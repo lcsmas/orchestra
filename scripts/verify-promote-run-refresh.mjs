@@ -9,33 +9,45 @@
 //
 // Both env builders (buildSdkEnv in agent-sdk.ts AND startAgentPty extraEnv in
 // workspaces.ts) stamp `ORCHESTRA_RUN_ID = resolveWaveRunId(ws)` at launch, so
-// what the SESSION's /proc env would carry after a relaunch IS `resolveWaveRunId`
-// evaluated against the post-promote store, and what the FROZEN switch notice
-// names is `writeBusSwitchState(worktree, thatRun)`. This rig drives the REAL
+// what a RELAUNCHED session's /proc env carries IS `resolveWaveRunId` against the
+// post-promote store. The ticket's arm 1 is: a LIVE promoted session's env reads
+// the NEW run WITHOUT a manual restart — i.e. promote must RESTART the live idle
+// session so it re-runs its env builder. This rig drives the REAL
 // `dispatchPromoteRequest` (bundled from workspaces.ts with esbuild + an electron
-// stub, never a re-implementation) over a REAL SQLite bus, and asserts:
+// stub, never a re-implementation) over a REAL SQLite bus, with a fake live SDK
+// session (registerSdkDelivery) and a STUBBED `./restart-workspace.ts` (esbuild
+// resolve plugin) that RECORDS every dispatchRestartRequest — so the reconcile's
+// restart WIRE is observable without a real claude process.
 //
-//   A1 (arm 1, the fix) — after promote, resolveWaveRunId(member) === the member's
-//        OWN id (not the parent OPS run), AND its `.orchestra/bus-switches` notice
-//        is rewritten to name the member's OWN run. This is exactly the run id the
-//        relaunched session's env would stamp — the refresh the manual restart used
-//        to supply, now automatic.
-//   A1-pre — BEFORE promote, resolveWaveRunId(member) === the parent OPS run and the
-//        notice names the OPS run (the same-command baseline that proves A1 is a
-//        real transition, not a constant).
-//   MUT (must-FAIL / mutation) — the UNFIXED promote (flip canOrchestrate + start
-//        the run row, but SKIP the reconcile — the pre-#171 body) leaves the notice
-//        naming the PARENT OPS run: arm 1 FAILS through this same rig. This proves
-//        the reconcile wire is load-bearing and A1 is non-vacuous across the fix
-//        boundary.
-//   A3 (unchanged) — a member spawned AFTER the promote resolves to the promoted
-//        OPS's own run natively (no reconcile needed) — the "members anchor to the
-//        OPS run" invariant the fix must not disturb.
+// ARMS (each names the mutation that reddens it):
+//   R1 (arm 1 — THE ticket promise) — a LIVE, IDLE promoted node: promote must
+//        invoke dispatchRestartRequest for it (conversation-preserving) so its env
+//        re-reads ORCHESTRA_RUN_ID, and report it in `restarted`. resolveWaveRunId
+//        flips parent→own (the value the relaunch stamps). MUTATION: deleting the
+//        reconcile call (or its restart branch) → NO restart recorded → R1 reddens.
+//        This is the arm the reviewer's F1 showed the old rig lacked: the notice
+//        was already refreshed by startRunForPromoted, so a notice-only assertion
+//        could not attribute the refresh to the reconcile.
+//   R2 (arm 2 — working session deferred, never a mid-turn kill) — the SAME live
+//        node but the stubbed restart returns {ok:false} (a working session's
+//        mid-turn guard): promote must DOWNGRADE to markedStale (marker + flag),
+//        NOT report `restarted`, and NEVER a second/forced teardown. MUTATION:
+//        dropping the {ok:false}→mark-stale fallback → node neither restarted nor
+//        stale → R2 reddens.
+//   RD (descendant refresh) — promote a live node that HAS a LIVE CHILD. The child's
+//        nearest orchestrator moves grandparent→promoted-parent, so the reconcile
+//        restarts the CHILD too — its env then re-reads the new run. Asserts both the
+//        parent AND the child are in `restarted`. MUTATION 2 (restart wire removed)
+//        reddens this alongside R1. (NB: the notice-write at ws.ts:1931 is flag-only
+//        and, for the promote path, converges with the D1b mission re-freeze — so it
+//        is NOT independently flag-observable here; the RESTART is the load-bearing
+//        arm-1 clause, and that is what RD/R1 pin. See the nomination's F1 answer.)
+//   A3 (unchanged invariant) — a member spawned AFTER promote anchors to the
+//        promoted node's run natively (no reconcile) — resolveWaveRunId only.
 //
-// The "the LIVE session is actually restarted / a working session is deferred"
-// halves are the source-binding gate (reparent-run-binding.test.ts, the #171 arms)
-// + the packaged drive; a cold member here takes the notice-only reconcile branch,
-// so this rig proves the RUN-DERIVE + NOTICE the env reads, with a real mutation.
+// The live /proc env of a REAL claude process is the packaged drive's domain; here
+// the restart-invocation + the run-derive it feeds are the observable, exactly as
+// the sibling #142 verify-reparent-run-notice.mjs splits notice(rig) vs send(packaged).
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -80,6 +92,10 @@ export { store } from ${JSON.stringify(path.join(repoRoot, 'src/main/store.ts'))
 export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};
 export { initBus, getBus, closeBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
 export { startRun } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-runs.ts'))};
+export { registerSdkDelivery } from ${JSON.stringify(path.join(repoRoot, 'src/main/sdk-delivery.ts'))};
+// The reconcile's restart wire. Stubbed via the resolve plugin below so the rig
+// RECORDS calls (and controls the {ok} result) instead of driving real claude.
+export { __restartCalls, __setRestartResult } from ${JSON.stringify(path.join(repoRoot, 'src/main/restart-workspace.ts'))};
 `,
 );
 
@@ -87,6 +103,27 @@ const cacheDir = path.join(repoRoot, 'node_modules', '.cache');
 fs.mkdirSync(cacheDir, { recursive: true });
 const bundle = path.join(cacheDir, 'promote-refresh-171.mjs');
 const electronStub = path.join(cacheDir, 'promote-refresh-171-electron-stub.mjs');
+
+// STUB for the reconcile's dynamic `import('./restart-workspace.ts')`. Records
+// every dispatchRestartRequest so R1 can assert the restart WIRE fired, and lets
+// the arm control the result ({ok:true} = idle restart succeeded; {ok:false} =
+// working session's mid-turn guard → the mark-stale fallback). No agent-sdk, no
+// node-pty — the wire is what's under test, not sdkRestart's internals (those are
+// agent-sdk's own tests). Exposes __restartCalls / __setRestartResult on the same
+// module the shipped code imports, so the recording is authoritative.
+const restartStub = path.join(cacheDir, 'promote-refresh-171-restart-stub.mjs');
+fs.writeFileSync(
+  restartStub,
+  `
+export const __restartCalls = [];
+let __result = { ok: true, mode: 'structured', fresh: false };
+export function __setRestartResult(r) { __result = r; }
+export async function dispatchRestartRequest(input) {
+  __restartCalls.push({ ...input });
+  return { ...__result };
+}
+`,
+);
 fs.writeFileSync(
   electronStub,
   `
@@ -118,6 +155,16 @@ export default { app, ipcMain, BrowserWindow, WebContentsView, shell, dialog, Me
 `,
 );
 
+// Redirect EVERY resolution of `restart-workspace.ts` (the static entry re-export
+// AND the reconcile's dynamic `import('./restart-workspace.ts')`) to the stub, so
+// the restart wire is observable and agent-sdk/node-pty never enter the bundle.
+const restartRedirect = {
+  name: 'restart-redirect',
+  setup(b) {
+    b.onResolve({ filter: /restart-workspace\.ts$/ }, () => ({ path: restartStub }));
+  },
+};
+
 await build({
   entryPoints: [entry],
   outfile: bundle,
@@ -126,6 +173,7 @@ await build({
   platform: 'node',
   external: ['better-sqlite3', 'node-pty', 'node:*', 'simple-git', 'ws', '@anthropic-ai/*'],
   alias: { electron: electronStub },
+  plugins: [restartRedirect],
   logLevel: 'silent',
 });
 const mod = await import(`${bundle}?t=${Date.now()}`);
@@ -146,18 +194,24 @@ check('the bus opened for the promote-refresh rig', schema >= 2, 'schema v' + sc
 const busDb = mod.getBus();
 check('getBus() is non-null after initBus()', !!busDb);
 
-// ── Seed: an OPS parent (its own run frozen) + a cold MEMBER child under it ───
-const OPS_ID = 'ops-parent-171';
-const MEMBER_ID = 'member-child-171';
+// ── A fake live SDK session, so the reconcile takes the LIVE (restart) branch ──
+// `sdkSessionLive(id)` reads this via the registered delivery. A node in `liveSet`
+// is a live STRUCTURED session (isRunning — the PTY probe — stays false, so the
+// live surface is structured, i.e. the sdkRestart mid-turn-guard surface).
+const liveSet = new Set();
+mod.registerSdkDelivery({
+  hasSession: (id) => liveSet.has(id),
+  send: async () => {},
+  sendAwaitingStart: async () => 'started',
+  start: async () => {},
+  stop: async () => {},
+});
 
 function worktreeFor(id) {
   const wt = path.join(tmp, id);
   fs.mkdirSync(path.join(wt, '.orchestra'), { recursive: true });
   return wt;
 }
-const opsWt = worktreeFor(OPS_ID);
-const memberWt = worktreeFor(MEMBER_ID);
-
 /** A minimal-but-valid Workspace record for the rig. */
 function ws(id, over) {
   return {
@@ -173,122 +227,143 @@ function ws(id, over) {
     ...over,
   };
 }
-
-// The OPS is a promoted worktree (canOrchestrate) → its own run anchor.
-await mod.store.upsertWorkspace(ws(OPS_ID, { worktreePath: opsWt, canOrchestrate: true }));
-// The MEMBER is a plain worktree parented under the OPS → resolves to the OPS run.
-await mod.store.upsertWorkspace(ws(MEMBER_ID, { worktreePath: memberWt, parentId: OPS_ID }));
-
-// Freeze the OPS run row so its notice/flags exist (delivery ON, like a live wave).
-mod.startRun(busDb, { id: OPS_ID, kind: 'mission', coordinator: OPS_ID }, {
-  delivery: true,
-  wake: true,
-  askGate: true,
-  liveness: true,
+// A LEAD (top-level orchestrator, its own run frozen delivery=ON) so a member
+// under it resolves to the LEAD run pre-promote (the ticket's spawn-under-LEAD).
+const LEAD_ID = 'lead-171';
+await mod.store.upsertWorkspace(ws(LEAD_ID, { canOrchestrate: true }));
+mod.startRun(busDb, { id: LEAD_ID, kind: 'mission', coordinator: LEAD_ID }, {
+  delivery: true, wake: true, askGate: true, liveness: true,
 });
-
-const memberNoticeFile = path.join(memberWt, '.orchestra', 'bus-switches');
-const readMemberNotice = () =>
-  fs.existsSync(memberNoticeFile) ? fs.readFileSync(memberNoticeFile, 'utf8') : '';
-
-// ── A1-pre — baseline: BEFORE promote the member belongs to the OPS run ───────
-console.log('\n#171 A1-pre — BEFORE promote: the member resolves to the PARENT OPS run:');
-const preRun = mod.resolveWaveRunId(mod.store.getWorkspace(MEMBER_ID));
-check('resolveWaveRunId(member) === the OPS run before promote', preRun === OPS_ID, `got ${preRun}`);
-// Write the member's notice for its pre-promote run (what spawn-time stamped).
-await mod.writeBusSwitchState(memberWt, preRun);
-const preNotice = readMemberNotice();
-check('the pre-promote member notice exists', preNotice.length > 0);
-// The OPS run was frozen delivery=ON, so the pre-promote member notice (naming the
-// OPS run) names delivery=ON — the authoritative discriminator below.
-check(
-  'the pre-promote notice names delivery=ON (the OPS run it belongs to)',
-  preNotice.includes('bus switch delivery=ON'),
-);
-// Set the LIVE switches to delivery=OFF so the member's OWN run — frozen by the
-// promote's startRunForPromoted at CURRENT live switches — names delivery=OFF. A
-// genuinely different frozen flag makes the post-notice transition unambiguous
-// (not a cosmetic rewrite of the same flags).
+// Live switches OFF so a node's OWN freshly-frozen run names delivery=OFF — an
+// authoritative flag transition vs the LEAD run's delivery=ON (not a cosmetic change).
 await mod.store.setBusSwitches({ delivery: false, wake: false, askGate: false, liveness: false });
 
-// ── Promote the member (the SHIPPED dispatchPromoteRequest) ───────────────────
-console.log('\n#171 promote — dispatchPromoteRequest({ id: member }):');
-const res = await mod.dispatchPromoteRequest({ id: MEMBER_ID });
-check('promote returned ok', res.ok === true, JSON.stringify(res));
+// ════════════════════════════════════════════════════════════════════════════
+// R1 — arm 1 (THE ticket promise): a LIVE, IDLE promoted node is RESTARTED so its
+// env re-reads the new run. This is the arm the reviewer's F1 showed was missing:
+// the notice is already refreshed by startRunForPromoted, so ONLY the restart wire
+// proves "the SESSION picks up the new run without a manual restart".
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#171 R1 — a LIVE idle promoted node is RESTARTED (env re-reads the new run):');
+const NODE_ID = 'live-node-171';
+await mod.store.upsertWorkspace(ws(NODE_ID, { parentId: LEAD_ID }));
+liveSet.add(NODE_ID); // a live structured session owns it
+const r1Pre = mod.resolveWaveRunId(mod.store.getWorkspace(NODE_ID));
+check('R1-pre: the live node resolves to the LEAD run before promote', r1Pre === LEAD_ID, `got ${r1Pre}`);
+mod.__restartCalls.length = 0;
+mod.__setRestartResult({ ok: true, mode: 'structured', fresh: false });
+const r1 = await mod.dispatchPromoteRequest({ id: NODE_ID });
+check('R1: promote ok', r1.ok === true, JSON.stringify(r1));
+// THE load-bearing assertion: the reconcile invoked dispatchRestartRequest for the
+// live node (so its relaunch re-reads ORCHESTRA_RUN_ID). Deleting the reconcile (or
+// its restart branch) → zero restart calls → this reddens.
+const r1Restart = mod.__restartCalls.find((c) => c.id === NODE_ID);
 check(
-  'promote reports NO stale/restart for a COLD member (notice-only reconcile branch)',
-  (res.restarted ?? []).length === 0 && (res.markedStale ?? []).length === 0,
-  `restarted=${JSON.stringify(res.restarted)} markedStale=${JSON.stringify(res.markedStale)}`,
+  'R1: dispatchRestartRequest was INVOKED for the promoted live node (env refresh wire fired)',
+  !!r1Restart,
+  `restart calls: ${JSON.stringify(mod.__restartCalls)}`,
+);
+check(
+  'R1: the restart is conversation-preserving (fresh:false, #111/#159)',
+  r1Restart && r1Restart.fresh === false,
+);
+check('R1: promote reports the node in `restarted`', (r1.restarted ?? []).includes(NODE_ID),
+  JSON.stringify(r1.restarted));
+check('R1: NOT marked stale (an idle restart succeeded)', (r1.markedStale ?? []).length === 0);
+const r1Post = mod.resolveWaveRunId(mod.store.getWorkspace(NODE_ID));
+check(
+  'R1: resolveWaveRunId(node) flipped LEAD→own (the run the relaunched env stamps)',
+  r1Post === NODE_ID && r1Pre !== r1Post,
+  `pre=${r1Pre} post=${r1Post}`,
 );
 
-// ── A1 — the fix: after promote the member is its OWN run + notice refreshed ──
-console.log('\n#171 A1 — AFTER promote: the member resolves to its OWN run + notice refreshed:');
-const postRun = mod.resolveWaveRunId(mod.store.getWorkspace(MEMBER_ID));
+// ════════════════════════════════════════════════════════════════════════════
+// R2 — arm 2 (working session): the restart is REFUSED ({ok:false}, the mid-turn
+// guard) → promote DOWNGRADES to mark-stale, never a mid-turn kill.
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#171 R2 — a WORKING live node: restart refused → deferred (mark-stale), never killed:');
+const WORKING_ID = 'working-node-171';
+await mod.store.upsertWorkspace(ws(WORKING_ID, { parentId: LEAD_ID }));
+liveSet.add(WORKING_ID);
+mod.__restartCalls.length = 0;
+// The working session's mid-turn guard throws → dispatchRestartRequest returns {ok:false}.
+mod.__setRestartResult({ ok: false, error: 'restart failed: The agent is working — interrupt it first, then restart.' });
+const r2 = await mod.dispatchPromoteRequest({ id: WORKING_ID });
+check('R2: promote ok', r2.ok === true, JSON.stringify(r2));
 check(
-  'resolveWaveRunId(member) === the member OWN id after promote (this is what the relaunched env stamps)',
-  postRun === MEMBER_ID,
-  `got ${postRun} (expected ${MEMBER_ID})`,
+  'R2: the restart WAS attempted (the guard lives in sdkRestart, not a pre-kill) — one call',
+  mod.__restartCalls.some((c) => c.id === WORKING_ID),
 );
-check('the run flipped (parent OPS run → member own run)', preRun !== postRun);
-const postNotice = readMemberNotice();
 check(
-  'the member notice was REWRITTEN by the reconcile for the member OWN run (delivery=OFF now)',
-  postNotice.includes('bus switch delivery=OFF') && !postNotice.includes('bus switch delivery=ON'),
-  'the reconcile must writeBusSwitchState for the new anchor so a relaunch reads the right run',
+  'R2: a refused restart DOWNGRADES to markedStale (not silently left on the old run)',
+  (r2.markedStale ?? []).includes(WORKING_ID),
+  JSON.stringify(r2),
+);
+check('R2: NOT reported restarted (the restart was refused)', !(r2.restarted ?? []).includes(WORKING_ID));
+check(
+  'R2: the stale marker file was written (CLI send-refusal armed)',
+  fs.existsSync(path.join(tmp, WORKING_ID, '.orchestra', 'bus-run-stale')),
 );
 check(
-  'the notice TRANSITIONED ON→OFF (the frozen flag the agent reads actually changed)',
-  preNotice.includes('bus switch delivery=ON') && postNotice.includes('bus switch delivery=OFF'),
-  'a promote that left the notice on the OLD run would show delivery=ON both times',
-);
-
-// ── A3 — a member spawned AFTER the promote anchors to the OPS's OWN run ──────
-// (unchanged invariant: a NEW plain member under the freshly-promoted OPS resolves
-// to the OPS run, natively, with no reconcile.)
-console.log('\n#171 A3 — a NEW member under the promoted OPS anchors to its run natively:');
-const LATE_MEMBER = 'late-member-171';
-await mod.store.upsertWorkspace(ws(LATE_MEMBER, { parentId: MEMBER_ID }));
-const lateRun = mod.resolveWaveRunId(mod.store.getWorkspace(LATE_MEMBER));
-check(
-  'a member spawned after promote anchors to the promoted OPS run',
-  lateRun === MEMBER_ID,
-  `got ${lateRun}`,
+  'R2: the working node is flagged busRunStale in the store',
+  mod.store.getWorkspace(WORKING_ID).busRunStale === true,
 );
 
-// ── MUT — must-FAIL: the UNFIXED promote (no reconcile) leaves the stale notice ─
-// Reproduce the pre-#171 body on a SECOND member: flip canOrchestrate + start the
-// run row (what old promote did), but SKIP the reconcile (no notice rewrite). The
-// arm-1 notice assertion must FAIL — proving the reconcile is what makes A1 real.
-console.log('\n#171 MUT — must-FAIL: the pre-#171 promote (no reconcile) leaves the stale notice:');
-const MEMBER2_ID = 'member2-child-171';
-const member2Wt = worktreeFor(MEMBER2_ID);
-await mod.store.upsertWorkspace(ws(MEMBER2_ID, { worktreePath: member2Wt, parentId: OPS_ID }));
-const pre2Run = mod.resolveWaveRunId(mod.store.getWorkspace(MEMBER2_ID));
-await mod.writeBusSwitchState(member2Wt, pre2Run); // spawn-time notice = OPS run
-const member2NoticeFile = path.join(member2Wt, '.orchestra', 'bus-switches');
-const pre2Notice = fs.readFileSync(member2NoticeFile, 'utf8');
-// The UNFIXED promote effect: capability flip + run row, NO reconcile/notice-rewrite.
-await mod.store.upsertWorkspace({ ...mod.store.getWorkspace(MEMBER2_ID), canOrchestrate: true });
-mod.startRun(busDb, { id: MEMBER2_ID, kind: 'vague', coordinator: MEMBER2_ID }, {
-  delivery: true,
-  wake: true,
-  askGate: true,
-  liveness: true,
+// ════════════════════════════════════════════════════════════════════════════
+// RD — the DESCENDANT-notice arm that catches the ws.ts:1931 newAnchorId mutation.
+// Promote a live node that HAS a COLD CHILD. startRunForPromoted writes ONLY the
+// promoted node's notice, so the CHILD's notice is written EXCLUSIVELY by the
+// reconcile's writeBusSwitchState(ws.worktreePath, newAnchorId). Mutating that to
+// oldAnchorId leaves the child naming the OLD (LEAD) run → this reddens.
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#171 RD — a promoted node\'s LIVE CHILD is ALSO reconciled (restarted) so ITS env refreshes:');
+// A promote re-anchors not just the node but every descendant whose nearest
+// orchestrator changes (child: grandparent→promoted parent). The reconcile walks
+// the whole snapshotted subtree, so a LIVE child is restarted too — its env then
+// re-reads the new run. Deleting the reconcile (mutation 2) reddens this alongside R1.
+const RD_LEAD = 'rd-lead-171';
+const RD_PARENT = 'rd-parent-171';
+const RD_CHILD = 'rd-child-171';
+await mod.store.upsertWorkspace(ws(RD_LEAD, { canOrchestrate: true }));
+await mod.store.upsertWorkspace(ws(RD_PARENT, { parentId: RD_LEAD })); // NOT yet orch
+await mod.store.upsertWorkspace(ws(RD_CHILD, { parentId: RD_PARENT }));
+liveSet.add(RD_PARENT);
+liveSet.add(RD_CHILD);
+mod.startRun(busDb, { id: RD_LEAD, kind: 'mission', coordinator: RD_LEAD }, {
+  delivery: true, wake: true, askGate: true, liveness: true,
 });
-const post2Notice = fs.readFileSync(member2NoticeFile, 'utf8');
-// The mutant leaves the notice UNCHANGED (still the OPS run) even though the node's
-// resolved run has moved to its own id — the exact #171 stale-env symptom.
-const post2Run = mod.resolveWaveRunId(mod.store.getWorkspace(MEMBER2_ID));
-const mutantWouldFailArm1 = post2Run === MEMBER2_ID && post2Notice === pre2Notice;
+const rdChildPre = mod.resolveWaveRunId(mod.store.getWorkspace(RD_CHILD));
+check('RD-pre: the live child resolves to the grandparent RD_LEAD run', rdChildPre === RD_LEAD, `got ${rdChildPre}`);
+mod.__restartCalls.length = 0;
+mod.__setRestartResult({ ok: true, mode: 'structured', fresh: false });
+const rd = await mod.dispatchPromoteRequest({ id: RD_PARENT });
+check('RD: promote ok', rd.ok === true, JSON.stringify(rd));
+// BOTH the promoted parent AND the live child must be restarted (each env refreshes).
 check(
-  'the UNFIXED promote leaves the notice on the OLD run while the resolved run moved (arm 1 would FAIL)',
-  mutantWouldFailArm1,
-  `post2Run=${post2Run} noticeChanged=${post2Notice !== pre2Notice}`,
+  'RD: the promoted parent was restarted (its own env refresh)',
+  mod.__restartCalls.some((c) => c.id === RD_PARENT) && (rd.restarted ?? []).includes(RD_PARENT),
+  `restarts=${JSON.stringify(mod.__restartCalls.map((c) => c.id))}`,
 );
 check(
-  'and the FIXED promote (member above) DID rewrite the notice — the discriminator between fixed and unfixed',
-  postNotice !== preNotice && post2Notice === pre2Notice,
-  'if both changed or both stayed, the rig cannot tell the fix from the mutant',
+  'RD: the LIVE CHILD was ALSO restarted (its anchor moved grandparent→promoted-parent)',
+  mod.__restartCalls.some((c) => c.id === RD_CHILD) && (rd.restarted ?? []).includes(RD_CHILD),
+  `restarts=${JSON.stringify(mod.__restartCalls.map((c) => c.id))} restarted=${JSON.stringify(rd.restarted)}`,
+);
+check(
+  'RD: resolveWaveRunId(child) flipped grandparent→promoted-parent (the run its relaunch stamps)',
+  mod.resolveWaveRunId(mod.store.getWorkspace(RD_CHILD)) === RD_PARENT && rdChildPre !== RD_PARENT,
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+// A3 — unchanged invariant: a member spawned AFTER promote anchors to the promoted
+// node's run natively (no reconcile) — the fix must not disturb this.
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#171 A3 — a NEW member under a promoted node anchors to its run natively:');
+const LATE = 'late-member-171';
+await mod.store.upsertWorkspace(ws(LATE, { parentId: NODE_ID }));
+check(
+  'a member spawned after promote anchors to the promoted node run',
+  mod.resolveWaveRunId(mod.store.getWorkspace(LATE)) === NODE_ID,
 );
 
 mod.closeBus();
