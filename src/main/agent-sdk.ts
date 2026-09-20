@@ -59,6 +59,7 @@ import {
 } from '../shared/reload-skills';
 import { withCrossSessionInboundPolicy } from '../shared/cross-session-inbound';
 import { coalesceWakeOrderInto, wakeOrderRuns } from '../shared/bus-wake.ts';
+import { rollbackWakeForWithdrawnTurn } from './bus-wake';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -2301,6 +2302,9 @@ export function sdkQueueRemove(wsId: string, id: string): boolean {
   settleDelivery(session.queue[i].uuid, false);
   session.queue.splice(i, 1);
   session.coalesce.delete(id);
+  // #172: a cancelled bus wake order rolls back its ledger mark so the next sweep
+  // re-fires — the mail it was ordered to check is still pending.
+  rollbackWakeForWithdrawnTurn(wsId, removedText);
   // Keep the crash-recovery insurance in step: `sdkPendingPrompts` re-sends
   // parked prompts if the app dies before they run, so leaving a CANCELLED
   // prompt there would resurrect it on next open — the one outcome the user
@@ -2651,6 +2655,17 @@ export async function sdkSendAwaitingStart(
   return result;
 }
 
+// #172 — every unstarted-turn discard site below calls
+// `rollbackWakeForWithdrawnTurn(wsId, text)` (src/main/bus-wake.ts): the wake sweep
+// marks the ledger on the QUEUE PUSH, not the turn START (#57), so a wake order
+// queued-then-withdrawn (delivery timeout / #90 wedge, tray cancel, Escape,
+// session-end wipe) would otherwise starve the reader on `already-woken`. The
+// gate (roll back ONLY when the withdrawn text is a wake order) lives in bus-wake.ts
+// — the strip-types-importable module the acceptance test can drive directly — so
+// the changed rule is covered rather than re-implemented in a private helper the
+// test runner cannot import (the #132/#134 seam lesson). The residual not covered
+// by any importable seam is only that these three sites INVOKE it (dir-import wall).
+
 /** Remove a turn that is still QUEUED (never yielded to the SDK) so it cannot
  *  run after its sender has already been told it was not delivered.
  *
@@ -2665,6 +2680,10 @@ function dequeueUnstartedTurn(wsId: string, uuid: string): void {
   const withdrawnText = queueEntryText(session.queue[i]);
   session.queue.splice(i, 1);
   session.coalesce.delete(uuid);
+  // #172: if this withdrawn turn was a bus wake order, roll back its ledger mark
+  // so the next sweep re-fires — the sweep marked it woken on the QUEUE PUSH, and
+  // it never started.
+  rollbackWakeForWithdrawnTurn(wsId, withdrawnText);
   // Drop the crash-recovery insurance for this turn as well, exactly as a tray
   // cancel does. The caller is about to park this message in the durable inbox;
   // leaving it in `sdkPendingPrompts` too would replay it on the next open —
@@ -3445,9 +3464,21 @@ function settleDelivery(uuid: string | undefined, started: boolean): void {
 }
 
 /** Settle every watcher for turns still sitting in a session's queue as DROPPED.
- *  Called by each path that discards queued entries. */
+ *  Called by each path that discards the WHOLE queue unstarted — Escape
+ *  (`interruptCancellingQueued`) and session-end (`consume`'s finally).
+ *
+ *  #172: those same entries are being thrown away unstarted, so any that is a bus
+ *  wake order must roll back its ledger mark (the sweep marked it woken on the
+ *  queue push; it never ran). One rollback per WSID suffices — the fire ledger is
+ *  keyed by reader, so even if several wake orders were queued (coalesced or not)
+ *  the single per-reader entry covers the union of their runs (acceptance arm 3).
+ *  Gated on {@link isWakeOrder} so an ordinary queued prompt never touches the
+ *  ledger. */
 function settleQueuedAsDropped(session: Session): void {
-  for (const m of session.queue) settleDelivery(m.uuid, false);
+  for (const m of session.queue) {
+    settleDelivery(m.uuid, false);
+    rollbackWakeForWithdrawnTurn(session.wsId, queueEntryText(m));
+  }
 }
 
 /** Per-workspace tail of in-flight pending-prompt writes, so concurrent sends
