@@ -1094,10 +1094,27 @@ references).
 
 - `openGate(db, runId, askedBy, question, recipient=null)` — `orchestra gate open
   [--to <recipient>] <question...>`.
-- `openGatesForRecipient(db, runId, recipient)` — the read behind BOTH the wake
-  predicate ("is R gate-pending") and `check`'s gate surface.
+- `openGatesForRecipient(db, runId, recipient)` — SINGLE-run read (the CLI's
+  own-run resolution: `check --run <r>` / `gate list`). Delegates to
+  `openGatesForRecipientInRuns(db, [runId], recipient)`.
+- `openGatesForRecipientInRuns(db, runIds, recipient)` (**#158**) — the CROSS-RUN
+  widening. The wake predicate and the plain-`check` gate surface both pass the
+  reader's RELATED run set (`getRelatedRunIds().ids` — own ∪ ancestors ∪
+  descendants), so a gate opened in the ASKER's run with the recipient in ANOTHER
+  run (an OPS→LEAD ruling ask) is visible to its recipient. Scoped to the related
+  set (never a bare cross-run read), exact-recipient (NULL-recipient gates match
+  nobody) — symmetric with the lot half's `relatedRunRecipientSql`. Pre-#158 the
+  gate half was own-run only while mail got the #134/#144 widening, so every
+  cross-run gate was invisible to its recipient: no wake, no check surface, no
+  staleness (ledger #157 F-C5-1).
 - `orchestra gate resolve <id> --resolution <text>` (positional ruling still
   accepted for back-compat); re-resolve REFUSED (`WHERE resolved_at IS NULL`).
+  (**#158**) On a successful resolve the verb reads the gate first (`getGate`) and
+  sends a `decision_gate` reply carrying the ruling to `asked_by` IN THE GATE'S
+  RUN, threaded `gate:<id>`. A gate has no reply message of its own (unlike a
+  `question`), so this is what re-wakes the ASKER with the resolution via the
+  normal lot path — for both same-run and cross-run shapes (the gate's run is
+  always the asker's own run). Not sent on an idempotent `--request-id` replay.
 - `orchestra gate list` — open gates addressed to the caller.
 - `check` output carries a `gates: [{id, asked_by, question, opened_at}]` array
   (always present, possibly empty) — the wake order is `orchestra check` and
@@ -1106,7 +1123,10 @@ references).
 ### The wake predicate — TWO switches, ONE order (`src/main/bus-wake.ts`, `src/shared/bus-wake.ts`)
 
 `readPendingReaders` now fills a SEPARATE gate half (`gatePending` /
-`gateThroughSeq`) from `openGatesForRecipient`, kept apart from the lot/question
+`gateThroughSeq` / `gateRunIds` [**#158**, the runs the open gates sit in — the
+wake order names them so the recipient's `check --run <gateRun>` surfaces the
+gate]) from `openGatesForRecipientInRuns(db, related.ids, reader)` [**#158** —
+was own-run `openGatesForRecipient`], kept apart from the lot/question
 `pending` because it rides the **`askGate`** switch, not **`wake`** — the two
 mechanisms flip independently. The sweep reads both switches per reader per run
 (`readWakeSwitch` + `readAskGateSwitch`, each in its own try so one throw cannot
@@ -1147,6 +1167,17 @@ durable truth, not a fired mechanism).
 loop; T119.2 gate recipient/resolve/list/re-resolve + check surface; T119.3 the
 must-FAIL gate-wake arm (pre-#119 predicate shows ZERO gate wakes) + counted-off;
 T119.4 waiting excluded. Each shown RED under one mutation then GREEN.
+
+**#158 cross-run gate** — `src/main/bus-cross-run-gate.test.ts` (sweep end-to-end
+over real `startRun`-frozen run rows, production accessors) + arms in
+`src/cli/bus-verbs.test.ts`. Arm1: a gate opened in the OPS run addressed to the
+LEAD (a descendant of the LEAD's run) wakes the LEAD ≤2 sweeps and the wake order
+names the GATE run (RED on the own-run predicate mutant); the CLI half proves both
+`check --run <gateRun>` and a plain own-run `check` (related-run widening) surface
+it. Arm2: an own-run gate is byte-unchanged (stays GREEN under the mutant). Arm3:
+the D-H1 gate-axis dedup (`wokeGateSeq`, keyed on the GLOBAL gate id) holds across
+runs. Arm4: resolve routes the ruling to the asker in the GATE run (RED when the
+send is dropped, and RED-only-cross-run when routed to the resolver's run).
 
 ### Wiring (WAS deferred #117/#118/#119 — now done by #134)
 

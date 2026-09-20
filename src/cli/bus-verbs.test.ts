@@ -19,6 +19,7 @@ import {
   verbSend,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import * as busRuns from '../main/bus-runs.ts';
 import { startRun } from '../main/bus-runs.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 
@@ -44,7 +45,11 @@ interface Rig {
   /** `fencing` (#128) defaults to the unfenced path — no generation presented,
    *  switch OFF — so every pre-#128 verb test runs with the fence inert (a pass),
    *  which is what they assert. A fencing arm passes real values explicitly. */
-  ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => BusVerbCtx;
+  ctx: (
+    handle: string,
+    fencing?: { generation?: number | null; fencingOn?: boolean },
+    runId?: string,
+  ) => BusVerbCtx;
   db: import('../main/bus.ts').BusDb;
   out: string[];
   fails: string[];
@@ -81,7 +86,11 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
     setCapabilityEnabled: (on: boolean) => {
       capOn = on;
     },
-    ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => ({
+    ctx: (
+      handle: string,
+      fencing?: { generation?: number | null; fencingOn?: boolean },
+      runId?: string,
+    ) => ({
       db,
       // The bus slice index.ts injects (openBusForVerb): the real bus.ts verbs
       // plus the #130 receipt wrapper and a busSwitch reader. busSwitch is stubbed
@@ -94,7 +103,10 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
         ack: bus.ack,
         openGate: bus.openGate,
         resolveGate: bus.resolveGate,
+        getGate: bus.getGate,
         openGatesForRecipient: bus.openGatesForRecipient,
+        openGatesForRecipientInRuns: bus.openGatesForRecipientInRuns,
+        getRelatedRunIds: busRuns.getRelatedRunIds,
         // #128 fencing + #129 capability, the real bus.ts helpers.
         fencedWrite: bus.fencedWrite,
         mintCapability: bus.mintCapability,
@@ -105,7 +117,7 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
         withReceipt,
         busSwitch: () => r.switchOn,
       },
-      id: { runId: RUN, handle },
+      id: { runId: runId ?? RUN, handle },
       out: (text) => out.push(text),
       // Mirrors index.ts's fail(): it THROWS, so a refusal genuinely stops the
       // verb. A fail that merely recorded would let execution run on into the
@@ -447,6 +459,98 @@ test('gate refuses an unknown subcommand, an empty question and an empty ruling'
   assert.match(r.fails[2], /ruling is empty/);
   assert.throws(() => verbGate(r.ctx('lead'), 'resolve', ['nope', 'x']));
   assert.match(r.fails[3], /usage: orchestra gate resolve/);
+});
+
+// ─── #158 — cross-run gate lookup: check surface + resolve→asker re-wake ──────
+
+test('#158 arm1 (CLI) — a CROSS-RUN gate surfaces in the recipient\'s check via check --run <gateRun>, and plain check (related-run widening) too', (t) => {
+  // The check-surface half of ledger #157 F-C5-1. A gate opened in the OPS run
+  // (a descendant of the LEAD's run) addressed to the LEAD must surface when the
+  // LEAD checks. `check --run <gateRun>` resolves gateRun directly; a PLAIN check
+  // (own run) surfaces it via the #158 related-run widening.
+  // MUTANT: revert verbCheck to `openGatesForRecipient(db, ctx.id.runId, handle)`
+  //   (own run only) → the plain-check assertion returns [] → red.
+  const r = rig(t);
+  const LEAD_RUN = 'run-lead';
+  const OPS_RUN = 'run-ops';
+  startRun(r.ctx('x').db, { id: LEAD_RUN, kind: 'mission', coordinator: 'ws-lead' }, DEFAULT_BUS_SWITCHES);
+  startRun(
+    r.ctx('x').db,
+    { id: OPS_RUN, kind: 'vague', coordinator: 'ws-ops', parentRunId: LEAD_RUN },
+    DEFAULT_BUS_SWITCHES,
+  );
+  // OPS opens a gate addressed to the LEAD, in the OPS run.
+  verbGate(r.ctx('ws-ops', undefined, OPS_RUN), 'open', ['--to', 'ws-lead', 'ship the stack?']);
+  const gateId = Number(r.out[r.out.length - 1]);
+  assert.ok(gateId > 0);
+
+  // The LEAD runs `check --run <gateRun>` (what the wake order names).
+  verbCheck(r.ctx('ws-lead', undefined, OPS_RUN), { ackPrevious: false, markdown: false, limit: 100 });
+  const namedRun = lastJson(r) as unknown as { gates: Array<{ id: number }> };
+  assert.deepEqual(namedRun.gates.map((g) => g.id), [gateId], 'check --run <gateRun> surfaces the cross-run gate');
+
+  // The LEAD runs a PLAIN check in its OWN run — the related-run widening surfaces
+  // the descendant-run gate here too, so a recipient checking on its own initiative
+  // is not blind to it.
+  verbCheck(r.ctx('ws-lead', undefined, LEAD_RUN), { ackPrevious: false, markdown: false, limit: 100 });
+  const ownRun = lastJson(r) as unknown as { gates: Array<{ id: number }> };
+  assert.deepEqual(ownRun.gates.map((g) => g.id), [gateId], 'a plain own-run check surfaces the cross-run gate (widened)');
+
+  // A non-recipient in a related run does NOT see it (exact-recipient scope).
+  verbCheck(r.ctx('ws-other', undefined, LEAD_RUN), { ackPrevious: false, markdown: false, limit: 100 });
+  const other = lastJson(r) as unknown as { gates: Array<{ id: number }> };
+  assert.deepEqual(other.gates, [], 'a non-recipient does not see the gate');
+});
+
+test('#158 arm4 (CLI) — resolve re-wakes the ASKER with the resolution: a threaded decision_gate reply lands in the asker\'s lot (own-run shape)', (t) => {
+  // A gate carries no reply message, so pre-#158 a resolved gate left its opener
+  // with no signal. Resolve must route the ruling back to the ASKER, threaded to
+  // the gate, so the normal lot wake delivers it.
+  // MUTANT: delete the `ctx.bus.send(...)` block in verbGate resolve → the asker's
+  //   lot is empty → red.
+  const r = rig(t);
+  verbGate(r.ctx('ws-ops'), 'open', ['--to', 'ws-lead', 'ship?']);
+  const gateId = Number(r.out[r.out.length - 1]);
+  verbGate(r.ctx('ws-lead'), 'resolve', [String(gateId), '--resolution', 'ship it']);
+  assert.equal(r.out[r.out.length - 1], `resolved ${gateId}\n`);
+
+  // The asker (ws-ops) checks its lot — the resolution is there, threaded to the gate.
+  verbCheck(r.ctx('ws-ops'), { ackPrevious: false, markdown: false, limit: 100 });
+  const lot = lastJson(r);
+  const reply = lot.messages.find((m) => m.thread_id === `gate:${gateId}`);
+  assert.ok(reply, 'the asker receives a message threaded to the gate');
+  assert.equal(reply!.body, 'ship it', 'carrying the resolution ruling');
+  assert.equal(reply!.recipient, 'ws-ops', 'addressed to the asker');
+  assert.equal(reply!.sender, 'ws-lead', 'from the resolver');
+});
+
+test('#158 arm4 (CLI) — resolve routes the reply to the GATE run so a CROSS-RUN asker (gate opened in its own run) receives it', (t) => {
+  // The cross-run shape: an OPS opens a gate in the OPS run addressed to the LEAD
+  // (in the mission run). The LEAD resolves. The reply must land in the GATE's run
+  // (= the asker's own run), so the asker's own-run check surfaces it — not in the
+  // resolver's run, which the asker would never check.
+  // MUTANT: send the reply with runId = ctx.id.runId (the resolver's run) instead
+  //   of gateBefore.run_id → the asker's own-run check is empty → red.
+  const r = rig(t);
+  const LEAD_RUN = 'run-lead';
+  const OPS_RUN = 'run-ops';
+  startRun(r.ctx('x').db, { id: LEAD_RUN, kind: 'mission', coordinator: 'ws-lead' }, DEFAULT_BUS_SWITCHES);
+  startRun(
+    r.ctx('x').db,
+    { id: OPS_RUN, kind: 'vague', coordinator: 'ws-ops', parentRunId: LEAD_RUN },
+    DEFAULT_BUS_SWITCHES,
+  );
+  verbGate(r.ctx('ws-ops', undefined, OPS_RUN), 'open', ['--to', 'ws-lead', 'ship?']);
+  const gateId = Number(r.out[r.out.length - 1]);
+  // The LEAD resolves from ITS run.
+  verbGate(r.ctx('ws-lead', undefined, LEAD_RUN), 'resolve', [String(gateId), '--resolution', 'hold']);
+
+  // The asker checks its OWN run (OPS_RUN) — the reply must be there.
+  verbCheck(r.ctx('ws-ops', undefined, OPS_RUN), { ackPrevious: false, markdown: false, limit: 100 });
+  const lot = lastJson(r);
+  const reply = lot.messages.find((m) => m.thread_id === `gate:${gateId}`);
+  assert.ok(reply, 'the asker receives the resolution in its OWN run (the gate run)');
+  assert.equal(reply!.body, 'hold');
 });
 
 // ─── T119.2 — gate --to recipient, --resolution, list, re-resolve refused ─────

@@ -225,9 +225,25 @@ export interface BusModule {
     recipient?: string | null,
   ): number;
   resolveGate(db: BusDb, gateId: number, resolvedBy: string, resolution: string): boolean;
-  /** Open gates addressed to `recipient` (#119) — surfaced by `check` and
-   *  `gate list` so a gate-woken reader can see what it was woken for. */
+  /** Read one gate back (#158) — the resolve verb reads it to route the
+   *  resolution reply back to the ASKER in the gate's run. */
+  getGate(db: BusDb, gateId: number): BusDecisionGate | null;
+  /** Open gates addressed to `recipient` in a SINGLE run (#119) — the CLI's
+   *  own-run resolution (`check --run <r>` / `gate list`). */
   openGatesForRecipient(db: BusDb, runId: string, recipient: string): BusDecisionGate[];
+  /** Open gates addressed to `recipient` in ANY related run (#158) — the
+   *  cross-run widening `check` (plain, own∪related) and the wake predicate use so
+   *  an OPS→LEAD ruling gate opened in another run is visible to its recipient.
+   *  The related-run set is computed with getRelatedRunIds, exactly like the lot
+   *  half. */
+  openGatesForRecipientInRuns(
+    db: BusDb,
+    runIds: readonly string[],
+    recipient: string,
+  ): BusDecisionGate[];
+  /** The reader's related run set (own ∪ ancestors ∪ descendants) (#134/#158).
+   *  `check` uses `.ids` to widen the gate lookup beyond the caller's own run. */
+  getRelatedRunIds(db: BusDb, readerRunId: string): { ids: string[]; depth: Map<string, number> };
   /** FENCING (#128): run `write` behind the coordinator-generation fence, as ONE
    *  IMMEDIATE transaction (closes the TOCTOU window, review F1). Throws
    *  StaleGenerationError when the switch is ON and the write is stale (the write
@@ -622,7 +638,17 @@ export function verbCheck(ctx: BusVerbCtx, a: CheckArgs): void {
   // Open gates addressed to this reader (#119) accompany EVERY check response —
   // the wake order is `orchestra check`, so this one verb must surface both the
   // lot and the gate a reader may have been woken for.
-  const gates = ctx.bus.openGatesForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
+  //
+  // #158: WIDENED to the reader's related run set (own ∪ ancestors ∪
+  // descendants), symmetric with the lot half. A gate opened in the ASKER's run
+  // with THIS reader as recipient (an OPS→LEAD ruling ask) sits in a related run,
+  // never the caller's own. The pre-#158 own-run-only lookup made every such gate
+  // invisible to its recipient's `check` — no surface, no staleness (ledger #157
+  // F-C5-1). The wake order names the gate's run so `check --run <gateRun>` also
+  // resolves it directly; this widening makes a PLAIN `check` (own run) surface it
+  // too, so a recipient that checks on its own initiative is not blind to it.
+  const related = ctx.bus.getRelatedRunIds(ctx.db, ctx.id.runId);
+  const gates = ctx.bus.openGatesForRecipientInRuns(ctx.db, related.ids, ctx.id.handle);
   if (a.ackPrevious) {
     const outstanding = ctx.bus.check(ctx.db, ctx.id.runId, ctx.id.handle, a.limit);
     if (outstanding.delivery && outstanding.replay) {
@@ -776,6 +802,10 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     // the resolve; a first call runs the fence + resolve as ONE transaction — a
     // superseded coordinator cannot resolve with fencing ON, the resolution never
     // runs and the gate's resolution stays unchanged.
+    // Read the gate BEFORE resolving so we know the ASKER and the gate's run for
+    // the resolution reply (#158 arm 4). Reading after would race an idempotent
+    // replay path; the gate row's asked_by/run_id are immutable once opened.
+    const gateBefore = ctx.bus.getGate(ctx.db, gateId);
     const ok = runMutation(ctx, req.value, 'gate_resolve', () =>
       fenced(ctx, 'gate-resolve', () =>
         ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling),
@@ -786,6 +816,25 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
         `orchestra gate resolve: gate ${gateId} is not open (already resolved, or unknown id) — ` +
           'the first ruling stands and was NOT overwritten',
       );
+    }
+    // #158 arm 4: re-wake the ASKER with the resolution. A gate carries no reply
+    // message (unlike a `question`, whose answer threads back and wakes the asker
+    // — T119.1), so pre-#158 a resolved gate left its opener idle with no signal;
+    // for a CROSS-RUN gate the opener was never woken at all. Route the resolution
+    // as a threaded message to `asked_by` IN THE GATE'S RUN (where the opener
+    // authored it, so it lands in the opener's own-run lot), threaded to the gate
+    // id. The normal lot wake path (own ∪ related, #134/#144) then delivers it —
+    // one mechanism for both shapes. Sent only on the resolving call, never on an
+    // idempotent replay (which returns without re-running this block).
+    if (gateBefore && gateBefore.asked_by) {
+      ctx.bus.send(ctx.db, {
+        runId: gateBefore.run_id,
+        sender: ctx.id.handle,
+        kind: 'decision_gate',
+        body: ruling,
+        recipient: gateBefore.asked_by,
+        threadId: `gate:${gateId}`,
+      });
     }
     ctx.out(`resolved ${gateId}\n`);
     return;
