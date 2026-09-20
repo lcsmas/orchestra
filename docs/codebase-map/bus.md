@@ -909,28 +909,42 @@ mail piles up. This is the wave-7 live repro (ledger #170/#172): `woke through
 1107` marked the ledger, the #90-wedged turn never ran, 12 messages piled ~15 min
 under the #159 transition warn until an `orchestra restart` cleared the wedge.
 
-Fix: `rollbackWakeForWithdrawnOrder(reader)` (`src/main/bus-wake.ts`) deletes the
-reader's FIRE-ledger entry (same effect as the sync `failed` path) and increments
-`counters.withdrawn` (never silent). It is called from `agent-sdk.ts`'s
-`rollbackWakeIfOrderWithdrawn(wsId, text)` — a thin `isWakeOrder(text)` gate — at
-**every** unstarted-turn withdrawal seam: `dequeueUnstartedTurn` (delivery
-timeout), `sdkQueueRemove` (tray cancel), and `settleQueuedAsDropped` (Escape via
-`interruptCancellingQueued` + session-end via `consume`'s finally). Bounded by the
-WITHDRAWAL event, not the 60s sweep. The rollback is keyed by **reader** (one
-`WakeLedgerEntry` per wsId), so a **coalesced** wake order (#162: one turn, one
-reader, the UNION of several runs) is re-armed for ALL its runs by the single
-delete — no per-run bookkeeping (arm 3). Only the FIRE ledger is touched: a COUNTED
-would-have-woken was never delivered a turn, so nothing of its can be withdrawn
-(touching the count ledger would resurrect the #153 C5 starvation). A started turn
-is `shift()`ed off `session.queue` before it runs, so it is never present at a
-withdrawal seam — the normal path is never rolled back (#112 intact).
+Fix, two functions in `src/main/bus-wake.ts`: `rollbackWakeForWithdrawnOrder(reader)`
+deletes the reader's FIRE-ledger entry (same effect as the sync `failed` path) and
+increments `counters.withdrawn` (never silent); the **gate**
+`rollbackWakeForWithdrawnTurn(reader, text)` wraps it in `isWakeOrder(text)` so a
+rollback fires ONLY when the withdrawn turn's text is a bus wake order. The gate
+lives in `bus-wake.ts` (not as a private agent-sdk helper) so the changed RULE is
+importable and the acceptance test drives the exact function agent-sdk calls — the
+#132/#134 seam lesson (REVIEW-172 F1: the first cut's private helper left the wire
+uncovered — reverting agent-sdk entirely still passed the suite). `agent-sdk.ts`
+calls `rollbackWakeForWithdrawnTurn` at **every** unstarted-turn withdrawal seam:
+`dequeueUnstartedTurn` (delivery timeout), `sdkQueueRemove` (tray cancel), and
+`settleQueuedAsDropped` (Escape via `interruptCancellingQueued` + session-end via
+`consume`'s finally + `sdkStop`/`sdkClear`). Bounded by the WITHDRAWAL event, not
+the 60s sweep. The rollback is keyed by **reader** (one `WakeLedgerEntry` per wsId),
+so a **coalesced** wake order (#162: one turn, one reader, the UNION of several
+runs) is re-armed for ALL its runs by the single delete — no per-run bookkeeping
+(arm 3). Only the FIRE ledger is touched: a COUNTED would-have-woken was never
+delivered a turn, so nothing of its can be withdrawn (touching the count ledger
+would resurrect the #153 C5 starvation). A started turn is `shift()`ed off
+`session.queue` before it runs, so it is never present at a withdrawal seam — the
+normal path is never rolled back (#112 intact).
 
-Gates (`bus-wake-withdrawal.test.ts`, 5 arms, mutation-proven — neutering the
-rollback reddens arms 1 & 3, leaves 2 & 2b green): `arm 1` (fire → withdraw →
-next sweep re-fires; the mutant twin stays `already-woken` across ≥3 sweeps —
-the live starvation), `arm 2` (a started/acked wake marks exactly once, no
-double-wake), `arm 2b` (a NON-wake-order withdrawal never touches the ledger),
-`arm 3` (a withdrawn coalesced multi-run wake re-arms every run it named).
+Gates (`bus-wake-withdrawal.test.ts`, 5 arms, mutation-proven — neutering
+`rollbackWakeForWithdrawnOrder` reddens arms 1 & 3; dropping the `isWakeOrder`
+gate reddens arm 2b; arm 2 stays green): `arm 1` (fire → drive the real
+`rollbackWakeForWithdrawnTurn` with the fired text → next sweep re-fires; the
+mutant twin with no rollback stays `already-woken` across ≥3 sweeps — the live
+starvation), `arm 2` (a started/acked wake marks exactly once, no double-wake),
+`arm 2b` (the gate: a NON-wake-order-text withdrawal does not roll back), `arm 3`
+(a withdrawn coalesced multi-run wake re-arms every run it named).
+
+**Accepted coverage gap (rides the PR NOT-VERIFIED):** whether agent-sdk *invokes*
+the gate at each of the three sites is not reachable from any importable seam
+(`./platform` dir-import blocks importing agent-sdk under the strip-types runner) —
+that call-site presence stays a reviewer/manual check; the gate rule and ledger
+effect are executably covered.
 
 ## Two injected seams, and why they are not just for tests
 

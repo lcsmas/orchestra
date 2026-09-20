@@ -58,8 +58,8 @@ import {
   type ReloadResult,
 } from '../shared/reload-skills';
 import { withCrossSessionInboundPolicy } from '../shared/cross-session-inbound';
-import { coalesceWakeOrderInto, wakeOrderRuns, isWakeOrder } from '../shared/bus-wake.ts';
-import { rollbackWakeForWithdrawnOrder } from './bus-wake';
+import { coalesceWakeOrderInto, wakeOrderRuns } from '../shared/bus-wake.ts';
+import { rollbackWakeForWithdrawnTurn } from './bus-wake';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -2281,7 +2281,7 @@ export function sdkQueueRemove(wsId: string, id: string): boolean {
   session.coalesce.delete(id);
   // #172: a cancelled bus wake order rolls back its ledger mark so the next sweep
   // re-fires — the mail it was ordered to check is still pending.
-  rollbackWakeIfOrderWithdrawn(wsId, removedText);
+  rollbackWakeForWithdrawnTurn(wsId, removedText);
   // Keep the crash-recovery insurance in step: `sdkPendingPrompts` re-sends
   // parked prompts if the app dies before they run, so leaving a CANCELLED
   // prompt there would resurrect it on next open — the one outcome the user
@@ -2632,26 +2632,16 @@ export async function sdkSendAwaitingStart(
   return result;
 }
 
-/** #172 — when a queued turn that is a BUS WAKE ORDER is withdrawn UNSTARTED,
- *  roll back the bus-wake ledger mark so the next sweep re-fires.
- *
- *  The wake sweep marks the ledger BEFORE `deliverWake` resolves, and that resolve
- *  is the QUEUE PUSH, not the turn START (#57). So a wake order that queued fine
- *  and is then thrown away unstarted — delivery timeout, tray cancel, Escape,
- *  session-end wipe — otherwise leaves the reader marked woken for a wake it never
- *  ran, starving it on `already-woken` (the wave-7 #90-wedge repro). Every path
- *  that discards an unstarted queue entry funnels through here so the rollback is
- *  bounded by the WITHDRAWAL event, not by the 60s sweep.
- *
- *  Gated on {@link isWakeOrder}: an ordinary prompt or peer message being withdrawn
- *  never touches the ledger (and `rollbackWakeForWithdrawnOrder` is itself a no-op
- *  when the reader has no fire mark, so this is doubly safe). A COALESCED wake
- *  order absorbs into an existing turn rather than being withdrawn, so its text is
- *  still a wake order here and the union of runs is covered by the single
- *  per-reader ledger entry (#172 acceptance arm 3). */
-function rollbackWakeIfOrderWithdrawn(wsId: string, text: string): void {
-  if (isWakeOrder(text)) rollbackWakeForWithdrawnOrder(wsId);
-}
+// #172 — every unstarted-turn discard site below calls
+// `rollbackWakeForWithdrawnTurn(wsId, text)` (src/main/bus-wake.ts): the wake sweep
+// marks the ledger on the QUEUE PUSH, not the turn START (#57), so a wake order
+// queued-then-withdrawn (delivery timeout / #90 wedge, tray cancel, Escape,
+// session-end wipe) would otherwise starve the reader on `already-woken`. The
+// gate (roll back ONLY when the withdrawn text is a wake order) lives in bus-wake.ts
+// — the strip-types-importable module the acceptance test can drive directly — so
+// the changed rule is covered rather than re-implemented in a private helper the
+// test runner cannot import (the #132/#134 seam lesson). The residual not covered
+// by any importable seam is only that these three sites INVOKE it (dir-import wall).
 
 /** Remove a turn that is still QUEUED (never yielded to the SDK) so it cannot
  *  run after its sender has already been told it was not delivered.
@@ -2670,7 +2660,7 @@ function dequeueUnstartedTurn(wsId: string, uuid: string): void {
   // #172: if this withdrawn turn was a bus wake order, roll back its ledger mark
   // so the next sweep re-fires — the sweep marked it woken on the QUEUE PUSH, and
   // it never started.
-  rollbackWakeIfOrderWithdrawn(wsId, withdrawnText);
+  rollbackWakeForWithdrawnTurn(wsId, withdrawnText);
   // Drop the crash-recovery insurance for this turn as well, exactly as a tray
   // cancel does. The caller is about to park this message in the durable inbox;
   // leaving it in `sdkPendingPrompts` too would replay it on the next open —
@@ -3464,7 +3454,7 @@ function settleDelivery(uuid: string | undefined, started: boolean): void {
 function settleQueuedAsDropped(session: Session): void {
   for (const m of session.queue) {
     settleDelivery(m.uuid, false);
-    rollbackWakeIfOrderWithdrawn(session.wsId, queueEntryText(m));
+    rollbackWakeForWithdrawnTurn(session.wsId, queueEntryText(m));
   }
 }
 

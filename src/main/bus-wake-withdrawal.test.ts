@@ -9,7 +9,7 @@ import {
   busWakeCounters,
   setWakeRoster,
   setWakeDeliver,
-  rollbackWakeForWithdrawnOrder,
+  rollbackWakeForWithdrawnTurn,
   __setBusReaderForTests,
   __resetBusWakeForTests,
   __freezeSwitchForTests,
@@ -26,16 +26,29 @@ import { isWakeOrder, wakeOrderRuns } from '../shared/bus-wake.ts';
 // withdrawal of a wake-order turn (agent-sdk.ts), roll back the ledger mark so the
 // next sweep RE-fires — bounded by the WITHDRAWAL event, not by sweeps.
 //
-// ── What these arms drive, and where the SEAM is ────────────────────────────
+// ── What these arms drive, and the COVERAGE BOUNDARY (REVIEW-172 F1) ─────────
 //
-// The withdrawal itself happens in agent-sdk.ts (`session.queue`), which is
-// un-importable under the strip-types runner (`./platform` dir-import). The
-// rollback it performs is `rollbackWakeForWithdrawnOrder` (src/main/bus-wake.ts),
-// which IS importable and owns the ledger — so agent-sdk calls ONE implementation
-// these arms drive directly (the #132/#162 pattern: the test never re-implements
-// the rule it certifies; agent-sdk's `rollbackWakeIfOrderWithdrawn` is a thin
-// `isWakeOrder`-gate over this exact call). The withdrawal is simulated by calling
-// it after a REAL sweep marked the ledger over a REAL on-disk SQLite bus.
+// The withdrawal SITE lives in agent-sdk.ts (`session.queue`), which is
+// un-importable under the strip-types runner (`./platform` dir-import). But the
+// CHANGED RULE it applies — "roll back the wake ledger ONLY when the withdrawn
+// text is a wake order" — is EXTRACTED into `rollbackWakeForWithdrawnTurn(reader,
+// text)` in the importable src/main/bus-wake.ts, and agent-sdk calls exactly that
+// function at all three sites. So these arms drive the SAME function agent-sdk
+// invokes (the #132/#134 seam lesson: never leave the changed wire uncovered when
+// the rule can be extracted; the test must not re-implement the gate it certifies).
+// The withdrawal is simulated by calling `rollbackWakeForWithdrawnTurn` with the
+// EXACT text a fire produced, after a REAL sweep marked the ledger over a REAL
+// on-disk SQLite bus.
+//
+// ACCEPTED GAP (rides the PR NOT-VERIFIED, reviewer-verified manually): whether
+// agent-sdk INVOKES `rollbackWakeForWithdrawnTurn` at each of the three
+// unstarted-turn discard sites — `dequeueUnstartedTurn` (delivery timeout),
+// `sdkQueueRemove` (tray cancel), and `settleQueuedAsDropped` (Escape via
+// `interruptCancellingQueued` + session-end via `consume`'s finally + sdkStop/
+// sdkClear) — is NOT reachable from any importable seam (the dir-import wall). The
+// call-site PRESENCE stays a manual/reviewer check; everything else (the gate rule,
+// the ledger effect, the re-fire, the coalesced union, the negative controls) is
+// executably covered below.
 //
 // The observable is the DELIVERED WAKE captured at the delivery seam AND the
 // ledger mark read through `__peekWakeLedgerForTests` — not an internal the dedup
@@ -104,10 +117,11 @@ test('#172 arm 1: a withdrawn wake-turn un-marks the ledger and the next sweep R
   assert.ok(__peekWakeLedgerForTests(READER), 'the fire marked the ledger');
 
   // The queued wake turn is WITHDRAWN unstarted (delivery timeout / #90 wedge).
-  // agent-sdk gates this on isWakeOrder(text) — assert that gate holds for the
-  // exact text that was fired, then perform the rollback it performs.
-  assert.ok(isWakeOrder(wakes[0].text), 'withdrawal gate: the withdrawn turn IS a wake order');
-  rollbackWakeForWithdrawnOrder(READER);
+  // Drive the EXACT function agent-sdk calls at every withdrawal site —
+  // `rollbackWakeForWithdrawnTurn(reader, text)` — with the exact text that was
+  // fired. This exercises the real isWakeOrder GATE (not a re-implementation): a
+  // mutant that drops/inverts the gate inside bus-wake.ts reddens here.
+  rollbackWakeForWithdrawnTurn(READER, wakes[0].text);
   assert.equal(__peekWakeLedgerForTests(READER), undefined, 'the ledger mark is rolled back');
   assert.equal(busWakeCounters().withdrawn, 1, 'the withdrawal is counted (never silent)');
 
@@ -131,7 +145,7 @@ test('#172 arm 1: a withdrawn wake-turn un-marks the ledger and the next sweep R
 //
 // This is the pre-fix behaviour driven through the SAME rig, so the fix boundary
 // is non-vacuous: SKIP the rollback call (the mutant = agent-sdk never wired
-// `rollbackWakeIfOrderWithdrawn`) and the reader is never re-woken across ≥3
+// `rollbackWakeForWithdrawnTurn`) and the reader is never re-woken across ≥3
 // sweeps despite pending mail — the exact zero-served-turns starvation.
 
 test('#172 arm 1 mutant: NO rollback → reader stays already-woken across ≥3 sweeps (the defect)', async (t) => {
@@ -185,15 +199,16 @@ test('#172 arm 2: a wake whose turn STARTS is marked exactly once, no double-wak
   assert.equal(busWakeCounters().withdrawn, 0, 'no withdrawal happened — the normal path is never rolled back');
 });
 
-// ── ARM 2b: an ORDINARY prompt withdrawal never touches the ledger ────────────
+// ── ARM 2b: the GATE — withdrawing a NON-wake-order turn is a no-op ────────────
 //
-// The rollback in agent-sdk is gated on isWakeOrder(text). A non-wake-order turn
-// (a human prompt, a peer message) being withdrawn must NOT roll back any wake
-// mark — otherwise a queued prompt cancel could re-storm a correctly-dedup'd wake.
-// Here a wake is marked, then a NON-order withdrawal is simulated (the gate fails,
-// so rollback is never called): the mark must survive.
+// The extracted gate `rollbackWakeForWithdrawnTurn(reader, text)` rolls back ONLY
+// when the withdrawn text IS a wake order. A non-wake-order turn (a human prompt, a
+// peer message) being withdrawn must NOT roll back any wake mark — otherwise a
+// queued prompt cancel could re-storm a correctly-dedup'd wake. This arm DRIVES the
+// real gate with a non-order text and asserts the mark survives — so a mutant that
+// drops the `isWakeOrder` guard (rolling back on ANY withdrawal) reddens here.
 
-test('#172 arm 2b: withdrawing a NON-wake-order turn leaves the wake ledger untouched', async (t) => {
+test('#172 arm 2b: the gate leaves the ledger untouched for a NON-wake-order withdrawal', async (t) => {
   const db = tmpDb(t);
   insertRun(db, RUN, null);
   const wakes = armRig(db, RUN);
@@ -203,16 +218,19 @@ test('#172 arm 2b: withdrawing a NON-wake-order turn leaves the wake ledger unto
   assert.equal(wakes.length, 1);
   assert.ok(__peekWakeLedgerForTests(READER), 'ledger marked');
 
-  // An ordinary prompt is withdrawn. agent-sdk's gate is `if (isWakeOrder(text))`,
-  // and a human prompt is NOT a wake order, so the rollback is never invoked.
+  // Drive the REAL gate with a non-order text — the same function agent-sdk calls
+  // when an ordinary prompt is withdrawn. isWakeOrder('please refactor…') is false,
+  // so the gate must NOT roll back. (A mutant dropping the guard reddens the next
+  // two assertions.)
   const ordinaryText = 'please refactor the parser';
   assert.equal(isWakeOrder(ordinaryText), false, 'a human prompt is not a wake order');
-  // (gate fails → rollback NOT called)
-  assert.ok(__peekWakeLedgerForTests(READER), 'the wake mark survives a non-order withdrawal');
+  rollbackWakeForWithdrawnTurn(READER, ordinaryText);
+  assert.ok(__peekWakeLedgerForTests(READER), 'the wake mark survives a non-order withdrawal (gate blocked it)');
+  assert.equal(busWakeCounters().withdrawn, 0, 'the gate did not perform a rollback');
 
-  // And a direct rollback for a reader with no mark is a harmless no-op.
-  rollbackWakeForWithdrawnOrder('some-other-reader-with-no-mark');
-  assert.equal(busWakeCounters().withdrawn, 0, 'no-op rollback does not increment the counter');
+  // And a wake-order-text withdrawal for a reader with no mark is a harmless no-op.
+  rollbackWakeForWithdrawnTurn('some-other-reader-with-no-mark', wakes[0].text);
+  assert.equal(busWakeCounters().withdrawn, 0, 'no-op rollback (no mark) does not increment the counter');
 });
 
 // ── ARM 3: the #162 COALESCED path — withdrawal un-marks for ALL runs covered ──
@@ -242,9 +260,10 @@ test('#172 arm 3: withdrawing a coalesced (multi-run) wake re-arms ALL its runs'
   assert.deepEqual(firstRuns, [CHILD, OWN].sort(), 'the fired order names BOTH pending runs');
   assert.ok(__peekWakeLedgerForTests(READER), 'the coalesced fire marks the single per-reader entry');
 
-  // The coalesced turn is withdrawn unstarted. ONE rollback drops the per-reader
-  // entry → both runs are re-armed (no per-run bookkeeping needed).
-  rollbackWakeForWithdrawnOrder(READER);
+  // The coalesced turn is withdrawn unstarted. Drive the real gate with the
+  // coalesced order's own text (a valid wake order naming both runs). ONE rollback
+  // drops the per-reader entry → both runs are re-armed (no per-run bookkeeping).
+  rollbackWakeForWithdrawnTurn(READER, wakes[0].text);
   assert.equal(__peekWakeLedgerForTests(READER), undefined, 'the single entry covering both runs is dropped');
 
   // No ack, no new mail: the next sweep must re-fire naming BOTH runs again — if

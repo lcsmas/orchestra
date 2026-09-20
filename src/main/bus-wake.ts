@@ -47,6 +47,7 @@ import {
   decideWake,
   pruneWakeLedger,
   buildWakeOrder,
+  isWakeOrder,
   type ReaderPendingState,
   type WakeLedgerEntry,
   type SkipReason,
@@ -200,6 +201,31 @@ export function rollbackWakeForWithdrawnOrder(reader: string): void {
   log.info(
     `bus-wake: rolled back wake ledger for ${reader} — its queued wake order was withdrawn unstarted (#172); next sweep re-fires`,
   );
+}
+
+/**
+ * #172 — the GATED withdrawal seam agent-sdk.ts calls at EVERY unstarted-turn
+ * discard site (`dequeueUnstartedTurn`, `sdkQueueRemove`, `settleQueuedAsDropped`).
+ *
+ * Given a WITHDRAWN turn's `reader` (wsId) and its `text`, roll back the wake
+ * ledger ONLY when that text is a bus WAKE ORDER — an ordinary prompt or peer
+ * message being withdrawn must never touch the ledger (that would let a queued
+ * prompt cancel re-storm a correctly-dedup'd wake). This is the CHANGED RULE the
+ * three call sites depend on; it lives HERE, in the strip-types-importable module
+ * that owns the ledger, rather than as a private helper in agent-sdk.ts (which the
+ * test runner cannot import through its `./platform` dir-import). So the acceptance
+ * test drives THIS exact function — the same one agent-sdk calls — instead of a
+ * re-implementation of its gate (the #132/#134 seam lesson: never leave the changed
+ * wire uncovered when the rule can be extracted). Mutating the gate here (dropping
+ * or inverting `isWakeOrder`) reddens the exported-gate arm.
+ *
+ * `rollbackWakeForWithdrawnOrder` is itself a no-op when the reader has no fire
+ * mark, so this is doubly safe to call on every withdrawal. The residual not
+ * covered by any importable seam is only whether agent-sdk INVOKES this at each of
+ * the three sites — the dir-import wall keeps that manual (reviewer-verified).
+ */
+export function rollbackWakeForWithdrawnTurn(reader: string, text: string): void {
+  if (isWakeOrder(text)) rollbackWakeForWithdrawnOrder(reader);
 }
 
 /** The FIRE dedup ledger: reader handle → the high-water a DELIVERED wake covered.
