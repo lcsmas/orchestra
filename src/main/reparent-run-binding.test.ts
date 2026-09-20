@@ -75,6 +75,74 @@ test('dispatchDemoteRequest reconciles the demoted node ITSELF + its subtree (F1
   );
 });
 
+test('#171 — dispatchPromoteRequest snapshots + reconciles on BOTH routes (env refresh)', () => {
+  const body = bodyOf(workspacesSrc, 'export async function dispatchPromoteRequest');
+  // #171: promote re-anchors the promoted node (member → its OWN run). Without a
+  // reconcile the LIVE session keeps the parent's ORCHESTRA_RUN_ID until a manual
+  // `orchestra restart` (the ticket's 4× symptom). The snapshot MUST be taken
+  // pre-mutation (resolveWaveRunId reads the store), and BOTH promote routes
+  // (worktree canOrchestrate + scratch kind-swap) must reconcile.
+  assert.ok(
+    callsUncommented(body, 'snapshotRunAnchors(id)'),
+    'promote must snapshot the promoted node + subtree BEFORE the mutation',
+  );
+  const recon = body.match(/reconcileRunAfterReparent\(/g) ?? [];
+  assert.ok(
+    recon.length >= 2,
+    `promote must reconcile on BOTH routes (worktree + scratch), found ${recon.length}`,
+  );
+  // must-FAIL arm: a promote-triggered reconcile must NOT --no-restart by default
+  // (that would leave EVERY idle promote stale, defeating the auto-refresh), and
+  // must defer a live PTY rather than kill it mid-turn (arm 2).
+  assert.ok(
+    callsUncommented(body, 'noRestart: false'),
+    'promote must reconcile with noRestart:false (auto-restart an idle session)',
+  );
+  assert.ok(
+    callsUncommented(body, 'preferStaleForLivePty: true'),
+    'promote must defer a live raw PTY (arm 2: never a mid-turn kill of an unguarded PTY)',
+  );
+});
+
+test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a stale run silently)', () => {
+  const body = bodyOf(workspacesSrc, 'async function reconcileRunAfterReparent');
+  // A working structured session throws the mid-turn guard → dispatchRestartRequest
+  // returns {ok:false}. Pre-#171 this only log.warn'd, leaving the live session on
+  // the OLD run with no operator signal (the promote symptom). The else-branch must
+  // now mark the workspace stale (deferred + CLI refusal) instead of only warning.
+  const elseIdx = body.indexOf('} else {');
+  assert.notEqual(elseIdx, -1, 'the restart-result else branch must exist');
+  const elseBlock = body.slice(elseIdx);
+  assert.ok(
+    /markWorkspaceStaleRun\(ws, newAnchorId\)/.test(elseBlock),
+    'a refused/failed restart must fall back to markWorkspaceStaleRun (not just log.warn)',
+  );
+  assert.ok(
+    /markedStale\.push\(ws\.id\)/.test(elseBlock),
+    'the fallback stale must be reported in markedStale',
+  );
+  // must-FAIL arm: the forceStale computation must gate on a LIVE pty (a cold or
+  // structured session must NOT be force-deferred — it either restarts or is
+  // notice-only).
+  assert.ok(
+    /const forceStale = opts\.preferStaleForLivePty === true && ptyLive/.test(body),
+    'forceStale must require preferStaleForLivePty AND a live PTY specifically',
+  );
+});
+
+test('#171 — the CLI promote verb reports the reconcile side effects', () => {
+  const promoteCase = (() => {
+    const i = cliSrc.indexOf("case 'promote': {");
+    assert.notEqual(i, -1);
+    const j = cliSrc.indexOf("case 'attach': {", i);
+    return cliSrc.slice(i, j === -1 ? undefined : j);
+  })();
+  assert.ok(
+    callsUncommented(promoteCase, 'reparentSuffix(res)'),
+    'promote must render restarted/markedStale via reparentSuffix (same as attach/detach)',
+  );
+});
+
 test('dispatchAdoptRepoRequest re-derives + reconciles at the new worktree path', () => {
   const body = bodyOf(workspacesSrc, 'export async function dispatchAdoptRepoRequest');
   assert.ok(
@@ -97,8 +165,16 @@ test('reconcileRunAfterReparent restarts conversation-preserving (fresh:false)',
     'must rewrite the notice for the new anchor',
   );
   // must-FAIL arm: mark-stale must write the marker the CLI reads AND set the flag.
-  assert.ok(body.includes('staleRunMarkerBody('), 'mark-stale must write the CLI marker');
-  assert.ok(body.includes('busRunStale: true'), 'mark-stale must set the pane flag');
+  // (#171 refactor: the marker+flag writes now live in the shared markWorkspaceStaleRun
+  // helper, which reconcile calls from BOTH the mark-stale action and the refused-
+  // restart fallback — assert reconcile calls it, and the helper does the writes.)
+  assert.ok(
+    callsUncommented(body, 'markWorkspaceStaleRun(ws, newAnchorId)'),
+    'reconcile must mark-stale via the shared helper',
+  );
+  const helper = bodyOf(workspacesSrc, 'async function markWorkspaceStaleRun');
+  assert.ok(helper.includes('staleRunMarkerBody('), 'mark-stale must write the CLI marker');
+  assert.ok(helper.includes('busRunStale: true'), 'mark-stale must set the pane flag');
 });
 
 test('a manual restart clears the stale block ONLY on a SUCCESSFUL restart (F2)', () => {

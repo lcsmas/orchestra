@@ -1790,6 +1790,13 @@ export interface PromoteResult {
   id?: string;
   branch?: string;
   kind?: Workspace['kind'];
+  /** #171 — ids whose live session was restarted (conversation-preserving) to
+   *  pick up the promoted node's NEW run id + coordinator generation. */
+  restarted?: string[];
+  /** #171 — ids marked 'stale run' because the live session was working (or a
+   *  raw PTY that could not be proven idle): the env refresh is DEFERRED to the
+   *  next idle `orchestra restart`, and bus sends are refused meanwhile. */
+  markedStale?: string[];
   error?: string;
 }
 
@@ -1841,6 +1848,21 @@ function snapshotRunAnchors(rootId: string): Map<string, string> {
   return snap;
 }
 
+/** #142/#171 — mark a workspace 'stale run': write the `.orchestra/bus-run-stale`
+ *  marker (so the store-less CLI refuses bus sends that would land in the OLD
+ *  run) BEFORE flipping the store flag (so a reader that sees the flag can always
+ *  find the file, and the refusal is armed before the pane says 'stale'). Shared
+ *  by the reconcile's explicit `--no-restart` branch AND the #171 fallback when a
+ *  restart is refused/deferred. `newRunId` is the run named in the marker body —
+ *  the run the session will adopt at its next idle `orchestra restart`. */
+async function markWorkspaceStaleRun(ws: Workspace, newRunId: string): Promise<void> {
+  await mkdir(path.join(ws.worktreePath, '.orchestra'), { recursive: true });
+  await writeFile(staleRunMarkerPath(ws.worktreePath), staleRunMarkerBody(newRunId));
+  const updated: Workspace = { ...ws, busRunStale: true };
+  await store.upsertWorkspace(updated);
+  platform.broadcast('workspace:update', updated);
+}
+
 /**
  * #142 — after a re-parent (attach/detach/adopt/demote) moved the tree, re-derive
  * each affected workspace's bus run id and reconcile the RUNNING session:
@@ -1862,7 +1884,18 @@ function snapshotRunAnchors(rootId: string): Map<string, string> {
  */
 async function reconcileRunAfterReparent(
   oldAnchors: Map<string, string>,
-  opts: { noRestart: boolean },
+  opts: {
+    noRestart: boolean;
+    /** #171 — treat a LIVE raw-PTY session as un-restartable: mark it stale
+     *  (deferred) instead of restarting it. The structured restart has a
+     *  mid-turn guard (`sdkRestart` throws → {ok:false} → the stale fallback
+     *  below), but the PTY restart (`restartPty`) has NO working guard and would
+     *  kill a mid-turn TUI. A raw PTY exposes no turn state we can read, so we
+     *  cannot PROVE it idle — the arm-2 "never a mid-turn kill" contract forces
+     *  us to defer rather than gamble. Passed only by `promote` (the #171 fix);
+     *  attach/demote/adopt keep their established #142 auto-restart behavior. */
+    preferStaleForLivePty?: boolean;
+  },
 ): Promise<{ restarted: string[]; markedStale: string[] }> {
   const restarted: string[] = [];
   const markedStale: string[] = [];
@@ -1876,12 +1909,19 @@ async function reconcileRunAfterReparent(
     if (ws.host?.kind === 'sandbox') continue;
     try {
       const newAnchorId = resolveWaveRunId(ws);
+      const ptyLive = isRunning(ws.id);
       const candidate: ReparentCandidate = {
         oldAnchorId,
         newAnchorId,
-        live: isRunning(ws.id) || sdkSessionLive(ws.id),
+        live: ptyLive || sdkSessionLive(ws.id),
       };
-      const action = decideReparentAction(candidate, opts.noRestart);
+      // #171 — under `preferStaleForLivePty` a live PTY is deferred, not
+      // restarted: force the `mark-stale` branch (only meaningful when the anchor
+      // actually changed AND a restart would otherwise fire, i.e. live + not
+      // already --no-restart). `decideReparentAction` still owns the noop /
+      // notice-only / structured-restart decisions.
+      const forceStale = opts.preferStaleForLivePty === true && ptyLive;
+      const action = decideReparentAction(candidate, opts.noRestart || forceStale);
       if (action.kind === 'noop') continue;
 
       // Every non-noop rewrites the notice for the NEW run FIRST — this is the
@@ -1897,14 +1937,7 @@ async function reconcileRunAfterReparent(
       if (action.kind === 'notice-only') continue;
 
       if (action.kind === 'mark-stale') {
-        // Write the marker BEFORE flipping the flag, so a reader that sees the
-        // flag can always find the file (and the CLI refusal is armed before the
-        // pane says 'stale').
-        await mkdir(path.join(ws.worktreePath, '.orchestra'), { recursive: true });
-        await writeFile(staleRunMarkerPath(ws.worktreePath), staleRunMarkerBody(newAnchorId));
-        const updated: Workspace = { ...ws, busRunStale: true };
-        await store.upsertWorkspace(updated);
-        platform.broadcast('workspace:update', updated);
+        await markWorkspaceStaleRun(ws, newAnchorId);
         markedStale.push(ws.id);
         continue;
       }
@@ -1921,7 +1954,21 @@ async function reconcileRunAfterReparent(
         await clearBusRunStale(ws.id);
         restarted.push(ws.id);
       } else {
-        log.warn(`reparent-run: restart failed for ${ws.id}: ${res.error ?? 'unknown'}`);
+        // #171 — the restart was REFUSED (a working structured session's
+        // mid-turn guard throws → dispatchRestartRequest returns {ok:false}) or
+        // otherwise failed. Never a mid-turn kill: instead of silently leaving
+        // the live session on the OLD run (the #171 promote symptom — a stale
+        // run with no operator signal), DOWNGRADE to mark-stale so the pane says
+        // 'stale', the CLI refuses sends into the wrong run, and the marker names
+        // the run it will adopt at the next `orchestra restart` (idle). This is
+        // the "refused-or-deferred explicitly" arm-2 contract, and it is a strict
+        // improvement for attach/demote too (they previously only warned).
+        log.warn(
+          `reparent-run: restart refused/failed for ${ws.id} (${res.error ?? 'unknown'}) — ` +
+            `marking stale so the new run activates on the next idle restart`,
+        );
+        await markWorkspaceStaleRun(ws, newAnchorId);
+        markedStale.push(ws.id);
       }
     } catch (e) {
       log.warn(`reparent-run: reconcile failed for ${wsId}`, e);
@@ -1968,6 +2015,15 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
   // Already an orchestrator by either route — succeed idempotently so a
   // double-invoke (or the skill re-firing) doesn't error.
   if (canOrchestrate(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };
+  // #171 — snapshot the promoted node's OWN run anchor (and its members') BEFORE
+  // the mutation, exactly as attach/demote do. Promote is a re-anchoring op: the
+  // promoted ws stops resolving to its nearest-orchestrator ANCESTOR (its parent
+  // OPS/LEAD, if any) and becomes its OWN run; any children re-anchor from the
+  // grandparent to it. `resolveWaveRunId` reads the store, so this must run
+  // pre-mutation. `reconcileRunAfterReparent` (post-mutation) restarts the live
+  // idle session so its rebuilt env re-reads ORCHESTRA_RUN_ID + generation — the
+  // manual `orchestra restart` the ticket documents as needed 4× is now automatic.
+  const oldAnchors = snapshotRunAnchors(id);
   if (ws.kind !== 'scratch') {
     // A git worktree keeps its kind and gains the capability instead.
     try {
@@ -1985,7 +2041,15 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       // (the pty is not relaunched, so startAgentPty won't do it until a member).
       startRunForPromoted(updated);
       log.info(`promoted worktree ${ws.branch} (${id}) to orchestrator (capability)`);
-      return { ok: true, id, branch: updated.branch, kind: updated.kind };
+      // #171 — refresh the live session's run env now (see the pre-mutation
+      // snapshot above). preferStaleForLivePty: a working structured session's
+      // restart is refused (mid-turn guard → stale fallback) and a raw PTY is
+      // deferred — never a mid-turn kill (arm 2).
+      const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, {
+        noRestart: false,
+        preferStaleForLivePty: true,
+      });
+      return { ok: true, id, branch: updated.branch, kind: updated.kind, restarted, markedStale };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
     }
@@ -2008,7 +2072,12 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
     // #134 (D1): wave boundary — start the run row now (pty not relaunched).
     startRunForPromoted(updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
-    return { ok: true, id, branch: updated.branch, kind: 'orchestrator' };
+    // #171 — refresh the live session's run env (see the pre-mutation snapshot).
+    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, {
+      noRestart: false,
+      preferStaleForLivePty: true,
+    });
+    return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
   }
