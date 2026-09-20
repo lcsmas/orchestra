@@ -164,6 +164,19 @@ the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentS
 prompt (each follow-up turn gated on the prior `result`), so the subprocess stays warm and
 `canUseTool` fires in-loop.
 
+**Turn-gate release (issue #90 root-cause).** `consume()` opens the gate for the
+next turn via the shared `releaseTurnGate(session)` helper — called from the
+`result` branch (normal turn end) AND the `conversation_reset` branch. A
+`conversation_reset` (from `/clear`, plan-mode exit, or the CLI's "loop
+detected" reset) abandons the in-flight turn: its `result` belongs to the
+now-defunct conversation and never arrives, so without an explicit release the
+gate would strand forever on a still-live session (the #90 wedge signature). The
+cause-agnostic layer-2 progress watchdog (`session-watchdog.ts`) remains the
+backstop for any other stranding shape; the `conversation_reset` release just
+recovers the one provable case immediately. Rig:
+`scripts/wedge90-rigs/upstream-cause.mjs` enumerates the wedge CLASS (which SDK
+messages abandon a turn without a `result`, WEDGE vs SELF-RECOVER).
+
 **Remote Control (parity with Claude Code's `/remote-control`).** The structured
 view carries a Remote Control toggle in the deck bar
 (`components/agent/RemoteControl.tsx`) that connects the session to Anthropic's

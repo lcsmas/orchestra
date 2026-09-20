@@ -1122,6 +1122,24 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
   }
 }
 
+/** Release the turn gate so `promptStream` can proceed to the next queued turn.
+ *
+ *  The ONE place the gate transitions from held→open on a live session, shared
+ *  by consume()'s `result` branch (normal turn end) and its `conversation_reset`
+ *  branch (issue #90 root-cause: a reset abandons the in-flight turn, whose
+ *  `result` can never come). Kept as one function so the two callers cannot
+ *  drift — a second copy is exactly how the reset path would silently stop
+ *  matching the result path. Non-destructive: it only unblocks the generator,
+ *  the same effect a normal turn boundary has. The force-release watchdog path
+ *  (`sdkReleaseStrandedGate`) performs the identical effect but gated on its own
+ *  silence/turn-uuid decision, so it is intentionally NOT routed through here. */
+function releaseTurnGate(session: Session): void {
+  const openNext = session.turnGate;
+  session.turnGate = null;
+  session.gateTurnUuid = null;
+  openNext?.();
+}
+
 /** Consume the SDK message stream for a session until it ends or throws. */
 async function consume(session: Session): Promise<void> {
   let endedByInterrupt = false;
@@ -1191,15 +1209,20 @@ async function consume(session: Session): Promise<void> {
         // what was missing was telling the HUMAN, which emitFrom now does
         // outside the driveStatus gate. See the third correction in
         // docs/research/issue-69-maxturns-findings.md.
-        const openNext = session.turnGate;
-        session.turnGate = null;
-        session.gateTurnUuid = null;
-        openNext?.();
+        releaseTurnGate(session);
         // Re-read the authoritative context figure now the turn has settled.
         // Fire-and-forget: the turn is already complete and the gauge updating
         // a beat later is fine, but blocking the consume loop on a control
         // request would stall every subsequent message.
         refreshContextUsage(session.wsId);
+      } else if (msg.type === 'conversation_reset') {
+        // #90 root-cause: a reset (/clear, plan-mode exit, CLI "loop detected")
+        // abandons the in-flight turn — its `result` belongs to a defunct
+        // conversation and can never come — so release the gate here or it
+        // strands forever on a still-live session. Non-destructive (same effect
+        // as a normal turn end); layer-2 watchdog remains the cause-agnostic
+        // backstop. Rig: scripts/wedge90-rigs/upstream-cause.mjs.
+        releaseTurnGate(session);
       }
     }
   } catch (err) {

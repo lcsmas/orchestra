@@ -36,6 +36,35 @@ dot only if you add it — just delete it after).
 | `false-positive.mjs` | `running` `idle` `waiting` | A busy, still-emitting session must NEVER be recycled — whatever `status` says. |
 | `redelivery.mjs` | `live` `nohook` | Every parked block reaches the agent **exactly once**. |
 | `flap-budget.mjs` | (none) | The anti-flap budget's shape, and whether the stand-down is surfaced. |
+| `upstream-cause.mjs` | `reset` `refusal` `worker_exit` `reset_recovered` `control_result` | The #90 root-cause CLASS: which SDK message ends/abandons a turn WITHOUT a `type:'result'`, driven through the REAL `consume`/gate. Classifies each into WEDGE (stream stays open → gate stranded) vs SELF-RECOVER (stream ends → finally releases). Proves `conversation_reset` is the in-tree instance the #90 gate fix releases (revert the fix → `reset` reddens); `refusal` stays WEDGE (fix is scoped; layer-2 covers it). |
+
+### `upstream-cause.mjs` — the root-cause investigation
+
+The wedge is `consume()` releasing `session.turnGate` on exactly ONE message
+type (`result`). The SDK contract (sdk.d.ts, `SDKResultMessage` jsdoc) is "the
+CLI emits EXACTLY ONE result per turn" — so a wedge is a **contract violation**:
+a turn abandoned without its `result`. This rig enumerates the SDK messages that
+can abandon a turn and are NOT `result`, and asks of each: does it leave the
+stream OPEN (WEDGE — the field signature: a live session whose control channel
+still answers) or END it (SELF-RECOVER — `consume`'s finally releases)?
+
+Two land as WEDGE: `conversation_reset` (a new conversation supersedes the
+in-flight turn) and `model_refusal_no_fallback`. `conversation_reset` is the one
+where a `result` provably can NEVER follow (it belongs to a defunct
+conversation), so the #90 fix releases the gate on it directly. `refusal` is
+normally still followed by a `result` in production, so it is left to the
+cause-agnostic layer-2 watchdog — the rig keeps it as the standing proof that
+the wedge is a CLASS, not a single message.
+
+**The barrier trap this rig is built around.** A fake SDK iterator emits its
+messages independently of the prompt generator, so the trigger message can race
+the gate-arm and land BEFORE turn 1's gate is held — which reads as a wedge for
+the wrong reason AND makes a gate-release mutant a no-op (the release fires when
+nothing is held). The rig resolves `firstTurnSeen` the instant the drain loop
+observes turn 1 and the iterator awaits it, so the trigger always lands on a
+HELD gate. Verified: with the barrier, reverting the fix reddens `reset`; the
+`[MUTANT] release branch fired ... gateHeld=true` ordering is the proof it now
+reaches the gate.
 
 ## The two traps these rigs are built around
 
