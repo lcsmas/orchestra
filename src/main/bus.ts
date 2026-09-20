@@ -1317,6 +1317,84 @@ export function getCapabilityByToken(
   );
 }
 
+/** Read the ACTIVE capability row for (run, recipient), or null. There is at most
+ *  one (the single-outstanding invariant enforced by supersede-on-mint). Used by
+ *  the recipient-side token retrieval (#167) to find WHICH dispatch to rotate. */
+export function getActiveCapabilityForRecipient(
+  db: BusDb,
+  runId: string,
+  recipient: string,
+): BusCapability | null {
+  return (
+    (db
+      .prepare(
+        `SELECT * FROM dispatch_capabilities
+           WHERE run_id=? AND recipient IS ? AND state='active'`,
+      )
+      .get(runId, recipient) as BusCapability | undefined) ?? null
+  );
+}
+
+/**
+ * ROTATE-ON-RETRIEVE (#167): re-mint the clear token of the recipient's CURRENT
+ * active capability and return it, so the RECIPIENT can retrieve a usable token
+ * without any clear token ever being stored (T129.2 preserved — only the new
+ * hash is written).
+ *
+ * WHY THIS EXISTS: the clear token minted at dispatch prints to the DISPATCHER's
+ * stdout only; the DB holds solely its sha256 hash, so it is UNRECOVERABLE. A
+ * member that never received the relay, or whose first token was superseded by a
+ * re-dispatch, previously had NO shipped way to obtain a valid token and its
+ * legitimate `worker_done` was refused (canary-6 F-C6-2). This lets it fetch one.
+ *
+ * WHAT IT DOES: finds the ONE active cap for (run, recipient), generates a fresh
+ * `dcap_<32B>`, overwrites `token_hash` IN PLACE for that same dispatch_seq (the
+ * capability's identity is its dispatch_seq, not its token), and returns the CLEAR
+ * token. Returns null when the recipient has no active capability (nothing to
+ * rotate — the caller reports "no active dispatch").
+ *
+ * INVARIANTS PRESERVED:
+ *  - Supersession/fencing UNTOUCHED: rotate only ever targets an ALREADY-active
+ *    cap, and only ever changes its secret — never its state, recipient, or seq.
+ *    A stale coordinator cannot create an active cap (fencing #128 gates the
+ *    dispatch write), so it cannot rotate one into existence. A newer dispatch
+ *    still supersedes (active→superseded), and a rotated-then-superseded cap is
+ *    just as dead as before.
+ *  - C1 core: the OLD clear token (the pre-rotate one the dispatcher held) no
+ *    longer hashes to the stored value, so a `worker_done` carrying it is rejected
+ *    + counted exactly like any stale token.
+ *  - T129.2: nothing durable holds a clear token; only the new hash is written.
+ *
+ * CAVEAT (documented, not a bug): each call rotates, so an EARLIER retrieved token
+ * is invalidated by a LATER retrieve. A member retrieves once, immediately before
+ * `worker_done`. Two concurrent retrieves race; the loser's token is stale — the
+ * same single-outstanding assumption the whole mechanism rests on (≤1 worker per
+ * recipient).
+ */
+export function rotateCapabilityForRecipient(
+  db: BusDb,
+  runId: string,
+  recipient: string,
+): string | null {
+  const generate = generateCapabilityToken;
+  const select = db.prepare(
+    `SELECT dispatch_seq FROM dispatch_capabilities
+       WHERE run_id=? AND recipient IS ? AND state='active'`,
+  );
+  const update = db.prepare(
+    `UPDATE dispatch_capabilities SET token_hash=?
+       WHERE run_id=? AND recipient IS ? AND state='active'`,
+  );
+  const tx = db.transaction((): string | null => {
+    const row = select.get(runId, recipient) as { dispatch_seq: number } | undefined;
+    if (!row) return null;
+    const token = generate();
+    update.run(hashCapabilityToken(token), runId, recipient);
+    return token;
+  });
+  return tx.immediate();
+}
+
 /**
  * Would this token be accepted as an ACTIVE capability?
  *
