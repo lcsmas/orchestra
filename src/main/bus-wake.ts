@@ -128,12 +128,78 @@ export interface BusWakeCounters {
   counted: number;
   /** Wakes that could not be delivered — sdkWake threw. Never silent. */
   failed: number;
+  /** Wakes whose QUEUED turn was later WITHDRAWN unstarted (#172): a delivery
+   *  timeout, tray cancel, Escape, or session-end queue-wipe threw away a wake
+   *  order the sweep had already marked in the ledger. The mark is rolled back so
+   *  the next sweep re-fires — this counts each such rollback. Never silent: a
+   *  fired-then-withdrawn wake that left the ledger marked is the #172 starvation
+   *  (reader stuck `already-woken`, zero served turns), so surfacing it as its own
+   *  signal is what distinguishes a re-armed rollback from a wake that landed. */
+  withdrawn: number;
 }
 
-const counters: BusWakeCounters = { fired: 0, counted: 0, failed: 0 };
+const counters: BusWakeCounters = { fired: 0, counted: 0, failed: 0, withdrawn: 0 };
 
 export function busWakeCounters(): BusWakeCounters {
   return { ...counters };
+}
+
+/**
+ * #172 — ROLL BACK a fired wake whose queued turn was WITHDRAWN unstarted.
+ *
+ * ── The defect this closes ──────────────────────────────────────────────────
+ *
+ * The sweep marks the FIRE ledger BEFORE the `await deliverWake` (mark-before-await,
+ * #112), and `deliverWake`/`sdkWake` resolve TRUE the instant the wake order is
+ * QUEUED — not when the turn STARTS (#57: 'live' means the turn started). So a
+ * wake order that queues successfully but is then thrown away UNSTARTED — a
+ * delivery-timeout withdrawal, a tray cancel, an Escape, or a session-end
+ * queue-wipe (all in agent-sdk.ts) — leaves the ledger marked for a wake that was
+ * never delivered. The reader then STARVES: every subsequent sweep reads the mark,
+ * finds the cursor has not advanced (the reader never ran the `check`, never
+ * acked), and skips `already-woken` — zero served turns while mail piles up. This
+ * is the wave-7 live repro (ledger #170/#172): 19:25:10 'woke through 1107' marked
+ * the ledger, the turn never ran, 12 messages piled ~15 min under the #159
+ * transition warn until an `orchestra restart` cleared the #90 wedge.
+ *
+ * The existing `counters.failed` rollback (the sweep's `else` branch) only covers
+ * a SYNCHRONOUS false return from `deliverWake` (SDK never registered / start
+ * threw). A turn that queues fine and is withdrawn LATER is invisible to it — the
+ * await already resolved true. This rollback is the ASYNCHRONOUS counterpart,
+ * bounded by the WITHDRAWAL event rather than by the sweep timer (the ticket's
+ * "bounded by the withdrawal event, not by sweeps").
+ *
+ * ── Why deleting the reader's entry is the whole fix ─────────────────────────
+ *
+ * The FIRE ledger is keyed by READER (a wsId), one {@link WakeLedgerEntry} per
+ * reader. Deleting that entry is exactly what the sync `failed` path already does
+ * (line ~714): the next sweep sees no prior FIRE entry for the reader, so
+ * `decideWake` re-fires the full pending set. This also settles the #162 coalesced
+ * arm for free: a coalesced wake order is ONE turn for ONE reader covering the
+ * UNION of several runs, and the reader has ONE ledger entry regardless of how
+ * many runs the order named — dropping it re-arms every run the order covered
+ * (acceptance arm 3), with no per-run bookkeeping.
+ *
+ * Only the FIRE ledger is touched. A COUNTED (switch-OFF) would-have-woken was
+ * never delivered a turn, so no turn of its can be withdrawn — the count ledger is
+ * left alone (touching it would resurrect the C5 starvation #153 guards against).
+ * A rollback for a reader with no fire entry is a no-op (an ordinary prompt was
+ * withdrawn, or the entry already re-armed), so this is safe to call on EVERY
+ * unstarted-turn withdrawal; the caller gates on {@link isWakeOrder} so a normal
+ * prompt withdrawal never even reaches here, keeping #112's guard untouched.
+ */
+export function rollbackWakeForWithdrawnOrder(reader: string): void {
+  if (!ledger.has(reader)) return;
+  ledger.delete(reader);
+  counters.withdrawn++;
+  // Force the #159 transition log to re-announce on the next stuck sweep: a
+  // reader that was `active` (just fired) is now owed a fresh wake, and if the
+  // wedge that withdrew this turn is still swallowing turns the next sweep's
+  // fire-then-withdraw cycle should be visible, not masked by a stale `active`.
+  skipState.delete(reader);
+  log.info(
+    `bus-wake: rolled back wake ledger for ${reader} — its queued wake order was withdrawn unstarted (#172); next sweep re-fires`,
+  );
 }
 
 /** The FIRE dedup ledger: reader handle → the high-water a DELIVERED wake covered.
@@ -881,6 +947,7 @@ export function __resetBusWakeForTests(): void {
   counters.fired = 0;
   counters.counted = 0;
   counters.failed = 0;
+  counters.withdrawn = 0;
   started = false;
   watcherEnabled = true;
   watchBusPath = busPath;
@@ -889,6 +956,15 @@ export function __resetBusWakeForTests(): void {
   readBusDb = getBus;
   readRoster = () => [];
   deliverWake = async () => false;
+}
+
+/** Test/rig seam (#172): read the FIRE ledger entry for a reader, so a rig can
+ *  assert a wake was MARKED after a fire and UN-marked after a withdrawal — the
+ *  acceptance-1/3 observable. Undefined when the reader has no outstanding fire
+ *  mark. Returns a copy so a test cannot mutate the live ledger. */
+export function __peekWakeLedgerForTests(reader: string): WakeLedgerEntry | undefined {
+  const e = ledger.get(reader);
+  return e ? { ...e } : undefined;
 }
 
 /** Rig seam: arm the sweep (`started = true`) WITHOUT touching the switch
