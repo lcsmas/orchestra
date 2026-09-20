@@ -1223,6 +1223,113 @@ test('#167 acceptance 3: token retrieval does NOT touch the rejection counter (a
   assert.ok(rowCount <= 1, 'capability_rejections is (run_id, count) aggregate — at most one row per run');
 });
 
+// ── OPS hazard 1: single-use / re-retrieve invalidation, PROVEN at worker_done ──
+test('#167 OPS-h1 single-use: the RELAYED token rejects after retrieve, the RETRIEVED one is accepted, a re-retrieve kills the prior', (t) => {
+  // COVERS the rotate-on-retrieve hazard OPS named: a member MUST complete with its
+  // LAST retrieved token. Proven THROUGH worker_done (verifyCapability), not just
+  // verifyCapability directly, so the arm exercises the real completion path.
+  // THE MUTANT: rotate that does NOT change the hash (a no-op UPDATE) → the relayed
+  // token would still verify and the "relayed rejects" assertion reddens.
+  const r = rig(t);
+  r.setCapabilityEnabled(true); // capability=ON so worker_done actually gates
+  const relayed = dispatchAndCap(r, 'w1'); // the token OPS would have relayed at dispatch
+
+  // First retrieve rotates the relayed token OUT.
+  const o1 = r.out.length;
+  verbToken(r.ctx('w1'));
+  const retrieved1 = r.out.slice(o1).join('').trim();
+  assert.notEqual(retrieved1, relayed);
+
+  // The RELAYED (pre-retrieve) token now REJECTS at worker_done + counts.
+  const beforeCount = bus.capabilityRejectCount(r.db, RUN);
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: relayed, body: 'relayed done' }),
+    /worker_done rejected — the token is not an active capability/,
+    'the relayed token is dead once retrieve rotated it',
+  );
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), beforeCount + 1, 'the relayed-token completion is COUNTED');
+
+  // A SECOND retrieve invalidates retrieved1 — the member must use the LAST one.
+  const o2 = r.out.length;
+  verbToken(r.ctx('w1'));
+  const retrieved2 = r.out.slice(o2).join('').trim();
+  assert.notEqual(retrieved2, retrieved1, 're-retrieve rotates again');
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: retrieved1, body: 'stale retrieved' }),
+    /worker_done rejected — the token is not an active capability/,
+    'a superseded retrieved token is dead',
+  );
+  // Only the LAST retrieved token completes.
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: retrieved2, body: 'last retrieved done' });
+  const landed = (r.db.prepare("SELECT body FROM messages WHERE kind='worker_done'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(landed, ['last retrieved done'], 'only the LAST retrieved token completes');
+});
+
+// ── OPS hazard 3: recipient-SCOPING — another reader never gets this token ──────
+test('#167 OPS-h3 recipient-scoping: `orchestra token` NEVER returns another recipient\'s cap', (t) => {
+  // COVERS: rotateCapabilityForRecipient is scoped to (run, caller). A DIFFERENT
+  // reader must not obtain w1's token — not by retrieval, and the token never
+  // appears in another reader's output. THE MUTANT: drop `recipient IS ?` from the
+  // rotate scope → w2's retrieve would return/rotate w1's cap and this reddens.
+  const r = rig(t);
+  const w1tok = dispatchAndCap(r, 'w1'); // only w1 has a dispatch
+  // w2 has NO dispatch → its token verb REFUSES (it cannot see w1's cap). Capture
+  // ONLY w2's output slice — r.out also holds w1's dispatch-mint line (the
+  // dispatcher's own stdout, which legitimately contains w1's token).
+  const w2SliceStart = r.out.length;
+  assert.throws(
+    () => verbToken(r.ctx('w2')),
+    /no active dispatch capability for w2/,
+    'a reader with no cap of its own gets nothing — never w1\'s',
+  );
+  // w1's active cap is untouched by w2's attempt (no cross-rotation).
+  assert.equal(bus.verifyCapability(r.db, RUN, w1tok), true, 'w1\'s cap survived w2\'s token attempt');
+  // And w1's token never appeared in W2's retrieval output (scoped to w2's slice).
+  for (const chunk of r.out.slice(w2SliceStart)) {
+    assert.ok(!chunk.includes(w1tok), 'w1\'s token must never surface in w2\'s token output');
+  }
+  // Positive control: give w2 its OWN dispatch → it retrieves ITS token, a
+  // DIFFERENT value from w1's, and w1's stays valid.
+  dispatchAndCap(r, 'w2');
+  const o = r.out.length;
+  verbToken(r.ctx('w2'));
+  const w2tok = r.out.slice(o).join('').trim();
+  assert.match(w2tok, /^dcap_[0-9a-f]{64}$/);
+  assert.notEqual(w2tok, w1tok, 'each recipient gets its OWN token');
+  assert.equal(bus.verifyCapability(r.db, RUN, w1tok), true, 'w1 unaffected by w2\'s retrieve');
+});
+
+// ── OPS hazard 4: a STALE-COORDINATOR re-dispatch STILL invalidates (fencing) ──
+test('#167 OPS-h4: a re-dispatch invalidates the old token regardless of coordinator — fencing gates the WRITE, rotate never resurrects', (t) => {
+  // COVERS: the #128/#129 invariant OPS pinned — supersession is driven by the
+  // DISPATCH write (which fencing #128 gates), NOT by token retrieval. Rotate only
+  // ever touches the CURRENT active cap: after a re-dispatch, `orchestra token`
+  // returns the NEW cap, and NOTHING rotate does can revive the superseded one.
+  // THE MUTANT: a rotate that targets the most-recently-MINTED-then-superseded row
+  // (drop state='active') would resurrect the old cap → the "old stays dead" arm
+  // reddens.
+  const r = rig(t);
+  r.setCapabilityEnabled(true);
+  const s1tok = dispatchAndCap(r, 'w1'); // dispatch 1
+  dispatchAndCap(r, 'w1'); // RE-DISPATCH supersedes s1 (the dispatch WRITE is what supersedes)
+  assert.equal(bus.verifyCapability(r.db, RUN, s1tok), false, 's1 superseded by the re-dispatch');
+
+  // A retrieve AFTER the re-dispatch returns the NEW active cap, never s1.
+  const o = r.out.length;
+  verbToken(r.ctx('w1'));
+  const current = r.out.slice(o).join('').trim();
+  assert.equal(bus.verifyCapability(r.db, RUN, current), true, 'retrieve returns the current (post-re-dispatch) cap');
+  assert.equal(bus.verifyCapability(r.db, RUN, s1tok), false, 'the superseded s1 token stays dead — rotate never resurrects it');
+  // Completing with s1 (the pre-re-dispatch token) still rejects+counts.
+  const before = bus.capabilityRejectCount(r.db, RUN);
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: s1tok, body: 'stale coord done' }),
+    /worker_done rejected — the token is not an active capability/,
+  );
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), before + 1, 'the superseded-dispatch completion is COUNTED');
+});
+
 // ─── #130 mutation receipts through the CLI verbs ────────────────────────────
 
 const msgCount = (r: Rig): number =>

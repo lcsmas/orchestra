@@ -1590,6 +1590,31 @@ token — T129.2 is FULLY preserved (no new column, no schema/migration change).
   "worker_done carries the RELAYED token" to "recipient retrieves via `orchestra
   token`". The manual OPS re-relay crutch is retired.
 
+**Re-dispatch policy (explicit, per #128/#129):** REFRESH-VIA-RETRIEVE, not
+no-supersede-until-complete. A re-dispatch to the same recipient supersedes the
+prior cap AT THE DISPATCH WRITE (which fencing #128 gates, so a stale coordinator's
+re-dispatch STILL invalidates — the mechanism's whole point) and the member obtains
+the refreshed token by running `orchestra token` again. "Current active cap" is
+unambiguous: the single-outstanding invariant (`mintCapability` supersede-on-mint)
+guarantees ≤1 `active` cap per (run, recipient), so `getActiveCapabilityForRecipient`
+resolves exactly one. A fan-out of N concurrent dispatches to ONE recipient remains
+out of scope (same wave-D assumption `mintCapability` documents).
+
+**Four hazards closed (OPS-W7 review, arms in `bus-verbs.test.ts`, each
+mutation-verified):**
+1. **Single-use / re-retrieve** (`OPS-h1`): retrieve rotates the RELAYED token dead
+   (rejects+counts at worker_done); the retrieved token is accepted; a SECOND
+   retrieve kills the first retrieved one — the member completes with its LAST
+   retrieved token. Mutant: a no-op rotate (hash unchanged) reddens it.
+2. **Supersession via re-dispatch** (`acceptance 1` + `OPS-h4`): after a re-dispatch
+   `token` returns the NEW cap; the pre-re-dispatch token rejects+counts; rotate
+   never resurrects the superseded row. Mutant: drop the `state='active'` filter.
+3. **Recipient-scoping** (`OPS-h3`): another reader's `token` never returns/reveals
+   this recipient's cap (negative arm), and never rotates it. Mutant: a rotate that
+   ignores the caller recipient reddens it.
+4. **Stale-coordinator re-dispatch still invalidates** (`OPS-h4`): supersession is
+   driven by the fencing-gated dispatch WRITE, not by retrieval — positive arm.
+
 ### The `capability` switch + pane listing (RULING D1)
 
 `capability` is a 5th `BusMechanism` in `src/shared/bus-switches.ts` (camel key ==
