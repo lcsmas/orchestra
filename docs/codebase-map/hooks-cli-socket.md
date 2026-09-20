@@ -98,7 +98,9 @@ Scripts and the Claude Code events they fire on:
   `tool_input.file_path` from the hook's stdin JSON and **denies (exit 2)**
   edits targeting another workspace's files (`~/.orchestra{,-dev}/worktrees/*`
   or `scratch/*` outside its own worktree), with a stderr message that
-  redirects the agent to `orchestra message` / spawn. Own-worktree writes
+  redirects the agent to `orchestra send` (the bus) / spawn — no longer
+  `orchestra message`, which #169 retired as a coordination path on a bus run.
+  Own-worktree writes
   (notes, plans), relative paths, and parse misses fail open.
 - **`fieldguide-instruction.sh`** — SessionStart ONLY. Injects the parent
   orchestrator's **swarm field guide** (`<orchestra-home>/fieldguide/
@@ -178,7 +180,16 @@ Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 `$ORCHESTRA_WS_ID` in a structured-view session. Exit 0 on `{ok:true}`, 1 otherwise
 (error to stderr).
 Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base),
-`read <id> [--lines N]`, `message <id> <text…>`,
+`read <id> [--lines N]`, `message [--emergency] <id> <text…>`
+(**#169 P4 — `message` is the LEGACY channel**: `dispatchMessageRequest` refuses
+a single-target send when the target's anchored run has the `delivery` switch ON,
+returning an error that names `orchestra send`; the pure decision is
+`decideMessageChannel` in `src/shared/message-channel-gate.ts`, the switch is read
+via `busSwitch(db, resolveWaveRunId(target), 'delivery')` — a missing run row reads
+OFF and is never refused. Two escapes survive: a delivery-OFF run (legacy/bloc2),
+and the leading `--emergency` token — the out-of-band liveness poke. `--emergency`
+is recognised ONLY as `args[0]`, same body-hijack reasoning as the routing below.
+The refusal is server-side so the socket enforces it even without this CLI),
 `message --children <text…>` / `message --to <id,id,…> <text…>` (issue #86 broadcast:
 one delivery line PER TARGET as a table, `--children` = your DIRECT children only,
 `--to` collapses duplicates and drops blanks so a trailing comma is a typo not a

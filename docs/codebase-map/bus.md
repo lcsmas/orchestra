@@ -638,7 +638,7 @@ CONDITIONED on the switch state this notice announces, so a spawned agent obeys
 
 | Wire name (`busSwitchNoticeLines`) | `=OFF` → old channel authoritative | `=ON` → bus authoritative |
 |---|---|---|
-| `delivery` | ledger/`orchestra message` (unordered, pull-first) | `send` / `check` / `ack` |
+| `delivery` | ledger/`orchestra message` (unordered, pull-first) | `send` / `check` / `ack` (**#169 P4**: `orchestra message` is now REFUSED for coordination on a delivery-ON run — points at `orchestra send`; escapes: delivery-OFF runs + `--emergency`) |
 | `wake` | self-wakeup rule (`ScheduleWakeup`) + lead ~15-min cron | host wake (Réveil); self-wakeup retired |
 | `ask_gate` | ledger §Open-questions + one-line ping | `ask` / decision gates (`gate open`/`resolve`) |
 | `liveness` | lead 15-min heartbeat cron | host-derived escalation |

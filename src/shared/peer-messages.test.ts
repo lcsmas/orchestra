@@ -13,7 +13,14 @@ import {
 // byte-identical here on purpose: if the formatter's wording ever changes, this
 // fixture stops matching and the backfill test below fails loudly — which is the
 // only warning the scoped textual recognizer can get.
+// #169 P4 — the CURRENT footer is bus-first (`orchestra send … — or … message …`).
 const formatted = (branch: string, id: string, body: string) =>
+  `[message from agent '${branch}' (${id})]\n${body}\n\n` +
+  `Reply with: orchestra send --type status --to ${id} "<reply>" ` +
+  `(bus run) — or orchestra message ${id} "<reply>" on a legacy delivery-OFF run`;
+// The LEGACY footer the ~1141 already-on-disk fleet transcripts carry. Backfill
+// must keep stripping it (#169 widened PEER_REPLY_FOOTER to match both).
+const legacyFormatted = (branch: string, id: string, body: string) =>
   `[message from agent '${branch}' (${id})]\n${body}\n\nReply with: orchestra message ${id} "<reply>"`;
 
 test('isPeerMessage: keys on the origin badge, not the text', () => {
@@ -95,6 +102,14 @@ test('recognizeFormattedPeerMessage: does NOT match ordinary prose (the control)
     null,
     'header must terminate the line',
   );
+});
+
+test('#169 recognizeFormattedPeerMessage: the LEGACY footer is still stripped (backfill)', () => {
+  const got = recognizeFormattedPeerMessage(
+    legacyFormatted('fix-login-race', 'ws-abc', 'STATUS: gates green'),
+  );
+  assert.ok(got, 'a pre-#169 on-disk delivery must still be recognized');
+  assert.equal(got.body, 'STATUS: gates green', 'legacy `orchestra message` footer stripped');
 });
 
 test('recognizeFormattedPeerMessage: body with no reply footer still parses', () => {

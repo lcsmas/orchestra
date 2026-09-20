@@ -83,8 +83,16 @@ export function peerSender(m: { origin?: string }): string {
 // envelope matches.
 const PEER_HEADER = /^\[message from agent '(.+?)' \(([^)]+)\)\]\n/;
 /** Trailing instruction the formatter appends. Stripped from the displayed body:
- *  it is boilerplate the human does not need in a preview or an expansion. */
-const PEER_REPLY_FOOTER = /\n\nReply with: orchestra message \S+ "<reply>"\s*$/;
+ *  it is boilerplate the human does not need in a preview or an expansion.
+ *
+ *  TWO forms, both matched (#169 P4): the LEGACY `orchestra message <id> "<reply>"`
+ *  footer that the ~1141 already-on-disk fleet transcripts carry, and the current
+ *  `orchestra send … — or orchestra message …` bus-first footer. Anchored at the
+ *  end; `[\s\S]*?` is bounded by the trailing anchor so it cannot eat message body
+ *  above a legitimate footer (the footer always starts on its own `\n\nReply with:`
+ *  line). */
+const PEER_REPLY_FOOTER =
+  /\n\nReply with: orchestra (?:send [\s\S]*?|message \S+ "<reply>")\s*$/;
 
 /** Recognize a message body Orchestra's OWN peer formatter produced, recovering
  *  its structural origin plus the body with the envelope removed.

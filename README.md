@@ -117,7 +117,7 @@ Orchestra ships an `orchestra` command that talks to a running app over its loca
 ```bash
 orchestra peers                                       # list the other agent workspaces (id, branch, repo, status)
 orchestra read <id> [--lines N]                       # print a workspace's transcript (default 80 lines)
-orchestra message <id> <text...>                      # send a prompt to a workspace
+orchestra message <id> <text...>                      # legacy peer channel; on a bus (delivery-ON) run use `orchestra send` instead
 orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]   # spawn a new worktree + agent
 orchestra rename <id> <branch>                         # rename a workspace's branch
 orchestra promote <id>                                 # promote a scratch session into an orchestrator

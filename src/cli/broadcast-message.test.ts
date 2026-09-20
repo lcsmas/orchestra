@@ -39,6 +39,7 @@ interface Captured {
   to?: unknown;
   children?: boolean;
   text?: string;
+  emergency?: boolean;
 }
 
 interface StubOutcome {
@@ -292,6 +293,48 @@ test('positional form still sends a STRING `to` and prints the legacy line', nee
   assert.equal(r.seen[0].to, 'some-id', 'a single target must stay a STRING on the wire');
   assert.equal(r.seen[0].children, undefined);
   assert.equal(r.seen[0].text, 'hello there');
+});
+
+// ---------------------------------------------------------------------------
+// #169 P4 — the surviving `--emergency` escape, parsed CLI-side.
+//
+// `--emergency` is recognised ONLY as the LEADING token (same body-hijack
+// reasoning as the positional routing). Three arms: it is stripped + threaded
+// as `emergency:true`; a plain send carries NO emergency; and a `--emergency`
+// that is NOT leading stays part of the body verbatim (never upgrades the send).
+// The wire body is what the server-side #169 gate keys on, so these assert on
+// `seen[0]`, not the printed line.
+// ---------------------------------------------------------------------------
+test('#169 --emergency (leading) is stripped and threaded as emergency:true', needsBuild, () => {
+  const r = driveCli(
+    ['message', '--emergency', 'ws1', 'wake', 'up'],
+    `return { ok: true, delivery: 'live', branch: 'br' };`,
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].to, 'ws1', 'the target must stay the STRING after the flag');
+  assert.equal(r.seen[0].text, 'wake up', 'the flag must not leak into the body');
+  assert.equal(r.seen[0].emergency, true, 'the escape must reach the wire');
+});
+
+test('#169 a plain positional send carries NO emergency flag', needsBuild, () => {
+  const r = driveCli(
+    ['message', 'ws1', 'ordinary', 'note'],
+    `return { ok: true, delivery: 'live', branch: 'br' };`,
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].emergency, undefined, 'no --emergency → the field is absent');
+  assert.equal(r.seen[0].text, 'ordinary note');
+});
+
+test('#169 --emergency NOT leading stays in the body (no silent upgrade)', needsBuild, () => {
+  const r = driveCli(
+    ['message', 'ws1', 'please', '--emergency', 'reboot'],
+    `return { ok: true, delivery: 'live', branch: 'br' };`,
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].to, 'ws1');
+  assert.equal(r.seen[0].emergency, undefined, 'a body --emergency must NOT upgrade the send');
+  assert.equal(r.seen[0].text, 'please --emergency reboot', 'body verbatim, flag intact');
 });
 
 test('--children and --to together are refused before reaching the socket', needsBuild, () => {

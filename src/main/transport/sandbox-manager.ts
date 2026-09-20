@@ -124,6 +124,7 @@ async function dispatchRpc(
             from: typeof p.from === 'string' ? p.from : undefined,
             to: p.to,
             text: p.text,
+            emergency: p.emergency === true,
           }),
         );
       }

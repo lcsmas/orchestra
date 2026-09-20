@@ -47,10 +47,12 @@ import {
   runFlags,
   startRun,
   getRun,
+  busSwitch,
   refreezeRun,
   refreezeMissionRun,
   type RefreezeMissionOutcome,
 } from './bus-runs.ts';
+import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   maybeStartRunAtAnchor,
@@ -1551,10 +1553,14 @@ async function submitTaskWhenReady(id: string, task: string, readyFile: string):
   }
   if (!submitted) {
     // Loud, and actionable: name the recovery the coordinator can run by hand.
+    // This agent never took its prompt (its reader is wedged), so the recovery
+    // is the out-of-band ESCAPE — `orchestra send` would sit in a bus the agent
+    // is not draining. `--emergency` bypasses the #169 fleet-coordination refusal
+    // for exactly this liveness case.
     log.error(
       `agent ${id} NEVER ACCEPTED ITS OPENING PROMPT after ${SUBMIT_TYPE_ROUNDS} type rounds ` +
         `x ${SUBMIT_MAX_ATTEMPTS} submits — it is sitting idle with no task. ` +
-        `Recover with: orchestra message ${id} "<the task>"`,
+        `Recover with: orchestra message --emergency ${id} "<the task>"`,
     );
   }
   await clearReadyFile(id);
@@ -3081,7 +3087,15 @@ export interface MessageResult {
 const MESSAGE_MAX_CHARS = 8000;
 
 function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
-  return `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\nReply with: orchestra message ${fromId} "<reply>"`;
+  // #169 P4 — on a bus (delivery-ON) run, replies go through `orchestra send`;
+  // `orchestra message` is the legacy fallback (this footer is only ever attached
+  // to a legacy/emergency delivery in the first place). Name the bus path first
+  // so a recipient on a delivery-ON run does not hit the coordination refusal.
+  return (
+    `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\n` +
+    `Reply with: orchestra send --type status --to ${fromId} "<reply>" ` +
+    `(bus run) — or orchestra message ${fromId} "<reply>" on a legacy delivery-OFF run`
+  );
 }
 
 /** Wake a stopped agent and hand it `prompt` as a live turn. Wakes it as a
@@ -3172,8 +3186,36 @@ export async function dispatchMessageRequest(
     from?: string;
     to: string;
     text: string;
+    /** #169 — the surviving out-of-band escape. When set, the fleet-coordination
+     *  refusal below is bypassed (the liveness poke path, #172 life-support). */
+    emergency?: boolean;
   },
 ): Promise<MessageResult> {
+  // P4 (#169) — REFUSE this OLD channel for fleet coordination when the target's
+  // run has adopted the bus for delivery, pointing the sender at `orchestra send`.
+  // Checked BEFORE the mirror and the delivery body: a refused send neither
+  // delivers nor mirrors (the mirror comment below relies on this — an unknown /
+  // refused recipient has no run row and would fall back to the host id).
+  //
+  // The switch is read from the TARGET's frozen run flags: `busSwitch` reads a
+  // missing run row as OFF (bus-runs.ts contract), so a plain standalone target
+  // or a bloc2-legacy delivery-OFF mission is `false` here and NEVER refused —
+  // exactly the escapes acceptance arm 2 requires. The DECISION is the pure
+  // `decideMessageChannel` (src/shared) so it is unit-tested without this module's
+  // Electron/store chain; here we only resolve its two inputs.
+  const targetForGate = store.getWorkspace(input.to);
+  const db = getBus();
+  const targetDeliveryOn =
+    !!targetForGate && !!db
+      ? busSwitch(db, resolveWaveRunId(targetForGate), 'delivery')
+      : false;
+  const gate = decideMessageChannel({
+    targetDeliveryOn,
+    emergency: input.emergency === true,
+  });
+  if (!gate.allow) {
+    return { ok: false, error: gate.error };
+  }
   // SHADOW MIRROR (#116). The old channel runs FIRST and UNCHANGED; the mirror
   // sees only its finished result and returns void. Written as a wrapper around
   // the untouched body rather than as N calls inside it, deliberately:
@@ -3923,15 +3965,33 @@ orchestra read <peer-id>
 Prints the peer's branch then its last ~80 lines of transcript. Pass
 \`--lines <n>\` (max 400) for more.
 
-## 3. Send a peer a prompt
+## 3. Send a peer a message
+
+On a bus-adopted mission (any run whose \`delivery\` switch is ON — the fleet-bus
+default now), FLEET COORDINATION GOES THROUGH THE BUS:
 
 \`\`\`bash
-orchestra message <peer-id> <your message...>
+orchestra send --type status --to <peer-id> <your message...>
 \`\`\`
 
-Prints \`Delivered (live).\` if the peer was running, or \`Delivered (started).\`
-if it was stopped and got woken to handle it now. The peer sees the message came
-from you and can reply back to your workspace.
+The bus is durable, ack'd and re-driven — a message survives the peer being
+stopped, mid-turn, or restarted, which the old channel could not guarantee.
+
+\`orchestra message\` is the PRE-BUS channel (it types into the peer's live TUI /
+wakes it, with #57-class duplicate/drop faults). On a delivery-ON run it is
+REFUSED for coordination and points you back here:
+
+\`\`\`bash
+orchestra message <peer-id> <your message...>   # refused on a delivery-ON run
+\`\`\`
+
+It still works in two cases, and only these:
+- a run whose \`delivery\` switch is OFF (a legacy / bloc2-style mission that never
+  adopted the bus, or a plain standalone workspace with no run);
+- \`orchestra message --emergency <peer-id> <text...>\` — the out-of-band liveness
+  poke, for when the peer's bus reader is wedged and you must wake it directly.
+  \`--emergency\` MUST be the leading token (anything after \`<peer-id>\` is the
+  message body, verbatim).
 
 ## 4. Verify a delegated branch actually landed
 
@@ -4585,7 +4645,7 @@ fi
 # Another workspace's files → block and point back at delegation.
 case "\$fp" in
   "\$HOME/.orchestra/worktrees/"*|"\$HOME/.orchestra/scratch/"*|"\$HOME/.orchestra-dev/worktrees/"*|"\$HOME/.orchestra-dev/scratch/"*)
-    echo "[orchestra] BLOCKED: you are an ORCHESTRATOR and '\$fp' belongs to another workspace. Never edit a child's files directly — delegate: send the change to the child agent that owns that worktree (\\\`orchestra message <id> \\"<task>\\"\\\`, see orchestra-comms skill) or spawn a new agent for it (orchestra-spawn skill)." >&2
+    echo "[orchestra] BLOCKED: you are an ORCHESTRATOR and '\$fp' belongs to another workspace. Never edit a child's files directly — delegate: send the change to the child agent that owns that worktree (\\\`orchestra send --type status --to <id> \\"<task>\\"\\\` on a bus run, see orchestra-comms skill) or spawn a new agent for it (orchestra-spawn skill)." >&2
     exit 2
     ;;
 esac
