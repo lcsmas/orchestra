@@ -275,7 +275,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | Handler | Line | Route | Purpose |
 |---|---|---|---|
 | `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start it as a **structured SDK session** (`startWorkspaceAgentHeadless`; raw-PTY only as fallback). Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. **Omitted → `DEFAULT_CHILD_MODEL` (`claude-opus-4-8`, workspaces.ts)**, so every spawned child runs Opus 4.8 unless the caller overrides it. Must be the FULL wire id (the alias `opus-4-8` is rejected; `opus` means Opus 5). The model guard is a charset/length check only — a dead model id passes it and fails at the child's own launch, so a delisted model going unserved breaks spawn silently. |
-| `dispatchPromoteRequest` | `:1309` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. |
+| `dispatchPromoteRequest` | `:2010` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. **#171: promote is a re-anchoring op** — the promoted node stops resolving to its parent OPS/LEAD and becomes its OWN run, so it now `snapshotRunAnchors(id)` **before** the mutation and `reconcileRunAfterReparent(…, {noRestart:false, preferStaleForLivePty:true})` **after** (both routes), exactly like attach/demote. An idle live session is restarted so its rebuilt env re-reads `ORCHESTRA_RUN_ID` + generation (removing the manual `orchestra restart` the ticket hit 4×); a working structured session's restart is refused (mid-turn guard → `{ok:false}` → mark-stale) and a raw PTY is deferred (`preferStaleForLivePty` — the PTY restart has no working guard). Returns `restarted`/`markedStale` like the re-parent handlers. |
 | `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
 | `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
 | `dispatchSetRepoAssociationRequest` | `:1834` | `/setRepoAssociation` | File an `'orchestrator'`-KIND session under a repo's sidebar section (with its subtree), or clear it. Writes **`repoAssociation`, never `repoPath`** — see below. Refuses a git worktree (it already groups by its own repo) and any path not in `store.repos`. |
@@ -309,10 +309,23 @@ governed by the flags of the **innermost** run of its two parties).
   (`writeBusSwitchState`), lazily starts the new run row (`maybeStartRunAtAnchor`),
   and then restarts conversation-preserving (#111 `dispatchRestartRequest`,
   `fresh:false`, via a dynamic import that breaks the workspaces↔restart-workspace
-  cycle) OR — with `--no-restart` — writes the `.orchestra/bus-run-stale` marker +
-  sets the `busRunStale` store flag. Best-effort per workspace (D1). Wired into
-  `dispatchAttachRequest` (both branches), `dispatchDemoteRequest` (the detached
-  children), `dispatchAdoptRepoRequest` (the moved worktree path).
+  cycle) OR — with `--no-restart` — marks stale (`markWorkspaceStaleRun`: the
+  `.orchestra/bus-run-stale` marker + the `busRunStale` store flag). Best-effort per
+  workspace (D1). Wired into `dispatchAttachRequest` (both branches),
+  `dispatchDemoteRequest` (the detached children), `dispatchAdoptRepoRequest` (the
+  moved worktree path), and **`dispatchPromoteRequest` (#171, both routes)**.
+- **#171 — restart refused/failed ⇒ mark-stale (not a silent warn).** When the
+  reconcile's restart returns `{ok:false}` (a working structured session throws the
+  mid-turn guard, or any relaunch failure) it now DOWNGRADES to `markWorkspaceStaleRun`
+  instead of only logging — so the live session is never left on the OLD run without
+  an operator signal (the #171 promote symptom), and never killed mid-turn (arm 2:
+  "refused-or-deferred explicitly"). `preferStaleForLivePty` (promote only) additionally
+  forces a LIVE raw PTY down the mark-stale branch up front, because `restartPty` has
+  no working guard and a PTY exposes no turn state to prove it idle. `markWorkspaceStaleRun`
+  is the shared marker+flag writer both the explicit `--no-restart` branch and this
+  fallback call. Rig: `scripts/verify-promote-run-refresh.mjs` (`pnpm test:promote-refresh`)
+  drives the SHIPPED `dispatchPromoteRequest` over a real bus and mutation-proves the
+  unfixed promote (no reconcile) leaves the notice on the parent run.
 - **`--no-restart`** — CLI flag on `attach`/`detach`/`adopt-repo` (forwarded through
   `/attach`, `/adoptRepo`). Marks the workspace 'stale run'; the store-less CLI
   `send` REFUSES from it (`refuseIfStaleRun`, keyed on the `.orchestra/bus-run-stale`

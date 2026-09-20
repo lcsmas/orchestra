@@ -1466,8 +1466,12 @@ async function main(argv: string[]): Promise<void> {
       if (!id) fail('usage: orchestra promote <id>');
       const res = await request('/promote', { id });
       if (!res.ok) fail(res.error ?? 'failed to promote workspace');
+      // #171 — promote now refreshes the live session's run env (restart it, or
+      // — working / raw-PTY — mark it 'stale run' so it activates on the next
+      // idle restart). reparentSuffix reports both, the same as attach/detach.
       process.stdout.write(
-        `Promoted ${res.id as string}${res.branch ? ` (${res.branch as string})` : ''} to orchestrator\n`,
+        `Promoted ${res.id as string}${res.branch ? ` (${res.branch as string})` : ''} to orchestrator` +
+          reparentSuffix(res),
       );
       return;
     }
