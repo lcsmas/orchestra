@@ -1160,6 +1160,47 @@ references).
   (always present, possibly empty) — the wake order is `orchestra check` and
   nothing else, so a gate-woken reader must see the gate in that one verb.
 
+### Human-directed gates — the recipient is the USER (#161)
+
+A gate with `recipient='human'` is a fleet question routed to the app's user
+instead of another agent. **No schema change** — `'human'` is a normal recipient
+string (no workspace id is a uuid collision), reserved as the shared constant
+`HUMAN_GATE_RECIPIENT` (`src/shared/human-gates.ts`) so the CLI, the main read
+and any doc agree on ONE spelling. `orchestra gate open --to human "<q>"` writes
+it today; the human answers in the app UI (surfaces A+B — see
+`docs/codebase-map/renderer-ipc-ui.md` and `structured-agent-view.md`).
+
+- **The read** is `openGatesForRecipientAllRuns(db, 'human')` (`src/main/bus.ts`)
+  — a bare cross-run read scoped only by the exact recipient. This is the ONE
+  place a recipient is NOT scoped to its related run set: an agent recipient uses
+  `openGatesForRecipientInRuns` (never woken by a stranger run's traffic), but the
+  human is the single top of every tree and every human-directed gate is theirs.
+  `src/main/human-gates.ts` projects each row into a `HumanGateView` (adds the
+  asker's workspace + label from the store; `asked_by` IS the asker's ws id, NOT
+  `run_id` which is the wave anchor).
+- **The resolve** is `resolveGate(db, id, 'human', ruling)` + `sendGateResolutionRewake`.
+  The re-wake was EXTRACTED from `verbGate` at #161 into
+  `sendGateResolutionRewake(db, gate, resolvedBy, ruling)` (`src/main/bus.ts`), so
+  the CLI resolve verb and the UI resolve IPC share ONE definition of "thread a
+  `decision_gate` reply to `asked_by` in the gate's run and let the normal lot
+  wake deliver it". A human resolve re-wakes the asker identically to an agent
+  resolve. Idempotent-by-refusal: two windows racing → the first ruling stands.
+- **Opening a human gate wakes NO agent**: the wake predicate matches an exact
+  recipient and `'human'` is never in an agent roster, so no agent is woken for
+  it — proven with an agent-gate positive control in
+  `src/main/human-gates.test.ts` (8 arms over a real bus, mutation-verified:
+  drop the recipient filter / the re-wake / the resolved_at-IS-NULL guard each
+  redden their arm). Durable-across-restart + backfill==live come for free: the
+  DB row is the source of truth, so every read rebuilds from it (a fresh
+  connection after a restart returns a byte-identical open set).
+- **Change detection**: gates open via the CLI (bypassing main), so
+  `startHumanGatesWatcher()` (`src/main/human-gates.ts`) watches the bus DB
+  directory (the #149 `-wal`-basename idiom, immune to WAL inode recycle),
+  debounces, and broadcasts `human-gates:update` (diffed — a `check` touches the
+  WAL too) plus mirrors a per-workspace `openHumanGateCount` (#88 pattern). A UI
+  resolve broadcasts immediately. Startup `reconcileHumanGates()` repairs a gate
+  opened/resolved via the CLI while the app was closed.
+
 ### The wake predicate — TWO switches, ONE order (`src/main/bus-wake.ts`, `src/shared/bus-wake.ts`)
 
 `readPendingReaders` now fills a SEPARATE gate half (`gatePending` /

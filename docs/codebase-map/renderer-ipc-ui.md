@@ -85,8 +85,9 @@ and exposes it as `window.orchestra` via `contextBridge`. Event listeners return
 an unsubscribe fn and adapt Electron's `(event, …args)` to `(…args)`. Push
 channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 `agent:tool`, `agent:context`, `repo:syncState`, `usage:update`,
-`accounts:usageUpdate`, `accounts:workspaceAccounts`, `repos:update`, and
-`sandbox:control` (cross-machine ownership broadcasts).
+`accounts:usageUpdate`, `accounts:workspaceAccounts`, `repos:update`,
+`sandbox:control` (cross-machine ownership broadcasts), and `human-gates:update`
+(#161 — the open human-directed decision gates, rebuilt from the bus DB).
 
 ## Renderer state — store.ts (Zustand, ~479 lines)
 Single source of truth; **atomic selectors** so high-frequency events
@@ -499,6 +500,29 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   render and click. Backend `src/main/inbox-tray.ts`, parser
   `src/shared/inbox-blocks.ts`. NOT the SDK `crossSessionInbound: 'hold'`
   channel (issue #42, heap-only upstream).
+- **Human-directed decision gates — the "Asks" surfaces (issue #161).** A bus
+  `decision_gates` row with `recipient='human'` is a fleet question routed to the
+  user. It renders in TWO places, both reading the ONE `store.humanGates` slice
+  (a flat fleet-wide list, replaced wholesale on the `human-gates:update` push —
+  a snapshot, never merged), so answering in either flips the other live:
+  - **Surface A** — `AskRow.tsx` (`src/renderer/components/agent/`), an amber
+    inline ask row docked above the composer in StructuredView (above InboxTray),
+    filtered to the asking workspace by `askedBy === workspaceId`. Free-text
+    ruling + Answer, visible aging badge, no modal.
+  - **Surface B** — `AsksSection.tsx` (`src/renderer/components/`), a sidebar
+    section aggregating EVERY open human gate, each row deep-linking to its
+    asking workspace via `setActive`; vanishes when empty (Tickets-section idiom),
+    slotted above Tickets in `Sidebar.tsx`.
+  Channels: `bus:humanGates` (read, in `BUS_PANE_IPC_CHANNELS`), `bus:resolveHumanGate`
+  (write, registered in `index.ts` beside `bus:setSwitches` — the pane registrar
+  refuses writes), plus the `human-gates:update` push (`platform.broadcast`, from
+  `src/main/human-gates.ts`'s bus-directory watcher + every resolve). The bus DB
+  row is the source of truth (durable + backfill==live); per-workspace
+  `Workspace.openHumanGateCount` is mirrored for the sidebar (#88 pattern). Pure
+  helpers + wire shape in `src/shared/human-gates.ts`. Backend
+  `src/main/human-gates.ts`; see `docs/codebase-map/bus.md` §"Human-directed
+  gates". The gate LIFECYCLE (resolved_by=human, re-wake) is the #119/#158
+  agent-gate machinery, unchanged.
 
 ## chime.ts (~517 lines) & debug.ts
 **chime.ts** synthesizes ~20 notification sounds with the Web Audio API (no

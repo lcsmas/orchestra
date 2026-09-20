@@ -586,6 +586,23 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   because losing a message is strictly worse than showing it twice. The released
   turn carries the `PeerOrigin` recovered from the envelope, so it renders as a
   #56 compact peer row rather than as a human turn.
+- **The inline ask row — human-directed decision gates (issue #161, surface A).**
+  A bus `decision_gates` row with `recipient='human'` this workspace's agent
+  opened surfaces as an amber ask row (`AskRow.tsx`, `src/renderer/components/
+  agent/`) docked INSIDE `.av-composer` ABOVE `InboxTray` — a fleet question
+  awaiting the human's ruling is the highest-priority thing above the composer
+  (it blocks an agent) yet stays a quiet `.av-ask` amber row, NEVER a modal steal.
+  "FLEET ASKS YOU" eyebrow + asker label + gate id, the question, a visible aging
+  badge (`waited Nm`, a stronger `.av-ask-old` tint past 15 min), and a free-text
+  ruling + **Answer ↵**. It reads `store.humanGates` filtered to this workspace by
+  `askedBy === workspaceId` (the gate's asker IS a ws id; `run_id` is the wave
+  anchor, not the asker) and answers via `window.orchestra.resolveHumanGate(id,
+  ruling)`. The SIBLING surface is the sidebar "Asks" section (`AsksSection.tsx`,
+  aggregating the whole fleet) — both read the ONE `store.humanGates` slice, so an
+  answer in either flips both live; the bus DB row is the source of truth
+  (durable + backfill==live). Gate LIFECYCLE (resolved_by=human, re-wake the
+  asker) is the #119/#158 machinery. Backend `src/main/human-gates.ts`; see
+  `docs/codebase-map/bus.md` §"Human-directed gates" and `renderer-ipc-ui.md`.
 - **Rate-limit / overload terminations (#26 item 2)** — a turn ending with
   `is_error` is classified STRUCTURALLY from `api_error_status`, never from the error
   prose: `classifyTurnError` (`agent-events.ts`) maps **429 → `rate-limit`**, **529 →
