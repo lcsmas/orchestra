@@ -2387,8 +2387,9 @@ export async function sdkSend(
   // confuses the human.
   //
   // Every entry in `session.queue` is UNSTARTED by construction — the running
-  // turn was `shift()`ed off it in promptStream — so merging into the newest
-  // queued wake order can never touch a started turn (acceptance arm 2). The
+  // turn was `shift()`ed off it in promptStream — so merging into the FIRST
+  // (existing) queued wake order can never touch a started turn (acceptance
+  // arm 2); `coalesceWakeOrderInto` picks it by `findIndex`, not the newest. The
   // merge is the UNION of named runs (buildWakeOrder dedups + sorts), which is a
   // superset of each order: the reader checks/acks every run either way, so the
   // single coalesced turn is behaviourally identical to running both.

@@ -457,7 +457,10 @@ export function wakeOrderRuns(text: string): string[] {
  *
  *  Returns, when the incoming send is a wake order AND a queued wake order
  *  exists to merge into:
- *   - `mergeIndex`: the queue index whose entry absorbs the incoming order, and
+ *   - `mergeIndex`: the queue index whose entry absorbs the incoming order — the
+ *     FIRST queued wake order (`findIndex`), i.e. the existing/oldest one, not the
+ *     newest; any single unstarted wake order is a valid merge target since the
+ *     union is order-independent, and the first keeps one stable target, and
  *   - `mergedText`: the UNION of both orders' named runs (`buildWakeOrder`
  *     dedups + sorts) — a superset of each, so the single coalesced turn checks
  *     every run either order would have.
