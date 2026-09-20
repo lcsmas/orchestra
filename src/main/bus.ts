@@ -348,9 +348,10 @@ export const MIGRATIONS: Record<number, string> = {
     CREATE INDEX IF NOT EXISTS idx_fence_events_run ON fence_events(run_id, id);
   `,
   // #129 — DISPATCH CAPABILITY TOKENS (bus v2). Each dispatch mints a
-  // `dcap_<32B>` token; a worker's completion/status row must carry it, and a
+  // `dcap_<32B>` token; a worker's `worker_done` completion must carry it, and a
   // LATE completion from a SUPERSEDED or failed dispatch is rejected so a hung
-  // retry cannot be masked by the original's stale answer.
+  // retry cannot be masked by the original's stale answer. (`status` is NOT a
+  // completion — it resolves no dispatch and passes untokened, #165.)
   //
   // WHAT IS STORED: only the SHA-256 HASH of the token, never the clear token.
   // The clear token is returned to the dispatcher's stdout once at mint time and

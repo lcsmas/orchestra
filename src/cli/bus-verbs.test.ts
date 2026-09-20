@@ -825,7 +825,8 @@ test('#129 T129.2: a minted token never appears in a message body, and nothing c
 // through. Replaced by the two F1 fail-closed arms below (no-cap → rejected+counted
 // under ON; lands+counted under OFF). A non-completion kind carrying --cap being
 // ignored is still covered: dispatch mints (it is not a completion kind), and
-// `ask`/`gate` never pass through the CAPABILITY_COMPLETION_KINDS branch.
+// `ask`/`gate`/`status` (#165) never pass through the CAPABILITY_COMPLETION_KINDS
+// branch.
 
 test('#129 F1 fail-closed: a completion with NO --cap is REJECTED+COUNTED under capability=ON', (t) => {
   // COVERS: the fail-closed gate — the guard is on the KIND, not on `cap`
@@ -851,11 +852,122 @@ test('#129 F1 coexistence: a completion with NO --cap LANDS+COUNTED under capabi
   // so the shadow signal shows the bypass that WOULD have been rejected once ON.
   // THE MUTANT: make the OFF path skip the count and the counter assertion reddens;
   // make it reject (drop `if (fired)`) and the landed assertion reddens.
+  // NB (#165): the completion kind here is `worker_done` — `status` is NO LONGER
+  // a completion, so it never enters the capability branch and is never counted
+  // (asserted by the #165 arms below).
   const r = rig(t); // default: capability OFF
-  verbSend(r.ctx('w1'), { kind: 'status', to: 'ops', thread: null, body: 'no-cap status' });
-  const landed = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='status'").get() as { n: number }).n;
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, body: 'no-cap done' });
+  const landed = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n;
   assert.equal(landed, 1, 'OFF: a no-cap completion lands (old channel authoritative)');
   assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'OFF still COUNTS the missing-token completion');
+});
+
+// ─── #165 `status` is NOT a completion — it passes untokened ─────────────────
+// The live-repro matrix: under capability=ON a plain `--type status` with no
+// token was REFUSED because 'status' sat in CAPABILITY_COMPLETION_KINDS. A
+// status resolves no dispatch, so it must never enter the capability branch.
+// THE SHARED MUTANT for arms 1 & 4: put 'status' back into
+// CAPABILITY_COMPLETION_KINDS (the pre-fix state) — arm 1 throws (was RED as the
+// live refusal) and arm 4's counter reads 1 instead of 0. Only `worker_done`
+// arms (2 & 3) discriminate the OTHER mutant: removing `worker_done` too, which
+// would let a stale/absent token through (C1 core softened).
+
+test('#165 arm 1: untokened `--type status` is ACCEPTED under capability=ON (the live repro)', (t) => {
+  // COVERS: the CAPABILITY_COMPLETION_KINDS change. PRE-FIX (status in the list)
+  // this THREW the verbatim live refusal; POST-FIX the status lands and NOTHING
+  // is counted (a status is not a capability divergence).
+  const r = rig(t);
+  r.setCapabilityEnabled(true); // capability=ON — the switch that broke status
+  verbSend(r.ctx('lead'), { kind: 'status', to: null, thread: null, body: 'phase 2, no token' });
+  assert.equal(r.fails.length, 0, 'a plain status must NOT be refused under capability=ON');
+  const landed = (r.db.prepare("SELECT body FROM messages WHERE kind='status'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(landed, ['phase 2, no token'], 'the status row lands untokened');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'a status is not a completion — nothing is counted');
+});
+
+test('#165 arm 1b: a status FROM a token-holder MAY carry --cap and is still ACCEPTED (attribution, never required)', (t) => {
+  // COVERS: the ticket's "if a status optionally carries --cap, accept it — never
+  // require it" clause. A valid token on a status must not change the outcome:
+  // it lands, uncounted, and the capability stays active (a status does not
+  // resolve/consume the dispatch).
+  const r = rig(t);
+  r.setCapabilityEnabled(true);
+  const token = dispatchAndCap(r, 'w1'); // w1 holds a live capability
+  verbSend(r.ctx('w1'), { kind: 'status', to: 'ops', thread: null, cap: token, body: 'still working' });
+  assert.equal(r.fails.length, 0, 'a status with a valid --cap is accepted');
+  const landed = (r.db.prepare("SELECT body FROM messages WHERE kind='status'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(landed, ['still working']);
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'no divergence counted for a status');
+  assert.equal(bus.verifyCapability(r.db, RUN, token), true, 'a status does not consume the capability — still active');
+});
+
+test('#165 arm 2: `worker_done` with a WRONG/absent token is STILL REJECTED+COUNTED under ON (C1 core intact)', (t) => {
+  // COVERS: the guarantee that #165 does NOT soften C1. worker_done remains the
+  // sole completion kind; a stale token and an absent token both fire.
+  // THE MUTANT: remove `worker_done` from CAPABILITY_COMPLETION_KINDS (over-fix)
+  // → both sub-arms go RED (the completion lands, nothing counted).
+  const r = rig(t);
+  r.setCapabilityEnabled(true);
+  const stale = dispatchAndCap(r, 'w1');
+  dispatchAndCap(r, 'w1'); // supersede the first → `stale` no longer active
+  assert.equal(bus.verifyCapability(r.db, RUN, stale), false);
+
+  const before = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n;
+  // wrong (stale) token → rejected
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: stale, body: 'stale done' }),
+    /worker_done rejected — the token is not an active capability/,
+  );
+  // absent token → rejected (fail-closed, F1)
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, body: 'no-cap done' }),
+    /worker_done rejected — no --cap token was presented/,
+  );
+  const after = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n;
+  assert.equal(after, before, 'no worker_done landed — C1 core did not soften');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 2, 'both the stale and the absent completion are COUNTED');
+});
+
+test('#165 arm 3: `worker_done` with the VALID minted token is accepted (happy path, uncounted)', (t) => {
+  // COVERS: the positive path — a real completion with its live token lands and
+  // is NOT counted as a divergence. (verbSend does not itself mutate the cap row
+  // on acceptance — the token stays active; resolution/fail is a separate step.)
+  // THE MUTANT: remove `worker_done` from the list and the arm still passes
+  // (it lands either way), so this arm alone does NOT discriminate the over-fix;
+  // arm 2 is the discriminator. This arm proves the fix did not break the happy
+  // path — its token was active at send time.
+  const r = rig(t);
+  r.setCapabilityEnabled(true);
+  const token = dispatchAndCap(r, 'w1');
+  assert.equal(bus.verifyCapability(r.db, RUN, token), true, 'the minted token is active before the completion');
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: token, body: 'real done' });
+  assert.equal(r.fails.length, 0, 'a valid-token worker_done is accepted');
+  const landed = (r.db.prepare("SELECT body FROM messages WHERE kind='worker_done'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(landed, ['real done']);
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'a valid completion is not a divergence');
+});
+
+test('#165 arm 4: OFF-run coexistence — a status passes untokened and is NOT counted, shadow counter intact', (t) => {
+  // COVERS: the OFF half. With capability OFF a status was already landing (the
+  // switch gates only the REFUSAL), but PRE-FIX it was still COUNTED as a
+  // divergence (status in the list) — polluting the shadow counter that the
+  // canary reads. POST-FIX a status is never a divergence in either switch state.
+  // THE SHARED MUTANT (status back in the list): the counter reads 1 → RED.
+  const r = rig(t); // default: capability OFF
+  verbSend(r.ctx('lead'), { kind: 'status', to: null, thread: null, body: 'off-run status' });
+  assert.equal(r.fails.length, 0, 'a status always lands');
+  const landed = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='status'").get() as { n: number }).n;
+  assert.equal(landed, 1, 'the status landed');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'OFF: a status is NOT a completion, so the shadow counter stays 0');
+
+  // A worker_done divergence under OFF still moves the counter (control: the
+  // counter is not simply dead) — proving the fix scoped the change to `status`,
+  // not the whole OFF path.
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, body: 'no-cap done' });
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'a real completion divergence STILL counts under OFF');
 });
 
 // ─── #130 mutation receipts through the CLI verbs ────────────────────────────
@@ -864,8 +976,8 @@ const msgCount = (r: Rig): number =>
   Number((r.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n);
 
 // NB: these use kind `handoff` — NOT `dispatch` (which mints a #129 capability
-// and prints a second token line) and NOT a completion kind (`worker_done`/
-// `status`, which the #129 seam gates). `handoff` exercises the #130 receipt in
+// and prints a second token line) and NOT the completion kind `worker_done`
+// (which the #129 seam gates). `handoff` exercises the #130 receipt in
 // isolation; the dispatch+receipt seam has its own arm below.
 test('T130.1/T130.2 send: --request-id replay is a NO-OP returning the original seq (switch ON)', (t) => {
   // COVERS: verbSend → runMutation → withReceipt short-circuit, the full CLI

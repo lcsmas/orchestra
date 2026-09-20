@@ -389,8 +389,9 @@ export interface SendArgs {
   to?: string | null;
   thread?: string | null;
   body: string;
-  /** #129 — the capability token a completion (`worker_done`/`status`) carries,
-   *  minted by the dispatch it answers. Ignored for other kinds. */
+  /** #129 — the capability token a `worker_done` completion carries, minted by
+   *  the dispatch it answers. Ignored for other kinds (a `status` may carry it
+   *  for attribution but is never required to — #165). */
   cap?: string | null;
   /** #130: an idempotency key. A retry of `send` with the same `--request-id`
    *  from the same caller is a NO-OP returning the original sequence when the
@@ -398,11 +399,16 @@ export interface SendArgs {
   requestId?: string | null;
 }
 
-/** #129 — the completion kinds that a capability token gates. A `worker_done`
- *  or `status` row is a worker reporting on a dispatch; those are the rows a
- *  stale token must not be able to forge. Other kinds (dispatch itself, gates,
- *  questions, heartbeats) carry no capability. */
-export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done', 'status'];
+/** #129 — the completion kinds that a capability token gates. Only `worker_done`
+ *  RESOLVES a dispatch; that is the single row a stale/absent token must not be
+ *  able to forge. Every other kind carries NO capability and passes untokened:
+ *  `dispatch` (mints the token), gates, questions, heartbeats, escalations,
+ *  handoffs — and `status` (#165). `status` resolves no dispatch and is the
+ *  fleet's highest-volume kind; most senders (LEAD, orchestrators, agents
+ *  between dispatches) hold no token, so gating it made status unusable the
+ *  moment `capability` flipped ON. A status FROM a token-holder MAY carry `--cap`
+ *  for attribution, but it is never REQUIRED — an untokened status is accepted. */
+export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done'];
 
 /**
  * `orchestra send --type <kind> [--to <h>] [--thread <id>] [--cap <token>] <body...>`
@@ -413,11 +419,13 @@ export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done', 's
  *    to `--to`), store only its hash, and print the CLEAR token on a second line
  *    so the dispatcher can hand it to the worker. The token is NEVER in the
  *    message body, the log, or the pane (T129.2).
- *  - `--type worker_done | status` with `--cap <token>`: VERIFY the token. A
- *    stale token (superseded by a respawn, or from a failed dispatch) is
- *    COUNTED as a divergence always, and REJECTED only when the `capability`
- *    switch is ON (T129.1 / T129.3 COUNTED-not-FIRED). With the switch OFF the
- *    completion lands exactly as v1 — the old channel stays authoritative.
+ *  - `--type worker_done` with `--cap <token>`: VERIFY the token. A stale token
+ *    (superseded by a respawn, or from a failed dispatch) is COUNTED as a
+ *    divergence always, and REJECTED only when the `capability` switch is ON
+ *    (T129.1 / T129.3 COUNTED-not-FIRED). With the switch OFF the completion
+ *    lands exactly as v1 — the old channel stays authoritative. `status` (#165)
+ *    is NOT a completion — it resolves no dispatch, so it never enters this
+ *    branch and passes untokened even under capability=ON.
  */
 export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] [--request-id <id>] <body...>');
@@ -438,7 +446,9 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   // is as invalid as a stale one — otherwise a hung worker bypasses the whole
   // mechanism by simply omitting the flag, which is the exact threat #129 exists
   // to stop. A missing token and a stale token therefore take the SAME path:
-  // COUNTED always, REJECTED when the switch is ON.
+  // COUNTED always, REJECTED when the switch is ON. Only `worker_done` is a
+  // completion (#165) — a `status` (or any other kind) skips this branch and is
+  // accepted untokened even under capability=ON; a `--cap` on it is ignored.
   const cap = a.cap?.trim() || null;
   if (CAPABILITY_COMPLETION_KINDS.includes(a.kind!)) {
     const valid = cap !== null && ctx.bus.verifyCapability(ctx.db, ctx.id.runId, cap);
