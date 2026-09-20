@@ -163,6 +163,67 @@ exports.default = async function afterPack(context) {
 
   console.log(`  • afterPack: verified ${REQUIRED.length} required bundles in the package`);
 
+  // ── Renderer purity: no Node builtins in the browser bundle (#93 fallout) ──
+  //
+  // WHY. `src/shared/*` is imported by BOTH main and the renderer. A
+  // `node:fs/promises` import added to src/shared/inbox-blocks.ts for the #93
+  // inbox-append fix therefore landed in the RENDERER bundle, where Vite emitted
+  // a bare `require(...)`. The renderer has no `require`, so the entry module
+  // threw `ReferenceError: require is not defined` at load, React never mounted
+  // and v0.5.275 launched to a BLACK WINDOW.
+  //
+  // It shipped green: tsc passes (the types are real), all unit tests pass (they
+  // run under Node, where `require` and `node:fs` both exist), and the bundle
+  // builds without warning. ONLY loading the packaged renderer reveals it —
+  // exactly the class this hook exists to catch.
+  const rendererBundles = [];
+  try {
+    const indexHtml = read('dist/index.html').toString('utf8');
+    for (const m of indexHtml.matchAll(/(?:src|href)="\.\/(assets\/[^"]+\.js)"/g)) {
+      rendererBundles.push('dist/' + m[1]);
+    }
+  } catch {
+    throw new Error('afterPack: dist/index.html unreadable — cannot verify renderer purity.');
+  }
+  if (rendererBundles.length === 0) {
+    throw new Error(
+      'afterPack: dist/index.html referenced NO entry script — the purity scan would ' +
+        'pass vacuously. Check the Vite HTML output.'
+    );
+  }
+  const impure = [];
+  for (const rel of rendererBundles) {
+    let code = '';
+    try {
+      code = read(rel).toString('utf8');
+    } catch {
+      throw new Error(`afterPack: renderer entry ${rel} is referenced by index.html but unreadable.`);
+    }
+    // A bare `require(` or a literal `node:`-prefixed specifier in the browser
+    // bundle is the tell. Vite emits `const X=require,Y=X("fs/promises")` for a
+    // leaked builtin, so match the aliasing form too.
+    const hits = [];
+    if (/[^.\w]require\s*\(/.test(code)) hits.push('a bare require(...) call');
+    if (/=\s*require\s*[,;)]/.test(code)) hits.push('an aliased `= require` reference');
+    if (/["'`]node:[a-z_/]+["'`]/.test(code)) hits.push('a literal "node:*" specifier');
+    if (hits.length > 0) impure.push(`  - ${rel}: ${hits.join(', ')}`);
+  }
+  if (impure.length > 0) {
+    throw new Error(
+      'afterPack: Node-only code leaked into the RENDERER bundle — the packaged app ' +
+        'will boot to a black window (ReferenceError: require is not defined):\n' +
+        impure.join('\n') +
+        '\n\nUsual cause: a file in src/shared/ imported a `node:*` builtin and a ' +
+        'renderer component imports a VALUE from that same file (a type-only import ' +
+        'is erased and is safe). Move the Node-only code into src/main/ and import it ' +
+        'there — see src/main/inbox-write.ts.'
+    );
+  }
+  console.log(
+    `  • afterPack: renderer bundle(s) free of Node builtins (${rendererBundles.length} entry: ` +
+      `${rendererBundles.join(', ')})`
+  );
+
   // ── Native modules: EVERY shipped .node, enumerated and pinned (#114, #126) ─
   //
   // A native `.node` cannot be dlopen'd from inside an asar archive, so every
