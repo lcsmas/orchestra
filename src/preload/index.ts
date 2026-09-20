@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { OrchestraAPI } from '../shared/ipc';
+import type { HumanGateView } from '../shared/human-gates';
 
 const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
@@ -26,6 +27,17 @@ const api: OrchestraAPI = {
   busListRuns: () => ipcRenderer.invoke('bus:listRuns'),
   busSwitches: () => ipcRenderer.invoke('bus:switches'),
   setBusSwitches: (next) => ipcRenderer.invoke('bus:setSwitches', next),
+  busHumanGates: () => ipcRenderer.invoke('bus:humanGates'),
+  resolveHumanGate: (gateId, resolution) =>
+    ipcRenderer.invoke('bus:resolveHumanGate', gateId, resolution),
+  onHumanGatesUpdate: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => {
+      const p = payload as { gates: HumanGateView[] };
+      cb(p.gates ?? []);
+    };
+    ipcRenderer.on('human-gates:update', listener);
+    return () => ipcRenderer.off('human-gates:update', listener);
+  },
 
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),

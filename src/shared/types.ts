@@ -348,6 +348,14 @@ export interface Workspace {
    * refreshed on every inbox mutation and by the directory watcher. Absent is
    * equivalent to 0. */
   parkedInboxCount?: number;
+  /** Count of OPEN human-directed decision gates (#161) this workspace's agent
+   * has opened and is waiting on — mirrored onto the record for the SAME reason
+   * as {@link Workspace.parkedInboxCount}: the sidebar's "Asks" surface (B) must
+   * badge a workspace whose pane nobody has opened, where the renderer has no
+   * per-pane gate cache. The bus DB row is the source of truth; this is a
+   * broadcast mirror refreshed on every gate open/resolve and by the bus
+   * directory watcher. Absent is equivalent to 0. */
+  openHumanGateCount?: number;
   /** Epoch MILLISECONDS at which the usage limit that killed the last turn
    * resets — set alongside `lastStopReason: 'usage_limit'` (#74), and the
    * clock the auto-resume driver waits out.

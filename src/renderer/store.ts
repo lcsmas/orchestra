@@ -24,6 +24,7 @@ import type {
   WorkspaceAccount,
 } from '../shared/types';
 import type { InboxBlock } from '../shared/inbox-blocks';
+import type { HumanGateView } from '../shared/human-gates';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -125,6 +126,14 @@ interface State {
    *  re-writes an already-delivered block over the watcher's correct retract —
    *  resurrecting the exact #91 stale chip. Never persisted. */
   parkedInboxGen: Record<string, number>;
+  /** OPEN human-directed decision gates (#161), fleet-wide, oldest first. The
+   *  bus DB row is the source of truth; this is a cache replaced WHOLESALE on
+   *  every `human-gates:update` push (never merged — a snapshot cannot drift the
+   *  way a delta can, and it makes surface A and surface B read one slice so an
+   *  answer in either flips both live). A flat list, not a per-workspace map:
+   *  surface B (the sidebar "Asks" section) aggregates the whole fleet, and
+   *  surface A filters it by `askedBy === workspaceId`. */
+  humanGates: HumanGateView[];
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -258,6 +267,7 @@ export const useStore = create<State>((set, get) => ({
   designPicks: {},
   parkedInbox: {},
   parkedInboxGen: {},
+  humanGates: [],
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -369,7 +379,7 @@ export const useStore = create<State>((set, get) => ({
         slog.warn(`startup load: ${what} failed — rendering as empty`, e);
         return fallback;
       });
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -382,6 +392,9 @@ export const useStore = create<State>((set, get) => ({
         // Reads the STORED list (no network) so the section paints instantly at
         // boot; the 120s poll refreshes state from Linear afterwards.
         orEmpty('listTickets', window.orchestra.listTickets(), []),
+        // Open human gates for the initial paint (#161); live updates then ride
+        // the human-gates:update push. Empty on a down bus.
+        orEmpty('busHumanGates', window.orchestra.busHumanGates(), { gates: [] }),
       ]);
     slog.info(
       `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
@@ -405,6 +418,7 @@ export const useStore = create<State>((set, get) => ({
       accounts,
       globalUsage: globalUsage ?? null,
       selfTuneRuns,
+      humanGates: humanGatesRes?.gates ?? [],
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -967,6 +981,16 @@ window.orchestra.onInboxUpdate((wsId, count) => {
   void window.orchestra.listInbox(wsId).then((blocks) => {
     useStore.setState((s) => ({ parkedInbox: { ...s.parkedInbox, [wsId]: blocks } }));
   });
+});
+// The set of OPEN human-directed decision gates changed (#161) — a gate opened
+// via `orchestra gate open --to human`, or one was resolved (in the UI or by an
+// agent). Main rebuilds the whole set from the bus DB and pushes it, so replace
+// wholesale — surface A (asking workspace's inline row) and surface B (sidebar
+// "Asks" section) both read this one slice, which is what makes an answer in
+// either surface flip the other live. backfill==live: the same DB read backs a
+// fresh render and one after a restart.
+window.orchestra.onHumanGatesUpdate((gates) => {
+  useStore.setState({ humanGates: gates });
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.

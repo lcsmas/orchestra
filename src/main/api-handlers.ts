@@ -207,6 +207,12 @@ type ServableApi = Omit<
   | 'busListRuns'
   | 'busSwitches'
   | 'setBusSwitches'
+  // #161 — the human-gate READ (bus:humanGates) is registered by
+  // registerBusPaneIpc() alongside the other pane reads; the RESOLVE
+  // (bus:resolveHumanGate) is a write registered separately in index.ts, exactly
+  // like setBusSwitches. Neither goes through this generic table.
+  | 'busHumanGates'
+  | 'resolveHumanGate'
 >;
 
 /** Served backend methods that are not part of the renderer-facing

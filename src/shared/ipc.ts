@@ -1,5 +1,6 @@
 import type { BusSnapshot, BusRunSummary } from './bus-view.ts';
 import type { BusSwitches } from './bus-switches.ts';
+import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
@@ -128,6 +129,26 @@ export interface OrchestraAPI {
    *  Touches NO run already in flight — a flip is picked up by the next run's
    *  freeze (#118 T118.2). */
   setBusSwitches: (next: Partial<BusSwitches>) => Promise<BusSwitches>;
+
+  // ---- Human-directed decision gates (#161). A gate whose recipient is the
+  //      HUMAN surfaces in the app as a first-class ask (surface A: an inline
+  //      row in the asking workspace; surface B: the sidebar "Asks" section).
+  /** Every OPEN human-directed gate, fleet-wide, oldest first. A READ (in
+   *  BUS_PANE_IPC_CHANNELS); the initial paint. Live updates ride
+   *  {@link onHumanGatesUpdate}. Empty when the bus is down (D1). */
+  busHumanGates: () => Promise<{ gates: HumanGateView[] }>;
+  /** Record the human's ruling on a gate (resolved_by=human) and re-wake its
+   *  asker. NOT a pane channel — a write, registered separately (index.ts), like
+   *  setBusSwitches. Idempotent-by-refusal: an already-resolved gate returns
+   *  `{ ok:false, reason:'not-open' }` and the first ruling stands. */
+  resolveHumanGate: (
+    gateId: number,
+    resolution: string,
+  ) => Promise<HumanGateResolveResult>;
+  /** Live push: the whole open human-gate set, rebuilt from the DB on every bus
+   *  change (so surface A and B stay in sync and backfill==live). Returns an
+   *  unsubscribe fn. */
+  onHumanGatesUpdate: (cb: (gates: HumanGateView[]) => void) => () => void;
 
   // ---- Accounts. Each account is a Claude Code config dir (CLAUDE_CONFIG_DIR)
   //      with its own login. store.json holds only {id, label, configDir} —

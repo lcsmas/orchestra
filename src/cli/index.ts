@@ -818,6 +818,7 @@ async function openBusForVerb(): Promise<{
       openGate: bus.openGate,
       resolveGate: bus.resolveGate,
       getGate: bus.getGate,
+      sendGateResolutionRewake: bus.sendGateResolutionRewake,
       openGatesForRecipient: bus.openGatesForRecipient,
       openGatesForRecipientInRuns: bus.openGatesForRecipientInRuns,
       getRelatedRunIds: busRuns.getRelatedRunIds,

@@ -781,6 +781,66 @@ export function getGate(db: BusDb, gateId: number): BusDecisionGate | null {
     | undefined) ?? null;
 }
 
+/**
+ * Re-wake the ASKER with a resolved gate's ruling (#158, extracted at #161).
+ *
+ * A gate carries no reply message of its own (unlike a `question`, whose answer
+ * threads back and wakes the asker), so a resolved gate would leave its opener
+ * idle with no signal — and for a CROSS-RUN gate the opener would never be woken
+ * at all. Route the resolution as a threaded `decision_gate` message to
+ * `asked_by` IN THE GATE'S RUN (where the opener authored it, so it lands in the
+ * opener's own-run lot), threaded to the gate id. The normal lot wake path (own
+ * ∪ related, #134/#144) then delivers it — one mechanism for same-run and
+ * cross-run shapes, and one for an agent resolve (the CLI verb) and a human
+ * resolve (the #161 UI IPC), which is why this lives here and not in the CLI.
+ *
+ * Caller must have ALREADY resolved the gate (this only sends the reply) and must
+ * NOT call it on an idempotent replay. Pass the gate row read BEFORE the resolve
+ * (asked_by / run_id are immutable once opened).
+ */
+export function sendGateResolutionRewake(
+  db: BusDb,
+  gate: BusDecisionGate,
+  resolvedBy: string,
+  ruling: string,
+): void {
+  if (!gate.asked_by) return;
+  send(db, {
+    runId: gate.run_id,
+    sender: resolvedBy,
+    kind: 'decision_gate',
+    body: ruling,
+    recipient: gate.asked_by,
+    threadId: `gate:${gate.id}`,
+  });
+}
+
+/**
+ * Open gates addressed to `recipient` across the WHOLE bus, oldest first (#161).
+ *
+ * The human sees the ENTIRE fleet's asks, not a related-run subset: unlike an
+ * agent recipient (scoped to its related run set by
+ * {@link openGatesForRecipientInRuns} so it is never woken by a stranger run's
+ * traffic), the app's user is the single top of every tree and every human-
+ * directed gate is theirs to answer. So this is a bare cross-run read, scoped
+ * only by the EXACT recipient (a NULL-recipient gate — addressed to nobody —
+ * never appears, same as the other reads). This is the read behind the #161
+ * "Asks" sidebar tray (surface B) and the per-workspace inline row (surface A
+ * filters this by `asked_by`).
+ */
+export function openGatesForRecipientAllRuns(
+  db: BusDb,
+  recipient: string,
+): BusDecisionGate[] {
+  return db
+    .prepare(
+      `SELECT * FROM decision_gates
+        WHERE recipient=? AND resolved_at IS NULL
+        ORDER BY opened_at, id`,
+    )
+    .all(recipient) as BusDecisionGate[];
+}
+
 /** Every gate of a run still awaiting a Ruling, oldest first. */
 export function openGates(db: BusDb, runId: string): BusDecisionGate[] {
   return db

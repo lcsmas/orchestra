@@ -228,6 +228,17 @@ export interface BusModule {
   /** Read one gate back (#158) — the resolve verb reads it to route the
    *  resolution reply back to the ASKER in the gate's run. */
   getGate(db: BusDb, gateId: number): BusDecisionGate | null;
+  /** Re-wake the asker with a resolved gate's ruling (#158, shared at #161). ONE
+   *  definition for the CLI resolve verb and the #161 UI resolve IPC — a gate
+   *  carries no reply of its own, so this threads a `decision_gate` message to
+   *  `asked_by` in the gate's run. Caller resolves FIRST and passes the pre-resolve
+   *  gate row; never called on an idempotent replay. */
+  sendGateResolutionRewake(
+    db: BusDb,
+    gate: BusDecisionGate,
+    resolvedBy: string,
+    ruling: string,
+  ): void;
   /** Open gates addressed to `recipient` in a SINGLE run (#119) — the CLI's
    *  own-run resolution (`check --run <r>` / `gate list`). */
   openGatesForRecipient(db: BusDb, runId: string, recipient: string): BusDecisionGate[];
@@ -880,14 +891,7 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     // one mechanism for both shapes. Sent only on the resolving call, never on an
     // idempotent replay (which returns without re-running this block).
     if (gateBefore && gateBefore.asked_by) {
-      ctx.bus.send(ctx.db, {
-        runId: gateBefore.run_id,
-        sender: ctx.id.handle,
-        kind: 'decision_gate',
-        body: ruling,
-        recipient: gateBefore.asked_by,
-        threadId: `gate:${gateId}`,
-      });
+      ctx.bus.sendGateResolutionRewake(ctx.db, gateBefore, ctx.id.handle, ruling);
     }
     ctx.out(`resolved ${gateId}\n`);
     return;

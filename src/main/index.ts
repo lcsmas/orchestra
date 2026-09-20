@@ -224,6 +224,12 @@ import { startSandboxAutoBackup } from './sandbox-import';
 import { primeLocalSyncStates, syncAllRepos } from './repo-sync';
 import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue';
 import { reconcileParkedCounts, startInboxWatcher, stopInboxWatcher } from './inbox-tray';
+import {
+  resolveHumanGate,
+  startHumanGatesWatcher,
+  stopHumanGatesWatcher,
+  reconcileHumanGates,
+} from './human-gates';
 import { startSessionWatchdog, stopSessionWatchdog } from './session-watchdog';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -403,6 +409,13 @@ async function createMainWindow() {
   // parked peer messages — including drains done by the inbox shell hook, which
   // the main process never initiates and would otherwise never hear about.
   startInboxWatcher();
+  // Watch the bus DB directory so human-directed decision gates (#161) surface in
+  // the app the moment an agent opens one via `orchestra gate open --to human`
+  // (a CLI write that bypasses the main process), and retract when resolved.
+  // Reconcile once so a gate opened/resolved via the CLI while the app was closed
+  // paints/clears correctly at boot (the DB row is the source of truth).
+  startHumanGatesWatcher();
+  reconcileHumanGates();
   // Re-derive every workspace's parked-inbox count from disk (#88). The counts
   // are persisted, but the inbox FILES are the source of truth and the shell
   // hook drains them without the main process — including while the app was
@@ -732,6 +745,15 @@ handle('bus:setSwitches', async (_e, next: Record<string, boolean>) => {
   return getLiveSwitches();
 });
 
+// #161 — the human's gate RESOLVE, deliberately NOT through registerBusPaneIpc()
+// (that registrar refuses writes): recording the human's ruling is a write, on
+// its own channel like bus:setSwitches. resolveHumanGate() records
+// resolved_by=human and re-wakes the asker via the shared #158 path, then
+// broadcasts the updated open set so surface A and surface B both flip live.
+handle('bus:resolveHumanGate', async (_e, gateId: number, resolution: string) =>
+  resolveHumanGate(Number(gateId), String(resolution ?? '')),
+);
+
 // Frontend-local by design: the native directory picker needs a host window,
 // so it is NOT part of the shared table.
 handle('dialog:pickDir', async () => {
@@ -816,6 +838,7 @@ function shutdownSubsystems(): void {
   stopAccountUsagePolling();
   stopPromptQueueFlusher();
   stopInboxWatcher();
+  stopHumanGatesWatcher();
   stopSessionWatchdog();
   stopSelfTuneScheduler();
   stopHibernationSweeper();
