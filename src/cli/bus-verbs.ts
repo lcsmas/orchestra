@@ -271,6 +271,11 @@ export interface BusModule {
   ): MintedCapability;
   /** #129 — is this clear token an ACTIVE capability for the run? Pure lookup. */
   verifyCapability(db: BusDb, runId: string, token: string): boolean;
+  /** #167 — ROTATE-ON-RETRIEVE: re-mint the recipient's ACTIVE capability's clear
+   *  token IN PLACE and return it, or null if the recipient has no active cap. The
+   *  shipped surface a recipient uses to obtain a usable token (the clear token is
+   *  never stored, so it cannot be re-read — only rotated). */
+  rotateCapabilityForRecipient(db: BusDb, runId: string, recipient: string): string | null;
   /** Idempotent mutation wrapper (#130). Present so a `--request-id` retry of
    *  send/ack/gate-resolve short-circuits to the original receipt when the
    *  gating switch is ON, and merely COUNTS while it is OFF (coexistence). */
@@ -738,6 +743,44 @@ export function verbAsk(ctx: BusVerbCtx, to: string | undefined, question: strin
     threadId: null,
   });
   ctx.out(`${seq}\n`);
+}
+
+// ─── token (#167) ─────────────────────────────────────────────────────────────
+
+/**
+ * `orchestra token` — retrieve THIS workspace's CURRENT active capability token.
+ *
+ * THE SURFACE the recipient uses (canary-6 F-C6-2). Before this, a dispatch's
+ * token printed to the DISPATCHER's stdout only; a member that never received the
+ * relay, or whose first token was superseded by a re-dispatch mid-task, had NO
+ * shipped way to obtain a valid token, and its legitimate `worker_done` was
+ * refused. `token` reads the ONE active capability addressed to the caller and
+ * prints a usable clear token, so the member can `--cap` it on its completion.
+ *
+ * ROTATE-ON-RETRIEVE, not read-back: the clear token is never stored (T129.2), so
+ * it cannot be re-read from the hash. `rotateCapabilityForRecipient` re-mints a
+ * fresh token for the caller's active dispatch IN PLACE (new hash, same seq/state/
+ * recipient) and returns the clear form. This does NOT touch supersession or
+ * fencing — it only ever rotates an ALREADY-active cap's secret. The pre-rotate
+ * token (e.g. a stale one from a superseded dispatch, or the dispatcher's copy)
+ * stops verifying, which is exactly C1: an OLD token at `worker_done` stays
+ * rejected + counted.
+ *
+ * No active capability → a non-zero refusal naming the absence, never a silent
+ * empty print: a member that reads "" as a token would `--cap ` an empty string
+ * and be rejected with a confusing message. The caller identity is the `--as`
+ * handle (default $ORCHESTRA_WS_ID), the same recipient the dispatch addressed.
+ */
+export function verbToken(ctx: BusVerbCtx): void {
+  const token = ctx.bus.rotateCapabilityForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
+  if (token === null) {
+    ctx.fail(
+      `orchestra token: no active dispatch capability for ${ctx.id.handle} in run ${ctx.id.runId} ` +
+        '(nothing was dispatched to you, or your dispatch has completed/been superseded). ' +
+        'A completion needs a token minted by a live dispatch addressed to you.',
+    );
+  }
+  ctx.out(`${token}\n`);
 }
 
 // ─── gate ───────────────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ import {
   verbCheck,
   verbAck,
   verbAsk,
+  verbToken,
   verbGate,
   unknownRunRefusalMessage,
   type BusVerbCtx,
@@ -285,6 +286,12 @@ Usage:
   orchestra ask --to <handle> <question...>      Park a question on the bus for <handle>, print
                                                  its id and EXIT — never waits (the answer comes
                                                  back as an ordinary bus message)
+  orchestra token                                Print YOUR current active dispatch capability
+                                                 token — carry it as --cap on your worker_done
+                                                 (#167). Retrieve it AFTER any re-dispatch: a
+                                                 re-dispatch supersedes your old token, so fetch
+                                                 the current one here rather than reusing a stale
+                                                 one. Fails if nothing is dispatched to you.
   orchestra gate open [--to <h>] <question...>   Open a decision gate awaiting a human Ruling;
                                                  --to <h> addresses (and wakes) that reader until
                                                  it is resolved, and surfaces it in their 'check'
@@ -817,6 +824,7 @@ async function openBusForVerb(): Promise<{
       fencedWrite: bus.fencedWrite,
       mintCapability: bus.mintCapability,
       verifyCapability: bus.verifyCapability,
+      rotateCapabilityForRecipient: bus.rotateCapabilityForRecipient,
       withReceipt: receipts.withReceipt,
       busSwitch: busRuns.busSwitch,
     };
@@ -1708,6 +1716,25 @@ async function main(argv: string[]): Promise<void> {
         // Writes the row, prints the id, RETURNS. No wait — the Bash tool caps
         // at 600s, so a blocking ask would report a false timeout (#108).
         verbAsk(busCtx(db, bus, id, { generation: null, fencingOn: false }), to.value, as.rest.join(' '));
+      } finally {
+        db.close();
+      }
+      return;
+    }
+
+    case 'token': {
+      // #167 — retrieve THIS workspace's current active capability token. A pure
+      // recipient-side rotate: no generation, never fenced (it does not write a
+      // message row and cannot invalidate another coordinator; it only re-mints
+      // the caller's OWN active cap's secret). ROTATE-ON-RETRIEVE, so the clear
+      // token is never at rest (T129.2). --run/--as select the identity, same as
+      // check/ack.
+      const run = takeFlag(args, '--run');
+      const as = takeFlag(run.rest, '--as');
+      const id = busIdentityOrFail({ run: run.value, as: as.value });
+      const { db, bus } = await openBusForVerb();
+      try {
+        verbToken(busCtx(db, bus, id, { generation: null, fencingOn: false }));
       } finally {
         db.close();
       }

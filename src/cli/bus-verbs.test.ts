@@ -17,6 +17,7 @@ import {
   verbCheck,
   verbGate,
   verbSend,
+  verbToken,
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import * as busRuns from '../main/bus-runs.ts';
@@ -111,6 +112,8 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
         fencedWrite: bus.fencedWrite,
         mintCapability: bus.mintCapability,
         verifyCapability: bus.verifyCapability,
+        // #167 — the recipient-side token retrieval (rotate-on-retrieve).
+        rotateCapabilityForRecipient: bus.rotateCapabilityForRecipient,
         // #130 receipts + the frozen-flag reader. busSwitch is stubbed to the
         // rig's `switchOn` so a test drives both coexistence arms without a run
         // row (the production reader is gated in bus-runs.test.ts).
@@ -1102,6 +1105,122 @@ test('#165 arm 4: OFF-run coexistence — a status passes untokened and is NOT c
   // not the whole OFF path.
   verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, body: 'no-cap done' });
   assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'a real completion divergence STILL counts under OFF');
+});
+
+// ─── #167 `orchestra token` — recipient-side token retrieval ─────────────────
+// The canary-6 F-C6-2 failure: a member could not obtain a usable token (the clear
+// token prints to the DISPATCHER only, the DB holds only a hash), so a legitimate
+// completion after a re-dispatch was refused. `verbToken` rotates-on-retrieve: it
+// re-mints the caller's ACTIVE cap's clear token IN PLACE and prints it.
+//
+// Read the resolved module path once so the arms provably drive the CHANGED bus.ts
+// (a test over an unchanged module would pass on master — #132).
+test('#167 arms drive the SHIPPED bus.ts (module path)', () => {
+  const resolved = import.meta.resolve('../main/bus.ts');
+  assert.match(resolved, /src\/main\/bus\.ts$/, `bus.ts resolved to ${resolved}`);
+  assert.equal(typeof bus.rotateCapabilityForRecipient, 'function', 'the #167 helper is present');
+});
+
+test('#167 acceptance 2: a recipient retrieves its ACTIVE token via `orchestra token`', (t) => {
+  // COVERS: verbToken + bus.rotateCapabilityForRecipient. PRE-FIX there is no
+  // surface at all (no verb); POST-FIX the recipient gets a dcap token that
+  // VERIFIES as its active capability. THE MUTANT: make
+  // rotateCapabilityForRecipient return null unconditionally → verbToken fails and
+  // this arm reddens (no token printed).
+  const r = rig(t);
+  const dispatched = dispatchAndCap(r, 'w1'); // OPS dispatched w1; token went to OPS' stdout
+  const before = r.out.length;
+  verbToken(r.ctx('w1')); // w1 retrieves ITS token
+  const printed = r.out.slice(before).join('').trim();
+  assert.match(printed, /^dcap_[0-9a-f]{64}$/, 'token verb prints a dcap token');
+  assert.equal(bus.verifyCapability(r.db, RUN, printed), true, 'the retrieved token verifies as active');
+  // Rotate-on-retrieve: the token the DISPATCHER held is now rotated OUT, so it no
+  // longer verifies. This is the whole point — the recipient uses the fresh one.
+  assert.notEqual(printed, dispatched, 'retrieve rotates the secret');
+  assert.equal(bus.verifyCapability(r.db, RUN, dispatched), false, 'the pre-rotate (dispatcher) token no longer verifies');
+});
+
+test('#167 acceptance 1: re-dispatch → complete with CURRENT token = ACCEPTED, OLD = rejected+counted (cap=ON)', (t) => {
+  // COVERS the LIVE case (a): a re-dispatch superseded the member's first token; a
+  // completion with the CURRENT (retrieved) token must be ACCEPTED, and a
+  // completion with the OLD (pre-re-dispatch or pre-rotate) token must stay
+  // REJECTED + COUNTED. THE MUTANT: verbToken/rotate that returns the STALE cap's
+  // token (e.g. drop the state='active' filter) → the accepted-arm reddens because
+  // the retrieved token would not verify.
+  const r = rig(t);
+  r.setCapabilityEnabled(true); // capability=ON — the mechanism FIRES
+  const first = dispatchAndCap(r, 'w1'); // dispatch 1 — the member's original token
+  dispatchAndCap(r, 'w1'); // RE-DISPATCH (dispatch 2) supersedes dispatch 1
+  assert.equal(bus.verifyCapability(r.db, RUN, first), false, 'the original token is superseded');
+
+  // The member retrieves its CURRENT active token via the shipped surface.
+  const beforeOut = r.out.length;
+  verbToken(r.ctx('w1'));
+  const current = r.out.slice(beforeOut).join('').trim();
+  assert.match(current, /^dcap_[0-9a-f]{64}$/);
+  assert.notEqual(current, first, 'the current token is not the superseded original');
+
+  // Completing with the OLD (superseded original) token → REJECTED + COUNTED.
+  const msgsBefore = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n;
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: first, body: 'old-token done' }),
+    /worker_done rejected — the token is not an active capability/,
+  );
+  assert.equal(
+    (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n,
+    msgsBefore,
+    'the old-token completion did not land',
+  );
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'the old-token completion is COUNTED (C1 core intact)');
+
+  // Completing with the CURRENT (retrieved) token → ACCEPTED, and NOT counted.
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: current, body: 'current done' });
+  const landed = (r.db.prepare("SELECT body FROM messages WHERE kind='worker_done'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(landed, ['current done'], 'the current-token completion is authoritative');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'the accepted completion adds no divergence');
+});
+
+test('#167: `orchestra token` with NO active capability is a NON-SILENT refusal', (t) => {
+  // COVERS: the null branch of verbToken. A member with nothing dispatched to it
+  // must get a clear refusal, not an empty print it would `--cap ` blindly. THE
+  // MUTANT: make verbToken print '' instead of fail() on null → this reddens
+  // (fails.length 0, and an empty string printed).
+  const r = rig(t);
+  assert.throws(
+    () => verbToken(r.ctx('nobody')),
+    /orchestra token: no active dispatch capability for nobody/,
+  );
+  assert.equal(r.fails.length, 1, 'the absence is reported, not swallowed');
+  // A superseded (no-longer-active) recipient is the same case: nothing active.
+  const only = dispatchAndCap(r, 'w2');
+  dispatchAndCap(r, 'w2'); // supersede w2's first cap; still ONE active for w2
+  // w2 DOES have an active cap (the 2nd), so token succeeds — control that the
+  // refusal is specifically "no active cap", not "any supersession happened".
+  const beforeOut = r.out.length;
+  verbToken(r.ctx('w2'));
+  const tok = r.out.slice(beforeOut).join('').trim();
+  assert.match(tok, /^dcap_[0-9a-f]{64}$/, 'w2 still has an active cap and can retrieve it');
+  assert.notEqual(tok, only);
+});
+
+test('#167 acceptance 3: token retrieval does NOT touch the rejection counter (aggregate table)', (t) => {
+  // COVERS: rotate-on-retrieve is a READ-adjacent op — it must not increment the
+  // capability_rejections shadow counter. Assert via capabilityRejectCount (SELECT
+  // count) NOT COUNT(*) on the table — capability_rejections is a (run_id, count)
+  // AGGREGATE, so COUNT(*) would count KEYS not events (#memory trap). THE MUTANT:
+  // if verbToken erroneously called countCapabilityReject, this reddens.
+  const r = rig(t);
+  r.setCapabilityEnabled(true);
+  dispatchAndCap(r, 'w1');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'counter starts at 0');
+  verbToken(r.ctx('w1'));
+  verbToken(r.ctx('w1')); // rotate twice — still no divergence
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'a successful retrieval is not a divergence');
+  // And the table has AT MOST one row per run even after activity — the aggregate
+  // shape acceptance 3 pins.
+  const rowCount = (r.db.prepare('SELECT COUNT(*) AS n FROM capability_rejections').get() as { n: number }).n;
+  assert.ok(rowCount <= 1, 'capability_rejections is (run_id, count) aggregate — at most one row per run');
 });
 
 // ─── #130 mutation receipts through the CLI verbs ────────────────────────────

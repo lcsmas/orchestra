@@ -1505,6 +1505,10 @@ under capability=ON; a `--cap` on a status is accepted but ignored (attribution)
   same tx, returns the CLEAR token), `verifyCapability` (pure predicate),
   `failCapability`, `supersedeCapabilities`, `countCapabilityReject`,
   `capabilityRejectCount`, `getCapabilityByToken`.
+  - **#167:** `getActiveCapabilityForRecipient` (the ONE active cap for
+    `(run, recipient)`, or null) and `rotateCapabilityForRecipient` (re-mint that
+    cap's token IN PLACE, return the clear token, or null) — back the `orchestra
+    token` verb. See "`orchestra token`" below.
 
 ### The token is NEVER stored/logged/rendered in clear (T129.2)
 
@@ -1544,6 +1548,48 @@ neutrally ("superseded by a newer dispatch … or marked failed"), not "stale/hu
 yet — the "failed dispatch" half is unwired; supersede-via-redispatch is the live
 path. Do not wire a new producer until the §Open-questions Q3 ruling.
 
+### `orchestra token` — recipient-side token retrieval, ROTATE-ON-RETRIEVE (#167)
+
+The token minted at dispatch prints to the **dispatcher's** stdout only, and the
+DB holds solely its sha256 **hash** (T129.2) — so it is UNRECOVERABLE. Operationally
+(canary-6 F-C6-2) this stranded legit workers two ways: a member never received
+the relay, or its first token was **superseded** by a re-dispatch mid-task, and it
+had NO shipped way to obtain a valid token, so its legitimate `worker_done` was
+refused. Interim crutch: OPS manually re-relayed the latest token on every dispatch.
+
+`orchestra token` (`verbToken`, `src/cli/bus-verbs.ts`; `case 'token'`,
+`src/cli/index.ts`) is the shipped surface. Because the clear token cannot be
+re-read from the hash, retrieval **rotates**: `rotateCapabilityForRecipient`
+(`src/main/bus.ts`) finds the caller's ONE active cap for `(run, --as handle)`,
+generates a fresh `dcap_<32B>`, overwrites `token_hash` **in place** for that same
+`dispatch_seq`, and returns the CLEAR token. So nothing durable ever holds a clear
+token — T129.2 is FULLY preserved (no new column, no schema/migration change).
+
+- **Surface choice (rule-10 seam):** a NEW verb, NOT a field on `check`'s
+  `CheckOutput` — that contract (#123) is shared with #168, and a verb keeps the
+  retrieval isolated and explicit. `gate list` was rejected (wrong concept).
+- **(a) is solved BY (b):** supersession is UNTOUCHED. A re-dispatch still
+  supersedes the old cap (and a stale coordinator's re-dispatch still invalidates —
+  fencing #128 gates the dispatch write), which is the mechanism's whole point.
+  The member simply runs `orchestra token` AFTER a re-dispatch to get the current
+  token, and completes with THAT. No supersession-semantics change was needed.
+- **C1 core intact:** the pre-rotate token (the dispatcher's copy, or a superseded
+  one) stops hashing to the stored value, so a `worker_done` carrying it stays
+  REJECTED + COUNTED. `rotate` only ever touches an ALREADY-`active` cap (a
+  `state='active'` filter on both the SELECT and the UPDATE) — it never resurrects
+  a superseded row, never creates one, never touches state/seq/recipient.
+- **Auth model:** the caller identity is `--as` (default `$ORCHESTRA_WS_ID`), same
+  as `check`/`ack`. `--as` spoofing is not the threat #129 addresses (stale/
+  superseded completions are), so no new auth is added. No active cap → a non-zero
+  refusal naming the absence (never a silent empty print a member would `--cap `).
+- **CAVEAT (documented):** each call rotates, so an EARLIER retrieved token is
+  invalidated by a LATER one. A member retrieves once, immediately before
+  `worker_done`; concurrent retrieves race, the loser's token is stale — the same
+  ≤1-outstanding-per-recipient assumption the whole mechanism rests on.
+- **Fleet token-discipline change:** once this ships the fleet switches from
+  "worker_done carries the RELAYED token" to "recipient retrieves via `orchestra
+  token`". The manual OPS re-relay crutch is retired.
+
 ### The `capability` switch + pane listing (RULING D1)
 
 `capability` is a 5th `BusMechanism` in `src/shared/bus-switches.ts` (camel key ==
@@ -1571,6 +1617,15 @@ node --test --experimental-strip-types src/cli/bus-verbs.test.ts   # CLI seam + 
 Mutation arms shown RED live: `verbSend` reject clause forced off (T129.1
 must-FAIL goes red), `verifyCapability` `state==='active'` → `!=null` (supersede
 test red), `countCapabilityReject` call dropped (T129.3 counter red).
+
+**#167 mutation arms** (`bus.test.ts` + `bus-verbs.test.ts`), each verified to
+redden its named arm: `rotateCapabilityForRecipient` returns null unconditionally
+→ acceptance 1/2/3 + refusal-control red; drop the `state='active'` filter (rotate
+targets a superseded row) → acceptance 1 (the discriminator) red; `verbToken`
+erroneously calls `countCapabilityReject` → acceptance 1 + 3 (counter) red. The
+runtime half (shipped `dist-electron/cli.js` under an isolated `ORCHESTRA_HOME`,
+never the live bus) proves `token` rotates on each call and refuses with rc=1 when
+no active cap exists.
 
 ---
 

@@ -17,6 +17,7 @@ import {
   countCapabilityReject,
   failCapability,
   generateCapabilityToken,
+  getActiveCapabilityForRecipient,
   getCapabilityByToken,
   getGate,
   hashCapabilityToken,
@@ -27,6 +28,7 @@ import {
   openGate,
   openGates,
   resolveGate,
+  rotateCapabilityForRecipient,
   schemaVersion,
   send,
   supersedeCapabilities,
@@ -939,6 +941,69 @@ test('#129: getCapabilityByToken round-trips by clear token and returns null for
   assert.equal(row.dispatch_seq, seq);
   assert.equal(row.state, 'active');
   assert.equal(getCapabilityByToken(db, RUN, generateCapabilityToken()), null);
+});
+
+test('#167 getActiveCapabilityForRecipient returns the ONE active cap, or null', (t) => {
+  const db = tmpBus(t);
+  assert.equal(getActiveCapabilityForRecipient(db, RUN, 'w1'), null, 'no dispatch → null');
+  const s1 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'a', recipient: 'w1' });
+  mintCapability(db, RUN, s1, 'w1');
+  const active = getActiveCapabilityForRecipient(db, RUN, 'w1');
+  assert.ok(active);
+  assert.equal(active.dispatch_seq, s1);
+  assert.equal(active.state, 'active');
+  // After a re-dispatch (supersede), the ACTIVE one is the NEW seq, not the old.
+  const s2 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'b', recipient: 'w1' });
+  mintCapability(db, RUN, s2, 'w1');
+  assert.equal(getActiveCapabilityForRecipient(db, RUN, 'w1')!.dispatch_seq, s2, 'the active cap follows the re-dispatch');
+});
+
+test('#167 rotateCapabilityForRecipient re-mints the active cap IN PLACE, invalidating the old token', (t) => {
+  const db = tmpBus(t);
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'go', recipient: 'w1' });
+  const minted = mintCapability(db, RUN, seq, 'w1');
+  assert.equal(verifyCapability(db, RUN, minted.token), true, 'the dispatch token is active');
+
+  const rotated = rotateCapabilityForRecipient(db, RUN, 'w1');
+  assert.match(rotated!, /^dcap_[0-9a-f]{64}$/, 'rotate returns a fresh clear token');
+  assert.notEqual(rotated, minted.token, 'the fresh token differs from the minted one');
+  // The rotated token verifies; the OLD (pre-rotate) token no longer does — this
+  // is the C1-preserving property (an old token at worker_done stays rejected).
+  assert.equal(verifyCapability(db, RUN, rotated!), true, 'the rotated token is now the active one');
+  assert.equal(verifyCapability(db, RUN, minted.token), false, 'the pre-rotate token no longer verifies');
+
+  // Rotate does NOT change the cap's identity (seq) or its state, and there is
+  // still exactly ONE active row — supersession/fencing are untouched. THE MUTANT:
+  // if rotate INSERTed a new row instead of UPDATE-in-place, this reads 2.
+  const rows = db
+    .prepare("SELECT dispatch_seq, state FROM dispatch_capabilities WHERE run_id=? AND recipient='w1'")
+    .all(RUN) as Array<{ dispatch_seq: number; state: string }>;
+  assert.equal(rows.length, 1, 'rotate is IN PLACE — no extra row');
+  assert.equal(rows[0].dispatch_seq, seq, 'same dispatch_seq');
+  assert.equal(rows[0].state, 'active', 'still active');
+
+  // No active cap → null (nothing to rotate). A superseded recipient with no live
+  // dispatch returns null, so the CLI can report the absence.
+  assert.equal(rotateCapabilityForRecipient(db, RUN, 'nobody'), null);
+});
+
+test('#167 rotate does NOT resurrect a superseded cap — it only ever touches the ACTIVE one', (t) => {
+  const db = tmpBus(t);
+  const s1 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'a', recipient: 'w1' });
+  const m1 = mintCapability(db, RUN, s1, 'w1');
+  const s2 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'b', recipient: 'w1' });
+  mintCapability(db, RUN, s2, 'w1'); // supersedes s1
+  assert.equal(verifyCapability(db, RUN, m1.token), false, 's1 is superseded');
+
+  const rotated = rotateCapabilityForRecipient(db, RUN, 'w1')!;
+  // The rotate targeted the ACTIVE (s2) cap — verify it and confirm s1 stays dead.
+  assert.equal(getActiveCapabilityForRecipient(db, RUN, 'w1')!.dispatch_seq, s2);
+  assert.equal(verifyCapability(db, RUN, rotated), true, 'the rotated token is the active (s2) one');
+  assert.equal(verifyCapability(db, RUN, m1.token), false, 's1 stays superseded — not resurrected');
+  const superseded = db
+    .prepare("SELECT COUNT(*) AS n FROM dispatch_capabilities WHERE run_id=? AND recipient='w1' AND state='superseded'")
+    .get(RUN) as { n: number };
+  assert.equal(superseded.n, 1, 'the superseded row is untouched');
 });
 
 // ─── #144 recipient-scoped check() + the shared predicate ────────────────────
