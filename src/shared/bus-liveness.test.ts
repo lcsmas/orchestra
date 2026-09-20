@@ -32,6 +32,7 @@ function staleMember(over: Partial<MemberLivenessState> = {}): MemberLivenessSta
     appStartedAt: APP_START,
     running: false,
     waiting: false,
+    doneAndReleased: false,
     ...over,
   };
 }
@@ -112,6 +113,104 @@ test('WAITING member excluded regardless of silence — skip waiting (T120.4)', 
   );
   assert.equal(a.kind, 'skip');
   assert.equal(a.kind === 'skip' && a.why, 'waiting');
+});
+
+// ── #160: the done-released exclusion, all 4 acceptance arms ──────────────────
+//
+// The discriminator is TASK STATE (`doneAndReleased`), never mail. Each arm names
+// the mutant it kills and pairs with a same-command control so a policy that
+// never/always escalates cannot pass it.
+
+test('#160 arm 1: done+released+idle+silent → skip done-released (NO escalation)', () => {
+  // The pre-fix bug: a cleanly-finished member (done, released, idle, silent 11m,
+  //   ZERO mail) tripped the staleness clock exactly like a stall — the 5-burst at
+  //   canary-5 wave end (F-C5-5).
+  // MUTANT: remove the `m.doneAndReleased` guard → this member escalates (the
+  //   pre-fix behaviour). With the guard it skips as `done-released`.
+  const a = decideEscalation(
+    staleMember({ doneAndReleased: true, lastActivityAt: NOW - 30 * 60 * 1000 }),
+    undefined,
+    NOW,
+    true,
+  );
+  assert.equal(a.kind, 'skip', 'a finished member must not escalate');
+  assert.equal(a.kind === 'skip' && a.why, 'done-released');
+});
+
+test('#160 arm 1 control: an OTHERWISE-IDENTICAL member NOT released → escalates', () => {
+  // Same fields as arm 1 but `doneAndReleased: false` — proves the exclusion keys
+  // on TASK STATE, not on the silence/idleness both members share. Without this
+  // control, arm 1 would also pass on a policy that never escalates anything.
+  const a = decideEscalation(
+    staleMember({ doneAndReleased: false, lastActivityAt: NOW - 30 * 60 * 1000 }),
+    undefined,
+    NOW,
+    true,
+  );
+  assert.equal(a.kind, 'escalate', 'an un-released silent member still escalates');
+});
+
+test('#160 arm 2: ZOMBIE (dispatched, never started, no mail, NOT released) → STILL escalates', () => {
+  // The true positive that must survive the exclusion: canary-5's real zombie
+  //   catch (831dc078) had a dispatched-never-started task and ZERO bus mail. The
+  //   discriminator being TASK STATE (not empty-inbox) is exactly what keeps this
+  //   RED: a never-started task never reaches done+released, so `doneAndReleased:
+  //   false` and it escalates.
+  // MUTANT: gate the exclusion on "no pending mail" instead of task state → this
+  //   zombie (no mail) would be wrongly excluded. `doneAndReleased: false` keeps it
+  //   escalating regardless of mail.
+  const zombie = staleMember({
+    doneAndReleased: false,
+    running: false,
+    waiting: false,
+    // never started ⇒ no host activity this run; floored old ⇒ silent past bound
+    lastActivityAt: NOW - 60 * 60 * 1000,
+  });
+  const a = decideEscalation(zombie, undefined, NOW, true);
+  assert.equal(a.kind, 'escalate', 'a dispatched-never-started zombie must STILL escalate');
+  assert.equal(a.kind === 'escalate' && a.reader, 'ws-worker');
+});
+
+test('#160 arm 3: STALLED (started, mid-task, silent 10m+) → STILL escalates, released or not', () => {
+  // A genuinely stalled member — started work, then went silent past the bound —
+  //   must still escalate. It has `doneAndReleased: false` (it never finished), so
+  //   the guard does not touch it. Pending mail is irrelevant (task state, not mail).
+  const stalled = staleMember({
+    doneAndReleased: false,
+    lastActivityAt: NOW - 15 * 60 * 1000,
+  });
+  const a = decideEscalation(stalled, undefined, NOW, true);
+  assert.equal(a.kind, 'escalate', 'a mid-task stall must STILL escalate');
+});
+
+test('#160 arm 4: WAITING (open ask/gate) exclusion is UNCHANGED by the done-released guard', () => {
+  // The pre-existing `waiting` exclusion must survive: a member parked on an ask
+  //   is still skipped as `waiting`, not mis-labelled. `doneAndReleased: false`
+  //   here proves the two exclusions are independent — the waiting path is reached
+  //   exactly as before (the done-released guard sits above it but does not fire).
+  const a = decideEscalation(
+    staleMember({ waiting: true, doneAndReleased: false, lastActivityAt: 0 }),
+    undefined,
+    NOW,
+    true,
+  );
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'waiting', 'waiting exclusion unchanged');
+});
+
+test('#160: done-released is checked BEFORE the staleness clock (order)', () => {
+  // A done+released member with an arbitrarily OLD clock must skip as
+  //   `done-released`, never fall through to `escalate` on the wall clock — the
+  //   guard order (done-released before fresh/stale) is what this asserts. MUTANT:
+  //   move the guard AFTER the staleness test → an old-clocked finished member
+  //   escalates before the exclusion is reached.
+  const a = decideEscalation(
+    staleMember({ doneAndReleased: true, lastActivityAt: 0 }),
+    undefined,
+    NOW,
+    true,
+  );
+  assert.equal(a.kind === 'skip' && a.why, 'done-released');
 });
 
 // ── The staleness bound itself, both sides ───────────────────────────────────

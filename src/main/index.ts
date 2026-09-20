@@ -189,6 +189,8 @@ import {
   stopBusLiveness,
   setLivenessRoster,
   setLivenessWaiting,
+  setLivenessReleased,
+  readReleasedReaders,
   type LivenessMember,
 } from './bus-liveness';
 import { getLastActivity, getAppStartedAt, getInFlightTools } from './hibernation-activity';
@@ -526,6 +528,15 @@ async function createMainWindow() {
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's
   // predicate. The seam type was pre-aligned to this exact signature.
   setLivenessWaiting(readWaitingReaders);
+  // #160: exclude a member whose TASK reached done+released (it SENT a
+  // `worker_done` AND was not since re-tasked) from staleness — a finished member
+  // is idle-and-drained on purpose, so escalating it is the dead-vs-slow trap on
+  // the DONE axis (canary-5 F-C5-5, the 5-burst at wave end). This is a POSITIVE
+  // task-state marker, NEVER empty-inbox/mail: the true zombie (dispatched, never
+  // started, never sent worker_done) is NOT in this set and STILL escalates. The
+  // set ORs on top of each member's own `doneAndReleased` (currently unset in the
+  // roster — the durable bus signal is authoritative here).
+  setLivenessReleased(readReleasedReaders);
   startBusLiveness();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a

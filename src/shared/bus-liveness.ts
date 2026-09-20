@@ -121,6 +121,22 @@ export interface MemberLivenessState {
    *  needs-input `waiting` status, OR #119's bus `waiting` (an asker parked on an
    *  open ask/gate). Either way it is excluded from staleness (acceptance/T120.4). */
   waiting: boolean;
+  /** #160: True when this member's TASK reached an explicit DONE-AND-RELEASED
+   *  state — it reported done AND its coordinator released it. A finished member
+   *  is idle-and-drained ON PURPOSE (its work landed), so its silence is expected,
+   *  exactly like `waiting` — escalating it is the dead-vs-slow trap on the DONE
+   *  axis (a cleanly-finished member trips the staleness clock identically to a
+   *  stalled one; canary-5 F-C5-5, the 5-escalation burst at wave end).
+   *
+   *  ## Why this is TASK STATE, never mail (the hard constraint)
+   *
+   *  The discriminator is a POSITIVE completion marker, NOT empty-inbox /
+   *  unacked-mail. Canary-5's TRUE zombie catch (a ticket-less workspace with a
+   *  dispatched-never-started task) had ZERO bus mail and MUST stay escalated — so
+   *  gating on "no pending mail" would have EATEN that true positive. A member is
+   *  excluded here ONLY when it positively reached done+released; a zombie that
+   *  never started never reaches it, so `false` for it, and it escalates. */
+  doneAndReleased: boolean;
   /** Liveness v2 (#127): EVERY tool call currently in flight for this member
    *  (empty when none is running). Host-derived from `applyAgentEvent`'s
    *  `pretool`/`posttool` chokepoint (no new probe). A LIST, not one slot, because
@@ -168,6 +184,7 @@ export type EscalationAction =
 export type EscalationSkip =
   | 'no-task' // not a dispatched member
   | 'no-coordinator' // nobody to escalate to
+  | 'done-released' // task reached done+released — finished on purpose (#160)
   | 'running' // a turn is in flight AND making progress — alive (the anti-trap)
   | 'waiting' // parked on an ask / needs-input — silent on purpose
   | 'fresh' // activity within the threshold — alive
@@ -199,22 +216,33 @@ export interface EscalationLedgerEntry {
  * Guard order is deliberate and each guard's disproof is a distinct skip reason:
  *   1. no dispatched task  → not a fleet member
  *   2. no coordinator      → nobody to escalate to
- *   3. running             → a turn is in flight AND making progress: ALIVE
+ *   3. done-released       → task reached done+released: FINISHED on purpose,
+ *                            idle-and-drained by design (#160, canary-5 F-C5-5).
+ *                            Checked here — a POSITIVE task-state marker, never
+ *                            mail — so a cleanly-finished member is excluded while
+ *                            a zombie (dispatched, never started, `doneAndReleased:
+ *                            false`) still falls through to escalation (arm 2).
+ *   4. running             → a turn is in flight AND making progress: ALIVE
  *                            (acceptance 2 anti-trap). BUT a running member whose
  *                            in-flight tool call has blown its per-tool-class
  *                            ceiling with ZERO progress is HUNG (#127) and falls
  *                            through to escalation — this is the progress bound.
- *   4. waiting             → parked on purpose (T120.4)
- *   5. fresh               → activity within STALE_AFTER_MS: ALIVE
- *   6. already-escalated   → one per silence (acceptance 1)
- * Only past all six does it escalate (or count, switch-gated).
+ *   5. waiting             → parked on purpose (T120.4)
+ *   6. fresh               → activity within STALE_AFTER_MS: ALIVE
+ *   7. already-escalated   → one per silence (acceptance 1)
+ * Only past all seven does it escalate (or count, switch-gated).
  *
- * `running`/`waiting` are checked BEFORE the wall-clock staleness test on
- * purpose: a member that is running or waiting is alive/parked no matter how old
- * its discrete activity stamp is, and testing the clock first would let a
- * slow-but-live 8-min build fall through to `escalate` (the exact trap). The
- * #127 progress bound is checked INSIDE the running guard so it applies ONLY to
- * a running member (a not-running member is caught by the staleness clock below).
+ * `done-released`/`running`/`waiting` are checked BEFORE the wall-clock staleness
+ * test on purpose: a member that is finished, running or waiting is
+ * finished/alive/parked no matter how old its discrete activity stamp is, and
+ * testing the clock first would let a finished member (or a slow-but-live 8-min
+ * build) fall through to `escalate` (the exact dead-vs-slow trap, on the DONE and
+ * the RUNNING axis respectively). `done-released` is checked BEFORE `running`
+ * because a finished member's completion is authoritative over a stale/racy
+ * status flag — the two never co-occur in practice (released ⇒ idle), and on the
+ * DONE axis "finished" must win. The #127 progress bound is checked INSIDE the
+ * running guard so it applies ONLY to a running member (a not-running member is
+ * caught by the staleness clock below).
  */
 export function decideEscalation(
   m: MemberLivenessState,
@@ -224,6 +252,11 @@ export function decideEscalation(
 ): EscalationAction {
   if (!m.hasTask) return { kind: 'skip', reader: m.reader, why: 'no-task' };
   if (!m.coordinator) return { kind: 'skip', reader: m.reader, why: 'no-coordinator' };
+  // #160: a task that reached done+released is FINISHED — idle-and-drained on
+  // purpose. Excluded here on a POSITIVE task-state marker (never mail), so a
+  // cleanly-finished member never escalates (arm 1) while a zombie that never
+  // reached done+released (`doneAndReleased: false`) still does (arm 2).
+  if (m.doneAndReleased) return { kind: 'skip', reader: m.reader, why: 'done-released' };
   const coordinator = m.coordinator;
   // ANTI-TRAP + #127 progress bound: a turn in flight is alive regardless of the
   // discrete clock's age — UNLESS its in-flight tool call has exceeded its
