@@ -43,6 +43,8 @@ import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
 import { QueueTray } from './agent/QueueTray';
 import { InboxTray } from './agent/InboxTray';
+import { AskRow } from './agent/AskRow';
+import type { HumanGateView } from '../../shared/human-gates';
 import { resolveInboxReDerive, type InboxBlock } from '../../shared/inbox-blocks';
 import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
@@ -1252,6 +1254,7 @@ const ALWAYS_COMMANDS = ['clear', 'compact', 'mcp'];
 
 /** Stable empty list for the inbox selector — see the note at its use site. */
 const EMPTY_BLOCKS: InboxBlock[] = [];
+const EMPTY_GATES: HumanGateView[] = [];
 
 function Composer({
   session,
@@ -1296,6 +1299,17 @@ function Composer({
   // on every agent:tool tick. EMPTY_BLOCKS is a module constant, not a fresh
   // `[]`, because a new array identity every render would defeat the memo.
   const parkedInbox = useStore((s) => s.parkedInbox[workspaceId]) ?? EMPTY_BLOCKS;
+  // Open human-directed gates (#161) THIS workspace's agent opened — surface A.
+  // Subscribe to the whole fleet slice (it changes only on a gate open/resolve,
+  // not on the hot agent:tool tick) and filter to this workspace by `askedBy`
+  // (the gate's asker IS a workspace id; run_id is the wave anchor, not the
+  // asker). useMemo keeps the filtered array identity stable so AskRow's rows
+  // don't remount every composer paint.
+  const allHumanGates = useStore((s) => s.humanGates);
+  const humanGates = useMemo(
+    () => allHumanGates.filter((g) => g.askedBy === workspaceId),
+    [allHumanGates, workspaceId],
+  );
   // The tray must RE-DERIVE from the on-disk file, never trust the cached parse
   // (issue #91). The `inbox:update` retract path (main's directory watcher →
   // `count:0`) is the fast path, but `fs.watch` is best-effort and drops events
@@ -1760,6 +1774,16 @@ function Composer({
 
   return (
     <div className="av-composer">
+      {/* Human-directed decision gates this workspace's agent opened (#161,
+          surface A). ABOVE everything else in the composer: a fleet question
+          awaiting the human's ruling is the highest-priority thing here — it is
+          blocking an agent — yet it stays a quiet amber row, never a modal. */}
+      <AskRow
+        gates={humanGates}
+        onResolve={(gateId, resolution) =>
+          void window.orchestra.resolveHumanGate(gateId, resolution)
+        }
+      />
       {/* Peer messages parked on disk while this workspace was unreachable
           (issue #64). Above the queue because they arrived BEFORE anything the
           user has queued, so the strip reads oldest-first top-down. */}

@@ -20,6 +20,7 @@ import {
 } from '../../shared/dnd-drop-target';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
+import { AsksSection } from './AsksSection';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import { QueueStallBadge } from './QueueStallBadge';
 import { RowActionsPopover, useRowActionsPopover } from './RowActionsPopover';
@@ -804,6 +805,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     tickets,
     removeTicket,
     spawnFromTicket,
+    humanGates,
     tools,
     repoSync,
     setActive,
@@ -1907,6 +1909,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             {renderSpawnTreeRows(orchestratorTrees, 'orchestrator')}
           </div>
         )}
+        {/* Asks — fleet decision gates addressed to the HUMAN (#161, surface B),
+            aggregated across every workspace. Above Tickets: an agent is BLOCKED
+            waiting on the human's ruling, which outranks not-yet-started work. A
+            row deep-links to the asking workspace, where surface A's inline row
+            answers it. Section vanishes when empty. */}
+        <AsksSection gates={humanGates} onOpen={(wsId) => wsId && setActive(wsId)} />
         {/* Tickets — Linear issues pinned into the sidebar, i.e. work that has
             NOT started yet, sitting above the running sections as a queue. A
             ticket that has a workspace has "graduated": it drops out of here

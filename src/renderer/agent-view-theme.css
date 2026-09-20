@@ -3299,6 +3299,78 @@ h6.av-md-h {
   background: color-mix(in srgb, var(--av-error) 14%, transparent);
 }
 
+/* ── Human-directed decision gates — surface A inline ask row (#161) ─────────
+   A fleet question routed to the human, docked above the composer in the
+   asking workspace. Same AMBER `--av-warn` "needs your attention, nothing is
+   broken" register as the inbox tray and wake rows — deliberately NOT a modal
+   steal. A stronger tint once it has aged past the threshold (visible nudge,
+   ticket req 3). Everything routes through --av-* tokens, no raw hex. */
+.av-ask-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.av-ask {
+  padding: 11px 13px 12px;
+  background: var(--av-surface-sunken);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 34%, transparent);
+  border-left: 3px solid var(--av-warn);
+  border-radius: var(--av-radius-lg, 10px);
+}
+/* Aged gate: brighter frame, so a long wait reads at a glance without stealing
+   focus. Keyed on a class the component sets from the shared 15-min threshold. */
+.av-ask-old {
+  border-color: color-mix(in srgb, var(--av-warn) 60%, transparent);
+  background: color-mix(in srgb, var(--av-warn) 7%, var(--av-surface-sunken));
+}
+.av-ask-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: var(--av-fs-small);
+}
+.av-ask-bell { flex: none; display: inline-flex; color: var(--av-warn); }
+.av-ask-eyebrow {
+  flex: none; font-weight: 700; text-transform: uppercase;
+  font-size: 10px; letter-spacing: 0.07em; color: var(--av-warn);
+}
+.av-ask-from {
+  color: var(--av-text-faint); font-family: var(--av-mono); font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.av-ask-spacer { flex: 1; }
+.av-ask-age {
+  flex: none; color: var(--av-text-faint); font-size: 10px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.av-ask-old .av-ask-age { color: var(--av-warn); font-weight: 600; }
+.av-ask-clock { opacity: 0.75; }
+.av-ask-q {
+  font-size: 14px; font-weight: 600; line-height: 1.45;
+  color: var(--av-text); margin-bottom: 10px;
+}
+.av-ask-reply { display: flex; gap: 8px; align-items: stretch; }
+.av-ask-reply-input {
+  flex: 1; min-width: 0; padding: 7px 11px;
+  font: inherit; font-size: 12px; font-family: var(--av-mono);
+  color: var(--av-text); background: var(--av-surface);
+  border: 1px solid var(--av-hairline-strong); border-radius: 8px;
+}
+.av-ask-reply-input::placeholder { color: var(--av-text-faint); }
+.av-ask-reply-input:focus-visible {
+  outline: none;
+  border-color: var(--av-focus-border);
+  box-shadow: 0 0 0 3px var(--av-focus-ring);
+}
+.av-ask-send {
+  flex: none; padding: 0 14px;
+  font: inherit; font-size: 12px; font-weight: 600;
+  border-radius: 8px; cursor: pointer;
+  color: var(--av-assistant-ink); background: var(--av-warn);
+  border: 1px solid var(--av-warn);
+}
+.av-ask-send:disabled { opacity: 0.5; cursor: default; }
+.av-ask-send:not(:disabled):hover {
+  background: color-mix(in srgb, var(--av-warn) 88%, #000);
+}
+.av-ask-send:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring);
+}
+
 /* ── Inter-agent (peer) message rows (issue #56) ───────────────────────────
    A coordinator with an active fleet receives dozens of agent-to-agent
    messages per wave; as full user bubbles they drowned the human's own

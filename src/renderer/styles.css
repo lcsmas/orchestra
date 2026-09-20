@@ -1167,6 +1167,90 @@ input:focus, textarea:focus, select:focus {
 .orchestrator-section { border-bottom: 1px solid var(--border); }
 .orchestrator-section .repo-name { color: var(--orchestrator); }
 .orchestrator-section .scratch-glyph { color: var(--orchestrator); }
+/* Asks — human-directed decision gates (#161, surface B), pinned above Tickets.
+   Amber, matching the inline ask row (surface A) and the "needs your attention,
+   nothing is broken" register used across the app; a faint amber section wash so
+   the block reads as one attention region without shouting. */
+.asks-section {
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--yellow) 5%, transparent);
+}
+.asks-section .repo-name { color: var(--yellow); }
+.asks-glyph { color: var(--yellow); }
+.asks-count {
+  color: var(--yellow);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--yellow) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 38%, transparent);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+/* One gate row — a clickable card that deep-links to the asking workspace.
+   Strips the global <button> chrome (same discipline as .repo-collapse) and
+   rebuilds a quiet card. */
+.ask-card,
+.ask-card:hover,
+.ask-card:focus-visible,
+.ask-card:active {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 0 8px 6px;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  border-radius: 9px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  transform: none;
+  cursor: pointer;
+}
+.ask-card:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--yellow) 45%, var(--border));
+}
+.ask-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring, rgba(110, 168, 255, 0.4));
+}
+.ask-card:disabled { cursor: default; opacity: 0.7; }
+/* An aged gate reads harder: a stronger amber frame + a left accent bar. */
+.ask-card-old {
+  border-color: color-mix(in srgb, var(--yellow) 55%, var(--border));
+  box-shadow: inset 2px 0 0 var(--yellow);
+}
+.ask-card-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+.ask-card-from {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.ask-card-age {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.ask-card-age-old { color: var(--yellow); font-weight: 600; }
+.ask-card-q {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .repo-header {
   display: flex;
   justify-content: space-between;
