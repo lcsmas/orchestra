@@ -1,0 +1,63 @@
+/* Orchestra agent-view design tokens — verbatim from src/renderer/agent-view-theme.css
+ * and styles.css (2026-09-20, master fe2934d). Reference for the #161 human-gate
+ * mockups so they read NATIVE, not generic. Dark is the unconditional default;
+ * light is opt-in via [data-agent-theme="light"]. */
+
+:root {
+  /* global app chrome (styles.css) — sidebar / toolbar surfaces */
+  --bg: #0a0b0d; --bg-2: #101215; --bg-3: #171a20; --bg-4: #1f242c;
+  --border: #23272f; --border-strong: #353b45;
+  --text: #eef1f5; --text-dim: #8f99a9;
+  --accent: #6ea8ff; --green: #5bd68b; --red: #ff6b6b; --yellow: #ffc857;
+  --radius-sm: 6px; --radius: 8px; --radius-lg: 12px;
+}
+
+.av-view {
+  /* structured-view tokens (dark, unconditional) */
+  --av-surface: #1a1f26; --av-surface-raised: #1f242c; --av-surface-sunken: #14181e;
+  --av-surface-overlay: #222933;
+  --av-hairline: #242a33; --av-hairline-strong: #333b47;
+  --av-hairline-faint: rgba(255,255,255,0.055);
+  --av-highlight: transparent;
+  --av-text: #e6e9ef; --av-text-dim: #8b95a7; --av-text-faint: #737e92;
+  --av-assistant: #6ea8ff; --av-assistant-ink: #081022;
+  --av-thinking: #b294bb; --av-tool: #7c8798; --av-tool-active: #6ea8ff;
+  --av-user: #7ee787; --av-task: #8b7cff;
+  --av-add: #5bd68b; --av-add-bg: rgba(91,214,139,0.12);
+  --av-remove: #ff6b6b; --av-remove-bg: rgba(255,107,107,0.12);
+  --av-error: #ff6b6b; --av-error-bg: rgba(255,107,107,0.09); --av-error-border: rgba(255,107,107,0.45);
+  --av-warn: #ffc857;
+  --av-code-bg: rgba(255,255,255,0.045); --av-code-border: rgba(255,255,255,0.07);
+  --av-glow: transparent;
+  --av-focus-border: rgba(110,168,255,0.75); --av-focus-ring: rgba(110,168,255,0.2);
+  --av-ease: cubic-bezier(0.3,0.8,0.3,1); --av-ease-out: cubic-bezier(0.16,1,0.3,1);
+  --av-fs-caption: 10px; --av-fs-small: 11px; --av-fs-body: 13px; --av-fs-code: 12px; --av-fs-h: 15px;
+  --av-lh-prose: 1.6; --av-radius-lg: 10px; --av-radius-xl: 14px;
+  --av-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "JetBrains Mono", "Courier New", monospace;
+  background: var(--av-surface); color: var(--av-text);
+  font-size: var(--av-fs-body);
+}
+
+.av-view[data-agent-theme="light"], [data-agent-theme="light"] .av-view {
+  --av-surface: #ffffff; --av-surface-raised: #f6f7f9; --av-surface-sunken: #eef1f4;
+  --av-surface-overlay: #ffffff;
+  --av-hairline: #e3e6eb; --av-hairline-strong: #ccd2db; --av-hairline-faint: rgba(20,30,50,0.07);
+  --av-highlight: rgba(255,255,255,0.6);
+  --av-text: #1b2330; --av-text-dim: #566175; --av-text-faint: #6d7787;
+  --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #7d55a3;
+  --av-tool: #64748b; --av-tool-active: #2159c8; --av-user: #178a4c; --av-task: #6250d0;
+  --av-add: #137a43; --av-add-bg: rgba(23,138,76,0.12);
+  --av-remove: #c62828; --av-remove-bg: rgba(198,40,40,0.09);
+  --av-error: #c93737; --av-error-bg: rgba(201,55,55,0.08); --av-error-border: rgba(201,55,55,0.38);
+  --av-warn: #a56a12; --av-code-bg: rgba(20,30,50,0.05); --av-code-border: rgba(20,30,50,0.09);
+  --av-glow: rgba(47,111,224,0.14);
+  --av-focus-border: rgba(47,111,224,0.75); --av-focus-ring: rgba(47,111,224,0.22);
+  background: var(--av-surface);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Inter, -apple-system, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

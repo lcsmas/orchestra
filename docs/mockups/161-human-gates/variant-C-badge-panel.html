@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>#161 — Variant C · Badge that expands to a panel</title>
+<link rel="stylesheet" href="_tokens.css" />
+<style>
+.frame { display: flex; flex-direction: column; height: 720px; width: 1180px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; position: relative; }
+
+/* ---- top toolbar carrying the single ASKS BADGE ---- */
+.toolbar { height: 46px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px; background: var(--bg-2); border-bottom: 1px solid var(--border); }
+.tb-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.tb-branch { font-size: 11px; color: var(--text-dim); font-family: var(--av-mono, monospace); }
+.tb-spacer { flex: 1; }
+/* the badge — a single quiet amber pill; the COUNT + oldest age is the whole readout */
+.asks-badge { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+  color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 40%, transparent); cursor: pointer; }
+.asks-badge:hover { background: color-mix(in srgb, var(--yellow) 22%, transparent); }
+.asks-badge .n { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; font-size: 10px; font-weight: 800; color: var(--bg); background: var(--yellow); }
+.asks-badge .age { font-size: 10px; font-weight: 500; color: color-mix(in srgb, var(--yellow) 85%, var(--text)); opacity: .85; }
+
+.body { flex: 1; display: flex; min-height: 0; }
+.sidebar { width: 210px; flex: none; background: var(--bg-2); border-right: 1px solid var(--border); padding: 10px 8px; font-size: 12px; }
+.ws { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+.ws .dot { width: 7px; height: 7px; border-radius: 50%; }
+.dot.run { background: var(--green); } .dot.wait { background: var(--yellow); } .dot.idle { background: var(--text-dim); opacity: .5; }
+.pane { flex: 1; padding: 20px 26px; color: var(--av-text); }
+.pane .av-message-text { font-size: 13px; line-height: 1.6; max-width: 78ch; color: var(--av-text); }
+.pane .muted { color: var(--av-text-faint); font-size: 13px; margin: 8px 0; }
+
+/* ---- the EXPANDED PANEL floating below the badge ---- */
+.asks-panel { position: absolute; top: 52px; right: 14px; width: 420px; background: var(--av-surface-overlay); border: 1px solid var(--av-hairline-strong); border-radius: 12px; box-shadow: 0 18px 48px rgba(0,0,0,.5); overflow: hidden; }
+.ap-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; border-bottom: 1px solid var(--av-hairline); }
+.ap-title { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; color: var(--av-warn); }
+.ap-sub { margin-left: auto; font-size: 10px; color: var(--av-text-faint); }
+.ap-list { max-height: 520px; overflow-y: auto; }
+.ap-ask { padding: 13px 14px; border-bottom: 1px solid var(--av-hairline-faint); }
+.ap-ask:last-child { border-bottom: none; }
+.ap-ask-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.ap-from { font-size: 10px; font-family: var(--av-mono); color: var(--av-assistant); font-weight: 600; }
+.ap-age { margin-left: auto; font-size: 10px; color: var(--av-text-faint); }
+.ap-age.old { color: #ffb14e; font-weight: 600; }
+.ap-q { font-size: 13px; font-weight: 600; line-height: 1.4; color: var(--av-text); margin-bottom: 9px; }
+.ap-options { display: flex; flex-direction: column; gap: 5px; margin-bottom: 9px; }
+.ap-option { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 7px; background: var(--av-surface-raised); border: 1px solid var(--av-hairline); cursor: pointer; }
+.ap-option:hover { border-color: color-mix(in srgb, var(--av-warn) 55%, var(--av-hairline)); }
+.ap-key { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; border-radius: 4px; color: var(--av-text-faint); background: var(--av-code-bg); border: 1px solid var(--av-code-border); }
+.ap-olabel { font-size: 12px; color: var(--av-text); font-weight: 550; }
+.ap-odesc { font-size: 10px; color: var(--av-text-dim); }
+.ap-omain { display: flex; flex-direction: column; }
+.ap-reply { display: flex; gap: 6px; }
+.ap-reply-input { flex: 1; min-width: 0; padding: 6px 9px; font: inherit; font-size: 11px; font-family: var(--av-mono); color: var(--av-text); background: var(--av-surface); border: 1px solid var(--av-hairline-strong); border-radius: 7px; }
+.ap-reply-input::placeholder { color: var(--av-text-faint); }
+.ap-send { flex: none; padding: 0 11px; font: inherit; font-size: 11px; font-weight: 600; border-radius: 7px; cursor: pointer; color: var(--av-assistant-ink); background: var(--av-warn); border: 1px solid var(--av-warn); }
+.ap-ask.collapsed .ap-options, .ap-ask.collapsed .ap-reply { display: none; }
+.ap-ask.collapsed .ap-q { font-weight: 500; color: var(--av-text-dim); margin-bottom: 0; }
+
+.pair { display: flex; gap: 28px; padding: 24px; background: #05060a; align-items: flex-start; flex-wrap: wrap; }
+.label { font: 600 12px Inter, sans-serif; color: #9aa4b4; margin: 0 0 8px 4px; letter-spacing: .04em; }
+.themewrap { display: flex; flex-direction: column; }
+h1.title { color: #cfd6e2; font: 700 15px Inter; margin: 0 0 2px; }
+.sub { color: #7b8496; font: 400 12px Inter; margin: 0 0 18px; }
+.header { padding: 22px 24px 0; background: #05060a; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1 class="title">#161 — Variant C · Badge that expands to a panel</h1>
+  <p class="sub">A single quiet amber badge in the toolbar carries the whole readout — count + oldest wait time — stealing no space and no focus. Click it → a floating panel drops open listing every open ask, each with inline options + reply. The top (oldest) ask is expanded; the rest collapse to one line.</p>
+</div>
+<div class="pair">
+
+<!-- DARK -->
+<div class="themewrap">
+  <div class="label">DARK</div>
+  <div class="frame">
+    <div class="toolbar">
+      <span class="tb-title">threshold-ruling-158</span>
+      <span class="tb-branch">human-gates-161</span>
+      <span class="tb-spacer"></span>
+      <button class="asks-badge">🔔 Asks <span class="n">3</span> <span class="age">oldest 22m</span></button>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <div class="ws"><span class="dot idle"></span> LEAD · wave-7</div>
+        <div class="ws"><span class="dot wait"></span> canary-driver</div>
+        <div class="ws"><span class="dot wait"></span> threshold-ruling-158</div>
+        <div class="ws"><span class="dot run"></span> bus-rows-145</div>
+      </div>
+      <div class="pane av-view">
+        <div class="av-message-text">Running the canary-6 refusal sweep across the four thresholds. The 303 arm crosses the escalation floor — I opened a decision gate to you and I’m waiting on your ruling.</div>
+        <div class="muted">› waiting on human gate #303 · won’t escalate</div>
+      </div>
+    </div>
+    <!-- floating panel -->
+    <div class="asks-panel av-view">
+      <div class="ap-head"><span class="ap-title">🔔 Fleet asks you</span><span class="ap-sub">3 open · resolved_by = human</span></div>
+      <div class="ap-list">
+        <div class="ap-ask">
+          <div class="ap-ask-top"><span class="ap-from">threshold-ruling-158</span><span class="ap-age old">⌛ 22m</span></div>
+          <div class="ap-q">The 303-refusal arm crosses the escalation floor. Nominate it, or hold for 454 first?</div>
+          <div class="ap-options">
+            <div class="ap-option"><span class="ap-key">1</span><span class="ap-omain"><span class="ap-olabel">Nominate 303 now</span><span class="ap-odesc">454 sweep continues in parallel.</span></span></div>
+            <div class="ap-option"><span class="ap-key">2</span><span class="ap-omain"><span class="ap-olabel">Hold for 454</span><span class="ap-odesc">Wait for the last arm’s count.</span></span></div>
+          </div>
+          <div class="ap-reply"><input class="ap-reply-input" placeholder="…or type a ruling" /><button class="ap-send">Answer ↵</button></div>
+        </div>
+        <div class="ap-ask collapsed">
+          <div class="ap-ask-top"><span class="ap-from">canary-driver</span><span class="ap-age">⌛ 4m</span></div>
+          <div class="ap-q">Mockup pick for the ask surface — A, B, or C?</div>
+        </div>
+        <div class="ap-ask collapsed">
+          <div class="ap-ask-top"><span class="ap-from">slimpay-attach</span><span class="ap-age">⌛ 1m</span></div>
+          <div class="ap-q">Go / no-go on the V2 attach cohort (4 728 users)?</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LIGHT -->
+<div class="themewrap">
+  <div class="label">LIGHT</div>
+  <div class="frame" data-agent-theme="light" style="--bg:#f2f4f7;--bg-2:#e9edf2;--bg-3:#dee3ea;--bg-4:#fff;--border:#d5dae1;--border-strong:#c2c9d3;--text:#1b2330;--text-dim:#566175;--accent:#2f6fe0;--green:#178a4c;--red:#c62828;--yellow:#a56a12;">
+    <div class="toolbar">
+      <span class="tb-title">threshold-ruling-158</span>
+      <span class="tb-branch">human-gates-161</span>
+      <span class="tb-spacer"></span>
+      <button class="asks-badge">🔔 Asks <span class="n">3</span> <span class="age">oldest 22m</span></button>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <div class="ws"><span class="dot idle"></span> LEAD · wave-7</div>
+        <div class="ws"><span class="dot wait"></span> canary-driver</div>
+        <div class="ws"><span class="dot wait"></span> threshold-ruling-158</div>
+        <div class="ws"><span class="dot run"></span> bus-rows-145</div>
+      </div>
+      <div class="pane av-view" data-agent-theme="light">
+        <div class="av-message-text">Running the canary-6 refusal sweep across the four thresholds. The 303 arm crosses the escalation floor — I opened a decision gate to you and I’m waiting on your ruling.</div>
+        <div class="muted">› waiting on human gate #303 · won’t escalate</div>
+      </div>
+    </div>
+    <div class="asks-panel av-view" data-agent-theme="light">
+      <div class="ap-head"><span class="ap-title">🔔 Fleet asks you</span><span class="ap-sub">3 open · resolved_by = human</span></div>
+      <div class="ap-list">
+        <div class="ap-ask">
+          <div class="ap-ask-top"><span class="ap-from">threshold-ruling-158</span><span class="ap-age old">⌛ 22m</span></div>
+          <div class="ap-q">The 303-refusal arm crosses the escalation floor. Nominate it, or hold for 454 first?</div>
+          <div class="ap-options">
+            <div class="ap-option"><span class="ap-key">1</span><span class="ap-omain"><span class="ap-olabel">Nominate 303 now</span><span class="ap-odesc">454 sweep continues in parallel.</span></span></div>
+            <div class="ap-option"><span class="ap-key">2</span><span class="ap-omain"><span class="ap-olabel">Hold for 454</span><span class="ap-odesc">Wait for the last arm’s count.</span></span></div>
+          </div>
+          <div class="ap-reply"><input class="ap-reply-input" placeholder="…or type a ruling" /><button class="ap-send">Answer ↵</button></div>
+        </div>
+        <div class="ap-ask collapsed">
+          <div class="ap-ask-top"><span class="ap-from">canary-driver</span><span class="ap-age">⌛ 4m</span></div>
+          <div class="ap-q">Mockup pick for the ask surface — A, B, or C?</div>
+        </div>
+        <div class="ap-ask collapsed">
+          <div class="ap-ask-top"><span class="ap-from">slimpay-attach</span><span class="ap-age">⌛ 1m</span></div>
+          <div class="ap-q">Go / no-go on the V2 attach cohort (4 728 users)?</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

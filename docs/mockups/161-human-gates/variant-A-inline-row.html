@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>#161 — Variant A · Inline quiet ask row</title>
+<link rel="stylesheet" href="_tokens.css" />
+<style>
+/* ---- app frame (sidebar + pane), shared by all variants ---- */
+.frame { display: flex; height: 720px; width: 1180px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.sidebar { width: 232px; flex: none; background: var(--bg-2); border-right: 1px solid var(--border); padding: 12px 8px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.sb-title { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); padding: 8px 8px 4px; }
+.sb-repo { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); padding: 10px 8px 3px; opacity: .8; }
+.ws { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; color: var(--text); cursor: default; }
+.ws:hover { background: var(--bg-3); }
+.ws.sel { background: var(--bg-3); box-shadow: inset 2px 0 0 var(--accent); }
+.ws .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot.run { background: var(--green); } .dot.wait { background: var(--yellow); } .dot.idle { background: var(--text-dim); opacity: .5; }
+.ws .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws .note { font-size: 10px; color: var(--text-dim); }
+
+/* the AGING ASK BADGE on the sidebar row — amber, gentle, shows wait time */
+.ask-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600;
+  padding: 1px 7px; border-radius: 999px; color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 40%, transparent); }
+.ask-badge.old { color: #ffb14e; background: color-mix(in srgb, var(--yellow) 26%, transparent); border-color: color-mix(in srgb, var(--yellow) 60%, transparent); }
+
+.pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.av-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.av-message-list { flex: 1; padding: 20px 24px 4px; overflow: hidden; }
+.av-message { margin-bottom: 16px; }
+.av-message-text { font-size: 13px; line-height: 1.6; color: var(--av-text); max-width: 78ch; }
+.av-message-user { display: flex; }
+.av-message-user .bubble { margin-left: auto; width: fit-content; max-width: 60ch; background: color-mix(in srgb, var(--av-user) 12%, var(--av-surface-raised)); border: 1px solid color-mix(in srgb, var(--av-user) 26%, transparent); padding: 8px 12px; border-radius: 12px; font-size: 13px; }
+.av-tool-run { color: var(--av-text-faint); font-size: 13px; margin: 6px 0; display: flex; align-items: center; gap: 7px; }
+.av-tool-run .caret { color: var(--av-text-faint); }
+
+/* ============ THE ASK ROW — docked above composer, InboxTray idiom ============ */
+.av-ask {
+  margin: 0 20px 8px;
+  padding: 11px 13px 12px;
+  background: var(--av-surface-sunken);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 34%, transparent);
+  border-left: 3px solid var(--av-warn);
+  border-radius: var(--av-radius-lg);
+}
+.av-ask-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: var(--av-fs-small); }
+.av-ask-bell { color: var(--av-warn); display: inline-flex; }
+.av-ask-eyebrow { font-weight: 700; letter-spacing: .01em; color: var(--av-warn); text-transform: uppercase; font-size: 10px; letter-spacing: .07em; }
+.av-ask-from { color: var(--av-text-faint); font-family: var(--av-mono); font-size: 10px; }
+.av-ask-spacer { flex: 1; }
+.av-ask-age { color: var(--av-text-faint); font-size: 10px; display: inline-flex; align-items: center; gap: 4px; }
+.av-ask-age .clock { opacity: .7; }
+.av-ask-q { font-size: 14px; font-weight: 600; color: var(--av-text); line-height: 1.45; margin-bottom: 10px; }
+.av-ask-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.av-ask-option { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border-radius: 8px;
+  background: var(--av-surface-raised); border: 1px solid var(--av-hairline); cursor: pointer; }
+.av-ask-option:hover { border-color: color-mix(in srgb, var(--av-warn) 55%, var(--av-hairline)); }
+.av-ask-option-key { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; border-radius: 4px; color: var(--av-text-faint);
+  background: var(--av-code-bg); border: 1px solid var(--av-code-border); }
+.av-ask-option-label { font-size: 13px; color: var(--av-text); font-weight: 550; }
+.av-ask-option-desc { font-size: 11px; color: var(--av-text-dim); }
+.av-ask-option-main { display: flex; flex-direction: column; gap: 1px; }
+.av-ask-reply { display: flex; gap: 8px; align-items: stretch; }
+.av-ask-reply-input { flex: 1; min-width: 0; padding: 7px 11px; font: inherit; font-size: 12px; font-family: var(--av-mono);
+  color: var(--av-text); background: var(--av-surface); border: 1px solid var(--av-hairline-strong); border-radius: 8px; }
+.av-ask-reply-input::placeholder { color: var(--av-text-faint); }
+.av-ask-send { flex: none; padding: 0 14px; font: inherit; font-size: 12px; font-weight: 600; border-radius: 8px; cursor: pointer;
+  color: var(--av-assistant-ink); background: var(--av-warn); border: 1px solid var(--av-warn); }
+
+/* composer, quiet, below the ask */
+.av-composer { margin: 0 20px 16px; }
+.av-composer-field { background: var(--av-surface-raised); border: 1px solid var(--av-hairline); border-radius: var(--av-radius-xl); padding: 10px 12px; }
+.av-composer-cm { color: var(--av-text-faint); font-family: var(--av-mono); font-size: 12px; }
+.av-composer-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--av-hairline-faint); font-size: 11px; color: var(--av-text-faint); }
+.av-composer-send { margin-left: auto; width: 28px; height: 28px; border-radius: 50%; background: var(--av-assistant); color: var(--av-assistant-ink); border: none; display: inline-flex; align-items: center; justify-content: center; }
+
+.pair { display: flex; gap: 28px; padding: 24px; background: #05060a; align-items: flex-start; flex-wrap: wrap; }
+.label { font: 600 12px Inter, sans-serif; color: #9aa4b4; margin: 0 0 8px 4px; letter-spacing: .04em; }
+.themewrap { display: flex; flex-direction: column; }
+h1.title { color: #cfd6e2; font: 700 15px Inter; margin: 0 0 2px; }
+.sub { color: #7b8496; font: 400 12px Inter; margin: 0 0 18px; }
+.header { padding: 22px 24px 0; background: #05060a; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1 class="title">#161 — Variant A · “Inline quiet ask row”</h1>
+  <p class="sub">The ask lands as an amber row docked above the composer in the workspace that opened it — the #145 WakeRow / #64 InboxTray idiom. Inline options + a free-text reply, no modal steal. Sidebar row shows a gentle aging badge (⌛ wait time).</p>
+</div>
+<div class="pair">
+
+<!-- ============ DARK ============ -->
+<div class="themewrap">
+  <div class="label">DARK</div>
+  <div class="frame">
+    <div class="sidebar">
+      <div class="sb-title">Orchestra</div>
+      <div class="sb-repo">lcsmas/orchestra</div>
+      <div class="ws"><span class="dot idle"></span><span class="name">LEAD · wave-7</span></div>
+      <div class="ws"><span class="dot wait"></span><span class="name">canary-driver</span><span class="ask-badge">⌛ 4m</span></div>
+      <div class="ws sel"><span class="dot wait"></span><span class="name">threshold-ruling-158</span><span class="ask-badge old">⌛ 22m</span></div>
+      <div class="ws"><span class="dot run"></span><span class="name">bus-rows-145</span></div>
+      <div class="ws"><span class="dot run"></span><span class="name">gate-wire-119</span></div>
+      <div class="sb-repo">mobile-club/api-v2</div>
+      <div class="ws"><span class="dot idle"></span><span class="name">slimpay-attach</span></div>
+    </div>
+    <div class="pane">
+      <div class="av-view">
+        <div class="av-message-list">
+          <div class="av-message av-message-assistant"><div class="av-message-text">Running the canary-6 refusal sweep across the four thresholds (39 / 152 / 303 / 454). The 303 arm crosses the escalation floor — I need a human call before I nominate it, so I’m opening a decision gate to you.</div></div>
+          <div class="av-tool-run"><span class="caret">›</span> Used a tool <span style="color:var(--av-text-faint)">bus openGate --recipient human</span></div>
+          <div class="av-message av-message-assistant"><div class="av-message-text">Gate opened. I’ll wait on your ruling — I’m marked <b>waiting</b>, so I won’t escalate.</div></div>
+        </div>
+
+        <!-- THE ASK ROW -->
+        <div class="av-ask" role="region" aria-label="Decision gate from a fleet agent">
+          <div class="av-ask-head">
+            <span class="av-ask-bell" aria-hidden><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a1 1 0 0 1 1 1v.4a4 4 0 0 1 3 3.87v2.4l1 1.3v.53H3v-.53l1-1.3v-2.4a4 4 0 0 1 3-3.87v-.4a1 1 0 0 1 1-1Zm0 13a1.6 1.6 0 0 1-1.5-1h3A1.6 1.6 0 0 1 8 14.5Z"/></svg></span>
+            <span class="av-ask-eyebrow">Fleet asks you</span>
+            <span class="av-ask-from">from canary-driver · gate #303</span>
+            <span class="av-ask-spacer"></span>
+            <span class="av-ask-age"><span class="clock" aria-hidden>⌛</span> waited 22m</span>
+          </div>
+          <div class="av-ask-q">The 303-refusal arm crosses the escalation floor. Nominate it, or hold for the 454 arm first?</div>
+          <div class="av-ask-options">
+            <div class="av-ask-option"><span class="av-ask-option-key">1</span><span class="av-ask-option-main"><span class="av-ask-option-label">Nominate 303 now</span><span class="av-ask-option-desc">Ship the arm; the 454 sweep continues in parallel.</span></span></div>
+            <div class="av-ask-option"><span class="av-ask-option-key">2</span><span class="av-ask-option-main"><span class="av-ask-option-label">Hold for 454</span><span class="av-ask-option-desc">Wait for the last arm’s count before ruling on either.</span></span></div>
+          </div>
+          <div class="av-ask-reply">
+            <input class="av-ask-reply-input" placeholder="…or type a ruling (written to the gate, resolved_by=human)" />
+            <button class="av-ask-send">Answer ↵</button>
+          </div>
+        </div>
+
+        <div class="av-composer">
+          <div class="av-composer-field">
+            <div class="av-composer-cm">Message threshold-ruling-158…</div>
+            <div class="av-composer-bar">threshold-ruling-158 · $0.24 · 41% ctx <button class="av-composer-send" aria-label="send">↑</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ LIGHT ============ -->
+<div class="themewrap">
+  <div class="label">LIGHT</div>
+  <div class="frame" data-agent-theme="light" style="--bg:#f2f4f7;--bg-2:#e9edf2;--bg-3:#dee3ea;--bg-4:#fff;--border:#d5dae1;--border-strong:#c2c9d3;--text:#1b2330;--text-dim:#566175;--accent:#2f6fe0;--green:#178a4c;--red:#c62828;--yellow:#a56a12;">
+    <div class="sidebar">
+      <div class="sb-title">Orchestra</div>
+      <div class="sb-repo">lcsmas/orchestra</div>
+      <div class="ws"><span class="dot idle"></span><span class="name">LEAD · wave-7</span></div>
+      <div class="ws"><span class="dot wait"></span><span class="name">canary-driver</span><span class="ask-badge">⌛ 4m</span></div>
+      <div class="ws sel"><span class="dot wait"></span><span class="name">threshold-ruling-158</span><span class="ask-badge old">⌛ 22m</span></div>
+      <div class="ws"><span class="dot run"></span><span class="name">bus-rows-145</span></div>
+      <div class="ws"><span class="dot run"></span><span class="name">gate-wire-119</span></div>
+    </div>
+    <div class="pane">
+      <div class="av-view" data-agent-theme="light">
+        <div class="av-message-list">
+          <div class="av-message av-message-assistant"><div class="av-message-text">Running the canary-6 refusal sweep across the four thresholds (39 / 152 / 303 / 454). The 303 arm crosses the escalation floor — I need a human call before I nominate it, so I’m opening a decision gate to you.</div></div>
+          <div class="av-tool-run"><span class="caret">›</span> Used a tool <span style="color:var(--av-text-faint)">bus openGate --recipient human</span></div>
+          <div class="av-message av-message-assistant"><div class="av-message-text">Gate opened. I’ll wait on your ruling — I’m marked <b>waiting</b>, so I won’t escalate.</div></div>
+        </div>
+        <div class="av-ask" role="region" aria-label="Decision gate from a fleet agent">
+          <div class="av-ask-head">
+            <span class="av-ask-bell" aria-hidden><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a1 1 0 0 1 1 1v.4a4 4 0 0 1 3 3.87v2.4l1 1.3v.53H3v-.53l1-1.3v-2.4a4 4 0 0 1 3-3.87v-.4a1 1 0 0 1 1-1Zm0 13a1.6 1.6 0 0 1-1.5-1h3A1.6 1.6 0 0 1 8 14.5Z"/></svg></span>
+            <span class="av-ask-eyebrow">Fleet asks you</span>
+            <span class="av-ask-from">from canary-driver · gate #303</span>
+            <span class="av-ask-spacer"></span>
+            <span class="av-ask-age"><span class="clock" aria-hidden>⌛</span> waited 22m</span>
+          </div>
+          <div class="av-ask-q">The 303-refusal arm crosses the escalation floor. Nominate it, or hold for the 454 arm first?</div>
+          <div class="av-ask-options">
+            <div class="av-ask-option"><span class="av-ask-option-key">1</span><span class="av-ask-option-main"><span class="av-ask-option-label">Nominate 303 now</span><span class="av-ask-option-desc">Ship the arm; the 454 sweep continues in parallel.</span></span></div>
+            <div class="av-ask-option"><span class="av-ask-option-key">2</span><span class="av-ask-option-main"><span class="av-ask-option-label">Hold for 454</span><span class="av-ask-option-desc">Wait for the last arm’s count before ruling on either.</span></span></div>
+          </div>
+          <div class="av-ask-reply">
+            <input class="av-ask-reply-input" placeholder="…or type a ruling (written to the gate, resolved_by=human)" />
+            <button class="av-ask-send">Answer ↵</button>
+          </div>
+        </div>
+        <div class="av-composer">
+          <div class="av-composer-field">
+            <div class="av-composer-cm">Message threshold-ruling-158…</div>
+            <div class="av-composer-bar">threshold-ruling-158 · $0.24 · 41% ctx <button class="av-composer-send" aria-label="send">↑</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
