@@ -231,8 +231,11 @@ export function readPendingReaders(
   // the depth map and carried as `switchRunId`; the sweep reads THAT flag.
   //
   // Two scopes, deliberately different:
-  //   - the reader's OWN run: `recipient = reader OR NULL` (a null-recipient
-  //     BROADCAST in the reader's own run still wakes it, as before);
+  //   - the reader's OWN run: `recipient = reader OR (NULL AND sender != reader)`
+  //     (a null-recipient BROADCAST in the reader's own run wakes it — EXCEPT when
+  //     the reader is the broadcast's own SENDER, #168: a sender's own broadcast
+  //     must not self-pend, or a "status after each wake" protocol self-loops).
+  //     A DIRECTED self-note (`recipient = reader`) still wakes, unchanged;
   //   - a RELATED (ancestor/descendant) run: `recipient = reader` EXACTLY — never
   //     a null broadcast. A broadcast belongs to the run it was sent in, not up or
   //     down the tree; pulling it across would wake unrelated parties.
@@ -312,7 +315,11 @@ export function readPendingReaders(
     // a variable-size run set.
     const related = getRelatedRunIds(db, runId);
     const runSetJson = JSON.stringify(related.ids);
-    const lot = lotRows.get(runSetJson, runId, reader, runId, reader, reader) as
+    // Param order tracks the SQL: json_each, own m.run_id=?, ownRunRecipientSql
+    // (TWO params post-#168: recipient=?, sender!=?), related m.run_id!=?,
+    // relatedRunRecipientSql (?), cursor c.reader=?. The reader is bound 4× — the
+    // two own-run recipient/sender slots, the related-run recipient, the cursor.
+    const lot = lotRows.get(runSetJson, runId, reader, reader, runId, reader, reader) as
       | { run_id: string; seq: number }
       | undefined;
     const q = questionRows.get(runSetJson, reader) as
@@ -343,7 +350,7 @@ export function readPendingReaders(
     // The FULL set of runs with pending mail — the wake order names them all (D2).
     const pendingRunIds =
       pendingThroughSeq > 0
-        ? (pendingRunSet.all(runSetJson, runId, reader, runId, reader, reader, runSetJson, reader) as {
+        ? (pendingRunSet.all(runSetJson, runId, reader, reader, runId, reader, reader, runSetJson, reader) as {
             run_id: string;
           }[]).map((r) => r.run_id)
         : [];
