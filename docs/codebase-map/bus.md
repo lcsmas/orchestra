@@ -1115,7 +1115,10 @@ references).
   `question`), so this is what re-wakes the ASKER with the resolution via the
   normal lot path — for both same-run and cross-run shapes (the gate's run is
   always the asker's own run). Not sent on an idempotent `--request-id` replay.
-- `orchestra gate list` — open gates addressed to the caller.
+- `orchestra gate list` — open gates addressed to the caller, CROSS-RUN aware
+  (**#158 F-R158-1**): widened to the caller's related run set via
+  `openGatesForRecipientInRuns`, exactly like the `check` surface, so a recipient
+  is not blind to a cross-run gate through `list` while `check` shows it.
 - `check` output carries a `gates: [{id, asked_by, question, opened_at}]` array
   (always present, possibly empty) — the wake order is `orchestra check` and
   nothing else, so a gate-woken reader must see the gate in that one verb.

@@ -840,7 +840,13 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     return;
   }
   if (sub === 'list') {
-    const gates = ctx.bus.openGatesForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
+    // #158 (F-R158-1): WIDENED to the caller's related run set, exactly like the
+    // `check` gate surface. A gate opened in the ASKER's run addressed to this
+    // caller (an OPS→LEAD ruling ask) sits in a related run, never the caller's
+    // own — so an own-run `gate list` was blind to the same cross-run gate the
+    // ticket makes visible to `check`. Same helper, same related set.
+    const related = ctx.bus.getRelatedRunIds(ctx.db, ctx.id.runId);
+    const gates = ctx.bus.openGatesForRecipientInRuns(ctx.db, related.ids, ctx.id.handle);
     ctx.out(`${JSON.stringify(gates.map((g) => ({
       id: g.id,
       asked_by: g.asked_by,

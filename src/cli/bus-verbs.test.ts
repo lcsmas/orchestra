@@ -553,6 +553,36 @@ test('#158 arm4 (CLI) — resolve routes the reply to the GATE run so a CROSS-RU
   assert.equal(reply!.body, 'hold');
 });
 
+test('#158 F-R158-1 (CLI) — a CROSS-RUN gate appears in the recipient\'s `gate list` (widened, same as check)', (t) => {
+  // The consistency gap review-158 found: `gate list` still used the own-run
+  // lookup while `check` was widened, so a recipient running `orchestra gate list`
+  // stayed blind to a cross-run gate — the same bug class the ticket removes.
+  // MUTANT: revert verbGate 'list' to openGatesForRecipient(db, ctx.id.runId, h)
+  //   (own run only) → the LEAD's list is [] → red.
+  const r = rig(t);
+  const LEAD_RUN = 'run-lead';
+  const OPS_RUN = 'run-ops';
+  startRun(r.ctx('x').db, { id: LEAD_RUN, kind: 'mission', coordinator: 'ws-lead' }, DEFAULT_BUS_SWITCHES);
+  startRun(
+    r.ctx('x').db,
+    { id: OPS_RUN, kind: 'vague', coordinator: 'ws-ops', parentRunId: LEAD_RUN },
+    DEFAULT_BUS_SWITCHES,
+  );
+  // OPS opens a gate addressed to the LEAD, in the OPS (descendant) run.
+  verbGate(r.ctx('ws-ops', undefined, OPS_RUN), 'open', ['--to', 'ws-lead', 'ship?']);
+  const gateId = Number(r.out[r.out.length - 1]);
+
+  // The LEAD lists its gates FROM ITS OWN RUN — the cross-run gate must appear.
+  verbGate(r.ctx('ws-lead', undefined, LEAD_RUN), 'list', []);
+  const list = JSON.parse(r.out[r.out.length - 1]) as Array<{ id: number }>;
+  assert.deepEqual(list.map((g) => g.id), [gateId], 'the cross-run gate appears in the recipient\'s own-run gate list');
+
+  // A non-recipient in the same related run sees nothing (exact-recipient scope).
+  verbGate(r.ctx('ws-other', undefined, LEAD_RUN), 'list', []);
+  const other = JSON.parse(r.out[r.out.length - 1]) as unknown[];
+  assert.deepEqual(other, [], 'a non-recipient does not see the gate in its list');
+});
+
 // ─── T119.2 — gate --to recipient, --resolution, list, re-resolve refused ─────
 
 test('T119.2 gate open --to records the recipient; gate list surfaces it to R only', (t) => {
