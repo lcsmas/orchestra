@@ -79,11 +79,14 @@ export async function dispatchRestartRequest(input: {
         // width across the out-of-band respawn.
         if (isRunning(id!)) stopPty(id!);
         const size = getPtySize(id!);
+        // #166 — a restart REPLACES the coordinator process on the same run, so
+        // bump the generation (startAgentPty gates the bump on the ws being its
+        // own orchestrator anchor; a member restart no-ops).
         await startAgentPty(
           ws!,
           size?.cols ?? RESTART_FALLBACK_COLS,
           size?.rows ?? RESTART_FALLBACK_ROWS,
-          { fresh: f },
+          { fresh: f, coordinatorReplacement: true },
         );
       },
     },

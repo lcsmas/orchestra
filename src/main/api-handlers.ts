@@ -61,6 +61,8 @@ import {
   startAgentPty,
   switchWorkspaceBranch,
   unarchiveWorkspace,
+  markPtyRestartPending,
+  consumePtyRestartPending,
 } from './workspaces';
 import { buildScriptEnv, loginShellArgv, readScriptLog, setupLogPath } from './scripts';
 import {
@@ -836,7 +838,12 @@ export const apiHandlers: ApiHandlerTable = {
     // drop the hibernation chip and re-stamp activity — otherwise the next
     // sweep could see a freshly-woken agent as still idle and kill it again.
     clearHibernated(id);
-    await startAgentPty(ws, cols, rows);
+    // #166 — if this ptyStart is a coordinator-replacement respawn (a toolbar
+    // Restart on a live PTY, or a branch switch — both broadcast 'pty:restart'
+    // which the renderer bounces here), consume the flag so startAgentPty bumps
+    // the coordinator generation. A first open has no pending flag → no bump.
+    const coordinatorReplacement = consumePtyRestartPending(id);
+    await startAgentPty(ws, cols, rows, { coordinatorReplacement });
     // Preserve the attention signals (`waiting`, the auto-unread bell) across
     // restarts; only clear stale `running` state left over from a prior crash.
     if (ws.status === 'running') {
@@ -945,6 +952,10 @@ export const apiHandlers: ApiHandlerTable = {
       // picks `claude --continue` since ws.hasInput is true, which is what
       // makes MCP/settings.json edits take effect.
       stopPty(id);
+      // #166 — a live-PTY toolbar Restart respawns via the renderer's
+      // onPtyRestart → ptyStart; mark it a coordinator replacement so that
+      // respawn bumps the generation (gated on the ws being its own anchor).
+      markPtyRestartPending(id);
       platform.broadcast('pty:restart', id);
       return;
     }

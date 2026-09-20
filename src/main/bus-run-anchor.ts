@@ -65,6 +65,29 @@ export interface AnchorInfo {
 }
 
 /**
+ * #166 — the PURE gate deciding whether a coordinator-replacement launch should
+ * BUMP the coordinator generation. Called ONLY from restart chokepoints (never a
+ * first start), so this gate is the sole discriminator that a replacement is real
+ * and safe to fence on. Platform-free so it is driven directly in tests (the
+ * effect `maybeBumpCoordinatorOnReplacement` in workspaces.ts calls THIS).
+ *
+ * Bump IFF ALL hold:
+ *  - `anchor.anchorIsOrchestrator` — the run belongs to a real coordinator;
+ *  - `anchor.wsId === anchor.anchorId` — the launching ws IS that coordinator,
+ *    not a member. A member's anchor is its OPS's run, so bumping on a member
+ *    relaunch would fence the LIVE OPS's own writes (catastrophic over-bump);
+ *  - `runRowExists` — a run row already exists for the anchor. `bumpCoordinator
+ *    Generation` throws on a missing row, and a first-ever start has no old
+ *    coordinator to fence (acceptance arm 1: first-start stays 0, respawn 0→1).
+ */
+export function shouldBumpCoordinatorGeneration(
+  anchor: AnchorInfo,
+  runRowExists: boolean,
+): boolean {
+  return anchor.anchorIsOrchestrator && anchor.wsId === anchor.anchorId && runRowExists;
+}
+
+/**
  * Ensure the anchor's run row exists (idempotent, best-effort). Returns the row
  * that now exists (frozen), or null when there is nothing to start / the bus was
  * down / the call failed (D1).

@@ -42,7 +42,7 @@ import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
-import { getBus } from './bus.ts';
+import { getBus, coordinatorGeneration, bumpCoordinatorGeneration } from './bus.ts';
 import {
   runFlags,
   startRun,
@@ -52,7 +52,11 @@ import {
   type RefreezeMissionOutcome,
 } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
-import { maybeStartRunAtAnchor, type AnchorInfo } from './bus-run-anchor.ts';
+import {
+  maybeStartRunAtAnchor,
+  shouldBumpCoordinatorGeneration,
+  type AnchorInfo,
+} from './bus-run-anchor.ts';
 import { nearestOrchestratorId, parentOrchestratorId } from './wave-run-id.ts';
 import {
   decideReparentAction,
@@ -3547,7 +3551,14 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
-  if (restartAgent) platform.broadcast('pty:restart', id);
+  // #166 — a branch switch respawns the agent PTY: mark it a coordinator
+  // replacement so the ptyStart respawn bumps the generation (gated on the ws
+  // being its own orchestrator anchor). Only the real workspace id — the nvim
+  // PTY has no run row and gate G would no-op it anyway.
+  if (restartAgent) {
+    markPtyRestartPending(id);
+    platform.broadcast('pty:restart', id);
+  }
   if (restartNvim) platform.broadcast('pty:restart', nvimId);
   return updated;
 }
@@ -4796,6 +4807,14 @@ export async function startAgentPty(
      *  for THIS launch. Omitted / false → the normal resume-from-hasInput path,
      *  byte-identical to before. */
     fresh?: boolean;
+    /** #166 — this launch REPLACES a live coordinator process on the same run
+     *  (a restart/branch-switch respawn), so bump the coordinator generation
+     *  before building the env so the successor presents the new one and the
+     *  old process's in-flight writes are fenced. Set ONLY by the restart routes
+     *  (restartPty effect; ptyStart when it consumes a pending-replacement mark);
+     *  a first open leaves it false and never bumps. The bump is still gated on
+     *  the workspace being its own orchestrator anchor. */
+    coordinatorReplacement?: boolean;
   },
 ): Promise<void> {
   const resuming = ws.hasInput === true && opts?.fresh !== true;
@@ -4870,6 +4889,12 @@ export async function startAgentPty(
   // bundle) so a run boundary crossed since creation is picked up; within one run
   // the frozen row makes the notice stable.
   if (!remote) await startBusRunAndWriteNotice(ws, remote);
+  // #166 — when this launch REPLACES a live coordinator on the same run (a
+  // restart / branch-switch respawn), bump the coordinator generation NOW, after
+  // the run row exists (startBusRunAndWriteNotice above) and BEFORE the env is
+  // built below, so the successor presents the bumped generation and the old
+  // process's in-flight writes are fenced. First opens leave the flag false.
+  if (!remote && opts?.coordinatorReplacement) maybeBumpCoordinatorOnReplacement(ws);
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -4906,6 +4931,23 @@ export async function startAgentPty(
     // `send`/`check`/`ack` land in the same run the anchor froze.
     ORCHESTRA_RUN_ID: waveRunId,
   };
+  // #166 — FENCING: present the wave run's current coordinator generation to the
+  // CLI bus verbs (`resolveFencing` reads $ORCHESTRA_COORDINATOR_GENERATION). Set
+  // ONLY when the run has been bumped past 0 — an absent var is the unfenced v1
+  // path (every write pre-fencing carried none), and a generation of 0 is the
+  // as-yet-unreplaced coordinator, indistinguishable from v1 for fencing. So gen
+  // 0 / no bus / no run row all leave the var ABSENT (coexistence-safe). Read
+  // AFTER any maybeBumpCoordinatorOnReplacement above so a replacement presents
+  // the new one. Best-effort: a bus read failure just omits the var.
+  if (!remote) {
+    try {
+      const db = getBus();
+      const gen = db ? coordinatorGeneration(db, waveRunId) : 0;
+      if (gen > 0) extraEnv.ORCHESTRA_COORDINATOR_GENERATION = String(gen);
+    } catch (e) {
+      log.warn(`bus-fencing: could not read coordinator generation for ${waveRunId}`, e);
+    }
+  }
   // A pinned account's CLAUDE_CONFIG_DIR is a HOST path; shipped to a sandbox
   // it points at nothing and would shadow the container's seeded ~/.claude
   // (leaving the agent logged out). The import already packed the account's
@@ -5073,6 +5115,62 @@ function startRunForPromoted(newlyOrchestrator: Workspace): void {
   void startBusRunAndWriteNotice(newlyOrchestrator).catch((e) =>
     log.warn(`bus-run-anchor: promote run-start/notice failed for ${newlyOrchestrator.id}`, e),
   );
+}
+
+// #166 — pending PTY-restart replacements. A coordinator's PTY can be recycled
+// by a route that does NOT pass through `dispatchRestartRequest`: the toolbar
+// Restart on a LIVE pty (`restartAgent` → stopPty + broadcast 'pty:restart') and
+// a branch switch (`switchWorkspaceBranch` → broadcast 'pty:restart'). Both land
+// in the renderer's onPtyRestart → the `ptyStart` IPC handler → startAgentPty,
+// which is ALSO the first-open funnel and so cannot itself tell a replacement
+// from a first start. The broadcaster (trusted, main-side) records the intent
+// here; `ptyStart` consumes it and tells startAgentPty this launch REPLACES a
+// coordinator, so the generation bump fires on exactly the restart routes and
+// never on a first open (#134: enumerate every replacement entry point).
+const pendingPtyRestart = new Set<string>();
+/** Mark that this workspace's next `ptyStart` is a coordinator-replacement
+ *  respawn (a 'pty:restart' the renderer will bounce back). Best-effort intent
+ *  flag; the actual bump is still gated on the workspace being its own
+ *  orchestrator anchor (see maybeBumpCoordinatorOnReplacement). */
+export function markPtyRestartPending(id: string): void {
+  pendingPtyRestart.add(id);
+}
+/** Consume the pending-replacement flag set by markPtyRestartPending. Returns
+ *  true (and clears it) iff this ptyStart is a replacement respawn. */
+export function consumePtyRestartPending(id: string): boolean {
+  return pendingPtyRestart.delete(id);
+}
+
+/**
+ * #166 — BUMP the coordinator generation when a NEW coordinator process replaces
+ * the OLD one on the SAME run. Every write the old process still has in flight
+ * carries the pre-bump generation and is fenced out by `fencedWrite` once the
+ * successor presents the bumped generation (plumbed into its env below).
+ *
+ * Gate (must fire on EVERY replacement and NEVER over-bump — #134 core risk):
+ *  - the launching ws IS its own orchestrator anchor (`wsId === anchorId` &&
+ *    `anchorIsOrchestrator`): a plain MEMBER's anchor is its OPS's run, so a
+ *    member relaunch would fence the LIVE OPS's own writes — catastrophic;
+ *  - a run row already EXISTS for that anchor: a bump on a run nobody started
+ *    throws (bus.ts), and a first-ever start has no old coordinator to fence
+ *    (acceptance arm 1: first-start stays 0, respawn bumps 0→1).
+ *
+ * Best-effort (D1): a bus failure/absence must never throw into the launch path.
+ * Called ONLY from the restart chokepoints (never a first start), so gate G is
+ * the sole discriminator that a replacement is happening.
+ */
+export function maybeBumpCoordinatorOnReplacement(ws: Workspace): void {
+  try {
+    const db = getBus();
+    if (!db) return; // D1: no bus → fencing is inert for this run
+    const anchor = resolveAnchorInfo(ws);
+    const runRowExists = getRun(db, anchor.anchorId) != null;
+    if (!shouldBumpCoordinatorGeneration(anchor, runRowExists)) return;
+    const gen = bumpCoordinatorGeneration(db, anchor.anchorId);
+    log.info(`bus-fencing: coordinator generation for run ${anchor.anchorId} bumped to ${gen}`);
+  } catch (e) {
+    log.warn(`bus-fencing: coordinator-generation bump failed for ${ws.id}`, e);
+  }
 }
 
 /**

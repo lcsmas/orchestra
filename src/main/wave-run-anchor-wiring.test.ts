@@ -24,6 +24,8 @@ const workspacesSrc = read('src/main/workspaces.ts');
 const indexSrc = read('src/main/index.ts');
 const hooksSrc = read('src/main/hooks-server.ts');
 const agentSdkSrc = read('src/main/agent-sdk.ts');
+const restartSrc = read('src/main/restart-workspace.ts');
+const apiHandlersSrc = read('src/main/api-handlers.ts');
 
 test('CONTROL: the four sources are readable and non-trivial', () => {
   assert.ok(workspacesSrc.length > 10_000, `workspaces.ts short: ${workspacesSrc.length}`);
@@ -206,4 +208,114 @@ test('P4 — /busStatus reads runFlags + getLiveSwitches for the CLI run id', ()
   assert.match(body, /getLiveSwitches\(\)/, 'live flags must come from the store');
   assert.match(body, /frozenFlags:/, 'the frozen flags must be returned');
   assert.match(body, /liveFlags:/, 'the live flags must be returned');
+});
+
+// ─── #166 — the coordinator-generation BUMP is wired at EVERY replacement path ─
+// The bump GATE + primitive are driven for real in bus-fencing-wiring.test.ts.
+// What THIS block catches is the #134-class regression: a replacement path whose
+// bump call is deleted or never added, or the env var never plumbed. The modules
+// are un-importable under node --test (./platform / ./store), so source-grep;
+// every assertion has a negative control so it cannot pass on an empty/wrong file.
+
+test('#166 — the bump effect calls the PURE gate then the real bump (no re-implementation)', () => {
+  const body = fnBody(workspacesSrc, 'export function maybeBumpCoordinatorOnReplacement(');
+  assert.match(body, /shouldBumpCoordinatorGeneration\(anchor, runRowExists\)/, 'gate decides the bump');
+  assert.match(body, /bumpCoordinatorGeneration\(db, anchor\.anchorId\)/, 'the real primitive performs it');
+  // Negative control: a build that dropped the effect has no such function body.
+  assert.ok(body.length > 0 && body.includes('getBus()'), 'the effect must read the boot bus');
+});
+
+test('#166 — startAgentPty bumps ONLY on a coordinatorReplacement launch, before the env', () => {
+  const body = startAgentPtyBody();
+  // The bump is gated on the explicit replacement opt (a first open leaves it
+  // false → no bump), and lives BEFORE the extraEnv object so the successor
+  // presents the new generation.
+  assert.match(
+    body,
+    /if \(!remote && opts\?\.coordinatorReplacement\) maybeBumpCoordinatorOnReplacement\(ws\)/,
+    'startAgentPty bumps only on a coordinatorReplacement launch',
+  );
+  const bumpIdx = body.indexOf('maybeBumpCoordinatorOnReplacement');
+  const envIdx = body.indexOf('ORCHESTRA_COORDINATOR_GENERATION');
+  assert.ok(bumpIdx > 0 && envIdx > bumpIdx, 'the bump must precede the env read (successor presents the new gen)');
+});
+
+test('#166 — startAgentPty extraEnv plumbs ORCHESTRA_COORDINATOR_GENERATION from coordinatorGeneration', () => {
+  const body = startAgentPtyBody();
+  assert.match(body, /coordinatorGeneration\(db, waveRunId\)/, 'the generation is read from the run row');
+  assert.match(
+    body,
+    /if \(gen > 0\) extraEnv\.ORCHESTRA_COORDINATOR_GENERATION = String\(gen\)/,
+    'the var is set ONLY when bumped past 0 (absent/0 = unfenced v1, coexistence-safe)',
+  );
+});
+
+test('#166 — buildSdkEnv (structured surface) plumbs ORCHESTRA_COORDINATOR_GENERATION too', () => {
+  const body = fnBody(agentSdkSrc, 'async function buildSdkEnv(');
+  assert.match(body, /coordinatorGeneration\(db, env\.ORCHESTRA_RUN_ID\)/, 'structured env reads the generation');
+  assert.match(
+    body,
+    /if \(gen > 0\) env\.ORCHESTRA_COORDINATOR_GENERATION = String\(gen\)/,
+    'parity with the PTY path — set only when bumped past 0',
+  );
+});
+
+test('#166 — sdkRestart (structured restart) bumps on both branches, past the mid-turn guard', () => {
+  const body = fnBody(agentSdkSrc, 'export async function sdkRestart(');
+  // The bump helper is invoked (via the local closure) on BOTH the fresh and the
+  // conversation-preserving branch. Crucially the NON-fresh bump fires AFTER the
+  // mid-turn guard's throw, so a refused restart never bumps.
+  assert.match(body, /maybeBumpCoordinatorOnReplacement\(restartingWs\)/, 'the bump closure calls the effect');
+  // Two invocations of the closure (fresh branch + non-fresh branch).
+  const calls = body.match(/bumpCoordinatorIfSelf\(\);/g) ?? [];
+  assert.equal(calls.length, 2, 'the bump closure is called on both the fresh and non-fresh branches');
+  const guardIdx = body.indexOf('The agent is working');
+  assert.ok(guardIdx > 0, 'the mid-turn guard is present');
+  // The LAST closure call (the non-fresh branch) must be after the guard.
+  const lastCallIdx = body.lastIndexOf('bumpCoordinatorIfSelf();');
+  assert.ok(lastCallIdx > guardIdx, 'the non-fresh bump fires AFTER the mid-turn guard (a refused restart never bumps)');
+});
+
+test('#166 — the two renderer-driven pty:restart routes mark a pending replacement', () => {
+  // restartAgent (toolbar, live PTY) and switchWorkspaceBranch broadcast
+  // pty:restart, which the renderer bounces to ptyStart — which then calls
+  // startAgentPty. Without a main-side marker that respawn could not tell itself
+  // from a first open (#134 under-wire). Both broadcasters must mark pending.
+  // Anchor on the HANDLER forms (`… : async`) — the bare `restartAgent:` /
+  // `ptyStart:` keys also appear in the channel-name map earlier in the file.
+  const restartAgentStart = apiHandlersSrc.indexOf('restartAgent: async');
+  assert.ok(restartAgentStart > 0, 'restartAgent handler not found');
+  const restartAgentBody = apiHandlersSrc.slice(
+    restartAgentStart,
+    apiHandlersSrc.indexOf('stopAgent: async', restartAgentStart),
+  );
+  assert.match(restartAgentBody, /markPtyRestartPending\(id\)/, 'toolbar live-PTY restart marks pending');
+  assert.match(restartAgentBody, /platform\.broadcast\('pty:restart', id\)/, 'and broadcasts pty:restart');
+
+  const switchBody = fnBody(workspacesSrc, 'export async function switchWorkspaceBranch(');
+  assert.match(switchBody, /markPtyRestartPending\(id\)/, 'branch switch marks pending');
+
+  // ptyStart consumes the marker and passes it into startAgentPty.
+  const ptyStartStart = apiHandlersSrc.indexOf('ptyStart: async');
+  assert.ok(ptyStartStart > 0, 'ptyStart handler not found');
+  const ptyStartBody = apiHandlersSrc.slice(
+    ptyStartStart,
+    apiHandlersSrc.indexOf('ptyWrite: async', ptyStartStart),
+  );
+  assert.match(ptyStartBody, /consumePtyRestartPending\(id\)/, 'ptyStart consumes the pending flag');
+  assert.match(
+    ptyStartBody,
+    /startAgentPty\(ws, cols, rows, \{ coordinatorReplacement \}\)/,
+    'and threads it into startAgentPty',
+  );
+});
+
+test('#166 — the restartPty effect marks its startAgentPty a coordinatorReplacement', () => {
+  assert.match(
+    restartSrc,
+    /coordinatorReplacement: true/,
+    'the CLI/#142 restart PTY effect must flag the replacement',
+  );
+  // Negative control: the source actually contains the startAgentPty call it flags.
+  assert.match(restartSrc, /await startAgentPty\(/, 'restart-workspace calls startAgentPty');
 });

@@ -40,8 +40,10 @@ import {
   orchestratorBrief,
   createWorkspace,
   resolveWaveRunId,
+  maybeBumpCoordinatorOnReplacement,
   DEFAULT_CHILD_MODEL,
 } from './workspaces';
+import { getBus, coordinatorGeneration } from './bus.ts';
 import { forkBranchName } from '../shared/fork-session';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
 import { scopeSessionsToWorktree, type SessionCandidate } from '../shared/session-discovery';
@@ -761,6 +763,19 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   // 'default'/host- instead of the wave — the same G9-class miss as the run row,
   // one env var over. Set unconditionally (independent of the spool gate below).
   env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);
+  // #166 — FENCING parity with startAgentPty: present the wave run's current
+  // coordinator generation so this session's CLI bus verbs (`resolveFencing`
+  // reads $ORCHESTRA_COORDINATOR_GENERATION) can be fenced. Set ONLY when bumped
+  // past 0 — absent/0 is the unfenced v1 path (coexistence-safe). A structured
+  // coordinator restart bumps in sdkRestart BEFORE this env is built, so the
+  // successor presents the new one. Best-effort: a bus read failure omits it.
+  try {
+    const db = getBus();
+    const gen = db ? coordinatorGeneration(db, env.ORCHESTRA_RUN_ID) : 0;
+    if (gen > 0) env.ORCHESTRA_COORDINATOR_GENERATION = String(gen);
+  } catch (e) {
+    log.warn(`agent-sdk: could not read coordinator generation for ${env.ORCHESTRA_RUN_ID}`, e);
+  }
   // Auto-rename gate parity with startAgentPty (workspaces.ts): the SessionStart
   // /UserPromptSubmit rename-instruction hook hard-gates on
   // `ORCHESTRA_BRANCH_AUTO=1` and reads `ORCHESTRA_AUTO_RENAME_COUNT` to pick the
@@ -4097,11 +4112,24 @@ export async function sdkRestart(
   wsId: string,
   opts: { fresh: boolean; trigger?: RestartTrigger },
 ): Promise<void> {
+  // #166 — a structured restart REPLACES the coordinator process on the same
+  // run, so bump the coordinator generation so the successor's buildSdkEnv
+  // presents the new one and the old process's in-flight writes are fenced.
+  // Gated (in the helper) on the ws being its own orchestrator anchor — a plain
+  // member restart no-ops, never fencing the live anchor. Done here, past every
+  // early return, so a refused restart (mid-turn guard below) does NOT bump.
+  const bumpCoordinatorIfSelf = () => {
+    const restartingWs = store.getWorkspace(wsId);
+    if (restartingWs) maybeBumpCoordinatorOnReplacement(restartingWs);
+  };
   if (opts.fresh) {
     // sdkClear = sdkStop + persist sdkSessionId:'' + broadcast session/clear.
     // The next send spawns a vierge session in the same worktree. A `--fresh`
     // restart drops the conversation, so there is no "conversation préservée"
     // row to render — the /clear reset is the surface, not a restart notice.
+    // A fresh restart still replaces the coordinator process → bump first, so
+    // the vierge session's buildSdkEnv presents the new generation.
+    bumpCoordinatorIfSelf();
     await sdkClear(wsId);
     return;
   }
@@ -4111,6 +4139,9 @@ export async function sdkRestart(
   if (live && live.turnGate !== null) {
     throw new Error('The agent is working — interrupt it first, then restart.');
   }
+  // Past the mid-turn guard: this restart WILL replace the process → bump now,
+  // before the teardown + ensureSession that rebuilds the env.
+  bumpCoordinatorIfSelf();
   // #148: mark the intent BEFORE the teardown that makes the keeper synthesize
   // exit(-1). The consume-loop catch reads `restartRequested` to render a
   // neutral row instead of the red error box. Set it on the live session (if

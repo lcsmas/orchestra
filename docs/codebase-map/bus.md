@@ -1387,6 +1387,10 @@ would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
 | `src/shared/bus-switches.ts` | The `fencing` mechanism added to the enum/labels/wire map. |
 | `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
 | `src/renderer/components/BusPane.tsx` | `data-run-generation` per run. |
+| `src/main/bus-run-anchor.ts` | **#166 PRODUCER GATE** `shouldBumpCoordinatorGeneration(anchor, runRowExists)` — pure: bump IFF `anchorIsOrchestrator && wsId===anchorId && runRowExists` (excludes members = never fence the live anchor; excludes first-start = stays gen 0). |
+| `src/main/workspaces.ts` | **#166 PRODUCER** `maybeBumpCoordinatorOnReplacement(ws)` (gate → `bumpCoordinatorGeneration`, best-effort D1); `startAgentPty` opt `coordinatorReplacement` bumps before `extraEnv` + plumbs `ORCHESTRA_COORDINATOR_GENERATION` (gen>0 only); `markPtyRestartPending`/`consumePtyRestartPending` (the toolbar-live-PTY + branch-switch `pty:restart` routes); `switchWorkspaceBranch` marks pending. |
+| `src/main/agent-sdk.ts` | **#166** `buildSdkEnv` plumbs `ORCHESTRA_COORDINATOR_GENERATION` (parity); `sdkRestart` bumps on both branches, non-fresh AFTER the mid-turn guard (a refused restart never bumps). |
+| `src/main/restart-workspace.ts` + `src/main/api-handlers.ts` | **#166** `restartPty` passes `coordinatorReplacement:true`; toolbar `restartAgent`+`ptyStart` mark/consume the pending-replacement flag. |
 
 ## Schema — `MIGRATIONS[5]`, `SCHEMA_VERSION 4 → 5`
 
@@ -1461,6 +1465,8 @@ npx tsc --noEmit                                                         # C1
 node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  5 pure
 node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 10 real-bus (primitive + fencedWrite)
 node --test --experimental-strip-types src/cli/bus-verbs.test.ts         # +5 VERB-path arms (F2): verbSend/Ack/Gate → fenced → fencedWrite
+node --test --experimental-strip-types src/main/bus-fencing-wiring.test.ts # #166 PRODUCER: pure gate + real-bus replacement flow (arms 1-3)
+node --test --experimental-strip-types src/main/wave-run-anchor-wiring.test.ts # #166 source-grep for the bump/env wiring in un-importable modules
 node scripts/bus-pane-render-smoke.mjs                                   # T128.2 generation visible
 pnpm run test                                                            # in the suite; # skipped must be 0
 ```
@@ -1479,11 +1485,15 @@ reddens), mutant-string verified live, then GREEN restored.
 
 ## Not covered here
 
-No production caller BUMPS generation yet — an OPS respawn calling
-`bumpCoordinatorGeneration` is the promotion step, not this ticket (like
-`ORCHESTRA_RUN_ID` still being unplumbed on master, #118 N2 tail). The fleet
-skill does not yet branch on the `fencing=OFF` notice line (inert while OFF). No
-live packaged two-generation refusal through a running app.
+The producer is WIRED as of #166 (see the two PRODUCER rows above): every
+coordinator-REPLACEMENT relaunch (CLI/#142 restart, toolbar Restart on a live
+PTY, branch switch, structured `sdkRestart`) bumps and the successor presents
+`$ORCHESTRA_COORDINATOR_GENERATION`; a first start / promote / member relaunch
+never bumps. The fleet skill does not yet branch on the `fencing=OFF` notice line
+(inert while OFF). The live packaged two-generation refusal through a running app
+(the F1b arm) runs post-release (LEAD, wave 7) — the in-repo gate is source-grep
+for the un-importable wiring + the real-bus composition in
+`bus-fencing-wiring.test.ts`.
 
 ---
 
