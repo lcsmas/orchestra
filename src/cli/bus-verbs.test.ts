@@ -109,6 +109,7 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
         openGatesForRecipient: bus.openGatesForRecipient,
         openGatesForRecipientInRuns: bus.openGatesForRecipientInRuns,
         getRelatedRunIds: busRuns.getRelatedRunIds,
+        getRun: busRuns.getRun,
         // #128 fencing + #129 capability, the real bus.ts helpers.
         fencedWrite: bus.fencedWrite,
         mintCapability: bus.mintCapability,
@@ -1446,4 +1447,82 @@ test('T130.3 gate resolve: switch OFF → replay re-resolves and REFUSES (v1 ide
     /not open/,
     'switch OFF: v1 refusal is preserved, the receipt did not short-circuit',
   );
+});
+
+// ─── #175: cross-run reachability guard (send/ask/gate open) ────────────────
+
+test('#175 must-FAIL — send --to a coordinator anchoring an UNRELATED root run is refused, nothing written', (t) => {
+  // The live incident's shape: two root missions with no parent link; a send in
+  // run A addressed to the coordinator of run B lands in A, where B's reader
+  // (related set = {B} here) can never be woken and never checks.
+  // MUTANT: delete the assertRecipientReachable call in verbSend → the send
+  // "succeeds" (sequence printed), the recipient-side check below still reads 0
+  // in ITS run, and the refusal assertions go red.
+  const r = rig(t);
+  startRun(
+    r.ctx('x').db,
+    { id: 'ws-other-lead', kind: 'mission', coordinator: 'ws-other-lead' },
+    DEFAULT_BUS_SWITCHES,
+  );
+  assert.throws(() =>
+    verbSend(r.ctx('ops'), { kind: 'escalation', to: 'ws-other-lead', thread: null, body: 'bug report' }),
+  );
+  assert.match(r.fails[0], /unreachable in run run-cli/);
+  assert.match(r.fails[0], /#175/);
+  assert.match(r.fails[0], /--run ws-other-lead --to ws-other-lead/, 'the refusal must NAME the working path');
+  // Nothing written — in the send run NOR anywhere the recipient reads.
+  assert.equal(bus.check(r.db, RUN, 'ws-other-lead').messages.length, 0);
+  assert.equal(bus.check(r.db, 'ws-other-lead', 'ws-other-lead').messages.length, 0);
+});
+
+test('#175 must-PASS — related-run anchors, plain members and the explicit --run workaround still deliver', (t) => {
+  const r = rig(t);
+  // Topology: lead175 anchors a root run; ops175 anchors a child run of it.
+  startRun(r.ctx('x').db, { id: 'lead175', kind: 'mission', coordinator: 'lead175' }, DEFAULT_BUS_SWITCHES);
+  startRun(
+    r.ctx('x').db,
+    { id: 'ops175', kind: 'vague', coordinator: 'ops175', parentRunId: 'lead175' },
+    DEFAULT_BUS_SWITCHES,
+  );
+  // Child-run sender → ancestor-anchoring recipient (OPS→LEAD digest): allowed.
+  verbSend(r.ctx('ops175', undefined, 'ops175'), { kind: 'status', to: 'lead175', thread: null, body: 'digest' });
+  // Parent-run sender → descendant-anchoring recipient (LEAD→OPS ruling): allowed.
+  verbSend(r.ctx('lead175', undefined, 'lead175'), { kind: 'status', to: 'ops175', thread: null, body: 'ruling' });
+  // Plain member (no runs row, e.g. freshly spawned, no cursor yet): NOT judged.
+  verbSend(r.ctx('ops'), { kind: 'dispatch', to: 'w-fresh', thread: null, body: 'brief' });
+  // The refusal's own named workaround: an OUTSIDER addressing the recipient's
+  // anchored run explicitly (send run == anchor run, trivially related).
+  verbSend(r.ctx('outsider', undefined, 'lead175'), { kind: 'escalation', to: 'lead175', thread: null, body: 'cross-fleet bug report' });
+  // Delivery proof per arm, read where each message actually lives: the OPS→LEAD
+  // digest sits in the CHILD run (the wake order names `check --run <mailRun>`,
+  // and the plain check reaches it via the #158 related-run widening); the
+  // outsider's explicit-run send sits in the recipient's own anchored run.
+  assert.deepEqual(
+    bus.check(r.db, 'ops175', 'lead175').messages.map((m) => m.body),
+    ['digest'],
+    'the ancestor-anchoring recipient reads the child-run send',
+  );
+  assert.deepEqual(
+    bus.check(r.db, 'lead175', 'lead175').messages.map((m) => m.body),
+    ['cross-fleet bug report'],
+    'the explicit --run workaround lands in the recipient own run',
+  );
+  assert.equal(r.fails.length, 0, 'no arm was refused');
+});
+
+test('#175 — ask and gate open take the same guard; gate --to human is exempt', (t) => {
+  const r = rig(t);
+  startRun(
+    r.ctx('x').db,
+    { id: 'ws-other-lead', kind: 'mission', coordinator: 'ws-other-lead' },
+    DEFAULT_BUS_SWITCHES,
+  );
+  assert.throws(() => verbAsk(r.ctx('ops'), 'ws-other-lead', 'may I?'));
+  assert.match(r.fails[0], /orchestra ask: --to ws-other-lead is unreachable/);
+  assert.throws(() => verbGate(r.ctx('ops'), 'open', ['--to', 'ws-other-lead', 'ruling needed']));
+  assert.match(r.fails[1], /orchestra gate open: --to ws-other-lead is unreachable/);
+  // #161 human-directed gates read through the app's all-runs surface, not the
+  // run topology — never judged by this guard.
+  verbGate(r.ctx('ops'), 'open', ['--to', 'human', 'human ruling needed']);
+  assert.ok(Number(r.out[r.out.length - 1]) > 0, 'a human-directed gate still opens');
 });

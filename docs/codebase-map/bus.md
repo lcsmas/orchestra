@@ -2272,9 +2272,20 @@ and neither clobbers the other:
 |---|---|---|---|
 | #142 `refuseIfStaleRun()` | the `.orchestra/bus-run-stale` marker FILE, **before any bus opens** | this workspace was re-parented with `--no-restart` | `staleRunRefusalMessage` |
 | #155 run-existence | the opened bus (`runExists`), after openBusForVerb | `run_id` (≠ `default`) has no `runs` row | `unknownRunRefusalMessage` |
+| #175 recipient-reachability | `assertRecipientReachable()` in `bus-verbs.ts`, inside send/ask/gate-open, before any write | `--to` names a workspace that ANCHORS its own run (`getRun(to)` non-null) and the send run ∉ `getRelatedRunIds(to).ids` | inline, names the fix (`--run <to> --to <to>`) |
 
 The #142 marker gate short-circuits first, so a stale + unanchored workspace sees
 #142's message, never #155's.
+
+The #175 guard is the WRITE-side mirror of the READ predicate: a recipient
+anchoring its own run reads mail only in `getRelatedRunIds(anchor)` (the same
+set `check`'s widening and the wake sweep use), so a `--to` into any other run
+is accepted-and-delivered-to-nobody (live incident 2026-09-21, seq 1355/1356:
+an escalation between two unrelated root missions, found only by reading the
+DB). Refuses exactly what is provably invisible: a recipient with NO run row
+(plain member, maybe freshly spawned with no cursor yet) is not judged, and
+`--to human` (#161 all-runs surface) is exempt. Mutation-proven in
+`bus-verbs.test.ts` (`#175 must-FAIL` reddens with the send-site call deleted).
 
 ## Gates (#155)
 
