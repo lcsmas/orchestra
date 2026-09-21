@@ -352,7 +352,17 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   the event. The limit formula is an Orchestra-side REPLICA of the CLI's —
   `max(40000, contextWindow * 0.05 * 3)` — documented with its drift risks in
   `src/shared/memory-size.ts`; `src/main/memory-files.ts` does the (import-
-  resolving) measurement. **`AgentThinkingTokensEvent`** (`system/thinking_tokens`) drives a live
+  resolving) measurement.
+  **`AgentUsageWarningEvent`** (`session/usage-warning`) carries the SDK's
+  `rate_limit_event`/`allowed_warning` as pinned session state
+  (`session.usageWarning`), never a transcript row — the SDK re-warns on every
+  API call near the limit, which used to spam one identical `rate-limit`
+  notice row per call. Rendered as the amber `UsageWarningStrip` above the
+  composer (`.av-usage-strip`, level-triggered: cleared by an `allowed` event,
+  by a real rejection — whose own `rate-limit` notice row and #74 latch are
+  untouched — or self-expired past `resetsAt`; smoke:
+  `scripts/usage-warning-render-smoke.mjs`).
+  **`AgentThinkingTokensEvent`** (`system/thinking_tokens`) drives a live
   "thinking · N tokens" readout while redacted thinking streams nothing else.
   A `status` message's `permissionMode` also emits `session/update` (CLI-side
   mode changes reflect live).

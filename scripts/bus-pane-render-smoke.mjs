@@ -249,6 +249,9 @@ const SEEDED = {
   messages,
   gates,
   members,
+  // #142 section renders only when non-empty; the field itself is mandatory
+  // (BusPaneView reads .length unconditionally — absent = render crash).
+  staleRunWorkspaces: [],
   counters,
   countersBusAvailable: true,
 };
@@ -263,6 +266,7 @@ const EMPTY = {
   messages: [],
   gates: [],
   members: [],
+  staleRunWorkspaces: [],
   counters: [],
   countersBusAvailable: null,
 };

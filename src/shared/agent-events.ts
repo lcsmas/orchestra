@@ -771,20 +771,31 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
             rejected: true,
             ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
           }),
+          // A rejection supersedes the "approaching" banner — its own surfaces
+          // (the notice row above, the prompt-queue banner) tell the story.
+          stamp(ctx, { type: 'session/usage-warning', warning: null }),
         ];
       }
       if (info.status === 'allowed_warning') {
-        const pct = typeof info.utilization === 'number' ? ` (${Math.round(info.utilization * 100)}% used)` : '';
+        // STATE, not a row: the SDK re-emits this warning on every API call
+        // while near the limit, so a notice per event spammed N identical rows.
+        // The fold pins it as the composer banner; each event replaces the last.
         return [
           stamp(ctx, {
-            type: 'notice',
-            kind: 'rate-limit',
-            text: `Approaching usage limit${pct}`,
-            ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
+            type: 'session/usage-warning',
+            warning: {
+              ...(typeof info.utilization === 'number' ? { utilization: info.utilization } : {}),
+              ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
+            },
           }),
         ];
       }
-      return []; // 'allowed' — nothing to show
+      if (info.status === 'allowed') {
+        // Nothing to show, but it must CLEAR a prior warning banner (level-
+        // triggered: the state is only true while the SDK keeps saying so).
+        return [stamp(ctx, { type: 'session/usage-warning', warning: null })];
+      }
+      return []; // unknown status — no opinion, leave any banner as-is
     }
 
     default:
@@ -1881,6 +1892,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       // warning (a merge-shaped fold could only ever add — the absent-means-no-
       // opinion trap that leaves a stale banner pinned after the file shrinks).
       return { ...next, oversizedMemory: event.files };
+
+    case 'session/usage-warning':
+      // Replaced wholesale, same shape as memory-size above: `null` must CLEAR
+      // a previous warning (the merge-shaped fold could only ever add).
+      return { ...next, usageWarning: event.warning ?? undefined };
 
     case 'thinking-tokens':
       return { ...next, liveThinkingTokens: event.tokens };

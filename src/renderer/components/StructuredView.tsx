@@ -94,6 +94,7 @@ import {
   totalTaskCount,
 } from './agent';
 import { MemorySizeBanner } from './agent/MemorySizeBanner';
+import { UsageWarningStrip } from './agent/UsageWarningStrip';
 import { RewindContext } from './agent/rewind-context';
 import { previousRewindId, rewindPrefillText } from './agent/rewind-util';
 import { forkTargetId, canForkFrom } from '../../shared/fork-session';
@@ -342,6 +343,9 @@ export function StructuredView({ workspaceId, isActive }: Props) {
       {/* A4 extension point: permission dialog(s) for parked canUseTool calls.
           Rendered as an overlay above the list. */}
       <PermissionSlot session={session} workspaceId={workspaceId} />
+      {/* Level-triggered usage-limit warning: pinned above the composer, never
+          a transcript row (the SDK re-warns per API call — see the component). */}
+      <UsageWarningStrip warning={session?.usageWarning} />
       {/* The model/mode controls and the ambient cost/context/branch readout are
           passed INTO the composer: they render as the card's bottom row and the
           caption strip beneath it, so the whole send surface is one frame. */}

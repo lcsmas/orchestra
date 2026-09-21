@@ -3104,6 +3104,35 @@ h6.av-md-h {
 }
 .av-memory-banner-close:hover { color: var(--av-text); background: var(--av-hover, transparent); }
 
+/* ── Usage-limit warning strip — pinned above the composer ─────────────────
+   Level-triggered STATE surface (see UsageWarningStrip.tsx): one persistent
+   amber strip whose percentage updates in place, replacing the old one-notice-
+   row-per-API-call transcript spam. */
+.av-usage-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--av-warn) 38%, transparent);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in srgb, var(--av-warn) 10%, var(--av-surface-raised));
+  color: var(--av-text);
+  font-size: var(--av-fs-meta, 12px);
+  line-height: 1.4;
+}
+.av-usage-strip-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--av-warn);
+}
+.av-usage-strip-text { flex: 1 1 auto; min-width: 0; }
+.av-usage-strip-pct { color: var(--av-warn); font-variant-numeric: tabular-nums; }
+.av-usage-strip-reset { flex: 0 0 auto; color: var(--av-text-dim); }
+
 /* ── Queue tray — prompts parked behind the in-flight turn ─────────────────
    Docked INSIDE the composer frame, above the input. It is deliberately a
    distinct SUNKEN strip rather than more bubbles: these are not transcript

@@ -1241,6 +1241,29 @@ export interface AgentNoticeEvent extends AgentEventBase {
   restartTrigger?: RestartTrigger;
 }
 
+/** Payload of {@link AgentUsageWarningEvent} while a warning is ACTIVE. */
+export interface UsageWarningState {
+  /** Utilization 0–1 as the SDK reported it, when it did. */
+  utilization?: number;
+  /** Epoch seconds the limit window resets, when reported. */
+  resetsAt?: number;
+}
+
+/** Standing "approaching usage limit" state (SDK `rate_limit_event` with
+ *  `status: 'allowed_warning'`). The SDK re-emits the warning on EVERY API call
+ *  while near the limit, so folding each into a transcript notice spammed one
+ *  identical row per call — this is an environment STATE, not a moment in the
+ *  conversation, so it pins as a banner above the composer instead (same
+ *  reasoning as {@link AgentMemorySizeEvent}). Replaced wholesale on every
+ *  event; `warning: null` clears it (status back to `allowed`, or a real
+ *  rejection whose own surfaces take over). A REJECTION still emits the
+ *  `rate-limit` notice row — the #74 auto-resume latch reads that structurally
+ *  and is untouched by this event. */
+export interface AgentUsageWarningEvent extends AgentEventBase {
+  type: 'session/usage-warning';
+  warning: UsageWarningState | null;
+}
+
 /** The CLAUDE.md memory files that exceed the model's per-file char limit.
  *  Emitted ONCE per session by main (the SDK never reports this — see
  *  shared/memory-size.ts), and folded into pinned session state rather than a
@@ -1923,6 +1946,7 @@ export type AgentEvent =
   | AgentTaskEvent
   | AgentNoticeEvent
   | AgentMemorySizeEvent
+  | AgentUsageWarningEvent
   | AgentStatusEvent
   | AgentThinkingTokensEvent
   | AgentSessionClearEvent
@@ -2123,6 +2147,13 @@ export interface AgentSession {
    *  Recomputed nowhere in the renderer: main measures it once at init (see
    *  main/memory-files.ts) because the SDK never reports it. */
   oversizedMemory?: OversizedMemoryNotice[];
+  /** Active "approaching usage limit" warning, from
+   *  {@link AgentUsageWarningEvent}. Pinned banner above the composer (never a
+   *  transcript row — the SDK re-warns on every API call near the limit, which
+   *  used to spam one identical notice row per call). Cleared when the SDK
+   *  reports `allowed` again or a real rejection takes over; the renderer also
+   *  self-expires it past `resetsAt`. */
+  usageWarning?: UsageWarningState;
   /** The highest `seq` folded in, so a caller can detect a gap. */
   lastSeq: number;
 }

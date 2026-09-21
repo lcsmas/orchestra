@@ -1393,14 +1393,76 @@ test('normalize: rate_limit_event rejected → rate-limit notice with resetsAt',
   assert.equal(ev.resetsAt, 1_753_500_000);
 });
 
-test('normalize: rate_limit_event allowed → no event', () => {
-  assert.deepEqual(
-    normalizeSdkMessage(
-      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } } as SdkMessage,
-      ctx(),
-    ),
-    [],
+test('normalize: rate_limit_event allowed → clears the usage-warning state (no row)', () => {
+  const evs = normalizeSdkMessage(
+    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } } as SdkMessage,
+    ctx(),
   );
+  assert.equal(evs.length, 1);
+  assert.equal(evs[0].type, 'session/usage-warning');
+  assert.equal((evs[0] as Extract<AgentEvent, { type: 'session/usage-warning' }>).warning, null);
+});
+
+test('normalize: allowed_warning → usage-warning STATE, never a notice row', () => {
+  // The SDK re-emits this on EVERY API call near the limit; a notice per event
+  // spammed one identical transcript row per call (the defect this replaces).
+  const evs = normalizeSdkMessage(
+    {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'allowed_warning', utilization: 0.76, resetsAt: 1_753_500_000 },
+    } as SdkMessage,
+    ctx(),
+  );
+  assert.equal(evs.length, 1);
+  const ev = evs[0] as Extract<AgentEvent, { type: 'session/usage-warning' }>;
+  assert.equal(ev.type, 'session/usage-warning');
+  assert.deepEqual(ev.warning, { utilization: 0.76, resetsAt: 1_753_500_000 });
+});
+
+test('fold: repeated warnings pin ONE banner state and add ZERO transcript rows', () => {
+  const c = ctx();
+  let s = emptySession('ws1');
+  const rowsBefore = s.messages.length;
+  for (const utilization of [0.75, 0.75, 0.76, 0.76, 0.76]) {
+    s = foldEvents(s, normalizeSdkMessage(
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', utilization, resetsAt: 99 } } as SdkMessage,
+      c,
+    ));
+  }
+  assert.equal(s.messages.length, rowsBefore, 'no notice rows for warnings');
+  assert.deepEqual(s.usageWarning, { utilization: 0.76, resetsAt: 99 }, 'latest warning wins in place');
+
+  // 'allowed' clears the pinned state (level-triggered).
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } } as SdkMessage,
+    c,
+  ));
+  assert.equal(s.usageWarning, undefined);
+
+  // A clear with nothing to clear stays cleared and still adds no rows.
+  const s2 = foldEvents(s, normalizeSdkMessage(
+    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } } as SdkMessage,
+    c,
+  ));
+  assert.equal(s2.usageWarning, undefined);
+  assert.equal(s2.messages.length, rowsBefore);
+});
+
+test('fold: a rejection keeps its notice row AND clears the warning banner', () => {
+  const c = ctx();
+  let s = emptySession('ws1');
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', utilization: 0.9 } } as SdkMessage,
+    c,
+  ));
+  assert.ok(s.usageWarning);
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 123 } } as SdkMessage,
+    c,
+  ));
+  const row = s.messages[s.messages.length - 1];
+  assert.equal(row.noticeKind, 'rate-limit', 'the #74 structural notice row survives');
+  assert.equal(s.usageWarning, undefined, 'a rejection supersedes the approaching banner');
 });
 
 test('normalize: auth_status with error → auth notice', () => {
