@@ -426,7 +426,13 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
           firstMessageSeen: progress.firstMessageSeen,
           turnInFlight: progress.gateHeld,
           pendingPromptCount: progress.pendingPromptCount,
-          lastStreamAt: progress.lastStreamAt,
+          // REAL-STREAM clock, not `lastStreamAt` (issue #174 clock-pollution):
+          // a boot-wedged session that keeps receiving bus-wake DELIVERIES has a
+          // turn armed on each → `lastStreamAt` reset → the silence window never
+          // elapses and the wedge never self-heals (field: ws 1a9ffb75 +
+          // ba1040aa, repeated wake, zero heal). `lastStreamMessageAt` is bumped
+          // ONLY by a genuine stream message, so turn-arming can't pollute it.
+          lastStreamAt: progress.lastStreamMessageAt,
           // `stopping` is not exposed on the probe; a stopping session has no
           // gate held (sdkStop releases it), so `turnInFlight` already excludes
           // it. Pass false explicitly rather than guess.
@@ -453,7 +459,15 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
       // documented in queue-stall.ts as not surviving a restart. A session that
       // emitted anything inside the silence window is refused regardless of
       // what its status says.
-      lastStreamAt: progress?.lastStreamAt ?? null,
+      //
+      // REAL-STREAM clock (issue #174 clock-pollution): the destructive-recycle
+      // progress refusal must key on genuine stream output, NEVER a turn-arm —
+      // otherwise a boot-wedge verdict (correctly fired on the un-polluted
+      // decideBootWedge clock above) would be refused HERE because a wake-delivery
+      // arm just reset `lastStreamAt`. Both the stall and boot-wedge paths feed
+      // this one refusal, and "did real output happen in the window" is the right
+      // question for both — a turn-arm is not progress.
+      lastStreamAt: progress?.lastStreamMessageAt ?? null,
       recentRecycles: ledger,
       now,
     });

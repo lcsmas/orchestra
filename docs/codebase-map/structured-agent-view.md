@@ -464,8 +464,12 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   session for ~35 min until a human re-kicked it.
   Two layers fix it, both keyed off `src/shared/session-wedge.ts` (pure policy,
   unit- and mutation-tested):
-  - `Session.lastStreamAt` is stamped by `consume()` on **every** stream message
-    and `Session.gateTurnUuid` records which turn holds the gate.
+  - `Session.lastStreamAt` is stamped on **every** stream message (`consume()`)
+    AND at turn-ARM (`promptStream`, before `yield`) — the arm reset keeps the
+    gate-release watchdog from releasing a freshly-armed healthy turn. (The
+    boot-wedge detector needs a clock the arm CANNOT touch — see
+    `lastStreamMessageAt` under Layer 2b.) `Session.gateTurnUuid` records which
+    turn holds the gate.
     `sdkGateProbe` / `sdkReleaseStrandedGate` let a caller observe the same turn
     twice and force-release a gate whose stream has been **completely silent**
     past `GATE_SILENCE_RELEASE_MS`. The bound is on PROGRESS, never duration —
@@ -509,7 +513,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     been silent for the whole `GATE_SILENCE_RELEASE_MS` window since spawn — a
     PROGRESS bound (a slow-but-live boot emits `system/init` at once, which flips
     `firstMessageSeen` true AND resets the clock, so it is NEVER restarted; that is
-    the must-FAIL arm). The discriminator is proof of life, **never** "prompts are
+    the must-FAIL arm).
+    **The boot-wedge clock is `Session.lastStreamMessageAt`, NOT `lastStreamAt`
+    (issue #174 clock-pollution).** `lastStreamAt` is reset at BOTH real stream
+    output AND turn-ARM (`promptStream`, just before `yield`) — correct for the
+    gate-release watchdog, but a boot-wedged session (`firstMessageSeen === false`)
+    that keeps receiving bus-wake DELIVERIES has a turn armed on each → `lastStreamAt`
+    reset → the silence window never elapsed and the wedge never self-healed (field
+    2026-09-21, ws 1a9ffb75 + ba1040aa: repeated wake, ZERO heal). `lastStreamMessageAt`
+    is bumped ONLY by a genuine stream message (`consume()`), so turn-arming cannot
+    pollute it. Both `decideBootWedge`'s clock AND `decideSessionRecycle`'s progress
+    refusal (`session-watchdog.ts`) read `progress.lastStreamMessageAt`; the source
+    pins are in `src/main/session-watchdog.test.ts` and the pure clock arm in
+    `src/shared/session-wedge.test.ts`. The discriminator is proof of life, **never** "prompts are
     live" (the #174 field recovery guard's false positive — the wedged session HELD
     live prompts) and never "inbox empty". The verdict is `QueueStallVerdict`-shaped
     so it feeds the SAME `decideSessionRecycle` (`stalled ?? bootWedge`), inheriting
