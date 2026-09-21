@@ -344,6 +344,25 @@ interface Session {
    *  force-released after a long silence with no stream activity at all — a
    *  turn that is still emitting is never touched, however long it runs. */
   lastStreamAt: number;
+  /** REAL-STREAM progress clock (issue #174 clock-pollution) — bumped ONLY by a
+   *  message actually arriving on the SDK stream (consume()'s per-message stamp),
+   *  NEVER by `promptStream` arming a turn.
+   *
+   *  ## Why this is separate from `lastStreamAt`
+   *
+   *  `lastStreamAt` is reset at BOTH real stream output AND turn-ARM time
+   *  (promptStream, just before `yield`) — the arm reset is correct for the
+   *  gate-release watchdog (`decideGateRelease`), which must not release a
+   *  freshly-armed healthy turn. But the BOOT-WEDGE detector (`decideBootWedge`)
+   *  needs a clock that turn-arming cannot touch: a boot-wedged session
+   *  (`firstMessageSeen === false`) that keeps receiving bus-wake DELIVERIES has
+   *  a new turn armed on each one → `lastStreamAt` reset → the boot-wedge silence
+   *  window never elapses, so the wedge never self-heals (field 2026-09-21, ws
+   *  1a9ffb75 + ba1040aa: repeated wake, zero self-heal). Keying the boot-wedge
+   *  clock on THIS field — which only real CLI output resets — closes that hole
+   *  without weakening the gate-release path. Stamped at spawn like `lastStreamAt`
+   *  so a boot that never emits ages from spawn. */
+  lastStreamMessageAt: number;
   /** PROOF OF LIFE (issue #174): set true the first time ANY message lands on
    *  this session's SDK stream — the one observable that proves the CLI got past
    *  session init and started consuming its opening turn.
@@ -1168,7 +1187,15 @@ async function consume(session: Session): Promise<void> {
       // Progress stamp (issue #90): refreshed by EVERY message, so a turn that
       // is still emitting anything at all is provably alive and the gate
       // watchdog will never touch it. See Session.lastStreamAt.
-      session.lastStreamAt = Date.now();
+      const streamNow = Date.now();
+      session.lastStreamAt = streamNow;
+      // REAL-STREAM progress clock (issue #174 clock-pollution): bumped ONLY
+      // HERE (a genuine stream message), never at turn-arm in promptStream. The
+      // boot-wedge detector reads THIS, so repeated bus-wake deliveries (which
+      // arm turns and bump lastStreamAt) can no longer hold the silence window
+      // open forever on a session that never actually emitted. See
+      // Session.lastStreamMessageAt.
+      session.lastStreamMessageAt = streamNow;
       // PROOF OF LIFE (issue #174): the first message on the stream proves the
       // CLI got past session init and is consuming its opening turn. Set once;
       // the boot-wedge watchdog stands down forever after this. Placed here, at
@@ -1507,6 +1534,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     pump: null,
     turnGate: null,
     lastStreamAt: Date.now(),
+    // Stamped at spawn like lastStreamAt: a boot that NEVER emits ages from
+    // spawn, so decideBootWedge's silence window elapses even if no stream
+    // message ever arrives (issue #174 clock-pollution).
+    lastStreamMessageAt: Date.now(),
     firstMessageSeen: false,
     gateTurnUuid: null,
     pending: new Map(),
@@ -2788,6 +2819,10 @@ export function sdkGateProbe(
   gateHeld: boolean;
   turnUuid: string | null;
   lastStreamAt: number;
+  /** REAL-STREAM progress clock (issue #174 clock-pollution): reset only by an
+   *  actual stream message, never by a turn-arm. The boot-wedge detector keys on
+   *  THIS, so repeated wake-deliveries cannot hold its silence window open. */
+  lastStreamMessageAt: number;
   queuedCount: number;
   /** PROOF OF LIFE (issue #174): whether the stream has ever produced a message
    *  for this session. False for a session still wedged in CLI init. */
@@ -2803,6 +2838,7 @@ export function sdkGateProbe(
     gateHeld: session.turnGate !== null,
     turnUuid: session.gateTurnUuid,
     lastStreamAt: session.lastStreamAt,
+    lastStreamMessageAt: session.lastStreamMessageAt,
     queuedCount: session.queue.length,
     firstMessageSeen: session.firstMessageSeen,
     pendingPromptCount: normalizePendingPrompts(store.getWorkspace(wsId)?.sdkPendingPrompts).length,
@@ -2831,6 +2867,10 @@ export function __backdateStreamForTests(wsId: string, ms: number): boolean {
   const session = sessions.get(wsId);
   if (!session) return false;
   session.lastStreamAt -= ms;
+  // Age the real-stream clock too, so a rig can drive the REAL boot-wedge
+  // silence bound (which keys on lastStreamMessageAt) as well as the gate-release
+  // bound — both against the same shipped constant (issue #174 clock-pollution).
+  session.lastStreamMessageAt -= ms;
   return true;
 }
 

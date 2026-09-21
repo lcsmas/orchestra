@@ -560,6 +560,46 @@ test('#180 the shorter boot window still respects proof-of-life (slow boot stays
   assert.ok(decideBootWedge(boot), 'control: its no-proof-of-life twin still wedges at 3 min');
 });
 
+test('#174 CLOCK-POLLUTION: repeated wake-DELIVERY (turn-arm) must NOT hold the window open', () => {
+  // The second real field incident (ws 1a9ffb75 + ba1040aa, 2026-09-21): a
+  // boot-wedged session kept receiving bus-wake DELIVERIES; each armed a turn,
+  // resetting the app's `lastStreamAt` (which promptStream bumps at turn-ARM), so
+  // the boot-wedge silence window never elapsed and the wedge never self-healed —
+  // repeated wake, ZERO heal. The fix: the boot-wedge clock reads the REAL-STREAM
+  // stamp (`lastStreamMessageAt`, bumped ONLY by an actual stream message in
+  // consume()), which a turn-arm can never touch.
+  //
+  // Model both clocks with the SHIPPED semantics so this arm reddens if the
+  // wiring feeds the wrong one: spawn stamps both; a wake-delivery arm resets ONLY
+  // lastStreamAt; the session then goes silent for the whole window.
+  const spawnAt = NOW - GATE_SILENCE_RELEASE_MS - 60_000; // wedged since spawn
+  const lastWakeArmAt = NOW - 1_000; // a delivery armed a turn 1s ago
+  const realStreamClock = spawnAt; // NEVER bumped — no stream message ever
+  const turnArmClock = lastWakeArmAt; // polluted by the wake-delivery arm
+
+  // FIX (real-stream clock): the wedge is still detected despite the recent arm.
+  assert.ok(
+    decideBootWedge({ ...wedgedBoot, lastStreamAt: realStreamClock }),
+    'fed the REAL-STREAM clock, a wedged session that only ARMED turns still heals',
+  );
+  // TODAY (polluted clock): the same session reads as "recent progress" and is
+  // NOT detected — the field non-fire. This is the arm that reddens the un-fixed
+  // wiring (which passed lastStreamAt, reset by the arm).
+  assert.equal(
+    decideBootWedge({ ...wedgedBoot, lastStreamAt: turnArmClock }),
+    null,
+    'fed the turn-arm-polluted clock, the wedge is (wrongly) missed — the defect being fixed',
+  );
+  // must-PASS mirror: a REAL stream message (both clocks advance together) inside
+  // the window correctly stands the predicate down — a slow boot that emits is
+  // never restarted, whichever clock is read.
+  assert.equal(
+    decideBootWedge({ ...wedgedBoot, firstMessageSeen: true, lastStreamAt: realStreamClock }),
+    null,
+    'a session that emitted a real stream message (firstMessageSeen) is never wedged',
+  );
+});
+
 test('#174 guard: a dead (no live) session produces no verdict', () => {
   assert.equal(decideBootWedge({ ...wedgedBoot, sessionLive: false }), null);
 });

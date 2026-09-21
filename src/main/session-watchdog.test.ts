@@ -175,11 +175,40 @@ test('R2-residual guard: the inbox is re-read INSIDE the release loop', () => {
 
 test('R1 guard: the recycle decision is fed live progress evidence', () => {
   const src = sourceOf('session-watchdog.ts');
-  // R1: the destructive path must not rely on #88's `status` guard alone.
+  // R1: the destructive path must not rely on #88's `status` guard alone. It
+  // must receive the REAL-STREAM clock (issue #174 clock-pollution), never
+  // `lastStreamAt` (which a turn-arm resets) — otherwise a boot-wedge verdict is
+  // refused HERE by a wake-delivery arm it should ignore.
   assert.match(
     src,
-    /lastStreamAt:\s*progress\?\.lastStreamAt/,
-    'decideSessionRecycle must receive the live stream stamp',
+    /lastStreamAt:\s*progress\?\.lastStreamMessageAt/,
+    'decideSessionRecycle must receive the REAL-STREAM stamp (lastStreamMessageAt)',
+  );
+  assert.doesNotMatch(
+    src,
+    /lastStreamAt:\s*progress\?\.lastStreamAt\b/,
+    'must NOT feed the turn-arm-polluted lastStreamAt to the destructive recycle refusal (#174)',
+  );
+});
+
+test('#174 clock-pollution: decideBootWedge keys on the REAL-STREAM clock, never the turn-arm one', () => {
+  const src = sourceOf('session-watchdog.ts');
+  // The whole fix: the boot-wedge silence window must key on lastStreamMessageAt
+  // (bumped only by a real stream message in consume()) — NOT lastStreamAt, which
+  // promptStream re-bumps at turn-ARM, so repeated bus-wake deliveries would hold
+  // the window open forever and the wedge would never self-heal (field: ws
+  // 1a9ffb75 + ba1040aa, repeated wake, zero heal). must-FAIL arm: a reversion to
+  // `lastStreamAt: progress.lastStreamAt` in the decideBootWedge call reddens.
+  const bootWedgeCall = src.slice(src.indexOf('decideBootWedge({'));
+  assert.match(
+    bootWedgeCall.slice(0, 400),
+    /lastStreamAt:\s*progress\.lastStreamMessageAt/,
+    'decideBootWedge must be fed progress.lastStreamMessageAt, not the polluted lastStreamAt',
+  );
+  assert.doesNotMatch(
+    bootWedgeCall.slice(0, 400),
+    /lastStreamAt:\s*progress\.lastStreamAt\b/,
+    'decideBootWedge must NOT read the turn-arm-polluted lastStreamAt (#174 clock-pollution)',
   );
 });
 
