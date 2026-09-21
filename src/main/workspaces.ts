@@ -2,7 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile, cp } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
@@ -53,6 +53,7 @@ import {
   type RefreezeMissionOutcome,
 } from './bus-runs.ts';
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
+import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   maybeStartRunAtAnchor,
@@ -185,6 +186,23 @@ const HEAVY_RESUME_TOKEN_THRESHOLD = (() => {
  * the structured view's history backfill (agent-sdk.ts sdkHistory). */
 export function mangleProjectDir(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+/** Does ANY transcript `.jsonl` exist in this workspace's project dir — i.e.
+ *  would `claude --continue` find a conversation to resume? (#178 seam b.)
+ *  `--continue` resumes the newest `.jsonl` under the PINNED account config dir;
+ *  `ws.hasInput` alone does NOT prove one still exists (a phantom terminal
+ *  workspace `--continue`s into nothing — the field 15:35:08 exit-1). Sync
+ *  (`readdirSync`) so the PTY launch sites stay straight-line; best-effort — a
+ *  missing dir / read error → "none" → start fresh, the safe direction. */
+export function newestTranscriptExists(ws: Workspace): boolean {
+  try {
+    const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+    const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
+    return readdirSync(dir).some((f) => f.endsWith('.jsonl'));
+  } catch {
+    return false;
+  }
 }
 
 /** Token count of the session that `claude --continue` will resume for this
@@ -3202,7 +3220,14 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
     }
     return true;
   }
-  const resuming = ws.hasInput === true;
+  // #178 seam (b), the raw-PTY wake fallback: same phantom-transcript guard as
+  // startAgentPty — `--continue` only when a transcript exists on disk, never on
+  // `hasInput` alone (a phantom terminal workspace `--continue`s into nothing).
+  const resuming = shouldContinuePty({
+    hasInput: ws.hasInput,
+    fresh: false,
+    newestTranscriptExists: newestTranscriptExists(ws),
+  });
   const readyFile = readyFilePath(id);
   await clearReadyFile(id);
   // Reuse the size the terminal had before the agent stopped: if the pane is
@@ -4965,7 +4990,16 @@ export async function startAgentPty(
     coordinatorReplacement?: boolean;
   },
 ): Promise<void> {
-  const resuming = ws.hasInput === true && opts?.fresh !== true;
+  // #178 seam (b) — `--continue` ONLY when a transcript actually exists on disk.
+  // `hasInput` records that a prompt was once typed, but not that the newest
+  // transcript still exists; a phantom terminal workspace (`hasInput` true, no
+  // `.jsonl`) would `claude --continue` into nothing → "No conversation found to
+  // continue", exit 1 (the field 15:35:08). Gate on the on-disk probe too.
+  const resuming = shouldContinuePty({
+    hasInput: ws.hasInput,
+    fresh: opts?.fresh === true,
+    newestTranscriptExists: newestTranscriptExists(ws),
+  });
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];

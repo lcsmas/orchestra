@@ -80,6 +80,14 @@ export function classifyRestartMode(
 ): RestartMode {
   if (live.ptyLive) return 'pty';
   if (live.sdkLive) return 'structured';
+  // #178 seam (c): a PHANTOM id (non-undefined but with no on-disk transcript)
+  // is DELIBERATELY still 'structured' — this classifier decides the SURFACE
+  // that owns the workspace, not whether a resume is safe. Routing it structured
+  // is CORRECT: the structured restart path (ensureSession, agent-sdk.ts seam a)
+  // proactively drops the phantom id and starts FRESH, redelivering the opening
+  // prompt. Do NOT reroute a phantom to 'pty'/'unknown' here — that would send it
+  // down the terminal path and lose the structured fresh-start heal. The
+  // resume-safety discriminator lives at the resume site, never here.
   if (ws.sdkSessionId !== undefined) return 'structured';
   if (ws.hasInput === true) return 'pty';
   return 'unknown';

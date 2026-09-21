@@ -26,6 +26,7 @@ import { store } from './store';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease } from '../shared/session-wedge.ts';
+import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
  *  produced here, folded in the renderer), so attributing a wrong pane to the
@@ -1521,6 +1522,24 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // Resolve the query factory: a test override, else the dynamically-imported
   // real ESM SDK (never a static require — that crashes Electron at boot).
   const query = queryOverride ?? (await loadSdk()).query;
+
+  // #178 seam (a) — the ONLY query({resume}) in the codebase. PROACTIVELY
+  // validate the resume id against the on-disk transcript before handing it to
+  // the SDK: a phantom id (one whose transcript is gone — minted by an earlier
+  // partial or by sdkWake adoption, never by this wedged session, which emitted
+  // no system/init) would otherwise dead-end the consume loop on "No
+  // conversation found with session ID". `resolveResumeId` returns undefined
+  // (start FRESH) for a missing id, the '' cleared marker, OR a phantom id, and
+  // the real id (resume) only when its transcript exists. Everything downstream
+  // that meant "resuming?" now reads THIS resolved value, not raw truthiness, so
+  // a phantom fresh-start also gets the orchestrator brief a fresh session is due.
+  const resumeId = resolveResumeId(ws.sdkSessionId, (id) => transcriptExistsFor(ws, id));
+  if (ws.sdkSessionId && !resumeId && ws.sdkSessionId !== '') {
+    log.warn(
+      `agent-sdk: ${wsId} sdkSessionId ${ws.sdkSessionId} has no transcript on disk — ` +
+        `starting fresh instead of resuming a phantom conversation (issue #178)`,
+    );
+  }
   // The SDK's DEFAULT executable path resolves relative to its own module —
   // which, in the packaged app, is a bundled chunk inside app.asar. Spawning
   // through the asar (a file, not a directory) fails with `spawn ENOTDIR`,
@@ -1643,17 +1662,20 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // continues the conversation with its memory intact, instead of starting
       // blank. The captured session id is persisted on `ws.sdkSessionId` as the
       // stream reports it (see consume()). Absent → a fresh session.
-      ...(ws.sdkSessionId ? { resume: ws.sdkSessionId } : {}),
+      ...(resumeId ? { resume: resumeId } : {}),
       // Orchestrator brief parity with startAgentPty (workspaces.ts): an
       // orchestrator's standing delegation brief is appended to the Claude Code
       // system prompt on a FRESH session only — on resume the persisted session
       // already carries it, so re-appending would duplicate it (mirrors the
-      // terminal path's `!resuming` gate; `ws.sdkSessionId` present === resuming).
-      // The `preset: 'claude_code'` keeps the full default system prompt and only
-      // APPENDS the brief. Durable enforcement across compaction is still the
-      // orchestrator-instruction SessionStart hook (now loaded via the 'local'
-      // source above); this is the richer one-time onboarding.
-      ...(!ws.sdkSessionId && ws.kind === 'orchestrator'
+      // terminal path's `!resuming` gate). Keyed on the RESOLVED `resumeId`, not
+      // raw `ws.sdkSessionId`: a phantom-id fresh-start (#178) IS a fresh session
+      // and must get the brief, so `!resumeId` (not `!ws.sdkSessionId`) is the
+      // correct "is this fresh?" test. The `preset: 'claude_code'` keeps the full
+      // default system prompt and only APPENDS the brief. Durable enforcement
+      // across compaction is still the orchestrator-instruction SessionStart hook
+      // (now loaded via the 'local' source above); this is the richer one-time
+      // onboarding.
+      ...(!resumeId && ws.kind === 'orchestrator'
         ? {
             systemPrompt: {
               type: 'preset' as const,
@@ -1701,6 +1723,35 @@ const HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 function transcriptDir(ws: Workspace): string {
   const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
   return path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
+}
+
+/** Does the on-disk transcript `.jsonl` for `sessionId` exist under `ws`'s
+ *  transcript dir? The PROACTIVE resume discriminator (#178): the exact test
+ *  `sdkWake` uses to gate adoption (fs.existsSync of `<dir>/<id>.jsonl`), reused
+ *  here so a resume never hands `query({resume})` a phantom id whose transcript
+ *  is gone (the field "No conversation found" dead-end). Best-effort: a probe
+ *  error is treated as "absent" (start fresh) — the safe direction. */
+function transcriptExistsFor(ws: Workspace, sessionId: string): boolean {
+  try {
+    return fs.existsSync(path.join(transcriptDir(ws), `${sessionId}.jsonl`));
+  } catch {
+    return false;
+  }
+}
+
+/** Does ANY transcript `.jsonl` exist in `ws`'s transcript dir — i.e. would
+ *  `claude --continue` find a conversation to resume? The terminal-seam (#178
+ *  seam b) discriminator: `hasInput` alone does not prove the newest transcript
+ *  still exists, so a phantom terminal workspace `--continue`s into nothing (the
+ *  15:35:08 exit-1). Best-effort: a missing dir / probe error → "none". */
+function anyTranscriptExists(ws: Workspace): boolean {
+  try {
+    return fs
+      .readdirSync(transcriptDir(ws))
+      .some((name) => name.endsWith('.jsonl'));
+  } catch {
+    return false;
+  }
 }
 
 /** Run `fn` with `CLAUDE_CONFIG_DIR` pinned to a workspace's ACCOUNT config dir,
@@ -4221,10 +4272,55 @@ export async function sdkRestart(
     return;
   }
   const live = sessions.get(wsId);
-  // `turnGate` is non-null exactly while a turn is in flight — same guard
-  // `sdkMcpRefresh` uses. Restarting mid-turn would throw the running turn away.
-  if (live && live.turnGate !== null) {
+  // #179 — the mid-turn guard, but a NEVER-STARTED opening turn is not "working".
+  // `turnGate !== null` is true both for a genuine in-flight turn AND for a
+  // boot-wedged session that armed its opening gate and yielded to a CLI stuck in
+  // init (firstMessageSeen === false, no stream message ever). The old guard
+  // refused BOTH forever — the field loop (2026-09-21) that killed the wedged
+  // session. `decideRestartGuard` splits them: 'refuse' only when the session
+  // actually started; 'fresh' when a never-started turn holds the gate (tear it
+  // down and start fresh, redelivering the opening prompt per #178); 'resume'
+  // otherwise (the ordinary conversation-preserving restart, unchanged).
+  const guard = decideRestartGuard({
+    hasLiveSession: live !== undefined,
+    turnInFlight: live?.turnGate != null,
+    firstMessageSeen: live?.firstMessageSeen === true,
+  });
+  if (guard === 'refuse') {
     throw new Error('The agent is working — interrupt it first, then restart.');
+  }
+  if (guard === 'fresh') {
+    // A never-started session wedged on its opening turn. CONVERGE (#179 D2):
+    // tear it down and route through the EXISTING #174 redelivery seam
+    // (recoverPendingPrompts) so the opening prompt is redelivered EXACTLY once —
+    // the same recipe recycleSession uses (session-watchdog.ts). seam (a) above
+    // has already dropped any phantom id, so the fresh session does not resume a
+    // corpse. This replaces the process, so bump the coordinator generation.
+    bumpCoordinatorIfSelf();
+    // #148 intent marker: the teardown makes the keeper synthesize exit(-1); mark
+    // it as an intentional restart so the wedged session's consume-loop catch
+    // renders a NEUTRAL row, not the red error box. `live` is non-null here (the
+    // 'fresh' verdict requires a live session).
+    if (live) live.restartRequested = opts.trigger ?? 'cli';
+    log.info(
+      `agent-sdk: restart of never-started session ${wsId} — tearing down the wedged ` +
+        `opening turn and redelivering fresh (issue #179)`,
+    );
+    await sdkStop(wsId).catch((e) =>
+      log.warn(`agent-sdk: stop failed during never-started restart for ${wsId}`, e),
+    );
+    await killKeeper(wsId).catch(() => {
+      /* already gone — the common case after a graceful stop */
+    });
+    // Redeliver the opening prompt through the honest, exactly-once seam. With
+    // no live session after the stop, `livePromptIds` is empty and the boot
+    // wedge consumed no transcript, so the opening prompt is re-sent once (it
+    // lazy-starts a FRESH session via sdkSend → ensureSession). Empty history:
+    // a boot wedge ran nothing, so nothing cancels.
+    await recoverPendingPrompts(wsId, []).catch((e) =>
+      log.warn(`agent-sdk: opening-prompt recovery failed during restart for ${wsId}`, e),
+    );
+    return;
   }
   // Past the mid-turn guard: this restart WILL replace the process → bump now,
   // before the teardown + ensureSession that rebuilds the env.
