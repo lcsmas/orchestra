@@ -77,6 +77,7 @@ import {
   decideBootWedge,
   decideSessionRecycle,
   pruneRecycles,
+  BOOT_SILENCE_MS,
   type RecycleDecision,
 } from '../shared/session-wedge.ts';
 import { sdkSessionLive } from './sdk-delivery';
@@ -431,6 +432,11 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
           // it. Pass false explicitly rather than guess.
           stopping: false,
           now,
+          // BOOT case gets its OWN, shorter window (issue #180): a never-started
+          // session heals at ~3 min, not the 10-min gate/stall constant. Layers
+          // 1/2 keep their default. Dropping this override silently reverts the
+          // heal to 10 min.
+          silenceMs: BOOT_SILENCE_MS,
         })
       : null;
     const recycleReason = stalled
