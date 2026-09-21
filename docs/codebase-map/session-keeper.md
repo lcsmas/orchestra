@@ -261,7 +261,29 @@ times).
 | CLI crash | attached: `exit` frame → existing error path; detached: keeper cleans up, relaunch resumes |
 | Turn ends detached | linger → graceful exit; relaunch = plain resume + backfill |
 | Workspace deleted while closed | startup orphan reap (+ linger bounds it anyway) |
-| `orchestra restart` (issue #111, structured branch) | `sdkRestart(wsId,{fresh,trigger?})` in `agent-sdk.ts` — default = `sdkStop`→`killKeeper`→`ensureSession` (same teardown+respawn recipe as `sdkMcpRefresh`, resumes `sdkSessionId` → same transcript); `--fresh` = `sdkClear` (vierge). Refuses while `turnGate!==null`. Composes existing exports only, no change to `sdkStop`/`consume` (issue #124 boundary). The CLI/socket wiring + PTY-mode branch live in `main/restart-workspace.ts` / `shared/restart-mode.ts` — see `hooks-cli-socket.md`. **#148: before tearing down, `sdkRestart` sets `session.restartRequested` (the intent marker) and records a `Workspace.sdkRestarts` entry, so the exit(-1) the teardown makes the keeper synthesize is rendered as a NEUTRAL restart row (not the red error box) both live and on backfill — see `structured-agent-view.md`.** |
+| `orchestra restart` (issue #111, structured branch) | `sdkRestart(wsId,{fresh,trigger?})` in `agent-sdk.ts` — default = `sdkStop`→`killKeeper`→`ensureSession` (same teardown+respawn recipe as `sdkMcpRefresh`, resumes `sdkSessionId` → same transcript); `--fresh` = `sdkClear` (vierge). Composes existing exports only, no change to `sdkStop`/`consume` (issue #124 boundary). The CLI/socket wiring + PTY-mode branch live in `main/restart-workspace.ts` / `shared/restart-mode.ts` — see `hooks-cli-socket.md`. **#148: before tearing down, `sdkRestart` sets `session.restartRequested` (the intent marker) and records a `Workspace.sdkRestarts` entry, so the exit(-1) the teardown makes the keeper synthesize is rendered as a NEUTRAL restart row (not the red error box) both live and on backfill — see `structured-agent-view.md`.** **#179: the mid-turn refusal is now `decideRestartGuard` (`shared/resume-guard.ts`), not a bare `turnGate!==null` throw — a session that has never emitted a stream message (`firstMessageSeen===false`, a boot-wedged opening turn) is INTERRUPTIBLE: `sdkRestart` tears it down and redelivers the opening prompt via `recoverPendingPrompts` (the #174 seam, exactly once), converging instead of refusing forever (the field ~27s loop). A genuinely working session — `turnGate` held AND `firstMessageSeen===true` — is still politely refused.** |
+
+### #178 — never-started restart starts FRESH (no phantom resume)
+
+A `sdkSessionId` can outlive its transcript — MINTED by an earlier partial or by
+`sdkWake` adoption, never by a boot-wedged session (which emits no `system/init`,
+so consume() never reaches `persistSessionId`, agent-sdk.ts:~1185). Resuming such
+a **phantom id** dead-ends the consume loop on `No conversation found with session
+ID: <id>` (the field incident, ws 0c092cd5, once the wedged session died). The
+reactive heal (`isBadResumeError`) only clears the id AFTER the failure. The
+PROACTIVE fix (`shared/resume-guard.ts`) validates the resume target at every
+seam BEFORE the launch:
+
+- **(a) structured resume** — `ensureSessionInner` computes `resolveResumeId(ws.sdkSessionId, transcriptExistsFor)` (the ONLY `query({resume})`); a phantom id (no `.jsonl` on disk) or the `''` cleared marker → `undefined` → FRESH. The orchestrator-brief fresh gate keys on the resolved id too.
+- **(b) terminal `--continue`** — both PTY launch sites (`startAgentPty`, the raw-PTY wake fallback) gate `resuming` on `shouldContinuePty({hasInput, fresh, newestTranscriptExists(ws)})`, not `hasInput` alone: a phantom terminal workspace `--continue`s into nothing (`No conversation found to continue`, exit 1) — start fresh instead.
+- **(c) routing classifier** (`shared/restart-mode.ts`) — a phantom id stays `structured` DELIBERATELY: it decides the SURFACE, and the structured path (seam a) owns the fresh-start heal. Do NOT reroute a phantom here.
+- **(d) `sdkWake` adoption** — already gates on `fs.existsSync(<id>.jsonl)`; it never mints a phantom. The reused precedent for (a).
+
+The discriminator is transcript-exists (not the live `firstMessageSeen`, which is
+unavailable at ensureSession time). Redelivery of the opening prompt on a
+fresh-start always routes through `recoverPendingPrompts` (the #174 seam) — never
+a parallel path. Guards: `shared/resume-guard.test.ts` (decision, both arms) +
+`main/resume-guard-binding.test.ts` (each seam is wired).
 
 Not covered while detached (by design): queued sends/`pendingLocalContext`
 die with the app; permission prompts park in the CLI and redeliver on attach;
