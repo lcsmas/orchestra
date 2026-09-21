@@ -343,6 +343,23 @@ interface Session {
    *  force-released after a long silence with no stream activity at all — a
    *  turn that is still emitting is never touched, however long it runs. */
   lastStreamAt: number;
+  /** PROOF OF LIFE (issue #174): set true the first time ANY message lands on
+   *  this session's SDK stream — the one observable that proves the CLI got past
+   *  session init and started consuming its opening turn.
+   *
+   *  A burst-spawned child on a heavy repo can wedge in CLI init
+   *  (`getContextUsage` times out) BEFORE it ever consumes the spawn's opening
+   *  prompt. That turn is accepted by `promptStream` (shifted off the queue,
+   *  gate armed, yielded) but the CLI never processes it, so consume() never
+   *  runs and `firstMessageSeen` stays false forever. The boot-wedge watchdog
+   *  (`decideBootWedge`) keys on exactly this — false + silent-for-the-window =
+   *  wedged — and NEVER on "a pending prompt is live" (the #174 recovery guard's
+   *  false positive: the wedged session HELD live prompts, reading as alive).
+   *
+   *  Set inside consume()'s loop, not at session start: session start only
+   *  proves the subprocess spawned, which a wedged one also did. Only a message
+   *  on the stream proves it got past init. */
+  firstMessageSeen: boolean;
   /** The `uuid` of the turn {@link Session.turnGate} is currently held for, so
    *  a force-release can prove it is releasing the turn it observed going
    *  silent rather than a later, healthy one that reused the gate slot. Null
@@ -1151,6 +1168,12 @@ async function consume(session: Session): Promise<void> {
       // is still emitting anything at all is provably alive and the gate
       // watchdog will never touch it. See Session.lastStreamAt.
       session.lastStreamAt = Date.now();
+      // PROOF OF LIFE (issue #174): the first message on the stream proves the
+      // CLI got past session init and is consuming its opening turn. Set once;
+      // the boot-wedge watchdog stands down forever after this. Placed here, at
+      // the SAME point as the progress stamp, because "a message arrived" is
+      // exactly what both facts record.
+      session.firstMessageSeen = true;
       emitFrom(session, msg);
       // Persist the SDK session id the first time the stream reports it, so
       // re-opening the structured view resumes THIS conversation (see the
@@ -1483,6 +1506,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     pump: null,
     turnGate: null,
     lastStreamAt: Date.now(),
+    firstMessageSeen: false,
     gateTurnUuid: null,
     pending: new Map(),
     pendingDialogs: new Map(),
@@ -2714,6 +2738,13 @@ export function sdkGateProbe(
   turnUuid: string | null;
   lastStreamAt: number;
   queuedCount: number;
+  /** PROOF OF LIFE (issue #174): whether the stream has ever produced a message
+   *  for this session. False for a session still wedged in CLI init. */
+  firstMessageSeen: boolean;
+  /** Opening prompts still owed a turn (`ws.sdkPendingPrompts.length`), read from
+   *  the store so the boot-wedge predicate can require outstanding work without a
+   *  second store lookup in the watchdog. */
+  pendingPromptCount: number;
 } | null {
   const session = sessions.get(wsId);
   if (!session) return null;
@@ -2722,6 +2753,8 @@ export function sdkGateProbe(
     turnUuid: session.gateTurnUuid,
     lastStreamAt: session.lastStreamAt,
     queuedCount: session.queue.length,
+    firstMessageSeen: session.firstMessageSeen,
+    pendingPromptCount: normalizePendingPrompts(store.getWorkspace(wsId)?.sdkPendingPrompts).length,
   };
 }
 

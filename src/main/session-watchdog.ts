@@ -1,4 +1,21 @@
-// Self-healing session watchdog (issue #90).
+// Self-healing session watchdog (issue #90, extended for the boot wedge in #174).
+//
+// ── Issue #174: the BOOT wedge (spawn → first turn is a product guarantee) ───
+//
+// A burst-spawned child on a heavy repo (large CLAUDE.md, many MCP servers) can
+// wedge in the CLI's session INIT — `getContextUsage` times out — BEFORE it ever
+// consumes the spawn's opening prompt. Measured 2026-09-21 on the metarepo: 5 of
+// 6 burst spawns died this way, and only an app relaunch + a #172 rollback ever
+// revived one. This shape escapes BOTH layers below, because both key on work
+// QUEUED BEHIND a started session and the boot wedge has none — it has an opening
+// turn that was accepted and never processed (the opening prompt is shifted off
+// `session.queue`, leaving it empty, and lives in `sdkPendingPrompts`, not the
+// inbox #88 counts). So layer 2b adds a proof-of-life detector
+// (`decideBootWedge`, src/shared/session-wedge.ts): a live session that never
+// emitted a stream message and has been silent for the whole window is recycled,
+// and `recycleSession` re-delivers the opening prompt via `recoverPendingPrompts`.
+// The discriminator is PROOF OF LIFE (a stream message was seen), never "prompts
+// are live" (the #174 field guard's false positive) and never "inbox empty".
 //
 // The BAR for this ticket is "never", not "visible". Issue #88 already ships a
 // sidebar badge that TELLS a human a workspace has parked work and has not
@@ -55,15 +72,32 @@
 import { store } from './store';
 import { log } from './logger';
 import { platform } from './platform';
-import { workspaceQueueStall } from '../shared/queue-stall.ts';
+import { workspaceQueueStall, type QueueStallVerdict } from '../shared/queue-stall.ts';
 import {
+  decideBootWedge,
   decideSessionRecycle,
   pruneRecycles,
   type RecycleDecision,
 } from '../shared/session-wedge.ts';
 import { sdkSessionLive } from './sdk-delivery';
-import { sdkGateProbe, sdkReleaseStrandedGate, sdkStop, sdkWake } from './agent-sdk';
+import {
+  recoverPendingPrompts,
+  sdkGateProbe,
+  sdkReleaseStrandedGate,
+  sdkStop,
+  sdkWake,
+} from './agent-sdk';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
+import { normalizePendingPrompts } from '../shared/pending-prompts.ts';
+
+/** Opening prompts still owed a turn for this workspace (`ws.sdkPendingPrompts`),
+ *  read from the store through the shared normalizer so a legacy shape counts
+ *  the same as the current one. Used by both the boot-wedge detector and the
+ *  recycle heal — after `sdkStop` there is no live session to probe, so this
+ *  reads the DURABLE store field, which sdkStop deliberately does not clear. */
+function normalizePendingPromptCount(wsId: string): number {
+  return normalizePendingPrompts(store.getWorkspace(wsId)?.sdkPendingPrompts).length;
+}
 
 /** How often the watchdog looks. Deliberately slow: the condition it treats is
  *  measured in tens of minutes (#88's threshold is 15), so a fast tick buys
@@ -159,17 +193,57 @@ export async function recycleSession(wsId: string, reason: string): Promise<void
   //    dropped, so no sender is left holding a receipt for a message that dies
   //    here — the senders' messages are already durable in the inbox, which is
   //    how they got parked in the first place.
+  //
+  //    #172 rollback rides along here: sdkStop settles the wedged session's
+  //    queued turns as dropped, and each unstarted-turn discard site calls
+  //    `rollbackWakeForWithdrawnTurn` — so if the wedged turn was a bus WAKE
+  //    ORDER, its ledger mark is rolled back and the next sweep re-fires,
+  //    breaking the #159 `already-woken` latch the boot wedge otherwise leaves.
   await sdkStop(wsId).catch((e) => log.warn(`session-watchdog: stop failed for ${wsId}`, e));
 
-  // 2. Is there anything parked at all?
+  // 2. Re-deliver the OPENING PROMPT (issue #174), if one is still owed a turn.
+  //
+  //    ## Why this is separate from the inbox path
+  //
+  //    A BOOT-wedged spawn never got its opening prompt into the inbox: the
+  //    spawn path (`sdkStartAndDeliver` → `sdkWake` → `sdkSend`) queues the
+  //    prompt directly onto the session and records it in `ws.sdkPendingPrompts`
+  //    as crash-recovery insurance — it is NOT a durable inbox block. sdkStop
+  //    does not clear `sdkPendingPrompts`, so after the teardown the opening
+  //    prompt still lives there, owed a turn nothing will start.
+  //
+  //    `recoverPendingPrompts` is the EXISTING, honest re-delivery for exactly
+  //    this: it re-sends each pending prompt through `sdkSend` (which lazy-starts
+  //    a FRESH session, resuming `ws.sdkSessionId`), tagged with its origin, and
+  //    cancels any the transcript already consumed. With no live session after
+  //    the stop, `livePromptIds` is empty, so a boot-wedge prompt (never
+  //    consumed) is correctly re-sent. An EMPTY history is passed because the
+  //    consumed-multiset only needs to cancel prompts the transcript shows ran —
+  //    a boot wedge ran none, so nothing cancels and the opening prompt is
+  //    redelivered. This brings the fresh session UP, which the inbox release
+  //    below then reuses. */
+  const hadPending = normalizePendingPromptCount(wsId) > 0;
+  if (hadPending) {
+    await recoverPendingPrompts(wsId, []).catch((e) =>
+      log.warn(`session-watchdog: opening-prompt recovery failed for ${wsId}`, e),
+    );
+  }
+
+  // 3. Is there anything parked in the durable inbox?
   const parked = readInbox(wsId);
   if (parked.length === 0) {
-    log.info(`session-watchdog: ${wsId} had nothing parked after stop — no wake needed`);
+    // A boot wedge with only an opening prompt (no inbox mail) is now healed:
+    // step 2 brought the fresh session up and redelivered it. Nothing to release.
+    log.info(
+      `session-watchdog: ${wsId} had nothing in the inbox after stop — ` +
+        `${hadPending ? 'opening prompt re-delivered, ' : ''}no inbox wake needed`,
+    );
     return;
   }
 
-  // 3. Wake the session on the SAME conversation with a NEUTRAL prompt that
-  //    carries NO parked content.
+  // 4. Bring the session up (if step 2 didn't already) with a NEUTRAL prompt
+  //    that carries NO parked content, so the inbox blocks have somewhere to
+  //    release into.
   //
   //    ## Why the wake prompt must not be a parked message (review R2)
   //
@@ -185,11 +259,16 @@ export async function recycleSession(wsId: string, reason: string): Promise<void
   //    Re-delivery and removal must therefore be ONE ordered operation, and
   //    `releaseInboxBlock` is the only thing that provides it. The wake prompt
   //    exists solely to bring the session up so blocks can be released into it.
-  try {
-    await sdkWake(wsId, WAKE_PROMPT);
-  } catch (e) {
-    log.warn(`session-watchdog: wake failed for ${wsId} — messages remain parked`, e);
-    return;
+  //    Skipped when step 2 already started the session by re-delivering the
+  //    opening prompt: a second neutral turn would be redundant noise, and the
+  //    inbox release below drives the now-live session directly.
+  if (!sdkSessionLive(wsId)) {
+    try {
+      await sdkWake(wsId, WAKE_PROMPT);
+    } catch (e) {
+      log.warn(`session-watchdog: wake failed for ${wsId} — messages remain parked`, e);
+      return;
+    }
   }
 
   // 4. Release whatever the WAKE TURN'S OWN HOOK DRAIN did not already take.
@@ -324,9 +403,45 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     // read happened before a possible gate release, and stale progress evidence
     // on a DESTRUCTIVE path is exactly the class review R1 caught.
     const progress = sdkGateProbe(ws.id);
+
+    // ── Layer 2b: the BOOT wedge (issue #174) ───────────────────────────────
+    //
+    // A session that accepted its opening turn but never emitted a single
+    // stream message (proof of life) and has been silent for the whole window
+    // is wedged in CLI init — the shape #88's queue-stall detector cannot see,
+    // because the opening prompt is in `session.queue`/`sdkPendingPrompts`, not
+    // in the banner queue or the inbox it counts. The verdict is
+    // QueueStallVerdict-shaped so it feeds the SAME `decideSessionRecycle`
+    // below, inheriting its anti-flap budget, backoff, and progress refusal.
+    //
+    // `??` picks the boot-wedge verdict only when #88's stall verdict is null:
+    // if the workspace already qualifies as a #88 stall, that path (with its own
+    // parked count and clock) owns it. The two are mutually exclusive in
+    // practice — a boot wedge has nothing parked in #88's sense — but the
+    // ordering makes the intent explicit and keeps ONE recycle decision.
+    const bootWedge: QueueStallVerdict | null = progress
+      ? decideBootWedge({
+          sessionLive: sdkSessionLive(ws.id),
+          firstMessageSeen: progress.firstMessageSeen,
+          turnInFlight: progress.gateHeld,
+          pendingPromptCount: progress.pendingPromptCount,
+          lastStreamAt: progress.lastStreamAt,
+          // `stopping` is not exposed on the probe; a stopping session has no
+          // gate held (sdkStop releases it), so `turnInFlight` already excludes
+          // it. Pass false explicitly rather than guess.
+          stopping: false,
+          now,
+        })
+      : null;
+    const recycleReason = stalled
+      ? 'stall'
+      : bootWedge
+        ? 'boot-wedge'
+        : 'none';
+
     const decision: RecycleDecision = decideSessionRecycle({
       sessionLive: sdkSessionLive(ws.id),
-      stalled,
+      stalled: stalled ?? bootWedge,
       // The recycle path carries its OWN progress evidence (review R1): #88's
       // `status` guard is a display field on a best-effort hook chain, and is
       // documented in queue-stall.ts as not surviving a restart. A session that
@@ -385,7 +500,10 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     recycleLedger.set(ws.id, [...ledger, now]);
     await recycleSession(
       ws.id,
-      `${decision.parkedCount} parked, no turn start for ${Math.round(decision.stalledForMs / 60_000)}min`,
+      recycleReason === 'boot-wedge'
+        ? `boot wedge: opening turn never started (no stream in ${Math.round(decision.stalledForMs / 60_000)}min, ` +
+            `${decision.parkedCount} prompt(s) owed a turn) — issue #174`
+        : `${decision.parkedCount} parked, no turn start for ${Math.round(decision.stalledForMs / 60_000)}min`,
     );
   }
 }

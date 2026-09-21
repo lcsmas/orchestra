@@ -176,6 +176,63 @@ test('R1 guard: the recycle decision is fed live progress evidence', () => {
   );
 });
 
+// ── Issue #174: the boot wedge is detected AND its opening prompt re-delivered ─
+//
+// The pure detector (`decideBootWedge`) is mutation-proven in
+// src/shared/session-wedge.test.ts. What lives ONLY in this module — and is
+// therefore what these source-binding guards pin — is the WIRING: that
+// `watchdogTick` feeds a boot-wedge verdict into the same `decideSessionRecycle`,
+// and that `recycleSession` re-delivers the opening prompt through
+// `recoverPendingPrompts` (the boot-wedge prompt is in `sdkPendingPrompts`, NOT
+// the inbox the pre-#174 recycle read). A refactor that dropped either half would
+// silently reopen the exact double-lock the ticket closes, so each is pinned with
+// a NAME. The end-to-end behaviour is driven by the scratch rig at report time;
+// these guards are the committed catchers.
+
+test('#174 guard: watchdogTick feeds a boot-wedge verdict into the recycle decision', () => {
+  const src = sourceOf('session-watchdog.ts');
+  // The detector must be called with the live proof-of-life evidence, and its
+  // verdict must reach decideSessionRecycle's `stalled` input (via `?? bootWedge`)
+  // so it inherits the anti-flap/backoff/progress machinery.
+  assert.match(src, /decideBootWedge\(/, 'the boot-wedge detector must be invoked');
+  assert.match(
+    src,
+    /firstMessageSeen:\s*progress\.firstMessageSeen/,
+    'the detector must be fed the live proof-of-life evidence, not a guess',
+  );
+  assert.match(
+    src,
+    /stalled:\s*stalled\s*\?\?\s*bootWedge/,
+    'the boot-wedge verdict must feed the SAME decideSessionRecycle as a #88 stall',
+  );
+});
+
+test('#174 guard: recycleSession re-delivers the opening prompt via recoverPendingPrompts', () => {
+  const src = sourceOf('session-watchdog.ts');
+  // The heal for the boot wedge: the opening prompt lives in sdkPendingPrompts,
+  // which the inbox-only recycle never touched. recoverPendingPrompts is the
+  // existing honest re-delivery — it must be called on the recycle path.
+  assert.match(
+    src,
+    /recoverPendingPrompts\(wsId,\s*\[\]\)/,
+    'recycle must re-send pending opening prompts (empty history = nothing consumed)',
+  );
+  // And it must be GATED on there actually being a pending prompt, so an ordinary
+  // stall recycle (inbox mail, no pending prompt) is unaffected.
+  assert.match(
+    src,
+    /normalizePendingPromptCount\(wsId\)\s*>\s*0/,
+    'opening-prompt recovery must be gated on a pending prompt existing',
+  );
+  // The neutral WAKE_PROMPT must be SKIPPED when the opening-prompt recovery
+  // already started the session, or the fresh session gets a redundant turn.
+  assert.match(
+    src,
+    /if\s*\(\s*!sdkSessionLive\(wsId\)\s*\)/,
+    'the neutral wake must be skipped when recovery already brought the session up',
+  );
+});
+
 test('F1 guard: the flap-limit surface is edge-triggered and re-arms on recovery', () => {
   const src = sourceOf('session-watchdog.ts');
   // The surface must be gated on a once-set (`stoodDown`) so it fires on the

@@ -1,6 +1,13 @@
 // Session-wedge policy (issue #90) — pure decision functions, no Electron, no
 // I/O, so they are unit-testable and mutation-testable without a running app.
 //
+// TYPE-ONLY import (issue #174): the boot-wedge detector below returns the SAME
+// verdict shape as the #88 queue-stall detector so both feed one
+// `decideSessionRecycle`. A type-only import adds no runtime coupling — this
+// module stays free of Electron and I/O — and guarantees the two verdicts can
+// never drift apart into incompatible shapes.
+import type { QueueStallVerdict } from './queue-stall.ts';
+//
 // ── The defect this module exists to make impossible ────────────────────────
 //
 // A structured (SDK) session drives its turns through an async generator,
@@ -358,6 +365,143 @@ export function decideSessionRecycle(input: RecycleInput): RecycleDecision {
     action: 'recycle',
     parkedCount: stalled.parkedCount,
     stalledForMs: stalled.stalledForMs,
+  };
+}
+
+/** ── Issue #174: the BOOT wedge — a first turn that never starts ─────────────
+ *
+ *  ## The failure this closes, and why the two layers above do NOT
+ *
+ *  A burst-spawned child (heavy `CLAUDE.md` preload + many MCP servers) can
+ *  wedge in the CLI's session INIT — `getContextUsage` times out — BEFORE it
+ *  ever consumes the spawn's opening prompt. Measured 2026-09-21 on the
+ *  metarepo: 5 of 6 burst spawns died this way, and only an app relaunch +
+ *  #172 rollback ever revived one.
+ *
+ *  This shape escapes BOTH layers above, and the reason is the opening prompt's
+ *  lifecycle (verified at source):
+ *
+ *   • The spawn prompt is the session's FIRST turn. `sdkSend` pushes it and
+ *     `promptStream` immediately SHIFTS it off `session.queue` (queue now
+ *     EMPTY), arms `turnGate`, and yields it to the SDK. So:
+ *       — {@link decideGateRelease} refuses at its `queuedCount <= 0` guard:
+ *         the gate is held but nothing is queued BEHIND it to drain, and
+ *         releasing a gate with an empty queue is a no-op anyway.
+ *       — {@link decideQueueStall} refuses at its `parkedCount <= 0` guard:
+ *         the opening prompt lives in `session.queue` (now drained) and
+ *         `ws.sdkPendingPrompts`, NOT in `ws.queuedPrompts` (the banner) or the
+ *         durable inbox, so the stall detector sees nothing waiting.
+ *
+ *  Both existing layers key on WORK QUEUED BEHIND a started session. The boot
+ *  wedge has no such work — it has an opening turn that was accepted and never
+ *  processed. The one observable that separates it from a healthy session is
+ *  PROOF OF LIFE: has the SDK stream ever produced a single message for this
+ *  session? A live turn — however slow — emits `system/init` almost at once and
+ *  then text/tool deltas. A boot-wedged session emits NOTHING, ever.
+ *
+ *  ## PROOF OF LIFE, never "prompts are live", never "inbox empty"
+ *
+ *  The discriminator is `firstMessageSeen` — set true in consume() the first
+ *  time ANY message lands on the SDK stream. It is emphatically NOT "a pending
+ *  prompt is live in the session" (the exact false-positive the #174 field
+ *  recovery guard tripped on: the wedged session HELD live prompts, which read
+ *  as alive) and NOT "the inbox is empty" (a boot wedge's prompt is not in the
+ *  inbox at all). Only stream output proves the CLI got past init.
+ *
+ *  ## Bounded on PROGRESS, so a genuinely SLOW boot is never restarted
+ *
+ *  `firstMessageSeen === false` alone is not enough: a heavy but healthy boot is
+ *  briefly in exactly that state. The predicate ALSO requires the stream to have
+ *  been silent for the full {@link GATE_SILENCE_RELEASE_MS} window since spawn —
+ *  and `lastStreamAt` is stamped at spawn and bumped by EVERY stream message, so
+ *  the instant a slow boot emits its first message BOTH `firstMessageSeen` flips
+ *  true AND the silence clock resets. A boot that eventually starts its first
+ *  turn can never satisfy this, however long its init took. This is the same
+ *  progress-not-duration argument as {@link decideGateRelease}, and it is the
+ *  ticket's must-FAIL arm: the slow-boot session stays green.
+ *
+ *  The verdict is shaped as a {@link QueueStallVerdict}-compatible
+ *  `{ parkedCount, stalledForMs }` so it feeds the SAME
+ *  {@link decideSessionRecycle} the layer-2 stall path uses — inheriting its
+ *  anti-flap budget, widening backoff, and progress refusal rather than
+ *  duplicating that safety machinery (a second copy is how a healthy agent
+ *  eventually gets recycled). `parkedCount` is the count of opening prompts
+ *  still owed a turn (`pendingPromptCount`), for the log/telemetry line. */
+export interface BootWedgeInput {
+  /** True iff a live (non-stopping) structured session owns this workspace. */
+  sessionLive: boolean;
+  /** Whether the SDK stream has EVER produced a message for this session —
+   *  proof the CLI got past init and started consuming. The whole discriminator
+   *  turns on this: false + silent = boot-wedged; true = past init, so this
+   *  predicate stands down and the layer-1/layer-2 paths own it from here. */
+  firstMessageSeen: boolean;
+  /** A turn is in flight (`session.turnGate !== null`) — the opening turn was
+   *  accepted by the generator and yielded to the SDK. Without a turn in flight
+   *  there is nothing wedged in the sense this predicate treats (the session is
+   *  simply idle between turns, or has not been sent anything). */
+  turnInFlight: boolean;
+  /** Opening prompts still owed a turn (`ws.sdkPendingPrompts.length`). At least
+   *  one must be outstanding, or there is no work to have wedged ON — and it is
+   *  what the auto-heal re-delivers after the recycle. */
+  pendingPromptCount: number;
+  /** Epoch ms of the last message seen on the SDK stream. Stamped at spawn,
+   *  bumped by every stream message — the progress clock. */
+  lastStreamAt: number;
+  /** True while the session is tearing down; teardown handles its own turn. */
+  stopping: boolean;
+  /** Epoch ms now. */
+  now: number;
+  /** Silence window; the SAME constant layer 1 uses, injectable for tests. */
+  silenceMs?: number;
+}
+
+/** Whether a session is BOOT-WEDGED: it accepted an opening turn, never emitted
+ *  a single stream message, and has been silent for the whole window since
+ *  spawn. Returns a recycle-ready verdict, or null when it is not boot-wedged.
+ *
+ *  Every guard is load-bearing:
+ *   1. **A live session, or nothing to treat.** No session ⇒ not this defect.
+ *   2. **PROOF OF LIFE refusal.** Any stream message ever ⇒ the CLI got past
+ *      init; this predicate stands down (the started-turn wedge is layer 1/2).
+ *      This is the must-FAIL arm's guard: a slow boot that emitted `system/init`
+ *      is refused here.
+ *   3. **A turn must actually be in flight.** An idle session between turns is
+ *      not wedged.
+ *   4. **An opening prompt must be outstanding.** Something must have wedged ON,
+ *      and it is what the heal re-delivers.
+ *   5. **Not while stopping.** Teardown owns the turn.
+ *   6. **PROGRESS bound.** Silent for the whole window — the reset-on-first-
+ *      message clock is what makes a slow-but-live boot safe. */
+export function decideBootWedge(input: BootWedgeInput): QueueStallVerdict | null {
+  const {
+    sessionLive,
+    firstMessageSeen,
+    turnInFlight,
+    pendingPromptCount,
+    lastStreamAt,
+    stopping,
+    now,
+    silenceMs = GATE_SILENCE_RELEASE_MS,
+  } = input;
+
+  if (!sessionLive) return null;
+  // 2. PROOF OF LIFE — the discriminator. A single stream message is proof the
+  //    CLI got past init, so this predicate stands down (the slow-boot must-FAIL
+  //    arm). NEVER "prompts are live" and NEVER "inbox empty".
+  if (firstMessageSeen) return null;
+  if (!turnInFlight) return null;
+  if (pendingPromptCount <= 0) return null;
+  if (stopping) return null;
+  // 6. PROGRESS bound: silent for the full window since spawn. A slow boot resets
+  //    lastStreamAt the instant it emits, so it can never reach here.
+  const stalledForMs = now - lastStreamAt;
+  if (stalledForMs < silenceMs) return null;
+
+  return {
+    parkedCount: pendingPromptCount,
+    queuedCount: 0,
+    parkedInboxCount: 0,
+    stalledForMs,
   };
 }
 

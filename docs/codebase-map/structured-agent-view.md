@@ -494,6 +494,35 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     `for…of readInbox()` snapshot predates the drain and delivers a block twice
     (measured 3/3). `src/main/session-watchdog.test.ts` drives the module itself
     and kills all three reviewed defects.
+  - **Layer 2b — the BOOT wedge (issue #174).** A burst-spawned child on a heavy
+    repo can wedge in CLI **session init** (`getContextUsage` times out) BEFORE it
+    ever consumes the spawn's opening prompt. This escapes BOTH layers above,
+    because both key on work QUEUED BEHIND a started session: the opening prompt is
+    the FIRST turn, so `promptStream` SHIFTS it off `session.queue` (now empty →
+    `decideGateRelease`'s `queuedCount<=0` refuses) and it lives in
+    `ws.sdkPendingPrompts`, not the banner queue or inbox `workspaceQueueStall`
+    counts (so the #88 verdict is null). The one observable that separates a boot
+    wedge from a healthy session is **proof of life**: `Session.firstMessageSeen`,
+    set true in `consume()` the first time ANY stream message lands.
+    `decideBootWedge` (`src/shared/session-wedge.ts`) fires when a live session has
+    `firstMessageSeen === false`, a turn in flight, an opening prompt owed, and has
+    been silent for the whole `GATE_SILENCE_RELEASE_MS` window since spawn — a
+    PROGRESS bound (a slow-but-live boot emits `system/init` at once, which flips
+    `firstMessageSeen` true AND resets the clock, so it is NEVER restarted; that is
+    the must-FAIL arm). The discriminator is proof of life, **never** "prompts are
+    live" (the #174 field recovery guard's false positive — the wedged session HELD
+    live prompts) and never "inbox empty". The verdict is `QueueStallVerdict`-shaped
+    so it feeds the SAME `decideSessionRecycle` (`stalled ?? bootWedge`), inheriting
+    its anti-flap budget, backoff, and progress refusal. The heal: `recycleSession`
+    re-delivers the opening prompt through `recoverPendingPrompts(wsId, [])` (the
+    prompt is in `sdkPendingPrompts`, which the inbox-only recycle never touched),
+    and `sdkStop`'s queued-turn withdrawal rolls back any bus wake ledger mark via
+    the #172 seam so the #159 `already-woken` latch releases too. So the
+    orchestrator no longer has to mitigate (no defensive sequential spawn, no
+    babysat restart). Mutation-proven in `src/shared/session-wedge.test.ts`
+    (dropping the proof-of-life guard reddens the slow-boot must-FAIL arm) and
+    source-pinned in `src/main/session-watchdog.test.ts` (the recycle feed + the
+    opening-prompt re-delivery).
   Full mechanism, field captures, refuted hypotheses and the measurement
   provenance: `docs/research/issue-90-session-wedge.md`. Rig:
   `scripts/e2e-session-wedge.sh`.

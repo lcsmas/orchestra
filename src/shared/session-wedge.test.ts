@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  decideBootWedge,
   decideGateRelease,
   decideSessionRecycle,
   pruneRecycles,
@@ -423,5 +424,120 @@ test('backoff never masks the flap ceiling: at budget it is flap-limit, not back
   assert.equal(
     decideSessionRecycle({ sessionLive: true, stalled, lastStreamAt: SILENT, recentRecycles: recent, now: NOW }).action,
     'flap-limit',
+  );
+});
+
+// ── Issue #174: the BOOT wedge (decideBootWedge) ────────────────────────────
+//
+// The discriminator is PROOF OF LIFE (`firstMessageSeen`), and the safety
+// argument is a PROGRESS bound (silent since spawn). Every case names the ONE
+// guard it exercises and satisfies every OTHER guard, so a green case cannot be
+// green for an incidental reason. The must-FAIL arm is the SLOW BOOT: a session
+// that emitted its first message must be refused however silent it then goes.
+
+/** A boot-wedged session: live, never emitted a stream message, holds the opening
+ *  turn (gate held) with a pending prompt owed, silent since spawn. */
+const wedgedBoot = {
+  sessionLive: true,
+  firstMessageSeen: false,
+  turnInFlight: true,
+  pendingPromptCount: 1,
+  lastStreamAt: SILENT,
+  stopping: false,
+  now: NOW,
+};
+
+test('#174 boot wedge: live + no proof of life + silent-since-spawn → recycle verdict', () => {
+  const v = decideBootWedge(wedgedBoot);
+  assert.ok(v, 'a boot-wedged session must produce a recycle verdict');
+  assert.equal(v.parkedCount, 1, 'parkedCount is the count of opening prompts owed a turn');
+  assert.equal(v.queuedCount, 0);
+  assert.equal(v.parkedInboxCount, 0);
+  assert.equal(v.stalledForMs, NOW - SILENT, 'stalledForMs is silence-since-spawn');
+});
+
+test('#174 must-FAIL arm — SLOW BOOT: a session that emitted its first message is NEVER wedged', () => {
+  // THE mutation-proving arm. `firstMessageSeen` is the discriminator: a heavy
+  // but healthy boot briefly looks identical to a wedged one (gate held, pending
+  // prompt, no result yet), and the ONLY thing that separates them is whether the
+  // stream ever produced a message. Flip that one field and the verdict must
+  // invert — a slow boot that got past init is refused even when it then goes
+  // silent for the whole window (that later silence is layer 1's job, not this).
+  const slowBoot = { ...wedgedBoot, firstMessageSeen: true };
+  assert.equal(
+    decideBootWedge(slowBoot),
+    null,
+    'proof of life (a stream message) must stand this predicate down — the slow-boot must-FAIL arm',
+  );
+  // And prove the arms genuinely DISCRIMINATE: same inputs, only firstMessageSeen
+  // differs, opposite verdicts. Mutating `decideBootWedge` to drop the
+  // `if (firstMessageSeen) return null` guard reddens exactly this pair.
+  assert.ok(decideBootWedge({ ...slowBoot, firstMessageSeen: false }), 'control: the wedged twin still fires');
+});
+
+test('#174 PROGRESS bound: a boot still inside the silence window is NOT wedged', () => {
+  // The second half of the safety argument: even with no proof of life yet, a
+  // session that has been silent for LESS than the window is a boot still in
+  // progress. `lastStreamAt` is stamped at spawn and reset by the first message,
+  // so this is "not silent long enough since spawn". must-FAIL: shorten the
+  // silence and the verdict must vanish.
+  assert.equal(
+    decideBootWedge({ ...wedgedBoot, lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS + 1 }),
+    null,
+    'a boot silent for less than the window is still booting, not wedged',
+  );
+  // Boundary: exactly at the window fires (>=, not >).
+  assert.ok(
+    decideBootWedge({ ...wedgedBoot, lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS }),
+    'exactly at the silence window, the boot wedge fires',
+  );
+});
+
+test('#174 guard: a dead (no live) session produces no verdict', () => {
+  assert.equal(decideBootWedge({ ...wedgedBoot, sessionLive: false }), null);
+});
+
+test('#174 guard: no turn in flight → not wedged (idle between turns is not this defect)', () => {
+  assert.equal(decideBootWedge({ ...wedgedBoot, turnInFlight: false }), null);
+});
+
+test('#174 guard: no opening prompt owed → nothing to have wedged ON', () => {
+  assert.equal(decideBootWedge({ ...wedgedBoot, pendingPromptCount: 0 }), null);
+});
+
+test('#174 guard: a stopping session is left to its own teardown', () => {
+  assert.equal(decideBootWedge({ ...wedgedBoot, stopping: true }), null);
+});
+
+test('#174 the boot-wedge verdict feeds decideSessionRecycle unchanged (shape compatibility)', () => {
+  // The whole point of the QueueStallVerdict shape: the boot-wedge verdict must
+  // drive the SAME recycle decision as a #88 stall, inheriting its anti-flap
+  // budget and progress refusal. Prove it composes, and that the recycle path's
+  // OWN progress guard (lastStreamAt) still gates it — a boot-wedge verdict with a
+  // FRESH stream stamp must be refused by decideSessionRecycle even though the
+  // detector fired, because the two guards are independent evidence.
+  const verdict = decideBootWedge(wedgedBoot);
+  assert.ok(verdict);
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: verdict,
+      lastStreamAt: SILENT,
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'recycle',
+    'a silent boot-wedge verdict recycles',
+  );
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: verdict,
+      lastStreamAt: NOW, // fresh: the recycle path's own progress guard refuses
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'none',
+    "decideSessionRecycle's own progress guard still refuses a fresh-stream session",
   );
 });
