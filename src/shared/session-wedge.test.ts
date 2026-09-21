@@ -7,6 +7,7 @@ import {
   pruneRecycles,
   recycleBackoffMs,
   GATE_SILENCE_RELEASE_MS,
+  BOOT_SILENCE_MS,
   MAX_RECYCLES_PER_HOUR,
   RECYCLE_BACKOFF_BASE_MS,
   RECYCLE_BACKOFF_MAX_MS,
@@ -491,6 +492,72 @@ test('#174 PROGRESS bound: a boot still inside the silence window is NOT wedged'
     decideBootWedge({ ...wedgedBoot, lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS }),
     'exactly at the silence window, the boot wedge fires',
   );
+});
+
+// ── Issue #180: the dedicated BOOT_SILENCE_MS (3 min) window ─────────────────
+//
+// #180 does not change decideBootWedge's DEFAULT (layers 1/2 keep 10 min); it
+// gives the BOOT call site its own, shorter window via the `silenceMs` override.
+// These arms prove the override BEHAVES, asserted against the LITERAL 180_000 —
+// never against BOOT_SILENCE_MS itself, which would let a mutated constant and a
+// mutated assertion shrink together and pass vacuously.
+
+test('#180 BOOT_SILENCE_MS is exactly 3 minutes (180_000 ms), the frozen D1 value', () => {
+  // The literal, so a change to the constant is a change to a committed number a
+  // reviewer must see — not something an in-file symbol quietly tracks.
+  assert.equal(BOOT_SILENCE_MS, 180_000);
+  // And it is genuinely SHORTER than the shared gate/stall window it overrides —
+  // the whole point of #180 (heal 3x sooner). If someone set them equal the
+  // override would be a no-op; this reddens on that.
+  assert.ok(BOOT_SILENCE_MS < GATE_SILENCE_RELEASE_MS, 'the boot window must be shorter than the 10-min shared one');
+});
+
+test('#180 must-FAIL arm — heals at 3 min: silent 3min+1ms under the boot window → wedged; <3min → null', () => {
+  // The behaviour #180 buys: under the 3-min override a never-started session is
+  // wedged the instant it crosses 180_000 ms of silence, NOT at 10 min. Asserted
+  // against the literal 180_000 so reverting the call-site override to the 10-min
+  // default (the mutant) reddens exactly this arm — at silence = 3min+1ms the
+  // 10-min default would still return null.
+  const boot = { ...wedgedBoot, silenceMs: 180_000 };
+
+  // 3 min + 1 ms of silence: wedged under the 3-min window.
+  assert.ok(
+    decideBootWedge({ ...boot, lastStreamAt: NOW - 180_000 - 1 }),
+    'silent past the 3-min boot window with no proof of life → wedged',
+  );
+  // Just under 3 min: still booting, not wedged.
+  assert.equal(
+    decideBootWedge({ ...boot, lastStreamAt: NOW - 180_000 + 1 }),
+    null,
+    'silent for less than the 3-min boot window is still booting',
+  );
+  // Boundary: exactly at 3 min fires (>=, not >).
+  assert.ok(
+    decideBootWedge({ ...boot, lastStreamAt: NOW - 180_000 }),
+    'exactly at the 3-min boot window, the wedge fires',
+  );
+  // DISCRIMINATOR against the old default: a session silent 3min+1ms but under the
+  // 10-MINUTE default is NOT wedged. This is what a dropped call-site override
+  // would produce — it must NOT wedge at 3 min, proving the shorter window is the
+  // thing doing the work here, not some incidental guard.
+  assert.equal(
+    decideBootWedge({ ...wedgedBoot, lastStreamAt: NOW - 180_000 - 1 }),
+    null,
+    'the 10-min default must NOT wedge at 3min+1ms — proving the override is load-bearing',
+  );
+});
+
+test('#180 the shorter boot window still respects proof-of-life (slow boot stays green under 3 min)', () => {
+  // #180 shrinks ONLY the not-yet-started window; a boot that emitted its first
+  // message is refused regardless of how short the window is. The must-FAIL arm
+  // survives the smaller constant unchanged.
+  const boot = { ...wedgedBoot, silenceMs: 180_000, lastStreamAt: NOW - 180_000 - 1 };
+  assert.equal(
+    decideBootWedge({ ...boot, firstMessageSeen: true }),
+    null,
+    'proof of life stands the boot wedge down even under the shorter 3-min window',
+  );
+  assert.ok(decideBootWedge(boot), 'control: its no-proof-of-life twin still wedges at 3 min');
 });
 
 test('#174 guard: a dead (no live) session produces no verdict', () => {

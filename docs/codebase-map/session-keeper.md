@@ -214,6 +214,17 @@ times).
   the destructive path's own `lastStreamAt` progress evidence, review R1) →
   `recycleSession` (`sdkStop` then `sdkWake` on the SAME conversation, parked
   mail re-driven via `releaseInboxBlock` exactly-once).
+- **Layer 2b: the BOOT wedge (#174/#180).** `decideBootWedge` catches a session
+  that accepted its opening turn but never emitted a stream message
+  (`firstMessageSeen === false`) and has been silent since spawn — the shape
+  layers 1/2 miss (nothing queued behind a started turn). Its verdict feeds the
+  SAME `decideSessionRecycle` (`stalled ?? bootWedge`). The window is its OWN
+  shorter constant `BOOT_SILENCE_MS` = 3 min (#180), passed as `silenceMs:` at the
+  lone call site (`session-watchdog.ts` ~line 428) — NOT the 10-min default; layers
+  1/2 keep the 10-min `GATE_SILENCE_RELEASE_MS`. Sized from #176 §4 (metarepo init
+  2–6 s, worst legit silence 30 s MCP connect timeout, ≥6x margin). Progress bound
+  is untouched: the first message resets `lastStreamAt`, so a slow-but-live boot is
+  never restarted.
 - **Anti-flap = COUNT + WIDENING BACKOFF (`session-wedge.ts`).**
   `MAX_RECYCLES_PER_HOUR` = 3 in `RECYCLE_WINDOW_MS` = 1h caps recycles;
   `recycleBackoffMs(n)` = `RECYCLE_BACKOFF_BASE_MS`·2^(n−1) (base 2 min, capped

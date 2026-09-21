@@ -92,6 +92,17 @@ import type { QueueStallVerdict } from './queue-stall.ts';
  *  workspace anyway. Neither failure loses a message. */
 export const GATE_SILENCE_RELEASE_MS = 10 * 60 * 1000;
 
+/** Silence window for the BOOT case ONLY — a session that has never emitted a
+ *  stream message (issue #180). Smaller than the 10-min gate/stall window on
+ *  purpose: #176 §4 measured metarepo init at 2.0–6.0 s across 30 runs (0/30
+ *  wedged) with the worst LEGITIMATE silence being the 30 s MCP connect timeout,
+ *  so 3 min carries ≥6x margin over that worst observed value while healing a
+ *  boot wedge 3x sooner than the shared constant did. This overrides
+ *  {@link decideBootWedge}'s default at its lone call site; the PROGRESS bound is
+ *  untouched (first message resets everything) and layers 1/2 keep the 10-min
+ *  constant. */
+export const BOOT_SILENCE_MS = 3 * 60 * 1000;
+
 export interface GateReleaseInput {
   /** Whether a turn is currently in flight (`session.turnGate !== null`). */
   gateHeld: boolean;

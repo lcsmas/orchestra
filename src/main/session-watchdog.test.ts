@@ -4,6 +4,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Pure, Electron-free — importable bare here (verified) so the #180 behavioural
+// arm below drives the REAL detector with the REAL constant, not a source regex.
+import {
+  decideBootWedge,
+  BOOT_SILENCE_MS,
+  GATE_SILENCE_RELEASE_MS,
+} from '../shared/session-wedge.ts';
 
 // Tests that DRIVE `src/main/session-watchdog.ts` itself (review R4).
 //
@@ -204,6 +211,83 @@ test('#174 guard: watchdogTick feeds a boot-wedge verdict into the recycle decis
     src,
     /stalled:\s*stalled\s*\?\?\s*bootWedge/,
     'the boot-wedge verdict must feed the SAME decideSessionRecycle as a #88 stall',
+  );
+});
+
+// ── Issue #180: the BOOT call site overrides silenceMs to BOOT_SILENCE_MS ─────
+//
+// #180's ONE behaviour change lives ENTIRELY at this call site: `decideBootWedge`
+// defaults to the 10-min GATE_SILENCE_RELEASE_MS, and the watchdog must OVERRIDE
+// it with the shorter BOOT_SILENCE_MS (3 min) so a never-started session heals 3x
+// sooner. A source regex alone is fragile (it passes on `silenceMs: SOME_OTHER`),
+// so this pairs a source guard with a BEHAVIOURAL arm that resolves the actual
+// argument the call site passes and drives the real detector with it.
+
+test('#180 guard: the boot-wedge call site overrides silenceMs with BOOT_SILENCE_MS', () => {
+  const src = sourceOf('session-watchdog.ts');
+  // The override must be present AND must be the boot constant — not the 10-min
+  // default (which is what dropping the line reverts to) and not some other value.
+  assert.match(
+    src,
+    /silenceMs:\s*BOOT_SILENCE_MS/,
+    'the BOOT case must pass its own shorter window, not inherit the 10-min default',
+  );
+  // And the constant must actually be imported into this module, or the line
+  // above would be a reference error the bundler would reject.
+  assert.match(
+    src,
+    /\bBOOT_SILENCE_MS\b[\s\S]*from\s+['"]\.\.\/shared\/session-wedge\.ts['"]/,
+    'BOOT_SILENCE_MS must be imported from the shared policy module',
+  );
+});
+
+test('#180 behavioural arm: the overridden window makes a 3-min boot wedge fire where the default would NOT', () => {
+  // This is the arm that REDDENS IF THE OVERRIDE IS DROPPED. It extracts the
+  // silenceMs expression the call site actually passes, resolves it to a number,
+  // and drives the REAL decideBootWedge with it against a never-started session
+  // silent for 3min+1ms. With the override (BOOT_SILENCE_MS = 180_000) the detector
+  // wedges; revert the call site to the default and the SAME 3min+1ms silence is
+  // under the 10-min window → null. The pair below proves the value doing the work
+  // is genuinely the shorter one, asserted against the literal 180_000.
+  const src = sourceOf('session-watchdog.ts');
+  const m = src.match(/decideBootWedge\(\{[\s\S]*?silenceMs:\s*([A-Za-z0-9_]+)[\s\S]*?\}\)/);
+  assert.ok(m, 'could not find a silenceMs argument at the decideBootWedge call site — the override is missing');
+  const passed = m![1];
+  // Resolve the identifier the call site passes to its real runtime value. Only
+  // the two policy constants are legitimate here; anything else is a defect.
+  const resolved =
+    passed === 'BOOT_SILENCE_MS'
+      ? BOOT_SILENCE_MS
+      : passed === 'GATE_SILENCE_RELEASE_MS'
+        ? GATE_SILENCE_RELEASE_MS
+        : NaN;
+  assert.ok(
+    Number.isFinite(resolved),
+    `the call site passes an unrecognised silenceMs (${passed}); expected BOOT_SILENCE_MS`,
+  );
+  assert.equal(resolved, 180_000, 'the resolved boot window must be 3 minutes (180_000 ms)');
+
+  const NOW = 1_800_000_000_000;
+  const neverStarted = {
+    sessionLive: true,
+    firstMessageSeen: false,
+    turnInFlight: true,
+    pendingPromptCount: 1,
+    lastStreamAt: NOW - 180_000 - 1, // silent 3 min + 1 ms since spawn
+    stopping: false,
+    now: NOW,
+  };
+  // WIRED value → wedged at 3 min.
+  assert.ok(
+    decideBootWedge({ ...neverStarted, silenceMs: resolved }),
+    'with the wired BOOT_SILENCE_MS the session is boot-wedged at 3min+1ms',
+  );
+  // MUTANT: the dropped-override world (10-min default) → NOT wedged at the same
+  // 3min+1ms. This is exactly what reverting the call-site line produces.
+  assert.equal(
+    decideBootWedge({ ...neverStarted, silenceMs: GATE_SILENCE_RELEASE_MS }),
+    null,
+    'the 10-min default would NOT wedge at 3min+1ms — so dropping the override reddens this arm',
   );
 });
 
