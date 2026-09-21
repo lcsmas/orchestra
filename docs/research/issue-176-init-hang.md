@@ -198,3 +198,28 @@ future incident should apply:
 WITH fresh logs. With no deterministic repro today, the honest close is: the
 **#174 resilience already dormant-izes the symptom; no Orchestra-side code change
 is warranted by the evidence.**
+
+## 8. Post-close addendum — the coordinator's answer arrived after close-out
+
+The raw-log request (§7) was answered by ws 36773f53 AFTER the investigation
+closed (bus seq 1376, 2026-09-21; integrated by the LEAD — the investigator
+workspace was already released). Three facts, none overturning the verdict,
+two sharpening it:
+
+1. **No per-session logs exist for the wedged six.** The spawns are headless;
+   no `<id>.log` / `<id>:run.log` was ever created, and the workspaces were
+   deleted 13:44:36–49 — only `orchestra.log(.1)` survives. The §7 discriminants
+   therefore need artifacts that do not exist for THIS incident: an
+   OBSERVABILITY GAP (a wedged headless session leaves nothing to autopsy),
+   filed as its own ticket (#177).
+2. **`getContextUsage timed out` is a NOISY symptom, not a discriminant**: 383
+   occurrences across multiple days in the surviving log, including ESTABLISHED
+   sessions outside any burst (36773f53 itself at 11:34:26). Consistent with
+   the 0/30 non-repro — the timeout alone must never be read as "boot wedge";
+   only the #174 predicate (no first message + silent since spawn) is.
+3. **Zero retry datapoints**: the five wedged sessions were deleted without any
+   relaunch attempt (fleet cancelled), so "a retry would have succeeded" —
+   the mechanism #174's recycle relies on — was never field-tested in the
+   incident itself. The rig's 30/30 clean boots remain the only evidence a
+   fresh start succeeds; load context at 13:41: ~30 workspaces in store,
+   ~12 sibling agents running, 6 submodule-bearing worktree creations in 12 s.
