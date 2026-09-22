@@ -222,10 +222,19 @@ test('#180/#174 wiring: decideSessionRecycle gets BOOT_SILENCE_MS on the boot pa
   // (a bare `silenceMs: BOOT_SILENCE_MS` OR no silenceMs at all in the
   // decideSessionRecycle call) reddens here.
   const recycleCall = src.slice(src.indexOf('decideSessionRecycle({'));
+  // F4: the window must key on `bootWedge` PRESENCE, not `recycleReason === 'boot-wedge'`
+  // (≡ bootWedge && !stalled), which re-masked the boot+stall co-fire back to 10 min.
   assert.match(
     recycleCall.slice(0, 500),
-    /silenceMs:\s*recycleReason === 'boot-wedge'\s*\?\s*BOOT_SILENCE_MS\s*:\s*GATE_SILENCE_RELEASE_MS/,
-    'the recycle window must be BOOT_SILENCE_MS for a boot wedge, GATE_SILENCE_RELEASE_MS (10min) for a stall',
+    /silenceMs:\s*bootWedge\s*\?\s*BOOT_SILENCE_MS\s*:\s*GATE_SILENCE_RELEASE_MS/,
+    'the recycle window must be BOOT_SILENCE_MS whenever a boot wedge is PRESENT (F4), else GATE_SILENCE_RELEASE_MS',
+  );
+  // must-FAIL arm: the old `recycleReason === 'boot-wedge'` gate re-masks the
+  // co-fire — it must be GONE from the silenceMs choice.
+  assert.doesNotMatch(
+    recycleCall.slice(0, 500),
+    /silenceMs:\s*recycleReason === 'boot-wedge'/,
+    'the window must NOT gate on recycleReason (bootWedge && !stalled) — that re-masks the co-fire (F4)',
   );
   // The stall side must be explicitly the 10-min constant — a mutant that used
   // BOOT_SILENCE_MS on both sides (shrinking the stall window) reddens.
