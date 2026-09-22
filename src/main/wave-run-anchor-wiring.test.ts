@@ -126,7 +126,13 @@ test('G9 FIX — createScratchLikeWorkspace (orchestrator/scratch spawn) starts 
 test('G9 FIX — startBusRunAndWriteNotice does BOTH the run-start and the notice write', () => {
   const body = fnBody(workspacesSrc, 'async function startBusRunAndWriteNotice(');
   assert.match(body, /maybeStartRunAtAnchor\(busRunAnchorDeps, anchor\)/, 'starts the run at the anchor');
-  assert.match(body, /await writeBusSwitchState\(ws\.worktreePath, anchor\.anchorId\)/, 'writes the frozen notice');
+  // #182: the notice write now also carries anchorIsOrchestrator so a genuine
+  // fleet member is never stamped "standalone" over a momentarily-unstarted row.
+  assert.match(
+    body,
+    /await writeBusSwitchState\(\s*ws\.worktreePath,\s*anchor\.anchorId,\s*anchor\.anchorIsOrchestrator,?\s*\)/,
+    'writes the frozen notice with the anchor-orchestrator signal (#182)',
+  );
 });
 
 test('P1 — startAgentPty also starts the run + notice (idempotent, upgrades pre-#134 workspaces)', () => {

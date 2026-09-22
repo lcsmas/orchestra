@@ -275,3 +275,62 @@ export function busSwitchNotice(s: BusSwitches | null | undefined): string | nul
     ...busSwitchNoticeLines(s),
   ].join('\n');
 }
+
+/** How many mechanisms are ON, and the total — for the run-less "N/7 ON" line.
+ *  Total is `BUS_MECHANISMS.length`, never a hardcoded 7, so a new mechanism
+ *  moves both numbers together. */
+export function countSwitchesOn(s: BusSwitches): { on: number; total: number } {
+  let on = 0;
+  for (const m of BUS_MECHANISMS) if (s[m] === true) on += 1;
+  return { on, total: BUS_MECHANISMS.length };
+}
+
+/**
+ * #182 — THE PURE NOTICE DECISION the effectful `writeBusSwitchState` calls.
+ *
+ * The "standalone" signal is `!anchorCanOrchestrate && !runExists`, NOT the
+ * frozen flags and NOT `!runExists` alone. A workspace that anchors no run has no
+ * run row, and `runFlags` collapses that to all-OFF — indistinguishable from a
+ * run whose wave genuinely froze every mechanism OFF. The field bug (#182): a
+ * fresh standalone workspace with the live store at 7/7 ON printed seven `=OFF`
+ * "frozen at wave start" lines, misread by a human ("switches un-ticked") and an
+ * agent ("shadow rollout") as a real frozen-OFF wave.
+ *
+ * THE CONFLATION (reviewer-182, confirmed at source): `!runExists` alone ALSO
+ * matches a GENUINE fleet member/orchestrator whose run row is not started YET —
+ * at the reparent (workspaces.ts:1937) and adopt (:2459) sites the notice is
+ * written BEFORE `maybeStartRunAtAnchor`, so `getRun(anchorId)` is transiently
+ * null for a real member. Claiming "standalone — not part of a fleet" there is
+ * actively FALSE (and persists to disk on a notice-only reparent). The honest
+ * standalone signal is that the anchor CANNOT orchestrate: a real member's anchor
+ * is its OPS (an orchestrator), a genuine top-level standalone is its own
+ * non-orchestrator anchor. So the "no run" line requires BOTH.
+ *
+ *  - !anchorCanOrchestrate && !runExists → the single "anchors no run" line,
+ *    naming the LIVE switch count, and ZERO `=OFF` lines. (Genuine standalone.)
+ *  - otherwise → the frozen-flags notice, UNCHANGED. A member/orchestrator with a
+ *    momentarily-unstarted row (anchorCanOrchestrate) falls back to the all-OFF
+ *    frozen notice (pre-#182 behaviour), never the false standalone line; a run
+ *    that exists prints its frozen ON/OFF lines and NEVER the "no run" line.
+ *
+ * Pure so the unit suite drives the exact decision the writer runs — no
+ * re-implementation. MUTATIONS: invert `runExists` → a frozen-ON run prints the
+ * "no run" line; drop the `anchorCanOrchestrate` gate → an orchestrator-anchored
+ * member with an unstarted row prints the false standalone line. Each reddens its
+ * named arm.
+ */
+export function busSwitchNoticeDecision(args: {
+  runExists: boolean;
+  anchorCanOrchestrate: boolean;
+  frozen: BusSwitches;
+  live: BusSwitches;
+}): string | null {
+  if (!args.anchorCanOrchestrate && !args.runExists) {
+    const { on, total } = countSwitchesOn(args.live);
+    return [
+      '[orchestra] Fleet-bus switches for this workspace:',
+      `- fleet bus: this workspace anchors no run (standalone — not part of a fleet). Switches will be frozen from the live settings (currently ${on}/${total} ON) when it is promoted or dispatched into a run.`,
+    ].join('\n');
+  }
+  return busSwitchNotice(args.frozen);
+}
