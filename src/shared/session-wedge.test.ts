@@ -229,6 +229,79 @@ test('POSITIVE CONTROL: occurrence-1 shape (parked=3, idle, 35min) IS recycled',
   assert.equal(d.action, 'recycle');
 });
 
+// ── #180 + #174: the recycle refusal window must match the DETECTOR's window ──
+//
+// decideBootWedge fires the boot verdict at BOOT_SILENCE_MS (3 min), but
+// decideSessionRecycle has its OWN progress refusal keyed on `silenceMs`
+// (default 10 min). If the boot recycle is fed the default, it is REFUSED until
+// 10 min — masking #180's 3-min heal (Gate #4). The watchdog passes
+// BOOT_SILENCE_MS on the boot-wedge path ONLY; the #88 stall path keeps 10 min.
+// These prove the two windows behave, against the LITERAL 180_000, so a mutated
+// constant + mutated assertion cannot shrink together.
+
+test('#180 boot recycle: fed BOOT_SILENCE_MS, a boot wedge silent 3min+1ms → recycle (heals at 3min)', () => {
+  // The boot verdict, real-stream-silent for 3min+1ms. With the SHORT window it
+  // recycles NOW instead of waiting out 10 min — the end-to-end #180 heal.
+  const bootVerdict = { parkedCount: 1, stalledForMs: 180_000 + 1 };
+  const d = decideSessionRecycle({
+    sessionLive: true,
+    stalled: bootVerdict,
+    lastStreamAt: NOW - 180_000 - 1, // real-stream-silent 3min+1ms
+    silenceMs: 180_000, // the boot-wedge path passes BOOT_SILENCE_MS
+    recentRecycles: [],
+    now: NOW,
+  });
+  assert.equal(d.action, 'recycle', 'with the 3-min window a 3min+1ms boot wedge recycles now');
+  // must-FAIL discriminator: the SAME verdict at the SAME silence, but fed the
+  // 10-MIN default (a dropped conditional), is REFUSED — the exact masking bug.
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: bootVerdict,
+      lastStreamAt: NOW - 180_000 - 1,
+      silenceMs: GATE_SILENCE_RELEASE_MS, // the un-fixed default
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'none',
+    'fed the 10-min default the boot wedge is refused at 3min — the masking Gate #4 bug',
+  );
+});
+
+test('#88 stall window UNCHANGED: a stall silent 3min+1ms is still refused until 10min (no regression)', () => {
+  // The must-PASS mirror OPS named: shrinking the recycle window on the STALL
+  // path would recycle a slow-but-live agent with parked work at 3 min. The
+  // stall path must keep GATE_SILENCE_RELEASE_MS (10 min). Same 3min+1ms silence
+  // as the boot arm above → the stall is NOT recycled.
+  const stallVerdict = { parkedCount: 3, stalledForMs: 35 * 60_000 };
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: stallVerdict,
+      lastStreamAt: NOW - 180_000 - 1, // real-stream-silent 3min+1ms
+      silenceMs: GATE_SILENCE_RELEASE_MS, // the stall path keeps the 10-min window
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'none',
+    'a stall silent only 3min is still booting/working — NOT recycled until the 10-min window',
+  );
+  // Control: the SAME stall, silent past the full 10-min window, DOES recycle —
+  // so this is a real window boundary, not an always-refuse.
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: stallVerdict,
+      lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS - 1,
+      silenceMs: GATE_SILENCE_RELEASE_MS,
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'recycle',
+    'control: the stall past the 10-min window still recycles',
+  );
+});
+
 // ── Review R1: the DESTRUCTIVE path carries its own progress evidence ───────
 //
 // These are the cases whose absence let the first cut reach `sdkStop` — which

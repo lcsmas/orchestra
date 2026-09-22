@@ -529,7 +529,17 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     live" (the #174 field recovery guard's false positive — the wedged session HELD
     live prompts) and never "inbox empty". The verdict is `QueueStallVerdict`-shaped
     so it feeds the SAME `decideSessionRecycle` (`stalled ?? bootWedge`), inheriting
-    its anti-flap budget, backoff, and progress refusal. The heal: `recycleSession`
+    its anti-flap budget, backoff, and progress refusal.
+    **The recycle's progress-refusal window is CONDITIONAL (issues #180 + #174):**
+    `decideBootWedge` fires the verdict at `BOOT_SILENCE_MS` (3 min, #180), but
+    `decideSessionRecycle` has its OWN refusal keyed on `silenceMs` — so the
+    watchdog passes `silenceMs: recycleReason === 'boot-wedge' ? BOOT_SILENCE_MS :
+    GATE_SILENCE_RELEASE_MS`. Without the boot branch the recycle would default to
+    10 min and refuse the boot heal until then, MASKING #180's 3-min window (Gate
+    #4). The #88 STALL path keeps the 10-min `GATE_SILENCE_RELEASE_MS` — shrinking
+    it would recycle a slow-but-live parked agent at 3 min. Both windows are pinned
+    (source in `session-watchdog.test.ts`, behaviour in `session-wedge.test.ts`).
+    The heal: `recycleSession`
     re-delivers the opening prompt through `recoverPendingPrompts(wsId, [])` (the
     prompt is in `sdkPendingPrompts`, which the inbox-only recycle never touched),
     and `sdkStop`'s queued-turn withdrawal rolls back any bus wake ledger mark via
