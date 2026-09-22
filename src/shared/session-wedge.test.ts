@@ -302,6 +302,77 @@ test('#88 stall window UNCHANGED: a stall silent 3min+1ms is still refused until
   );
 });
 
+test('#F4 CO-FIRE (boot wedge AND #88 stall): the window follows bootWedge PRESENCE → heals at 3min', () => {
+  // reviewer-restart F4: a never-started session (firstMessageSeen===false) CAN
+  // also qualify as a #88 stall — a boot-wedged coordinator with peer messages
+  // parked in its inbox. Both detectors fire. The FIXED wiring keys the recycle
+  // window on `bootWedge` PRESENCE (silenceMs: bootWedge ? BOOT_SILENCE_MS : …),
+  // NOT on `recycleReason === 'boot-wedge'` (≡ bootWedge && !stalled) which fell to
+  // the 10-min else and RE-MASKED the co-fire. This drives BOTH real detectors in
+  // the co-fire shape and then the recycle with each candidate window.
+  const now = NOW;
+  const silentSinceSpawn = now - 4 * 60_000; // real-stream-silent 4 min (past 3, under 10)
+
+  // Both real detectors fire on the SAME session state:
+  const bootVerdict = decideBootWedge({
+    sessionLive: true,
+    firstMessageSeen: false, // never started
+    turnInFlight: true, // opening turn accepted + yielded
+    pendingPromptCount: 1, // opening prompt owed
+    lastStreamAt: silentSinceSpawn,
+    stopping: false,
+    now,
+    silenceMs: 180_000, // BOOT_SILENCE_MS (3 min)
+  });
+  const stallVerdict = decideQueueStall({
+    status: 'idle',
+    lastStopReason: undefined,
+    queuedCount: 0,
+    parkedInboxCount: 2, // peers pinged the wedged coordinator
+    // NEVER-STARTED session → lastTurnStartAt is UNDEFINED, so the stall clock
+    // falls back to `createdAt` (workspace-creation, >15min ago) — THIS is why the
+    // co-fire is reachable at the 4-min wedge mark: the stall's 15-min threshold is
+    // met by the creation clock while the boot clock is only 4 min in.
+    lastTurnStartAt: undefined,
+    createdAt: now - 3_600_000, // workspace created 60 min ago
+    hibernated: false,
+    observableSince: now - 3_600_000, // app up 60 min
+    now,
+  });
+  assert.ok(bootVerdict, 'the boot wedge must fire (firstMessageSeen false, silent 4min)');
+  assert.ok(stallVerdict, 'the #88 stall must ALSO fire (parked inbox) — this is the co-fire');
+
+  // The watchdog feeds `stalled: stalled ?? bootWedge` and the CONDITIONAL window.
+  // FIXED wiring: window follows bootWedge PRESENCE → BOOT_SILENCE_MS → recycle NOW.
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: stallVerdict ?? bootVerdict,
+      lastStreamAt: silentSinceSpawn,
+      silenceMs: bootVerdict ? 180_000 : GATE_SILENCE_RELEASE_MS, // the FIXED choice
+      recentRecycles: [],
+      now,
+    }).action,
+    'recycle',
+    'co-fire fixed: window follows bootWedge presence → 3-min window → recycles at 4min',
+  );
+  // OLD (buggy) wiring modelled: `bootWedge && !stalled` — with a stall present this
+  // is false → 10-min window → REFUSED at 4 min. This is the F4 re-mask; the arm
+  // reddens if someone reverts the window to the recycleReason gate.
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: stallVerdict ?? bootVerdict,
+      lastStreamAt: silentSinceSpawn,
+      silenceMs: bootVerdict && !stallVerdict ? 180_000 : GATE_SILENCE_RELEASE_MS, // the OLD choice
+      recentRecycles: [],
+      now,
+    }).action,
+    'none',
+    'co-fire under the OLD recycleReason gate is RE-MASKED to 10min — the F4 blocker',
+  );
+});
+
 // ── Review R1: the DESTRUCTIVE path carries its own progress evidence ───────
 //
 // These are the cases whose absence let the first cut reach `sdkStop` — which

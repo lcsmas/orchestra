@@ -530,15 +530,24 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     live prompts) and never "inbox empty". The verdict is `QueueStallVerdict`-shaped
     so it feeds the SAME `decideSessionRecycle` (`stalled ?? bootWedge`), inheriting
     its anti-flap budget, backoff, and progress refusal.
-    **The recycle's progress-refusal window is CONDITIONAL (issues #180 + #174):**
+    **The recycle's progress-refusal window is CONDITIONAL (issues #180 + #174 + F4):**
     `decideBootWedge` fires the verdict at `BOOT_SILENCE_MS` (3 min, #180), but
     `decideSessionRecycle` has its OWN refusal keyed on `silenceMs` — so the
-    watchdog passes `silenceMs: recycleReason === 'boot-wedge' ? BOOT_SILENCE_MS :
-    GATE_SILENCE_RELEASE_MS`. Without the boot branch the recycle would default to
-    10 min and refuse the boot heal until then, MASKING #180's 3-min window (Gate
-    #4). The #88 STALL path keeps the 10-min `GATE_SILENCE_RELEASE_MS` — shrinking
-    it would recycle a slow-but-live parked agent at 3 min. Both windows are pinned
-    (source in `session-watchdog.test.ts`, behaviour in `session-wedge.test.ts`).
+    watchdog passes `silenceMs: bootWedge ? BOOT_SILENCE_MS : GATE_SILENCE_RELEASE_MS`.
+    Without the boot branch the recycle would default to 10 min and refuse the boot
+    heal until then, MASKING #180's 3-min window (Gate #4). **It keys on `bootWedge`
+    PRESENCE, not `recycleReason` (F4):** a never-started session can ALSO trip the
+    #88 stall — `lastTurnStartAt` is undefined so the stall clock falls back to
+    `createdAt` (workspace-creation), so a boot-wedged coordinator with a parked peer
+    message co-fires both at the ~15-min-old-workspace mark while only 3 min into the
+    wedge. `recycleReason` (`stalled ? 'stall' : …`) would then pick 'stall' → 10-min
+    window → re-mask. A boot wedge is a boot wedge regardless of a co-firing stall.
+    The #88-ONLY stall path keeps the 10-min `GATE_SILENCE_RELEASE_MS` — shrinking it
+    would recycle a slow-but-live parked agent at 3 min. Telemetry `stalledForMs`
+    still follows the stall verdict (`stalled ?? bootWedge`); only the WINDOW follows
+    bootWedge. Pinned by a real co-fire EXECUTION arm in `session-wedge.test.ts`
+    (both detectors driven, recycle at 4 min) + the source pin in
+    `session-watchdog.test.ts`.
     The heal: `recycleSession`
     re-delivers the opening prompt through `recoverPendingPrompts(wsId, [])` (the
     prompt is in `sdkPendingPrompts`, which the inbox-only recycle never touched),

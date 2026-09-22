@@ -469,16 +469,24 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
       // this one refusal, and "did real output happen in the window" is the right
       // question for both — a turn-arm is not progress.
       lastStreamAt: progress?.lastStreamMessageAt ?? null,
-      // BOOT-WEDGE window on the boot path ONLY (issue #180 + #174): decideBootWedge
-      // fires the verdict at BOOT_SILENCE_MS (3 min), but decideSessionRecycle's OWN
-      // progress refusal (session-wedge.ts) would then default to the 10-min
-      // GATE_SILENCE_RELEASE_MS and REFUSE the recycle until 10 min — masking #180's
-      // 3-min heal (Gate #4). So when THIS recycle is driven by a boot wedge and NOT
-      // a #88 stall (`recycleReason === 'boot-wedge'` ≡ `bootWedge && !stalled`),
-      // pass the shorter window so the refusal and the detector agree. The #88 STALL
-      // path MUST keep the 10-min window — shrinking the stall window would be a
-      // regression (a slow-but-live agent with parked work is not wedged at 3 min).
-      silenceMs: recycleReason === 'boot-wedge' ? BOOT_SILENCE_MS : GATE_SILENCE_RELEASE_MS,
+      // BOOT-WEDGE window whenever a boot wedge is PRESENT (issue #180 + #174 + F4):
+      // decideBootWedge fires the verdict at BOOT_SILENCE_MS (3 min), but
+      // decideSessionRecycle's OWN progress refusal (session-wedge.ts) would default
+      // to the 10-min GATE_SILENCE_RELEASE_MS and REFUSE the recycle until 10 min —
+      // masking #180's 3-min heal (Gate #4).
+      //
+      // KEY ON `bootWedge` PRESENCE, not on which reason "won" (reviewer-restart F4):
+      // a never-started session (firstMessageSeen===false) CAN also qualify as a #88
+      // stall — e.g. a boot-wedged coordinator with peer messages parked in its inbox.
+      // Then `stalled` is truthy and `recycleReason` is 'stall', but the session STILL
+      // never started, so the 3-min boot window is correct. Using `recycleReason ===
+      // 'boot-wedge'` (≡ `bootWedge && !stalled`) re-masked exactly that co-fire back
+      // to 10 min. A boot wedge is a boot wedge regardless of a co-firing stall.
+      // The #88-ONLY stall path (`bootWedge` null) keeps the 10-min window — shrinking
+      // it would recycle a slow-but-live parked agent at 3 min (regression). Telemetry
+      // `stalledForMs` still follows the stall verdict via `stalled ?? bootWedge`
+      // above; only the WINDOW follows bootWedge.
+      silenceMs: bootWedge ? BOOT_SILENCE_MS : GATE_SILENCE_RELEASE_MS,
       recentRecycles: ledger,
       now,
     });
