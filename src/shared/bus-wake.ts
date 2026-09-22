@@ -159,17 +159,50 @@ export interface WakeLedgerEntry {
    *  wake while the ask stays open. `undefined` for the ordinary lot path, which
    *  re-arms by pending going false, not by cursor advance. */
   cursorAtWake?: number;
+  /**
+   * A ~monotonic wall-clock timestamp (ms, `Date.now()`-scale) of the last wake
+   * ATTEMPT this entry recorded — the pending-since clock for the #183 D1 bounded
+   * re-wake. Wall-clock, not a strict monotonic source: a backward NTP jump merely
+   * DELAYS a re-wake (the elapsed check reads negative → waits longer), never
+   * wedges — self-correcting, so a monotonic clock buys nothing here. The
+   * class-wide backstop: a reader latched `already-woken` (neither axis re-armed by
+   * its own signal) whose pending has still not cleared is re-fired once
+   * {@link REWAKE_BOUND_MS} has elapsed since this mark, LEVEL-TRIGGERED like
+   * liveness (#183). Recorded afresh on every fire/count so the re-fire itself
+   * resets the clock — bounded by the interval, not by sweeps, so a healthy
+   * check+ack cycle (which re-arms via the cursor FIRST, before the bound elapses)
+   * never sees a double-fire. `undefined` for legacy entries — treated as "no clock
+   * yet", so the FIRST sweep that sees a latch with no `lastWakeAt` records one and
+   * the bound counts from there (never re-fires a latch it has not itself timed,
+   * which would fire instantly on a restart that rebuilt the ledger). */
+  lastWakeAt?: number;
 }
+
+/**
+ * #183 D1 — the bounded level-triggered re-wake interval. No pending message or
+ * gate may wait longer than this without a fresh wake attempt while its reader is
+ * wakeable. The class-wide backstop for the fleet-stopping latch (#183 §State,
+ * THREE 4h/6h/14h latches against healthy active sessions): the gate axis
+ * ({@link gateAxisReArmed}) re-fires ONLY when a genuinely new gate opens, and the
+ * lot axis ({@link lotAxisReArmed}) re-fires ONLY when the reader ACKS — so an
+ * operator-driven session whose turns are not wake-driven (it never runs
+ * `check`/`ack` for that run) is unreachable by both, and its one consumed wake
+ * latches `already-woken` until an unrelated topology/emergency event. This bound
+ * closes that class regardless of which specific re-arm failed.
+ */
+export const REWAKE_BOUND_MS = 5 * 60_000;
 
 export type WakeAction =
   /** Fire the order into the reader's session. `throughSeq` is the max of the two
    *  axes for the human log line; `lotSeq`/`gateSeq` are recorded on the ledger
    *  SEPARATELY (D-H1) so each axis re-arms on its own signal. Each is the
    *  high-water of ONLY the sources that JUSTIFIED this action (0 for an axis that
-   *  did not fire/count). */
-  | { kind: 'fire'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string }
+   *  did not fire/count). `lastWakeAt` is the `now` this action fired at (~monotonic
+   *  wall clock — see {@link WakeLedgerEntry.lastWakeAt}), recorded on the ledger
+   *  for the #183 bounded re-wake clock. */
+  | { kind: 'fire'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string; lastWakeAt: number }
   /** The switch is OFF: count a would-have-woken, fire nothing (standing ruling). */
-  | { kind: 'count'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string }
+  | { kind: 'count'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string; lastWakeAt: number }
   /** Nothing to do — no pending state, or already woken on BOTH axes' high-waters. */
   | { kind: 'skip'; reader: string; why: SkipReason };
 
@@ -311,6 +344,30 @@ function gateAxisReArmed(pending: ReaderPendingState, previous: WakeLedgerEntry)
 }
 
 /**
+ * The #183 D1 BOUNDED re-arm test — the class-wide backstop. True when an
+ * otherwise-latched reader (neither its lot nor its gate axis re-armed by its own
+ * signal) has been latched at least {@link REWAKE_BOUND_MS} without clearing its
+ * pending: re-fire, LEVEL-TRIGGERED, exactly like the liveness sweep.
+ *
+ * Why it is safe against the fast path (#153 / T117.2): this is consulted ONLY when
+ * both per-signal re-arms are dead this sweep. A HEALTHY reader re-arms via its
+ * CURSOR ({@link lotAxisReArmed}) the moment it acks — long before the bound
+ * elapses — so the bound never fires on a check+ack cycle and there is no
+ * double-fire within the interval (arm: healthy-cycle). N rising inserts before any
+ * ack still coalesce to one wake until the bound, then ONE re-fire, then the clock
+ * resets on that re-fire — bounded by the interval, never per-sweep.
+ *
+ * Requires a `previous.lastWakeAt` we ourselves recorded: an entry with no clock
+ * (legacy, or a ledger rebuilt on restart) is NOT re-fired instantly — the sweep
+ * records `lastWakeAt` on the current tick and the bound counts from there. A wake
+ * whose cursor already reached the woken lot is handled by the lot axis, not here.
+ */
+function boundedReArmed(previous: WakeLedgerEntry, now: number): boolean {
+  if (previous.lastWakeAt === undefined) return false;
+  return now - previous.lastWakeAt >= REWAKE_BOUND_MS;
+}
+
+/**
  * TWO DEDUP LEDGERS, NOT ONE (#153). A `count` (switch OFF) must NEVER arm the
  * FIRE dedup, or a mid-process OFF→ON flip strands every reader counted under OFF
  * in `already-woken` starvation: the counted reader was never delivered a wake, so
@@ -337,6 +394,7 @@ export function decideWake(
   switchOn: boolean,
   askGateOn = false,
   previousCount: WakeLedgerEntry | undefined = undefined,
+  now: number = Date.now(),
 ): WakeAction {
   const lotPending = pending.pending;
   const gatePending = pending.gatePending === true;
@@ -364,6 +422,36 @@ export function decideWake(
   const lotActive = lotPending && (lotPrev === undefined || lotAxisReArmed(pending, lotPrev));
   const gateActive = gatePending && (gatePrev === undefined || gateAxisReArmed(pending, gatePrev));
   if (!lotActive && !gateActive) {
+    // ── #183 D1: the BOUNDED level-triggered backstop ──────────────────────────
+    // Both per-signal re-arms are dead this sweep — the reader is latched
+    // `already-woken`. That is CORRECT for a reader mid-turn on its outstanding
+    // order, but WRONG for the #183 class: an operator-driven session whose turns
+    // are not wake-driven never acks that lot and never opens a new gate, so
+    // neither axis can ever re-arm and the latch holds for HOURS. If the reader has
+    // been latched at least REWAKE_BOUND_MS (measured from the last wake WE timed on
+    // EITHER ledger — a latch persists in whichever ledger the last wake landed),
+    // re-fire the STILL-PENDING axes. This ships regardless of which specific
+    // re-arm failed (D2); the clock resets on the re-fire (`lastWakeAt` below), so
+    // it is bounded by the interval, never per-sweep.
+    const boundPrev = lotPrev ?? gatePrev; // whichever ledger carries the latch clock
+    if (boundPrev !== undefined && boundedReArmed(boundPrev, now)) {
+      const lotSeqNow = pending.pendingThroughSeq;
+      const gateSeqNow = pending.gateThroughSeq ?? 0;
+      const lotFires = lotPending && switchOn;
+      const gateFires = gatePending && askGateOn;
+      // Carry each axis's mark forward from the ledger it dedups against, exactly as
+      // the normal path does, so a bounded re-fire never resets the OTHER axis's
+      // high-water (which would spuriously re-fire it next sweep).
+      const lotSeq = lotPending ? lotSeqNow : (lotPrev?.wokeLotSeq ?? 0);
+      const gateSeq = gatePending ? gateSeqNow : (gatePrev?.wokeGateSeq ?? 0);
+      const wokeRunId = lotPending ? pending.pendingRunId : lotPrev?.wokeRunId;
+      if (lotFires || gateFires) {
+        const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
+        return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+      }
+      const throughSeq = Math.max(lotPending ? lotSeqNow : 0, gatePending ? gateSeqNow : 0);
+      return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+    }
     return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
   }
 
@@ -390,10 +478,10 @@ export function decideWake(
   // stays observable next sweep.
   if (lotFires || gateFires) {
     const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
-    return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId };
+    return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
   }
   const throughSeq = Math.max(lotActive ? lotSeqNow : 0, gateActive ? gateSeqNow : 0);
-  return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId };
+  return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
 }
 
 /**
