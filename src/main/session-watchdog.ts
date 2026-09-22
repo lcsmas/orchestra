@@ -416,11 +416,18 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     // QueueStallVerdict-shaped so it feeds the SAME `decideSessionRecycle`
     // below, inheriting its anti-flap budget, backoff, and progress refusal.
     //
-    // `??` picks the boot-wedge verdict only when #88's stall verdict is null:
-    // if the workspace already qualifies as a #88 stall, that path (with its own
-    // parked count and clock) owns it. The two are mutually exclusive in
-    // practice — a boot wedge has nothing parked in #88's sense — but the
-    // ordering makes the intent explicit and keeps ONE recycle decision.
+    // `??` picks the boot-wedge verdict only when #88's stall verdict is null,
+    // so `stalledForMs` telemetry follows the stall when both fire — ONE recycle
+    // decision either way.
+    //
+    // NOT mutually exclusive (reviewer-restart/verifier F4 — the old comment here
+    // wrongly claimed they were): a never-started session (firstMessageSeen false)
+    // with parked INBOX mail trips BOTH — decideBootWedge on the session clock
+    // (3 min) AND decideQueueStall on the workspace-creation clock (its
+    // `lastTurnStartAt` is undefined → falls back to `createdAt`, so a >15-min-old
+    // workspace with a parked peer message stalls immediately). That co-fire is
+    // exactly why the recycle WINDOW below keys on `bootWedge` PRESENCE, not on
+    // which reason won `recycleReason` — see the `silenceMs` choice.
     const bootWedge: QueueStallVerdict | null = progress
       ? decideBootWedge({
           sessionLive: sdkSessionLive(ws.id),
