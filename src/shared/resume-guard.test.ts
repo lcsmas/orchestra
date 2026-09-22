@@ -75,6 +75,34 @@ test('resolveResumeId: the probe is DECISIVE — same id, flipped probe flips th
   assert.equal(resolveResumeId(id, () => false), undefined);
 });
 
+test('resolveResumeId: REMOTE composition (F1) — a real remote id resumes despite NO local transcript', () => {
+  // reviewer-restart F1: the seam-(a) probe is a LOCAL-disk check, invalid for a
+  // sandbox session whose transcript lives in the container. The seam feeds
+  // `remote ? true : transcriptExistsFor(ws, id)` — model BOTH sides here so the
+  // remote data-loss regression is covered end-to-end at the decision boundary.
+  const remoteProbe = (remote: boolean) => (id: string) =>
+    remote ? true : /* local disk says the transcript is absent */ false;
+
+  // REMOTE: a real id + no local transcript → still RESUMES (trust the remote id).
+  // The un-fixed seam (unconditional local probe) returned undefined here and
+  // silently discarded the whole remote conversation — the blocking regression.
+  assert.equal(
+    resolveResumeId('remote-real-id', remoteProbe(true)),
+    'remote-real-id',
+    'a remote session must resume its real id even though no LOCAL transcript exists',
+  );
+  // LOCAL: the same "no transcript on disk" is a genuine phantom → fresh.
+  assert.equal(
+    resolveResumeId('local-phantom-id', remoteProbe(false)),
+    undefined,
+    'a local id with no on-disk transcript is a phantom → fresh (unchanged)',
+  );
+  // Remote still drops the explicit fresh signals — undefined/'' are fresh
+  // regardless of host, so a remote /clear or never-run session starts fresh.
+  assert.equal(resolveResumeId(undefined, remoteProbe(true)), undefined);
+  assert.equal(resolveResumeId('', remoteProbe(true)), undefined);
+});
+
 // ─── shouldContinuePty — terminal --continue gate (#178 seam b) ──────────────
 
 test('shouldContinuePty: hasInput + transcript exists → --continue (must-PASS)', () => {

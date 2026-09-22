@@ -274,7 +274,7 @@ reactive heal (`isBadResumeError`) only clears the id AFTER the failure. The
 PROACTIVE fix (`shared/resume-guard.ts`) validates the resume target at every
 seam BEFORE the launch:
 
-- **(a) structured resume** — `ensureSessionInner` computes `resolveResumeId(ws.sdkSessionId, transcriptExistsFor)` (the ONLY `query({resume})`); a phantom id (no `.jsonl` on disk) or the `''` cleared marker → `undefined` → FRESH. The orchestrator-brief fresh gate keys on the resolved id too.
+- **(a) structured resume** — `ensureSessionInner` computes `resolveResumeId(ws.sdkSessionId, id => remote ? true : transcriptExistsFor(ws, id))` (the ONLY `query({resume})`); a phantom LOCAL id (no `.jsonl` on disk) or the `''` cleared marker → `undefined` → FRESH. The orchestrator-brief fresh gate keys on the resolved id too. **REMOTE/SANDBOX (reviewer-restart F1):** the transcript probe is a LOCAL-disk check — a sandbox session's transcript lives in the container, so probing local disk would always say "phantom" and silently discard the remote conversation. The probe returns `true` for `remote` (`ws.host?.kind === 'sandbox'`), so a real remote id resumes (trust it) while undefined/`''` still start fresh. The phantom dead-end this seam defends is LOCAL-only.
 - **(b) terminal `--continue`** — both PTY launch sites (`startAgentPty`, the raw-PTY wake fallback) gate `resuming` on `shouldContinuePty({hasInput, fresh, newestTranscriptExists(ws)})`, not `hasInput` alone: a phantom terminal workspace `--continue`s into nothing (`No conversation found to continue`, exit 1) — start fresh instead.
 - **(c) routing classifier** (`shared/restart-mode.ts`) — a phantom id stays `structured` DELIBERATELY: it decides the SURFACE, and the structured path (seam a) owns the fresh-start heal. Do NOT reroute a phantom here.
 - **(d) `sdkWake` adoption** — already gates on `fs.existsSync(<id>.jsonl)`; it never mints a phantom. The reused precedent for (a).
@@ -282,8 +282,13 @@ seam BEFORE the launch:
 The discriminator is transcript-exists (not the live `firstMessageSeen`, which is
 unavailable at ensureSession time). Redelivery of the opening prompt on a
 fresh-start always routes through `recoverPendingPrompts` (the #174 seam) — never
-a parallel path. Guards: `shared/resume-guard.test.ts` (decision, both arms) +
-`main/resume-guard-binding.test.ts` (each seam is wired).
+a parallel path. `recoverPendingPrompts` is a thin COALESCING wrapper over
+`recoverPendingPromptsInner` (reviewer-restart F3): the open path, the watchdog's
+`recycleSession`, and the never-started restart can race the same recovery, so an
+in-flight `Map<wsId, Promise>` dedups them (same idiom as `ensuring`) — no double
+opening-prompt delivery. Guards: `shared/resume-guard.test.ts` (decision, both
+arms + the remote composition) + `main/resume-guard-binding.test.ts` (each seam is
+wired, incl. the remote-aware probe and the coalescing wrapper).
 
 Not covered while detached (by design): queued sends/`pendingLocalContext`
 die with the app; permission prompts park in the CLI and redeliver on attach;

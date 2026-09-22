@@ -53,6 +53,18 @@ test('seam (a): the ONLY query({resume}) resumes the RESOLVED id, never raw ws.s
     callsUncommented(body, 'transcriptExistsFor(ws'),
     'the resolveResumeId probe must be the on-disk transcriptExistsFor(ws, …)',
   );
+  // reviewer-restart F1: the probe MUST be remote-aware — the local-disk check is
+  // invalid for a sandbox session (transcript lives in the container), so it must
+  // TRUST a remote id, not probe local disk (which would discard remote history).
+  // must-FAIL arm: reverting to an unconditional local probe reddens.
+  assert.ok(
+    callsUncommented(body, 'remote ? true : transcriptExistsFor(ws'),
+    'the resolveResumeId probe must be `remote ? true : transcriptExistsFor(ws, id)` (F1: no remote data loss)',
+  );
+  assert.ok(
+    !/resolveResumeId\(ws\.sdkSessionId,\s*\(id\)\s*=>\s*transcriptExistsFor\(ws/.test(body),
+    'must NOT feed the unconditional local probe — that discards every sandbox conversation (F1)',
+  );
   // ...and THAT is what feeds resume, not the raw field. must-FAIL arm: reject a
   // reversion to `resume: ws.sdkSessionId`.
   assert.ok(
@@ -167,5 +179,30 @@ test('#179: sdkRestart replaces the raw turnGate refusal with decideRestartGuard
     callsUncommented(body, "guard === 'fresh'") &&
       callsUncommented(body, 'recoverPendingPrompts(wsId, [])'),
     'the never-started restart must converge by redelivering via recoverPendingPrompts (#174/#179)',
+  );
+});
+
+test('F3: recoverPendingPrompts COALESCES concurrent calls (no double opening-prompt delivery)', () => {
+  // reviewer-restart F3: sdkRestart's 'fresh' path, the watchdog's recycleSession,
+  // and the structured-view open path all call recoverPendingPrompts; two racing
+  // callers each read ws.sdkPendingPrompts then drain it, so both could resend the
+  // same opening prompt (a TOCTOU double-delivery). The exported entry must
+  // coalesce onto ONE in-flight run (same idiom as `ensuring`), so a second caller
+  // awaits the first (which drained the list) rather than re-reading stale state.
+  // must-FAIL arm: without the in-flight map the export runs the body directly.
+  assert.ok(
+    /const recovering = new Map<string, Promise<void>>\(\)/.test(agentSdkSrc),
+    'a per-wsId in-flight map must coalesce concurrent recoverPendingPrompts calls',
+  );
+  const exportBody = bodyOf(agentSdkSrc, 'export function recoverPendingPrompts');
+  assert.ok(
+    callsUncommented(exportBody, 'recovering.get(wsId)') &&
+      callsUncommented(exportBody, 'recovering.set(wsId'),
+    'the exported recoverPendingPrompts must return an in-flight promise / register one, not run the body inline',
+  );
+  // The real work moved to the Inner; the export is only the coalescing wrapper.
+  assert.ok(
+    /async function recoverPendingPromptsInner\(/.test(agentSdkSrc),
+    'the recovery body must live in recoverPendingPromptsInner, guarded by the coalescing export',
   );
 });

@@ -183,11 +183,14 @@ function agentSdkCode(): string {
   return stripped;
 }
 
-/** The body of `recoverPendingPrompts`, so a file-wide grep cannot stand in for
- *  a check about THIS function. */
+/** The body of `recoverPendingPromptsInner`, so a file-wide grep cannot stand in
+ *  for a check about THIS function. The exported `recoverPendingPrompts` is now a
+ *  thin coalescing wrapper (reviewer-restart F3, in-flight dedup); the recovery
+ *  LOGIC — the partition, the transcript filter, the write-back — lives in the
+ *  Inner. */
 function recoverBody(code: string): string {
-  const start = code.indexOf('export async function recoverPendingPrompts');
-  assert.notEqual(start, -1, 'recoverPendingPrompts not found — was it renamed?');
+  const start = code.indexOf('async function recoverPendingPromptsInner');
+  assert.notEqual(start, -1, 'recoverPendingPromptsInner not found — was it renamed?');
   const rest = code.slice(start);
   const end = rest.indexOf('\n}\n');
   assert.notEqual(end, -1, 'recoverPendingPrompts has no closing brace at column 0');
