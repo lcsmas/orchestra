@@ -212,6 +212,30 @@ test('#174 clock-pollution: decideBootWedge keys on the REAL-STREAM clock, never
   );
 });
 
+test('#180/#174 wiring: decideSessionRecycle gets BOOT_SILENCE_MS on the boot path, 10-min on the stall path', () => {
+  const src = sourceOf('session-watchdog.ts');
+  // The masking fix (OPS BLOCKING finding): decideBootWedge fires at 3 min but
+  // decideSessionRecycle's own progress refusal would default to 10 min and
+  // REFUSE the boot recycle until 10 — masking #180's heal (Gate #4). The window
+  // passed to decideSessionRecycle must be CONDITIONAL on the recycle being a
+  // boot wedge (and NOT a #88 stall). must-FAIL arm: dropping the conditional
+  // (a bare `silenceMs: BOOT_SILENCE_MS` OR no silenceMs at all in the
+  // decideSessionRecycle call) reddens here.
+  const recycleCall = src.slice(src.indexOf('decideSessionRecycle({'));
+  assert.match(
+    recycleCall.slice(0, 500),
+    /silenceMs:\s*recycleReason === 'boot-wedge'\s*\?\s*BOOT_SILENCE_MS\s*:\s*GATE_SILENCE_RELEASE_MS/,
+    'the recycle window must be BOOT_SILENCE_MS for a boot wedge, GATE_SILENCE_RELEASE_MS (10min) for a stall',
+  );
+  // The stall side must be explicitly the 10-min constant — a mutant that used
+  // BOOT_SILENCE_MS on both sides (shrinking the stall window) reddens.
+  assert.match(
+    recycleCall.slice(0, 500),
+    /:\s*GATE_SILENCE_RELEASE_MS/,
+    'the non-boot (stall) branch must keep the 10-min GATE_SILENCE_RELEASE_MS — no stall-window regression',
+  );
+});
+
 // ── Issue #174: the boot wedge is detected AND its opening prompt re-delivered ─
 //
 // The pure detector (`decideBootWedge`) is mutation-proven in
