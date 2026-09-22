@@ -1564,8 +1564,21 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // the real id (resume) only when its transcript exists. Everything downstream
   // that meant "resuming?" now reads THIS resolved value, not raw truthiness, so
   // a phantom fresh-start also gets the orchestrator brief a fresh session is due.
-  const resumeId = resolveResumeId(ws.sdkSessionId, (id) => transcriptExistsFor(ws, id));
-  if (ws.sdkSessionId && !resumeId && ws.sdkSessionId !== '') {
+  //
+  // REMOTE/SANDBOX (reviewer-restart F1): the transcript-exists probe is a
+  // LOCAL-disk check (`transcriptDir` = local account config dir + mangled
+  // worktree). A sandbox session's CLI runs IN THE CONTAINER and writes its
+  // transcript there — there is NO local `.jsonl`, so the local probe would
+  // ALWAYS say "phantom" and silently discard a real remote conversation on
+  // every reopen/restart. The phantom dead-end this seam defends against is a
+  // LOCAL failure mode only; a remote id is not locally-provable, so the safe
+  // direction for remote is the OPPOSITE — TRUST the id. Feed a probe that
+  // returns true for remote, so `resolveResumeId` still drops undefined/'' (fresh)
+  // but keeps a real remote id (resume). Local keeps the on-disk discriminator.
+  const resumeId = resolveResumeId(ws.sdkSessionId, (id) =>
+    remote ? true : transcriptExistsFor(ws, id),
+  );
+  if (!remote && ws.sdkSessionId && !resumeId && ws.sdkSessionId !== '') {
     log.warn(
       `agent-sdk: ${wsId} sdkSessionId ${ws.sdkSessionId} has no transcript on disk — ` +
         `starting fresh instead of resuming a phantom conversation (issue #178)`,
@@ -2984,7 +2997,25 @@ export async function sdkAttachIfDetached(wsId: string): Promise<boolean> {
  *
  *  Entries the LIVE session still holds are skipped (issue #112) — see
  *  `partitionLivePrompts`. */
-export async function recoverPendingPrompts(wsId: string, history: AgentEvent[]): Promise<void> {
+/** In-flight recoverPendingPrompts promises, keyed by wsId (reviewer-restart F3).
+ *  Two callers can race the same recovery — the structured-view open path, the
+ *  watchdog's recycleSession, and (new) sdkRestart's never-started 'fresh' path.
+ *  Each reads `ws.sdkPendingPrompts` (line below) then drains it via
+ *  `keepOnlyPendingPrompts`; if both read BEFORE either drain persists, both
+ *  resend the same opening prompt (a TOCTOU double-delivery). Coalesce concurrent
+ *  calls onto ONE run — the same idiom as `ensuring` — so the second awaits the
+ *  first (which has drained the list) rather than re-reading stale state. */
+const recovering = new Map<string, Promise<void>>();
+
+export function recoverPendingPrompts(wsId: string, history: AgentEvent[]): Promise<void> {
+  const inFlight = recovering.get(wsId);
+  if (inFlight) return inFlight;
+  const p = recoverPendingPromptsInner(wsId, history).finally(() => recovering.delete(wsId));
+  recovering.set(wsId, p);
+  return p;
+}
+
+async function recoverPendingPromptsInner(wsId: string, history: AgentEvent[]): Promise<void> {
   const ws = store.getWorkspace(wsId);
   const pending = normalizePendingPrompts(ws?.sdkPendingPrompts);
   if (pending.length === 0) return;
