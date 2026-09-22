@@ -608,6 +608,18 @@ export function __setBusReaderForTests(fn: () => BusDb | null): void {
   readBusDb = fn;
 }
 
+/** The ~monotonic wall clock the sweep stamps the #183 bounded-re-wake ledger with
+ *  (a backward NTP jump only delays a re-wake, never wedges — see the `lastWakeAt`
+ *  field doc). Injectable so a rig can advance time past REWAKE_BOUND_MS without a
+ *  real wait — the D1 bound is otherwise untestable in a unit sweep (a 5-min sleep
+ *  is not a test). Production uses `Date.now()`. */
+let nowMs: () => number = () => Date.now();
+
+/** Rig seam (#183): drive the sweep's clock. Pass a closure a test advances. */
+export function __setNowForTests(fn: () => number): void {
+  nowMs = fn;
+}
+
 let sweeping = false;
 
 /**
@@ -629,6 +641,10 @@ export async function sweepBusWake(): Promise<void> {
   if (!started) return; // startBusWake() has not run
   sweeping = true;
   try {
+    // ONE clock read for the whole tick (#183 D1): every reader's bounded
+    // re-wake is measured against the same `now`, and it is read from an injectable
+    // seam so a rig can drive the 5-min bound without a real clock.
+    const now = nowMs();
     const readers = readRoster();
     const pending = readPendingReaders(db, readers);
     // A reader stays in the dedup ledger while pending for EITHER a lot/question
@@ -723,6 +739,7 @@ export async function sweepBusWake(): Promise<void> {
         switchOn,
         askGateOn,
         countLedger.get(p.reader),
+        now,
       );
       // #159 transition log. `no-pending` is not a "silent skip" — the reader has
       // nothing to wake for — so it is not tracked here (its entry is pruned below,
@@ -754,6 +771,10 @@ export async function sweepBusWake(): Promise<void> {
         // Record the cursor only for the re-wake-until-answered path, so a later
         // advance re-arms it. Left undefined for ordinary lot wakes.
         cursorAtWake: p.reWakeUntilAnswered === true ? (p.cursorSeq ?? 0) : undefined,
+        // #183 D1: the pending-since clock for the bounded re-wake. `decideWake`
+        // stamped this action with the `now` it decided at, so the bound counts
+        // from the moment of THIS wake and resets on every re-fire.
+        lastWakeAt: action.lastWakeAt,
       };
       if (action.kind === 'count') {
         // A count arms ONLY the count ledger (dedup counts vs counts), never the
@@ -982,6 +1003,7 @@ export function __resetBusWakeForTests(): void {
   readBusDb = getBus;
   readRoster = () => [];
   deliverWake = async () => false;
+  nowMs = () => Date.now();
 }
 
 /** Test/rig seam (#172): read the FIRE ledger entry for a reader, so a rig can

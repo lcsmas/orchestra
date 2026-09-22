@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openBus, send, check, ack, openGate, type BusDb } from './bus.ts';
+import { openBus, send, check, ack, openGate, resolveGate, type BusDb } from './bus.ts';
 import {
   sweepBusWake,
   busWakeCounters,
@@ -12,9 +12,10 @@ import {
   __setBusReaderForTests,
   __resetBusWakeForTests,
   __freezeSwitchForTests,
+  __setNowForTests,
   stopBusWake,
 } from './bus-wake.ts';
-import { isWakeOrder, wakeOrderRuns } from '../shared/bus-wake.ts';
+import { isWakeOrder, wakeOrderRuns, REWAKE_BOUND_MS } from '../shared/bus-wake.ts';
 
 // The SWEEP, driven end to end over a real SQLite bus (#117 acceptance 1-5,
 // ledger #123 T117.1-T117.5).
@@ -746,4 +747,155 @@ test('D-H1 rider — a re-armed gate under askGate OFF is COUNTED (real bus, not
   for (let i = 0; i < 3; i++) await sweepBusWake();
   assert.equal(busWakeCounters().counted, 2, 'the RE-ARMED gate is COUNTED, not skipped (rider)');
   assert.equal(busWakeCounters().fired, 0);
+});
+
+// ── #183 D1 — the BOUNDED level-triggered re-wake (the fleet-stopper) ────────
+//
+// Field: THREE latches in one evening (4h/6h/14h) against HEALTHY active sessions
+// whose turns were not wake-driven — they consumed one wake, never ran check/ack
+// for that run, and neither the LOT axis (re-arms on ACK) nor the GATE axis
+// (re-arms on a NEW gate) could ever re-fire. The class-wide backstop: a reader
+// latched `already-woken` whose pending has not cleared re-fires after
+// REWAKE_BOUND_MS, level-triggered. Every arm drives the injectable sweep clock
+// (`__setNowForTests`) so the 5-min bound is exercised without a real wait, and
+// counts TURNS DELIVERED at the seam (never an internal the bug also moves).
+
+/** A clock a test advances by hand. Returns a getter + a `set(ms)` mutator. */
+function fakeClock(startMs = 1_000_000_000_000) {
+  let t = startMs;
+  return {
+    now: () => t,
+    set: (ms: number) => {
+      t = ms;
+    },
+    advance: (deltaMs: number) => {
+      t += deltaMs;
+    },
+    get value() {
+      return t;
+    },
+  };
+}
+
+test('#183 D5 field-replay — lot woken once, reader NEVER acks → NO re-wake until the bound, then RE-WAKES', async (t) => {
+  // The incident, replayed: a reader woken for a lot whose turns are not
+  // wake-driven (never runs check/ack for this run). On CURRENT code the latch
+  // holds FOREVER (the lot axis re-arms only on ack, which never comes). With the
+  // fix, the reader re-wakes once REWAKE_BOUND_MS elapses.
+  //   MUTANT (sever the D1 bound): `boundedReArmed` → `return false` → this arm
+  //   stalls at 1 wake forever → RED.
+  const db = tmpDb(t);
+  const clock = fakeClock();
+  const wakes = rig(db, { switchOn: true });
+  __setNowForTests(clock.now);
+
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'order 1', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first wake fires (else the latch below is vacuous — #90 barrier)');
+
+  // The reader does NOT ack. Sweeps within the bound must NOT re-fire: this is the
+  // fast-path dedup holding — an outstanding order on an un-advanced axis is not
+  // re-issued. THIS is the "latched already-woken at trigger" assertion the #90
+  // barrier lesson requires: prove the reader is stuck BEFORE the bound trigger.
+  clock.advance(REWAKE_BOUND_MS - 1_000); // just under 5 min
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 1, 'ARMED STATE: within the bound and un-acked, the reader is latched already-woken — NO re-wake');
+
+  // The bound elapses. LEVEL-TRIGGERED: the next sweep re-fires the still-pending lot.
+  clock.advance(2_000); // now past REWAKE_BOUND_MS since the last wake
+  await sweepBusWake();
+  assert.equal(wakes.length, 2, 'past the bound with pending un-acked → the D1 backstop RE-WAKES');
+  assert.ok(isWakeOrder(wakes[1].text), 'the re-wake is a valid run-naming order, not a body');
+
+  // And it does not storm: the re-fire reset the clock, so the immediate next
+  // sweeps (still within the fresh bound) do NOT double-fire.
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'the re-fire reset the clock — no storm within the fresh bound');
+});
+
+test('#183 healthy cycle — a reader that ACKS re-arms via the CURSOR (fast path), the bound NEVER double-fires', async (t) => {
+  // The fast-path dedup preserved (D1): a reader woken, then acking, re-arms
+  // immediately on the CURSOR — long before REWAKE_BOUND_MS. The bound must add NO
+  // extra fire on a healthy check+ack cycle. A single wake per lot, no double.
+  //   This arm reddens on the CURSOR/prune re-arm regressing, NOT on the bound: an
+  //   acked+drained lot is PRUNED from the ledger, so decideWake sees no latch and
+  //   the bound block is never reached — a bound-fires-unconditionally mutant stays
+  //   GREEN here. That mutant is caught by arm25's "no storm within the fresh bound"
+  //   assertion, not this one.
+  const db = tmpDb(t);
+  const clock = fakeClock();
+  const wakes = rig(db, { switchOn: true });
+  __setNowForTests(clock.now);
+
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'lot A', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first wake');
+
+  // The reader OBEYS: check + ack, WITHIN the bound. Its cursor advances past the
+  // woken lot — the lot axis re-arm, not the time bound. No NEW mail, so the entry
+  // prunes and the reader is idle.
+  clock.advance(10_000); // 10s — well under the bound
+  const lot = check(db, RUN, R1);
+  assert.ok(lot.delivery, 'the reader has a lot to ack');
+  ack(db, RUN, R1, lot.delivery!.id);
+
+  // Sweeps for well past the bound: nothing pending, so nothing fires — the bound
+  // must not resurrect an ACKED, drained lot.
+  clock.advance(REWAKE_BOUND_MS * 2);
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 1, 'acked+drained → the bound adds NO second wake (fast path preserved)');
+  assert.equal(busWakeCounters().fired, 1, 'exactly one fire across the whole healthy cycle');
+
+  // NEW mail after the ack still wakes ONCE, on the cursor re-arm — the bound is
+  // not needed for the healthy path and does not add a duplicate.
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'lot B', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 2, 'new mail after ack re-wakes once (cursor re-arm, within the bound)');
+});
+
+test('#183 gate axis — a pending decision_gate re-wakes until RESOLVED (the #119 promise, via the bound)', async (t) => {
+  // The gate half of the field incident: an open decision_gate addressed to the
+  // reader (seq 1407 in the field), woken once, the reader reads but never
+  // resolves and never opens a new gate → the gate axis (re-arms only on a NEW
+  // gate) can never re-fire. The D1 bound is what re-wakes a STILL-OPEN gate
+  // every REWAKE_BOUND_MS until it is resolved — closing the #119 promise the
+  // field broke.
+  //   MUTANT (sever the gate arm of the bound: force the gate branch off in the
+  //   bounded block, e.g. `gateFires = false` there / drop `gatePending`): the
+  //   still-open gate never re-wakes past the bound → RED, while the lot D5 arm
+  //   stays green.
+  const db = tmpDb(t);
+  const clock = fakeClock();
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests(false, true); // wake OFF, askGate ON — the gate axis is what's under test
+  __setNowForTests(clock.now);
+
+  const gateId = openGate(db, RUN, 'ws-asker', 'ship gate 1407?', R1);
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first gate wake fires (else the latch is vacuous — #90 barrier)');
+
+  // The reader reads the gate but does NOT resolve it, and opens NO new gate.
+  // Within the bound: no new gate → the gate axis is dead → latched already-woken.
+  clock.advance(REWAKE_BOUND_MS - 1_000);
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 1, 'ARMED STATE: gate still open, no new gate, within the bound → latched already-woken');
+
+  // Past the bound: the still-open gate re-wakes (the #119 promise, via D1).
+  clock.advance(2_000);
+  await sweepBusWake();
+  assert.equal(wakes.length, 2, 'past the bound with the gate STILL OPEN → RE-WAKES (the #119 promise)');
+
+  // RESOLVE the gate. It drops out of pending, prunes, and never re-wakes again —
+  // the bound is bounded by resolution, not an eternal alarm.
+  resolveGate(db, gateId, 'ws-asker', 'shipped');
+  clock.advance(REWAKE_BOUND_MS * 2);
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'a RESOLVED gate is no longer pending → the bound stops (no eternal alarm)');
 });
