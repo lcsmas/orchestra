@@ -602,7 +602,7 @@ start" lines — impersonating a frozen-OFF wave (a human read "my switches got
 un-ticked", an agent invented a "shadow rollout"). **The signal is
 `!anchorIsOrchestrator && no run row`, NOT the missing row alone.** A missing row
 also matches a GENUINE fleet member/orchestrator whose row is not started yet: at
-the reparent (`:1937`) and adopt (`:2459`) sites `writeBusSwitchState` runs
+the reparent (`:1941`) and adopt (`:2471`) sites `writeBusSwitchState` runs
 BEFORE `maybeStartRunAtAnchor`, so `getRun(anchorId)` is transiently null for a
 real member — gating on the row alone would falsely stamp "standalone" on it (and
 persist it to disk on a notice-only reparent). The honest standalone signal is
