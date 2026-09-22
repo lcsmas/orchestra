@@ -40,7 +40,7 @@ import {
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
-import { DEFAULT_BUS_SWITCHES, busSwitchNotice, serializeSwitches } from '../shared/bus-switches.ts';
+import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import { getBus, coordinatorGeneration, bumpCoordinatorGeneration } from './bus.ts';
 import {
@@ -1934,11 +1934,19 @@ async function reconcileRunAfterReparent(
       // self-heal a plain relaunch already gives, made to happen now so a cold
       // workspace (notice-only) is correct without a restart, and so a stale
       // workspace's notice already names the run it will adopt on restart.
-      await writeBusSwitchState(ws.worktreePath, newAnchorId);
+      // #182: the run row may not be started yet at this point (the start is the
+      // next line), so pass anchorIsOrchestrator so a genuine member is NOT
+      // stamped "standalone" just because its OPS's row is momentarily absent.
+      const reparentAnchor = resolveAnchorInfo(ws);
+      await writeBusSwitchState(
+        ws.worktreePath,
+        newAnchorId,
+        reparentAnchor.anchorIsOrchestrator,
+      );
       // Lazily create the NEW anchor's run row if it does not exist yet (the
       // member moved under an OPS whose row was never started) — same idempotent
       // best-effort call every launch makes.
-      maybeStartRunAtAnchor(busRunAnchorDeps, resolveAnchorInfo(ws));
+      maybeStartRunAtAnchor(busRunAnchorDeps, reparentAnchor);
 
       if (action.kind === 'notice-only') continue;
 
@@ -2456,8 +2464,12 @@ export async function dispatchAdoptRepoRequest(input: {
     );
     // The worktree moved: write the frozen notice at the NEW path regardless of
     // whether the anchor changed, and start the anchor's run row if missing.
-    await writeBusSwitchState(newWorktreePath, resolveWaveRunId(updated));
-    maybeStartRunAtAnchor(busRunAnchorDeps, resolveAnchorInfo(updated));
+    // #182: the row may be unstarted at write time (started on the next line), so
+    // pass anchorIsOrchestrator — an orchestrator (adopt keeps it as its own
+    // anchor) must never be stamped "standalone" over a momentarily-absent row.
+    const adoptAnchor = resolveAnchorInfo(updated);
+    await writeBusSwitchState(newWorktreePath, adoptAnchor.anchorId, adoptAnchor.anchorIsOrchestrator);
+    maybeStartRunAtAnchor(busRunAnchorDeps, adoptAnchor);
     const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
     return {
       ok: true,
@@ -5252,7 +5264,8 @@ const busRunAnchorDeps = {
 async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise<void> {
   const anchor = resolveAnchorInfo(ws);
   maybeStartRunAtAnchor(busRunAnchorDeps, anchor);
-  if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
+  if (!remote)
+    await writeBusSwitchState(ws.worktreePath, anchor.anchorId, anchor.anchorIsOrchestrator);
 }
 
 /** #134 — start the run row when a workspace BECOMES an orchestrator via
@@ -5363,26 +5376,51 @@ export function maybeBumpCoordinatorOnReplacement(ws: Workspace): void {
  * blocks the app). On failure the notice is simply absent, and the script's `-s`
  * guard makes that a silent no-op rather than a false "all off" claim.
  */
-export async function writeBusSwitchState(worktreePath: string, runId: string): Promise<void> {
+export async function writeBusSwitchState(
+  worktreePath: string,
+  runId: string,
+  // #182 reviewer fix: whether this workspace's anchor is a REAL orchestrator.
+  // The "standalone" claim requires the anchor CANNOT orchestrate — not merely a
+  // missing run row. At the reparent/adopt call sites the notice is written
+  // BEFORE maybeStartRunAtAnchor, so getRun() is transiently null for a GENUINE
+  // fleet member; gating on the row alone would falsely stamp "standalone" on it.
+  // A genuine standalone top-level ws is its own non-orchestrator anchor. Callers
+  // pass resolveAnchorInfo(ws).anchorIsOrchestrator; the default `true` is the
+  // conservative direction (never claim standalone when the caller did not vouch
+  // for it), so an un-updated caller keeps the pre-#182 all-OFF frozen notice.
+  anchorIsOrchestrator = true,
+): Promise<void> {
   try {
-    // The FROZEN flags for this run, read from the run row. Never getLiveSwitches().
-    // getBus() may be null (D1) — then the run reads all-OFF, which is what
-    // runFlags returns for an absent/unopened bus by construction below.
-    let frozen;
+    // #182: a standalone workspace should read "anchors no run", not seven
+    // misleading `=OFF` "frozen at wave start" lines. But the honest standalone
+    // signal is `!anchorIsOrchestrator && no run row` — NOT the missing row alone,
+    // which also matches a real member/orchestrator whose row is momentarily
+    // unstarted (reparent/adopt write the notice before the run-start). See
+    // busSwitchNoticeDecision.
+    //
+    // getBus() may be null / throw (D1). When we cannot read the bus at all we
+    // fall back to the coexistence-safe all-OFF frozen notice — never the "no run"
+    // claim, which we then cannot prove.
+    let notice: string | null;
     try {
       const db = getBus();
-      frozen = db ? runFlags(db, runId) : undefined;
+      if (!db) {
+        notice = busSwitchNotice(getLiveSwitchesAllOff());
+      } else {
+        const runExists = getRun(db, runId) != null;
+        notice = busSwitchNoticeDecision({
+          runExists,
+          anchorCanOrchestrate: anchorIsOrchestrator,
+          frozen: runFlags(db, runId),
+          live: getLiveSwitches(),
+        });
+      }
     } catch (busErr) {
       // A malformed/locked bus is "unavailable", not a spawn blocker (D1). Fall
       // through to the coexistence-safe all-OFF notice.
       log.warn('bus-switches: could not read the run row — notice reads all-OFF', busErr);
-      frozen = undefined;
+      notice = busSwitchNotice(getLiveSwitchesAllOff());
     }
-    // runFlags already returns all-OFF for an unknown run; when the bus itself is
-    // unavailable we default to the same all-OFF set so the run stays self-
-    // describing as unadopted rather than the notice vanishing.
-    const flags = frozen ?? getLiveSwitchesAllOff();
-    const notice = busSwitchNotice(flags);
     const file = path.join(worktreePath, '.orchestra', 'bus-switches');
     if (!notice) {
       await rm(file, { force: true });

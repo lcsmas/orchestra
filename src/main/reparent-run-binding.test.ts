@@ -159,10 +159,13 @@ test('reconcileRunAfterReparent restarts conversation-preserving (fresh:false)',
   assert.ok(body.includes("import('./restart-workspace.ts')"), 'must use #111 restart');
   assert.ok(body.includes('fresh: false'), 'restart must preserve the conversation (fresh:false)');
   // must-FAIL arm: the notice must be rewritten for the NEW anchor BEFORE any
-  // restart/mark, or a restarted session would re-read a stale notice.
-  assert.ok(
-    body.includes('writeBusSwitchState(ws.worktreePath, newAnchorId)'),
-    'must rewrite the notice for the new anchor',
+  // restart/mark, or a restarted session would re-read a stale notice. #182: the
+  // write now also carries the anchor-orchestrator signal so a genuine member is
+  // not stamped "standalone" over its OPS's momentarily-unstarted row.
+  assert.match(
+    body,
+    /writeBusSwitchState\(\s*ws\.worktreePath,\s*newAnchorId,\s*reparentAnchor\.anchorIsOrchestrator,?\s*\)/,
+    'must rewrite the notice for the new anchor with the anchor-orchestrator signal (#182)',
   );
   // must-FAIL arm: mark-stale must write the marker the CLI reads AND set the flag.
   // (#171 refactor: the marker+flag writes now live in the shared markWorkspaceStaleRun

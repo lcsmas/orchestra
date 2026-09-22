@@ -26,6 +26,8 @@ import {
   switchStateWord,
   busSwitchNoticeLines,
   busSwitchNotice,
+  busSwitchNoticeDecision,
+  countSwitchesOn,
   type BusSwitches,
   type BusMechanism,
 } from './bus-switches.ts';
@@ -236,4 +238,92 @@ test('busSwitchNotice: null only for no-switches; an all-OFF set still PRINTS', 
   assert.match(notice, /frozen at wave start/);
   // Every mechanism named, in the wire spelling.
   for (const m of BUS_MECHANISMS) assert.ok(notice.includes(`${mechanismToWire(m)}=OFF`));
+});
+
+// ---------------------------------------------------------------------------
+// #182 — the run-less notice decision (D3 + reviewer-182 conflation fix). The
+// "standalone" signal is `!anchorCanOrchestrate && !runExists`, NOT the frozen
+// flags and NOT the missing row alone: a workspace anchoring no run has no row,
+// and runFlags collapses that to all-OFF, impersonating a frozen-OFF wave — but
+// a GENUINE member/orchestrator whose row is momentarily unstarted also has no
+// row, and must NOT be stamped "standalone". These arms drive the SAME pure
+// helper writeBusSwitchState calls (no re-implementation).
+// ---------------------------------------------------------------------------
+
+test('#182 must-PASS: genuine standalone (non-orch anchor, no row) → "no run" line, ZERO =OFF lines', () => {
+  // The field case: fresh top-level standalone, its own non-orchestrator anchor,
+  // no run row, live store 7/7 ON.
+  const notice = busSwitchNoticeDecision({
+    runExists: false,
+    anchorCanOrchestrate: false,
+    frozen: ALL_OFF,
+    live: ALL_ON,
+  });
+  assert.ok(notice, 'run-less workspace must still emit a notice');
+  assert.match(notice, /this workspace anchors no run \(standalone — not part of a fleet\)/);
+  // Names the LIVE count, computed from the mechanism list (never hardcoded 7).
+  const { on, total } = countSwitchesOn(ALL_ON);
+  assert.match(notice, new RegExp(`currently ${on}/${total} ON`));
+  // The whole point: not one frozen-OFF line.
+  assert.ok(!notice.includes('=OFF'), 'run-less notice must print ZERO =OFF lines');
+  assert.ok(!notice.includes('frozen at wave start'), 'run-less notice is not a frozen wave');
+});
+
+test('#182 must-PASS: legacy run frozen OFF → unchanged =OFF lines, no "no run"', () => {
+  const notice = busSwitchNoticeDecision({
+    runExists: true,
+    anchorCanOrchestrate: true,
+    frozen: ALL_OFF,
+    live: ALL_ON,
+  });
+  assert.ok(notice, 'a run row must still emit the frozen notice');
+  // Byte-for-byte the pre-#182 notice for a frozen-OFF run.
+  assert.equal(notice, busSwitchNotice(ALL_OFF));
+  assert.match(notice, /frozen at wave start/);
+  for (const m of BUS_MECHANISMS) assert.ok(notice.includes(`${mechanismToWire(m)}=OFF`));
+  assert.ok(!notice.includes('anchors no run'), 'a run that exists must never print the no-run line');
+});
+
+test('#182 must-FAIL guard: a run frozen ON must NEVER print the "no run" line', () => {
+  // MUTATION: inverting the runExists branch makes THIS emit the "no run" line —
+  // this arm reddens on that mutant.
+  const notice = busSwitchNoticeDecision({
+    runExists: true,
+    anchorCanOrchestrate: true,
+    frozen: ALL_ON,
+    live: ALL_ON,
+  });
+  assert.ok(notice);
+  assert.ok(!notice.includes('anchors no run'), 'a frozen-ON run must never claim it anchors no run');
+  assert.equal(notice, busSwitchNotice(ALL_ON));
+  for (const m of BUS_MECHANISMS) assert.ok(notice.includes(`${mechanismToWire(m)}=ON`));
+});
+
+test('#182 must-FAIL guard (reviewer conflation): orchestrator-anchored member with an UNSTARTED row must NOT print "no run"', () => {
+  // The reviewer-182 bug: at the reparent/adopt sites the notice is written
+  // BEFORE maybeStartRunAtAnchor, so a GENUINE member (anchor = its OPS, an
+  // orchestrator) has runExists=false at write time. It must fall back to the
+  // all-OFF frozen notice, NEVER the false "standalone — not part of a fleet"
+  // claim. MUTATION: dropping the `anchorCanOrchestrate` gate makes THIS emit the
+  // standalone line — this arm reddens on that mutant.
+  const notice = busSwitchNoticeDecision({
+    runExists: false,
+    anchorCanOrchestrate: true,
+    frozen: ALL_OFF,
+    live: ALL_ON,
+  });
+  assert.ok(notice);
+  assert.ok(
+    !notice.includes('anchors no run'),
+    'a member whose anchor can orchestrate must never be stamped standalone over a momentarily-absent row',
+  );
+  assert.ok(!notice.includes('standalone'), 'no false standalone claim');
+  // Falls back to the coexistence-safe all-OFF frozen notice (pre-#182 behaviour).
+  assert.equal(notice, busSwitchNotice(ALL_OFF));
+  assert.match(notice, /frozen at wave start/);
+});
+
+test('#182: countSwitchesOn derives the total from the mechanism list', () => {
+  assert.deepEqual(countSwitchesOn(ALL_ON), { on: BUS_MECHANISMS.length, total: BUS_MECHANISMS.length });
+  assert.deepEqual(countSwitchesOn(ALL_OFF), { on: 0, total: BUS_MECHANISMS.length });
 });

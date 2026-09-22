@@ -593,9 +593,31 @@ plain standalone spawn is its own run). The pure walk lives in
 capability-flag promoted worktree is the anchor, standalone→self, broken link,
 cycle). `walkToRootId` is retained there for any tree-root caller but is NOT the
 run anchor. `parentOrchestratorId` gives the nested `parent_run_id`. **#134 now
-CREATES the run row here-adjacent** (see the #134 section); an absent run row or a
-down bus (D1) still reads **all-OFF**, the coexistence-safe STABLE default, so
-"frozen" holds even before a row exists.
+CREATES the run row here-adjacent** (see the #134 section).
+
+**#182 — genuine standalone workspaces print "anchors no run", not all-OFF.** A
+standalone workspace anchors no run, so it has NO run row; `runFlags` collapses
+that to all-OFF, which the notice used to render as seven `=OFF` "frozen at wave
+start" lines — impersonating a frozen-OFF wave (a human read "my switches got
+un-ticked", an agent invented a "shadow rollout"). **The signal is
+`!anchorIsOrchestrator && no run row`, NOT the missing row alone.** A missing row
+also matches a GENUINE fleet member/orchestrator whose row is not started yet: at
+the reparent (`:1937`) and adopt (`:2459`) sites `writeBusSwitchState` runs
+BEFORE `maybeStartRunAtAnchor`, so `getRun(anchorId)` is transiently null for a
+real member — gating on the row alone would falsely stamp "standalone" on it (and
+persist it to disk on a notice-only reparent). The honest standalone signal is
+that the anchor CANNOT orchestrate (a member's anchor is its OPS = an
+orchestrator; a genuine top-level standalone is its own non-orchestrator anchor).
+`writeBusSwitchState(worktreePath, runId, anchorIsOrchestrator=true)` threads
+`resolveAnchorInfo(ws).anchorIsOrchestrator` from all three call sites and calls
+the pure `busSwitchNoticeDecision({runExists, anchorCanOrchestrate, frozen,
+live})` (`src/shared/bus-switches.ts`): `!anchorCanOrchestrate && !runExists` →
+one "anchors no run (standalone — not part of a fleet)… currently N/7 ON" line
+(live count via `countSwitchesOn`, never hardcoded), ZERO `=OFF` lines; otherwise
+→ the unchanged frozen notice (legacy frozen-OFF stays OFF; frozen-ON and an
+orchestrator-anchored member with an unstarted row never print the no-run line).
+A **down bus** (D1) can't tell run-less from run-exists, so it falls back to the
+coexistence-safe all-OFF frozen notice.
 
 The state lives in a **file, not a script constant**, for a specific reason:
 `installOrchestraHooks` short-circuits on a **hash of the script bodies**, so a
