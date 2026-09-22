@@ -1307,6 +1307,22 @@ answering does not clear it. The re-arm is the recipient's cursor ADVANCING past
 `WakeLedgerEntry.cursorAtWake` (their ack), so re-wakes are bounded by ACKS, not
 sweeps — no wake storm. An answered ask clears pending and prunes normally.
 
+#185: the #183 bounded backstop (`boundedReArmed`) REVALIDATES before it re-fires
+the lot axis — a re-`check` order can only accomplish something while a message is
+still UN-ACKED. `decideWake`'s bounded block keys on `unackedThroughSeq > 0` (the
+newest message of ANY kind — a `question` matches the lot recipient predicate too —
+still above the reader's per-run cursor). It fires NOTHING only when the reader
+acked through EVERYTHING and the sole remaining pending is an answer-based
+unanswered ask (`unackedThroughSeq == 0`, `pendingThroughSeq > 0`): a re-`check` is
+a no-op it cannot silence, and the ask clears by ANSWER — that was the permanent
+5-min storm (live repro: cursor 1688 past ask 1458, nothing un-acked). One signal
+covers every re-fire case: an ordinary un-acked lot (#183 D5), a NEVER-acked ask
+(the ask row is itself un-acked → no pre-#183 silent latch), and a co-pending
+un-acked lot behind an already-obeyed newer ask (no cross-run starvation, review-185
+— `lotAxisReArmed` also short-circuits to false under `reWakeUntilAnswered`, so the
+bound is that lot's only backstop). The obeyed-ask reader still re-arms on its own
+`cursorAtWake` advance (#119) when it acks new mail, and clears on answer.
+
 ### `readWaitingReaders(db, readers): Set<string>` — the export #120 consumes
 
 The SENDER/opener side (distinct from the recipient side above): a reader is

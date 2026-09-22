@@ -7,6 +7,7 @@ import {
   buildWakeOrder,
   wakeOrderRuns,
   WAKE_ORDER_HEADER,
+  REWAKE_BOUND_MS,
   type ReaderPendingState,
   type WakeLedgerEntry,
 } from './bus-wake.ts';
@@ -449,13 +450,143 @@ test('#150 arm 3 — the ask re-wake path (reWakeUntilAnswered) is UNCHANGED by 
   // keeps its own effectful `cursorAtWake` re-arm (src/main/bus-wake.ts), which
   // this pure decision must leave to that layer. So with a `previous` present and
   // reWakeUntilAnswered=true, decideWake SKIPS regardless of the cursor.
-  const prev: WakeLedgerEntry = { wokeLotSeq: 633, wokeGateSeq: 0, cursorAtWake: 632 };
+  //
+  // #185 strengthening: `lastWakeAt` is set and `now` is pushed PAST the bound, so
+  // this is no longer vacuous (pre-#185 it passed only because the default `now`
+  // and an absent `lastWakeAt` made `boundedReArmed` false). cursorSeq 999 >= 633:
+  // the ask is OBEYED, so the revalidated bound must not re-fire it — reddens if the
+  // #183 bound is ever allowed to re-fire an already-obeyed ask.
+  const prev: WakeLedgerEntry = {
+    wokeLotSeq: 633,
+    wokeGateSeq: 0,
+    cursorAtWake: 632,
+    lastWakeAt: 0,
+  };
   const askAckedPast = pending({
     pendingThroughSeq: 633,
+    unackedThroughSeq: 0, // acked through everything — only the unanswered ask remains
     cursorSeq: 999, // acked far past — would re-arm a LOT reader
     reWakeUntilAnswered: true,
   });
-  const a = decideWake(askAckedPast, WAKEABLE, prev, true);
+  const a = decideWake(askAckedPast, WAKEABLE, prev, true, false, undefined, REWAKE_BOUND_MS + 1);
   assert.equal(a.kind, 'skip', 'the pure lot re-arm never touches an ask reader');
   assert.equal(a.kind === 'skip' && a.why, 'already-woken');
+});
+
+test('#185 — the #183 bound does NOT re-fire an ask the reader ALREADY OBEYED (cursor >= ask seq)', () => {
+  // LIVE REPRO (#185): a reader with an unanswered `question` it ALREADY read+acked
+  // (cursor >= ask seq) was re-fired by the #183 boundedReArmed backstop every
+  // REWAKE_BOUND_MS forever, because the sweep stamps `lastWakeAt` on ask entries
+  // too. Re-ordering `orchestra check` on an ask the reader has already obeyed is a
+  // no-op it cannot silence → the 5-min storm. The bound REVALIDATES: an OBEYED ask
+  // (cursor >= pendingThroughSeq) is not re-fired. (Field numbers: cursor 1688 >=
+  // ask seq 1458.)
+  //
+  // MUTANT (drop the `askObeyed` revalidation, i.e. re-fire the ask regardless of
+  // cursor): this arm reddens (fires instead of skips), reproducing the storm.
+  const prev: WakeLedgerEntry = {
+    wokeLotSeq: 1458,
+    wokeGateSeq: 0,
+    cursorAtWake: 1458, // last wake's cursor
+    lastWakeAt: 0,
+  };
+  const askObeyed = pending({
+    pendingThroughSeq: 1458,
+    unackedThroughSeq: 0, // acked through EVERYTHING — nothing un-acked remains
+    cursorSeq: 1688, // acked PAST the ask seq — read+acked but never ANSWERED
+    reWakeUntilAnswered: true,
+  });
+  // `now` is well past the bound: the bound WOULD fire were the ask not revalidated.
+  const a = decideWake(askObeyed, WAKEABLE, prev, true, false, undefined, REWAKE_BOUND_MS * 3);
+  assert.equal(a.kind, 'skip', '#185: an ALREADY-OBEYED ask past the bound must NOT re-fire');
+  assert.equal(a.kind === 'skip' && a.why, 'already-woken');
+});
+
+test('#185 MIRROR — the #183 bound STILL re-fires an UNOBEYED ask (cursor < ask seq): no pre-#183 silent latch', () => {
+  // LEAD's mirror question (blocking): excluding the ask axis outright would
+  // re-latch a never-acking reader silently — the exact pre-#183 defect the bound
+  // exists to fix (the ask axis's own re-arms both fail: the `cursorAtWake` advance
+  // needs an ack that never comes, and the prune-on-clear needs an answer that never
+  // comes). REVALIDATE, don't exclude: an ask the reader has NOT yet obeyed (cursor
+  // < pendingThroughSeq — it never ran the check) STILL rides the #183 bound, so a
+  // genuinely-stuck ask reader is re-woken.
+  //
+  // MUTANT (exclude the ask axis, i.e. drop the `hasUnacked` term so an ask is never
+  // eligible): this arm reddens (skips instead of fires) — the reintroduced silent
+  // latch. A never-acked ask row is ITSELF un-acked (`unackedThroughSeq` = the ask
+  // seq), which is what keeps the bound live for it.
+  const prev: WakeLedgerEntry = {
+    wokeLotSeq: 1458,
+    wokeGateSeq: 0,
+    cursorAtWake: 0, // last wake's cursor — reader never acked
+    lastWakeAt: 0,
+    wokeRunId: 'run-A',
+  };
+  const askUnobeyed = pending({
+    pendingThroughSeq: 1458,
+    unackedThroughSeq: 1458, // the ask row is un-acked (reader never ran the check)
+    cursorSeq: 0, // NEVER acked — the reader has not obeyed the outstanding order
+    reWakeUntilAnswered: true,
+    pendingRunId: 'run-A',
+  });
+  const a = decideWake(askUnobeyed, WAKEABLE, prev, true, false, undefined, REWAKE_BOUND_MS * 3);
+  assert.equal(a.kind, 'fire', '#185 mirror: an UNOBEYED ask past the bound MUST re-fire (no silent latch)');
+  assert.equal(a.kind === 'fire' && a.lastWakeAt, REWAKE_BOUND_MS * 3);
+});
+
+test('#185 control — a genuine LOT latch (NOT an ask) STILL re-fires past the bound (#183 D5 stays intact)', () => {
+  // The must-PASS control that proves the #185 guard did not neuter the #183 bound
+  // for its real target: a cursor-clearable LOT the reader never acked, latched past
+  // the bound, MUST still re-fire. Same shape as the live repro but reWakeUntilAnswered
+  // is FALSE (an ordinary lot), so the bound is the correct backstop.
+  //
+  // MUTANT (over-broad #185 guard that excludes ALL lots from the bound): this
+  // reddens (skips instead of fires).
+  const prev: WakeLedgerEntry = {
+    wokeLotSeq: 1458,
+    wokeGateSeq: 0,
+    wokeRunId: 'run-A',
+    lastWakeAt: 0,
+  };
+  const lotUnacked = pending({
+    pendingThroughSeq: 1460,
+    unackedThroughSeq: 1460, // a genuine un-acked LOT
+    cursorSeq: 1200, // NOT acked through the woken lot
+    pendingRunId: 'run-A',
+    cursorByRun: new Map([['run-A', 1200]]),
+    // reWakeUntilAnswered omitted → false: an ordinary cursor-clearable lot.
+  });
+  const a = decideWake(lotUnacked, WAKEABLE, prev, true, false, undefined, REWAKE_BOUND_MS * 3);
+  assert.equal(a.kind, 'fire', '#183 bound must still fire a genuine un-acked lot latch');
+  assert.equal(a.kind === 'fire' && a.lastWakeAt, REWAKE_BOUND_MS * 3);
+});
+
+test('#185 co-pending — an un-acked LOT keeps the bound even when a NEWER ask is obeyed (review-185 gap)', () => {
+  // review-185's cross-run finding: a reader co-pending for an un-acked ordinary LOT
+  // (run B, seq X) AND an unanswered ask (run A, seq Y>X) that it HAS obeyed (cursor
+  // in the ask's run >= Y = pendingThroughSeq). A cursor-vs-max discriminator alone
+  // (`askObeyed = cursor >= pendingThroughSeq`) would read the whole reader as
+  // "obeyed" and drop the bound — but the run-B lot is genuinely un-acked (cursors
+  // are per-run) and `lotAxisReArmed` short-circuits to false under
+  // reWakeUntilAnswered, so the lot has NO other bounded backstop → it starves.
+  // The fix keys eligibility on `unackedThroughSeq > 0` (something un-acked exists),
+  // independent of the ask, so the lot STILL re-fires.
+  //
+  // MUTANT (revert to the cursor-vs-max-only discriminator, dropping the
+  // `hasUnackedLot` term): this arm reddens (skips — the lot starves).
+  const prev: WakeLedgerEntry = {
+    wokeLotSeq: 1460,
+    wokeGateSeq: 0,
+    wokeRunId: 'run-B',
+    lastWakeAt: 0,
+  };
+  const coPending = pending({
+    pendingThroughSeq: 1460, // = the ASK seq (newest), in run A
+    unackedThroughSeq: 1455, // an un-acked LOT at seq 1455, in run B
+    cursorSeq: 1460, // acked through the ask's run (>= pendingThroughSeq) — ask OBEYED
+    reWakeUntilAnswered: true,
+    pendingRunId: 'run-A',
+  });
+  const a = decideWake(coPending, WAKEABLE, prev, true, false, undefined, REWAKE_BOUND_MS * 3);
+  assert.equal(a.kind, 'fire', '#185: a co-pending un-acked LOT must keep the #183 bound (no starvation)');
 });

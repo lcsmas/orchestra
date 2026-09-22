@@ -478,6 +478,13 @@ export function readPendingReaders(
       reader,
       pendingThroughSeq,
       pending: pendingThroughSeq > 0,
+      // #185: the newest UN-ACKED message seq (ANY kind — a question matches the lot
+      // recipient predicate too), i.e. the lot query's newest row ABOVE the reader's
+      // cursor. `0` exactly when the reader acked through everything and only an
+      // answer-based unanswered ask keeps it pending — the storm shape the bounded
+      // re-fire must NOT re-fire. A co-pending un-acked lot keeps `hi > 0`, so it
+      // keeps the #183 backstop even behind an already-obeyed newer ask.
+      unackedThroughSeq: hi,
       gatePending: gates.length > 0,
       gateThroughSeq,
       gateRunIds: gates.length > 0 ? gateRunIds : undefined,

@@ -25,6 +25,19 @@ export interface ReaderPendingState {
    *  to the reader is open. This half is gated on the `wake` switch. */
   pending: boolean;
   /**
+   * Highest UN-ACKED `messages.sequence` for this reader — the newest message (of
+   * ANY kind, a `question` matches the lot recipient predicate too) still ABOVE the
+   * reader's per-run cursor, across every pending run. `0` when the reader has acked
+   * through EVERYTHING and the only thing keeping it pending is an answer-based
+   * unanswered ask (the #185 storm shape: cursor past the question, question
+   * unanswered). Distinct from `pendingThroughSeq` (= `max(lot, unanswered-question)`,
+   * which stays > 0 for an already-acked-but-unanswered ask): the #185 bounded
+   * re-fire keys on THIS — a re-`check` order can only accomplish something while a
+   * message remains un-acked (`> 0`). Defaults 0/undefined, so every pre-#185 caller
+   * and the whole shared suite behaves identically without edits.
+   */
+  unackedThroughSeq?: number;
+  /**
    * True when an OPEN decision gate is addressed to this reader (#119). Carried
    * SEPARATELY from `pending` because it is gated on a DIFFERENT switch —
    * `askGate`, not `wake`. A reader may be pending for a lot (wake OFF → counted)
@@ -435,22 +448,45 @@ export function decideWake(
     // it is bounded by the interval, never per-sweep.
     const boundPrev = lotPrev ?? gatePrev; // whichever ledger carries the latch clock
     if (boundPrev !== undefined && boundedReArmed(boundPrev, now)) {
+      // #185: REVALIDATE before a bounded re-fire — a re-`check` order can only
+      // accomplish something while a message is still UN-ACKED. Key the lot axis on
+      // `unackedThroughSeq > 0` (the newest message of ANY kind still above the
+      // reader's cursor). This is the ONE signal that covers every case:
+      //   - ordinary un-acked lot → un-acked → re-fire (#183 D5),
+      //   - a never-acked unanswered ask → the ask row is itself un-acked → re-fire
+      //     (the mirror: no pre-#183 silent latch), and
+      //   - a co-pending un-acked lot behind an already-obeyed newer ask → the lot
+      //     is un-acked → re-fire (review-185: no cross-run starvation).
+      // It fires NOTHING only when the reader has acked through EVERYTHING and the
+      // sole remaining pending is an answer-based unanswered ask (unackedThroughSeq
+      // == 0, pendingThroughSeq > 0): a re-`check` is a no-op it cannot silence, and
+      // the ask clears by ANSWER, not by re-ordering a check → this is the storm we
+      // stop (live repro #185: cursor 1688 past ask 1458, nothing un-acked). Such a
+      // reader still re-arms on its own `cursorAtWake` advance (#119) if it acks new
+      // mail, and clears when the ask is answered.
+      const hasUnacked = (pending.unackedThroughSeq ?? 0) > 0;
+      const lotBoundEligible = lotPending && hasUnacked;
       const lotSeqNow = pending.pendingThroughSeq;
       const gateSeqNow = pending.gateThroughSeq ?? 0;
-      const lotFires = lotPending && switchOn;
+      const lotFires = lotBoundEligible && switchOn;
       const gateFires = gatePending && askGateOn;
       // Carry each axis's mark forward from the ledger it dedups against, exactly as
       // the normal path does, so a bounded re-fire never resets the OTHER axis's
       // high-water (which would spuriously re-fire it next sweep).
-      const lotSeq = lotPending ? lotSeqNow : (lotPrev?.wokeLotSeq ?? 0);
+      const lotSeq = lotBoundEligible ? lotSeqNow : (lotPrev?.wokeLotSeq ?? 0);
       const gateSeq = gatePending ? gateSeqNow : (gatePrev?.wokeGateSeq ?? 0);
-      const wokeRunId = lotPending ? pending.pendingRunId : lotPrev?.wokeRunId;
+      const wokeRunId = lotBoundEligible ? pending.pendingRunId : lotPrev?.wokeRunId;
       if (lotFires || gateFires) {
         const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
         return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
       }
-      const throughSeq = Math.max(lotPending ? lotSeqNow : 0, gatePending ? gateSeqNow : 0);
-      return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+      // A bounded re-fire is owed only when a cursor-clearable lot or a gate is
+      // eligible. An ask-only latch (lot pending but reWakeUntilAnswered) falls
+      // through to the ordinary skip — its re-arm is the `cursorAtWake` path.
+      if (lotBoundEligible || gatePending) {
+        const throughSeq = Math.max(lotBoundEligible ? lotSeqNow : 0, gatePending ? gateSeqNow : 0);
+        return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+      }
     }
     return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
   }

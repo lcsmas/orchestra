@@ -899,3 +899,128 @@ test('#183 gate axis — a pending decision_gate re-wakes until RESOLVED (the #1
   for (let i = 0; i < 5; i++) await sweepBusWake();
   assert.equal(wakes.length, 2, 'a RESOLVED gate is no longer pending → the bound stops (no eternal alarm)');
 });
+
+test('#185 ask-storm — an OBEYED (acked) unanswered question does NOT storm past the bound (real bus)', async (t) => {
+  // The live #185 repro at the sweep: a `question` addressed to the reader is
+  // answer-based (`reWakeUntilAnswered`). The reader is woken, OBEYS the order (runs
+  // check + ack → cursor advances past the ask), but never ANSWERS. Once obeyed, a
+  // re-`check` order is a no-op the reader cannot silence — pre-#185 the #183 bound
+  // re-fired it every REWAKE_BOUND_MS FOREVER (the 5-min storm: field cursor 1688 >=
+  // ask 1458). The revalidated bound must NOT re-fire an obeyed ask.
+  //   MUTANT (drop the `askObeyed` revalidation → re-fire the ask regardless): the
+  //   sweep past the bound fires again and again → RED (storm). The mirror arm below
+  //   and the #183 D5 lot arm both stay green.
+  const db = tmpDb(t);
+  const clock = fakeClock();
+  const wakes = rig(db, { switchOn: true }); // wake ON — questions ride the wake switch
+  __setNowForTests(clock.now);
+
+  send(db, { runId: RUN, sender: 'ws-asker', kind: 'question', body: 'Q4?', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first wake fires (else the latch below is vacuous — #90 barrier)');
+
+  // The reader OBEYS: check + ack (cursor advances past the ask), but does NOT
+  // answer. The ack triggers the ask's own `cursorAtWake` re-arm exactly ONCE (the
+  // #119 "read-without-answer re-wakes once" promise), so a single extra wake here
+  // is EXPECTED and correct. After that its cursor is stable at the ask seq.
+  const lot = check(db, RUN, R1);
+  assert.ok(lot.delivery, 'the reader has the question to ack');
+  ack(db, RUN, R1, lot.delivery!.id);
+  clock.advance(1_000);
+  await sweepBusWake();
+  const afterObey = wakes.length; // 2 (initial + the one cursorAtWake re-arm)
+  assert.ok(afterObey <= 2, 'obeying re-wakes at most once (the #119 cursor-advance re-arm)');
+
+  // Now the reader is OBEYED (cursor >= ask seq) and stops acking. PAST the bound,
+  // many sweeps: the revalidated bound must NOT re-fire — the storm is silenced.
+  clock.advance(REWAKE_BOUND_MS * 6);
+  for (let i = 0; i < 6; i++) await sweepBusWake();
+  assert.equal(wakes.length, afterObey, '#185: an OBEYED unanswered ask is NOT re-fired by the #183 bound (no storm)');
+});
+
+test('#185 MIRROR — a NEVER-acking (unobeyed) unanswered question STILL re-wakes past the bound (no pre-#183 silent latch)', async (t) => {
+  // LEAD's blocking mirror question, at the sweep: excluding the ask axis outright
+  // would re-latch a reader that never runs check/ack — the pre-#183 defect (both
+  // ask re-arms fail: `cursorAtWake` needs an ack that never comes; prune-on-clear
+  // needs an answer that never comes). REVALIDATE, don't exclude: an UNOBEYED ask
+  // (cursor < ask seq) STILL rides the #183 bound.
+  //   MUTANT (exclude the ask axis instead of revalidating): the never-acking reader
+  //   never re-wakes → stalls at 1 → RED (the reintroduced silent latch).
+  const db = tmpDb(t);
+  const clock = fakeClock();
+  const wakes = rig(db, { switchOn: true });
+  __setNowForTests(clock.now);
+
+  send(db, { runId: RUN, sender: 'ws-asker', kind: 'question', body: 'Q?', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first wake fires (else the latch is vacuous — #90 barrier)');
+
+  // The reader NEVER acks and NEVER answers (cursor stays 0 < ask seq). Within the
+  // bound: latched. Past the bound: the bound RE-WAKES (the genuinely-stuck ask).
+  clock.advance(REWAKE_BOUND_MS - 1_000);
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 1, 'ARMED STATE: unobeyed ask within the bound → latched already-woken');
+
+  clock.advance(2_000);
+  await sweepBusWake();
+  assert.equal(wakes.length, 2, '#185 mirror: past the bound an UNOBEYED ask RE-WAKES (no silent latch)');
+  assert.ok(isWakeOrder(wakes[1].text), 'the re-wake is a valid run-naming order');
+
+  // And it does not storm within the fresh bound (the re-fire reset the clock).
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'the re-fire reset the clock — no storm within the fresh bound');
+});
+
+test('#185 co-pending — an un-acked LOT in a related run is NOT starved by an obeyed newer ask (real bus)', async (t) => {
+  // review-185's cross-run gap, end to end: reader R has an un-acked ordinary LOT in
+  // a DESCENDANT run B (older seq) AND an unanswered ask in its own run A (newer
+  // seq). R obeys the ask (check+ack run A) but leaves the run-B lot un-acked and
+  // never answers. Per-run cursors mean the run-B lot genuinely stays pending; a
+  // cursor-vs-max-only discriminator would drop the bound and STARVE it (measured:
+  // the lot stayed pending forever with no re-wake). The fix keeps the bound while
+  // an un-acked lot exists → R is re-woken for run B past the bound.
+  //   MUTANT (drop the `hasUnackedLot` term): the run-B lot never re-wakes → RED.
+  const db = tmpDb(t);
+  const RUNA = 'run-A185', RUNB = 'run-B185', R = 'ws-cop';
+  db.prepare(
+    'INSERT INTO runs (id,kind,coordinator,parent_run_id,created_at,coordinator_generation) VALUES (?,?,?,?,?,0)',
+  ).run(RUNA, 'mission', R, null, 1);
+  db.prepare(
+    'INSERT INTO runs (id,kind,coordinator,parent_run_id,created_at,coordinator_generation) VALUES (?,?,?,?,?,0)',
+  ).run(RUNB, 'vague', 'wkr', RUNA, 2);
+  const clock = fakeClock();
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R, wakeable: true, runId: RUNA }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests(true);
+  __setNowForTests(clock.now);
+
+  // LOT in run B (older), then ASK in run A (newer). Both pend for R (B is related).
+  send(db, { runId: RUNB, sender: 'wkr', kind: 'dispatch', body: 'LOT-B', recipient: R });
+  send(db, { runId: RUNA, sender: 'asker', kind: 'question', body: 'ASK-A?', recipient: R });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first wake fires (barrier)');
+
+  // R OBEYS only the ask in run A: check + ack run A (cursor A past the ask). The
+  // ack triggers the ask's one-shot cursorAtWake re-arm (expected). Leaves LOT-B.
+  const lotA = check(db, RUNA, R);
+  assert.ok(lotA.delivery, 'the reader has run-A mail to ack');
+  ack(db, RUNA, R, lotA.delivery!.id);
+  clock.advance(1_000);
+  await sweepBusWake();
+  const afterObey = wakes.length; // 2 (initial + one cursorAtWake re-arm naming both runs)
+
+  // R does NOT ack run B and does NOT answer. Past the bound: the un-acked run-B lot
+  // MUST re-wake (it is cursor-clearable and genuinely unobeyed) — no starvation.
+  clock.advance(REWAKE_BOUND_MS * 2);
+  await sweepBusWake();
+  assert.ok(wakes.length > afterObey, '#185: the un-acked run-B lot RE-WAKES past the bound (not starved)');
+  // And the re-wake order names run B (where the lot sits).
+  const last = wakes[wakes.length - 1];
+  assert.ok(wakeOrderRuns(last.text).includes(RUNB), 'the re-wake order names the run-B lot');
+});
