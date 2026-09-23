@@ -103,6 +103,15 @@ export const GATE_SILENCE_RELEASE_MS = 10 * 60 * 1000;
  *  constant. */
 export const BOOT_SILENCE_MS = 3 * 60 * 1000;
 
+/** Whether a stream message proves the CLI got past init (`firstMessageSeen`).
+ *  SessionStart `system/hook_*` events are always emitted ~1 s BEFORE init — on
+ *  fresh and resumed sessions alike (measured 2026-09-23) — so counting them made
+ *  every boot-wedged session look started: the boot-wedge heal never fired and
+ *  restart refused it (bloc2, 10-min stall). */
+export function isProofOfLifeMessage(msg: { type?: unknown; subtype?: unknown }): boolean {
+  return !(msg.type === 'system' && typeof msg.subtype === 'string' && msg.subtype.startsWith('hook_'));
+}
+
 export interface GateReleaseInput {
   /** Whether a turn is currently in flight (`session.turnGate !== null`). */
   gateHeld: boolean;

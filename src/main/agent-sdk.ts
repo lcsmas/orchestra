@@ -25,7 +25,7 @@ import { platform } from './platform';
 import { store } from './store';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
-import { decideGateRelease } from '../shared/session-wedge.ts';
+import { decideGateRelease, isProofOfLifeMessage } from '../shared/session-wedge.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 
@@ -1208,8 +1208,9 @@ async function consume(session: Session): Promise<void> {
       // CLI got past session init and is consuming its opening turn. Set once;
       // the boot-wedge watchdog stands down forever after this. Placed here, at
       // the SAME point as the progress stamp, because "a message arrived" is
-      // exactly what both facts record.
-      session.firstMessageSeen = true;
+      // exactly what both facts record. SessionStart hook events precede init,
+      // so they are NOT proof of life (isProofOfLifeMessage).
+      if (isProofOfLifeMessage(msg)) session.firstMessageSeen = true;
       emitFrom(session, msg);
       // Persist the SDK session id the first time the stream reports it, so
       // re-opening the structured view resumes THIS conversation (see the

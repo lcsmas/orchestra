@@ -792,3 +792,21 @@ test('#174 the boot-wedge verdict feeds decideSessionRecycle unchanged (shape co
     "decideSessionRecycle's own progress guard still refuses a fresh-stream session",
   );
 });
+
+// ─── isProofOfLifeMessage — SessionStart hook events precede init (2026-09-23) ──
+
+test('isProofOfLifeMessage: SessionStart hook events are NOT proof of life', async () => {
+  const { isProofOfLifeMessage } = await import('./session-wedge.ts');
+  assert.equal(isProofOfLifeMessage({ type: 'system', subtype: 'hook_started' }), false);
+  assert.equal(isProofOfLifeMessage({ type: 'system', subtype: 'hook_response' }), false);
+  assert.equal(isProofOfLifeMessage({ type: 'system', subtype: 'hook_progress' }), false);
+});
+
+test('isProofOfLifeMessage: init and turn output ARE proof of life', async () => {
+  const { isProofOfLifeMessage } = await import('./session-wedge.ts');
+  assert.equal(isProofOfLifeMessage({ type: 'system', subtype: 'init' }), true);
+  assert.equal(isProofOfLifeMessage({ type: 'assistant' }), true);
+  assert.equal(isProofOfLifeMessage({ type: 'stream_event' }), true);
+  assert.equal(isProofOfLifeMessage({ type: 'result', subtype: 'success' }), true);
+  assert.equal(isProofOfLifeMessage({ type: 'system', subtype: 'status' }), true);
+});

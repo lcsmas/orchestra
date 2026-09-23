@@ -67,6 +67,11 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   restart of a started turn silent ≥ `RESTART_STALL_MS` (2 min, `resume-guard.ts`
   verdict `'stalled'`) tears down and redelivers pending prompts instead of
   refusing. Gate: `pnpm run test:hung-cli` (`scripts/e2e-hung-cli-teardown.mjs`).
+- **SessionStart hook events are not proof of life**: the SDK yields
+  `system/hook_*` ~1 s before `system/init` (fresh and resumed). consume() sets
+  `firstMessageSeen` only via `isProofOfLifeMessage` (`session-wedge.ts`) —
+  counting hooks made the #174/#180 boot-wedge heal and #179 'fresh' restart
+  unreachable in the field.
 - **Explicit stops genuinely kill**: `sdkStop`'s live path rides the graceful
   close (interrupt → stdin EOF → keeper escalation — preserves the CLI's
   transcript flush); its NO-SESSION path calls `killKeeper(wsId)` — critical
