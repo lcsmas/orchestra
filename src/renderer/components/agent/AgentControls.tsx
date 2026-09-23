@@ -211,6 +211,9 @@ export function AgentControls({
   // to the static MODEL_CHOICES via modelChoicesFrom. Re-fetched when a session
   // inits, since only a live subprocess can answer (and the account may differ).
   const [liveModels, setLiveModels] = React.useState<AgentModelInfo[]>([]);
+  // Bumped on every menu open: `claude update` changes the list under a live
+  // session, so a mount-time fetch alone would freeze it (main memoizes).
+  const [modelsEpoch, setModelsEpoch] = React.useState(0);
   React.useEffect(() => {
     let alive = true;
     void window.orchestra
@@ -223,7 +226,7 @@ export function AgentControls({
     return () => {
       alive = false;
     };
-  }, [workspaceId, inited]);
+  }, [workspaceId, inited, modelsEpoch]);
 
   const choices: ModelChoice[] = modelChoicesFrom(liveModels);
   const baseItems = toModelItems(choices);
@@ -266,6 +269,7 @@ export function AgentControls({
           value={menuValue}
           placeholder="Account default"
           ariaLabel="Model"
+          onOpen={() => setModelsEpoch((n) => n + 1)}
           onSelect={(v) => void window.orchestra.agentSdkSetModel(workspaceId, v || undefined)}
         />
         <EffortSlider

@@ -33,11 +33,13 @@ interface Props {
   /** Fallback trigger text when `value` matches no item. */
   placeholder?: string;
   disabled?: boolean;
+  /** Fired each time the menu opens (e.g. to refresh a list that can go stale). */
+  onOpen?: () => void;
 }
 
 const PANEL_WIDTH = 248;
 
-export function AvMenu({ items, value, onSelect, ariaLabel, placeholder, disabled }: Props) {
+export function AvMenu({ items, value, onSelect, ariaLabel, placeholder, disabled, onOpen }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
@@ -92,6 +94,7 @@ export function AvMenu({ items, value, onSelect, ariaLabel, placeholder, disable
     const idx = items.findIndex((i) => i.value === value);
     setActiveIdx(startIdx ?? (idx === -1 ? 0 : idx));
     setOpen(true);
+    onOpen?.();
   };
 
   const pick = (v: string) => {
