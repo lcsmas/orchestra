@@ -147,6 +147,8 @@ export interface SdkMessage {
   /** system/init: protocol capabilities the CLI supports, for feature-detecting
    *  control requests (e.g. `interrupt_cancel_queued_v1`). */
   capabilities?: string[];
+  /** system/init: version of the CLI process answering (e.g. `2.1.280`). */
+  claude_code_version?: string;
   // stream_event:
   event?: RawStreamEvent;
   // assistant / user (an object); system/permission_denied reuses the key as a

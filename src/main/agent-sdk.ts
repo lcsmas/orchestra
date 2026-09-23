@@ -27,6 +27,7 @@ import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease } from '../shared/session-wedge.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
+import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
  *  produced here, folded in the renderer), so attributing a wrong pane to the
@@ -419,6 +420,10 @@ interface Session {
    *  "msg_lifecycle_v1"]`. Undefined until the first init lands — treat that
    *  as "no capabilities", never as "assume supported". */
   capabilities?: string[];
+  /** `claude_code_version` from the latest `system/init`. The process keeps the
+   *  binary it was spawned from (keeper survives app restarts), so this can lag
+   *  the `claude` on PATH — see {@link sdkListModels}. */
+  cliVersion?: string;
   /** Set by {@link sdkClear}: the user cleared the conversation, so the dying
    *  session's tail events (interrupt error, synthetic turn-end, stray stream
    *  messages) must NOT be emitted — they'd land AFTER the `session/clear`
@@ -587,6 +592,9 @@ function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
 function emitFrom(session: Session, msg: SdkMessage): void {
   // A cleared session's tail must stay silent — the transcript was reset.
   if (session.cleared) return;
+  if (msg.type === 'system' && msg.subtype === 'init' && typeof msg.claude_code_version === 'string') {
+    session.cliVersion = msg.claude_code_version;
+  }
   for (const ev of normalizeSdkMessage(msg, session.ctx)) {
     // Drop a stream replay of a LOCALLY-sent prompt: sdkSend already echoed it
     // (the transcript's record), so re-rendering it would duplicate the bubble.
@@ -2071,53 +2079,158 @@ export function sdkDefaultModel(wsId: string): string {
   return DEFAULT_CHILD_MODEL;
 }
 
-/** Model lists last reported by a live session, keyed by the ACCOUNT config
- *  dir that answered (model availability is an account/CLI property, not a
- *  workspace one) — so a workspace with no live session still gets the list a
- *  sibling on the same account fetched. In-memory only: on a fresh app run
- *  with no session yet, {@link sdkListModels} returns [] and the renderer
- *  falls back to its static list (model-util.ts MODEL_CHOICES). */
+/** Model lists keyed by ACCOUNT config dir + CLI VERSION (availability is an
+ *  account/CLI property, not a workspace one), filled from a current-version
+ *  live session or a probe of the current binary. Version in the key so an
+ *  old session can never overwrite the current list. In-memory only; [] →
+ *  the renderer's static MODEL_CHOICES fallback. */
 const modelListCache = new Map<string, AgentModelInfo[]>();
+const modelProbeInflight = new Map<string, Promise<AgentModelInfo[]>>();
 
-/** List the models the workspace's Claude runtime actually offers, via the
- *  live session's `supportedModels()` control request — the same source as
- *  Claude Code's /model picker, so newly released models (and account-gated
- *  ones) appear without hardcoding. Falls back to the last list cached for
- *  this workspace's account, then []. The control request is raced against a
- *  short timeout so a wedged subprocess can't hang the renderer's menu open. */
+/** List the models the CURRENT `claude` on PATH offers (`supportedModels()`,
+ *  same source as Claude Code's /model picker): from the live session when it
+ *  runs that version, else a cached/probed list for that version, else the
+ *  live session's own (possibly older) list, then []. */
 export async function sdkListModels(wsId: string): Promise<AgentModelInfo[]> {
   const ws = store.getWorkspace(wsId);
-  const cacheKey =
+  const configDir =
     (ws && workspaceAccountConfigDir(ws, undefined)) || path.join(os.homedir(), '.claude');
+  // The picker follows the `claude` on PATH NOW, not the binary a long-lived
+  // session was spawned from (a 2.1.278 session hid Opus 5.5 after an update).
+  const current = ws ? await currentClaudeRuntime(ws).catch(() => null) : null;
+  const keyFor = (version: string | undefined) => `${configDir}\0${version ?? ''}`;
+  const cacheKey = keyFor(current?.version);
 
   const session = sessions.get(wsId);
-  if (session) {
-    try {
-      const models = await Promise.race([
-        session.q.supportedModels(),
-        // A control request to a dying subprocess can park forever; the menu
-        // must still open, so time-box and fall back to the cache.
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('supportedModels timed out')), 3000),
-        ),
-      ]);
-      const mapped: AgentModelInfo[] = models.map((m) => ({
-        value: m.value,
-        resolvedModel: m.resolvedModel,
-        displayName: m.displayName,
-        description: m.description,
-      }));
-      if (mapped.length) {
-        modelListCache.set(cacheKey, mapped);
-        return mapped;
-      }
-    } catch (err) {
-      log.warn(
-        `agent-sdk: supportedModels failed for ${wsId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+  // Only trust the live session's list when it is PROVEN to run the current
+  // CLI (or when the current one is unknowable, e.g. dev without `claude`).
+  const sessionIsCurrent =
+    !!session && (!current || (session.cliVersion !== undefined && !isRuntimeStale(session.cliVersion, current.version)));
+  if (session && sessionIsCurrent) {
+    const mapped = await sessionModels(wsId, session);
+    if (mapped.length) {
+      modelListCache.set(cacheKey, mapped);
+      return mapped;
     }
   }
-  return modelListCache.get(cacheKey) ?? [];
+  const cached = modelListCache.get(cacheKey);
+  if (cached) return cached;
+  if (current && ws) {
+    let inflight = modelProbeInflight.get(cacheKey);
+    if (!inflight) {
+      inflight = probeRuntimeModels(ws, current.bin)
+        .catch((err) => {
+          log.warn(`agent-sdk: model probe of ${current.bin} failed: ${err instanceof Error ? err.message : String(err)}`);
+          return [] as AgentModelInfo[];
+        })
+        .finally(() => modelProbeInflight.delete(cacheKey));
+      modelProbeInflight.set(cacheKey, inflight);
+    }
+    const probed = await inflight;
+    if (probed.length) {
+      modelListCache.set(cacheKey, probed);
+      return probed;
+    }
+  }
+  // Last resort: whatever the (possibly older) live session offers.
+  return session ? sessionModels(wsId, session) : [];
+}
+
+async function sessionModels(wsId: string, session: Session): Promise<AgentModelInfo[]> {
+  try {
+    const models = await Promise.race([
+      session.q.supportedModels(),
+      // A control request to a dying subprocess can park forever; the menu
+      // must still open, so time-box and fall back to the cache.
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('supportedModels timed out')), 3000),
+      ),
+    ]);
+    return models.map((m) => ({
+      value: m.value,
+      resolvedModel: m.resolvedModel,
+      displayName: m.displayName,
+      description: m.description,
+    }));
+  } catch (err) {
+    log.warn(
+      `agent-sdk: supportedModels failed for ${wsId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+}
+
+/** `claude --version` memo, keyed by the binary's realpath + mtime so a
+ *  `claude update` (symlink re-pointed) is picked up without an app restart. */
+const cliVersionMemo = new Map<string, Promise<string | null>>();
+
+/** The `claude` a NEW session for this workspace would spawn, and its version. */
+async function currentClaudeRuntime(ws: Workspace): Promise<{ bin: string; version: string } | null> {
+  const { env } = await buildSdkEnv(ws);
+  const bin = resolveClaudeBinary(env);
+  if (!bin) return null;
+  const real = fs.realpathSync(bin);
+  const key = `${real}\0${fs.statSync(real).mtimeMs}`;
+  let p = cliVersionMemo.get(key);
+  if (!p) {
+    p = new Promise<string | null>((resolve) => {
+      let out = '';
+      const child = spawn(real, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+      child.stdout?.on('data', (c: Buffer) => (out += c.toString('utf8')));
+      child.on('error', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve(parseCliVersion(out));
+      });
+    });
+    cliVersionMemo.set(key, p);
+  }
+  const version = await p;
+  if (!version) cliVersionMemo.delete(key); // don't memoize a failed probe
+  return version ? { bin, version } : null;
+}
+
+/** Ask a throwaway CLI of the CURRENT binary for its model list (initialize
+ *  handshake only — no prompt is ever sent, so no API call and no transcript).
+ *  No setting sources: the probe must not run the worktree's hooks. */
+async function probeRuntimeModels(ws: Workspace, bin: string): Promise<AgentModelInfo[]> {
+  const { query } = await loadSdk();
+  const { env } = await buildSdkEnv(ws);
+  const abort = new AbortController();
+  // A prompt stream that never yields: the CLI initializes and waits.
+  const idle = (async function* () {
+    await new Promise<void>((resolve) => abort.signal.addEventListener('abort', () => resolve()));
+  })() as AsyncIterable<SDKUserMessage>;
+  const q = query({
+    prompt: idle,
+    options: {
+      cwd: os.tmpdir(),
+      env,
+      pathToClaudeCodeExecutable: bin,
+      settingSources: [],
+      abortController: abort,
+    },
+  });
+  try {
+    const models = await Promise.race([
+      q.supportedModels(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('model probe timed out')), 15_000),
+      ),
+    ]);
+    return models.map((m) => ({
+      value: m.value,
+      resolvedModel: m.resolvedModel,
+      displayName: m.displayName,
+      description: m.description,
+    }));
+  } finally {
+    abort.abort();
+  }
 }
 
 /** Read the workspace's context-window usage from the LIVE SDK session — the
@@ -3723,6 +3836,28 @@ export async function sdkSetModel(wsId: string, model: string | undefined): Prom
   await persistWorkspacePatch(wsId, { model });
   const session = sessions.get(wsId);
   if (!session) return; // choice is persisted; it applies on next start
+  // The live CLI may predate `claude update` (e.g. a 2.1.278 session rejects
+  // Opus 5.5, and maps `opus[1m]` to Opus 5). If it can't serve the model the way
+  // the current binary would, restart onto the current binary (conversation kept).
+  if (model) {
+    const own = await sessionModels(wsId, session);
+    if (own.length && !runtimeServesLikeCurrent(own, await sdkListModels(wsId), model)) {
+      try {
+        await sdkRestart(wsId, { fresh: false, trigger: 'toolbar' });
+      } catch (err) {
+        emit(
+          wsId,
+          stamp(session.ctx, {
+            type: 'notice',
+            kind: 'warning',
+            text: `This session's Claude Code (${session.cliVersion ?? 'older build'}) doesn't offer ${model} — restart the session after this turn to switch.`,
+          }),
+        );
+        log.info(`agent-sdk: model switch needs a runtime restart for ${wsId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+  }
   // Reflect the switch in the folded session — session/init (the only other
   // source of session.model) fires once, so without this the dropdown snaps
   // back to the init value. '' conveys "session default".

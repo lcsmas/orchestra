@@ -277,9 +277,18 @@ test('modelChoicesFrom appends delisted-but-served extras the live list omits', 
     { value: 'opus-4-8-live', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: 'Opus 4.8 · Previous release' },
   ];
   const relistedValues = modelChoicesFrom(relisted).map((c) => c.value);
-  // 4.8's live row wins (no duplicate card); the OTHER extra (Fable 5, still not
-  // in this list) is appended, so it is the only trailing entry.
-  assert.deepEqual(relistedValues, ['opus-4-8-live', 'claude-fable-5'], 'no duplicate 4.8 card');
+  // 4.8's live row wins (no duplicate card); the OTHER extras (Opus 5, Fable 5,
+  // not in this list) are appended as the trailing entries.
+  assert.deepEqual(relistedValues, ['opus-4-8-live', 'claude-opus-5', 'claude-fable-5'], 'no duplicate 4.8 card');
+
+  // Opus 5 is covered by the pre-2.1.280 live rows above → no duplicate card…
+  assert.equal(values.filter((v) => v === 'claude-opus-5').length, 0, 'Opus 5 not duplicated when live');
+  // …and appended once CLI 2.1.280 re-points opus → Opus 5.5 (real rows, 2026-09-23).
+  const v280 = modelChoicesFrom([
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5.5 with 1M context' },
+  ]);
+  assert.equal(v280[0].label, 'Opus 5.5');
+  assert.ok(v280.some((c) => c.value === 'claude-opus-5'), 'Opus 5 stays selectable after delisting');
 });
 
 test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes', () => {

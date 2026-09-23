@@ -1758,11 +1758,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   **The switcher's list is DYNAMIC**: `AgentControls` fetches the live runtime
   list via **`agentModels`** (`agent:models` → `sdkListModels(wsId)` in
   agent-sdk.ts — the Agent SDK's `query.supportedModels()`, the same source as
-  Claude Code's `/model` picker, cached in-memory per ACCOUNT config dir so
-  sessionless workspaces reuse a sibling's fetch; `[]` = unknown). New models
-  therefore appear without an Orchestra release. **`EXTRA_MODEL_CHOICES`** covers the
+  Claude Code's `/model` picker, cached in-memory per ACCOUNT config dir +
+  CLI VERSION; `[]` = unknown). The list follows the `claude` on PATH NOW
+  (`currentClaudeRuntime`, `claude --version` memoized by realpath+mtime): a
+  live session is trusted only when its `system/init` `claude_code_version`
+  (`Session.cliVersion`) matches, else the current binary is probed with a
+  throwaway handshake-only query (`probeRuntimeModels`). `sdkSetModel` restarts
+  (conversation kept) a session whose older runtime can't serve the pick like
+  the current one (`runtimeServesLikeCurrent`, `src/shared/cli-runtime.ts` —
+  e.g. 2.1.278 maps `opus[1m]` to Opus 5, 2.1.280 to Opus 5.5). New models
+  therefore appear without an Orchestra release. Live rows trust their own
+  `resolvedModel` over the static `MODEL_ALIASES` in `choiceCovers`. **`EXTRA_MODEL_CHOICES`** covers the
   inverse case — models DELISTED from `supportedModels()` but still served by
-  the API (**Opus 4.8** and **Fable 5**: absent from the live list, yet
+  the API (**Opus 5** since CLI 2.1.280, **Opus 4.8** and **Fable 5**: absent from the live list, yet
   `--model claude-opus-4-8` / `--model claude-fable-5` exit 0 under their own
   `canonicalModel` — Opus 4.8 measured 2026-09-10, Fable 5 measured 2026-09-14;
   the short aliases `opus-4-8` / `fable-5` are rejected, only the full wire id

@@ -23,6 +23,7 @@ export interface ModelChoice {
 export const MODEL_CHOICES: ModelChoice[] = [
   { value: 'claude-fable-5-1', label: 'Fable 5.1', description: 'Most capable — hardest work' },
   { value: 'claude-fable-5', label: 'Fable 5', description: 'Previous Fable release' },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5', description: 'Newest Opus' },
   { value: 'claude-opus-5', label: 'Opus 5', description: 'Highly capable — deep work' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8', description: 'Previous Opus release' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', description: 'Balanced speed and depth' },
@@ -48,6 +49,8 @@ export const MODEL_CHOICES: ModelChoice[] = [
  *  A delisted model is on borrowed time: when the runtime stops serving one,
  *  drop its entry here. */
 export const EXTRA_MODEL_CHOICES: ModelChoice[] = [
+  // Delisted on CLI 2.1.280 (opus → Opus 5.5); `--model claude-opus-5` still served (2026-09-23).
+  { value: 'claude-opus-5', label: 'Opus 5', description: 'Previous Opus release' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8', description: 'Previous Opus release' },
   { value: 'claude-fable-5', label: 'Fable 5', description: 'Previous Fable release' },
 ];
@@ -140,7 +143,7 @@ function splitContextSuffix(model: string): { base: string; suffix: string } {
  *  real "Opus (1M context)" row. */
 function modelKey(model: string): string {
   const { base } = splitContextSuffix(model);
-  const lower = base.toLowerCase();
+  const lower = base.toLowerCase().replace(/-\d{8}$/, ''); // drop a date snapshot
   return MODEL_ALIASES[lower] ?? lower;
 }
 
@@ -151,8 +154,13 @@ function modelKey(model: string): string {
 export function choiceCovers(choice: ModelChoice, model: string): boolean {
   if (!model) return false;
   const want = modelKey(model);
-  if (modelKey(choice.value) === want) return true;
-  return !!choice.resolvedModel && modelKey(choice.resolvedModel) === want;
+  if (choice.resolvedModel) {
+    // A live row states what its alias means on THIS runtime — never override it
+    // with the static alias map (CLI 2.1.280 re-pointed `opus` to Opus 5.5).
+    const literal = (m: string) => splitContextSuffix(m).base.toLowerCase();
+    return literal(choice.value) === literal(model) || modelKey(choice.resolvedModel) === want;
+  }
+  return modelKey(choice.value) === want;
 }
 
 /** The model the switcher should display, given the three candidate sources.
