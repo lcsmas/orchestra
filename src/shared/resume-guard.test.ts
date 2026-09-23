@@ -187,3 +187,32 @@ test('decideRestartGuard: firstMessageSeen is the ONLY thing separating refuse f
   assert.equal(decideRestartGuard({ ...base, firstMessageSeen: true }), 'refuse');
   assert.equal(decideRestartGuard({ ...base, firstMessageSeen: false }), 'fresh');
 });
+
+// ─── 'stalled' — explicit restart of a started-but-silent turn (2026-09-23) ──
+
+test('decideRestartGuard: started turn silent past the stall bound → STALLED', () => {
+  const base = { hasLiveSession: true, turnInFlight: true, firstMessageSeen: true, stallMs: 120_000 };
+  assert.equal(decideRestartGuard({ ...base, silentForMs: 120_000 }), 'stalled');
+  assert.equal(decideRestartGuard({ ...base, silentForMs: 6 * 60_000 }), 'stalled');
+});
+
+test('decideRestartGuard: started turn with recent activity, or unknown silence → still REFUSE', () => {
+  const base = { hasLiveSession: true, turnInFlight: true, firstMessageSeen: true, stallMs: 120_000 };
+  assert.equal(decideRestartGuard({ ...base, silentForMs: 119_999 }), 'refuse');
+  assert.equal(decideRestartGuard({ ...base, silentForMs: 0 }), 'refuse');
+  assert.equal(decideRestartGuard(base), 'refuse', 'no silence reading → never stalled');
+});
+
+test('decideRestartGuard: silence never overrides fresh/resume, default bound is 2 min', () => {
+  assert.equal(
+    decideRestartGuard({ hasLiveSession: true, turnInFlight: true, firstMessageSeen: false, silentForMs: 1e9 }),
+    'fresh',
+  );
+  assert.equal(
+    decideRestartGuard({ hasLiveSession: true, turnInFlight: false, firstMessageSeen: true, silentForMs: 1e9 }),
+    'resume',
+  );
+  const started = { hasLiveSession: true, turnInFlight: true, firstMessageSeen: true };
+  assert.equal(decideRestartGuard({ ...started, silentForMs: 2 * 60_000 }), 'stalled');
+  assert.equal(decideRestartGuard({ ...started, silentForMs: 2 * 60_000 - 1 }), 'refuse');
+});

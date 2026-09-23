@@ -4491,9 +4491,33 @@ export async function sdkRestart(
     hasLiveSession: live !== undefined,
     turnInFlight: live?.turnGate != null,
     firstMessageSeen: live?.firstMessageSeen === true,
+    silentForMs: live ? Date.now() - live.lastStreamAt : undefined,
   });
   if (guard === 'refuse') {
     throw new Error('The agent is working — interrupt it first, then restart.');
+  }
+  if (guard === 'stalled') {
+    // Started turn, stream silent ≥ RESTART_STALL_MS: tear down (conversation
+    // kept), then redeliver still-owed prompts against the real transcript so
+    // one that did run is not re-sent. Same recipe as the watchdog recycle.
+    bumpCoordinatorIfSelf();
+    const trigger: RestartTrigger = opts.trigger ?? 'cli';
+    if (live) {
+      live.restartRequested = trigger;
+      live.interruptRequested = false;
+    }
+    log.info(`agent-sdk: restart of stalled turn for ${wsId} — tearing down and redelivering pending prompts`);
+    await recordRestart(wsId, trigger);
+    await sdkStop(wsId).catch((e) => log.warn(`agent-sdk: stop failed during stalled restart for ${wsId}`, e));
+    await killKeeper(wsId).catch(() => {
+      /* already gone */
+    });
+    const history = await sdkHistory(wsId).catch(() => [] as AgentEvent[]);
+    await recoverPendingPrompts(wsId, history).catch((e) =>
+      log.warn(`agent-sdk: pending-prompt recovery failed during stalled restart for ${wsId}`, e),
+    );
+    if (!sessions.has(wsId)) await ensureSession(wsId);
+    return;
   }
   if (guard === 'fresh') {
     // A never-started session wedged on its opening turn. CONVERGE (#179 D2):
@@ -4907,13 +4931,24 @@ export async function sdkStop(wsId: string): Promise<void> {
   // Wake any waiters so the generator returns, then interrupt to unwind the SDK.
   session.pump?.();
   session.turnGate?.();
+  let interruptHung = false;
   try {
-    await session.q.interrupt();
-  } catch {
-    // interrupt on an already-ended query throws; ignore.
+    // Bounded: interrupt() is a control request a hung CLI never answers
+    // (measured: pending >40s vs a silent CLI), which parked every teardown.
+    await withTimeout(session.q.interrupt(), STOP_INTERRUPT_TIMEOUT_MS, 'interrupt');
+  } catch (err) {
+    // interrupt on an already-ended query throws; ignore. A timeout is the hung CLI.
+    interruptHung = err instanceof Error && /interrupt timed out/.test(err.message);
   }
   sessions.delete(wsId);
-  // NOTE: no killKeeper here — the SDK's graceful close ends stdin, which the
+  if (interruptHung) {
+    // The graceful close can't reach a CLI that ignores stdin — kill it outright.
+    log.warn(`agent-sdk: interrupt unanswered for ${wsId} — killing the keeper/CLI`);
+    await killKeeper(wsId).catch(() => {
+      /* already gone */
+    });
+  }
+  // NOTE: otherwise no killKeeper — the SDK's graceful close ends stdin, which the
   // bridge forwards as a stdinEnd frame; the keeper then EOF→SIGTERM→SIGKILL
   // escalates on its own clock. That preserves the CLI's clean shutdown
   // (transcript flush) where an immediate SIGTERM would race it.
@@ -4943,6 +4978,25 @@ export async function sdkClear(wsId: string): Promise<void> {
     seq: cursorFor(wsId).seq++,
     at: Date.now(),
   });
+}
+
+/** `rewindFiles` is a CLI control request: a wedged CLI never answers, and an
+ *  unbounded await parked the rewind for minutes, then truncated the
+ *  conversation whenever the CLI died (2026-09-23 bloc2). Files stay best-effort. */
+const REWIND_FILES_TIMEOUT_MS = 10_000;
+const REWIND_PREVIEW_TIMEOUT_MS = 5_000;
+/** {@link sdkStop}'s bound on the SDK `interrupt()` control request. */
+const STOP_INTERRUPT_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${what} timed out after ${ms / 1000}s — the agent did not respond`)),
+      ms,
+    );
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** Rewind the conversation to a previous user message — Claude Code's
@@ -4988,7 +5042,7 @@ export async function sdkRewind(
   let filesError: string | undefined;
   if (session && !session.stopping) {
     try {
-      files = await session.q.rewindFiles(rewindId);
+      files = await withTimeout(session.q.rewindFiles(rewindId), REWIND_FILES_TIMEOUT_MS, 'rewindFiles');
       if (!files.canRewind) {
         filesError = files.error || 'No file checkpoint exists for this message.';
       }
@@ -5223,7 +5277,11 @@ export async function sdkRewindPreview(
     };
   }
   try {
-    return await session.q.rewindFiles(rewindId, { dryRun: true });
+    return await withTimeout(
+      session.q.rewindFiles(rewindId, { dryRun: true }),
+      REWIND_PREVIEW_TIMEOUT_MS,
+      'rewindFiles preview',
+    );
   } catch (err) {
     return { canRewind: false, error: err instanceof Error ? err.message : String(err) };
   }

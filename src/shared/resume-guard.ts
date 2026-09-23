@@ -106,14 +106,18 @@ export function shouldContinuePty(input: {
  *  (2026-09-21 15:28-15:33) was exactly this — promote/reparent restart refused
  *  every ~27s forever while the keeper reported `everStarted:false`.
  *
- *  Three verdicts:
+ *  Four verdicts:
  *   - `'refuse'`  — a turn is in flight AND the session has started
- *     (`firstMessageSeen === true`): a genuine working turn; refusing protects
- *     it (the must-PASS arm). This is the ONLY case that refuses.
+ *     (`firstMessageSeen === true`) with recent stream activity: a genuine
+ *     working turn; refusing protects it (the must-PASS arm).
  *   - `'fresh'`   — a turn is in flight but the session NEVER started
  *     (`firstMessageSeen === false`): a never-started opening turn is
  *     interruptible; tear it down and start FRESH, redelivering the opening
  *     prompt (per #178). This converges the #179 loop.
+ *   - `'stalled'` — a started turn silent for {@link RESTART_STALL_MS}+: an
+ *     explicit restart of a session showing no activity (2026-09-23 bloc2: CLI
+ *     hung after `system/init`, pane idle with no Stop, restart refused). Tear
+ *     down, keep the conversation, redeliver pending prompts.
  *   - `'resume'`  — no turn in flight (or no live session): the ordinary
  *     conversation-preserving restart, unchanged.
  *
@@ -121,7 +125,12 @@ export function shouldContinuePty(input: {
  *  it true on the first stream message) — the same proof-of-life the boot-wedge
  *  watchdog keys on (session-wedge.ts `decideBootWedge`), so the restart guard
  *  and the watchdog share ONE definition of "never started". */
-export type RestartGuardVerdict = 'refuse' | 'fresh' | 'resume';
+export type RestartGuardVerdict = 'refuse' | 'fresh' | 'stalled' | 'resume';
+
+/** Silence after which an EXPLICIT restart may tear down a started turn
+ *  (`'stalled'`). Keyed on `session.lastStreamAt` (bumped at turn arm AND by
+ *  every stream message), so a turn that just started is never "stalled". */
+export const RESTART_STALL_MS = 2 * 60 * 1000;
 
 export function decideRestartGuard(input: {
   /** A live in-memory session exists for this workspace. */
@@ -131,11 +140,19 @@ export function decideRestartGuard(input: {
   /** The live session has emitted at least one stream message
    *  (`session.firstMessageSeen`). Meaningless when `hasLiveSession` is false. */
   firstMessageSeen: boolean;
+  /** Ms since the session's last stream activity (`now - session.lastStreamAt`).
+   *  Absent ⇒ unknown ⇒ a started turn is refused (the pre-'stalled' behaviour). */
+  silentForMs?: number;
+  /** Injectable {@link RESTART_STALL_MS} for tests. */
+  stallMs?: number;
 }): RestartGuardVerdict {
   if (!input.hasLiveSession) return 'resume';
   if (!input.turnInFlight) return 'resume';
-  // A turn is in flight. Refuse ONLY if the session actually started — a
-  // never-started opening turn is interruptible and starts fresh (#179/#178).
-  if (input.firstMessageSeen) return 'refuse';
-  return 'fresh';
+  // A turn is in flight. A never-started opening turn is interruptible and
+  // starts fresh (#179/#178).
+  if (!input.firstMessageSeen) return 'fresh';
+  // Started: refuse unless the stream has been silent past the stall bound.
+  const stallMs = input.stallMs ?? RESTART_STALL_MS;
+  if (input.silentForMs !== undefined && input.silentForMs >= stallMs) return 'stalled';
+  return 'refuse';
 }

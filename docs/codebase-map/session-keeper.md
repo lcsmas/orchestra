@@ -59,6 +59,14 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   nothing else re-asserts it until the user opens the row. Probe ≠ attach: the
   probe frame never claims the client slot, so this restores the sidebar dot
   without violating no-mass-resume.
+- **A hung CLI never parks a teardown** (2026-09-23): control requests to a CLI
+  that stopped reading stdin never resolve (SDK `interrupt()` measured pending
+  >40 s). `sdkStop` bounds `interrupt()` (`STOP_INTERRUPT_TIMEOUT_MS`, 5 s) and
+  on timeout awaits `killKeeper`; `sdkRewind`/`sdkRewindPreview` bound
+  `rewindFiles` (10 s / 5 s, files then reported unrestored). An explicit
+  restart of a started turn silent ≥ `RESTART_STALL_MS` (2 min, `resume-guard.ts`
+  verdict `'stalled'`) tears down and redelivers pending prompts instead of
+  refusing. Gate: `pnpm run test:hung-cli` (`scripts/e2e-hung-cli-teardown.mjs`).
 - **Explicit stops genuinely kill**: `sdkStop`'s live path rides the graceful
   close (interrupt → stdin EOF → keeper escalation — preserves the CLI's
   transcript flush); its NO-SESSION path calls `killKeeper(wsId)` — critical

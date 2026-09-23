@@ -272,25 +272,26 @@ test('#166 — sdkRestart (structured restart) bumps on both branches, past the 
   // conversation-preserving branch. Crucially the NON-fresh bump fires AFTER the
   // mid-turn guard's throw, so a refused restart never bumps.
   assert.match(body, /maybeBumpCoordinatorOnReplacement\(restartingWs\)/, 'the bump closure calls the effect');
-  // Three invocations of the closure, each on a process-REPLACING branch:
+  // Four invocations of the closure, each on a process-REPLACING branch:
   //   1. the --fresh branch (sdkClear),
   //   2. #179's never-started 'fresh' restart (tear down + redeliver),
-  //   3. the ordinary conversation-preserving branch (past the mid-turn refusal).
+  //   3. the 'stalled' restart (started turn silent past RESTART_STALL_MS),
+  //   4. the ordinary conversation-preserving branch (past the mid-turn refusal).
   // Every one replaces the process, so every one must bump; the REFUSE branch
   // (a genuinely working session) throws before any bump — the #166 invariant.
   const calls = body.match(/bumpCoordinatorIfSelf\(\);/g) ?? [];
-  assert.equal(calls.length, 3, 'the bump closure is called on each process-replacing branch');
+  assert.equal(calls.length, 4, 'the bump closure is called on each process-replacing branch');
   const guardIdx = body.indexOf('The agent is working');
   assert.ok(guardIdx > 0, 'the mid-turn refusal is present');
   // Both bumps that follow the refusal (the #179 fresh branch + the ordinary
   // branch) must be AFTER the guard's throw, so a REFUSED restart never bumps.
   // Only the very first bump (the --fresh/sdkClear branch, which has no working
   // guard) precedes it. So: at least the LAST call is after the guard, and the
-  // count of post-guard bumps is 2 (fresh-never-started + conversation-preserving).
+  // count of post-guard bumps is 3 (fresh-never-started + stalled + conversation-preserving).
   const lastCallIdx = body.lastIndexOf('bumpCoordinatorIfSelf();');
   assert.ok(lastCallIdx > guardIdx, 'the non-fresh bump fires AFTER the mid-turn refusal (a refused restart never bumps)');
   const postGuardBumps = (body.slice(guardIdx).match(/bumpCoordinatorIfSelf\(\);/g) ?? []).length;
-  assert.equal(postGuardBumps, 2, 'both the #179 fresh and the ordinary bump fire past the refusal');
+  assert.equal(postGuardBumps, 3, 'the #179 fresh, stalled and ordinary bumps all fire past the refusal');
 });
 
 test('#166 — the two renderer-driven pty:restart routes mark a pending replacement', () => {
