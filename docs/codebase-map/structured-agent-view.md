@@ -1810,13 +1810,12 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   there's no `session.model`; rather than an opaque placeholder, `AgentControls`
   fetches the model a fresh session *will* run on via **`agentSdkDefaultModel`**
   (`agent:sdkDefaultModel` → `sdkDefaultModel(wsId)` in agent-sdk.ts) and shows it
-  (through `describeLiveModel`). The resolver returns an explicit `ws.model` if set,
-  else **Orchestra's app-wide default `DEFAULT_CHILD_MODEL` (Opus 4.8,
-  `claude-opus-4-8`)** — the SAME value the session-start path pins (the `model`
-  option in `startAgentSdk`: `ws.model || DEFAULT_CHILD_MODEL`). Neither path
-  consults Claude Code's `settings.json` `model` any more: the app default
-  overrides the account default so EVERY workspace instance starts on Opus 4.8
-  unless the user picks otherwise, and the pre-session badge must match what will
+  (through `describeLiveModel`). Both it and the session-start `model` option in
+  `startAgentSdk` call **`resolveLaunchModel(ws.model, store.getModelDefaults())`**
+  (`src/shared/model-defaults.ts`): `ws.model` wins, an absent one (legacy) follows
+  the user's *workspace default model*, and the `default` marker means no pin
+  (account default → `''` placeholder). Neither consults Claude Code's
+  `settings.json`, so the pre-session badge matches what will
   actually run. **Display precedence
   gates on `session.sessionId`** (`effectiveModel` in model-util.ts): a folded
   session's model/permissionMode count only once `session/init` actually landed —

@@ -54,6 +54,13 @@ import {
 } from './bus-runs.ts';
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
+import {
+  ACCOUNT_DEFAULT_MODEL,
+  isValidModelArg,
+  modelForNewWorkspace,
+  resolveLaunchModel,
+  type ModelDefaultKind,
+} from '../shared/model-defaults.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   maybeStartRunAtAnchor,
@@ -444,7 +451,12 @@ export async function ensureRoot() {
   if (!existsSync(ORCHESTRA_ROOT)) await mkdir(ORCHESTRA_ROOT, { recursive: true });
 }
 
-export async function createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
+export async function createWorkspace(
+  input: CreateWorkspaceInput,
+  /** Which default model the workspace takes when `input.model` is absent:
+   *  'spawned' only for `orchestra spawn` by an agent (see dispatchSpawnRequest). */
+  defaultKind: ModelDefaultKind = 'workspace',
+): Promise<Workspace> {
   await ensureRoot();
   // REJECT a falsy repoPath before anything touches git. This is the durable
   // guard for a whole failure class, not defensive noise — `simpleGit('')` does
@@ -523,9 +535,9 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
     // Persist where the agent runs. Absent input → local (field left unset, the
     // default everywhere). Only a sandbox host is recorded explicitly.
     ...(input.host && input.host.kind !== 'local' ? { host: input.host } : {}),
-    // Model pin (spawn --model). Absent = login default, like every
-    // pre-existing workspace record.
-    ...(input.model ? { model: input.model } : {}),
+    // Model pin: the explicit pick, else the default of its kind, FROZEN here so
+    // a later settings change never moves an existing workspace.
+    model: modelForNewWorkspace(input.model, store.getModelDefaults(), defaultKind),
   };
   await store.upsertWorkspace(ws);
   platform.broadcast('workspace:update', ws);
@@ -622,7 +634,8 @@ export function orchestratorBrief(
   'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to report to you (`orchestra send --type status --to <your-id>` on a bus run) on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra read <id>`. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child (`orchestra send` on a bus run) — route it to the owner however small it looks. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
-  'Spawn every child on Opus 4.8: that is the DEFAULT applied when you pass no "model" param, so simply omit it. To override, pass a full wire id (the short alias `opus-4-8` is rejected; `opus` means Opus 5). Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
+  spawnedModelBriefLine(store.getModelDefaults().spawned) +
+  ' Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.'
   );
@@ -1609,26 +1622,22 @@ async function waitForSubmitConfirmed(id: string, timeoutMs: number): Promise<bo
   return false;
 }
 
-/** Orchestra's default model for EVERY workspace instance that has no explicit
- *  `ws.model` — spawned children (via `orchestra spawn` with no `--model`) AND
- *  a workspace's own structured session started from the UI (agent-sdk.ts's
- *  session-start `model` fallback and `sdkDefaultModel`). Opus 4.8 on the user's
- *  instruction (2026-09-10, reaffirmed 2026-09-14 as the app-wide default) — a
- *  deliberate downgrade from the account default (Opus 5), not a staleness
- *  artifact. An explicit pick (dropdown / `--model`) always wins over this.
- *
- *  Must be the FULL wire id: the runtime rejects the short alias `opus-4-8`
- *  with `unrecognized_model`. Opus 4.8 is delisted from `supportedModels()` but
- *  still served under its own identity (measured 2026-09-10, claude 2.1.267) —
- *  if that ever stops, every spawn starts failing at the child's own launch,
- *  because the spawn guard is a charset check and cannot catch a dead model. */
-export const DEFAULT_CHILD_MODEL = 'claude-opus-4-8';
-
 export interface SpawnResult {
   ok: boolean;
   id?: string;
   branch?: string;
   error?: string;
+}
+
+/** The brief's model sentence, from the user's spawned-agent default model
+ *  (a settings value, so never hardcode a model name in the brief). */
+function spawnedModelBriefLine(spawned: string): string {
+  const what =
+    spawned === ACCOUNT_DEFAULT_MODEL ? "the account's default model" : `\`${spawned}\``;
+  return (
+    `Children are spawned on ${what} — the user's spawned-agent default, applied when you pass no "model" param, so simply omit it. ` +
+    'To override, pass a full wire id (short versioned aliases like `opus-4-8` are rejected).'
+  );
 }
 
 /** Handle a spawn request from an agent via the hooks-server socket: create a
@@ -1648,6 +1657,10 @@ export async function dispatchSpawnRequest(
     agent?: 'claude';
     detached?: boolean;
     model?: string;
+    /** Which default model applies with no `model`: 'spawned' when an AGENT
+     *  spawns (`orchestra spawn`), 'workspace' when a human's click reuses this
+     *  path (spawn from a pinned Linear ticket). See CONTEXT.md "Spawned agent". */
+    defaultKind: ModelDefaultKind;
     /** Explicit branch name for the new worktree (see
      * {@link CreateWorkspaceInput.branch}). Omitted → the usual random name.
      * Used when spawning from a pinned Linear ticket, whose branch must lead
@@ -1657,14 +1670,10 @@ export async function dispatchSpawnRequest(
 ): Promise<SpawnResult> {
   const task = input.task.trim();
   if (!task) return { ok: false, error: 'empty task' };
-  // Model pin: passed verbatim to `claude --model` (args array, no shell), so
-  // the only validation needed is a sanity charset/length guard — a typo'd
-  // model errors loudly at the agent's own launch, which is the right place.
-  // No explicit --model → pin the child to DEFAULT_CHILD_MODEL rather than
-  // letting it inherit the login default, so every spawned agent runs the
-  // model the user chose for children.
-  const model = input.model?.trim() || DEFAULT_CHILD_MODEL;
-  if (model && !/^[A-Za-z0-9._:/-]{1,64}$/.test(model)) {
+  // Explicit --model: charset guard only (a typo'd model errors loudly at the
+  // agent's own launch). Absent → createWorkspace pins the default of `defaultKind`.
+  const model = input.model?.trim() || undefined;
+  if (model && !isValidModelArg(model)) {
     return { ok: false, error: `invalid model: ${model.slice(0, 80)}` };
   }
   let repoPath = input.repoPath?.trim() || undefined;
@@ -1704,7 +1713,7 @@ export async function dispatchSpawnRequest(
       parentId: input.detached ? undefined : input.from,
       model,
       branch: input.branch,
-    });
+    }, input.defaultKind);
     await startWorkspaceAgentHeadless(ws.id);
     return { ok: true, id: ws.id, branch: ws.branch };
   } catch (e) {
@@ -4008,10 +4017,10 @@ Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
 - \`--model <model>\` — pin the new agent to a model (an alias like \`haiku\`/
-  \`sonnet\`/\`opus\` or a full model id). **Omitting it pins the child to Opus
-  4.8** (\`claude-opus-4-8\`), the configured default for spawned agents. Note
-  \`opus\` means Opus 5, and the short form \`opus-4-8\` is rejected — override
-  with a full wire id. Do NOT downgrade implementation workers on your own
+  \`sonnet\`/\`opus\` or a full model id). **Omitting it pins the child to the
+  user's spawned-agent default model** (Orchestra's Default models settings).
+  Short versioned forms like \`opus-4-8\` are rejected — override with a full
+  wire id. Do NOT downgrade implementation workers on your own
   initiative to economize — that trade-off is the user's call, not yours.
 - \`--detached\` — create the workspace with NO parent, so it appears as its own
   top-level section grouped under its repo instead of nesting under you.
@@ -5018,7 +5027,8 @@ export async function startAgentPty(
   // Model pin (spawn --model): passed on EVERY launch — fresh and resume — so
   // the pin survives pty restarts instead of silently reverting to the login
   // default. The SDK structured-session path mirrors this via options.model.
-  if (ws.model) claudeArgs.push('--model', ws.model);
+  const launchModel = resolveLaunchModel(ws.model, store.getModelDefaults());
+  if (launchModel) claudeArgs.push('--model', launchModel);
   // Heavy-resume gate: if `claude --continue` is about to reload a large
   // session, Claude Code shows its compaction menu — but a typed task would
   // proceed the FULL resume and drain the usage pool. Flag the workspace so

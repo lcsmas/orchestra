@@ -203,6 +203,8 @@ export async function spawnWorkspaceForTicket(
       model,
       from,
       detached: !from,
+      // An agent's `orchestra ticket --spawn` carries `from`; a human's click does not.
+      defaultKind: from ? 'spawned' : 'workspace',
     });
     if (!res.ok || !res.id) {
       return { ok: false, error: res.error ?? 'failed to spawn workspace for ticket' };

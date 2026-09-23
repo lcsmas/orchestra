@@ -71,3 +71,18 @@ _Avoid_: report, status update, recap
 The human-readable projection of a mission or vague built from the bus;
 not a source of truth.
 _Avoid_: issue, ticket (the GitHub-issue form is one rendering of it)
+
+### Workspaces
+
+**Spawned agent**:
+A workspace created by an agent through `orchestra spawn`. A workspace created
+by a human click is not a spawned agent, even when the click goes through the
+same spawn path (e.g. spawning from a pinned Linear ticket).
+_Avoid_: child (only meaningful under an orchestrator), worker (a fleet role)
+
+**Default model**:
+The model a new workspace is pinned to when nobody names one. There are two:
+the *workspace default model* (human-created workspaces) and the *spawned-agent
+default model*. It is copied onto the workspace at creation, so changing it
+never moves an existing workspace. An explicit pick always wins.
+_Avoid_: account default (that is Claude Code's own fallback, one of the choices)

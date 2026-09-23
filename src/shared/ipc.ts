@@ -1,5 +1,6 @@
 import type { BusSnapshot, BusRunSummary } from './bus-view.ts';
 import type { BusSwitches } from './bus-switches.ts';
+import type { ModelDefaults } from './model-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
@@ -632,6 +633,10 @@ export interface OrchestraAPI {
   verifyLinear: (id: string) => Promise<LinearIssue | null>;
   /** Pinned Linear tickets — the sidebar's Tickets section. */
   listTickets: () => Promise<PinnedTicket[]>;
+  /** The two default models new workspaces are pinned to (CONTEXT.md "Default model"). */
+  modelDefaults: () => Promise<ModelDefaults>;
+  /** Patch the defaults; resolves with the normalized, persisted value. */
+  setModelDefaults: (next: Partial<ModelDefaults>) => Promise<ModelDefaults>;
   /** Re-fetch every pinned ticket from Linear in ONE batched request and
    *  return the refreshed list. Throws if Linear is unreachable / unauthorized,
    *  so the caller can distinguish that from "nothing pinned". */

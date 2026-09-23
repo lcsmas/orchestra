@@ -100,6 +100,7 @@ async function dispatchRpc(
             baseBranch: typeof p.baseBranch === 'string' ? p.baseBranch : undefined,
             task: p.task,
             agent: 'claude',
+            defaultKind: 'spawned',
           }),
         );
       }

@@ -26,6 +26,7 @@ import { store } from './store';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease, isProofOfLifeMessage } from '../shared/session-wedge.ts';
+import { resolveLaunchModel } from '../shared/model-defaults.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 
@@ -43,7 +44,6 @@ import {
   createWorkspace,
   resolveWaveRunId,
   maybeBumpCoordinatorOnReplacement,
-  DEFAULT_CHILD_MODEL,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
 import { forkBranchName } from '../shared/fork-session';
@@ -1738,11 +1738,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
               }
             }) as never,
           }),
-      // Start on the workspace's configured model (set by `orchestra spawn
-      // --model` or the Model dropdown). With no explicit pick, fall back to
-      // Orchestra's app-wide default (Opus 4.8) rather than the account default
-      // — the default for EVERY workspace instance. `sdkSetModel` switches it live.
-      model: ws.model || DEFAULT_CHILD_MODEL,
+      // The workspace's model (frozen at creation / picked in the dropdown);
+      // undefined = account default. Same resolver as the pty path. `sdkSetModel`
+      // switches it live.
+      model: resolveLaunchModel(ws.model, store.getModelDefaults()),
       // Start on the workspace's chosen reasoning effort (the deck bar's Effort
       // slider, persisted like the model). Undefined falls back to the model's
       // own default (`high`). `options.effort` accepts 'max' (unlike the
@@ -2094,28 +2093,14 @@ function restartRecordsForBackfill(ws: Workspace, file: string): RestartRecord[]
   return all.filter((r) => r.sessionId === fileSessionId);
 }
 
-/** The model this workspace's structured session WILL start on when no explicit
- *  `ws.model` is set, so the Model dropdown can show the real value BEFORE the
- *  first turn instead of an opaque "Account default" placeholder. An explicit
- *  `ws.model` (set by `orchestra spawn --model` or the dropdown) always wins and
- *  is returned verbatim.
- *
- *  Otherwise this returns Orchestra's app-wide default, {@link DEFAULT_CHILD_MODEL}
- *  (Opus 4.8) — the SAME value the session-start path pins. That path deliberately
- *  does NOT consult Claude Code's `settings.json` `model`, so neither does this:
- *  reading it would make the picker badge disagree with the model that actually
- *  runs. Invoked when the structured view mounts without a live session. */
+/** The model this workspace's structured session WILL start on, so the Model
+ *  dropdown shows the real value before the first turn. Same resolver as the
+ *  session-start path (never Claude Code's settings.json, or the badge would
+ *  disagree with what runs); '' = account default (placeholder). */
 export function sdkDefaultModel(wsId: string): string {
   const ws = store.getWorkspace(wsId);
   if (!ws) return '';
-  if (ws.model?.trim()) return ws.model.trim();
-
-  // No explicit ws.model → the session-start path (see the `model` option in
-  // startAgentSdk) pins Orchestra's app-wide default (Opus 4.8) and does NOT
-  // consult Claude Code's settings.json. The picker must show the SAME value it
-  // will actually run, so return the app default here too — reading settings.json
-  // would make the badge disagree with the running session.
-  return DEFAULT_CHILD_MODEL;
+  return resolveLaunchModel(ws.model, store.getModelDefaults()) ?? '';
 }
 
 /** Model lists keyed by ACCOUNT config dir + CLI VERSION (availability is an

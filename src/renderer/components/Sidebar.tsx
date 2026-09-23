@@ -31,6 +31,7 @@ import { AgentViewSettings } from './AgentViewSettings';
 import { BusSwitchSettings } from './BusSwitchSettings';
 import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
+import { ModelDefaultsSettings } from './ModelDefaultsSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
 import { UsageBars } from './UsageBars';
@@ -105,6 +106,15 @@ function CiBadge({ checks, onFix }: { checks?: ChecksForBranch; onFix: () => voi
     >
       CI ✗
     </button>
+  );
+}
+
+function ChipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+      <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
+    </svg>
   );
 }
 
@@ -890,6 +900,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [agentViewSettingsOpen, setAgentViewSettingsOpen] = useState(false);
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
+  const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
@@ -1764,6 +1775,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <BellIcon />
           </button>
+          <button
+            className="header-icon-btn"
+            onClick={() => setModelDefaultsOpen(true)}
+            title="Default models — for new workspaces and spawned agents"
+            aria-label="Default model settings"
+          >
+            <ChipIcon />
+          </button>
           {/* Fleet-bus mechanism switches (#118). The SETTINGS write lives here,
               never in the bus pane — the pane is read-only in v1. */}
           <button
@@ -2577,6 +2596,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         )}
         {busSwitchSettingsOpen && (
           <BusSwitchSettings onClose={() => setBusSwitchSettingsOpen(false)} />
+        )}
+        {modelDefaultsOpen && (
+          <ModelDefaultsSettings
+            workspaceId={activeId ?? undefined}
+            onClose={() => setModelDefaultsOpen(false)}
+          />
         )}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}
         {accountsSettingsOpen && (

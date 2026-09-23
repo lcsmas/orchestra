@@ -11,6 +11,7 @@ import {
   sanitizeAccountInherit,
 } from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
+import { normalizeModelDefaults, type ModelDefaults } from '../shared/model-defaults';
 import { scoped } from './logger';
 
 /** Store-scoped logger. Persistence failures are invisible at runtime — every
@@ -64,6 +65,9 @@ interface StoreShape {
    *  row at wave start (src/main/bus-runs.ts), never this field. Absent on
    *  stores predating the feature → every mechanism off. */
   busSwitches?: Partial<Record<string, boolean>>;
+  /** The two default models (workspace / spawned agent), raw —
+   *  shared/model-defaults.ts normalizes. Absent → both at the initial value. */
+  modelDefaults?: Partial<ModelDefaults>;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -414,6 +418,16 @@ class Store {
    *  next run's freeze, never by a run already in flight (#118 T118.2). */
   async setBusSwitches(next: Partial<Record<string, boolean>>): Promise<void> {
     this.data.busSwitches = next;
+    await this.save();
+  }
+
+  /** The default models new workspaces are pinned to, normalized. */
+  getModelDefaults(): ModelDefaults {
+    return normalizeModelDefaults(this.data.modelDefaults);
+  }
+
+  async setModelDefaults(next: ModelDefaults): Promise<void> {
+    this.data.modelDefaults = next;
     await this.save();
   }
 

@@ -161,6 +161,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 // .ts-suffixed relative specifiers for value imports or it dies at runtime with
 // ERR_MODULE_NOT_FOUND — see commit 05adb90.
 import { isScratchLike } from '../shared/types.ts';
+import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import type {
   Account,
   BrowserBounds,
@@ -360,6 +361,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   sendReviewToAgent: 'git:sendReview',
   verifyLinear: 'linear:verify',
   listTickets: 'tickets:list',
+  modelDefaults: 'settings:modelDefaults',
+  setModelDefaults: 'settings:setModelDefaults',
   refreshTickets: 'tickets:refresh',
   removeTicket: 'tickets:remove',
   spawnFromTicket: 'tickets:spawn',
@@ -1309,6 +1312,14 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   listTickets: async () => store.tickets,
+
+  modelDefaults: async () => store.getModelDefaults(),
+
+  // Normalized before persisting; the echo is what the settings modal shows.
+  setModelDefaults: async (next) => {
+    await store.setModelDefaults(normalizeModelDefaults({ ...store.getModelDefaults(), ...next }));
+    return store.getModelDefaults();
+  },
 
   refreshTickets: async () => refreshPinnedTickets(),
 

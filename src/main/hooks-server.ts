@@ -275,6 +275,7 @@ export async function startHooksServer(): Promise<void> {
                   agent: 'claude',
                   detached: msg.detached === true,
                   model: typeof msg.model === 'string' ? msg.model : undefined,
+                  defaultKind: 'spawned',
                 }),
               );
             } else {
