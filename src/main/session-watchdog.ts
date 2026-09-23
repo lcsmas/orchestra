@@ -87,6 +87,7 @@ import {
   sdkGateProbe,
   sdkReleaseStrandedGate,
   sdkStop,
+  sdkMarkAutoRestart,
   sdkWake,
 } from './agent-sdk';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
@@ -187,8 +188,16 @@ const WAKE_PROMPT =
 /** Exported for the R2 rig (`scripts/e2e-session-wedge-redelivery.mjs`), which
  *  drives the REAL recycle against a REAL inbox file to prove each parked
  *  message is delivered EXACTLY ONCE. */
-export async function recycleSession(wsId: string, reason: string): Promise<void> {
+export async function recycleSession(
+  wsId: string,
+  reason: string,
+  trigger: 'watchdog-boot' | 'watchdog-stall' = 'watchdog-stall',
+): Promise<void> {
   log.warn(`session-watchdog: recycling wedged session ${wsId} — ${reason} (issue #90)`);
+  // Visible, not silent: the neutral auto-restart row names why (2026-09-23).
+  await sdkMarkAutoRestart(wsId, trigger).catch((e) =>
+    log.warn(`session-watchdog: could not mark auto-restart for ${wsId}`, e),
+  );
 
   // 1. Tear the wedged session down. This also releases the stranded gate
   //    (sdkStop calls `session.turnGate?.()`) and settles every queued turn as
@@ -550,6 +559,7 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
         ? `boot wedge: opening turn never started (no stream in ${Math.round(decision.stalledForMs / 60_000)}min, ` +
             `${decision.parkedCount} prompt(s) owed a turn) — issue #174`
         : `${decision.parkedCount} parked, no turn start for ${Math.round(decision.stalledForMs / 60_000)}min`,
+      recycleReason === 'boot-wedge' ? 'watchdog-boot' : 'watchdog-stall',
     );
   }
 }

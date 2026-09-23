@@ -20,6 +20,10 @@
 //   boot_init_probe  — control: hooks then system/init → started.
 //   boot_hooks_restart — hooks-only boot wedge → restart takes the 'fresh' path
 //                      and redelivers instead of "interrupt it first".
+//   boot_stall_flag  — hooks-only for >30 s → ws.bootStallSince set (visible).
+//   boot_stall_clears — init lands at 35 s → flag set, then cleared (null).
+//   auto_restart_row — watchdog recycleSession(…,'watchdog-boot') persists an
+//                      auto-restart record and redelivers.
 //
 // Prints one JSON line with `ok`.
 
@@ -28,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'stop_hung';
-const ARMS = ['stop_hung', 'stop_healthy', 'rewind_hung', 'restart_stalled', 'restart_busy', 'boot_hooks_probe', 'boot_init_probe', 'boot_hooks_restart'];
+const ARMS = ['stop_hung', 'stop_healthy', 'rewind_hung', 'restart_stalled', 'restart_busy', 'boot_hooks_probe', 'boot_init_probe', 'boot_hooks_restart', 'boot_stall_flag', 'boot_stall_clears', 'auto_restart_row'];
 if (!ARMS.includes(ARM)) {
   console.error(`unknown arm: ${ARM}`);
   process.exit(2);
@@ -76,6 +80,7 @@ await store.upsertWorkspace({
   status: 'idle',
   createdAt: Date.now(),
   hasInput: true,
+  sdkSessionId: 'rig-session',
 });
 
 const INIT = { type: 'system', subtype: 'init', session_id: 'hung', tools: [], slash_commands: [] };
@@ -104,7 +109,10 @@ sdk.__setQueryFactoryForTests(({ prompt }) => {
       // The field shape: hooks, then (unless a boot wedge) system/init, then silence.
       // A successor query (after a restart) always boots normally.
       for (const h of HOOKS) yield h;
-      if (!bootArm || ARM === 'boot_init_probe' || q > 0) yield INIT;
+      if (ARM === 'boot_stall_clears' && q === 0) {
+        await new Promise((r) => setTimeout(r, 35_000));
+        yield INIT;
+      } else if (!bootArm || ARM === 'boot_init_probe' || q > 0) yield INIT;
       await never();
     },
     interrupt: hung ? never : async () => {},
@@ -143,6 +151,25 @@ if (ARM === 'boot_hooks_probe' || ARM === 'boot_init_probe') {
   await new Promise((res) => setTimeout(res, 500));
   const reDelivered = (yieldedPerQuery[1] ?? []).some((c) => String(c).includes('owed prompt'));
   out = { ...r, queries, reDelivered, ok: r.settled === 'resolved' && queries >= 2 && reDelivered };
+} else if (ARM === 'boot_stall_flag') {
+  const before = store.getWorkspace(WS_ID)?.bootStallSince ?? null;
+  await new Promise((r) => setTimeout(r, 31_000));
+  const after = store.getWorkspace(WS_ID)?.bootStallSince ?? null;
+  out = { before, after, ok: before === null && typeof after === 'number' };
+} else if (ARM === 'boot_stall_clears') {
+  await new Promise((r) => setTimeout(r, 31_000));
+  const mid = store.getWorkspace(WS_ID)?.bootStallSince ?? null;
+  await new Promise((r) => setTimeout(r, 6_000));
+  const after = store.getWorkspace(WS_ID)?.bootStallSince;
+  out = { mid, after: after === undefined ? 'undefined' : after, ok: typeof mid === 'number' && after === null };
+} else if (ARM === 'auto_restart_row') {
+  const wd = await import(`${REPO}/src/main/session-watchdog.ts`);
+  const r = await within(wd.recycleSession(WS_ID, 'rig', 'watchdog-boot'), 30_000);
+  await new Promise((res) => setTimeout(res, 500));
+  const recs = store.getWorkspace(WS_ID)?.sdkRestarts ?? [];
+  const last = recs[recs.length - 1]?.trigger ?? null;
+  const reDelivered = (yieldedPerQuery[1] ?? []).some((c) => String(c).includes('owed prompt'));
+  out = { ...r, last, queries, reDelivered, ok: r.settled === 'resolved' && last === 'watchdog-boot' && reDelivered };
 } else if (ARM === 'stop_hung' || ARM === 'stop_healthy') {
   const r = await within(sdk.sdkStop(WS_ID), 15_000);
   out = { ...r, ms: Date.now() - t0, ok: r.settled === 'resolved' && !sdk.sdkHasSession(WS_ID) };

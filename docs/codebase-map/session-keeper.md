@@ -72,6 +72,14 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   `firstMessageSeen` only via `isProofOfLifeMessage` (`session-wedge.ts`) —
   counting hooks made the #174/#180 boot-wedge heal and #179 'fresh' restart
   unreachable in the field.
+- **Network trouble is visible, not silent**: a sent turn with no proof of life
+  for `BOOT_STALL_NOTICE_MS` (30 s) sets `Workspace.bootStallSince` (cleared with
+  `null` on proof of life / teardown / store load) → `BootStallRow` above the
+  composer (timer + Relancer) and `BootStallBadge` in the sidebar
+  (`components/BootStall*.tsx`, copy in `shared/boot-stall.ts`). Watchdog
+  recycles record `watchdog-boot`/`watchdog-stall` restarts (auto-restart row);
+  the first `api_retry` of a sequence leaves a persistent warning notice.
+  Pixels: `pnpm run test:network-visibility-shot` (needs RIG_WAYLAND).
 - **Explicit stops genuinely kill**: `sdkStop`'s live path rides the graceful
   close (interrupt → stdin EOF → keeper escalation — preserves the CLI's
   transcript flush); its NO-SESSION path calls `killKeeper(wsId)` — critical

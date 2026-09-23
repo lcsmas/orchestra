@@ -146,6 +146,11 @@ class Store {
         ws.status = 'idle';
         mutated = true;
       }
+      // A boot-stall flag describes a live session of the previous app run.
+      if (ws.bootStallSince != null) {
+        ws.bootStallSince = null;
+        mutated = true;
+      }
       // A restored `waiting` was written by a build where `waiting` meant BOTH
       // "blocked on you" and "finished, unseen". The process behind it is gone,
       // so the question it may have been asking can never be answered — resolve

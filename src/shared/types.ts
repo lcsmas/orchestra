@@ -264,6 +264,11 @@ export interface Workspace {
    * without a timestamp, a stale "wiring the tests" from yesterday reads as
    * live progress. Absent whenever `statusText` is absent. */
   statusTextAt?: number;
+  /** Epoch ms since which a sent turn has had NO proof of life from the CLI
+   *  (set after {@link BOOT_STALL_NOTICE_MS}); `null`/absent = not stalled.
+   *  Drives the live "la CLI ne répond pas" row + sidebar badge. Cleared with
+   *  `null` (the renderer merges updates, so an absent key cannot unset it). */
+  bootStallSince?: number | null;
   /** Why this workspace's LAST turn ended, when it ended for a reason the human
    * needs to know about — `max_turns` (ONE turn hit the per-turn step cap;
    * the cap resets each user turn, so the session is NOT spent — MEASURED
@@ -1171,7 +1176,7 @@ export interface AgentMcpServersEvent extends AgentEventBase {
  *   - `cli`      — `orchestra restart <id>` (issue #111).
  *   - `toolbar`  — the structured view's Restart button.
  *   - `reparent` — the #142 conversation-preserving re-parent restart. */
-export type RestartTrigger = 'cli' | 'toolbar' | 'reparent';
+export type RestartTrigger = 'cli' | 'toolbar' | 'reparent' | 'watchdog-boot' | 'watchdog-stall';
 
 /** A persisted record of one intentional restart, kept on the workspace
  *  ({@link Workspace.sdkRestarts}) so a REOPENED pane can rebuild the same

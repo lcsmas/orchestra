@@ -42,6 +42,7 @@ import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
 import { QueueTray } from './agent/QueueTray';
+import { BootStallRow } from './BootStall';
 import { InboxTray } from './agent/InboxTray';
 import { AskRow } from './agent/AskRow';
 import type { HumanGateView } from '../../shared/human-gates';
@@ -1788,6 +1789,8 @@ function Composer({
           void window.orchestra.resolveHumanGate(gateId, resolution)
         }
       />
+      {/* Sent turn, no proof of life from the CLI (2026-09-23): visible, not silent. */}
+      <BootStallRow workspaceId={workspaceId} />
       {/* Peer messages parked on disk while this workspace was unreachable
           (issue #64). Above the queue because they arrived BEFORE anything the
           user has queued, so the strip reads oldest-first top-down. */}

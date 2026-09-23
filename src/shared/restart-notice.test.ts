@@ -170,3 +170,13 @@ test('live and backfill rows are equal by construction (same builder)', () => {
   assert.equal(liveRow!.restartTrigger, backfillRow!.restartTrigger);
   assert.equal(liveRow!.text, backfillRow!.text);
 });
+
+test('makeRestartNotice: watchdog triggers get the AUTOMATIC headline and a reason label', async () => {
+  const m = await import('./restart-notice.ts');
+  const c = { seq: 0, now: () => 1_000 };
+  assert.equal(m.makeRestartNotice(c, 'watchdog-boot').text, 'Session relancée automatiquement — conversation préservée');
+  assert.equal(m.makeRestartNotice(c, 'watchdog-stall').text, 'Session relancée automatiquement — conversation préservée');
+  assert.equal(m.makeRestartNotice(c, 'toolbar').text, 'Session redémarrée — conversation préservée');
+  assert.match(m.restartTriggerLabel('watchdog-boot'), /pas démarré en 3 min/);
+  assert.match(m.restartTriggerLabel('watchdog-stall'), /10 min/);
+});

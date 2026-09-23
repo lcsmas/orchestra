@@ -2606,3 +2606,36 @@ test('fold: session/rewind drops parked prompts that can never run', () => {
   const s1 = foldEvent(s0, stamp(c, { type: 'session/rewind', rewindId: 'uuid-1' }));
   assert.deepEqual(s1.queuedPrompts, [], 'the session died — nothing parked can be delivered');
 });
+
+// ─── api_retry: first retry leaves a PERSISTENT row (2026-09-23) ─────────────
+
+test('normalize: first api_retry with no_response → persistent warning notice naming the wait', () => {
+  // Shape captured from CLI 2.1.280 during the metarepo stall repro.
+  const evs = normalizeSdkMessage(
+    {
+      type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 1, retry_delay_ms: 557,
+      error_status: null, error: 'unknown', no_response: { waited_ms: 188000, retry_wait_ms: 599000 },
+    } as SdkMessage,
+    ctx(),
+  );
+  assert.deepEqual(evs.map((e) => e.type), ['session/status', 'notice']);
+  const n = evs[1] as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(n.kind, 'warning');
+  assert.equal(n.text, 'API sans réponse depuis 3 min 08 — nouvelle tentative (réseau probable)');
+});
+
+test('normalize: later api_retry attempts only update the status line (no row spam)', () => {
+  const evs = normalizeSdkMessage(
+    { type: 'system', subtype: 'api_retry', attempt: 3, max_retries: 10, retry_delay_ms: 8000, error_status: 529 } as SdkMessage,
+    ctx(),
+  );
+  assert.deepEqual(evs.map((e) => e.type), ['session/status']);
+});
+
+test('normalize: first api_retry with an HTTP status → "Erreur API <status>" row', () => {
+  const evs = normalizeSdkMessage(
+    { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 4000, error_status: 500 } as SdkMessage,
+    ctx(),
+  );
+  assert.equal((evs[1] as Extract<AgentEvent, { type: 'notice' }>).text, 'Erreur API 500 — nouvelle tentative');
+});

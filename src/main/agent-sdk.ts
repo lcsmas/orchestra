@@ -438,6 +438,39 @@ interface Session {
    *  UNSET → the error box still renders). Carries the trigger so the row's
    *  detail names the producer. */
   restartRequested?: RestartTrigger;
+  /** Pending boot-stall check armed with the opening turn (see scheduleBootStallCheck). */
+  bootStallTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** Silence after a turn is armed, with no proof of life, before the workspace
+ *  shows "la CLI ne répond pas" (a healthy metarepo boot is ~3 s, p90 ~10 s). */
+export const BOOT_STALL_NOTICE_MS = 30_000;
+
+function scheduleBootStallCheck(session: Session, armedAt: number): void {
+  if (session.bootStallTimer) clearTimeout(session.bootStallTimer);
+  session.bootStallTimer = setTimeout(() => {
+    session.bootStallTimer = undefined;
+    if (sessions.get(session.wsId) !== session || session.stopping) return;
+    if (session.firstMessageSeen || session.turnGate === null) return;
+    log.warn(`agent-sdk: ${session.wsId} — no proof of life ${BOOT_STALL_NOTICE_MS / 1000}s after the turn was sent`);
+    void persistWorkspacePatch(session.wsId, { bootStallSince: armedAt });
+  }, BOOT_STALL_NOTICE_MS);
+  session.bootStallTimer.unref?.();
+}
+
+/** Drop the boot-stall timer and, if the flag is up, clear it (proof of life
+ *  arrived, or the session is going away). */
+function clearBootStall(session: Session): void {
+  if (session.bootStallTimer) {
+    clearTimeout(session.bootStallTimer);
+    session.bootStallTimer = undefined;
+  }
+  // A late-unwinding predecessor must not clear its successor's flag.
+  const owner = sessions.get(session.wsId);
+  if (owner && owner !== session) return;
+  if (store.getWorkspace(session.wsId)?.bootStallSince != null) {
+    void persistWorkspacePatch(session.wsId, { bootStallSince: null });
+  }
 }
 
 const sessions = new Map<string, Session>();
@@ -1158,6 +1191,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // healthy turn that reused the slot.
     session.gateTurnUuid = msg.uuid ?? null;
     session.lastStreamAt = Date.now();
+    if (!session.firstMessageSeen) scheduleBootStallCheck(session, session.lastStreamAt);
     // This entry is now genuinely the session's turn — tell anyone who is
     // holding a delivery receipt for it (issue #57 fault b). Settled BEFORE the
     // yield: the yield hands control to the SDK and does not return until the
@@ -1210,7 +1244,10 @@ async function consume(session: Session): Promise<void> {
       // the SAME point as the progress stamp, because "a message arrived" is
       // exactly what both facts record. SessionStart hook events precede init,
       // so they are NOT proof of life (isProofOfLifeMessage).
-      if (isProofOfLifeMessage(msg)) session.firstMessageSeen = true;
+      if (!session.firstMessageSeen && isProofOfLifeMessage(msg)) {
+        session.firstMessageSeen = true;
+        clearBootStall(session);
+      }
       emitFrom(session, msg);
       // Persist the SDK session id the first time the stream reports it, so
       // re-opening the structured view resumes THIS conversation (see the
@@ -1364,6 +1401,7 @@ async function consume(session: Session): Promise<void> {
       }
     }
   } finally {
+    clearBootStall(session);
     // ── Close the ledger BEFORE dropping the session (silent-failure audit
     // H1/H2). Without this, an iterator that ends mid-turn (subprocess died,
     // worker shutdown, kill) left the folded view `running` forever — elapsed
@@ -4590,6 +4628,18 @@ export async function sdkRestart(
   await ensureSession(wsId);
 }
 
+/** Mark an AUTOMATIC (watchdog) restart before its teardown, so the dying
+ *  session renders the neutral "relancée automatiquement" row instead of a red
+ *  exit box, and a reopened pane rebuilds it from the persisted record. */
+export async function sdkMarkAutoRestart(wsId: string, trigger: RestartTrigger): Promise<void> {
+  const live = sessions.get(wsId);
+  if (live) {
+    live.restartRequested = trigger;
+    live.interruptRequested = false;
+  }
+  await recordRestart(wsId, trigger);
+}
+
 /** Max intentional-restart records kept on a workspace (oldest dropped). A pane
  *  restarted many times over a long conversation would otherwise grow the store
  *  record unbounded; the backfill only needs the ones still in the visible
@@ -4923,6 +4973,7 @@ export async function sdkStop(wsId: string): Promise<void> {
     return;
   }
   session.stopping = true;
+  clearBootStall(session);
   // Anything still queued when the session is torn down will never run, so any
   // sender holding a delivery receipt for it is told now (issue #57 fault b).
   // Done here as well as in consume()'s finally because an explicit stop can

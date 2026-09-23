@@ -182,6 +182,8 @@ export interface SdkMessage {
   max_retries?: number;
   retry_delay_ms?: number;
   error_status?: number | null;
+  /** CLI no-response watchdog: the request got no bytes for `waited_ms`. */
+  no_response?: { waited_ms?: number; retry_wait_ms?: number };
   // system/compact_boundary:
   compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
   // system/local_command_output + informational + refusal messages:
@@ -845,7 +847,13 @@ function normalizeSystemNotice(ctx: NormalizeContext, msg: SdkMessage): AgentEve
       const status = msg.error_status != null ? `API ${msg.error_status}` : 'Connection error';
       const delay = typeof msg.retry_delay_ms === 'number' ? ` in ${Math.max(1, Math.round(msg.retry_delay_ms / 1000))}s` : '';
       const nth = msg.attempt != null && msg.max_retries != null ? ` (${msg.attempt}/${msg.max_retries})` : '';
-      return [stamp(ctx, { type: 'session/status', status: `${status} — retrying${delay}${nth}` })];
+      const out: AgentEvent[] = [stamp(ctx, { type: 'session/status', status: `${status} — retrying${delay}${nth}` })];
+      // Visible, not silent (2026-09-23): the FIRST retry of a sequence also
+      // leaves a persistent row; later attempts only update the status line.
+      if (msg.attempt == null || msg.attempt <= 1) {
+        out.push(stamp(ctx, { type: 'notice', kind: 'warning', text: apiRetryNoticeText(msg.error_status, msg.no_response?.waited_ms) }));
+      }
+      return out;
     }
 
     case 'compact_boundary': {
@@ -2097,4 +2105,15 @@ export function clearPendingAnswerable(
     return session;
   }
   return { ...session, pendingAnswerables, pendingPermissions };
+}
+
+/** Persistent-row copy for a CLI `system/api_retry` (network trouble made visible). */
+export function apiRetryNoticeText(errorStatus: number | null | undefined, waitedMs: number | undefined): string {
+  if (typeof waitedMs === 'number' && waitedMs > 0) {
+    const s = Math.round(waitedMs / 1000);
+    const dur = s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')}` : `${s} s`;
+    return `API sans réponse depuis ${dur} — nouvelle tentative (réseau probable)`;
+  }
+  if (errorStatus != null) return `Erreur API ${errorStatus} — nouvelle tentative`;
+  return 'Erreur de connexion à l\'API — nouvelle tentative';
 }

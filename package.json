@@ -42,6 +42,7 @@
     "test:human-gates-shot": "node scripts/human-gates-screenshot.mjs",
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:hung-cli": "bash scripts/e2e-hung-cli-teardown.sh",
+    "test:network-visibility-shot": "node scripts/network-visibility-screenshot.mjs",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "test:cli-pipe": "pnpm run build:cli && node scripts/verify-verify-landed-exit.mjs && node scripts/verify-cli-pipe-flush.mjs",
     "test:bus-wake-e2e": "scripts/verify-bus-wake-e2e.sh",

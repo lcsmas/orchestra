@@ -3590,3 +3590,26 @@ h6.av-md-h {
   grid-column: 3; color: var(--av-text-dim); font-size: var(--av-fs-small);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ── Boot stall row (2026-09-23) — sent turn, no proof of life from the CLI.
+   Same amber "needs attention" register as the ask row; docked above input. */
+.av-boot-stall {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px; padding: 9px 12px;
+  background: color-mix(in srgb, var(--av-warn) 7%, var(--av-surface-sunken));
+  border: 1px solid color-mix(in srgb, var(--av-warn) 40%, transparent);
+  border-left: 3px solid var(--av-warn);
+  border-radius: var(--av-radius-lg, 10px);
+}
+.av-boot-stall-icon { flex: none; color: var(--av-warn); font-size: 14px; }
+.av-boot-stall-text { flex: 1; min-width: 0; }
+.av-boot-stall-title { font-size: 13px; font-weight: 600; color: var(--av-text); font-variant-numeric: tabular-nums; }
+.av-boot-stall-detail { font-size: var(--av-fs-small); color: var(--av-text-faint); margin-top: 2px; }
+.av-boot-stall-restart {
+  flex: none; padding: 5px 12px;
+  font: inherit; font-size: 12px; font-weight: 600;
+  border-radius: 8px; cursor: pointer;
+  color: var(--av-assistant-ink); background: var(--av-warn); border: 1px solid var(--av-warn);
+}
+.av-boot-stall-restart:disabled { opacity: 0.5; cursor: default; }
+.av-boot-stall-restart:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }

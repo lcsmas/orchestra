@@ -43,6 +43,14 @@ export type { RestartTrigger, RestartRecord } from './types.ts';
  *  screenshot gate assert the same literal. */
 export const RESTART_NOTICE_TEXT = 'Session redémarrée — conversation préservée';
 
+/** Headline for an AUTOMATIC (watchdog) restart — distinct so a self-heal is
+ *  never mistaken for a user action. */
+export const AUTO_RESTART_NOTICE_TEXT = 'Session relancée automatiquement — conversation préservée';
+
+export function isAutoRestartTrigger(trigger: RestartTrigger): boolean {
+  return trigger === 'watchdog-boot' || trigger === 'watchdog-stall';
+}
+
 /** Human-readable label for the trigger, shown in the expandable detail. */
 export function restartTriggerLabel(trigger: RestartTrigger): string {
   switch (trigger) {
@@ -52,6 +60,10 @@ export function restartTriggerLabel(trigger: RestartTrigger): string {
       return 'Redémarrage via le bouton Restart';
     case 'reparent':
       return 'Redémarrage après re-parentage (#142)';
+    case 'watchdog-boot':
+      return "La CLI n'avait pas démarré en 3 min (connexion à l'API sans réponse probable)";
+    case 'watchdog-stall':
+      return 'Aucune activité depuis 10 min alors que des messages attendaient';
     default: {
       // Exhaustiveness: an unknown trigger still renders a sane detail rather
       // than throwing on a value a future producer might add.
@@ -130,7 +142,7 @@ export function makeRestartNotice(
   const ev = stamp(ctx, {
     type: 'notice' as const,
     kind: 'restarted' as const,
-    text: RESTART_NOTICE_TEXT,
+    text: isAutoRestartTrigger(trigger) ? AUTO_RESTART_NOTICE_TEXT : RESTART_NOTICE_TEXT,
     restartTrigger: trigger,
   });
   return at !== undefined ? { ...ev, at } : ev;
