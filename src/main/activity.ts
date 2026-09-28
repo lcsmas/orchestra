@@ -975,6 +975,15 @@ export function applyAgentEvent(
    *  with the exact in-flight call it ended, so a hung parallel sibling is not
    *  cleared by a fast call's posttool (review-127 F1). */
   toolUseId?: string | null,
+  /** #199 (review-199 F1): for a `submit`, TRUE when this submit is NOT a genuine
+   *  new turn boundary — it is a PARKED prompt queued behind a running turn (SDK
+   *  `sdkSend` with `ev.queued`), or a keeper REATTACH to a turn already in flight
+   *  (`session/attach`). In those cases the CURRENT turn (and its live tool calls)
+   *  continues, so the turn-start clear MUST NOT run or it would wipe a live tool
+   *  of the running turn and mask a genuine mid-call hang (#108 Q16). The terminal/
+   *  spool path never queues a submit (UserPromptSubmit fires at a real prompt
+   *  submission), so it leaves this undefined → a real boundary → clears. */
+  queuedSubmit?: boolean,
 ): void {
   alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
   // Every lifecycle event — from either agent path — is "this workspace did
@@ -989,14 +998,21 @@ export function applyAgentEvent(
       // and the model is generating before any tool runs. That window is also
       // event-free, so label it rather than clearing.
       emitTool(id, THINKING_TOOL_LABEL);
-      // Liveness v2 (#199): a NEW turn is starting — every tool call still in the
-      // in-flight list belongs to a PRIOR turn and is a phantom (a call cannot
-      // span a turn boundary; a new submit only arrives once the last turn ended).
-      // Clearing here catches a DROPPED posttool/stop that the turn-end arms
-      // missed, before its stale entry blows the tool ceiling and false-escalates
-      // as "hung mid-call". A genuinely hung turn never reaches a new submit, so
-      // the ceiling still catches it (#108 Q16 preserved).
-      clearInFlightTools(id);
+      // Liveness v2 (#199): a GENUINE new turn is starting — every tool call still
+      // in the in-flight list belongs to a PRIOR turn and is a phantom (a call
+      // cannot span a turn boundary; the first event of a turn is this submit, so
+      // no current-turn tool exists yet). Clearing here catches a DROPPED
+      // posttool/stop that the turn-end arms missed, before its stale entry blows
+      // the tool ceiling and false-escalates as "hung mid-call".
+      //
+      // review-199 F1: this clear runs ONLY for a REAL turn boundary
+      // (`!queuedSubmit`). A PARKED prompt (SDK send queued behind a running turn)
+      // and a keeper REATTACH (`session/attach`, turn still in flight) both drive a
+      // `submit` MID-turn — the current turn and its live tools continue, so
+      // clearing would wipe a live tool of the running turn and mask a genuine
+      // mid-call hang (#108 Q16). The terminal/spool path never queues a submit, so
+      // it leaves `queuedSubmit` undefined → a real boundary → clears.
+      if (!queuedSubmit) clearInFlightTools(id);
       // `null` clears any stop-reason marker (#69): the agent is taking a turn,
       // so whatever ended the LAST one is no longer the workspace's state. Done
       // on the running transition rather than on the next turn-end so the badge

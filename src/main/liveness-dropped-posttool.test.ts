@@ -51,25 +51,30 @@ import {
 
 const WS = 'ws-199-dropped-posttool';
 
-/** One spool line, in the shape activity.ts's `applyAgentEvent` consumes. */
+/** One spool line, in the shape activity.ts's `applyAgentEvent` consumes.
+ *  `queued` (a submit only) mirrors `queuedSubmit`: TRUE for a PARKED prompt /
+ *  keeper reattach (a mid-turn submit, NOT a boundary). */
 interface SpoolEvent {
   event: 'submit' | 'pretool' | 'posttool' | 'stop';
   tool?: string | null;
   toolUseId?: string | null;
+  queued?: boolean;
 }
 
 /** Faithful model of the ONLY tracker calls each activity.ts switch arm makes
  *  (mirrors src/main/activity.ts lines behind each `case`). `submitClears` is the
- *  ONE clause under test: the FIX makes `submit` clear the list; PRE-FIX it did
- *  not. Everything else is identical in both arms, so the arms differ only in the
- *  fix clause — the must-FAIL comparison is exact. */
+ *  ONE clause under test: the FIX makes a REAL-boundary `submit` clear the list;
+ *  PRE-FIX (master) it did not. The `submit` arm mirrors the shipped guard
+ *  `if (!queuedSubmit) clearInFlightTools(id)` — a QUEUED submit (parked / reattach)
+ *  never clears, even under the fix (review-199 F1). Everything else is identical
+ *  in both arms, so the arms differ only in the fix clause. */
 function applySpool(ws: string, events: readonly SpoolEvent[], submitClears: boolean): void {
   for (const ev of events) {
     switch (ev.event) {
       case 'submit':
         // activity.ts `case 'submit'`: emitTool(THINKING) + setStatus(running) +
-        // [FIX #199] clearInFlightTools(id).
-        if (submitClears) clearInFlightTools(ws);
+        // [FIX #199] `if (!queuedSubmit) clearInFlightTools(id)`.
+        if (submitClears && ev.queued !== true) clearInFlightTools(ws);
         break;
       case 'pretool':
         // activity.ts `case 'pretool'`: noteToolStart(id, tool, toolUseId).
@@ -196,6 +201,54 @@ test('#199 the fix does NOT break a GENUINELY hung mid-call (the #108 Q16 case)'
   reset();
 });
 
+test('#199 review-199 F1: a MID-TURN (queued) submit must NOT clear a live tool', () => {
+  // THE blocking finding. Turn A is running a Bash that HANGS; then a PARKED prompt
+  // (SDK send queued behind the running turn) or a keeper REATTACH drives a submit
+  // MID-turn (queuedSubmit=true). The blanket clear (the first #199 cut) wiped the
+  // live Bash here → decideEscalation returned skip → the genuine hang the ceiling
+  // SHOULD catch never escalated. The fix gates the clear on `!queuedSubmit`, so a
+  // queued submit leaves the running turn's tool in place and it STILL escalates.
+  const now = Date.now();
+  const midTurnSpool: SpoolEvent[] = [
+    { event: 'submit' }, // turn A begins (a real boundary)
+    { event: 'pretool', tool: 'Bash', toolUseId: 'toolu_bash_live' }, // Bash starts and HANGS
+    { event: 'submit', queued: true }, // a PARKED prompt / reattach — mid-turn, NOT a boundary
+    // <-- turn A still running; its Bash is live, not a phantom
+  ];
+
+  // The FIX arm (submitClears=true): the queued submit must NOT clear the live Bash.
+  reset();
+  applySpool(WS, midTurnSpool, /* submitClears */ true);
+  const list = getInFlightTools(WS);
+  assert.equal(list.length, 1, 'FIX: a queued (mid-turn) submit leaves the running turn\'s tool in flight');
+  assert.equal(list[0].tool, 'Bash');
+  const member: MemberLivenessState = {
+    ...memberFrom(WS, now),
+    inFlightTools: [{ tool: 'Bash', startedAt: now - CEILING_AGO }],
+  };
+  const action = decideEscalation(member, undefined, now, true);
+  assert.equal(
+    action.kind,
+    'escalate',
+    'FIX must-PASS: a genuinely hung Bash STILL escalates through a mid-turn submit (#108 Q16)',
+  );
+  assert.equal(action.kind === 'escalate' && action.hungTool, 'Bash');
+
+  // CONTRAST — the BROKEN (blanket-clear) behaviour: had the queued submit cleared,
+  // the live Bash would vanish and the genuine hang go undetected. Model the blanket
+  // clear (ignore `queued`) and show it masks the escalation — this is what the fix
+  // prevents (asserts the guard is load-bearing, not decorative).
+  reset();
+  for (const ev of midTurnSpool) {
+    if (ev.event === 'submit') clearInFlightTools(WS); // BLANKET clear (ignores queued)
+    else if (ev.event === 'pretool') noteToolStart(WS, ev.tool ?? null, ev.toolUseId ?? null);
+  }
+  assert.equal(getInFlightTools(WS).length, 0, 'BLANKET clear wipes the live Bash — the review-199 F1 bug');
+  const maskedAction = decideEscalation(memberFrom(WS, now), undefined, now, true);
+  assert.equal(maskedAction.kind, 'skip', 'BLANKET clear masks the genuine hang — the defect the fix removes');
+  reset();
+});
+
 test('#199 a healthy turn (posttool arrives) never strands — the negative control', () => {
   // Proves the must-FAIL arm above is not vacuous: when the posttool DOES arrive,
   // the Bash clears WITHOUT needing the turn-start clause, so this passes even on
@@ -258,9 +311,10 @@ function caseArm(code: string, name: string): string {
   return body;
 }
 
-test('#199 source: the submit arm CLEARS in-flight tools (must-FAIL on master)', () => {
+test('#199 source: the submit arm clears in-flight tools GATED on !queuedSubmit (must-FAIL on master)', () => {
   const code = codeOf(ACTIVITY);
   const submitArm = caseArm(code, 'submit');
+  // The clear must be present (master has none → reddens there) …
   assert.match(
     submitArm,
     /clearInFlightTools\(\s*id\s*\)/,
@@ -268,6 +322,26 @@ test('#199 source: the submit arm CLEARS in-flight tools (must-FAIL on master)',
       "phantoms (#199). On master this arm has no such call, so the dropped-" +
       "posttool Bash strands across the turn and false-escalates as 'hung mid-call'.",
   );
+  // … AND it must be GUARDED by `!queuedSubmit` (review-199 F1): a blanket clear
+  // wipes a live tool of a still-running turn on a PARKED/reattach mid-turn submit
+  // and masks a genuine hang. Pin the guard so the blanket form cannot return.
+  assert.match(
+    submitArm,
+    /if\s*\(\s*!queuedSubmit\s*\)\s*clearInFlightTools\(\s*id\s*\)/,
+    'the submit-arm clear must be gated on !queuedSubmit (review-199 F1) — a ' +
+      'queued (parked/reattach) submit is mid-turn and must not wipe a live tool.',
+  );
+});
+
+test('#199 source: applyAgentEvent declares the queuedSubmit parameter', () => {
+  const code = codeOf(ACTIVITY);
+  const start = code.indexOf('export function applyAgentEvent(');
+  assert.notEqual(start, -1, 'applyAgentEvent() not found — was it renamed?');
+  const end = code.indexOf('): void {', start);
+  assert.notEqual(end, -1, 'applyAgentEvent signature has no `): void {` — slice would be wrong');
+  const sig = code.slice(start, end);
+  assert.match(sig, /toolUseId\?:\s*string\s*\|\s*null/, 'positive control: the sliced text is applyAgentEvent\'s params');
+  assert.match(sig, /queuedSubmit\?:\s*boolean/, 'applyAgentEvent must take the #199 queuedSubmit flag');
 });
 
 test('#199 source: turn-END arms still clear too (regression guard, not replaced)', () => {
@@ -281,4 +355,26 @@ test('#199 source: turn-END arms still clear too (regression guard, not replaced
       `case '${arm}' must still clear in-flight tools at turn end`,
     );
   }
+});
+
+test('#199 source: driveStatusFromEvent computes queuedSubmit and PASSES it to applyAgentEvent', () => {
+  // The producer wiring: without this the parameter exists but is fed `undefined`
+  // for every SDK submit — a parked/reattach submit would fall through to the
+  // real-boundary branch and wipe a live tool (review-199 F1 re-opened). Pin that
+  // driveStatusFromEvent both DERIVES queuedSubmit (from ev.queued / session-attach)
+  // and passes it as applyAgentEvent's last argument (the turn-start-stamp R3
+  // lesson: a value can be computed and then dropped on the way through).
+  const SDK = path.join(process.cwd(), 'src', 'main', 'agent-sdk.ts');
+  const code = codeOf(SDK);
+  const fnIdx = code.indexOf('function driveStatusFromEvent(');
+  assert.notEqual(fnIdx, -1, 'driveStatusFromEvent not found — was it renamed?');
+  // Slice from the fn to the applyAgentEvent call it makes.
+  const applyIdx = code.indexOf('applyAgentEvent(', fnIdx);
+  assert.notEqual(applyIdx, -1, 'driveStatusFromEvent no longer calls applyAgentEvent');
+  const body = code.slice(fnIdx, code.indexOf(');', applyIdx) + 2);
+  assert.match(body, /const\s+queuedSubmit\s*=/, 'driveStatusFromEvent must derive queuedSubmit');
+  assert.match(body, /ev\.queued/, 'queuedSubmit must read ev.queued (the parked-prompt marker)');
+  // The call must pass queuedSubmit as an argument (not silently drop it).
+  const call = code.slice(applyIdx, code.indexOf(');', applyIdx));
+  assert.match(call, /queuedSubmit/, 'applyAgentEvent call must pass queuedSubmit through');
 });
