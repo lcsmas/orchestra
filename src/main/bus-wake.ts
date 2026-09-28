@@ -39,6 +39,7 @@ import {
   openGatesForRecipientInRuns,
   ownRunRecipientSql,
   relatedRunRecipientSql,
+  coordinatorGeneration,
   type BusDb,
 } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
@@ -494,6 +495,16 @@ export function readPendingReaders(
       pendingRunId: pendingThroughSeq > 0 ? mailRunId : undefined,
       pendingRunIds: pendingThroughSeq > 0 ? pendingRunIds : undefined,
       switchRunId: pendingThroughSeq > 0 ? switchRunId : undefined,
+      // #200: the reader's ANCHOR-run coordinator generation this sweep. `runId` is
+      // the reader's wave anchor (resolveWaveRunId = nearest orchestrator), so for a
+      // member this IS its OPS run. A coordinator restart bumps that run's generation
+      // (#128/#166); comparing it against the ledger entry's recorded generation lets
+      // `decideWake` re-arm a stale latch inherited across a SESSION restart — for
+      // the restarting coordinator AND every member latched in that run (F1: benign,
+      // once per reader per restart). Read for the anchor run (`runId`), never the
+      // mail run. An unknown run reads 0 (never throws), the coexistence-safe floor:
+      // 0 never advances past a recorded 0, so no re-arm.
+      readerRunGeneration: coordinatorGeneration(db, runId),
     });
   }
   return out;
@@ -782,6 +793,11 @@ export async function sweepBusWake(): Promise<void> {
         // stamped this action with the `now` it decided at, so the bound counts
         // from the moment of THIS wake and resets on every re-fire.
         lastWakeAt: action.lastWakeAt,
+        // #200: the reader's own-run coordinator generation at this wake. A later
+        // sweep re-arms this entry when the generation has advanced (a coordinator
+        // restart). Reset on every fire/count (decideWake carries the CURRENT
+        // generation forward), so the re-arm fires exactly once per restart.
+        wokeGeneration: action.wokeGeneration,
       };
       if (action.kind === 'count') {
         // A count arms ONLY the count ledger (dedup counts vs counts), never the
