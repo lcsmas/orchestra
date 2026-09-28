@@ -235,6 +235,7 @@ import {
   stopSessionWatchdog,
   setBootWedgeRunResolver,
 } from './session-watchdog';
+import { startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -470,6 +471,14 @@ async function createMainWindow() {
       // liveness/wake rosters: `resolveWaveRunId` lives behind the platform seam.
       setBootWedgeRunResolver(resolveWaveRunId);
       startSessionWatchdog();
+      // Always-on resource monitor + reaper (#198 T8): samples /proc every 60s
+      // into <ORCHESTRA_HOME>/logs/resources.jsonl and reaps a session tree whose
+      // workspace was deleted (a leak the delete path leaves behind — #124 D3 is
+      // the fix, this is the safety net). Started AFTER store.load() (in
+      // createMainWindow) so its reaper — which treats absence-from-store as
+      // proof-of-deletion — never runs against an unloaded store; decideReap
+      // additionally refuses unless `store.loadedFromDisk`.
+      startResourceMonitor();
     });
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
@@ -875,6 +884,7 @@ function shutdownSubsystems(): void {
   stopInboxWatcher();
   stopHumanGatesWatcher();
   stopSessionWatchdog();
+  stopResourceMonitor();
   stopSelfTuneScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();

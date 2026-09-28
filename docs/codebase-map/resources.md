@@ -14,6 +14,57 @@ no IPC at all — it renders the store slices the existing account pollers keep
 fresh (`accountUsage` / `globalUsage` / `workspaceAccounts`, see
 [accounts-usage.md](accounts-usage.md)).
 
+## Always-on monitor + reaper — resource-monitor.ts (issue #198 T8)
+
+Separate from the pull-only page above: an **always-on MAIN-process sampler**
+that ticks every **60s regardless of whether any window is open** (the laptop
+overheats the longer Orchestra runs — the page can't watch what a closed page
+never polls). Files: `src/shared/resource-monitor.ts` (pure decision + line
+shape, `.test.ts` beside it), `src/main/resource-monitor.ts` (I/O + timer),
+started/stopped in `index.ts` (`startResourceMonitor` in the
+`reconcileParkedCounts().finally` beside the watchdog — AFTER `store.load()`;
+`stopResourceMonitor` in `shutdownSubsystems`). Driven gate:
+`scripts/verify-resource-monitor.mjs`.
+
+Each tick (`sampleTick`, dependency-injected so the rig drives the real path):
+- reads the local process table from `/proc` — **NO child process spawned**, its
+  own read never adds to the load it measures (a private copy of the same reader
+  the page uses, kept off `./resources` so the always-on module doesn't drag in
+  the PTY/transport stack);
+- walks **every live keeper's process tree** (keeper → CLI → MCP children),
+  keyed by workspace id, via `listKeeperRoots()` (`keeper-client.ts`) +
+  `collectTree`. This is the tree the page's `listPtySessions()` roots MISS —
+  keeper-hosted sessions are DETACHED daemons, not PTY children;
+- appends ONE JSON line (`ResourceLogLine`) to
+  `<ORCHESTRA_HOME>/logs/resources.jsonl` — totals (cores, mem total/used from
+  `/proc/meminfo` MemAvailable), each Electron process (cpu+rss), each session
+  tree (cpu+rss+procCount + `present`/`status`/`reaped`). Bounded: rotate at
+  `MAX_FILE_BYTES` (50 MB, one `.1` backup) + drop a backup older than
+  `RETENTION_MS` (7 days).
+
+**Detectors, each a log WARN with the stable prefix `resources:`**:
+- **(a) reaper — DESTRUCTIVE (`decideReap`).** A session tree whose workspace is
+  **provably absent from the store** → SIGKILL the tree + WARN. This is the
+  SAFETY NET for the leak LEAD measured (2 trees, 1.6 GB, alive for workspaces
+  deleted 14:21/14:23); the delete-leaves-session-alive **root cause is #124 D3**
+  (T3's scope), not this. Gated HARD: refuses entirely unless
+  `store.loadedFromDisk` (absence-from-store is only proof-of-deletion once
+  store.json parsed — the #187 lesson); the store is read AT KILL TIME each tick
+  (a re-created ws is never reaped on a stale snapshot); the killed pids are
+  EXACTLY the descendants of a keeper pid (`collectTree` under a keeper root), so
+  an Electron / unrelated process is never in the set; what+why is logged BEFORE
+  the kill.
+- **(b) threshold advisory (`decideThresholdWarnings`).** A session tree or
+  Electron process over a cpu/rss threshold → WARN only, **never kills**
+  (`SESSION_RSS_WARN_BYTES` etc., all UNBASELINED named constants sized from the
+  ~700 MB healthy-tree measurement). A reaped tree is excluded (its RSS is
+  stale).
+
+The reaper's must-FAIL/must-PASS arms and one in-place mutant per guard clause
+live in `resource-monitor.test.ts` + the rig; the rig writes a REAL
+resources.jsonl to a temp `ORCHESTRA_HOME` and shows the line shape + reap
+decision. `agent-sdk.ts` is deliberately untouched (the #124 D3 seam is T3's).
+
 ## Pure logic — shared/resources.ts
 Dependency-free so `node --test` covers it without Electron:
 - `parseProcStatLine` — one `/proc/<pid>/stat` line → `ProcSample`

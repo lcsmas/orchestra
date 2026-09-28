@@ -356,6 +356,33 @@ export function listLiveKeepers(): string[] {
   return out;
 }
 
+/** Every live keeper's workspace id AND keeper daemon pid — the ROOT of the
+ *  keeper → CLI → MCP process tree. Used by the resource monitor (issue #198
+ *  T8) to walk and, for an orphaned workspace, reap that tree. Read-only: unlike
+ *  {@link listLiveKeepers} it does NOT prune stale files as a side effect, so the
+ *  monitor's sampling never mutates keeper state. A pid that is not alive is
+ *  skipped. */
+export function listKeeperRoots(): Array<{ workspaceId: string; keeperPid: number }> {
+  const out: Array<{ workspaceId: string; keeperPid: number }> = [];
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(keeperDir());
+  } catch {
+    return out;
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.pid')) continue;
+    const wsId = name.slice(0, -'.pid'.length);
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(keeperDir(), name), 'utf8')) as { pid?: number };
+      if (meta.pid && isAlive(meta.pid)) out.push({ workspaceId: wsId, keeperPid: meta.pid });
+    } catch {
+      /* unreadable → skip (listLiveKeepers prunes it on its own pass) */
+    }
+  }
+  return out;
+}
+
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
