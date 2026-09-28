@@ -1909,7 +1909,16 @@ coalesced-wake amplifier keeps the member `running` across turns) strands a Bash
 that ages past its 600s ceiling and false-escalates against a healthy member
 (wave 198, 7× incl. seq 1711 — escalated as "hung 10m" 5s before a `#187 DONE`).
 A genuinely hung mid-call turn never reaches a new `submit` (it is stuck), so the
-ceiling still catches it (#108 Q16 preserved).
+ceiling still catches it (#108 Q16 preserved). **review-199 F1: the turn-START
+clear runs ONLY for a GENUINE boundary — `applyAgentEvent`'s `queuedSubmit`
+gates it (`if (!queuedSubmit)`).** Two SDK submits are MID-turn, not boundaries,
+and must NOT clear (they would wipe a live tool of the running turn and mask a
+genuine hang): a PARKED prompt (`sdkSend` queued behind a running turn →
+`ev.queued`) and a keeper REATTACH (`session/attach` with `turnInFlight` →
+`submit`). `driveStatusFromEvent` derives `queuedSubmit` (true for both) and
+threads it; the terminal/spool path never queues a submit so it stays undefined
+(a real boundary → clears). Residual accepted-gap (N1): a phantom persists until
+the NEXT genuine boundary if the member stays `running` via coalesced wakes.
 
 ## The two existing bounds this complements (MEASURED, not assumed)
 
@@ -1943,10 +1952,10 @@ into `LivenessMember.inFlightTools`.
 | File | #127 change |
 |---|---|
 | `src/main/hibernation-activity.ts` | `InFlightTool[]` tracker keyed by toolUseId + `noteToolStart`/`noteToolEnd`/`clearInFlightTools`/`getInFlightTools`; `forgetHibernationActivity` clears it. |
-| `src/main/agent-sdk.ts` | `driveStatusFromEvent` threads `ev.toolUseId` for tool-use/tool-result. |
+| `src/main/agent-sdk.ts` | `driveStatusFromEvent` threads `ev.toolUseId` for tool-use/tool-result, and (#199) derives+passes `queuedSubmit` (true for a parked `ev.queued` user-message and for `session/attach`→submit) so a mid-turn submit does not clear a live tool. |
 | `src/main/events-spool.ts` + hook (`workspaces.ts`) | hook mines `tool_use_id` into the jsonl; spool reads `toolUseId` and passes it to `applyAgentEvent`. |
-| `src/main/activity.ts` | `applyAgentEvent` calls start/end at the pretool/posttool cases and `clearInFlightTools` at BOTH turn boundaries — turn-END (`stop`/`stopfail`/`notify`/`session`) and **turn-START (`submit`, #199)**. |
-| `src/main/liveness-dropped-posttool.test.ts` | **NEW (#199)**: drives a dropped-posttool + new-turn spool through the real tracker into the real policy (must-FAIL: phantom Bash escalates); the genuine-hang and healthy controls; a source-check pinning the `submit` arm's `clearInFlightTools` call (reddens on master). |
+| `src/main/activity.ts` | `applyAgentEvent` takes `queuedSubmit`; calls start/end at pretool/posttool and `clearInFlightTools` at turn-END (`stop`/`stopfail`/`notify`/`session`) always, and at turn-START (`submit`, #199) **only when `!queuedSubmit`** (review-199 F1). |
+| `src/main/liveness-dropped-posttool.test.ts` | **NEW (#199)**: drives a dropped-posttool + new-turn spool through the real tracker into the real policy (must-FAIL: phantom Bash escalates); the genuine-hang, mid-turn-submit (review-199 F1 must-PASS: a live tool survives a queued submit + a blanket-clear contrast), and healthy controls; source-checks pinning the `!queuedSubmit`-gated clear, the `queuedSubmit` param, and the `driveStatusFromEvent` wiring (reddens on master / on a blanket-clear regression). |
 | `src/shared/bus-liveness.ts` | `toolClassCeilingMs`, `hungCallForMs`, `resolveStall` (shared dedup/switch, extracted so the staleness & hung paths keep ONE copy), `hungCallEscalationBody`, `InFlightToolState`; `decideEscalation`'s `running` guard now checks the progress bound. |
 | `src/main/bus-liveness.ts` | roster carries `inFlightTools` (list); the hung-call body + log wording; `writeEscalation` takes the hung tool. |
 | `src/shared/bus-liveness.test.ts` | pure tests: ceiling, hung, build-alive, **F1 parallel-hang + most-overdue**, boundary `>=`, switch-OFF count, dedup, body. |
