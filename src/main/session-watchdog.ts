@@ -97,6 +97,7 @@ import {
 } from './agent-sdk';
 import { getBus, send } from './bus.ts';
 import { busSwitch } from './bus-runs.ts';
+import { killKeeper } from './keeper-client';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { normalizePendingPrompts } from '../shared/pending-prompts.ts';
 
@@ -362,6 +363,18 @@ export async function recycleSession(
   //    ORDER, its ledger mark is rolled back and the next sweep re-fires,
   //    breaking the #159 `already-woken` latch the boot wedge otherwise leaves.
   await sdkStop(wsId).catch((e) => log.warn(`session-watchdog: stop failed for ${wsId}`, e));
+
+  // 1b. Await the keeper PROCESS actually dying before the redelivery/wake below
+  //     spawns a replacement (audit D1, modeled on sdkMcpRefresh). `sdkStop` on
+  //     a session that HAD produced a result rides the graceful close (stdinEnd
+  //     → keeper escalation) and RETURNS before the CLI has exited — the
+  //     0.5–15s window in which the old recycle's `sdkWake` reattached to the
+  //     dying CLI and the wake prompt was dropped (13/13 field recycles). (For a
+  //     never-started wedge, sdkStop already awaits killKeeper via !sawResult;
+  //     this covers the started-then-stalled case and is idempotent.) killKeeper
+  //     resolves only once the keeper pid is gone, so ensureSession (inside the
+  //     redelivery / sdkWake) then launches a genuinely fresh CLI.
+  await killKeeper(wsId).catch((e) => log.warn(`session-watchdog: killKeeper failed for ${wsId}`, e));
 
   // 2. Re-deliver the OPENING PROMPT (issue #174), if one is still owed a turn.
   //

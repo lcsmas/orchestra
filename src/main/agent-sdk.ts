@@ -79,6 +79,7 @@ import {
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
+import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { clearHibernated } from './hibernation.ts';
 import { buildBrowserToolServer } from './agent-browser-tools';
 import {
@@ -252,6 +253,18 @@ export function __setListSessionsForTests(fn: ListSessionsFn | null): void {
 let queryOverride: QueryFactory | null = null;
 export function __setQueryFactoryForTests(factory: QueryFactory | null): void {
   queryOverride = factory;
+}
+
+/** Test seam: observe {@link sdkStop}'s D3 fall-through kill without a real
+ *  keeper. A queryOverride rig has no keeper daemon, so the real
+ *  {@link killKeeper} is a no-op there — this lets a rig assert WHETHER the
+ *  no-first-result branch fired (the decision S3 makes), separately from the
+ *  real-keeper harness that proves `killKeeper` actually terminates the pids.
+ *  Null (the default) uses the real `killKeeper`. Only sdkStop's teardown kill
+ *  reads this override — other killKeeper sites keep the real one. */
+let killKeeperOverride: ((wsId: string) => Promise<void>) | null = null;
+export function __setKillKeeperForTests(fn: ((wsId: string) => Promise<void>) | null): void {
+  killKeeperOverride = fn;
 }
 
 interface Session {
@@ -441,6 +454,20 @@ interface Session {
   restartRequested?: RestartTrigger;
   /** Pending boot-stall check armed with the opening turn (see scheduleBootStallCheck). */
   bootStallTimer?: ReturnType<typeof setTimeout>;
+  /** True once ANY `result` message has been seen on this query's stream (D3).
+   *
+   *  The SDK ends stdin only after the prompt iterator finishes AND its
+   *  `waitForFirstResult()` resolves; `interrupt()` is a control request the CLI
+   *  does not service before init completes. So a graceful {@link sdkStop} on a
+   *  CLI that has never produced a `result` reaches the keeper with NOTHING —
+   *  no `stdinEnd`, no `kill` — and the CLI lives on inside a since-removed
+   *  worktree until its own ~600 s deadline (measured: 26/26 of the exit-1
+   *  cluster). Current master's bounded interrupt (STOP_INTERRUPT_TIMEOUT_MS)
+   *  closes the interrupt-HANGS case after 5 s; this flag lets {@link sdkStop}
+   *  kill IMMEDIATELY when no result was ever seen (and covers the case where
+   *  interrupt resolves fast but the CLI never serviced it). Set in consume()'s
+   *  `result` branch; a fresh session starts `false`. */
+  sawResult: boolean;
 }
 
 /** Silence after a turn is armed, with no proof of life, before the workspace
@@ -1275,6 +1302,12 @@ async function consume(session: Session): Promise<void> {
         void persistSessionId(session.wsId, sid);
       }
       if (msg.type === 'result') {
+        // D3: a `result` means the CLI has finished its first turn, so a
+        // graceful stop can now reach the keeper through the SDK's stdin-end.
+        // Latched (never reset): once ANY result has landed, the query's stdin
+        // is serviceable and sdkStop's graceful close terminates without the
+        // no-result fall-through kill. See Session.sawResult.
+        session.sawResult = true;
         // Turn boundary — the interrupt (if any) is fully accounted for, so
         // reset the flag: it must not linger and mislabel/suppress a FUTURE
         // turn's genuine error as interrupt fallout. (emitFrom already ran for
@@ -1329,6 +1362,27 @@ async function consume(session: Session): Promise<void> {
         // a beat later is fine, but blocking the consume loop on a control
         // request would stall every subsequent message.
         refreshContextUsage(session.wsId);
+        // #124 D4: re-drive parked inbox mail at the turn boundary. A peer
+        // delivery that timed out waiting for a running turn to START was
+        // withdrawn and parked in the durable inbox; nothing starts a new turn
+        // when this one ends, so the mail sat unseen until the watchdog
+        // "recycled" a healthy idle session (into D1/D2 — the user-visible "not
+        // responding"). When this session has nothing queued of its own and the
+        // inbox holds blocks, release the FIRST through the exactly-once path
+        // (`releaseInboxBlock`, the ONLY remover). One block per boundary: the
+        // turn it starts produces its own `result`, which re-drives the next.
+        // Fire-and-forget for the same reason as refreshContextUsage — the gate
+        // is already open (releaseTurnGate ran above), so releaseInboxBlock's
+        // sendAwaitingStart can start the new turn; awaiting it here would block
+        // the consume loop on a full delivery round-trip.
+        if (session.queue.length === 0 && !session.cleared) {
+          const parked = readInbox(session.wsId);
+          if (parked.length > 0) {
+            void releaseInboxBlock(session.wsId, parked[0].text).catch((e) =>
+              log.warn(`agent-sdk: inbox re-drive failed for ${session.wsId}`, e),
+            );
+          }
+        }
       } else if (msg.type === 'conversation_reset') {
         // #90 root-cause: a reset (/clear, plan-mode exit, CLI "loop detected")
         // abandons the in-flight turn — its `result` belongs to a defunct
@@ -1347,6 +1401,14 @@ async function consume(session: Session): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     const interrupted =
       session.interruptRequested || /error_during_execution|ede_diagnostic/i.test(message);
+    // D1: a session we are already STOPPING whose socket is preempted by a
+    // legitimate new client surfaces the SDK's synthetic `exited with code -1`
+    // here (a restart's fresh hello destroys the old facade's socket → close
+    // handler emits exit -1 → consume() throws). That is the stop we asked for,
+    // not a crash — painting a red `exited with code -1` row on the conversation
+    // the user just replaced is the false alarm the audit flagged. Scoped to
+    // stopping AND a -1 exit so a genuine crash of a live session still errors.
+    const preemptedWhileStopping = session.stopping && /exited with code -1\b/.test(message);
     // #148: an INTENTIONAL restart tore this session down, which makes the
     // keeper synthesize exit(-1), thrown here as "Claude Code process exited
     // with code -1". The DISCRIMINATOR is the explicit `restartRequested`
@@ -1362,6 +1424,7 @@ async function consume(session: Session): Promise<void> {
       cleared: session.cleared === true,
       interrupted,
       restartRequested: session.restartRequested,
+      preemptedWhileStopping,
     });
     // A restart is NOT an interrupt for the downstream turn-end/usage-limit
     // bookkeeping — it is intentional teardown. Only a genuine interrupt (the
@@ -1387,6 +1450,18 @@ async function consume(session: Session): Promise<void> {
         // live path (here) and the backfill (sdkHistory) call — so the live row
         // and the reopened row are byte-identical (#57). No red, no ERROR level.
         emit(session.wsId, makeRestartNotice(session.ctx, outcome.trigger));
+        break;
+      case 'stopped':
+        // D1: a legitimate new client preempted this already-stopping session's
+        // socket → synthetic exit -1. Surface the stop it is (quiet notice), not
+        // the red error banner. No warn log (below): it is not a failure.
+        emit(session.wsId, {
+          type: 'notice',
+          kind: 'interrupted',
+          seq: session.ctx.seq++,
+          at: (session.ctx.now ?? Date.now)(),
+          text: 'Session stopped',
+        });
         break;
       case 'error':
         emit(session.wsId, {
@@ -1481,16 +1556,27 @@ async function consume(session: Session): Promise<void> {
     session.stopping = true;
     session.pump?.();
     session.turnGate?.();
-    sessions.delete(session.wsId);
-    // Status-dot reconciliation floor, mirroring the terminal PTY's exit handler
-    // (pty.ts reconcileExited): once the SDK subprocess is gone — natural end,
-    // interrupt, crash, or kill — the agent can't be `running`, so self-heal a
-    // dot the activity `stop` hook may not have flipped (a crash never fires it).
-    // Guard on no live PTY: if a terminal PTY owns the dot for this workspace,
-    // let ITS exit handler reconcile — knocking it to `waiting` here would fight
-    // a still-live terminal agent. reconcileExited itself no-ops unless status is
-    // currently `running`, so this is safe when the agent legitimately idled.
-    if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
+    // D2: remove ONLY ourselves. `sessions` is keyed by wsId, not by identity,
+    // so an unconditional `delete(wsId)` here deletes whatever session currently
+    // owns the slot — which, after a stop→restart, is the SUCCESSOR (session B):
+    // `sdkStop` removed A and A's still-unwinding consume loop would then evict
+    // B. B keeps running but `sdkHasSession` reads false, peer deliveries return
+    // `'none'` (the only path to it, sdk-delivery.ts) and the next send spawns a
+    // rival third session. Delete + reconcile only while WE still own the slot.
+    if (sessions.get(session.wsId) === session) {
+      sessions.delete(session.wsId);
+      // Status-dot reconciliation floor, mirroring the terminal PTY's exit
+      // handler (pty.ts reconcileExited): once the SDK subprocess is gone —
+      // natural end, interrupt, crash, or kill — the agent can't be `running`,
+      // so self-heal a dot the activity `stop` hook may not have flipped (a
+      // crash never fires it). Guard on no live PTY: if a terminal PTY owns the
+      // dot for this workspace, let ITS exit handler reconcile — knocking it to
+      // `waiting` here would fight a still-live terminal agent. reconcileExited
+      // itself no-ops unless status is currently `running`, so this is safe when
+      // the agent legitimately idled. Inside the identity guard: a live
+      // successor's dot must not be floored by the predecessor's teardown.
+      if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
+    }
   }
 }
 
@@ -1611,6 +1697,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     driveStatus,
     pendingLocalContext: [],
     recentEchoes: [],
+    sawResult: false,
   };
 
   // Resolve the query factory: a test override, else the dynamically-imported
@@ -5002,11 +5089,26 @@ export async function sdkStop(wsId: string): Promise<void> {
     // switch, account migration) funnels through here and must not leave an
     // orphan CLI running a conversation the app just discarded. Best-effort:
     // instant no-op when no keeper exists.
-    void killKeeper(wsId);
+    //
+    // AWAITED (audit D1, same family): a fire-and-forget `void killKeeper` let
+    // an immediate restart (sdkClear → send, a peer delivery) race the dying
+    // keeper — the new hello preempts the old socket, attaches to the SIGTERM'd
+    // child, and the wake prompt is lost. Resolving before returning means the
+    // caller's own `await sdkStop` sees the process actually gone (mirrors
+    // sdkMcpRefresh's `await sdkStop → await killKeeper` ordering).
+    await killKeeper(wsId).catch(() => {
+      /* no keeper / already gone */
+    });
     return;
   }
   session.stopping = true;
   clearBootStall(session);
+  // Latch BEFORE any await (D3): `session.sawResult` can flip on a late `result`
+  // that lands between here and the interrupt, and the decision below must be
+  // "had this CLI produced a result by the time the user asked to stop?" — a
+  // result racing in after the stop request does not retroactively make the
+  // graceful close reach the keeper in time.
+  const sawResult = session.sawResult;
   // Anything still queued when the session is torn down will never run, so any
   // sender holding a delivery receipt for it is told now (issue #57 fault b).
   // Done here as well as in consume()'s finally because an explicit stop can
@@ -5026,17 +5128,32 @@ export async function sdkStop(wsId: string): Promise<void> {
     interruptHung = err instanceof Error && /interrupt timed out/.test(err.message);
   }
   sessions.delete(wsId);
-  if (interruptHung) {
-    // The graceful close can't reach a CLI that ignores stdin — kill it outright.
-    log.warn(`agent-sdk: interrupt unanswered for ${wsId} — killing the keeper/CLI`);
-    await killKeeper(wsId).catch(() => {
+  if (interruptHung || !sawResult) {
+    // Kill outright — the graceful close cannot terminate this CLI:
+    //  • interruptHung: it ignores stdin, so stdinEnd never escalates in time.
+    //  • !sawResult (audit D3): a CLI that has NEVER emitted a `result` cannot
+    //    be stopped gracefully. The SDK ends stdin only after
+    //    `waitForFirstResult()` resolves and `interrupt()` is unserviced before
+    //    init completes, so the graceful attempt above reached the keeper with
+    //    nothing (no `stdinEnd`, no `kill`) and the CLI would live on inside a
+    //    since-removed worktree until its own ~600 s deadline (26/26 of the
+    //    exit-1 cluster). Fall through to killKeeper — the same terminate path
+    //    sdkMcpRefresh uses — so delete/archive/hibernate/migrate/branch-switch
+    //    never orphan a CLI. killKeeper AWAITS the process's death (bounded,
+    //    then SIGKILL), so the caller (deleteWorkspace &c.) can safely rm the
+    //    worktree after this returns.
+    if (interruptHung) {
+      log.warn(`agent-sdk: interrupt unanswered for ${wsId} — killing the keeper/CLI`);
+    }
+    await (killKeeperOverride ?? killKeeper)(wsId).catch(() => {
       /* already gone */
     });
   }
-  // NOTE: otherwise no killKeeper — the SDK's graceful close ends stdin, which the
-  // bridge forwards as a stdinEnd frame; the keeper then EOF→SIGTERM→SIGKILL
-  // escalates on its own clock. That preserves the CLI's clean shutdown
-  // (transcript flush) where an immediate SIGTERM would race it.
+  // NOTE: for a session that HAS produced a result and answered interrupt, no
+  // killKeeper — the SDK's graceful close ends stdin, which the bridge forwards
+  // as a stdinEnd frame; the keeper then EOF→SIGTERM→SIGKILL escalates on its
+  // own clock. That preserves the CLI's clean shutdown (transcript flush) where
+  // an immediate SIGTERM would race it.
 }
 
 /** Clear the conversation (composer `/clear` — parity with Claude Code): tear

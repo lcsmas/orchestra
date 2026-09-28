@@ -44,6 +44,8 @@
     "test:hung-cli": "bash scripts/e2e-hung-cli-teardown.sh",
     "test:session-debug-log": "bash scripts/e2e-session-debug-log.sh",
     "test:context-seed": "bash scripts/e2e-context-seed-176.sh",
+    "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
+    "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:network-visibility-shot": "node scripts/network-visibility-screenshot.mjs",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "test:cli-pipe": "pnpm run build:cli && node scripts/verify-verify-landed-exit.mjs && node scripts/verify-cli-pipe-flush.mjs",
