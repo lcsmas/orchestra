@@ -1902,8 +1902,10 @@ or `resolveContextUsage()` directly in a unit test.
   `session.q.getContextUsage()`, raced against a 3s timeout exactly like
   `sdkListModels` (a control request to a dying subprocess parks forever).
   `refreshContextUsage` (`:1344`) normalizes and emits `session/context`.
-  Called at **session bootstrap** (`:1088`, so a reopened pane has a gauge
-  before any turn) and **after each turn** (`:732`, at the `result` boundary).
+  Called **only after each turn** (at the `result` boundary). Never at session
+  bootstrap: a boot-time call made the CLI burst ~90 API connections and wedged
+  metarepo first turns (#176); a reopened pane shows the transcript fallback below
+  until the next turn.
   Returns `null` — never a zeroed reading — on no-session/timeout/bad payload,
   because `0` is the app's "context was reset" sentinel and would clear the badge.
 - **Bonus — `/context`.** `normalizeSdkMessage`'s `assistant` case lifts the

@@ -1826,12 +1826,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   sessions.set(wsId, session);
   // Fire-and-forget the consume loop; it self-cleans on end/throw.
   void consume(session);
-  // Seed the context gauge for the freshly-opened pane. `getContextUsage()` is
-  // answerable as soon as the session bootstraps — before any turn has run —
-  // which is the whole point: the inferred per-turn figure does not exist until
-  // a turn CLOSES, so without this a reopened pane shows no gauge until the
-  // agent next replies.
-  refreshContextUsage(wsId);
+  // No context-gauge seed here (#176): a boot-time getContextUsage() makes the CLI
+  // burst ~90 API connections and wedged 5/7 metarepo first turns. The first read is at turn end.
   return session;
 }
 
@@ -2300,10 +2296,9 @@ async function probeRuntimeModels(ws: Workspace, bin: string): Promise<AgentMode
  *  reading (0 is the app's "context was reset" sentinel and would clear the
  *  badge).
  *
- *  Callable as soon as the session has bootstrapped, before any turn has run —
- *  verified against CLI 2.1.234 — so the gauge can be seeded at pane mount
- *  instead of waiting for a turn to end. Time-boxed exactly like
- *  {@link sdkListModels}: a wedged subprocess must not hang the caller. */
+ *  Called only at turn end: calling it at session start wedged metarepo first turns
+ *  (#176). Time-boxed exactly like {@link sdkListModels}: a wedged subprocess must
+ *  not hang the caller. */
 export async function sdkGetContextUsage(wsId: string): Promise<ContextUsage | null> {
   const session = sessions.get(wsId);
   if (!session) return null;
@@ -2327,8 +2322,8 @@ export async function sdkGetContextUsage(wsId: string): Promise<ContextUsage | n
 }
 
 /** Take a live context reading and broadcast it if it beats what the renderer
- *  already has. Fire-and-forget: every call site (pane mount, turn end) wants
- *  the gauge refreshed but none should block on it.
+ *  already has. Fire-and-forget: the one call site (turn end) wants the gauge
+ *  refreshed but must not block on it.
  *
  *  The precedence check is what stops this from fighting the transcript
  *  recompute — both producers fire independently, and without it a posttool's
