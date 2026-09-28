@@ -605,6 +605,20 @@ function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
   // it; other event types have no id (undefined → treated as null downstream).
   const toolUseId =
     ev.type === 'tool-use' || ev.type === 'tool-result' ? ev.toolUseId : undefined;
+  // #199 (review-199 F1): a `submit` that is NOT a genuine turn boundary must not
+  // clear the in-flight tool list, or it wipes a live tool of the still-running
+  // turn and masks a genuine mid-call hang. Two SDK-path submits are mid-turn:
+  //  - a PARKED prompt (`ev.queued` on the user-message — sdkSend sets it when a
+  //    turn is in flight or the queue is non-empty);
+  //  - a keeper REATTACH (`session/attach` with `turnInFlight` maps to `submit`) —
+  //    the turn was already running, so any in-flight tool is the current turn's.
+  // Both → queuedSubmit=true. A fresh (non-parked) user-message is a real boundary.
+  const queuedSubmit =
+    spoolEvent === 'submit'
+      ? ev.type === 'user-message'
+        ? ev.queued === true
+        : true // session/attach → submit: a reattach, never a boundary
+      : undefined;
   // Thread the turn-end reason through (undefined for every non-terminal event).
   // The SDK path is the only one that HAS a reason — Claude Code's Stop hook
   // carries no equivalent field — so this is where end_turn / interrupted /
@@ -617,6 +631,7 @@ function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
     sdkEventToStopReason(ev),
     undefined, // crons: SDK path has no session_crons signal
     toolUseId,
+    queuedSubmit,
   );
 }
 
