@@ -1,5 +1,5 @@
 import React from 'react';
-import { bootStallCopy, formatStallElapsed } from '../../shared/boot-stall';
+import { bootStallCopy, bootWedgedCopy, formatStallElapsed } from '../../shared/boot-stall';
 
 // Pure views (no store import) so the screenshot rig can render them standalone.
 
@@ -35,6 +35,39 @@ export function BootStallRowView(props: {
   return (
     <div className="av-boot-stall" role="status" data-boot-stall="1">
       <span className="av-boot-stall-icon" aria-hidden>⚠</span>
+      <div className="av-boot-stall-text">
+        <div className="av-boot-stall-title">{title}</div>
+        <div className="av-boot-stall-detail">{detail}</div>
+      </div>
+      <button type="button" className="av-boot-stall-restart" disabled={props.busy} onClick={props.onRestart}>
+        {props.busy ? 'Relance…' : 'Relancer'}
+      </button>
+    </div>
+  );
+}
+
+/** Pure WEDGED sidebar badge (issue #197): a terminal give-up, not a ticking
+ *  timer — no elapsed clock, a fixed "bloquée" label. */
+export function BootWedgedBadgeView(): React.ReactElement {
+  const { title } = bootWedgedCopy();
+  return (
+    <span className="ws-stall-badge ws-boot-wedged-badge" title={title} role="img" aria-label={title} data-boot-wedged="1">
+      <WarnGlyph />
+      bloquée
+    </span>
+  );
+}
+
+/** Pure WEDGED composer row (issue #197). Keeps the manual Relancer — the human
+ *  can still retry — but the copy says the automatic retries are exhausted. */
+export function BootWedgedRowView(props: {
+  busy: boolean;
+  onRestart: () => void;
+}): React.ReactElement {
+  const { title, detail } = bootWedgedCopy();
+  return (
+    <div className="av-boot-stall av-boot-wedged" role="alert" data-boot-wedged="1">
+      <span className="av-boot-stall-icon" aria-hidden>⛔</span>
       <div className="av-boot-stall-text">
         <div className="av-boot-stall-title">{title}</div>
         <div className="av-boot-stall-detail">{detail}</div>

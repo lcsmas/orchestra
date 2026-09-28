@@ -3613,3 +3613,16 @@ h6.av-md-h {
 }
 .av-boot-stall-restart:disabled { opacity: 0.5; cursor: default; }
 .av-boot-stall-restart:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+
+/* Issue #197 — the WEDGED variant: a terminal give-up (auto-restarts exhausted),
+   so it reads in the error/danger colour rather than the warn colour the
+   transient boot-stall row uses. */
+.av-boot-stall.av-boot-wedged {
+  background: var(--av-error-bg);
+  border: 1px solid var(--av-error-border);
+  border-left: 3px solid var(--av-error);
+}
+.av-boot-wedged .av-boot-stall-icon { color: var(--av-error); }
+.av-boot-wedged .av-boot-stall-restart {
+  color: var(--av-assistant-ink); background: var(--av-error); border-color: var(--av-error);
+}

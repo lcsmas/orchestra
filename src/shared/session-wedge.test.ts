@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   decideBootWedge,
+  decideBootHeal,
   decideGateRelease,
   decideSessionRecycle,
   pruneRecycles,
   recycleBackoffMs,
   GATE_SILENCE_RELEASE_MS,
   BOOT_SILENCE_MS,
+  MAX_BOOT_RESTARTS,
   MAX_RECYCLES_PER_HOUR,
   RECYCLE_BACKOFF_BASE_MS,
   RECYCLE_BACKOFF_MAX_MS,
@@ -809,4 +811,38 @@ test('isProofOfLifeMessage: init and turn output ARE proof of life', async () =>
   assert.equal(isProofOfLifeMessage({ type: 'stream_event' }), true);
   assert.equal(isProofOfLifeMessage({ type: 'result', subtype: 'success' }), true);
   assert.equal(isProofOfLifeMessage({ type: 'system', subtype: 'status' }), true);
+});
+
+// ─── decideBootHeal — bound the boot-wedge self-heal, then escalate (#197) ─────
+
+test('decideBootHeal: MAX_BOOT_RESTARTS is 3 (D2, ledger #198)', () => {
+  // The frozen bound. A test asserts the literal so a silent change to the
+  // constant reddens here (carry-forward: a marker as specific as the claim).
+  assert.equal(MAX_BOOT_RESTARTS, 3);
+});
+
+test('decideBootHeal: under the bound restarts, at the bound escalates', () => {
+  // 0, 1, 2 fresh starts already made → restart (raising the count to 1, 2, 3).
+  assert.deepEqual(decideBootHeal({ consecutiveFreshStarts: 0 }), { action: 'restart' });
+  assert.deepEqual(decideBootHeal({ consecutiveFreshStarts: 1 }), { action: 'restart' });
+  assert.deepEqual(decideBootHeal({ consecutiveFreshStarts: 2 }), { action: 'restart' });
+  // The 3rd time the watchdog is asked, the count is already 3 → escalate.
+  assert.deepEqual(decideBootHeal({ consecutiveFreshStarts: 3 }), {
+    action: 'escalate',
+    restartCount: 3,
+  });
+});
+
+test('decideBootHeal: never restarts once past the bound (would-loop-forever arm)', () => {
+  // The must-FAIL-today shape as a pure assertion: without the bound, every count
+  // would keep restarting. Past the bound it must ALWAYS escalate, never restart —
+  // this is what turns "N+1 wedged starts → N+1 restarts" into "3 then stop".
+  for (const n of [3, 4, 5, 10, 100]) {
+    assert.equal(decideBootHeal({ consecutiveFreshStarts: n }).action, 'escalate');
+  }
+});
+
+test('decideBootHeal: the bound is injectable (so a rig can drive N=2 fast)', () => {
+  assert.equal(decideBootHeal({ consecutiveFreshStarts: 1, maxRestarts: 2 }).action, 'restart');
+  assert.equal(decideBootHeal({ consecutiveFreshStarts: 2, maxRestarts: 2 }).action, 'escalate');
 });

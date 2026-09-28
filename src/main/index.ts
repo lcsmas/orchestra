@@ -230,7 +230,11 @@ import {
   stopHumanGatesWatcher,
   reconcileHumanGates,
 } from './human-gates';
-import { startSessionWatchdog, stopSessionWatchdog } from './session-watchdog';
+import {
+  startSessionWatchdog,
+  stopSessionWatchdog,
+  setBootWedgeRunResolver,
+} from './session-watchdog';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -459,6 +463,12 @@ async function createMainWindow() {
       // wedge #88 badges never needs a human to act on it. Main-side and
       // single-writer by necessity — a renderer-derived check cannot act with
       // no window open, and would act N times with N windows.
+      //
+      // #197 — wire the wave-run resolver so a boot-wedge escalation names the
+      // member's OWN run (its $ORCHESTRA_RUN_ID anchor), the run the coordinator's
+      // `orchestra check` reads. Injected for the same strip-types reason as the
+      // liveness/wake rosters: `resolveWaveRunId` lives behind the platform seam.
+      setBootWedgeRunResolver(resolveWaveRunId);
       startSessionWatchdog();
     });
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per

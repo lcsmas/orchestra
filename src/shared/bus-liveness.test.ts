@@ -5,6 +5,7 @@ import {
   pruneEscalationLedger,
   escalationBody,
   hungCallEscalationBody,
+  bootWedgeEscalationBody,
   toolClassCeilingMs,
   phaseChanged,
   STALE_AFTER_MS,
@@ -548,4 +549,27 @@ test('hungCallEscalationBody names the tool and the minutes, distinct from the s
   const anon = hungCallEscalationBody('ws-worker', null, 31 * 60_000);
   assert.match(anon, /a tool/, 'null tool name renders a generic phrase, not "null"');
   assert.doesNotMatch(anon, /null/, 'never leaks the literal null');
+});
+
+test('bootWedgeEscalationBody carries the D2 diagnostic: count + last error + transcript size', () => {
+  // Carry-forward 2: the escalation must be as specific as D2 (ledger #198) —
+  // restart count, last error, transcript size — so the coordinator's
+  // `orchestra check` gets an actionable line, not an opaque ping.
+  const body = bootWedgeEscalationBody(
+    'ws-worker',
+    3,
+    'boot wedge: opening turn never started (no stream in 3min after 3 fresh restarts) — issue #197',
+    16_500_000,
+  );
+  assert.match(body, /ws-worker/, 'names the wedged member');
+  assert.match(body, /3 fresh/, 'carries the restart count');
+  assert.match(body, /WEDGED/, 'names the terminal wedged condition, not generic silence');
+  assert.match(body, /STOPPED auto-restarting/, 'says the app gave up (the field loop that never did)');
+  assert.match(body, /Last error:/, 'carries the last error');
+  assert.match(body, /no stream in 3min/, 'the last error text is embedded verbatim');
+  // 16_500_000 bytes ≈ 15.7 MB — the field W6b transcript size (D5). The MB
+  // figure is load-bearing: a coordinator uses it to tell a huge-transcript wedge
+  // apart from a transient one.
+  assert.match(body, /15\.7 MB/, 'renders the transcript size in MB');
+  assert.doesNotMatch(body, /NaN|undefined/, 'never leaks NaN/undefined');
 });

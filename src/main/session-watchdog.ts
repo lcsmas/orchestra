@@ -72,15 +72,19 @@
 import { store } from './store';
 import { log } from './logger';
 import { platform } from './platform';
+import type { Workspace } from '../shared/types.ts';
 import { workspaceQueueStall, type QueueStallVerdict } from '../shared/queue-stall.ts';
 import {
   decideBootWedge,
+  decideBootHeal,
   decideSessionRecycle,
   pruneRecycles,
   BOOT_SILENCE_MS,
   GATE_SILENCE_RELEASE_MS,
+  MAX_BOOT_RESTARTS,
   type RecycleDecision,
 } from '../shared/session-wedge.ts';
+import { bootWedgeEscalationBody } from '../shared/bus-liveness.ts';
 import { sdkSessionLive } from './sdk-delivery';
 import {
   recoverPendingPrompts,
@@ -88,10 +92,30 @@ import {
   sdkReleaseStrandedGate,
   sdkStop,
   sdkMarkAutoRestart,
+  sdkTranscriptBytes,
   sdkWake,
 } from './agent-sdk';
+import { getBus, send } from './bus.ts';
+import { busSwitch } from './bus-runs.ts';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { normalizePendingPrompts } from '../shared/pending-prompts.ts';
+
+// ─── Boot-heal escalation seam (issue #197) ─────────────────────────────────
+//
+// The escalation must name the workspace's WAVE run (its `$ORCHESTRA_RUN_ID`
+// anchor) so the row lands in the run the coordinator's `orchestra check` reads.
+// `resolveWaveRunId` lives in `workspaces.ts`, which — like the liveness roster's
+// store seam — reaches the platform directory-import the strip-types test runner
+// cannot resolve, so importing it here would make this module untestable under
+// `pnpm run test`. It is INJECTED at boot (index.ts) with the real resolver; the
+// default falls back to the CLI's own `'default'` run, the coexistence-safe value
+// (a `busSwitch` for an unknown run reads OFF → counted, never a wrong-run fire).
+let resolveRunId: (ws: Workspace) => string = () => 'default';
+
+/** Wire the wave-run resolver (index.ts) or a rig's. */
+export function setBootWedgeRunResolver(fn: (ws: Workspace) => string): void {
+  resolveRunId = fn;
+}
 
 /** Opening prompts still owed a turn for this workspace (`ws.sdkPendingPrompts`),
  *  read from the store through the shared normalizer so a legacy shape counts
@@ -143,7 +167,134 @@ const lastGateSeen = new Map<string, string | null>();
  *  budget is spent is a fresh transition and surfaces again. */
 const stoodDown = new Set<string>();
 
+/** Issue #197 — per-workspace count of CONSECUTIVE failed FRESH starts of the
+ *  SAME session (each a boot-wedge recycle that produced no proof of life). The
+ *  watchdog increments it on every boot-wedge recycle and RESETS it to zero the
+ *  moment the session emits a first stream message (`firstMessageSeen === true`)
+ *  — genuine proof of life, so a session that recovers on restart k<N is never
+ *  escalated (its first message zeroes the count before it can reach the bound).
+ *  In memory only, like `recycleLedger`: a fresh session starts the count at 0,
+ *  and the count only means anything while the SAME never-started session is
+ *  being retried. */
+const bootRestartLedger = new Map<string, number>();
+
+/** Issue #197 — workspaces already escalated for a boot-wedge give-up, so the
+ *  escalation + the visible-wedged mark fire EXACTLY ONCE on the transition into
+ *  the wedged state, not every 60 s tick (the same edge-trigger `stoodDown`
+ *  gives the flap-limit toast). Cleared when the count resets on proof of life. */
+const bootEscalated = new Set<string>();
+
 let timer: NodeJS.Timeout | null = null;
+
+/** Persist a workspace patch and broadcast it, mirroring agent-sdk's private
+ *  `persistWorkspacePatch` (which is not exported). Used to set/clear the visible
+ *  `bootWedgedSince` marker. Best-effort: a persist failure is logged, never
+ *  thrown into the tick. */
+async function patchWorkspace(wsId: string, patch: Partial<Workspace>): Promise<void> {
+  const ws = store.getWorkspace(wsId);
+  if (!ws) return;
+  const updated = { ...ws, ...patch };
+  await store
+    .upsertWorkspace(updated)
+    .catch((err) => log.warn(`session-watchdog: persist patch failed for ${wsId}`, err));
+  platform.broadcast('workspace:update', updated);
+}
+
+/** Issue #197 — the boot-heal counter has been reset because the session showed
+ *  proof of life (a first stream message) or was torn down for good: drop the
+ *  count, clear the escalate-once guard, and unset the visible-wedged marker if
+ *  it was set. Idempotent — safe to call on every tick where the count is 0. */
+function clearBootHealState(wsId: string): void {
+  const hadCount = bootRestartLedger.has(wsId);
+  bootRestartLedger.delete(wsId);
+  bootEscalated.delete(wsId);
+  const ws = store.getWorkspace(wsId);
+  if (ws?.bootWedgedSince != null) {
+    void patchWorkspace(wsId, { bootWedgedSince: null });
+  } else if (hadCount) {
+    log.info(`session-watchdog: ${wsId} showed proof of life — boot-heal count reset (issue #197)`);
+  }
+}
+
+/** Issue #197 — the workspace reached the bound of consecutive failed fresh
+ *  starts: STOP restarting, mark it visibly WEDGED, and emit ONE bus `escalation`
+ *  row to its coordinator carrying the diagnostic D2 requires (restart count,
+ *  last error, transcript size). Edge-triggered via {@link bootEscalated} so it
+ *  fires once per wedge, not every tick.
+ *
+ *  The escalation reuses the EXISTING `escalation` kind + the `send` verb — the
+ *  app's own escalation path (#120's `bus-liveness.ts writeEscalation`), never a
+ *  hand-written insert into `~/.orchestra/bus.sqlite`. It is SWITCH-GATED on the
+ *  run's frozen `liveness` flag (the escalation mechanism switch, #118): fired
+ *  when ON, only logged when OFF — the coexistence-safe default, exactly like the
+ *  liveness sweep. Tolerates `getBus() === null` (D1): logs and returns, never
+ *  throws into the tick. */
+async function escalateBootWedge(
+  ws: Workspace,
+  restartCount: number,
+  lastError: string,
+  now: number,
+): Promise<void> {
+  // Mark visibly wedged FIRST (a durable store surface the human sees even if the
+  // bus is down), then escalate to the coordinator.
+  await patchWorkspace(ws.id, { bootWedgedSince: now });
+
+  const coordinator = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;
+  const coordinatorId = coordinator && !coordinator.archived ? coordinator.id : null;
+  const transcriptBytes = sdkTranscriptBytes(ws.id);
+
+  log.error(
+    `session-watchdog: ${ws.id} WEDGED — ${restartCount} consecutive failed fresh starts, ` +
+      `STOPPING auto-restart (issue #197). Last error: ${lastError}; transcript ${transcriptBytes} bytes`,
+  );
+
+  if (!coordinatorId) {
+    // A standalone workspace (or one whose parent was deleted) has nobody to
+    // escalate to. The visible-wedged mark above is still the human's surface;
+    // there is no coordinator row to write.
+    log.warn(`session-watchdog: ${ws.id} wedged but has no live coordinator to escalate to`);
+    return;
+  }
+
+  const db = getBus();
+  if (!db) {
+    log.warn(`session-watchdog: no bus — ${ws.id} wedge not escalated to ${coordinatorId}`);
+    return;
+  }
+  const runId = resolveRunId(ws);
+  let switchOn = false;
+  try {
+    switchOn = busSwitch(db, runId, 'liveness');
+  } catch (e) {
+    log.warn(`session-watchdog: liveness switch read failed for ${ws.id} — treating as OFF`, e);
+  }
+  const body = bootWedgeEscalationBody(ws.id, restartCount, lastError, transcriptBytes);
+  if (!switchOn) {
+    // COUNTED, not FIRED: the coexistence-safe default while the escalation
+    // mechanism is OFF for the run — the flap-limit toast (surfaceFlapLimit) and
+    // the visible-wedged mark remain the human-facing surface.
+    log.info(
+      `session-watchdog: would have escalated ${ws.id} → ${coordinatorId} ` +
+        `(wedged; liveness switch OFF — counted, not fired)`,
+    );
+    return;
+  }
+  try {
+    send(db, {
+      runId,
+      sender: ws.id,
+      recipient: coordinatorId,
+      kind: 'escalation',
+      body,
+    });
+    log.info(`session-watchdog: escalated wedged ${ws.id} → ${coordinatorId} (issue #197)`);
+  } catch (e) {
+    // D1: a bus write failure logs and returns. The escalate-once guard is set by
+    // the CALLER only after this resolves, so a failed write re-arms next tick.
+    log.warn(`session-watchdog: failed to escalate wedged ${ws.id} → ${coordinatorId}`, e);
+    throw e;
+  }
+}
 
 /** Recycle ONE wedged session: stop it, then wake it on the SAME conversation
  *  and re-drive whatever was parked.
@@ -415,6 +566,22 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     // on a DESTRUCTIVE path is exactly the class review R1 caught.
     const progress = sdkGateProbe(ws.id);
 
+    // ── Issue #197: the boot-heal counter RESET, on genuine proof of life ─────
+    //
+    // A session that emitted a first stream message got past init — the fresh
+    // start that produced it SUCCEEDED. So a session that recovers on restart
+    // k<N zeroes its consecutive-failed-start count here, BEFORE any recycle
+    // decision, and can never reach the escalation bound (the ticket's "recovers
+    // on restart k<N is NOT escalated" arm). This ALSO clears the visible-wedged
+    // marker if a wedged session later came back to life on a manual Relancer.
+    // Keyed on `firstMessageSeen` (proof of life) — never "prompts are live",
+    // never "inbox empty" — the same discriminator decideBootWedge turns on.
+    if (progress?.firstMessageSeen) clearBootHealState(ws.id);
+    // A workspace with no live session at all is not mid-boot-heal; drop any
+    // stale count so a future spawn starts clean (a torn-down session cannot be
+    // the "same session" the count tracks).
+    else if (!sdkSessionLive(ws.id)) clearBootHealState(ws.id);
+
     // ── Layer 2b: the BOOT wedge (issue #174) ───────────────────────────────
     //
     // A session that accepted its opening turn but never emitted a single
@@ -462,11 +629,21 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
           silenceMs: BOOT_SILENCE_MS,
         })
       : null;
-    const recycleReason = stalled
-      ? 'stall'
-      : bootWedge
-        ? 'boot-wedge'
-        : 'none';
+    // Issue #197 — the give-up, the counter, and the recycle telemetry all key on
+    // the PRESENCE of a boot wedge, NOT on which detector "won" (reviewer-1bfa79ee
+    // F1). A never-started session (firstMessageSeen===false) with parked INBOX
+    // mail on a >15-min workspace trips BOTH detectors — decideBootWedge AND #88's
+    // workspaceQueueStall — so `stalled` is truthy. Keying the give-up on a
+    // stall-loses discriminator (`bootWedge && !stalled`) let that co-fire fall
+    // through to the GENERIC #90/#97 flap-limit (an OS toast only), NEVER firing
+    // the bus escalation D2 requires — the exact fleet-invisible surface #197
+    // exists to kill (a wave member pinged by peers while its fresh CLI wedges is
+    // the plausible field shape). A boot wedge is a boot wedge regardless of a
+    // co-firing stall — the SAME precedence the `silenceMs: bootWedge ? ...`
+    // window below already uses. Telemetry `stalledForMs` still follows the stall
+    // via `stalled ?? bootWedge` in `decideSessionRecycle`; only the REASON label
+    // follows the boot wedge.
+    const isBootWedge = bootWedge !== null;
 
     const decision: RecycleDecision = decideSessionRecycle({
       sessionLive: sdkSessionLive(ws.id),
@@ -513,6 +690,51 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     // is spent counts as a fresh transition and surfaces again (review F1).
     if (decision.action !== 'flap-limit') stoodDown.delete(ws.id);
 
+    // ── Issue #197: BOUND the boot-wedge recycle, then ESCALATE ──────────────
+    //
+    // A BOOT-WEDGE recycle is a FRESH start of the same never-started session.
+    // After MAX_BOOT_RESTARTS consecutive ones with no proof of life, STOP
+    // restarting, mark the workspace visibly wedged, and escalate ONCE to the
+    // coordinator — instead of looping forever (the ~75 s × ∞ field loop).
+    //
+    // Placed BEFORE the #90/#97 anti-flap dispatch DELIBERATELY: the generic
+    // flap-limit (`MAX_RECYCLES_PER_HOUR`) and this boot bound both = 3 and both
+    // count the same recycles, so on the tick after the bound the generic path
+    // would return `flap-limit` first — a human toast, but NO bus escalation and
+    // NO visible-wedged mark. The boot wedge is a distinct, more actionable
+    // failure (a fresh CLI that deterministically re-wedges), and D2 (ledger
+    // #198) requires the fleet-visible `escalation` row the flap-limit lacks. So
+    // for a boot wedge the #197 give-up takes precedence. Keyed on `isBootWedge`
+    // (PRESENCE), never `recycleReason` — a co-firing #88 stall must not mask the
+    // escalation (F1). A pure #88 stall (no boot wedge) keeps the flap-limit
+    // surface below.
+    if (isBootWedge) {
+      const priorStarts = bootRestartLedger.get(ws.id) ?? 0;
+      const heal = decideBootHeal({ consecutiveFreshStarts: priorStarts });
+      if (heal.action === 'escalate') {
+        // The bound is reached. Do NOT restart (a further fresh start would only
+        // re-wedge). Escalate exactly once (edge-triggered via `bootEscalated`).
+        if (!bootEscalated.has(ws.id)) {
+          const stalledForMs = decision.action === 'recycle' || decision.action === 'flap-limit'
+            ? decision.stalledForMs
+            : now - (progress?.lastStreamMessageAt ?? now);
+          const lastError =
+            `boot wedge: opening turn never started (no stream in ` +
+            `${Math.round(stalledForMs / 60_000)}min after ${heal.restartCount} fresh restarts, ` +
+            `${progress?.pendingPromptCount ?? 0} prompt(s) owed a turn) — issue #197`;
+          try {
+            await escalateBootWedge(ws, heal.restartCount, lastError, now);
+            // Mark escalated only on a completed escalation attempt (a bus-write
+            // failure throws so the guard is NOT set and the next tick retries).
+            bootEscalated.add(ws.id);
+          } catch {
+            // escalateBootWedge already logged; leave the guard clear to retry.
+          }
+        }
+        continue;
+      }
+    }
+
     if (decision.action === 'none') continue;
 
     if (decision.action === 'backoff') {
@@ -552,14 +774,25 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
       continue;
     }
 
+    // Issue #197 — this is a BOOT-WEDGE recycle under the bound (the give-up
+    // short-circuit above already `continue`d at the bound), so it is one more
+    // fresh start: count it. Keyed on `isBootWedge` PRESENCE (F1): a never-started
+    // session with co-firing parked mail is still a boot wedge and its fresh
+    // restart must be counted, or the bound never advances and the escalation
+    // never fires. A pure #88 stall recycle does not go through a fresh start and
+    // is not counted.
+    if (isBootWedge) {
+      bootRestartLedger.set(ws.id, (bootRestartLedger.get(ws.id) ?? 0) + 1);
+    }
+
     recycleLedger.set(ws.id, [...ledger, now]);
     await recycleSession(
       ws.id,
-      recycleReason === 'boot-wedge'
+      isBootWedge
         ? `boot wedge: opening turn never started (no stream in ${Math.round(decision.stalledForMs / 60_000)}min, ` +
             `${decision.parkedCount} prompt(s) owed a turn) — issue #174`
         : `${decision.parkedCount} parked, no turn start for ${Math.round(decision.stalledForMs / 60_000)}min`,
-      recycleReason === 'boot-wedge' ? 'watchdog-boot' : 'watchdog-stall',
+      isBootWedge ? 'watchdog-boot' : 'watchdog-stall',
     );
   }
 }
@@ -582,6 +815,8 @@ export function stopSessionWatchdog(): void {
   recycleLedger.clear();
   lastGateSeen.clear();
   stoodDown.clear();
+  bootRestartLedger.clear();
+  bootEscalated.clear();
 }
 
 /** Test/rig seam: reset the in-memory state so a rig can drive ticks from a
@@ -591,4 +826,7 @@ export function __resetSessionWatchdogForTests(since: number = Date.now()): void
   recycleLedger.clear();
   lastGateSeen.clear();
   stoodDown.clear();
+  bootRestartLedger.clear();
+  bootEscalated.clear();
+  resolveRunId = () => 'default';
 }
