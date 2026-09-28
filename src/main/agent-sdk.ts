@@ -46,6 +46,7 @@ import {
   maybeBumpCoordinatorOnReplacement,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
+import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
 import { forkBranchName } from '../shared/fork-session';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
 import { scopeSessionsToWorktree, type SessionCandidate } from '../shared/session-discovery';
@@ -1644,9 +1645,25 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // createSdkMcpServer (no subprocess/port). Local (non-remote) sessions only —
   // a sandboxed/remote agent has no WebContentsView on this host to drive.
   const browserServer = remote ? null : await buildBrowserToolServer(wsId);
+  // Per-session debug black box (#177): every LOCAL session — HEADLESS included
+  // — writes the CLI's verbose debug/stderr to a file under
+  // `<ORCHESTRA_HOME>/logs/sessions/`, which OUTLIVES workspace deletion (unlike
+  // the keeper's `keepers/<id>.log`, swept when the keeper dies, or anything in
+  // the worktree). The SDK maps `debugFile` → the CLI `--debug-file <path>` flag
+  // (the same surface the #176 rig used) — the arg flows through the keeper
+  // spawn to the child. REMOTE/SANDBOX is excluded: its CLI runs in the
+  // container, so a host path would resolve there, not on this host — the
+  // measured gap (#177 incident 2026-09-21) was local headless spawns anyway.
+  const debugFile = remote ? null : newSessionDebugLogPath(wsId);
+  // Bound the black box the moment a new capture appears: age + total-bytes +
+  // file-count caps, oldest evicted first, never the file we're about to write.
+  if (debugFile) sweepSessionDebugLogs(debugFile);
   session.q = query({
     prompt: promptStream(session),
     options: {
+      // #177 — set BEFORE the rest so a future edit can't accidentally drop it
+      // behind a conditional. `debugFile` implicitly enables debug mode.
+      ...(debugFile ? { debugFile } : {}),
       ...(browserServer ? { mcpServers: { browser: browserServer } } : {}),
       cwd: remote ? '/workspace' : ws.worktreePath,
       includePartialMessages: true,
