@@ -42,7 +42,12 @@ import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
-import { getBus, coordinatorGeneration, bumpCoordinatorGeneration } from './bus.ts';
+import {
+  getBus,
+  coordinatorGeneration,
+  bumpCoordinatorGeneration,
+  expireOrphanedAsks,
+} from './bus.ts';
 import {
   runFlags,
   startRun,
@@ -859,11 +864,25 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   }
 }
 
+/** #187: a deleted workspace can never answer, so its open asks/gates are
+ *  eternal pending that re-wake the recipient forever. Expire them on delete.
+ *  Tolerates `getBus() === null` (D1) — the boot backfill catches any it missed. */
+function expireBusAsksForDeleted(id: string): void {
+  const db = getBus();
+  if (!db) return;
+  try {
+    expireOrphanedAsks(db, id);
+  } catch (e) {
+    log.warn(`bus: failed to expire orphaned asks for deleted workspace ${id}`, e);
+  }
+}
+
 export async function deleteWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   await teardownWorkspace(ws);
   await store.removeWorkspace(id);
+  expireBusAsksForDeleted(id);
   platform.broadcast('workspace:removed', id);
 }
 
@@ -888,6 +907,7 @@ export async function deleteWorkspaces(
   }
   if (removed.length === 0) return;
   await store.removeWorkspaces(removed);
+  for (const id of removed) expireBusAsksForDeleted(id);
   platform.broadcast('workspaces:removed', removed);
 }
 
@@ -971,6 +991,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
       }
 
       await store.removeWorkspace(ws.id);
+      expireBusAsksForDeleted(ws.id);
       platform.broadcast('workspace:removed', ws.id);
     }
   }

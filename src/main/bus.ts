@@ -908,6 +908,138 @@ export function openGatesForRecipientInRuns(
     .all(JSON.stringify([...runIds]), recipient) as BusDecisionGate[];
 }
 
+// ─── Orphaned asks/gates: expire when the asker is deleted (#187) ────────────
+
+/** How an orphaned ask/gate is closed — the resolution shown to a human and the
+ *  `resolved_by` recorded on a gate. */
+export const ASKER_DELETED_RESOLUTION = 'asker deleted';
+const SYSTEM_ACTOR = 'system';
+
+/** Canonical UUID v4 shape — a workspace id (`randomUUID()`). Used ONLY as the
+ *  backfill discriminant: a run-anchor `host-…` id or `default` fails this, so
+ *  we never close an ask whose asker is a non-workspace id of another type. */
+const WORKSPACE_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Expire every OPEN ask and gate whose asker is `deletedWorkspaceId`, in ALL runs
+ * — the fix for #187 (a cross-fleet ask outlives its asker and re-wakes the
+ * recipient forever). Returns how many of each it closed.
+ *
+ * A DELETED workspace can never answer, so its open asks/gates are eternal
+ * pending. We close them so the wake/liveness predicates read them as done:
+ *   - GATES: resolved in place (`resolution = 'asker deleted'`, `resolved_by =
+ *     'system'`) — exactly what `resolveGate` records, so `openGate…` reads and
+ *     `readWaitingReaders`'s `resolved_at IS NULL` clause stop matching.
+ *   - QUESTIONS: a `question` has no resolution column; "answered" is DEFINED (by
+ *     both `readPendingReaders`'s `questionRows` and `readWaitingReaders`'s
+ *     `openAskSent`) as a threaded reply FROM the target (`sender = recipient`)
+ *     back TO the asker (`recipient = sender`) in the question's run. So we
+ *     synthesize exactly that reply — one `status` row per open question — which
+ *     satisfies BOTH predicates with NO schema change. The reply is addressed to
+ *     the deleted asker, so it wakes nobody. Only NON-NULL-recipient questions
+ *     can pend (the predicate matches an exact recipient), so a NULL-recipient
+ *     question is already inert and needs no reply (and `sender` could not be
+ *     NULL anyway — `messages.sender` is NOT NULL).
+ */
+export function expireOrphanedAsks(
+  db: BusDb,
+  deletedWorkspaceId: string,
+): { questions: number; gates: number } {
+  const now = Date.now();
+  const gateInfo = db
+    .prepare(
+      `UPDATE decision_gates
+          SET resolution=?, resolved_by=?, resolved_at=?
+        WHERE asked_by=? AND resolved_at IS NULL`,
+    )
+    .run(ASKER_DELETED_RESOLUTION, SYSTEM_ACTOR, now, deletedWorkspaceId);
+
+  const openQuestions = db
+    .prepare(
+      `SELECT sequence, run_id, recipient FROM messages q
+        WHERE q.kind='question' AND q.sender=? AND q.recipient IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM messages r
+             WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
+               AND r.sender = q.recipient AND r.recipient = q.sender
+          )`,
+    )
+    .all(deletedWorkspaceId) as {
+    sequence: number;
+    run_id: string;
+    recipient: string;
+  }[];
+  const insertReply = db.prepare(
+    `INSERT INTO messages (run_id, thread_id, sender, recipient, kind, body, created_at)
+     VALUES (?,?,?,?,?,?,?)`,
+  );
+  for (const q of openQuestions) {
+    insertReply.run(
+      q.run_id,
+      String(q.sequence),
+      q.recipient, // the target answers…
+      deletedWorkspaceId, // …back to the (deleted) asker
+      'status',
+      ASKER_DELETED_RESOLUTION,
+      now,
+    );
+  }
+  return { questions: openQuestions.length, gates: Number(gateInfo.changes) };
+}
+
+/**
+ * BOOT BACKFILL (#187 requirement 2): close asks/gates ALREADY orphaned before
+ * this fix landed (e.g. prod question seq 1458). Enumerates the DISTINCT askers of
+ * every open ask/gate and expires each proven to be a DELETED workspace.
+ *
+ * The discriminant is deliberate: an asker id must be BOTH a well-formed workspace
+ * UUID AND absent from the live store (`isLiveWorkspace(id)` false). "Absent" alone
+ * is not enough — a run-anchor/`host-…` id is also absent yet is NOT a deleted
+ * workspace; the UUID shape excludes those (and `default`). A UUID that is still a
+ * live workspace fails `!isLiveWorkspace`, so we never touch a running asker.
+ * Returns the ids it expired and the totals closed.
+ *
+ * `storeLoaded` GATES the whole pass: it must be `true` (the store was really read
+ * off disk). An absent/corrupt store.json falls back to EMPTY defaults, under which
+ * EVERY live asker reads "absent" (`isLiveWorkspace` false for all) and this would
+ * close the asks/gates of LIVING workspaces (review #187 F1). When false we do
+ * NOTHING — the safety lives in the reusable function, not only at the call site.
+ */
+export function expireAllOrphanedAsks(
+  db: BusDb,
+  isLiveWorkspace: (id: string) => boolean,
+  storeLoaded: boolean,
+): { askers: string[]; questions: number; gates: number } {
+  if (!storeLoaded) return { askers: [], questions: 0, gates: 0 };
+  const askers = (
+    db
+      .prepare(
+        `SELECT DISTINCT sender AS id FROM messages
+          WHERE kind='question' AND recipient IS NOT NULL
+        UNION
+         SELECT DISTINCT asked_by AS id FROM decision_gates
+          WHERE resolved_at IS NULL`,
+      )
+      .all() as { id: string }[]
+  )
+    .map((r) => r.id)
+    .filter((id) => WORKSPACE_ID_RE.test(id) && !isLiveWorkspace(id));
+
+  let questions = 0;
+  let gates = 0;
+  const expired: string[] = [];
+  for (const id of askers) {
+    const res = expireOrphanedAsks(db, id);
+    if (res.questions || res.gates) {
+      expired.push(id);
+      questions += res.questions;
+      gates += res.gates;
+    }
+  }
+  return { askers: expired, questions, gates };
+}
+
 // ─── Fencing: coordinator generation (#128) ─────────────────────────────────
 
 /**

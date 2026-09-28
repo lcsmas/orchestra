@@ -708,6 +708,7 @@ for an agent, and never acks on one's behalf.** Frozen on #108 comments 4-5.
 | `src/main/bus-wake-restart.test.ts` | 6 tests: the #159 restart→orphan re-arm (mutation-proven RED pre-fix) + the wakeable-state transition log (once per transition, not per sweep). Runs on `$HOME` (btrfs), not tmpfs. |
 | `src/main/bus-wake-sweep.test.ts` | 15 tests driving the sweep end to end (T117.1–T117.5, D1, Q1 two-run + restart) |
 | `src/main/bus-wake-withdrawal.test.ts` | 5 tests: #172 withdrawn wake-turn rolls back the ledger mark → next sweep re-fires (mutation-proven RED pre-fix on arms 1 & 3), incl. the #162 coalesced multi-run arm + the started-path/non-order negative controls. Runs on `$HOME` (btrfs). |
+| `src/main/bus-orphaned-asks.test.ts` | 6 tests: #187 `expireOrphanedAsks`/`expireAllOrphanedAsks` close a deleted asker's open asks/gates so the wake/liveness predicates read them done. Runs on `$HOME` (btrfs). |
 
 ## Why the host watches instead of the agent polling
 
@@ -1322,6 +1323,54 @@ un-acked lot behind an already-obeyed newer ask (no cross-run starvation, review
 — `lotAxisReArmed` also short-circuits to false under `reWakeUntilAnswered`, so the
 bound is that lot's only backstop). The obeyed-ask reader still re-arms on its own
 `cursorAtWake` advance (#119) when it acks new mail, and clears on answer.
+
+### Orphaned asks/gates expire when the asker is DELETED (#187)
+
+#185 silenced the WAKE side of an eternal ask, but the DIRTY STATE stayed: an ask
+or gate whose `sender`/`asked_by` workspace was deleted (the #187 seed — a
+cross-fleet ask into another mission's run, that workspace deleted at wave close)
+can never be meaningfully answered, so its pending is eternal and re-fires any
+future wake-engine evolution. Fix: on delete, expire the asker's open asks/gates
+in **ALL** runs so the wake (`readPendingReaders`) and liveness
+(`readWaitingReaders`) predicates read them done.
+
+`expireOrphanedAsks(db, deletedWorkspaceId)` (`src/main/bus.ts`) closes both, with
+NO schema change:
+- **Gates**: resolved in place — `resolution='asker deleted'`
+  (`ASKER_DELETED_RESOLUTION`), `resolved_by='system'`, `resolved_at=now`, guarded
+  `WHERE asked_by=? AND resolved_at IS NULL` (a human's earlier ruling is never
+  clobbered). Same shape `resolveGate` records, so `openGates…`/`openGateOpened`
+  stop matching.
+- **Questions**: a `question` has no resolution column; "answered" is DEFINED
+  identically by both predicates as a threaded reply FROM the target
+  (`sender = q.recipient`) back TO the asker (`recipient = q.sender`) in the
+  question's run. So we SYNTHESIZE exactly that reply — one `status` row per open
+  question — satisfying both. The reply is addressed to the (deleted) asker, so it
+  wakes nobody. Only NON-NULL-recipient questions can pend, so a NULL-recipient one
+  is already inert (and `messages.sender` is NOT NULL, so a reply for it could not
+  be authored anyway).
+
+Wired at all three delete paths — `deleteWorkspace`, `deleteWorkspaces`,
+`pruneOrphanedWorkspaces` (`src/main/workspaces.ts`, via `expireBusAsksForDeleted`)
+— AFTER `store.removeWorkspace`, tolerating `getBus() === null` (D1).
+
+**Boot BACKFILL** — `expireAllOrphanedAsks(db, isLiveWorkspace)`, called after
+`initBus()` in `src/main/index.ts`, closes orphans ALREADY dirty before this fix
+(the prod seq 1458). It enumerates the DISTINCT askers of every open ask/gate and
+expires each proven a DELETED workspace. The discriminant is deliberate: an asker
+must be BOTH a well-formed workspace UUID (`WORKSPACE_ID_RE`) AND absent from the
+live store. Absence ALONE is insufficient — a run-anchor / per-boot `host-…` id /
+`default` is also absent yet is NOT a deleted workspace; the UUID shape excludes
+those. A UUID still live in the store fails `!isLiveWorkspace`, so a running asker
+is never touched.
+
+Gates: `src/main/bus-orphaned-asks.test.ts` (6 arms on real SQLite, driving the
+SHIPPED `readPendingReaders`/`readWaitingReaders` — the #185 storm shape: ack the
+lot first, so the only remaining pending is the answer-based re-arm). Each names
+its clause; mutants seen RED: no synthetic reply (A1+A6), no gate UPDATE (A2),
+drop `resolved_at IS NULL` (A4), drop the UUID-shape discriminant (A5), unscoped
+`sender` (A3+A5). A3 (living asker untouched on an unrelated peer delete) is the
+negative control.
 
 ### `readWaitingReaders(db, readers): Set<string>` — the export #120 consumes
 

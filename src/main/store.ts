@@ -93,6 +93,15 @@ class Store {
     return this._file;
   }
   private data: StoreShape = DEFAULT;
+  // True ONLY after `load()` parsed an existing store.json off disk. An absent or
+  // corrupt file leaves it false, so `this.data` (empty DEFAULT) is NOT trusted as
+  // "the full set of live workspaces" — a destructive consumer (the #187 orphan
+  // backfill) that treats absence-from-store as proof-of-deletion must refuse to
+  // run in that state, or it closes the asks/gates of workspaces that are alive.
+  private _loadedFromDisk = false;
+  get loadedFromDisk(): boolean {
+    return this._loadedFromDisk;
+  }
   // Chain of pending saves — each save waits for the previous to finish before
   // writing. Prevents concurrent writeFile calls from interleaving and
   // truncating each other, which was corrupting store.json.
@@ -108,6 +117,7 @@ class Store {
       const raw = await readFile(this.file, 'utf8');
       const parsed = JSON.parse(raw);
       this.data = { ...DEFAULT, ...parsed };
+      this._loadedFromDisk = true;
       slog.info(
         `loaded ${this.data.workspaces?.length ?? 0} workspace(s), ${this.data.repos?.length ?? 0} repo(s) from ${this.file}`,
       );

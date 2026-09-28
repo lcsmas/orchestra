@@ -171,7 +171,7 @@ import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
-import { initBus, closeBus, busPath, getBus } from './bus';
+import { initBus, closeBus, busPath, getBus, expireAllOrphanedAsks } from './bus';
 import { registerBusPaneIpc, registerStaleRunSource } from './bus-pane';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import {
@@ -379,6 +379,31 @@ async function createMainWindow() {
   try {
     const version = initBus();
     log.info(`bus: opened ${busPath()} (schema v${version})`);
+    // #187 boot backfill: close asks/gates already orphaned by a workspace
+    // deleted before this fix (e.g. the cross-fleet question that re-wakes its
+    // recipient every boot). A live workspace's ask is left untouched; a
+    // non-workspace asker id (host-…/default/run anchor) is excluded by shape.
+    try {
+      const db = getBus();
+      // `store.loadedFromDisk` GATES this destructive pass: an absent/corrupt
+      // store.json falls back to EMPTY defaults, under which EVERY live asker reads
+      // "deleted" and the backfill would close alive workspaces' asks/gates (F1).
+      // Not a "0 workspaces" proxy — a genuinely-empty store reads the same.
+      if (db && !store.loadedFromDisk) {
+        log.warn(
+          'bus: skipping #187 orphaned-ask backfill — store was not loaded from disk (empty/corrupt fallback); would misread live askers as deleted',
+        );
+      } else if (db) {
+        const r = expireAllOrphanedAsks(db, (id) => !!store.getWorkspace(id), store.loadedFromDisk);
+        if (r.questions || r.gates) {
+          log.info(
+            `bus: expired ${r.questions} orphaned question(s) + ${r.gates} gate(s) from ${r.askers.length} deleted asker(s)`,
+          );
+        }
+      }
+    } catch (e) {
+      log.warn('bus: orphaned-ask backfill failed', e);
+    }
   } catch (e) {
     log.error(`bus: FAILED to open ${busPath()} — the fleet bus is unavailable`, e);
     // Best-effort surface for the renderer; never let the notification itself
