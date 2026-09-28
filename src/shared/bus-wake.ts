@@ -120,6 +120,31 @@ export interface ReaderPendingState {
    * downward mail, reddens the G4a fire arm. `undefined` when only a gate pends.
    */
   switchRunId?: string;
+  /**
+   * The reader's OWN run coordinator generation THIS sweep (#200). A coordinator
+   * (an OPS/LEAD) that `orchestra restart`s BUMPS its own run's
+   * `coordinator_generation` (#128/#166) — the durable, per-run marker of "this
+   * coordinator was replaced". The FIRE ledger is process-global in-memory, so a
+   * SESSION restart (not an app restart) leaves the reader's pre-restart entry —
+   * its `(wokeRunId, wokeLotSeq, lastWakeAt)` — in place. That entry belongs to the
+   * SUPERSEDED coordinator: its high-water is stale, and its `already-woken` latch
+   * (the fresh coordinator has not acked past the pre-restart high-water because
+   * its turn was reset) suppresses the very mail the restart was meant to deliver,
+   * until the #183 5-min bound. #200 keys the re-arm on this: when the reader's own
+   * run generation has ADVANCED past the generation the ledger entry was recorded
+   * under ({@link WakeLedgerEntry.wokeGeneration}), the coordinator restarted since
+   * that wake, so the stale entry RE-ARMS — the fresh coordinator wakes on the
+   * current pending seq at once (not the stale one, not after the bound).
+   *
+   * Read for the reader's OWN run (the roster's `runId`), NOT the mail run: #166
+   * bumps the run whose anchor IS the restarting workspace (an OPS is its own
+   * anchor), and a downward LEAD->OPS ruling sits in the LEAD's (ancestor) run whose
+   * generation the OPS restart never touches. A plain non-coordinator reader's run
+   * never bumps, so this stays 0 and never re-arms — the fix is scoped to a
+   * coordinator restart exactly. `undefined` for legacy/pre-#200 callers and the
+   * whole shared suite, so every existing arm behaves identically (no re-arm).
+   */
+  readerRunGeneration?: number;
 }
 
 /** Everything about the reader's SESSION the decision needs. */
@@ -189,6 +214,25 @@ export interface WakeLedgerEntry {
    * the bound counts from there (never re-fires a latch it has not itself timed,
    * which would fire instantly on a restart that rebuilt the ledger). */
   lastWakeAt?: number;
+  /**
+   * The reader's OWN run coordinator generation at the moment this entry was
+   * recorded (#200). Compared against {@link ReaderPendingState.readerRunGeneration}
+   * (the CURRENT generation) each sweep: a strict advance means the coordinator
+   * `orchestra restart`ed since this wake (#128/#166 bumps its own run's generation
+   * on a coordinator-replacement relaunch), so this entry belongs to the superseded
+   * coordinator and its high-water/latch is stale — RE-ARM ({@link coordinatorRestarted}).
+   *
+   * A plain SESSION restart of a coordinator does not touch this process-global
+   * in-memory ledger, so without this marker the fresh coordinator inherits the old
+   * one's `(wokeLotSeq, lastWakeAt)` and stays latched `already-woken` on mail it
+   * never acked until the #183 5-min bound (the #200 latency + the stale reported
+   * seq). `undefined` for legacy entries and for a reader whose generation is
+   * unknown — treated as "no restart observed", so the re-arm never fires
+   * spuriously (the coexistence-safe direction: dedup as before). Reset to the
+   * current generation on every fire/count so the re-arm fires exactly ONCE per
+   * restart, then the ordinary cursor/gate dedup holds.
+   */
+  wokeGeneration?: number;
 }
 
 /**
@@ -213,9 +257,9 @@ export type WakeAction =
    *  did not fire/count). `lastWakeAt` is the `now` this action fired at (~monotonic
    *  wall clock — see {@link WakeLedgerEntry.lastWakeAt}), recorded on the ledger
    *  for the #183 bounded re-wake clock. */
-  | { kind: 'fire'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string; lastWakeAt: number }
+  | { kind: 'fire'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string; lastWakeAt: number; wokeGeneration?: number }
   /** The switch is OFF: count a would-have-woken, fire nothing (standing ruling). */
-  | { kind: 'count'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string; lastWakeAt: number }
+  | { kind: 'count'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string; lastWakeAt: number; wokeGeneration?: number }
   /** Nothing to do — no pending state, or already woken on BOTH axes' high-waters. */
   | { kind: 'skip'; reader: string; why: SkipReason };
 
@@ -381,6 +425,38 @@ function boundedReArmed(previous: WakeLedgerEntry, now: number): boolean {
 }
 
 /**
+ * The #200 COORDINATOR-RESTART re-arm test. True when the reader's OWN run
+ * coordinator generation has strictly ADVANCED past the generation this ledger
+ * entry was recorded under — i.e. the coordinator (an OPS/LEAD) `orchestra
+ * restart`ed since the last wake (#128/#166 bump its own run's generation on a
+ * coordinator-replacement relaunch).
+ *
+ * The FIRE ledger is process-global in-memory, so a SESSION restart (the app stays
+ * up) leaves the pre-restart entry — its `(wokeRunId, wokeLotSeq, lastWakeAt)` —
+ * belonging to the SUPERSEDED coordinator. That stale high-water is what makes the
+ * fresh coordinator (a) report a stale/cross-run `wokeLotSeq` in the wake log and
+ * (b) latch `already-woken` on mail it never acked (its turn was reset, so its
+ * cursor never reached the pre-restart high-water) until the #183 5-min bound.
+ * Treating the generation advance as a re-arm drops the stale entry: the next fire
+ * records the CURRENT pending seq (not the stale one) and resets the latch clock,
+ * exactly like the #159 orphan re-arm does for a topology change.
+ *
+ * Requires BOTH values present. `readerRunGeneration === undefined` (unknown, e.g.
+ * a legacy caller or a down bus) → NO re-arm, the coexistence-safe direction (dedup
+ * as before). `previous.wokeGeneration === undefined` (a legacy entry recorded
+ * before this field existed) → NO re-arm, so a build carrying an old ledger across
+ * an upgrade does not storm. Fires exactly ONCE per restart: the fire records the
+ * current generation as the new `wokeGeneration`, so `current > recorded` is false
+ * next sweep and the ordinary cursor/gate dedup resumes.
+ */
+function coordinatorRestarted(pending: ReaderPendingState, previous: WakeLedgerEntry): boolean {
+  const current = pending.readerRunGeneration;
+  const recorded = previous.wokeGeneration;
+  if (current === undefined || recorded === undefined) return false;
+  return current > recorded;
+}
+
+/**
  * TWO DEDUP LEDGERS, NOT ONE (#153). A `count` (switch OFF) must NEVER arm the
  * FIRE dedup, or a mid-process OFF→ON flip strands every reader counted under OFF
  * in `already-woken` starvation: the counted reader was never delivered a wake, so
@@ -432,8 +508,22 @@ export function decideWake(
   // own high-water rising (a new gate opened). Suppress only when NEITHER axis is
   // active — that is the dedup: an outstanding order on an un-advanced axis is not
   // re-issued.
-  const lotActive = lotPending && (lotPrev === undefined || lotAxisReArmed(pending, lotPrev));
-  const gateActive = gatePending && (gatePrev === undefined || gateAxisReArmed(pending, gatePrev));
+  // #200: a COORDINATOR RESTART re-arms EITHER axis. The reader's own-run
+  // generation advancing past the ledger entry's `wokeGeneration` means the
+  // coordinator was replaced (`orchestra restart`) since the last wake, so the
+  // entry's high-water and `already-woken` latch belong to the superseded
+  // coordinator and are stale. OR'd into each axis's active test (per the ledger
+  // that axis dedups against) so the fresh coordinator fires on the CURRENT pending
+  // at once — not the stale seq, not after the #183 bound. Fires exactly once: the
+  // recorded `wokeGeneration` below is reset to the current generation.
+  const lotActive =
+    lotPending &&
+    (lotPrev === undefined || lotAxisReArmed(pending, lotPrev) || coordinatorRestarted(pending, lotPrev));
+  const gateActive =
+    gatePending &&
+    (gatePrev === undefined || gateAxisReArmed(pending, gatePrev) || coordinatorRestarted(pending, gatePrev));
+  // Recorded on every action so the re-arm fires ONCE per restart, then dedups.
+  const wokeGeneration = pending.readerRunGeneration;
   if (!lotActive && !gateActive) {
     // ── #183 D1: the BOUNDED level-triggered backstop ──────────────────────────
     // Both per-signal re-arms are dead this sweep — the reader is latched
@@ -478,14 +568,14 @@ export function decideWake(
       const wokeRunId = lotBoundEligible ? pending.pendingRunId : lotPrev?.wokeRunId;
       if (lotFires || gateFires) {
         const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
-        return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+        return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now, wokeGeneration };
       }
       // A bounded re-fire is owed only when a cursor-clearable lot or a gate is
       // eligible. An ask-only latch (lot pending but reWakeUntilAnswered) falls
       // through to the ordinary skip — its re-arm is the `cursorAtWake` path.
       if (lotBoundEligible || gatePending) {
         const throughSeq = Math.max(lotBoundEligible ? lotSeqNow : 0, gatePending ? gateSeqNow : 0);
-        return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+        return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now, wokeGeneration };
       }
     }
     return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
@@ -514,10 +604,10 @@ export function decideWake(
   // stays observable next sweep.
   if (lotFires || gateFires) {
     const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
-    return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+    return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now, wokeGeneration };
   }
   const throughSeq = Math.max(lotActive ? lotSeqNow : 0, gateActive ? gateSeqNow : 0);
-  return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now };
+  return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId, lastWakeAt: now, wokeGeneration };
 }
 
 /**
