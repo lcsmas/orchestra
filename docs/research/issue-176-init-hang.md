@@ -224,130 +224,134 @@ two sharpening it:
    fresh start succeeds; load context at 13:41: ~30 workspaces in store,
    ~12 sibling agents running, 6 submodule-bearing worktree creations in 12 s.
 
+
 ---
 
-## 9. ROOT CAUSE — PROVEN 2026-09-28 (T2, ledger #198, wave CLI-unresponsive)
+## 9. ROOT CAUSE — 2026-09-28 (T2, ledger #198, wave CLI-unresponsive)
 
-**Verdict: the hang is a NETWORK-PATH pathology on TLS connections from this host
-to the Anthropic anycast endpoint, NOT an Orchestra spawn-env defect and NOT the
-claude-CLI's config.** A subset of TCP connections to `api.anthropic.com`
-(`160.79.104.10` v4 / `[2607:6bc0::10]` v6) receive a SYN-ACK advertising the
-**minimum MSS (536)**, and the path then **silently drops the CLI's first data
-segment** — the ~1504-byte, 2-segment TLS ClientHello — which is **never ACKed**.
-The connection is dead from the handshake. The CLI blocks on that dead socket
-until an app-level timeout. Reproduced live AND with a code-free control.
+> **This section was amended after an initial over-claim was caught (LEAD D8).**
+> The first draft claimed a code-free `curl` control reproduced the stall 35/40;
+> that was a **measurement error** — the `ss` snapshot captured the live *fleet's*
+> `claude` sockets, not the curls, which actually all succeeded. The corrected
+> control below (a concurrent burst of pure Node TLS handshakes) is the real
+> reproduction. The corrected verdict is narrower and honest about what is proven.
 
-### 9.1 The trace (live, 2026-09-28 ~14:00–16:00Z, real fleet running)
+**Verdict: the hang is a transient, CONCURRENCY-TRIGGERED network-path pathology
+on the *anthropic* path — a fraction of simultaneously-opened TLS connections to
+`api.anthropic.com` are black-holed at the handshake (SYN-ACK advertises the
+minimum MSS 536, then the ClientHello data is never ACKed, `bytes_acked:1`). It is
+NOT an Orchestra spawn-env defect and NOT the claude-CLI's config: it reproduces
+with a pure Node TLS client that shares none of that code. Serial connections
+succeed; only bursts stall, and only in intermittent windows.**
 
-Captured with `ss -tnpi` on stuck flows to anthropic. Every stuck flow, no
-exception:
+### 9.1 The signature (live fleet, 2026-09-28)
+
+Every stuck flow to anthropic, no exception, carries this `ss -tnpi` signature:
 
 ```
 ESTAB 0 1504  192.168.1.19:57226  160.79.104.10:443  users:(("claude",pid=402443,fd=27))
-  rcvmss:536  bytes_sent:1504  bytes_acked:1  data_segs_out:2  unacked:2
-  retrans:0/5  rto:15687   (RTO backed off 15.7 s after 5 retransmits)
+  rcvmss:536  bytes_sent:1504  bytes_acked:1  data_segs_out:2  unacked:2  retrans:0/5  rto:15687
 ```
 
-- `bytes_acked:1` = only the SYN's phantom byte ACKed; **0 bytes of the 1504-byte
-  ClientHello were ever ACKed** (`data_segs_out:2`, `unacked:2`).
-- `rcvmss:536` = the peer's SYN-ACK offered MSS 536 (TCP minimum). Healthy flows
-  to the **same IP** get `rcvmss:1448`.
-- The host's own `advmss` is 1448 and it routes over clean WiFi (`wlp1s0f0`,
-  MTU 1500, `via 192.168.1.1`); **NOT** the tailscale tunnel (tailscale0 MTU 1280
-  carries no anthropic traffic). The host has **no MSS-clamp rule** (`iptables
-  mangle` / `nft` clean). So the 536 clamp originates **upstream of this host** —
-  ISP path or the anthropic edge/anycast — not from anything we control.
+- `bytes_acked:1` = only the SYN's phantom byte ACKed; **0 bytes of the ClientHello
+  ACKed**; the socket retransmits with RTO backing off (5 retrans → 15.7 s).
+- `rcvmss:536` = the peer's SYN-ACK offered MSS 536 (TCP minimum). Healthy flows to
+  the **same IP** get `rcvmss:1448`.
 
-**The MSS-536 SYN-ACK deterministically predicts the black hole** (cross-tab over
-one 100-flow snapshot):
+**`rcvmss:536 ⟺ stuck` is 100 %** across the captures:
+- live `claude` fleet flows: 293/293 stuck flows `rcvmss:536`;
+- my own Node-probe flows (§9.2): 4/4 stuck `rcvmss:536`, 0 healthy flows at 536.
 
-| | `rcvmss:536` | `rcvmss:1448` |
-|---|---|---|
-| stuck (`bytes_acked:1`) | **79** | 0 |
-| healthy | 0 | **21** |
+Both IPv4 (`160.79.104.10`) and IPv6 (`[2607:6bc0::10]`) destinations are affected.
 
-100 % correlation, zero exceptions. Both v4 and v6 destinations affected (not
-protocol-specific — the 09-23 note saw v6, this capture saw both). The stuck
-flows clear as the CLI/kernel retransmits or the app times out and reconnects,
-which is why the field symptom is a *bounded* stall (188 s turn-retry on CLI
-≥2.1.280, or the ~600 s init-request API timeout) rather than a permanent hang.
+### 9.2 The corrected code-free control (Node TLS burst)
 
-### 9.2 The code-free positive control (isolates the path, exonerates the CLI)
+Pure `node:tls` handshakes — no Orchestra, no claude-CLI, no MCP
+(`~/init-hang-rig/burst-probe.mjs`, `interleave.mjs`; kept out of tree):
 
-40 parallel plain `curl -X POST https://api.anthropic.com/v1/messages` — no
-Orchestra, no claude-CLI, no MCP — fired in one burst:
+1. **Serial vs burst is the discriminator, not the client.** 40 *serial* `curl`
+   POSTs → **40/40 HTTP 401** (all TLS handshakes complete, appconnect ~0.03–0.08 s):
+   **no stall**. A *concurrent burst* of 40+ Node TLS handshakes → **~40 % TIMEOUT
+   in a stall window** (e.g. one run: v4-big 12/30, v4-small 10/30, v6-big 12/30,
+   v6-small 9/30 timed out at 15 s).
+2. **NOT specific to the 2-segment "big" ClientHello.** Small ClientHellos time
+   out at nearly the same rate as ALPN-padded 2-segment ones (10 vs 12 on v4). The
+   first draft's emphasis on the 1504-byte 2-segment ClientHello as the trigger is
+   **not supported** — payload size is not the axis; concurrency is.
+3. **It is INTERMITTENT.** Most burst rounds return 0/40 for minutes at a time; the
+   stall appears in windows. Field ceiling (188 s turn-retry / ~600 s init) matches
+   a transient that clears as sockets retransmit or the app times out and reconnects.
+
+### 9.3 Localization — anthropic-path specific, not the local box
+
+Interleaved control (`interleave.mjs`): each round fires a 40-burst at
+`api.anthropic.com` AND at `cloudflare.com` back-to-back, same instant. A local
+SYN-proxy / anti-flood middlebox would clamp/black-hole BOTH equally. Observed:
 
 ```
-35 / 40 flows → rcvmss:536 + bytes_acked:1  (stuck at ClientHello)
-19 / 40 flows → rcvmss:1448                 (healthy)
+round  7: anthropic_fail=4/40   cloudflare_fail=0/40
+round 11: anthropic_fail=2/40   cloudflare_fail=0/40
+(cloudflare: 0/40 in every one of 21+ rounds; anthropic stalls in ~2 rounds/window)
 ```
 
-The pathology reproduces with a client that shares **none** of the code under
-suspicion. This is the decisive exoneration: the black hole is a property of the
-**network path under connection burst**, triggered by opening many TLS
-connections to the anycast endpoint at once. Orchestra's fleet (many CLIs each
-opening several connectors near-simultaneously) is a *victim* of it, not a cause;
-a single lucky connection is enough to make one session boot fine while its
-sibling in the same 2 s window wedges — exactly the observed synchronized-burst
-wedge (e.g. 5 sessions at 11:10:30–33Z, 2026-09-28).
+In a stall window, anthropic stalls while cloudflare (identical concurrent load,
+same moment) does not → the clamp is on the **anthropic path** (their edge/anycast
+or a peering hop toward it), not a generic local box. Corroborating: the host has
+**no local MSS-clamp rule** (`nft list ruleset`, `iptables -t mangle` clean) and
+routes anthropic over clean WiFi (`wlp1s0f0`, MTU 1500, `via 192.168.1.1`), NOT
+the tailscale tunnel (tailscale0 MTU 1280 carries no anthropic traffic). So the
+MSS-536 originates upstream of this host, on the anthropic-specific path.
 
-### 9.3 D5 (ledger's test-first hypothesis) — REFUTED
+### 9.4 D5 (ledger's test-first hypothesis) — REFUTED
 
 **Does resume/init time scale with transcript size? NO.** Isolated rig
 (`~/init-hang-rig`, throwaway `CLAUDE_CONFIG_DIR`, `--fork-session --resume
 --strict-mcp-config`, real metarepo worktree cwd, on btrfs) resuming real
-metarepo transcripts:
+transcripts: 7 MB → init@**0.96 s**, 16 MB (= the 16.5 MB W6b session) →
+**0.75 s**, 28 MB → **1.00 s**. Init/resume is **flat ~1 s across 7→28 MB**; the
+multi-minute delay in those same runs lived entirely in the turn's API request
+(`result` at 88–95 s = the §9.1 network stall). Confirms the prior "94 MB in 4 s".
 
-| transcript | size | time to `system/init` |
-|---|---|---|
-| vivid-canyon | 7 MB | **0.96 s** |
-| crimson-horizon (= the 16.5 MB W6b session) | 16 MB | **0.75 s** |
-| fuzzy-harbor | 28 MB | **1.00 s** |
+### 9.5 Ownership & fix
 
-Init/resume is **flat at ~1 s across 7→28 MB** — transcript loading is not the
-bottleneck (confirms the prior "94 MB resumes in 4 s" note). The multi-second /
-multi-minute delay in these same runs lived entirely in the *turn's API request*
-(`result` at 88–95 s), which is the §9.1 network stall, not the resume. The
-persistent re-wedger `15d02de8` (16.5 MB) is caught more often only because it is
-long-lived and keeps sending turns into the congested window, not because its
-size slows init.
+- **Root-cause owner: the anthropic network path** (MSS-536 SYN-ACK +
+  data-segment black hole on a fraction of *burst* connections). File upstream
+  with the §9.2/§9.3 Node repro. NOT an Orchestra code defect.
+- **Init 600 s vs turn 188 s asymmetry** (the one CLI-side lever): the CLI's
+  init-time request appears to lack the no-response retry the turn request has
+  (`waited_ms:188000` on turns, none observed at init). Filed upstream — not
+  Orchestra-patchable. (Inferred from field timing, not CLI source — see NOT
+  VERIFIED.)
+- **Product mitigation (D7 = A, ruled): BUILD a boot-concurrency throttle.**
+  §9.2 proves the trigger is *concurrency*: serial succeeds, burst stalls. A
+  throttle that caps simultaneous opening-turn boots directly shrinks the burst
+  that provokes the clamp — the one product lever that attacks the trigger, not
+  just the symptom. The shipped #174 self-heal + v0.5.285 bounded stop/rewind +
+  #197 bounded boot-heal remain the recovery layer for whatever still slips
+  through. (Throttle tracked as T2 code, seam `agent-sdk.ts`.)
 
-### 9.4 Ownership & fix
+### 9.6 VERIFIED / NOT VERIFIED
 
-- **Root cause owner: the network path / Anthropic edge** (MSS-536 SYN-ACK +
-  data-segment black hole on a fraction of burst connections). File upstream with
-  the §9.2 control as the repro. NOT an Orchestra code defect.
-- **Why init hangs 600 s while a turn recovers in 188 s** (the one asymmetry we
-  *do* own visibility into): the CLI's init-time request lacks the no-response
-  retry that the turn request has (`waited_ms:188000` on turns, none at init).
-  That is a **claude-CLI** property, filed upstream — Orchestra cannot patch it.
-- **Product mitigation already shipped is the correct layer**: #174 proof-of-life
-  self-heal + v0.5.285 bounded stop/rewind + #197 bounded boot-heal convert a
-  black-holed boot into an automatic recycle whose fresh connections usually miss
-  the transient. A boot-concurrency throttle (work item 3) would *reduce* the
-  burst that triggers the MSS-536 clamp — this is the one product lever that
-  attacks the trigger rather than the symptom, and §9.2 (35/40 stuck under a
-  40-wide burst) is the first hard evidence it would help. **Not built here**
-  (spec-axis; routed to LEAD via §Open-questions on #198 for a ruling before any
-  code).
-
-### 9.5 VERIFIED / NOT VERIFIED
-
-**VERIFIED (literal command beside each):**
-- Stuck flows carry `bytes_acked:1` + `rcvmss:536`, 294/294 in the live capture
-  (`~/init-hang-rig/stuck-capture.log`); `ss -tnpi | grep -A1 :443`.
-- MSS-536 ⟺ stuck, 100 % (79/0, 0/21) — one `ss` snapshot cross-tab.
-- Control: 40 parallel `curl` POST → 35/40 stuck with the identical signature.
-- D5: 7/16/28 MB resume all init in ~1 s (`~/init-hang-rig/ts-*.tsv`).
-- Host routes anthropic over WiFi MTU 1500, no local MSS clamp (`ip route get`,
-  `nft list ruleset`).
+**VERIFIED (literal command / artifact beside each):**
+- `rcvmss:536 ⟺ stuck (bytes_acked:1)`, 100 %: 293/293 live claude flows + 4/4
+  Node-probe flows (`ss -tnpi | grep -A1 :443`; `~/init-hang-rig/stuck-capture.log`).
+- Serial curl 40/40 OK (no stall); concurrent Node TLS burst ~40 % timeout in a
+  window (`~/init-hang-rig/curl2.txt`, `burst2.out`).
+- Anthropic-path specific: interleaved round anthropic 4/40 vs cloudflare 0/40,
+  same burst (`~/init-hang-rig/interleave*.out`).
+- Not ClientHello-size specific: small ≈ big timeout rate.
+- D5 flat init ~1 s across 7/16/28 MB (`~/init-hang-rig/ts-*.tsv`).
+- No local MSS clamp; anthropic routes over WiFi MTU 1500 (`nft list ruleset`,
+  `ip route get 160.79.104.10`).
 
 **NOT VERIFIED:**
-- WHICH hop clamps to MSS 536 (ISP vs anthropic edge) — needs a traceroute/tcpdump
-  from a second vantage; the control proves it is upstream of this host, not which
-  upstream hop.
-- That the init-request truly has NO retry in CLI 2.1.280 (inferred from the
-  600 s vs 188 s field asymmetry + the turn-only `waited_ms` log; not read from CLI
-  source, which is minified).
-- Whether a boot throttle empirically drops the wedge rate — proposed, not
-  measured end-to-end (would need the throttle built).
+- The EXACT hop that clamps to MSS 536 and its SYN-ACK **TTL** (LEAD's tcpdump
+  discriminator): **blocked** — `tcpdump`/packet capture needs `CAP_NET_RAW`/sudo
+  not available to this agent, and the brief forbids any human dialog. §9.3
+  localizes to the anthropic *path* (vs cloudflare) but cannot name the hop or
+  distinguish anthropic-edge from a transit middlebox. Hop ownership = NOT
+  VERIFIED; needs a privileged tcpdump or a second-vantage capture.
+- The CLI init-request has NO no-response retry (inferred from 600 s vs 188 s field
+  timing + turn-only `waited_ms`; not read from the minified CLI binary).
+- That the throttle empirically drops the fleet wedge rate (the burst repro is
+  intermittent, so an end-to-end before/after needs a longer measurement window).
