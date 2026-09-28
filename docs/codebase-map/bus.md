@@ -706,6 +706,7 @@ for an agent, and never acks on one's behalf.** Frozen on #108 comments 4-5.
 | `src/shared/bus-wake.test.ts` | 11 policy tests; each names the clause it kills |
 | `src/main/bus-wake.test.ts` | 10 tests of the pending predicate over a real SQLite bus |
 | `src/main/bus-wake-restart.test.ts` | 6 tests: the #159 restart→orphan re-arm (mutation-proven RED pre-fix) + the wakeable-state transition log (once per transition, not per sweep). Runs on `$HOME` (btrfs), not tmpfs. |
+| `src/main/bus-wake-restart-generation.test.ts` | 5 tests (#200): a COORDINATOR restart re-arms the stale in-memory FIRE-ledger latch keyed on the reader's own-run `coordinator_generation` advancing — lot arm + report-correct-seq arm + fire-once dedup + a generation-never-advances negative control + the gate-axis clause. Each clause mutation-proven RED (lot/gate clause removed, comparison→false, population→undefined, recording→undefined). Runs on `$HOME` (btrfs). |
 | `src/main/bus-wake-sweep.test.ts` | 15 tests driving the sweep end to end (T117.1–T117.5, D1, Q1 two-run + restart) |
 | `src/main/bus-wake-withdrawal.test.ts` | 5 tests: #172 withdrawn wake-turn rolls back the ledger mark → next sweep re-fires (mutation-proven RED pre-fix on arms 1 & 3), incl. the #162 coalesced multi-run arm + the started-path/non-order negative controls. Runs on `$HOME` (btrfs). |
 | `src/main/bus-orphaned-asks.test.ts` | 6 tests: #187 `expireOrphanedAsks`/`expireAllOrphanedAsks` close a deleted asker's open asks/gates so the wake/liveness predicates read them done. Runs on `$HOME` (btrfs). |
@@ -872,6 +873,33 @@ read the absent key as cursor 0 → `0 >= wokeLotSeq` false → `already-woken` 
 silent skip) every sweep, ~19 min (F-C5-3) / ~8 min (F-C6), until an OLD-CHANNEL turn
 advanced a cursor in a live run.
 Closed by the orphan re-arm above; regression in `bus-wake-restart.test.ts`.
+
+**#200 COORDINATOR-RESTART re-arm — a THIRD lot/gate re-arm, keyed on the run's
+`coordinator_generation`.** The FIRE `ledger` is process-global **in-memory**
+(`src/main/bus-wake.ts`), so an `orchestra restart` of a coordinator (a SESSION
+restart, not an app restart) leaves the SUPERSEDED coordinator's entry in place —
+its `(wokeRunId, wokeLotSeq, lastWakeAt)`. The fresh coordinator's turn was reset,
+so its cursor never reached the pre-restart high-water: the lot axis does not
+re-arm (cursor), the woken run is still related (not #159-orphaned), and the #183
+bound has not elapsed → it latches `already-woken` on the very mail the restart
+should deliver, until the 5-min bound. Live (#200): the wake log also reported a
+STALE cross-run `wokeLotSeq` (`woke 0d4e3866 through seq 15`, a 2-week-old
+unrelated run) — the pre-#159 shipped build; on current master the orphan re-arm
+already reports the current seq, but the LATCH survived. The durable marker of a
+coordinator restart is `runs.coordinator_generation` — #128/#166 bump the run
+whose anchor IS the restarting workspace (an OPS is its own anchor; verified live:
+OPS run `0d4e3866` read generation 1 post-restart, the mail's mission run
+`0524718f` still 0). So `coordinatorRestarted(pending, prev)`
+(`src/shared/bus-wake.ts`): the reader's OWN-run generation
+(`ReaderPendingState.readerRunGeneration`, read for `runId` NOT the mail run)
+strictly exceeding the entry's recorded `WakeLedgerEntry.wokeGeneration` re-arms
+BOTH axes (OR'd into `lotActive`/`gateActive`). Fires exactly once: the fire
+records the current generation, so `current > recorded` is false next sweep and
+the ordinary cursor/gate dedup resumes. Both `undefined` (unknown generation / down
+bus / legacy entry) → NO re-arm (coexistence-safe: dedup as before; a plain
+non-coordinator run never bumps, so this is scoped to a coordinator restart
+exactly). Regression: `bus-wake-restart-generation.test.ts`.
+
 **Observability (#159):** the sweep now logs ONCE per reader wakeable-state
 TRANSITION (a `skipState` map, `src/main/bus-wake.ts`) — entering a skip while
 pending (`already-woken`/`not-wakeable`) WARNs once, recovery INFOs once — so a
