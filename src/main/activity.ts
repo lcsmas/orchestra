@@ -989,6 +989,14 @@ export function applyAgentEvent(
       // and the model is generating before any tool runs. That window is also
       // event-free, so label it rather than clearing.
       emitTool(id, THINKING_TOOL_LABEL);
+      // Liveness v2 (#199): a NEW turn is starting — every tool call still in the
+      // in-flight list belongs to a PRIOR turn and is a phantom (a call cannot
+      // span a turn boundary; a new submit only arrives once the last turn ended).
+      // Clearing here catches a DROPPED posttool/stop that the turn-end arms
+      // missed, before its stale entry blows the tool ceiling and false-escalates
+      // as "hung mid-call". A genuinely hung turn never reaches a new submit, so
+      // the ceiling still catches it (#108 Q16 preserved).
+      clearInFlightTools(id);
       // `null` clears any stop-reason marker (#69): the agent is taking a turn,
       // so whatever ended the LAST one is no longer the workspace's state. Done
       // on the running transition rather than on the next turn-end so the badge

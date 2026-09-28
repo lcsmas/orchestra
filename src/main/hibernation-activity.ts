@@ -147,11 +147,24 @@ export function noteToolEnd(
   else inFlightTools.set(wsId, list);
 }
 
-/** Clear ALL in-flight calls for `wsId` — a turn ended (`stop`/`stopfail`/
- *  `notify`) or the session was cleared, so no tool call can still be running.
- *  Without this, a turn that ends without a posttool for every call (an
- *  interrupt, an error) would leave phantom in-flight entries that later escalate
- *  as false hangs. */
+/** Clear ALL in-flight calls for `wsId` — a turn BOUNDARY was crossed, so no tool
+ *  call from before it can still be running.
+ *
+ *  Called at BOTH ends of a turn:
+ *   - turn END (`stop`/`stopfail`/`notify`/`session`): a turn that ends without a
+ *     posttool for every call (an interrupt, an error, a dropped hook line) must
+ *     not leave phantom entries that later escalate as false hangs;
+ *   - turn START (`submit`, #199): a NEW turn is beginning, so every call still in
+ *     the list belongs to a PRIOR turn and is a phantom. A tool call cannot span a
+ *     turn boundary — the model must receive every `tool_result` before it can end
+ *     a turn, and a fresh `submit`/user-message only arrives once the prior turn
+ *     ended. So a call surviving into a new turn's start is one whose `posttool`
+ *     (or whose turn's `stop`) was DROPPED; leaving it strands a completed call
+ *     until it blows its ceiling and false-escalates as "hung mid-call" (#199,
+ *     seq 1711 — the escalation fired while the member was actively working, its
+ *     wake-turns coalesced so `running` held for the full 10m with a stale Bash).
+ *     A genuinely hung mid-call turn is UNAFFECTED: it is stuck, so it never
+ *     reaches a new `submit`, and the ceiling still catches it (#108 Q16). */
 export function clearInFlightTools(wsId: string): void {
   inFlightTools.delete(wsId);
 }
