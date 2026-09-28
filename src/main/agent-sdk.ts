@@ -28,6 +28,7 @@ import { log, scoped } from './logger';
 import { decideGateRelease, isProofOfLifeMessage } from '../shared/session-wedge.ts';
 import { resolveLaunchModel } from '../shared/model-defaults.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
+import { BootThrottle, resolveBootThrottleK, type BootSlot } from '../shared/boot-throttle.ts';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
@@ -440,6 +441,11 @@ interface Session {
   restartRequested?: RestartTrigger;
   /** Pending boot-stall check armed with the opening turn (see scheduleBootStallCheck). */
   bootStallTimer?: ReturnType<typeof setTimeout>;
+  /** Boot-throttle slot held while this session's OPENING turn is in flight (#176
+   *  D7). Set when a fresh session (firstMessageSeen === false) is admitted to
+   *  drive its opening turn; released the instant it sees its first stream message
+   *  OR the session tears down. Undefined once released / for a started session. */
+  bootSlot?: BootSlot;
 }
 
 /** Silence after a turn is armed, with no proof of life, before the workspace
@@ -470,6 +476,23 @@ function clearBootStall(session: Session): void {
   if (owner && owner !== session) return;
   if (store.getWorkspace(session.wsId)?.bootStallSince != null) {
     void persistWorkspacePatch(session.wsId, { bootStallSince: null });
+  }
+}
+
+/** Boot-concurrency throttle (#176 D7): at most K opening-turn boots drive their
+ *  first turn at once, so a burst of metarepo spawns no longer opens all its TLS
+ *  connectors simultaneously and trips the anthropic-path MSS-536 black hole
+ *  (docs/research/issue-176-init-hang.md §9). K from ORCHESTRA_BOOT_THROTTLE_K
+ *  (default 3); a lone spawn is never delayed. */
+const bootThrottle = new BootThrottle(resolveBootThrottleK(process.env));
+
+/** Release this session's boot-throttle slot, if it holds one. Idempotent (the
+ *  slot's own release is idempotent), so the two callers — first-proof-of-life in
+ *  consume() and session teardown — can both fire without double-freeing. */
+function releaseBootSlot(session: Session): void {
+  if (session.bootSlot) {
+    session.bootSlot.release();
+    session.bootSlot = undefined;
   }
 }
 
@@ -1181,6 +1204,25 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // This entry (and anything it absorbed) has left the queue — tell the tray
     // before the turn starts, so the dispatched prompt stops rendering pending.
     emitQueueUpdate(session);
+    // BOOT-CONCURRENCY THROTTLE (#176 D7): the OPENING turn of a fresh session is
+    // what opens the CLI's TLS connectors; a burst of them at once trips the
+    // anthropic-path MSS-536 black hole (§9). Gate only the opening turn
+    // (firstMessageSeen === false) and only if we don't already hold a slot: park
+    // here (queued FIFO) until one of at most K in-flight boots produces its first
+    // stream message or fails. A lone spawn resolves immediately, so the single
+    // path is never delayed. The slot is released in consume() on first proof of
+    // life, and on teardown — so a wedged boot holds its slot only until the
+    // watchdog recycles it (a fail), which is exactly the freeing signal the spec
+    // names. Ordinary turns on a started session never reach here.
+    if (!session.firstMessageSeen && !session.bootSlot) {
+      session.bootSlot = await bootThrottle.acquire();
+      // While we were parked the session may have been torn down / superseded;
+      // don't drive a dead session's turn (and free the slot we just took).
+      if (sessions.get(session.wsId) !== session || session.stopping) {
+        releaseBootSlot(session);
+        return;
+      }
+    }
     // Arm the gate for THIS turn before yielding: consume() resolves it on the
     // turn's `result` (or stop()/interrupt() resolves it to unblock shutdown).
     turnInFlight = new Promise<void>((res) => {
@@ -1247,6 +1289,10 @@ async function consume(session: Session): Promise<void> {
       if (!session.firstMessageSeen && isProofOfLifeMessage(msg)) {
         session.firstMessageSeen = true;
         clearBootStall(session);
+        // The opening turn is proven alive — free its boot-throttle slot so the
+        // next queued boot can start (#176 D7). This is the primary release; the
+        // teardown path is the fallback for a boot that never gets here.
+        releaseBootSlot(session);
       }
       emitFrom(session, msg);
       // Persist the SDK session id the first time the stream reports it, so
@@ -1402,6 +1448,11 @@ async function consume(session: Session): Promise<void> {
     }
   } finally {
     clearBootStall(session);
+    // Free the boot-throttle slot if this boot still holds one (#176 D7): the
+    // stream ended/threw without ever reaching first proof of life — a FAILED
+    // boot, exactly the signal that must let the next queued boot start. Idempotent
+    // with the first-proof-of-life release above.
+    releaseBootSlot(session);
     // ── Close the ledger BEFORE dropping the session (silent-failure audit
     // H1/H2). Without this, an iterator that ends mid-turn (subprocess died,
     // worker shutdown, kill) left the folded view `running` forever — elapsed

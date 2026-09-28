@@ -79,6 +79,16 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   (`components/BootStall*.tsx`, copy in `shared/boot-stall.ts`). Watchdog
   recycles record `watchdog-boot`/`watchdog-stall` restarts (auto-restart row);
   the first `api_retry` of a sequence leaves a persistent warning notice.
+- **Boot-concurrency throttle (#176 D7)**: the init hang's proven root cause is a
+  network-path pathology — a burst of simultaneous TLS connections to
+  `api.anthropic.com` gets a fraction black-holed at the handshake (SYN-ACK MSS 536,
+  ClientHello never ACKed; `docs/research/issue-176-init-hang.md` §9). `BootThrottle`
+  (`shared/boot-throttle.ts`, pure FIFO semaphore, K from `ORCHESTRA_BOOT_THROTTLE_K`,
+  default 3) caps how many OPENING turns drive at once: `promptStream` acquires a
+  slot when `!firstMessageSeen && !bootSlot` (so a started session never queues, and
+  a lone spawn is never delayed), released on first proof of life (consume) or on
+  teardown/fail (consume's `finally`) via idempotent `releaseBootSlot`. Wiring gated
+  by `boot-throttle-wiring.test.ts` (agent-sdk is un-importable under strip-types).
   Pixels: `pnpm run test:network-visibility-shot` (needs RIG_WAYLAND).
 - **Explicit stops genuinely kill**: `sdkStop`'s live path rides the graceful
   close (interrupt → stdin EOF → keeper escalation — preserves the CLI's
