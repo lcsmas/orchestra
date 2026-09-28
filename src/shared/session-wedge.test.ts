@@ -7,6 +7,7 @@ import {
   decideSessionRecycle,
   pruneRecycles,
   recycleBackoffMs,
+  shouldRedriveInbox,
   GATE_SILENCE_RELEASE_MS,
   BOOT_SILENCE_MS,
   MAX_BOOT_RESTARTS,
@@ -845,4 +846,44 @@ test('decideBootHeal: never restarts once past the bound (would-loop-forever arm
 test('decideBootHeal: the bound is injectable (so a rig can drive N=2 fast)', () => {
   assert.equal(decideBootHeal({ consecutiveFreshStarts: 1, maxRestarts: 2 }).action, 'restart');
   assert.equal(decideBootHeal({ consecutiveFreshStarts: 2, maxRestarts: 2 }).action, 'escalate');
+});
+
+// ── #124 D4 + reviewer F2: the inbox re-drive gate ───────────────────────────
+test('shouldRedriveInbox: re-drives when idle with parked mail and none in flight', () => {
+  assert.equal(
+    shouldRedriveInbox({ queueLen: 0, cleared: false, parkedCount: 1, inFlightCount: 0 }),
+    true,
+  );
+});
+
+test('shouldRedriveInbox: NO re-drive while one is already in flight (F2 double-drive guard)', () => {
+  // The delivery-start window: a dispatched re-drive has not yet pushed its turn
+  // onto the queue, so queueLen is still 0. Without the inFlightCount check a
+  // second result here would deliver the SAME block twice. This is the must-FAIL
+  // arm for dropping the F2 guard.
+  assert.equal(
+    shouldRedriveInbox({ queueLen: 0, cleared: false, parkedCount: 1, inFlightCount: 1 }),
+    false,
+  );
+});
+
+test('shouldRedriveInbox: NO re-drive when the session has its own turn queued', () => {
+  assert.equal(
+    shouldRedriveInbox({ queueLen: 1, cleared: false, parkedCount: 1, inFlightCount: 0 }),
+    false,
+  );
+});
+
+test('shouldRedriveInbox: NO re-drive when the conversation was cleared', () => {
+  assert.equal(
+    shouldRedriveInbox({ queueLen: 0, cleared: true, parkedCount: 1, inFlightCount: 0 }),
+    false,
+  );
+});
+
+test('shouldRedriveInbox: NO re-drive when the inbox is empty', () => {
+  assert.equal(
+    shouldRedriveInbox({ queueLen: 0, cleared: false, parkedCount: 0, inFlightCount: 0 }),
+    false,
+  );
 });

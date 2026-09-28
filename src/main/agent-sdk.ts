@@ -25,7 +25,7 @@ import { platform } from './platform';
 import { store } from './store';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
-import { decideGateRelease, isProofOfLifeMessage } from '../shared/session-wedge.ts';
+import { decideGateRelease, isProofOfLifeMessage, shouldRedriveInbox } from '../shared/session-wedge.ts';
 import { resolveLaunchModel } from '../shared/model-defaults.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
@@ -454,6 +454,14 @@ interface Session {
   restartRequested?: RestartTrigger;
   /** Pending boot-stall check armed with the opening turn (see scheduleBootStallCheck). */
   bootStallTimer?: ReturnType<typeof setTimeout>;
+  /** Inbox blocks (by trimmed text) whose #124-D4 turn-boundary re-drive is
+   *  IN FLIGHT — dispatched via `releaseInboxBlock` but not yet reflected in
+   *  `session.queue`. `session.queue.length` stays 0 in the delivery-start
+   *  window between the fire-and-forget dispatch and the new turn's queue push,
+   *  so a SECOND `result` in that window would re-dispatch the SAME block and
+   *  deliver it as two turns. Guarding on this set makes the re-drive
+   *  at-most-once per block until its delivery settles. */
+  inboxRedriveInFlight: Set<string>;
   /** True once ANY `result` message has been seen on this query's stream (D3).
    *
    *  The SDK ends stdin only after the prompt iterator finishes AND its
@@ -1375,12 +1383,31 @@ async function consume(session: Session): Promise<void> {
         // is already open (releaseTurnGate ran above), so releaseInboxBlock's
         // sendAwaitingStart can start the new turn; awaiting it here would block
         // the consume loop on a full delivery round-trip.
-        if (session.queue.length === 0 && !session.cleared) {
+        // Skip entirely while a re-drive is already in flight (F2): the queue
+        // does not yet reflect a just-dispatched re-drive (queue.length stays 0
+        // in the delivery-start window), so a second result in that window would
+        // otherwise re-dispatch — releasing the SAME block twice (two turns for
+        // one message) or a DIFFERENT block out of order. One in-flight re-drive
+        // at a time keeps the "one block per boundary, in order" contract; the
+        // in-flight release's own turn produces the next boundary.
+        {
+          // ONE owner of the decision: `shouldRedriveInbox`. (An earlier draft pre-filtered
+          // the disk read on the same conditions — a second copy of the guard that masked
+          // every mutant of the first. A once-per-turn read of a tiny file is not worth it.)
           const parked = readInbox(session.wsId);
-          if (parked.length > 0) {
-            void releaseInboxBlock(session.wsId, parked[0].text).catch((e) =>
-              log.warn(`agent-sdk: inbox re-drive failed for ${session.wsId}`, e),
-            );
+          if (
+            shouldRedriveInbox({
+              queueLen: session.queue.length,
+              cleared: session.cleared === true,
+              parkedCount: parked.length,
+              inFlightCount: session.inboxRedriveInFlight.size,
+            })
+          ) {
+            const key = parked[0].text.trim();
+            session.inboxRedriveInFlight.add(key);
+            void releaseInboxBlock(session.wsId, parked[0].text)
+              .catch((e) => log.warn(`agent-sdk: inbox re-drive failed for ${session.wsId}`, e))
+              .finally(() => session.inboxRedriveInFlight.delete(key));
           }
         }
       } else if (msg.type === 'conversation_reset') {
@@ -1698,6 +1725,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     pendingLocalContext: [],
     recentEchoes: [],
     sawResult: false,
+    inboxRedriveInFlight: new Set(),
   };
 
   // Resolve the query factory: a test override, else the dynamically-imported
@@ -5127,7 +5155,13 @@ export async function sdkStop(wsId: string): Promise<void> {
     // interrupt on an already-ended query throws; ignore. A timeout is the hung CLI.
     interruptHung = err instanceof Error && /interrupt timed out/.test(err.message);
   }
-  sessions.delete(wsId);
+  // D2 (symmetric to consume()'s finally): delete ONLY while WE still own the
+  // slot. `interrupt()` above is awaited, and a peer delivery / user send can
+  // register a SUCCESSOR B under this wsId in that window (ensureSession sets it
+  // at the end of its own start). An unconditional delete here would evict B —
+  // the verbatim D2 symptom (B live but sdkHasSession false, deliveries →
+  // 'none'). killKeeper below is still driven by THIS session's state.
+  if (sessions.get(wsId) === session) sessions.delete(wsId);
   if (interruptHung || !sawResult) {
     // Kill outright — the graceful close cannot terminate this CLI:
     //  • interruptHung: it ignores stdin, so stdinEnd never escalates in time.

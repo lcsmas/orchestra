@@ -48,7 +48,9 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   fresh). Symmetrically, a `stdin` frame that arrives while `shuttingDown` is
   answered with `{t:'err', msg:'shutting down'}` instead of being silently
   dropped — the old drop let a restart's wake prompt vanish into a keeper whose
-  CLI then exited 0. Gate: `keeper.test.ts` (probe-during-shutdown, stdin-err).
+  CLI then exited 0. Gates: `keeper.test.ts` (the DAEMON: probe-during-shutdown, stdin-err) and
+  `pnpm run test:keeper-facade-restart` (the CLIENT decision — real `makeKeeperSpawn` against a real
+  keeper, two-sided: refuses a shutting-down keeper → fresh pids, AND still attaches a healthy live one).
 
 ## Attach / lifecycle flow
 
@@ -107,18 +109,24 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   `kill`) and the CLI would live on inside a since-removed worktree until its own
   ~600 s deadline (measured: 26/26 of the exit-1 cluster). `sdkStop` therefore
   `await`s `killKeeper` when `interruptHung || !sawResult` (latched before any
-  await). Rig arm: `e2e-hung-cli-teardown.mjs stop_hung`.
+  await). Rig: `pnpm run test:keeper-stop-semantics` (`s3_noresult_kills` / `s3_result_no_kill` isolate the
+  `!sawResult` clause with a fast-resolving interrupt; `stop_hung` in `test:hung-cli` covers the
+  hung-interrupt clause).
 - **A session's teardown removes ONLY itself (audit D2, #124).** consume()'s
   `finally` runs `sessions.delete`/`reconcileExited` only when
   `sessions.get(wsId) === session` — else A's unwinding loop would evict the
   SUCCESSOR B a stop→restart just registered (B keeps running but `sdkHasSession`
-  reads false; peer deliveries return `'none'`).
+  reads false; peer deliveries return `'none'`). `sdkStop`'s OWN delete is identity-guarded the same way —
+  it awaits `interrupt()`, and a peer delivery can register the successor in that window (rig arm
+  `s2_sdkstop_only_self`).
 - **A -1 preempt of a STOPPING session is labelled as the stop it is (audit D1,
   #124).** `classifyConsumeTermination` gains a `stopped` outcome, keyed on
   `preemptedWhileStopping` (`session.stopping && /exited with code -1/`) — a
   quiet "Session stopped" notice, never the red error box. Precedence:
   cleared → restarted → stopped → interrupted → error (a real crash of a live
-  session leaves `stopping` false → error). Gate: `restart-notice.test.ts`.
+  session leaves `stopping` false → error). Gates: `restart-notice.test.ts` (the pure decision) and
+  `test:keeper-stop-semantics` `s1_stopped_label` / `s1_crash_still_errors` (the WIRING in consume()'s
+  catch — a stopping session's -1 → quiet notice, a live session's -1 → still the red error).
 - **Watchdog recycle awaits keeper death (audit D1, #124).** `recycleSession`
   (session-watchdog.ts) `await`s `killKeeper` after `sdkStop` before the
   redelivery/`sdkWake` spawns a replacement — a `sawResult`-true stalled session
@@ -132,7 +140,12 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   boundary; the turn it starts produces its own `result` which re-drives the
   next. Fire-and-forget after `releaseTurnGate` (the gate is open). Closes the
   "not responding" where peer mail sat parked until the watchdog recycled a
-  healthy idle session. Rig: `scripts/e2e-inbox-redrive.mjs`.
+  healthy idle session. ONE re-drive in flight at a time (`Session.inboxRedriveInFlight`; the
+  delivery-start window leaves `queue.length` at 0, so a 2nd result would otherwise deliver the SAME block
+  twice); the whole decision is the pure `shouldRedriveInbox` (session-wedge.ts) — keep it the ONLY
+  copy of the guard (a duplicate pre-filter masked every mutant of it). Rig: `pnpm run test:inbox-redrive`
+  (`in_window_double` pins the window open by re-registering the delivery seam with a latched
+  `sendAwaitingStart` — `sendCalls` 1 fixed / 2 mutant).
 - **Shutdown policy** (daemon-side, from the pure state machine): detached +
   turn complete (`"type":"result"` seen on stdout; `system` lines are neutral
   so an attach's fresh init doesn't hold an idle CLI) → linger 15 min
