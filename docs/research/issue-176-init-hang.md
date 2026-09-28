@@ -355,3 +355,78 @@ multi-minute delay in those same runs lived entirely in the turn's API request
   timing + turn-only `waited_ms`; not read from the minified CLI binary).
 - That the throttle empirically drops the fleet wedge rate (the burst repro is
   intermittent, so an end-to-end before/after needs a longer measurement window).
+
+---
+
+## 10. Why metarepo, not orchestra? (LEAD D10) — CONNECTION VOLUME, not a repo ingredient
+
+LEAD's field facts: 28/28 wedges on metarepo, 0 on orchestra, same account + CLI;
+and a single hand-made metarepo workspace reportedly wedges 4/5. If the cause were
+a *pure* per-connection network transient, it should not be repo-selective. D10
+asks for the metarepo-specific factor. Answer, with evidence: **it is not a
+metarepo startup ingredient — it is concurrent-connection VOLUME, which is driven
+by session ACTIVITY, and the metarepo agents in the incident were the heavy ones.**
+
+### 10.1 Boot is identical across repos (bisect, ≥3–5 spawns/arm)
+
+Single `claude -p` boots, model `claude-opus-5-5[1m]`, isolated timing, counting
+anthropic connections owned by the spawned pid (`~/init-hang-rig/d10-boot.sh`):
+
+| arm | cwd | config | boots | init | peak conns | wedged |
+|---|---|---|---|---|---|---|
+| A | metarepo | full `mc` account | 5 | 1–2 s | 13 | 0/5 |
+| B | metarepo | `--strict-mcp-config` (no claude.ai connectors) | 3 | 0–2 s | 11 | 0/3 |
+| C | **orchestra** | full `mc` account | 3 | 1–5 s | 10–11 | 0/3 |
+
+- **Metarepo and orchestra boots are indistinguishable**: same ~11–13 conns, same
+  init range. Stripping the claude.ai connectors (`--strict-mcp-config`) barely
+  moved the count (13 → 11) — the connectors are not the driver.
+- **An orchestra boot ALSO produced transient stuck flows** (arm C run 1: 6 ×
+  `bytes_acked:1`). The MSS-536 black hole is **NOT metarepo-specific at boot** —
+  orchestra catches it too when it opens connections in a bad window.
+
+### 10.2 Connection count tracks ACTIVITY, not repo (live fleet, ~30 pids)
+
+Anthropic connection count per live `claude` pid, tagged by repo:
+
+| repo | idle sessions | busy sessions | stuck flows |
+|---|---|---|---|
+| orchestra | 1–4 conns | **30, 32** conns | 0 (in this snapshot) |
+| metarepo | 1–4 conns | **55, 61, 62** conns | 55→10, 61→6 stuck |
+
+- **High-conn sessions exist in BOTH repos** (orchestra 30/32; metarepo 55/61/62)
+  → connection count is not a repo property.
+- The 62-conn session's connections were **all to `api.anthropic.com`** (50 v6 +
+  12 v4), not MCP servers — so the volume is API request concurrency (parallel
+  tool calls / sub-agent fan-out under a 1M-context model), not connectors.
+- **Stuck flows land only on the high-conn sessions.** The more concurrent
+  connections a session holds, the higher its chance that one lands in a bad
+  window: measured per-connection stuck rate in a bad window **q ≈ 0.13** (8/60 on
+  a 60-wide Node TLS burst; q = 0 in good windows). At 62 conns vs 2 conns the
+  session-level exposure differs by more than an order of magnitude.
+
+### 10.3 Verdict on D10
+
+The metarepo concentration is a **selection effect**: in the incident wave the
+heavy-activity agents (large parallel tool/sub-agent fan-out, 1M-context) happened
+to be the metarepo ones, so they carried 50–62 concurrent connections and caught
+the intermittent black hole; the orchestra agents were lighter (mostly ≤4 conns).
+"154 metarepo vs 30 orchestra" is a snapshot of *which agents were busy*, not an
+intrinsic metarepo trait — orchestra sessions reach 30+ conns and also get stuck
+flows. No startup ingredient (CLAUDE.md size, MCP set, connectors, hooks, cwd)
+flips the boot outcome (§10.1).
+
+### 10.4 Limitation + implication (honest)
+
+- **NOT reproduced**: the "single workspace wedges 4/5" figure. A `-p` one-shot
+  boot does ONE trivial turn (~13 conns) and wedged 0/5; the field 4/5 is a
+  *working* keeper-driven session that reaches the 50+ conn regime through real
+  tool fan-out, which the `-p` rig does not exercise. Reproducing it needs a driven
+  multi-turn session under a bad window — left as the next step.
+- **Implication for the D7 boot throttle**: if the dominant exposure is per-session
+  concurrent-connection count *during work* (not the multi-session boot burst),
+  then a boot-concurrency throttle is only a partial mitigation — it helps the
+  simultaneous-boot case but does nothing for a single busy session at 62 conns.
+  The exposure-matched lever would cap concurrent in-flight API connections per
+  session (or serialize tool/sub-agent fan-out) — a larger, separate change.
+  Flagged for LEAD as the reason the throttle alone may not zero the heal counters.
