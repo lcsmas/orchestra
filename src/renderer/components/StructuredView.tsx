@@ -443,6 +443,18 @@ function MessageList({
   // boundary resets it, so only an unbroken chain WITHIN one frame can trip it.
   const syncMeasurePasses = useRef(0);
   const measureLoopWarned = useRef(false);
+  // Per-COMMIT counting: N rows first-measuring in one commit are ONE pass, not N (cold pane opens tripped the guard).
+  const lastPassCommit = useRef<object | null>(null);
+  // One-shot frame-boundary reset, armed by a measure pass — a perpetual rAF here woke every
+  // mounted pane 60x/s while idle (#198 D11; `scripts/renderer-cpu-profile.mjs` gates it).
+  const measureResetRaf = useRef(0);
+  const armMeasureReset = useCallback(() => {
+    if (measureResetRaf.current) return; // a reset is already pending this frame
+    measureResetRaf.current = requestAnimationFrame(() => {
+      measureResetRaf.current = 0;
+      syncMeasurePasses.current = 0;
+    });
+  }, []);
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
@@ -577,18 +589,11 @@ function MessageList({
     // there are messages (the empty state renders a different subtree).
   }, [pinToBottom, messages.length > 0]);
 
-  // Reset the measure-loop counter once per painted frame. Only an unbroken
-  // chain of synchronous measure→render passes WITHIN a single frame can trip
-  // the guard; reaching a paint means layout settled, so normal streaming (which
-  // paints between batches) never accumulates toward the limit.
+  // Cancel a still-pending frame-boundary reset on unmount.
   useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      syncMeasurePasses.current = 0;
-      raf = requestAnimationFrame(tick);
+    return () => {
+      if (measureResetRaf.current) cancelAnimationFrame(measureResetRaf.current);
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
   }, []);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
@@ -697,6 +702,8 @@ function MessageList({
   start = Math.max(0, start - OVERSCAN);
   end = Math.min(items.length, end + OVERSCAN);
 
+  // Shared by every row's onHeight of THIS render (see lastPassCommit).
+  const commitToken = {};
   const visible = items.slice(start, end);
   const padTop = offsets[start] ?? 0;
 
@@ -822,7 +829,11 @@ function MessageList({
                   // path, which yields to the browser and cannot recurse. A
                   // frame boundary resets the counter, so normal streaming (a
                   // handful of passes per frame) is untouched.
-                  syncMeasurePasses.current += 1;
+                  if (lastPassCommit.current !== commitToken) {
+                    lastPassCommit.current = commitToken;
+                    syncMeasurePasses.current += 1;
+                  }
+                  armMeasureReset();
                   const looping = syncMeasurePasses.current > MAX_SYNC_MEASURE_PASSES;
                   if (looping && !measureLoopWarned.current) {
                     measureLoopWarned.current = true;
