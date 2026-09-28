@@ -721,3 +721,36 @@ time). Meta formatting surfaces what `.stack` omits: errno fields
   types, the events-dir startup wipe (fingerprint of the multi-instance
   stuck-dot bug), and the renderer store's startup fallbacks (which render a
   failed backend call as a legitimately-empty UI section).
+
+## Per-session debug black box — session-debug-log.ts + session-debug-log-fs.ts (#177)
+
+Every LOCAL SDK session — HEADLESS included — writes the CLI's verbose
+debug/stderr to its OWN file under `<ORCHESTRA_HOME>/logs/sessions/<wsId>__<ISO-ts>.log`.
+`agent-sdk.ts` (`ensureSessionInner`, the sole `query()` launch) mints the path
+(`newSessionDebugLogPath`) and sets the SDK `debugFile` option, which the SDK
+maps to the CLI `--debug-file <path>` flag — the same surface the #176 rig used;
+the arg flows through the keeper spawn to the child. Remote/sandbox is excluded
+(its CLI runs in the container, so a host path would resolve there).
+
+**Why a new dir and not `keepers/<wsId>.log`.** The keeper already tees the
+child's *bare* stderr into `keepers/<wsId>.log`, but that (a) isn't `--debug`
+verbose and (b) is swept when the keeper dies (`listLiveKeepers`) and tied to
+workspace lifetime — the exact gap #177 names: the 6 boot-wedged headless
+sessions of 2026-09-21 left ZERO autopsiable artifacts. `logs/sessions/` is a
+sibling of `orchestra.log`, NOT under the worktree nor `keepers/`, so a capture
+**OUTLIVES workspace deletion** — a wedged headless session can be autopsied
+after the fleet is cancelled and the workspace is gone. One file PER spawn
+(wsId + timestamp), so a resume/restart gets its own file (per-boot granularity).
+
+**Bounded — a black box, not a firehose.** `sweepSessionDebugLogs` runs at every
+spawn against `DEFAULT_SESSION_DEBUG_RETENTION` (7-day age, 200 MB total,
+500 files — whichever binds first; UNBASELINED named constants). The pure
+policy `planSessionDebugLogSweep` (`src/shared/session-debug-log.ts`) evicts
+oldest-first on all three axes and NEVER the file the current spawn is about to
+write (`keepName`). Gates: `src/shared/session-debug-log.test.ts` (12 pure,
+must-DELETE + must-KEEP per cap, each mutant-reddened), `src/main/session-debug-log-wiring.test.ts`
+(source-pins the agent-sdk wiring + the SDK's `--debug-file` mapping), and
+`pnpm run test:session-debug-log` (`scripts/e2e-session-debug-log.mjs`: drives a
+REAL `sdkSend → query()` with a faked CLI that honors `--debug-file` — the file
+appears under `logs/sessions/` and old captures rotate; the `appears` arm is the
+discriminating must-FAIL — inert on master where no `debugFile` is set).
