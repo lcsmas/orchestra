@@ -415,3 +415,25 @@ export function hungCallEscalationBody(
   const toolName = tool ?? 'a tool';
   return `member ${reader} has a dispatched task and its ${toolName} call has been running ${mins}m with no progress — it may be hung mid-call; check on it`;
 }
+
+/** The body of a BOOT-WEDGE-BOUND escalation row (#197): a member whose fresh CLI
+ *  wedged in session init `restartCount` times in a row — the app has STOPPED
+ *  auto-restarting it and needs a coordinator. Carries the exact diagnostic D2
+ *  (ledger #198) requires — restart count, last error, transcript size — so the
+ *  coordinator's `orchestra check` gets an actionable line rather than an opaque
+ *  ping (and can tell a huge-transcript wedge, D5, apart from a transient one).
+ *  Kept pure so a test asserts the exact string (carry-forward 2). */
+export function bootWedgeEscalationBody(
+  reader: string,
+  restartCount: number,
+  lastError: string,
+  transcriptBytes: number,
+): string {
+  const mib = (transcriptBytes / (1024 * 1024)).toFixed(1);
+  return (
+    `member ${reader} is WEDGED: its session failed to start ${restartCount} fresh ` +
+    `restarts in a row and Orchestra has STOPPED auto-restarting it (issue #197). ` +
+    `Last error: ${lastError}. Transcript size: ${mib} MB. It needs a human — ` +
+    `check on it, and consider recreating the workspace.`
+  );
+}

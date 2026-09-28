@@ -534,3 +534,79 @@ export function pruneRecycles(
 ): number[] {
   return recentRecycles.filter((t) => now - t < windowMs);
 }
+
+/** ── Issue #197: BOUND the boot-wedge self-heal, then ESCALATE ────────────────
+ *
+ *  ## The failure this closes, and why the #174/#180 heal alone does NOT
+ *
+ *  {@link decideBootWedge} + the layer-2 recycle heal a boot-wedged session by
+ *  tearing it down and re-delivering the opening prompt on a FRESH start
+ *  (`recoverPendingPrompts`, #178 always-fresh for a phantom id). That converges
+ *  when the fresh CLI gets past init. But when the fresh CLI wedges AGAIN — the
+ *  same repo, the same heavy init that wedged it the first time — the heal loops
+ *  FOREVER with no escalation: field 2026-09-28 metarepo W6b (`15d02de8`,
+ *  transcript 16.5 MB) cycled `no proof of life 30s` → `restart of never-started
+ *  session (#179)` → `interrupt unanswered — killing the keeper/CLI` every ~75 s,
+ *  5 cycles, recovered ONLY by deleting the workspace.
+ *
+ *  The #90/#97 anti-flap machinery ({@link decideSessionRecycle}'s
+ *  `MAX_RECYCLES_PER_HOUR` + widening backoff → `flap-limit` → `surfaceFlapLimit`)
+ *  does bound the RATE and surface to a human, but it is the WRONG instrument for
+ *  the boot wedge on two counts:
+ *   1. It counts recycles in a rolling HOUR regardless of whether the session
+ *      ever recovered in between; the D2 counter must count CONSECUTIVE failed
+ *      FRESH starts of the SAME session and RESET on a first stream message.
+ *   2. It only broadcasts + toasts a human; D2 requires a bus `escalation` row to
+ *      the workspace's COORDINATOR carrying the diagnostic (restart count, last
+ *      error, transcript size) — the fleet-visible surface the field incident
+ *      lacked, so no coordinator agent ever learned the member was dead.
+ *
+ *  ## The counter and the reset (D2, ledger #198)
+ *
+ *  A per-workspace count of CONSECUTIVE failed fresh starts. The watchdog
+ *  increments it each time it recycles a still-never-started boot-wedged session,
+ *  and RESETS it to zero the moment that session produces a first stream message
+ *  (`firstMessageSeen === true` — genuine proof of life, the same discriminator
+ *  {@link decideBootWedge} uses, never "a prompt is live" and never "inbox
+ *  empty"). So a session that recovers on restart k<N is never escalated: its
+ *  first stream message zeroes the count before it can reach the bound. */
+
+/** After this many CONSECUTIVE failed fresh starts of the SAME session (each a
+ *  boot wedge that produced no proof of life), the watchdog STOPS restarting,
+ *  marks the workspace visibly wedged, and escalates ONCE to its coordinator.
+ *
+ *  Frozen by LEAD as D2 (ledger #198): "after 3 consecutive failed fresh starts".
+ *  It is a CEILING, not a tuned rate (same footing as MAX_RECYCLES_PER_HOUR): a
+ *  single transient init hiccup that recovers on the first or second fresh start
+ *  is common and must not escalate, while a repo whose init deterministically
+ *  wedges every fresh CLI converges on "tell the coordinator" in a bounded few
+ *  cycles instead of looping forever (the ~75 s × ∞ field loop). */
+export const MAX_BOOT_RESTARTS = 3;
+
+export type BootHealDecision =
+  /** Fewer than the bound of consecutive failed fresh starts so far — recycle
+   *  the boot-wedged session again (the #174/#180 heal), counting this attempt. */
+  | { action: 'restart' }
+  /** The bound is reached: STOP restarting, mark the workspace wedged, and emit
+   *  ONE escalation to the coordinator. `restartCount` rides along for the body. */
+  | { action: 'escalate'; restartCount: number };
+
+/** Whether the watchdog should recycle a boot-wedged session one more time, or
+ *  give up and escalate.
+ *
+ *  `consecutiveFreshStarts` is the count of fresh starts ALREADY made for this
+ *  session with no proof of life since. Pure and total: with the bound at 3, the
+ *  0th, 1st and 2nd attempts recycle (raising the count to 1, 2, 3) and the 3rd
+ *  time the watchdog is asked — the count already 3 — it escalates. So the field
+ *  loop's "N+1 wedged starts → N+1 restarts, no escalation" becomes "3 restarts
+ *  then stop + escalate". */
+export function decideBootHeal(input: {
+  consecutiveFreshStarts: number;
+  maxRestarts?: number;
+}): BootHealDecision {
+  const { consecutiveFreshStarts, maxRestarts = MAX_BOOT_RESTARTS } = input;
+  if (consecutiveFreshStarts >= maxRestarts) {
+    return { action: 'escalate', restartCount: consecutiveFreshStarts };
+  }
+  return { action: 'restart' };
+}

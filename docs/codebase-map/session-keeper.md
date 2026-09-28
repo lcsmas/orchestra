@@ -264,13 +264,46 @@ times).
   surface ONCE on the transition into stand-down and clears when `inWindow`
   drops back below budget — the log line stays level-triggered, but a
   non-suppressed toast every 60s tick for the whole window would be a storm.
+- **Layer 2b bound: BOOT-WEDGE gives up + ESCALATES (#197).** The #174/#180 heal
+  restarts a never-started session on a FRESH start; when the fresh CLI re-wedges
+  (heavy repo, same init that wedged it first), it looped forever with only the
+  #97 flap-limit toast (no fleet-visible surface — field 2026-09-28 W6b, ~75 s ×
+  5). Now `decideBootHeal({consecutiveFreshStarts})` (`session-wedge.ts`) caps at
+  `MAX_BOOT_RESTARTS` = 3 (LEAD D2, ledger #198): the watchdog counts consecutive
+  boot-wedge recycles in `bootRestartLedger` (`session-watchdog.ts`) and RESETS
+  the count the instant the session shows PROOF OF LIFE (`firstMessageSeen`, via
+  `clearBootHealState`) — so a session that recovers on restart k<N is never
+  escalated. At the bound it STOPS restarting, marks the workspace visibly wedged
+  (`Workspace.bootWedgedSince` — a distinct red `BootWedged*` surface beside the
+  transient yellow `BootStall*`, both in `components/BootStall.tsx`/`BootStallView.tsx`,
+  copy `shared/boot-stall.ts:bootWedgedCopy`), and emits ONE bus `escalation` row
+  to the coordinator carrying restart count + last error + transcript size
+  (`bootWedgeEscalationBody` in `shared/bus-liveness.ts`; `sdkTranscriptBytes` in
+  `agent-sdk.ts`). The give-up is checked BEFORE the #90/#97 flap-limit dispatch
+  DELIBERATELY (both bounds = 3 and count the same recycles, so the generic
+  flap-limit would else win with only a toast). It reuses the app's own escalation
+  path — the `escalation` kind + `send` verb (like `bus-liveness.ts writeEscalation`),
+  SWITCH-GATED on the run's frozen `liveness` flag (fired ON, counted OFF), never a
+  hand-written insert into `~/.orchestra/bus.sqlite`. Both are edge-triggered
+  (`bootEscalated` Set) so the escalation + mark fire ONCE per wedge, cleared on
+  proof of life. The wave-run resolver is injected at boot
+  (`setBootWedgeRunResolver(resolveWaveRunId)`, index.ts) for the strip-types
+  reason the liveness/wake rosters are.
 - **Gates.** Pure policy: `src/shared/session-wedge.test.ts` (backoff growth +
-  ordering). Module end-to-end: `src/main/session-watchdog.test.ts` drives the
-  R2 redelivery rig AND `scripts/wedge90-rigs/flap-budget.mjs` (14 real ticks:
-  recycles at [0,2,6] gaps [2,4] widening, flap-limit surfaces at tick 7 →
+  ordering; `decideBootHeal` bound + escalate-past-bound) and
+  `src/shared/bus-liveness.test.ts` (`bootWedgeEscalationBody` carries count +
+  last error + MB size). Module end-to-end: `src/main/session-watchdog.test.ts`
+  drives the R2 redelivery rig AND `scripts/wedge90-rigs/flap-budget.mjs` (14 real
+  ticks: recycles at [0,2,6] gaps [2,4] widening, flap-limit surfaces at tick 7 →
   `watchdog:flap-limit` + `NOTIFY`; the pre-#97 build recycled [0,1,2] and never
-  surfaced). Both rigs run through `scripts/.r2-register.mjs` because the module
-  can't be imported bare under the strip-types runner (`./platform` dir-import).
+  surfaced). **#197: `src/main/boot-heal-bound.test.ts` drives
+  `scripts/e2e-boot-heal-bound.mjs` — a faked-CLI boot-wedged session through the
+  REAL `watchdogTick` over a REAL bus: `bounded` (3 restarts then ONE escalation,
+  edge-triggered; ok:false on master — verified in a throwaway origin/master
+  worktree), `recovers` (revive on restart k<N → never escalated), `reset` (proof
+  of life clears the counter → a later episode escalates again).** All rigs run
+  through `scripts/.r2-register.mjs` because the module can't be imported bare
+  under the strip-types runner (`./platform` dir-import).
 
 ## Kill/quit semantics
 

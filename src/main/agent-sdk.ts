@@ -3027,6 +3027,27 @@ export function sdkGateProbe(
   };
 }
 
+/** The transcript size, in bytes, of this workspace's current SDK conversation
+ *  (`ws.sdkSessionId`.jsonl under the account's transcript dir), or 0 when there
+ *  is no id / no file / the probe errors. Best-effort and NON-THROWING: it is a
+ *  diagnostic read on the boot-heal escalation path (issue #197), never a control
+ *  flow gate.
+ *
+ *  Why the boot-heal escalation carries this (D2, ledger #198): the 2026-09-28
+ *  field wedge (metarepo W6b) rode a 16.5 MB transcript, and D5 asks whether
+ *  resume/init time scales with transcript size — so the size is the single most
+ *  actionable number a coordinator can read off the escalation to tell a
+ *  genuinely-huge-transcript wedge apart from a transient init failure. */
+export function sdkTranscriptBytes(wsId: string): number {
+  const ws = store.getWorkspace(wsId);
+  if (!ws?.sdkSessionId) return 0;
+  try {
+    return fs.statSync(path.join(transcriptDir(ws), `${ws.sdkSessionId}.jsonl`)).size;
+  } catch {
+    return 0;
+  }
+}
+
 /** Force-release a stranded turn gate so the queued turns can drain.
  *
  *  Returns true iff a gate was actually released. The decision itself lives in

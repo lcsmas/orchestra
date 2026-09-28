@@ -1603,6 +1603,12 @@ input:focus, textarea:focus, select:focus {
      so the stroke width is set on the element in QueueStallBadge.tsx rather
      than here — a `vector-effect` would thin it below legibility at 9px. */
 }
+/* Issue #197 — the WEDGED sidebar badge: auto-restarts exhausted, a terminal
+   state, so it reads red rather than the transient stall badge's yellow. */
+.ws-boot-wedged-badge {
+  color: var(--red);
+  border-color: var(--red);
+}
 /* Coordinator marker on a sidebar row — a PROMOTED WORKTREE's only cue that it
    coordinates other agents (it stays in its repo section and never appears in
    the pinned Orchestrators list, so nothing else marks it).

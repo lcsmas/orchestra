@@ -269,6 +269,15 @@ export interface Workspace {
    *  Drives the live "la CLI ne répond pas" row + sidebar badge. Cleared with
    *  `null` (the renderer merges updates, so an absent key cannot unset it). */
   bootStallSince?: number | null;
+  /** Epoch ms since which this workspace is WEDGED: its session failed to start
+   *  {@link MAX_BOOT_RESTARTS} consecutive fresh restarts (no proof of life each
+   *  time), so the watchdog STOPPED auto-restarting it and escalated to its
+   *  coordinator (issue #197). `null`/absent = not wedged. Drives the red
+   *  "session bloquée" row + sidebar badge, distinct from the transient
+   *  `bootStallSince` ("la CLI ne répond pas", still auto-healing). CLEARED with
+   *  `null` the moment a later start produces a first stream message — the
+   *  renderer merges updates, so an absent key cannot unset it. */
+  bootWedgedSince?: number | null;
   /** Why this workspace's LAST turn ended, when it ended for a reason the human
    * needs to know about — `max_turns` (ONE turn hit the per-turn step cap;
    * the cap resets each user turn, so the session is NOT spent — MEASURED
