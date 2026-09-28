@@ -890,15 +890,20 @@ coordinator restart is `runs.coordinator_generation` — #128/#166 bump the run
 whose anchor IS the restarting workspace (an OPS is its own anchor; verified live:
 OPS run `0d4e3866` read generation 1 post-restart, the mail's mission run
 `0524718f` still 0). So `coordinatorRestarted(pending, prev)`
-(`src/shared/bus-wake.ts`): the reader's OWN-run generation
-(`ReaderPendingState.readerRunGeneration`, read for `runId` NOT the mail run)
-strictly exceeding the entry's recorded `WakeLedgerEntry.wokeGeneration` re-arms
-BOTH axes (OR'd into `lotActive`/`gateActive`). Fires exactly once: the fire
-records the current generation, so `current > recorded` is false next sweep and
-the ordinary cursor/gate dedup resumes. Both `undefined` (unknown generation / down
-bus / legacy entry) → NO re-arm (coexistence-safe: dedup as before; a plain
-non-coordinator run never bumps, so this is scoped to a coordinator restart
-exactly). Regression: `bus-wake-restart-generation.test.ts`.
+(`src/shared/bus-wake.ts`): the reader's ANCHOR-run generation
+(`ReaderPendingState.readerRunGeneration`, read for the roster `runId` =
+`resolveWaveRunId(ws)` = nearest orchestrator, NOT the mail run) strictly exceeding
+the entry's recorded `WakeLedgerEntry.wokeGeneration` re-arms BOTH axes (OR'd into
+`lotActive`/`gateActive`). Fires exactly once: the fire records the current
+generation, so `current > recorded` is false next sweep and the ordinary
+cursor/gate dedup resumes. Both `undefined` (unknown generation / down bus / legacy
+entry) → NO re-arm (coexistence-safe: dedup as before). **Blast radius (F1):** the
+re-arm hits every reader whose ANCHOR-run generation advanced — the restarting
+coordinator AND its direct members, since a member's roster `runId` IS its OPS run.
+Benign — once per such reader per restart (recorded generation catches up next
+sweep, idempotent, no storm), and re-delivering a stuck member's mail across an OPS
+handover is desirable. A run with no coordinator replacement never bumps → no
+re-arm. Regression: `bus-wake-restart-generation.test.ts`.
 
 **Observability (#159):** the sweep now logs ONCE per reader wakeable-state
 TRANSITION (a `skipState` map, `src/main/bus-wake.ts`) — entering a skip while

@@ -136,13 +136,23 @@ export interface ReaderPendingState {
    * that wake, so the stale entry RE-ARMS — the fresh coordinator wakes on the
    * current pending seq at once (not the stale one, not after the bound).
    *
-   * Read for the reader's OWN run (the roster's `runId`), NOT the mail run: #166
-   * bumps the run whose anchor IS the restarting workspace (an OPS is its own
+   * Read for the reader's WAVE-ANCHOR run (the roster's `runId` =
+   * `resolveWaveRunId(ws)` = the reader's nearest orchestrator), NOT the mail run:
+   * #166 bumps the run whose anchor IS the restarting workspace (an OPS is its own
    * anchor), and a downward LEAD->OPS ruling sits in the LEAD's (ancestor) run whose
-   * generation the OPS restart never touches. A plain non-coordinator reader's run
-   * never bumps, so this stays 0 and never re-arms — the fix is scoped to a
-   * coordinator restart exactly. `undefined` for legacy/pre-#200 callers and the
-   * whole shared suite, so every existing arm behaves identically (no re-arm).
+   * generation the OPS restart never touches.
+   *
+   * BLAST RADIUS (F1, review of #200): this re-arms EVERY reader whose anchor-run
+   * generation advanced — the restarting coordinator AND its direct members. A
+   * member's roster `runId` IS its OPS run (that is where the CLI writes its mail),
+   * so an OPS restart bumps that one run's generation and every latched member with
+   * pending mail in it re-arms too. That is BENIGN: it fires once per such reader
+   * per OPS restart (the recorded `wokeGeneration` catches up next sweep — idempotent,
+   * no storm), and a stuck member is exactly what a coordinator handover wants to
+   * re-deliver. A reader whose anchor run never bumps (a genuine standalone, a run
+   * with no coordinator replacement) stays 0 and never re-arms. `undefined` for
+   * legacy/pre-#200 callers and the whole shared suite, so every existing arm
+   * behaves identically (no re-arm).
    */
   readerRunGeneration?: number;
 }
@@ -425,11 +435,18 @@ function boundedReArmed(previous: WakeLedgerEntry, now: number): boolean {
 }
 
 /**
- * The #200 COORDINATOR-RESTART re-arm test. True when the reader's OWN run
- * coordinator generation has strictly ADVANCED past the generation this ledger
- * entry was recorded under — i.e. the coordinator (an OPS/LEAD) `orchestra
- * restart`ed since the last wake (#128/#166 bump its own run's generation on a
- * coordinator-replacement relaunch).
+ * The #200 COORDINATOR-RESTART re-arm test. True when the reader's ANCHOR-run
+ * coordinator generation (its `runId` = nearest orchestrator) has strictly
+ * ADVANCED past the generation this ledger entry was recorded under — i.e. the
+ * coordinator of that run (an OPS/LEAD) `orchestra restart`ed since the last wake
+ * (#128/#166 bump the anchor run's generation on a coordinator-replacement
+ * relaunch).
+ *
+ * BLAST RADIUS (F1): this re-arms every reader whose ANCHOR-run generation
+ * advanced — the restarting coordinator AND its direct members, since a member's
+ * roster `runId` IS its OPS run. Benign: fires once per such reader per restart
+ * (the recorded generation catches up next sweep — idempotent, no storm), and
+ * re-delivering a stuck member's mail across an OPS handover is desirable.
  *
  * The FIRE ledger is process-global in-memory, so a SESSION restart (the app stays
  * up) leaves the pre-restart entry — its `(wokeRunId, wokeLotSeq, lastWakeAt)` —

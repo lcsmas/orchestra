@@ -495,13 +495,15 @@ export function readPendingReaders(
       pendingRunId: pendingThroughSeq > 0 ? mailRunId : undefined,
       pendingRunIds: pendingThroughSeq > 0 ? pendingRunIds : undefined,
       switchRunId: pendingThroughSeq > 0 ? switchRunId : undefined,
-      // #200: the reader's OWN run coordinator generation this sweep. A coordinator
-      // restart bumps its own run's generation (#128/#166); comparing it against the
-      // ledger entry's recorded generation lets `decideWake` re-arm a stale latch a
-      // fresh coordinator inherited across a session restart. Read for the reader's
-      // OWN run (`runId`), never the mail run — #166 bumps the run whose anchor IS
-      // the restarting workspace. An unknown run reads 0 (never throws), the
-      // coexistence-safe floor: 0 never advances past a recorded 0, so no re-arm.
+      // #200: the reader's ANCHOR-run coordinator generation this sweep. `runId` is
+      // the reader's wave anchor (resolveWaveRunId = nearest orchestrator), so for a
+      // member this IS its OPS run. A coordinator restart bumps that run's generation
+      // (#128/#166); comparing it against the ledger entry's recorded generation lets
+      // `decideWake` re-arm a stale latch inherited across a SESSION restart — for
+      // the restarting coordinator AND every member latched in that run (F1: benign,
+      // once per reader per restart). Read for the anchor run (`runId`), never the
+      // mail run. An unknown run reads 0 (never throws), the coexistence-safe floor:
+      // 0 never advances past a recorded 0, so no re-arm.
       readerRunGeneration: coordinatorGeneration(db, runId),
     });
   }
