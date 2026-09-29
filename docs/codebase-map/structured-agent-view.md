@@ -1180,11 +1180,16 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   renderer's CPU actually goes (#198 D11 / T9).** `syncMeasurePasses` bounds the
   synchronous measure→render chain that guards React error #185
   (`MAX_SYNC_MEASURE_PASSES = 12`; a trip logs `row-measure loop guard tripped`).
-  Two defects, both fixed, both gated by `scripts/renderer-cpu-profile.mjs`
-  (built app, headless sway, CDP; `pnpm run test:renderer-cpu`; 5 named clauses):
+  Four defects, all fixed, gated by `scripts/renderer-cpu-profile.mjs` (built
+  app, headless sway, CDP; `pnpm run test:renderer-cpu`; 7 named clauses) and,
+  for the dev-only one, by unit tests:
   (1) the per-frame counter reset was a **perpetual self-rescheduling rAF per
   mounted pane** — 62 app-rAF/s each, measured 372/s at 6 panes, even idle; it is
-  now a one-shot armed by a measure pass (`armMeasureReset`) → 0/s (`idle-raf`).
+  now a one-shot armed by a measure pass → 0/s (`idle-raf`). The scheduler is
+  `src/shared/frame-reset.ts`: `cancel()` also drops the handle, because
+  StrictMode (dev, `main.tsx`) re-runs effects on the SAME refs and a stale handle
+  silently killed every later reset (counter never back to 0 → false guard trips)
+  — only reachable in dev, so `frame-reset.test.ts` gates it, not the rig.
   (2) the counter incremented **per row callback**, not per commit as
   `MAX_SYNC_MEASURE_PASSES`' own comment says, so ANY pane whose window holds >12
   rows tripped the guard the first time it became visible (a 13-row cold open:
@@ -1192,9 +1197,13 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   (`cold-guard`); it now counts one pass per render commit (`lastPassCommit`). A
   real A→B→A oscillation is still one pass per commit and still trips at 12.
   Frame-boundary resets must keep firing (`stream-guard`: 40 rows streamed across
-  frames trip nothing). In-place mutants each redden ONLY their clause: perpetual
+  frames trip nothing). (3) a **second perpetual rAF**: `useTypewriter` loops
+  while `!message.done`, and only `block-stop` set `done` — a turn cut off
+  without one left 59 rAF/s on an idle pane forever. `turn-end` now closes the
+  turn's open assistant blocks in the fold (`closeOpenBlocks`,
+  `agent-events.test.ts`; rig arm `typewriter-live` control + `typewriter-idle`). In-place mutants each redden ONLY their clause: perpetual
   rAF (= master) → `idle-raf`; per-row counting → `cold-guard`; reset removed →
-  `stream-guard`.
+  `stream-guard`; turn-end not closing blocks → `typewriter-idle`.
 
   **Measured, and NOT what the ticket assumed:** removing the rAF loop does not
   measurably move OS CPU (renderer `/proc` 14.2% → 13.5%, series overlap), and the

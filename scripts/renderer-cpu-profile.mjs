@@ -396,7 +396,7 @@ async function main() {
   const activate = (id) => Runtime.evaluate({ expression: `window.__orchestraSetState({ activeId: '${id}', view: 'structured' })`, returnByValue: true });
   const rowsInDom = async () => (await Runtime.evaluate({ expression: `document.querySelectorAll('.av-message-list-inner > div > *').length`, returnByValue: true })).result.value;
   const msgs = async (id) => (await Runtime.evaluate({ expression: `window.__readAgentSession('${id}')?.messages.length ?? 0`, returnByValue: true })).result.value;
-  await Runtime.evaluate({ expression: seedWorkspacesExpr(PANES, ['ws-cold', 'ws-stream'], 'ws-0'), returnByValue: true });
+  await Runtime.evaluate({ expression: seedWorkspacesExpr(PANES, ['ws-cold', 'ws-stream', 'ws-tw'], 'ws-0'), returnByValue: true });
   await Runtime.evaluate({ expression: injectTranscriptExpr(['ws-cold']), returnByValue: true });
   await sleep(500);
 
@@ -434,6 +434,33 @@ async function main() {
   })).result.value;
   console.error('[rig] streaming arm:', JSON.stringify(streamed), 'mount-phase trips:', guardTripsDuringMount);
 
+  // (c) TYPEWRITER after a turn that never closed its block (review F4): the stream
+  // was cut, so no `block-stop` — only `turn-end`. `done` stayed false and the
+  // bubble's typewriter rAF looped 60/s forever on an idle pane. Control first:
+  // while the block is genuinely streaming the typewriter MUST be animating, or a
+  // 0 later proves nothing. Uses its own fresh pane (`ws-tw`).
+  const twEv = (o) => `window.__injectAgentEvent('ws-tw', ${JSON.stringify({ at: 1, ...o })})`;
+  const rafRate = async (ms) => {
+    await Runtime.evaluate({ expression: 'window.__rafCount = 0', returnByValue: true });
+    await sleep(ms);
+    const n = (await Runtime.evaluate({ expression: 'window.__rafCount', returnByValue: true })).result.value || 0;
+    return +(n / (ms / 1000)).toFixed(1);
+  };
+  await activate('ws-tw');
+  await sleep(800);
+  for (const e of [
+    { type: 'user-message', text: 'go', seq: 0 },
+    { type: 'block-start', index: 0, kind: 'text', seq: 1 },
+    { type: 'text-delta', index: 0, text: 'The quick brown fox jumps over the lazy dog. '.repeat(20), seq: 2 },
+  ]) await Runtime.evaluate({ expression: twEv(e), returnByValue: true });
+  const twLive = await rafRate(600);
+  await Runtime.evaluate({ expression: twEv({ type: 'turn-end', isError: false, stopReason: 'end_turn', numTurns: 1, costUsd: null, usage: null, resultText: null, sessionId: 'S', durationMs: null, seq: 3 }), returnByValue: true });
+  await sleep(2500); // let the typewriter DRAIN its unrevealed tail at the finish cadence
+  const twIdle = await rafRate(2000);
+  const twMsg = (await Runtime.evaluate({ expression: `(() => { const m = window.__readAgentSession('ws-tw')?.messages.find((x) => x.role === 'assistant'); return m ? { done: !!m.done, len: (m.text || '').length } : null; })()`, returnByValue: true })).result.value;
+  const typewriter = { liveRafPerSec: twLive, idleRafPerSec: twIdle, message: twMsg };
+  console.error('[rig] typewriter arm:', JSON.stringify(typewriter));
+
   const result = {
     label: LABEL,
     panes: PANES,
@@ -453,6 +480,7 @@ async function main() {
     guardTripsDuringMount,
     cold,
     streamed,
+    typewriter,
     tripMessages,
     runningAnimations,
     ab,
@@ -469,6 +497,8 @@ async function main() {
     { name: 'cold-rows', ok: cold.rowsMounted > 12, detail: `cold pane mounted rows (${cold.rowsMounted}) > 12 [positive control]` },
     { name: 'cold-guard', ok: cold.rowsMounted > 12 && cold.guardTrips === 0, detail: `guard trips on a cold ${cold.rowsMounted}-row pane open (${cold.guardTrips}) == 0` },
     { name: 'stream-rows', ok: streamed.startedEmpty && streamed.rowsAdded === STREAM_N, detail: `streamed rows added (${streamed.rowsAdded}) == ${STREAM_N} on an empty pane [positive control]` },
+    { name: 'typewriter-live', ok: typewriter.liveRafPerSec > 20 && typewriter.message?.len > 0, detail: `typewriter animating while its block streams (${typewriter.liveRafPerSec}/s) > 20 [positive control]` },
+    { name: 'typewriter-idle', ok: typewriter.liveRafPerSec > 20 && typewriter.idleRafPerSec <= IDLE_RAF_MAX, detail: `rAF/s after turn-end with NO block-stop (${typewriter.idleRafPerSec}) <= ${IDLE_RAF_MAX}` },
     { name: 'stream-guard', ok: streamed.rowsAdded === STREAM_N && streamed.guardTrips === 0, detail: `guard trips streaming ${STREAM_N} rows across frames (${streamed.guardTrips}) == 0` },
   ];
   result.clauses = clauses;

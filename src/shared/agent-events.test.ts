@@ -624,6 +624,46 @@ test('fold: text deltas at one index coalesce into a single assistant message', 
   assert.equal(s.messages[0].done, true);
 });
 
+// ─── fold: a finished turn closes blocks the stream never closed (#198 T9 F4) ─
+// An interrupted/killed stream sends no content_block_stop. `done` then stayed
+// false and the bubble's typewriter rAF looped at 60/s forever on an idle pane.
+
+const RESULT_OK = {
+  type: 'result', subtype: 'success', is_error: false, api_error_status: null,
+  duration_ms: 1, num_turns: 1, result: '', stop_reason: 'end_turn', session_id: 'S', total_cost_usd: 0,
+  usage: { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1, service_tier: 'standard' },
+} as SdkMessage;
+const startText = (index: number) =>
+  ({ type: 'stream_event', event: { type: 'content_block_start', index, content_block: { type: 'text' } } }) as SdkMessage;
+const delta = (index: number, text: string) =>
+  ({ type: 'stream_event', event: { type: 'content_block_delta', index, delta: { type: 'text_delta', text } } }) as SdkMessage;
+
+test('fold: turn-end finalises an assistant block that never got block-stop', () => {
+  const streaming = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'Hello')]));
+  assert.equal(streaming.messages[0].done, undefined, 'precondition: block is open mid-stream');
+  const s = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'Hello'), RESULT_OK]));
+  assert.equal(s.running, false);
+  assert.equal(s.messages.length, 1);
+  assert.equal(s.messages[0].text, 'Hello');
+  assert.equal(s.messages[0].done, true);
+  assert.equal(s.messages[0].index, undefined);
+});
+
+test('fold: a stray next-turn delta (index reused, no block-start yet) does not absorb into the retired block', () => {
+  // findByIndex scans from the end, so only a delta with NO newer block at its index
+  // can reach the retired one — exactly what clearing `index` at turn-end prevents.
+  const s = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'A'), RESULT_OK, delta(0, 'B')]));
+  assert.equal(s.messages[0].text, 'A');
+  assert.equal(s.messages[0].done, true);
+});
+
+test('fold: turn-end leaves a normally closed block untouched', () => {
+  const stop = { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } } as SdkMessage;
+  const closed = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'Hi'), stop]));
+  const after = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'Hi'), stop, RESULT_OK]));
+  assert.deepEqual(after.messages, closed.messages);
+});
+
 test('fold: session/init sets model but does NOT flip running (audit H8)', () => {
   // A session can boot with NO turn in flight (lazy start from a bash run or
   // the Remote Control toggle) — init flipping `running` wedged a perpetual
