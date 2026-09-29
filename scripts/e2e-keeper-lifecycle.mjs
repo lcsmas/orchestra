@@ -196,10 +196,17 @@ const rmKeeperFiles = (ws) => { for (const p of [kc.keeperSocketPath(ws), pidFil
 
 const touched = new Set();
 const result = { arm: ARM, subject: REPO, ok: false, base };
+/** Every live process whose argv mentions this arm's rig dir (keepers, wrappers, fake CLIs — incl. SIGSTOPped / SIGTERM-ignoring). */
+const rigPids = () => procs().filter((p) => p.pid !== process.pid && p.argv.some((a) => a.includes(base))).map((p) => p.pid).filter(alive);
 const finish = async () => {
   for (const ws of touched) {
     for (const pid of [...keepersOf(ws), ...clisOf(ws)]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
   }
+  for (const pid of rigPids()) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  // LEAK ASSERTION: after the reap, 0 fake keeper/CLI/wrapper pids may remain (SIGKILL wakes a SIGSTOPped process).
+  await waitFor(() => rigPids().length === 0, 5_000);
+  const leaked = rigPids();
+  if (leaked.length) { result.leaked = leaked; result.ok = false; }
   if (process.env.KEEP_RIG !== '1') fs.rmSync(base, { recursive: true, force: true });
   console.log(JSON.stringify(result));
   process.exit(result.ok ? 0 : 1);
