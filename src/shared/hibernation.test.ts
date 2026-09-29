@@ -42,6 +42,7 @@ function signals(over: Partial<HibernationSignals> = {}): HibernationSignals {
     hasLivePty: true,
     hasLiveSdk: false,
     hasLiveRunPty: false,
+    hasLiveBackgroundTask: false,
     thresholdMs: THRESHOLD,
     ...over,
   };
@@ -249,4 +250,17 @@ test('a looping workspace is never hibernated', () => {
 
 test('clearing the loop marker makes it eligible again', () => {
   assert.equal(shouldHibernate(ws({ loopingSince: undefined }), signals()), true);
+});
+
+// A `run_in_background` Bash / background Agent keeps working after the turn ends and emits no
+// lifecycle event, so idleness alone would reap it at 5 min (#198 D14 F1).
+test('a live background task blocks hibernation even when idle for days', () => {
+  assert.equal(
+    shouldHibernate(ws(), signals({ hasLiveBackgroundTask: true, lastActivityAt: NOW - 5 * 24 * 3600_000 })),
+    false,
+  );
+});
+
+test('clearing the background task makes it eligible again', () => {
+  assert.equal(shouldHibernate(ws(), signals({ hasLiveBackgroundTask: false })), true);
 });

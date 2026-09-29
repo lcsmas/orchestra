@@ -22,6 +22,8 @@ import type { PeerOrigin } from '../shared/peer-messages.ts';
 export interface SdkDelivery {
   /** True iff a live (non-stopping) structured session owns this workspace. */
   hasSession(wsId: string): boolean;
+  /** True iff the live session still owns a RUNNING background task (hibernation must not kill it). */
+  hasBackgroundTask(wsId: string): boolean;
   /** Enqueue a text turn to a live structured session (becomes its next turn,
    *  same "live" semantics as typing into a running TUI). Resolves when queued.
    *
@@ -68,6 +70,11 @@ export function registerSdkDelivery(delivery: SdkDelivery): void {
  *  module hasn't registered yet (nothing structured has ever run). */
 export function sdkSessionLive(wsId: string): boolean {
   return impl?.hasSession(wsId) ?? false;
+}
+
+/** True iff the workspace's live structured session still owns a running background task. */
+export function sdkHasBackgroundTasks(wsId: string): boolean {
+  return impl?.hasBackgroundTask(wsId) ?? false;
 }
 
 /** Deliver a prompt to a live structured session. Returns false (caller falls

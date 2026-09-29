@@ -29,6 +29,13 @@
 //                      REACHABLE by the next send (needs agent-sdk's identity-guarded
 //                      `sessions.delete`; red on a base without #124, green with it)
 //
+//   fresh_record     ★ (F2) a NON-wake writer lands a field mid-teardown → the sweep stamps the
+//                      chip WITHOUT clobbering it (marks from a fresh record, not the pre-await one)
+//   bg_task          ★ (F1) a live BACKGROUND task (task_started + background_tasks_changed, one
+//                      heartbeat at +4 min) → NOT hibernated at +6 min; idle >=5 min asserted so
+//                      recency cannot be what spares it (task events stamp no activity)
+//   bg_task_done     — control: the task completes (task_notification) → hibernated (block not permanent)
+//   bg_task_healed   — control: a lost bookend is healed by a `background_tasks_changed` replace → hibernated
 //   hibernate_exit1 ★ MEASUREMENT (expected RED on this base): a hibernate stop whose CLI
 //                      exits 1 during the graceful close must emit NO error row (it is an
 //                      intentional stop); a spontaneous crash still must (positive control).
@@ -51,7 +58,7 @@ const ARM = process.argv[2] ?? 'window_6min';
 const ARMS = [
   'window_4min', 'window_6min', 'recent_activity', 'control_6h',
   'guard_run_pty', 'guard_turn', 'wake_after', 'teardown_chip', 'wake_during_teardown',
-  'hibernate_exit1',
+  'hibernate_exit1', 'fresh_record', 'bg_task', 'bg_task_done', 'bg_task_healed',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -141,7 +148,7 @@ sdk.__setQueryFactoryForTests(({ prompt, options }) => {
   const call = {
     n: calls.length + 1, resume: options?.resume, prompts: [], hold: false,
     interruptDelay: 0, interruptStartedAt: 0, ended: false,
-    exitOnEnd: '', crash: '', poke: () => {},
+    exitOnEnd: '', crash: '', poke: () => {}, inject: [],
   };
   calls.push(call);
   const queue = [];
@@ -161,6 +168,7 @@ sdk.__setQueryFactoryForTests(({ prompt, options }) => {
       yield { type: 'system', subtype: 'init', session_id: SESSION_ID, tools: [], slash_commands: [] };
       while (!call.ended) {
         if (call.crash) throw new Error(call.crash);     // a spontaneous CLI death
+        if (call.inject.length) { yield call.inject.shift(); continue; } // a raw SDK message (task_*)
         if (!queue.length) { await new Promise((r) => { poke = r; }); continue; }
         queue.shift();
         if (call.hold) await new Promise(() => {}); // a turn that never ends
@@ -198,7 +206,7 @@ const wsNow = () => store.getWorkspace(WS);
 // (or the guard under test) stands between it and hibernation — else a 'not hibernated' is vacuous.
 const eligibleIfOld = (over = {}) => shouldHibernate(wsNow(), {
   now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-  hasLiveRunPty: false, thresholdMs: resolveHibernateAfterMs(undefined), ...over,
+  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), ...over,
 });
 const live = () => delivery.sdkSessionLive(WS);
 const turnEnds = () => events.filter((e) => e.ev.type === 'turn-end').length;
@@ -375,6 +383,58 @@ if (ARM === 'window_4min' || ARM === 'window_6min') {
   ok = ARM === 'teardown_chip'
     ? stopping && orderSeen && !chipStale             // only the piece hibernation.ts owns
     : stopping && orderSeen && successorReachable && !chipStale;
+}
+
+if (ARM === 'fresh_record') {
+  // A NON-wake writer lands a field mid-teardown; the sweep must stamp the chip WITHOUT clobbering it.
+  calls[0].interruptDelay = 600;
+  skewMs = 6 * MIN;
+  const sweepP = hib.sweepHibernation();
+  const stopping = await waitUntil(() => calls[0].interruptStartedAt > 0, 3000);
+  await store.upsertWorkspace({ ...wsNow(), statusText: 'written-mid-teardown' });
+  const hibernated = await sweepP;
+  const w = wsNow();
+  Object.assign(out, { stopping, hibernated, chip: w.hibernatedAt ?? null, statusText: w.statusText ?? null });
+  ok = stopping && hibernated.length === 1 && !!w.hibernatedAt && w.statusText === 'written-mid-teardown';
+}
+
+if (ARM === 'bg_task' || ARM === 'bg_task_done' || ARM === 'bg_task_healed') {
+  // The agent ended its turn and left a BACKGROUND task running. Task events stamp NO activity
+  // (mapped to null in sdkEventToStatusEvent), so only the live-task guard can spare the session.
+  const hn = await import(`${REPO}/src/main/hibernation-activity.ts`);
+  const taskEvents = () => events.filter((e) => e.ev.type === 'task').length;
+  const c = calls[0];
+  const sys = (o) => ({ type: 'system', session_id: SESSION_ID, uuid: `u-${Math.random()}`, ...o });
+  c.inject.push(sys({ subtype: 'task_started', task_id: 'bg1', tool_use_id: 'tu-bg1', task_type: 'local_bash', description: 'pnpm test (background)' }));
+  c.inject.push(sys({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg1' }] }));
+  c.poke();
+  const startedSeen = await waitUntil(() => taskEvents() >= 2, 3000);
+  skewMs = 4 * MIN;
+  c.inject.push(sys({ subtype: 'task_progress', task_id: 'bg1', tool_use_id: 'tu-bg1', description: 'pnpm test (background)',
+    usage: { total_tokens: 0, tool_uses: 1, duration_ms: 240000 }, last_tool_name: 'Bash' }));
+  c.poke();
+  const progressSeen = await waitUntil(() => taskEvents() >= 3, 3000);
+  let closeSeen = true;
+  if (ARM === 'bg_task_done') {
+    c.inject.push(sys({ subtype: 'task_notification', task_id: 'bg1', tool_use_id: 'tu-bg1', status: 'completed', summary: 'done' }));
+    c.poke(); closeSeen = await waitUntil(() => taskEvents() >= 4, 3000);
+  }
+  if (ARM === 'bg_task_healed') {
+    c.inject.push(sys({ subtype: 'background_tasks_changed', tasks: [] })); // a missed bookend, healed by replace
+    c.poke(); closeSeen = await waitUntil(() => taskEvents() >= 4, 3000);
+  }
+  await sleep(100);
+  skewMs = 6 * MIN;
+  const idleMinutes = (Date.now() - (hn.getLastActivity(WS) ?? 0)) / MIN;
+  const controlEligible = eligibleIfOld();           // only the live task can block
+  const hasTask = delivery.sdkHasBackgroundTasks?.(WS) ?? false;   // absent on a pre-F1 tree → false, not a crash
+  const hibernated = await hib.sweepHibernation();
+  Object.assign(out, { startedSeen, progressSeen, closeSeen, taskEvents: taskEvents(), idleMinutes: Math.round(idleMinutes * 10) / 10,
+    controlEligible, hasTask, hibernated, live: live(), interruptCalled: c.interruptStartedAt > 0 });
+  const proven = startedSeen && progressSeen && closeSeen && controlEligible && idleMinutes >= 5;
+  ok = ARM === 'bg_task'
+    ? proven && hasTask && hibernated.length === 0 && live()
+    : proven && !hasTask && hibernated.length === 1 && !live();
 }
 
 if (ARM === 'hibernate_exit1') {

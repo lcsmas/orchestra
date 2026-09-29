@@ -97,6 +97,8 @@ import {
   sdkEventToStopReason,
   stamp,
   supportsCancelQueued,
+  foldTaskEvent,
+  hasRunningBackgroundTask,
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
@@ -118,6 +120,7 @@ import { contextWindowFromModelId } from '../shared/memory-size.ts';
 import type {
   AgentEffortLevel,
   AgentEvent,
+  BackgroundTask,
   AgentInitEvent,
   AgentImage,
   AgentMcpServer,
@@ -322,6 +325,9 @@ interface Session {
    *  what env THIS subprocess was given. `= !remote && isPtyRunning(ws.id)` at
    *  spawn, i.e. local-and-spool-withheld (see buildSdkEnv, which returns it). */
   driveStatus: boolean;
+  /** Background tasks this session owns, folded from its `task` events (same fold as
+   *  the panel). Session-scoped so it dies with the CLI; read by the hibernation sweep. */
+  bgTasks: Record<string, BackgroundTask>;
   /** Last Remote Control state emitted for this session, so a fresh `ensureSession`
    *  (e.g. after the view re-mounts and re-sends) can re-broadcast it and the
    *  toggle survives. Undefined until the user first enables it. */
@@ -785,6 +791,7 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     // limit-killed, which would auto-resume a session nobody stopped.
     if (ev.type === 'turn-end') session.rateLimitHit = undefined;
     driveStatusFromEvent(session, ev);
+    if (ev.type === 'task') session.bgTasks = foldTaskEvent(session.bgTasks, ev);
     if (ev.type === 'session/init') {
       // Feature-detection state for control requests. `system/init` repeats on
       // EVERY request, so this re-latches each turn — deliberately, since a
@@ -1722,6 +1729,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     stopping: false,
     permissionMode,
     driveStatus,
+    bgTasks: {},
     pendingLocalContext: [],
     recentEchoes: [],
     sawResult: false,
@@ -5529,6 +5537,12 @@ export function sdkHasSession(wsId: string): boolean {
   return !!s && !s.stopping;
 }
 
+/** True while the workspace's live session still owns a RUNNING background task. */
+export function sdkHasBackgroundTask(wsId: string): boolean {
+  const s = sessions.get(wsId);
+  return !!s && hasRunningBackgroundTask(s.bgTasks);
+}
+
 /** Tear down the SDK sessions for a set of workspaces (best-effort, fire &
  *  forget). Called from the workspace delete/archive paths so a removed
  *  workspace never leaks its `query()` subprocess. Exposed as a plain function
@@ -5557,6 +5571,7 @@ export function sdkStopMany(wsIds: readonly string[]): void {
 // wake-on-message run the agent in the structured view instead of a raw PTY.
 registerSdkDelivery({
   hasSession: sdkHasSession,
+  hasBackgroundTask: sdkHasBackgroundTask,
   send: async (wsId, text, peerOrigin) => {
     await sdkSend(wsId, text, undefined, peerOrigin);
   },

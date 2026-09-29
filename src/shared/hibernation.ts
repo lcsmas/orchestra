@@ -56,6 +56,10 @@ export interface HibernationSignals {
    *  script does the work, and killing the agent process here would also read to
    *  the user as "my running app died". Hibernation skips these entirely. */
   hasLiveRunPty: boolean;
+  /** True iff the structured session still owns a RUNNING background task (a
+   *  `run_in_background` Bash / background Agent). Required, not optional: a caller
+   *  that forgets it must fail tsc, not silently hibernate over a live task. */
+  hasLiveBackgroundTask: boolean;
   /** Resolved idle threshold in ms, or {@link HIBERNATION_DISABLED}. */
   thresholdMs: number;
 }
@@ -138,6 +142,7 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *    reclaim, which is the entire point).
  *  - **Not archived.** Archived rows are already out of the fleet.
  *  - **No live run-script PTY.** See {@link HibernationSignals.hasLiveRunPty}.
+ *  - **No running background task.** See {@link HibernationSignals.hasLiveBackgroundTask}.
  *  - **Idle longer than the threshold**, measured from the last observed
  *    lifecycle event. When no activity has EVER been observed for this
  *    workspace this app run, the sweeper supplies the app-start time (see
@@ -154,6 +159,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
     hasLivePty,
     hasLiveSdk,
     hasLiveRunPty,
+    hasLiveBackgroundTask,
     thresholdMs,
   } = signals;
 
@@ -182,6 +188,9 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (ws.host) return false;
   if (ws.archived) return false;
   if (hasLiveRunPty) return false;
+  // A quiet long task emits no lifecycle events, so idleness can't see it — the live
+  // task set must block on its own (#198 D14 F1).
+  if (hasLiveBackgroundTask) return false;
 
   if (lastActivityAt === undefined) return false;
   return now - lastActivityAt >= thresholdMs;

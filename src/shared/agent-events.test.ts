@@ -26,6 +26,8 @@ import {
   toNonExecutionKind,
   classifyTurnError,
   supportsCancelQueued,
+  foldTaskEvent,
+  hasRunningBackgroundTask,
   CAP_INTERRUPT_CANCEL_QUEUED,
   type NormalizeContext,
   type SdkMessage,
@@ -2638,4 +2640,37 @@ test('normalize: first api_retry with an HTTP status → "Erreur API <status>" r
     ctx(),
   );
   assert.equal((evs[1] as Extract<AgentEvent, { type: 'notice' }>).text, 'Erreur API 500 — nouvelle tentative');
+});
+
+// ─── background tasks: main-side liveness (hibernation must not kill a live task) ────
+
+test('hasRunningBackgroundTask: empty → false; a started task → true; a terminal notification → false', () => {
+  const fold = (tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) =>
+    foldTaskEvent(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+  let t = {};
+  assert.equal(hasRunningBackgroundTask(t), false); // control: the empty set never blocks
+  t = fold(t, { kind: 'started', taskId: 'a', description: 'x' });
+  assert.equal(hasRunningBackgroundTask(t), true);
+  for (const status of ['completed', 'failed', 'stopped'] as const) {
+    assert.equal(hasRunningBackgroundTask(fold(t, { kind: 'notification', taskId: 'a', status })), false, status);
+  }
+});
+
+test('hasRunningBackgroundTask: one running task among finished ones still blocks', () => {
+  const fold = (tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) =>
+    foldTaskEvent(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+  let t = {};
+  t = fold(t, { kind: 'started', taskId: 'a' });
+  t = fold(t, { kind: 'started', taskId: 'b' });
+  t = fold(t, { kind: 'notification', taskId: 'a', status: 'completed' });
+  assert.equal(hasRunningBackgroundTask(t), true); // b still runs
+});
+
+test('hasRunningBackgroundTask: a `changed` replace heals a missed finish bookend, never creates or resurrects', () => {
+  const fold = (tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) =>
+    foldTaskEvent(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+  let t = fold({}, { kind: 'started', taskId: 'a' });
+  assert.equal(hasRunningBackgroundTask(fold(t, { kind: 'changed', liveIds: ['a'] })), true); // still live: stays blocked
+  assert.equal(hasRunningBackgroundTask(fold(t, { kind: 'changed', liveIds: [] })), false); // dropped: healed
+  assert.equal(hasRunningBackgroundTask(fold({}, { kind: 'changed', liveIds: ['ghost'] })), false); // never creates a card
 });

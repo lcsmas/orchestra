@@ -20,7 +20,7 @@ import { store } from './store';
 import { platform } from './platform';
 import { scoped } from './logger';
 import { getPtyPid, isRunning, stopPty } from './pty';
-import { sdkSessionLive, sdkStopIfLive } from './sdk-delivery';
+import { sdkHasBackgroundTasks, sdkSessionLive, sdkStopIfLive } from './sdk-delivery';
 // NOTE the .ts extension on this VALUE import: main modules pulled into
 // `node --test --experimental-strip-types` suites do not resolve extensionless
 // relative specifiers (see commit 05adb90 — git.ts/ci-state.ts hit this).
@@ -155,6 +155,7 @@ export async function sweepHibernation(): Promise<string[]> {
       // The run-script PTY registry uses the `<id>:run` naming convention
       // (api-handlers.ts runScript*). Check it BEFORE killing anything.
       hasLiveRunPty: isRunning(`${ws.id}:run`),
+      hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
       thresholdMs,
     });
     if (!eligible) continue;
@@ -186,7 +187,7 @@ export async function sweepHibernation(): Promise<string[]> {
       hlog.info(`${ws.name} (${ws.id}) woken during hibernate teardown — not marking hibernated`);
       continue;
     }
-    // Fresh record, not the pre-await `ws`: the stop persists sdkSessionId etc.
+    // Fresh record, not the pre-await `ws`: any writer during the <=5 s interrupt await would be clobbered.
     const current = store.getWorkspace(ws.id);
     if (!current) continue;
     markHibernated(current, now);

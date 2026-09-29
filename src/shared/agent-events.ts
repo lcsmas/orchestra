@@ -1993,7 +1993,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
  *
  *  All merges preserve first-seen insertion order (object key order), which the
  *  panel relies on for a stable card list. */
-function foldTaskEvent(
+export function foldTaskEvent(
   tasks: Record<string, BackgroundTask>,
   event: AgentTaskEvent,
 ): Record<string, BackgroundTask> {
@@ -2044,6 +2044,13 @@ function foldTaskEvent(
   }
 
   return { ...tasks, [id]: merged };
+}
+
+/** True while any folded background task is still `running` (main-side liveness
+ *  signal — the hibernation sweep must not kill a session that still owns one). */
+export function hasRunningBackgroundTask(tasks: Record<string, BackgroundTask>): boolean {
+  for (const id in tasks) if (tasks[id].status === 'running') return true;
+  return false;
 }
 
 /** Merge an incoming task-usage counter over the prior one. The SDK reports
