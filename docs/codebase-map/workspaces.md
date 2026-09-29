@@ -363,8 +363,9 @@ governed by the flags of the **innermost** run of its two parties).
 
 ## Hooks installed per worktree
 `installOrchestraHooks(worktreePath)` — `workspaces.ts:2156`. Idempotent via a
-`HOOKS_VERSION` stamp hashing every script body + command. Writes 4 shell
-scripts to `<worktree>/.orchestra/` and 6 capability skills to
+`HOOKS_VERSION` stamp hashing every script body + command. Writes the shell
+scripts to `<worktree>/.orchestra/` (temp file + `rename()`, so a running hook
+keeps its inode) and 6 capability skills to
 `<worktree>/.claude/skills/`, then merges hook commands into
 `settings.local.json` and evicts deprecated ones. Full detail (events, scripts,
 env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
