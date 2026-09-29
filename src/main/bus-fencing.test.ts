@@ -339,7 +339,21 @@ test('#222 — with fencing OFF a stale MEMBER write records NO counted event ei
   assert.equal(fenceEvents(db, RUN).length, 0, 'no shadow event for a non-coordinator');
 });
 
-test('#222 — a run with NO runs row fences nobody (no coordinator to identify)', (t) => {
+test('#222 F1 — an UPPERCASE actor for the coordinator is still fenced (case-folded identity)', (t) => {
   const db = tmpBus(t);
-  assert.equal(fencedWrite(db, { runId: 'default', verb: 'send', presented: 0, fencingOn: true, actor: 'ops' }, () => 'ok'), 'ok');
+  startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops-coord' }, FENCING_ON);
+  bumpCoordinatorGeneration(db, RUN);
+  assert.throws(
+    () => fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: true, actor: 'OPS-COORD' }, () => 1),
+    (e: unknown) => e instanceof StaleGenerationError,
+  );
+});
+
+test('#222 F3 — a run with NO runs row has no coordinator: even presented=-1 (< the 0 floor) is not fenced', (t) => {
+  // -1 is the ONLY value that reaches the writer clause on an unknown run (current reads 0, so any
+  // presented >= 0 passes first); the CLI refuses negatives, so this pins the clause at the primitive.
+  const db = tmpBus(t);
+  assert.equal(coordinatorGeneration(db, 'default'), 0);
+  assert.equal(fencedWrite(db, { runId: 'default', verb: 'send', presented: -1, fencingOn: true, actor: 'ops' }, () => 'ok'), 'ok');
+  assert.equal(fenceEvents(db, 'default').length, 0);
 });

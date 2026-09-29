@@ -10,7 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideFence, type FenceInput } from './bus-fencing.ts';
+import { decideFence, isCoordinatorHandle, type FenceInput } from './bus-fencing.ts';
 
 // `writerIsCoordinator` defaults TRUE: the pre-#222 arms below are all about the coordinator.
 const at = (
@@ -82,4 +82,14 @@ test('#222 — a NON-coordinator writer is never fenced, stale or not, in EITHER
   // Control (must-FAIL twin): the SAME numbers from the coordinator are fenced.
   assert.equal(decideFence(at(1, 2, true, true)), 'reject');
   assert.equal(decideFence(at(1, 2, false, true)), 'count');
+});
+
+test('#222 F1 — isCoordinatorHandle is case-folded + trimmed; a null coordinator (no run row) matches nobody', () => {
+  // Disproof: an exact `===` lets `--as <UPPERCASE coordinator id>` (a zombie) escape the fence.
+  assert.equal(isCoordinatorHandle('ab-12', 'ab-12'), true);
+  assert.equal(isCoordinatorHandle('ab-12', 'AB-12'), true, 'UPPERCASE handle is still the coordinator');
+  assert.equal(isCoordinatorHandle('ab-12', '  ab-12 '), true, 'trimmed');
+  assert.equal(isCoordinatorHandle('ab-12', 'ab-13'), false, 'a different handle is a member');
+  assert.equal(isCoordinatorHandle('ab-12', ''), false);
+  assert.equal(isCoordinatorHandle(null, 'ab-12'), false, 'unknown run: no coordinator');
 });

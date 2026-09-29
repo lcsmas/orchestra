@@ -19,7 +19,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { loadDatabaseCtor } from './bus-binding.ts';
 import { orchestraHome } from './platform/index.ts';
-import { decideFence } from '../shared/bus-fencing.ts';
+import { decideFence, isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { isFullWorkspaceId } from '../shared/types.ts';
 
 /** A live connection to the bus. */
@@ -1253,7 +1253,7 @@ export function fencedWrite<T = void>(
         presented: input.presented,
         current,
         // #222: coordinator-only fence; the write's actor is compared to runs.coordinator IN this tx.
-        writerIsCoordinator: runCoordinator(db, input.runId) === input.actor,
+        writerIsCoordinator: isCoordinatorHandle(runCoordinator(db, input.runId), input.actor),
         fencingOn: input.fencingOn,
       });
       if (decision !== 'pass') {

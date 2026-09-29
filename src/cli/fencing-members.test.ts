@@ -36,6 +36,7 @@ const needsBuild = {
 // Real runs anchor on the coordinator: run id == coordinator ws id == its handle.
 const COORD = 'a6a6a6a6-0000-4000-8000-0000000000c0';
 const MEMBER = 'a6a6a6a6-0000-4000-8000-0000000000e1';
+const LEAD = 'a6a6a6a6-0000-4000-8000-0000000000d0'; // the coordinator's OWN parent orchestrator (own run)
 const RUN = COORD;
 
 interface Cli {
@@ -59,6 +60,7 @@ function freshHome(t: { after: (fn: () => void) => void }): string {
       workspaces: [
         { id: COORD, name: 'ops' },
         { id: MEMBER, name: 'member' },
+        { id: LEAD, name: 'lead' },
       ],
     }),
   );
@@ -78,11 +80,11 @@ function withDb<T>(home: string, fn: (db: bus.BusDb) => T): T {
 /** Seed the run: coordinator COORD, `fencing` frozen ON/OFF, bumped to generation 2
  *  (two coordinator restarts — a member spawned at generation 1 is stale, as in the
  *  field message). */
-function seedRun(home: string, opts: { fencingOn: boolean } = { fencingOn: true }): void {
+function seedRun(home: string, opts: { fencingOn: boolean; parent?: string } = { fencingOn: true }): void {
   withDb(home, (db) => {
     startRun(
       db,
-      { id: RUN, kind: 'vague', coordinator: COORD },
+      { id: RUN, kind: 'vague', coordinator: COORD, parentRunId: opts.parent ?? null },
       { ...DEFAULT_BUS_SWITCHES, fencing: opts.fencingOn },
     );
     bus.bumpCoordinatorGeneration(db, RUN);
@@ -106,13 +108,13 @@ function seedLot(home: string, reader: string): number {
  *  ALLOWLIST env (never `{...process.env}`): no inherited ORCHESTRA_SOCK / WS id /
  *  run id can leak in, and HOME is the isolated home so no live socket pointer is
  *  found. Never throws on a non-zero exit. */
-function orchestra(home: string, who: string, gen: number | null, args: string[]): Cli {
+function orchestra(home: string, who: string, gen: number | null, args: string[], runId: string = RUN): Cli {
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: home,
     ORCHESTRA_HOME: home,
     ORCHESTRA_WS_ID: who,
-    ORCHESTRA_RUN_ID: RUN,
+    ORCHESTRA_RUN_ID: runId, // the writer's OWN run (a member's anchor / a coordinator's own id)
   };
   if (gen !== null) env.ORCHESTRA_COORDINATOR_GENERATION = String(gen);
   try {
@@ -253,4 +255,39 @@ test('control: fencing switch OFF — a zombie coordinator is COUNTED (fired=0) 
   const ev = fences(home);
   assert.equal(ev.length, 1);
   assert.equal(ev[0].fired, 0, 'COUNTED, not FIRED');
+});
+
+// ── review F1/F2 (ledger #224 c/5898638191) ─────────────────────────────────────
+
+test('F1: a zombie coordinator with --as <UPPERCASE id> is STILL fenced (identity is case-folded)', needsBuild, (t) => {
+  const home = freshHome(t);
+  seedRun(home);
+  const r = orchestra(home, COORD, 1, ['send', '--type', 'status', '--as', COORD.toUpperCase(), '--to', MEMBER, 'upper-a6']);
+  assert.equal(r.code, 1, `an UPPERCASE --as must not dodge the fence (exact === lets it land, rc 0): ${r.stdout}`);
+  assert.match(r.stderr, STALE);
+  assert.equal(msgCount(home, 'upper-a6'), 0, 'the stale write never landed');
+  assert.equal(fences(home).filter((e) => e.fired === 1).length, 1);
+});
+
+test('F2: cross-run — the OPS (own run at gen 2) writing --run <LEAD run at gen 3> is a MEMBER write there: lands', needsBuild, (t) => {
+  const home = freshHome(t);
+  seedRun(home, { fencingOn: true, parent: LEAD }); // OPS run (RUN = COORD, gen 2), nested under the LEAD — its gen sits in the OPS env
+  withDb(home, (db) => {
+    startRun(db, { id: LEAD, kind: 'mission', coordinator: LEAD }, { ...DEFAULT_BUS_SWITCHES, fencing: true });
+    for (let i = 0; i < 3; i++) bus.bumpCoordinatorGeneration(db, LEAD);
+    assert.equal(bus.coordinatorGeneration(db, LEAD), 3, 'seed: the LEAD run sits at generation 3');
+  });
+  // OPS env = its OWN run (RUN) + its own generation 2; the write targets the LEAD's run at 3.
+  const r = orchestra(home, COORD, 2, ['send', '--type', 'status', '--run', LEAD, '--to', LEAD, 'ops-to-lead-a6'], RUN);
+  assert.equal(r.code, 0, `OPS is a MEMBER of the LEAD run — its own-run generation is meaningless there (master: rc 1 stale 2<3): ${r.stderr}`);
+  assert.equal(
+    withDb(home, (db) => (db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=? AND body=?').get(LEAD, 'ops-to-lead-a6') as { n: number }).n),
+    1,
+    'the message landed in the LEAD run',
+  );
+  assert.deepEqual(withDb(home, (db) => bus.fenceEvents(db, LEAD)), [], 'no fence event on the LEAD run');
+  // Must-FAIL twin: the LEAD ITSELF as a zombie (gen 2 < 3) on its own run IS fenced.
+  const z = orchestra(home, LEAD, 2, ['send', '--type', 'status', '--to', COORD, 'lead-zombie-a6'], LEAD);
+  assert.equal(z.code, 1, `the superseded LEAD is fenced on its own run: ${z.stdout}`);
+  assert.match(z.stderr, STALE);
 });

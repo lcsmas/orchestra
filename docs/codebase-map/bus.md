@@ -1648,7 +1648,8 @@ the fence tx by `fencedWrite`) AND `presented < current`. Anything else passes, 
 |---|---|
 | `send` (any kind: dispatch / status / worker_done / question …), `ack`, `gate resolve` by the run's **coordinator** presenting an old generation | **yes** — the #166 guarantee |
 | the same three verbs by any **member** of the run (stale env generation) | no — never refused, no shadow event |
-| `check`, `ask`, `token`, `gate open/list` | never (they present no generation) |
+| `check`, `ask`, `token`, `gate open/list` | never — they do not route through `fenced()` (`check` is a read + the reader's own ack; `verbAsk` → `ctx.bus.send` and `gate open` → `openGate` write directly) |
+| a write to a run the writer does not coordinate (e.g. OPS `--run <LEAD run>`) | no — the OPS is a member there; its env generation belongs to ITS OWN run (pinned by a CLI arm) |
 | run with no `runs` row (`default`) | never (no coordinator to identify) |
 
 **Writer identity** = the CLI handle (`--as`, else `$ORCHESTRA_WS_ID`/`_IDENTITY`) — the same
@@ -1656,7 +1657,11 @@ value stamped as `messages.sender`. The zombie and its successor share ONE ws id
 generation tells them apart. `--as` is a caller-supplied claim: a member passing `--as <coordinator>`
 with a stale generation is fenced (fail-closed, pinned by test); a zombie coordinator passing
 `--as <member>` escapes — but it could equally unset the env var, so fencing is a safety net
-against an ACCIDENTAL zombie, not an auth boundary (unchanged by #222).
+against an ACCIDENTAL zombie, not an auth boundary (unchanged by #222). The comparison is
+case-folded + trimmed (`isCoordinatorHandle`), so `--as <UPPERCASE id>` stays fenced. Pre-existing,
+unchanged: a zombie can still `ask`, `gate open`, implicit-ack via `check --ack-previous`, and emit the
+gate-resolution rewake (none route through `fenced()`). Requires `runs.coordinator` == the coordinator's
+ws id (only writer: `bus-run-anchor.ts` `coordinator: anchor.anchorId`); a run created otherwise is unfenced.
 
 ## Atomicity — the fence and the write are ONE transaction (review F1)
 
@@ -1703,10 +1708,10 @@ state, not a crash.
 
 ```bash
 npx tsc --noEmit                                                         # C1
-node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  6 pure
-node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 14 real-bus (primitive + fencedWrite + #222 member/coordinator)
+node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  7 pure
+node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 16 real-bus (primitive + fencedWrite + #222 member/coordinator)
 node --test --experimental-strip-types src/cli/bus-verbs.test.ts         # +5 VERB-path arms (F2): verbSend/Ack/Gate → fenced → fencedWrite (+ #222 member arm)
-node --test --experimental-strip-types src/cli/fencing-members.test.ts    # #222: BUILT CLI vs isolated home — 5 member arms (fail on unfixed master) + zombie/control arms; rebuild the CLI first
+node --test --experimental-strip-types src/cli/fencing-members.test.ts    # #222: BUILT CLI vs isolated home — 5 member arms + cross-run OPS→LEAD (fail on unfixed master) + zombie/UPPERCASE/control arms; rebuild the CLI first
 node --test --experimental-strip-types src/main/bus-fencing-wiring.test.ts # #166 PRODUCER: pure gate + real-bus replacement flow (arms 1-3)
 node --test --experimental-strip-types src/main/wave-run-anchor-wiring.test.ts # #166 source-grep for the bump/env wiring in un-importable modules
 node scripts/bus-pane-render-smoke.mjs                                   # T128.2 generation visible
@@ -1729,7 +1734,9 @@ reddens), mutant-string verified live, then GREEN restored.
 zombie-coordinator arms redden (member arms stay green); drop the coordinator clause /
 hard-code `writerIsCoordinator` / pass `runId` as the actor → the member arms redden;
 invert the identity test → both sets redden; compare `actor` to `runId` instead of
-`runs.coordinator` → only the unit arms redden (the CLI rig seeds coordinator == run id).
+`runs.coordinator` → only the unit arms redden (the CLI rig seeds coordinator == run id); exact
+`===` instead of case-folded → the UPPERCASE `--as` arms redden; "actor coordinates ANY run" → the
+cross-run OPS→LEAD arm reddens.
 
 ## Not covered here
 

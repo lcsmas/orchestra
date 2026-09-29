@@ -35,6 +35,12 @@ export interface FenceInput {
   fencingOn: boolean;
 }
 
+/** Is `actor` (a caller-supplied `--as` / ws-id handle) the run's coordinator? Case-folded +
+ *  trimmed so `--as <UPPERCASE id>` cannot dodge the fence (#222 review F1); null = no run row. */
+export function isCoordinatorHandle(coordinator: string | null, actor: string): boolean {
+  return coordinator !== null && coordinator.trim().toLowerCase() === actor.trim().toLowerCase();
+}
+
 /**
  * Decide the fate of one write.
  *
