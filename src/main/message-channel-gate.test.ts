@@ -24,8 +24,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
-import { startRun, busSwitch } from './bus-runs.ts';
-import { isPlainOwnAnchor } from './wave-run-id.ts';
+import { startRun, busSwitch, getRelatedRunIds } from './bus-runs.ts';
+import { isPlainOwnAnchor, nearestOrchestratorId } from './wave-run-id.ts';
+import { mirrorDispatch as realMirrorDispatch } from './bus-mirror.ts';
+import {
+  sweepBusWake,
+  busWakeCounters,
+  setWakeRoster,
+  setWakeDeliver,
+  setWakeSwitchReader,
+  setAskGateSwitchReader,
+  __setBusReaderForTests,
+  __resetBusWakeForTests,
+  __armStartedForTests,
+} from './bus-wake.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { deliverToTargets, normalizeExplicitTargets } from '../shared/broadcast-targets.ts';
 import {
@@ -126,6 +138,14 @@ test('#169 SOURCE BINDING — the wrapper resolves the switch and gates before d
   );
 });
 
+interface TopoNode {
+  id: string;
+  branch: string;
+  archived: boolean;
+  parentId?: string;
+  canOrchestrate?: boolean;
+}
+
 interface WrapperResult {
   result: { ok: boolean; error?: string; delivery?: string; branch?: string };
   delivered: boolean;
@@ -147,6 +167,10 @@ async function runWrapper(opts: {
   /** #221 — the target is a plain own-anchor (a run-less parent that gained a mission run),
    *  not a coordinator. Default: an ORCHESTRATOR target, the case P4 was written for. */
   plainParent?: boolean;
+  /** #221 review — a REAL topology (id → node): the wrapper then resolves runs through the REAL
+   *  `nearestOrchestratorId` over it, `from` names the sender node, and the mirror is the REAL one
+   *  writing into `db` (so a following `sweepBusWake` sees what the wrapper filed). */
+  topo?: { nodes: Record<string, TopoNode>; from?: string };
 }): Promise<WrapperResult> {
   const body = extract('export async function dispatchMessageRequest');
   let delivered = false;
@@ -159,9 +183,13 @@ async function runWrapper(opts: {
     MESSAGE_MAX_CHARS: 8000,
     getBus: () => opts.db,
     busSwitch, // the REAL frozen-flag read
-    resolveWaveRunId: (_ws: unknown) => opts.targetRunId,
+    resolveWaveRunId: (ws: TopoNode) =>
+      opts.topo ? nearestOrchestratorId(ws, (id: string) => opts.topo!.nodes[id]) : opts.targetRunId,
     isPlainOwnAnchor, // the REAL #221 discriminator (wave-run-id.ts)
-    store: { getWorkspace: (_id: string) => target },
+    store: {
+      getWorkspace: (id: string) => (opts.topo ? opts.topo.nodes[id] : id === 'ws-target' ? target : undefined),
+    },
+    getRelatedRunIds, // the REAL related-run set (F2: does the SENDER have a bus route?)
     decideMessageChannel: opts.gated
       ? decideMessageChannel
       : (_i: unknown) => ({ allow: true as const }), // pre-#169: no gate
@@ -170,8 +198,11 @@ async function runWrapper(opts: {
       delivered = true;
       return { ok: true, delivery: 'live', branch: 'target-branch' };
     },
-    // The mirror is read-only w.r.t. delivery and irrelevant to the gate.
-    mirrorDispatch: () => {},
+    // The mirror is read-only w.r.t. delivery and irrelevant to the gate — except in a `topo` arm,
+    // where the REAL mirror files the row so the wake sweep can be asked whether it wakes anyone.
+    mirrorDispatch: opts.topo
+      ? (i: Parameters<typeof realMirrorDispatch>[0]) => realMirrorDispatch({ ...i, db: opts.db })
+      : () => {},
     // Present only so the wrapper's `resolveWaveRunId(recipientWs)` mirror line
     // (post-delivery) type-checks; harmless.
   };
@@ -182,7 +213,7 @@ async function runWrapper(opts: {
   )(...Object.values(scope));
 
   const result = await fn({
-    from: 'ws-sender',
+    from: opts.topo ? opts.topo.from : 'ws-sender',
     to: 'ws-target',
     text: 'coordinate the wave',
     ...(opts.emergency ? { emergency: true } : {}),
@@ -305,6 +336,105 @@ test('#221 ARM 3 — plain own-anchor target with a delivery-ON run is DELIVERED
   });
   assert.equal(orch.result.ok, false, 'the same run on an ORCHESTRATOR target is still refused');
   assert.equal(orch.delivered, false);
+});
+
+// ── #221 review round 2 (F1 blocking, F2, F3): drive the REAL wrapper over a REAL topology ────────
+const node = (id: string, over: Partial<TopoNode> = {}): TopoNode => ({
+  id, branch: `${id}-branch`, archived: false, ...over,
+});
+/** LEAD (plain, own anchor = the target 'ws-target'), OPS (promoted child), MEMBER (of OPS), WORKER (plain child). */
+function leadTopo(from: string | undefined): { nodes: Record<string, TopoNode>; from?: string } {
+  return {
+    from,
+    nodes: {
+      'ws-target': node('ws-target'),
+      'ws-ops': node('ws-ops', { parentId: 'ws-target', canOrchestrate: true }),
+      'ws-member': node('ws-member', { parentId: 'ws-ops' }),
+      'ws-worker': node('ws-worker', { parentId: 'ws-target' }),
+    },
+  };
+}
+/** LEAD mission run (delivery+wake ON) with the OPS vague nested under it — the post-#221 bus. */
+function seedLeadRuns(db: BusDb): void {
+  const on = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
+  startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, on);
+  startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops', parentRunId: 'ws-target' }, on);
+}
+function armSweep(db: BusDb, readers: { reader: string; runId: string }[]): { reader: string; text: string }[] {
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => readers.map((r) => ({ ...r, wakeable: true })));
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  setWakeSwitchReader((runId) => busSwitch(db, runId, 'wake'));
+  setAskGateSwitchReader((runId) => busSwitch(db, runId, 'ask_gate'));
+  __armStartedForTests();
+  return wakes;
+}
+
+test('#221 F1 — an EXEMPTED `message` to the plain parent is delivered ONCE: the mirrored row wakes nobody', async (t) => {
+  const db = tmpBus(t);
+  t.after(() => __resetBusWakeForTests());
+  seedLeadRuns(db);
+  const r = await runWrapper({
+    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
+  });
+  assert.equal(r.result.ok, true, `non-member child → plain parent is delivered: ${r.result.error}`);
+  assert.equal(r.delivered, true);
+  const wakes = armSweep(db, [{ reader: 'ws-target', runId: 'ws-target' }]);
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, `no second delivery via a wake: ${JSON.stringify(wakes)}`);
+  assert.equal(busWakeCounters().fired, 0);
+  // POSITIVE CONTROL (the instrument can see a wake): the same mirrored row filed in the parent's OWN run
+  // — what the un-fixed wrapper did — wakes it.
+  realMirrorDispatch({
+    sender: 'ws-worker', recipient: 'ws-target', body: 'control', result: { ok: true, delivery: 'live' },
+    runId: 'ws-target', db,
+  });
+  await sweepBusWake();
+  assert.equal(wakes.filter((w) => w.reader === 'ws-target').length, 1, 'control: a row in the parent run DOES wake it');
+});
+
+test('#221 F2 — the exemption is for NON-member senders only: the OPS coordinator and its member are refused', async (t) => {
+  const db = tmpBus(t);
+  seedLeadRuns(db);
+  const send = (from: string | undefined) =>
+    runWrapper({ db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo(from) });
+  const ops = await send('ws-ops');
+  assert.equal(ops.result.ok, false, 'the OPS has a bus route (`send` works) → refused');
+  assert.match(ops.result.error ?? '', /orchestra send/);
+  assert.equal(ops.delivered, false);
+  const member = await send('ws-member');
+  assert.equal(member.result.ok, false, 'a member of the OPS run (related to the LEAD run) → refused');
+  assert.equal(member.delivered, false);
+  // Controls: a non-member child and an external (no `from`) sender stay delivered.
+  assert.equal((await send('ws-worker')).result.ok, true, 'non-member child: delivered');
+  assert.equal((await send(undefined)).result.ok, true, 'external sender (no workspace): delivered');
+});
+
+test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is REFUSED by P4, never mistaken for a plain anchor', async (t) => {
+  // MUTANT: isPlainOwnAnchor(targetForGate, () => undefined) → the member "has no parent", looks like an
+  // own-anchor and is exempted (a P4 bypass for every member of a delivery-ON run) → this arm reddens.
+  const db = tmpBus(t);
+  const on = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
+  startRun(db, { id: 'ws-orch', kind: 'mission', coordinator: 'ws-orch' }, on);
+  const r = await runWrapper({
+    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
+    topo: {
+      from: 'ws-someone',
+      nodes: {
+        'ws-target': node('ws-target', { parentId: 'ws-orch' }), // the MEMBER, target of the message
+        'ws-orch': node('ws-orch', { canOrchestrate: true }),
+        'ws-someone': node('ws-someone'),
+      },
+    },
+  });
+  assert.equal(r.result.ok, false, 'member of a delivery-ON run: refused');
+  assert.match(r.result.error ?? '', /orchestra send/);
+  assert.equal(r.delivered, false);
 });
 
 // ─── 3. F3 (LEAD D-W8-1) — the BROADCAST is gated too; only --emergency bypasses ──

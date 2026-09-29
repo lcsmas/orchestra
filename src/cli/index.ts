@@ -1666,13 +1666,24 @@ async function main(argv: string[]): Promise<void> {
       const run = takeFlag(to.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
+      // #221 — same canonicalize as `send` (full id + the recipient's wave run) so an unreachable
+      // recipient is refused loudly instead of parking a question nobody reads. `human` is a surface.
+      const askTo =
+        to.value?.trim() && to.value.trim() !== 'human'
+          ? await canonicalizeRecipientOrFail(to.value)
+          : null;
       const { db, bus } = await openBusForVerb();
       try {
         // `ask` parks a question and is not one of the three fenced coordinator
         // mutations (#128 scope: send/ack/gate-resolve) — never fenced.
         // Writes the row, prints the id, RETURNS. No wait — the Bash tool caps
         // at 600s, so a blocking ask would report a false timeout (#108).
-        verbAsk(busCtx(db, bus, id, { generation: null, fencingOn: false }), to.value, as.rest.join(' '));
+        verbAsk(
+          busCtx(db, bus, id, { generation: null, fencingOn: false }),
+          askTo?.id ?? to.value,
+          as.rest.join(' '),
+          askTo?.runId ?? null,
+        );
       } finally {
         db.close();
       }
@@ -1703,10 +1714,21 @@ async function main(argv: string[]): Promise<void> {
       const run = takeFlag(gen.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
+      // #221 — `gate open --to <handle>`: canonicalize like `send`/`ask` (skip `human`, a surface).
+      let gateArgs = as.rest.slice(1);
+      let gateToRunId: string | null = null;
+      if (as.rest[0] === 'open') {
+        const gt = takeFlag(gateArgs, '--to');
+        if (gt.value?.trim() && gt.value.trim() !== 'human') {
+          const c = await canonicalizeRecipientOrFail(gt.value);
+          gateArgs = ['--to', c.id, ...gt.rest];
+          gateToRunId = c.runId;
+        }
+      }
       const { db, bus } = await openBusForVerb();
       try {
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
-        verbGate(busCtx(db, bus, id, fencing), as.rest[0], as.rest.slice(1));
+        verbGate(busCtx(db, bus, id, fencing), as.rest[0], gateArgs, gateToRunId);
       } finally {
         db.close();
       }
