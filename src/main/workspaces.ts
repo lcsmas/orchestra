@@ -60,6 +60,7 @@ import {
 } from './bus-runs.ts';
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
+import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import {
   ACCOUNT_DEFAULT_MODEL,
   isValidModelArg,
@@ -3255,6 +3256,12 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
 export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
+  // #226: sandbox agents are paused — refuse here too: sdkStartAndDeliver swallows the funnel's refusal and the PTY fallback below (no `host`) would start a LOCAL claude.
+  const paused = sandboxPausedMessage(ws);
+  if (paused) {
+    log.warn(`wake refused for ${id}: ${paused}`);
+    return false;
+  }
   // A wake is a restore, whichever branch below serves it: the SDK paths clear
   // via ensureSession, but the raw-PTY fallback calls startPty directly, so
   // clear once here and every branch is covered. Idempotent when not hibernated.

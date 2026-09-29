@@ -28,6 +28,7 @@ import { log, scoped } from './logger';
 import { decideGateRelease, isProofOfLifeMessage, shouldRedriveInbox } from '../shared/session-wedge.ts';
 import { resolveLaunchModel } from '../shared/model-defaults.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
+import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
@@ -1643,6 +1644,11 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
 
   const ws = store.getWorkspace(wsId);
   if (!ws) throw new Error(`unknown workspace: ${wsId}`);
+
+  // #226: sandbox agents are PAUSED pending #220 — refuse at THE funnel every start/resume/wake
+  // shares, before any side effect (rewind cut, hibernation clear, env, spawn), naming the pause.
+  const paused = sandboxPausedMessage(ws);
+  if (paused) throw new Error(paused);
 
   // A pending rewind cut, consumed EXACTLY ONCE by the restart it was queued
   // for (see sdkRewind). Read-and-clear before any `await` below so a second

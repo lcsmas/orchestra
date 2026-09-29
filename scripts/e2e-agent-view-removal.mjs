@@ -71,6 +71,8 @@ const EXPECT = {
     baseline: { wake: false, agentPty: true, surfaceWord: 'terminal', resumeFlag: '--continue' },
     after: { wake: true, agentPty: false, surfaceWord: null, resumeFlag: '--resume' },
   },
+  // #226: does a refused sandbox agent start NAME the pause + #220? (baseline: the cryptic spawn error / silent PTY fallback)
+  sandboxPaused: { baseline: false, after: true },
 };
 // #228 legacy seed: a real-shaped TERMINAL transcript (entrypoint 'cli') the wake path must adopt. A valid UUID: the SDK's session index keys on it.
 const LEGACY_SESSION_ID = '228c0de0-7e57-4a11-8b3a-00000000b301';
@@ -428,8 +430,16 @@ function seedWorld(home, opt = {}) {
     ].map((l) => JSON.stringify(l)).join('\n') + '\n');
   }
   const repo = { path: repoDir, name: 'avr-repo', defaultBranch: 'main', scripts: BROKEN_CONTROL ? {} : { run: 'sleep 3600' }, accountId: account.id };
+  // #226 seeds (opt.sandbox): two sandbox-hosted records as `importWorkspaceToSandbox` leaves them (host flipped, hasInput false,
+  // local worktree retired). `gone` = retired path absent (the normal case); `live` = the retire step failed, so the local dir still
+  // exists — the case where a PTY fallback WITHOUT `host` would start a local agent. Listed FIRST so the store's first ws is active at boot.
+  const sbxHost = { kind: 'sandbox', endpoint: 'ws://127.0.0.1:9' }; // nothing listens there: a refused start must never dial
+  const sbxRec = (tag, wt) => ({ ...ws, id: `ws-avr-sbx-${tag}`, name: `avr-sbx-${tag}`, branch: `e2e/avr-sbx-${tag}`, worktreePath: wt, host: sbxHost, hasInput: false, sdkSessionId: `avr-sbx-${tag}-sess` });
+  const sbxLiveDir = path.join(home, 'wt', 'avr-sbx-live');
+  if (opt.sandbox) fs.mkdirSync(sbxLiveDir, { recursive: true });
+  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir) } : null;
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, ws] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
   // Stub claude: the legacy agent PTY execs `claude` from PATH; a stub keeps the baseline
   // free of API calls. Stays a shell (not exec) so its cmdline names the stub for identity.
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
@@ -447,7 +457,7 @@ function seedWorld(home, opt = {}) {
       `echo "gh: avr stub has no answer for: $*" >&2; exit 1\n`, { mode: 0o755 });
     fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\necho "$*" >> ${q('xdg-open.log')}\n`, { mode: 0o755 });
   }
-  return { fakeHome, repoDir, wtDir, ws, account, stubDir, stub, stubLog, legacyTranscript, storeFile: path.join(dir, 'store.json') };
+  return { fakeHome, repoDir, wtDir, ws, sbx, account, stubDir, stub, stubLog, legacyTranscript, storeFile: path.join(dir, 'store.json') };
 }
 
 async function bootApp(arm, opt = {}) {
@@ -763,6 +773,52 @@ const listWs = (app) => app.cdp.eval('window.orchestra.listWorkspaces()');
 /** Positive control for every arm that claims "a session did / did NOT start": the app installs `dist-electron/keeper.js` at boot; without it NO SDK session can
  *  start, so a "no session started" claim passes vacuously (review #228 F2: a vite-only build left `legacy_restart_fresh` fully green). */
 const keeperControl = (ctx) => { const f = path.join(ctx.app.home, 'bin', 'keeper.js'); return ctx.clause('env/keeper-runtime-installed', fs.existsSync(f), `${path.relative(ctx.app.home, f)} ${fs.existsSync(f) ? 'installed at boot' : 'ABSENT — no SDK session can start here, so every session-start claim below is unproven (build with pnpm run build:bundles)'}`); };
+// ── #226 helpers: drive the Agent view like a user, and the REAL CLI against this boot's socket ──────────────
+/** Trusted click on a sidebar row by (unique) workspace name; asserts the row became active. */
+async function activateWorkspace(app, name) {
+  const row = await waitFor(`sidebar row '${name}'`, () => app.cdp.eval(`(() => { const e = [...document.querySelectorAll('.ws-item')].find(x => x.textContent.includes(${JSON.stringify(name)})); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 15000);
+  await app.click(row.cx, row.cy);
+  await waitFor(`'${name}' active`, () => app.cdp.eval(`[...document.querySelectorAll('.ws-item.active')].some(x => x.textContent.includes(${JSON.stringify(name)}))`), 8000, 100);
+}
+/** Open the Agent-view tab of the active workspace. Whichever label the build renders (Structured today, Agent after #230):
+ *  this arm is about the START refusal, not the tab rename, so a build that has not renamed yet must still reach its clauses. */
+async function openAgentTab(app) {
+  const labels = (await app.tabs()).map((t) => t.label);
+  const label = ['Agent', 'Structured'].find((l) => labels.includes(l));
+  if (!label) throw new Error(`no Agent-view tab (Agent|Structured) in ${JSON.stringify(labels)}`);
+  await app.clickTab(label);
+}
+/** Type into the VISIBLE composer through trusted input and press Enter (the real send path). Returns pre/post composer text. */
+async function composerSend(app, text) {
+  const box = await waitFor('visible composer', () => app.cdp.eval(`(() => { for (const e of document.querySelectorAll('.cm-content')) { const r = e.getBoundingClientRect(); if (r.width > 50 && r.height > 5) return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; } return null; })()`), 15000);
+  await app.click(box.cx, box.cy);
+  await app.cdp.send('Input.insertText', { text });
+  const visibleText = () => app.cdp.eval(`(() => { for (const e of document.querySelectorAll('.cm-content')) { const r = e.getBoundingClientRect(); if (r.width > 50 && r.height > 5) return e.innerText; } return null; })()`);
+  const pre = await visibleText();
+  await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r' });
+  await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  const post = await waitFor('composer cleared', async () => { const t = await visibleText(); return t !== null && !t.includes(text) ? t : null; }, 8000, 100).catch(() => null);
+  return { pre, post };
+}
+/** Text of the VISIBLE message list, plus its error rows and user rows (DOM oracle; the screenshot is the paint oracle). */
+const messageRows = (app) => app.cdp.eval(`(() => { for (const l of document.querySelectorAll('.av-message-list')) { const r = l.getBoundingClientRect(); if (r.width > 50 && r.height > 50) return { errors: [...l.querySelectorAll('.av-message-error')].map(e => e.innerText), users: [...l.querySelectorAll('.av-message-user')].map(e => e.innerText) }; } return null; })()`);
+/** The REAL `orchestra` CLI (dist-electron/cli.js under plain node) against THIS boot's socket, allowlist env only. */
+function runCli(app, args, ms = 60000) {
+  const cli = path.join(APP_DIR, 'dist-electron/cli.js');
+  if (!fs.existsSync(cli)) throw new Error(`${cli} missing — build the CLI (pnpm run build:cli) in <app-dir>`);
+  const sock = fs.readFileSync(path.join(app.home, 'sock'), 'utf8').trim();
+  const env = { PATH: `${app.world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: app.world.fakeHome, ORCHESTRA_HOME: app.home, ORCHESTRA_SOCK: sock, LANG: 'C.UTF-8' };
+  return new Promise((resolve) => {
+    const c = spawn(process.execPath, [cli, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    c.stdout.on('data', (d) => (out += d)); c.stderr.on('data', (d) => (err += d));
+    const t = setTimeout(() => { c.kill('SIGKILL'); }, ms);
+    c.on('close', (rc) => { clearTimeout(t); resolve({ rc, stdout: out.trim(), stderr: err.trim() }); });
+  });
+}
+/** One-line message that must name the pause AND the follow-up ticket (all three parts, literal). */
+const namesPause = (t) => /paused/i.test(t ?? '') && (t ?? '').includes('#220') && (t ?? '').includes('Reconcile sandbox agents with the Agent view');
+const oneLine = (t, n = 200) => String(t ?? '').replace(/\s+/g, ' ').slice(0, n);
 
 const ARMS = [
   {
@@ -1455,6 +1511,72 @@ const ARMS = [
       ctx.clause('with-pr/click-opens-pr-url', clicked && after, `pre-click matches=${before}; clicked=${clicked}${why ? ` (${why})` : ''}; main log line after click=${after} ("${needle}")`);
       const xdg = fs.existsSync(path.join(app.home, 'xdg-open.log')) ? fs.readFileSync(path.join(app.home, 'xdg-open.log'), 'utf8').trim() : '';
       console.log(`OBSERVED  xdg-open stub argv after click=${JSON.stringify(xdg)} (informational: Electron may hand the URL over without xdg-open)`);
+    },
+  },
+  {
+    name: 'sandbox_paused', boots: true, ticket: '#226', boot: { sandbox: true },
+    doc: 'sandbox-hosted workspaces: starting their agent is refused naming the pause + #220 — Agent-view send (error row), CLI restart (rc!=0 + message), CLI message wake (no local PTY fallback); a local workspace in the same boot is unaffected',
+    async run(ctx) {
+      const { app } = ctx; const { sbx, ws: local } = app.world; const want = pick(EXPECT.sandboxPaused);
+      // seeded state read back from the RUNNING app's store, not from my seed
+      const seen = await app.cdp.eval(`window.orchestra.listWorkspaces().then(l => l.map(w => ({ id: w.id, host: w.host ? w.host.kind : null })))`);
+      const hostOf = (id) => seen.find((w) => w.id === id)?.host;
+      ctx.clause('seed/sandbox-hosted-in-app-store', hostOf(sbx.gone.id) === 'sandbox' && hostOf(sbx.live.id) === 'sandbox' && hostOf(local.id) === null,
+        `app store host kinds: gone=${hostOf(sbx.gone.id)} live=${hostOf(sbx.live.id)} local=${hostOf(local.id)}`);
+      ctx.clause('seed/gone-path-absent-live-path-present', !fs.existsSync(sbx.gone.worktreePath) && fs.existsSync(sbx.live.worktreePath), `gone=${fs.existsSync(sbx.gone.worktreePath)} live=${fs.existsSync(sbx.live.worktreePath)}`);
+
+      // ── 1. Agent-view send on a sandbox workspace ────────────────────────────────────────────
+      await activateWorkspace(app, 'avr-sbx-gone');
+      await openAgentTab(app);
+      const MARK = 'AVR-SEND-SBX-1f3a';
+      const sent = await composerSend(app, MARK);
+      ctx.clause('agent-view-send/composer-submitted', !!sent.pre?.includes(MARK) && sent.post !== null, `composer text pre=${JSON.stringify(oneLine(sent.pre, 40))} -> post=${JSON.stringify(oneLine(sent.post, 40))} (trusted Enter)`);
+      const errRow = await waitFor('error row', async () => { const r = await messageRows(app); return r && r.errors.length ? r : null; }, 30000, 250).catch(() => null);
+      const errText = errRow ? errRow.errors.join(' | ') : '';
+      console.log(`OBSERVED  agent-view-send(${sbx.gone.id}) error rows=${errRow ? errRow.errors.length : 0}: ${JSON.stringify(oneLine(errText, 300))}`);
+      ctx.clause('agent-view-send/error-row-appears', !!errRow, errRow ? `error row: ${oneLine(errText)}` : 'NO error row within 30 s');
+      ctx.clause('agent-view-send/error-names-pause-and-220', namesPause(errText) === want, `names pause+#220=${namesPause(errText)} expected(${MODE})=${want} :: ${oneLine(errText)}`);
+      const listRect = await app.cdp.eval(`(() => { for (const l of document.querySelectorAll('.av-message-list')) { const r = l.getBoundingClientRect(); if (r.width > 50 && r.height > 50) return { x: r.x, y: r.y, width: r.width, height: r.height }; } return null; })()`);
+      if (listRect) console.log(`SHOT      agent-view-send-error ${await app.shot('sandbox-agent-view-send', listRect)}`);
+
+      // ── 2. CLI restart of the same workspace: not-ok, same message ───────────────────────────
+      const rs = await runCli(app, ['restart', sbx.gone.id]);
+      console.log(`OBSERVED  cli restart ${sbx.gone.id}: rc=${rs.rc} stdout=${JSON.stringify(oneLine(rs.stdout))} stderr=${JSON.stringify(oneLine(rs.stderr))}`);
+      // baseline (measured on master): the SDK start is lazy, so `restart` reports success and the failure surfaces later as an error row.
+      ctx.clause('cli-restart/not-ok', rs.rc !== null && (rs.rc !== 0) === want, `rc=${rs.rc} expected(${MODE}) ${want ? 'not-ok (a restart of a paused sandbox agent must fail)' : 'ok — the pre-pause lazy start'}; stdout=${JSON.stringify(oneLine(rs.stdout, 80))}`);
+      ctx.clause('cli-restart/names-pause-and-220', namesPause(rs.stderr) === want, `names pause+#220=${namesPause(rs.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(rs.stderr)}`);
+
+      // ── 3. PTY-listing positive control (the local workspace), then CLI message wake of the sandbox workspace whose local dir EXISTS ──
+      await activateWorkspace(app, 'avr-1');
+      await runControl(ctx);
+      const before = await app.ptys();
+      const paused = (ps) => ps.filter((p) => p.kind === 'agent' && p.workspaceId === sbx.live.id);
+      const wk = await runCli(app, ['message', sbx.live.id, 'AVR-WAKE-PROBE']);
+      await sleep(ABSENCE_MS);
+      const afterPs = await app.ptys();
+      console.log(`OBSERVED  cli message ${sbx.live.id}: rc=${wk.rc} stdout=${JSON.stringify(oneLine(wk.stdout))} stderr=${JSON.stringify(oneLine(wk.stderr))} agent PTYs for it: before=${paused(before).length} after=${paused(afterPs).length} (${fmtP(afterPs)})`);
+      // after: parked in the inbox (story 14), never claimed started; baseline (measured on master): 'started' — a FALSE claim, the lazy SDK start "succeeds" and dies later.
+      const delivery = /Delivered \((\w+)\)/.exec(wk.stdout)?.[1] ?? null;
+      ctx.clause('cli-message-wake/delivery', delivery === (want ? 'inbox' : 'started'), `delivery=${delivery} expected(${MODE})=${want ? 'inbox' : 'started'} rc=${wk.rc} stdout=${JSON.stringify(oneLine(wk.stdout, 80))}`);
+      // BOTH modes: no local agent may run for a sandbox workspace whose leftover local dir exists. Master passes (nothing falls back); the funnel refusal ALONE opens the
+      // hole (sdkStartAndDeliver -> false -> PTY fallback with no `host`), which only the wake refusal closes — the mutant that drops it turns THIS clause red.
+      noAgentPty(ctx, 'cli-message-wake/no-agent-pty-for-paused-workspace', afterPs.filter((p) => p.workspaceId === sbx.live.id));
+      const logText = (() => { try { return fs.readFileSync(path.join(app.home, 'logs', 'orchestra.log'), 'utf8'); } catch { return ''; } })();
+      ctx.clause('cli-message-wake/app-log-readable', /\bINFO\b|\bWARN\b/.test(logText), `logs/orchestra.log ${logText.length} bytes (the log-line clause below is meaningless on an unreadable log)`);
+      const refusedLine = logText.split('\n').find((l) => l.includes(`wake refused for ${sbx.live.id}`)) ?? '';
+      ctx.clause('cli-message-wake/refusal-logged-with-pause-message', !!refusedLine === want && (!want || namesPause(refusedLine)), `wake-refused log line present=${!!refusedLine} expected(${MODE})=${want} :: ${oneLine(refusedLine)}`);
+
+      // ── 4. Positive control: a LOCAL workspace's Agent-view send is NOT refused ──────────────
+      await openAgentTab(app);
+      const LMARK = 'AVR-SEND-LOCAL-77c2';
+      const ls = await composerSend(app, LMARK);
+      ctx.clause('local-control/composer-submitted', !!ls.pre?.includes(LMARK) && ls.post !== null, `composer text pre=${JSON.stringify(oneLine(ls.pre, 40))} -> post=${JSON.stringify(oneLine(ls.post, 40))}`);
+      await sleep(4000);
+      const lr = await messageRows(app);
+      const lErr = (lr?.errors ?? []).join(' | ');
+      console.log(`OBSERVED  local send(${local.id}): user rows=${JSON.stringify((lr?.users ?? []).map((u) => oneLine(u, 60)))} error rows=${JSON.stringify(oneLine(lErr, 200))}`);
+      ctx.clause('local-control/not-refused-with-pause', !!lr && !namesPause(lErr) && !/paused/i.test(lErr), `pause text in local error rows=${namesPause(lErr)} (rows: ${JSON.stringify(oneLine(lErr, 120))})`);
+      ctx.clause('local-control/user-turn-rendered', !!lr && lr.users.some((u) => u.includes(LMARK)), `user rows=${JSON.stringify((lr?.users ?? []).map((u) => oneLine(u, 60)))} — the send got past ensureSession`);
     },
   },
 ];

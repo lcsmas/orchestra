@@ -9,6 +9,31 @@ streaming the terminal over a single multiplexed WebSocket. Files:
 `docs/multi-machine-sandbox-remaining.md`; manual verification:
 `docs/sandbox-two-host-checklist.md`.
 
+## ⏸ PAUSED — sandbox agents cannot be started (#226, wave "Agent view only" #219; follow-up #220)
+Sandbox agents are PTY-only; the Agent view drives an SDK session that would run the CLI on THIS host
+with the container's cwd (a cryptic spawn error). Until #220 — Reconcile sandbox agents with the Agent
+view — every START of a sandbox-hosted workspace's agent is refused with one message
+(`SANDBOX_PAUSED_MESSAGE`, `shared/sandbox-pause.ts`; pure decision `sandboxPausedMessage(ws)` = `ws.host.kind==='sandbox'`).
+Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED and its tests stay green — only the start is refused.
+- **The funnel** — `agent-sdk.ts` `ensureSessionInner` throws it first thing after the workspace lookup (before the
+  rewind cut, hibernation clear, env build and the `query()` spawn). `ensureSession` is the ONLY caller and that `query({`
+  the only agent-start one (the other, `probeRuntimeModels`, is a `tmpdir()` model probe), so every entry that starts an
+  SDK session is covered by construction: Agent-view send (`sdkSend` turns the throw into the `Couldn't start the agent: …`
+  error row), CLI `restart` (`sdkRestart` → `{ok:false,error}` → CLI rc 1), `sdkWake`/`sdkStartAndDeliver` (bus wake,
+  session watchdog, spawn/wake seam), `sdkStatus`/`sdkRunBash`/`sdkMcp*`/`sdkSetRemoteControl`.
+- **The one extra refusal** — `workspaces.ts` `wakeAgentWithPrompt` returns `false` up front (logs `wake refused for <id>: …`).
+  `sdkStartAndDeliver` swallows the funnel's throw and the PTY fallback below it passes no `host`, so without this a wake
+  starts a LOCAL `claude` in `ws.worktreePath` (reachable: the import's local-worktree retire step is best-effort and may
+  leave the dir). Callers keep their existing contract for `false`: `/message` → durable inbox (`Delivered (inbox)`),
+  prompt queue re-queues, fix-checks/send-review report the failure.
+- **Not reachable / not covered** — `orchestra spawn` cannot yield a sandbox workspace: `dispatchSpawnRequest` →
+  `createWorkspace` never passes `host` (only the import flips `host`), so there is nothing to refuse. The Raw-tab PTY launch
+  (`startAgentPty`, the one host-aware launcher) is untouched — #230/#233 delete it.
+- **Proof** — built-app arm `sandbox_paused` (`scripts/e2e-agent-view-removal.mjs`, see [activity-pty-terminal.md](activity-pty-terminal.md)
+  § Removal rig): seeds sandbox-hosted records, drives an Agent-view send, the real CLI `restart`/`message`, and a local
+  control; `EXPECT.sandboxPaused` baseline false (master) / after true. Pins: `shared/sandbox-pause.test.ts`,
+  `main/sandbox-pause-wiring.test.ts` (funnel placement, one `query({`, one `ensureSessionInner` caller, wake guard first).
+
 ## Settled architecture (do not relitigate)
 Central sandbox, thin clients. **File-sync was evaluated and REJECTED.** Local
 node-pty stays the DEFAULT transport — a workspace is EITHER local OR

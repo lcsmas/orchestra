@@ -543,7 +543,11 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   reports 0 unpushed + `findPR` empty, and the `.toolbar-actions` buttons rendered). The toolbar checks are a literal
   deny-list (`button.pr-link`, `/Open PR|ready to push|create a PR/`, `.primed`): a reworded, re-classed replacement
   button is NOT caught (review F3, accepted gap). With-PR (same in both modes): control = `findPR` returns the open PR via the stub `gh`;
-  exactly one `PR #4242` button, no create button, and a trusted click makes main log `open external (renderer-ipc): <url>`. Every clause
+  exactly one `PR #4242` button, no create button, and a trusted click makes main log `open external (renderer-ipc): <url>`. And #226's `sandbox_paused`
+  (`boot: { sandbox: true }` → sandbox-hosted records `gone` / `live` / `legacy` + the local control; drives a trusted-input Agent-view send, the REAL
+  `dist-electron/cli.js` `restart` (default, `--fresh`, legacy ws) / `message` against the boot's socket via `runCli`, `sendReviewToAgent` / `fixChecks`
+  over IPC, and a local send as positive control; `EXPECT.sandboxPaused` flips the message clauses — see [sandbox-transport.md](sandbox-transport.md) § PAUSED;
+  needs `build:cli` + `build:keeper` in `<app-dir>`). Every clause
   prints `PASS|FAIL|SKIP <arm>/<clause> — detail`; the final `RIG-RESULT verdict=… ` line is the terminator (rc 0 all
   pass · 1 a clause failed · 2 harness/usage) and NAMES what a green run leaned on: `verdict=PASS-ON-STALE-BUILD`
   (`--allow-stale`), `PASS-WITH-EXTERNAL-CHANGE`, with `allowed_stale=` / `external_change=` counted apart from `pass=`.
