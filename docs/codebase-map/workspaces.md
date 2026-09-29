@@ -386,7 +386,7 @@ env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
   iterates an OLD array snapshot) can resurrect a deleted workspace. An id
   present in the store still updates; a never-removed id (spawn/create — fresh
   UUIDs) still inserts. `persistWorkspacePatch` is NOT a racer (get→upsert with no
-  await between). Rig: `scripts/e2e-delete-resurrect.mjs` (11 arms), gate
+  await between). Rig: `scripts/e2e-delete-resurrect.mjs` (13 arms), gate
   `src/main/store-delete-resurrect.test.ts`.
 - Methods: `upsertWorkspace`, `removeWorkspace`, `getWorkspace`,
   `reorderWorkspaces`; repo methods `addRepo`/`removeRepo`/

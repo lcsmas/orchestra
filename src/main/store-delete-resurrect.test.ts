@@ -95,6 +95,26 @@ test('★ wakeAgentWithPrompt (get → await sdkStartAndDeliver → upsert stale
   assert.equal(r.ok, true);
 });
 
+test('★ the REAL deleteWorkspace teardown marks the id so a concurrent REAL sweep does not stop it (pins forgetHibernationActivity in teardownWorkspace)', () => {
+  const r = runArm('real_delete_vs_sweep');
+  assert.deepEqual(r.pre, { present: true, dirExists: true }, 'control: a real scratch workspace with a real dir');
+  assert.deepEqual(r.stops, [], 'the sweep must not stop a workspace whose delete is in flight');
+  assert.deepEqual(r.swept, []);
+  assert.equal(r.presentAfter, false);
+  assert.equal(r.onDiskAfter, false);
+  assert.equal(r.dirGone, true, 'the delete really ran to completion');
+  assert.equal(r.ok, true);
+});
+
+test('★ a stale upsert issued DURING removeWorkspace(s)\'s save await is dropped (tombstone is set before the save, both paths)', () => {
+  const r = runArm('stale_during_save') as { bulk: Record<string, boolean>; single: Record<string, boolean>; ok: boolean };
+  assert.equal(r.bulk.bulkSyncRan, true, 'control: the bulk removal\'s sync part ran before the stale upsert');
+  assert.equal(r.single.singleSyncRan, true, 'control: same for the single removal');
+  assert.deepEqual([r.bulk.presentAfter, r.bulk.onDisk], [false, false], 'bulk path');
+  assert.deepEqual([r.single.presentAfter, r.single.onDisk], [false, false], 'single path');
+  assert.equal(r.ok, true);
+});
+
 test('MUST-PASS: a never-removed id still inserts and updates in place; a removed id does not block another', () => {
   const r = runArm('fresh_insert');
   assert.equal(r.insertedMem, true);

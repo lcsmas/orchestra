@@ -9,6 +9,8 @@
 //   gate_counts        ★ real syncWorkspaceGateCounts loop: delete lands between two awaited upserts
 //   sweep_serial       ★ real sweepHibernation must not stop/stamp a workspace whose delete has begun
 //   sweep_delete_begins_midstop ★ delete's teardown begins DURING the sweep's stop → no hibernatedAt stamp
+//   real_delete_vs_sweep ★ REAL deleteWorkspace + a concurrent REAL sweepHibernation → no stop (pins teardown's forgetHibernationActivity)
+//   stale_during_save  ★ a stale upsert issued WHILE removeWorkspace(s)'s save is awaited → tombstone must already be set
 //   wake_stale         ★ real wakeAgentWithPrompt: get → await sdkStartAndDeliver → upsert(stale); delete mid-start
 //   fresh_insert         must-PASS: a never-removed id still inserts (memory + disk) and updates in place
 //   spawn_insert         must-PASS: the real createScratchWorkspace insert still lands
@@ -26,7 +28,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'store_stale_upsert';
 const ARMS = [
   'store_stale_upsert', 'bulk_remove', 'stale_marker', 'gate_counts', 'sweep_serial',
-  'sweep_delete_begins_midstop', 'wake_stale',
+  'sweep_delete_begins_midstop', 'wake_stale', 'real_delete_vs_sweep', 'stale_during_save',
   'fresh_insert', 'spawn_insert', 'patch_control', 'sweep_delete_midstop',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
@@ -140,6 +142,42 @@ if (ARM === 'store_stale_upsert') {
   await sleep(50);
   Object.assign(out, { woke, presentAfter: has('A'), onDiskAfter: onDisk('A') });
   ok = woke === true && !has('A') && !onDisk('A');
+} else if (ARM === 'stale_during_save') {
+  // No timers: the stale upsert is issued between the sync part of the removal and its awaited save.
+  await store.upsertWorkspace(mk('A')); await store.upsertWorkspace(mk('B'));
+  const staleA = { ...store.getWorkspace('A') }; const staleB = { ...store.getWorkspace('B') };
+  const pb = store.removeWorkspaces(['A']);
+  const bulkSyncRan = !has('A');                           // control: the removal's sync part already ran
+  await store.upsertWorkspace({ ...staleA, name: 'ghost' });
+  await pb;
+  const bulk = { bulkSyncRan, presentAfter: has('A'), onDisk: onDisk('A') };
+  const ps = store.removeWorkspace('B');
+  const singleSyncRan = !has('B');
+  await store.upsertWorkspace({ ...staleB, name: 'ghost' });
+  await ps;
+  const single = { singleSyncRan, presentAfter: has('B'), onDisk: onDisk('B') };
+  Object.assign(out, { bulk, single });
+  ok = bulkSyncRan && singleSyncRan && !bulk.presentAfter && !bulk.onDisk && !single.presentAfter && !single.onDisk;
+} else if (ARM === 'real_delete_vs_sweep') {
+  const { createScratchWorkspace, deleteWorkspace } = await import(`${REPO}/src/main/workspaces.ts`);
+  const delivery = await import(`${REPO}/src/main/sdk-delivery.ts`);   // register AFTER workspaces.ts (may load agent-sdk)
+  const hib = await import(`${REPO}/src/main/hibernation.ts`);
+  const act = await import(`${REPO}/src/main/hibernation-activity.ts`);
+  const stops = [];
+  delivery.registerSdkDelivery({
+    hasSession: () => true, hasBackgroundTask: () => false,
+    send: async () => {}, sendAwaitingStart: async () => 'started', start: async () => {},
+    stop: async (id) => { stops.push(id); },
+  });
+  const ws = await createScratchWorkspace();
+  const pre = { present: has(ws.id), dirExists: fs.existsSync(ws.worktreePath) };
+  act.noteActivity(ws.id);
+  skewMs = 6 * MIN;                                        // idle past the 5-min default
+  const d = deleteWorkspace(ws.id);                        // REAL teardown: its sync head runs, then it yields
+  const swept = await hib.sweepHibernation();              // the sweep tick lands mid-teardown
+  await d;
+  Object.assign(out, { pre, stops, swept, presentAfter: has(ws.id), onDiskAfter: onDisk(ws.id), dirGone: !fs.existsSync(ws.worktreePath) });
+  ok = pre.present && pre.dirExists && stops.length === 0 && swept.length === 0 && !has(ws.id) && !onDisk(ws.id) && out.dirGone;
 } else if (ARM === 'fresh_insert') {
   await store.upsertWorkspace(mk('A'));
   await store.removeWorkspace('A');                        // a tombstone for A must not affect B
