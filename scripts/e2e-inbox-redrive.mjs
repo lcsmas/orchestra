@@ -53,14 +53,9 @@ const ARMS = {
   redrive: { bodies: ['REDRIVE-ALPHA'], emitKickoffResult: true },
   redrive_two: { bodies: ['REDRIVE-ALPHA', 'REDRIVE-BRAVO'], emitKickoffResult: true },
   control_noresult: { bodies: ['REDRIVE-ALPHA'], emitKickoffResult: false },
-  // F2 (reviewer fc47cadb): a 2nd `result` lands while the 1st re-drive is still
-  // IN FLIGHT (queue.length is still 0, the block still in the inbox). DETERMINISTIC:
-  // the delivery seam is re-registered with a wrapper that HOLDS sendAwaitingStart on
-  // a latch, so the window is pinned open by construction, not by timing. Without the
-  // in-flight guard the 2nd result dispatches releaseInboxBlock(ALPHA) again →
-  // sendAwaitingStart called 2× and ALPHA broadcast 2×. With it: 1× and 1×.
-  // (A burst of 0ms-apart results does NOT open this window — measured: the plain
-  // burst stayed green with the guard removed; that version was vacuous.)
+  // F2 (reviewer fc47cadb): `holdDelivery` (latched sendAwaitingStart) is what opens the window — result #2
+  // dispatches the re-drive and it stays in flight; #3 (80 ms later, inFlight=1) must NOT re-dispatch (sendCalls 1 fixed / 2 mutant).
+  // `burstFirst`'s 0 ms pair is #0/#1, fired while the kickoff is still queued (queueLen 1): it dispatches nothing (traced).
   in_window_double: { bodies: ['REDRIVE-ALPHA'], emitKickoffResult: true, burstFirst: true, holdDelivery: true },
 };
 const arm = ARMS[ARM];
@@ -147,9 +142,8 @@ sdk.__setQueryFactoryForTests(({ prompt }) => {
             type: 'result', subtype: 'success', session_id: 'redrive', is_error: false,
             num_turns: 1, duration_ms: 1, total_cost_usd: 0, result: `done ${i}`,
           };
-          // F2 arm: fire the SECOND result with NO gap so it lands inside the
-          // first re-drive's delivery-start window (before its turn hits the
-          // queue), forcing the double-drive the in-flight guard must prevent.
+          // burstFirst: #0/#1 fire 0 ms apart with the kickoff still queued (queueLen 1) → nothing dispatched;
+          // it is NOT what opens the F2 window (holdDelivery does).
           const gap = arm.burstFirst && i === 0 ? 0 : 80;
           await new Promise((r) => setTimeout(r, gap));
         }
@@ -189,8 +183,8 @@ const keepalive = setInterval(() => {}, 250);
 // its opening turn. Its `result` is the first turn boundary the re-drive fires on.
 await sdk.sdkSend(WS_ID, KICKOFF);
 if (arm.holdDelivery) {
-  // Result #1 dispatched the (held) re-drive; result #2 follows 0ms later and is
-  // processed while it is still held. Give #2 ample time, THEN open the latch.
+  // #0/#1 dispatch nothing; #2 dispatches the re-drive (held); #3, 80 ms on, must be blocked by the guard.
+  // Give #3 ample time, THEN open the latch.
   await new Promise((r) => setTimeout(r, 600));
   releaseHold();
 }
