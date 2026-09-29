@@ -90,6 +90,9 @@ export { getActiveWorkspaceId };
 
 // --- hibernation state on the workspace record ------------------------------
 
+/** Per-workspace wake counter, bumped by {@link clearHibernated}. */
+const wakeEpoch = new Map<string, number>();
+
 /** Record `hibernatedAt` and broadcast, following the mutation-site broadcast
  *  convention (persist in the background, broadcast immediately — the store's
  *  disk flush is serialized and must not gate the UI). */
@@ -104,6 +107,9 @@ function markHibernated(ws: Workspace, at: number): void {
  *  restore paths can call it unconditionally. Exported for those call sites
  *  (pty:start, sdkSend/sdkWake, wakeAgentWithPrompt). */
 export function clearHibernated(wsId: string): void {
+  // Every start/resume/wake/activate lands here — bump BEFORE the no-chip return so a
+  // sweep whose teardown a wake overtook can tell (#198 D14/N1).
+  wakeEpoch.set(wsId, (wakeEpoch.get(wsId) ?? 0) + 1);
   const ws = store.getWorkspace(wsId);
   if (!ws || ws.hibernatedAt === undefined) return;
   // Set the key to `undefined` EXPLICITLY — do NOT rest-spread it away. The
@@ -166,6 +172,7 @@ export async function sweepHibernation(): Promise<string[]> {
         `${hasLiveSdk ? ' sdk' : ''}`,
     );
 
+    const epochBefore = wakeEpoch.get(ws.id) ?? 0;
     if (hasLiveSdk) {
       // Stop the structured session first: it is the path that persists
       // `sdkSessionId`, and stopping it is async. A failure here must not
@@ -174,7 +181,15 @@ export async function sweepHibernation(): Promise<string[]> {
     }
     if (hasLivePty) stopPty(ws.id);
 
-    markHibernated(ws, now);
+    // A wake can land mid-teardown (the stop is async): don't stamp a chip on a woken workspace.
+    if ((wakeEpoch.get(ws.id) ?? 0) !== epochBefore) {
+      hlog.info(`${ws.name} (${ws.id}) woken during hibernate teardown — not marking hibernated`);
+      continue;
+    }
+    // Fresh record, not the pre-await `ws`: the stop persists sdkSessionId etc.
+    const current = store.getWorkspace(ws.id);
+    if (!current) continue;
+    markHibernated(current, now);
     hibernated.push(ws.id);
   }
   return hibernated;

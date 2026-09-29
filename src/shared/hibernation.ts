@@ -20,10 +20,13 @@
 
 import type { Workspace } from './types.ts';
 
-/** Default idle threshold before an agent is eligible: 30 minutes. Long enough
- *  that a user stepping away from a session mid-thought comes back to a live
- *  process, short enough that an overnight fleet collapses to near-zero. */
-export const DEFAULT_HIBERNATE_AFTER_MS = 30 * 60 * 1000;
+/** Default idle threshold before an agent is eligible: 5 minutes. A resource
+ *  lever (issue #198 D14): many live session trees hold ~700 MB each and the
+ *  laptop overheats when Orchestra runs long, so idle sessions are reclaimed
+ *  sooner. Resume is ~1s and lossless (conversation + queued mail survive — see
+ *  the module header), so a user stepping away briefly comes back to a
+ *  hibernated-but-intact session that wakes on their next keystroke. Was 30 min. */
+export const DEFAULT_HIBERNATE_AFTER_MS = 5 * 60 * 1000;
 
 /** Sentinel returned by {@link resolveHibernateAfterMs} when the feature is
  *  switched off (`ORCHESTRA_HIBERNATE_AFTER_MS=-1`). Callers must check for it
@@ -171,7 +174,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   // A /loop's wakeups live INSIDE the session process — hibernating a looping
   // agent doesn't pause the loop, it silently kills it (and the sidebar would
   // keep advertising a loop that can never fire again). A loop's idle phase
-  // between wakeups can legitimately exceed the 30-min threshold (ScheduleWakeup
+  // between wakeups can legitimately exceed the idle threshold (ScheduleWakeup
   // delays go up to 60 min), so without this line the sweeper reaps exactly the
   // agents that are deliberately sleeping-to-work.
   if (ws.loopingSince) return false;

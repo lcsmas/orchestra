@@ -271,7 +271,7 @@ silently and the human was the detector.
   a dynamic /loop that dies by simply not re-arming clears on that very
   turn-end, where the edge rules can't see "no call happened". `shouldHibernate` refuses a looping
   workspace — the sweeper would silently kill the loop (wakeups live inside the
-  session process, and loop delays reach 60 min > the 30-min idle threshold).
+  session process, and loop delays reach 60 min > the 5-min idle threshold).
   UI: a small cycle-arrows CORNER BADGE (`.ws-glyph-loop`, slow 4s spin,
   `currentColor` so it follows each state's hue) overlaid on every glyph shape
   by `WorkspaceStatusGlyph` (`looping` prop, passed by all five surfaces) —
@@ -515,7 +515,8 @@ long-idle agents and lets the existing resume paths bring them back.
   means the human is needed and the dot + inbox entry must survive); not the
   active workspace; not sandbox-hosted (`ws.host` absent); not archived; no live
   `<id>:run` PTY; idle ≥ threshold. Threshold from
-  `ORCHESTRA_HIBERNATE_AFTER_MS`: unset/empty/garbage/`0` → 30 min default,
+  `ORCHESTRA_HIBERNATE_AFTER_MS`: unset/empty/garbage/`0` → 5 min default (#198
+  D14, was 30 min — a resource lever; resume ~1s and lossless),
   `-1` → disabled (its own sentinel, since an env var with a default is not a
   kill switch), positive → verbatim (the e2e rig injects a few seconds).
 - **The sweeper** — `src/main/hibernation.ts` `startHibernationSweeper()` (wired
@@ -523,7 +524,32 @@ long-idle agents and lets the existing resume paths bring them back.
   `sweepHibernation()` on an unref'd `setInterval`. Per eligible workspace:
   `sdkStopIfLive` (the sdk-delivery seam) then `stopPty`, then `markHibernated`
   records `ws.hibernatedAt` and broadcasts `workspace:update` (mutation-site
-  broadcast: persist in the background, broadcast immediately).
+  broadcast: persist in the background, broadcast immediately). **The stop is
+  async, so a wake can land mid-teardown (#198 D14/N1):** `clearHibernated`
+  (the one funnel every start/resume/wake/activate passes through) bumps a
+  per-workspace `wakeEpoch` BEFORE its no-chip early return; the sweep snapshots
+  it before the stops and SKIPS `markHibernated` if it moved (else a live,
+  woken coordinator wears a stale "zZ"), and marks from a fresh
+  `store.getWorkspace` rather than the pre-await `ws`.
+- **Driven rig — `scripts/e2e-hibernate-wake.{mjs,sh}`** (#198 D14): the REAL
+  `sweepHibernation` + REAL `sweepBusWake`→`ensureSession` over a stub CLI, fake
+  clock via `Date.now` skew, env override deleted so it measures the shipped
+  5-min default. 8 REQUIRED arms (4-min no / 6-min yes / recent activity via the
+  real `applyAgentEvent` funnel / live run-script PTY / turn in flight / wake
+  after hibernate resumes by `sdkSessionId` with a byte-identical transcript
+  prefix + mail lossless via the real verbs / wake mid-teardown leaves no stale
+  chip) each mutation-proven; run through `scripts/.r2-register.mjs`. Traps
+  found: `resume` is only passed when `<transcript>.jsonl` exists (#178), so the
+  stub must write one; `stop` sets `autoUnread` asynchronously (a synchronous
+  clear is overwritten, making a "not hibernated" arm vacuous); read `hibernatedAt`
+  BEFORE any follow-up send (its `ensureSession` clears the chip you are testing).
+  **Two DEPENDENT arms are red on a base without their fix:** `wake_during_teardown`
+  (needs #124's identity-guarded `sessions.delete` in `consume()`'s finally and
+  `sdkStop` — unguarded, the old teardown evicts the successor session, so the
+  next send spawns a 2nd CLI on the same transcript) and `hibernate_exit1` (a
+  hibernate stop sets none of `cleared`/`interrupted`/`restartRequested`, so a CLI
+  exiting 1 on graceful close renders a red error row — field: 11/126 real
+  hibernations).
 - **Both knobs are env-injectable, and that is a testability requirement, not a
   convenience.** The cadence is `ORCHESTRA_HIBERNATE_SWEEP_MS`
   (`resolveHibernateSweepMs`, default 5 min, floored at 1s, no disable sentinel

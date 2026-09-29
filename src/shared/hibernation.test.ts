@@ -150,6 +150,27 @@ test('a short injected threshold makes a briefly-idle workspace eligible (e2e ri
   );
 });
 
+// --- the default threshold VALUE (issue #198 D14: 30 min → 5 min). Pinned to
+// the literal rather than the constant so a change to the number is caught here
+// AND cannot pass silently through the value-agnostic env fallback tests below
+// (those compare against DEFAULT_HIBERNATE_AFTER_MS, so both sides move together).
+test('the default idle threshold is 5 minutes (D14 resource lever, was 30)', () => {
+  assert.equal(DEFAULT_HIBERNATE_AFTER_MS, 5 * 60 * 1000);
+});
+
+// A session idle for just over 5 minutes IS now eligible where under the old
+// 30-min default it was not — the must-FAIL arm of D14. Uses the resolved
+// default (env unset), not the local THRESHOLD constant, so it exercises the
+// shipped value end to end through resolveHibernateAfterMs → shouldHibernate.
+test('a session idle >5 min hibernates at the default threshold (was: only at 30 min)', () => {
+  const thresholdMs = resolveHibernateAfterMs(undefined);
+  const sixMinIdle = signals({ thresholdMs, lastActivityAt: NOW - 6 * 60 * 1000 });
+  assert.equal(shouldHibernate(ws(), sixMinIdle), true);
+  // must-PASS mirror: activity within the 5-min window does NOT hibernate.
+  const fourMinIdle = signals({ thresholdMs, lastActivityAt: NOW - 4 * 60 * 1000 });
+  assert.equal(shouldHibernate(ws(), fourMinIdle), false);
+});
+
 // --- resolveHibernateAfterMs
 test('unset / empty / garbage / zero env all fall back to the default', () => {
   assert.equal(resolveHibernateAfterMs(undefined), DEFAULT_HIBERNATE_AFTER_MS);
