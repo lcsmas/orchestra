@@ -91,7 +91,7 @@ export { dispatchPromoteRequest, resolveWaveRunId, writeBusSwitchState } from ${
 export { store } from ${JSON.stringify(path.join(repoRoot, 'src/main/store.ts'))};
 export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};
 export { initBus, getBus, closeBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
-export { startRun } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-runs.ts'))};
+export { startRun, getRun } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-runs.ts'))};
 export { registerSdkDelivery } from ${JSON.stringify(path.join(repoRoot, 'src/main/sdk-delivery.ts'))};
 // The reconcile's restart wire. Stubbed via the resolve plugin below so the rig
 // RECORDS calls (and controls the {ok} result) instead of driving real claude.
@@ -365,6 +365,52 @@ check(
   'a member spawned after promote anchors to the promoted node run',
   mod.resolveWaveRunId(mod.store.getWorkspace(LATE)) === NODE_ID,
 );
+
+// ════════════════════════════════════════════════════════════════════════════
+// #221 — promoting a child under a run-less PLAIN workspace gives that workspace a
+// MISSION run (coordinator = itself) and nests the child's run under it. Drives the
+// SHIPPED dispatchPromoteRequest → startRunForPromoted → resolveAnchorInfo (real store
+// lookup + real run-row probe) over the same real bus. MUTATION: the pre-#221 anchor
+// (no implicit parent / no run-anchoring walk) leaves the child a ROOT mission → P1/P2.
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#221 P — promote under a run-less plain workspace nests the child under a new mission run:');
+await mod.store.setBusSwitches({ delivery: true, wake: true, askGate: false, liveness: false });
+const runRow = (id) => {
+  const r = mod.getRun(busDb, id);
+  return r ? `${r.kind}|${r.coordinator}|${r.parent_run_id ?? 'null'}` : 'absent';
+};
+const PLAIN = 'plain-lead-221';
+const KID = 'kid-221';
+const KID2 = 'kid2-221';
+await mod.store.upsertWorkspace(ws(PLAIN)); // hand-made LEAD: never promoted, no run
+await mod.store.upsertWorkspace(ws(KID, { parentId: PLAIN }));
+await mod.store.upsertWorkspace(ws(KID2, { parentId: PLAIN }));
+check('P-pre: the plain LEAD anchors NO run row', runRow(PLAIN) === 'absent', runRow(PLAIN));
+const plainBefore = JSON.stringify(mod.store.getWorkspace(PLAIN));
+const p1 = await mod.dispatchPromoteRequest({ id: KID });
+check('P1: promote ok', p1.ok === true, JSON.stringify(p1));
+check('P1: the plain LEAD got a MISSION row (coordinator = itself, no parent)', runRow(PLAIN) === `mission|${PLAIN}|null`, runRow(PLAIN));
+check('P1: the child run is a VAGUE with parent_run_id = the LEAD', runRow(KID) === `vague|${KID}|${PLAIN}`, runRow(KID));
+check(
+  'P1: the LEAD stays a PLAIN workspace — record byte-identical, no orchestrator sentinel',
+  JSON.stringify(mod.store.getWorkspace(PLAIN)) === plainBefore &&
+    !fs.existsSync(path.join(tmp, PLAIN, '.orchestra', '.orchestrator')),
+);
+check(
+  'P1: positive control — the promoted child DID get the orchestrator sentinel',
+  fs.existsSync(path.join(tmp, KID, '.orchestra', '.orchestrator')),
+);
+check('P1: the LEAD wave run is still its own id', mod.resolveWaveRunId(mod.store.getWorkspace(PLAIN)) === PLAIN);
+const leadRow0 = JSON.stringify(mod.getRun(busDb, PLAIN));
+const p1b = await mod.dispatchPromoteRequest({ id: KID }); // re-promote: idempotent
+check('P2: re-promote ok and leaves both rows untouched', p1b.ok === true && JSON.stringify(mod.getRun(busDb, PLAIN)) === leadRow0 && runRow(KID) === `vague|${KID}|${PLAIN}`);
+const p2 = await mod.dispatchPromoteRequest({ id: KID2 });
+check('P2: a SECOND child nests under the SAME (single) LEAD run', p2.ok === true && runRow(KID2) === `vague|${KID2}|${PLAIN}` && runRow(PLAIN) === `mission|${PLAIN}|null`, runRow(KID2));
+check(
+  'P2: still exactly ONE row for the LEAD',
+  busDb.prepare('SELECT COUNT(*) AS c FROM runs WHERE id = ?').get(PLAIN).c === 1,
+);
+check('P3 (unchanged): R1\'s node under the ORCHESTRATOR LEAD keeps parent_run_id = that LEAD', runRow(NODE_ID) === `vague|${NODE_ID}|${LEAD_ID}`, runRow(NODE_ID));
 
 mod.closeBus();
 fs.rmSync(tmp, { recursive: true, force: true });

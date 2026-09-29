@@ -26,6 +26,12 @@
 import type { BusDb } from './bus.ts';
 import type { BusRunRow } from './bus-runs.ts';
 import type { BusSwitches } from '../shared/bus-switches.ts';
+import {
+  nearestOrchestratorId,
+  nodeOrchestrates,
+  parentRunTarget,
+  type WaveNode,
+} from './wave-run-id.ts';
 
 /** The collaborators the anchor-start needs, injected so a rig drives the real
  *  function without the Electron/store chain `workspaces.ts` drags in. */
@@ -60,8 +66,52 @@ export interface AnchorInfo {
    *  plain standalone workspace resolves anchorId === wsId WITHOUT being an
    *  orchestrator — those get NO run row here (they are shadow until adopted). */
   anchorIsOrchestrator: boolean;
-  /** The anchor's own parent orchestrator run id (nested-run pointer), or null. */
+  /** The anchor's own parent run id (nested-run pointer), or null. */
   parentRunId: string | null;
+  /** #221 — `parentRunId` names a run-less PLAIN workspace (not an orchestrator): start its
+   *  mission row before the anchor's own. It never becomes an orchestrator. */
+  parentRunImplicit?: boolean;
+}
+
+/** "Does this workspace id anchor a run (a row exists)?" — best-effort like every bus
+ *  read here: no bus / a throwing read is `false`, never a throw into the launch path. */
+export function runAnchorProbe(deps: BusRunAnchorDeps): (id: string) => boolean {
+  return (id) => {
+    try {
+      const db = deps.getBus();
+      return !!db && deps.getRun(db, id) !== null;
+    } catch {
+      return false;
+    }
+  };
+}
+
+/**
+ * Everything the anchor-start needs about a launching workspace (pure — the store
+ * is the injected `lookup`, so a rig drives the REAL resolution, not a copy).
+ * The anchor may be a DIFFERENT node than `ws` (a member's anchor is its OPS), so
+ * `parentRunId` is computed from the ANCHOR node.
+ */
+export function computeAnchorInfo(
+  ws: WaveNode,
+  lookup: (id: string) => WaveNode | undefined,
+  anchorsRun: (id: string) => boolean = () => false,
+): AnchorInfo {
+  const anchorId = nearestOrchestratorId(ws, lookup);
+  const anchorNode = anchorId === ws.id ? ws : lookup(anchorId);
+  const anchorIsOrchestrator = anchorNode ? nodeOrchestrates(anchorNode) : false;
+  // #221 — only a REAL orchestrator anchor nests; a plain standalone starts no row anyway.
+  const parent =
+    anchorNode && anchorIsOrchestrator
+      ? parentRunTarget(anchorNode, lookup, anchorsRun)
+      : { id: null, implicit: false };
+  return {
+    wsId: ws.id,
+    anchorId,
+    anchorIsOrchestrator,
+    parentRunId: parent.id,
+    ...(parent.implicit ? { parentRunImplicit: true } : {}),
+  };
 }
 
 /**
@@ -116,6 +166,15 @@ export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo
     // a correctness gate.
     const existing = deps.getRun(db, anchor.anchorId);
     if (existing) return existing;
+    // #221 — a run-less plain parent gets its MISSION row FIRST (coordinator = the parent, no
+    // orchestrator role); a failure aborts before the child row, never a dangling parent_run_id.
+    if (anchor.parentRunImplicit && anchor.parentRunId) {
+      deps.startRun(
+        db,
+        { id: anchor.parentRunId, kind: 'mission', coordinator: anchor.parentRunId, parentRunId: null },
+        deps.getLiveSwitches(),
+      );
+    }
     // A top-level orchestrator (no parent orchestrator) is a MISSION; a nested
     // one (an OPS under a LEAD) is a VAGUE. The kind is what `refreezeRun` gates
     // on — only mission rows are ever re-frozen (D1b).

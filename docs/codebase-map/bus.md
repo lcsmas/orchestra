@@ -2184,6 +2184,23 @@ is a *promoted worktree*, so NEVER key on kind alone), else the first
 LEAD→OPS = two run rows.** `walkToRootId` is retained for tree-root callers but is
 NOT the run anchor.
 
+**#221 — a run-less PLAIN parent gets a mission run when it promotes a child.** A
+hand-made LEAD that was never promoted has no orchestrator and no run, so its promoted
+OPS used to become a ROOT mission (LEAD→OPS mail refused by #155 — the LEAD's run has no
+row; OPS→LEAD landed in a run the LEAD is never woken for). `parentRunTarget`
+(`wave-run-id.ts`) now resolves the child's `parent_run_id` as: first ancestor that is an
+orchestrator **or already anchors a run row** (`parentOrchestratorId(ws, lookup,
+anchorsRun)`), else the DIRECT parent when it resolves (`implicit`). `computeAnchorInfo`
+(`bus-run-anchor.ts`, pure — `resolveAnchorInfo` in `workspaces.ts` delegates with the
+store lookup + `runAnchorProbe`) carries that as `parentRunId` + `parentRunImplicit`, and
+`maybeStartRunAtAnchor` starts the parent's MISSION row (coordinator = the parent, live
+switches frozen) BEFORE the child's row (a parent-start failure aborts before the child →
+no dangling pointer). The parent is NOT an orchestrator: its record, `canOrchestrate`,
+sentinel and `resolveWaveRunId` (= itself) are untouched. Idempotent (`startRun` is
+INSERT-OR-IGNORE; a 2nd child reaches the row via the run-anchoring walk); an orchestrator
+parent, a run-anchoring parent, a plain member of an OPS, a top-level or dangling-parent
+promote are unchanged. No schema change. Existing root-mission OPS rows are NOT migrated.
+
 ## Where the run starts — `maybeStartRunAtAnchor` (`src/main/bus-run-anchor.ts`)
 
 `startAgentPty` resolves `resolveAnchorInfo(ws)` = `{ anchorId, anchorIsOrchestrator,
@@ -2315,6 +2332,14 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
   spawn (F1), standalone → no row, D1 null/throwing bus, idempotence.
 - `src/main/bus-wake-run-switch.test.ts` — G7 the REAL accessor fires a frozen-ON
   run, COUNTS a frozen-OFF run, unwired-accessor arm reproduces the master defect.
+- `src/main/bus-parent-run.test.ts` (**#221**) — the REAL `computeAnchorInfo` +
+  `maybeStartRunAtAnchor` + `startRun` on a real bus, plus the BUILT CLI `send`/`check`
+  and the real `sweepBusWake` in an isolated `ORCHESTRA_HOME`: promote under a run-less
+  parent → mission+vague; run-anchoring ancestor above a plain intermediate; unchanged
+  arms (orchestrator/run-anchoring/member/top-level/dangling); idempotence; D1 (down bus,
+  throwing start/read); LEAD↔OPS mail+wake in BOTH directions with the OLD topology
+  (master primitives) as the failing control. `scripts/verify-promote-run-refresh.mjs`
+  §#221 drives the SHIPPED `dispatchPromoteRequest` over the real `workspaces.ts`.
 - `src/main/wave-run-anchor-wiring.test.ts` — source guards for the un-importable
   seams; `resolveWaveRunId` uses `nearestOrchestratorId` not `walkToRootId`; both
   promote branches call `startRunForPromoted`; roster mutant `'default'` reddens.

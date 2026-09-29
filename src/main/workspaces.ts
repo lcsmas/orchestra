@@ -69,11 +69,13 @@ import {
 import { effortForNewWorkspace, parseEffortArg } from '../shared/effort-defaults.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
+  computeAnchorInfo,
   maybeStartRunAtAnchor,
+  runAnchorProbe,
   shouldBumpCoordinatorGeneration,
   type AnchorInfo,
 } from './bus-run-anchor.ts';
-import { nearestOrchestratorId, parentOrchestratorId } from './wave-run-id.ts';
+import { nearestOrchestratorId } from './wave-run-id.ts';
 import {
   decideReparentAction,
   staleRunMarkerBody,
@@ -5273,35 +5275,15 @@ export function resolveWaveRunId(ws: Workspace): string {
 }
 
 /**
- * The `parent_run_id` for a workspace that BECOMES an orchestrator = its PARENT
- * orchestrator's run id (the nested-run pointer), or null for a top-level
- * orchestrator (a LEAD with no orchestrator above it). This is what makes
- * LEAD→OPS two run rows with the OPS's row pointing at the LEAD's (D1).
- */
-export function resolveParentRunId(ws: Workspace): string | null {
-  return parentOrchestratorId(ws, (id) => store.getWorkspace(id));
-}
-
-/**
  * Resolve everything the anchor-start needs about a launching workspace: the
  * nearest-orchestrator run id, whether that anchor is a REAL orchestrator (a
  * plain standalone spawn resolves to itself WITHOUT being one — no run row), and
- * the anchor's own parent orchestrator run id (`parent_run_id`, the nested-run
- * pointer). The anchor may be a DIFFERENT workspace than `ws` (when `ws` is a
- * member), so `parent_run_id` is computed from the ANCHOR node, not `ws`.
+ * the anchor's own parent run id (`parent_run_id`: an orchestrator OR run-anchoring
+ * ancestor, else the run-less plain parent — #221). The anchor may be a DIFFERENT
+ * workspace than `ws` (when `ws` is a member), so it is computed from the ANCHOR node.
  */
 export function resolveAnchorInfo(ws: Workspace): AnchorInfo {
-  const anchorId = resolveWaveRunId(ws);
-  const anchorWs = anchorId === ws.id ? ws : store.getWorkspace(anchorId);
-  const anchorIsOrchestrator = anchorWs ? canOrchestrate(anchorWs) : false;
-  return {
-    wsId: ws.id,
-    anchorId,
-    anchorIsOrchestrator,
-    // The anchor's parent orchestrator — computed from the anchor node so a
-    // member launch that lazily creates the OPS row still nests it under the LEAD.
-    parentRunId: anchorWs ? resolveParentRunId(anchorWs) : null,
-  };
+  return computeAnchorInfo(ws, (id) => store.getWorkspace(id), runAnchorProbe(busRunAnchorDeps));
 }
 
 /** The injected collaborators for the anchor-start (#134). One place, so every
