@@ -1460,8 +1460,8 @@ Two host-derived signals, both reusing EXISTING kinds (`escalation`, `status`) �
 
 | File | What it is |
 |---|---|
-| `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation` (guards incl. `done-released`, #160), `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
-| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/**released** (`readReleasedReaders`, #160; a run's own coordinator is also released by a `worker_done` in its PARENT run, where it was dispatched — #204)/switch seams, the counters, D1 tolerance. |
+| `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation` (guards incl. `done-released` #160, `held` + `fleet-active` #204), `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
+| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/**released** (`readReleasedReaders`, #160; a run's own coordinator is also released by a `worker_done` in its PARENT run, where it was dispatched — #204)/switch seams, the per-tick `heldRunIds` hold read + `activeCoordinators` derivation (#204), the counters, D1 tolerance. |
 | `src/shared/bus-liveness.test.ts` | Pure policy tests (incl. the 4 #160 done-released arms); each names the mutant it kills. |
 | `src/main/bus-liveness.test.ts` | Tests over a real SQLite bus (T120.1–T120.4, C4, C5, phase). #160: the pure-boolean/sweep arms PLUS **discrete SQL arms S1–S6** that call the SHIPPED `readReleasedReaders(db, keys)` over real `send()` rows — S3 kills Mutant A (drop the re-task NOT-EXISTS clause), S4 kills Mutant B (drop `wd.kind='worker_done'`), S2 is the zombie true-positive driven through the derivation. |
 
@@ -1525,6 +1525,118 @@ canary-5's TRUE zombie catch (dispatched, never started, ZERO mail, never sent
 likewise never sent `worker_done` (arm 3). The default set is empty (nobody
 released), the safe over-escalate direction: a broken derivation can only
 over-escalate, never hide a stall or eat a zombie. Run-scoped; switch-independent.
+
+## Active coordinator + per-run HOLD (#204 remainder, wave #224 track A4)
+
+Two more exclusions, both ahead of the staleness clock, from the LEAD's ruling D4
+(ledger [#224](https://github.com/lcsmas/orchestra/issues/224)); review dispositions
+F1–F5 are folded in below:
+
+- **`fleet-active` (D4 i):** a coordinator with ≥1 member *making progress* is not
+  stale. The sweep (`src/main/bus-liveness.ts:350`) builds `activeCoordinators` =
+  the `coordinator` of every roster member for which `isMakingProgress`
+  (`src/shared/bus-liveness.ts:315`) holds, and sets `fleetActive` per state.
+  **"Progress" = `running` AND (an in-flight call under its ceiling, OR — with NO
+  call in flight — `lastActivityAt` within `STALE_AFTER_MS`; a clockless member is
+  not progress)** (F1): a WEDGED member (status stuck `running`, #90, lost Stop)
+  therefore never shields its OPS, mid-call or between calls. Guard order: after the
+  running/hung block, so it never masks a coordinator that is itself hung. Shields
+  ONLY the coordinator, never a sibling worker. Direct members only — not transitive.
+- **`held` (D4 ii):** `orchestra run hold|resume [--run <id>] [--as <handle>]`
+  set/clear `runs.held_at` + `runs.held_by` (NULL = not held / holder unknown;
+  **`MIGRATIONS[8]`, `SCHEMA_VERSION 7 → 8`**, `src/main/bus.ts:464`). The sweep
+  reads `heldRunIds(db)` (`src/main/bus-runs.ts:370`) every tick and sets `held` on
+  each member whose `runId` is in the set (`bus-liveness.ts:378`); `decideEscalation`
+  skips it FIRST (after no-task / no-coordinator), hung calls included. **Unknown ⇒
+  not held**: a run with no row, a NULL column, or an unreadable read (try/catch,
+  logged) can only over-escalate. A run's OPS is keyed on its OWN run (an
+  orchestrator is its own anchor), so holding run X silences X's workers AND X's
+  OPS→LEAD escalation.
+- **One escalation per silence (F2):** the sweep's ledger-prune probe
+  (`decideEscalation({...state, held:false, fleetActive:false}, …)`) ignores both
+  shields — they are not activity — so a worker flapping idle/running ×7 keeps ONE
+  OPS→LEAD row (was `[1,1,2,2,3,3,4]`) and hold→resume does not re-fire the same
+  silence.
+
+The verb is **store-less** like `send`/`ack` (`src/cli/index.ts:1803` `case 'run'`,
+body `verbRunHold` `src/cli/bus-verbs.ts:1016`, writer `setRunHold`
+`src/main/bus-runs.ts:294`, reader `getRunHold` `:325`, authority `runHoldAuthority`
+`:258`): it writes the bus directly, so a hold lands while the app is DOWN — the
+moment an operator wants it (before a relaunch). It refuses a run with no row
+(`no-run`; `default` never has one) so a typo'd hold is never accepted and inert, is
+idempotent (a repeat hold keeps the ORIGINAL time and holder), and is a pure UPDATE
+— never touches `run_flags` (#123 F1). `--run` beats `$ORCHESTRA_RUN_ID`; the caller
+is `--as` > `$ORCHESTRA_WS_ID`.
+
+- **Authorized (LEAD ruling D7, supersedes the F3 "accepted gap"):** only X's
+  coordinator (`runs.coordinator`) or the coordinator of an ANCESTOR run
+  (`parent_run_id` chain — the LEAD) may hold/resume X. Anyone else, a descendant
+  run's coordinator, a sibling OPS, or a caller with no identity is `refused` and
+  nothing changes; the CLI message names the coordinator and the ancestors and, with
+  no identity, says to pass `--as <handle>`. Identity is compared like A6's fence
+  (`isCoordinatorHandle`: case-folded, trimmed) and is caller-asserted, as on every
+  bus verb — `--as` is not authentication. `no-run` is decided BEFORE authorization.
+  The ancestor walk is bounded by a seen-set (malformed cycle ends).
+- **Fenced (review-A4 F7 + R1 + R3):** the write runs inside A6's `fencedWrite` (verb
+  `run-hold` / `run-resume`, actor = the caller, presented generation =
+  `--generation` > `$ORCHESTRA_COORDINATOR_GENERATION`). The caller is fenced as the
+  coordinator of the FIRST run in `[target, ...ancestors]` it coordinates
+  (`fenceRunForHold`, `src/shared/bus-fencing.ts:72`, over the `chain` of
+  `runHoldAuthority`): the target's own coordinator against the TARGET run; a zombie
+  ANCESTOR (LEAD presenting a stale generation of ITS OWN run) against the ANCESTOR's
+  run — its generation, its `fencing` switch, its `fence_events` row (R1). The switch
+  is that run's frozen flag, never the caller's `$ORCHESTRA_RUN_ID` (R3). A stale
+  coordinator's hold/resume is rejected (`StaleGenerationError`, one FIRED
+  `fence_events` row; switch OFF = COUNTED and the write proceeds); a member
+  coordinates none of the chain (A6: never fenced) and is refused by D7 instead,
+  leaving no fence event.
+- **Visible (F3, H1):** `orchestra bus-status` prints `hold: HELD since <iso> by
+  <holder>` for a held run (nothing when not held). The whole per-run part of the
+  `/busStatus` reply is `busStatusRunView` (`bus-runs.ts:353`, over `runStatusView`
+  `:338`), which `hooks-server.ts` calls — extracted because the Electron route is
+  untestable; `bus-run-hold.test.ts` pins its shape and that the route calls it.
+- `hold`/`resume` count as `--help` subcommands only under `run` (`help.ts:411`), so
+  a status note is never read as a help request.
+
+**`migrate()` re-reads `user_version` INSIDE the write txn (F5,
+`src/main/bus.ts:524`)** — it read it once before `BEGIN IMMEDIATE`, so two
+first-openers of an old DB both replayed the same `ALTER` and the loser threw
+"duplicate column name" (pre-existing class; reviewer race rig, 6 procs, from v7:
+13/60 and 11/60 lost on the unfixed build, 0/60 twice on the fix; from v4 17/60 vs
+0/60). The skip path ROLLBACKs (a leaked open txn would starve every other opener).
+
+**What the restart cascade still is (NOT fixed here):** the escalation ledger is
+in-memory, so after an app relaunch every silent member of a NON-held run with an
+open dispatch escalates again once the app-start floor (10 min) expires. HOLD stops
+that only for runs the operator held (before or after the relaunch); `fleet-active`
+only for coordinators with a progressing member at that moment. Persisting the
+ledger across restarts is separate work. Also not covered (accepted gaps, F6): hold
+covers the liveness sweep only (`session-watchdog.ts` boot-wedge escalation and the
+#183 re-wake are untouched); it is not transitive (holding a mission run leaves its
+OPS runs escalating); a running `hasTask:false` child shields its OPS; on `resume`,
+members already silent >10 min escalate at the next sweep (no grace); the D7 ancestor
+authority is `runs.parent_run_id`, written once by `INSERT OR IGNORE`, so a
+re-parent/demote goes stale (field: 0/21 dangling parents on a live-bus copy); and a
+human click on a wedged `running` member refreshes its clock (`noteActivity`), so it
+shields its OPS for up to 10 min per click. D7 is advisory under `--as` spoofing
+(same identity model as the fence) — accepted gaps R2/R4/R5/R6, ledger #224.
+
+Gates: `src/shared/bus-liveness.test.ts` (#204 policy arms incl. F1 freshness),
+`src/main/bus-liveness.test.ts` (fleet-active, hold, F1 wedged, F2 flap + hold→resume,
+F4 sibling — all through the real sweep), `src/main/bus-run-hold.test.ts` (outcomes,
+per-run scope, holder, D7 authority matrix + `runHoldAuthority`, `runStatusView`, freeze untouched, v7→v8 migration),
+`src/cli/run-hold.test.ts` (the BUILT CLI in an isolated `ORCHESTRA_HOME`, verb →
+bus.sqlite → sweep on a fresh connection; `--as`, `--run` vs env, D7 authority
+matrix, F7 stale/live/OFF generation arms),
+`src/cli/bus-status-no-run.test.ts` (the `hold:` line), `src/main/bus.test.ts` (F5:
+the race made deterministic by a proxy that lets the winner migrate between the
+loser's read and its `BEGIN`).
+
+**Slot trap (hit while landing this):** tests that build an old-version DB by
+opening to HEAD and hand-DROPping what later migrations added (`bus-fencing.test.ts`
+T128.4, `bus-mirror.test.ts` C11) must also `DROP COLUMN held_at` AND `held_by` for
+`from < 8`, or the replay throws "duplicate column name"; `bus.test.ts` T130.4
+asserts a `SCHEMA_VERSION` floor (>= 7), never an absolute.
 
 ## COUNTED, not FIRED — the `liveness` switch (C5)
 
@@ -1598,7 +1710,7 @@ would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
 | `src/main/bus.ts` | `coordinatorGeneration` / `runCoordinator` (#222) / `bumpCoordinatorGeneration` / `assertCoordinatorGeneration` / `fencedWrite` / `recordFenceEvent` / `fenceEvents` / `fenceEventCounts` / `StaleGenerationError`; migration `MIGRATIONS[5]` (`runs.coordinator_generation` + `fence_events`). |
 | `src/main/bus-runs.ts` | `BusRunRow.coordinator_generation` threaded through `getRun`/`listRuns`/`toRunRow`. |
 | `src/shared/bus-switches.ts` | The `fencing` mechanism added to the enum/labels/wire map. |
-| `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
+| `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write (and, #204, `run hold|resume`) THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
 | `src/renderer/components/BusPane.tsx` | `data-run-generation` per run. |
 | `src/main/bus-run-anchor.ts` | **#166 PRODUCER GATE** `shouldBumpCoordinatorGeneration(anchor, runRowExists)` — pure: bump IFF `anchorIsOrchestrator && wsId===anchorId && runRowExists` (excludes members = never fence the live anchor; excludes first-start = stays gen 0). |
 | `src/main/workspaces.ts` | **#166 PRODUCER** `maybeBumpCoordinatorOnReplacement(ws)` (gate → `bumpCoordinatorGeneration`, best-effort D1); `startAgentPty` opt `coordinatorReplacement` bumps before `extraEnv` + plumbs `ORCHESTRA_COORDINATOR_GENERATION` (gen>0 only); `markPtyRestartPending`/`consumePtyRestartPending` (the toolbar-live-PTY + branch-switch `pty:restart` routes); `switchWorkspaceBranch` marks pending. |
@@ -1648,6 +1760,7 @@ the fence tx by `fencedWrite`) AND `presented < current`. Anything else passes, 
 |---|---|
 | `send` (any kind: dispatch / status / worker_done / question …), `ack`, `gate resolve` by the run's **coordinator** presenting an old generation | **yes** — the #166 guarantee |
 | the same three verbs by any **member** of the run (stale env generation) | no — never refused, no shadow event |
+| `run hold` / `run resume` (#204) by the run's **coordinator** presenting an old generation | **yes** — verb `run-hold`/`run-resume`, against the first run of `[target, ...ancestors]` the actor coordinates (a zombie ancestor is fenced on ITS OWN run, R1); a member is never fenced (refused by the D7 authority check instead) |
 | `check`, `ask`, `token`, `gate open/list` | never — they do not route through `fenced()` (`check` is a read + the reader's own ack; `verbAsk` → `ctx.bus.send` and `gate open` → `openGate` write directly) |
 | a write to a run the writer does not coordinate (e.g. OPS `--run <LEAD run>`) | no — the OPS is a member there; its env generation belongs to ITS OWN run (pinned by a CLI arm) |
 | run with no `runs` row (`default`) | never (no coordinator to identify) |
@@ -2312,7 +2425,7 @@ serialized JSON. The CLI prints the run it resolved (`--run` > `$ORCHESTRA_RUN_I
 > `default`), **never** the main process's `host-…` mirror id, plus a
 frozen-vs-live flag table (WIRE names). No write path. `runExists` (#206) tells a
 missing run row apart from a run frozen OFF (`runFlags` reads both as all-OFF): the
-CLI then prints "no such run (standalone …)" and `—` in the frozen column.
+CLI then prints "no such run (standalone …)" and `—` in the frozen column. `runStatusView` (`bus-runs.ts`) also returns `heldAt`/`heldBy` (#204): a HELD run prints `hold: HELD since <iso> by <holder>`; not held prints nothing.
 
 ## D1a-bis BIDIRECTIONAL innermost-run wake routing (OQ2 ruling A, wake-side)
 

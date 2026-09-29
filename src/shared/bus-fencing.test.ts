@@ -10,7 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideFence, isCoordinatorHandle, type FenceInput } from './bus-fencing.ts';
+import { decideFence, isCoordinatorHandle, type FenceInput, fenceRunForHold } from './bus-fencing.ts';
 
 // `writerIsCoordinator` defaults TRUE: the pre-#222 arms below are all about the coordinator.
 const at = (
@@ -92,4 +92,26 @@ test('#222 F1 — isCoordinatorHandle is case-folded + trimmed; a null coordinat
   assert.equal(isCoordinatorHandle('ab-12', 'ab-13'), false, 'a different handle is a member');
   assert.equal(isCoordinatorHandle('ab-12', ''), false);
   assert.equal(isCoordinatorHandle(null, 'ab-12'), false, 'unknown run: no coordinator');
+});
+
+// ── delta review R1: which run a `run hold|resume` writer is fenced against ──
+
+test('#204 R1: fenceRunForHold — the FIRST run in [target, ...ancestors] the actor coordinates; none ⇒ null', () => {
+  // MUTANT: always the target / last match instead of the first / exact-case compare → RED.
+  const chain = [
+    { runId: 'run-deep', coordinator: 'ws-deep' },
+    { runId: 'run-ops', coordinator: 'ws-ops' },
+    { runId: 'run-lead', coordinator: 'ws-lead' },
+  ];
+  assert.equal(fenceRunForHold(chain, 'ws-deep'), 'run-deep', 'the target\'s own coordinator ⇒ the target run');
+  assert.equal(fenceRunForHold(chain, 'ws-ops'), 'run-ops', 'the parent run\'s coordinator ⇒ ITS run');
+  assert.equal(fenceRunForHold(chain, '  WS-LEAD '), 'run-lead', 'the LEAD, case-folded + trimmed ⇒ the LEAD run');
+  assert.equal(fenceRunForHold(chain, 'a-member'), null, 'a member coordinates none ⇒ null (never fenced, A6)');
+  assert.equal(fenceRunForHold(chain, ''), null, 'no identity ⇒ null');
+  assert.equal(fenceRunForHold([], 'ws-lead'), null, 'empty chain ⇒ null');
+  // Coordinator of BOTH the target and an ancestor: the target (nearest) wins.
+  assert.equal(
+    fenceRunForHold([{ runId: 'a', coordinator: 'x' }, { runId: 'b', coordinator: 'x' }], 'x'),
+    'a',
+  );
 });

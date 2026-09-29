@@ -210,10 +210,21 @@ test('P4 — /busStatus reads runFlags + getLiveSwitches for the CLI run id', ()
   const start = hooksSrc.indexOf("route === '/busStatus'");
   assert.ok(start > 0, '/busStatus route not found');
   const body = hooksSrc.slice(start, start + 2400);
-  assert.match(body, /runFlags\(db,\s*cliRunId\)/, 'frozen flags must come from the run row');
+  // #204: the per-run reply is ONE pure view (bus-runs.ts busStatusRunView), so the shaping is
+  // testable; the route hands it the boot bus, the CLI run id and the STORE's live flags.
+  assert.match(
+    body,
+    /busStatusRunView\(getBus\(\),\s*cliRunId,\s*serializeSwitches\(getLiveSwitches\(\)\)\)/,
+    'the run view is built by busStatusRunView from the boot bus, the CLI run id and the live flags',
+  );
   assert.match(body, /getLiveSwitches\(\)/, 'live flags must come from the store');
-  assert.match(body, /frozenFlags:/, 'the frozen flags must be returned');
-  assert.match(body, /liveFlags:/, 'the live flags must be returned');
+  // The view itself: frozen flags from the run row, both flag sets returned (behaviour pinned in
+  // bus-run-hold.test.ts H1; this is the structural half).
+  const busRunsSrc = read('src/main/bus-runs.ts');
+  const view = busRunsSrc.slice(busRunsSrc.indexOf('export function busStatusRunView('));
+  assert.match(view, /runFlags\(db,\s*runId\)/, 'frozen flags must come from the run row');
+  assert.match(view, /frozenFlags:/, 'the frozen flags must be returned');
+  assert.match(view, /liveFlags:/, 'the live flags must be returned');
 });
 
 // ─── #166 — the coordinator-generation BUMP is wired at EVERY replacement path ─

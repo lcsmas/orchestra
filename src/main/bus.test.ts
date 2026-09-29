@@ -836,7 +836,7 @@ test('#130 T130.4: a from-6 DB migrates to v7 and grows mutation_receipts at ind
   assert.ok(!at6.has('mutation_receipts'), 'receipts table absent at v6 (would mean a duplicate index)');
 
   assert.equal(migrate(db), SCHEMA_VERSION, 'migrate reaches v7 from v6');
-  assert.equal(SCHEMA_VERSION, 7, 'the receipts migration bumps SCHEMA_VERSION to 7');
+  assert.ok(SCHEMA_VERSION >= 7, 'the receipts migration bumps SCHEMA_VERSION to at least 7 (later slots append)');
   const after = new Set(
     (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
       (r) => r.name,
@@ -1152,4 +1152,49 @@ test('#144 badRecipientRows returns [] on a clean bus (all full ids or nulls)', 
   send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'a' });
   send(db, { runId: RUN, sender: 's', recipient: null, kind: 'dispatch', body: 'b' });
   assert.deepEqual(badRecipientRows(db), []);
+});
+
+test('#204 F5 (MUST-FAIL before the fix): migrate() re-reads user_version INSIDE the write txn — a concurrent opener that wins the race is not replayed', (t) => {
+  // review-A4 F5: migrate() read user_version BEFORE `BEGIN IMMEDIATE`, so two first-openers
+  // of a v7 DB both ran `ALTER TABLE … ADD COLUMN held_at` and the loser threw
+  // "duplicate column name". The race is made DETERMINISTIC here: right before the loser
+  // takes its write lock, the winner completes migrate() on the same file.
+  // MUTANT: read the version once before the loop (drop the in-txn re-read) → RED.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-bus-race-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'bus.sqlite');
+  const seed = open(file);
+  seed.exec('BEGIN IMMEDIATE');
+  for (let v = 1; v <= 7; v++) seed.exec(MIGRATIONS[v]!);
+  seed.pragma('user_version = 7');
+  seed.exec('COMMIT');
+  seed.close();
+
+  const winner = open(file);
+  const loser = open(file);
+  t.after(() => {
+    winner.close();
+    loser.close();
+  });
+  let raced = false;
+  const proxied = new Proxy(loser, {
+    get(target, prop) {
+      if (prop === 'exec') {
+        return (sql: string) => {
+          if (!raced && /^\s*BEGIN IMMEDIATE/.test(sql)) {
+            raced = true;
+            migrate(winner); // the concurrent opener commits first
+          }
+          return target.exec(sql);
+        };
+      }
+      const v = (target as unknown as Record<string | symbol, unknown>)[prop];
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+  assert.equal(migrate(proxied as typeof loser), SCHEMA_VERSION, 'the loser reaches HEAD without replaying');
+  assert.equal(raced, true, 'control: the winner really migrated between the loser\'s read and its BEGIN');
+  assert.equal(schemaVersion(winner), SCHEMA_VERSION);
+  // The skip path must ROLLBACK: a leaked open txn would hold the write lock and starve every other opener.
+  assert.equal(loser.inTransaction, false, 'the loser left no transaction open');
 });

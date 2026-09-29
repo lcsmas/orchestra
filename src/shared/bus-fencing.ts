@@ -59,3 +59,22 @@ export function decideFence(input: FenceInput): FenceDecision {
   if (input.presented >= input.current) return 'pass';
   return input.fencingOn ? 'reject' : 'count';
 }
+
+/**
+ * Which run's generation + `fencing` switch a `run hold|resume` write is fenced against
+ * (delta review R1). `chain` = the TARGET run first, then its ancestors nearest-first,
+ * each with its coordinator handle. The actor is fenced as the coordinator of the FIRST
+ * run in the chain it coordinates — itself the target (its own generation), or an
+ * ancestor (a zombie LEAD presenting a stale generation of ITS OWN run). `null` = the
+ * actor coordinates none of them (a member / stranger): A6 never fences those, and the
+ * authority check refuses them, so the caller falls back to the target run.
+ */
+export function fenceRunForHold(
+  chain: readonly { runId: string; coordinator: string }[],
+  actor: string,
+): string | null {
+  for (const link of chain) {
+    if (isCoordinatorHandle(link.coordinator, actor)) return link.runId;
+  }
+  return null;
+}

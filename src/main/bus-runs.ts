@@ -16,6 +16,7 @@
 // removed rather than kept alongside it.
 
 import type { BusDb } from './bus.ts';
+import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import {
   type BusSwitches,
   freezeSwitches,
@@ -238,6 +239,137 @@ export function refreezeMissionRun(
   // coexistence-safe direction: an unfrozen run reads all-OFF, not late-frozen.
   const changed = refreezeRun(db, runId, liveSwitches);
   return changed ? 'refrozen' : 'no-flags';
+}
+
+/** The typed outcome of `orchestra run hold|resume` (#204). `no-run` refuses an id
+ *  with no `runs` row so a typo'd hold is never accepted and silently inert. */
+export type RunHoldOutcome =
+  | 'held'
+  | 'already-held'
+  | 'resumed'
+  | 'not-held'
+  | 'no-run'
+  | 'refused'; // caller is neither X's coordinator nor an ancestor run's coordinator (D7)
+
+/** Who may hold/resume run `runId` (LEAD ruling D7): its own coordinator plus the
+ *  coordinator of every ANCESTOR run, nearest first. `chain` is the same list with the
+ *  run ids (target first) — what the fence keys on (R1). Null for an unknown run. The
+ *  parent walk is bounded by a seen-set (a malformed `parent_run_id` cycle ends). */
+export function runHoldAuthority(
+  db: BusDb,
+  runId: string,
+): {
+  coordinator: string;
+  ancestors: string[];
+  chain: { runId: string; coordinator: string }[];
+} | null {
+  const q = db.prepare('SELECT coordinator AS c, parent_run_id AS p FROM runs WHERE id = ?');
+  const row = q.get(runId) as { c: string; p: string | null } | undefined;
+  if (!row) return null;
+  const ancestors: string[] = [];
+  const chain = [{ runId, coordinator: String(row.c) }];
+  const seen = new Set<string>([runId]);
+  let cur = row.p;
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    const r = q.get(cur) as { c: string; p: string | null } | undefined;
+    if (!r) break;
+    ancestors.push(String(r.c));
+    chain.push({ runId: cur, coordinator: String(r.c) });
+    cur = r.p;
+  }
+  return { coordinator: String(row.c), ancestors, chain };
+}
+
+/**
+ * HOLD / RESUME a run (#204 remainder, LEAD ruling D4 ii): the explicit per-run
+ * flag `runs.held_at` (NULL = not held) + `held_by` (the holder's handle).
+ * AUTHORIZED (LEAD ruling D7): only X's coordinator or the coordinator of an
+ * ancestor run may act; anyone else — including a caller with no identity — gets
+ * `refused` and nothing changes. Identity is compared like A6's fence (case-folded,
+ * trimmed) and is caller-asserted, as on every bus verb. Idempotent — a repeat hold
+ * keeps the ORIGINAL time and holder. A pure UPDATE, never an INSERT: it cannot
+ * create a run row and never touches the frozen `run_flags` (#123 F1).
+ */
+export function setRunHold(
+  db: BusDb,
+  runId: string,
+  hold: boolean,
+  actor: string | null | undefined,
+): RunHoldOutcome {
+  const auth = runHoldAuthority(db, runId);
+  if (!auth) return 'no-run';
+  const who = actor?.trim() ?? '';
+  if (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who))) {
+    return 'refused';
+  }
+  const row = db.prepare('SELECT held_at AS h FROM runs WHERE id = ?').get(runId) as
+    | { h: number | null }
+    | undefined;
+  const isHeld = row !== undefined && row.h !== null && row.h !== undefined;
+  if (hold) {
+    if (isHeld) return 'already-held';
+    db.prepare('UPDATE runs SET held_at = ?, held_by = ? WHERE id = ? AND held_at IS NULL').run(
+      Date.now(),
+      who,
+      runId,
+    );
+    return 'held';
+  }
+  if (!isHeld) return 'not-held';
+  db.prepare('UPDATE runs SET held_at = NULL, held_by = NULL WHERE id = ?').run(runId);
+  return 'resumed';
+}
+
+/** The run's current hold, or null when it is not held / has no row. */
+export function getRunHold(
+  db: BusDb,
+  runId: string,
+): { heldAt: number; heldBy: string | null } | null {
+  const r = db.prepare('SELECT held_at AS a, held_by AS b FROM runs WHERE id = ?').get(runId) as
+    | { a: number | null; b: string | null }
+    | undefined;
+  if (!r || r.a === null || r.a === undefined) return null;
+  return { heldAt: Number(r.a), heldBy: r.b ?? null };
+}
+
+/** The `/busStatus` per-run wire fields (`orchestra bus-status`): whether the run
+ *  has a row (#206) and its hold, so an operator can see a forgotten hold. */
+export function runStatusView(
+  db: BusDb,
+  runId: string,
+): { runExists: boolean; heldAt: number | null; heldBy: string | null } {
+  const hold = getRunHold(db, runId);
+  return {
+    runExists: getRun(db, runId) !== null,
+    heldAt: hold?.heldAt ?? null,
+    heldBy: hold?.heldBy ?? null,
+  };
+}
+
+/** The whole per-run part of the `/busStatus` reply (hooks-server.ts calls this — the
+ *  Electron route itself is untestable, so the shaping lives here and is pinned, H1).
+ *  A null bus (D1) carries only the id + live flags, the older-app shape. */
+export function busStatusRunView(
+  db: BusDb | null,
+  runId: string,
+  liveFlagsJson: string,
+): Record<string, unknown> {
+  return {
+    displayRunId: runId,
+    // #206: runFlags reads a MISSING run as all-OFF; runExists says so explicitly so the
+    // CLI never prints "frozen OFF" for a workspace that anchors no run.
+    ...(db ? runStatusView(db, runId) : {}),
+    frozenFlags: db ? serializeSwitches(runFlags(db, runId)) : null,
+    liveFlags: liveFlagsJson,
+  };
+}
+
+/** Every run currently HELD. UNKNOWN ⇒ NOT HELD: a run with no row (or a NULL
+ *  `held_at`) is simply absent from this set, so it can only ever over-escalate. */
+export function heldRunIds(db: BusDb): Set<string> {
+  const rows = db.prepare('SELECT id FROM runs WHERE held_at IS NOT NULL').all() as { id: string }[];
+  return new Set(rows.map((r) => r.id));
 }
 
 /** Read one run row with its frozen flags, or null. */

@@ -222,13 +222,24 @@ all. Read-only.`,
   {
     name: 'run',
     group: 'Fleet bus',
-    summary: "Admin: re-freeze a mission run's switches",
+    summary: "Admin: re-freeze a mission run's switches; hold / resume a run's liveness",
     detail: `usage: orchestra run refreeze [--run <id>]
+       orchestra run hold [--run <id>] [--as <handle>]
+       orchestra run resume [--run <id>] [--as <handle>]
 
-Re-freeze a MISSION run's bus switches to the current live switches (default
-run: $ORCHESTRA_RUN_ID or 'default'). For a FLAT orchestrator whose mission
-never picks up a switch flip. Refused on a non-mission run, or while any
-child is live mid-turn. Never creates a run row.`,
+  refreeze  Re-freeze a MISSION run's bus switches to the current live switches.
+            For a FLAT orchestrator whose mission never picks up a switch flip.
+            Refused on a non-mission run, or while any child is live mid-turn.
+            Never creates a run row.
+  hold      Put the run on HOLD: liveness stops escalating every member of it
+            (workers AND its orchestrator). Durable in the bus, so it survives
+            an app relaunch and works while the app is down. Idempotent.
+            Only the run's coordinator or a coordinator of an ANCESTOR run may
+            hold/resume it (caller = --as, else $ORCHESTRA_WS_ID); anyone else
+            is refused. Fenced like send/ack (--generation). The holder is
+            recorded and 'orchestra bus-status' shows a held run.
+  resume    Clear the hold; escalation is re-enabled on the next sweep.
+Default run: $ORCHESTRA_RUN_ID or 'default'. hold/resume refuse a run with no row.`,
   },
 
   // ── Legacy messaging ──────────────────────────────────────────────────
@@ -395,9 +406,16 @@ export function isHelpFlag(arg: string | undefined): boolean {
  *  (`gate open --help`). Never deeper — free text may contain "--help". */
 const SUBCOMMAND_VERBS = new Set(['open', 'resolve', 'list', 'refreeze', 'add', 'rm', 'pin']);
 
-export function wantsCommandHelp(args: string[]): boolean {
+/** `hold`/`resume` are `run` subcommands only — scoped so `orchestra status hold
+ *  --help` (free text) is never read as a help request. */
+const RUN_SUBCOMMANDS = new Set(['hold', 'resume']);
+
+export function wantsCommandHelp(args: string[], command?: string): boolean {
   if (isHelpFlag(args[0])) return true;
-  return SUBCOMMAND_VERBS.has(args[0] ?? '') && isHelpFlag(args[1]);
+  if (!isHelpFlag(args[1])) return false;
+  return (
+    SUBCOMMAND_VERBS.has(args[0] ?? '') || (command === 'run' && RUN_SUBCOMMANDS.has(args[0] ?? ''))
+  );
 }
 
 export function commandHelp(name: string): string | undefined {

@@ -277,7 +277,14 @@ run `--run > $ORCHESTRA_RUN_ID > default` and POSTs `/runRefreeze`; prints the
 frozen flag table on `refrozen` and a diagnosable line on every refusal
 (`not-mission` / `live-child` / `no-run` / `no-flags`), non-zero, no stack.
 `src/cli/index.ts` `case 'run'`; arg/outcome contract in
-`src/cli/run-refreeze-args.test.ts`).
+`src/cli/run-refreeze-args.test.ts`),
+`run hold|resume [--run <id>] [--as <handle>] [--generation <n>]` (issue #204 — set/clear
+the per-run HOLD flag that makes liveness skip every member of the run; STORE-LESS like
+`send`/`ack` — writes `runs.held_at`/`held_by` in the bus directly, no socket route,
+so it works while the app is down; refuses a run with no row; idempotent; AUTHORIZED —
+only the run's coordinator or an ancestor run's coordinator (D7); FENCED through A6's
+`fencedWrite` (F7); the hold shows in `orchestra bus-status` (`/busStatus` returns
+`heldAt`/`heldBy`); see `bus.md` §Active coordinator + per-run HOLD),
 Fully non-interactive (destructive `delete` needs `--yes`).
 
 ### Help (`src/cli/help.ts`)

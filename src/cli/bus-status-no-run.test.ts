@@ -136,3 +136,34 @@ test('bus-status against an older app (no runExists field) keeps the previous re
   assert.doesNotMatch(r.stdout, /no such run/);
   assert.match(r.stdout, /delivery\s+OFF\s+ON/);
 });
+
+// ── review-A4 F3: the hold is visible in `bus-status` ───────────────────────
+
+test('bus-status prints a HELD run: since <iso> by <holder> (F3)', needsBuild, () => {
+  // MUTANT: the CLI ignores heldAt/heldBy → no `hold:` line → RED.
+  const r = driveCli(
+    ['bus-status'],
+    reply('runExists: true, heldAt: 1700000000000, heldBy: "alice",'),
+    { runIdEnv: 'held-run' },
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^hold: HELD since 2023-11-14T22:13:20\.000Z by alice/m);
+});
+
+test('bus-status on a held run with an unknown holder says "unknown", and a NOT-held run prints no hold line (F3)', needsBuild, () => {
+  // MUTANT: print the hold line unconditionally / print "by null" → RED.
+  const unknown = driveCli(
+    ['bus-status'],
+    reply('runExists: true, heldAt: 1700000000000, heldBy: null,'),
+    { runIdEnv: 'held-run' },
+  );
+  assert.match(unknown.stdout, /^hold: HELD since .* by unknown/m);
+  assert.doesNotMatch(unknown.stdout, /by null/);
+  const open = driveCli(
+    ['bus-status'],
+    reply('runExists: true, heldAt: null, heldBy: null,'),
+    { runIdEnv: 'open-run' },
+  );
+  assert.equal(open.code, 0, open.stderr);
+  assert.doesNotMatch(open.stdout, /^hold:/m, 'a run that is not held prints no hold line');
+});

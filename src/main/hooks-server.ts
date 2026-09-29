@@ -29,7 +29,7 @@ import {
 } from './workspaces';
 import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
-import { getRun, runFlags } from './bus-runs.ts';
+import { busStatusRunView } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
 import {
@@ -440,20 +440,10 @@ export async function startHooksServer(): Promise<void> {
             const cliRunId = typeof msg.runId === 'string' ? msg.runId.trim() : '';
             let runFlagsExtra: Record<string, unknown> = {};
             if (cliRunId) {
-              const db = getBus();
-              // Frozen flags come from the run row (all-OFF for an unknown run /
-              // a null bus — the coexistence-safe direction); live from the
-              // store. Serialized as the stable sorted JSON object both sides
-              // parse, so the CLI never re-derives the shape.
-              const frozen = db ? runFlags(db, cliRunId) : undefined;
-              runFlagsExtra = {
-                displayRunId: cliRunId,
-                // #206: runFlags reads a MISSING run as all-OFF; say so explicitly so the
-                // CLI never prints "frozen OFF" for a workspace that anchors no run.
-                ...(db ? { runExists: getRun(db, cliRunId) !== null } : {}),
-                frozenFlags: frozen ? serializeSwitches(frozen) : null,
-                liveFlags: serializeSwitches(getLiveSwitches()),
-              };
+              // Frozen flags come from the run row (all-OFF for an unknown run / a null
+              // bus — the coexistence-safe direction); live from the store; the hold
+              // (#204) rides along. One pure view, pinned by bus-run-hold.test.ts (H1).
+              runFlagsExtra = busStatusRunView(getBus(), cliRunId, serializeSwitches(getLiveSwitches()));
             }
             // #144 — flag any message whose recipient is not a full workspace id
             // (the canary's short handles). Cross-run: a bad recipient anywhere

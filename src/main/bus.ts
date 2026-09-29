@@ -135,8 +135,11 @@ export interface BusDecisionGate {
  *  index 5, #129 capability took 6 (both merged); this migration is RENUMBERED
  *  to the next-free index 7 at this rebase and SCHEMA_VERSION bumped 6→7 with it.
  *  `migrate()` applies BY INDEX, so a duplicate number would silently SKIP this
- *  SQL (wave B trap) — hence 7, not a reused 5/6. Never edit a merged migration. */
-export const SCHEMA_VERSION = 7;
+ *  SQL (wave B trap) — hence 7, not a reused 5/6. Never edit a merged migration.
+ *
+ *  8 = the per-run HOLD flag (#204 remainder, wave #224 track A4 — the only track
+ *  of that wave allowed a slot). */
+export const SCHEMA_VERSION = 8;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -453,6 +456,15 @@ export const MIGRATIONS: Record<number, string> = {
       PRIMARY KEY (run_id, caller_fingerprint, request_id)
     );
   `,
+  // #204 remainder (LEAD ruling D4 ii, ledger #224): `orchestra run hold|resume`
+  // sets/clears these. held_at NULL = not held (every pre-existing and every new run),
+  // else the epoch-ms the hold began; held_by = the holder's handle (NULL = unknown).
+  // Liveness skips every member of a held run. Columns on `runs`, not a table: one
+  // flag per run, and the row already anchors the run.
+  8: `
+    ALTER TABLE runs ADD COLUMN held_at INTEGER;
+    ALTER TABLE runs ADD COLUMN held_by TEXT;
+  `,
 };
 
 // ─── open() — the ONE place PRAGMAs are set ─────────────────────────────────
@@ -521,7 +533,24 @@ export function migrate(db: BusDb): number {
   for (let v = current + 1; v <= SCHEMA_VERSION; v++) {
     const sql = MIGRATIONS[v];
     if (!sql) throw new Error(`bus: no migration to produce schema v${v}`);
-    db.exec(`BEGIN IMMEDIATE; ${sql}; PRAGMA user_version = ${v}; COMMIT;`);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      // Re-read UNDER the write lock: a concurrent first-opener may have applied v
+      // since `current` was read, and replaying an ALTER would throw (review-A4 F5).
+      if (schemaVersion(db) >= v) {
+        db.exec('ROLLBACK');
+        continue;
+      }
+      db.exec(`${sql}; PRAGMA user_version = ${v}`);
+      db.exec('COMMIT');
+    } catch (e) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        /* no open transaction */
+      }
+      throw e;
+    }
   }
   return schemaVersion(db);
 }
