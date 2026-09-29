@@ -1,0 +1,16 @@
+[
+ {
+  "name": "G5a_gate_lookup_empty_UNIT_ONLY",
+  "file": "src/main/workspaces.ts",
+  "old": "!isPlainOwnAnchor(targetForGate, (id) => store.getWorkspace(id))",
+  "new": "!isPlainOwnAnchor(targetForGate, () => undefined)",
+  "rig": false
+ },
+ {
+  "name": "G5b_gate_lookup_empty_WITH_RIG",
+  "file": "src/main/workspaces.ts",
+  "old": "!isPlainOwnAnchor(targetForGate, (id) => store.getWorkspace(id))",
+  "new": "!isPlainOwnAnchor(targetForGate, () => undefined)",
+  "rig": true
+ }
+]
