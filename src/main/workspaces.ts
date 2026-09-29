@@ -4859,57 +4859,39 @@ event="\${1:-}"
 [ -n "\$event" ] || exit 0
 
 # Claude Code delivers the hook's event payload as JSON on stdin. We read it
-# once (when present) and pull two values out with pure bash parameter
-# expansion — no jq dependency: the active tool name (for the per-tool label)
-# and the transcript path (so orchestra can compute the session's context size
-# in TypeScript rather than parsing JSONL here, which would be fragile).
+# once (when present) and pull values out with bash alone — no jq dependency:
+# the active tool name (for the per-tool label) and the transcript path (so
+# orchestra can compute the session's context size in TypeScript rather than
+# parsing JSONL here, which would be fragile).
 tool=""
 tooluseid=""
 transcript=""
 crons=""
+# mine KEY → \$mined = value after the FIRST "KEY" (next ':', next '"', up to the next '"'); 1 if none.
+# mine KEY last → the LAST "KEY": "<string>" pair — a key, never a "KEY" string value.
+# ONE linear regex scan: \${payload#*"KEY"} is O(n²) — 46 s on a real 295 KB Edit payload (#198 D20).
+mine() {
+  local LC_ALL=C re="\\"\$1\\"[^:]*:[^\\"]*\\"([^\\"]*)"
+  [ "\${2:-}" = last ] && re=".*\\"\$1\\"[[:space:]]*:[[:space:]]*\\"([^\\"]*)"
+  [[ \$payload =~ \$re ]] || return 1
+  mined="\${BASH_REMATCH[1]}"
+}
 case "\$event" in
   pretool|posttool|stop|notify|session)
     payload="\$(cat)"
-    case "\$payload" in
-      *'"tool_name"'*)
-        rest="\${payload#*'"tool_name"'}"
-        rest="\${rest#*:}"
-        rest="\${rest#*'"'}"
-        tool="\${rest%%'"'*}"
-        ;;
-    esac
+    mine tool_name && tool="\$mined"
     # #127: mine the tool_use id so the reader can pair a posttool with the exact
     # in-flight call it ended (a hung PARALLEL call must survive a fast sibling's
-    # posttool). PreToolUse/PostToolUse/PostToolUseFailure payloads carry it.
-    case "\$payload" in
-      *'"tool_use_id"'*)
-        rest="\${payload#*'"tool_use_id"'}"
-        rest="\${rest#*:}"
-        rest="\${rest#*'"'}"
-        tooluseid="\${rest%%'"'*}"
-        ;;
-    esac
+    # posttool). PreToolUse/PostToolUse/PostToolUseFailure payloads carry it as their LAST
+    # "tool_use_id" — a WebSearch tool_response nests srvtoolu_ ids before it (#198 T11 F1).
+    mine tool_use_id last && tooluseid="\$mined"
     # SessionStart carries no tool; reuse the tool slot for its "source"
     # (startup|resume|clear|compact) so orchestra can tell a context-resetting
     # clear/compact apart from a plain startup without a new line format.
     if [ "\$event" = "session" ]; then
-      case "\$payload" in
-        *'"source"'*)
-          rest="\${payload#*'"source"'}"
-          rest="\${rest#*:}"
-          rest="\${rest#*'"'}"
-          tool="\${rest%%'"'*}"
-          ;;
-      esac
+      mine source && tool="\$mined"
     fi
-    case "\$payload" in
-      *'"transcript_path"'*)
-        rest="\${payload#*'"transcript_path"'}"
-        rest="\${rest#*:}"
-        rest="\${rest#*'"'}"
-        transcript="\${rest%%'"'*}"
-        ;;
-    esac
+    mine transcript_path && transcript="\$mined"
     # Loop level-signal: Stop/StopFailure payloads carry \`session_crons\` — the
     # CLI scheduler's OWN registry of pending ScheduleWakeup/CronCreate//loop
     # tasks ("[]" = definitively none scheduled). Reduced to a three-state flag
@@ -4925,9 +4907,9 @@ case "\$event" in
   toolbatch)
     # #199 residual (T6b): PostToolBatch lists EVERY call of a resolved batch —
     # the only end signal a DENIED call gets. Collect all ids comma-joined (an id
-    # nested in a tool_response is a no-op downstream). grep, not the parameter
-    # expansion above: that is O(n^2) on a big payload (a batch carries every
-    # tool_response). Ids are [A-Za-z0-9_-] only, so the JSON line stays valid.
+    # nested in a tool_response is a no-op downstream). grep -o, not mine() above:
+    # that returns only the FIRST id; both are linear on a big payload (#198 D20).
+    # Ids are [A-Za-z0-9_-] only, so the JSON line stays valid.
     tooluseid="\$(LC_ALL=C grep -oE '"tool_use_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]+"' | while IFS= read -r m; do m="\${m%'"'}"; printf '%s,' "\${m##*'"'}"; done)"
     tooluseid="\${tooluseid%,}"
     ;;
@@ -5561,8 +5543,19 @@ export async function installOrchestraHooks(
     // instruction text propagate to existing workspaces. Write them all in
     // parallel with the executable mode baked in — dropping the separate
     // chmod round-trips that doubled the syscall count here.
-    const w = (name: string, body: string) =>
-      writeFile(path.join(dir, name), body, { mode: 0o755 });
+    // A fresh file renamed over the old one: a hook still RUNNING the previous
+    // script keeps reading its own inode (an in-place rewrite corrupts it, #198 T11 F2).
+    const w = async (name: string, body: string) => {
+      const dest = path.join(dir, name);
+      const tmp = `${dest}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, body, { mode: 0o755 });
+        await rename(tmp, dest);
+      } catch (err) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw err;
+      }
+    };
     await Promise.all([
       w('rename-instruction.sh', RENAME_INSTRUCTION_SCRIPT),
       w('orchestra-hook.sh', ORCHESTRA_HOOK_SCRIPT),

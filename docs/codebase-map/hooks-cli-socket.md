@@ -53,8 +53,8 @@ shell scripts, mode 0755) and merges commands into
 `claude` outside Orchestra is a silent no-op.
 
 Scripts and the Claude Code events they fire on:
-- **`orchestra-hook.sh`** (~`workspaces.ts:1901`) — UserPromptSubmit, Stop,
-  Notification, PreToolUse, PostToolUse, SessionStart. The **durable activity
+- **`orchestra-hook.sh`** (`ORCHESTRA_HOOK_SCRIPT`, ~`workspaces.ts:4849`) — UserPromptSubmit, Stop,
+  Notification, PreToolUse, PostToolUse(+Failure), PostToolBatch, SessionStart. The **durable activity
   writer**: appends one JSON line per event to
   `~/.orchestra/events/<wsid>.jsonl`, allocating a monotonic `seq` under `flock`
   on `<wsid>.seq` (2s timeout; falls back to `seq=0` **and an unlocked append**
@@ -66,7 +66,20 @@ Scripts and the Claude Code events they fire on:
   `stop` going missing is what left the status dot stuck on `running`). Pure bash
   (no jq/sed); JSON-escapes the transcript path **before** taking the lock to
   keep the critical section short. Line:
-  `{"seq":N,"event":"…","tool":"…","transcript":"…"}`. For the `session` event
+  `{"seq":N,"event":"…","tool":"…","toolUseId":"…","transcript":"…","crons":"…"}`.
+  Payload values (`tool_name`, `tool_use_id`, SessionStart `source`,
+  `transcript_path`) come from ONE `mine KEY` helper — a single `[[ =~ ]]` scan
+  under `LC_ALL=C`, **linear in the payload**. Never `${payload#*"KEY"}`: bash
+  evaluates it in O(n²), and a PostToolUse carries the whole `tool_response`
+  (an Edit's `originalFile`) BEFORE the top-level id — 46 s on a 287 KB Edit,
+  with the agent blocked by the CLI the whole time (#198 D20). The hook never
+  reads the transcript. `tool_use_id` is the **LAST `"tool_use_id": "<str>"`
+  pair** (`mine tool_use_id last`): the call's own id follows tool_input /
+  tool_response in every real shape, and a WebSearch `tool_response` nests
+  `srvtoolu_` ids before it (#198 T11 F1). The installer writes every script
+  to a temp file and `rename()`s it over the old one, so a hook still running
+  the previous build keeps its own inode. An in-place rewrite fed that bash
+  the new bytes at its old offset and lost the posttool (T11 F2). For the `session` event
   the `tool` slot carries the SessionStart `source`
   (startup|resume|clear|compact) so main can reset the context badge on
   clear/compact.
@@ -401,7 +414,15 @@ missing/inconsistent · `2` precondition unmet (no compositor) — named, never 
   isolated OAuth window instead of the system browser. POSIX only (returns
   null on Windows). See [accounts-usage.md](accounts-usage.md).
 
-## Tests (orchestra-hook.test.ts, ~121 lines)
+## Tests (orchestra-hook.test.ts)
 Validates `seq` allocation: sequential `[1,2,3,4]` with flock (`[0,0,0,0]`
 without); 50 concurrent invocations yield exactly `1..N` (no dupes/gaps);
 numbering restarts after `.seq` deletion (mirrors the reader's fresh-run reset).
+Payload mining runs the REAL script (rendered from the template literal): Stop
+`session_crons` states; a real-size Edit PostToolUse / Write PreToolUse mined in
+bounded time (Edit, Write, failed Write); the spool line equal to the frozen
+pre-D20 parse (spliced into the real script) on a seeded CLI-shaped corpus,
+except a mis-mined nested id, which becomes the call's own (enumerated); the
+real-shape WebSearch posttool; invalid UTF-8 kept byte-for-byte. The real-chain rig (installer → hook → spool reader → tracker,
+plus a real-`claude` arm and a byte-identity arm vs another tree) is
+`scripts/e2e-hook-cost.sh`.
