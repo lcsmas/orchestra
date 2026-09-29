@@ -803,12 +803,17 @@ export function verbAck(
  * arrives as an ordinary bus message and the réveil (#117) starts a turn. So
  * this writes one `question` row, prints its sequence, and returns.
  */
-export function verbAsk(ctx: BusVerbCtx, to: string | undefined, question: string): void {
+export function verbAsk(
+  ctx: BusVerbCtx,
+  to: string | undefined,
+  question: string,
+  toRunId?: string | null,
+): void {
   if (!to?.trim()) ctx.fail('usage: orchestra ask --to <handle> <question...>');
   if (!question.trim()) ctx.fail('orchestra ask: the question is empty');
   // #175 — an ask to an unreachable recipient parks a question nobody is ever
   // woken for (same void as send; the re-wake-until-answered loop never arms).
-  assertRecipientReachable(ctx, 'ask', to!);
+  assertRecipientReachable(ctx, 'ask', to!, toRunId);
   const seq = ctx.bus.send(ctx.db, {
     runId: ctx.id.runId,
     sender: ctx.id.handle,
@@ -889,7 +894,12 @@ function pullFlag(tokens: string[], flag: string): { value?: string; present: bo
  * Omitting `--to` opens a gate addressed to nobody — recorded, but it wakes no
  * one; the coexistence-safe default.
  */
-export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[]): void {
+export function verbGate(
+  ctx: BusVerbCtx,
+  sub: string | undefined,
+  rest: string[],
+  toRunId?: string | null,
+): void {
   if (sub === 'open') {
     const to = pullFlag(rest, '--to');
     if (to.present && !to.value?.trim()) {
@@ -900,7 +910,7 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     // #175 — same reachability rule as send/ask. #158 widened gate READS to
     // related runs only, so an unrelated-run recipient still never sees it.
     // A gate with no --to wakes nobody by design and is not judged.
-    if (to.value?.trim()) assertRecipientReachable(ctx, 'gate open', to.value.trim());
+    if (to.value?.trim()) assertRecipientReachable(ctx, 'gate open', to.value.trim(), toRunId);
     const gateId = ctx.bus.openGate(
       ctx.db,
       ctx.id.runId,

@@ -430,6 +430,14 @@ mod.startRun(busDb, { id: ORCH, kind: 'mission', coordinator: ORCH }, { delivery
 liveSet.add(ORCH);
 const m1 = await mod.dispatchMessageRequest({ from: WORKER, to: PLAIN, text: 'worker → plain parent' });
 check('M1: a non-member child can `message` the plain parent (master: ok)', m1.ok === true, JSON.stringify(m1));
+check(
+  "M1b: the exempted message is delivered ONCE — its mirrored row is NOT filed in the parent's own (wake-ON) run",
+  busDb.prepare('SELECT COUNT(*) AS c FROM messages WHERE run_id = ? AND recipient = ?').get(PLAIN, PLAIN).c === 0,
+);
+const m1c = await mod.dispatchMessageRequest({ from: KID, to: PLAIN, text: 'ops → plain parent' });
+check('M1c: the OPS (has a bus route: `send` works) is still gated', m1c.ok === false && /orchestra send/.test(m1c.error ?? ''), JSON.stringify(m1c));
+const m1d = await mod.dispatchMessageRequest({ from: KIDMEM, to: PLAIN, text: 'member → plain parent' });
+check('M1d: a MEMBER of the OPS run is still gated too', m1d.ok === false && /orchestra send/.test(m1d.error ?? ''), JSON.stringify(m1d));
 const m2 = await mod.dispatchMessageRequest({ from: WORKER, to: KIDMEM, text: 'coordination to a member' });
 check('M2 (unchanged): `message` to a MEMBER of a delivery-ON run is still refused by P4', m2.ok === false && /orchestra send/.test(m2.error ?? ''), JSON.stringify(m2));
 const m3 = await mod.dispatchMessageRequest({ from: WORKER, to: ORCH, text: 'to an orchestrator' });

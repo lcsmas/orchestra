@@ -15,7 +15,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -601,6 +602,134 @@ test('#221 isPlainOwnAnchor — a run-less parent is one; an orchestrator, a mem
   assert.equal(isPlainOwnAnchor(w.tree.nodes.get(GRAND)!, w.tree.lookup), false, 'an orchestrator-kind node');
 });
 
+// ── 7b'. Round 2: the PRODUCTION (socket) branch + the sibling verbs `ask` / `gate open` ─────────────
+function sibWorld(t: After, topology: Topology): World {
+  const w = world(t, topology);
+  fieldTree(w);
+  w.tree.add({ id: WORKER, kind: 'worktree', parentId: LEAD });
+  w.tree.add({ id: MEMBER, kind: 'worktree', parentId: OPS });
+  w.promote(OPS);
+  seedStore(w);
+  return w;
+}
+
+/** ASYNC CLI run (spawn): a fake app socket lives in THIS process, so execFileSync would deadlock on it. */
+function cliAsync(w: World, from: string, args: string[], sock?: string): Promise<Cli> {
+  const wt = path.join(w.home, 'wt', from);
+  fs.mkdirSync(wt, { recursive: true });
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: w.home,
+    ORCHESTRA_HOME: w.home,
+    ORCHESTRA_WS_ID: from,
+    ORCHESTRA_RUN_ID: w.tree.runOf(from),
+    ORCHESTRA_WORKSPACE_PATH: wt,
+  };
+  if (sock) env.ORCHESTRA_SOCK = sock; // ONLY the rig's fake app — never the live socket
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [CLI, ...args], { env, cwd: wt });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (d) => (stdout += d));
+    p.stderr.on('data', (d) => (stderr += d));
+    p.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+  });
+}
+
+/** A fake APP answering `/resolveHandle` exactly like the production handler (`runId` present or, for an
+ *  OLDER app, absent) — the branch every offline-store arm above cannot reach. */
+async function withApp(
+  w: World,
+  withRunId: boolean,
+  fn: (sock: string) => Promise<void>,
+): Promise<void> {
+  const sock = path.join(w.home, 'app.sock');
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/resolveHandle') {
+        res.end(
+          JSON.stringify({
+            ok: true,
+            workspaces: [...w.tree.nodes.values()].map((n) => ({
+              id: n.id,
+              name: `ws-${n.id.slice(0, 4)}`,
+              ...(withRunId ? { runId: w.tree.runOf(n.id) } : {}),
+            })),
+          }),
+        );
+      } else {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ ok: false, error: `no route ${req.url}` }));
+      }
+    });
+  });
+  await new Promise<void>((r) => srv.listen(sock, r));
+  try {
+    await fn(sock);
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+}
+
+test('#221 F4 SOCKET branch (production): LEAD → plain non-member child `send` is refused loudly, 0 rows', async (t) => {
+  const w = sibWorld(t, 'new');
+  await withApp(w, true, async (sock) => {
+    const rows0 = messageCount(w);
+    const r = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'x'], sock);
+    assert.equal(r.code, 1, `rc ${r.code} ${r.stdout}`);
+    assert.match(r.stderr, /plain workspace outside run/);
+    assert.equal(messageCount(w) - rows0, 0);
+    // Positive control: the same socket path still delivers a reachable recipient (the app was really used).
+    const ok = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', OPS, 'y'], sock);
+    assert.equal(ok.code, 0, ok.stderr);
+  });
+});
+
+test('#221 F4 SOCKET branch, OLDER app (no runId): not judged — documented skew, rc 0', async (t) => {
+  // MUTANT: `runId: w.runId ?? w.id` (older-app default = self) would refuse here → this arm reddens.
+  const w = sibWorld(t, 'new');
+  await withApp(w, false, async (sock) => {
+    const r = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'x'], sock);
+    assert.equal(r.code, 0, `older app is permissive: ${r.stderr}`);
+  });
+});
+
+test('#221 F5 sibling verbs — `ask --to` and `gate open --to` a plain non-member child are refused loudly, 0 rows', async (t) => {
+  const w = sibWorld(t, 'new');
+  const rows0 = messageCount(w);
+  const ask = await cliAsync(w, LEAD, ['ask', '--to', WORKER, 'q?']);
+  assert.equal(ask.code, 1, `ask rc ${ask.code} ${ask.stdout}`);
+  assert.match(ask.stderr, /plain workspace outside run/);
+  const gate = await cliAsync(w, LEAD, ['gate', 'open', '--to', WORKER, 'gq?']);
+  assert.equal(gate.code, 1, `gate open rc ${gate.code} ${gate.stdout}`);
+  assert.match(gate.stderr, /plain workspace outside run/);
+  assert.equal(messageCount(w) - rows0, 0, 'no question row, no gate row');
+});
+
+test('#221 F5 sibling verbs — controls: a related OPS / MEMBER, `--to human` and a SHORT handle still work (canonicalized)', async (t) => {
+  const w = sibWorld(t, 'new');
+  assert.equal((await cliAsync(w, LEAD, ['ask', '--to', OPS, 'q-ops?'])).code, 0, 'ask → OPS');
+  assert.equal((await cliAsync(w, LEAD, ['ask', '--to', MEMBER, 'q-member?'])).code, 0, 'ask → member of the OPS');
+  assert.equal((await cliAsync(w, LEAD, ['gate', 'open', '--to', 'human', 'ruling?'])).code, 0, 'gate → human');
+  const short = await cliAsync(w, OPS, ['ask', '--to', LEAD.slice(0, 8), 'q-short?']);
+  assert.equal(short.code, 0, short.stderr);
+  const row = w.db.prepare("SELECT recipient FROM messages WHERE body = 'q-short?'").get() as { recipient: string };
+  assert.equal(row.recipient, LEAD, 'the short handle was canonicalized to the FULL id before the row was written');
+});
+
+test('#221 F5 FIELD topology (root OPS, row-less LEAD): OPS `ask` / `gate open` --to LEAD are refused loudly like `send`', async (t) => {
+  const w = sibWorld(t, 'old');
+  const rows0 = messageCount(w);
+  assert.equal((await cliAsync(w, OPS, ['send', '--type', 'status', '--to', LEAD, 'x'])).code, 1, 'send (control, already loud)');
+  const ask = await cliAsync(w, OPS, ['ask', '--to', LEAD, 'q?']);
+  assert.equal(ask.code, 1, `ask rc ${ask.code} ${ask.stdout}`);
+  const gate = await cliAsync(w, OPS, ['gate', 'open', '--to', LEAD, 'gq?']);
+  assert.equal(gate.code, 1, `gate open rc ${gate.code} ${gate.stdout}`);
+  assert.equal(messageCount(w) - rows0, 0);
+});
+
 // ── 7c. F2 / F3 (review): pin the direct-parent choice and the probe fail-direction ─
 test('#221 F2 GRAND(plain) → LEAD(plain) → OPS: the DIRECT parent gets the row, the topmost ancestor none', (t) => {
   const w = world(t, 'new');
@@ -697,8 +826,8 @@ test('#221 wiring — the P4 gate, /resolveHandle and the CLI send carry the F1 
   };
   assert.match(
     fn(ws, 'export async function dispatchMessageRequest('),
-    /!isPlainOwnAnchor\(targetForGate,/,
-    'P4 gate exempts a plain own-anchor',
+    /isPlainOwnAnchor\(targetForGate,[\s\S]*\(!plainAnchor \|\| senderHasBusRoute\)/,
+    'P4 gate exempts a plain own-anchor, but only for a sender WITHOUT a bus route',
   );
   assert.match(
     fn(ws, 'export function dispatchResolveHandleRequest('),
@@ -706,4 +835,11 @@ test('#221 wiring — the P4 gate, /resolveHandle and the CLI send carry the F1 
     '/resolveHandle carries the wave run',
   );
   assert.match(cliSrc, /toRunId: canonTo\?\.runId \?\? null/, 'CLI send passes the recipient wave run');
+  assert.match(cliSrc, /askTo\?\.runId \?\? null/, 'CLI ask passes the recipient wave run');
+  assert.match(cliSrc, /gateToRunId = c\.runId/, 'CLI gate open passes the recipient wave run');
+  assert.match(
+    fn(ws, 'export async function dispatchMessageRequest('),
+    /const partiesRunId =\s*recipientWs && !plainAnchor/,
+    'the mirrored row skips a plain own-anchor (no second delivery by wake)',
+  );
 });

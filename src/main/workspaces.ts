@@ -53,6 +53,7 @@ import {
   startRun,
   getRun,
   busSwitch,
+  getRelatedRunIds,
   refreezeRun,
   refreezeMissionRun,
   type RefreezeMissionOutcome,
@@ -3353,12 +3354,25 @@ export async function dispatchMessageRequest(
   // Electron/store chain; here we only resolve its two inputs.
   const targetForGate = store.getWorkspace(input.to);
   const db = getBus();
-  // #221: a run-less parent that gained a mission run is a plain own-anchor, not a coordinator —
-  // its non-member children have no bus route to it, so `message` stays open exactly as on master.
+  // #221: a run-less parent that gained a mission run is a plain own-anchor, not a coordinator — its
+  // NON-member children have no bus route to it, so `message` stays open for them exactly as on master.
+  // A sender that DOES have a route (its run ∈ related(the parent's run): the OPS and its members) is
+  // still gated — `send` reaches the parent for them.
+  const plainAnchor =
+    !!targetForGate && isPlainOwnAnchor(targetForGate, (id) => store.getWorkspace(id));
+  const fromForGate = input.from ? store.getWorkspace(input.from) : undefined;
+  let senderHasBusRoute = false;
+  if (plainAnchor && !!targetForGate && !!fromForGate && !!db) {
+    try {
+      senderHasBusRoute = getRelatedRunIds(db, resolveWaveRunId(targetForGate)).ids.includes(
+        resolveWaveRunId(fromForGate),
+      );
+    } catch {
+      senderHasBusRoute = false; // D1: an unreadable bus keeps the master behaviour (exempt)
+    }
+  }
   const targetDeliveryOn =
-    !!targetForGate &&
-    !!db &&
-    !isPlainOwnAnchor(targetForGate, (id) => store.getWorkspace(id))
+    !!targetForGate && !!db && (!plainAnchor || senderHasBusRoute)
       ? busSwitch(db, resolveWaveRunId(targetForGate), 'delivery')
       : false;
   const gate = decideMessageChannel({
@@ -3399,8 +3413,11 @@ export async function dispatchMessageRequest(
   // (mail sits in the reader's run; the wake predicate scopes to it). An unknown
   // recipient (a refused send) has no run → undefined, and the mirror falls back
   // to the host id — harmless, since a refused send is not mirrored anyway.
+  // #221: NOT for a plain own-anchor — the old channel already delivered, and a dispatch row in the
+  // parent's own (now wake-ON) run would wake it a second time; the host-id fallback wakes nobody.
   const recipientWs = store.getWorkspace(input.to);
-  const partiesRunId = recipientWs ? resolveWaveRunId(recipientWs) : undefined;
+  const partiesRunId =
+    recipientWs && !plainAnchor ? resolveWaveRunId(recipientWs) : undefined;
   mirrorDispatch({
     sender: input.from ?? 'external',
     recipient: input.to,
