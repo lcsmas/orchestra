@@ -1619,10 +1619,11 @@ function Composer({
   // and `.cm-scroller`'s `max-height: 200px` (set in the editor theme) reproduces
   // the old cap-then-scroll behaviour without measuring scrollHeight by hand.
 
-  // Skills autocomplete: loaded lazily on the first "/" (cheap dir scan in
-  // main), cached per mount. `acIndex` is the highlighted row.
+  // Skills autocomplete: re-scanned (cheap dir scan in main) EVERY time the
+  // popover opens — a per-mount cache hid skills added/reloaded after the first
+  // "/". The last list stays shown while the rescan is in flight.
   const [skills, setSkills] = useState<AgentSkillInfo[] | null>(null);
-  const skillsRequested = useRef(false);
+  const skillsFetchGen = useRef(0);
   const [acIndex, setAcIndex] = useState(0);
   // Escape dismisses the popover until the slash-prefix changes again.
   const [acDismissed, setAcDismissed] = useState(false);
@@ -1653,14 +1654,15 @@ function Composer({
   })();
   const acOpen = acQuery !== null && acItems.length > 0;
 
+  const acActive = acQuery !== null;
   useEffect(() => {
-    if (acQuery === null || skillsRequested.current) return;
-    skillsRequested.current = true;
+    if (!acActive) return;
+    const gen = ++skillsFetchGen.current; // an older, slower scan must not win
     void window.orchestra
       .agentSkills(workspaceId)
-      .then(setSkills)
-      .catch(() => setSkills([]));
-  }, [acQuery, workspaceId]);
+      .then((list) => gen === skillsFetchGen.current && setSkills(list))
+      .catch(() => gen === skillsFetchGen.current && setSkills((prev) => prev ?? []));
+  }, [acActive, workspaceId]);
 
   // Clamp the highlight when the filtered list shrinks.
   useEffect(() => {

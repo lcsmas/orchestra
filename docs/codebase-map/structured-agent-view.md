@@ -1504,7 +1504,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `.claude/skills/*`, the account config dir's `skills/*`, and the ENABLED plugins'
   skill dirs (project shadows user shadows plugin) for `AgentSkillInfo`
   (shared/types.ts); the Composer shows a popover when the input is a
-  pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses). The popover is
+  pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses). The list is
+  RE-SCANNED on every popover open (generation-guarded), never cached per mount —
+  a per-mount cache hid skills added or reloaded after the first `/`. The popover is
   CSS-fragile: it anchors to `.av-composer-field`, so that rule must keep
   `position:relative` and must never set `overflow:hidden` — see
   `agent-view-design.md`, where a redeclaration once clipped a correctly-rendered
