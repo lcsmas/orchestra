@@ -1,0 +1,1 @@
+{"control":["SIGTERM:4003","SIGTERM:4002","SIGKILL:4003","SIGKILL:4002"],"trackedRecycled_signals":["SIGTERM:4003","SIGTERM:4002","SIGKILL:4003","SIGKILL:4002"],"soleKeeperD_signalled":true}

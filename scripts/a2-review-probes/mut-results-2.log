@@ -1,0 +1,7 @@
+{"mutant": "R56_both_storeloaded_copies", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 64, "fail": 2, "skipped": 0, "red": ["reap_boot_pass \u2014 \\#203 the boot pass (reapKeepersNow): store not loaded \u2192 kills nothing; loaded \u2192 orphan + duplicate reaped, tracked kept", "reap_store_unreadable \u2014 \\#203 a sweep whose store did not load from disk kills nothing (must-PASS)"]}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 36}
+DONE R56_both_storeloaded_copies rc=0
+{"mutant": "K1_daemon_probe_noreply_is_stale", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE K1_daemon_probe_noreply_is_stale rc=0
+{"mutant": "K2_daemon_no_retry_gap", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 35}
+DONE K2_daemon_no_retry_gap rc=0
+ALL_DONE

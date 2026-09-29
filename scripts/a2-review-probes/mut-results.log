@@ -1,0 +1,59 @@
+{"mutant": "S1_wrapper_victim_contains_tracked_ok", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE S1_wrapper_victim_contains_tracked_ok rc=0
+{"mutant": "C0_known_caught_drop_tracked_moved", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 65, "fail": 1, "skipped": 0, "red": ["reap_failclosed \u2014 \\#203 identity re-verified at signal time: cmdline/start-time/tracked-keeper drift \u2192 no signal"]}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE C0_known_caught_drop_tracked_moved rc=0
+{"mutant": "R1_drop_tracked_stat", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 65, "fail": 1, "skipped": 0, "red": ["reap_failclosed \u2014 \\#203 identity re-verified at signal time: cmdline/start-time/tracked-keeper drift \u2192 no signal"]}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 35}
+DONE R1_drop_tracked_stat rc=0
+{"mutant": "R2_drop_tracked_cmdline", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 35}
+DONE R2_drop_tracked_cmdline rc=0
+{"mutant": "R2b_drop_both_tracked_reverify", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 65, "fail": 1, "skipped": 0, "red": ["reap_failclosed \u2014 \\#203 identity re-verified at signal time: cmdline/start-time/tracked-keeper drift \u2192 no signal"]}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE R2b_drop_both_tracked_reverify rc=0
+{"mutant": "R3_drop_now_ne_victim", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE R3_drop_now_ne_victim rc=0
+{"mutant": "R4_orphan_untracked_no_live_recheck", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 65, "fail": 1, "skipped": 0, "red": ["reap_failclosed \u2014 \\#203 identity re-verified at signal time: cmdline/start-time/tracked-keeper drift \u2192 no signal"]}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 35}
+DONE R4_orphan_untracked_no_live_recheck rc=0
+{"mutant": "R5_drop_killtime_storeloaded", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 37}
+DONE R5_drop_killtime_storeloaded rc=0
+{"mutant": "R6_classify_dup_ignores_storeloaded", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE R6_classify_dup_ignores_storeloaded rc=0
+{"mutant": "R56_both_storeloaded_copies", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 65, "fail": 1, "skipped": 0, "red": ["reap_store_unreadable \u2014 \\#203 a sweep whose store did not load from disk kills nothing (must-PASS)"]}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "0", "secs": 34}
+DONE R56_both_storeloaded_copies rc=0
+Traceback (most recent call last):
+  File "/home/lmas/a2r-attack/mutate.py", line 82, in <module>
+    main()
+    ~~~~^^
+  File "/home/lmas/a2r-attack/mutate.py", line 75, in main
+    shutil.copyfile(bak, f)
+    ~~~~~~~~~~~~~~~^^^^^^^^
+  File "/usr/lib64/python3.13/shutil.py", line 260, in copyfile
+    with open(src, 'rb') as fsrc:
+         ~~~~^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/lmas/a2r-cand/src/main/resource-monitor.ts.mutbak'
+DONE R56_both_storeloaded_copies rc=1
+Traceback (most recent call last):
+  File "/home/lmas/a2r-attack/mutate.py", line 82, in <module>
+    main()
+    ~~~~^^
+  File "/home/lmas/a2r-attack/mutate.py", line 67, in main
+    assert src.count(o) == 1, f'{mid}: pattern count {src.count(o)} != 1: {o[:60]!r}'
+           ^^^^^^^^^^^^^^^^^
+AssertionError: K1_daemon_probe_noreply_is_stale: pattern count 0 != 1: "        s.destroy();\n        resolve('live');\n      }, 1500)"
+DONE K1_daemon_probe_noreply_is_stale rc=1
+{"mutant": "K1_daemon_probe_noreply_is_stale", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "2", "secs": 37}
+DONE K1_daemon_probe_noreply_is_stale rc=0
+{"mutant": "K2_daemon_no_retry_gap", "result": {"unit+lifecycle+keeper": {"tests": 66, "pass": 66, "fail": 0, "skipped": 0, "red": []}}, "restored_cmp_equal": true, "git_diff_lines_after_restore": "2", "secs": 36}
+DONE K2_daemon_no_retry_gap rc=0
+ALL_DONE
+Traceback (most recent call last):
+  File "/home/lmas/a2r-attack/mutate.py", line 82, in <module>
+    main()
+    ~~~~^^
+  File "/home/lmas/a2r-attack/mutate.py", line 75, in main
+    shutil.copyfile(bak, f)
+    ~~~~~~~~~~~~~~~^^^^^^^^
+  File "/usr/lib64/python3.13/shutil.py", line 260, in copyfile
+    with open(src, 'rb') as fsrc:
+         ~~~~^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/lmas/a2r-cand/src/keeper/index.ts.mutbak'
+DONE K2_daemon_no_retry_gap rc=1
+ALL_DONE
