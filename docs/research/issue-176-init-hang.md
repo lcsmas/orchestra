@@ -229,6 +229,9 @@ two sharpening it:
 
 ## 9. ROOT CAUSE — 2026-09-28 (T2, ledger #198, wave CLI-unresponsive)
 
+> **Superseded (2026-09-29, ledger #198 D18).** The proven trigger is Orchestra's boot-time `getContextUsage()` burst (fixed in v0.5.290; evidence in the #176 issue body). The network-black-hole and activity-volume narratives below describe the failure mode seen from outside, not the cause. The npx-MCP hypothesis is refuted.
+
+
 > **This section was amended after an initial over-claim was caught (LEAD D8).**
 > The first draft claimed a code-free `curl` control reproduced the stall 35/40;
 > that was a **measurement error** — the `ss` snapshot captured the live *fleet's*
@@ -359,6 +362,9 @@ multi-minute delay in those same runs lived entirely in the turn's API request
 ---
 
 ## 10. Why metarepo, not orchestra? (LEAD D10) — CONNECTION VOLUME, not a repo ingredient
+
+> **Superseded (2026-09-29, ledger #198 D18).** The proven trigger is Orchestra's boot-time `getContextUsage()` burst (fixed in v0.5.290; evidence in the #176 issue body). The network-black-hole and activity-volume narratives below describe the failure mode seen from outside, not the cause. The npx-MCP hypothesis is refuted.
+
 
 LEAD's field facts: 28/28 wedges on metarepo, 0 on orchestra, same account + CLI;
 and a single hand-made metarepo workspace reportedly wedges 4/5. If the cause were
