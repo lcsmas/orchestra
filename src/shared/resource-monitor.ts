@@ -187,8 +187,16 @@ export interface ReapMember {
   startTicks: number;
 }
 
+/** Why a tree is reaped: 'orphan' = workspace absent from the store; 'orphan-untracked' = absent AND
+ *  not the pid-file keeper; 'duplicate' = live workspace, a keeper other than the tracked one (#203). */
+export type ReapKind = 'orphan' | 'orphan-untracked' | 'duplicate';
+
 export interface ReapTarget {
   workspaceId: string;
+  /** Absent = 'orphan' (the T8 shape). */
+  kind?: ReapKind;
+  /** The pid-file keeper this tree must NOT be (duplicates / untracked orphans); null = none tracked. */
+  trackedPid?: number | null;
   keeperPid: number;
   /** Leaf-first (keeper LAST). */
   pids: number[];
@@ -249,6 +257,81 @@ export function decideReap(
       pids: members.map((m) => m.pid).reverse(),
       members,
     });
+  }
+  return { targets, refused, refusedStoreNotLoaded: false };
+}
+
+/** A process whose argv is a keeper daemon of THIS home (found by argv scan, not by pid file). */
+export interface KeeperProc {
+  pid: number;
+  workspaceId: string;
+}
+
+/** Workspace id of a keeper daemon argv `<runtime> …/keeper.js <wsId> <sock> <pidPath> <log>` whose
+ *  pid-file arg is THIS home's (`pidPathFor(wsId)`) — a dev/other-home keeper is never matched. */
+export function parseKeeperArgv(argv: string[] | null, pidPathFor: (wsId: string) => string): string | null {
+  if (!argv) return null;
+  for (let i = 0; i + 4 < argv.length; i++) {
+    if (argv[i].split(/[\\/]/).pop() !== 'keeper.js') continue;
+    const ws = argv[i + 1];
+    if (ws && argv[i + 3] === pidPathFor(ws)) return ws;
+  }
+  return null;
+}
+
+/**
+ * Classify keeper trees that are NOT the workspace's tracked (pid-file) keeper (#203). Victims: any
+ * keeper of an absent workspace other than the tracked one, and — for a LIVE workspace — every keeper
+ * other than the tracked one, but only when the tracked one is proven present in the scan. A live
+ * workspace's SOLE keeper is never a victim; no tracked keeper ⇒ nothing is reaped (cannot tell which
+ * to keep). Store not loaded from disk ⇒ refuse all. Classification is NOT authorization: the caller
+ * re-verifies identity + the tracked keeper at kill time.
+ */
+export function decideDuplicateReap(
+  keeperRoots: KeeperRoot[],
+  keeperProcs: KeeperProc[],
+  table: ProcSample[],
+  liveWorkspaceIds: Set<string>,
+  storeLoadedFromDisk: boolean,
+): ReapDecision {
+  if (!storeLoadedFromDisk) return { targets: [], refused: [], refusedStoreNotLoaded: true };
+  const targets: ReapTarget[] = [];
+  const refused: ReapRefusal[] = [];
+  const byWs = new Map<string, KeeperProc[]>();
+  for (const p of keeperProcs) byWs.set(p.workspaceId, [...(byWs.get(p.workspaceId) ?? []), p]);
+  for (const [ws, procs] of byWs) {
+    const live = liveWorkspaceIds.has(ws);
+    if (live && procs.length < 2) continue; // sole keeper of a live workspace — NEVER reap
+    const tracked = keeperRoots.find((r) => r.workspaceId === ws)?.keeperPid ?? null;
+    if (live) {
+      if (tracked === null) {
+        refused.push({ workspaceId: ws, reason: `no-tracked-keeper (${procs.length} keepers; cannot tell which to keep)` });
+        continue;
+      }
+      if (!procs.some((p) => p.pid === tracked)) {
+        refused.push({ workspaceId: ws, reason: `tracked-keeper-not-in-scan (pid ${tracked} is not a keeper argv)` });
+        continue;
+      }
+    }
+    for (const v of procs) {
+      if (v.pid === tracked) continue;
+      const tree = collectTree(v.pid, table);
+      if (tree.length === 0) continue;
+      const blind = tree.find((p) => p.startTicks === undefined);
+      if (blind) {
+        refused.push({ workspaceId: ws, reason: `identity-unverifiable (no start-time for pid ${blind.pid}; non-Linux sampler)` });
+        continue;
+      }
+      const members: ReapMember[] = tree.map((p) => ({ pid: p.pid, ppid: p.ppid, comm: p.comm, startTicks: p.startTicks as number }));
+      targets.push({
+        workspaceId: ws,
+        kind: live ? 'duplicate' : 'orphan-untracked',
+        trackedPid: tracked,
+        keeperPid: v.pid,
+        pids: members.map((m) => m.pid).reverse(),
+        members,
+      });
+    }
   }
   return { targets, refused, refusedStoreNotLoaded: false };
 }

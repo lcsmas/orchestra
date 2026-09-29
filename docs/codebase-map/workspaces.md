@@ -222,7 +222,14 @@ endpoint}` = agent lives in an always-on container, see
   except the store-remove + broadcast) so both `deleteWorkspace` and the bulk
   path share them. Its first act `forgetHibernationActivity(id)` also marks the
   id `isBeingDeleted` so the hibernation sweep skips it (delete/hibernate
-  serialization, #205).
+  serialization, #205); then **#201:** `stopStructuredSession(id)` —
+  awaited `sdkStopIfLive` (drops the in-memory session) + `killKeeper(id,
+  'workspace-deleted')` (kills a surviving keeper/CLI, sweeps its pid/sock) —
+  also run by `pruneOrphanedWorkspaces` (boot). It sits in the workspaces.ts
+  chokepoint, not api-handlers' fire-and-forget `sdkStopMany` (which skips a
+  session-less survivor and is bypassed by the CLI socket route
+  `dispatchDeleteWorkspaceRequest`). No session/keeper (hibernated, never
+  started) → instant no-op. Gate: `del_*` arms of `scripts/e2e-keeper-lifecycle.mjs`.
 - **Cascade:** archive/unarchive an orchestrator and its whole subtree moves
   with it. **`collectWorkspaceTree(id)`** `:517` gathers the root plus every
   transitively `parentId`-nested descendant (BFS, cycle-guarded); both

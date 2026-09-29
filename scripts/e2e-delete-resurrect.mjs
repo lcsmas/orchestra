@@ -167,7 +167,7 @@ if (ARM === 'store_stale_upsert') {
   delivery.registerSdkDelivery({
     hasSession: () => true, hasBackgroundTask: () => false,
     send: async () => {}, sendAwaitingStart: async () => 'started', start: async () => {},
-    stop: async (id) => { stops.push(id); },
+    stop: async (id, opts) => { if (opts?.hibernate) stops.push(id); },   // only the SWEEP's stop: the delete's own stop (#201) is legit
   });
   const ws = await createScratchWorkspace();
   const pre = { present: has(ws.id), dirExists: fs.existsSync(ws.worktreePath) };

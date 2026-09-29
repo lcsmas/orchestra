@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
+import { forbidKeeperLaunch, killKeeper } from './keeper-client';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import {
   sdkDeliver,
@@ -802,6 +803,14 @@ export async function unarchiveWorkspace(id: string): Promise<void> {
   }
 }
 
+/** #201: a delete stops the SDK session AND its keeper/CLI (awaited; killKeeper is a no-op when none
+ *  exists, so hibernated/never-started rows pass). Best-effort — a failed stop never blocks a delete. */
+async function stopStructuredSession(id: string): Promise<void> {
+  forbidKeeperLaunch(id); // sync, before any await: a racing wake must not launch a keeper for a dying workspace
+  await sdkStopIfLive(id).catch((e) => log.warn(`delete: session stop failed for ${id}`, e));
+  await killKeeper(id, 'workspace-deleted').catch((e) => log.warn(`delete: killKeeper failed for ${id}`, e));
+}
+
 /** Tear down everything a delete owns EXCEPT the store record and the renderer
  *  broadcast: stop PTYs, run the archive script, remove the worktree/dir, drop
  *  scrollback + inbox. Split out so bulk delete can reap N worktrees and then
@@ -812,6 +821,7 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   forgetWorkspaceProbes(id);
   forgetHibernationActivity(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
+  await stopStructuredSession(id);
   // Hard delete: stop agent, run user's archive script (best-effort), remove
   // the git worktree from disk, drop the scrollback log. Archive script runs
   // BEFORE worktree removal so it can still see the files / cwd.
@@ -980,6 +990,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
       if (tracked.has(ws.worktreePath)) continue; // still a live worktree
 
       // Orphaned: git no longer tracks this worktree. Tear the record down.
+      await stopStructuredSession(ws.id);
       stopPty(ws.id);
       stopPty(`${ws.id}:run`);
       stopPty(`${ws.id}:nvim`);

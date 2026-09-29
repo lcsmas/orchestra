@@ -209,7 +209,6 @@ import { installCliShim, installAgentCliShim } from './cli-shim';
 import {
   installKeeper,
   listLiveKeepers,
-  killKeeper,
   probeKeeper,
   setAppQuitting,
 } from './keeper-client';
@@ -236,7 +235,7 @@ import {
   stopSessionWatchdog,
   setBootWedgeRunResolver,
 } from './session-watchdog';
-import { startResourceMonitor, stopResourceMonitor } from './resource-monitor';
+import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -842,8 +841,9 @@ async function checkDependencies(): Promise<void> {
 // top of this module handles the command and exits the process.
 
 /** Startup keeper reconcile. Two jobs, one `listLiveKeepers()` walk:
- *  - Kill detached keepers whose workspace no longer exists in the store —
- *    deleted/archived while their turn outlived a previous app run.
+ *  - Reap keepers whose workspace no longer exists in the store (deleted while
+ *    their turn outlived a previous app run) and duplicate keepers of a live
+ *    workspace — `reapKeepersNow`, the same pass the 60 s monitor runs (#203).
  *  - For live keepers whose workspace DOES exist, probe (read-only — a probe
  *    frame never claims the client slot or attaches, so lazy reattach stays
  *    lazy) and, when a turn is genuinely in flight, restore the `running` dot
@@ -854,11 +854,9 @@ async function checkDependencies(): Promise<void> {
 async function reconcileKeepersAtStartup(): Promise<void> {
   try {
     for (const wsId of listLiveKeepers()) {
-      if (!store.getWorkspace(wsId)) {
-        log.info(`reaping orphan keeper for deleted workspace ${wsId}`);
-        void killKeeper(wsId);
-        continue;
-      }
+      // Absent-from-store keepers are reaped below by reapKeepersNow (store-loaded guard, identity
+      // re-verified, one log line per kill) — never by a bare killKeeper on an unverified store.
+      if (!store.getWorkspace(wsId)) continue;
       try {
         const probe = await probeKeeper(wsId);
         // `everStarted === false` = CLI wedged in session INIT (see KeeperProbe)
@@ -873,6 +871,7 @@ async function reconcileKeepersAtStartup(): Promise<void> {
   } catch (e) {
     log.warn('startup keeper reconcile failed', e);
   }
+  await reapKeepersNow().catch((e) => log.warn('startup keeper reap failed', e));
 }
 
 function shutdownSubsystems(): void {

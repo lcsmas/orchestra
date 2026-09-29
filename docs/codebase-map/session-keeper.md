@@ -14,8 +14,8 @@ completion, relaunch reattach + transcript, explicit-stop kill).
 | Piece | File | Role |
 |---|---|---|
 | Frame protocol + shutdown policy | `src/shared/keeper-protocol.ts` (+ `.test.ts`) | Newline-JSON frames (`hello`/`probe`/`spawn`/`stdin`/`stdinEnd`/`kill` → `helloAck`/`stdout`/`exit`/`err`, b64 payloads), line splitter, and the PURE linger/wedge state machine (`createKeeperState`, time injected). |
-| The daemon | `src/keeper/index.ts` → `dist-electron/keeper.js` (`vite.keeper.config.ts`, `build:keeper`) | Owns the CLI child; one claimed client at a time (`hello` claims + preempts — last wins; `probe` is read-only). Always drains stdout (discards while detached — the CLI's own transcript is the catch-up story). Only `stdinEnd`/`kill` terminate — BOTH via the shared `escalateKill` helper (stdinEnd: EOF → 10s → SIGTERM → 5s → SIGKILL; a `kill` frame: its signal now → 5s → SIGKILL, audit D5 — a CLI that ignores SIGTERM is never left alive); a bare socket drop is a detach. Cleans `<wsId>.sock/.pid` and exits when the child dies. Integration-tested in `src/keeper/keeper.test.ts` against a fake CLI. |
-| App-side client | `src/main/keeper-client.ts` | `installKeeper()` copies the bundle to `$ORCHESTRA_HOME/bin/keeper.js` at startup (a live keeper must not depend on the asar/AppImage mount after quit); `makeKeeperSpawn(wsId)` is the SDK `spawnClaudeCodeProcess` implementation (connect-or-launch behind a `SpawnedProcess` facade); `probeKeeper`/`killKeeper`/`listLiveKeepers`/`setAppQuitting`. Files live in `$ORCHESTRA_HOME/keepers/` (`<wsId>.sock/.pid/.log`). The keeper's `.log` tees the child's *bare* stderr but is swept when the keeper dies; the verbose per-session `--debug-file` capture that OUTLIVES workspace deletion lives separately under `logs/sessions/` (#177 — see `activity-pty-terminal.md`). |
+| The daemon | `src/keeper/index.ts` → `dist-electron/keeper.js` (`vite.keeper.config.ts`, `build:keeper`) | Owns the CLI child; one claimed client at a time (`hello` claims + preempts — last wins; `probe` is read-only). Always drains stdout (discards while detached — the CLI's own transcript is the catch-up story). Only `stdinEnd`/`kill` terminate — BOTH via the shared `escalateKill` helper (stdinEnd: EOF → 10s → SIGTERM → 5s → SIGKILL; a `kill` frame: its signal now → 5s → SIGKILL, audit D5 — a CLI that ignores SIGTERM is never left alive); a bare socket drop is a detach. Cleans `<wsId>.sock/.pid` and exits when the child dies — **only files it OWNS (#202)**: the pid file names the owner (`unlinkOwnedFiles`; sock `(ino,ctime)` fallback while no pid file exists), so a sibling that took the paths over is never orphaned. **Singleton start (#202):** bind FIRST — `EADDRINUSE` = someone owns the path; a live keeper answering a `probe` (3 tries; an unanswered connect counts as live — fail closed) → log + `exit(0)` touching NOTHING; only a provably stale socket is unlinked; the pid file is written after bind via tmp+rename. Integration-tested in `src/keeper/keeper.test.ts` against a fake CLI. |
+| App-side client | `src/main/keeper-client.ts` | `installKeeper()` copies the bundle to `$ORCHESTRA_HOME/bin/keeper.js` at startup (a live keeper must not depend on the asar/AppImage mount after quit); `makeKeeperSpawn(wsId)` is the SDK `spawnClaudeCodeProcess` implementation (connect-or-launch behind a `SpawnedProcess` facade); `probeKeeper`/`killKeeper`/`listLiveKeepers`/`setAppQuitting`. **#202:** `serializeKeeperOp(wsId, …)` runs the facade's connect-or-launch and `killKeeper` for ONE workspace strictly one at a time (N concurrent starts no longer each launch a daemon; a kill queued after a start kills it). `killKeeper(wsId, reason)` signals a pid-file pid ONLY when `keeperPidState` (argv read at signal time; `unknown` never signalled) says it is this workspace's keeper — a stale pid file after a reboot names a reused pid — and its post-kill `sweepStaleKeeperFiles` unlinks only files with no live owner (pid gone/other; nobody answering on the sock). One log line per kill: `keeper[<ws>] killing keeper (… pid=<P>, reason=<r>)`. **Delete race (A3 review F4):** `forbidKeeperLaunch(wsId)` (called first thing in `stopStructuredSession`) tombstones the workspace — the facade's serialized op then refuses (`workspace … was deleted — keeper start refused`), so a wake that raced the delete cannot launch a keeper nobody will kill. Files live in `$ORCHESTRA_HOME/keepers/` (`<wsId>.sock/.pid/.log`). The keeper's `.log` tees the child's *bare* stderr but is swept when the keeper dies; the verbose per-session `--debug-file` capture that OUTLIVES workspace deletion lives separately under `logs/sessions/` (#177 — see `activity-pty-terminal.md`). |
 
 ## The bridge facade (the load-bearing subtleties)
 
@@ -260,9 +260,11 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   - `ensureSession` is **start-coalesced** (`ensuring` map): a send racing
     the lazy reattach would otherwise pass the `sessions.get` check twice and
     spawn two rival query()/keeper clients.
-- Startup: `installKeeper()` before the window; `reapOrphanKeepers()` AFTER
+- Startup: `installKeeper()` before the window; `reconcileKeepersAtStartup()` AFTER
   `createMainWindow()` — the store loads in there, and reaping against an
-  unloaded store kills every legitimate keeper (E2E-caught bug).
+  unloaded store kills every legitimate keeper (E2E-caught bug). Its orphan/duplicate
+  reap is `reapKeepersNow()` (resource-monitor.ts — store-loaded guard, identity
+  re-verified, `resources.md`), never a bare `killKeeper` on `store.getWorkspace`.
   `startEventsSpool`'s wipe skips live keepers' spool files (events-spool.ts).
 
 ## Environment durability
@@ -364,6 +366,17 @@ times).
   through `scripts/.r2-register.mjs` because the module can't be imported bare
   under the strip-types runner (`./platform` dir-import).
 
+## One keeper per workspace (track A2, #201/#202/#203)
+
+Ledger #224; rig `scripts/e2e-keeper-lifecycle.mjs` (wrapper `src/main/keeper-lifecycle.test.ts`,
+`SUBJECT_REPO=<tree>` drives another tree — every arm marked `mustFailOnMaster` in the rig is RED on the pre-fix master). Field shape
+(2026-09-28): two keepers 1.5 s apart for one workspace, each with its own CLI, then the exiting one
+unlinked the shared sock/pid so the survivors were unreachable by `killKeeper`. Three cooperating fixes:
+(1) client per-ws serialization + owned-only sweep (this file, Pieces), (2) daemon singleton start +
+owned-only cleanup, (3) the reaper's duplicate pass (`resources.md`). The **tracked keeper** = the
+pid-file keeper (written only by the keeper that owns the socket). Not pinned by a deterministic arm:
+`listLiveKeepers` still prunes a stale pid file's sock unconditionally (microsecond window vs a successor's bind).
+
 ## Kill/quit semantics
 
 | Scenario | Outcome |
@@ -373,7 +386,8 @@ times).
 | Keeper crash | facade emits synthetic exit (−1) → consume() ledger close; resume-by-id recovers |
 | CLI crash | attached: `exit` frame → existing error path; detached: keeper cleans up, relaunch resumes |
 | Turn ends detached | linger → graceful exit; relaunch = plain resume + backfill |
-| Workspace deleted while closed | startup orphan reap (+ linger bounds it anyway) |
+| Workspace deleted (app running) | `teardownWorkspace`/`pruneOrphanedWorkspaces` → `stopStructuredSession` (#201): session stopped + `killKeeper` awaited, files swept |
+| Workspace deleted while closed / duplicate keepers | startup `reapKeepersNow` + the 60 s monitor sweep (#203; +linger bounds it anyway) |
 | `orchestra restart` (issue #111, structured branch) | `sdkRestart(wsId,{fresh,trigger?})` in `agent-sdk.ts` — default = `sdkStop`→`killKeeper`→`ensureSession` (same teardown+respawn recipe as `sdkMcpRefresh`, resumes `sdkSessionId` → same transcript); `--fresh` = `sdkClear` (vierge). Composes existing exports only, no change to `sdkStop`/`consume` (issue #124 boundary). The CLI/socket wiring + PTY-mode branch live in `main/restart-workspace.ts` / `shared/restart-mode.ts` — see `hooks-cli-socket.md`. **#228: a stopped legacy terminal-only workspace (`hasInput`, no `sdkSessionId`) is NOT routed to `sdkRestart` directly (it would resume nothing) — the classifier's `wake` mode calls `sdkWakeRestart`, which runs `adoptTerminalTranscript` (shared with `sdkWake`) first, then `sdkRestart`.** **#148: before tearing down, `sdkRestart` sets `session.restartRequested` (the intent marker) and records a `Workspace.sdkRestarts` entry, so the exit(-1) the teardown makes the keeper synthesize is rendered as a NEUTRAL restart row (not the red error box) both live and on backfill — see `structured-agent-view.md`.** **#179: the mid-turn refusal is now `decideRestartGuard` (`shared/resume-guard.ts`), not a bare `turnGate!==null` throw — a session that has never emitted a stream message (`firstMessageSeen===false`, a boot-wedged opening turn) is INTERRUPTIBLE: `sdkRestart` tears it down and redelivers the opening prompt via `recoverPendingPrompts` (the #174 seam, exactly once), converging instead of refusing forever (the field ~27s loop). A genuinely working session — `turnGate` held AND `firstMessageSeen===true` — is still politely refused.** |
 
 ### #178 — never-started restart starts FRESH (no phantom resume)
