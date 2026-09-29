@@ -345,8 +345,7 @@ async function killStopped() {
   const imm = { keeperAlive: alive(k1.keeperPid), files: filesLeft(WS) };
   await sleep(2000);
   const late = { keeperAlive: alive(k1.keeperPid), files: filesLeft(WS) };
-  await kc.sweepStaleKeeperFiles(WS);
-  late.filesAfterSecondSweep = filesLeft(WS);
+  if (kc.sweepStaleKeeperFiles) { await kc.sweepStaleKeeperFiles(WS); late.filesAfterSecondSweep = filesLeft(WS); }
   try { process.kill(k1.cliPid, 'SIGKILL'); } catch {}
   Object.assign(result, { killMs, imm, late });
   result.ok = imm.files.length === 0 && late.files.length === 0;
