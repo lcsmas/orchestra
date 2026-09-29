@@ -507,30 +507,42 @@ changes, never on an out-of-band respawn).
 Boots a BUILT app (`<app-dir>` argument — point the SAME rig at a pre-change and a candidate
 build) under its own headless sway and reports (1) the rendered workspace tab labels
 (`.toolbar .tabs .tab` DOM) and (2) the live PTY sessions by kind (`sampleResources()`, see
-[resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (pins the account
-from the invoker's `${CLAUDE_CONFIG_DIR:-~/.claude}`, rig dir on btrfs under `~` via
-`E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
+[resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (rig dir on btrfs under
+`~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`; keeps the newest 5 rig dirs); `.mjs` = driver. Run:
 `scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
-(`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor).
-- **Modes** — every arm holds both expectations in `EXPECT` (`.mjs` :40): `baseline` = today
+(`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). Not covered: nvim/login PTYs.
+- **Modes** — every arm holds both expectations in `EXPECT` (`.mjs` :52): `baseline` = today
   (tabs `Raw·Run·Structured·Diff`, opening Raw creates an agent-kind PTY) is green on master
   and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
-  PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`.
-- **Arms** (`ARMS` :443): `guard_selftest` (isolation guard refuses wayland-1 / sibling display /
-  X11 `DISPLAY`, naming the clause), `pixel_selftest` (PNG decoder + painted-vs-blank
-  predicate), `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`, `agent_view_content`
-  (events injected through `__injectAgentEvent`, rows asserted visible, screenshot read back
-  off disk and asserted on DECODED pixels vs a hidden-rows blank frame, plus a `grim` capture).
-  Every clause prints `PASS|FAIL <arm>/<clause> — detail`; a final `RIG-RESULT` line is the
-  terminator (rc 0 all pass · 1 a clause failed · 2 harness/usage).
-- **Guards** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
-  target URL must contain `<app-dir>`, never `app.asar`) before any clause, then proves isolation
-  by reading the RUNNING child's `/proc/<pid>/environ` (WAYLAND_DISPLAY == the rig's marker-verified
-  socket, != wayland-1, no DISPLAY), its pid in MY sway's `get_tree`, and `ORCHESTRA_HOME` on
-  non-tmpfs. `noAgentPty` (:437) REFUSES any "no agent PTY" claim unless the Run-tab positive
-  control fired in the same boot (`--broken-control` seeds no Run script to prove it).
-- **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause
-  asserts the agent PTY's cmdline is the stub. NOT covered here: nvim/login PTYs (later arms).
+  PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`. A clause
+  that cannot measure in a mode prints `SKIP` (counted apart), so `clauses=` is comparable across modes.
+- **Arms** (`ARMS` :567): no-boot self-tests `guard_selftest` (isolation guard), `pixel_selftest` (PNG
+  decoder + painted-vs-blank predicate), `live_guard_selftest`, `refuse_live_handoff`, `gate_selftest`;
+  boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`, `agent_view_content` (events
+  injected via `__injectAgentEvent`, rows asserted visible, screenshot read back off disk and asserted on
+  DECODED pixels of the rows' own region vs a hidden-rows blank frame, plus a `grim` capture). Every clause
+  prints `PASS|FAIL|SKIP <arm>/<clause> — detail`; a final `RIG-RESULT` line is the terminator (rc 0 all
+  pass · 1 a clause failed · 2 harness/usage).
+- **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
+  target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
+  (`distFreshness` :500) REFUSES a `dist/` older than `src/` or `package.json` (`--allow-stale` overrides).
+- **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
+  account-inherit sync; under the rig's fake `HOME` its source `~/.claude` is missing, so it UNLINKS every
+  inherited link / MCP server in whatever `configDir` the seeded account names — the first version pinned
+  the invoker's live `~/.claude-mc` and stripped it on 46+ boots. Each boot now seeds `<home>/claude-config`
+  (stub `claude`, no login); `checkHandOff` (:287) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
+  / every seeded `configDir` and REFUSES (named) if any is outside the boot home or is/overlaps `~/.claude`,
+  a `~/.claude-*` sibling, the invoker's `$CLAUDE_CONFIG_DIR` or the real home (`refuse_live_handoff` proves
+  it before any launch); `liveSnapshot` (:263) asserts those dirs' inheritance surface is identical
+  before/after every boot. A later arm that needs a login must COPY `.credentials.json` into the scratch dir.
+- **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
+  == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
+  tmpfs). `noAgentPty` (:550) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
+  that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
+- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted
+  (`app.log` + screenshots kept); a FAILED arm keeps everything for forensics.
+- **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause asserts the
+  agent PTY's cmdline is the stub.
 
 ## Session hibernation — hibernation.ts / hibernation-activity.ts / shared/hibernation.ts
 

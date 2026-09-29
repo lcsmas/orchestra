@@ -10,7 +10,7 @@
 //       -> `classifyPtyId`). Already script-readable through the preload bridge, so NO new
 //       exposure was added. Keeper-hosted SDK sessions are NOT PTYs and never appear there.
 //
-// Run through the wrapper (own sway, env -i allowlist, pinned account, btrfs base):
+// Run through the wrapper (own sway, env -i allowlist, SCRATCH account dir, btrfs base):
 //   scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list] [--broken-control]
 //   (`pnpm run test:agent-view-removal`; --broken-control = self-test knob, see below.)
 //
@@ -27,6 +27,18 @@
 // fired in the SAME boot (a listing that cannot see PTYs proves nothing). Every boot prints
 // IDENTITY (running version + loaded bundle md5) and proves isolation (own compositor,
 // own ORCHESTRA_HOME, never wayland-1) before any arm asserts.
+//
+// THE ACCOUNT IS A SCRATCH DIR, NEVER THE INVOKER'S LIVE ONE (review F1 on #225, MEASURED): the app
+// boot runs account-inherit sync, and under this rig's fake HOME its source `~/.claude` is missing,
+// so it UNLINKED every inherited link / MCP server of whatever configDir the seeded account named —
+// the invoker's live ~/.claude-mc. Each boot now seeds `<home>/claude-config` (fresh, stub claude,
+// no login needed); `checkScratchConfig` refuses anything else before launch, and every boot
+// asserts the live config dirs' inheritance surface is byte-identical before/after (`liveSnapshot`).
+// A later arm that needs a real login must COPY `.credentials.json` into the scratch dir.
+// Also: `identity/dist-fresh` REFUSES a dist/ older than src/ or package.json (`--allow-stale` overrides, loudly);
+// a clause that cannot measure in a mode prints SKIP (counted apart, `clauses=` stays comparable across modes);
+// retention = a PASSED arm's bulky state is deleted (app.log + screenshots kept), a FAILED arm keeps everything,
+// and the wrapper keeps only the newest 5 rig dirs.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -58,6 +70,8 @@ const LIST = argv.includes('--list');
 // SELF-TEST knob: seed a repo with NO Run script, so the Run-tab control cannot make a PTY appear
 // and every "no agent PTY" assertion must be REFUSED (proves the gate is load-bearing).
 const BROKEN_CONTROL = argv.includes('--broken-control');
+// Escape hatch for a deliberately stale dist/ (default: a dist/ older than src/ is REFUSED — F2).
+const ALLOW_STALE = argv.includes('--allow-stale');
 const positional = argv.filter((a, i) => !a.startsWith('--') && !['--mode', '--arm'].includes(argv[i - 1]));
 const APP_DIR = positional[0] ? fs.realpathSync(positional[0]) : null;
 if (!['baseline', 'after'].includes(MODE)) { console.error(`bad --mode ${MODE} (baseline|after)`); process.exit(2); }
@@ -82,6 +96,12 @@ function makeCtx(arm) {
       RESULTS.push({ arm, clause: name, ok: !!ok, detail });
       console.log(`${ok ? 'PASS' : 'FAIL'}  ${arm}/${name}${detail ? ' — ' + detail : ''}`);
       return !!ok;
+    },
+    /** A clause that CANNOT measure in this mode/build: printed as SKIP with the reason, counted apart
+     *  from pass/fail so `clauses=` stays comparable across modes (F3). Never a PASS on a constant. */
+    skip(name, reason) {
+      RESULTS.push({ arm, clause: name, ok: true, skip: true, detail: reason });
+      console.log(`SKIP  ${arm}/${name} — ${reason}`);
     },
     note(line) { console.log(`      ${arm}: ${line}`); },
   };
@@ -207,7 +227,7 @@ const RIG = {
   wayland: process.env.RIG_WAYLAND ?? '',
   swaysock: process.env.SWAYSOCK ?? '',
   base: process.env.ORCHESTRA_HOME ?? '',          // the rig's `oh`; each boot gets a subdir
-  cfg: process.env.CLAUDE_CONFIG_DIR ?? '',        // pinned from the INVOKING agent's login
+  liveCfg: process.env.CLAUDE_CONFIG_DIR ?? '',    // the INVOKER's live dir: a dir to PROTECT, never to use
   rigDir: process.env.RIG_DIR ?? '',
 };
 const REAL_HOME = os.userInfo().homedir;
@@ -221,9 +241,63 @@ async function freePort() {
   });
 }
 
+/** The scratch account dir must live inside this boot's home and never be, contain or sit
+ *  under a live config dir. Pure, so live_guard_selftest drives the shipped function. */
+function checkScratchConfig(configDir, live, home, { allowHome = false } = {}) {
+  const rp = (x) => { try { return fs.realpathSync(x); } catch { return path.resolve(x); } };
+  const c = rp(configDir);
+  if (c === rp(REAL_HOME)) return { ok: false, clause: 'is-real-home', detail: `${configDir} IS the invoker's real home ${REAL_HOME}` };
+  for (const l of live.filter(Boolean)) {
+    const lr = rp(l);
+    if (c === lr) return { ok: false, clause: 'is-live-config', detail: `${configDir} IS the live config dir ${l}` };
+    if (c.startsWith(lr + path.sep) || lr.startsWith(c + path.sep)) return { ok: false, clause: 'overlaps-live-config', detail: `${configDir} overlaps live ${l}` };
+  }
+  if (allowHome && c === rp(home)) return { ok: true, clause: 'scratch-config', detail: configDir };
+  if (!c.startsWith(rp(home) + path.sep)) return { ok: false, clause: 'outside-boot-home', detail: `${configDir} is not under this boot's home ${home}` };
+  return { ok: true, clause: 'scratch-config', detail: configDir };
+}
+/** What the app's account-inherit sync can rewrite in a config dir: symlinks (top level + skills/),
+ *  the managed file names, the manifest, and the mcpServers KEY set of .claude.json. Volatile
+ *  files (history, sessions, projects) are deliberately outside it — the invoker's own claude
+ *  writes those while a rig runs. */
+function liveSnapshot(dir) {
+  const snap = { dir, exists: fs.existsSync(dir), links: [], managed: [], manifest: null, mcp: null };
+  if (!snap.exists) return JSON.stringify(snap);
+  for (const sub of ['', 'skills']) {
+    let ents = [];
+    try { ents = fs.readdirSync(path.join(dir, sub)); } catch { /* absent */ }
+    for (const n of ents.sort()) {
+      const f = path.join(dir, sub, n);
+      try { if (fs.lstatSync(f).isSymbolicLink()) snap.links.push(`${path.join(sub, n)} -> ${fs.readlinkSync(f)}`); } catch { /* raced */ }
+    }
+  }
+  for (const n of ['CLAUDE.md', 'settings.json', 'LESSONS.md']) if (fs.existsSync(path.join(dir, n))) snap.managed.push(n);
+  try { snap.manifest = fs.readFileSync(path.join(dir, '.orchestra-inherited.json'), 'utf8'); } catch { /* none */ }
+  try { snap.mcp = Object.keys(JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8')).mcpServers ?? {}).sort(); } catch { snap.mcp = 'unreadable'; }
+  return JSON.stringify(snap);
+}
+/** Every config dir a boot must never touch: the invoker's $CLAUDE_CONFIG_DIR, ~/.claude, and every ~/.claude-* sibling. */
+const liveDirs = () => {
+  const s = new Set([RIG.liveCfg, path.join(REAL_HOME, '.claude')].filter(Boolean));
+  try { for (const n of fs.readdirSync(REAL_HOME)) if (n.startsWith('.claude-') && fs.statSync(path.join(REAL_HOME, n)).isDirectory()) s.add(path.join(REAL_HOME, n)); } catch { /* unreadable home */ }
+  return [...s].filter((d) => fs.existsSync(d));
+};
+/** Resolve EVERY path the app is handed (HOME, CLAUDE_CONFIG_DIR, XDG_*, ORCHESTRA_HOME, each seeded
+ *  account's configDir) and REFUSE — named — if any is outside the boot home or is/overlaps a live dir. */
+function checkHandOff(env, accounts, home) {
+  const vars = { HOME: env.HOME, CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME: env.XDG_CONFIG_HOME, XDG_CACHE_HOME: env.XDG_CACHE_HOME, ORCHESTRA_HOME: env.ORCHESTRA_HOME };
+  accounts.forEach((a, i) => { vars[`accounts[${i}].configDir`] = a.configDir; });
+  for (const [k, v] of Object.entries(vars)) {
+    if (!v) return { ok: false, clause: `handoff:${k}:unset`, detail: `${k} is not set — the app would fall back to a default under the real home` };
+    const r = checkScratchConfig(v, liveDirs(), home, { allowHome: k === 'ORCHESTRA_HOME' });
+    if (!r.ok) return { ok: false, clause: `handoff:${k}:${r.clause}`, detail: r.detail };
+  }
+  return { ok: true, clause: 'handoff-scratch', detail: `${Object.keys(vars).length} paths all inside ${home}` };
+}
+
 /** Seed: a real git repo + registered worktree (prune deletes what it cannot verify), the
  *  repo's Run script, the PINNED account, and a stub `claude` that never touches the API. */
-function seedWorld(home) {
+function seedWorld(home, opt = {}) {
   const fakeHome = path.join(home, 'home');
   const repoDir = path.join(home, 'repo'), wtDir = path.join(home, 'wt', 'avr-1');
   fs.mkdirSync(fakeHome, { recursive: true }); fs.mkdirSync(repoDir, { recursive: true });
@@ -235,8 +309,10 @@ function seedWorld(home) {
   const listed = git(repoDir, ['worktree', 'list', '--porcelain'], fakeHome);
   if (!listed.includes(`worktree ${fs.realpathSync(wtDir)}`)) throw new Error(`seed worktree not registered:\n${listed}`);
 
-  if (!RIG.cfg || !fs.existsSync(RIG.cfg)) throw new Error(`pinned config dir missing: '${RIG.cfg}'`);
-  const account = { id: 'rig-avr', label: `rig (${RIG.cfg})`, configDir: RIG.cfg };
+  const configDir = opt.configDir ?? path.join(home, 'claude-config'); if (!opt.configDir) fs.mkdirSync(configDir, { recursive: true });
+  const cfgGuard = checkScratchConfig(configDir, liveDirs(), home);
+  if (!cfgGuard.ok) throw new Error(`REFUSED before seeding [${cfgGuard.clause}]: ${cfgGuard.detail}`);
+  const account = { id: 'rig-avr', label: 'rig (scratch config dir)', configDir };
   const ws = {
     id: 'ws-avr-1', name: 'avr-1', repoPath: repoDir, worktreePath: wtDir, branch: 'e2e/avr-1',
     baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id,
@@ -252,13 +328,13 @@ function seedWorld(home) {
   return { fakeHome, repoDir, wtDir, ws, account, stubDir, stub, storeFile: path.join(dir, 'store.json') };
 }
 
-async function bootApp(arm) {
+async function bootApp(arm, opt = {}) {
   if (!APP_DIR) throw new Error('no <app-dir> given');
   const missing = ['RIG_WAYLAND', 'SWAYSOCK', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR'].filter((k) => !process.env[k]);
   if (missing.length) throw new Error(`not launched via scripts/e2e-agent-view-removal.sh (missing ${missing.join(', ')})`);
   const home = path.join(RIG.base, `${arm}-${Date.now().toString(36)}`);
   fs.mkdirSync(home, { recursive: true });
-  const world = seedWorld(home);
+  const world = seedWorld(home, opt);
   const port = await freePort();
   const electron = process.env.E2E_ELECTRON
     ?? [path.join(APP_DIR, 'node_modules/electron/dist/electron'), path.join(path.dirname(new URL(import.meta.url).pathname), '../node_modules/electron/dist/electron')].find((p) => fs.existsSync(p));
@@ -272,29 +348,36 @@ async function bootApp(arm) {
     WAYLAND_DISPLAY: RIG.wayland, SWAYSOCK: RIG.swaysock, LANG: 'C.UTF-8',
     ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: home, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true',
-    CLAUDE_CONFIG_DIR: RIG.cfg,
+    CLAUDE_CONFIG_DIR: world.account.configDir,
+    ...(opt.env ?? {}),
   };
   const pre = checkChildEnv(env, RIG.wayland);
   if (!pre.ok) throw new Error(`REFUSED before launch [${pre.clause}]: ${pre.detail}`);
+  const hand = checkHandOff(env, [world.account], home);
+  if (!hand.ok) throw new Error(`REFUSED before launch [${hand.clause}]: ${hand.detail}`);
 
+  const liveBefore = Object.fromEntries(liveDirs().map((d) => [d, liveSnapshot(d)]));
   const log = fs.openSync(path.join(home, 'app.log'), 'w');
   const child = spawn(electron, [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', log, log] });
-  const app = { arm, home, port, child, pid: child.pid, env, world, electron, cdp: null, exited: false };
+  const app = { arm, home, port, child, pid: child.pid, env, world, electron, liveBefore, cdp: null, exited: false };
   child.on('exit', () => { app.exited = true; });
-
-  const targets = await waitFor(`CDP target on :${port}`, async () => {
-    if (app.exited) throw new Error(`electron exited early (see ${home}/app.log)`);
-    try {
-      const j = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-      const t = j.filter((x) => x.type === 'page' && x.url.includes('dist/index.html'));
-      return t.length ? t : null;
-    } catch { return null; }
-  }, 30000, 300);
-  app.target = targets[0];
-  app.cdp = await Cdp.connect(app.target.webSocketDebuggerUrl);
-  await app.cdp.send('Page.enable');
-  // the renderer must have mounted the toolbar (a workspace is active) before anything asserts
-  return Object.assign(app, appApi(app));
+  try {
+    const targets = await waitFor(`CDP target on :${port}`, async () => {
+      if (app.exited) throw new Error(`electron exited early (see ${home}/app.log)`);
+      try {
+        const j = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+        const t = j.filter((x) => x.type === 'page' && x.url.includes('dist/index.html'));
+        return t.length ? t : null;
+      } catch { return null; }
+    }, 30000, 300);
+    app.target = targets[0];
+    app.cdp = await Cdp.connect(app.target.webSocketDebuggerUrl);
+    await app.cdp.send('Page.enable');
+    return Object.assign(app, appApi(app));
+  } catch (e) {
+    await appApi(app).close(); // a half-booted app must never outlive the failure
+    e.app = app; throw e;
+  }
 }
 
 function appApi(app) {
@@ -401,10 +484,40 @@ async function identityAndIsolation(ctx, app) {
     } catch { return null; }
   }, 20000, 500).catch(() => false);
   ctx.clause('isolation/window-in-my-sway', inSway, `app pid ${app.pid} in get_tree of SWAYSOCK=${RIG.swaysock}`);
-  ctx.clause('isolation/pinned-account', app.world.ws.accountId === app.world.account.id && app.world.account.configDir === RIG.cfg,
-    `ws.accountId=${app.world.ws.accountId} account.id=${app.world.account.id} configDir=${app.world.account.configDir}`);
+  const scratch = checkScratchConfig(app.world.account.configDir, liveDirs(), app.home);
+  ctx.clause(`isolation/${scratch.clause}`, scratch.ok && app.world.ws.accountId === app.world.account.id && live.CLAUDE_CONFIG_DIR === app.world.account.configDir,
+    `seeded configDir=${app.world.account.configDir} child CLAUDE_CONFIG_DIR(read back)=${live.CLAUDE_CONFIG_DIR} live dirs protected=${liveDirs().join(',')}`);
 }
 
+/** After teardown: the invoker's live config dirs must be exactly as before the boot (review F1). */
+function liveCheck(ctx, app) {
+  const changed = liveDirs().filter((d) => liveSnapshot(d) !== app.liveBefore[d]);
+  ctx.clause('isolation/live-config-untouched', changed.length === 0,
+    changed.length ? `CHANGED: ${changed.map((d) => `${d}\n  before=${app.liveBefore[d]}\n  after =${liveSnapshot(d)}`).join('\n')}` : `inheritance surface identical before/after for ${liveDirs().join(', ')}`);
+}
+/** Build freshness (review F2): identity/version compares the app with the SAME package.json, so it
+ *  cannot see a stale dist/. A src file (or package.json) newer than the OLDEST build artifact = stale. */
+function distFreshness() {
+  const walk = (d, out = []) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name === 'node_modules') continue;
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f, out); else if (!/\.test\.ts$/.test(e.name)) out.push(f);
+    }
+    return out;
+  };
+  const srcDir = path.join(APP_DIR, 'src');
+  if (!fs.existsSync(srcDir)) return { ok: false, detail: 'no src/ under <app-dir> — cannot prove dist/ is fresh (checkout builds only)' };
+  const srcFiles = [...walk(srcDir), ...['package.json', 'index.html', 'vite.config.ts'].map((f) => path.join(APP_DIR, f)).filter((f) => fs.existsSync(f))];
+  const newest = srcFiles.map((f) => ({ f, t: fs.statSync(f).mtimeMs })).reduce((a, b) => (b.t > a.t ? b : a));
+  const sid = staticIdentity();
+  const arts = [path.join(APP_DIR, 'dist/index.html'), path.join(APP_DIR, 'dist-electron/main.js'), path.join(APP_DIR, 'dist-electron', sid.chunk ?? 'main.js'),
+    ...sid.rendererFiles.map((x) => path.join(APP_DIR, 'dist/assets', x.split(':')[0]))].filter((f) => fs.existsSync(f));
+  const oldest = arts.map((f) => ({ f, t: fs.statSync(f).mtimeMs })).reduce((a, b) => (b.t < a.t ? b : a));
+  const ok = newest.t <= oldest.t;
+  const rel = (f) => path.relative(APP_DIR, f);
+  return { ok, detail: `newest source ${rel(newest.f)} @${new Date(newest.t).toISOString()} ${ok ? '<=' : '> NEWER THAN'} oldest build artifact ${rel(oldest.f)} @${new Date(oldest.t).toISOString()}${ok ? '' : ' — dist/ is STALE: rebuild (npx vite build) or pass --allow-stale'}` };
+}
 /** The seeded workspace is auto-activated at boot; wait until its toolbar tabs are rendered. */
 async function ready(app) {
   await waitFor('toolbar tabs rendered', async () => (await app.tabs()).length > 0, 30000, 300).catch(async (e) => {
@@ -434,10 +547,21 @@ async function runControl(ctx) {
   return fired;
 }
 /** A "no agent PTY" claim: REFUSED unless the positive control fired in this boot. */
-function noAgentPty(ctx, name, ps) {
+function noAgentPty(ctx, name, ps, already = new Set()) {
   if (!ctx.controls.run) return ctx.clause(name, false, 'REFUSED: Run-tab positive control did not fire in this boot — the listing is unproven');
-  const agent = ps.filter((p) => p.kind === 'agent');
-  return ctx.clause(name, agent.length === 0, `agent-kind PTYs=${agent.length} (${fmtP(ps)})`);
+  // `already` = agent PTYs that existed BEFORE the step under test (V1: a per-tab claim is about what THAT tab created).
+  const created = ps.filter((p) => p.kind === 'agent' && !already.has(p.ptyId));
+  return ctx.clause(name, created.length === 0, `agent-kind PTYs created by this step=${created.length}${already.size ? ` (pre-existing ${[...already].join(',')} excluded)` : ''} (${fmtP(ps)})`);
+}
+
+/** Retention (F4): a boot whose arm fully PASSED drops its bulky state (profile, repo, worktree, scratch
+ *  config) and keeps `app.log` + screenshots; an arm with ANY FAIL/HARNESS-ERROR keeps everything for forensics.
+ *  The wrapper additionally keeps only the newest 5 rig dirs. */
+function retain(ctx, app) {
+  if (!app?.home || !app.home.startsWith(RIG.base + path.sep)) return;
+  if (!RESULTS.filter((r) => r.arm === ctx.arm).every((r) => r.ok)) { console.log(`RETAIN    ${app.home} kept whole for forensics (arm ${ctx.arm} has a FAIL)`); return; }
+  for (const d of ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin']) fs.rmSync(path.join(app.home, d), { recursive: true, force: true });
+  console.log(`RETAIN    ${app.home}: arm ${ctx.arm} PASSED — state deleted, kept app.log + screenshots`);
 }
 
 const ARMS = [
@@ -500,6 +624,94 @@ const ARMS = [
     },
   },
   {
+    name: 'live_guard_selftest', boots: false, ticket: '#225',
+    doc: 'the live-config protections can FAIL: the scratch-dir refusal names its clause; the before/after snapshot flags every inheritance rewrite and ignores unrelated writes',
+    async run(ctx) {
+      const root = fs.mkdtempSync(path.join(REAL_HOME, '.cache', 'avr-live-selftest-'));
+      try {
+        const mk = (p, c = '') => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, c); return p; };
+        const live = path.join(root, 'live'), home = path.join(root, 'boot-home'), other = path.join(root, 'elsewhere');
+        for (const d of [live, path.join(live, 'sub'), home, other]) fs.mkdirSync(d, { recursive: true });
+        const g = (cfg) => checkScratchConfig(cfg, [live], home);
+        const scratch = path.join(home, 'claude-config'); fs.mkdirSync(scratch, { recursive: true });
+        const cases = [
+          [live, 'is-live-config', false], [path.join(live, 'sub'), 'overlaps-live-config', false], [root, 'overlaps-live-config', false],
+          [other, 'outside-boot-home', false], [scratch, 'scratch-config', true],
+        ];
+        for (const [cfg, want, ok] of cases) { const r = g(cfg); ctx.clause(`scratch-guard:${want}${ok ? '' : ':refused'}`, r.ok === ok && r.clause === want, `configDir=${path.relative(root, cfg) || '.'} -> ok=${r.ok} clause=${r.clause}`); }
+        // a live-like config dir: 2 symlinks (one under skills/), a manifest, .claude.json with mcpServers
+        const glob = path.join(root, 'global');
+        mk(path.join(glob, 'settings.json'), '{}'); mk(path.join(glob, 'x', 'SKILL.md'), 'x');
+        const setup = () => {
+          fs.rmSync(live, { recursive: true, force: true }); fs.mkdirSync(path.join(live, 'skills'), { recursive: true });
+          fs.symlinkSync(path.join(glob, 'settings.json'), path.join(live, 'settings.json'));
+          fs.symlinkSync(path.join(glob, 'x'), path.join(live, 'skills', 'x'));
+          mk(path.join(live, '.orchestra-inherited.json'), '{"symlinks":["settings.json","skills/x"],"mcpServers":["a"]}');
+          mk(path.join(live, '.claude.json'), JSON.stringify({ numStartups: 1, mcpServers: { a: {}, b: {} } }));
+        };
+        setup(); const S0 = liveSnapshot(live);
+        ctx.clause('snapshot-stable-when-untouched', liveSnapshot(live) === S0, 'two reads of an untouched dir agree (no spurious diff)');
+        mk(path.join(live, '.claude.json'), JSON.stringify({ numStartups: 99, mcpServers: { a: {}, b: {} }, projects: { p: 1 } })); mk(path.join(live, 'history.jsonl'), 'x'); mk(path.join(live, 'sessions', 's.json'), '{}');
+        ctx.clause('snapshot-ignores-unrelated-writes', liveSnapshot(live) === S0, 'numStartups/projects/history/sessions changed -> same snapshot (the invoker\'s own claude writes these)');
+        const mutants = [
+          ['unlink-top-level-symlink', () => fs.unlinkSync(path.join(live, 'settings.json'))],
+          ['unlink-skills-symlink', () => fs.unlinkSync(path.join(live, 'skills', 'x'))],
+          ['rewrite-manifest', () => mk(path.join(live, '.orchestra-inherited.json'), '{"symlinks":[],"mcpServers":[]}')],
+          ['drop-mcp-server', () => mk(path.join(live, '.claude.json'), JSON.stringify({ mcpServers: { b: {} } }))],
+        ];
+        for (const [name, mutate] of mutants) { setup(); const base = liveSnapshot(live); mutate(); ctx.clause(`snapshot-detects:${name}`, liveSnapshot(live) !== base, `${name} -> snapshot changed`); }
+      } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    },
+  },
+  {
+    name: 'refuse_live_handoff', boots: false, ticket: '#225',
+    doc: 'must-FAIL: a boot that would be handed the invoker\'s live config dir, ~/.claude, a ~/.claude-* sibling, the real HOME or a path outside the boot home is REFUSED (named) BEFORE any launch; nothing spawns and the live dirs are untouched',
+    async run(ctx) {
+      const before = Object.fromEntries(liveDirs().map((d) => [d, liveSnapshot(d)]));
+      // discovered independently of liveDirs(), so a defect in liveDirs() cannot hide the sibling case behind a SKIP
+      const sib = fs.readdirSync(REAL_HOME).filter((n) => n.startsWith('.claude-')).map((n) => path.join(REAL_HOME, n)).find((d) => d !== RIG.liveCfg && fs.statSync(d).isDirectory());
+      const outside = fs.mkdtempSync(path.join(REAL_HOME, '.cache', 'avr-outside-'));
+      const cases = [
+        ['invoker-config-dir', { configDir: RIG.liveCfg }, 'is-live-config'],
+        ['home-dot-claude', { configDir: path.join(REAL_HOME, '.claude') }, 'is-live-config'],
+        ['sibling-dot-claude-star', sib ? { configDir: sib } : null, 'is-live-config'],
+        ['real-home-as-HOME', { env: { HOME: REAL_HOME } }, 'handoff:HOME:is-real-home'],
+        ['outside-boot-home', { configDir: outside }, 'outside-boot-home'],
+      ];
+      try {
+        for (const [name, opt, want] of cases) {
+          if (!opt) { ctx.skip(`refused:${name}`, 'no such directory on this machine'); continue; }
+          let msg = '';
+          try { const app = await bootApp(`refuse-${name}`, opt); await app.close(); msg = 'BOOTED (no refusal)'; } catch (e) { msg = e.message; }
+          const m = msg.match(/^REFUSED before (seeding|launch) \[([^\]]+)\]/);
+          const dirs = fs.readdirSync(RIG.base).filter((d) => d.startsWith(`refuse-${name}-`));
+          const spawned = dirs.some((d) => fs.existsSync(path.join(RIG.base, d, 'app.log')));
+          ctx.clause(`refused:${name}`, !!m && m[2].includes(want) && !spawned, `${m ? `REFUSED before ${m[1]} [${m[2]}]` : msg.slice(0, 120)} (want clause ${want}); app.log created=${spawned}`);
+        }
+        const ok = checkHandOff({ HOME: '/x/home', CLAUDE_CONFIG_DIR: '/x/cfg', XDG_CONFIG_HOME: '/x/c', XDG_CACHE_HOME: '/x/k', ORCHESTRA_HOME: '/x' }, [{ configDir: '/x/cfg' }], '/x');
+        ctx.clause('positive-control:scratch-handoff-accepted', ok.ok, `an all-inside-boot-home hand-off is accepted (${ok.clause}) — the guard is not a constant refusal`);
+      } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+      const changed = liveDirs().filter((d) => liveSnapshot(d) !== before[d]);
+      ctx.clause('live-dirs-untouched', changed.length === 0, changed.length ? `CHANGED ${changed.join(',')}` : `identical for ${liveDirs().join(', ')}`);
+    },
+  },
+  {
+    name: 'gate_selftest', boots: false, ticket: '#225',
+    doc: 'the no-agent-PTY gate: REFUSED without the Run control, a per-tab claim counts only PTYs that step CREATED (V1: no carry-over), a created one reddens it',
+    async run(ctx) {
+      const probe = (fired, ps, already) => { const got = []; noAgentPty({ controls: { run: fired }, clause: (n, ok, d) => { got.push({ ok, d }); return ok; } }, 'x', ps, already); return got[0]; };
+      const run = { ptyId: 'w:run', kind: 'run' }, agent = { ptyId: 'w', kind: 'agent' };
+      const r1 = probe(false, [run], new Set());
+      ctx.clause('refused-without-control', !r1.ok && r1.d.startsWith('REFUSED'), `control not fired -> ${r1.d.slice(0, 40)}…`);
+      const r2 = probe(true, [run], new Set());
+      ctx.clause('passes-when-nothing-created', r2.ok, 'control fired, only a run PTY listed -> PASS');
+      const r3 = probe(true, [run, agent], new Set());
+      ctx.clause('fails-when-step-created-agent-pty', !r3.ok, 'control fired, agent PTY created by this step -> FAIL');
+      const r4 = probe(true, [run, agent], new Set(['w']));
+      ctx.clause('no-carry-over-from-earlier-step', r4.ok, 'the same agent PTY pre-existing before this step -> PASS (delta, not cumulative)');
+    },
+  },
+  {
     name: 'observe', boots: true, ticket: '#225',
     doc: 'record what the app shows on boot: rendered tab labels + live PTY sessions by kind (no assertion beyond identity/isolation)',
     async run(ctx) {
@@ -535,9 +747,10 @@ const ARMS = [
       noAgentPty(ctx, 'pre-state-no-agent-pty', pre);
       const labels = (await app.tabs()).map((t) => t.label);
       for (const label of labels.filter((l) => l !== 'Raw')) {
+        const already = new Set((await app.ptys()).filter((p) => p.kind === 'agent').map((p) => p.ptyId));
         await app.clickTab(label);
         await sleep(ABSENCE_MS);
-        noAgentPty(ctx, `tab:${label}:no-agent-pty`, await app.ptys());
+        noAgentPty(ctx, `tab:${label}:no-agent-pty`, await app.ptys(), already);
       }
       if (labels.includes('Raw')) {
         await app.clickTab('Raw');
@@ -547,9 +760,10 @@ const ARMS = [
           const agent = post.find((p) => p.kind === 'agent');
           const cmds = agent.pids.map(procCmdline);
           ctx.clause('tab:Raw:agent-pty-is-the-stub', cmds.some((c) => c.includes(app.world.stub)), `no real claude was started; PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
-        }
+        } else ctx.skip('tab:Raw:agent-pty-is-the-stub', 'no agent PTY appeared — nothing to inspect');
       } else {
-        ctx.clause('tab:Raw:creates-agent-pty', pick(EXPECT.rawCreatesAgentPty) === false, 'no Raw tab rendered, so nothing to open');
+        ctx.skip('tab:Raw:creates-agent-pty', `no Raw tab rendered — nothing to open; agent-PTY absence is measured by end-state-agent-pty (expected(${MODE})=${pick(EXPECT.rawCreatesAgentPty)})`);
+        ctx.skip('tab:Raw:agent-pty-is-the-stub', 'no agent PTY was created — nothing to inspect');
       }
       const end = await app.ptys();
       if (MODE === 'baseline') ctx.clause('end-state-agent-pty', end.filter((p) => p.kind === 'agent').length === 1, `baseline: Raw left exactly one agent-kind PTY (${fmtP(end)})`);
@@ -587,19 +801,30 @@ const ARMS = [
       ctx.clause('composer-present', await app.cdp.eval(`!!document.querySelector('.cm-editor, .av-composer, textarea')`), 'a composer element is in the DOM');
       await settle();
       const contentFile = await app.shot('agent-view-content', rect);
+      // V2: the painted-vs-blank gate is measured on the crop where the INJECTED ROWS must paint (union of the two
+      // sentinel elements' rects), so an empty pane / unpainted rows cannot pass on the empty state's own ink.
+      const rowsRect = await app.cdp.eval(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n; const rs = [];
+        while ((n = w.nextNode())) if (n.textContent.includes(${JSON.stringify(SENTINEL_USER)}) || n.textContent.includes(${JSON.stringify(SENTINEL_ASSISTANT)})) rs.push(n.parentElement.getBoundingClientRect());
+        if (rs.length < 2) return null;
+        const x0 = Math.min(...rs.map((r) => r.left)), y0 = Math.min(...rs.map((r) => r.top)), x1 = Math.max(...rs.map((r) => r.right)), y1 = Math.max(...rs.map((r) => r.bottom));
+        return { x: Math.max(0, x0 - 8), y: Math.max(0, y0 - 8), width: x1 - x0 + 16, height: y1 - y0 + 16 }; })()`);
+      ctx.clause('rows-rect-found', !!rowsRect, rowsRect ? `injected rows occupy ${Math.round(rowsRect.width)}x${Math.round(rowsRect.height)} at (${Math.round(rowsRect.x)},${Math.round(rowsRect.y)})` : 'sentinel elements not found in the DOM');
+      const rowsContentFile = rowsRect ? await app.shot('agent-view-rows-content', rowsRect) : null;
       // Blank POPULATION for the threshold: same region with the pane's rows hidden (a real "painted nothing" frame).
       await app.cdp.eval(`(() => { const s = document.createElement('style'); s.id = 'avr-blank'; s.textContent = '.av-message-list > * { visibility: hidden !important }'; document.head.appendChild(s); })()`);
       await settle();
-      const blankFile = await app.shot('agent-view-blank', rect);
+      const rowsBlankFile = rowsRect ? await app.shot('agent-view-rows-blank', rowsRect) : null;
       await app.cdp.eval(`document.getElementById('avr-blank').remove()`);
       // READ BACK off disk: assert on the bytes of the files we report, not the in-memory buffers.
       const rd = (f) => { const b = fs.readFileSync(f); return { f, md5: crypto.createHash('md5').update(b).digest('hex'), ...pngStats(b) }; };
-      const [E, C, B] = [rd(emptyFile), rd(contentFile), rd(blankFile)];
-      for (const [n, x] of [['empty-state', E], ['content', C], ['blank', B]]) console.log(`SHOT      ${n.padEnd(11)} ${x.f} md5=${x.md5} ${x.w}x${x.h} bytes=${x.bytes} distinct=${x.distinct} nonBg=${x.nonBgPct}%`);
-      const distinct3 = new Set([E.md5, C.md5, B.md5]).size === 3;
-      ctx.clause('screenshots-distinct', distinct3, `md5 empty=${E.md5.slice(0, 8)} content=${C.md5.slice(0, 8)} blank=${B.md5.slice(0, 8)} (a no-op step would collide)`);
-      // Threshold sits BETWEEN the two observed populations: blank (nothing painted) vs content.
-      ctx.clause('content-painted-not-blank', paintedBeyondBlank(C, B), `content nonBg=${C.nonBgPct}% distinct=${C.distinct} vs blank nonBg=${B.nonBgPct}% distinct=${B.distinct} (need > +0.05pp and > +4 colours)`);
+      const E = rd(emptyFile), C = rd(contentFile);
+      const shots = [['empty-state', E], ['content', C]];
+      let RC = null, RB = null;
+      if (rowsRect) { RC = rd(rowsContentFile); RB = rd(rowsBlankFile); shots.push(['rows-content', RC], ['rows-blank', RB]); }
+      for (const [n, x] of shots) console.log(`SHOT      ${n.padEnd(12)} ${x.f} md5=${x.md5} ${x.w}x${x.h} bytes=${x.bytes} distinct=${x.distinct} nonBg=${x.nonBgPct}%`);
+      ctx.clause('screenshots-distinct', new Set(shots.map(([, x]) => x.md5)).size === shots.length, `md5s ${shots.map(([n, x]) => `${n}=${x.md5.slice(0, 8)}`).join(' ')} (a no-op step would collide)`);
+      // Threshold sits BETWEEN the two observed populations: blank (nothing painted) vs content, on the rows' own region.
+      ctx.clause('content-painted-not-blank', !!RC && paintedBeyondBlank(RC, RB), RC ? `rows region: content nonBg=${RC.nonBgPct}% distinct=${RC.distinct} vs blank nonBg=${RB.nonBgPct}% distinct=${RB.distinct} (need > +0.05pp and > +4 colours)` : 'no rows region to measure');
       // Composed-window oracle: what the compositor actually shows of the whole app.
       const G = rd(app.grim('compositor-grim'));
       console.log(`SHOT      compositor  ${G.f} md5=${G.md5} ${G.w}x${G.h} bytes=${G.bytes} distinct=${G.distinct} nonBg=${G.nonBgPct}%`);
@@ -614,13 +839,16 @@ async function main() {
     for (const a of ARMS) console.log(`${a.name.padEnd(22)} ${a.boots ? 'boots ' : 'no-boot'} ${a.ticket}  ${a.doc}`);
     process.exit(0);
   }
-  if (!APP_DIR) { console.error('usage: e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list] [--broken-control]'); process.exit(2); }
+  if (!APP_DIR) { console.error('usage: e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list] [--broken-control] [--allow-stale]'); process.exit(2); }
   const sel = ARM_SEL ? ARM_SEL.split(',') : ARMS.map((a) => a.name);
   const unknown = sel.filter((n) => !ARMS.some((a) => a.name === n));
   if (unknown.length) { console.error(`unknown arm(s): ${unknown.join(', ')} — try --list`); process.exit(2); }
   console.log(`RIG agent-view-removal mode=${MODE} arms=${sel.join(',')} app-dir=${APP_DIR}`);
   const sid = staticIdentity();
   console.log(`IDENTITY(static) git=${sid.gitInfo} version(package.json)=${sid.pkgVersion} main=${sid.chunk ?? '?'} md5=${sid.mainMd5} renderer=${sid.rendererFiles.join(',')}`);
+  const pre = makeCtx('preflight'); const fresh = distFreshness();
+  pre.clause('identity/dist-fresh', fresh.ok || ALLOW_STALE, `${fresh.detail}${!fresh.ok && ALLOW_STALE ? ' [--allow-stale: proceeding on a STALE build]' : ''}`);
+  if (!fresh.ok && !ALLOW_STALE) return finish(sel);
   for (const arm of ARMS.filter((a) => sel.includes(a.name))) {
     const ctx = makeCtx(arm.name);
     console.log(`--- arm ${arm.name}: ${arm.doc}`);
@@ -631,16 +859,21 @@ async function main() {
           await identityAndIsolation(ctx, ctx.app);
           await ready(ctx.app);
           await arm.run(ctx);
-        } finally { await ctx.app.close(); }
+        } finally { await ctx.app.close(); liveCheck(ctx, ctx.app); }
       } else await arm.run(ctx);
     } catch (e) {
       ctx.clause('arm-completed', false, `HARNESS-ERROR ${e.message}`);
+      if (e.app) { liveCheck(ctx, e.app); ctx.app = e.app; } // boot failed after launch: the live dirs must still be untouched
     }
+    if (arm.boots) retain(ctx, ctx.app);
   }
-  const fail = RESULTS.filter((r) => !r.ok).length, pass = RESULTS.length - fail;
+  finish(sel);
+}
+function finish(sel) {
+  const fail = RESULTS.filter((r) => !r.ok).length, skip = RESULTS.filter((r) => r.skip).length, pass = RESULTS.length - fail - skip;
   const out = path.join(RIG.rigDir || os.tmpdir(), `result-${MODE}.json`);
   fs.writeFileSync(out, JSON.stringify({ mode: MODE, appDir: APP_DIR, results: RESULTS }, null, 2));
-  console.log(`RIG-RESULT mode=${MODE} arms=${sel.length} clauses=${RESULTS.length} pass=${pass} fail=${fail} artifact=${out}`);
+  console.log(`RIG-RESULT mode=${MODE} arms=${sel.length} clauses=${RESULTS.length} pass=${pass} fail=${fail} skip=${skip} artifact=${out}`);
   process.exit(fail ? 1 : 0);
 }
 main().catch((e) => { console.error(`RIG-RESULT HARNESS-ERROR ${e.stack ?? e}`); process.exit(2); });
