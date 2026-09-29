@@ -1060,6 +1060,14 @@ export function coordinatorGeneration(db: BusDb, runId: string): number {
   return row ? Number(row.g) : 0;
 }
 
+/** The run's coordinator (`runs.coordinator` = its anchor ws id), or null for an unknown run. */
+export function runCoordinator(db: BusDb, runId: string): string | null {
+  const row = db.prepare('SELECT coordinator AS c FROM runs WHERE id=?').get(runId) as
+    | { c: string }
+    | undefined;
+  return row ? String(row.c) : null;
+}
+
 /**
  * BUMP the run's coordinator generation (an OPS respawn calls this). Returns the
  * NEW generation. Formalizes the manual OPS-B → OPS-B2 handover: the moment a new
@@ -1206,8 +1214,8 @@ export interface FencedWriteInput {
 /**
  * THE FENCE, applied around a write, honouring the coexistence switch.
  *
- * Reads the run's current generation, decides with the PURE {@link decideFence},
- * and:
+ * Reads the run's current generation, decides with the PURE {@link decideFence}
+ * (COORDINATOR-ONLY, #222: `actor` must equal `runs.coordinator`; members pass), and:
  *   - 'pass'   → runs `write` (if given) and returns.
  *   - 'count'  → records a `fence_events` row with `fired=0`, then STILL runs
  *                `write` (switch OFF, old channel authoritative — COUNTED, not
@@ -1244,6 +1252,8 @@ export function fencedWrite<T = void>(
       const decision = decideFence({
         presented: input.presented,
         current,
+        // #222: coordinator-only fence; the write's actor is compared to runs.coordinator IN this tx.
+        writerIsCoordinator: runCoordinator(db, input.runId) === input.actor,
         fencingOn: input.fencingOn,
       });
       if (decision !== 'pass') {

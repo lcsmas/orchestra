@@ -24,6 +24,7 @@ import {
   fenceEventCounts,
   fenceEvents,
   fencedWrite,
+  runCoordinator,
   getGate,
   openBus,
   openGate,
@@ -164,8 +165,8 @@ test('T128.1 — a stale-generation SEND is REFUSED (switch ON) and writes NO ro
   // superseded coordinator would keep writing (the split #128 prevents).
   assert.throws(
     () => {
-      fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: true, actor: 'ops-old' });
-      send(db, { runId: RUN, sender: 'ops-old', kind: 'dispatch', body: 'stale write' });
+      fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: true, actor: 'ops' });
+      send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'stale write' });
     },
     (e: unknown) => e instanceof StaleGenerationError,
     'a stale send must throw the typed error before the write',
@@ -177,8 +178,8 @@ test('T128.1 — a stale-generation SEND is REFUSED (switch ON) and writes NO ro
   assert.equal(after, before, 'the messages row count is UNCHANGED — the send never ran');
 
   // The CURRENT coordinator (presenting G=1) writes fine — the must-PASS control.
-  fencedWrite(db, { runId: RUN, verb: 'send', presented: 1, fencingOn: true, actor: 'ops-new' });
-  const seq = send(db, { runId: RUN, sender: 'ops-new', kind: 'dispatch', body: 'live write' });
+  fencedWrite(db, { runId: RUN, verb: 'send', presented: 1, fencingOn: true, actor: 'ops' });
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'live write' });
   assert.ok(seq > 0, 'the live coordinator writes normally');
 });
 
@@ -186,13 +187,13 @@ test('T128.1 — a stale-generation ACK is REFUSED (switch ON), leaving the lot 
   const db = tmpBus(t);
   startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops' }, FENCING_ON);
   send(db, { runId: RUN, sender: 'peer', kind: 'dispatch', body: 'm1' });
-  const lot = check(db, RUN, 'reader-1');
+  const lot = check(db, RUN, 'ops'); // the coordinator's own lot
   assert.ok(lot.delivery, 'a lot was taken');
-  bumpCoordinatorGeneration(db, RUN); // reader/actor superseded at G0, now G1
+  bumpCoordinatorGeneration(db, RUN); // the coordinator is superseded at G0, now G1
 
   assert.throws(
     () =>
-      fencedWrite(db, { runId: RUN, verb: 'ack', presented: 0, fencingOn: true, actor: 'reader-1' }),
+      fencedWrite(db, { runId: RUN, verb: 'ack', presented: 0, fencingOn: true, actor: 'ops' }),
     (e: unknown) => e instanceof StaleGenerationError,
   );
   // The ack never ran, so the lot is still outstanding (acked_at IS NULL).
@@ -203,8 +204,8 @@ test('T128.1 — a stale-generation ACK is REFUSED (switch ON), leaving the lot 
   ).acked_at;
   assert.equal(still, null, 'row unchanged: the lot stays outstanding after a refused ack');
   // Control: the live generation acks fine.
-  fencedWrite(db, { runId: RUN, verb: 'ack', presented: 1, fencingOn: true, actor: 'reader-1' });
-  assert.equal(ack(db, RUN, 'reader-1', lot.delivery!.id), true);
+  fencedWrite(db, { runId: RUN, verb: 'ack', presented: 1, fencingOn: true, actor: 'ops' });
+  assert.equal(ack(db, RUN, 'ops', lot.delivery!.id), true);
 });
 
 test('T128.1 — a stale-generation GATE-RESOLVE is REFUSED (switch ON), resolution unchanged', (t) => {
@@ -220,7 +221,7 @@ test('T128.1 — a stale-generation GATE-RESOLVE is REFUSED (switch ON), resolut
         verb: 'gate-resolve',
         presented: 0,
         fencingOn: true,
-        actor: 'ops-old',
+        actor: 'ops',
       }),
     (e: unknown) => e instanceof StaleGenerationError,
   );
@@ -231,9 +232,9 @@ test('T128.1 — a stale-generation GATE-RESOLVE is REFUSED (switch ON), resolut
     verb: 'gate-resolve',
     presented: 1,
     fencingOn: true,
-    actor: 'ops-new',
+    actor: 'ops',
   });
-  assert.equal(resolveGate(db, gateId, 'ops-new', 'the ruling'), true);
+  assert.equal(resolveGate(db, gateId, 'ops', 'the ruling'), true);
   assert.ok(getGate(db, gateId)?.resolved_at, 'the gate is resolved by the live coordinator');
 });
 
@@ -254,9 +255,9 @@ test('T128.3 — with fencing OFF a stale write is COUNTED, not rejected; the ro
   // rejects while OFF breaks coexistence; a build that records nothing makes the
   // OFF state indistinguishable from having no fencing at all.
   assert.doesNotThrow(() =>
-    fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: false, actor: 'ops-old' }),
+    fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: false, actor: 'ops' }),
   );
-  const seq = send(db, { runId: RUN, sender: 'ops-old', kind: 'dispatch', body: 'shadow-counted' });
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'shadow-counted' });
   assert.ok(seq > 0, 'the write STILL lands — old channel authoritative');
   const after = (
     db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }
@@ -280,7 +281,7 @@ test('T128.3 control — with fencing ON a stale write records a FIRED event (fi
   startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops' }, FENCING_ON);
   bumpCoordinatorGeneration(db, RUN);
   assert.throws(() =>
-    fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: true, actor: 'ops-old' }),
+    fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: true, actor: 'ops' }),
   );
   const counts = fenceEventCounts(db, RUN);
   assert.equal(counts.fired, 1, 'the rejection recorded a FIRED event');
@@ -296,4 +297,49 @@ test('a NON-stale write records NO fence event in either switch state', (t) => {
   // No generation presented (unfenced path), switch OFF: passes, records nothing.
   fencedWrite(db, { runId: RUN, verb: 'send', presented: null, fencingOn: false, actor: 'ops' });
   assert.equal(fenceEvents(db, RUN).length, 0, 'a non-stale/unfenced write is not a fence event');
+});
+
+// ─── #222 — only the COORDINATOR is fenced; a member's stale generation is not ─
+
+test('#222 — runCoordinator reads runs.coordinator; an unknown run has none', (t) => {
+  const db = tmpBus(t);
+  startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops' }, FENCING_ON);
+  assert.equal(runCoordinator(db, RUN), 'ops');
+  assert.equal(runCoordinator(db, 'no-such-run'), null);
+});
+
+test('#222 — a MEMBER presenting a stale generation is NOT fenced (ON), records NO event; the coordinator IS', (t) => {
+  const db = tmpBus(t);
+  startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops' }, FENCING_ON);
+  bumpCoordinatorGeneration(db, RUN);
+  bumpCoordinatorGeneration(db, RUN); // run at 2; a member spawned at 1 (or 0) is stale
+  for (const verb of ['send', 'ack', 'gate-resolve']) {
+    for (const presented of [0, 1]) {
+      // Returns the write's value: the closure runs, proving the write was NOT skipped.
+      const ran = fencedWrite(db, { runId: RUN, verb, presented, fencingOn: true, actor: 'reader-1' }, () => 'wrote');
+      assert.equal(ran, 'wrote', `member ${verb} @${presented} runs its write`);
+    }
+  }
+  assert.equal(fenceEvents(db, RUN).length, 0, 'member writes leave NO fence_events row');
+  // Must-FAIL twin: the coordinator with the SAME stale numbers is refused and its write never runs.
+  let wrote = false;
+  assert.throws(
+    () => fencedWrite(db, { runId: RUN, verb: 'send', presented: 1, fencingOn: true, actor: 'ops' }, () => { wrote = true; }),
+    (e: unknown) => e instanceof StaleGenerationError,
+  );
+  assert.equal(wrote, false, 'the zombie coordinator write never ran');
+  assert.equal(fenceEventCounts(db, RUN).fired, 1);
+});
+
+test('#222 — with fencing OFF a stale MEMBER write records NO counted event either', (t) => {
+  const db = tmpBus(t);
+  startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops' }, FENCING_OFF);
+  bumpCoordinatorGeneration(db, RUN);
+  fencedWrite(db, { runId: RUN, verb: 'send', presented: 0, fencingOn: false, actor: 'reader-1' }, () => 1);
+  assert.equal(fenceEvents(db, RUN).length, 0, 'no shadow event for a non-coordinator');
+});
+
+test('#222 — a run with NO runs row fences nobody (no coordinator to identify)', (t) => {
+  const db = tmpBus(t);
+  assert.equal(fencedWrite(db, { runId: 'default', verb: 'send', presented: 0, fencingOn: true, actor: 'ops' }, () => 'ok'), 'ok');
 });

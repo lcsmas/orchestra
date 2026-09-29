@@ -26,6 +26,9 @@ export type FenceDecision = 'pass' | 'count' | 'reject';
 export interface FenceInput {
   /** The generation the writer presented, or null/undefined = did not opt in. */
   presented: number | null | undefined;
+  /** Is the writer the run's COORDINATOR? Fencing stops a zombie coordinator; a member's
+   *  env generation is stale by construction after a restart (#222) and never fenced. */
+  writerIsCoordinator: boolean;
   /** The run's current (authoritative) generation. */
   current: number;
   /** The `fencing` switch, frozen on the run row. */
@@ -36,8 +39,9 @@ export interface FenceInput {
  * Decide the fate of one write.
  *
  * A caller that presents NO generation is never fenced, in EITHER switch state —
- * that is the old, unfenced channel and it must keep working (coexistence). Only
- * a caller that opted into fencing by presenting a generation can be fenced, and
+ * that is the old, unfenced channel and it must keep working (coexistence). A
+ * writer that is not the run's coordinator is never fenced either (#222). Only a
+ * COORDINATOR that opted into fencing by presenting a generation can be fenced, and
  * only when it is STRICTLY BELOW the current one:
  *   - equal  → the live coordinator itself (pass).
  *   - above  → impossible without a bump this caller performed (pass).
@@ -45,6 +49,7 @@ export interface FenceInput {
  */
 export function decideFence(input: FenceInput): FenceDecision {
   if (input.presented === null || input.presented === undefined) return 'pass';
+  if (!input.writerIsCoordinator) return 'pass'; // #222: members are never fenced
   if (input.presented >= input.current) return 'pass';
   return input.fencingOn ? 'reject' : 'count';
 }

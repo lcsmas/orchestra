@@ -322,6 +322,7 @@ export interface BusModule {
  * runs read-decide-write inside one IMMEDIATE transaction, so no concurrent bump
  * can interleave. This function only adds the CLI-side error routing.
  *
+ * Coordinator-only (#222): `fencedWrite` fences just the run's coordinator (actor == runs.coordinator); a member's stale env generation passes.
  * `fencedWrite` THROWS a StaleGenerationError when the switch is ON and the write
  * is stale. That throw must become a CLI refusal, not an uncaught exception: under
  * Electron a bare throw of a non-CliFailure would escape runCli's catch and a bare

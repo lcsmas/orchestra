@@ -12,11 +12,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decideFence, type FenceInput } from './bus-fencing.ts';
 
+// `writerIsCoordinator` defaults TRUE: the pre-#222 arms below are all about the coordinator.
 const at = (
   presented: number | null | undefined,
   current: number,
   fencingOn: boolean,
-): FenceInput => ({ presented, current, fencingOn });
+  writerIsCoordinator = true,
+): FenceInput => ({ presented, current, fencingOn, writerIsCoordinator });
 
 // ─── the coexistence axis: no generation presented → never fenced ────────────
 
@@ -66,4 +68,18 @@ test('an un-bumped run (current 0) fences nobody — a gen-0 caller is not < 0',
   // `<=` mutant would fence the very first coordinator of a fresh run.
   assert.equal(decideFence(at(0, 0, true)), 'pass', 'gen-0 caller on an un-bumped run');
   assert.equal(decideFence(at(0, 0, false)), 'pass');
+});
+
+// ─── #222: the writer axis — only the COORDINATOR is ever fenced ─────────────
+
+test('#222 — a NON-coordinator writer is never fenced, stale or not, in EITHER switch state', () => {
+  // A member's env generation is stale after every coordinator restart. Disproof:
+  // a build that ignores `writerIsCoordinator` rejects (ON) / counts (OFF) here —
+  // the field lock-out (reviewer-t11's ack + send refused, rc=1).
+  assert.equal(decideFence(at(1, 2, true, false)), 'pass', 'stale member, switch ON');
+  assert.equal(decideFence(at(0, 5, true, false)), 'pass', 'far-stale member, switch ON');
+  assert.equal(decideFence(at(1, 2, false, false)), 'pass', 'stale member, switch OFF (no shadow event either)');
+  // Control (must-FAIL twin): the SAME numbers from the coordinator are fenced.
+  assert.equal(decideFence(at(1, 2, true, true)), 'reject');
+  assert.equal(decideFence(at(1, 2, false, true)), 'count');
 });

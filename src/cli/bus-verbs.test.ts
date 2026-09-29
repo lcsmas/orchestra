@@ -770,7 +770,7 @@ test('F2 — verbSend fences a stale generation: RC-refusal via ctx.fail, NO row
   // The stale coordinator (gen 0) sends. fenced() catches the typed throw and
   // routes it through ctx.fail (which throws FAIL:) — so the send never runs.
   assert.throws(
-    () => verbSend(r.ctx('ops-old', { generation: 0, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'stale' }),
+    () => verbSend(r.ctx('ops', { generation: 0, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'stale' }),
     /FAIL: bus: stale coordinator generation/,
   );
   const after = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
@@ -779,7 +779,7 @@ test('F2 — verbSend fences a stale generation: RC-refusal via ctx.fail, NO row
   assert.equal(counts.fired, 1, 'the rejection recorded a FIRED fence event (survives the tx rollback)');
   assert.equal(counts.counted, 0);
   // Must-PASS control: the LIVE generation sends fine through the same verb.
-  verbSend(r.ctx('ops-new', { generation: 1, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'live' });
+  verbSend(r.ctx('ops', { generation: 1, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'live' });
   const afterLive = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
   assert.equal(afterLive, before + 1, 'the live coordinator write lands');
 });
@@ -789,7 +789,7 @@ test('F2 — verbSend with the switch OFF COUNTS a stale send but STILL writes (
   seedFencedRun(r.ctx('x').db, { fencingOn: false, gen: 1 });
   const before = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
   // Switch OFF: no throw, the send lands, and the would-have-fenced event is counted.
-  verbSend(r.ctx('ops-old', { generation: 0, fencingOn: false }), { kind: 'dispatch', to: 'peer', thread: null, body: 'shadow' });
+  verbSend(r.ctx('ops', { generation: 0, fencingOn: false }), { kind: 'dispatch', to: 'peer', thread: null, body: 'shadow' });
   const after = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
   assert.equal(after, before + 1, 'old channel authoritative — the write lands');
   const counts = bus.fenceEventCounts(r.ctx('x').db, RUN);
@@ -802,11 +802,11 @@ test('F2 — verbAck fences a stale ack: refused, lot stays outstanding (row unc
   const db = r.ctx('x').db;
   seedFencedRun(db, { fencingOn: true, gen: 0 }); // start at gen 0
   bus.send(db, { runId: RUN, sender: 'peer', kind: 'dispatch', body: 'm1' });
-  const lot = bus.check(db, RUN, 'reader-1');
+  const lot = bus.check(db, RUN, 'ops'); // the COORDINATOR's own lot
   assert.ok(lot.delivery);
-  bus.bumpCoordinatorGeneration(db, RUN); // reader superseded, now gen 1
+  bus.bumpCoordinatorGeneration(db, RUN); // coordinator superseded, now gen 1
   assert.throws(
-    () => verbAck(r.ctx('reader-1', { generation: 0, fencingOn: true }), String(lot.delivery!.id)),
+    () => verbAck(r.ctx('ops', { generation: 0, fencingOn: true }), String(lot.delivery!.id)),
     /FAIL: bus: stale coordinator generation/,
   );
   const still = (db.prepare('SELECT acked_at FROM deliveries WHERE id=?').get(lot.delivery!.id) as { acked_at: number | null }).acked_at;
@@ -820,10 +820,28 @@ test('F2 — verbGate resolve fences a stale coordinator: refused, gate stays op
   const gateId = bus.openGate(db, RUN, 'ops', 'ruling?', 'lead');
   bus.bumpCoordinatorGeneration(db, RUN); // now gen 1
   assert.throws(
-    () => verbGate(r.ctx('ops-old', { generation: 0, fencingOn: true }), 'resolve', [String(gateId), '--resolution', 'sneaky']),
+    () => verbGate(r.ctx('ops', { generation: 0, fencingOn: true }), 'resolve', [String(gateId), '--resolution', 'sneaky']),
     /FAIL: bus: stale coordinator generation/,
   );
   assert.equal(bus.getGate(db, gateId)?.resolved_at, null, 'the gate stays open — the resolve never ran');
+});
+
+test('#222 — a MEMBER with a stale generation acks, sends and resolves through the verbs (no refusal, no event)', (t) => {
+  const r = rig(t);
+  const db = r.ctx('x').db;
+  seedFencedRun(db, { fencingOn: true, gen: 2 }); // the coordinator ('ops') restarted twice
+  bus.send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'm1', recipient: 'reader-1' });
+  const lot = bus.check(db, RUN, 'reader-1');
+  const gateId = bus.openGate(db, RUN, 'ops', 'ruling?', 'reader-1');
+  const stale = { generation: 1, fencingOn: true }; // the env generation the member was spawned with
+  verbAck(r.ctx('reader-1', stale), String(lot.delivery!.id));
+  verbSend(r.ctx('reader-1', stale), { kind: 'status', to: 'ops', thread: null, body: 'member-status' });
+  verbGate(r.ctx('reader-1', stale), 'resolve', [String(gateId), '--resolution', 'member ruling']);
+  assert.notEqual((db.prepare('SELECT acked_at FROM deliveries WHERE id=?').get(lot.delivery!.id) as { acked_at: number | null }).acked_at, null, 'ack landed');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=? AND body=?').get(RUN, 'member-status') as { n: number }).n, 1, 'send landed');
+  assert.ok(bus.getGate(db, gateId)?.resolved_at, 'gate resolved');
+  assert.equal(bus.fenceEvents(db, RUN).length, 0, 'no fence_events row for any member write');
+  assert.deepEqual(r.fails, [], 'no refusal was raised');
 });
 
 test('F1 — the fence and the write are ONE transaction: the generation is read AT write time', (t) => {

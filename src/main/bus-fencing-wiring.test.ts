@@ -172,7 +172,8 @@ test('#166 arm 2 — after a respawn, a stale-generation send is FENCED (StaleGe
   replacementLaunch(db, OPS);
   assert.equal(coordinatorGeneration(db, 'ops'), 1);
 
-  // The OLD coordinator's in-flight send presents the pre-bump generation (0).
+  // The OLD coordinator's in-flight send presents the pre-bump generation (0); the zombie
+  // and its successor share one ws id (= runs.coordinator), so only the generation differs.
   assert.throws(
     () =>
       fencedWrite(db, {
@@ -180,7 +181,7 @@ test('#166 arm 2 — after a respawn, a stale-generation send is FENCED (StaleGe
         verb: 'send',
         presented: 0,
         fencingOn: true,
-        actor: 'ops-old',
+        actor: 'ops',
       }),
     (e: unknown) => e instanceof StaleGenerationError,
     'a stale-generation write is refused',
@@ -193,7 +194,7 @@ test('#166 arm 2 — after a respawn, a stale-generation send is FENCED (StaleGe
 
   // Control: the SUCCESSOR (presenting the bumped generation 1) writes fine.
   assert.doesNotThrow(() =>
-    fencedWrite(db, { runId: 'ops', verb: 'send', presented: 1, fencingOn: true, actor: 'ops-new' }),
+    fencedWrite(db, { runId: 'ops', verb: 'send', presented: 1, fencingOn: true, actor: 'ops' }),
   );
 });
 
@@ -203,7 +204,7 @@ test('#166 arm 3 — current-generation and absent-generation (v1) writes are un
   replacementLaunch(db, OPS); // gen 1
 
   // Current generation: passes, records NO fence event.
-  fencedWrite(db, { runId: 'ops', verb: 'send', presented: 1, fencingOn: true, actor: 'ops-new' });
+  fencedWrite(db, { runId: 'ops', verb: 'send', presented: 1, fencingOn: true, actor: 'ops' });
   // Absent generation (the unfenced v1 path — every write before fencing carried
   // none): passes, records nothing, EVEN with the switch ON.
   fencedWrite(db, { runId: 'ops', verb: 'send', presented: null, fencingOn: true, actor: 'legacy' });

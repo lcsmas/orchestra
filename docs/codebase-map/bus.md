@@ -1595,7 +1595,7 @@ would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
 | File | What |
 |---|---|
 | `src/shared/bus-fencing.ts` | The PURE `decideFence` predicate (`pass`/`count`/`reject`). No SQLite/Electron. |
-| `src/main/bus.ts` | `coordinatorGeneration` / `bumpCoordinatorGeneration` / `assertCoordinatorGeneration` / `fencedWrite` / `recordFenceEvent` / `fenceEvents` / `fenceEventCounts` / `StaleGenerationError`; migration `MIGRATIONS[5]` (`runs.coordinator_generation` + `fence_events`). |
+| `src/main/bus.ts` | `coordinatorGeneration` / `runCoordinator` (#222) / `bumpCoordinatorGeneration` / `assertCoordinatorGeneration` / `fencedWrite` / `recordFenceEvent` / `fenceEvents` / `fenceEventCounts` / `StaleGenerationError`; migration `MIGRATIONS[5]` (`runs.coordinator_generation` + `fence_events`). |
 | `src/main/bus-runs.ts` | `BusRunRow.coordinator_generation` threaded through `getRun`/`listRuns`/`toRunRow`. |
 | `src/shared/bus-switches.ts` | The `fencing` mechanism added to the enum/labels/wire map. |
 | `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
@@ -1617,9 +1617,11 @@ index+table THEN the column, or the re-run throws `duplicate column name`.
 
 ## The three-way decision (why `count` ≠ `reject`)
 
-`decideFence(presented, current, fencingOn)`:
+`decideFence(presented, current, fencingOn, writerIsCoordinator)`:
 - **no generation presented** → `pass` in EITHER state (the v1 unfenced channel —
   every existing caller — must keep working: coexistence).
+- **writer is not the run's coordinator** → `pass`, NO `fence_events` row (#222 — see
+  the classification below).
 - **presented ≥ current** → `pass` (equal = the live coordinator; above is
   impossible without a bump it performed).
 - **presented < current, switch ON** → `reject` (StaleGenerationError).
@@ -1629,6 +1631,32 @@ index+table THEN the column, or the re-run throws `duplicate column name`.
 The count/reject split is the whole point of shadow: a mechanism whose OFF-state
 is indistinguishable from the feature being absent cannot be observed before
 promotion.
+
+## Coordinator-only fence — which writes are fenced (#222, ledger #224 A6)
+
+Fencing exists to stop a ZOMBIE COORDINATOR. A restart bumps `runs.coordinator_generation`,
+but every workspace of the run keeps the generation it was SPAWNED with in
+`$ORCHESTRA_COORDINATOR_GENERATION` (plumbed to members too) — so after a coordinator
+restart every older member presents a stale number by construction. Pre-#222 that locked
+the whole fleet out (field 2026-09-29: reviewer-t11's `ack` + status `send` refused, rc=1).
+
+**Rule.** A write is fenced (`StaleGenerationError` + `fence_events` row) IFF it presents a
+generation AND its writer IS the run's coordinator (`actor == runs.coordinator`, read INSIDE
+the fence tx by `fencedWrite`) AND `presented < current`. Anything else passes, with no event.
+
+| Write | Fenced? |
+|---|---|
+| `send` (any kind: dispatch / status / worker_done / question …), `ack`, `gate resolve` by the run's **coordinator** presenting an old generation | **yes** — the #166 guarantee |
+| the same three verbs by any **member** of the run (stale env generation) | no — never refused, no shadow event |
+| `check`, `ask`, `token`, `gate open/list` | never (they present no generation) |
+| run with no `runs` row (`default`) | never (no coordinator to identify) |
+
+**Writer identity** = the CLI handle (`--as`, else `$ORCHESTRA_WS_ID`/`_IDENTITY`) — the same
+value stamped as `messages.sender`. The zombie and its successor share ONE ws id, so only the
+generation tells them apart. `--as` is a caller-supplied claim: a member passing `--as <coordinator>`
+with a stale generation is fenced (fail-closed, pinned by test); a zombie coordinator passing
+`--as <member>` escapes — but it could equally unset the env var, so fencing is a safety net
+against an ACCIDENTAL zombie, not an auth boundary (unchanged by #222).
 
 ## Atomicity — the fence and the write are ONE transaction (review F1)
 
@@ -1675,9 +1703,10 @@ state, not a crash.
 
 ```bash
 npx tsc --noEmit                                                         # C1
-node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  5 pure
-node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 10 real-bus (primitive + fencedWrite)
-node --test --experimental-strip-types src/cli/bus-verbs.test.ts         # +5 VERB-path arms (F2): verbSend/Ack/Gate → fenced → fencedWrite
+node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  6 pure
+node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 14 real-bus (primitive + fencedWrite + #222 member/coordinator)
+node --test --experimental-strip-types src/cli/bus-verbs.test.ts         # +5 VERB-path arms (F2): verbSend/Ack/Gate → fenced → fencedWrite (+ #222 member arm)
+node --test --experimental-strip-types src/cli/fencing-members.test.ts    # #222: BUILT CLI vs isolated home — 5 member arms (fail on unfixed master) + zombie/control arms; rebuild the CLI first
 node --test --experimental-strip-types src/main/bus-fencing-wiring.test.ts # #166 PRODUCER: pure gate + real-bus replacement flow (arms 1-3)
 node --test --experimental-strip-types src/main/wave-run-anchor-wiring.test.ts # #166 source-grep for the bump/env wiring in un-importable modules
 node scripts/bus-pane-render-smoke.mjs                                   # T128.2 generation visible
@@ -1695,6 +1724,12 @@ Each acceptance arm was shown RED under one mutation (decideFence → always
 discriminant broken; the verb-path fence bypassed → the 5 verb arms redden; the
 on-rollback fence-event re-record removed → the verbSend `fired=1` assertion
 reddens), mutant-string verified live, then GREEN restored.
+
+#222 mutants (in place, CLI rebuilt each time): drop fencing entirely → only the
+zombie-coordinator arms redden (member arms stay green); drop the coordinator clause /
+hard-code `writerIsCoordinator` / pass `runId` as the actor → the member arms redden;
+invert the identity test → both sets redden; compare `actor` to `runId` instead of
+`runs.coordinator` → only the unit arms redden (the CLI rig seeds coordinator == run id).
 
 ## Not covered here
 
