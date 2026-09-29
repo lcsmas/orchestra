@@ -1,0 +1,23 @@
+[
+ {
+  "name": "S_server_runId_self_WITH_RIG",
+  "file": "src/main/workspaces.ts",
+  "old": "runId: resolveWaveRunId(w) })),",
+  "new": "runId: w.id })),",
+  "rig": true
+ },
+ {
+  "name": "W10_mirror_skip_only_if_no_route_WITH_RIG",
+  "file": "src/main/workspaces.ts",
+  "old": "recipientWs && !plainAnchor ? resolveWaveRunId(recipientWs) : undefined",
+  "new": "recipientWs && !(plainAnchor && !senderHasBusRoute) ? resolveWaveRunId(recipientWs) : undefined",
+  "rig": true
+ },
+ {
+  "name": "W1_catch_failclosed_WITH_RIG",
+  "file": "src/main/workspaces.ts",
+  "old": "senderHasBusRoute = false; // D1",
+  "new": "senderHasBusRoute = true; // D1",
+  "rig": true
+ }
+]

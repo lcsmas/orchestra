@@ -1,0 +1,107 @@
+[
+ {
+  "name": "W1_catch_failclosed",
+  "file": "src/main/workspaces.ts",
+  "old": "senderHasBusRoute = false; // D1",
+  "new": "senderHasBusRoute = true; // D1"
+ },
+ {
+  "name": "W3_sender_member_by_id",
+  "file": "src/main/workspaces.ts",
+  "old": "        resolveWaveRunId(fromForGate),\n",
+  "new": "        fromForGate.id,\n"
+ },
+ {
+  "name": "W4_no_sender_exemption_D2_off",
+  "file": "src/main/workspaces.ts",
+  "old": "!!targetForGate && !!db && (!plainAnchor || senderHasBusRoute)",
+  "new": "!!targetForGate && !!db && !plainAnchor"
+ },
+ {
+  "name": "W5_route_always_true",
+  "file": "src/main/workspaces.ts",
+  "old": "!!targetForGate && !!db && (!plainAnchor || senderHasBusRoute)",
+  "new": "!!targetForGate && !!db && (!plainAnchor || true)"
+ },
+ {
+  "name": "W7_mirror_in_parent_run",
+  "file": "src/main/workspaces.ts",
+  "old": "recipientWs && !plainAnchor ? resolveWaveRunId(recipientWs) : undefined",
+  "new": "recipientWs ? resolveWaveRunId(recipientWs) : undefined"
+ },
+ {
+  "name": "W10_mirror_skip_only_if_no_route",
+  "file": "src/main/workspaces.ts",
+  "old": "recipientWs && !plainAnchor ? resolveWaveRunId(recipientWs) : undefined",
+  "new": "recipientWs && !(plainAnchor && !senderHasBusRoute) ? resolveWaveRunId(recipientWs) : undefined"
+ },
+ {
+  "name": "W11_db_guard_dropped_in_route",
+  "file": "src/main/workspaces.ts",
+  "old": "if (plainAnchor && !!targetForGate && !!fromForGate && !!db) {",
+  "new": "if (plainAnchor && !!targetForGate && !!fromForGate) {"
+ },
+ {
+  "name": "C1_ask_human_canonicalized",
+  "file": "src/cli/index.ts",
+  "old": "to.value?.trim() && to.value.trim() !== 'human'",
+  "new": "to.value?.trim() && true",
+  "cli": true
+ },
+ {
+  "name": "C1g_gate_human_canonicalized",
+  "file": "src/cli/index.ts",
+  "old": "gt.value?.trim() && gt.value.trim() !== 'human'",
+  "new": "gt.value?.trim() && true",
+  "cli": true
+ },
+ {
+  "name": "C2_gate_drops_toRunId",
+  "file": "src/cli/index.ts",
+  "old": "gateToRunId = c.runId;",
+  "new": "gateToRunId = null;",
+  "cli": true
+ },
+ {
+  "name": "C3_gate_raw_handle_stored",
+  "file": "src/cli/index.ts",
+  "old": "gateArgs = ['--to', c.id, ...gt.rest];",
+  "new": "gateArgs = ['--to', gt.value!, ...gt.rest];",
+  "cli": true
+ },
+ {
+  "name": "C4_ask_raw_handle_stored",
+  "file": "src/cli/index.ts",
+  "old": "askTo?.id ?? to.value,",
+  "new": "to.value,",
+  "cli": true
+ },
+ {
+  "name": "C5_ask_drops_runId",
+  "file": "src/cli/index.ts",
+  "old": "askTo?.runId ?? null,",
+  "new": "null,",
+  "cli": true
+ },
+ {
+  "name": "C6_gate_canon_off",
+  "file": "src/cli/index.ts",
+  "old": "if (as.rest[0] === 'open') {",
+  "new": "if (false) {",
+  "cli": true
+ },
+ {
+  "name": "B1_verbAsk_drops_toRunId",
+  "file": "src/cli/bus-verbs.ts",
+  "old": "assertRecipientReachable(ctx, 'ask', to!, toRunId);",
+  "new": "assertRecipientReachable(ctx, 'ask', to!);",
+  "cli": true
+ },
+ {
+  "name": "B2_verbGate_drops_toRunId",
+  "file": "src/cli/bus-verbs.ts",
+  "old": "assertRecipientReachable(ctx, 'gate open', to.value.trim(), toRunId)",
+  "new": "assertRecipientReachable(ctx, 'gate open', to.value.trim())",
+  "cli": true
+ }
+]

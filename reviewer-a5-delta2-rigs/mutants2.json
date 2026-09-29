@@ -1,0 +1,34 @@
+[
+ {
+  "name": "G5a_gate_lookup_blind",
+  "file": "src/main/workspaces.ts",
+  "old": "isPlainOwnAnchor(targetForGate, (id) => store.getWorkspace(id));",
+  "new": "isPlainOwnAnchor(targetForGate, () => undefined);"
+ },
+ {
+  "name": "P5_socket_drops_runId",
+  "file": "src/cli/index.ts",
+  "old": "runId: w.runId }),",
+  "new": "runId: undefined }),",
+  "cli": true
+ },
+ {
+  "name": "P6_older_app_runId_self",
+  "file": "src/cli/index.ts",
+  "old": "runId: candidates.find((c) => c.id === id)?.runId ?? null }",
+  "new": "runId: candidates.find((c) => c.id === id)?.runId ?? id }",
+  "cli": true
+ },
+ {
+  "name": "S_server_runId_self",
+  "file": "src/main/workspaces.ts",
+  "old": "runId: resolveWaveRunId(w) })),",
+  "new": "runId: w.id })),"
+ },
+ {
+  "name": "W12_route_uses_from_id_not_run_orchestrator_member",
+  "file": "src/main/workspaces.ts",
+  "old": "getRelatedRunIds(db, resolveWaveRunId(targetForGate)).ids.includes(",
+  "new": "getRelatedRunIds(db, targetForGate.id).ids.includes("
+ }
+]
