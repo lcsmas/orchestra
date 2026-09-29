@@ -220,7 +220,9 @@ endpoint}` = agent lives in an always-on container, see
   (`:491`) just detach — the container keeps its copy; nothing local to reap.
   The reap steps are factored into **`teardownWorkspace(ws)`** (everything
   except the store-remove + broadcast) so both `deleteWorkspace` and the bulk
-  path share them.
+  path share them. Its first act `forgetHibernationActivity(id)` also marks the
+  id `isBeingDeleted` so the hibernation sweep skips it (delete/hibernate
+  serialization, #205).
 - **Cascade:** archive/unarchive an orchestrator and its whole subtree moves
   with it. **`collectWorkspaceTree(id)`** `:517` gathers the root plus every
   transitively `parentId`-nested descendant (BFS, cycle-guarded); both
@@ -376,6 +378,16 @@ env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
 - **Atomic writes** via a serialized promise chain (`writeChain`) + temp-file
   rename (~`:89`). Load migrates stale `running`/`stalled` → `idle` (agents
   relaunch lazily on first open, not at startup).
+- **Removal tombstone (#205):** `removeWorkspace`/`removeWorkspaces` add the id to
+  an in-memory `removedIds` set; `upsertWorkspace` DROPS (warn-logged) an upsert
+  of an id that is absent AND tombstoned — so no stale `getWorkspace` → `await` →
+  `upsertWorkspace({...ws})` (~65 callers, e.g. `clearBusRunStale`,
+  `wakeAgentWithPrompt`, `human-gates syncWorkspaceGateCounts`, whose loop
+  iterates an OLD array snapshot) can resurrect a deleted workspace. An id
+  present in the store still updates; a never-removed id (spawn/create — fresh
+  UUIDs) still inserts. `persistWorkspacePatch` is NOT a racer (get→upsert with no
+  await between). Rig: `scripts/e2e-delete-resurrect.mjs` (11 arms), gate
+  `src/main/store-delete-resurrect.test.ts`.
 - Methods: `upsertWorkspace`, `removeWorkspace`, `getWorkspace`,
   `reorderWorkspaces`; repo methods `addRepo`/`removeRepo`/
   `updateRepo`/`getRepoScripts`/`setRepoScripts`; `allocatePort` (~`:185`, range

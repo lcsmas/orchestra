@@ -38,6 +38,7 @@ import {
   getActiveWorkspaceId,
   getAppStartedAt,
   getLastActivity,
+  isBeingDeleted,
   noteActiveWorkspace,
   noteActivity,
   noteAppStart,
@@ -139,6 +140,7 @@ export async function sweepHibernation(): Promise<string[]> {
   const hibernated: string[] = [];
 
   for (const ws of store.workspaces) {
+    if (isBeingDeleted(ws.id)) continue; // delete owns the teardown (#205)
     const hasLivePty = isRunning(ws.id);
     const hasLiveSdk = sdkSessionLive(ws.id);
     // Seed unseen workspaces at the app-start floor rather than leaving them
@@ -189,7 +191,7 @@ export async function sweepHibernation(): Promise<string[]> {
     }
     // Fresh record, not the pre-await `ws`: any writer during the <=5 s interrupt await would be clobbered.
     const current = store.getWorkspace(ws.id);
-    if (!current) continue;
+    if (!current || isBeingDeleted(ws.id)) continue;
     markHibernated(current, now);
     hibernated.push(ws.id);
   }

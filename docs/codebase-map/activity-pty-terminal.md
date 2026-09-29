@@ -541,7 +541,13 @@ long-idle agents and lets the existing resume paths bring them back.
   per-workspace `wakeEpoch` BEFORE its no-chip early return; the sweep snapshots
   it before the stops and SKIPS `markHibernated` if it moved (else a live,
   woken coordinator wears a stale "zZ"), and marks from a fresh
-  `store.getWorkspace` rather than the pre-await `ws`.
+  `store.getWorkspace` rather than the pre-await `ws`. **Delete serialization
+  (#205):** `teardownWorkspace` → `forgetHibernationActivity` adds the id to
+  `hibernation-activity.ts`'s `deleting` set; the sweep skips `isBeingDeleted`
+  ids at the loop top and again before `markHibernated` (a delete that begins
+  during the stop). The sweep itself never resurrected a deleted row (its
+  post-stop write re-reads); the store tombstone (workspaces.md §Persistence)
+  is what blocks the stale writers.
 - **Driven rig — `scripts/e2e-hibernate-wake.{mjs,sh}`** (#198 D14): the REAL
   `sweepHibernation` + REAL `sweepBusWake`→`ensureSession` over a stub CLI, fake
   clock via `Date.now` skew, env override deleted so it measures the shipped

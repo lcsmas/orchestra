@@ -132,7 +132,7 @@ export function invalidateHumanGatesBroadcast(): void {
  *  Only workspaces whose count MOVES are re-persisted (a full store flush per
  *  bus write would be far too costly — the watcher fires on every insert). The
  *  count is stored ABSENT rather than 0 for the common no-gate case. */
-async function syncWorkspaceGateCounts(gates: HumanGateView[]): Promise<void> {
+export async function syncWorkspaceGateCounts(gates: HumanGateView[]): Promise<void> {
   const counts = new Map<string, number>();
   for (const g of gates) {
     if (g.askedByWorkspaceId) {

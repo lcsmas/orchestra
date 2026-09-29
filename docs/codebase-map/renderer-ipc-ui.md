@@ -120,7 +120,10 @@ matters: the same channel carries status-dot transitions, which arrive
 constantly, and each refresh costs a `gh` call per linked PR — firing
 unconditionally would put the PR poll on the status-dot cadence. Note
 `onWorkspaceRemoved` already prunes `prs`/`checks`/`linear`/`stats`; the update
-path is the one that needed the equivalent.
+path is the one that needed the equivalent. **Removed-id tombstone (#205):** both
+removal handlers record ids in `removed-workspaces.ts`, and the update handler
+drops any `workspace:update` for a recorded id — it UPSERTS unknown ids, so a
+stale update after `workspace:removed` would otherwise paint a ghost row.
 
 `agentSessions: Record<wsId, AgentSession>` holds the folded structured-agent-view
 state (Claude Agent SDK). The `agent:event` channel is the app's **hottest** —

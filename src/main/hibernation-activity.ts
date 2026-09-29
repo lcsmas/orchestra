@@ -35,8 +35,16 @@ export function getLastActivity(wsId: string): number | undefined {
   return lastActivity.get(wsId);
 }
 
+/** Workspaces whose delete has begun — the sweeper skips them (delete/hibernate serialization, #205). */
+const deleting = new Set<string>();
+
+export function isBeingDeleted(wsId: string): boolean {
+  return deleting.has(wsId);
+}
+
 /** Drop a workspace's tracking (workspace deleted). */
 export function forgetHibernationActivity(wsId: string): void {
+  deleting.add(wsId);
   lastActivity.delete(wsId);
   inFlightTools.delete(wsId);
 }

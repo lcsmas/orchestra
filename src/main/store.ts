@@ -258,14 +258,22 @@ class Store {
     await this.save();
   }
 
+  // Ids removed this run. A stale get→await→upsert must not re-insert them (#205); a tombstone (not
+  // update-if-exists) keeps upsert's insert semantics for spawn/create, whose ids are fresh UUIDs.
+  private removedIds = new Set<string>();
+
   async upsertWorkspace(w: Workspace) {
     const i = this.data.workspaces.findIndex((x) => x.id === w.id);
     if (i >= 0) this.data.workspaces[i] = w;
-    else this.data.workspaces.push(w);
+    else if (this.removedIds.has(w.id)) {
+      slog.warn(`dropped upsert of removed workspace ${w.id} (stale read-modify-write)`);
+      return;
+    } else this.data.workspaces.push(w);
     await this.save();
   }
 
   async removeWorkspace(id: string) {
+    this.removedIds.add(id);
     this.data.workspaces = this.data.workspaces.filter((w) => w.id !== id);
     await this.save();
   }
@@ -275,6 +283,7 @@ class Store {
    *  than N serialized rewrites. */
   async removeWorkspaces(ids: string[]) {
     const drop = new Set(ids);
+    for (const id of drop) this.removedIds.add(id);
     this.data.workspaces = this.data.workspaces.filter((w) => !drop.has(w.id));
     await this.save();
   }

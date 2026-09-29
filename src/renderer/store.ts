@@ -33,6 +33,7 @@ import { createAgentEventQueue } from './agent-event-queue';
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
 import { readDefaultAgentView } from './default-agent-view';
+import { isWorkspaceRemoved, noteWorkspacesRemoved } from './removed-workspaces';
 
 // How many workspace probes (each an IPC → git/gh subprocess in main) a poll
 // fans out at once. The polls used to `Promise.all` over every workspace, so a
@@ -757,6 +758,7 @@ window.orchestra.onTicketsUpdate((tickets) => {
   useStore.setState({ tickets });
 });
 window.orchestra.onWorkspaceUpdate((w) => {
+  if (isWorkspaceRemoved(w.id)) return; // stale update after a delete (#205)
   // Debug: trace what status the renderer actually receives. A dot stuck on the
   // wrong colour is either a transition that never arrived (main-side) or one
   // that arrived and was overwritten (renderer-side) — this line shows which.
@@ -807,6 +809,7 @@ window.orchestra.onWorkspaceUpdate((w) => {
   }
 });
 window.orchestra.onWorkspaceRemoved((id) => {
+  noteWorkspacesRemoved([id]);
   useStore.setState((s) => {
     const workspaces = s.workspaces.filter((w) => w.id !== id);
     const activeId =
@@ -826,6 +829,7 @@ window.orchestra.onWorkspaceRemoved((id) => {
   });
 });
 window.orchestra.onWorkspacesRemoved((ids) => {
+  noteWorkspacesRemoved(ids);
   const drop = new Set(ids);
   useStore.setState((s) => {
     const workspaces = s.workspaces.filter((w) => !drop.has(w.id));
