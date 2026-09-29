@@ -44,6 +44,16 @@ shim install no-ops on Linux; if a run did set it, restore
   prefix like `orch-verify*` gets your `ORCHESTRA_HOME` deleted mid-drive
   (observed: the app died and the seeded store vanished between two runs).
 
+## A fresh `ORCHESTRA_HOME` boots a real `claude -p /insights`
+
+An empty `selfTuneRuns` makes the monthly self-tune due, so ~1-2 min after boot
+the app spawns a detached (`ppid 1`) `claude -p /insights --dangerously-skip-permissions`
+with `cwd=$HOME` — real tokens, and it inherits the CDP port fd, so killing the
+app leaves `:<port>` held by a `claude` pid (`ss -ltnp`). Launch with
+`ORCHESTRA_SELF_TUNE_CMD=/bin/true` (the `claudeCmd()` seam, `src/main/self-tune.ts`;
+source-read, not re-driven), and kill any leftover by its resolved pid at teardown.
+Same for `orchestra spawn` children: `delete` leaves their `keeper.js` + `claude` alive.
+
 ## Kill by resolved pid
 
 `pkill -f <your tmp path>` kills your own shell — the pattern appears in the
