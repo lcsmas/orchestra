@@ -719,6 +719,11 @@ test('#221 F5 sibling verbs — controls: a related OPS / MEMBER, `--to human` a
   assert.equal(human.code, 0, `ask → human: ${human.stderr}`);
   const hRow = w.db.prepare("SELECT recipient FROM messages WHERE body = 'q-human?'").get() as { recipient: string };
   assert.equal(hRow.recipient, 'human', 'stored as the literal surface, not a workspace id');
+  // D5 pin: `gate open --to <8-char>` is canonicalized to the FULL id (the short-handle canary defect otherwise).
+  const gshort = await cliAsync(w, OPS, ['gate', 'open', '--to', LEAD.slice(0, 8), 'gq-short?']);
+  assert.equal(gshort.code, 0, gshort.stderr);
+  const gRow = w.db.prepare('SELECT recipient FROM decision_gates ORDER BY id DESC LIMIT 1').get() as { recipient: string };
+  assert.equal(gRow.recipient, LEAD, 'gate recipient stored as the FULL id, never the short handle');
   const short = await cliAsync(w, OPS, ['ask', '--to', LEAD.slice(0, 8), 'q-short?']);
   assert.equal(short.code, 0, short.stderr);
   const row = w.db.prepare("SELECT recipient FROM messages WHERE body = 'q-short?'").get() as { recipient: string };
@@ -734,6 +739,50 @@ test('#221 F5 FIELD topology (root OPS, row-less LEAD): OPS `ask` / `gate open` 
   const gate = await cliAsync(w, OPS, ['gate', 'open', '--to', LEAD, 'gq?']);
   assert.equal(gate.code, 1, `gate open rc ${gate.code} ${gate.stdout}`);
   assert.equal(messageCount(w) - rows0, 0);
+});
+
+test('#221 R3 — each verb names ITSELF in its unknown-handle refusal (ask printed "orchestra send:")', async (t) => {
+  const w = sibWorld(t, 'new');
+  const s = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', 'no-such-ws', 'x']);
+  const a = await cliAsync(w, LEAD, ['ask', '--to', 'no-such-ws', 'q?']);
+  const g = await cliAsync(w, LEAD, ['gate', 'open', '--to', 'no-such-ws', 'gq?']);
+  for (const r of [s, a, g]) assert.equal(r.code, 1);
+  assert.match(s.stderr, /^orchestra send: --to "no-such-ws" matches no workspace/);
+  assert.match(a.stderr, /^orchestra ask: --to "no-such-ws" matches no workspace/);
+  assert.match(g.stderr, /^orchestra gate open: --to "no-such-ws" matches no workspace/);
+});
+
+test('#221 S — SANDBOX shape (hook socket answers unforwarded routes `{}`, no store): ask/gate open --to fail exactly like `send --to` does on master; `--to human` still works', async (t) => {
+  // MEASURED on master @aa9bb442 with this exact emulation: send rc 1 "matches no workspace"; ask rc 0 (a row parked in
+  // the in-container bus nobody reads) and gate open rc 0. ask/gate now behave like send: loud, 0 rows.
+  const w = world(t, 'new');
+  fieldTree(w);
+  w.tree.add({ id: WORKER, kind: 'worktree', parentId: LEAD });
+  w.promote(OPS); // NO seedStore: a sandbox has no store.json
+  const sock = path.join(w.home, 'shim.sock');
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      res.end('{}'); // the shim's answer for a route it does not forward
+    });
+  });
+  await new Promise<void>((r) => srv.listen(sock, r));
+  try {
+    const rows0 = messageCount(w);
+    const s = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'x'], sock);
+    const a = await cliAsync(w, LEAD, ['ask', '--to', WORKER, 'q?'], sock);
+    const g = await cliAsync(w, LEAD, ['gate', 'open', '--to', WORKER, 'gq?'], sock);
+    for (const r of [s, a, g]) {
+      assert.equal(r.code, 1, `rc ${r.code} ${r.stdout}`);
+      assert.match(r.stderr, /matches no workspace/);
+    }
+    assert.equal(messageCount(w) - rows0, 0, 'no row parked in the sandbox-local bus');
+    assert.equal((await cliAsync(w, LEAD, ['ask', '--to', 'human', 'q?'], sock)).code, 0, 'ask → human works in a sandbox');
+    assert.equal((await cliAsync(w, LEAD, ['gate', 'open', '--to', 'human', 'gq?'], sock)).code, 0, 'gate → human works');
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
 });
 
 // ── 7c. F2 / F3 (review): pin the direct-parent choice and the probe fail-direction ─
@@ -819,33 +868,5 @@ test('#221 wiring — resolveAnchorInfo hands computeAnchorInfo the store lookup
   assert.match(
     body,
     /computeAnchorInfo\(\s*ws,\s*\(id\) => store\.getWorkspace\(id\),\s*runAnchorProbe\(busRunAnchorDeps\),?\s*\)/,
-  );
-});
-
-test('#221 wiring — the P4 gate, /resolveHandle and the CLI send carry the F1 fixes', () => {
-  const ws = fs.readFileSync(path.join(here, 'workspaces.ts'), 'utf8');
-  const cliSrc = fs.readFileSync(path.join(here, '..', 'cli', 'index.ts'), 'utf8');
-  const fn = (src: string, decl: string): string => {
-    const i = src.indexOf(decl);
-    assert.ok(i > 0, `${decl} not found`);
-    return src.slice(i, src.indexOf('\n}\n', i));
-  };
-  assert.match(
-    fn(ws, 'export async function dispatchMessageRequest('),
-    /isPlainOwnAnchor\(targetForGate,[\s\S]*\(!plainAnchor \|\| senderHasBusRoute\)/,
-    'P4 gate exempts a plain own-anchor, but only for a sender WITHOUT a bus route',
-  );
-  assert.match(
-    fn(ws, 'export function dispatchResolveHandleRequest('),
-    /runId: resolveWaveRunId\(w\)/,
-    '/resolveHandle carries the wave run',
-  );
-  assert.match(cliSrc, /toRunId: canonTo\?\.runId \?\? null/, 'CLI send passes the recipient wave run');
-  assert.match(cliSrc, /askTo\?\.runId \?\? null/, 'CLI ask passes the recipient wave run');
-  assert.match(cliSrc, /gateToRunId = c\.runId/, 'CLI gate open passes the recipient wave run');
-  assert.match(
-    fn(ws, 'export async function dispatchMessageRequest('),
-    /const partiesRunId =\s*recipientWs && !plainAnchor/,
-    'the mirrored row skips a plain own-anchor (no second delivery by wake)',
   );
 });

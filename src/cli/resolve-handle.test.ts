@@ -74,3 +74,23 @@ test('resolveHandle: an EXACT id wins even when it is also a prefix of another',
 test('resolveHandle: a blank/whitespace --to is refused', () => {
   assert.equal(resolveHandle('   ', CANDS).ok, false);
 });
+
+// #221 R3 — every refusal names the verb that was typed (`ask` used to print "orchestra send:").
+test('resolveHandle: each refusal branch names the VERB it was given; the default stays `send`', () => {
+  const err = (r: ReturnType<typeof resolveHandle>): string => (r.ok ? '' : r.error);
+  for (const verb of ['ask', 'gate open']) {
+    assert.match(err(resolveHandle('  ', CANDS, verb)), new RegExp(`^orchestra ${verb}: --to is empty`), `${verb} / empty`);
+    assert.match(err(resolveHandle('nope', CANDS, verb)), new RegExp(`^orchestra ${verb}: --to "nope" matches no workspace`), `${verb} / unknown`);
+    const dup = [
+      { id: 'aaaa1111-0', name: 'same' },
+      { id: 'bbbb2222-0', name: 'same' },
+    ];
+    assert.match(err(resolveHandle('same', dup, verb)), new RegExp(`^orchestra ${verb}: --to "same" is ambiguous`), `${verb} / ambiguous name`);
+    const pre = [
+      { id: 'cccc3333-a', name: 'x' },
+      { id: 'cccc3333-b', name: 'y' },
+    ];
+    assert.match(err(resolveHandle('cccc3333', pre, verb)), new RegExp(`^orchestra ${verb}: --to "cccc3333" is ambiguous`), `${verb} / ambiguous prefix`);
+  }
+  assert.match(err(resolveHandle('nope', CANDS)), /^orchestra send: --to "nope" matches no workspace/, 'default verb is send');
+});

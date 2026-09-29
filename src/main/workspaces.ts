@@ -3413,11 +3413,14 @@ export async function dispatchMessageRequest(
   // (mail sits in the reader's run; the wake predicate scopes to it). An unknown
   // recipient (a refused send) has no run → undefined, and the mirror falls back
   // to the host id — harmless, since a refused send is not mirrored anyway.
-  // #221: NOT for a plain own-anchor — the old channel already delivered, and a dispatch row in the
-  // parent's own (now wake-ON) run would wake it a second time; the host-id fallback wakes nobody.
+  // #221: a plain own-anchor whose OWN run wakes (wake=ON) must not get the row there — the old channel already
+  // delivered and it would wake the parent a second time (host-id fallback wakes nobody). Row-less / wake-OFF
+  // targets keep own-run placement, so their `check` still sees it (as on master).
   const recipientWs = store.getWorkspace(input.to);
+  const mirrorWouldWake =
+    plainAnchor && !!db && !!recipientWs && busSwitch(db, resolveWaveRunId(recipientWs), 'wake');
   const partiesRunId =
-    recipientWs && !plainAnchor ? resolveWaveRunId(recipientWs) : undefined;
+    recipientWs && !mirrorWouldWake ? resolveWaveRunId(recipientWs) : undefined;
   mirrorDispatch({
     sender: input.from ?? 'external',
     recipient: input.to,

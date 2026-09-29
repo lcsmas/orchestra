@@ -809,6 +809,7 @@ export function offlineHandleCandidates(): HandleCandidate[] {
  *  id on success. */
 async function canonicalizeRecipientOrFail(
   to: string,
+  verb = 'send',
 ): Promise<{ id: string; runId: string | null }> {
   let candidates: HandleCandidate[];
   try {
@@ -827,7 +828,7 @@ async function canonicalizeRecipientOrFail(
     // bus verbs working through). Resolve against the persisted store.
     candidates = offlineHandleCandidates();
   }
-  const resolved = resolveHandle(to, candidates);
+  const resolved = resolveHandle(to, candidates, verb);
   if (!resolved.ok) fail(resolved.error);
   const id = (resolved as { ok: true; id: string }).id;
   return { id, runId: candidates.find((c) => c.id === id)?.runId ?? null };
@@ -1670,7 +1671,7 @@ async function main(argv: string[]): Promise<void> {
       // recipient is refused loudly instead of parking a question nobody reads. `human` is a surface.
       const askTo =
         to.value?.trim() && to.value.trim() !== 'human'
-          ? await canonicalizeRecipientOrFail(to.value)
+          ? await canonicalizeRecipientOrFail(to.value, 'ask')
           : null;
       const { db, bus } = await openBusForVerb();
       try {
@@ -1720,7 +1721,7 @@ async function main(argv: string[]): Promise<void> {
       if (as.rest[0] === 'open') {
         const gt = takeFlag(gateArgs, '--to');
         if (gt.value?.trim() && gt.value.trim() !== 'human') {
-          const c = await canonicalizeRecipientOrFail(gt.value);
+          const c = await canonicalizeRecipientOrFail(gt.value, 'gate open');
           gateArgs = ['--to', c.id, ...gt.rest];
           gateToRunId = c.runId;
         }

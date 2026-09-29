@@ -411,6 +411,18 @@ check(
   busDb.prepare('SELECT COUNT(*) AS c FROM runs WHERE id = ?').get(PLAIN).c === 1,
 );
 check('P3 (unchanged): R1\'s node under the ORCHESTRATOR LEAD keeps parent_run_id = that LEAD', runRow(NODE_ID) === `vague|${NODE_ID}|${LEAD_ID}`, runRow(NODE_ID));
+// P4 — a run-ANCHORING plain grandparent above a run-less plain intermediate wins: the shipped resolveAnchorInfo
+// must hand computeAnchorInfo the run-row probe (real workspaces.ts wiring, not a source regex).
+const GRANDP = 'grandp-221';
+const MID = 'mid-221';
+const KIDG = 'kidg-221';
+await mod.store.upsertWorkspace(ws(GRANDP));
+await mod.store.upsertWorkspace(ws(MID, { parentId: GRANDP }));
+await mod.store.upsertWorkspace(ws(KIDG, { parentId: MID }));
+mod.startRun(busDb, { id: GRANDP, kind: 'mission', coordinator: GRANDP }, { delivery: true, wake: true, askGate: false, liveness: false });
+const p4 = await mod.dispatchPromoteRequest({ id: KIDG });
+check('P4: promote nests the child under the run-ANCHORING grandparent', p4.ok === true && runRow(KIDG) === `vague|${KIDG}|${GRANDP}`, runRow(KIDG));
+check('P4: the run-less plain intermediate gets NO row', runRow(MID) === 'absent', runRow(MID));
 
 
 // F1(a) — the plain parent LOSES NOTHING: its NON-member children keep the old `message`

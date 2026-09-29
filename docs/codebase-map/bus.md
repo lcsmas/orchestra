@@ -2208,9 +2208,10 @@ gate in `dispatchMessageRequest` skips a **plain own-anchor** (`isPlainOwnAnchor
 sender WITHOUT a bus route** — the sender's run ∉ `getRelatedRunIds(parent run)`, i.e. a
 non-member child or an external caller; the OPS and its members (whose `send` reaches the
 parent) are still refused, as are an orchestrator and any member of a delivery-ON run. The
-mirrored dispatch row of an exempted `message` is NOT filed in the parent's own run
-(`partiesRunId` undefined → host-id fallback): that run now reads wake=ON and the row would
-wake the parent a SECOND time for a message the old channel already delivered.
+mirrored dispatch row of an exempted `message` is NOT filed in the parent's own run when
+that run has wake=ON (`partiesRunId` undefined → host-id fallback): the row would wake the
+parent a SECOND time for a message the old channel already delivered. A row-less or
+wake-OFF plain target keeps own-run placement (its `check` still sees it, as on master).
 (b) The reverse, parent→plain-child `send`, would have been accepted into a run the child
 never reads; `/resolveHandle` now carries each workspace's wave `runId` (the CLI computes
 it from `store.json` when the app is down) and `send` / `ask --to` / `gate open --to` all
@@ -2218,7 +2219,11 @@ canonicalize the handle and pass `toRunId` → `assertRecipientReachable` treats
 recipient with `toRunId === to` (own anchor, nobody's member) like an anchored one:
 unreachable → loud refusal naming `orchestra message`. A member (`toRunId ≠ to`), a legacy
 orchestrator a child run points at, `--to human`, and an older app (no `runId`) are not
-judged. ACCEPTED GAPS (first review round): a
+judged. Each verb names ITSELF in its unknown/ambiguous-handle refusal
+(`resolveHandle(raw, candidates, verb)`). **Sandbox:** the in-container hook socket forwards
+no `/resolveHandle` and there is no store, so `send`, `ask --to` and `gate open --to` all
+refuse "matches no workspace" (MEASURED on master: only `send` did — `ask`/`gate open` parked
+a row in the in-container bus nobody reads); `--to human` still works. ACCEPTED GAPS (first review round): a
 plain P with a #221 row re-parented under an orchestrator collapses into that run (its OPS
 children leave the related set); a demoted ex-orchestrator intermediate with a stale row
 wins the walk (and its P4 gate opens); the field root-mission OPS row is not repaired

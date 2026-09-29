@@ -51,9 +51,11 @@ export const SHORT_HANDLE_LEN = 8;
 export function resolveHandle(
   raw: string,
   candidates: readonly HandleCandidate[],
+  /** The verb the refusal names (`send` | `ask` | `gate open`): each names ITSELF. */
+  verb = 'send',
 ): ResolveHandleResult {
   const to = raw.trim();
-  if (!to) return { ok: false, error: 'orchestra send: --to is empty' };
+  if (!to) return { ok: false, error: `orchestra ${verb}: --to is empty` };
 
   // Tier 1: exact id. Unique, so at most one — return immediately.
   const exactId = candidates.find((c) => c.id === to);
@@ -66,7 +68,7 @@ export function resolveHandle(
   if (byName.length > 1) {
     return {
       ok: false,
-      error: ambiguous(to, byName, 'name'),
+      error: ambiguous(to, byName, 'name', verb),
     };
   }
 
@@ -77,14 +79,14 @@ export function resolveHandle(
   if (byPrefix.length > 1) {
     return {
       ok: false,
-      error: ambiguous(to, byPrefix, 'prefix'),
+      error: ambiguous(to, byPrefix, 'prefix', verb),
     };
   }
 
   return {
     ok: false,
     error:
-      `orchestra send: --to ${JSON.stringify(to)} matches no workspace ` +
+      `orchestra ${verb}: --to ${JSON.stringify(to)} matches no workspace ` +
       `(tried exact id, exact name, then id prefix). ` +
       `Use 'orchestra peers' to list ids, or pass the full workspace id.`,
   };
@@ -94,13 +96,14 @@ function ambiguous(
   to: string,
   matches: readonly HandleCandidate[],
   kind: 'name' | 'prefix',
+  verb: string,
 ): string {
   const named = matches
     .map((c) => `${c.id}${c.name ? ` (${c.name})` : ''}`)
     .join(', ');
   const how = kind === 'name' ? 'workspace name' : 'id prefix';
   return (
-    `orchestra send: --to ${JSON.stringify(to)} is ambiguous — it matches ${matches.length} ` +
+    `orchestra ${verb}: --to ${JSON.stringify(to)} is ambiguous — it matches ${matches.length} ` +
     `workspaces by ${how}: ${named}. Pass the full id of the one you mean.`
   );
 }

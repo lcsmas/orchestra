@@ -437,6 +437,79 @@ test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is R
   assert.equal(r.delivered, false);
 });
 
+test('#221 R1 — a ROW-LESS / wake-OFF plain target keeps OWN-RUN placement of the mirrored row (master behaviour); only a wake-ON own run skips it', async (t) => {
+  const own = (db: BusDb) =>
+    db.prepare("SELECT run_id FROM messages WHERE recipient = 'ws-target' ORDER BY sequence").all() as { run_id: string }[];
+  // (a) row-less target (no run row at all): the row lands in ITS run, where its own `check` finds it.
+  const dbA = tmpBus(t);
+  const a = await runWrapper({
+    db: dbA, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
+  });
+  assert.equal(a.result.ok, true);
+  assert.deepEqual(own(dbA).map((r) => r.run_id), ['ws-target'], 'row-less target: own-run placement kept');
+  // (b) own run exists but wake is OFF (delivery OFF too): nothing to double-wake → placement kept.
+  const dbB = tmpBus(t);
+  startRun(dbB, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, { ...DEFAULT_BUS_SWITCHES });
+  await runWrapper({
+    db: dbB, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
+  });
+  assert.deepEqual(own(dbB).map((r) => r.run_id), ['ws-target'], 'wake-OFF own run: placement kept');
+  // (c) wake-ON own run: the row would wake the parent a SECOND time → NOT filed there (host-id fallback).
+  const dbC = tmpBus(t);
+  seedLeadRuns(dbC);
+  await runWrapper({
+    db: dbC, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
+  });
+  assert.equal(own(dbC).filter((r) => r.run_id === 'ws-target').length, 0, 'wake-ON own run: skipped');
+});
+
+test('#221 R4b — a ROUTE sender under delivery OFF / wake ON is delivered by `message` and the mirrored row still wakes nobody', async (t) => {
+  // MUTANT: skip the mirror only for NON-route senders (`!(plainAnchor && !senderHasBusRoute)`) → the OPS's
+  // row lands in the wake-ON parent run → 1 wake → reddens.
+  const db = tmpBus(t);
+  t.after(() => __resetBusWakeForTests());
+  const flags = { ...DEFAULT_BUS_SWITCHES, delivery: false, wake: true };
+  startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, flags);
+  startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops', parentRunId: 'ws-target' }, flags);
+  const r = await runWrapper({
+    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-ops'),
+  });
+  assert.equal(r.result.ok, true, 'delivery OFF: the old channel is not gated for the OPS');
+  assert.equal(r.delivered, true);
+  const wakes = armSweep(db, [{ reader: 'ws-target', runId: 'ws-target' }]);
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, `no double delivery: ${JSON.stringify(wakes)}`);
+});
+
+test('#221 R4a — /resolveHandle carries each workspace wave run: member → its orchestrator, plain child → itself, archived excluded', () => {
+  // The REAL handler body from workspaces.ts. MUTANT `runId: w.id` → the member reads as its own anchor.
+  const body = extract('export function dispatchResolveHandleRequest')
+    .replace(/^export\s+/, '')
+    .replace(/function dispatchResolveHandleRequest\(\): \{[\s\S]*?\n\} \{/, 'function dispatchResolveHandleRequest() {');
+  assert.ok(!/:\s*\{\s*ok:/.test(body), 'return annotation stripped');
+  const nodes: Record<string, TopoNode & { name: string }> = {
+    o: { ...node('o', { canOrchestrate: true }), name: 'orch' },
+    m: { ...node('m', { parentId: 'o' }), name: 'member' },
+    c: { ...node('c'), name: 'child' },
+    a: { ...node('a', { archived: true }), name: 'gone' },
+  };
+  const fn = new Function(
+    'store',
+    'resolveWaveRunId',
+    `${body}\nreturn dispatchResolveHandleRequest;`,
+  )(
+    { workspaces: Object.values(nodes) },
+    (ws: TopoNode) => nearestOrchestratorId(ws, (id: string) => nodes[id]),
+  );
+  const res = fn() as { ok: boolean; workspaces: { id: string; name: string; runId: string }[] };
+  assert.equal(res.ok, true);
+  assert.deepEqual(
+    res.workspaces.map((w) => [w.id, w.runId]),
+    [['o', 'o'], ['m', 'o'], ['c', 'c']],
+    'orchestrator → itself, member → its orchestrator, plain child → itself; archived dropped',
+  );
+});
+
 // ─── 3. F3 (LEAD D-W8-1) — the BROADCAST is gated too; only --emergency bypasses ──
 //
 // A broadcast is NOT a bypass by virtue of its shape: `dispatchBroadcast
