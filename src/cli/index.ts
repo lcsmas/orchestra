@@ -33,6 +33,13 @@ import {
   switchStateWord,
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
+import {
+  commandHelp,
+  isHelpFlag,
+  overview,
+  unknownCommandMessage,
+  wantsCommandHelp,
+} from './help.ts';
 import { staleRunRefusalMessage } from '../shared/reparent-run.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
@@ -188,138 +195,7 @@ function printBadRecipients(res: OrchestraResponse): void {
   }
 }
 
-const USAGE = `Orchestra CLI — talk to a running Orchestra app over its Unix socket.
-
-Usage:
-  orchestra peers [--stats]                      List the other agent workspaces
-                                                 (--stats: + committed diff vs base per peer)
-  orchestra read <id> [--lines N]                Print a workspace's transcript
-  orchestra message <id> <text...>               Send a prompt to a workspace
-                                                 (LEGACY channel; for fleet
-                                                  coordination on a bus run use
-                                                  'orchestra send'. Refused toward
-                                                  a delivery-ON target unless
-                                                  --emergency is the leading token)
-  orchestra message [--emergency] --children <text...>   Broadcast to your DIRECT children
-                                                 (not the whole subtree)
-  orchestra message [--emergency] --to <id,id,...> <text...>   Broadcast to an explicit list
-                                                 (both broadcast forms print one
-                                                  delivery line PER TARGET and exit
-                                                  non-zero if ANY target failed;
-                                                  gated like a single send on a
-                                                  delivery-ON run — the #86 group-
-                                                  stop needs a leading --emergency)
-  orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
-                                                 Spawn a new worktree + agent
-                                                 (--model: pin the agent's model, e.g. haiku/sonnet/opus;
-                                                  default when omitted: claude-opus-4-8;
-                                                  --detached: top-level, not nested under the caller)
-  orchestra rename <id> <branch>                 Rename a workspace's branch
-  orchestra set-base <id> <branch>               Retarget the base branch (Diff/merge target)
-  orchestra restart [<id>] [--fresh]             Relaunch a workspace's claude process so it re-reads
-                                                 CLAUDE.md/settings, WITHOUT touching worktree/branch/commits
-                                                 (default: THIS workspace; handles terminal + structured;
-                                                  default keeps the conversation, --fresh starts vierge)
-  orchestra reload-skills [<id>|--all] [--plugins]
-                                                 Make out-of-band skill/plugin installs visible to
-                                                 ALREADY-RUNNING sessions, without restarting them
-                                                 (default: THIS workspace; --all: every live session;
-                                                  --plugins: also reload plugins, which unlike plain
-                                                  ~/.claude/skills are NOT watched for changes)
-  orchestra promote <id>                         Promote a scratch session into an orchestrator
-  orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
-  orchestra detach <id>                          Pop a workspace back out to its own section
-  orchestra set-repo <id> [<path>]               Group an ORCHESTRATOR under a repo's sidebar
-                                                 section (with its children); omit the path to
-                                                 clear. Display only — grants no repo/branch/diff
-                                                 and is never inherited by spawn
-  orchestra verify-landed <id> [--into <branch>] Check every commit on a workspace's branch tip
-                                                 landed on the target (default: YOUR branch);
-                                                 exit 0 = landed, 2 = unmerged commits remain,
-                                                 1 = could not check (unknown id, no branch, …)
-  orchestra whoami                               Print THIS workspace's own record (id, branch,
-                                                 kind, orchestrator role, parent, repo, base)
-  orchestra status <text...>                     Set THIS workspace's one-line status note —
-                                                 shown under its sidebar row and in peers
-  orchestra status --clear                       Clear the status note
-  orchestra bus-status                           Print the shadow mirror's divergence counters
-                                                 for the current run (missed / duplicate /
-                                                 lost-wake per mechanism), and whether the bus
-                                                 is reachable at all. Read-only.
-  orchestra run refreeze [--run <id>]            Re-freeze a MISSION run's bus switches to the
-                                                 current live switches (default run: $ORCHESTRA_RUN_ID
-                                                 or 'default'). For a FLAT orchestrator whose mission
-                                                 never picks up a switch flip (no sub-OPS ever launches
-                                                 under it). Refused on a non-mission run, or while any
-                                                 child is live mid-turn. Never creates a run row.
-  orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
-                                                 Pin a Linear ticket into the sidebar
-                                                 (--spawn: also create a worktree + agent for it,
-                                                  nested under you, like orchestra spawn)
-  orchestra linear list [--mine]                 List pinned tickets (--mine: your open Linear issues)
-  orchestra linear rm <url|TEAM-123>             Un-pin a ticket (never touches Linear)
-  orchestra linear pin <url|TEAM-123> [--workspace <id>]
-                                                 Attach a ticket to an existing workspace
-  orchestra link [--pr <url>]... [--linear <KEY>] [id]
-                                                 Report the PR(s) / Linear issue THIS workspace
-                                                 is working on — the only source for the sidebar
-                                                 badges. --pr repeats and ADDS (link every PR
-                                                 when work spans several repos)
-  orchestra link --clear [--pr [<url>]] [--linear]
-                                                 Drop links: --pr <url> removes one,
-                                                 a bare --pr removes them all
-  orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] <body...>
-                                                 Append a message to the FLEET BUS. Writes
-                                                 SQLite directly, so it lands even while the
-                                                 app is down. Prints the message's sequence.
-                                                 <kind>: status dispatch worker_done escalation
-                                                         handoff decision_gate question heartbeat
-                                                 --type dispatch also mints a capability token
-                                                 (printed on a 2nd line) — hand it to the worker.
-                                                 --cap <token>: a worker_done carries the token
-                                                 from its dispatch; a missing or superseded one is
-                                                 rejected once the capability switch is ON. A status
-                                                 may carry it for attribution but never requires it.
-                                                 --generation <n>: coordinator generation to fence
-                                                 the write on (#128); a stale one is rejected.
-  orchestra check [--ack-previous] [--markdown] [--limit N]
-                                                 Relève: print YOUR pending lot as JSON
-                                                 (--markdown for a human render). NEVER acks —
-                                                 the same lot replays until you ack it, so a
-                                                 crash between check and ack loses nothing.
-                                                 --ack-previous: ack the outstanding lot first,
-                                                 then take the next one.
-  orchestra ack <lot-id>                         Accusé: close the lot 'check' handed you and
-                                                 advance your cursor past it
-  orchestra ask --to <handle> <question...>      Park a question on the bus for <handle>, print
-                                                 its id and EXIT — never waits (the answer comes
-                                                 back as an ordinary bus message)
-  orchestra token                                Print YOUR current active dispatch capability
-                                                 token — carry it as --cap on your worker_done
-                                                 (#167). Retrieve it AFTER any re-dispatch: a
-                                                 re-dispatch supersedes your old token, so fetch
-                                                 the current one here rather than reusing a stale
-                                                 one. Fails if nothing is dispatched to you.
-  orchestra gate open [--to <h>] <question...>   Open a decision gate awaiting a human Ruling;
-                                                 --to <h> addresses (and wakes) that reader until
-                                                 it is resolved, and surfaces it in their 'check'
-  orchestra gate resolve <id> --resolution <r>   Record the Ruling (refuses to overwrite one)
-  orchestra gate list                            Open gates addressed to you (also shown by 'check')
-                                                 All accept --run <id> (default: $ORCHESTRA_RUN_ID
-                                                 or 'default') and --as <handle> (default: $ORCHESTRA_WS_ID)
-  orchestra add-repo <path>                       Register a repo by path
-  orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
-  orchestra accounts                              List configured Claude accounts (id + label)
-  orchestra migrate-account <id> <accountId>     Migrate a workspace to another account
-  orchestra migrate-account <id> --default       Migrate a workspace back to the default login
-  orchestra login-url <url>                      (internal) route an account-login browser-open
-                                                 to the app's isolated login window
-  orchestra --help                               Show this help
-
-Socket discovery (in order):
-  1. the ORCHESTRA_SOCK environment variable, if set;
-  2. else the contents of ~/.orchestra/sock (the absolute socket path);
-  3. else the command fails — Orchestra is not running.`;
+const USAGE = overview();
 
 /**
  * The caller's own workspace id, when the CLI runs inside an Orchestra agent
@@ -1065,8 +941,21 @@ function busIdentityOrFail(flags: { run?: string; as?: string }): {
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
 
-  if (!command || command === '--help' || command === '-h' || command === 'help') {
-    process.stdout.write(`${USAGE}\n`);
+  if (!command || isHelpFlag(command)) {
+    process.stdout.write(USAGE);
+    return;
+  }
+  // `help <cmd>` and `<cmd> --help` print that command's help and NEVER run it
+  // (before this, `status --help` set the status note to "--help").
+  if (command === 'help' || wantsCommandHelp(args)) {
+    const target = command === 'help' ? args[0] : command;
+    if (!target) {
+      process.stdout.write(USAGE);
+      return;
+    }
+    const text = commandHelp(target);
+    if (!text) fail(unknownCommandMessage(target));
+    process.stdout.write(text);
     return;
   }
 
@@ -2177,7 +2066,7 @@ async function main(argv: string[]): Promise<void> {
     }
 
     default:
-      fail(`unknown command: ${command}\n\n${USAGE}`);
+      fail(unknownCommandMessage(command));
   }
 }
 

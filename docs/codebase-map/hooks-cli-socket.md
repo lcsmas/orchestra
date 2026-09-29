@@ -267,6 +267,14 @@ frozen flag table on `refrozen` and a diagnosable line on every refusal
 `src/cli/run-refreeze-args.test.ts`).
 Fully non-interactive (destructive `delete` needs `--yes`).
 
+### Help (`src/cli/help.ts`)
+`COMMANDS` is the single help registry (group, one-line summary, full detail per
+verb); `overview()` renders the grouped `orchestra --help`. `main()` short-circuits
+`help <cmd>` and `<cmd> --help|-h` (also `<cmd> <sub> --help`, e.g. `gate open
+--help`) BEFORE dispatch, so a help flag never executes the verb; unknown verbs get
+`suggest()` typo hints. `src/cli/help.test.ts` fails when a `case` in `main()` has
+no registry entry — adding a verb means adding its entry.
+
 ### Exiting the CLI: flush before you terminate (issue #62)
 
 Every terminal exit funnels through **`exitAfterFlush(code)`** (`src/cli/index.ts`),
