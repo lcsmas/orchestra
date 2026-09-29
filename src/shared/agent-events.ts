@@ -1461,6 +1461,18 @@ function findByIndex(messages: RenderMessage[], index: number): number {
   return -1;
 }
 
+/** turn-end closes blocks the stream never `block-stop`ped, else `done` stays false and the typewriter
+ *  rAF loops 60/s forever (#198 T9 F4); clearing `index` stops a stray turn-2 delta absorbing into them. */
+function closeOpenBlocks(messages: RenderMessage[]): RenderMessage[] {
+  let changed = false;
+  const out = messages.map((m) => {
+    if (m.role !== 'assistant' || m.done) return m;
+    changed = true;
+    return { ...m, thinking: false, done: true, index: undefined };
+  });
+  return changed ? out : messages;
+}
+
 /** Find the tool render message by tool_use id, or -1. */
 function findByToolUseId(messages: RenderMessage[], toolUseId: string): number {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -1835,6 +1847,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
     case 'turn-end':
       return {
         ...next,
+        messages: closeOpenBlocks(next.messages),
         running: false,
         lastTurn: event,
         totalCostUsd: next.totalCostUsd + (event.costUsd ?? 0),

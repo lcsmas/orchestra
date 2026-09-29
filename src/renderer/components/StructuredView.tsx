@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { isPeerMessage } from '../../shared/peer-messages';
+import { createMeasurePassGuard } from '../../shared/measure-pass-guard';
 import {
   isBusWakeMessage,
   isCheckInvocation,
@@ -438,11 +439,15 @@ function MessageList({
   // first namesake — see scroll-anchor.ts for the transcript-teleport that came
   // from trusting id uniqueness here.
   const anchorRef = useRef<{ id: string; delta: number; index: number } | null>(null);
-  // Guards against the React #185 render loop (see the onHeight handler). Counts
-  // synchronous measure→render passes since the last painted frame; a frame
-  // boundary resets it, so only an unbroken chain WITHIN one frame can trip it.
-  const syncMeasurePasses = useRef(0);
-  const measureLoopWarned = useRef(false);
+  // Guards against the React #185 render loop (see the onHeight handler): a pure state machine,
+  // gated by `measure-pass-guard.test.ts`. Its frame reset is one-shot (a perpetual rAF woke every pane 60x/s idle).
+  const [measureGuard] = useState(() =>
+    createMeasurePassGuard(
+      MAX_SYNC_MEASURE_PASSES,
+      (cb) => requestAnimationFrame(cb),
+      (h) => cancelAnimationFrame(h),
+    ),
+  );
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
@@ -577,19 +582,8 @@ function MessageList({
     // there are messages (the empty state renders a different subtree).
   }, [pinToBottom, messages.length > 0]);
 
-  // Reset the measure-loop counter once per painted frame. Only an unbroken
-  // chain of synchronous measure→render passes WITHIN a single frame can trip
-  // the guard; reaching a paint means layout settled, so normal streaming (which
-  // paints between batches) never accumulates toward the limit.
-  useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      syncMeasurePasses.current = 0;
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, []);
+  // Cancel a pending frame-boundary reset on unmount (cancel() also drops the handle: StrictMode re-runs effects on the same refs).
+  useEffect(() => () => measureGuard.dispose(), [measureGuard]);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
   useLayoutEffect(() => {
@@ -697,6 +691,8 @@ function MessageList({
   start = Math.max(0, start - OVERSCAN);
   end = Math.min(items.length, end + OVERSCAN);
 
+  // Shared by every row's onHeight of THIS render: N rows in one commit are ONE pass (measure-pass-guard).
+  const commitToken = {};
   const visible = items.slice(start, end);
   const padTop = offsets[start] ?? 0;
 
@@ -822,10 +818,8 @@ function MessageList({
                   // path, which yields to the browser and cannot recurse. A
                   // frame boundary resets the counter, so normal streaming (a
                   // handful of passes per frame) is untouched.
-                  syncMeasurePasses.current += 1;
-                  const looping = syncMeasurePasses.current > MAX_SYNC_MEASURE_PASSES;
-                  if (looping && !measureLoopWarned.current) {
-                    measureLoopWarned.current = true;
+                  const { looping, firstTrip } = measureGuard.recordPass(commitToken);
+                  if (firstTrip) {
                     log.warn(
                       `row-measure loop guard tripped after ` +
                         `${MAX_SYNC_MEASURE_PASSES} synchronous passes (row ${it.id}: ` +

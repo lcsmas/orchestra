@@ -52,3 +52,6 @@ build/human-gates-shots/
 # Context-panel scroll screenshots produced by scripts/context-panel-scroll-screenshot.mjs (#33).
 # Same rule: gate EVIDENCE, regenerate with the rig, keep them off the source tree.
 build/ctx-panel-scroll-shots/
+# Renderer idle-CPU profiles produced by scripts/renderer-cpu-profile.mjs (#198 D11 / T9).
+# Gate evidence, regenerate with the rig; keep off the source tree.
+build/renderer-cpu/

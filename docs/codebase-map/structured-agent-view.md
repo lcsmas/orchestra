@@ -1174,7 +1174,60 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   two clamp guards red). Verified e2e (CDP under headless sway) against a
   positive control: baseline streamMaxGap ~6666px vs fixed 0px, with user
   scroll-up still releasing (a real wheel event leaves the viewport where the user
-  put it while more text streams in). The **composer** auto-grows and accepts **pasted images**
+  put it while more text streams in).
+
+  **Measure-loop guard: on-demand reset + per-COMMIT counting, and where the
+  renderer's CPU actually goes (#198 D11 / T9).** `syncMeasurePasses` bounds the
+  synchronous measure→render chain that guards React error #185
+  (`MAX_SYNC_MEASURE_PASSES = 12`; a trip logs `row-measure loop guard tripped`).
+  Four defects, all fixed, gated by `scripts/renderer-cpu-profile.mjs` (built
+  app, headless sway, CDP; `pnpm run test:renderer-cpu`; 7 named clauses) and,
+  for the dev-only one, by unit tests:
+  (1) the per-frame counter reset was a **perpetual self-rescheduling rAF per
+  mounted pane** — 62 app-rAF/s each, measured 372/s at 6 panes, even idle; it is
+  now a one-shot armed by a measure pass → 0/s (`idle-raf`). The scheduler is
+  `src/shared/frame-reset.ts`: `cancel()` also drops the handle, because
+  StrictMode (dev, `main.tsx`) re-runs effects on the SAME refs and a stale handle
+  silently killed every later reset (counter never back to 0 → false guard trips)
+  — only reachable in dev, so `frame-reset.test.ts` gates it, not the rig.
+  The whole circuit breaker (count per COMMIT, trip latch, frame reset) is the pure
+  state machine `src/shared/measure-pass-guard.ts`; `measure-pass-guard.test.ts`
+  drives a genuinely oscillating height sequence (must trip once, then stay bounded)
+  plus the must-NOT-trip arms; mutants never-counts / per-row / no-latch / no-reset /
+  never-armed / `>=` / perpetual-reset each redden. The rig deletes only ITS OWN
+  `/tmp` files (grim → stdout, own-pid cleanup on every exit path).
+  (2) the counter incremented **per row callback**, not per commit as
+  `MAX_SYNC_MEASURE_PASSES`' own comment says, so ANY pane whose window holds >12
+  rows tripped the guard the first time it became visible (a 13-row cold open:
+  1 trip → 0) and rows past the 12th lost the synchronous first-measure path
+  (`cold-guard`); it now counts one pass per render commit (`lastPassCommit`). A
+  real A→B→A oscillation is still one pass per commit and still trips at 12.
+  Frame-boundary resets must keep firing (`stream-guard`: 40 rows streamed across
+  frames trip nothing). (3) a **second perpetual rAF**: `useTypewriter` loops
+  while `!message.done`, and only `block-stop` set `done` — a turn cut off
+  without one left 59 rAF/s on an idle pane forever. `turn-end` now closes the
+  turn's open assistant blocks in the fold (`closeOpenBlocks`,
+  `agent-events.test.ts`; rig arm `typewriter-live` control + `typewriter-idle`). In-place mutants each redden ONLY their clause: perpetual
+  rAF (= master) → `idle-raf`; per-row counting → `cold-guard`; reset removed →
+  `stream-guard`; turn-end not closing blocks → `typewriter-idle`.
+
+  **Measured, and NOT what the ticket assumed:** removing the rAF loop does not
+  measurably move OS CPU (renderer `/proc` 14.2% → 13.5%, series overlap), and the
+  guard trips are one-off bursts, not a sustained loop. What burns CPU is the
+  **infinite CSS animations of the running-turn UI**, same build, interleaved
+  windows, renderer+GPU % of a core (software GL in the headless rig — absolute
+  numbers overstate a real GPU, the ranking is the point): 6 running sessions with
+  sidebar spinners **39.4% → 1.0%** with all animations off; one animation alone
+  above the 2.2% floor: `av-shimmer` (`background-position` on a `background-clip:
+  text` label — repaints text every frame) 20.5, `av-pulse` (`box-shadow`) 14.1,
+  `av-spark-spin` (transform) 11.9, `cm-blink` 4.0. Any ONE running animation costs
+  a 60 fps frame stream; stepping the three agent-view ones to ~12–15 fps measured
+  30.1 → 17.9 (one noisy run). Rig knobs: `RCPU_AB=<css|1>` (in-page interleaved
+  A/B), `RCPU_WS_STATUS=running`, per-process/thread breakdown in the JSON.
+  Lowering those animations is a visual change — decision for the human, not made
+  here.
+
+  The **composer** auto-grows and accepts **pasted images**
   (`onPaste` → base64 via FileReader → thumbnail strip → sent on submit as
   `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,
   **`BackgroundTasksPanel`**. A floating top-right **toggle** (`av-bgtask-toggle`,
