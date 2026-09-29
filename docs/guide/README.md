@@ -7,7 +7,7 @@ Orchestra runs parallel Claude Code agents in isolated git worktrees — each on
 | [Getting started](getting-started.md) | Install, register a repo, first workspace, first PR |
 | [Workspaces & sessions](workspaces.md) | Worktree workspaces, scratch sessions, orchestrators, lifecycle, terminals, status |
 | [Multi-agent orchestration](multi-agent.md) | Agents spawning agents, peer comms, orchestrator fleets |
-| [Review & ship](review-and-ship.md) | Diff review, one-click PR, merge & release tracking, base sync |
+| [Review & ship](review-and-ship.md) | Diff review, PR tracking, merge & release tracking, base sync |
 | [Accounts & usage](accounts-and-usage.md) | Multiple Claude logins, usage bars, the prompt queue |
 | [Remote sandbox agents](sandbox.md) | Agents that keep working in Docker with the laptop closed |
 | [Integrations & extras](integrations.md) | Linear badges, Insights & Improvements self-tune, chime, scripts |

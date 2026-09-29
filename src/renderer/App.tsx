@@ -588,7 +588,7 @@ export function App() {
               </div>
               <div className="welcome-feature">
                 <span className="welcome-feature-name">Diff-first review</span>
-                <span className="welcome-feature-desc">Live side-by-side diff, then a one-click PR</span>
+                <span className="welcome-feature-desc">Live side-by-side diff, then the agent opens the PR</span>
               </div>
               <div className="welcome-feature">
                 <span className="welcome-feature-name">Accounts &amp; usage</span>

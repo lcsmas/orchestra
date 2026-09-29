@@ -25,7 +25,7 @@ The **?** button in the sidebar header opens the in-app feature guide any time.
 3. Type your task into the agent's terminal. The branch starts with an auto-generated name; the agent renames it to something meaningful once it understands the work ([self-naming branches](workspaces.md#branch-naming)).
 4. Watch the status dot: blue while the agent works, orange when it's waiting for you.
 5. Open the **Diff** tab to review the change as it grows — it refreshes live.
-6. Happy? Click the PR button: Orchestra commits, pushes, and opens a `gh pr create` PR against the base branch. The sidebar tracks the PR from then on.
+6. Happy? Ask the agent to commit, push and open a PR against the base branch (`gh pr create`). Once it links the PR, a **PR #N** button appears in the toolbar and the sidebar tracks the PR from then on.
 7. Done with the workspace? **Archive** it — worktree and branch are removed together (recoverable via unarchive until you delete).
 
 ## Where things live

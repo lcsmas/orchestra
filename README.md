@@ -6,7 +6,7 @@
 
 > **A Conductor-like app for Linux: run parallel Claude Code agents in isolated git worktrees — and let agents spawn agents.**
 
-If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that idea for Linux (it runs on macOS and Windows too, built from source). Each agent gets its own branch in its own git worktree, and you watch them all from one dashboard: live terminal, cumulative diff, one-click PR.
+If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that idea for Linux (it runs on macOS and Windows too, built from source). Each agent gets its own branch in its own git worktree, and you watch them all from one dashboard: live terminal, cumulative diff, PR tracking.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)
@@ -39,7 +39,7 @@ If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that 
 
 ### Review & ship
 - **Diff-first review** — side-by-side Monaco diff per workspace, refreshing while the agent works; +/− counts on every sidebar row
-- **One-click PR** — commit → push → `gh pr create` from the dashboard, with PR state tracked in the sidebar
+- **PR tracking** — the agent opens the PR and links it; a toolbar `PR #N` button opens it and its state is tracked in the sidebar
 - **Merge & release pills** — merged / diverged / unpushed detection per branch, plus the earliest release containing the branch's commits
 - **Base sync** — behind/ahead counts vs. `origin/<base>`, refreshed on focus
 
@@ -104,7 +104,7 @@ pnpm run dev                 # vite + electron, hot reload
 - **Agents** — spawned via `node-pty` in the worktree, wired to an xterm.js terminal in the UI.
 - **Hooks** — Orchestra installs Claude Code hooks into each worktree's `.claude/settings.local.json`. They talk to a Unix-socket HTTP server in the main process: activity status, agent-driven branch rename, and the `/spawn` endpoint that lets any agent create a new workspace + agent. All hooks are env-guarded, so running `claude` outside Orchestra is a silent no-op.
 - **Capability skills** — each worktree also gets a set of `orchestra-*` Claude Code skills (spawn, comms, rename, promote, attach, repos, migrate-account), so agents discover their powers on demand instead of carrying them in every prompt.
-- **PRs** — `commit → push -u origin <branch> → gh pr create --base <baseBranch>`.
+- **PRs** — opened by the agent (`commit → push -u origin <branch> → gh pr create --base <baseBranch>`), then linked with `orchestra link --pr`; Orchestra only tracks and opens them.
 
 ## CLI
 

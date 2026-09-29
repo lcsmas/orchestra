@@ -53,7 +53,7 @@ const SECTIONS: HelpSection[] = [
     intro: 'Track changes and go straight to a PR — without leaving the dashboard.',
     items: [
       { name: 'Change counts', desc: '+/− line counts on every sidebar row show how much each workspace has changed vs. its base, refreshed live while the agent works.' },
-      { name: 'One-click PR', desc: 'Commit → push → `gh pr create`, from the toolbar. The sidebar then tracks the PR’s state.' },
+      { name: 'PR tracking', desc: 'Ask the agent to open the PR. Once it links it, a PR #N button in the toolbar opens it and the sidebar tracks its state.' },
       { name: 'Merge & release pills', desc: 'Sidebar pills show merged / diverged / unpushed work, and the earliest release that contains the branch’s commits.' },
       { name: 'Base sync', desc: 'Behind/ahead counts vs. origin’s base branch, refreshed on focus — stale branches are visible at a glance.' },
     ],

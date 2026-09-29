@@ -6,9 +6,9 @@ Orchestra is diff-first: the point of parallel agents is that *you* stay in the 
 
 The **Diff** tab shows a side-by-side Monaco diff of the workspace against its base, refreshing every few seconds while the agent works. You don't wait for "done" to start reviewing — watch the change take shape, and steer the agent in the terminal when it drifts. Every sidebar row shows live +/− line counts so you can see at a glance which workspaces have real work in them.
 
-## One-click PR
+## Pull requests
 
-The PR button in the toolbar runs the whole chain: commit → `push -u origin <branch>` → `gh pr create --base <baseBranch>`. From then on the sidebar row carries a PR badge tracking the PR's state (open / merged / closed), linked to GitHub.
+Ask the agent to open the PR: commit → `push -u origin <branch>` → `gh pr create --base <baseBranch>`. Once it links the PR (`orchestra link --pr`), the toolbar shows a **PR #N** button that opens it, and the sidebar row carries a PR badge tracking the PR's state (open / merged / closed), linked to GitHub.
 
 ## Merge & release tracking
 
@@ -18,7 +18,7 @@ Sidebar pills answer "where is this branch in its life?" without you asking git:
 - **Diverged / unpushed** — local work that never made it up, or a branch that split from its remote.
 - **Release pill** — the earliest release tag that contains the branch's commits, so you know when a change actually shipped.
 
-Merges themselves are delegated to the agent's terminal — Orchestra asks the agent to perform the merge in its own PTY, so conflicts land in front of an agent that can resolve them, not in a background job.
+Orchestra has no merge button: ask the agent to merge, so conflicts land in front of an agent that can resolve them, not in a background job.
 
 ## Base sync
 

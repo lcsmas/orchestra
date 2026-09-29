@@ -511,14 +511,14 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
 `~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
 `scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
 (`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). Not covered: nvim/login PTYs.
-`parseArgs` (`.mjs` :70) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
+`parseArgs` (`.mjs` :76) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
 ignored flag would run the default mode, the exact flip #230 performs (`args_selftest`).
 - **Modes** — every arm holds both expectations in `EXPECT` (:54): `baseline` = today
   (tabs `Raw·Run·Structured·Diff`, opening Raw creates an agent-kind PTY) is green on master
   and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
   PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`. A clause
   that cannot measure in a mode prints `SKIP` (counted apart), so `clauses=` is comparable across modes.
-- **Arms** (`ARMS` :668): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
+- **Arms** (`ARMS` :704): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
   (tally / retain / KEEP marker); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
@@ -528,41 +528,44 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   commits, `linkedPr` = a pointer + a stub `gh` answering ONLY `api repos/<o>/<r>/pulls/<n>` and a stub `xdg-open`, both
   logging argv). No-PR: control = main reports `unpushedAhead>=1` AND the sidebar paints its pill; then the toolbar has no
   create button / "ready to push" surface / PR control, `window.orchestra.mergeWorktree` is `undefined`, and no loaded CSS rule
-  names `.pr-link-create`/`.primed`. With-PR (same in both modes): control = `findPR` returns the open PR via the stub `gh`;
+  names `.pr-link-create`/`.primed`. `toolbar_no_pr_fresh` = the commonest no-PR state (0 commits ahead; controls: main
+  reports 0 unpushed + `findPR` empty, and the `.toolbar-actions` buttons rendered). The toolbar checks are a literal
+  deny-list (`button.pr-link`, `/Open PR|ready to push|create a PR/`, `.primed`): a reworded, re-classed replacement
+  button is NOT caught (review F3, accepted gap). With-PR (same in both modes): control = `findPR` returns the open PR via the stub `gh`;
   exactly one `PR #4242` button, no create button, and a trusted click makes main log `open external (renderer-ipc): <url>`. Every clause
   prints `PASS|FAIL|SKIP <arm>/<clause> — detail`; the final `RIG-RESULT verdict=… ` line is the terminator (rc 0 all
   pass · 1 a clause failed · 2 harness/usage) and NAMES what a green run leaned on: `verdict=PASS-ON-STALE-BUILD`
   (`--allow-stale`), `PASS-WITH-EXTERNAL-CHANGE`, with `allowed_stale=` / `external_change=` counted apart from `pass=`.
 - **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
   target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
-  (`distFreshness` :566, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
+  (`distFreshness` :602, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
   `package.json`; `--allow-stale` proceeds but tallies `ALLOWED-STALE`, never a PASS. mtime ordering is not provenance
   (a `cp -r`'d dist passes).
 - **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
   account-inherit sync; under the rig's fake `HOME` its source `~/.claude` is missing, so it UNLINKS every
   inherited link / MCP server in whatever `configDir` the seeded account names — the first version pinned
   the invoker's live `~/.claude-mc` and stripped it on 46+ boots. Each boot now seeds `<home>/claude-config`
-  (stub `claude`, no login); `checkHandOff` (:353) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
+  (stub `claude`, no login); `checkHandOff` (:359) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
   / every seeded `configDir` (symlinks resolved, `<home>-sibling` is outside) and REFUSES (named) if any is outside the
   boot home or is/overlaps `~/.claude`, a `~/.claude-*` sibling, the invoker's `$CLAUDE_CONFIG_DIR` or the real home.
   `refuse_live_handoff` proves each layer (seed-time guard incl. a symlinked `claude-config`, per-variable hand-off, and the
   `accounts[]` layer alone) refuses BEFORE any launch; every boot there goes through ONE `bootRefused` wrapper that forces
   `electron: '/bin/false'` (the wrapper's `env -i` drops an ambient `E2E_ELECTRON`), so a guard regression can never start a
-  real Electron. `liveSnapshot` (:298) asserts the protected dirs' inheritance surface (`liveDirs()`; `claudeSiblingDirs`
-  :340 skips a bad `~/.claude-*` entry ALONE) before/after every boot: `classifySnapshotChange` (:319) attributes by
+  real Electron. `liveSnapshot` (:304) asserts the protected dirs' inheritance surface (`liveDirs()`; `claudeSiblingDirs`
+  :346 skips a bad `~/.claude-*` entry ALONE) before/after every boot: `classifySnapshotChange` (:325) attributes by
   direction — REMOVALS FAIL (the app's failure mode), ADDITIONS-ONLY tally `EXTERNAL-CHANGE` (the live Orchestra re-syncing a
-  shared dir, which a fake-HOME app cannot do); `liveVerdict` (:331, pinned by `live_verdict_selftest`) is asserted to have run
+  shared dir, which a fake-HOME app cannot do); `liveVerdict` (:337, pinned by `live_verdict_selftest`) is asserted to have run
   for every boot arm (`isolation/live-config-check-ran`). A later arm that needs a login must COPY `.credentials.json` into
   the scratch dir (only while the access token has hours left — a refresh in the copy may rotate the source login,
   UNVERIFIED); `scripts/verify-keeper-detach.mjs` (probes the scratch copy, by-direction check, deletes the copy at exit, no
   pattern kill; exit/SIGINT/SIGTERM kill its own sway and remove the copy) and the `verify` skill's recipe (`LAUNCH-TRAPS.md`) do the same.
 - **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
   == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
-  tmpfs). `noAgentPty` (:616) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
+  tmpfs). `noAgentPty` (:652) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
   that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
-- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:661;
-  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:642) removes only
-  `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :640 = realpath of the
+- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:697;
+  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:678) removes only
+  `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :676 = realpath of the
   worktree holding the scripts, from `fileURLToPath` — never another agent's dirs; no identity ⇒ prune NOTHING), older than 24 h, unreferenced by any live process (unreadable
   `/proc/*/environ`, e.g. under bwrap, reads as unreferenced — KEEP backstops it) and lacking `KEEP-UNTIL-CLEAN` (written at
   start, removed only by a 0-FAIL run, so failed/crashed runs keep their forensics), never the invocation's own dir; the

@@ -1207,6 +1207,34 @@ const ARMS = [
     },
   },
   {
+    name: 'toolbar_no_pr_fresh', boots: true, ticket: '#229', boot: {},
+    doc: 'FRESH no-PR workspace (0 commits ahead — the commonest no-PR state): baseline the toolbar has the plain "Open PR" create button (never primed); after — none. Control: the actions group rendered and findPR resolved empty',
+    async run(ctx) {
+      const { app } = ctx; const wsId = app.world.ws.id;
+      // POSITIVE CONTROL 1: a genuinely fresh, PR-less workspace — main says 0 unpushed and findPR resolves with no PR.
+      const ws = (await app.cdp.eval('window.orchestra.listWorkspaces()')).find((x) => x.id === wsId);
+      const pr = await app.cdp.eval(`window.orchestra.findPR(${JSON.stringify(wsId)})`);
+      const fresh = !!ws && (ws.unpushedAhead ?? 0) === 0 && !!pr && pr.open === null && (pr.all ?? []).length === 0 && !pr.error;
+      ctx.clause('control/fresh-no-pr-workspace', fresh, `listWorkspaces unpushedAhead=${ws?.unpushedAhead ?? 'absent'}; findPR=${JSON.stringify({ open: pr?.open ?? null, all: (pr?.all ?? []).length, error: pr?.error ?? null })}`);
+      // POSITIVE CONTROL 2: the slot the button lived in is rendered — the toolbar actions group has its visible sibling buttons.
+      const actions = await waitFor('toolbar actions group rendered', () => app.cdp.eval(`(() => { const g = document.querySelector('.toolbar-actions'); if (!g) return null; const bs = [...g.querySelectorAll('button')].filter((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); return bs.length ? bs.map((b) => b.className.split(' ')[0]) : null; })()`), 15000, 250).catch(() => null);
+      ctx.clause('control/actions-group-rendered', !!actions, `visible .toolbar-actions buttons=${JSON.stringify(actions)}`);
+      await sleep(ABSENCE_MS); // a late-appearing button (after the renderer's own PR refresh) must have had time to show
+      const controls = await app.prControls();
+      const brief = JSON.stringify(controls.map((c) => ({ tag: c.tag, text: c.text, cls: c.cls })));
+      const want = pick(EXPECT.openPrButton) ? 1 : 0;
+      if (!fresh || !actions) {
+        for (const n of ['fresh/open-pr-button', 'fresh/no-pr-controls']) ctx.clause(n, false, 'REFUSED: the fresh-workspace / rendered-actions control did not hold in this boot — an absence here would be unproven');
+      } else {
+        const create = controls.filter((c) => c.create && c.visible);
+        ctx.clause('fresh/open-pr-button', create.length === want, `toolbar create buttons=${create.length} (${create.map((c) => JSON.stringify(c.text)).join(',') || '∅'}) expected(${MODE})=${want}; all toolbar PR controls=${brief}`);
+        ctx.clause('fresh/no-pr-controls', controls.filter((c) => c.visible).length === want, `visible toolbar PR controls=${controls.filter((c) => c.visible).length} expected(${MODE})=${want}: ${brief}`);
+      }
+      // Never primed on a fresh workspace, in either mode (nothing is unpushed).
+      ctx.clause('fresh/never-ready-to-push', controls.filter((c) => c.readyToPush).length === 0, `ready-to-push surfaces=${controls.filter((c) => c.readyToPush).length} (0 expected in both modes)`);
+    },
+  },
+  {
     name: 'toolbar_with_pr', boots: true, ticket: '#229', boot: { linkedPr: { owner: 'avr-owner', repo: 'avr-repo', number: 4242, title: 'AVR seeded PR' } },
     doc: 'a linked OPEN PR (resolved through the real `gh api` path via a stub gh): the toolbar shows "PR #4242" in BOTH modes, never an Open PR button, and clicking it reaches main\'s openExternal with the PR url',
     async run(ctx) {
