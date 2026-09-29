@@ -78,7 +78,7 @@ interface Ctx {
 
 const ctxs: Ctx[] = [];
 
-function makeCtx(env?: Record<string, string>): Ctx {
+function makeCtx(env?: Record<string, string>, cliBody: string = FAKE_CLI): Ctx {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeper-test-'));
   const ctx: Ctx = {
     dir,
@@ -88,7 +88,7 @@ function makeCtx(env?: Record<string, string>): Ctx {
     logFile: path.join(dir, 'k.log'),
     fakeCli: path.join(dir, 'fake-cli.cjs'),
   };
-  fs.writeFileSync(ctx.fakeCli, FAKE_CLI);
+  fs.writeFileSync(ctx.fakeCli, cliBody);
   const child = spawn(process.execPath, [KEEPER_JS, ctx.wsId, ctx.sock, ctx.pidFile, ctx.logFile], {
     detached: true,
     stdio: 'ignore',
@@ -171,6 +171,29 @@ class Client {
 
 const isAck = (f: KeeperDaemonFrame): f is Extract<KeeperDaemonFrame, { t: 'helloAck' }> => f.t === 'helloAck';
 const isExit = (f: KeeperDaemonFrame): f is Extract<KeeperDaemonFrame, { t: 'exit' }> => f.t === 'exit';
+const isErr = (f: KeeperDaemonFrame): f is Extract<KeeperDaemonFrame, { t: 'err' }> => f.t === 'err';
+const errWithMsg =
+  (needle: string) =>
+  (f: KeeperDaemonFrame): f is Extract<KeeperDaemonFrame, { t: 'err' }> =>
+    f.t === 'err' && f.msg.includes(needle);
+
+/** A fake CLI that IGNORES SIGTERM and stays alive until SIGKILL — models a CLI
+ *  that ignores the graceful signal so the keeper's escalation must fire (D5).
+ *  Never exits its stdin `end` handler either, so `shuttingDown` stays observable
+ *  for the whole escalation window. */
+const SIGTERM_IGNORING_CLI = `
+process.on('SIGTERM', () => { /* deliberately ignored */ });
+process.stdin.on('data', (d) => {
+  const s = d.toString('utf8');
+  for (const line of s.split('\\n')) {
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.echo !== undefined) process.stdout.write(JSON.stringify({ type: 'assistant', echo: m.echo }) + '\\n');
+  }
+});
+// Keep the event loop alive forever (until SIGKILL).
+setInterval(() => {}, 1000);
+`;
 const stdoutContaining =
   (needle: string) =>
   (f: KeeperDaemonFrame): f is Extract<KeeperDaemonFrame, { t: 'stdout' }> =>
@@ -369,6 +392,76 @@ test('mid-turn detach does NOT linger-kill (no result line yet)', async () => {
   assert.ok(alive(keeperPid), 'keeper must stay while the turn is in flight');
   // cleanup
   process.kill(keeperPid, 'SIGTERM');
+});
+
+// ── D1: helloAck.shuttingDown + stdin-during-shutdown err ────────────────────
+// A dying CLI still reports running:true until its exit lands. helloAck must
+// carry `shuttingDown` so an attaching client refuses it (facade) instead of
+// writing its wake prompt into a frame the keeper drops. And a stdin frame that
+// arrives during shutdown must be answered with an `err`, never silently lost.
+
+test('D1 — probe during shutdown reports shuttingDown:true (SIGTERM-ignoring CLI)', async () => {
+  const ctx = makeCtx(undefined, SIGTERM_IGNORING_CLI);
+  const c = await connect(ctx);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  const ack0 = await c.wait(isAck);
+  assert.notEqual(ack0.shuttingDown, true, 'not shutting down before stdinEnd');
+  c.send(spawnFrame(ctx));
+  c.send(stdinLine({ echo: 'up' }));
+  await c.wait(stdoutContaining('"echo":"up"'));
+  const keeperPid = pidOf(ctx);
+  // Begin the graceful shutdown; the CLI ignores SIGTERM so the escalation
+  // window (10s SIGTERM → 5s SIGKILL) stays open — probe inside it.
+  c.send({ t: 'stdinEnd' });
+  await sleep(300);
+  const p = await connect(ctx);
+  p.send({ t: 'probe', wsId: ctx.wsId });
+  const ack = await p.wait((f): f is Extract<KeeperDaemonFrame, { t: 'helloAck' }> => isAck(f) && f.shuttingDown === true);
+  assert.equal(ack.shuttingDown, true, 'a shutting-down keeper surfaces it in helloAck');
+  assert.equal(ack.running, true, 'CLI still running while it ignores SIGTERM');
+  p.destroy();
+  c.destroy();
+  process.kill(keeperPid, 'SIGKILL');
+});
+
+test('D1 — a stdin frame during shutdown is answered with err, not dropped', async () => {
+  const ctx = makeCtx(undefined, SIGTERM_IGNORING_CLI);
+  const c = await connect(ctx);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  await c.wait(isAck);
+  c.send(spawnFrame(ctx));
+  c.send(stdinLine({ echo: 'up' }));
+  await c.wait(stdoutContaining('"echo":"up"'));
+  const keeperPid = pidOf(ctx);
+  c.send({ t: 'stdinEnd' });
+  await sleep(300);
+  // The same still-attached client now tries to push more input — the keeper is
+  // shutting down, so it must reply `err: shutting down` (audit D1) rather than
+  // silently discarding the frame (the old behavior that lost the wake prompt).
+  c.send(stdinLine({ echo: 'too-late' }));
+  const err = await c.wait(errWithMsg('shutting down'));
+  assert.match(err.msg, /shutting down/);
+  c.destroy();
+  process.kill(keeperPid, 'SIGKILL');
+});
+
+test('D5 — kill frame escalates SIGTERM → SIGKILL for a CLI that ignores SIGTERM', async () => {
+  const ctx = makeCtx(undefined, SIGTERM_IGNORING_CLI);
+  const c = await connect(ctx);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  await c.wait(isAck);
+  c.send(spawnFrame(ctx));
+  c.send(stdinLine({ echo: 'up' }));
+  await c.wait(stdoutContaining('"echo":"up"'));
+  const keeperPid = pidOf(ctx);
+  // Default kill signal is SIGTERM, which this CLI ignores. Without the D5
+  // escalation the CLI (and keeper) would live forever; escalation SIGKILLs it
+  // after ESCALATE_KILL_MS (5s). Bound the wait above that.
+  c.send({ t: 'kill' });
+  await c.wait(isExit, 12000);
+  c.destroy();
+  await waitUntil(() => !alive(keeperPid), 12000, 'keeper gone after SIGTERM→SIGKILL escalation');
+  assert.ok(!fs.existsSync(ctx.sock), 'socket unlinked after escalated kill');
 });
 
 async function waitUntil(pred: () => boolean, ms: number, what: string): Promise<void> {

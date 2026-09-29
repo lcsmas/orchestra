@@ -87,6 +87,11 @@ export type ConsumeTermination =
   | { kind: 'interrupted' }
   /** An INTENTIONAL restart — the neutral restart row. */
   | { kind: 'restarted'; trigger: RestartTrigger }
+  /** The old session was already `stopping` when a legitimate NEW client's hello
+   *  preempted its socket, surfacing the SDK's synthetic `exited with code -1`
+   *  (audit D1). That is the stop we asked for, not a crash — a quiet
+   *  `stopped` notice, never the red error row. */
+  | { kind: 'stopped' }
   /** A genuine failure — the red error row. */
   | { kind: 'error' };
 
@@ -106,11 +111,16 @@ export type ConsumeTermination =
  *      start (agent-sdk.ts), scoped to the restart path so a GENUINE standalone
  *      interrupt (which never sets `restartRequested`) is never relabeled and
  *      still reaches branch 3.
- *   3. `interrupted` (our own interrupt OR an EDE-diagnostic throw), with NO
+ *   3. `preemptedWhileStopping` (the old session was `stopping` and a new
+ *      client's hello preempted its socket → synthetic `exited with code -1`,
+ *      audit D1), with NO restart marker → the quiet `stopped` notice. It is the
+ *      stop we asked for, not a crash. Scoped narrowly (stopping AND a -1 exit)
+ *      so a genuine crash of a NON-stopping session still reaches branch 5.
+ *   4. `interrupted` (our own interrupt OR an EDE-diagnostic throw), with NO
  *      restart marker → the quiet `interrupted` notice. A plain user stop.
- *   4. `restartRequested` UNSET and not interrupted → the red error row. The
- *      marker is the whole discriminator: a `kill -9` crash also exits -1 but
- *      leaves it UNSET → falls through here (ARM B).
+ *   5. none of the above → the red error row. The marker is the whole
+ *      discriminator: a `kill -9` crash also exits -1 but leaves `stopping`
+ *      false and `restartRequested` unset → falls through here (ARM B).
  *
  *  `restartRequested` is `undefined` for a crash and a `RestartTrigger` for an
  *  intentional restart; that is the whole discriminator. */
@@ -118,10 +128,15 @@ export function classifyConsumeTermination(input: {
   cleared: boolean;
   interrupted: boolean;
   restartRequested: RestartTrigger | undefined;
+  preemptedWhileStopping?: boolean;
 }): ConsumeTermination {
   if (input.cleared) return { kind: 'suppress' };
   // Restart marker WINS over `interrupted` (D-H2) — deterministic, timing-free.
   if (input.restartRequested) return { kind: 'restarted', trigger: input.restartRequested };
+  // A -1 preempt of an already-stopping session is the stop it is, not a crash
+  // (D1). Precedes `interrupted` so it wins its own quiet label; scoped to
+  // stopping+(-1) upstream so a real crash of a live session cannot reach here.
+  if (input.preemptedWhileStopping) return { kind: 'stopped' };
   if (input.interrupted) return { kind: 'interrupted' };
   return { kind: 'error' };
 }

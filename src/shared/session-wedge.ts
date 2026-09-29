@@ -172,6 +172,33 @@ export function decideGateRelease(input: GateReleaseInput): boolean {
   return now - lastStreamAt >= silenceMs;
 }
 
+/** #124 D4 — should this turn boundary re-drive a parked inbox block?
+ *
+ *  Pure decision extracted from consume()'s `result` branch so it is unit- and
+ *  mutation-testable without the async race (the #132 dir-import trap keeps
+ *  agent-sdk itself out of the test runner). The consume loop calls this with
+ *  the LIVE session/inbox counts and, on `true`, dispatches exactly one
+ *  `releaseInboxBlock`.
+ *
+ *  All FOUR conditions are load-bearing:
+ *   - `queueLen === 0`: only re-drive when the session has nothing of its own
+ *     queued — a queued turn will produce its own boundary.
+ *   - `!cleared`: a /clear'd session must not resurrect mail into a fresh convo.
+ *   - `parkedCount > 0`: there is something to release.
+ *   - `inFlightCount === 0` (reviewer F2): a re-drive already dispatched this
+ *     boundary has NOT yet pushed its turn onto the queue (the delivery-start
+ *     window), so `queueLen` is still 0 — without this a second `result` in that
+ *     window re-dispatches, delivering the SAME block twice (or a different one
+ *     out of order). One in-flight re-drive at a time. */
+export function shouldRedriveInbox(input: {
+  queueLen: number;
+  cleared: boolean;
+  parkedCount: number;
+  inFlightCount: number;
+}): boolean {
+  return input.queueLen === 0 && !input.cleared && input.parkedCount > 0 && input.inFlightCount === 0;
+}
+
 /** Max automatic session recycles per workspace per rolling hour.
  *
  *  Anti-flap is MANDATORY and this is why: an automatic restart that fires

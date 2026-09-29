@@ -22,6 +22,8 @@ test('encode/parse round-trips every frame shape', () => {
     { t: 'stdinEnd' },
     { t: 'kill', signal: 'SIGKILL' },
     { t: 'helloAck', wsId: 'ws-1', running: true, pid: 42, startedAt: 123 },
+    // D1: helloAck carries `shuttingDown` so an attaching client refuses a dying CLI.
+    { t: 'helloAck', wsId: 'ws-1', running: true, pid: 42, everStarted: true, turnInFlight: false, shuttingDown: true },
     { t: 'stdout', b64: 'aGk=' },
     { t: 'exit', code: 0, signal: null },
     { t: 'err', msg: 'boom' },

@@ -96,6 +96,58 @@ test('ARM B (LOOK-ALIKE) — a crash: exit -1 but NO marker → error row, NOT p
   assert.equal(out.kind, 'error');
 });
 
+// ── D1: a -1 preempt of an ALREADY-STOPPING session is the stop it is ────────
+// A legitimate new client's hello preempts the old (stopping) session's socket
+// → the SDK synthesizes `exited with code -1` → consume() throws. That is the
+// stop we asked for, not a crash — a quiet `stopped` notice, never the red row.
+
+test('D1 STOPPED — a -1 preempt while stopping → `stopped`, NOT error', () => {
+  const out = classifyConsumeTermination({
+    cleared: false,
+    interrupted: false,
+    restartRequested: undefined,
+    preemptedWhileStopping: true,
+  });
+  assert.equal(out.kind, 'stopped');
+});
+
+test('D1 must-FAIL LOOK-ALIKE — a crash of a NON-stopping session (no preempt flag) stays error', () => {
+  // The discriminator is `preemptedWhileStopping` (set upstream only when the
+  // session was stopping AND the message is exit -1). A genuine crash leaves it
+  // false → error row. Dropping the flag from the caller reddens the STOPPED arm
+  // above; keying `stopped` on the exit code alone would redden THIS arm.
+  const out = classifyConsumeTermination({
+    cleared: false,
+    interrupted: false,
+    restartRequested: undefined,
+    preemptedWhileStopping: false,
+  });
+  assert.equal(out.kind, 'error');
+});
+
+test('D1 PRECEDENCE — an intentional restart still wins over a stopping preempt', () => {
+  // A restart teardown is also `stopping` and can surface a -1; the explicit
+  // restart marker must still route to the neutral restart row (it carries the
+  // trigger the detail needs), not the generic `stopped` notice.
+  const out = classifyConsumeTermination({
+    cleared: false,
+    interrupted: false,
+    restartRequested: 'cli',
+    preemptedWhileStopping: true,
+  });
+  assert.equal(out.kind, 'restarted');
+});
+
+test('D1 — `stopped` wins over interrupt-shaped so a preempt is not mislabeled "Interrupted"', () => {
+  const out = classifyConsumeTermination({
+    cleared: false,
+    interrupted: true,
+    restartRequested: undefined,
+    preemptedWhileStopping: true,
+  });
+  assert.equal(out.kind, 'stopped');
+});
+
 test('PRECEDENCE (D-H2) — restart marker WINS over interrupt-shaped teardown', () => {
   // A restart rides the SDK interrupt(), so the throw can look interrupt-shaped
   // (interrupted=true) even though the user asked for a restart. The label must

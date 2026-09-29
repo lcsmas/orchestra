@@ -52,6 +52,16 @@ export type KeeperDaemonFrame =
        *  an attaching client restore the "Working…" turn state it never saw
        *  the start of. */
       turnInFlight?: boolean;
+      /** True once this keeper has begun its shutdown escalation (a `stdinEnd`
+       *  or `kill` frame, or a linger/wedge/init-grace expiry). The CLI is
+       *  DYING but not yet gone, so `running` can still read true; a client
+       *  that attached anyway (issue #90 / audit D1) would write its wake
+       *  prompt into a `stdin` frame the keeper drops, then watch the CLI exit
+       *  0 with the message never delivered. The facade treats
+       *  `shuttingDown === true` exactly like a stale keeper: kill it and
+       *  launch fresh, never attach. `undefined` = pre-field keeper daemon
+       *  (legacy: absence means "not shutting down"). */
+      shuttingDown?: boolean;
     }
   /** Raw bytes from the CLI's stdout. */
   | { t: 'stdout'; b64: string }
