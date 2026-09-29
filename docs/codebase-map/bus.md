@@ -1461,7 +1461,7 @@ Two host-derived signals, both reusing EXISTING kinds (`escalation`, `status`) �
 | File | What it is |
 |---|---|
 | `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation` (guards incl. `done-released`, #160), `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
-| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/**released** (`readReleasedReaders`, #160)/switch seams, the counters, D1 tolerance. |
+| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/**released** (`readReleasedReaders`, #160; a run's own coordinator is also released by a `worker_done` in its PARENT run, where it was dispatched — #204)/switch seams, the counters, D1 tolerance. |
 | `src/shared/bus-liveness.test.ts` | Pure policy tests (incl. the 4 #160 done-released arms); each names the mutant it kills. |
 | `src/main/bus-liveness.test.ts` | Tests over a real SQLite bus (T120.1–T120.4, C4, C5, phase). #160: the pure-boolean/sweep arms PLUS **discrete SQL arms S1–S6** that call the SHIPPED `readReleasedReaders(db, keys)` over real `send()` rows — S3 kills Mutant A (drop the re-task NOT-EXISTS clause), S4 kills Mutant B (drop `wd.kind='worker_done'`), S2 is the zombie true-positive driven through the derivation. |
 

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openBus, send, openGate, type BusDb } from './bus.ts';
+import { startRun } from './bus-runs.ts';
 import { readWaitingReaders } from './bus-wake.ts';
 import {
   sweepBusLiveness,
@@ -766,4 +767,50 @@ test('T127.3: a hung call with liveness=OFF is COUNTED, never emitted to the coo
     busLivenessCounters().counted >= 1,
     'the would-have-escalated hung call is COUNTED, not fired',
   );
+});
+
+// ── #204: a promoted OPS is released by a worker_done in its PARENT run ────────
+// The OPS is keyed on the run it anchors, but its task was dispatched (and closed)
+// in the LEAD's mission run. Field 2026-09-28: worker_done in the parent run was
+// never seen → the paused OPS was escalated to the LEAD forever.
+const ALL_ON = { delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
+function opsUnderLead(db: BusDb): void {
+  startRun(db, { id: 'run-lead', kind: 'mission', coordinator: 'ws-lead' }, ALL_ON);
+  startRun(db, { id: 'ws-ops2', kind: 'vague', coordinator: 'ws-ops2', parentRunId: 'run-lead' }, ALL_ON);
+}
+
+test('#204 (SQL): OPS dispatched + worker_done in the PARENT run → released', (t) => {
+  const db = tmpBus(t);
+  opsUnderLead(db);
+  send(db, { runId: 'run-lead', sender: 'ws-lead', kind: 'dispatch', body: 'go', recipient: 'ws-ops2' });
+  send(db, { runId: 'run-lead', sender: 'ws-ops2', kind: 'worker_done', body: 'paused', recipient: 'ws-lead' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-ops2', runId: 'ws-ops2' }]);
+  assert.equal(set.has('ws-ops2'), true, 'the OPS completion in the parent run releases it');
+});
+
+test('#204 (SQL): OPS re-dispatched in the parent run after worker_done → NOT released', (t) => {
+  const db = tmpBus(t);
+  opsUnderLead(db);
+  send(db, { runId: 'run-lead', sender: 'ws-ops2', kind: 'worker_done', body: 'paused', recipient: 'ws-lead' });
+  send(db, { runId: 'run-lead', sender: 'ws-lead', kind: 'dispatch', body: 'resume', recipient: 'ws-ops2' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-ops2', runId: 'ws-ops2' }]);
+  assert.equal(set.has('ws-ops2'), false, 'a later dispatch in the parent run re-tasks it');
+});
+
+test('#204 (SQL): OPS without worker_done anywhere → NOT released (still escalates)', (t) => {
+  const db = tmpBus(t);
+  opsUnderLead(db);
+  send(db, { runId: 'run-lead', sender: 'ws-lead', kind: 'dispatch', body: 'go', recipient: 'ws-ops2' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-ops2', runId: 'ws-ops2' }]);
+  assert.equal(set.has('ws-ops2'), false);
+});
+
+test('#204 (SQL): a plain member is NOT released by a worker_done of the same name in an unrelated parent', (t) => {
+  // The parent lookup only applies to the run's own COORDINATOR: a member of run-L
+  // (not its coordinator) must not be released by rows in some other run.
+  const db = tmpBus(t);
+  opsUnderLead(db);
+  send(db, { runId: 'run-lead', sender: 'ws-member', kind: 'worker_done', body: 'x', recipient: 'ws-lead' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-member', runId: 'ws-ops2' }]);
+  assert.equal(set.has('ws-member'), false, 'only the anchoring coordinator reads its parent run');
 });

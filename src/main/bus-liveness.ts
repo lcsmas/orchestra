@@ -206,9 +206,19 @@ export function readReleasedReaders(
        )
      LIMIT 1
   `);
+  // #204: a coordinator (OPS) is keyed on the run it ANCHORS, but its own task was
+  // dispatched — and closed — in the PARENT run; read its completion there too.
+  const parentOfAnchoredQ = db.prepare(
+    'SELECT parent_run_id AS p FROM runs WHERE id = ? AND coordinator = ?',
+  );
   const released = new Set<string>();
   for (const { reader, runId } of readers) {
-    if (releasedQ.get(runId, reader)) released.add(reader);
+    if (releasedQ.get(runId, reader)) {
+      released.add(reader);
+      continue;
+    }
+    const parent = (parentOfAnchoredQ.get(runId, reader) as { p: string | null } | undefined)?.p;
+    if (parent && releasedQ.get(parent, reader)) released.add(reader);
   }
   return released;
 }
