@@ -39,6 +39,8 @@ const DEBUG_PORT = 9000 + (RIG % 900);
 const XDG = process.env.XDG_RUNTIME_DIR || '/run/user/1000';
 const ORCH_HOME = join(XDG, `rcpu-${RIG}`);
 const FAKE_HOME = mkdtempSync(join(tmpdir(), `rcpu-home-${RIG}-`));
+// Registered BEFORE anything else can throw (a bogus app dir throws at the mkdir below): sync cleanup of OUR files on every exit path.
+process.on('exit', () => cleanupOwnFiles());
 const OUT_DIR = join(APP_DIR, 'build', 'renderer-cpu');
 mkdirSync(OUT_DIR, { recursive: true });
 mkdirSync(ORCH_HOME, { recursive: true });
@@ -57,23 +59,20 @@ function sh(cmd, args, opts = {}) {
 }
 
 async function grimDecode(display) {
-  // returns fraction of pixels matching MARK_RGB on HEADLESS-1 for `display`
-  const png = join(tmpdir(), `rcpu-grim-${RIG}-${display}.png`);
+  // returns fraction of pixels matching MARK_RGB on HEADLESS-1 for `display`.
+  // grim writes the PNG to STDOUT ('-'): no file is ever created, so nothing can leak into /tmp.
+  const chunks = [];
   await new Promise((res) => {
-    const g = spawn('grim', ['-o', 'HEADLESS-1', png], {
+    const g = spawn('grim', ['-o', 'HEADLESS-1', '-'], {
       env: { ...minEnv(), WAYLAND_DISPLAY: display },
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
-    g.on('exit', res);
+    g.stdout.on('data', (d) => chunks.push(d));
+    g.on('close', res);
     g.on('error', () => res(1));
   });
   try {
-    const buf = readFileSync(png);
-    // crude: count how many of MARK_RGB triplets appear in raw IDAT-inflated?
-    // Too heavy — instead sample: use a tiny PNG decoder. Keep it simple: the
-    // marker check only needs "is this predominantly MARK". Use sharp-free
-    // zlib inflate of the single IDAT.
-    return decodeSolidFraction(buf, MARK_RGB);
+    return decodeSolidFraction(Buffer.concat(chunks), MARK_RGB);
   } catch {
     return 0;
   }
@@ -719,12 +718,17 @@ async function waitForTarget(port, appDir) {
   throw new Error('no CDP target on port ' + port);
 }
 
+// Remove ONLY the files THIS run created (all keyed by our pid): never sweep by pattern — other
+// agents run this rig too, and their live sockets/dirs are not ours to delete.
+function cleanupOwnFiles() {
+  for (const f of [CFG, SWAYSOCK]) { try { rmSync(f, { force: true }); } catch {} }
+  for (const d of [FAKE_HOME, ORCH_HOME]) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
+}
+
 async function teardown(swayPid) {
   for (const c of children) { try { c.kill('SIGKILL'); } catch {} }
   try { if (swayPid) process.kill(swayPid, 'SIGKILL'); } catch {}
-  try { rmSync(CFG); } catch {}
-  try { rmSync(FAKE_HOME, { recursive: true, force: true }); } catch {}
-  try { rmSync(ORCH_HOME, { recursive: true, force: true }); } catch {}
+  cleanupOwnFiles();
 }
 
 process.on('SIGINT', async () => { await teardown(); process.exit(130); });
