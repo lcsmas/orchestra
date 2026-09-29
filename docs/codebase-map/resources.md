@@ -64,12 +64,13 @@ Each tick (`sampleTick`, dependency-injected so the rig drives the real path):
   duplicate's pid file was overwritten and `listKeeperRoots` cannot see it. Kinds:
   `duplicate` (live ws), `orphan-untracked` (absent ws). A live workspace's SOLE
   keeper is never a victim; no tracked keeper / tracked pid not in the scan → refused
-  (cannot tell which to keep); store not loaded → refused. At kill time
+  (cannot tell which to keep); a victim whose tree CONTAINS the tracked keeper (a fork-style `timeout … node keeper.js` wrapper — both argv match) → refused (`victim-tree-contains-tracked-keeper`); store not loaded → refused. At kill time
   `reapTargets` re-reads `deps.trackedKeeperPid(ws)` and re-verifies the tracked
   keeper (`/proc` stat + keeper argv): drift → ABORT, nothing signalled. The pass is
   `reapPass`, run by the 60 s tick AND by `reapKeepersNow` at boot
   (`reconcileKeepersAtStartup`, index.ts — replaced its bare `killKeeper` on an
-  unverified store). Log = one WARN per tree (`reaping duplicate keeper tree for
+  unverified store; NON-LINUX (no start-time ⇒ this pass refuses) keeps master's boot
+  `killKeeper` of absent keepers via `bootFallbackKills`, store-loaded-guarded). Log = one WARN per tree (`reaping duplicate keeper tree for
   workspace <ws> (tracked keeper pid <T> kept …) — keeper pid <P>, …`) + one
   summary per tree. Gates, in order:
   1. `store.loadedFromDisk` — absence-from-store is only proof-of-deletion once

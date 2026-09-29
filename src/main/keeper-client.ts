@@ -35,6 +35,7 @@ import {
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline } from '../shared/resource-monitor';
+import { parseProcStatLine } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
 import { log } from './logger';
@@ -324,6 +325,75 @@ export function keeperPidState(pid: number, wsId: string): 'keeper' | 'other' | 
   return isKeeperCmdline(argv, wsId) ? 'keeper' : 'other';
 }
 
+/** Identity-stamped descendants (pid + /proc start-time) of `rootPid`, read NOW; Linux only ([] elsewhere). */
+function snapshotDescendants(rootPid: number): Array<{ pid: number; comm: string; startTicks: number }> {
+  if (process.platform !== 'linux') return [];
+  const byPpid = new Map<number, Array<{ pid: number; comm: string; startTicks: number }>>();
+  let names: string[];
+  try {
+    names = fs.readdirSync('/proc');
+  } catch {
+    return [];
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
+      if (p && p.startTicks !== undefined) {
+        byPpid.set(p.ppid, [...(byPpid.get(p.ppid) ?? []), { pid: p.pid, comm: p.comm, startTicks: p.startTicks }]);
+      }
+    } catch {
+      /* exited mid-scan */
+    }
+  }
+  const out: Array<{ pid: number; comm: string; startTicks: number }> = [];
+  const seen = new Set<number>([rootPid]);
+  const queue = [rootPid];
+  while (queue.length) {
+    for (const c of byPpid.get(queue.shift() as number) ?? []) {
+      if (seen.has(c.pid)) continue;
+      seen.add(c.pid);
+      out.push(c);
+      queue.push(c.pid);
+    }
+  }
+  return out;
+}
+
+/** Is `d` still the SAME live process (pid + start-time, not a zombie)? */
+function descendantAlive(d: { pid: number; startTicks: number }): boolean {
+  let text: string;
+  try {
+    text = fs.readFileSync(`/proc/${d.pid}/stat`, 'utf8');
+  } catch {
+    return false;
+  }
+  const fresh = parseProcStatLine(text);
+  return !!fresh && fresh.startTicks === d.startTicks && !/\) Z /.test(text);
+}
+
+/** SIGKILL snapshot members that are STILL the same process (pid + start-time) — the orphaned CLI/MCP a
+ *  SIGKILLed (wedged) keeper leaves behind (ppid 1, no keeper root for anyone to reach it) — then wait
+ *  (≤1 s) until they are gone, so `killKeeper` resolving means the CLI is dead too. Leaf-first. */
+async function killSurvivingDescendants(
+  wsId: string,
+  tree: Array<{ pid: number; comm: string; startTicks: number }>,
+  reason: string,
+): Promise<void> {
+  const signalled: typeof tree = [];
+  for (const d of [...tree].reverse()) {
+    if (!descendantAlive(d)) continue; // gone, recycled, or already dead
+    log.warn(`keeper[${wsId}] killing orphaned descendant pid=${d.pid} (${d.comm}) of the killed keeper, reason=${reason}`);
+    try {
+      process.kill(d.pid, 'SIGKILL');
+      signalled.push(d);
+    } catch {
+      /* gone */
+    }
+  }
+  for (let i = 0; i < 20 && signalled.some(descendantAlive); i++) await new Promise((r) => setTimeout(r, 50));
+}
+
 function readKeeperPidFile(wsId: string): number | null {
   try {
     const pid = (JSON.parse(fs.readFileSync(keeperPidPath(wsId), 'utf8')) as { pid?: unknown }).pid;
@@ -356,7 +426,12 @@ export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
   const pid = readKeeperPidFile(wsId);
   const state = pid === null ? 'gone' : keeperPidState(pid, wsId);
   const sockPath = keeperSocketPath(wsId);
-  const sockLive = await socketAnswers(sockPath);
+  let sockLive = await socketAnswers(sockPath);
+  // Owner provably gone yet the socket still answers = its fds are closing (a dying thread group): wait, bounded.
+  for (let i = 0; i < 10 && sockLive && (state === 'gone' || state === 'other'); i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    sockLive = await socketAnswers(sockPath);
+  }
   const unlink = (p: string): void => {
     try {
       fs.unlinkSync(p);
@@ -386,6 +461,8 @@ export function killKeeper(wsId: string, reason = 'explicit-stop'): Promise<void
 async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
   const sockPath = keeperSocketPath(wsId);
   const pid = readKeeperPidFile(wsId) ?? undefined;
+  // Read the keeper's tree BEFORE any kill: a SIGKILLed keeper orphans its CLI to init and nothing can find it after.
+  const tree = pid && keeperPidState(pid, wsId) === 'keeper' ? snapshotDescendants(pid) : [];
   let signalled = false;
   try {
     const sock = await connectSock(sockPath);
@@ -429,8 +506,11 @@ async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
       } catch {
         /* gone */
       }
+      // SIGKILL is asynchronous (a stopped process still has to be scheduled to die): resolve only once it is.
+      for (let i = 0; i < 20 && waiting(); i++) await new Promise((r) => setTimeout(r, 50));
     }
   }
+  await killSurvivingDescendants(wsId, tree, reason);
   // Sweep stale artifacts so probes stop seeing ghosts — never a live successor's files.
   await sweepStaleKeeperFiles(wsId);
 }

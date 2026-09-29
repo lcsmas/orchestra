@@ -322,6 +322,12 @@ export function decideDuplicateReap(
         refused.push({ workspaceId: ws, reason: `identity-unverifiable (no start-time for pid ${blind.pid}; non-Linux sampler)` });
         continue;
       }
+      // A "duplicate" whose tree CONTAINS the tracked keeper is its fork-style wrapper (`timeout … node keeper.js`):
+      // reaping it would SIGTERM the live sole keeper (review K1).
+      if (live && tracked !== null && tree.some((p) => p.pid === tracked)) {
+        refused.push({ workspaceId: ws, reason: `victim-tree-contains-tracked-keeper (pid ${v.pid} wraps tracked pid ${tracked})` });
+        continue;
+      }
       const members: ReapMember[] = tree.map((p) => ({ pid: p.pid, ppid: p.ppid, comm: p.comm, startTicks: p.startTicks as number }));
       targets.push({
         workspaceId: ws,
@@ -334,6 +340,21 @@ export function decideDuplicateReap(
     }
   }
   return { targets, refused, refusedStoreNotLoaded: false };
+}
+
+/**
+ * Boot fallback (review K5): where the /proc reaper cannot act (no start-time identity ⇒ non-Linux `ps`
+ * sampler), keep the old boot behaviour — `killKeeper` each absent-from-store keeper (it talks to the socket
+ * owner, no pid guess) — but ONLY once the store loaded from disk. Linux ⇒ [] (the guarded reaper owns it).
+ */
+export function bootFallbackKills(
+  platform: string,
+  keeperWsIds: string[],
+  liveWorkspaceIds: Set<string>,
+  storeLoadedFromDisk: boolean,
+): string[] {
+  if (platform === 'linux' || !storeLoadedFromDisk) return [];
+  return keeperWsIds.filter((id) => !liveWorkspaceIds.has(id));
 }
 
 /** A genuine keeper's argv is `<runtime> …/keeper.js <wsId> <sock> <pid> <log>`
