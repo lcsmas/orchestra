@@ -58,9 +58,10 @@ function freshHome(t: { after: (fn: () => void) => void }): string {
     path.join(storeDir, 'store.json'),
     JSON.stringify({
       workspaces: [
-        { id: COORD, name: 'ops' },
-        { id: MEMBER, name: 'member' },
-        { id: LEAD, name: 'lead' },
+        // Real topology links (#221: `send --to` derives the recipient's wave run from them).
+        { id: COORD, name: 'ops', canOrchestrate: true },
+        { id: MEMBER, name: 'member', parentId: COORD },
+        { id: LEAD, name: 'lead', canOrchestrate: true },
       ],
     }),
   );

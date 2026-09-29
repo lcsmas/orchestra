@@ -1528,6 +1528,38 @@ test('#175 must-PASS — related-run anchors, plain members and the explicit --r
   assert.equal(r.fails.length, 0, 'no arm was refused');
 });
 
+// ─── #221 F1(b): a recipient that resolves to its OWN unstarted anchor ────────
+test('#221 must-FAIL — send --to a standalone plain workspace (own anchor, no row, unrelated to the send run) is refused loudly', (t) => {
+  // The LEAD (now run-anchoring) → its plain non-member child: mail would sit in the LEAD run and
+  // the child's reader (related set = {itself}) is never woken. MUTANT: drop the `toRunId === to`
+  // branch in assertRecipientReachable → rc 0 + a row nobody reads.
+  const r = rig(t);
+  startRun(r.ctx('x').db, { id: 'lead221', kind: 'mission', coordinator: 'lead221' }, DEFAULT_BUS_SWITCHES);
+  assert.throws(() =>
+    verbSend(r.ctx('lead221', undefined, 'lead221'), {
+      kind: 'status', to: 'w-plain', toRunId: 'w-plain', thread: null, body: 'lost?',
+    }),
+  );
+  assert.match(r.fails[0], /w-plain/);
+  assert.match(r.fails[0], /anchors no run/);
+  assert.match(r.fails[0], /orchestra message w-plain/, 'names the channel that reaches a plain workspace');
+  assert.equal(bus.check(r.db, 'lead221', 'w-plain').messages.length, 0, 'nothing written in the send run');
+});
+
+test('#221 must-PASS — a member (toRunId ≠ to), a legacy orchestrator with a child pointer, and an unknown toRunId still deliver', (t) => {
+  const r = rig(t);
+  startRun(r.ctx('x').db, { id: 'lead221', kind: 'mission', coordinator: 'lead221' }, DEFAULT_BUS_SWITCHES);
+  startRun(r.ctx('x').db, { id: 'ops221', kind: 'vague', coordinator: 'ops221', parentRunId: 'lead221' }, DEFAULT_BUS_SWITCHES);
+  // A MEMBER of the OPS run (row-less, resolves to ops221): not judged, as before.
+  verbSend(r.ctx('lead221', undefined, 'lead221'), { kind: 'status', to: 'm1', toRunId: 'ops221', thread: null, body: 'to member' });
+  // A LEGACY orchestrator with NO row that a child run points at (dangling parent_run_id): related via the pointer.
+  startRun(r.ctx('x').db, { id: 'kid221', kind: 'vague', coordinator: 'kid221', parentRunId: 'legacy221' }, DEFAULT_BUS_SWITCHES);
+  verbSend(r.ctx('kid221', undefined, 'kid221'), { kind: 'status', to: 'legacy221', toRunId: 'legacy221', thread: null, body: 'to legacy lead' });
+  // Older app without `runId` in /resolveHandle → undefined → not judged (backward compatible).
+  verbSend(r.ctx('lead221', undefined, 'lead221'), { kind: 'status', to: 'w-plain', thread: null, body: 'old app' });
+  assert.equal(r.fails.length, 0, 'no arm was refused');
+});
+
 test('#175 — ask and gate open take the same guard; gate --to human is exempt', (t) => {
   const r = rig(t);
   startRun(

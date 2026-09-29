@@ -87,7 +87,7 @@ const entry = path.join(tmp, 'entry.ts');
 fs.writeFileSync(
   entry,
   `
-export { dispatchPromoteRequest, resolveWaveRunId, writeBusSwitchState } from ${JSON.stringify(path.join(repoRoot, 'src/main/workspaces.ts'))};
+export { dispatchPromoteRequest, dispatchMessageRequest, dispatchResolveHandleRequest, resolveWaveRunId, writeBusSwitchState } from ${JSON.stringify(path.join(repoRoot, 'src/main/workspaces.ts'))};
 export { store } from ${JSON.stringify(path.join(repoRoot, 'src/main/store.ts'))};
 export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};
 export { initBus, getBus, closeBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
@@ -411,6 +411,35 @@ check(
   busDb.prepare('SELECT COUNT(*) AS c FROM runs WHERE id = ?').get(PLAIN).c === 1,
 );
 check('P3 (unchanged): R1\'s node under the ORCHESTRATOR LEAD keeps parent_run_id = that LEAD', runRow(NODE_ID) === `vague|${NODE_ID}|${LEAD_ID}`, runRow(NODE_ID));
+
+
+// F1(a) — the plain parent LOSES NOTHING: its NON-member children keep the old `message`
+// channel exactly as on master (the P4 gate refuses only coordinators/members, not a plain
+// own-anchor), and P4 still refuses an orchestrator and a MEMBER of a delivery-ON run.
+console.log('\n#221 M — `orchestra message` to the plain parent stays open; P4 unchanged elsewhere:');
+const WORKER = 'worker-221';
+const KIDMEM = 'kid-member-221';
+await mod.store.upsertWorkspace(ws(WORKER, { parentId: PLAIN }));
+await mod.store.upsertWorkspace(ws(KIDMEM, { parentId: KID }));
+liveSet.add(PLAIN);
+liveSet.add(KIDMEM);
+// A FRESH orchestrator with a delivery-ON row (LEAD_ID's row was re-frozen OFF by the earlier promotes' D1b refreeze).
+const ORCH = 'orch-221';
+await mod.store.upsertWorkspace(ws(ORCH, { canOrchestrate: true }));
+mod.startRun(busDb, { id: ORCH, kind: 'mission', coordinator: ORCH }, { delivery: true, wake: true, askGate: false, liveness: false });
+liveSet.add(ORCH);
+const m1 = await mod.dispatchMessageRequest({ from: WORKER, to: PLAIN, text: 'worker → plain parent' });
+check('M1: a non-member child can `message` the plain parent (master: ok)', m1.ok === true, JSON.stringify(m1));
+const m2 = await mod.dispatchMessageRequest({ from: WORKER, to: KIDMEM, text: 'coordination to a member' });
+check('M2 (unchanged): `message` to a MEMBER of a delivery-ON run is still refused by P4', m2.ok === false && /orchestra send/.test(m2.error ?? ''), JSON.stringify(m2));
+const m3 = await mod.dispatchMessageRequest({ from: WORKER, to: ORCH, text: 'to an orchestrator' });
+check('M3 (unchanged): `message` to an ORCHESTRATOR with delivery ON is still refused', m3.ok === false && /orchestra send/.test(m3.error ?? ''), JSON.stringify(m3));
+const handles = Object.fromEntries(mod.dispatchResolveHandleRequest().workspaces.map((w) => [w.id, w.runId]));
+check(
+  'M4: /resolveHandle carries each workspace wave run (plain parent → itself, member → its OPS, plain child → itself)',
+  handles[PLAIN] === PLAIN && handles[KIDMEM] === KID && handles[KID] === KID && handles[WORKER] === WORKER,
+  JSON.stringify({ PLAIN: handles[PLAIN], KIDMEM: handles[KIDMEM], KID: handles[KID], WORKER: handles[WORKER] }),
+);
 
 mod.closeBus();
 fs.rmSync(tmp, { recursive: true, force: true });

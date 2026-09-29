@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun, busSwitch } from './bus-runs.ts';
+import { isPlainOwnAnchor } from './wave-run-id.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { deliverToTargets, normalizeExplicitTargets } from '../shared/broadcast-targets.ts';
 import {
@@ -143,12 +144,15 @@ async function runWrapper(opts: {
   targetExists: boolean;
   emergency: boolean;
   gated: boolean;
+  /** #221 — the target is a plain own-anchor (a run-less parent that gained a mission run),
+   *  not a coordinator. Default: an ORCHESTRATOR target, the case P4 was written for. */
+  plainParent?: boolean;
 }): Promise<WrapperResult> {
   const body = extract('export async function dispatchMessageRequest');
   let delivered = false;
 
   const target = opts.targetExists
-    ? { id: 'ws-target', branch: 'target-branch', archived: false }
+    ? { id: 'ws-target', branch: 'target-branch', archived: false, canOrchestrate: !opts.plainParent }
     : undefined;
 
   const scope = {
@@ -156,6 +160,7 @@ async function runWrapper(opts: {
     getBus: () => opts.db,
     busSwitch, // the REAL frozen-flag read
     resolveWaveRunId: (_ws: unknown) => opts.targetRunId,
+    isPlainOwnAnchor, // the REAL #221 discriminator (wave-run-id.ts)
     store: { getWorkspace: (_id: string) => target },
     decideMessageChannel: opts.gated
       ? decideMessageChannel
@@ -282,6 +287,24 @@ test('#169 ARM 2c — target with no run row is NEVER refused', async (t) => {
   assert.equal(busSwitch(db, 'run-absent', 'delivery'), false, 'unknown run reads OFF');
   assert.equal(r.result.ok, true, 'no run row → not refused');
   assert.equal(r.delivered, true);
+});
+
+// ARM 3 (#221 F1a) — a PLAIN own-anchor target (a run-less parent that gained a mission run
+// with delivery ON) is NOT refused: its non-member children have no bus route to it, so
+// `message` stays open exactly as on master. MUTANT: drop the isPlainOwnAnchor exemption → refused.
+test('#221 ARM 3 — plain own-anchor target with a delivery-ON run is DELIVERED; the orchestrator twin is REFUSED', async (t) => {
+  const db = tmpBus(t);
+  seedRun(db, 'run-on', true);
+  const plain = await runWrapper({
+    db, targetRunId: 'run-on', targetExists: true, emergency: false, gated: true, plainParent: true,
+  });
+  assert.equal(plain.result.ok, true, `plain parent must stay reachable: ${plain.result.error}`);
+  assert.equal(plain.delivered, true);
+  const orch = await runWrapper({
+    db, targetRunId: 'run-on', targetExists: true, emergency: false, gated: true, plainParent: false,
+  });
+  assert.equal(orch.result.ok, false, 'the same run on an ORCHESTRATOR target is still refused');
+  assert.equal(orch.delivered, false);
 });
 
 // ─── 3. F3 (LEAD D-W8-1) — the BROADCAST is gated too; only --emergency bypasses ──

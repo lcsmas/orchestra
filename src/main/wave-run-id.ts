@@ -99,6 +99,15 @@ export function parentOrchestratorId(
   return null;
 }
 
+/** #221 — a workspace that is its OWN run anchor without orchestrating (a run-less parent that
+ *  gained a mission run): a plain workspace, not a coordinator. */
+export function isPlainOwnAnchor(
+  ws: WaveNode,
+  lookup: (id: string) => WaveNode | undefined,
+): boolean {
+  return !nodeOrchestrates(ws) && nearestOrchestratorId(ws, lookup) === ws.id;
+}
+
 /**
  * #221 — the parent run for a NEW orchestrator: `parentOrchestratorId`, else the DIRECT
  * parent when it resolves but anchors no run and has no orchestrator above it

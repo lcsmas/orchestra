@@ -2201,6 +2201,23 @@ INSERT-OR-IGNORE; a 2nd child reaches the row via the run-anchoring walk); an or
 parent, a run-anchoring parent, a plain member of an OPS, a top-level or dangling-parent
 promote are unchanged. No schema change. Existing root-mission OPS rows are NOT migrated.
 
+**#221 F1 — the plain parent LOSES NOTHING.** Giving the parent a delivery-ON run would
+have cut off its NON-member children (plain, no row, resolve to themselves). (a) The P4
+gate in `dispatchMessageRequest` skips a **plain own-anchor** (`isPlainOwnAnchor`,
+`wave-run-id.ts`: not an orchestrator AND `nearestOrchestratorId === self`), so `orchestra
+message` to the parent stays open exactly as on master — a member of a delivery-ON run and
+an orchestrator are still refused. (b) The reverse, parent→plain-child `send`, would have
+been accepted into a run the child never reads; `/resolveHandle` now carries each
+workspace's wave `runId` (the CLI computes it from `store.json` when the app is down) and
+`send` passes it as `toRunId` → `assertRecipientReachable` treats a row-less recipient with
+`toRunId === to` (own anchor, nobody's member) like an anchored one: unreachable → loud
+refusal naming `orchestra message`. A member (`toRunId ≠ to`), a legacy orchestrator a child
+run points at, and an older app (no `runId`) are not judged. ACCEPTED GAPS (review F4/F5): a
+plain P with a #221 row re-parented under an orchestrator collapses into that run (its OPS
+children leave the related set); a demoted ex-orchestrator intermediate with a stale row
+wins the walk (and its P4 gate opens); the field root-mission OPS row is not repaired
+(a live-bus write is the LEAD's call).
+
 ## Where the run starts — `maybeStartRunAtAnchor` (`src/main/bus-run-anchor.ts`)
 
 `startAgentPty` resolves `resolveAnchorInfo(ws)` = `{ anchorId, anchorIsOrchestrator,
