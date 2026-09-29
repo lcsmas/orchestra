@@ -657,6 +657,34 @@ test('fold: a stray next-turn delta (index reused, no block-start yet) does not 
   assert.equal(s.messages[0].done, true);
 });
 
+test('fold: turn-end clears `thinking` on a still-open thinking block', () => {
+  const think = { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } } as SdkMessage;
+  const open = foldEvents(emptySession('ws1'), normalizeAll([think]));
+  assert.equal(open.messages[0].thinking, true, 'precondition: thinking block is open mid-stream');
+  const s = foldEvents(emptySession('ws1'), normalizeAll([think, RESULT_OK]));
+  assert.equal(s.messages[0].thinking, false);
+  assert.equal(s.messages[0].done, true);
+});
+
+test('fold: turn-end only closes ASSISTANT blocks — an in-flight tool row is left as it was', () => {
+  const tool = { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'Bash' } } } as SdkMessage;
+  const mid = foldEvents(emptySession('ws1'), normalizeAll([tool]));
+  assert.equal(mid.messages[0].role, 'tool', 'precondition: a tool row exists');
+  assert.equal(mid.messages[0].done, undefined, 'precondition: it is not done');
+  const s = foldEvents(emptySession('ws1'), normalizeAll([tool, RESULT_OK]));
+  assert.deepEqual(s.messages[0], mid.messages[0]);
+});
+
+test('fold: turn-end keeps object identity of already-closed messages (no memo churn)', () => {
+  const stop = { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } } as SdkMessage;
+  const before = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'Hi'), stop, startText(1), delta(1, 'open')]));
+  const [turnEnd] = normalizeAll([RESULT_OK]);
+  const after = foldEvent(before, turnEnd);
+  assert.equal(after.messages[0], before.messages[0], 'closed message: same object');
+  assert.notEqual(after.messages[1], before.messages[1], 'open message: replaced');
+  assert.equal(after.messages[1].done, true);
+});
+
 test('fold: turn-end leaves a normally closed block untouched', () => {
   const stop = { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } } as SdkMessage;
   const closed = foldEvents(emptySession('ws1'), normalizeAll([startText(0), delta(0, 'Hi'), stop]));
