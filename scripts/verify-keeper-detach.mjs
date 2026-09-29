@@ -94,7 +94,26 @@ console.log(`[harness] sway up on ${wayland}`);
 // as), else ~/.claude. Deriving beats hardcoding: the harness then runs as
 // whoever invokes it rather than as one machine's account.
 const ACCOUNT_ID = 'keeper-e2e-account';
+// The login to BORROW (read-only). The app is NEVER handed this dir: every Orchestra boot runs the account-inherit
+// sync over its seeded accounts and REWRITES their configDir (unlinks inherited links / MCP servers) — review of #225.
+// The seeded account gets a SCRATCH dir holding a COPY of the credentials instead.
 const ACCOUNT_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const SCRATCH_CONFIG_DIR = path.join(RUN, 'claude-config');
+// What that sync can rewrite in a config dir, snapshotted before/after so a regression fails loudly here.
+const liveSurface = (dir) => {
+  const out = { links: [], manifest: null, mcp: null };
+  for (const sub of ['', 'skills']) {
+    let ents = [];
+    try { ents = fs.readdirSync(path.join(dir, sub)).sort(); } catch { /* absent */ }
+    for (const n of ents) {
+      try { if (fs.lstatSync(path.join(dir, sub, n)).isSymbolicLink()) out.links.push(`${path.join(sub, n)} -> ${fs.readlinkSync(path.join(dir, sub, n))}`); } catch { /* raced */ }
+    }
+  }
+  try { out.manifest = fs.readFileSync(path.join(dir, '.orchestra-inherited.json'), 'utf8'); } catch { /* none */ }
+  try { out.mcp = Object.keys(JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8')).mcpServers ?? {}).sort(); } catch { out.mcp = 'unreadable'; }
+  return JSON.stringify(out);
+};
+const LIVE_BEFORE = liveSurface(ACCOUNT_CONFIG_DIR);
 
 // PREFLIGHT. An auth failure surfaces 60+ seconds later as a keeper check
 // failing, which reads as a defect in the thing under test. Fail here instead,
@@ -117,6 +136,22 @@ const ACCOUNT_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir
   }
 }
 
+// ── scratch account dir: a COPY of the login, never the live dir ────────────
+{
+  const credFile = path.join(ACCOUNT_CONFIG_DIR, '.credentials.json');
+  let oauth = null;
+  try { oauth = JSON.parse(fs.readFileSync(credFile, 'utf8')).claudeAiOauth; } catch { /* handled below */ }
+  // A copy that REFRESHES may rotate the refresh token and invalidate the source login (UNVERIFIED either way):
+  // only copy while the access token has hours left.
+  if (!oauth || !(oauth.expiresAt - Date.now() >= 2 * 3600e3)) {
+    console.error(`PREFLIGHT FAIL — ${credFile} is missing or its access token expires in <2h; refusing to copy it (a refresh in the copy could rotate the source login). Use a login with a fresh token.`);
+    process.exit(1);
+  }
+  fs.mkdirSync(SCRATCH_CONFIG_DIR, { recursive: true });
+  fs.copyFileSync(credFile, path.join(SCRATCH_CONFIG_DIR, '.credentials.json'));
+  fs.chmodSync(path.join(SCRATCH_CONFIG_DIR, '.credentials.json'), 0o600);
+}
+
 // ── seed store ──────────────────────────────────────────────────────────────
 const scratchDir = path.join(RUN, 'scratch-ws');
 fs.mkdirSync(scratchDir, { recursive: true });
@@ -134,7 +169,7 @@ fs.writeFileSync(
       // ~/.claude — whose OAuth is commonly expired non-interactively. The run
       // then dies at the "sleep 15 running under OUR keeper" check, i.e. it
       // fails in the one place that looks exactly like a keeper defect. See #29.
-      accounts: [{ id: ACCOUNT_ID, label: 'keeper-e2e', configDir: ACCOUNT_CONFIG_DIR }],
+      accounts: [{ id: ACCOUNT_ID, label: 'keeper-e2e (scratch config)', configDir: SCRATCH_CONFIG_DIR }],
       workspaces: [
         {
           id: WS,
@@ -423,6 +458,8 @@ try {
   sway.kill('SIGKILL');
 }
 
+// The borrowed login's config dir must be exactly as it was before any app boot (review F4 on #225).
+check('live config dir untouched by the app boots', liveSurface(ACCOUNT_CONFIG_DIR) === LIVE_BEFORE, `${ACCOUNT_CONFIG_DIR} (a re-sync by the LIVE Orchestra during the run reads as a change)`);
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed  (artifacts: ${RUN})`);
 process.exit(failed.length ? 1 : 0);

@@ -1,10 +1,10 @@
-# BASELINE of scripts/e2e-agent-view-removal.sh --mode baseline on a build of origin/master 628e4d84 (src tree byte-identical: git diff origin/master -- src = 0 lines; IDENTITY git= is the rig commit before this file was amended in).
+# BASELINE of scripts/e2e-agent-view-removal.sh --mode baseline on a build of origin/master aa9bb442 (src tree byte-identical: git diff origin/master -- src = 0 lines; IDENTITY git= is a rig commit before this file was amended in).
 # Recorded 2026-09-29 with the invoker's config dir = a scratch mirror (the app itself only ever gets <home>/claude-config). Tabs Raw·Run·Structured·Diff; opening Raw makes ws-avr-1[agent]. #230 (B5) flips EXPECT and regenerates this file.
 # Regenerate: scripts/e2e-agent-view-removal.sh <app-dir> --mode baseline | grep -v '^\[rig\]\|^disk-guard\|^\[avr\]'
-RIG agent-view-removal mode=baseline arms=guard_selftest,pixel_selftest,live_guard_selftest,refuse_live_handoff,prune_selftest,gate_selftest,observe,control_run_pty,tabs,open_tabs_agent_pty,agent_view_content app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883
-IDENTITY(static) git=4d0f2800+3dirty version(package.json)=0.5.296 main=index-VcYHgMvB.js md5=d51c8d954ca4 renderer=index-2RNRdBjx.js:493e466341b4
-PASS  preflight/identity/dist-fresh — newest source package.json @2026-09-29T21:15:36.825Z <= oldest build artifact dist/index.html @2026-09-29T21:15:45.608Z
-PRUNE     removed 0 rig dir(s) older than 24 h and unreferenced; kept 27 (own / younger / in use)
+RIG agent-view-removal mode=baseline arms=guard_selftest,pixel_selftest,live_guard_selftest,refuse_live_handoff,prune_selftest,freshness_selftest,gate_selftest,observe,control_run_pty,tabs,open_tabs_agent_pty,agent_view_content app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883
+IDENTITY(static) git=ff0a45b0+1dirty version(package.json)=0.5.296 main=index-VcYHgMvB.js md5=d51c8d954ca4 renderer=index-2RNRdBjx.js:493e466341b4
+PASS  preflight/identity/dist-fresh — newest source package.json @2026-09-29T21:52:32.750Z <= oldest build artifact dist/index.html @2026-09-29T21:53:24.659Z
+PRUNE     removed 0 rig dir(s) older than 24 h and unreferenced; kept 37 (own / younger / in use)
 --- arm guard_selftest: isolation guard can FAIL: wayland-1 / sibling display / X11 DISPLAY / unset each refused with the NAMED clause; a good env passes
 PASS  guard_selftest/refuse-wayland-1 — forced {"WAYLAND_DISPLAY":"wayland-1"} -> ok=false clause=refuse-wayland-1
 PASS  guard_selftest/refuse-wayland-1-even-if-mine — forced {"WAYLAND_DISPLAY":"wayland-1"} -> ok=false clause=refuse-wayland-1
@@ -47,111 +47,127 @@ PASS  refuse_live_handoff/refused:real-home-as-HOME — REFUSED before launch [h
 PASS  refuse_live_handoff/refused:xdg-config-home-live — REFUSED before launch [handoff:XDG_CONFIG_HOME:outside-boot-home] (want launch layer, clause handoff:XDG_CONFIG_HOME:outside-boot-home); app.log created=false
 PASS  refuse_live_handoff/refused:xdg-cache-home-live — REFUSED before launch [handoff:XDG_CACHE_HOME:overlaps-live-config] (want launch layer, clause handoff:XDG_CACHE_HOME:outside-boot-home | handoff:XDG_CACHE_HOME:overlaps-live-config); app.log created=false
 PASS  refuse_live_handoff/refused:claude-config-dir-env-live — REFUSED before launch [handoff:CLAUDE_CONFIG_DIR:is-live-config] (want launch layer, clause handoff:CLAUDE_CONFIG_DIR:is-live-config); app.log created=false
+PASS  refuse_live_handoff/refused:claude-config-dir-env-empty — REFUSED before launch [handoff:CLAUDE_CONFIG_DIR:unset] (want launch layer, clause handoff:CLAUDE_CONFIG_DIR:unset); app.log created=false
+PASS  refuse_live_handoff/refused:xdg-config-home-is-live-dir — REFUSED before launch [handoff:XDG_CONFIG_HOME:is-live-config] (want launch layer, clause handoff:XDG_CONFIG_HOME:is-live-config); app.log created=false
+PASS  refuse_live_handoff/refused:xdg-cache-home-is-dot-claude — REFUSED before launch [handoff:XDG_CACHE_HOME:is-live-config] (want launch layer, clause handoff:XDG_CACHE_HOME:is-live-config); app.log created=false
 PASS  refuse_live_handoff/refused:orchestra-home-live — REFUSED before launch [handoff:ORCHESTRA_HOME:outside-boot-home] (want launch layer, clause handoff:ORCHESTRA_HOME:outside-boot-home); app.log created=false
 PASS  refuse_live_handoff/refused:accounts-layer-alone — only accounts[0].configDir=/home/lmas/.cache/e2e-agent-view-removal/mirror-live is live -> ok=false clause=handoff:accounts[0].configDir:is-live-config
 PASS  refuse_live_handoff/positive-control:scratch-handoff-accepted — an all-inside-boot-home hand-off is accepted (handoff-scratch) — the guard is not a constant refusal
 PASS  refuse_live_handoff/no-real-electron-launched — real electron processes carrying a refuse-* ORCHESTRA_HOME: 0
 PASS  refuse_live_handoff/live-dirs-untouched — inheritance surface identical before/after for /home/lmas/.cache/e2e-agent-view-removal/mirror-live, /home/lmas/.claude, /home/lmas/.claude-broken, /home/lmas/.claude-mc, /home/lmas/.claude-perso, /home/lmas/.claude-test, /home/lmas/.claude-testacct, /home/lmas/.claude-work
---- arm prune_selftest: the rig-dir prune is sibling-safe: only e2e64c-* dirs older than 24 h AND unreferenced by any live process go; own, younger, in-use and differently-named dirs stay
+--- arm prune_selftest: the rig-dir prune is sibling-safe: only THIS rig's e2e64c-* dirs, older than 24 h, unreferenced by any live process and not marked failed/incomplete go; own, younger, in-use, other rigs', forensics and differently-named dirs stay
 PASS  prune_selftest/removes-only-stale-unreferenced — removed=["e2e64c-1001"]
 PASS  prune_selftest/keeps-in-use — a >24 h dir named in a live process argv survives
 PASS  prune_selftest/keeps-younger-than-24h — a recent sibling dir survives
 PASS  prune_selftest/keeps-own-dir — this invocation's own dir survives even when old
 PASS  prune_selftest/keeps-non-rig-names — a differently-named dir is never touched
+PASS  prune_selftest/keeps-other-rigs-dirs — an e2e64c-* dir without THIS rig's owner marker survives (E2E_RIG_BASE=/tmp shares the pattern with every contained-rig user)
+PASS  prune_selftest/keeps-failed-run-forensics — a dir carrying KEEP-UNTIL-CLEAN (failed/crashed run) survives even when old and unreferenced
+--- arm freshness_selftest: identity/dist-fresh can FAIL: a fake app dir with a fresh dist is accepted; a src file or package.json newer than the build, or no src/ at all, is refused naming the file
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+PASS  freshness_selftest/fresh-build-accepted — newest source src/a.ts @2026-09-29T21:45:20.250Z <= oldest build artifact dist/index.html @2026-09-29T21:54:20.250Z
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+PASS  freshness_selftest/stale-src-refused — refused: newest source src/deep/b.ts @2026-09-29T21:55:20.253Z > NEWER THAN oldest build artifact dist/index.html @2026-09-29T21:54:20.253Z
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+PASS  freshness_selftest/stale-package-json-refused — refused: newest source package.json @2026-09-29T21:55:20.263Z > NEWER THAN oldest build artifact dist/index.html @2026-09-29T21:54:20.263Z  (the version-bumped-without-rebuild case)
+PASS  freshness_selftest/no-src-refused — refused: no src/ under <app-dir> — cannot prove dist/ is fresh (checkout builds only)
 --- arm gate_selftest: the no-agent-PTY gate: REFUSED without the Run control, a per-tab claim counts only PTYs that step CREATED (V1: no carry-over), a created one reddens it
 PASS  gate_selftest/refused-without-control — control not fired -> REFUSED: Run-tab positive control did no…
 PASS  gate_selftest/passes-when-nothing-created — control fired, only a run PTY listed -> PASS
 PASS  gate_selftest/fails-when-step-created-agent-pty — control fired, agent PTY created by this step -> FAIL
 PASS  gate_selftest/no-carry-over-from-earlier-step — the same agent PTY pre-existing before this step -> PASS (delta, not cumulative)
 --- arm observe: record what the app shows on boot: rendered tab labels + live PTY sessions by kind (no assertion beyond identity/isolation)
-IDENTITY  arm=observe mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=4d0f2800+3dirty version(running)=0.5.296 version(package.json)=0.5.296
+IDENTITY  arm=observe mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=ff0a45b0+1dirty version(running)=0.5.296 version(package.json)=0.5.296
           target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
           loaded-renderer-bundle=index-2RNRdBjx.js md5=493e466341b4  main=index-VcYHgMvB.js md5=d51c8d954ca4  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
 PASS  observe/identity/version — running=0.5.296 package.json=0.5.296
 PASS  observe/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
-PASS  observe/isolation/display-isolated — (read back from /proc/1156705/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
-PASS  observe/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/observe-mun7d72a
+PASS  observe/isolation/display-isolated — (read back from /proc/1399943/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  observe/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/observe-mun7t5xr (rule: must equal this boot's home /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/observe-mun7t5xr and must not be, or sit under, /home/lmas/.orchestra — a rig base under ~/.orchestra is refused)
 PASS  observe/isolation/home-not-tmpfs — fstype=btrfs
-PASS  observe/isolation/window-in-my-sway — app pid 1156705 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/sway.sock
-PASS  observe/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/observe-mun7d72a/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/observe-mun7d72a/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
+PASS  observe/isolation/window-in-my-sway — app pid 1399943 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/sway.sock
+PASS  observe/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/observe-mun7t5xr/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/observe-mun7t5xr/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
 OBSERVED  tabs=["Raw","Run","Structured*","Diff"] ptys=∅ kinds={}
 PASS  observe/isolation/live-config-untouched — inheritance surface identical before/after for /home/lmas/.cache/e2e-agent-view-removal/mirror-live, /home/lmas/.claude, /home/lmas/.claude-broken, /home/lmas/.claude-mc, /home/lmas/.claude-perso, /home/lmas/.claude-test, /home/lmas/.claude-testacct, /home/lmas/.claude-work
-RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/observe-mun7d72a: arm observe PASSED — state deleted, kept app.log + screenshots
+RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/observe-mun7t5xr: arm observe PASSED — state deleted, kept app.log + screenshots
 --- arm control_run_pty: positive control: opening Run (+ ▶ Run) makes a run-kind PTY appear — proves the listing can see PTYs
-IDENTITY  arm=control_run_pty mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=4d0f2800+3dirty version(running)=0.5.296 version(package.json)=0.5.296
+IDENTITY  arm=control_run_pty mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=ff0a45b0+1dirty version(running)=0.5.296 version(package.json)=0.5.296
           target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
           loaded-renderer-bundle=index-2RNRdBjx.js md5=493e466341b4  main=index-VcYHgMvB.js md5=d51c8d954ca4  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
 PASS  control_run_pty/identity/version — running=0.5.296 package.json=0.5.296
 PASS  control_run_pty/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
-PASS  control_run_pty/isolation/display-isolated — (read back from /proc/1157934/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
-PASS  control_run_pty/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/control_run_pty-mun7d8ms
+PASS  control_run_pty/isolation/display-isolated — (read back from /proc/1400655/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  control_run_pty/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/control_run_pty-mun7t96q (rule: must equal this boot's home /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/control_run_pty-mun7t96q and must not be, or sit under, /home/lmas/.orchestra — a rig base under ~/.orchestra is refused)
 PASS  control_run_pty/isolation/home-not-tmpfs — fstype=btrfs
-PASS  control_run_pty/isolation/window-in-my-sway — app pid 1157934 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/sway.sock
-PASS  control_run_pty/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/control_run_pty-mun7d8ms/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/control_run_pty-mun7d8ms/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
+PASS  control_run_pty/isolation/window-in-my-sway — app pid 1400655 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/sway.sock
+PASS  control_run_pty/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/control_run_pty-mun7t96q/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/control_run_pty-mun7t96q/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
 PASS  control_run_pty/control/run-pty-appears — pre=∅ -> post=ws-avr-1:run[run]
 PASS  control_run_pty/isolation/live-config-untouched — inheritance surface identical before/after for /home/lmas/.cache/e2e-agent-view-removal/mirror-live, /home/lmas/.claude, /home/lmas/.claude-broken, /home/lmas/.claude-mc, /home/lmas/.claude-perso, /home/lmas/.claude-test, /home/lmas/.claude-testacct, /home/lmas/.claude-work
-RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/control_run_pty-mun7d8ms: arm control_run_pty PASSED — state deleted, kept app.log + screenshots
+RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/control_run_pty-mun7t96q: arm control_run_pty PASSED — state deleted, kept app.log + screenshots
 --- arm tabs: rendered tab labels, in order (baseline Raw·Run·Structured·Diff; after Agent·Run·Diff) + default-active tab
-IDENTITY  arm=tabs mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=4d0f2800+3dirty version(running)=0.5.296 version(package.json)=0.5.296
+IDENTITY  arm=tabs mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=ff0a45b0+1dirty version(running)=0.5.296 version(package.json)=0.5.296
           target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
           loaded-renderer-bundle=index-2RNRdBjx.js md5=493e466341b4  main=index-VcYHgMvB.js md5=d51c8d954ca4  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
 PASS  tabs/identity/version — running=0.5.296 package.json=0.5.296
 PASS  tabs/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
-PASS  tabs/isolation/display-isolated — (read back from /proc/1158960/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
-PASS  tabs/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/tabs-mun7dacx
+PASS  tabs/isolation/display-isolated — (read back from /proc/1401567/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  tabs/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/tabs-mun7tdly (rule: must equal this boot's home /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/tabs-mun7tdly and must not be, or sit under, /home/lmas/.orchestra — a rig base under ~/.orchestra is refused)
 PASS  tabs/isolation/home-not-tmpfs — fstype=btrfs
-PASS  tabs/isolation/window-in-my-sway — app pid 1158960 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/sway.sock
-PASS  tabs/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/tabs-mun7dacx/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/tabs-mun7dacx/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
+PASS  tabs/isolation/window-in-my-sway — app pid 1401567 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/sway.sock
+PASS  tabs/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/tabs-mun7tdly/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/tabs-mun7tdly/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
 PASS  tabs/tab-labels — rendered=["Raw","Run","Structured","Diff"] expected(baseline)=["Raw","Run","Structured","Diff"]
 PASS  tabs/all-tabs-visible — visible=true,true,true,true
 PASS  tabs/opens-on-agent-view — active=Structured expected=Structured
 PASS  tabs/raw-tab — Raw present=true expected(baseline)=true
 PASS  tabs/isolation/live-config-untouched — inheritance surface identical before/after for /home/lmas/.cache/e2e-agent-view-removal/mirror-live, /home/lmas/.claude, /home/lmas/.claude-broken, /home/lmas/.claude-mc, /home/lmas/.claude-perso, /home/lmas/.claude-test, /home/lmas/.claude-testacct, /home/lmas/.claude-work
-RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/tabs-mun7dacx: arm tabs PASSED — state deleted, kept app.log + screenshots
+RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/tabs-mun7tdly: arm tabs PASSED — state deleted, kept app.log + screenshots
 --- arm open_tabs_agent_pty: opening each tab: baseline Raw creates an agent-kind PTY, every other tab creates none; after — NO tab creates one (gated on the Run-tab control)
-IDENTITY  arm=open_tabs_agent_pty mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=4d0f2800+3dirty version(running)=0.5.296 version(package.json)=0.5.296
+IDENTITY  arm=open_tabs_agent_pty mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=ff0a45b0+1dirty version(running)=0.5.296 version(package.json)=0.5.296
           target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
           loaded-renderer-bundle=index-2RNRdBjx.js md5=493e466341b4  main=index-VcYHgMvB.js md5=d51c8d954ca4  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
 PASS  open_tabs_agent_pty/identity/version — running=0.5.296 package.json=0.5.296
 PASS  open_tabs_agent_pty/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
-PASS  open_tabs_agent_pty/isolation/display-isolated — (read back from /proc/1159720/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
-PASS  open_tabs_agent_pty/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/open_tabs_agent_pty-mun7dbrc
+PASS  open_tabs_agent_pty/isolation/display-isolated — (read back from /proc/1402058/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  open_tabs_agent_pty/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/open_tabs_agent_pty-mun7tg98 (rule: must equal this boot's home /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/open_tabs_agent_pty-mun7tg98 and must not be, or sit under, /home/lmas/.orchestra — a rig base under ~/.orchestra is refused)
 PASS  open_tabs_agent_pty/isolation/home-not-tmpfs — fstype=btrfs
-PASS  open_tabs_agent_pty/isolation/window-in-my-sway — app pid 1159720 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/sway.sock
-PASS  open_tabs_agent_pty/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/open_tabs_agent_pty-mun7dbrc/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/open_tabs_agent_pty-mun7dbrc/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
+PASS  open_tabs_agent_pty/isolation/window-in-my-sway — app pid 1402058 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/sway.sock
+PASS  open_tabs_agent_pty/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/open_tabs_agent_pty-mun7tg98/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/open_tabs_agent_pty-mun7tg98/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
 PASS  open_tabs_agent_pty/control/run-pty-appears — pre=∅ -> post=ws-avr-1:run[run]
 PASS  open_tabs_agent_pty/pre-state-no-agent-pty — agent-kind PTYs created by this step=0 (ws-avr-1:run[run])
 PASS  open_tabs_agent_pty/tab:Run:no-agent-pty — agent-kind PTYs created by this step=0 (ws-avr-1:run[run])
 PASS  open_tabs_agent_pty/tab:Structured:no-agent-pty — agent-kind PTYs created by this step=0 (ws-avr-1:run[run])
 PASS  open_tabs_agent_pty/tab:Diff:no-agent-pty — agent-kind PTYs created by this step=0 (ws-avr-1:run[run])
 PASS  open_tabs_agent_pty/tab:Raw:creates-agent-pty — pre=ws-avr-1:run[run] -> post=ws-avr-1:run[run],ws-avr-1[agent] expected(baseline)=true
-PASS  open_tabs_agent_pty/tab:Raw:agent-pty-is-the-stub — no real claude was started; PTY tree cmdlines=["/bin/sh /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/open_tabs_agent_pty-mun7dbrc/stub-bin/claude --dangerously-skip-permissions --model claude-opus-4-8","sleep 3600"]
+PASS  open_tabs_agent_pty/tab:Raw:agent-pty-is-the-stub — no real claude was started; PTY tree cmdlines=["/bin/sh /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/open_tabs_agent_pty-mun7tg98/stub-bin/claude --dangerously-skip-permissions --model claude-opus-4-8","sleep 3600"]
 PASS  open_tabs_agent_pty/end-state-agent-pty — baseline: Raw left exactly one agent-kind PTY (ws-avr-1:run[run],ws-avr-1[agent])
 PASS  open_tabs_agent_pty/isolation/live-config-untouched — inheritance surface identical before/after for /home/lmas/.cache/e2e-agent-view-removal/mirror-live, /home/lmas/.claude, /home/lmas/.claude-broken, /home/lmas/.claude-mc, /home/lmas/.claude-perso, /home/lmas/.claude-test, /home/lmas/.claude-testacct, /home/lmas/.claude-work
-RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/open_tabs_agent_pty-mun7dbrc: arm open_tabs_agent_pty PASSED — state deleted, kept app.log + screenshots
+RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/open_tabs_agent_pty-mun7tg98: arm open_tabs_agent_pty PASSED — state deleted, kept app.log + screenshots
 --- arm agent_view_content: the Agent view renders REAL content (injected through the real fold path: user + assistant rows visible) + a screenshot read back off disk and asserted on its decoded pixels
-IDENTITY  arm=agent_view_content mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=4d0f2800+3dirty version(running)=0.5.296 version(package.json)=0.5.296
+IDENTITY  arm=agent_view_content mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=ff0a45b0+1dirty version(running)=0.5.296 version(package.json)=0.5.296
           target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
           loaded-renderer-bundle=index-2RNRdBjx.js md5=493e466341b4  main=index-VcYHgMvB.js md5=d51c8d954ca4  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
 PASS  agent_view_content/identity/version — running=0.5.296 package.json=0.5.296
 PASS  agent_view_content/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
-PASS  agent_view_content/isolation/display-isolated — (read back from /proc/1163423/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
-PASS  agent_view_content/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza
+PASS  agent_view_content/isolation/display-isolated — (read back from /proc/1403977/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  agent_view_content/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx (rule: must equal this boot's home /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx and must not be, or sit under, /home/lmas/.orchestra — a rig base under ~/.orchestra is refused)
 PASS  agent_view_content/isolation/home-not-tmpfs — fstype=btrfs
-PASS  agent_view_content/isolation/window-in-my-sway — app pid 1163423 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/sway.sock
-PASS  agent_view_content/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
+PASS  agent_view_content/isolation/window-in-my-sway — app pid 1403977 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/sway.sock
+PASS  agent_view_content/isolation/scratch-config — seeded configDir=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/claude-config child CLAUDE_CONFIG_DIR(read back)=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/claude-config live dirs protected=/home/lmas/.cache/e2e-agent-view-removal/mirror-live,/home/lmas/.claude,/home/lmas/.claude-broken,/home/lmas/.claude-mc,/home/lmas/.claude-perso,/home/lmas/.claude-test,/home/lmas/.claude-testacct,/home/lmas/.claude-work
 PASS  agent_view_content/agent-tab-rendered — 'Structured' in ["Raw","Run","Structured","Diff"]
 PASS  agent_view_content/rows-rendered-and-visible — user + assistant sentinels are in visible elements (DOM oracle — blind to paint, hence the pixels below)
 PASS  agent_view_content/composer-present — a composer element is in the DOM
 PASS  agent_view_content/rows-rect-found — injected rows occupy 1190x89 at (366,104)
-SHOT      empty-state  /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/agent-view-empty.png md5=d497f074ec94d276a7aec7aff0e5e12c 1256x776 bytes=17714 distinct=607 nonBg=0.823%
-SHOT      content      /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/agent-view-content.png md5=f950e42633cb7f4158e482c236892074 1256x776 bytes=14847 distinct=536 nonBg=1.254%
-SHOT      rows-content /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/agent-view-rows-content.png md5=0edc310d1ee7b4671d6ce550bdf3127a 1190x88 bytes=8523 distinct=402 nonBg=9.758%
-SHOT      rows-blank   /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/agent-view-rows-blank.png md5=5fee217ca54d864480b253348967dc42 1190x88 bytes=586 distinct=1 nonBg=0%
-PASS  agent_view_content/screenshots-distinct — md5s empty-state=d497f074 content=f950e426 rows-content=0edc310d rows-blank=5fee217c (a no-op step would collide)
+SHOT      empty-state  /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/agent-view-empty.png md5=d497f074ec94d276a7aec7aff0e5e12c 1256x776 bytes=17714 distinct=607 nonBg=0.823%
+SHOT      content      /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/agent-view-content.png md5=98c56b989a492936401cf4f0fdb23fd4 1256x776 bytes=14853 distinct=529 nonBg=1.254%
+SHOT      rows-content /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/agent-view-rows-content.png md5=0edc310d1ee7b4671d6ce550bdf3127a 1190x88 bytes=8523 distinct=402 nonBg=9.758%
+SHOT      rows-blank   /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/agent-view-rows-blank.png md5=5fee217ca54d864480b253348967dc42 1190x88 bytes=586 distinct=1 nonBg=0%
+PASS  agent_view_content/screenshots-distinct — md5s empty-state=d497f074 content=98c56b98 rows-content=0edc310d rows-blank=5fee217c (a no-op step would collide)
 PASS  agent_view_content/content-painted-not-blank — rows region: content nonBg=9.758% distinct=402 vs blank nonBg=0% distinct=1 (need > +0.05pp and > +4 colours)
-SHOT      compositor  /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza/compositor-grim.png md5=d3f7f324b1727280f6714fc6cd77c079 1600x1000 bytes=86124 distinct=4103 nonBg=33.327%
+SHOT      compositor  /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx/compositor-grim.png md5=e890e2c59b1359a522ca49b69e8df0d5 1600x1000 bytes=86124 distinct=4103 nonBg=33.327%
 PASS  agent_view_content/compositor-shows-app — grim on wayland-3: distinct=4103 nonBg=33.327% (thresholds >=12 colours, >=1%)
 PASS  agent_view_content/isolation/live-config-untouched — inheritance surface identical before/after for /home/lmas/.cache/e2e-agent-view-removal/mirror-live, /home/lmas/.claude, /home/lmas/.claude-broken, /home/lmas/.claude-mc, /home/lmas/.claude-perso, /home/lmas/.claude-test, /home/lmas/.claude-testacct, /home/lmas/.claude-work
-RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/oh/agent_view_content-mun7djza: arm agent_view_content PASSED — state deleted, kept app.log + screenshots
-RIG-RESULT mode=baseline arms=11 clauses=113 pass=113 fail=0 skip=0 allowed_stale=0 external_change=0 artifact=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1155552/result-baseline.json
+RETAIN    /home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/oh/agent_view_content-mun7trnx: arm agent_view_content PASSED — state deleted, kept app.log + screenshots
+RIG-RESULT mode=baseline arms=12 clauses=122 pass=122 fail=0 skip=0 allowed_stale=0 external_change=0 artifact=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-1398546/result-baseline.json

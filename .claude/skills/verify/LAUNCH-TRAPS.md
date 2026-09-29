@@ -99,6 +99,10 @@ CLAUDE.md/settings/LESSONS/skills symlinks and its MCP servers (measured twice o
 2026-09-29 — `~/.claude-mc` emptied at 22:57 and again at 23:39 local by two
 rigs following the old version of this recipe). Use a SCRATCH config dir per
 boot, and copy only `.credentials.json` into it when the drive needs a real login.
+It is unsafe under the REAL `HOME` too (the #225 review measured a real-HOME boot pinned to a mirror dir dropping
+links and MCP servers: no `inherit` ⇒ BASE-only set, and the sync removes what its manifest tracks). And a copied
+`.credentials.json` that REFRESHES may rotate the source login's refresh token (UNVERIFIED) — copy it only while the
+access token has hours left (`claudeAiOauth.expiresAt`; `scripts/verify-keeper-detach.mjs` refuses under 2 h).
 
 **The LOGIN is DERIVED from the INVOKING agent's own `CLAUDE_CONFIG_DIR`,
 falling back to `~/.claude` — NEVER a hardcoded account.** The rig must run as

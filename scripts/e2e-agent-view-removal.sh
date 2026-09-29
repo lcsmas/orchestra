@@ -29,7 +29,8 @@ done
 # account-inherit sync strips a live dir under this rig's fake HOME). It is passed through only so
 # the driver can assert, before/after every boot, that it was left untouched.
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-[[ -d "${CFG}" ]] || { echo "ABORT: config dir ${CFG} does not exist" >&2; exit 2; }
+# It is only ever PROTECTED, never used — a missing dir is not an error (the driver skips its cases and snapshots).
+[[ -d "${CFG}" ]] || echo "[avr] WARN: config dir ${CFG} does not exist — nothing to protect there" >&2
 echo "[avr] live config dir to PROTECT (never used as the app's account): ${CFG}" >&2
 
 export E2E_RIG_BASE="${E2E_RIG_BASE:-$HOME/.cache/e2e-agent-view-removal}"

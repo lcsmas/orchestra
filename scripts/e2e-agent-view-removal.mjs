@@ -476,18 +476,18 @@ function appApi(app) {
 
 const md5f = (f) => crypto.createHash('md5').update(fs.readFileSync(f)).digest('hex').slice(0, 12);
 /** Read off the build on disk — printed before ANY arm, including the no-boot ones. */
-function staticIdentity() {
-  const pkgVersion = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version;
-  const chunk = (fs.readFileSync(path.join(APP_DIR, 'dist-electron/main.js'), 'utf8').match(/require\(["']\.\/([^"']+)["']\)/) ?? [])[1];
+function staticIdentity(appDir = APP_DIR) {
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version;
+  const chunk = (fs.readFileSync(path.join(appDir, 'dist-electron/main.js'), 'utf8').match(/require\(["']\.\/([^"']+)["']\)/) ?? [])[1];
   let gitInfo = 'no-git';
   try {
-    const sha = execFileSync('git', ['-C', APP_DIR, 'rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8' }).trim();
-    const dirty = execFileSync('git', ['-C', APP_DIR, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }).split('\n').filter(Boolean).length;
+    const sha = execFileSync('git', ['-C', appDir, 'rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8' }).trim();
+    const dirty = execFileSync('git', ['-C', appDir, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }).split('\n').filter(Boolean).length;
     gitInfo = `${sha}${dirty ? `+${dirty}dirty` : ''}`;
   } catch { /* not a git checkout */ }
-  const assets = path.join(APP_DIR, 'dist/assets');
+  const assets = path.join(appDir, 'dist/assets');
   const rendererFiles = fs.existsSync(assets) ? fs.readdirSync(assets).filter((f) => /^index-.*\.js$/.test(f)).map((f) => `${f}:${md5f(path.join(assets, f))}`) : [];
-  return { pkgVersion, chunk, gitInfo, rendererFiles, mainMd5: chunk ? md5f(path.join(APP_DIR, 'dist-electron', chunk)) : '?' };
+  return { pkgVersion, chunk, gitInfo, rendererFiles, mainMd5: chunk ? md5f(path.join(appDir, 'dist-electron', chunk)) : '?' };
 }
 /** Printed FIRST, before any clause of the arm: what is actually running. */
 async function identityAndIsolation(ctx, app) {
@@ -507,7 +507,7 @@ async function identityAndIsolation(ctx, app) {
   const g = checkChildEnv(live, RIG.wayland);
   ctx.clause(`isolation/${g.clause}`, g.ok, `(read back from /proc/${app.pid}/environ) ${g.detail}`);
   ctx.clause('isolation/orchestra-home', live.ORCHESTRA_HOME === app.home && !app.home.startsWith(path.join(REAL_HOME, '.orchestra') + path.sep) && live.ORCHESTRA_HOME !== path.join(REAL_HOME, '.orchestra'),
-    `ORCHESTRA_HOME=${live.ORCHESTRA_HOME}`);
+    `ORCHESTRA_HOME=${live.ORCHESTRA_HOME} (rule: must equal this boot's home ${app.home} and must not be, or sit under, ${path.join(REAL_HOME, '.orchestra')} — a rig base under ~/.orchestra is refused)`);
   const fstype = execFileSync('findmnt', ['-no', 'FSTYPE', '-T', app.home], { encoding: 'utf8' }).trim();
   ctx.clause('isolation/home-not-tmpfs', fstype !== 'tmpfs' && !app.home.startsWith('/tmp/'), `fstype=${fstype}`);
   const inSway = await waitFor('app window in MY sway tree', () => {
@@ -529,7 +529,7 @@ function liveCheck(ctx, app) {
 }
 /** Build freshness (review F2): identity/version compares the app with the SAME package.json, so it
  *  cannot see a stale dist/. A src file (or package.json) newer than the OLDEST build artifact = stale. */
-function distFreshness() {
+function distFreshness(appDir = APP_DIR) {
   const walk = (d, out = []) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       if (e.name === 'node_modules') continue;
@@ -538,16 +538,16 @@ function distFreshness() {
     }
     return out;
   };
-  const srcDir = path.join(APP_DIR, 'src');
+  const srcDir = path.join(appDir, 'src');
   if (!fs.existsSync(srcDir)) return { ok: false, detail: 'no src/ under <app-dir> — cannot prove dist/ is fresh (checkout builds only)' };
-  const srcFiles = [...walk(srcDir), ...['package.json', 'index.html', 'vite.config.ts'].map((f) => path.join(APP_DIR, f)).filter((f) => fs.existsSync(f))];
+  const srcFiles = [...walk(srcDir), ...['package.json', 'index.html', 'vite.config.ts'].map((f) => path.join(appDir, f)).filter((f) => fs.existsSync(f))];
   const newest = srcFiles.map((f) => ({ f, t: fs.statSync(f).mtimeMs })).reduce((a, b) => (b.t > a.t ? b : a));
-  const sid = staticIdentity();
-  const arts = [path.join(APP_DIR, 'dist/index.html'), path.join(APP_DIR, 'dist-electron/main.js'), path.join(APP_DIR, 'dist-electron', sid.chunk ?? 'main.js'),
-    ...sid.rendererFiles.map((x) => path.join(APP_DIR, 'dist/assets', x.split(':')[0]))].filter((f) => fs.existsSync(f));
+  const sid = staticIdentity(appDir);
+  const arts = [path.join(appDir, 'dist/index.html'), path.join(appDir, 'dist-electron/main.js'), path.join(appDir, 'dist-electron', sid.chunk ?? 'main.js'),
+    ...sid.rendererFiles.map((x) => path.join(appDir, 'dist/assets', x.split(':')[0]))].filter((f) => fs.existsSync(f));
   const oldest = arts.map((f) => ({ f, t: fs.statSync(f).mtimeMs })).reduce((a, b) => (b.t < a.t ? b : a));
   const ok = newest.t <= oldest.t;
-  const rel = (f) => path.relative(APP_DIR, f);
+  const rel = (f) => path.relative(appDir, f);
   return { ok, detail: `newest source ${rel(newest.f)} @${new Date(newest.t).toISOString()} ${ok ? '<=' : '> NEWER THAN'} oldest build artifact ${rel(oldest.f)} @${new Date(oldest.t).toISOString()}${ok ? '' : ' — dist/ is STALE: rebuild (npx vite build) or pass --allow-stale'}` };
 }
 /** The seeded workspace is auto-activated at boot; wait until its toolbar tabs are rendered. */
@@ -594,14 +594,19 @@ function referencedByLiveProcess(dir) {
   }
   return false;
 }
-/** Sibling-safe prune (S3): delete ONLY `e2e64c-<pid>` rig dirs that are older than 24 h AND not referenced by
- *  any live process, never this invocation's own dir. Younger dirs (a sibling's forensics) and in-use dirs stay. */
+/** Sibling-safe prune (S3/F3): delete ONLY `e2e64c-<pid>` dirs that (a) carry THIS rig's owner marker, (b) are older than
+ *  24 h, (c) are unreferenced by any live process, (d) have no KEEP marker (a failed or crashed run), and never this
+ *  invocation's own dir. Everything else — other rigs' dirs, younger dirs, in-use dirs, forensics — stays. */
+const OWNER_MARKER = '.avr-rig-owner';   // written into every rig dir THIS rig creates: other contained-rig users' e2e64c-* dirs lack it
+const KEEP_MARKER = 'KEEP-UNTIL-CLEAN';  // written at start, removed only when the invocation ends with 0 FAIL: crashed/failed runs keep their forensics
 function pruneStaleRigDirs(base, own, { now = Date.now(), maxAgeMs = 24 * 3600e3, inUse = referencedByLiveProcess } = {}) {
   const removed = [], kept = [];
   for (const n of fs.readdirSync(base)) {
     if (!/^e2e64c-\d+$/.test(n)) continue;
     const d = path.join(base, n);
     if (own && path.resolve(d) === path.resolve(own)) { kept.push([n, 'own']); continue; }
+    if (!fs.existsSync(path.join(d, OWNER_MARKER))) { kept.push([n, 'not created by this rig']); continue; }
+    if (fs.existsSync(path.join(d, KEEP_MARKER))) { kept.push([n, 'failed/incomplete run — forensics']); continue; }
     if (now - fs.statSync(d).mtimeMs < maxAgeMs) { kept.push([n, 'younger than 24 h']); continue; }
     if (inUse(d)) { kept.push([n, 'in use']); continue; }
     fs.rmSync(d, { recursive: true, force: true }); removed.push(n);
@@ -746,15 +751,18 @@ const ARMS = [
       const cfgEnv = (env) => ({ ...NET, env });
       // [name, opts, wanted clause, layer]: 'seeding' = the seed-time guard, 'launch' = checkHandOff on the child env.
       const cases = [
-        ['invoker-config-dir', { ...NET, configDir: RIG.liveCfg }, 'is-live-config', 'seeding'],
-        ['home-dot-claude', { ...NET, configDir: path.join(REAL_HOME, '.claude') }, 'is-live-config', 'seeding'],
+        ['invoker-config-dir', RIG.liveCfg && fs.existsSync(RIG.liveCfg) ? { ...NET, configDir: RIG.liveCfg } : null, 'is-live-config', 'seeding'],
+        ['home-dot-claude', fs.existsSync(path.join(REAL_HOME, '.claude')) ? { ...NET, configDir: path.join(REAL_HOME, '.claude') } : null, 'is-live-config', 'seeding'],
         ['sibling-dot-claude-star', sib ? { ...NET, configDir: sib } : null, 'is-live-config', 'seeding'],
         ['outside-boot-home', { ...NET, configDir: outside }, 'outside-boot-home', 'seeding'],
         ['real-home-as-HOME', cfgEnv({ HOME: REAL_HOME }), 'handoff:HOME:is-real-home', 'launch'],
         ['xdg-config-home-live', cfgEnv({ XDG_CONFIG_HOME: path.join(REAL_HOME, '.config') }), 'handoff:XDG_CONFIG_HOME:outside-boot-home', 'launch'],
         // ~/.cache may CONTAIN the invoker's dir (a scratch mirror lives there) => either refusal clause names this same var check
         ['xdg-cache-home-live', cfgEnv({ XDG_CACHE_HOME: path.join(REAL_HOME, '.cache') }), ['handoff:XDG_CACHE_HOME:outside-boot-home', 'handoff:XDG_CACHE_HOME:overlaps-live-config'], 'launch'],
-        ['claude-config-dir-env-live', RIG.liveCfg ? cfgEnv({ CLAUDE_CONFIG_DIR: RIG.liveCfg }) : null, 'handoff:CLAUDE_CONFIG_DIR:is-live-config', 'launch'],
+        ['claude-config-dir-env-live', RIG.liveCfg && fs.existsSync(RIG.liveCfg) ? cfgEnv({ CLAUDE_CONFIG_DIR: RIG.liveCfg }) : null, 'handoff:CLAUDE_CONFIG_DIR:is-live-config', 'launch'],
+        ['claude-config-dir-env-empty', cfgEnv({ CLAUDE_CONFIG_DIR: '' }), 'handoff:CLAUDE_CONFIG_DIR:unset', 'launch'],
+        ['xdg-config-home-is-live-dir', RIG.liveCfg && fs.existsSync(RIG.liveCfg) ? cfgEnv({ XDG_CONFIG_HOME: RIG.liveCfg }) : null, 'handoff:XDG_CONFIG_HOME:is-live-config', 'launch'],
+        ['xdg-cache-home-is-dot-claude', fs.existsSync(path.join(REAL_HOME, '.claude')) ? cfgEnv({ XDG_CACHE_HOME: path.join(REAL_HOME, '.claude') }) : null, 'handoff:XDG_CACHE_HOME:is-live-config', 'launch'],
         ['orchestra-home-live', cfgEnv({ ORCHESTRA_HOME: path.join(REAL_HOME, '.orchestra') }), 'handoff:ORCHESTRA_HOME:outside-boot-home', 'launch'],
       ];
       try {
@@ -768,10 +776,13 @@ const ARMS = [
           ctx.clause(`refused:${name}`, !!m && m[1] === layer && [].concat(want).some((w) => m[2].includes(w)) && !spawned, `${m ? `REFUSED before ${m[1]} [${m[2]}]` : msg.slice(0, 120)} (want ${layer} layer, clause ${[].concat(want).join(' | ')}); app.log created=${spawned}`);
         }
         // the accounts[] layer ALONE (the seed-time guard would mask it in a full boot): drive checkHandOff directly.
-        const liveOne = RIG.liveCfg || path.join(REAL_HOME, '.claude');
+        const liveOne = [RIG.liveCfg, path.join(REAL_HOME, '.claude')].find((d) => d && fs.existsSync(d));
         const clean = { HOME: '/x/home', CLAUDE_CONFIG_DIR: '/x/cfg', XDG_CONFIG_HOME: '/x/c', XDG_CACHE_HOME: '/x/k', ORCHESTRA_HOME: '/x' };
-        const acc = checkHandOff(clean, [{ configDir: liveOne }], '/x');
-        ctx.clause('refused:accounts-layer-alone', !acc.ok && acc.clause === 'handoff:accounts[0].configDir:is-live-config', `only accounts[0].configDir=${liveOne} is live -> ok=${acc.ok} clause=${acc.clause}`);
+        if (!liveOne) ctx.skip('refused:accounts-layer-alone', 'no live config dir exists on this machine');
+        else {
+          const acc = checkHandOff(clean, [{ configDir: liveOne }], '/x');
+          ctx.clause('refused:accounts-layer-alone', !acc.ok && acc.clause === 'handoff:accounts[0].configDir:is-live-config', `only accounts[0].configDir=${liveOne} is live -> ok=${acc.ok} clause=${acc.clause}`);
+        }
         const ok = checkHandOff(clean, [{ configDir: '/x/cfg' }], '/x');
         ctx.clause('positive-control:scratch-handoff-accepted', ok.ok, `an all-inside-boot-home hand-off is accepted (${ok.clause}) — the guard is not a constant refusal`);
         // nothing REAL launched: no Electron whose ORCHESTRA_HOME is one of this arm's boot homes.
@@ -787,18 +798,25 @@ const ARMS = [
   },
   {
     name: 'prune_selftest', boots: false, ticket: '#225',
-    doc: 'the rig-dir prune is sibling-safe: only e2e64c-* dirs older than 24 h AND unreferenced by any live process go; own, younger, in-use and differently-named dirs stay',
+    doc: 'the rig-dir prune is sibling-safe: only THIS rig\'s e2e64c-* dirs, older than 24 h, unreferenced by any live process and not marked failed/incomplete go; own, younger, in-use, other rigs\', forensics and differently-named dirs stay',
     async run(ctx) {
       const base = fs.mkdtempSync(path.join(REAL_HOME, '.cache', 'avr-prune-selftest-'));
       const day = 24 * 3600e3, old = new Date(Date.now() - 2 * day), fresh = new Date();
-      const mk = (n, when) => { const d = path.join(base, n); fs.mkdirSync(d); fs.writeFileSync(path.join(d, 'x'), 'x'); fs.utimesSync(d, when, when); return d; };
+      const mk = (n, when, { owner = true, keep = false } = {}) => {
+        const d = path.join(base, n); fs.mkdirSync(d); fs.writeFileSync(path.join(d, 'x'), 'x');
+        if (owner) fs.writeFileSync(path.join(d, OWNER_MARKER), '1');
+        if (keep) fs.writeFileSync(path.join(d, KEEP_MARKER), '1');
+        fs.utimesSync(d, when, when); return d;
+      };
       let holder = null;
       try {
-        mk('e2e64c-1001', old);                       // stale + unreferenced -> the ONLY one that may go
+        mk('e2e64c-1001', old);                       // stale + unreferenced + owned + clean -> the ONLY one that may go
         const busy = mk('e2e64c-1002', old);          // stale but a live process names it -> keep
         mk('e2e64c-1003', fresh);                     // a sibling's recent forensics -> keep
         const own = mk('e2e64c-1004', old);           // this invocation's own dir -> keep
         mk('keepme', old);                            // not a rig dir at all -> keep
+        mk('e2e64c-1005', old, { owner: false });     // another contained-rig user's dir (no owner marker) -> keep
+        mk('e2e64c-1006', old, { keep: true });       // a failed/incomplete run's forensics -> keep
         holder = spawn('sh', ['-c', 'while :; do sleep 1; done', '_', path.join(busy, 'marker')], { stdio: 'ignore' }); // argv carries the dir; loop ends when the shell is killed
         await sleep(200);
         const r = pruneStaleRigDirs(base, own);
@@ -808,7 +826,39 @@ const ARMS = [
         ctx.clause('keeps-younger-than-24h', left.includes('e2e64c-1003'), 'a recent sibling dir survives');
         ctx.clause('keeps-own-dir', left.includes('e2e64c-1004'), 'this invocation\'s own dir survives even when old');
         ctx.clause('keeps-non-rig-names', left.includes('keepme'), 'a differently-named dir is never touched');
+        ctx.clause('keeps-other-rigs-dirs', left.includes('e2e64c-1005'), 'an e2e64c-* dir without THIS rig\'s owner marker survives (E2E_RIG_BASE=/tmp shares the pattern with every contained-rig user)');
+        ctx.clause('keeps-failed-run-forensics', left.includes('e2e64c-1006'), 'a dir carrying KEEP-UNTIL-CLEAN (failed/crashed run) survives even when old and unreferenced');
       } finally { try { holder?.kill('SIGKILL'); } catch { /* gone */ } fs.rmSync(base, { recursive: true, force: true }); }
+    },
+  },
+  {
+    name: 'freshness_selftest', boots: false, ticket: '#225',
+    doc: 'identity/dist-fresh can FAIL: a fake app dir with a fresh dist is accepted; a src file or package.json newer than the build, or no src/ at all, is refused naming the file',
+    async run(ctx) {
+      const root = fs.mkdtempSync(path.join(REAL_HOME, '.cache', 'avr-fresh-selftest-'));
+      const at = (f, sec) => { const t = new Date(Date.now() + sec * 1000); fs.utimesSync(f, t, t); };
+      const mkApp = (name, { src = true } = {}) => {
+        const d = path.join(root, name);
+        for (const f of ['dist/index.html', 'dist/assets/index-R1.js', 'dist-electron/main.js', 'dist-electron/index-Q1.js', 'package.json', ...(src ? ['src/a.ts', 'src/deep/b.ts'] : [])]) {
+          fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true });
+          fs.writeFileSync(path.join(d, f), f === 'dist-electron/main.js' ? 'require("./index-Q1.js")' : f === 'package.json' ? '{"version":"1.0.0"}' : 'x');
+        }
+        for (const f of ['src/a.ts', 'src/deep/b.ts', 'package.json']) if (fs.existsSync(path.join(d, f))) at(path.join(d, f), -600);   // sources 10 min OLD
+        for (const f of ['dist/index.html', 'dist/assets/index-R1.js', 'dist-electron/main.js', 'dist-electron/index-Q1.js']) at(path.join(d, f), -60); // build 1 min old
+        return d;
+      };
+      try {
+        const fresh = distFreshness(mkApp('fresh'));
+        ctx.clause('fresh-build-accepted', fresh.ok, fresh.detail.slice(0, 150));
+        const sd = mkApp('stale-src'); at(path.join(sd, 'src/deep/b.ts'), 0);
+        const st = distFreshness(sd);
+        ctx.clause('stale-src-refused', !st.ok && st.detail.includes('src/deep/b.ts'), `${st.ok ? 'ACCEPTED' : 'refused'}: ${st.detail.slice(0, 130)}`);
+        const sp = mkApp('stale-pkg'); at(path.join(sp, 'package.json'), 0);
+        const pk = distFreshness(sp);
+        ctx.clause('stale-package-json-refused', !pk.ok && pk.detail.includes('package.json'), `${pk.ok ? 'ACCEPTED' : 'refused'}: ${pk.detail.slice(0, 130)} (the version-bumped-without-rebuild case)`);
+        const ns = distFreshness(mkApp('no-src', { src: false }));
+        ctx.clause('no-src-refused', !ns.ok && ns.detail.includes('no src/'), `${ns.ok ? 'ACCEPTED' : 'refused'}: ${ns.detail.slice(0, 110)}`);
+      } finally { fs.rmSync(root, { recursive: true, force: true }); }
     },
   },
   {
@@ -967,6 +1017,7 @@ async function main() {
   else if (ALLOW_STALE) pre.allowedStale('identity/dist-fresh', `${fresh.detail} [--allow-stale: proceeding on a STALE build — results are NOT a clean PASS]`);
   else pre.clause('identity/dist-fresh', false, fresh.detail);
   if (!fresh.ok && !ALLOW_STALE) return finish(sel);
+  if (RIG.rigDir) { fs.writeFileSync(path.join(RIG.rigDir, OWNER_MARKER), String(process.pid)); fs.writeFileSync(path.join(RIG.rigDir, KEEP_MARKER), 'removed when this invocation ends with 0 FAIL'); }
   if (RIG.rigDir) { const pr = pruneStaleRigDirs(path.dirname(RIG.rigDir), RIG.rigDir); console.log(`PRUNE     removed ${pr.removed.length} rig dir(s) older than 24 h and unreferenced; kept ${pr.kept.length} (own / younger / in use)`); }
   for (const arm of ARMS.filter((a) => sel.includes(a.name))) {
     const ctx = makeCtx(arm.name);
@@ -992,6 +1043,7 @@ function finish(sel) {
   const fail = RESULTS.filter((r) => !r.ok).length, skip = RESULTS.filter((r) => r.skip).length, stale = RESULTS.filter((r) => r.allowedStale).length, ext = RESULTS.filter((r) => r.externalChange).length, pass = RESULTS.length - fail - skip - stale - ext;
   const out = path.join(RIG.rigDir || os.tmpdir(), `result-${MODE}.json`);
   fs.writeFileSync(out, JSON.stringify({ mode: MODE, appDir: APP_DIR, results: RESULTS }, null, 2));
+  if (!fail && RIG.rigDir) fs.rmSync(path.join(RIG.rigDir, KEEP_MARKER), { force: true }); // a clean run's dir becomes prunable after 24 h
   console.log(`RIG-RESULT mode=${MODE} arms=${sel.length} clauses=${RESULTS.length} pass=${pass} fail=${fail} skip=${skip} allowed_stale=${stale} external_change=${ext} artifact=${out}`);
   process.exit(fail ? 1 : 0);
 }

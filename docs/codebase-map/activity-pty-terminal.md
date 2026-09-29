@@ -516,8 +516,8 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
   and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
   PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`. A clause
   that cannot measure in a mode prints `SKIP` (counted apart), so `clauses=` is comparable across modes.
-- **Arms** (`ARMS` :622): no-boot self-tests `guard_selftest` (isolation guard), `pixel_selftest` (PNG
-  decoder + painted-vs-blank predicate), `live_guard_selftest`, `refuse_live_handoff`, `prune_selftest`, `gate_selftest`;
+- **Arms** (`ARMS` :627): no-boot self-tests `guard_selftest` (isolation guard), `pixel_selftest` (PNG
+  decoder + painted-vs-blank predicate), `live_guard_selftest`, `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`;
   boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`, `agent_view_content` (events
   injected via `__injectAgentEvent`, rows asserted visible, screenshot read back off disk and asserted on
   DECODED pixels of the rows' own region vs a hidden-rows blank frame, plus a `grim` capture). Every clause
@@ -525,7 +525,7 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
   pass · 1 a clause failed · 2 harness/usage).
 - **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
   target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
-  (`distFreshness` :532) REFUSES a `dist/` older than `src/` or `package.json`; `--allow-stale` proceeds but tallies
+  (`distFreshness` :532, pinned by `freshness_selftest`) REFUSES a `dist/` older than `src/` or `package.json`; `--allow-stale` proceeds but tallies
   `ALLOWED-STALE` (`allowed_stale=` in `RIG-RESULT`), never a PASS.
 - **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
   account-inherit sync; under the rig's fake `HOME` its source `~/.claude` is missing, so it UNLINKS every
@@ -539,15 +539,19 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
   wrapper's `env -i` drops an ambient `E2E_ELECTRON`), so a guard regression can never start a real Electron; `liveSnapshot` (:274) asserts those dirs' inheritance surface before/after every boot;
   `classifySnapshotChange` (:295) attributes by direction — REMOVALS FAIL (the app's failure mode), ADDITIONS-ONLY tally
   `EXTERNAL-CHANGE` (`external_change=`; the live Orchestra re-syncing a shared dir, which a fake-HOME app cannot do),
-  identical PASSes. A later arm that needs a login must COPY `.credentials.json` into the scratch dir.
+  identical PASSes. A later arm that needs a login must COPY `.credentials.json` into the scratch dir (only while the access token has hours
+  left — a refresh in the copy may rotate the source login, UNVERIFIED); `scripts/verify-keeper-detach.mjs` and the `verify`
+  skill's recipe (`LAUNCH-TRAPS.md`) now do the same.
 - **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
   == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
   tmpfs). `noAgentPty` (:582) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
   that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
 - **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted
-  (`app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:599) removes
-  only `e2e64c-<pid>` dirs older than 24 h AND unreferenced by any live process, never the invocation's own dir
-  (`prune_selftest`); the wrapper deletes nothing.
+  (`app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:602) removes
+  only `e2e64c-<pid>` dirs that carry THIS rig's `.avr-rig-owner` marker, are older than 24 h, are unreferenced by any live
+  process and lack `KEEP-UNTIL-CLEAN` (written at start, removed only on a 0-FAIL run — so failed/crashed runs keep their
+  forensics), never the invocation's own dir (`prune_selftest`); the wrapper deletes nothing. The invoker's config dir is
+  only PROTECTED: a missing one is a warning and skips the cases that need it.
 - **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
 
