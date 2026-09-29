@@ -185,8 +185,10 @@ is what pauses git/gh/du/Linear polling when minimized. Toolbar is grouped by
 function: the base→feature branch chip (with `BranchPicker`) on the left, then
 a **views group** (`.toolbar-views`: Terminal/Structured/Run tabs + the nvim
 pane-toggle), a hairline `.toolbar-sep`, and an **actions group**
-(`.toolbar-actions`: restart-agent, run play/stop, PR button as the rightmost
-CTA). **Tab availability by kind** (`isScratch = isScratchLike(active)`, true for
+(`.toolbar-actions`: restart-agent, run play/stop, and the `PR #N` link as the
+rightmost button — rendered ONLY when the workspace has an open PR; there is no
+"Open PR" create button and no unpushed-commits primed state, #229).
+**Tab availability by kind** (`isScratch = isScratchLike(active)`, true for
 BOTH scratch and orchestrator): Terminal and **Structured** show for EVERY kind —
 the structured/SDK path is kind-agnostic (agent-sdk.ts appends the
 `ORCHESTRATOR_BRIEF` for orchestrators), so scratch and orchestrator sessions get

@@ -374,9 +374,6 @@ button.pr-link:hover {
   transform: translateY(-0.5px);
   box-shadow: 0 4px 14px rgba(74, 140, 255, 0.18);
 }
-/* "Open PR" action button — same visual language as the pr-link, minus the
-   external-link arrow (this button submits a prompt, it doesn't open a URL). */
-button.pr-link.pr-link-create::after { display: none; }
 button.pr-link.merged {
   color: #c4a8ff;
   background: rgba(179, 139, 255, 0.08);
@@ -497,20 +494,6 @@ button.run-toggle-btn.running:hover {
   color: var(--text-dim);
   opacity: 0.85;
   line-height: 1;
-}
-
-/* Open PR button when there are local commits ready to push — same shape
-   as the regular create button but tinted amber to match the sidebar pill,
-   so the "you can ship now" affordance is visible at a glance. */
-button.pr-link.pr-link-create.primed {
-  color: #f5c46b;
-  background: rgba(245, 196, 107, 0.10);
-  border-color: rgba(245, 196, 107, 0.40);
-}
-button.pr-link.pr-link-create.primed:hover {
-  background: rgba(245, 196, 107, 0.18);
-  border-color: rgba(245, 196, 107, 0.60);
-  box-shadow: 0 4px 14px rgba(245, 196, 107, 0.20);
 }
 
 input, textarea, select {

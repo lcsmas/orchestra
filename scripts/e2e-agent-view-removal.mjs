@@ -58,6 +58,12 @@ const EXPECT = {
   agentTab: { baseline: 'Structured', after: 'Agent' },
   // Does opening the (Raw) terminal tab create an agent-kind PTY?
   rawCreatesAgentPty: { baseline: true, after: false },
+  // #229: with NO linked PR the toolbar rendered an "Open PR" create button (amber "· ↑N" when commits are unpushed).
+  openPrButton: { baseline: true, after: false },
+  // #229: the merge IPC's preload wrapper (`window.orchestra.mergeWorktree`) exists on the built app?
+  mergeWrapper: { baseline: true, after: false },
+  // #229: the loaded stylesheet still carries rules for the removed button (`.pr-link-create`, `.primed`)?
+  createButtonCss: { baseline: true, after: false },
 };
 const ABSENCE_MS = 2500; // window an "absent" claim is observed for after each tab click
 const SENTINEL_USER = 'AVR-USER-4f81c2 render probe';
@@ -385,6 +391,16 @@ function seedWorld(home, opt = {}) {
     id: 'ws-avr-1', name: 'avr-1', repoPath: repoDir, worktreePath: wtDir, branch: 'e2e/avr-1',
     baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id,
   };
+  // #229 seeds. `commitsAhead`: N never-pushed commits on the seed branch → the app's own merge-state poll reports
+  // unpushedAhead=N (no origin ref, so every commit ahead of base counts) — the "primed" input of the old Open PR button.
+  for (let i = 1; i <= (opt.commitsAhead ?? 0); i++) {
+    fs.writeFileSync(path.join(wtDir, `ahead-${i}.txt`), `unpushed ${i}\n`);
+    git(wtDir, ['add', '.'], fakeHome); git(wtDir, ['commit', '-q', '-m', `avr unpushed ${i}`], fakeHome);
+  }
+  // `linkedPr`: a PR the agent "linked" (pointer only; the app re-reads its state via `gh api repos/<o>/<r>/pulls/<n>` — the
+  // REAL path). Stub gh answers exactly that call with an OPEN PR and refuses everything else (as an unauthenticated gh would);
+  // stub xdg-open keeps a click on the PR button from launching a browser. Both log their argv (positive controls).
+  if (opt.linkedPr) { const { owner, repo, number } = opt.linkedPr; ws.linkedPrs = [{ url: `https://github.com/${owner}/${repo}/pull/${number}`, owner, repo, number }]; }
   const repo = { path: repoDir, name: 'avr-repo', defaultBranch: 'main', scripts: BROKEN_CONTROL ? {} : { run: 'sleep 3600' }, accountId: account.id };
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
@@ -393,6 +409,16 @@ function seedWorld(home, opt = {}) {
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stub = path.join(stubDir, 'claude');
   fs.writeFileSync(stub, '#!/bin/sh\necho AVR-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
+  if (opt.linkedPr) {
+    const { owner, repo, number, title } = opt.linkedPr;
+    const q = (f) => `'${path.join(home, f)}'`;
+    // gh: answers ONLY `api repos/<owner>/<repo>/pulls/<n>` (already in the jq-mapped shape fetchLinkedPR parses).
+    fs.writeFileSync(path.join(stubDir, 'gh'), `#!/bin/sh\necho "$*" >> ${q('gh-calls.log')}\n` +
+      `if [ "$1" = api ] && [ "$2" = "repos/${owner}/${repo}/pulls/${number}" ]; then\n` +
+      `  echo '{"url":"https://github.com/${owner}/${repo}/pull/${number}","number":${number},"title":${JSON.stringify(title)},"state":"OPEN"}'; exit 0\nfi\n` +
+      `echo "gh: avr stub has no answer for: $*" >&2; exit 1\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\necho "$*" >> ${q('xdg-open.log')}\n`, { mode: 0o755 });
+  }
   return { fakeHome, repoDir, wtDir, ws, account, stubDir, stub, storeFile: path.join(dir, 'store.json') };
 }
 
@@ -462,6 +488,16 @@ function appApi(app) {
       return cdp.eval(`window.orchestra.sampleResources().then(s => s.sessions.map(x => ({
         ptyId: x.ptyId, kind: x.kind, workspaceId: x.workspaceId, remote: x.remote,
         procCount: x.procCount, pids: (x.processes || []).map(p => p.pid) })))`);
+    },
+    /** #229: every PR-related control the TOOLBAR renders (not the sidebar): `.pr-link` buttons + anything whose text/title/class
+     *  reads as the old create/"ready to push" affordance. `create` = the old "Open PR" button; `readyToPush` = its primed surface. */
+    async prControls() {
+      return cdp.eval(`(() => [...document.querySelectorAll('.toolbar *')].filter((e) => e.matches('button.pr-link')
+          || /Open PR|ready to push|create a PR/i.test((e.tagName === 'BUTTON' ? e.textContent : '') + ' ' + (e.getAttribute('title') || '')) || e.classList.contains('primed')).map((e) => {
+        const r = e.getBoundingClientRect(), t = e.textContent.trim(), ti = e.getAttribute('title') || '';
+        return { tag: e.tagName, text: t, title: ti, cls: e.className, visible: r.width > 0 && r.height > 0, cx: r.x + r.width / 2, cy: r.y + r.height / 2,
+          create: /^Open PR/.test(t) || e.classList.contains('pr-link-create'), readyToPush: /ready to push/i.test(ti) || e.classList.contains('primed') };
+      }))()`);
     },
     async click(cx, cy) {
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
@@ -1136,6 +1172,76 @@ const ARMS = [
       ctx.clause('compositor-shows-app', G.distinct >= 12 && G.nonBgPct >= 1, `grim on ${RIG.wayland}: distinct=${G.distinct} nonBg=${G.nonBgPct}% (thresholds >=12 colours, >=1%)`);
     },
   },
+  {
+    name: 'toolbar_no_pr', boots: true, ticket: '#229', boot: { commitsAhead: 1 },
+    doc: 'no linked PR + 1 unpushed commit: baseline the toolbar has the amber "Open PR · ↑1" create button; after — no Open PR button, no "ready to push" affordance, no PR control at all; the merge IPC preload wrapper is gone',
+    async run(ctx) {
+      const { app } = ctx; const wsId = app.world.ws.id;
+      // POSITIVE CONTROL: the old button's "primed" input really reached the renderer (main reports unpushedAhead>=1 AND the
+      // sidebar paints its unpushed pill) — else "no ready-to-push affordance" would be measured on an unprimed workspace.
+      const ahead = await waitFor('unpushedAhead>=1 via IPC', async () => { const w = (await app.cdp.eval('window.orchestra.listWorkspaces()')).find((x) => x.id === wsId); return w && w.unpushedAhead >= 1 ? w.unpushedAhead : null; }, 40000, 500).catch(() => 0);
+      const pill = await waitFor('sidebar .unpushed-pill painted', () => app.cdp.eval(`(() => { const e = document.querySelector('.unpushed-pill'); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 ? e.textContent.trim() : null; })()`), 20000, 300).catch(() => null);
+      const primed = ahead >= 1 && pill === String(ahead);
+      ctx.clause('control/unpushed-input-reached-renderer', primed, `main listWorkspaces unpushedAhead=${ahead}; sidebar .unpushed-pill text=${JSON.stringify(pill)}`);
+      const refuse = (name) => ctx.clause(name, false, 'REFUSED: the unpushed-commits input did not reach the renderer in this boot — an absence here would be unproven');
+      const controls = await app.prControls();
+      const brief = JSON.stringify(controls.map((c) => ({ tag: c.tag, text: c.text, cls: c.cls, title: c.title.slice(0, 60) })));
+      const want = pick(EXPECT.openPrButton);
+      if (!primed) { refuse('no-pr/open-pr-button'); refuse('no-pr/ready-to-push-affordance'); refuse('no-pr/no-pr-controls'); }
+      else {
+        const create = controls.filter((c) => c.create && c.visible), rtp = controls.filter((c) => c.readyToPush && c.visible);
+        ctx.clause('no-pr/open-pr-button', create.length === (want ? 1 : 0), `toolbar create buttons=${create.length} (${create.map((c) => JSON.stringify(c.text)).join(',') || '∅'}) expected(${MODE})=${want ? 1 : 0}; all toolbar PR controls=${brief}`);
+        ctx.clause('no-pr/ready-to-push-affordance', rtp.length === (want ? 1 : 0), `toolbar ready-to-push surfaces=${rtp.length} (${rtp.map((c) => JSON.stringify(c.title.slice(0, 50))).join(',') || '∅'}) expected(${MODE})=${want ? 1 : 0}`);
+        ctx.clause('no-pr/no-pr-controls', controls.filter((c) => c.visible).length === (want ? 1 : 0), `visible toolbar PR controls=${controls.filter((c) => c.visible).length} expected(${MODE})=${want ? 1 : 0}: ${brief}`);
+      }
+      const tb = await app.cdp.eval(`(() => { const e = document.querySelector('.toolbar'); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      if (tb) { const f = await app.shot('toolbar-no-pr', tb); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      toolbar-no-pr ${f} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+      // Styles used only by the removed button — read off the LOADED stylesheets (CSSOM), with a control: the `.pr-link` rules the
+      // surviving "PR #N" button uses must still be there (proves the sheets were readable AND the base rules were not swept out).
+      const css = await app.cdp.eval(`(() => { const dead = [], live = []; for (const ss of document.styleSheets) { let rs; try { rs = ss.cssRules; } catch { continue; }
+        for (const r of rs) { const t = r.selectorText; if (!t) continue; if (/pr-link-create|\\.primed\\b/.test(t)) dead.push(t); else if (/button\\.pr-link\\b/.test(t)) live.push(t); } } return { dead, live: live.length }; })()`);
+      ctx.clause('css/create-button-rules', css.live >= 4 && (css.dead.length > 0) === pick(EXPECT.createButtonCss), `create-button/primed selectors in loaded CSS=${JSON.stringify(css.dead)} expected(${MODE})=${pick(EXPECT.createButtonCss) ? 'present' : 'none'}; surviving button.pr-link rules=${css.live} (control: need >= 4)`);
+      // The merge IPC's preload wrapper — read off the RUNNING app's bridge, not the source.
+      const wrapper = await app.cdp.eval(`typeof window.orchestra.mergeWorktree`);
+      ctx.clause('preload/mergeWorktree-wrapper', (wrapper === 'function') === pick(EXPECT.mergeWrapper), `typeof window.orchestra.mergeWorktree=${wrapper} expected(${MODE})=${pick(EXPECT.mergeWrapper) ? 'function' : 'undefined'}`);
+    },
+  },
+  {
+    name: 'toolbar_with_pr', boots: true, ticket: '#229', boot: { linkedPr: { owner: 'avr-owner', repo: 'avr-repo', number: 4242, title: 'AVR seeded PR' } },
+    doc: 'a linked OPEN PR (resolved through the real `gh api` path via a stub gh): the toolbar shows "PR #4242" in BOTH modes, never an Open PR button, and clicking it reaches main\'s openExternal with the PR url',
+    async run(ctx) {
+      const { app } = ctx; const wsId = app.world.ws.id;
+      const url = 'https://github.com/avr-owner/avr-repo/pull/4242';
+      // POSITIVE CONTROL: the PR really resolved — the stub gh was consulted for exactly this PR AND main's findPR returns it open.
+      const pr = await waitFor('findPR open #4242', async () => { const r = await app.cdp.eval(`window.orchestra.findPR(${JSON.stringify(wsId)})`); return r && r.open && r.open.number === 4242 ? r : null; }, 40000, 500).catch(() => null);
+      const ghLog = fs.existsSync(path.join(app.home, 'gh-calls.log')) ? fs.readFileSync(path.join(app.home, 'gh-calls.log'), 'utf8') : '';
+      ctx.clause('control/pr-resolved', !!pr && ghLog.includes('api repos/avr-owner/avr-repo/pulls/4242'), `findPR.open=${pr ? JSON.stringify({ n: pr.open.number, state: pr.open.state, url: pr.open.url }) : 'null'}; gh stub calls=${JSON.stringify(ghLog.trim().split('\n').slice(0, 2))}`);
+      const btn = await waitFor('toolbar PR button rendered', async () => { const cs = await app.prControls(); return cs.find((c) => c.tag === 'BUTTON' && c.text === 'PR #4242' && c.visible) ?? null; }, 30000, 300).catch(() => null);
+      const controls = await app.prControls();
+      const brief = JSON.stringify(controls.map((c) => ({ tag: c.tag, text: c.text, cls: c.cls })));
+      ctx.clause('with-pr/pr-button', !!btn && controls.filter((c) => c.tag === 'BUTTON' && c.visible).length === 1, `expected exactly one visible toolbar PR button "PR #4242" (both modes): ${brief}`);
+      ctx.clause('with-pr/no-open-pr-button', controls.filter((c) => c.create).length === 0 && controls.filter((c) => c.readyToPush).length === 0, `create/ready-to-push controls=${controls.filter((c) => c.create || c.readyToPush).length} (both modes: with a PR the old ternary never showed one)`);
+      const tb = await app.cdp.eval(`(() => { const e = document.querySelector('.toolbar'); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      if (tb) { const f = await app.shot('toolbar-with-pr', tb); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      toolbar-with-pr ${f} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+      // CLICK — trusted mouse event, hit-tested, then the effect is read off main's own log (`open external (renderer-ipc): <url>`), which only
+      // a click that reached the IPC handler writes; the pre-click log must NOT already contain it.
+      const logFile = path.join(app.home, 'logs', 'orchestra.log');
+      const readLog = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '');
+      const needle = `open external (renderer-ipc): ${url}`;
+      const before = readLog().split(needle).length - 1;
+      let clicked = false, why = '';
+      try {
+        if (!btn) throw new Error('no PR button to click');
+        const hit = await app.cdp.eval(`(() => { const e = document.elementFromPoint(${btn.cx}, ${btn.cy}); const b = e && e.closest('button.pr-link'); return b ? b.textContent.trim() : null; })()`);
+        if (hit !== 'PR #4242') throw new Error(`hit-test landed on ${JSON.stringify(hit)}`);
+        await app.click(btn.cx, btn.cy); clicked = true;
+      } catch (e) { why = e.message; }
+      const after = await waitFor('main logged the open', () => (readLog().split(needle).length - 1 > before ? true : null), 8000, 200).catch(() => false);
+      ctx.clause('with-pr/click-opens-pr-url', clicked && after, `pre-click matches=${before}; clicked=${clicked}${why ? ` (${why})` : ''}; main log line after click=${after} ("${needle}")`);
+      const xdg = fs.existsSync(path.join(app.home, 'xdg-open.log')) ? fs.readFileSync(path.join(app.home, 'xdg-open.log'), 'utf8').trim() : '';
+      console.log(`OBSERVED  xdg-open stub argv after click=${JSON.stringify(xdg)} (informational: Electron may hand the URL over without xdg-open)`);
+    },
+  },
 ];
 
 // ── driver ───────────────────────────────────────────────────────────────────
@@ -1168,7 +1274,7 @@ async function main() {
     console.log(`--- arm ${arm.name}: ${arm.doc}`);
     try {
       if (arm.boots) {
-        ctx.app = await bootApp(arm.name);
+        ctx.app = await bootApp(arm.name, arm.boot ?? {});
         try {
           await identityAndIsolation(ctx, ctx.app);
           await ready(ctx.app);

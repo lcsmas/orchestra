@@ -227,7 +227,6 @@ const api: OrchestraAPI = {
     ipcRenderer.invoke('tickets:spawn', identifier, repoPath),
   listBranches: (id) => ipcRenderer.invoke('git:listBranches', id),
   switchBranch: (id, branch) => ipcRenderer.invoke('git:switchBranch', id, branch),
-  mergeWorktree: (id) => ipcRenderer.invoke('git:merge', id),
 
   listSelfTuneRuns: () => ipcRenderer.invoke('selfTune:list'),
   startSelfTune: () => ipcRenderer.invoke('selfTune:run'),

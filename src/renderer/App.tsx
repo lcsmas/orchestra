@@ -779,7 +779,7 @@ export function App() {
                   )}
                 </button>
               )}
-              {!isScratch && (openPR ? (
+              {!isScratch && openPR && (
                 <button
                   className="primary pr-link"
                   onClick={() => window.orchestra.openExternal(openPR.url)}
@@ -787,33 +787,7 @@ export function App() {
                 >
                   PR #{openPR.number}
                 </button>
-              ) : (() => {
-                // Prime the button when there are local commits not on origin —
-                // the user is one push away from being able to actually open
-                // a PR, so make the affordance visually obvious.
-                const unpushed = active.unpushedAhead ?? 0;
-                const primed = unpushed > 0;
-                const tip = primed
-                  ? `${unpushed} commit${unpushed === 1 ? '' : 's'} ready to push — ask the agent to push and open a PR`
-                  : 'Ask the focused Claude Code agent to create a PR';
-                return (
-                  <button
-                    className={`pr-link pr-link-create${primed ? ' primed' : ''}`}
-                    onClick={() => {
-                      const id = active.id;
-                      const prompt =
-                        'Please create a pull request for the current branch: commit any pending changes, push the branch, and open the PR with a concise title and summary.';
-                      // Type the prompt first, then send Enter as a separate keystroke
-                      // so Claude's TUI treats it as a submit, not a pasted newline.
-                      window.orchestra.ptyWrite(id, prompt);
-                      setTimeout(() => window.orchestra.ptyWrite(id, '\r'), 80);
-                    }}
-                    title={tip}
-                  >
-                    {primed ? `Open PR · ↑${unpushed}` : 'Open PR'}
-                  </button>
-                );
-              })())}
+              )}
               </div>
             </div>
             {/* SetupBanner sits ABOVE .pane-row, not inside .pane. Inside,

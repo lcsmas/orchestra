@@ -153,7 +153,7 @@ never runs again.
   the Sidebar renders a red `.ci-badge` ONLY on `fail`, whose click →
   `git:fixChecks` hands the failing run (`gh run view <id> --log-failed`) to
   the workspace's agent via `wakeAgentWithPrompt`, falling back to typing into
-  a live PTY like `git:merge`.
+  a live PTY.
 - **`getReleaseState`** `:722` / **`getReleaseVersionsContaining`** `:797` — pill
   policy: the earliest published release containing the branch's *authored*
   commits (`authoredCommits` `:870`, reflog-derived) **plus** each release the
@@ -184,11 +184,12 @@ never runs again.
   `gh auth git-credential` helper. The desktop app has no TTY, so it must fail
   fast on auth rather than hang on `gnome-ssh-askpass`.
 
-## Merge is delegated to the agent
-The `git:merge` IPC handler (`api-handlers.ts:217`, `mergeWorktree`) does **not** merge in the main
-process. It injects a prompt into the agent's PTY telling it to run `git -C
-<repoPath> merge … && git push`. Rationale: keeps the checked-out worktree HEAD
-stable, and lets the agent write a meaningful commit message with full context.
+## No merge / open-PR handler
+Merging and PR creation are the agent's job, done from its own prompt — there is
+no `git:merge` IPC channel, no `mergeWorktree` preload wrapper, and no toolbar
+"Open PR" button (removed in #229; both only typed a prompt into the agent PTY).
+The toolbar shows a `PR #N` button (`App.tsx`, `.pr-link`) only when the
+workspace has an open PR, and it just opens the PR URL.
 
 ## Error handling
 Helpers swallow and return safe defaults (`[]`/`''`/`null`/all-false merge

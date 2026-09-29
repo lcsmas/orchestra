@@ -523,7 +523,13 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
   (tally / retain / KEEP marker); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
   `agent_view_content` (events injected via `__injectAgentEvent`, rows asserted visible, screenshot read back off disk and
-  asserted on DECODED pixels of the rows' own region vs a hidden-rows blank frame, plus a `grim` capture). Every clause
+  asserted on DECODED pixels of the rows' own region vs a hidden-rows blank frame, plus a `grim` capture), and #229's
+  `toolbar_no_pr` / `toolbar_with_pr` (`ARMS` entries carry `boot:` seed options → `seedWorld`: `commitsAhead` = N unpushed
+  commits, `linkedPr` = a pointer + a stub `gh` answering ONLY `api repos/<o>/<r>/pulls/<n>` and a stub `xdg-open`, both
+  logging argv). No-PR: control = main reports `unpushedAhead>=1` AND the sidebar paints its pill; then the toolbar has no
+  create button / "ready to push" surface / PR control, `window.orchestra.mergeWorktree` is `undefined`, and no loaded CSS rule
+  names `.pr-link-create`/`.primed`. With-PR (same in both modes): control = `findPR` returns the open PR via the stub `gh`;
+  exactly one `PR #4242` button, no create button, and a trusted click makes main log `open external (renderer-ipc): <url>`. Every clause
   prints `PASS|FAIL|SKIP <arm>/<clause> — detail`; the final `RIG-RESULT verdict=… ` line is the terminator (rc 0 all
   pass · 1 a clause failed · 2 harness/usage) and NAMES what a green run leaned on: `verdict=PASS-ON-STALE-BUILD`
   (`--allow-stale`), `PASS-WITH-EXTERNAL-CHANGE`, with `allowed_stale=` / `external_change=` counted apart from `pass=`.

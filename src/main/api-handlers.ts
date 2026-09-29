@@ -371,7 +371,6 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   spawnFromTicket: 'tickets:spawn',
   listBranches: 'git:listBranches',
   switchBranch: 'git:switchBranch',
-  mergeWorktree: 'git:merge',
   getRepoScripts: 'repos:getScripts',
   setRepoScripts: 'repos:setScripts',
   retrySetup: 'scripts:retrySetup',
@@ -1255,7 +1254,7 @@ export const apiHandlers: ApiHandlerTable = {
       `Tell me what was broken and what you changed.`;
     // Live SDK session or stopped agent: wakeAgentWithPrompt handles both
     // (deliver-as-next-turn / structured-first wake). It returns false when a
-    // terminal PTY is live — then type it in, exactly like git:merge above.
+    // terminal PTY is live — then type it in.
     if (!(await wakeAgentWithPrompt(id, prompt))) {
       writePty(id, prompt);
       setTimeout(() => writePty(id, '\r'), 80);
@@ -1368,30 +1367,6 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   switchBranch: (id, branch) => switchWorkspaceBranch(id, branch),
-
-  mergeWorktree: async (id) => {
-    const ws = store.getWorkspace(id);
-    if (!ws) throw new Error('workspace not found');
-
-    // Hand the merge off to the agent: it has full context of the work it
-    // just did and writes its own commit messages along the way. To update
-    // the base branch it must operate on the main repo via `git -C` since the
-    // worktree's HEAD is pinned.
-    const prompt =
-      `Please merge this branch into \`${ws.baseBranch}\` and push.\n\n` +
-      `- Feature branch: \`${ws.branch}\` (current worktree HEAD)\n` +
-      `- Base branch: \`${ws.baseBranch}\`\n` +
-      `- Main repo path: \`${ws.repoPath}\`\n\n` +
-      `If there are uncommitted changes, commit them first with a clear message. ` +
-      `Then run the merge against the main repo (use \`git -C "${ws.repoPath}" ...\` so the worktree HEAD stays put), ` +
-      `and \`git push\` the base branch. ` +
-      `Tell me when it's done or if anything goes wrong.`;
-
-    writePty(id, prompt);
-    setTimeout(() => writePty(id, '\r'), 80);
-
-    return { status: 'requested' as const };
-  },
 
   // ---------- Repo scripts (setup / run / archive) ----------
 

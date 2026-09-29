@@ -653,7 +653,6 @@ export interface OrchestraAPI {
   spawnFromTicket: (identifier: string, repoPath: string) => Promise<{ workspaceId: string }>;
   listBranches: (id: string) => Promise<string[]>;
   switchBranch: (id: string, branch: string) => Promise<Workspace>;
-  mergeWorktree: (id: string) => Promise<{ status: 'requested' }>;
 
   // Repo scripts (setup / run / archive)
   getRepoScripts: (repoPath: string) => Promise<RepoScripts>;
