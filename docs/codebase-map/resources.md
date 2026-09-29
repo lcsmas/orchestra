@@ -167,6 +167,18 @@ Dependency-free so `node --test` covers it without Electron:
     that blocks). `scripts/disk-guard.cjs` keeps its own **sync** statfs — it's a
     run-to-completion CLI, not on any 2s tick.
 
+### Reading the PTY listing from a script (removal rig, #225)
+
+`window.orchestra.sampleResources()` (preload `sampleResources` → `resources:sample`) is
+callable from any CDP-driven page, so an E2E rig gets the live PTY sessions **by kind**
+(`sessions[].{ptyId, kind, workspaceId, remote, procCount, processes[].pid}`) with NO extra
+exposure — this is how `scripts/e2e-agent-view-removal.mjs` (`ptys()` in `appApi`) counts
+agent/run/nvim/login PTYs. It lists `listPtySessions()` only: keeper-hosted SDK sessions are
+detached daemons, not PTYs, and never appear. `kind === 'agent'` means "id is a bare
+workspace id" (`classifyPtyId`), so it is the legacy agent-PTY path by construction. Prove the
+instrument with a positive control (open Run → a `run`-kind PTY appears) before trusting an
+"absent" reading — see [activity-pty-terminal.md](activity-pty-terminal.md) § Removal rig.
+
 ## UI — ResourcesView.tsx
 Rendered by `App.tsx` as an **overlay** on `.main` (`position:absolute`,
 z-index 25) when `store.page === 'resources'` — never instead of the workspace

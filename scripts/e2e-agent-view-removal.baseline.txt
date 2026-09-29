@@ -1,0 +1,99 @@
+# BASELINE of scripts/e2e-agent-view-removal.sh --mode baseline on a build of origin/master 1dae6265 (src tree byte-identical: git diff origin/master -- src = 0 lines).
+# Recorded 2026-09-29. Tabs Raw·Run·Structured·Diff; opening Raw makes ws-avr-1[agent]. #230 (B5) flips the baseline expectations in EXPECT and regenerates this file.
+# Regenerate: scripts/e2e-agent-view-removal.sh <app-dir> --mode baseline | grep -v '^\[rig\]\|^disk-guard\|^\[avr\]'
+RIG agent-view-removal mode=baseline arms=guard_selftest,pixel_selftest,observe,control_run_pty,tabs,open_tabs_agent_pty,agent_view_content app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883
+IDENTITY(static) git=1dae6265+5dirty version(package.json)=0.5.296 main=index-DHS19stR.js md5=51a5c0cd59af renderer=index-AxNSDLsU.js:093595d88d67
+--- arm guard_selftest: isolation guard can FAIL: wayland-1 / sibling display / X11 DISPLAY / unset each refused with the NAMED clause; a good env passes
+PASS  guard_selftest/refuse-wayland-1 — forced {"WAYLAND_DISPLAY":"wayland-1"} -> ok=false clause=refuse-wayland-1
+PASS  guard_selftest/refuse-wayland-1-even-if-mine — forced {"WAYLAND_DISPLAY":"wayland-1"} -> ok=false clause=refuse-wayland-1
+PASS  guard_selftest/not-my-compositor — forced {"WAYLAND_DISPLAY":"wayland-3"} -> ok=false clause=not-my-compositor
+PASS  guard_selftest/x11-display-set — forced {"WAYLAND_DISPLAY":"wayland-7","DISPLAY":":0"} -> ok=false clause=x11-display-set
+PASS  guard_selftest/no-wayland-display — forced {} -> ok=false clause=no-wayland-display
+PASS  guard_selftest/display-isolated — forced {"WAYLAND_DISPLAY":"wayland-7"} -> ok=true clause=display-isolated
+--- arm pixel_selftest: the PNG instrument can tell blank from painted: encode PNGs using every filter type, decode them exactly, and apply the SAME painted-vs-blank predicate the content arm gates on
+PASS  pixel_selftest/decode-roundtrip-all-filters — 9x10 pseudo-random pixels, filters 0-4 cycled: exact=true
+PASS  pixel_selftest/blank-reads-blank — distinct=1 nonBg=0%
+PASS  pixel_selftest/painted-reads-painted — distinct=6 nonBg=5% (5 blocks of 4px in 400 = 5%)
+PASS  pixel_selftest/predicate-accepts-painted — painted vs blank -> true
+PASS  pixel_selftest/predicate-rejects-blank — blank vs blank -> false, blank vs painted -> false (a no-op frame cannot pass)
+PASS  pixel_selftest/garbage-rejected — decodePng(garbage) threw 'not a PNG'
+--- arm observe: record what the app shows on boot: rendered tab labels + live PTY sessions by kind (no assertion beyond identity/isolation)
+IDENTITY  arm=observe mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=1dae6265+5dirty version(running)=0.5.296 version(package.json)=0.5.296
+          target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+          loaded-renderer-bundle=index-AxNSDLsU.js md5=093595d88d67  main=index-DHS19stR.js md5=51a5c0cd59af  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
+PASS  observe/identity/version — running=0.5.296 package.json=0.5.296
+PASS  observe/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+PASS  observe/isolation/display-isolated — (read back from /proc/191350/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  observe/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/observe-mun5jbzt
+PASS  observe/isolation/home-not-tmpfs — fstype=btrfs
+PASS  observe/isolation/window-in-my-sway — app pid 191350 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/sway.sock
+PASS  observe/isolation/pinned-account — ws.accountId=rig-avr account.id=rig-avr configDir=/home/lmas/.claude-mc
+OBSERVED  tabs=["Raw","Run","Structured*","Diff"] ptys=∅ kinds={}
+--- arm control_run_pty: positive control: opening Run (+ ▶ Run) makes a run-kind PTY appear — proves the listing can see PTYs
+IDENTITY  arm=control_run_pty mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=1dae6265+5dirty version(running)=0.5.296 version(package.json)=0.5.296
+          target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+          loaded-renderer-bundle=index-AxNSDLsU.js md5=093595d88d67  main=index-DHS19stR.js md5=51a5c0cd59af  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
+PASS  control_run_pty/identity/version — running=0.5.296 package.json=0.5.296
+PASS  control_run_pty/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+PASS  control_run_pty/isolation/display-isolated — (read back from /proc/192498/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  control_run_pty/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/control_run_pty-mun5jdjd
+PASS  control_run_pty/isolation/home-not-tmpfs — fstype=btrfs
+PASS  control_run_pty/isolation/window-in-my-sway — app pid 192498 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/sway.sock
+PASS  control_run_pty/isolation/pinned-account — ws.accountId=rig-avr account.id=rig-avr configDir=/home/lmas/.claude-mc
+PASS  control_run_pty/control/run-pty-appears — pre=∅ -> post=ws-avr-1:run[run]
+--- arm tabs: rendered tab labels, in order (baseline Raw·Run·Structured·Diff; after Agent·Run·Diff) + default-active tab
+IDENTITY  arm=tabs mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=1dae6265+5dirty version(running)=0.5.296 version(package.json)=0.5.296
+          target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+          loaded-renderer-bundle=index-AxNSDLsU.js md5=093595d88d67  main=index-DHS19stR.js md5=51a5c0cd59af  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
+PASS  tabs/identity/version — running=0.5.296 package.json=0.5.296
+PASS  tabs/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+PASS  tabs/isolation/display-isolated — (read back from /proc/193204/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  tabs/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/tabs-mun5jf5o
+PASS  tabs/isolation/home-not-tmpfs — fstype=btrfs
+PASS  tabs/isolation/window-in-my-sway — app pid 193204 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/sway.sock
+PASS  tabs/isolation/pinned-account — ws.accountId=rig-avr account.id=rig-avr configDir=/home/lmas/.claude-mc
+PASS  tabs/tab-labels — rendered=["Raw","Run","Structured","Diff"] expected(baseline)=["Raw","Run","Structured","Diff"]
+PASS  tabs/all-tabs-visible — visible=true,true,true,true
+PASS  tabs/opens-on-agent-view — active=Structured expected=Structured
+PASS  tabs/raw-tab — Raw present=true expected(baseline)=true
+--- arm open_tabs_agent_pty: opening each tab: baseline Raw creates an agent-kind PTY, every other tab creates none; after — NO tab creates one (gated on the Run-tab control)
+IDENTITY  arm=open_tabs_agent_pty mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=1dae6265+5dirty version(running)=0.5.296 version(package.json)=0.5.296
+          target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+          loaded-renderer-bundle=index-AxNSDLsU.js md5=093595d88d67  main=index-DHS19stR.js md5=51a5c0cd59af  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
+PASS  open_tabs_agent_pty/identity/version — running=0.5.296 package.json=0.5.296
+PASS  open_tabs_agent_pty/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+PASS  open_tabs_agent_pty/isolation/display-isolated — (read back from /proc/193834/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  open_tabs_agent_pty/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/open_tabs_agent_pty-mun5jgjz
+PASS  open_tabs_agent_pty/isolation/home-not-tmpfs — fstype=btrfs
+PASS  open_tabs_agent_pty/isolation/window-in-my-sway — app pid 193834 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/sway.sock
+PASS  open_tabs_agent_pty/isolation/pinned-account — ws.accountId=rig-avr account.id=rig-avr configDir=/home/lmas/.claude-mc
+PASS  open_tabs_agent_pty/control/run-pty-appears — pre=∅ -> post=ws-avr-1:run[run]
+PASS  open_tabs_agent_pty/pre-state-no-agent-pty — agent-kind PTYs=0 (ws-avr-1:run[run])
+PASS  open_tabs_agent_pty/tab:Run:no-agent-pty — agent-kind PTYs=0 (ws-avr-1:run[run])
+PASS  open_tabs_agent_pty/tab:Structured:no-agent-pty — agent-kind PTYs=0 (ws-avr-1:run[run])
+PASS  open_tabs_agent_pty/tab:Diff:no-agent-pty — agent-kind PTYs=0 (ws-avr-1:run[run])
+PASS  open_tabs_agent_pty/tab:Raw:creates-agent-pty — pre=ws-avr-1:run[run] -> post=ws-avr-1:run[run],ws-avr-1[agent] expected(baseline)=true
+PASS  open_tabs_agent_pty/tab:Raw:agent-pty-is-the-stub — no real claude was started; PTY tree cmdlines=["/bin/sh /home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/open_tabs_agent_pty-mun5jgjz/stub-bin/claude --dangerously-skip-permissions --model claude-opus-4-8","sleep 3600"]
+PASS  open_tabs_agent_pty/end-state-agent-pty — baseline: Raw left exactly one agent-kind PTY (ws-avr-1:run[run],ws-avr-1[agent])
+--- arm agent_view_content: the Agent view renders REAL content (injected through the real fold path: user + assistant rows visible) + a screenshot read back off disk and asserted on its decoded pixels
+IDENTITY  arm=agent_view_content mode=baseline app-dir=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883 git=1dae6265+5dirty version(running)=0.5.296 version(package.json)=0.5.296
+          target-url=file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+          loaded-renderer-bundle=index-AxNSDLsU.js md5=093595d88d67  main=index-DHS19stR.js md5=51a5c0cd59af  electron=/home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/node_modules/electron/dist/electron
+PASS  agent_view_content/identity/version — running=0.5.296 package.json=0.5.296
+PASS  agent_view_content/identity/target-is-this-build — file:///home/lmas/.orchestra/worktrees/orchestra-sunny-forest-cc35b883/dist/index.html
+PASS  agent_view_content/isolation/display-isolated — (read back from /proc/198386/environ) WAYLAND_DISPLAY=wayland-3, DISPLAY absent
+PASS  agent_view_content/isolation/orchestra-home — ORCHESTRA_HOME=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/agent_view_content-mun5joid
+PASS  agent_view_content/isolation/home-not-tmpfs — fstype=btrfs
+PASS  agent_view_content/isolation/window-in-my-sway — app pid 198386 in get_tree of SWAYSOCK=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/sway.sock
+PASS  agent_view_content/isolation/pinned-account — ws.accountId=rig-avr account.id=rig-avr configDir=/home/lmas/.claude-mc
+PASS  agent_view_content/agent-tab-rendered — 'Structured' in ["Raw","Run","Structured","Diff"]
+PASS  agent_view_content/rows-rendered-and-visible — user + assistant sentinels are in visible elements (DOM oracle — blind to paint, hence the pixels below)
+PASS  agent_view_content/composer-present — a composer element is in the DOM
+SHOT      empty-state /home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/agent_view_content-mun5joid/agent-view-empty.png md5=d497f074ec94d276a7aec7aff0e5e12c 1256x776 bytes=17714 distinct=607 nonBg=0.823%
+SHOT      content     /home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/agent_view_content-mun5joid/agent-view-content.png md5=b88a56ab77b5cfc78d541cf1ede59304 1256x776 bytes=14739 distinct=520 nonBg=1.254%
+SHOT      blank       /home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/agent_view_content-mun5joid/agent-view-blank.png md5=f4df40148848708d5153900dc67d0263 1256x776 bytes=4649 distinct=1 nonBg=0%
+PASS  agent_view_content/screenshots-distinct — md5 empty=d497f074 content=b88a56ab blank=f4df4014 (a no-op step would collide)
+PASS  agent_view_content/content-painted-not-blank — content nonBg=1.254% distinct=520 vs blank nonBg=0% distinct=1 (need > +0.05pp and > +4 colours)
+SHOT      compositor  /home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/oh/agent_view_content-mun5joid/compositor-grim.png md5=83ce260fa5fdba39894812c56fa518fb 1600x1000 bytes=86924 distinct=4151 nonBg=33.337%
+PASS  agent_view_content/compositor-shows-app — grim on wayland-3: distinct=4151 nonBg=33.337% (thresholds >=12 colours, >=1%)
+RIG-RESULT mode=baseline arms=7 clauses=66 pass=66 fail=0 artifact=/home/lmas/.cache/e2e-agent-view-removal/e2e64c-190583/result-baseline.json

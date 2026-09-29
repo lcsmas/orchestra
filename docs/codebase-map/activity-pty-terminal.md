@@ -502,6 +502,36 @@ reuse it so an open terminal keeps its real width instead of snapping to a
 default 80×24 / 120×32; the renderer only re-asserts size on container/focus
 changes, never on an out-of-band respawn).
 
+### Removal rig — `scripts/e2e-agent-view-removal.{sh,mjs}` (#225, wave "Agent view only" #219)
+
+Boots a BUILT app (`<app-dir>` argument — point the SAME rig at a pre-change and a candidate
+build) under its own headless sway and reports (1) the rendered workspace tab labels
+(`.toolbar .tabs .tab` DOM) and (2) the live PTY sessions by kind (`sampleResources()`, see
+[resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (pins the account
+from the invoker's `${CLAUDE_CONFIG_DIR:-~/.claude}`, rig dir on btrfs under `~` via
+`E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
+`scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
+(`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor).
+- **Modes** — every arm holds both expectations in `EXPECT` (`.mjs` :40): `baseline` = today
+  (tabs `Raw·Run·Structured·Diff`, opening Raw creates an agent-kind PTY) is green on master
+  and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
+  PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`.
+- **Arms** (`ARMS` :443): `guard_selftest` (isolation guard refuses wayland-1 / sibling display /
+  X11 `DISPLAY`, naming the clause), `pixel_selftest` (PNG decoder + painted-vs-blank
+  predicate), `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`, `agent_view_content`
+  (events injected through `__injectAgentEvent`, rows asserted visible, screenshot read back
+  off disk and asserted on DECODED pixels vs a hidden-rows blank frame, plus a `grim` capture).
+  Every clause prints `PASS|FAIL <arm>/<clause> — detail`; a final `RIG-RESULT` line is the
+  terminator (rc 0 all pass · 1 a clause failed · 2 harness/usage).
+- **Guards** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
+  target URL must contain `<app-dir>`, never `app.asar`) before any clause, then proves isolation
+  by reading the RUNNING child's `/proc/<pid>/environ` (WAYLAND_DISPLAY == the rig's marker-verified
+  socket, != wayland-1, no DISPLAY), its pid in MY sway's `get_tree`, and `ORCHESTRA_HOME` on
+  non-tmpfs. `noAgentPty` (:437) REFUSES any "no agent PTY" claim unless the Run-tab positive
+  control fired in the same boot (`--broken-control` seeds no Run script to prove it).
+- **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause
+  asserts the agent PTY's cmdline is the stub. NOT covered here: nvim/login PTYs (later arms).
+
 ## Session hibernation — hibernation.ts / hibernation-activity.ts / shared/hibernation.ts
 
 Idle agents used to keep their processes forever: the renderer's 12-pane LRU

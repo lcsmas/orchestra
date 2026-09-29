@@ -20,7 +20,10 @@
 set -Eeuo pipefail
 
 RIG_ID="e2e64c-$$"
-RIG_DIR="/tmp/${RIG_ID}"
+# E2E_RIG_BASE relocates the rig dir (fake HOME + ORCHESTRA_HOME live under it). Default
+# /tmp is unchanged; a rig whose fs is part of the instrument sets a btrfs base under ~.
+RIG_BASE="${E2E_RIG_BASE:-/tmp}"
+RIG_DIR="${RIG_BASE}/${RIG_ID}"
 SWAYSOCK_MINE="${RIG_DIR}/sway.sock"
 FAKE_HOME="${RIG_DIR}/home"
 
@@ -32,7 +35,8 @@ FAKE_HOME="${RIG_DIR}/home"
 # leaves rig dirs for inspection, and they may belong to a sibling agent
 # (the sleeping-owner rule).
 _RIG_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-node "${_RIG_REPO_ROOT}/scripts/disk-guard.cjs" --preset e2e-rig --path /tmp || exit $?
+mkdir -p "${RIG_BASE}"
+node "${_RIG_REPO_ROOT}/scripts/disk-guard.cjs" --preset e2e-rig --path "${RIG_BASE}" || exit $?
 
 mkdir -p "${RIG_DIR}" "${FAKE_HOME}/.orchestra/inbox" "${RIG_DIR}/oh/userData"
 

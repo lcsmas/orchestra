@@ -377,6 +377,11 @@ CI invocation would have "reproduced" #62 forever. Run it as:
 scripts/e2e-contained-rig.sh pnpm run test:cli-pipe
 ```
 
+`e2e-contained-rig.sh` puts its rig dir (fake `HOME`, `ORCHESTRA_HOME`, sway socket) under
+`${E2E_RIG_BASE:-/tmp}`; a rig whose filesystem is part of the instrument (btrfs, not the
+tmpfs `/tmp`) sets `E2E_RIG_BASE` under `~` — `scripts/e2e-agent-view-removal.sh` does
+(see [activity-pty-terminal.md](activity-pty-terminal.md) § Removal rig). Default unchanged.
+
 ### The rig's own self-test — `pnpm run test:rig-selftest`
 
 `scripts/e2e-contained-rig-selftest.sh` proves the rig's pre-flight assert can
