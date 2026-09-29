@@ -71,6 +71,8 @@ test('T128.4 — MIGRATIONS[5]: a from-4 DB migrates and coordinator_generation 
   seed.exec('DROP INDEX IF EXISTS idx_fence_events_run');
   seed.exec('DROP TABLE IF EXISTS fence_events');
   seed.exec('ALTER TABLE runs DROP COLUMN coordinator_generation');
+  seed.exec('ALTER TABLE runs DROP COLUMN held_at'); // MIGRATIONS[8] (#204) re-runs on the replay
+  seed.exec('ALTER TABLE runs DROP COLUMN held_by');
   seed.pragma('user_version = 4');
   // CONTROL, same command (carry-forward 4): the column is genuinely ABSENT at v4.
   const colsAt4 = (seed.pragma('table_info(runs)') as { name: string }[]).map((c) => c.name);

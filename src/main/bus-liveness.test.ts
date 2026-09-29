@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openBus, send, openGate, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
+import * as busRuns from './bus-runs.ts';
 import { readWaitingReaders } from './bus-wake.ts';
 import {
   sweepBusLiveness,
@@ -813,4 +814,251 @@ test('#204 (SQL): a plain member is NOT released by a worker_done of the same na
   send(db, { runId: 'run-lead', sender: 'ws-member', kind: 'worker_done', body: 'x', recipient: 'ws-lead' });
   const set = readReleasedReaders(db, [{ reader: 'ws-member', runId: 'ws-ops2' }]);
   assert.equal(set.has('ws-member'), false, 'only the anchoring coordinator reads its parent run');
+});
+
+// ── #204 remainder (LEAD ruling D4 i): a coordinator with a PROGRESSING member is
+//    not stale ─────────────────────────────────────────────────────────────────
+//
+// The field shape (ledger #198, seq 2976/2980): an OPS idle while its T11 verifier
+// works was escalated to the LEAD every ~10 min — its silence is the fleet working.
+
+/** An idle OPS: silent 11m, coordinated by ws-lead, not running. */
+function idleOps(over: Partial<LivenessMember> = {}): LivenessMember {
+  return member({ reader: 'ws-ops', coordinator: 'ws-lead', ...over });
+}
+/** A worker of `coordinator`, with a FRESH clock so only the OPS is a candidate. */
+function liveWorker(coordinator: string, over: Partial<LivenessMember> = {}): LivenessMember {
+  return member({
+    reader: `w-of-${coordinator}`,
+    coordinator,
+    lastActivityAt: NOW - 30_000,
+    ...over,
+  });
+}
+
+test('#204 i (MUST-FAIL on master): an idle OPS with a RUNNING member is NOT escalated', (t) => {
+  // MUTANT: drop the fleet-active guard (or never derive it in the sweep) → ws-ops
+  //   escalates (1 row) and this goes RED. Same-command POSITIVE control: ws-ops-b is
+  //   idle beside an IDLE (not running) worker and DOES escalate — so the zero is a
+  //   real distinction, and a blanket "any member anywhere is running" would also
+  //   suppress ws-ops-b (scoping).
+  const db = tmpBus(t);
+  armSweep(db, [
+    idleOps(),
+    liveWorker('ws-ops', { running: true }),
+    idleOps({ reader: 'ws-ops-b' }),
+    liveWorker('ws-ops-b', { running: false }),
+  ]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-lead', 'ws-ops'),
+    0,
+    'an idle coordinator whose member is running is NOT stale',
+  );
+  assert.equal(
+    escalationCount(db, 'ws-lead', 'ws-ops-b'),
+    1,
+    'an idle coordinator with NO running member STILL escalates (control)',
+  );
+});
+
+test('#204 i: the shield is LEVEL-triggered — the worker stops → the next sweep escalates the OPS', (t) => {
+  // MUTANT: latch the "active" verdict (cache it across sweeps) → the second sweep
+  //   stays at 0 rows and this goes RED.
+  const db = tmpBus(t);
+  armSweep(db, [idleOps(), liveWorker('ws-ops', { running: true })]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-lead', 'ws-ops'), 0);
+  setLivenessRoster(() => [idleOps(), liveWorker('ws-ops', { running: false })]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-lead', 'ws-ops'), 1, 'no running member any more → stale');
+});
+
+test('#204 i: a member HUNG mid-call does NOT keep its OPS un-stale (progress bound, not the flag)', (t) => {
+  // A wedged member holds status=running forever (the #90 class). Counting it as
+  // "active" would blind the OPS-level check for good. MUTANT: derive activity from
+  // `running` alone (ignore the hung ceiling) → ws-ops reads 0 rows and this goes RED.
+  const db = tmpBus(t);
+  armSweep(db, [idleOps(), hungMember({ reader: 'w-hung', coordinator: 'ws-ops' })]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-lead', 'ws-ops'), 1, 'the OPS escalates: its only running member is hung');
+  assert.equal(escalationCount(db, 'ws-ops', 'w-hung'), 1, 'and the hung member itself still escalates to the OPS');
+});
+
+test('#204 i: the shield does not mask a coordinator that is ITSELF hung mid-call', (t) => {
+  // MUTANT: place the fleet-active guard BEFORE the running/hung block → the hung
+  //   OPS is suppressed (0 rows) and this goes RED.
+  const db = tmpBus(t);
+  armSweep(db, [
+    hungMember({ reader: 'ws-ops', coordinator: 'ws-lead' }),
+    liveWorker('ws-ops', { running: true }),
+  ]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-lead', 'ws-ops'), 1, 'a hung coordinator still escalates');
+});
+
+// ── #204 remainder (LEAD ruling D4 ii): HOLD — a held run's members are skipped ──
+
+const HOLD_ON = { delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
+function escalationsIn(db: BusDb, runId: string, coordinator: string, reader: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM messages
+        WHERE run_id=? AND kind='escalation' AND recipient=? AND sender=?`,
+    )
+    .get(runId, coordinator, reader) as { n: number };
+  return Number(row.n);
+}
+function seedTwoRuns(db: BusDb): void {
+  startRun(db, { id: 'run-held', kind: 'vague', coordinator: 'ws-ops-h' }, HOLD_ON);
+  startRun(db, { id: 'run-open', kind: 'vague', coordinator: 'ws-ops-o' }, HOLD_ON);
+}
+/** One silent member per run, plus each run's OPS (keyed on its OWN run, as the
+ *  production roster does — an orchestrator is its own run anchor). */
+function twoRunRoster(): LivenessMember[] {
+  return [
+    member({ reader: 'w-held', coordinator: 'ws-ops-h', runId: 'run-held' }),
+    member({ reader: 'w-open', coordinator: 'ws-ops-o', runId: 'run-open' }),
+    member({ reader: 'ws-ops-h', coordinator: 'ws-lead', runId: 'run-held' }),
+    member({ reader: 'ws-ops-o', coordinator: 'ws-lead', runId: 'run-open' }),
+  ];
+}
+
+test('#204 ii (MUST-FAIL on master): every member of a HELD run is skipped; a non-held run still escalates', (t) => {
+  // MUTANT: never read the hold in the sweep (or the `held` guard removed) → the
+  //   held run's members escalate and this goes RED. The non-held run's rows in the
+  //   SAME sweep are the positive control (4 silent members, 2 rows expected).
+  const db = tmpBus(t);
+  seedTwoRuns(db);
+  assert.equal(busRuns.setRunHold(db, 'run-held', true, 'ws-ops-h'), 'held');
+  armSweep(db, twoRunRoster());
+  sweepBusLiveness();
+  assert.equal(escalationsIn(db, 'run-held', 'ws-ops-h', 'w-held'), 0, 'worker of a held run: skipped');
+  assert.equal(escalationsIn(db, 'run-held', 'ws-lead', 'ws-ops-h'), 0, 'the held run\'s OPS (keyed on its own run): skipped');
+  assert.equal(escalationsIn(db, 'run-open', 'ws-ops-o', 'w-open'), 1, 'worker of a NON-held run still escalates');
+  assert.equal(escalationsIn(db, 'run-open', 'ws-lead', 'ws-ops-o'), 1, 'OPS of a NON-held run still escalates');
+});
+
+test('#204 ii: resume RE-ENABLES escalation for the run on the very next sweep', (t) => {
+  // MUTANT: resume does not clear the flag → the third assertion stays 0 and goes RED.
+  const db = tmpBus(t);
+  seedTwoRuns(db);
+  busRuns.setRunHold(db, 'run-held', true, 'ws-ops-h');
+  armSweep(db, twoRunRoster());
+  sweepBusLiveness();
+  assert.equal(escalationsIn(db, 'run-held', 'ws-ops-h', 'w-held'), 0, 'held: skipped');
+  assert.equal(busRuns.setRunHold(db, 'run-held', false, 'ws-ops-h'), 'resumed');
+  sweepBusLiveness();
+  assert.equal(escalationsIn(db, 'run-held', 'ws-ops-h', 'w-held'), 1, 'resumed: the silent member escalates');
+});
+
+test('#204 ii: HOLD beats a hung call — a held run\'s wedged member is not escalated', (t) => {
+  // MUTANT: place the `held` guard AFTER the running/hung block → the hung member
+  //   escalates despite the hold and this goes RED.
+  const db = tmpBus(t);
+  seedTwoRuns(db);
+  busRuns.setRunHold(db, 'run-held', true, 'ws-ops-h');
+  armSweep(db, [hungMember({ reader: 'w-held', coordinator: 'ws-ops-h', runId: 'run-held' })]);
+  sweepBusLiveness();
+  assert.equal(escalationsIn(db, 'run-held', 'ws-ops-h', 'w-held'), 0);
+});
+
+test('#204 ii: a run with NO row is not held (unknown ⇒ not held) — its members still escalate', (t) => {
+  // MUTANT: treat an unknown run as held (default-true) → the member is skipped, RED.
+  const db = tmpBus(t);
+  armSweep(db, [member({ reader: 'w-ghost', runId: 'run-never-created' })]);
+  sweepBusLiveness();
+  assert.equal(escalationsIn(db, 'run-never-created', 'ws-ops', 'w-ghost'), 1);
+});
+
+test('#204 ii: an UNREADABLE hold never suppresses a stall or takes the sweep down (safe direction)', (t) => {
+  // The hold read failing must read as "not held" — over-escalate, never hide.
+  // MUTANT: let the held-read throw escape the sweep (or default to held) → the
+  //   member is never escalated and this goes RED.
+  const db = tmpBus(t);
+  const broken = new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'prepare') {
+        return (sql: string) => {
+          if (/held_at/.test(sql)) throw new Error('simulated: hold column unreadable');
+          return target.prepare(sql);
+        };
+      }
+      const v = (target as unknown as Record<string | symbol, unknown>)[prop];
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  }) as BusDb;
+  armSweep(db, [member()]);
+  __setBusReaderForTests(() => broken);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 1, 'a broken hold read must not hide a real stall');
+});
+
+const tmp2 = tmpBus;
+
+// ── review-A4 dispositions (ledger #224): F1 wedged member, F2 one-per-silence, F4 sibling ──
+
+test('#204 F1 (MUST-FAIL before the fix): a WEDGED running member (no call in flight, silent 6h) does NOT shield its OPS', (t) => {
+  // Reviewer attack A1. MUTANT: drop the freshness clause of isMakingProgress →
+  //   ws-ops-w reads 0 rows and this goes RED. Same-command POSITIVE control: a FRESH
+  //   running member (ws-ops-f's worker) still shields its OPS — the zero is real.
+  const db = tmp2(t);
+  const SIX_H = 6 * 3600_000;
+  armSweep(db, [
+    idleOps({ reader: 'ws-ops-w', lastActivityAt: NOW - SIX_H }),
+    member({ reader: 'w-wedged', coordinator: 'ws-ops-w', running: true, inFlightTools: [], lastActivityAt: NOW - SIX_H }),
+    idleOps({ reader: 'ws-ops-f' }),
+    liveWorker('ws-ops-f', { running: true, inFlightTools: [] }),
+  ]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-lead', 'ws-ops-w'), 1, 'wedged member must not shield: the OPS escalates');
+  assert.equal(escalationCount(db, 'ws-lead', 'ws-ops-f'), 0, 'a fresh running member still shields (control)');
+});
+
+test('#204 F2 (MUST-FAIL before the fix): a worker flapping idle/running ×7 keeps ONE escalation per OPS silence', (t) => {
+  // review-A4 F2: the ledger-prune probe used held/fleetActive, so a shielded coordinator
+  // read non-stale and was re-armed → rows [1,1,2,2,3,3,4] vs master [1×7].
+  // MUTANT: let the probe see fleetActive → the sequence grows and this goes RED.
+  const db = tmp2(t);
+  let workerRunning = false;
+  armSweep(db, [idleOps(), liveWorker('ws-ops', { running: false })]);
+  setLivenessRoster(() => [idleOps(), liveWorker('ws-ops', { running: workerRunning })]);
+  const seq: number[] = [];
+  for (const r of [false, true, false, true, false, true, false]) {
+    workerRunning = r;
+    sweepBusLiveness();
+    seq.push(escalationCount(db, 'ws-lead', 'ws-ops'));
+  }
+  assert.deepEqual(seq, [1, 1, 1, 1, 1, 1, 1]);
+});
+
+test('#204 F2 (MUST-FAIL before the fix): hold → resume does NOT re-escalate the SAME silence', (t) => {
+  // MUTANT: let the probe see `held` → the hold prunes the ledger, resume re-fires (1→1→2) → RED.
+  const db = tmp2(t);
+  seedTwoRuns(db);
+  armSweep(db, [member({ reader: 'w-held', coordinator: 'ws-ops-h', runId: 'run-held' })]);
+  sweepBusLiveness();
+  const rows = () => escalationsIn(db, 'run-held', 'ws-ops-h', 'w-held');
+  const a = rows();
+  busRuns.setRunHold(db, 'run-held', true, 'ws-ops-h');
+  sweepBusLiveness();
+  const b = rows();
+  busRuns.setRunHold(db, 'run-held', false, 'ws-ops-h');
+  sweepBusLiveness();
+  const c = rows();
+  assert.deepEqual([a, b, c], [1, 1, 1]);
+});
+
+test('#204 F4: fleetActive shields ONLY the coordinator — an idle silent SIBLING beside a running worker still escalates', (t) => {
+  // review-A4 F4 (survivor). MUTANT: `fleetActive: activeCoordinators.has(m.coordinator)`
+  //   (shield every member of an active coordinator) → the sibling reads 0 → RED.
+  const db = tmp2(t);
+  armSweep(db, [
+    idleOps({ lastActivityAt: NOW - 30_000 }),
+    liveWorker('ws-ops', { reader: 'w-run', running: true }),
+    member({ reader: 'w-idle', coordinator: 'ws-ops' }),
+  ]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'w-idle'), 1, 'the idle silent sibling escalates to its OPS');
+  assert.equal(escalationCount(db, 'ws-ops', 'w-run'), 0, 'the running one does not (control)');
 });

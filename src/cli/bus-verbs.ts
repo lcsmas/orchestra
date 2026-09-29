@@ -35,6 +35,7 @@ import type {
   MintedCapability,
 } from '../main/bus.ts';
 import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
+import type { RunHoldOutcome } from '../main/bus-runs.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -966,4 +967,73 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
       'orchestra gate resolve <gate-id> --resolution <ruling...> | ' +
       'orchestra gate list',
   );
+}
+
+// ─── run hold / resume (#204) ───────────────────────────────────────────────
+
+/**
+ * `orchestra run hold|resume [--run <id>]` — set/clear the per-run HOLD flag
+ * (LEAD ruling D4 ii). Liveness skips every member of a held run. AUTHORIZED (D7):
+ * only the run's coordinator or an ancestor run's coordinator; anyone else is refused
+ * with a message naming who may. FENCED (review-A4 F7): the write goes through A6's
+ * `fencedWrite` (coordinator-only), so a superseded coordinator cannot hold or resume
+ * its successor's run. Idempotent (rc 0 both ways); REFUSES a run with no row.
+ * `ctx.id` = { runId: the TARGET run, handle: the caller ('' = no identity) }.
+ * Takes the writers as callbacks so it is unit-testable without a process.
+ */
+export function verbRunHold(
+  ctx: BusVerbCtx,
+  hold: {
+    setRunHold: (db: BusDb, runId: string, hold: boolean, actor: string | null) => RunHoldOutcome;
+    getRunHold: (db: BusDb, runId: string) => { heldAt: number; heldBy: string | null } | null;
+    runHoldAuthority: (db: BusDb, runId: string) => { coordinator: string; ancestors: string[] } | null;
+  },
+  isHold: boolean,
+): void {
+  const runId = ctx.id.runId;
+  const actor = ctx.id.handle.trim() || null;
+  const verb = isHold ? 'hold' : 'resume';
+  const outcome = fenced(ctx, `run-${verb}`, () => hold.setRunHold(ctx.db, runId, isHold, actor));
+  switch (outcome) {
+    case 'no-run':
+      ctx.fail(
+        `orchestra run ${verb}: run ${JSON.stringify(runId)} has no row in the bus 'runs' table — ` +
+          `nothing to ${verb} (pass --run <id>; \$ORCHESTRA_RUN_ID is your wave anchor, 'default' never has a row)`,
+      );
+    // eslint-disable-next-line no-fallthrough
+    case 'refused': {
+      const auth = hold.runHoldAuthority(ctx.db, runId);
+      const may = auth ? [auth.coordinator, ...auth.ancestors] : [];
+      ctx.fail(
+        `orchestra run ${verb}: refused — run ${JSON.stringify(runId)} can only be ${isHold ? 'held' : 'resumed'} ` +
+          `by its coordinator (${auth?.coordinator ?? '?'}) or by a coordinator of an ancestor run ` +
+          `(${auth && auth.ancestors.length ? auth.ancestors.join(', ') : 'none'}). ` +
+          (actor
+            ? `You are ${JSON.stringify(actor)}, who is none of ${may.join(', ')}.`
+            : `You have no identity (\$ORCHESTRA_WS_ID unset) — pass --as <handle> to act as one of them.`),
+      );
+    }
+    // eslint-disable-next-line no-fallthrough
+    case 'held':
+      ctx.out(
+        `Run ${runId} is now HELD — liveness will not escalate any member of it ` +
+          `(undo with: orchestra run resume --run ${runId})\n`,
+      );
+      return;
+    case 'already-held': {
+      const h = hold.getRunHold(ctx.db, runId);
+      ctx.out(
+        `Run ${runId} was already held` +
+          (h ? ` (since ${new Date(h.heldAt).toISOString()} by ${h.heldBy ?? 'unknown'})` : '') +
+          ' — unchanged.\n',
+      );
+      return;
+    }
+    case 'resumed':
+      ctx.out(`Run ${runId} resumed — liveness escalation is re-enabled for its members.\n`);
+      return;
+    case 'not-held':
+      ctx.out(`Run ${runId} was not held — unchanged.\n`);
+      return;
+  }
 }

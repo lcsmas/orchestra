@@ -29,7 +29,7 @@ import {
 } from './workspaces';
 import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
-import { getRun, runFlags } from './bus-runs.ts';
+import { runFlags, runStatusView } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
 import {
@@ -450,7 +450,7 @@ export async function startHooksServer(): Promise<void> {
                 displayRunId: cliRunId,
                 // #206: runFlags reads a MISSING run as all-OFF; say so explicitly so the
                 // CLI never prints "frozen OFF" for a workspace that anchors no run.
-                ...(db ? { runExists: getRun(db, cliRunId) !== null } : {}),
+                ...(db ? runStatusView(db, cliRunId) : {}),
                 frozenFlags: frozen ? serializeSwitches(frozen) : null,
                 liveFlags: serializeSwitches(getLiveSwitches()),
               };

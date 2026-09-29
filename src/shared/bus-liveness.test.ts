@@ -14,6 +14,7 @@ import {
   type MemberLivenessState,
   type EscalationLedgerEntry,
 } from './bus-liveness.ts';
+import * as policy from './bus-liveness.ts';
 
 // The PURE liveness policy (#120, ledger #125). Every guard is exercised in both
 // directions with a same-command control, so a mutant that deletes/flips a clause
@@ -572,4 +573,93 @@ test('bootWedgeEscalationBody carries the D2 diagnostic: count + last error + tr
   // apart from a transient one.
   assert.match(body, /15\.7 MB/, 'renders the transcript size in MB');
   assert.doesNotMatch(body, /NaN|undefined/, 'never leaks NaN/undefined');
+});
+
+// ── #204 remainder (LEAD ruling D4): fleet-active + held, at the policy layer ──
+// `policy.*` (namespace import) so a build without the new export fails ARM BY ARM
+// rather than the whole file at import time.
+
+test('#204 i: an idle coordinator whose fleet is ACTIVE → skip fleet-active; control → escalate', () => {
+  // MUTANT: drop the `fleetActive` guard → `escalate` and the first assertion is RED.
+  const active = decideEscalation(staleMember({ fleetActive: true }), undefined, NOW, true);
+  assert.equal(active.kind, 'skip');
+  assert.equal(active.kind === 'skip' && active.why, 'fleet-active');
+  const control = decideEscalation(staleMember({ fleetActive: false }), undefined, NOW, true);
+  assert.equal(control.kind, 'escalate', 'no active member → the same stale coordinator escalates');
+});
+
+test('#204 i: fleet-active does NOT mask a coordinator that is itself hung mid-call', () => {
+  // MUTANT: order the fleet-active guard before the running/hung block → RED.
+  const hung = staleMember({
+    running: true,
+    fleetActive: true,
+    inFlightTools: [{ tool: 'Bash', startedAt: NOW - BASH_TOOL_CEILING_MS - 1000 }],
+  });
+  const a = decideEscalation(hung, undefined, NOW, true);
+  assert.equal(a.kind, 'escalate');
+  assert.equal(a.kind === 'escalate' && a.hungTool, 'Bash');
+});
+
+test('#204 ii: a member of a HELD run → skip held, even when hung; control → escalate', () => {
+  // MUTANT: drop the `held` guard, or order it after the hung block → RED.
+  const a = decideEscalation(staleMember({ held: true }), undefined, NOW, true);
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'held');
+  const hungHeld = staleMember({
+    held: true,
+    running: true,
+    inFlightTools: [{ tool: 'Bash', startedAt: NOW - BASH_TOOL_CEILING_MS - 1000 }],
+  });
+  const b = decideEscalation(hungHeld, undefined, NOW, true);
+  assert.equal(b.kind === 'skip' && b.why, 'held', 'hold beats the hung-call escalation');
+  assert.equal(decideEscalation(staleMember({ held: false }), undefined, NOW, true).kind, 'escalate');
+});
+
+test('#204: held and fleetActive default to false when absent (the safe over-escalate direction)', () => {
+  // MUTANT: treat `undefined` as true → the plain stale member is skipped → RED.
+  const a = decideEscalation(staleMember(), undefined, NOW, true);
+  assert.equal(a.kind, 'escalate');
+});
+
+test('#204 i: isMakingProgress — running with no hung call is progress; hung / idle are not', () => {
+  // The predicate the sweep uses to decide a coordinator's fleet is active.
+  // MUTANT: `return m.running` (ignore the hung ceiling) → the hung arm is RED.
+  const fresh = staleMember({ running: true, lastActivityAt: NOW - 30_000 });
+  assert.equal(policy.isMakingProgress(fresh, NOW), true, 'running, nothing in flight, fresh clock');
+  const underCeiling = staleMember({
+    running: true,
+    lastActivityAt: NOW - 30_000,
+    inFlightTools: [{ tool: 'Bash', startedAt: NOW - 60_000 }],
+  });
+  assert.equal(policy.isMakingProgress(underCeiling, NOW), true, 'a live tool call under its ceiling');
+  const hung = staleMember({
+    running: true,
+    inFlightTools: [{ tool: 'Bash', startedAt: NOW - BASH_TOOL_CEILING_MS - 1000 }],
+  });
+  assert.equal(policy.isMakingProgress(hung, NOW), false, 'a call past its ceiling is NOT progress');
+  assert.equal(policy.isMakingProgress(staleMember({ running: false }), NOW), false, 'idle is not progress');
+});
+
+test('#204 F1: a running member with NO call in flight is progress ONLY while its clock is fresh', () => {
+  // The wedged-member hole (review-A4 F1): status stuck `running`, no in-flight
+  // call, silent for hours must NOT shield its idle OPS forever.
+  // MUTANT: drop the freshness clause (running && no hung call) → the stale arms are RED.
+  const at = (ageMs: number | undefined, tools?: { tool: string | null; startedAt: number }[]) =>
+    staleMember({
+      running: true,
+      lastActivityAt: ageMs === undefined ? undefined : NOW - ageMs,
+      ...(tools ? { inFlightTools: tools } : {}),
+    });
+  assert.equal(policy.isMakingProgress(at(60_000, []), NOW), true, 'fresh clock, nothing in flight');
+  assert.equal(policy.isMakingProgress(at(STALE_AFTER_MS, []), NOW), true, 'exactly at the window (matches the `fresh` guard)');
+  assert.equal(policy.isMakingProgress(at(STALE_AFTER_MS + 1, []), NOW), false, 'one ms past the window');
+  assert.equal(policy.isMakingProgress(at(6 * 3600_000, []), NOW), false, 'wedged 6h');
+  assert.equal(policy.isMakingProgress(at(6 * 3600_000), NOW), false, 'absent inFlightTools == none in flight');
+  assert.equal(policy.isMakingProgress(at(undefined, []), NOW), false, 'a clockless member is not evidence of progress');
+  // A live call under its ceiling IS progress whatever the clock says (the call is the evidence).
+  assert.equal(
+    policy.isMakingProgress(at(6 * 3600_000, [{ tool: 'Bash', startedAt: NOW - 60_000 }]), NOW),
+    true,
+    'in-flight call under its ceiling',
+  );
 });

@@ -23,6 +23,7 @@ import {
   verbAsk,
   verbToken,
   verbGate,
+  verbRunHold,
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
@@ -668,6 +669,10 @@ async function openBusForVerb(): Promise<{
   // run absent from `runs`. Carried through the SAME dynamic import so no extra
   // native/ABI cost is paid.
   runExists: (db: import('../main/bus.ts').BusDb, runId: string) => boolean;
+  // #204 — the per-run HOLD writer behind `run hold|resume` (same dynamic import).
+  runHold: typeof import('../main/bus-runs.ts').setRunHold;
+  runHoldInfo: typeof import('../main/bus-runs.ts').getRunHold;
+  runHoldAuthority: typeof import('../main/bus-runs.ts').runHoldAuthority;
   file: string;
 }> {
   // Resolved BEFORE the try. It can itself fail(), and a CliFailure raised
@@ -724,6 +729,9 @@ async function openBusForVerb(): Promise<{
       // #155 — getRun returns null for a run with no `runs` row (an UNKNOWN run
       // reads all-OFF, #123 F1); the send gate refuses on that.
       runExists: (d, runId) => busRuns.getRun(d, runId) !== null,
+      runHold: busRuns.setRunHold,
+      runHoldInfo: busRuns.getRunHold,
+      runHoldAuthority: busRuns.runHoldAuthority,
       file,
     };
   } catch (err) {
@@ -947,7 +955,7 @@ async function main(argv: string[]): Promise<void> {
   }
   // `help <cmd>` and `<cmd> --help` print that command's help and NEVER run it
   // (before this, `status --help` set the status note to "--help").
-  if (command === 'help' || wantsCommandHelp(args)) {
+  if (command === 'help' || wantsCommandHelp(args, command)) {
     const target = command === 'help' ? args[0] : command;
     if (!target) {
       process.stdout.write(USAGE);
@@ -1742,13 +1750,36 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'run': {
-      // #156 — ADMIN run subcommands. Only `refreeze` today. Routed to the app
-      // (NOT the store-less bus path) because the live-child gate needs the store's
+      // #156 — ADMIN run subcommands. `refreeze` is routed to the app (NOT the
+      // store-less bus path) because the live-child gate needs the store's
       // `isRunning` ground truth; the CLI is a thin wrapper that resolves the run
       // and prints the typed outcome.
       const sub = args[0];
+      if (sub === 'hold' || sub === 'resume') {
+        // #204 — the per-run HOLD flag. STORE-LESS like send/ack: it writes the bus
+        // directly, so a hold lands while the app is down (before a relaunch).
+        // Authorized (D7) + fenced (F7): the caller is --as > $ORCHESTRA_WS_ID.
+        const holdGen = takeFlag(args.slice(1), '--generation');
+        const holdRunArg = takeFlag(holdGen.rest, '--run');
+        const holdAsArg = takeFlag(holdRunArg.rest, '--as');
+        const holdTarget =
+          holdRunArg.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        const holdActor = resolveBusIdentity({ as: holdAsArg.value }, process.env)?.handle ?? '';
+        const { db, bus, runHold, runHoldInfo, runHoldAuthority } = await openBusForVerb();
+        try {
+          const fencing = await resolveFencing(db, holdTarget, holdGen.value);
+          verbRunHold(
+            busCtx(db, bus, { runId: holdTarget, handle: holdActor }, fencing),
+            { setRunHold: runHold, getRunHold: runHoldInfo, runHoldAuthority },
+            sub === 'hold',
+          );
+        } finally {
+          db.close();
+        }
+        return;
+      }
       if (sub !== 'refreeze') {
-        fail('usage: orchestra run refreeze [--run <id>]');
+        fail('usage: orchestra run refreeze|hold|resume [--run <id>]');
       }
       const { value: runFlag } = takeFlag(args.slice(1), '--run');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
@@ -1832,6 +1863,15 @@ async function main(argv: string[]): Promise<void> {
           ? `run: ${shownRunId} — no such run (standalone: switches freeze from the live settings when this workspace is promoted or dispatched)\n`
           : `run: ${shownRunId}\n`,
       );
+      // #204 F3: a HELD run says so (a forgotten hold must be visible). No line when
+      // not held, so existing output is unchanged.
+      if (typeof res.heldAt === 'number') {
+        process.stdout.write(
+          `hold: HELD since ${new Date(res.heldAt).toISOString()} by ${
+            typeof res.heldBy === 'string' ? res.heldBy : 'unknown'
+          } — liveness skips this run's members (undo: orchestra run resume --run ${shownRunId})\n`,
+        );
+      }
       // Printed unconditionally, not only when it is false: an operator reading
       // a row of zeros must be able to tell "nothing diverged" from "nothing
       // could be written" without going to the log (D1).

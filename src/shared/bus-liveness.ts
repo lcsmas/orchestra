@@ -144,6 +144,14 @@ export interface MemberLivenessState {
    *  a fast sibling (review-127 F1). A call still in this list IS the zero-progress
    *  signal — its `posttool` never arrived. */
   inFlightTools?: readonly InFlightToolState[];
+  /** #204 (LEAD ruling D4 ii): this member's RUN is on HOLD (`orchestra run hold`) —
+   *  an explicit operator pause, so it is never escalated. Absent/false = not held
+   *  (unknown ⇒ not held, the safe over-escalate direction). */
+  held?: boolean;
+  /** #204 (D4 i): at least one of THIS member's own members is making progress, so
+   *  a coordinator idle beside a working fleet is not stale. Derived by the sweep
+   *  from the roster via {@link isMakingProgress}; absent/false = no active member. */
+  fleetActive?: boolean;
 }
 
 /** One in-flight tool call the progress bound reasons about. Mirrors the leaf
@@ -184,9 +192,11 @@ export type EscalationAction =
 export type EscalationSkip =
   | 'no-task' // not a dispatched member
   | 'no-coordinator' // nobody to escalate to
+  | 'held' // the member's run is on HOLD — an explicit operator pause (#204)
   | 'done-released' // task reached done+released — finished on purpose (#160)
   | 'running' // a turn is in flight AND making progress — alive (the anti-trap)
   | 'waiting' // parked on an ask / needs-input — silent on purpose
+  | 'fleet-active' // a member of THIS coordinator is making progress (#204)
   | 'fresh' // activity within the threshold — alive
   | 'already-escalated'; // one escalation per silence — dedup holds
 
@@ -216,6 +226,9 @@ export interface EscalationLedgerEntry {
  * Guard order is deliberate and each guard's disproof is a distinct skip reason:
  *   1. no dispatched task  → not a fleet member
  *   2. no coordinator      → nobody to escalate to
+ *   2b. held               → the run is on HOLD (#204): skipped before anything
+ *                            else, hung calls included — a hold is an explicit
+ *                            operator pause, stronger than any inferred signal.
  *   3. done-released       → task reached done+released: FINISHED on purpose,
  *                            idle-and-drained by design (#160, canary-5 F-C5-5).
  *                            Checked here — a POSITIVE task-state marker, never
@@ -228,9 +241,12 @@ export interface EscalationLedgerEntry {
  *                            ceiling with ZERO progress is HUNG (#127) and falls
  *                            through to escalation — this is the progress bound.
  *   5. waiting             → parked on purpose (T120.4)
+ *   5b. fleet-active       → a member of this coordinator is progressing (#204);
+ *                            after the running/hung block so it never masks a
+ *                            coordinator that is itself hung.
  *   6. fresh               → activity within STALE_AFTER_MS: ALIVE
  *   7. already-escalated   → one per silence (acceptance 1)
- * Only past all seven does it escalate (or count, switch-gated).
+ * Only past all of them does it escalate (or count, switch-gated).
  *
  * `done-released`/`running`/`waiting` are checked BEFORE the wall-clock staleness
  * test on purpose: a member that is finished, running or waiting is
@@ -252,6 +268,8 @@ export function decideEscalation(
 ): EscalationAction {
   if (!m.hasTask) return { kind: 'skip', reader: m.reader, why: 'no-task' };
   if (!m.coordinator) return { kind: 'skip', reader: m.reader, why: 'no-coordinator' };
+  // #204: an explicit HOLD on the member's run beats every inferred signal below.
+  if (m.held) return { kind: 'skip', reader: m.reader, why: 'held' };
   // #160: a task that reached done+released is FINISHED — idle-and-drained on
   // purpose. Excluded here on a POSITIVE task-state marker (never mail), so a
   // cleanly-finished member never escalates (arm 1) while a zombie that never
@@ -277,6 +295,9 @@ export function decideEscalation(
   }
   // Parked on an ask / needs-input: silent on purpose, never stale (T120.4).
   if (m.waiting) return { kind: 'skip', reader: m.reader, why: 'waiting' };
+  // #204: a coordinator idle beside a WORKING fleet is not stale. After the
+  // running/hung block on purpose — it must never mask a coordinator hung itself.
+  if (m.fleetActive) return { kind: 'skip', reader: m.reader, why: 'fleet-active' };
   const last = m.lastActivityAt ?? m.appStartedAt;
   const silentForMs = now - last;
   if (silentForMs <= STALE_AFTER_MS) {
@@ -285,6 +306,19 @@ export function decideEscalation(
   // Past the threshold, silent, with a task and a coordinator, not running, not
   // waiting → stale. No hung-tool context (this is between-turns silence).
   return resolveStall(coordinator, silentForMs, previous, switchOn, m.reader, undefined);
+}
+
+/** True when the member is PROGRESSING: a turn is in flight AND (an in-flight call
+ *  is under its ceiling, OR — with no call in flight — its clock is within the
+ *  staleness window). A wedged member (status stuck `running`, #90) therefore never
+ *  counts as an active fleet, mid-call or between calls (review-A4 F1). */
+export function isMakingProgress(
+  m: Pick<MemberLivenessState, 'running' | 'inFlightTools' | 'lastActivityAt'>,
+  now: number,
+): boolean {
+  if (!m.running) return false;
+  if (m.inFlightTools && m.inFlightTools.length > 0) return hungCall(m, now) === null;
+  return m.lastActivityAt !== undefined && now - m.lastActivityAt <= STALE_AFTER_MS;
 }
 
 /** The MOST-OVERDUE hung tool call for a running member — the in-flight call
@@ -307,7 +341,10 @@ export function decideEscalation(
  *  correctly side by side. `>=` on the ceiling (not `>`) makes the boundary tick
  *  the first flag. Returns the call with the largest `elapsed - ceiling` so the
  *  escalation names the worst offender. */
-function hungCall(m: MemberLivenessState, now: number): { tool: string | null; elapsedMs: number } | null {
+function hungCall(
+  m: Pick<MemberLivenessState, 'inFlightTools'>,
+  now: number,
+): { tool: string | null; elapsedMs: number } | null {
   const calls = m.inFlightTools;
   if (!calls || calls.length === 0) return null; // running but no call in flight — alive
   let worst: { tool: string | null; elapsedMs: number; over: number } | null = null;

@@ -25,10 +25,11 @@
 // host path. Nothing is lost that matters: a bus that comes back is swept again.
 
 import { getBus, send, type BusDb } from './bus.ts';
-import { busSwitch } from './bus-runs.ts';
+import { busSwitch, heldRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
 import {
   decideEscalation,
+  isMakingProgress,
   pruneEscalationLedger,
   escalationBody,
   hungCallEscalationBody,
@@ -335,6 +336,21 @@ export function sweepBusLiveness(): void {
     } catch (e) {
       log.warn('bus-liveness: released accessor failed — treating as none', e);
     }
+    // #204 (D4 ii): runs on HOLD, read off the durable `runs.held_at` each sweep so
+    // a hold set while the app was down applies at the very first sweep. Unreadable
+    // = none held (over-escalate, never hide a stall), like the accessors above.
+    let heldRuns: ReadonlySet<string> = new Set<string>();
+    try {
+      heldRuns = heldRunIds(db);
+    } catch (e) {
+      log.warn('bus-liveness: hold read failed — treating as none held', e);
+    }
+    // #204 (D4 i): coordinators with at least one member making PROGRESS (running
+    // and not hung) — an idle OPS beside a working fleet is not stale.
+    const activeCoordinators = new Set<string>();
+    for (const m of members) {
+      if (m.coordinator && isMakingProgress(m, now)) activeCoordinators.add(m.coordinator);
+    }
 
     // First pass: who is stale THIS tick (for the ledger prune / re-arm). Stale
     // = the decision would escalate-or-count. Computed independent of the switch
@@ -359,13 +375,22 @@ export function sweepBusLiveness(): void {
       // released set. Same OR shape as `waiting`, same safe default (false/empty).
       doneAndReleased: (m.doneAndReleased ?? false) || released.has(m.reader),
       inFlightTools: m.inFlightTools,
+      held: heldRuns.has(m.runId),
+      fleetActive: activeCoordinators.has(m.reader),
     });
 
     const stale = new Set<string>();
     for (const m of members) {
       // Decide with no ledger to learn staleness (independent of the switch and
       // of prior marks), then again with the ledger below to get the action.
-      const probe = decideEscalation(buildState(m), undefined, now, false);
+      // held/fleetActive are shields, not activity: a probe that sees them would prune
+      // the ledger and re-fire the SAME silence on resume/idle (review-A4 F2).
+      const probe = decideEscalation(
+        { ...buildState(m), held: false, fleetActive: false },
+        undefined,
+        now,
+        false,
+      );
       if (probe.kind !== 'skip') stale.add(m.reader);
     }
     pruneEscalationLedger(ledger, stale);
