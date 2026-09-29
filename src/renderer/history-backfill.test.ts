@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldRequestHistory, dedupeHistoryAgainstLive } from './history-backfill.ts';
+import { shouldRequestHistory, dedupeHistoryAgainstLive, dropLiveErrorEchoes } from './history-backfill.ts';
 
 // The OLD gate, kept verbatim as a control. Every test below that documents the
 // bug asserts the old gate gets it WRONG and the new one gets it RIGHT — so the
@@ -75,4 +75,17 @@ test('overlapping ids are not duplicated when history re-reads folded lines', ()
   });
   assert.deepEqual(prepend, ['m-001']);
   assert.equal(overlap, 2);
+});
+
+// #227 — a start failure is emitted live AND persisted for the backfill (different ids): one failure must render once.
+test('dropLiveErrorEchoes: a history error row the live fold already holds (same at+text) is dropped; different ones stay', () => {
+  const live = [{ role: 'error', at: 1000, text: "Couldn't start the agent: X" }, { role: 'user', at: 1001, text: 'hi' }];
+  const history = [
+    { id: 'h1', role: 'error', at: 1000, text: "Couldn't start the agent: X" }, // the echo of the live row
+    { id: 'h2', role: 'error', at: 900, text: "Couldn't start the agent: OLDER" }, // an earlier failure the live fold never saw
+    { id: 'h3', role: 'error', at: 1000, text: 'a different failure at the same instant' },
+    { id: 'h4', role: 'user', at: 1001, text: 'hi' }, // non-error rows are never this helper's business
+  ];
+  assert.deepEqual(dropLiveErrorEchoes(history, live).map((m) => m.id), ['h2', 'h3', 'h4']);
+  assert.deepEqual(dropLiveErrorEchoes(history, []).map((m) => m.id), ['h1', 'h2', 'h3', 'h4'], 'no live rows → nothing to echo');
 });

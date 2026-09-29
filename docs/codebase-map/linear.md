@@ -112,6 +112,8 @@ The ticket then carries a `workspaceId`, leaves the queue
 (`shared/linear-tickets-queue.ts` `queuedTickets`), and its work shows as an
 ordinary workspace row — an issue is never displayed twice.
 
+**A failed START still graduates (#227 F4):** `spawnWorkspaceForTicket` graduates the ticket to the kept child whenever `dispatchSpawnRequest` created one (`res.id`), even with `ok:false`, and returns `{ok:false, error, workspaceId}`; a retry hits the "already has a workspace — Restart it" guard instead of spawning a duplicate. `dispatchLinearAddRequest` reports the graduated ticket + workspace WITH the error.
+
 **Nesting on spawn** — `spawnWorkspaceForTicket` (`main/linear-tickets.ts:166`)
 takes an optional `from` (the calling workspace id) and passes
 `detached: !from` to `dispatchSpawnRequest`, which nests via

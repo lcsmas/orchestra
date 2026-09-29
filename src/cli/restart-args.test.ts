@@ -172,3 +172,37 @@ test('unknown id: server ok:false surfaces the error, non-zero exit, NO stack tr
   // Diagnosable, not a stack trace (T111.1): no "at " frames, no "Error:" dump.
   assert.doesNotMatch(r.stderr, /\n\s+at\s/);
 });
+
+// #227 — Restart of a kept child delivers its retained task; the CLI says so instead of "conversation preserved".
+test('restart: an opening-task retry reports the task was delivered (not "conversation preserved")', needsBuild, () => {
+  const r = driveCli(['restart', 'ws-kept'], `return { ok: true, mode: 'structured', fresh: false, openingTask: true };`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, 'Started ws-kept — its opening task was delivered\n');
+  assert.doesNotMatch(r.stdout, /conversation preserved/);
+});
+
+// #227 F8 — a Restart whose start was NOT confirmed within the wait must say so, never "delivered".
+test('restart: a not-confirmed opening-task start prints the note instead of "its opening task was delivered"', needsBuild, () => {
+  const note = 'first turn not confirmed within 20 s — started, not confirmed';
+  const r = driveCli(['restart', 'ws-kept'], `return { ok: true, mode: 'structured', fresh: false, openingTask: true, note: ${JSON.stringify(note)} };`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, `Started ws-kept — ${note}\n`);
+  assert.doesNotMatch(r.stdout, /delivered/);
+});
+
+// #227 F4 — `linear add --spawn` for a child that was CREATED and KEPT but whose agent failed to start: error on stderr, non-zero exit, no "Spawned" line.
+const LINEAR_KEPT_FAILED = `return { ok: true, ticket: { identifier: 'ENG-9', title: 'probe ticket' }, workspaceId: 'ws-kept-1', branch: 'kept-branch', error: 'the agent failed to start: boom. Workspace kept-branch (ws-kept-1) was kept, stopped' };`;
+test('linear add --spawn: a kept child whose start failed exits non-zero with the error on stderr and NO success line', needsBuild, () => {
+  const r = driveCli(['linear', 'add', 'ENG-9', '--spawn'], LINEAR_KEPT_FAILED);
+  assert.notEqual(r.code, 0, 'a failed start must not exit 0');
+  assert.match(r.stderr, /the agent failed to start: boom/);
+  assert.doesNotMatch(r.stdout, /Spawned/, 'no success line for a failed start');
+  assert.match(r.stdout, /Pinned ENG-9/, 'the pin itself did happen');
+});
+
+test('linear add --spawn: a clean spawn still prints the Spawned line and exits 0 (control)', needsBuild, () => {
+  const r = driveCli(['linear', 'add', 'ENG-9', '--spawn'], `return { ok: true, ticket: { identifier: 'ENG-9', title: 'probe ticket' }, workspaceId: 'ws-1', branch: 'b1' };`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Spawned ws-1 on branch b1/);
+  assert.equal(r.stderr, '');
+});

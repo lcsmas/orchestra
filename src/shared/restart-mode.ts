@@ -156,6 +156,10 @@ export interface RestartResult {
   mode?: RestartMode;
   /** True when `--fresh` was applied (conversation cleared). */
   fresh?: boolean;
+  /** #227: the restart started a kept child by delivering its retained opening task (nothing had ever run). */
+  openingTask?: boolean;
+  /** #227 F8: the start succeeded but its first turn was not confirmed within the wait ("started, not confirmed") — not "delivered". */
+  note?: string;
   error?: string;
 }
 

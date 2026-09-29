@@ -78,6 +78,16 @@ export function shouldRequestHistory(s: HistoryBackfillState): boolean {
  * the store (a session that folded a few live messages must not show them
  * twice once the same lines are read back off disk).
  */
+/** Start-failure rows (#227) are emitted live AND persisted for the backfill, under different ids: drop a history `error` row the
+ *  live fold already holds (same `at` + text) so one failure never renders twice in the run that produced it. */
+export function dropLiveErrorEchoes<T extends { role: string; at?: number; text?: string }>(
+  history: readonly T[],
+  live: readonly { role: string; at?: number; text?: string }[],
+): T[] {
+  const seen = new Set(live.filter((m) => m.role === 'error').map((m) => `${m.at}|${m.text}`));
+  return history.filter((m) => !(m.role === 'error' && seen.has(`${m.at}|${m.text}`)));
+}
+
 export function dedupeHistoryAgainstLive(opts: {
   /** Stable ids of messages already folded into the store, in order. */
   liveIds: readonly string[];

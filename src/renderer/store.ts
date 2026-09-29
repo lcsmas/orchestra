@@ -34,6 +34,7 @@ import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
 import { readDefaultAgentView } from './default-agent-view';
 import { isWorkspaceRemoved, noteWorkspacesRemoved } from './removed-workspaces';
+import { dropLiveErrorEchoes } from './history-backfill';
 
 // How many workspace probes (each an IPC → git/gh subprocess in main) a poll
 // fans out at once. The polls used to `Promise.all` over every workspace, so a
@@ -336,7 +337,7 @@ export const useStore = create<State>((set, get) => ({
       // Dedupe by message id: a turn that ran live AND was flushed to disk
       // appears in both lists and must not render twice.
       const liveIds = new Set(prev.messages.map((m) => m.id));
-      const older = history.messages.filter((m) => !liveIds.has(m.id));
+      const older = dropLiveErrorEchoes(history.messages.filter((m) => !liveIds.has(m.id)), prev.messages);
       useStore.setState({
         agentSessions: {
           ...s.agentSessions,

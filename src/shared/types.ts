@@ -215,6 +215,12 @@ export interface Workspace {
    *  never leak. Capped (oldest dropped) so a workspace restarted hundreds of
    *  times can't grow the record unbounded. */
   sdkRestarts?: RestartRecord[];
+  /** #227 — the retained `lastTask` reached a live CLI (its first stream message was seen). Unset = still owed
+   *  (`owesOpeningTask`): a failed start leaves it unset so ANY later first start delivers the brief. */
+  openingTaskDelivered?: boolean;
+  /** #227 — start failures (the Agent view's `Couldn't start the agent` / exit-before-init `error` rows), persisted so a
+   *  reload or app restart re-renders them (`sdkHistory`). Capped, newest last. */
+  sdkStartErrors?: Array<{ at: number; message: string }>;
   repoPath: string;
   /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
    * 'orchestrator'`). Purely a sidebar-grouping preference: it files the

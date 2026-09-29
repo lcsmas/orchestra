@@ -92,27 +92,28 @@ test('seam (a): transcriptExistsFor probes the .jsonl on disk (the sdkWake discr
   );
 });
 
-// ─── Seam (b): the terminal --continue gate — workspaces.ts (BOTH sites) ─────
+// ─── Seam (b): the terminal --continue gate — workspaces.ts (startAgentPty) ──
 
-test('seam (b): both PTY launch sites gate --continue on shouldContinuePty + on-disk probe', () => {
-  // startAgentPty (the restart/open path) and the raw-PTY wake fallback both
-  // compute `resuming` via the guard, never on `ws.hasInput === true` alone.
+test('seam (b): the PTY launch site gates --continue on shouldContinuePty + on-disk probe', () => {
+  // startAgentPty (the restart/open path) computes `resuming` via the guard, never on
+  // `ws.hasInput === true` alone. (#227 removed the SECOND site, the raw-PTY wake fallback: a wake
+  // that cannot start an SDK session now returns false instead of launching a PTY.)
   const guardCalls = workspacesSrc.match(/shouldContinuePty\(/g) ?? [];
   assert.ok(
-    guardCalls.length >= 2,
-    `both PTY seams must call shouldContinuePty, found ${guardCalls.length}`,
+    guardCalls.length >= 1,
+    `the PTY seam must call shouldContinuePty, found ${guardCalls.length}`,
   );
   const probeCalls = workspacesSrc.match(/newestTranscriptExists\(ws\)/g) ?? [];
   assert.ok(
-    probeCalls.length >= 2,
-    `both PTY seams must feed the on-disk newestTranscriptExists(ws) probe, found ${probeCalls.length}`,
+    probeCalls.length >= 1,
+    `the PTY seam must feed the on-disk newestTranscriptExists(ws) probe, found ${probeCalls.length}`,
   );
   // must-FAIL arm: the old `const resuming = ws.hasInput === true` (with or
-  // without the fresh clause) must be GONE from both launch sites — it is the
+  // without the fresh clause) must be GONE from the launch site — it is the
   // phantom `--continue` dead-end.
   assert.ok(
     !/const resuming = ws\.hasInput === true(?:\s*&&|;)/.test(workspacesSrc),
-    'the raw `resuming = ws.hasInput === true` gate must be replaced by shouldContinuePty at both sites',
+    'the raw `resuming = ws.hasInput === true` gate must be replaced by shouldContinuePty',
   );
 });
 

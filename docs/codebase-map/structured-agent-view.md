@@ -316,9 +316,28 @@ woken by a peer message / queued prompt resumes structured (`ws.sdkSessionId`; a
 terminal-only workspace first ADOPTS its newest on-disk transcript as the resume id —
 the same session `--continue` picks — so context survives the switch). Account
 migration calls `sdkStopIfLive` so the session doesn't keep running under the old
-account's `CLAUDE_CONFIG_DIR`. The raw-PTY spawn/wake machinery (headless TUI typing,
-readiness sentinel, submit retries) survives only as a fallback when the seam is
-unregistered or the SDK start fails (`sdkStartAndDeliver` returns false and logs).
+account's `CLAUDE_CONFIG_DIR`. **There is no raw-PTY spawn/wake fallback (#227):** a start that
+fails is reported — `sdkStartAndDeliverResult` returns `{ok:false,error}` (`sdkStartAndDeliver` is its boolean
+form), spawn answers not-ok with the kept child's id, a wake returns false so the callers' own fallbacks apply
+(inbox / re-queue / error), and the reason is an `error` event in the Agent view (`sdkSend`'s catch). The
+headless TUI typing/readiness/submit-retry helpers are unreferenced and go with #233. Start failures are
+also PERSISTED (`ws.sdkStartErrors`, `persistStartError`, capped 5): `sdkHistory` returns them as `error`
+events — interleaved by `at` into a transcript backfill, or on their own when the workspace has no
+transcript — and the renderer's `applyAgentHistory` drops a history error row the live fold already holds
+(`dropLiveErrorEchoes`, same `at`+text), so one failure renders once and survives reload / app restart.
+`sdkSend` also carries the retained-opening-task chokepoint (`claimOwedOpeningTask`, see workspaces.md) and
+`consume` classifies each message while a claimed brief's first turn is undecided (`shared/first-turn.ts`):
+first non-error output → `confirmOpeningTask` (delivered marker + `sdkAwaitFirstTurn` ok); assistant API error /
+`result is_error` → `failFirstTurn` (brief unwound, init-persisted session id cleared, ONE error row persisted,
+waiter told `failed`/`turn-error`); death before either → the same unwind with `cause:'exit'` (the exit's own
+error event is suppressed after an errored turn — one failure, one row; the persisted row is the normalizer's own `error`
+event, same `at`+text, so live and reload dedupe). Init is proof of life, not delivery; only the terminal `result is_error` fails the
+turn (the synthetic API-error assistant message before it is neither output nor the end). The claim is gated: `session.briefGate`
+makes every other send wait until the brief is queued (brief FIRST) and a same-text send while it is in flight returns the
+claimant's turn (`session.briefUuid`) instead of sending it again — for spawn / Restart's own send only (`dedupeOpeningBrief`), never a user's
+identical message. An errored first turn with no waiter STOPS the session (`failFirstTurn` → `sdkStop`); an intentional end keeps the pending
+copy (`unwindOpeningTask({keepPending})`); the recovery re-send of that copy is deduped against a racing claim (`recoverPendingPromptsInner`). `owedBrief` is dropped when the CLI speaks before any claim
+(keeper reattach); `clearStaleStartErrors` drops start errors older than the session at its first non-error output.
 Post-wake insurance checks in the callers gate on `sdkSessionLive` too, since
 `isRunning` is PTY-only and a structured wake would otherwise read as "died" and
 double-deliver (inbox park / prompt re-queue).

@@ -1171,9 +1171,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       // button is enabled at all.
       const repoPath = ticket.repoPath ?? (repos.length === 1 ? repos[0].path : undefined);
       if (!repoPath) return;
-      void spawnFromTicket(ticket.identifier, repoPath).catch(() => {
-        /* main owns the authoritative state and re-broadcasts; on failure the
-           row simply stays in the queue. */
+      // Main owns the authoritative state and re-broadcasts. A failed START (#227) leaves a kept, stopped child (the ticket graduates to
+      // it): say WHY instead of swallowing the rejection, or the click reads as a silent no-op.
+      void spawnFromTicket(ticket.identifier, repoPath).catch((e) => {
+        void dialog.error(`Could not start ${ticket.identifier}`, (e as Error).message);
       });
     },
     [repos, spawnFromTicket],

@@ -143,7 +143,15 @@ export async function dispatchLinearAddRequest(input: {
     };
   }
   const spawned = await spawnWorkspaceForTicket(identifier, repoPath, input.model, input.from);
-  if (!spawned.ok) return { ok: true, ticket, error: spawned.error };
+  // A failed START (#227) still graduated the ticket to its kept child: report that workspace WITH the error.
+  if (!spawned.ok) {
+    return {
+      ok: true,
+      ticket: spawned.ticket ?? ticket,
+      ...(spawned.workspaceId ? { workspaceId: spawned.workspaceId, branch: spawned.branch } : {}),
+      error: spawned.error,
+    };
+  }
   return { ok: true, ticket: spawned.ticket ?? ticket, workspaceId: spawned.workspaceId, branch: spawned.branch };
 }
 
@@ -179,7 +187,7 @@ export async function spawnWorkspaceForTicket(
   if (ticket.workspaceId && store.getWorkspace(ticket.workspaceId)) {
     return {
       ok: false,
-      error: `${identifier} already has a workspace (${ticket.workspaceId})`,
+      error: `${identifier} already has a workspace (${ticket.workspaceId}) — if its agent never started, Restart it`,
     };
   }
   if (!store.repos.some((r) => r.path === repoPath)) {
@@ -206,14 +214,16 @@ export async function spawnWorkspaceForTicket(
       // An agent's `orchestra ticket --spawn` carries `from`; a human's click does not.
       defaultKind: from ? 'spawned' : 'workspace',
     });
-    if (!res.ok || !res.id) {
+    if (!res.id) {
       return { ok: false, error: res.error ?? 'failed to spawn workspace for ticket' };
     }
     // Graduate: the ticket now has a workspace, so it leaves the Tickets
-    // section and that workspace's branch badge takes over.
+    // section and that workspace's branch badge takes over. Also when its agent FAILED to start (#227): the child
+    // is kept (task owed, Restart retries), so a retry must find it rather than spawn a duplicate.
     const updated: PinnedTicket = { ...ticket, workspaceId: res.id, repoPath };
     await store.upsertTicket(updated);
     broadcastTickets();
+    if (!res.ok) return { ok: false, error: res.error, ticket: updated, workspaceId: res.id, branch: res.branch };
     return { ok: true, ticket: updated, workspaceId: res.id, branch: res.branch };
   } catch (e) {
     return toError(e, 'failed to spawn workspace for ticket');

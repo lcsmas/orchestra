@@ -153,7 +153,8 @@ never runs again.
   the Sidebar renders a red `.ci-badge` ONLY on `fail`, whose click →
   `git:fixChecks` hands the failing run (`gh run view <id> --log-failed`) to
   the workspace's agent via `wakeAgentWithPrompt`, falling back to typing into
-  a live PTY.
+  a live PTY — and, when the SDK session cannot start (#227, no
+  PTY exists to type into), throwing `AGENT_WAKE_FAILED` instead of answering "requested".
 - **`getReleaseState`** `:722` / **`getReleaseVersionsContaining`** `:797` — pill
   policy: the earliest published release containing the branch's *authored*
   commits (`authoredCommits` `:870`, reflog-derived) **plus** each release the

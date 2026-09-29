@@ -24,12 +24,14 @@ Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED a
   `sdkWake`/`sdkStartAndDeliver` (session watchdog, spawn/wake seam), `sdkStatus`/`sdkRunBash`/`sdkMcp*`/`sdkSetRemoteControl`.
   `scripts/verify-answerable-wiring.mjs` (`pnpm run test:wiring`) drives the REAL funnel and asserts the refusal.
 - **Guards beside the funnel** (each closes a route the funnel cannot see; each has a named must-FAIL clause in the rig arm):
-  `restart-workspace.ts` `dispatchRestartRequest` refuses BEFORE the classifier (`--fresh` = `sdkClear` never reaches the funnel;
-  a legacy `hasInput`/no-session ws classifies to the PTY route; `recordRestart` would write `sdkRestarts` for a refused restart);
-  `workspaces.ts` `wakeAgentWithPrompt` returns `false` (its PTY fallback passes no `host` and would start a LOCAL `claude`);
+  `restart-workspace.ts` `dispatchRestartRequest` refuses BEFORE the classifier AND before the owed-brief route (#227: a never-started
+  sandbox ws that still owes its `lastTask` would otherwise be started by `startWorkspaceAgentHeadless`; `--fresh` = `sdkClear` never
+  reaches the funnel; `recordRestart` would write `sdkRestarts` for a refused restart);
+  `workspaces.ts` `wakeAgentWithPrompt` returns `false` (`sdkStartAndDeliver` swallows the funnel's refusal; the PTY fallback that would
+  have started a LOCAL `claude` is gone, #227);
   `api-handlers.ts` `fixChecks` / `sendReviewToAgent` THROW the message (a `false` wake there answered `requested` into nothing);
   `index.ts` bus-wake roster marks the ws `wakeable:false` (else the sweep re-fires at a start that always refuses);
-  `startWorkspaceAgentHeadless` throws (unreachable today — see next bullet);
+  `startWorkspaceAgentOnce` answers `{ok:false, error: <pause>}` (unreachable today — see next bullet);
   `api-handlers.ts` `restartAgent` (toolbar Restart) THROWS the pause on a paused ws (App.tsx shows it in `dialog.error`, both `BootStall.tsx`
   callers `.catch`) — the restart guard's `{ok:false}` alone resolved silently into a neutral "Resume your session" row;
   `agent-sdk.ts` `sdkClear` (UI `/clear` + `restart --fresh`) throws so a paused ws keeps its `sdkSessionId` (the UI's `agentSdkClear` caller only

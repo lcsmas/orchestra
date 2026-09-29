@@ -73,6 +73,20 @@ const EXPECT = {
   },
   // #226: does a refused sandbox agent start NAME the pause + #220? (baseline: the cryptic spawn error / silent PTY fallback)
   sandboxPaused: { baseline: false, after: true },
+  // #227 — with the SDK start FORCED to fail: does the "run claude in a PTY instead" fallback still MASK it?
+  spawnOkWhenSdkFails: { baseline: true, after: false },   // `orchestra spawn` verdict (rc 0 = ok)
+  spawnMakesAgentPty: { baseline: true, after: false },    // the fallback starts an agent-kind PTY for the child
+  messageDelivery: { baseline: 'started', after: 'inbox' },// `orchestra message` to the stopped, unstartable child
+  messageInInbox: { baseline: false, after: true },
+  queueFlushOk: { baseline: true, after: false },          // prompt-queue flush verdict
+  queueKeepsPrompt: { baseline: false, after: true },      // …and whether the prompt is still queued (re-queued, not dropped)
+  reviewRequested: { baseline: true, after: false },       // sendReviewToAgent answers "requested"
+  // #227 D6 — a CLI that dies BEFORE its first message (dead --model): does `spawn` still answer ok? / does a silent CLI earn the note?
+  cliDeathSpawnOk: { baseline: true, after: false },
+  slowInitNote: { baseline: false, after: true },
+  // #227 D7 — the CLI INITS, then its first turn errors (the measured real shape): does `spawn` still answer ok on init alone? / is the brief marked delivered at init?
+  firstTurnErrorSpawnOk: { baseline: true, after: false },
+  silentBriefMarkedDelivered: { baseline: true, after: false },   // a silent CLI past the bound: init-based delivery (D6) vs first-output delivery (D7)
 };
 // #228 legacy seed: a real-shaped TERMINAL transcript (entrypoint 'cli') the wake path must adopt. A valid UUID: the SDK's session index keys on it.
 const LEGACY_SESSION_ID = '228c0de0-7e57-4a11-8b3a-00000000b301';
@@ -438,16 +452,17 @@ function seedWorld(home, opt = {}) {
   const sbxLiveDir = path.join(home, 'wt', 'avr-sbx-live');
   if (opt.sandbox) fs.mkdirSync(sbxLiveDir, { recursive: true });
   // `legacy` = a terminal-only sandbox ws (hasInput, NO sdkSessionId): the restart classifier routes it to the PTY (host-aware) launcher.
-  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir), legacy: sbxRec('legacy', path.join(home, 'wt', 'avr-sbx-legacy'), { hasInput: true, sdkSessionId: undefined }) } : null;
+  // `owed` (#227) = an imported, NEVER-started sandbox ws that still owes its brief (lastTask, no hasInput, no session id): Restart's owed-task route must not reach it.
+  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir), legacy: sbxRec('legacy', path.join(home, 'wt', 'avr-sbx-legacy'), { hasInput: true, sdkSessionId: undefined }), owed: sbxRec('owed', path.join(home, 'wt', 'avr-sbx-owed'), { sdkSessionId: undefined, lastTask: 'AVR-SBX-OWED-BRIEF' }) } : null;
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, sbx.legacy, ws] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, sbx.legacy, sbx.owed, ws] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
   // Stub claude: the legacy agent PTY execs `claude` from PATH; a stub keeps the baseline
   // free of API calls. Stays a shell (not exec) so its cmdline names the stub for identity.
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stub = path.join(stubDir, 'claude');
   // Every start appends `<pid> <argv…>` to stub-argv.log (#228: the OBSERVABLE of "which session did this CLI resume"), from ANY launcher (PTY or SDK keeper).
   const stubLog = path.join(home, 'stub-argv.log');
-  fs.writeFileSync(stub, `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\necho AVR-STUB-CLAUDE "$@"\nsleep 3600\n`, { mode: 0o755 });
+  fs.writeFileSync(stub, opt.stubScript ?? `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\necho AVR-STUB-CLAUDE "$@"\nsleep 3600\n`, { mode: 0o755 });
   if (opt.linkedPr) {
     const { owner, repo, number, title } = opt.linkedPr;
     const q = (f) => `'${path.join(home, f)}'`;
@@ -465,9 +480,10 @@ async function bootApp(arm, opt = {}) {
   if (!APP_DIR) throw new Error('no <app-dir> given');
   const missing = ['RIG_WAYLAND', 'SWAYSOCK', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR'].filter((k) => !process.env[k]);
   if (missing.length) throw new Error(`not launched via scripts/e2e-agent-view-removal.sh (missing ${missing.join(', ')})`);
-  const home = path.join(RIG.base, `${arm}-${Date.now().toString(36)}`);
+  // `opt.resume` = boot the SAME home again (a second app run over the first run's store): nothing is re-seeded.
+  const home = opt.resume?.home ?? path.join(RIG.base, `${arm}-${Date.now().toString(36)}`);
   fs.mkdirSync(home, { recursive: true });
-  const world = seedWorld(home, opt);
+  const world = opt.resume?.world ?? seedWorld(home, opt);
   const port = await freePort();
   const electron = opt.electron ?? process.env.E2E_ELECTRON
     ?? [path.join(APP_DIR, 'node_modules/electron/dist/electron'), path.join(path.dirname(new URL(import.meta.url).pathname), '../node_modules/electron/dist/electron')].find((p) => fs.existsSync(p));
@@ -490,9 +506,12 @@ async function bootApp(arm, opt = {}) {
   if (!hand.ok) throw new Error(`REFUSED before launch [${hand.clause}]: ${hand.detail}`);
 
   const liveBefore = Object.fromEntries(liveDirs().map((d) => [d, liveSnapshot(d)]));
-  const log = fs.openSync(path.join(home, 'app.log'), 'w');
-  const child = spawn(electron, [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', log, log] });
-  const app = { arm, home, port, child, pid: child.pid, env, world, electron, liveBefore, cdp: null, exited: false };
+  const log = fs.openSync(path.join(home, 'app.log'), opt.resume ? 'a' : 'w');
+  // #227: an arm may boot a byte-identical OVERLAY copy of the build whose node_modules lacks the Agent SDK (makeSdkLessApp).
+  const overlay = opt.resume?.overlay ?? (opt.sdkLess ? makeSdkLessApp(APP_DIR, path.join(home, 'app')) : null);
+  const launchDir = overlay ? overlay.dest : APP_DIR;
+  const child = spawn(electron, [launchDir, '--ozone-platform=wayland'], { cwd: launchDir, env, stdio: ['ignore', log, log] });
+  const app = { arm, home, port, child, pid: child.pid, env, world, electron, liveBefore, cdp: null, exited: false, appDir: launchDir, overlay };
   child.on('exit', () => { app.exited = true; });
   try {
     const targets = await waitFor(`CDP target on :${port}`, async () => {
@@ -601,15 +620,15 @@ function staticIdentity(appDir = APP_DIR) {
 /** Printed FIRST, before any clause of the arm: what is actually running. */
 async function identityAndIsolation(ctx, app) {
   const runningVersion = await app.cdp.eval('window.orchestra.getAppVersion()');
-  const sid = staticIdentity(); const pkgVersion = sid.pkgVersion;
+  const sid = staticIdentity(app.appDir); const pkgVersion = sid.pkgVersion;
   const scripts = await app.cdp.eval(`[...document.scripts].map(s => s.src).filter(Boolean)`);
   const paths = scripts.map((u) => decodeURIComponent(new URL(u).pathname));
   const bundle = paths.find((p) => p.includes('/assets/index-') && p.endsWith('.js')) ?? paths[0] ?? '';
-  console.log(`IDENTITY  arm=${ctx.arm} mode=${MODE} app-dir=${APP_DIR} git=${sid.gitInfo} version(running)=${runningVersion} version(package.json)=${pkgVersion}`);
+  console.log(`IDENTITY  arm=${ctx.arm} mode=${MODE} app-dir=${app.appDir}${app.appDir !== APP_DIR ? ` (overlay copy of ${APP_DIR})` : ''} git=${sid.gitInfo} version(running)=${runningVersion} version(package.json)=${pkgVersion}`);
   console.log(`          target-url=${app.target.url}`);
   console.log(`          loaded-renderer-bundle=${path.basename(bundle)} md5=${md5f(bundle)}  main=${sid.chunk ?? '?'} md5=${sid.mainMd5}  electron=${app.electron}`);
   ctx.clause('identity/version', runningVersion === pkgVersion, `running=${runningVersion} package.json=${pkgVersion}`);
-  ctx.clause('identity/target-is-this-build', app.target.url.includes(APP_DIR) && !app.target.url.includes('app.asar'), app.target.url);
+  ctx.clause('identity/target-is-this-build', app.target.url.includes(app.appDir) && !app.target.url.includes('app.asar'), app.target.url);
 
   // isolation: read back from the RUNNING child, not from the array we built
   const live = procEnv(app.pid);
@@ -736,7 +755,7 @@ function pruneStaleRigDirs(base, own, { now = Date.now(), maxAgeMs = 24 * 3600e3
 function retain(ctx, app, { base = RIG.base, results = RESULTS } = {}) {
   if (!app?.home || !app.home.startsWith(base + path.sep)) return;
   if (!results.filter((r) => r.arm === ctx.arm).every((r) => r.ok)) { console.log(`RETAIN    ${app.home} kept whole for forensics (arm ${ctx.arm} has a FAIL)`); return; }
-  for (const d of ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin']) fs.rmSync(path.join(app.home, d), { recursive: true, force: true });
+  for (const d of ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin', 'app']) fs.rmSync(path.join(app.home, d), { recursive: true, force: true });
   console.log(`RETAIN    ${app.home}: arm ${ctx.arm} PASSED — state deleted, kept app.log + screenshots`);
 }
 
@@ -832,6 +851,89 @@ const ipcSettle = (app, expr, ms = 30000) => Promise.race([
 /** One-line message that must name the pause AND the follow-up ticket (all three parts, literal). */
 const namesPause = (t) => /paused/i.test(t ?? '') && (t ?? '').includes('#220') && (t ?? '').includes('Reconcile sandbox agents with the Agent view');
 const oneLine = (t, n = 200) => String(t ?? '').replace(/\s+/g, ' ').slice(0, n);
+// ── #227: forcing an SDK start failure, driving the CLI, reading the stub's stdin ─────────────────────────
+/** #227 FORCED SDK START FAILURE: a byte-identical COPY of the build whose node_modules lacks `@anthropic-ai/claude-agent-sdk` (a lazy
+ *  external → `ensureSession` throws on the first agent start). <app-dir> is never touched. Why not a failing stub `claude`, and the
+ *  re-boot after `restoreSdk`: activity-pty-terminal.md § Spawn-failure arms. */
+function makeSdkLessApp(appDir, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  fs.copyFileSync(path.join(appDir, 'package.json'), path.join(dest, 'package.json'));
+  for (const d of ['dist', 'dist-electron']) fs.cpSync(path.join(appDir, d), path.join(dest, d), { recursive: true });
+  const realNm = path.join(appDir, 'node_modules'), nm = path.join(dest, 'node_modules');
+  fs.mkdirSync(nm);
+  for (const e of fs.readdirSync(realNm)) {
+    if (e === '.bin' || e === '.pnpm' || e.startsWith('.')) continue;
+    if (e !== '@anthropic-ai') { fs.symlinkSync(fs.realpathSync(path.join(realNm, e)), path.join(nm, e)); continue; }
+    fs.mkdirSync(path.join(nm, e));
+    for (const sub of fs.readdirSync(path.join(realNm, e))) if (sub !== 'claude-agent-sdk') fs.symlinkSync(fs.realpathSync(path.join(realNm, e, sub)), path.join(nm, e, sub));
+  }
+  const sdkReal = fs.realpathSync(path.join(realNm, '@anthropic-ai', 'claude-agent-sdk'));
+  return { dest, sdkReal, sdkLink: path.join(nm, '@anthropic-ai', 'claude-agent-sdk') };
+}
+const restoreSdk = (overlay) => fs.symlinkSync(overlay.sdkReal, overlay.sdkLink);
+/** Does `@anthropic-ai/claude-agent-sdk` resolve from a bundle living in `fromDir`? (asked of Node itself, not the filesystem) */
+function sdkResolvesFrom(fromDir) {
+  try {
+    execFileSync(process.execPath, ['-e', `require.resolve('@anthropic-ai/claude-agent-sdk', { paths: [${JSON.stringify(fromDir)}] })`], { stdio: 'ignore', env: { PATH: '/usr/bin:/bin' } });
+    return true;
+  } catch { return false; }
+}
+/** Stub `claude`: logs argv + all stdin to <boot home>/stub-stdin.log (what the CLI RECEIVED; the reader stays in the FOREGROUND — a
+ *  background job of a non-interactive sh reads /dev/null). Like the real CLI (MEASURED, claude 2.1.284) it prints its stream-json
+ *  `system/init` line only AFTER the first user message, then a healthy turn (assistant + result) — nothing at all while
+ *  `<home>/slow-init` exists — and exits 1 at launch for a `--model avr-bad-model` (a dead model). While `<home>/real-shape.jsonl` exists it
+ *  replays the MEASURED real failure (D7): init, then on the first user turn the file's assistant-error + result-is_error lines, exit 1. */
+const LOGGING_STUB = [
+  '#!/bin/sh', 'D="$(dirname "$0")/.."', 'LOG="$D/stub-stdin.log"', 'echo AVR-STUB-CLAUDE "$@" >> "$LOG"',
+  `case "$*" in *${'avr-bad-model'}*) echo "error: unknown model 'avr-bad-model'" >&2; exit 1;; esac`,
+  'SLOW=0; [ -f "$D/slow-init" ] && SLOW=1', 'BAD=0; [ -f "$D/real-shape.jsonl" ] && BAD=1', 'LIVE=0; [ -f "$D/real-shape-live" ] && LIVE=1',
+  // an exit marker (EXIT trap; TERM/HUP/INT → exit 0 → the same trap) so an arm can observe that the CLI PROCESS ended; a SILENT CLI (slow-init) emits nothing at all: no init, and no result either (a result is a first message too)
+  'SP=', `trap 'kill $SP 2>/dev/null; echo AVR-STUB-EXIT >> "$LOG"' EXIT`, `trap 'exit 0' TERM HUP INT`,
+  'INITED=0',
+  // like a real CLI: init only after the first user message, then finish every turn it is handed (assistant + `result`), or a queued second message parks behind the first forever
+  'while IFS= read -r line; do', '  printf \'%s\\n\' "$line" >> "$LOG"',
+  `  case "$line" in *'"type":"user"'*)`,
+  `    [ "$SLOW" = 1 ] || [ "$INITED" = 1 ] || { echo '{"type":"system","subtype":"init","session_id":"avr-stub-sess","tools":[],"slash_commands":[]}'; INITED=1; }`,
+  `    if [ "$BAD" = 1 ]; then sed -n 2,3p "$D/real-shape.jsonl"; [ "$LIVE" = 1 ] && continue; exit 1; fi`,
+  `    [ "$SLOW" = 1 ] || { echo '{"type":"assistant","session_id":"avr-stub-sess","message":{"role":"assistant","model":"claude-stub","content":[{"type":"text","text":"working on it"}]}}'; echo '{"type":"result","subtype":"success","session_id":"avr-stub-sess","is_error":false,"num_turns":1,"duration_ms":1,"total_cost_usd":0,"result":"ok"}'; };;`,
+  '  esac',
+  // after stdin EOF: idle, but interruptibly (a foreground `sleep` would defer the TERM trap for an hour)
+  'done', 'sleep 3600 &', 'SP=$!', 'wait $SP', '',
+].join('\n');
+/** D7 instrument: install the REAL measured failure (scripts/fixtures/real-cli-badmodel-2.1.284.jsonl, session id rewritten to the stub's) where the
+ *  stub replays it; returns what the replay will say so the arm can assert the fixture really is the shape under test. */
+const REAL_SHAPE_FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'real-cli-badmodel-2.1.284.jsonl');
+function installRealShape(app) {
+  const lines = fs.readFileSync(REAL_SHAPE_FIXTURE, 'utf8').split('\n').filter(Boolean);
+  const sid = JSON.parse(lines[0]).session_id;
+  fs.writeFileSync(path.join(app.home, 'real-shape.jsonl'), `${lines.join('\n').split(sid).join('avr-stub-sess')}\n`);
+  const [init, asst, res] = lines.map((l) => JSON.parse(l));
+  return { lines: lines.length, init: init.type === 'system' && init.subtype === 'init', assistantError: asst.type === 'assistant' && asst.is_api_error_message === true && asst.message?.model === '<synthetic>', resultError: res.type === 'result' && res.is_error === true, text: asst.message?.content?.[0]?.text ?? '' };
+}
+const removeRealShape = (app) => { fs.rmSync(path.join(app.home, 'real-shape.jsonl'), { force: true }); fs.rmSync(path.join(app.home, 'real-shape-live'), { force: true }); };
+/** Text after the LAST stub launch header: what the CLI process started most recently was handed. */
+const lastLaunchLog = (app) => stubLogText(app).split('AVR-STUB-CLAUDE').pop();
+const stubLogText = (app) => { try { return fs.readFileSync(path.join(app.home, 'stub-stdin.log'), 'utf8'); } catch { return ''; } };
+const countIn = (text, needle) => (needle ? text.split(needle).length - 1 : 0);
+/** Visible text in the page (DOM oracle, blind to paint — pair with a screenshot). */
+const visibleText = (app, needle) => app.cdp.eval(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n;
+  while ((n = w.nextNode())) if (n.textContent.includes(${JSON.stringify(needle)})) { const e = n.parentElement, r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0 && e.checkVisibility()) return true; } return false; })()`);
+const SPAWN_TASK = 'AVR-TASK-6b1d90 opening brief';
+const MSG_TEXT = 'AVR-MSG-3e77a4 peer message';
+const QUEUED_TEXT = 'AVR-QUEUED-c25f18 queued prompt';
+const REVIEW_TEXT = 'AVR-REVIEW-58aa21 review';
+const START_ERR = "Couldn't start the agent";
+
+/** Spawn a child through the REAL socket route and return what the CLI said + the workspace it created (if any). */
+async function spawnChild(ctx, task = SPAWN_TASK, extra = []) {
+  const { app } = ctx;
+  const known = new Set((await listWs(app)).map((w) => w.id));
+  const t0 = Date.now();
+  const r = await runCli(app, ['spawn', '--task', task, '--repo', app.world.repoDir, '--detached', ...extra]);
+  r.ms = Date.now() - t0;
+  const fresh = (await listWs(app)).filter((w) => !known.has(w.id));
+  return { r, fresh, child: fresh[0] ?? null };
+}
 
 const ARMS = [
   {
@@ -1166,15 +1268,15 @@ const ARMS = [
       // retain
       const base = fs.mkdtempSync(path.join(REAL_HOME, '.cache', 'avr-retain-selftest-'));
       try {
-        const mkBoot = (n) => { const h = path.join(base, n); for (const d of ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin']) fs.mkdirSync(path.join(h, d), { recursive: true }); fs.writeFileSync(path.join(h, 'app.log'), 'log'); fs.writeFileSync(path.join(h, 'shot.png'), 'png'); return h; };
-        const has = (h) => ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin'].filter((d) => fs.existsSync(path.join(h, d)));
+        const mkBoot = (n) => { const h = path.join(base, n); for (const d of ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin', 'app']) fs.mkdirSync(path.join(h, d), { recursive: true }); fs.writeFileSync(path.join(h, 'app.log'), 'log'); fs.writeFileSync(path.join(h, 'shot.png'), 'png'); return h; };
+        const has = (h) => ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin', 'app'].filter((d) => fs.existsSync(path.join(h, d)));
         const quiet = (fn) => { const l = console.log; console.log = () => {}; try { fn(); } finally { console.log = l; } };
         const pass = mkBoot('pass-arm'), fail = mkBoot('fail-arm'), out = mkBoot('outside-base');
         const results = [{ arm: 'pa', ok: true }, { arm: 'pa', ok: true }, { arm: 'fa', ok: true }, { arm: 'fa', ok: false }];
         quiet(() => { retain({ arm: 'pa' }, { home: pass }, { base, results }); retain({ arm: 'fa' }, { home: fail }, { base, results }); retain({ arm: 'pa' }, { home: out }, { base: path.join(base, 'elsewhere'), results }); });
         ctx.clause('retain:passed-arm-drops-bulky-state-keeps-log', has(pass).length === 0 && fs.existsSync(path.join(pass, 'app.log')) && fs.existsSync(path.join(pass, 'shot.png')), `remaining bulky dirs=${JSON.stringify(has(pass))}; app.log+png kept`);
-        ctx.clause('retain:failed-arm-keeps-everything', has(fail).length === 6, `remaining bulky dirs=${has(fail).length}/6`);
-        ctx.clause('retain:home-outside-base-untouched', has(out).length === 6, `a home outside the rig base is never deleted (${has(out).length}/6 kept)`);
+        ctx.clause('retain:failed-arm-keeps-everything', has(fail).length === 7, `remaining bulky dirs=${has(fail).length}/7`);
+        ctx.clause('retain:home-outside-base-untouched', has(out).length === 7, `a home outside the rig base is never deleted (${has(out).length}/7 kept)`);
         // KEEP marker
         const rd = path.join(base, 'rigdir'); fs.mkdirSync(rd);
         fs.writeFileSync(path.join(rd, KEEP_MARKER), '1'); settleKeepMarker(rd, 2);
@@ -1581,6 +1683,16 @@ const ARMS = [
       // baseline (measured on master AFTER #228): the legacy ws is routed to the SDK wake path, whose lazy start "succeeds" (rc 0); before #228 it dialled the container (ECONNREFUSED).
       ctx.clause('cli-restart-legacy/not-ok', lg.rc !== null && (lg.rc !== 0) === want, `rc=${lg.rc} expected(${MODE}) ${want ? 'not-ok (refused before the classifier, no dial)' : 'ok — the pre-pause lazy wake'}`);
       ctx.clause('cli-restart-legacy/names-pause-and-220', namesPause(lg.stderr) === want, `names pause+#220=${namesPause(lg.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(lg.stderr)}`);
+      // #227 merge duty (review r2 F2 of #226): a sandbox ws that still OWES its brief must be refused with the pause too — before Restart's owed-task route starts an agent for it.
+      if (!want) ctx.skip('cli-restart-owed/*', "#227's owed-task Restart route does not exist on the pre-change build");
+      else {
+        const ow = await runCli(app, ['restart', sbx.owed.id]);
+        const owAfter = await app.cdp.eval(`window.orchestra.listWorkspaces().then(l => l.find(w => w.id === ${JSON.stringify(sbx.owed.id)}))`);
+        console.log(`OBSERVED  cli restart owed ${sbx.owed.id}: rc=${ow.rc} stdout=${JSON.stringify(oneLine(ow.stdout))} stderr=${JSON.stringify(oneLine(ow.stderr))}`);
+        ctx.clause('cli-restart-owed/not-ok', ow.rc !== null && ow.rc !== 0, `rc=${ow.rc} — a paused sandbox agent must never be started, owed brief or not`);
+        ctx.clause('cli-restart-owed/names-pause-and-220', namesPause(ow.stderr), `names pause+#220=${namesPause(ow.stderr)} :: stderr=${oneLine(ow.stderr)}`);
+        ctx.clause('cli-restart-owed/writes-nothing', !!owAfter && owAfter.hasInput !== true && owAfter.openingTaskDelivered !== true && !(owAfter.sdkStartErrors?.length) && owAfter.lastTask === 'AVR-SBX-OWED-BRIEF', `owed record after: hasInput=${owAfter?.hasInput} delivered=${owAfter?.openingTaskDelivered} startErrors=${owAfter?.sdkStartErrors?.length ?? 0} lastTask kept=${owAfter?.lastTask === 'AVR-SBX-OWED-BRIEF'} (a refused restart must not start, deliver or record anything)`);
+      }
       // r2 F1: the TOOLBAR Restart (`restartAgent` IPC) must REJECT naming the pause — its callers show the rejection — not resolve into a silent neutral "Resume your session" row.
       const tb = await ipcSettle(app, `window.orchestra.restartAgent(${JSON.stringify(sbx.gone.id)})`);
       console.log(`OBSERVED  restartAgent(${sbx.gone.id}) [toolbar Restart]: ${JSON.stringify(tb)}`);
@@ -1637,6 +1749,292 @@ const ARMS = [
       ctx.clause('local-control/send-review-still-requested', lsr.ok && lsr.value?.status === 'requested', `settled=${JSON.stringify(lsr).slice(0, 160)} (a local ws with a live session takes the review as its next turn)`);
     },
   },
+  {
+    name: 'spawn_failure_reported', boots: true, sdkLess: true, ticket: '#227',
+    doc: 'SDK start FORCED to fail (Agent SDK absent from the boot\'s node_modules): `orchestra spawn` returns not-ok naming the reason, the child is KEPT stopped with its task, the error shows in its Agent view, and a wake (message / prompt queue / review) never starts a PTY — baseline: the PTY fallback masks all of it',
+    async run(ctx) {
+      const { app } = ctx; const okWanted = pick(EXPECT.spawnOkWhenSdkFails); const wantPty = pick(EXPECT.spawnMakesAgentPty);
+      // Instrument controls: the cause is really present in THIS boot, and the resolver CAN say yes (real build).
+      ctx.clause('force/sdk-absent-from-this-boot', !sdkResolvesFrom(path.join(app.appDir, 'dist-electron')), `require.resolve('@anthropic-ai/claude-agent-sdk') from ${app.appDir}/dist-electron must throw`);
+      ctx.clause('force/resolver-can-say-yes', sdkResolvesFrom(path.join(APP_DIR, 'dist-electron')), `the same probe against the real build ${APP_DIR} must resolve`);
+      await runControl(ctx);
+      // ── spawn ──
+      const { r, fresh, child } = await spawnChild(ctx);
+      ctx.clause('spawn/cli-verdict', (r.rc === 0) === okWanted, `rc=${r.rc} expected(${MODE})=${okWanted ? 0 : 'non-zero'} stdout=${JSON.stringify(r.stdout.slice(0, 160))} stderr=${JSON.stringify(r.stderr.slice(0, 260))}`);
+      ctx.clause('spawn/child-workspace-created', fresh.length === 1, `new workspaces after spawn=${fresh.length} (${fresh.map((w) => w.id).join(',')}) — a failed start must KEEP the child (no rollback)`);
+      if (!child) return;
+      if (okWanted) ctx.skip('spawn/error-names-reason-and-child', 'spawn answered ok — there is no error to name (the PTY fallback masked the failed start)');
+      else ctx.clause('spawn/error-names-reason-and-child', /failed to start/.test(r.stderr) && /claude-agent-sdk/.test(r.stderr) && r.stderr.includes(child.id), `stderr names the failure, the missing package and child ${child.id}: ${JSON.stringify(r.stderr.slice(0, 300))}`);
+      ctx.clause('spawn/task-retained-on-child', child.lastTask === SPAWN_TASK && !child.archived, `lastTask=${JSON.stringify(child.lastTask)} archived=${!!child.archived}`);
+      if (wantPty) {
+        const ps = await waitFor(`fallback agent PTY for ${child.id}`, async () => { const x = await app.ptys(); return x.some((p) => p.ptyId === child.id && p.kind === 'agent') ? x : null; }, 20000, 300).catch(() => null);
+        ctx.clause('spawn/fallback-agent-pty-appears', !!ps, `expected(${MODE}): the PTY fallback started the child's agent. ptys=${ps ? fmtP(ps) : 'none appeared'}`);
+      } else { await sleep(ABSENCE_MS); noAgentPty(ctx, 'spawn/no-agent-pty', await app.ptys()); }
+      // ── the error is in the child's Agent view ──
+      if (okWanted) ctx.skip('view/start-error-visible-in-agent-view', 'spawn answered ok — no start error exists to show');
+      else {
+        await activateWorkspace(app, child.branch);
+        await app.clickTab('Agent').catch(async () => app.clickTab('Structured'));
+        const seen = await waitFor('start error row in the child\'s Agent view', () => visibleText(app, START_ERR), 15000, 300).catch(() => false);
+        ctx.clause('view/start-error-visible-in-agent-view', !!seen, `'${START_ERR}' rendered in the active (child ${child.branch}) Agent view`);
+        const rect = await app.cdp.eval(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) if (n.textContent.includes(${JSON.stringify(START_ERR)})) { const r = n.parentElement.getBoundingClientRect(); return { x: Math.max(0, r.x - 8), y: Math.max(0, r.y - 8), width: r.width + 16, height: r.height + 16 }; } return null; })()`);
+        if (rect) {
+          await app.cdp.eval('document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))');
+          const shot = pngStats(fs.readFileSync(await app.shot('start-error-row', rect)));
+          console.log(`SHOT      start-error-row ${app.home}/start-error-row.png ${shot.w}x${shot.h} bytes=${shot.bytes} distinct=${shot.distinct} nonBg=${shot.nonBgPct}%`);
+          ctx.clause('view/start-error-row-painted', shot.distinct > 4 && shot.nonBgPct > 0.5, `decoded pixels of the error row: distinct=${shot.distinct} nonBg=${shot.nonBgPct}% (a blank crop reads distinct=1, 0%)`);
+        } else ctx.clause('view/start-error-row-painted', false, 'error row not found — nothing to screenshot');
+        // F3: one failure = one row while the LIVE row is still in the store and the backfill has read its persisted copy back.
+        const liveRows = await app.cdp.eval(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n = 0, t; while ((t = w.nextNode())) if (t.textContent.includes(${JSON.stringify(START_ERR)})) n++; return n; })()`);
+        ctx.clause('view/start-error-rendered-once-with-live-row', liveRows === 1, `'${START_ERR}' text nodes with the live row AND the persisted backfill copy in play=${liveRows}`);
+        // F3: the row is persisted, not just a live event — a renderer RELOAD (the store is rebuilt from main) must re-render it.
+        await app.cdp.send('Page.reload');
+        await ready(app);
+        await activateWorkspace(app, child.branch);
+        await app.clickTab('Agent').catch(async () => app.clickTab('Structured'));
+        const again = await waitFor('start error row after a renderer reload', () => visibleText(app, START_ERR), 15000, 300).catch(() => false);
+        ctx.clause('view/start-error-survives-renderer-reload', !!again, `'${START_ERR}' rendered again in the child's Agent view after Page.reload (a live-only event is gone)`);
+        const rows = await app.cdp.eval(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n = 0, t; while ((t = w.nextNode())) if (t.textContent.includes(${JSON.stringify(START_ERR)})) n++; return n; })()`);
+        ctx.clause('view/start-error-rendered-once', rows === 1, `'${START_ERR}' text nodes in the page after reload=${rows} (persisted copy must not double a live row)`);
+      }
+      // ── a WAKE that cannot start: message → inbox, prompt queue → re-queued, review → refused ──
+      const stopAndWait = async () => { await app.cdp.eval(`window.orchestra.stopAgent(${JSON.stringify(child.id)})`); await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
+      await stopAndWait(); // baseline: kill the spawn-fallback PTY so the wake path is what runs; after: nothing to stop
+      const msg = await runCli(app, ['message', child.id, MSG_TEXT]);
+      const want = pick(EXPECT.messageDelivery);
+      ctx.clause('wake/message-delivery', msg.rc === 0 && msg.stdout.includes(`Delivered (${want})`), `expected(${MODE})=Delivered (${want}); rc=${msg.rc} stdout=${JSON.stringify(msg.stdout)} stderr=${JSON.stringify(msg.stderr.slice(0, 200))}`);
+      const inboxFile = path.join(app.world.fakeHome, '.orchestra', 'inbox', `${child.id}.txt`);
+      const inbox = fs.existsSync(inboxFile) ? fs.readFileSync(inboxFile, 'utf8') : '';
+      ctx.clause('wake/message-in-inbox', inbox.includes(MSG_TEXT) === pick(EXPECT.messageInInbox), `inbox ${inboxFile} holds the message=${inbox.includes(MSG_TEXT)} expected(${MODE})=${pick(EXPECT.messageInInbox)}`);
+      if (wantPty) await waitFor('wake fallback PTY', async () => (await app.ptys()).some((p) => p.ptyId === child.id && p.kind === 'agent'), 20000, 300).catch(() => null);
+      else noAgentPty(ctx, 'wake/message-no-agent-pty', await app.ptys());
+      await stopAndWait();
+      await app.cdp.eval(`window.orchestra.queuePrompt(${JSON.stringify(child.id)}, ${JSON.stringify(QUEUED_TEXT)})`);
+      const fl = await app.cdp.eval(`window.orchestra.flushQueuedPrompts(${JSON.stringify(child.id)}).catch((e) => ({ threw: String(e.message || e) }))`);
+      const after = (await listWs(app)).find((w) => w.id === child.id);
+      const kept = (after?.queuedPrompts ?? []).some((p) => (p.text ?? p.body ?? JSON.stringify(p)).includes(QUEUED_TEXT));
+      ctx.clause('wake/queue-flush-verdict', (fl?.ok === true) === pick(EXPECT.queueFlushOk), `flush -> ${JSON.stringify(fl)} expected(${MODE}) ok=${pick(EXPECT.queueFlushOk)}`);
+      ctx.clause('wake/queue-prompt-requeued-not-dropped', kept === pick(EXPECT.queueKeepsPrompt), `queued prompt still on the workspace=${kept} expected(${MODE})=${pick(EXPECT.queueKeepsPrompt)} (queuedPrompts=${JSON.stringify(after?.queuedPrompts ?? []).slice(0, 160)})`);
+      if (wantPty) await waitFor('queue wake fallback PTY', async () => (await app.ptys()).some((p) => p.ptyId === child.id && p.kind === 'agent'), 20000, 300).catch(() => null);
+      else noAgentPty(ctx, 'wake/queue-no-agent-pty', await app.ptys());
+      await stopAndWait();
+      const rv = await app.cdp.eval(`window.orchestra.sendReviewToAgent(${JSON.stringify(child.id)}, ${JSON.stringify(REVIEW_TEXT)}).then((v) => ({ v }), (e) => ({ threw: String(e.message || e) }))`);
+      ctx.clause('wake/review-not-reported-requested-when-agent-cannot-start', (rv.v?.status === 'requested') === pick(EXPECT.reviewRequested) && (pick(EXPECT.reviewRequested) || /could not be started/.test(rv.threw ?? '')), `sendReviewToAgent -> ${JSON.stringify(rv)} expected(${MODE}) requested=${pick(EXPECT.reviewRequested)}`);
+      await stopAndWait();
+      // `git:fixChecks` reaches the same wake seam (its `gh` lookup fails fast here — no auth, no GitHub remote — and the handler builds its prompt anyway).
+      const fx = await app.cdp.eval(`window.orchestra.fixChecks(${JSON.stringify(child.id)}).then((v) => ({ v }), (e) => ({ threw: String(e.message || e) }))`);
+      ctx.clause('wake/fix-checks-not-reported-requested-when-agent-cannot-start', (fx.v?.status === 'requested') === pick(EXPECT.reviewRequested) && (pick(EXPECT.reviewRequested) || /could not be started/.test(fx.threw ?? '')), `fixChecks -> ${JSON.stringify(fx)} expected(${MODE}) requested=${pick(EXPECT.reviewRequested)}`);
+      const end = await app.ptys();
+      if (wantPty) await stopAndWait().catch(() => {});
+      else noAgentPty(ctx, 'end-state-no-agent-pty', end);
+    },
+  },
+  {
+    name: 'restart_delivers_task_once', boots: true, sdkLess: true, stubScript: 'logging', ticket: '#227',
+    doc: 'after a failed spawn: Restart while the cause remains is REPORTED (task still owed, no PTY); after the cause is removed Restart starts the child and the CLI receives its task EXACTLY ONCE — also across Agent-view history loads (no duplicated brief)',
+    async run(ctx) {
+      const { app } = ctx; const okWanted = pick(EXPECT.spawnOkWhenSdkFails);
+      await runControl(ctx);
+      const { r, child } = await spawnChild(ctx);
+      ctx.clause('precondition/failed-start-exists-to-retry', (r.rc === 0) === okWanted && !!child, `spawn rc=${r.rc} expected(${MODE})=${okWanted ? 0 : 'non-zero'}; child=${child?.id ?? 'none'}`);
+      if (okWanted || !child) { ctx.skip('restart/*', 'spawn answered ok (the PTY fallback masked the failed start) — there is no failed start to restart'); return; }
+      // 1. the task has NOT reached the CLI while the start keeps failing — and Restart says so instead of going quiet
+      const still = await runCli(app, ['restart', child.id]);
+      ctx.clause('restart/still-failing-is-reported', still.rc !== 0 && /restart failed/.test(still.stderr) && /claude-agent-sdk/.test(still.stderr), `rc=${still.rc} stderr=${JSON.stringify(still.stderr.slice(0, 240))}`);
+      const owed = (await listWs(app)).find((w) => w.id === child.id);
+      ctx.clause('restart/task-still-owed-after-failed-retry', owed?.hasInput !== true && owed?.lastTask === SPAWN_TASK, `hasInput=${owed?.hasInput} lastTask kept=${owed?.lastTask === SPAWN_TASK}`);
+      await sleep(1000);
+      ctx.clause('restart/task-not-delivered-while-failing', countIn(stubLogText(app), SPAWN_TASK) === 0, `stub CLI stdin log holds the task ${countIn(stubLogText(app), SPAWN_TASK)}x (must be 0: no session started)`);
+      noAgentPty(ctx, 'restart/failing-no-agent-pty', await app.ptys());
+      // 2. remove the cause + re-boot the SAME home (an in-process restore fails: the ESM loader keeps the failed lookup); this also
+      //    proves the kept child and its owed task survive an app restart.
+      const first = app;
+      await first.close(); liveCheck(ctx, first);
+      restoreSdk(first.overlay);
+      ctx.clause('force/cause-removed', sdkResolvesFrom(path.join(first.appDir, 'dist-electron')), 'the SDK resolves from the overlay again (asked of a fresh node process)');
+      const again = await bootApp(ctx.arm, { resume: { home: first.home, world: first.world, overlay: first.overlay }, sdkLess: true, stubScript: LOGGING_STUB });
+      ctx.app = again;
+      await identityAndIsolation(ctx, again);
+      await ready(again);
+      const kept = (await listWs(again)).find((w) => w.id === child.id);
+      ctx.clause('restart/child-survives-app-restart-with-task-owed', !!kept && kept.lastTask === SPAWN_TASK && kept.hasInput !== true && !kept.archived, `after the 2nd boot: present=${!!kept} lastTask kept=${kept?.lastTask === SPAWN_TASK} hasInput=${kept?.hasInput}`);
+      await runControl(ctx);
+      await activateWorkspace(again, child.branch);
+      await again.clickTab('Agent').catch(async () => again.clickTab('Structured'));
+      const shown = await waitFor('start error row after an app restart', () => visibleText(again, START_ERR), 15000, 300).catch(() => false);
+      ctx.clause('view/start-error-visible-after-app-restart', !!shown, `'${START_ERR}' is in the kept child's Agent view after the app was closed and re-booted (persisted, not a live event)`);
+      noAgentPty(ctx, 'restart/2nd-boot-no-agent-pty', await again.ptys());
+      await sleep(1500);
+      ctx.clause('restart/task-not-delivered-by-boot-alone', countIn(stubLogText(again), SPAWN_TASK) === 0, `a boot with the cause removed does NOT start the child by itself: stub log holds the task ${countIn(stubLogText(again), SPAWN_TASK)}x (must be 0)`);
+      const btn = await waitFor('toolbar Restart button', () => again.cdp.eval(`(() => { const b = document.querySelector('.restart-btn'); if (!b) return null; const r = b.getBoundingClientRect(); return r.width > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 10000);
+      await again.click(btn.cx, btn.cy);
+      const got = await waitFor('task reaches the CLI', () => (countIn(stubLogText(again), SPAWN_TASK) >= 1 ? countIn(stubLogText(again), SPAWN_TASK) : null), 30000, 300).catch(() => 0);
+      ctx.clause('restart/task-reaches-the-cli', got >= 1, `stub CLI stdin log holds the task ${got}x after Restart (instrument control: it CAN see the task)`);
+      // 3. exactly once — including across the Agent view's history-load recovery (#112: the duplicated-brief class)
+      for (let i = 0; i < 2; i++) { await again.cdp.eval(`window.orchestra.agentSdkHistory(${JSON.stringify(child.id)})`); await sleep(700); }
+      await sleep(ABSENCE_MS);
+      const n = countIn(stubLogText(again), SPAWN_TASK);
+      ctx.clause('restart/task-delivered-exactly-once', n === 1, `stub CLI stdin log holds the task ${n}x after Restart + 2 history loads + ${ABSENCE_MS}ms (must be exactly 1)`);
+      const done = (await listWs(again)).find((w) => w.id === child.id);
+      ctx.clause('restart/task-marked-delivered', done?.hasInput === true, `hasInput=${done?.hasInput}`);
+      noAgentPty(ctx, 'restart/end-state-no-agent-pty', await again.ptys());
+    },
+  },
+  {
+    name: 'spawn_init_wait', boots: true, stubScript: 'logging', ticket: '#227',
+    doc: 'D6/D7: `orchestra spawn` waits (bounded, 20 s) for the child\'s first TURN outcome — a CLI that dies before producing output (dead --model) is not-ok naming the model, a normal spawn returns at once, a silent CLI is ok WITH the not-confirmed note after the bound and its brief is not marked delivered',
+    async run(ctx) {
+      const { app } = ctx; const okOnDeath = pick(EXPECT.cliDeathSpawnOk); const wantNote = pick(EXPECT.slowInitNote);
+      await runControl(ctx);
+      // (1) a healthy CLI: init lands at once → spawn returns without waiting the bound, no caveat
+      const norm = await spawnChild(ctx, `${SPAWN_TASK} normal`);
+      ctx.clause('init/normal-spawn-ok-without-the-full-wait', norm.r.rc === 0 && norm.r.ms < 15000 && !/first turn not confirmed/.test(norm.r.stdout), `rc=${norm.r.rc} in ${norm.r.ms}ms (bound 20000) stdout=${JSON.stringify(norm.r.stdout.slice(0, 200))}`);
+      const got = await waitFor('brief reaches the healthy CLI', () => (countIn(stubLogText(app), `${SPAWN_TASK} normal`) >= 1 ? true : null), 20000, 300).catch(() => false);
+      ctx.clause('init/normal-brief-reached-the-cli', !!got && countIn(stubLogText(app), `${SPAWN_TASK} normal`) === 1, `stub log holds the brief ${countIn(stubLogText(app), `${SPAWN_TASK} normal`)}x (control: the stub CLI records what it receives)`);
+      // (2) a dead model: the CLI exits 1 before any message
+      const bad = await spawnChild(ctx, `${SPAWN_TASK} badmodel`, ['--model', 'avr-bad-model']);
+      ctx.clause('init/dead-model-spawn-verdict', (bad.r.rc === 0) === okOnDeath, `rc=${bad.r.rc} in ${bad.r.ms}ms expected(${MODE})=${okOnDeath ? 0 : 'non-zero'} stdout=${JSON.stringify(bad.r.stdout.slice(0, 120))} stderr=${JSON.stringify(bad.r.stderr.slice(0, 300))}`);
+      if (okOnDeath) ctx.skip('init/dead-model-names-the-model-and-keeps-the-child', 'spawn answered ok — the async CLI death went unseen (the pre-D6 behaviour)');
+      else {
+        const w = bad.child;
+        ctx.clause('init/dead-model-names-the-model-and-keeps-the-child', /avr-bad-model/.test(bad.r.stderr) && /exited before its first turn produced output/.test(bad.r.stderr) && bad.r.ms < 15000 && !!w && w.lastTask === `${SPAWN_TASK} badmodel` && w.hasInput !== true && !w.archived, `stderr names the model + the early exit, in ${bad.r.ms}ms (< the bound); child kept=${!!w} lastTask retained=${w?.lastTask === `${SPAWN_TASK} badmodel`} hasInput=${w?.hasInput}`);
+        noAgentPty(ctx, 'init/dead-model-no-agent-pty', await app.ptys());
+      }
+      // (3) a CLI that never emits its first message: ok with the note only AFTER the bound
+      fs.writeFileSync(path.join(app.home, 'slow-init'), '1');
+      const slow = await spawnChild(ctx, `${SPAWN_TASK} slow`);
+      const noted = /first turn not confirmed within 20 s — started, not confirmed/.test(slow.r.stdout);
+      ctx.clause('init/silent-cli-ok-with-note-after-the-bound', slow.r.rc === 0 && noted === wantNote && (wantNote ? slow.r.ms >= 19000 : slow.r.ms < 15000), `rc=${slow.r.rc} in ${slow.r.ms}ms note=${noted} expected(${MODE})=${wantNote} stdout=${JSON.stringify(slow.r.stdout.slice(0, 220))}`);
+      // D7: "started, not confirmed" is not "delivered" — the brief is marked only when the CLI produces output (this one never does)
+      const sw = slow.child && (await listWs(app)).find((w) => w.id === slow.child.id);
+      const marked = sw?.hasInput === true;
+      ctx.clause('init/silent-cli-brief-not-marked-delivered', !!sw && marked === pick(EXPECT.silentBriefMarkedDelivered), `hasInput=${sw?.hasInput} openingTaskDelivered=${sw?.openingTaskDelivered} expected(${MODE}) marked=${pick(EXPECT.silentBriefMarkedDelivered)} (a CLI that produced no output has not been handed the work)`);
+    },
+  },
+  {
+    name: 'first_turn_error_reported', boots: true, stubScript: 'logging', ticket: '#227',
+    doc: 'D7: the MEASURED real failure shape (claude 2.1.284 — init, then assistant API error + result is_error, exit 1; replayed from scripts/fixtures/real-cli-badmodel-2.1.284.jsonl): init alone is NOT success — `orchestra spawn` is not-ok naming the error, the brief stays owed (no delivered marker, session id cleared), the error shows once in the Agent view, Restart while broken is reported, and after the cause is removed Restart delivers the brief EXACTLY once',
+    async run(ctx) {
+      const { app } = ctx; const okWanted = pick(EXPECT.firstTurnErrorSpawnOk);
+      const TASK = `${SPAWN_TASK} realshape`; const ERR = 'Please run /login';
+      await runControl(ctx);
+      const shape = installRealShape(app);
+      ctx.clause('force/replays-the-measured-real-shape', shape.lines === 3 && shape.init && shape.assistantError && shape.resultError && shape.text.includes(ERR), `fixture lines=${shape.lines} init=${shape.init} assistant is_api_error+<synthetic>=${shape.assistantError} result is_error=${shape.resultError} text=${JSON.stringify(shape.text)}`);
+      // (1) spawn: the CLI inits, then the first turn errors
+      const { r, fresh, child } = await spawnChild(ctx, TASK);
+      ctx.clause('spawn/cli-verdict', (r.rc === 0) === okWanted, `rc=${r.rc} in ${r.ms}ms expected(${MODE})=${okWanted ? 0 : 'non-zero'} stdout=${JSON.stringify(r.stdout.slice(0, 160))} stderr=${JSON.stringify(r.stderr.slice(0, 300))}`);
+      ctx.clause('spawn/child-workspace-created', fresh.length === 1, `new workspaces after spawn=${fresh.length} — a failed first turn must KEEP the child`);
+      if (!child) return;
+      const failedCli = await waitFor('the stub CLI received the brief and failed', () => (countIn(lastLaunchLog(app), TASK) >= 1 ? true : null), 20000, 300).catch(() => false);
+      ctx.clause('force/the-cli-inited-and-received-the-brief', !!failedCli && stubLogText(app).includes('AVR-STUB-CLAUDE'), `stub launched and its stdin holds the brief ${countIn(stubLogText(app), TASK)}x (control: the failure is AFTER init, on the first turn)`);
+      if (okWanted) { ctx.skip('spawn/error-names-the-first-turn-failure', 'spawn answered ok on init alone — the errored first turn went unseen (the pre-D7 behaviour)'); ctx.skip('owed/*', 'no failure was reported, so nothing is owed'); return; }
+      ctx.clause('spawn/error-names-the-first-turn-failure', /first turn failed/.test(r.stderr) && r.stderr.includes(ERR) && r.stderr.includes(child.id) && r.ms < 15000, `stderr names the errored first turn + the CLI's own text + child ${child.id}, in ${r.ms}ms (< the bound): ${JSON.stringify(r.stderr.slice(0, 300))}`);
+      const w1 = (await listWs(app)).find((w) => w.id === child.id);
+      ctx.clause('owed/brief-not-marked-delivered', w1?.hasInput !== true && w1?.openingTaskDelivered !== true && w1?.lastTask === TASK && !w1?.archived, `hasInput=${w1?.hasInput} openingTaskDelivered=${w1?.openingTaskDelivered} lastTask kept=${w1?.lastTask === TASK} archived=${!!w1?.archived}`);
+      ctx.clause('owed/init-session-id-cleared', !w1?.sdkSessionId, `sdkSessionId=${JSON.stringify(w1?.sdkSessionId)} — an errored first turn is no conversation to resume (a set id reads "already ran": no owed-task Restart)`);
+      noAgentPty(ctx, 'spawn/no-agent-pty', await app.ptys());
+      // (2) the error is in the child's Agent view — once — and survives a renderer reload
+      const errRows = () => app.cdp.eval(`[...document.querySelectorAll('.av-message-eyebrow')].filter((e) => e.textContent.trim() === 'Error').length`);
+      await activateWorkspace(app, child.branch);
+      await app.clickTab('Agent').catch(async () => app.clickTab('Structured'));
+      const seen = await waitFor('error row in the child Agent view', () => visibleText(app, ERR), 15000, 300).catch(() => false);
+      ctx.clause('view/error-visible-in-agent-view', !!seen, `'${ERR}' rendered in the active child (${child.branch}) Agent view`);
+      const live = await errRows();
+      ctx.clause('view/error-row-rendered-once', live === 1, `Error rows in the Agent view=${live} (the live event and its persisted copy are ONE row; the CLI's exit after the error adds none)`);
+      await app.cdp.send('Page.reload'); await ready(app);
+      await activateWorkspace(app, child.branch);
+      await app.clickTab('Agent').catch(async () => app.clickTab('Structured'));
+      await waitFor('error row after a renderer reload', () => visibleText(app, ERR), 15000, 300).catch(() => false);
+      const reloaded = await errRows();
+      ctx.clause('view/error-row-survives-reload-once', reloaded === 1, `Error rows after Page.reload=${reloaded} (persisted, and not doubled)`);
+      // (3) Restart while the cause remains: reported, still owed, the brief is offered again
+      const still = await runCli(app, ['restart', child.id]);
+      ctx.clause('restart/still-failing-is-reported', still.rc !== 0 && /restart failed/.test(still.stderr) && still.stderr.includes(ERR), `rc=${still.rc} stderr=${JSON.stringify(still.stderr.slice(0, 260))}`);
+      const w2 = (await listWs(app)).find((w) => w.id === child.id);
+      ctx.clause('owed/still-owed-after-failed-retry', w2?.hasInput !== true && w2?.openingTaskDelivered !== true && !w2?.sdkSessionId && w2?.lastTask === TASK, `hasInput=${w2?.hasInput} openingTaskDelivered=${w2?.openingTaskDelivered} sdkSessionId=${JSON.stringify(w2?.sdkSessionId)}`);
+      // (4) the cause is removed: Restart starts a healthy CLI and it receives the brief EXACTLY once
+      removeRealShape(app);
+      ctx.clause('force/cause-removed', !fs.existsSync(path.join(app.home, 'real-shape.jsonl')), 'the stub no longer replays the failure');
+      const fixed = await runCli(app, ['restart', child.id]);
+      ctx.clause('restart/delivers-the-brief', fixed.rc === 0 && /opening task was delivered/.test(fixed.stdout), `rc=${fixed.rc} stdout=${JSON.stringify(fixed.stdout.slice(0, 200))} stderr=${JSON.stringify(fixed.stderr.slice(0, 200))}`);
+      const got = await waitFor('brief reaches the healthy CLI', () => (countIn(lastLaunchLog(app), TASK) >= 1 ? countIn(lastLaunchLog(app), TASK) : null), 30000, 300).catch(() => 0);
+      ctx.clause('restart/brief-reaches-the-healthy-cli', got >= 1, `the newest stub launch's stdin holds the brief ${got}x (instrument control: it CAN see it)`);
+      for (let i = 0; i < 2; i++) { await app.cdp.eval(`window.orchestra.agentSdkHistory(${JSON.stringify(child.id)})`); await sleep(700); }
+      await sleep(ABSENCE_MS);
+      const n = countIn(lastLaunchLog(app), TASK);
+      ctx.clause('restart/brief-delivered-exactly-once', n === 1, `the healthy launch's stdin holds the brief ${n}x after 2 history loads + ${ABSENCE_MS}ms (must be exactly 1; the failed launches each held it 1x more)`);
+      const done = await waitFor('brief marked delivered at first output', async () => { const w = (await listWs(app)).find((x) => x.id === child.id); return w?.openingTaskDelivered === true ? w : null; }, 15000, 300).catch(() => null);
+      ctx.clause('restart/marked-delivered-at-first-output', !!done && done.hasInput === true && !!done.sdkSessionId, `openingTaskDelivered=${done?.openingTaskDelivered} hasInput=${done?.hasInput} sdkSessionId=${JSON.stringify(done?.sdkSessionId)}`);
+      noAgentPty(ctx, 'end-state-no-agent-pty', await app.ptys());
+    },
+  },
+  {
+    name: 'first_turn_error_live_reported', boots: true, stubScript: 'logging', ticket: '#227',
+    doc: 'D7 / round-3 F7: the same measured failure, but the CLI STAYS ALIVE after the errored result (exits only at stdin EOF): `orchestra spawn` is not-ok AND the CLI process is STOPPED (child kept stopped — spawn\'s sdkStopIfLive is driven), and after the cause is removed Restart delivers the brief exactly once',
+    async run(ctx) {
+      const { app } = ctx; const okWanted = pick(EXPECT.firstTurnErrorSpawnOk);
+      const TASK = `${SPAWN_TASK} realshape-live`; const ERR = 'Please run /login';
+      await runControl(ctx);
+      const shape = installRealShape(app); fs.writeFileSync(path.join(app.home, 'real-shape-live'), '1');
+      ctx.clause('force/replays-the-measured-real-shape-alive', shape.assistantError && shape.resultError && fs.existsSync(path.join(app.home, 'real-shape-live')), `assistant is_api_error=${shape.assistantError} result is_error=${shape.resultError}; live flag set (the stub does NOT exit after the errored result)`);
+      const { r, child } = await spawnChild(ctx, TASK);
+      ctx.clause('spawn/cli-verdict', (r.rc === 0) === okWanted, `rc=${r.rc} in ${r.ms}ms expected(${MODE})=${okWanted ? 0 : 'non-zero'} stderr=${JSON.stringify(r.stderr.slice(0, 240))}`);
+      if (!child) return;
+      const inited = await waitFor('the live stub received the brief', () => (countIn(lastLaunchLog(app), TASK) >= 1 ? true : null), 20000, 300).catch(() => false);
+      ctx.clause('force/the-cli-received-the-brief', !!inited, `the stub's stdin holds the brief ${countIn(lastLaunchLog(app), TASK)}x (control: the failure is on the first TURN)`);
+      if (okWanted) { ctx.skip('stopped/*', 'spawn answered ok — nothing reported, nothing stopped (the pre-D7 behaviour)'); return; }
+      ctx.clause('spawn/error-names-the-first-turn-failure', /first turn failed/.test(r.stderr) && r.stderr.includes(ERR) && r.stderr.includes(child.id), `stderr=${JSON.stringify(r.stderr.slice(0, 260))}`);
+      // the CLI process must END: an errored first turn must not leave a half-running child
+      const gone = await waitFor('the CLI process ended', () => (lastLaunchLog(app).includes('AVR-STUB-EXIT') ? true : null), 15000, 300).catch(() => false);
+      ctx.clause('stopped/the-errored-cli-process-was-stopped', !!gone, `stub log after the failed spawn carries the exit marker=${!!gone} (the CLI stays alive after an errored result unless spawn stops it)`);
+      const w = (await listWs(app)).find((x) => x.id === child.id);
+      ctx.clause('stopped/brief-still-owed', w?.hasInput !== true && w?.openingTaskDelivered !== true && !w?.sdkSessionId && w?.lastTask === TASK, `hasInput=${w?.hasInput} openingTaskDelivered=${w?.openingTaskDelivered} sdkSessionId=${JSON.stringify(w?.sdkSessionId)}`);
+      noAgentPty(ctx, 'stopped/no-agent-pty', await app.ptys());
+      removeRealShape(app);
+      const fixed = await runCli(app, ['restart', child.id]);
+      ctx.clause('restart/delivers-the-brief', fixed.rc === 0 && /opening task was delivered/.test(fixed.stdout), `rc=${fixed.rc} stdout=${JSON.stringify(fixed.stdout.slice(0, 160))}`);
+      await waitFor('brief reaches the healthy CLI', () => (countIn(lastLaunchLog(app), TASK) >= 1 ? true : null), 30000, 300).catch(() => null);
+      await sleep(ABSENCE_MS);
+      const n = countIn(lastLaunchLog(app), TASK);
+      ctx.clause('restart/brief-delivered-exactly-once', n === 1, `the healthy launch's stdin holds the brief ${n}x (must be exactly 1)`);
+    },
+  },
+  {
+    name: 'brief_survives_other_start', boots: true, sdkLess: true, stubScript: 'logging', ticket: '#227',
+    doc: 'F2: a kept child\'s retained brief reaches the CLI (once, FIRST) whichever start comes first after the cause is removed — a peer message wake or the composer — not only Restart',
+    async run(ctx) {
+      const { app } = ctx; const okWanted = pick(EXPECT.spawnOkWhenSdkFails);
+      const TA = `${SPAWN_TASK} child-A`, TB = `${SPAWN_TASK} child-B`, MSG = 'AVR-WAKE-MSG-71c2', TYPED = 'AVR-COMPOSER-TEXT-19be';
+      await runControl(ctx);
+      const a = await spawnChild(ctx, TA), b = await spawnChild(ctx, TB);
+      ctx.clause('precondition/two-failed-starts-exist', (a.r.rc === 0) === okWanted && (b.r.rc === 0) === okWanted && !!a.child && !!b.child, `spawn rc A=${a.r.rc} B=${b.r.rc} expected(${MODE})=${okWanted ? 0 : 'non-zero'}`);
+      if (okWanted || !a.child || !b.child) { ctx.skip('brief/*', 'spawn answered ok (the PTY fallback masked the failed start) — no kept child owes a brief'); return; }
+      const first = app;
+      await first.close(); liveCheck(ctx, first);
+      restoreSdk(first.overlay);
+      const again = await bootApp(ctx.arm, { resume: { home: first.home, world: first.world, overlay: first.overlay }, sdkLess: true, stubScript: LOGGING_STUB });
+      ctx.app = again;
+      await identityAndIsolation(ctx, again);
+      await ready(again);
+      await runControl(ctx);
+      const idx = (t) => stubLogText(again).indexOf(t);
+      // child A: the FIRST start is a peer-message wake (not Restart)
+      const msg = await runCli(again, ['message', a.child.id, MSG]);
+      ctx.clause('brief/wake-starts-the-child', msg.rc === 0 && /Delivered \((started|live)\)/.test(msg.stdout), `orchestra message -> rc=${msg.rc} ${JSON.stringify(msg.stdout)}`);
+      await waitFor('wake text reaches the CLI', () => (idx(MSG) >= 0 ? true : null), 30000, 300).catch(() => null);
+      await sleep(1500);
+      ctx.clause('brief/wake-delivers-the-brief-once-and-first', countIn(stubLogText(again), TA) === 1 && idx(TA) >= 0 && idx(TA) < idx(MSG), `CLI received brief A ${countIn(stubLogText(again), TA)}x at ${idx(TA)}, the wake message at ${idx(MSG)} (must be 1x and brief BEFORE the message)`);
+      const restarted = await runCli(again, ['restart', a.child.id]);
+      await sleep(ABSENCE_MS);
+      ctx.clause('brief/restart-after-wake-adds-no-second-brief', countIn(stubLogText(again), TA) === 1, `after \`orchestra restart\` (rc ${restarted.rc}) the CLI has received brief A ${countIn(stubLogText(again), TA)}x (must stay 1)`);
+      // child B: the FIRST start is the composer's send
+      await again.cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(b.child.id)}, ${JSON.stringify(TYPED)})`);
+      await waitFor('composer text reaches the CLI', () => (idx(TYPED) >= 0 ? true : null), 30000, 300).catch(() => null);
+      await sleep(1500);
+      ctx.clause('brief/composer-delivers-the-brief-once-and-first', countIn(stubLogText(again), TB) === 1 && idx(TB) >= 0 && idx(TB) < idx(TYPED), `CLI received brief B ${countIn(stubLogText(again), TB)}x at ${idx(TB)}, the typed text at ${idx(TYPED)} (must be 1x and brief BEFORE the text)`);
+      noAgentPty(ctx, 'brief/end-state-no-agent-pty', await again.ptys());
+    },
+  },
 ];
 
 // ── driver ───────────────────────────────────────────────────────────────────
@@ -1669,7 +2067,7 @@ async function main() {
     console.log(`--- arm ${arm.name}: ${arm.doc}`);
     try {
       if (arm.boots) {
-        ctx.app = await bootApp(arm.name, arm.boot ?? {});
+        ctx.app = await bootApp(arm.name, { ...(arm.boot ?? {}), sdkLess: !!arm.sdkLess, ...(arm.stubScript === 'logging' ? { stubScript: LOGGING_STUB } : {}) });
         try {
           await identityAndIsolation(ctx, ctx.app);
           await ready(ctx.app);

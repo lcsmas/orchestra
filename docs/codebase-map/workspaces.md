@@ -189,27 +189,87 @@ endpoint}` = agent lives in an always-on container, see
   install, uses cwd `SANDBOX_WORKSPACE_DIR` (`/workspace`), and **strips
   `CLAUDE_CONFIG_DIR`** (a host path would shadow the container's seeded
   login); `startPty` routes to the remote transport via `ws.host`.
-- **`startWorkspaceAgentHeadless(id)`** — `workspaces.ts` (used by spawn).
-  **STRUCTURED-FIRST**: starts the delegated agent as an SDK session via the
-  `sdk-delivery.ts` seam (`sdkStartAndDeliver` → agent-sdk's `sdkWake`/`sdkSend`),
-  enqueuing `lastTask` as the opening turn — so a spawned child runs in the
-  structured view, and no TUI typing/readiness machinery is involved. Flips
-  `hasInput` so a later Raw-tab open resumes (`--continue`) instead of
-  re-injecting the task. The legacy headless raw-PTY spawn (below) survives only
-  as a fallback when the SDK seam is unregistered or the session fails to start.
-- **`submitTaskWhenReady(...)`** — PTY-fallback only. Waits on the SessionStart
-  readiness sentinel (`$ORCHESTRA_READY_FILE`, 15s timeout, 1.2s fallback), types
-  the task, submits with `\r`, retries up to 4× confirming status left `idle`.
+- **`startWorkspaceAgentHeadless(id)`** — `workspaces.ts` (used by spawn **and by
+  Restart's retry**, below). Starts the delegated agent as an SDK session via the
+  `sdk-delivery.ts` seam (`sdkStartAndDeliverResult` → agent-sdk's `sdkWake`/`sdkSend`),
+  enqueuing `lastTask` as the opening turn, and returns `SdkStartResult` (`sdk-delivery.ts`)
+  (`{ok:true, note?}` | `{ok:false,error}`). **No PTY fallback (#227):** when the SDK
+  session cannot start (`ensureSession` throws — SDK not loadable, worktree
+  missing, env build failure, `query()` construction), the workspace is KEPT,
+  stopped, `lastTask` retained, `hasInput` and `openingTaskDelivered` unset (= "task
+  still owed", `owesOpeningTask`, `src/shared/opening-task.ts`), and the reason is an
+  `error` row in its Agent view — emitted live AND persisted (`ws.sdkStartErrors`, capped 5;
+  `sdkHistory` returns them even with no transcript, the renderer drops a history row its live
+  fold already holds — `dropLiveErrorEchoes`), so a reload or app restart still explains why the
+  child is stopped. **D6/D7 — bounded first-TURN wait:** after a successful start it waits (20 s,
+  `ORCHESTRA_SPAWN_INIT_WAIT_MS` overrides for tests) for the session's FIRST TURN OUTCOME
+  (`sdkAwaitFirstTurn`, settled in agent-sdk `consume` via `shared/first-turn.ts classifyTurnMessage`):
+  init alone decides NOTHING (a bad `--model` / no auth inits, then errors — measured on claude
+  2.1.284: init → assistant `{error, is_api_error_message, model:"<synthetic>"}` → `result is_error`;
+  the CLI then STAYS ALIVE — it exits 1 only at stdin EOF, so a stub that exits models the one-shot harness, not the SDK's open stdin —
+  fixture `scripts/fixtures/real-cli-badmodel-2.1.284.jsonl`). First non-error assistant/tool
+  output → ok at once; an errored turn (`failFirstTurn`) or the CLI exiting before any output →
+  not-ok naming the error/exit and the model, the queued brief unwound (owed again, no stale
+  pending-prompt entry), the init-persisted `sdkSessionId` cleared (else the workspace would read
+  "already ran"), the reason persisted as ONE error row, and the errored session STOPPED (child kept
+  stopped: spawn's own `sdkStopIfLive`, or `failFirstTurn` itself when NO waiter holds it — a failure past the
+  bound, a wake); an interrupted / stopped first turn (`shared/first-turn.ts isIntentionalEnd`: stop, Restart,
+  /clear, hibernate, user interrupt) is NOT a failed start; still silent at the bound → ok WITH
+  `note: "first turn not confirmed within 20 s — started, not confirmed"` (the note names the SIGNAL D7 waits for, not init) (never a failure — the #176 slow-init
+  class; the brief is NOT marked delivered until the output lands, so a CLI that then dies leaves it owed — `slow_then_die`). **What the wait catches
+  / does not:** caught = a CLI that exits before output and one that errors its first turn (the no-credentials shape above);
+  NOT caught inside the wait = a live CLI that only RETRIES (`system/api_retry`, e.g. a dummy key: init after the message, then 401
+  retries, process alive — measured 2026-09-30): spawn answers ok + the note and the brief stays unmarked; a later errored end still
+  unwinds it via `failFirstTurn`. Restart carries the note (`RestartResult.note`; the CLI prints it instead of "delivered").
+  Single-flight per workspace (`openingTaskStarts`) and guarded by `owesOpeningTask`; **across sends** the `sdkSend` claim holds
+  `session.briefGate` until the brief is queued — every other send waits (the brief is FIRST) and a send whose text IS the in-flight
+  brief (Restart racing a composer send, either order) is answered with the claimant's turn instead of being sent again — so the
+  brief reaches the CLI **once**. That dedupe is opt-in (`dedupeOpeningBrief`: only spawn / Restart's own `sdkStartAndDeliverResult(…,
+  { openingBrief: true })`), so a user's identical message is never swallowed. An INTENTIONAL end of a session that never delivered the brief
+  (stop, Restart, boot-wedge recycle, hibernate) KEEPS its pending-prompt copy — Restart-fresh (`recoverPendingPrompts`) and
+  `recycleSession` re-read it to redeliver; only a crash drops it. The view-open recovery (`recoverPendingPromptsInner`) sends that copy
+  with the same dedupe when its text is `lastTask` (r4), so it and a racing wake's claim are ONE delivery. `session.owedBrief` is dropped when the CLI speaks before any claim (a keeper reattach). Start
+  errors that predate a session are cleared at its first non-error output (`clearStaleStartErrors`); the bus-wake roster skips a kept
+  child that `startKeepsFailing` — owed + a failed start, or the SAME error `START_FAIL_STREAK` (3) times in a row within
+  `START_FAIL_WINDOW_MS` (10 min — a transient cause stops blocking once it is gone) even for a child that ran once; never a LIVE session — so
+  Restart / a direct message retries, not every sweep. Restart takes the owed route for a stopped owed child AND for a live one whose OWN first
+  turn failed (`restartOwesOpeningTask`, `live.sdkFailed` from the seam `firstTurnFailed`); a live hung start restarts normally.
+- **`submitTaskWhenReady(...)`** — UNREFERENCED since #227 (deleted with the agent-PTY
+  launcher by #233). Was the PTY fallback's task typing over the SessionStart sentinel.
 - **`wakeAgentWithPrompt(id, prompt)`** — the live-or-wake delivery used by peer
   messages and the prompt-queue flusher. Order: live SDK session (`sdkDeliver`)
   → live PTY (typed) happens in the callers → **structured wake**
   (`sdkStartAndDeliver`: lazy SDK session resuming `ws.sdkSessionId`, or — for a
   terminal-only workspace — the newest on-disk transcript, adopted as the resume
-  id by agent-sdk's `sdkWake`, the same session `--continue` picks) → raw-PTY
-  wake with `--continue` as the last fallback. Post-wake "did it survive"
+  id by agent-sdk's `sdkWake`, the same session `--continue` picks). **If the SDK
+  session cannot start it returns `false` (#227) — there is no raw-PTY wake any
+  more**; every caller's existing fallback applies: `dispatchMessageRequest` → inbox,
+  the prompt queue → `requeue()`, the usage-limit nudge → re-mark, and
+  `git:fixChecks` / `git:sendReview` (`api-handlers.ts`) → throw `AGENT_WAKE_FAILED`
+  instead of typing into a PTY that does not exist and answering "requested".
+  Post-wake "did it survive"
   insurance checks (`dispatchMessageRequest`'s inbox park, prompt-queue's
   re-queue) treat a live SDK session as "still up" (`sdkSessionLive`), since
   `isRunning` is PTY-only and always false for a structured wake.
+- **The owed brief rides the FIRST send of ANY session start** (`agent-sdk.ts sdkSend`, the one
+  chokepoint composer, wake, peer message, bus wake and `recoverPendingPrompts` all pass): a session
+  created while the workspace owes its task snapshots `session.owedBrief` BEFORE `consume` can run;
+  the first send claims it (`claimOwedOpeningTask`) and queues the brief ahead of the caller's text
+  (when the caller's text IS the brief — spawn / Restart — that send is the delivery). It is marked
+  DELIVERED (`openingTaskDelivered` + `hasInput`) only when the CLI produces its first NON-ERROR output
+  for it (`confirmOpeningTask`, D7) — never at enqueue, never at init; a session that dies or errors
+  its first turn unwinds the claim (`unwindOpeningTask`/`failFirstTurn`). So a wake
+  or a typed message can no longer retire a brief nothing delivered. `wakeAgentWithPrompt` does not
+  flip `hasInput` itself while a brief is owed.
+- **Restart of a kept child** — `dispatchRestartRequest` (`restart-workspace.ts`) checks
+  `owesOpeningTask(ws)` (and no live PTY/SDK session) BEFORE the classifier: nothing ever
+  ran, so `classifyRestartMode` would answer `unknown` ("Open it first"). It calls
+  `startWorkspaceAgentHeadless` instead — still failing → `{ok:false,'restart failed: …'}` and a
+  fresh error row; cause removed → the task is delivered as the opening turn and `hasInput`
+  flips, so the next Restart is an ordinary one; the reply carries `openingTask:true` and the CLI
+  prints "Started <id> — its opening task was delivered" (not "conversation preserved"). The kept
+  child survives an app restart (`lastTask`/`hasInput`/`sdkStartErrors` are in `store.json`).
+  Rigs: `restart_delivers_task_once`, `brief_survives_other_start`, `spawn_init_wait`, `first_turn_error_reported`.
 
 ### Archive / unarchive / delete
 - **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),
@@ -285,7 +345,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 
 | Handler | Line | Route | Purpose |
 |---|---|---|---|
-| `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start it as a **structured SDK session** (`startWorkspaceAgentHeadless`; raw-PTY only as fallback). Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. **Omitted → the user's *spawned-agent default model*** (`defaultKind: 'spawned'` from `/spawn` and sandbox spawn; the UI's spawn-from-ticket click passes `'workspace'`). `createWorkspace` freezes `modelForNewWorkspace(...)` onto every new record (`src/shared/model-defaults.ts`; settings in `store.getModelDefaults()`, edited from the sidebar's Default models modal `ModelDefaultsSettings.tsx`); launch paths resolve via `resolveLaunchModel` (`default` marker = account default, no `--model`). The reasoning effort mirrors it: `createWorkspace` freezes an explicit `/spawn` `effort` (`orchestra spawn --effort`), else `effortForNewWorkspace(store.getEffortDefaults(), defaultKind)`, onto `ws.sdkEffort` (`src/shared/effort-defaults.ts`; same modal; `default` = leave unset), and the PTY launch passes `--effort` when set (the SDK path already reads `ws.sdkEffort`). The model guard is a charset/length check only — a dead model id passes it and fails at the child's own launch, so a delisted model going unserved breaks spawn silently. |
+| `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start it as a **structured SDK session** (`startWorkspaceAgentHeadless`). **A start that fails is reported, not masked (#227):** `ok:false` + `error` naming the reason and the kept child (`id`/`branch` also on the reply); the child stays stopped with its task, Restart retries. No PTY fallback. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. **Omitted → the user's *spawned-agent default model*** (`defaultKind: 'spawned'` from `/spawn` and sandbox spawn; the UI's spawn-from-ticket click passes `'workspace'`). `createWorkspace` freezes `modelForNewWorkspace(...)` onto every new record (`src/shared/model-defaults.ts`; settings in `store.getModelDefaults()`, edited from the sidebar's Default models modal `ModelDefaultsSettings.tsx`); launch paths resolve via `resolveLaunchModel` (`default` marker = account default, no `--model`). The reasoning effort mirrors it: `createWorkspace` freezes an explicit `/spawn` `effort` (`orchestra spawn --effort`), else `effortForNewWorkspace(store.getEffortDefaults(), defaultKind)`, onto `ws.sdkEffort` (`src/shared/effort-defaults.ts`; same modal; `default` = leave unset), and the PTY launch passes `--effort` when set (the SDK path already reads `ws.sdkEffort`). The model guard is a charset/length check only — a dead model id passes it and fails at the child's own launch — a CLI that exits, or errors its first turn, before producing output now makes spawn not-ok (#227 D7); one that only retries (`api_retry`, process alive) is ok + a "not confirmed" note. |
 | `dispatchPromoteRequest` | `:2010` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. **#171: promote is a re-anchoring op** — the promoted node stops resolving to its parent OPS/LEAD and becomes its OWN run, so it now `snapshotRunAnchors(id)` **before** the mutation and `reconcileRunAfterReparent(…, {noRestart:false, preferStaleForLivePty:true})` **after** (both routes), exactly like attach/demote. An idle live session is restarted so its rebuilt env re-reads `ORCHESTRA_RUN_ID` + generation (removing the manual `orchestra restart` the ticket hit 4×); a working structured session's restart is refused (mid-turn guard → `{ok:false}` → mark-stale) and a raw PTY is deferred (`preferStaleForLivePty` — the PTY restart has no working guard). Returns `restarted`/`markedStale` like the re-parent handlers. **#221:** promoting a child of a run-less PLAIN workspace also starts that workspace's MISSION run (coordinator = itself) and nests the child's run under it — the parent stays a plain workspace (see `bus.md` §#221). |
 | `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
 | `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
@@ -294,7 +354,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
 | `dispatchReadRequest` | `:1266` | `/read` | Peer branch + last ~80 transcript lines, ANSI-stripped. |
-| `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session, else typed into a running TUI), **started** (structured wake via `wakeAgentWithPrompt`, PTY `--continue` only as fallback), or **inbox** (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
+| `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session, else typed into a running TUI), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
 | `dispatchRenameRequest` | `:722` | `/rename` | see Branch management. |
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
 | `dispatchDeleteWorkspaceRequest` | `:1054` | `/deleteWorkspace` | Hard-delete. |

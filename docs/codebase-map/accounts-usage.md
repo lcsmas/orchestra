@@ -280,7 +280,8 @@ off mid-task and had nothing queued.
   `lastStopReason === 'usage_limit'` candidate filter, so no later tick
   reconsiders it: frozen forever, with the ⏸ glyph gone so nothing on screen
   says to look. Reachable — `wakeAgentWithPrompt` returns false when a terminal
-  PTY coexists (`isRunning`), which the filter does not exclude. `flushQueuedPrompts`
+  PTY coexists (`isRunning`), which the filter does not exclude, AND (#227) when the
+  SDK session cannot start (there is no PTY fallback any more). `flushQueuedPrompts`
   pairs the same ordering with `requeue()`; this path needs its own equivalent.
 - **Session death is a SECOND detection site.** `consume()`'s `finally`
   (`src/main/agent-sdk.ts`) builds its own `turn-end` and emits it directly,

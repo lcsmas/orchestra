@@ -12,8 +12,8 @@
 //
 // This tiny seam breaks the cycle: agent-sdk.ts registers its live-session
 // hooks here at module load; the dispatchers consult the seam. When no SDK
-// module has registered (or no session is live) the hooks report "no session"
-// and callers fall back to their existing PTY path unchanged.
+// module has registered (or no session is live) the hooks report "no session";
+// a START that fails is REPORTED (`sdkStartAndDeliverResult`), never masked by a PTY (#227).
 
 import { log } from './logger';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
@@ -52,8 +52,14 @@ export interface SdkDelivery {
   /** START a structured session (or reuse a live one) and deliver `text` as its
    *  next turn — the spawn/wake entry point. Unlike `send` this does not require
    *  a live session: it lazy-starts one, resuming the workspace's prior
-   *  conversation when there is one (agent-sdk's `sdkWake`). */
-  start(wsId: string, text: string): Promise<void>;
+   *  conversation when there is one (agent-sdk's `sdkWake`).
+   *  `opts.openingBrief`: this send is spawn / Restart's own delivery of `lastTask` (the only callers whose same-text in-flight send is deduped — #227 F5). */
+  start(wsId: string, text: string, opts?: { openingBrief?: boolean }): Promise<void>;
+  /** Resolve when the workspace's CURRENT session settles its first TURN (first non-error output, an errored turn, or death before
+   *  either) or `timeoutMs` passes. Optional: a seam without it reports `unknown` (#227 D7). */
+  awaitFirstTurn?(wsId: string, timeoutMs: number): Promise<SdkFirstTurnOutcome>;
+  /** Did the workspace's LIVE session's first turn ERROR (a failed start still holding a process)? Optional (#227 r4 F2). */
+  firstTurnFailed?(wsId: string): boolean;
   /** Tear down a live structured session (used by account migration, which must
    *  stop the session running under the OLD account/config dir). */
   stop(wsId: string, opts?: { hibernate?: boolean }): Promise<void>;
@@ -119,20 +125,44 @@ export async function sdkDeliverConfirmed(
   return impl.sendAwaitingStart(wsId, text, peerOrigin, timeoutMs);
 }
 
-/** Start a structured session for the workspace (resuming prior context when
- *  there is any) and deliver `text` as its opening turn — the structured-first
- *  spawn/wake path. Returns false when the SDK module hasn't registered OR the
- *  start failed (logged; the start error also surfaces as an error event in the
- *  structured view), so callers can fall back to the legacy raw-PTY path. */
-export async function sdkStartAndDeliver(wsId: string, text: string): Promise<boolean> {
-  if (!impl) return false;
+/** `error` = the start failure's own message; `note` = an ok-with-a-caveat line for the caller to print (#227 D6). */
+export type SdkStartResult = { ok: true; note?: string } | { ok: false; error: string };
+
+/** How a started session's FIRST TURN went (#227 D7 — init alone proves nothing: a bad `--model` / no auth inits, then errors):
+ *  `ok` = the first non-error output arrived; `failed` = the turn errored (`cause` 'turn-error', `reason` = the CLI's text) or the
+ *  CLI exited before any output (`cause` 'exit'); `timeout` = still silent at the bound; `unknown` = no seam that can say. */
+export type SdkFirstTurnOutcome =
+  | { state: 'ok' }
+  | { state: 'failed'; reason: string; cause: 'turn-error' | 'exit' }
+  | { state: 'timeout' }
+  | { state: 'unknown' };
+
+/** Start a structured session and deliver `text` as its opening turn (resuming prior context). No PTY fallback (#227):
+ *  a failure is REPORTED here, and is an error row in the Agent view (agent-sdk `sdkSend`). */
+export async function sdkStartAndDeliverResult(wsId: string, text: string, opts?: { openingBrief?: boolean }): Promise<SdkStartResult> {
+  if (!impl) return { ok: false, error: 'the structured agent module is not loaded' };
   try {
-    await impl.start(wsId, text);
-    return true;
+    await impl.start(wsId, text, opts);
+    return { ok: true };
   } catch (err) {
-    log.warn(`sdk-delivery: structured start failed for ${wsId} — falling back to PTY`, err);
-    return false;
+    log.warn(`sdk-delivery: structured start failed for ${wsId}`, err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Wait (bounded) for the session `sdkStartAndDeliver*` just started to settle its first turn. */
+export async function sdkAwaitFirstTurn(wsId: string, timeoutMs: number): Promise<SdkFirstTurnOutcome> {
+  return (await impl?.awaitFirstTurn?.(wsId, timeoutMs)) ?? { state: 'unknown' };
+}
+
+/** Did the workspace's LIVE session's first turn error? (`false` when no seam / no session.) */
+export function sdkFirstTurnFailed(wsId: string): boolean {
+  return impl?.firstTurnFailed?.(wsId) ?? false;
+}
+
+/** Boolean form of {@link sdkStartAndDeliverResult} for wake and the bus wake seam. */
+export async function sdkStartAndDeliver(wsId: string, text: string): Promise<boolean> {
+  return (await sdkStartAndDeliverResult(wsId, text)).ok;
 }
 
 /** Stop a live structured session if one exists (best-effort). Even with NO

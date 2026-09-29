@@ -1,7 +1,7 @@
 /** Compose a set of review annotations into ONE revision prompt for the agent.
  *
  *  Why one prompt rather than one message per comment: every delivery path
- *  (`sdkDeliver` → next turn, `sdkStartAndDeliver` → wake, or the PTY fallback)
+ *  (`sdkDeliver` → next turn, `sdkStartAndDeliver` → wake)
  *  costs the agent a full turn, and N separate turns would make it revise
  *  against a moving file N times. Batching also lets the agent see the review as
  *  a whole, which is how a human reviewer's comments are meant to be read.

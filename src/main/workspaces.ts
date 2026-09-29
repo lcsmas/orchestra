@@ -13,6 +13,9 @@ import {
   sdkDeliver,
   sdkDeliverConfirmed,
   sdkStartAndDeliver,
+  sdkStartAndDeliverResult,
+  sdkAwaitFirstTurn,
+  type SdkStartResult,
   sdkStopIfLive,
   sdkSessionLive,
 } from './sdk-delivery';
@@ -41,6 +44,7 @@ import {
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
+import { owesOpeningTask } from '../shared/opening-task.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
@@ -1492,80 +1496,66 @@ const SUBMIT_MAX_ATTEMPTS = 4;
 // TUI would retype indefinitely.
 const SUBMIT_TYPE_ROUNDS = 2;
 
-/** Start a freshly-created workspace's agent straight from the main process,
- * without waiting for any renderer pane to become visible — the agent-driven
- * /spawn flow wants the delegated worktree working *now*. The agent runs as a
- * STRUCTURED (SDK) session, so the child shows up live in the structured view;
- * the legacy headless raw-PTY spawn (TUI typing + readiness sentinel + submit
- * retries) remains below only as a fallback when the SDK path is unavailable.
- *
- * Safe against the renderer's later `pty:start`: that handler early-returns on
- * `isRunning(id)` (just resizing to the real geometry), so there's no
- * double-spawn. We also flip `hasInput` after delivering the task so that if
- * the user later opens the Raw pane, the renderer resumes with `--continue`
- * instead of re-injecting the task into a fresh run. */
-async function startWorkspaceAgentHeadless(id: string): Promise<void> {
-  const ws = store.getWorkspace(id);
-  if (!ws || ws.archived || isRunning(id)) return;
-  // #226: sandbox agents are paused — throw (dispatchSpawnRequest answers {ok:false,error}) before the PTY fallback below. Unreachable today: no producer spawns a sandbox ws.
-  const paused = sandboxPausedMessage(ws);
-  if (paused) throw new Error(paused);
-  // STRUCTURED-FIRST: run the delegated agent as an SDK session, so the child
-  // works in the structured view (the default agent surface) instead of a raw
-  // `claude` TUI hidden in the "Raw" tab. sdkStartAndDeliver lazy-starts the
-  // session and enqueues the task as its opening turn — no readiness sentinel,
-  // no TUI typing/retry machinery needed (the queue can't drop a keystroke).
-  // The raw-PTY path below survives ONLY as a fallback for when the SDK seam
-  // is unregistered or the session fails to start (sdk-delivery logs why).
-  if (ws.lastTask && (await sdkStartAndDeliver(id, ws.lastTask))) {
-    // Delivered. Flip hasInput so a later Raw-tab open resumes the conversation
-    // (`claude --continue`) instead of re-injecting the task into a fresh TUI
-    // (see the `!resuming && ws.lastTask` branch in api-handlers' ptyStart).
-    const fresh = store.getWorkspace(id);
-    if (fresh && !fresh.hasInput) {
-      const updated: Workspace = { ...fresh, hasInput: true };
-      await store.upsertWorkspace(updated);
-      platform.broadcast('workspace:update', updated);
-    }
-    return;
-  }
-  const readyFile = readyFilePath(id);
-  // Drop any stale sentinel from a prior run before the agent starts, so the
-  // wait below can't be short-circuited by an old file.
-  await clearReadyFile(id);
-  const extraEnv: Record<string, string> = {
-    // Per-repo env first so Orchestra's own vars below always take precedence.
-    ...(await resolveRepoAgentEnv(ws)),
-    ORCHESTRA_BRANCH: ws.branch,
-    ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
-    ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
-    ORCHESTRA_KIND: ws.kind ?? 'worktree',
-    ORCHESTRA_READY_FILE: readyFile,
-  };
-  await startPty({
-    id,
-    cwd: ws.worktreePath,
-    command: 'claude',
-    args: ['--dangerously-skip-permissions'],
-    cols: HEADLESS_COLS,
-    rows: HEADLESS_ROWS,
-    workspaceId: id,
-    extraEnv,
-    stripEnv: await resolveRepoAgentStripEnv(ws),
-  });
-  if (!ws.lastTask) return;
-  const task = ws.lastTask;
-  // Submit the opening prompt once the TUI is actually live — signalled by the
-  // SessionStart readiness sentinel rather than a fixed delay — then confirm the
-  // submit '\r' actually registered and resend it if not. The old path was
-  // fire-and-forget: under concurrent spawns the saturated main loop could drop
-  // the submit keystroke (text present in the box, never sent — exactly the
-  // "third agent didn't start" symptom), with nothing to catch it. Now the task
-  // text lands on readiness, and the '\r' is retried until the agent's own
-  // UserPromptSubmit hook flips the status off `idle`.
-  void submitTaskWhenReady(id, task, readyFile);
+/** How long spawn / Restart wait for the child's first-turn outcome (#227 D6/D7); the env override is for tests. */
+const INIT_WAIT_MS = 20_000;
+function initWaitMs(): number {
+  const n = Number(process.env.ORCHESTRA_SPAWN_INIT_WAIT_MS);
+  return Number.isFinite(n) && n > 0 ? n : INIT_WAIT_MS;
 }
 
+/** In-flight starts by workspace — two Restarts (or a Restart racing spawn) must not queue the brief twice. */
+const openingTaskStarts = new Map<string, Promise<SdkStartResult>>();
+
+/** Start the workspace's SDK session with `lastTask` as its opening turn. NO PTY fallback (#227): on failure the child
+ *  stays stopped with the task retained (`owesOpeningTask`) and the reason is an error row in its Agent view; Restart retries. */
+export function startWorkspaceAgentHeadless(id: string): Promise<SdkStartResult> {
+  const inFlight = openingTaskStarts.get(id);
+  if (inFlight) return inFlight;
+  const p = startWorkspaceAgentOnce(id).finally(() => openingTaskStarts.delete(id));
+  openingTaskStarts.set(id, p);
+  return p;
+}
+
+async function startWorkspaceAgentOnce(id: string): Promise<SdkStartResult> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
+  if (isRunning(id)) return { ok: true };
+  // #226: sandbox agents are paused — refuse before any start (a sandbox ws is never spawned today; no PTY fallback could mask it, #227).
+  const paused = sandboxPausedMessage(ws);
+  if (paused) return { ok: false, error: paused };
+  // Nothing owed = nothing to deliver — a repeated Restart delivers the brief once (#227).
+  if (!ws.lastTask || !owesOpeningTask(ws)) return { ok: true };
+  const started = await sdkStartAndDeliverResult(id, ws.lastTask, { openingBrief: true });
+  if (!started.ok) return started;
+  // #227 D7: wait (bounded) for the FIRST TURN's outcome — init alone proves nothing (a bad --model / no auth inits, then errors and exits).
+  const turn = await sdkAwaitFirstTurn(id, initWaitMs());
+  if (turn.state === 'failed') {
+    // An errored first turn can leave the CLI alive (only a dead one is gone already): the kept child must be STOPPED, not half-running.
+    await sdkStopIfLive(id).catch(() => {});
+    const model = `(model: ${ws.model ?? 'default'})`;
+    return {
+      ok: false,
+      error:
+        turn.cause === 'turn-error'
+          ? `the agent's first turn failed: ${turn.reason} ${model}`
+          : `the agent exited before its first turn produced output: ${turn.reason} ${model}`,
+    };
+  }
+  if (turn.state === 'timeout') {
+    // Still silent at the bound (a slow first turn is not a failure): ok, brief NOT yet delivered — the consume loop decides that.
+    return { ok: true, note: `first turn not confirmed within ${Math.round(initWaitMs() / 1000)} s — started, not confirmed` };
+  }
+  // ok = delivered (agent-sdk flipped hasInput at the first non-error output). 'unknown' = a seam that cannot say (fake / no SDK): flip here.
+  const fresh = store.getWorkspace(id);
+  if (turn.state === 'unknown' && fresh && !fresh.hasInput) {
+    const updated: Workspace = { ...fresh, hasInput: true };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+  }
+  return { ok: true };
+}
+
+// `submitTaskWhenReady` + `waitForSubmitConfirmed` are UNREFERENCED since #227; #233 deletes them.
 /** Submit `task` into a freshly-started agent's TUI once it signals readiness,
  * then flip `hasInput`. Waits for the readiness sentinel (deterministic), and
  * only if it never appears falls back to the proven fixed delay. The two-write
@@ -1677,6 +1667,8 @@ export interface SpawnResult {
   id?: string;
   branch?: string;
   error?: string;
+  /** Ok with a caveat (#227 D6/D7): the child's first turn was not confirmed within the wait bound. */
+  note?: string;
 }
 
 /** The brief's model sentence, from the user's spawned-agent default model
@@ -1769,8 +1761,19 @@ export async function dispatchSpawnRequest(
       ...(effort ? { effort } : {}),
       branch: input.branch,
     }, input.defaultKind);
-    await startWorkspaceAgentHeadless(ws.id);
-    return { ok: true, id: ws.id, branch: ws.branch };
+    const started = await startWorkspaceAgentHeadless(ws.id);
+    if (!started.ok) {
+      // #227: not-ok, but the child is KEPT (stopped, task retained) — carry id+branch so the caller can restart it.
+      return {
+        ok: false,
+        id: ws.id,
+        branch: ws.branch,
+        error:
+          `the agent failed to start: ${started.error}. Workspace ${ws.branch} (${ws.id}) was kept, stopped, ` +
+          `with its task retained — fix the cause, then restart it (\`orchestra restart ${ws.id}\`).`,
+      };
+    }
+    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'spawn failed' };
   }
@@ -3266,26 +3269,23 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
  * STRUCTURED (SDK) session — resuming the prior conversation (`ws.sdkSessionId`,
  * or a terminal-only workspace's newest on-disk transcript, the same session
  * `--continue` picks) so the woken agent keeps its context; a workspace that
- * never ran starts fresh with the prompt as its opening turn. The raw-PTY wake
- * below survives only as a fallback when the SDK path is unavailable. Safe
- * against the renderer's later `pty:start`, which early-returns on `isRunning`.
- * Returns false when the agent can't be woken (missing / archived / already
- * running) so the caller can fall back. Throws only if the PTY spawn itself
- * fails. Exported for the prompt-queue flusher, which delivers
+ * never ran starts fresh with the prompt as its opening turn. There is NO
+ * raw-PTY fallback (#227). Safe against the renderer's later `pty:start`, which
+ * early-returns on `isRunning`. Returns false when the agent can't be woken
+ * (missing / archived / a live PTY / the SDK session failed to start) so the
+ * caller falls back (inbox, re-queue, error). Exported for the prompt-queue flusher, which delivers
  * usage-limit-parked prompts through the exact same live-or-wake path as peer
  * messages. */
 export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
-  // #226: sandbox agents are paused — refuse here too: sdkStartAndDeliver swallows the funnel's refusal and the PTY fallback below (no `host`) would start a LOCAL claude.
+  // #226: sandbox agents are paused — refuse here too (sdkStartAndDeliver swallows the funnel's refusal; there is no PTY fallback to mask it, #227).
   const paused = sandboxPausedMessage(ws);
   if (paused) {
     log.warn(`wake refused for ${id}: ${paused}`);
     return false;
   }
-  // A wake is a restore, whichever branch below serves it: the SDK paths clear
-  // via ensureSession, but the raw-PTY fallback calls startPty directly, so
-  // clear once here and every branch is covered. Idempotent when not hibernated.
+  // A wake is a restore: drop the hibernated chip up front. Idempotent when not hibernated.
   clearHibernated(id);
   // A live structured (SDK) session is the active agent even with no PTY: deliver
   // the prompt as its next turn rather than spawning a raw `claude` PTY beside it.
@@ -3295,7 +3295,8 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
   // prior conversation) and hand it the prompt as its opening turn, so the woken
   // agent runs in the structured view instead of respawning the raw TUI.
   if (await sdkStartAndDeliver(id, prompt)) {
-    if (!ws.hasInput) {
+    // An OWED brief rides first and flips hasInput itself once the CLI's first non-error output lands (agent-sdk `consume`, #227 D7).
+    if (!ws.hasInput && !owesOpeningTask(ws)) {
       const updated: Workspace = { ...ws, hasInput: true };
       void store.upsertWorkspace(updated).then(() => {
         platform.broadcast('workspace:update', updated);
@@ -3303,53 +3304,8 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
     }
     return true;
   }
-  // #178 seam (b), the raw-PTY wake fallback: same phantom-transcript guard as
-  // startAgentPty — `--continue` only when a transcript exists on disk, never on
-  // `hasInput` alone (a phantom terminal workspace `--continue`s into nothing).
-  const resuming = shouldContinuePty({
-    hasInput: ws.hasInput,
-    fresh: false,
-    newestTranscriptExists: newestTranscriptExists(ws),
-  });
-  const readyFile = readyFilePath(id);
-  await clearReadyFile(id);
-  // Reuse the size the terminal had before the agent stopped: if the pane is
-  // open, the renderer won't re-assert its size after this out-of-band spawn,
-  // so a default geometry would leave Claude's TUI drawing at the wrong width.
-  const priorSize = getPtySize(id);
-  await startPty({
-    id,
-    cwd: ws.worktreePath,
-    command: 'claude',
-    args: resuming
-      ? ['--continue', '--dangerously-skip-permissions']
-      : ['--dangerously-skip-permissions'],
-    cols: priorSize?.cols ?? HEADLESS_COLS,
-    rows: priorSize?.rows ?? HEADLESS_ROWS,
-    workspaceId: id,
-    stripEnv: await resolveRepoAgentStripEnv(ws),
-    extraEnv: {
-      // Per-repo env first so Orchestra's own vars below always take precedence.
-      ...(await resolveRepoAgentEnv(ws)),
-      ORCHESTRA_BRANCH: ws.branch,
-      ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
-      ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
-      ORCHESTRA_KIND: ws.kind ?? 'worktree',
-      ORCHESTRA_READY_FILE: readyFile,
-    },
-  });
-  // Submit the message once the TUI signals readiness (sentinel), not on a
-  // fixed delay — same concurrency fix as the headless spawn path. submitTask-
-  // WhenReady handles the wait, fallback, two-write submit, and dead-PTY guard;
-  // hasInput is flipped here since this turn is always a real submitted prompt.
-  void submitTaskWhenReady(id, prompt, readyFile);
-  if (!ws.hasInput) {
-    const updated: Workspace = { ...ws, hasInput: true };
-    void store.upsertWorkspace(updated).then(() => {
-      platform.broadcast('workspace:update', updated);
-    });
-  }
-  return true;
+  // #227: no PTY fallback — false lets the callers fall back (inbox / re-queue / re-mark / error row already in the view).
+  return false;
 }
 
 /** Deliver a prompt from one agent to another. If the target's PTY is running
@@ -3530,9 +3486,8 @@ async function dispatchMessageRequestUnmirrored(
   }
 
   if (isRunning(input.to)) {
-    // Type the message, then a SEPARATE carriage return a beat later — same
-    // trick startWorkspaceAgentHeadless uses so the TUI submits it as one turn
-    // instead of treating the trailing newline as a pasted line.
+    // Type the message, then a SEPARATE carriage return a beat later, so the TUI
+    // submits it as one turn instead of treating the trailing newline as a pasted line.
     writePty(input.to, body);
     setTimeout(() => writePty(input.to, '\r'), 80);
     return { ok: true, delivery: 'live', branch: target.branch };
@@ -5357,7 +5312,7 @@ const busRunAnchorDeps = {
  * the `.orchestra/bus-switches` notice exist REGARDLESS of the launch path.
  *
  * WHY AT CREATION, NOT ONLY startAgentPty (review-F1/VERIFY-F G9): the DEFAULT
- * spawn is `dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliver`
+ * spawn is `dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliverResult`
  * (the structured session), which NEVER calls `startAgentPty` (the Raw-tab PTY
  * path). Wiring only into `startAgentPty` made the whole feature a NO-OP on the
  * real AppImage — a spawned orchestrator got RUNS=0 / no notice, the exact canary

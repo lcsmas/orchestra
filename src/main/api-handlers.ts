@@ -392,6 +392,10 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
  *  of a busy log when tracing a duplicate-window report. */
 const olog = scoped('open-url');
 
+/** #227 — fix-checks / send-review to an agent whose SDK session could not start (the reason is an error row in its Agent view). */
+const AGENT_WAKE_FAILED =
+  'The agent could not be started, so nothing was sent — see the error in its Agent view, fix the cause, then Restart it.';
+
 // Only allow http(s) URLs out to the OS. Other schemes are ignored to avoid
 // opening arbitrary things (file://, javascript:, etc.) from PTY output.
 function isSafeHttpUrl(url: string): boolean {
@@ -1265,6 +1269,9 @@ export const apiHandlers: ApiHandlerTable = {
     // (deliver-as-next-turn / structured-first wake). It returns false when a
     // terminal PTY is live — then type it in.
     if (!(await wakeAgentWithPrompt(id, prompt))) {
+      // #227: false is a live PTY (typed in, unchanged — #232) OR an SDK session that would not start (no
+      // PTY to type into): never answer "requested" for a prompt that went nowhere.
+      if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED);
       writePty(id, prompt);
       setTimeout(() => writePty(id, '\r'), 80);
     }
@@ -1319,6 +1326,7 @@ export const apiHandlers: ApiHandlerTable = {
     // next turn, a stopped agent gets a structured-first wake, and a live
     // terminal PTY (where wakeAgentWithPrompt returns false) gets it typed in.
     if (!(await wakeAgentWithPrompt(id, prompt))) {
+      if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED); // #227 — see fixChecks
       writePty(id, prompt);
       setTimeout(() => writePty(id, '\r'), 80);
     }
