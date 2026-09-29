@@ -4,6 +4,7 @@ import type { ProcSample } from './resources.ts';
 import {
   buildResourceLogLine,
   classifySurvivors,
+  bootFallbackKills,
   decideDuplicateReap,
   decideReap,
   decideThresholdWarnings,
@@ -408,4 +409,25 @@ test('parseKeeperArgv matches only THIS home\'s keeper argv (pid path anchors th
   assert.equal(parseKeeperArgv(['nvim', 'keeper.js', 'a', 'b', 'c', 'd'], pidPathFor), null);
   assert.equal(parseKeeperArgv(good.slice(0, 4), pidPathFor), null);
   assert.equal(parseKeeperArgv(null, pidPathFor), null);
+});
+
+test('decideDuplicateReap REFUSES a "duplicate" whose tree contains the tracked keeper (fork-style wrapper, review K1)', () => {
+  // wrapper 50 (argv matches keeper) → tracked keeper 60 → its CLI 61; sole keeper of a LIVE workspace
+  const table = [proc(50, 1, { comm: 'timeout' }), proc(60, 50, { comm: 'node' }), proc(61, 60, { comm: 'claude' })];
+  const d = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 60 }], [kp(50, 'w'), kp(60, 'w')], table, new Set(['w']), true);
+  assert.deepEqual(d.targets, []);
+  assert.match(d.refused[0].reason, /victim-tree-contains-tracked-keeper/);
+  // control: a real duplicate (no tracked pid in its tree) is still classified
+  const ctl = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 200 }], [kp(100, 'w'), kp(200, 'w')], dupTable, new Set(['w']), true);
+  assert.deepEqual(ctl.targets.map((t) => t.keeperPid), [100]);
+});
+
+test('bootFallbackKills: only where /proc identity is unavailable (non-Linux), only once the store loaded, only absent ids (review K5)', () => {
+  const ids = ['gone', 'live'];
+  const live = new Set(['live']);
+  assert.deepEqual(bootFallbackKills('darwin', ids, live, true), ['gone']);
+  assert.deepEqual(bootFallbackKills('win32', ids, live, true), ['gone']);
+  assert.deepEqual(bootFallbackKills('darwin', ids, live, false), [], 'store not loaded → kills nothing');
+  assert.deepEqual(bootFallbackKills('linux', ids, live, true), [], 'Linux: the guarded reaper owns it');
+  assert.deepEqual(bootFallbackKills('darwin', ['live'], live, true), [], 'a live workspace is never killed');
 });

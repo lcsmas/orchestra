@@ -208,6 +208,7 @@ import { installCliShim, installAgentCliShim } from './cli-shim';
 import {
   installKeeper,
   listLiveKeepers,
+  killKeeper,
   probeKeeper,
   setAppQuitting,
 } from './keeper-client';
@@ -235,6 +236,7 @@ import {
   setBootWedgeRunResolver,
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
+import { bootFallbackKills } from '../shared/resource-monitor';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -853,7 +855,7 @@ async function reconcileKeepersAtStartup(): Promise<void> {
   try {
     for (const wsId of listLiveKeepers()) {
       // Absent-from-store keepers are reaped below by reapKeepersNow (store-loaded guard, identity
-      // re-verified, one log line per kill) — never by a bare killKeeper on an unverified store.
+      // re-verified, one log line per kill); non-Linux (no /proc start-time) falls back to killKeeper.
       if (!store.getWorkspace(wsId)) continue;
       try {
         const probe = await probeKeeper(wsId);
@@ -870,6 +872,10 @@ async function reconcileKeepersAtStartup(): Promise<void> {
     log.warn('startup keeper reconcile failed', e);
   }
   await reapKeepersNow().catch((e) => log.warn('startup keeper reap failed', e));
+  const liveIds = new Set(store.workspaces.map((w) => w.id));
+  for (const wsId of bootFallbackKills(process.platform, listLiveKeepers(), liveIds, store.loadedFromDisk)) {
+    void killKeeper(wsId, 'boot-orphan (no /proc identity)');
+  }
 }
 
 function shutdownSubsystems(): void {

@@ -27,15 +27,18 @@ const ARMS = [
   'del_never_started',
   'race_n_starts',
   'daemon_refuses_second',
+  'daemon_refuses_hung',
   'exit_owns_only',
   'survivor_killable',
   'sweep_spares_successor',
   'kill_serialized_with_start',
   'kill_refuses_reused_pid',
   'kill_pid_fallback_reaches',
+  'kill_hung_keeper',
   'reap_dup_live',
   'reap_boot_pass',
   'reap_sole_live',
+  'reap_wrapper_sole',
   'reap_store_unreadable',
   'reap_absent_all',
   'reap_failclosed',
@@ -91,15 +94,18 @@ const NOTES: Record<(typeof ARMS)[number], string> = {
   del_prune_orphan: '#201 boot orphan prune kills the orphan keeper; a tracked workspace keeps its keeper',
   del_never_started: '#201 hibernated / never-started delete → no error (must-PASS on master too)',
   race_n_starts: '#202 N=6 concurrent starts → exactly 1 keeper + 1 CLI; killKeeper reaches the survivor',
+  daemon_refuses_hung: '#202 a 2nd daemon fails CLOSED on a hung (SIGSTOP) live keeper: refuses, leaves its files',
   daemon_refuses_second: '#202 a second daemon on a live keeper\'s socket refuses, touching no file',
   exit_owns_only: '#202 a keeper\'s exit does not unlink a takeover\'s socket/pid',
   survivor_killable: '#202 killKeeper still reaches the survivor after a sibling\'s exit',
   sweep_spares_successor: '#202 the post-kill sweep spares a live successor\'s files, clears dead ones',
   kill_serialized_with_start: '#202 a killKeeper issued right after a start queues behind it and kills it (no interleave)',
   kill_refuses_reused_pid: '#202/identity killKeeper never signals a pid-file pid that is not this workspace\'s keeper',
+  kill_hung_keeper: '#201 killKeeper on a wedged keeper: SIGKILL fallback also takes its CLI down (no ppid-1 orphan) and clears the files',
   kill_pid_fallback_reaches: 'killKeeper\'s pid fallback still reaches a real keeper (must-PASS on master too)',
   reap_dup_live: '#203 duplicate keeper of a live workspace reaped, tracked one untouched, one log line',
   reap_boot_pass: '#203 the boot pass (reapKeepersNow): store not loaded → kills nothing; loaded → orphan + duplicate reaped, tracked kept',
+  reap_wrapper_sole: '#203 a live ws\'s sole keeper behind a fork-style wrapper is never reaped as a duplicate',
   reap_sole_live: '#203 a live workspace\'s sole keeper (incl. hibernated) is never reaped (must-PASS)',
   reap_store_unreadable: '#203 a sweep whose store did not load from disk kills nothing (must-PASS)',
   reap_absent_all: '#203 absent workspace: tracked AND untracked keepers reaped',
@@ -119,5 +125,7 @@ test('boot reconcile reaps through the guarded pass and never kills on a bare st
   const fn = src.slice(src.indexOf('async function reconcileKeepersAtStartup'), src.indexOf('function shutdownSubsystems'));
   assert.ok(fn.length > 200, 'reconcileKeepersAtStartup not found');
   assert.match(fn, /await reapKeepersNow\(\)/);
-  assert.doesNotMatch(fn, /killKeeper\(/);
+  assert.match(fn, /bootFallbackKills\(process\.platform/);
+  // the only killKeeper is the non-Linux fallback's, fed by the guarded bootFallbackKills list
+  assert.equal((fn.match(/killKeeper\(/g) ?? []).length, 1);
 });

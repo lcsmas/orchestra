@@ -32,16 +32,19 @@ const ARMS = {
   // #202
   race_n_starts: { mustFailOnMaster: true },
   daemon_refuses_second: { mustFailOnMaster: true },
+  daemon_refuses_hung: { mustFailOnMaster: true },
   exit_owns_only: { mustFailOnMaster: true },
   survivor_killable: { mustFailOnMaster: true },
   sweep_spares_successor: { mustFailOnMaster: true },
   kill_serialized_with_start: { mustFailOnMaster: true },
   kill_refuses_reused_pid: { mustFailOnMaster: true },
   kill_pid_fallback_reaches: {},
+  kill_hung_keeper: { mustFailOnMaster: true },
   // #203
   reap_dup_live: { mustFailOnMaster: true },
   reap_boot_pass: { mustFailOnMaster: true },
   reap_sole_live: {},
+  reap_wrapper_sole: {},
   reap_store_unreadable: {},
   reap_absent_all: { mustFailOnMaster: true },
   reap_failclosed: { mustFailOnMaster: true },
@@ -152,13 +155,15 @@ async function startKeeper(ws) {
   return { st, keeperPid: pidFilePid(ws), cliPid: echoPid(st, 'up') };
 }
 /** A keeper daemon launched by hand (same argv as launchKeeperDaemon), optionally with a live CLI. */
-async function rawKeeper(ws, { cli = false, tag = 'k' } = {}) {
-  const k = spawn(process.execPath, [KEEPER_BIN, ws, kc.keeperSocketPath(ws), pidFilePath(ws), path.join(home, 'keepers', `${ws}.log`)], {
+async function rawKeeper(ws, { cli = false, tag = 'k', wrapper = [] } = {}) {
+  if (!kc.keeperSocketPath(ws).startsWith(home + path.sep)) throw new Error('VOID: socket path fell back to a hashed tmp name (rig dir too long)');
+  const [cmd, ...pre] = wrapper.length ? [...wrapper, process.execPath] : [process.execPath];
+  const k = spawn(cmd, [...pre, KEEPER_BIN, ws, kc.keeperSocketPath(ws), pidFilePath(ws), path.join(home, 'keepers', `${ws}.log`)], {
     detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   });
   k.unref();
   const out = { pid: k.pid, sock: null, cliPid: null };
-  if (!(await waitFor(() => pidFilePid(ws) === k.pid, 25_000))) return out; // refused / never owned the paths
+  if (!(await waitFor(() => (wrapper.length ? pidFilePid(ws) !== null : pidFilePid(ws) === k.pid), 25_000))) return out; // refused / never owned the paths
   if (cli) {
     const sock = net.connect(kc.keeperSocketPath(ws));
     await new Promise((res, rej) => { sock.once('connect', res); sock.once('error', rej); });
@@ -207,10 +212,12 @@ async function runArm() {
   if (ARM.startsWith('del_')) return deleteArms();
   if (ARM === 'race_n_starts') return raceArm();
   if (ARM === 'daemon_refuses_second') return daemonRefusesSecond();
+  if (ARM === 'daemon_refuses_hung') return daemonRefusesHung();
   if (ARM === 'exit_owns_only' || ARM === 'survivor_killable') return takeoverArms();
   if (ARM === 'sweep_spares_successor') return sweepArm();
   if (ARM === 'kill_refuses_reused_pid' || ARM === 'kill_pid_fallback_reaches') return killIdentityArms();
   if (ARM === 'kill_serialized_with_start') return killSerializedArm();
+  if (ARM === 'kill_hung_keeper') return killHungArm();
   if (ARM.startsWith('reap_')) return reapArms();
 }
 
@@ -497,6 +504,37 @@ async function killIdentityArms() {
   result.ok = after.keeperDead && after.cliDead;
 }
 
+async function daemonRefusesHung() {
+  // K_old is alive but HUNG (SIGSTOP: the kernel accepts into the backlog, nobody answers). A 2nd daemon must
+  // fail CLOSED — refuse, leave K_old's files — never read silence as "stale" and steal the socket (review K3).
+  const WS = W('h');
+  const old = await rawKeeper(WS);
+  if (pidFilePid(WS) !== old.pid) throw new Error('setup: K_old did not own the paths');
+  process.kill(old.pid, 'SIGSTOP');
+  const k2 = spawn(process.execPath, [KEEPER_BIN, WS, kc.keeperSocketPath(WS), pidFilePath(WS), path.join(home, 'keepers', `${WS}.log`)], { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+  k2.unref();
+  const k2Exited = await waitFor(() => !alive(k2.pid), 15_000);
+  const after = { k2Exited, oldAlive: alive(old.pid), pidFileIsOld: pidFilePid(WS) === old.pid, keepers: keepersOf(WS).length };
+  process.kill(old.pid, 'SIGCONT');
+  after.oldStillServes = (await waitFor(async () => (await kc.probeKeeper(WS)) !== null, 5_000));
+  Object.assign(result, { after });
+  result.ok = k2Exited && after.oldAlive && after.pidFileIsOld && after.keepers === 1 && after.oldStillServes;
+}
+
+async function killHungArm() {
+  // A WEDGED keeper (SIGSTOP) can't relay the kill frame: killKeeper falls back to SIGKILL on the keeper —
+  // its CLI must die too (no orphan with ppid 1), and the socket/pid files must go (review K4).
+  const WS = W('w');
+  const k = await startKeeper(WS);
+  process.kill(k.keeperPid, 'SIGSTOP');
+  const t0 = Date.now();
+  await kc.killKeeper(WS, 'rig');
+  const ms = Date.now() - t0;
+  const after = { ms, keeperAlive: alive(k.keeperPid), cliAlive: alive(k.cliPid), files: filesLeft(WS), lines: killLogLines(WS).length };
+  Object.assign(result, { after });
+  result.ok = !after.keeperAlive && !after.cliAlive && after.files.length === 0 && ms < 20_000;
+}
+
 async function killSerializedArm() {
   // A stop requested AFTER a start must win: killKeeper queues behind the in-flight launch, then kills it.
   const WS = W('q');
@@ -570,6 +608,20 @@ async function reapArms() {
     result.ok = Object.values(unloaded).every((x) => x.keeperAlive && x.cliAlive)
       && !after.dup.keeperAlive && !after.dup.cliAlive && after.tracked.keeperAlive && after.tracked.cliAlive
       && !after.orphan.keeperAlive && !after.orphan.cliAlive && after.reapLines === 2;
+    return;
+  }
+  if (ARM === 'reap_wrapper_sole') {
+    // A live ws's SOLE keeper launched through a fork-style wrapper (`timeout 300 node keeper.js …`): both the
+    // wrapper and the daemon carry the keeper argv; the wrapper must NOT be reaped as a "duplicate" (review K1).
+    const WS = W('w');
+    const k = await rawKeeper(WS, { wrapper: ['timeout', '300'] });
+    const tracked = pidFilePid(WS);
+    if (!tracked || tracked === k.pid) throw new Error(`setup: wrapper not in front of the daemon ${JSON.stringify({ wrapper: k.pid, tracked })}`);
+    await M.sampleTick(deps({ liveWorkspaceIds: live(WS), storeLoadedFromDisk: () => true, statusFor: () => 'idle' }));
+    await sleep(300);
+    const after = { wrapperAlive: alive(k.pid), trackedAlive: alive(tracked), reachable: (await kc.probeKeeper(WS)) !== null, reapLines: reapLogs().length, refused: logs.filter((l) => /victim-tree-contains-tracked-keeper/.test(l)).length };
+    Object.assign(result, { after });
+    result.ok = after.wrapperAlive && after.trackedAlive && after.reachable && after.reapLines === 0;
     return;
   }
   if (ARM === 'reap_sole_live') {
@@ -648,12 +700,23 @@ async function reapArms() {
         signal: (pid, sig) => { if (pid === T) trackedDead = true; sentLog.push(`${sig}:${pid}`); return true; },
       });
     })();
+    // Tracked pid RECYCLED by a non-keeper at kill time; D is the ONLY real keeper of a live ws → nothing signalled.
+    const trackedRecycled = await run({ readCmdline: (pid) => (pid === D ? argv(D) : ['/bin/sleep', '1']) });
+    // K1: a "duplicate" that WRAPS the tracked keeper (fork-style wrapper W above T) → refused, nothing signalled.
+    const Wp = 5001;
+    const wrapTable = [proc(Wp, 1, 'timeout', 90), proc(T, Wp, 'node', 100)];
+    const wrapperSole = await run({
+      procTable: async () => wrapTable, keeperProcs: () => [{ pid: Wp, workspaceId: WS }, { pid: T, workspaceId: WS }],
+      readProcStat: (pid) => wrapTable.find((p) => p.pid === pid) ?? null,
+      readCmdline: (pid) => (pid === T || pid === Wp ? argv(pid) : ['/bin/sleep', '1']),
+    });
     const onlyDup = (sent) => sent.every((s) => /:(4002|4003)$/.test(s)) && !sent.some((s) => s.endsWith(`:${T}`));
-    Object.assign(result, { control, cmdMismatch, reused, trackedMoved, trackedGone, orphanFlip, orphanControl, trackedDiesFirst });
+    Object.assign(result, { control, cmdMismatch, reused, trackedMoved, trackedGone, orphanFlip, orphanControl, trackedDiesFirst, trackedRecycled, wrapperSole });
     result.ok = control.length > 0 && onlyDup(control) && control.some((s) => s === `SIGTERM:${D}`) && control.some((s) => s === `SIGTERM:${C}`)
       && cmdMismatch.length === 0 && reused.filter((s) => s.endsWith(`:${D}`)).length === 0
       && trackedMoved.length === 0 && trackedGone.length === 0
       && trackedDiesFirst.some((x) => x === `SIGTERM:${D}`) && trackedDiesFirst.some((x) => x === `SIGTERM:${C}`)
+      && trackedRecycled.length === 0 && wrapperSole.length === 0
       && orphanFlip.length === 0 && orphanControl.some((x) => x === `SIGTERM:${T}`) && orphanControl.some((x) => x === `SIGTERM:${D}`);
     return;
   }
