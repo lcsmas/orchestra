@@ -1,0 +1,8 @@
+(1) legacy + RELATIVE links, same HOME, de-select skills+statusline: warns=0 links=4 (expect 0 warns, 4 links); sample link before: ["CLAUDE.md","../realhome/.claude/CLAUDE.md"]
+(1b) legacy + RELATIVE links, FAKE HOME S1: warns=1 links 7->7 (expect 7->7 refused)
+(2) login dir is a symlink, stamped, same HOME: warns=0 links=4 (expect 0 warns, 4)
+(2b)   ...then FAKE HOME S1: warns=1 links=4 (expect 4 kept)
+(2) login dir is a symlink, legacy, same HOME: warns=0 links=4 (expect 0 warns, 4)
+(2b)   ...then FAKE HOME S1: warns=1 links=4 (expect 4 kept)
+(3) legacy skills-only account, fake HOME with a skills/handoff dir: warns=1 links 2->2 repointed=0 (expect 2->2, 0 repointed)
+(4) sequential fake then real: fakeWarns=1 realWarns=0 links=7

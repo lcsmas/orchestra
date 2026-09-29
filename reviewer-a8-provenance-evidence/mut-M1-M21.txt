@@ -1,0 +1,26 @@
+CONTROL clean: pass=41 fail=0 skipped=0
+M1 sameDir catch fail-open (unresolvable stamped source == ours): pass=41 fail=0 skipped=0 restored=true **SURVIVOR**
+M2 isInside lexical check = naive string prefix (.claude-x counts inside .claude): pass=41 fail=0 skipped=0 restored=true **SURVIVOR**
+M3 isInside realpath fallback fail-open: pass=40 fail=1 skipped=0 restored=true 
+     red: \#235/D10 legacy manifest with ONE foreign link among ours → refused
+M14 legacy link target NOT resolved against the link dir (relative symlinks): pass=41 fail=0 skipped=0 restored=true **SURVIVOR**
+M15 legacy: dangling links skipped (existsSync) instead of judged by target: pass=40 fail=1 skipped=0 restored=true 
+     red: \#235/D10 legacy manifest with ONE foreign link among ours → refused
+M16 stamp compared by realpath only when path differs -> compare basename only: pass=34 fail=7 skipped=0 restored=true 
+     red: \#235/D10 stamped manifest, source shape S1 CLI-created
+     red: \#235/D10 stamped manifest, source shape S2 self-tune skeleton
+     red: \#235/D10 stamped manifest, source shape S3 empty ~/.claude: live-like target untouched, ONE warn
+     red: \#235/D10 stamped manifest, source shape S4 CLAUDE.md only: live-like target untouched, ONE warn
+     red: \#235/D10 stamped manifest, source shape S5 every file but no skills/ dir: live-like target untouched, ONE war
+     red: \#235/D10 stamped MCP-only account
+M17 refuse only when manifest lists >0 links (MCP-only stamped passes): pass=40 fail=1 skipped=0 restored=true 
+     red: \#235/D10 stamped MCP-only account
+M18 legacy check ignores links whose rel is a skill (skills/*): pass=41 fail=0 skipped=0 restored=true **SURVIVOR**
+M19 stamped: refuse iff stamped source path string differs (no realpath, no alias): pass=40 fail=1 skipped=0 restored=true 
+     red: \#235/D10 stamped manifest, same source via an ALIAS of HOME: still ours → de-selection prunes
+M20 writeManifest stamp = realpath(globalDir) instead of literal: pass=39 fail=2 skipped=0 restored=true 
+     red: \#235/D10 stamped manifest, same source via an ALIAS of HOME: still ours → de-selection prunes
+     red: \#235/D10 legacy manifest, same source via an ALIAS of HOME: still ours → de-selection prunes
+M21 readManifest ignores non-string source (always legacy): pass=40 fail=1 skipped=0 restored=true 
+     red: \#235/D10 stamped MCP-only account
+CONTROL clean after: pass=41 fail=0 skipped=0; src==backup: true

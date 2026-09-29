@@ -1,0 +1,56 @@
+--- /home/lmas/rva8/tip-src.bak	2026-09-30 00:29:06.103617631 +0200
++++ /home/lmas/rva8/proto-src.ts	2026-09-30 00:30:57.269196341 +0200
+@@ -218,9 +218,9 @@
+ 
+ /** #235/D10: where the login dir's links were built from when that is NOT `globalDir` (manifest
+  *  `source`; legacy manifest: any of its links pointing outside `globalDir`), else null. */
+-function builtFromElsewhere(loginDir: string, globalDir: string, prev: InheritManifest): string | null {
++function builtFromElsewhere(loginDir: string, globalDir: string, prev: InheritManifest, managed: string[]): string | null {
+   if (prev.source !== undefined) return sameDir(prev.source, globalDir) ? null : prev.source;
+-  for (const rel of prev.symlinks) {
++  for (const rel of new Set([...prev.symlinks, ...managed])) {
+     const linkPath = path.join(loginDir, rel);
+     if (!isSymlink(linkPath)) continue;
+     const target = path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath));
+@@ -383,20 +383,6 @@
+ 
+   // #235/D10: links built from ANOTHER source (a fake-HOME app vs a live config dir) are not ours to
+   // rewrite — even a readable, skeletal source would repoint/strip them. No write at all.
+-  const prev = readManifest(loginDir);
+-  const from = builtFromElsewhere(loginDir, globalDir, prev);
+-  if (from !== null) {
+-    log.warn(`account-inherit: ${loginDir} was built from ${from}, not ${globalDir} — sync skipped (delete ${MANIFEST_NAME} there to re-home it)`);
+-    return;
+-  }
+-
+-  try {
+-    await fs.promises.mkdir(loginDir, { recursive: true });
+-  } catch (err) {
+-    log.warn(`account-inherit: cannot create login dir ${loginDir}`, err);
+-    return;
+-  }
+-
+   // Build the desired symlink set (relative path -> {target, replaceReal}).
+   // Config FILES the user opted into replace a stale real copy (with backup);
+   // skill DIRS never clobber a real dir (could be the user's own skill).
+@@ -433,6 +419,20 @@
+     });
+   }
+ 
++  const prev = readManifest(loginDir);
++  const from = builtFromElsewhere(loginDir, globalDir, prev, [...wantLinks.keys()]);
++  if (from !== null) {
++    log.warn(`account-inherit: ${loginDir} was built from ${from}, not ${globalDir} — sync skipped (delete ${MANIFEST_NAME} there to re-home it)`);
++    return;
++  }
++
++  try {
++    await fs.promises.mkdir(loginDir, { recursive: true });
++  } catch (err) {
++    log.warn(`account-inherit: cannot create login dir ${loginDir}`, err);
++    return;
++  }
++
+   // Apply desired links; collect the ones actually present afterwards.
+   const liveLinks: string[] = [];
+   for (const [rel, { target, replaceReal }] of wantLinks) {

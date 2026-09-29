@@ -1,0 +1,65 @@
+
+##D foreign sync writes nothing: fs-write spy + fingerprint(login tree + fake home tree), incl mtime/ino
+  stamped S0: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  stamped S1: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  stamped S2: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  stamped S3: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  stamped S4: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  stamped S5: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  legacy  S0: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  legacy  S1: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  legacy  S2: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  legacy  S3: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  legacy  S4: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  legacy  S5: fs-writes=0 loginDiff=0 fakeHomeDiff=0 parentListingSame=true warns=1 
+  CONTROL master S1 (strips): fs-writes=10 loginDiff=11
+  CONTROL cand fresh account (must write): fs-writes=17 links=7
+
+##A legitimate sync refused forever?
+  stamped trailing-slash HOME: warns=0 links=4 (expect 4 = de-selection pruned) 
+  stamped double-slash HOME: warns=0 links=4 (expect 4 = de-selection pruned) 
+  stamped dot-dot HOME: warns=0 links=4 (expect 4 = de-selection pruned) 
+  legacy  trailing-slash HOME: warns=0 links=4 (expect 4 = de-selection pruned) 
+  legacy  double-slash HOME: warns=0 links=4 (expect 4 = de-selection pruned) 
+  legacy  dot-dot HOME: warns=0 links=4 (expect 4 = de-selection pruned) 
+  HOME RENAMED h1->h2 stamped [cand]: warns=1 before={"links":7,"mcp":3,"man":"7/3","src":"<SCR>/run4/t21/h1/.claude","bak":0,"live":0} after={"links":7,"mcp":3,"man":"7/3","src":"<SCR>/run4/t21/h1/.claude","bak":0,"live":0} 
+      WARN: account-inherit: <SCR>/run4/t21/h2/.claude-mc was built from <SCR>/run4/t21/h1/.claude, not /home/lmas/rva8/scr/run4/t21/h2/.claude — sync skipped (delete .orchestra-inherited.json there
+  HOME RENAMED h1->h2 stamped [master]: warns=0 before={"links":7,"mcp":3,"man":"7/3","bak":0,"live":0} after={"links":7,"mcp":3,"man":"7/3","bak":0,"live":7} 
+  HOME RENAMED h1->h2 legacy  [cand]: warns=1 before={"links":7,"mcp":3,"man":"7/3","bak":0,"live":0} after={"links":7,"mcp":3,"man":"7/3","bak":0,"live":0} 
+      WARN: account-inherit: <SCR>/run4/t23/h2/.claude-mc was built from <SCR>/run4/t23/h1/.claude/settings.json, not /home/lmas/rva8/scr/run4/t23/h2/.claude — sync skipped (delete .orchestra-inheri
+  HOME RENAMED h1->h2 legacy  [master]: warns=0 before={"links":7,"mcp":3,"man":"7/3","bak":0,"live":0} after={"links":7,"mcp":3,"man":"7/3","bak":0,"live":7} 
+  POISONED STAMP [cand]: after fake sync={"links":2,"mcp":null,"man":"2/0","src":"<SCR>/run4/t25/fakehome/.claude","bak":0,"live":2}; fake home deleted; REAL sync warns=1 -> {"links":2,"mcp":null,"man":"2/0","src":"<SCR>/run4/t25/fakehome/.claude","bak":0,"live":0} 
+      WARN: account-inherit: <SCR>/run4/t25/livecfg was built from <SCR>/run4/t25/fakehome/.claude, not /home/lmas/rva8/scr/run4/t25/realhome/.claude — sync s
+  POISONED STAMP [master]: after fake sync={"links":2,"mcp":null,"man":"2/0","bak":0,"live":2}; fake home deleted; REAL sync warns=0 -> {"links":7,"mcp":3,"man":"7/3","bak":0,"live":7} 
+
+##B legacy manifest, HOME alias, one link dangling (a skill/import deleted from the source)
+  [cand] ALIAS legacy: warns=1 links 7->7 (RTK.md dangling link still present) 
+      WARN: account-inherit: <SCR>/run4/t27/livecfg was built from <SCR>/run4/t27/realhome/.claude/RTK.md, not /home/lmas/rva8/scr/run4/t27/homealias/.claude — sync ski
+  [cand] ALIAS stamped: warns=0 links 7->6 (RTK.md dangling link dropped) 
+  [cand] same-path legacy: warns=0 links 7->6 (RTK.md dangling link dropped) 
+  [cand] same-path stamped: warns=0 links 7->6 (RTK.md dangling link dropped) 
+  [master] ALIAS legacy: warns=0 links 7->6 (RTK.md dangling link dropped) 
+  [master] same-path legacy: warns=0 links 7->6 (RTK.md dangling link dropped) 
+
+##C live-like links present, manifest NOT listing them (master-reset / deleted / torn) -> fake-HOME sync
+  manifest emptied (what master writes after its strip) / S1 [cand]: links 7->2 repointed-into-fake=0 dropped=5 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S2 [cand]: links 7->3 repointed-into-fake=2 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S4 [cand]: links 7->3 repointed-into-fake=1 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S5 [cand]: links 7->5 repointed-into-fake=5 dropped=2 bak=0 mcp 4->4 warns=0 stamped-now=FAKE
+  manifest absent / S1 [cand]: links 7->2 repointed-into-fake=0 dropped=5 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest absent / S2 [cand]: links 7->3 repointed-into-fake=2 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest absent / S4 [cand]: links 7->3 repointed-into-fake=1 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest absent / S5 [cand]: links 7->5 repointed-into-fake=5 dropped=2 bak=0 mcp 4->4 warns=0 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S1 [cand]: links 7->2 repointed-into-fake=0 dropped=5 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S2 [cand]: links 7->3 repointed-into-fake=2 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S4 [cand]: links 7->3 repointed-into-fake=1 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S5 [cand]: links 7->5 repointed-into-fake=5 dropped=2 bak=0 mcp 4->4 warns=0 stamped-now=FAKE
+  (master, same emptied manifest / S1): links 7->2  mcp 4->4
+
+##E fake HOME whose ~/.claude is a SYMLINK to the live source (sameDir true) but has its own skeleton ~/.claude.json
+  [cand] links 7->7 mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"] warns=1
+  [master] links 7->7 mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"] warns=1
+
+##F first sync on a fresh account
+  absent login dir: warns=0 {"links":7,"mcp":3,"man":"7/3","src":"<SCR>/run4/t48/h/.claude","bak":0,"live":7}
+  inherit undefined: warns=0 {"links":0,"mcp":null,"man":"0/0","src":"<SCR>/run4/t49/h/.claude","bak":0,"live":0}

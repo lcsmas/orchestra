@@ -1,0 +1,26 @@
+
+##C live-like links present, manifest NOT listing them (master-reset / deleted / torn) -> fake-HOME sync
+  manifest emptied (what master writes after its strip) / S1 [cand]: links 7->2 repointed-into-fake=0 dropped=5 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S1 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest emptied (what master writes after its strip) / S2 [cand]: links 7->3 repointed-into-fake=2 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S2 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest emptied (what master writes after its strip) / S4 [cand]: links 7->3 repointed-into-fake=1 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S4 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest emptied (what master writes after its strip) / S5 [cand]: links 7->5 repointed-into-fake=5 dropped=2 bak=0 mcp 4->4 warns=0 stamped-now=FAKE
+  manifest emptied (what master writes after its strip) / S5 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest absent / S1 [cand]: links 7->2 repointed-into-fake=0 dropped=5 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest absent / S1 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest absent / S2 [cand]: links 7->3 repointed-into-fake=2 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest absent / S2 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest absent / S4 [cand]: links 7->3 repointed-into-fake=1 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest absent / S4 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest absent / S5 [cand]: links 7->5 repointed-into-fake=5 dropped=2 bak=0 mcp 4->4 warns=0 stamped-now=FAKE
+  manifest absent / S5 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest torn (truncated mid-write) / S1 [cand]: links 7->2 repointed-into-fake=0 dropped=5 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S1 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest torn (truncated mid-write) / S2 [cand]: links 7->3 repointed-into-fake=2 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S2 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest torn (truncated mid-write) / S4 [cand]: links 7->3 repointed-into-fake=1 dropped=4 bak=0 mcp 4->4 warns=1 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S4 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
+  manifest torn (truncated mid-write) / S5 [cand]: links 7->5 repointed-into-fake=5 dropped=2 bak=0 mcp 4->4 warns=0 stamped-now=FAKE
+  manifest torn (truncated mid-write) / S5 [proto]: links 7->7 repointed-into-fake=0 dropped=0 bak=0 mcp 4->4 warns=1 stamped-now=none
