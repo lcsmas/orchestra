@@ -1,0 +1,483 @@
+TAP version 13
+# (node:1547410) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/lmas/.orchestra/worktrees/a8rev-cand/package.json.
+# (Use `node-22 --trace-warnings ...` to show where the warning was created)
+# Subtest: parseClaudeMdImports: bare-filename imports are collected in order
+ok 1 - parseClaudeMdImports: bare-filename imports are collected in order
+  ---
+  duration_ms: 2.89701
+  type: 'test'
+  ...
+# Subtest: parseClaudeMdImports: ignores non-import lines and inline mentions
+ok 2 - parseClaudeMdImports: ignores non-import lines and inline mentions
+  ---
+  duration_ms: 0.713836
+  type: 'test'
+  ...
+# Subtest: parseClaudeMdImports: rejects path-traversal and separator imports
+ok 3 - parseClaudeMdImports: rejects path-traversal and separator imports
+  ---
+  duration_ms: 0.116834
+  type: 'test'
+  ...
+# Subtest: parseClaudeMdImports: tolerates surrounding whitespace and CRLF
+ok 4 - parseClaudeMdImports: tolerates surrounding whitespace and CRLF
+  ---
+  duration_ms: 0.07975
+  type: 'test'
+  ...
+# Subtest: \#235 no-op on live mirror — fake HOME: ~/.claude AND ~/.claude.json absent (the incident)
+not ok 5 - \#235 no-op on live mirror — fake HOME: ~/.claude AND ~/.claude.json absent (the incident)
+  ---
+  duration_ms: 45.88903
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:284:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    symlinks not unlinked
+    + actual - expected
+    
+    + []
+    - [
+    -   'CLAUDE.md',
+    -   'LESSONS.md',
+    -   'RTK.md',
+    -   'settings.json',
+    -   'skills/frontend-design',
+    -   'skills/handoff',
+    -   'statusline-command.sh'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'CLAUDE.md'
+    1: 'LESSONS.md'
+    2: 'RTK.md'
+    3: 'settings.json'
+    4: 'skills/frontend-design'
+    5: 'skills/handoff'
+    6: 'statusline-command.sh'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:291:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude absent, ~/.claude.json present
+not ok 6 - \#235 no-op on live mirror — ~/.claude absent, ~/.claude.json present
+  ---
+  duration_ms: 4.960059
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:284:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    symlinks not unlinked
+    + actual - expected
+    
+    + []
+    - [
+    -   'CLAUDE.md',
+    -   'LESSONS.md',
+    -   'RTK.md',
+    -   'settings.json',
+    -   'skills/frontend-design',
+    -   'skills/handoff',
+    -   'statusline-command.sh'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'CLAUDE.md'
+    1: 'LESSONS.md'
+    2: 'RTK.md'
+    3: 'settings.json'
+    4: 'skills/frontend-design'
+    5: 'skills/handoff'
+    6: 'statusline-command.sh'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:291:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude is a regular file (ENOTDIR)
+not ok 7 - \#235 no-op on live mirror — ~/.claude is a regular file (ENOTDIR)
+  ---
+  duration_ms: 3.902263
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:284:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    symlinks not unlinked
+    + actual - expected
+    
+    + []
+    - [
+    -   'CLAUDE.md',
+    -   'LESSONS.md',
+    -   'RTK.md',
+    -   'settings.json',
+    -   'skills/frontend-design',
+    -   'skills/handoff',
+    -   'statusline-command.sh'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'CLAUDE.md'
+    1: 'LESSONS.md'
+    2: 'RTK.md'
+    3: 'settings.json'
+    4: 'skills/frontend-design'
+    5: 'skills/handoff'
+    6: 'statusline-command.sh'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:291:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude is a dangling symlink
+not ok 8 - \#235 no-op on live mirror — ~/.claude is a dangling symlink
+  ---
+  duration_ms: 3.48947
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:284:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    symlinks not unlinked
+    + actual - expected
+    
+    + []
+    - [
+    -   'CLAUDE.md',
+    -   'LESSONS.md',
+    -   'RTK.md',
+    -   'settings.json',
+    -   'skills/frontend-design',
+    -   'skills/handoff',
+    -   'statusline-command.sh'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'CLAUDE.md'
+    1: 'LESSONS.md'
+    2: 'RTK.md'
+    3: 'settings.json'
+    4: 'skills/frontend-design'
+    5: 'skills/handoff'
+    6: 'statusline-command.sh'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:291:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude mode 000 (EACCES)
+not ok 9 - \#235 no-op on live mirror — ~/.claude mode 000 (EACCES)
+  ---
+  duration_ms: 4.995351
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:284:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    symlinks not unlinked
+    + actual - expected
+    
+    + []
+    - [
+    -   'CLAUDE.md',
+    -   'LESSONS.md',
+    -   'RTK.md',
+    -   'settings.json',
+    -   'skills/frontend-design',
+    -   'skills/handoff',
+    -   'statusline-command.sh'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'CLAUDE.md'
+    1: 'LESSONS.md'
+    2: 'RTK.md'
+    3: 'settings.json'
+    4: 'skills/frontend-design'
+    5: 'skills/handoff'
+    6: 'statusline-command.sh'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:291:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 step: symlink PRUNE (removeOurSymlink) skipped — inherit empty, manifest lists links
+not ok 10 - \#235 step: symlink PRUNE (removeOurSymlink) skipped — inherit empty, manifest lists links
+  ---
+  duration_ms: 2.014424
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:306:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    prune must not unlink
+    + actual - expected
+    
+    + []
+    - [
+    -   'settings.json',
+    -   'skills/handoff'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'settings.json'
+    1: 'skills/handoff'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:316:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 step: dangling-link DROP (ensureSymlink source-gone unlink) skipped — link still wanted
+not ok 11 - \#235 step: dangling-link DROP (ensureSymlink source-gone unlink) skipped — link still wanted
+  ---
+  duration_ms: 1.317504
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:321:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    wanted link must not be dropped
+    + actual - expected
+    
+    + []
+    - [
+    -   'settings.json'
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'settings.json'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:328:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 step: MCP removal (syncMcpServers toRemove) skipped — nothing wanted, manifest lists servers
+not ok 12 - \#235 step: MCP removal (syncMcpServers toRemove) skipped — nothing wanted, manifest lists servers
+  ---
+  duration_ms: 1.696298
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:333:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    injected server must not be removed
+    + actual - expected
+    
+      [
+    -   'github',
+        'my-own'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'github'
+    1: 'my-own'
+  actual:
+    0: 'my-own'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:339:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 step: MANIFEST write skipped — nothing else to change
+not ok 13 - \#235 step: MANIFEST write skipped — nothing else to change
+  ---
+  duration_ms: 1.822423
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:344:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    manifest not reset
+    + actual - expected
+    
+      {
+        mcpServers: [],
+    +   symlinks: []
+    -   symlinks: [
+    -     'settings.json'
+    -   ]
+      }
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    symlinks:
+      0: 'settings.json'
+    mcpServers:
+  actual:
+    symlinks:
+    mcpServers:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:349:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 step: nothing is CREATED either — absent login dir stays absent
+not ok 14 - \#235 step: nothing is CREATED either — absent login dir stays absent
+  ---
+  duration_ms: 1.156838
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:354:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    no mkdir / manifest in a login dir we did not have
+    
+    true !== false
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: false
+  actual: true
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:357:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 source present: fresh login dir gets links + MCP + manifest, no warn
+ok 15 - \#235 source present: fresh login dir gets links + MCP + manifest, no warn
+  ---
+  duration_ms: 1.54738
+  type: 'test'
+  ...
+# Subtest: \#235 source present: a de-selected link/MCP server IS still pruned (intended prune)
+ok 16 - \#235 source present: a de-selected link/MCP server IS still pruned (intended prune)
+  ---
+  duration_ms: 2.205549
+  type: 'test'
+  ...
+# Subtest: \#235 source present: everything de-selected → every manifest link pruned
+ok 17 - \#235 source present: everything de-selected → every manifest link pruned
+  ---
+  duration_ms: 2.305341
+  type: 'test'
+  ...
+# Subtest: \#235 source present: a skill deleted from the source has its dangling link dropped
+ok 18 - \#235 source present: a skill deleted from the source has its dangling link dropped
+  ---
+  duration_ms: 2.850927
+  type: 'test'
+  ...
+# Subtest: \#235 MCP source missing — ~/.claude.json absent: MCP servers + manifest kept, ONE warn
+not ok 19 - \#235 MCP source missing — ~/.claude.json absent: MCP servers + manifest kept, ONE warn
+  ---
+  duration_ms: 2.151924
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:409:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    MCP servers not removed
+    + actual - expected
+    
+      [
+    -   'chrome-devtools',
+    -   'github',
+    -   'linear-server',
+        'my-own'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'chrome-devtools'
+    1: 'github'
+    2: 'linear-server'
+    3: 'my-own'
+  actual:
+    0: 'my-own'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:414:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 MCP source missing — ~/.claude.json unparseable (torn read): MCP servers + manifest kept, ONE warn
+not ok 20 - \#235 MCP source missing — ~/.claude.json unparseable (torn read): MCP servers + manifest kept, ONE warn
+  ---
+  duration_ms: 2.154632
+  type: 'test'
+  location: '/home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:409:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    MCP servers not removed
+    + actual - expected
+    
+      [
+    -   'chrome-devtools',
+    -   'github',
+    -   'linear-server',
+        'my-own'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'chrome-devtools'
+    1: 'github'
+    2: 'linear-server'
+    3: 'my-own'
+  actual:
+    0: 'my-own'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts:414:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: \#235 MCP source present but no servers → injected servers ARE removed (intended prune)
+ok 21 - \#235 MCP source present but no servers → injected servers ARE removed (intended prune)
+  ---
+  duration_ms: 2.001673
+  type: 'test'
+  ...
+# Subtest: \#235 helper: assertScratch REFUSES live Claude dirs and anything outside the scratch root
+ok 22 - \#235 helper: assertScratch REFUSES live Claude dirs and anything outside the scratch root
+  ---
+  duration_ms: 1.261838
+  type: 'test'
+  ...
+# Subtest: \#235 helper: snapshot() is sensitive, and the log stub captures a real warn
+ok 23 - \#235 helper: snapshot() is sensitive, and the log stub captures a real warn
+  ---
+  duration_ms: 2.487217
+  type: 'test'
+  ...
+1..23
+# tests 23
+# suites 0
+# pass 11
+# fail 12
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 281.817492
+rc=1

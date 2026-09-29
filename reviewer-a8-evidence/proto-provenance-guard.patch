@@ -1,0 +1,37 @@
+--- /home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev.cNGyiw/cand/src/main/account-inherit.ts	2026-09-29 23:56:04.000000000 +0200
++++ /home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev.cNGyiw/proto/src/main/account-inherit.ts	2026-09-30 00:06:21.627140288 +0200
+@@ -73,6 +73,8 @@
+ // items the user de-selected without touching anything the user added by hand.
+ 
+ interface InheritManifest {
++  /** PROTOTYPE: the inheritance source this manifest's links were built from. */
++  source?: string;
+   /** Login-dir-relative paths of symlinks we created (e.g. `settings.json`,
+    *  `skills/frontend-design`). */
+   symlinks: string[];
+@@ -87,6 +89,7 @@
+     const raw = fs.readFileSync(path.join(loginDir, MANIFEST_NAME), 'utf8');
+     const parsed = JSON.parse(raw) as Partial<InheritManifest>;
+     return {
++      source: typeof (parsed as any).source === 'string' ? (parsed as any).source : undefined,
+       symlinks: Array.isArray(parsed.symlinks) ? parsed.symlinks.filter((s) => typeof s === 'string') : [],
+       mcpServers: Array.isArray(parsed.mcpServers)
+         ? parsed.mcpServers.filter((s) => typeof s === 'string')
+@@ -342,6 +345,8 @@
+     return;
+   }
+ 
++  { const m0 = readManifest(loginDir); if (m0.source && m0.source !== globalDir) { log.warn(`account-inherit: ${loginDir} was built from ${m0.source}, not ${globalDir} — sync skipped`); return; } }
++
+   try {
+     await fs.promises.mkdir(loginDir, { recursive: true });
+   } catch (err) {
+@@ -400,7 +405,7 @@
+   // MCP servers (selective merge into the login dir's own .claude.json).
+   const liveMcp = syncMcpServers(loginDir, inherit?.mcpServers ?? [], prev.mcpServers);
+ 
+-  writeManifest(loginDir, { symlinks: liveLinks, mcpServers: liveMcp });
++  writeManifest(loginDir, { source: globalDir, symlinks: liveLinks, mcpServers: liveMcp });
+ }
+ 
+ /** Sync every configured account. Called after the accounts list changes so

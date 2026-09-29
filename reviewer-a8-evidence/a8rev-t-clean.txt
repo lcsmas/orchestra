@@ -1,0 +1,153 @@
+TAP version 13
+# (node:1546043) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/lmas/.orchestra/worktrees/a8rev-cand/src/main/account-inherit.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/lmas/.orchestra/worktrees/a8rev-cand/package.json.
+# (Use `node-22 --trace-warnings ...` to show where the warning was created)
+# Subtest: parseClaudeMdImports: bare-filename imports are collected in order
+ok 1 - parseClaudeMdImports: bare-filename imports are collected in order
+  ---
+  duration_ms: 2.276924
+  type: 'test'
+  ...
+# Subtest: parseClaudeMdImports: ignores non-import lines and inline mentions
+ok 2 - parseClaudeMdImports: ignores non-import lines and inline mentions
+  ---
+  duration_ms: 0.1025
+  type: 'test'
+  ...
+# Subtest: parseClaudeMdImports: rejects path-traversal and separator imports
+ok 3 - parseClaudeMdImports: rejects path-traversal and separator imports
+  ---
+  duration_ms: 0.652585
+  type: 'test'
+  ...
+# Subtest: parseClaudeMdImports: tolerates surrounding whitespace and CRLF
+ok 4 - parseClaudeMdImports: tolerates surrounding whitespace and CRLF
+  ---
+  duration_ms: 0.092126
+  type: 'test'
+  ...
+# Subtest: \#235 no-op on live mirror — fake HOME: ~/.claude AND ~/.claude.json absent (the incident)
+ok 5 - \#235 no-op on live mirror — fake HOME: ~/.claude AND ~/.claude.json absent (the incident)
+  ---
+  duration_ms: 36.855999
+  type: 'test'
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude absent, ~/.claude.json present
+ok 6 - \#235 no-op on live mirror — ~/.claude absent, ~/.claude.json present
+  ---
+  duration_ms: 3.599137
+  type: 'test'
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude is a regular file (ENOTDIR)
+ok 7 - \#235 no-op on live mirror — ~/.claude is a regular file (ENOTDIR)
+  ---
+  duration_ms: 4.229723
+  type: 'test'
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude is a dangling symlink
+ok 8 - \#235 no-op on live mirror — ~/.claude is a dangling symlink
+  ---
+  duration_ms: 4.593682
+  type: 'test'
+  ...
+# Subtest: \#235 no-op on live mirror — ~/.claude mode 000 (EACCES)
+ok 9 - \#235 no-op on live mirror — ~/.claude mode 000 (EACCES)
+  ---
+  duration_ms: 6.937565
+  type: 'test'
+  ...
+# Subtest: \#235 step: symlink PRUNE (removeOurSymlink) skipped — inherit empty, manifest lists links
+ok 10 - \#235 step: symlink PRUNE (removeOurSymlink) skipped — inherit empty, manifest lists links
+  ---
+  duration_ms: 1.51363
+  type: 'test'
+  ...
+# Subtest: \#235 step: dangling-link DROP (ensureSymlink source-gone unlink) skipped — link still wanted
+ok 11 - \#235 step: dangling-link DROP (ensureSymlink source-gone unlink) skipped — link still wanted
+  ---
+  duration_ms: 0.875045
+  type: 'test'
+  ...
+# Subtest: \#235 step: MCP removal (syncMcpServers toRemove) skipped — nothing wanted, manifest lists servers
+ok 12 - \#235 step: MCP removal (syncMcpServers toRemove) skipped — nothing wanted, manifest lists servers
+  ---
+  duration_ms: 0.829752
+  type: 'test'
+  ...
+# Subtest: \#235 step: MANIFEST write skipped — nothing else to change
+ok 13 - \#235 step: MANIFEST write skipped — nothing else to change
+  ---
+  duration_ms: 0.645252
+  type: 'test'
+  ...
+# Subtest: \#235 step: nothing is CREATED either — absent login dir stays absent
+ok 14 - \#235 step: nothing is CREATED either — absent login dir stays absent
+  ---
+  duration_ms: 0.564043
+  type: 'test'
+  ...
+# Subtest: \#235 source present: fresh login dir gets links + MCP + manifest, no warn
+ok 15 - \#235 source present: fresh login dir gets links + MCP + manifest, no warn
+  ---
+  duration_ms: 2.35755
+  type: 'test'
+  ...
+# Subtest: \#235 source present: a de-selected link/MCP server IS still pruned (intended prune)
+ok 16 - \#235 source present: a de-selected link/MCP server IS still pruned (intended prune)
+  ---
+  duration_ms: 3.433095
+  type: 'test'
+  ...
+# Subtest: \#235 source present: everything de-selected → every manifest link pruned
+ok 17 - \#235 source present: everything de-selected → every manifest link pruned
+  ---
+  duration_ms: 2.126132
+  type: 'test'
+  ...
+# Subtest: \#235 source present: a skill deleted from the source has its dangling link dropped
+ok 18 - \#235 source present: a skill deleted from the source has its dangling link dropped
+  ---
+  duration_ms: 3.977555
+  type: 'test'
+  ...
+# Subtest: \#235 MCP source missing — ~/.claude.json absent: MCP servers + manifest kept, ONE warn
+ok 19 - \#235 MCP source missing — ~/.claude.json absent: MCP servers + manifest kept, ONE warn
+  ---
+  duration_ms: 2.403383
+  type: 'test'
+  ...
+# Subtest: \#235 MCP source missing — ~/.claude.json unparseable (torn read): MCP servers + manifest kept, ONE warn
+ok 20 - \#235 MCP source missing — ~/.claude.json unparseable (torn read): MCP servers + manifest kept, ONE warn
+  ---
+  duration_ms: 2.389674
+  type: 'test'
+  ...
+# Subtest: \#235 MCP source present but no servers → injected servers ARE removed (intended prune)
+ok 21 - \#235 MCP source present but no servers → injected servers ARE removed (intended prune)
+  ---
+  duration_ms: 3.204428
+  type: 'test'
+  ...
+# Subtest: \#235 helper: assertScratch REFUSES live Claude dirs and anything outside the scratch root
+ok 22 - \#235 helper: assertScratch REFUSES live Claude dirs and anything outside the scratch root
+  ---
+  duration_ms: 1.43513
+  type: 'test'
+  ...
+# Subtest: \#235 helper: snapshot() is sensitive, and the log stub captures a real warn
+ok 23 - \#235 helper: snapshot() is sensitive, and the log stub captures a real warn
+  ---
+  duration_ms: 2.804342
+  type: 'test'
+  ...
+1..23
+# tests 23
+# suites 0
+# pass 23
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 245.848162
+rc=0

@@ -1,0 +1,31 @@
+
+=== S1 CLI-created skeleton (.claude/{backups,sessions,projects} + .claude.json w/o mcpServers)
+  [cand] build-warns=0 links 7 -> 0  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]  manifest.links 7 -> 0  manifest.mcp 3 -> 0  warns=["account-inherit: 3 selected MCP server(s) not defined in the global config and were skipped for <SCR>/run1/t1/home/.claude-mc: github, linear-server, chrome-devtools"]
+     cand links kept: []  repointed-vs-before: []
+  [master] build-warns=0 links 7 -> 0  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]  manifest.links 7 -> 0  manifest.mcp 3 -> 0  warns=["account-inherit: 3 selected MCP server(s) not defined in the global config and were skipped for <SCR>/run1/t2/home/.claude-mc: github, linear-server, chrome-devtools"]
+
+=== S2 self-tune ensureFoldTargets shape (usage-data/, LESSONS.md, CLAUDE.md)
+  [cand] build-warns=0 links 7 -> 2  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]  manifest.links 7 -> 2  manifest.mcp 3 -> 3  warns=["account-inherit: <SCR>/run1/t3/home/.claude.json is missing or unreadable — MCP servers left untouched for /home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev.cNGyiw/run1/t3/home/.claude-mc"]
+     cand links kept: ["CLAUDE.md","LESSONS.md"]  repointed-vs-before: []
+  [master] build-warns=0 links 7 -> 2  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]  manifest.links 7 -> 2  manifest.mcp 3 -> 0  warns=["account-inherit: 3 selected MCP server(s) not defined in the global config and were skipped for <SCR>/run1/t4/home/.claude-mc: github, linear-server, chrome-devtools"]
+
+=== S3 empty ~/.claude dir, no ~/.claude.json
+  [cand] build-warns=0 links 7 -> 0  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]  manifest.links 7 -> 0  manifest.mcp 3 -> 3  warns=["account-inherit: <SCR>/run1/t5/home/.claude.json is missing or unreadable — MCP servers left untouched for /home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev.cNGyiw/run1/t5/home/.claude-mc"]
+     cand links kept: []  repointed-vs-before: []
+  [master] build-warns=0 links 7 -> 0  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]  manifest.links 7 -> 0  manifest.mcp 3 -> 0  warns=["account-inherit: 3 selected MCP server(s) not defined in the global config and were skipped for <SCR>/run1/t6/home/.claude-mc: github, linear-server, chrome-devtools"]
+
+=== S4 partial: CLAUDE.md only (no settings/skills/statusline/imports), ~/.claude.json kept
+  [cand] build-warns=0 links 7 -> 1  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]  manifest.links 7 -> 1  manifest.mcp 3 -> 3  warns=[]
+     cand links kept: ["CLAUDE.md"]  repointed-vs-before: []
+  [master] build-warns=0 links 7 -> 1  mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]  manifest.links 7 -> 1  manifest.mcp 3 -> 3  warns=[]
+
+=== S5 partial: everything but skills/ dir (skills dir missing), ~/.claude.json kept
+RIG ERROR Error: ENOENT: no such file or directory, lstat '/home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev.cNGyiw/run1/t9/home/.claude/skills'
+    at Object.rmSync (node:fs:1248:5)
+    at S5 partial: everything but skills/ dir (skills dir missing), ~/.claude.json kept (/home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev-run1.cjs:24:46)
+    at /home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev-run1.cjs:44:7 {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'lstat',
+  path: '/home/lmas/.orchestra/worktrees/orchestra-radiant-maple-0c2dd41a/node_modules/.cache/a8rev.cNGyiw/run1/t9/home/.claude/skills'
+}

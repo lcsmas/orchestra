@@ -1,0 +1,3 @@
+CLEAN control: {"tests":"23","pass":"23","fail":"0","skipped":"0","failed":0}
+MUTANT MG isReadableDir rejects a SYMLINK source (dotfiles-style ~/.claude -> dir): tests=23 pass=23 fail=0 skipped=0 | red arms: [] | restored-cmp=true
+DONE mutants-run=1 restored-clean=1

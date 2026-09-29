@@ -1,0 +1,36 @@
+
+=== S0 fake HOME with NO ~/.claude (the literal incident; control: guard must fire)
+  [cand] links 7 -> 7 kept=["CLAUDE.md","LESSONS.md","RTK.md","settings.json","skills/frontend-design","skills/handoff","statusline-command.sh"] REPOINTED-into-fake-home=[]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]; manifest.links 7->7 manifest.mcp 3->3; warns=1
+  [master] links 7 -> 0 kept=[] REPOINTED-into-fake-home=[]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]; manifest.links 7->0 manifest.mcp 3->0; warns=1
+
+=== S1 CLI-created skeleton (MEASURED: bare `claude -p` under fake HOME) .claude/{backups,sessions,projects}+.claude.json
+  [cand] links 7 -> 0 kept=[] REPOINTED-into-fake-home=[]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]; manifest.links 7->0 manifest.mcp 3->0; warns=1
+  [master] links 7 -> 0 kept=[] REPOINTED-into-fake-home=[]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]; manifest.links 7->0 manifest.mcp 3->0; warns=1
+
+=== S2 self-tune ensureFoldTargets shape: .claude/{usage-data/,LESSONS.md,CLAUDE.md}
+  [cand] links 7 -> 2 kept=["CLAUDE.md","LESSONS.md"] REPOINTED-into-fake-home=["CLAUDE.md=>run2/t5/fakehome/.claude/CLAUDE.md","LESSONS.md=>run2/t5/fakehome/.claude/LESSONS.md"]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]; manifest.links 7->2 manifest.mcp 3->3; warns=1
+  [master] links 7 -> 2 kept=["CLAUDE.md","LESSONS.md"] REPOINTED-into-fake-home=["CLAUDE.md=>run2/t6/fakehome/.claude/CLAUDE.md","LESSONS.md=>run2/t6/fakehome/.claude/LESSONS.md"]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]; manifest.links 7->2 manifest.mcp 3->0; warns=1
+
+=== S3 empty ~/.claude dir
+  [cand] links 7 -> 0 kept=[] REPOINTED-into-fake-home=[]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]; manifest.links 7->0 manifest.mcp 3->3; warns=1
+  [master] links 7 -> 0 kept=[] REPOINTED-into-fake-home=[]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]; manifest.links 7->0 manifest.mcp 3->0; warns=1
+
+=== S4 partial: only CLAUDE.md (no skills dir, no settings)
+  [cand] links 7 -> 1 kept=["CLAUDE.md"] REPOINTED-into-fake-home=["CLAUDE.md=>run2/t9/fakehome/.claude/CLAUDE.md"]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]; manifest.links 7->1 manifest.mcp 3->3; warns=1
+  [master] links 7 -> 1 kept=["CLAUDE.md"] REPOINTED-into-fake-home=["CLAUDE.md=>run2/t10/fakehome/.claude/CLAUDE.md"]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["my-own"]; manifest.links 7->1 manifest.mcp 3->0; warns=1
+
+=== S5 partial: all files present but skills/ dir missing
+  [cand] links 7 -> 5 kept=["CLAUDE.md","LESSONS.md","RTK.md","settings.json","statusline-command.sh"] REPOINTED-into-fake-home=["CLAUDE.md=>run2/t11/fakehome/.claude/CLAUDE.md","LESSONS.md=>run2/t11/fakehome/.claude/LESSONS.md","RTK.md=>run2/t11/fakehome/.claude/RTK.md","settings.json=>run2/t11/fakehome/.claude/settings.json","statusline-command.sh=>run2/t11/fakehome/.claude/statusline-command.sh"]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]; manifest.links 7->5 manifest.mcp 3->3; warns=0
+  [master] links 7 -> 5 kept=["CLAUDE.md","LESSONS.md","RTK.md","settings.json","statusline-command.sh"] REPOINTED-into-fake-home=["CLAUDE.md=>run2/t12/fakehome/.claude/CLAUDE.md","LESSONS.md=>run2/t12/fakehome/.claude/LESSONS.md","RTK.md=>run2/t12/fakehome/.claude/RTK.md","settings.json=>run2/t12/fakehome/.claude/settings.json","statusline-command.sh=>run2/t12/fakehome/.claude/statusline-command.sh"]
+      mcp ["chrome-devtools","github","linear-server","my-own"] -> ["chrome-devtools","github","linear-server","my-own"]; manifest.links 7->5 manifest.mcp 3->3; warns=0

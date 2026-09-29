@@ -1,0 +1,8 @@
+CLEAN control: {"tests":"23","pass":"23","fail":"0","skipped":"0","failed":0}
+MUTANT MA warn-cond drops the prevKeys clause: tests=23 pass=23 fail=0 skipped=0 | red arms: [] | restored-cmp=true
+MUTANT MB MCP guard only when something desired: tests=23 pass=23 fail=0 skipped=0 | red arms: [] | restored-cmp=true
+MUTANT MC isReadableDir = lstat.isDirectory (symlinked ~/.claude rejected): tests=23 pass=22 fail=1 skipped=0 | red arms: ["no-op on live mirror — ~/.claude mode 000 (EACCES)"] | restored-cmp=true
+MUTANT MD isReadableDir = statSync.isDirectory (EACCES not caught): tests=23 pass=22 fail=1 skipped=0 | red arms: ["no-op on live mirror — ~/.claude mode 000 (EACCES)"] | restored-cmp=true
+MUTANT ME MCP guard also fires on a file with NO mcpServers key: tests=23 pass=22 fail=1 skipped=0 | red arms: ["MCP source present but no servers → injected servers ARE removed (intended prune)"] | restored-cmp=true
+MUTANT MF MCP guard returns [] (manifest MCP list reset): tests=23 pass=21 fail=2 skipped=0 | red arms: ["MCP source missing — ~/.claude.json absent: MCP servers + manifest kept, ONE warn","MCP source missing — ~/.claude.json unparseable (torn read): MCP servers + manifest kept, ONE warn"] | restored-cmp=true
+DONE mutants-run=6 restored-clean=6
