@@ -441,7 +441,6 @@ export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
   };
   if (state === 'gone' || state === 'other') unlink(keeperPidPath(wsId));
   if (!sockLive) unlink(sockPath);
-  if (!sockLive && (state === 'gone' || state === 'other')) unlink(keeperLogPath(wsId));
 }
 
 /**
@@ -470,6 +469,15 @@ async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
     sock.write(encodeKeeperFrame({ t: 'kill', signal: 'SIGTERM' }));
     signalled = true;
     log.info(`keeper[${wsId}] killing keeper (kill frame; pid=${pid ?? '?'}, reason=${reason})`);
+    // The keeper answers a kill with an `exit` frame and only cleans up once its client disconnects — drop the
+    // socket at once instead of idling out the 3 s bound below (was ~3 s per delete).
+    sock.on(
+      'data',
+      createLineSplitter((line) => {
+        const f = parseKeeperFrame(line);
+        if (f && f.t === 'exit') sock.destroy();
+      }),
+    );
     await new Promise<void>((resolve) => {
       const to = setTimeout(() => resolve(), 3000);
       sock.once('close', () => {
