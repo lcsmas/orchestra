@@ -29,7 +29,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { isPeerMessage } from '../../shared/peer-messages';
-import { createFrameReset, type FrameReset } from '../../shared/frame-reset';
+import { createMeasurePassGuard } from '../../shared/measure-pass-guard';
 import {
   isBusWakeMessage,
   isCheckInvocation,
@@ -439,26 +439,15 @@ function MessageList({
   // first namesake — see scroll-anchor.ts for the transcript-teleport that came
   // from trusting id uniqueness here.
   const anchorRef = useRef<{ id: string; delta: number; index: number } | null>(null);
-  // Guards against the React #185 render loop (see the onHeight handler). Counts
-  // synchronous measure→render passes since the last painted frame; a frame
-  // boundary resets it, so only an unbroken chain WITHIN one frame can trip it.
-  const syncMeasurePasses = useRef(0);
-  const measureLoopWarned = useRef(false);
-  // Per-COMMIT counting: N rows first-measuring in one commit are ONE pass, not N (cold pane opens tripped the guard).
-  const lastPassCommit = useRef<object | null>(null);
-  // One-shot frame-boundary reset, armed by a measure pass — a perpetual rAF here woke every
-  // mounted pane 60x/s while idle (#198 D11; `scripts/renderer-cpu-profile.mjs` gates it).
-  const frameResetRef = useRef<FrameReset | null>(null);
-  if (!frameResetRef.current) {
-    frameResetRef.current = createFrameReset(
-      () => {
-        syncMeasurePasses.current = 0;
-      },
+  // Guards against the React #185 render loop (see the onHeight handler): a pure state machine,
+  // gated by `measure-pass-guard.test.ts`. Its frame reset is one-shot (a perpetual rAF woke every pane 60x/s idle).
+  const [measureGuard] = useState(() =>
+    createMeasurePassGuard(
+      MAX_SYNC_MEASURE_PASSES,
       (cb) => requestAnimationFrame(cb),
       (h) => cancelAnimationFrame(h),
-    );
-  }
-  const armMeasureReset = () => frameResetRef.current?.arm();
+    ),
+  );
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
@@ -594,7 +583,7 @@ function MessageList({
   }, [pinToBottom, messages.length > 0]);
 
   // Cancel a pending frame-boundary reset on unmount (cancel() also drops the handle: StrictMode re-runs effects on the same refs).
-  useEffect(() => () => frameResetRef.current?.cancel(), []);
+  useEffect(() => () => measureGuard.dispose(), [measureGuard]);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
   useLayoutEffect(() => {
@@ -702,7 +691,7 @@ function MessageList({
   start = Math.max(0, start - OVERSCAN);
   end = Math.min(items.length, end + OVERSCAN);
 
-  // Shared by every row's onHeight of THIS render (see lastPassCommit).
+  // Shared by every row's onHeight of THIS render: N rows in one commit are ONE pass (measure-pass-guard).
   const commitToken = {};
   const visible = items.slice(start, end);
   const padTop = offsets[start] ?? 0;
@@ -829,14 +818,8 @@ function MessageList({
                   // path, which yields to the browser and cannot recurse. A
                   // frame boundary resets the counter, so normal streaming (a
                   // handful of passes per frame) is untouched.
-                  if (lastPassCommit.current !== commitToken) {
-                    lastPassCommit.current = commitToken;
-                    syncMeasurePasses.current += 1;
-                  }
-                  armMeasureReset();
-                  const looping = syncMeasurePasses.current > MAX_SYNC_MEASURE_PASSES;
-                  if (looping && !measureLoopWarned.current) {
-                    measureLoopWarned.current = true;
+                  const { looping, firstTrip } = measureGuard.recordPass(commitToken);
+                  if (firstTrip) {
                     log.warn(
                       `row-measure loop guard tripped after ` +
                         `${MAX_SYNC_MEASURE_PASSES} synchronous passes (row ${it.id}: ` +

@@ -1190,6 +1190,12 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   StrictMode (dev, `main.tsx`) re-runs effects on the SAME refs and a stale handle
   silently killed every later reset (counter never back to 0 → false guard trips)
   — only reachable in dev, so `frame-reset.test.ts` gates it, not the rig.
+  The whole circuit breaker (count per COMMIT, trip latch, frame reset) is the pure
+  state machine `src/shared/measure-pass-guard.ts`; `measure-pass-guard.test.ts`
+  drives a genuinely oscillating height sequence (must trip once, then stay bounded)
+  plus the must-NOT-trip arms; mutants never-counts / per-row / no-latch / no-reset /
+  never-armed / `>=` / perpetual-reset each redden. The rig deletes only ITS OWN
+  `/tmp` files (grim → stdout, own-pid cleanup on every exit path).
   (2) the counter incremented **per row callback**, not per commit as
   `MAX_SYNC_MEASURE_PASSES`' own comment says, so ANY pane whose window holds >12
   rows tripped the guard the first time it became visible (a 13-row cold open:
