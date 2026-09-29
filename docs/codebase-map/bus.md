@@ -1953,6 +1953,36 @@ threads it; the terminal/spool path never queues a submit so it stays undefined
 (a real boundary → clears). Residual accepted-gap (N1): a phantom persists until
 the NEXT genuine boundary if the member stays `running` via coalesced wakes.
 
+## #199 residual (T6b) — a call can END without PostToolUse
+
+The v0.5.295 residual (verifier `ca4268dd`, 17:04:07Z, ledger #198 D19) was NOT a
+coalesced wake: a coalesced wake emits no event at all (`coalesceWakeOrderInto`
+path in agent-sdk.ts), and the phantom was born INSIDE the running turn. The
+cause, measured on CLI 2.1.284 and in the field (15/15 `hung mid-call` rows had an
+`is_error` Bash at T-(600..720)s): the per-call END events of a tool call are
+
+| Call outcome | Hook events the CLI fires | Spool line (since T6b) |
+|---|---|---|
+| success | PreToolUse, PostToolUse, PostToolBatch | `pretool`, `posttool`, `toolbatch` |
+| failure (non-zero exit, tool error, interrupt) | PreToolUse, **PostToolUseFailure**, PostToolBatch | `pretool`, `posttool`, `toolbatch` |
+| denied (hook / permission / canUseTool) | PreToolUse, PostToolBatch only | `pretool`, `toolbatch` |
+| genuinely hung | PreToolUse only (its batch never resolves) | `pretool` → escalates |
+
+Orchestra wired PostToolUse only, so a failed or denied call stayed in flight
+until the turn ended. `installOrchestraHooks` now wires `POSTTOOL_HOOK_EVENTS`
+(PostToolUse + PostToolUseFailure → `posttool`) and PostToolBatch → `toolbatch`;
+`applyAgentEvent`'s `toolbatch` arm calls `noteToolBatchEnd` (removes exactly the
+listed ids — never clear-all, a subagent's batch resolves while the parent's Agent
+call runs; never FIFO). The batch also repairs a mis-mined per-call id (a WebSearch
+`tool_response` nests `"tool_use_id":"srvtoolu_…"` before the real one). The
+batch ids are mined with `grep -oE`: the per-call `${payload#*"tool_use_id"}`
+expansion is O(n²) — the CLI logged `Slow PostToolUse hooks` up to 46.9 s on an
+Edit of a big file (NOT fixed here; reported on ledger #198).
+Rig: `scripts/e2e-liveness-failed-call.sh` (real installer → real hook script →
+real spool reader → real `applyAgentEvent` → tracker → `decideEscalation`;
+`SUBJECT_REPO=<tree>` drives another tree, `REAL_CLI=1` adds two arms on the real
+`claude` CLI).
+
 ## The two existing bounds this complements (MEASURED, not assumed)
 
 - **#90 turn-gate watchdog** (`session-watchdog.ts` `TICK_MS = 60_000`;
@@ -1993,6 +2023,8 @@ into `LivenessMember.inFlightTools`.
 | `src/main/bus-liveness.ts` | roster carries `inFlightTools` (list); the hung-call body + log wording; `writeEscalation` takes the hung tool. |
 | `src/shared/bus-liveness.test.ts` | pure tests: ceiling, hung, build-alive, **F1 parallel-hang + most-overdue**, boundary `>=`, switch-OFF count, dedup, body. |
 | `src/main/bus-liveness.test.ts` | real-bus tests: T127.1 both arms, **F1 parallel-hang end-to-end**, T127.3 counted-not-fired. |
+| `src/main/liveness-failed-call.test.ts` | **T6b**: the REAL hook script (extracted from workspaces.ts) on CLI-shaped PostToolUseFailure/PostToolBatch payloads → tracker → policy: failed, failed-with-long-sibling, denied, mis-mined WebSearch, genuine hang, subagent batch keeps the parent, no-FIFO, linear 2 MB batch; source pins on the installer wiring + `HOOKS_VERSION` + the `toolbatch` arm. |
+| `scripts/e2e-liveness-failed-call.{mjs,sh}` | **T6b** real-module rig (see the #199 residual section). |
 | `src/main/hibernation-activity.test.ts` | **NEW — tracker-level (review-127 F2)**: the produce-from-events seam; F1 regression (fast sibling posttool does not clear a hung parallel call), **F3 remote id-less cross-tool masking**, tool-name FIFO, no-op-match, clear-all. |
 
 ## COUNTED-not-FIRED while `liveness=OFF` (T127.3, C5)

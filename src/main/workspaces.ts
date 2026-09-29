@@ -3775,7 +3775,7 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
 //    types a name in the UI).
 //
 // 2. Activity tracking. UserPromptSubmit + Stop + Notification + PreToolUse +
-//    PostToolUse hooks each append one JSON line to a durable per-workspace
+//    PostToolUse(+Failure) + PostToolBatch hooks each append one JSON line to a durable per-workspace
 //    spool file (via `.orchestra/orchestra-hook.sh`) that orchestra tails, so
 //    workspace status flips running ↔ waiting from Claude's own lifecycle
 //    events. A local append is atomic and never blocks, which is why this
@@ -3784,7 +3784,7 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
 //    $ORCHESTRA_WS_ID so it's a no-op when claude is run outside orchestra.
 //
 
-// All five activity hooks delegate to the same installed helper, passing the
+// Every activity hook delegates to the same installed helper, passing the
 // event name as $1. The `-f` guard + `|| true` make a genuinely-missing script
 // (claude run outside a worktree orchestra manages) a silent no-op rather than
 // a hook error, mirroring the rename/spawn hooks.
@@ -3800,6 +3800,11 @@ const HOOK_ACTIVITY_STOP_CMD = activityHookCmd('stop');
 const HOOK_ACTIVITY_NOTIFY_CMD = activityHookCmd('notify');
 const HOOK_ACTIVITY_PRETOOL_CMD = activityHookCmd('pretool');
 const HOOK_ACTIVITY_POSTTOOL_CMD = activityHookCmd('posttool');
+// A tool call can END without PostToolUse (#199 residual, T6b): a FAILED call fires
+// PostToolUseFailure instead, and a DENIED call fires neither — only the batch's
+// PostToolBatch. Unwired, each strands its pretool until a false "hung mid-call".
+const POSTTOOL_HOOK_EVENTS = ['PostToolUse', 'PostToolUseFailure'] as const;
+const HOOK_ACTIVITY_TOOLBATCH_CMD = activityHookCmd('toolbatch');
 // SessionStart, whose payload `source` distinguishes startup/resume from
 // clear/compact — the two moments the persisted context-size badge goes stale
 // (compaction/clearing rewrites the context without any turn-end hook firing).
@@ -4875,7 +4880,7 @@ case "\$event" in
     esac
     # #127: mine the tool_use id so the reader can pair a posttool with the exact
     # in-flight call it ended (a hung PARALLEL call must survive a fast sibling's
-    # posttool). PreToolUse/PostToolUse payloads carry it; other events do not.
+    # posttool). PreToolUse/PostToolUse/PostToolUseFailure payloads carry it.
     case "\$payload" in
       *'"tool_use_id"'*)
         rest="\${payload#*'"tool_use_id"'}"
@@ -4916,6 +4921,15 @@ case "\$event" in
       *'"session_crons":[]'*) crons="none" ;;
       *'"session_crons":['*) crons="some" ;;
     esac
+    ;;
+  toolbatch)
+    # #199 residual (T6b): PostToolBatch lists EVERY call of a resolved batch —
+    # the only end signal a DENIED call gets. Collect all ids comma-joined (an id
+    # nested in a tool_response is a no-op downstream). grep, not the parameter
+    # expansion above: that is O(n^2) on a big payload (a batch carries every
+    # tool_response). Ids are [A-Za-z0-9_-] only, so the JSON line stays valid.
+    tooluseid="\$(LC_ALL=C grep -oE '"tool_use_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]+"' | while IFS= read -r m; do m="\${m%'"'}"; printf '%s,' "\${m##*'"'}"; done)"
+    tooluseid="\${tooluseid%,}"
     ;;
 esac
 
@@ -5231,6 +5245,10 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_ACTIVITY_NOTIFY_CMD,
       HOOK_ACTIVITY_PRETOOL_CMD,
       HOOK_ACTIVITY_POSTTOOL_CMD,
+      // The wiring, not just the command: re-pointing an event at an existing
+      // command must still force the one reinstall (T6b added PostToolUseFailure).
+      POSTTOOL_HOOK_EVENTS.join(','),
+      HOOK_ACTIVITY_TOOLBATCH_CMD,
       HOOK_ACTIVITY_SESSION_CMD,
       HOOK_SESSION_START_READY_CMD,
       HOOK_SESSION_START_RENAME_CMD,
@@ -5701,9 +5719,16 @@ export async function installOrchestraHooks(
     upsertMatcherHookCommand(preToolList, ORCHESTRATOR_GUARD_MATCHER, HOOK_ORCHESTRATOR_GUARD_CMD);
     hooks.PreToolUse = preToolList;
 
-    const postToolList = ((hooks.PostToolUse as unknown[]) ??= []);
-    upsertHookCommand(postToolList, HOOK_ACTIVITY_POSTTOOL_CMD);
-    hooks.PostToolUse = postToolList;
+    // Every per-call END signal → `posttool` (see POSTTOOL_HOOK_EVENTS), plus the
+    // per-batch PostToolBatch → `toolbatch`, the only end a DENIED call gets.
+    for (const ev of POSTTOOL_HOOK_EVENTS) {
+      const list = ((hooks[ev] as unknown[]) ??= []);
+      upsertHookCommand(list, HOOK_ACTIVITY_POSTTOOL_CMD);
+      hooks[ev] = list;
+    }
+    const toolBatchList = ((hooks.PostToolBatch as unknown[]) ??= []);
+    upsertHookCommand(toolBatchList, HOOK_ACTIVITY_TOOLBATCH_CMD);
+    hooks.PostToolBatch = toolBatchList;
 
     let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
