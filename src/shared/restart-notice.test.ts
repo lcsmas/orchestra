@@ -232,3 +232,40 @@ test('makeRestartNotice: watchdog triggers get the AUTOMATIC headline and a reas
   assert.match(m.restartTriggerLabel('watchdog-boot'), /pas démarré en 3 min/);
   assert.match(m.restartTriggerLabel('watchdog-stall'), /10 min/);
 });
+
+// ── #198 D14: an idle-HIBERNATE stop is intentional, whatever exit code the CLI's close gives ──
+// Field: 11/126 real hibernations rendered a red `exited with code 1` row. The marker is
+// session-scoped upstream (set on the exact Session inside sdkStop), so a successor's genuine
+// crash is a different Session with the marker unset.
+
+test('HIBERNATE — a hibernate stop (marker set) → suppress, NO error row', () => {
+  const out = classifyConsumeTermination({
+    cleared: false, interrupted: false, restartRequested: undefined, hibernating: true,
+  });
+  assert.equal(out.kind, 'suppress');
+});
+
+test('HIBERNATE must-FAIL LOOK-ALIKE — the same exit with NO marker (a crash) stays an error row', () => {
+  for (const hibernating of [false, undefined]) {
+    const out = classifyConsumeTermination({
+      cleared: false, interrupted: false, restartRequested: undefined, hibernating,
+    });
+    assert.equal(out.kind, 'error', String(hibernating));
+  }
+});
+
+test('HIBERNATE precedence — an explicit restart still wins; cleared still suppresses; the marker beats interrupted/preempted', () => {
+  assert.equal(
+    classifyConsumeTermination({ cleared: false, interrupted: false, restartRequested: 'cli', hibernating: true }).kind,
+    'restarted',
+  );
+  assert.equal(
+    classifyConsumeTermination({ cleared: true, interrupted: false, restartRequested: undefined, hibernating: true }).kind,
+    'suppress',
+  );
+  // T3's D1 `stopped` and the quiet `interrupted` label both lose to the hibernate marker (no row at all).
+  assert.equal(
+    classifyConsumeTermination({ cleared: false, interrupted: true, restartRequested: undefined, hibernating: true, preemptedWhileStopping: true }).kind,
+    'suppress',
+  );
+});

@@ -22,6 +22,8 @@ import type { PeerOrigin } from '../shared/peer-messages.ts';
 export interface SdkDelivery {
   /** True iff a live (non-stopping) structured session owns this workspace. */
   hasSession(wsId: string): boolean;
+  /** True iff the live session still owns a RUNNING background task (hibernation must not kill it). */
+  hasBackgroundTask(wsId: string): boolean;
   /** Enqueue a text turn to a live structured session (becomes its next turn,
    *  same "live" semantics as typing into a running TUI). Resolves when queued.
    *
@@ -54,7 +56,7 @@ export interface SdkDelivery {
   start(wsId: string, text: string): Promise<void>;
   /** Tear down a live structured session (used by account migration, which must
    *  stop the session running under the OLD account/config dir). */
-  stop(wsId: string): Promise<void>;
+  stop(wsId: string, opts?: { hibernate?: boolean }): Promise<void>;
 }
 
 let impl: SdkDelivery | null = null;
@@ -68,6 +70,11 @@ export function registerSdkDelivery(delivery: SdkDelivery): void {
  *  module hasn't registered yet (nothing structured has ever run). */
 export function sdkSessionLive(wsId: string): boolean {
   return impl?.hasSession(wsId) ?? false;
+}
+
+/** True iff the workspace's live structured session still owns a running background task. */
+export function sdkHasBackgroundTasks(wsId: string): boolean {
+  return impl?.hasBackgroundTask(wsId) ?? false;
 }
 
 /** Deliver a prompt to a live structured session. Returns false (caller falls
@@ -134,9 +141,9 @@ export async function sdkStartAndDeliver(wsId: string, text: string): Promise<bo
  *  every caller here (hibernation, branch switch, account migration) means
  *  "make sure nothing structured is running" — sdkStop's no-session path kills
  *  any live keeper and is an instant no-op otherwise. */
-export async function sdkStopIfLive(wsId: string): Promise<boolean> {
+export async function sdkStopIfLive(wsId: string, opts?: { hibernate?: boolean }): Promise<boolean> {
   if (!impl) return false;
   const had = impl.hasSession(wsId);
-  await impl.stop(wsId);
+  await impl.stop(wsId, opts);
   return had;
 }

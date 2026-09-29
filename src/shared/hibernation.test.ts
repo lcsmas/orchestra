@@ -42,6 +42,7 @@ function signals(over: Partial<HibernationSignals> = {}): HibernationSignals {
     hasLivePty: true,
     hasLiveSdk: false,
     hasLiveRunPty: false,
+    hasLiveBackgroundTask: false,
     thresholdMs: THRESHOLD,
     ...over,
   };
@@ -150,6 +151,27 @@ test('a short injected threshold makes a briefly-idle workspace eligible (e2e ri
   );
 });
 
+// --- the default threshold VALUE (issue #198 D14: 30 min → 5 min). Pinned to
+// the literal rather than the constant so a change to the number is caught here
+// AND cannot pass silently through the value-agnostic env fallback tests below
+// (those compare against DEFAULT_HIBERNATE_AFTER_MS, so both sides move together).
+test('the default idle threshold is 5 minutes (D14 resource lever, was 30)', () => {
+  assert.equal(DEFAULT_HIBERNATE_AFTER_MS, 5 * 60 * 1000);
+});
+
+// A session idle for just over 5 minutes IS now eligible where under the old
+// 30-min default it was not — the must-FAIL arm of D14. Uses the resolved
+// default (env unset), not the local THRESHOLD constant, so it exercises the
+// shipped value end to end through resolveHibernateAfterMs → shouldHibernate.
+test('a session idle >5 min hibernates at the default threshold (was: only at 30 min)', () => {
+  const thresholdMs = resolveHibernateAfterMs(undefined);
+  const sixMinIdle = signals({ thresholdMs, lastActivityAt: NOW - 6 * 60 * 1000 });
+  assert.equal(shouldHibernate(ws(), sixMinIdle), true);
+  // must-PASS mirror: activity within the 5-min window does NOT hibernate.
+  const fourMinIdle = signals({ thresholdMs, lastActivityAt: NOW - 4 * 60 * 1000 });
+  assert.equal(shouldHibernate(ws(), fourMinIdle), false);
+});
+
 // --- resolveHibernateAfterMs
 test('unset / empty / garbage / zero env all fall back to the default', () => {
   assert.equal(resolveHibernateAfterMs(undefined), DEFAULT_HIBERNATE_AFTER_MS);
@@ -228,4 +250,17 @@ test('a looping workspace is never hibernated', () => {
 
 test('clearing the loop marker makes it eligible again', () => {
   assert.equal(shouldHibernate(ws({ loopingSince: undefined }), signals()), true);
+});
+
+// A `run_in_background` Bash / background Agent keeps working after the turn ends and emits no
+// lifecycle event, so idleness alone would reap it at 5 min (#198 D14 F1).
+test('a live background task blocks hibernation even when idle for days', () => {
+  assert.equal(
+    shouldHibernate(ws(), signals({ hasLiveBackgroundTask: true, lastActivityAt: NOW - 5 * 24 * 3600_000 })),
+    false,
+  );
+});
+
+test('clearing the background task makes it eligible again', () => {
+  assert.equal(shouldHibernate(ws(), signals({ hasLiveBackgroundTask: false })), true);
 });

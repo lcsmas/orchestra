@@ -20,10 +20,13 @@
 
 import type { Workspace } from './types.ts';
 
-/** Default idle threshold before an agent is eligible: 30 minutes. Long enough
- *  that a user stepping away from a session mid-thought comes back to a live
- *  process, short enough that an overnight fleet collapses to near-zero. */
-export const DEFAULT_HIBERNATE_AFTER_MS = 30 * 60 * 1000;
+/** Default idle threshold before an agent is eligible: 5 minutes. A resource
+ *  lever (issue #198 D14): many live session trees hold ~700 MB each and the
+ *  laptop overheats when Orchestra runs long, so idle sessions are reclaimed
+ *  sooner. Resume is ~1s and lossless (conversation + queued mail survive — see
+ *  the module header), so a user stepping away briefly comes back to a
+ *  hibernated-but-intact session that wakes on their next keystroke. Was 30 min. */
+export const DEFAULT_HIBERNATE_AFTER_MS = 5 * 60 * 1000;
 
 /** Sentinel returned by {@link resolveHibernateAfterMs} when the feature is
  *  switched off (`ORCHESTRA_HIBERNATE_AFTER_MS=-1`). Callers must check for it
@@ -53,6 +56,10 @@ export interface HibernationSignals {
    *  script does the work, and killing the agent process here would also read to
    *  the user as "my running app died". Hibernation skips these entirely. */
   hasLiveRunPty: boolean;
+  /** True iff the structured session still owns a RUNNING background task (a
+   *  `run_in_background` Bash / background Agent). Required, not optional: a caller
+   *  that forgets it must fail tsc, not silently hibernate over a live task. */
+  hasLiveBackgroundTask: boolean;
   /** Resolved idle threshold in ms, or {@link HIBERNATION_DISABLED}. */
   thresholdMs: number;
 }
@@ -135,6 +142,7 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *    reclaim, which is the entire point).
  *  - **Not archived.** Archived rows are already out of the fleet.
  *  - **No live run-script PTY.** See {@link HibernationSignals.hasLiveRunPty}.
+ *  - **No running background task.** See {@link HibernationSignals.hasLiveBackgroundTask}.
  *  - **Idle longer than the threshold**, measured from the last observed
  *    lifecycle event. When no activity has EVER been observed for this
  *    workspace this app run, the sweeper supplies the app-start time (see
@@ -151,6 +159,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
     hasLivePty,
     hasLiveSdk,
     hasLiveRunPty,
+    hasLiveBackgroundTask,
     thresholdMs,
   } = signals;
 
@@ -171,7 +180,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   // A /loop's wakeups live INSIDE the session process — hibernating a looping
   // agent doesn't pause the loop, it silently kills it (and the sidebar would
   // keep advertising a loop that can never fire again). A loop's idle phase
-  // between wakeups can legitimately exceed the 30-min threshold (ScheduleWakeup
+  // between wakeups can legitimately exceed the idle threshold (ScheduleWakeup
   // delays go up to 60 min), so without this line the sweeper reaps exactly the
   // agents that are deliberately sleeping-to-work.
   if (ws.loopingSince) return false;
@@ -179,6 +188,9 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (ws.host) return false;
   if (ws.archived) return false;
   if (hasLiveRunPty) return false;
+  // A quiet long task emits no lifecycle events, so idleness can't see it — the live
+  // task set must block on its own (#198 D14 F1).
+  if (hasLiveBackgroundTask) return false;
 
   if (lastActivityAt === undefined) return false;
   return now - lastActivityAt >= thresholdMs;

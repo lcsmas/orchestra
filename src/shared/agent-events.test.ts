@@ -26,6 +26,9 @@ import {
   toNonExecutionKind,
   classifyTurnError,
   supportsCancelQueued,
+  foldTaskEvent,
+  foldTaskEventForLiveness,
+  hasRunningBackgroundTask,
   CAP_INTERRUPT_CANCEL_QUEUED,
   type NormalizeContext,
   type SdkMessage,
@@ -2638,4 +2641,76 @@ test('normalize: first api_retry with an HTTP status → "Erreur API <status>" r
     ctx(),
   );
   assert.equal((evs[1] as Extract<AgentEvent, { type: 'notice' }>).text, 'Erreur API 500 — nouvelle tentative');
+});
+
+// ─── background tasks: main-side liveness (hibernation must not kill a live task) ────
+
+test('hasRunningBackgroundTask: empty → false; a started task → true; a terminal notification → false', () => {
+  const fold = (tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) =>
+    foldTaskEvent(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+  let t = {};
+  assert.equal(hasRunningBackgroundTask(t), false); // control: the empty set never blocks
+  t = fold(t, { kind: 'started', taskId: 'a', description: 'x' });
+  assert.equal(hasRunningBackgroundTask(t), true);
+  for (const status of ['completed', 'failed', 'stopped'] as const) {
+    assert.equal(hasRunningBackgroundTask(fold(t, { kind: 'notification', taskId: 'a', status })), false, status);
+  }
+});
+
+test('hasRunningBackgroundTask: one running task among finished ones still blocks', () => {
+  const fold = (tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) =>
+    foldTaskEvent(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+  let t = {};
+  t = fold(t, { kind: 'started', taskId: 'a' });
+  t = fold(t, { kind: 'started', taskId: 'b' });
+  t = fold(t, { kind: 'notification', taskId: 'a', status: 'completed' });
+  assert.equal(hasRunningBackgroundTask(t), true); // b still runs
+});
+
+test('hasRunningBackgroundTask: a `changed` replace heals a missed finish bookend, never creates or resurrects', () => {
+  const fold = (tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) =>
+    foldTaskEvent(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+  let t = fold({}, { kind: 'started', taskId: 'a' });
+  assert.equal(hasRunningBackgroundTask(fold(t, { kind: 'changed', liveIds: ['a'] })), true); // still live: stays blocked
+  assert.equal(hasRunningBackgroundTask(fold(t, { kind: 'changed', liveIds: [] })), false); // dropped: healed
+  assert.equal(hasRunningBackgroundTask(fold({}, { kind: 'changed', liveIds: ['ghost'] })), false); // never creates a card
+});
+
+// ─── liveness fold: a keeper REATTACH gets the `changed` level snapshot, not the `started` edge ───
+
+function liveFold(tasks: Parameters<typeof foldTaskEvent>[0], o: Parameters<typeof taskEvent>[0]) {
+  return foldTaskEventForLiveness(tasks, taskEvent(o) as Extract<AgentEvent, { type: 'task' }>);
+}
+
+test('liveness fold: a `changed` snapshot seeds a running entry for an id never seen; the panel fold does not', () => {
+  const seeded = liveFold({}, { kind: 'changed', liveIds: ['bg1'] });
+  assert.equal(hasRunningBackgroundTask(seeded), true);
+  assert.deepEqual(Object.keys(seeded), ['bg1']);
+  // control: the shared panel fold keeps its no-create rule (it needs a `started` edge)
+  assert.equal(hasRunningBackgroundTask(foldTaskEvent({}, taskEvent({ kind: 'changed', liveIds: ['bg1'] }) as Extract<AgentEvent, { type: 'task' }>)), false);
+});
+
+test('liveness fold: a later `started` edge merges into the seeded entry (one entry, still running)', () => {
+  let t = liveFold({}, { kind: 'changed', liveIds: ['bg1'] });
+  t = liveFold(t, { kind: 'started', taskId: 'bg1', description: 'pnpm test (background)' });
+  assert.deepEqual(Object.keys(t), ['bg1']);
+  assert.equal(t.bg1.status, 'running');
+  assert.equal(t.bg1.description, 'pnpm test (background)');
+});
+
+test('liveness fold: a seeded task is finalized by its notification and healed by a later empty snapshot', () => {
+  const seeded = liveFold({}, { kind: 'changed', liveIds: ['bg1'] });
+  assert.equal(hasRunningBackgroundTask(liveFold(seeded, { kind: 'notification', taskId: 'bg1', status: 'stopped' })), false);
+  assert.equal(hasRunningBackgroundTask(liveFold(seeded, { kind: 'changed', liveIds: [] })), false);
+});
+
+test('liveness fold: a stale snapshot never resurrects a FINISHED task (an existing entry is never replaced)', () => {
+  let t = liveFold({}, { kind: 'started', taskId: 'bg1' });
+  t = liveFold(t, { kind: 'notification', taskId: 'bg1', status: 'completed' });
+  assert.equal(hasRunningBackgroundTask(liveFold(t, { kind: 'changed', liveIds: ['bg1'] })), false);
+});
+
+test('liveness fold: non-`changed` events behave exactly like the panel fold', () => {
+  const ev = taskEvent({ kind: 'started', taskId: 'a', description: 'x' }) as Extract<AgentEvent, { type: 'task' }>;
+  assert.deepEqual(foldTaskEventForLiveness({}, ev), foldTaskEvent({}, ev));
 });
