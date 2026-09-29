@@ -35,6 +35,10 @@
 //                      heartbeat at +4 min) → NOT hibernated at +6 min; idle >=5 min asserted so
 //                      recency cannot be what spares it (task events stamp no activity)
 //   bg_task_done     — control: the task completes (task_notification) → hibernated (block not permanent)
+//   level_only       ★ (R1) a keeper REATTACH learns of a live bg task ONLY via the `background_tasks_changed`
+//                      level snapshot (no `started` edge; local_bash emits no task_progress) → NOT hibernated
+//   level_only_healed— control: the seeded entry is healed by a later empty snapshot → hibernates
+//   level_after_done — control: a STALE snapshot after the task finished never resurrects it → hibernates
 //   bg_task_healed   — control: a lost bookend is healed by a `background_tasks_changed` replace → hibernated
 //   hibernate_exit1 ★ MEASUREMENT (expected RED on this base): a hibernate stop whose CLI
 //                      exits 1 during the graceful close must emit NO error row (it is an
@@ -59,6 +63,7 @@ const ARMS = [
   'window_4min', 'window_6min', 'recent_activity', 'control_6h',
   'guard_run_pty', 'guard_turn', 'wake_after', 'teardown_chip', 'wake_during_teardown',
   'hibernate_exit1', 'fresh_record', 'bg_task', 'bg_task_done', 'bg_task_healed',
+  'level_only', 'level_only_healed', 'level_after_done',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -433,6 +438,37 @@ if (ARM === 'bg_task' || ARM === 'bg_task_done' || ARM === 'bg_task_healed') {
     controlEligible, hasTask, hibernated, live: live(), interruptCalled: c.interruptStartedAt > 0 });
   const proven = startedSeen && progressSeen && closeSeen && controlEligible && idleMinutes >= 5;
   ok = ARM === 'bg_task'
+    ? proven && hasTask && hibernated.length === 0 && live()
+    : proven && !hasTask && hibernated.length === 1 && !live();
+}
+
+if (ARM === 'level_only' || ARM === 'level_only_healed' || ARM === 'level_after_done') {
+  const hn = await import(`${REPO}/src/main/hibernation-activity.ts`);
+  const taskEvents = () => events.filter((e) => e.ev.type === 'task').length;
+  const c = calls[0];
+  const sys = (o) => ({ type: 'system', session_id: SESSION_ID, uuid: `u-${Math.random()}`, ...o });
+  const live1 = { task_id: 'bg1', task_type: 'local_bash', description: 'pnpm test (background)' };
+  let expected = 1;
+  if (ARM === 'level_after_done') {
+    c.inject.push(sys({ subtype: 'task_started', ...live1, tool_use_id: 'tu-bg1' }));
+    c.inject.push(sys({ subtype: 'task_notification', task_id: 'bg1', tool_use_id: 'tu-bg1', status: 'completed', summary: 'done' }));
+    c.inject.push(sys({ subtype: 'background_tasks_changed', tasks: [live1] }));  // a STALE snapshot after the finish
+    expected = 3;
+  } else {
+    c.inject.push(sys({ subtype: 'background_tasks_changed', tasks: [live1] }));  // the ONLY signal a reattach gets
+    if (ARM === 'level_only_healed') { c.inject.push(sys({ subtype: 'background_tasks_changed', tasks: [] })); expected = 2; }
+  }
+  c.poke();
+  const seen = await waitUntil(() => taskEvents() >= expected, 3000);
+  await sleep(100);
+  skewMs = 6 * MIN;
+  const idleMinutes = (Date.now() - (hn.getLastActivity(WS) ?? 0)) / MIN;
+  const controlEligible = eligibleIfOld();
+  const hasTask = delivery.sdkHasBackgroundTasks?.(WS) ?? false;
+  const hibernated = await hib.sweepHibernation();
+  Object.assign(out, { seen, taskEvents: taskEvents(), idleMinutes: Math.round(idleMinutes * 10) / 10, controlEligible, hasTask, hibernated, live: live() });
+  const proven = seen && controlEligible && idleMinutes >= 5;
+  ok = ARM === 'level_only'
     ? proven && hasTask && hibernated.length === 0 && live()
     : proven && !hasTask && hibernated.length === 1 && !live();
 }

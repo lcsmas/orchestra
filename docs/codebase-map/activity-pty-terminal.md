@@ -517,7 +517,12 @@ long-idle agents and lets the existing resume paths bring them back.
   `<id>:run` PTY; no RUNNING background task (#198 D14 F1 — structured path
   only: the Session folds its `task` events with the panel's `foldTaskEvent`,
   read via `sdkHasBackgroundTasks`; a quiet long task stamps no activity so idleness
-  cannot see it; the terminal path's tasks are NOT tracked); idle ≥ threshold. Threshold from
+  cannot see it. The main-side fold is `foldTaskEventForLiveness`: a `changed` LEVEL
+  snapshot also SEEDS a running entry for an unseen id, because a keeper REATTACH gets
+  the snapshot, not the `started` edge (and a background Bash emits no `task_progress`)
+  — the panel fold keeps its no-create rule. **Accepted gap (R4):** a PTY-hosted agent's
+  background tasks are NOT tracked — the spool hook forwards `session_crons`, not
+  `background_tasks` (workspaces.ts), so it still hibernates at 5 min); idle ≥ threshold. Threshold from
   `ORCHESTRA_HIBERNATE_AFTER_MS`: unset/empty/garbage/`0` → 5 min default (#198
   D14, was 30 min — a resource lever; resume ~1s and lossless),
   `-1` → disabled (its own sentinel, since an env var with a default is not a
@@ -537,9 +542,10 @@ long-idle agents and lets the existing resume paths bring them back.
 - **Driven rig — `scripts/e2e-hibernate-wake.{mjs,sh}`** (#198 D14): the REAL
   `sweepHibernation` + REAL `sweepBusWake`→`ensureSession` over a stub CLI, fake
   clock via `Date.now` skew, env override deleted so it measures the shipped
-  5-min default. 12 REQUIRED arms (4-min no / 6-min yes / recent activity via the
+  5-min default. 15 REQUIRED arms (4-min no / 6-min yes / recent activity via the
   real `applyAgentEvent` funnel / live run-script PTY / turn in flight / live background
-  task blocks (+2 controls: completed, or healed by a `changed` replace, → hibernates) / fresh
+  task blocks (+2 controls: completed, or healed by a `changed` replace, → hibernates) / a
+  reattach's level-only snapshot blocks (+2 controls: healed / stale-after-done) / fresh
   record not clobbered by a mid-teardown writer / wake
   after hibernate resumes by `sdkSessionId` with a byte-identical transcript
   prefix + mail lossless via the real verbs / wake mid-teardown leaves no stale

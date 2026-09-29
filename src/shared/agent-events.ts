@@ -2046,6 +2046,22 @@ export function foldTaskEvent(
   return { ...tasks, [id]: merged };
 }
 
+/** Main-side liveness variant of {@link foldTaskEvent}: a `changed` LEVEL snapshot also seeds a
+ *  `running` entry for each live id never seen, because a keeper reattach gets the snapshot, not
+ *  the `started` edge (and a background Bash emits no `task_progress`). The panel fold keeps its
+ *  no-create rule; an existing entry (even a finished one) is never replaced, so nothing resurrects. */
+export function foldTaskEventForLiveness(
+  tasks: Record<string, BackgroundTask>,
+  event: AgentTaskEvent,
+): Record<string, BackgroundTask> {
+  let out = foldTaskEvent(tasks, event);
+  if (event.kind !== 'changed') return out;
+  for (const id of event.liveIds ?? []) {
+    if (!out[id]) out = { ...out, [id]: { id, description: '', status: 'running', startedAt: event.at } };
+  }
+  return out;
+}
+
 /** True while any folded background task is still `running` (main-side liveness
  *  signal — the hibernation sweep must not kill a session that still owns one). */
 export function hasRunningBackgroundTask(tasks: Record<string, BackgroundTask>): boolean {

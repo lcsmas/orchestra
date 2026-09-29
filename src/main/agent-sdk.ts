@@ -97,7 +97,7 @@ import {
   sdkEventToStopReason,
   stamp,
   supportsCancelQueued,
-  foldTaskEvent,
+  foldTaskEventForLiveness,
   hasRunningBackgroundTask,
   type NormalizeContext,
   type SdkMessage,
@@ -791,7 +791,7 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     // limit-killed, which would auto-resume a session nobody stopped.
     if (ev.type === 'turn-end') session.rateLimitHit = undefined;
     driveStatusFromEvent(session, ev);
-    if (ev.type === 'task') session.bgTasks = foldTaskEvent(session.bgTasks, ev);
+    if (ev.type === 'task') session.bgTasks = foldTaskEventForLiveness(session.bgTasks, ev);
     if (ev.type === 'session/init') {
       // Feature-detection state for control requests. `system/init` repeats on
       // EVERY request, so this re-latches each turn — deliberately, since a
