@@ -2191,7 +2191,9 @@ explicit operator path:
 `frozenFlags` (`runFlags(db, runId)`) + `liveFlags` (`getLiveSwitches()`),
 serialized JSON. The CLI prints the run it resolved (`--run` > `$ORCHESTRA_RUN_ID`
 > `default`), **never** the main process's `host-…` mirror id, plus a
-frozen-vs-live flag table (WIRE names). No write path.
+frozen-vs-live flag table (WIRE names). No write path. `runExists` (#206) tells a
+missing run row apart from a run frozen OFF (`runFlags` reads both as all-OFF): the
+CLI then prints "no such run (standalone …)" and `—` in the frozen column.
 
 ## D1a-bis BIDIRECTIONAL innermost-run wake routing (OQ2 ruling A, wake-side)
 

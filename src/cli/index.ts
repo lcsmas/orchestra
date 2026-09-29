@@ -1933,23 +1933,28 @@ async function main(argv: string[]): Promise<void> {
       // #134 — the WAVE run, not the host mirror run. `res.displayRunId` echoes
       // what we asked for; fall back to our own resolution if an older app did
       // not echo it (never to the host `res.runId`).
-      process.stdout.write(`run: ${(res.displayRunId as string) ?? displayRunId}\n`);
+      const shownRunId = (res.displayRunId as string) ?? displayRunId;
+      // #206: no run row -> nothing is frozen; never print that as "frozen OFF".
+      const noRun = res.runExists === false;
+      process.stdout.write(
+        noRun
+          ? `run: ${shownRunId} — no such run (standalone: switches freeze from the live settings when this workspace is promoted or dispatched)\n`
+          : `run: ${shownRunId}\n`,
+      );
       // Printed unconditionally, not only when it is false: an operator reading
       // a row of zeros must be able to tell "nothing diverged" from "nothing
       // could be written" without going to the log (D1).
       process.stdout.write(`bus: ${res.busAvailable ? 'available' : 'UNAVAILABLE'}\n`);
       // #134 — frozen (run row) vs live (store) flags, one row per mechanism.
-      // Frozen null means no run row exists yet → all-OFF, the coexistence-safe
-      // reading; the app already collapses that to an all-OFF set, so `null`
-      // here prints OFF, never blank. WIRE names (`ask_gate`), never the camel
-      // key, to match the notice and the verbs.
+      // No run row → the frozen column prints "—" (#206), never OFF. WIRE names
+      // (`ask_gate`), never the camel key, to match the notice and the verbs.
       const frozen = parseSwitches(
         typeof res.frozenFlags === 'string' ? res.frozenFlags : null,
       );
       const live = parseSwitches(typeof res.liveFlags === 'string' ? res.liveFlags : null);
       const flagRows = BUS_MECHANISMS.map((m) => ({
         mechanism: mechanismToWire(m),
-        frozen: switchStateWord(frozen[m]),
+        frozen: noRun ? '—' : switchStateWord(frozen[m]),
         live: switchStateWord(live[m]),
       }));
       process.stdout.write(`${table(flagRows, ['mechanism', 'frozen', 'live'])}\n`);
