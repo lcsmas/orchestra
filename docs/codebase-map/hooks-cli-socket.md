@@ -23,7 +23,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | Route | Required body | Response |
 |---|---|---|
 | `/rename` | `id`, `branch` | `{ ok, branch? }` |
-| `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached`,`model` — `detached:true` skips parent nesting; `from` still drives repo inheritance; `model` pins the agent's model, passed as `claude --model` on every launch) | `{ ok, id?, branch? }` |
+| `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached`,`model`,`effort` — `detached:true` skips parent nesting; `from` still drives repo inheritance; `model` pins the agent's model, passed as `claude --model` on every launch; `effort` pins `ws.sdkEffort`, validated by `parseEffortArg` — unknown levels are refused) | `{ ok, id?, branch? }` |
 | `/peers` | — (+ `stats?: true` — adds each git peer's committed three-dot diff vs base as `diff: {files,insertions,deletions}\|null`; one git subprocess per peer, so opt-in — the comms-resurface hook hits `/peers` on every prompt) | `{ ok, peers?: PeerInfo[] }` |
 | `/read` | `id` (+ `lines?`) | `{ ok, branch?, transcript? }` |
 | `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'\|'started'\|'inbox' }` — **`'live'` is a PROVEN claim, not an optimistic one (issue #57 fault b):** it is returned only once the message actually became the target's turn (`sdkDeliverConfirmed` awaits the delivery watcher; see `structured-agent-view.md`). A turn discarded before running (Escape, session end, tray cancel, stop) or still unconfirmed after `DELIVERY_START_TIMEOUT_MS` falls back to the durable inbox and reports **`'inbox'`** — it previously reported `'live'` on the queue push alone and never corrected it, which is how senders lost messages silently. The CLI prints this verbatim as `Delivered (<delivery>).` |
@@ -215,7 +215,7 @@ rest — an all-or-nothing 0 would hide the targets an emergency halt never reac
 and prints a `N of M target(s) failed: <ids>` summary to stderr. The positional
 single-target form is unchanged, byte for byte, including its `Delivered (<kind>).`
 line, which agents and scripts already parse), `spawn
---task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]`
+--task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]`
 (`--model` pins the agent's model — alias or full id; `--detached`
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
 `reload-skills [<id>|--all] [--plugins]` (make an out-of-band skill/plugin

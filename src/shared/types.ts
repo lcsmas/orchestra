@@ -728,6 +728,8 @@ export interface CreateWorkspaceInput {
   host?: WorkspaceHost;
   /** Model for the new workspace's agent (see {@link Workspace.model}). */
   model?: string;
+  /** Explicit reasoning effort (spawn `--effort`); absent → the default of its kind. */
+  effort?: AgentEffortLevel;
   /** Branch name for the new worktree. Omitted → an auto-generated
    * adjective-noun name (`randomBranchName`), which is what every hand-created
    * and `/spawn`ed workspace uses. Supplied only when the name carries meaning

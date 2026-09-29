@@ -17,10 +17,10 @@ test('CONTROL: sources are the real files', () => {
   assert.match(handlers, /setModelDefaults: async/);
 });
 
-test('createWorkspace freezes the effort default of its kind onto sdkEffort', () => {
+test('createWorkspace freezes an explicit spawn --effort, else the default of its kind, onto sdkEffort', () => {
   assert.match(
     workspaces,
-    /const newEffort = effortForNewWorkspace\(store\.getEffortDefaults\(\), defaultKind\)/,
+    /const newEffort = input\.effort \?\? effortForNewWorkspace\(store\.getEffortDefaults\(\), defaultKind\)/,
   );
   assert.match(workspaces, /\.\.\.\(newEffort \? \{ sdkEffort: newEffort \} : \{\}\)/);
 });
@@ -35,4 +35,10 @@ test('the setter normalizes the MERGED value, so a one-kind patch keeps the othe
     handlers,
     /normalizeEffortDefaults\(\{ \.\.\.store\.getEffortDefaults\(\), \.\.\.next \}\)/,
   );
+});
+
+test('orchestra spawn --effort reaches createWorkspace (route → dispatch → input)', () => {
+  assert.match(read('src/main/hooks-server.ts'), /effort: typeof msg\.effort === 'string' \? msg\.effort : undefined/);
+  assert.match(workspaces, /const effort = input\.effort\?\.trim\(\) \? parseEffortArg\(input\.effort\) : undefined;/);
+  assert.match(workspaces, /\.\.\.\(effort \? \{ effort \} : \{\}\),/);
 });

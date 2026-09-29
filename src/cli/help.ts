@@ -67,13 +67,15 @@ in 'peers'. --clear removes it.`,
     name: 'spawn',
     group: 'Workspaces',
     summary: 'Spawn a new worktree + agent',
-    detail: `usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
+    detail: `usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]
 
 Spawn a new worktree + agent, nested under the caller by default.
   --task <text>     the agent's brief (required)
   --repo <path>     repo to branch from (default: the caller's)
   --base <branch>   base branch
   --model <model>   pin the agent's model (full wire id); omitted = the user's
+                    spawned-agent default from Settings
+  --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the
                     spawned-agent default from Settings
   --detached        top-level, not nested under the caller`,
   },

@@ -49,3 +49,10 @@ export function effortForNewWorkspace(
   const d = defaults[kind];
   return d === MODEL_DEFAULT_EFFORT ? undefined : d;
 }
+
+/** A spawn's explicit `--effort` must be one of {@link EFFORT_LEVELS}; returns the
+ *  level, or null when the value is not a known level (the caller refuses). */
+export function parseEffortArg(raw: string | undefined): AgentEffortLevel | null {
+  const v = raw?.trim().toLowerCase();
+  return v && EFFORT_LEVELS.includes(v as AgentEffortLevel) ? (v as AgentEffortLevel) : null;
+}

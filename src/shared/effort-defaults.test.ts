@@ -5,6 +5,7 @@ import {
   MODEL_DEFAULT_EFFORT,
   effortForNewWorkspace,
   normalizeEffortDefaults,
+  parseEffortArg,
 } from './effort-defaults.ts';
 
 const D = { workspace: 'xhigh', spawned: 'low' } as const;
@@ -32,4 +33,15 @@ test('"model default" leaves the workspace unpinned (undefined, never the marker
   const none = { workspace: MODEL_DEFAULT_EFFORT, spawned: 'max' } as const;
   assert.equal(effortForNewWorkspace(none, 'workspace'), undefined);
   assert.equal(effortForNewWorkspace(none, 'spawned'), 'max');
+});
+
+// spawn --effort (fleet policy: OPS high, workers xhigh) — only known levels pass.
+test('parseEffortArg accepts every known level, case/space-insensitive', () => {
+  for (const l of ['low', 'medium', 'high', 'xhigh', 'max']) assert.equal(parseEffortArg(l), l);
+  assert.equal(parseEffortArg('  XHigh '), 'xhigh');
+});
+test('parseEffortArg refuses unknown values (the spawn is refused, never silently defaulted)', () => {
+  for (const v of ['extreme', 'default', 'hi', '1']) assert.equal(parseEffortArg(v), null);
+  assert.equal(parseEffortArg(''), null);
+  assert.equal(parseEffortArg(undefined), null);
 });

@@ -66,7 +66,7 @@ import {
   resolveLaunchModel,
   type ModelDefaultKind,
 } from '../shared/model-defaults.ts';
-import { effortForNewWorkspace } from '../shared/effort-defaults.ts';
+import { effortForNewWorkspace, parseEffortArg } from '../shared/effort-defaults.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   maybeStartRunAtAnchor,
@@ -512,7 +512,7 @@ export async function createWorkspace(
   // stays around on failure; we want the same port across retries).
   const port = store.allocatePort();
   const setupScript = store.getRepoScripts(input.repoPath).setup;
-  const newEffort = effortForNewWorkspace(store.getEffortDefaults(), defaultKind);
+  const newEffort = input.effort ?? effortForNewWorkspace(store.getEffortDefaults(), defaultKind);
 
   const ws: Workspace = {
     id,
@@ -1682,6 +1682,8 @@ export async function dispatchSpawnRequest(
     agent?: 'claude';
     detached?: boolean;
     model?: string;
+    /** Explicit reasoning effort (`orchestra spawn --effort`); absent → the default of `defaultKind`. */
+    effort?: string;
     /** Which default model applies with no `model`: 'spawned' when an AGENT
      *  spawns (`orchestra spawn`), 'workspace' when a human's click reuses this
      *  path (spawn from a pinned Linear ticket). See CONTEXT.md "Spawned agent". */
@@ -1701,6 +1703,8 @@ export async function dispatchSpawnRequest(
   if (model && !isValidModelArg(model)) {
     return { ok: false, error: `invalid model: ${model.slice(0, 80)}` };
   }
+  const effort = input.effort?.trim() ? parseEffortArg(input.effort) : undefined;
+  if (effort === null) return { ok: false, error: `invalid effort: ${String(input.effort).slice(0, 40)}` };
   let repoPath = input.repoPath?.trim() || undefined;
   if (repoPath) {
     // Only repos the user has already added — never let an agent point a new
@@ -1737,6 +1741,7 @@ export async function dispatchSpawnRequest(
       agent: input.agent,
       parentId: input.detached ? undefined : input.from,
       model,
+      ...(effort ? { effort } : {}),
       branch: input.branch,
     }, input.defaultKind);
     await startWorkspaceAgentHeadless(ws.id);

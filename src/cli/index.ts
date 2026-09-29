@@ -1197,11 +1197,12 @@ async function main(argv: string[]): Promise<void> {
       const { value: repo, rest: r2 } = takeFlag(r1, '--repo');
       const { value: base, rest: r3 } = takeFlag(r2, '--base');
       const { value: model, rest: r4 } = takeFlag(r3, '--model');
-      const { present: detached, rest: r5 } = takeBoolFlag(r4, '--detached');
+      const { value: effort, rest: r4b } = takeFlag(r4, '--effort');
+      const { present: detached, rest: r5 } = takeBoolFlag(r4b, '--detached');
       void r5;
       if (!task)
         fail(
-          'usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]',
+          'usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
         );
       // Catch the intent/flag mismatch mechanically. Nesting is the default, so
       // an agent briefing a child as "standalone"/"independent"/"separate" while
@@ -1224,6 +1225,7 @@ async function main(argv: string[]): Promise<void> {
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
       if (model !== undefined) body.model = model;
+      if (effort !== undefined) body.effort = effort;
       if (detached) body.detached = true;
       const res = await request('/spawn', body);
       if (!res.ok) fail(res.error ?? 'failed to spawn workspace');
