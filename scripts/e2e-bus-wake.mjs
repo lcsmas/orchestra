@@ -197,8 +197,13 @@ if (arm.realVerb) {
   // reader's own ack failing is exactly what a host that acked on its behalf
   // produces (measured with that mutant). Recording it keeps the diagnosis in
   // the output instead of in a stack trace.
+  // The CLI's own composer (src/cli/bus-verb-slice.ts): bare `busMod` is rig rot (#223).
+  const busRuns = await import(`${REPO}/src/main/bus-runs.ts`);
+  const receipts = await import(`${REPO}/src/main/bus-receipts.ts`);
+  const { composeBusVerbSlice } = await import(`${REPO}/src/cli/bus-verb-slice.ts`);
+  const slice = composeBusVerbSlice(busMod, busRuns, receipts);
   const ctx = {
-    db, id, bus: busMod,
+    db, id, bus: slice,
     out: (t) => { stdout += t; },
     fail: (m) => { verbFailure = m; throw new VerbRefusal(m); },
   };

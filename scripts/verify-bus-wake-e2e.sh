@@ -21,12 +21,15 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 ARMS=(fires switch_off coalesce ack_clears control_second check_no_ack real_verb)
 FAILED=0
+ERR="$(mktemp)"; trap 'rm -f "$ERR"' EXIT
 for arm in "${ARMS[@]}"; do
   out="$(node --experimental-strip-types --import ./scripts/.r2-register.mjs \
-          scripts/e2e-bus-wake.mjs "$arm" 2>/dev/null | tail -1)"
+          scripts/e2e-bus-wake.mjs "$arm" 2>"$ERR" | tail -1)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '  FAIL %-16s rc=%s %s\n' "$arm" "$rc" "$out"
+    # A crash prints no JSON: surface the error (#223 rotted silently as an empty line).
+    grep -E '(Error|rig fault)' "$ERR" | head -2 | sed 's/^/       stderr: /'
     FAILED=1
   else
     printf '  ok   %-16s %s\n' "$arm" "$out"

@@ -27,6 +27,7 @@ import {
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
   BUS_MECHANISMS,
   parseSwitches,
@@ -702,25 +703,7 @@ async function openBusForVerb(): Promise<{
     // (pure JS over the same `db`, no extra native cost). busRuns (busSwitch) is
     // already imported above for the capability seam.
     const receipts = await import('../main/bus-receipts.ts');
-    const busSlice: BusVerbCtx['bus'] = {
-      send: bus.send,
-      check: bus.check,
-      ack: bus.ack,
-      openGate: bus.openGate,
-      resolveGate: bus.resolveGate,
-      getGate: bus.getGate,
-      sendGateResolutionRewake: bus.sendGateResolutionRewake,
-      openGatesForRecipient: bus.openGatesForRecipient,
-      openGatesForRecipientInRuns: bus.openGatesForRecipientInRuns,
-      getRelatedRunIds: busRuns.getRelatedRunIds,
-      getRun: busRuns.getRun,
-      fencedWrite: bus.fencedWrite,
-      mintCapability: bus.mintCapability,
-      verifyCapability: bus.verifyCapability,
-      rotateCapabilityForRecipient: bus.rotateCapabilityForRecipient,
-      withReceipt: receipts.withReceipt,
-      busSwitch: busRuns.busSwitch,
-    };
+    const busSlice = composeBusVerbSlice(bus, busRuns, receipts);
     return {
       db,
       bus: busSlice,

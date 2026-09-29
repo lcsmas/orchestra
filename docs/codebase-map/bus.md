@@ -1110,6 +1110,10 @@ the wake was about, then the ack to clear pending *as read back through the
 host's own predicate*. Identity comes from `resolveBusIdentity()` on the env
 Orchestra sets, never a hand-built `{runId, handle}`: a hand-built one agrees
 with the host by construction and proves nothing about whether the two meet.
+The verb `ctx.bus` comes from `composeBusVerbSlice` (`src/cli/bus-verb-slice.ts`),
+the SAME composer `src/cli/index.ts` uses — passing bare `bus.ts` rotted the arm
+when `getRelatedRunIds` moved (#223); a new verb dependency is now a tsc error in
+the composer, not silent rig drift.
 
 Three mutants killed by it: host roster on a different run than the CLI resolves
 (0 turns); host waking a handle the CLI does not resolve to
