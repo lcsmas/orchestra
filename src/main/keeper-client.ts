@@ -24,7 +24,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable, type Readable } from 'node:stream';
 import {
@@ -34,6 +34,7 @@ import {
   type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
+import { isKeeperCmdline } from '../shared/resource-monitor';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
 import { log } from './logger';
@@ -91,6 +92,11 @@ export function keeperSocketPath(wsId: string): string {
 
 function keeperPidPath(wsId: string): string {
   return path.join(keeperDir(), `${wsId}.pid`);
+}
+
+/** The pid file path a keeper for `wsId` is launched with (argv[3] of the daemon). */
+export function keeperPidFilePath(wsId: string): string {
+  return keeperPidPath(wsId);
 }
 
 function keeperLogPath(wsId: string): string {
@@ -265,29 +271,128 @@ export async function probeKeeper(wsId: string): Promise<KeeperProbe | null> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Per-workspace serialization (#202): connect-or-launch and kill for ONE wsId never interleave, so N
+// concurrent starts can't each launch a daemon and a kill's file sweep can't clobber a successor.
+// ---------------------------------------------------------------------------
+
+const keeperOps = new Map<string, Promise<void>>();
+
+/** Workspaces whose delete has begun: no keeper is launched or attached for them (a wake racing the
+ *  delete — A3 review F4 — would otherwise orphan a keeper/CLI). Ids are unique, so never cleared. */
+const deletedWorkspaces = new Set<string>();
+export function forbidKeeperLaunch(wsId: string): void {
+  deletedWorkspaces.add(wsId);
+}
+
+function serializeKeeperOp<T>(wsId: string, op: () => Promise<T>): Promise<T> {
+  const prev = keeperOps.get(wsId) ?? Promise.resolve();
+  const run = prev.then(op);
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  keeperOps.set(wsId, tail);
+  void tail.then(() => {
+    if (keeperOps.get(wsId) === tail) keeperOps.delete(wsId);
+  });
+  return run;
+}
+
+/** argv of a live pid; null = unreadable. Linux /proc, macOS `ps`; win32 cannot → null. */
+function readProcArgv(pid: number): string[] | null {
+  try {
+    if (process.platform === 'linux') {
+      return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter((a) => a.length > 0);
+    }
+    if (process.platform === 'darwin') {
+      const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 });
+      return out.trim().split(/\s+/).filter((a) => a.length > 0);
+    }
+  } catch {
+    /* gone / unreadable */
+  }
+  return null;
+}
+
+/** Identity of the process a pid file names, read NOW: 'keeper' (argv is this workspace's keeper),
+ *  'other' (alive but not it — a reused pid), 'gone', 'unknown' (alive, argv unreadable → never signal). */
+export function keeperPidState(pid: number, wsId: string): 'keeper' | 'other' | 'gone' | 'unknown' {
+  if (!isAlive(pid)) return 'gone';
+  const argv = readProcArgv(pid);
+  if (!argv) return isAlive(pid) ? 'unknown' : 'gone';
+  return isKeeperCmdline(argv, wsId) ? 'keeper' : 'other';
+}
+
+function readKeeperPidFile(wsId: string): number | null {
+  try {
+    const pid = (JSON.parse(fs.readFileSync(keeperPidPath(wsId), 'utf8')) as { pid?: unknown }).pid;
+    return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The pid-file keeper for `wsId` iff it is alive (the TRACKED keeper — the one holding the socket). */
+export function readTrackedKeeperPid(wsId: string): number | null {
+  const pid = readKeeperPidFile(wsId);
+  return pid !== null && isAlive(pid) ? pid : null;
+}
+
+/** True when a live server accepts connections on the workspace's socket. */
+function socketAnswers(sockPath: string): Promise<boolean> {
+  return connectSock(sockPath, 500).then(
+    (s) => {
+      s.destroy();
+      return true;
+    },
+    () => false,
+  );
+}
+
+/** Remove keeper files that have NO live owner (#202): the pid file when its pid is gone or is not a
+ *  keeper, the socket when nobody answers on it. A successor's live files are never touched. */
+export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
+  const pid = readKeeperPidFile(wsId);
+  const state = pid === null ? 'gone' : keeperPidState(pid, wsId);
+  const sockPath = keeperSocketPath(wsId);
+  const sockLive = await socketAnswers(sockPath);
+  const unlink = (p: string): void => {
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      /* fine */
+    }
+  };
+  if (state === 'gone' || state === 'other') unlink(keeperPidPath(wsId));
+  if (!sockLive) unlink(sockPath);
+  if (!sockLive && (state === 'gone' || state === 'other')) unlink(keeperLogPath(wsId));
+}
+
 /**
  * Terminate a workspace's keeper + CLI (explicit-stop path: sdkStop, delete,
  * clear, hibernate…). Socket kill frame first (hello claims the slot — fine,
- * we're killing); falls back to SIGTERM via the pid file. Resolves only once
- * the keeper PROCESS is actually gone (bounded wait) — callers that respawn
- * right after (the pending-prompt recovery, the facade's stale path) must not
- * race a dying keeper still holding the socket: that exact race bridged a
- * fresh query onto a SIGTERM'd child ("exited with code 143") in testing.
+ * we're killing); falls back to SIGTERM via the pid file — but ONLY to a pid whose argv is
+ * verified, at signal time, to be this workspace's keeper (a stale pid file can name a reused
+ * pid). Resolves only once the keeper PROCESS is actually gone (bounded wait) — callers that
+ * respawn right after (the pending-prompt recovery, the facade's stale path) must not race a
+ * dying keeper still holding the socket: that exact race bridged a fresh query onto a
+ * SIGTERM'd child ("exited with code 143") in testing. Serialized per workspace.
  */
-export async function killKeeper(wsId: string): Promise<void> {
+export function killKeeper(wsId: string, reason = 'explicit-stop'): Promise<void> {
+  return serializeKeeperOp(wsId, () => killKeeperUnlocked(wsId, reason));
+}
+
+async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
   const sockPath = keeperSocketPath(wsId);
-  let pid: number | undefined;
-  try {
-    pid = (JSON.parse(fs.readFileSync(keeperPidPath(wsId), 'utf8')) as { pid?: number }).pid;
-  } catch {
-    /* no pid file */
-  }
+  const pid = readKeeperPidFile(wsId) ?? undefined;
   let signalled = false;
   try {
     const sock = await connectSock(sockPath);
     sock.write(encodeKeeperFrame({ t: 'hello', wsId }));
     sock.write(encodeKeeperFrame({ t: 'kill', signal: 'SIGTERM' }));
     signalled = true;
+    log.info(`keeper[${wsId}] killing keeper (kill frame; pid=${pid ?? '?'}, reason=${reason})`);
     await new Promise<void>((resolve) => {
       const to = setTimeout(() => resolve(), 3000);
       sock.once('close', () => {
@@ -299,19 +404,26 @@ export async function killKeeper(wsId: string): Promise<void> {
   } catch {
     /* no socket — pid fallback below */
   }
-  if (!signalled && pid) {
+  if (!signalled && pid && keeperPidState(pid, wsId) === 'keeper') {
+    log.info(`keeper[${wsId}] killing keeper (SIGTERM via pid file; pid=${pid}, reason=${reason})`);
     try {
       process.kill(pid, 'SIGTERM');
     } catch {
       /* already gone */
     }
   }
-  // Deterministic handoff: wait (bounded) for the process to actually die.
+  // Deterministic handoff: wait (bounded) for the process to actually die — while it still
+  // verifies as OUR keeper (a recycled pid must neither be waited on nor SIGKILLed).
   if (pid) {
-    for (let i = 0; i < 50 && isAlive(pid); i++) {
+    const waiting = (): boolean => {
+      const st = keeperPidState(pid, wsId);
+      return st === 'keeper' || st === 'unknown';
+    };
+    for (let i = 0; i < 50 && waiting(); i++) {
       await new Promise((r) => setTimeout(r, 100));
     }
-    if (isAlive(pid)) {
+    if (keeperPidState(pid, wsId) === 'keeper') {
+      log.warn(`keeper[${wsId}] SIGKILL pid=${pid} (still alive after SIGTERM grace, reason=${reason})`);
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
@@ -319,14 +431,8 @@ export async function killKeeper(wsId: string): Promise<void> {
       }
     }
   }
-  // Sweep stale artifacts so probes stop seeing ghosts.
-  for (const p of [sockPath, keeperPidPath(wsId)]) {
-    try {
-      fs.unlinkSync(p);
-    } catch {
-      /* fine */
-    }
-  }
+  // Sweep stale artifacts so probes stop seeing ghosts — never a live successor's files.
+  await sweepStaleKeeperFiles(wsId);
 }
 
 /** Workspace ids with a live keeper (pid alive). Prunes stale pid/sock files
@@ -565,61 +671,66 @@ export function makeKeeperSpawn(
 
     void (async () => {
       try {
-        let attached = false;
-        let attachedPid: number | undefined;
-        let attachedTurnInFlight = false;
-        try {
-          sock = await connectSock(sockPath);
-        } catch {
-          sock = null;
-        }
-        if (sock) {
-          wireSocket(sock);
-          const ack = await helloOn(sock);
-          // Attach only to a CLI that has genuinely RUN (everStarted) and is
-          // NOT shutting down. A running-but-never-started CLI is init-wedged
-          // (its init handshake died with a previous client) — sending into it
-          // queues the message behind a ~60s timeout. A `shuttingDown` CLI is
-          // mid-teardown (a graceful stop/kill/linger escalation in flight):
-          // attaching to it (audit D1) writes the wake prompt into a `stdin`
-          // frame the keeper rejects, then the CLI exits 0 with the prompt
-          // lost, so treat it as stale too. `undefined` on either field
-          // (pre-field keeper) keeps the legacy attach behavior.
-          if (ack.running && ack.everStarted !== false && ack.shuttingDown !== true) {
-            attached = true;
-            attachedPid = ack.pid;
-            attachedTurnInFlight = ack.turnInFlight === true;
-          } else {
-            // Stale keeper (child gone, never spawned by us, a
-            // never-started/init-wedged CLI, or one already shutting down):
-            // clear it out and start fresh — never reuse a dead-or-wedged or
-            // dying child slot. killKeeper resolves only once the keeper
-            // PROCESS is gone, so the fresh launch below can't race a dying
-            // keeper still holding the socket path.
-            const stale = sock;
-            sock = null; // detach the router's close semantics first
-            stale.destroy();
-            await killKeeper(wsId);
+        // Serialized per workspace (#202): N concurrent starts run connect-or-launch ONE at a time,
+        // so the 2nd..Nth see the 1st's keeper instead of each launching a daemon.
+        await serializeKeeperOp(wsId, async () => {
+          if (deletedWorkspaces.has(wsId)) throw new Error(`workspace ${wsId} was deleted — keeper start refused`);
+          let attached = false;
+          let attachedPid: number | undefined;
+          let attachedTurnInFlight = false;
+          try {
+            sock = await connectSock(sockPath);
+          } catch {
+            sock = null;
           }
-        }
-        if (!sock) {
-          sock = await launchKeeperDaemon(wsId);
-          wireSocket(sock);
-          await helloOn(sock);
-          sock.write(
-            encodeKeeperFrame({
-              t: 'spawn',
-              command: opts.command,
-              args: opts.args,
-              cwd: opts.cwd ?? process.cwd(),
-              env: opts.env,
-            }),
-          );
-        }
-        ready = true;
-        for (const line of buffered) sock.write(line);
-        buffered.length = 0;
-        if (attached) onAttached?.(attachedPid, attachedTurnInFlight);
+          if (sock) {
+            wireSocket(sock);
+            const ack = await helloOn(sock);
+            // Attach only to a CLI that has genuinely RUN (everStarted) and is
+            // NOT shutting down. A running-but-never-started CLI is init-wedged
+            // (its init handshake died with a previous client) — sending into it
+            // queues the message behind a ~60s timeout. A `shuttingDown` CLI is
+            // mid-teardown (a graceful stop/kill/linger escalation in flight):
+            // attaching to it (audit D1) writes the wake prompt into a `stdin`
+            // frame the keeper rejects, then the CLI exits 0 with the prompt
+            // lost, so treat it as stale too. `undefined` on either field
+            // (pre-field keeper) keeps the legacy attach behavior.
+            if (ack.running && ack.everStarted !== false && ack.shuttingDown !== true) {
+              attached = true;
+              attachedPid = ack.pid;
+              attachedTurnInFlight = ack.turnInFlight === true;
+            } else {
+              // Stale keeper (child gone, never spawned by us, a
+              // never-started/init-wedged CLI, or one already shutting down):
+              // clear it out and start fresh — never reuse a dead-or-wedged or
+              // dying child slot. killKeeper resolves only once the keeper
+              // PROCESS is gone, so the fresh launch below can't race a dying
+              // keeper still holding the socket path.
+              const stale = sock;
+              sock = null; // detach the router's close semantics first
+              stale.destroy();
+              await killKeeperUnlocked(wsId, 'stale-keeper');
+            }
+          }
+          if (!sock) {
+            sock = await launchKeeperDaemon(wsId);
+            wireSocket(sock);
+            await helloOn(sock);
+            sock.write(
+              encodeKeeperFrame({
+                t: 'spawn',
+                command: opts.command,
+                args: opts.args,
+                cwd: opts.cwd ?? process.cwd(),
+                env: opts.env,
+              }),
+            );
+          }
+          ready = true;
+          for (const line of buffered) sock.write(line);
+          buffered.length = 0;
+          if (attached) onAttached?.(attachedPid, attachedTurnInFlight);
+        });
       } catch (e) {
         ev.emit('error', e instanceof Error ? e : new Error(String(e)));
       }

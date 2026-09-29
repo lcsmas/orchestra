@@ -4,10 +4,12 @@ import type { ProcSample } from './resources.ts';
 import {
   buildResourceLogLine,
   classifySurvivors,
+  decideDuplicateReap,
   decideReap,
   decideThresholdWarnings,
   firstSampleAt,
   isKeeperCmdline,
+  parseKeeperArgv,
   shouldDropBackup,
   shouldRotate,
   summarizeSessionTree,
@@ -19,6 +21,7 @@ import {
   SESSION_CPU_WARN_PCT,
   ELECTRON_RSS_WARN_BYTES,
   ELECTRON_CPU_WARN_PCT,
+  type KeeperProc,
   type KeeperRoot,
   type ReapTarget,
   type ResourceLogElectronProc,
@@ -343,4 +346,66 @@ test('firstSampleAt reads the first line only and refuses garbage', () => {
   assert.equal(firstSampleAt('not json\n{"at":1}\n'), null);
   assert.equal(firstSampleAt('{"at":"soon"}\n'), null);
   assert.equal(firstSampleAt(''), null);
+});
+
+// ─── decideDuplicateReap (#203): keepers that are not the tracked one ────────
+
+const kp = (pid: number, ws: string): KeeperProc => ({ pid, workspaceId: ws });
+/** Two keepers for ONE workspace: 200 = tracked (pid file), 100 = the duplicate. */
+const dupTable = [...keeperTree(100, 1), ...keeperTree(200, 1)];
+
+test('decideDuplicateReap CLASSIFIES the untracked keeper of a LIVE workspace, never the tracked one (must-FAIL arm)', () => {
+  const d = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 200 }], [kp(100, 'w'), kp(200, 'w')], dupTable, new Set(['w']), true);
+  assert.deepEqual(d.targets.map((t) => [t.keeperPid, t.kind, t.trackedPid]), [[100, 'duplicate', 200]]);
+  assert.deepEqual(d.targets[0].pids, [102, 101, 100], 'the duplicate tree only, leaf-first, keeper last');
+});
+
+test('decideDuplicateReap NEVER touches a live workspace\'s SOLE keeper — incl. a hibernated one with a lingering keeper (must-PASS arm)', () => {
+  const d = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 100 }], [kp(100, 'w')], keeperTree(100, 1), new Set(['w']), true);
+  assert.deepEqual(d.targets, []);
+  assert.deepEqual(d.refused, []);
+  // …and an untracked sole keeper of a live workspace is also left alone.
+  const u = decideDuplicateReap([], [kp(100, 'w')], keeperTree(100, 1), new Set(['w']), true);
+  assert.deepEqual(u.targets, []);
+  assert.deepEqual(u.refused, [], 'a sole keeper is not even a refusal (no per-tick WARN noise)');
+});
+
+test('decideDuplicateReap REFUSES everything when the store was not loaded from disk', () => {
+  const d = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 200 }], [kp(100, 'w'), kp(200, 'w')], dupTable, new Set(['w']), false);
+  assert.deepEqual(d, { targets: [], refused: [], refusedStoreNotLoaded: true });
+});
+
+test('decideDuplicateReap fails closed: no tracked keeper, or a tracked pid that is not in the scan → refused, nothing classified', () => {
+  const none = decideDuplicateReap([], [kp(100, 'w'), kp(200, 'w')], dupTable, new Set(['w']), true);
+  assert.deepEqual(none.targets, []);
+  assert.match(none.refused[0].reason, /no-tracked-keeper/);
+  const off = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 999 }], [kp(100, 'w'), kp(200, 'w')], dupTable, new Set(['w']), true);
+  assert.deepEqual(off.targets, []);
+  assert.match(off.refused[0].reason, /tracked-keeper-not-in-scan/);
+});
+
+test('decideDuplicateReap: an ABSENT workspace loses every keeper except the tracked one (that is decideReap\'s)', () => {
+  const d = decideDuplicateReap([{ workspaceId: 'gone', keeperPid: 200 }], [kp(100, 'gone'), kp(200, 'gone')], dupTable, new Set<string>(), true);
+  assert.deepEqual(d.targets.map((t) => [t.keeperPid, t.kind]), [[100, 'orphan-untracked']]);
+  const untracked = decideDuplicateReap([], [kp(100, 'gone'), kp(200, 'gone')], dupTable, new Set<string>(), true);
+  assert.deepEqual(untracked.targets.map((t) => t.keeperPid).sort(), [100, 200]);
+});
+
+test('decideDuplicateReap refuses a duplicate tree whose members carry no start-time (identity unverifiable)', () => {
+  const blind = dupTable.map((p) => ({ ...p, startTicks: undefined }));
+  const d = decideDuplicateReap([{ workspaceId: 'w', keeperPid: 200 }], [kp(100, 'w'), kp(200, 'w')], blind, new Set(['w']), true);
+  assert.deepEqual(d.targets, []);
+  assert.match(d.refused[0].reason, /identity-unverifiable/);
+});
+
+test('parseKeeperArgv matches only THIS home\'s keeper argv (pid path anchors the home)', () => {
+  const pidPathFor = (ws: string) => `/home/u/.orchestra/keepers/${ws}.pid`;
+  const good = ['node', '/home/u/.orchestra/bin/keeper.js', 'ws1', '/home/u/.orchestra/keepers/ws1.sock', '/home/u/.orchestra/keepers/ws1.pid', '/home/u/.orchestra/keepers/ws1.log'];
+  assert.equal(parseKeeperArgv(good, pidPathFor), 'ws1');
+  // a dev-home keeper, an editor with a file named keeper.js, and a short argv are all rejected
+  const dev = [...good.slice(0, 4), '/home/u/.orchestra-dev/keepers/ws1.pid', 'l'];
+  assert.equal(parseKeeperArgv(dev, pidPathFor), null);
+  assert.equal(parseKeeperArgv(['nvim', 'keeper.js', 'a', 'b', 'c', 'd'], pidPathFor), null);
+  assert.equal(parseKeeperArgv(good.slice(0, 4), pidPathFor), null);
+  assert.equal(parseKeeperArgv(null, pidPathFor), null);
 });

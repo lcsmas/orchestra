@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { orchestraHome, platform } from './platform';
 import { scoped } from './logger';
 import { store } from './store';
-import { listKeeperRoots } from './keeper-client';
+import { keeperPidFilePath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
 import {
   computeCpuPcts,
   parseProcStatLine,
@@ -23,12 +23,16 @@ import {
 import {
   buildResourceLogLine,
   classifySurvivors,
+  decideDuplicateReap,
   decideReap,
   decideThresholdWarnings,
   firstSampleAt,
+  isKeeperCmdline,
+  parseKeeperArgv,
   shouldDropBackup,
   shouldRotate,
   verifyReapIdentity,
+  type KeeperProc,
   type KeeperRoot,
   type ReapMember,
   type ReapTarget,
@@ -86,6 +90,10 @@ export interface ResourceMonitorDeps {
   now(): number;
   procTable(): Promise<ProcSample[]>;
   keeperRoots(): KeeperRoot[];
+  /** Every process whose argv is a keeper daemon of THIS home (/proc scan) — finds duplicates a pid file hides. */
+  keeperProcs(): KeeperProc[];
+  /** The pid-file keeper of a workspace iff alive, read FRESH (kill-time tracked-keeper re-check). */
+  trackedKeeperPid(wsId: string): number | null;
   /** Workspace ids present in the store, read FRESH each call (kill-time read). */
   liveWorkspaceIds(): Set<string>;
   statusFor(wsId: string): string | null;
@@ -190,10 +198,35 @@ export function appendResourceLogLine(line: ResourceLogLine): void {
   }
 }
 
+/** Linux /proc argv scan for keeper daemons of this home; other platforms → [] (reap needs /proc anyway). */
+function scanKeeperProcs(): KeeperProc[] {
+  if (process.platform !== 'linux') return [];
+  const out: KeeperProc[] = [];
+  let names: string[];
+  try {
+    names = fs.readdirSync('/proc');
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const argv = fs.readFileSync(`/proc/${name}/cmdline`, 'utf8').split('\0').filter((a) => a.length > 0);
+      const ws = parseKeeperArgv(argv, keeperPidFilePath);
+      if (ws) out.push({ pid: Number(name), workspaceId: ws });
+    } catch {
+      /* exited mid-scan / not readable */
+    }
+  }
+  return out;
+}
+
 const defaultDeps: ResourceMonitorDeps = {
   now: () => Date.now(),
   procTable: () => sampleProcTable(),
   keeperRoots: () => listKeeperRoots(),
+  keeperProcs: () => scanKeeperProcs(),
+  trackedKeeperPid: (wsId) => readTrackedKeeperPid(wsId),
   liveWorkspaceIds: () => new Set(store.workspaces.map((w) => w.id)),
   statusFor: (wsId) => store.getWorkspace(wsId)?.status ?? null,
   storeLoadedFromDisk: () => store.loadedFromDisk,
@@ -261,6 +294,7 @@ async function reapTargets(d: ResourceMonitorDeps, targets: ReapTarget[]): Promi
   const armed: Array<{ target: ReapTarget; sent: ReapMember[] }> = [];
   for (const target of targets) {
     const ws = target.workspaceId;
+    const kind = target.kind ?? 'orphan';
     const check = verifyReapIdentity(
       target,
       readFresh(d, target.pids),
@@ -274,15 +308,33 @@ async function reapTargets(d: ResourceMonitorDeps, targets: ReapTarget[]): Promi
       d.warn(`resources: reap skipped pid ${w.pid} of workspace ${ws} — ${w.reason}`);
     }
     if (check.signalable.length === 0) continue;
-    if (!d.storeLoadedFromDisk() || d.liveWorkspaceIds().has(ws)) {
+    if (!d.storeLoadedFromDisk() || (kind !== 'duplicate' && d.liveWorkspaceIds().has(ws))) {
       d.warn(`resources: reap ABORTED for workspace ${ws} — present in the store at kill time`);
       continue;
     }
+    if (kind === 'duplicate') {
+      // #203: a duplicate is only a duplicate while the tracked keeper is STILL the same live keeper
+      // (not for an absent workspace: there the tracked one is reaped too, possibly just before this).
+      const tracked = target.trackedPid ?? null;
+      const now = d.trackedKeeperPid(ws);
+      const trackedOk =
+        now === tracked &&
+        now !== target.keeperPid &&
+        (tracked === null ||
+          (d.readProcStat(tracked) !== null && isKeeperCmdline(d.readCmdline(tracked), ws)));
+      if (!trackedOk) {
+        d.warn(`resources: reap ABORTED for workspace ${ws} — tracked keeper changed since classification (was ${tracked}, now ${now})`);
+        continue;
+      }
+    }
     const members = check.signalable.map((m) => `${m.comm}(${m.pid})`).join(', ');
-    d.warn(
-      `resources: reaping orphaned session tree for workspace ${ws} (absent from store; identity verified) — ` +
-        `keeper pid ${target.keeperPid}, ${check.signalable.length} process(es): ${members}`,
-    );
+    const why =
+      kind === 'duplicate'
+        ? `reaping duplicate keeper tree for workspace ${ws} (tracked keeper pid ${target.trackedPid} kept; identity verified)`
+        : kind === 'orphan-untracked'
+          ? `reaping untracked orphan keeper tree for workspace ${ws} (absent from store; identity verified)`
+          : `reaping orphaned session tree for workspace ${ws} (absent from store; identity verified)`;
+    d.warn(`resources: ${why} — keeper pid ${target.keeperPid}, ${check.signalable.length} process(es): ${members}`);
     const sent = check.signalable.filter((m) => d.signal(m.pid, 'SIGTERM'));
     if (sent.length > 0) {
       reaped.add(ws);
@@ -295,12 +347,45 @@ async function reapTargets(d: ResourceMonitorDeps, targets: ReapTarget[]): Promi
     const s = classifySurvivors(sent, readFresh(d, sent.map((m) => m.pid)));
     const killed = s.kill.filter((m) => d.signal(m.pid, 'SIGKILL')).length;
     d.warn(
-      `resources: reaped workspace ${target.workspaceId} — SIGTERM ${sent.length}, exited within grace ` +
+      `resources: reaped workspace ${target.workspaceId} keeper pid ${target.keeperPid} — SIGTERM ${sent.length}, exited within grace ` +
         `${s.gone.length}, SIGKILL ${killed}` +
         (s.reused.length ? `, pid reused (left alone) ${s.reused.join(',')}` : ''),
     );
   }
   return reaped;
+}
+
+/** Classify (orphans by pid file + duplicates by argv scan) then reap, identity-safe. Shared by the
+ *  60 s tick and the boot pass so both apply the same store guard and log lines. */
+async function reapPass(
+  d: ResourceMonitorDeps,
+  table: ProcSample[],
+  keeperRoots: KeeperRoot[],
+  liveWorkspaceIds: Set<string>,
+): Promise<Set<string>> {
+  const loaded = d.storeLoadedFromDisk();
+  const reap = decideReap(keeperRoots, table, liveWorkspaceIds, loaded);
+  const dup = decideDuplicateReap(keeperRoots, d.keeperProcs(), table, liveWorkspaceIds, loaded);
+  if (reap.refusedStoreNotLoaded && keeperRoots.length > 0) {
+    d.info(
+      `resources: reap skipped — store not loaded from disk; ` +
+        `${keeperRoots.length} keeper tree(s) left untouched (absence-from-store is not proof of deletion)`,
+    );
+  }
+  for (const r of [...reap.refused, ...dup.refused]) {
+    d.warn(`resources: reap WITHHELD for workspace ${r.workspaceId} — ${r.reason}`);
+  }
+  return reapTargets(d, [...reap.targets, ...dup.targets]);
+}
+
+/** Boot pass (#203): the same reap the 60 s tick runs, right after the store loads. */
+export async function reapKeepersNow(d: ResourceMonitorDeps = defaultDeps): Promise<Set<string>> {
+  return reapPass(d, await d.procTable(), d.keeperRoots(), d.liveWorkspaceIds());
+}
+
+/** The real (non-faked) deps — a rig overrides only the store/clock seams it needs. */
+export function realResourceMonitorDeps(): ResourceMonitorDeps {
+  return { ...defaultDeps };
 }
 
 /** One sample + detect + reap + log cycle (what the 60s timer runs). */
@@ -313,17 +398,7 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
 
   const keeperRoots = d.keeperRoots();
   const liveWorkspaceIds = d.liveWorkspaceIds();
-  const reap = decideReap(keeperRoots, table, liveWorkspaceIds, d.storeLoadedFromDisk());
-  if (reap.refusedStoreNotLoaded && keeperRoots.length > 0) {
-    d.info(
-      `resources: reap skipped — store not loaded from disk; ` +
-        `${keeperRoots.length} keeper tree(s) left untouched (absence-from-store is not proof of deletion)`,
-    );
-  }
-  for (const r of reap.refused) {
-    d.warn(`resources: reap WITHHELD for workspace ${r.workspaceId} — ${r.reason}`);
-  }
-  const reapedWorkspaceIds = await reapTargets(d, reap.targets);
+  const reapedWorkspaceIds = await reapPass(d, table, keeperRoots, liveWorkspaceIds);
 
   // Electron CPU from the monitor's own jiffy deltas: app.getAppMetrics() shares one
   // process-wide cursor with the Resources page, so its percent is garbage when both poll (F3).

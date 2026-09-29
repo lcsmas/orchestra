@@ -82,17 +82,50 @@ function send(frame: KeeperDaemonFrame): void {
   if (client && !client.destroyed) client.write(encodeKeeperFrame(frame));
 }
 
+/** Identity of the socket file THIS keeper bound (null until listening). */
+let ownedSock: { ino: number; ctimeMs: number } | null = null;
+
+function readPidFileOwner(): number | null {
+  try {
+    const pid = (JSON.parse(fs.readFileSync(pidPath, 'utf8')) as { pid?: unknown }).pid;
+    return typeof pid === 'number' ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Unlink sock/pid ONLY when they are ours (#202) — a sibling that took the
+ *  paths over must not be orphaned by our exit. The pid file names the owner;
+ *  the sock's (ino, ctime) is the fallback while no pid file exists. */
+function unlinkOwnedFiles(): void {
+  const owner = readPidFileOwner();
+  let ownsSock = owner === process.pid;
+  if (!ownsSock && owner === null && ownedSock) {
+    try {
+      const st = fs.statSync(sockPath);
+      ownsSock = st.ino === ownedSock.ino && st.ctimeMs === ownedSock.ctimeMs;
+    } catch {
+      /* gone */
+    }
+  }
+  if (ownsSock) {
+    try {
+      fs.unlinkSync(sockPath);
+    } catch {
+      /* already gone */
+    }
+  }
+  if (owner === process.pid) {
+    try {
+      fs.unlinkSync(pidPath);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 function cleanupAndExit(code: number): void {
-  try {
-    fs.unlinkSync(sockPath);
-  } catch {
-    /* already gone */
-  }
-  try {
-    fs.unlinkSync(pidPath);
-  } catch {
-    /* already gone */
-  }
+  unlinkOwnedFiles();
   klog(`exit code=${code}`);
   process.exit(code);
 }
@@ -299,12 +332,80 @@ process.on('uncaughtException', (e) => klog(`uncaught: ${e.message}`));
 process.on('unhandledRejection', (e) => klog(`unhandled rejection: ${String(e)}`));
 
 fs.mkdirSync(path.dirname(sockPath), { recursive: true });
-try {
-  fs.unlinkSync(sockPath);
-} catch {
-  /* no stale socket */
+
+/** True when a LIVE keeper answers a probe on sockPath (#202). Stale socket
+ *  files (ECONNREFUSED/ENOENT) read false; a connect that never answers reads
+ *  true — fail closed rather than launch a second CLI. */
+function liveKeeperServing(): Promise<boolean> {
+  const attempt = (): Promise<'live' | 'stale'> =>
+    new Promise((resolve) => {
+      const s = net.connect(sockPath);
+      const to = setTimeout(() => {
+        s.destroy();
+        resolve('live');
+      }, 1500);
+      s.once('connect', () => s.write(encodeKeeperFrame({ t: 'probe', wsId })));
+      s.on('data', () => {
+        clearTimeout(to);
+        s.destroy();
+        resolve('live');
+      });
+      s.once('error', () => {
+        clearTimeout(to);
+        resolve('stale');
+      });
+    });
+  return (async () => {
+    // A bind()→listen() gap on a racing daemon reads ECONNREFUSED briefly.
+    for (let i = 0; i < 3; i++) {
+      if ((await attempt()) === 'live') return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  })();
 }
-server.listen(sockPath, () => {
-  fs.writeFileSync(pidPath, JSON.stringify({ pid: process.pid, wsId, startedAt: Date.now() }));
+
+function refuseAndExit(): never {
+  klog('live keeper already serving this socket — refusing to start (files untouched)');
+  process.exit(0);
+}
+
+function listenOnce(): Promise<'ok' | 'inuse'> {
+  return new Promise((resolve) => {
+    const onErr = (e: NodeJS.ErrnoException): void => {
+      if (e.code === 'EADDRINUSE') return resolve('inuse');
+      klog(`listen failed: ${e.message}`);
+      process.exit(1);
+    };
+    server.once('error', onErr);
+    server.listen(sockPath, () => {
+      server.off('error', onErr);
+      resolve('ok');
+    });
+  });
+}
+
+void (async () => {
+  // bind-first: EADDRINUSE is the atomic "somebody owns this path" signal.
+  let r = await listenOnce();
+  if (r === 'inuse') {
+    if (await liveKeeperServing()) refuseAndExit();
+    try {
+      fs.unlinkSync(sockPath); // provably stale (nobody answers)
+    } catch {
+      /* raced */
+    }
+    r = await listenOnce();
+    if (r === 'inuse') refuseAndExit();
+  }
+  try {
+    const st = fs.statSync(sockPath);
+    ownedSock = { ino: st.ino, ctimeMs: st.ctimeMs };
+  } catch {
+    /* win32 named pipe has no file */
+  }
+  const tmp = `${pidPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, wsId, startedAt: Date.now() }));
+  fs.renameSync(tmp, pidPath);
   klog(`listening ${sockPath} pid=${process.pid}`);
-});
+})();

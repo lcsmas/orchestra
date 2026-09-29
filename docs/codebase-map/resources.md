@@ -55,7 +55,23 @@ Each tick (`sampleTick`, dependency-injected so the rig drives the real path):
   whose workspace is **provably absent from the store** → SIGTERM, grace, SIGKILL
   survivors + WARN. The SAFETY NET for the leak LEAD measured (2 trees, 1.6 GB,
   alive for workspaces deleted 14:21/14:23); the delete-leaves-session-alive
-  **root cause is #124 D3** (T3's scope), not this. Gates, in order:
+  **root cause is fixed in #201** (`teardownWorkspace` now stops the session +
+  keeper — `workspaces.md`), so this sweep is a backstop for crashes/old builds.
+  **#203 extends it to DUPLICATES:** `decideDuplicateReap` (`shared/resource-monitor.ts`)
+  classifies every keeper of a workspace that is NOT the *tracked* (pid-file) one —
+  found by a `/proc` argv scan (`deps.keeperProcs`, `parseKeeperArgv`, anchored on
+  THIS home's `<wsId>.pid` arg so a dev-home keeper is never matched) because a
+  duplicate's pid file was overwritten and `listKeeperRoots` cannot see it. Kinds:
+  `duplicate` (live ws), `orphan-untracked` (absent ws). A live workspace's SOLE
+  keeper is never a victim; no tracked keeper / tracked pid not in the scan → refused
+  (cannot tell which to keep); store not loaded → refused. At kill time
+  `reapTargets` re-reads `deps.trackedKeeperPid(ws)` and re-verifies the tracked
+  keeper (`/proc` stat + keeper argv): drift → ABORT, nothing signalled. The pass is
+  `reapPass`, run by the 60 s tick AND by `reapKeepersNow` at boot
+  (`reconcileKeepersAtStartup`, index.ts — replaced its bare `killKeeper` on an
+  unverified store). Log = one WARN per tree (`reaping duplicate keeper tree for
+  workspace <ws> (tracked keeper pid <T> kept …) — keeper pid <P>, …`) + one
+  summary per tree. Gates, in order:
   1. `store.loadedFromDisk` — absence-from-store is only proof-of-deletion once
      store.json parsed (#187 lesson); the store is re-read AT KILL TIME too.
   2. **Identity (review F1 — pid reuse).** A `<wsId>.pid` from a crash-killed
@@ -83,7 +99,7 @@ Each tick (`sampleTick`, dependency-injected so the rig drives the real path):
   ~700 MB healthy-tree measurement). A reaped tree is excluded (its RSS is
   stale).
 
-Gates: unit arms in `resource-monitor.test.ts` (+ real-`/proc` start-time oracle in
+Gates: #203 arms `reap_*` in `scripts/e2e-keeper-lifecycle.mjs` (REAL keeper daemons + `sampleTick`/`reapKeepersNow`, wrapped by `src/main/keeper-lifecycle.test.ts`); unit arms in `resource-monitor.test.ts` (+ real-`/proc` start-time oracle in
 `resources.test.ts`) and `scripts/verify-resource-monitor.mjs`, which drives the
 REAL `sampleTick` over a fake `/proc` WORLD that can recycle a pid between the
 sample and the kill (`afterSample`) or during the grace (`onSleep`), records the

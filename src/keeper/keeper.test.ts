@@ -493,6 +493,84 @@ test('D5 — kill frame escalates SIGTERM → SIGKILL for a CLI that ignores SIG
   assert.ok(!fs.existsSync(ctx.sock), 'socket unlinked after escalated kill');
 });
 
+/** Launch a keeper by hand on ctx's paths (a racing/second launch). */
+function launchOn(ctx: Ctx): ReturnType<typeof spawn> {
+  const child = spawn(process.execPath, [KEEPER_JS, ctx.wsId, ctx.sock, ctx.pidFile, ctx.logFile], { detached: true, stdio: 'ignore' });
+  child.unref();
+  return child;
+}
+
+test('#202 — a second keeper on a live keeper\'s socket refuses to start and touches nothing', { timeout: 60_000 }, async () => {
+  const ctx = makeCtx();
+  const c = await connect(ctx);
+  const pids: number[] = [];
+  try {
+    c.send({ t: 'hello', wsId: ctx.wsId });
+    await c.wait(isAck);
+    c.send(spawnFrame(ctx));
+    c.send(stdinLine({ echo: 'one' }));
+    await c.wait(stdoutContaining('"echo":"one"'));
+    const k1 = pidOf(ctx);
+    pids.push(k1);
+    const second = launchOn(ctx);
+    pids.push(second.pid as number);
+    await waitUntil(() => !alive(second.pid as number), 8000, 'second keeper exits (refuses)');
+    // K1 still owns the paths and still relays.
+    assert.equal(pidOf(ctx), k1, 'pid file still names the first keeper');
+    assert.ok(fs.existsSync(ctx.sock), 'socket untouched');
+    c.send(stdinLine({ echo: 'two' }));
+    assert.ok(await c.wait(stdoutContaining('"echo":"two"')), 'first keeper still serves its client');
+  } finally {
+    // A failing arm must not leave an open socket / live daemon (node --test would hang on it).
+    c.destroy();
+    for (const p of pids) {
+      try {
+        process.kill(p, 'SIGKILL');
+      } catch {
+        /* gone */
+      }
+    }
+  }
+});
+
+test('#202 — a keeper\'s exit unlinks only the files it owns (a takeover survives it)', { timeout: 60_000 }, async () => {
+  const ctx = makeCtx();
+  const c = await connect(ctx);
+  const pids: number[] = [];
+  let c2: Client | null = null;
+  try {
+    c.send({ t: 'hello', wsId: ctx.wsId });
+    await c.wait(isAck);
+    c.send(spawnFrame(ctx));
+    c.send(stdinLine({ echo: 'up' }));
+    await c.wait(stdoutContaining('"echo":"up"')); // a live CLI keeps K1 alive across the detach
+    const k1 = pidOf(ctx);
+    pids.push(k1);
+    c.destroy();
+    fs.unlinkSync(ctx.sock); // an older build's race removed K1's paths…
+    fs.unlinkSync(ctx.pidFile);
+    const k2 = launchOn(ctx); // …and K2 took them over
+    pids.push(k2.pid as number);
+    await waitUntil(() => fs.existsSync(ctx.pidFile) && pidOf(ctx) === k2.pid, 8000, 'K2 owns the pid file');
+    process.kill(k1, 'SIGTERM'); // K1's cleanup runs
+    await waitUntil(() => !alive(k1), 8000, 'K1 gone');
+    assert.equal(pidOf(ctx), k2.pid, 'pid file still names K2');
+    c2 = await connect(ctx, 5);
+    c2.send({ t: 'probe', wsId: ctx.wsId });
+    assert.ok(await c2.wait(isAck), 'K2 still reachable on the socket K1 exited from');
+  } finally {
+    c.destroy();
+    c2?.destroy();
+    for (const p of pids) {
+      try {
+        process.kill(p, 'SIGKILL');
+      } catch {
+        /* gone */
+      }
+    }
+  }
+});
+
 async function waitUntil(pred: () => boolean, ms: number, what: string): Promise<void> {
   const t0 = Date.now();
   while (!pred()) {
