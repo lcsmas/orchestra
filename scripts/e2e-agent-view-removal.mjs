@@ -48,7 +48,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 
 // ── expectations: the ONE place baseline↔after flips live ────────────────────
 const EXPECT = {
@@ -64,7 +64,18 @@ const EXPECT = {
   mergeWrapper: { baseline: true, after: false },
   // #229: the loaded stylesheet still carries rules for the removed button (`.pr-link-create`, `.primed`)?
   createButtonCss: { baseline: true, after: false },
+  // #228 — `orchestra restart` of a stopped LEGACY terminal-only workspace (hasInput, no sdkSessionId). Baseline = today's PTY
+  // restart (`claude --continue` in an agent PTY, `(terminal, …)` in the CLI reply, no adoption); after = the SDK wake path
+  // adopts the terminal transcript and the session resumes it in the Agent view (no PTY, reply names no surface).
+  legacyRestart: {
+    baseline: { wake: false, agentPty: true, surfaceWord: 'terminal', resumeFlag: '--continue' },
+    after: { wake: true, agentPty: false, surfaceWord: null, resumeFlag: '--resume' },
+  },
 };
+// #228 legacy seed: a real-shaped TERMINAL transcript (entrypoint 'cli') the wake path must adopt. A valid UUID: the SDK's session index keys on it.
+const LEGACY_SESSION_ID = '228c0de0-7e57-4a11-8b3a-00000000b301';
+const LEGACY_SENTINEL_USER = 'AVR-LEGACY-USER-228b3 typed into the old terminal agent';
+const LEGACY_SENTINEL_ASSISTANT = 'AVR-LEGACY-ASSISTANT-228b3 answered in the old terminal agent';
 const ABSENCE_MS = 2500; // window an "absent" claim is observed for after each tab click
 const SENTINEL_USER = 'AVR-USER-4f81c2 render probe';
 const SENTINEL_ASSISTANT = 'AVR-ASSISTANT-9d03e7 rendered through the real fold path';
@@ -390,6 +401,7 @@ function seedWorld(home, opt = {}) {
   const ws = {
     id: 'ws-avr-1', name: 'avr-1', repoPath: repoDir, worktreePath: wtDir, branch: 'e2e/avr-1',
     baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id,
+    ...(opt.legacy ? { hasInput: true } : {}), // #228: input typed into the terminal agent, NO sdkSessionId
   };
   // #229 seeds. `commitsAhead`: N never-pushed commits on the seed branch → the app's own merge-state poll reports
   // unpushedAhead=N (no origin ref, so every commit ahead of base counts) — the "primed" input of the old Open PR button.
@@ -401,6 +413,20 @@ function seedWorld(home, opt = {}) {
   // REAL path). Stub gh answers exactly that call with an OPEN PR and refuses everything else (as an unauthenticated gh would);
   // stub xdg-open keeps a click on the PR button from launching a browser. Both log their argv (positive controls).
   if (opt.linkedPr) { const { owner, repo, number } = opt.linkedPr; ws.linkedPrs = [{ url: `https://github.com/${owner}/${repo}/pull/${number}`, owner, repo, number }]; }
+  // #228: the terminal agent's transcript, exactly where `claude --continue` / the SDK session index look for it:
+  // <account configDir>/projects/<mangled worktree path>/<session>.jsonl.
+  let legacyTranscript = null;
+  if (opt.legacy) {
+    const projDir = path.join(configDir, 'projects', wtDir.replace(/[^A-Za-z0-9]/g, '-'));
+    fs.mkdirSync(projDir, { recursive: true });
+    legacyTranscript = path.join(projDir, `${LEGACY_SESSION_ID}.jsonl`);
+    const env = { userType: 'external', entrypoint: 'cli', cwd: wtDir, sessionId: LEGACY_SESSION_ID, version: '2.1.284', gitBranch: 'e2e/avr-1' };
+    const u = '2280b3a1-0000-4000-8000-000000000001', a = '2280b3a1-0000-4000-8000-000000000002', t0 = Date.now() - 3600e3;
+    fs.writeFileSync(legacyTranscript, [
+      { parentUuid: null, isSidechain: false, promptId: 'avr-prompt-1', type: 'user', message: { role: 'user', content: LEGACY_SENTINEL_USER }, uuid: u, timestamp: new Date(t0).toISOString(), ...env },
+      { parentUuid: u, isSidechain: false, type: 'assistant', message: { id: 'msg_avr228', type: 'message', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: LEGACY_SENTINEL_ASSISTANT }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }, uuid: a, timestamp: new Date(t0 + 1000).toISOString(), ...env },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+  }
   const repo = { path: repoDir, name: 'avr-repo', defaultBranch: 'main', scripts: BROKEN_CONTROL ? {} : { run: 'sleep 3600' }, accountId: account.id };
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
@@ -408,7 +434,9 @@ function seedWorld(home, opt = {}) {
   // free of API calls. Stays a shell (not exec) so its cmdline names the stub for identity.
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stub = path.join(stubDir, 'claude');
-  fs.writeFileSync(stub, '#!/bin/sh\necho AVR-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
+  // Every start appends `<pid> <argv…>` to stub-argv.log (#228: the OBSERVABLE of "which session did this CLI resume"), from ANY launcher (PTY or SDK keeper).
+  const stubLog = path.join(home, 'stub-argv.log');
+  fs.writeFileSync(stub, `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\necho AVR-STUB-CLAUDE "$@"\nsleep 3600\n`, { mode: 0o755 });
   if (opt.linkedPr) {
     const { owner, repo, number, title } = opt.linkedPr;
     const q = (f) => `'${path.join(home, f)}'`;
@@ -419,7 +447,7 @@ function seedWorld(home, opt = {}) {
       `echo "gh: avr stub has no answer for: $*" >&2; exit 1\n`, { mode: 0o755 });
     fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\necho "$*" >> ${q('xdg-open.log')}\n`, { mode: 0o755 });
   }
-  return { fakeHome, repoDir, wtDir, ws, account, stubDir, stub, storeFile: path.join(dir, 'store.json') };
+  return { fakeHome, repoDir, wtDir, ws, account, stubDir, stub, stubLog, legacyTranscript, storeFile: path.join(dir, 'store.json') };
 }
 
 async function bootApp(arm, opt = {}) {
@@ -700,6 +728,38 @@ function retain(ctx, app, { base = RIG.base, results = RESULTS } = {}) {
   for (const d of ['userData', 'home', 'repo', 'wt', 'claude-config', 'stub-bin']) fs.rmSync(path.join(app.home, d), { recursive: true, force: true });
   console.log(`RETAIN    ${app.home}: arm ${ctx.arm} PASSED — state deleted, kept app.log + screenshots`);
 }
+
+/** #228: run the SHIPPED CLI form — `electron . cli <args>`, the dual-mode entry the AppImage/`orchestra` shim execs — against THIS boot's socket.
+ *  ALLOWLIST env (never the invoker's): ORCHESTRA_HOME pins the socket pointer to this boot, ORCHESTRA_SOCK/ORCHESTRA_WS_ID are absent, DISPLAY unset,
+ *  WAYLAND_DISPLAY = my marker-verified sway; every path is refused (named) unless inside the boot home (same guards as the app launch). */
+function cliRun(app, args) {
+  const env = {
+    PATH: '/usr/bin:/bin', HOME: app.world.fakeHome, XDG_RUNTIME_DIR: app.env.XDG_RUNTIME_DIR,
+    XDG_CONFIG_HOME: app.env.XDG_CONFIG_HOME, XDG_CACHE_HOME: app.env.XDG_CACHE_HOME,
+    WAYLAND_DISPLAY: RIG.wayland, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', LANG: 'C.UTF-8',
+    ORCHESTRA_HOME: app.home, CLAUDE_CONFIG_DIR: app.world.account.configDir,
+  };
+  const pre = checkChildEnv(env, RIG.wayland);
+  if (!pre.ok) throw new Error(`REFUSED before CLI launch [${pre.clause}]: ${pre.detail}`);
+  const hand = checkHandOff(env, [app.world.account], app.home);
+  if (!hand.ok) throw new Error(`REFUSED before CLI launch [${hand.clause}]: ${hand.detail}`);
+  const r = spawnSync(app.electron, ['.', 'cli', ...args], { cwd: APP_DIR, env, encoding: 'utf8', timeout: 60000 });
+  return { status: r.status, signal: r.signal, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+/** The app's own diagnostic log (`<ORCHESTRA_HOME>/logs/orchestra.log`). */
+const appLog = (app) => readText(path.join(app.home, 'logs', 'orchestra.log'));
+/** Every `claude` start the stub recorded, from ANY launcher: [{pid, argv[]}]. */
+const stubStarts = (app) => readText(app.world.stubLog).split('\n').filter(Boolean).map((l) => { const [pid, ...argv] = l.split(' '); return { pid: Number(pid), argv, line: l }; });
+/** The starts that are a SESSION (agent PTY / SDK keeper CLI): the app also runs `claude --version` at boot as a probe (MEASURED: 1 start, argv exactly `--version`). */
+const sessionStarts = (app) => stubStarts(app).filter((x) => !(x.argv.length === 1 && x.argv[0] === '--version'));
+/** The resume target a `claude` argv names, in BOTH spellings — the SDK passes `--resume=<id>` (MEASURED), the terminal path `--continue`. */
+function resumeOf(argv) {
+  const i = argv.findIndex((a) => a === '--resume' || a.startsWith('--resume='));
+  const target = i < 0 ? null : argv[i].includes('=') ? argv[i].slice(argv[i].indexOf('=') + 1) : (argv[i + 1] ?? '');
+  return { resume: i >= 0, target, continue: argv.includes('--continue') };
+}
+const listWs = (app) => app.cdp.eval('window.orchestra.listWorkspaces()');
 
 const ARMS = [
   {
@@ -1050,6 +1110,128 @@ const ARMS = [
         settleKeepMarker(rd, 0);
         ctx.clause('keep-marker:survives-a-failing-run', keptOnFail && !fs.existsSync(path.join(rd, KEEP_MARKER)), `fail=2 -> marker kept=${keptOnFail}; fail=0 -> marker removed=${!fs.existsSync(path.join(rd, KEEP_MARKER))}`);
       } finally { fs.rmSync(base, { recursive: true, force: true }); }
+    },
+  },
+  {
+    name: 'legacy_restart', boots: true, ticket: '#228', boot: { legacy: true },
+    doc: 'a stopped LEGACY terminal-only workspace (hasInput, no sdkSessionId, a terminal transcript on disk) restarted through the REAL CLI: baseline = PTY restart (`--continue` in an agent PTY, no adoption); after = the SDK wake path adopts that transcript, the session resumes ITS id in the Agent view, no agent PTY, reply names no surface',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.legacyRestart);
+      const labels = (await app.tabs()).map((t) => t.label);
+      const agentTab = ['Structured', 'Agent'].find((l) => labels.includes(l)); // the build's Agent-view tab (label flips at B5)
+      await runControl(ctx);                                                   // positive control: the PTY listing can see PTYs in THIS boot
+      await app.clickTab(agentTab);
+      // ── pre-state (each must DIFFER from the post-state below, so the arm cannot pass on a state already true) ──
+      const rec0 = (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('seed/legacy-shape', !!rec0 && rec0.hasInput === true && rec0.sdkSessionId === undefined && !rec0.archived, `hasInput=${rec0?.hasInput} sdkSessionId=${JSON.stringify(rec0?.sdkSessionId)} (want hasInput=true, sdkSessionId absent)`);
+      ctx.clause('seed/transcript-on-disk', !!w.legacyTranscript && readText(w.legacyTranscript).includes(LEGACY_SENTINEL_USER), `${w.legacyTranscript ? path.relative(app.home, w.legacyTranscript) : 'none seeded'}`);
+      const pre = await app.ptys();
+      const already = new Set(pre.filter((p) => p.kind === 'agent').map((p) => p.ptyId));
+      noAgentPty(ctx, 'pre-state-no-agent-pty', pre);
+      const ADOPT = `wake ${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`;
+      const log0 = appLog(app);
+      ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log path/channel is unproven, so its silence below means nothing'}`);
+      ctx.clause('pre-state-no-adoption-logged', !log0.includes(ADOPT) && sessionStarts(app).length === 0, `adoption line present=${log0.includes(ADOPT)}; claude SESSION starts so far=${sessionStarts(app).length} (+${stubStarts(app).length - sessionStarts(app).length} \`--version\` probe(s))`);
+
+      // ── drive the REAL CLI ──
+      const r = cliRun(app, ['restart', wsId]);
+      const expectReply = `Restarted ${wsId} (${want.surfaceWord ? `${want.surfaceWord}, ` : ''}conversation preserved)\n`;
+      ctx.clause('cli/restart-exits-0', r.status === 0, `rc=${r.status} signal=${r.signal} stderr=${JSON.stringify(r.stderr.slice(0, 160))}`);
+      ctx.clause('cli/reply', r.stdout === expectReply, `stdout=${JSON.stringify(r.stdout)} expected(${MODE})=${JSON.stringify(expectReply)} (the reply names ${want.surfaceWord ? `'${want.surfaceWord}'` : 'no surface'})`);
+
+      // ── what the restart actually launched (ANY launcher: PTY or SDK keeper) ──
+      const started = await waitFor('a claude session start (stub argv log)', () => sessionStarts(app).length >= 1, 30000, 250).catch(() => false);
+      await sleep(ABSENCE_MS);
+      const starts = sessionStarts(app);
+      ctx.clause('restart/cli-started', !!started, started ? `first start pid=${starts[0]?.pid}` : 'NO claude session start was recorded within 30 s of the restart');
+      ctx.clause('restart/exactly-one-cli-start', starts.length === 1, `${starts.length} claude session start(s) after the restart (two on one workspace is the double-process hazard) — ${JSON.stringify(starts.map((x) => x.pid))}`);
+      const argv = starts[0]?.argv ?? [];
+      const ro = resumeOf(argv);
+      const resumeOk = want.resumeFlag === '--resume' ? ro.target === LEGACY_SESSION_ID && !ro.continue : ro.continue && !ro.resume;
+      ctx.clause('restart/resume-target', resumeOk, `claude argv (${argv.length} args) starts ${JSON.stringify(argv.slice(0, 4).join(' '))}…: --resume target=${JSON.stringify(ro.target)} --continue=${ro.continue}; want ${want.resumeFlag === '--resume' ? `--resume=${LEGACY_SESSION_ID} (the terminal transcript's session) and no --continue` : '--continue and NO --resume (PTY restart)'}`);
+
+      // ── the wake path really ran, and its write landed ──
+      const log1 = appLog(app);
+      ctx.clause('wake/adoption-logged', log1.includes(ADOPT) === want.wake, `'${ADOPT}' present=${log1.includes(ADOPT)} expected(${MODE})=${want.wake}`);
+      const rec1 = await waitFor('sdkSessionId adopted', async () => { const x = (await listWs(app)).find((y) => y.id === wsId); return x?.sdkSessionId === LEGACY_SESSION_ID ? x : null; }, want.wake ? 10000 : 500, 250).catch(() => null);
+      const got = rec1 ?? (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('wake/store-sdkSessionId', want.wake ? got?.sdkSessionId === LEGACY_SESSION_ID : got?.sdkSessionId === undefined, `ws.sdkSessionId after=${JSON.stringify(got?.sdkSessionId)} expected(${MODE})=${want.wake ? LEGACY_SESSION_ID : 'absent'}`);
+
+      // ── PTYs: the wake path launches none; the PTY restart launches one ──
+      const ps = await app.ptys();
+      if (want.agentPty) {
+        const created = ps.filter((p) => p.kind === 'agent' && !already.has(p.ptyId));
+        const cmds = created.flatMap((p) => p.pids.map(procCmdline));
+        ctx.clause('restart/agent-pty-created', created.length === 1 && cmds.some((c) => c.includes(w.stub)), `baseline: the PTY restart created ${created.length} agent-kind PTY (${fmtP(ps)}), tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
+      } else noAgentPty(ctx, 'restart/no-agent-pty', ps, already);
+
+      // ── the Agent view: the terminal transcript is the conversation it shows ──
+      // NOT a discriminator (MEASURED on a master build): the Agent view's history backfill already falls back to the newest on-disk transcript for a
+      // workspace with no sdkSessionId, so the conversation is on screen on BOTH builds — what differs is which session the LIVE process resumes (above).
+      const hist = await app.cdp.eval(`window.orchestra.agentSdkHistory(${JSON.stringify(wsId)}).then(h => JSON.stringify(h))`).catch((e) => `ERR ${e.message}`);
+      ctx.clause('view/history-is-the-terminal-transcript', hist.includes(LEGACY_SENTINEL_USER) && hist.includes(LEGACY_SENTINEL_ASSISTANT), `agent:sdkHistory carries the user+assistant sentinels of the terminal transcript: ${hist.includes(LEGACY_SENTINEL_USER)}/${hist.includes(LEGACY_SENTINEL_ASSISTANT)} (${hist.length} bytes; holds on both builds — not a discriminator)`);
+      await app.clickTab('Run'); await app.clickTab(agentTab); // remount the Agent view: a fresh backfill, not a stale pane
+      const vis = (t) => `(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) { if (n.textContent.includes(${JSON.stringify(t)})) { const e = n.parentElement, r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight && e.checkVisibility(); } } return false; })()`;
+      const seen = await waitFor('terminal transcript rendered in the Agent view', async () => (await app.cdp.eval(vis(LEGACY_SENTINEL_USER))) && (await app.cdp.eval(vis(LEGACY_SENTINEL_ASSISTANT))), 15000, 250).catch(() => false);
+      ctx.clause('view/transcript-rendered', !!seen, `terminal transcript rows visible in the '${agentTab}' view=${!!seen} (DOM oracle — pixels below; holds on both builds — not a discriminator)`);
+      {
+        const settle = () => app.cdp.eval('document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))').then(() => sleep(300));
+        await settle();
+        const rowsRect = await app.cdp.eval(`(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n; const rs = [];
+          while ((n = w.nextNode())) if (n.textContent.includes(${JSON.stringify(LEGACY_SENTINEL_USER)}) || n.textContent.includes(${JSON.stringify(LEGACY_SENTINEL_ASSISTANT)})) rs.push(n.parentElement.getBoundingClientRect());
+          if (rs.length < 2) return null;
+          const x0 = Math.min(...rs.map((r) => r.left)), y0 = Math.min(...rs.map((r) => r.top)), x1 = Math.max(...rs.map((r) => r.right)), y1 = Math.max(...rs.map((r) => r.bottom));
+          return { x: Math.max(0, x0 - 8), y: Math.max(0, y0 - 8), width: x1 - x0 + 16, height: y1 - y0 + 16 }; })()`);
+        if (!rowsRect) ctx.clause('view/pixels-painted', false, 'sentinel elements not found — nothing to screenshot');
+        else {
+          const contentFile = await app.shot('legacy-restart-agent-view-rows', rowsRect);
+          await app.cdp.eval(`(() => { const s = document.createElement('style'); s.id = 'avr-blank'; s.textContent = '.av-message-list > * { visibility: hidden !important }'; document.head.appendChild(s); })()`);
+          await settle();
+          const blankFile = await app.shot('legacy-restart-agent-view-rows-blank', rowsRect);
+          await app.cdp.eval(`document.getElementById('avr-blank').remove()`);
+          const rd = (f) => { const b = fs.readFileSync(f); return { f, md5: crypto.createHash('md5').update(b).digest('hex'), ...pngStats(b) }; };
+          const C = rd(contentFile), B = rd(blankFile);
+          console.log(`SHOT      legacy-rows   ${C.f} md5=${C.md5} ${C.w}x${C.h} bytes=${C.bytes} distinct=${C.distinct} nonBg=${C.nonBgPct}%`);
+          console.log(`SHOT      legacy-blank  ${B.f} md5=${B.md5} ${B.w}x${B.h} bytes=${B.bytes} distinct=${B.distinct} nonBg=${B.nonBgPct}%`);
+          ctx.clause('view/pixels-painted', C.md5 !== B.md5 && paintedBeyondBlank(C, B), `rows region: content nonBg=${C.nonBgPct}% distinct=${C.distinct} vs blank nonBg=${B.nonBgPct}% distinct=${B.distinct} (need > +0.05pp and > +4 colours; md5s differ=${C.md5 !== B.md5})`);
+        }
+      }
+    },
+  },
+  {
+    name: 'legacy_restart_fresh', boots: true, ticket: '#228', boot: { legacy: true },
+    doc: '`orchestra restart --fresh` of the same legacy workspace NEVER adopts the terminal transcript (the conversation is being dropped): baseline = a vierge agent PTY (no --continue, no --resume); after = sdkClear (ws.sdkSessionId \'\'), no adoption logged, no session started, no agent PTY',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.legacyRestart);
+      await runControl(ctx);
+      const pre = await app.ptys();
+      const already = new Set(pre.filter((p) => p.kind === 'agent').map((p) => p.ptyId));
+      noAgentPty(ctx, 'pre-state-no-agent-pty', pre);
+      const ADOPT = `wake ${wsId} adopting terminal transcript`;   // ANY adoption of this workspace's transcript
+      const log0 = appLog(app);
+      ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log channel is unproven'}`);
+      ctx.clause('pre-state-no-adoption-logged', !log0.includes(ADOPT) && sessionStarts(app).length === 0, `adoption line present=${log0.includes(ADOPT)}; claude SESSION starts so far=${sessionStarts(app).length}`);
+      const r = cliRun(app, ['restart', '--fresh', wsId]);
+      const expectReply = `Restarted ${wsId} (${want.surfaceWord ? `${want.surfaceWord}, ` : ''}fresh (conversation cleared))\n`;
+      ctx.clause('cli/restart-exits-0', r.status === 0, `rc=${r.status} signal=${r.signal}`);
+      ctx.clause('cli/reply', r.stdout === expectReply, `stdout=${JSON.stringify(r.stdout)} expected(${MODE})=${JSON.stringify(expectReply)}`);
+      // baseline: the PTY restart launches a vierge claude; after: sdkClear starts NO session (the next send does) — wait out the same window either way.
+      if (want.agentPty) await waitFor('a claude session start', () => sessionStarts(app).length >= 1, 30000, 250).catch(() => false);
+      await sleep(ABSENCE_MS);
+      const starts = sessionStarts(app);
+      if (want.agentPty) {
+        const argv = starts[0]?.argv ?? []; const ro = resumeOf(argv);
+        ctx.clause('fresh/vierge-launch', starts.length === 1 && !ro.continue && !ro.resume, `baseline: ${starts.length} session start(s), argv (${argv.length} args) starts ${JSON.stringify(argv.slice(0, 3).join(' '))}…, --resume=${ro.resume} --continue=${ro.continue} (want exactly one start with neither)`);
+      } else ctx.clause('fresh/no-session-started', starts.length === 0, `${starts.length} claude session start(s) after --fresh (sdkClear starts none; a --resume here would be the adopted conversation coming back): ${JSON.stringify(starts.map((x) => x.line.slice(0, 120)))}`);
+      const log1 = appLog(app);
+      ctx.clause('fresh/never-adopts', !log1.includes(ADOPT), `'${ADOPT}' present=${log1.includes(ADOPT)} (want absent in BOTH modes: --fresh drops the conversation, adopting it first would persist an id --fresh must never keep)`);
+      const rec = (await waitFor('sdkSessionId cleared', async () => { const x = (await listWs(app)).find((y) => y.id === wsId); return x?.sdkSessionId === '' ? x : null; }, want.wake ? 10000 : 500, 250).catch(() => null)) ?? (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('fresh/store-sdkSessionId', want.wake ? rec?.sdkSessionId === '' : rec?.sdkSessionId === undefined, `ws.sdkSessionId after=${JSON.stringify(rec?.sdkSessionId)} expected(${MODE})=${want.wake ? `'' (the cleared marker)` : 'absent'}`);
+      const ps = await app.ptys();
+      if (want.agentPty) {
+        const created = ps.filter((p) => p.kind === 'agent' && !already.has(p.ptyId));
+        ctx.clause('restart/agent-pty-created', created.length === 1, `baseline: the PTY restart created ${created.length} agent-kind PTY (${fmtP(ps)})`);
+      } else noAgentPty(ctx, 'restart/no-agent-pty', ps, already);
     },
   },
   {

@@ -54,11 +54,34 @@ test("stopped structured, cleared marker sdkSessionId='' → structured (not pty
   );
 });
 
-test('stopped terminal-only (hasInput, no sdkSessionId) → pty', () => {
-  assert.equal(
-    classifyRestartMode({ hasInput: true, sdkSessionId: undefined }, { ptyLive: false, sdkLive: false }),
-    'pty',
-  );
+test('stopped legacy terminal-only (hasInput, no sdkSessionId) → wake, NEVER pty (#228)', () => {
+  // The #228 case: it must resolve to the SDK wake mode (which adopts the terminal
+  // transcript so the conversation resumes in the Agent view). The OLD classifier
+  // returned 'pty' here, so this fails on it.
+  const mode = classifyRestartMode({ hasInput: true, sdkSessionId: undefined }, { ptyLive: false, sdkLive: false });
+  assert.equal(mode, 'wake');
+  assert.notEqual(mode, 'pty', 'a stopped legacy workspace must not be routed to a PTY restart');
+});
+
+test('#228 write path twice: once the wake adopts an id, the SAME workspace classifies structured (not wake again)', () => {
+  const live = { ptyLive: false, sdkLive: false };
+  const legacy = { hasInput: true, sdkSessionId: undefined };
+  assert.equal(classifyRestartMode(legacy, live), 'wake');
+  // sdkWakeRestart's adoption persists the transcript's session id; the next restart of that
+  // workspace must take the ordinary structured resume, never re-adopt.
+  assert.equal(classifyRestartMode({ ...legacy, sdkSessionId: 'adopted-session' }, live), 'structured');
+});
+
+test('#228 unchanged neighbours: an sdkSessionId, no input, and a LIVE PTY resolve exactly as before', () => {
+  const liveNone = { ptyLive: false, sdkLive: false };
+  // (a) any sdkSessionId (real id or the '' cleared marker) wins over hasInput → structured.
+  assert.equal(classifyRestartMode({ hasInput: true, sdkSessionId: 'sess-1' }, liveNone), 'structured');
+  assert.equal(classifyRestartMode({ hasInput: true, sdkSessionId: '' }, liveNone), 'structured');
+  // (b) no input at all → unknown (nothing to restart), even with hasInput explicitly false.
+  assert.equal(classifyRestartMode({ hasInput: false, sdkSessionId: undefined }, liveNone), 'unknown');
+  // (c) a LIVE PTY still resolves 'pty' — the live-PTY case leaves with #232, not here — even for the
+  //     legacy shape that would otherwise wake.
+  assert.equal(classifyRestartMode({ hasInput: true, sdkSessionId: undefined }, { ptyLive: true, sdkLive: false }), 'pty');
 });
 
 test('nothing ever ran (no hasInput, no sdkSessionId) → unknown', () => {
@@ -78,12 +101,13 @@ test('PTY live wins over a stray structured-live flag (deterministic)', () => {
 // --- routeRestart: the effect actually fired, and the fresh flag threaded ---
 
 /** Records which effect fired and with what `fresh`. Exactly one should fire. */
-function recordingEffects(): RestartEffects & { calls: Array<{ kind: 'structured' | 'pty'; fresh: boolean }> } {
-  const calls: Array<{ kind: 'structured' | 'pty'; fresh: boolean }> = [];
+function recordingEffects(): RestartEffects & { calls: Array<{ kind: 'structured' | 'pty' | 'wake'; fresh: boolean }> } {
+  const calls: Array<{ kind: 'structured' | 'pty' | 'wake'; fresh: boolean }> = [];
   return {
     calls,
     restartStructured: async (fresh) => { calls.push({ kind: 'structured', fresh }); },
     restartPty: async (fresh) => { calls.push({ kind: 'pty', fresh }); },
+    restartWake: async (fresh) => { calls.push({ kind: 'wake', fresh }); },
   };
 }
 
@@ -109,6 +133,15 @@ test('T111.2 — PTY mode default routes to restartPty(fresh=false)', async () =
   const fired = await routeRestart('pty', false, fx);
   assert.equal(fired, 'pty');
   assert.deepEqual(fx.calls, [{ kind: 'pty', fresh: false }]);
+});
+
+test('#228 — wake mode routes to restartWake and NEVER to restartPty (fresh threaded)', async () => {
+  for (const fresh of [false, true]) {
+    const fx = recordingEffects();
+    const fired = await routeRestart('wake', fresh, fx);
+    assert.equal(fired, 'wake');
+    assert.deepEqual(fx.calls, [{ kind: 'wake', fresh }], 'exactly the wake effect fires — no PTY launch');
+  }
 });
 
 test('unknown mode throws (no effect fires) — the caller refuses diagnosably', async () => {
@@ -201,10 +234,18 @@ test('resolveRestart: structured ws → structured effect fires, {ok, mode, fres
   assert.deepEqual(fx.calls, [{ kind: 'structured', fresh: true }]);
 });
 
-test('resolveRestart: terminal-only ws → pty effect fires (fresh=false)', async () => {
+test('resolveRestart: stopped legacy terminal-only ws → WAKE effect fires, no PTY (#228)', async () => {
   const fx = recordingEffects();
   const ws: RestartWorkspace = { hasInput: true };
   const r = await resolveRestart({ id: 'ws-p', ws, live: liveNone, fresh: false, effects: fx });
+  assert.deepEqual(r, { ok: true, mode: 'wake', fresh: false });
+  assert.deepEqual(fx.calls, [{ kind: 'wake', fresh: false }]);
+});
+
+test('resolveRestart: a LIVE PTY still takes the pty effect (unchanged until #232)', async () => {
+  const fx = recordingEffects();
+  const ws: RestartWorkspace = { hasInput: true };
+  const r = await resolveRestart({ id: 'ws-p', ws, live: { ptyLive: true, sdkLive: false }, fresh: false, effects: fx });
   assert.deepEqual(r, { ok: true, mode: 'pty', fresh: false });
   assert.deepEqual(fx.calls, [{ kind: 'pty', fresh: false }]);
 });
@@ -220,6 +261,7 @@ test('resolveRestart: a THROWN effect is wrapped as {ok:false} + onError called'
     effects: {
       restartStructured: async () => { throw new Error('boom'); },
       restartPty: async () => {},
+      restartWake: async () => {},
     },
     onError: (mode, message) => { logged = { mode, message }; },
   });

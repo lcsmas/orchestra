@@ -3236,6 +3236,16 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
  *  fresh; a genuinely bad adopted id is cleared by sdkSend's isBadResumeError
  *  guard, so a corrupt transcript can't wedge future sends.) */
 export async function sdkWake(wsId: string, text: string): Promise<void> {
+  await adoptTerminalTranscript(wsId);
+  await sdkSend(wsId, text);
+}
+
+/** The terminal-only → SDK adoption step shared by {@link sdkWake} and the legacy
+ *  restart ({@link sdkWakeRestart}, #228): a workspace with input but no
+ *  `sdkSessionId` and no live session persists its newest on-disk transcript as
+ *  the resume id. A no-op otherwise (an id, the `''` cleared marker, a live
+ *  session, or no transcript on disk all leave the record untouched). */
+async function adoptTerminalTranscript(wsId: string): Promise<void> {
   const ws = store.getWorkspace(wsId);
   if (ws?.worktreePath && ws.hasInput && ws.sdkSessionId === undefined && !sessions.has(wsId)) {
     // Newest session for THIS worktree under THIS workspace's account config
@@ -3251,7 +3261,6 @@ export async function sdkWake(wsId: string, text: string): Promise<void> {
       await persistWorkspacePatch(wsId, { sdkSessionId: adopted });
     }
   }
-  await sdkSend(wsId, text);
 }
 
 /** Reattach to a DETACHED keeper session, if one is live for this workspace.
@@ -4783,8 +4792,23 @@ export async function sdkRestart(
   });
   // Resumes ws.sdkSessionId (query({resume})) → same transcript, fresh CLI that
   // re-reads CLAUDE.md/settings. A workspace that only ever ran the terminal
-  // agent (hasInput, no sdkSessionId) is not routed here — see classifyRestartMode.
+  // agent (hasInput, no sdkSessionId) is not routed here — see classifyRestartMode;
+  // it goes through sdkWakeRestart, which adopts its terminal transcript first.
   await ensureSession(wsId);
+}
+
+/** Restart a LEGACY terminal-only workspace (`hasInput`, no `sdkSessionId`) into
+ *  the Agent view — issue #228 (wave "Agent view only" #219), `classifyRestartMode`'s
+ *  `'wake'` mode. `sdkRestart` alone would resume nothing (no id) and start blank, so
+ *  the SDK wake path's adoption runs first: the newest terminal transcript becomes
+ *  `ws.sdkSessionId`, then the ordinary structured restart resumes it (default) or
+ *  clears it (`fresh`, which never adopts — the conversation is being dropped). No PTY. */
+export async function sdkWakeRestart(
+  wsId: string,
+  opts: { fresh: boolean; trigger?: RestartTrigger },
+): Promise<void> {
+  if (!opts.fresh) await adoptTerminalTranscript(wsId);
+  await sdkRestart(wsId, opts);
 }
 
 /** Mark an AUTOMATIC (watchdog) restart before its teardown, so the dying

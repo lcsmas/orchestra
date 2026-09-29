@@ -11,6 +11,11 @@
 //     (agent-sdk.ts). Restart = sdkStop + killKeeper + ensureSession, which
 //     resumes the same transcript. `--fresh` = sdkClear-equivalent (blank the
 //     resume id → a vierge session).
+//   - WAKE (#228, wave "Agent view only" #219): a STOPPED workspace that only
+//     ever ran the terminal agent (`hasInput`, no `sdkSessionId`). It restarts
+//     into the Agent view: the SDK wake path ADOPTS its newest terminal
+//     transcript as the resume id, then starts the session — no PTY is launched.
+//     (The `pty` mode survives only for a LIVE PTY, until the live-PTY cleanup.)
 //
 // The ticket flags gap #3: the UI Restart button gates on `isRunning(id)` =
 // PTY-only, so a STRUCTURED workspace silently falls through it. The CLI must
@@ -50,7 +55,7 @@ export interface RestartLiveness {
  *  workspace under either surface, so there is no process to relaunch and no
  *  conversation to preserve — the caller refuses DIAGNOSABLY rather than
  *  spawning a stray agent. */
-export type RestartMode = 'pty' | 'structured' | 'unknown';
+export type RestartMode = 'pty' | 'structured' | 'wake' | 'unknown';
 
 /** Decide which surface `orchestra restart <id>` targets.
  *
@@ -62,7 +67,9 @@ export type RestartMode = 'pty' | 'structured' | 'unknown';
  *   3. Stopped: fall back to persisted state. `sdkSessionId` defined (a real id
  *      OR the `''` cleared marker) means the structured surface owns this
  *      workspace → 'structured' (resume it / clear it). Otherwise, `hasInput`
- *      with NO `sdkSessionId` is the terminal-only workspace → 'pty'.
+ *      with NO `sdkSessionId` is the legacy terminal-only workspace → 'wake'
+ *      (#228: the SDK wake path adopts its terminal transcript, so it resumes in
+ *      the Agent view instead of relaunching a PTY).
  *   4. Neither surface has ever run → 'unknown'.
  *
  *  A workspace cannot be BOTH live at once in practice (one agent per worktree),
@@ -89,7 +96,7 @@ export function classifyRestartMode(
   // down the terminal path and lose the structured fresh-start heal. The
   // resume-safety discriminator lives at the resume site, never here.
   if (ws.sdkSessionId !== undefined) return 'structured';
-  if (ws.hasInput === true) return 'pty';
+  if (ws.hasInput === true) return 'wake';
   return 'unknown';
 }
 
@@ -105,6 +112,10 @@ export interface RestartEffects {
   /** PTY (terminal) restart: stop the live PTY (if any), respawn main-side with
    *  `--continue` (default) or vierge (fresh). */
   restartPty(fresh: boolean): Promise<void>;
+  /** Legacy terminal-only restart (#228): adopt the terminal transcript through
+   *  the SDK wake path, then restart the session in the Agent view (default), or
+   *  clear it (fresh). Never launches a PTY. */
+  restartWake(fresh: boolean): Promise<void>;
 }
 
 /** Route a resolved {@link RestartMode} to the matching side effect. Pure
@@ -127,6 +138,10 @@ export async function routeRestart(
   if (mode === 'structured') {
     await effects.restartStructured(fresh);
     return 'structured';
+  }
+  if (mode === 'wake') {
+    await effects.restartWake(fresh);
+    return 'wake';
   }
   await effects.restartPty(fresh);
   return 'pty';
@@ -190,7 +205,7 @@ export async function resolveRestart(input: {
       ok: false,
       error:
         `workspace ${id} has no agent to restart yet ` +
-        `(no terminal or structured session has run). Open it first.`,
+        `(no agent session has run). Open it first.`,
     };
   }
   try {

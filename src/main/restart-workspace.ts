@@ -17,6 +17,9 @@
 //   - STRUCTURED (SDK session): sdkRestart, which reuses agent-sdk's internal
 //     restart recipe (sdkStop → killKeeper → ensureSession, resuming the
 //     transcript) for the default, and sdkClear for `--fresh`.
+//   - WAKE (#228): a stopped LEGACY terminal-only workspace (hasInput, no
+//     sdkSessionId) — sdkWakeRestart adopts its terminal transcript, then sdkRestart.
+//     Only a LIVE PTY still takes the PTY branch (removed with the live-PTY cleanup).
 //
 // The pure surface decision lives in src/shared/restart-mode.ts so it is
 // testable without Electron (classifyRestartMode); this module wires the live
@@ -31,7 +34,7 @@ import { store } from './store';
 import { log } from './logger';
 import { isRunning, stopPty, getPtySize } from './pty';
 import { startAgentPty, clearBusRunStale } from './workspaces';
-import { sdkRestart } from './agent-sdk';
+import { sdkRestart, sdkWakeRestart } from './agent-sdk';
 import { sdkSessionLive } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
 import type { RestartTrigger } from '../shared/types';
@@ -72,6 +75,10 @@ export async function dispatchRestartRequest(input: {
     effects: {
       // sdkStop + killKeeper + ensureSession (default, resumes) or sdkClear (fresh).
       restartStructured: (f) => sdkRestart(id!, { fresh: f, trigger }),
+      // #228 — a legacy terminal-only workspace (hasInput, no sdkSessionId): the SDK
+      // wake path adopts its terminal transcript, then the session restarts in the
+      // Agent view. No PTY is launched.
+      restartWake: (f) => sdkWakeRestart(id!, { fresh: f, trigger }),
       restartPty: async (f) => {
         // Stop the live process (if any), then respawn main-side. When already
         // stopped, isRunning is false and stopPty is a no-op — we just

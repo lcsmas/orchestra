@@ -102,8 +102,7 @@ Retarget a workspace's base branch — the Diff/merge target.`,
     detail: `usage: orchestra restart [<id>] [--fresh]
 
 Relaunch a workspace's claude process so it re-reads CLAUDE.md/settings,
-WITHOUT touching worktree/branch/commits. Default: THIS workspace; handles
-terminal + structured sessions.
+WITHOUT touching worktree/branch/commits. Default: THIS workspace.
   --fresh   start a new conversation (default keeps the conversation)`,
   },
   {

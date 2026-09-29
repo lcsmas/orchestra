@@ -518,6 +518,15 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
   PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`. A clause
   that cannot measure in a mode prints `SKIP` (counted apart), so `clauses=` is comparable across modes.
+- **`legacy_restart` + `legacy_restart_fresh` (#228)** — the first ticket arms. `boot: {legacy:true}` makes `seedWorld` write a `hasInput:true`
+  / no-`sdkSessionId` workspace plus a real-shaped terminal transcript under the scratch account dir, and the stub
+  `claude` logs every start's argv to `<home>/stub-argv.log` (any launcher: PTY or SDK keeper). The arm runs the
+  SHIPPED CLI form (`cliRun`: `electron . cli restart <id>`, allowlisted env, `checkChildEnv`/`checkHandOff` guarded)
+  and asserts the reply, exactly one `claude` start whose argv is `--resume=<the transcript's session>` (the SDK's `=` form; baseline:
+  `--continue`, no `--resume`), the `adopting terminal transcript` app-log line, `ws.sdkSessionId`, no agent-kind PTY
+  (baseline: exactly one), and the terminal transcript rendered in the Agent view (state + decoded pixels — NOT a
+  discriminator: master's history backfill already shows it). `legacy_restart_fresh` drives `restart --fresh`: never adopts,
+  `ws.sdkSessionId===''`, no session started (baseline: a vierge PTY).
 - **Arms** (`ARMS` :704): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`

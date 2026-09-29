@@ -227,9 +227,9 @@ export async function startHooksServer(): Promise<void> {
           } else if (route === '/restart') {
             // orchestra restart <id> [--fresh]: relaunch the workspace's claude
             // process so a fresh boot re-reads CLAUDE.md/settings, WITHOUT
-            // touching worktree/branch/commits (issue #111). Handles BOTH the
-            // PTY (terminal) and structured (SDK) surfaces — the mode routing
-            // lives in restart-workspace.ts (classifyRestartMode). `fresh` maps
+            // touching worktree/branch/commits (issue #111). The surface routing
+            // (SDK session, legacy terminal-only wake #228, live PTY) lives in
+            // restart-workspace.ts (classifyRestartMode). `fresh` maps
             // to --fresh (vierge / sdkClear-equivalent).
             if (typeof msg.id === 'string') {
               send(

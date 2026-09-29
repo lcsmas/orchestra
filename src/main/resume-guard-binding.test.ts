@@ -143,10 +143,17 @@ test('seam (c): a phantom id stays structured (documented) — routing unchanged
 // ─── Seam (d): sdkWake adoption already gates on the transcript existing ──────
 
 test('seam (d): sdkWake adoption still requires the transcript .jsonl to exist (no phantom minted)', () => {
-  const body = bodyOf(agentSdkSrc, 'export async function sdkWake');
+  // #228 moved the adoption body out of sdkWake into adoptTerminalTranscript so the legacy
+  // restart (sdkWakeRestart) shares it; the existence probe lives THERE now, and both callers
+  // must reach it.
+  const body = bodyOf(agentSdkSrc, 'async function adoptTerminalTranscript');
   assert.ok(
     callsUncommented(body, 'fs.existsSync') && body.includes('.jsonl'),
-    'sdkWake must only adopt an id whose transcript exists — the precedent seam (a) reuses',
+    'adoptTerminalTranscript must only adopt an id whose transcript exists — the precedent seam (a) reuses',
+  );
+  assert.ok(
+    callsUncommented(bodyOf(agentSdkSrc, 'export async function sdkWake'), 'await adoptTerminalTranscript(wsId)'),
+    'sdkWake must still adopt through the shared helper',
   );
 });
 

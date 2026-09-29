@@ -105,7 +105,7 @@ function driveCli(args: string[], replySrc: string, wsId: string | null = 'calle
   return JSON.parse(out.slice(marker + '__ENVELOPE__'.length)) as StubOutcome;
 }
 
-const OK = `return { ok: true, mode: 'terminal', fresh: !!body.fresh };`;
+const OK = `return { ok: true, mode: 'wake', fresh: !!body.fresh };`;
 
 test('restart <id>: posts id with fresh=false, exits 0', needsBuild, () => {
   const r = driveCli(['restart', 'ws-target'], OK);
@@ -114,6 +114,20 @@ test('restart <id>: posts id with fresh=false, exits 0', needsBuild, () => {
   assert.equal(r.seen[0].id, 'ws-target');
   assert.equal(r.seen[0].fresh, false);
   assert.match(r.stdout, /conversation preserved/);
+});
+
+test('#228 restart output names no surface: whatever mode the reply carries, no "terminal"/"structured"', needsBuild, () => {
+  // One Agent view → the CLI no longer reports terminal vs structured. Drive it with each mode the
+  // server can answer (the old CLI printed `terminal` for anything but 'structured').
+  for (const mode of ['wake', 'structured', 'pty']) {
+    const r = driveCli(['restart', 'ws-target'], `return { ok: true, mode: '${mode}', fresh: !!body.fresh };`);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, 'Restarted ws-target (conversation preserved)\n', `mode=${mode}`);
+    assert.doesNotMatch(r.stdout, /terminal|structured/i, `mode=${mode}`);
+  }
+  const f = driveCli(['restart', 'ws-target', '--fresh'], OK);
+  assert.equal(f.stdout, 'Restarted ws-target (fresh (conversation cleared))\n');
+  assert.doesNotMatch(f.stdout, /terminal|structured/i);
 });
 
 test('restart <id> --fresh: posts fresh=true (parses DISTINCTLY from the default)', needsBuild, () => {

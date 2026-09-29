@@ -1290,9 +1290,9 @@ async function main(argv: string[]): Promise<void> {
       // CLAUDE.md/settings, WITHOUT touching worktree/branch/commits (issue
       // #111). A rule added to ~/.claude/CLAUDE.md is read only at startup; a
       // live session never re-reads it — restart is how an agent (or a peer)
-      // picks it up by script. Handles BOTH terminal (PTY) and structured (SDK)
-      // sessions main-side. Defaults to THIS workspace, like `status`/`link`/
-      // `reload-skills`: the common caller is an agent restarting itself.
+      // picks it up by script. Handled main-side. Defaults to THIS workspace,
+      // like `status`/`link`/`reload-skills`: the common caller is an agent
+      // restarting itself.
       const { present: fresh, rest } = takeBoolFlag(args, '--fresh');
       const target = rest[0] ?? selfWorkspaceId();
       if (!target) {
@@ -1303,11 +1303,10 @@ async function main(argv: string[]): Promise<void> {
       }
       const res = await request('/restart', { id: target, fresh });
       if (!res.ok) fail(res.error ?? 'failed to restart workspace');
-      // Report the surface and whether the conversation survived — the two
-      // things the caller cares about (default keeps it, --fresh clears it).
-      const mode = res.mode === 'structured' ? 'structured' : 'terminal';
+      // Report whether the conversation survived (default keeps it, --fresh
+      // clears it). There is one agent view, so the reply names no surface (#228).
       const conv = res.fresh ? 'fresh (conversation cleared)' : 'conversation preserved';
-      process.stdout.write(`Restarted ${target} (${mode}, ${conv})\n`);
+      process.stdout.write(`Restarted ${target} (${conv})\n`);
       return;
     }
 

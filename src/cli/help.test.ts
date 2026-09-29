@@ -40,6 +40,13 @@ test('help flag is honoured only at the head, never inside free text', () => {
   assert.equal(wantsCommandHelp([]), false);
 });
 
+test('#228 `restart` help no longer says terminal vs structured', () => {
+  const c = COMMANDS.find((x) => x.name === 'restart');
+  assert.ok(c, 'restart has a help entry');
+  assert.doesNotMatch(`${c.summary}\n${c.detail}`, /terminal|structured/i);
+  assert.match(c.detail, /--fresh/, 'the --fresh flag stays documented');
+});
+
 test('typo suggestions', () => {
   assert.deepEqual(suggest('sttaus')[0], 'status');
   assert.ok(suggest('verify').includes('verify-landed'));

@@ -971,8 +971,9 @@ export const apiHandlers: ApiHandlerTable = {
       return;
     }
     // No live PTY: dispatchRestartRequest classifies the surface (a live or
-    // persisted structured session → sdkRestart; a stopped PTY-only workspace →
-    // startAgentPty). It refuses diagnosably when nothing has ever run.
+    // persisted structured session → sdkRestart; a stopped legacy terminal-only
+    // workspace → sdkWakeRestart, #228). It refuses diagnosably when nothing has
+    // ever run.
     const { dispatchRestartRequest } = await import('./restart-workspace.ts');
     const res = await dispatchRestartRequest({ id, fresh: false, trigger: 'toolbar' });
     if (!res.ok) log.warn(`restartAgent: ${id} — ${res.error ?? 'unknown'}`);
