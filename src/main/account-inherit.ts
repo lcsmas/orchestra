@@ -73,6 +73,8 @@ const MC_MCP = [
 // items the user de-selected without touching anything the user added by hand.
 
 interface InheritManifest {
+  /** The `~/.claude` these links were built from (#235/D10); absent in legacy manifests. */
+  source?: string;
   /** Login-dir-relative paths of symlinks we created (e.g. `settings.json`,
    *  `skills/frontend-design`). */
   symlinks: string[];
@@ -87,6 +89,7 @@ function readManifest(loginDir: string): InheritManifest {
     const raw = fs.readFileSync(path.join(loginDir, MANIFEST_NAME), 'utf8');
     const parsed = JSON.parse(raw) as Partial<InheritManifest>;
     return {
+      source: typeof parsed.source === 'string' ? parsed.source : undefined,
       symlinks: Array.isArray(parsed.symlinks) ? parsed.symlinks.filter((s) => typeof s === 'string') : [],
       mcpServers: Array.isArray(parsed.mcpServers)
         ? parsed.mcpServers.filter((s) => typeof s === 'string')
@@ -171,6 +174,16 @@ export async function seedAccountInheritDefaults(): Promise<void> {
 
 // ---- symlink helpers ---------------------------------------------------------
 
+/** True iff `p` is a readable directory — the inheritance SOURCE test (#235). */
+function isReadableDir(p: string): boolean {
+  try {
+    fs.readdirSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** True iff `p` exists AND is a symlink (so we may safely manage/remove it). */
 function isSymlink(p: string): boolean {
   try {
@@ -178,6 +191,42 @@ function isSymlink(p: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Same directory: identical path, or same realpath (`/home` vs `/var/home`, a symlinked HOME). */
+function sameDir(a: string, b: string): boolean {
+  if (path.resolve(a) === path.resolve(b)) return true;
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+function isInside(p: string, dir: string): boolean {
+  const within = (x: string, d: string): boolean => {
+    const rel = path.relative(d, x);
+    return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  };
+  if (within(p, dir)) return true;
+  try {
+    return within(fs.realpathSync(p), fs.realpathSync(dir));
+  } catch {
+    return false;
+  }
+}
+
+/** #235/D10: where the login dir's links were built from when that is NOT `globalDir` (manifest
+ *  `source`; legacy manifest: any of its links pointing outside `globalDir`), else null. */
+function builtFromElsewhere(loginDir: string, globalDir: string, prev: InheritManifest): string | null {
+  if (prev.source !== undefined) return sameDir(prev.source, globalDir) ? null : prev.source;
+  for (const rel of prev.symlinks) {
+    const linkPath = path.join(loginDir, rel);
+    if (!isSymlink(linkPath)) continue;
+    const target = path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath));
+    if (!isInside(target, globalDir)) return target;
+  }
+  return null;
 }
 
 /** Ensure `loginDir/rel` is a symlink to `target`.
@@ -261,14 +310,21 @@ function removeOurSymlink(loginDir: string, rel: string): void {
  *  Returns the keys that are now ours. */
 function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[]): string[] {
   // Read the global server definitions.
-  let globalMcp: Record<string, unknown> = {};
+  let globalMcp: Record<string, unknown> | null = null;
   try {
     const parsed = JSON.parse(fs.readFileSync(globalClaudeJson(), 'utf8')) as {
       mcpServers?: Record<string, unknown>;
     };
-    if (parsed.mcpServers && typeof parsed.mcpServers === 'object') globalMcp = parsed.mcpServers;
+    globalMcp = parsed.mcpServers && typeof parsed.mcpServers === 'object' ? parsed.mcpServers : {};
   } catch {
-    /* no global servers available */
+    /* missing/unreadable/torn → handled below */
+  }
+  // #235: an unreadable source is "unknown", never "no servers" — remove nothing.
+  if (globalMcp === null) {
+    if (desired.length > 0 || prevKeys.length > 0) {
+      log.warn(`account-inherit: ${globalClaudeJson()} is missing or unreadable — MCP servers left untouched for ${loginDir}`);
+    }
+    return prevKeys;
   }
   const want = desired.filter((k) => k in globalMcp);
   // A server can be selected in the Accounts UI yet no longer exist in the
@@ -319,6 +375,20 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
   if (!loginDir) return;
   const inherit = account.inherit;
   const globalDir = globalClaudeDir();
+  // #235: a missing/unreadable source is "unknown", never "empty" — gates every destructive step below.
+  if (!isReadableDir(globalDir)) {
+    log.warn(`account-inherit: source ${globalDir} is missing or unreadable — sync skipped, ${loginDir} left untouched`);
+    return;
+  }
+
+  // #235/D10: links built from ANOTHER source (a fake-HOME app vs a live config dir) are not ours to
+  // rewrite — even a readable, skeletal source would repoint/strip them. No write at all.
+  const prev = readManifest(loginDir);
+  const from = builtFromElsewhere(loginDir, globalDir, prev);
+  if (from !== null) {
+    log.warn(`account-inherit: ${loginDir} was built from ${from}, not ${globalDir} — sync skipped (delete ${MANIFEST_NAME} there to re-home it)`);
+    return;
+  }
 
   try {
     await fs.promises.mkdir(loginDir, { recursive: true });
@@ -326,8 +396,6 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
     log.warn(`account-inherit: cannot create login dir ${loginDir}`, err);
     return;
   }
-
-  const prev = readManifest(loginDir);
 
   // Build the desired symlink set (relative path -> {target, replaceReal}).
   // Config FILES the user opted into replace a stale real copy (with backup);
@@ -378,7 +446,7 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
   // MCP servers (selective merge into the login dir's own .claude.json).
   const liveMcp = syncMcpServers(loginDir, inherit?.mcpServers ?? [], prev.mcpServers);
 
-  writeManifest(loginDir, { symlinks: liveLinks, mcpServers: liveMcp });
+  writeManifest(loginDir, { source: globalDir, symlinks: liveLinks, mcpServers: liveMcp });
 }
 
 /** Sync every configured account. Called after the accounts list changes so

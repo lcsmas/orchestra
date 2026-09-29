@@ -72,10 +72,27 @@ reads them transiently to query usage.
   pieces of global `~/.claude` so they behave like the default. Files & skills →
   **symlink**; MCP servers → **merge** into the login dir's `.claude.json`
   (can't symlink — holds per-project trust). Manifest `.orchestra-inherited.json`
-  tracks injections for clean removal. Key fns: `listInheritables` `:111`,
-  `defaultInheritForAccount` `:138`, `seedAccountInheritDefaults` `:159`,
-  `syncAccountInheritance(account)` `:304` (idempotent; run on account changes &
-  each spawn).
+  tracks injections for clean removal and stamps `source` (the `~/.claude` the
+  links were built from). Key fns: `listInheritables` `:116`,
+  `defaultInheritForAccount` `:143`, `seedAccountInheritDefaults` `:164`,
+  `syncAccountInheritance(account)` `:373` (idempotent; run on account changes &
+  each spawn). **A sync never strips because of its source (#235):** (1) `~/.claude`
+  not a readable dir (`isReadableDir` `:178`) ⇒ return before ANY write (mkdir,
+  dangling-link drop, prune, MCP removal, manifest) + one WARN; (2) PROVENANCE
+  (D10, `builtFromElsewhere` `:221`): a manifest whose `source` differs from the
+  current `~/.claude` (`sameDir`: same path or realpath) — or, legacy manifest
+  without `source`, any link pointing outside it — ⇒ refused, no write, one WARN
+  naming the manifest to delete to re-home it. This is what protects a live config
+  dir from a fake-HOME app, whose readable-but-skeletal `~/.claude` (self-tune
+  `ensureFoldTargets`, `claude -p`) a "source has entries?" test cannot tell apart;
+  a first sync on a fresh account still writes + stamps. (3) `syncMcpServers`
+  (`:311`) keeps injected servers + manifest list when `~/.claude.json` is
+  missing/unparseable. Same-source prune/de-selection is unchanged. Rig traps:
+  a fake-HOME boot pinned to a LIVE configDir stripped `~/.claude-mc` twice
+  (2026-09-29) — never point a rig's configDir at a live `~/.claude*`
+  (`account-inherit.test.ts` scratch-only harness refuses one). Known gaps: a
+  legacy manifest with no links (MCP-only) can't be attributed until its first
+  same-source sync stamps it.
 - **Login flow:** interactive `claude /login` in a dedicated PTY
   (`account-login:<accountId>`); `armLoginWatch` (`account-usage.ts:284`) +
   `watchForLogin` `:101` watch `.credentials.json` for a new token via `fs.watch`
