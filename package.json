@@ -49,7 +49,7 @@
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",
     "test:hook-cost": "bash scripts/e2e-hook-cost.sh",
-    "test:agent-view-removal": "vite build && bash scripts/e2e-agent-view-removal.sh \"$PWD\"",
+    "test:agent-view-removal": "pnpm run build:bundles && bash scripts/e2e-agent-view-removal.sh \"$PWD\"",
     "test:network-visibility-shot": "node scripts/network-visibility-screenshot.mjs",
     "test:renderer-cpu": "vite build && node scripts/renderer-cpu-profile.mjs \"$PWD\" fix 6",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",

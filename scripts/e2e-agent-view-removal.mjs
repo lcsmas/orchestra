@@ -760,6 +760,9 @@ function resumeOf(argv) {
   return { resume: i >= 0, target, continue: argv.includes('--continue') };
 }
 const listWs = (app) => app.cdp.eval('window.orchestra.listWorkspaces()');
+/** Positive control for every arm that claims "a session did / did NOT start": the app installs `dist-electron/keeper.js` at boot; without it NO SDK session can
+ *  start, so a "no session started" claim passes vacuously (review #228 F2: a vite-only build left `legacy_restart_fresh` fully green). */
+const keeperControl = (ctx) => { const f = path.join(ctx.app.home, 'bin', 'keeper.js'); return ctx.clause('env/keeper-runtime-installed', fs.existsSync(f), `${path.relative(ctx.app.home, f)} ${fs.existsSync(f) ? 'installed at boot' : 'ABSENT — no SDK session can start here, so every session-start claim below is unproven (build with pnpm run build:bundles)'}`); };
 
 const ARMS = [
   {
@@ -1131,6 +1134,7 @@ const ARMS = [
       const ADOPT = `wake ${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`;
       const log0 = appLog(app);
       ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log path/channel is unproven, so its silence below means nothing'}`);
+      keeperControl(ctx);
       ctx.clause('pre-state-no-adoption-logged', !log0.includes(ADOPT) && sessionStarts(app).length === 0, `adoption line present=${log0.includes(ADOPT)}; claude SESSION starts so far=${sessionStarts(app).length} (+${stubStarts(app).length - sessionStarts(app).length} \`--version\` probe(s))`);
 
       // ── drive the REAL CLI ──
@@ -1210,6 +1214,7 @@ const ARMS = [
       const ADOPT = `wake ${wsId} adopting terminal transcript`;   // ANY adoption of this workspace's transcript
       const log0 = appLog(app);
       ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log channel is unproven'}`);
+      keeperControl(ctx);
       ctx.clause('pre-state-no-adoption-logged', !log0.includes(ADOPT) && sessionStarts(app).length === 0, `adoption line present=${log0.includes(ADOPT)}; claude SESSION starts so far=${sessionStarts(app).length}`);
       const r = cliRun(app, ['restart', '--fresh', wsId]);
       const expectReply = `Restarted ${wsId} (${want.surfaceWord ? `${want.surfaceWord}, ` : ''}fresh (conversation cleared))\n`;

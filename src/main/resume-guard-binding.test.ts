@@ -18,6 +18,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const agentSdkSrc = readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8');
 const workspacesSrc = readFileSync(path.join(here, 'workspaces.ts'), 'utf8');
 const restartModeSrc = readFileSync(path.join(here, '..', 'shared', 'restart-mode.ts'), 'utf8');
+const restartWorkspaceSrc = readFileSync(path.join(here, 'restart-workspace.ts'), 'utf8');
 
 /** The body of a named function, from its declaration to the next top-level
  *  `function`/`export function`/`export async function` — scopes a "does THIS
@@ -154,6 +155,35 @@ test('seam (d): sdkWake adoption still requires the transcript .jsonl to exist (
   assert.ok(
     callsUncommented(bodyOf(agentSdkSrc, 'export async function sdkWake'), 'await adoptTerminalTranscript(wsId)'),
     'sdkWake must still adopt through the shared helper',
+  );
+});
+
+// ─── #228: the legacy terminal-only restart — `wake` mode → sdkWakeRestart → adoption ───────
+// The classifier/router are proven in src/shared/restart-mode.test.ts; these pin the two seams
+// only the built app (scripts/e2e-agent-view-removal.mjs `legacy_restart*`) exercised, so a later
+// wave rewriting the wake/restart area cannot drop adoption with `pnpm run test` green.
+
+test('#228: the restartWake effect is sdkWakeRestart (plain sdkRestart would resume nothing for a legacy ws)', () => {
+  const body = bodyOf(restartWorkspaceSrc, 'export async function dispatchRestartRequest');
+  assert.ok(
+    callsUncommented(body, 'restartWake: (f) => sdkWakeRestart(id!, { fresh: f, trigger })'),
+    'dispatchRestartRequest must wire restartWake to sdkWakeRestart(id, {fresh, trigger})',
+  );
+  // must-FAIL arm: the structured effect (`sdkRestart`) is the neighbour this must not be swapped for.
+  assert.ok(
+    callsUncommented(body, 'restartStructured: (f) => sdkRestart(id!, { fresh: f, trigger })'),
+    'control: restartStructured still calls plain sdkRestart (the two effects stay distinct)',
+  );
+});
+
+test('#228: sdkWakeRestart adopts the terminal transcript BEFORE sdkRestart, and never on --fresh', () => {
+  const body = bodyOf(agentSdkSrc, 'export async function sdkWakeRestart');
+  const adopt = 'if (!opts.fresh) await adoptTerminalTranscript(wsId);';
+  assert.ok(callsUncommented(body, adopt), 'adoption must be guarded by !opts.fresh (a fresh restart drops the conversation; adopting first would persist an id --fresh must never keep)');
+  assert.ok(callsUncommented(body, 'await sdkRestart(wsId, opts);'), 'sdkWakeRestart must hand off to sdkRestart');
+  assert.ok(
+    body.indexOf(adopt) !== -1 && body.indexOf(adopt) < body.indexOf('await sdkRestart(wsId, opts);'),
+    'adoption must run BEFORE sdkRestart (ensureSession resumes ws.sdkSessionId; adopting after it starts a blank session)',
   );
 });
 

@@ -21,8 +21,8 @@ APP_DIR="${1:-}"
 [[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--mode baseline|after] [--arm a,b] [--list] [--broken-control] [--allow-stale]" >&2; exit 2; }
 shift
 APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does not exist" >&2; exit 2; }
-for f in package.json dist/index.html dist-electron/main.js; do
-  [[ -f "${APP_DIR}/${f}" ]] || { echo "ABORT: ${APP_DIR}/${f} missing — build first (npx vite build)" >&2; exit 2; }
+for f in package.json dist/index.html dist-electron/main.js dist-electron/keeper.js; do
+  [[ -f "${APP_DIR}/${f}" ]] || { echo "ABORT: ${APP_DIR}/${f} missing — build first (pnpm run build:bundles; a bare 'vite build' omits dist-electron/keeper.js, and without it no SDK session can start, so every 'no session started' claim is vacuous)" >&2; exit 2; }
 done
 
 # The invoker's LIVE config dir is never the app's account (review F1 on #225: the app boot's
