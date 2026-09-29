@@ -147,6 +147,17 @@ export function noteToolEnd(
   else inFlightTools.set(wsId, list);
 }
 
+/** A tool BATCH resolved (the spool's `toolbatch`, from Claude Code's PostToolBatch):
+ *  remove exactly the listed calls (`idList` = comma-joined tool_use ids). The only
+ *  end a DENIED call gets (#199 residual, T6b). Never clears unlisted calls — a
+ *  subagent's batch resolves while the parent's Agent call is still running — and
+ *  never falls back to FIFO: an empty list is a no-op. */
+export function noteToolBatchEnd(wsId: string, idList: string | null): void {
+  for (const id of (idList ?? '').split(',')) {
+    if (id) noteToolEnd(wsId, id);
+  }
+}
+
 /** Clear ALL in-flight calls for `wsId` — a turn BOUNDARY was crossed, so no tool
  *  call from before it can still be running.
  *

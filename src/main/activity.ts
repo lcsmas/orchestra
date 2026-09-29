@@ -22,6 +22,7 @@ import {
   noteActivity,
   noteToolStart,
   noteToolEnd,
+  noteToolBatchEnd,
   clearInFlightTools,
 } from './hibernation-activity.ts';
 
@@ -1058,6 +1059,12 @@ export function applyAgentEvent(
       // the tool NAME scopes the id-less FIFO so a fast call can't clear a hung
       // call of a different tool (review-127 F1/F3). A hung sibling stays.
       noteToolEnd(id, toolUseId ?? null, tool ?? null);
+      break;
+    case 'toolbatch':
+      // #199 residual (T6b): PostToolBatch — every call in the batch RESOLVED
+      // (incl. a DENIED call, which gets no posttool). Remove exactly the listed
+      // ids; status and label are untouched (the per-call arms own those).
+      noteToolBatchEnd(id, toolUseId ?? null);
       break;
     case 'stop':
     // Claude's `StopFailure` hook (turn ended on an API error) maps here too:

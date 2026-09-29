@@ -15,7 +15,10 @@ scraping, no polling.
 Event → status (`applyAgentEvent` `:471`):
 - `submit` → `running` + `THINKING_TOOL_LABEL`; `pretool` → `running` + tool
   label; `posttool` → `running`, label back to `THINKING_TOOL_LABEL`, emit live
-  context tokens.
+  context tokens. `posttool` is written by BOTH PostToolUse and
+  PostToolUseFailure (a failed call fires only the latter); `toolbatch`
+  (PostToolBatch, comma-joined ids) only removes those calls from the in-flight
+  tracker — the one end a DENIED call gets (#199 residual, see bus.md Liveness v2).
 
   **`submit` and `pretool` also stamp `Workspace.lastTurnStartAt` (issue #88)**,
   by passing `turnStart: true` as `setStatus`'s 4th argument — the same

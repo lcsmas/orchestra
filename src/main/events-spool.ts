@@ -267,6 +267,7 @@ function drain(id: string): void {
     // #127: the tool_use id the hook mined from the PreToolUse/PostToolUse
     // payload, so the in-flight tracker pairs a posttool with the exact call it
     // ended (parallel-hang F1). Empty/absent (old hook) → null → FIFO fallback.
+    // A `toolbatch` line (T6b) carries the batch's ids comma-joined.
     const toolUseId = typeof ev.toolUseId === 'string' && ev.toolUseId.length ? ev.toolUseId : null;
     const transcript =
       typeof ev.transcript === 'string' && ev.transcript.length ? ev.transcript : undefined;
