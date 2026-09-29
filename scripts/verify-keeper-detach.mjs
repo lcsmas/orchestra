@@ -73,6 +73,10 @@ const sway = spawn('sway', ['-c', swayCfg], {
   },
   stdio: 'ignore',
 });
+// However this process ends — a normal exit, `process.exit(1)` in PREFLIGHT, or a signal — it must not strand THIS sway (ppid 1)
+// nor the credentials copy made below: exit handlers run on process.exit, and a signal is turned into one.
+process.on('exit', () => { try { sway.kill('SIGKILL'); } catch { /* gone */ } });
+for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.on(sig, () => process.exit(code));
 const wayland = await waitFor(
   'sway wayland socket',
   () =>

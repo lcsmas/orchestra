@@ -47,6 +47,7 @@ import net from 'node:net';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 
 // ── expectations: the ONE place baseline↔after flips live ────────────────────
@@ -68,12 +69,15 @@ const KNOWN_FLAGS = { '--mode': true, '--arm': true, '--list': false, '--broken-
  *  positional is an ERROR — a silently-ignored flag runs the default mode, which is exactly the flip B5 performs (F3). */
 function parseArgs(argv) {
   const r = { mode: 'baseline', arm: null, list: false, brokenControl: false, allowStale: false, positional: [], error: null };
+  const seen = new Set();
   for (let i = 0; i < argv.length && !r.error; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) { r.positional.push(a); continue; }
+    if (a in KNOWN_FLAGS && seen.has(a)) { r.error = `${a} given more than once (last-wins would silently drop the first)`; break; }
+    seen.add(a);
     if (!(a in KNOWN_FLAGS)) { r.error = `unknown flag '${a}'${a.includes('=') ? " (write '--mode after', not '--mode=after')" : ''} — known: ${Object.keys(KNOWN_FLAGS).join(' ')}`; break; }
     let v = null;
-    if (KNOWN_FLAGS[a]) { v = argv[++i]; if (v === undefined || v.startsWith('--')) { r.error = `${a} needs a value`; break; } }
+    if (KNOWN_FLAGS[a]) { v = argv[++i]; if (v === undefined || v.startsWith('--')) { r.error = `${a} needs a value`; break; } if (v === '') { r.error = `${a} needs a NON-EMPTY value${a === '--arm' ? ' (an empty --arm would run every arm)' : ''}`; break; } }
     if (a === '--mode') { if (!['baseline', 'after'].includes(v)) { r.error = `bad --mode '${v}' (baseline|after)`; break; } r.mode = v; }
     else if (a === '--arm') r.arm = v;
     else if (a === '--list') r.list = true;
@@ -630,10 +634,14 @@ function referencedByLiveProcess(dir) {
 const OWNER_MARKER = '.avr-rig-owner';   // written into every rig dir THIS invoker creates; its CONTENT is the invoker identity below
 // Per-invoker identity (F5): the realpath of the worktree that holds THESE scripts. Every agent runs the rig from its own
 // worktree, so another agent's clean dirs (whose screenshots a ledger comment may cite) never match and are never pruned.
-const RIG_OWNER = (() => { try { return fs.realpathSync(path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')); } catch { return 'unknown'; } })();
+/** realpath of the worktree holding this module, from a file: URL. `fileURLToPath` (NOT `new URL().pathname`, which stays
+ *  percent-encoded: a path with a space resolved to nothing and every such invoker shared one 'unknown' owner). null = no identity. */
+function ownerFromModuleUrl(url) { try { return fs.realpathSync(path.resolve(path.dirname(fileURLToPath(url)), '..')); } catch { return null; } }
+const RIG_OWNER = ownerFromModuleUrl(import.meta.url);
 const KEEP_MARKER = 'KEEP-UNTIL-CLEAN';  // written at start, removed only when the invocation ends with 0 FAIL: crashed/failed runs keep their forensics
 function pruneStaleRigDirs(base, own, { now = Date.now(), maxAgeMs = 24 * 3600e3, inUse = referencedByLiveProcess, owner = RIG_OWNER } = {}) {
   const removed = [], kept = [];
+  if (!owner) return { removed, kept, disabled: true }; // no invoker identity => prune NOTHING (fail closed: never a shared 'unknown' owner)
   for (const n of fs.readdirSync(base)) {
     if (!/^e2e64c-\d+$/.test(n)) continue;
     const d = path.join(base, n);
@@ -876,6 +884,16 @@ const ARMS = [
         ctx.clause('keeps-other-agents-dirs', left.includes('e2e64c-1007'), 'an owned-marker dir of ANOTHER invoker (different worktree identity) survives even when clean, old and unreferenced');
         ctx.clause('keeps-non-pid-names', left.includes('e2e64c-notapid') && left.includes('e2e64c-1008x'), 'e2e64c-notapid and e2e64c-1008x survive: only e2e64c-<digits> is a rig dir');
         ctx.clause('keeps-failed-run-forensics', left.includes('e2e64c-1006'), 'a dir carrying KEEP-UNTIL-CLEAN (failed/crashed run) survives even when old and unreferenced');
+        // F2: no invoker identity => prune NOTHING (an unmarked dir must not match a null owner).
+        const base2 = path.join(base, 'no-owner-base'); fs.mkdirSync(base2);
+        for (const [n, marker] of [['e2e64c-2001', 'someone'], ['e2e64c-2002', null]]) { const d = path.join(base2, n); fs.mkdirSync(d); if (marker) fs.writeFileSync(path.join(d, OWNER_MARKER), marker); fs.utimesSync(d, old, old); }
+        const noOwner = pruneStaleRigDirs(base2, null, { owner: null });
+        ctx.clause('no-owner-prunes-nothing', noOwner.removed.length === 0 && fs.readdirSync(base2).length === 2, `owner=null: removed=${JSON.stringify(noOwner.removed)}, both old dirs (one marked, one unmarked) kept`);
+        // F2: the identity is the ABSOLUTE realpath of the repo root that holds THESE scripts, resolved with fileURLToPath.
+        ctx.clause('owner-identity-is-the-repo-root', typeof RIG_OWNER === 'string' && path.isAbsolute(RIG_OWNER) && RIG_OWNER !== 'unknown' && fs.realpathSync(RIG_OWNER) === RIG_OWNER && fs.existsSync(path.join(RIG_OWNER, 'scripts', 'e2e-agent-view-removal.mjs')), `RIG_OWNER=${RIG_OWNER}`);
+        const spaced = path.join(base, 'with space'); fs.mkdirSync(path.join(spaced, 'scripts'), { recursive: true });
+        const viaUrl = ownerFromModuleUrl(pathToFileURL(path.join(spaced, 'scripts', 'x.mjs')).href);
+        ctx.clause('owner-identity-survives-a-path-with-a-space', viaUrl === fs.realpathSync(spaced), `file URL of '<…>/with space/scripts/x.mjs' -> ${viaUrl === null ? 'null (percent-encoded path: the pre-fix behaviour)' : path.relative(base, viaUrl)}`);
       } finally { try { holder?.kill('SIGKILL'); } catch { /* gone */ } fs.rmSync(base, { recursive: true, force: true }); }
     },
   },
@@ -958,6 +976,9 @@ const ARMS = [
     async run(ctx) {
       const bad = [['--mode=after'], ['--mod', 'after'], ['--allow_stale'], ['--frobnicate'], ['--mode'], ['--mode', '--arm', 'x'], ['--mode', 'bogus'], ['--arm'], ['app', 'extra']];
       for (const a of bad) { const r = parseArgs(a); ctx.clause(`rejects:${a.join(' ')}`, !!r.error, `${JSON.stringify(a)} -> ${r.error ?? 'ACCEPTED (mode=' + r.mode + ')'}`); }
+      for (const [label, a] of [['empty --arm', ['--arm', '']], ['empty --mode', ['--mode', '']], ['repeated --mode', ['--mode', 'after', '--mode', 'baseline']], ['repeated --arm', ['--arm', 'tabs', '--arm', 'observe']], ['repeated --allow-stale', ['--allow-stale', '--allow-stale']], ['repeated --list', ['--list', '--list']]]) {
+        const r = parseArgs(a); ctx.clause(`rejects:${label}`, !!r.error, `${JSON.stringify(a)} -> ${r.error ?? 'ACCEPTED (mode=' + r.mode + ', arm=' + JSON.stringify(r.arm) + ')'}`);
+      }
       const ok = parseArgs(['/app', '--mode', 'after', '--arm', 'tabs,open_tabs_agent_pty', '--allow-stale', '--broken-control']);
       ctx.clause('accepts:documented-forms', !ok.error && ok.mode === 'after' && ok.arm === 'tabs,open_tabs_agent_pty' && ok.allowStale && ok.brokenControl && ok.positional[0] === '/app', JSON.stringify(ok));
       const def = parseArgs(['/app']);
@@ -1135,9 +1156,10 @@ async function main() {
   else if (ALLOW_STALE) pre.allowedStale('identity/dist-fresh', `${fresh.detail} [--allow-stale: proceeding on a STALE build — results are NOT a clean PASS]`);
   else pre.clause('identity/dist-fresh', false, fresh.detail);
   if (!fresh.ok && !ALLOW_STALE) return finish(sel);
-  if (RIG.rigDir) { fs.writeFileSync(path.join(RIG.rigDir, OWNER_MARKER), RIG_OWNER); fs.writeFileSync(path.join(RIG.rigDir, KEEP_MARKER), 'removed when this invocation ends with 0 FAIL'); }
+  if (RIG.rigDir) { if (RIG_OWNER) fs.writeFileSync(path.join(RIG.rigDir, OWNER_MARKER), RIG_OWNER); fs.writeFileSync(path.join(RIG.rigDir, KEEP_MARKER), 'removed when this invocation ends with 0 FAIL'); }
   if (RIG.rigDir) {
     const pr = pruneStaleRigDirs(path.dirname(RIG.rigDir), RIG.rigDir);
+    if (pr.disabled) console.log('PRUNE     disabled: no invoker identity (could not resolve this worktree) — nothing pruned');
     const why = pr.kept.reduce((m, [, r]) => ((m[r] = (m[r] ?? 0) + 1), m), {});
     console.log(`PRUNE     removed ${pr.removed.length} stale rig dir(s); kept ${pr.kept.length}: ${Object.entries(why).map(([r, n]) => `${n} ${r}`).join(', ') || 'none'}`);
   }
