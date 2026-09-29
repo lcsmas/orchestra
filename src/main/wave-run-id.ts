@@ -30,7 +30,7 @@ export interface WaveNode {
 /** `canOrchestrate` over the minimal node shape — an orchestrator is the KIND
  *  `'orchestrator'` OR the capability flag (a PROMOTED worktree), never the kind
  *  alone (D1: an OPS is a promoted worktree carrying the flag). */
-function nodeOrchestrates(n: WaveNode): boolean {
+export function nodeOrchestrates(n: WaveNode): boolean {
   return canOrchestrate({ kind: n.kind as never, canOrchestrate: n.canOrchestrate });
 }
 
@@ -78,23 +78,41 @@ export function nearestOrchestratorId(
  *
  * Walk STARTS at `ws.parentId` (never `ws` itself — `ws` is the new orchestrator
  * whose own row we are creating), and returns the first ancestor that
- * `canOrchestrate`. This is what makes LEAD→OPS two rows with the OPS's
+ * `canOrchestrate`, or (#221, when `anchorsRun` is given) the first that already
+ * ANCHORS a run row. This is what makes LEAD→OPS two rows with the OPS's
  * `parent_run_id` = the LEAD's run id.
  */
 export function parentOrchestratorId(
   ws: WaveNode,
   lookup: (id: string) => WaveNode | undefined,
+  anchorsRun?: (id: string) => boolean,
 ): string | null {
   if (!ws.parentId) return null;
   const seen = new Set<string>([ws.id]);
   let cur = lookup(ws.parentId);
   while (cur && !seen.has(cur.id)) {
-    if (nodeOrchestrates(cur)) return cur.id;
+    if (nodeOrchestrates(cur) || anchorsRun?.(cur.id)) return cur.id;
     seen.add(cur.id);
     if (!cur.parentId) break;
     cur = lookup(cur.parentId);
   }
   return null;
+}
+
+/**
+ * #221 — the parent run for a NEW orchestrator: `parentOrchestratorId`, else the DIRECT
+ * parent when it resolves but anchors no run and has no orchestrator above it
+ * (`implicit`: the caller must give it a mission row; it stays a plain workspace).
+ */
+export function parentRunTarget(
+  ws: WaveNode,
+  lookup: (id: string) => WaveNode | undefined,
+  anchorsRun: (id: string) => boolean,
+): { id: string | null; implicit: boolean } {
+  const found = parentOrchestratorId(ws, lookup, anchorsRun);
+  if (found) return { id: found, implicit: false };
+  const parent = ws.parentId ? lookup(ws.parentId) : undefined;
+  return parent ? { id: parent.id, implicit: true } : { id: null, implicit: false };
 }
 
 /**
