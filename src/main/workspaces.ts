@@ -75,7 +75,7 @@ import {
   shouldBumpCoordinatorGeneration,
   type AnchorInfo,
 } from './bus-run-anchor.ts';
-import { nearestOrchestratorId } from './wave-run-id.ts';
+import { isPlainOwnAnchor, nearestOrchestratorId } from './wave-run-id.ts';
 import {
   decideReparentAction,
   staleRunMarkerBody,
@@ -3178,13 +3178,14 @@ export function dispatchRunRefreezeRequest(input: { runId?: string }): RunRefree
  *  and resolving a handle to one would land mail nobody reads. */
 export function dispatchResolveHandleRequest(): {
   ok: boolean;
-  workspaces: Array<{ id: string; name: string }>;
+  workspaces: Array<{ id: string; name: string; runId: string }>;
 } {
   return {
     ok: true,
     workspaces: store.workspaces
       .filter((w) => !w.archived)
-      .map((w) => ({ id: w.id, name: w.name })),
+      // #221: `runId` lets the store-less CLI prove a `send --to` recipient reachable.
+      .map((w) => ({ id: w.id, name: w.name, runId: resolveWaveRunId(w) })),
   };
 }
 
@@ -3352,8 +3353,12 @@ export async function dispatchMessageRequest(
   // Electron/store chain; here we only resolve its two inputs.
   const targetForGate = store.getWorkspace(input.to);
   const db = getBus();
+  // #221: a run-less parent that gained a mission run is a plain own-anchor, not a coordinator —
+  // its non-member children have no bus route to it, so `message` stays open exactly as on master.
   const targetDeliveryOn =
-    !!targetForGate && !!db
+    !!targetForGate &&
+    !!db &&
+    !isPlainOwnAnchor(targetForGate, (id) => store.getWorkspace(id))
       ? busSwitch(db, resolveWaveRunId(targetForGate), 'delivery')
       : false;
   const gate = decideMessageChannel({

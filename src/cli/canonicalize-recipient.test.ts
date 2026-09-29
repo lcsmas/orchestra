@@ -61,10 +61,30 @@ test('#144 offline: a missing/unreadable store yields [] (send then refuses, nev
   assert.equal(resolveHandle('0a5c25bb', offlineHandleCandidates()).ok, false);
 });
 
+test('#221 offline: each candidate carries its wave run (nearest orchestrator, else itself)', (t) => {
+  const ORCH = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const MEMBER = 'bbbbbbbb-0000-4000-8000-000000000002';
+  const PLAIN_PARENT = 'cccccccc-0000-4000-8000-000000000003';
+  const PLAIN_CHILD = 'dddddddd-0000-4000-8000-000000000004';
+  withStore(t, [
+    { id: ORCH, name: 'o', kind: 'worktree', canOrchestrate: true },
+    { id: MEMBER, name: 'm', kind: 'worktree', parentId: ORCH },
+    { id: PLAIN_PARENT, name: 'p', kind: 'worktree' },
+    { id: PLAIN_CHILD, name: 'c', kind: 'worktree', parentId: PLAIN_PARENT },
+  ]);
+  const runOf = Object.fromEntries(offlineHandleCandidates().map((c) => [c.id, c.runId]));
+  assert.deepEqual(runOf, {
+    [ORCH]: ORCH,
+    [MEMBER]: ORCH, // a member anchors on its orchestrator
+    [PLAIN_PARENT]: PLAIN_PARENT,
+    [PLAIN_CHILD]: PLAIN_CHILD, // a plain parent is NOT an anchor for its child
+  });
+});
+
 test('#144 offline: malformed records are dropped, not crashed on', (t) => {
   withStore(t, [{ name: 'no-id' }, { id: 42 }, { id: FULL, name: 'ok' }]);
   const cands = offlineHandleCandidates();
-  assert.deepEqual(cands, [{ id: FULL, name: 'ok' }]);
+  assert.deepEqual(cands, [{ id: FULL, name: 'ok', runId: FULL }]);
 });
 
 // ─── REVIEW-144 F1 — offline must EXCLUDE archived, matching the online path ──
@@ -80,7 +100,7 @@ test('#144 F1: offline candidates EXCLUDE archived workspaces (online parity)', 
   const cands = offlineHandleCandidates();
   // MUTANT: drop the `w.archived !== true` filter → the archived id is a
   // candidate, and both repro cases below flip.
-  assert.deepEqual(cands, [{ id: LIVE, name: 'live' }], 'only the live workspace');
+  assert.deepEqual(cands, [{ id: LIVE, name: 'live', runId: LIVE }], 'only the live workspace');
 });
 
 test('#144 F1 repro A: a prefix hitting 1 live + 1 archived resolves to the LIVE id (not a false refusal)', (t) => {

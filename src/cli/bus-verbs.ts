@@ -424,6 +424,8 @@ function runMutation<T>(
 export interface SendArgs {
   kind?: string;
   to?: string | null;
+  /** #221 — the recipient's wave run id (store-derived, see `assertRecipientReachable`). */
+  toRunId?: string | null;
   thread?: string | null;
   body: string;
   /** #129 — the capability token a `worker_done` completion carries, minted by
@@ -483,12 +485,31 @@ export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done'];
  * possibly freshly spawned with no cursor yet) is NOT judged — the bus alone
  * cannot prove membership either way, so that case stays permissive.
  * `human` is a #161 surface, not a workspace: skipped.
+ *
+ * #221 — `toRunId` (the recipient's wave run, from the store via `/resolveHandle`) proves the
+ * case the bus cannot: `toRunId === to` means the recipient is its OWN anchor (no orchestrator
+ * above it), so with no row it is a standalone plain workspace — same reachability rule.
+ * Absent (older app) or ≠ `to` (a member of another run) → not judged, as before.
  */
-function assertRecipientReachable(ctx: BusVerbCtx, verb: string, to: string): void {
+function assertRecipientReachable(
+  ctx: BusVerbCtx,
+  verb: string,
+  to: string,
+  toRunId?: string | null,
+): void {
   if (to === 'human') return;
-  if (!ctx.bus.getRun(ctx.db, to)) return; // plain member — not provable, allow
+  const anchored = !!ctx.bus.getRun(ctx.db, to);
+  if (!anchored && toRunId !== to) return; // plain member — not provable, allow
   const related = ctx.bus.getRelatedRunIds(ctx.db, to).ids;
   if (!related.includes(ctx.id.runId)) {
+    if (!anchored) {
+      ctx.fail(
+        `orchestra ${verb}: --to ${to} is a plain workspace outside run ${ctx.id.runId} — ` +
+          `it anchors no run and is nobody's member, so nothing would ever wake it or ` +
+          `surface this message (#221). Nothing was written. Reach it with ` +
+          `orchestra message ${to} "<text>"`,
+      );
+    }
     ctx.fail(
       `orchestra ${verb}: --to ${to} is unreachable in run ${ctx.id.runId} — ` +
         `that recipient anchors its own run and only reads runs related to it, ` +
@@ -508,7 +529,7 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   }
   if (!a.body.trim()) ctx.fail('orchestra send: the message body is empty');
   // #175 — refuse a provably-undeliverable cross-run --to BEFORE any write.
-  if (a.to) assertRecipientReachable(ctx, 'send', a.to);
+  if (a.to) assertRecipientReachable(ctx, 'send', a.to, a.toRunId);
 
   // #129 — capability verification BEFORE the write, so a rejected (fired)
   // completion never lands at all. Independent of #128's fence: fencing gates on

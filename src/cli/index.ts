@@ -33,6 +33,7 @@ import {
   switchStateWord,
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
+import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
 import {
   commandHelp,
   isHelpFlag,
@@ -755,9 +756,28 @@ export function offlineHandleCandidates(): HandleCandidate[] {
   try {
     const raw = fs.readFileSync(file, 'utf8');
     const parsed = JSON.parse(raw) as {
-      workspaces?: Array<{ id?: unknown; name?: unknown; archived?: unknown }>;
+      workspaces?: Array<{
+        id?: unknown;
+        name?: unknown;
+        archived?: unknown;
+        parentId?: unknown;
+        kind?: unknown;
+        canOrchestrate?: unknown;
+      }>;
     };
     const ws = Array.isArray(parsed.workspaces) ? parsed.workspaces : [];
+    // #221 — the recipient's wave run (nearest orchestrator, else itself) from the persisted
+    // records, so the offline path proves reachability like the socket path does.
+    const nodes = new Map<string, WaveNode>();
+    for (const w of ws) {
+      if (typeof w.id !== 'string' || !w.id) continue;
+      nodes.set(w.id, {
+        id: w.id,
+        parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
+        kind: typeof w.kind === 'string' ? w.kind : undefined,
+        canOrchestrate: w.canOrchestrate === true,
+      });
+    }
     return ws
       // EXCLUDE archived, to MATCH the online path (REVIEW-144 F1): the socket
       // `dispatchResolveHandleRequest` filters `!w.archived`. Without the same
@@ -770,7 +790,11 @@ export function offlineHandleCandidates(): HandleCandidate[] {
         (w) =>
           typeof w.id === 'string' && (w.id as string).length > 0 && w.archived !== true,
       )
-      .map((w) => ({ id: w.id as string, name: typeof w.name === 'string' ? (w.name as string) : '' }));
+      .map((w) => ({
+        id: w.id as string,
+        name: typeof w.name === 'string' ? (w.name as string) : '',
+        runId: nearestOrchestratorId(nodes.get(w.id as string)!, (id) => nodes.get(id)),
+      }));
   } catch {
     return [];
   }
@@ -783,15 +807,16 @@ export function offlineHandleCandidates(): HandleCandidate[] {
  *  refusal (ambiguous/unknown) goes through `fail()` — never silently through,
  *  because a silent short handle is exactly the canary defect. Returns the full
  *  id on success. */
-async function canonicalizeRecipientOrFail(to: string): Promise<string> {
+async function canonicalizeRecipientOrFail(
+  to: string,
+): Promise<{ id: string; runId: string | null }> {
   let candidates: HandleCandidate[];
   try {
     const res = await request('/resolveHandle', {});
     if (res.ok && Array.isArray(res.workspaces)) {
-      candidates = (res.workspaces as Array<{ id: string; name?: string }>).map((w) => ({
-        id: w.id,
-        name: w.name ?? '',
-      }));
+      candidates = (res.workspaces as Array<{ id: string; name?: string; runId?: string }>).map(
+        (w) => ({ id: w.id, name: w.name ?? '', runId: w.runId }),
+      );
     } else {
       // App answered but without the route (older build) → fall back to disk so
       // canonicalization still happens rather than landing a raw handle.
@@ -804,7 +829,8 @@ async function canonicalizeRecipientOrFail(to: string): Promise<string> {
   }
   const resolved = resolveHandle(to, candidates);
   if (!resolved.ok) fail(resolved.error);
-  return (resolved as { ok: true; id: string }).id;
+  const id = (resolved as { ok: true; id: string }).id;
+  return { id, runId: candidates.find((c) => c.id === id)?.runId ?? null };
 }
 
 /** Bind a bus verb to this process's stdout and this file's `fail()`.
@@ -1576,7 +1602,8 @@ async function main(argv: string[]): Promise<void> {
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
         verbSend(busCtx(db, bus, id, fencing, capMod), {
           kind: t.value,
-          to: canonTo,
+          to: canonTo?.id ?? null,
+          toRunId: canonTo?.runId ?? null,
           thread: th.value ?? null,
           cap: capf.value ?? null,
           requestId: reqId.value ?? null,

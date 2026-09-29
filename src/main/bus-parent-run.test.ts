@@ -30,6 +30,7 @@ import {
   type BusRunAnchorDeps,
 } from './bus-run-anchor.ts';
 import {
+  isPlainOwnAnchor,
   nearestOrchestratorId,
   nodeOrchestrates,
   parentOrchestratorId,
@@ -58,6 +59,7 @@ const OPS = '22222222-2221-4000-8000-00000000a502'; // its child, promoted
 const OPS2 = '33333333-2221-4000-8000-00000000a503'; // a second child promoted later
 const GRAND = '44444444-2221-4000-8000-00000000a504'; // an orchestrator ABOVE the parent
 const MEMBER = '55555555-2221-4000-8000-00000000a505'; // a plain member under OPS
+const WORKER = '66666666-2221-4000-8000-00000000a506'; // a plain direct child of the LEAD, NOT promoted
 
 const ALL_ON: BusSwitches = {
   delivery: true,
@@ -435,12 +437,14 @@ function cli(w: World, from: string, args: string[]): Cli {
 }
 
 /** The offline handle store the CLI resolves `--to` against (no app in the rig). */
-function seedStore(w: World, ids: string[]): void {
+function seedStore(w: World): void {
   const dir = path.join(w.home, 'userData', 'orchestra');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'store.json'),
-    JSON.stringify({ workspaces: ids.map((id) => ({ id, name: `ws-${id.slice(0, 4)}` })) }),
+    JSON.stringify({
+      workspaces: [...w.tree.nodes.values()].map((n) => ({ ...n, name: `ws-${n.id.slice(0, 4)}` })),
+    }),
   );
 }
 
@@ -498,7 +502,7 @@ async function fieldWorld(t: After, topology: Topology): Promise<World> {
   const w = world(t, topology);
   fieldTree(w);
   w.promote(OPS);
-  seedStore(w, [LEAD, OPS]);
+  seedStore(w);
   // Positive control: the CLI opens THIS home's bus (an unreadable bus fails `check`).
   const probe = cli(w, OPS, ['check']);
   assert.equal(probe.code, 0, `check must run in the isolated home: ${probe.stderr}`);
@@ -535,14 +539,140 @@ test('#221 E2E OLD topology (failing control) — LEAD→OPS is REFUSED: the LEA
   assert.equal(x.read, '', 'and nothing is read');
 });
 
-test('#221 E2E OLD topology (failing control) — OPS→LEAD is ACCEPTED into a run the LEAD is never woken for: never read', async (t) => {
+test('#221 E2E OLD topology (failing control) — OPS→LEAD is refused loudly (unreachable): nothing written, LEAD never woken', async (t) => {
   const w = await fieldWorld(t, 'old');
   const x = await exchange(w, OPS, LEAD, 'mail-ops-to-lead');
-  assert.equal(x.send.code, 0, 'the send is accepted (this is the silent-loss shape)');
-  assert.equal(x.rows, 1, 'the row landed');
-  assert.equal(x.woken, false, 'but the LEAD is never woken');
-  assert.equal(x.read, '', 'so nobody tells it which run to check — the mail is never read');
+  // Pre-F1(b) this send was ACCEPTED into a run the LEAD is never woken for (silent loss).
+  assert.equal(x.send.code, 1, 'refused by the store-aware reachability guard');
+  assert.match(x.send.stderr, /plain workspace outside run/);
+  assert.equal(x.rows, 0);
+  assert.equal(x.woken, false, 'the LEAD is never woken');
+  assert.equal(x.read, '', 'and reads nothing');
   assert.equal(busWakeCounters().fired, 0);
+});
+
+// ── 7b. F1 (OPS ruling): the plain parent LOSES NOTHING ─────────────────────────
+test('#221 F1(b) the LEAD → a plain NON-member child `send` fails LOUDLY (never rc 0 + a row nobody can read)', async (t) => {
+  const w = world(t, 'new');
+  fieldTree(w);
+  w.tree.add({ id: WORKER, kind: 'worktree', parentId: LEAD });
+  w.tree.add({ id: MEMBER, kind: 'worktree', parentId: OPS });
+  w.promote(OPS);
+  seedStore(w);
+  const wakes = armWake(w, [LEAD, OPS, WORKER, MEMBER]);
+  const rows0 = messageCount(w);
+  const lost = cli(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'mail-lead-to-worker']);
+  assert.equal(lost.code, 1, `refused, not silently accepted: rc ${lost.code} ${lost.stdout}`);
+  assert.match(lost.stderr, /outside this run|anchors no run/, 'names the cause');
+  assert.match(lost.stderr, /orchestra message/, 'names the channel that DOES reach a plain workspace');
+  assert.equal(messageCount(w) - rows0, 0, 'nothing written');
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, 'and nobody woken');
+  // Controls: a MEMBER of the OPS run (row-less, but related) and the OPS itself stay deliverable.
+  const toMember = cli(w, LEAD, ['send', '--type', 'status', '--to', MEMBER, 'mail-lead-to-member']);
+  assert.equal(toMember.code, 0, `member of a related run is unchanged: ${toMember.stderr}`);
+  const toOps = cli(w, LEAD, ['send', '--type', 'status', '--to', OPS, 'mail-lead-to-ops']);
+  assert.equal(toOps.code, 0, `the promoted child is unchanged: ${toOps.stderr}`);
+  assert.equal(messageCount(w) - rows0, 2, 'exactly the two deliverable sends landed');
+});
+
+test('#221 F1(a) the plain child → LEAD `send` is refused loudly exactly as on master (its own run has no row)', (t) => {
+  const w = world(t, 'new');
+  fieldTree(w);
+  w.tree.add({ id: WORKER, kind: 'worktree', parentId: LEAD });
+  w.promote(OPS);
+  seedStore(w);
+  const rows0 = messageCount(w);
+  const r = cli(w, WORKER, ['send', '--type', 'status', '--to', LEAD, 'mail-worker-to-lead']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /has no row in the bus 'runs' table/);
+  assert.equal(messageCount(w) - rows0, 0);
+});
+
+test('#221 isPlainOwnAnchor — a run-less parent is one; an orchestrator, a member and a promoted child are not', (t) => {
+  const w = world(t, 'new');
+  fieldTree(w);
+  w.tree.add({ id: MEMBER, kind: 'worktree', parentId: OPS });
+  w.promote(OPS);
+  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(LEAD)!, w.tree.lookup), true, 'the LEAD (plain, own anchor)');
+  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(OPS)!, w.tree.lookup), false, 'the promoted OPS orchestrates');
+  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(MEMBER)!, w.tree.lookup), false, 'a member anchors on its OPS');
+  w.tree.add({ id: GRAND, kind: 'orchestrator' });
+  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(GRAND)!, w.tree.lookup), false, 'an orchestrator-kind node');
+});
+
+// ── 7c. F2 / F3 (review): pin the direct-parent choice and the probe fail-direction ─
+test('#221 F2 GRAND(plain) → LEAD(plain) → OPS: the DIRECT parent gets the row, the topmost ancestor none', (t) => {
+  const w = world(t, 'new');
+  w.tree.add({ id: GRAND, kind: 'worktree' });
+  w.tree.add({ id: LEAD, kind: 'worktree', parentId: GRAND });
+  w.tree.add({ id: OPS, kind: 'worktree', parentId: LEAD });
+  w.promote(OPS);
+  assert.deepEqual(w.runs(), [
+    { id: LEAD, kind: 'mission', coordinator: LEAD, parent: null },
+    { id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD },
+  ]);
+});
+
+test('#221 F3 a THROWING run-row probe falls to the SAFE direction: implicit parent row created, no dangling pointer', (t) => {
+  // getRun throws ONLY for the parent id (the probe's question); the child-row check still works.
+  const w = world(t, 'new', {
+    getRun: (db, id) => {
+      if (id === LEAD) throw new Error('probe boom');
+      return getRun(db, id);
+    },
+  });
+  fieldTree(w);
+  w.promote(OPS);
+  assert.deepEqual(w.runs(), [
+    { id: LEAD, kind: 'mission', coordinator: LEAD, parent: null },
+    { id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD },
+  ]);
+});
+
+test('#221 F3 runAnchorProbe answers FALSE for no bus, a throwing bus getter and a throwing read', () => {
+  const base: BusRunAnchorDeps = {
+    getBus: () => null,
+    startRun,
+    getRun,
+    refreezeRun,
+    getLiveSwitches: () => ALL_ON,
+    warn: () => {},
+  };
+  assert.equal(runAnchorProbe(base)('x'), false, 'no bus');
+  assert.equal(
+    runAnchorProbe({
+      ...base,
+      getBus: () => {
+        throw new Error('bus boom');
+      },
+    })('x'),
+    false,
+    'throwing getBus',
+  );
+  assert.equal(
+    runAnchorProbe({
+      ...base,
+      getBus: () => ({}) as BusDb,
+      getRun: () => {
+        throw new Error('read boom');
+      },
+    })('x'),
+    false,
+    'throwing read',
+  );
+  // Positive control: a real row reads TRUE, an absent one FALSE.
+  const dir = fs.mkdtempSync(path.join(os.homedir(), '.orchestra-a5-probe-'));
+  const db = openBus(path.join(dir, 'bus.sqlite'));
+  try {
+    startRun(db, { id: 'anchored', kind: 'mission', coordinator: 'anchored' }, ALL_ON);
+    const p = runAnchorProbe({ ...base, getBus: () => db });
+    assert.equal(p('anchored'), true);
+    assert.equal(p('absent'), false);
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── 8. Wiring: the seam in un-importable workspaces.ts ──────────────────────────
@@ -555,4 +685,25 @@ test('#221 wiring — resolveAnchorInfo hands computeAnchorInfo the store lookup
     body,
     /computeAnchorInfo\(\s*ws,\s*\(id\) => store\.getWorkspace\(id\),\s*runAnchorProbe\(busRunAnchorDeps\),?\s*\)/,
   );
+});
+
+test('#221 wiring — the P4 gate, /resolveHandle and the CLI send carry the F1 fixes', () => {
+  const ws = fs.readFileSync(path.join(here, 'workspaces.ts'), 'utf8');
+  const cliSrc = fs.readFileSync(path.join(here, '..', 'cli', 'index.ts'), 'utf8');
+  const fn = (src: string, decl: string): string => {
+    const i = src.indexOf(decl);
+    assert.ok(i > 0, `${decl} not found`);
+    return src.slice(i, src.indexOf('\n}\n', i));
+  };
+  assert.match(
+    fn(ws, 'export async function dispatchMessageRequest('),
+    /!isPlainOwnAnchor\(targetForGate,/,
+    'P4 gate exempts a plain own-anchor',
+  );
+  assert.match(
+    fn(ws, 'export function dispatchResolveHandleRequest('),
+    /runId: resolveWaveRunId\(w\)/,
+    '/resolveHandle carries the wave run',
+  );
+  assert.match(cliSrc, /toRunId: canonTo\?\.runId \?\? null/, 'CLI send passes the recipient wave run');
 });

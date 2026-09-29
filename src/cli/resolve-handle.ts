@@ -17,6 +17,8 @@
 export interface HandleCandidate {
   id: string;
   name: string;
+  /** #221 — the workspace's bus wave run (nearest orchestrator, else itself), when known. */
+  runId?: string;
 }
 
 export type ResolveHandleResult =
