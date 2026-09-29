@@ -228,6 +228,26 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Pids whose argv runs `file` (Linux /proc; elsewhere nothing — the leak was measured here). */
+function pidsRunning(file: string): number[] {
+  const out: number[] = [];
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (!/^\d+$/.test(e)) continue;
+    try {
+      if (fs.readFileSync(`/proc/${e}/cmdline`, 'utf8').split('\0').includes(file)) out.push(Number(e));
+    } catch {
+      /* gone */
+    }
+  }
+  return out;
+}
+
 after(() => {
   // Belt-and-braces: kill any keeper the tests leaked, then rm temp dirs.
   for (const ctx of ctxs) {
@@ -235,6 +255,15 @@ after(() => {
       process.kill(pidOf(ctx), 'SIGKILL');
     } catch {
       /* already gone */
+    }
+    // Also the fake CLI: SIGTERM_IGNORING_CLI never exits on its own, and killing its
+    // keeper orphans it forever (588 leaked processes / 10 GB measured 2026-09-30).
+    for (const pid of pidsRunning(ctx.fakeCli)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
     }
     try {
       fs.rmSync(ctx.dir, { recursive: true, force: true });
