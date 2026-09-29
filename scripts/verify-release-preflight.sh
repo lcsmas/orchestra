@@ -159,6 +159,7 @@ PKG
   # release.sh sources scripts/release-preflight.sh via the repo toplevel — copy both.
   cp "$RELEASE_SH" scripts/release.sh
   cp "$(dirname "$RELEASE_SH")/release-preflight.sh" scripts/release-preflight.sh
+  cp "$(dirname "$RELEASE_SH")/release-gate.sh" scripts/release-gate.sh
   git add -A; git commit -qm init
   # origin that cannot be fetched → the preflight's fetch fails.
   git remote add origin "$F3_TMP/nonexistent-remote.git"
@@ -202,6 +203,7 @@ PKG
   mkdir -p scripts
   cp "$RELEASE_SH" scripts/release.sh
   cp "$(dirname "$RELEASE_SH")/release-preflight.sh" scripts/release-preflight.sh
+  cp "$(dirname "$RELEASE_SH")/release-gate.sh" scripts/release-gate.sh
   git add -A; git commit -qm "T: base"      # commit T
   git branch -M master
   git tag v0.5.270                            # tag == T

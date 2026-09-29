@@ -36,19 +36,15 @@ documents every flag (`--to-master`, `--install`, `--notes-file`, `--dry-run`,
    `git merge-base --is-ancestor origin/master HEAD` exits 0. If a conflict
    can't be resolved cleanly, stop and surface it to the user.
 
-3. **Verify the build before releasing.** The release script runs the real
-   build, but only *after* the version bump — and it never runs typecheck or
-   tests. Catch failures now, while they're free to fix:
-
-   ```bash
-   [ -d node_modules ] || pnpm install
-   npx tsc --noEmit && pnpm test
-   ```
-
-   Done when both commands exit 0. On a failure, stop and report it — tagging
-   waits for a green typecheck and suite. (The release script builds the
-   AppImage itself and aborts if that fails, so a separate `pnpm run build`
-   adds nothing here.)
+3. **Typecheck now; the release gate runs the full suite.** Run
+   `[ -d node_modules ] || pnpm install` and `npx tsc --noEmit` (~5 s) now, so a
+   type error surfaces before the UI and perf steps. Do NOT run the suite:
+   `release.sh` runs `tsc`, then `pnpm run test` (0 fail, **0 skipped**), then
+   `pnpm run build:bus-abi` itself, before anything is tagged or pushed (#207;
+   `scripts/release-gate.sh`). A refusal names the failed check and leaves the
+   repo untouched: fix it and re-run step 7. The gate is bypassable only with
+   `--skip-release-gate "<reason>"`, recorded in the notes, the bump commit and
+   the tag — never use it to get past a red suite.
 
 4. **Drive the changed UI surface — state AND pixels.** Typecheck and tests are
    structurally blind to the defects that actually reach users: a composition
@@ -171,8 +167,8 @@ documents every flag (`--to-master`, `--install`, `--notes-file`, `--dry-run`,
 - Flag semantics (`--to-master`, `--install`, `--notes-file`, `--dry-run`,
   `--ci-only`) live in the header comment of `scripts/release.sh`. Read them
   there.
-- The script preflights gh auth, a clean tree, branch-up-to-date, and that
-  `origin/master` fast-forwards to HEAD. Each of those aborts before anything is
+- The script preflights gh auth, a clean tree, branch-up-to-date, that
+  `origin/master` fast-forwards to HEAD, and then the tsc + full-suite gate. Each of those aborts before anything is
   tagged or pushed, so a failure at this stage is safe to read and fix — and a
   "not an ancestor" rejection is usually just a sibling agent having moved
   master mid-run: re-run `git fetch origin && git rebase origin/master` and

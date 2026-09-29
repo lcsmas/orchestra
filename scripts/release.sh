@@ -16,6 +16,7 @@
 #   pnpm run release patch --to-master # also land the release on master (see below)
 #   pnpm run release patch --install   # also install the local build to the launcher (see below)
 #   pnpm run release patch --notes-file NOTES.md  # use NOTES.md as the release description (see below)
+#   pnpm run release patch --skip-release-gate "why"  # bypass tsc + test gate, recorded in the notes
 #
 # --notes-file FILE: use FILE's contents as the GitHub release description (body)
 # instead of gh's auto-generated commit list. The release title stays the tag.
@@ -52,6 +53,10 @@
 #   2. Pushes tag (triggers GitHub Actions)
 #   3. GitHub Actions creates release with x64 and arm64 AppImages
 #
+# RELEASE GATE (#207): before any tag/push the tree must pass `npx tsc --noEmit` and the full
+# suite (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build. Escape hatch:
+# --skip-release-gate "<reason>" (mandatory, appended to the release notes; not with --ci-only).
+#
 # Requirements: a clean working tree on a non-detached branch, up to date with
 # its own remote, and an authenticated gh CLI.
 
@@ -64,9 +69,17 @@ TO_MASTER=0
 INSTALL=0
 NOTES_FILE=""
 expect_notes_file=0
+SKIP_GATE=0
+SKIP_GATE_REASON=""
+expect_skip_reason=0
 for arg in "$@"; do
   if [ "$expect_notes_file" = 1 ]; then
     NOTES_FILE="$arg"; expect_notes_file=0; continue
+  fi
+  if [ "$expect_skip_reason" = 1 ]; then
+    expect_skip_reason=0
+    # A flag-looking token is a missing reason, not the reason: fall through to parse it.
+    case "$arg" in --*) ;; *) SKIP_GATE_REASON="$arg"; continue ;; esac
   fi
   case "$arg" in
     patch|minor|major) BUMP="$arg" ;;
@@ -76,11 +89,29 @@ for arg in "$@"; do
     --install) INSTALL=1 ;;
     --notes-file) expect_notes_file=1 ;;
     --notes-file=*) NOTES_FILE="${arg#--notes-file=}" ;;
+    --skip-release-gate) SKIP_GATE=1; expect_skip_reason=1 ;;
+    --skip-release-gate=*) SKIP_GATE=1; SKIP_GATE_REASON="${arg#--skip-release-gate=}" ;;
     [0-9]*.[0-9]*.[0-9]*) BUMP="$arg" ;;
     *) echo "error: unknown argument '$arg'" >&2; exit 2 ;;
   esac
 done
 [ "$expect_notes_file" = 0 ] || { echo "error: --notes-file requires a path argument" >&2; exit 2; }
+
+if [ "$SKIP_GATE" = 1 ]; then
+  if [ -z "$(printf '%s' "$SKIP_GATE_REASON" | tr -d '[:space:]')" ]; then
+    echo "error: --skip-release-gate: a non-empty reason is required (it is recorded in the release notes)" >&2
+    exit 2
+  fi
+  _r="${SKIP_GATE_REASON#"${SKIP_GATE_REASON%%[![:space:]]*}"}"; _r="${_r%"${_r##*[![:space:]]}"}"
+  if [[ "$_r" =~ ^(patch|minor|major|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    echo "error: --skip-release-gate '$_r' is a version bump, not a reason (give the reason first: --skip-release-gate \"why\" $_r)" >&2
+    exit 2
+  fi
+  if [ "$CI_ONLY" = 1 ]; then
+    echo "error: --skip-release-gate can't be combined with --ci-only (CI writes the release notes, so the bypass could not be recorded there)" >&2
+    exit 2
+  fi
+fi
 
 if [ "$INSTALL" = 1 ] && [ "$CI_ONLY" = 1 ]; then
   echo "error: --install needs the local build, so it can't be combined with --ci-only" >&2
@@ -101,6 +132,9 @@ cd "$(git rev-parse --show-toplevel)"
 # exercise them without driving a real release (issue #78, T78.1/T78.2).
 # shellcheck source=scripts/release-preflight.sh
 . "$(git rev-parse --show-toplevel)/scripts/release-preflight.sh"
+# The #207 release gate (typecheck + full suite + native-ABI prep) lives in a library too.
+# shellcheck source=scripts/release-gate.sh
+. "$(git rev-parse --show-toplevel)/scripts/release-gate.sh"
 
 say()  { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 # In dry-run, mutating steps are printed instead of run.
@@ -225,6 +259,7 @@ gh auth status >/dev/null 2>&1 || { echo "error: gh CLI not authenticated — ru
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$BRANCH" != "HEAD" ] || { echo "error: detached HEAD — checkout a branch first" >&2; exit 1; }
 
+git update-index -q --refresh 2>/dev/null || true   # an mtime-only touch is not dirt
 git diff-index --quiet HEAD -- || { echo "error: working tree is dirty — commit or stash first" >&2; exit 1; }
 
 # Don't tag a branch that's behind its own remote — you'd ship stale code.
@@ -354,6 +389,22 @@ rp_next_version_free "$TAG" || {
 
 say "Releasing $CURRENT → $NEW  (tag $TAG)"
 
+# ------------------------------------------------------ release gate (#207) ---
+# After every cheap refusal, BEFORE the first mutation; order tsc -> test -> build:bus-abi -> bump -> build.
+say "Release gate (#207): typecheck + full suite on this tree"
+if [ "$DRY_RUN" = 1 ]; then
+  printf '  [dry-run] release gate: npx tsc --noEmit -> pnpm run test (0 fail, 0 skipped)%s\n' \
+    "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
+elif [ "$SKIP_GATE" = 1 ]; then
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc and the full suite were NOT run. Reason: %s\n' "$SKIP_GATE_REASON" >&2
+  echo "  (this is recorded in the release notes)" >&2
+else
+  rg_run_gate || exit 1
+fi
+if [ "$CI_ONLY" = 0 ]; then
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] pnpm run build:bus-abi\n'; else rg_prepare_native || exit 1; fi
+fi
+
 # ------------------------------------------------- advance master (pre-bump) ---
 # Fast-forward origin/master up to HEAD without checking it out (safe inside a
 # worktree). FF-safety was already verified in preflight. The post-bump push
@@ -365,7 +416,10 @@ fi
 
 # ------------------------------------------------------- bump + commit + tag ---
 say "Bump version, commit, tag"
-run "pnpm version '$NEW' --message 'chore: bump version to %s'"
+BUMP_MSG='chore: bump version to %s'
+# A bypass is stamped on the bump commit AND the tag (npm reuses --message), not only the release notes.
+[ "$SKIP_GATE" != 1 ] || BUMP_MSG="$BUMP_MSG [release gate bypassed: $(printf '%s' "$SKIP_GATE_REASON" | tr -s '[:space:]' ' ' | tr -d '%')]"
+run "pnpm version '$NEW' --message $(printf '%q' "$BUMP_MSG")"
 
 # The bump rewrites package.json — verify it survived before we build and ship
 # from it (issue #40). Aborting here costs a `git reset`; shipping stripped
@@ -438,7 +492,13 @@ if [ "$CI_ONLY" = 0 ]; then
   # electron-builder also emits the auto-update manifest; ship it if present.
   [ -f release/latest-linux.yml ] && ASSETS="$ASSETS release/latest-linux.yml"
   # Use a hand-written description if given, else fall back to gh's commit list.
-  if [ -n "$NOTES_FILE" ]; then
+  # #207: a gate bypass is appended to a COPY of the notes (gh prepends a supplied body to generated ones).
+  if [ "$SKIP_GATE" = 1 ] && [ "$DRY_RUN" != 1 ]; then
+    GATE_NOTES="$(mktemp "${TMPDIR:-/tmp}/release-notes.XXXXXX")"
+    { [ -z "$NOTES_FILE" ] || cat "$NOTES_FILE"; rg_bypass_record "$SKIP_GATE_REASON"; } > "$GATE_NOTES"
+    if [ -n "$NOTES_FILE" ]; then NOTES_OPT="--notes-file '$GATE_NOTES'"
+    else NOTES_OPT="--generate-notes --notes-file '$GATE_NOTES'"; fi
+  elif [ -n "$NOTES_FILE" ]; then
     NOTES_OPT="--notes-file '$NOTES_FILE'"
   else
     NOTES_OPT="--generate-notes"

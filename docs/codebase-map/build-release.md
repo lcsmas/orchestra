@@ -99,13 +99,13 @@ resolution).
 **Worktree-safe** (never checks out master). Invoke via
 `pnpm run release [patch|minor|major|X.Y.Z] [flags]`.
 
-Preflight (fails before any mutation): `gh auth status`; not detached HEAD;
+Preflight (fails before any mutation; the #207 gate below is the last of them): `gh auth status`; not detached HEAD;
 clean tree; branch not behind `origin/<branch>`; for `--to-master`, that
 `origin/master` fast-forwards to HEAD; for `--install`, resolvable destination.
 
-**Tag-vs-master preflight (issue #78, `release.sh:310`, after the version is
+**Tag-vs-master preflight (issue #78, the `rp_two_way_discriminator` call in `release.sh`, after the version is
 computed and before the bump).** The bare `git rev-parse "$TAG"` check
-(`release.sh:296`) only sees the LOCAL tag namespace; the "3rd race shape" (stale
+(the `git rev-parse "$TAG"` check) only sees the LOCAL tag namespace; the "3rd race shape" (stale
 `package.json` version + an ORIGIN tag that does not contain the work being
 released) fired on v0.5.257/260/261. `release.sh` `git fetch origin master --tags`
 (FAILS CLOSED on a non-dry-run fetch failure — a no-network release can't push a
@@ -137,6 +137,33 @@ control mutates the call site HEAD→origin/master and requires it to REFUSE —
 the arm depends on the shipped call site's ref, not just the library), and a
 mutation of the refuse condition — with stubbed ls-remote/gh, never driving a real
 release. The preflight is read-only, so it runs under `--dry-run` too.
+
+**Release gate (issue #207, `scripts/release-gate.sh`, sourced by `release.sh`).**
+Runs after every cheap preflight and BEFORE the first mutation (`--to-master`
+push, bump, tag), once per release: tree == HEAD (tracked files unchanged after a
+`git update-index --refresh`, **no untracked non-ignored files** — a tag carries
+neither) → `npx tsc --noEmit` → `pnpm run test` → the same tree check again →
+(local build only) `pnpm run build:bus-abi`. The test step reads node's summary
+(`# tests|pass|fail|cancelled|skipped|todo`, TAP or spec) and refuses on rc≠0,
+any fail/cancelled, **any skipped or todo**, zero tests, `tests != pass`, or a
+summary missing `tests|pass|fail|skipped` (fails closed). Refusals are
+`release-gate: REFUSED — check '<tsc|test|tree|build:bus-abi>' failed: …`, rc 1.
+Order is the native-module order: the suite leaves better-sqlite3 on node ABI 127,
+the package needs Electron's 130 (`bus.md` ABI section) — `build:bus-abi` runs
+after the suite and before `pnpm run build`, and is not a check, so it also runs
+under the bypass. The gate also runs under `--ci-only` (which just skips
+`build:bus-abi`, the build and `gh release create`). **Escape hatch:**
+`--skip-release-gate "<reason>"` (reason mandatory, not `patch|minor|major|X.Y.Z`,
+not with `--ci-only`) prints a `release-gate: BYPASSED` banner, appends a
+`## ⚠ Release gate bypassed` section (reason, tree, date) to a COPY of the notes
+handed to `gh release create` (`--notes-file`, or alongside `--generate-notes`),
+and stamps `[release gate bypassed: <reason>]` on the bump commit and tag message.
+`--dry-run` prints the plan and runs nothing. **Accepted gap:** a hand-pushed
+`v*` tag or `workflow_dispatch` still builds ungated in CI (outside the release
+path). `scripts/verify-release-gate.sh` (`pnpm run test:release-gate`) drives the
+real `release.sh` in a sandbox (local bare origin, fake `gh`, real tsc/`node
+--test`, stub build scripts) across the refusal/bypass/order/once/`--to-master`/
+`--ci-only` arms; nothing real is tagged or pushed.
 
 Then: compute version → (if `--to-master`) `git push origin HEAD:master` →
 `pnpm version` (bump+commit+tag) → (unless `--ci-only`) `pnpm run build` +

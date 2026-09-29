@@ -60,7 +60,8 @@ whole map instead of hand-editing.
   CLI regression test. **Cite the PASS count, and check `# skipped` is 0**: a
   partial green is the failure mode this hook exists to prevent.
 - Release: the **`ship` skill** drives `scripts/release.sh` (worktree-safe; never
-  checks out master). See `docs/codebase-map/build-release.md`.
+  checks out master). It refuses to tag unless `npx tsc --noEmit` and the full suite
+  (0 fail, 0 skipped) pass — the #207 gate. See `docs/codebase-map/build-release.md`.
 
 ## Conventions
 
