@@ -37,10 +37,8 @@ mkdir -p "${E2E_RIG_BASE}"
 FSTYPE="$(findmnt -no FSTYPE -T "${E2E_RIG_BASE}")"
 [[ "${FSTYPE}" != "tmpfs" ]] || { echo "ABORT: rig base ${E2E_RIG_BASE} is on tmpfs — must be btrfs under ~" >&2; exit 2; }
 export CLAUDE_CONFIG_DIR_PIN="${CFG}"   # name kept: e2e-contained-rig.sh forwards it as the child's CLAUDE_CONFIG_DIR
-# F4 retention: keep the newest 5 rig dirs (pattern e2e64c-*, this rig's own base); the driver also deletes a
-# PASSED arm's bulky state and keeps FAILED arms whole for forensics.
-PRUNE="$(find "${E2E_RIG_BASE}" -maxdepth 1 -type d -name 'e2e64c-*' -printf '%T@ %p\n' | sort -rn | tail -n +6 | cut -d' ' -f2-)"
-if [[ -n "${PRUNE}" ]]; then printf '%s\n' "${PRUNE}" | xargs -r rm -rf; echo "[avr] pruned $(printf '%s\n' "${PRUNE}" | wc -l) older rig dir(s), kept the newest 5 under ${E2E_RIG_BASE}" >&2; fi
+# Retention: the driver deletes a PASSED arm's bulky state and prunes only stale (>24 h), unreferenced e2e64c-* dirs
+# (sibling-safe; see pruneStaleRigDirs) — the wrapper itself deletes nothing.
 
 # Foreground, no inner `&`: the contained rig tears its sway down on exit.
 exec "${HERE}/e2e-contained-rig.sh" node "${HERE}/e2e-agent-view-removal.mjs" "${APP_DIR}" "$@"

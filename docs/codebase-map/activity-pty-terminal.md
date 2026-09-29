@@ -508,7 +508,7 @@ Boots a BUILT app (`<app-dir>` argument — point the SAME rig at a pre-change a
 build) under its own headless sway and reports (1) the rendered workspace tab labels
 (`.toolbar .tabs .tab` DOM) and (2) the live PTY sessions by kind (`sampleResources()`, see
 [resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (rig dir on btrfs under
-`~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`; keeps the newest 5 rig dirs); `.mjs` = driver. Run:
+`~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
 `scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
 (`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). Not covered: nvim/login PTYs.
 - **Modes** — every arm holds both expectations in `EXPECT` (`.mjs` :52): `baseline` = today
@@ -516,8 +516,8 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
   and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
   PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`. A clause
   that cannot measure in a mode prints `SKIP` (counted apart), so `clauses=` is comparable across modes.
-- **Arms** (`ARMS` :567): no-boot self-tests `guard_selftest` (isolation guard), `pixel_selftest` (PNG
-  decoder + painted-vs-blank predicate), `live_guard_selftest`, `refuse_live_handoff`, `gate_selftest`;
+- **Arms** (`ARMS` :622): no-boot self-tests `guard_selftest` (isolation guard), `pixel_selftest` (PNG
+  decoder + painted-vs-blank predicate), `live_guard_selftest`, `refuse_live_handoff`, `prune_selftest`, `gate_selftest`;
   boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`, `agent_view_content` (events
   injected via `__injectAgentEvent`, rows asserted visible, screenshot read back off disk and asserted on
   DECODED pixels of the rows' own region vs a hidden-rows blank frame, plus a `grim` capture). Every clause
@@ -525,22 +525,29 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
   pass · 1 a clause failed · 2 harness/usage).
 - **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
   target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
-  (`distFreshness` :500) REFUSES a `dist/` older than `src/` or `package.json` (`--allow-stale` overrides).
+  (`distFreshness` :532) REFUSES a `dist/` older than `src/` or `package.json`; `--allow-stale` proceeds but tallies
+  `ALLOWED-STALE` (`allowed_stale=` in `RIG-RESULT`), never a PASS.
 - **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
   account-inherit sync; under the rig's fake `HOME` its source `~/.claude` is missing, so it UNLINKS every
   inherited link / MCP server in whatever `configDir` the seeded account names — the first version pinned
   the invoker's live `~/.claude-mc` and stripped it on 46+ boots. Each boot now seeds `<home>/claude-config`
-  (stub `claude`, no login); `checkHandOff` (:287) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
+  (stub `claude`, no login); `checkHandOff` (:321) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
   / every seeded `configDir` and REFUSES (named) if any is outside the boot home or is/overlaps `~/.claude`,
-  a `~/.claude-*` sibling, the invoker's `$CLAUDE_CONFIG_DIR` or the real home (`refuse_live_handoff` proves
-  it before any launch); `liveSnapshot` (:263) asserts those dirs' inheritance surface is identical
-  before/after every boot. A later arm that needs a login must COPY `.credentials.json` into the scratch dir.
+  a `~/.claude-*` sibling, the invoker's `$CLAUDE_CONFIG_DIR` or the real home. `refuse_live_handoff` proves each
+  layer (seed-time guard, per-variable hand-off for HOME / CLAUDE_CONFIG_DIR / XDG_* / ORCHESTRA_HOME, and the
+  `accounts[]` layer alone) refuses BEFORE any launch, and forces `electron: '/bin/false'` INSIDE its boots (the
+  wrapper's `env -i` drops an ambient `E2E_ELECTRON`), so a guard regression can never start a real Electron; `liveSnapshot` (:274) asserts those dirs' inheritance surface before/after every boot;
+  `classifySnapshotChange` (:295) attributes by direction — REMOVALS FAIL (the app's failure mode), ADDITIONS-ONLY tally
+  `EXTERNAL-CHANGE` (`external_change=`; the live Orchestra re-syncing a shared dir, which a fake-HOME app cannot do),
+  identical PASSes. A later arm that needs a login must COPY `.credentials.json` into the scratch dir.
 - **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
   == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
-  tmpfs). `noAgentPty` (:550) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
+  tmpfs). `noAgentPty` (:582) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
   that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
 - **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted
-  (`app.log` + screenshots kept); a FAILED arm keeps everything for forensics.
+  (`app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:599) removes
+  only `e2e64c-<pid>` dirs older than 24 h AND unreferenced by any live process, never the invocation's own dir
+  (`prune_selftest`); the wrapper deletes nothing.
 - **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
 
