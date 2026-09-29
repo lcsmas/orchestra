@@ -38,32 +38,59 @@ Each tick (`sampleTick`, dependency-injected so the rig drives the real path):
 - appends ONE JSON line (`ResourceLogLine`) to
   `<ORCHESTRA_HOME>/logs/resources.jsonl` — totals (cores, mem total/used from
   `/proc/meminfo` MemAvailable), each Electron process (cpu+rss), each session
-  tree (cpu+rss+procCount + `present`/`status`/`reaped`). Bounded: rotate at
-  `MAX_FILE_BYTES` (50 MB, one `.1` backup) + drop a backup older than
-  `RETENTION_MS` (7 days).
+  tree (cpu+rss+procCount + `present`/`status`/`reaped`; an orphan the reaper
+  WITHHELD reads `present:false, reaped:false`). Electron cpu comes from the
+  monitor's OWN `/proc` jiffy deltas, not `app.getAppMetrics()` — that shares one
+  process-wide cursor with the page's poll, so its percent is garbage when both
+  run (review F3; residual: the monitor's call still resets the page's window).
+  **Bounded by SAMPLE age and size, not mtime** (review F4,
+  `appendResourceLogLine`): active + one `.1` backup ≤ 50 MB total
+  (`MAX_FILE_BYTES` = 25 MB each); the active file rotates once its first sample
+  is `ROTATE_AFTER_MS` (3.5 d) old and the `.1` is dropped once ITS first sample
+  passes `RETENTION_MS` (7 d) — so nothing older than 7 d survives even after an
+  idle gap. First-sample times are read from disk once, then cached in memory.
 
 **Detectors, each a log WARN with the stable prefix `resources:`**:
-- **(a) reaper — DESTRUCTIVE (`decideReap`).** A session tree whose workspace is
-  **provably absent from the store** → SIGKILL the tree + WARN. This is the
-  SAFETY NET for the leak LEAD measured (2 trees, 1.6 GB, alive for workspaces
-  deleted 14:21/14:23); the delete-leaves-session-alive **root cause is #124 D3**
-  (T3's scope), not this. Gated HARD: refuses entirely unless
-  `store.loadedFromDisk` (absence-from-store is only proof-of-deletion once
-  store.json parsed — the #187 lesson); the store is read AT KILL TIME each tick
-  (a re-created ws is never reaped on a stale snapshot); the killed pids are
-  EXACTLY the descendants of a keeper pid (`collectTree` under a keeper root), so
-  an Electron / unrelated process is never in the set; what+why is logged BEFORE
-  the kill.
+- **(a) reaper — DESTRUCTIVE (`decideReap` → `reapTargets`).** A session tree
+  whose workspace is **provably absent from the store** → SIGTERM, grace, SIGKILL
+  survivors + WARN. The SAFETY NET for the leak LEAD measured (2 trees, 1.6 GB,
+  alive for workspaces deleted 14:21/14:23); the delete-leaves-session-alive
+  **root cause is #124 D3** (T3's scope), not this. Gates, in order:
+  1. `store.loadedFromDisk` — absence-from-store is only proof-of-deletion once
+     store.json parsed (#187 lesson); the store is re-read AT KILL TIME too.
+  2. **Identity (review F1 — pid reuse).** A `<wsId>.pid` from a crash-killed
+     keeper lingers with a recycled pid and `isAlive` is `kill(pid,0)` (existence,
+     not identity), so classification alone is NOT authorization. Identity =
+     `(pid, /proc stat field 22 start-time)` captured at classification
+     (`ProcSample.startTicks`; absent on the non-Linux `ps` path → **fail closed**,
+     never reaped). At kill time `verifyReapIdentity` re-reads `/proc/<pid>/stat`
+     per member: same start-time, same ppid, parent itself still verified (chain
+     to the keeper); the ROOT must also be a real keeper — argv `…/keeper.js
+     <wsId>` (`isKeeperCmdline`, clock-free; wall-clock `startedAt` is
+     deliberately unused — `btime` shifts on clock steps, cf. the RTC +2h boot
+     step). A failing root withholds the WHOLE tree; a failing child only itself.
+  3. **SIGTERM → grace → SIGKILL.** All verified pids get SIGTERM leaf-first (the
+     keeper's own handler kills its child and unlinks `.pid/.sock`); ONE
+     `REAP_GRACE_MS` (5 s, the keeper's own SIGTERM→SIGKILL escalation); then
+     SIGKILL only survivors whose `(pid, start-time)` still match
+     (`classifySurvivors`) — a pid recycled DURING the grace is left alone.
+  Members are keeper descendants only (never Electron/unrelated); what+why is
+  logged BEFORE any signal. Residual, unclosable in Node (no pidfd): a reuse in
+  the microseconds between the fresh read and `kill(2)`, vs ~60 s pre-fix.
 - **(b) threshold advisory (`decideThresholdWarnings`).** A session tree or
   Electron process over a cpu/rss threshold → WARN only, **never kills**
   (`SESSION_RSS_WARN_BYTES` etc., all UNBASELINED named constants sized from the
   ~700 MB healthy-tree measurement). A reaped tree is excluded (its RSS is
   stale).
 
-The reaper's must-FAIL/must-PASS arms and one in-place mutant per guard clause
-live in `resource-monitor.test.ts` + the rig; the rig writes a REAL
-resources.jsonl to a temp `ORCHESTRA_HOME` and shows the line shape + reap
-decision. `agent-sdk.ts` is deliberately untouched (the #124 D3 seam is T3's).
+Gates: unit arms in `resource-monitor.test.ts` (+ real-`/proc` start-time oracle in
+`resources.test.ts`) and `scripts/verify-resource-monitor.mjs`, which drives the
+REAL `sampleTick` over a fake `/proc` WORLD that can recycle a pid between the
+sample and the kill (`afterSample`) or during the grace (`onSleep`), records the
+OCCUPANT of every signalled pid, and writes a REAL `resources.jsonl`. It also runs
+against the pre-fix build (deps carry an old-build `kill` alias) — there A3/A4
+show an unrelated process actually SIGKILLed. `agent-sdk.ts` is untouched (the
+#124 D3 seam is T3's).
 
 ## Pure logic — shared/resources.ts
 Dependency-free so `node --test` covers it without Electron:

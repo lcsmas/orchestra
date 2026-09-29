@@ -21,6 +21,10 @@ export interface ProcSample {
    *  (`ps -o pcpu` on macOS); null on Linux where the percentage is derived
    *  from cpuTicks deltas between two samples. */
   cpuPct: number | null;
+  /** /proc stat field 22 (start time, clock ticks since boot). With `pid` it is
+   *  the process's identity — a recycled pid gets a different value. Absent on
+   *  the `ps` fallback, where identity is unverifiable (#198 T8 reaper fails closed). */
+  startTicks?: number;
 }
 
 /** One process inside a session's tree, ready for display. */
@@ -117,11 +121,13 @@ export function parseProcStatLine(text: string): ProcSample | null {
   const pid = Number(text.slice(0, open).trim());
   const comm = text.slice(open + 1, close);
   // Fields after the comm, whitespace-split. rest[i] is stat field i+3:
-  // rest[0]=state, rest[1]=ppid, rest[11]=utime, rest[12]=stime, rest[21]=rss.
+  // rest[0]=state, rest[1]=ppid, rest[11]=utime, rest[12]=stime, rest[19]=starttime,
+  // rest[21]=rss.
   const rest = text.slice(close + 1).trim().split(/\s+/);
   const ppid = Number(rest[1]);
   const utime = Number(rest[11]);
   const stime = Number(rest[12]);
+  const startTicks = Number(rest[19]);
   const rssPages = Number(rest[21]);
   if (!Number.isFinite(pid) || !Number.isFinite(ppid)) return null;
   if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
@@ -132,6 +138,7 @@ export function parseProcStatLine(text: string): ProcSample | null {
     cpuTicks: utime + stime,
     memBytes: (Number.isFinite(rssPages) ? rssPages : 0) * 4096,
     cpuPct: null,
+    ...(Number.isFinite(startTicks) ? { startTicks } : {}),
   };
 }
 

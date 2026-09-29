@@ -1,26 +1,6 @@
-// Continuous resource monitor + reaper (issue #198 D11 / track T8).
-//
-// The laptop overheats the longer Orchestra runs. This module is the PURE half
-// of an always-on main-process sampler: every 60s it reads /proc (no child
-// process spawned — see src/main/resource-monitor.ts) and appends ONE JSON line
-// to <ORCHESTRA_HOME>/logs/resources.jsonl describing totals, each Electron
-// process, and EACH session tree (keeper → CLI → MCP children) keyed by
-// workspace id. It also runs two detectors, each a log WARN with the stable
-// prefix `resources:`:
-//   (a) a session tree whose workspace is ABSENT from the store → REAP (kill).
-//       The delete-leaves-session-alive ROOT CAUSE is issue #124 D3 (an sdkStop
-//       on a CLI without a first result is a no-op); this reaper is the SAFETY
-//       NET that stops a deleted workspace's ~700 MB session tree from surviving
-//       forever, not the fix.
-//   (b) a session tree or Electron process over a cpu/rss threshold → advisory
-//       WARN (never kills).
-//
-// Everything here is dependency-free (no fs, no process, no Electron) so the
-// plain `node --test` runner covers the reap DECISION and the log-line shape
-// without a real /proc or a real store. The platform I/O — reading /proc, the
-// Electron app metrics, the keeper pid files, the store, appending the file and
-// killing a reaped tree — lives in src/main/resource-monitor.ts and calls the
-// functions below.
+// Always-on resource monitor + reaper — PURE half (issue #198 T8). I/O half:
+// src/main/resource-monitor.ts; design + gates: docs/codebase-map/resources.md.
+// Dependency-free so `node --test` covers the reap DECISION without a real /proc or store.
 
 import type { ProcSample } from './resources.ts';
 import { collectTree } from './resources.ts';
@@ -38,8 +18,8 @@ export interface ResourceLogElectronProc {
 }
 
 /** One session tree (keeper → CLI → MCP children) in a log line, keyed by the
- *  owning workspace id. `present` is whether that workspace id is currently in
- *  the store — a `false` here is exactly what the reaper acts on. */
+ *  owning workspace id. `present:false` + `reaped:false` = an orphan the reaper
+ *  WITHHELD (identity unproven) — see the `resources:` WARN for the reason. */
 export interface ResourceLogSessionTree {
   workspaceId: string;
   /** The keeper daemon's pid — the ROOT of the tree we walk. */
@@ -52,95 +32,92 @@ export interface ResourceLogSessionTree {
   present: boolean;
   /** The workspace's store status, or null when absent from the store. */
   status: string | null;
-  /** True when this tick reaped (killed) this tree. */
+  /** True when this tick SIGTERMed (reaped) this tree. */
   reaped: boolean;
 }
 
-/** One sample line appended to resources.jsonl. Compact field names keep the
- *  line small (~one per session tree × 60s × up to 7 days). */
+/** One sample line appended to resources.jsonl. */
 export interface ResourceLogLine {
   /** ISO timestamp of the sample. */
   t: string;
-  /** Epoch ms of the sample (redundant with `t` but cheap to sort on). */
+  /** Epoch ms of the sample. */
   at: number;
-  /** Totals across the whole machine. */
   totals: {
     cpuCores: number;
-    /** Total system memory in bytes. */
     memTotalBytes: number;
-    /** Used system memory in bytes (total − available), or null if unknown. */
+    /** total − available, or null if unknown. */
     memUsedBytes: number | null;
   };
-  /** Electron's own processes (main / renderer / gpu / …). */
   electron: ResourceLogElectronProc[];
   /** Every keeper-hosted session tree, keyed by workspace id. */
   sessions: ResourceLogSessionTree[];
 }
 
 // ─── Thresholds (detector b — advisory only) ─────────────────────────────────
-//
-// UNBASELINED starting points sized from LEAD's 16:30 measurement (issue #198
-// D11): a healthy session tree is ~700 MB (claude CLI ~350 MB + chrome-devtools
-// MCP ~220 MB + server-filesystem ~130 MB + keeper ~56 MB), so the RSS warn sits
-// well above one healthy tree to flag a genuine outlier, not the steady state.
-// CPU warn is percent of one core sustained across a single 60s tick.
+// UNBASELINED, sized from LEAD's 16:30 measurement (#198 D11): a healthy session
+// tree is ~700 MB, so the RSS warn (~3×) flags an outlier, not the steady state.
 
-/** A session tree over this RSS is flagged (advisory). 2 GB ≈ 3× a healthy
- *  ~700 MB tree — a clear outlier, not the norm. */
 export const SESSION_RSS_WARN_BYTES = 2 * 1024 * 1024 * 1024;
-/** A session tree over this CPU (percent of one core) is flagged (advisory). */
+/** Percent of one core over a single 60s tick. */
 export const SESSION_CPU_WARN_PCT = 150;
-/** An Electron process over this RSS is flagged (advisory). */
 export const ELECTRON_RSS_WARN_BYTES = 2 * 1024 * 1024 * 1024;
-/** An Electron process over this CPU (percent of one core) is flagged. */
 export const ELECTRON_CPU_WARN_PCT = 100;
 
-// ─── Rotation policy (bounded log: ≤7 days / ≤50 MB) ─────────────────────────
+// ─── Bounded log: ≤7 days / ≤50 MB across the active file + one `.1` backup ──
 
-/** Keep at most 7 days of samples. */
 export const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-/** Rotate the active file once it passes this — one `.1` backup is kept, so the
- *  worst case on disk is ~2× this. */
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+/** Per-file cap: active + `.1` ≤ 50 MB TOTAL (the brief's bound). */
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+/** The active file spans ≤ half the retention, so active + `.1` stay ≤ 7 days. */
+export const ROTATE_AFTER_MS = RETENTION_MS / 2;
 
-/** Whether the active resources.jsonl should be rotated before this append.
- *  Size-driven only: age-based pruning is applied to the ROTATED backup at
- *  rotation time (the platform side drops a backup older than RETENTION_MS),
- *  because a single active file that never crosses MAX_FILE_BYTES within 7 days
- *  is left untouched — cheapest correct policy. */
-export function shouldRotate(activeSizeBytes: number): boolean {
-  return activeSizeBytes >= MAX_FILE_BYTES;
+/** Rotate the active file before an append. Unknown age (`null`) counts as expired. */
+export function shouldRotate(
+  activeSizeBytes: number,
+  activeStartedAt: number | null,
+  now: number,
+): boolean {
+  if (activeSizeBytes <= 0) return false;
+  if (activeSizeBytes >= MAX_FILE_BYTES) return true;
+  return activeStartedAt === null || now - activeStartedAt >= ROTATE_AFTER_MS;
 }
 
-// ─── The session-tree roots (one per live keeper) ────────────────────────────
+/** Drop the `.1` backup once its OLDEST sample passes the retention. Unknown → drop. */
+export function shouldDropBackup(backupStartedAt: number | null, now: number): boolean {
+  return backupStartedAt === null || now - backupStartedAt > RETENTION_MS;
+}
 
-/** A live keeper the sampler found on disk: its owning workspace id and the
- *  keeper daemon's pid (the root of the process tree to walk). */
+/** `at` of a jsonl file's first line, or null when unreadable. */
+export function firstSampleAt(text: string): number | null {
+  const nl = text.indexOf('\n');
+  try {
+    const at = (JSON.parse(nl < 0 ? text : text.slice(0, nl)) as { at?: unknown }).at;
+    return typeof at === 'number' && Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Building the log line ───────────────────────────────────────────────────
+
+/** A live keeper found on disk: workspace id + the keeper daemon's pid (tree root). */
 export interface KeeperRoot {
   workspaceId: string;
   keeperPid: number;
 }
 
-// ─── Building the log line ───────────────────────────────────────────────────
-
 export interface BuildLogLineInput {
   at: number;
   cpuCores: number;
   memTotalBytes: number;
-  /** total − MemAvailable, or null when /proc/meminfo was unreadable. */
   memUsedBytes: number | null;
-  /** The full local process table. */
   table: ProcSample[];
-  /** pid → CPU percent (of one core) derived from jiffy deltas. */
+  /** pid → percent of one core, from jiffy deltas. */
   cpuPcts: Map<number, number>;
-  /** Every live keeper root (workspace id + keeper pid). */
   keeperRoots: KeeperRoot[];
-  /** Workspace ids currently present in the store. */
   liveWorkspaceIds: Set<string>;
-  /** Electron's own processes. */
   electron: ResourceLogElectronProc[];
-  /** Which trees were reaped this tick (workspace ids) — set by the reaper so
-   *  the log line records the action inline with the sample. */
+  /** Workspace ids whose tree this tick signalled. */
   reapedWorkspaceIds: Set<string>;
 }
 
@@ -172,8 +149,7 @@ export function summarizeSessionTree(
   };
 }
 
-/** Assemble the full JSONL line for one sample. `statusFor` maps a workspace id
- *  to its store status (null when absent). */
+/** Assemble the JSONL line for one sample. `statusFor`: ws id → store status (null = absent). */
 export function buildResourceLogLine(
   input: BuildLogLineInput,
   statusFor: (wsId: string) => string | null,
@@ -201,48 +177,44 @@ export function buildResourceLogLine(
   };
 }
 
-// ─── The reaper decision (detector a) ────────────────────────────────────────
+// ─── The reaper (detector a) — decision + identity ───────────────────────────
 
-/** One tree the reaper has decided to kill, with the members to SIGKILL. */
+/** A tree member as CLASSIFIED (sampled): its identity is (pid, startTicks). */
+export interface ReapMember {
+  pid: number;
+  ppid: number;
+  comm: string;
+  startTicks: number;
+}
+
 export interface ReapTarget {
   workspaceId: string;
   keeperPid: number;
-  /** Every pid in the tree (keeper + CLI + MCP children), the exact set to
-   *  kill. Ordered leaf-first so children die before the keeper that would
-   *  otherwise relaunch nothing (the keeper exits when its child dies). */
+  /** Leaf-first (keeper LAST). */
   pids: number[];
-  /** Human-readable members for the pre-kill log line (pid + comm). */
-  members: Array<{ pid: number; comm: string }>;
+  /** BFS order, keeper first — parents precede children. */
+  members: ReapMember[];
+}
+
+export interface ReapRefusal {
+  workspaceId: string;
+  reason: string;
 }
 
 export interface ReapDecision {
-  /** Trees to kill this tick. Empty unless the store loaded from disk. */
   targets: ReapTarget[];
-  /** True when the reaper REFUSED to act because the store is not trustworthy
-   *  (never loaded from disk). Surfaced so the caller can log why nothing was
-   *  reaped even though orphan-looking trees exist. */
+  /** Orphans the reaper declined to touch, with the named reason. */
+  refused: ReapRefusal[];
+  /** True when the whole pass was refused because the store never loaded from disk. */
   refusedStoreNotLoaded: boolean;
 }
 
 /**
- * Decide which session trees to reap. A tree is reaped iff ALL hold:
- *   1. the store is LOADED FROM DISK — an absent/empty store must NEVER be read
- *      as "every workspace was deleted" (the #187 lesson: absence-from-store as
- *      proof-of-deletion is only sound once the file actually parsed);
- *   2. the tree's workspace id is PROVABLY ABSENT from the live store;
- *   3. the tree has at least one live process (an empty tree — keeper pid gone —
- *      is nothing to kill).
- *
- * The members killed are EXACTLY the descendants of the keeper pid (collectTree),
- * so an Electron or unrelated process is never in the set: the root is a keeper
- * daemon pid read from <ORCHESTRA_HOME>/keepers/<wsId>.pid, and every member is a
- * descendant of it. This is the "known session-tree member" gate the brief
- * requires — we never kill by name-match or by heuristic, only by tree membership
- * under a keeper root.
- *
- * The store MUST be read at DECISION time by the caller (a dry-run then kill with
- * a fresh store read) — this function takes the live snapshot as an argument so
- * the caller controls that ordering.
+ * Classify orphaned trees. A tree is a target iff the store LOADED FROM DISK
+ * (#187 lesson), its workspace id is absent, and EVERY member carries a start-time
+ * (else identity is unverifiable → refused, fail closed). Members are keeper
+ * descendants only. Classification is NOT authorization: the caller must run
+ * verifyReapIdentity at kill time (#198 T8 review F1 — pid reuse).
  */
 export function decideReap(
   keeperRoots: KeeperRoot[],
@@ -250,47 +222,133 @@ export function decideReap(
   liveWorkspaceIds: Set<string>,
   storeLoadedFromDisk: boolean,
 ): ReapDecision {
-  if (!storeLoadedFromDisk) {
-    return { targets: [], refusedStoreNotLoaded: true };
-  }
+  if (!storeLoadedFromDisk) return { targets: [], refused: [], refusedStoreNotLoaded: true };
   const targets: ReapTarget[] = [];
+  const refused: ReapRefusal[] = [];
   for (const root of keeperRoots) {
     if (liveWorkspaceIds.has(root.workspaceId)) continue; // live ws — NEVER reap
     const tree = collectTree(root.keeperPid, table);
-    if (tree.length === 0) continue; // keeper pid already gone — nothing to kill
-    // Leaf-first: sort descendants after the root so children are killed before
-    // the keeper. collectTree returns BFS from the root, so reverse gives a
-    // deepest-first-ish order good enough for a SIGKILL sweep.
-    const pids = tree.map((p) => p.pid).reverse();
+    if (tree.length === 0) continue; // keeper pid already gone
+    const blind = tree.find((p) => p.startTicks === undefined);
+    if (blind) {
+      refused.push({
+        workspaceId: root.workspaceId,
+        reason: `identity-unverifiable (no start-time for pid ${blind.pid}; non-Linux sampler)`,
+      });
+      continue;
+    }
+    const members: ReapMember[] = tree.map((p) => ({
+      pid: p.pid,
+      ppid: p.ppid,
+      comm: p.comm,
+      startTicks: p.startTicks as number,
+    }));
     targets.push({
       workspaceId: root.workspaceId,
       keeperPid: root.keeperPid,
-      pids,
-      members: tree.map((p) => ({ pid: p.pid, comm: p.comm })),
+      pids: members.map((m) => m.pid).reverse(),
+      members,
     });
   }
-  return { targets, refusedStoreNotLoaded: false };
+  return { targets, refused, refusedStoreNotLoaded: false };
+}
+
+/** A genuine keeper's argv is `<runtime> …/keeper.js <wsId> <sock> <pid> <log>`
+ *  (keeper-client.ts launchKeeperDaemon) — a clock-free anchor for the root. */
+export function isKeeperCmdline(argv: string[] | null, wsId: string): boolean {
+  if (!argv) return false;
+  for (let i = 0; i + 1 < argv.length; i++) {
+    if (argv[i].split(/[\\/]/).pop() === 'keeper.js' && argv[i + 1] === wsId) return true;
+  }
+  return false;
+}
+
+export type Identity = 'same' | 'gone' | 'reused';
+
+/** Same process iff the pid still exists with the start-time it had when classified. */
+export function identityOf(m: ReapMember, fresh: ProcSample | null | undefined): Identity {
+  if (!fresh) return 'gone';
+  return fresh.startTicks === m.startTicks ? 'same' : 'reused';
+}
+
+export interface IdentityCheck {
+  /** Members provably still the classified tree, leaf-first (keeper last). */
+  signalable: ReapMember[];
+  /** Individual members withheld (tree otherwise intact), with reason. */
+  withheld: Array<{ pid: number; reason: string }>;
+  /** Non-null → the WHOLE tree is refused (its legitimacy hangs on the keeper root). */
+  treeRefusal: string | null;
+}
+
+/**
+ * Kill-time identity check against FRESH /proc reads. Root: same start-time AND
+ * keeper argv for this workspace. Each child: same start-time, same ppid as
+ * classified, parent itself still signalable (chain to the keeper intact).
+ */
+export function verifyReapIdentity(
+  target: ReapTarget,
+  fresh: Map<number, ProcSample | null>,
+  keeperArgv: string[] | null,
+): IdentityCheck {
+  const refuse = (treeRefusal: string): IdentityCheck => ({ signalable: [], withheld: [], treeRefusal });
+  const root = target.members.find((m) => m.pid === target.keeperPid);
+  if (!root) return refuse('keeper-not-in-classified-tree');
+  const rootId = identityOf(root, fresh.get(root.pid));
+  if (rootId === 'gone') return refuse('keeper-gone');
+  if (rootId === 'reused') return refuse('keeper-start-time-changed (pid reused)');
+  if (!isKeeperCmdline(keeperArgv, target.workspaceId)) {
+    return refuse("keeper-cmdline-mismatch (pid is not this workspace's keeper)");
+  }
+  const ok = new Set<number>([root.pid]);
+  const signalable: ReapMember[] = [root];
+  const withheld: Array<{ pid: number; reason: string }> = [];
+  for (const m of target.members) {
+    if (m.pid === root.pid) continue;
+    const f = fresh.get(m.pid);
+    const id = identityOf(m, f);
+    let reason: string | null = null;
+    if (id === 'gone') reason = 'gone';
+    else if (id === 'reused') reason = 'start-time-changed (pid reused)';
+    else if (f?.ppid !== m.ppid) reason = 'reparented';
+    else if (!ok.has(m.ppid)) reason = 'parent-withheld';
+    if (reason) {
+      withheld.push({ pid: m.pid, reason });
+      continue;
+    }
+    ok.add(m.pid);
+    signalable.push(m);
+  }
+  return { signalable: signalable.reverse(), withheld, treeRefusal: null };
+}
+
+/** After the SIGTERM grace: SIGKILL only members still the SAME process (pid + start-time). */
+export function classifySurvivors(
+  signalled: ReapMember[],
+  fresh: Map<number, ProcSample | null>,
+): { kill: ReapMember[]; gone: number[]; reused: number[] } {
+  const out = { kill: [] as ReapMember[], gone: [] as number[], reused: [] as number[] };
+  for (const m of signalled) {
+    const id = identityOf(m, fresh.get(m.pid));
+    if (id === 'same') out.kill.push(m);
+    else if (id === 'gone') out.gone.push(m.pid);
+    else out.reused.push(m.pid);
+  }
+  return out;
 }
 
 // ─── The threshold detector (detector b — advisory) ──────────────────────────
 
-/** One advisory over-threshold finding. `kind` names what breached so the log
- *  line and any future UI can group them. */
 export interface ThresholdWarning {
   kind: 'session-rss' | 'session-cpu' | 'electron-rss' | 'electron-cpu';
   /** Workspace id for a session finding, Electron process type for an app one. */
   subject: string;
   pid: number;
-  /** The measured value that breached (bytes for rss, percent for cpu). */
+  /** Measured value (bytes for rss, percent for cpu). */
   value: number;
-  /** The threshold it crossed. */
   threshold: number;
 }
 
-/** Advisory over-threshold findings across every session tree and Electron
- *  process. Never kills — the caller emits one WARN per finding. Session trees
- *  that were reaped this tick are excluded (they're gone; a stale RSS reading
- *  is not a leak to warn about). */
+/** Advisory over-threshold findings; never kills. A reaped tree is skipped (its RSS is stale). */
 export function decideThresholdWarnings(
   sessions: ResourceLogSessionTree[],
   electron: ResourceLogElectronProc[],

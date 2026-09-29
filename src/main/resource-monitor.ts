@@ -1,24 +1,9 @@
-// Always-on resource monitor + reaper (issue #198 D11 / track T8) — platform I/O.
-//
-// A MAIN-PROCESS sampler that ticks every 60s regardless of whether any window
-// is open (unlike the pull-only Resources page, which polls only while visible).
-// Each tick:
-//   1. reads the local process table from /proc (Linux) — NO child process is
-//      spawned, so the sampler itself never adds to the load it measures;
-//   2. finds every live keeper's process tree (keeper → CLI → MCP children),
-//      keyed by workspace id, plus Electron's own processes;
-//   3. REAPS any session tree whose workspace is provably absent from the store
-//      (detector a — the destructive one, gated hard, see decideReap), reading
-//      the store AT KILL TIME;
-//   4. appends ONE JSON line to <ORCHESTRA_HOME>/logs/resources.jsonl (bounded:
-//      rotate at 50 MB, drop a backup older than 7 days);
-//   5. emits an advisory WARN for any tree/Electron process over threshold
-//      (detector b — never kills).
-//
-// The pure decision + line-shape logic lives in ../shared/resource-monitor.ts;
-// this module owns the I/O and is structured around an injectable `deps` object
-// so a rig (scripts/verify-resource-monitor.mjs) can drive the REAL sampleTick
-// over a faked /proc table + store fixture through the real append + reap path.
+// Always-on resource monitor + reaper — I/O half (issue #198 T8). Pure half:
+// src/shared/resource-monitor.ts; design + gates: docs/codebase-map/resources.md.
+// A 60s main-process timer (no window needed): /proc read (no child spawned) →
+// reap orphaned keeper trees → append one line to <ORCHESTRA_HOME>/logs/resources.jsonl
+// → advisory threshold WARNs. `sampleTick` takes an injectable `deps` so a rig
+// (scripts/verify-resource-monitor.mjs) drives the REAL path over a faked /proc + store.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,11 +22,16 @@ import {
 } from '../shared/resources';
 import {
   buildResourceLogLine,
+  classifySurvivors,
   decideReap,
   decideThresholdWarnings,
+  firstSampleAt,
+  shouldDropBackup,
   shouldRotate,
-  RETENTION_MS,
+  verifyReapIdentity,
   type KeeperRoot,
+  type ReapMember,
+  type ReapTarget,
   type ResourceLogElectronProc,
   type ResourceLogLine,
 } from '../shared/resource-monitor';
@@ -49,11 +39,19 @@ import {
 const rlog = scoped('resources');
 const execFileP = promisify(execFile);
 
-/** Read the full local process table — the SAME cheap read the Resources page
- *  uses, kept here (rather than imported from ./resources) so this always-on
- *  module does not transitively drag in the PTY/transport stack. Linux reads
- *  /proc directly (NO child process spawned); other platforms shell out to
- *  `ps`. */
+export const TICK_MS = 60_000;
+/** SIGTERM → SIGKILL grace; mirrors the keeper's own 5 s escalation (session-keeper.md). */
+export const REAP_GRACE_MS = 5_000;
+
+export function resourcesLogPath(): string {
+  return path.join(orchestraHome(), 'logs', 'resources.jsonl');
+}
+function resourcesLogBackupPath(): string {
+  return `${resourcesLogPath()}.1`;
+}
+
+/** Local process table. Kept here (not imported from ./resources) so this always-on
+ *  module doesn't drag in the PTY/transport stack. Linux: /proc, NO child spawned. */
 async function sampleProcTable(): Promise<ProcSample[]> {
   if (process.platform === 'linux') {
     const out: ProcSample[] = [];
@@ -66,8 +64,7 @@ async function sampleProcTable(): Promise<ProcSample[]> {
     for (const name of names) {
       if (!/^\d+$/.test(name)) continue;
       try {
-        const text = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
-        const p = parseProcStatLine(text);
+        const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
         if (p) out.push(p);
       } catch {
         /* process exited mid-scan — skip */
@@ -83,17 +80,6 @@ async function sampleProcTable(): Promise<ProcSample[]> {
   }
 }
 
-/** How often the monitor samples. Matches the brief (issue #198 D11): 60s. */
-export const TICK_MS = 60_000;
-
-/** Path of the active sample log. */
-export function resourcesLogPath(): string {
-  return path.join(orchestraHome(), 'logs', 'resources.jsonl');
-}
-function resourcesLogBackupPath(): string {
-  return `${resourcesLogPath()}.1`;
-}
-
 // ─── Injectable platform seam (real defaults; a rig overrides them) ───────────
 
 export interface ResourceMonitorDeps {
@@ -102,30 +88,28 @@ export interface ResourceMonitorDeps {
   keeperRoots(): KeeperRoot[];
   /** Workspace ids present in the store, read FRESH each call (kill-time read). */
   liveWorkspaceIds(): Set<string>;
-  /** A workspace's store status, or null when absent. */
   statusFor(wsId: string): string | null;
   /** True once the store parsed a real store.json off disk. */
   storeLoadedFromDisk(): boolean;
   electronProcs(): ResourceLogElectronProc[];
   cpuCores(): number;
   memTotalBytes(): number;
-  /** total − MemAvailable in bytes, or null if unreadable. */
   memUsedBytes(): number | null;
-  /** Append one JSONL line (handles rotation). */
   appendLine(line: ResourceLogLine): void;
-  /** SIGKILL one pid. Returns true if the signal was delivered. */
-  kill(pid: number): boolean;
-  /** Emit a WARN with the `resources:` scope. */
+  /** Fresh single-pid /proc/<pid>/stat read; null = gone/unreadable/non-Linux. */
+  readProcStat(pid: number): ProcSample | null;
+  /** /proc/<pid>/cmdline argv; null = gone/unreadable/non-Linux. */
+  readCmdline(pid: number): string[] | null;
+  /** Deliver a signal; false when it wasn't delivered (ESRCH, EPERM). */
+  signal(pid: number, sig: 'SIGTERM' | 'SIGKILL'): boolean;
+  sleep(ms: number): Promise<void>;
   warn(message: string, meta?: unknown): void;
   info(message: string, meta?: unknown): void;
 }
 
-/** Read total − MemAvailable from /proc/meminfo (Linux). null elsewhere / on
- *  failure — never a fabricated figure. */
+/** total − MemAvailable from /proc/meminfo; null when unreadable — never a fabricated figure. */
 export function readMemUsedBytes(): number | null {
   if (process.platform !== 'linux') {
-    // os.freemem() is closer to MemFree than MemAvailable, but it is the only
-    // cross-platform figure; used = total − free.
     const free = os.freemem();
     const total = os.totalmem();
     return Number.isFinite(free) && Number.isFinite(total) ? total - free : null;
@@ -141,34 +125,65 @@ export function readMemUsedBytes(): number | null {
   }
 }
 
-/** Append one line, rotating the file first when it has grown past the cap and
- *  dropping a backup older than the retention window. Best-effort — a logging
- *  failure must never crash the tick. */
-function appendLineToDisk(line: ResourceLogLine): void {
-  const file = resourcesLogPath();
+// ─── The bounded log (≤7 d / ≤50 MB) — review F4 ─────────────────────────────
+
+/** In-memory first-sample times of the two files, read from disk once (lazily). */
+const logState: { loaded: boolean; activeStartedAt: number | null; backupStartedAt: number | null } = {
+  loaded: false,
+  activeStartedAt: null,
+  backupStartedAt: null,
+};
+
+function readFirstSampleAt(file: string): number | null {
+  let fd: number | null = null;
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    let size = 0;
-    try {
-      size = fs.statSync(file).size;
-    } catch {
-      /* absent → size 0 */
-    }
-    if (shouldRotate(size)) {
-      // Move the full file aside; a single .1 backup is kept.
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(256 * 1024);
+    return firstSampleAt(buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, 0)));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
       try {
-        fs.renameSync(file, resourcesLogBackupPath());
+        fs.closeSync(fd);
       } catch {
-        /* fine — next append recreates */
+        /* fine */
       }
     }
-    // Drop a backup older than the retention window (age-based bound, ≤7 days).
-    try {
-      const st = fs.statSync(resourcesLogBackupPath());
-      if (Date.now() - st.mtimeMs > RETENTION_MS) fs.unlinkSync(resourcesLogBackupPath());
-    } catch {
-      /* no backup → nothing to prune */
+  }
+}
+
+function fileSize(file: string): number {
+  try {
+    return fs.statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** Append one line; rotate/prune by SAMPLE age + size first. Best-effort — never throws. */
+export function appendResourceLogLine(line: ResourceLogLine): void {
+  const file = resourcesLogPath();
+  const backup = resourcesLogBackupPath();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!logState.loaded) {
+      logState.activeStartedAt = fileSize(file) > 0 ? readFirstSampleAt(file) : null;
+      logState.backupStartedAt = fileSize(backup) > 0 ? readFirstSampleAt(backup) : null;
+      logState.loaded = true;
     }
+    let size = fileSize(file);
+    if (shouldRotate(size, logState.activeStartedAt, line.at)) {
+      fs.renameSync(file, backup);
+      logState.backupStartedAt = logState.activeStartedAt;
+      logState.activeStartedAt = null;
+      size = 0;
+    }
+    if (fileSize(backup) > 0 && shouldDropBackup(logState.backupStartedAt, line.at)) {
+      fs.unlinkSync(backup);
+      logState.backupStartedAt = null;
+    }
+    if (size === 0) logState.activeStartedAt = line.at;
     fs.appendFileSync(file, `${JSON.stringify(line)}\n`);
   } catch (e) {
     rlog.swallow('resources.jsonl append', e);
@@ -192,79 +207,127 @@ const defaultDeps: ResourceMonitorDeps = {
   cpuCores: () => os.cpus().length || 1,
   memTotalBytes: () => os.totalmem(),
   memUsedBytes: () => readMemUsedBytes(),
-  appendLine: appendLineToDisk,
-  kill: (pid) => {
+  appendLine: appendResourceLogLine,
+  readProcStat: (pid) => {
+    if (process.platform !== 'linux') return null;
     try {
-      process.kill(pid, 'SIGKILL');
+      return parseProcStatLine(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+    } catch {
+      return null;
+    }
+  },
+  readCmdline: (pid) => {
+    if (process.platform !== 'linux') return null;
+    try {
+      return fs
+        .readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+        .split('\0')
+        .filter((s) => s.length > 0);
+    } catch {
+      return null;
+    }
+  },
+  signal: (pid, sig) => {
+    try {
+      process.kill(pid, sig);
       return true;
     } catch {
       return false;
     }
   },
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   warn: (message, meta) => rlog.warn(message, meta),
   info: (message, meta) => rlog.info(message, meta),
 };
 
-// The CPU percent is a jiffy delta between two samples, so the monitor keeps its
-// OWN previous-ticks map (independent of the Resources page's, which ticks at a
-// different cadence). The first tick after start reports 0% CPU; the second is
-// real.
+// CPU% is a jiffy delta between two samples: the monitor keeps its OWN baseline
+// (independent of the Resources page's). The first tick reads 0%; the second is real.
 let prevTicks = new Map<number, number>();
 let prevAt = 0;
 
+function readFresh(d: ResourceMonitorDeps, pids: number[]): Map<number, ProcSample | null> {
+  return new Map(pids.map((pid) => [pid, d.readProcStat(pid)]));
+}
+
 /**
- * One sample + detect + reap + log cycle. Exported and dependency-injected so a
- * rig drives the REAL decision/append/reap through a faked /proc + store.
- *
- * ## Reaper ordering — dry-run then kill, store read at kill time
- * The store snapshot (`liveWorkspaceIds`) is read HERE, immediately before the
- * decision, so a workspace re-created between two ticks is never reaped on a
- * stale snapshot. The decision itself (decideReap) refuses to act at all unless
- * the store loaded from disk. Every killed pid is a descendant of a keeper pid
- * (collectTree under a keeper root) — never an Electron or unrelated process.
- * We LOG what and why BEFORE issuing any kill.
+ * Reap orphaned trees, identity-safe (review F1). Phase 1 re-verifies each tree
+ * against FRESH /proc reads + re-reads the store, then SIGTERMs leaf-first; ONE
+ * grace; phase 2 SIGKILLs only survivors still the same (pid, start-time).
+ * Residual: a pid can still be reused in the microseconds between the read and
+ * the signal (no pidfd in Node) — vs the ~60 s stale window before this fix.
  */
+async function reapTargets(d: ResourceMonitorDeps, targets: ReapTarget[]): Promise<Set<string>> {
+  const reaped = new Set<string>();
+  const armed: Array<{ target: ReapTarget; sent: ReapMember[] }> = [];
+  for (const target of targets) {
+    const ws = target.workspaceId;
+    const check = verifyReapIdentity(
+      target,
+      readFresh(d, target.pids),
+      d.readCmdline(target.keeperPid),
+    );
+    if (check.treeRefusal) {
+      d.warn(`resources: reap WITHHELD for workspace ${ws} — ${check.treeRefusal}`);
+      continue;
+    }
+    for (const w of check.withheld) {
+      d.warn(`resources: reap skipped pid ${w.pid} of workspace ${ws} — ${w.reason}`);
+    }
+    if (check.signalable.length === 0) continue;
+    if (!d.storeLoadedFromDisk() || d.liveWorkspaceIds().has(ws)) {
+      d.warn(`resources: reap ABORTED for workspace ${ws} — present in the store at kill time`);
+      continue;
+    }
+    const members = check.signalable.map((m) => `${m.comm}(${m.pid})`).join(', ');
+    d.warn(
+      `resources: reaping orphaned session tree for workspace ${ws} (absent from store; identity verified) — ` +
+        `keeper pid ${target.keeperPid}, ${check.signalable.length} process(es): ${members}`,
+    );
+    const sent = check.signalable.filter((m) => d.signal(m.pid, 'SIGTERM'));
+    if (sent.length > 0) {
+      reaped.add(ws);
+      armed.push({ target, sent });
+    }
+  }
+  if (armed.length === 0) return reaped;
+  await d.sleep(REAP_GRACE_MS);
+  for (const { target, sent } of armed) {
+    const s = classifySurvivors(sent, readFresh(d, sent.map((m) => m.pid)));
+    const killed = s.kill.filter((m) => d.signal(m.pid, 'SIGKILL')).length;
+    d.warn(
+      `resources: reaped workspace ${target.workspaceId} — SIGTERM ${sent.length}, exited within grace ` +
+        `${s.gone.length}, SIGKILL ${killed}` +
+        (s.reused.length ? `, pid reused (left alone) ${s.reused.join(',')}` : ''),
+    );
+  }
+  return reaped;
+}
+
+/** One sample + detect + reap + log cycle (what the 60s timer runs). */
 export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<ResourceLogLine> {
   const now = d.now();
   const table = await d.procTable();
-  const elapsed = prevAt === 0 ? 0 : now - prevAt;
-  const cpuPcts = computeCpuPcts(table, prevTicks, elapsed);
+  const cpuPcts = computeCpuPcts(table, prevTicks, prevAt === 0 ? 0 : now - prevAt);
   prevTicks = new Map(table.filter((p) => p.cpuPct === null).map((p) => [p.pid, p.cpuTicks]));
   prevAt = now;
 
   const keeperRoots = d.keeperRoots();
-  const liveWorkspaceIds = d.liveWorkspaceIds(); // kill-time store read
-  const storeLoaded = d.storeLoadedFromDisk();
-
-  // ── Detector (a): reap orphaned trees ──────────────────────────────────────
-  const reap = decideReap(keeperRoots, table, liveWorkspaceIds, storeLoaded);
-  const reapedWorkspaceIds = new Set<string>();
+  const liveWorkspaceIds = d.liveWorkspaceIds();
+  const reap = decideReap(keeperRoots, table, liveWorkspaceIds, d.storeLoadedFromDisk());
   if (reap.refusedStoreNotLoaded && keeperRoots.length > 0) {
     d.info(
       `resources: reap skipped — store not loaded from disk; ` +
         `${keeperRoots.length} keeper tree(s) left untouched (absence-from-store is not proof of deletion)`,
     );
   }
-  for (const target of reap.targets) {
-    const memberDesc = target.members.map((m) => `${m.comm}(${m.pid})`).join(', ');
-    // Log what + why BEFORE killing (the destructive act is auditable even if a
-    // later kill throws).
-    d.warn(
-      `resources: reaping orphaned session tree for workspace ${target.workspaceId} ` +
-        `(absent from store) — keeper pid ${target.keeperPid}, ${target.pids.length} process(es): ${memberDesc}`,
-    );
-    let killed = 0;
-    for (const pid of target.pids) {
-      if (d.kill(pid)) killed++;
-    }
-    reapedWorkspaceIds.add(target.workspaceId);
-    d.warn(
-      `resources: reaped workspace ${target.workspaceId} — sent SIGKILL to ${killed}/${target.pids.length} process(es)`,
-    );
+  for (const r of reap.refused) {
+    d.warn(`resources: reap WITHHELD for workspace ${r.workspaceId} — ${r.reason}`);
   }
+  const reapedWorkspaceIds = await reapTargets(d, reap.targets);
 
-  // ── Build the sample line ───────────────────────────────────────────────────
-  const electron = d.electronProcs();
+  // Electron CPU from the monitor's own jiffy deltas: app.getAppMetrics() shares one
+  // process-wide cursor with the Resources page, so its percent is garbage when both poll (F3).
+  const electron = d.electronProcs().map((e) => ({ ...e, cpuPct: cpuPcts.get(e.pid) ?? 0 }));
   const line = buildResourceLogLine(
     {
       at: now,
@@ -282,17 +345,12 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
   );
   d.appendLine(line);
 
-  // ── Detector (b): advisory over-threshold WARNs ────────────────────────────
   for (const w of decideThresholdWarnings(line.sessions, electron)) {
-    const val =
-      w.kind.endsWith('rss')
-        ? `${(w.value / (1024 * 1024)).toFixed(0)} MB`
-        : `${w.value.toFixed(0)}% cpu`;
-    d.warn(
-      `resources: ${w.kind} over threshold — ${w.subject} (pid ${w.pid}) at ${val} (advisory, not killed)`,
-    );
+    const val = w.kind.endsWith('rss')
+      ? `${(w.value / (1024 * 1024)).toFixed(0)} MB`
+      : `${w.value.toFixed(0)}% cpu`;
+    d.warn(`resources: ${w.kind} over threshold — ${w.subject} (pid ${w.pid}) at ${val} (advisory, not killed)`);
   }
-
   return line;
 }
 
@@ -301,8 +359,7 @@ let timer: NodeJS.Timeout | null = null;
 /** Start the always-on monitor (idempotent). */
 export function startResourceMonitor(): void {
   if (timer) return;
-  prevTicks = new Map();
-  prevAt = 0;
+  resetState();
   timer = setInterval(() => {
     void sampleTick().catch((e) => rlog.swallow('resource-monitor tick', e));
   }, TICK_MS);
@@ -315,13 +372,16 @@ export function stopResourceMonitor(): void {
     clearInterval(timer);
     timer = null;
   }
-  prevTicks = new Map();
-  prevAt = 0;
+  resetState();
 }
 
-/** Test seam: reset the CPU-delta baseline so a rig drives ticks from a known
- *  start instead of inheriting a previous run's ticks. */
-export function __resetResourceMonitorForTest(): void {
+function resetState(): void {
   prevTicks = new Map();
   prevAt = 0;
+  logState.loaded = false;
+  logState.activeStartedAt = null;
+  logState.backupStartedAt = null;
 }
+
+/** Test seam: reset the CPU baseline and the log-state cache. */
+export const __resetResourceMonitorForTest = resetState;

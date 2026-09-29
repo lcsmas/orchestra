@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   aggregateSession,
   classifyPtyId,
@@ -43,6 +44,20 @@ test('parseProcStatLine parses a normal stat line', () => {
   assert.equal(p.cpuTicks, 750);
   assert.equal(p.memBytes, 2048 * 4096);
   assert.equal(p.cpuPct, null);
+  assert.equal(p.startTicks, 12345); // stat field 22 (#198 T8 reaper identity)
+});
+
+test('parseProcStatLine startTicks is the REAL start time on a live /proc, and absent when malformed', () => {
+  const malformed = '7 (x) S 1 7 7 0 -1 0 0 0 0 0 1 1 0 0 20 0 1 0 notanumber 1 1';
+  assert.equal(parseProcStatLine(malformed)?.startTicks, undefined);
+  if (process.platform !== 'linux') return;
+  // Independent oracle: this test process started within the last 10 min, so its start-time
+  // must sit within 10 min (in 100 Hz ticks) of machine uptime — utime/rss/etc. cannot.
+  const self = parseProcStatLine(fs.readFileSync('/proc/self/stat', 'utf8'));
+  const uptimeTicks = Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) * 100;
+  assert.ok(self && typeof self.startTicks === 'number');
+  const ageTicks = uptimeTicks - self.startTicks;
+  assert.ok(ageTicks >= 0 && ageTicks < 10 * 60 * 100, `implausible process age: ${ageTicks} ticks`);
 });
 
 test('parseProcStatLine survives spaces and parens in comm', () => {

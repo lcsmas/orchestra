@@ -3,30 +3,36 @@ import assert from 'node:assert/strict';
 import type { ProcSample } from './resources.ts';
 import {
   buildResourceLogLine,
+  classifySurvivors,
   decideReap,
   decideThresholdWarnings,
+  firstSampleAt,
+  isKeeperCmdline,
+  shouldDropBackup,
   shouldRotate,
   summarizeSessionTree,
+  verifyReapIdentity,
   MAX_FILE_BYTES,
+  RETENTION_MS,
+  ROTATE_AFTER_MS,
   SESSION_RSS_WARN_BYTES,
   SESSION_CPU_WARN_PCT,
   ELECTRON_RSS_WARN_BYTES,
   ELECTRON_CPU_WARN_PCT,
   type KeeperRoot,
+  type ReapTarget,
   type ResourceLogElectronProc,
 } from './resource-monitor.ts';
 
-const proc = (
-  pid: number,
-  ppid: number,
-  over: Partial<ProcSample> = {},
-): ProcSample => ({
+/** startTicks defaults to 1000+pid: a pid's identity = (pid, startTicks). */
+const proc = (pid: number, ppid: number, over: Partial<ProcSample> = {}): ProcSample => ({
   pid,
   ppid,
   comm: `p${pid}`,
   cpuTicks: 0,
   memBytes: 0,
   cpuPct: null,
+  startTicks: 1000 + pid,
   ...over,
 });
 
@@ -39,76 +45,184 @@ function keeperTree(kpid: number, rss: number): ProcSample[] {
   ];
 }
 
-// ─── decideReap: the destructive detector (a) ────────────────────────────────
+const argvFor = (ws: string) => ['/opt/Orchestra/orchestra', '/home/u/.orchestra/bin/keeper.js', ws, 's', 'p', 'l'];
 
-test('decideReap KILLS a tree whose workspace is absent from the store (must-FAIL arm)', () => {
-  // ws "gone" was deleted; its keeper tree is still alive. This is exactly the
-  // 1.6 GB leak LEAD measured. The reaper MUST target it.
+/** Classify the orphan "gone" tree rooted at 100 and return its ReapTarget. */
+function target100(): ReapTarget {
+  const d = decideReap([{ workspaceId: 'gone', keeperPid: 100 }], keeperTree(100, 1), new Set<string>(), true);
+  return d.targets[0];
+}
+/** Fresh /proc reads for the target's members, optionally overridden per pid. */
+function freshOf(t: ReapTarget, over: Record<number, ProcSample | null> = {}): Map<number, ProcSample | null> {
+  const m = new Map<number, ProcSample | null>();
+  for (const x of t.members) m.set(x.pid, proc(x.pid, x.ppid));
+  for (const [k, v] of Object.entries(over)) m.set(Number(k), v);
+  return m;
+}
+
+// ─── decideReap: classification (detector a) ─────────────────────────────────
+
+test('decideReap CLASSIFIES a tree whose workspace is absent from the store (must-FAIL arm)', () => {
   const roots: KeeperRoot[] = [{ workspaceId: 'gone', keeperPid: 100 }];
-  const table = keeperTree(100, 700 * 1024 * 1024);
-  const decision = decideReap(roots, table, new Set<string>(), /*storeLoaded*/ true);
+  const decision = decideReap(roots, keeperTree(100, 700 * 1024 * 1024), new Set<string>(), true);
   assert.equal(decision.refusedStoreNotLoaded, false);
   assert.equal(decision.targets.length, 1);
   const t = decision.targets[0];
   assert.equal(t.workspaceId, 'gone');
   assert.equal(t.keeperPid, 100);
-  // Exactly the three tree members, and ONLY them.
   assert.deepEqual([...t.pids].sort((a, b) => a - b), [100, 101, 102]);
-  // Leaf-first: the keeper root is killed LAST.
-  assert.equal(t.pids[t.pids.length - 1], 100);
+  assert.equal(t.pids[t.pids.length - 1], 100); // leaf-first: keeper LAST
+  // Identity captured AT classification: (pid, ppid, startTicks) literals.
+  assert.deepEqual(
+    t.members.map((m) => [m.pid, m.ppid, m.startTicks]),
+    [[100, 1, 1100], [101, 100, 1101], [102, 101, 1102]],
+  );
 });
 
-test('decideReap NEVER reaps a live workspace tree (must-PASS arm)', () => {
-  const roots: KeeperRoot[] = [{ workspaceId: 'alive', keeperPid: 200 }];
-  const table = keeperTree(200, 700 * 1024 * 1024);
-  const decision = decideReap(roots, table, new Set(['alive']), true);
+test('decideReap NEVER classifies a live workspace tree (must-PASS arm)', () => {
+  const decision = decideReap(
+    [{ workspaceId: 'alive', keeperPid: 200 }],
+    keeperTree(200, 1),
+    new Set(['alive']),
+    true,
+  );
   assert.deepEqual(decision.targets, []);
 });
 
 test('decideReap REFUSES entirely when the store is not loaded from disk', () => {
-  // Absence-from-store is only proof-of-deletion once store.json actually
-  // parsed. An unloaded store looks empty — reaping then kills the whole fleet.
-  const roots: KeeperRoot[] = [{ workspaceId: 'gone', keeperPid: 100 }];
-  const table = keeperTree(100, 700 * 1024 * 1024);
-  const decision = decideReap(roots, table, new Set<string>(), /*storeLoaded*/ false);
+  const decision = decideReap(
+    [{ workspaceId: 'gone', keeperPid: 100 }],
+    keeperTree(100, 1),
+    new Set<string>(),
+    false,
+  );
   assert.deepEqual(decision.targets, []);
   assert.equal(decision.refusedStoreNotLoaded, true);
 });
 
 test('decideReap skips an orphan whose keeper pid is already gone (nothing to kill)', () => {
-  const roots: KeeperRoot[] = [{ workspaceId: 'gone', keeperPid: 100 }];
-  // The keeper pid is NOT in the table — collectTree returns [].
-  const table = [proc(1, 0), proc(2, 1)];
-  const decision = decideReap(roots, table, new Set<string>(), true);
+  const decision = decideReap(
+    [{ workspaceId: 'gone', keeperPid: 100 }],
+    [proc(1, 0), proc(2, 1)],
+    new Set<string>(),
+    true,
+  );
   assert.deepEqual(decision.targets, []);
+  assert.deepEqual(decision.refused, []);
 });
 
-test('decideReap only touches descendants of the keeper root, never siblings', () => {
-  const roots: KeeperRoot[] = [{ workspaceId: 'gone', keeperPid: 100 }];
-  const table = [
-    ...keeperTree(100, 1),
-    proc(500, 1, { comm: 'electron' }), // unrelated Electron process
-    proc(501, 500, { comm: 'renderer' }),
-  ];
-  const decision = decideReap(roots, table, new Set<string>(), true);
+test('decideReap only classifies descendants of the keeper root, never siblings', () => {
+  const table = [...keeperTree(100, 1), proc(500, 1, { comm: 'electron' }), proc(501, 500, { comm: 'renderer' })];
+  const decision = decideReap([{ workspaceId: 'gone', keeperPid: 100 }], table, new Set<string>(), true);
   assert.equal(decision.targets.length, 1);
   assert.ok(!decision.targets[0].pids.includes(500));
   assert.ok(!decision.targets[0].pids.includes(501));
 });
 
+test('decideReap REFUSES an orphan whose members carry no start-time (non-Linux ps fallback)', () => {
+  const table = keeperTree(100, 1).map((p) => ({ ...p, startTicks: undefined }));
+  const decision = decideReap([{ workspaceId: 'gone', keeperPid: 100 }], table, new Set<string>(), true);
+  assert.deepEqual(decision.targets, []);
+  assert.equal(decision.refused.length, 1);
+  assert.equal(decision.refused[0].workspaceId, 'gone');
+  assert.match(decision.refused[0].reason, /identity-unverifiable/);
+});
+
+// ─── isKeeperCmdline: the clock-free root anchor ─────────────────────────────
+
+test('isKeeperCmdline accepts a real keeper argv and rejects look-alikes', () => {
+  assert.equal(isKeeperCmdline(argvFor('ws-1'), 'ws-1'), true);
+  assert.equal(isKeeperCmdline(['node', 'keeper.js', 'ws-1'], 'ws-1'), true);
+  assert.equal(isKeeperCmdline(null, 'ws-1'), false);
+  assert.equal(isKeeperCmdline([], 'ws-1'), false);
+  assert.equal(isKeeperCmdline(['/usr/bin/chromium', '--type=renderer'], 'ws-1'), false);
+  assert.equal(isKeeperCmdline(argvFor('ws-2'), 'ws-1'), false); // another workspace's keeper
+  assert.equal(isKeeperCmdline(argvFor('ws-10'), 'ws-1'), false); // prefix is not equality
+  assert.equal(isKeeperCmdline(['node', '/x/notkeeper.js', 'ws-1'], 'ws-1'), false); // basename must be exact
+  assert.equal(isKeeperCmdline(['node', 'keeper.js', 'x', 'ws-1'], 'ws-1'), false); // wsId must FOLLOW keeper.js
+  assert.equal(isKeeperCmdline(['ws-1', 'node', 'keeper.js'], 'ws-1'), false);
+});
+
+// ─── verifyReapIdentity: kill-time identity (review F1) ──────────────────────
+
+test('verifyReapIdentity: an intact tree is fully signalable, leaf-first, keeper last', () => {
+  const t = target100();
+  const v = verifyReapIdentity(t, freshOf(t), argvFor('gone'));
+  assert.equal(v.treeRefusal, null);
+  assert.deepEqual(v.withheld, []);
+  assert.deepEqual(v.signalable.map((m) => m.pid), [102, 101, 100]);
+});
+
+test('verifyReapIdentity: a member pid REUSED by an unrelated process is withheld (start-time clause)', () => {
+  const t = target100();
+  // 101 now belongs to a different process: same pid, later start-time.
+  const v = verifyReapIdentity(t, freshOf(t, { 101: proc(101, 100, { startTicks: 9_999_999 }) }), argvFor('gone'));
+  assert.equal(v.treeRefusal, null);
+  assert.deepEqual(v.withheld.map((w) => [w.pid, w.reason]), [
+    [101, 'start-time-changed (pid reused)'],
+    [102, 'parent-withheld'], // its child hangs off a withheld parent → chain broken
+  ]);
+  assert.deepEqual(v.signalable.map((m) => m.pid), [100]); // only the keeper itself
+});
+
+test('verifyReapIdentity: a keeper pid REUSED (start-time changed) refuses the WHOLE tree', () => {
+  const t = target100();
+  const v = verifyReapIdentity(t, freshOf(t, { 100: proc(100, 1, { startTicks: 9_999_999 }) }), argvFor('gone'));
+  assert.match(v.treeRefusal ?? '', /keeper-start-time-changed/);
+  assert.deepEqual(v.signalable, []);
+});
+
+test('verifyReapIdentity: a recycled ROOT running an unrelated program refuses the tree (cmdline clause)', () => {
+  // The reviewer's F1 scenario: stale <wsId>.pid → pid now an unrelated process with its own children.
+  const t = target100();
+  const v = verifyReapIdentity(t, freshOf(t), ['/usr/bin/some-daemon', '--serve']);
+  assert.match(v.treeRefusal ?? '', /keeper-cmdline-mismatch/);
+  assert.deepEqual(v.signalable, []);
+  // …and another workspace's keeper is not THIS workspace's keeper.
+  const other = verifyReapIdentity(t, freshOf(t), argvFor('someone-else'));
+  assert.match(other.treeRefusal ?? '', /keeper-cmdline-mismatch/);
+  // …and an unreadable cmdline (process vanished) is not proof.
+  assert.match(verifyReapIdentity(t, freshOf(t), null).treeRefusal ?? '', /keeper-cmdline-mismatch/);
+});
+
+test('verifyReapIdentity: a vanished keeper refuses the tree (nothing to anchor on)', () => {
+  const t = target100();
+  const v = verifyReapIdentity(t, freshOf(t, { 100: null }), argvFor('gone'));
+  assert.equal(v.treeRefusal, 'keeper-gone');
+});
+
+test('verifyReapIdentity: a member that moved out of the tree (ppid changed) is withheld; a gone member is skipped', () => {
+  const t = target100();
+  const v = verifyReapIdentity(t, freshOf(t, { 101: proc(101, 1) /* reparented */, 102: null /* gone */ }), argvFor('gone'));
+  assert.deepEqual(v.withheld.map((w) => [w.pid, w.reason]), [
+    [101, 'reparented'],
+    [102, 'gone'],
+  ]);
+  assert.deepEqual(v.signalable.map((m) => m.pid), [100]);
+});
+
+// ─── classifySurvivors: the SIGKILL phase after the grace ────────────────────
+
+test('classifySurvivors SIGKILLs only members still the SAME process; a reused pid is left alone', () => {
+  const t = target100();
+  const fresh = new Map<number, ProcSample | null>([
+    [100, proc(100, 1)], // still the same keeper → kill
+    [101, null], // exited within grace
+    [102, proc(102, 55, { startTicks: 424242 })], // pid reused during the grace → NEVER kill
+  ]);
+  const s = classifySurvivors(t.members, fresh);
+  assert.deepEqual(s.kill.map((m) => m.pid), [100]);
+  assert.deepEqual(s.gone, [101]);
+  assert.deepEqual(s.reused, [102]);
+});
+
 // ─── summarizeSessionTree + buildResourceLogLine: the JSONL line shape ────────
 
 test('summarizeSessionTree rolls the keeper tree up with present/status/reaped', () => {
-  const table = keeperTree(300, 100);
-  const cpuPcts = new Map([
-    [300, 5],
-    [301, 40],
-    [302, 10],
-  ]);
   const s = summarizeSessionTree(
     { workspaceId: 'ws-a', keeperPid: 300 },
-    table,
-    cpuPcts,
+    keeperTree(300, 100),
+    new Map([[300, 5], [301, 40], [302, 10]]),
     new Set(['ws-a']),
     'running',
     false,
@@ -124,20 +238,17 @@ test('summarizeSessionTree rolls the keeper tree up with present/status/reaped',
 });
 
 test('buildResourceLogLine assembles totals, electron and per-session rows', () => {
-  const table = keeperTree(400, 50);
-  const electron: ResourceLogElectronProc[] = [
-    { type: 'Browser', pid: 10, cpuPct: 3, rssBytes: 111 },
-  ];
+  const electron: ResourceLogElectronProc[] = [{ type: 'Browser', pid: 10, cpuPct: 3, rssBytes: 111 }];
   const line = buildResourceLogLine(
     {
       at: 1_700_000_000_000,
       cpuCores: 8,
       memTotalBytes: 32 * 1024 * 1024 * 1024,
       memUsedBytes: 18 * 1024 * 1024 * 1024,
-      table,
+      table: keeperTree(400, 50),
       cpuPcts: new Map([[400, 1], [401, 2], [402, 3]]),
       keeperRoots: [{ workspaceId: 'ws-b', keeperPid: 400 }],
-      liveWorkspaceIds: new Set<string>(), // absent → present:false, reaped
+      liveWorkspaceIds: new Set<string>(),
       electron,
       reapedWorkspaceIds: new Set(['ws-b']),
     },
@@ -153,72 +264,83 @@ test('buildResourceLogLine assembles totals, electron and per-session rows', () 
   assert.equal(line.sessions[0].reaped, true);
   assert.equal(line.sessions[0].status, null);
   assert.equal(line.sessions[0].cpuPct, 6);
-  // The line round-trips through JSON (it is what gets appended).
   assert.deepEqual(JSON.parse(JSON.stringify(line)), line);
 });
 
 // ─── decideThresholdWarnings: advisory detector (b) ──────────────────────────
 
+const session = (over: Partial<Parameters<typeof decideThresholdWarnings>[0][number]> = {}) => ({
+  workspaceId: 'ws',
+  keeperPid: 5,
+  cpuPct: 10,
+  rssBytes: 1,
+  procCount: 3,
+  present: true,
+  status: 'running' as string | null,
+  reaped: false,
+  ...over,
+});
+
 test('decideThresholdWarnings flags an over-RSS session and an over-CPU electron proc', () => {
-  const sessions = [
-    {
-      workspaceId: 'hog',
-      keeperPid: 5,
-      cpuPct: 10,
-      rssBytes: SESSION_RSS_WARN_BYTES + 1,
-      procCount: 3,
-      present: true,
-      status: 'running',
-      reaped: false,
-    },
-  ];
-  const electron: ResourceLogElectronProc[] = [
-    { type: 'Tab', pid: 7, cpuPct: ELECTRON_CPU_WARN_PCT + 1, rssBytes: 1 },
-  ];
-  const warnings = decideThresholdWarnings(sessions, electron);
-  const kinds = warnings.map((w) => w.kind).sort();
-  assert.deepEqual(kinds, ['electron-cpu', 'session-rss']);
+  const warnings = decideThresholdWarnings(
+    [session({ workspaceId: 'hog', rssBytes: SESSION_RSS_WARN_BYTES + 1 })],
+    [{ type: 'Tab', pid: 7, cpuPct: ELECTRON_CPU_WARN_PCT + 1, rssBytes: 1 }],
+  );
+  assert.deepEqual(warnings.map((w) => w.kind).sort(), ['electron-cpu', 'session-rss']);
 });
 
 test('decideThresholdWarnings never warns about a reaped tree (its RSS is stale)', () => {
-  const sessions = [
-    {
-      workspaceId: 'gone',
-      keeperPid: 5,
-      cpuPct: SESSION_CPU_WARN_PCT + 100,
-      rssBytes: SESSION_RSS_WARN_BYTES * 2,
-      procCount: 3,
-      present: false,
-      status: null,
-      reaped: true,
-    },
-  ];
-  assert.deepEqual(decideThresholdWarnings(sessions, []), []);
+  const s = session({
+    cpuPct: SESSION_CPU_WARN_PCT + 100,
+    rssBytes: SESSION_RSS_WARN_BYTES * 2,
+    present: false,
+    status: null,
+    reaped: true,
+  });
+  assert.deepEqual(decideThresholdWarnings([s], []), []);
 });
 
 test('decideThresholdWarnings stays quiet under threshold', () => {
-  const sessions = [
-    {
-      workspaceId: 'ok',
-      keeperPid: 5,
-      cpuPct: SESSION_CPU_WARN_PCT - 1,
-      rssBytes: SESSION_RSS_WARN_BYTES - 1,
-      procCount: 3,
-      present: true,
-      status: 'idle',
-      reaped: false,
-    },
-  ];
-  const electron: ResourceLogElectronProc[] = [
+  const s = session({ cpuPct: SESSION_CPU_WARN_PCT - 1, rssBytes: SESSION_RSS_WARN_BYTES - 1 });
+  const e: ResourceLogElectronProc[] = [
     { type: 'GPU', pid: 9, cpuPct: ELECTRON_CPU_WARN_PCT - 1, rssBytes: ELECTRON_RSS_WARN_BYTES - 1 },
   ];
-  assert.deepEqual(decideThresholdWarnings(sessions, electron), []);
+  assert.deepEqual(decideThresholdWarnings([s], e), []);
 });
 
-// ─── shouldRotate: bounded log ───────────────────────────────────────────────
+// ─── bounded log: ≤7 days / ≤50 MB (review F4) ───────────────────────────────
 
-test('shouldRotate fires at the size cap, not below', () => {
-  assert.equal(shouldRotate(MAX_FILE_BYTES - 1), false);
-  assert.equal(shouldRotate(MAX_FILE_BYTES), true);
-  assert.equal(shouldRotate(MAX_FILE_BYTES + 1), true);
+const DAY = 24 * 60 * 60 * 1000;
+
+test('the bound constants keep active + .1 within 50 MB and 7 days (literals, not derived)', () => {
+  assert.equal(MAX_FILE_BYTES, 25 * 1024 * 1024);
+  assert.equal(RETENTION_MS, 7 * DAY);
+  assert.equal(ROTATE_AFTER_MS, 3.5 * DAY);
+  assert.ok(2 * MAX_FILE_BYTES <= 50 * 1024 * 1024);
+  assert.ok(2 * ROTATE_AFTER_MS <= 7 * DAY);
+});
+
+test('shouldRotate: size cap, age cap, unknown age; an empty file never rotates', () => {
+  const t0 = 1_700_000_000_000;
+  assert.equal(shouldRotate(MAX_FILE_BYTES - 1, t0, t0 + DAY), false);
+  assert.equal(shouldRotate(MAX_FILE_BYTES, t0, t0 + DAY), true); // size arm
+  assert.equal(shouldRotate(1024, t0, t0 + 3.5 * DAY - 1), false);
+  assert.equal(shouldRotate(1024, t0, t0 + 3.5 * DAY), true); // age arm — a low-traffic file
+  assert.equal(shouldRotate(1024, null, t0), true); // unknown age = expired
+  assert.equal(shouldRotate(0, null, t0), false); // nothing to rotate
+});
+
+test('shouldDropBackup: drops once the OLDEST sample passes 7 days; unknown age drops', () => {
+  const t0 = 1_700_000_000_000;
+  assert.equal(shouldDropBackup(t0, t0 + 7 * DAY), false);
+  assert.equal(shouldDropBackup(t0, t0 + 7 * DAY + 1), true);
+  assert.equal(shouldDropBackup(null, t0), true);
+});
+
+test('firstSampleAt reads the first line only and refuses garbage', () => {
+  assert.equal(firstSampleAt('{"at":1700000000000,"x":1}\n{"at":5}\n'), 1_700_000_000_000);
+  assert.equal(firstSampleAt('{"at":42}'), 42); // no trailing newline
+  assert.equal(firstSampleAt('not json\n{"at":1}\n'), null);
+  assert.equal(firstSampleAt('{"at":"soon"}\n'), null);
+  assert.equal(firstSampleAt(''), null);
 });
