@@ -26,6 +26,7 @@ import { sdkHasBackgroundTasks, sdkSessionLive, sdkStopIfLive } from './sdk-deli
 // relative specifiers (see commit 05adb90 — git.ts/ci-state.ts hit this).
 import {
   formatIdleDuration,
+  idleClockStart,
   resolveHibernateAfterMs,
   resolveHibernateSweepMs,
   shouldHibernate,
@@ -146,7 +147,7 @@ export async function sweepHibernation(): Promise<string[]> {
     // Seed unseen workspaces at the app-start floor rather than leaving them
     // `undefined` — otherwise a session that has been quietly live since launch
     // (started, never emitted another event) would never become eligible at all.
-    const lastActivityAt = getLastActivity(ws.id) ?? getAppStartedAt();
+    const lastActivityAt = idleClockStart(getLastActivity(ws.id), getAppStartedAt(), ws.createdAt);
 
     const eligible = shouldHibernate(ws, {
       now,

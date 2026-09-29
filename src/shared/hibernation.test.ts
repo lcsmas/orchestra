@@ -8,6 +8,7 @@ import {
   resolveHibernateAfterMs,
   resolveHibernateSweepMs,
   shouldHibernate,
+  idleClockStart,
   type HibernationSignals,
 } from './hibernation.ts';
 import type { Workspace, WorkspaceStatus } from './types.ts';
@@ -263,4 +264,35 @@ test('a live background task blocks hibernation even when idle for days', () => 
 
 test('clearing the background task makes it eligible again', () => {
   assert.equal(shouldHibernate(ws(), signals({ hasLiveBackgroundTask: false })), true);
+});
+
+// --- 2026-09-30: fresh spawns hibernated 1 s after spawn --------------------
+// The sweep floored an unseen workspace's idle clock at APP START, so a child spawned
+// 2 h after launch read "idle 2h" and slept before its brief was delivered.
+
+test('idleClockStart: an unseen workspace created AFTER app start idles from its creation', () => {
+  const appStart = NOW - 2 * 60 * 60 * 1000; // app up for 2 h
+  const created = NOW - 1000; // spawned 1 s ago
+  assert.equal(idleClockStart(undefined, appStart, created), created);
+  // and therefore the rule does NOT fire for it
+  assert.equal(
+    shouldHibernate(ws({ createdAt: created }), signals({ lastActivityAt: idleClockStart(undefined, appStart, created) })),
+    false,
+  );
+});
+
+test('idleClockStart: an old unseen workspace still floors at app start (no regression)', () => {
+  const appStart = NOW - 2 * 60 * 60 * 1000;
+  assert.equal(idleClockStart(undefined, appStart, appStart - 10_000), appStart);
+});
+
+test('idleClockStart: a seen workspace idles from its last activity', () => {
+  assert.equal(idleClockStart(NOW - 5000, NOW - 99_999, NOW - 50_000), NOW - 5000);
+});
+
+test('a workspace with a prompt still waiting to be delivered is never hibernated', () => {
+  const pending = [{ id: 'p1', text: 'the brief', createdAt: NOW - 3_600_000 }] as never;
+  assert.equal(shouldHibernate(ws({ sdkPendingPrompts: pending }), signals({ hasLiveSdk: true })), false);
+  // control: same workspace without the pending prompt IS eligible
+  assert.equal(shouldHibernate(ws(), signals({ hasLiveSdk: true })), true);
 });

@@ -177,6 +177,9 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   // workspaces whose output the user has not read yet — and the "zZ" chip would
   // replace the bell on a row that still owes them a look.
   if (ws.autoUnread) return false;
+  // A prompt still waiting to be delivered (e.g. a spawn's brief) means a turn is
+  // about to start — hibernating now strands it (2026-09-30: fresh spawns slept 1 s in).
+  if (ws.sdkPendingPrompts?.length) return false;
   // A /loop's wakeups live INSIDE the session process — hibernating a looping
   // agent doesn't pause the loop, it silently kills it (and the sidebar would
   // keep advertising a loop that can never fire again). A loop's idle phase
@@ -208,4 +211,15 @@ export function formatIdleDuration(ms: number): string {
   if (hours === 0) return `${minutes}m`;
   if (minutes === 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
+}
+
+/** Start of the idle clock for the sweep: the last activity seen, else the app-start
+ *  floor — but never before the workspace EXISTED. Without the createdAt bound a child
+ *  spawned 2 h after launch read "idle 2h" and was hibernated before its first turn. */
+export function idleClockStart(
+  lastSeen: number | undefined,
+  appStartedAt: number,
+  createdAt: number | undefined,
+): number {
+  return Math.max(lastSeen ?? appStartedAt, createdAt ?? 0);
 }

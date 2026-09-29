@@ -666,8 +666,12 @@ long-idle agents and lets the existing resume paths bring them back.
   and the structured path's `driveStatusFromEvent` pass through — and activity.ts
   cannot import hibernation.ts, which imports pty.ts, which imports activity.ts.
   In-memory only, which is the SAFE direction: after a restart the map is empty
-  and the sweep falls back to an app-start floor, so nothing can be hibernated
-  until it has been idle a full threshold *of this run*.
+  and the sweep falls back to an app-start floor — bounded below by the
+  workspace's own `createdAt` (`idleClockStart`, shared/hibernation.ts) — so
+  nothing can be hibernated until it has been idle a full threshold *of this run
+  and of its own life*. A workspace with `sdkPendingPrompts` (an undelivered
+  brief) is never hibernated. (2026-09-30: without the createdAt bound, spawns
+  made 2 h after launch slept 1 s in, their brief undelivered.)
 - **Restore** rides the paths that already resume: `clearHibernated(id)` is
   called from `ensureSession` (agent-sdk.ts — the single funnel for every SDK
   start/resume/wake, so no restore path can forget it), the `ptyStart` handler
