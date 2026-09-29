@@ -216,15 +216,30 @@ function isInside(p: string, dir: string): boolean {
   }
 }
 
-/** #235/D10: where the login dir's links were built from when that is NOT `globalDir` (manifest
- *  `source`; legacy manifest: any of its links pointing outside `globalDir`), else null. */
+/** True only for a DEFINITE absence (ENOENT/ENOTDIR, dangling links included) — EACCES/ELOOP are not "gone". */
+function isGone(p: string): boolean {
+  try {
+    fs.statSync(p);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
+}
+
+/** #235/D10: the OTHER, still-existing source this login dir's links were built from (manifest
+ *  `source`; legacy manifest: a link resolving outside `globalDir`), else null. A source/target that
+ *  no longer exists is no evidence — master re-homes those, so must we. */
 function builtFromElsewhere(loginDir: string, globalDir: string, prev: InheritManifest): string | null {
-  if (prev.source !== undefined) return sameDir(prev.source, globalDir) ? null : prev.source;
+  if (prev.source !== undefined) {
+    return sameDir(prev.source, globalDir) || isGone(prev.source) ? null : prev.source;
+  }
   for (const rel of prev.symlinks) {
     const linkPath = path.join(loginDir, rel);
     if (!isSymlink(linkPath)) continue;
     const target = path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath));
-    if (!isInside(target, globalDir)) return target;
+    if (isGone(target) || isInside(target, globalDir)) continue;
+    return target.endsWith(path.sep + rel) ? target.slice(0, -(rel.length + 1)) : path.dirname(target); // the source DIR
   }
   return null;
 }

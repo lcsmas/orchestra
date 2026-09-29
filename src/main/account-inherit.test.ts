@@ -485,9 +485,120 @@ for (const legacy of [false, true]) {
       assert.deepEqual(linksOf(after_), LINKS, 'no link stripped');
       assert.deepEqual(after_, before, 'byte-identical: nothing repointed into the fake HOME, MCP + manifest untouched');
       warnNames(warns, path.join(real.home, '.claude'), path.join(fake.home, '.claude'));
+      assert.ok(warns[0].includes(`built from ${path.join(real.home, '.claude')}, not ${path.join(fake.home, '.claude')}`), `names the source DIR, not a link-target file: ${warns[0]}`);
     });
   }
 }
+
+// ---- D10/P2: where master self-heals, the guard must not refuse forever --------
+
+for (const legacy of [false, true]) {
+  test(`#235/D10 ${legacy ? 'legacy' : 'stamped'} manifest, HOME moved (h1 → h2, old source GONE): re-homed like master, not refused`, async () => {
+    const rig = newRig();
+    await buildLiveMirror(rig);
+    if (legacy) unstamp(rig.login);
+    const home2 = path.join(path.dirname(rig.home), 'home2');
+    fs.renameSync(rig.home, home2); // the login dir (inside HOME) moves too; its links + stamp still name h1
+    assert.equal(fs.existsSync(path.join(rig.home, '.claude')), false, 'precondition: the old source is gone');
+    const moved = { home: home2, login: path.join(home2, '.claude-mc') };
+    assert.deepEqual(await runSync(moved, FULL), []);
+    const snap = snapshot(moved.login)!;
+    assert.deepEqual(linksOf(snap), LINKS);
+    assert.equal(snap['settings.json'], `L:${path.join(home2, '.claude', 'settings.json')}`, 'links now point at the new HOME');
+    assert.equal(stampOf(moved.login), path.join(home2, '.claude'));
+  });
+}
+
+test('#235/D10 poisoned stamp: a fake-HOME app stamped a never-synced live dir, its scratch HOME is deleted → the real sync heals', async () => {
+  const real = newRig();
+  makeSource(real.home);
+  put(path.join(real.login, '.credentials.json'), '{"scratch":true}');
+  const fake = fakeOf(real);
+  makeSource(fake.home);
+  assert.deepEqual(await runSync(fake, FULL), [], 'first sync on a fresh dir writes (fresh-account rule)');
+  assert.equal(stampOf(real.login), path.join(fake.home, '.claude'), 'precondition: stamped with the FAKE source');
+  fs.rmSync(fake.home, { recursive: true, force: true });
+  assert.deepEqual(await runSync(real, FULL), []);
+  assert.equal(snapshot(real.login)!['settings.json'], `L:${path.join(real.home, '.claude', 'settings.json')}`);
+  assert.equal(stampOf(real.login), path.join(real.home, '.claude'));
+});
+
+test('#235/D10 legacy manifest + HOME alias + ONE dangling link (its source file was deleted): still ours', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  unstamp(rig.login);
+  fs.rmSync(path.join(rig.home, '.claude', 'RTK.md')); // link RTK.md now dangles; CLAUDE.md still imports it
+  const alias = path.join(path.dirname(rig.home), 'homealias');
+  fs.symlinkSync(rig.home, alias);
+  assert.deepEqual(await runSync({ home: alias, login: rig.login }, FULL), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), LINKS.filter((l) => l !== 'RTK.md'), 'dangling link dropped as on master');
+});
+
+test('#235/D10 stamped source that EXISTS but cannot be resolved (symlink loop) → refused, fail closed', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  const loop = path.join(path.dirname(rig.home), 'loop');
+  fs.symlinkSync(loop, loop);
+  const m = JSON.parse(fs.readFileSync(manifestPath(rig.login), 'utf8'));
+  fs.writeFileSync(manifestPath(rig.login), JSON.stringify({ ...m, source: loop }, null, 2));
+  const before = snapshot(rig.login);
+  const warns = await runSync(rig, FULL);
+  assert.deepEqual(snapshot(rig.login), before);
+  warnNames(warns, loop);
+});
+
+// ---- D10/P4: pin the legacy link check's own clauses ---------------------------
+
+const relink = (login: string, rel: string, to: string): void => {
+  fs.rmSync(path.join(login, rel), { force: true });
+  fs.mkdirSync(path.dirname(path.join(login, rel)), { recursive: true });
+  fs.symlinkSync(to, path.join(login, rel));
+};
+
+test('#235/D10 legacy link into a SIBLING dir `.claude-x` (string prefix of `.claude`) is foreign → refused', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  unstamp(rig.login);
+  put(path.join(rig.home, '.claude-x', 'RTK.md'), '# not ours\n');
+  relink(rig.login, 'RTK.md', path.join(rig.home, '.claude-x', 'RTK.md'));
+  const before = snapshot(rig.login);
+  const warns = await runSync(rig, FULL);
+  assert.deepEqual(snapshot(rig.login), before);
+  warnNames(warns, path.join(rig.home, '.claude-x'));
+});
+
+test('#235/D10 legacy RELATIVE links: into our source → proceeds; into a foreign dir → refused (resolved against the LINK dir)', async () => {
+  const ours = newRig();
+  await buildLiveMirror(ours);
+  unstamp(ours.login);
+  for (const rel of LINKS.filter((l) => !l.includes('/'))) relink(ours.login, rel, path.join('..', '.claude', rel)); // login = <home>/.claude-mc
+  assert.deepEqual(await runSync(ours, { settings: true }), [], 'relative links into our own source are ours');
+  assert.deepEqual(linksOf(snapshot(ours.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json']);
+
+  const foreign = newRig();
+  await buildLiveMirror(foreign);
+  unstamp(foreign.login);
+  put(path.join(path.dirname(foreign.home), 'elsewhere', '.claude', 'settings.json'), '{}');
+  relink(foreign.login, 'settings.json', path.join('..', '..', 'elsewhere', '.claude', 'settings.json')); // → <t>/elsewhere/.claude/settings.json
+  const before = snapshot(foreign.login);
+  const warns = await runSync(foreign, FULL);
+  assert.deepEqual(snapshot(foreign.login), before);
+  warnNames(warns, path.join(path.dirname(foreign.home), 'elsewhere', '.claude'));
+});
+
+test('#235/D10 legacy SKILLS-only account whose links point at another home → refused', async () => {
+  const real = newRig();
+  makeSource(real.home);
+  await runSync(real, { skills: ['frontend-design', 'handoff'] });
+  unstamp(real.login);
+  const before = snapshot(real.login)!;
+  assert.deepEqual(linksOf(before), ['skills/frontend-design', 'skills/handoff']);
+  const fake = fakeOf(real);
+  fs.mkdirSync(path.join(fake.home, '.claude'));
+  const warns = await runSync(fake, { skills: ['frontend-design', 'handoff'] });
+  assert.deepEqual(snapshot(real.login), before);
+  warnNames(warns, path.join(real.home, '.claude'));
+});
 
 test('#235/D10 stamped MCP-only account (no links): refused too', async () => {
   const real = newRig();
@@ -508,12 +619,13 @@ test('#235/D10 legacy manifest with ONE foreign link among ours → refused (any
   await buildLiveMirror(rig);
   unstamp(rig.login);
   const other = path.join(path.dirname(rig.home), 'other', '.claude', 'RTK.md');
+  put(other, '# foreign, still exists\n'); // a dangling foreign target is no evidence (P2)
   fs.unlinkSync(path.join(rig.login, 'RTK.md'));
   fs.symlinkSync(other, path.join(rig.login, 'RTK.md'));
   const before = snapshot(rig.login);
   const warns = await runSync(rig, FULL); // same HOME as 6 of the 7 links
   assert.deepEqual(snapshot(rig.login), before);
-  warnNames(warns, other);
+  warnNames(warns, path.dirname(other));
 });
 
 for (const legacy of [false, true]) {
