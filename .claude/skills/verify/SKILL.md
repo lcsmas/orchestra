@@ -92,8 +92,9 @@ sibling had overwritten it in between. Same rule as the `/json` target-url check
 below: identity by what the thing SAYS IT IS, never by where you found it.
 
 **Pin the account before any live drive.** Seeding the store is a REQUIRED step,
-not a convenience, and its `configDir` is derived from YOUR `CLAUDE_CONFIG_DIR`
-(fallback `~/.claude`) — see the "pin the account in that seed" section of
+not a convenience: its `configDir` is a SCRATCH dir under your `ORCHESTRA_HOME`
+holding a copy of YOUR login's `.credentials.json` — NEVER a live `~/.claude*`
+dir, which app boot would strip (see the "pin the account in that seed" section of
 [`LAUNCH-TRAPS.md`](LAUNCH-TRAPS.md). An unpinned rig falls back to the default
 login, which can be OAuth-expired machine-wide, and that failure impersonates
 the feature under test.
@@ -178,9 +179,9 @@ rather than omitted:
       RUNNING instance is quoted beside the version you built, and they match.
       "It was at the installed path" is not an identity — that path is shared.
 - [ ] The account was PINNED before the drive: the report quotes the seeded
-      `accountId`, the seeded account's `id`, and the derived `configDir` value,
-      which equals your own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`. A drive on
-      the unpinned default login is reported as NOT VERIFIED.
+      `accountId`, the seeded account's `id`, and the `configDir` value, which
+      is a scratch dir under `$ORCHESTRA_HOME` — never a live `~/.claude*` dir.
+      A drive on the unpinned default login is reported as NOT VERIFIED.
 - [ ] Every changed surface has at least one NAMED state assertion, printed as
       `pre-state -> post-state` and showing a DIFFERENCE. A surface whose
       pre-state already equalled the target is reported as such — the assertion

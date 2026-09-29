@@ -91,7 +91,16 @@ the #29 keeper harness and a wave-2 live gate each burned a blocked cycle on
 it). The fallback is correct behaviour; the rig is what's wrong when it relies
 on it.
 
-**`configDir` is DERIVED from the INVOKING agent's own `CLAUDE_CONFIG_DIR`,
+**⛔ NEVER point the rig's `configDir` (or the child's `CLAUDE_CONFIG_DIR` /
+`HOME`) at a LIVE Claude dir (`~/.claude`, `~/.claude-*`, your own
+`$CLAUDE_CONFIG_DIR`).** App boot runs account-inheritance sync against the
+rig's FAKE `HOME`, finds no inheritance source, and STRIPS the live dir: its
+CLAUDE.md/settings/LESSONS/skills symlinks and its MCP servers (measured twice on
+2026-09-29 — `~/.claude-mc` emptied at 22:57 and again at 23:39 local by two
+rigs following the old version of this recipe). Use a SCRATCH config dir per
+boot, and copy only `.credentials.json` into it when the drive needs a real login.
+
+**The LOGIN is DERIVED from the INVOKING agent's own `CLAUDE_CONFIG_DIR`,
 falling back to `~/.claude` — NEVER a hardcoded account.** The rig must run as
 WHOEVER RUNS IT: your sibling agents run this same recipe under different
 logins, so a path copied out of someone else's run pins THEIR account and drives
@@ -101,8 +110,11 @@ literal `${CLAUDE_CONFIG_DIR}` into the store, because `expandConfigDir`
 PROCESS's env, not yours.
 
 ```bash
-CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"   # derived — echo it and eyeball it
-[ -d "$CFG" ] || { echo "ABORT: config dir $CFG does not exist"; exit 1; }
+LIVE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"  # the login to borrow — READ ONLY
+[ -d "$LIVE" ] || { echo "ABORT: config dir $LIVE does not exist"; exit 1; }
+CFG="$ORCHESTRA_HOME/claude-config"         # SCRATCH — the app may rewrite it freely
+case "$(realpath -m "$CFG")" in "$(realpath -m "$LIVE")"|"$HOME"/.claude|"$HOME"/.claude-*) echo "ABORT: CFG is a live Claude dir"; exit 1;; esac
+mkdir -p "$CFG" && { [ -f "$LIVE/.credentials.json" ] && cp "$LIVE/.credentials.json" "$CFG/" || true; }
 # Both of these silently produce a BROKEN-BUT-PLAUSIBLE store if empty: an
 # unset ORCHESTRA_WS_ID seeds a workspace with id "" that still self-checks
 # (accountId "rig-" matches account id "rig-"), so the pin looks applied and
@@ -123,7 +135,7 @@ node -e '
 ```
 
 Then ASSERT the pin landed, rather than assuming it: the printed `configDir`
-equals your `echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"`, and the seeded
+is the SCRATCH dir under `$ORCHESTRA_HOME` (never `$LIVE`), and the seeded
 workspace's `accountId` matches the seeded account's `id`. A pin that silently
 did not apply looks exactly like a pin that did, until the drive fails as the
 feature.
