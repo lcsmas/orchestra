@@ -271,7 +271,30 @@ after(() => {
       /* fine */
     }
   }
+  // LEAK ASSERTION: after the reap above NO keeper daemon / fake CLI of any ctx may still be running (a
+  // SIGSTOPped or SIGTERM-ignoring fake is killed by SIGKILL too). Fails the file rather than orphaning to init.
+  const live = (): number[] =>
+    ctxs.flatMap((ctx) => [...pidsRunning(ctx.fakeCli), ...pidsRunning(ctx.sock)]).filter((p) => alive(p) && !isZombie(p));
+  const t0 = Date.now();
+  while (live().length && Date.now() - t0 < 3000) {
+    for (const p of live()) {
+      try {
+        process.kill(p, 'SIGKILL');
+      } catch {
+        /* gone */
+      }
+    }
+  }
+  assert.deepEqual(live(), [], 'keeper / fake-CLI processes leaked past teardown');
 });
+
+function isZombie(pid: number): boolean {
+  try {
+    return /^\d+ \(.*\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+  } catch {
+    return true;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -1,4 +1,4 @@
-import { test, before } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -58,7 +58,7 @@ function runArm(arm: string): Promise<Verdict | { ok: false; error: string }> {
     execFile(
       process.execPath,
       ['--experimental-strip-types', '--import', REGISTER, RIG, arm],
-      { cwd: REPO, timeout: 240_000, encoding: 'utf8', env: { ...process.env, A2_HOME: path.join(os.homedir(), '.a2-rig', `u${process.pid}`) } },
+      { cwd: REPO, timeout: 240_000, encoding: 'utf8', env: { ...process.env, A2_HOME: RIG_DIR } },
       (_err, stdout) => {
         const line = stdout.trim().split('\n').filter(Boolean).pop();
         // An EMPTY result must never read as a pass (a crashed rig prints nothing).
@@ -73,6 +73,24 @@ function runArm(arm: string): Promise<Verdict | { ok: false; error: string }> {
   });
 }
 
+const RIG_DIR = path.join(os.homedir(), '.a2-rig', `u${process.pid}`);
+
+/** Live (non-zombie) pids whose argv mentions this file's rig dir — keepers, `timeout` wrappers, fake CLIs. */
+function rigPids(): number[] {
+  const out: number[] = [];
+  for (const e of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(e) || Number(e) === process.pid) continue;
+    try {
+      if (!fs.readFileSync(`/proc/${e}/cmdline`, 'utf8').split('\0').some((a) => a.includes(RIG_DIR))) continue;
+      if (/^\d+ \(.*\) Z /.test(fs.readFileSync(`/proc/${e}/stat`, 'utf8'))) continue; // reaped-pending zombie = dead
+      out.push(Number(e));
+    } catch {
+      /* gone */
+    }
+  }
+  return out;
+}
+
 before(async () => {
   // Small pool: each arm launches real keeper daemons; the whole suite runs files in parallel already.
   const queue = [...ARMS];
@@ -81,7 +99,6 @@ before(async () => {
       for (let a = queue.shift(); a; a = queue.shift()) results.set(a, await runArm(a));
     }),
   );
-  fs.rmSync(path.join(os.homedir(), '.a2-rig', `u${process.pid}`), { recursive: true, force: true });
 });
 
 test('every arm the rig declares is run here (no silently unrun arm)', () => {
@@ -140,4 +157,26 @@ test('boot reconcile reaps through the guarded pass and never kills on a bare st
   assert.match(fn, /bootFallbackKills\(process\.platform/);
   // the only killKeeper is the non-Linux fallback's, fed by the guarded bootFallbackKills list
   assert.equal((fn.match(/killKeeper\(/g) ?? []).length, 1);
+});
+
+// LEAK ASSERTION (the fleet's 588-orphan incident): 0 fake keeper / CLI / wrapper pids may outlive the arms — each
+// arm's own finish() must have reaped them (incl. SIGSTOPped and SIGTERM-ignoring ones). Checked BEFORE the safety net.
+test('no keeper / fake CLI / wrapper process is left running by the arms', () => {
+  const left = rigPids();
+  assert.deepEqual(left, [], `leaked ${left.length} pid(s) under ${RIG_DIR}`);
+});
+
+after(async () => {
+  // Safety net (an arm killed by its 240 s timeout cannot reap its own children): SIGKILL, then verify none remain.
+  for (const pid of rigPids()) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* gone */
+    }
+  }
+  for (let i = 0; i < 50 && rigPids().length; i++) await new Promise((r) => setTimeout(r, 100));
+  const left = rigPids();
+  fs.rmSync(RIG_DIR, { recursive: true, force: true });
+  assert.deepEqual(left, [], `pids survived SIGKILL: ${left.join(',')}`);
 });
