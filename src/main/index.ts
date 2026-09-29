@@ -195,6 +195,7 @@ import {
 } from './bus-liveness';
 import { getLastActivity, getAppStartedAt, getInFlightTools } from './hibernation-activity';
 import { sdkStartAndDeliver } from './sdk-delivery';
+import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -503,7 +504,8 @@ async function createMainWindow() {
       // An archived workspace's session is a frozen leftover; waking it would
       // resurrect a workspace the human retired. `ws.archived` is the flag the
       // #90 watchdog gates on too (session-watchdog.ts:233).
-      wakeable: !ws.archived && !!ws.worktreePath,
+      // #226: a paused sandbox agent cannot be woken — not-wakeable, or the sweep re-fires (60 s + every WAL write) at a start that always refuses.
+      wakeable: !ws.archived && !!ws.worktreePath && sandboxPausedMessage(ws) === null,
       // #134 — the WAVE run this reader belongs to (its tree anchor), the SAME
       // id `$ORCHESTRA_RUN_ID` plumbs into the member's CLI, so the host looks
       // for a reader's pending mail in the run the CLI actually wrote it to. Was

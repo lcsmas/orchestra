@@ -1770,12 +1770,14 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     from the same constant, so rewriting it to a bogus kind moves them together
     and equality still holds (measured — it passed an equality-only version
     while the feature was fully broken, the CLI failing closed on the unknown
-    kind). Both **launch paths** are driven — a local workspace and a
-    `host.kind==='sandbox'` one, the latter asserting `cwd === '/workspace'` so
-    it cannot silently re-measure the local arm — because the launch site
-    already spreads one option on `remote` 14 lines below the wiring
-    (`agent-sdk.ts:1248`), making a `...(remote ? {} : {...})` gate a one-line
-    break in the file's own idiom.
+    kind). Both **workspace kinds** are driven — a local workspace (the wiring
+    above) and a `host.kind==='sandbox'` one. Sandbox agents are **PAUSED**
+    (#226, pending #220 — see [sandbox-transport.md](sandbox-transport.md) § PAUSED): `ensureSession`
+    refuses them before `query()`, so the sandbox arm asserts the REFUSAL — `sdkSend`
+    throws naming the pause + `#220`, an error row is broadcast, `query()` is never
+    reached — instead of the old remote wiring (`cwd === '/workspace'`). **Accepted
+    gap until #220:** the `remote` option spread at the launch site is unreachable,
+    hence ungated.
     **Proven to fail** — six mutations each applied to source and watched go RED
     (RC=1): the three options deleted individually; `SUPPORTED_DIALOG_KINDS`
     set to a bogus kind; a declared-but-not-handled kind appended; and the

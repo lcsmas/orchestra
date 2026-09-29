@@ -434,12 +434,13 @@ function seedWorld(home, opt = {}) {
   // local worktree retired). `gone` = retired path absent (the normal case); `live` = the retire step failed, so the local dir still
   // exists — the case where a PTY fallback WITHOUT `host` would start a local agent. Listed FIRST so the store's first ws is active at boot.
   const sbxHost = { kind: 'sandbox', endpoint: 'ws://127.0.0.1:9' }; // nothing listens there: a refused start must never dial
-  const sbxRec = (tag, wt) => ({ ...ws, id: `ws-avr-sbx-${tag}`, name: `avr-sbx-${tag}`, branch: `e2e/avr-sbx-${tag}`, worktreePath: wt, host: sbxHost, hasInput: false, sdkSessionId: `avr-sbx-${tag}-sess` });
+  const sbxRec = (tag, wt, extra = {}) => ({ ...ws, id: `ws-avr-sbx-${tag}`, name: `avr-sbx-${tag}`, branch: `e2e/avr-sbx-${tag}`, worktreePath: wt, host: sbxHost, hasInput: false, sdkSessionId: `avr-sbx-${tag}-sess`, ...extra });
   const sbxLiveDir = path.join(home, 'wt', 'avr-sbx-live');
   if (opt.sandbox) fs.mkdirSync(sbxLiveDir, { recursive: true });
-  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir) } : null;
+  // `legacy` = a terminal-only sandbox ws (hasInput, NO sdkSessionId): the restart classifier routes it to the PTY (host-aware) launcher.
+  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir), legacy: sbxRec('legacy', path.join(home, 'wt', 'avr-sbx-legacy'), { hasInput: true, sdkSessionId: undefined }) } : null;
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, ws] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, sbx.legacy, ws] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
   // Stub claude: the legacy agent PTY execs `claude` from PATH; a stub keeps the baseline
   // free of API calls. Stays a shell (not exec) so its cmdline names the stub for identity.
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
@@ -816,6 +817,13 @@ function runCli(app, args, ms = 60000) {
     c.on('close', (rc) => { clearTimeout(t); resolve({ rc, stdout: out.trim(), stderr: err.trim() }); });
   });
 }
+/** `ws.sdkRestarts` length as the RUNNING app's store holds it (a refused restart must not grow it — F5). */
+const restartsOf = (app, id) => app.cdp.eval(`window.orchestra.listWorkspaces().then(l => (l.find(w => w.id === ${JSON.stringify(id)}) || {}).sdkRestarts?.length ?? 0)`);
+/** Drive an IPC method that may reject: `{ ok, value|message }` (Electron prefixes the remote error text — clauses match a substring). */
+const ipcSettle = (app, expr, ms = 30000) => Promise.race([
+  app.cdp.eval(`(${expr}).then(v => ({ ok: true, value: v }), e => ({ ok: false, message: String((e && e.message) || e) }))`),
+  new Promise((r) => setTimeout(() => r({ ok: false, message: `TIMEOUT ${ms}ms` }), ms)),
+]);
 /** One-line message that must name the pause AND the follow-up ticket (all three parts, literal). */
 const namesPause = (t) => /paused/i.test(t ?? '') && (t ?? '').includes('#220') && (t ?? '').includes('Reconcile sandbox agents with the Agent view');
 const oneLine = (t, n = 200) => String(t ?? '').replace(/\s+/g, ' ').slice(0, n);
@@ -1545,6 +1553,24 @@ const ARMS = [
       // baseline (measured on master): the SDK start is lazy, so `restart` reports success and the failure surfaces later as an error row.
       ctx.clause('cli-restart/not-ok', rs.rc !== null && (rs.rc !== 0) === want, `rc=${rs.rc} expected(${MODE}) ${want ? 'not-ok (a restart of a paused sandbox agent must fail)' : 'ok — the pre-pause lazy start'}; stdout=${JSON.stringify(oneLine(rs.stdout, 80))}`);
       ctx.clause('cli-restart/names-pause-and-220', namesPause(rs.stderr) === want, `names pause+#220=${namesPause(rs.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(rs.stderr)}`);
+      // F5: a refused restart writes NOTHING (recordRestart ran before the funnel threw). baseline (master): the lazy restart "succeeds" and records.
+      const restartsPre = await restartsOf(app, sbx.gone.id);
+      const rs2 = await runCli(app, ['restart', sbx.gone.id]);
+      const restartsPost = await restartsOf(app, sbx.gone.id);
+      console.log(`OBSERVED  cli restart #2 ${sbx.gone.id}: rc=${rs2.rc} sdkRestarts ${restartsPre} -> ${restartsPost}`);
+      ctx.clause('cli-restart/refused-restart-writes-no-state', want ? restartsPost === restartsPre : restartsPost > restartsPre, `store sdkRestarts ${restartsPre} -> ${restartsPost} expected(${MODE}) ${want ? 'unchanged' : 'grown (master records a restart that then fails)'}`);
+      // F2: `--fresh` (sdkClear) never reaches the funnel — the dispatcher must refuse it too, and must not clear the session id.
+      const fr = await runCli(app, ['restart', sbx.gone.id, '--fresh']);
+      const sessAfter = await app.cdp.eval(`window.orchestra.listWorkspaces().then(l => (l.find(w => w.id === ${JSON.stringify(sbx.gone.id)}) || {}).sdkSessionId)`);
+      console.log(`OBSERVED  cli restart --fresh ${sbx.gone.id}: rc=${fr.rc} stdout=${JSON.stringify(oneLine(fr.stdout))} stderr=${JSON.stringify(oneLine(fr.stderr))} sdkSessionId now ${JSON.stringify(sessAfter)}`);
+      ctx.clause('cli-restart-fresh/not-ok', fr.rc !== null && (fr.rc !== 0) === want, `rc=${fr.rc} expected(${MODE}) ${want ? 'not-ok' : 'ok — master clears the conversation of a workspace it cannot run'}`);
+      ctx.clause('cli-restart-fresh/names-pause-and-220', namesPause(fr.stderr) === want, `names pause+#220=${namesPause(fr.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(fr.stderr)}`);
+      ctx.clause('cli-restart-fresh/session-id-untouched', want ? sessAfter === sbx.gone.sdkSessionId : sessAfter === '', `sdkSessionId=${JSON.stringify(sessAfter)} expected(${MODE}) ${want ? JSON.stringify(sbx.gone.sdkSessionId) : "'' (cleared)"}`);
+      // F4: a LEGACY sandbox ws (hasInput, no session id) classifies to the host-aware PTY route — must be refused before the classifier.
+      const lg = await runCli(app, ['restart', sbx.legacy.id]);
+      console.log(`OBSERVED  cli restart legacy ${sbx.legacy.id}: rc=${lg.rc} stdout=${JSON.stringify(oneLine(lg.stdout))} stderr=${JSON.stringify(oneLine(lg.stderr))}`);
+      ctx.clause('cli-restart-legacy/not-ok', lg.rc !== null && lg.rc !== 0, `rc=${lg.rc} (both modes: master dials the container and fails; the pause refuses without dialling)`);
+      ctx.clause('cli-restart-legacy/names-pause-and-220', namesPause(lg.stderr) === want, `names pause+#220=${namesPause(lg.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(lg.stderr)} (baseline: ECONNREFUSED = it dialled the sandbox)`);
 
       // ── 3. PTY-listing positive control (the local workspace), then CLI message wake of the sandbox workspace whose local dir EXISTS ──
       await activateWorkspace(app, 'avr-1');
@@ -1566,6 +1592,14 @@ const ARMS = [
       const refusedLine = logText.split('\n').find((l) => l.includes(`wake refused for ${sbx.live.id}`)) ?? '';
       ctx.clause('cli-message-wake/refusal-logged-with-pause-message', !!refusedLine === want && (!want || namesPause(refusedLine)), `wake-refused log line present=${!!refusedLine} expected(${MODE})=${want} :: ${oneLine(refusedLine)}`);
 
+      // ── 3b. fix-checks / send-review over IPC: a paused agent THROWS the pause, never answers 'requested' into nothing (F3) ──
+      const sr = await ipcSettle(app, `window.orchestra.sendReviewToAgent(${JSON.stringify(sbx.gone.id)}, 'AVR-REVIEW-PROBE')`);
+      console.log(`OBSERVED  sendReviewToAgent(${sbx.gone.id}): ${JSON.stringify(sr)}`);
+      ctx.clause('send-review/throws-the-pause', want ? (!sr.ok && namesPause(sr.message)) : (sr.ok && sr.value?.status === 'requested'), `settled=${JSON.stringify(sr).slice(0, 200)} expected(${MODE}) ${want ? 'reject naming pause+#220' : "resolve 'requested' (master: a false claim, the failure surfaces later as a cryptic error row)"}`);
+      const fx = await ipcSettle(app, `window.orchestra.fixChecks(${JSON.stringify(sbx.gone.id)})`);
+      console.log(`OBSERVED  fixChecks(${sbx.gone.id}): ${JSON.stringify(fx)}`);
+      ctx.clause('fix-checks/throws-the-pause', want ? (!fx.ok && namesPause(fx.message)) : !namesPause(fx.message ?? ''), `settled=${JSON.stringify(fx).slice(0, 200)} expected(${MODE}) ${want ? 'reject naming pause+#220 (before any gh call)' : 'anything but the pause'}`);
+
       // ── 4. Positive control: a LOCAL workspace's Agent-view send is NOT refused ──────────────
       await openAgentTab(app);
       const LMARK = 'AVR-SEND-LOCAL-77c2';
@@ -1577,6 +1611,8 @@ const ARMS = [
       console.log(`OBSERVED  local send(${local.id}): user rows=${JSON.stringify((lr?.users ?? []).map((u) => oneLine(u, 60)))} error rows=${JSON.stringify(oneLine(lErr, 200))}`);
       ctx.clause('local-control/not-refused-with-pause', !!lr && !namesPause(lErr) && !/paused/i.test(lErr), `pause text in local error rows=${namesPause(lErr)} (rows: ${JSON.stringify(oneLine(lErr, 120))})`);
       ctx.clause('local-control/user-turn-rendered', !!lr && lr.users.some((u) => u.includes(LMARK)), `user rows=${JSON.stringify((lr?.users ?? []).map((u) => oneLine(u, 60)))} — the send got past ensureSession`);
+      const lsr = await ipcSettle(app, `window.orchestra.sendReviewToAgent(${JSON.stringify(local.id)}, 'AVR-REVIEW-LOCAL')`);
+      ctx.clause('local-control/send-review-still-requested', lsr.ok && lsr.value?.status === 'requested', `settled=${JSON.stringify(lsr).slice(0, 160)} (a local ws with a live session takes the review as its next turn)`);
     },
   },
 ];

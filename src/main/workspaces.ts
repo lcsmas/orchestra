@@ -1489,6 +1489,9 @@ const SUBMIT_TYPE_ROUNDS = 2;
 async function startWorkspaceAgentHeadless(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return;
+  // #226: sandbox agents are paused — throw (dispatchSpawnRequest answers {ok:false,error}) before the PTY fallback below. Unreachable today: no producer spawns a sandbox ws.
+  const paused = sandboxPausedMessage(ws);
+  if (paused) throw new Error(paused);
   // STRUCTURED-FIRST: run the delegated agent as an SDK session, so the child
   // works in the structured view (the default agent surface) instead of a raw
   // `claude` TUI hidden in the "Raw" tab. sdkStartAndDeliver lazy-starts the

@@ -1,8 +1,10 @@
 // #226 — WIRING pins for the sandbox pause. agent-sdk.ts / workspaces.ts cannot be imported under
 // `node --test` (Electron + extensionless directory imports), so the DECISION is executed in
 // src/shared/sandbox-pause.test.ts and the BEHAVIOUR is proven by the built-app arm `sandbox_paused`
-// (scripts/e2e-agent-view-removal.mjs); this file pins WHERE the decision sits and that no other
-// agent-start site exists — a source pin, so it proves placement, never effect.
+// (scripts/e2e-agent-view-removal.mjs); this file pins WHERE the decision sits (funnel, wake, restart,
+// fix-checks/send-review, bus-wake roster, headless spawn) and that no other agent-start site exists
+// — a source pin, so it proves placement, never effect. The funnel's EFFECT is also driven by
+// scripts/verify-answerable-wiring.mjs (`pnpm run test:wiring`).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,6 +13,9 @@ import path from 'node:path';
 const read = (f: string) => fs.readFileSync(path.join(process.cwd(), 'src', 'main', f), 'utf8');
 const AGENT_SDK = read('agent-sdk.ts');
 const WORKSPACES = read('workspaces.ts');
+const RESTART = read('restart-workspace.ts');
+const API_HANDLERS = read('api-handlers.ts');
+const INDEX = read('index.ts');
 
 /** Body of a top-level function: from its signature to the next column-0 `}`. */
 function body(src: string, signature: string): string {
@@ -54,4 +59,34 @@ test('wake: wakeAgentWithPrompt refuses a paused sandbox workspace before any wa
   assert.match(b, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) \{[\s\S]*?return false;\s*\n\s*\}/);
   for (const later of ['clearHibernated(id)', 'sdkDeliver(id, prompt)', 'sdkStartAndDeliver(id, prompt)', 'await startPty('])
     before(b, 'sandboxPausedMessage(ws)', later);
+});
+
+test('restart: dispatchRestartRequest refuses a paused sandbox workspace BEFORE the classifier (--fresh, legacy PTY route, recordRestart)', () => {
+  const b = body(RESTART, 'export async function dispatchRestartRequest(');
+  assert.match(b, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) return \{ ok: false, error: paused \};/);
+  before(b, 'sandboxPausedMessage(ws)', 'await resolveRestart(');
+});
+
+test('fix-checks / send-review handlers THROW the pause before doing any work (never answer `requested` into nothing)', () => {
+  const fix = API_HANDLERS.slice(API_HANDLERS.indexOf('fixChecks: async (id) =>'), API_HANDLERS.indexOf('getReviewDiff: async'));
+  assert.ok(fix.length > 100, 'fixChecks handler not found');
+  assert.match(fix, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
+  before(fix, 'sandboxPausedMessage(ws)', 'findBranchChecks(');
+  before(fix, 'sandboxPausedMessage(ws)', 'wakeAgentWithPrompt(');
+  const rev = API_HANDLERS.slice(API_HANDLERS.indexOf('sendReviewToAgent: async (id, prompt) =>'), API_HANDLERS.indexOf('listTickets: async'));
+  assert.ok(rev.length > 100, 'sendReviewToAgent handler not found');
+  assert.match(rev, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
+  before(rev, 'sandboxPausedMessage(ws)', 'wakeAgentWithPrompt(');
+});
+
+test('bus-wake: the roster marks a paused sandbox workspace NOT wakeable (else the sweep re-fires at a start that always refuses)', () => {
+  const roster = INDEX.slice(INDEX.indexOf('setWakeRoster(() =>'), INDEX.indexOf('setWakeRoster(() =>') + 1500);
+  assert.match(roster, /wakeable: !ws\.archived && !!ws\.worktreePath && sandboxPausedMessage\(ws\) === null,/);
+});
+
+test('spawn: startWorkspaceAgentHeadless throws the pause before the SDK start / PTY fallback (unreachable today — no producer spawns a sandbox ws)', () => {
+  const b = body(WORKSPACES, 'async function startWorkspaceAgentHeadless(');
+  assert.match(b, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
+  before(b, 'sandboxPausedMessage(ws)', 'sdkStartAndDeliver(id, ws.lastTask)');
+  before(b, 'sandboxPausedMessage(ws)', 'await startPty(');
 });

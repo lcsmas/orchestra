@@ -50,12 +50,12 @@
 // still holds — measured, it passed an equality-only version of this gate while
 // the feature was completely broken.
 //
-// BOTH LAUNCH PATHS are driven — a local workspace and a sandbox/remote one.
-// `ensureSession` derives `remote = ws.host?.kind === 'sandbox'`, and the launch
-// site already spreads one option conditionally on that flag, so gating the
-// wiring the same way is a one-line change in the file's own house style that
-// would strip cards from every remote workspace. A local-only harness cannot
-// see it.
+// BOTH WORKSPACE KINDS are driven — a local workspace (the wiring above) and a
+// sandbox/remote one. Sandbox agents are PAUSED (#226, pending #220): `ensureSession`
+// refuses them before `query()`, so the sandbox arm now asserts the REFUSAL (send throws
+// naming the pause + #220, an error row is broadcast, `query()` is never reached) instead
+// of the old remote wiring. ACCEPTED GAP until #220: the `remote` option spread at the
+// launch site is unreachable, hence ungated.
 //
 // PROVEN TO FAIL (the only claim that makes this a gate) — each mutation
 // applied to the source and WATCHED to go red:
@@ -170,9 +170,8 @@ fs.writeFileSync(
         id: WS_ID_SANDBOX,
         name: 'wiring-gate-sandbox',
         repoPath: worktree,
-        // A sandbox workspace's worktree lives in the container; ensureSession
-        // skips the local statSync/hook-install for it and passes
-        // SANDBOX_WORKSPACE_DIR as cwd. The path here is never touched.
+        // A sandbox workspace's worktree lives in the container. Sandbox agents are
+        // PAUSED (#226): ensureSession refuses it before touching this path.
         worktreePath: '/workspace',
         branch: 'wiring-gate',
         accountId: ACCOUNT_ID,
@@ -544,56 +543,41 @@ if (typeof options.onUserDialog !== 'function' || !handledKinds?.length) {
   );
 }
 
-// ── 3. The SANDBOX/REMOTE launch path carries the same wiring ───────────────
-// A sandbox workspace takes the `remote === true` branch of ensureSession. The
-// launch site conditions one option on exactly that flag already, so gating the
-// answerable-cards wiring the same way is a one-line change in the file's own
-// idiom that would silently strip cards from every remote workspace. Asserting
-// the same three options on this second capture is what makes that visible.
-console.log('\nquery() launch site receives the same wiring (SANDBOX/REMOTE workspace):');
-const remoteOptions = await captureOptionsFor(WS_ID_SANDBOX);
-if (!remoteOptions) {
-  check('the sandbox workspace reached query()', false, 'sdkSend never reached query()');
-} else {
-  // Confirm the arm really is the remote one — otherwise this whole section
-  // could be silently re-testing the local path and passing for the wrong
-  // reason. `cwd` is SANDBOX_WORKSPACE_DIR ('/workspace') only when
-  // `remote === true` (agent-sdk.ts:1173).
-  check(
-    'the sandbox arm really took the remote branch (cwd is the container path)',
-    remoteOptions.cwd === '/workspace',
-    `cwd: ${remoteOptions.cwd} (expected /workspace; if this is the local worktree the probe measured the WRONG arm)`,
-  );
-  check(
-    'onElicitation is passed to query() for a sandbox workspace',
-    typeof remoteOptions.onElicitation === 'function',
-    `onElicitation: ${remoteOptions.onElicitation === undefined ? 'MISSING' : typeof remoteOptions.onElicitation}`,
-  );
-  check(
-    'onUserDialog is passed to query() for a sandbox workspace',
-    typeof remoteOptions.onUserDialog === 'function',
-    `onUserDialog: ${remoteOptions.onUserDialog === undefined ? 'MISSING' : typeof remoteOptions.onUserDialog}`,
-  );
-  const remoteSameSet =
-    Array.isArray(remoteOptions.supportedDialogKinds) &&
-    Array.isArray(handledKinds) &&
-    remoteOptions.supportedDialogKinds.length === handledKinds.length &&
-    [...remoteOptions.supportedDialogKinds].sort().join('\u0000') ===
-      [...handledKinds].sort().join('\u0000');
-  check(
-    'supportedDialogKinds DECLARED === HANDLED for a sandbox workspace',
-    remoteSameSet,
-    `declared: ${JSON.stringify(remoteOptions.supportedDialogKinds)} vs handled: ${JSON.stringify(handledKinds)}`,
-  );
-  check(
-    'every DECLARED dialog kind is SDK-documented for a sandbox workspace',
-    Array.isArray(vendorKinds) &&
-      Array.isArray(remoteOptions.supportedDialogKinds) &&
-      remoteOptions.supportedDialogKinds.length > 0 &&
-      remoteOptions.supportedDialogKinds.every((k) => vendorKinds.includes(k)),
-    `declared: ${JSON.stringify(remoteOptions.supportedDialogKinds)} vs SDK-documented: ${JSON.stringify(vendorKinds)}`,
-  );
+// ── 3. The SANDBOX workspace is REFUSED at the funnel (#226) ─────────────────
+// Sandbox agents are paused pending #220: a send must throw naming the pause, broadcast the
+// `Couldn't start the agent: …` error row, and NEVER reach `query()`. The old arm asserted the
+// remote wiring (`cwd === '/workspace'`); the refusal replaces it. Expectations are LITERALS
+// (never the shared constant) so a rewrite of the message cannot move both sides together.
+console.log('\nSANDBOX workspace is refused before query() (paused, #226):');
+captured = null;
+const errorsBefore = eventsOf('error').length;
+let refusal = null;
+try {
+  await sdk.sdkSend(WS_ID_SANDBOX, 'wiring gate');
+} catch (err) {
+  refusal = err?.message ?? String(err);
 }
+check(
+  'sdkSend on a sandbox workspace THROWS (not a silent start)',
+  refusal !== null,
+  'sdkSend resolved — the sandbox workspace was started',
+);
+check(
+  'the refusal names the pause and #220',
+  refusal !== null && /paused/i.test(refusal) && refusal.includes('#220'),
+  `message: ${refusal}`,
+);
+check(
+  'query() was never reached for the sandbox workspace',
+  captured === null,
+  captured ? `query() received options with cwd ${captured.options?.cwd}` : '',
+);
+const errorRows = eventsOf('error').slice(errorsBefore);
+check(
+  'an error row naming the pause is broadcast to the Agent view',
+  errorRows.some((e) => /Couldn't start the agent/.test(e.payload?.message ?? '') && /paused/i.test(e.payload?.message ?? '') && (e.payload?.message ?? '').includes('#220')),
+  `error events: ${JSON.stringify(errorRows.map((e) => e.payload?.message))}`,
+);
 
 // ── Teardown ────────────────────────────────────────────────────────────────
 try {

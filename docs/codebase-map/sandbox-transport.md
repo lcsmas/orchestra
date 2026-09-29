@@ -12,27 +12,32 @@ streaming the terminal over a single multiplexed WebSocket. Files:
 ## ⏸ PAUSED — sandbox agents cannot be started (#226, wave "Agent view only" #219; follow-up #220)
 Sandbox agents are PTY-only; the Agent view drives an SDK session that would run the CLI on THIS host
 with the container's cwd (a cryptic spawn error). Until #220 — Reconcile sandbox agents with the Agent
-view — every START of a sandbox-hosted workspace's agent is refused with one message
-(`SANDBOX_PAUSED_MESSAGE`, `shared/sandbox-pause.ts`; pure decision `sandboxPausedMessage(ws)` = `ws.host.kind==='sandbox'`).
-Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED and its tests stay green — only the start is refused.
+view — starting a sandbox-hosted workspace's agent through the **SDK, wake, restart, fix-checks / send-review and bus-wake**
+paths is refused with ONE message (`SANDBOX_PAUSED_MESSAGE`, `shared/sandbox-pause.ts`; pure decision
+`sandboxPausedMessage(ws)` = `ws.host.kind==='sandbox'`). **The one path NOT refused is the Raw-tab PTY launcher**
+(`startAgentPty`, the host-aware one; `restart`'s route INTO it is refused, opening the Raw tab is not) — #230/#233 delete it.
+Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED and its tests stay green.
 - **The funnel** — `agent-sdk.ts` `ensureSessionInner` throws it first thing after the workspace lookup (before the
   rewind cut, hibernation clear, env build and the `query()` spawn). `ensureSession` is the ONLY caller and that `query({`
   the only agent-start one (the other, `probeRuntimeModels`, is a `tmpdir()` model probe), so every entry that starts an
-  SDK session is covered by construction: Agent-view send (`sdkSend` turns the throw into the `Couldn't start the agent: …`
-  error row), CLI `restart` (`sdkRestart` → `{ok:false,error}` → CLI rc 1), `sdkWake`/`sdkStartAndDeliver` (bus wake,
-  session watchdog, spawn/wake seam), `sdkStatus`/`sdkRunBash`/`sdkMcp*`/`sdkSetRemoteControl`.
-- **The one extra refusal** — `workspaces.ts` `wakeAgentWithPrompt` returns `false` up front (logs `wake refused for <id>: …`).
-  `sdkStartAndDeliver` swallows the funnel's throw and the PTY fallback below it passes no `host`, so without this a wake
-  starts a LOCAL `claude` in `ws.worktreePath` (reachable: the import's local-worktree retire step is best-effort and may
-  leave the dir). Callers keep their existing contract for `false`: `/message` → durable inbox (`Delivered (inbox)`),
-  prompt queue re-queues, fix-checks/send-review report the failure.
-- **Not reachable / not covered** — `orchestra spawn` cannot yield a sandbox workspace: `dispatchSpawnRequest` →
-  `createWorkspace` never passes `host` (only the import flips `host`), so there is nothing to refuse. The Raw-tab PTY launch
-  (`startAgentPty`, the one host-aware launcher) is untouched — #230/#233 delete it.
+  SDK session is covered by construction: Agent-view send (`sdkSend` → the `Couldn't start the agent: …` error row),
+  `sdkWake`/`sdkStartAndDeliver` (session watchdog, spawn/wake seam), `sdkStatus`/`sdkRunBash`/`sdkMcp*`/`sdkSetRemoteControl`.
+  `scripts/verify-answerable-wiring.mjs` (`pnpm run test:wiring`) drives the REAL funnel and asserts the refusal.
+- **Guards beside the funnel** (each closes a route the funnel cannot see; each has a named must-FAIL clause in the rig arm):
+  `restart-workspace.ts` `dispatchRestartRequest` refuses BEFORE the classifier (`--fresh` = `sdkClear` never reaches the funnel;
+  a legacy `hasInput`/no-session ws classifies to the PTY route; `recordRestart` would write `sdkRestarts` for a refused restart);
+  `workspaces.ts` `wakeAgentWithPrompt` returns `false` (its PTY fallback passes no `host` and would start a LOCAL `claude`);
+  `api-handlers.ts` `fixChecks` / `sendReviewToAgent` THROW the message (a `false` wake there answered `requested` into nothing);
+  `index.ts` bus-wake roster marks the ws `wakeable:false` (else the sweep re-fires at a start that always refuses);
+  `startWorkspaceAgentHeadless` throws (unreachable today — see next bullet).
+- **Not reachable** — `orchestra spawn` cannot yield a sandbox workspace: `dispatchSpawnRequest` → `createWorkspace` never passes
+  `host` (only `importWorkspaceToSandbox` flips it; the `workspaces:create` IPC accepts it but the renderer never sends it).
+  A live local session survives an import flip (`ensureSessionInner`'s `existing` early-return precedes the guard) — not a start.
 - **Proof** — built-app arm `sandbox_paused` (`scripts/e2e-agent-view-removal.mjs`, see [activity-pty-terminal.md](activity-pty-terminal.md)
-  § Removal rig): seeds sandbox-hosted records, drives an Agent-view send, the real CLI `restart`/`message`, and a local
-  control; `EXPECT.sandboxPaused` baseline false (master) / after true. Pins: `shared/sandbox-pause.test.ts`,
-  `main/sandbox-pause-wiring.test.ts` (funnel placement, one `query({`, one `ensureSessionInner` caller, wake guard first).
+  § Removal rig): seeds sandbox-hosted records, drives an Agent-view send, the real CLI `restart` (default, `--fresh`, legacy ws)
+  and `message`, `sendReviewToAgent`/`fixChecks` over IPC, and a local control; `EXPECT.sandboxPaused` baseline false (master) /
+  after true. Pins: `shared/sandbox-pause.test.ts`, `main/sandbox-pause-wiring.test.ts` (funnel placement, one `query({`,
+  one `ensureSessionInner` caller, each guard's placement).
 
 ## Settled architecture (do not relitigate)
 Central sandbox, thin clients. **File-sync was evaluated and REJECTED.** Local

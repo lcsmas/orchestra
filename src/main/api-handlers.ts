@@ -163,6 +163,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
+import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import type {
   Account,
   BrowserBounds,
@@ -1242,6 +1243,9 @@ export const apiHandlers: ApiHandlerTable = {
   fixChecks: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
+    // #226: a paused sandbox agent cannot take the prompt — throw the pause, never answer 'requested'.
+    const paused = sandboxPausedMessage(ws);
+    if (paused) throw new Error(paused);
     const checks = await findBranchChecks(ws.repoPath, ws.branch);
     const logCmd = checks.runId
       ? `gh run view ${checks.runId} --log-failed`
@@ -1304,6 +1308,9 @@ export const apiHandlers: ApiHandlerTable = {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
     if (!prompt.trim()) throw new Error('empty review');
+    // #226: same as fixChecks — a paused sandbox agent cannot take the review; throw, never 'requested'.
+    const paused = sandboxPausedMessage(ws);
+    if (paused) throw new Error(paused);
     // Exactly the fixChecks delivery seam: a live SDK session takes it as its
     // next turn, a stopped agent gets a structured-first wake, and a live
     // terminal PTY (where wakeAgentWithPrompt returns false) gets it typed in.

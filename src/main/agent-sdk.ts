@@ -1663,9 +1663,9 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // means no restore path can forget to drop the chip.
   clearHibernated(wsId);
 
-  // Env parity with the terminal spawn (installOrchestraHooks + account
-  // inheritance + CLAUDE_CONFIG_DIR), skipped for remote/sandbox workspaces
-  // whose worktree lives in the container.
+  // Env parity with the terminal spawn (installOrchestraHooks + account inheritance +
+  // CLAUDE_CONFIG_DIR). `remote` is always false here while sandbox agents are PAUSED (#226,
+  // refused above) — the remote branches below are dead until #220 restores them.
   const remote = ws.host?.kind === 'sandbox';
 
   // Validate the worktree BEFORE the SDK spawns `claude` there. The SDK's
