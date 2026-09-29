@@ -542,7 +542,7 @@ long-idle agents and lets the existing resume paths bring them back.
 - **Driven rig — `scripts/e2e-hibernate-wake.{mjs,sh}`** (#198 D14): the REAL
   `sweepHibernation` + REAL `sweepBusWake`→`ensureSession` over a stub CLI, fake
   clock via `Date.now` skew, env override deleted so it measures the shipped
-  5-min default. 15 REQUIRED arms (4-min no / 6-min yes / recent activity via the
+  5-min default. 17 REQUIRED arms (4-min no / 6-min yes / recent activity via the
   real `applyAgentEvent` funnel / live run-script PTY / turn in flight / live background
   task blocks (+2 controls: completed, or healed by a `changed` replace, → hibernates) / a
   reattach's level-only snapshot blocks (+2 controls: healed / stale-after-done) / fresh
@@ -554,13 +554,17 @@ long-idle agents and lets the existing resume paths bring them back.
   stub must write one; `stop` sets `autoUnread` asynchronously (a synchronous
   clear is overwritten, making a "not hibernated" arm vacuous); read `hibernatedAt`
   BEFORE any follow-up send (its `ensureSession` clears the chip you are testing).
-  **Two DEPENDENT arms are red on a base without their fix:** `wake_during_teardown`
-  (needs #124's identity-guarded `sessions.delete` in `consume()`'s finally and
-  `sdkStop` — unguarded, the old teardown evicts the successor session, so the
-  next send spawns a 2nd CLI on the same transcript) and `hibernate_exit1` (a
-  hibernate stop sets none of `cleared`/`interrupted`/`restartRequested`, so a CLI
-  exiting 1 on graceful close renders a red error row — field: 11/126 real
-  hibernations).
+  Two arms depend on their own fix: `wake_during_teardown` needs #124's
+  identity-guarded `sessions.delete` in `consume()`'s finally and `sdkStop` (unguarded,
+  the old teardown evicts the successor, so the next send spawns a 2nd CLI on the same
+  transcript — on master since af5c6a7e); `hibernate_exit1` needs the **`hibernating`
+  marker**: the sweep calls `sdkStopIfLive(ws.id, { hibernate: true })` → `sdkStop` sets
+  `session.hibernating` (SESSION-scoped — a successor is a new object and never
+  inherits it) → consume()'s catch passes it to `classifyConsumeTermination`, which
+  returns `suppress` (after `cleared`/`restartRequested`, before T3's `stopped` and
+  `interrupted`). Without it a CLI exiting 1 on graceful close rendered a red error
+  row (field: 11/126 real hibernations); T3's `preemptedWhileStopping` only matches
+  the synthetic `-1`. Not covered: the `error_during_execution` result path (~3/126).
 - **Both knobs are env-injectable, and that is a testability requirement, not a
   convenience.** The cadence is `ORCHESTRA_HIBERNATE_SWEEP_MS`
   (`resolveHibernateSweepMs`, default 5 min, floored at 1s, no disable sentinel

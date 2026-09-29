@@ -328,6 +328,8 @@ interface Session {
   /** Background tasks this session owns, folded from its `task` events (same fold as
    *  the panel). Session-scoped so it dies with the CLI; read by the hibernation sweep. */
   bgTasks: Record<string, BackgroundTask>;
+  /** Set by sdkStop when the idle-hibernate sweep stops THIS session; read by consume()'s catch. */
+  hibernating?: boolean;
   /** Last Remote Control state emitted for this session, so a fresh `ensureSession`
    *  (e.g. after the view re-mounts and re-sends) can re-broadcast it and the
    *  toggle survives. Undefined until the user first enables it. */
@@ -1459,6 +1461,7 @@ async function consume(session: Session): Promise<void> {
       interrupted,
       restartRequested: session.restartRequested,
       preemptedWhileStopping,
+      hibernating: session.hibernating === true,
     });
     // A restart is NOT an interrupt for the downstream turn-end/usage-limit
     // bookkeeping — it is intentional teardown. Only a genuine interrupt (the
@@ -5116,7 +5119,7 @@ async function runMcpAuthFlow(
 
 /** Tear down a workspace's session (stop/interrupt + drop). Called on explicit
  *  stop and on workspace removal so a deleted workspace never leaks a query. */
-export async function sdkStop(wsId: string): Promise<void> {
+export async function sdkStop(wsId: string, opts?: { hibernate?: boolean }): Promise<void> {
   const session = sessions.get(wsId);
   if (!session) {
     // No in-memory session — but a DETACHED KEEPER may still be running this
@@ -5138,6 +5141,8 @@ export async function sdkStop(wsId: string): Promise<void> {
     return;
   }
   session.stopping = true;
+  // Session-scoped (a successor is a new object): this stop is the idle-hibernate sweep's, not a crash.
+  if (opts?.hibernate) session.hibernating = true;
   clearBootStall(session);
   // Latch BEFORE any await (D3): `session.sawResult` can flip on a late `result`
   // that lands between here and the interrupt, and the decision below must be

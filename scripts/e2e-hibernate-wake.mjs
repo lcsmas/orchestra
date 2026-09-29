@@ -27,8 +27,23 @@
 //                      in flight → the sweep must NOT stamp `hibernatedAt` on the woken row
 //   wake_during_teardown ★ (N1, #124 seam) same drive → exactly one live successor,
 //                      REACHABLE by the next send (needs agent-sdk's identity-guarded
-//                      `sessions.delete`; red on a base without #124, green with it)
+//                      `sessions.delete` — #124, on master since af5c6a7e)
 //
+//   fresh_record     ★ (F2) a NON-wake writer lands a field mid-teardown → the sweep stamps the
+//                      chip WITHOUT clobbering it (marks from a fresh record, not the pre-await one)
+//   bg_task          ★ (F1) a live BACKGROUND task (task_started + background_tasks_changed, one
+//                      heartbeat at +4 min) → NOT hibernated at +6 min; idle >=5 min asserted so
+//                      recency cannot be what spares it (task events stamp no activity)
+//   bg_task_done     — control: the task completes (task_notification) → hibernated (block not permanent)
+//   level_only       ★ (R1) a keeper REATTACH learns of a live bg task ONLY via the `background_tasks_changed`
+//                      level snapshot (no `started` edge; local_bash emits no task_progress) → NOT hibernated
+//   level_only_healed— control: the seeded entry is healed by a later empty snapshot → hibernates
+//   level_after_done — control: a STALE snapshot after the task finished never resurrects it → hibernates
+//   bg_task_healed   — control: a lost bookend is healed by a `background_tasks_changed` replace → hibernated
+//   hibernate_exit1 ★ a hibernate stop whose CLI exits 1 during the graceful close emits NO error row
+//                      (session-scoped `hibernating` marker → classifyConsumeTermination 'suppress');
+//                      a spontaneous crash of the SUCCESSOR session still does (positive control, and
+//                      proof the marker does not leak). Field: 11/126 real hibernations had the row.
 //   fresh_record     ★ (F2) a NON-wake writer lands a field mid-teardown → the sweep stamps the
 //                      chip WITHOUT clobbering it (marks from a fresh record, not the pre-await one)
 //   bg_task          ★ (F1) a live BACKGROUND task (task_started + background_tasks_changed, one

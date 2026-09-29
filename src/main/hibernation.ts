@@ -178,7 +178,7 @@ export async function sweepHibernation(): Promise<string[]> {
       // Stop the structured session first: it is the path that persists
       // `sdkSessionId`, and stopping it is async. A failure here must not
       // prevent the PTY stop below or abort the whole sweep.
-      await sdkStopIfLive(ws.id).catch((e) => hlog.swallow(`sdk stop for ${ws.id}`, e));
+      await sdkStopIfLive(ws.id, { hibernate: true }).catch((e) => hlog.swallow(`sdk stop for ${ws.id}`, e));
     }
     if (hasLivePty) stopPty(ws.id);
 

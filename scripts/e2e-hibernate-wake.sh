@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Runs every arm of e2e-hibernate-wake.mjs (#198 D14). REQUIRED arms must be ok:true
-# (a missing/failed line fails). DEPENDENT arms are printed but never fail the run:
-#   wake_during_teardown — needs #124's identity-guarded `sessions.delete` (red without it)
-#   hibernate_exit1      — measurement of a known gap (hibernate stop classified as an error row)
-# Promote a dependent arm to REQUIRED the commit its fix lands.
+# (a missing/failed line fails). DEPENDENT arms are printed but never fail the run — empty
+# now that #124 (wake_during_teardown) and the hibernating marker (hibernate_exit1) are in.
 set -u
 cd "$(dirname "$0")/.."
-REQUIRED="window_4min window_6min recent_activity control_6h guard_run_pty guard_turn bg_task bg_task_done bg_task_healed level_only level_only_healed level_after_done wake_after teardown_chip fresh_record"
-DEPENDENT="wake_during_teardown hibernate_exit1"
+REQUIRED="window_4min window_6min recent_activity control_6h guard_run_pty guard_turn bg_task bg_task_done bg_task_healed level_only level_only_healed level_after_done wake_after teardown_chip fresh_record wake_during_teardown hibernate_exit1"
+DEPENDENT=""
 RC=0
 run_arm() {
   timeout 90 node --experimental-strip-types --import ./scripts/.r2-register.mjs \

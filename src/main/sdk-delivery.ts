@@ -56,7 +56,7 @@ export interface SdkDelivery {
   start(wsId: string, text: string): Promise<void>;
   /** Tear down a live structured session (used by account migration, which must
    *  stop the session running under the OLD account/config dir). */
-  stop(wsId: string): Promise<void>;
+  stop(wsId: string, opts?: { hibernate?: boolean }): Promise<void>;
 }
 
 let impl: SdkDelivery | null = null;
@@ -141,9 +141,9 @@ export async function sdkStartAndDeliver(wsId: string, text: string): Promise<bo
  *  every caller here (hibernation, branch switch, account migration) means
  *  "make sure nothing structured is running" — sdkStop's no-session path kills
  *  any live keeper and is an instant no-op otherwise. */
-export async function sdkStopIfLive(wsId: string): Promise<boolean> {
+export async function sdkStopIfLive(wsId: string, opts?: { hibernate?: boolean }): Promise<boolean> {
   if (!impl) return false;
   const had = impl.hasSession(wsId);
-  await impl.stop(wsId);
+  await impl.stop(wsId, opts);
   return had;
 }

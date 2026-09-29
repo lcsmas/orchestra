@@ -111,6 +111,7 @@ export type ConsumeTermination =
  *      start (agent-sdk.ts), scoped to the restart path so a GENUINE standalone
  *      interrupt (which never sets `restartRequested`) is never relabeled and
  *      still reaches branch 3.
+ *   2b. `hibernating` (the sweeper's own stop of this session) → suppress: no row.
  *   3. `preemptedWhileStopping` (the old session was `stopping` and a new
  *      client's hello preempted its socket → synthetic `exited with code -1`,
  *      audit D1), with NO restart marker → the quiet `stopped` notice. It is the
@@ -129,10 +130,16 @@ export function classifyConsumeTermination(input: {
   interrupted: boolean;
   restartRequested: RestartTrigger | undefined;
   preemptedWhileStopping?: boolean;
+  /** The sweeper's hibernate stop of THIS session (session-scoped marker, never inherited by a
+   *  successor). Optional: a caller that omits it keeps the visible-error direction. */
+  hibernating?: boolean;
 }): ConsumeTermination {
   if (input.cleared) return { kind: 'suppress' };
   // Restart marker WINS over `interrupted` (D-H2) — deterministic, timing-free.
   if (input.restartRequested) return { kind: 'restarted', trigger: input.restartRequested };
+  // An idle-hibernate stop is intentional whatever exit code the CLI's graceful close produced
+  // (the "zZ" chip already says so): no row (#198 D14; field: `exited with code 1` in 11/126).
+  if (input.hibernating) return { kind: 'suppress' };
   // A -1 preempt of an already-stopping session is the stop it is, not a crash
   // (D1). Precedes `interrupted` so it wins its own quiet label; scoped to
   // stopping+(-1) upstream so a real crash of a live session cannot reach here.
