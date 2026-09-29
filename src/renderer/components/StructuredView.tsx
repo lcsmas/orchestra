@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { isPeerMessage } from '../../shared/peer-messages';
+import { createFrameReset, type FrameReset } from '../../shared/frame-reset';
 import {
   isBusWakeMessage,
   isCheckInvocation,
@@ -447,14 +448,17 @@ function MessageList({
   const lastPassCommit = useRef<object | null>(null);
   // One-shot frame-boundary reset, armed by a measure pass — a perpetual rAF here woke every
   // mounted pane 60x/s while idle (#198 D11; `scripts/renderer-cpu-profile.mjs` gates it).
-  const measureResetRaf = useRef(0);
-  const armMeasureReset = useCallback(() => {
-    if (measureResetRaf.current) return; // a reset is already pending this frame
-    measureResetRaf.current = requestAnimationFrame(() => {
-      measureResetRaf.current = 0;
-      syncMeasurePasses.current = 0;
-    });
-  }, []);
+  const frameResetRef = useRef<FrameReset | null>(null);
+  if (!frameResetRef.current) {
+    frameResetRef.current = createFrameReset(
+      () => {
+        syncMeasurePasses.current = 0;
+      },
+      (cb) => requestAnimationFrame(cb),
+      (h) => cancelAnimationFrame(h),
+    );
+  }
+  const armMeasureReset = () => frameResetRef.current?.arm();
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
@@ -589,12 +593,8 @@ function MessageList({
     // there are messages (the empty state renders a different subtree).
   }, [pinToBottom, messages.length > 0]);
 
-  // Cancel a still-pending frame-boundary reset on unmount.
-  useEffect(() => {
-    return () => {
-      if (measureResetRaf.current) cancelAnimationFrame(measureResetRaf.current);
-    };
-  }, []);
+  // Cancel a pending frame-boundary reset on unmount (cancel() also drops the handle: StrictMode re-runs effects on the same refs).
+  useEffect(() => () => frameResetRef.current?.cancel(), []);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
   useLayoutEffect(() => {
