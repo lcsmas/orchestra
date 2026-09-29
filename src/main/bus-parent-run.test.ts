@@ -713,6 +713,12 @@ test('#221 F5 sibling verbs — controls: a related OPS / MEMBER, `--to human` a
   assert.equal((await cliAsync(w, LEAD, ['ask', '--to', OPS, 'q-ops?'])).code, 0, 'ask → OPS');
   assert.equal((await cliAsync(w, LEAD, ['ask', '--to', MEMBER, 'q-member?'])).code, 0, 'ask → member of the OPS');
   assert.equal((await cliAsync(w, LEAD, ['gate', 'open', '--to', 'human', 'ruling?'])).code, 0, 'gate → human');
+  // `human` is a surface, not a workspace: it must NEVER go through the handle canonicalizer (which would
+  // refuse it as "matches no workspace"). MUTANT: drop the `!== 'human'` skip in `ask` → rc 1 here.
+  const human = await cliAsync(w, LEAD, ['ask', '--to', 'human', 'q-human?']);
+  assert.equal(human.code, 0, `ask → human: ${human.stderr}`);
+  const hRow = w.db.prepare("SELECT recipient FROM messages WHERE body = 'q-human?'").get() as { recipient: string };
+  assert.equal(hRow.recipient, 'human', 'stored as the literal surface, not a workspace id');
   const short = await cliAsync(w, OPS, ['ask', '--to', LEAD.slice(0, 8), 'q-short?']);
   assert.equal(short.code, 0, short.stderr);
   const row = w.db.prepare("SELECT recipient FROM messages WHERE body = 'q-short?'").get() as { recipient: string };
