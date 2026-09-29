@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -28,17 +29,23 @@ const ARMS = {
   del_prune_orphan: { mustFailOnMaster: true },
   del_session_with_result: { mustFailOnMaster: true },
   del_racing_start_refused: { mustFailOnMaster: true },
+  del_bulk_window: { mustFailOnMaster: true },
+  del_prune_fast: { mustFailOnMaster: true },
   del_never_started: {},
   // #202
   race_n_starts: { mustFailOnMaster: true },
   daemon_refuses_second: { mustFailOnMaster: true },
   daemon_refuses_hung: { mustFailOnMaster: true },
+  stale_two_launch: { mustFailOnMaster: true },
   exit_owns_only: { mustFailOnMaster: true },
+  exit_pidless_fallback: { mustFailOnMaster: true },
   survivor_killable: { mustFailOnMaster: true },
   sweep_spares_successor: { mustFailOnMaster: true },
   kill_serialized_with_start: { mustFailOnMaster: true },
   kill_refuses_reused_pid: { mustFailOnMaster: true },
   kill_pid_fallback_reaches: {},
+  kill_spares_successor_files: { mustFailOnMaster: true },
+  kill_keeps_log: {},
   kill_hung_keeper: { mustFailOnMaster: true },
   // #203
   reap_dup_live: { mustFailOnMaster: true },
@@ -54,7 +61,8 @@ if (!ARMS[ARM]) {
   process.exit(2);
 }
 
-const base = path.join(process.env.A2_HOME ?? path.join(REAL_HOME, '.a2-rig', 'arms'), ARM);
+// Short per-arm dir: a unix socket path must stay < ~100 bytes or keeperSocketPath hashes it into /tmp.
+const base = path.join(process.env.A2_HOME ?? path.join(REAL_HOME, '.a2-rig', 'arms'), createHash('sha1').update(ARM).digest('hex').slice(0, 8));
 if (!base.startsWith(REAL_HOME + path.sep)) throw new Error(`refusing rig dir outside $HOME: ${base}`);
 fs.rmSync(base, { recursive: true, force: true });
 const home = path.join(base, 'home');
@@ -87,7 +95,7 @@ const kc = await import(`${REPO}/src/main/keeper-client.ts`);
 
 // ── fake CLI + process/file observation helpers ──────────────────────────────
 const FAKE_CLI = `
-process.on('SIGTERM', () => process.exit(0));
+process.on('SIGTERM', () => { if (process.argv[3] === 'slowterm') setTimeout(() => process.exit(0), 1500); else process.exit(0); });
 process.stdin.on('data', (d) => {
   for (const line of d.toString('utf8').split('\\n')) {
     if (!line.trim()) continue;
@@ -134,9 +142,9 @@ const filesLeft = (ws) => [sockExists(ws) ? 'sock' : null, fs.existsSync(pidFile
 const spawnOpts = (ws, tag = '') => ({ command: process.execPath, args: [fakeCli, ws, tag].filter(Boolean), cwd: base, env: { PATH: process.env.PATH }, signal: new AbortController().signal });
 
 /** A facade (what the SDK's query() gets) — stdout text, errors, exit. */
-function open(ws, label = 'F') {
+function open(ws, label = 'F', tag = '') {
   const st = { label, out: '', errors: [], attached: false, exited: false };
-  const h = kc.makeKeeperSpawn(ws, () => { st.attached = true; })(spawnOpts(ws));
+  const h = kc.makeKeeperSpawn(ws, () => { st.attached = true; })(spawnOpts(ws, tag));
   h.stdout.on('data', (d) => { st.out += d.toString('utf8'); });
   h.on('error', (e) => st.errors.push(String(e?.message ?? e)));
   h.on('exit', () => { st.exited = true; });
@@ -148,8 +156,8 @@ const echoPid = (st, tag) => {
   return m ? m.pid : null;
 };
 /** Facade + one echo round trip → {keeperPid, cliPid, st}. */
-async function startKeeper(ws) {
-  const st = open(ws);
+async function startKeeper(ws, tag = '') {
+  const st = open(ws, 'F', tag);
   st.h.stdin.write(JSON.stringify({ echo: 'up' }) + '\n');
   if (!(await waitFor(() => echoPid(st, 'up') !== null, 20_000))) throw new Error(`setup: keeper for ${ws} never came up`);
   return { st, keeperPid: pidFilePid(ws), cliPid: echoPid(st, 'up') };
@@ -187,7 +195,7 @@ const killLogLines = (ws) => {
 const rmKeeperFiles = (ws) => { for (const p of [kc.keeperSocketPath(ws), pidFilePath(ws)]) { try { fs.unlinkSync(p); } catch { /* gone */ } } };
 
 const touched = new Set();
-const result = { arm: ARM, subject: REPO, ok: false };
+const result = { arm: ARM, subject: REPO, ok: false, base };
 const finish = async () => {
   for (const ws of touched) {
     for (const pid of [...keepersOf(ws), ...clisOf(ws)]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
@@ -213,11 +221,14 @@ async function runArm() {
   if (ARM === 'race_n_starts') return raceArm();
   if (ARM === 'daemon_refuses_second') return daemonRefusesSecond();
   if (ARM === 'daemon_refuses_hung') return daemonRefusesHung();
-  if (ARM === 'exit_owns_only' || ARM === 'survivor_killable') return takeoverArms();
+  if (ARM === 'stale_two_launch') return staleTwoLaunch();
+  if (ARM === 'exit_owns_only' || ARM === 'survivor_killable' || ARM === 'exit_pidless_fallback') return takeoverArms();
   if (ARM === 'sweep_spares_successor') return sweepArm();
   if (ARM === 'kill_refuses_reused_pid' || ARM === 'kill_pid_fallback_reaches') return killIdentityArms();
   if (ARM === 'kill_serialized_with_start') return killSerializedArm();
   if (ARM === 'kill_hung_keeper') return killHungArm();
+  if (ARM === 'kill_spares_successor_files') return killSparesSuccessor();
+  if (ARM === 'kill_keeps_log') return killKeepsLog();
   if (ARM.startsWith('reap_')) return reapArms();
 }
 
@@ -242,13 +253,15 @@ async function deleteArms() {
     const k = await startKeeper(A);
     const control = { keepers: keepersOf(A).length, clis: clisOf(A).length, files: filesLeft(A).length, session: sdk.sdkHasSession(A) };
     if (control.keepers !== 1 || control.clis !== 1 || control.files !== 2 || control.session !== false) throw new Error(`control failed: ${JSON.stringify(control)}`);
+    const t0 = Date.now();
     await wsm.deleteWorkspace(A);
-    const after = { keeperAlive: alive(k.keeperPid), cliAlive: alive(k.cliPid), keepers: keepersOf(A).length, clis: clisOf(A).length, files: filesLeft(A), inStore: !!store.getWorkspace(A) };
+    const deleteMs = Date.now() - t0; // single-delete latency of a LIVE keeper (was ~3.1 s: an idle close-wait)
+    const after = { deleteMs, keeperAlive: alive(k.keeperPid), cliAlive: alive(k.cliPid), keepers: keepersOf(A).length, clis: clisOf(A).length, files: filesLeft(A), inStore: !!store.getWorkspace(A) };
     const facadeClosed = await waitFor(() => k.st.exited, 3_000);
     const lines = killLogLines(A); // every kill = ONE log line naming wsid + pid + reason
     Object.assign(result, { control, after, facadeClosed, lines });
     result.ok = !after.keeperAlive && !after.cliAlive && after.keepers === 0 && after.clis === 0 && after.files.length === 0 && !after.inStore && facadeClosed
-      && lines.length === 1 && lines[0].includes(`pid=${k.keeperPid}`) && /reason=/.test(lines[0]);
+      && lines.length === 1 && lines[0].includes(`pid=${k.keeperPid}`) && /reason=/.test(lines[0]) && after.deleteMs < 2_000;
     return;
   }
 
@@ -332,6 +345,55 @@ async function deleteArms() {
     return;
   }
 
+  if (ARM === 'del_prune_fast') {
+    // Boot prune runs before first paint: 4 orphan keepers must not cost 4 serial kills (L2: was 12.4 s).
+    const repo = path.join(base, 'repo');
+    fs.mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    const ids = ['a', 'b', 'c', 'd'].map((n) => W(n));
+    const ks = [];
+    for (const id of ids) {
+      await store.upsertWorkspace({ id, name: id, kind: 'worktree', repoPath: repo, worktreePath: path.join(base, 'not-a-worktree', id), branch: id, status: 'idle', createdAt: Date.now(), hasInput: true, sdkSessionId: `rig-${id}` });
+      ks.push(await startKeeper(id, 'slowterm')); // each CLI takes ~1.5 s to die: serial stops would cost ~6 s
+    }
+    const t0 = Date.now();
+    await wsm.pruneOrphanedWorkspaces();
+    const pruneMs = Date.now() - t0;
+    const allGone = await waitFor(() => ks.every((k) => !alive(k.keeperPid) && !alive(k.cliPid)) && ids.every((id) => filesLeft(id).length === 0), 30_000);
+    const after = { pruneMs, allGone, rows: ids.filter((id) => store.getWorkspace(id)).length };
+    Object.assign(result, { after });
+    result.ok = pruneMs < 3_000 && allGone && after.rows === 0;
+    return;
+  }
+
+  if (ARM === 'del_bulk_window') {
+    // deleteWorkspaces([A slow, B]): a wake on B during A's teardown must not run a turn (L5) — every id is tombstoned up front.
+    const repo = path.join(base, 'repo');
+    fs.mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    const marker = path.join(base, 'archive-started');
+    await store.addRepo({ path: repo, name: 'rig-repo', defaultBranch: 'master' });
+    await store.setRepoScripts(repo, { archive: `touch ${marker}; sleep 3` });
+    const A = W('a'), B = W('b');
+    const wt = path.join(base, 'wt-a');
+    fs.mkdirSync(wt, { recursive: true });
+    await store.upsertWorkspace({ id: A, name: A, kind: 'worktree', repoPath: repo, worktreePath: wt, branch: A, status: 'idle', createdAt: Date.now(), hasInput: true, sdkSessionId: 'rig-a' });
+    await seed(B);
+    const p = wsm.deleteWorkspaces([A, B]);
+    const archiving = await waitFor(() => fs.existsSync(marker), 15_000); // A's teardown is in its slow archive script
+    const late = open(B); // a wake on B, whose own teardown has not begun
+    late.h.stdin.write(JSON.stringify({ echo: 'late' }) + '\n');
+    await sleep(1_500);
+    const turnRan = echoPid(late, 'late') !== null;
+    const midClis = clisOf(B).length;
+    await p;
+    await sleep(500);
+    const after = { archiving, turnRan, midClis, lateErrors: late.errors.slice(0, 1), keepers: keepersOf(B).length, inStore: [A, B].filter((w) => store.getWorkspace(w)).length };
+    Object.assign(result, { after });
+    result.ok = archiving && !turnRan && midClis === 0 && after.keepers === 0 && after.lateErrors.some((e) => /deleted/.test(e)) && after.inStore === 0;
+    return;
+  }
+
   if (ARM === 'del_bulk') {
     const A = W('a'), B = W('b'), C = W('c');
     await seed(A); await seed(B); await seed(C, { hibernatedAt: Date.now() });
@@ -366,6 +428,7 @@ async function deleteArms() {
     await mk(T, repo); // the repo's own main worktree IS tracked by `git worktree list`
     const ko = await startKeeper(O), kt = await startKeeper(T);
     await wsm.pruneOrphanedWorkspaces();
+    await waitFor(() => gone(ko) && filesLeft(O).length === 0, 20_000); // the orphan's session stop runs in the background
     const after = { orphanInStore: !!store.getWorkspace(O), trackedInStore: !!store.getWorkspace(T), orphanGone: gone(ko), orphanFiles: filesLeft(O), trackedAlive: alive(kt.keeperPid) && alive(kt.cliPid) };
     Object.assign(result, { after });
     result.ok = !after.orphanInStore && after.trackedInStore && after.orphanGone && after.orphanFiles.length === 0 && after.trackedAlive;
@@ -444,6 +507,22 @@ async function takeoverSetup(WS) {
 }
 async function takeoverArms() {
   const WS = W('t');
+  if (ARM === 'exit_pidless_fallback') {
+    // K2 owns the sock but its pid file is absent: K1's exit must NOT take the pid-less "fallback" to unlink K2's sock.
+    const k1 = await startKeeper(WS);
+    rmKeeperFiles(WS);
+    const k2 = await rawKeeper(WS);
+    if (pidFilePid(WS) !== k2.pid) throw new Error('setup: K2 did not take over the paths');
+    fs.unlinkSync(pidFilePath(WS)); // K2's pid file vanishes; its socket stays
+    process.kill(k1.keeperPid, 'SIGTERM');
+    if (!(await waitFor(() => !alive(k1.keeperPid), 8_000))) throw new Error('setup: K1 did not exit');
+    await sleep(200);
+    const probe = await kc.probeKeeper(WS);
+    const after = { sock: sockExists(WS), probeReaches: probe !== null, k2Alive: alive(k2.pid) };
+    Object.assign(result, { after });
+    result.ok = after.sock && after.probeReaches && after.k2Alive;
+    return;
+  }
   const { k2 } = await takeoverSetup(WS);
   if (ARM === 'exit_owns_only') {
     const probe = await kc.probeKeeper(WS);
@@ -502,6 +581,61 @@ async function killIdentityArms() {
   const after = { keeperDead: await waitFor(() => !alive(k.keeperPid), 3_000), cliDead: await waitFor(() => !alive(k.cliPid), 3_000) };
   Object.assign(result, { after });
   result.ok = after.keeperDead && after.cliDead;
+}
+
+async function staleTwoLaunch() {
+  // Two daemons started TOGETHER over a STALE socket file must end as ONE keeper (L1): both used to read the
+  // socket as stale, both unlinked, both relistened. Several trials — master loses ~85% of them.
+  const WS = W('s');
+  const trials = [];
+  for (let t = 0; t < 6; t++) {
+    const old = await rawKeeper(WS);
+    if (pidFilePid(WS) !== old.pid) throw new Error('setup: seed keeper did not own the paths');
+    process.kill(old.pid, 'SIGKILL'); // leaves a stale sock + pid file
+    if (!(await waitFor(() => new Promise((r) => { const c = net.connect(kc.keeperSocketPath(WS)); c.once('connect', () => { c.destroy(); r(false); }); c.once('error', () => r(true)); }), 8_000))) throw new Error('setup: seed keeper still answers');
+    const go = () => { const c = spawn(process.execPath, [KEEPER_BIN, WS, kc.keeperSocketPath(WS), pidFilePath(WS), path.join(home, 'keepers', `${WS}.log`)], { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }); c.unref(); return c.pid; };
+    const a = go(), b = go();
+    await sleep(3_000);
+    const live = keepersOf(WS);
+    trials.push({ live: live.length, pidFileIsLive: live.includes(pidFilePid(WS)) });
+    for (const pid of [a, b]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    await waitFor(() => keepersOf(WS).length === 0, 5_000);
+    rmKeeperFiles(WS);
+  }
+  Object.assign(result, { trials });
+  result.ok = trials.every((x) => x.live === 1 && x.pidFileIsLive);
+}
+
+async function killSparesSuccessor() {
+  // K8: killKeeper's own post-kill file sweep must spare a live SUCCESSOR's files. K_A is hung (SIGSTOP), so
+  // killKeeper lingers ~8 s; meanwhile K_A's paths are taken over by K_B. K_A's SIGKILL → sweep must leave K_B's.
+  const WS = W('k');
+  const a = await startKeeper(WS);
+  process.kill(a.keeperPid, 'SIGSTOP');
+  const killing = kc.killKeeper(WS, 'rig');
+  await sleep(1_500);
+  rmKeeperFiles(WS); // K_A's paths vanish (an older build's clobber)…
+  const b = await rawKeeper(WS, { cli: true, tag: 'succ' }); // …and K_B takes them over
+  if (pidFilePid(WS) !== b.pid) throw new Error('setup: K_B did not take over the paths');
+  await killing;
+  const probe = await kc.probeKeeper(WS);
+  const after = { aDead: !alive(a.keeperPid), bAlive: alive(b.pid), sock: sockExists(WS), pidFileIsB: pidFilePid(WS) === b.pid, reachable: probe !== null };
+  await kc.killKeeper(WS, 'rig-cleanup'); // and killKeeper still reaches the survivor
+  after.bKilledAfter = await waitFor(() => !alive(b.pid), 5_000);
+  Object.assign(result, { after });
+  result.ok = after.aDead && after.bAlive && after.sock && after.pidFileIsB && after.reachable && after.bKilledAfter;
+}
+
+async function killKeepsLog() {
+  // L7: stopping a keeper must not delete its <ws>.log (master keeps it; nothing else does).
+  const WS = W('l');
+  const k = await startKeeper(WS);
+  const logPath = path.join(home, 'keepers', `${WS}.log`);
+  const before = fs.existsSync(logPath) ? fs.statSync(logPath).size : -1;
+  await kc.killKeeper(WS, 'rig');
+  const after = { before, exists: fs.existsSync(logPath), size: fs.existsSync(logPath) ? fs.statSync(logPath).size : -1, dead: !alive(k.keeperPid) };
+  Object.assign(result, { after });
+  result.ok = before > 0 && after.exists && after.size >= before && after.dead;
 }
 
 async function daemonRefusesHung() {

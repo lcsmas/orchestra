@@ -385,17 +385,85 @@ function listenOnce(): Promise<'ok' | 'inuse'> {
   });
 }
 
+const claimPath = `${pidPath}.claim`;
+
+/** Exclusive stale-socket takeover claim (L1): two daemons that both read a stale socket as "stale" must not both
+ *  unlink+relisten. The claim is created ATOMICALLY WITH ITS CONTENT (write a tmp file, `link` it into place —
+ *  EEXIST = held), so a contender never reads a half-written claim as a dead holder. A claim older than 5 s or held
+ *  by a dead pid is broken; an unreadable one is only broken by age. */
+async function claimTakeover(): Promise<boolean> {
+  const tmp = `${claimPath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, String(process.pid));
+  } catch {
+    return false;
+  }
+  try {
+    for (let i = 0; i < 60; i++) {
+      try {
+        fs.linkSync(tmp, claimPath);
+        return true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+      }
+      try {
+        const holder = Number(fs.readFileSync(claimPath, 'utf8'));
+        let dead = false;
+        if (holder > 0) {
+          try {
+            process.kill(holder, 0);
+          } catch {
+            dead = true;
+          }
+        }
+        if (dead || Date.now() - fs.statSync(claimPath).mtimeMs > 5000) fs.unlinkSync(claimPath);
+      } catch {
+        /* released or raced */
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* gone */
+    }
+  }
+}
+
+function releaseClaim(): void {
+  try {
+    if (fs.readFileSync(claimPath, 'utf8') === String(process.pid)) fs.unlinkSync(claimPath);
+  } catch {
+    /* gone */
+  }
+}
+
 void (async () => {
   // bind-first: EADDRINUSE is the atomic "somebody owns this path" signal.
   let r = await listenOnce();
   if (r === 'inuse') {
     if (await liveKeeperServing()) refuseAndExit();
+    klog('socket looks stale — claiming the takeover');
+    if (!(await claimTakeover())) refuseAndExit(); // fail closed: could not get exclusive rights
+    klog('takeover claim acquired');
     try {
-      fs.unlinkSync(sockPath); // provably stale (nobody answers)
-    } catch {
-      /* raced */
+      // Re-probe UNDER the claim: the previous claimant may have finished binding.
+      if (await liveKeeperServing()) {
+        releaseClaim();
+        refuseAndExit();
+      }
+      try {
+        fs.unlinkSync(sockPath); // provably stale (nobody answers)
+      } catch {
+        /* raced */
+      }
+      r = await listenOnce();
+      klog(`takeover listen → ${r}`);
+    } finally {
+      releaseClaim();
     }
-    r = await listenOnce();
     if (r === 'inuse') refuseAndExit();
   }
   try {

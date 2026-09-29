@@ -22,18 +22,24 @@ const ARMS = [
   'del_session_and_keeper',
   'del_session_with_result',
   'del_racing_start_refused',
+  'del_bulk_window',
+  'del_prune_fast',
   'del_bulk',
   'del_prune_orphan',
   'del_never_started',
   'race_n_starts',
   'daemon_refuses_second',
   'daemon_refuses_hung',
+  'stale_two_launch',
   'exit_owns_only',
+  'exit_pidless_fallback',
   'survivor_killable',
   'sweep_spares_successor',
   'kill_serialized_with_start',
   'kill_refuses_reused_pid',
   'kill_pid_fallback_reaches',
+  'kill_spares_successor_files',
+  'kill_keeps_log',
   'kill_hung_keeper',
   'reap_dup_live',
   'reap_boot_pass',
@@ -52,7 +58,7 @@ function runArm(arm: string): Promise<Verdict | { ok: false; error: string }> {
     execFile(
       process.execPath,
       ['--experimental-strip-types', '--import', REGISTER, RIG, arm],
-      { cwd: REPO, timeout: 240_000, encoding: 'utf8', env: { ...process.env, A2_HOME: path.join(os.homedir(), '.a2-rig', `unit-${process.pid}`) } },
+      { cwd: REPO, timeout: 240_000, encoding: 'utf8', env: { ...process.env, A2_HOME: path.join(os.homedir(), '.a2-rig', `u${process.pid}`) } },
       (_err, stdout) => {
         const line = stdout.trim().split('\n').filter(Boolean).pop();
         // An EMPTY result must never read as a pass (a crashed rig prints nothing).
@@ -75,7 +81,7 @@ before(async () => {
       for (let a = queue.shift(); a; a = queue.shift()) results.set(a, await runArm(a));
     }),
   );
-  fs.rmSync(path.join(os.homedir(), '.a2-rig', `unit-${process.pid}`), { recursive: true, force: true });
+  fs.rmSync(path.join(os.homedir(), '.a2-rig', `u${process.pid}`), { recursive: true, force: true });
 });
 
 test('every arm the rig declares is run here (no silently unrun arm)', () => {
@@ -90,18 +96,24 @@ const NOTES: Record<(typeof ARMS)[number], string> = {
   del_session_and_keeper: '#201 socket/CLI delete route: in-memory session dropped AND keeper+CLI dead',
   del_session_with_result: '#201 a session that produced a result closes gracefully — the delete\'s own killKeeper still takes the keeper down',
   del_racing_start_refused: '#201 a wake racing the delete cannot launch a keeper for the dying workspace (A3 F4)',
+  del_bulk_window: '#201 bulk delete tombstones EVERY id up front: a wake on B during A\'s slow teardown runs no turn (L5)',
+  del_prune_fast: '#201 boot prune of 4 orphan keepers returns fast (session stops run in the background) and they all end dead (L2)',
   del_bulk: '#201 bulk delete (incl. hibernated row with stale files): all keepers dead, no throw',
   del_prune_orphan: '#201 boot orphan prune kills the orphan keeper; a tracked workspace keeps its keeper',
   del_never_started: '#201 hibernated / never-started delete → no error (must-PASS on master too)',
   race_n_starts: '#202 N=6 concurrent starts → exactly 1 keeper + 1 CLI; killKeeper reaches the survivor',
   daemon_refuses_hung: '#202 a 2nd daemon fails CLOSED on a hung (SIGSTOP) live keeper: refuses, leaves its files',
   daemon_refuses_second: '#202 a second daemon on a live keeper\'s socket refuses, touching no file',
+  stale_two_launch: '#202 two daemons started together over a STALE socket end as ONE keeper (atomic takeover claim, L1)',
+  exit_pidless_fallback: '#202 a keeper\'s exit with the takeover\'s pid file absent must not unlink the takeover\'s socket (MA)',
   exit_owns_only: '#202 a keeper\'s exit does not unlink a takeover\'s socket/pid',
   survivor_killable: '#202 killKeeper still reaches the survivor after a sibling\'s exit',
   sweep_spares_successor: '#202 the post-kill sweep spares a live successor\'s files, clears dead ones',
   kill_serialized_with_start: '#202 a killKeeper issued right after a start queues behind it and kills it (no interleave)',
   kill_refuses_reused_pid: '#202/identity killKeeper never signals a pid-file pid that is not this workspace\'s keeper',
   kill_hung_keeper: '#201 killKeeper on a wedged keeper: SIGKILL fallback also takes its CLI down (no ppid-1 orphan) and clears the files',
+  kill_spares_successor_files: '#202 killKeeper\'s own post-kill sweep spares a live successor\'s socket/pid (K8); killKeeper still reaches it',
+  kill_keeps_log: '#201 stopping a keeper does not delete its <ws>.log (L7, master behaviour)',
   kill_pid_fallback_reaches: 'killKeeper\'s pid fallback still reaches a real keeper (must-PASS on master too)',
   reap_dup_live: '#203 duplicate keeper of a live workspace reaped, tracked one untouched, one log line',
   reap_boot_pass: '#203 the boot pass (reapKeepersNow): store not loaded → kills nothing; loaded → orphan + duplicate reaped, tracked kept',

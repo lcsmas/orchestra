@@ -228,7 +228,9 @@ endpoint}` = agent lives in an always-on container, see
   also run by `pruneOrphanedWorkspaces` (boot). It sits in the workspaces.ts
   chokepoint, not api-handlers' fire-and-forget `sdkStopMany` (which skips a
   session-less survivor and is bypassed by the CLI socket route
-  `dispatchDeleteWorkspaceRequest`). No session/keeper (hibernated, never
+  `dispatchDeleteWorkspaceRequest`). `deleteWorkspaces` tombstones (`forbidKeeperLaunch`) EVERY id before the first teardown (L5); the boot
+  `pruneOrphanedWorkspaces` runs the stops in the BACKGROUND (`pendingStops`, not awaited — it precedes first
+  paint; 4 orphans 12 s → 75 ms). No session/keeper (hibernated, never
   started) → instant no-op. Gate: `del_*` arms of `scripts/e2e-keeper-lifecycle.mjs`.
 - **Cascade:** archive/unarchive an orchestrator and its whole subtree moves
   with it. **`collectWorkspaceTree(id)`** `:517` gathers the root plus every

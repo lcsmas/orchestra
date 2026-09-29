@@ -917,6 +917,8 @@ export async function deleteWorkspaces(
   const targets = ids.map((id) => store.getWorkspace(id)).filter((w): w is Workspace => !!w);
   const removed: string[] = [];
   let done = 0;
+  // Tombstone EVERY id before the first (slow) teardown: a wake on B must not start a keeper while A tears down.
+  for (const ws of targets) forbidKeeperLaunch(ws.id);
   for (const ws of targets) {
     await teardownWorkspace(ws);
     removed.push(ws.id);
@@ -977,6 +979,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
     }),
   );
 
+  const pendingStops: Promise<void>[] = [];
   for (const [repoPath, list] of byRepo) {
     const tracked = trackedByRepo.get(repoPath);
     if (!tracked) continue; // repo gone/unmounted/unreadable — skip safely
@@ -988,8 +991,9 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
       if (ws.host?.kind === 'sandbox') continue;
       if (tracked.has(ws.worktreePath)) continue; // still a live worktree
 
-      // Orphaned: git no longer tracks this worktree. Tear the record down.
-      await stopStructuredSession(ws.id);
+      // Orphaned: git no longer tracks this worktree. Tear the record down. The session stop runs in the
+      // BACKGROUND (a kill can take seconds and this runs before first paint); launches are refused at once.
+      pendingStops.push(stopStructuredSession(ws.id));
       stopPty(ws.id);
       stopPty(`${ws.id}:run`);
       stopPty(`${ws.id}:nvim`);
@@ -1013,6 +1017,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
       platform.broadcast('workspace:removed', ws.id);
     }
   }
+  void Promise.allSettled(pendingStops); // never rejects (stopStructuredSession swallows); deliberately not awaited
 }
 
 /** Run (or re-run) the repo's setup script for a workspace. Persists
