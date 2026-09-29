@@ -5,15 +5,11 @@
 // offer all five (sdk.d.ts).
 
 import type { AgentEffortLevel } from '../../../shared/types';
+import { EFFORT_LEVELS } from '../../../shared/effort-defaults.ts';
 
-/** Slider stops, left (fastest) → right (smartest). */
-export const EFFORT_LEVELS: readonly AgentEffortLevel[] = [
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-];
+/** Slider stops, left (fastest) → right (smartest). Defined in shared so the
+ *  defaults dropdown offers the same list. */
+export { EFFORT_LEVELS };
 
 /** The model default when the workspace has no explicit choice (sdk.d.ts:
  *  "`'high'` — Deep reasoning (default)"). */

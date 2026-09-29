@@ -7,7 +7,14 @@ import {
   type ModelDefaultKind,
   type ModelDefaults,
 } from '../../shared/model-defaults';
+import {
+  EFFORT_LEVELS,
+  MODEL_DEFAULT_EFFORT,
+  type EffortDefault,
+  type EffortDefaults,
+} from '../../shared/effort-defaults';
 import { modelChoicesFrom, type ModelChoice } from './agent/model-util';
+import { EFFORT_LABELS } from './agent/effort-util';
 
 interface Props {
   /** A workspace to ask for the live model list (the list is per account/CLI);
@@ -42,19 +49,31 @@ function optionsFor(choices: ModelChoice[], value: string): { value: string; lab
   return opts;
 }
 
-/** The two default models (CONTEXT.md "Default model"). A change applies to
- *  workspaces created AFTERWARDS only — each workspace keeps the model it was
- *  created with, and its Model dropdown still switches it. */
+/** Effort options for one select: the model's own default first, then the levels. */
+const EFFORT_OPTIONS: { value: EffortDefault; label: string }[] = [
+  { value: MODEL_DEFAULT_EFFORT, label: 'Model default' },
+  ...EFFORT_LEVELS.map((l) => ({ value: l, label: EFFORT_LABELS[l] })),
+];
+
+/** The two default models and efforts (CONTEXT.md "Default model" / "Default
+ *  effort"). A change applies to workspaces created AFTERWARDS only — each
+ *  workspace keeps the model and effort it was created with, and its deck bar
+ *  still switches them. */
 export function ModelDefaultsSettings({ workspaceId, onClose }: Props) {
   const [defaults, setDefaults] = useState<ModelDefaults>({
     workspace: INITIAL_DEFAULT_MODEL,
     spawned: INITIAL_DEFAULT_MODEL,
+  });
+  const [efforts, setEfforts] = useState<EffortDefaults>({
+    workspace: MODEL_DEFAULT_EFFORT,
+    spawned: MODEL_DEFAULT_EFFORT,
   });
   const [live, setLive] = useState<AgentModelInfo[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     void window.orchestra.modelDefaults().then(setDefaults).catch(() => {});
+    void window.orchestra.effortDefaults().then(setEfforts).catch(() => {});
     if (workspaceId) void window.orchestra.agentModels(workspaceId).then(setLive).catch(() => {});
   }, [workspaceId]);
 
@@ -75,6 +94,20 @@ export function ModelDefaultsSettings({ workspaceId, onClose }: Props) {
     }
   };
 
+  const changeEffort = async (kind: ModelDefaultKind, value: EffortDefault) => {
+    if (busy) return;
+    setBusy(true);
+    const prev = efforts;
+    setEfforts({ ...efforts, [kind]: value });
+    try {
+      setEfforts(await window.orchestra.setEffortDefaults({ [kind]: value }));
+    } catch {
+      setEfforts(prev);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return createPortal(
     <div
       className="modal-backdrop"
@@ -82,33 +115,50 @@ export function ModelDefaultsSettings({ workspaceId, onClose }: Props) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal sound-settings model-defaults-settings" role="dialog" aria-label="Default models">
-        <h2>Default models</h2>
+      <div className="modal sound-settings model-defaults-settings" role="dialog" aria-label="Default models and effort">
+        <h2>Default models &amp; effort</h2>
         <div className="sound-hint">
-          The model a new workspace starts on when none is picked. <strong>Applies to
-          workspaces created from now on</strong> — existing ones keep their model (switch it
-          from their Model dropdown).
+          The model and reasoning effort a new workspace starts on when none is picked.{' '}
+          <strong>Applies to workspaces created from now on</strong> — existing ones keep theirs
+          (switch them from the deck bar).
         </div>
         {FIELDS.map((f) => (
-          <label className="field" key={f.kind}>
+          <div className="field" key={f.kind}>
             <div className="field-head">
               <span className="field-label">{f.label}</span>
               <span className="field-hint">{f.hint}</span>
             </div>
-            <select
-              className="field-select"
-              data-model-default={f.kind}
-              value={defaults[f.kind]}
-              disabled={busy}
-              onChange={(e) => void change(f.kind, e.target.value)}
-            >
-              {optionsFor(choices, defaults[f.kind]).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            <div className="model-defaults-row">
+              <select
+                className="field-select"
+                aria-label={`${f.label} — model`}
+                data-model-default={f.kind}
+                value={defaults[f.kind]}
+                disabled={busy}
+                onChange={(e) => void change(f.kind, e.target.value)}
+              >
+                {optionsFor(choices, defaults[f.kind]).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="field-select"
+                aria-label={`${f.label} — effort`}
+                data-effort-default={f.kind}
+                value={efforts[f.kind]}
+                disabled={busy}
+                onChange={(e) => void changeEffort(f.kind, e.target.value as EffortDefault)}
+              >
+                {EFFORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         ))}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>

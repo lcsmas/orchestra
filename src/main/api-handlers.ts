@@ -162,6 +162,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 // ERR_MODULE_NOT_FOUND — see commit 05adb90.
 import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
+import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import type {
   Account,
   BrowserBounds,
@@ -363,6 +364,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   listTickets: 'tickets:list',
   modelDefaults: 'settings:modelDefaults',
   setModelDefaults: 'settings:setModelDefaults',
+  effortDefaults: 'settings:effortDefaults',
+  setEffortDefaults: 'settings:setEffortDefaults',
   refreshTickets: 'tickets:refresh',
   removeTicket: 'tickets:remove',
   spawnFromTicket: 'tickets:spawn',
@@ -1319,6 +1322,13 @@ export const apiHandlers: ApiHandlerTable = {
   setModelDefaults: async (next) => {
     await store.setModelDefaults(normalizeModelDefaults({ ...store.getModelDefaults(), ...next }));
     return store.getModelDefaults();
+  },
+
+  effortDefaults: async () => store.getEffortDefaults(),
+
+  setEffortDefaults: async (next) => {
+    await store.setEffortDefaults(normalizeEffortDefaults({ ...store.getEffortDefaults(), ...next }));
+    return store.getEffortDefaults();
   },
 
   refreshTickets: async () => refreshPinnedTickets(),

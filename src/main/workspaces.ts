@@ -66,6 +66,7 @@ import {
   resolveLaunchModel,
   type ModelDefaultKind,
 } from '../shared/model-defaults.ts';
+import { effortForNewWorkspace } from '../shared/effort-defaults.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   maybeStartRunAtAnchor,
@@ -511,6 +512,7 @@ export async function createWorkspace(
   // stays around on failure; we want the same port across retries).
   const port = store.allocatePort();
   const setupScript = store.getRepoScripts(input.repoPath).setup;
+  const newEffort = effortForNewWorkspace(store.getEffortDefaults(), defaultKind);
 
   const ws: Workspace = {
     id,
@@ -543,6 +545,8 @@ export async function createWorkspace(
     // Model pin: the explicit pick, else the default of its kind, FROZEN here so
     // a later settings change never moves an existing workspace.
     model: modelForNewWorkspace(input.model, store.getModelDefaults(), defaultKind),
+    // Same for the reasoning effort; "model default" leaves `sdkEffort` unset.
+    ...(newEffort ? { sdkEffort: newEffort } : {}),
   };
   await store.upsertWorkspace(ws);
   platform.broadcast('workspace:update', ws);
@@ -5050,6 +5054,8 @@ export async function startAgentPty(
   // default. The SDK structured-session path mirrors this via options.model.
   const launchModel = resolveLaunchModel(ws.model, store.getModelDefaults());
   if (launchModel) claudeArgs.push('--model', launchModel);
+  // Same for effort (`claude --effort`); the SDK path mirrors it via options.effort.
+  if (ws.sdkEffort) claudeArgs.push('--effort', ws.sdkEffort);
   // Heavy-resume gate: if `claude --continue` is about to reload a large
   // session, Claude Code shows its compaction menu — but a typed task would
   // proceed the FULL resume and drain the usage pool. Flag the workspace so

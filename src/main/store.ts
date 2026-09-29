@@ -12,6 +12,7 @@ import {
 } from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
 import { normalizeModelDefaults, type ModelDefaults } from '../shared/model-defaults';
+import { normalizeEffortDefaults, type EffortDefaults } from '../shared/effort-defaults';
 import { scoped } from './logger';
 
 /** Store-scoped logger. Persistence failures are invisible at runtime — every
@@ -68,6 +69,9 @@ interface StoreShape {
   /** The two default models (workspace / spawned agent), raw —
    *  shared/model-defaults.ts normalizes. Absent → both at the initial value. */
   modelDefaults?: Partial<ModelDefaults>;
+  /** The two default reasoning efforts, raw — shared/effort-defaults.ts
+   *  normalizes. Absent → both "model default" (no pin). */
+  effortDefaults?: Partial<EffortDefaults>;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -438,6 +442,16 @@ class Store {
 
   async setModelDefaults(next: ModelDefaults): Promise<void> {
     this.data.modelDefaults = next;
+    await this.save();
+  }
+
+  /** The default efforts new workspaces are pinned to, normalized. */
+  getEffortDefaults(): EffortDefaults {
+    return normalizeEffortDefaults(this.data.effortDefaults);
+  }
+
+  async setEffortDefaults(next: EffortDefaults): Promise<void> {
+    this.data.effortDefaults = next;
     await this.save();
   }
 

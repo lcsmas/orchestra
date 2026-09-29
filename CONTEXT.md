@@ -86,3 +86,10 @@ the *workspace default model* (human-created workspaces) and the *spawned-agent
 default model*. It is copied onto the workspace at creation, so changing it
 never moves an existing workspace. An explicit pick always wins.
 _Avoid_: account default (that is Claude Code's own fallback, one of the choices)
+
+**Default effort**:
+The reasoning effort a new workspace is pinned to (`Workspace.sdkEffort`) when
+nobody names one — same two kinds as the default model (human-created / spawned
+agent), same freeze-at-creation rule. *Model default* pins nothing (the model's
+own effort). Unlike the model, a workspace with no pinned effort never follows
+the setting later.

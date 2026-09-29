@@ -1778,8 +1778,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           <button
             className="header-icon-btn"
             onClick={() => setModelDefaultsOpen(true)}
-            title="Default models — for new workspaces and spawned agents"
-            aria-label="Default model settings"
+            title="Default models & effort — for new workspaces and spawned agents"
+            aria-label="Default model and effort settings"
           >
             <ChipIcon />
           </button>

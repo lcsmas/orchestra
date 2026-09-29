@@ -4800,6 +4800,12 @@ button.danger-primary:active {
   background: var(--bg-2);
   color: var(--text);
 }
+/* Default models modal: model select (wide) beside its effort select. */
+.model-defaults-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 8px;
+}
 
 /* Account login terminal modal */
 .account-login-modal {

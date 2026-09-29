@@ -1,6 +1,7 @@
 import type { BusSnapshot, BusRunSummary } from './bus-view.ts';
 import type { BusSwitches } from './bus-switches.ts';
 import type { ModelDefaults } from './model-defaults.ts';
+import type { EffortDefaults } from './effort-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
@@ -637,6 +638,10 @@ export interface OrchestraAPI {
   modelDefaults: () => Promise<ModelDefaults>;
   /** Patch the defaults; resolves with the normalized, persisted value. */
   setModelDefaults: (next: Partial<ModelDefaults>) => Promise<ModelDefaults>;
+  /** The two default reasoning efforts (CONTEXT.md "Default effort"). */
+  effortDefaults: () => Promise<EffortDefaults>;
+  /** Patch the effort defaults; resolves with the normalized, persisted value. */
+  setEffortDefaults: (next: Partial<EffortDefaults>) => Promise<EffortDefaults>;
   /** Re-fetch every pinned ticket from Linear in ONE batched request and
    *  return the refreshed list. Throws if Linear is unreachable / unauthorized,
    *  so the caller can distinguish that from "nothing pinned". */
