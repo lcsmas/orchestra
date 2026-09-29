@@ -58,15 +58,10 @@ fs.mkdirSync(HOME, { recursive: true });
 const swayCfg = path.join(RUN, 'sway.cfg');
 fs.writeFileSync(swayCfg, 'output HEADLESS-1 resolution 1600x1000\n');
 const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
-// A previous crashed run can leave (a) a stray headless sway and (b) a stale
-// wayland-N socket FILE that a fresh sway re-binds under the SAME name — so
-// detect the new socket by MTIME, not by name diff, and sweep strays first.
-try {
-  execSync(`pkill -f 'sway -c /tmp/keeper-e2e'`);
-  await sleep(500);
-} catch {
-  /* none running */
-}
+// A previous crashed run can leave a stale wayland-N socket FILE that a fresh sway
+// re-binds under the SAME name — so detect the new socket by MTIME, not by name diff.
+// (No `pkill -f` sweep of "stray" sways: the pattern also matches SIBLINGS' live runs — only
+// processes this script started are ever signalled, by pid, in the `finally` below.)
 const t0 = Date.now();
 const sway = spawn('sway', ['-c', swayCfg], {
   env: {
@@ -113,28 +108,21 @@ const liveSurface = (dir) => {
   try { out.mcp = Object.keys(JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8')).mcpServers ?? {}).sort(); } catch { out.mcp = 'unreadable'; }
   return JSON.stringify(out);
 };
+// By DIRECTION (as the removal rig's S4): the failure mode is REMOVAL (links / MCP servers dropped); a re-sync by the LIVE
+// Orchestra during the run only ADDS entries back and must not read as a defect of this script.
+const removedFrom = (beforeStr, afterStr) => {
+  if (beforeStr === afterStr) return [];
+  const b = JSON.parse(beforeStr), a = JSON.parse(afterStr);
+  const gone = (x, y) => (x ?? []).filter((v) => !(y ?? []).includes(v));
+  const man = (x) => { try { return JSON.parse(x ?? '{}'); } catch { return {}; } };
+  return [
+    ...gone(b.links, a.links),
+    ...gone(Array.isArray(b.mcp) ? b.mcp : [], Array.isArray(a.mcp) ? a.mcp : []).map((n) => `mcp:${n}`),
+    ...gone(man(b.manifest).symlinks, man(a.manifest).symlinks).map((n) => `manifest-link:${n}`),
+    ...gone(man(b.manifest).mcpServers, man(a.manifest).mcpServers).map((n) => `manifest-mcp:${n}`),
+  ];
+};
 const LIVE_BEFORE = liveSurface(ACCOUNT_CONFIG_DIR);
-
-// PREFLIGHT. An auth failure surfaces 60+ seconds later as a keeper check
-// failing, which reads as a defect in the thing under test. Fail here instead,
-// naming auth, before any of that machinery starts.
-{
-  const probe = spawnSync(process.env.CLAUDE_BIN || 'claude', ['-p', 'say ok'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: ACCOUNT_CONFIG_DIR },
-    encoding: 'utf8',
-    timeout: 120_000,
-  });
-  const out = `${probe.stdout ?? ''}${probe.stderr ?? ''}`;
-  if (probe.status !== 0 || /Failed to authenticate|OAuth/i.test(out)) {
-    console.error(
-      `PREFLIGHT FAIL — cannot authenticate with CLAUDE_CONFIG_DIR=${ACCOUNT_CONFIG_DIR}\n` +
-        `  ${out.trim().split('\n').slice(0, 3).join('\n  ')}\n` +
-        `This is an AUTH problem, not a keeper problem (see #29). Log in for that\n` +
-        `config dir, or re-run with CLAUDE_CONFIG_DIR set to one that is authenticated.`,
-    );
-    process.exit(1);
-  }
-}
 
 // ── scratch account dir: a COPY of the login, never the live dir ────────────
 {
@@ -150,6 +138,29 @@ const LIVE_BEFORE = liveSurface(ACCOUNT_CONFIG_DIR);
   fs.mkdirSync(SCRATCH_CONFIG_DIR, { recursive: true });
   fs.copyFileSync(credFile, path.join(SCRATCH_CONFIG_DIR, '.credentials.json'));
   fs.chmodSync(path.join(SCRATCH_CONFIG_DIR, '.credentials.json'), 0o600);
+  // The credentials COPY must not outlive the run (it sits under /tmp): remove it on EVERY normal exit path.
+  process.on('exit', () => { try { fs.rmSync(SCRATCH_CONFIG_DIR, { recursive: true, force: true }); } catch { /* best effort */ } });
+}
+
+// PREFLIGHT — on the SCRATCH COPY the app will actually run as (not the live dir). An auth failure surfaces 60+ seconds
+// later as a keeper check failing, which reads as a defect in the thing under test. Fail here instead, naming auth,
+// before any of that machinery starts.
+{
+  const probe = spawnSync(process.env.CLAUDE_BIN || 'claude', ['-p', 'say ok'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: SCRATCH_CONFIG_DIR },
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  const out = `${probe.stdout ?? ''}${probe.stderr ?? ''}`;
+  if (probe.status !== 0 || /Failed to authenticate|OAuth/i.test(out)) {
+    console.error(
+      `PREFLIGHT FAIL — cannot authenticate with the SCRATCH COPY of ${ACCOUNT_CONFIG_DIR}/.credentials.json (${SCRATCH_CONFIG_DIR})\n` +
+        `  ${out.trim().split('\n').slice(0, 3).join('\n  ')}\n` +
+        `This is an AUTH problem, not a keeper problem (see #29). Log in for the source config dir, or re-run with\n` +
+        `CLAUDE_CONFIG_DIR set to one that is authenticated.`,
+    );
+    process.exit(1);
+  }
 }
 
 // ── seed store ──────────────────────────────────────────────────────────────
@@ -459,7 +470,7 @@ try {
 }
 
 // The borrowed login's config dir must be exactly as it was before any app boot (review F4 on #225).
-check('live config dir untouched by the app boots', liveSurface(ACCOUNT_CONFIG_DIR) === LIVE_BEFORE, `${ACCOUNT_CONFIG_DIR} (a re-sync by the LIVE Orchestra during the run reads as a change)`);
+{ const removed = removedFrom(LIVE_BEFORE, liveSurface(ACCOUNT_CONFIG_DIR)); check('live config dir: nothing REMOVED by the app boots', removed.length === 0, `${ACCOUNT_CONFIG_DIR}${removed.length ? ` — REMOVED: ${removed.join(', ')}` : ' (additions by a live re-sync, if any, are not counted)'}`); }
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed  (artifacts: ${RUN})`);
 process.exit(failed.length ? 1 : 0);
