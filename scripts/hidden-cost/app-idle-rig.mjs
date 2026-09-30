@@ -84,7 +84,9 @@ git(repoDir, 'remote', 'add', 'origin', originDir);
 git(repoDir, 'push', '-q', 'origin', 'main');
 git(repoDir, 'fetch', '-q', 'origin');
 const workspaces = [];
-const account = { id: 'rig-hc', label: 'rig (scratch config dir)', configDir: cfgDir };
+// A pinned account has ANTHROPIC_API_KEY/BASE_URL/AUTH_TOKEN scrubbed from its agents' env unless the account's own `env` re-supplies them (src/shared/accounts.ts ACCOUNT_AUTH_ENV_VARS):
+// sessions mode re-supplies the FAKE key + fake-API URL by template (expanded against the app main's env, which carries them).
+const account = { id: 'rig-hc', label: 'rig (scratch config dir)', configDir: cfgDir, ...(SESSIONS > 0 ? { env: { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' } } : {}) };
 for (let i = 0; i < N; i++) {
   const wt = path.join(OHOME, 'wt', `ws-${i}`);
   git(repoDir, 'worktree', 'add', '-q', '-b', `hc/ws-${i}`, wt, 'main');
@@ -155,7 +157,7 @@ function classify(p) {
   if (/(^|\/)electron$/.test(p.cmd[0] ?? '')) return 'electron-other';
   if (/keeper\.js/.test(line)) return 'keeper';
   if (/\/claude\/versions\//.test(p.cmd[0] ?? '')) return 'claude-cli';
-  if (/(^|\/)claude$/.test(p.cmd[0] ?? '') || /stub-bin\/claude/.test(line) || /sleep 3600/.test(line)) return 'claude-stub';
+  if (/(^|\/)claude$/.test(p.cmd[0] ?? '') || /stub-bin\/claude/.test(line) || /sleep 3600/.test(line)) return 'claude';  // the stub (no --sessions) or the REAL claude CLI (--sessions)
   if (/fake-mcp|mcp/.test(line)) return 'mcp-child';
   return 'other';
 }

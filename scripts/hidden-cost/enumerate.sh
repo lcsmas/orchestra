@@ -16,7 +16,9 @@ declare -A CAT
 CAT[sdk-control]='\.(getContextUsage|supportedModels|supportedCommands|supportedAgents|mcpServerStatus|setMcpServers|initializationResult|accountInfo|reloadPlugins|reloadSkills|applyFlagSettings|setModel|setPermissionMode|setMaxThinkingTokens|rewindFiles|interrupt|streamInput|reconnectMcpServer|toggleMcpServer|mcpAuthenticate|stopTask)\('
 CAT[sdk-query]='\bquery\(\{|spawnClaudeCodeProcess|sdkQuery\('
 CAT[proc-spawn]='\b(spawn|spawnSync|execFile|execFileSync|execSync|fork|pexec|pExecFile|execFileP|execFileAsync)\('
-CAT[proc-exec]='\bexec\('
+CAT[proc-exec]='\bexec\('   # NOISE CHECK: child_process.exec is never imported (see proc-spawn); these are RegExp#exec — listed so the zero is auditable
+CAT[simple-git]='simpleGit\('   # simple-git spawns `git` per call; the proc-spawn pattern cannot see it
+CAT[shell-env]='shellEnvSync|shell-env'
 CAT[pty]='pty\.spawn|nodePty|spawnLocalPty'
 CAT[net-fetch]='\bfetch\('
 CAT[net-http]='https?\.(request|get)\(|net\.request\(|net\.(connect|createConnection)\(|new WebSocket|createServer\('
