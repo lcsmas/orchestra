@@ -226,6 +226,7 @@ all. Read-only.`,
        orchestra run hold [--run <id>] [--as <handle>]
        orchestra run pause --hard [--run <id>] [--as <handle>]
        orchestra run resume [--run <id>] [--as <handle>]
+       orchestra run status [--run <id>] [--json]
 
   refreeze  Re-freeze a MISSION run's bus switches to the current live switches.
             For a FLAT orchestrator whose mission never picks up a switch flip.
@@ -252,6 +253,11 @@ all. Read-only.`,
             bus mail resume (there is no structured Reprise yet). A descendant run is
             lifted through the run that carries the pause (the message names it);
             escalation is re-enabled on the next sweep.
+  status    Is the run paused (by whom, since when, which run carries the pause),
+            has the host trap finished, and the BILAN DE PAUSE of every member:
+            what it was doing, its snapshot ref (refs/orchestra/pause/…, holds the
+            uncommitted + untracked work), dirty tree, the tool processes the host
+            killed (never the session or keeper), errors. Read-only; --json for tools.
 Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume refuse a run with no row.`,
   },
 

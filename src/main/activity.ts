@@ -948,6 +948,12 @@ function resetContext(id: string): void {
   platform.broadcast('agent:context', id, 0);
 }
 
+/** #252 D1b: observer of genuine turn STARTS (set once at boot by the pause trap; null = no-op). */
+let turnStartObserver: ((wsId: string) => void) | null = null;
+export function setTurnStartObserver(fn: ((wsId: string) => void) | null): void {
+  turnStartObserver = fn;
+}
+
 /** Apply one lifecycle event to a workspace's status. Fed by the durable spool
  *  tailer (with the per-tool `tool` for pretool/posttool) and, for legacy
  *  sessions, by the Unix-socket route via `dispatchHookEvent`. `setStatus`
@@ -1014,6 +1020,8 @@ export function applyAgentEvent(
       // mid-call hang (#108 Q16). The terminal/spool path never queues a submit, so
       // it leaves `queuedSubmit` undefined → a real boundary → clears.
       if (!queuedSubmit) clearInFlightTools(id);
+      // #252 D1b (rows 29/30): a real turn START — the pause trap interrupts it when this member is paused.
+      if (!queuedSubmit) turnStartObserver?.(id);
       // `null` clears any stop-reason marker (#69): the agent is taking a turn,
       // so whatever ended the LAST one is no longer the workspace's state. Done
       // on the running transition rather than on the next turn-end so the badge

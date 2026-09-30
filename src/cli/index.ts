@@ -29,6 +29,7 @@ import {
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
   BUS_MECHANISMS,
@@ -1834,6 +1835,30 @@ async function main(argv: string[]): Promise<void> {
       // `isRunning` ground truth; the CLI is a thin wrapper that resolves the run
       // and prints the typed outcome.
       const sub = args[0];
+
+      if (sub === 'status') {
+        // #252 D1b — the Bilan de pause reader: is the run paused, has the host trap finished, and
+        // what did it record per member (snapshot ref, dirty tree, commands killed). STORE-LESS.
+        const stJson = takeBoolFlag(args.slice(1), '--json');
+        const stRun = takeFlag(stJson.rest, '--run');
+        const stTarget = stRun.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        const { db: stDb } = await openBusForVerb();
+        try {
+          const busPause = await import('../main/bus-pause.ts');
+          const records = await import('../main/bus-pause-records.ts');
+          const busRuns = await import('../main/bus-runs.ts');
+          const st = gatherRunStatus(stDb, stTarget, {
+            getRunPause: busPause.getRunPause,
+            activePauseFor: busPause.activePauseFor,
+            listBilanForRun: records.listBilanForRun,
+            runExists: (d, id) => busRuns.getRun(d, id) !== null,
+          });
+          process.stdout.write(stJson.present ? `${JSON.stringify(st, null, 2)}\n` : renderRunStatus(st));
+        } finally {
+          stDb.close();
+        }
+        return;
+      }
       if (sub === 'hold' || sub === 'resume' || sub === 'pause') {
         // #204 — the per-run HOLD flag. STORE-LESS like send/ack: it writes the bus
         // directly, so a hold lands while the app is down (before a relaunch).
@@ -1881,7 +1906,7 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       if (sub !== 'refreeze') {
-        fail('usage: orchestra run refreeze|hold|resume|pause --hard [--run <id>]');
+        fail('usage: orchestra run refreeze|hold|resume|pause --hard|status [--run <id>]');
       }
       const { value: runFlag } = takeFlag(args.slice(1), '--run');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An

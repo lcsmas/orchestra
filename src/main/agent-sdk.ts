@@ -3955,6 +3955,50 @@ export async function sdkInterrupt(wsId: string): Promise<void> {
   }
 }
 
+/** #252 D1b — read-only view of a live structured session for the Bilan de pause (null = no live
+ *  session object in THIS app run). Reads only; never starts or stops anything. */
+export function sdkPauseActivity(
+  wsId: string,
+): { turnRunning: boolean; queued: number; bgTasks: BackgroundTask[] } | null {
+  const s = sessions.get(wsId);
+  if (!s || s.stopping) return null;
+  return { turnRunning: s.turnGate !== null, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
+}
+
+export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed';
+
+/**
+ * #252 D1b — interrupt the running turn of a PAUSED member. Unlike {@link sdkInterrupt} it never
+ * fabricates a `turn-end` for a missing session and never touches an idle one (a stale
+ * `interruptRequested` would relabel a later crash). A turn still running in a DETACHED keeper this
+ * app run never attached to (the app was down when the pause landed) is attached first — attaching
+ * starts no turn (ledger D5 row 3). Never stops the CLI session or the keeper.
+ */
+export async function sdkInterruptForPause(wsId: string): Promise<PauseInterruptOutcome> {
+  let attached = false;
+  if (!sessions.has(wsId)) {
+    const probe = await probeKeeper(wsId);
+    if (!probe?.running || probe.turnInFlight !== true) return 'idle';
+    try {
+      attached = await sdkAttachIfDetached(wsId);
+    } catch {
+      attached = false;
+    }
+    if (!attached) return 'no-session';
+  }
+  const session = sessions.get(wsId);
+  if (!session) return 'no-session';
+  if (!attached && session.turnGate === null && session.queue.length === 0) return 'idle';
+  session.interruptRequested = true;
+  try {
+    await interruptCancellingQueued(session);
+    return attached ? 'attached-then-interrupted' : 'interrupted';
+  } catch (err) {
+    log.warn(`agent-sdk: pause interrupt failed for ${wsId}`, err);
+    return 'failed';
+  }
+}
+
 /** Resolve a parked canUseTool call with the renderer's decision. */
 export function sdkPermissionReply(
   wsId: string,
