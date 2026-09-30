@@ -45,6 +45,7 @@
     "test:liveness-failed-call": "bash scripts/e2e-liveness-failed-call.sh",
     "test:session-debug-log": "bash scripts/e2e-session-debug-log.sh",
     "test:context-seed": "bash scripts/e2e-context-seed-176.sh",
+    "test:session-budget": "bash scripts/e2e-session-budget.sh",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",
