@@ -239,7 +239,7 @@ import {
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { bootFallbackKills } from '../shared/resource-monitor';
-import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
+import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
 import { initLogger, log, isLevelEnabled } from './logger';
@@ -486,9 +486,9 @@ async function createMainWindow() {
       // additionally refuses unless `store.loadedFromDisk`.
       startResourceMonitor();
     });
-  // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
-  // calendar month (checked shortly after startup and every ~6h).
-  startSelfTuneScheduler();
+  // Insights & Improvements: manual-only since 2026-09-30 (no auto-run) —
+  // just sweep a run left `running` by a previous session.
+  sweepStaleSelfTuneRuns();
   // Periodic fail-safe snapshots of every sandbox-hosted workspace — the
   // container is the only copy of unpushed work, so a dead sandbox must cost
   // at most one backup interval.
@@ -864,7 +864,6 @@ function shutdownSubsystems(): void {
   stopHumanGatesWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
-  stopSelfTuneScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();
   disposeVoice();

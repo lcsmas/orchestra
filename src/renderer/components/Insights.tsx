@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { parseLessonBullets, type SelfTuneReport, type SelfTuneRun, type SelfTuneStep } from '../../shared/self-tune';
 import { dialog } from './Dialog';
 
-// Insights & Improvements — orchestra-native monthly Claude Code self-tuning.
+// Insights & Improvements — on-demand Claude Code self-tuning (manual runs only).
 // `InsightsSection` is the sidebar entry (bottom of the sidebar, above the
 // usage bars): one row when idle, one row per login while a run is in flight.
 // `InsightsView` is the main-pane view it opens: live transcript, run history,
@@ -68,7 +68,7 @@ export function InsightsSection() {
       <button
         className={`insights-row ${insightsOpen ? 'active' : ''}`}
         onClick={() => setInsightsOpen(!insightsOpen)}
-        title="Insights & Improvements — monthly Claude Code self-tuning"
+        title="Insights & Improvements — Claude Code self-tuning (manual)"
         aria-expanded={insightsOpen}
       >
         <span className="insights-row-icon" aria-hidden="true">
@@ -185,7 +185,7 @@ export function InsightsView() {
         <div className="insights-view-titles">
           <h2>Insights &amp; Improvements</h2>
           <div className="insights-view-sub">
-            Monthly self-tune: regenerate each login&apos;s Claude Code insights report, then distill new friction lessons into ~/.claude/LESSONS.md
+            Self-tune (manual): regenerate each login&apos;s Claude Code insights report, then distill new friction lessons into ~/.claude/LESSONS.md
           </div>
         </div>
         <button
@@ -258,7 +258,7 @@ export function InsightsView() {
           <section className="insights-panel">
             <div className="insights-panel-title">No runs yet</div>
             <div className="insights-empty-hint">
-              The pipeline runs automatically once per calendar month — or start one with &ldquo;Run now&rdquo;.
+              The pipeline never runs by itself — start one with &ldquo;Run now&rdquo;.
             </div>
           </section>
         )}

@@ -1,7 +1,7 @@
-# Insights & Improvements (monthly self-tune)
+# Insights & Improvements (manual self-tune)
 
-Orchestra-native monthly Claude Code self-tuning (replaces the user's old
-systemd timer): for every login run a headless `claude -p "/insights"` to
+Orchestra-native Claude Code self-tuning, MANUAL ONLY since 2026-09-30 (the
+monthly auto-run was removed — it grew LESSONS.md unattended): for every login run a headless `claude -p "/insights"` to
 regenerate that login's usage report, then ONE fold pass that distills new
 friction lessons into `~/.claude/LESSONS.md` and appends a summary to
 `~/.claude/usage-data/self-tune.log`.
@@ -65,8 +65,10 @@ Dependency-free (testable under `node --test`):
   transition (`store.ts saveSelfTuneRun`, bounded to 24) and broadcast as
   `selfTune:update`; a `running` run found at startup is swept to `failed`
   (child processes don't survive restarts).
-- **Scheduler**: `startSelfTuneScheduler(window)` `:295` — 15s after startup
-  and every 6h, auto-start iff `isSelfTuneDue` against the persisted history.
+- **No scheduler** (removed 2026-09-30): runs start only from the UI's "Run
+  now". `sweepStaleSelfTuneRuns()` (called at startup from `index.ts`) sweeps a
+  leftover `running` run to `failed`. `isSelfTuneDue`/`lastSuccessAt` remain in
+  shared/self-tune.ts, unused by main.
 - IPC (registered in `index.ts` next to `usage:get`): `selfTune:list` / `run` /
   `output` / `reports` / `openReport` (shell.openPath on the newest report) /
   `lessons` (reads `~/.claude/LESSONS.md`); push events `selfTune:update`,

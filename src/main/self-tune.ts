@@ -11,8 +11,6 @@ import {
   diffLessons,
   ensureLessonsImport,
   enumerateSelfTuneLogins,
-  isSelfTuneDue,
-  lastSuccessAt,
   LESSONS_BOOTSTRAP,
   newestReport,
   parseFoldSummary,
@@ -23,8 +21,8 @@ import {
   type SelfTuneStep,
 } from '../shared/self-tune';
 
-// Monthly Claude Code self-tuning, orchestra-native (replaces the old systemd
-// timer): for every login (the default ~/.claude plus each configured
+// On-demand Claude Code self-tuning ("Run now" only — the monthly auto-run
+// was removed 2026-09-30): for every login (the default ~/.claude plus each configured
 // account's config dir) run a headless `claude -p "/insights"` to regenerate
 // that login's usage report, then ONE fold pass — under the default login —
 // that reads every newest report and distills new friction lessons into
@@ -34,7 +32,7 @@ import {
 //
 // The pipeline's pure half (login enumeration, due-date math, report
 // resolution, the fold prompt) lives in src/shared/self-tune.ts; this module
-// owns the impure half: spawning, streaming, persistence, scheduling, IPC.
+// owns the impure half: spawning, streaming, persistence, IPC.
 
 /** Test seam: overrides the `claude` executable for every pipeline spawn, so
  *  tests/e2e exercise the full pipeline with a fast fake instead of a real
@@ -45,8 +43,6 @@ function claudeCmd(): string {
 }
 
 let current: SelfTuneRun | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
-let kickoff: ReturnType<typeof setTimeout> | null = null;
 
 // Live transcript per run: an in-memory bounded buffer for streaming to the
 // UI, mirrored to a file so the last run's transcript survives a restart.
@@ -332,28 +328,11 @@ export function startSelfTuneRun(trigger: 'auto' | 'manual'): SelfTuneRun {
   return run;
 }
 
-// Check cadence: cheap pure date math against the persisted history, so a
-// wasteful spawn never happens when the month is already covered.
-const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
-// Small startup grace so the auto-kickoff never competes with window load,
-// agent resume, and the first poller burst.
-const STARTUP_DELAY_MS = 15_000;
-
-function autoRunIfDue(): void {
-  if (current) return;
-  if (!isSelfTuneDue(lastSuccessAt(store.selfTuneRuns), Date.now())) return;
-  try {
-    startSelfTuneRun('auto');
-  } catch (err) {
-    log.warn('self-tune auto-run failed to start', err);
-  }
-}
-
-/** Start the monthly scheduler: shortly after app ready, and every ~6h, kick
- *  off a run iff no successful run exists in the current calendar month. Also
- *  sweeps any `running` run left over from a previous session to `failed`
- *  (a child process can't survive a restart). */
-export function startSelfTuneScheduler(): void {
+/** Startup sweep only — the monthly auto-run was REMOVED (user ruling
+ *  2026-09-30: it grew LESSONS.md unattended); runs start from "Run now". A
+ *  `running` run left over from a previous session is swept to `failed` (a
+ *  child process can't survive a restart). */
+export function sweepStaleSelfTuneRuns(): void {
   for (const run of store.selfTuneRuns) {
     if (run.status === 'running') {
       run.status = 'failed';
@@ -361,19 +340,5 @@ export function startSelfTuneScheduler(): void {
       for (const s of run.steps) if (s.status === 'running') s.status = 'failed';
       void store.saveSelfTuneRun(run);
     }
-  }
-  if (timer) return;
-  kickoff = setTimeout(autoRunIfDue, STARTUP_DELAY_MS);
-  timer = setInterval(autoRunIfDue, CHECK_EVERY_MS);
-}
-
-export function stopSelfTuneScheduler(): void {
-  if (kickoff) {
-    clearTimeout(kickoff);
-    kickoff = null;
-  }
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
   }
 }
