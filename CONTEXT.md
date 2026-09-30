@@ -93,3 +93,14 @@ nobody names one — same two kinds as the default model (human-created / spawne
 agent), same freeze-at-creation rule. *Model default* pins nothing (the model's
 own effort). Unlike the model, a workspace with no pinned effort never follows
 the setting later.
+
+### Accounts
+
+**Compte** (account):
+A Claude identity (claude.ai subscription login) that Orchestra can run agents
+under; each has its own sign-in, independent of the others. UI says "Compte",
+code says `Account`. Every workspace runs under an explicit Compte: there is
+no default account (the bare `~/.claude` fallback goes away). Settled with the
+user 2026-09-30.
+_Avoid_: profil / profile (collides with the isolated browser profile used
+during sign-in), login (that is the act, not the thing)
