@@ -97,9 +97,10 @@ the setting later.
 ### Accounts
 
 **Compte** (account):
-A Claude identity (claude.ai subscription login) that Orchestra can run agents
-under; each has its own sign-in, independent of the others. UI says "Compte",
-code says `Account`. Every workspace runs under an explicit Compte: there is
+A named place Orchestra can run agents under: its own configuration, history
+and sign-in, independent of the other Comptes. The claude.ai identity signed in
+to it is not fixed: signing in again with another identity keeps the Compte and
+changes who it bills. UI says "Compte", code says `Account`. Every workspace runs under an explicit Compte: there is
 no default account (the bare `~/.claude` fallback goes away). Settled with the
 user 2026-09-30.
 _Avoid_: profil / profile (collides with the isolated browser profile used
