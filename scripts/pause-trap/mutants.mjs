@@ -67,6 +67,24 @@ export const MUTANTS = {
     replace: 'const exempt = false;',
     mustRedden: 'pauser_keeps_its_turn',
   },
+  // D11: the env provenance matches ANY CLAUDE_PID (planner AND signal-time re-read — two layers cover each other, so both are edited).
+  'env-pid-not-matched': {
+    file: '/src/shared/pause-procs.ts',
+    edits: [
+      { find: /      if \(opts\.claudePidOf\(p\) === cli\.pid\) add\(p, null, 99, 'env'\);/g, replace: "      if (opts.claudePidOf(p) !== null) add(p, null, 99, 'env');" },
+      { find: /  if \(env === plan\.cli\.pid && fresh\.startTicks > plan\.cli\.startTicks\) \{/g, replace: '  if (env !== null && fresh.startTicks > plan.cli.startTicks) {' },
+    ],
+    mustRedden: 'other_member_orphan_survives',
+  },
+  // D11: the env provenance ignores the CLI's START-TIME (a bare pid match): planner AND re-read.
+  'env-start-time-ignored': {
+    file: '/src/shared/pause-procs.ts',
+    edits: [
+      { find: / \|\| p\.startTicks <= cli\.startTicks\) continue;/g, replace: ') continue;' },
+      { find: /  if \(env === plan\.cli\.pid && fresh\.startTicks > plan\.cli\.startTicks\) \{/g, replace: '  if (env === plan.cli.pid) {' },
+    ],
+    mustRedden: 'stale_orphan_before_cli_survives',
+  },
   // The signal-time identity re-read removed: a recycled pid is signalled (real pid reuse: recycle-rig.mjs).
   'identity-reread-removed': {
     file: '/src/shared/pause-procs.ts',
@@ -92,8 +110,12 @@ export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context);
   if (!active || !url.endsWith(MUTANTS[active].file)) return result;
   const m = MUTANTS[active];
-  const src = String(result.source);
-  const hits = [...src.matchAll(m.find)].length;
-  if (hits !== 1) throw new Error(`mutant ${active}: PATTERN-GONE — anchor matched ${hits}× in ${m.file} (want exactly 1); the mutant no longer describes the shipped code`);
-  return { ...result, source: src.replace(m.find, m.replace) };
+  let src = String(result.source);
+  const edits = m.edits ?? [{ find: m.find, replace: m.replace }];
+  for (const e of edits) {
+    const hits = [...src.matchAll(e.find)].length;
+    if (hits !== 1) throw new Error(`mutant ${active}: PATTERN-GONE — anchor matched ${hits}× in ${m.file} (want exactly 1)`);
+    src = src.replace(e.find, e.replace);
+  }
+  return { ...result, source: src };
 }

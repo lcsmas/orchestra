@@ -35,8 +35,11 @@ const M = [
   { id: 'procs-kill-order-root-first', file: PROCS, find: 'return [...members].sort((a, b) => Number(a.isRoot) - Number(b.isRoot) || b.depth - a.depth);', rep: 'return [...members].sort((a, b) => Number(b.isRoot) - Number(a.isRoot) || a.depth - b.depth);', tests: [T.procs, T.kill], expect: /killOrder|leaf-first/ },
   { id: 'procs-env-older-than-cli', file: PROCS, find: '|| p.startTicks <= cli.startTicks) continue;', rep: ') continue;', tests: [T.procs], expect: /env provenance/ },
   { id: 'procs-env-sidecar-descendants', file: PROCS, find: '|| sidecar.has(p.pid) ||', rep: '||', tests: [T.procs], expect: /env provenance/ },
+  { id: 'procs-env-planner-pid-unmatched', file: PROCS, find: "      if (opts.claudePidOf(p) === cli.pid) add(p, null, 99, 'env');", rep: "      if (opts.claudePidOf(p) !== null) add(p, null, 99, 'env');", tests: [T.procs], expect: /env provenance/ },
+  { id: 'procs-env-evidence-dropped', file: PROCS, find: "      evidence: `re-read now: environ CLAUDE_PID=${env} == CLI ${plan.cli.pid} whose start-time ${plan.cli.startTicks} was just re-verified; process started after it (${fresh.startTicks} > ${plan.cli.startTicks})`,", rep: "      evidence: '',", tests: [T.procs], expect: /D11: planner records cwd/ },
+  { id: 'kill-cwd-not-recorded', file: KILL, find: '    cwdOf: (p: ProcIdent) => deps.readCwd(p.pid),\n', rep: '', tests: [T.kill], expect: /listed with its cmdline, cwd/ },
   { id: 'procs-env-keeper-member', file: PROCS, find: 'p.pid === cliNow.ppid || p.pid <= 1 || ', rep: '', tests: [T.procs], expect: /never makes the CLI a member/ },
-  { id: 'procs-env-verify-ignores-marker', file: PROCS, find: '  if (env === plan.cli.pid && fresh.startTicks > plan.cli.startTicks) return { ok: true, via: \'env\' };', rep: "  if (true) return { ok: true, via: 'env' };", tests: [T.procs], expect: /env path/ },
+  { id: 'procs-env-verify-ignores-marker', file: PROCS, find: '  if (env === plan.cli.pid && fresh.startTicks > plan.cli.startTicks) {', rep: '  if (true) {', tests: [T.procs], expect: /env path/ },
   // ── killer (pause-kill.ts)
   { id: 'kill-no-sigkill-escalation', file: KILL, find: "      if (v.ok && deps.signal(m.pid, 'SIGKILL')) {", rep: '      if (false) {', tests: [T.kill], expect: /SIGTERM ignored/ },
   // TWO LAYERS cover each other here (isAlive's identity read + verifyAtSignal): each alone survives, so the mutant removes BOTH.

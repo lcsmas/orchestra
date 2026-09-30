@@ -27,6 +27,8 @@ class FakeOs {
   unreadable = new Set<number>();
   /** CLAUDE_PID per pid (what /proc/<pid>/environ would say). */
   env = new Map<number, number>();
+  /** cwd per pid (what /proc/<pid>/cwd would say). */
+  cwds = new Map<number, string>();
   /** run after every delivered signal (a tool respawning as it is killed). */
   onSignal: ((pid: number, sig: string) => void) | null = null;
   supported = true;
@@ -56,6 +58,7 @@ class FakeOs {
         return x ? { ...x } : 'gone';
       },
       readClaudePid: (pid) => (this.unreadable.has(pid) ? 'unreadable' : (this.env.get(pid) ?? null)),
+      readCwd: (pid) => this.cwds.get(pid) ?? null,
       signal: (pid, sig) => {
         const target = this.procs.get(pid);
         this.signals.push({ pid, sig, target });
@@ -102,6 +105,23 @@ test('fake OS: kills the tool tree leaf-first, spares the MCP sidecar, never tou
   assert.deepEqual(r.survivors, []);
   assert.deepEqual(r.refused, []);
   assert.equal(r.killed.find((k) => k.pid === 201)?.cmd, 'sleep 600');
+});
+
+test('every killed process is listed with its cmdline, cwd and the evidence the signal-time re-read proved; an env orphan names the CLI identity (pid + start-time)', async () => {
+  const os = world();
+  os.add(mk(700, 1, { sid: 700, startTicks: 5000, comm: 'sleep', argv: ['sleep', '7715'] })); // daemonized orphan of this CLI
+  os.env.set(700, 100);
+  os.cwds.set(700, '/work/tree-w1');
+  os.cwds.set(201, '/work/tree-w1');
+  const r = await killToolTrees(CLI, 90, os.deps());
+  const orphan = r.killed.find((k) => k.pid === 700)!;
+  assert.equal(orphan.via, 'env');
+  assert.equal(orphan.cmd, 'sleep 7715');
+  assert.equal(orphan.cwd, '/work/tree-w1');
+  assert.match(orphan.evidence, /CLAUDE_PID=100 names this member's CLI \(pid 100, start-time 1000\)/);
+  assert.match(orphan.evidence, /re-read now: environ CLAUDE_PID=100 == CLI 100 whose start-time 1000 was just re-verified/);
+  assert.deepEqual(r.cli, CLI, 'the CLI identity the proofs were made against is part of the report');
+  assert.equal(r.killed.find((k) => k.pid === 201)!.cwd, '/work/tree-w1');
 });
 
 test('fake OS: SIGTERM ignored → escalates to SIGKILL (after a fresh identity re-read)', async () => {

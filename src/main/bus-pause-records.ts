@@ -33,7 +33,7 @@ export interface BilanActivity {
   notes?: string[];
   /** Processes the TURN OBSERVER (a CLI-started turn while paused) killed — kept apart from `killed_json`, which belongs to the pause-time trap
    *  (a non-NULL `killed_json` means "this member's trap is complete"). */
-  observerKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string }>;
+  observerKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>;
 }
 
 export interface BilanRow {
@@ -249,12 +249,12 @@ export function appendObserverKills(
   carrierRunId: string,
   wsId: string,
   pausedAt: number,
-  killed: ReadonlyArray<{ pid: number; cmd: string; signal: string; outcome: string }>,
+  killed: ReadonlyArray<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>,
 ): void {
   if (killed.length === 0) return;
   const tx = db.transaction(() => {
     const row = bilanForMember(db, carrierRunId, wsId, pausedAt);
-    const add = killed.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome }));
+    const add = killed.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome, via: k.via, cwd: k.cwd, evidence: k.evidence })); // D11: pid, cmdline, cwd, reason matched — all kept
     if (!row) {
       insertBilan(db, { runId: carrierRunId, wsId, pausedAt, activity: { surface: 'none', observerKilled: add }, snapshotRef: null, dirty: null, killed: null, error: null });
       return;

@@ -102,13 +102,14 @@ const target = (pid: number) => plan().members.find((m) => m.pid === pid)!;
 test('verifyAtSignal: the happy paths — root under CLI, chain member, session orphan', () => {
   const t = table();
   const pr = { keeperPid: KEEPER, selfPid: SELF };
-  assert.deepEqual(verifyAtSignal(target(200), plan(), pr, reader(t)), { ok: true, via: 'root-under-cli' });
+  assert.equal(verifyAtSignal(target(200), plan(), pr, reader(t)).ok, true);
+  assert.equal((verifyAtSignal(target(200), plan(), pr, reader(t)) as { via: string }).via, 'root-under-cli');
   assert.equal(verifyAtSignal(target(201), plan(), pr, reader(t)).ok, true);
   const orphan = verifyAtSignal(target(250), plan(), pr, reader(t));
-  assert.deepEqual(orphan, { ok: true, via: 'session' }, 'an orphan with a live root');
+  assert.deepEqual({ ok: orphan.ok, via: (orphan as { via?: string }).via }, { ok: true, via: 'session' }, 'an orphan with a live root');
   // dead root: the orphan is still provably ours via the session id
   const noRoot = t.filter((x) => x.pid !== 210);
-  assert.deepEqual(verifyAtSignal(target(250), plan(), pr, reader(noRoot)), { ok: true, via: 'session' });
+  assert.equal((verifyAtSignal(target(250), plan(), pr, reader(noRoot)) as { via?: string }).via, 'session');
 });
 
 test('verifyAtSignal REFUSES a recycled pid (start-time changed) — the D4 identity re-read', () => {
@@ -175,7 +176,7 @@ test('verifyAtSignal (non-session-leader roots): ppid chain is verified hop by h
   const tg = pl.members.find((m) => m.pid === 202)!;
   assert.equal(tg.rootIsSessionLeader, false);
   const pr = { keeperPid: KEEPER, selfPid: SELF };
-  assert.deepEqual(verifyAtSignal(tg, pl, pr, reader(t)), { ok: true, via: 'chain' });
+  assert.equal((verifyAtSignal(tg, pl, pr, reader(t)) as { via?: string }).via, 'chain');
   // 201 died and 202 was reparented to init: the chain is broken → refused (fail closed).
   const reparented = { ...t[3], ppid: 1 };
   const v = verifyAtSignal(tg, pl, pr, reader(t, { 202: reparented }));
@@ -219,7 +220,7 @@ test('verifyAtSignal env path: re-reads CLAUDE_PID NOW — matching proves it, a
   const pl = planToolTrees(t, CLI, { claudePidOf });
   const tg = pl.members.find((m) => m.pid === 700)!;
   const pr = { keeperPid: KEEPER, selfPid: SELF };
-  assert.deepEqual(verifyAtSignal(tg, pl, pr, reader(t), () => 100), { ok: true, via: 'env' });
+  assert.equal((verifyAtSignal(tg, pl, pr, reader(t), () => 100) as { via?: string }).via, 'env');
   assert.equal(verifyAtSignal(tg, pl, pr, reader(t), () => 555).ok, false, 'another CLI\'s marker');
   assert.equal(verifyAtSignal(tg, pl, pr, reader(t), () => null).ok, false, 'no marker');
   const un = verifyAtSignal(tg, pl, pr, reader(t), () => 'unreadable');
@@ -233,4 +234,33 @@ test('planToolTrees never makes the CLI a member, even through the env rule', ()
   const t = [...table(), p(100, 90, { startTicks: 1000 })].filter((x, i, a) => a.findIndex((y) => y.pid === x.pid) === i);
   const plan = planToolTrees(t, CLI, { claudePidOf: () => 100 });
   assert.ok(!plan.members.some((m) => m.pid === CLI.pid || m.pid === KEEPER));
+});
+
+test('D11: planner records cwd + the reason it matched; the verdict carries the evidence the signal-time re-read proved', () => {
+  const t = tableWithDaemon();
+  const plan = planToolTrees(t, CLI, { claudePidOf, cwdOf: (x) => `/cwd/${x.pid}` });
+  const d = plan.members.find((m) => m.pid === 700)!;
+  assert.equal(d.cwd, '/cwd/700');
+  assert.match(d.matched, /CLAUDE_PID=100 names this member's CLI \(pid 100, start-time 1000\); started after it \(start-time 5000\)/);
+  const v = verifyAtSignal(d, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100);
+  assert.equal(v.ok, true);
+  assert.match((v as { evidence: string }).evidence, /environ CLAUDE_PID=100 == CLI 100 whose start-time 1000 was just re-verified; process started after it \(5000 > 1000\)/);
+  const root = plan.members.find((m) => m.pid === 200)!;
+  assert.match(root.matched, /direct child of CLI 100, a shell run with -c/);
+  assert.match(plan.members.find((m) => m.pid === 201)!.matched, /descendant of tool shell 200/);
+});
+
+test('D11 (a)(b)(c) at the verify layer: another member\'s CLAUDE_PID, a recycled CLI pid (start-time differs) and a process older than the CLI are all REFUSED', () => {
+  const t = tableWithDaemon();
+  const pl = planToolTrees(t, CLI, { claudePidOf });
+  const d = pl.members.find((m) => m.pid === 700)!;
+  const pr = { keeperPid: KEEPER, selfPid: SELF };
+  // (a) another member's orphan: its marker names ANOTHER CLI
+  assert.equal(verifyAtSignal(d, pl, pr, reader(t), () => 555).ok, false);
+  // (b) the CLI pid was recycled between plan and signal: same pid, different start-time ⇒ the identity the marker is matched against is gone
+  const recycledCli = { ...t.find((x) => x.pid === 100)!, startTicks: 6000 };
+  assert.deepEqual(verifyAtSignal(d, pl, pr, reader(t, { 100: recycledCli }), () => 100), { ok: false, reason: 'cli-identity-unprovable' });
+  // (c) a process that started BEFORE the member CLI never matches, whatever its marker says
+  const older = { ...d, startTicks: 900 };
+  assert.equal(verifyAtSignal(older, pl, pr, reader(t, { 700: { ...t.find((x) => x.pid === 700)!, startTicks: 900 } }), () => 100).ok, false);
 });

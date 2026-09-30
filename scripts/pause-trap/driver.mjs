@@ -227,6 +227,12 @@ try {
   check('bilan_w1', !!w1row && w1row.dirty === true && (A.idleAtPause ? w1row.activity?.interrupt === 'idle' : (['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt) || (w1row.activity?.interrupt === 'idle' && (w1row.activity?.notes ?? []).some((n) => /interrupt=interrupted/.test(n))))) && Array.isArray(w1row.killed?.killed) && !w1row.error && w1row.activity?.turnRunning === !A.idleAtPause,
     w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
+  if (A.mustKill.includes('sleep 7715')) {
+    // LEAD ruling D11: the daemonized orphan is listed with pid, cmdline, cwd and the reason that matched (CLI identity = pid + start-time).
+    const o = (w1row?.killed?.killed ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.observerKilled ?? []).find((k) => k.cmd === 'sleep 7715');
+    check('orphan_listed_with_cwd_and_reason', !!o && typeof o.pid === 'number' && o.via === 'env' && o.cwd === WT.w1 && /CLAUDE_PID=\d+ names this member's CLI \(pid \d+, start-time \d+\)/.test(o.evidence ?? ''),
+      JSON.stringify(o ?? null));
+  }
   check('bilan_ops_member_recorded', !!opsrow && !!opsrow.snapshotRef, opsrow ? `ops: ref=${opsrow.snapshotRef} dirty=${opsrow.dirty} surface=${opsrow.activity?.surface}` : 'no Bilan row for ops (the OPS is a member of its own run)');
   if (A.pauser) {
     const opsKeeper = allProcs().find((x) => live(x) && x.argv.some((a) => a.endsWith('keeper.js')) && x.argv.includes('ops'));

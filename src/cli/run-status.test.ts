@@ -128,3 +128,19 @@ test('AFTER the lift the Bilan is still readable (the footer tells the coordinat
   // a run that never had a pause says nothing extra
   assert.ok(!/Last pause/.test(renderRunStatus(gatherRunStatus(db, 'M', { ...deps, latestPauseBilan: () => null }))));
 });
+
+test('D11: a killed ORPHAN is listed with its cmdline, pid, cwd and the reason that matched', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-o', pausedAt: p.pausedAt, activity: { surface: 'sdk', memberRun: 'W' }, snapshotRef: null, dirty: null, error: null,
+    killed: { cli: { pid: 100, startTicks: 1000 }, killed: [
+      { pid: 7, cmd: 'sleep 7715', signal: 'SIGTERM', outcome: 'exited', via: 'env', cwd: '/work/tree-ws-o', evidence: "CLAUDE_PID=100 names this member's CLI (pid 100, start-time 1000) | re-read now: environ CLAUDE_PID=100 == CLI 100" },
+      { pid: 8, cmd: 'sleep 1', signal: 'SIGTERM', outcome: 'exited', via: 'chain', cwd: '/x', evidence: 'chain' },
+    ] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /orphan killed \(left the CLI's tree, via env\): sleep 7715 pid 7 cwd \/work\/tree-ws-o — CLAUDE_PID=100 names this member's CLI \(pid 100, start-time 1000\)/);
+  assert.equal((text.match(/orphan killed/g) ?? []).length, 1, 'only the orphan (not the ppid-tree child) is listed as one');
+});

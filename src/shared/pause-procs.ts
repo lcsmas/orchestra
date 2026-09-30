@@ -54,6 +54,10 @@ export interface ToolProc {
   depth: number;
   /** How the planner attached it: the ppid tree under a tool shell, a session orphan, or an env-proven orphan. */
   via: 'tree' | 'session' | 'env';
+  /** `/proc/<pid>/cwd` read at PLAN time (before any signal), for the Bilan. */
+  cwd: string | null;
+  /** Why the planner attached it (the evidence string the Bilan lists; the signal-time re-read adds its own). */
+  matched: string;
 }
 
 export interface SparedProc {
@@ -109,6 +113,8 @@ export function isToolShell(p: ProcIdent): boolean {
 export interface PlanOptions {
   /** `CLAUDE_PID` from the process's environ (null = absent/unreadable). Omitted ⇒ no env-proven orphans. */
   claudePidOf?: (p: ProcIdent) => number | null;
+  /** `/proc/<pid>/cwd` (null = unreadable): recorded per member for the Bilan. */
+  cwdOf?: (p: ProcIdent) => string | null;
   /** Tool-shell roots found in EARLIER rounds (possibly dead now): their session orphans are still ours. */
   priorRoots?: readonly RootRef[];
 }
@@ -134,6 +140,14 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
   }
   const add = (p: ProcIdent, root: ProcIdent | null, depth: number, via: ToolProc['via'] = 'tree'): void => {
     if (p.pid === cli.pid || members.has(p.pid)) return;
+    const matched =
+      via === 'env'
+        ? `CLAUDE_PID=${cli.pid} names this member's CLI (pid ${cli.pid}, start-time ${cli.startTicks}); started after it (start-time ${p.startTicks})`
+        : via === 'session'
+          ? `same session (sid ${p.sid}) as tool shell ${root?.pid}`
+          : root && p.pid === root.pid
+            ? `direct child of CLI ${cli.pid}, a shell run with -c`
+            : `descendant of tool shell ${root?.pid}`;
     members.set(p.pid, {
       pid: p.pid,
       ppid: p.ppid,
@@ -146,6 +160,8 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
       isRoot: root ? p.pid === root.pid : false,
       depth,
       via,
+      cwd: opts.cwdOf ? opts.cwdOf(p) : null,
+      matched,
     });
   };
   for (const root of roots) {
@@ -197,7 +213,7 @@ export function killOrder(members: readonly ToolProc[]): ToolProc[] {
 
 export type FreshRead = ProcIdent | 'gone' | 'unreadable';
 export type SignalVerdict =
-  | { ok: true; via: 'root-under-cli' | 'chain' | 'session' | 'env' }
+  | { ok: true; via: 'root-under-cli' | 'chain' | 'session' | 'env'; /** what the signal-time re-read actually proved (listed in the Bilan) */ evidence: string }
   | { ok: false; reason: string };
 
 /**
@@ -227,13 +243,15 @@ export function verifyAtSignal(
     return { ok: false, reason: 'cli-identity-unprovable' };
   }
   if (target.isRoot) {
-    return fresh.ppid === plan.cli.pid ? { ok: true, via: 'root-under-cli' } : { ok: false, reason: 'root-not-under-cli' };
+    return fresh.ppid === plan.cli.pid
+      ? { ok: true, via: 'root-under-cli', evidence: `re-read now: direct child of CLI ${plan.cli.pid} (start-time ${plan.cli.startTicks}), start-time ${fresh.startTicks} unchanged` }
+      : { ok: false, reason: 'root-not-under-cli' };
   }
   let reason = 'no-lineage-proof';
   // 1. ppid chain up to a planned root under the CLI (every hop identity-checked).
   if (target.via === 'tree') {
     const chain = chainToRoot(fresh, plan, read);
-    if (chain === true) return { ok: true, via: 'chain' };
+    if (chain === true) return { ok: true, via: 'chain', evidence: `re-read now: ppid chain to tool shell ${target.rootPid}, every hop's start-time identity-checked` };
     reason = chain;
   }
   // 2. session lineage: still in the planned root's session (root alive = same identity, or dead).
@@ -241,13 +259,19 @@ export function verifyAtSignal(
     const root = read(target.rootPid);
     const rootStart = plan.members.find((m) => m.pid === target.rootPid)?.startTicks;
     const rootOk = root === 'gone' || (root !== 'unreadable' && (rootStart === undefined || root.startTicks === rootStart));
-    if (rootOk) return { ok: true, via: 'session' };
+    if (rootOk) return { ok: true, via: 'session', evidence: `re-read now: sid ${fresh.sid} == tool shell ${target.rootPid}'s session (root ${root === 'gone' ? 'dead' : 'alive, same identity'})` };
     reason = 'session-root-mismatch';
   }
   // 3. env provenance: CLAUDE_PID == this CLI's pid (re-read now) and started after the CLI.
   const env = readClaudePid(target.pid);
   if (env === 'unreadable') return { ok: false, reason: reason === 'no-lineage-proof' ? 'environ-unreadable' : reason };
-  if (env === plan.cli.pid && fresh.startTicks > plan.cli.startTicks) return { ok: true, via: 'env' };
+  if (env === plan.cli.pid && fresh.startTicks > plan.cli.startTicks) {
+    return {
+      ok: true,
+      via: 'env',
+      evidence: `re-read now: environ CLAUDE_PID=${env} == CLI ${plan.cli.pid} whose start-time ${plan.cli.startTicks} was just re-verified; process started after it (${fresh.startTicks} > ${plan.cli.startTicks})`,
+    };
+  }
   return { ok: false, reason };
 }
 

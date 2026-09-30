@@ -46,7 +46,8 @@ export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 interface KilledShape {
-  killed?: Array<{ pid: number; cmd: string; signal: string; outcome: string }>;
+  killed?: Array<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>;
+  cli?: { pid: number; startTicks: number };
   survivors?: Array<{ pid: number; cmd: string; reason: string }>;
   refused?: Array<{ pid: number; cmd: string; reason: string }>;
   spared?: Array<{ pid: number; cmd: string }>;
@@ -115,12 +116,19 @@ function renderRows(rows: BilanRow[], out: string[]): void {
         out.push(
           `      killed: ${killed.length} tool process(es)${killed.length ? ' — ' + killed.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${x.pid})`).join('; ') + (killed.length > 6 ? `; +${killed.length - 6} more` : '') : ''}`,
         );
+        // D11: an ORPHAN (left the CLI's tree) is killed only with provenance — list each with its cwd and the reason that matched.
+        for (const o of killed.filter((x) => x.via === 'env' || x.via === 'session')) {
+          out.push(`      orphan killed (left the CLI's tree, via ${o.via}): ${short(o.cmd, 70)} pid ${o.pid} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);
+        }
         if (k.survivors?.length) out.push(`      STILL ALIVE: ${k.survivors.map((x) => `${short(x.cmd, 60)} (pid ${x.pid}: ${x.reason})`).join('; ')}`);
         if (k.refused?.length) out.push(`      refused (identity not provable): ${k.refused.map((x) => `pid ${x.pid}: ${x.reason}`).join('; ')}`);
         if (k.spared?.length) out.push(`      left running (not tool processes): ${k.spared.map((x) => short(x.cmd, 50)).join('; ')}`);
       }
     } else out.push('      killed: (trap not finished for this member)');
     if (a?.observerKilled?.length) out.push(`      killed by the turn observer (CLI-started turn while paused): ${a.observerKilled.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${x.pid})`).join('; ')}${a.observerKilled.length > 6 ? `; +${a.observerKilled.length - 6} more` : ''}`);
+    for (const o of (a?.observerKilled ?? []).filter((x) => x.via === 'env' || x.via === 'session')) {
+      out.push(`      orphan killed by the turn observer (via ${o.via}): ${short(o.cmd, 70)} pid ${o.pid} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);
+    }
     for (const n of a?.notes ?? []) out.push(`      note: ${n}`);
     if (r.error) out.push(`      error: ${r.error}`);
   }

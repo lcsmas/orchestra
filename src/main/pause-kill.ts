@@ -23,6 +23,8 @@ export interface KillDeps {
   readTable(): ProcIdent[];
   /** ONE pid, read NOW (the signal-time identity re-read). */
   read(pid: number): FreshRead;
+  /** `/proc/<pid>/cwd`, read NOW (null = unreadable/gone). */
+  readCwd(pid: number): string | null;
   /** `CLAUDE_PID` from /proc/<pid>/environ, read NOW (null = absent, 'unreadable' = fail closed). */
   readClaudePid(pid: number): number | null | 'unreadable';
   /** Deliver a signal; false when it was not delivered (ESRCH/EPERM). */
@@ -38,6 +40,10 @@ export interface KilledProc {
   comm: string;
   cmd: string;
   startTicks: number;
+  /** Working directory read at plan time (before the signal). */
+  cwd: string | null;
+  /** What the signal-time identity re-read proved for THIS process — the Bilan's "reason matched". */
+  evidence: string;
   /** The last signal sent (SIGKILL only when SIGTERM left it alive). */
   signal: 'SIGTERM' | 'SIGKILL';
   via: string;
@@ -47,6 +53,8 @@ export interface KilledProc {
 
 export interface KillReport {
   cliPid: number;
+  /** The CLI identity every provenance proof was made against (pid + /proc start-time). */
+  cli: RootRef;
   killed: KilledProc[];
   /** Planned tool processes the identity re-read REFUSED to signal (reused/unreadable/…): never killed. */
   refused: Array<{ pid: number; comm: string; cmd: string; reason: string }>;
@@ -66,6 +74,14 @@ export interface KillOptions {
 const DEFAULT_TERM_GRACE_MS = 2_000;
 const DEFAULT_ROUNDS = 3;
 const POLL_MS = 50;
+
+function readCwdOf(pid: number): string | null {
+  try {
+    return fs.readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
 
 function readClaudePidOf(pid: number): number | null | 'unreadable' {
   try {
@@ -104,6 +120,7 @@ export function realKillDeps(): KillDeps {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     read: (pid) => (supported ? readOne(pid) : 'unreadable'),
     readClaudePid: (pid) => (supported ? readClaudePidOf(pid) : 'unreadable'),
+    readCwd: (pid) => (supported ? readCwdOf(pid) : null),
     readTable: () => {
       if (!supported) return [];
       const out: ProcIdent[] = [];
@@ -152,7 +169,7 @@ export async function killToolTrees(
   deps: KillDeps,
   opts: KillOptions = {},
 ): Promise<KillReport> {
-  const report: KillReport = { cliPid: cli.pid, killed: [], refused: [], spared: [], survivors: [], rounds: 0 };
+  const report: KillReport = { cliPid: cli.pid, cli, killed: [], refused: [], spared: [], survivors: [], rounds: 0 };
   if (!deps.supported) {
     report.error = 'process identity (/proc start-time) unavailable on this platform — nothing killed (fail closed)';
     return report;
@@ -170,6 +187,7 @@ export async function killToolTrees(
       const r = deps.readClaudePid(p.pid);
       return typeof r === 'number' ? r : null;
     },
+    cwdOf: (p: ProcIdent) => deps.readCwd(p.pid),
   });
   const planNow = (): ToolPlan => {
     const pl = planToolTrees(deps.readTable(), cli, planOpts());
@@ -196,7 +214,7 @@ export async function killToolTrees(
         signalled++;
         termed.push(m);
         killed.set(`${m.pid}:${m.startTicks}`, {
-          pid: m.pid, comm: m.comm, cmd: m.cmd, startTicks: m.startTicks, signal: 'SIGTERM', via: v.via, outcome: 'exited',
+          pid: m.pid, comm: m.comm, cmd: m.cmd, startTicks: m.startTicks, cwd: m.cwd, evidence: `${m.matched} | ${v.evidence}`, signal: 'SIGTERM', via: v.via, outcome: 'exited',
         });
       }
     }

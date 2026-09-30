@@ -68,7 +68,7 @@ function newRig(t: { after: (fn: () => void) => void }, pauseSwitch = true): Rig
     calls,
     roster: [] as TrapMember[],
     wt: (n: string) => path.join(root, n),
-    killReport: { cliPid: 100, killed: [{ pid: 201, comm: 'sleep', cmd: 'sleep 600', startTicks: 5, signal: 'SIGTERM', via: 'chain', outcome: 'exited' }], refused: [], spared: [], survivors: [], rounds: 1 } as KillReport,
+    killReport: { cliPid: 100, cli: { pid: 100, startTicks: 1000 }, killed: [{ pid: 201, comm: 'sleep', cmd: 'sleep 600', startTicks: 5, cwd: '/w', evidence: 'test', signal: 'SIGTERM', via: 'chain', outcome: 'exited' }], refused: [], spared: [], survivors: [], rounds: 1 } as KillReport,
     interruptResult: 'interrupted' as InterruptOutcome,
     cliResult: { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 } as Rig['cliResult'],
     onSnapshot: null as (() => void) | null,
@@ -412,10 +412,11 @@ test('ROW 29: what the turn observer KILLS is recorded on the Bilan (activity.ob
   __resetPauseTrapForTests();
   const rig = newRig(t);
   const c = pauseW(rig);
-  rig.killReport = { ...rig.killReport, killed: [{ pid: 77, comm: 'sleep', cmd: 'sleep 7718', startTicks: 9, signal: 'SIGTERM', via: 'env', outcome: 'exited' }] };
+  rig.killReport = { ...rig.killReport, killed: [{ pid: 77, comm: 'sleep', cmd: 'sleep 7718', startTicks: 9, cwd: '/w', evidence: 'test', signal: 'SIGTERM', via: 'env', outcome: 'exited' }] };
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
   const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
   assert.deepEqual(row.activity?.observerKilled?.map((k) => k.cmd), ['sleep 7718']);
+  assert.deepEqual(row.activity?.observerKilled?.map((k) => [k.via, k.cwd, k.evidence]), [['env', '/w', 'test']], 'D11: via, cwd and the evidence survive into the Bilan');
   assert.equal(row.killed, null, 'the pause-time trap of this member is still OWED (an observer row must not mask it)');
   // and the trap that runs afterwards still snapshots this member and keeps the observer's record
   member(rig, 'w1', 'W');
