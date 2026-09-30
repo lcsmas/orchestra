@@ -70,9 +70,8 @@
 // ISOLATION — this never touches the user's real Orchestra state. It runs
 // against a fresh mkdtemp userData with its own seeded store.json, its own
 // $ORCHESTRA_HOME, a fake `platform` seam, and a stubbed `electron`. The
-// account it seeds derives `configDir` from the INVOKING agent's
-// $CLAUDE_CONFIG_DIR (falling back to ~/.claude) — never a hardcoded account,
-// so this passes for whichever account happens to run it.
+// account it seeds uses a SCRATCH config dir under that tmp — never the
+// invoker's live $CLAUDE_CONFIG_DIR, which the inheritance sync would strip.
 //
 // HOW THIS IS ENFORCED — by the FLEET MODEL, deliberately, not by a GitHub
 // Actions workflow (owner ruling, 2026-08-25, issue #55). It is registered as
@@ -137,9 +136,11 @@ fs.mkdirSync(worktree, { recursive: true });
 // hooks-socket pointer, and the real ~/.orchestra must stay untouched.
 process.env.ORCHESTRA_HOME = path.join(tmp, 'home');
 
-// G5 — the account pin is DERIVED, never hardcoded. Whichever agent/account
-// runs this gate, the seeded workspace points at THAT account's config dir.
-const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+// G5 — the account pin is a SCRATCH config dir, never the invoker's live one: the
+// bundle's account-inheritance sync strips a live dir it is pointed at (it emptied
+// ~/.claude-mc on 2026-09-30 while this gate printed PASS). No login is needed here.
+const configDir = path.join(tmp, 'claude-config');
+fs.mkdirSync(configDir, { recursive: true });
 const WS_ID = 'wiring-gate-ws';
 // BOTH launch paths must be exercised. `ensureSession` computes
 // `remote = ws.host?.kind === 'sandbox'` (agent-sdk.ts:1084) and the launch site
