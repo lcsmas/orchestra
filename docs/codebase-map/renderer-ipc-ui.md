@@ -474,6 +474,13 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `helpOpen` flag — mutually exclusive with `insightsOpen` (opening one closes
   the other; `setActive` closes both). The welcome empty state in `App.tsx`
   also renders a `welcome-features` highlight grid.
+- **Bus page vs the toolbar (#253)** — `BusPane` (`page === 'bus'`) is an absolute
+  `inset: 0` overlay in `<main class="main">`, and the workspace `.toolbar`
+  (z-index 20, height `--toolbar-h`, declared on `.main`) paints OVER it, so the page
+  is offset with `.toolbar ~ .bus-pane { top: var(--toolbar-h) }` — a sibling rule, because with
+  no active workspace there is no toolbar and the page must still fill `<main>`. The `.res-page`
+  Resources overlay takes the other route (z-index 25, covers the toolbar with its own 48px
+  header). Rig: `scripts/e2e-bus-page-header.sh <app-dir>` (DOM + hit-test + pixels, min/typical/no-workspace).
 - **RepoScriptsModal.tsx** — edit setup/run/archive scripts, account assignment,
   and the repo's default base branch (select fed by `repos:listBranches`, saved
   via `repos:setDefaultBranch` — main validates the branch exists, rebroadcasts
