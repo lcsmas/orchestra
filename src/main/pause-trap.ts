@@ -57,10 +57,13 @@ export type InterruptOutcome = NonNullable<BilanActivity['interrupt']>;
 export interface TrapDeps {
   getBus(): BusDb | null;
   now(): number;
-  /** Non-archived workspaces covered by the pause: their run is in `runIds` (the carrier's `parent_run_id` closure),
-   *  OR the carrier's anchor workspace is an ancestor-or-self on the LIVE store `parentId` chain ({@link liveChainIncludes}) —
-   *  `parent_run_id` is write-once, so a workspace re-parented after creation is reached only through the live chain. */
+  /** Non-archived workspaces covered by the pause = the SAME scope as D1a's gate: the carrier's anchor workspace is an
+   *  ancestor-or-self on the LIVE store `parentId` chain ({@link liveChainIncludes}); `runIds` (the `parent_run_id` closure,
+   *  write-once and so stale for a re-parented workspace) is only the fallback when the chain dangles. */
   members(runIds: readonly string[], carrierRunId: string): TrapMember[];
+  /** The pause carrier governing `m` right now through the live tree (production: D1a's `pausedCarrierForWorkspace`, the
+   *  gate's own decision). Omitted ⇒ the bus-level walk over `[m.runId, ...m.chain]`. */
+  carrierFor?(m: TrapMember): RunPauseInfo | null;
   /** Read-only: what the member is doing — called BEFORE any interrupt/kill. */
   activityOf(m: TrapMember): Promise<MemberActivity>;
   /** Interrupt the running turn. Never stops the session/keeper. */
@@ -86,20 +89,23 @@ export interface TrapSummary {
 const ACTIVITY_LASTTASK_CHARS = 200;
 
 /** Is `carrierRunId` (a run id = its anchor workspace id) `startId` itself or one of its ancestors on the LIVE `parentId` chain?
- *  Bounded by a seen-set (a malformed cycle ends); a dangling parent ends the walk. */
+ *  `dangling` = the walk reached a parent the store no longer has — the same case D1a's gate falls back to `parent_run_id` for.
+ *  Bounded by a seen-set (a malformed cycle ends). */
 export function liveChainIncludes(
   startId: string,
   carrierRunId: string,
   lookup: (id: string) => { parentId?: string } | undefined,
-): boolean {
+): { includes: boolean; dangling: boolean } {
   const seen = new Set<string>();
   let cur: string | undefined = startId;
   while (cur !== undefined && !seen.has(cur)) {
-    if (cur === carrierRunId) return true;
+    if (cur === carrierRunId) return { includes: true, dangling: false };
     seen.add(cur);
-    cur = lookup(cur)?.parentId;
+    const node = lookup(cur);
+    if (!node) return { includes: false, dangling: cur !== startId };
+    cur = node.parentId;
   }
-  return false;
+  return { includes: false, dangling: false };
 }
 
 function stillPaused(db: BusDb, carrier: RunPauseInfo): boolean {
@@ -276,9 +282,12 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
     const db = deps.getBus();
     if (!db) return 'not-paused';
     let carrier: RunPauseInfo | null = null;
-    for (const id of [m.runId, ...(m.chain ?? [])]) {
-      carrier = activePauseFor(db, id);
-      if (carrier) break;
+    if (deps.carrierFor) carrier = deps.carrierFor(m);
+    else {
+      for (const id of [m.runId, ...(m.chain ?? [])]) {
+        carrier = activePauseFor(db, id);
+        if (carrier) break;
+      }
     }
     if (!carrier) return 'not-paused';
     const now = deps.now();

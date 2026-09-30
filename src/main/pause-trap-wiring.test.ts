@@ -75,7 +75,8 @@ test('pause-trap-host snapshots through the no-touch snapshotWorktree and kills 
 
 test('pause-trap-host membership is the UNION of the run closure and the live parent chain (parent_run_id is write-once)', () => {
   const code = codeOf('src/main/pause-trap-host.ts');
-  assert.ok(code.includes('.filter((m) => set.has(m.runId) || liveChainIncludes(m.wsId, carrierRunId, lookup));'));
+  assert.ok(code.includes('return c.includes || (c.dangling && set.has(m.runId));'));
+  assert.ok(code.includes('pausedCarrierForWorkspace(db, ws, (id) => store.getWorkspace(id))'), 'the observer asks the gate\'s own live-tree decision');
   assert.ok(code.includes('chain: liveChain(ws),'), 'toMember carries the live chain the turn-start observer reads');
 });
 

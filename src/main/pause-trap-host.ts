@@ -5,6 +5,7 @@
 import { store } from './store';
 import { nearestOrchestratorId } from './wave-run-id';
 import { getBus } from './bus';
+import { pausedCarrierForWorkspace } from './bus-pause';
 import { sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
 import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-client';
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
@@ -70,7 +71,10 @@ export function buildPauseTrapDeps(): TrapDeps {
       return store.workspaces
         .filter((w) => !w.archived && !!w.worktreePath)
         .map(toMember)
-        .filter((m) => set.has(m.runId) || liveChainIncludes(m.wsId, carrierRunId, lookup));
+        .filter((m) => {
+          const c = liveChainIncludes(m.wsId, carrierRunId, lookup);
+          return c.includes || (c.dangling && set.has(m.runId));
+        });
     },
     activityOf: async (m): Promise<MemberActivity> => {
       const sdk = sdkPauseActivity(m.wsId);
@@ -115,6 +119,12 @@ export function buildPauseTrapDeps(): TrapDeps {
         return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid: null };
       }
       return null;
+    },
+    // The gate's own decision (live workspace tree, frozen switch on the carrier) — the observer and the gate cannot disagree.
+    carrierFor: (m) => {
+      const db = getBus();
+      const ws = store.getWorkspace(m.wsId);
+      return db && ws ? pausedCarrierForWorkspace(db, ws, (id) => store.getWorkspace(id)) : null;
     },
     snapshot: snapshotWorktree,
     killTrees: (cli, keeperPid) => killToolTrees(cli, keeperPid, kill),

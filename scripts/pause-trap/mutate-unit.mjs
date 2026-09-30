@@ -62,10 +62,12 @@ const M = [
   { id: 'wire-stream-observer-any-turn', file: SDK, find: "if (session.turnGate === null && !session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant'", rep: "if (!session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant'", tests: [T.wiring], expect: /consume\(\): a CLI-started turn/ },
   { id: 'wire-interrupt-idle-not-skipped', file: SDK, find: "  if (!attached && session.turnGate === null && session.queue.length === 0 && session.unexplainedTurnSeen !== true) return 'idle';\n", rep: '', tests: [T.wiring], expect: /never touches an idle session/ },
   { id: 'wire-submit-notifies-parked-prompt', file: ACT, find: 'if (!queuedSubmit) notifyTurnStart(id);', rep: 'notifyTurnStart(id);', tests: [T.wiring], expect: /submit. chokepoint/ },
-  { id: 'wire-members-closure-only', file: HOST, find: '.filter((m) => set.has(m.runId) || liveChainIncludes(m.wsId, carrierRunId, lookup));', rep: '.filter((m) => set.has(m.runId));', tests: [T.wiring], expect: /UNION of the run closure/ },
+  { id: 'wire-members-closure-only', file: HOST, find: 'return c.includes || (c.dangling && set.has(m.runId));', rep: 'return set.has(m.runId);', tests: [T.wiring], expect: /UNION of the run closure/ },
   { id: 'trap-observer-ignores-live-chain', file: TRAP, find: 'for (const id of [m.runId, ...(m.chain ?? [])]) {', rep: 'for (const id of [m.runId]) {', tests: [T.trap], expect: /LIVE parent chain is\) is still trapped|NOT under the carrier/ },
-  { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = lookup(cur)?.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
-  { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return true;', tests: [T.trap], expect: /liveChainIncludes/ },
+  { id: 'trap-observer-ignores-carrierFor', file: TRAP, find: '    if (deps.carrierFor) carrier = deps.carrierFor(m);', rep: '    if (false) carrier = deps.carrierFor!(m);', tests: [T.trap], expect: /carrierFor/ },
+  { id: 'wire-observer-not-gate-decision', file: HOST, find: 'return db && ws ? pausedCarrierForWorkspace(db, ws, (id) => store.getWorkspace(id)) : null;', rep: 'return null;', tests: [T.wiring], expect: /UNION|live parent chain|membership/ },
+  { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
+  { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-host-observer-pty-too', file: HOST, find: '    if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own\n', rep: '', tests: [T.wiring], expect: /host observer stands down/ },
 ];
 
