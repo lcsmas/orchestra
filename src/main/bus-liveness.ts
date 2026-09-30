@@ -356,8 +356,8 @@ export function sweepBusLiveness(): void {
     // = the decision would escalate-or-count. Computed independent of the switch
     // so a member re-arms whether the mechanism fired or only counted.
     // The belt-and-braces floor for a member whose `lastActivityAt` arrives
-    // undefined (the roster floors it via index.ts, but a rig or a future caller
-    // might not). It MUST be a RECENT time (app-start / now), never 0 (epoch):
+    // undefined (the roster always sets it via `idleClockOf`, idle-clock.ts, but a rig
+    // or a future caller might not). It MUST be a RECENT time (app-start / now), never 0 (epoch):
     // with `appStartedAt: 0`, an undefined clock gives `silentForMs = now`, which
     // is always past the threshold, so EVERY clockless member would escalate —
     // the floor inverted from safe to dangerous (F3, review-120). `now` is the

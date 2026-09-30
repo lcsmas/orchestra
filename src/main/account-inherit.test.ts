@@ -89,7 +89,12 @@ type Inherit = { settings?: boolean; statusline?: boolean; skills?: string[]; mc
 type Acct = { id: string; label: string; configDir: string; inherit?: Inherit };
 type LogRec = { level: string; msg: string };
 
-let bundlePromise: Promise<{ syncAccountInheritance(a: Acct): Promise<void> }> | null = null;
+type SyncOpts = { userDeselected?: boolean; caller?: string };
+type Mod = {
+  syncAccountInheritance(a: Acct, opts?: SyncOpts): Promise<void>;
+  syncAfterAccountsSave(before: Acct[], saved: Acct[]): Promise<void>;
+};
+let bundlePromise: Promise<Mod> | null = null;
 function loadInherit() {
   return (bundlePromise ??= (async () => {
     const require_ = createRequire(path.join(repoRoot, 'package.json'));
@@ -106,10 +111,10 @@ function loadInherit() {
     const out = path.join(SCRATCH_ROOT, 'account-inherit.bundle.cjs');
     fs.writeFileSync(
       entry,
-      `export { syncAccountInheritance } from ${JSON.stringify(path.join(repoRoot, 'src/main/account-inherit.ts'))};\n`,
+      `export { syncAccountInheritance, syncAfterAccountsSave } from ${JSON.stringify(path.join(repoRoot, 'src/main/account-inherit.ts'))};\n`,
     );
     const stubs: Record<string, string> = {
-      store: 'export const store = { accounts: [] as unknown[] };',
+      store: '(globalThis as any).__a8Store ??= { accounts: [] as unknown[] };\nexport const store = (globalThis as any).__a8Store;',
       logger:
         "const rec = (level: string) => (msg: unknown) => { (globalThis as any).__a8Logs.push({ level, msg: String(msg) }); };\n" +
         "export const log = { warn: rec('warn'), info: rec('info'), error: rec('error'), debug: rec('debug') };",
@@ -189,7 +194,7 @@ const LINKS = [
 ];
 
 /** Run the REAL sync with HOME redirected to the scratch home; returns the WARN lines. */
-async function runSync(rig: Rig, inherit?: Inherit): Promise<string[]> {
+async function runSync(rig: Rig, inherit?: Inherit, opts?: SyncOpts): Promise<string[]> {
   assertScratch(rig.home);
   assertScratch(rig.login);
   const m = await loadInherit();
@@ -198,7 +203,7 @@ async function runSync(rig: Rig, inherit?: Inherit): Promise<string[]> {
   try {
     assert.equal(os.homedir(), rig.home, 'HOME redirect must take effect');
     (globalThis as any).__a8Logs = [] as LogRec[];
-    await m.syncAccountInheritance({ id: 'a', label: 'mc', configDir: rig.login, inherit });
+    await m.syncAccountInheritance({ id: 'a', label: 'mc', configDir: rig.login, inherit }, opts);
     return ((globalThis as any).__a8Logs as LogRec[]).filter((l) => l.level === 'warn').map((l) => l.msg);
   } finally {
     if (prev === undefined) delete process.env.HOME;
@@ -393,10 +398,10 @@ test('#235 source present: a de-selected link/MCP server IS still pruned (intend
   assert.deepEqual(manifestOf(rig.login), { symlinks: ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/frontend-design'], mcpServers: [] });
 });
 
-test('#235 source present: everything de-selected → every manifest link pruned', async () => {
+test('#235 source present: everything de-selected IN THE UI → every manifest link pruned', async () => {
   const rig = newRig();
   await buildLiveMirror(rig);
-  assert.deepEqual(await runSync(rig, undefined), []);
+  assert.deepEqual(await runSync(rig, undefined, { userDeselected: true }), []);
   assert.deepEqual(linksOf(snapshot(rig.login)!), []);
   assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
 });
@@ -685,6 +690,378 @@ test('#235 symlinked source (~/.claude → real dir, dotfiles-style) is a normal
   assert.deepEqual(linksOf(snapshot(rig.login)!), LINKS);
   assert.deepEqual(await runSync(rig, { settings: true }), []);
   assert.deepEqual(linksOf(snapshot(rig.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json']);
+});
+
+// ---- #235 residual / C10: an EMPTY selection is a de-selection only when the UI setter says so ----
+//
+// Incident #3 (2026-09-29): the live `~/.claude-mc` was stripped by a real-HOME sync of an account whose
+// `inherit` was empty/absent. Same source, so the D10 provenance guard cannot see it. Every arm below
+// runs the REAL module against SCRATCH dirs (assertScratch inside runSync); `EMPTIES` are the shapes
+// `isEmptyAccountInherit` must all read as "nothing selected".
+
+const EMPTIES: Array<[string, Inherit | undefined]> = [
+  ['absent', undefined],
+  ['{}', {}],
+  ['all-false / empty lists', { settings: false, statusline: false, skills: [], mcpServers: [] }],
+];
+const CALLERS = ['boot', 'spawn-sdk', 'spawn-pty', 'migrate', 'sandbox-import', 'login', 'ui-save'];
+
+/** The ONE blocked-prune warn: names the dir, the held counts and WHO synced (attribution). */
+function blockedWarn(warns: string[], rig: Rig, caller: string, links: number, mcp: number): void {
+  assert.equal(warns.length, 1, `exactly ONE warn, got ${JSON.stringify(warns)}`);
+  const w = warns[0];
+  assert.ok(w.includes(`${rig.login} holds ${links} inherited link(s) + ${mcp} MCP server(s)`), `names the dir + counts: ${w}`);
+  assert.ok(w.includes(`caller=${caller} `), `names the caller: ${w}`);
+  assert.ok(w.includes(`pid=${process.pid} `) && w.includes(`HOME=${rig.home} `) && w.includes('ORCHESTRA_HOME='), `carries pid/HOME/ORCHESTRA_HOME: ${w}`);
+}
+
+for (const [name, empty] of EMPTIES) {
+  test(`C10 must-FAIL on master: empty selection (${name}), non-UI caller, live-shaped mirror → nothing written, ONE warn`, async () => {
+    const rig = newRig();
+    const before = await buildLiveMirror(rig);
+    const warns = await runSync(rig, empty, { caller: 'spawn-sdk' });
+    assert.deepEqual(snapshot(rig.login), before, 'whole login dir byte-identical (links, MCP, manifest, trust)');
+    assert.deepEqual(linksOf(snapshot(rig.login)!), LINKS);
+    assert.deepEqual(mcpOf(rig.login), ['chrome-devtools', 'github', 'linear-server', 'my-own']);
+    blockedWarn(warns, rig, 'spawn-sdk', 7, 3);
+    // Recoverable: the next real selection re-syncs from the surviving manifest, no warn.
+    assert.deepEqual(await runSync(rig, FULL, { caller: 'spawn-sdk' }), []);
+    assert.deepEqual(snapshot(rig.login), before, 'a normal selection afterwards changes nothing');
+  });
+}
+
+for (const caller of [...CALLERS, undefined]) {
+  test(`C10 every caller tag is blocked (caller=${caller ?? '<none>'}) and named in the warn`, async () => {
+    const rig = newRig();
+    const before = await buildLiveMirror(rig);
+    const warns = await runSync(rig, undefined, caller === undefined ? undefined : { caller });
+    assert.deepEqual(snapshot(rig.login), before);
+    blockedWarn(warns, rig, caller ?? 'unknown', 7, 3);
+  });
+}
+
+for (const [name, empty] of EMPTIES) {
+  test(`C10 must-PASS: UI de-select-all (${name}) still prunes every inherited link + injected MCP server`, async () => {
+    const rig = newRig();
+    await buildLiveMirror(rig);
+    assert.deepEqual(await runSync(rig, empty, { userDeselected: true, caller: 'ui-save' }), [], 'no warn');
+    assert.deepEqual(linksOf(snapshot(rig.login)!), [], 'every link pruned');
+    assert.deepEqual(mcpOf(rig.login), ['my-own'], "injected servers gone, the user's own kept");
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(rig.login, '.claude.json'), 'utf8')).projects, { '/scratch/proj': { hasTrustDialogAccepted: true } });
+    assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
+    assert.equal(stampOf(rig.login), path.join(rig.home, '.claude'));
+  });
+}
+
+test('C10 a PARTIAL de-selection (non-empty selection) from a non-UI caller still prunes — the guard is scoped to EMPTY', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  assert.deepEqual(await runSync(rig, { settings: true, skills: ['frontend-design'] }, { caller: 'spawn-pty' }), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/frontend-design']);
+  assert.deepEqual(mcpOf(rig.login), ['my-own']);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/frontend-design'], mcpServers: [] });
+});
+
+test('C10 a link the user removed on purpose: hand-removed link/servers over an EMPTY selection are reconciled, not resurrected', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  for (const rel of LINKS) fs.unlinkSync(path.join(rig.login, rel)); // user rm'd every link by hand …
+  const cj = path.join(rig.login, '.claude.json');
+  const d = JSON.parse(fs.readFileSync(cj, 'utf8'));
+  d.mcpServers = { 'my-own': d.mcpServers['my-own'] }; // … and every injected server
+  fs.writeFileSync(cj, JSON.stringify(d, null, 2));
+  assert.deepEqual(await runSync(rig, undefined, { caller: 'spawn-sdk' }), [], 'nothing held → no block, no warn');
+  assert.deepEqual(linksOf(snapshot(rig.login)!), [], 'not resurrected');
+  assert.deepEqual(mcpOf(rig.login), ['my-own']);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] }, 'manifest reconciled');
+});
+
+test('C10 held clause "links": a skills-only account (links, no MCP) is protected; ONE link left is enough', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design', 'handoff'] }), []);
+  const before = snapshot(rig.login)!;
+  assert.deepEqual(linksOf(before), ['skills/frontend-design', 'skills/handoff']);
+  assert.equal(manifestOf(rig.login).mcpServers.length, 0, 'precondition: no MCP in the manifest');
+  blockedWarn(await runSync(rig, undefined, { caller: 'boot' }), rig, 'boot', 2, 0);
+  assert.deepEqual(snapshot(rig.login), before);
+  fs.unlinkSync(path.join(rig.login, 'skills', 'handoff'));
+  const one = snapshot(rig.login)!;
+  blockedWarn(await runSync(rig, undefined, { caller: 'boot' }), rig, 'boot', 1, 0);
+  assert.deepEqual(snapshot(rig.login), one);
+});
+
+test('C10 held clause "mcp": an MCP-only account (no links) is protected too', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server'] }), []);
+  const before = snapshot(rig.login)!;
+  assert.deepEqual(linksOf(before), [], 'precondition: no links');
+  blockedWarn(await runSync(rig, undefined, { caller: 'boot' }), rig, 'boot', 0, 2);
+  assert.deepEqual(mcpOf(rig.login), ['github', 'linear-server']);
+  assert.deepEqual(snapshot(rig.login), before);
+});
+
+test('C10 held-by-PRESENCE, links: manifest lists links that are all gone (skills-only) → not blocked, manifest reconciled', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  await runSync(rig, { skills: ['frontend-design', 'handoff'] });
+  fs.unlinkSync(path.join(rig.login, 'skills', 'frontend-design'));
+  fs.unlinkSync(path.join(rig.login, 'skills', 'handoff'));
+  assert.deepEqual(await runSync(rig, undefined, { caller: 'boot' }), []);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
+});
+
+test('C10 held-by-PRESENCE, mcp: manifest lists servers that are all gone from .claude.json (mcp-only) → not blocked, manifest reconciled', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  await runSync(rig, { mcpServers: ['github', 'linear-server'] });
+  fs.writeFileSync(path.join(rig.login, '.claude.json'), JSON.stringify({ mcpServers: {}, projects: { '/p': {} } }));
+  assert.deepEqual(await runSync(rig, undefined, { caller: 'boot' }), []);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
+});
+
+test('C10 unchanged: empty selection on a fresh dir / a dir with no manifest still creates the dir + manifest, no warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, undefined, { caller: 'spawn-sdk' }), []);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
+  assert.equal(stampOf(rig.login), path.join(rig.home, '.claude'), 'first sync stamps its source');
+});
+
+test('C10 the D10 provenance guard still comes FIRST — even a UI de-selection cannot rewrite a dir built from another source', async () => {
+  const real = newRig();
+  await buildLiveMirror(real);
+  const before = snapshot(real.login)!;
+  const fake = fakeOf(real);
+  putSkeleton(fake.home);
+  put(path.join(fake.home, '.claude.json'), SKELETON_JSON); // a READABLE, server-less MCP source: without it the C10 guard would not fire either (unreadable source keeps the held servers)
+  for (const opts of [{ caller: 'boot' }, { userDeselected: true, caller: 'ui-save' }]) {
+    const warns = await runSync(fake, undefined, opts);
+    assert.deepEqual(snapshot(real.login), before, `untouched (${JSON.stringify(opts)})`);
+    warnNames(warns, path.join(real.home, '.claude'), path.join(fake.home, '.claude'));
+    assert.ok(warns[0].includes('built from'), `the D10 warn, not the C10 one: ${warns[0]}`);
+  }
+});
+
+// ---- the UI setter's own step (`syncAfterAccountsSave`): per-ACCOUNT authority, driven through the real module ----
+
+const setStore = (accounts: Acct[]): void => { (globalThis as any).__a8Store.accounts = accounts; };
+async function runSave(home: string, before: Acct[], saved: Acct[]): Promise<string[]> {
+  assertScratch(home);
+  const m = await loadInherit();
+  const prev = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    assert.equal(os.homedir(), home, 'HOME redirect must take effect');
+    (globalThis as any).__a8Logs = [] as LogRec[];
+    setStore(saved); // the store already holds what the setter just persisted
+    await m.syncAfterAccountsSave(before, saved);
+    return ((globalThis as any).__a8Logs as LogRec[]).filter((l) => l.level === 'warn').map((l) => l.msg);
+  } finally {
+    setStore([]);
+    if (prev === undefined) delete process.env.HOME;
+    else process.env.HOME = prev;
+  }
+}
+const acct = (id: string, rig: Rig | { login: string }, inherit?: Inherit): Acct => ({ id, label: id, configDir: rig.login, inherit });
+const secondLogin = (rig: Rig, name: string): Rig => ({ home: rig.home, login: path.join(rig.home, name) });
+
+test('C10 setter: non-empty → empty for THIS account prunes it (the user just de-selected everything)', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  assert.deepEqual(await runSave(rig.home, [acct('a', rig, FULL)], [acct('a', rig, undefined)]), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), []);
+  assert.deepEqual(mcpOf(rig.login), ['my-own']);
+});
+
+test('C10 setter: empty → empty (an UNRELATED save) does not prune a dir that still holds links; ONE warn names caller=ui-save', async () => {
+  const rig = newRig();
+  const before = await buildLiveMirror(rig);
+  const warns = await runSave(rig.home, [acct('a', rig, undefined)], [acct('a', rig, undefined)]);
+  assert.deepEqual(snapshot(rig.login), before);
+  blockedWarn(warns, rig, 'ui-save', 7, 3);
+});
+
+test('C10 setter: authority is per ACCOUNT — A de-selected prunes, B (already empty, stray links) is kept, C (new) is kept', async () => {
+  const a = newRig();
+  await buildLiveMirror(a);
+  const b = secondLogin(a, '.claude-b');
+  const c = secondLogin(a, '.claude-c');
+  assert.deepEqual(await runSync(b, FULL), []); // B and C hold links built by a real sync
+  assert.deepEqual(await runSync(c, FULL), []);
+  const bBefore = snapshot(b.login)!;
+  const cBefore = snapshot(c.login)!;
+  const warns = await runSave(
+    a.home,
+    [acct('a', a, FULL), acct('b', b, undefined)], // B was already empty; C does not exist yet
+    [acct('a', a, undefined), acct('b', b, undefined), acct('c', c, undefined)],
+  );
+  assert.deepEqual(linksOf(snapshot(a.login)!), [], 'A pruned');
+  assert.deepEqual(snapshot(b.login), bBefore, 'B (no transition) untouched');
+  assert.deepEqual(snapshot(c.login), cBefore, 'C (new account, no transition) untouched');
+  assert.equal(warns.length, 2, `one warn each for B and C: ${JSON.stringify(warns)}`);
+  assert.ok(warns.some((w) => w.includes(b.login)) && warns.some((w) => w.includes(c.login)));
+});
+
+test('C10 setter: a non-empty → non-empty edit is a plain sync (prunes only the de-selected item, no warn)', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  assert.deepEqual(await runSave(rig.home, [acct('a', rig, FULL)], [acct('a', rig, { settings: true })]), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json']);
+});
+
+// ---- C10 fix round 1 (review of c5600209): the guard keys on EFFECT, the grant on (id, configDir), reads fail CLOSED ----
+
+const VANISHED: Array<[string, Inherit]> = [
+  ['skills naming only a missing source', { skills: ['gone'] }],
+  ['skills naming only an invalid name (`a/b`)', { skills: ['a/b'] }],
+  ['skills naming only `..`', { skills: ['..'] }],
+  ['mcpServers naming only a server the global config lacks', { mcpServers: ['nope'] }],
+  ['statusline whose source file is missing', { statusline: true }],
+];
+for (const [name, sel] of VANISHED) {
+  test(`C10/F1 effect: ${name} (non-empty selection, would leave nothing) over a live-shaped mirror → nothing written, ONE warn`, async () => {
+    const rig = newRig();
+    const before = await buildLiveMirror(rig);
+    fs.rmSync(path.join(rig.home, '.claude', 'statusline-command.sh')); // the `statusline` source vanished (the other shapes never had one)
+    const warns = await runSync(rig, sel, { caller: 'spawn-sdk' });
+    assert.deepEqual(snapshot(rig.login), before, 'byte-identical: 7 links + 3 injected MCP survive');
+    blockedWarn(warns, rig, 'spawn-sdk', 7, 3);
+  });
+}
+
+test('C10/F1 effect: a user-owned REAL dir in the only selected slot leaves nothing live → blocked', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  put(path.join(rig.home, '.claude', 'skills', 'mine-real', 'SKILL.md'), '# source copy\n');
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design'] }), []);
+  put(path.join(rig.login, 'skills', 'mine-real', 'SKILL.md'), '# the user own skill\n');
+  const before = snapshot(rig.login)!;
+  const warns = await runSync(rig, { skills: ['mine-real'] }, { caller: 'boot' });
+  assert.deepEqual(snapshot(rig.login), before, 'the held link is not pruned in exchange for a link that cannot be made');
+  blockedWarn(warns, rig, 'boot', 1, 0);
+});
+
+test('C10/F1 effect: a SWAP to other existing items leaves something → still applies (UI-save and non-UI), no warn', async () => {
+  for (const caller of ['ui-save', 'spawn-pty']) {
+    const rig = newRig();
+    makeSource(rig.home);
+    assert.deepEqual(await runSync(rig, { skills: ['frontend-design'] }), []);
+    assert.deepEqual(await runSync(rig, { skills: ['handoff'] }, { caller }), [], `${caller}: no warn`);
+    assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills/handoff'], `${caller}: old pruned, new linked`);
+  }
+});
+
+test('C10/F1 effect: ONE surviving selected item is enough — the rest of a stale selection still prunes', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  assert.deepEqual(await runSync(rig, { skills: ['handoff', 'gone'] }, { caller: 'spawn-sdk' }), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills/handoff']);
+  assert.deepEqual(mcpOf(rig.login), ['my-own']);
+});
+
+test('C10/F1 effect: an UNREADABLE MCP source keeps the held servers, so it is not a full prune — only the existing MCP warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server'] }), []);
+  const before = snapshot(rig.login)!;
+  fs.rmSync(path.join(rig.home, '.claude.json'));
+  const warns = await runSync(rig, undefined, { caller: 'boot' });
+  assert.equal(warns.length, 1, `exactly ONE warn: ${JSON.stringify(warns)}`);
+  assert.ok(warns[0].includes(`${path.join(rig.home, '.claude.json')} is missing or unreadable`), `the MCP-source warn, not the C10 one: ${warns[0]}`);
+  assert.deepEqual(mcpOf(rig.login), ['github', 'linear-server']);
+  assert.deepEqual(snapshot(rig.login), before);
+});
+
+// F2: the grant is (id, configDir), not id.
+test('C10/F2 setter: editing configDir to ANOTHER dir AND clearing the boxes in one save does not prune that dir', async () => {
+  const a = newRig();
+  await buildLiveMirror(a);
+  const b = secondLogin(a, '.claude-b');
+  assert.deepEqual(await runSync(b, FULL), []);
+  const aBefore = snapshot(a.login)!;
+  const bBefore = snapshot(b.login)!;
+  const warns = await runSave(a.home, [acct('a', a, FULL)], [acct('a', b, undefined)]);
+  assert.deepEqual(snapshot(b.login), bBefore, 'the newly named dir is untouched');
+  assert.deepEqual(snapshot(a.login), aBefore, 'the old dir is not synced by the save');
+  blockedWarn(warns, { ...a, login: b.login }, 'ui-save', 7, 3);
+});
+
+test('C10/F2 setter: the SAME dir spelled differently (`..` segment) is still the same dir → the de-selection prunes', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  const respelled = { login: `${rig.login}${path.sep}..${path.sep}${path.basename(rig.login)}` }; // path.join would normalise the `..` away
+  assert.notEqual(respelled.login, rig.login);
+  assert.deepEqual(await runSave(rig.home, [acct('a', rig, FULL)], [acct('a', respelled, undefined)]), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), []);
+});
+
+// F4: unreadable held state fails CLOSED.
+test('C10/F4 fail closed: a TORN login .claude.json over an MCP-only dir + empty selection → blocked, file byte-identical', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server'] }), []);
+  fs.writeFileSync(path.join(rig.login, '.claude.json'), '{"mcpServers": {"github": {"comm');
+  const before = snapshot(rig.login)!;
+  const warns = await runSync(rig, undefined, { caller: 'spawn-pty' });
+  assert.deepEqual(snapshot(rig.login), before, 'the torn file is not read as {} and overwritten');
+  blockedWarn(warns, rig, 'spawn-pty', 0, 2);
+});
+
+test('C10/F4 definite absence is not held: NO login .claude.json (ENOENT) with manifest-listed servers → proceeds, reconciled', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  await runSync(rig, { mcpServers: ['github', 'linear-server'] });
+  fs.rmSync(path.join(rig.login, '.claude.json'));
+  assert.deepEqual(await runSync(rig, undefined, { caller: 'boot' }), []);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
+});
+
+test('C10/F4 fail closed: an lstat that CANNOT be read (EACCES on skills/) counts the manifest link as held', { skip: process.getuid?.() === 0 ? 'root bypasses mode bits' : undefined }, async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design', 'handoff'] }), []);
+  const before = snapshot(rig.login)!;
+  const skills = path.join(rig.login, 'skills');
+  fs.chmodSync(skills, 0o000);
+  try {
+    assert.throws(() => fs.lstatSync(path.join(skills, 'handoff')), /EACCES/, 'precondition: the link really is unreadable');
+    const warns = await runSync(rig, undefined, { caller: 'boot' });
+    blockedWarn(warns, rig, 'boot', 2, 0);
+  } finally {
+    fs.chmodSync(skills, 0o755);
+  }
+  assert.deepEqual(snapshot(rig.login), before, 'manifest not rewritten to `symlinks: []` while the links still exist');
+});
+
+// ---- the pure helpers -----------------------------------------------------------
+
+test('C10 isEmptyAccountInherit / deselectedAccountIds: literal table', async () => {
+  const { isEmptyAccountInherit, deselectedAccountIds } = await import('../shared/accounts.ts');
+  for (const v of [undefined, null, {}, { settings: false }, { skills: [] }, { mcpServers: ['  '] }, { skills: [1, ''] }, 'x']) {
+    assert.equal(isEmptyAccountInherit(v), true, `empty: ${JSON.stringify(v)}`);
+  }
+  for (const v of [{ settings: true }, { statusline: true }, { skills: ['a'] }, { mcpServers: ['b'] }]) {
+    assert.equal(isEmptyAccountInherit(v), false, `non-empty: ${JSON.stringify(v)}`);
+  }
+  const A = (id: string, inherit?: Inherit) => ({ id, label: id, configDir: '/x', inherit });
+  const ids = (b: any[], a: any[]) => [...deselectedAccountIds(b, a)].sort();
+  assert.deepEqual(ids([A('a', { settings: true })], [A('a')]), ['a'], 'non-empty → absent');
+  assert.deepEqual(ids([A('a', { settings: true })], [A('a', {})]), ['a'], 'non-empty → {}');
+  assert.deepEqual(ids([A('a')], [A('a')]), [], 'absent → absent is not a de-selection');
+  assert.deepEqual(ids([A('a', {})], [A('a')]), [], '{} → absent is not a de-selection');
+  assert.deepEqual(ids([A('a', { settings: true })], [A('a', { skills: ['x'] })]), [], 'non-empty → non-empty');
+  assert.deepEqual(ids([], [A('a')]), [], 'new account');
+  const moved = (b: any[], a: any[]) => [...deselectedAccountIds(b, a)].sort();
+  assert.deepEqual(moved([{ ...A('a', { settings: true }), configDir: '/x' }], [{ ...A('a'), configDir: '/y' }]), [], 'configDir changed in the same save → no grant');
+  assert.deepEqual(moved([{ ...A('a', { settings: true }), configDir: ' /x ' }], [{ ...A('a'), configDir: '/x' }]), ['a'], 'default comparator trims');
+  assert.deepEqual(moved([{ ...A('a', { settings: true }), configDir: '' }], [{ ...A('a'), configDir: '' }]), [], 'no dir on either side → no grant');
+  const mv = [{ ...A('a', { settings: true }), configDir: '/x' }]; const mv2 = [{ ...A('a'), configDir: '/y' }];
+  assert.deepEqual([...deselectedAccountIds(mv, mv2, () => true)], ['a'], 'a caller-supplied comparator decides (same dir → grant)');
+  assert.deepEqual([...deselectedAccountIds(mv, [{ ...A('a'), configDir: '/x' }], () => false)], [], 'a caller-supplied comparator decides (other dir → no grant)');
+  assert.deepEqual(ids([A('a', { settings: true })], []), [], 'removed account');
+  assert.deepEqual(ids([A('a', { settings: true }), A('b', { skills: ['s'] }), A('c')], [A('a'), A('b', { skills: ['s'] }), A('c')]), ['a']);
 });
 
 // ---- instrument controls --------------------------------------------------------

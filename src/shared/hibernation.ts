@@ -215,11 +215,15 @@ export function formatIdleDuration(ms: number): string {
 
 /** Start of the idle clock for the sweep: the last activity seen, else the app-start
  *  floor — but never before the workspace EXISTED. Without the createdAt bound a child
- *  spawned 2 h after launch read "idle 2h" and was hibernated before its first turn. */
+ *  spawned 2 h after launch read "idle 2h" and was hibernated before its first turn.
+ *  A non-finite `lastSeen`/`createdAt` is ignored: NaN through `Math.max` would read
+ *  every member as instantly stale (#236 F3). */
 export function idleClockStart(
   lastSeen: number | undefined,
   appStartedAt: number,
   createdAt: number | undefined,
 ): number {
-  return Math.max(lastSeen ?? appStartedAt, createdAt ?? 0);
+  const seen = lastSeen !== undefined && Number.isFinite(lastSeen) ? lastSeen : appStartedAt;
+  const born = createdAt !== undefined && Number.isFinite(createdAt) ? createdAt : 0;
+  return Math.max(seen, born);
 }

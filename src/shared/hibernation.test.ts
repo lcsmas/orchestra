@@ -296,3 +296,12 @@ test('a workspace with a prompt still waiting to be delivered is never hibernate
   // control: same workspace without the pending prompt IS eligible
   assert.equal(shouldHibernate(ws(), signals({ hasLiveSdk: true })), true);
 });
+
+test('idleClockStart: a non-finite createdAt or lastSeen is ignored (floors at app start), never NaN', () => {
+  const appStart = NOW - 100_000;
+  assert.equal(idleClockStart(undefined, appStart, NaN), appStart);
+  assert.equal(idleClockStart(undefined, appStart, Infinity), appStart);
+  assert.equal(idleClockStart(NaN, appStart, undefined), appStart);
+  assert.equal(idleClockStart(NaN, appStart, NOW - 50_000), NOW - 50_000);
+  assert.equal(idleClockStart(NOW - 5000, appStart, NaN), NOW - 5000);
+});

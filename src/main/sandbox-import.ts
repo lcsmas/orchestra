@@ -204,7 +204,7 @@ export async function importWorkspaceToSandbox(id: string, endpoint: string): Pr
   if (ws.accountId) {
     const account = store.accounts.find((a) => a.id === ws.accountId);
     if (account) {
-      await syncAccountInheritance(account).catch((err) =>
+      await syncAccountInheritance(account, { caller: 'sandbox-import' }).catch((err) =>
         log.warn(`sandbox import: account-inherit sync failed for ${id}`, err),
       );
     }

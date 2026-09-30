@@ -691,7 +691,8 @@ long-idle agents and lets the existing resume paths bring them back.
   cannot import hibernation.ts, which imports pty.ts, which imports activity.ts.
   In-memory only, which is the SAFE direction: after a restart the map is empty
   and the sweep falls back to an app-start floor — bounded below by the
-  workspace's own `createdAt` (`idleClockStart`, shared/hibernation.ts) — so
+  workspace's own `createdAt` (`idleClockStart`, shared/hibernation.ts, reached only
+  via `idleClockOf`, `src/main/idle-clock.ts` — the hibernation sweep AND the liveness roster, #236) — so
   nothing can be hibernated until it has been idle a full threshold *of this run
   and of its own life*. A workspace with `sdkPendingPrompts` (an undelivered
   brief) is never hibernated. (2026-09-30: without the createdAt bound, spawns

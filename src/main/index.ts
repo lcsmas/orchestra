@@ -191,9 +191,8 @@ import {
   setLivenessWaiting,
   setLivenessReleased,
   readReleasedReaders,
-  type LivenessMember,
 } from './bus-liveness';
-import { getLastActivity, getAppStartedAt, getInFlightTools } from './hibernation-activity';
+import { buildLivenessRoster } from './bus-liveness-roster';
 import { sdkStartAndDeliver } from './sdk-delivery';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import {
@@ -333,7 +332,7 @@ async function createMainWindow() {
   await seedAccountInheritDefaults().catch((err) =>
     log.warn('account-inherit: seeding failed', err),
   );
-  void syncAllAccountsInheritance();
+  void syncAllAccountsInheritance({ caller: 'boot' });
   await ensureRoot();
 
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
@@ -539,9 +538,9 @@ async function createMainWindow() {
   startBusWake();
   // Liveness + phase (#120): DERIVE staleness from the app's own activity signals
   // (the status dot's sources) and escalate a silent-with-a-task member to its
-  // coordinator. Reuses `getLastActivity` (fed by `applyAgentEvent`'s
-  // `noteActivity` on every lifecycle event incl. tool-call START) — NO new
-  // probe. The roster is INJECTED for the same reason as the wake roster:
+  // coordinator. Reuses the hibernation idle clock (`idleClockOf`, fed by
+  // `applyAgentEvent`'s `noteActivity` on every lifecycle event incl. tool-call
+  // START) — NO new probe. The roster is INJECTED for the same reason as the wake roster:
   // `store.ts` reaches the platform seam through a directory import the
   // strip-types test runner cannot resolve. SHIPS OFF — the `liveness` switch
   // (#118) defaults false, so out of the box this only COUNTS. Tolerates
@@ -550,39 +549,7 @@ async function createMainWindow() {
   // `readWaitingReaders` (the sender/opener parked on an open ask or gate), and
   // #120 subtracts that set, on top of the app-level `waiting` status. The
   // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
-  setLivenessRoster((): LivenessMember[] =>
-    store.workspaces.map((ws) => {
-      // Coordinator = the member's parent, resolved to a LIVE workspace. A
-      // dangling parentId (parent deleted) resolves to null → the member is
-      // never escalated (nobody to escalate to), matching parentId's documented
-      // dangling semantics.
-      const parent = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;
-      return {
-        reader: ws.id,
-        coordinator: parent && !parent.archived ? parent.id : null,
-        // A DISPATCHED member carries a `lastTask` (set at spawn). A hand-made UI
-        // workspace has none and is not a fleet member — never escalated.
-        hasTask: !!ws.lastTask,
-        // Floor an absent clock at app-start so a just-launched app never
-        // escalates on an empty/stale in-memory map (hibernation-activity's own
-        // safe default), NOT on createdAt (which for an old workspace reads as a
-        // stall of days).
-        lastActivityAt: getLastActivity(ws.id) ?? getAppStartedAt(),
-        // A turn IN FLIGHT is alive regardless of the discrete clock — the
-        // dead-vs-slow-reader anti-trap (acceptance 2).
-        running: ws.status === 'running',
-        // App-level parked signal: an agent showing the needs-input `waiting`
-        // status is silent on purpose. #119's bus `waiting` ORs in on top.
-        waiting: ws.status === 'waiting',
-        // Liveness v2 (#127): EVERY tool call currently in flight (name + start),
-        // host-derived from `applyAgentEvent`'s pretool/posttool chokepoint — no
-        // new probe. The progress bound checks each against its ceiling to catch a
-        // session HUNG mid-tool-call, even a hung call parallel to a fast sibling.
-        inFlightTools: getInFlightTools(ws.id),
-        runId: resolveWaveRunId(ws),
-      };
-    }),
-  );
+  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId));
   // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
   // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's

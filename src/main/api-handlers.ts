@@ -94,7 +94,7 @@ import {
   armLoginWatch,
   cancelLoginWatch,
 } from './account-usage';
-import { listInheritables, syncAccountInheritance, syncAllAccountsInheritance } from './account-inherit';
+import { listInheritables, syncAccountInheritance, syncAfterAccountsSave } from './account-inherit';
 import { getSandboxControlState, takeSandboxControl } from './transport/sandbox-manager';
 import {
   importWorkspaceToSandbox,
@@ -532,10 +532,11 @@ export const apiHandlers: ApiHandlerTable = {
   // Replace the whole list, then immediately recompute the workspace→account
   // map and refresh usage so the badges react without waiting for the poll.
   setAccounts: async (accounts: Account[]) => {
+    const before = store.accounts; // captured BEFORE the save: the de-selection signal (#235 residual/C10)
     const saved = await store.setAccounts(accounts);
     // Re-materialize each account's inheritance so edited selections take
     // effect immediately (symlinks added/removed, MCP servers merged/pruned).
-    void syncAllAccountsInheritance();
+    void syncAfterAccountsSave(before, saved);
     void refreshAccountsNow();
     // A removed account's stored API key must not outlive it in the keystore.
     await pruneAccountApiKeys(saved.map((a) => a.id)).catch(() => {});
@@ -604,7 +605,7 @@ export const apiHandlers: ApiHandlerTable = {
     // and materialize the account's inherited config so the login session
     // itself has the user's settings/skills/MCP (not just a bare creds dir).
     await fs.promises.mkdir(dir, { recursive: true });
-    await syncAccountInheritance(account).catch((err) =>
+    await syncAccountInheritance(account, { caller: 'login' }).catch((err) =>
       log.warn('account-inherit: login-time sync failed', err),
     );
     // `claude /login` does NOT exit after authenticating — watch the config

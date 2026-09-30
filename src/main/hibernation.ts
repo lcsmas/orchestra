@@ -26,7 +26,6 @@ import { sdkHasBackgroundTasks, sdkSessionLive, sdkStopIfLive } from './sdk-deli
 // relative specifiers (see commit 05adb90 — git.ts/ci-state.ts hit this).
 import {
   formatIdleDuration,
-  idleClockStart,
   resolveHibernateAfterMs,
   resolveHibernateSweepMs,
   shouldHibernate,
@@ -37,13 +36,12 @@ import {
 // → pty → activity would close an import cycle. See hibernation-activity.ts.
 import {
   getActiveWorkspaceId,
-  getAppStartedAt,
-  getLastActivity,
   isBeingDeleted,
   noteActiveWorkspace,
   noteActivity,
   noteAppStart,
 } from './hibernation-activity.ts';
+import { idleClockOf } from './idle-clock.ts';
 import type { Workspace } from '../shared/types';
 
 const hlog = scoped('hibernate');
@@ -144,10 +142,9 @@ export async function sweepHibernation(): Promise<string[]> {
     if (isBeingDeleted(ws.id)) continue; // delete owns the teardown (#205)
     const hasLivePty = isRunning(ws.id);
     const hasLiveSdk = sdkSessionLive(ws.id);
-    // Seed unseen workspaces at the app-start floor rather than leaving them
-    // `undefined` — otherwise a session that has been quietly live since launch
-    // (started, never emitted another event) would never become eligible at all.
-    const lastActivityAt = idleClockStart(getLastActivity(ws.id), getAppStartedAt(), ws.createdAt);
+    // Unseen workspaces idle from the app-start floor, bounded by createdAt —
+    // otherwise a session quietly live since launch would never become eligible.
+    const lastActivityAt = idleClockOf(ws);
 
     const eligible = shouldHibernate(ws, {
       now,

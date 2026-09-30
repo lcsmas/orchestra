@@ -1465,8 +1465,10 @@ Two host-derived signals, both reusing EXISTING kinds (`escalation`, `status`) �
 | File | What it is |
 |---|---|
 | `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation` (guards incl. `done-released` #160, `held` + `fleet-active` #204), `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
+| `src/main/bus-liveness-roster.ts` | `buildLivenessRoster(store, waveRunId)` — the roster mapping extracted from `index.ts` (#236) so the real silence start is driven through `sweepBusLiveness` in tests. |
 | `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/**released** (`readReleasedReaders`, #160; a run's own coordinator is also released by a `worker_done` in its PARENT run, where it was dispatched — #204)/switch seams, the per-tick `heldRunIds` hold read + `activeCoordinators` derivation (#204), the counters, D1 tolerance. |
 | `src/shared/bus-liveness.test.ts` | Pure policy tests (incl. the 4 #160 done-released arms); each names the mutant it kills. |
+| `src/main/bus-liveness-roster.test.ts` | #236: the real roster + real activity clock into the real sweep — fresh member (app up 2 h) not escalated, old member floors at app start, member with activity uses it, fresh running child shields its OPS, one-reader source pin. |
 | `src/main/bus-liveness.test.ts` | Tests over a real SQLite bus (T120.1–T120.4, C4, C5, phase). #160: the pure-boolean/sweep arms PLUS **discrete SQL arms S1–S6** that call the SHIPPED `readReleasedReaders(db, keys)` over real `send()` rows — S3 kills Mutant A (drop the re-task NOT-EXISTS clause), S4 kills Mutant B (drop `wd.kind='worker_done'`), S2 is the zombie true-positive driven through the derivation. |
 
 ## The one thing to understand — bound on PROGRESS, not wall-clock (acceptance 2)
@@ -1487,9 +1489,17 @@ BEFORE the wall-clock test`) pins it.
 in-memory clock the hibernation sweeper reads, fed by `noteActivity` at
 `src/main/activity.ts:973` — the one funnel `applyAgentEvent` crosses for EVERY
 lifecycle event, incl. tool-call START (`pretool`). The roster
-(`index.ts`, wired via `setLivenessRoster`) floors an absent clock at
-`getAppStartedAt()` (NOT `createdAt`, which for an old workspace reads as a stall
-of days), so a just-launched app never escalates on an empty in-memory map.
+(`buildLivenessRoster`, `src/main/bus-liveness-roster.ts`, wired by `index.ts` via
+`setLivenessRoster`) takes each member's silence start from `idleClockOf(ws)`
+(`src/main/idle-clock.ts`) = `idleClockStart` — last activity, else the app-start
+floor (a relaunched app never escalates on an empty in-memory map; NOT bare
+`createdAt`, which for an old workspace reads as a stall of days), **never before the
+member's own `createdAt`** (a future or non-finite `createdAt`/stamp is ignored, not clamped — a clamp to `now` would blind liveness for the whole clock skew) (#236: a spawn 2 h after launch was escalated as "silent
+86m" a minute in). `idleClockOf` is the ONE reader of that floor (`getAppStartedAt`
+is called nowhere else) — the hibernation sweep uses it too — and a source pin in
+`bus-liveness-roster.test.ts` fails on a second reader. It lives beside, not in, the
+leaf `hibernation-activity.ts`, which must stay import-free (`hibernation-no-disk.test.ts`). It also feeds
+`isMakingProgress`, so a fresh running child counts as progress (shields its OPS).
 
 ## Coordinator routing
 
