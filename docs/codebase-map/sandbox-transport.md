@@ -33,7 +33,8 @@ Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED a
   `api-handlers.ts` `restartAgent` (toolbar Restart) THROWS the pause on a paused ws (App.tsx shows it in `dialog.error`, both `BootStall.tsx`
   callers `.catch`) — the restart guard's `{ok:false}` alone resolved silently into a neutral "Resume your session" row;
   `agent-sdk.ts` `sdkClear` (UI `/clear` + `restart --fresh`) throws so a paused ws keeps its `sdkSessionId` (the UI's `agentSdkClear` caller only
-  `console.error`s the rejection — nothing is rendered for a refused `/clear`).
+  `console.error`s the rejection — nothing is rendered for a refused `/clear`);
+  the composer (`StructuredView.tsx` `submit`) RESTORES the typed text + images when `agentSdkSend` rejects (any refused start, not only the pause).
 - **Not reachable** — `orchestra spawn` cannot yield a sandbox workspace: `dispatchSpawnRequest` → `createWorkspace` never passes
   `host` (only `importWorkspaceToSandbox` flips it; the `workspaces:create` IPC accepts it but the renderer never sends it).
   A live local session survives an import flip (`ensureSessionInner`'s `existing` early-return precedes the guard) — not a start.

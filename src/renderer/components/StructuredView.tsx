@@ -1728,10 +1728,17 @@ function Composer({
     // turn so this prompt runs NOW instead of queueing. The interrupt is
     // awaited: sending first would race the queue-clearing inside
     // `interruptCancellingQueued` and could discard this very prompt.
+    const sentText = text;
+    const sentImages = pendingImages;
     const send = () =>
       window.orchestra
         .agentSdkSend(workspaceId, t, images)
-        .catch((e) => console.error('agentSdkSend failed', e));
+        .catch((e) => {
+          console.error('agentSdkSend failed', e);
+          // A REFUSED send (start failed, sandbox paused #226) must not eat what the user typed: restore it, but only into an EMPTY composer.
+          setText((cur) => (cur === '' ? sentText : cur));
+          setPendingImages((cur) => (cur.length === 0 ? sentImages : cur));
+        });
     if (interruptFirst && running) {
       void window.orchestra
         .agentSdkInterrupt(workspaceId)

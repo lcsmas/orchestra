@@ -798,9 +798,14 @@ async function composerSend(app, text) {
   const pre = await visibleText();
   await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r' });
   await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
-  const post = await waitFor('composer cleared', async () => { const t = await visibleText(); return t !== null && !t.includes(text) ? t : null; }, 8000, 100).catch(() => null);
-  return { pre, post };
+  // A REFUSED send clears the composer and then RESTORES it (r2 L1), so "cleared" is a transient: poll fast for ~3 s, remember whether it was ever seen.
+  let sawCleared = false, last = pre;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 3000) { const t = await visibleText(); if (t !== null) { last = t; if (!t.includes(text)) sawCleared = true; } await sleep(20); }
+  return { pre, sawCleared, final: last, post: sawCleared ? last : null };
 }
+/** Current text of the VISIBLE composer (placeholder text when empty). */
+const composerText = (app) => app.cdp.eval(`(() => { for (const e of document.querySelectorAll('.cm-content')) { const r = e.getBoundingClientRect(); if (r.width > 50 && r.height > 5) return e.innerText; } return null; })()`);
 /** Text of the VISIBLE message list, plus its error rows and user rows (DOM oracle; the screenshot is the paint oracle). */
 const messageRows = (app) => app.cdp.eval(`(() => { for (const l of document.querySelectorAll('.av-message-list')) { const r = l.getBoundingClientRect(); if (r.width > 50 && r.height > 50) return { errors: [...l.querySelectorAll('.av-message-error')].map(e => e.innerText), users: [...l.querySelectorAll('.av-message-user')].map(e => e.innerText) }; } return null; })()`);
 /** The REAL `orchestra` CLI (dist-electron/cli.js under plain node) against THIS boot's socket, allowlist env only. */
@@ -1538,10 +1543,14 @@ const ARMS = [
       await openAgentTab(app);
       const MARK = 'AVR-SEND-SBX-1f3a';
       const sent = await composerSend(app, MARK);
-      ctx.clause('agent-view-send/composer-submitted', !!sent.pre?.includes(MARK) && sent.post !== null, `composer text pre=${JSON.stringify(oneLine(sent.pre, 40))} -> post=${JSON.stringify(oneLine(sent.post, 40))} (trusted Enter)`);
       const errRow = await waitFor('error row', async () => { const r = await messageRows(app); return r && r.errors.length ? r : null; }, 30000, 250).catch(() => null);
       const errText = errRow ? errRow.errors.join(' | ') : '';
       console.log(`OBSERVED  agent-view-send(${sbx.gone.id}) error rows=${errRow ? errRow.errors.length : 0}: ${JSON.stringify(oneLine(errText, 300))}`);
+      // the send fired = the composer was cleared at submit (seen transiently when it is restored) OR main answered with an error row
+      ctx.clause('agent-view-send/composer-submitted', !!sent.pre?.includes(MARK) && (sent.sawCleared || !!errRow), `composer text pre=${JSON.stringify(oneLine(sent.pre, 40))} sawCleared=${sent.sawCleared} errorRow=${!!errRow} (trusted Enter)`);
+      // r2 L1 (verifier1): a REFUSED send must not eat what the user typed. baseline (master): the lazy start "succeeds", so nothing rejects and the text stays gone.
+      const kept = (await composerText(app))?.includes(MARK) ?? false;
+      ctx.clause('agent-view-send/refused-send-keeps-typed-text', kept === want, `composer still holds the typed text=${kept} expected(${MODE})=${want} (final composer text ${JSON.stringify(oneLine(await composerText(app), 50))})`);
       ctx.clause('agent-view-send/error-row-appears', !!errRow, errRow ? `error row: ${oneLine(errText)}` : 'NO error row within 30 s');
       ctx.clause('agent-view-send/error-names-pause-and-220', namesPause(errText) === want, `names pause+#220=${namesPause(errText)} expected(${MODE})=${want} :: ${oneLine(errText)}`);
       const listRect = await app.cdp.eval(`(() => { for (const l of document.querySelectorAll('.av-message-list')) { const r = l.getBoundingClientRect(); if (r.width > 50 && r.height > 50) return { x: r.x, y: r.y, width: r.width, height: r.height }; } return null; })()`);
@@ -1615,7 +1624,8 @@ const ARMS = [
       await openAgentTab(app);
       const LMARK = 'AVR-SEND-LOCAL-77c2';
       const ls = await composerSend(app, LMARK);
-      ctx.clause('local-control/composer-submitted', !!ls.pre?.includes(LMARK) && ls.post !== null, `composer text pre=${JSON.stringify(oneLine(ls.pre, 40))} -> post=${JSON.stringify(oneLine(ls.post, 40))}`);
+      // control for the restore: a SUCCESSFUL send still clears the composer and it STAYS cleared (a restore-always mutant turns this red)
+      ctx.clause('local-control/composer-submitted', !!ls.pre?.includes(LMARK) && ls.sawCleared && !ls.final.includes(LMARK), `composer text pre=${JSON.stringify(oneLine(ls.pre, 40))} sawCleared=${ls.sawCleared} final=${JSON.stringify(oneLine(ls.final, 40))} (must stay cleared)`);
       await sleep(4000);
       const lr = await messageRows(app);
       const lErr = (lr?.errors ?? []).join(' | ');

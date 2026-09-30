@@ -159,7 +159,9 @@ the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentS
 `agentSdkRewind(wsId, rewindId, prevRewindId?)`, `agentSdkRewindPreview(wsId, rewindId)`,
 `agentSdkFork(wsId, upToMessageId, title?)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
-`agentSdkSetEffort`, `agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
+`agentSdkSetEffort`, `agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. A send REFUSED by main
+(rejected `agentSdkSend`: session start failed, sandbox paused #226) RESTORES the typed text + attached images into the
+composer (`StructuredView.tsx` `submit`), only when the composer is still empty — main emits the error row either way. Multi-turn uses the
 **streaming-input pattern**: one long-lived `query()` per session fed by an async-generator
 prompt (each follow-up turn gated on the prior `result`), so the subprocess stays warm and
 `canUseTool` fires in-loop.
@@ -1785,15 +1787,11 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     `sdk.d.ts` fails loudly rather than going vacuous, and an innocent
     `makeOnElicitation` → `buildElicitationBridge` rename stays GREEN (it
     asserts the object, not the text). Runs against a mkdtemp userData +
-    seeded `store.json` + its own `$ORCHESTRA_HOME`. **SAFETY (incident 2026-09-30):**
-    the seeded account's `configDir` is a fresh SCRATCH dir inside its tmp — NEVER the
-    invoker's `$CLAUDE_CONFIG_DIR` / `~/.claude*` (the driven `ensureSession` runs
-    `syncAccountInheritance` on that dir, which STRIPS a live dir's links + MCP servers:
-    measured 7→0 / 3→0 on a live-like mirror while the old script still printed
-    `ALL WIRING CHECKS PASSED`); `process.env.CLAUDE_CONFIG_DIR` is re-pointed at the
-    scratch dir, the script REFUSES (rc 2) a configDir outside its tmp or overlapping a
-    live dir, and a final check FAILS if any protected live dir lost a link / managed file /
-    manifest entry / MCP server. No login needed (`query()` is the injected fake).
+    seeded `store.json` + its own `$ORCHESTRA_HOME`, and the seeded account's
+    `configDir` is a SCRATCH dir under that tmp — never the invoker's live
+    `$CLAUDE_CONFIG_DIR` (the bundle's account-inheritance sync strips a live dir it is
+    pointed at: incident 2026-09-30, fixed on master `786d9d30`). No login needed
+    (`query()` is the injected fake).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - **`EffortSlider`** (`components/agent/EffortSlider.tsx`, pure logic in

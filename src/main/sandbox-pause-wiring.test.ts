@@ -16,6 +16,7 @@ const WORKSPACES = read('workspaces.ts');
 const RESTART = read('restart-workspace.ts');
 const API_HANDLERS = read('api-handlers.ts');
 const INDEX = read('index.ts');
+const STRUCTURED_VIEW = fs.readFileSync(path.join(process.cwd(), 'src', 'renderer', 'components', 'StructuredView.tsx'), 'utf8');
 const BOOT_STALL = fs.readFileSync(path.join(process.cwd(), 'src', 'renderer', 'components', 'BootStall.tsx'), 'utf8');
 
 /** Body of a top-level function: from its signature to the next column-0 `}`. */
@@ -106,4 +107,15 @@ test('sdkClear (UI /clear + `restart --fresh`): a paused ws keeps its session id
   assert.match(b, /const paused = sandboxPausedMessage\(store\.getWorkspace\(wsId\)\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
   before(b, 'sandboxPausedMessage(', 'sessions.get(wsId)');
   before(b, 'sandboxPausedMessage(', "persistWorkspacePatch(wsId, { sdkSessionId: '' })");
+});
+
+test('composer: a REFUSED send (rejected agentSdkSend) restores the typed text + images into an EMPTY composer, never over new input', () => {
+  const at = STRUCTURED_VIEW.indexOf('const sentText = text;');
+  assert.ok(at > 0, 'send capture not found');
+  const blk = STRUCTURED_VIEW.slice(at, at + 900);
+  assert.match(blk, /\.agentSdkSend\(workspaceId, t, images\)\s*\n\s*\.catch\(\(e\) => \{/);
+  assert.match(blk, /setText\(\(cur\) => \(cur === '' \? sentText : cur\)\);/);
+  assert.match(blk, /setPendingImages\(\(cur\) => \(cur\.length === 0 \? sentImages : cur\)\);/);
+  // the optimistic clear still happens AFTER the send is issued (the restore is a rejection handler, not a skipped clear)
+  assert.ok(STRUCTURED_VIEW.indexOf("setText('');", at) > at, "the optimistic setText('') must follow the send");
 });
