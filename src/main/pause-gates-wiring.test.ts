@@ -25,6 +25,7 @@ test('row 11 pty:start: the handler hands the brief to the REAL scheduler (gated
   assert.doesNotMatch(b, /writePty\(/, 'the handler never calls the pty writer itself — `writePty` appears ONLY as the scheduler\'s argument (an extra ungated write must redden this)');
   assert.doesNotMatch(body(b, 'const resuming', 'if (!resuming && ws.lastTask)'), /pauseRefusal/, 'opening the terminal itself (HUMAN) is not gated');
   const sched = read('opening-brief-pty.ts');
+  assert.match(sched, /delayMs: number = OPENING_BRIEF_DELAY_MS,/, 'the default parameter IS the constant (it cannot drift from the pinned 1200)');
   assert.match(sched, /export const OPENING_BRIEF_DELAY_MS = 1200;/, 'the TUI-init delay is pinned (the rig\'s default-delay check measures it)');
   assert.ok(sched.indexOf("pauseRefusalById(id, 'auto')") >= 0 && sched.indexOf("pauseRefusalById(id, 'auto')") < sched.indexOf("write(id, task + '\\n')"), 'gate precedes the write');
 });

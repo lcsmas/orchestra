@@ -795,7 +795,11 @@ function toWaveNodes(ws: readonly OfflineRecord[]): Map<string, WaveNode> {
 /** The persisted workspace tree (`id → {parentId, kind, canOrchestrate}`) — empty on any read/parse failure. Used by `run resume` to ask the
  *  LIVE tree which ancestor still pauses a run (store-less verb: the app may be down). */
 export function offlineWaveNodes(file: string = appStoreFile()): Map<string, WaveNode> {
-  return toWaveNodes(readOfflineRecords(file));
+  try {
+    return toWaveNodes(readOfflineRecords(file));
+  } catch {
+    return new Map(); // a malformed record (e.g. a null entry) drops the whole tree, exactly as a parse failure does — never a thrown TypeError
+  }
 }
 
 /** Read the persisted workspace list off disk when the app is DOWN (#144), from the file the RUNNING APP writes ({@link appStoreFile}:
@@ -803,7 +807,14 @@ export function offlineWaveNodes(file: string = appStoreFile()): Map<string, Wav
  *  default install never writes). Returns `[]` on any read/parse failure — the caller then refuses the send with "matches no workspace",
  *  which is correct: an unreadable store cannot canonicalize anything, and landing a short handle would reintroduce the bug. */
 export function offlineHandleCandidates(file: string = appStoreFile()): HandleCandidate[] {
-  const ws = readOfflineRecords(file);
+  try {
+    return handleCandidatesOf(readOfflineRecords(file));
+  } catch {
+    return []; // master semantics: ANY failure (incl. a malformed record) yields [] — the send is refused, never a thrown TypeError
+  }
+}
+
+function handleCandidatesOf(ws: readonly OfflineRecord[]): HandleCandidate[] {
   // #221 — the recipient's wave run (nearest orchestrator, else itself) from the persisted
   // records, so the offline path proves reachability like the socket path does.
   const nodes = toWaveNodes(ws);

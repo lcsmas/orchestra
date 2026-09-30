@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { appStoreFile, offlineHandleCandidates } from './index.ts';
+import { appStoreFile, offlineHandleCandidates, offlineWaveNodes } from './index.ts';
 import { resolveHandle } from './resolve-handle.ts';
 
 // #144 — the OFFLINE half of the send canonicalizer: when the app is down the
@@ -144,4 +144,10 @@ test('#144 offline (packaged default): handles resolve against the app\'s real s
   assert.deepEqual(cands.map((c) => c.id), [FULL], 'only the live store is read');
   assert.deepEqual(resolveHandle('0a5c25bb', cands), { ok: true, id: FULL });
   assert.equal(resolveHandle('dead0000', cands).ok, false, 'the stale copy is invisible');
+});
+
+test('review: a malformed record (a null entry) yields [] / an empty tree exactly as a parse failure does — never a thrown TypeError', (t) => {
+  withStore(t, [null, { id: FULL, name: 'impl-144' }]);
+  assert.deepEqual(offlineHandleCandidates(), [], 'master semantics: any failure → [] → the send is refused');
+  assert.equal(offlineWaveNodes().size, 0);
 });

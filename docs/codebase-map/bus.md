@@ -1724,7 +1724,7 @@ module that consumes the seams below.
 
 Gates: `src/shared/bus-pause.test.ts`, `src/main/bus-pause.test.ts` (schema v8→v9, writer matrix, propagation, switch OFF inert, gate
 decision), `src/main/bus-pause-liveness.test.ts` (row 15, the shipped roster + real sweep, incl. an orchestrator re-parented after creation), `src/cli/run-pause.test.ts` (built CLI, app down),
-`src/main/pause-gates.test.ts` + `scripts/e2e-pause-gates.mjs` (25 arms incl. `hang_selftest`, scratch `ORCHESTRA_HOME`/`HOME`/`CLAUDE_CONFIG_DIR`; an arm that hangs prints `ok:false` JSON + exit 1 at `PAUSE_RIG_DEADLINE_MS`, default 75 s — never a silent exit 13),
+`src/main/pause-gates.test.ts` + `scripts/e2e-pause-gates.mjs` (24 arms incl. `hang_selftest`, scratch `ORCHESTRA_HOME`/`HOME`/`CLAUDE_CONFIG_DIR`; an arm that hangs prints `ok:false` JSON + exit 1 at `PAUSE_RIG_DEADLINE_MS`, default 75 s — never a silent exit 13),
 `src/main/pause-gates-wiring.test.ts` (Electron-bound sites, HUMAN enumeration, docs).
 
 ## COUNTED, not FIRED — the `liveness` switch (C5)
