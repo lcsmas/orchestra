@@ -43,7 +43,7 @@ interface Rig {
   killReport: KillReport;
   interruptResult: InterruptOutcome;
   cliResult: { cli: { pid: number; startTicks: number }; keeperPid: number | null } | { error: string } | null;
-  killOpts: Array<{ stillPaused?: () => boolean; startedBeforeMs?: number; spareRoots?: readonly number[] } | undefined>;
+  killOpts: Array<{ stillPaused?: () => boolean; startedBeforeMs?: number | (() => number | undefined); spareRoots?: readonly number[] } | undefined>;
   onSnapshot: (() => void) | null;
   onInterrupt: (() => void) | null;
   clock: number;
@@ -622,6 +622,7 @@ test('HUMAN prompt is ALLOWED while paused and un-pauses nothing (ledger D5 row 
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   rig.calls.length = 0;
+  rig.clock = c.pausedAt + 10; // the human's turn starts AFTER the pause (a mark from before it admits nothing — pre-review M4)
   markPauseHumanTurn('w1', rig.clock);
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'allowed');
   assert.deepEqual(rig.calls, []);
@@ -637,6 +638,7 @@ test('F2 a human prompt PARKED for over 10 s behind a running turn, and a SECOND
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   rig.calls.length = 0;
+  rig.clock = c.pausedAt + 10;
   // turn 1 (human) starts; promptStream marks it at its yield, the submit hook fires 1 s later
   markPauseHumanTurn('w1', rig.clock);
   rig.clock += 1_000;
@@ -662,12 +664,13 @@ test('F2 a HUMAN turn that STARTS during the trap window is not interrupted; its
   const rig = newRig(t);
   member(rig, 'w1', 'W');
   const c = pauseW(rig);
-  const before = rig.clock;
-  rig.onSnapshot = () => markPauseHumanTurn('w1', rig.clock + 5); // the human's prompt is yielded while the snapshot runs
+  rig.onSnapshot = () => markPauseHumanTurn('w1', c.pausedAt + 5); // the human's prompt is yielded while the snapshot runs
   await runPauseTrap(rig.deps, c);
-  assert.ok(lastHumanTurnStart('w1')! >= before);
+  assert.ok(lastHumanTurnStart('w1')! >= c.pausedAt);
   assert.ok(!rig.calls.includes('interrupt:w1'), 'the human turn is allowed: no interrupt');
-  assert.equal(typeof rig.killOpts[0]?.startedBeforeMs, 'number', 'the kill only reaches processes older than the human turn');
+  const sb = rig.killOpts[0]?.startedBeforeMs;
+  assert.equal(typeof sb, 'function', 'the kill re-reads the human-turn start at EVERY signal (pre-review M5)');
+  assert.equal(typeof (sb as () => number | undefined)(), 'number', 'the kill only reaches processes older than the human turn');
   const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
   assert.equal(row.activity?.interrupt, 'skipped');
   assert.match((row.activity?.notes ?? []).join(' '), /HUMAN prompt started a turn during the trap/);
@@ -681,7 +684,8 @@ test('F2 control: a human mark from BEFORE the trap began does not suppress the 
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   assert.ok(rig.calls.includes('interrupt:w1'));
-  assert.equal(rig.killOpts[0]?.startedBeforeMs, undefined);
+  const sb0 = rig.killOpts[0]?.startedBeforeMs;
+  assert.equal(typeof sb0 === 'function' ? sb0() : sb0, undefined, 'no human turn during the trap: every process is a target');
 });
 
 test('a stale human mark (older than its TTL) does not whitelist a later CLI-internal start', async (t) => {
@@ -690,7 +694,8 @@ test('a stale human mark (older than its TTL) does not whitelist a later CLI-int
   member(rig, 'w1', 'W');
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
-  markPauseHumanTurn('w1', rig.clock - 120_000);
+  markPauseHumanTurn('w1', c.pausedAt + 1);
+  rig.clock = c.pausedAt + 120_000; // far past the 30 s TTL
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
 });
 
@@ -816,3 +821,118 @@ test('members are trapped in PARALLEL (bounded by deps.concurrency): a slow snap
   assert.equal(listBilan(rig.db, 'W', c.pausedAt).length, 4);
 });
 
+
+// ── pre-review round 2 (M3 M4 M5 M7 M8 M9) ──
+
+test('M3 a RETRY keeps the FIRST attempt\'s observations (was-doing, snapshot facts, interrupt) — a fresh read after the interrupt says "idle" and must not overwrite them', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.cliResult = { error: 'keeper unresponsive' }; // attempt 1: incomplete (snapshot + activity + interrupt happen)
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  const first = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(first.activity?.turnRunning, true);
+  assert.ok(first.activity?.head && first.activity?.changed, 'control: attempt 1 recorded the snapshot facts');
+  // attempt 2: everything answers, the turn is long idle now
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  rig.deps.activityOf = async () => ({ surface: 'sdk', turnRunning: false, inFlightTools: [], bgTasks: [] });
+  rig.interruptResult = 'idle';
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(row.activity?.turnRunning, true, 'the pre-interrupt "was doing" survives the retry');
+  assert.equal(row.activity?.inFlightTools?.length, 1);
+  assert.equal(row.activity?.bgTasks?.length, 1);
+  assert.equal(row.activity?.head, first.activity?.head);
+  assert.deepEqual(row.activity?.changed, first.activity?.changed);
+  assert.equal(row.activity?.interrupt, 'interrupted', 'an interrupt that really happened is not rewritten to "idle"');
+  assert.notEqual(row.killed, null, 'and the retry completed the member');
+});
+
+test('M7 a LIFT landing while the trap arms / probes the CLI: NOTHING is interrupted or killed (re-checked right before the interrupt)', async (t) => {
+  for (const where of ['arm', 'cliOf'] as const) {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, 'w1', 'W');
+    const c = pauseW(rig);
+    const lift = () => assert.equal(setRunPause(rig.db, 'W', false, 'ops-w'), 'lifted');
+    if (where === 'arm') rig.deps.arm = async () => lift();
+    else rig.deps.cliOf = async () => { lift(); return rig.cliResult; };
+    const s = await runPauseTrap(rig.deps, c);
+    assert.equal(s.aborted, 'lifted', where);
+    assert.ok(!rig.calls.some((x) => x.startsWith('interrupt') || x.startsWith('kill')), `lift during ${where}: ${rig.calls.join(' ')}`);
+  }
+});
+
+test('M7 a lift DURING the kill step still records what WAS killed (D11: every killed process is listed), never drops the report', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.deps.killTrees = async () => {
+    setRunPause(rig.db, 'W', false, 'ops-w');
+    return { ...rig.killReport, aborted: 'lifted' as const };
+  };
+  const s = await runPauseTrap(rig.deps, c);
+  assert.equal(s.aborted, 'lifted');
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal((row.killed as { killed: unknown[] } | null)?.killed.length, 1, 'the round-1 kills are on the Bilan');
+});
+
+test('M4 a human mark from BEFORE the pause never admits a CLI-started turn after it (a cron turn right after the trap killed a background task)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  markPauseHumanTurn('w1', c.pausedAt - 5); // a human turn that started 5 ms BEFORE the pause, mark still inside its 30 s TTL
+  rig.clock = c.pausedAt + 50;
+  rig.calls.length = 0;
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+  assert.ok(rig.calls.includes('interrupt:w1'));
+});
+
+test('M5 a human turn that started AFTER the pause but BEFORE this member\'s trap began (queued behind other members) is not interrupted — the window is anchored on the PAUSE', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  markPauseHumanTurn('w1', c.pausedAt + 5);
+  rig.clock = c.pausedAt + 1000; // the member's trap only begins a second after the pause
+  await runPauseTrap(rig.deps, c);
+  assert.ok(!rig.calls.includes('interrupt:w1'), 'the allowed human turn is not interrupted');
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interrupt, 'skipped');
+});
+
+test('M9 the turn start fired by THIS trap\'s own arm() attach is ignored by the observer: the trap handles the member itself — pauser-aware (a boot-drain pauser is not interrupted by the attach)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  let fromArm: string | null = null;
+  rig.deps.arm = async (m) => { fromArm = await onTurnStart(rig.deps, m); }; // attach of a detached keeper mid-turn → notifyTurnStart
+  await runPauseTrap(rig.deps, c);
+  assert.equal(fromArm, 'skipped', 'the observer stood down for the trap\'s own attach');
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'the pauser (by ancestry) keeps its turn');
+  // control: outside an arm window the same start IS trapped
+  rig.calls.length = 0;
+  rig.clock = c.pausedAt + 50;
+  assert.equal(await onTurnStart(rig.deps, tm('ops-w', 'W')), 'interrupted');
+});
+
+test('M8 a HUNG arm() cannot stall the member: the deadline turns it into an error, the trap stays OPEN (not stamped) and is retried; a REJECTED arm still does not block', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // never settles
+  const c = pauseW(rig);
+  const s = await runPauseTrap(rig.deps, c);
+  assert.equal(s.done, false);
+  assert.equal(s.incomplete, 1);
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.match(row.error ?? '', /arm timed out after 20 ms/);
+  assert.equal(row.killed, null, 'the member stays owed');
+  assert.ok(rig.calls.includes('interrupt:w1'), 'the interrupt/kill still ran');
+});

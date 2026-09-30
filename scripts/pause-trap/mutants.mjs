@@ -35,8 +35,8 @@ export const MUTANTS = {
   // The trap never kills (interrupt + snapshot only).
   'skip-kill': {
     file: '/src/main/pause-trap.ts',
-    find: /const rep = await deps\.killTrees\(target\.cli, target\.keeperPid\);\n        killed = rep;/g,
-    replace: "const rep = { cliPid: target.cli.pid, killed: [], refused: [], spared: [], survivors: [], rounds: 0 };\n        killed = rep;",
+    find: /const rep = await deps\.killTrees\(target\.cli, target\.keeperPid, \{\n        stillPaused: \(\) => stillPaused\(db, carrier\),/g,
+    replace: "const rep = await (async (_a: unknown, _b: unknown, _o: unknown) => ({ cliPid: target.cli.pid, killed: [] as never[], refused: [] as never[], spared: [] as never[], survivors: [] as never[], rounds: 0 }))(target.cli, target.keeperPid, {\n        stillPaused: () => stillPaused(db, carrier),",
     mustRedden: 'trap_killed_what_survives_an_interrupt', // (also reddens no_surviving_tool_procs on the background arm)
   },
   // The trap never snapshots.
@@ -60,14 +60,24 @@ export const MUTANTS = {
     replace: '    await interruptCancellingQueued(session);',
     mustRedden: 'queued_prompt_survives_pause',
   },
-  // F1: the supervisor guard removed (planner AND signal-time re-read — two layers cover each other).
+  // F1: the supervisor guard removed ENTIRELY (planner AND signal-time re-read, descendant AND ancestor walks — layers cover each other).
   'supervisor-guard-removed': {
     file: '/src/shared/pause-procs.ts',
     edits: [
-      { find: /    if \(via !== 'tree' && hasSupervisor\(p\.pid\)\) \{/g, replace: '    if (false) {' },
+      { find: /    if \(via !== 'tree' && \(hasSupervisor\(p\.pid\) \|\| supervisorAncestorOf\(p, \(pid\) => byPid\.get\(pid\) \?\? 'gone', cli\.pid\) !== 'no'\)\) \{/g, replace: '    if (false) {' },
       { find: /  if \(target\.via !== 'tree' && isSupervisorProc\(fresh\)\) return \{ ok: false, reason: 'supervisor \(keeper \/ claude CLI \/ Orchestra app of another session\)' \};\n/g, replace: '' },
+      { find: /  if \(target\.via !== 'tree' && supervisorAncestorOf\(fresh, read, plan\.cli\.pid\) !== 'no'\) return \{[^\n]*\n/g, replace: '' },
     ],
     mustRedden: 'other_session_supervisor_survives',
+  },
+  // Pre-review M1: only the ANCESTOR walk removed (planner AND signal-time): the foreign CLI's MCP server (a child of a spared claude) is killed.
+  'supervisor-ancestor-removed': {
+    file: '/src/shared/pause-procs.ts',
+    edits: [
+      { find: /\(hasSupervisor\(p\.pid\) \|\| supervisorAncestorOf\(p, \(pid\) => byPid\.get\(pid\) \?\? 'gone', cli\.pid\) !== 'no'\)/g, replace: 'hasSupervisor(p.pid)' },
+      { find: /  if \(target\.via !== 'tree' && supervisorAncestorOf\(fresh, read, plan\.cli\.pid\) !== 'no'\) return \{[^\n]*\n/g, replace: '' },
+    ],
+    mustRedden: 'other_session_mcp_survives',
   },
   // The pauser exemption removed: the coordinator that pauses its own run is interrupted + its tools killed.
   'no-pauser-exemption': {

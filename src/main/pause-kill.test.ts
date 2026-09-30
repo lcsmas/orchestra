@@ -162,6 +162,15 @@ test('F2: startedBeforeMs spares what started after a HUMAN turn began (its tool
   assert.ok(r.spared.some((x) => x.pid === 500 && /HUMAN turn/.test(x.reason)));
 });
 
+test('M5: startedBeforeMs as a GETTER is re-read at EVERY signal — a human turn that begins mid-kill protects the tools it starts (not only at plan time)', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'pre-pause tool')); // start 2400
+  os.add(shellC(500, 100, 'human turn tool')); // start 2500 — the human turn starts AFTER the first signal
+  await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: () => (os.signals.length === 0 ? undefined : 2450) });
+  assert.ok(os.signals.length > 0 && !os.procs.has(400), 'the older tree is killed');
+  assert.ok(os.procs.has(500), 'the tool of the human turn that began mid-kill is NOT signalled');
+});
+
 test('F5: spareRoots spares the WHOLE tree that contains the run-pause call and kills the member\'s other trees', async () => {
   const os = world();
   os.add(shellC(400, 100, 'other tree'));

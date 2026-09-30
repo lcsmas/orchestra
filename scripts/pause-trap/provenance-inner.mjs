@@ -5,9 +5,12 @@
 //   (c) a process that started BEFORE the member CLI survives (same scenario, seen from the start-time rule).
 // F1 (review): another SESSION's supervisor is never a tool — a daemonized "app" launched from a tool (no `env -i`) carries this CLAUDE_PID into its keeper
 // and that keeper's claude CLI; they must survive and be listed as spared.
+// Pre-review M1: the foreign claude CLI's own MCP-server-like child (neither keeper nor CLI itself, carries the same CLAUDE_PID by inheritance) survives too.
 // Controls: the recycle is real (this CLI got the pid the stale orphan's marker names, asserted from /proc) and the member's OWN daemonized orphan IS killed
 // (so "survives" is not a rig that kills nothing).
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -26,6 +29,10 @@ const find = (n) => procs().filter((p) => p.comm === 'sleep' && p.argv[1] === St
 const alive = (n) => find(n).length > 0;
 const envOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`, 'latin1').split('\0').find((x) => x.startsWith('CLAUDE_PID=')) ?? null; } catch { return null; } };
 
+const FAKES = fs.mkdtempSync(path.join(process.env.HOME ?? os.tmpdir(), '.cache', 'pt-prov-'));
+fs.writeFileSync(path.join(FAKES, 'fake-mcp.js'), 'setInterval(() => {}, 1000);\n');
+fs.writeFileSync(path.join(FAKES, 'fake-claude.js'), `const { spawn } = require('child_process'); spawn(process.execPath, [${JSON.stringify(path.join(FAKES, 'fake-mcp.js'))}, 'fake-other-mcp'], { stdio: 'ignore' }); setInterval(() => {}, 1000);\n`);
+
 // Stand-in CLI: spawns (on command) a tool shell and a DAEMONIZED orphan (its shell exits at once), both with CLAUDE_PID=<its own pid>.
 const STANDIN = `
 const { spawn } = require('child_process');
@@ -34,12 +41,12 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { if (d.includes('go')) {
   spawn('/bin/bash', ['-c', 'sleep %TOOL%; true'], { detached: true, stdio: 'ignore', env }).unref();
   spawn('/bin/bash', ['-c', 'sleep %DAEMON% >/dev/null 2>&1 & exit 0'], { detached: true, stdio: 'ignore', env }).unref();
-  if ('%SUP%' === '1') spawn('/bin/bash', ['-c', '"$NODE" -e "$SUPSCRIPT" /x/.orchestra/bin/keeper.js ws-OTHER sock pid log >/dev/null 2>&1 & exit 0'], { detached: true, stdio: 'ignore', env: { ...env, NODE: process.execPath, SUPSCRIPT: "const {spawn}=require('child_process'); spawn(process.execPath,['-e','setInterval(()=>{},1000)','fake-other-claude-cli'],{argv0:'claude',stdio:'ignore'}); setInterval(()=>{},1000)" } }).unref();
+  if ('%SUP%' === '1') spawn('/bin/bash', ['-c', '"$NODE" -e "$SUPSCRIPT" /x/.orchestra/bin/keeper.js ws-OTHER sock pid log >/dev/null 2>&1 & exit 0'], { detached: true, stdio: 'ignore', env: { ...env, NODE: process.execPath, SUPSCRIPT: "const {spawn}=require('child_process'); spawn(process.execPath,['%FAKECLAUDE%','fake-other-claude-cli'],{argv0:'claude',stdio:'ignore'}); setInterval(()=>{},1000)" } }).unref();
   console.log(JSON.stringify({ spawned: true })); } });
 setInterval(() => {}, 1000); console.log(JSON.stringify({ ready: process.pid }));
 `;
 function standin(tool, daemon, tag, sup = false) {
-  const c = spawn(process.execPath, ['-e', STANDIN.replace('%TOOL%', tool).replace('%DAEMON%', daemon).replace('%SUP%', sup ? '1' : '0'), tag], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const c = spawn(process.execPath, ['-e', STANDIN.replace('%TOOL%', tool).replace('%DAEMON%', daemon).replace('%SUP%', sup ? '1' : '0').replace('%FAKECLAUDE%', path.join(FAKES, 'fake-claude.js')), tag], { stdio: ['pipe', 'pipe', 'inherit'] });
   const replies = [];
   let buf = '';
   c.stdout.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { try { replies.push(JSON.parse(buf.slice(0, i))); } catch { /* */ } buf = buf.slice(i + 1); } });
@@ -85,14 +92,18 @@ try {
   const supervisors = procs().filter((p) => p.state !== 'Z' && (p.argv.some((a) => a.endsWith('keeper.js')) || p.argv.at(-1) === 'fake-other-claude-cli'));
   check('other_session_supervisor_survives', supervisors.length === 2 && supervisors.some((p) => p.argv.some((a) => a.endsWith('keeper.js'))) && supervisors.some((p) => p.argv[0] === 'claude') && rep.spared.some((x) => /keeper\.js/.test(x.cmd)),
     `another session's keeper (carries CLAUDE_PID=${P}) and its claude CLI alive=${supervisors.length === 2}; listed as spared=${rep.spared.some((x) => /keeper\.js/.test(x.cmd))}; killed=${JSON.stringify(rep.killed.map((k) => k.cmd.slice(0, 30)))}`);
+  const mcps = procs().filter((p) => p.state !== 'Z' && p.argv.at(-1) === 'fake-other-mcp');
+  check('other_session_mcp_survives', mcps.length === 1 && rep.spared.some((x) => x.pid === mcps[0].pid && /ANCESTOR/.test(x.reason)),
+    `another session's MCP-like child (under its claude CLI, carries CLAUDE_PID=${P}) alive=${mcps.length === 1}; listed as spared by the ancestor rule=${rep.spared.some((x) => mcps[0] && x.pid === mcps[0].pid && /ANCESTOR/.test(x.reason))}`);
   check('cli_alive', real.read(P) !== 'gone', 'the member CLI stand-in is alive');
 } catch (e) {
   check('rig_ran_to_completion', false, String(e?.stack ?? e).slice(0, 400));
 }
 result.checks = checks;
 result.ok = checks.length > 0 && checks.every((c) => c.ok);
-for (const p of procs()) if (p.argv.some((a) => a.endsWith('keeper.js')) || p.argv.at(-1) === 'fake-other-claude-cli') { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
+for (const p of procs()) if (p.argv.some((a) => a.endsWith('keeper.js')) || p.argv.at(-1) === 'fake-other-claude-cli' || p.argv.at(-1) === 'fake-other-mcp') { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
 for (const n of [7811, 7812, 7813, 7821, 7822]) for (const p of find(n)) { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
 for (const c of cleanup) { try { c.kill('SIGKILL'); } catch { /* */ } }
+try { fs.rmSync(FAKES, { recursive: true, force: true }); } catch { /* */ }
 console.log(JSON.stringify(result));
 process.exit(0);

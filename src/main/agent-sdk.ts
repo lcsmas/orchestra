@@ -4005,7 +4005,8 @@ export async function sdkInterruptForPause(wsId: string): Promise<PauseInterrupt
     if (!probe) {
       // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer is 'unresponsive' (the trap retries), not 'idle'.
       const kp = readTrackedKeeperPid(wsId);
-      return kp !== null && keeperPidState(kp, wsId) === 'keeper' ? 'unresponsive' : 'idle';
+      const ks = kp === null ? 'gone' : keeperPidState(kp, wsId);
+      return ks === 'keeper' || ks === 'unknown' ? 'unresponsive' : 'idle'; // 'unknown' (alive, argv unreadable) is UNKNOWN, not "no keeper" (pre-review M8)
     }
     if (!probe.running || probe.turnInFlight !== true) return 'idle';
     try {

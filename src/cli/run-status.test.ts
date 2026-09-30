@@ -158,3 +158,25 @@ test('F11: control characters in a raw argv / task text are stripped before they
   assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text.replace(/\n/g, '')), 'no control character survives (newlines are the output\'s own)');
   assert.match(text, /sleep.* 9/);
 });
+
+test('F11 (round 2): EVERY recorded string is sanitized — orphan cwd/evidence, skipped paths, snapshot warnings, submodule path/error, notes, errors, refused/survivor reasons — and a newline inside a value cannot forge a line', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-d', pausedAt: p.pausedAt,
+    activity: {
+      surface: 'sdk', memberRun: 'W', branch: 'b\u001b[1m', head: 'abc\u001bdef0123456',
+      snapshotWarnings: ['unreadable f\u001b[2J'], skippedLarge: [{ path: 'big\u0007.bin', bytes: 3e7 }],
+      submodules: [{ path: 'sub\u001b[0m', ref: null, dirty: false, error: 'boom\u001b[0m' }],
+      notes: ['note\u001b[0m\nFORGED: note line'],
+      observerKilled: [{ pid: 9, cmd: 'x', signal: 'SIGTERM', outcome: 'exited', via: 'env', cwd: '/w\u001b[0m\nkilled: FORGED', evidence: 'ev\u001b[0m' }],
+    },
+    snapshotRef: 'refs/x\u001b[0m', dirty: true, error: 'err\u001b[0m\nFORGED: error line',
+    killed: { killed: [{ pid: 1, cmd: 'orphan', signal: 'SIGTERM', outcome: 'exited', via: 'env', cwd: '/cwd\u001b[2J\nkilled: FORGED', evidence: 'why\u001b[0m' }], refused: [{ pid: 2, cmd: 'r', reason: 'nope\u001b[0m' }], survivors: [{ pid: 3, cmd: 's', reason: 'alive\u001b[0m' }] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text.replace(/\n/g, '')), 'no control character survives');
+  assert.ok(!/^\s*(FORGED|killed: FORGED)/m.test(text), 'a newline inside a value did not start a forged line');
+  assert.match(text, /orphan killed \(left the CLI's tree, via env\)/);
+});

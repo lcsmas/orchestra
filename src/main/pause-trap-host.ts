@@ -106,7 +106,9 @@ export function buildPauseTrapDeps(): TrapDeps {
       if (!probe) {
         // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer (busy/stopped) must not read as "no keeper".
         const kp = readTrackedKeeperPid(m.wsId);
-        if (kp !== null && keeperPidState(kp, m.wsId) === 'keeper') return { error: `keeper ${kp} is alive but did not answer the probe (busy/unresponsive)` };
+        const ks = kp === null ? 'gone' : keeperPidState(kp, m.wsId);
+        // 'unknown' (alive, argv unreadable) is UNKNOWN, not "no keeper": never skip the kill on it (pre-review M8)
+        if (kp !== null && (ks === 'keeper' || ks === 'unknown')) return { error: `keeper ${kp} is alive (${ks}) but did not answer the probe (busy/unresponsive)` };
       }
       if (probe?.running && probe.pid) {
         const keeperPid = readTrackedKeeperPid(m.wsId);

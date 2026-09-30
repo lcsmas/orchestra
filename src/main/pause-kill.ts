@@ -77,7 +77,7 @@ export interface KillOptions {
   /** Re-checked before EVERY round and every signal: false ⇒ stop at once (a lift/re-pause must not cost the released turn its first tool — review F8). */
   stillPaused?: () => boolean;
   /** Only processes that started BEFORE this epoch-ms are targets (a HUMAN turn that began during the trap is allowed to run — D9, review F2). */
-  startedBeforeMs?: number;
+  startedBeforeMs?: number | (() => number | undefined);
   /** Tool-shell roots whose whole tree is SPARED (the tree that contains the `orchestra run pause` call — pauser exemption, review F5). */
   spareRoots?: readonly number[];
 }
@@ -221,6 +221,12 @@ export async function killToolTrees(
     },
     cwdOf: (p: ProcIdent) => deps.readCwd(p.pid),
   });
+  // re-read at every plan AND every signal: a human turn may begin while the kill rounds run (D9, pre-review M5)
+  const beforeMs = (): number | undefined => (typeof opts.startedBeforeMs === 'function' ? opts.startedBeforeMs() : opts.startedBeforeMs);
+  const tooNew = (m: ToolProc): boolean => {
+    const b = beforeMs();
+    return b !== undefined && deps.startMs(m.startTicks) >= b;
+  };
   const planNow = (): ToolPlan => {
     const pl = planToolTrees(deps.readTable(), cli, planOpts());
     for (const m of pl.members) if (m.isRoot) priorRoots.set(m.pid, { pid: m.pid, startTicks: m.startTicks });
@@ -233,8 +239,8 @@ export async function killToolTrees(
       }
       pl.members = keep;
     }
-    if (opts.startedBeforeMs !== undefined) {
-      const before = opts.startedBeforeMs;
+    const before = beforeMs();
+    if (before !== undefined) {
       const keep: ToolProc[] = [];
       for (const m of pl.members) {
         if (deps.startMs(m.startTicks) < before) keep.push(m);
@@ -262,6 +268,7 @@ export async function killToolTrees(
     const termed: ToolProc[] = [];
     for (const m of killOrder(plan.members)) {
       if (!paused()) break;
+      if (tooNew(m)) continue; // started after a human turn that began mid-kill
       const v = verifyAtSignal(m, plan, protect, deps.read, deps.readClaudePid);
       if (!v.ok) {
         if (v.reason !== 'gone' && v.reason !== 'zombie') {
@@ -281,6 +288,7 @@ export async function killToolTrees(
     for (const m of killOrder(termed)) {
       if (!isAlive(m, deps)) continue;
       if (!paused()) break;
+      if (tooNew(m)) continue;
       // SIGTERM was ignored/slow: escalate — after a SECOND identity re-read of this pid.
       const v = verifyAtSignal(m, plan, protect, deps.read, deps.readClaudePid);
       if (v.ok && deps.signal(m.pid, 'SIGKILL')) {

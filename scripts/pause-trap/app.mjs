@@ -109,8 +109,7 @@ if (phase === 'first') {
 const deps = host.buildPauseTrapDeps();
 activity.setTurnStartObserver(host.makeTurnStartObserver(deps));
 if (!cfg.noTrap) trap.startPauseTrap(deps);
-// autopsy aid: the rig's own sweep reports every TrapSummary (the host logger is silent outside dev)
-if (!cfg.noTrap) setInterval(() => void trap.sweepPauseTrap(deps).then((r) => { if (r.length) out({ ev: 'sweep', r }); }).catch((e) => out({ ev: 'sweep-error', error: String(e?.stack ?? e) })), 4000).unref();
+// NO rig-side sweep: detection is ONLY the production path (startPauseTrap: boot drain + WAL dir watch + timer) — a second trigger here defeated the no-trap mutant
 out({ ev: 'trap-started', phase, noTrap: !!cfg.noTrap });
 
 if (phase === 'first' && scenario) {

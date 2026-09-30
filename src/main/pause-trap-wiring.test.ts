@@ -63,6 +63,12 @@ test('a keeper REATTACH with a turn in flight is a CLI-started turn: the flag is
   assert.ok(body.indexOf('live.unexplainedTurnSeen = true;') < body.indexOf('notifyTurnStart(wsId);'), 'flag first: the handler it triggers must see the turn as running');
 });
 
+test("sdkInterruptForPause: an alive keeper with an unreadable argv ('unknown') is 'unresponsive', not 'idle' (pre-review M8)", () => {
+  const code = codeOf('src/main/agent-sdk.ts');
+  const fn = code.slice(at(code, 'export async function sdkInterruptForPause('));
+  assert.ok(fn.slice(0, 900).includes("ks === 'keeper' || ks === 'unknown'"));
+});
+
 test('sdkInterruptForPause never touches an idle session and NEVER drops the queue (plain interrupt, no cancel_queued)', () => {
   const code = codeOf('src/main/agent-sdk.ts');
   const fn = code.slice(at(code, 'export async function sdkInterruptForPause('));
@@ -94,6 +100,7 @@ test('pause-trap-host snapshots through the no-touch snapshotWorktree and kills 
   assert.ok(code.includes('storeReady: () => store.loadedFromDisk,'), 'an unloaded store defers the trap (F10)');
   assert.ok(code.includes('if (isPtyRunning(wsId)) return;'), 'a live Raw terminal stands the observer down (human keystrokes fire submit)');
   assert.ok(code.includes('did not answer the probe (busy/unresponsive)'), 'a tracked-but-unresponsive keeper is an ERROR, not "no keeper" (F4)');
+  assert.ok(code.includes("ks === 'keeper' || ks === 'unknown'"), "an ALIVE keeper whose argv is unreadable ('unknown') is unresponsive too, never \"no keeper\" (pre-review M8)");
   assert.ok(!/process\.kill\(|\.kill\(/.test(code), 'the host binding contains no direct kill call');
 });
 

@@ -54,9 +54,13 @@ interface KilledShape {
   skipped?: string;
 }
 
+/** Control characters (ESC, CR, NL, NUL…) in ANY recorded string (argv, cwd, paths, errors, notes) must never reach the coordinator's terminal nor forge a line (review F11). */
+function c(s: unknown): string {
+  return String(s ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+}
+
 function short(s: string, n = 90): string {
-  // control characters (ESC, CR, NUL…) in a raw argv / task text must never reach the coordinator's terminal (review F11)
-  const clean = s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+  const clean = c(s);
   return clean.length > n ? `${clean.slice(0, n - 1)}…` : clean;
 }
 
@@ -74,7 +78,7 @@ export function renderRunStatus(st: RunStatus): string {
   }
   const p = st.pause;
   out.push(
-    `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${p.pausedBy ?? 'unknown'}` +
+    `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${c(p.pausedBy ?? 'unknown')}` +
       (st.inherited ? ` — carried by ancestor run ${p.runId}; lift it with: orchestra run resume --run ${p.runId}` : `; lift with: orchestra run resume --run ${p.runId}`),
   );
   out.push(
@@ -95,43 +99,43 @@ function renderRows(rows: BilanRow[], out: string[]): void {
     const a = r.activity;
     const dirtyTxt =
       r.dirty === null ? 'unknown' : r.dirty ? `yes${a?.changed ? ` (${a.changed.modified} modified, ${a.changed.added} added, ${a.changed.deleted} deleted)` : ''}` : 'no';
-    out.push(`  • ${r.wsId}${a?.branch ? ` [${a.branch}]` : ''} — dirty tree: ${dirtyTxt}`);
-    if (r.snapshotRef) out.push(`      snapshot: ${r.snapshotRef}   (git diff ${a?.head ? a.head.slice(0, 9) : 'HEAD'} ${r.snapshotRef} shows the uncommitted work)`);
-    if (a?.snapshotWarnings?.length) out.push(`      NOT captured (unreadable): ${a.snapshotWarnings.join(' | ').slice(0, 300)}`);
-    if (a?.skippedLarge?.length) out.push(`      not captured (too large): ${a.skippedLarge.map((f) => `${f.path} (${Math.round(f.bytes / 1048576)} MB)`).join(', ')}`);
-    for (const s of a?.submodules ?? []) out.push(`      submodule ${s.path}: ${s.error ? `snapshot failed (${s.error})` : `${s.dirty ? 'dirty, ' : ''}ref ${s.ref}`}`);
+    out.push(`  • ${c(r.wsId)}${a?.branch ? ` [${c(a.branch)}]` : ''} — dirty tree: ${dirtyTxt}`);
+    if (r.snapshotRef) out.push(`      snapshot: ${c(r.snapshotRef)}   (git diff ${a?.head ? c(a.head).slice(0, 9) : 'HEAD'} ${c(r.snapshotRef)} shows the uncommitted work)`);
+    if (a?.snapshotWarnings?.length) out.push(`      NOT captured (unreadable): ${c(a.snapshotWarnings.join(' | ')).slice(0, 300)}`);
+    if (a?.skippedLarge?.length) out.push(`      not captured (too large): ${a.skippedLarge.map((f) => `${c(f.path)} (${Math.round(Number(f.bytes) / 1048576)} MB)`).join(', ')}`);
+    for (const s of a?.submodules ?? []) out.push(`      submodule ${c(s.path)}: ${s.error ? `snapshot failed (${c(s.error)})` : `${s.dirty ? 'dirty, ' : ''}ref ${c(s.ref)}`}`);
     if (a) {
       const doing: string[] = [];
       if (a.surface === 'none') doing.push('no live session');
       else doing.push(a.turnRunning ? 'turn running' : 'idle');
-      for (const t of a.inFlightTools ?? []) doing.push(`in-flight ${t.tool ?? '?'}${t.sinceMs !== null ? ` ${Math.round(t.sinceMs / 1000)}s` : ''}`);
-      for (const b of a.bgTasks ?? []) doing.push(`background ${b.type ?? 'task'} "${short(b.description, 50)}" (${b.status})`);
+      for (const t of a.inFlightTools ?? []) doing.push(`in-flight ${c(t.tool ?? '?')}${t.sinceMs !== null ? ` ${Math.round(t.sinceMs / 1000)}s` : ''}`);
+      for (const b of a.bgTasks ?? []) doing.push(`background ${b.type ?? 'task'} "${short(b.description, 50)}" (${c(b.status)})`);
       out.push(`      was doing: ${doing.join(' · ')}`);
       if (a.lastTask) out.push(`      task: ${short(a.lastTask, 120)}`);
-      if (a.interrupt) out.push(`      interrupt: ${a.interrupt}`);
+      if (a.interrupt) out.push(`      interrupt: ${c(a.interrupt)}`);
     }
     const k = r.killed as KilledShape | null;
     if (k) {
-      if (k.skipped) out.push(`      killed: nothing — ${k.skipped}`);
+      if (k.skipped) out.push(`      killed: nothing — ${c(k.skipped)}`);
       else {
         const killed = k.killed ?? [];
         out.push(
-          `      killed: ${killed.length} tool process(es)${killed.length ? ' — ' + killed.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${x.pid})`).join('; ') + (killed.length > 6 ? `; +${killed.length - 6} more` : '') : ''}`,
+          `      killed: ${killed.length} tool process(es)${killed.length ? ' — ' + killed.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)})`).join('; ') + (killed.length > 6 ? `; +${killed.length - 6} more` : '') : ''}`,
         );
         // D11: an ORPHAN (left the CLI's tree) is killed only with provenance — list each with its cwd and the reason that matched.
         for (const o of killed.filter((x) => x.via === 'env' || x.via === 'session')) {
-          out.push(`      orphan killed (left the CLI's tree, via ${o.via}): ${short(o.cmd, 70)} pid ${o.pid} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);
+          out.push(`      orphan killed (left the CLI's tree, via ${c(o.via)}): ${short(o.cmd, 70)} pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);
         }
-        if (k.survivors?.length) out.push(`      STILL ALIVE: ${k.survivors.map((x) => `${short(x.cmd, 60)} (pid ${x.pid}: ${x.reason})`).join('; ')}`);
-        if (k.refused?.length) out.push(`      refused (identity not provable): ${k.refused.map((x) => `pid ${x.pid}: ${x.reason}`).join('; ')}`);
+        if (k.survivors?.length) out.push(`      STILL ALIVE: ${k.survivors.map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)}: ${c(x.reason)})`).join('; ')}`);
+        if (k.refused?.length) out.push(`      refused (identity not provable): ${k.refused.map((x) => `pid ${c(x.pid)}: ${c(x.reason)}`).join('; ')}`);
         if (k.spared?.length) out.push(`      left running (not tool processes): ${k.spared.map((x) => short(x.cmd, 50)).join('; ')}`);
       }
     } else out.push('      killed: (trap not finished for this member)');
-    if (a?.observerKilled?.length) out.push(`      killed by the turn observer (CLI-started turn while paused): ${a.observerKilled.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${x.pid})`).join('; ')}${a.observerKilled.length > 6 ? `; +${a.observerKilled.length - 6} more` : ''}`);
+    if (a?.observerKilled?.length) out.push(`      killed by the turn observer (CLI-started turn while paused): ${a.observerKilled.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)})`).join("; ")}${a.observerKilled.length > 6 ? `; +${a.observerKilled.length - 6} more` : ''}`);
     for (const o of (a?.observerKilled ?? []).filter((x) => x.via === 'env' || x.via === 'session')) {
-      out.push(`      orphan killed by the turn observer (via ${o.via}): ${short(o.cmd, 70)} pid ${o.pid} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);
+      out.push(`      orphan killed by the turn observer (via ${c(o.via)}): ${short(o.cmd, 70)} pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);
     }
-    for (const n of a?.notes ?? []) out.push(`      note: ${n}`);
-    if (r.error) out.push(`      error: ${r.error}`);
+    for (const n of a?.notes ?? []) out.push(`      note: ${c(n)}`);
+    if (r.error) out.push(`      error: ${c(r.error)}`);
   }
 }

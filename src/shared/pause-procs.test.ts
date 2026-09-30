@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isSupervisorProc,
   isToolShell,
   killOrder,
   parseProcIdent,
@@ -304,6 +305,52 @@ test('F1: a TREE member that is a claude sub-invocation run by the tool itself i
   const t = [...table(), p(203, 200, { sid: 200, comm: 'claude', argv: ['claude', '-p', 'x'] })];
   const plan = planToolTrees(t, CLI, {});
   assert.ok(plan.members.some((m) => m.pid === 203 && m.via === 'tree'));
+});
+
+// ── pre-review M1/M2 (round 2): supervisor ANCESTORS, and the `orchestra` CLI client is not a supervisor ──
+
+function tableWithSupervisorChildren(): ProcIdent[] {
+  return [
+    ...tableWithSupervisors(),
+    // another session's MCP server UNDER its CLI (802): carries this CLI's CLAUDE_PID by inheritance, is neither a keeper nor a CLI itself
+    p(803, 802, { sid: 800, startTicks: 6003, comm: 'node', argv: ['node', '/x/mcp-server.js'] }),
+  ];
+}
+const ENV3: Record<number, number> = { ...ENV2, 803: 100, 820: 100, 821: 100 };
+
+test('M1: an env-proven process UNDER another session\'s app/keeper/CLI (its MCP server) is SPARED — the ancestor walk, not only the descendant walk', () => {
+  const plan = planToolTrees(tableWithSupervisorChildren(), CLI, { claudePidOf: (x) => ENV3[x.pid] ?? null });
+  const pids = plan.members.map((m) => m.pid);
+  assert.ok(!pids.includes(803), '803 (MCP under the foreign CLI) must not be a member');
+  assert.ok(pids.includes(810), 'control: the ordinary daemon is still a member');
+  assert.ok(plan.spared.some((x) => x.pid === 803 && /ANCESTOR/.test(x.reason)), 'listed as spared with the ancestor reason');
+});
+
+test('M1: the signal-time re-read refuses a process under a foreign supervisor (forged plan), fails CLOSED on an unreadable hop, and accepts the ordinary daemon (control)', () => {
+  const t = tableWithSupervisorChildren();
+  const plan = planToolTrees(t, CLI, { claudePidOf: (x) => ENV3[x.pid] ?? null });
+  const forge = (pid: number) => ({ ...plan.members[0], pid, startTicks: t.find((x) => x.pid === pid)!.startTicks, isRoot: false, via: 'env' as const, rootPid: 0, rootIsSessionLeader: false, rootStartTicks: undefined });
+  const v = verifyAtSignal(forge(803), plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100);
+  assert.equal(v.ok, false);
+  assert.match((v as { reason: string }).reason, /under another session/);
+  const unreadable = verifyAtSignal(forge(803), plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t, { 801: 'unreadable' }), () => 100);
+  assert.equal(unreadable.ok, false, 'an unreadable ancestor hop is refused, never read as "no supervisor"');
+  const ctl = plan.members.find((m) => m.pid === 810)!;
+  assert.equal(verifyAtSignal(ctl, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100).ok, true, 'control: the ordinary env orphan (ppid 1) is still killable');
+});
+
+test('M2: `Orchestra.AppImage cli <verb>` (the orchestra CLI client) is NOT a supervisor; the app\'s own main/helper processes are; an orphan shell polling `orchestra check` is still a tool', () => {
+  assert.equal(isSupervisorProc({ comm: 'Orchestra.AppImag', argv: ['/tmp/.mount_OrchesAB/Orchestra.AppImage', 'cli', 'check'] }), false);
+  assert.equal(isSupervisorProc({ comm: 'Orchestra.AppImag', argv: ['/tmp/.mount_OrchesAB/Orchestra.AppImage', '--no-sandbox', 'cli', 'send'] }), false);
+  assert.equal(isSupervisorProc({ comm: 'orchestra', argv: ['/tmp/.mount_OrchesAB/orchestra', '--type=gpu'] }), true);
+  assert.equal(isSupervisorProc({ comm: 'Orchestra.AppImag', argv: ['/tmp/.mount_OrchesAB/Orchestra.AppImage'] }), true);
+  const t = [
+    ...table(),
+    p(820, 1, { sid: 820, startTicks: 6020, comm: 'zsh', argv: ['/usr/bin/zsh', '-c', 'while :; do orchestra check; sleep 5; done'] }),
+    p(821, 820, { sid: 820, startTicks: 6021, comm: 'Orchestra.AppImag', argv: ['/tmp/.mount_OrchesAB/Orchestra.AppImage', 'cli', 'check'] }),
+  ];
+  const plan = planToolTrees(t, CLI, { claudePidOf: (x) => ENV3[x.pid] ?? null });
+  assert.ok(plan.members.some((m) => m.pid === 820), 'the orphaned poll loop is a member although an `orchestra cli` call runs under it');
 });
 
 // ── review F9: a dead prior root's recycled pid cannot vouch for an unrelated session ──

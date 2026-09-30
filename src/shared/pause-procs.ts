@@ -72,8 +72,33 @@ export function isSupervisorProc(p: Pick<ProcIdent, 'argv' | 'comm'>): boolean {
   if (argv.some((a) => baseName(a) === 'keeper.js')) return true;
   const a0 = baseName(argv[0] ?? '').replace(/^-/, '');
   if (a0 === 'claude' || p.comm === 'claude') return true;
-  if (/^(orchestra|Orchestra\.AppImage|electron)$/i.test(a0) || /\.mount_Orches/.test(argv[0] ?? '')) return true;
+  if (/^(orchestra|Orchestra\.AppImage|electron)$/i.test(a0) || /\.mount_Orches/.test(argv[0] ?? '')) {
+    // `Orchestra.AppImage cli <verb>` is the `orchestra` CLI CLIENT (a short-lived tool of some session), not the app's main process (review: pre-review M2).
+    return argv.slice(1).find((a) => !a.startsWith('-')) !== 'cli';
+  }
   return false;
+}
+
+/**
+ * Does `p` sit UNDER another session's supervisor (keeper / claude CLI / Orchestra app)? Walks the ppid chain hop by hop through `read`
+ * (a fresh /proc read at signal time, the planner's table at plan time). The paused member's own CLI is skipped. 'unknown' = a hop could
+ * not be read (fail closed: treated as "yes" by callers that refuse on anything but 'no'). Bounded depth.
+ */
+export function supervisorAncestorOf(
+  p: Pick<ProcIdent, 'ppid'>,
+  read: (pid: number) => ProcIdent | 'gone' | 'unreadable',
+  ownCliPid: number,
+): 'yes' | 'no' | 'unknown' {
+  let pid = p.ppid;
+  for (let hops = 0; hops < 64; hops++) {
+    if (pid <= 1 || pid === ownCliPid) return 'no';
+    const q = read(pid);
+    if (q === 'unreadable') return 'unknown';
+    if (q === 'gone') return 'no'; // reparented past a dead hop: nothing above it is this process's parent any more
+    if (isSupervisorProc(q)) return 'yes';
+    pid = q.ppid;
+  }
+  return 'unknown';
 }
 
 export interface SparedProc {
@@ -167,9 +192,9 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
   };
   const add = (p: ProcIdent, root: ProcIdent | null, depth: number, via: ToolProc['via'] = 'tree'): void => {
     if (p.pid === cli.pid || members.has(p.pid)) return;
-    if (via !== 'tree' && hasSupervisor(p.pid)) {
+    if (via !== 'tree' && (hasSupervisor(p.pid) || supervisorAncestorOf(p, (pid) => byPid.get(pid) ?? 'gone', cli.pid) !== 'no')) {
       // an orphan proven only by session/env that IS (or has a descendant) another session's keeper/CLI/app: never a tool
-      if (!spared.some((x) => x.pid === p.pid)) spared.push({ pid: p.pid, comm: p.comm, cmd: cmdOf(p.argv, p.comm), reason: `${via}-proven orphan that is (or has a descendant) a keeper / claude CLI / Orchestra app — another session's supervisor, never a tool` });
+      if (!spared.some((x) => x.pid === p.pid)) spared.push({ pid: p.pid, comm: p.comm, cmd: cmdOf(p.argv, p.comm), reason: `${via}-proven orphan that is, has a descendant or has an ANCESTOR that is a keeper / claude CLI / Orchestra app — another session's supervisor tree, never a tool` });
       return;
     }
     const matched =
@@ -289,6 +314,8 @@ export function verifyAtSignal(
   }
   // 2. session lineage: still in the planned root's session (root alive = same identity, or dead).
   if (target.via !== 'tree' && isSupervisorProc(fresh)) return { ok: false, reason: 'supervisor (keeper / claude CLI / Orchestra app of another session)' };
+  // ...nor anything UNDER such a supervisor (its MCP servers, helpers): fresh ppid chain, fail closed on an unreadable hop (pre-review M1).
+  if (target.via !== 'tree' && supervisorAncestorOf(fresh, read, plan.cli.pid) !== 'no') return { ok: false, reason: 'under another session\'s supervisor (keeper / claude CLI / Orchestra app)' };
   if (target.rootIsSessionLeader && fresh.sid === target.rootPid && target.via !== 'env') {
     const root = read(target.rootPid);
     // The root's planned start-time is REQUIRED: a dead root's pid may have been recycled by an innocent session leader, and an unknown
