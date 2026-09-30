@@ -39,6 +39,13 @@ export const MUTANTS = {
     replace: "throw new Error('mutant: snapshot skipped'); const r = await deps.snapshot({ worktreePath: m.worktreePath, runId: carrier.runId, wsId: m.wsId, at: deps.now() });",
     mustRedden: 'pause_ref_holds_uncommitted_work',
   },
+  // The pauser exemption removed: the coordinator that pauses its own run is interrupted + its tools killed.
+  'no-pauser-exemption': {
+    file: '/src/main/pause-trap.ts',
+    find: /const exempt = carrier\.pausedBy !== null && isCoordinatorHandle\(carrier\.pausedBy, m\.wsId\);/g,
+    replace: 'const exempt = false;',
+    mustRedden: 'pauser_keeps_its_turn',
+  },
   // The signal-time identity re-read removed: a recycled pid is signalled (real pid reuse: recycle-rig.mjs).
   'identity-reread-removed': {
     file: '/src/shared/pause-procs.ts',

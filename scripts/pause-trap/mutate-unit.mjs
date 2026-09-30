@@ -13,7 +13,8 @@ import { spawnSync } from 'node:child_process';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 const SNAP = 'src/main/pause-snapshot.ts', PROCS = 'src/shared/pause-procs.ts', KILL = 'src/main/pause-kill.ts', TRAP = 'src/main/pause-trap.ts', REC = 'src/main/bus-pause-records.ts';
-const T = { snap: 'src/main/pause-snapshot.test.ts', procs: 'src/shared/pause-procs.test.ts', kill: 'src/main/pause-kill.test.ts', trap: 'src/main/pause-trap.test.ts', status: 'src/cli/run-status.test.ts' };
+const IDX = 'src/main/index.ts', SDK = 'src/main/agent-sdk.ts', ACT = 'src/main/activity.ts', HOST = 'src/main/pause-trap-host.ts';
+const T = { wiring: 'src/main/pause-trap-wiring.test.ts', snap: 'src/main/pause-snapshot.test.ts', procs: 'src/shared/pause-procs.test.ts', kill: 'src/main/pause-kill.test.ts', trap: 'src/main/pause-trap.test.ts', status: 'src/cli/run-status.test.ts' };
 
 const M = [
   // ── snapshot (pause-snapshot.ts)
@@ -55,6 +56,13 @@ const M = [
   { id: 'trap-always-resnapshot', file: TRAP, find: '  if (!snapshotRef) {\n    if (!m.worktreePath)', rep: '  if (true) {\n    if (!m.worktreePath)', tests: [T.trap], expect: /BOOT COMPLETION/ },
   { id: 'trap-done-member-redone', file: TRAP, find: '  if (existing && existing.killed !== null) return; // already fully trapped (boot completion after a mid-trap quit)\n', rep: '', tests: [T.trap], expect: /BOOT COMPLETION/ },
   { id: 'rec-trap-stamp-unguarded', file: REC, find: "'UPDATE runs SET pause_trap_at = ? WHERE id = ? AND paused_at = ? AND pause_trap_at IS NULL'", rep: "'UPDATE runs SET pause_trap_at = ? WHERE id = ? AND ? IS NOT NULL AND pause_trap_at IS NULL'", tests: [T.trap], expect: /markTrapDone is keyed on paused_at/ },
+  // ── wiring (index.ts / agent-sdk.ts / activity.ts / pause-trap-host.ts) — pause-trap-wiring.test.ts
+  { id: 'wire-human-observer-unregistered', file: IDX, find: "    setPauseHumanTurnObserver(markPauseHumanTurn); // sdkSend(origin 'human') marks the turn the pause allows\n", rep: '', tests: [T.wiring], expect: /index\.ts starts the trap/ },
+  { id: 'wire-stop-after-close', file: IDX, find: '  stopPauseTrap();\n  // Last: a clean close', rep: '  // Last: a clean close', tests: [T.wiring], expect: /index\.ts starts the trap/ },
+  { id: 'wire-stream-observer-any-turn', file: SDK, find: "if (session.turnGate === null && !session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant'", rep: "if (!session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant'", tests: [T.wiring], expect: /consume\(\): a CLI-started turn/ },
+  { id: 'wire-interrupt-idle-not-skipped', file: SDK, find: "  if (!attached && session.turnGate === null && session.queue.length === 0 && session.unexplainedTurnSeen !== true) return 'idle';\n", rep: '', tests: [T.wiring], expect: /never touches an idle session/ },
+  { id: 'wire-submit-notifies-parked-prompt', file: ACT, find: 'if (!queuedSubmit) notifyTurnStart(id);', rep: 'notifyTurnStart(id);', tests: [T.wiring], expect: /submit. chokepoint/ },
+  { id: 'wire-host-observer-pty-too', file: HOST, find: '    if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own\n', rep: '', tests: [T.wiring], expect: /host observer stands down/ },
 ];
 
 const sel = ONLY ? M.filter((m) => m.id === ONLY) : M;

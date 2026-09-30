@@ -110,6 +110,7 @@ if (!cfg.noTrap) trap.startPauseTrap(deps);
 out({ ev: 'trap-started', phase, noTrap: !!cfg.noTrap });
 
 if (phase === 'first' && scenario) {
+  if (cfg.opsScenario) await sdk.sdkSend('ops', `SCN:${cfg.opsScenario}`); // the coordinator has its OWN live session + tool (pauser-exempt arm)
   await sdk.sdkSend('w1', `SCN:${scenario}`);
   out({ ev: 'sent', ws: 'w1', scenario });
 }

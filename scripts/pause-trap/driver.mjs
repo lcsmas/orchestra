@@ -77,6 +77,7 @@ const SCENARIOS = {
   background: [BASH('sleep 7714', { run_in_background: true }), BASH("python3 -c \"import subprocess; subprocess.Popen(['sleep','7715'], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\"; sleep 7716"), { text: 'done' }],
   // a background task that, when killed, makes the CLI start a turn by itself (task notification): row 29
   bgnotify: [BASH('sleep 7718', { run_in_background: true }), { text: 'background started' }, BASH('sleep 7717'), { text: 'done' }],
+  blockingops: [BASH('sleep 7719'), { text: 'done' }],
   resume: [{ text: 'ok' }],
   dbg: [BASH("python3 -c \"import os,subprocess; p=subprocess.Popen(['sleep','7715'], start_new_session=True); print('child', p.pid, 'childsid', os.getsid(p.pid), 'mysid', os.getsid(0), 'path', os.environ.get('PATH'))\" > $HOME/dbg.txt 2>&1; id >> $HOME/dbg.txt; grep -E 'Seccomp|NoNewPrivs' /proc/self/status >> $HOME/dbg.txt; sleep 7716"), { text: 'done' }],
 };
@@ -91,6 +92,8 @@ const ARMS = {
   'app-restart-bg': { scenario: 'background', markers: [7714, 7715, 7716], restart: true, mustKill: ['sleep 7714', 'sleep 7715'] },
   // the first turn has ENDED when the pause lands (only the background task is alive): interrupt = 'idle' is the right outcome
   'turn-while-paused': { scenario: 'bgnotify', markers: [7718], rowTwentyNine: true, mustKill: ['sleep 7718'], idleAtPause: true },
+  // the PAUSER (the OPS pausing its own run) is a member with a live session + a running tool: it keeps its turn
+  'pauser-exempt': { scenario: 'blocking', markers: [7713], mustKill: [], pauser: { ws: 'ops', scenario: 'blockingops', markers: [7719] } },
   // PROBE (not a verdict arm): what does a plain human interrupt leave alive? — the gap the trap's kill exists for.
   'probe-dbg': { scenario: 'dbg', markers: [7715, 7716], probe: true, mustKill: [] },
   'probe-interrupt': { scenario: 'background', markers: [7714, 7715, 7716], probe: true, mustKill: [] },
@@ -132,10 +135,11 @@ let app1 = null, app2 = null;
 const result = { pause_trap: true, arm, mutant };
 try {
   // 1. fleet up, turn in flight
-  app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe });
+  app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe, ...(A.pauser ? { opsScenario: A.pauser.scenario } : {}) });
   await app1.waitEv((e) => e.ev === 'sent', 120_000, 'the first turn to be sent');
   // 2. POSITIVE CONTROL: the real CLI really spawned the real tool processes
   await waitFor(() => A.markers.every((n) => sleepers(n).length >= 1), 90_000, `tool processes ${A.markers.join(',')} to appear`);
+  if (A.pauser) await waitFor(() => A.pauser.markers.every((n) => sleepers(n).length >= 1), 90_000, `the pauser's tool ${A.pauser.markers.join(',')} to appear`);
   const keeper = await waitFor(() => keeperProc(), 10_000, 'the keeper');
   const cli0 = await waitFor(() => cliProcOf(keeper.pid), 10_000, 'the CLI under the keeper');
   check('tool_procs_present_before_pause', A.markers.every((n) => sleepers(n).length >= 1), `markers ${A.markers.join(',')} alive under CLI ${cli0.pid}`);
@@ -174,7 +178,7 @@ try {
 
   // 4. THE PAUSE, through the real built CLI (store-less: writes the bus directly)
   const tPause = Date.now();
-  const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', 'lead');
+  const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', A.pauser ? 'ops' : 'lead');
   check('cli_pause_accepted', p.rc === 0 && /PAUSED/.test(p.out), `rc=${p.rc} ${p.out.trim().slice(0, 200)}`);
   if (A.restart) {
     await sleep(2500);
@@ -210,6 +214,11 @@ try {
     w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
   check('bilan_ops_member_recorded', !!opsrow && !!opsrow.snapshotRef, opsrow ? `ops: ref=${opsrow.snapshotRef} dirty=${opsrow.dirty} surface=${opsrow.activity?.surface}` : 'no Bilan row for ops (the OPS is a member of its own run)');
+  if (A.pauser) {
+    const opsKeeper = allProcs().find((x) => live(x) && x.argv.some((a) => a.endsWith('keeper.js')) && x.argv.includes('ops'));
+    check('pauser_keeps_its_turn', A.pauser.markers.every((n) => sleepers(n).length >= 1) && !!opsKeeper && opsrow?.activity?.exempt === 'pauser' && opsrow?.activity?.interrupt === 'exempt' && !!opsrow?.snapshotRef,
+      `ops (the pauser): tool sleep ${A.pauser.markers.join(',')} alive=${A.pauser.markers.every((n) => sleepers(n).length >= 1)} keeper alive=${!!opsKeeper} Bilan exempt=${opsrow?.activity?.exempt} interrupt=${opsrow?.activity?.interrupt} ref=${opsrow?.snapshotRef}`);
+  }
   check('run_still_paused', done?.pause?.runId === 'ops' && !!done?.pause?.pausedAt, `pause=${JSON.stringify(done?.pause ?? null).slice(0, 120)}`);
 
   // 7. the session is still RESUMABLE (and a HUMAN prompt is allowed while paused, un-pausing nothing)
