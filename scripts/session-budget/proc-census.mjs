@@ -13,9 +13,15 @@ function readProc(pid) {
     const rp = stat.lastIndexOf(')');
     const rest = stat.slice(rp + 2).split(' ');
     const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-    let rssKB = 0;
-    try { rssKB = Number((fs.readFileSync(`/proc/${pid}/statm`, 'utf8').split(' ')[1] ?? 0)) * 4; } catch { /* gone */ }
-    return { pid, state: rest[0], ppid: Number(rest[1]), cmd, rssKB };
+    // VmRSS/VmSwap from /proc/<pid>/status (kB, page-size independent). NOT statm × 4: this host runs 16 KB
+    // pages (Asahi) and `statm` counts pages, which read every process 4× too small (#210 found it).
+    let rssKB = 0, swapKB = 0;
+    try {
+      const st = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      rssKB = Number(/^VmRSS:\s+(\d+) kB/m.exec(st)?.[1] ?? 0);
+      swapKB = Number(/^VmSwap:\s+(\d+) kB/m.exec(st)?.[1] ?? 0);
+    } catch { /* gone */ }
+    return { pid, state: rest[0], ppid: Number(rest[1]), cmd, rssKB, swapKB };
   } catch {
     return null; // exited between readdir and read
   }

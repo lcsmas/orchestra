@@ -232,6 +232,13 @@ test('census classifies cli / keeper / mcp / hook / other', () => {
   assert.equal(c('sleep', '5'), 'other');
 });
 
+test('census RSS is page-size independent: this process reads within 25% of Node\'s own memoryUsage().rss', () => {
+  const me = proc.snapshotProcs().find((p: any) => p.pid === process.pid);
+  const truth = process.memoryUsage().rss / 1024; // kB, from the kernel via libuv — independent of /proc parsing here
+  assert.ok(me && me.rssKB > 0, 'own RSS must be readable and non-zero');
+  assert.ok(Math.abs(me.rssKB - truth) / truth < 0.25, `census says ${me.rssKB} kB, memoryUsage says ${Math.round(truth)} kB`);
+});
+
 test('census (subtree mode) counts a child of this process and stops counting it once it dies', async () => {
   const before = proc.census({ pidns: false }).total;
   const child = spawn('sleep', ['30'], { stdio: 'ignore' });
