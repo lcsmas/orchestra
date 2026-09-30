@@ -1,9 +1,9 @@
-// #253 — the fleet Bus page must render fully BELOW the top toolbar.
+// #253 — the fleet Bus page (and the Insights / Help overlays, same cause) must render fully BELOW the top toolbar.
 //
 // Boots a BUILT Orchestra (argv[2] = app dir) inside the contained rig's own headless sway, with
 // a SCRATCH ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, a seeded bus DB and one active workspace
-// (the `.toolbar` only exists when a workspace is active), opens the Bus page with a TRUSTED click
-// on the sidebar-footer button, and asserts — at the enforced minimum window size and a typical one:
+// (the `.toolbar` only exists when a workspace is active), opens each page (bus | insights | help) with a
+// TRUSTED click on its sidebar control, and asserts — at the enforced minimum window size and a typical one:
 //   DOM     pane / first row rects vs the toolbar's bottom edge
 //   HIT     elementFromPoint at the first row's centre lands in the row, not the toolbar
 //   PIXELS  the first row's clip is identical with the toolbar painted and with it `visibility:hidden`
@@ -12,8 +12,9 @@
 // are separate clauses so a RED layout clause can only be blamed on layout.
 //
 // Usage (via scripts/e2e-bus-page-header.sh): <app-dir> --live-home <real $HOME> [--out dir]
-//   [--label name] [--sizes min,typical] [--expect-red]
-// Arms: min / typical (active workspace => a toolbar) and `noworkspace` (NO toolbar: the fix must not leave a dead strip).
+//   [--label name] [--sizes min,typical,noworkspace] [--pages bus,insights,help] [--expect-red]
+// Arms per page: min / typical (active workspace => a toolbar) and `noworkspace` (NO toolbar: the fix must not leave a dead strip).
+// --out defaults to <rig dir>/shots (scratch); pass it explicitly to keep captures.
 // --expect-red = the must-FAIL arm: exit 0 only if every layout clause is RED and every control GREEN.
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -34,7 +35,7 @@ const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
 const SIZES = flag('--sizes', 'min,typical,noworkspace').split(',');
 const EXPECT_RED = argv.includes('--expect-red');
-const OUT = flag('--out', path.join(LIVE_HOME || os.homedir(), '.orchestra', 'ops-wave-d', '253', 'shots'));
+const PAGE_LIST = flag('--pages', 'bus,insights,help').split(',');
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -44,6 +45,8 @@ const RIG_WAYLAND = process.env.RIG_WAYLAND;
 if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-bus-page-header.sh (the contained rig)');
 if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
 if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
+
+const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots'); // default = SCRATCH (inside the rig dir), never the live ~/.orchestra
 
 // ── scratch-containment guard (live dirs are never handed to the app) ─────────────────────────────
 const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
@@ -198,14 +201,21 @@ function readMin() {
 const MIN = readMin();
 const SIZE = { min: { w: MIN.w, h: MIN.h }, typical: { w: 1400, h: 900 }, noworkspace: { w: 1400, h: 900, noWs: true } };
 
-const MEASURE = `(() => {
+const PAGES = {
+  bus: { root: '.bus-pane', open: '[aria-label="Open the fleet bus page"]', ready: '.bus-pane[data-bus-state="available"] .bus-run-row', close: null, seed: true },
+  insights: { root: '.insights-view', open: '.insights-row', ready: '.insights-view', close: '[aria-label="Close Insights"]', seed: false },
+  help: { root: '.help-view', open: '[aria-label="Help — feature guide"]', ready: '.help-view', close: '[aria-label="Close help"]', seed: false },
+};
+for (const pg of PAGE_LIST) if (!PAGES[pg]) { console.log(`REFUSED: unknown page ${pg}`); process.exit(3); }
+
+const measureExpr = (P) => `(() => {
   const R = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, width: b.width, height: b.height }; };
-  const tb = document.querySelector('.toolbar'), pane = document.querySelector('.bus-pane');
-  const first = pane && pane.firstElementChild, runRow = pane && pane.querySelector('.bus-run-row');
+  const tb = document.querySelector('.toolbar'), pane = document.querySelector(${JSON.stringify(P.root)});
+  const first = pane && pane.firstElementChild, runRow = pane && pane.querySelector('.bus-run-row'), closeEl = ${P.close ? `document.querySelector(${JSON.stringify(P.close)})` : 'null'};
   const hit = (el, edge) => { if (!el) return null; const b = el.getBoundingClientRect(); const x = edge ? b.left + 12 : b.left + Math.min(b.width / 2, 200), y = edge ? b.top + 3 : b.top + b.height / 2; const h = document.elementFromPoint(x, y);
     return { x, y, tag: h ? h.tagName.toLowerCase() + (h.className && typeof h.className === 'string' ? '.' + h.className.trim().split(/\\s+/)[0] : '') : null, inside: !!(h && el.contains(h)), inToolbar: !!(h && h.closest('.toolbar')) }; };
   return { inner: { w: innerWidth, h: innerHeight }, dpr: devicePixelRatio, toolbar: R(tb), pane: R(pane), paneZ: pane ? getComputedStyle(pane).zIndex : null, toolbarZ: tb ? getComputedStyle(tb).zIndex : null,
-    first: R(first), firstClass: first ? first.className : null, runRow: R(runRow), runRowText: runRow ? runRow.textContent.trim().slice(0, 80) : null,
+    first: R(first), firstClass: first ? first.className : null, runRow: R(runRow), runRowText: runRow ? runRow.textContent.trim().slice(0, 80) : null, close: R(closeEl), closeHit: hit(closeEl, false),
     main: R(document.querySelector('main.main')), firstHit: hit(first, true), firstHitMid: hit(first, false), runRowHit: hit(runRow, false), titleInDom: document.body.innerText.includes(${JSON.stringify(TITLE)}), busState: pane ? pane.getAttribute('data-bus-state') : null, scrollTop: pane ? pane.scrollTop : null };
 })()`;
 
@@ -222,15 +232,15 @@ const shots = []; // {file, md5}
 function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !!ok, detail }); console.log(`  ${ok ? 'PASS' : 'FAIL'}  [${arm}] ${name} — ${detail}`); }
 function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
 
-async function runArm(sizeName) {
-  const { w, h } = SIZE[sizeName]; const arm = `${LABEL}/${sizeName}`;
+async function runArm(page, sizeName) {
+  const P = PAGES[page], key = page === 'bus' ? sizeName : `${page}-${sizeName}`; // bus keeps its original arm/file names
+  const { w, h } = SIZE[sizeName]; const arm = `${LABEL}/${key}`;
   console.log(`\n== arm ${arm}: output ${w}x${h} ==`);
-  const armDir = path.join(RIG_DIR, `arm-${LABEL}-${sizeName}`);
+  const armDir = path.join(RIG_DIR, `arm-${LABEL}-${key}`);
   fs.mkdirSync(armDir, { recursive: true });
   const noWs = !!SIZE[sizeName].noWs;
   const world = seedWorld(armDir, { noWs });
-  const seeded = await seedBus(world.ohome);
-  console.log(`  seeded: ${seeded}`);
+  if (P.seed) console.log(`  seeded: ${await seedBus(world.ohome)}`);
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', `${w}x${h}`]);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
@@ -249,7 +259,7 @@ async function runArm(sizeName) {
     clause(arm, 'ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
     cdp = await Cdp.connect(target.webSocketDebuggerUrl);
     await cdp.send('Page.enable');
-    await waitFor(() => cdp.eval(`${noWs ? 'true' : '!!document.querySelector(".toolbar")'} && !!document.querySelector('[aria-label="Open the fleet bus page"]')`), 60000, noWs ? 'the Bus button (no workspace)' : 'toolbar + Bus button (an ACTIVE workspace)');
+    await waitFor(() => cdp.eval(`${noWs ? 'true' : '!!document.querySelector(".toolbar")'} && !!document.querySelector(${JSON.stringify(P.open)})`), 60000, noWs ? `the ${page} control (no workspace)` : `toolbar + the ${page} control (an ACTIVE workspace)`);
     // identity: the bundle the page executes is byte-identical to the one in APP_DIR/dist
     const src = await cdp.eval(`[...document.querySelectorAll('script[src]')].map((s) => s.src)`);
     const bundle = src.find((s) => /assets\/index-.*\.js/.test(s));
@@ -268,30 +278,32 @@ async function runArm(sizeName) {
     clause(arm, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(tree), `app pid ${app.pid} present in my sway's get_tree`);
 
     // pre-state, trusted click, post-state
-    const pre = await cdp.eval(`({ pane: !!document.querySelector('.bus-pane'), pressed: document.querySelector('[aria-label="Open the fleet bus page"]').getAttribute('aria-pressed') })`);
-    const btn = await cdp.eval(`(() => { const b = document.querySelector('[aria-label="Open the fleet bus page"]').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2, inView: b.top >= 0 && b.bottom <= innerHeight && b.left >= 0 && b.right <= innerWidth }; })()`);
-    if (!btn.inView) throw new Error(`Bus button not inside the viewport at ${w}x${h}: ${JSON.stringify(btn)}`);
+    const OPEN = JSON.stringify(P.open), ROOT = JSON.stringify(P.root);
+    const pre = await cdp.eval(`({ pane: !!document.querySelector(${ROOT}), pressed: document.querySelector(${OPEN}).getAttribute('aria-pressed') })`);
+    const btn = await cdp.eval(`(() => { const b = document.querySelector(${OPEN}).getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2, inView: b.top >= 0 && b.bottom <= innerHeight && b.left >= 0 && b.right <= innerWidth }; })()`);
+    if (!btn.inView) throw new Error(`${page} control not inside the viewport at ${w}x${h}: ${JSON.stringify(btn)}`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: btn.x, y: btn.y });
     await cdp.click(btn.x, btn.y);
-    await waitFor(() => cdp.eval(`!!document.querySelector('.bus-pane[data-bus-state="available"] .bus-run-row')`), 30000, 'the seeded bus pane');
+    await waitFor(() => cdp.eval(`!!document.querySelector(${JSON.stringify(P.ready)})`), 30000, `the ${page} page`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: h - 5 }); // park the cursor (no :hover residue)
     await sleep(800); // settle: 2 s poll has fired at least the first snapshot; fonts
     await cdp.eval(`document.fonts.ready.then(() => true)`);
-    const post = await cdp.eval(`({ pane: !!document.querySelector('.bus-pane'), pressed: document.querySelector('[aria-label="Open the fleet bus page"]').getAttribute('aria-pressed') })`);
-    clause(arm, 'ctl/pre-post-state', !pre.pane && pre.pressed === 'false' && post.pane && post.pressed === 'true', `pane ${pre.pane}->${post.pane}, aria-pressed ${pre.pressed}->${post.pressed}`);
+    const post = await cdp.eval(`({ pane: !!document.querySelector(${ROOT}), pressed: document.querySelector(${OPEN}).getAttribute('aria-pressed') })`);
+    clause(arm, 'ctl/pre-post-state', !pre.pane && post.pane && (pre.pressed === null || (pre.pressed === 'false' && post.pressed === 'true')), `${page} page ${pre.pane}->${post.pane}, aria-pressed ${pre.pressed}->${post.pressed} (null = control has none)`);
 
-    const M = await cdp.eval(MEASURE);
+    const M = await cdp.eval(measureExpr(P));
     console.log(`  measured: ${JSON.stringify({ inner: M.inner, dpr: M.dpr, toolbar: M.toolbar, pane: M.pane, paneZ: M.paneZ, toolbarZ: M.toolbarZ, first: M.first, firstClass: M.firstClass, runRow: M.runRow, main: M.main })}`);
     const minish = sizeName === 'min' ? (M.inner.w <= w + 4 && M.inner.h <= h + 4) : (M.inner.w >= 1300 && M.inner.h >= 800);
     clause(arm, 'ctl/window-size', minish, `viewport ${M.inner.w}x${M.inner.h} for target ${w}x${h} (${sizeName}; min enforced by the build = ${MIN.w}x${MIN.h} in ${MIN.file})`);
-    clause(arm, 'ctl/bus-available', M.busState === 'available' && M.titleInDom && !!M.runRow, `data-bus-state=${M.busState}; seeded run title in DOM=${M.titleInDom}; first run row="${M.runRowText}"`);
+    if (page === 'bus') clause(arm, 'ctl/bus-available', M.busState === 'available' && M.titleInDom && !!M.runRow, `data-bus-state=${M.busState}; seeded run title in DOM=${M.titleInDom}; first run row="${M.runRowText}"`);
+    else clause(arm, 'ctl/page-rendered', !!M.pane && !!M.first && M.first.height > 20 && (!P.close || !!M.close), `${P.root} present, first child .${M.firstClass} ${M.first?.width}x${M.first?.height}, close control ${P.close ? (M.close ? 'present' : 'ABSENT') : 'n/a'}`);
     const fmtHit = (x) => `elementFromPoint(${x?.x},${x?.y}) = ${x?.tag} (inside row=${x?.inside}, inside toolbar=${x?.inToolbar})`;
     let dFirst = null, dRun = null, rows = null;
     const full = await cdp.shot();
-    const fullFile = saveShot(`${LABEL}-${sizeName}-renderer.png`, full);
+    const fullFile = saveShot(`${LABEL}-${key}-renderer.png`, full);
     // composed-window oracle: compositor capture, taken BEFORE any clipped Page.captureScreenshot (a clipped capture
     // leaves the compositor on a stale clip-sized frame for a moment — measured: a "typical" grim showed one run row at 0,0).
-    const grimFile = path.join(OUT, `${LABEL}-${sizeName}-compositor.png`);
+    const grimFile = path.join(OUT, `${LABEL}-${key}-compositor.png`);
     fs.mkdirSync(OUT, { recursive: true });
     sh('grim', ['-o', 'HEADLESS-1', grimFile], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: RIG_WAYLAND } });
     shots.push({ file: grimFile, md5: md5(fs.readFileSync(grimFile)) });
@@ -307,32 +319,34 @@ async function runArm(sizeName) {
       // GUARD arm (must be green on every build): with NO active workspace there is no toolbar, so the page must
       // still fill <main> — an unconditional `top: 48px` would leave a dead strip showing the welcome screen.
       clause(arm, 'ctl/toolbar-absent', M.toolbar === null, `.toolbar element: ${M.toolbar === null ? 'absent' : JSON.stringify(M.toolbar)} (this arm is the no-workspace case)`);
-      clause(arm, 'G1/pane-fills-main-without-toolbar', !!M.pane && !!M.main && Math.abs(M.pane.top - M.main.top) < 0.5 && Math.abs(M.pane.bottom - M.main.bottom) < 0.5, `.bus-pane ${M.pane?.top}..${M.pane?.bottom} vs main ${M.main?.top}..${M.main?.bottom}`);
+      clause(arm, 'G1/pane-fills-main-without-toolbar', !!M.pane && !!M.main && Math.abs(M.pane.top - M.main.top) < 0.5 && Math.abs(M.pane.bottom - M.main.bottom) < 0.5, `${P.root} ${M.pane?.top}..${M.pane?.bottom} vs main ${M.main?.top}..${M.main?.bottom}`);
       clause(arm, 'G2/first-row-visible-without-toolbar', !!M.firstHit && M.firstHit.inside, fmtHit(M.firstHit));
+      if (P.close) clause(arm, 'G3/close-button-reachable-without-toolbar', !!M.closeHit && M.closeHit.inside, `close control ${fmtHit(M.closeHit)}`);
     } else {
       clause(arm, 'ctl/toolbar-present', !!M.toolbar && M.toolbar.height >= 40, `.toolbar ${JSON.stringify(M.toolbar)} (an active workspace shows the header the page must clear)`);
       // ── layout clauses (the ones that must be RED on a pre-fix build) ──
       const tbB = M.toolbar ? M.toolbar.bottom : NaN;
-      clause(arm, 'L1/pane-starts-below-toolbar', M.pane && M.pane.top >= tbB - 0.5, `.bus-pane.top=${M.pane?.top} >= toolbar.bottom=${tbB}`);
+      clause(arm, 'L1/pane-starts-below-toolbar', M.pane && M.pane.top >= tbB - 0.5, `${P.root}.top=${M.pane?.top} >= toolbar.bottom=${tbB}`);
       clause(arm, 'L2/first-row-below-toolbar', M.first && M.first.top >= tbB - 0.5, `first row (.${M.firstClass}) top=${M.first?.top} >= toolbar.bottom=${tbB}; first run row top=${M.runRow?.top}`);
       clause(arm, 'L3/first-row-not-covered-hit-test', !!M.firstHit && M.firstHit.inside && !M.firstHit.inToolbar, `top-edge probe ${fmtHit(M.firstHit)}; mid-row probe ${fmtHit(M.firstHitMid)}`);
       clause(arm, 'L5/first-row-inside-viewport', M.first && M.first.top >= 0 && M.first.bottom <= M.inner.h, `first row ${M.first?.top}..${M.first?.bottom} within 0..${M.inner.h}`);
+      if (P.close) clause(arm, 'L6/close-button-reachable', !!M.closeHit && M.closeHit.inside && !M.closeHit.inToolbar, `close control ${fmtHit(M.closeHit)}`);
       // ── pixels ──
       const clipOf = (R) => ({ x: Math.max(0, Math.floor(R.left)), y: Math.max(0, Math.floor(R.top)), width: Math.ceil(Math.min(R.width, M.inner.w - Math.max(0, R.left))), height: Math.ceil(R.height) });
-      rows = { first: clipOf(M.first), runRow: clipOf(M.runRow) };
+      rows = { first: clipOf(M.first), ...(M.runRow ? { runRow: clipOf(M.runRow) } : {}) };
       const withTb = {}; for (const [k, c] of Object.entries(rows)) withTb[k] = decodePng(await cdp.shot(c));
       await cdp.eval(`(() => { const s = document.createElement('style'); s.id = 'b253-hide-toolbar'; s.textContent = '.toolbar { visibility: hidden !important; }'; document.head.appendChild(s); return true; })()`);
       await sleep(400);
-      const hiddenFull = await cdp.shot(); saveShot(`${LABEL}-${sizeName}-renderer-toolbar-hidden.png`, hiddenFull);
+      const hiddenFull = await cdp.shot(); saveShot(`${LABEL}-${key}-renderer-toolbar-hidden.png`, hiddenFull);
       const noTb = {}; for (const [k, c] of Object.entries(rows)) noTb[k] = decodePng(await cdp.shot(c));
       await cdp.eval(`document.getElementById('b253-hide-toolbar').remove()`);
-      dFirst = diffPx(withTb.first, noTb.first); dRun = diffPx(withTb.runRow, noTb.runRow);
+      dFirst = diffPx(withTb.first, noTb.first); dRun = rows.runRow ? diffPx(withTb.runRow, noTb.runRow) : null;
       clause(arm, 'ctl/pixels-first-row-painted', inkPx(noTb.first) > 40, `${inkPx(noTb.first)} ink pixels in the first row's ${rows.first.width}x${rows.first.height} clip (must be >40: a zero diff over a blank clip proves nothing)`);
-      clause(arm, 'ctl/pixels-run-row-painted', inkPx(noTb.runRow) > 40, `${inkPx(noTb.runRow)} ink pixels in the first run row's clip`);
+      if (rows.runRow) clause(arm, 'ctl/pixels-run-row-painted', inkPx(noTb.runRow) > 40, `${inkPx(noTb.runRow)} ink pixels in the first run row's clip`);
       clause(arm, 'L4/first-row-pixels-unoccluded', dFirst === 0, `${dFirst} px of the first row's ${rows.first.width}x${rows.first.height} clip change when the toolbar is hidden (0 = nothing paints over it); run row: ${dRun} px`);
     }
 
-    fs.writeFileSync(path.join(OUT, `${LABEL}-${sizeName}-measure.json`), JSON.stringify({ M, dFirst, dRun, rows }, null, 2));
+    fs.writeFileSync(path.join(OUT, `${LABEL}-${key}-measure.json`), JSON.stringify({ M, dFirst, dRun, rows }, null, 2));
   } catch (e) {
     clause(arm, 'rig/arm-completed', false, `ARM ABORTED: ${e.stack || e}`);
   } finally {
@@ -361,9 +375,9 @@ function liveCanary() {
 
 // ── main ──────────────────────────────────────────────────────────────────────────────────────────
 const before = liveCanary();
-console.log(`[rig] app ${APP_DIR} label ${LABEL} sizes ${SIZES.join(',')} expect-red=${EXPECT_RED}`);
+console.log(`[rig] app ${APP_DIR} label ${LABEL} pages ${PAGE_LIST.join(',')} sizes ${SIZES.join(',')} expect-red=${EXPECT_RED} out=${OUT}`);
 console.log(`[rig] min window enforced by THIS build: ${MIN.w}x${MIN.h} (${MIN.file})`);
-for (const s of SIZES) await runArm(s);
+for (const pg of PAGE_LIST) for (const s of SIZES) await runArm(pg, s);
 const after = liveCanary();
 const same = JSON.stringify(before) === JSON.stringify(after);
 clause('rig', 'ctl/live-claude-dirs-untouched', same, `${Object.keys(before).length} live ~/.claude* dirs, symlink-set + mcpServers hashes ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
@@ -380,7 +394,7 @@ fs.writeFileSync(path.join(OUT, `${LABEL}-result.json`), JSON.stringify({ app: A
 let verdict, rc;
 if (EXPECT_RED) {
   // must-FAIL arm: the layout clauses L1-L4 are all red at every size AND no control is red
-  const needRed = layoutAll.filter((c) => /^L[1-4]\//.test(c.clause));
+  const needRed = layoutAll.filter((c) => /^L[1-46]\//.test(c.clause));
   const allRed = needRed.length > 0 && needRed.every((c) => !c.ok);
   ({ verdict, rc } = ctlRed.length === 0 && allRed ? { verdict: `EXPECTED-RED CONFIRMED: ${needRed.length}/${needRed.length} layout clauses red (${[...new Set(needRed.map((c) => c.clause))].join(', ')}), all controls green`, rc: 0 } : { verdict: `EXPECTED-RED NOT MET: layout red ${layoutRed.length}/${needRed.length}; controls red: ${ctlRed.map((c) => `${c.arm} ${c.clause}`).join('; ') || 'none'}`, rc: 1 });
 } else {

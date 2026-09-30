@@ -4,7 +4,7 @@
 # scratch bus + an active workspace, opens the Bus page and asserts DOM + pixels.
 # Driver: scripts/e2e-bus-page-header.mjs.
 #
-# Usage: scripts/e2e-bus-page-header.sh <app-dir> [--out <dir>] [--label <name>] [--expect-red] [--sizes min,typical]
+# Usage: scripts/e2e-bus-page-header.sh <app-dir> [--out <dir>] [--label <name>] [--expect-red] [--sizes min,typical,noworkspace] [--pages bus,insights,help]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js); pass a
 #              pre-fix build and the fixed build to compare the SAME rig on both.
 #   --expect-red  the must-FAIL arm: exit 0 only if the layout clauses are RED and every
@@ -13,7 +13,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 APP_DIR="${1:-}"
-[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--expect-red] [--sizes min,typical]" >&2; exit 2; }
+[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--expect-red] [--sizes min,typical,noworkspace] [--pages bus,insights,help]" >&2; exit 2; }
 shift
 APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does not exist" >&2; exit 2; }
 for f in package.json dist/index.html dist-electron/main.js dist-electron/keeper.js; do
