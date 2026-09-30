@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Pause-trap rig driver (#252 D1b, ledger #261 G3/G2):  node scripts/pause-trap/run.mjs [--arm <name>|all] [--json] [--keep]
+// Pause-trap rig driver (#252 D1b, ledger #261 G3/G2):  node scripts/pause-trap/run.mjs [--arm <name>[,…]|all|normal|mutants] [--json] [--keep]
 //
 // REAL path, zero tokens: the real detached keeper → the real `claude` CLI → real Bash-tool processes, against a
 // scripted local fake Anthropic API, inside net+pid namespaces (nothing leaves loopback, every descendant dies with the
@@ -50,7 +50,12 @@ const MUTANT_ARMS = [
 ];
 const all = [...NORMAL, 'probe-interrupt', 'probe-dbg'].map((a) => ({ name: a, arm: a, mutant: null }));
 all.push(...MUTANT_ARMS);
-const selected = WANT === 'all' ? all.filter((x) => !x.arm.startsWith('probe-')) : all.filter((x) => x.name === WANT || x.name === `mutant:${WANT}`);
+const wanted = new Set(WANT.split(',').map((x) => x.trim()));
+const selected = WANT === 'all'
+  ? all.filter((x) => !x.arm.startsWith('probe-'))
+  : WANT === 'normal' ? all.filter((x) => !x.mutant && !x.arm.startsWith('probe-'))
+  : WANT === 'mutants' ? all.filter((x) => !!x.mutant)
+  : all.filter((x) => wanted.has(x.name) || wanted.has(x.name.replace(/^(mutant|unfixed):/, '')));
 if (selected.length === 0) { console.error(`unknown arm: ${WANT} (have: ${all.map((x) => x.name).join(', ')})`); process.exit(2); }
 
 const say = (s = '') => { if (!JSON_OUT) console.log(s); };

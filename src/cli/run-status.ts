@@ -120,6 +120,7 @@ function renderRows(rows: BilanRow[], out: string[]): void {
         if (k.spared?.length) out.push(`      left running (not tool processes): ${k.spared.map((x) => short(x.cmd, 50)).join('; ')}`);
       }
     } else out.push('      killed: (trap not finished for this member)');
+    if (a?.observerKilled?.length) out.push(`      killed by the turn observer (CLI-started turn while paused): ${a.observerKilled.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${x.pid})`).join('; ')}${a.observerKilled.length > 6 ? `; +${a.observerKilled.length - 6} more` : ''}`);
     for (const n of a?.notes ?? []) out.push(`      note: ${n}`);
     if (r.error) out.push(`      error: ${r.error}`);
   }

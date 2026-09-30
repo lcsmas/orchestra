@@ -78,8 +78,12 @@ const M = [
   { id: 'rec-active-ignores-switch', file: REC, find: '    .filter((r) => parseSwitches((r.flags_json as string | null | undefined) ?? null).pause === true)\n', rep: '', tests: [T.trap], expect: /activePauseCarriers honours the FROZEN switch/ },
   { id: 'rec-latest-bilan-oldest', file: REC, find: "  const recent = db.prepare('SELECT * FROM pause_records ORDER BY id DESC LIMIT 500').all() as RawRow[];", rep: "  const recent = db.prepare('SELECT * FROM pause_records ORDER BY id ASC LIMIT 500').all() as RawRow[];", tests: [T.trap], expect: /latestPauseBilanFor/ },
   { id: 'status-lastpause-never-read', file: 'src/cli/run-status.ts', find: '  const last = pause ? null : (deps.latestPauseBilan?.(db, runId) ?? null);', rep: '  const last = null as ReturnType<NonNullable<RunStatusDeps[\'latestPauseBilan\']>>;', tests: [T.status], expect: /AFTER the lift/ },
+  { id: 'trap-observer-kills-unrecorded', file: TRAP, find: '          appendObserverKills(db, carrier.runId, m.wsId, carrier.pausedAt, rep.killed);\n', rep: '', tests: [T.trap], expect: /what the turn observer KILLS/ },
+  { id: 'trap-final-write-drops-observer-kills', file: TRAP, find: '    ...(fresh?.activity?.observerKilled ? { observerKilled: fresh.activity.observerKilled } : {}),\n', rep: '', tests: [T.trap], expect: /DURING the trap/ },
+  { id: 'trap-provisional-row-blind-overwrite', file: TRAP, find: '  if (cur?.activity?.observerKilled) activity.observerKilled = cur.activity.observerKilled;\n', rep: '', tests: [T.trap], expect: /what the turn observer KILLS/ },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
+  { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },
   { id: 'wire-host-observer-pty-too', file: HOST, find: '    if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own\n', rep: '', tests: [T.wiring], expect: /host observer stands down/ },
 ];
 

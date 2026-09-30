@@ -11,7 +11,7 @@ import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause } from './bus-pause.ts';
-import { activePauseCarriers, bilanForMember, latestPauseBilanFor, listBilan, listBilanForRun, markTrapDone } from './bus-pause-records.ts';
+import { activePauseCarriers, appendObserverKills, bilanForMember, latestPauseBilanFor, listBilan, listBilanForRun, markTrapDone } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { snapshotWorktree } from './pause-snapshot.ts';
 import {
@@ -406,6 +406,38 @@ test('ROW 29: the injected carrierFor (production: the gate\'s own live-tree dec
   assert.deepEqual(rig.calls, []);
   rig.deps.carrierFor = () => getRunPause(rig.db, 'W');
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+});
+
+test('ROW 29: what the turn observer KILLS is recorded on the Bilan (activity.observerKilled) WITHOUT marking the member\'s trap complete (killed_json stays NULL)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  const c = pauseW(rig);
+  rig.killReport = { ...rig.killReport, killed: [{ pid: 77, comm: 'sleep', cmd: 'sleep 7718', startTicks: 9, signal: 'SIGTERM', via: 'env', outcome: 'exited' }] };
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.deepEqual(row.activity?.observerKilled?.map((k) => k.cmd), ['sleep 7718']);
+  assert.equal(row.killed, null, 'the pause-time trap of this member is still OWED (an observer row must not mask it)');
+  // and the trap that runs afterwards still snapshots this member and keeps the observer's record
+  member(rig, 'w1', 'W');
+  await runPauseTrap(rig.deps, c);
+  const done = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.ok(done.snapshotRef, 'the member was trapped after all');
+  assert.deepEqual(done.activity?.observerKilled?.map((k) => k.cmd), ['sleep 7718'], 'the observer\'s kills survive the final Bilan write');
+  assert.notEqual(done.killed, null);
+});
+
+test('ROW 29: an observer kill landing DURING the trap\'s own kill step survives the final Bilan write (the final write merges a fresh read)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  const origKill = rig.deps.killTrees;
+  rig.deps.killTrees = async (cli, keeper) => {
+    appendObserverKills(rig.db, 'W', 'w1', c.pausedAt, [{ pid: 88, cmd: 'sleep 7717', signal: 'SIGKILL', outcome: 'exited' }]);
+    return origKill(cli, keeper);
+  };
+  await runPauseTrap(rig.deps, c);
+  assert.deepEqual(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.observerKilled?.map((k) => k.cmd), ['sleep 7717']);
 });
 
 test('ROW 29 control: a turn start on a NON-paused run is left alone (the observer is inert off the pause)', async (t) => {

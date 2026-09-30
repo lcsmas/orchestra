@@ -2051,6 +2051,12 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
                 const attachEv = stamp(live.ctx, { type: 'session/attach' as const, turnInFlight });
                 emit(wsId, attachEv);
                 driveStatusFromEvent(live, attachEv);
+                // #252 D1b: a turn this app never yielded is RUNNING in the reattached CLI — the same "CLI-started turn" as consume()'s
+                // detector (no app turnGate), so the pause interrupt must not read it as idle, and the observer must see it.
+                if (turnInFlight) {
+                  live.unexplainedTurnSeen = true;
+                  notifyTurnStart(wsId);
+                }
               }
             }) as never,
           }),

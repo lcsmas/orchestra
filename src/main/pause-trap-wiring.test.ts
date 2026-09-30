@@ -44,6 +44,15 @@ test('agent-sdk consume(): a CLI-started turn (no app turn in flight) notifies t
   assert.ok(resultArm.indexOf('session.unexplainedTurnSeen = false;') !== -1 && resultArm.indexOf('session.unexplainedTurnSeen = false;') < 600, 'the latch resets in the `result` branch');
 });
 
+test('a keeper REATTACH with a turn in flight is a CLI-started turn: the flag is set (so the pause interrupt is not "idle") and the observer is notified', () => {
+  const code = codeOf('src/main/agent-sdk.ts');
+  const cb = code.slice(at(code, 'makeKeeperSpawn(wsId, (pid, turnInFlight) => {'));
+  const body = cb.slice(0, cb.indexOf('}) as never,'));
+  const i = at(body, 'if (turnInFlight) {');
+  assert.ok(body.slice(i).includes('live.unexplainedTurnSeen = true;') && body.slice(i).includes('notifyTurnStart(wsId);'));
+  assert.ok(body.indexOf('live.unexplainedTurnSeen = true;') < body.indexOf('notifyTurnStart(wsId);'), 'flag first: the handler it triggers must see the turn as running');
+});
+
 test('sdkInterruptForPause never touches an idle session and NEVER drops the queue (plain interrupt, no cancel_queued)', () => {
   const code = codeOf('src/main/agent-sdk.ts');
   const fn = code.slice(at(code, 'export async function sdkInterruptForPause('));

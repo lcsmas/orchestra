@@ -31,6 +31,9 @@ export interface BilanActivity {
   exempt?: 'pauser';
   /** Free-text trail: turn starts observed while paused, partial failures. */
   notes?: string[];
+  /** Processes the TURN OBSERVER (a CLI-started turn while paused) killed — kept apart from `killed_json`, which belongs to the pause-time trap
+   *  (a non-NULL `killed_json` means "this member's trap is complete"). */
+  observerKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string }>;
 }
 
 export interface BilanRow {
@@ -238,4 +241,26 @@ export function latestPauseBilanFor(db: BusDb, runId: string): { carrierRunId: s
     }
   }
   return null;
+}
+
+/** Record what the turn observer killed on a paused member, on its activity (never on `killed_json`: that marks the trap complete). */
+export function appendObserverKills(
+  db: BusDb,
+  carrierRunId: string,
+  wsId: string,
+  pausedAt: number,
+  killed: ReadonlyArray<{ pid: number; cmd: string; signal: string; outcome: string }>,
+): void {
+  if (killed.length === 0) return;
+  const tx = db.transaction(() => {
+    const row = bilanForMember(db, carrierRunId, wsId, pausedAt);
+    const add = killed.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome }));
+    if (!row) {
+      insertBilan(db, { runId: carrierRunId, wsId, pausedAt, activity: { surface: 'none', observerKilled: add }, snapshotRef: null, dirty: null, killed: null, error: null });
+      return;
+    }
+    const a: BilanActivity = row.activity ?? { surface: 'none' };
+    updateBilan(db, row.id, { activity: { ...a, observerKilled: [...(a.observerKilled ?? []), ...add].slice(-100) } });
+  });
+  tx.immediate();
 }

@@ -221,8 +221,10 @@ try {
   }
   check('pause_ref_holds_uncommitted_work', refOk, refDetail);
   check('snapshot_no_touch', fingerprint(WT.w1) === fpBefore && fingerprint(WT.ops) === opsFpBefore, 'worktree contents+mtimes, REAL index bytes, HEAD and branches are byte-identical after the trap (w1 and ops)');
-  const killedCmds = (w1row?.killed?.killed ?? []).map((k) => k.cmd);
-  check('bilan_w1', !!w1row && w1row.dirty === true && (A.idleAtPause ? w1row.activity?.interrupt === 'idle' : ['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt)) && Array.isArray(w1row.killed?.killed) && !w1row.error && w1row.activity?.turnRunning === !A.idleAtPause,
+  const killedCmds = [...(w1row?.killed?.killed ?? []).map((k) => k.cmd), ...(w1row?.activity?.observerKilled ?? []).map((k) => k.cmd)]; // the pause-time trap's list + what the turn observer killed on a reattached in-flight turn
+  // (After an app restart the arm pass can attach the member first: the observer then interrupts the reattached in-flight turn before the trap's own
+  // interrupt runs, which finds it already over — `idle` is honest IF a Bilan note records the observer's interrupt.)
+  check('bilan_w1', !!w1row && w1row.dirty === true && (A.idleAtPause ? w1row.activity?.interrupt === 'idle' : (['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt) || (w1row.activity?.interrupt === 'idle' && (w1row.activity?.notes ?? []).some((n) => /interrupt=interrupted/.test(n))))) && Array.isArray(w1row.killed?.killed) && !w1row.error && w1row.activity?.turnRunning === !A.idleAtPause,
     w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
   check('bilan_ops_member_recorded', !!opsrow && !!opsrow.snapshotRef, opsrow ? `ops: ref=${opsrow.snapshotRef} dirty=${opsrow.dirty} surface=${opsrow.activity?.surface}` : 'no Bilan row for ops (the OPS is a member of its own run)');

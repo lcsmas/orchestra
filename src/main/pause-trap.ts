@@ -20,6 +20,7 @@ import { activePauseFor, getRunPause, runSubtreeIds, runsOwingPauseTrap, type Ru
 import {
   activePauseCarriers,
   appendBilanNote,
+  appendObserverKills,
   bilanForMember,
   insertBilan,
   markTrapDone,
@@ -175,8 +176,13 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   }
 
   // 2. The provisional Bilan row: the snapshot ref is durable before anything is killed.
-  const rowId = existing
-    ? (updateBilan(db, existing.id, { activity, snapshotRef, dirty, error: errors.length ? errors.join('; ') : null }), existing.id)
+  // Re-read NOW: the snapshot can take seconds, and the turn observer may have appended notes/kills (or inserted the member's row) meanwhile —
+  // merge them instead of overwriting, and never insert a second row for the same member.
+  const cur = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt);
+  if (cur?.activity?.notes) activity.notes = cur.activity.notes;
+  if (cur?.activity?.observerKilled) activity.observerKilled = cur.activity.observerKilled;
+  const rowId = cur
+    ? (updateBilan(db, cur.id, { activity, snapshotRef, dirty, error: errors.length ? errors.join('; ') : null }), cur.id)
     : insertBilan(db, { runId: carrier.runId, wsId: m.wsId, pausedAt: carrier.pausedAt, activity, snapshotRef, dirty, killed: null, error: errors.length ? errors.join('; ') : null }, deps.now());
 
   // A lift during the snapshot: stop before touching any process.
@@ -217,7 +223,11 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   }
   const fresh = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt);
   // notes appended by onTurnStart while we were busy must survive this final write
-  const merged: BilanActivity = { ...activity, notes: fresh?.activity?.notes ?? activity.notes };
+  const merged: BilanActivity = {
+    ...activity,
+    notes: fresh?.activity?.notes ?? activity.notes,
+    ...(fresh?.activity?.observerKilled ? { observerKilled: fresh.activity.observerKilled } : {}),
+  };
   if (!merged.notes?.length) delete merged.notes;
   updateBilan(db, rowId, { activity: merged, killed, error: errors.length ? errors.join('; ') : null });
 }
@@ -335,6 +345,7 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
         if (target && !('error' in target)) {
           const rep = await deps.killTrees(target.cli, target.keeperPid);
           killedN = rep.killed.length;
+          appendObserverKills(db, carrier.runId, m.wsId, carrier.pausedAt, rep.killed);
         }
         if (now - st.lastNoteAt >= 1000) {
           st.lastNoteAt = now;
