@@ -4253,12 +4253,19 @@ their own seam.
 \`\`\`bash
 orchestra run pause --hard [--run <id>] [--as <handle>]   # PAUSE DURE of the run + every descendant run
 orchestra run resume [--run <id>] [--as <handle>]          # lift it (queued turns + pending mail resume)
+orchestra run status [--run <id>] [--json]                 # the Bilan de pause of every member
 \`\`\`
 
 A pause is a durable state on the bus that the HOST enforces — not a message you
 must obey. While a run is paused: no réveil, no new turn, no spawn into it
 (refused with \`run en pause — orchestra run resume --run <id>\`), \`orchestra
-message\` to its members is parked in their inbox, liveness is silenced. Only the
+message\` to its members is parked in their inbox, liveness is silenced; the host
+also snapshots each member's worktree (uncommitted + untracked work) to a pause
+ref \`refs/orchestra/pause/<run>/<ws>/<ts>\` without touching the worktree, its index
+or any branch, interrupts the turn and kills the tool processes it was running
+(never the session or the keeper). \`orchestra run status\` is the Bilan de pause:
+what each member was doing, its snapshot ref (\`git diff <head> <ref>\` = the work
+in progress), which commands were killed. Only the
 run's coordinator or an ancestor run's coordinator may pause/resume (the human
 acts \`--as\` the coordinator); a worker is refused. It needs the run's \`pause\`
 switch ON at wave start (frozen; default OFF) — otherwise the verb is refused.

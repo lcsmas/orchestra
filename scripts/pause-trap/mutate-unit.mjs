@@ -48,7 +48,7 @@ const M = [
   { id: 'trap-no-pauser-exemption', file: TRAP, find: "  const exempt = carrier.pausedBy !== null && isCoordinatorHandle(carrier.pausedBy, m.wsId);", rep: '  const exempt = false;', tests: [T.trap], expect: /PAUSER is exempt/ },
   { id: 'trap-interrupt-after-kill', file: TRAP, find: "    try {\n      activity.interrupt = await deps.interrupt(m);\n    } catch (e) {\n      activity.interrupt = 'failed';\n      errors.push(`interrupt: ${errMsg(e)}`);\n    }\n", rep: '', tests: [T.trap], expect: /ORDER \+ CONTENT|PAUSER|surviving/ },
   { id: 'trap-no-lift-check-before-kill', file: TRAP, find: "    if (deps.settleMs > 0) await deps.sleep(deps.settleMs);\n    if (!stillPaused(db, carrier)) return;\n    // 4.", rep: "    if (deps.settleMs > 0) await deps.sleep(deps.settleMs);\n    // 4.", tests: [T.trap], expect: /LIFT landing DURING the interrupt/ },
-  { id: 'trap-members-without-descendants', file: TRAP, find: 'const members = deps.members(runSubtreeIds(db, carrier.runId));', rep: 'const members = deps.members([carrier.runId]);', tests: [T.trap], expect: /DESCENDANTS/ },
+  { id: 'trap-members-without-descendants', file: TRAP, find: 'const members = deps.members(runSubtreeIds(db, carrier.runId), carrier.runId);', rep: 'const members = deps.members([carrier.runId], carrier.runId);', tests: [T.trap], expect: /DESCENDANTS/ },
   { id: 'trap-human-mark-reusable', file: TRAP, find: '  humanTurnMarks.delete(wsId);\n', rep: '', tests: [T.trap], expect: /HUMAN prompt is ALLOWED/ },
   { id: 'trap-no-burst-guard', file: TRAP, find: "    if (last !== undefined && now - last < 1000) return 'skipped'; // one handler per burst", rep: '', tests: [T.trap], expect: /burst/ },
   { id: 'trap-pauser-observed', file: TRAP, find: "    if (carrier.pausedBy !== null && isCoordinatorHandle(carrier.pausedBy, m.wsId)) return 'allowed';", rep: '', tests: [T.trap], expect: /pauser keeps its own turns/ },
@@ -62,6 +62,10 @@ const M = [
   { id: 'wire-stream-observer-any-turn', file: SDK, find: "if (session.turnGate === null && !session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant'", rep: "if (!session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant'", tests: [T.wiring], expect: /consume\(\): a CLI-started turn/ },
   { id: 'wire-interrupt-idle-not-skipped', file: SDK, find: "  if (!attached && session.turnGate === null && session.queue.length === 0 && session.unexplainedTurnSeen !== true) return 'idle';\n", rep: '', tests: [T.wiring], expect: /never touches an idle session/ },
   { id: 'wire-submit-notifies-parked-prompt', file: ACT, find: 'if (!queuedSubmit) notifyTurnStart(id);', rep: 'notifyTurnStart(id);', tests: [T.wiring], expect: /submit. chokepoint/ },
+  { id: 'wire-members-closure-only', file: HOST, find: '.filter((m) => set.has(m.runId) || liveChainIncludes(m.wsId, carrierRunId, lookup));', rep: '.filter((m) => set.has(m.runId));', tests: [T.wiring], expect: /UNION of the run closure/ },
+  { id: 'trap-observer-ignores-live-chain', file: TRAP, find: 'for (const id of [m.runId, ...(m.chain ?? [])]) {', rep: 'for (const id of [m.runId]) {', tests: [T.trap], expect: /LIVE parent chain is\) is still trapped|NOT under the carrier/ },
+  { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = lookup(cur)?.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
+  { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return true;', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-host-observer-pty-too', file: HOST, find: '    if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own\n', rep: '', tests: [T.wiring], expect: /host observer stands down/ },
 ];
 
@@ -85,6 +89,9 @@ if (control.fail !== 0 || !(control.pass > 0)) { console.log(`MUTATE-UNIT: FAIL 
 
 let caught = 0;
 const bak = fs.mkdtempSync(path.join(os.tmpdir(), 'mutate-unit-'));
+// A harness killed mid-mutant would leave the source MUTATED (a `finally` does not run on a signal): restore on SIGINT/SIGTERM.
+let activeRestore = null;
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { try { activeRestore?.(); } catch { /* best effort */ } process.exit(130); });
 for (const m of sel) {
   const abs = path.join(REPO, m.file);
   const backup = path.join(bak, `${m.id}.bak`);
@@ -94,11 +101,13 @@ for (const m of sel) {
   const bad = edits.map((e) => ({ e, hits: src.split(e.find).length - 1 })).find((x) => x.hits !== 1);
   if (bad) { console.log(`✗ ${m.id}: PATTERN-GONE — anchor matched ${bad.hits}× in ${m.file} (want exactly 1): ${bad.e.find.slice(0, 70)}`); continue; }
   let res;
+  activeRestore = () => fs.copyFileSync(backup, abs);
   try {
     fs.writeFileSync(abs, edits.reduce((acc, e) => acc.replace(e.find, () => e.rep), src));
     res = runTests(m.tests);
   } finally {
     fs.copyFileSync(backup, abs); // byte-exact restore
+    activeRestore = null;
   }
   const restored = spawnSync('cmp', [abs, backup]).status === 0;
   const named = res.red.filter((n) => m.expect.test(n));

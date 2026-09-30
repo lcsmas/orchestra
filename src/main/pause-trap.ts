@@ -40,6 +40,9 @@ export interface TrapMember {
   remote: boolean;
   status: string | null;
   lastTask: string | null;
+  /** Live `parentId` chain, self first: a pause carried by ANY of these covers the member (`parent_run_id` is write-once,
+   *  so `runId` alone misses a workspace re-parented after its run row was written). Optional: tests/older callers omit it. */
+  chain?: readonly string[];
 }
 
 export interface MemberActivity {
@@ -54,8 +57,10 @@ export type InterruptOutcome = NonNullable<BilanActivity['interrupt']>;
 export interface TrapDeps {
   getBus(): BusDb | null;
   now(): number;
-  /** Non-archived workspaces whose run is in `runIds` (resolved at TRAP time from the live store). */
-  members(runIds: readonly string[]): TrapMember[];
+  /** Non-archived workspaces covered by the pause: their run is in `runIds` (the carrier's `parent_run_id` closure),
+   *  OR the carrier's anchor workspace is an ancestor-or-self on the LIVE store `parentId` chain ({@link liveChainIncludes}) —
+   *  `parent_run_id` is write-once, so a workspace re-parented after creation is reached only through the live chain. */
+  members(runIds: readonly string[], carrierRunId: string): TrapMember[];
   /** Read-only: what the member is doing — called BEFORE any interrupt/kill. */
   activityOf(m: TrapMember): Promise<MemberActivity>;
   /** Interrupt the running turn. Never stops the session/keeper. */
@@ -79,6 +84,23 @@ export interface TrapSummary {
 }
 
 const ACTIVITY_LASTTASK_CHARS = 200;
+
+/** Is `carrierRunId` (a run id = its anchor workspace id) `startId` itself or one of its ancestors on the LIVE `parentId` chain?
+ *  Bounded by a seen-set (a malformed cycle ends); a dangling parent ends the walk. */
+export function liveChainIncludes(
+  startId: string,
+  carrierRunId: string,
+  lookup: (id: string) => { parentId?: string } | undefined,
+): boolean {
+  const seen = new Set<string>();
+  let cur: string | undefined = startId;
+  while (cur !== undefined && !seen.has(cur)) {
+    if (cur === carrierRunId) return true;
+    seen.add(cur);
+    cur = lookup(cur)?.parentId;
+  }
+  return false;
+}
 
 function stillPaused(db: BusDb, carrier: RunPauseInfo): boolean {
   const cur = getRunPause(db, carrier.runId);
@@ -194,7 +216,7 @@ export async function runPauseTrap(deps: TrapDeps, carrier: RunPauseInfo): Promi
   const db = deps.getBus();
   const base = { carrier: carrier.runId, pausedAt: carrier.pausedAt };
   if (!db) return { ...base, members: 0, done: false, aborted: 'no-bus' };
-  const members = deps.members(runSubtreeIds(db, carrier.runId));
+  const members = deps.members(runSubtreeIds(db, carrier.runId), carrier.runId);
   log.info(`pause-trap: run ${carrier.runId} hard-paused at ${carrier.pausedAt} — trapping ${members.length} member(s)`);
   let n = 0;
   for (const m of members) {
@@ -253,7 +275,11 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
   try {
     const db = deps.getBus();
     if (!db) return 'not-paused';
-    const carrier = activePauseFor(db, m.runId);
+    let carrier: RunPauseInfo | null = null;
+    for (const id of [m.runId, ...(m.chain ?? [])]) {
+      carrier = activePauseFor(db, id);
+      if (carrier) break;
+    }
     if (!carrier) return 'not-paused';
     const now = deps.now();
     if (consumeHumanMark(m.wsId, now)) return 'allowed';

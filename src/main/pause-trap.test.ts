@@ -16,6 +16,7 @@ import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { snapshotWorktree } from './pause-snapshot.ts';
 import {
   __resetPauseTrapForTests,
+  liveChainIncludes,
   markPauseHumanTurn,
   onTurnStart,
   runPauseTrap,
@@ -76,8 +77,9 @@ function newRig(t: { after: (fn: () => void) => void }, pauseSwitch = true): Rig
   rig.deps = {
     getBus: () => db,
     now: () => rig.clock++,
-    members: (runIds) => {
+    members: (runIds, carrierRunId) => {
       calls.push(`members(${[...runIds].sort().join(',')})`);
+      assert.ok(typeof carrierRunId === 'string' && carrierRunId.length > 0, 'the carrier run id is passed so the host can walk the live chain');
       return rig.roster.filter((m) => runIds.includes(m.runId));
     },
     activityOf: async (m) => {
@@ -156,6 +158,18 @@ test('ORDER + CONTENT: snapshot → Bilan row → interrupt → kill; the ref ho
   assert.equal(git(w1.worktreePath!, 'show', `${row.snapshotRef}:a.txt`), 'UNCOMMITTED EDIT');
   assert.equal(git(w1.worktreePath!, 'show', `${row.snapshotRef}:new.txt`), 'untracked work');
   assert.ok(getRunPause(rig.db, 'W')?.trapAt, 'pause_trap_at stamped');
+});
+
+test('liveChainIncludes: the carrier anchor is self-or-ancestor on the LIVE parent chain (a workspace re-parented after its run row was written)', () => {
+  const ws: Record<string, { parentId?: string }> = { lead: {}, ops: { parentId: 'lead' }, w1: { parentId: 'ops' }, plain: { parentId: 'w1' }, other: { parentId: 'x' }, loopA: { parentId: 'loopB' }, loopB: { parentId: 'loopA' }, dangling: { parentId: 'gone' } };
+  const look = (id: string) => ws[id];
+  assert.equal(liveChainIncludes('w1', 'ops', look), true, 'ancestor');
+  assert.equal(liveChainIncludes('plain', 'lead', look), true, 'grand-ancestor');
+  assert.equal(liveChainIncludes('ops', 'ops', look), true, 'self');
+  assert.equal(liveChainIncludes('lead', 'ops', look), false, 'a parent is NOT covered by its child run');
+  assert.equal(liveChainIncludes('other', 'ops', look), false, 'unrelated');
+  assert.equal(liveChainIncludes('loopA', 'ops', look), false, 'a cycle terminates');
+  assert.equal(liveChainIncludes('dangling', 'ops', look), false, 'a dangling parent ends the walk');
 });
 
 test('DESCENDANTS are covered: pausing the mission traps its wave run members; an unrelated run is untouched', async (t) => {
@@ -361,6 +375,20 @@ test('ROW 29: a turn that starts on a paused member (CLI /loop, cron) is interru
   const notes = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? [];
   assert.equal(notes.length, 1);
   assert.match(notes[0], /turn started while paused.*interrupt=interrupted, 1 tool process/);
+});
+
+test('ROW 29: a member whose own run id is NOT under the carrier but whose LIVE parent chain is (re-parented after its run row) is still trapped', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  rig.calls.length = 0;
+  const reparented: TrapMember = { ...tm('w9', 'X'), chain: ['w9', 'W', 'M'] }; // own run X (unrelated), chain climbs to the paused run W
+  assert.equal(await onTurnStart(rig.deps, reparented), 'interrupted');
+  assert.deepEqual(rig.calls, ['interrupt:w9', 'cliOf:w9', 'kill:100/90']);
+  rig.clock += 2000;
+  assert.equal(await onTurnStart(rig.deps, { ...tm('w8', 'X'), chain: ['w8', 'X'] }), 'not-paused', 'a chain that never reaches the carrier stays inert');
 });
 
 test('ROW 29 control: a turn start on a NON-paused run is left alone (the observer is inert off the pause)', async (t) => {

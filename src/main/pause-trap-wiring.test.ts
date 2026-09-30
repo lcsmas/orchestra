@@ -73,6 +73,12 @@ test('pause-trap-host snapshots through the no-touch snapshotWorktree and kills 
   assert.ok(!/process\.kill\(|\.kill\(/.test(code), 'the host binding contains no direct kill call');
 });
 
+test('pause-trap-host membership is the UNION of the run closure and the live parent chain (parent_run_id is write-once)', () => {
+  const code = codeOf('src/main/pause-trap-host.ts');
+  assert.ok(code.includes('.filter((m) => set.has(m.runId) || liveChainIncludes(m.wsId, carrierRunId, lookup));'));
+  assert.ok(code.includes('chain: liveChain(ws),'), 'toMember carries the live chain the turn-start observer reads');
+});
+
 test('CONTROL: codeOf really strips comments (a needle that only appears in a comment is NOT found)', () => {
   const code = codeOf('src/main/pause-trap-host.ts');
   assert.equal(code.includes('Claude Code\'s interrupt key'), false);

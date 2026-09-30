@@ -11,7 +11,7 @@ import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
 import { snapshotWorktree } from './pause-snapshot';
 import { killToolTrees, realKillDeps } from './pause-kill';
-import { onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
+import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
 import { log } from './logger';
 import type { Workspace } from '../shared/types';
 
@@ -20,8 +20,22 @@ const PTY_INTERRUPT = '\x1b';
 const SETTLE_MS = 400;
 const INTERRUPT_TIMEOUT_MS = 10_000;
 
+/** The live `parentId` chain, self first (bounded by a seen-set; a dangling parent ends it). */
+function liveChain(ws: Workspace): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let cur: Workspace | undefined = ws;
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    out.push(cur.id);
+    cur = cur.parentId ? store.getWorkspace(cur.parentId) : undefined;
+  }
+  return out;
+}
+
 function toMember(ws: Workspace): TrapMember {
   return {
+    chain: liveChain(ws),
     wsId: ws.id,
     runId: nearestOrchestratorId(ws, (id) => store.getWorkspace(id)),
     worktreePath: ws.worktreePath || null,
@@ -50,9 +64,13 @@ export function buildPauseTrapDeps(): TrapDeps {
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     settleMs: SETTLE_MS,
-    members: (runIds) => {
+    members: (runIds, carrierRunId) => {
       const set = new Set(runIds);
-      return store.workspaces.filter((w) => !w.archived && !!w.worktreePath).map(toMember).filter((m) => set.has(m.runId));
+      const lookup = (id: string) => store.getWorkspace(id);
+      return store.workspaces
+        .filter((w) => !w.archived && !!w.worktreePath)
+        .map(toMember)
+        .filter((m) => set.has(m.runId) || liveChainIncludes(m.wsId, carrierRunId, lookup));
     },
     activityOf: async (m): Promise<MemberActivity> => {
       const sdk = sdkPauseActivity(m.wsId);
