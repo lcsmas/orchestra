@@ -72,7 +72,8 @@
     "test:gates": "bash scripts/run-gates.sh",
     "test:release-preflight": "bash scripts/verify-release-preflight.sh",
     "test:release-gate": "bash scripts/verify-release-gate.sh",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "proto:compte-signin": "electron scripts/prototypes/compte-signin/main.cjs"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.6",

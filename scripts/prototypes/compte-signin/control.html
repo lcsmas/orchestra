@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>PROTOTYPE #247</title>
+<style>body{font:13px system-ui;margin:12px;background:#111;color:#ddd}button{margin:0 6px 8px 0;padding:6px 10px}
+pre{background:#000;padding:8px;height:520px;overflow:auto;white-space:pre-wrap;font:12px monospace}
+.b{color:#f90;font-weight:bold}</style>
+<div class="b">PROTOTYPE jetable — #247. Config dir = scratch /tmp, effacé à la fermeture.</div>
+<p>1. Lance une variante. 2. Connecte-toi dans la fenêtre qui s'ouvre (Google / email / SSO). 3. Regarde le log.</p>
+<button onclick="c('stdin')">A · Code collé (stdin)</button>
+<button onclick="c('loopback')">B · Retour localhost</button>
+<button onclick="c('status')">auth status</button>
+<button onclick="c('logout')">logout</button>
+<button onclick="c('cancel')">annuler</button>
+<pre id="log"></pre>
+<script>
+const { ipcRenderer } = require('electron');
+const c = (x) => ipcRenderer.send('cmd', x);
+ipcRenderer.on('log', (_e, l) => { const p = document.getElementById('log'); p.textContent += l + '\n'; p.scrollTop = 1e9; });
+</script>
