@@ -384,14 +384,20 @@ if (ARM === 'spawn') {
   const { pendingPromptKey } = await import(`${REPO}/src/shared/pending-prompts.ts`);
   await store.upsertWorkspace({ ...ws('ws-m1'), sdkPendingPrompts: [{ id: 'p1', key: pendingPromptKey({ text: 'PENDING-ONE' }), text: 'PENDING-ONE' }] });
   pause();
+  // the top gate must short-circuit BEFORE any write: a drop-then-restore (what the mid-loop restore alone would do) rewrites the record twice
+  let writes = 0;
+  const realUpsert = store.upsertWorkspace.bind(store);
+  store.upsertWorkspace = (...a) => { writes++; return realUpsert(...a); };
   await sdk.recoverPendingPrompts('ws-m1', []);
+  store.upsertWorkspace = realUpsert;
+  rec('writesWhilePaused', writes);
   rec('pendingAfterPausedRecover', (ws('ws-m1').sdkPendingPrompts ?? []).length);
   rec('spawns', factoryCalls);
   rec('turns', userMessages.length);
   lift();
   await sdk.recoverPendingPrompts('ws-m1', []);
   const re = rec('recoveredAfterLift', await untilOrFail(() => userMessages.some((m) => m.text.includes('PENDING-ONE'))));
-  ok = out.pendingAfterPausedRecover === 1 && out.spawns === 0 && out.turns === 0 && re && factoryCalls === 1;
+  ok = out.writesWhilePaused === 0 && out.pendingAfterPausedRecover === 1 && out.spawns === 0 && out.turns === 0 && re && factoryCalls === 1;
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'redrive') {

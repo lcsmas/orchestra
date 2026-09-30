@@ -161,6 +161,7 @@ test('GATE row 24 drain: a turn queued BEFORE the pause does not drain; a HUMAN 
 
 test('GATE row 4 recover: pending-prompt recovery is HELD and the entries stay durable (not dropped by the recover path); the lift recovers them', () => {
   const r = runArm('recover');
+  assert.equal(r.writesWhilePaused, 0, 'held BEFORE any store write (no drop-then-restore churn)');
   assert.equal(r.pendingAfterPausedRecover, 1);
   assert.equal(r.spawns, 0);
   assert.equal(r.turns, 0);
