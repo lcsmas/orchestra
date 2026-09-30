@@ -79,6 +79,7 @@ import {
   markStoppedOnUsageLimit,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
+import { resolveClaudeBinary } from './claude-binary.ts';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
@@ -634,24 +635,6 @@ function emit(wsId: string, event: AgentEvent): void {
     slog.trace(`emit ${event.type} ws=${wsId} seq=${(event as { seq?: number }).seq ?? '?'}`);
   }
   platform.broadcast('agent:event', wsId, event);
-}
-
-/** Find the `claude` executable on the session env's PATH (the shim dir the
- *  env prepends holds only the `orchestra` CLI, so this lands on the user's
- *  real install). Returns null when absent — callers fall back to the SDK's
- *  bundled default, which only works outside the packaged asar. */
-function resolveClaudeBinary(env: Record<string, string>): string | null {
-  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, 'claude');
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      /* keep looking */
-    }
-  }
-  return null;
 }
 
 /** Drive the sidebar status dot from the SDK event stream.

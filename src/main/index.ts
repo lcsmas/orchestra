@@ -237,6 +237,8 @@ import {
   setBootWedgeRunResolver,
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
+import { startCliBudgetWatch } from './cli-budget-runner';
+import { stopCliBudgetRerun } from './cli-budget-rerun.ts';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -481,6 +483,10 @@ async function createMainWindow() {
       // proof-of-deletion — never runs against an unloaded store; decideReap
       // additionally refuses unless `store.loadedFromDisk`.
       startResourceMonitor();
+      // #211 — re-run the session budget suite ONCE in the background when the installed `claude` changes
+      // (fake API, zero tokens, nice 19, cancelled at quit); only a broken budget is announced. Late by design
+      // (its own startup delay): it must never compete with session restore.
+      startCliBudgetWatch();
     });
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
@@ -860,6 +866,8 @@ function shutdownSubsystems(): void {
   stopHumanGatesWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
+  // Cancels an in-flight budget run (kills its process tree) so it can never outlive the app.
+  stopCliBudgetRerun();
   stopSelfTuneScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();

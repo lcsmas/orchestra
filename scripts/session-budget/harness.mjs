@@ -117,15 +117,25 @@ async function runContained(o, script, label, extraCfg, resultPrefix) {
     // to a NEW host from main is counted, not lost to a DNS failure inside the netns. Loopback (the fake API) is exempt.
     NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: proxyUrl, HTTP_PROXY: proxyUrl, NO_PROXY: '127.0.0.1,localhost',
   };
-  const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--disable-warning=UNDICI-EHPA', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', script)];
-  const child = spawn(argv[0], argv.slice(1), { cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  // Default: the SOURCE runner (dev + tests). `o.launch(root, cfg)` swaps in another one — the packaged app's
+  // bundled runner (C4 #211): `{ argv: [exe, bundle], env: {...scratch ORCHESTRA_HOME/CLAUDE_CONFIG_DIR, ELECTRON_RUN_AS_NODE} }`.
+  const launch = o.launch ? o.launch(root, cfg) : null;
+  const runner = launch?.argv ?? [process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--disable-warning=UNDICI-EHPA', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', script)];
+  Object.assign(env, launch?.env ?? {});
+  // `nice` OUTERMOST: the containment supervisor and every descendant (keeper, CLI, MCP servers) inherit the niceness.
+  const argv = [...(o.niceness && findOnPath('nice') ? ['nice', '-n', String(o.niceness)] : []), ...containment.prefix, ...runner];
+  const child = spawn(argv[0], argv.slice(1), { cwd: launch?.cwd ?? repo, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let out = '', err = '';
   child.stdout.on('data', (d) => (out += d));
   child.stderr.on('data', (d) => (err += d));
+  const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } };
   const rc = await new Promise((resolve) => {
-    const t = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } resolve('TIMEOUT'); }, timeoutMs + 60_000);
+    // `killAfterMs` bounds the WHOLE run (default: the turn timeout + 60 s); `signal` cancels it (C4 #211).
+    const t = setTimeout(() => { kill(); resolve('TIMEOUT'); }, o.killAfterMs ?? timeoutMs + 60_000);
+    const onAbort = () => { kill(); resolve('CANCELLED'); };
+    if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener('abort', onAbort, { once: true });
     // 'close', not 'exit': 'exit' can fire before stdout/stderr are drained, losing the result line or the error text.
-    child.on('close', (code, sig) => { clearTimeout(t); resolve(code ?? sig); });
+    child.on('close', (code, sig) => { clearTimeout(t); o.signal?.removeEventListener('abort', onAbort); resolve(code ?? sig); });
   });
   const line = out.split('\n').reverse().find((l) => l.startsWith(resultPrefix));
   let result;

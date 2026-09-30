@@ -42,7 +42,7 @@ resolution).
   HMR + Electron).
 - `pnpm run build` — `pnpm run build:bundles && electron-builder`.
 - `pnpm run build:bundles` — every JS bundle the package needs, in one place:
-  `vite build && pnpm run build:cli && pnpm run build:keeper`. **CI calls this
+  `vite build && pnpm run build:cli && pnpm run build:keeper && pnpm run build:session-budget`. **CI calls this
   same script** — the list of bundles is never restated, because a CI build that
   inlined only `vite build` shipped every AppImage up to v0.5.221 without
   `keeper.js` (structured sessions then died with `connect ENOENT
@@ -50,6 +50,11 @@ resolution).
 - `pnpm run build:cli` — CLI only.
 - `pnpm run build:keeper` — detached session keeper only (`dist-electron/keeper.js`,
   see `session-keeper.md`).
+- `pnpm run build:session-budget` — the session-budget RUNNER as one CJS file
+  (`vite.session-budget.config.ts` → `dist-electron/session-budget.js`, #211): what a packaged app (no `src/`,
+  Electron 33 = Node 20, no `--experimental-strip-types`) runs to re-check the budgets when `claude` updates.
+  `scripts/after-pack-check.cjs` REQUIRES it in the package (a missing bundle would otherwise silently disable the
+  re-run — the `keeper.js` trap). See `session-budget.md` § CLI-version re-run.
 - `pnpm run start` — `electron .` (runs the built `dist-electron/main.js`).
 - `pnpm run lint` — `eslint src --ext .ts,.tsx`.
 - `pnpm run test` — `node --test --experimental-strip-types 'src/**/*.test.ts'`

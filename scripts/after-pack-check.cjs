@@ -22,6 +22,7 @@ const REQUIRED = [
   ['dist-electron/preload.js', 'preload bridge'],
   ['dist-electron/cli.js', 'bundled `orchestra` CLI'],
   ['dist-electron/keeper.js', 'detached session keeper (structured SDK sessions)'],
+  ['dist-electron/session-budget.js', 'session-budget runner (re-run on a `claude` version change, #211)'],
 ];
 
 // EXPECTED NATIVE MANIFEST (#126) — every .node this app may ship, keyed by its
@@ -156,8 +157,8 @@ exports.default = async function afterPack(context) {
   if (missing.length > 0) {
     throw new Error(
       `afterPack: required bundle(s) absent from the packaged app:\n${missing.join('\n')}\n\n` +
-        'Build via `pnpm run build` (vite → build:cli → build:keeper → electron-builder); ' +
-        'running `vite build && electron-builder` alone skips the CLI and keeper passes.'
+        'Build via `pnpm run build` (vite → build:cli → build:keeper → build:session-budget → electron-builder); ' +
+        'running `vite build && electron-builder` alone skips the CLI, keeper and session-budget passes.'
     );
   }
 
