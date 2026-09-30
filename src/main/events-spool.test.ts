@@ -1,9 +1,21 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+// Every temp dir this file creates, removed in `after` — the hook-run tests left
+// ~25 MB per suite run in /tmp (a RAM tmpfs), filling it on 2026-09-30.
+const TMP_DIRS: string[] = [];
+function mkTmp(prefix: string): string {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  TMP_DIRS.push(d);
+  return d;
+}
+after(() => {
+  for (const d of TMP_DIRS) fs.rmSync(d, { recursive: true, force: true });
+});
 
 // Headless reproduction of the activity-spool READER (events-spool.ts `drain`).
 //
@@ -147,7 +159,7 @@ const statusOf = (events: string[]): string => {
 };
 
 function tmpSpool(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-spool-'));
+  const dir = mkTmp('orchestra-spool-');
   return path.join(dir, 'ws.jsonl');
 }
 function append(p: string, seq: number, event: string, tool = ''): void {
@@ -284,7 +296,7 @@ fi
 `;
 
 test('control: real hook under concurrency → reader applies every event, no drop', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-hookrun-'));
+  const dir = mkTmp('orchestra-hookrun-');
   const script = path.join(dir, 'hook.sh');
   fs.writeFileSync(script, HOOK, { mode: 0o755 });
   const env = { ...process.env, ORCHESTRA_EVENTS_DIR: dir };
@@ -331,7 +343,7 @@ test('control: real hook under concurrency → reader applies every event, no dr
 // trials; with the append inside the lock it is 0. Load is deliberately high so
 // the test discriminates rather than passing by luck.
 test('writer: concurrent hooks never tear a spool line (long transcript path)', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-hooktear-'));
+  const dir = mkTmp('orchestra-hooktear-');
   const script = path.join(dir, 'hook.sh');
   fs.writeFileSync(script, HOOK_TEAR, { mode: 0o755 });
   const env = { ...process.env, ORCHESTRA_EVENTS_DIR: dir };
