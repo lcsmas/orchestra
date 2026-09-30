@@ -224,6 +224,7 @@ export function getActiveWorkspaceId(): string | null {
   return activeWorkspaceId;
 }
 
+/** Raw floor — read ONLY by `idle-clock.ts` (#236); consumers call `idleClockOf`. */
 export function getAppStartedAt(): number {
   return appStartedAt;
 }
