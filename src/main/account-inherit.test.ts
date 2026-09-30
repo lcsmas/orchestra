@@ -1044,6 +1044,66 @@ test('#239 setter: a save holding the source-pointed account AND a normal one �
   assert.deepEqual(mcpOf(other.login), ['chrome-devtools', 'github', 'linear-server']);
 });
 
+// ---- #239 review F1: the login `.claude.json` IS the global MCP source (same FILE, not same dir) ---------------------------
+
+interface SharedJson { name: string; login: (rig: Rig) => Rig | { home: string; login: string }; prime: (rig: Rig) => Promise<void> }
+const SHARED_JSON: SharedJson[] = [
+  {
+    name: 'configDir = ~ (its .claude.json IS ~/.claude.json)',
+    login: (rig) => ({ home: rig.home, login: rig.home }),
+    prime: async (rig) => { put(path.join(rig.home, '.orchestra-inherited.json'), JSON.stringify({ source: path.join(rig.home, '.claude'), symlinks: [], mcpServers: ['linear-server', 'chrome-devtools'] })); },
+  },
+  {
+    name: 'the login .claude.json is a SYMLINK to ~/.claude.json',
+    login: (rig) => rig,
+    prime: async (rig) => {
+      assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server', 'chrome-devtools'] }), []);
+      fs.rmSync(cjOf(rig));
+      fs.symlinkSync(path.join(rig.home, '.claude.json'), cjOf(rig));
+    },
+  },
+  {
+    name: 'the login .claude.json is a HARD LINK to ~/.claude.json (dev+ino)',
+    login: (rig) => rig,
+    prime: async (rig) => {
+      assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server', 'chrome-devtools'] }), []);
+      fs.rmSync(cjOf(rig));
+      fs.linkSync(path.join(rig.home, '.claude.json'), cjOf(rig));
+    },
+  },
+];
+for (const sh of SHARED_JSON) {
+  test(`#239/F1 ${sh.name}: de-selecting a server leaves the GLOBAL ~/.claude.json byte-identical, ONE pinned warn, the manifest keeps its servers`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    await sh.prime(rig);
+    const acct_ = sh.login(rig);
+    const globalJson = path.join(rig.home, '.claude.json');
+    const before = viewOf(globalJson);
+    const manifestBefore = JSON.parse(fs.readFileSync(manifestPath(acct_.login), 'utf8'));
+    assert.equal(JSON.parse(before.bytes!.toString()).mcpServers['linear-server'].url, 'u', 'precondition: the global file holds linear-server');
+    const warns = await runSyncAt(acct_ as Rig, acct_.login, { mcpServers: ['github'] }, { caller: 'spawn-sdk' });
+    assert.ok(sameViewOf(before, viewOf(globalJson)), 'the GLOBAL file is byte-identical (bytes + mtime)');
+    assert.deepEqual(warns, [`account-inherit: ${path.join(acct_.login, '.claude.json')} is the global MCP source ${globalJson} itself — MCP servers left untouched for ${acct_.login}`]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(manifestPath(acct_.login), 'utf8')), manifestBefore, 'the manifest still owns its servers (nothing was removed)');
+    assert.deepEqual(tmpLeft(path.dirname(globalJson)), [], 'no tmp / lock left next to the global file');
+  });
+}
+
+test('#239/F1 must-PASS: a COPY of ~/.claude.json (same bytes, other inode) is a normal login file — the removal applies to the copy only', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server', 'chrome-devtools'] }), []);
+  const globalJson = path.join(rig.home, '.claude.json');
+  fs.rmSync(cjOf(rig));
+  fs.copyFileSync(globalJson, cjOf(rig));
+  const before = viewOf(globalJson);
+  assert.deepEqual(await runSyncAt(rig, rig.login, { mcpServers: ['github'] }, { caller: 'spawn-sdk' }), []);
+  assert.ok(sameViewOf(before, viewOf(globalJson)), 'the global file is untouched');
+  assert.deepEqual(mcpOf(rig.login), ['github'], 'linear-server + chrome-devtools removed from the login copy');
+  assert.deepEqual(manifestOf(rig.login).mcpServers, ['github']);
+});
+
 // ---- the UI setter's own step (`syncAfterAccountsSave`): per-ACCOUNT authority, driven through the real module ----
 
 const setStore = (accounts: Acct[]): void => { (globalThis as any).__a8Store.accounts = accounts; };

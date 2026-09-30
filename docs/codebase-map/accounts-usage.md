@@ -160,13 +160,16 @@ reads them transiently to query usage.
   its next sync re-creates them); a legacy (unstamped) manifest + alias is refused by D10 first ("built from <dotfiles>",
   safe direction); aliasing of the MCP `.claude.json` file is C12's same-file guard.
   grant — re-select then de-select; two accounts on one dir.
-  SELF-LOOP GUARD (#239/C12, `:456`, right after the source-readable check): an account whose `configDir`
-  IS the source — `sameDir(loginDir, globalDir)` `:209`, so `~`/`${HOME}` templates, `..`, a trailing `/`, a
-  symlink alias or a symlinked HOME all count — ⇒ return before ANY write + ONE WARN. Unguarded, the sync moved the
-  SOURCE's own settings.json/CLAUDE.md/imports/statusline to `.orchestra-bak`, left self-loops and wrote a manifest +
-  `.claude.json` into `~/.claude` (measured on the scratch rig). Equality only: a look-alike (`~/.claude-mc`), a child
-  or a link to another dir still sync. Not covered: a `configDir` whose `.claude.json` is the MCP source file itself
-  (`configDir` = `~`).
+  SELF-LOOP GUARD (#239/C12, `:635`, right after the source-readable check): an account whose `configDir`
+  IS the source — `sameDir(loginDir, globalDir)` (`src/main/same-dir.ts`, the ONE shared definition: path | realpath | dev+ino,
+  so `~`/`${HOME}` templates, `..`, a trailing `/`, a symlink alias, a symlinked HOME and a BIND MOUNT of the source all
+  count) — ⇒ return before ANY write + ONE WARN. Unguarded, the sync moved the SOURCE's own
+  settings.json/CLAUDE.md/imports/statusline to `.orchestra-bak`, left self-loops and wrote a manifest +
+  `.claude.json` into `~/.claude` (measured on the scratch rig and under a real `bwrap --bind`). Equality only: a look-alike
+  (`~/.claude-mc`), a child or a link to another dir still sync. SAME-FILE MCP GUARD (#239 review F1, `:559` in
+  `syncMcpServers`): a login whose `.claude.json` IS the global `~/.claude.json` (`configDir=~`, a symlink — caught already by C11's
+  `resolveWriteTarget` realpath — or a HARD LINK, which only the inode identity catches) ⇒ MCP servers left untouched
+  + ONE WARN, `prevKeys` returned: without it de-selecting a server would `delete` it from the user's GLOBAL config.
   Rig: `scripts/e2e-inherit-empty-no-prune.mjs all` (REAL `setAccounts` + store + logger,
   scratch HOME, live-dir `find` canary). Same-source partial prune/de-selection is
   unchanged. Rig traps: a fake-HOME boot pinned to a LIVE configDir stripped

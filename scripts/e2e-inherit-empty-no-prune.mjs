@@ -16,6 +16,7 @@
 //   torn_json_ui_save  ★ (#238/C11) same through the REAL apiHandlers.setAccounts (a normal, unchanged-selection save)
 //   alias_skills_ui_save ★ (#241/C14) login `skills/` symlinked to the source's dotfile-linked `skills/`; REAL setAccounts (unchanged FULL save) → the SOURCE's skill links intact, alias intact, ONE warn, the other 5 links kept
 //   self_loop_ui_save  ★ (#239/C12) REAL setAccounts saves an account whose configDir IS the source `~/.claude` next to a normal one → source byte-identical (no .orchestra-bak, no self-loop, no manifest), ONE warn, the normal account fully synced
+//   same_file_mcp_ui_save ★ (#239/F1) a login whose .claude.json is a SYMLINK to the GLOBAL ~/.claude.json: REAL setAccounts de-selects MCP servers → the global file byte-identical, ONE warn, manifest keeps its servers
 //
 // Run one arm:  node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-inherit-empty-no-prune.mjs <arm>
 // Run all:      node scripts/e2e-inherit-empty-no-prune.mjs all      (children + a live-dir listing canary before/after)
@@ -31,7 +32,7 @@ import { REAL_HOMES, REAL_CFG, checkScratch, liveCanary, canaryDiff } from './.s
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'all';
-const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save', 'alias_skills_ui_save', 'self_loop_ui_save'];
+const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save', 'alias_skills_ui_save', 'self_loop_ui_save', 'same_file_mcp_ui_save'];
 
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-inherit-empty');
 
@@ -347,6 +348,30 @@ if (ARM === 'boot_empty_obj') {
   });
   ok = control && out.controlSrc && settled && out.storeConfigDir && out.srcByteIdentical && out.srcLinks === 0 && out.srcBak.length === 0
     && !out.srcManifest && out.warns === 1 && out.bLinks === LINKS.length && out.bMcp?.join() === 'chrome-devtools,github,linear-server';
+} else if (ARM === 'same_file_mcp_ui_save') {
+  // #239/F1: the login's .claude.json IS the user's global ~/.claude.json (symlink). De-selecting an injected server would
+  // `delete servers[k]` in the GLOBAL file. Scratch HOME only.
+  const globalJson = path.join(home, '.claude.json');
+  const loginB = path.join(home, '.claude-b');
+  { const g = checkScratch(loginB, BASE); if (!g.ok) { console.log(JSON.stringify({ arm: ARM, ok: false, error: `SAFETY: ${g.clause}` })); process.exit(3); } }
+  await inh.syncAccountInheritance({ id: 'rig-b', label: 'b', configDir: loginB, inherit: FULL }); // real login file + manifest first
+  fs.rmSync(path.join(loginB, '.claude.json'));
+  fs.symlinkSync(globalJson, path.join(loginB, '.claude.json'));
+  const globalBefore = fs.readFileSync(globalJson, 'utf8');
+  out.controlGlobal = Object.keys(JSON.parse(globalBefore).mcpServers).join() === 'github,linear-server,chrome-devtools';
+  await apiHandlers.setAccounts([
+    { id: ACCOUNT.id, label: 'mc', configDir: login, inherit: FULL },
+    { id: 'rig-b', label: 'b', configDir: loginB, inherit: { ...FULL, mcpServers: ['github'] } }, // linear-server + chrome-devtools de-selected
+  ]);
+  const sameFileWarns = () => logLines().filter((l) => l.includes('is the global MCP source')).length;
+  const settled = await until(() => sameFileWarns() > 0);
+  await sleep(400);
+  Object.assign(out, {
+    settled, globalByteIdentical: fs.readFileSync(globalJson, 'utf8') === globalBefore, globalMcp: Object.keys(JSON.parse(fs.readFileSync(globalJson, 'utf8')).mcpServers),
+    warns: sameFileWarns(), symlinkKept: fs.lstatSync(path.join(loginB, '.claude.json')).isSymbolicLink(),
+    manifestMcp: JSON.parse(fs.readFileSync(path.join(loginB, '.orchestra-inherited.json'), 'utf8')).mcpServers,
+  });
+  ok = control && out.controlGlobal && settled && out.globalByteIdentical && out.warns === 1 && out.symlinkKept && out.manifestMcp.join() === 'github,linear-server,chrome-devtools';
 } else if (ARM === 'ui_normal_save') {
   await apiHandlers.setAccounts([{ ...ACCOUNT, label: 'mc-renamed', inherit: FULL }]);
   const changed = await until(() => store.accounts[0]?.label === 'mc-renamed');
