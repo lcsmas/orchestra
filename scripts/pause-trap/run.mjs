@@ -12,11 +12,13 @@
 //   app-restart       the app DIES mid-turn; the pause lands with the app DOWN; the restarted app finishes the trap
 //   app-restart-idle  the keeper is IDLE when the app dies; the boot drain must arm (attach) it so the CLI's own task-notification turn is caught (row 29 after a restart)
 //   app-restart-bg    same, with a background task + a daemonized job (only the boot drain's KILL can stop them)
-//   pauser-exempt     the OPS pauses ITS OWN run: its live session + running tool are left alone (snapshotted + recorded), w1 is trapped
+//   pauser-self       the OPS pauses ITS OWN run from inside its own tool: its turn + that tool tree are spared, its other tool tree (a bg task) is killed, w1 is trapped (review F5)
+//   pauser-human      a human types `--as <coordinator>` in a plain shell: the coordinator is NOT exempt (interrupted, tool killed)
+//   keeper-stopped    the keeper is SIGSTOPped (alive, unresponsive): nothing killed, trap NOT stamped done, completes once it answers (review F4)
 //   queue-kept        an AUTO prompt queued behind the running turn is NOT dropped by the pause interrupt, is held while paused (a human prompt still runs first), and runs after `run resume`
 //   turn-while-paused a background task is killed, the CLI starts a turn BY ITSELF (task notification) → interrupted + noted
 // Must-FAIL mutants (load-time edits of the shipped source; the named check must go red):
-//   no-trap (the unfixed build) · kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · drop-queue-on-pause-interrupt
+//   no-trap (the unfixed build) · kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · exempt-by-handle · stamp-on-unknown · drop-queue-on-pause-interrupt
 // Exit: 0 every arm as expected · 1 an arm broke expectation · 3 VOID (containment/tooling unavailable: nothing measured).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,7 +36,7 @@ const JSON_OUT = args.includes('--json');
 const KEEP = args.includes('--keep') || process.env.PT_KEEP === '1';
 const WANT = opt('arm', 'all');
 
-const NORMAL = ['blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'pauser-exempt', 'queue-kept'];
+const NORMAL = ['blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
 const MUTANT_ARMS = [
   // G1: the UNFIXED build (no host trap, as on master) must FAIL the same rig: nothing is interrupted, killed or snapshotted.
   { name: 'unfixed:no-trap', arm: 'background', mutant: 'no-trap' },
@@ -46,7 +48,9 @@ const MUTANT_ARMS = [
   { name: 'mutant:no-turn-observer', arm: 'turn-while-paused', mutant: 'no-turn-observer' },
   { name: 'mutant:no-arm', arm: 'app-restart-idle', mutant: 'no-arm' },
   { name: 'mutant:drop-queue-on-pause-interrupt', arm: 'queue-kept', mutant: 'drop-queue-on-pause-interrupt' },
-  { name: 'mutant:no-pauser-exemption', arm: 'pauser-exempt', mutant: 'no-pauser-exemption' },
+  { name: 'mutant:no-pauser-exemption', arm: 'pauser-self', mutant: 'no-pauser-exemption' },
+  { name: 'mutant:exempt-by-handle', arm: 'pauser-human', mutant: 'exempt-by-handle' },
+  { name: 'mutant:stamp-on-unknown', arm: 'keeper-stopped', mutant: 'stamp-on-unknown' },
 ];
 const all = [...NORMAL, 'probe-interrupt', 'probe-dbg'].map((a) => ({ name: a, arm: a, mutant: null }));
 all.push(...MUTANT_ARMS);

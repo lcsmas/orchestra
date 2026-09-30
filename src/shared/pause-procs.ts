@@ -49,6 +49,8 @@ export interface ToolProc {
   rootPid: number;
   /** True when the root is its own session leader (sid == pid) — enables the session lineage. */
   rootIsSessionLeader: boolean;
+  /** The root's /proc start-time as it was PLANNED (also for a root that is dead by now): the session lineage is only provable against it (review F9). */
+  rootStartTicks: number | undefined;
   isRoot: boolean;
   /** Distance below the root (0 = root); orphans that only match by session/env get a large depth. */
   depth: number;
@@ -58,6 +60,20 @@ export interface ToolProc {
   cwd: string | null;
   /** Why the planner attached it (the evidence string the Bilan lists; the signal-time re-read adds its own). */
   matched: string;
+}
+
+/**
+ * Another SESSION's supervisor — never a tool. The Orchestra keeper daemon (`keeper.js`), a `claude` CLI and the Orchestra/Electron binary:
+ * a daemonized app launched from a tool (no `env -i`) carries `CLAUDE_PID=<paused CLI>` into every keeper/CLI/helper it spawns, so the
+ * orphan provenance proofs would reach them. They are spared and listed (review F1, LEAD D4 "never the CLI or keeper" for EVERY session).
+ */
+export function isSupervisorProc(p: Pick<ProcIdent, 'argv' | 'comm'>): boolean {
+  const argv = p.argv ?? [];
+  if (argv.some((a) => baseName(a) === 'keeper.js')) return true;
+  const a0 = baseName(argv[0] ?? '').replace(/^-/, '');
+  if (a0 === 'claude' || p.comm === 'claude') return true;
+  if (/^(orchestra|Orchestra\.AppImage|electron)$/i.test(a0) || /\.mount_Orches/.test(argv[0] ?? '')) return true;
+  return false;
 }
 
 export interface SparedProc {
@@ -138,8 +154,24 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
     if (isToolShell(c)) roots.push(c);
     else spared.push({ pid: c.pid, comm: c.comm, cmd: cmdOf(c.argv, c.comm), reason: 'not-a-shell-command (sidecar/MCP)' });
   }
+  const supervisorMemo = new Map<number, boolean>();
+  const hasSupervisor = (pid: number, seen = new Set<number>()): boolean => {
+    if (supervisorMemo.has(pid)) return supervisorMemo.get(pid) as boolean;
+    if (seen.has(pid)) return false;
+    seen.add(pid);
+    const me = byPid.get(pid);
+    let hit = !!me && isSupervisorProc(me);
+    if (!hit) for (const k of children.get(pid) ?? []) if (hasSupervisor(k.pid, seen)) { hit = true; break; }
+    supervisorMemo.set(pid, hit);
+    return hit;
+  };
   const add = (p: ProcIdent, root: ProcIdent | null, depth: number, via: ToolProc['via'] = 'tree'): void => {
     if (p.pid === cli.pid || members.has(p.pid)) return;
+    if (via !== 'tree' && hasSupervisor(p.pid)) {
+      // an orphan proven only by session/env that IS (or has a descendant) another session's keeper/CLI/app: never a tool
+      if (!spared.some((x) => x.pid === p.pid)) spared.push({ pid: p.pid, comm: p.comm, cmd: cmdOf(p.argv, p.comm), reason: `${via}-proven orphan that is (or has a descendant) a keeper / claude CLI / Orchestra app — another session's supervisor, never a tool` });
+      return;
+    }
     const matched =
       via === 'env'
         ? `CLAUDE_PID=${cli.pid} names this member's CLI (pid ${cli.pid}, start-time ${cli.startTicks}); started after it (start-time ${p.startTicks})`
@@ -157,6 +189,7 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
       cmd: cmdOf(p.argv, p.comm),
       rootPid: root ? root.pid : 0,
       rootIsSessionLeader: root ? root.sid === root.pid : false,
+      rootStartTicks: root ? root.startTicks : undefined,
       isRoot: root ? p.pid === root.pid : false,
       depth,
       via,
@@ -255,10 +288,13 @@ export function verifyAtSignal(
     reason = chain;
   }
   // 2. session lineage: still in the planned root's session (root alive = same identity, or dead).
+  if (target.via !== 'tree' && isSupervisorProc(fresh)) return { ok: false, reason: 'supervisor (keeper / claude CLI / Orchestra app of another session)' };
   if (target.rootIsSessionLeader && fresh.sid === target.rootPid && target.via !== 'env') {
     const root = read(target.rootPid);
-    const rootStart = plan.members.find((m) => m.pid === target.rootPid)?.startTicks;
-    const rootOk = root === 'gone' || (root !== 'unreadable' && (rootStart === undefined || root.startTicks === rootStart));
+    // The root's planned start-time is REQUIRED: a dead root's pid may have been recycled by an innocent session leader, and an unknown
+    // start-time cannot tell them apart ⇒ refuse (D4 fail-closed; review F9).
+    const rootStart = target.rootStartTicks;
+    const rootOk = rootStart !== undefined && (root === 'gone' || (root !== 'unreadable' && root.startTicks === rootStart));
     if (rootOk) return { ok: true, via: 'session', evidence: `re-read now: sid ${fresh.sid} == tool shell ${target.rootPid}'s session (root ${root === 'gone' ? 'dead' : 'alive, same identity'})` };
     reason = 'session-root-mismatch';
   }

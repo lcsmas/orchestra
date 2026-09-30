@@ -244,7 +244,7 @@ all. Read-only.`,
             --run <id>") and silences liveness. Durable in the bus (survives an app
             relaunch, works while the app is down), idempotent. Same authority +
             fencing as hold. The host also TRAPS every member: snapshots its worktree
-            (uncommitted + untracked work) to refs/orchestra/pause/<run>/<ws>/<ts> without
+            (uncommitted + untracked NON-IGNORED work) to refs/orchestra/pause/<run>/<ws>/<ts> without
             touching the worktree/index/branches, records a Bilan de pause, interrupts the
             turn and kills its tool processes (never the session or the keeper); read it
             with 'status'. The pauser's own turn is left running.

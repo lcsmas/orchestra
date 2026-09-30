@@ -78,6 +78,8 @@ const SCENARIOS = {
   // a background task that, when killed, makes the CLI start a turn by itself (task notification): row 29
   bgnotify: [BASH('sleep 7718', { run_in_background: true }), { text: 'background started' }, BASH('sleep 7717'), { text: 'done' }],
   blockingops: [BASH('sleep 7719'), { text: 'done' }],
+  // the coordinator pauses ITS OWN run from inside one of its tools: a background task (another tool tree) + the tool that holds the `run pause` call
+  pauserself: [BASH('sleep 7723', { run_in_background: true }), BASH(`node ${REPO}/dist-electron/cli.js run pause --hard --run ops; sleep 7719`), { text: 'done' }],
   resume: [{ text: 'ok' }],
   dbg: [BASH("python3 -c \"import os,subprocess; p=subprocess.Popen(['sleep','7715'], start_new_session=True); print('child', p.pid, 'childsid', os.getsid(p.pid), 'mysid', os.getsid(0), 'path', os.environ.get('PATH'))\" > $HOME/dbg.txt 2>&1; id >> $HOME/dbg.txt; grep -E 'Seccomp|NoNewPrivs' /proc/self/status >> $HOME/dbg.txt; sleep 7716"), { text: 'done' }],
 };
@@ -93,7 +95,12 @@ const ARMS = {
   // the first turn has ENDED when the pause lands (only the background task is alive): interrupt = 'idle' is the right outcome
   'turn-while-paused': { scenario: 'bgnotify', markers: [7718], rowTwentyNine: true, mustKill: ['sleep 7718'], idleAtPause: true },
   // the PAUSER (the OPS pausing its own run) is a member with a live session + a running tool: it keeps its turn
-  'pauser-exempt': { scenario: 'blocking', markers: [7713], mustKill: [], pauser: { ws: 'ops', scenario: 'blockingops', markers: [7719] } },
+  // review F5: a human typing `--as <coordinator>` in a plain shell exempts NOBODY (the handle is not identity): the coordinator is interrupted + its tool killed
+  'pauser-human': { scenario: 'blocking', markers: [7713], mustKill: [], pauser: { ws: 'ops', scenario: 'blockingops', markers: [7719], mode: 'human' } },
+  // review F5: the pause is issued from INSIDE the coordinator's own tool: its turn is not interrupted and exactly that tool tree survives; its other tree (a bg task) is killed
+  'pauser-self': { scenario: 'blocking', markers: [7713], mustKill: [], pauser: { ws: 'ops', scenario: null, markers: [7719], mode: 'self', otherTree: 7723 } },
+  // review F4: the keeper is SIGSTOPped (alive but unresponsive): UNKNOWN is not NONE — nothing is killed, the trap is NOT stamped done, and it completes once the keeper answers again
+  'keeper-stopped': { scenario: 'blocking', markers: [7713], mustKill: [], keeperStopped: true },
   // the keeper is IDLE (first turn ended, a background task still runs) when the app dies: the boot drain must ARM it (attach) so the CLI's own
   // task-notification turn — started when the trap kills that task — is observed, interrupted and noted (row 29 after a restart)
   'app-restart-idle': { scenario: 'bgnotify', markers: [7718], restart: true, rowTwentyNine: true, idleAtPause: true, settleBeforeKill: true, mustKill: ['sleep 7718'] },
@@ -140,11 +147,11 @@ let app1 = null, app2 = null;
 const result = { pause_trap: true, arm, mutant };
 try {
   // 1. fleet up, turn in flight
-  app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe, ...(A.pauser ? { opsScenario: A.pauser.scenario } : {}) });
+  app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe, ...(A.pauser?.scenario ? { opsScenario: A.pauser.scenario } : {}) });
   await app1.waitEv((e) => e.ev === 'sent', 120_000, 'the first turn to be sent');
   // 2. POSITIVE CONTROL: the real CLI really spawned the real tool processes
   await waitFor(() => A.markers.every((n) => sleepers(n).length >= 1), 90_000, `tool processes ${A.markers.join(',')} to appear`);
-  if (A.pauser) await waitFor(() => A.pauser.markers.every((n) => sleepers(n).length >= 1), 90_000, `the pauser's tool ${A.pauser.markers.join(',')} to appear`);
+  if (A.pauser?.mode === 'human') await waitFor(() => A.pauser.markers.every((n) => sleepers(n).length >= 1), 90_000, `the pauser's tool ${A.pauser.markers.join(',')} to appear`);
   const keeper = await waitFor(() => keeperProc(), 10_000, 'the keeper');
   const cli0 = await waitFor(() => cliProcOf(keeper.pid), 10_000, 'the CLI under the keeper');
   check('tool_procs_present_before_pause', A.markers.every((n) => sleepers(n).length >= 1), `markers ${A.markers.join(',')} alive under CLI ${cli0.pid}`);
@@ -187,11 +194,27 @@ try {
     check('tools_survive_app_death_control', A.markers.every((n) => sleepers(n).length >= 1) && alive(keeper.pid, keeper.start) && alive(cli0.pid, cli0.start), 'keeper, CLI and tool processes outlived the app');
   }
 
-  // 4. THE PAUSE, through the real built CLI (store-less: writes the bus directly)
+  if (A.keeperStopped) process.kill(keeper.pid, 'SIGSTOP'); // alive but unresponsive
+  // 4. THE PAUSE, through the real built CLI (store-less: writes the bus directly) — or, for pauser-self, by the coordinator's OWN tool
   const tPause = Date.now();
   result.tPause = tPause;
-  const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', A.pauser ? 'ops' : 'lead');
-  check('cli_pause_accepted', p.rc === 0 && /PAUSED/.test(p.out), `rc=${p.rc} ${p.out.trim().slice(0, 200)}`);
+  if (A.pauser?.mode === 'self') {
+    app1.send({ cmd: 'human-send', ws: 'ops', text: 'SCN:pauserself' });
+    await waitFor(() => sleepers(A.pauser.otherTree).length >= 1, 90_000, `the coordinator's background task ${A.pauser.otherTree}`);
+    const st = await waitFor(() => { const x = runStatus(); return x.pause ? x : null; }, 90_000, 'the coordinator\'s own tool to pause its run');
+    check('pause_issued_from_inside_the_member_tool', st.pause.pausedBy === 'ops' && sleepers(7719).length >= 1, `pausedBy=${st.pause.pausedBy}; the tool that holds the call (sleep 7719) is running`);
+  } else {
+    const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', A.pauser ? 'ops' : 'lead');
+    check('cli_pause_accepted', p.rc === 0 && /PAUSED/.test(p.out), `rc=${p.rc} ${p.out.trim().slice(0, 200)}`);
+  }
+  if (A.keeperStopped) {
+    await sleep(22_000);
+    const st = runStatus();
+    const row = st.bilan?.find((r) => r.wsId === 'w1');
+    check('trap_not_stamped_while_keeper_unresponsive', (st.pause?.trapAt ?? null) === null && sleepers(7713).length >= 1 && /did not answer|timed out|unresponsive/i.test(row?.error ?? ''),
+      `trapAt=${st.pause?.trapAt ?? null} tool alive=${sleepers(7713).length >= 1} Bilan error=${row?.error ?? 'none'}`);
+    process.kill(keeper.pid, 'SIGCONT');
+  }
   if (A.restart) {
     await sleep(2500);
     check('app_down_trap_owed_control', A.markers.every((n) => sleepers(n).length >= 1) && (runStatus().pause?.trapAt ?? null) === null, 'app is down: nothing killed yet, run status says the trap is NOT finished (proves the reaction is the host\'s)');
@@ -220,12 +243,16 @@ try {
     } catch (e) { refDetail = `${ref}: ${String(e.message).slice(0, 200)}`; }
   }
   check('pause_ref_holds_uncommitted_work', refOk, refDetail);
-  check('snapshot_no_touch', fingerprint(WT.w1) === fpBefore && fingerprint(WT.ops) === opsFpBefore, 'worktree contents+mtimes, REAL index bytes, HEAD and branches are byte-identical after the trap (w1 and ops)');
+  // (pauser-self: ops's own session starts writing into its worktree AFTER the baseline was taken, so only w1 — the member the trap alone touched — is compared)
+  check('snapshot_no_touch', fingerprint(WT.w1) === fpBefore && (A.pauser?.mode === 'self' || fingerprint(WT.ops) === opsFpBefore), 'worktree contents+mtimes, REAL index bytes, HEAD and branches are byte-identical after the trap (w1 and ops)');
   const killedCmds = [...(w1row?.killed?.killed ?? []).map((k) => k.cmd), ...(w1row?.activity?.observerKilled ?? []).map((k) => k.cmd)]; // the pause-time trap's list + what the turn observer killed on a reattached in-flight turn
   // (After an app restart the arm pass can attach the member first: the observer then interrupts the reattached in-flight turn before the trap's own
   // interrupt runs, which finds it already over — `idle` is honest IF a Bilan note records the observer's interrupt.)
-  check('bilan_w1', !!w1row && w1row.dirty === true && (A.idleAtPause ? w1row.activity?.interrupt === 'idle' : (['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt) || (w1row.activity?.interrupt === 'idle' && (w1row.activity?.notes ?? []).some((n) => /interrupt=interrupted/.test(n))))) && Array.isArray(w1row.killed?.killed) && !w1row.error && w1row.activity?.turnRunning === !A.idleAtPause,
-    w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
+  check('bilan_w1', !!w1row && w1row.dirty === true && Array.isArray(w1row.killed?.killed) && !w1row.error
+    && (A.keeperStopped /* the stopped keeper's queued interrupt lands after SIGCONT, so the retry finds the turn already over: any outcome, the error-free COMPLETE retry is the point */
+      || (A.idleAtPause ? w1row.activity?.interrupt === 'idle' && w1row.activity?.turnRunning === false
+        : (w1row.activity?.turnRunning === true && (['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt) || (w1row.activity?.interrupt === 'idle' && (w1row.activity?.notes ?? []).some((n) => /interrupt=interrupted/.test(n)))))))
+    , w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
   if (A.mustKill.includes('sleep 7715')) {
     // LEAD ruling D11: the daemonized orphan is listed with pid, cmdline, cwd and the reason that matched (CLI identity = pid + start-time).
@@ -234,10 +261,15 @@ try {
       JSON.stringify(o ?? null));
   }
   check('bilan_ops_member_recorded', !!opsrow && !!opsrow.snapshotRef, opsrow ? `ops: ref=${opsrow.snapshotRef} dirty=${opsrow.dirty} surface=${opsrow.activity?.surface}` : 'no Bilan row for ops (the OPS is a member of its own run)');
-  if (A.pauser) {
+  if (A.pauser?.mode === 'self') {
     const opsKeeper = allProcs().find((x) => live(x) && x.argv.some((a) => a.endsWith('keeper.js')) && x.argv.includes('ops'));
-    check('pauser_keeps_its_turn', A.pauser.markers.every((n) => sleepers(n).length >= 1) && !!opsKeeper && opsrow?.activity?.exempt === 'pauser' && opsrow?.activity?.interrupt === 'exempt' && !!opsrow?.snapshotRef,
-      `ops (the pauser): tool sleep ${A.pauser.markers.join(',')} alive=${A.pauser.markers.every((n) => sleepers(n).length >= 1)} keeper alive=${!!opsKeeper} Bilan exempt=${opsrow?.activity?.exempt} interrupt=${opsrow?.activity?.interrupt} ref=${opsrow?.snapshotRef}`);
+    check('pauser_keeps_its_call_tree', sleepers(7719).length >= 1 && !!opsKeeper && opsrow?.activity?.exempt === 'pauser' && opsrow?.activity?.interrupt === 'exempt' && !!opsrow?.snapshotRef,
+      `ops (the pauser): the tool holding the pause call (sleep 7719) alive=${sleepers(7719).length >= 1} keeper alive=${!!opsKeeper} Bilan exempt=${opsrow?.activity?.exempt} interrupt=${opsrow?.activity?.interrupt} ref=${opsrow?.snapshotRef}`);
+    check('pauser_other_tool_tree_killed', sleepers(A.pauser.otherTree).length === 0, `ops's OTHER tool tree (background sleep ${A.pauser.otherTree}) alive=${sleepers(A.pauser.otherTree).length >= 1}`);
+  }
+  if (A.pauser?.mode === 'human') {
+    check('human_as_coordinator_is_not_exempt', sleepers(7719).length === 0 && opsrow?.activity?.exempt === undefined && opsrow?.activity?.interrupt === 'interrupted',
+      `ops (paused_by ops via a plain shell): tool sleep 7719 alive=${sleepers(7719).length >= 1} exempt=${opsrow?.activity?.exempt} interrupt=${opsrow?.activity?.interrupt}`);
   }
   check('run_still_paused', done?.pause?.runId === 'ops' && !!done?.pause?.pausedAt, `pause=${JSON.stringify(done?.pause ?? null).slice(0, 120)}`);
 
@@ -279,6 +311,8 @@ try {
 } catch (e) {
   check('rig_ran_to_completion', false, String(e?.stack ?? e).slice(0, 500));
 }
+result.appErr = [app1, app2].map((a) => (a?.err ?? '').slice(-1500));
+result.sweeps = [app1, app2].flatMap((a) => (a?.events ?? []).filter((e) => e.ev === 'sweep' || e.ev === 'sweep-error')).slice(-6); // the host's own stderr (logger lines) for autopsy
 result.checks = checks;
 result.ok = checks.length > 0 && checks.every((c) => c.ok);
 result.requests = api.requests.length;

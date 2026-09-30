@@ -264,3 +264,67 @@ test('D11 (a)(b)(c) at the verify layer: another member\'s CLAUDE_PID, a recycle
   const older = { ...d, startTicks: 900 };
   assert.equal(verifyAtSignal(older, pl, pr, reader(t, { 700: { ...t.find((x) => x.pid === 700)!, startTicks: 900 } }), () => 100).ok, false);
 });
+
+// ── review F1: another session's supervisor is never a tool, whatever marker it carries ──
+
+function tableWithSupervisors(): ProcIdent[] {
+  return [
+    ...table(),
+    // a daemonized Orchestra app launched from a tool: app → keeper.js (ws-OTHER) → that ws's claude CLI; all exported this CLI's CLAUDE_PID
+    p(800, 1, { sid: 800, startTicks: 6000, comm: 'orchestra', argv: ['/tmp/.mount_OrchesXYZ/orchestra', '--type=gpu'] }),
+    p(801, 800, { sid: 800, startTicks: 6001, comm: 'node', argv: ['node', '/x/.orchestra/bin/keeper.js', 'ws-OTHER', 'sock', 'pid', 'log'] }),
+    p(802, 801, { sid: 800, startTicks: 6002, comm: 'claude', argv: ['/home/u/.local/bin/claude', '--output-format', 'stream-json'] }),
+    // an ordinary daemonized rig: must still be killed (control)
+    p(810, 1, { sid: 810, startTicks: 6010, comm: 'sleep', argv: ['sleep', '9'] }),
+  ];
+}
+const ENV2: Record<number, number> = { 800: 100, 801: 100, 802: 100, 810: 100 };
+
+test('F1: an env-proven orphan that IS or HAS a keeper / claude CLI / Orchestra app descendant is SPARED and listed; an ordinary daemon is still planned', () => {
+  const plan = planToolTrees(tableWithSupervisors(), CLI, { claudePidOf: (x) => ENV2[x.pid] ?? null });
+  const pids = plan.members.map((m) => m.pid);
+  for (const banned of [800, 801, 802]) assert.ok(!pids.includes(banned), `${banned} must not be a member`);
+  assert.ok(pids.includes(810), 'control: the ordinary daemon is a member');
+  const spared = plan.spared.filter((x) => [800, 801, 802].includes(x.pid));
+  assert.ok(spared.length >= 1 && spared.every((x) => /supervisor/.test(x.reason)), 'listed as spared with the reason');
+});
+
+test('F1: the signal-time re-read refuses a keeper/claude/app even from a forged plan (second layer)', () => {
+  const t = tableWithSupervisors();
+  const plan = planToolTrees(t, CLI, { claudePidOf: (x) => ENV2[x.pid] ?? null });
+  for (const pid of [801, 802]) {
+    const forged = { ...plan.members[0], pid, startTicks: t.find((x) => x.pid === pid)!.startTicks, isRoot: false, via: 'env' as const, rootPid: 0, rootIsSessionLeader: false, rootStartTicks: undefined };
+    const v = verifyAtSignal(forged, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100);
+    assert.equal(v.ok, false);
+    assert.match((v as { reason: string }).reason, /supervisor/);
+  }
+});
+
+test('F1: a TREE member that is a claude sub-invocation run by the tool itself is still a tool (only orphans are guarded)', () => {
+  const t = [...table(), p(203, 200, { sid: 200, comm: 'claude', argv: ['claude', '-p', 'x'] })];
+  const plan = planToolTrees(t, CLI, {});
+  assert.ok(plan.members.some((m) => m.pid === 203 && m.via === 'tree'));
+});
+
+// ── review F9: a dead prior root's recycled pid cannot vouch for an unrelated session ──
+
+test('F9: the session lineage of a PRIOR (dead) root needs the root\'s planned start-time; an innocent session leader that recycled the pid is refused', () => {
+  const t = [
+    p(100, KEEPER, { startTicks: 1000, comm: 'claude', argv: ['claude'] }),
+    p(500, 1, { sid: 500, startTicks: 9999, comm: 'innocent-daemon', argv: ['innocent'] }), // recycled pid 500, a session leader now
+    p(501, 500, { sid: 500, startTicks: 10000, comm: 'sleep', argv: ['sleep', '5'] }),
+  ];
+  const plan = planToolTrees(t, CLI, { priorRoots: [{ pid: 500, startTicks: 1100 }] }); // the PRIOR root 500 started at 1100 (and is dead)
+  const tg = plan.members.find((m) => m.pid === 501);
+  assert.ok(tg, 'planned as a session orphan of the prior root');
+  assert.equal(tg!.rootStartTicks, 1100);
+  const v = verifyAtSignal(tg!, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t));
+  assert.equal(v.ok, false, 'pid 500 is alive with a DIFFERENT start-time: not our root');
+  assert.match((v as { reason: string }).reason, /session-root-mismatch|no-lineage-proof|environ/);
+  // unknown planned start-time (forged) ⇒ refuse, even when the root is simply gone (fail-closed)
+  const noStart = { ...tg!, rootStartTicks: undefined };
+  assert.equal(verifyAtSignal(noStart, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t.filter((x) => x.pid !== 500))).ok, false);
+  // control: the root is really gone and its start-time was planned ⇒ accepted via the session
+  const v2 = verifyAtSignal(tg!, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t.filter((x) => x.pid !== 500)));
+  assert.equal(v2.ok, true);
+});

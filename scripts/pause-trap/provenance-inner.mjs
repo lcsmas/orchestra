@@ -3,6 +3,8 @@
 //   (a) another member's orphan (CLAUDE_PID = another CLI's pid) survives;
 //   (b) a process whose CLAUDE_PID names a RECYCLED pid — the pid is now this CLI's, but the process belongs to the previous incarnation — survives;
 //   (c) a process that started BEFORE the member CLI survives (same scenario, seen from the start-time rule).
+// F1 (review): another SESSION's supervisor is never a tool — a daemonized "app" launched from a tool (no `env -i`) carries this CLAUDE_PID into its keeper
+// and that keeper's claude CLI; they must survive and be listed as spared.
 // Controls: the recycle is real (this CLI got the pid the stale orphan's marker names, asserted from /proc) and the member's OWN daemonized orphan IS killed
 // (so "survives" is not a rig that kills nothing).
 import fs from 'node:fs';
@@ -32,11 +34,12 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { if (d.includes('go')) {
   spawn('/bin/bash', ['-c', 'sleep %TOOL%; true'], { detached: true, stdio: 'ignore', env }).unref();
   spawn('/bin/bash', ['-c', 'sleep %DAEMON% >/dev/null 2>&1 & exit 0'], { detached: true, stdio: 'ignore', env }).unref();
+  if ('%SUP%' === '1') spawn('/bin/bash', ['-c', '"$NODE" -e "$SUPSCRIPT" /x/.orchestra/bin/keeper.js ws-OTHER sock pid log >/dev/null 2>&1 & exit 0'], { detached: true, stdio: 'ignore', env: { ...env, NODE: process.execPath, SUPSCRIPT: "const {spawn}=require('child_process'); spawn(process.execPath,['-e','setInterval(()=>{},1000)','fake-other-claude-cli'],{argv0:'claude',stdio:'ignore'}); setInterval(()=>{},1000)" } }).unref();
   console.log(JSON.stringify({ spawned: true })); } });
 setInterval(() => {}, 1000); console.log(JSON.stringify({ ready: process.pid }));
 `;
-function standin(tool, daemon, tag) {
-  const c = spawn(process.execPath, ['-e', STANDIN.replace('%TOOL%', tool).replace('%DAEMON%', daemon), tag], { stdio: ['pipe', 'pipe', 'inherit'] });
+function standin(tool, daemon, tag, sup = false) {
+  const c = spawn(process.execPath, ['-e', STANDIN.replace('%TOOL%', tool).replace('%DAEMON%', daemon).replace('%SUP%', sup ? '1' : '0'), tag], { stdio: ['pipe', 'pipe', 'inherit'] });
   const replies = [];
   let buf = '';
   c.stdout.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { try { replies.push(JSON.parse(buf.slice(0, i))); } catch { /* */ } buf = buf.slice(i + 1); } });
@@ -55,7 +58,7 @@ try {
   for (let attempt = 0; attempt < 12 && (!me || me.c.pid !== P); attempt++) {
     if (me) { try { me.c.kill('SIGKILL'); } catch { /* */ } await sleep(100); }
     fs.writeFileSync('/proc/sys/kernel/ns_last_pid', String(P - 1));
-    me = standin(7812, 7813, 'provenance-member-cli');
+    me = standin(7812, 7813, 'provenance-member-cli', true);
   }
   cleanup.push(me.c);
   while (!me.replies.some((r) => r.ready)) await sleep(20);
@@ -79,12 +82,16 @@ try {
   check('killed_orphan_is_listed_with_cwd_and_reason', !!d && d.via === 'env' && typeof d.cwd === 'string' && /CLAUDE_PID=5000 names this member's CLI \(pid 5000, start-time \d+\)/.test(d.evidence), JSON.stringify(d ?? null));
   check('other_member_orphan_survives', alive(7822) && alive(7821), `another member's daemon (CLAUDE_PID names ITS CLI) alive=${alive(7822)}, its tool alive=${alive(7821)}`);
   check('stale_orphan_before_cli_survives', alive(7811), `the process whose CLAUDE_PID names the RECYCLED pid ${P} but started before this CLI is alive=${alive(7811)}`);
+  const supervisors = procs().filter((p) => p.state !== 'Z' && (p.argv.some((a) => a.endsWith('keeper.js')) || p.argv.at(-1) === 'fake-other-claude-cli'));
+  check('other_session_supervisor_survives', supervisors.length === 2 && supervisors.some((p) => p.argv.some((a) => a.endsWith('keeper.js'))) && supervisors.some((p) => p.argv[0] === 'claude') && rep.spared.some((x) => /keeper\.js/.test(x.cmd)),
+    `another session's keeper (carries CLAUDE_PID=${P}) and its claude CLI alive=${supervisors.length === 2}; listed as spared=${rep.spared.some((x) => /keeper\.js/.test(x.cmd))}; killed=${JSON.stringify(rep.killed.map((k) => k.cmd.slice(0, 30)))}`);
   check('cli_alive', real.read(P) !== 'gone', 'the member CLI stand-in is alive');
 } catch (e) {
   check('rig_ran_to_completion', false, String(e?.stack ?? e).slice(0, 400));
 }
 result.checks = checks;
 result.ok = checks.length > 0 && checks.every((c) => c.ok);
+for (const p of procs()) if (p.argv.some((a) => a.endsWith('keeper.js')) || p.argv.at(-1) === 'fake-other-claude-cli') { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
 for (const n of [7811, 7812, 7813, 7821, 7822]) for (const p of find(n)) { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
 for (const c of cleanup) { try { c.kill('SIGKILL'); } catch { /* */ } }
 console.log(JSON.stringify(result));

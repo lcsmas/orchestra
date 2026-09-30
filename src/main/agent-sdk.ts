@@ -81,7 +81,8 @@ import {
   markStoppedOnUsageLimit,
   notifyTurnStart,
 } from './activity';
-import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
+import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
+import { markPauseHumanTurn } from './pause-trap';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
@@ -1309,6 +1310,9 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     if (session.queue.length === 0) continue; // emptied while held (tray cancel)
 
     const msg = session.queue.shift()!;
+    // #252 D1b (review F2): is a HUMAN-typed prompt part of the turn about to start? Marked at the YIELD below (the turn's real start), so a prompt
+    // parked behind a running turn — or a second one typed during the first — is allowed when IT starts, however late.
+    let humanTurn = !!msg.uuid && session.humanTurns.has(msg.uuid);
     // COALESCE: while the entry just taken is marked "merge with next", absorb
     // the following entry's text into it so the agent receives ONE turn instead
     // of several. Marks are dropped as they're consumed. The loop is bounded by
@@ -1316,6 +1320,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // absorb (the user merged, then cancelled what followed).
     while (msg.uuid && session.coalesce.has(msg.uuid) && session.queue.length > 0) {
       const nextMsg = session.queue.shift()!;
+      if (nextMsg.uuid && session.humanTurns.has(nextMsg.uuid)) humanTurn = true;
       session.coalesce.delete(msg.uuid);
       // The absorbed entry's TEXT does reach the model (inside this turn), so
       // its delivery receipt is honest: settle it STARTED (issue #57 fault b).
@@ -1350,6 +1355,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // NEXT turn is requested, so settling after it would strand the sender for
     // the whole duration of the turn it just started.
     settleDelivery(msg.uuid, true);
+    if (humanTurn) markPauseHumanTurn(session.wsId); // the pause trap's turn-start observer lets exactly this start through
     yield msg;
   }
 }
@@ -3982,7 +3988,7 @@ export function sdkPauseActivity(
   return { turnRunning: s.turnGate !== null || s.unexplainedTurnSeen === true, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
 }
 
-export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed';
+export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'unresponsive';
 
 /**
  * #252 D1b — interrupt the running turn of a PAUSED member. Unlike {@link sdkInterrupt} it never fabricates a
@@ -3996,7 +4002,12 @@ export async function sdkInterruptForPause(wsId: string): Promise<PauseInterrupt
   let attached = false;
   if (!sessions.has(wsId)) {
     const probe = await probeKeeper(wsId);
-    if (!probe?.running || probe.turnInFlight !== true) return 'idle';
+    if (!probe) {
+      // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer is 'unresponsive' (the trap retries), not 'idle'.
+      const kp = readTrackedKeeperPid(wsId);
+      return kp !== null && keeperPidState(kp, wsId) === 'keeper' ? 'unresponsive' : 'idle';
+    }
+    if (!probe.running || probe.turnInFlight !== true) return 'idle';
     try {
       attached = await sdkAttachIfDetached(wsId);
     } catch {

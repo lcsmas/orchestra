@@ -21,16 +21,26 @@ const at = (code: string, needle: string): number => {
   return i;
 };
 
-test('index.ts starts the trap AFTER the bus liveness sweep, registers BOTH observers first, and stops it before the bus closes', () => {
+test('index.ts starts the trap AFTER the bus liveness sweep, registers the turn-start observer first, and stops it before the bus closes', () => {
   const code = codeOf('src/main/index.ts');
   const live = at(code, 'startBusLiveness();');
   const buildDeps = at(code, 'buildPauseTrapDeps()');
   const turn = at(code, 'setTurnStartObserver(makeTurnStartObserver(');
-  const human = at(code, 'setPauseHumanTurnObserver(markPauseHumanTurn)');
   const start = at(code, 'startPauseTrap(pauseTrapDeps)');
-  assert.ok(live < buildDeps && buildDeps < turn && turn < human && human < start, 'order: liveness → deps → turn observer → human observer → startPauseTrap (a boot drain must never run before its observers exist)');
+  assert.ok(live < buildDeps && buildDeps < turn && turn < start, 'order: liveness → deps → turn observer → startPauseTrap (a boot drain must never run before its observer exists)');
+  assert.ok(!code.includes('setPauseHumanTurnObserver'), 'the human mark is NOT set at enqueue any more (review F2): promptStream marks the turn START');
   const shut = code.slice(at(code, 'function shutdownSubsystems()'));
   assert.ok(at(shut, 'stopPauseTrap();') < at(shut, 'closeBus();'), 'stopPauseTrap() before closeBus() (its sweep reads the bus handle)');
+});
+
+test('promptStream marks a HUMAN turn at its YIELD (per turn start, not per enqueue): a coalesced human prompt counts, the mark precedes the yield', () => {
+  const code = codeOf('src/main/agent-sdk.ts');
+  const ps = code.slice(at(code, 'const msg = session.queue.shift()!;'));
+  const head = ps.slice(0, ps.indexOf('yield msg;'));
+  assert.ok(head.includes('let humanTurn = !!msg.uuid && session.humanTurns.has(msg.uuid);'));
+  assert.ok(head.includes('if (nextMsg.uuid && session.humanTurns.has(nextMsg.uuid)) humanTurn = true;'), 'an absorbed human prompt makes the merged turn human');
+  assert.ok(head.includes('if (humanTurn) markPauseHumanTurn(session.wsId);'));
+  assert.ok(head.indexOf('if (humanTurn) markPauseHumanTurn') > head.indexOf('settleDelivery(msg.uuid, true);'), 'marked at the yield, after the turn is armed');
 });
 
 test('agent-sdk consume(): a CLI-started turn (no app turn in flight) notifies the observer BEFORE the event is emitted, once per turn, reset at `result`', () => {
@@ -80,7 +90,10 @@ test('the host observer stands down for anything without a live structured sessi
 test('pause-trap-host snapshots through the no-touch snapshotWorktree and kills through killToolTrees only (never a raw kill)', () => {
   const code = codeOf('src/main/pause-trap-host.ts');
   assert.ok(code.includes('snapshot: snapshotWorktree,'));
-  assert.ok(code.includes('killTrees: (cli, keeperPid) => killToolTrees(cli, keeperPid, kill),'));
+  assert.ok(code.includes('killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),'), 'the killer gets the stillPaused / startedBeforeMs / spareRoots options (F8, F2, F5)');
+  assert.ok(code.includes('storeReady: () => store.loadedFromDisk,'), 'an unloaded store defers the trap (F10)');
+  assert.ok(code.includes('if (isPtyRunning(wsId)) return;'), 'a live Raw terminal stands the observer down (human keystrokes fire submit)');
+  assert.ok(code.includes('did not answer the probe (busy/unresponsive)'), 'a tracked-but-unresponsive keeper is an ERROR, not "no keeper" (F4)');
   assert.ok(!/process\.kill\(|\.kill\(/.test(code), 'the host binding contains no direct kill call');
 });
 

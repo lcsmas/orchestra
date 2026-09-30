@@ -11,12 +11,23 @@ import { runSubtreeIds, type RunPauseInfo } from './bus-pause.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
 
 /** What the member was doing when the Pause took effect + what the trap did (all optional but `surface`). */
+/** One process of the pausing call's ancestry (the CLI records it at pause time; the trap re-verifies pid + start-time against the live CLI). */
+export interface PauseOriginProc {
+  pid: number;
+  ppid: number;
+  startTicks: number;
+  comm: string;
+}
+
+/** Reserved `pause_records.ws_id` of the row carrying the pausing call's process chain (the frozen schema has no column for it). Never a member. */
+export const PAUSE_ORIGIN_WS = '__pause_origin__';
+
 export interface BilanActivity {
   surface: 'sdk' | 'pty' | 'none' | 'remote';
   memberRun?: string;
   status?: string;
   turnRunning?: boolean;
-  interrupt?: 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'exempt' | 'skipped';
+  interrupt?: 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'unresponsive' | 'exempt' | 'skipped';
   inFlightTools?: Array<{ tool: string | null; toolUseId: string | null; sinceMs: number | null }>;
   bgTasks?: Array<{ id: string; type?: string; description: string; status: string }>;
   lastTask?: string;
@@ -27,8 +38,11 @@ export interface BilanActivity {
   /** Files the snapshot could not read (everything else is in the ref). */
   snapshotWarnings?: string[];
   submodules?: Array<{ path: string; ref: string | null; dirty: boolean; error?: string }>;
-  /** `pauser`: the member that issued the pause keeps its turn (snapshot + row only). */
+  /** `pauser`: the member whose CLI is a process ancestor of the `orchestra run pause` call keeps its turn and the tool tree containing that call
+   *  (snapshot + row; its other trees ARE killed). Keyed on process ancestry, never on the `--as` handle (review F5). */
   exempt?: 'pauser';
+  /** Only on the reserved {@link PAUSE_ORIGIN_WS} row: the process chain of the `orchestra run pause` call, captured by the CLI at pause time. */
+  origin?: { chain: PauseOriginProc[] };
   /** Free-text trail: turn starts observed while paused, partial failures. */
   notes?: string[];
   /** Processes the TURN OBSERVER (a CLI-started turn while paused) killed — kept apart from `killed_json`, which belongs to the pause-time trap
@@ -160,7 +174,7 @@ export function listBilan(db: BusDb, carrierRunId: string, pausedAt?: number): B
       : (db
           .prepare('SELECT * FROM pause_records WHERE run_id = ? AND paused_at = ? ORDER BY id')
           .all(carrierRunId, pausedAt) as RawRow[]);
-  return rows.map(toRow);
+  return rows.map(toRow).filter((r) => r.wsId !== PAUSE_ORIGIN_WS);
 }
 
 /** The rows a coordinator of `runId` should read: its own subtree's members under the carrier's pause. */
@@ -234,6 +248,7 @@ export function latestPauseBilanFor(db: BusDb, runId: string): { carrierRunId: s
   const recent = db.prepare('SELECT * FROM pause_records ORDER BY id DESC LIMIT 500').all() as RawRow[];
   for (const raw of recent) {
     const r = toRow(raw);
+    if (r.wsId === PAUSE_ORIGIN_WS) continue;
     const mr = r.activity?.memberRun;
     if (r.runId === runId || (mr !== undefined && inScope.has(mr))) {
       const rows = listBilanForRun(db, r.runId, runId, r.pausedAt);
@@ -263,4 +278,18 @@ export function appendObserverKills(
     updateBilan(db, row.id, { activity: { ...a, observerKilled: [...(a.observerKilled ?? []), ...add].slice(-100) } });
   });
   tx.immediate();
+}
+
+/** Record the pausing call's process chain (called by the CLI right after a successful `run pause`). Idempotent per (carrier, paused_at). */
+export function recordPauseOrigin(db: BusDb, carrierRunId: string, pausedAt: number, chain: PauseOriginProc[]): void {
+  const tx = db.transaction(() => {
+    if (bilanForMember(db, carrierRunId, PAUSE_ORIGIN_WS, pausedAt)) return;
+    insertBilan(db, { runId: carrierRunId, wsId: PAUSE_ORIGIN_WS, pausedAt, activity: { surface: 'none', origin: { chain } }, snapshotRef: null, dirty: null, killed: null, error: null });
+  });
+  tx.immediate();
+}
+
+/** The recorded chain of the call that made THIS pause, or null when none was recorded (an older CLI, or a pause written another way). */
+export function readPauseOrigin(db: BusDb, carrierRunId: string, pausedAt: number): PauseOriginProc[] | null {
+  return bilanForMember(db, carrierRunId, PAUSE_ORIGIN_WS, pausedAt)?.activity?.origin?.chain ?? null;
 }

@@ -27,6 +27,7 @@ for (const [name, mutant, mustRedden, inner, control] of [
   ['provenance (D11 a/b/c)', null, null, 'provenance-inner.mjs', 'recycle_is_real_control'],
   ['mutant:env-pid-not-matched', 'env-pid-not-matched', 'other_member_orphan_survives', 'provenance-inner.mjs', 'recycle_is_real_control'],
   ['mutant:env-start-time-ignored', 'env-start-time-ignored', 'stale_orphan_before_cli_survives', 'provenance-inner.mjs', 'recycle_is_real_control'],
+  ['mutant:supervisor-guard-removed', 'supervisor-guard-removed', 'other_session_supervisor_survives', 'provenance-inner.mjs', 'recycle_is_real_control'],
 ]) {
   const res = run(mutant, inner);
   let ok, why;

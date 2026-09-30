@@ -55,7 +55,8 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: s
     const child = execFile(
       'git',
       // gc.auto=0: no background gc from a snapshot; fsmonitor=false: no hook on the user's repo.
-      ['-c', 'gc.auto=0', '-c', 'core.fsmonitor=false', '-c', 'commit.gpgsign=false', ...args],
+      // hooksPath=/dev/null: the user's repo hooks (post-index-change, reference-transaction, …) must never run for a snapshot (review F6).
+      ['-c', 'gc.auto=0', '-c', 'core.fsmonitor=false', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
       {
         cwd,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env },

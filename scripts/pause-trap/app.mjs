@@ -60,13 +60,16 @@ const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.t
 const sdk = await import(`${REPO}/src/main/agent-sdk.ts`);
 const activity = await import(`${REPO}/src/main/activity.ts`);
 const trap = await import(`${REPO}/src/main/pause-trap.ts`);
-const pauseGate = await import(`${REPO}/src/main/pause-gate.ts`);
 const host = await import(`${REPO}/src/main/pause-trap-host.ts`);
 
 // The keeper bundle the app would have installed at startup.
 fs.mkdirSync(path.join(orchHome, 'bin'), { recursive: true });
 fs.copyFileSync(path.join(REPO, 'dist-electron', 'keeper.js'), path.join(orchHome, 'bin', 'keeper.js'));
 
+// A fresh install has no store.json (load() then leaves loadedFromDisk=false); the fleet this rig seeds is an EXISTING install, so start from an
+// (empty) store file on disk — F10: the trap refuses to act on a store that was not loaded from disk.
+const STORE_FILE = path.join(orchHome, 'orchestra', 'store.json'); // userData(=ORCHESTRA_HOME)/orchestra/store.json — the real store's path
+if (!fs.existsSync(STORE_FILE)) { fs.mkdirSync(path.dirname(STORE_FILE), { recursive: true }); fs.writeFileSync(STORE_FILE, JSON.stringify({ repos: [], workspaces: [], accounts: [], selfTuneRuns: [] })); }
 await store.load?.();
 const version = busMod.initBus(); // the real boot gate: opens <ORCHESTRA_HOME>/bus.sqlite + migrates
 out({ ev: 'booted', phase, busSchema: version });
@@ -98,15 +101,16 @@ if (phase === 'first') {
   runsMod.startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, sw);
   runsMod.startRun(db, { id: 'ops', kind: 'vague', coordinator: 'ops', parentRunId: 'lead' }, sw);
   // make sure store.json has the fleet on disk before anything can kill this process (the restart arm)
-  const storeFile = () => { try { return fs.readFileSync(path.join(orchHome, 'store.json'), 'utf8'); } catch { return ''; } };
+  const storeFile = () => { try { return fs.readFileSync(STORE_FILE, 'utf8'); } catch { return ''; } };
   for (let i = 0; i < 100 && !(storeFile().includes('"w1"') && storeFile().includes('"ops"')); i++) await new Promise((r) => setTimeout(r, 50));
 }
 
 // THE PRODUCTION WIRING (index.ts): host deps + the turn-start observer + detection (WAL watch + sweep + boot drain).
 const deps = host.buildPauseTrapDeps();
 activity.setTurnStartObserver(host.makeTurnStartObserver(deps));
-pauseGate.setPauseHumanTurnObserver(trap.markPauseHumanTurn); // exactly index.ts's wiring
 if (!cfg.noTrap) trap.startPauseTrap(deps);
+// autopsy aid: the rig's own sweep reports every TrapSummary (the host logger is silent outside dev)
+if (!cfg.noTrap) setInterval(() => void trap.sweepPauseTrap(deps).then((r) => { if (r.length) out({ ev: 'sweep', r }); }).catch((e) => out({ ev: 'sweep-error', error: String(e?.stack ?? e) })), 4000).unref();
 out({ ev: 'trap-started', phase, noTrap: !!cfg.noTrap });
 
 if (phase === 'first' && scenario) {

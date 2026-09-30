@@ -4260,7 +4260,7 @@ A pause is a durable state on the bus that the HOST enforces — not a message y
 must obey. While a run is paused: no réveil, no new turn, no spawn into it
 (refused with \`run en pause — orchestra run resume --run <id>\`), \`orchestra
 message\` to its members is parked in their inbox, liveness is silenced; the host
-also snapshots each member's worktree (uncommitted + untracked work) to a pause
+also snapshots each member's worktree (uncommitted + untracked, non-ignored work) to a pause
 ref \`refs/orchestra/pause/<run>/<ws>/<ts>\` without touching the worktree, its index
 or any branch, interrupts the turn and kills the tool processes it was running
 (never the session or the keeper). \`orchestra run status\` is the Bilan de pause:

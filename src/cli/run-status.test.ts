@@ -144,3 +144,17 @@ test('D11: a killed ORPHAN is listed with its cmdline, pid, cwd and the reason t
   assert.match(text, /orphan killed \(left the CLI's tree, via env\): sleep 7715 pid 7 cwd \/work\/tree-ws-o — CLAUDE_PID=100 names this member's CLI \(pid 100, start-time 1000\)/);
   assert.equal((text.match(/orphan killed/g) ?? []).length, 1, 'only the orphan (not the ppid-tree child) is listed as one');
 });
+
+test('F11: control characters in a raw argv / task text are stripped before they reach the terminal (no ESC / CR / NUL in the output)', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-c', pausedAt: p.pausedAt, activity: { surface: 'sdk', memberRun: 'W', lastTask: 'do x\u001b[2J\u001b]0;pwned\u0007 then\r\ny', bgTasks: [{ id: 'b', type: 'shell', description: 'rig\u001b[31mRED', status: 'running' }] },
+    snapshotRef: null, dirty: null, error: null,
+    killed: { killed: [{ pid: 1, cmd: 'sleep\u001b[1m 9\u0000', signal: 'SIGTERM', outcome: 'exited' }] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text.replace(/\n/g, '')), 'no control character survives (newlines are the output\'s own)');
+  assert.match(text, /sleep.* 9/);
+});

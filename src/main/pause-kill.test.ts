@@ -59,6 +59,7 @@ class FakeOs {
       },
       readClaudePid: (pid) => (this.unreadable.has(pid) ? 'unreadable' : (this.env.get(pid) ?? null)),
       readCwd: (pid) => this.cwds.get(pid) ?? null,
+      startMs: (t) => t,
       signal: (pid, sig) => {
         const target = this.procs.get(pid);
         this.signals.push({ pid, sig, target });
@@ -122,6 +123,52 @@ test('every killed process is listed with its cmdline, cwd and the evidence the 
   assert.match(orphan.evidence, /re-read now: environ CLAUDE_PID=100 == CLI 100 whose start-time 1000 was just re-verified/);
   assert.deepEqual(r.cli, CLI, 'the CLI identity the proofs were made against is part of the report');
   assert.equal(r.killed.find((k) => k.pid === 201)!.cwd, '/work/tree-w1');
+});
+
+test('F8: a lift landing mid-kill stops the signals at once (re-checked before every round AND every signal); nothing after the lift is touched', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'make'));
+  os.add(mk(401, 400, { sid: 400, comm: 'make', argv: ['make'] }));
+  let paused = true;
+  os.onSignal = () => {
+    paused = false; // the lift lands right after the FIRST signal
+  };
+  const r = await killToolTrees(CLI, 90, os.deps(), { stillPaused: () => paused });
+  assert.equal(os.signals.length, 1, `exactly one signal before the lift was seen, got ${JSON.stringify(os.signals.map((x) => x.pid))}`);
+  assert.equal(r.aborted, 'lifted');
+  const os2 = world();
+  const r2 = await killToolTrees(CLI, 90, os2.deps(), { stillPaused: () => false });
+  assert.deepEqual(os2.signals, [], 'lifted before the first round: nothing signalled');
+  assert.equal(r2.aborted, 'lifted');
+  assert.equal(r2.rounds, 0, 'and the round itself never started (the round-level check is its own layer)');
+});
+
+test('F8: the SIGKILL escalation re-checks the pause too', async () => {
+  const os = world();
+  os.ignoresTerm.add(201);
+  let calls = 0;
+  const r = await killToolTrees(CLI, 90, os.deps(), { termGraceMs: 100, stillPaused: () => ++calls <= 3 });
+  assert.ok(!os.signals.some((x) => x.sig === 'SIGKILL'), `no SIGKILL after the lift: ${JSON.stringify(os.signals.map((x) => `${x.pid}:${x.sig}`))}`);
+  assert.equal(r.aborted, 'lifted');
+});
+
+test('F2: startedBeforeMs spares what started after a HUMAN turn began (its tools are allowed to run); older processes are still killed', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'pre-pause tool')); // start 2400
+  os.add(shellC(500, 100, 'human turn tool')); // start 2500
+  const r = await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: 2450 });
+  assert.ok(!os.procs.has(400) && !os.procs.has(200), 'older trees killed');
+  assert.ok(os.procs.has(500), 'the tool the human turn started is left running');
+  assert.ok(r.spared.some((x) => x.pid === 500 && /HUMAN turn/.test(x.reason)));
+});
+
+test('F5: spareRoots spares the WHOLE tree that contains the run-pause call and kills the member\'s other trees', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'other tree'));
+  const r = await killToolTrees(CLI, 90, os.deps(), { spareRoots: [200] });
+  assert.ok(os.procs.has(200) && os.procs.has(201), 'the pauser\'s own tool tree survives');
+  assert.ok(!os.procs.has(400), 'its other tool tree is killed');
+  assert.ok(r.spared.filter((x) => x.pid === 200 || x.pid === 201).every((x) => /pauser exemption/.test(x.reason)));
 });
 
 test('fake OS: SIGTERM ignored → escalates to SIGKILL (after a fresh identity re-read)', async () => {

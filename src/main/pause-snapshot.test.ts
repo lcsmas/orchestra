@@ -330,6 +330,27 @@ test('a nested STANDALONE repository (.git directory, not a submodule) is left u
   }
 });
 
+test('the repo\'s HOOKS never run for a snapshot (post-index-change, reference-transaction, post-commit…): 0 hook executions', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    dirtyUp(wt);
+    const hooks = path.join(git(wt, 'rev-parse', '--git-common-dir').replace(/^(?!\/)/, `${wt}/`), 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    const log = path.join(root, 'hook-runs.log');
+    for (const h of ['post-index-change', 'reference-transaction', 'post-commit', 'pre-commit', 'post-checkout', 'pre-auto-gc']) {
+      fs.writeFileSync(path.join(hooks, h), `#!/bin/sh\necho ${h} >> ${log}\nexit 0\n`, { mode: 0o755 });
+    }
+    // positive control: the hooks DO fire for an ordinary git command of the same shape (else the arm proves nothing)
+    git(wt, 'update-ref', 'refs/control/x', 'HEAD');
+    assert.ok(fs.existsSync(log) && fs.readFileSync(log, 'utf8').includes('reference-transaction'), 'control: reference-transaction hook fires on a plain update-ref');
+    fs.rmSync(log);
+    await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 31 });
+    assert.equal(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '', '', 'no hook ran during the snapshot');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('refuses a missing worktree with a clear error', async () => {
   await assert.rejects(
     snapshotWorktree({ worktreePath: '/nonexistent/path/xyz', runId: 'r', wsId: 'w', at: 1 }),

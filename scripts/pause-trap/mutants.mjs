@@ -60,12 +60,21 @@ export const MUTANTS = {
     replace: '    await interruptCancellingQueued(session);',
     mustRedden: 'queued_prompt_survives_pause',
   },
+  // F1: the supervisor guard removed (planner AND signal-time re-read — two layers cover each other).
+  'supervisor-guard-removed': {
+    file: '/src/shared/pause-procs.ts',
+    edits: [
+      { find: /    if \(via !== 'tree' && hasSupervisor\(p\.pid\)\) \{/g, replace: '    if (false) {' },
+      { find: /  if \(target\.via !== 'tree' && isSupervisorProc\(fresh\)\) return \{ ok: false, reason: 'supervisor \(keeper \/ claude CLI \/ Orchestra app of another session\)' \};\n/g, replace: '' },
+    ],
+    mustRedden: 'other_session_supervisor_survives',
+  },
   // The pauser exemption removed: the coordinator that pauses its own run is interrupted + its tools killed.
   'no-pauser-exemption': {
     file: '/src/main/pause-trap.ts',
-    find: /const exempt = carrier\.pausedBy !== null && isCoordinatorHandle\(carrier\.pausedBy, m\.wsId\);/g,
-    replace: 'const exempt = false;',
-    mustRedden: 'pauser_keeps_its_turn',
+    find: /  const pauser = spareRoot !== undefined;/g,
+    replace: '  const pauser = false;',
+    mustRedden: 'pauser_keeps_its_call_tree',
   },
   // D11: the env provenance matches ANY CLAUDE_PID (planner AND signal-time re-read — two layers cover each other, so both are edited).
   'env-pid-not-matched': {
@@ -84,6 +93,21 @@ export const MUTANTS = {
       { find: /  if \(env === plan\.cli\.pid && fresh\.startTicks > plan\.cli\.startTicks\) \{/g, replace: '  if (env === plan.cli.pid) {' },
     ],
     mustRedden: 'stale_orphan_before_cli_survives',
+  },
+  // The old rule: the pauser is whoever's ws id equals `paused_by` (`--as`), which a human typing in a plain shell also is (review F5).
+  'exempt-by-handle': {
+    file: '/src/main/pause-trap.ts',
+    find: /  const pauser = spareRoot !== undefined;/g,
+    replace: '  const pauser = spareRoot !== undefined || (carrier.pausedBy !== null && carrier.pausedBy.trim().toLowerCase() === m.wsId.trim().toLowerCase());',
+    mustRedden: 'human_as_coordinator_is_not_exempt',
+  },
+  // UNKNOWN recorded as NONE (review F4): an unprovable/unresponsive member no longer keeps the trap open — it is stamped done anyway.
+  'stamp-on-unknown': {
+    file: '/src/main/pause-trap.ts',
+    edits: [
+      { find: /  return incomplete \? 'incomplete' : 'complete';/g, replace: "  return 'complete';" },
+    ],
+    mustRedden: 'trap_not_stamped_while_keeper_unresponsive',
   },
   // The signal-time identity re-read removed: a recycled pid is signalled (real pid reuse: recycle-rig.mjs).
   'identity-reread-removed': {

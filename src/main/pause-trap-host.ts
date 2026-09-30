@@ -103,6 +103,11 @@ export function buildPauseTrapDeps(): TrapDeps {
     cliOf: async (m) => {
       // Structured: keeper → CLI. The keeper's identity is argv-verified; the CLI must be ITS child.
       const probe = await probeKeeper(m.wsId).catch(() => null);
+      if (!probe) {
+        // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer (busy/stopped) must not read as "no keeper".
+        const kp = readTrackedKeeperPid(m.wsId);
+        if (kp !== null && keeperPidState(kp, m.wsId) === 'keeper') return { error: `keeper ${kp} is alive but did not answer the probe (busy/unresponsive)` };
+      }
       if (probe?.running && probe.pid) {
         const keeperPid = readTrackedKeeperPid(m.wsId);
         if (keeperPid === null || keeperPidState(keeperPid, m.wsId) !== 'keeper') return { error: 'keeper identity unverifiable (pid file / argv)' };
@@ -135,7 +140,8 @@ export function buildPauseTrapDeps(): TrapDeps {
       await sdkAttachIfDetached(m.wsId);
     },
     snapshot: snapshotWorktree,
-    killTrees: (cli, keeperPid) => killToolTrees(cli, keeperPid, kill),
+    killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),
+    storeReady: () => store.loadedFromDisk,
   };
 }
 
@@ -144,6 +150,7 @@ export function buildPauseTrapDeps(): TrapDeps {
 export function makeTurnStartObserver(deps: TrapDeps): (wsId: string) => void {
   return (wsId) => {
     if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own
+    if (isPtyRunning(wsId)) return; // a Raw terminal is attached: its human keystrokes fire `submit` too and cannot be told from a cron turn (D9, row 12)
     const ws = store.getWorkspace(wsId);
     if (!ws || ws.archived) return;
     void onTurnStart(deps, toMember(ws)).catch((e) => log.warn('pause-trap: turn-start observer failed', e));

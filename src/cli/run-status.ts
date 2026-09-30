@@ -55,7 +55,9 @@ interface KilledShape {
 }
 
 function short(s: string, n = 90): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+  // control characters (ESC, CR, NUL…) in a raw argv / task text must never reach the coordinator's terminal (review F11)
+  const clean = s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+  return clean.length > n ? `${clean.slice(0, n - 1)}…` : clean;
 }
 
 /** Human-readable rendering (the `--json` path prints `RunStatus` verbatim). */

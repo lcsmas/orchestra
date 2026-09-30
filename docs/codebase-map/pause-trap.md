@@ -24,12 +24,19 @@ and processes** once `runs.paused_at` is set. Wave D ledger #261 (D4 = the destr
    prompt still runs first). PTY agents get ESC. Never stops the CLI session or the keeper. A turn running in a DETACHED keeper this app run never attached to
    is attached first (attaching starts no turn). An idle session (no running or CLI-started turn) is left alone.
 5. **Kill the tool process trees** (`killToolTrees`, `src/main/pause-kill.ts:149`) under a CLI whose identity was proven (keeper argv + the CLI is the
-   keeper's child). Result → `killed_json`; the row is complete.
+   keeper's child). Result → `killed_json`. The killer re-checks the pause before EVERY round and signal (`stillPaused`, review F8) and only reaches processes older than a HUMAN turn
+   that began during the trap (`startedBeforeMs`, D9): a human prompt sent while the trap runs is neither interrupted nor has its tools killed.
+6. **UNKNOWN is not NONE (review F4/F10).** A tracked keeper that is alive but did not answer the probe, an unprovable CLI, a failed/timed-out interrupt, ZERO members or a store not
+   loaded from disk leave the member's `killed_json` NULL and the trap UNSTAMPED: retried by the sweep (≥5 s apart); the last attempt's error stays visible in `run status` until the retry's
+   own write. Only a proven member is complete.
 
-Then `runs.pause_trap_at` is stamped (guarded on `paused_at`, so a trap that outlived a resume + re-pause cannot stamp the NEW pause). A lift mid-trap
-stops the trap before the next process is touched. **The pauser is spared only the pause-time interrupt/kill** (`paused_by` == the member's ws id): a coordinator that pauses its
-own run keeps the turn that issued the pause (otherwise it would kill the rest of its own `orchestra run pause … && …` chain); it is still snapshotted, armed and recorded (`exempt: pauser`).
-A CLI-started turn on the pauser is a new turn and IS trapped (rows 29/30). A human pausing `--as <coordinator>` therefore spares that coordinator's in-flight turn and background tasks.
+Then `runs.pause_trap_at` is stamped (guarded on `paused_at`, so a trap that outlived a resume + re-pause cannot stamp the NEW pause) — only when EVERY member is complete. A lift mid-trap
+stops the trap before the next process is touched. The snapshot runs with `core.hooksPath=/dev/null` (the repo's hooks never fire, review F6). **The pauser (review F5) is keyed on PROCESS ANCESTRY, never the `--as` handle.** The CLI records the `orchestra run pause` process chain at pause time
+(`src/main/pause-origin.ts`, stored as a reserved `pause_records` row `__pause_origin__` — no schema change; a recent pause waits ≤3 s for it). The member whose CLI (pid + /proc
+start-time re-verified against the live CLI) is an ancestor is the pauser: its turn is NOT interrupted and ONLY the tool tree that holds the call (`spareRoots`) is spared — its other
+trees (a background task…) are killed; it is still snapshotted, armed and recorded (`exempt: pauser`). A human typing `--as <coordinator>` in a plain shell exempts NOBODY. No origin /
+a recycled CLI pid in the chain ⇒ nobody is spared.
+A CLI-started turn on the pauser is a new turn and IS trapped (rows 29/30).
 
 ## Destructive-act rules (D4) — `src/shared/pause-procs.ts`
 
@@ -42,6 +49,9 @@ A CLI-started turn on the pauser is a new turn and IS trapped (rows 29/30). A hu
   hop by hop, else same session as its root, else env provenance (`CLAUDE_PID == this CLI` AND started after it, re-read now). **Unreadable ⇒ refused
   (fail closed)**; the CLI, the keeper, the app and pid ≤ 1 are refused by a separate check even from a forged plan. Non-Linux: no start-time identity → nothing is killed.
 - Kill order: deepest first, roots last; SIGTERM, ≤2 s grace, SIGKILL for the same-identity survivors; ≤3 re-plan rounds (a tool started while killing is caught); survivors are reported, never hidden.
+- **Another session's supervisor is never a tool (review F1)**: an env-/session-proven orphan that is (or has a descendant) `keeper.js`, a `claude` CLI or the Orchestra/Electron binary is REFUSED and listed as
+  `spared` (planner + signal-time re-read). Real-pid arm: a daemonized app → another ws's keeper → its CLI, all carrying this CLAUDE_PID, survive. A dead prior root's recycled pid cannot vouch for an unrelated
+  session (the root's planned start-time is required, review F9).
 - **Orphans (LEAD ruling D11)**: a process that left the CLI's tree is killed only with provenance re-read AT SIGNAL TIME, fail-closed — `CLAUDE_PID` must name THIS member CLI's IDENTITY (pid + /proc
   start-time, re-verified just before the signal), never the bare pid, AND the process must have started after that CLI. Every killed process is listed in the Bilan with pid, cmdline, **cwd** (read before
   the signal) and **the reason matched** (`killed[].evidence` = the planner's reason + what the re-read proved; `run status` prints each orphan's line). Real-pid must-FAIL arms
@@ -63,7 +73,7 @@ A pause that landed while the app was DOWN is drained at the next boot: the deta
 
 `onTurnStart` (`src/main/pause-trap.ts:305`): a **CLI-started turn** (model output with no app-yielded turn in flight — `src/main/agent-sdk.ts:1411`; also the `submit` chokepoint, `src/main/activity.ts:957`;
 e.g. `/loop`, cron, the task-notification a killed background task triggers) on a paused member (the observer asks the gate's own `pausedCarrierForWorkspace`) is interrupted, its tool trees killed, and the Bilan notes it; starts that land while the handler runs are coalesced into one re-run (none dropped). A HUMAN send is allowed and un-pauses nothing
-(`markPauseHumanTurn`, `src/main/pause-trap.ts:278`, registered as D1a's `setPauseHumanTurnObserver` seam in `src/main/pause-gate.ts` — `sdkSend(origin 'human')` marks once per human send; single-use, 10 s TTL). PTY agents are not observed (their human keystrokes also fire `submit`).
+(`markPauseHumanTurn`, `src/main/pause-trap.ts`: marked by `promptStream` (`src/main/agent-sdk.ts`) at the YIELD of a turn that contains a human prompt — the turn's real start, so a parked or second prompt is allowed when IT starts (review F2); one single-use mark per turn, 30 s TTL). PTY agents — and a structured member with a live Raw terminal — are not observed (their human keystrokes also fire `submit`).
 
 ## Reading it
 
@@ -75,6 +85,6 @@ e.g. `/loop`, cron, the task-notification a killed background task triggers) on 
 | Gate | Command |
 |---|---|
 | Unit (real git, real bus, real processes, structural wiring) | `pnpm run test` — `pause-snapshot.test.ts`, `pause-kill.test.ts`, `pause-trap.test.ts`, `pause-trap-wiring.test.ts`, `shared/pause-procs.test.ts`, `cli/run-status.test.ts` |
-| Real keeper → real `claude` CLI → real Bash-tool processes, pid+net namespaces, scripted fake API (zero tokens), the pause written by the REAL built `orchestra run pause --hard` | `pnpm run test:pause-trap` (`scripts/pause-trap/run.mjs`; refuses to run at load > 20 / MemAvailable < 6 GB): arms `blocking · foreground · background · app-restart · app-restart-bg · app-restart-idle · turn-while-paused · pauser-exempt · queue-kept` must PASS (checks: tool procs present BEFORE, 0 after, CLI+keeper alive with the same start-time, pause ref holds the uncommitted+untracked work, worktree+REAL index byte-identical, Bilan content, session resumable + a human prompt allowed, nothing restarts); load-time mutants `kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · drop-queue-on-pause-interrupt` (+ `unfixed:no-trap` = master) must each redden their named check. `--arm probe-interrupt` = what a plain interrupt leaves alive (the gap the kill exists for) |
-| Real pid recycle (`ns_last_pid` in a user+pid namespace) | `pnpm run test:pause-trap-recycle`: the innocent that inherits a planned pid survives (identity re-read removed ⇒ killed); D11 provenance arms (a)/(b)/(c) above, with their two mutants |
-| In-place unit mutants (byte-exact backup + `cmp`, clean control before/after, anchors match once) | `pnpm run test:pause-trap-mutants` — 60+ mutants over every clause (snapshot no-touch, identity/lineage/fail-closed, kill ladder, orchestrator order/lift/dedupe, the DB stamp guard, the boot/stream/submit wiring) |
+| Real keeper → real `claude` CLI → real Bash-tool processes, pid+net namespaces, scripted fake API (zero tokens), the pause written by the REAL built `orchestra run pause --hard` | `pnpm run test:pause-trap` (`scripts/pause-trap/run.mjs`; refuses to run at load > 20 / MemAvailable < 6 GB): arms `blocking · foreground · background · app-restart · app-restart-bg · app-restart-idle · turn-while-paused · pauser-human · pauser-self · keeper-stopped · queue-kept` must PASS (checks: tool procs present BEFORE, 0 after, CLI+keeper alive with the same start-time, pause ref holds the uncommitted+untracked work, worktree+REAL index byte-identical, Bilan content, session resumable + a human prompt allowed, nothing restarts); load-time mutants `kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · exempt-by-handle · stamp-on-unknown · drop-queue-on-pause-interrupt` (+ `unfixed:no-trap` = master) must each redden their named check. `--arm probe-interrupt` = what a plain interrupt leaves alive (the gap the kill exists for) |
+| Real pid recycle (`ns_last_pid` in a user+pid namespace) | `pnpm run test:pause-trap-recycle`: the innocent that inherits a planned pid survives (identity re-read removed ⇒ killed); D11 provenance arms (a)/(b)/(c) + the F1 supervisor arm above, with their mutants |
+| In-place unit mutants (byte-exact backup + `cmp`, clean control before/after, anchors match once) | `pnpm run test:pause-trap-mutants` — 100+ mutants over every clause (snapshot no-touch, identity/lineage/fail-closed, kill ladder, orchestrator order/lift/dedupe, the DB stamp guard, the boot/stream/submit wiring) |

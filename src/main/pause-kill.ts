@@ -5,6 +5,7 @@
 // elsewhere there is no start-time identity, so it fails closed and kills nothing.
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import {
   killOrder,
   parseProcIdent,
@@ -27,6 +28,8 @@ export interface KillDeps {
   readCwd(pid: number): string | null;
   /** `CLAUDE_PID` from /proc/<pid>/environ, read NOW (null = absent, 'unreadable' = fail closed). */
   readClaudePid(pid: number): number | null | 'unreadable';
+  /** Epoch ms a process with this /proc start-time began (boot time + ticks / CLK_TCK). */
+  startMs(startTicks: number): number;
   /** Deliver a signal; false when it was not delivered (ESRCH/EPERM). */
   signal(pid: number, sig: 'SIGTERM' | 'SIGKILL'): boolean;
   sleep(ms: number): Promise<void>;
@@ -63,17 +66,45 @@ export interface KillReport {
   /** Tool-tree members still alive after the last round (same identity). */
   survivors: Array<{ pid: number; comm: string; cmd: string; reason: string }>;
   rounds: number;
+  /** The pause was lifted/re-written while killing: the remaining signals were NOT sent. */
+  aborted?: 'lifted';
   error?: string;
 }
 
 export interface KillOptions {
   termGraceMs?: number;
   maxRounds?: number;
+  /** Re-checked before EVERY round and every signal: false ⇒ stop at once (a lift/re-pause must not cost the released turn its first tool — review F8). */
+  stillPaused?: () => boolean;
+  /** Only processes that started BEFORE this epoch-ms are targets (a HUMAN turn that began during the trap is allowed to run — D9, review F2). */
+  startedBeforeMs?: number;
+  /** Tool-shell roots whose whole tree is SPARED (the tree that contains the `orchestra run pause` call — pauser exemption, review F5). */
+  spareRoots?: readonly number[];
 }
 
 const DEFAULT_TERM_GRACE_MS = 2_000;
 const DEFAULT_ROUNDS = 3;
 const POLL_MS = 50;
+
+let bootMs: number | null = null;
+let clkTck = 100;
+function startMsOf(startTicks: number): number {
+  if (bootMs === null) {
+    try {
+      const m = /^btime\s+(\d+)/m.exec(fs.readFileSync('/proc/stat', 'utf8'));
+      bootMs = m ? Number(m[1]) * 1000 : 0;
+    } catch {
+      bootMs = 0;
+    }
+    try {
+      const t = Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8', timeout: 2000 }).trim());
+      if (Number.isFinite(t) && t > 0) clkTck = t;
+    } catch {
+      /* 100 is the Linux default */
+    }
+  }
+  return bootMs + (startTicks * 1000) / clkTck;
+}
 
 function readCwdOf(pid: number): string | null {
   try {
@@ -121,6 +152,7 @@ export function realKillDeps(): KillDeps {
     read: (pid) => (supported ? readOne(pid) : 'unreadable'),
     readClaudePid: (pid) => (supported ? readClaudePidOf(pid) : 'unreadable'),
     readCwd: (pid) => (supported ? readCwdOf(pid) : null),
+    startMs: startMsOf,
     readTable: () => {
       if (!supported) return [];
       const out: ProcIdent[] = [];
@@ -192,10 +224,36 @@ export async function killToolTrees(
   const planNow = (): ToolPlan => {
     const pl = planToolTrees(deps.readTable(), cli, planOpts());
     for (const m of pl.members) if (m.isRoot) priorRoots.set(m.pid, { pid: m.pid, startTicks: m.startTicks });
+    if (opts.spareRoots?.length) {
+      const sp = new Set(opts.spareRoots);
+      const keep: ToolProc[] = [];
+      for (const m of pl.members) {
+        if (sp.has(m.pid) || sp.has(m.rootPid)) pl.spared.push({ pid: m.pid, comm: m.comm, cmd: m.cmd, reason: 'the tool tree that issued `orchestra run pause` (pauser exemption by process ancestry)' });
+        else keep.push(m);
+      }
+      pl.members = keep;
+    }
+    if (opts.startedBeforeMs !== undefined) {
+      const before = opts.startedBeforeMs;
+      const keep: ToolProc[] = [];
+      for (const m of pl.members) {
+        if (deps.startMs(m.startTicks) < before) keep.push(m);
+        else pl.spared.push({ pid: m.pid, comm: m.comm, cmd: m.cmd, reason: 'started after a HUMAN turn began during the trap — the human prompt is allowed (D9)' });
+      }
+      pl.members = keep;
+    }
     return pl;
+  };
+  const paused = (): boolean => {
+    if (opts.stillPaused && !opts.stillPaused()) {
+      report.aborted = 'lifted';
+      return false;
+    }
+    return true;
   };
 
   for (let round = 1; round <= maxRounds; round++) {
+    if (!paused()) break;
     const plan: ToolPlan = planNow();
     for (const s of plan.spared) spared.set(s.pid, s);
     if (plan.members.length === 0) break;
@@ -203,6 +261,7 @@ export async function killToolTrees(
     let signalled = 0;
     const termed: ToolProc[] = [];
     for (const m of killOrder(plan.members)) {
+      if (!paused()) break;
       const v = verifyAtSignal(m, plan, protect, deps.read, deps.readClaudePid);
       if (!v.ok) {
         if (v.reason !== 'gone' && v.reason !== 'zombie') {
@@ -221,6 +280,7 @@ export async function killToolTrees(
     await waitUntilGone(termed, deps, grace);
     for (const m of killOrder(termed)) {
       if (!isAlive(m, deps)) continue;
+      if (!paused()) break;
       // SIGTERM was ignored/slow: escalate — after a SECOND identity re-read of this pid.
       const v = verifyAtSignal(m, plan, protect, deps.read, deps.readClaudePid);
       if (v.ok && deps.signal(m.pid, 'SIGKILL')) {

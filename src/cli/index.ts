@@ -1892,7 +1892,20 @@ async function main(argv: string[]): Promise<void> {
           const fencing = await resolveFencing(db, fenceRun, holdGen.value);
           const holdCtx = busCtx(db, bus, { runId: fenceRun, handle: holdActor }, fencing);
           if (sub === 'pause') {
+            const pauseCallAt = Date.now();
             verbRunPause(holdCtx, { ...runPause, runHoldAuthority }, holdTarget);
+            // #252 D1b (review F5): record WHO called — this process's ancestry — so the host trap can spare the tool tree that issued the pause
+            // (the member whose CLI is an ancestor) and exempt nobody for a human typing `--as <coordinator>` in a plain shell. Best-effort.
+            try {
+              const made = runPause.getRunPause(db, holdTarget);
+              if (made && made.pausedAt >= pauseCallAt) {
+                const records = await import('../main/bus-pause-records.ts');
+                const origin = await import('../main/pause-origin.ts');
+                records.recordPauseOrigin(db, holdTarget, made.pausedAt, origin.readProcessChain(process.pid));
+              }
+            } catch {
+              /* no origin recorded ⇒ nobody is spared by the trap: the safe direction */
+            }
           } else {
             verbRunHold(
               holdCtx,
