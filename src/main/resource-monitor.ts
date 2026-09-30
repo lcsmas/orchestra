@@ -15,6 +15,9 @@ import { scoped } from './logger';
 import { store } from './store';
 import { keeperPidFilePath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
 import { hostPageSize, onPageSizeFallback } from './host-page-size';
+import { sdkHasBackgroundTasks, sdkSessionLive } from './sdk-delivery';
+import { sessionDebugLogDir } from './session-debug-log-fs';
+import { createBudgetAlarmEngine, type BudgetAlarmDeps, type BudgetAlarmEngine } from './session-budget-alarms';
 import {
   computeCpuPcts,
   parseProcStatLine,
@@ -116,6 +119,9 @@ export interface ResourceMonitorDeps {
   sleep(ms: number): Promise<void>;
   warn(message: string, meta?: unknown): void;
   info(message: string, meta?: unknown): void;
+  /** Field budget alarms (#214), called with every sample line after it is logged. Unset in rigs that don't
+   *  test them; the app installs `createAppBudgetAlarms().tick` in `startResourceMonitor`. */
+  budgetAlarms?(line: ResourceLogLine): void;
 }
 
 /** total − MemAvailable from /proc/meminfo; null when unreadable — never a fabricated figure. */
@@ -430,17 +436,45 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
       : `${w.value.toFixed(0)}% cpu`;
     d.warn(`resources: ${w.kind} over threshold — ${w.subject} (pid ${w.pid}) at ${val} (advisory, not killed)`);
   }
+  // #214: one `session-budget-alarm:` WARN per breach of a src/shared/session-budget.ts budget (log only, D5).
+  try {
+    d.budgetAlarms?.(line);
+  } catch (e) {
+    rlog.swallow('budget alarms', e);
+  }
   return line;
 }
 
+/** The app's field-alarm engine (#214): real sessions dir, workspace label from the store, WARN through the
+ *  `resources` logger. A rig overrides only the seams it must fake (dir, clock, sink). */
+export function createAppBudgetAlarms(over: Partial<BudgetAlarmDeps> = {}): BudgetAlarmEngine {
+  return createBudgetAlarmEngine({
+    now: () => Date.now(),
+    sessionsDir: () => sessionDebugLogDir(),
+    label: (wsId) => {
+      const ws = store.getWorkspace(wsId);
+      return ws ? (ws.name || ws.branch || null) : null;
+    },
+    // Busy OR UNKNOWN reads true: the SDK session's running background task (the signal hibernation honours), an armed
+    // cron/loop (`loopingSince`, the Stop payload's session_crons), or no attached structured session in THIS run (a
+    // keeper not yet reattached after a restart has no task state to consult) — idle-but-busy is not a leak.
+    backgroundWork: (wsId) => !sdkSessionLive(wsId) || sdkHasBackgroundTasks(wsId) || store.getWorkspace(wsId)?.loopingSince !== undefined,
+    warn: (m) => rlog.warn(m),
+    ...over,
+  });
+}
+
 let timer: NodeJS.Timeout | null = null;
+let budgetEngine: BudgetAlarmEngine | null = null;
 
 /** Start the always-on monitor (idempotent). */
 export function startResourceMonitor(): void {
   if (timer) return;
   resetState();
+  budgetEngine = createAppBudgetAlarms();
+  const appDeps: ResourceMonitorDeps = { ...defaultDeps, budgetAlarms: (line) => budgetEngine?.tick(line) };
   timer = setInterval(() => {
-    void sampleTick().catch((e) => rlog.swallow('resource-monitor tick', e));
+    void sampleTick(appDeps).catch((e) => rlog.swallow('resource-monitor tick', e));
   }, TICK_MS);
   if (timer.unref) timer.unref();
   rlog.info('resource-monitor: started (issue #198 T8) — sampling /proc every 60s');
@@ -457,6 +491,7 @@ export function stopResourceMonitor(): void {
 function resetState(): void {
   prevTicks = new Map();
   prevAt = 0;
+  budgetEngine?.reset();
   logState.loaded = false;
   logState.activeStartedAt = null;
   logState.backupStartedAt = null;

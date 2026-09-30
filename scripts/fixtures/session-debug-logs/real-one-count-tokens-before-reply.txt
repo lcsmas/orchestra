@@ -1,0 +1,7 @@
+2026-09-30T03:21:46.356Z [DEBUG] [API REQUEST] /v1/messages/count_tokens x-client-request-id=5d6eb992-d96f-487a-8e09-26f7bc72a789 source=count_tokens
+2026-09-30T03:21:46.622Z [DEBUG] [API:timing] dispatching to firstParty model=claude-sonnet-5-5
+2026-09-30T03:21:46.623Z [DEBUG] [API REQUEST] /v1/messages x-client-request-id=913dc75c-b210-4c99-b6f3-ee88d5000be2 source=sdk
+2026-09-30T03:21:56.905Z [DEBUG] [API:timing] first byte after 10286ms
+2026-09-30T03:22:02.159Z [DEBUG] [API:timing] dispatching to firstParty model=claude-sonnet-5-5
+2026-09-30T03:22:02.159Z [DEBUG] [API REQUEST] /v1/messages x-client-request-id=9cfb0998-c7f8-4dd6-aefa-d3344037e95c source=sdk
+2026-09-30T03:22:03.381Z [DEBUG] [API:timing] first byte after 1223ms

@@ -1,0 +1,8 @@
+2026-09-29T13:57:52.420Z [DEBUG] [API:timing] dispatching to firstParty model=claude-haiku-4-5-20251001
+2026-09-29T13:57:52.421Z [DEBUG] [API:timing] dispatching to firstParty model=claude-opus-5-5[1m]
+2026-09-29T13:57:52.422Z [DEBUG] [API REQUEST] /v1/messages x-client-request-id=bfe20f83-d1fe-4ad3-a033-785a0489c59e source=generate_session_title
+2026-09-29T13:57:52.423Z [DEBUG] [API REQUEST] /v1/messages x-client-request-id=dc41071c-bfc9-4174-a843-a6840772a4a5 source=sdk
+2026-09-29T13:57:53.153Z [DEBUG] [API:timing] first byte after 733ms
+2026-09-29T13:57:53.879Z [DEBUG] [API:timing] first byte after 1459ms
+2026-09-29T13:57:58.254Z [DEBUG] [API:timing] dispatching to firstParty model=claude-opus-5-5[1m]
+2026-09-29T13:57:58.255Z [DEBUG] [API REQUEST] /v1/messages x-client-request-id=a4e0e8b5-fabf-49dc-932e-17f1924c05f0 source=sdk

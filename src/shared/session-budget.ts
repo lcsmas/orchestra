@@ -218,6 +218,22 @@ export const SESSION_BUDGETS = Object.freeze({
     /** …and it must be gone within this long of the delete call. */
     zeroWithinMs: 5000,
   }),
+  /** FIELD alarms on REAL sessions (#214, session-budget-alarms.ts). The process budget IS `processes` above, applied to the
+   *  SETTLED skeleton: samples whose store status is idle with no live background task or cron (a running tool's children are
+   *  work, not a leak), `settledSamples` in a row, n = stdio MCP servers the session's debug log shows connected (HTTP servers
+   *  have no process). PROCESS COUNT only — `processes.memoryMB` is not judged in the field (fixture-calibrated; real settled
+   *  skeleton trees run up to 1.15× it, see session-budget-alarms.ts). Only what `processes` has no number for lives here. */
+  field: Object.freeze({
+    /** Consecutive settled samples over a `processes` limit before it alarms (15 × 60 s ≈ 15 min — OPS ruling 2026-09-30). */
+    settledSamples: 15,
+    /** Least-squares RSS growth of a SETTLED tree over this trailing window — a leak's signature. */
+    slopeWindowMs: 30 * 60 * 1000,
+    /** Fewer settled samples than this in the window ⇒ no slope verdict (no trend yet). */
+    slopeMinSamples: 20,
+    /** Measured 2026-09-30 on the dev laptop over the 6.8 h resources.jsonl (1525 idle 30-min windows, RSS in REAL units —
+     *  the log predates the page-size fix, ×4): p99.9 3.5 / max 4.4 MB/min; the budget is ~1.8× the max. UNBASELINED beyond 6.8 h. */
+    maxIdleRssSlopeBytesPerMin: 8 * 1024 * 1024,
+  }),
 });
 
 export type SessionBudgets = typeof SESSION_BUDGETS;
@@ -253,7 +269,7 @@ const fmtCounts = (c: RequestCounts): string =>
   `model=${c.model} count_tokens=${c.count_tokens} other=${c.other} | main=${c.main} side=${fmtMap(c.side)} egress=${fmtMap(c.egress)}`;
 
 /** One `max` verdict per key in the budget map OR the actual map (a key only the run has is budgeted at 0). */
-function mapVerdicts(prefix: string, budget: Record<string, number>, actual: Record<string, number> | undefined, ctx: string): Verdict[] {
+export function mapVerdicts(prefix: string, budget: Record<string, number>, actual: Record<string, number> | undefined, ctx: string): Verdict[] {
   const keys = [...new Set([...Object.keys(budget), ...Object.keys(actual ?? {})])].sort();
   return keys.map((k) => budgetVerdict(`${prefix}.${k}`, 'max', budget[k] ?? 0, actual?.[k] ?? 0, ctx));
 }
@@ -262,7 +278,8 @@ function flagVerdict(id: string, ok: boolean, okMsg: string, voidMsg: string): V
   return { id, kind: 'instrument', ok, actual: ok ? 1 : null, limit: 'required', message: ok ? `ok ${id}: ${okMsg}` : `INSTRUMENT VOID ${id}: ${voidMsg}` };
 }
 
-function budgetVerdict(id: string, kind: 'exact' | 'max', limit: number, actual: number, ctx: string): Verdict {
+/** Exported for the field alarms (#214): one verdict shape/message for the suite and the app. */
+export function budgetVerdict(id: string, kind: 'exact' | 'max', limit: number, actual: number, ctx: string): Verdict {
   const ok = kind === 'exact' ? actual === limit : actual <= limit;
   const lim = kind === 'exact' ? `exactly ${limit}` : `at most ${limit}`;
   return {

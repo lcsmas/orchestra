@@ -1,0 +1,3 @@
+2026-09-30T03:03:03.939Z [DEBUG] [API:timing] dispatching to firstParty model=claude-opus-5-5[1m]
+2026-09-30T03:03:03.948Z [DEBUG] [API REQUEST] /v1/messages x-client-request-id=41010703-3a4e-4ffe-8476-d477e153e64b source=sdk
+2026-09-30T03:03:04.719Z [ERROR] API error x-client-request-id=41010703-3a4e-4ffe-8476-d477e153e64b (give this to the API team for server-log lookup)

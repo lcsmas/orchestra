@@ -100,6 +100,52 @@ Each tick (`sampleTick`, dependency-injected so the rig drives the real path):
   ~700 MB healthy-tree measurement). A reaped tree is excluded (its RSS is
   stale).
 
+- **(c) field budget alarms (`session-budget-alarm:`, #214 — log only, D5).** Judges REAL sessions against
+  `src/shared/session-budget.ts` (the one budget file; the alarm modules restate no number — pinned by
+  `session-budget-alarms.test.ts`). Pure half `src/shared/session-budget-alarms.ts`, I/O half
+  `src/main/session-budget-alarms.ts` (Node builtins + shared only), called by `sampleTick` via the optional
+  `deps.budgetAlarms` seam that `startResourceMonitor` fills with `createAppBudgetAlarms()` (rigs leave it unset).
+  Each tick, two families:
+  **(1) session tree** — from the sample line, on SETTLED samples only (store status `idle` AND no live background
+  work AND a live attached SDK session: `backgroundWork` = `!sdkSessionLive || sdkHasBackgroundTasks || loopingSince`,
+  unknown reads busy). `session.processes.atEnd.total`: `settledSamples`=15 consecutive settled samples all over
+  the limit DERIVED from `SESSION_BUDGETS.processes` (keeper + cli + 1 per **stdio** MCP server + hook + other) — n =
+  distinct `Successfully connected (transport: stdio)` names in the head of the session's latest debug log, unknown
+  (log < 2 min old / absent) ⇒ not judged, never guessed. `session.field.settledRssSlopeBytesPerMin`: least-squares RSS
+  slope of the settled run over 30 min ≤ `field.maxIdleRssSlopeBytesPerMin` (≥ 20 samples spanning ≥ 80 %). Reaped /
+  absent-from-store trees are the reaper's. **Tree MEMORY level is deliberately NOT judged:** `processes.memoryMB` is
+  fixture-calibrated (first reply / settled); real settled skeleton trees sit at p50 0.82 / p90 1.01 / p99 1.10 / max
+  1.15 × it (3271 idle samples, 69 sessions, 6.8 h, real units) — 12.6 % over — so growth is the slope's job.
+  RSS needs the page-size fix (`RSS units` above): pre-fix `resources.jsonl` is 4× low on a 16 KB host.
+  **(2) session-start requests** — the per-session debug logs (`activity-pty-terminal.md` § #177) still inside their START
+  window (spawn ts from the file name < 10 min old, tailed by byte offset, torn last line held back): `[API REQUEST]`
+  lines up to the first reply, judged against `SESSION_BUDGETS.beforeFirstReply` (model ≤ 1 as an upper bound,
+  count_tokens ≤ 0, other ≤ 0). First reply = the first byte of the first counted `/v1/messages` call, paired to its
+  dispatch by `(line ts − "first byte after Nms")`, one-to-one (title + opening turn leave in the same ms).
+  Counted like the suite (#208): `source=sdk` = the user's turn (`main`, ≤ `modelRequests`), every other
+  `/v1/messages` call is a `side` call keyed by the model of its `dispatching to firstParty model=` line (≤
+  `sideModelRequests[model]`, an unlisted model 0 — so the title call is budgeted, a new startup probe is not absorbed); a
+  model call that ended in `API error x-client-request-id=<id>` is un-counted (a 429 retry is not drift). NOT judged:
+  `startupEgressAttempts` (a debug log records no refused connection). CLI logs under
+  API-key auth / a custom base URL (the suite's fake API) carry NO `x-client-request-id=` — the parser accepts both.
+  The window shuts at the first reply: the ~58 count_tokens the turn-end gauge sends AFTER it are not a breach.
+  **One alarm per breach:** `AlarmLedger` fires on the false→true edge and re-arms when the tree recovers; a log fires
+  each budget once (a restart = a new log = a new window); the ledger resets with the monitor (an app restart re-alarms
+  a persisting breach once). A line reads `session-budget-alarm: session <wsId> (<name>) — BUDGET BROKEN <id>: allowed
+  <limit>, saw <n> — <detail> [<source>]`; an open start window's count is a lower bound (flagged).
+  **Field evidence (2026-09-30, dev laptop).** Start requests: the shipped parser over the 169 real captures gave 164
+  normal starts (model=1), 3 with no request yet, TWO alarms — the #176 fan-out (52 count_tokens) and one post-fix start
+  with 1 count_tokens. Tree rule replayed over the 6.8 h `resources.jsonl` (RSS ×4): 15 process firings in 8 of 69
+  sessions BEFORE the background exclusion (not in the log); by transcript (`run_in_background`/Monitor starts vs
+  `<task-notification>` completions) 13 of them (6 sessions) had a live background task — excluded live — one
+  (`612f1597`) was a real leak (the agent's own note: spike processes left alive), one (`f4e20bf8`) idle with 5 extra
+  processes and no background task (unattributed, consistent with leftover rig processes); slope: 0 firings
+  (idle 30-min slope p99.9 3.5 / max 4.4 MB/min vs the 8 MB/min budget). Gates: `src/shared/session-budget-alarms.test.ts`
+  (real-log fixtures in `scripts/fixtures/session-debug-logs/`), `src/main/field-budget-alarms.test.ts` wrapping
+  `scripts/e2e-field-budget-alarms.mjs` (REAL `sampleTick` + engine over a fake /proc + real log files, incl. the app's
+  default `backgroundWork`), and `pnpm run test:field-budget-alarms` (`--real-cli`: C1's harness session's real debug
+  log → exactly one alarm, the count equal to the fake API's own).
+
 Gates: #203 arms `reap_*` in `scripts/e2e-keeper-lifecycle.mjs` (REAL keeper daemons + `sampleTick`/`reapKeepersNow`, wrapped by `src/main/keeper-lifecycle.test.ts`); unit arms in `resource-monitor.test.ts` (+ real-`/proc` start-time oracle in
 `resources.test.ts`) and `scripts/verify-resource-monitor.mjs`, which drives the
 REAL `sampleTick` over a fake `/proc` WORLD that can recycle a pid between the

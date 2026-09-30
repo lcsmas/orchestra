@@ -937,3 +937,10 @@ must-DELETE + must-KEEP per cap, each mutant-reddened), `src/main/session-debug-
 REAL `sdkSend → query()` with a faked CLI that honors `--debug-file` — the file
 appears under `logs/sessions/` and old captures rotate; the `appears` arm is the
 discriminating must-FAIL — inert on master where no `debugFile` is set).
+
+**Also the field-alarm source (#214).** The always-on resource monitor tails each young capture (file name →
+`parseSessionDebugLogName`, the inverse of `sessionDebugLogName`) and counts its `[API REQUEST]` lines up to the
+session's first reply against `SESSION_BUDGETS.beforeFirstReply` — see `resources.md` detector (c). The line format the
+alarm reads: `<iso> [DEBUG] [API REQUEST] <path> [x-client-request-id=<id>] source=<src>`,
+`[API:timing] dispatching to firstParty model=<model>` and `[API:timing] first byte after <N>ms`; a CLI upgrade that changes either is caught by the fixtures in
+`scripts/fixtures/session-debug-logs/` and the `--real-cli` arm.

@@ -46,6 +46,7 @@
     "test:session-debug-log": "bash scripts/e2e-session-debug-log.sh",
     "test:context-seed": "bash scripts/e2e-context-seed-176.sh",
     "test:session-budget": "bash scripts/e2e-session-budget.sh",
+    "test:field-budget-alarms": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-field-budget-alarms.mjs --real-cli",
     "smoke:session-budget-real": "node scripts/session-budget/smoke-real.mjs",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",

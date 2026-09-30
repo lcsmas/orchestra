@@ -62,6 +62,15 @@ export function sessionDebugLogName(wsId: string, spawnedAtMs: number): string {
   return `${safeWs}__${ts}${SESSION_DEBUG_LOG_EXT}`;
 }
 
+/** Inverse of `sessionDebugLogName`: `{ wsId, spawnedAtMs }`, or null for a name that isn't one of ours
+ *  (the field budget alarms, #214, key a session's start window on it). */
+export function parseSessionDebugLogName(name: string): { wsId: string; spawnedAtMs: number } | null {
+  const m = /^(.+)__(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.log$/.exec(name);
+  if (!m) return null;
+  const spawnedAtMs = Date.parse(`${m[2]}T${m[3]}:${m[4]}:${m[5]}.${m[6]}Z`);
+  return Number.isFinite(spawnedAtMs) ? { wsId: m[1], spawnedAtMs } : null;
+}
+
 /**
  * Decide which files to delete to satisfy the retention caps. Pure.
  *

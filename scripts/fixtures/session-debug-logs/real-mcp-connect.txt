@@ -1,0 +1,4 @@
+2026-09-30T03:21:45.129Z [DEBUG] MCP server "chrome-devtools": Successfully connected (transport: stdio) in 93ms
+2026-09-30T03:21:45.872Z [DEBUG] MCP server "linear-server": Successfully connected (transport: http) in 777ms
+2026-09-30T03:21:45.884Z [DEBUG] MCP server "datadog-mcp": Successfully connected (transport: http) in 788ms
+2026-09-30T03:21:46.199Z [DEBUG] MCP server "plugin:slack:slack": Successfully connected (transport: http) in 1106ms
