@@ -114,6 +114,16 @@ function bootAppThen(now: number): void {
   at(now);
 }
 
+/** LEAD → OPS (old, no activity) → `child`: the OPS is escalated unless `child` shields it. */
+function fleetStore(child: Workspace): LivenessRosterStore {
+  const all = [
+    ws({ id: 'c9-lead', parentId: undefined, lastTask: undefined }),
+    ws({ id: 'c9-ops2', parentId: 'c9-lead', createdAt: T0 - 3 * 24 * HOUR }),
+    child,
+  ];
+  return { workspaces: all, getWorkspace: (id) => all.find((w) => w.id === id) };
+}
+
 test('#236 must-FAIL on master: app up 2 h, a FRESH member with no activity → NO escalation in the stale window', (t) => {
   // MUTANT (master's roster): `lastActivityAt: getLastActivity(id) ?? appStartedAt` — the
   //   fresh member reads silent since app start (2 h) and escalates a sweep after spawn.
@@ -183,12 +193,7 @@ test('#236 fleet-active: a fresh RUNNING child shields its coordinator on an app
   //   → not progress → its idle OPS is escalated to LEAD while its whole fleet works.
   const db = tmpBus(t);
   bootAppThen(UP_2H);
-  const lead = ws({ id: 'c9-lead', parentId: undefined, lastTask: undefined });
-  const ops = ws({ id: 'c9-ops2', parentId: 'c9-lead', createdAt: T0 - 3 * 24 * HOUR });
-  const store = (child: Workspace): LivenessRosterStore => {
-    const all = [lead, ops, child];
-    return { workspaces: all, getWorkspace: (id) => all.find((w) => w.id === id) };
-  };
+  const store = fleetStore;
   const fresh = ws({ id: 'c9-child-fresh', parentId: 'c9-ops2', status: 'running', createdAt: UP_2H - 30_000 });
   arm(db, store(fresh));
   sweepBusLiveness();
@@ -199,6 +204,49 @@ test('#236 fleet-active: a fresh RUNNING child shields its coordinator on an app
   arm(db, store(stuck));
   sweepBusLiveness();
   assert.equal(escalations(db, 'c9-lead', 'c9-ops2'), 1, 'no-progress running child → OPS escalated');
+});
+
+test('#236 F1: a createdAt in the FUTURE (clock stepped back) floors at app start like master — never blinds liveness', (t) => {
+  // MUTANTS: raw createdAt, and the literal `Math.min(createdAt, now)` clamp (= now on every
+  //   sweep, still blind): a silent member and a wedged running child then read as fresh.
+  const db = tmpBus(t);
+  bootAppThen(UP_2H);
+  const skewed = ws({ id: 'c9-future', createdAt: UP_2H + 2 * HOUR });
+  const roster = arm(db, storeOf(skewed));
+  assert.equal(roster()[0].lastActivityAt, T0, 'a future createdAt is ignored: app-start floor');
+  sweepBusLiveness();
+  assert.equal(escalations(db, 'c9-ops', 'c9-future'), 1, 'silent since app start (master parity)');
+
+  // A wedged `running` child with a future createdAt must not shield its OPS either.
+  const wedged = ws({ id: 'c9-child-future', parentId: 'c9-ops2', status: 'running', createdAt: UP_2H + 2 * HOUR });
+  arm(db, fleetStore(wedged));
+  sweepBusLiveness();
+  assert.equal(escalations(db, 'c9-lead', 'c9-ops2'), 1, 'wedged future-createdAt child shields nothing');
+});
+
+test('#236 F3: a non-finite createdAt or activity stamp is ignored — floors at app start, never NaN-escalates', (t) => {
+  // MUTANT: no `Number.isFinite` guard → Math.max(NaN, …) = NaN → `now - NaN <= STALE` is false
+  //   → a member is escalated on an app up 1 minute.
+  const db = tmpBus(t);
+  bootAppThen(T0 + MIN);
+  const nanBorn = ws({ id: 'c9-nan-born', createdAt: NaN });
+  const infBorn = ws({ id: 'c9-inf-born', createdAt: Infinity });
+  const nanSeen = ws({ id: 'c9-nan-seen', createdAt: T0 - 3 * 24 * HOUR });
+  at(NaN);
+  noteActivity('c9-nan-seen'); // Date.now() = NaN → the stored stamp is NaN
+  at(T0 + MIN);
+  const roster = arm(db, storeOf(nanBorn, infBorn, nanSeen));
+  for (const m of roster()) assert.equal(m.lastActivityAt, T0, `${m.reader}: app-start floor`);
+  sweepBusLiveness();
+  for (const id of ['c9-nan-born', 'c9-inf-born', 'c9-nan-seen']) {
+    assert.equal(escalations(db, 'c9-ops', id), 0, `${id}: app up 1 m → fresh`);
+  }
+  // Control (same rig): past the window of the floor they DO escalate — not permanent immunity.
+  at(T0 + STALE_AFTER_MS + MIN);
+  sweepBusLiveness();
+  for (const id of ['c9-nan-born', 'c9-inf-born', 'c9-nan-seen']) {
+    assert.equal(escalations(db, 'c9-ops', id), 1, `${id}: silent past the floor's window → escalated once`);
+  }
 });
 
 // ── One chokepoint: the app-start floor has ONE reader ──────────────────────────

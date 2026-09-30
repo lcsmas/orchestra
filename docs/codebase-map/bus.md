@@ -1494,7 +1494,7 @@ lifecycle event, incl. tool-call START (`pretool`). The roster
 (`src/main/idle-clock.ts`) = `idleClockStart` — last activity, else the app-start
 floor (a relaunched app never escalates on an empty in-memory map; NOT bare
 `createdAt`, which for an old workspace reads as a stall of days), **never before the
-member's own `createdAt`** (#236: a spawn 2 h after launch was escalated as "silent
+member's own `createdAt`** (a future or non-finite `createdAt`/stamp is ignored, not clamped — a clamp to `now` would blind liveness for the whole clock skew) (#236: a spawn 2 h after launch was escalated as "silent
 86m" a minute in). `idleClockOf` is the ONE reader of that floor (`getAppStartedAt`
 is called nowhere else) — the hibernation sweep uses it too — and a source pin in
 `bus-liveness-roster.test.ts` fails on a second reader. It lives beside, not in, the

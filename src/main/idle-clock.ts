@@ -9,5 +9,8 @@ import { idleClockStart } from '../shared/hibernation.ts';
 import { getAppStartedAt, getLastActivity } from './hibernation-activity.ts';
 
 export function idleClockOf(ws: { id: string; createdAt?: number }): number {
-  return idleClockStart(getLastActivity(ws.id), getAppStartedAt(), ws.createdAt);
+  // A createdAt in the FUTURE (wall clock stepped back after creation) is no birth time:
+  // ignore it → app-start floor as before #236. Clamping to now would read "now" every sweep.
+  const born = ws.createdAt !== undefined && ws.createdAt <= Date.now() ? ws.createdAt : undefined;
+  return idleClockStart(getLastActivity(ws.id), getAppStartedAt(), born);
 }
