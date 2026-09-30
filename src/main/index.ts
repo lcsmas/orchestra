@@ -215,7 +215,8 @@ import {
   setAppQuitting,
 } from './keeper-client';
 import { restoreRunningFromKeeper, setTurnStartObserver } from './activity';
-import { startPauseTrap, stopPauseTrap } from './pause-trap';
+import { startPauseTrap, stopPauseTrap, markPauseHumanTurn } from './pause-trap';
+import { setPauseHumanTurnObserver } from './pause-gate';
 import { buildPauseTrapDeps, makeTurnStartObserver } from './pause-trap-host';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
@@ -563,6 +564,7 @@ async function createMainWindow() {
   {
     const pauseTrapDeps = buildPauseTrapDeps();
     setTurnStartObserver(makeTurnStartObserver(pauseTrapDeps));
+    setPauseHumanTurnObserver(markPauseHumanTurn); // sdkSend(origin 'human') marks the turn the pause allows
     startPauseTrap(pauseTrapDeps);
   }
   // Stop the agent processes of long-idle workspaces to reclaim their memory;

@@ -185,3 +185,52 @@ test('verifyAtSignal (non-session-leader roots): ppid chain is verified hop by h
   const hop = { ...t[2], startTicks: 77 };
   assert.match((verifyAtSignal(tg, pl, pr, reader(t, { 201: hop })) as { reason: string }).reason, /parent-identity-changed/);
 });
+
+// ── env provenance: an orphan (reparented, own session) that only CLAUDE_PID ties to this CLI ──
+
+function tableWithDaemon(): ProcIdent[] {
+  return [
+    ...table(),
+    // started AFTER the CLI (start-time 5000 > 1000), ppid 1, its own session, exported CLAUDE_PID=100
+    p(700, 1, { sid: 700, startTicks: 5000, comm: 'sleep', argv: ['sleep', '7715'] }),
+    // same marker but started BEFORE the CLI (a stale process from a previous CLI with a recycled pid value)
+    p(701, 1, { sid: 701, startTicks: 500, comm: 'sleep', argv: ['sleep', '7716'] }),
+    // marker of ANOTHER CLI
+    p(702, 1, { sid: 702, startTicks: 5001, comm: 'sleep', argv: ['sleep', '7717'] }),
+    // a descendant of the MCP sidecar that inherited the marker: must NOT be a tool
+    p(703, 300, { sid: 90, startTicks: 5002, comm: 'chrome', argv: ['chrome'] }),
+  ];
+}
+const ENV: Record<number, number> = { 700: 100, 701: 100, 702: 555, 703: 100 };
+const claudePidOf = (x: ProcIdent): number | null => ENV[x.pid] ?? null;
+
+test('env provenance: a new-session orphan with CLAUDE_PID==this CLI is planned; stale / other-CLI / sidecar-descendant are NOT', () => {
+  const plan = planToolTrees(tableWithDaemon(), CLI, { claudePidOf });
+  const env = plan.members.filter((m) => m.via === 'env').map((m) => m.pid);
+  assert.deepEqual(env, [700]);
+  const d = plan.members.find((m) => m.pid === 700)!;
+  assert.equal(d.isRoot, false, 'an env orphan is never a root');
+  // without the env reader nothing is proven → no env members (fail closed)
+  assert.ok(!planToolTrees(tableWithDaemon(), CLI).members.some((m) => m.via === 'env'));
+});
+
+test('verifyAtSignal env path: re-reads CLAUDE_PID NOW — matching proves it, a changed/absent/unreadable value refuses', () => {
+  const t = tableWithDaemon();
+  const pl = planToolTrees(t, CLI, { claudePidOf });
+  const tg = pl.members.find((m) => m.pid === 700)!;
+  const pr = { keeperPid: KEEPER, selfPid: SELF };
+  assert.deepEqual(verifyAtSignal(tg, pl, pr, reader(t), () => 100), { ok: true, via: 'env' });
+  assert.equal(verifyAtSignal(tg, pl, pr, reader(t), () => 555).ok, false, 'another CLI\'s marker');
+  assert.equal(verifyAtSignal(tg, pl, pr, reader(t), () => null).ok, false, 'no marker');
+  const un = verifyAtSignal(tg, pl, pr, reader(t), () => 'unreadable');
+  assert.deepEqual(un, { ok: false, reason: 'environ-unreadable' });
+  // and never when the process is not younger than the CLI
+  const old = { ...tg, startTicks: 900 };
+  assert.equal(verifyAtSignal(old, pl, pr, reader(t, { 700: { ...t.find((x) => x.pid === 700)!, startTicks: 900 } }), () => 100).ok, false);
+});
+
+test('planToolTrees never makes the CLI a member, even through the env rule', () => {
+  const t = [...table(), p(100, 90, { startTicks: 1000 })].filter((x, i, a) => a.findIndex((y) => y.pid === x.pid) === i);
+  const plan = planToolTrees(t, CLI, { claudePidOf: () => 100 });
+  assert.ok(!plan.members.some((m) => m.pid === CLI.pid || m.pid === KEEPER));
+});

@@ -60,6 +60,7 @@ const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.t
 const sdk = await import(`${REPO}/src/main/agent-sdk.ts`);
 const activity = await import(`${REPO}/src/main/activity.ts`);
 const trap = await import(`${REPO}/src/main/pause-trap.ts`);
+const pauseGate = await import(`${REPO}/src/main/pause-gate.ts`);
 const host = await import(`${REPO}/src/main/pause-trap-host.ts`);
 
 // The keeper bundle the app would have installed at startup.
@@ -104,6 +105,7 @@ if (phase === 'first') {
 // THE PRODUCTION WIRING (index.ts): host deps + the turn-start observer + detection (WAL watch + sweep + boot drain).
 const deps = host.buildPauseTrapDeps();
 activity.setTurnStartObserver(host.makeTurnStartObserver(deps));
+pauseGate.setPauseHumanTurnObserver(trap.markPauseHumanTurn); // exactly index.ts's wiring
 if (!cfg.noTrap) trap.startPauseTrap(deps);
 out({ ev: 'trap-started', phase, noTrap: !!cfg.noTrap });
 
@@ -118,17 +120,12 @@ for await (const line of rl) {
   try { c = JSON.parse(line); } catch { continue; }
   try {
     if (c.cmd === 'human-send') {
-      // exactly what api-handlers agentSdkSend does for a composer prompt
-      trap.notePauseHumanTurn(c.ws);
-      await sdk.sdkSend(c.ws, c.text);
+      // exactly what api-handlers agentSdkSend does for a composer prompt (origin 'human' → the registered observer marks it)
+      await sdk.sdkSend(c.ws, c.text, undefined, undefined, undefined, false, false, 'human');
       out({ reply: 'human-send', ws: c.ws });
     } else if (c.cmd === 'interrupt') {
       await sdk.sdkInterrupt(c.ws); // the plain human Stop button (no trap)
       out({ reply: 'interrupt', ws: c.ws });
-    } else if (c.cmd === 'cron-send') {
-      // a turn the app did NOT mark as human (stand-in for the CLI's own /loop / cron / task-notification)
-      await sdk.sdkSend(c.ws, c.text);
-      out({ reply: 'cron-send', ws: c.ws });
     } else if (c.cmd === 'state') {
       const ws = store.getWorkspace(c.ws);
       out({ reply: 'state', ws: c.ws, status: ws?.status ?? null, hasSession: sdk.sdkHasSession(c.ws) });

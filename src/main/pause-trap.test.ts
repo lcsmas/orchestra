@@ -11,12 +11,12 @@ import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause } from './bus-pause.ts';
-import { bilanForMember, listBilan, listBilanForRun } from './bus-pause-records.ts';
+import { bilanForMember, listBilan, listBilanForRun, markTrapDone } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { snapshotWorktree } from './pause-snapshot.ts';
 import {
   __resetPauseTrapForTests,
-  notePauseHumanTurn,
+  markPauseHumanTurn,
   onTurnStart,
   runPauseTrap,
   sweepPauseTrap,
@@ -40,6 +40,7 @@ interface Rig {
   interruptResult: InterruptOutcome;
   cliResult: { cli: { pid: number; startTicks: number }; keeperPid: number | null } | { error: string } | null;
   onSnapshot: (() => void) | null;
+  onInterrupt: (() => void) | null;
   clock: number;
 }
 
@@ -69,6 +70,7 @@ function newRig(t: { after: (fn: () => void) => void }, pauseSwitch = true): Rig
     interruptResult: 'interrupted' as InterruptOutcome,
     cliResult: { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 } as Rig['cliResult'],
     onSnapshot: null as (() => void) | null,
+    onInterrupt: null as (() => void) | null,
     clock: 10_000,
   } as Rig;
   rig.deps = {
@@ -84,6 +86,7 @@ function newRig(t: { after: (fn: () => void) => void }, pauseSwitch = true): Rig
     },
     interrupt: async (m) => {
       calls.push(`interrupt:${m.wsId}`);
+      rig.onInterrupt?.();
       return rig.interruptResult;
     },
     cliOf: async (m) => {
@@ -241,6 +244,19 @@ test('LIFT during the trap: no process is touched after the lift, pause_trap_at 
   assert.equal(getRunPause(rig.db, 'W'), null);
 });
 
+test('LIFT landing DURING the interrupt: the kill step never runs (the lift is re-checked after the settle pause)', async (t) => {
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.onInterrupt = () => {
+    assert.equal(setRunPause(rig.db, 'W', false, 'ops-w'), 'lifted');
+  };
+  const s = await runPauseTrap(rig.deps, c);
+  assert.equal(s.done, false);
+  assert.ok(rig.calls.includes('interrupt:w1'), 'the interrupt had already started');
+  assert.ok(!rig.calls.some((x) => x.startsWith('kill:') || x.startsWith('cliOf:')), `no process killed after the lift: ${rig.calls.join(' ')}`);
+});
+
 test('resume + RE-PAUSE: a stale trap cannot stamp the NEW pause as done (pause_trap_at keyed on paused_at)', async (t) => {
   const rig = newRig(t);
   member(rig, 'w1', 'W');
@@ -254,6 +270,22 @@ test('resume + RE-PAUSE: a stale trap cannot stamp the NEW pause as done (pause_
   const s = await runPauseTrap(rig.deps, c1);
   assert.equal(s.done, false);
   assert.equal(getRunPause(rig.db, 'W')?.trapAt, null, 'the new pause still owes its trap');
+});
+
+test('markTrapDone is keyed on paused_at: a stale pause cannot stamp the NEW pause (the DB guard itself, below the stillPaused checks)', (t) => {
+  const rig = newRig(t);
+  const c1 = pauseW(rig);
+  assert.equal(setRunPause(rig.db, 'W', false, 'ops-w'), 'lifted');
+  const end = Date.now() + 5;
+  while (Date.now() < end); // a distinct paused_at ms
+  const c2 = pauseW(rig);
+  assert.notEqual(c1.pausedAt, c2.pausedAt);
+  assert.equal(markTrapDone(rig.db, 'W', c1.pausedAt, 777), false, 'the stale pause is refused');
+  assert.equal(getRunPause(rig.db, 'W')?.trapAt, null);
+  assert.equal(markTrapDone(rig.db, 'W', c2.pausedAt, 888), true);
+  assert.equal(getRunPause(rig.db, 'W')?.trapAt, 888);
+  assert.equal(markTrapDone(rig.db, 'W', c2.pausedAt, 999), false, 'stamped once');
+  assert.equal(getRunPause(rig.db, 'W')?.trapAt, 888);
 });
 
 test('BOOT COMPLETION: a half-done trap (snapshot taken, kill owed) is finished without a second snapshot; a finished member is skipped', async (t) => {
@@ -345,7 +377,7 @@ test('HUMAN prompt is ALLOWED while paused and un-pauses nothing (ledger D5 row 
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   rig.calls.length = 0;
-  notePauseHumanTurn('w1', rig.clock);
+  markPauseHumanTurn('w1', rig.clock);
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'allowed');
   assert.deepEqual(rig.calls, []);
   assert.notEqual(getRunPause(rig.db, 'W'), null, 'the human prompt did not lift the pause');
@@ -359,7 +391,7 @@ test('a stale human mark (older than its TTL) does not whitelist a later CLI-int
   member(rig, 'w1', 'W');
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
-  notePauseHumanTurn('w1', rig.clock - 120_000);
+  markPauseHumanTurn('w1', rig.clock - 120_000);
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
 });
 

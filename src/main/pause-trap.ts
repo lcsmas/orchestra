@@ -224,8 +224,8 @@ export async function runPauseTrap(deps: TrapDeps, carrier: RunPauseInfo): Promi
 const humanTurnMarks = new Map<string, number>();
 const HUMAN_MARK_TTL_MS = 10_000;
 
-/** The composer (or any other HUMAN-origin send) calls this just before starting a turn. */
-export function notePauseHumanTurn(wsId: string, now = Date.now()): void {
+/** Registered as pause-gate's human-turn observer: `sdkSend(origin 'human')` calls it once per HUMAN send, before the turn starts. */
+export function markPauseHumanTurn(wsId: string, now = Date.now()): void {
   humanTurnMarks.set(wsId, now);
 }
 

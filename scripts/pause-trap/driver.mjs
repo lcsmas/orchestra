@@ -87,6 +87,8 @@ const ARMS = {
   foreground: { scenario: 'foreground', markers: [7711, 7712], mustKill: [] },
   background: { scenario: 'background', markers: [7714, 7715, 7716], mustKill: ['sleep 7714', 'sleep 7715'] },
   'app-restart': { scenario: 'blocking', markers: [7713], restart: true, mustKill: [] },
+  // the boot drain must KILL too (not only interrupt): a background task + a daemonized job survive the interrupt
+  'app-restart-bg': { scenario: 'background', markers: [7714, 7715, 7716], restart: true, mustKill: ['sleep 7714', 'sleep 7715'] },
   // the first turn has ENDED when the pause lands (only the background task is alive): interrupt = 'idle' is the right outcome
   'turn-while-paused': { scenario: 'bgnotify', markers: [7718], rowTwentyNine: true, mustKill: ['sleep 7718'], idleAtPause: true },
   // PROBE (not a verdict arm): what does a plain human interrupt leave alive? — the gap the trap's kill exists for.

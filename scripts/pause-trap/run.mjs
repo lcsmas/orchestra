@@ -10,6 +10,7 @@
 //   foreground        pause during a tool call that is a process TREE (bash → sleep & sleep)
 //   background        pause during a background task + a job that outlived its shell + a blocking command
 //   app-restart       the app DIES mid-turn; the pause lands with the app DOWN; the restarted app finishes the trap
+//   app-restart-bg    same, with a background task + a daemonized job (only the boot drain's KILL can stop them)
 //   turn-while-paused a background task is killed, the CLI starts a turn BY ITSELF (task notification) → interrupted + noted
 // Must-FAIL mutants (load-time edits of the shipped source; the named check must go red):
 //   kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer
@@ -30,7 +31,7 @@ const JSON_OUT = args.includes('--json');
 const KEEP = args.includes('--keep') || process.env.PT_KEEP === '1';
 const WANT = opt('arm', 'all');
 
-const NORMAL = ['blocking', 'foreground', 'background', 'app-restart', 'turn-while-paused'];
+const NORMAL = ['blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'turn-while-paused'];
 const MUTANT_ARMS = [
   { name: 'mutant:kill-cli', arm: 'blocking', mutant: 'kill-cli' },
   { name: 'mutant:kill-keeper', arm: 'blocking', mutant: 'kill-keeper' },

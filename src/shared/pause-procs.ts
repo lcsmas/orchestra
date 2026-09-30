@@ -183,7 +183,7 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
       }
     }
     for (const p of byPid.values()) {
-      if (members.has(p.pid) || p.pid === cli.pid || sidecar.has(p.pid) || p.startTicks <= cli.startTicks) continue;
+      if (members.has(p.pid) || p.pid === cli.pid || p.pid === cliNow.ppid || p.pid <= 1 || sidecar.has(p.pid) || p.startTicks <= cli.startTicks) continue;
       if (opts.claudePidOf(p) === cli.pid) add(p, null, 99, 'env');
     }
   }

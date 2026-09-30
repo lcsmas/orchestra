@@ -51,7 +51,7 @@ A pause that landed while the app was DOWN is drained at the next boot: the deta
 
 `onTurnStart` (`:252`): a **CLI-started turn** (model output with no app-yielded turn in flight — `src/main/agent-sdk.ts:1380`; also the `submit` chokepoint, `src/main/activity.ts:957`;
 e.g. `/loop`, cron, the task-notification a killed background task triggers) on a paused member is interrupted, its tool trees killed, and the Bilan notes it. A HUMAN send is allowed and un-pauses nothing
-(`notePauseHumanTurn`, `:228`, called by the composer handler `src/main/api-handlers.ts:1012`; single-use, 10 s TTL). PTY agents are not observed (their human keystrokes also fire `submit`).
+(`markPauseHumanTurn`, `src/main/pause-trap.ts:228`, registered as D1a's `setPauseHumanTurnObserver` seam in `src/main/pause-gate.ts` — `sdkSend(origin 'human')` marks once per human send; single-use, 10 s TTL). PTY agents are not observed (their human keystrokes also fire `submit`).
 
 ## Reading it
 
