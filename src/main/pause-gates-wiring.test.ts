@@ -19,12 +19,13 @@ const body = (src: string, start: string, end: string): string => {
   return src.slice(a, b);
 };
 
-test('row 11 pty:start: typing the opening brief into a freshly opened terminal is an AUTO turn start — gated at FIRE time, before writePty', () => {
+test('row 11 pty:start: the handler hands the brief to the REAL scheduler (gated at fire time, driven by the `pty_brief` rig arm) and the scheduler gates before it writes', () => {
   const b = body(API, 'ptyStart: async (id, cols, rows) =>', 'ptyWrite: async');
-  const timer = body(b, 'if (!resuming && ws.lastTask)', 'Status flips to running');
-  assert.match(timer, /setTimeout\(\(\) => \{[\s\S]*pauseRefusalById\(id, 'auto'\)[\s\S]*return log\.info\([\s\S]*writePty\(id, task \+ '\\n'\)/);
-  assert.ok(timer.indexOf("pauseRefusalById(id, 'auto')") < timer.indexOf('writePty(id, task'), 'gate precedes the write');
+  assert.match(body(b, 'if (!resuming && ws.lastTask)', '\n  },'), /scheduleOpeningBrief\(id, ws\.lastTask, writePty\)/);
+  assert.doesNotMatch(b, /writePty\(id, task/, 'the handler no longer types the brief itself');
   assert.doesNotMatch(body(b, 'const resuming', 'if (!resuming && ws.lastTask)'), /pauseRefusal/, 'opening the terminal itself (HUMAN) is not gated');
+  const sched = read('opening-brief-pty.ts');
+  assert.ok(sched.indexOf("pauseRefusalById(id, 'auto')") >= 0 && sched.indexOf("pauseRefusalById(id, 'auto')") < sched.indexOf("write(id, task + '\\n')"), 'gate precedes the write');
 });
 
 test('row 1 composer: the human prompt carries origin human to the sdkSend gate', () => {

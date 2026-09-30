@@ -1037,7 +1037,7 @@ export function verbRunHold(
   });
   if (lifted === 'lifted') {
     // An ANCESTOR run's pause still gates this run (descendants carry none of their own): never claim it is free to start again.
-    const cover = hold.pause?.activePauseFor(ctx.db, runId);
+    const cover = hold.pause?.coverFor(ctx.db, runId);
     ctx.out(
       cover
         ? `Run ${runId}'s own pause is LIFTED, but it is still PAUSED by run ${cover.runId} — lift that one: orchestra run resume --run ${cover.runId}\n`
@@ -1087,7 +1087,7 @@ export function verbRunHold(
       return;
     case 'not-held': {
       // #252: a DESCENDANT run is paused by its ancestor's pause, which `resume` here cannot lift.
-      const cover = !isHold ? hold.pause?.activePauseFor(ctx.db, runId) : null;
+      const cover = !isHold ? hold.pause?.coverFor(ctx.db, runId) : null;
       ctx.out(
         `Run ${runId} was not held — unchanged.\n` +
           (cover
@@ -1104,7 +1104,9 @@ export function verbRunHold(
 export interface RunPauseDeps {
   setRunPause: (db: BusDb, runId: string, pause: boolean, actor: string | null) => RunPauseOutcome;
   getRunPause: (db: BusDb, runId: string) => RunPauseInfo | null;
-  activePauseFor: (db: BusDb, runId: string) => RunPauseInfo | null;
+  /** The pause (if any) that still GATES `runId` through an ancestor — the SAME live-tree walk the host gates use (follow-up: the
+   *  write-once `runs.parent_run_id` misses a run re-parented after creation). Production: src/cli/index.ts `coverFor`. */
+  coverFor: (db: BusDb, runId: string) => RunPauseInfo | null;
 }
 
 /**

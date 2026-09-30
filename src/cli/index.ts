@@ -725,7 +725,14 @@ async function openBusForVerb(): Promise<{
       runPause: {
         setRunPause: busPause.setRunPause,
         getRunPause: busPause.getRunPause,
-        activePauseFor: busPause.activePauseFor,
+        // The SAME live-tree walk the host gates use (the store file when readable — the app's own record of who is under whom), else the bus run tree.
+        coverFor: (d, runId) => {
+          const nodes = offlineWaveNodes();
+          const node = nodes.get(runId);
+          return node
+            ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
+            : busPause.activePauseFor(d, runId);
+        },
       },
       file,
     };
@@ -741,6 +748,47 @@ async function openBusForVerb(): Promise<{
  *  cost) on the common path. */
 function cliOrchestraHome(): string {
   return process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
+}
+
+/** Where the RUNNING APP keeps `store.json` — the app's own rule (src/main/index.ts:167): `$ORCHESTRA_HOME/userData/orchestra/` ONLY when
+ *  ORCHESTRA_HOME is set, else Electron's default userData (`$XDG_CONFIG_HOME|~/.config` + `/orchestra`) + `/orchestra/`. NOT `~/.orchestra/userData`
+ *  when unset — that is an abandoned, stale path in a default install (pre-review: the packaged app has no ORCHESTRA_HOME). */
+export function appStoreFile(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (env.ORCHESTRA_HOME) return path.join(env.ORCHESTRA_HOME, 'userData', 'orchestra', 'store.json');
+  const userData =
+    platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support', 'orchestra')
+      : platform === 'win32'
+        ? path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'orchestra')
+        : path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'orchestra');
+  return path.join(userData, 'orchestra', 'store.json');
+}
+
+/** The persisted workspace tree (`id → {parentId, kind, canOrchestrate}`) read off the store file — empty on any read/parse failure.
+ *  Used by `run resume` to ask the LIVE tree which ancestor still pauses a run (store-less verb: the app may be down). */
+export function offlineWaveNodes(file: string = appStoreFile()): Map<string, WaveNode> {
+  const nodes = new Map<string, WaveNode>();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+      workspaces?: Array<{ id?: unknown; parentId?: unknown; kind?: unknown; canOrchestrate?: unknown }>;
+    };
+    for (const w of Array.isArray(parsed.workspaces) ? parsed.workspaces : []) {
+      if (typeof w.id !== 'string' || !w.id) continue;
+      nodes.set(w.id, {
+        id: w.id,
+        parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
+        kind: typeof w.kind === 'string' ? w.kind : undefined,
+        canOrchestrate: w.canOrchestrate === true,
+      });
+    }
+  } catch {
+    /* unreadable store → empty: the caller falls back to the bus run tree */
+  }
+  return nodes;
 }
 
 /** Read the persisted workspace list off disk when the app is DOWN (#144).

@@ -289,3 +289,18 @@ test('F2 (review D1a) live_tree: an orchestrator attached under a paused run AFT
   assert.equal(r.plainChild, 'inbox');
   assert.equal(r.ok, true);
 });
+
+test('GATE row 11 pty_brief (follow-up): the opening brief typed into a fresh terminal is refused at FIRE time for a paused run (and its descendants); an unrelated run and the lift type it', () => {
+  const r = runArm('pty_brief');
+  assert.deepEqual(r.whilePaused, [{ id: 'ws-xm', data: 'BRIEF-OTHER-RUN\n' }], 'only the unrelated run is typed while paused');
+  assert.deepEqual(r.pauseLandedBeforeFire, [], 'a pause landing between schedule and fire still holds it');
+  assert.deepEqual(r.afterLift, [{ id: 'ws-m1', data: 'BRIEF-LIFTED\n' }]);
+  assert.equal(r.ok, true);
+});
+
+test('follow-up: a hung arm is a RED verdict with JSON — the send_funnel arm names its peer-delivery outcome even when its gate is gone', () => {
+  const rig = fs.readFileSync(RIG, 'utf8');
+  assert.match(rig, /sdkSendAwaitingStart\('ws-m1', 'PEER-TEXT', undefined, 400\), 4000, 'hung'\)/, 'the await that hung without the commit-point gate is bounded');
+  assert.match(rig, /setInterval\(\(\) => \{\}, 1000\);/, 'a keepalive prevents the silent exit 13');
+  assert.match(rig, /abort: 'deadline: the arm hung/, 'and a deadline prints ok:false JSON');
+});
