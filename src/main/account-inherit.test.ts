@@ -835,6 +835,7 @@ test('C10 the D10 provenance guard still comes FIRST — even a UI de-selection 
   const before = snapshot(real.login)!;
   const fake = fakeOf(real);
   putSkeleton(fake.home);
+  put(path.join(fake.home, '.claude.json'), SKELETON_JSON); // a READABLE, server-less MCP source: without it the C10 guard would not fire either (unreadable source keeps the held servers)
   for (const opts of [{ caller: 'boot' }, { userDeselected: true, caller: 'ui-save' }]) {
     const warns = await runSync(fake, undefined, opts);
     assert.deepEqual(snapshot(real.login), before, `untouched (${JSON.stringify(opts)})`);
@@ -910,6 +911,130 @@ test('C10 setter: a non-empty → non-empty edit is a plain sync (prunes only th
   assert.deepEqual(linksOf(snapshot(rig.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json']);
 });
 
+// ---- C10 fix round 1 (review of c5600209): the guard keys on EFFECT, the grant on (id, configDir), reads fail CLOSED ----
+
+const VANISHED: Array<[string, Inherit]> = [
+  ['skills naming only a missing source', { skills: ['gone'] }],
+  ['skills naming only an invalid name (`a/b`)', { skills: ['a/b'] }],
+  ['skills naming only `..`', { skills: ['..'] }],
+  ['mcpServers naming only a server the global config lacks', { mcpServers: ['nope'] }],
+  ['statusline whose source file is missing', { statusline: true }],
+];
+for (const [name, sel] of VANISHED) {
+  test(`C10/F1 effect: ${name} (non-empty selection, would leave nothing) over a live-shaped mirror → nothing written, ONE warn`, async () => {
+    const rig = newRig();
+    const before = await buildLiveMirror(rig);
+    fs.rmSync(path.join(rig.home, '.claude', 'statusline-command.sh')); // the `statusline` source vanished (the other shapes never had one)
+    const warns = await runSync(rig, sel, { caller: 'spawn-sdk' });
+    assert.deepEqual(snapshot(rig.login), before, 'byte-identical: 7 links + 3 injected MCP survive');
+    blockedWarn(warns, rig, 'spawn-sdk', 7, 3);
+  });
+}
+
+test('C10/F1 effect: a user-owned REAL dir in the only selected slot leaves nothing live → blocked', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  put(path.join(rig.home, '.claude', 'skills', 'mine-real', 'SKILL.md'), '# source copy\n');
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design'] }), []);
+  put(path.join(rig.login, 'skills', 'mine-real', 'SKILL.md'), '# the user own skill\n');
+  const before = snapshot(rig.login)!;
+  const warns = await runSync(rig, { skills: ['mine-real'] }, { caller: 'boot' });
+  assert.deepEqual(snapshot(rig.login), before, 'the held link is not pruned in exchange for a link that cannot be made');
+  blockedWarn(warns, rig, 'boot', 1, 0);
+});
+
+test('C10/F1 effect: a SWAP to other existing items leaves something → still applies (UI-save and non-UI), no warn', async () => {
+  for (const caller of ['ui-save', 'spawn-pty']) {
+    const rig = newRig();
+    makeSource(rig.home);
+    assert.deepEqual(await runSync(rig, { skills: ['frontend-design'] }), []);
+    assert.deepEqual(await runSync(rig, { skills: ['handoff'] }, { caller }), [], `${caller}: no warn`);
+    assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills/handoff'], `${caller}: old pruned, new linked`);
+  }
+});
+
+test('C10/F1 effect: ONE surviving selected item is enough — the rest of a stale selection still prunes', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  assert.deepEqual(await runSync(rig, { skills: ['handoff', 'gone'] }, { caller: 'spawn-sdk' }), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills/handoff']);
+  assert.deepEqual(mcpOf(rig.login), ['my-own']);
+});
+
+test('C10/F1 effect: an UNREADABLE MCP source keeps the held servers, so it is not a full prune — only the existing MCP warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server'] }), []);
+  const before = snapshot(rig.login)!;
+  fs.rmSync(path.join(rig.home, '.claude.json'));
+  const warns = await runSync(rig, undefined, { caller: 'boot' });
+  assert.equal(warns.length, 1, `exactly ONE warn: ${JSON.stringify(warns)}`);
+  assert.ok(warns[0].includes(`${path.join(rig.home, '.claude.json')} is missing or unreadable`), `the MCP-source warn, not the C10 one: ${warns[0]}`);
+  assert.deepEqual(mcpOf(rig.login), ['github', 'linear-server']);
+  assert.deepEqual(snapshot(rig.login), before);
+});
+
+// F2: the grant is (id, configDir), not id.
+test('C10/F2 setter: editing configDir to ANOTHER dir AND clearing the boxes in one save does not prune that dir', async () => {
+  const a = newRig();
+  await buildLiveMirror(a);
+  const b = secondLogin(a, '.claude-b');
+  assert.deepEqual(await runSync(b, FULL), []);
+  const aBefore = snapshot(a.login)!;
+  const bBefore = snapshot(b.login)!;
+  const warns = await runSave(a.home, [acct('a', a, FULL)], [acct('a', b, undefined)]);
+  assert.deepEqual(snapshot(b.login), bBefore, 'the newly named dir is untouched');
+  assert.deepEqual(snapshot(a.login), aBefore, 'the old dir is not synced by the save');
+  blockedWarn(warns, { ...a, login: b.login }, 'ui-save', 7, 3);
+});
+
+test('C10/F2 setter: the SAME dir spelled differently (`..` segment) is still the same dir → the de-selection prunes', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  const respelled = { login: `${rig.login}${path.sep}..${path.sep}${path.basename(rig.login)}` }; // path.join would normalise the `..` away
+  assert.notEqual(respelled.login, rig.login);
+  assert.deepEqual(await runSave(rig.home, [acct('a', rig, FULL)], [acct('a', respelled, undefined)]), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), []);
+});
+
+// F4: unreadable held state fails CLOSED.
+test('C10/F4 fail closed: a TORN login .claude.json over an MCP-only dir + empty selection → blocked, file byte-identical', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server'] }), []);
+  fs.writeFileSync(path.join(rig.login, '.claude.json'), '{"mcpServers": {"github": {"comm');
+  const before = snapshot(rig.login)!;
+  const warns = await runSync(rig, undefined, { caller: 'spawn-pty' });
+  assert.deepEqual(snapshot(rig.login), before, 'the torn file is not read as {} and overwritten');
+  blockedWarn(warns, rig, 'spawn-pty', 0, 2);
+});
+
+test('C10/F4 definite absence is not held: NO login .claude.json (ENOENT) with manifest-listed servers → proceeds, reconciled', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  await runSync(rig, { mcpServers: ['github', 'linear-server'] });
+  fs.rmSync(path.join(rig.login, '.claude.json'));
+  assert.deepEqual(await runSync(rig, undefined, { caller: 'boot' }), []);
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] });
+});
+
+test('C10/F4 fail closed: an lstat that CANNOT be read (EACCES on skills/) counts the manifest link as held', { skip: process.getuid?.() === 0 ? 'root bypasses mode bits' : undefined }, async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design', 'handoff'] }), []);
+  const before = snapshot(rig.login)!;
+  const skills = path.join(rig.login, 'skills');
+  fs.chmodSync(skills, 0o000);
+  try {
+    assert.throws(() => fs.lstatSync(path.join(skills, 'handoff')), /EACCES/, 'precondition: the link really is unreadable');
+    const warns = await runSync(rig, undefined, { caller: 'boot' });
+    blockedWarn(warns, rig, 'boot', 2, 0);
+  } finally {
+    fs.chmodSync(skills, 0o755);
+  }
+  assert.deepEqual(snapshot(rig.login), before, 'manifest not rewritten to `symlinks: []` while the links still exist');
+});
+
 // ---- the pure helpers -----------------------------------------------------------
 
 test('C10 isEmptyAccountInherit / deselectedAccountIds: literal table', async () => {
@@ -928,6 +1053,13 @@ test('C10 isEmptyAccountInherit / deselectedAccountIds: literal table', async ()
   assert.deepEqual(ids([A('a', {})], [A('a')]), [], '{} → absent is not a de-selection');
   assert.deepEqual(ids([A('a', { settings: true })], [A('a', { skills: ['x'] })]), [], 'non-empty → non-empty');
   assert.deepEqual(ids([], [A('a')]), [], 'new account');
+  const moved = (b: any[], a: any[]) => [...deselectedAccountIds(b, a)].sort();
+  assert.deepEqual(moved([{ ...A('a', { settings: true }), configDir: '/x' }], [{ ...A('a'), configDir: '/y' }]), [], 'configDir changed in the same save → no grant');
+  assert.deepEqual(moved([{ ...A('a', { settings: true }), configDir: ' /x ' }], [{ ...A('a'), configDir: '/x' }]), ['a'], 'default comparator trims');
+  assert.deepEqual(moved([{ ...A('a', { settings: true }), configDir: '' }], [{ ...A('a'), configDir: '' }]), [], 'no dir on either side → no grant');
+  const mv = [{ ...A('a', { settings: true }), configDir: '/x' }]; const mv2 = [{ ...A('a'), configDir: '/y' }];
+  assert.deepEqual([...deselectedAccountIds(mv, mv2, () => true)], ['a'], 'a caller-supplied comparator decides (same dir → grant)');
+  assert.deepEqual([...deselectedAccountIds(mv, [{ ...A('a'), configDir: '/x' }], () => false)], [], 'a caller-supplied comparator decides (other dir → no grant)');
   assert.deepEqual(ids([A('a', { settings: true })], []), [], 'removed account');
   assert.deepEqual(ids([A('a', { settings: true }), A('b', { skills: ['s'] }), A('c')], [A('a'), A('b', { skills: ['s'] }), A('c')]), ['a']);
 });

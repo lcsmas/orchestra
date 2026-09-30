@@ -146,7 +146,7 @@ async function boot(arm, seed) {
   const app = { arm, armRoot, world, port, child, pid: child.pid, exited: false, cdp: null };
   child.on('exit', () => { app.exited = true; });
   app.logLines = () => { try { return fs.readFileSync(path.join(world.oh, 'logs', 'orchestra.log'), 'utf8').split('\n'); } catch { return []; } };
-  app.heldWarns = (caller) => app.logLines().filter((l) => l.includes('empty inherit selection') && l.includes(`caller=${caller} `) && l.includes(world.login));
+  app.heldWarns = (caller) => app.logLines().filter((l) => l.includes('would leave no inherited item') && l.includes(`caller=${caller} `) && l.includes(world.login));
   app.close = async () => {
     app.cdp?.close();
     if (!app.exited && app.pid) {

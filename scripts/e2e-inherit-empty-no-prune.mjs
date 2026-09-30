@@ -7,6 +7,8 @@
 //   refuse_live        ★ the rig's own scratch guard REFUSES ~/.claude-*, $CLAUDE_CONFIG_DIR, a symlink into ~/.claude, outside paths
 //   boot_empty_obj     ★ boot order (seed + syncAll, caller=boot), account `inherit:{}` over a live-shaped dir → dir untouched + ONE warn
 //   ui_unrelated_save  ★ REAL apiHandlers.setAccounts, account already empty (no de-selection) → dir untouched + warn caller=ui-save
+//   boot_vanished_only ★ boot order, account `inherit:{skills:['gone']}` (NON-empty but names only a missing source) → dir untouched + ONE warn (review F1: guard keys on effect)
+//   ui_configdir_swap  ★ REAL setAccounts: configDir repointed at another held dir AND boxes cleared in one save → that dir untouched (review F2)
 //   ui_deselect          must-PASS: REAL setAccounts takes a FULL selection to empty → links/MCP pruned, own MCP + trust kept
 //   ui_normal_save       must-PASS: REAL setAccounts, selection unchanged → nothing pruned, no held-block warn
 //   boot_absent_seeded   control: `inherit` ABSENT is re-seeded by boot's seed (pre-existing) → dir keeps its links
@@ -25,7 +27,7 @@ import { REAL_HOMES, REAL_CFG, checkScratch, liveCanary, canaryDiff } from './.s
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'all';
-const ARMS = ['refuse_live', 'boot_empty_obj', 'ui_unrelated_save', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded'];
+const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded'];
 
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-inherit-empty');
 
@@ -119,7 +121,7 @@ const LINKS = ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/fro
 const ACCOUNT = { id: 'rig-c10', label: 'mc', configDir: login };
 // Store seeded RAW before load: sanitizeAccountInherit would turn `{}` into absent, and `{}` is the shape
 // that survives boot's seed (`inherit === undefined` is the seed's only trigger).
-const seedInherit = ARM === 'ui_deselect' || ARM === 'ui_normal_save' ? FULL : ARM === 'boot_absent_seeded' ? undefined : {};
+const seedInherit = ARM === 'ui_deselect' || ARM === 'ui_normal_save' || ARM === 'ui_configdir_swap' ? FULL : ARM === 'boot_absent_seeded' ? undefined : ARM === 'boot_vanished_only' ? { skills: ['gone'] } : {};
 fs.mkdirSync(path.join(userData, 'orchestra'), { recursive: true });
 fs.writeFileSync(path.join(userData, 'orchestra', 'store.json'), JSON.stringify({
   repos: [], workspaces: [], selfTuneRuns: [],
@@ -152,7 +154,7 @@ await inh.syncAccountInheritance({ ...ACCOUNT, inherit: FULL });
   fs.writeFileSync(cj, JSON.stringify(d, null, 2));
 }
 
-const snapshot = () => {
+const snapshot = (dir = login) => {
   const o = {};
   const walk = (d, rel) => {
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
@@ -163,11 +165,11 @@ const snapshot = () => {
       else o[r] = `F:${crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}`;
     }
   };
-  walk(login, '');
+  walk(dir, '');
   return o;
 };
 const linksOf = (s) => Object.keys(s).filter((k) => s[k].startsWith('L:')).sort();
-const mcpOf = () => Object.keys(JSON.parse(fs.readFileSync(path.join(login, '.claude.json'), 'utf8')).mcpServers ?? {}).sort();
+const mcpOf = (dir = login) => Object.keys(JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8')).mcpServers ?? {}).sort();
 const manifest = () => JSON.parse(fs.readFileSync(path.join(login, '.orchestra-inherited.json'), 'utf8'));
 const logLines = () => {
   try { return fs.readFileSync(path.join(ohome, 'logs', 'orchestra.log'), 'utf8').split('\n').filter((l) => l.includes('account-inherit')); } catch { return []; }
@@ -180,7 +182,7 @@ const before = snapshot();
 // POSITIVE CONTROL: the mirror really holds what the incident wiped (a rig that started empty proves nothing).
 const control = JSON.stringify(linksOf(before)) === JSON.stringify(LINKS) && mcpOf().join() === 'chrome-devtools,github,linear-server,my-own';
 Object.assign(out, { control, storeInherit: store.accounts[0]?.inherit ?? null, loginIsScratch: checkScratch(login, BASE).ok });
-const heldWarn = (caller) => logLines().filter((l) => l.includes('empty inherit selection') && l.includes(`caller=${caller} `) && l.includes(login));
+const heldWarn = (caller, dir = login) => logLines().filter((l) => l.includes('would leave no inherited item') && l.includes(`caller=${caller} `) && l.includes(dir));
 const stripped = () => linksOf(snapshot()).length < LINKS.length || manifest().symlinks.length === 0;
 
 let ok = false;
@@ -193,6 +195,14 @@ if (ARM === 'boot_empty_obj') {
   const after = snapshot();
   Object.assign(out, { links: linksOf(after).length, mcp: mcpOf(), manifestLinks: manifest().symlinks.length, byteIdentical: JSON.stringify(after) === JSON.stringify(before), heldWarns: heldWarn('boot').length });
   ok = control && out.seedKeptEmpty && out.byteIdentical && out.heldWarns === 1;
+} else if (ARM === 'boot_vanished_only') {
+  await inh.seedAccountInheritDefaults();
+  out.seedKeptSelection = JSON.stringify(store.accounts[0]?.inherit) === JSON.stringify({ skills: ['gone'] });
+  await inh.syncAllAccountsInheritance({ caller: 'boot' });
+  await sleep(200);
+  const after = snapshot();
+  Object.assign(out, { links: linksOf(after).length, mcp: mcpOf(), byteIdentical: JSON.stringify(after) === JSON.stringify(before), heldWarns: heldWarn('boot').length });
+  ok = control && out.seedKeptSelection && out.byteIdentical && out.heldWarns === 1;
 } else if (ARM === 'boot_absent_seeded') {
   await inh.seedAccountInheritDefaults();
   const seeded = store.accounts[0]?.inherit ?? null;
@@ -209,6 +219,21 @@ if (ARM === 'boot_empty_obj') {
   const after = snapshot();
   Object.assign(out, { settled, labelPersisted: store.accounts[0]?.label === 'mc-renamed', links: linksOf(after).length, mcp: mcpOf(), manifestLinks: manifest().symlinks.length, byteIdentical: JSON.stringify(after) === JSON.stringify(before), heldWarns: heldWarn('ui-save').length });
   ok = control && settled && out.labelPersisted && out.byteIdentical && out.heldWarns === 1;
+} else if (ARM === 'ui_configdir_swap') {
+  // A second dir, held (built by the REAL sync). The user repoints the account at it AND clears the boxes in ONE save.
+  const loginB = path.join(home, '.claude-b');
+  { const g = checkScratch(loginB, BASE); if (!g.ok) { console.log(JSON.stringify({ arm: ARM, ok: false, error: `SAFETY: ${g.clause}` })); process.exit(3); } }
+  await inh.syncAccountInheritance({ id: 'rig-b', label: 'b', configDir: loginB, inherit: FULL });
+  const beforeB = snapshot(loginB);
+  out.controlB = JSON.stringify(linksOf(beforeB)) === JSON.stringify(LINKS) && mcpOf(loginB).join() === 'chrome-devtools,github,linear-server';
+  await apiHandlers.setAccounts([{ id: ACCOUNT.id, label: 'mc', configDir: loginB }]);
+  const settled = await until(() => heldWarn('ui-save', loginB).length > 0 || linksOf(snapshot(loginB)).length < LINKS.length);
+  await sleep(300);
+  Object.assign(out, {
+    settled, bByteIdentical: JSON.stringify(snapshot(loginB)) === JSON.stringify(beforeB), aByteIdentical: JSON.stringify(snapshot()) === JSON.stringify(before),
+    bLinks: linksOf(snapshot(loginB)).length, warnsForB: heldWarn('ui-save', loginB).length, storeConfigDir: store.accounts[0]?.configDir === loginB,
+  });
+  ok = control && out.controlB && settled && out.storeConfigDir && out.bByteIdentical && out.aByteIdentical && out.warnsForB === 1;
 } else if (ARM === 'ui_deselect') {
   // The user unchecks EVERYTHING and saves: the renderer sends the account with no `inherit`.
   Object.assign(out, { preLinks: linksOf(before).length, preStoreNonEmpty: !!store.accounts[0]?.inherit });
@@ -229,7 +254,7 @@ if (ARM === 'boot_empty_obj') {
   const changed = await until(() => store.accounts[0]?.label === 'mc-renamed');
   await sleep(600); // the fire-and-forget sync has no completion event on this path — settle, then read
   const after = snapshot();
-  Object.assign(out, { labelPersisted: changed, links: linksOf(after).length, mcp: mcpOf(), byteIdentical: JSON.stringify(after) === JSON.stringify(before), heldWarns: logLines().filter((l) => l.includes('empty inherit selection')).length });
+  Object.assign(out, { labelPersisted: changed, links: linksOf(after).length, mcp: mcpOf(), byteIdentical: JSON.stringify(after) === JSON.stringify(before), heldWarns: logLines().filter((l) => l.includes('would leave no inherited item')).length });
   ok = control && changed && out.byteIdentical && out.heldWarns === 0;
 }
 

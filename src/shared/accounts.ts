@@ -109,15 +109,22 @@ export function isEmptyAccountInherit(v: unknown): boolean {
 }
 
 /** #235 residual/C10: ids of accounts whose selection the user just took from NON-empty (`before`) to
- *  EMPTY (`after`). The Accounts UI setter is the only writer of `inherit`, so this transition is the
- *  one "de-select everything" that may prune a login dir down to nothing; an account that was already
- *  empty is not a de-selection. Pure. */
-export function deselectedAccountIds(before: readonly Account[], after: readonly Account[]): Set<string> {
+ *  EMPTY (`after`) on an UNCHANGED config dir (`sameConfigDir`; default: the trimmed strings are equal and
+ *  non-empty — main passes a resolved-path comparison). The Accounts UI setter is the only writer that can
+ *  take a selection to empty (`seedAccountInheritDefaults` also writes `inherit`, but only absent →
+ *  non-empty), so this transition is the one "de-select everything" that may prune a login dir to nothing;
+ *  an account that was already empty, a new one, or one whose `configDir` changed in the same save (the
+ *  cleared boxes belonged to the OLD dir) is not a de-selection of the dir it now names. Pure. */
+export function deselectedAccountIds(
+  before: readonly Account[],
+  after: readonly Account[],
+  sameConfigDir: (a: string, b: string) => boolean = (a, b) => a.trim() !== '' && a.trim() === b.trim(),
+): Set<string> {
   const was = new Map(before.map((a) => [a.id, a]));
   const out = new Set<string>();
   for (const a of after) {
     const b = was.get(a.id);
-    if (b && !isEmptyAccountInherit(b.inherit) && isEmptyAccountInherit(a.inherit)) out.add(a.id);
+    if (b && !isEmptyAccountInherit(b.inherit) && isEmptyAccountInherit(a.inherit) && sameConfigDir(b.configDir, a.configDir)) out.add(a.id);
   }
   return out;
 }
