@@ -541,5 +541,8 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 **chime.ts** synthesizes ~20 notification sounds with the Web Audio API (no
 shipped assets); `playFinishedChime()` plays the selected sound when
 `agent:finished` fires and the workspace isn't focused (picker in
-`SoundSettings.tsx`, selection in localStorage). **debug.ts** — `window.orchestraDebug(true)`
+`SoundSettings.tsx`, selection in localStorage — per userData, so a fresh
+instance defaults to `knock`). Any instance with `ORCHESTRA_HOME` set (e2e rigs)
+runs with Chromium `mute-audio` unless `ORCHESTRA_AUDIO=1` (`shouldMuteAudio`,
+`src/shared/audio-mute.ts`; the `dev` script sets it). **debug.ts** — `window.orchestraDebug(true)`
 toggles renderer activity-pipeline logging (persisted, reloads).

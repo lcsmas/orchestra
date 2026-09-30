@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
 import { APPIMAGE_PATH } from './app-image';
 import { stripProcessLocalEnv } from '../shared/child-env';
+import { shouldMuteAudio } from '../shared/audio-mute';
 
 // ---------------------------------------------------------------- CLI mode ---
 // The same binary doubles as the `orchestra` CLI: `Orchestra.AppImage cli …`
@@ -312,6 +313,9 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('disable-gpu-vsync');
 }
+
+// Rig instances chimed on the user's speakers despite their Sound=Silent.
+if (shouldMuteAudio(process.env)) app.commandLine.appendSwitch('mute-audio');
 
 // Expose Chrome DevTools Protocol in dev so chrome-devtools-mcp can attach.
 // Port is overridable via ORCHESTRA_DEBUG_PORT so a second instance can be

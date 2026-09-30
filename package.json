@@ -25,7 +25,7 @@
     ]
   },
   "scripts": {
-    "dev": "ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
+    "dev": "ORCHESTRA_AUDIO=1 ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
     "build:cli": "vite build --config vite.cli.config.ts",
     "build:keeper": "vite build --config vite.keeper.config.ts",
     "disk-guard": "node scripts/disk-guard.cjs",
