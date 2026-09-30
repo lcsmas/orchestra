@@ -34,7 +34,7 @@ import {
   type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
-import { isKeeperCmdline } from '../shared/resource-monitor';
+import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
 import { parseProcStatLine } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
@@ -360,21 +360,35 @@ function snapshotDescendants(rootPid: number): Array<{ pid: number; comm: string
   return out;
 }
 
-/** Is `d` still the SAME live process (pid + start-time, not a zombie)? */
+/** Is `d` still the SAME live process (pid + start-time, not a zombie)? Identity decision = the shared pure fn. */
 function descendantAlive(d: { pid: number; startTicks: number }): boolean {
-  let text: string;
+  let text: string | null = null;
   try {
     text = fs.readFileSync(`/proc/${d.pid}/stat`, 'utf8');
   } catch {
-    return false;
+    /* gone */
   }
-  const fresh = parseProcStatLine(text);
-  return !!fresh && fresh.startTicks === d.startTicks && !/\) Z /.test(text);
+  return isSameLiveProcess(d.startTicks, text);
 }
 
 /** SIGKILL snapshot members that are STILL the same process (pid + start-time) — the orphaned CLI/MCP a
  *  SIGKILLed (wedged) keeper leaves behind (ppid 1, no keeper root for anyone to reach it) — then wait
  *  (≤1 s) until they are gone, so `killKeeper` resolving means the CLI is dead too. Leaf-first. */
+/** The keeper's identity-stamped descendants, read NOW (before anything is killed). [] when there is no verified keeper. */
+export function snapshotKeeperTree(wsId: string): Array<{ pid: number; comm: string; startTicks: number }> {
+  const pid = readKeeperPidFile(wsId);
+  return pid && keeperPidState(pid, wsId) === 'keeper' ? snapshotDescendants(pid) : [];
+}
+
+/** SIGKILL the still-same-identity members of a {@link snapshotKeeperTree} snapshot and wait for them to die. */
+export async function killKeeperTree(
+  wsId: string,
+  tree: Array<{ pid: number; comm: string; startTicks: number }>,
+  reason: string,
+): Promise<void> {
+  await killSurvivingDescendants(wsId, tree, reason);
+}
+
 async function killSurvivingDescendants(
   wsId: string,
   tree: Array<{ pid: number; comm: string; startTicks: number }>,
@@ -420,6 +434,37 @@ function socketAnswers(sockPath: string): Promise<boolean> {
   );
 }
 
+/** Takeover-claim leftovers of a crashed daemon: `<ws>.pid.claim` and its `.<pid>.tmp` / `.stale.<pid>` siblings are
+ *  removed only when the pid they name is DEAD (a live daemon's claim is never touched) — review D7. */
+function sweepDeadClaims(wsId: string): void {
+  const prefix = `${wsId}.pid.claim`;
+  let names: string[];
+  try {
+    names = fs.readdirSync(keeperDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name !== prefix && !name.startsWith(`${prefix}.`)) continue;
+    const full = path.join(keeperDir(), name);
+    const m = /\.(?:stale\.)?(\d+)(?:\.tmp)?$/.exec(name.slice(prefix.length));
+    let owner: number | null = m ? Number(m[1]) : null;
+    if (name === prefix) {
+      try {
+        owner = Number(fs.readFileSync(full, 'utf8'));
+      } catch {
+        owner = null;
+      }
+    }
+    if (!owner || !Number.isInteger(owner) || owner <= 0 || isAlive(owner)) continue; // unknown/live owner: leave it
+    try {
+      fs.unlinkSync(full);
+    } catch {
+      /* fine */
+    }
+  }
+}
+
 /** Remove keeper files that have NO live owner (#202): the pid file when its pid is gone or is not a
  *  keeper, the socket when nobody answers on it. A successor's live files are never touched. */
 export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
@@ -441,6 +486,7 @@ export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
   };
   if (state === 'gone' || state === 'other') unlink(keeperPidPath(wsId));
   if (!sockLive) unlink(sockPath);
+  sweepDeadClaims(wsId);
 }
 
 /**
@@ -457,11 +503,14 @@ export function killKeeper(wsId: string, reason = 'explicit-stop'): Promise<void
   return serializeKeeperOp(wsId, () => killKeeperUnlocked(wsId, reason));
 }
 
+/** A HEALTHY kill (restart / clear / MCP refresh) never touches the agent's background jobs: the keeper's descendants
+ *  are only swept when the keeper had to be SIGKILLed (wedged) — a delete sweeps its own snapshot (see workspaces.ts). */
 async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
   const sockPath = keeperSocketPath(wsId);
   const pid = readKeeperPidFile(wsId) ?? undefined;
   // Read the keeper's tree BEFORE any kill: a SIGKILLed keeper orphans its CLI to init and nothing can find it after.
   const tree = pid && keeperPidState(pid, wsId) === 'keeper' ? snapshotDescendants(pid) : [];
+  let escalated = false;
   let signalled = false;
   try {
     const sock = await connectSock(sockPath);
@@ -509,6 +558,7 @@ async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
     }
     if (keeperPidState(pid, wsId) === 'keeper') {
       log.warn(`keeper[${wsId}] SIGKILL pid=${pid} (still alive after SIGTERM grace, reason=${reason})`);
+      escalated = true;
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
@@ -518,7 +568,7 @@ async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
       for (let i = 0; i < 20 && waiting(); i++) await new Promise((r) => setTimeout(r, 50));
     }
   }
-  await killSurvivingDescendants(wsId, tree, reason);
+  if (escalated) await killSurvivingDescendants(wsId, tree, reason);
   // Sweep stale artifacts so probes stop seeing ghosts — never a live successor's files.
   await sweepStaleKeeperFiles(wsId);
 }

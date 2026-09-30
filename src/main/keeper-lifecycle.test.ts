@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,6 +24,7 @@ const ARMS = [
   'del_racing_start_refused',
   'del_bulk_window',
   'del_prune_fast',
+  'k4_bg_delete_kills',
   'del_bulk',
   'del_prune_orphan',
   'del_never_started',
@@ -31,6 +32,9 @@ const ARMS = [
   'daemon_refuses_second',
   'daemon_refuses_hung',
   'stale_two_launch',
+  'l1_stale_claim_dead',
+  'l1_stale_claim_old',
+  'l1_claim_age',
   'exit_owns_only',
   'exit_pidless_fallback',
   'survivor_killable',
@@ -40,6 +44,8 @@ const ARMS = [
   'kill_pid_fallback_reaches',
   'kill_spares_successor_files',
   'kill_keeps_log',
+  'k4_bg_restart_spares',
+  'sweep_dead_claims',
   'kill_hung_keeper',
   'reap_dup_live',
   'reap_boot_pass',
@@ -115,12 +121,16 @@ const NOTES: Record<(typeof ARMS)[number], string> = {
   del_racing_start_refused: '#201 a wake racing the delete cannot launch a keeper for the dying workspace (A3 F4)',
   del_bulk_window: '#201 bulk delete tombstones EVERY id up front: a wake on B during A\'s slow teardown runs no turn (L5)',
   del_prune_fast: '#201 boot prune of 4 orphan keepers returns fast (session stops run in the background) and they all end dead (L2)',
+  k4_bg_delete_kills: '#201 a DELETE also takes down the agent\'s background job (snapshot before the stop, kill after) (D1)',
   del_bulk: '#201 bulk delete (incl. hibernated row with stale files): all keepers dead, no throw',
   del_prune_orphan: '#201 boot orphan prune kills the orphan keeper; a tracked workspace keeps its keeper',
   del_never_started: '#201 hibernated / never-started delete → no error (must-PASS on master too)',
   race_n_starts: '#202 N=6 concurrent starts → exactly 1 keeper + 1 CLI; killKeeper reaches the survivor',
   daemon_refuses_hung: '#202 a 2nd daemon fails CLOSED on a hung (SIGSTOP) live keeper: refuses, leaves its files',
   daemon_refuses_second: '#202 a second daemon on a live keeper\'s socket refuses, touching no file',
+  l1_stale_claim_dead: '#202 a crashed daemon\'s claim naming a DEAD pid never blocks a launch: N daemons → 1 keeper, serving promptly (D2)',
+  l1_stale_claim_old: '#202 a claim held by a live pid but > 5 s old is broken by AGE: N daemons → 1 keeper, serving promptly (D2)',
+  l1_claim_age: '#202 a claim\'s age counts from ACQUISITION (utimes before link), and a live fresh claim is not broken early (D5)',
   stale_two_launch: '#202 two daemons started together over a STALE socket end as ONE keeper (atomic takeover claim, L1)',
   exit_pidless_fallback: '#202 a keeper\'s exit with the takeover\'s pid file absent must not unlink the takeover\'s socket (MA)',
   exit_owns_only: '#202 a keeper\'s exit does not unlink a takeover\'s socket/pid',
@@ -130,6 +140,8 @@ const NOTES: Record<(typeof ARMS)[number], string> = {
   kill_refuses_reused_pid: '#202/identity killKeeper never signals a pid-file pid that is not this workspace\'s keeper',
   kill_hung_keeper: '#201 killKeeper on a wedged keeper: SIGKILL fallback also takes its CLI down (no ppid-1 orphan) and clears the files',
   kill_spares_successor_files: '#202 killKeeper\'s own post-kill sweep spares a live successor\'s socket/pid (K8); killKeeper still reaches it',
+  k4_bg_restart_spares: '#201 a HEALTHY kill (restart/clear/MCP refresh) does NOT kill the agent\'s background job (D1)',
+  sweep_dead_claims: '#202 leftover <ws>.pid.claim / .claim.<pid>.tmp / .claim.stale.<pid> of DEAD pids are swept, a live one is kept (D7)',
   kill_keeps_log: '#201 stopping a keeper does not delete its <ws>.log (L7, master behaviour)',
   kill_pid_fallback_reaches: 'killKeeper\'s pid fallback still reaches a real keeper (must-PASS on master too)',
   reap_dup_live: '#203 duplicate keeper of a live workspace reaped, tracked one untouched, one log line',
@@ -157,6 +169,47 @@ test('boot reconcile reaps through the guarded pass and never kills on a bare st
   assert.match(fn, /bootFallbackKills\(process\.platform/);
   // the only killKeeper is the non-Linux fallback's, fed by the guarded bootFallbackKills list
   assert.equal((fn.match(/killKeeper\(/g) ?? []).length, 1);
+});
+
+/** Non-zombie pids whose argv mentions `dir` (+ their state letter). */
+function pidsUnder(dir: string): Array<{ pid: number; state: string }> {
+  const out: Array<{ pid: number; state: string }> = [];
+  for (const e of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(e) || Number(e) === process.pid) continue;
+    try {
+      if (!fs.readFileSync(`/proc/${e}/cmdline`, 'utf8').split('\0').some((a) => a.includes(dir))) continue;
+      const state = fs.readFileSync(`/proc/${e}/stat`, 'utf8').replace(/^.*\) /, '')[0];
+      if (state !== 'Z') out.push({ pid: Number(e), state });
+    } catch {
+      /* gone */
+    }
+  }
+  return out;
+}
+
+async function waitUntil(pred: () => boolean, ms: number): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (pred()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return pred();
+}
+
+// D4 — ABNORMAL termination: a group SIGTERM of the rig (Ctrl-C / harness abort) while a keeper is SIGSTOPped must still
+// leave 0 processes (the rig's watchdog runs in its OWN session and SIGKILLs everything under the rig dir).
+test('a group SIGTERM of a rig mid-arm (SIGSTOPped keeper) leaves no process behind', async () => {
+  const dir = path.join(RIG_DIR, 'gk');
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--import', REGISTER, RIG, 'daemon_refuses_hung'], {
+    cwd: REPO, detached: true, stdio: 'ignore', env: { ...process.env, A2_HOME: dir },
+  });
+  child.unref();
+  const sawStopped = await waitUntil(() => pidsUnder(dir).some((p) => p.state === 'T'), 60_000);
+  assert.ok(sawStopped, 'setup: never saw a SIGSTOPped keeper under the rig dir');
+  process.kill(-(child.pid as number), 'SIGTERM'); // the whole group, like a terminal Ctrl-C
+  const clean = await waitUntil(() => pidsUnder(dir).length === 0, 10_000);
+  assert.deepEqual(pidsUnder(dir), [], 'processes survived a group SIGTERM (rig watchdog did not reap)');
+  assert.ok(clean);
 });
 
 // LEAK ASSERTION (the fleet's 588-orphan incident): 0 fake keeper / CLI / wrapper pids may outlive the arms — each

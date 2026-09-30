@@ -3,7 +3,7 @@
 // Dependency-free so `node --test` covers the reap DECISION without a real /proc or store.
 
 import type { ProcSample } from './resources.ts';
-import { collectTree } from './resources.ts';
+import { collectTree, parseProcStatLine } from './resources.ts';
 
 // ─── The JSONL line shape ────────────────────────────────────────────────────
 
@@ -355,6 +355,15 @@ export function bootFallbackKills(
 ): string[] {
   if (platform === 'linux' || !storeLoadedFromDisk) return [];
   return keeperWsIds.filter((id) => !liveWorkspaceIds.has(id));
+}
+
+/** Is the process whose `/proc/<pid>/stat` text is `statText` (null = unreadable/gone) still the SAME live process
+ *  — same start-time (pid not recycled) and not a zombie? Pure, so the identity clauses are unit-pinned (review D3). */
+export function isSameLiveProcess(expectedStartTicks: number, statText: string | null): boolean {
+  if (statText === null) return false;
+  const p = parseProcStatLine(statText);
+  if (!p || p.startTicks !== expectedStartTicks) return false;
+  return !/\) Z /.test(statText);
 }
 
 /** A genuine keeper's argv is `<runtime> …/keeper.js <wsId> <sock> <pid> <log>`

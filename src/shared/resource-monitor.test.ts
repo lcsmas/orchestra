@@ -10,6 +10,7 @@ import {
   decideThresholdWarnings,
   firstSampleAt,
   isKeeperCmdline,
+  isSameLiveProcess,
   parseKeeperArgv,
   shouldDropBackup,
   shouldRotate,
@@ -430,4 +431,30 @@ test('bootFallbackKills: only where /proc identity is unavailable (non-Linux), o
   assert.deepEqual(bootFallbackKills('darwin', ids, live, false), [], 'store not loaded → kills nothing');
   assert.deepEqual(bootFallbackKills('linux', ids, live, true), [], 'Linux: the guarded reaper owns it');
   assert.deepEqual(bootFallbackKills('darwin', ['live'], live, true), [], 'a live workspace is never killed');
+});
+
+// ─── isSameLiveProcess: the identity guard on the K4 SIGKILL path (review D3) ─────────────────────────────────────
+
+/** A /proc/<pid>/stat line: field 22 (starttime) is rest[19]. */
+const statLine = (pid: number, state: string, startTicks: number): string =>
+  `${pid} (node) ${state} 1 1 1 0 -1 4194560 0 0 0 0 5 2 0 0 20 0 1 0 ${startTicks} 1000 250 18446744073709551615`;
+
+test('isSameLiveProcess: same pid + same start-time + not a zombie → true (the only accepted shape)', () => {
+  assert.equal(isSameLiveProcess(777, statLine(42, 'S', 777)), true);
+  assert.equal(isSameLiveProcess(777, statLine(42, 'R', 777)), true);
+  assert.equal(isSameLiveProcess(777, statLine(42, 'T', 777)), true, 'a SIGSTOPped process is still the same live process');
+});
+
+test('isSameLiveProcess: a RECYCLED pid (different start-time) is refused — K4a reddens this', () => {
+  assert.equal(isSameLiveProcess(777, statLine(42, 'S', 778)), false);
+});
+
+test('isSameLiveProcess: a zombie is dead — K4b reddens this', () => {
+  assert.equal(isSameLiveProcess(777, statLine(42, 'Z', 777)), false);
+});
+
+test('isSameLiveProcess: unreadable (null) and malformed stat text are refused', () => {
+  assert.equal(isSameLiveProcess(777, null), false);
+  assert.equal(isSameLiveProcess(777, 'garbage'), false);
+  assert.equal(isSameLiveProcess(777, ''), false);
 });

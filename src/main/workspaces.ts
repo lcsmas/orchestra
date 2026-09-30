@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
-import { forbidKeeperLaunch, killKeeper } from './keeper-client';
+import { forbidKeeperLaunch, killKeeper, killKeeperTree, snapshotKeeperTree } from './keeper-client';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import {
   sdkDeliver,
@@ -807,8 +807,10 @@ export async function unarchiveWorkspace(id: string): Promise<void> {
  *  exists, so hibernated/never-started rows pass). Best-effort — a failed stop never blocks a delete. */
 async function stopStructuredSession(id: string): Promise<void> {
   forbidKeeperLaunch(id); // sync, before any await: a racing wake must not launch a keeper for a dying workspace
+  const tree = snapshotKeeperTree(id); // BEFORE the stop: a delete (unlike a restart) also takes down the agent's background jobs
   await sdkStopIfLive(id).catch((e) => log.warn(`delete: session stop failed for ${id}`, e));
   await killKeeper(id, 'workspace-deleted').catch((e) => log.warn(`delete: killKeeper failed for ${id}`, e));
+  await killKeeperTree(id, tree, 'workspace-deleted').catch((e) => log.warn(`delete: descendant sweep failed for ${id}`, e));
 }
 
 /** Tear down everything a delete owns EXCEPT the store record and the renderer

@@ -401,31 +401,65 @@ async function claimTakeover(): Promise<boolean> {
   try {
     for (let i = 0; i < 60; i++) {
       try {
+        // The claim's age must count from ACQUISITION, not from when `tmp` was written (we may have waited seconds).
+        const now = new Date();
+        fs.utimesSync(tmp, now, now);
         fs.linkSync(tmp, claimPath);
         return true;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return false;
       }
-      try {
-        const holder = Number(fs.readFileSync(claimPath, 'utf8'));
-        let dead = false;
-        if (holder > 0) {
-          try {
-            process.kill(holder, 0);
-          } catch {
-            dead = true;
-          }
-        }
-        if (dead || Date.now() - fs.statSync(claimPath).mtimeMs > 5000) fs.unlinkSync(claimPath);
-      } catch {
-        /* released or raced */
-      }
+      breakStaleClaim();
       await new Promise((r) => setTimeout(r, 100));
     }
     return false;
   } finally {
     try {
       fs.unlinkSync(tmp);
+    } catch {
+      /* gone */
+    }
+  }
+}
+
+/** Is the claim file at `p` stale — its holder pid dead, or older than 5 s? (An unreadable claim only by age.) */
+function claimIsStale(p: string): boolean {
+  try {
+    const holder = Number(fs.readFileSync(p, 'utf8'));
+    if (holder > 0) {
+      try {
+        process.kill(holder, 0);
+      } catch {
+        return true;
+      }
+    }
+    return Date.now() - fs.statSync(p).mtimeMs > 5000;
+  } catch {
+    return false; // released or raced
+  }
+}
+
+/** Break a stale claim by renaming it ASIDE (atomic: only one breaker gets the inode), then re-verify WHAT we moved —
+ *  if it was a live claim a racing holder had just taken, link it back instead of destroying it. */
+function breakStaleClaim(): void {
+  if (!claimIsStale(claimPath)) return;
+  const aside = `${claimPath}.stale.${process.pid}`;
+  try {
+    fs.renameSync(claimPath, aside);
+  } catch {
+    return; // someone else broke or released it first
+  }
+  try {
+    if (!claimIsStale(aside)) {
+      try {
+        fs.linkSync(aside, claimPath); // not stale after all: give the live claim back
+      } catch {
+        /* path already re-taken */
+      }
+    }
+  } finally {
+    try {
+      fs.unlinkSync(aside);
     } catch {
       /* gone */
     }
