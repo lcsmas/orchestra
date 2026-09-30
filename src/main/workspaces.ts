@@ -4247,6 +4247,27 @@ arbiter agent with no stake in either branch (orchestra-spawn skill): its task
 names both branches, the conflicting files, and each child's stated intent,
 and it owns the resolution. Both children then review the arbiter's merge of
 their own seam.
+
+## 7. Pause a run (host-enforced)
+
+\`\`\`bash
+orchestra run pause --hard [--run <id>] [--as <handle>]   # PAUSE DURE of the run + every descendant run
+orchestra run resume [--run <id>] [--as <handle>]          # lift it (nothing restarts on its own)
+\`\`\`
+
+A pause is a durable state on the bus that the HOST enforces — not a message you
+must obey. While a run is paused: no réveil, no new turn, no spawn into it
+(refused with \`run en pause — orchestra run resume --run <id>\`), \`orchestra
+message\` to its members is parked in their inbox, liveness is silenced; the host
+also interrupts the turn and kills tool processes (never the session). Only the
+run's coordinator or an ancestor run's coordinator may pause/resume (the human
+acts \`--as\` the coordinator); a worker is refused. It needs the run's \`pause\`
+switch ON at wave start (frozen; default OFF) — otherwise the verb is refused.
+
+**A prompt a HUMAN types in a member's composer is still allowed and does NOT
+lift the pause** (nor does restarting it from the toolbar). Every automatic start
+is refused, including yours: if you are refused with \`run en pause\`, stop and
+wait — do not retry in a loop.
 `;
 
 const WORKSPACE_ADMIN_SKILL = `---

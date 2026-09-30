@@ -193,10 +193,8 @@ import {
   readReleasedReaders,
 } from './bus-liveness';
 import { buildLivenessRoster } from './bus-liveness-roster';
-import { sdkStartAndDeliver, sdkSessionLive } from './sdk-delivery';
-import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { pauseRefusal } from './pause-gate';
-import { startKeepsFailing } from '../shared/opening-task.ts';
+import { sdkStartAndDeliver } from './sdk-delivery';
+import { wakeRosterEntry } from './wake-roster';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -500,25 +498,7 @@ async function createMainWindow() {
   // platform seam through a directory import that node's strip-types test
   // runner cannot resolve, and importing it there would make the whole wake
   // module untestable under `pnpm run test`.
-  setWakeRoster(() =>
-    store.workspaces.map((ws) => ({
-      reader: ws.id,
-      // An archived workspace's session is a frozen leftover; waking it would
-      // resurrect a workspace the human retired. `ws.archived` is the flag the
-      // #90 watchdog gates on too (session-watchdog.ts:233).
-      // #226: a paused sandbox agent cannot be woken — not-wakeable, or the sweep re-fires (60 s + every WAL write) at a start that always refuses.
-      // #252 fleet PAUSE (ledger #261 row 14): a paused run's reader is not-wakeable, or the sweep re-fires at a start that always refuses.
-      wakeable: !ws.archived && !!ws.worktreePath && sandboxPausedMessage(ws) === null && pauseRefusal(ws, 'auto') === null && !startKeepsFailing(ws, sdkSessionLive(ws.id)),
-      // #134 — the WAVE run this reader belongs to (its tree anchor), the SAME
-      // id `$ORCHESTRA_RUN_ID` plumbs into the member's CLI, so the host looks
-      // for a reader's pending mail in the run the CLI actually wrote it to. Was
-      // hardcoded `'default'` (the CLI's pre-#134 fallback), which — now that
-      // members send under their wave run id — would have the sweep read an
-      // empty `default` run and never wake anyone. A root anchor resolves to
-      // itself; a member resolves to its anchor (walkToRootId).
-      runId: resolveWaveRunId(ws),
-    })),
-  );
+  setWakeRoster(() => store.workspaces.map(wakeRosterEntry));
   // #134 — wire the per-run switch readers the wake sweep consults. Until now
   // these stayed the shipped default `() => false`, so even a run frozen wake=ON
   // was COUNTED, never fired. Each reads the flag FROZEN ON THE RUN ROW (never

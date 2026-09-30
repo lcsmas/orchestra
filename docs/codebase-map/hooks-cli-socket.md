@@ -286,6 +286,9 @@ so it works while the app is down; refuses a run with no row; idempotent; AUTHOR
 only the run's coordinator or an ancestor run's coordinator (D7); FENCED through A6's
 `fencedWrite` (F7); the hold shows in `orchestra bus-status` (`/busStatus` returns
 `heldAt`/`heldBy`); see `bus.md` §Active coordinator + per-run HOLD),
+`run pause --hard [--run <id>] [--as <handle>]` (#252 — STORE-LESS like `hold`; writes
+`runs.paused_at`/`paused_by`/`pause_mode`; same authority + fencing as hold; refused while the run's
+frozen `pause` switch is OFF; `run resume` lifts the pause AND the hold; see `bus.md` §Fleet PAUSE),
 Fully non-interactive (destructive `delete` needs `--yes`).
 
 ### Help (`src/cli/help.ts`)

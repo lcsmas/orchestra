@@ -358,6 +358,11 @@ async function tick(): Promise<void> {
   }
 }
 
+/** Rig seam (#252 pause-gates rig): run ONE flusher tick (usage-limit auto-resume + queue flush) without waiting TICK_MS. */
+export async function __tickForTests(): Promise<void> {
+  await tick();
+}
+
 /** Start the queue flusher (idempotent). Ticks are pure cache reads unless a
  *  queue is actually waiting, so the steady-state cost is nil. */
 export function startPromptQueueFlusher(): void {
