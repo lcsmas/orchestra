@@ -1,0 +1,100 @@
+--- /home/lmas/rf/probes/rig-orig.mjs	2026-09-30 03:02:58.890283909 +0200
++++ /home/lmas/a2f-mut/scripts/rig-p4.mjs	2026-09-30 03:10:17.725692305 +0200
+@@ -32,6 +32,11 @@
+   del_bulk_window: { mustFailOnMaster: true },
+   del_prune_fast: { mustFailOnMaster: true },
+   k4_bg_delete_kills: { mustFailOnMaster: true },
++  p4_delete_recycled_pid: {},
++  p4_delete_recycled_pid_ctl: {},
++  p4t_killtree_recycled: {},
++  p5_sweep_live_claim: {},
++  p4t_killtree_recycled_ctl: {},
+   del_never_started: {},
+   // #202
+   race_n_starts: { mustFailOnMaster: true },
+@@ -255,7 +260,9 @@
+ // ═════════════════════════════════ arms ═════════════════════════════════════
+ async function runArm() {
+   // ── #201: delete drives the REAL workspaces.ts against real keepers ─────────
+-  if (ARM.startsWith('del_') || ARM === 'k4_bg_delete_kills') return deleteArms();
++  if (ARM.startsWith('del_') || ARM === 'k4_bg_delete_kills' || ARM.startsWith('p4_')) return deleteArms();
++  if (ARM.startsWith('p4t_')) return p4tArms();
++  if (ARM === 'p5_sweep_live_claim') return p5();
+   if (ARM === 'race_n_starts') return raceArm();
+   if (ARM === 'daemon_refuses_second') return daemonRefusesSecond();
+   if (ARM === 'daemon_refuses_hung') return daemonRefusesHung();
+@@ -289,6 +296,36 @@
+   };
+   const gone = (k) => !alive(k.keeperPid) && !alive(k.cliPid);
+ 
++  if (ARM === 'p4_delete_recycled_pid' || ARM === 'p4_delete_recycled_pid_ctl') {
++    // P4 (reviewer-a2-final): the pid file names a LIVE process that is NOT this workspace's keeper (pid recycled after a crash/reboot),
++    // and that process has a child. deleteWorkspace must signal NEITHER. _ctl: pid file names a REAL keeper -> its bg job MUST die (arm can detect a kill).
++    const A = W('a'); await seed(A);
++    let by = null, childPid = 0, k = null;
++    if (ARM === 'p4_delete_recycled_pid') {
++      const cf = path.join(base, 'p4child.pid');
++      by = spawn(process.execPath, ['-e', "const c=require('child_process').spawn('sleep',['601'],{stdio:'ignore'});require('fs').writeFileSync(process.argv[1],String(c.pid));setInterval(()=>{},1000)", cf], { detached: true, stdio: 'ignore' });
++      by.unref();
++      if (!(await waitFor(() => fs.existsSync(cf) && fs.readFileSync(cf, 'utf8').trim(), 8_000))) throw new Error('setup: bystander child never spawned');
++      childPid = Number(fs.readFileSync(cf, 'utf8'));
++      fs.mkdirSync(path.join(home, 'keepers'), { recursive: true });
++      fs.writeFileSync(pidFilePath(A), JSON.stringify({ pid: by.pid, wsId: A, startedAt: 1 }));
++    } else {
++      k = await startKeeper(A, 'bg');
++      const bgPidFile = path.join(base, 'bg.pid');
++      if (!(await waitFor(() => fs.existsSync(bgPidFile) && fs.readFileSync(bgPidFile, 'utf8').trim(), 8_000))) throw new Error('setup: bg job never spawned');
++      childPid = Number(fs.readFileSync(bgPidFile, 'utf8'));
++    }
++    const control = { childAlive: alive(childPid), parentAlive: by ? alive(by.pid) : alive(k.keeperPid) };
++    if (!control.childAlive || !control.parentAlive) throw new Error(`control failed: ${JSON.stringify(control)}`);
++    await wsm.deleteWorkspace(A);
++    const after = { parentAlive: by ? alive(by.pid) : alive(k.keeperPid), childAlive: alive(childPid) };
++    if (by) { try { process.kill(by.pid, 'SIGKILL'); } catch {} }
++    try { process.kill(childPid, 'SIGKILL'); } catch {}
++    Object.assign(result, { control, after });
++    result.ok = ARM === 'p4_delete_recycled_pid' ? (after.parentAlive && after.childAlive) : (!after.parentAlive && !after.childAlive);
++    return;
++  }
++
+   if (ARM === 'del_single_survivor') {
+     // A keeper that outlived an app relaunch: NO in-memory session, the row is deleted.
+     const A = W('a'); await seed(A);
+@@ -614,6 +651,37 @@
+   result.ok = spared.sock && spared.pidFileIsLive && spared.probe && left.length === 2 && swept.after.length === 0;
+ }
+ 
++async function p4tArms() {
++  // killKeeperTree given a snapshot entry whose pid now belongs to a DIFFERENT process (start-time mismatch) must spare it.
++  // _ctl: same call with the CORRECT start-time -> must kill it (proves the arm can detect a kill).
++  const by = spawn('sleep', ['602'], { detached: true, stdio: 'ignore' });
++  by.unref();
++  const st = Number(fs.readFileSync(`/proc/${by.pid}/stat`, 'utf8').replace(/^.*\) /, '').split(' ')[19]);
++  const startTicks = ARM.endsWith('_ctl') ? st : st + 12345;
++  const control = { alive: alive(by.pid), startTicks, real: st };
++  await kc.killKeeperTree(W('t'), [{ pid: by.pid, comm: 'sleep', startTicks }], 'p4-probe');
++  await sleep(300);
++  const survived = alive(by.pid);
++  try { process.kill(by.pid, 'SIGKILL'); } catch {}
++  Object.assign(result, { control, survived });
++  result.ok = ARM.endsWith('_ctl') ? !survived : survived;
++}
++
++async function p5() {
++  // D7 safety: a claim FILE (and .stale.<pid>) whose owner is ALIVE must survive sweepStaleKeeperFiles; the dead-owner one must not.
++  const WS = W('s');
++  fs.mkdirSync(path.join(home, 'keepers'), { recursive: true });
++  const dead = spawn('true'); await new Promise((res) => dead.once('exit', res));
++  const b = pidFilePath(WS) + '.claim';
++  const liveClaim = b, liveStale = `${b}.stale.${process.pid}`;
++  fs.writeFileSync(liveClaim, String(process.pid)); fs.writeFileSync(liveStale, String(process.pid));
++  const deadStale = `${b}.stale.${dead.pid}`; fs.writeFileSync(deadStale, String(dead.pid));
++  await kc.sweepStaleKeeperFiles(WS);
++  const after = { liveClaimKept: fs.existsSync(liveClaim), liveStaleKept: fs.existsSync(liveStale), deadStaleRemoved: !fs.existsSync(deadStale) };
++  Object.assign(result, { after });
++  result.ok = after.liveClaimKept && after.liveStaleKept && after.deadStaleRemoved;
++}
++
+ async function killIdentityArms() {
+   const WS = W('k');
+   fs.mkdirSync(path.join(home, 'keepers'), { recursive: true });

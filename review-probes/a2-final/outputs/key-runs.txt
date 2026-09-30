@@ -1,0 +1,16 @@
+# key outputs (copied from the run, 2026-09-30, candidate e3983174; load 6-14)
+P1 control (rig holds fresh live claim, plain daemon): {"MODE":"control","tF":8,"acquiredWhileHeld":false,"reachedClaimStage":true,"ok":true}
+P1 tip, verdict-delay only:  displacedLiveFreshClaim:false tF:585 tAcq:6003 deltaMs:5418   (F given back; D3 acquires by AGE)
+P1 R4 unlink-by-path:        displacedLiveFreshClaim:true  tF:579 tAcq:1655 deltaMs:1076
+P1 M44 no give-back:         displacedLiveFreshClaim:true  tF:569 tAcq:1645 deltaMs:1076
+P1 tip, both gaps widened:   displacedLiveFreshClaim:true  tF:579 tAcq:1448 deltaMs:869 finalClaim=<rig pid> (give-back resurrected F after D3 released)
+P3 leftover: servingAfterMs 709 keepersAlive 1 ok:true ; killmid: servingAfterMs 670 keepersAlive 1 ok:true
+P2 sweep vs live-claim swap: flips 3615, liveClaimVanishedWhileHeld 18 ; controlA (no sweeper) 0/1338 ; controlB (sweeper, live-only claims) 0/888
+P4 tip: p4_delete_recycled_pid ok (parent+child alive) ; _ctl ok (bg job dead) ; p4t_killtree_recycled ok (survived) ; _ctl ok (killed)
+P4 R12a: p4_delete_recycled_pid ok:false after:{parentAlive:true,childAlive:false} ; R11: p4t_killtree_recycled ok:false survived:false
+P5 tip: p5_sweep_live_claim ok ; R5: ok:false after:{liveClaimKept:false,liveStaleKept:true,deadStaleRemoved:true}
+D1 tip: k4_bg_grandchild after:{killMs:150,keeperAlive:false,cliAlive:false,grandchildAlive:true,grandchildPpid:1}; k4_scope all four bystanders alive
+D1 rig arms tip: k4_bg_delete_kills ok, k4_bg_restart_spares ok, kill_hung_keeper ok (ms 8115, cli dead, files []), l1_stale_claim_dead ok (677/710/705 ms, live 1), l1_stale_claim_old ok, l1_claim_age ok (ageMs 1), sweep_dead_claims ok
+G1 master 37ce7879: k4_bg_delete_kills ok:false (bg alive, keeper+cli alive, files sock+pid) ; l1_stale_claim_dead ok:false live 4/4/6 ; l1_stale_claim_old ok:false live 4/4/4 ; l1_claim_age ok:false ageMs null ; sweep_dead_claims ok:false (error: no sweepStaleKeeperFiles export) ; k4_bg_restart_spares ok:true (as designed)
+D4: group SIGTERM of wrapper+rigs, SIGSTOPped keeper: LEFTOVER 0 (x2; prior tip 3). Watchdog SIGKILLed first then group SIGTERM: LEFTOVER 1 (stopped=1: keeper.js state T ppid 1)
+tsc --noEmit rc 0 ; wrapper+resource-monitor+keeper tests: 89 pass / 0 fail / 0 skipped (34 s)

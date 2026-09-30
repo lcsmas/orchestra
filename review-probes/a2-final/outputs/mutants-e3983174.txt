@@ -1,0 +1,12 @@
+CLEAN pass=89 fail=0 skipped=0 red=[] build rc=0
+R1_K4d_unconditional_sweep pass=88 fail=1 skipped=0 red=[k4_bg_restart_spares — \#201 a HEALTHY kill (restart/clear/MCP refresh|] build rc=0
+R2_never_sweep_after_sigkill pass=88 fail=1 skipped=0 red=[kill_hung_keeper — \#201 killKeeper on a wedged keeper: SIGKILL fallba|] build rc=0
+R3_snapshot_after_kill pass=88 fail=1 skipped=0 red=[k4_bg_delete_kills — \#201 a DELETE also takes down the agent's backgr|] build rc=0
+R4_unlink_by_path_break pass=89 fail=0 skipped=0 red=[] build rc=0
+R5_live_claimfile_swept pass=89 fail=0 skipped=0 red=[] build rc=0
+R11_no_identity_gate_at_kill pass=89 fail=0 skipped=0 red=[] build rc=0
+R12a_snapshot_unverified_pid pass=89 fail=0 skipped=0 red=[] build rc=0
+K4a_no_starttime pass=88 fail=1 skipped=0 red=[isSameLiveProcess: a RECYCLED pid (different start-time) is refused — |] build rc=0
+K4b_no_zombie pass=88 fail=1 skipped=0 red=[isSameLiveProcess: a zombie is dead — K4b reddens this|] build rc=0
+M43_no_utimes pass=88 fail=1 skipped=0 red=[l1_claim_age — \#202 a claim's age counts from ACQUISITION (utimes bef|] build rc=0
+RUNMUT DONE CLEAN R1_K4d_unconditional_sweep R2_never_sweep_after_sigkill R3_snapshot_after_kill R4_unlink_by_path_break R5_live_claimfile_swept R11_no_identity_gate_at_kill R12a_snapshot_unverified_pid K4a_no_starttime K4b_no_zombie M43_no_utimes

@@ -1,0 +1,557 @@
+TAP version 13
+# (node:4119651) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/lmas/a2f-tip/src/keeper/keeper.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/lmas/a2f-tip/package.json.
+# (Use `node-22 --trace-warnings ...` to show where the warning was created)
+# Subtest: spawn → relay round-trip → wsId guard
+ok 1 - spawn → relay round-trip → wsId guard
+  ---
+  duration_ms: 235.838836
+  type: 'test'
+  ...
+# Subtest: bare socket drop = detach; CLI survives; reattach relays again
+ok 2 - bare socket drop = detach; CLI survives; reattach relays again
+  ---
+  duration_ms: 587.765271
+  type: 'test'
+  ...
+# Subtest: probe answers without preempting the attached client
+ok 3 - probe answers without preempting the attached client
+  ---
+  duration_ms: 178.738977
+  type: 'test'
+  ...
+# Subtest: hello preempts the previous client (last wins)
+ok 4 - hello preempts the previous client (last wins)
+  ---
+  duration_ms: 176.788471
+  type: 'test'
+  ...
+# Subtest: stdinEnd → graceful CLI exit → exit frame → full cleanup
+ok 5 - stdinEnd → graceful CLI exit → exit frame → full cleanup
+  ---
+  duration_ms: 295.799329
+  type: 'test'
+  ...
+# Subtest: kill frame terminates promptly; spawn on stale keeper is refused
+ok 6 - kill frame terminates promptly; spawn on stale keeper is refused
+  ---
+  duration_ms: 270.974537
+  type: 'test'
+  ...
+# Subtest: linger: detached turn-complete keeper shuts itself down
+ok 7 - linger: detached turn-complete keeper shuts itself down
+  ---
+  duration_ms: 664.122153
+  type: 'test'
+  ...
+# Subtest: mid-turn detach does NOT linger-kill (no result line yet)
+ok 8 - mid-turn detach does NOT linger-kill (no result line yet)
+  ---
+  duration_ms: 1373.474877
+  type: 'test'
+  ...
+# Subtest: D1 — probe during shutdown reports shuttingDown:true (SIGTERM-ignoring CLI)
+ok 9 - D1 — probe during shutdown reports shuttingDown:true (SIGTERM-ignoring CLI)
+  ---
+  duration_ms: 475.40431
+  type: 'test'
+  ...
+# Subtest: D1 — a stdin frame during shutdown is answered with err, not dropped
+ok 10 - D1 — a stdin frame during shutdown is answered with err, not dropped
+  ---
+  duration_ms: 466.843739
+  type: 'test'
+  ...
+# Subtest: D5 — kill frame escalates SIGTERM → SIGKILL for a CLI that ignores SIGTERM
+ok 11 - D5 — kill frame escalates SIGTERM → SIGKILL for a CLI that ignores SIGTERM
+  ---
+  duration_ms: 5278.387696
+  type: 'test'
+  ...
+# Subtest: \#202 — a second keeper on a live keeper's socket refuses to start and touches nothing
+ok 12 - \#202 — a second keeper on a live keeper's socket refuses to start and touches nothing
+  ---
+  duration_ms: 374.803429
+  type: 'test'
+  ...
+# Subtest: \#202 — a keeper's exit unlinks only the files it owns (a takeover survives it)
+ok 13 - \#202 — a keeper's exit unlinks only the files it owns (a takeover survives it)
+  ---
+  duration_ms: 382.618289
+  type: 'test'
+  ...
+# (node:4119653) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/lmas/a2f-tip/src/main/keeper-lifecycle.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/lmas/a2f-tip/package.json.
+# (Use `node-22 --trace-warnings ...` to show where the warning was created)
+# Subtest: every arm the rig declares is run here (no silently unrun arm)
+ok 14 - every arm the rig declares is run here (no silently unrun arm)
+  ---
+  duration_ms: 32816.256786
+  type: 'test'
+  ...
+# Subtest: del_single_survivor — \#201 single delete of a post-relaunch survivor keeper: keeper+CLI dead, pid/sock files gone, facade closed
+ok 15 - del_single_survivor — \#201 single delete of a post-relaunch survivor keeper: keeper+CLI dead, pid/sock files gone, facade closed
+  ---
+  duration_ms: 0.602127
+  type: 'test'
+  ...
+# Subtest: del_session_and_keeper — \#201 socket/CLI delete route: in-memory session dropped AND keeper+CLI dead
+ok 16 - del_session_and_keeper — \#201 socket/CLI delete route: in-memory session dropped AND keeper+CLI dead
+  ---
+  duration_ms: 0.190334
+  type: 'test'
+  ...
+# Subtest: del_session_with_result — \#201 a session that produced a result closes gracefully — the delete's own killKeeper still takes the keeper down
+ok 17 - del_session_with_result — \#201 a session that produced a result closes gracefully — the delete's own killKeeper still takes the keeper down
+  ---
+  duration_ms: 0.594711
+  type: 'test'
+  ...
+# Subtest: del_racing_start_refused — \#201 a wake racing the delete cannot launch a keeper for the dying workspace (A3 F4)
+ok 18 - del_racing_start_refused — \#201 a wake racing the delete cannot launch a keeper for the dying workspace (A3 F4)
+  ---
+  duration_ms: 0.24046
+  type: 'test'
+  ...
+# Subtest: del_bulk_window — \#201 bulk delete tombstones EVERY id up front: a wake on B during A's slow teardown runs no turn (L5)
+ok 19 - del_bulk_window — \#201 bulk delete tombstones EVERY id up front: a wake on B during A's slow teardown runs no turn (L5)
+  ---
+  duration_ms: 0.275626
+  type: 'test'
+  ...
+# Subtest: del_prune_fast — \#201 boot prune of 4 orphan keepers returns fast (session stops run in the background) and they all end dead (L2)
+ok 20 - del_prune_fast — \#201 boot prune of 4 orphan keepers returns fast (session stops run in the background) and they all end dead (L2)
+  ---
+  duration_ms: 1.358754
+  type: 'test'
+  ...
+# Subtest: k4_bg_delete_kills — \#201 a DELETE also takes down the agent's background job (snapshot before the stop, kill after) (D1)
+ok 21 - k4_bg_delete_kills — \#201 a DELETE also takes down the agent's background job (snapshot before the stop, kill after) (D1)
+  ---
+  duration_ms: 0.872003
+  type: 'test'
+  ...
+# Subtest: del_bulk — \#201 bulk delete (incl. hibernated row with stale files): all keepers dead, no throw
+ok 22 - del_bulk — \#201 bulk delete (incl. hibernated row with stale files): all keepers dead, no throw
+  ---
+  duration_ms: 1.049754
+  type: 'test'
+  ...
+# Subtest: del_prune_orphan — \#201 boot orphan prune kills the orphan keeper; a tracked workspace keeps its keeper
+ok 23 - del_prune_orphan — \#201 boot orphan prune kills the orphan keeper; a tracked workspace keeps its keeper
+  ---
+  duration_ms: 7.190274
+  type: 'test'
+  ...
+# Subtest: del_never_started — \#201 hibernated / never-started delete → no error (must-PASS on master too)
+ok 24 - del_never_started — \#201 hibernated / never-started delete → no error (must-PASS on master too)
+  ---
+  duration_ms: 0.182209
+  type: 'test'
+  ...
+# Subtest: race_n_starts — \#202 N=6 concurrent starts → exactly 1 keeper + 1 CLI; killKeeper reaches the survivor
+ok 25 - race_n_starts — \#202 N=6 concurrent starts → exactly 1 keeper + 1 CLI; killKeeper reaches the survivor
+  ---
+  duration_ms: 0.126334
+  type: 'test'
+  ...
+# Subtest: daemon_refuses_second — \#202 a second daemon on a live keeper's socket refuses, touching no file
+ok 26 - daemon_refuses_second — \#202 a second daemon on a live keeper's socket refuses, touching no file
+  ---
+  duration_ms: 0.104792
+  type: 'test'
+  ...
+# Subtest: daemon_refuses_hung — \#202 a 2nd daemon fails CLOSED on a hung (SIGSTOP) live keeper: refuses, leaves its files
+ok 27 - daemon_refuses_hung — \#202 a 2nd daemon fails CLOSED on a hung (SIGSTOP) live keeper: refuses, leaves its files
+  ---
+  duration_ms: 0.105917
+  type: 'test'
+  ...
+# Subtest: stale_two_launch — \#202 two daemons started together over a STALE socket end as ONE keeper (atomic takeover claim, L1)
+ok 28 - stale_two_launch — \#202 two daemons started together over a STALE socket end as ONE keeper (atomic takeover claim, L1)
+  ---
+  duration_ms: 0.133917
+  type: 'test'
+  ...
+# Subtest: l1_stale_claim_dead — \#202 a crashed daemon's claim naming a DEAD pid never blocks a launch: N daemons → 1 keeper, serving promptly (D2)
+ok 29 - l1_stale_claim_dead — \#202 a crashed daemon's claim naming a DEAD pid never blocks a launch: N daemons → 1 keeper, serving promptly (D2)
+  ---
+  duration_ms: 0.110292
+  type: 'test'
+  ...
+# Subtest: l1_stale_claim_old — \#202 a claim held by a live pid but > 5 s old is broken by AGE: N daemons → 1 keeper, serving promptly (D2)
+ok 30 - l1_stale_claim_old — \#202 a claim held by a live pid but > 5 s old is broken by AGE: N daemons → 1 keeper, serving promptly (D2)
+  ---
+  duration_ms: 0.272001
+  type: 'test'
+  ...
+# Subtest: l1_claim_age — \#202 a claim's age counts from ACQUISITION (utimes before link), and a live fresh claim is not broken early (D5)
+ok 31 - l1_claim_age — \#202 a claim's age counts from ACQUISITION (utimes before link), and a live fresh claim is not broken early (D5)
+  ---
+  duration_ms: 0.110167
+  type: 'test'
+  ...
+# Subtest: exit_owns_only — \#202 a keeper's exit does not unlink a takeover's socket/pid
+ok 32 - exit_owns_only — \#202 a keeper's exit does not unlink a takeover's socket/pid
+  ---
+  duration_ms: 0.102917
+  type: 'test'
+  ...
+# Subtest: exit_pidless_fallback — \#202 a keeper's exit with the takeover's pid file absent must not unlink the takeover's socket (MA)
+ok 33 - exit_pidless_fallback — \#202 a keeper's exit with the takeover's pid file absent must not unlink the takeover's socket (MA)
+  ---
+  duration_ms: 0.223042
+  type: 'test'
+  ...
+# Subtest: survivor_killable — \#202 killKeeper still reaches the survivor after a sibling's exit
+ok 34 - survivor_killable — \#202 killKeeper still reaches the survivor after a sibling's exit
+  ---
+  duration_ms: 0.105875
+  type: 'test'
+  ...
+# Subtest: sweep_spares_successor — \#202 the post-kill sweep spares a live successor's files, clears dead ones
+ok 35 - sweep_spares_successor — \#202 the post-kill sweep spares a live successor's files, clears dead ones
+  ---
+  duration_ms: 0.10975
+  type: 'test'
+  ...
+# Subtest: kill_serialized_with_start — \#202 a killKeeper issued right after a start queues behind it and kills it (no interleave)
+ok 36 - kill_serialized_with_start — \#202 a killKeeper issued right after a start queues behind it and kills it (no interleave)
+  ---
+  duration_ms: 1.611506
+  type: 'test'
+  ...
+# Subtest: kill_refuses_reused_pid — \#202/identity killKeeper never signals a pid-file pid that is not this workspace's keeper
+ok 37 - kill_refuses_reused_pid — \#202/identity killKeeper never signals a pid-file pid that is not this workspace's keeper
+  ---
+  duration_ms: 0.150334
+  type: 'test'
+  ...
+# Subtest: kill_pid_fallback_reaches — killKeeper's pid fallback still reaches a real keeper (must-PASS on master too)
+ok 38 - kill_pid_fallback_reaches — killKeeper's pid fallback still reaches a real keeper (must-PASS on master too)
+  ---
+  duration_ms: 0.112667
+  type: 'test'
+  ...
+# Subtest: kill_spares_successor_files — \#202 killKeeper's own post-kill sweep spares a live successor's socket/pid (K8); killKeeper still reaches it
+ok 39 - kill_spares_successor_files — \#202 killKeeper's own post-kill sweep spares a live successor's socket/pid (K8); killKeeper still reaches it
+  ---
+  duration_ms: 0.109584
+  type: 'test'
+  ...
+# Subtest: kill_keeps_log — \#201 stopping a keeper does not delete its <ws>.log (L7, master behaviour)
+ok 40 - kill_keeps_log — \#201 stopping a keeper does not delete its <ws>.log (L7, master behaviour)
+  ---
+  duration_ms: 0.045917
+  type: 'test'
+  ...
+# Subtest: k4_bg_restart_spares — \#201 a HEALTHY kill (restart/clear/MCP refresh) does NOT kill the agent's background job (D1)
+ok 41 - k4_bg_restart_spares — \#201 a HEALTHY kill (restart/clear/MCP refresh) does NOT kill the agent's background job (D1)
+  ---
+  duration_ms: 0.046208
+  type: 'test'
+  ...
+# Subtest: sweep_dead_claims — \#202 leftover <ws>.pid.claim / .claim.<pid>.tmp / .claim.stale.<pid> of DEAD pids are swept, a live one is kept (D7)
+ok 42 - sweep_dead_claims — \#202 leftover <ws>.pid.claim / .claim.<pid>.tmp / .claim.stale.<pid> of DEAD pids are swept, a live one is kept (D7)
+  ---
+  duration_ms: 0.043417
+  type: 'test'
+  ...
+# Subtest: kill_hung_keeper — \#201 killKeeper on a wedged keeper: SIGKILL fallback also takes its CLI down (no ppid-1 orphan) and clears the files
+ok 43 - kill_hung_keeper — \#201 killKeeper on a wedged keeper: SIGKILL fallback also takes its CLI down (no ppid-1 orphan) and clears the files
+  ---
+  duration_ms: 0.044458
+  type: 'test'
+  ...
+# Subtest: reap_dup_live — \#203 duplicate keeper of a live workspace reaped, tracked one untouched, one log line
+ok 44 - reap_dup_live — \#203 duplicate keeper of a live workspace reaped, tracked one untouched, one log line
+  ---
+  duration_ms: 0.127667
+  type: 'test'
+  ...
+# Subtest: reap_boot_pass — \#203 the boot pass (reapKeepersNow): store not loaded → kills nothing; loaded → orphan + duplicate reaped, tracked kept
+ok 45 - reap_boot_pass — \#203 the boot pass (reapKeepersNow): store not loaded → kills nothing; loaded → orphan + duplicate reaped, tracked kept
+  ---
+  duration_ms: 0.113126
+  type: 'test'
+  ...
+# Subtest: reap_sole_live — \#203 a live workspace's sole keeper (incl. hibernated) is never reaped (must-PASS)
+ok 46 - reap_sole_live — \#203 a live workspace's sole keeper (incl. hibernated) is never reaped (must-PASS)
+  ---
+  duration_ms: 0.102667
+  type: 'test'
+  ...
+# Subtest: reap_wrapper_sole — \#203 a live ws's sole keeper behind a fork-style wrapper is never reaped as a duplicate
+ok 47 - reap_wrapper_sole — \#203 a live ws's sole keeper behind a fork-style wrapper is never reaped as a duplicate
+  ---
+  duration_ms: 0.104709
+  type: 'test'
+  ...
+# Subtest: reap_store_unreadable — \#203 a sweep whose store did not load from disk kills nothing (must-PASS)
+ok 48 - reap_store_unreadable — \#203 a sweep whose store did not load from disk kills nothing (must-PASS)
+  ---
+  duration_ms: 0.111459
+  type: 'test'
+  ...
+# Subtest: reap_absent_all — \#203 absent workspace: tracked AND untracked keepers reaped
+ok 49 - reap_absent_all — \#203 absent workspace: tracked AND untracked keepers reaped
+  ---
+  duration_ms: 0.117292
+  type: 'test'
+  ...
+# Subtest: reap_failclosed — \#203 identity re-verified at signal time: cmdline/start-time/tracked-keeper drift → no signal
+ok 50 - reap_failclosed — \#203 identity re-verified at signal time: cmdline/start-time/tracked-keeper drift → no signal
+  ---
+  duration_ms: 0.108959
+  type: 'test'
+  ...
+# Subtest: boot reconcile reaps through the guarded pass and never kills on a bare store lookup (index.ts wiring)
+ok 51 - boot reconcile reaps through the guarded pass and never kills on a bare store lookup (index.ts wiring)
+  ---
+  duration_ms: 0.952461
+  type: 'test'
+  ...
+# Subtest: a group SIGTERM of a rig mid-arm (SIGSTOPped keeper) leaves no process behind
+ok 52 - a group SIGTERM of a rig mid-arm (SIGSTOPped keeper) leaves no process behind
+  ---
+  duration_ms: 1294.374402
+  type: 'test'
+  ...
+# Subtest: no keeper / fake CLI / wrapper process is left running by the arms
+ok 53 - no keeper / fake CLI / wrapper process is left running by the arms
+  ---
+  duration_ms: 11.055371
+  type: 'test'
+  ...
+# (node:4119654) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/lmas/a2f-tip/src/shared/resource-monitor.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/lmas/a2f-tip/package.json.
+# (Use `node-22 --trace-warnings ...` to show where the warning was created)
+# Subtest: decideReap CLASSIFIES a tree whose workspace is absent from the store (must-FAIL arm)
+ok 54 - decideReap CLASSIFIES a tree whose workspace is absent from the store (must-FAIL arm)
+  ---
+  duration_ms: 2.465925
+  type: 'test'
+  ...
+# Subtest: decideReap NEVER classifies a live workspace tree (must-PASS arm)
+ok 55 - decideReap NEVER classifies a live workspace tree (must-PASS arm)
+  ---
+  duration_ms: 0.124668
+  type: 'test'
+  ...
+# Subtest: decideReap REFUSES entirely when the store is not loaded from disk
+ok 56 - decideReap REFUSES entirely when the store is not loaded from disk
+  ---
+  duration_ms: 0.08725
+  type: 'test'
+  ...
+# Subtest: decideReap skips an orphan whose keeper pid is already gone (nothing to kill)
+ok 57 - decideReap skips an orphan whose keeper pid is already gone (nothing to kill)
+  ---
+  duration_ms: 0.198501
+  type: 'test'
+  ...
+# Subtest: decideReap only classifies descendants of the keeper root, never siblings
+ok 58 - decideReap only classifies descendants of the keeper root, never siblings
+  ---
+  duration_ms: 0.209917
+  type: 'test'
+  ...
+# Subtest: decideReap REFUSES an orphan whose members carry no start-time (non-Linux ps fallback)
+ok 59 - decideReap REFUSES an orphan whose members carry no start-time (non-Linux ps fallback)
+  ---
+  duration_ms: 0.248126
+  type: 'test'
+  ...
+# Subtest: isKeeperCmdline accepts a real keeper argv and rejects look-alikes
+ok 60 - isKeeperCmdline accepts a real keeper argv and rejects look-alikes
+  ---
+  duration_ms: 0.265751
+  type: 'test'
+  ...
+# Subtest: verifyReapIdentity: an intact tree is fully signalable, leaf-first, keeper last
+ok 61 - verifyReapIdentity: an intact tree is fully signalable, leaf-first, keeper last
+  ---
+  duration_ms: 0.246668
+  type: 'test'
+  ...
+# Subtest: verifyReapIdentity: a member pid REUSED by an unrelated process is withheld (start-time clause)
+ok 62 - verifyReapIdentity: a member pid REUSED by an unrelated process is withheld (start-time clause)
+  ---
+  duration_ms: 0.501877
+  type: 'test'
+  ...
+# Subtest: verifyReapIdentity: a keeper pid REUSED (start-time changed) refuses the WHOLE tree
+ok 63 - verifyReapIdentity: a keeper pid REUSED (start-time changed) refuses the WHOLE tree
+  ---
+  duration_ms: 0.483585
+  type: 'test'
+  ...
+# Subtest: verifyReapIdentity: a recycled ROOT running an unrelated program refuses the tree (cmdline clause)
+ok 64 - verifyReapIdentity: a recycled ROOT running an unrelated program refuses the tree (cmdline clause)
+  ---
+  duration_ms: 0.185501
+  type: 'test'
+  ...
+# Subtest: verifyReapIdentity: a vanished keeper refuses the tree (nothing to anchor on)
+ok 65 - verifyReapIdentity: a vanished keeper refuses the tree (nothing to anchor on)
+  ---
+  duration_ms: 0.07775
+  type: 'test'
+  ...
+# Subtest: verifyReapIdentity: a member that moved out of the tree (ppid changed) is withheld; a gone member is skipped
+ok 66 - verifyReapIdentity: a member that moved out of the tree (ppid changed) is withheld; a gone member is skipped
+  ---
+  duration_ms: 0.884586
+  type: 'test'
+  ...
+# Subtest: classifySurvivors SIGKILLs only members still the SAME process; a reused pid is left alone
+ok 67 - classifySurvivors SIGKILLs only members still the SAME process; a reused pid is left alone
+  ---
+  duration_ms: 0.152958
+  type: 'test'
+  ...
+# Subtest: summarizeSessionTree rolls the keeper tree up with present/status/reaped
+ok 68 - summarizeSessionTree rolls the keeper tree up with present/status/reaped
+  ---
+  duration_ms: 0.113709
+  type: 'test'
+  ...
+# Subtest: buildResourceLogLine assembles totals, electron and per-session rows
+ok 69 - buildResourceLogLine assembles totals, electron and per-session rows
+  ---
+  duration_ms: 0.422418
+  type: 'test'
+  ...
+# Subtest: decideThresholdWarnings flags an over-RSS session and an over-CPU electron proc
+ok 70 - decideThresholdWarnings flags an over-RSS session and an over-CPU electron proc
+  ---
+  duration_ms: 0.162376
+  type: 'test'
+  ...
+# Subtest: decideThresholdWarnings never warns about a reaped tree (its RSS is stale)
+ok 71 - decideThresholdWarnings never warns about a reaped tree (its RSS is stale)
+  ---
+  duration_ms: 0.058042
+  type: 'test'
+  ...
+# Subtest: decideThresholdWarnings stays quiet under threshold
+ok 72 - decideThresholdWarnings stays quiet under threshold
+  ---
+  duration_ms: 0.058125
+  type: 'test'
+  ...
+# Subtest: the bound constants keep active + .1 within 50 MB and 7 days (literals, not derived)
+ok 73 - the bound constants keep active + .1 within 50 MB and 7 days (literals, not derived)
+  ---
+  duration_ms: 0.050042
+  type: 'test'
+  ...
+# Subtest: shouldRotate: size cap, age cap, unknown age; an empty file never rotates
+ok 74 - shouldRotate: size cap, age cap, unknown age; an empty file never rotates
+  ---
+  duration_ms: 0.065708
+  type: 'test'
+  ...
+# Subtest: shouldDropBackup: drops once the OLDEST sample passes 7 days; unknown age drops
+ok 75 - shouldDropBackup: drops once the OLDEST sample passes 7 days; unknown age drops
+  ---
+  duration_ms: 0.055459
+  type: 'test'
+  ...
+# Subtest: firstSampleAt reads the first line only and refuses garbage
+ok 76 - firstSampleAt reads the first line only and refuses garbage
+  ---
+  duration_ms: 0.115167
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap CLASSIFIES the untracked keeper of a LIVE workspace, never the tracked one (must-FAIL arm)
+ok 77 - decideDuplicateReap CLASSIFIES the untracked keeper of a LIVE workspace, never the tracked one (must-FAIL arm)
+  ---
+  duration_ms: 0.256751
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap NEVER touches a live workspace's SOLE keeper — incl. a hibernated one with a lingering keeper (must-PASS arm)
+ok 78 - decideDuplicateReap NEVER touches a live workspace's SOLE keeper — incl. a hibernated one with a lingering keeper (must-PASS arm)
+  ---
+  duration_ms: 0.229
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap REFUSES everything when the store was not loaded from disk
+ok 79 - decideDuplicateReap REFUSES everything when the store was not loaded from disk
+  ---
+  duration_ms: 0.08425
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap fails closed: no tracked keeper, or a tracked pid that is not in the scan → refused, nothing classified
+ok 80 - decideDuplicateReap fails closed: no tracked keeper, or a tracked pid that is not in the scan → refused, nothing classified
+  ---
+  duration_ms: 0.245043
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap: an ABSENT workspace loses every keeper except the tracked one (that is decideReap's)
+ok 81 - decideDuplicateReap: an ABSENT workspace loses every keeper except the tracked one (that is decideReap's)
+  ---
+  duration_ms: 3.856055
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap refuses a duplicate tree whose members carry no start-time (identity unverifiable)
+ok 82 - decideDuplicateReap refuses a duplicate tree whose members carry no start-time (identity unverifiable)
+  ---
+  duration_ms: 0.136709
+  type: 'test'
+  ...
+# Subtest: parseKeeperArgv matches only THIS home's keeper argv (pid path anchors the home)
+ok 83 - parseKeeperArgv matches only THIS home's keeper argv (pid path anchors the home)
+  ---
+  duration_ms: 0.133709
+  type: 'test'
+  ...
+# Subtest: decideDuplicateReap REFUSES a "duplicate" whose tree contains the tracked keeper (fork-style wrapper, review K1)
+ok 84 - decideDuplicateReap REFUSES a "duplicate" whose tree contains the tracked keeper (fork-style wrapper, review K1)
+  ---
+  duration_ms: 0.131292
+  type: 'test'
+  ...
+# Subtest: bootFallbackKills: only where /proc identity is unavailable (non-Linux), only once the store loaded, only absent ids (review K5)
+ok 85 - bootFallbackKills: only where /proc identity is unavailable (non-Linux), only once the store loaded, only absent ids (review K5)
+  ---
+  duration_ms: 0.106209
+  type: 'test'
+  ...
+# Subtest: isSameLiveProcess: same pid + same start-time + not a zombie → true (the only accepted shape)
+ok 86 - isSameLiveProcess: same pid + same start-time + not a zombie → true (the only accepted shape)
+  ---
+  duration_ms: 0.399668
+  type: 'test'
+  ...
+# Subtest: isSameLiveProcess: a RECYCLED pid (different start-time) is refused — K4a reddens this
+ok 87 - isSameLiveProcess: a RECYCLED pid (different start-time) is refused — K4a reddens this
+  ---
+  duration_ms: 0.155709
+  type: 'test'
+  ...
+# Subtest: isSameLiveProcess: a zombie is dead — K4b reddens this
+ok 88 - isSameLiveProcess: a zombie is dead — K4b reddens this
+  ---
+  duration_ms: 0.313251
+  type: 'test'
+  ...
+# Subtest: isSameLiveProcess: unreadable (null) and malformed stat text are refused
+ok 89 - isSameLiveProcess: unreadable (null) and malformed stat text are refused
+  ---
+  duration_ms: 0.102084
+  type: 'test'
+  ...
+1..89
+# tests 89
+# suites 0
+# pass 89
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 34352.444127
+END rc=0 secs=34
