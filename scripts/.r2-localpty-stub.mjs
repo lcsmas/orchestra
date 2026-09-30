@@ -31,6 +31,9 @@ class ChildTransport {
 export class LocalPtyTransport extends ChildTransport {}
 
 export const createLocalPtyTransport = async (opts) => {
+  // Test knob (default 0 = off): keep the start "in flight" for a while, so a rig can begin a migration inside it (#240 r3 F1).
+  const delayMs = Number(process.env.E2E_PTY_SPAWN_DELAY_MS || 0);
+  if (delayMs > 0) await new Promise((res) => setTimeout(res, delayMs));
   const proc = spawn(opts.command, opts.args ?? [], {
     cwd: opts.cwd, env: opts.env, stdio: ['pipe', 'pipe', 'pipe'],
   });

@@ -29,6 +29,7 @@
     "build:cli": "vite build --config vite.cli.config.ts",
     "build:keeper": "vite build --config vite.keeper.config.ts",
     "disk-guard": "node scripts/disk-guard.cjs",
+    "test:migrate-transcripts": "pnpm run build:keeper && node scripts/e2e-migrate-transcripts.mjs all",
     "test:disk-guard": "node scripts/verify-disk-guard.mjs",
     "test:disk-guard-ui": "node scripts/verify-disk-guard-ui.mjs",
     "prebuild:bundles": "node scripts/disk-guard.cjs --preset build-bundles",

@@ -20,6 +20,7 @@ import {
   type SdkStartResult,
   sdkStopIfLive,
   sdkSessionLive,
+  sdkAwaitStart,
 } from './sdk-delivery';
 import {
   createWorktree,
@@ -40,6 +41,7 @@ import {
   stopPty,
   stopPtyAndWait,
   stuckPtyWriter,
+  awaitPtyStarts,
   clearScrollback,
   startPty,
   writePty,
@@ -2907,8 +2909,21 @@ export async function dispatchMigrateAccountRequest(input: {
   // #240: a previous stop that timed out left a PTY child alive (SIGKILL survived): its transcripts must not move under it.
   const stuck = stuckPtyWriter(id);
   if (stuck) return { ok: false, error: `the agent process${stuck.pid ? ` (pid ${stuck.pid})` : ''} of workspace ${id} is still running after stop — migration refused until it exits` };
-  if (!beginMigration(id)) return { ok: false, error: `a migration of workspace ${id} is already in progress` };
+  const fenceToken = beginMigration(id);
+  if (fenceToken === null) return { ok: false, error: `a migration of workspace ${id} is already in progress` };
+  // Released exactly once (after the re-pin, or in the `finally` on any other exit) — and only if this call still holds it.
+  let fenceHeld = true;
+  const releaseFence = (): void => {
+    if (!fenceHeld) return;
+    fenceHeld = false;
+    endMigration(id, fenceToken);
+  };
   try {
+    // #240 r3 F1: a start that passed the fence BEFORE beginMigration is still assembling its session/PTY and is invisible to
+    // `isRunning`/`sessions`: let it land (the stops below then see it) or abort at its own re-check — fail closed if it will not settle.
+    if (!(await sdkAwaitStart(id, 15_000)) || !(await awaitPtyStarts(id, 15_000))) {
+      return { ok: false, error: `an agent start for workspace ${id} is still in flight — try again in a moment` };
+    }
     const wasRunning = isRunning(id);
     // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
     // start (buildSdkEnv), so it would keep running on the stale account and may
@@ -2942,7 +2957,7 @@ export async function dispatchMigrateAccountRequest(input: {
     if (targetAccountId) updated.accountId = targetAccountId;
     else delete updated.accountId;
     await store.upsertWorkspace(updated);
-    endMigration(id); // re-pinned: an agent may start again (on the NEW account) — the resume below is one
+    releaseFence(); // re-pinned: an agent may start again (on the NEW account) — the resume below is one
     platform.broadcast('workspace:update', updated);
     // Re-broadcast the workspace→account map here rather than only in the IPC
     // handler: the socket route (`orchestra migrate-account`) reaches this
@@ -2990,7 +3005,7 @@ export async function dispatchMigrateAccountRequest(input: {
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
   } finally {
-    endMigration(id);
+    releaseFence();
   }
 }
 

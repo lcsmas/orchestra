@@ -2065,6 +2065,13 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     },
   });
 
+  // #240 r3 F1: an account migration began while this start was in flight (it passed the fence at the top): this CLI runs on the OLD
+  // account. Register it just long enough for the normal teardown (interrupt, keeper kill), then refuse. Sync from here to `set`.
+  if (isMigrating(wsId)) {
+    sessions.set(wsId, session);
+    await sdkStop(wsId).catch(() => undefined);
+    throw new Error(migratingMessage(wsId));
+  }
   sessions.set(wsId, session);
   const wsAtStart = store.getWorkspace(wsId);
   if (wsAtStart && owesOpeningTask(wsAtStart)) session.owedBrief = wsAtStart.lastTask;
@@ -5862,4 +5869,15 @@ registerSdkDelivery({
   awaitFirstTurn: sdkAwaitFirstTurn,
   firstTurnFailed: (wsId) => sessions.get(wsId)?.briefOutcome === 'failed',
   stop: sdkStop,
+  awaitStart: async (wsId, timeoutMs) => {
+    const inFlight = ensuring.get(wsId);
+    if (!inFlight) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<boolean>((res) => { timer = setTimeout(() => res(false), timeoutMs); });
+    try {
+      return await Promise.race([inFlight.then(() => true, () => true), bound]);
+    } finally {
+      clearTimeout(timer);
+    }
+  },
 });

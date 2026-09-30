@@ -63,6 +63,9 @@ export interface SdkDelivery {
   /** Tear down a live structured session (used by account migration, which must
    *  stop the session running under the OLD account/config dir). */
   stop(wsId: string, opts?: { hibernate?: boolean }): Promise<void>;
+  /** Resolve true once no session START for `wsId` is in flight (false = still in flight at `timeoutMs`). #240: an account
+   *  migration must not read "is anything running" while a start that already passed its fence is still assembling a session. */
+  awaitStart?(wsId: string, timeoutMs: number): Promise<boolean>;
 }
 
 let impl: SdkDelivery | null = null;
@@ -163,6 +166,11 @@ export function sdkFirstTurnFailed(wsId: string): boolean {
 /** Boolean form of {@link sdkStartAndDeliverResult} for wake and the bus wake seam. */
 export async function sdkStartAndDeliver(wsId: string, text: string): Promise<boolean> {
   return (await sdkStartAndDeliverResult(wsId, text)).ok;
+}
+
+/** Wait (bounded) for an in-flight structured-session start of `wsId` to land or abort. true = none in flight / settled. */
+export async function sdkAwaitStart(wsId: string, timeoutMs: number): Promise<boolean> {
+  return (await impl?.awaitStart?.(wsId, timeoutMs)) ?? true;
 }
 
 /** Stop a live structured session if one exists (best-effort). Even with NO

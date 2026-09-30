@@ -23,13 +23,18 @@
 //   start_fence          ★ while a migration is between stop and re-pin, an agent PTY start AND an SDK ensureSession for that workspace are refused; the migration's own resume still works
 //   keeper_detached      ★ NO in-memory session, a REAL detached keeper (built keeper.js) + fake CLI appending by path → keeper AND CLI dead when the migration returns, 0 appends lost (needs `pnpm run build:keeper`)
 //   keeper_slowterm      ★ same, the CLI takes 1.5 s to die on SIGTERM → the move still waits for it
+//   inflight             ★ an agent PTY start that already PASSED the fence (suspended at its first await) when the migration begins → the migration waits for it; the start aborts (child killed); 0 PTYs on the old account after the pin
+//   sdkinflight          ★ the REAL agent-sdk ensureSession (fake `query`, no CLI) racing the REAL migration at 0..8 event-loop ticks → never a live session on the OLD account after the pin
+//   fencedrop            ★ a 2nd migration begins from call 1's `workspace:update` broadcast: call 1's late release must NOT drop call 2's fence (3rd migration and agent start still refused; 0 lost)
+//   emfile               ★ /proc identity reads fail UNKNOWN (EMFILE-like): at the escalation NO SIGKILL and the child is latched; an already-latched child is not released by an unknown read
+//   no_proc              ★ no /proc (macOS/Windows model): SIGKILL is never sent, the child is latched (refuse), released only by its exit event
 //   concurrent           ★ two overlapping migrations of ONE workspace (the reviewer's shape) → 0 transcripts lost, the 2nd is refused "already in progress"
 //   exdev_subdir         ★ target on ANOTHER filesystem (tmpfs), session has a subdir → moves + source gone (master: EISDIR)
 //   different_dir_moves    must-PASS: genuinely different target → everything at the target byte-identical, mtimes kept, source gone
 //   exdev_move           ★ target on another filesystem, flat files → moves with mtimes KEPT (master's EXDEV copyFile drops them)
 //
 // Run one arm:  node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-migrate-transcripts.mjs <arm>
-// Run all:      node scripts/e2e-migrate-transcripts.mjs all      (children + an independent live-dir canary before/after)
+// Run all:      pnpm run test:migrate-transcripts   (= build:keeper + node scripts/e2e-migrate-transcripts.mjs all: children + an independent live-dir canary before/after)
 
 import path from 'node:path';
 import fs from 'node:fs';
@@ -45,7 +50,7 @@ const ARM = process.argv[2] ?? 'all';
 const ARMS = [
   'trailing_slash', 'dot_segment', 'home_var_dotdot', 'symlink_alias', 'acct_trailing_slash', 'acct_symlink_alias',
   'shared_projects', 'bind_mount', 'copy_fail_midway', 'exdev_copy_fail', 'dst_different_kept', 'src_unreadable',
-  'concurrent', 'live_writer', 'live_writer_stuck', 'stuck_latch', 'stuck_identity', 'start_fence', 'keeper_detached', 'keeper_slowterm', 'exdev_subdir', 'different_dir_moves', 'exdev_move',
+  'concurrent', 'live_writer', 'live_writer_stuck', 'stuck_latch', 'stuck_identity', 'start_fence', 'keeper_detached', 'keeper_slowterm', 'inflight', 'sdkinflight', 'fencedrop', 'emfile', 'no_proc', 'exdev_subdir', 'different_dir_moves', 'exdev_move',
 ];
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-migrate-transcripts'); // btrfs, under ~
 const XBASE = process.env.E2E_XHOME ?? path.join(os.tmpdir(), 'e2e-migrate-transcripts-x'); // tmpfs: a DIFFERENT filesystem (EXDEV)
@@ -86,7 +91,7 @@ const bail = (error) => { console.log(JSON.stringify({ arm: ARM, ok: false, erro
 const scratchOk = (p) => { const a = checkScratch(p, BASE); return a.ok ? a : checkScratch(p, XBASE); };
 const mustBeScratch = (p) => { const g = scratchOk(p); if (!g.ok) bail(`SAFETY: ${g.clause} ${g.detail}`); };
 
-const X_ARM = ARM.startsWith('exdev');
+const X_ARM = ARM.startsWith('exdev') || ARM === 'fencedrop';
 const root = path.join(BASE, ARM);
 const xroot = path.join(XBASE, ARM);
 for (const p of [BASE, root, ...(X_ARM ? [XBASE, xroot] : [])]) mustBeScratch(p);
@@ -146,6 +151,11 @@ const S = {
   start_fence:         { target: '~/.claude-b' },
   keeper_detached:     { target: '~/.claude-b' },
   keeper_slowterm:     { target: '~/.claude-b' },
+  inflight:            { target: '~/.claude-b' },
+  sdkinflight:         { srcCfg: path.join(home, '.claude-a'), target: '~/.claude-b' },
+  fencedrop:           { srcCfg: path.join(home, '.claude-a'), target: '~/.claude-b' },
+  emfile:              { target: '~/.claude-b' },
+  no_proc:             { target: '~/.claude-b' },
   exdev_subdir:        { target: path.join(xroot, 'cfg-b') },
   different_dir_moves: { target: '~/.claude-b' },
   exdev_move:          { target: path.join(xroot, 'cfg-b') },
@@ -202,11 +212,12 @@ const ACCT_A = { id: 'acct-a', label: 'a', configDir: srcCfg };
 const ACCT_B = { id: 'acct-b', label: 'b', configDir: S.target };
 fs.mkdirSync(path.join(userData, 'orchestra'), { recursive: true });
 fs.writeFileSync(path.join(userData, 'orchestra', 'store.json'), JSON.stringify({
-  repos: [], workspaces: [], selfTuneRuns: [], accounts: S.srcCfg ? [ACCT_A, ACCT_B] : [ACCT_B],
+  repos: [], workspaces: [], selfTuneRuns: [], accounts: S.srcCfg ? [ACCT_A, ACCT_B, ...(ARM === 'fencedrop' ? [{ id: 'acct-c', label: 'c', configDir: path.join(xroot, 'cfg-c') }] : [])] : [ACCT_B],
 }, null, 2));
+let onBroadcast = () => {}; // arms may hook the app's broadcasts (fencedrop starts a 2nd migration from `workspace:update`)
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 initPlatform({
-  kind: 'headless-e2e-migrate-transcripts', broadcast: () => {}, broadcastPtyData: () => true, canBroadcast: () => true,
+  kind: 'headless-e2e-migrate-transcripts', broadcast: (...a) => onBroadcast(...a), broadcastPtyData: () => true, canBroadcast: () => true,
   isFocused: () => false, hasAttachedUi: () => false, notify: () => {}, openExternal: () => {}, showItemInFolder: () => {},
   openPath: () => {}, openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
   getUserDataDir: () => userData, getLogsDir: () => path.join(userData, 'logs'),
@@ -286,7 +297,7 @@ if (ARM === 'concurrent') {
 }
 
 // ---- arms that drive a REAL agent process around a migration (each dispatches itself and exits) --------------------
-const PROC_ARMS = ['live_writer_stuck', 'stuck_latch', 'stuck_identity', 'start_fence', 'keeper_detached', 'keeper_slowterm'];
+const PROC_ARMS = ['live_writer_stuck', 'stuck_latch', 'stuck_identity', 'start_fence', 'keeper_detached', 'keeper_slowterm', 'inflight', 'sdkinflight', 'fencedrop', 'emfile', 'no_proc'];
 if (PROC_ARMS.includes(ARM)) {
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); } catch { return false; } try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /, '')[0] !== 'Z'; } catch { return false; } };
@@ -343,6 +354,109 @@ if (PROC_ARMS.includes(ARM)) {
     const stillAlive = alive(pid);
     try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
     finish({ resolved: res, signalled, childAliveAfter: stillAlive, statReads: reads }, res === true && signalled.length === 0 && stillAlive && reads >= 2);
+  }
+  if (ARM === 'inflight') {
+    // A start that ALREADY passed the fence (suspended at its first await) when the migration begins in the same tick: isRunning is false, nothing to stop.
+    const writer = `i=0; while [ $i -lt 400 ]; do mkdir -p '${projOf(srcCfg)}'; echo "late-$i" >> '${target}' 2>/dev/null; i=$((i+1)); sleep 0.05; done`;
+    process.env.E2E_PTY_SPAWN_DELAY_MS = '300'; // the start stays in flight ~300 ms (plain-node child transport), so the migration begins INSIDE it
+    const startP = pty.startPty({ id: 'ws1', workspaceId: 'ws1', cwd: wtPath, cols: 80, rows: 24, command: '/bin/sh', args: ['-c', writer] });
+    const migP = dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    const fenceHeldRightAfter = fence.isMigrating('ws1');
+    const [sres, r] = await Promise.allSettled([startP, migP]);
+    await sleep(1200);
+    const mig = r.status === 'fulfilled' ? r.value : { ok: false, error: String(r.reason) };
+    const pinned = store.getWorkspace('ws1')?.accountId;
+    finish({ fenceHeldRightAfter, start: { status: sres.status, error: sres.status === 'rejected' ? String(sres.reason?.message) : null }, mig: { ok: mig.ok, error: mig.error }, after: { running: pty.isRunning('ws1'), pinned: pinned ?? null, atSrc: lines(target), atDst: lines(path.join(dstP, 'a.jsonl')) } },
+      fenceHeldRightAfter && sres.status === 'rejected' && /being migrated/.test(String(sres.reason?.message)) && mig.ok === true && !pty.isRunning('ws1') && lines(target) === 0 && !fs.existsSync(src) && pinned === ACCT_B.id);
+  }
+  if (ARM === 'sdkinflight') {
+    // REAL agent-sdk ensureSession (fake `query`, no CLI, zero tokens) racing REAL dispatch. The pinned account's dir is what the session's env sees.
+    const sdk = await import(`${REPO}/src/main/agent-sdk.ts`);
+    const never = () => new Promise(() => {});
+    const envSeen = [];
+    sdk.__setQueryFactoryForTests(({ prompt, options }) => {
+      envSeen.push({ cfg: options?.env?.CLAUDE_CONFIG_DIR ?? null });
+      void (async () => { try { for await (const m of prompt) { void m; } } catch { /* torn down */ } })();
+      return { async *[Symbol.asyncIterator]() { yield { type: 'system', subtype: 'init', session_id: 'r3', tools: [], slash_commands: [] }; await never(); },
+        interrupt: async () => {}, rewindFiles: async () => ({ canRewind: false, error: 'none' }), setModel: async () => {}, setPermissionMode: async () => {}, mcpServerStatus: async () => ({}), supportedCommands: async () => [], supportedModels: async () => [], getContextUsage: never };
+    });
+    const reseed = async () => { await sdk.sdkStop('ws1').catch(() => {}); fs.rmSync(srcCfg, { recursive: true, force: true }); fs.rmSync(dstCfg, { recursive: true, force: true });
+      for (let i = 0; i < 4; i++) put(path.join(src, `s${i}.jsonl`), body(`s${i}`, 20), 1_756_000_000 + i); await store.upsertWorkspace({ id: 'ws1', name: 'ws1', kind: 'scratch', repoPath: '', branch: 'ws1', worktreePath: wtPath, status: 'idle', createdAt: Date.now(), hasInput: false, accountId: ACCT_A.id }); envSeen.length = 0; };
+    await reseed(); await sdk.sdkSend('ws1', 'hi');
+    const soloCfg = envSeen[0]?.cfg ?? null; await sdk.sdkStop('ws1').catch(() => {});
+    if (soloCfg !== srcCfg) bail('PRECONDITION: the fake query did not see the pinned account dir: ' + JSON.stringify(soloCfg));
+    const ticks = async (n) => { for (let i = 0; i < n; i++) await new Promise((res) => setImmediate(res)); };
+    const tally = {}; let bypass = 0, migFailed = 0;
+    for (const n of [0, 1, 2, 4, 8]) for (let k = 0; k < 6; k++) {
+      await reseed();
+      const sp = sdk.sdkSend('ws1', 'hi').then(() => 'ok', (e) => 'ERR ' + String(e.message).slice(0, 60));
+      await ticks(n);
+      const m = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id }); const s = await sp; await sleep(40);
+      const live = sdk.sdkHasSession('ws1'); const on = envSeen.at(-1)?.cfg;
+      const pinnedNow = store.getWorkspace('ws1')?.accountId;
+      const cls = !m.ok ? 'mig-failed' : live && on === srcCfg && pinnedNow === ACCT_B.id ? 'BYPASS' : s !== 'ok' ? 'start-refused(fence)' : !live ? 'stopped-by-migration' : 'other';
+      tally[cls] = (tally[cls] ?? 0) + 1; if (cls === 'BYPASS') bypass++; if (cls === 'mig-failed') migFailed++;
+    }
+    await sdk.sdkStop('ws1').catch(() => {});
+    const inFlightHits = (tally['start-refused(fence)'] ?? 0) + (tally['stopped-by-migration'] ?? 0);
+    finish({ soloCfg, tally }, bypass === 0 && migFailed === 0 && !tally.other && inFlightHits >= 20); // 30 iterations; every one must end with NO live session on the old account
+  }
+  if (ARM === 'fencedrop') {
+    // Call 1 releases its fence right after the re-pin; a 2nd migration begins from call 1's `workspace:update` broadcast (fence taken synchronously) and is
+    // still running when call 1 returns. Call 1's late release must not touch it.
+    const H = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+    const cfgC = path.join(xroot, 'cfg-c'); mustBeScratch(cfgC);
+    fs.rmSync(srcCfg, { recursive: true, force: true }); fs.rmSync(dstCfg, { recursive: true, force: true });
+    for (let i = 0; i < 40; i++) put(path.join(src, `s${i}.jsonl`), crypto.randomBytes(100_000).toString('hex'), 1_756_000_000 + i);
+    await store.upsertWorkspace({ id: 'ws1', name: 'ws1', kind: 'scratch', repoPath: '', branch: 'ws1', worktreePath: wtPath, status: 'idle', createdAt: Date.now(), hasInput: false, accountId: ACCT_A.id });
+    const seeded = new Map(fs.readdirSync(src).map((n) => [n, H(path.join(src, n))]));
+    let call2 = null;
+    onBroadcast = (ch, w) => { if (ch === 'workspace:update' && w?.accountId === ACCT_B.id && !call2) call2 = dispatchMigrateAccountRequest({ id: 'ws1', accountId: 'acct-c' }); };
+    const r1 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    const fenceAtCall1Return = fence.isMigrating('ws1');
+    const overlapped = call2 !== null && (await Promise.race([call2.then(() => false), sleep(0).then(() => true)])); // call 2 still running when call 1 returned
+    let startErr = null; let third = null;
+    if (overlapped) {
+      try { await pty.startPty({ id: 'ws1', workspaceId: 'ws1', cwd: wtPath, cols: 80, rows: 24, command: '/bin/sh', args: ['-c', 'sleep 0.3'] }); } catch (e) { startErr = String(e.message); }
+      third = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_A.id });
+    }
+    const r2 = call2 ? await call2 : null;
+    try { pty.stopPty('ws1'); } catch { /* none */ }
+    await sleep(200);
+    let lost = 0; for (const [n, h] of seeded) { const at = [src, dstP, projOf(cfgC)].some((d) => fs.existsSync(path.join(d, n)) && H(path.join(d, n)) === h); if (!at) lost++; }
+    finish({ call1: { ok: r1.ok }, call2: { ok: r2?.ok, error: r2?.error }, overlapped, fenceAtCall1Return, startDuringCall2: startErr, thirdMigration: third && { ok: third.ok, error: third.error }, lost, pinned: store.getWorkspace('ws1')?.accountId ?? null },
+      r1.ok === true && overlapped === true && fenceAtCall1Return === true && /being migrated/.test(startErr ?? '') && third?.ok === false && /already in progress/.test(third?.error ?? '') && r2?.ok === true && lost === 0);
+  }
+  if (ARM === 'emfile') {
+    // The /proc identity read fails with something that is NOT "no such process" (EMFILE, EACCES, EIO…): UNKNOWN. Unknown is never "gone".
+    const pid = await startAgent(`trap '' TERM HUP; sleep 40`);
+    const real = (p_) => { try { return fs.readFileSync(`/proc/${p_}/stat`, 'utf8'); } catch { return null; } };
+    let reads = 0; const signalled = [];
+    const readStat = (p_) => (++reads === 1 ? real(p_) : undefined); // capture works, every later read is UNKNOWN
+    const resolved = await pty.stopPtyAndWait('ws1', 400, 500, { kill: (p_, sg) => { signalled.push([p_, sg]); }, readStat });
+    const aliveAfter = alive(pid);
+    const latched = pty.stuckPtyWriter('ws1', () => undefined); // an unknown read must not release the latch
+    const r1 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    const srcIntact = same(before, sig(src));
+    process.kill(pid, 'SIGKILL');
+    let released = false; for (let i = 0; i < 60 && !released; i++) { released = pty.stuckPtyWriter('ws1') === null; if (!released) await sleep(50); }
+    const r2 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    finish({ resolved, signalled, aliveAfter, latchKeptOnUnknownRead: latched?.pid === pid, refused: { ok: r1.ok, error: r1.error }, srcIntact, released, second: { ok: r2.ok } },
+      resolved === false && signalled.length === 0 && aliveAfter && latched?.pid === pid && r1.ok === false && srcIntact && released && r2.ok === true);
+  }
+  if (ARM === 'no_proc') {
+    // No /proc at all (macOS/Windows): identity is unknowable, so NO SIGKILL; the child is latched and only its exit event releases it.
+    const pid = await startAgent(`trap '' TERM HUP; sleep 40`);
+    const signalled = [];
+    const resolved = await pty.stopPtyAndWait('ws1', 400, 500, { kill: (p_, sg) => { signalled.push([p_, sg]); }, readStat: () => null });
+    const latched = pty.stuckPtyWriter('ws1', () => null); // even a "definitely absent" read cannot release a latch with no start-time to compare
+    const r1 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    const srcIntact = same(before, sig(src));
+    process.kill(pid, 'SIGKILL');
+    let released = false; for (let i = 0; i < 60 && !released; i++) { released = pty.stuckPtyWriter('ws1') === null; if (!released) await sleep(50); }
+    const r2 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    finish({ resolved, signalled, latched: latched?.pid === pid, refused: { ok: r1.ok, error: r1.error }, srcIntact, releasedByExit: released, second: { ok: r2.ok } },
+      resolved === false && signalled.length === 0 && latched?.pid === pid && r1.ok === false && srcIntact && released && r2.ok === true);
   }
   if (ARM === 'start_fence') {
     // The agent takes ~2.5 s to die on stop, so the migration sits between stop and re-pin. In that window neither start path may run an agent.

@@ -502,16 +502,22 @@ test('wiring: workspaces.ts routes the move through moveProjectTranscripts, awai
   const body = disp.slice(0, disp.indexOf('\nexport '));
   for (const [re, what] of [
     [/stuckPtyWriter\(id\)/, 'refuses while a previous stop left an agent process alive'],
-    [/!beginMigration\(id\)/, 'per-workspace in-flight fence'],
-    [/endMigration\(id\)/, 'fence released'],
+    [/const fenceToken = beginMigration\(id\)/, 'per-workspace in-flight fence, holder-token'],
+    [/endMigration\(id, fenceToken\)/, 'released by TOKEN (a stale call cannot drop a later call\'s fence)'],
+    [/await sdkAwaitStart\(id,/, 'waits for an SDK session start already in flight'],
+    [/await awaitPtyStarts\(id,/, 'waits for an agent PTY start already in flight'],
     [/await sdkStopIfLive\(id\)/, 'unconditional SDK stop (detached keeper too)'],
     [/await killKeeper\(id\)/, 'awaits the keeper/CLI death'],
     [/await stopPtyAndWait\(id\)/, 'awaits the PTY child exit'],
   ] as const) assert.ok(re.test(body), `dispatchMigrateAccountRequest: ${what}`);
   assert.equal(/sdkSessionLive\(id\)/.test(body), false, 'the SDK stop is not gated on an in-memory session (a detached keeper has none)');
-  assert.ok(body.indexOf('await store.upsertWorkspace(updated)') < body.indexOf('endMigration(id); // re-pinned'), 'the fence drops only AFTER the re-pin');
-  assert.ok(/finally \{\s*endMigration\(id\);/.test(body), 'and always in a finally');
+  assert.ok(body.indexOf('await store.upsertWorkspace(updated)') < body.indexOf('releaseFence(); // re-pinned'), 'the fence drops only AFTER the re-pin');
+  assert.ok(/finally \{\s*releaseFence\(\);/.test(body), 'and always in a finally');
+  assert.equal((body.match(/endMigration\(/g) ?? []).length, 1, 'exactly ONE release site (inside the once-only releaseFence)');
+  assert.ok(body.indexOf('await sdkAwaitStart(id,') < body.indexOf('const wasRunning = isRunning(id)'), 'in-flight starts settle BEFORE wasRunning is read');
   // the start fence at the two funnels an agent can start through
-  assert.ok(/isMigrating\(opts\.workspaceId\)/.test(fs.readFileSync(path.join(here, 'pty.ts'), 'utf8')), 'startPty refuses during a migration');
-  assert.ok(/isMigrating\(wsId\)/.test(fs.readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8')), 'ensureSessionInner refuses during a migration');
+  const sdkSrc = fs.readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8');
+  assert.equal((sdkSrc.match(/isMigrating\(wsId\)/g) ?? []).length, 2, 'ensureSessionInner checks the fence at the top AND right before sessions.set');
+  const ptySrc = fs.readFileSync(path.join(here, 'pty.ts'), 'utf8');
+  assert.equal((ptySrc.match(/isMigrating\(opts\.workspaceId\)/g) ?? []).length, 2, 'startPty checks the fence at the top AND right after the transport is created');
 });

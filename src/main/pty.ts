@@ -17,9 +17,8 @@ import { createLocalPtyTransport } from './transport/local-pty';
 import { createRemoteTransport } from './transport/remote';
 import { getSandboxConnection } from './transport/sandbox-manager';
 import type { WorkspaceHost } from '../shared/types';
-import { isSameLiveProcess } from '../shared/resource-monitor';
-import { parseProcIdentity } from '../shared/resources';
 import { isMigrating, migratingMessage } from './migration-fence';
+import { procStartTicks, readProcStat, sameLiveProcess, type StatRead } from './proc-identity';
 
 /** Build the transport for a session given where its agent runs. Local is the
  *  default and unchanged (node-pty); a sandbox-hosted workspace rides a
@@ -228,7 +227,42 @@ function queuePtyData(s: Session, data: string): void {
   }
 }
 
-export async function startPty(opts: {
+/** In-flight agent-PTY starts per workspace (#240 r3 F1): a migration WAITS for them before it reads `isRunning`. */
+const startingPtys = new Map<string, Set<Promise<void>>>();
+
+/** Wait (bounded) until no agent-PTY start for `workspaceId` is in flight. false = still in flight at the bound. */
+export async function awaitPtyStarts(workspaceId: string, timeoutMs = 15_000): Promise<boolean> {
+  const pending = startingPtys.get(workspaceId);
+  if (!pending?.size) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<boolean>((res) => { timer = setTimeout(() => res(false), timeoutMs); });
+  const settled = Promise.allSettled([...pending]).then(() => true);
+  try {
+    return await Promise.race([settled, bound]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type StartPtyOpts = Parameters<typeof startPtyInner>[0];
+
+export function startPty(opts: StartPtyOpts): Promise<void> {
+  const p = startPtyInner(opts); // the fence check is in its synchronous head, so the tracking below never lags a start that passed it
+  const ws = opts.workspaceId;
+  if (ws) {
+    const set = startingPtys.get(ws) ?? new Set<Promise<void>>();
+    set.add(p);
+    startingPtys.set(ws, set);
+    const drop = (): void => {
+      set.delete(p);
+      if (set.size === 0 && startingPtys.get(ws) === set) startingPtys.delete(ws);
+    };
+    p.then(drop, drop);
+  }
+  return p;
+}
+
+async function startPtyInner(opts: {
   id: string;
   cwd: string;
   command: string;
@@ -354,6 +388,27 @@ export async function startPty(opts: {
     throw e;
   }
   log.info(`pty spawned id=${opts.id} cmd=${opts.command} pid=${transport.pid} cwd=${opts.cwd}`);
+  // #240 r3 F1: a migration began while this start was in flight (it passed the fence at the top): this process runs on the OLD account — undo it.
+  if (opts.workspaceId && isMigrating(opts.workspaceId)) {
+    // Wait (bounded) for the child to be gone before refusing: the migration waits on THIS promise, so it moves the transcripts only
+    // after the process that was about to write into them has exited.
+    await new Promise<void>((res) => {
+      const t = setTimeout(res, 2_000);
+      transport.onExit(() => { clearTimeout(t); res(); });
+      try {
+        transport.kill();
+      } catch {
+        clearTimeout(t);
+        res();
+      }
+    });
+    try {
+      logStream.end();
+    } catch {
+      /* ignore */
+    }
+    throw new Error(migratingMessage(opts.workspaceId));
+  }
   const session: Session = {
     transport,
     id: opts.id,
@@ -547,20 +602,13 @@ export function stopPty(id: string) {
  *  the workspace's transcripts must not be moved — `stopPty` already dropped the session, so `isRunning()` no longer says so. */
 const stuckWriters = new Map<string, { pid?: number; startTicks?: number }>();
 
-const readProcStat = (pid: number): string | null => {
-  try {
-    return fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-  } catch {
-    return null;
-  }
-};
-
 /** The latched still-alive PTY child of workspace `id`, or null. A pid whose start-time no longer matches (gone / recycled /
  *  zombie) is released here; a child with no local pid (remote transport) is released by its exit event. */
-export function stuckPtyWriter(id: string): { pid?: number } | null {
+export function stuckPtyWriter(id: string, readStat: (pid: number) => StatRead = readProcStat): { pid?: number } | null {
   const w = stuckWriters.get(id);
   if (!w) return null;
-  if (w.pid !== undefined && w.startTicks !== undefined && !isSameLiveProcess(w.startTicks, readProcStat(w.pid))) {
+  // Released only on a DEFINITE verdict (`false`: gone / recycled / zombie). A failed read (EMFILE…) says nothing: the latch stays.
+  if (w.pid !== undefined && w.startTicks !== undefined && sameLiveProcess(w.startTicks, readStat(w.pid)) === false) {
     stuckWriters.delete(id);
     return null;
   }
@@ -572,19 +620,23 @@ export function stuckPtyWriter(id: string): { pid?: number } | null {
  *  once the child is gone (or there was no session), false if it survived even that: it is then LATCHED ({@link stuckPtyWriter})
  *  and cleared only when it really exits. Account migration needs the writer DEAD before it moves a transcript: `kill()`
  *  is a SIGHUP that returns at once. The exit listener is attached BEFORE the kill — disposeSession drops the session's own,
- *  and the transport fires exit once. `io.kill` is a test seam. */
+ *  and the transport fires exit once. Identity needs /proc (Linux): elsewhere, or on a failed/unknown read, the child is never
+ *  SIGKILLed or judged gone — it is latched at the end of the grace and only its exit event releases it (safe direction). The
+ *  SIGKILL targets the PTY child only (a launcher that does not `exec` leaves its own children — accepted gap, review r3 F4).
+ *  `io.kill` / `io.readStat` are test seams. */
 export function stopPtyAndWait(
   id: string,
   timeoutMs = 10_000,
   killGraceMs = 3_000,
-  io: { kill?: (pid: number, signal: NodeJS.Signals) => void; readStat?: (pid: number) => string | null } = {},
+  io: { kill?: (pid: number, signal: NodeJS.Signals) => void; readStat?: (pid: number) => StatRead } = {},
 ): Promise<boolean> {
   const s = sessions.get(id);
   if (!s) return Promise.resolve(true);
   const readStat = io.readStat ?? readProcStat;
   const pid = s.remote ? undefined : s.transport.pid;
-  const stat = pid === undefined ? null : parseProcIdentity(readStat(pid) ?? '');
-  const startTicks = stat?.startTicks;
+  // No /proc (macOS/Windows) or an unreadable stat ⇒ startTicks undefined ⇒ identity unknowable: never "gone" by identity, never SIGKILLed —
+  // the child is latched at the end of the grace and only its exit event releases it (safe direction).
+  const startTicks = pid === undefined ? undefined : procStartTicks(readStat(pid));
   return new Promise<boolean>((resolve) => {
     let exited = false;
     let latched = false;
@@ -611,13 +663,14 @@ export function stopPtyAndWait(
       }
       resolve(ok);
     };
-    // Gone = the exit event fired, or the pid no longer names the SAME live process (start-time re-read NOW: exited, zombie, recycled).
-    const gone = (): boolean => exited || (pid !== undefined && startTicks !== undefined && !isSameLiveProcess(startTicks, readStat(pid)));
+    // Gone = the exit event fired, or a DEFINITE "not the same live process" (start-time re-read NOW: exited, zombie, recycled, absent).
+    // An UNKNOWN read (EMFILE, EACCES, …) is not gone.
+    const gone = (): boolean => exited || (pid !== undefined && startTicks !== undefined && sameLiveProcess(startTicks, readStat(pid)) === false);
     timers.push(
       setTimeout(() => {
         if (gone()) return finish(true);
-        // Escalate — only a pid whose identity `gone()` just re-verified as the SAME live process (never a recycled one).
-        if (pid !== undefined && startTicks !== undefined) {
+        // Escalate — only a pid whose identity was just VERIFIED as the same live process (never a recycled one, never on an unknown read).
+        if (pid !== undefined && startTicks !== undefined && sameLiveProcess(startTicks, readStat(pid)) === true) {
           plog.warn(`stopPtyAndWait[${id}]: pid ${pid} ignored the stop for ${timeoutMs} ms — SIGKILL`);
           try {
             (io.kill ?? process.kill)(pid, 'SIGKILL');

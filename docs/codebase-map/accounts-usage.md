@@ -50,15 +50,24 @@ reads them transiently to query usage.
 - **Migration** (existing workspace → another account): re-pinning alone breaks
   `--continue` (its transcript lives in the *old* config dir), so migration
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
-  auto-stops the agent — `sdkStopIfLive` (always, so a detached keeper's CLI dies too), `killKeeper`
+  auto-stops the agent under a per-workspace FENCE (`migration-fence.ts`, a leaf module; the holder is a per-call TOKEN so a
+  stale release can never drop a later call's fence): a 2nd overlapping migration → `ok:false "already in progress"`, and
+  `startPty` / `ensureSessionInner` refuse to start an agent for that workspace while it is held (a start now would run on the
+  OLD account and write into the dir being moved). A start that ALREADY passed that check is awaited first (`sdkAwaitStart`
+  seam → `ensuring`, `awaitPtyStarts`; fail closed after 15 s) and both start paths re-check the fence at their commit point
+  (SDK: right before `sessions.set`, then the normal `sdkStop` teardown; PTY: right after the transport exists, the child is
+  killed and awaited) — so no session or PTY is left running on the old account after the re-pin. Then the stops:
+  `sdkStopIfLive` (always, so a detached keeper's CLI dies too), `killKeeper`
   (awaits the CLI/keeper death; `sdkStop` does not after a `result`) and `stopPtyAndWait` (`pty.ts`: awaits the PTY child's
-  exit for 10 s, then SIGKILLs it — only if pid + /proc start-time still match, re-read at signal time — and waits 3 s more;
-  a child that survives even that is LATCHED (`stuckPtyWriter`) and `dispatchMigrateAccountRequest` refuses every migration of
-  that workspace, `ok:false` naming the pid, until it really exits — `stopPty` already dropped the session, so `isRunning()`
-  no longer says so). The whole call runs under a per-workspace FENCE (`migration-fence.ts`, a leaf module): a 2nd overlapping
-  migration → `ok:false "already in progress"`, and `startPty` / `ensureSessionInner` refuse to start an agent for that
-  workspace (it would run on the OLD account and write into the dir being moved); the fence drops right after the
-  re-pin (so the resume below works) and always in a `finally`. Then `moveWorkspaceTranscripts` moves
+  exit for 10 s, then SIGKILLs it — only if pid + /proc start-time (`proc-identity.ts`) were just VERIFIED as the same live
+  process — and waits 3 s more; a child that survives even that is LATCHED (`stuckPtyWriter`) and
+  `dispatchMigrateAccountRequest` refuses every migration of that workspace, `ok:false` naming the pid, until it really
+  exits — `stopPty` already dropped the session, so `isRunning()` no longer says so). A failed `/proc` read (EMFILE, EACCES…)
+  is UNKNOWN, never "gone": no SIGKILL, latch kept. **The SIGKILL escalation is Linux-only** (it needs the /proc start-time);
+  elsewhere the child is only latched and its exit event releases it (safe direction). Known gaps: the SIGKILL targets the PTY
+  child only (a launcher that does not `exec` leaves its own children), the latch is process memory (a kill-proof orphan from
+  before an app relaunch is untracked), and a fenced `sdkSend` shows a red start-error row. The fence drops right after the
+  re-pin (so the resume below works) and always in a `finally`, once. Then `moveWorkspaceTranscripts` moves
   `<old>/projects/<mangled-worktree>/` → the new account's config dir via `moveProjectTranscripts`
   (`transcript-move.ts`, #240): a no-op when source and destination are the SAME dir by identity (`sameDir`,
   `same-dir.ts`: resolved path, realpath or dev+ino — trailing `/`, `..`, symlink alias, a shared `projects/`, a bind
@@ -418,10 +427,12 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 symlink survives; same-FS rename keeps inode + mtime and a fd-holding writer; mid-way rename/copy failure, truncated copy,
 size-preserving bit flip, skipped entry all leave the source intact; a different/appearing destination entry is never
 overwritten; a source that changed after it was read is kept; late file not deleted). Driven proof through the REAL
-`dispatchMigrateAccountRequest`: `scripts/e2e-migrate-transcripts.mjs all` (23 arms incl. bind mount under
-`unshare -rm`, a cross-filesystem EXDEV target, 2 overlapping migrations, a real agent PTY still writing / ignoring HUP+TERM
-(SIGKILL escalation, retry), a SIGKILL-proof child (latch), a recycled-pid guard, the start fence, and a REAL detached
-`keeper.js` + fake CLI — needs `pnpm run build:keeper`; scratch HOME, live-dir canary).
+`dispatchMigrateAccountRequest`: `pnpm run test:migrate-transcripts` = `scripts/e2e-migrate-transcripts.mjs all` (28 arms: bind mount
+under `unshare -rm`, a cross-filesystem EXDEV target, 2 overlapping migrations, a 2nd migration begun from the 1st's
+`workspace:update`, a real agent PTY still writing / ignoring HUP+TERM (SIGKILL escalation, retry), a SIGKILL-proof child (latch),
+a recycled pid, unknown `/proc` reads, no `/proc`, the start fence, a start already in flight (PTY, and the REAL `ensureSession`
+racing the migration), and a REAL detached `keeper.js` + fake CLI; the script builds the keeper bundle first; scratch HOME,
+live-dir canary). `proc-identity.test.ts` / `migration-fence.test.ts` pin the errno→gone/unknown map and the token semantics.
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
 `planAccountMigration` (migrate/noop/error, default-login clear, trimming),
