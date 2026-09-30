@@ -1,11 +1,12 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile, cp } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, cp } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
+import { moveProjectTranscripts } from './transcript-move';
 import { store } from './store';
 import { forbidKeeperLaunch, killKeeper, killKeeperTree, snapshotKeeperTree } from './keeper-client';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
@@ -2826,46 +2827,23 @@ const MIGRATE_RESUME_ROWS = 24;
  * config dir to another's, so `claude --continue` still resolves the session
  * after the pin changes. Claude keys the session off the worktree cwd
  * (`projects/<mangled-cwd>/*.jsonl`), which never changes, so relocating those
- * files under `dstConfigDir` is what preserves continuity. Best-effort per file;
- * a genuine fs error propagates so a half-move surfaces instead of silently
- * losing history. A missing source project dir is fine (nothing recorded yet).
- * No-ops when src and dst resolve to the same dir. */
+ * files under `dstConfigDir` is what preserves continuity. A missing source
+ * project dir is fine (nothing recorded yet). Source and destination are compared
+ * by dir IDENTITY, never by string (#240: `~/.claude/`, a symlink alias, a shared
+ * `projects/` or a bind mount are the SAME dir — moving onto itself and then
+ * removing the source erased the history), and the source is removed only after
+ * every entry is verified at the destination; a failure throws with the source
+ * intact. See `moveProjectTranscripts` (transcript-move.ts). */
 async function moveWorkspaceTranscripts(
   worktreePath: string,
   srcConfigDir: string,
   dstConfigDir: string,
 ): Promise<void> {
-  if (srcConfigDir === dstConfigDir) return;
   const mangled = mangleProjectDir(worktreePath);
-  const srcDir = path.join(srcConfigDir, 'projects', mangled);
-  const dstDir = path.join(dstConfigDir, 'projects', mangled);
-  let entries: string[];
-  try {
-    entries = await readdir(srcDir);
-  } catch {
-    return; // no project dir under the source account → nothing to move
-  }
-  if (entries.length === 0) return;
-  await mkdir(dstDir, { recursive: true });
-  for (const name of entries) {
-    const from = path.join(srcDir, name);
-    const to = path.join(dstDir, name);
-    try {
-      await rename(from, to);
-    } catch (err) {
-      // Cross-device rename (EXDEV) — the two config dirs live on different
-      // filesystems. Fall back to copy + unlink so the move still completes.
-      if ((err as NodeJS.ErrnoException)?.code === 'EXDEV') {
-        await copyFile(from, to);
-        await rm(from, { force: true });
-      } else {
-        throw err;
-      }
-    }
-  }
-  // Drop the now-empty source project dir (best-effort — leftover files, e.g. a
-  // concurrently-written transcript, just leave it in place).
-  await rm(srcDir, { recursive: true, force: true }).catch(() => undefined);
+  await moveProjectTranscripts(
+    path.join(srcConfigDir, 'projects', mangled),
+    path.join(dstConfigDir, 'projects', mangled),
+  );
 }
 
 /** Socket/IPC entry point for migrating a workspace to a different account (or

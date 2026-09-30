@@ -51,8 +51,15 @@ reads them transiently to query usage.
   `--continue` (its transcript lives in the *old* config dir), so migration
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
   auto-stops the agent, `moveWorkspaceTranscripts` moves
-  `<old>/projects/<mangled-worktree>/*.jsonl` → the new account's config dir
-  (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId`,
+  `<old>/projects/<mangled-worktree>/` → the new account's config dir via
+  `moveProjectTranscripts` (`transcript-move.ts`, #240): a no-op when source and
+  destination are the SAME dir by identity (`sameDir`, `same-dir.ts`: resolved path,
+  realpath or dev+ino — trailing `/`, `..`, symlink alias, a shared `projects/`, a bind
+  mount; NEVER the raw config-dir strings, which used to `rm -r` the history), else
+  `fs.cp` (timestamps kept, works across filesystems and for session subdirs) of every
+  entry, VERIFY (each node present, same size + sha256), and only then remove the source
+  entries (dir removed non-recursively, so a late file survives); any failure throws with the
+  source untouched and this call's partial copies removed. Then re-pins `ws.accountId`,
   `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
   running — at the winsize the PTY had before the stop (`getPtySize`, pty.ts),
   not a blind 80×24: an already-visible terminal never re-asserts its size
@@ -80,7 +87,7 @@ reads them transiently to query usage.
   not a readable dir (`isReadableDir` `:190`) ⇒ return before ANY write (mkdir,
   dangling-link drop, prune, MCP removal, manifest) + one WARN; (2) PROVENANCE
   (D10, `builtFromElsewhere` `:245`): a manifest whose `source` differs from the
-  current `~/.claude` (`sameDir`: same path or realpath) — or, legacy manifest
+  current `~/.claude` (`sameDir`, now shared in `same-dir.ts`: same path, realpath or dev+ino) — or, legacy manifest
   without `source`, a link resolving outside it — ⇒ refused, no write, one WARN
   naming the OTHER source dir and the manifest to delete to re-home it. A source /
   link target that is definitely GONE (`isGone` `:232`: ENOENT/ENOTDIR, so a moved
@@ -394,6 +401,12 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
   (populated from `listGlobalInheritables`); saves via `setAccounts` then syncs.
 
 ## Tests
+`transcript-move.test.ts` covers `sameDir` (every spelling, hard link = the dev+ino clause, look-alikes) and
+`moveProjectTranscripts` (same dir via trailing slash / `..` / symlink / shared `projects/` / project-dir
+symlink survives; different dir moves byte-identical with mtimes; mid-way copy failure, truncated copy,
+size-preserving bit flip, skipped entry all leave the source intact; late file not deleted). Driven proof through the
+REAL `dispatchMigrateAccountRequest`: `scripts/e2e-migrate-transcripts.mjs all` (12 arms incl. bind mount under
+`unshare -rm` and a cross-filesystem EXDEV target; scratch HOME, live-dir canary).
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
 `planAccountMigration` (migrate/noop/error, default-login clear, trimming),
