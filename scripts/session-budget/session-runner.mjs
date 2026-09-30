@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
-const { REPO, root, arm, mutant = null, replyDelayMs = 250, settleMs = 2500, timeoutMs = 90_000, pidns = false, containment = 'proxy-only', profile = {}, realApi = null } = cfg;
+const { REPO, root, arm, mutant = null, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000, pidns = false, containment = 'proxy-only', profile = {}, realApi = null } = cfg;
 const HERE = path.join(REPO, 'scripts', 'session-budget');
 
 // D7: scratch HOME / config dir / ORCHESTRA_HOME only — refuse anything live BEFORE the app can boot.

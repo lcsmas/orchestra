@@ -142,12 +142,15 @@ release. The preflight is read-only, so it runs under `--dry-run` too.
 Runs after every cheap preflight and BEFORE the first mutation (`--to-master`
 push, bump, tag), once per release: tree == HEAD (tracked files unchanged after a
 `git update-index --refresh`, **no untracked non-ignored files** — a tag carries
-neither) → `npx tsc --noEmit` → `pnpm run test` → the same tree check again →
-(local build only) `pnpm run build:bus-abi`. The test step reads node's summary
+neither) → `npx tsc --noEmit` → `pnpm run test` → `pnpm run test:session-budget`
+(#208, `session-budget.md`: rc 0 **and** the `SESSION-BUDGET: PASS` terminator, rc 3 =
+VOID; refusal names check `session-budget`; opt-in `RELEASE_REAL_API_SMOKE_CONFIG_DIR=<account
+config dir>` adds a fourth step, one real cheap-model turn, check `real-api-smoke`) → the
+same tree check again → (local build only) `pnpm run build:bus-abi`. The test step reads node's summary
 (`# tests|pass|fail|cancelled|skipped|todo`, TAP or spec) and refuses on rc≠0,
 any fail/cancelled, **any skipped or todo**, zero tests, `tests != pass`, or a
 summary missing `tests|pass|fail|skipped` (fails closed). Refusals are
-`release-gate: REFUSED — check '<tsc|test|tree|build:bus-abi>' failed: …`, rc 1.
+`release-gate: REFUSED — check '<tsc|test|session-budget|real-api-smoke|tree|build:bus-abi>' failed: …`, rc 1.
 Order is the native-module order: the suite leaves better-sqlite3 on node ABI 127,
 the package needs Electron's 130 (`bus.md` ABI section) — `build:bus-abi` runs
 after the suite and before `pnpm run build`, and is not a check, so it also runs

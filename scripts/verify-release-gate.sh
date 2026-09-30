@@ -7,9 +7,10 @@
 # stub build scripts): nothing real is tagged, pushed or published. Observable = rc, refusal text,
 # sandbox tags/commits and the ordered step log.
 #
-# Arms: clean (steps EXACTLY `tsc test abi build gh-release`); tsc_error, test_fail, test_skipped,
+# Arms: clean (steps EXACTLY `tsc test session-budget abi build gh-release`); tsc_error, test_fail, test_skipped,
 # test_todo, test_rc_only, test_zero, test_swallow_fail/hang, test_no_summary, test_no_skipped_line,
-# tree_dirtied, tree_moved, abi_fail -> REFUSED naming the check + nothing tagged/pushed; bypass
+# tree_dirtied, tree_moved, abi_fail, sb_fail, sb_void, sb_no_terminator, sb_missing_script -> REFUSED naming
+# the check + nothing tagged/pushed (sb_* = the #208 session-budget step, stubbed here); bypass
 # (+notes-file, =form) -> proceeds with the reason in the notes; bypass_no_reason/blank/flag/ci_only
 # -> rc 2; dry_run -> plan only. Must-FAIL on old code: RG_SCRIPTS_DIR=<dir with the old release.sh>.
 set -uo pipefail
@@ -54,7 +55,7 @@ FAILED=0
 pass() { printf '  ok   %-34s %s\n' "$1" "$2"; }
 fail() { printf '  FAIL %-34s %s\n' "$1" "$2"; FAILED=1; }
 
-# mk_fixture <name> <ts:ok|err> <test:pass|fail|skip|todo|nosummary|dirty|moved|rcfail|zero|abifail|swallowfail|swallowhang|noskipped|nofail|nopass|notests|mismatch|untrackedbytest|untracked|touch|touchbytest>
+# mk_fixture <name> <ts:ok|err> <test:pass|sbfail|sbvoid|sbnoterm|sbmissing|fail|skip|todo|nosummary|dirty|moved|rcfail|zero|abifail|swallowfail|swallowhang|noskipped|nofail|nopass|notests|mismatch|untrackedbytest|untracked|touch|touchbytest>
 # Sets D W ORIGIN LOG. The fixture repo is at v0.5.270 with 1 commit of work ahead.
 mk_fixture() {
   local name="$1" ts="$2" tv="$3"
@@ -82,15 +83,34 @@ mk_fixture() {
   [ "$tv" = zero ] && testcmd="node --test 'test/none-*.test.mjs'"   # glob matches nothing: rc 0, '# tests 0'
   local abicmd='echo abi >> \"$RG_FX_LOG\"'
   [ "$tv" = abifail ] && abicmd='exit 7'
+  local sbscript='"test:session-budget": "bash scripts/sb-stub.sh", "smoke:session-budget-real": "bash scripts/smoke-stub.sh",'
+  [ "$tv" = sbmissing ] && sbscript=''
   cat > "$W/package.json" <<PKG
 { "name": "fx", "version": "0.5.270",
   "scripts": { "a":"a","b":"b","c":"c",
+    $sbscript
     "test": "$testcmd",
     "build:bus-abi": "$abicmd",
     "build": "echo build >> \"\$RG_FX_LOG\" && mkdir -p release && : > release/Orchestra.AppImage",
     "release": "bash scripts/release.sh" },
   "devDependencies": {}, "build": {} }
 PKG
+  # The #208 session-budget step, stubbed: logs itself, then behaves per variant (real suite: scripts/session-budget/run.mjs).
+  {
+    echo 'echo session-budget >> "$RG_FX_LOG"'
+    case "$tv" in
+      sbfail) echo "echo '== arm normal (expect PASS): UNEXPECTED — BUDGET BROKEN session.beforeFirstReply.countTokensRequests: allowed at most 0, saw 57'"; echo 'echo "SESSION-BUDGET: FAIL"; exit 1' ;;
+      sbvoid) echo "echo '== arm normal (expect PASS): UNEXPECTED — VOID — INSTRUMENT VOID instrument.mcpChildProcesses: need at least 4, saw 0'"; echo 'echo "SESSION-BUDGET: VOID"; exit 3' ;;
+      sbnoterm) echo "echo '   requests before first reply: model=1 count_tokens=0 other=0'"; echo 'exit 0' ;;
+      *) echo "echo '   requests before first reply: model=1 count_tokens=0 other=0'"; echo 'echo "SESSION-BUDGET: PASS"' ;;
+    esac
+  } > "$W/scripts/sb-stub.sh"
+  # The opt-in real-API smoke, stubbed (never a real call): logs `smoke`, passes unless RG_SMOKE_MODE=fail|noterm.
+  {
+    echo 'echo smoke >> "$RG_FX_LOG"'
+    echo 'case "${RG_SMOKE_MODE:-pass}" in fail) echo "smoke stub: claude exited 1"; exit 1 ;; noterm) exit 0 ;; esac'
+    echo 'echo "{\"ok\":true,\"mode\":\"real\"}"; echo "REAL-API-SMOKE: PASS"'
+  } > "$W/scripts/smoke-stub.sh"
   printf 'node_modules/\nrelease/\n' > "$W/.gitignore"
   echo '{"compilerOptions":{"strict":true,"noEmit":true,"target":"es2022","module":"esnext","moduleResolution":"bundler","types":[]},"include":["src/**/*.ts"]}' > "$W/tsconfig.json"
   if [ "$ts" = err ]; then echo 'export const x: number = "not a number";' > "$W/src/a.ts"
@@ -157,12 +177,12 @@ refused() { # name check-name [extra-marker] [expected-steps]
 
 # ── clean ────────────────────────────────────────────────────────────────────
 mk_fixture clean ok pass; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test abi build gh-release" ]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then
   pass "clean proceeds, ordered, once" "rc=0 steps=[$(steps)]"
-else fail "clean proceeds, ordered, once" "rc=$RC steps=[$(steps)] want [tsc test abi build gh-release]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+else fail "clean proceeds, ordered, once" "rc=$RC steps=[$(steps)] want [tsc test session-budget abi build gh-release]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 [ "$(git -C "$W" log -1 --format=%s)" = "chore: bump version to 0.5.271" ] && pass "clean bump message unchanged" "chore: bump version to 0.5.271" || fail "clean bump message unchanged" "$(git -C "$W" log -1 --format=%s)"
 [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ] && pass "clean tag-pushed" "v0.5.271 on the sandbox origin" || fail "clean tag-pushed" "no v0.5.271 on origin"
-case "$OUT" in *"release-gate: PASS"*) pass "clean pass-line" "$(printf '%s' "$OUT" | grep -F 'release-gate: PASS' | head -1)" ;; *) fail "clean pass-line" "no 'release-gate: PASS' line" ;; esac
+case "$OUT" in *"release-gate: PASS"*"session budget held (requests before first reply: model=1 count_tokens=0 other=0)"*) pass "clean pass-line" "$(printf '%s' "$OUT" | grep -F 'release-gate: PASS' | head -1)" ;; *) fail "clean pass-line" "no 'release-gate: PASS' line carrying the session-budget detail" ;; esac
 if grep -qi 'bypass' "$LOG.notes" 2>/dev/null; then fail "clean notes-untouched" "bypass text in a clean release's notes"; else pass "clean notes-untouched" "no gate text in notes (as today)"; fi
 
 # ── refusals ─────────────────────────────────────────────────────────────────
@@ -197,17 +217,40 @@ mk_fixture test_zero ok zero; run_release 0.5.271
 refused test_zero test "0 tests ran" "tsc"; nothing_shipped test_zero
 
 mk_fixture tree_dirtied ok dirty; run_release 0.5.271
-refused tree_dirtied tree "" "tsc test"
+refused tree_dirtied tree "" "tsc test session-budget"
 [ "$(git -C "$W" rev-parse HEAD)" = "$HEAD0" ] && [ -z "$(git -C "$ORIGIN" tag -l v0.5.271)" ] \
   && pass "tree_dirtied nothing-shipped" "no bump, no tag" || fail "tree_dirtied nothing-shipped" "shipped"
 
 mk_fixture tree_moved ok moved; run_release 0.5.271
-refused tree_moved tree "" "tsc test"
+refused tree_moved tree "" "tsc test session-budget"
 [ -z "$(git -C "$ORIGIN" tag -l v0.5.271)" ] && [ "$(git -C "$ORIGIN" rev-parse master)" = "$ORIGIN0" ] \
   && pass "tree_moved nothing-pushed" "no tag, origin unmoved" || fail "tree_moved nothing-pushed" "pushed"
 
 mk_fixture abi_fail ok abifail; run_release 0.5.271
-refused abi_fail "build:bus-abi" "" "tsc test"; nothing_shipped abi_fail
+refused abi_fail "build:bus-abi" "" "tsc test session-budget"; nothing_shipped abi_fail
+
+# ── #208 session-budget step: a broken budget / a VOID run / a missing terminator / a missing script all refuse ─
+mk_fixture sb_fail ok sbfail; run_release 0.5.271
+refused sb_fail session-budget "BUDGET BROKEN session.beforeFirstReply.countTokensRequests" "tsc test session-budget"; nothing_shipped sb_fail
+mk_fixture sb_void ok sbvoid; run_release 0.5.271
+refused sb_void session-budget "VOID: nothing was measured" "tsc test session-budget"; nothing_shipped sb_void
+mk_fixture sb_no_terminator ok sbnoterm; run_release 0.5.271
+refused sb_no_terminator session-budget "SESSION-BUDGET: PASS' terminator" "tsc test session-budget"; nothing_shipped sb_no_terminator
+mk_fixture sb_missing_script ok sbmissing; run_release 0.5.271
+refused sb_missing_script session-budget "Missing script: test:session-budget" "tsc test"; nothing_shipped sb_missing_script
+
+# ── #208 opt-in real-API smoke (stubbed): off by default, runs after the budget step when named, refuses on failure ─
+mk_fixture smoke_off ok pass; run_release 0.5.271
+if [ "$RC" = 0 ] && ! grep -qx smoke "$LOG" && [[ "$OUT" != *"real-API smoke"* ]]; then pass "smoke_off: never runs unless asked" "rc=0 steps=[$(steps)]"
+else fail "smoke_off: never runs unless asked" "rc=$RC steps=[$(steps)]"; fi
+mk_fixture smoke_pass ok pass; RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget smoke abi build gh-release" ] && [[ "$OUT" == *"real-API smoke passed"* ]]; then
+  pass "smoke_pass: runs once, after the budget step" "rc=0 steps=[$(steps)]"
+else fail "smoke_pass: runs once, after the budget step" "rc=$RC steps=[$(steps)]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+mk_fixture smoke_fail ok pass; RG_SMOKE_MODE=fail RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
+refused smoke_fail real-api-smoke "claude exited 1" "tsc test session-budget smoke"; nothing_shipped smoke_fail
+mk_fixture smoke_no_terminator ok pass; RG_SMOKE_MODE=noterm RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
+refused smoke_no_terminator real-api-smoke "REAL-API-SMOKE: PASS" "tsc test session-budget smoke"; nothing_shipped smoke_no_terminator
 
 mk_fixture test_no_fail_line ok nofail; run_release 0.5.271
 refused test_no_fail_line test "readable summary" "tsc"; nothing_shipped test_no_fail_line
@@ -221,28 +264,28 @@ refused test_mismatch test "!= pass" "tsc"; nothing_shipped test_mismatch
 mk_fixture untracked ok untracked; run_release 0.5.271
 refused untracked tree "untracked" "-"; nothing_shipped untracked
 mk_fixture untracked_by_test ok untrackedbytest; run_release 0.5.271
-refused untracked_by_test tree "untracked" "tsc test"; nothing_shipped untracked_by_test
+refused untracked_by_test tree "untracked" "tsc test session-budget"; nothing_shipped untracked_by_test
 
 mk_fixture mtime_touch ok touch; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test abi build gh-release" ]; then pass "mtime-only touch is not dirty" "rc=0, released"
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then pass "mtime-only touch is not dirty" "rc=0, released"
 else fail "mtime-only touch is not dirty" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 
 mk_fixture mtime_by_test ok touchbytest; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test abi build gh-release" ]; then pass "mtime-only touch by a test is not dirty" "rc=0, released"
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then pass "mtime-only touch by a test is not dirty" "rc=0, released"
 else fail "mtime-only touch by a test is not dirty" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 
 # ── --ci-only / --to-master ordering (the gate is neither skipped nor late) ───
 mk_fixture ci_only_refused err pass; run_release 0.5.271 --ci-only
 refused ci_only_refused tsc "" "tsc"; nothing_shipped ci_only_refused
 mk_fixture ci_only_clean ok pass; run_release 0.5.271 --ci-only
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test" ] && [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget" ] && [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ]; then
   pass "ci_only clean: gate runs, no local build" "rc=0 steps=[$(steps)] tag pushed"
 else fail "ci_only clean: gate runs, no local build" "rc=$RC steps=[$(steps)]"; fi
 
 FX_BRANCH=feat mk_fixture to_master_refused err pass; run_release 0.5.271 --to-master
 refused to_master_refused tsc "" "tsc"; nothing_shipped to_master_refused
 FX_BRANCH=feat mk_fixture to_master_clean ok pass; run_release 0.5.271 --to-master
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test abi build gh-release" ] \
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ] \
    && [ "$(git -C "$ORIGIN" rev-parse master)" = "$(git -C "$W" rev-parse HEAD)" ]; then
   pass "to_master clean: master fast-forwarded" "rc=0 origin/master == bump commit"
 else fail "to_master clean: master fast-forwarded" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi

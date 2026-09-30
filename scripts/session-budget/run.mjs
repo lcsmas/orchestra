@@ -35,6 +35,8 @@ let bad = 0, voided = 0;
 for (const [name, spec] of Object.entries(ARMS)) {
   if (WANT !== 'all' && WANT !== name) continue;
   const res = await runSessionArm({ repo: REPO, arm: name, mutant: spec.mutant, containment });
+  if (res.reaped) say(`   (reaped ${res.reaped} leftover scratch process(es) — containment ${containment.name} did not contain the keeper)`);
+  if (res.void) { voided++; console.log(JSON_OUT ? JSON.stringify({ arm: name, void: true, error: res.error }) : `== arm ${name}: VOID — ${res.error}`); continue; }
   if (res.error || !res.report) {
     bad++; console.log(JSON_OUT ? JSON.stringify({ arm: name, ok: false, error: res.error }) : `== arm ${name}: RUN BROKE — ${res.error}\n   scratch kept at ${res.root}`);
     continue;

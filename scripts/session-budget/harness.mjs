@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { liveDirs, assertScratch } from './scratch-guard.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
@@ -40,8 +40,43 @@ export function detectContainment() {
   return { name: 'proxy-only', prefix: [] };
 }
 
-function resolveOnPath(bin) {
-  return execFileSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).trim();
+/** Absolute path of `bin` on PATH, or null (never throws). */
+export function findOnPath(bin) {
+  const r = spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() || null : null;
+}
+
+/**
+ * Kill every process whose environment carries THIS run's scratch HOME (identity read from
+ * /proc/<pid>/environ at signal time — a pid or pidfile alone is only a name). The pid namespace makes
+ * this a no-op; without one (containment 'proxy-only'/'netns') the detached keeper would outlive the run.
+ * Returns the number of processes signalled.
+ */
+export function reapScratchProcesses(root) {
+  const needle = `HOME=${path.join(root, 'home')}\0`;
+  let n = 0;
+  for (const name of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+    try {
+      if (fs.readFileSync(`/proc/${name}/environ`, 'latin1').includes(needle)) { process.kill(Number(name), 'SIGKILL'); n++; }
+    } catch { /* not ours / gone */ }
+  }
+  return n;
+}
+
+const RUN_MARKER = '.session-budget-run';
+
+/** Drop scratch dirs left by earlier FAILED runs (kept for autopsy) once they are a day old. ONLY dirs carrying
+ *  this harness's own marker: the base dir is shared (other tracks drop measurement files there). */
+function sweepOld(base) {
+  try {
+    for (const n of fs.readdirSync(base)) {
+      const p = path.join(base, n);
+      if (fs.statSync(p).isDirectory() && fs.existsSync(path.join(p, RUN_MARKER)) && Date.now() - fs.statSync(p).mtimeMs > 24 * 3600 * 1000) {
+        fs.rmSync(p, { recursive: true, force: true });
+      }
+    }
+  } catch { /* first run */ }
 }
 
 /**
@@ -50,38 +85,44 @@ function resolveOnPath(bin) {
  *          settleMs?: number, timeoutMs?: number, keep?: boolean, containment?: {name:string,prefix:string[]}}} o
  */
 export async function runSessionArm(o) {
-  const { repo, arm, mutant = null, profile = {}, replyDelayMs = 250, settleMs = 2500, timeoutMs = 90_000 } = o;
+  const { repo, arm, mutant = null, profile = {}, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000 } = o;
   const containment = o.containment ?? detectContainment();
   const base = path.join(os.homedir(), '.cache', 'session-budget');
+  sweepOld(base);
   const root = path.join(base, `${arm}-${process.pid}-${Date.now().toString(36).slice(-4)}`);
   const live = liveDirs(process.env);
   fs.mkdirSync(root, { recursive: true });
   assertScratch('root', root, base, live);
+  fs.writeFileSync(path.join(root, RUN_MARKER), `${process.pid} ${new Date().toISOString()}\n`);
 
-  const claude = resolveOnPath('claude');
+  const claude = findOnPath('claude');
+  if (!claude) return { void: true, error: 'no `claude` CLI on PATH — the suite drives the real CLI, so nothing was measured', root };
   const cfg = { REPO: repo, root, arm, mutant, profile, replyDelayMs, settleMs, timeoutMs, pidns: containment.name === 'netns+pidns', containment: containment.name, live };
   const env = {
     PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'),
     HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', SB_CONFIG: JSON.stringify(cfg),
   };
-  const argv = [...containment.prefix, process.execPath, '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', 'session-runner.mjs')];
+  const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', 'session-runner.mjs')];
   const child = spawn(argv[0], argv.slice(1), { cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let out = '', err = '';
   child.stdout.on('data', (d) => (out += d));
   child.stderr.on('data', (d) => (err += d));
   const rc = await new Promise((resolve) => {
     const t = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } resolve('TIMEOUT'); }, timeoutMs + 60_000);
-    child.on('exit', (code, sig) => { clearTimeout(t); resolve(code ?? sig); });
+    // 'close', not 'exit': 'exit' can fire before stdout/stderr are drained, losing the result line or the error text.
+    child.on('close', (code, sig) => { clearTimeout(t); resolve(code ?? sig); });
   });
   const line = out.split('\n').reverse().find((l) => l.startsWith('{"report"'));
   let result;
   if (line) {
     try { result = JSON.parse(line); } catch (e) { result = { error: `unparsable result line: ${e}` }; }
   } else {
-    result = { error: `no result line (rc=${rc}); stderr tail: ${err.slice(-1200)}` };
+    const errLine = err.split('\n').find((l) => /Error:/.test(l)) ?? err.trim().slice(-300).replace(/\s+/g, ' ');
+    result = { error: `no result line (rc=${rc}): ${errLine.trim()}${out.trim() ? ` | stdout tail: ${out.trim().slice(-300).replace(/\s+/g, ' ')}` : ''}` };
   }
   result.rc = rc;
   result.root = root;
+  result.reaped = reapScratchProcesses(root); // 0 under a pid namespace; the keeper's descendants otherwise
   if (!o.keep && !process.env.SB_KEEP && !result.error) fs.rmSync(root, { recursive: true, force: true });
   return result;
 }

@@ -53,8 +53,8 @@
 #   2. Pushes tag (triggers GitHub Actions)
 #   3. GitHub Actions creates release with x64 and arm64 AppImages
 #
-# RELEASE GATE (#207): before any tag/push the tree must pass `npx tsc --noEmit` and the full
-# suite (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build. Escape hatch:
+# RELEASE GATE (#207/#208): before any tag/push the tree must pass `npx tsc --noEmit`, the full
+# suite and the session-budget suite (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build. Escape hatch:
 # --skip-release-gate "<reason>" (mandatory, appended to the release notes; not with --ci-only).
 #
 # Requirements: a clean working tree on a non-detached branch, up to date with
@@ -391,12 +391,12 @@ say "Releasing $CURRENT → $NEW  (tag $TAG)"
 
 # ------------------------------------------------------ release gate (#207) ---
 # After every cheap refusal, BEFORE the first mutation; order tsc -> test -> build:bus-abi -> bump -> build.
-say "Release gate (#207): typecheck + full suite on this tree"
+say "Release gate (#207/#208): typecheck + full suite + session-budget suite on this tree"
 if [ "$DRY_RUN" = 1 ]; then
-  printf '  [dry-run] release gate: npx tsc --noEmit -> pnpm run test (0 fail, 0 skipped)%s\n' \
+  printf '  [dry-run] release gate: npx tsc --noEmit -> pnpm run test (0 fail, 0 skipped) -> pnpm run test:session-budget%s\n' \
     "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
 elif [ "$SKIP_GATE" = 1 ]; then
-  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc and the full suite were NOT run. Reason: %s\n' "$SKIP_GATE_REASON" >&2
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite and the session-budget suite were NOT run. Reason: %s\n' "$SKIP_GATE_REASON" >&2
   echo "  (this is recorded in the release notes)" >&2
 else
   rg_run_gate || exit 1

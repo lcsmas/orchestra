@@ -24,10 +24,10 @@ export function liveDirs(env = process.env) {
 export function assertScratch(label, p, scratchRoot, live = liveDirs()) {
   const rp = real(p);
   const rr = real(scratchRoot);
-  if (rp !== rr && !rp.startsWith(rr + path.sep)) throw new Error(`scratch-guard: REFUSED ${label}=${p} — not inside the scratch root ${scratchRoot}`);
   for (const l of live.map(real)) {
     if (rp === l || rp.startsWith(l + path.sep) || l.startsWith(rp + path.sep)) {
       throw new Error(`scratch-guard: REFUSED ${label}=${p} — resolves to/into/over the live dir ${l}`);
     }
   }
+  if (rp !== rr && !rp.startsWith(rr + path.sep)) throw new Error(`scratch-guard: REFUSED ${label}=${p} — not inside the scratch root ${scratchRoot}`);
 }
