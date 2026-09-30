@@ -58,15 +58,48 @@ export function summarizeWindow(requests: RawRequest[], egress: RawEgress[], aft
   return c;
 }
 
+/** One live process of a session tree (proc-census.mjs). `cmd` is truncated to 300 chars. */
+export interface ProcEntry {
+  pid: number;
+  ppid?: number;
+  kind: 'cli' | 'keeper' | 'mcp' | 'hook' | 'other';
+  /** Resident set, kB (`VmRSS`). */
+  rssKB?: number;
+  /** Swapped-out anonymous memory, kB (`VmSwap`) — counted in the memory budget so paging cannot hide a leak. */
+  swapKB?: number;
+  cmd: string;
+}
+
+/** What the REAL workspace-delete path left behind (#210; scripts/session-budget/delete-teardown.mjs). */
+export interface DeleteReport {
+  /** Which real route was driven: `cli` = the socket `/deleteWorkspace` route, `ui` = the renderer IPC handler. */
+  via: 'cli' | 'ui';
+  /** How long the run polled for the tree to disappear. */
+  boundMs: number;
+  /** Delete call start → the call returned. */
+  returnedMs: number;
+  /** Delete call start → zero processes left; null when some were still alive at `boundMs`. */
+  elapsedMs: number | null;
+  treeBefore: ProcEntry[];
+  /** Pre-delete tree members still alive BY IDENTITY, plus (pid namespace) anything still in the namespace. */
+  survivors: ProcEntry[];
+  /** The store record is gone — proof the delete really ran to its end. */
+  storeRecordGone: boolean;
+  error?: string;
+}
+
 /** A census of the session's process tree at one instant. */
 export interface ProcessCensus {
   total: number;
   /** Zombies are listed apart and NOT in `total` (a zombie is not a running program). */
   zombies: number;
   rssKB: number;
+  swapKB?: number;
   /** cli = the `claude` binary, keeper = the detached daemon, mcp = a fixture MCP server,
    *  hook = an Orchestra hook shell, other = anything else in the tree. */
   byKind: { cli: number; keeper: number; mcp: number; hook: number; other: number };
+  /** The tree itself (#210) — what a process/memory verdict names when it fails. */
+  procs?: ProcEntry[];
 }
 
 /** What one session-budget run measured. Everything the judge and the printed report read. */
@@ -93,6 +126,8 @@ export interface SessionBudgetReport {
   startupEgress?: Record<string, number>;
   requests: { beforeFirstReply: RequestCounts; afterFirstReply: RequestCounts; total: RequestCounts };
   processes: { atFirstReply: ProcessCensus; atEnd: ProcessCensus; survivorsAfterTeardown: number | null };
+  /** Present only on the delete arms (#210): the session was torn down through the real delete path. */
+  delete?: DeleteReport;
   /** Every host the CLI tried to reach OUTSIDE the fake API (refused/unreachable), in order, whole run. */
   egress: string[];
   /** Compact per-request log (whole run) so a reader can see WHICH side call / route broke a budget. */
@@ -158,6 +193,31 @@ export const SESSION_BUDGETS = Object.freeze({
      *  (the CLI's AND the app process's); an unlisted host is allowed 0. */
     startupEgressAttempts: Object.freeze({ 'api.anthropic.com:443': 3 } as Record<string, number>),
   }),
+  /** #210 — the session's process tree, at the first reply AND settled (+2.5 s). A session is exactly one
+   *  keeper, one CLI, one process per CONFIGURED MCP server, and nothing else: a hook shell, a helper, a second
+   *  keeper or a stray build is a leak. MEASURED 2026-09-30 (claude 2.1.284, node 22, aarch64 16 KB pages, the
+   *  4-server heavy fixture, fake API, n=24 sessions): 6 processes in every run at both windows; tree memory
+   *  498-530 MB (keeper 52, CLI 275, each MCP server 51; swap 0). Re-measure with
+   *  `node scripts/session-budget/measure-procs.mjs --runs 8` before moving a number. */
+  processes: Object.freeze({
+    keeper: 1,
+    cli: 1,
+    /** Per configured MCP server (the report's `fixture.mcpServers`). */
+    mcpPerConfiguredServer: 1,
+    hook: 0,
+    other: 0,
+    /** Tree memory, MB (RSS + swapped-out, summed): base (keeper + CLI, measured 327) + per configured MCP server
+     *  (measured 51). ~1.25× the measured max: the heavy fixture allows 660 (measured ≤ 530) — a CLI upgrade or
+     *  keeper leak that grows the tree by a quarter must be looked at. Host-dependent (page size, node build). */
+    memoryMB: Object.freeze({ base: 400, perMcpServer: 65 }),
+  }),
+  /** #210 — deleting the workspace through the real delete path. */
+  afterDelete: Object.freeze({
+    /** Nothing from the session tree may be alive once the delete has finished. */
+    survivors: 0,
+    /** …and it must be gone within this long of the delete call. */
+    zeroWithinMs: 5000,
+  }),
 });
 
 export type SessionBudgets = typeof SESSION_BUDGETS;
@@ -173,6 +233,8 @@ export interface Verdict {
   limit: string;
   /** One line, names the rule and the counts. */
   message: string;
+  /** The named process tree (#210), one line per process, present on a broken process/memory/delete verdict. */
+  tree?: string[];
 }
 
 export interface Judgement {
@@ -217,6 +279,95 @@ function instrumentVerdict(id: string, actual: number | null, min: number, why: 
   };
 }
 
+const mbOf = (kb: number): number => Math.round(kb / 1024);
+/** Memory a process owns = resident + swapped-out (a paged-out leak is still a leak). */
+const footprintKB = (p: { rssKB?: number; swapKB?: number }): number => (p.rssKB ?? 0) + (p.swapKB ?? 0);
+
+/** `/path/node-22 /path/keeper.js ws-sb …` → `node-22 keeper.js ws-sb …` (a tree line must be readable, not a scratch path). */
+function shortCmd(cmd: string): string {
+  const t = cmd.split(' ');
+  const base = (x: string | undefined) => (x ? x.slice(x.lastIndexOf('/') + 1) : '');
+  const head = t[0]?.includes('/') ? [base(t[0]), t[1]?.includes('/') ? base(t[1]) : t[1], ...t.slice(2)] : t;
+  const out = head.filter((x) => x !== undefined && x !== '').join(' ');
+  return out.length > 90 ? `${out.slice(0, 89)}…` : out;
+}
+
+/** The session tree as indented text (children under their parent inside the given set), one line per process:
+ *  `[pid] kind  12 MB  node-22 keeper.js ws-sb …`. Pure. What a broken process/memory/delete verdict names. */
+export function formatProcessTree(procs: readonly ProcEntry[] | undefined): string[] {
+  const list = procs ?? [];
+  const pids = new Set(list.map((p) => p.pid));
+  const kids = new Map<number, ProcEntry[]>();
+  const roots: ProcEntry[] = [];
+  for (const p of list) {
+    if (p.ppid !== undefined && pids.has(p.ppid) && p.ppid !== p.pid) (kids.get(p.ppid) ?? kids.set(p.ppid, []).get(p.ppid)!).push(p);
+    else roots.push(p);
+  }
+  const lines: string[] = [];
+  const walk = (p: ProcEntry, depth: number): void => {
+    const rss = p.rssKB === undefined ? '' : `${String(mbOf(footprintKB(p))).padStart(4)} MB  `;
+    lines.push(`${'  '.repeat(depth)}[${p.pid}] ${p.kind.padEnd(6)} ${rss}${shortCmd(p.cmd)}`);
+    for (const c of kids.get(p.pid) ?? []) walk(c, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  return lines;
+}
+
+const withTree = (v: Verdict, tree: string[]): Verdict => (v.ok ? v : { ...v, tree });
+
+/** #210 — process-count and memory verdicts at one census window. */
+function processVerdicts(report: SessionBudgetReport, b: SessionBudgets['processes'], out: Verdict[]): void {
+  const nMcp = report.fixture?.mcpServers ?? 0;
+  const windows: Array<['atFirstReply' | 'atEnd', ProcessCensus | undefined, string]> = [
+    ['atFirstReply', report.processes?.atFirstReply, 'the first reply'],
+    ['atEnd', report.processes?.atEnd, 'the settled end'],
+  ];
+  for (const [when, c, label] of windows) {
+    // A census that never saw the tree (lost pid-namespace view, wrong subtree) reads 0 and would pass every max.
+    out.push(instrumentVerdict(`instrument.processCensus.${when}`, c?.total ?? null, 2 + nMcp, `the census at ${label} did not see the keeper + CLI + ${nMcp} MCP servers — a max-budget on it would pass vacuously`));
+    if (!c?.byKind) continue;
+    const tree = formatProcessTree(c.procs);
+    const ctx = `${c.total} processes, ${mbOf(footprintKB(c))} MB (RSS+swap) at ${label}`;
+    const limits: Array<[string, number]> = [
+      ['keeper', b.keeper], ['cli', b.cli], ['mcp', b.mcpPerConfiguredServer * nMcp], ['hook', b.hook], ['other', b.other],
+    ];
+    for (const [kind, limit] of limits) {
+      out.push(withTree(budgetVerdict(`session.processes.${when}.${kind}`, 'max', limit, c.byKind[kind as keyof typeof c.byKind], `${kind} processes — ${ctx}`), tree));
+    }
+    const totalLimit = limits.reduce((a, [, l]) => a + l, 0);
+    out.push(withTree(budgetVerdict(`session.processes.${when}.total`, 'max', totalLimit, c.total, ctx), tree));
+    const memLimit = b.memoryMB.base + b.memoryMB.perMcpServer * nMcp;
+    out.push(withTree(budgetVerdict(`session.processes.${when}.memoryMB`, 'max', memLimit, mbOf(footprintKB(c)), `MB (RSS+swap) summed over the tree — ${ctx}`), tree));
+  }
+}
+
+/** #210 — what survived deleting the workspace through the real delete path. */
+function deleteVerdicts(report: SessionBudgetReport, b: SessionBudgets['afterDelete'], out: Verdict[]): void {
+  const d = report.delete;
+  if (!d) return;
+  const nMcp = report.fixture?.mcpServers ?? 0;
+  out.push(instrumentVerdict('instrument.delete.treeExistedBefore', d.treeBefore?.length ?? null, 2 + nMcp, `the tree was not there before the delete (${d.treeBefore?.length ?? 0} processes) — a zero after it proves nothing`));
+  out.push(instrumentVerdict('instrument.delete.recordRemoved', d.storeRecordGone ? 1 : null, 1, `the delete (${d.via}) did not run to its end — the workspace record is still in the store`));
+  out.push(instrumentVerdict('instrument.delete.ran', d.error ? null : 1, 1, `the delete (${d.via}) threw: ${(d.error ?? '').split('\n')[0]}`));
+  const survivors = d.survivors ?? [];
+  const before = new Set((d.treeBefore ?? []).map((p) => p.pid));
+  const kinds = [...new Set(survivors.map((p) => p.kind))].join('+');
+  out.push(withTree(
+    budgetVerdict('session.delete.survivors', 'max', b.survivors, survivors.length, `after deleting the workspace via ${d.via} ${survivors.length} process(es) (${kinds || 'none'}) of its session tree were still alive ${d.boundMs} ms later`),
+    survivorLines(survivors, before),
+  ));
+  const okT = d.elapsedMs !== null && d.elapsedMs <= b.zeroWithinMs;
+  out.push({
+    id: 'session.delete.zeroWithinMs', kind: 'budget', ok: okT, actual: d.elapsedMs, limit: `at most ${b.zeroWithinMs}`,
+    message: okT ? `ok session.delete.zeroWithinMs: ${d.elapsedMs} (at most ${b.zeroWithinMs})` : `BUDGET BROKEN session.delete.zeroWithinMs: allowed at most ${b.zeroWithinMs} ms until zero processes, ${d.elapsedMs === null ? `never reached zero in ${d.boundMs} ms` : `took ${d.elapsedMs} ms`} (delete call returned after ${d.returnedMs} ms, via ${d.via})`,
+    ...(okT ? {} : { tree: survivorLines(survivors, before) }),
+  });
+}
+
+function survivorLines(survivors: readonly ProcEntry[], before: ReadonlySet<number>): string[] {
+  return survivors.map((p) => `[${p.pid}] ${p.kind.padEnd(6)} ${p.rssKB === undefined ? '' : `${String(mbOf(footprintKB(p))).padStart(4)} MB  `}${shortCmd(p.cmd)}  (${before.has(p.pid) ? 'from the pre-delete tree' : 'NEW since the delete'})`);
+}
+
 /** Judge one report against the budgets. Never throws on a malformed report: a missing measurement
  *  is a failed instrument check (VOID), not a pass. */
 export function judgeSessionBudget(report: SessionBudgetReport, budgets: SessionBudgets = SESSION_BUDGETS): Judgement {
@@ -236,6 +387,8 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
     verdicts.push(...mapVerdicts('session.beforeFirstReply.startupEgressAttempts', egressBudget, report.startupEgress ?? {},
       `${ctx}; before the main model request started (startup ${report.timing?.startupEgressSpanMs ?? '?'} ms, so +${extra} retry allowance on a listed host) it made egress attempts ${fmtMap(report.startupEgress)}`));
   }
+  processVerdicts(report, budgets.processes, verdicts);
+  deleteVerdicts(report, budgets.afterDelete, verdicts);
   // Instrument checks: the subject really was a heavy, mounted session with a first reply.
   const f = report.fixture;
   const s = report.subject;

@@ -67,8 +67,9 @@ test('a healthy session passes every budget and every instrument check', () => {
   assert.ok(j.verdicts.every((v) => v.ok), j.verdicts.filter((v) => !v.ok).map((v) => v.message).join('\n'));
   // 5 budget lines (main, haiku side call, count_tokens, other, egress host) + containment, productionEnv, egress visible, startup not stalled, clock, runCompleted, keeper, cli,
   // firstReply, mcpConnected, mcpChildren, tools + 4 markers
-  assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 5);
-  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 16);
+  // (TEMP with the C3 overlay: C3's process/delete verdicts are counted by its own test — only the request budgets here)
+  assert.equal(j.verdicts.filter((v) => v.kind === 'budget' && v.id.startsWith('session.beforeFirstReply.')).length, 5);
+  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument' && !v.id.startsWith('instrument.processCensus')).length, 16);
 });
 
 test('a boot-time context read (count_tokens burst before the first reply) breaks the budget NAMING it and the counts', () => {
