@@ -420,6 +420,9 @@ interface Session {
    *  silent rather than a later, healthy one that reused the gate slot. Null
    *  whenever no turn is in flight. */
   gateTurnUuid: string | null;
+  /** #252 D1b (round-2 F3): the turn the gate is held for contains a HUMAN-typed prompt. Set/cleared WITH `gateTurnUuid` — `humanTurns` itself is pruned to the queue at
+   *  every `emitQueueUpdate` (the entry has left it by the time the gate opens), so it cannot answer "is the turn in flight human". */
+  gateTurnHuman: boolean;
   /** Set by {@link sdkInterrupt} just before calling the SDK's `interrupt()`, so
    *  the consume loop's catch can label the resulting throw "interrupted" from
    *  OUR OWN action instead of pattern-matching /abort/ against arbitrary error
@@ -1347,6 +1350,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // can prove it is releasing the turn it watched go silent, never a later
     // healthy turn that reused the slot.
     session.gateTurnUuid = msg.uuid ?? null;
+    session.gateTurnHuman = humanTurn;
     session.lastStreamAt = Date.now();
     if (!session.firstMessageSeen) scheduleBootStallCheck(session, session.lastStreamAt);
     // This entry is now genuinely the session's turn — tell anyone who is
@@ -1375,6 +1379,7 @@ function releaseTurnGate(session: Session): void {
   const openNext = session.turnGate;
   session.turnGate = null;
   session.gateTurnUuid = null;
+  session.gateTurnHuman = false;
   openNext?.();
 }
 
@@ -1888,6 +1893,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     lastStreamMessageAt: Date.now(),
     firstMessageSeen: false,
     gateTurnUuid: null,
+    gateTurnHuman: false,
     pending: new Map(),
     pendingDialogs: new Map(),
     pendingElicitations: new Map(),
@@ -3443,6 +3449,7 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
   const openNext = session.turnGate;
   session.turnGate = null;
   session.gateTurnUuid = null;
+  session.gateTurnHuman = false;
   openNext?.();
   return true;
 }
@@ -3986,6 +3993,13 @@ export function sdkPauseActivity(
   const s = sessions.get(wsId);
   if (!s || s.stopping) return null;
   return { turnRunning: s.turnGate !== null || s.unexplainedTurnSeen === true, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
+}
+
+/** #252 D1b (round-2 F3): is the turn in flight RIGHT NOW one a human typed? Exact and TTL-free (a cold-started paused member can take far longer than any timer between the
+ *  yield and the CLI's turn-start hook). The pause trap's turn-start observer lets such a turn through. */
+export function sdkHumanTurnInFlight(wsId: string): boolean {
+  const s = sessions.get(wsId);
+  return !!s && !s.stopping && s.turnGate !== null && s.gateTurnHuman === true;
 }
 
 export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'unresponsive';

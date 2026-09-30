@@ -14,7 +14,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 const SNAP = 'src/main/pause-snapshot.ts', PROCS = 'src/shared/pause-procs.ts', KILL = 'src/main/pause-kill.ts', TRAP = 'src/main/pause-trap.ts', REC = 'src/main/bus-pause-records.ts';
 const IDX = 'src/main/index.ts', SDK = 'src/main/agent-sdk.ts', ACT = 'src/main/activity.ts', HOST = 'src/main/pause-trap-host.ts';
-const T = { wiring: 'src/main/pause-trap-wiring.test.ts', snap: 'src/main/pause-snapshot.test.ts', procs: 'src/shared/pause-procs.test.ts', kill: 'src/main/pause-kill.test.ts', trap: 'src/main/pause-trap.test.ts', status: 'src/cli/run-status.test.ts', runpause: 'src/cli/run-pause.test.ts' };
+const GUARD = 'scripts/pause-trap/pidns-guard.mjs', PROV = 'scripts/pause-trap/provenance-inner.mjs';
+const T = { rigguard: 'src/main/pause-rig-guard.test.ts', wiring: 'src/main/pause-trap-wiring.test.ts', snap: 'src/main/pause-snapshot.test.ts', procs: 'src/shared/pause-procs.test.ts', kill: 'src/main/pause-kill.test.ts', trap: 'src/main/pause-trap.test.ts', status: 'src/cli/run-status.test.ts', runpause: 'src/cli/run-pause.test.ts' };
 
 const M = [
   // ── snapshot (pause-snapshot.ts)
@@ -76,7 +77,7 @@ const M = [
   { id: 'trap-observer-ignores-live-chain', file: TRAP, find: 'for (const id of [m.runId, ...(m.chain ?? [])]) {', rep: 'for (const id of [m.runId]) {', tests: [T.trap], expect: /LIVE parent chain is\) is still trapped|NOT under the carrier/ },
   { id: 'trap-observer-ignores-carrierFor', file: TRAP, find: '  if (deps.carrierFor) return deps.carrierFor(m);', rep: '  if (false) return deps.carrierFor!(m);', tests: [T.trap], expect: /carrierFor/ },
   { id: 'wire-observer-not-gate-decision', file: HOST, find: 'return db && ws ? pausedCarrierForWorkspace(db, ws, (id) => store.getWorkspace(id)) : null;', rep: 'return null;', tests: [T.wiring], expect: /UNION|live parent chain|membership/ },
-  { id: 'trap-observer-pauser-exempt', file: TRAP, find: "    if (consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt)) return 'allowed';\n", rep: "    if (consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt)) return 'allowed';\n    if (readPauseOrigin(db, carrier.runId, carrier.pausedAt)) return 'allowed'; // mutant: the pauser's later CLI-started turns are exempt too\n", tests: [T.trap], expect: /pauser is spared only the PAUSE-TIME/ },
+  { id: 'trap-observer-pauser-exempt', file: TRAP, find: "    if (humanNow || marked) return 'allowed';\n", rep: "    if (humanNow || marked) return 'allowed';\n    if (readPauseOrigin(db, carrier.runId, carrier.pausedAt)) return 'allowed'; // mutant: the pauser's later CLI-started turns are exempt too\n", tests: [T.trap], expect: /pauser is spared only the PAUSE-TIME/ },
   { id: 'trap-burst-dropped', file: TRAP, find: '        if (!st.again) break;\n', rep: '        break;\n', tests: [T.trap], expect: /COALESCED, not dropped/ },
   { id: 'trap-burst-parallel', file: TRAP, find: '    if (st.running) {\n      st.again = true;', rep: '    if (false) {\n      st.again = true;', tests: [T.trap], expect: /COALESCED, not dropped/ },
   { id: 'trap-members-unbounded', file: TRAP, find: 'Math.min(deps.concurrency ?? 3, members.length)', rep: 'members.length', tests: [T.trap], expect: /PARALLEL/ },
@@ -108,7 +109,7 @@ const M = [
   { id: 'trap-pauser-by-handle', file: TRAP, find: '  const pauser = spareRoot !== undefined;', rep: '  const pauser = spareRoot !== undefined || (carrier.pausedBy !== null && isCoordinatorHandle(carrier.pausedBy, m.wsId));', tests: [T.trap], expect: /F5 a pause typed by a HUMAN/ },
   { id: 'trap-origin-start-time-ignored', file: TRAP, find: '(p) => p.pid === target.cli.pid && p.startTicks === target.cli.startTicks', rep: '(p) => p.pid === target.cli.pid', tests: [T.trap], expect: /F5 a RECYCLED CLI pid/ },
   { id: 'trap-pauser-spares-nothing', file: TRAP, find: "        ...(spareRoot !== undefined ? { spareRoots: [spareRoot] } : {}),\n", rep: '', tests: [T.trap], expect: /F5 the PAUSER/ },
-  { id: 'trap-pauser-interrupted', file: TRAP, find: "  if (pauser) activity.interrupt = 'exempt';\n  else if (humanDuringTrap) {", rep: "  if (false) activity.interrupt = 'exempt';\n  else if (humanDuringTrap) {", tests: [T.trap], expect: /F5 the PAUSER/ },
+  { id: 'trap-pauser-interrupted', file: TRAP, find: "  if (pauser) activity.interrupt = 'exempt';\n  else if (target !== null && 'error' in target) {", rep: "  if (false) activity.interrupt = 'exempt';\n  else if (target !== null && 'error' in target) {", tests: [T.trap], expect: /F5 the PAUSER/ },
   { id: 'trap-origin-not-awaited', file: TRAP, find: '    if (carrier.pausedAt + limit < start || deps.now() - start >= limit) return null;', rep: '    return null;', tests: [T.trap], expect: /F5 a RECENT pause waits/ },
   { id: 'trap-zero-members-stamped', file: TRAP, find: '  if (members.length === 0) {', rep: '  if (false) {', tests: [T.trap], expect: /F10 ZERO members/ },
   { id: 'trap-store-not-ready-ignored', file: TRAP, find: '  if (deps.storeReady && !deps.storeReady()) {', rep: '  if (false) {', tests: [T.trap], expect: /F10 ZERO members/ },
@@ -142,6 +143,20 @@ const M = [
   { id: 'status-orphan-cwd-raw', file: 'src/cli/run-status.ts', find: "pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);\n        }\n        if (k.survivors", rep: "pid ${c(o.pid)} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);\n        }\n        if (k.survivors", tests: [T.status], expect: /F11 \(round 2\)/ },
   { id: 'status-error-raw', file: 'src/cli/run-status.ts', find: 'out.push(`      error: ${c(r.error)}`);', rep: 'out.push(`      error: ${r.error}`);', tests: [T.status], expect: /F11 \(round 2\)/ },
   { id: 'status-note-raw', file: 'src/cli/run-status.ts', find: 'out.push(`      note: ${c(n)}`);', rep: 'out.push(`      note: ${n}`);', tests: [T.status], expect: /F11 \(round 2\)/ },
+  // ── round-2 delta (F1b F2 F3 F7)
+  { id: 'startms-floored-btime', file: KILL, find: 'if (up !== null) return startWallMs(Date.now(), up, startTicks, clkTck);', rep: 'if (false) return startWallMs(Date.now(), up, startTicks, clkTck);', tests: [T.kill], expect: /round-2 F1b REAL/ },
+  { id: 'startwallms-wrong-sign', file: KILL, find: 'return nowMs - (uptimeSec - startTicks / tck) * 1000;', rep: 'return nowMs + (uptimeSec - startTicks / tck) * 1000;', tests: [T.kill], expect: /F1b: startWallMs/ },
+  { id: 'trap-human-inflight-ignored', file: TRAP, find: "    if (humanNow || marked) return 'allowed';", rep: "    if (marked) return 'allowed';", tests: [T.trap], expect: /round-2 F3 a HUMAN turn in flight/ },
+  { id: 'trap-exact-allow-keeps-mark', file: TRAP, find: '    const marked = consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);', rep: '    const marked = humanNow ? false : consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);', tests: [T.trap], expect: /CONSUMES the fresh mark/ },
+  { id: 'sdk-gate-human-never-set', file: SDK, find: '    session.gateTurnHuman = humanTurn;', rep: '    session.gateTurnHuman = false;', tests: [T.wiring], expect: /round-2 F3: the session carries/ },
+  { id: 'sdk-gate-human-stuck-after-release', file: SDK, find: '  session.gateTurnUuid = null;\n  session.gateTurnHuman = false;\n  openNext?.();\n}', rep: '  session.gateTurnUuid = null;\n  openNext?.();\n}', tests: [T.wiring], expect: /round-2 F3: the session carries/ },
+  { id: 'sdk-gate-human-stuck-after-force-release', file: SDK, find: '  session.gateTurnHuman = false;\n  openNext?.();\n  return true;', rep: '  openNext?.();\n  return true;', tests: [T.wiring], expect: /round-2 F3: the session carries/ },
+  { id: 'sdk-human-inflight-any-turn', file: SDK, find: 's.turnGate !== null && s.gateTurnHuman === true', rep: 's.turnGate !== null', tests: [T.wiring], expect: /round-2 F3: the session carries/ },
+  { id: 'host-human-inflight-not-wired', file: HOST, find: '    humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),\n', rep: '', tests: [T.wiring], expect: /round-2 F3: the session carries/ },
+  { id: 'trap-probe-flake-interrupts', file: TRAP, find: "  else if (target !== null && 'error' in target) {", rep: '  else if (false) {', tests: [T.trap], expect: /round-2 F2 a flaking keeper probe/ },
+  // F7: the guard removed (the rig bodies then run in the HOST namespace but can only reach TAGGED pids and cannot write ns_last_pid) / the cleanup no longer keyed on the tag
+  { id: 'rig-pidns-guard-removed', file: GUARD, find: "  if (!cfg.tag || !cfg.hostPidNs || own === null || own === cfg.hostPidNs || process.pid !== 1) {", rep: '  if (false) {', tests: [T.rigguard], expect: /F7 a DIRECT run/ },
+  { id: 'rig-cleanup-untagged', file: PROV, find: 'if (p.pid !== process.pid && isTagged(p.pid, TAG)) {', rep: 'if (p.pid !== process.pid) {', tests: [T.rigguard], expect: /F7 the inner rigs kill only TAGGED/ },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },
@@ -150,6 +165,20 @@ const M = [
 
 const sel = ONLY ? M.filter((m) => m.id === ONLY) : M;
 if (sel.length === 0) { console.error(`unknown mutant ${ONLY}`); process.exit(2); }
+
+// --anchors-only: every anchor must match the CURRENT source exactly once (cheap; run after ANY edit of a mutated clause — a stale anchor is PATTERN-GONE, never a pass).
+if (process.argv.includes('--anchors-only')) {
+  let gone = 0;
+  for (const m of sel) {
+    const src = fs.readFileSync(path.join(REPO, m.file), 'utf8');
+    for (const e of (m.edits ?? [{ find: m.find }])) {
+      const hits = src.split(e.find).length - 1;
+      if (hits !== 1) { gone++; console.log(`✗ ${m.id}: anchor matched ${hits}× in ${m.file}: ${e.find.slice(0, 70)}`); }
+    }
+  }
+  console.log(`ANCHORS: ${gone === 0 ? 'OK' : 'FAIL'} (${sel.length} mutants, ${gone} stale)`);
+  process.exit(gone === 0 ? 0 : 1);
+}
 
 function runTests(files) {
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', ...files], { cwd: REPO, encoding: 'utf8', timeout: 240_000 });

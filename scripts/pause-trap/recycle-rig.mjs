@@ -3,6 +3,7 @@
 // Runs recycle-inner.mjs in `unshare --user --map-root-user --pid --fork --mount-proc` (the only place a pid can be forced to
 // be reused: /proc/sys/kernel/ns_last_pid). must-PASS: the innocent process that inherited a planned tool's pid survives.
 // must-FAIL: with the signal-time identity re-read REMOVED (load-time mutant) it is killed. Exit 0 / 1 / 3 (VOID: no unshare).
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -15,7 +16,7 @@ if (probe.status !== 0 || !probe.stdout.includes('ok')) {
 }
 function run(mutant, inner = 'recycle-inner.mjs') {
   const r = spawnSync('unshare', ['--user', '--map-root-user', '--pid', '--fork', '--mount-proc', process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(REPO, 'scripts', 'pause-trap', inner)],
-    { cwd: REPO, encoding: 'utf8', timeout: 90_000, env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: 'C.UTF-8', PT_CONFIG: JSON.stringify({ REPO, mutant }) } });
+    { cwd: REPO, encoding: 'utf8', timeout: 90_000, env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: 'C.UTF-8', PT_CONFIG: JSON.stringify({ REPO, mutant, hostPidNs: fs.readlinkSync('/proc/self/ns/pid'), tag: `pt-rig-${process.pid}-${Date.now()}` }) } });
   const line = (r.stdout ?? '').split('\n').reverse().find((l) => l.startsWith('{"recycle_rig"') || l.startsWith('{"provenance_rig"'));
   return line ? JSON.parse(line) : { checks: [], ok: false, error: `no result line (rc=${r.status}): ${(r.stderr ?? '').slice(-300)}` };
 }

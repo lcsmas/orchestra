@@ -93,6 +93,15 @@ test('the host observer stands down for anything without a live structured sessi
   assert.ok(at(obs, 'if (sdkPauseActivity(wsId) === null) return;') < at(obs, 'void onTurnStart('));
 });
 
+test('round-2 F3: the session carries a dedicated gateTurnHuman flag (humanTurns is pruned at emitQueueUpdate BEFORE the gate opens) set with the gate and cleared at BOTH release sites; the host wires it', () => {
+  const sdk = codeOf('src/main/agent-sdk.ts');
+  assert.ok(sdk.includes('session.gateTurnHuman = humanTurn;'), 'set at the gate arm from the computed humanTurn');
+  assert.equal((sdk.match(/session\.gateTurnHuman = false;/g) ?? []).length, 2, 'cleared in releaseTurnGate AND the stranded-gate force release');
+  assert.ok(sdk.includes('export function sdkHumanTurnInFlight('));
+  assert.ok(/s\.turnGate !== null && s\.gateTurnHuman === true/.test(sdk));
+  assert.ok(codeOf('src/main/pause-trap-host.ts').includes('humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),'));
+});
+
 test('pause-trap-host snapshots through the no-touch snapshotWorktree and kills through killToolTrees only (never a raw kill)', () => {
   const code = codeOf('src/main/pause-trap-host.ts');
   assert.ok(code.includes('snapshot: snapshotWorktree,'));

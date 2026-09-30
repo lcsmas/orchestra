@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import { killToolTrees, realKillDeps, type KillDeps } from './pause-kill.ts';
+import { killToolTrees, realKillDeps, startWallMs, type KillDeps } from './pause-kill.ts';
 import type { FreshRead, ProcIdent } from '../shared/pause-procs.ts';
 
 // ── (1) fake OS ─────────────────────────────────────────────────────────────
@@ -160,6 +160,11 @@ test('F2: startedBeforeMs spares what started after a HUMAN turn began (its tool
   assert.ok(!os.procs.has(400) && !os.procs.has(200), 'older trees killed');
   assert.ok(os.procs.has(500), 'the tool the human turn started is left running');
   assert.ok(r.spared.some((x) => x.pid === 500 && /HUMAN turn/.test(x.reason)));
+});
+
+test('F1b: startWallMs = now − (uptime − ticks/CLK_TCK) — exact, no btime flooring', () => {
+  assert.equal(startWallMs(1_000_000, 100, 9000, 100), 990_000);
+  assert.equal(Math.round(startWallMs(1_000_000, 100.37, 9000, 100)), 989_630, 'sub-second uptime carries through (a floored btime loses up to 1 s here)');
 });
 
 test('M5: startedBeforeMs as a GETTER is re-read at EVERY signal — a human turn that begins mid-kill protects the tools it starts (not only at plan time)', async () => {
@@ -390,4 +395,56 @@ test('read() really parses /proc for this process (positive control for the real
   assert.ok(me.startTicks > 0);
   assert.ok(fs.existsSync(`/proc/${process.pid}/stat`));
   assert.equal(real.read(2 ** 22 + 12345), 'gone');
+});
+
+test('round-2 F1b REAL: realKillDeps.startMs places a real process within one tick of the wall clock it was spawned at (the old floored-btime read ran ~0.4 s early)', async () => {
+  if (process.platform !== 'linux') return;
+  const t0 = Date.now();
+  const p = spawn('/bin/sleep', ['7792'], { stdio: 'ignore' });
+  try {
+    await waitFor(() => findByArgv('sleep 7792').length === 1);
+    const t1 = Date.now();
+    const id = real.read(p.pid!) as ProcIdent;
+    const at = real.startMs(id.startTicks);
+    assert.ok(at >= t0 - 40 && at <= t1 + 40, `startMs ${at - t0} ms from spawn (window 0..${t1 - t0} ms, ±40 ms for the 10 ms tick)`);
+  } finally {
+    p.kill('SIGKILL');
+  }
+});
+
+const GATED_STANDIN = `
+const { spawn } = require('child_process');
+const o = { detached: true, stdio: 'ignore', env: { ...process.env, CLAUDE_PID: String(process.pid) } };
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (d) => { for (const c of d) {
+  if (c === 'a') spawn('/bin/bash', ['-c', 'sleep 7793; true'], o).unref();
+  if (c === 'b') spawn('/bin/bash', ['-c', 'sleep 7794; true'], o).unref();
+} });
+setInterval(() => {}, 1000);
+console.log('ready');
+`;
+
+test('round-2 F1b REAL: a tool that starts 100 ms AFTER a human turn began is SPARED by the cutoff; the older tool is killed (a biased start-time reads the newer one as older and kills it)', async () => {
+  if (process.platform !== 'linux') return;
+  const spawned: ChildProcess[] = [];
+  try {
+    const cli = spawn(process.execPath, ['-e', GATED_STANDIN, 'fake-cli-gated'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    spawned.push(cli);
+    await new Promise<void>((res) => cli.stdout!.once('data', () => res()));
+    cli.stdin!.write('a');
+    await waitFor(() => findByArgv('sleep 7793').length === 1);
+    await new Promise((r) => setTimeout(r, 500));
+    const humanStart = Date.now(); // the human turn begins here
+    await new Promise((r) => setTimeout(r, 100));
+    cli.stdin!.write('b');
+    await waitFor(() => findByArgv('sleep 7794').length === 1);
+    const cliId = real.read(cli.pid!) as ProcIdent;
+    const rep = await killToolTrees({ pid: cli.pid!, startTicks: cliId.startTicks }, null, { ...real, selfPid: -1 }, { termGraceMs: 300, startedBeforeMs: humanStart });
+    assert.ok(findByArgv('sleep 7793').length === 0, `the pre-human tool is killed: ${JSON.stringify(rep.killed.map((k) => k.cmd))}`);
+    assert.ok(findByArgv('sleep 7794').length === 1, 'the tool that started AFTER the human turn is left running');
+    assert.ok(rep.spared.some((x) => /HUMAN turn/.test(x.reason) && /7794/.test(x.cmd)), 'listed as spared with the D9 reason');
+  } finally {
+    for (const n of ['sleep 7793', 'sleep 7794', 'fake-cli-gated']) for (const pid of findByArgv(n)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    for (const c of spawned) c.kill('SIGKILL');
+  }
 });

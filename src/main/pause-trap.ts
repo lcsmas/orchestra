@@ -75,6 +75,8 @@ export interface TrapDeps {
   /** Make the member's idle detached keeper OBSERVED (attach its session; starts no turn) so a CLI-started turn during the
    *  pause reaches `onTurnStart`. Never starts/kills anything. Omitted ⇒ no re-arming. */
   arm?(m: TrapMember): Promise<void>;
+  /** Is the turn in flight right now one a HUMAN typed (exact, TTL-free — production: the session's gate flag)? Such a start is ALLOWED however late the hook lands (D9, round-2 F3). */
+  humanTurnInFlight?(m: TrapMember): boolean;
   /** Members trapped in parallel (snapshots of big worktrees must not serialize the interrupt of the last member). Default 3. */
   concurrency?: number;
   snapshot(input: SnapshotInput): Promise<SnapshotResult>;
@@ -268,7 +270,11 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   const humanAtInterrupt = lastHumanTurnStart(m.wsId);
   const humanDuringTrap = humanAtInterrupt !== undefined && humanAtInterrupt >= carrier.pausedAt;
   if (pauser) activity.interrupt = 'exempt';
-  else if (humanDuringTrap) {
+  else if (target !== null && 'error' in target) {
+    // The pauser can only be recognised through a PROVEN CLI: a flaking probe must never interrupt it, so the interrupt waits for the retry (round-2 F2).
+    activity.interrupt = 'skipped';
+    activity.notes = [...(activity.notes ?? []), 'CLI identity not proven on this attempt — the interrupt is deferred to the retry (the pauser cannot be ruled out)'];
+  } else if (humanDuringTrap) {
     activity.interrupt = 'skipped';
     activity.notes = [...(activity.notes ?? []), 'a HUMAN prompt started a turn during the trap: that turn is allowed and was not interrupted; only processes older than it are killed'];
   } else {
@@ -504,7 +510,10 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
     const carrier = resolveCarrier(deps, db, m);
     if (!carrier) return 'not-paused';
     if (trapArming.has(m.wsId)) return 'skipped'; // the member trap's own arm() attach fired this start: trapMember handles the turn (pauser-aware)
-    if (consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt)) return 'allowed';
+    // a human turn IN FLIGHT (exact) OR a fresh mark (the hook of a very short turn can land after its result); BOTH are consumed — a leftover mark must not admit a later CLI turn
+    const humanNow = deps.humanTurnInFlight?.(m) === true;
+    const marked = consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);
+    if (humanNow || marked) return 'allowed';
     if (m.remote) return 'skipped';
     const st = turnTrap.get(m.wsId) ?? { running: false, again: false, lastNoteAt: Number.NEGATIVE_INFINITY };
     turnTrap.set(m.wsId, st);

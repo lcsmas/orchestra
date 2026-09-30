@@ -834,14 +834,16 @@ test('M3 a RETRY keeps the FIRST attempt\'s observations (was-doing, snapshot fa
   __resetPauseTrapForTests();
   const rig = newRig(t);
   member(rig, 'w1', 'W');
-  rig.cliResult = { error: 'keeper unresponsive' }; // attempt 1: incomplete (snapshot + activity + interrupt happen)
+  const okKill = rig.deps.killTrees;
+  rig.deps.killTrees = async () => { throw new Error('kill boom'); }; // attempt 1: incomplete AFTER the interrupt ran (snapshot + activity + interrupt happen)
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   const first = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
   assert.equal(first.activity?.turnRunning, true);
+  assert.equal(first.activity?.interrupt, 'interrupted', 'control: attempt 1 interrupted');
   assert.ok(first.activity?.head && first.activity?.changed, 'control: attempt 1 recorded the snapshot facts');
   // attempt 2: everything answers, the turn is long idle now
-  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  rig.deps.killTrees = okKill;
   rig.deps.activityOf = async () => ({ surface: 'sdk', turnRunning: false, inFlightTools: [], bgTasks: [] });
   rig.interruptResult = 'idle';
   await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
@@ -941,4 +943,67 @@ test('M8 a HUNG arm() cannot stall the member: the deadline turns it into an err
   assert.match(row.error ?? '', /arm timed out after 20 ms/);
   assert.equal(row.killed, null, 'the member stays owed');
   assert.ok(rig.calls.includes('interrupt:w1'), 'the interrupt/kill still ran');
+});
+
+test('round-2 F2 a flaking keeper probe (cliOf error) on attempt 1 NEVER interrupts the pauser: the interrupt waits for a proven CLI; the pauser is then recognised and still never interrupted', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.cliResult = { error: 'keeper alive but did not answer the probe' };
+  const s1 = await runPauseTrap(rig.deps, c);
+  assert.equal(s1.done, false, 'attempt 1 is incomplete');
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'the probe flake did NOT interrupt the pauser');
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.interrupt, 'skipped');
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'attempt 2 recognises the pauser (exempt) — never interrupted');
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.exempt, 'pauser');
+});
+
+test('round-2 F2 control: a NON-pauser whose probe flaked on attempt 1 is interrupted on the retry (the deferral is not a hole)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.cliResult = { error: 'keeper unresponsive' };
+  await runPauseTrap(rig.deps, c);
+  assert.ok(!rig.calls.includes('interrupt:w1'));
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.ok(rig.calls.includes('interrupt:w1') && rig.calls.includes('kill:100/90'));
+});
+
+test('round-2 F3 a HUMAN turn in flight is allowed however LATE its hook lands (60 s after the send — a cold-started paused member): exact discriminator, no timer; a CLI-started turn is still trapped', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  rig.calls.length = 0;
+  markPauseHumanTurn('w1', c.pausedAt + 1);
+  rig.clock = c.pausedAt + 60_000; // the mark is long expired (30 s TTL)
+  let human = true;
+  rig.deps.humanTurnInFlight = () => human;
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'allowed', 'the human turn is in flight: allowed at +60 s');
+  assert.deepEqual(rig.calls, []);
+  human = false; // control: no human turn in flight, the (consumed) mark is gone ⇒ a CLI-started turn is trapped
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+});
+
+test('round-2 F3 an exact-allowed start also CONSUMES the fresh mark (a leftover mark must not admit a later CLI-started turn)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  markPauseHumanTurn('w1', c.pausedAt + 1);
+  rig.clock = c.pausedAt + 5; // mark still fresh
+  let human = true;
+  rig.deps.humanTurnInFlight = () => human;
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'allowed');
+  human = false;
+  rig.clock = c.pausedAt + 50;
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted', 'the mark was consumed with the exact allow');
 });

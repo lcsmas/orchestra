@@ -6,7 +6,7 @@ import { store } from './store';
 import { nearestOrchestratorId } from './wave-run-id';
 import { getBus } from './bus';
 import { pausedCarrierForWorkspace } from './bus-pause';
-import { sdkAttachIfDetached, sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
+import { sdkAttachIfDetached, sdkHumanTurnInFlight, sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
 import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-client';
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
@@ -141,6 +141,7 @@ export function buildPauseTrapDeps(): TrapDeps {
       if (!probe?.running || probe.everStarted === false || probe.shuttingDown === true) return;
       await sdkAttachIfDetached(m.wsId);
     },
+    humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),
     snapshot: snapshotWorktree,
     killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),
     storeReady: () => store.loadedFromDisk,

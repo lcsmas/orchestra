@@ -14,9 +14,11 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { isTagged, requireOwnPidNs } from './pidns-guard.mjs';
 
 const cfg = JSON.parse(process.env.PT_CONFIG ?? '{}');
 const { REPO, mutant = null } = cfg;
+const TAG = requireOwnPidNs(cfg, 'provenance_rig'); // D8: refuses the host pid namespace BEFORE anything is spawned; every spawn below carries the tag
 if (mutant) register(pathToFileURL(`${REPO}/scripts/pause-trap/mutants.mjs`).href, { parentURL: import.meta.url, data: { mutant } });
 const { killToolTrees, realKillDeps } = await import(`${REPO}/src/main/pause-kill.ts`);
 const real = realKillDeps();
@@ -101,8 +103,8 @@ try {
 }
 result.checks = checks;
 result.ok = checks.length > 0 && checks.every((c) => c.ok);
-for (const p of procs()) if (p.argv.some((a) => a.endsWith('keeper.js')) || p.argv.at(-1) === 'fake-other-claude-cli' || p.argv.at(-1) === 'fake-other-mcp') { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
-for (const n of [7811, 7812, 7813, 7821, 7822]) for (const p of find(n)) { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
+// cleanup: ONLY this run's tagged processes (never "every keeper.js / sleep N on the box")
+for (const p of procs()) if (p.pid !== process.pid && isTagged(p.pid, TAG)) { try { process.kill(p.pid, 'SIGKILL'); } catch { /* */ } }
 for (const c of cleanup) { try { c.kill('SIGKILL'); } catch { /* */ } }
 try { fs.rmSync(FAKES, { recursive: true, force: true }); } catch { /* */ }
 console.log(JSON.stringify(result));

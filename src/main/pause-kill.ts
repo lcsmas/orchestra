@@ -88,6 +88,22 @@ const POLL_MS = 50;
 
 let bootMs: number | null = null;
 let clkTck = 100;
+
+/** Wall-clock start (epoch ms) of a process from its /proc start-time ticks: NOW minus (uptime − ticks/CLK_TCK). Exact to one tick; `btime` is floored to whole
+ *  seconds and read ~0.4 s EARLY, which made a human turn's first processes look "older" than it (round-2 F1b). */
+export function startWallMs(nowMs: number, uptimeSec: number, startTicks: number, tck: number): number {
+  return nowMs - (uptimeSec - startTicks / tck) * 1000;
+}
+
+function readUptimeSec(): number | null {
+  try {
+    const v = Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 function startMsOf(startTicks: number): number {
   if (bootMs === null) {
     try {
@@ -103,7 +119,9 @@ function startMsOf(startTicks: number): number {
       /* 100 is the Linux default */
     }
   }
-  return bootMs + (startTicks * 1000) / clkTck;
+  const up = readUptimeSec();
+  if (up !== null) return startWallMs(Date.now(), up, startTicks, clkTck);
+  return bootMs + (startTicks * 1000) / clkTck; // no /proc/uptime: the floored btime (early by < 1 s)
 }
 
 function readCwdOf(pid: number): string | null {
