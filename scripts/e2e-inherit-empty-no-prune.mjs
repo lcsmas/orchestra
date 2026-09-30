@@ -15,6 +15,7 @@
 //   torn_json_boot     ★ (#238/C11) boot order, FULL selection, the login `.claude.json` torn (60% of it; the tear's producer is unexplained — claude 2.1.284 writes tmp+rename under a lock) → file byte-identical + ONE warn, links intact; whole again → next sync merges, trust kept
 //   torn_json_ui_save  ★ (#238/C11) same through the REAL apiHandlers.setAccounts (a normal, unchanged-selection save)
 //   alias_skills_ui_save ★ (#241/C14) login `skills/` symlinked to the source's dotfile-linked `skills/`; REAL setAccounts (unchanged FULL save) → the SOURCE's skill links intact, alias intact, ONE warn, the other 5 links kept
+//   self_loop_ui_save  ★ (#239/C12) REAL setAccounts saves an account whose configDir IS the source `~/.claude` next to a normal one → source byte-identical (no .orchestra-bak, no self-loop, no manifest), ONE warn, the normal account fully synced
 //
 // Run one arm:  node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-inherit-empty-no-prune.mjs <arm>
 // Run all:      node scripts/e2e-inherit-empty-no-prune.mjs all      (children + a live-dir listing canary before/after)
@@ -30,7 +31,7 @@ import { REAL_HOMES, REAL_CFG, checkScratch, liveCanary, canaryDiff } from './.s
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'all';
-const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save', 'alias_skills_ui_save'];
+const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save', 'alias_skills_ui_save', 'self_loop_ui_save'];
 
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-inherit-empty');
 
@@ -319,6 +320,33 @@ if (ARM === 'boot_empty_obj') {
   });
   ok = control && out.controlSrc && settled && out.srcByteIdentical && out.srcSkillLinks.length === 2 && out.aliasKept && out.warns === 1
     && out.loginLinks.join() === 'CLAUDE.md,LESSONS.md,RTK.md,settings.json,statusline-command.sh' && out.manifestSymlinks.join() === out.loginLinks.join();
+} else if (ARM === 'self_loop_ui_save') {
+  // #239/C12: the source is a login dir. Without the guard the sync moves the SOURCE's settings.json/CLAUDE.md/imports to
+  // `.orchestra-bak`, leaves self-loops, and writes a manifest + .claude.json into `~/.claude`.
+  const srcDir = path.join(home, '.claude');
+  const loginB = path.join(home, '.claude-b');
+  for (const d of [srcDir, loginB]) {
+    const g = checkScratch(d, BASE);
+    if (!g.ok) { console.log(JSON.stringify({ arm: ARM, ok: false, error: `SAFETY: ${g.clause}` })); process.exit(3); }
+  }
+  const srcBefore = snapshot(srcDir);
+  out.controlSrc = linksOf(srcBefore).length === 0 && !fs.lstatSync(path.join(srcDir, 'settings.json')).isSymbolicLink() && !fs.existsSync(path.join(srcDir, '.orchestra-inherited.json'));
+  await apiHandlers.setAccounts([
+    { id: ACCOUNT.id, label: 'mc', configDir: srcDir, inherit: FULL },
+    { id: 'rig-b', label: 'b', configDir: loginB, inherit: FULL },
+  ]);
+  const bLinks = () => (fs.existsSync(loginB) ? linksOf(snapshot(loginB)).length : 0);
+  const settled = await until(() => bLinks() === LINKS.length);
+  await sleep(400); // the source-pointed account syncs first in store order; let any (unfixed) damage land before reading
+  const srcAfter = snapshot(srcDir);
+  Object.assign(out, {
+    settled, srcByteIdentical: JSON.stringify(srcAfter) === JSON.stringify(srcBefore), srcLinks: linksOf(srcAfter).length,
+    srcBak: Object.keys(srcAfter).filter((k) => k.endsWith('.orchestra-bak')), srcManifest: fs.existsSync(path.join(srcDir, '.orchestra-inherited.json')),
+    warns: logLines().filter((l) => l.includes('is the inheritance source') && l.includes(srcDir)).length, bLinks: bLinks(),
+    bMcp: fs.existsSync(path.join(loginB, '.claude.json')) ? mcpOf(loginB) : null, storeConfigDir: store.accounts[0]?.configDir === srcDir,
+  });
+  ok = control && out.controlSrc && settled && out.storeConfigDir && out.srcByteIdentical && out.srcLinks === 0 && out.srcBak.length === 0
+    && !out.srcManifest && out.warns === 1 && out.bLinks === LINKS.length && out.bMcp?.join() === 'chrome-devtools,github,linear-server';
 } else if (ARM === 'ui_normal_save') {
   await apiHandlers.setAccounts([{ ...ACCOUNT, label: 'mc-renamed', inherit: FULL }]);
   const changed = await until(() => store.accounts[0]?.label === 'mc-renamed');

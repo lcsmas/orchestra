@@ -624,6 +624,12 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
     log.warn(`account-inherit: source ${globalDir} is missing or unreadable — sync skipped, ${loginDir} left untouched`);
     return;
   }
+  // #239: a login dir that IS the source has nothing to inherit from itself — linking would move the source's own
+  // settings.json/CLAUDE.md/imports to `.orchestra-bak` and leave self-loops. Equality (path or realpath), not containment.
+  if (sameDir(loginDir, globalDir)) {
+    log.warn(`account-inherit: ${loginDir} is the inheritance source ${globalDir} itself — sync skipped, nothing to inherit from itself`);
+    return;
+  }
 
   // #235/D10: links built from ANOTHER source (a fake-HOME app vs a live config dir) are not ours to
   // rewrite — even a readable, skeletal source would repoint/strip them. No write at all.
