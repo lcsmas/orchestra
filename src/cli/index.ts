@@ -39,6 +39,8 @@ import {
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
+import type { BusDb } from '../main/bus.ts';
+import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
   commandHelp,
   isHelpFlag,
@@ -726,14 +728,7 @@ async function openBusForVerb(): Promise<{
       runPause: {
         setRunPause: busPause.setRunPause,
         getRunPause: busPause.getRunPause,
-        // The SAME live-tree walk the host gates use (the store file when readable — the app's own record of who is under whom), else the bus run tree.
-        coverFor: (d, runId) => {
-          const nodes = offlineWaveNodes();
-          const node = nodes.get(runId);
-          return node
-            ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
-            : busPause.activePauseFor(d, runId);
-        },
+        coverFor: (d, runId) => coverFor(d, runId, busPause),
       },
       file,
     };
@@ -801,6 +796,18 @@ export function offlineWaveNodes(file: string = appStoreFile()): Map<string, Wav
   } catch {
     return new Map(); // a malformed record (e.g. a null entry) drops the whole tree, exactly as a parse failure does — never a thrown TypeError
   }
+}
+
+/** ONE resolver of "which pause covers this run" for every store-less reader (`run resume`, `run status`): the SAME live-tree walk the host gates use
+ *  (the store file when readable — the app's own record of who is under whom), else the bus run tree. */
+export function coverFor(
+  d: BusDb,
+  runId: string,
+  busPause: Pick<typeof import('../main/bus-pause.ts'), 'pausedCarrierForWorkspace' | 'activePauseFor'>,
+  nodes: Map<string, WaveNode> = offlineWaveNodes(),
+): RunPauseInfo | null {
+  const node = nodes.get(runId);
+  return node ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id)) : busPause.activePauseFor(d, runId);
 }
 
 /** Read the persisted workspace list off disk when the app is DOWN (#144), from the file the RUNNING APP writes ({@link appStoreFile}:
@@ -1849,7 +1856,7 @@ async function main(argv: string[]): Promise<void> {
           const busRuns = await import('../main/bus-runs.ts');
           const st = gatherRunStatus(stDb, stTarget, {
             getRunPause: busPause.getRunPause,
-            activePauseFor: busPause.activePauseFor,
+            activePauseFor: (d, id) => coverFor(d, id, busPause),
             listBilanForRun: records.listBilanForRun,
             runExists: (d, id) => busRuns.getRun(d, id) !== null,
             latestPauseBilan: records.latestPauseBilanFor,

@@ -274,3 +274,23 @@ test('pre-review MAJOR: the store is read where the RUNNING APP writes it — th
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /still PAUSED by run O — lift that one/, 'the LIVE (config-dir) tree decided, not the stale ~/.orchestra/userData copy');
 });
+
+test('follow-up review F1: `run status` and `run resume` read the SAME live cover walk — a run re-parented AFTER creation under a paused run reads PAUSED (inherited) in status, not "not paused"', needsBuild, (t) => {
+  const h = home(t);
+  const db = bus.openBus(path.join(h, 'bus.sqlite'));
+  try { busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db.close(); } // created top-level: parent_run_id NULL forever
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws').code, 0); // only O is paused; O2 has no pause of its own
+  writeStore(h, [{ id: 'L', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'O2', kind: 'orchestrator', parentId: 'O' }]);
+  const st = JSON.parse(cli(h, ['run', 'status', '--run', 'O2', '--json'], 'o2-ws').stdout) as { pause: { runId: string } | null; inherited: boolean };
+  assert.equal(st.pause?.runId, 'O', 'status names the ancestor that pauses O2 via the live tree');
+  assert.equal(st.inherited, true);
+  assert.match(cli(h, ['run', 'status', '--run', 'O2'], 'o2-ws').stdout, /orchestra run resume --run O/);
+  assert.match(cli(h, ['run', 'resume', '--run', 'O2'], 'o2-ws').stdout, /still PAUSED by run O|PAUSED by run O/, 'resume agrees');
+  // control: detached in the store → O2 is not covered, status agrees with the plain lift
+  const h2 = home(t);
+  const db2 = bus.openBus(path.join(h2, 'bus.sqlite'));
+  try { busRuns.startRun(db2, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db2.close(); }
+  cli(h2, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws');
+  writeStore(h2, [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }]);
+  assert.equal((JSON.parse(cli(h2, ['run', 'status', '--run', 'O2', '--json'], 'o2-ws').stdout) as { pause: unknown }).pause, null, 'detached: not paused');
+});

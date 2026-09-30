@@ -14,7 +14,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 const SNAP = 'src/main/pause-snapshot.ts', PROCS = 'src/shared/pause-procs.ts', KILL = 'src/main/pause-kill.ts', TRAP = 'src/main/pause-trap.ts', REC = 'src/main/bus-pause-records.ts';
 const IDX = 'src/main/index.ts', SDK = 'src/main/agent-sdk.ts', ACT = 'src/main/activity.ts', HOST = 'src/main/pause-trap-host.ts';
-const T = { wiring: 'src/main/pause-trap-wiring.test.ts', snap: 'src/main/pause-snapshot.test.ts', procs: 'src/shared/pause-procs.test.ts', kill: 'src/main/pause-kill.test.ts', trap: 'src/main/pause-trap.test.ts', status: 'src/cli/run-status.test.ts' };
+const T = { wiring: 'src/main/pause-trap-wiring.test.ts', snap: 'src/main/pause-snapshot.test.ts', procs: 'src/shared/pause-procs.test.ts', kill: 'src/main/pause-kill.test.ts', trap: 'src/main/pause-trap.test.ts', status: 'src/cli/run-status.test.ts', runpause: 'src/cli/run-pause.test.ts' };
 
 const M = [
   // ── snapshot (pause-snapshot.ts)
@@ -111,6 +111,9 @@ const M = [
   { id: 'rec-origin-listed-as-member', file: REC, find: '  return rows.map(toRow).filter((r) => r.wsId !== PAUSE_ORIGIN_WS);', rep: '  return rows.map(toRow);', tests: [T.trap], expect: /F5 the PAUSER/ },
   { id: 'trap-retry-blanks-error', file: TRAP, find: "errors.length ? errors.join('; ') : (cur.error ?? null) }), cur.id)", rep: "errors.length ? errors.join('; ') : null }), cur.id)", tests: [T.trap], expect: /F4 a RETRY keeps/ },
   { id: 'status-control-chars-not-stripped', file: 'src/cli/run-status.ts', find: "  const clean = s.replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, ' ');", rep: '  const clean = s;', tests: [T.status], expect: /F11/ },
+  // follow-up review F1: `run status` and `run resume` share ONE live cover walk. These tests EXEC dist-electron/cli.js → `build: true` rebuilds it per mutant.
+  { id: 'status-uses-write-once-walk', file: 'src/cli/index.ts', find: 'activePauseFor: (d, id) => coverFor(d, id, busPause),', rep: 'activePauseFor: busPause.activePauseFor,', tests: [T.runpause], expect: /follow-up review F1/, build: true },
+  { id: 'cover-for-ignores-live-tree', file: 'src/cli/index.ts', find: '  return node ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id)) : busPause.activePauseFor(d, runId);', rep: '  return busPause.activePauseFor(d, runId);', tests: [T.runpause], expect: /follow-up review F1|re-parented AFTER creation/, build: true },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },
@@ -129,6 +132,10 @@ function runTests(files) {
   return { fail, pass, red, raw: out };
 }
 
+function rebuildCli() {
+  const r = spawnSync('pnpm', ['run', 'build:cli'], { cwd: REPO, encoding: 'utf8', timeout: 120_000 });
+  if (r.status !== 0) { console.error(`build:cli failed rc=${r.status}: ${(r.stderr ?? '').slice(-300)}`); process.exit(3); }
+}
 // Gate 0: a clean control over every file any mutant uses — a tree that is already red proves nothing.
 const allFiles = [...new Set(sel.flatMap((m) => m.tests))];
 const control = runTests(allFiles);
@@ -152,10 +159,12 @@ for (const m of sel) {
   activeRestore = () => fs.copyFileSync(backup, abs);
   try {
     fs.writeFileSync(abs, edits.reduce((acc, e) => acc.replace(e.find, () => e.rep), src));
+    if (m.build) rebuildCli(); // the tests EXEC the built bundle: a stale one would run the unmutated code (vacuous survivor)
     res = runTests(m.tests);
   } finally {
     fs.copyFileSync(backup, abs); // byte-exact restore
     activeRestore = null;
+    if (m.build) rebuildCli(); // and never leave a mutated bundle behind
   }
   const restored = spawnSync('cmp', [abs, backup]).status === 0;
   const named = res.red.filter((n) => m.expect.test(n));
