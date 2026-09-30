@@ -535,7 +535,7 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   `ws.sdkSessionId===''`, no session started (baseline: a vierge PTY). Both need `dist-electron/keeper.js` (build with
   `pnpm run build:bundles`, which `test:agent-view-removal` now does): the wrapper ABORTs without it and each arm asserts
   `env/keeper-runtime-installed`, because without a keeper no session can start and every "no session" claim is vacuous.
-- **Arms** (`ARMS` :1040): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
+- **Arms** (`ARMS` :1091): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
   (tally / retain / KEEP marker); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
@@ -559,7 +559,7 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   (`--allow-stale`), `PASS-WITH-EXTERNAL-CHANGE`, with `allowed_stale=` / `external_change=` counted apart from `pass=`.
 - **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
   target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
-  (`distFreshness` :693, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
+  (`distFreshness` :696, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
   `package.json`; `--allow-stale` proceeds but tallies `ALLOWED-STALE`, never a PASS. mtime ordering is not provenance
   (a `cp -r`'d dist passes).
 - **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
@@ -582,11 +582,11 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   pattern kill; exit/SIGINT/SIGTERM kill its own sway and remove the copy) and the `verify` skill's recipe (`LAUNCH-TRAPS.md`) do the same.
 - **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
   == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
-  tmpfs). `noAgentPty` (:743) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
+  tmpfs). `noAgentPty` (:746) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
   that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
-- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:788;
-  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:769) removes only
-  `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :767 = realpath of the
+- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:791;
+  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:772) removes only
+  `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :770 = realpath of the
   worktree holding the scripts, from `fileURLToPath` — never another agent's dirs; no identity ⇒ prune NOTHING), older than 24 h, unreferenced by any live process (unreadable
   `/proc/*/environ`, e.g. under bwrap, reads as unreferenced — KEEP backstops it) and lacking `KEEP-UNTIL-CLEAN` (written at
   start, removed only by a 0-FAIL run, so failed/crashed runs keep their forensics), never the invocation's own dir; the
@@ -602,7 +602,7 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   tab label is its only master-red clause), `legacy_composer_send` + `legacy_first_action_bash` / `legacy_first_action_mcp` (#228 O1/F1: whichever Agent-view action starts a
   legacy ws's session FIRST — composer send, `!cmd`, the MCP popover — resumes the terminal transcript, because adoption is in `ensureSessionInner`;
   baseline starts blank; a fresh ws adopts nothing) + `legacy_adopted_unresumable` (r2 F1: a resume-REFUSING stub (`RESUME_FAIL_STUB`, exit 1 on `--resume`) — the dead adopted id is cleared to `''`, the 2nd send starts fresh, no relaunch loop, no re-adoption), `other_terminals_work` (Run / nvim / account-login PTYs
-  still appear and run their programs). `--mode after` on master is red on every one of them except `other_terminals_work`.
+  still appear and run their programs; `login/pty-runs-claude-login` is a BOUNDED wait — the PTY is a `bash -ilc … claude /login` reading its profile before the stub starts, so an immediate read raced, 2/5 red at load 11-27) + `other_terminals_work_slow_profile` (the same arm with a 4 s `sleep` in the fake HOME's `.bash_profile`/`.bashrc` via `boot: { slowProfileS }` — the deterministic instrument for that race: the wait removed reddens it 2/2). `--mode after` on master is red on every one of them except `other_terminals_work`.
 - **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the baseline Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
 - **Spawn-failure arms (#227)** — `spawn_failure_reported`, `restart_delivers_task_once` (boot arms with `sdkLess: true`).

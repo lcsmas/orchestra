@@ -491,6 +491,9 @@ function seedWorld(home, opt = {}) {
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, sbx.legacy, sbx.owed, sbx.adoptx, ws] : kinds ? [ws, kinds.scratch, kinds.orch] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
   // Stub claude: the legacy agent PTY execs `claude` from PATH; a stub keeps the baseline
   // free of API calls. Stays a shell (not exec) so its cmdline names the stub for identity.
+  // `slowProfileS` (#230 verifier race): every `bash -ilc <program>` PTY (Run / nvim / login) spends N s in the login profile BEFORE it execs the program —
+  // the exact window in which a clause that reads the PTY tree / the stub's start log right after `…/pty-appears` sees neither (MEASURED: 2/5 runs red at load 11-27).
+  if (opt.slowProfileS) for (const f of ['.bash_profile', '.bashrc']) fs.writeFileSync(path.join(fakeHome, f), `sleep ${Number(opt.slowProfileS)}\n`);
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stub = path.join(stubDir, 'claude');
   // Every start appends `<pid> <argv…>` to stub-argv.log (#228: the OBSERVABLE of "which session did this CLI resume"), from ANY launcher (PTY or SDK keeper).
@@ -1036,6 +1039,54 @@ async function legacyFirstAction(ctx, arm, drive) {
   await runControl(ctx);
   noAgentPty(ctx, `${arm}/no-agent-pty`, await app.ptys());
 }
+
+const otherTerminalsRun = async (ctx) => {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id;
+      await runControl(ctx); // Run: control/run-pty-appears
+      const pre = await app.ptys();
+      const tog = await app.cdp.eval(`(() => { const b = document.querySelector('button.pane-toggle[aria-label="Show file pane"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`);
+      ctx.clause('nvim/toggle-rendered', !!tog, 'the "Show file pane" toggle is in the toolbar');
+      if (tog) {
+        await app.click(tog.cx, tog.cy);
+        const post = await waitFor('nvim-kind PTY', async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === `${wsId}:nvim` && p.kind === 'nvim') ? ps : null; }, 20000, 300).catch(() => null);
+        ctx.clause('nvim/pty-appears', !!post && !pre.some((p) => p.ptyId === `${wsId}:nvim`), `pre=${fmtP(pre)} -> post=${post ? fmtP(post) : 'NO nvim PTY appeared'}`);
+        const nv = post?.find((p) => p.ptyId === `${wsId}:nvim`);
+        const cmds = (nv?.pids ?? []).map(procCmdline);
+        ctx.clause('nvim/pty-runs-nvim', cmds.some((c) => /\bnvim\b/.test(c)), `PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
+        const dom = await waitFor('nvim pane xterm', () => app.cdp.eval(`document.querySelectorAll('.nvim-pane .xterm').length`).then((n) => (n > 0 ? n : null)), 10000, 250).catch(() => 0);
+        ctx.clause('nvim/pane-terminal-mounted', dom > 0, `.nvim-pane .xterm elements=${dom}`);
+      }
+      const acc = await app.cdp.eval(`(() => { const b = document.querySelector('[aria-label="Claude accounts settings"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`);
+      ctx.clause('login/accounts-entry-rendered', !!acc, 'the "Claude accounts settings" header button is present');
+      if (acc) {
+        await app.click(acc.cx, acc.cy);
+        const btn = await waitFor('Login button in the accounts modal', () => app.cdp.eval(`(() => { const b = document.querySelector('.accounts-login'); if (!b) return null; const r = b.getBoundingClientRect(); return r.width > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 15000, 250).catch(() => null);
+        ctx.clause('login/login-button-rendered', !!btn, 'the seeded account row has its Login button');
+        if (btn) {
+          const before = await app.ptys();
+          await app.click(btn.cx, btn.cy);
+          const id = `account-login:${w.account.id}`;
+          const post = await waitFor('login-kind PTY', async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === id && p.kind === 'login') ? ps : null; }, 20000, 300).catch(() => null);
+          ctx.clause('login/pty-appears', !!post && !before.some((p) => p.ptyId === id), `pre=${fmtP(before)} -> post=${post ? fmtP(post) : 'NO login PTY appeared'}`);
+          // BOUNDED WAIT, not an immediate read (verifier @8c23d493: 2/5 runs red): right after `login/pty-appears` the PTY may still be a `bash -ilc … claude /login`
+          // reading its profile, with the stub not yet started — the start log gains its `/login` line only after that. Poll until the tree names the stub OR the
+          // stub logged a `/login` start; on timeout report the state observed at the LAST poll.
+          const loginState = async () => {
+            const lg = (await app.ptys()).find((p) => p.ptyId === id);
+            const cmds = (lg?.pids ?? []).map(procCmdline);
+            const starts = stubStarts(app).filter((x) => x.argv.includes('/login')).length;
+            return { cmds, starts, ok: cmds.some((c) => c.includes(w.stub)) || starts > 0 };
+          };
+          const ran = await waitFor('claude /login started under the login PTY', async () => { const st = await loginState(); return st.ok ? st : null; }, 15000, 250).catch(() => null);
+          const seenLogin = ran ?? await loginState();
+          ctx.clause('login/pty-runs-claude-login', !!ran, `PTY tree cmdlines=${JSON.stringify(seenLogin.cmds.slice(0, 3))}; stub starts with /login=${seenLogin.starts} (bounded wait 15 s, polled every 250 ms; the stub stands in for claude; no real login happens)`);
+          const modal = await waitFor('login modal xterm', () => app.cdp.eval(`document.querySelectorAll('.modal .xterm, .modal-backdrop .xterm').length`).then((n) => (n > 0 ? n : null)), 10000, 250).catch(() => 0);
+          ctx.clause('login/modal-terminal-mounted', modal > 0, `login modal xterm elements=${modal}`);
+          const rect = await app.cdp.eval(`(() => { const e = document.querySelector('.modal-backdrop .xterm, .modal .xterm'); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 50 ? { x: r.x, y: r.y, width: r.width, height: r.height } : null; })()`);
+          if (rect) { const f = await app.shot('login-modal-terminal', rect); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      login-modal ${f} md5=${md5f(f)} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+        }
+      }
+};
 
 const ARMS = [
   {
@@ -2415,44 +2466,12 @@ const ARMS = [
   {
     name: 'other_terminals_work', boots: true, ticket: '#230',
     doc: 'the terminals that SURVIVE the removal still work, identically in both modes: the Run tab (run-kind PTY), the nvim file pane (nvim-kind PTY running nvim) and the account login modal (login-kind PTY running `claude /login` in the account\'s scratch dir)',
-    async run(ctx) {
-      const { app } = ctx; const w = app.world; const wsId = w.ws.id;
-      await runControl(ctx); // Run: control/run-pty-appears
-      const pre = await app.ptys();
-      const tog = await app.cdp.eval(`(() => { const b = document.querySelector('button.pane-toggle[aria-label="Show file pane"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`);
-      ctx.clause('nvim/toggle-rendered', !!tog, 'the "Show file pane" toggle is in the toolbar');
-      if (tog) {
-        await app.click(tog.cx, tog.cy);
-        const post = await waitFor('nvim-kind PTY', async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === `${wsId}:nvim` && p.kind === 'nvim') ? ps : null; }, 20000, 300).catch(() => null);
-        ctx.clause('nvim/pty-appears', !!post && !pre.some((p) => p.ptyId === `${wsId}:nvim`), `pre=${fmtP(pre)} -> post=${post ? fmtP(post) : 'NO nvim PTY appeared'}`);
-        const nv = post?.find((p) => p.ptyId === `${wsId}:nvim`);
-        const cmds = (nv?.pids ?? []).map(procCmdline);
-        ctx.clause('nvim/pty-runs-nvim', cmds.some((c) => /\bnvim\b/.test(c)), `PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
-        const dom = await waitFor('nvim pane xterm', () => app.cdp.eval(`document.querySelectorAll('.nvim-pane .xterm').length`).then((n) => (n > 0 ? n : null)), 10000, 250).catch(() => 0);
-        ctx.clause('nvim/pane-terminal-mounted', dom > 0, `.nvim-pane .xterm elements=${dom}`);
-      }
-      const acc = await app.cdp.eval(`(() => { const b = document.querySelector('[aria-label="Claude accounts settings"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`);
-      ctx.clause('login/accounts-entry-rendered', !!acc, 'the "Claude accounts settings" header button is present');
-      if (acc) {
-        await app.click(acc.cx, acc.cy);
-        const btn = await waitFor('Login button in the accounts modal', () => app.cdp.eval(`(() => { const b = document.querySelector('.accounts-login'); if (!b) return null; const r = b.getBoundingClientRect(); return r.width > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 15000, 250).catch(() => null);
-        ctx.clause('login/login-button-rendered', !!btn, 'the seeded account row has its Login button');
-        if (btn) {
-          const before = await app.ptys();
-          await app.click(btn.cx, btn.cy);
-          const id = `account-login:${w.account.id}`;
-          const post = await waitFor('login-kind PTY', async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === id && p.kind === 'login') ? ps : null; }, 20000, 300).catch(() => null);
-          ctx.clause('login/pty-appears', !!post && !before.some((p) => p.ptyId === id), `pre=${fmtP(before)} -> post=${post ? fmtP(post) : 'NO login PTY appeared'}`);
-          const lg = post?.find((p) => p.ptyId === id);
-          const cmds = (lg?.pids ?? []).map(procCmdline);
-          ctx.clause('login/pty-runs-claude-login', cmds.some((c) => c.includes(w.stub)) || stubStarts(app).some((x) => x.argv.includes('/login')), `PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}; stub starts with /login=${stubStarts(app).filter((x) => x.argv.includes('/login')).length} (the stub stands in for claude; no real login happens)`);
-          const modal = await waitFor('login modal xterm', () => app.cdp.eval(`document.querySelectorAll('.modal .xterm, .modal-backdrop .xterm').length`).then((n) => (n > 0 ? n : null)), 10000, 250).catch(() => 0);
-          ctx.clause('login/modal-terminal-mounted', modal > 0, `login modal xterm elements=${modal}`);
-          const rect = await app.cdp.eval(`(() => { const e = document.querySelector('.modal-backdrop .xterm, .modal .xterm'); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 50 ? { x: r.x, y: r.y, width: r.width, height: r.height } : null; })()`);
-          if (rect) { const f = await app.shot('login-modal-terminal', rect); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      login-modal ${f} md5=${md5f(f)} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
-        }
-      }
-    },
+    run: otherTerminalsRun,
+  },
+  {
+    name: 'other_terminals_work_slow_profile', boots: true, ticket: '#230', boot: { slowProfileS: 4 },
+    doc: 'other_terminals_work with every `bash -ilc` PTY (Run / nvim / login) spending 4 s in the login profile BEFORE it execs its program (the verifier race: a clause that read the PTY tree / the stub start log right after "pty-appears" saw neither): the bounded waits must ride it out. Deterministic instrument for the race; identical in both modes',
+    run: otherTerminalsRun,
   },
 ];
 
