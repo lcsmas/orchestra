@@ -232,9 +232,10 @@ test('verifyAtSignal env path: re-reads CLAUDE_PID NOW — matching proves it, a
 });
 
 test('planToolTrees never makes the CLI a member, even through the env rule', () => {
-  const t = [...table(), p(100, 90, { startTicks: 1000 })].filter((x, i, a) => a.findIndex((y) => y.pid === x.pid) === i);
+  // the keeper carries a NON-keeper argv here so the supervisor guard (F1) cannot be what spares it: only the structural ppid/pid<=1 exclusions can
+  const t = [...table().map((x) => (x.pid === KEEPER ? { ...x, argv: ['node', '/x/not-a-supervisor.js'] } : x)), p(100, 90, { startTicks: 1000 })].filter((x, i, a) => a.findIndex((y) => y.pid === x.pid) === i);
   const plan = planToolTrees(t, CLI, { claudePidOf: () => 100 });
-  assert.ok(!plan.members.some((m) => m.pid === CLI.pid || m.pid === KEEPER));
+  assert.ok(!plan.members.some((m) => m.pid === CLI.pid || m.pid === KEEPER || m.pid <= 1), 'neither the CLI, its parent nor init is ever a member');
 });
 
 test('D11: planner records cwd + the reason it matched; the verdict carries the evidence the signal-time re-read proved', () => {
@@ -293,11 +294,13 @@ test('F1: an env-proven orphan that IS or HAS a keeper / claude CLI / Orchestra 
 test('F1: the signal-time re-read refuses a keeper/claude/app even from a forged plan (second layer)', () => {
   const t = tableWithSupervisors();
   const plan = planToolTrees(t, CLI, { claudePidOf: (x) => ENV2[x.pid] ?? null });
-  for (const pid of [801, 802]) {
+  for (const pid of [800, 801, 802]) {
     const forged = { ...plan.members[0], pid, startTicks: t.find((x) => x.pid === pid)!.startTicks, isRoot: false, via: 'env' as const, rootPid: 0, rootIsSessionLeader: false, rootStartTicks: undefined };
     const v = verifyAtSignal(forged, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100);
     assert.equal(v.ok, false);
     assert.match((v as { reason: string }).reason, /supervisor/);
+    // 800 (the app, ppid 1) has NO supervisor ancestor: only the SELF check can refuse it — the ancestor walk (801/802) must not mask that layer
+    if (pid === 800) assert.match((v as { reason: string }).reason, /^supervisor \(keeper/);
   }
 });
 
@@ -333,7 +336,7 @@ test('M1: the signal-time re-read refuses a process under a foreign supervisor (
   const v = verifyAtSignal(forge(803), plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100);
   assert.equal(v.ok, false);
   assert.match((v as { reason: string }).reason, /under another session/);
-  const unreadable = verifyAtSignal(forge(803), plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t, { 801: 'unreadable' }), () => 100);
+  const unreadable = verifyAtSignal(forge(803), plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t, { 802: 'unreadable' }), () => 100); // 802 = 803's FIRST hop
   assert.equal(unreadable.ok, false, 'an unreadable ancestor hop is refused, never read as "no supervisor"');
   const ctl = plan.members.find((m) => m.pid === 810)!;
   assert.equal(verifyAtSignal(ctl, plan, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => 100).ok, true, 'control: the ordinary env orphan (ppid 1) is still killable');

@@ -702,10 +702,16 @@ test('a stale human mark (older than its TTL) does not whitelist a later CLI-int
 test('the pauser is spared only the PAUSE-TIME interrupt/kill: a CLI-started turn on it is a new turn and IS trapped', async (t) => {
   __resetPauseTrapForTests();
   const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
   const c = pauseW(rig, 'W', 'ops-w');
-  void c;
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  await runPauseTrap(rig.deps, c);
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.exempt, 'pauser', 'control: the member IS the pauser (by ancestry) and was spared the pause-time interrupt');
+  assert.ok(!rig.calls.includes('interrupt:ops-w'));
+  rig.calls.length = 0;
+  rig.clock = c.pausedAt + 50;
   assert.equal(await onTurnStart(rig.deps, tm('ops-w', 'W')), 'interrupted');
-  assert.deepEqual(rig.calls, ['interrupt:ops-w', 'cliOf:ops-w', 'kill:100/90']);
+  assert.deepEqual(rig.calls, ['interrupt:ops-w', 'cliOf:ops-w', 'kill:100/90'], 'a CLI-started turn on the pauser is a NEW turn: interrupted and its trees killed');
 });
 
 test('a burst of turn starts is COALESCED, not dropped: a start that lands while the handler runs re-runs it once; one Bilan note per second', async (t) => {

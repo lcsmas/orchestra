@@ -31,7 +31,6 @@ import {
 import type { KillReport } from './pause-kill.ts';
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
 import type { RootRef } from '../shared/pause-procs.ts';
-import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { log } from './logger.ts';
 
 export interface TrapMember {
