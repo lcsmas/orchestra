@@ -1813,3 +1813,138 @@ test('#241 an aliased-only selection leaves NOTHING inherited → the C10 guard 
   assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills'], 'only the alias itself is left');
   assert.deepEqual(snapshot(src), srcBefore, 'the source is intact');
 });
+
+// ---- #241 review round 1: the source's dir may not be where `~/.claude/skills` LOOKS (stow), nor the login a sibling ------------
+
+/** The stow/dotfiles fold: `~/.claude/skills` is a symlink to `~/dotfiles/skills`, itself a dir of LINKS into `~/agents/skills/<n>`. */
+function stowSkills(home: string): string[] {
+  const names = ['frontend-design', 'handoff'];
+  fs.rmSync(path.join(home, '.claude', 'skills'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(home, 'dotfiles', 'skills'), { recursive: true });
+  for (const n of names) {
+    put(path.join(home, 'agents', 'skills', n, 'SKILL.md'), `# ${n}\n`);
+    fs.symlinkSync(path.join(home, 'agents', 'skills', n), path.join(home, 'dotfiles', 'skills', n));
+  }
+  fs.symlinkSync(path.join(home, 'dotfiles', 'skills'), path.join(home, '.claude', 'skills'));
+  return names;
+}
+/** Everything that is the SOURCE's, wherever it physically lives (byte-exact: file hashes, link targets). */
+function sourceTree(home: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const d of ['.claude', 'dotfiles', 'agents']) {
+    const snap = fs.existsSync(path.join(home, d)) ? snapshot(path.join(home, d)) : null;
+    for (const [k, v] of Object.entries(snap ?? {})) out[`${d}/${k}`] = v;
+  }
+  return out;
+}
+const SKILL_NAMES = ['frontend-design', 'handoff'];
+
+for (const [name, mk] of [
+  ['login skills/ -> the source skills/ (which is itself a symlink into dotfiles)', (rig: Rig) => fs.symlinkSync(path.join(rig.home, '.claude', 'skills'), path.join(rig.login, 'skills'))],
+  ['login skills/ -> dotfiles/skills DIRECTLY (the source folded there)', (rig: Rig) => fs.symlinkSync(path.join(rig.home, 'dotfiles', 'skills'), path.join(rig.login, 'skills'))],
+] as Array<[string, (rig: Rig) => void]>) {
+  test(`#241/F1 stow shape: ${name} → the source's links (in dotfiles/agents) are intact, ONE pinned warn`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    stowSkills(rig.home);
+    fs.mkdirSync(rig.login, { recursive: true });
+    mk(rig);
+    const before = sourceTree(rig.home);
+    assert.equal(Object.keys(before).filter((k) => k.startsWith('dotfiles/') && before[k].startsWith('L:')).length, 2, 'precondition: 2 links in dotfiles/skills');
+    const warns = await runSync(rig, { skills: SKILL_NAMES }, { caller: 'spawn-sdk' });
+    assert.deepEqual(sourceTree(rig.home), before, 'no source link deleted or repointed');
+    assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+  });
+}
+
+test('#241/F1 stow shape, PRUNE path: a pre-alias manifest lists skills/<n> + settings.json → de-selecting skills leaves the source intact and the manifest sheds them', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  stowSkills(rig.home);
+  fs.mkdirSync(rig.login, { recursive: true });
+  fs.symlinkSync(path.join(rig.home, '.claude', 'skills'), path.join(rig.login, 'skills'));
+  fs.symlinkSync(path.join(rig.home, '.claude', 'settings.json'), path.join(rig.login, 'settings.json'));
+  put(manifestPath(rig.login), JSON.stringify({ source: path.join(rig.home, '.claude'), symlinks: ['skills/frontend-design', 'skills/handoff', 'settings.json'], mcpServers: [] }));
+  const before = sourceTree(rig.home);
+  const warns = await runSync(rig, { settings: true }, { caller: 'spawn-pty' });
+  assert.deepEqual(sourceTree(rig.home), before);
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+  assert.deepEqual(manifestOf(rig.login).symlinks, ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json']);
+});
+
+test('#241/F2 the login dir is an ANCESTOR of the source (configDir = ~; ~/skills -> source skills/): the source links survive, ONE pinned warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  fs.symlinkSync(path.join(rig.home, '.claude', 'skills'), path.join(rig.home, 'skills'));
+  const up = { home: rig.home, login: rig.home };
+  const before = sourceTree(rig.home);
+  const warns = await runSync(up, { skills: SKILL_NAMES }, { caller: 'spawn-sdk' });
+  assert.deepEqual(sourceTree(rig.home), before);
+  assert.deepEqual(warns, [aliasWarn(up, 2, 'skills')]);
+});
+
+// A bind mount of the source's skills/ over the login's skills/ has another realpath but the same dev+ino (review F2). A real
+// bind needs privileges the suite lacks: the empty login skills/ dir is answered with the source's stat — sameDir's only input
+// (the real `bwrap --bind` proof is in the nomination).
+test('#241/F2 a BIND MOUNT of the source skills/ onto the login skills/ (other realpath, same dev+ino): nothing written through it, ONE pinned warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  const srcSkills = path.join(rig.home, '.claude', 'skills');
+  const mnt = path.join(rig.login, 'skills');
+  fs.mkdirSync(mnt, { recursive: true });
+  const before = sourceTree(rig.home);
+  const f = fs as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const orig = f.statSync;
+  let hits = 0;
+  f.statSync = function (this: unknown, p: unknown, o?: unknown) {
+    if (String(p) === mnt) { hits++; return orig.call(this, srcSkills, o); }
+    return orig.call(this, p, o);
+  };
+  let warns: string[] = [];
+  try {
+    warns = await runSync(rig, { skills: SKILL_NAMES }, { caller: 'spawn-sdk' });
+  } finally {
+    f.statSync = orig;
+  }
+  assert.ok(hits > 0, 'instrument control: sameDir really stat-ed the mount');
+  assert.deepEqual(fs.readdirSync(mnt), [], 'nothing written through the mount');
+  assert.deepEqual(sourceTree(rig.home), before);
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+});
+
+test('#241/F4+F9 a TRANSIENT unresolvable parent (ELOOP) keeps OUR manifest entries verbatim (an FS effect, not warn text); once it clears, de-selecting prunes them', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { settings: true, skills: SKILL_NAMES }), []);
+  const manifestBefore = fs.readFileSync(manifestPath(rig.login), 'utf8');
+  assert.deepEqual(manifestOf(rig.login).symlinks, ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/frontend-design', 'skills/handoff']);
+  const aside = path.join(rig.login, 'skills.aside');
+  fs.renameSync(path.join(rig.login, 'skills'), aside);
+  fs.symlinkSync('skills', path.join(rig.login, 'skills')); // a loop: realpath → ELOOP
+  const warns = await runSync(rig, { settings: true, skills: SKILL_NAMES }, { caller: 'spawn-sdk' });
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+  assert.equal(fs.readFileSync(manifestPath(rig.login), 'utf8'), manifestBefore, 'the manifest still owns the two skill links');
+  fs.rmSync(path.join(rig.login, 'skills'));
+  fs.renameSync(aside, path.join(rig.login, 'skills'));
+  assert.deepEqual(await runSync(rig, { settings: true }, { caller: 'spawn-sdk' }), [], 'loop cleared → no warn');
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json'], 'the de-selected skill links are pruned (not orphaned)');
+});
+
+test('#241/F6 the source links seen through the alias are not "held": a non-UI empty sync is not blocked by them, the UI log says 0 pruned, the manifest is reconciled', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  aliasSkillsTo(rig, path.join(rig.home, '.claude', 'skills'));
+  put(manifestPath(rig.login), JSON.stringify({ source: path.join(rig.home, '.claude'), symlinks: SKILL_NAMES.map((n) => `skills/${n}`), mcpServers: [] }));
+  const before = sourceTree(rig.home);
+  const infoOf = (): string[] => ((globalThis as any).__a8Logs as LogRec[]).filter((l) => l.level === 'info').map((l) => l.msg);
+  const warns = await runSync(rig, undefined, { caller: 'boot' });
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')], 'no "holds 2 inherited link(s)" block: they are the source\'s, not ours');
+  assert.deepEqual(manifestOf(rig.login), { symlinks: [], mcpServers: [] }, 'reconciled: nothing here was ever ours');
+  put(manifestPath(rig.login), JSON.stringify({ source: path.join(rig.home, '.claude'), symlinks: SKILL_NAMES.map((n) => `skills/${n}`), mcpServers: [] }));
+  await runSync(rig, undefined, { caller: 'ui-save', userDeselected: true });
+  assert.deepEqual(infoOf().filter((m) => m.includes('UI de-selection pruned')), []);
+  assert.deepEqual(sourceTree(rig.home), before);
+});

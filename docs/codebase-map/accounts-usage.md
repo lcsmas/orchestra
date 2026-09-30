@@ -145,13 +145,20 @@ reads them transiently to query usage.
   is never completed (MCP prune skipped, then every later plain sync is blocked by (4)) — accepted, safe direction,
   same class as the burnt UI grant above.
   ALIASED ENTRIES (#241/C14): a login `skills/` symlinked to the source's `skills/` makes every `skills/<n>` slot one of
-  the SOURCE's own links (often dotfile links) — the sync used to `unlink`/repoint them as "ours" (`ensureSymlink` `:313`
-  repoint, stale-drop, `removeOurSymlink` `:385`), destroying the source's. `slotOwner` `:372` resolves the slot's PARENT
-  (`realpath`) and returns 'source' when the slot lands inside the real source but outside the real login dir ('ok' for a
-  child account inside the source and for a not-yet-existing parent; 'unknown' = unresolvable, fail closed). Those rels
-  (wanted now OR listed in the manifest) form `untouchable` `:533`: ONE WARN per sync, skipped in the apply and prune loops,
-  not counted as "alive" for the C10 guard, and dropped from the manifest. Not covered: aliasing of a whole login dir
-  (C12) or of the MCP `.claude.json` file.
+  the SOURCE's own links (often dotfile links) — the sync used to `unlink`/repoint them as "ours" (`ensureSymlink` `:300`
+  repoint, stale-drop, `removeOurSymlink` `:376`), destroying the source's. `slotOwner` `:362` realpaths the slot's PARENT and
+  decides 'source' by IDENTITY — `sameDir` (`src/main/same-dir.ts`, the ONE shared definition: path | realpath | dev+ino) of that
+  parent and `<source>/dirname(rel)` — so a source `skills/` folded OUTSIDE `~/.claude` (stow/dotfiles), a bind-mounted `skills/`
+  and an ANCESTOR login dir (`configDir=~`, `~/skills` -> the source's) are recognised; failing that, a slot inside the real
+  source but outside the real login dir (an alias onto ANY source dir) is 'source' too. 'ok' = the login dir's own slot (a
+  child account inside the source, a not-yet-existing parent); 'unknown' = unresolvable (ELOOP…), fail closed. Those rels
+  (wanted now OR listed in the manifest) form `untouchable` `:524`: ONE WARN per sync, skipped in the apply and prune loops, out of
+  the C10 alive count AND out of `held` (the source's links seen through the alias are not "held": no bogus block, the UI log
+  reports what was actually pruned). Manifest: a 'source' slot is shed (never ours); an 'unknown' one that the previous manifest
+  listed is RETAINED verbatim, so a transient ELOOP cannot orphan our own links (the next sync prunes them). Accepted gaps: an alias
+  into ANOTHER account's login dir is managed as that account's dir (its links are claimed, and pruned on de-selection until
+  its next sync re-creates them); a legacy (unstamped) manifest + alias is refused by D10 first ("built from <dotfiles>",
+  safe direction); aliasing of the MCP `.claude.json` file is C12's same-file guard.
   Rig: `scripts/e2e-inherit-empty-no-prune.mjs all` (REAL `setAccounts` + store + logger,
   scratch HOME, live-dir `find` canary). Same-source partial prune/de-selection is
   unchanged. Rig traps: a fake-HOME boot pinned to a LIVE configDir stripped

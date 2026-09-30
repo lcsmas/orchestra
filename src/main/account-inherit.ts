@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { store } from './store';
+import { sameDir } from './same-dir';
 import { deselectedAccountIds, expandConfigDir, type Account, type AccountInherit } from '../shared/accounts';
 import { parseClaudeMdImports } from '../shared/claude-md-imports';
 import { log } from './logger';
@@ -205,24 +206,10 @@ function isSymlink(p: string): boolean {
   }
 }
 
-/** Same directory: identical path, or same realpath (`/home` vs `/var/home`, a symlinked HOME). */
-function sameDir(a: string, b: string): boolean {
-  if (path.resolve(a) === path.resolve(b)) return true;
-  try {
-    return fs.realpathSync(a) === fs.realpathSync(b);
-  } catch {
-    return false;
-  }
-}
-
 function isInside(p: string, dir: string): boolean {
-  const within = (x: string, d: string): boolean => {
-    const rel = path.relative(d, x);
-    return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-  };
-  if (within(p, dir)) return true;
+  if (pathWithin(p, dir)) return true;
   try {
-    return within(fs.realpathSync(p), fs.realpathSync(dir));
+    return pathWithin(fs.realpathSync(p), fs.realpathSync(dir));
   } catch {
     return false;
   }
@@ -365,11 +352,14 @@ function pathWithin(x: string, dir: string): boolean {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
-/** #241: whose entry is `loginDir/rel`? 'ok' = the login dir's own slot (a child account inside the source included);
- *  'source' = its parent resolves so the slot IS an entry of the source (login `skills/` symlinked to the source's) —
- *  unlinking/repointing it would destroy the source's own link; 'unknown' = the parent cannot be resolved (fail closed).
- *  Only 'ok' slots may be created, rewritten or pruned. */
-function slotOwner(loginDir: string, rel: string, realGlobal: string, realLogin: string): 'ok' | 'source' | 'unknown' {
+/** #241: whose entry is `loginDir/rel`? 'source' = the slot IS one of the source's own entries — decided by IDENTITY
+ *  (`sameDir`: path | realpath | dev+ino) of the slot's real parent and the source's dir of the same rel, so a source
+ *  `skills/` folded outside `~/.claude` (stow/dotfiles), a bind-mounted `skills/` and an ANCESTOR login dir (`configDir=~`)
+ *  are all recognised — or, failing that, the slot lands inside the real source but outside the real login dir (an alias
+ *  onto ANY source dir). Unlinking/repointing it would destroy the source's own link. 'unknown' = the parent cannot be
+ *  resolved (fail closed). 'ok' = the login dir's own slot (a child account inside the source and a not-yet-existing
+ *  parent included). Only 'ok' slots may be created, rewritten or pruned. */
+function slotOwner(loginDir: string, rel: string, globalDir: string, realGlobal: string, realLogin: string): 'ok' | 'source' | 'unknown' {
   let parent: string;
   try {
     parent = fs.realpathSync(path.dirname(path.join(loginDir, rel)));
@@ -377,6 +367,7 @@ function slotOwner(loginDir: string, rel: string, realGlobal: string, realLogin:
     const code = (err as NodeJS.ErrnoException).code;
     return code === 'ENOENT' || code === 'ENOTDIR' ? 'ok' : 'unknown';
   }
+  if (sameDir(parent, path.join(globalDir, path.dirname(rel)))) return 'source';
   const slot = path.join(parent, path.basename(rel));
   return pathWithin(slot, realGlobal) && !pathWithin(slot, realLogin) ? 'source' : 'ok';
 }
@@ -690,13 +681,14 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   };
   const realGlobal = realOr(globalDir);
   const realLogin = realOr(loginDir);
-  const untouchable = new Set<string>();
+  const untouchable = new Map<string, 'source' | 'unknown'>();
   for (const rel of new Set([...wantLinks.keys(), ...prev.symlinks])) {
-    if (slotOwner(loginDir, rel, realGlobal, realLogin) !== 'ok') untouchable.add(rel);
+    const owner = slotOwner(loginDir, rel, globalDir, realGlobal, realLogin);
+    if (owner !== 'ok') untouchable.set(rel, owner);
   }
   if (untouchable.size > 0) {
     const n = untouchable.size;
-    const dirs = [...new Set([...untouchable].map((r) => path.dirname(r)))].sort().join(', ');
+    const dirs = [...new Set([...untouchable.keys()].map((r) => path.dirname(r)))].sort().join(', ');
     log.warn(
       `account-inherit: ${n} entr${n === 1 ? 'y' : 'ies'} of ${loginDir} (${dirs}) resolve${n === 1 ? 's' : ''} into the source ${globalDir} or cannot be resolved — left untouched (never pruned or rewritten)`,
     );
@@ -708,7 +700,8 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   // per-account grant may do that (incident #3: a real-HOME sync with no selection stripped the live dir,
   // writer unattributed). Any other caller: no write at all + ONE WARN. A swap to other, existing items
   // still applies (it leaves something), so the UI's own edits are never blocked.
-  const held = heldInherited(loginDir, prev);
+  // the source's links seen through an alias are not ours to count as "held" (C10 would block on them, the UI log would lie)
+  const held = heldInherited(loginDir, { ...prev, symlinks: prev.symlinks.filter((rel) => !untouchable.has(rel)) });
   let uiPrune: { links: string[]; mcp: string[] } | null = null;
   if (held.links.length + held.mcp.length > 0) {
     const globalMcp = readGlobalMcpServers();
@@ -744,6 +737,11 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   // Remove links we created before that are no longer desired.
   for (const rel of prev.symlinks) {
     if (!wantLinks.has(rel) && !untouchable.has(rel)) removeOurSymlink(loginDir, rel);
+  }
+  // A slot we merely could not resolve ('unknown', e.g. a transient ELOOP) may still hold OUR link: keep owning it, so the
+  // next sync can prune it. A 'source' slot was never ours and is shed from the manifest.
+  for (const rel of prev.symlinks) {
+    if (untouchable.get(rel) === 'unknown' && !liveLinks.includes(rel)) liveLinks.push(rel);
   }
 
   // MCP servers (selective merge into the login dir's own .claude.json).
