@@ -32,10 +32,17 @@ if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: imp
 const { startFakeApi } = await import(`${HERE}/fake-anthropic-api.mjs`);
 const { generateHeavyFixture } = await import(`${HERE}/fixture.mjs`);
 const { census } = await import(`${HERE}/proc-census.mjs`);
-const { judgeSessionBudget, summarizeWindow, TRAFFIC_KNOBS } = await import(`${REPO}/src/shared/session-budget.ts`);
+const { judgeSessionBudget, summarizeWindow, egressUpTo, TRAFFIC_KNOBS } = await import(`${REPO}/src/shared/session-budget.ts`);
 
 const fx = generateHeavyFixture(path.join(root, 'repo'), profile);
-const api = await startFakeApi({ replyDelayMs, markers: fx.markers });
+// Fixed ports: this process was started with HTTPS_PROXY/NODE_USE_ENV_PROXY already aimed at the proxy port (the harness
+// chose it) — Node reads NODE_USE_ENV_PROXY at bootstrap, so the proxy must come up on exactly that port.
+if (!cfg.apiPort || !cfg.proxyPort) throw new Error('session-runner: cfg.apiPort/proxyPort absent — the app-process egress proxy cannot be wired (fails closed)');
+const api = await startFakeApi({ replyDelayMs, markers: fx.markers, apiPort: cfg.apiPort, proxyPort: cfg.proxyPort })
+if (api.proxyUrl !== process.env.HTTPS_PROXY || process.env.NODE_USE_ENV_PROXY !== '1') {
+  throw new Error(`session-runner: this process is not routed through the recording proxy (HTTPS_PROXY=${process.env.HTTPS_PROXY} NODE_USE_ENV_PROXY=${process.env.NODE_USE_ENV_PROXY}, proxy=${api.proxyUrl}) — app-process egress would be invisible (fails closed)`);
+}
+delete process.env.NODE_USE_ENV_PROXY; // production parity: the env copy handed to the CLI must not carry an instrument-only var
 
 // The CLI's environment (buildSdkEnv copies process.env): fake API, dummy key, and the refusing proxy that NAMES
 // any host the CLI still reaches for. PRODUCTION PARITY (review F2): Orchestra sets NONE of the CLI's
@@ -62,6 +69,7 @@ const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 const events = [];
 let tInit = null, tFirstReply = null, tTurnEnd = null, initEvent = null, errorEvent = null;
 let censusAtFirstReply = null;
+let cliEnv = null;
 initPlatform({
   kind: 'headless-session-budget',
   broadcast: (channel, _wsId, ev) => {
@@ -73,6 +81,14 @@ initPlatform({
     if (ev.type === 'text-delta' && tFirstReply === null) {
       tFirstReply = t; // the first token the user would see
       censusAtFirstReply = census({ pidns });
+      // F1 (round 2): judge the env the CLI was actually HANDED — /proc/<cli pid>/environ — not this process's own env.
+      const cliProc = censusAtFirstReply.procs.find((p) => p.kind === 'cli');
+      if (cliProc) {
+        try {
+          const keys = new Set(fs.readFileSync(`/proc/${cliProc.pid}/environ`, 'latin1').split('\0').map((kv) => kv.split('=')[0]));
+          cliEnv = { cliPid: cliProc.pid, trafficKnobsSet: TRAFFIC_KNOBS.filter((k) => keys.has(k)) };
+        } catch (e) { cliEnv = { cliPid: cliProc.pid, error: String(e?.message ?? e), trafficKnobsSet: null }; }
+      }
     }
     if (ev.type === 'turn-end' && tTurnEnd === null) tTurnEnd = t;
   },
@@ -103,9 +119,7 @@ const done = new Promise((resolve) => {
   setTimeout(() => { clearInterval(iv); resolve(); }, timeoutMs).unref();
 });
 let tSend = null;
-let trafficKnobsSet = null;
 try {
-  trafficKnobsSet = TRAFFIC_KNOBS.filter((k) => process.env[k] !== undefined); // what the SDK env copy will hold
   tSend = api.now(); // F5: the clock for time-to-first-reply starts HERE, not at fake-API start (runner setup is ~1.5 s)
   await sdk.sdkSend(WS_ID, 'Reply with the single word ok.');
   await done;
@@ -129,10 +143,15 @@ try {
   error = error ?? `teardown: ${String(e?.stack ?? e)}`;
 }
 
-const cut = tFirstReply ?? Infinity; // no first reply: everything counts as "before" (the run is VOID anyway)
+// The request windows end at the first turn's turn-end: the legitimate gauge refresh is triggered BY that event, so it can
+// never fall inside the window whatever the reply latency or observation lag (review round 2 F3); a boot read deferred past
+// the first token but before turn-end is now inside it too. No turn-end (a run that broke): everything is "before".
+const cut = tTurnEnd ?? Infinity;
 const win = (from, to) => summarizeWindow(api.requests, api.egress, from, to);
 // F2: the user's turn is the model call that CARRIES TOOLS — never "the first request" (a tool-less side call can precede it).
 const mainModel = api.requests.find((r) => r.type === 'model' && (r.tools ?? 0) > 0);
+// STARTUP egress: attempts made before the main request STARTED (headers in, body not yet read) — a causal cut, not a race with the reply.
+const startupEgress = mainModel ? egressUpTo(api.egress, mainModel.tStartMs) : undefined;
 const strip = ({ procs, ...c }) => c;
 const report = {
   schema: 1,
@@ -141,11 +160,14 @@ const report = {
   fixture: { skills: fx.profile.skills, memoryFiles: fx.profile.memoryFiles, mcpServers: fx.profile.mcpServers, toolsPerServer: fx.profile.toolsPerServer, claudeMdKB: fx.profile.claudeMdKB },
   containment,
   ...(cfg.containmentOptOut ? { containmentOptOut: true } : {}),
-  envParity: trafficKnobsSet === null ? undefined : { trafficKnobsSet },
-  timing: { timeToFirstReplyMs: tFirstReply === null || tSend === null ? null : Math.round(tFirstReply - tSend), fakeModelLatencyMs: replyDelayMs, setupMs: tSend === null ? undefined : Math.round(tSend) },
+  envParity: cliEnv === null ? undefined : { source: `/proc/${cliEnv.cliPid}/environ at the first reply`, trafficKnobsSet: cliEnv.trafficKnobsSet, ...(cliEnv.error ? { error: cliEnv.error } : {}) },
+  timing: { timeToFirstReplyMs: tFirstReply === null || tSend === null ? null : Math.round(tFirstReply - tSend), fakeModelLatencyMs: replyDelayMs, setupMs: tSend === null ? undefined : Math.round(tSend), firstReplyAbsMs: tFirstReply === null ? undefined : Math.round(tFirstReply), turnEndAbsMs: tTurnEnd === null ? undefined : Math.round(tTurnEnd), mainRequestStartAbsMs: mainModel ? Math.round(mainModel.tStartMs) : undefined,
+    startupEgressSpanMs: mainModel && api.egress.length ? Math.round(mainModel.tStartMs - api.egress[0].tMs) : undefined },
+  startupEgress,
   requests: { beforeFirstReply: win(-Infinity, cut), afterFirstReply: win(cut, Infinity), total: win(-Infinity, Infinity) },
   processes: { atFirstReply: strip(censusAtFirstReply ?? { total: 0, zombies: 0, rssKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 } }), atEnd: strip(censusAtEnd), survivorsAfterTeardown: survivors },
   egress: api.egress.map((e) => e.target),
+  egressLog: api.egress.map((e) => ({ tMs: Math.round(e.tMs), target: e.target })),
   subject: {
     firstModelRequestTools: mainModel?.tools ?? 0,
     firstModelRequestBytes: mainModel?.bodyBytes ?? 0,

@@ -28,6 +28,14 @@ export interface RawRequest { tMs: number; type: string; method?: string; path?:
 /** One refused egress attempt as recorded by the fake API's proxy. */
 export interface RawEgress { tMs: number; target: string }
 
+/** Refused egress attempts by `host:port` with `tMs <= upToMs` (pure). Used for the STARTUP egress budget: the cut is the
+ *  main model request's START — a causal boundary independent of when the reply is observed. */
+export function egressUpTo(egress: RawEgress[], upToMs: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const e of egress) if (e.tMs <= upToMs) out[e.target] = (out[e.target] ?? 0) + 1;
+  return out;
+}
+
 /** Summarize the requests/egress with `afterMs < tMs <= upToMs` (pure; the runner and the tests share it). */
 export function summarizeWindow(requests: RawRequest[], egress: RawEgress[], afterMs: number, upToMs: number): RequestCounts {
   const c: RequestCounts = { model: 0, main: 0, side: {}, count_tokens: 0, other: 0, otherPaths: {}, egress: {}, total: 0 };
@@ -72,9 +80,17 @@ export interface SessionBudgetReport {
   /** True only when the run was started with SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT=1: a weaker containment is then tolerated, and printed. */
   containmentOptOut?: boolean;
   /** Which traffic-suppressing knobs were set in the env the CLI was handed (must be none: production parity). */
-  envParity?: { trafficKnobsSet: string[] };
+  envParity?: { source?: string; trafficKnobsSet: string[] | null; error?: string };
   /** `timeToFirstReplyMs` = first text-delta minus the instant just before `sdkSend` (NOT runner setup). */
-  timing: { timeToFirstReplyMs: number | null; fakeModelLatencyMs: number; setupMs?: number };
+  timing: {
+    timeToFirstReplyMs: number | null; fakeModelLatencyMs: number; setupMs?: number;
+    /** Absolute stamps on the fake API's clock: first text-delta, first turn's turn-end, main request start. */
+    firstReplyAbsMs?: number; turnEndAbsMs?: number; mainRequestStartAbsMs?: number;
+    /** Main request start minus the FIRST egress attempt: how long the startup burst took. */
+    startupEgressSpanMs?: number;
+  };
+  /** Refused egress attempts made BEFORE the main model request started (the budgeted window), by `host:port`. */
+  startupEgress?: Record<string, number>;
   requests: { beforeFirstReply: RequestCounts; afterFirstReply: RequestCounts; total: RequestCounts };
   processes: { atFirstReply: ProcessCensus; atEnd: ProcessCensus; survivorsAfterTeardown: number | null };
   /** Every host the CLI tried to reach OUTSIDE the fake API (refused/unreachable), in order, whole run. */
@@ -96,19 +112,26 @@ export const SUBJECT_MARKERS = Object.freeze(['claude_md', 'rule_last', 'skill_l
  *  either (review F2): a run with any of them set describes a lighter session than production's. */
 export const TRAFFIC_KNOBS = Object.freeze(['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'DISABLE_TELEMETRY', 'DISABLE_AUTOUPDATER', 'DISABLE_ERROR_REPORTING', 'DISABLE_BUG_COMMAND'] as const);
 
+/** Above this first-attempt→main-request gap the CLI's retry of a refused call can land in the startup window (see the judge). */
+export const STARTUP_SPAN_MAX_MS = 2000;
+
 /** Env var that lets a run proceed with a weaker egress containment than net+pid namespaces (echoed in the verdict). */
 export const WEAK_CONTAINMENT_ENV = 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT';
 
 /** THE budget numbers. Frozen; import, do not copy.
  *
- *  They describe PRODUCTION configuration: the suite sets none of the CLI's traffic-disabling env knobs (Orchestra
- *  sets none either — `git grep NONESSENTIAL src scripts` finds only this suite's docs), against a fake
- *  non-first-party base URL, inside a network namespace. Measured on CLI 2.1.284, 4 identical runs (2026-09-30,
- *  ledger #237 review F2): the user's turn is the model call that carries tools; one tool-less haiku call precedes
- *  it; the CLI then makes 5 refused attempts at api.anthropic.com:443 (hard-coded host, ignores the base URL).
- *  A NEW startup call — a different side model, another route, another host, one more attempt — breaks a number. */
+ *  They describe PRODUCTION configuration: the suite sets none of the CLI's traffic-disabling env knobs (Orchestra sets none
+ *  either — `git grep NONESSENTIAL src scripts` finds only this suite), against a fake non-first-party base URL, inside a
+ *  network namespace, with the app process's own fetch()/http(s) routed through the recording proxy too. Measured on CLI
+ *  2.1.284 (2026-09-30, ledger #237 reviews): the user's turn is the model call that carries tools; one tool-less haiku call
+ *  (the CLI's session-title generator) precedes it; exactly 3 refused attempts at api.anthropic.com:443 precede the main
+ *  request (9/9 runs at reply latency 500/2000/5000 ms; later attempts grow with session duration and are printed, not
+ *  budgeted). A NEW startup call — a different side model, another route, another host, one more attempt — breaks a number.
+ *
+ *  WINDOWS: `beforeFirstReply` requests = everything up to the first turn's `turn-end` (the reply is complete; the legitimate
+ *  gauge refresh is triggered BY that event, so it can never land inside the window); `startupEgressAttempts` = attempts
+ *  before the main request STARTS (causal, immune to reply latency). */
 export const SESSION_BUDGETS = Object.freeze({
-  /** Before the FIRST REPLY of a fresh session (#208; the #176 class). */
   beforeFirstReply: Object.freeze({
     /** Exactly one model call carrying tools — the opening turn itself. */
     modelRequests: 1,
@@ -118,8 +141,9 @@ export const SESSION_BUDGETS = Object.freeze({
     countTokensRequests: 0,
     /** No other route: a new startup call from a CLI upgrade must be looked at, not absorbed. */
     otherRequests: 0,
-    /** Refused attempts to reach a host OUTSIDE the fake API, at most N per `host:port`; an unlisted host is allowed 0. */
-    egressAttempts: Object.freeze({ 'api.anthropic.com:443': 5 } as Record<string, number>),
+    /** Refused attempts to reach a host OUTSIDE the fake API BEFORE the main request starts, at most N per `host:port`
+     *  (the CLI's AND the app process's); an unlisted host is allowed 0. */
+    startupEgressAttempts: Object.freeze({ 'api.anthropic.com:443': 3 } as Record<string, number>),
   }),
 });
 
@@ -192,7 +216,7 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
     verdicts.push(...mapVerdicts('session.beforeFirstReply.sideModelRequests', b.sideModelRequests, pre.side, ctx));
     verdicts.push(budgetVerdict('session.beforeFirstReply.countTokensRequests', 'max', b.countTokensRequests, pre.count_tokens, ctx));
     verdicts.push(budgetVerdict('session.beforeFirstReply.otherRequests', 'max', b.otherRequests, pre.other, ctx));
-    verdicts.push(...mapVerdicts('session.beforeFirstReply.egressAttempts', b.egressAttempts, pre.egress, ctx));
+    verdicts.push(...mapVerdicts('session.beforeFirstReply.startupEgressAttempts', b.startupEgressAttempts, report.startupEgress ?? {}, `${ctx}; before the main model request started it made egress attempts ${fmtMap(report.startupEgress)}`));
   }
   // Instrument checks: the subject really was a heavy, mounted session with a first reply.
   const f = report.fixture;
@@ -206,10 +230,21 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
   verdicts.push(flagVerdict('instrument.productionEnv', Array.isArray(knobs) && knobs.length === 0,
     'no traffic-suppressing env knob set (production parity)',
     `${Array.isArray(knobs) ? `traffic-suppressing env set: ${knobs.join(', ')}` : 'env parity not reported'} — Orchestra sets none, so these budgets would describe a lighter session than production's`));
-  const preEgress = Object.values(pre?.egress ?? {}).reduce((a, b) => a + b, 0);
-  verdicts.push(instrumentVerdict('instrument.nonessentialTrafficVisible', pre ? preEgress : null, 1,
-    'the CLI made no outbound attempt before the first reply — either a traffic-suppressing knob leaked in, or the CLI stopped reaching out (then lower this deliberately)'));
-  verdicts.push(instrumentVerdict('instrument.clockStartedAtSend', report.timing?.setupMs ?? null, 1, 'time-to-first-reply must start at sdkSend, after runner setup — setupMs was not measured'));
+  const preEgress = Object.values(report.startupEgress ?? {}).reduce((a, b) => a + b, 0);
+  verdicts.push(instrumentVerdict('instrument.nonessentialTrafficVisible', report.startupEgress ? preEgress : null, 1,
+    'no outbound attempt was seen before the main request — either a traffic-suppressing knob leaked in, or the CLI stopped reaching out (then lower this deliberately)'));
+  // A refused call is RETRIED by the CLI (backoff ~2 s): a startup that stalls past that inflates the pre-main attempt count without
+  // any new call. Measured: 34/35 runs had exactly 3 (span 190–1400 ms even at 4× CPU starvation); the outlier's startup ran ~2 s slow.
+  // So such a run is NOT COMPARABLE — VOID (re-run), never a false budget break.
+  verdicts.push(flagVerdict('instrument.startupNotStalled', report.timing?.startupEgressSpanMs == null || report.timing.startupEgressSpanMs <= STARTUP_SPAN_MAX_MS,
+    `startup egress burst took ${report.timing?.startupEgressSpanMs ?? 'n/a'} ms (≤ ${STARTUP_SPAN_MAX_MS})`,
+    `the startup egress burst took ${report.timing?.startupEgressSpanMs} ms (> ${STARTUP_SPAN_MAX_MS}): a refused call was retried, so the attempt count is not comparable — re-run`));
+  // F4 (round 2): the reported time-to-first-reply must be measured FROM sdkSend: ttfr + setup == the first-reply stamp (±2 ms of rounding).
+  const tm = report.timing;
+  const drift = tm && tm.timeToFirstReplyMs != null && tm.setupMs != null && tm.firstReplyAbsMs != null ? Math.abs(tm.timeToFirstReplyMs + tm.setupMs - tm.firstReplyAbsMs) : null;
+  verdicts.push(flagVerdict('instrument.clockStartedAtSend', drift !== null && drift <= 2 && (tm?.setupMs ?? 0) >= 1,
+    `timeToFirstReplyMs ${tm?.timeToFirstReplyMs} + setupMs ${tm?.setupMs} = firstReplyAbsMs ${tm?.firstReplyAbsMs} (±2 ms rounding)`,
+    `timeToFirstReplyMs + setupMs must equal the first-reply stamp within 2 ms (${drift === null ? 'no timing' : `off by ${drift} ms`}) — the clock did not start at sdkSend`));
   verdicts.push(flagVerdict('instrument.runCompleted', !report.error, 'no setup/teardown/agent error', `the run raised: ${String(report.error).slice(0, 300)}`));
   verdicts.push(instrumentVerdict('instrument.keeperProcess', report.processes?.atFirstReply?.byKind?.keeper ?? null, 1, 'no keeper daemon at the first reply — the session did not go through the detached keeper'));
   verdicts.push(instrumentVerdict('instrument.cliProcess', report.processes?.atFirstReply?.byKind?.cli ?? null, 1, 'no claude CLI process at the first reply — the census sees no session'));
@@ -231,5 +266,15 @@ export function formatRequestSummary(report: SessionBudgetReport): string[] {
     `requests before first reply: ${fmtCounts(r.beforeFirstReply)}`,
     `requests after first reply:  ${fmtCounts(r.afterFirstReply)}`,
     `requests total:              ${fmtCounts(r.total)}`,
+    `startup egress (before the main request started): ${fmtMap(report.startupEgress)}`,
   ];
+}
+
+/** The suite's last line. PASS only for a FULL run under full containment; a partial `--arm` run is PARTIAL and a run that needed
+ *  the weak-containment opt-out is PASS-WEAK — the release gate accepts nothing but the exact `PASS` line. */
+export function sessionBudgetTerminator(o: { voided: boolean; bad: boolean; partial: boolean; strongContainment: boolean }): 'VOID' | 'FAIL' | 'PARTIAL' | 'PASS-WEAK' | 'PASS' {
+  if (o.voided) return 'VOID';
+  if (o.bad) return 'FAIL';
+  if (o.partial) return 'PARTIAL';
+  return o.strongContainment ? 'PASS' : 'PASS-WEAK';
 }

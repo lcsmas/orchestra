@@ -103,12 +103,21 @@ async function runContained(o, script, label, extraCfg, resultPrefix) {
 
   const claude = findOnPath('claude');
   if (!claude) return { void: true, error: 'no `claude` CLI on PATH — the suite drives the real CLI, so nothing was measured', root };
-  const cfg = { REPO: repo, root, replyDelayMs, settleMs, timeoutMs, pidns: containment.name === 'netns+pidns', containment: containment.name, containmentOptOut: WEAK_OK, live, ...extraCfg };
+  // Ports are chosen HERE because the runner must START with its HTTP(S) traffic already pointed at the recording proxy
+  // (Node reads NODE_USE_ENV_PROXY at bootstrap, not later). Inside the fresh netns nothing else listens; the random
+  // base only matters in the opt-out modes, where parallel runs share a loopback.
+  const apiPort = 30000 + Math.floor(Math.random() * 15000) * 2;
+  const proxyPort = apiPort + 1;
+  const cfg = { REPO: repo, root, replyDelayMs, settleMs, timeoutMs, pidns: containment.name === 'netns+pidns', containment: containment.name, containmentOptOut: WEAK_OK, live, apiPort, proxyPort, ...extraCfg };
+  const proxyUrl = `http://127.0.0.1:${proxyPort}`;
   const env = {
     PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'),
     HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', SB_CONFIG: JSON.stringify(cfg),
+    // The APP process's own fetch()/http(s) traffic goes through the recording proxy too (review round 2 F2): a startup call
+    // to a NEW host from main is counted, not lost to a DNS failure inside the netns. Loopback (the fake API) is exempt.
+    NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: proxyUrl, HTTP_PROXY: proxyUrl, NO_PROXY: '127.0.0.1,localhost',
   };
-  const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', script)];
+  const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--disable-warning=UNDICI-EHPA', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', script)];
   const child = spawn(argv[0], argv.slice(1), { cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let out = '', err = '';
   child.stdout.on('data', (d) => (out += d));

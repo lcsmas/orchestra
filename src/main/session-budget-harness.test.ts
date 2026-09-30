@@ -90,6 +90,14 @@ test('egress proxy: a CONNECT is RECORDED and REFUSED, and a resetting client ca
     rst.write('CONNECT evil.example:443 HTTP/1.1\r\n\r\n', () => rst.resetAndDestroy());
     await new Promise((r) => setTimeout(r, 150));
     assert.deepEqual(f.egress.map((e: any) => e.target), ['api.anthropic.com:443', 'evil.example:443']);
+    // a plain-HTTP proxied request (absolute URI) is recorded as host:port too, like a CONNECT target
+    const http = await import('node:http');
+    await new Promise<void>((resolve) => {
+      const r = http.request({ host: '127.0.0.1', port: f.proxyPort, path: 'http://plain.example.invalid/x', method: 'GET', headers: { host: 'plain.example.invalid' } }, (res) => { res.resume(); res.on('end', () => resolve()); });
+      r.on('error', () => resolve());
+      r.end();
+    });
+    assert.equal(f.egress[f.egress.length - 1].target, 'plain.example.invalid:80');
     // still serving
     const res = await fetch(`${f.url}/v1/messages/count_tokens`, { method: 'POST', body: '{}' });
     assert.equal(res.status, 200);
@@ -387,12 +395,13 @@ test('F10: session-runner FAILS CLOSED when cfg.live is absent or empty (never r
 
 // ── the driver's exit / terminator contract, hermetic (a shimmed `bwrap` that always fails; no `claude` needed) ──
 
-test('F1 end to end: with bwrap unusable the driver is VOID rc 3 by default; under the explicit opt-out the self-tests are SKIPPED and the terminator is PASS-WEAK (never plain PASS)', async () => {
+test('F1/F6 end to end: with bwrap unusable the driver is VOID rc 3 by default; under the explicit opt-out the self-tests are SKIPPED and a partial run prints PARTIAL — never PASS', async () => {
   const shim = scratch('bwrap-shim');
   fs.writeFileSync(path.join(shim, 'bwrap'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const run = async (extraEnv: Record<string, string>) => {
     const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', S('run.mjs'), '--arm', 'census-selftest'], {
-      cwd: REPO, env: { PATH: `${shim}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: os.homedir(), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'],
+      // SESSION_BUDGET_SKIP_BUILD: never rebuild dist-electron/keeper.js from a unit test — keeper.test.ts runs in parallel and spawns it (F5)
+      cwd: REPO, env: { PATH: `${shim}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: os.homedir(), SESSION_BUDGET_SKIP_BUILD: '1', ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
     child.stdout.on('data', (d) => (out += d));
@@ -409,7 +418,7 @@ test('F1 end to end: with bwrap unusable the driver is VOID rc 3 by default; und
     assert.equal(weak.rc, 0, weak.out);
     assert.match(weak.out, /WEAK containment explicitly allowed/);
     assert.match(weak.out, /== arm census-selftest: SKIPPED — needs net\+pid namespaces/);
-    assert.match(weak.out, /^SESSION-BUDGET: PASS-WEAK$/m);
-    assert.doesNotMatch(weak.out, /^SESSION-BUDGET: PASS$/m, 'a weak run must never print the plain PASS terminator');
+    assert.match(weak.out, /^SESSION-BUDGET: PARTIAL$/m, 'a --arm run is PARTIAL (the PASS-WEAK mapping is unit-tested on sessionBudgetTerminator)');
+    assert.doesNotMatch(weak.out, /^SESSION-BUDGET: PASS(-WEAK)?$/m, 'a partial weak run must never print a PASS terminator');
   } finally { fs.rmSync(shim, { recursive: true, force: true }); }
 });

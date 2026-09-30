@@ -7,6 +7,20 @@
 
 /** name -> { file suffix, regex (global), replace } */
 export const MUTANTS = {
+  // Review round 2 F1: an app-code edit that hands the CLI a traffic-suppressing env knob (buildSdkEnv copies process.env then adds
+  // the workspace vars). The runner's own env is clean, so only the CLI's /proc environ can see it.
+  'traffic-knob-in-sdk-env': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(  env\.ORCHESTRA_BRANCH = ws\.branch;\n)/g,
+    replace: "$1  env.DISABLE_TELEMETRY = '1';\n",
+  },
+  // Review round 2 F2: a startup call from the APP process (main) to a host nobody budgeted. Node's fetch ignores the proxy env
+  // unless the runner started with NODE_USE_ENV_PROXY=1; without that wiring the attempt dies at DNS inside the netns, unseen.
+  'app-fetch-new-host': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(  void consume\(session\);\n)(?=(?:  \/\/[^\n]*\n)*  return session;\n)/g,
+    replace: "$1  void fetch('https://telemetry.example.invalid/boot').catch(() => {});\n",
+  },
   // #176 re-added: the pre-fix code called refreshContextUsage(wsId) right after consume() started
   // (git show 89ae8b4b^:src/main/agent-sdk.ts) — a boot-time getContextUsage() before the first turn.
   'boot-context-read': {

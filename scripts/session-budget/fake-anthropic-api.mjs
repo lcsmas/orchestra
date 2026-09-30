@@ -99,6 +99,9 @@ function summarizeModelBody(buf, markers = {}) {
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
  * @param {(req: object) => ({text?: string}|undefined)} [opts.reply]   per-model-request override
+ * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
+ * @param {number} [opts.proxyPort]  fixed port for the egress proxy (default: any free port) — needed when a process must be
+ *                                    started with HTTPS_PROXY already pointing at it (NODE_USE_ENV_PROXY is read at bootstrap)
  * @param {number} [opts.replyDelayMs]  delay before the first SSE byte of a /v1/messages reply
  * @param {Record<string,string>} [opts.markers]  sentinel name -> substring to look for in request bodies
  * @param {(rec: object) => void} [opts.onRequest]  observer, called for every recorded request
@@ -113,11 +116,12 @@ export async function startFakeApi(opts = {}) {
 
   const server = http.createServer(async (req, res) => {
     req.socket.on('error', () => {});
+    const tStartMs = now(); // when the request's headers arrived — BEFORE its (large) body is read
     const u = new URL(req.url ?? '/', 'http://fake.invalid');
     const body = await readBody(req);
     const type = classifyRequest(req.method ?? 'GET', u.pathname);
     const rec = {
-      seq: ++seq, tMs: now(), method: req.method, path: u.pathname, query: u.search, type,
+      seq: ++seq, tStartMs, tMs: now(), method: req.method, path: u.pathname, query: u.search, type,
       bodyBytes: body.length,
       auth: req.headers['x-api-key'] ? 'x-api-key' : req.headers.authorization ? 'bearer' : 'none',
       ua: String(req.headers['user-agent'] ?? '').slice(0, 60),
@@ -157,8 +161,13 @@ export async function startFakeApi(opts = {}) {
   });
 
   // Egress-recording proxy: a CONNECT (https) or absolute-URI (http) request is RECORDED and REFUSED.
+  // Every egress attempt is answered 403 AT ONCE. (Holding the connection open instead was tried: it stalls the CLI's startup by
+  // ~5 s, so it no longer resembles production. A refused call is RETRIED on a ~2 s backoff — see SESSION_BUDGETS.)
   const proxy = http.createServer((req, res) => {
-    egress.push({ tMs: now(), via: 'http', method: req.method, target: req.url });
+    // Plain-HTTP proxying sends an absolute URI: record it as host:port like a CONNECT target.
+    let target = req.url;
+    try { const u = new URL(req.url); target = `${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)}`; } catch { /* keep raw */ }
+    egress.push({ tMs: now(), via: 'http', method: req.method, target });
     res.writeHead(403, { 'content-type': 'text/plain' });
     res.end('egress refused by session-budget suite');
   });
@@ -169,11 +178,12 @@ export async function startFakeApi(opts = {}) {
   });
   proxy.on('clientError', (_e, sock) => { try { sock.destroy(); } catch { /* ignore */ } });
 
-  const listen = (srv) => new Promise((resolve, reject) => {
+  const listen = (srv, port) => new Promise((resolve, reject) => {
     srv.once('error', reject);
-    srv.listen(opts.port ?? 0, '127.0.0.1', () => resolve(/** @type {net.AddressInfo} */ (srv.address()).port));
+    srv.listen(port ?? 0, '127.0.0.1', () => resolve(/** @type {net.AddressInfo} */ (srv.address()).port));
   });
-  const [port, proxyPort] = [await listen(server), await listen(proxy)];
+  const port = await listen(server, opts.apiPort ?? opts.port);
+  const proxyPort = await listen(proxy, opts.proxyPort);
 
   const byType = () => {
     const out = {};

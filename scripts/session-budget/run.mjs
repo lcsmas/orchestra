@@ -9,6 +9,10 @@
 //                      (mutants.mjs); MUST FAIL naming session.beforeFirstReply.countTokensRequests with a
 //                      large burst — the proof the suite can see the defect it exists for.
 // Self-test arms (host-dependent checks of the instruments themselves, kept out of `pnpm run test`):
+//   traffic-knob-in-env  a buildSdkEnv edit hands the CLI DISABLE_TELEMETRY: MUST be VOID naming instrument.productionEnv
+//                        (judged from the CLI's /proc environ, not the runner's own env).
+//   app-egress-new-host  an ensureSession edit fetch()es a new host: MUST FAIL naming that host in startupEgressAttempts
+//                        (the app process's traffic goes through the recording proxy too).
 //   census-selftest    the pid-namespace census is exactly the runner's tree.
 //   smoke-flag-path    the optional real-API smoke's flag path, real CLI vs the fake API.
 // Exit: 0 all arms as expected · 1 an arm broke expectation or the run raised · 3 an arm was VOID (nothing measured:
@@ -16,7 +20,8 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureBuilt, runSessionArm, runSelfTest, detectContainment } from './harness.mjs';
-import { formatRequestSummary } from '../../src/shared/session-budget.ts';
+import fs from 'node:fs';
+import { formatRequestSummary, sessionBudgetTerminator } from '../../src/shared/session-budget.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);
@@ -28,13 +33,20 @@ const WANT = opt('arm', 'all');
 const ARMS = {
   normal: { kind: 'session', mutant: null, expect: 'pass' },
   'boot-context-read': { kind: 'session', mutant: 'boot-context-read', expect: 'fail', mustBreak: 'session.beforeFirstReply.countTokensRequests', minBurst: 50 },
+  'traffic-knob-in-env': { kind: 'session', mutant: 'traffic-knob-in-sdk-env', expect: 'void', mustVoid: 'instrument.productionEnv', mustName: 'DISABLE_TELEMETRY' },
+  'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
   'census-selftest': { kind: 'selftest', mode: 'census' },
   'smoke-flag-path': { kind: 'selftest', mode: 'smoke' },
 };
 if (WANT !== 'all' && !ARMS[WANT]) { console.error(`unknown arm: ${WANT} (have: ${Object.keys(ARMS).join(', ')})`); process.exit(2); }
 
 const say = (s = '') => { if (!JSON_OUT) console.log(s); };
-const build = ensureBuilt(REPO);
+// SESSION_BUDGET_SKIP_BUILD=1: use the prebuilt dist-electron/keeper.js. The unit test that drives this file must not rebuild it
+// while src/keeper/keeper.test.ts runs in parallel and spawns that same file (a build briefly leaves it 0 bytes).
+const KEEPER = path.join(REPO, 'dist-electron', 'keeper.js');
+const build = process.env.SESSION_BUDGET_SKIP_BUILD === '1' && fs.existsSync(KEEPER)
+  ? { path: KEEPER, mtimeMs: fs.statSync(KEEPER).mtimeMs }
+  : process.env.SESSION_BUDGET_SKIP_BUILD === '1' ? { path: KEEPER, mtimeMs: 0 } : ensureBuilt(REPO);
 const containment = detectContainment();
 say(`session-budget: keeper bundle rebuilt (${new Date(build.mtimeMs).toISOString()}) · containment=${containment.name}${process.env.SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT === '1' ? ' (WEAK containment explicitly allowed by SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT=1)' : ''}`);
 
@@ -70,7 +82,12 @@ for (const [name, spec] of Object.entries(ARMS)) {
   const broke = judgement.verdicts.filter((v) => v.kind === 'budget' && !v.ok);
   let asExpected;
   let why = '';
-  if (judgement.void) { asExpected = false; why = `VOID — ${judgement.verdicts.filter((v) => v.kind === 'instrument' && !v.ok).map((v) => v.message).join(' | ')}`; voided++; }
+  if (spec.expect === 'void') {
+    // A must-VOID arm: the run is EXPECTED to be judged VOID, by the named instrument, naming the named knob.
+    const named = judgement.verdicts.find((v) => v.kind === 'instrument' && !v.ok && v.id === spec.mustVoid && v.message.includes(spec.mustName));
+    asExpected = judgement.void && !!named;
+    why = named ? named.message : `expected ${spec.mustVoid} to VOID naming ${spec.mustName} but it did not (void=${judgement.void})`;
+  } else if (judgement.void) { asExpected = false; why = `VOID — ${judgement.verdicts.filter((v) => v.kind === 'instrument' && !v.ok).map((v) => v.message).join(' | ')}`; voided++; }
   else if (spec.expect === 'pass') { asExpected = judgement.ok; why = judgement.ok ? 'every budget held' : broke.map((v) => v.message).join(' | '); }
   else {
     const named = broke.find((v) => v.id === spec.mustBreak);
@@ -78,7 +95,7 @@ for (const [name, spec] of Object.entries(ARMS)) {
     why = named ? named.message : `expected ${spec.mustBreak} to break but it held`;
     if (named && !asExpected) why += ` — burst below ${spec.minBurst}, not the large #176 shape`;
   }
-  if (!asExpected && !judgement.void) bad++;
+  if (!asExpected && (spec.expect === 'void' || !judgement.void)) bad++;
   if (JSON_OUT) { console.log(JSON.stringify({ arm: name, expect: spec.expect, asExpected, why, report, judgement })); continue; }
   const p = report.processes;
   say(`== arm ${name} (expect ${spec.expect.toUpperCase()}): ${asExpected ? 'AS EXPECTED' : 'UNEXPECTED'} — ${why}`);
@@ -90,6 +107,6 @@ for (const [name, spec] of Object.entries(ARMS)) {
   say(`   claude ${report.cli.version} · containment ${report.containment}${report.containmentOptOut ? ' (WEAK, explicit opt-out)' : ''} · fixture ${report.fixture.skills} skills / ${report.fixture.memoryFiles} rules / ${report.fixture.mcpServers}×${report.fixture.toolsPerServer} MCP tools · routes: ${report.paths.join(', ')}`);
 }
 // A run that needed the weak-containment opt-out never prints the plain PASS terminator: the release gate wants full containment.
-const status = voided ? 'VOID' : bad ? 'FAIL' : containment.name === 'netns+pidns' ? 'PASS' : 'PASS-WEAK';
+const status = sessionBudgetTerminator({ voided: voided > 0, bad: bad > 0, partial: WANT !== 'all', strongContainment: containment.name === 'netns+pidns' });
 say(`SESSION-BUDGET: ${status}`);
-process.exit(voided ? 3 : bad ? 1 : 0);
+process.exit(status === 'VOID' ? 3 : status === 'FAIL' ? 1 : 0);

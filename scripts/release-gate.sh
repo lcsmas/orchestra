@@ -67,6 +67,10 @@ rg_judge_session_budget() { # log rc
     _rg_refuse session-budget "'pnpm run test:session-budget' rc=$rc$([ "$rc" -eq 3 ] && echo ' (VOID: nothing was measured)') — ${why:-no diagnostic line}. Log: $log"
     return 1
   fi
+  if grep -qx 'SESSION-BUDGET: PARTIAL' "$log"; then
+    _rg_refuse session-budget "the suite printed 'SESSION-BUDGET: PARTIAL' — a partial (--arm) run never counts; the gate runs every arm. Log: $log"
+    return 1
+  fi
   if grep -qx 'SESSION-BUDGET: PASS-WEAK' "$log"; then
     _rg_refuse session-budget "the suite ran with WEAK egress containment (SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT=1) and printed 'SESSION-BUDGET: PASS-WEAK' — a release needs net+pid namespaces (bwrap). Log: $log"
     return 1

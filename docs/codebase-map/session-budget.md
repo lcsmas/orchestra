@@ -19,7 +19,7 @@ step 3 (`build-release.md`).
 | Heavy fixture | `scripts/session-budget/fixture.mjs` (+ `fake-mcp-server.mjs`) | `generateHeavyFixture(dir, profile)` — deterministic (seeded), git repo: 60 skills, 48 KB CLAUDE.md, **50 `.claude/rules/*.md`** (the axis that multiplies `count_tokens`: one call per memory file, measured 47 for 40 files; skills and MCP tools are batched), 4 stdio MCP servers × 15 tools. Sentinels planted in CLAUDE.md, the last rule, last skill, last MCP tool. |
 | Runner (one session per process) | `scripts/session-budget/session-runner.mjs` | Scratch HOME / `CLAUDE_CONFIG_DIR` / `ORCHESTRA_HOME` (guard first; **fails closed** if the parent's live-dir list is absent), dummy `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`=fake, the refusing `HTTPS_PROXY` (names hosts), every `TRAFFIC_KNOBS` env var DELETED (production parity; reported in `envParity`), installs the built keeper bundle, `sdkSend`s one turn (clock t0 stamped just before), taps `agent:event` on the platform seam. **First reply = first `text-delta`**; requests are split at that instant (same monotonic clock as the fake API). Census at first reply/end, teardown as a workspace delete does, survivors counted. Emits `{report, judgement}`. |
 | Harness API | `scripts/session-budget/harness.mjs` | `ensureBuilt(repo)`, `detectContainment()`, `runSessionArm({repo, arm, mutant?, profile?, containment?})`, `findOnPath`, `reapScratchProcesses`. Containment = `bwrap --unshare-net --unshare-pid --proc /proc --die-with-parent --tmpfs /tmp` (`netns+pidns`: no egress possible, every descendant dies with the run) and it is **mandatory**: `runSessionArm`/`runSelfTest` return `{void, error}` without spawning when it is unavailable (`netns`/`proxy-only` only with the explicit env opt-out, echoed in the report; reaped by scratch `HOME` in `/proc/*/environ`). NOT `unshare -r`: it maps uid 0 and the CLI then refuses `bypassPermissions`. |
-| Driver | `scripts/session-budget/run.mjs` (`scripts/e2e-session-budget.sh`) | Session arms `normal` (must PASS) and `boot-context-read` (must FAIL naming `session.beforeFirstReply.countTokensRequests` with a burst ≥ 50); self-test arms `census-selftest` (pid-namespace census = exactly the runner's tree) and `smoke-flag-path` (the real-API smoke's flag path, real CLI vs fake API) — host-dependent checks live HERE, never in `pnpm run test`, which must not need `bwrap` or a real `claude`. A run whose report carries `error` is `RUN BROKE` (rc 1). Prints requests by type (before/after first reply/total, with main/side/egress), each tool-less side call with a preview of its prompt, time to first reply (from just before `sdkSend`; runner setup reported apart), child-process census (`cli/keeper/mcp/hook/other`, rss, survivors after teardown), CLI version, egress, routes. Exit 0 / 1 / 3 (VOID); last line `SESSION-BUDGET: PASS|PASS-WEAK|FAIL|VOID` (`PASS-WEAK` = ran under the explicit weak-containment opt-out; the release gate refuses it). `--json` for one JSON line per arm. |
+| Driver | `scripts/session-budget/run.mjs` (`scripts/e2e-session-budget.sh`) | Session arms `normal` (must PASS), `boot-context-read` (must FAIL naming `session.beforeFirstReply.countTokensRequests`, burst ≥ 50), `traffic-knob-in-env` (a `buildSdkEnv` edit hands the CLI `DISABLE_TELEMETRY`: must be VOID naming `instrument.productionEnv`) and `app-egress-new-host` (an `ensureSession` edit `fetch()`es a new host: must FAIL naming it in `startupEgressAttempts`); self-test arms `census-selftest` (pid-namespace census = exactly the runner's tree) and `smoke-flag-path` (the real-API smoke's flag path, real CLI vs fake API) — host-dependent checks live HERE, never in `pnpm run test`, which must not need `bwrap` or a real `claude`. A run whose report carries `error` is `RUN BROKE` (rc 1). Prints requests by type (before/after first reply/total, with main/side/egress), each tool-less side call with a preview of its prompt, time to first reply (from just before `sdkSend`; runner setup reported apart), child-process census (`cli/keeper/mcp/hook/other`, rss, survivors after teardown), CLI version, egress, routes. Exit 0 / 1 / 3 (VOID); last line `SESSION-BUDGET: PASS|PARTIAL|PASS-WEAK|FAIL|VOID` (`sessionBudgetTerminator`: `PASS` only for a FULL run under full containment; `PARTIAL` = `--arm` ≠ all; `PASS-WEAK` = weak-containment opt-out; the release gate accepts nothing but the exact `PASS`). `SESSION_BUDGET_SKIP_BUILD=1` uses the prebuilt keeper bundle (the unit test that drives the driver must not rebuild it while `keeper.test.ts` spawns it). `--json` for one JSON line per arm. |
 | Must-FAIL mutant | `scripts/session-budget/mutants.mjs` | Node `load` hook that rewrites `src/main/agent-sdk.ts` **as it loads** (nothing on disk): re-adds `refreshContextUsage(wsId)` after `void consume(session)` (the pre-fix code, `git show 89ae8b4b^`). The anchor must match **exactly once** or the run throws `PATTERN-GONE` (unit-tested against the shipped file). |
 | Process census | `scripts/session-budget/proc-census.mjs` | `/proc` walk: in a pid namespace every process except pid 1/self, else the runner's descendants; zombies listed apart. Reused by C3. |
 | Scratch guard (D7) | `scripts/session-budget/scratch-guard.mjs` | `assertScratch` refuses any HOME/config/`ORCHESTRA_HOME` that is, resolves into, or contains `~/.claude*`, `~/.orchestra*`, or the invoker's `CLAUDE_CONFIG_DIR`/`ORCHESTRA_HOME` (symlinks resolved). |
@@ -35,7 +35,15 @@ none; fake non-first-party base URL; netns; 10/10 identical runs, 2026-09-30, lo
 | main model request (tools>0) | **1** | `claude-opus-4-8`, ~92 tools, carries CLAUDE.md + rules + skills + MCP tools |
 | tool-less side model call | **1 × `claude-haiku-4-5-20251001`** | lands ~170 ms BEFORE the main request; its prompt is `<session>…</session> Write the title in …` = the CLI's **session-title generator** |
 | `count_tokens` / other routes | **0 / 0** | |
-| refused egress attempts | **5 × `api.anthropic.com:443`** | hard-coded host, ignores the base URL; 3 more after the reply. In production these reach the real API — what they are is NOT identified |
+| refused egress attempts BEFORE THE MAIN REQUEST STARTS | **3 × `api.anthropic.com:443`** | hard-coded host, ignores the base URL; 5 by the first reply, 8–9 by the end of the run (the rest are triggered by the request/reply or retried on a ~2 s backoff, so they grow with elapsed time and are printed, not budgeted). In production these reach the real API — what they are is NOT identified |
+
+**Windows (review round 2 F3).** Request budgets cover everything up to the first turn's **`turn-end`** event: the legitimate gauge
+refresh is triggered BY that event, so it cannot fall inside the window whatever the reply latency or observation lag (proven:
+reply delay 500/2000/5000 ms, and an order-preserving +250 ms lag on every observed event, all PASS). Egress is budgeted on a
+separate **causal** cut — attempts before the main request's *start* (headers in) — 3 in 34 of 35 runs (incl. 5 pinned to one
+core and 5 sharing that core with 3 busy-loops: startup burst 190–1400 ms); the one outlier had a startup stalled ~2 s, where the
+CLI's retry of a refused call lands in the window. `instrument.startupNotStalled` makes such a run VOID (span > 2000 ms), never a
+false budget break. Egress after the main request is printed, not budgeted.
 
 The budgets in `session-budget.ts` are these numbers as ceilings; a NEW startup call (another side model, another route, another
 host, one more attempt) breaks one by name. With `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` the title call and the egress
@@ -53,14 +61,25 @@ disappear (main=1, egress 0) — which is why the suite does NOT set it, and why
 ## Coverage — what a green suite does and does NOT prove
 
 Covered: `sdkSend → ensureSession → buildSdkEnv → SDK query() → keeper → real CLI` on a fresh session with a heavy project.
+**Egress visibility:** the CLI is behind `HTTPS_PROXY`; the *app process* (the runner, which hosts agent-sdk.ts) is started with
+`NODE_USE_ENV_PROXY=1` + the same proxy (Node 22.22 reads it at bootstrap — the harness picks the ports in advance), so its
+`fetch()`/`http(s)` startup calls to an unlisted host are counted and break the budget. NOT visible: raw `net`/`tls` sockets, `dns`
+lookups, and any CLI connect that ignores the proxy env (not enumerated — no `strace` here; in the netns they fail unseen).
+`instrument.productionEnv` reads the env the **CLI was handed** from `/proc/<cli pid>/environ` at the first reply (an app-code edit
+that adds a suppressing knob is caught; the runner's own env is irrelevant).
 NOT covered: `workspaces.ts` (spawn/promote/wake/resume, hook install into `.claude/settings.local.json`, orchestra-* skills,
-account env), UI-triggered calls, the built Electron app. A boot read added at a *caller* of `ensureSession` passes. **Accepted gap
-(review F9, the spec says "first reply"):** a boot read deferred past the first reply is only printed (`afterFirstReply`) — the
-legitimate turn-end refresh is itself 57.
+account env), UI-triggered calls, the built Electron app. A boot read added at a *caller* of `ensureSession` passes. **Accepted gaps:** a boot read deferred past `turn-end` is only printed (`afterFirstReply`) — the legitimate turn-end refresh is itself
+57; side calls are budgeted by *model*, not purpose (a CLI update replacing the title call with another tool-less haiku call keeps
+the count — the prompt preview is printed; C4 re-runs on a CLI change); an extra same-host call before the main
+request breaks the ceiling of 3, but if startup stalled >2 s (a retry could explain it) the run is VOID instead.
 
 ## Traps
 
-- One session per process (agent-sdk.ts module state is global). The fake API's `replyDelayMs` (500) models real model
-  latency so a count_tokens burst lands before the first reply; a longer delay only strengthens the normal arm.
+- One session per process (agent-sdk.ts module state is global). The fake API's `replyDelayMs` (500) models real model latency.
+  A longer delay does NOT only strengthen the normal arm: it lengthens the session, so attempt counts that grow with elapsed time
+  (post-request egress, retries) grow too — which is why egress is budgeted on the causal pre-main-request cut, not on a
+  reply-relative window (a reply-relative egress ceiling failed at reply delay ≥ 2000 ms: 6–7 attempts).
+- Node's `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` was set at process START; setting it later does nothing. A
+  proxy that HOLDS refused connections open stalls the CLI's startup by ~5 s — refuse at once instead.
 - A refused-CONNECT socket may RST — the proxy swallows socket errors (found by the first spike; unit-tested).
 - Don't `pkill -f` a spike by a path token that also appears in your own command line (it kills the wrapper).

@@ -7,6 +7,8 @@ import {
   judgeSessionBudget,
   formatRequestSummary,
   summarizeWindow,
+  egressUpTo,
+  sessionBudgetTerminator,
   type RequestCounts,
   type SessionBudgetReport,
 } from './session-budget.ts';
@@ -28,8 +30,9 @@ function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
     schema: 1, arm: 't', cli: { version: '2.1.284', path: '/x/claude' },
     fixture: { skills: 60, memoryFiles: 50, mcpServers: 4, toolsPerServer: 15, claudeMdKB: 48 },
     containment: 'netns+pidns',
-    timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 380 },
-    envParity: { trafficKnobsSet: [] },
+    timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 380, firstReplyAbsMs: 1780, turnEndAbsMs: 1900, mainRequestStartAbsMs: 1200, startupEgressSpanMs: 700 },
+    startupEgress: { [HOST]: 3 },
+    envParity: { source: '/proc/4242/environ at the first reply', trafficKnobsSet: [] },
     requests: { beforeFirstReply: preOk(), afterFirstReply: counts(0, 57, 0, {}, { [HOST]: 3 }), total: counts(1, 57, 0, { [HAIKU]: 1 }, { [HOST]: 8 }) },
     processes: { atFirstReply: census(4), atEnd: census(4), survivorsAfterTeardown: 0 },
     egress: [],
@@ -41,10 +44,10 @@ function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
 test('the budget numbers are pinned as LITERALS (a silent loosening must fail here)', () => {
   assert.deepEqual(
     { ...SESSION_BUDGETS.beforeFirstReply },
-    { modelRequests: 1, sideModelRequests: { [HAIKU]: 1 }, countTokensRequests: 0, otherRequests: 0, egressAttempts: { [HOST]: 5 } },
+    { modelRequests: 1, sideModelRequests: { [HAIKU]: 1 }, countTokensRequests: 0, otherRequests: 0, startupEgressAttempts: { [HOST]: 3 } },
   );
   assert.ok(Object.isFrozen(SESSION_BUDGETS) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply));
-  assert.ok(Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.sideModelRequests) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.egressAttempts));
+  assert.ok(Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.sideModelRequests) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.startupEgressAttempts));
   assert.equal(WEAK_CONTAINMENT_ENV, 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT');
   assert.deepEqual([...SUBJECT_MARKERS], ['claude_md', 'rule_last', 'skill_last', 'mcp_tool_last']);
 });
@@ -54,10 +57,10 @@ test('a healthy session passes every budget and every instrument check', () => {
   assert.equal(j.ok, true);
   assert.equal(j.void, false);
   assert.ok(j.verdicts.every((v) => v.ok), j.verdicts.filter((v) => !v.ok).map((v) => v.message).join('\n'));
-  // 5 budget lines (main, haiku side call, count_tokens, other, egress host) + containment, productionEnv, egress visible, clock, runCompleted, keeper, cli,
+  // 5 budget lines (main, haiku side call, count_tokens, other, egress host) + containment, productionEnv, egress visible, startup not stalled, clock, runCompleted, keeper, cli,
   // firstReply, mcpConnected, mcpChildren, tools + 4 markers
   assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 5);
-  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 15);
+  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 16);
 });
 
 test('a boot-time context read (count_tokens burst before the first reply) breaks the budget NAMING it and the counts', () => {
@@ -114,32 +117,36 @@ test('a malformed report never throws and never passes', () => {
   assert.equal(j.void, true);
 });
 
-test('the printed request summary carries all three windows by type', () => {
+test('the printed request summary carries all three windows by type, plus the startup-egress window', () => {
   const lines = formatRequestSummary(good());
-  assert.equal(lines.length, 3);
+  assert.equal(lines.length, 4);
+  assert.match(lines[3], /startup egress \(before the main request started\): \{api\.anthropic\.com:443:3\}/);
   assert.match(lines[0], /before first reply: model=2 count_tokens=0 other=0 \| main=1 side=\{claude-haiku-4-5-20251001:1\} egress=\{api\.anthropic\.com:443:5\}/);
   assert.match(lines[1], /after first reply: +model=0 count_tokens=57 other=0 \| main=0 side=\{\} egress=\{api\.anthropic\.com:443:3\}/);
 });
 
 test('a NEW startup call breaks a number: an unbudgeted side model, one more haiku call, an unbudgeted egress host, one more attempt', () => {
-  const broken = (pre: RequestCounts) => judgeSessionBudget(good({ requests: { beforeFirstReply: pre, afterFirstReply: counts(0, 0), total: pre } })).verdicts.filter((v) => !v.ok && v.kind === 'budget');
+  const broken = (pre: RequestCounts, startupEgress: Record<string, number> = { [HOST]: 3 }) =>
+    judgeSessionBudget(good({ requests: { beforeFirstReply: pre, afterFirstReply: counts(0, 0), total: pre }, startupEgress })).verdicts.filter((v) => !v.ok && v.kind === 'budget');
   // a different side model appears
-  let b = broken(counts(1, 0, 0, { [HAIKU]: 1, 'claude-sonnet-x': 1 }, { [HOST]: 5 }));
+  let b = broken(counts(1, 0, 0, { [HAIKU]: 1, 'claude-sonnet-x': 1 }));
   assert.deepEqual(b.map((v) => v.id), ['session.beforeFirstReply.sideModelRequests.claude-sonnet-x']);
   assert.match(b[0].message, /BUDGET BROKEN .*allowed at most 0, saw 1/);
   // the haiku call doubles
-  b = broken(counts(1, 0, 0, { [HAIKU]: 2 }, { [HOST]: 5 }));
+  b = broken(counts(1, 0, 0, { [HAIKU]: 2 }));
   assert.deepEqual(b.map((v) => v.id), [`session.beforeFirstReply.sideModelRequests.${HAIKU}`]);
-  // a new host
-  b = broken(counts(1, 0, 0, { [HAIKU]: 1 }, { [HOST]: 5, 'statsig.anthropic.com:443': 1 }));
-  assert.deepEqual(b.map((v) => v.id), ['session.beforeFirstReply.egressAttempts.statsig.anthropic.com:443']);
-  assert.match(b[0].message, /allowed at most 0, saw 1/);
+  // a new host — from the CLI OR the app process (the proxy sees both)
+  b = broken(counts(1, 0, 0, { [HAIKU]: 1 }), { [HOST]: 3, 'telemetry.example.invalid:443': 1 });
+  assert.deepEqual(b.map((v) => v.id), ['session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443']);
+  assert.match(b[0].message, /allowed at most 0, saw 1 — .*egress attempts \{api\.anthropic\.com:443:3, telemetry\.example\.invalid:443:1\}/);
   // one more attempt at the known host
-  b = broken(counts(1, 0, 0, { [HAIKU]: 1 }, { [HOST]: 6 }));
-  assert.deepEqual(b.map((v) => v.id), [`session.beforeFirstReply.egressAttempts.${HOST}`]);
-  assert.match(b[0].message, /allowed at most 5, saw 6/);
+  b = broken(counts(1, 0, 0, { [HAIKU]: 1 }), { [HOST]: 4 });
+  assert.deepEqual(b.map((v) => v.id), [`session.beforeFirstReply.startupEgressAttempts.${HOST}`]);
+  assert.match(b[0].message, /allowed at most 3, saw 4/);
+  // egress AFTER the main request (printed in the window counts, not budgeted) never breaks the startup budget
+  assert.deepEqual(broken(counts(1, 0, 0, { [HAIKU]: 1 }, { [HOST]: 9, 'late.example:443': 2 })), []);
   // FEWER calls than budgeted is not a BUDGET break (ceilings) — the instrument checks are what notice a suppressed run
-  assert.deepEqual(broken(counts(1, 0, 0, {}, {})), []);
+  assert.deepEqual(broken(counts(1, 0, 0, {}, {}), {}), []);
 });
 
 test('the main request is the one carrying tools: a run with only a tool-less call has main=0 and breaks the model budget', () => {
@@ -198,13 +205,61 @@ test('F2: budgets describe PRODUCTION config — a suppressed run (knob set, or 
   assert.equal(j.void, true);
   assert.match(j.verdicts.find((v) => v.id === 'instrument.productionEnv')!.message, /INSTRUMENT VOID .*CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC.*lighter session than production/);
   // the same session with NO outbound attempt before the reply (what a suppressing knob produces) — ceilings alone would pass it
-  const quiet = judgeSessionBudget(good({ requests: { beforeFirstReply: counts(1, 0), afterFirstReply: counts(0, 0), total: counts(1, 0) } }));
+  const quiet = judgeSessionBudget(good({ requests: { beforeFirstReply: counts(1, 0), afterFirstReply: counts(0, 0), total: counts(1, 0) }, startupEgress: {} }));
   assert.equal(quiet.void, true);
   assert.ok(quiet.verdicts.some((v) => !v.ok && v.id === 'instrument.nonessentialTrafficVisible'));
   assert.equal(quiet.verdicts.filter((v) => v.kind === 'budget' && !v.ok).length, 0, 'every ceiling still holds — only the instrument sees the suppression');
   // env parity not reported at all is not parity
   assert.equal(judgeSessionBudget(good({ envParity: undefined })).void, true);
   // the clock must start at sdkSend, after runner setup
-  const t = judgeSessionBudget(good({ timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 0 } }));
+  const t = judgeSessionBudget(good({ timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 0, firstReplyAbsMs: 1400, turnEndAbsMs: 1900, mainRequestStartAbsMs: 1200 } }));
   assert.ok(t.verdicts.some((v) => !v.ok && v.id === 'instrument.clockStartedAtSend'));
+});
+
+test('F4 (round 2): time-to-first-reply + setup must equal the first-reply stamp (±2 ms) — an API-start clock that still reports a setup figure is VOID', () => {
+  const at = (ttfr: number, setup: number, abs: number) => judgeSessionBudget(good({ timing: { timeToFirstReplyMs: ttfr, fakeModelLatencyMs: 500, setupMs: setup, firstReplyAbsMs: abs, turnEndAbsMs: 2000, mainRequestStartAbsMs: 1200 } }));
+  assert.equal(at(1400, 380, 1780).ok, true);
+  assert.equal(at(1400, 380, 1782).ok, true, '2 ms of rounding is tolerated');
+  // the reviewer's mutant: ttfr measured from API start (= the absolute stamp) while setup is still reported
+  const bad = at(1780, 380, 1780);
+  assert.equal(bad.void, true);
+  assert.match(bad.verdicts.find((v) => v.id === 'instrument.clockStartedAtSend')!.message, /off by 380 ms\) — the clock did not start at sdkSend/);
+  assert.equal(at(1400, 380, undefined as unknown as number).void, true, 'a missing stamp is not a pass');
+});
+
+test('F1 (round 2): productionEnv judges the env the CLI was HANDED — a knob in its /proc environ is VOID naming it; an unreadable environ is not parity', () => {
+  const j = judgeSessionBudget(good({ envParity: { source: '/proc/4242/environ at the first reply', trafficKnobsSet: ['DISABLE_TELEMETRY'] } }));
+  assert.equal(j.void, true);
+  assert.match(j.verdicts.find((v) => v.id === 'instrument.productionEnv')!.message, /INSTRUMENT VOID .*traffic-suppressing env set: DISABLE_TELEMETRY/);
+  const unreadable = judgeSessionBudget(good({ envParity: { source: '/proc/4242/environ at the first reply', trafficKnobsSet: null, error: 'EACCES' } }));
+  assert.equal(unreadable.void, true);
+});
+
+test('egressUpTo: attempts up to a cut, by host:port', () => {
+  const eg = [{ tMs: 10, target: HOST }, { tMs: 20, target: HOST }, { tMs: 30, target: 'x:443' }, { tMs: 40, target: HOST }];
+  assert.deepEqual(egressUpTo(eg, 25), { [HOST]: 2 });
+  assert.deepEqual(egressUpTo(eg, 40), { [HOST]: 3, 'x:443': 1 });
+  assert.deepEqual(egressUpTo(eg, 5), {});
+});
+
+test('F6 (round 2): the terminator — PASS only for a FULL run under FULL containment; PARTIAL / PASS-WEAK / FAIL / VOID otherwise', () => {
+  const t = sessionBudgetTerminator;
+  assert.equal(t({ voided: false, bad: false, partial: false, strongContainment: true }), 'PASS');
+  assert.equal(t({ voided: false, bad: false, partial: true, strongContainment: true }), 'PARTIAL', 'a --arm run never prints PASS');
+  assert.equal(t({ voided: false, bad: false, partial: false, strongContainment: false }), 'PASS-WEAK');
+  assert.equal(t({ voided: false, bad: false, partial: true, strongContainment: false }), 'PARTIAL');
+  assert.equal(t({ voided: false, bad: true, partial: true, strongContainment: true }), 'FAIL');
+  assert.equal(t({ voided: true, bad: true, partial: true, strongContainment: false }), 'VOID', 'VOID outranks everything');
+});
+
+test('a STALLED startup (first egress attempt → main request > 2 s) is VOID, not a budget break: the CLI retries a refused call, so the count is not comparable', () => {
+  const at = (span: number | undefined, egress: Record<string, number>) => judgeSessionBudget(good({ startupEgress: egress, timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 380, firstReplyAbsMs: 1780, turnEndAbsMs: 1900, mainRequestStartAbsMs: 1200, startupEgressSpanMs: span } }));
+  assert.equal(at(1400, { [HOST]: 3 }).ok, true, '1.4 s (4x CPU starvation) is fine');
+  assert.equal(at(2000, { [HOST]: 3 }).ok, true, 'the limit itself is fine');
+  const stalled = at(2600, { [HOST]: 4 });
+  assert.equal(stalled.void, true);
+  assert.equal(stalled.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.ok, false);
+  assert.match(stalled.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.message, /INSTRUMENT VOID .*2600 ms \(> 2000\).*re-run/);
+  // the inflated count still shows as a broken budget line, but the run's verdict is VOID (re-run), not FAIL
+  assert.ok(stalled.verdicts.some((v) => !v.ok && v.kind === 'budget'));
 });
