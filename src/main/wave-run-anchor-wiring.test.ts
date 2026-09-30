@@ -44,7 +44,7 @@ test('CONTROL: the four sources are readable and non-trivial', () => {
 
 test('ALL-PATHS — the row+notice write lives at the common CREATION chokepoint (covers structured default)', () => {
   // The structured default spawn is dispatchSpawnRequest → createWorkspace →
-  // startWorkspaceAgentHeadless → sdkStartAndDeliver. The row+notice come from
+  // startWorkspaceAgentHeadless (→ startWorkspaceAgentOnce) → sdkStartAndDeliverResult. The row+notice come from
   // createWorkspace (the chokepoint); startWorkspaceAgentHeadless does NOT (and
   // must not need to) write them itself.
   assert.match(
@@ -52,8 +52,8 @@ test('ALL-PATHS — the row+notice write lives at the common CREATION chokepoint
     /await createWorkspace\(/,
     'the CLI/structured spawn routes through createWorkspace (the chokepoint)',
   );
-  const headless = fnBody(workspacesSrc, 'async function startWorkspaceAgentHeadless(');
-  assert.match(headless, /sdkStartAndDeliver\(/, 'the structured default delivers via sdkStartAndDeliver');
+  const headless = fnBody(workspacesSrc, 'async function startWorkspaceAgentOnce(');
+  assert.match(headless, /sdkStartAndDeliverResult\(/, 'the structured default delivers via the sdk-delivery seam (sdkStartAndDeliverResult)');
   // createWorkspace is where the row+notice is written (asserted by the G9-FIX
   // test below); the headless path must not be the ONLY writer.
 });

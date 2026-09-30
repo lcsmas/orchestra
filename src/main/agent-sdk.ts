@@ -79,7 +79,10 @@ import {
   markStoppedOnUsageLimit,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
-import { registerSdkDelivery } from './sdk-delivery';
+import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
+import { owesOpeningTask } from '../shared/opening-task.ts';
+import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
+import { interleaveStartErrors } from '../shared/start-errors.ts';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { clearHibernated } from './hibernation.ts';
 import { buildBrowserToolServer } from './agent-browser-tools';
@@ -471,6 +474,26 @@ interface Session {
    *  deliver it as two turns. Guarding on this set makes the re-drive
    *  at-most-once per block until its delivery settles. */
   inboxRedriveInFlight: Set<string>;
+  /** #227 — the retained opening task this session was handed ahead of its first send; cleared once its first message lands
+   *  (delivered) or the session dies before one (unwound: the brief is owed again). */
+  openingBrief?: string;
+  /** #227 — the opening task this session was CREATED owing (snapshot taken before `consume` can run, so a fast CLI's init cannot
+   *  retire the "owed" state before the first send claims it). */
+  owedBrief?: string;
+  /** How the claimed brief's FIRST TURN went (#227 D7): unset while undecided; 'ok' at the first non-error output; 'failed' on an errored turn
+   *  (unwound: owed again). Init alone decides nothing — a bad --model / no auth inits, then errors. */
+  briefOutcome?: 'ok' | 'failed';
+  /** #227 D7 — `sdkAwaitFirstTurn` callers waiting for this session's first turn outcome. */
+  turnWaiters: Array<(o: SdkFirstTurnOutcome) => void>;
+  turnSettled?: boolean;
+  /** #227 F2/F5 — pending while the claimant queues the brief: every other send waits, so the brief is FIRST and never twice. */
+  briefGate?: Promise<void>;
+  /** The claimed brief's turn uuid — what a same-text duplicate send (Restart racing a composer send) is answered with. */
+  briefUuid?: string;
+  /** When this session object was created; start errors older than it are stale once it produces healthy output (#227 F7). */
+  createdAt: number;
+  /** True once the CLI produced its first NON-ERROR output on this session (#227 F7). */
+  firstOutputSeen?: boolean;
   /** True once ANY `result` message has been seen on this query's stream (D3).
    *
    *  The SDK ends stdin only after the prompt iterator finishes AND its
@@ -519,6 +542,36 @@ function clearBootStall(session: Session): void {
 }
 
 const sessions = new Map<string, Session>();
+
+/** #227 D7 — the settled first-turn outcome of each workspace's most recent session, so a waiter arriving after a fast failure still learns it. */
+const turnOutcomes = new Map<string, SdkFirstTurnOutcome>();
+
+function settleTurn(session: Session, outcome: SdkFirstTurnOutcome): void {
+  if (session.turnSettled) return;
+  session.turnSettled = true;
+  // Identity guard (the D2 class): a predecessor's late settle must not overwrite a live successor's outcome.
+  const cur = sessions.get(session.wsId);
+  if (!cur || cur === session) turnOutcomes.set(session.wsId, outcome);
+  for (const w of session.turnWaiters.splice(0)) w(outcome);
+}
+
+/** Resolve when the workspace's session settles its first turn (non-error output / errored turn / death first) or `timeoutMs` passes (#227 D7). */
+export function sdkAwaitFirstTurn(wsId: string, timeoutMs: number): Promise<SdkFirstTurnOutcome> {
+  const session = sessions.get(wsId);
+  if (!session || session.turnSettled) return Promise.resolve(turnOutcomes.get(wsId) ?? { state: 'unknown' });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const i = session.turnWaiters.indexOf(waiter);
+      if (i >= 0) session.turnWaiters.splice(i, 1);
+      resolve({ state: 'timeout' });
+    }, timeoutMs);
+    const waiter = (o: SdkFirstTurnOutcome) => {
+      clearTimeout(timer);
+      resolve(o);
+    };
+    session.turnWaiters.push(waiter);
+  });
+}
 
 /** Per-workspace event cursors, kept ALIVE across session teardown.
  *
@@ -682,9 +735,10 @@ function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
 /** Normalize an SDK message and broadcast every event it produces, and (when this
  *  session must, i.e. its spool hooks are withheld) drive the sidebar status dot
  *  off the same stream — see driveStatusFromEvent for the single-writer gate. */
-function emitFrom(session: Session, msg: SdkMessage): void {
+function emitFrom(session: Session, msg: SdkMessage): AgentEvent[] {
+  const emitted: AgentEvent[] = []; // what actually reached the view (consume reads the error row the normalizer already rendered — #227 D7)
   // A cleared session's tail must stay silent — the transcript was reset.
-  if (session.cleared) return;
+  if (session.cleared) return emitted;
   if (msg.type === 'system' && msg.subtype === 'init' && typeof msg.claude_code_version === 'string') {
     session.cliVersion = msg.claude_code_version;
   }
@@ -716,6 +770,7 @@ function emitFrom(session: Session, msg: SdkMessage): void {
       continue;
     }
     emit(session.wsId, ev);
+    emitted.push(ev);
     // Loop tracking: the SDK path is the only one that sees a tool call's full
     // INPUT, so it alone can catch `ScheduleWakeup({stop: true})` — the /loop
     // skill's own termination. The SET side ('ScheduleWakeup' fired at all)
@@ -804,6 +859,7 @@ function emitFrom(session: Session, msg: SdkMessage): void {
       emitMemoryWarning(session, ev);
     }
   }
+  return emitted;
 }
 
 /** Emit the oversized-memory warning the CLI shows in its startup banner but
@@ -1284,6 +1340,8 @@ function releaseTurnGate(session: Session): void {
 /** Consume the SDK message stream for a session until it ends or throws. */
 async function consume(session: Session): Promise<void> {
   let endedByInterrupt = false;
+  let diedMessage: string | undefined; // #227: the throw that ended the loop (if any) — the reason a pre-init death is reported
+  let diedAt: number | undefined;
   try {
     for await (const raw of session.q) {
       const msg = raw as unknown as SdkMessage;
@@ -1308,8 +1366,28 @@ async function consume(session: Session): Promise<void> {
       if (!session.firstMessageSeen && isProofOfLifeMessage(msg)) {
         session.firstMessageSeen = true;
         clearBootStall(session);
+        // F6: a CLI that speaks before ANY brief was claimed is already running this conversation (a keeper REATTACH — a fresh CLI
+        // inits only after its first user message, MEASURED on claude 2.1.284): nothing is owed to it, so the snapshot must not be re-sent.
+        if (session.openingBrief === undefined) session.owedBrief = undefined;
       }
-      emitFrom(session, msg);
+      const emitted = emitFrom(session, msg);
+      // #227 D7: init is proof of LIFE, not of delivery. While the claimed brief's first turn is undecided this message may decide it:
+      // the first non-error output delivers the brief; the turn's ERRORED END (`result is_error` — the synthetic API-error assistant
+      // message before it is neither output nor the end) leaves it owed. A user-requested interrupt is not a failed start.
+      const briefUndecided = session.openingBrief !== undefined && session.briefOutcome === undefined;
+      if (briefUndecided || !session.firstOutputSeen) {
+        const sig = classifyTurnMessage(msg as unknown as Parameters<typeof classifyTurnMessage>[0]);
+        if (sig.kind === 'output') {
+          if (!session.firstOutputSeen) {
+            session.firstOutputSeen = true;
+            clearStaleStartErrors(session); // F7: a healthy session ends the story of failures that predate it
+          }
+          if (briefUndecided) confirmOpeningTask(session);
+        } else if (briefUndecided && sig.kind === 'error' && sig.terminal && !intentionalEnd(session)) {
+          const rendered = emitted.find((e): e is Extract<AgentEvent, { type: 'error' }> => e.type === 'error');
+          failFirstTurn(session, rendered ?? sig.text);
+        }
+      }
       // Persist the SDK session id the first time the stream reports it, so
       // re-opening the structured view resumes THIS conversation (see the
       // `resume` option in ensureSession). The id is stable across a session's
@@ -1502,14 +1580,19 @@ async function consume(session: Session): Promise<void> {
         });
         break;
       case 'error':
-        emit(session.wsId, {
-          type: 'error',
-          seq: session.ctx.seq++,
-          at: (session.ctx.now ?? Date.now)(),
-          message,
-          apiErrorStatus: null,
-          willRetry: false,
-        });
+        diedAt = (session.ctx.now ?? Date.now)();
+        diedMessage = message;
+        // #227 D7: a first turn that already ERRORED was reported (failFirstTurn) — the CLI's exit that follows is the same failure, one row.
+        if (session.briefOutcome !== 'failed') {
+          emit(session.wsId, {
+            type: 'error',
+            seq: session.ctx.seq++,
+            at: diedAt,
+            message,
+            apiErrorStatus: null,
+            willRetry: false,
+          });
+        }
         break;
     }
     if (outcome.kind === 'error') {
@@ -1531,6 +1614,27 @@ async function consume(session: Session): Promise<void> {
     }
   } finally {
     clearBootStall(session);
+    // #227: a session that ended before its claimed brief's first turn produced anything is a FAILED START — unwind the brief (owed
+    // again); unless it was stopped on purpose, persist the reason (the Agent view row re-renders after reload); tell spawn's wait.
+    const intentional = intentionalEnd(session, endedByInterrupt);
+    if (session.openingBrief !== undefined && session.briefOutcome === undefined) {
+      // F1: an INTENTIONAL end (stop / Restart / boot-wedge recycle / hibernate / interrupt) KEEPS the pending-prompt copy — Restart-fresh and
+      // the recycle re-read it to redeliver the opening prompt; only a crash drops it (the next claim drops stale copies itself).
+      unwindOpeningTask(session, { keepPending: intentional });
+      if (!intentional) {
+        const reason = diedMessage ?? 'the agent process exited before producing any output';
+        if (diedMessage === undefined) {
+          diedAt = (session.ctx.now ?? Date.now)();
+          emit(session.wsId, { type: 'error', seq: session.ctx.seq++, at: diedAt, message: reason, apiErrorStatus: null, willRetry: false });
+        }
+        void persistStartError(session.wsId, diedAt ?? Date.now(), reason);
+        settleTurn(session, { state: 'failed', reason, cause: 'exit' });
+      } else {
+        settleTurn(session, { state: 'failed', reason: 'the session was stopped before its first turn', cause: 'exit' });
+      }
+    } else {
+      settleTurn(session, { state: 'unknown' }); // nothing was waiting on a brief; a no-op once settled
+    }
     // ── Close the ledger BEFORE dropping the session (silent-failure audit
     // H1/H2). Without this, an iterator that ends mid-turn (subprocess died,
     // worker shutdown, kill) left the folded view `running` forever — elapsed
@@ -1662,6 +1766,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // Clearing here rather than at each call site (sdkSend/sdkWake/sdkDeliver)
   // means no restore path can forget to drop the chip.
   clearHibernated(wsId);
+  turnOutcomes.delete(wsId); // #227 D6: a new session starts unsettled
 
   // Env parity with the terminal spawn (installOrchestraHooks + account inheritance +
   // CLAUDE_CONFIG_DIR). `remote` is always false here while sandbox agents are PAUSED (#226,
@@ -1743,6 +1848,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     recentEchoes: [],
     sawResult: false,
     inboxRedriveInFlight: new Set(),
+    turnWaiters: [],
+    createdAt: Date.now(),
   };
 
   // Resolve the query factory: a test override, else the dynamically-imported
@@ -1956,6 +2063,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   });
 
   sessions.set(wsId, session);
+  const wsAtStart = store.getWorkspace(wsId);
+  if (wsAtStart && owesOpeningTask(wsAtStart)) session.owedBrief = wsAtStart.lastTask;
   // Fire-and-forget the consume loop; it self-cleans on end/throw.
   void consume(session);
   // No context-gauge seed here (#176): a boot-time getContextUsage() makes the CLI
@@ -2143,7 +2252,7 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
       }
     }
   }
-  if (!file) return [];
+  if (!file) return interleaveStartErrors([], ws.sdkStartErrors ?? [], { seq: HISTORY_SEQ_BASE });
   let text: string;
   let truncated = false;
   try {
@@ -2201,7 +2310,7 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   // block triplets and push the reload-stamped truncation banner to the end.
   const restarts = restartRecordsForBackfill(ws, file);
   events.push(...interleaveRestartRows(transcriptEvents, restarts, ctx));
-  return events;
+  return interleaveStartErrors(events, ws.sdkStartErrors ?? [], ctx);
 }
 
 /** Merge intentional-restart rows (#148) into a backfilled transcript's events
@@ -2791,6 +2900,11 @@ export async function sdkSend(
    *  through the fix meant to close it. Passing the registrar down the call
    *  stack gives each send its own binding, so no two sends can alias. */
   onTurnQueued?: (uuid: string) => void,
+  /** INTERNAL (#227): set only by the brief claimant's own nested send of the retained opening task — it bypasses the gate/duplicate checks below. */
+  fromClaim = false,
+  /** INTERNAL (#227 F5): true only for spawn / Restart's own send of `lastTask` — the ONLY callers whose same-text send while the brief is in
+   *  flight is the SAME delivery. A user's identical message is never swallowed. */
+  dedupeOpeningBrief = false,
   /** Resolves to the minted turn uuid — the handle a caller uses to await
    *  whether this turn actually STARTED (issue #57 b, sdkSendAwaitingStart). */
 ): Promise<string> {
@@ -2800,16 +2914,18 @@ export async function sdkSend(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.warn(`agent-sdk: could not start session for ${wsId}: ${message}`);
+    const failedAt = Date.now();
     emit(wsId, {
       type: 'error',
       // Unique even with no live Session: the workspace cursor outlives
       // sessions, so two failed sends can't both mint id `error:0`.
       seq: cursorFor(wsId).seq++,
-      at: Date.now(),
+      at: failedAt,
       message: `Couldn't start the agent: ${message}`,
       apiErrorStatus: null,
       willRetry: false,
     });
+    void persistStartError(wsId, failedAt, `Couldn't start the agent: ${message}`); // #227: re-rendered by sdkHistory after a reload
     // If we were trying to RESUME, a genuinely BAD resume id (its transcript is
     // gone or the id is malformed) can wedge every future send — clear it so the
     // next attempt starts a fresh session instead of repeating the same failure.
@@ -2824,6 +2940,25 @@ export async function sdkSend(
       await persistWorkspacePatch(wsId, { sdkSessionId: undefined }).catch(() => {});
     }
     throw err;
+  }
+  // #227: the retained opening task rides ahead of the FIRST send of any session start (composer, wake, peer, bus wake), so no
+  // other first start can retire it. Claimed per session; when the caller's own text IS the brief (spawn / Restart) that send is it.
+  if (!fromClaim) {
+    // F5: a claim is queueing the brief — wait, so the brief is FIRST. F2: a send that IS the claimed brief while it is still in
+    // flight (Restart's / spawn's `sdkSend(lastTask)` racing a composer send) is the SAME delivery — answer with its turn, never send it twice.
+    if (session.briefGate) await session.briefGate;
+    if (dedupeOpeningBrief && session.openingBrief !== undefined && session.briefOutcome === undefined && session.briefUuid !== undefined && text.trim() === session.openingBrief.trim()) {
+      return session.briefUuid;
+    }
+  }
+  const claim = claimOwedOpeningTask(session, text);
+  if (claim) {
+    try {
+      await dropPendingText(wsId, claim.brief);
+      if (!claim.callerIsBrief) session.briefUuid = await sdkSend(wsId, claim.brief, undefined, undefined, undefined, true);
+    } finally {
+      claim.release(); // waiters resume AFTER this synchronous run reaches its own queue push (no await in between)
+    }
   }
   // Bash-mode parity (Claude Code `!command`): any local-command output run since
   // the last turn is prepended to THIS message as `<local-command-stdout>` context
@@ -2904,6 +3039,7 @@ export async function sdkSend(
   // NO stream path to learn a CLI-assigned uuid, and reading it off disk would
   // be racy. It rides the echo below so the bubble is rewindable immediately.
   const rewindId = randomUUID();
+  if (claim?.callerIsBrief) session.briefUuid = rewindId;
   // Arm the delivery watcher HERE (issue #57 fault b) — before the entry is
   // pushed, so `promptStream` cannot shift and settle it in the window between
   // the push and the caller learning the id. See sdkSendAwaitingStart.
@@ -3193,6 +3329,13 @@ export function sdkTranscriptBytes(wsId: string): number {
  *
  *  Deliberately moves the CLOCK STAMP rather than shortening the window: the
  *  rig then drives the same comparison, against the same constant, that ships. */
+/** Test seam (#227 F9a): the drop-vs-append interleave — an append already in the serialized chain when the stale-brief drop runs. */
+export async function __dropPendingRaceForTests(wsId: string, briefText: string, entry: PendingPrompt): Promise<void> {
+  const a = appendPendingPrompt(wsId, entry);
+  const d = dropPendingText(wsId, briefText);
+  await Promise.all([a, d]);
+}
+
 export function __backdateStreamForTests(wsId: string, ms: number): boolean {
   const session = sessions.get(wsId);
   if (!session) return false;
@@ -3241,9 +3384,9 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
  *  (`sdkSessionId === ''` is sdkClear's explicit "cleared" marker and starts
  *  fresh; a genuinely bad adopted id is cleared by sdkSend's isBadResumeError
  *  guard, so a corrupt transcript can't wedge future sends.) */
-export async function sdkWake(wsId: string, text: string): Promise<void> {
+export async function sdkWake(wsId: string, text: string, opts?: { openingBrief?: boolean }): Promise<void> {
   await adoptTerminalTranscript(wsId);
-  await sdkSend(wsId, text);
+  await sdkSend(wsId, text, undefined, undefined, undefined, false, opts?.openingBrief === true);
 }
 
 /** The terminal-only → SDK adoption step shared by {@link sdkWake} and the legacy
@@ -3383,7 +3526,11 @@ async function recoverPendingPromptsInner(wsId: string, history: AgentEvent[]): 
   // one another (sdkSend pushes; promptStream drains sequentially).
   for (const p of missing) {
     try {
-      await sdkSend(wsId, p.text, undefined, p.peer ? { kind: 'peer', ...p.peer } : undefined);
+      // #227 r4 F1: an intentional stop keeps the brief's pending copy, so THIS is the redelivery of the opening task while it is still
+      // owed — it must be the SAME delivery as a racing wake's claim (deduped), never a second copy.
+      const cur = store.getWorkspace(wsId);
+      const isOwedBrief = !!cur?.lastTask && p.text.trim() === cur.lastTask.trim();   // dedupe only bites while a claimed brief is in flight, so a delivered brief is unaffected
+      await sdkSend(wsId, p.text, undefined, p.peer ? { kind: 'peer', ...p.peer } : undefined, undefined, false, isOwedBrief);
     } catch (err) {
       log.warn(`agent-sdk: pending-prompt recovery send failed for ${wsId}`, err);
     }
@@ -3911,6 +4058,99 @@ async function persistWorkspacePatch(
     log.warn(`agent-sdk: persist workspace patch failed for ${wsId}`, err),
   );
   platform.broadcast('workspace:update', updated);
+}
+
+/** Start failures kept per workspace for the Agent view (#227 F3). */
+const START_ERRORS_CAP = 5;
+
+async function persistStartError(wsId: string, at: number, message: string): Promise<void> {
+  const ws = store.getWorkspace(wsId);
+  if (!ws) return;
+  const next = [...(ws.sdkStartErrors ?? []), { at, message }].slice(-START_ERRORS_CAP);
+  await persistWorkspacePatch(wsId, { sdkStartErrors: next });
+}
+
+/** Claim the workspace's owed opening task for THIS session (#227): once per session however many first sends race. */
+function claimOwedOpeningTask(session: Session, text: string): { brief: string; callerIsBrief: boolean; release: () => void } | null {
+  if (session.openingBrief !== undefined || session.owedBrief === undefined) return null;
+  const brief = session.owedBrief;
+  session.openingBrief = brief;
+  session.briefUuid = undefined;
+  session.briefOutcome = undefined; // a fresh first turn to judge (also after an errored one on this same live session)
+  session.turnSettled = false;
+  turnOutcomes.delete(session.wsId);
+  let open!: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  session.briefGate = gate;
+  return {
+    brief,
+    callerIsBrief: text.trim() === brief.trim(),
+    release: () => { if (session.briefGate === gate) session.briefGate = undefined; open(); },
+  };
+}
+
+/** The claimed brief's first turn produced a non-error output: it is DELIVERED (never at enqueue, never at init) (#227 D7). */
+function confirmOpeningTask(session: Session): void {
+  if (session.openingBrief === undefined || session.briefOutcome !== undefined) return;
+  session.briefOutcome = 'ok';
+  // A live session that errored its first turn and is now delivering the brief again has no resume id (failFirstTurn cleared it): restore it.
+  const restoreSid = session.persistedSessionId && !store.getWorkspace(session.wsId)?.sdkSessionId ? { sdkSessionId: session.persistedSessionId } : {};
+  void persistWorkspacePatch(session.wsId, { openingTaskDelivered: true, hasInput: true, ...restoreSid });
+  settleTurn(session, { state: 'ok' });
+}
+
+/** The first turn ERRORED (bad --model / no auth: the CLI inits, then errors — #227 D7): the brief never reached a working agent, so it
+ *  is owed again. The session id the init persisted is dropped too — an errored first turn is no conversation to resume, and a set id
+ *  would read as "already ran" (no claim, no owed-task Restart). `persistedSessionId` is left alone so consume does not re-persist it. */
+function failFirstTurn(session: Session, rendered: { at: number; message: string } | string): void {
+  if (session.openingBrief === undefined || session.briefOutcome !== undefined) return;
+  session.briefOutcome = 'failed';
+  unwindOpeningTask(session);
+  void persistWorkspacePatch(session.wsId, { sdkSessionId: undefined });
+  // The normalizer already put this turn's error row in the view (`result is_error` → an `error` event): persist THAT row (same at+text,
+  // so the reload backfill and the live row dedupe to one). Only when nothing was rendered do we emit our own.
+  let at: number, text: string;
+  if (typeof rendered === 'string') {
+    at = (session.ctx.now ?? Date.now)();
+    text = rendered;
+    emit(session.wsId, { type: 'error', seq: session.ctx.seq++, at, message: text, apiErrorStatus: null, willRetry: false });
+  } else ({ at, message: text } = rendered);
+  void persistStartError(session.wsId, at, text);
+  // F2: an errored first turn leaves the CLI ALIVE (it exits only at stdin EOF) — the kept child must be STOPPED. A waiter (spawn's wait)
+  // stops it itself right after; with none (a failure past the bound, a wake) nobody else would, so do it here.
+  const heldByWaiter = session.turnWaiters.length > 0;
+  settleTurn(session, { state: 'failed', reason: text, cause: 'turn-error' });
+  if (!heldByWaiter) void sdkStop(session.wsId).catch(() => {});
+}
+
+/** Start errors that predate this session (`at` < its creation) are stale once it produces healthy output — a transient failure must
+ *  not render on a healthy workspace forever (#227 F7). This session's own errors (an errored first turn) are kept. */
+function clearStaleStartErrors(session: Session): void {
+  const list = store.getWorkspace(session.wsId)?.sdkStartErrors;
+  if (!list?.length) return;
+  const keep = list.filter((e) => e.at >= session.createdAt);
+  if (keep.length !== list.length) void persistWorkspacePatch(session.wsId, { sdkStartErrors: keep.length ? keep : undefined });
+}
+
+/** Drop pending-prompt insurance entries carrying exactly `text` (a stale copy of the brief from a start that never landed). */
+async function dropPendingText(wsId: string, text: string): Promise<void> {
+  // Through the serialized per-workspace chain: the read happens INSIDE it, so a concurrent append cannot be overwritten (F9a).
+  await mutatePendingPrompts(wsId, (pending) => {
+    const keep = pending.filter((p) => p.text !== text);
+    return keep.length !== pending.length ? keep : null;
+  });
+}
+
+/** The queued opening task never reached a working agent (errored first turn / death before output): owed again (#227). */
+function unwindOpeningTask(session: Session, opts: { keepPending?: boolean } = {}): void {
+  const brief = session.openingBrief;
+  session.openingBrief = undefined;
+  if (brief !== undefined && !opts.keepPending) void dropPendingText(session.wsId, brief);
+}
+
+/** The ONE predicate for "this session's end / interruption is on purpose" — see shared/first-turn.ts `isIntentionalEnd` (#227 F3). */
+function intentionalEnd(session: Session, endedByInterrupt = false): boolean {
+  return isIntentionalEnd(session, endedByInterrupt);
 }
 
 function persistSessionId(wsId: string, sessionId: string): Promise<void> {
@@ -5615,6 +5855,8 @@ registerSdkDelivery({
   },
   sendAwaitingStart: (wsId, text, peerOrigin, timeoutMs) =>
     sdkSendAwaitingStart(wsId, text, peerOrigin, timeoutMs),
-  start: (wsId, text) => sdkWake(wsId, text),
+  start: (wsId, text, opts) => sdkWake(wsId, text, opts),
+  awaitFirstTurn: sdkAwaitFirstTurn,
+  firstTurnFailed: (wsId) => sessions.get(wsId)?.briefOutcome === 'failed',
   stop: sdkStop,
 });

@@ -1260,6 +1260,7 @@ async function main(argv: string[]): Promise<void> {
         );
       }
       process.stdout.write(`Spawned ${res.id} on branch ${res.branch}\n`);
+      if (typeof res.note === 'string') process.stdout.write(`${res.note}\n`);
       return;
     }
 
@@ -1303,6 +1304,13 @@ async function main(argv: string[]): Promise<void> {
       }
       const res = await request('/restart', { id: target, fresh });
       if (!res.ok) fail(res.error ?? 'failed to restart workspace');
+      if (res.openingTask === true) {
+        // #227 F8: a start whose first turn was not confirmed within the wait says so — never "delivered" for a start nothing confirmed.
+        process.stdout.write(
+          res.note ? `Started ${target} — ${res.note as string}\n` : `Started ${target} — its opening task was delivered\n`,
+        );
+        return;
+      }
       // Report whether the conversation survived (default keeps it, --fresh
       // clears it). There is one agent view, so the reply names no surface (#228).
       const conv = res.fresh ? 'fresh (conversation cleared)' : 'conversation preserved';
@@ -1972,7 +1980,10 @@ async function main(argv: string[]): Promise<void> {
           process.stdout.write(
             `Pinned ${ticket?.identifier ?? ref}${ticket?.title ? ` — ${ticket.title}` : ''}\n`,
           );
-          if (res.workspaceId) {
+          if (res.workspaceId && res.error) {
+            // #227: the child was created and KEPT but its agent failed to start — never a success line, and a non-zero exit.
+            fail(res.error as string);
+          } else if (res.workspaceId) {
             process.stdout.write(
               `Spawned ${res.workspaceId as string} on branch ${res.branch as string}\n`,
             );

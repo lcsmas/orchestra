@@ -119,3 +119,23 @@ test('spawn without --effort: sends no effort (the Settings default applies)', n
   assert.equal(r.code, 0, r.stderr);
   assert.equal('effort' in r.seen[0], false);
 });
+
+// #227 D6 — spawn's not-confirmed caveat and a not-ok start failure reach the caller verbatim.
+test('spawn: an ok reply carrying a note prints it on its own line after the Spawned line', needsBuild, () => {
+  const r = driveCli(
+    ['spawn', '--task', 'do a thing'],
+    "return { ok: true, id: 'ws-new', branch: 'b-new', note: 'first turn not confirmed within 20 s — started, not confirmed' };",
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, 'Spawned ws-new on branch b-new\nfirst turn not confirmed within 20 s — started, not confirmed\n');
+});
+
+test('spawn: a start failure (ok:false + reason) exits non-zero with the reason on stderr and NO Spawned line', needsBuild, () => {
+  const r = driveCli(
+    ['spawn', '--task', 'do a thing'],
+    "return { ok: false, id: 'ws-kept', branch: 'b-kept', error: 'the agent failed to start: the agent exited before it initialised' };",
+  );
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /exited before it initialised/);
+  assert.doesNotMatch(r.stdout, /Spawned/);
+});

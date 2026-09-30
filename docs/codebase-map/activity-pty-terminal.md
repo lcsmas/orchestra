@@ -497,7 +497,7 @@ model, the "scattered words" garble; used by the `pty:start`/`nvim:start`/
 `pty:repaint` IPC), `stopPty`, `readScrollback` (last 256 KiB only),
 `clearScrollback`, `isRunning`, `getPtySize` (live session's winsize, falling
 back to a `lastSizes` map that survives `stopPty` — main-initiated respawns of
-a stopped session, i.e. account-migration resume and `wakeAgentWithPrompt`,
+a stopped session, i.e. account-migration resume,
 reuse it so an open terminal keeps its real width instead of snapping to a
 default 80×24 / 120×32; the renderer only re-asserts size on container/focus
 changes, never on an out-of-band respawn).
@@ -511,7 +511,7 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
 `~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
 `scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
 (`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). Not covered: nvim/login PTYs.
-`parseArgs` (`.mjs` :87) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
+`parseArgs` (`.mjs` :103) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
 ignored flag would run the default mode, the exact flip #230 performs (`args_selftest`).
 - **Modes** — every arm holds both expectations in `EXPECT` (:54): `baseline` = today
   (tabs `Raw·Run·Structured·Diff`, opening Raw creates an agent-kind PTY) is green on master
@@ -529,7 +529,7 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   `ws.sdkSessionId===''`, no session started (baseline: a vierge PTY). Both need `dist-electron/keeper.js` (build with
   `pnpm run build:bundles`, which `test:agent-view-removal` now does): the wrapper ABORTs without it and each arm asserts
   `env/keeper-runtime-installed`, because without a keeper no session can start and every "no session" claim is vacuous.
-- **Arms** (`ARMS` :767): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
+- **Arms** (`ARMS` :938): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
   (tally / retain / KEEP marker); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
@@ -553,21 +553,21 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   (`--allow-stale`), `PASS-WITH-EXTERNAL-CHANGE`, with `allowed_stale=` / `external_change=` counted apart from `pass=`.
 - **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
   target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
-  (`distFreshness` :630, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
+  (`distFreshness` :660, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
   `package.json`; `--allow-stale` proceeds but tallies `ALLOWED-STALE`, never a PASS. mtime ordering is not provenance
   (a `cp -r`'d dist passes).
 - **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
   account-inherit sync; under the rig's fake `HOME` its source `~/.claude` is missing, so it UNLINKS every
   inherited link / MCP server in whatever `configDir` the seeded account names — the first version pinned
   the invoker's live `~/.claude-mc` and stripped it on 46+ boots. Each boot now seeds `<home>/claude-config`
-  (stub `claude`, no login); `checkHandOff` (:370) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
+  (stub `claude`, no login); `checkHandOff` (:386) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
   / every seeded `configDir` (symlinks resolved, `<home>-sibling` is outside) and REFUSES (named) if any is outside the
   boot home or is/overlaps `~/.claude`, a `~/.claude-*` sibling, the invoker's `$CLAUDE_CONFIG_DIR` or the real home.
   `refuse_live_handoff` proves each layer (seed-time guard incl. a symlinked `claude-config`, per-variable hand-off, and the
   `accounts[]` layer alone) refuses BEFORE any launch; every boot there goes through ONE `bootRefused` wrapper that forces
   `electron: '/bin/false'` (the wrapper's `env -i` drops an ambient `E2E_ELECTRON`), so a guard regression can never start a
-  real Electron. `liveSnapshot` (:315) asserts the protected dirs' inheritance surface (`liveDirs()`; `claudeSiblingDirs`
-  :357 skips a bad `~/.claude-*` entry ALONE) before/after every boot: `classifySnapshotChange` (:336) attributes by
+  real Electron. `liveSnapshot` (:331) asserts the protected dirs' inheritance surface (`liveDirs()`; `claudeSiblingDirs`
+  :373 skips a bad `~/.claude-*` entry ALONE) before/after every boot: `classifySnapshotChange` (:352) attributes by
   direction — REMOVALS FAIL (the app's failure mode), ADDITIONS-ONLY tally `EXTERNAL-CHANGE` (the live Orchestra re-syncing a
   shared dir, which a fake-HOME app cannot do); `liveVerdict` (:348, pinned by `live_verdict_selftest`) is asserted to have run
   for every boot arm (`isolation/live-config-check-ran`). A later arm that needs a login must COPY `.credentials.json` into
@@ -576,10 +576,10 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   pattern kill; exit/SIGINT/SIGTERM kill its own sway and remove the copy) and the `verify` skill's recipe (`LAUNCH-TRAPS.md`) do the same.
 - **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
   == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
-  tmpfs). `noAgentPty` (:680) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
+  tmpfs). `noAgentPty` (:710) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
   that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
 - **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:725;
-  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:706) removes only
+  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:736) removes only
   `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :704 = realpath of the
   worktree holding the scripts, from `fileURLToPath` — never another agent's dirs; no identity ⇒ prune NOTHING), older than 24 h, unreferenced by any live process (unreadable
   `/proc/*/environ`, e.g. under bwrap, reads as unreferenced — KEEP backstops it) and lacking `KEEP-UNTIL-CLEAN` (written at
@@ -587,6 +587,48 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   wrapper deletes nothing. The invoker's config dir is only PROTECTED: a missing one is a warning and skips its cases.
 - **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
+- **Spawn-failure arms (#227)** — `spawn_failure_reported`, `restart_delivers_task_once` (boot arms with `sdkLess: true`).
+  HOW THE SDK START IS FORCED TO FAIL: `makeSdkLessApp` boots a byte-identical COPY of `<app-dir>`'s build
+  (`<home>/app`: `dist`, `dist-electron`, `package.json`, a `node_modules` of symlinks to every original entry EXCEPT
+  `@anthropic-ai/claude-agent-sdk`); the SDK is an external, lazily `import()`ed dep, so the app boots and runs until the first
+  agent start, where `ensureSession` throws (`Cannot find package …`) — the pre-flight failure the PTY fallback masked. Same
+  overlay from master and candidate; `<app-dir>` is never mutated. Controls: `force/sdk-absent-from-this-boot` (Node's own
+  `require.resolve` from the overlay must throw) and `force/resolver-can-say-yes` (the same probe on the real build must
+  resolve). A stub `claude` exiting non-zero would NOT force it: the CLI is spawned lazily behind the keeper, so that failure
+  is asynchronous and `spawn` has already answered ok. The child is spawned through the REAL socket route by the built CLI
+  (`runCli`: plain node, allowlist env, `<ORCHESTRA_HOME>/sock`), wakes are driven through the CLI `message`, the preload
+  `flushQueuedPrompts` / `sendReviewToAgent`, and Restart through the REAL toolbar `.restart-btn` click. Arm 2 reads what the
+  CLI RECEIVED from a stub that appends its stdin to `<home>/stub-stdin.log` (`LOGGING_STUB`; `cat` must be the FOREGROUND
+  reader — a background job of a non-interactive `sh` reads `/dev/null`): the task sentinel counted once = exactly once,
+  across Restart + two `agentSdkHistory` loads (the #112 recovery path). Restoring the SDK inside the running app does NOT
+  work (the second `import()` dies in Node's `legacyMainResolve`, app.log), so the arm closes the app, restores the package
+  and re-boots the SAME home (`bootApp({resume})`) — which also proves the kept child + owed task survive an app restart.
+  Baseline expectation = the masked behaviour (spawn ok + an agent PTY appears; message `started`; queue flush ok; review
+  `requested`); `EXPECT.spawnOkWhenSdkFails … reviewRequested` hold both values. The real-module (no Electron) counterparts are
+  `scripts/e2e-spawn-failure.mjs` via `src/main/spawn-failure.test.ts` (fake SDK seam) and
+  `scripts/e2e-opening-task.mjs` via `src/main/opening-task-delivery.test.ts` (REAL sdkSend/consume/sdkHistory over a fake CLI).
+  **Fix round 1 arms:** `spawn_init_wait` (D6 — a dead `--model` is not-ok naming the model in seconds, a normal spawn returns
+  well under the 20 s bound with no note, a silent CLI is ok WITH the note only after the bound), `brief_survives_other_start`
+  (F2 — a peer-message wake and the composer's first send each deliver the kept child's brief once and FIRST, and a later Restart
+  adds no second copy), and F3 clauses in `spawn_failure_reported` (the error row survives `Page.reload`, once) and
+  `restart_delivers_task_once` (visible after an APP restart). `LOGGING_STUB` now prints a stream-json `system/init` line (a healthy
+  CLI's first message) unless `<home>/slow-init` exists and exits 1 for `--model avr-bad-model`.
+  **Fix round 2 (D7):** `first_turn_error_reported` — `<home>/real-shape.jsonl` (the fixture
+  `scripts/fixtures/real-cli-badmodel-2.1.284.jsonl`, session id rewritten) makes the stub replay the MEASURED real failure (init →
+  assistant API error + `result is_error` → exit 1): spawn not-ok naming the error, brief owed (no marker, session id cleared),
+  ONE error row (also after `Page.reload`), Restart while broken reported, and after the flag file is removed Restart delivers the
+  brief exactly once (counted in the newest stub launch's stdin). `spawn_init_wait` adds `init/silent-cli-brief-not-marked-delivered`;
+  `EXPECT.firstTurnErrorSpawnOk` / `silentBriefMarkedDelivered` hold both values.
+  Real-module arms (`scripts/e2e-opening-task.mjs` via `src/main/opening-task-delivery.test.ts`, fake CLI that — like the real one — inits only
+  after its first user message): `firstturn_error`, `firstturn_error_live` (CLI stays up → spawn stops it), `errored_turn_then_message`,
+  `slow_then_die` (F1), `race_restart_vs_composer` (F2), `brief_first_under_concurrency` (F5), `attach_then_send` (F6),
+  `restart_note` (F8), `settle_identity` (F9b), `drop_vs_append_race` (F9a), `history_with_transcript` (persisted start errors
+  interleave into a history that HAS a transcript), plus F7 asserted at the tail of `preinit_death`. **Round 3:** `x_restart_silent_live` /
+  `x_recycle_wedged_spawn` (F1: a live silent spawned child, then Restart / `recycleSession` → brief once), `late_error_live_restart` +
+  `held_errored_then_restart` (F2: failure past the bound stops the session; a held one does not, and Restart still retries),
+  `x_interrupt_apiretry` / `x_stop_apiretry_live` (F3: aborted first turn ≠ failed start), `swallow_same_text` (F5); fake modes
+  `silent-live` (never inits, ends when killed), `late-error-live`, `api-retry`. Built-app arm `first_turn_error_live_reported` drives
+  the live-CLI variant (stub `real-shape-live` flag + `AVR-STUB-EXIT` marker) so spawn's `sdkStopIfLive` is exercised there.
 
 ## Session hibernation — hibernation.ts / hibernation-activity.ts / shared/hibernation.ts
 
@@ -701,7 +743,7 @@ long-idle agents and lets the existing resume paths bring them back.
   called from `ensureSession` (agent-sdk.ts — the single funnel for every SDK
   start/resume/wake, so no restore path can forget it), the `ptyStart` handler
   (which is also Terminal.tsx's press-any-key `claude --continue` relaunch),
-  `wakeAgentWithPrompt` (covering its raw-PTY fallback), and workspace
+  `wakeAgentWithPrompt` (up front — its raw-PTY fallback is gone, #227), and workspace
   ACTIVATION. The renderer reports selection over the new
   `setActiveWorkspace` IPC (`workspaces:setActive`) — both so the sweeper never
   kills the pane under the user's cursor and because activating a hibernated row
