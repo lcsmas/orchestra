@@ -9,6 +9,10 @@ import {
   summarizeWindow,
   egressUpTo,
   sessionBudgetTerminator,
+  startupRetryAllowance,
+  STARTUP_CUT_MARGIN_MS,
+  STARTUP_RETRY_MS,
+  STARTUP_SPAN_MAX_MS,
   type RequestCounts,
   type SessionBudgetReport,
 } from './session-budget.ts';
@@ -49,6 +53,10 @@ test('the budget numbers are pinned as LITERALS (a silent loosening must fail he
   assert.ok(Object.isFrozen(SESSION_BUDGETS) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply));
   assert.ok(Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.sideModelRequests) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.startupEgressAttempts));
   assert.equal(WEAK_CONTAINMENT_ENV, 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT');
+  // the startup-egress cut margin and retry allowance are measured facts (see the doc), pinned as literals
+  assert.equal(STARTUP_CUT_MARGIN_MS, 150);
+  assert.equal(STARTUP_RETRY_MS, 1000);
+  assert.equal(STARTUP_SPAN_MAX_MS, 8000);
   assert.deepEqual([...SUBJECT_MARKERS], ['claude_md', 'rule_last', 'skill_last', 'mcp_tool_last']);
 });
 
@@ -252,14 +260,26 @@ test('F6 (round 2): the terminator — PASS only for a FULL run under FULL conta
   assert.equal(t({ voided: true, bad: true, partial: true, strongContainment: false }), 'VOID', 'VOID outranks everything');
 });
 
-test('a STALLED startup (first egress attempt → main request > 2 s) is VOID, not a budget break: the CLI retries a refused call, so the count is not comparable', () => {
+test('a SLOW-but-healthy startup PASSES: the known host gets a retry allowance scaled by startup time; a NEW host never does', () => {
   const at = (span: number | undefined, egress: Record<string, number>) => judgeSessionBudget(good({ startupEgress: egress, timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 380, firstReplyAbsMs: 1780, turnEndAbsMs: 1900, mainRequestStartAbsMs: 1200, startupEgressSpanMs: span } }));
-  assert.equal(at(1400, { [HOST]: 3 }).ok, true, '1.4 s (4x CPU starvation) is fine');
-  assert.equal(at(2000, { [HOST]: 3 }).ok, true, 'the limit itself is fine');
-  const stalled = at(2600, { [HOST]: 4 });
-  assert.equal(stalled.void, true);
-  assert.equal(stalled.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.ok, false);
-  assert.match(stalled.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.message, /INSTRUMENT VOID .*2600 ms \(> 2000\).*re-run/);
-  // the inflated count still shows as a broken budget line, but the run's verdict is VOID (re-run), not FAIL
-  assert.ok(stalled.verdicts.some((v) => !v.ok && v.kind === 'budget'));
+  const egressBroken = (j: ReturnType<typeof judgeSessionBudget>) => j.verdicts.filter((v) => !v.ok && v.kind === 'budget' && v.id.includes('startupEgressAttempts')).map((v) => v.id);
+  assert.equal(startupRetryAllowance(322), 0);
+  assert.equal(startupRetryAllowance(999), 0);
+  assert.equal(startupRetryAllowance(2241), 2);
+  assert.equal(startupRetryAllowance(undefined), 0);
+  // the measured slow-MCP startups (2.2–2.7 s, ONE extra attempt) pass
+  assert.equal(at(2241, { [HOST]: 4 }).ok, true);
+  assert.equal(at(2705, { [HOST]: 4 }).ok, true);
+  // a FAST startup still holds the exact ceiling: 4 attempts in 322 ms is one call too many
+  assert.deepEqual(egressBroken(at(322, { [HOST]: 4 })), [`session.beforeFirstReply.startupEgressAttempts.${HOST}`]);
+  // the allowance is bounded: 1.5 s allows 1 extra (4), not 2 (5)
+  assert.equal(at(1500, { [HOST]: 4 }).ok, true);
+  assert.deepEqual(egressBroken(at(1500, { [HOST]: 5 })), [`session.beforeFirstReply.startupEgressAttempts.${HOST}`]);
+  // a NEW host is never explained by a retry, however slow startup was
+  assert.deepEqual(egressBroken(at(2500, { [HOST]: 3, 'telemetry.example.invalid:443': 1 })), ['session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443']);
+  // an absurd startup (> 8 s) is VOID, not a pass and not a budget verdict
+  const absurd = at(9000, { [HOST]: 3 });
+  assert.equal(absurd.void, true);
+  assert.match(absurd.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.message, /INSTRUMENT VOID .*9000 ms \(> 8000\).*re-run/);
 });
+

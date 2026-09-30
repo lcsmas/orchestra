@@ -28,8 +28,8 @@ export interface RawRequest { tMs: number; type: string; method?: string; path?:
 /** One refused egress attempt as recorded by the fake API's proxy. */
 export interface RawEgress { tMs: number; target: string }
 
-/** Refused egress attempts by `host:port` with `tMs <= upToMs` (pure). Used for the STARTUP egress budget: the cut is the
- *  main model request's START — a causal boundary independent of when the reply is observed. */
+/** Refused egress attempts by `host:port` with `tMs <= upToMs` (pure). Used for the STARTUP egress budget: the cut is
+ *  `STARTUP_CUT_MARGIN_MS` before the main model request's START — causal, independent of when the reply is observed. */
 export function egressUpTo(egress: RawEgress[], upToMs: number): Record<string, number> {
   const out: Record<string, number> = {};
   for (const e of egress) if (e.tMs <= upToMs) out[e.target] = (out[e.target] ?? 0) + 1;
@@ -112,8 +112,21 @@ export const SUBJECT_MARKERS = Object.freeze(['claude_md', 'rule_last', 'skill_l
  *  either (review F2): a run with any of them set describes a lighter session than production's. */
 export const TRAFFIC_KNOBS = Object.freeze(['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'DISABLE_TELEMETRY', 'DISABLE_AUTOUPDATER', 'DISABLE_ERROR_REPORTING', 'DISABLE_BUG_COMMAND'] as const);
 
-/** Above this first-attempt→main-request gap the CLI's retry of a refused call can land in the startup window (see the judge). */
-export const STARTUP_SPAN_MAX_MS = 2000;
+/** The startup-egress cut sits this far BEFORE the main request's start: attempts the CLI fires together with the request landed at
+ *  -2…+56 ms around it (a coin flip at the cut, measured), so they are excluded from the startup window instead of raced. */
+export const STARTUP_CUT_MARGIN_MS = 150;
+
+/** A refused startup call is RETRIED by the CLI: one extra attempt per this many ms of startup (generous — measured: a startup slowed
+ *  to 2.2–2.7 s by a slow MCP server made ONE extra attempt, ~1.1 s after the first burst; 3 of 3 runs). Only KNOWN hosts get the
+ *  allowance — a retry always goes to a host already attempted, so a NEW host is never explained by it. */
+export const STARTUP_RETRY_MS = 1000;
+/** Beyond this first-attempt→main-request gap something is broken (the CLI gives up on MCP at ~3 s): the run is not comparable — VOID. */
+export const STARTUP_SPAN_MAX_MS = 8000;
+
+/** Extra same-host startup attempts a startup of `spanMs` may legitimately show (retries of refused calls). Pure. */
+export function startupRetryAllowance(spanMs: number | undefined): number {
+  return spanMs == null || !(spanMs > 0) ? 0 : Math.floor(spanMs / STARTUP_RETRY_MS);
+}
 
 /** Env var that lets a run proceed with a weaker egress containment than net+pid namespaces (echoed in the verdict). */
 export const WEAK_CONTAINMENT_ENV = 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT';
@@ -216,7 +229,12 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
     verdicts.push(...mapVerdicts('session.beforeFirstReply.sideModelRequests', b.sideModelRequests, pre.side, ctx));
     verdicts.push(budgetVerdict('session.beforeFirstReply.countTokensRequests', 'max', b.countTokensRequests, pre.count_tokens, ctx));
     verdicts.push(budgetVerdict('session.beforeFirstReply.otherRequests', 'max', b.otherRequests, pre.other, ctx));
-    verdicts.push(...mapVerdicts('session.beforeFirstReply.startupEgressAttempts', b.startupEgressAttempts, report.startupEgress ?? {}, `${ctx}; before the main model request started it made egress attempts ${fmtMap(report.startupEgress)}`));
+    // Listed hosts get base + a retry allowance scaled by how long startup took (a slow-but-healthy run must PASS); an UNLISTED host is 0.
+    const extra = startupRetryAllowance(report.timing?.startupEgressSpanMs);
+    const egressBudget: Record<string, number> = {};
+    for (const [h, n] of Object.entries(b.startupEgressAttempts)) egressBudget[h] = n + extra;
+    verdicts.push(...mapVerdicts('session.beforeFirstReply.startupEgressAttempts', egressBudget, report.startupEgress ?? {},
+      `${ctx}; before the main model request started (startup ${report.timing?.startupEgressSpanMs ?? '?'} ms, so +${extra} retry allowance on a listed host) it made egress attempts ${fmtMap(report.startupEgress)}`));
   }
   // Instrument checks: the subject really was a heavy, mounted session with a first reply.
   const f = report.fixture;
@@ -233,12 +251,11 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
   const preEgress = Object.values(report.startupEgress ?? {}).reduce((a, b) => a + b, 0);
   verdicts.push(instrumentVerdict('instrument.nonessentialTrafficVisible', report.startupEgress ? preEgress : null, 1,
     'no outbound attempt was seen before the main request — either a traffic-suppressing knob leaked in, or the CLI stopped reaching out (then lower this deliberately)'));
-  // A refused call is RETRIED by the CLI (backoff ~2 s): a startup that stalls past that inflates the pre-main attempt count without
-  // any new call. Measured: 34/35 runs had exactly 3 (span 190–1400 ms even at 4× CPU starvation); the outlier's startup ran ~2 s slow.
-  // So such a run is NOT COMPARABLE — VOID (re-run), never a false budget break.
+  // A refused call is RETRIED by the CLI, so the pre-main attempt count of a KNOWN host grows with how long startup took: it is allowed
+  // `startupRetryAllowance(span)` extra attempts (above) — a slow-but-healthy run PASSES. Only an absurd startup is not comparable: VOID.
   verdicts.push(flagVerdict('instrument.startupNotStalled', report.timing?.startupEgressSpanMs == null || report.timing.startupEgressSpanMs <= STARTUP_SPAN_MAX_MS,
     `startup egress burst took ${report.timing?.startupEgressSpanMs ?? 'n/a'} ms (≤ ${STARTUP_SPAN_MAX_MS})`,
-    `the startup egress burst took ${report.timing?.startupEgressSpanMs} ms (> ${STARTUP_SPAN_MAX_MS}): a refused call was retried, so the attempt count is not comparable — re-run`));
+    `the startup egress burst took ${report.timing?.startupEgressSpanMs} ms (> ${STARTUP_SPAN_MAX_MS}): startup was broken or stalled far beyond the CLI's own timeouts, so the attempt count is not comparable — re-run`));
   // F4 (round 2): the reported time-to-first-reply must be measured FROM sdkSend: ttfr + setup == the first-reply stamp (±2 ms of rounding).
   const tm = report.timing;
   const drift = tm && tm.timeToFirstReplyMs != null && tm.setupMs != null && tm.firstReplyAbsMs != null ? Math.abs(tm.timeToFirstReplyMs + tm.setupMs - tm.firstReplyAbsMs) : null;

@@ -32,7 +32,7 @@ if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: imp
 const { startFakeApi } = await import(`${HERE}/fake-anthropic-api.mjs`);
 const { generateHeavyFixture } = await import(`${HERE}/fixture.mjs`);
 const { census } = await import(`${HERE}/proc-census.mjs`);
-const { judgeSessionBudget, summarizeWindow, egressUpTo, TRAFFIC_KNOBS } = await import(`${REPO}/src/shared/session-budget.ts`);
+const { judgeSessionBudget, summarizeWindow, egressUpTo, TRAFFIC_KNOBS, STARTUP_CUT_MARGIN_MS } = await import(`${REPO}/src/shared/session-budget.ts`);
 
 const fx = generateHeavyFixture(path.join(root, 'repo'), profile);
 // Fixed ports: this process was started with HTTPS_PROXY/NODE_USE_ENV_PROXY already aimed at the proxy port (the harness
@@ -150,8 +150,8 @@ const cut = tTurnEnd ?? Infinity;
 const win = (from, to) => summarizeWindow(api.requests, api.egress, from, to);
 // F2: the user's turn is the model call that CARRIES TOOLS — never "the first request" (a tool-less side call can precede it).
 const mainModel = api.requests.find((r) => r.type === 'model' && (r.tools ?? 0) > 0);
-// STARTUP egress: attempts made before the main request STARTED (headers in, body not yet read) — a causal cut, not a race with the reply.
-const startupEgress = mainModel ? egressUpTo(api.egress, mainModel.tStartMs) : undefined;
+// STARTUP egress: attempts made before the main request STARTED (headers in, body not yet read) minus a margin — a causal cut, not a race with the reply or with the request-coupled attempts.
+const startupEgress = mainModel ? egressUpTo(api.egress, mainModel.tStartMs - STARTUP_CUT_MARGIN_MS) : undefined;
 const strip = ({ procs, ...c }) => c;
 const report = {
   schema: 1,

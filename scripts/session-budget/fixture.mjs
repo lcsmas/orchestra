@@ -22,6 +22,8 @@ export const HEAVY_PROFILE = Object.freeze({
   memoryFiles: 50,
   mcpServers: 4,
   toolsPerServer: 15,
+  /** Experiments only: the FIRST MCP server answers `initialize` this late (0 = off). */
+  mcpInitDelayMs: 0,
 });
 
 function prng(seed) { let s = seed >>> 0; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32); }
@@ -72,7 +74,7 @@ export function generateHeavyFixture(dir, overrides = {}) {
   }
   const mcpServerNames = Array.from({ length: profile.mcpServers }, (_, i) => `fixsrv${i + 1}`);
   const mcpServers = {};
-  for (const n of mcpServerNames) mcpServers[n] = { command: process.execPath, args: [FAKE_MCP_SERVER, '--name', n, '--tools', String(profile.toolsPerServer)] };
+  for (const [i, n] of mcpServerNames.entries()) mcpServers[n] = { command: process.execPath, args: [FAKE_MCP_SERVER, '--name', n, '--tools', String(profile.toolsPerServer), ...(i === 0 && profile.mcpInitDelayMs > 0 ? ['--init-delay-ms', String(profile.mcpInitDelayMs)] : [])] };
   fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify({ mcpServers }, null, 2)}\n`);
   // Project-scoped .mcp.json servers only start once approved; approve them in the project settings.
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });

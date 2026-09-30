@@ -8,6 +8,7 @@ import readline from 'node:readline';
 const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
 const NAME = arg('name', 'fake');
 const TOOLS = Number(arg('tools', '10'));
+const INIT_DELAY_MS = Number(arg('init-delay-ms', '0')); // slow-but-healthy server: answers `initialize` late (startup-stall experiments)
 
 const tools = Array.from({ length: TOOLS }, (_, i) => ({
   name: `${NAME}_tool_${String(i).padStart(2, '0')}`,
@@ -34,6 +35,7 @@ rl.on('line', (line) => {
   if (m.id === undefined) return; // notification
   switch (m.method) {
     case 'initialize':
+      if (INIT_DELAY_MS > 0) return void setTimeout(() => send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: NAME, version: '0.0.1' } } }), INIT_DELAY_MS);
       return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: NAME, version: '0.0.1' } } });
     case 'tools/list': return send({ jsonrpc: '2.0', id: m.id, result: { tools } });
     case 'tools/call': return send({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: 'ok' }] } });

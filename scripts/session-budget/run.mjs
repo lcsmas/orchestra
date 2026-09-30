@@ -9,6 +9,7 @@
 //                      (mutants.mjs); MUST FAIL naming session.beforeFirstReply.countTokensRequests with a
 //                      large burst — the proof the suite can see the defect it exists for.
 // Self-test arms (host-dependent checks of the instruments themselves, kept out of `pnpm run test`):
+//   slow-startup         a slow MCP server delays the main request ~3 s (refused startup calls get retried): MUST PASS.
 //   traffic-knob-in-env  a buildSdkEnv edit hands the CLI DISABLE_TELEMETRY: MUST be VOID naming instrument.productionEnv
 //                        (judged from the CLI's /proc environ, not the runner's own env).
 //   app-egress-new-host  an ensureSession edit fetch()es a new host: MUST FAIL naming that host in startupEgressAttempts
@@ -33,6 +34,8 @@ const WANT = opt('arm', 'all');
 const ARMS = {
   normal: { kind: 'session', mutant: null, expect: 'pass' },
   'boot-context-read': { kind: 'session', mutant: 'boot-context-read', expect: 'fail', mustBreak: 'session.beforeFirstReply.countTokensRequests', minBurst: 50 },
+  // A slow-but-healthy startup (a slow MCP server, as npx-launched ones are): the main request waits ~3 s and the CLI retries a refused call once. MUST PASS.
+  'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 } },
   'traffic-knob-in-env': { kind: 'session', mutant: 'traffic-knob-in-sdk-env', expect: 'void', mustVoid: 'instrument.productionEnv', mustName: 'DISABLE_TELEMETRY' },
   'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
   'census-selftest': { kind: 'selftest', mode: 'census' },
@@ -60,7 +63,7 @@ for (const [name, spec] of Object.entries(ARMS)) {
   }
   const res = spec.kind === 'selftest'
     ? await runSelfTest({ repo: REPO, mode: spec.mode, containment })
-    : await runSessionArm({ repo: REPO, arm: name, mutant: spec.mutant, containment });
+    : await runSessionArm({ repo: REPO, arm: name, mutant: spec.mutant, profile: spec.profile, containment });
   if (res.reaped) say(`   (reaped ${res.reaped} leftover scratch process(es) — containment ${containment.name} did not contain the keeper)`);
   if (res.void) { voided++; console.log(JSON_OUT ? JSON.stringify({ arm: name, void: true, error: res.error }) : `== arm ${name}: VOID — ${res.error}`); continue; }
 
