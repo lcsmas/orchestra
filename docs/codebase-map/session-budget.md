@@ -110,7 +110,7 @@ its keeper→CLI→MCP tree, Theil–Sen MB/min after a warm-up, OLS + growth pr
 | Seeded leak | `fake-mcp-server.mjs --leak-mb-per-min`, fixture `mcpLeakMbPerMin` | One MCP child retains touched MB forever: a session that never frees memory. |
 | Driver | `soak-lib.mjs` `runCampaign` | D7 preflight (usage refusals rc 2; RAM/load/projected footprint ⇒ an **ABORTED report**, nothing spawned), single-flight lock `~/.cache/session-budget/campaign.lock` (pid + /proc start time) **plus** a `/proc` scan for a live `soak-runner.mjs`, keeper bundle build, the runner, the parent's own cap **watchdog** (second channel next to the runner's per-sample check), abort = `<root>/ABORT` file (see Traps), code identity, report files. |
 | Pure half | `src/shared/soak-campaign.ts` | `decideAbort`/`preflight`/`tightenCaps`, `theilSenSlope`/`olsSlope`, `buildSoakReport`, `judgeSoak`, formatters. Unit: `soak-campaign.test.ts` (a synthetic campaign with a known leak/wedge/survivor per must-FAIL arm). |
-| Must-FAIL / must-PASS arms | `soak-selftest.mjs` (`pnpm run test:soak-campaign`, ~13 min, run when calm) | `seeded` (s1 leaks 60 MB/min, s2 hangs after 3 main requests; s0/s3 are in-run controls — MUST FAIL naming s1's slope and s2's wedge, NOT s0/s3, 0 survivors), `healthy` (MUST PASS), `abort-runner` / `abort-watchdog` / `abort-yield` (MUST be ABORTED naming the right cap/caller, 0 survivors, elapsed stamped). VOID (rc 3), never FAIL, when the machine was too busy to measure. |
+| Must-FAIL / must-PASS arms | `soak-selftest.mjs` (`pnpm run test:soak-campaign`, ~20 min, run when calm) | `seeded` (s1 leaks 60 MB/min, s2 hangs after 3 main requests; s0/s3 are in-run controls — MUST FAIL naming s1's slope and s2's wedge, NOT s0/s3, 0 survivors), `healthy` (MUST PASS), `abort-runner` / `abort-watchdog` / `abort-yield` / `abort-parent-died` (MUST be ABORTED naming the right cap/caller/parent, 0 survivors, elapsed stamped). VOID (rc 3), never FAIL, when the machine was too busy to measure. |
 
 **D7 caps** (hard, in `SOAK_BUDGETS`): ≤ 10 sessions (refused above, not clamped), abort when `MemAvailable` < 6 GB or load1 > 20 — before the start
 (also when the PROJECTED footprint 400 MB + N × 600 MB would leave < 6 GB) and at every sample; a per-run override can only tighten (`tightenCaps`).
@@ -138,7 +138,14 @@ start/finish, ONE WARN naming the broken budgets and the report on a breach. Sta
   `abortGraceMs` later is the group SIGKILLed.
 - **The fake API must not live in the app process**: its request log alone grew ~100 MB/h and would read as an app leak. Separate process, bounded records.
 - **rtk's `ps` output lies** about a running campaign (`ps | grep soak-runner` read "no process" while it ran): scan `/proc` (`otherRunnerAlive`).
-- The first minutes of a CLI session grow ~5–8 MB/min (warm-up) — a slope over a short window is noise; the report skips `max(60 s, 25 %)` and
-  refuses to judge a window under 120 s / 8 samples (`instrument.memoryWindow` ⇒ VOID).
+- **Time is MONOTONIC in the runner** (`performance.now()`): a 40-min machine suspend once made a 10-min campaign read 2776 s and would have turned
+  every in-flight turn into a "wedge". The wall clock is read only to DETECT a jump against the monotonic one (`clock-jump` event ⇒ `instrument.noClockStep`
+  ⇒ VOID, never a pass and never advances the scheduler's gate).
+- A fresh session's tree climbs ~25 MB in its first 3 minutes (measured 513 → 540 MB, then flat ±5 MB/sample): that is warm-up, so the judge skips
+  `max(180 s, 25 %)` and refuses a window under 120 s / 8 samples (`instrument.memoryWindow` ⇒ VOID). The slope budget SHRINKS with the window —
+  `floor 0.5 + 8 MB / window-minutes` MB/min (`soakSlopeBudget`) — because a short window's slope is sampling noise: 1 MB/min hides in 5 minutes and is
+  caught over an hour.
+- Tool turns (`--tool-every N`, default 3): the fake API answers every Nth user turn with a `Bash` call (a real short-lived subprocess) and then a fixture MCP
+  call, so the process spawn/exit paths a text-only turn never reaches are inside the run — and inside the survivors census.
 - A shared, busy machine trips the D7 load cap: a campaign that ABORTED says so in its report and never advances the change gate.
 - Teardown here is C1's replica of `stopStructuredSession`; once C3 #210 merges, switch `teardown()` in `soak-runner.mjs` to its real-delete-route driver.

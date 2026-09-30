@@ -2,7 +2,7 @@
 // and the formatters. No I/O, no Electron; runs under `node --experimental-strip-types`. The numbers live in session-budget.ts
 // (`SOAK_BUDGETS`); the collector is scripts/session-budget/soak-runner.mjs (emits `{"soak":…}` lines), the driver soak-lib.mjs.
 // Design + traps: docs/codebase-map/session-budget.md §Load/soak campaign.
-import { SOAK_BUDGETS, type Judgement, type Verdict } from './session-budget.ts';
+import { SOAK_BUDGETS, soakSlopeBudget, type Judgement, type Verdict } from './session-budget.ts';
 
 // ── D7: resource caps ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 export interface SoakCaps { minMemAvailKB: number; maxLoad1: number }
@@ -159,6 +159,8 @@ export interface SoakReport {
   /** Per session, from its first `session/init`: how many fixture MCP servers were connected. */
   init: SoakFinal['init'];
   errors: { byMessage: Record<string, number> };
+  /** Wall-clock jumps the runner saw against its monotonic clock (machine suspend/resume, a clock step): any makes the run VOID. */
+  clockJumps: Array<{ atSec: number; sec: number }>;
   /** tSec/MB pairs for every sample (decimated to ≤ 720 points): one array per session, then the runner and the API process. */
   series: { sessions: Array<Array<[number, number]>>; runner: Array<[number, number]>; api: Array<[number, number]>; memAvailGB: Array<[number, number]> };
   verdicts?: Verdict[];
@@ -280,6 +282,7 @@ export function buildSoakReport(raw: SoakRaw, meta: Record<string, unknown> = {}
     api: raw.final?.api ?? null,
     init: raw.final?.init ?? [],
     errors: { byMessage: errorsByMessage },
+    clockJumps: raw.events.filter((e) => e.kind === 'clock-jump').map((e) => ({ atSec: e.tSec, sec: Number((e as SoakEvent & { sec?: number }).sec ?? 0) })),
     series: { sessions: perSession.map((p) => thin(p.map(([t, v]) => [t, r2(v) as number] as [number, number]), 720)), runner: thin(runner.map(([t, v]) => [t, r2(v) as number] as [number, number]), 720), api: thin(apiPts.map(([t, v]) => [t, r2(v) as number] as [number, number]), 720), memAvailGB: thin(avail.map(([t, v]) => [t, r2(v) as number] as [number, number]), 720) },
   };
 }
@@ -310,6 +313,8 @@ export function judgeSoak(report: SoakReport, budgets = SOAK_BUDGETS): Judgement
     `every session connected all ${fx?.mcpServers ?? '?'} fixture MCP servers`, `each session must report ${fx?.mcpServers ?? '?'} connected fixture MCP servers at init (saw ${init.map((x) => `s${x.i}=${x.mcpConnected ?? '?'}`).join(' ') || 'nothing'}) — the subject is lighter than the fixture claims`));
   const minWin = budgets.memory.minWindowSec;
   const winSec = report.memory.window.toSec - report.memory.window.fromSec;
+  v.push(need('soak.instrument.noClockStep', report.clockJumps.length === 0, 'the wall clock never moved against the monotonic clock',
+    `the wall clock moved against the monotonic clock ${report.clockJumps.map((j) => `${j.sec} s at ${j.atSec} s`).join(', ')} (machine suspend/resume or a clock step) — the timings around it are not comparable; re-run`));
   v.push(need('soak.instrument.memoryWindow', winSec >= minWin && report.memory.window.samples >= budgets.memory.minSamples,
     `${report.memory.window.samples} samples over ${winSec} s after the ${report.memory.warmupSec} s warm-up`,
     `the post-warm-up window has ${report.memory.window.samples} sample(s) over ${winSec} s — need ≥ ${budgets.memory.minSamples} samples and ≥ ${minWin} s to fit a slope; run longer or sample faster`));
@@ -326,11 +331,11 @@ export function judgeSoak(report: SoakReport, budgets = SOAK_BUDGETS): Judgement
     const slope = s.slopeMBPerMin;
     v.push(slope == null
       ? need(`soak.instrument.memorySeries.s${s.i}`, false, '', `s${s.i} has no usable RSS series (${s.windowN} window samples)`)
-      : maxV(`soak.memory.slopeMBPerMin.s${s.i}`, budgets.memory.maxSessionSlopeMBPerMin, slope, `s${s.i} tree RSS ${s.startMB}→${s.endMB} MB (peak ${s.peakMB}), Theil–Sen ${slope} MB/min, OLS ${s.olsMBPerMin} MB/min, +${s.growthMB} MB over the ${report.memory.window.samples}-sample window`));
+      : maxV(`soak.memory.slopeMBPerMin.s${s.i}`, soakSlopeBudget(winSec, budgets.memory.sessionSlopeFloorMBPerMin, budgets.memory.sessionSlopeNoiseMB), slope, `s${s.i} tree RSS ${s.startMB}→${s.endMB} MB (peak ${s.peakMB}), Theil–Sen ${slope} MB/min, OLS ${s.olsMBPerMin} MB/min, +${s.growthMB} MB over the ${report.memory.window.samples}-sample window`));
   }
   const rs = report.memory.runner.slopeMBPerMin;
   v.push(rs == null ? need('soak.instrument.memorySeries.runner', false, '', 'the app process has no usable RSS series')
-    : maxV('soak.memory.slopeMBPerMin.runner', budgets.memory.maxRunnerSlopeMBPerMin, rs, `the app process RSS ${report.memory.runner.startMB}→${report.memory.runner.endMB} MB, Theil–Sen ${rs} MB/min, OLS ${report.memory.runner.olsMBPerMin} MB/min`));
+    : maxV('soak.memory.slopeMBPerMin.runner', soakSlopeBudget(winSec, budgets.memory.runnerSlopeFloorMBPerMin, budgets.memory.runnerSlopeNoiseMB), rs, `the app process RSS ${report.memory.runner.startMB}→${report.memory.runner.endMB} MB, Theil–Sen ${rs} MB/min, OLS ${report.memory.runner.olsMBPerMin} MB/min`));
 
   // processes
   const sv = report.processes.survivorsAfterDelete;

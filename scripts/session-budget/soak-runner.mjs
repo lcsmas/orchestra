@@ -12,7 +12,7 @@ import { fork, execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
 const { REPO, root, sessions: N = 3, durationMs = 300_000, turnIntervalMs = 20_000, sampleMs = 10_000, turnDeadlineMs = 60_000,
-  replyDelayMs = 500, faultPlan = null, profile = {}, seedLeak = null, pidns = false, containment = 'proxy-only', caps = null } = cfg;
+  replyDelayMs = 500, toolEvery = 0, faultPlan = null, profile = {}, seedLeak = null, pidns = false, containment = 'proxy-only', caps = null } = cfg;
 const HERE = path.join(REPO, 'scripts', 'session-budget');
 
 const { assertScratch } = await import(`${HERE}/scratch-guard.mjs`);
@@ -35,8 +35,19 @@ const { TRAFFIC_KNOBS } = await import(`${REPO}/src/shared/session-budget.ts`);
 
 const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ALL durations here are MONOTONIC (`performance.now()`): the wall clock jumps when the machine suspends or a clock is stepped (a 40-minute suspend
+// once made a 10-minute campaign read 2776 s and every in-flight turn look wedged). The wall clock is read only to DETECT such a jump (see `clockWatch`).
 const t0 = Date.now();
-const tSec = () => Math.round((Date.now() - t0) / 100) / 10;
+const m0 = performance.now();
+const tSec = () => Math.round((performance.now() - m0) / 100) / 10;
+let lastGapSec = 0;
+/** wall − monotonic since the start, in seconds; a change between two calls means the wall clock moved on its own (suspend/resume, clock step). */
+function clockWatch() {
+  const gap = (Date.now() - t0 - (performance.now() - m0)) / 1000;
+  const delta = gap - lastGapSec;
+  lastGapSec = gap;
+  return Math.abs(delta) >= 5 ? Math.round(delta * 10) / 10 : 0;
+}
 
 // ── fixtures: one heavy repo per session (a workspace worktree each) ────────────────────────────────────────────────────────────
 const fixtures = [];
@@ -47,7 +58,7 @@ for (let i = 0; i < N; i++) {
 
 // ── the fake API, in its own process (inside the same namespace: its loopback is the CLI's) ─────────────────────────────────────
 if (!cfg.apiPort || !cfg.proxyPort) throw new Error('soak-runner: cfg.apiPort/proxyPort absent — the app-process egress proxy cannot be wired (fails closed)');
-const apiEnv = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', SB_API_CONFIG: JSON.stringify({ apiPort: cfg.apiPort, proxyPort: cfg.proxyPort, replyDelayMs, faultPlan, markers: fixtures[0].markers }) };
+const apiEnv = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', SB_API_CONFIG: JSON.stringify({ apiPort: cfg.apiPort, proxyPort: cfg.proxyPort, replyDelayMs, toolEvery, faultPlan, markers: fixtures[0].markers }) };
 const apiChild = fork(`${HERE}/soak-api-proc.mjs`, [], { env: apiEnv, stdio: ['ignore', 'inherit', 'inherit', 'ipc'], execArgv: ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON'] });
 const apiPid = apiChild.pid;
 const api = await new Promise((resolve, reject) => {
@@ -146,6 +157,8 @@ function scan() {
 
 let lastPerPids = new Map(); // pid → session index, from the most recent sample (survivor attribution after the delete)
 async function sample(phase) {
+  const jump = clockWatch();
+  if (jump) emit({ soak: 'event', tSec: tSec(), kind: 'clock-jump', sec: jump, detail: `the wall clock moved ${jump} s relative to the monotonic clock (machine suspend/resume or a clock step) — timings around it are not comparable` });
   const sc = scan();
   for (const p of sc.per) for (const pid of p.pids) lastPerPids.set(pid, p.i);
   const st = await apiStats();
@@ -181,7 +194,7 @@ const sleepInterruptible = (ms) => Promise.race([sleep(ms), stopSignal]);
 
 function beginTurn(s) {
   const n = s.sent++;
-  const p = { s, n, tSend: Date.now(), endsBefore: s.turnEnds, errsBefore: s.errors, sendErr: null, done: false };
+  const p = { s, n, tSend: performance.now(), endsBefore: s.turnEnds, errsBefore: s.errors, sendErr: null, done: false };
   p.sent = Promise.race([
     sdk.sdkSend(s.ws, `Reply with the single word ok. (soak turn ${n})`).then(() => {}, (e) => { p.sendErr = String(e?.message ?? e).slice(0, 200); }),
     sleep(turnDeadlineMs).then(() => {}),
@@ -192,16 +205,16 @@ async function settle(p) {
   const { s } = p;
   await p.sent;
   let outcome = null;
-  while (Date.now() - p.tSend < turnDeadlineMs) {
+  while (performance.now() - p.tSend < turnDeadlineMs) {
     if (p.sendErr) { outcome = 'error'; break; }
     if (s.turnEnds > p.endsBefore) { outcome = 'ok'; break; }
     if (s.errors > p.errsBefore) { outcome = 'error'; break; }
     if (abortInfo) break; // an abort (caps / signal): do not wait out the deadline on every session
     await sleep(100);
   }
-  const ms = Date.now() - p.tSend;
+  const ms = Math.round(performance.now() - p.tSend);
   if (!outcome) outcome = abortInfo && ms < turnDeadlineMs ? 'unfinished' : 'wedged';
-  emit({ soak: 'turn', i: s.i, n: p.n, tSec: Math.round((p.tSend - t0) / 100) / 10, ms, outcome, phase: p.n === 0 ? 'startup' : 'steady', ...(outcome === 'error' ? { err: p.sendErr ?? s.lastError } : {}) });
+  emit({ soak: 'turn', i: s.i, n: p.n, tSec: Math.round((p.tSend - m0) / 100) / 10, ms, outcome, phase: p.n === 0 ? 'startup' : 'steady', ...(outcome === 'error' ? { err: p.sendErr ?? s.lastError } : {}) });
   return outcome;
 }
 
@@ -217,7 +230,7 @@ async function drive(s, first) {
   }
 }
 
-emit({ soak: 'start', at: new Date(t0).toISOString(), sessions: N, durationMs, turnIntervalMs, sampleMs, turnDeadlineMs, replyDelayMs, containment, pidns, cli: { version: cliVersion, path: fs.realpathSync(cliPath) },
+emit({ soak: 'start', at: new Date(t0).toISOString(), sessions: N, durationMs, turnIntervalMs, sampleMs, turnDeadlineMs, replyDelayMs, toolEvery, containment, pidns, cli: { version: cliVersion, path: fs.realpathSync(cliPath) },
   fixture: { skills: fixtures[0].profile.skills, memoryFiles: fixtures[0].profile.memoryFiles, mcpServers: fixtures[0].profile.mcpServers, toolsPerServer: fixtures[0].profile.toolsPerServer, claudeMdKB: fixtures[0].profile.claudeMdKB },
   seedLeak, faultPlan, caps, pageKB: Math.round(Number(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8' })) / 1024), nproc: (await import('node:os')).cpus().length });
 
@@ -229,7 +242,7 @@ const sampler = setInterval(async () => {
   await sample('run').catch((e) => emit({ soak: 'event', tSec: tSec(), kind: 'sample-error', detail: String(e).slice(0, 200) }));
 }, sampleMs);
 
-const endAt = t0 + durationMs;
+const endAt = m0 + durationMs;
 const drives = [];
 try {
   for (const s of S) {
@@ -241,7 +254,7 @@ try {
     emit({ soak: 'event', tSec: tSec(), i: s.i, kind: 'started', detail: `session ${s.i} launched` });
   }
   // The duration counts from the first launch; sessions keep going until it is over (or an abort).
-  await Promise.race([sleep(Math.max(0, endAt - Date.now())), stopSignal]);
+  await Promise.race([sleep(Math.max(0, endAt - performance.now())), stopSignal]);
 } catch (e) {
   emit({ soak: 'event', tSec: tSec(), kind: 'runner-error', detail: String(e?.stack ?? e).slice(0, 600) });
 }

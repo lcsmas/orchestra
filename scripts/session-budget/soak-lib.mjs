@@ -99,8 +99,8 @@ export async function runCampaign(o) {
   try { lock = acquireLock(o.lockPath ?? LOCK_PATH, label); } catch (e) { return { refused: [String(e.message)] }; }
   const raw = emptyRaw();
   const abortCtl = new AbortController();
-  const tStart = Date.now();
-  const elapsedSec = () => Math.round((Date.now() - tStart) / 100) / 10;
+  const tStart = performance.now();
+  const elapsedSec = () => Math.round((performance.now() - tStart) / 100) / 10; // monotonic: a suspend must not read as elapsed campaign time
   let parentAbort = null;
   let watchdog = null;
   try {
@@ -127,7 +127,7 @@ export async function runCampaign(o) {
     let buf = '';
     const res = await runSoakCampaign({
       repo, sessions: params.sessions, durationMs: params.durationSec * 1000, turnIntervalMs: params.turnIntervalSec * 1000, sampleMs: params.sampleSec * 1000,
-      turnDeadlineMs: params.turnDeadlineSec * 1000, replyDelayMs: params.replyDelayMs, faultPlan, seedLeak, profile,
+      turnDeadlineMs: params.turnDeadlineSec * 1000, replyDelayMs: params.replyDelayMs, toolEvery: params.toolEvery ?? 0, faultPlan, seedLeak, profile,
       caps: tightenCaps(caps, o.runnerCapsOverride), containment, signal: abortCtl.signal, keep: o.keep,
       onStdout: (chunk) => {
         buf += chunk;

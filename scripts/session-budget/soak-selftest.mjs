@@ -7,21 +7,24 @@
 //   abort-runner   the RUNNER's own per-sample cap check trips (D7): MUST be ABORTED naming high-load, torn down gracefully, 0 survivors.
 //   abort-watchdog the PARENT's independent cap watchdog trips mid-run (a load spike it reads): MUST be ABORTED naming it.
 //   abort-yield    the caller aborts mid-run (the app yielding to the user): MUST be ABORTED naming the caller's reason, 0 survivors.
+//   abort-parent-died  the CLI's --parent-pid process dies mid-run (the app was killed hard): MUST be ABORTED `parent-died`, 0 survivors.
 // Exit 0 all arms as expected · 1 an arm broke expectation · 3 an arm was VOID/ABORTED unexpectedly (machine too busy — re-run when calm).
-// ~13 min for all arms; each arm is ONE campaign, run one at a time (D7). Last line: `SOAK-SELFTEST: PASS|FAIL|VOID`.
+// ~20 min for all arms; each arm is ONE campaign, run one at a time (D7). Last line: `SOAK-SELFTEST: PASS|FAIL|VOID`.
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { runCampaign, otherRunnerAlive, readMemAvailKB, readLoad1 } from './soak-lib.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);
 const want = args.includes('--arm') ? args[args.indexOf('--arm') + 1] : 'all';
 const outDir = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'session-budget', 'soak-selftest-'));
-// `--duration <sec>` (≥ 180: a 60 s warm-up + the 120 s window the judge needs) shortens the seeded/healthy arms — the mutation gate uses 180.
-const durationSec = args.includes('--duration') ? Number(args[args.indexOf('--duration') + 1]) : 240;
-const base = { sessions: 3, durationSec, turnIntervalSec: 15, sampleSec: 10, turnDeadlineSec: 20, replyDelayMs: 500 };
+// `--duration <sec>` overrides the seeded/healthy arms' length. The judge skips a 180 s warm-up (a fresh session climbs ~25 MB in its first 3 min)
+// and needs a ≥ 120 s window after it, so the floor is 300 s; `healthy` defaults to 480 s so its slope budget (floor + noise/window) is tight.
+const durOpt = args.includes('--duration') ? Number(args[args.indexOf('--duration') + 1]) : null;
+const base = { sessions: 3, durationSec: durOpt ?? 300, turnIntervalSec: 15, sampleSec: 10, turnDeadlineSec: 20, replyDelayMs: 500, toolEvery: 3 };
 
 // Each arm: a campaign spec + `check(res)` → list of [ok, message] assertions with LITERAL expectations.
 const V = (res, id) => res.report.verdicts?.find((v) => v.id === id);
@@ -41,7 +44,7 @@ const ARMS = {
     ],
   },
   healthy: {
-    run: () => runCampaign({ repo: REPO, params: base, outDir, label: 'healthy' }),
+    run: () => runCampaign({ repo: REPO, params: { ...base, durationSec: durOpt ?? 480 }, outDir, label: 'healthy' }),
     expect: 'PASS',
     check: (r) => [
       [r.report.wedge.turns >= 30 && r.report.wedge.ok === r.report.wedge.turns, `all ${r.report.wedge.turns} turns completed (want ≥ 30, none wedged/errored)`],
@@ -82,6 +85,28 @@ const ARMS = {
       [r.report.aborted?.reason === 'user-active', `the caller's reason is preserved: ${r.report.aborted?.reason}`],
       [r.report.processes.survivorsAfterDelete.total === 0, 'torn down gracefully: 0 survivors'],
       [r.report.wedge.turns >= 1, 'partial rates are still reported'],
+    ],
+  },
+  'abort-parent-died': {
+    // Drives the CLI itself (that is where --parent-pid lives): a stand-in "app" (a sleeper) is killed 40 s in.
+    run: async () => {
+      const app = spawn('sleep', ['600'], { stdio: 'ignore' });
+      setTimeout(() => app.kill('SIGKILL'), 40_000);
+      const cli = spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', path.join(REPO, 'scripts', 'session-budget', 'soak-campaign.mjs'),
+        '--sessions', '2', '--duration', '180s', '--sample', '10s', '--turn-interval', '15s', '--turn-deadline', '20s', '--label', 'abort-parent', '--out-dir', outDir, '--parent-pid', String(app.pid), '--json'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      cli.stdout.on('data', (d) => (out += d));
+      const rc = await new Promise((r) => cli.on('close', (c) => r(c)));
+      const line = out.split('\n').find((l) => l.startsWith('{"terminator"'));
+      if (!line) return { refused: [`the CLI printed no report (rc ${rc}): ${out.slice(-300)}`] };
+      const { terminator, ...report } = JSON.parse(line);
+      return { report, terminator, rc, files: { json: `${outDir}/(cli --json)` } };
+    },
+    expect: 'ABORTED',
+    check: (r) => [
+      [r.rc === 4, `the CLI exited rc 4 (ABORTED), got ${r.rc}`],
+      [r.report.aborted?.reason === 'parent-died', `the campaign noticed its parent died: ${r.report.aborted?.reason} — ${r.report.aborted?.detail}`],
+      [r.report.processes.survivorsAfterDelete.total === 0, 'torn down gracefully: 0 survivors'],
     ],
   },
 };

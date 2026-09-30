@@ -63,6 +63,28 @@ export function jsonTextReply({ model = 'claude-fake', text = CANNED_TEXT, id = 
   };
 }
 
+/** A streamed assistant reply that CALLS A TOOL (stop_reason tool_use): the CLI runs it, then sends the tool_result back as the next model request. */
+export function streamedToolUseReply({ model = 'claude-fake', name, input = {}, id = 'msg_fake_1', toolId = 'toolu_fake_1', inputTokens = 12 } = {}) {
+  return [
+    sseEvent('message_start', {
+      type: 'message_start',
+      message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } },
+    }),
+    sseEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolId, name, input: {} } }),
+    sseEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }),
+    sseEvent('content_block_stop', { type: 'content_block_stop', index: 0 }),
+    sseEvent('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { input_tokens: inputTokens, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+    sseEvent('message_stop', { type: 'message_stop' }),
+  ].join('');
+}
+
+export function jsonToolUseReply({ model = 'claude-fake', name, input = {}, id = 'msg_fake_1', toolId = 'toolu_fake_1', inputTokens = 12 } = {}) {
+  return {
+    id, type: 'message', role: 'assistant', model, content: [{ type: 'tool_use', id: toolId, name, input }],
+    stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  };
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -85,6 +107,8 @@ function summarizeModelBody(buf, markers = {}) {
       messages: Array.isArray(b.messages) ? b.messages.length : 0,
       systemBytes: sysText.length,
       hasThinking: !!b.thinking,
+      // What the LAST message carries: 'tool_result' means the model is being handed a tool's output (a tool turn's second request).
+      lastBlock: (() => { const m = Array.isArray(b.messages) ? b.messages[b.messages.length - 1] : null; const c = m?.content; return Array.isArray(c) ? (c[c.length - 1]?.type ?? null) : typeof c === 'string' ? 'text' : null; })(),
       // First ~100 chars of the first message / system prompt: identifies what a tool-less SIDE call is for.
       preview: String(Array.isArray(b.messages) && b.messages[0] ? (typeof b.messages[0].content === 'string' ? b.messages[0].content : JSON.stringify(b.messages[0].content)) : sysText).replace(/\s+/g, ' ').slice(0, 100),
       // Which planted sentinels (opts.markers name -> substring) this request body carries.
@@ -173,12 +197,14 @@ export async function startFakeApi(opts = {}) {
       const text = override?.text ?? CANNED_TEXT;
       const id = `msg_fake_${++modelSeq}`;
       if (opts.replyDelayMs) await new Promise((r) => setTimeout(r, opts.replyDelayMs));
+      const tool = override?.toolUse; // { name, input }: answer with a tool call instead of text
+      if (tool) rec.toolUse = tool.name;
       if (rec.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'request-id': `req_fake_${rec.seq}` });
-        res.end(streamedTextReply({ model: rec.model ?? 'claude-fake', text, id }));
+        res.end(tool ? streamedToolUseReply({ model: rec.model ?? 'claude-fake', name: tool.name, input: tool.input, id, toolId: `toolu_fake_${modelSeq}` }) : streamedTextReply({ model: rec.model ?? 'claude-fake', text, id }));
       } else {
         res.writeHead(200, { 'content-type': 'application/json', 'request-id': `req_fake_${rec.seq}` });
-        res.end(JSON.stringify(jsonTextReply({ model: rec.model ?? 'claude-fake', text, id })));
+        res.end(JSON.stringify(tool ? jsonToolUseReply({ model: rec.model ?? 'claude-fake', name: tool.name, input: tool.input, id, toolId: `toolu_fake_${modelSeq}` }) : jsonTextReply({ model: rec.model ?? 'claude-fake', text, id })));
       }
       return;
     }

@@ -252,6 +252,10 @@ const realDeps = (): SoakDeps => ({
   log: { info: (m) => slog.info(m), warn: (m) => slog.warn(m), debug: (m) => slog.debug(m) },
 });
 
+/** One tick over the REAL dependencies, with any of them overridable — the driven rig (scripts/verify-soak-scheduler.mjs) injects only the
+ *  machine reading so the run does not depend on how loaded the host is; repo resolution, identity, spawn, env, state and logging stay real. */
+export const soakTickWith = (over: Partial<SoakDeps> = {}): ReturnType<typeof soakTick> => soakTick({ ...realDeps(), ...over });
+
 let timer: ReturnType<typeof setInterval> | null = null;
 
 /** Start the scheduler (index.ts, after the store loaded). A no-op tick loop when no checkout is found or it is disabled. */

@@ -181,7 +181,7 @@ export function runSelfTest(o) {
  *          keep?: boolean, abortGraceMs?: number}} o
  */
 export function runSoakCampaign(o) {
-  const { sessions, durationMs, turnIntervalMs = 20_000, sampleMs = 10_000, turnDeadlineMs = 60_000, faultPlan = null, seedLeak = null, profile = {}, caps } = o;
+  const { sessions, durationMs, turnIntervalMs = 20_000, sampleMs = 10_000, turnDeadlineMs = 60_000, toolEvery = 0, faultPlan = null, seedLeak = null, profile = {}, caps } = o;
   return runContained({ ...o, timeoutMs: durationMs + turnDeadlineMs + 240_000 }, 'soak-runner.mjs', 'soak',
-    { sessions, durationMs, turnIntervalMs, sampleMs, turnDeadlineMs, faultPlan, seedLeak, profile, caps }, '{"soak":"final"');
+    { sessions, durationMs, turnIntervalMs, sampleMs, turnDeadlineMs, toolEvery, faultPlan, seedLeak, profile, caps }, '{"soak":"final"');
 }

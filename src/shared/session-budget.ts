@@ -310,8 +310,18 @@ export const SOAK_BUDGETS = Object.freeze({
   projected: Object.freeze({ baseMB: 400, perSessionMB: 600 }),
   /** Every rate below is a MAX; 0 means "not one". A healthy campaign on the canned-OK fake API has no wedge, no error, no leftover. */
   wedge: Object.freeze({ wedgedTurns: 0, wedgedSessions: 0, errorTurns: 0 }),
-  /** Slope of a session's process-tree RSS (Theil–Sen, MB/min) over the post-warm-up window, and of the app process (the runner). */
-  memory: Object.freeze({ maxSessionSlopeMBPerMin: 2, maxRunnerSlopeMBPerMin: 4, warmupFraction: 0.25, minWarmupSec: 60, minWindowSec: 120, minSamples: 8 }),
+  /** Slope of a session's process-tree RSS (Theil–Sen, MB/min) over the post-warm-up window, and of the app process (the runner).
+   *  The allowed slope SHRINKS with the window: `floor + noiseMB / windowMin` (see `soakSlopeBudget`) — a short window's slope is dominated by
+   *  sampling noise (±5 MB per 10 s sample), a long one is not. The warm-up is skipped: a fresh session's tree climbs ~25 MB in its first 3 minutes. */
+  memory: Object.freeze({
+    sessionSlopeFloorMBPerMin: 0.5, sessionSlopeNoiseMB: 8, runnerSlopeFloorMBPerMin: 0.5, runnerSlopeNoiseMB: 4,
+    warmupFraction: 0.25, minWarmupSec: 180, minWindowSec: 120, minSamples: 8,
+  }),
   /** Processes left in the namespace after every workspace is deleted, and orphans (outside any session tree) at the end of the run. */
   processes: Object.freeze({ survivorsAfterDelete: 0, strayAtEnd: 0 }),
 });
+
+/** Allowed post-warm-up RSS slope (MB/min) over a window of `windowSec`: `floor + noiseMB / windowMinutes`. Pure. */
+export function soakSlopeBudget(windowSec: number, floorMBPerMin: number, noiseMB: number): number {
+  return Math.round((floorMBPerMin + noiseMB / Math.max(1, windowSec / 60)) * 100) / 100;
+}

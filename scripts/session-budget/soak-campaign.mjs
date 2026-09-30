@@ -6,6 +6,7 @@
 // < 6 GB or load > 20; never while another campaign runs; scratch HOME/config, everything killed at the end.
 // Exit: 0 PASS · 1 FAIL/BROKE · 2 usage/refused · 3 VOID · 4 ABORTED. Last line: `SOAK-CAMPAIGN: <terminator>`.
 //   --sessions N (default 3, max 10) --duration <n>[s|m|h] (5m) --turn-interval 20s --sample 10s --turn-deadline 60s --reply-delay-ms 500
+//   --tool-every N (default 3: every Nth turn is a TOOL turn — a Bash call, then a fixture MCP call; 0 = text-only turns)
 //   --out-dir DIR --label NAME --json (final report as one JSON line) --identity (print the code id JSON and exit) --skip-build
 //   --parent-pid PID (abort + tear down if that process dies — the app's scheduler passes its own pid)
 //   --seed-leak <session>:<MB/min>   --seed-wedge <session>:<afterMainRequests>     (the must-FAIL seeds; see soak-selftest.mjs)
@@ -22,7 +23,7 @@ if (args.includes('--identity')) { console.log(JSON.stringify({ ...codeIdentity(
 
 const params = {
   sessions: Number(opt('sessions', 3)), durationSec: dur(opt('duration'), 300), turnIntervalSec: dur(opt('turn-interval'), 20), sampleSec: dur(opt('sample'), 10),
-  turnDeadlineSec: dur(opt('turn-deadline'), 60), replyDelayMs: Number(opt('reply-delay-ms', 500)),
+  turnDeadlineSec: dur(opt('turn-deadline'), 60), replyDelayMs: Number(opt('reply-delay-ms', 500)), toolEvery: Number(opt('tool-every', 3)),
 };
 const seedLeak = opt('seed-leak') ? (([s, m]) => ({ session: Number(s), mbPerMin: Number(m) }))(opt('seed-leak').split(':')) : null;
 const seedWedge = opt('seed-wedge') ? (([s, n]) => ({ session: Number(s), after: Number(n) }))(opt('seed-wedge').split(':')) : null;

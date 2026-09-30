@@ -7,7 +7,7 @@ import {
   buildSoakReport, decideAbort, emptyRaw, formatSoakText, ingestSoakLine, judgeSoak, median, olsSlope, percentile, preflight, soakExitCode, soakTerminator, theilSenSlope, tightenCaps,
   type SoakRaw, type SoakReport,
 } from './soak-campaign.ts';
-import { SOAK_BUDGETS } from './session-budget.ts';
+import { SOAK_BUDGETS, soakSlopeBudget } from './session-budget.ts';
 
 const GB = 1048576;
 const CAPS = { minMemAvailKB: 6 * GB, maxLoad1: 20 };
@@ -18,6 +18,10 @@ test('SOAK_BUDGETS pins the D7 numbers as literals', () => {
   assert.equal(SOAK_BUDGETS.maxLoad1, 20);
   assert.deepEqual({ ...SOAK_BUDGETS.wedge }, { wedgedTurns: 0, wedgedSessions: 0, errorTurns: 0 });
   assert.deepEqual({ ...SOAK_BUDGETS.processes }, { survivorsAfterDelete: 0, strayAtEnd: 0 });
+  assert.equal(SOAK_BUDGETS.memory.minWarmupSec, 180, 'a fresh session climbs ~25 MB in its first 3 min: that is warm-up, not a leak');
+  assert.equal(SOAK_BUDGETS.memory.warmupFraction, 0.25);
+  assert.equal(SOAK_BUDGETS.memory.minWindowSec, 120);
+  assert.equal(SOAK_BUDGETS.memory.minSamples, 8);
   assert.ok(Object.isFrozen(SOAK_BUDGETS) && Object.isFrozen(SOAK_BUDGETS.memory) && Object.isFrozen(SOAK_BUDGETS.wedge));
 });
 
@@ -64,6 +68,13 @@ test('slopes: exact on a line, Theil–Sen shrugs off a spike that drags OLS, nu
   assert.equal(theilSenSlope([]), null);
   assert.equal(olsSlope([[5, 1], [5, 2]]), null, 'no x spread');
   assert.equal(olsSlope(Array.from({ length: 10 }, (_, i): [number, number] => [i, 7])), 0, 'flat is 0');
+});
+
+test('soakSlopeBudget: floor + noise/window — a short window is allowed noise, a long one is held to the floor', () => {
+  assert.equal(soakSlopeBudget(120, 0.5, 8), 4.5);
+  assert.equal(soakSlopeBudget(300, 0.5, 8), 2.1);
+  assert.equal(soakSlopeBudget(3600, 0.5, 8), 0.63);
+  assert.equal(soakSlopeBudget(0, 0.5, 8), 8.5, 'a degenerate window is clamped to 1 minute, never divides by zero');
 });
 
 test('median and percentile (nearest rank)', () => {
@@ -156,6 +167,30 @@ test('MUST-FAIL: a leak too small to see is NOT a false alarm — 1 MB/min stays
   assert.equal(term, 'PASS');
 });
 
+test('the slope budget SHRINKS with the window: 1 MB/min hides in 5 minutes but is caught over an hour', () => {
+  const hour = judged({ durationSec: 3600, sampleSec: 30, leak: { session: 1, mbPerMin: 1 } });
+  const v = hour.byId('soak.memory.slopeMBPerMin.s1')!;
+  assert.equal(v.ok, false, v.message);
+  assert.match(v.limit, /at most 0\.68/, 'warm-up 25% of 3600 s = 900 s → window 2700 s = 45 min → 0.5 + 8/45');
+  assert.equal(hour.byId('soak.memory.slopeMBPerMin.s0')!.ok, true);
+  assert.equal(hour.term, 'FAIL');
+  assert.equal(judged({ leak: { session: 1, mbPerMin: 1 } }).byId('soak.memory.slopeMBPerMin.s1')!.ok, true, 'the same leak over the 2-minute window is inside its noise allowance');
+});
+
+test('VOID: a wall-clock jump against the monotonic clock (suspend/resume, clock step) — nothing comparable was measured', () => {
+  const raw = synth();
+  raw.events.push({ tSec: 120, kind: 'clock-jump', sec: 2400, detail: 'x' } as any);
+  const report = buildSoakReport(raw, {}, SOAK_BUDGETS, '2026-09-30T06:05:00.000Z');
+  const j = judgeSoak(report);
+  assert.deepEqual(report.clockJumps, [{ atSec: 120, sec: 2400 }]);
+  assert.equal(j.void, true);
+  const v = j.verdicts.find((x) => x.id === 'soak.instrument.noClockStep')!;
+  assert.equal(v.ok, false);
+  assert.match(v.message, /2400 s at 120 s/);
+  assert.equal(soakTerminator(report, j), 'VOID');
+  assert.equal(judged().byId('soak.instrument.noClockStep')!.ok, true, 'a healthy run has none');
+});
+
 test('MUST-FAIL: a seeded app-process (runner) leak is named on the runner series', () => {
   const { byId, term } = judged({ runnerLeakMBPerMin: 30 });
   assert.equal(byId('soak.memory.slopeMBPerMin.runner')!.ok, false);
@@ -225,7 +260,7 @@ test('the report carries rates AND their split (per session, phase, third), the 
   assert.ok(report.series.sessions[1].length >= 30, 'the whole series is kept, not one number');
   assert.equal(report.conditions.memAvailKB.min, 10 * GB);
   assert.equal(report.conditions.load1.max, 8);
-  assert.equal(report.memory.warmupSec, 75, 'warm-up = max(60 s, 25% of 300 s)');
+  assert.equal(report.memory.warmupSec, 180, 'warm-up = max(180 s, 25% of 300 s)');
   assert.equal(report.memory.worstSession?.i, 1);
   assert.equal(report.latency.n, report.wedge.ok);
   const text = formatSoakText(report).join('\n');
