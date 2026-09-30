@@ -56,7 +56,10 @@ function WedgedRow({ workspaceId }: { workspaceId: string }) {
       busy={busy}
       onRestart={() => {
         setBusy(true);
-        void window.orchestra.restartAgent(workspaceId).finally(() => setBusy(false));
+        void window.orchestra
+          .restartAgent(workspaceId)
+          .catch((e) => console.error('restartAgent failed', e))
+          .finally(() => setBusy(false));
       }}
     />
   );
@@ -71,7 +74,10 @@ function TickingRow({ since, workspaceId }: { since: number; workspaceId: string
       busy={busy}
       onRestart={() => {
         setBusy(true);
-        void window.orchestra.restartAgent(workspaceId).finally(() => setBusy(false));
+        void window.orchestra
+          .restartAgent(workspaceId)
+          .catch((e) => console.error('restartAgent failed', e))
+          .finally(() => setBusy(false));
       }}
     />
   );

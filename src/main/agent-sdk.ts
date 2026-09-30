@@ -5246,6 +5246,9 @@ export async function sdkStop(wsId: string, opts?: { hibernate?: boolean }): Pro
  *  (ensureSession's `resume` gate), and the next live session overwrites it
  *  with the fresh id. */
 export async function sdkClear(wsId: string): Promise<void> {
+  // #226: a paused sandbox ws keeps its session id — this is the chokepoint of UI /clear and `restart --fresh`.
+  const paused = sandboxPausedMessage(store.getWorkspace(wsId));
+  if (paused) throw new Error(paused);
   const session = sessions.get(wsId);
   if (session) {
     session.cleared = true;

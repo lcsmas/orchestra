@@ -29,13 +29,17 @@ Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED a
   `workspaces.ts` `wakeAgentWithPrompt` returns `false` (its PTY fallback passes no `host` and would start a LOCAL `claude`);
   `api-handlers.ts` `fixChecks` / `sendReviewToAgent` THROW the message (a `false` wake there answered `requested` into nothing);
   `index.ts` bus-wake roster marks the ws `wakeable:false` (else the sweep re-fires at a start that always refuses);
-  `startWorkspaceAgentHeadless` throws (unreachable today — see next bullet).
+  `startWorkspaceAgentHeadless` throws (unreachable today — see next bullet);
+  `api-handlers.ts` `restartAgent` (toolbar Restart) THROWS the pause on a paused ws (App.tsx shows it in `dialog.error`, both `BootStall.tsx`
+  callers `.catch`) — the restart guard's `{ok:false}` alone resolved silently into a neutral "Resume your session" row;
+  `agent-sdk.ts` `sdkClear` (UI `/clear` + `restart --fresh`) throws so a paused ws keeps its `sdkSessionId` (the UI's `agentSdkClear` caller only
+  `console.error`s the rejection — nothing is rendered for a refused `/clear`).
 - **Not reachable** — `orchestra spawn` cannot yield a sandbox workspace: `dispatchSpawnRequest` → `createWorkspace` never passes
   `host` (only `importWorkspaceToSandbox` flips it; the `workspaces:create` IPC accepts it but the renderer never sends it).
   A live local session survives an import flip (`ensureSessionInner`'s `existing` early-return precedes the guard) — not a start.
 - **Proof** — built-app arm `sandbox_paused` (`scripts/e2e-agent-view-removal.mjs`, see [activity-pty-terminal.md](activity-pty-terminal.md)
   § Removal rig): seeds sandbox-hosted records, drives an Agent-view send, the real CLI `restart` (default, `--fresh`, legacy ws)
-  and `message`, `sendReviewToAgent`/`fixChecks` over IPC, and a local control; `EXPECT.sandboxPaused` baseline false (master) /
+  and `message`, `sendReviewToAgent`/`fixChecks`/`restartAgent`/`agentSdkClear` over IPC, and a local control; `EXPECT.sandboxPaused` baseline false (master) /
   after true. Pins: `shared/sandbox-pause.test.ts`, `main/sandbox-pause-wiring.test.ts` (funnel placement, one `query({`,
   one `ensureSessionInner` caller, each guard's placement).
 

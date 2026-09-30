@@ -978,6 +978,9 @@ export const apiHandlers: ApiHandlerTable = {
     const { dispatchRestartRequest } = await import('./restart-workspace.ts');
     const res = await dispatchRestartRequest({ id, fresh: false, trigger: 'toolbar' });
     if (!res.ok) log.warn(`restartAgent: ${id} — ${res.error ?? 'unknown'}`);
+    // #226: a paused sandbox agent must SURFACE the pause (the callers show the rejection), never a silent resolve.
+    const paused = sandboxPausedMessage(store.getWorkspace(id));
+    if (!res.ok && paused) throw new Error(paused);
   },
 
   stopAgent: async (id) => {

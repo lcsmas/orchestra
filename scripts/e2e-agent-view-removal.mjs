@@ -1571,6 +1571,10 @@ const ARMS = [
       console.log(`OBSERVED  cli restart legacy ${sbx.legacy.id}: rc=${lg.rc} stdout=${JSON.stringify(oneLine(lg.stdout))} stderr=${JSON.stringify(oneLine(lg.stderr))}`);
       ctx.clause('cli-restart-legacy/not-ok', lg.rc !== null && lg.rc !== 0, `rc=${lg.rc} (both modes: master dials the container and fails; the pause refuses without dialling)`);
       ctx.clause('cli-restart-legacy/names-pause-and-220', namesPause(lg.stderr) === want, `names pause+#220=${namesPause(lg.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(lg.stderr)} (baseline: ECONNREFUSED = it dialled the sandbox)`);
+      // r2 F1: the TOOLBAR Restart (`restartAgent` IPC) must REJECT naming the pause — its callers show the rejection — not resolve into a silent neutral "Resume your session" row.
+      const tb = await ipcSettle(app, `window.orchestra.restartAgent(${JSON.stringify(sbx.gone.id)})`);
+      console.log(`OBSERVED  restartAgent(${sbx.gone.id}) [toolbar Restart]: ${JSON.stringify(tb)}`);
+      ctx.clause('toolbar-restart/throws-the-pause', want ? (!tb.ok && namesPause(tb.message)) : tb.ok, `settled=${JSON.stringify(tb).slice(0, 200)} expected(${MODE}) ${want ? 'reject naming pause+#220' : 'resolve (master: silent; the failure surfaces later as a cryptic error row)'}`);
 
       // ── 3. PTY-listing positive control (the local workspace), then CLI message wake of the sandbox workspace whose local dir EXISTS ──
       await activateWorkspace(app, 'avr-1');
@@ -1599,6 +1603,13 @@ const ARMS = [
       const fx = await ipcSettle(app, `window.orchestra.fixChecks(${JSON.stringify(sbx.gone.id)})`);
       console.log(`OBSERVED  fixChecks(${sbx.gone.id}): ${JSON.stringify(fx)}`);
       ctx.clause('fix-checks/throws-the-pause', want ? (!fx.ok && namesPause(fx.message)) : !namesPause(fx.message ?? ''), `settled=${JSON.stringify(fx).slice(0, 200)} expected(${MODE}) ${want ? 'reject naming pause+#220 (before any gh call)' : 'anything but the pause'}`);
+
+      // ── 3c. UI /clear (`agentSdkClear`): rejects naming the pause and keeps the session id (r2 F3; the CLI `--fresh` clause covers the other caller of sdkClear) ──
+      const cl = await ipcSettle(app, `window.orchestra.agentSdkClear(${JSON.stringify(sbx.live.id)})`);
+      const liveSess = await app.cdp.eval(`window.orchestra.listWorkspaces().then(l => (l.find(w => w.id === ${JSON.stringify(sbx.live.id)}) || {}).sdkSessionId)`);
+      console.log(`OBSERVED  agentSdkClear(${sbx.live.id}): ${JSON.stringify(cl)} sdkSessionId now ${JSON.stringify(liveSess)}`);
+      ctx.clause('ui-clear/throws-the-pause', want ? (!cl.ok && namesPause(cl.message)) : cl.ok, `settled=${JSON.stringify(cl).slice(0, 200)} expected(${MODE}) ${want ? 'reject naming pause+#220' : 'resolve (master clears the conversation of a workspace it cannot run)'}`);
+      ctx.clause('ui-clear/session-id-untouched', want ? liveSess === sbx.live.sdkSessionId : liveSess === '', `sdkSessionId=${JSON.stringify(liveSess)} expected(${MODE}) ${want ? JSON.stringify(sbx.live.sdkSessionId) : "'' (cleared)"}`);
 
       // ── 4. Positive control: a LOCAL workspace's Agent-view send is NOT refused ──────────────
       await openAgentTab(app);

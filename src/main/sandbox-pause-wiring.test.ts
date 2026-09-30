@@ -16,6 +16,7 @@ const WORKSPACES = read('workspaces.ts');
 const RESTART = read('restart-workspace.ts');
 const API_HANDLERS = read('api-handlers.ts');
 const INDEX = read('index.ts');
+const BOOT_STALL = fs.readFileSync(path.join(process.cwd(), 'src', 'renderer', 'components', 'BootStall.tsx'), 'utf8');
 
 /** Body of a top-level function: from its signature to the next column-0 `}`. */
 function body(src: string, signature: string): string {
@@ -89,4 +90,20 @@ test('spawn: startWorkspaceAgentHeadless throws the pause before the SDK start /
   assert.match(b, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
   before(b, 'sandboxPausedMessage(ws)', 'sdkStartAndDeliver(id, ws.lastTask)');
   before(b, 'sandboxPausedMessage(ws)', 'await startPty(');
+});
+
+test('toolbar Restart: restartAgent THROWS the pause on a paused ws (never a silent resolve) and its renderer callers tolerate the rejection', () => {
+  const h = API_HANDLERS.slice(API_HANDLERS.indexOf('restartAgent: async (id) =>'), API_HANDLERS.indexOf('stopAgent: async'));
+  assert.ok(h.length > 200, 'restartAgent handler not found');
+  assert.match(h, /const paused = sandboxPausedMessage\(store\.getWorkspace\(id\)\);\s*\n\s*if \(!res\.ok && paused\) throw new Error\(paused\);/);
+  before(h, 'await dispatchRestartRequest(', 'sandboxPausedMessage(store.getWorkspace(id))');
+  // both BootStall callers catch (App.tsx already try/catches into dialog.error)
+  assert.equal([...BOOT_STALL.matchAll(/\.catch\(\(e\) => console\.error\('restartAgent failed', e\)\)/g)].length, 2, 'both BootStall restartAgent callers must tolerate a rejection');
+});
+
+test('sdkClear (UI /clear + `restart --fresh`): a paused ws keeps its session id — the guard is the first statement', () => {
+  const b = body(AGENT_SDK, 'export async function sdkClear(');
+  assert.match(b, /const paused = sandboxPausedMessage\(store\.getWorkspace\(wsId\)\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
+  before(b, 'sandboxPausedMessage(', 'sessions.get(wsId)');
+  before(b, 'sandboxPausedMessage(', "persistWorkspacePatch(wsId, { sdkSessionId: '' })");
 });

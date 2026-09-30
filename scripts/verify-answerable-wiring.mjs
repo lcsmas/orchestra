@@ -63,15 +63,24 @@
 //   • `SUPPORTED_DIALOG_KINDS = ['totally_bogus_kind_the_cli_never_emits']`
 //   • `supportedDialogKinds: [...SUPPORTED_DIALOG_KINDS, 'permission_prompt']`
 //     (declared but NOT handled — rejected by the bridge's includes() guard)
-//   • the wiring gated behind `...(remote ? {} : { ... })`
+//   • NOT the wiring gated behind `...(remote ? {} : { ... })` — measured GREEN since #226: `remote` is
+//     unreachable at the launch site while sandbox agents are paused (accepted gap until #220).
 // Re-run these after any change here — a gate nobody has watched fail is
 // indistinguishable from one that cannot.
 //
 // ISOLATION — this never touches the user's real Orchestra state. It runs
 // against a fresh mkdtemp userData with its own seeded store.json, its own
 // $ORCHESTRA_HOME, a fake `platform` seam, and a stubbed `electron`. The
-// account it seeds uses a SCRATCH config dir under that tmp — never the
-// invoker's live $CLAUDE_CONFIG_DIR, which the inheritance sync would strip.
+// account it seeds points at a FRESH SCRATCH `configDir` under its own tmp —
+// NEVER the invoker's $CLAUDE_CONFIG_DIR / ~/.claude* (SAFETY, incident
+// 2026-09-30): the driven `ensureSession` runs `syncAccountInheritance` on the
+// seeded account's dir, which STRIPS the symlinks + MCP servers of any live dir
+// it names (measured on the invoker's dir: links 7→0, mcp 3→0, while still
+// printing ALL WIRING CHECKS PASSED). `process.env.CLAUDE_CONFIG_DIR` is
+// re-pointed at the scratch dir too, the script REFUSES (rc 2) any configDir
+// outside its tmp or overlapping a live dir, and it FAILS if a protected live
+// dir lost anything between start and end. No login is needed: `query()` is
+// the injected fake.
 //
 // HOW THIS IS ENFORCED — by the FLEET MODEL, deliberately, not by a GitHub
 // Actions workflow (owner ruling, 2026-08-25, issue #55). It is registered as
@@ -136,11 +145,46 @@ fs.mkdirSync(worktree, { recursive: true });
 // hooks-socket pointer, and the real ~/.orchestra must stay untouched.
 process.env.ORCHESTRA_HOME = path.join(tmp, 'home');
 
-// G5 — the account pin is a SCRATCH config dir, never the invoker's live one: the
-// bundle's account-inheritance sync strips a live dir it is pointed at (it emptied
-// ~/.claude-mc on 2026-09-30 while this gate printed PASS). No login is needed here.
+// SAFETY — the seeded account's configDir is a fresh scratch dir inside `tmp`, never a live one.
+// The invoker's dirs are only PROTECTED: snapshotted now, compared at the end (see `protectedDirs`).
+const realHome = os.userInfo().homedir;
+const protectedDirs = [
+  ...new Set(
+    [process.env.CLAUDE_CONFIG_DIR, path.join(realHome, '.claude')]
+      .concat(fs.readdirSync(realHome).filter((n) => n.startsWith('.claude-')).map((n) => path.join(realHome, n)))
+      .filter((d) => d && fs.existsSync(d)),
+  ),
+];
+const rp = (x) => { try { return fs.realpathSync(x); } catch { return path.resolve(x); } };
 const configDir = path.join(tmp, 'claude-config');
 fs.mkdirSync(configDir, { recursive: true });
+{
+  const c = rp(configDir);
+  const inTmp = c.startsWith(rp(tmp) + path.sep);
+  const overlaps = protectedDirs.map(rp).some((l) => c === l || c.startsWith(l + path.sep) || l.startsWith(c + path.sep));
+  if (!inTmp || overlaps) {
+    console.error(`REFUSED: seeded configDir ${configDir} must be inside ${tmp} and never overlap a live config dir (${protectedDirs.join(', ')})`);
+    process.exit(2);
+  }
+}
+process.env.CLAUDE_CONFIG_DIR = configDir; // the driven bundle must not see the invoker's dir either
+/** What the account-inherit sync can rewrite: symlinks (top level + skills/), the managed files, the manifest, the mcpServers KEYS. */
+function surfaceOf(dir) {
+  const items = [];
+  for (const sub of ['', 'skills']) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(dir, sub)); } catch { /* absent */ }
+    for (const n of names.sort()) {
+      const f = path.join(dir, sub, n);
+      try { if (fs.lstatSync(f).isSymbolicLink()) items.push(`link:${path.join(sub, n)}->${fs.readlinkSync(f)}`); } catch { /* raced */ }
+    }
+  }
+  for (const n of ['CLAUDE.md', 'settings.json', 'LESSONS.md']) if (fs.existsSync(path.join(dir, n))) items.push(`managed:${n}`);
+  try { const m = JSON.parse(fs.readFileSync(path.join(dir, '.orchestra-inherited.json'), 'utf8')); items.push(...(m.symlinks ?? []).map((x) => `manifest-link:${x}`), ...(m.mcpServers ?? []).map((x) => `manifest-mcp:${x}`)); } catch { /* none */ }
+  try { items.push(...Object.keys(JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8')).mcpServers ?? {}).map((x) => `mcp:${x}`)); } catch { /* none */ }
+  return items;
+}
+const surfaceBefore = new Map(protectedDirs.map((d) => [d, surfaceOf(d)]));
 const WS_ID = 'wiring-gate-ws';
 // BOTH launch paths must be exercised. `ensureSession` computes
 // `remote = ws.host?.kind === 'sandbox'` (agent-sdk.ts:1084) and the launch site
@@ -578,6 +622,21 @@ check(
   errorRows.some((e) => /Couldn't start the agent/.test(e.payload?.message ?? '') && /paused/i.test(e.payload?.message ?? '') && (e.payload?.message ?? '').includes('#220')),
   `error events: ${JSON.stringify(errorRows.map((e) => e.payload?.message))}`,
 );
+
+// ── 4. The invoker's live config dirs lost NOTHING (safety, incident 2026-09-30) ─────────────
+console.log('\nprotected live config dirs are untouched:');
+{
+  const removed = [];
+  for (const [d, before] of surfaceBefore) {
+    const after = new Set(surfaceOf(d));
+    for (const item of before) if (!after.has(item)) removed.push(`${d}: -${item}`);
+  }
+  check(
+    'no protected live config dir lost a link / managed file / manifest entry / MCP server',
+    removed.length === 0,
+    `REMOVED ${removed.length}: ${removed.slice(0, 4).join(' | ')}`,
+  );
+}
 
 // ── Teardown ────────────────────────────────────────────────────────────────
 try {
