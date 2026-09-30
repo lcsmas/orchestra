@@ -6,7 +6,7 @@
 // Runs in scratch HOME/ORCHESTRA_HOME (D7). Zero tokens: no model, no network (netns wrapper).
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assertScratch } from '../session-budget/scratch-guard.mjs';
 
@@ -77,7 +77,7 @@ const hookEvent = (k) => k.split(':')[0];
 
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null; };
 const short = (c) => c.replace(/^f="\$\{ORCHESTRA_WORKTREE:-\.\}\/\.orchestra\//, '').replace(/"; \[ -f "\$f" \] && bash "\$f"/, ' →').slice(0, 70);
-const out = { generatedAt: new Date().toISOString(), runs: RUNS, peers: PEERS, orchestraCliOnPath: WITH_CLI && !!realShimDir, events: {} };
+const out = { generatedAt: new Date().toISOString(), loadavg: fs.readFileSync('/proc/loadavg', 'utf8').split(' ').slice(0, 3).join(' '), runs: RUNS, peers: PEERS, orchestraCliOnPath: WITH_CLI && !!realShimDir, events: {} };
 let seq = 0;
 for (const [key, [payload, toolName]] of Object.entries(payloads)) {
   const ev = hookEvent(key);
@@ -91,14 +91,19 @@ for (const [key, [payload, toolName]] of Object.entries(payloads)) {
       fs.writeFileSync(logFile, '');
       const wrapped = `TIMEFORMAT='HCTIME %3R %3U %3S'; { time bash -c "$1"; } 2>>"$2" >/dev/null`;
       const tf = `${logFile}.time`;
-      const t0 = process.hrtime.bigint();
-      spawnSync('bash', ['-c', wrapped, '_', cmd, tf], { input: JSON.stringify(payload), env: hookEnv(logFile), cwd: wt, timeout: 60_000 });
-      const wall = Number(process.hrtime.bigint() - t0) / 1e6;
+      // ASYNC spawn: the hooks server lives in THIS process — a blocking spawnSync would deadlock every hook that curls it (comms-resurface, `orchestra whoami`).
+      const wall = await new Promise((resolve) => {
+        const t0 = process.hrtime.bigint();
+        const c = spawn('bash', ['-c', wrapped, '_', cmd, tf], { env: hookEnv(logFile), cwd: wt, stdio: ['pipe', 'ignore', 'ignore'] });
+        c.stdin.end(JSON.stringify(payload));
+        const to = setTimeout(() => c.kill('SIGKILL'), 60_000);
+        c.on('exit', () => { clearTimeout(to); resolve(Number(process.hrtime.bigint() - t0) / 1e6); });
+      });
       if (r < 2) continue; // 2 warm-up runs (page cache, first curl)
       const tline = fs.existsSync(tf) ? fs.readFileSync(tf, 'utf8').split('\n').reverse().find((l) => l.startsWith('HCTIME')) : null;
       const [, , u, s] = tline ? tline.split(' ') : [];
       const lines = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l.startsWith('EXEC '));
-      // The `time` wrapper's own `bash -c "$1"` re-exec is not the hook: discount the 2 wrapper execs (outer bash -c wrapper is the driver's spawn; inner is `bash -c cmd`).
+      // Logged lines = the inner `bash -c <hook command>` (Claude's dispatcher shell — a real process per hook in the field) + everything it spawns; the outer timing wrapper starts before LD_PRELOAD applies, so it is not logged.
       procs.push(lines.length);
       for (const l of lines) { const a = l.split(' ').slice(5); const k = path.basename(l.split(' ')[4]); byKey[k] = (byKey[k] ?? 0) + 1; void a; }
       walls.push(wall); cpus.push((Number(u) + Number(s)) * 1000);

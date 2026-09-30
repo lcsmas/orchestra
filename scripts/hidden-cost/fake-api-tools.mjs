@@ -30,19 +30,34 @@ function streamedDeltas({ model, id, deltas }) {
   return ev.join('');
 }
 
+/** The same delta stream, but PACED at `rate` deltas/second (a model streaming tokens), written as it goes. */
+async function streamProgressive(res, { model, id, deltas, rate }) {
+  const u = { input_tokens: 12, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  res.write(sse('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: u } }));
+  res.write(sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }));
+  const tickMs = 50, perTick = Math.max(1, Math.round((rate * tickMs) / 1000));
+  for (let i = 0; i < deltas; i += perTick) {
+    for (let j = i; j < Math.min(deltas, i + perTick); j++) res.write(sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${j % 10} ` } }));
+    await new Promise((r) => setTimeout(r, tickMs));
+  }
+  res.write(sse('content_block_stop', { type: 'content_block_stop', index: 0 }));
+  res.write(sse('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { ...u, output_tokens: deltas } }));
+  res.end(sse('message_stop', { type: 'message_stop' }));
+}
+
 /** Plan for this request from the message list: how many tool_results since the last human text turn, and k from `TOOLS=k`. */
 export function planFor(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
-  let done = 0, k = 0, stream = 0;
+  let done = 0, k = 0, stream = 0, rate = 0;
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     const parts = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }];
     const results = parts.filter((p) => p.type === 'tool_result').length;
     const text = parts.filter((p) => p.type === 'text').map((p) => p.text ?? '').join('\n');
-    if (m.role === 'user' && results === 0 && /TOOLS=\d+/.test(text)) { k = Number(/TOOLS=(\d+)/.exec(text)[1]); stream = Number(/STREAM=(\d+)/.exec(text)?.[1] ?? 0); break; }
+    if (m.role === 'user' && results === 0 && /TOOLS=\d+/.test(text)) { k = Number(/TOOLS=(\d+)/.exec(text)[1]); stream = Number(/STREAM=(\d+)/.exec(text)?.[1] ?? 0); rate = Number(/RATE=(\d+)/.exec(text)?.[1] ?? 0); break; }
     if (m.role === 'user') done += results;
   }
-  return { k, done, stream };
+  return { k, done, stream, rate };
 }
 
 export async function startFakeApiWithTools(opts = {}) {
@@ -62,13 +77,14 @@ export async function startFakeApiWithTools(opts = {}) {
     const rec = { seq: ++seq, tMs: now(), method: req.method, path: u.pathname, type, bodyBytes: raw.length, model: body?.model ?? null, stream: body?.stream === true, tools: Array.isArray(body?.tools) ? body.tools.length : 0, messages: Array.isArray(body?.messages) ? body.messages.length : 0 };
     requests.push(rec);
     if (type === 'model') {
-      const { k, done, stream } = planFor(body);
+      const { k, done, stream, rate } = planFor(body);
       const id = `msg_fake_${++modelSeq}`;
       if (opts.replyDelayMs) await new Promise((r) => setTimeout(r, opts.replyDelayMs));
       const wantTool = done < k;
       rec.plan = wantTool ? `tool_use ${done + 1}/${k}` : 'text';
       if (rec.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'request-id': `req_fake_${rec.seq}` });
+        if (!wantTool && stream > 0 && rate > 0) { await streamProgressive(res, { model: rec.model ?? 'claude-fake', id, deltas: stream, rate }); return; }
         res.end(wantTool
           ? toolUseReply({ model: rec.model ?? 'claude-fake', id, toolId: `toolu_fake_${rec.seq}`, name: 'Bash', input: { command: 'true', description: 'hc tool call' } })
           : (stream > 0 ? streamedDeltas({ model: rec.model ?? 'claude-fake', id, deltas: stream }) : streamedTextReply({ model: rec.model ?? 'claude-fake', text: 'ok', id })));

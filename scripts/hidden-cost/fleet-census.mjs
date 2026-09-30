@@ -12,7 +12,7 @@ for (const d of fs.readdirSync('/proc')) {
     const rp = stat.lastIndexOf(')');
     const f = stat.slice(rp + 2).split(' ');
     const cmd = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0').filter(Boolean);
-    const rssKB = Number(fs.readFileSync(`/proc/${d}/statm`, 'utf8').split(' ')[1]) * 4;
+    const rssKB = Number(/^VmRSS:\s+(\d+) kB/m.exec(fs.readFileSync(`/proc/${d}/status`, 'utf8'))?.[1] ?? 0); // kB whatever the page size (statm*4 read 4x LOW on this 16 KB-page host)
     rows.push({ pid: Number(d), ppid: Number(f[1]), state: f[0], cpuS: (Number(f[11]) + Number(f[12])) / 100, startTicks: Number(f[19]), cmd, rssKB });
   } catch { /* exited */ }
 }

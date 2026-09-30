@@ -79,7 +79,7 @@ function readProc(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); const rp = stat.lastIndexOf(')'); const f = stat.slice(rp + 2).split(' ');
     const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-    let rssKB = 0; try { rssKB = Number(fs.readFileSync(`/proc/${pid}/statm`, 'utf8').split(' ')[1]) * 4; } catch { /* gone */ }
+    let rssKB = 0; try { const m = /^VmRSS:\s+(\d+) kB/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8')); rssKB = m ? Number(m[1]) : 0; } catch { /* gone */ }  // VmRSS is kB whatever the page size (statm*4 read 4x LOW on this 16 KB-page host)
     return { pid, ppid: Number(f[1]), state: f[0], utime: Number(f[11]), stime: Number(f[12]), cutime: Number(f[13]), cstime: Number(f[14]), cmd, rssKB };
   } catch { return null; }
 }
@@ -104,16 +104,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const windows = [];
 async function window_(name, fn) {
-  const c0 = cpuNow(); const t0 = mono(); const r0 = api.requests.length; const b0 = { calls: bc.calls, bytes: bc.bytes, byType: { ...bc.byType } };
+  const m0 = process.cpuUsage(); const c0 = cpuNow(); const t0 = mono(); const r0 = api.requests.length; const b0 = { calls: bc.calls, bytes: bc.bytes, byType: { ...bc.byType } };
   const extra = await fn();
-  const t1 = mono(); const c1 = cpuNow();
+  const t1 = mono(); const c1 = cpuNow(); const m1 = process.cpuUsage(m0); // Orchestra-main analogue: the runner process (agent-sdk consume, spool reader, hooks server, emitContext)
   const reqs = api.requests.slice(r0);
   const count = { model: 0, count_tokens: 0, other: 0 };
   for (const r of reqs) count[r.type === 'model' || r.type === 'count_tokens' ? r.type : 'other']++;
   const cpu = {};
   for (const k of new Set([...Object.keys(c0), ...Object.keys(c1)])) { const a = c0[k] ?? { own: 0, kids: 0 }, b = c1[k] ?? { own: 0, kids: 0, n: 0, rssKB: 0 }; cpu[k] = { ownCpuMs: (b.own - a.own) * 10, waitedKidsCpuMs: (b.kids - a.kids) * 10, n: b.n ?? 0, rssKB: b.rssKB ?? 0 }; }
   const rendererIpc = { events: bc.calls - b0.calls, jsonBytes: bc.bytes - b0.bytes, byType: Object.fromEntries(Object.entries(bc.byType).map(([k, n]) => [k, n - (b0.byType[k] ?? 0)]).filter(([, n]) => n > 0)) };
-  windows.push({ name, t0, t1, rendererIpc, seconds: Number(((t1 - t0) / 1000).toFixed(2)), requests: count, otherPaths: [...new Set(reqs.filter((r) => r.type !== 'model' && r.type !== 'count_tokens').map((r) => `${r.method} ${r.path}`))], cpu, ...(extra ?? {}) });
+  windows.push({ name, t0, t1, mainProcessCpuMs: Math.round((m1.user + m1.system) / 1000), rendererIpc, seconds: Number(((t1 - t0) / 1000).toFixed(2)), requests: count, otherPaths: [...new Set(reqs.filter((r) => r.type !== 'model' && r.type !== 'count_tokens').map((r) => `${r.method} ${r.path}`))], cpu, ...(extra ?? {}) });
 }
 
 let error = null;

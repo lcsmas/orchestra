@@ -41,7 +41,10 @@ fs.mkdirSync(root, { recursive: true });
 assertScratch('root', root, base, live);
 const claude = spawnSync('sh', ['-c', 'command -v claude'], { encoding: 'utf8' }).stdout.trim();
 const cfg = { REPO, root, live, turns, idleSeconds, hooks, profile, probeModels, httpMcp, execlogSo: so, label, containment: containment.name };
-const env = { PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', HC_CONFIG: JSON.stringify(cfg) };
+// PATH: a scratch bin holding ONLY a `claude` symlink — ~/.local/bin also holds the `orchestra` shim (an AppImage that cannot FUSE-mount inside bwrap),
+// which the SessionStart hooks would call and fail on; the CLI's real cost is measured apart (scripts/hidden-cost/cli-cost.sh).
+const scratchBin = path.join(root, 'bin'); fs.mkdirSync(scratchBin, { recursive: true }); fs.symlinkSync(fs.realpathSync(claude), path.join(scratchBin, 'claude'));
+const env = { PATH: [scratchBin, path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', HC_CONFIG: JSON.stringify(cfg) };
 const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(REPO, 'scripts', 'hidden-cost', 'scenario-runner.mjs')];
 const child = spawn(argv[0], argv.slice(1), { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 let out = '', err = '';

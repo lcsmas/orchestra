@@ -15,4 +15,4 @@ export E2E_RIG_BASE="${E2E_RIG_BASE:-$HOME/.cache/hidden-cost/rigs}"
 exec bash scripts/e2e-contained-rig.sh \
   bwrap --dev-bind / / --unshare-net --unshare-pid --proc /proc --die-with-parent \
   node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types "$REPO/scripts/hidden-cost/app-idle-rig.mjs" \
-  --so "$REPO/scripts/hidden-cost/execlog/execlog.so" --live "$LIVE_JSON" "$@"
+  --so "$REPO/scripts/hidden-cost/execlog/execlog.so" --live "$LIVE_JSON" --claude-dir "$(dirname "$(command -v claude)")" "$@"
