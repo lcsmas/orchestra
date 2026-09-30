@@ -110,11 +110,52 @@ export function classifyPtyId(
   return { kind: 'agent', workspaceId: id };
 }
 
+/** What every memory reader falls back to when the host page size cannot be read (WRONG on a 16 KB-page host — the
+ *  reader warns once; #214 finding). NOT a parse default: `parseProcStatLine` requires the page size explicitly. */
+export const FALLBACK_PAGE_SIZE_BYTES = 4096;
+
+/** A page size we accept from the kernel: a power of two in [4 KiB, 64 KiB]. Anything else (a hugetlb-backed first VMA
+ *  reports MBs) is refused rather than multiplied into every RSS figure. */
+export function isPlausiblePageSize(bytes: number): boolean {
+  return Number.isInteger(bytes) && bytes >= 4096 && bytes <= 65536 && (bytes & (bytes - 1)) === 0;
+}
+
+/** `KernelPageSize:   16 kB` (first VMA block of /proc/self/smaps) → bytes; null unless plausible. Fallback source only. */
+export function parseKernelPageSize(smaps: string): number | null {
+  const m = /^KernelPageSize:\s+(\d+)\s*kB/m.exec(smaps);
+  if (!m) return null;
+  const bytes = Number(m[1]) * 1024;
+  return isPlausiblePageSize(bytes) ? bytes : null;
+}
+
+/** AT_PAGESZ (auxv type 6) from a raw /proc/self/auxv image — the kernel's own answer for THIS process. Entries are
+ *  (type, value) pairs of `entryBytes` (8 on 64-bit, 4 on 32-bit); null when absent, truncated or implausible. */
+export function parseAuxvPageSize(auxv: Uint8Array, entryBytes: 4 | 8, littleEndian: boolean): number | null {
+  const dv = new DataView(auxv.buffer, auxv.byteOffset, auxv.byteLength);
+  const read = (off: number): number =>
+    entryBytes === 8 ? Number(littleEndian ? dv.getBigUint64(off, true) : dv.getBigUint64(off, false)) : dv.getUint32(off, littleEndian);
+  for (let off = 0; off + 2 * entryBytes <= auxv.byteLength; off += 2 * entryBytes) {
+    const type = read(off);
+    if (type === 0) return null; // AT_NULL: end of vector
+    if (type === 6) {
+      const v = read(off + entryBytes);
+      return isPlausiblePageSize(v) ? v : null;
+    }
+  }
+  return null;
+}
+
+/** Identity-only view of a stat line (pid, ppid, comm, start-time, cpu ticks): `memBytes` is 0, deliberately — callers that
+ *  need memory must call `parseProcStatLine` with the host page size (RSS is in PAGES; #214 finding). */
+export function parseProcIdentity(text: string): ProcSample | null {
+  return parseProcStatLine(text, 0);
+}
+
 /** Parse one /proc/<pid>/stat file. The comm field is wrapped in parentheses
  *  and may itself contain spaces or parentheses (`(tmux: server)`), so split
  *  on the LAST ')' rather than whitespace-splitting the whole line. Returns
  *  null for anything malformed (process died mid-read, kernel threads, …). */
-export function parseProcStatLine(text: string): ProcSample | null {
+export function parseProcStatLine(text: string, pageSizeBytes: number): ProcSample | null {
   const open = text.indexOf('(');
   const close = text.lastIndexOf(')');
   if (open < 0 || close < 0 || close < open) return null;
@@ -136,7 +177,7 @@ export function parseProcStatLine(text: string): ProcSample | null {
     ppid,
     comm,
     cpuTicks: utime + stime,
-    memBytes: (Number.isFinite(rssPages) ? rssPages : 0) * 4096,
+    memBytes: (Number.isFinite(rssPages) ? rssPages : 0) * pageSizeBytes,
     cpuPct: null,
     ...(Number.isFinite(startTicks) ? { startTicks } : {}),
   };
