@@ -21,6 +21,17 @@ const cfgDir = path.join(home, '.claude');
 // Fails CLOSED: without the invoker's live-dir list the guard would compare against nothing (F10).
 if (!Array.isArray(cfg.live) || cfg.live.length === 0) throw new Error('session-runner: cfg.live (the invoker\'s live-dir list) is absent or empty — refusing to run without the scratch guard\'s live list');
 for (const [label, p] of [['HOME', home], ['ORCHESTRA_HOME', orchHome], ['CLAUDE_CONFIG_DIR', cfgDir]]) assertScratch(label, p, root, cfg.live);
+// CONTAINMENT CANARY, before anything boots: ask the namespace whether it is routeless (documentation-range connect, interfaces, routes).
+// Unproven and not opted out ⇒ print a VOID judgement and STOP — the fake API, the fixture, the app and the CLI never start in an
+// environment that was only *named* contained.
+const { containmentCanary } = await import(`${HERE}/canary.mjs`);
+const { judgeContainmentProof } = await import(`${REPO}/src/shared/session-budget.ts`);
+const containmentProof = await containmentCanary();
+const proofVerdict = judgeContainmentProof(containmentProof, !!cfg.containmentOptOut);
+if (!proofVerdict.ok) {
+  console.log(JSON.stringify({ report: { schema: 1, arm, containment, ...(cfg.containmentOptOut ? { containmentOptOut: true } : {}), containmentProof }, judgement: { ok: false, void: true, verdicts: [proofVerdict] }, aborted: 'containment' }));
+  process.exit(0);
+}
 fs.mkdirSync(cfgDir, { recursive: true });
 fs.mkdirSync(orchHome, { recursive: true });
 process.env.HOME = home;
@@ -160,6 +171,7 @@ const report = {
   fixture: { skills: fx.profile.skills, memoryFiles: fx.profile.memoryFiles, mcpServers: fx.profile.mcpServers, toolsPerServer: fx.profile.toolsPerServer, claudeMdKB: fx.profile.claudeMdKB },
   containment,
   ...(cfg.containmentOptOut ? { containmentOptOut: true } : {}),
+  containmentProof,
   envParity: cliEnv === null ? undefined : { source: `/proc/${cliEnv.cliPid}/environ at the first reply`, trafficKnobsSet: cliEnv.trafficKnobsSet, ...(cliEnv.error ? { error: cliEnv.error } : {}) },
   timing: { timeToFirstReplyMs: tFirstReply === null || tSend === null ? null : Math.round(tFirstReply - tSend), fakeModelLatencyMs: replyDelayMs, setupMs: tSend === null ? undefined : Math.round(tSend), firstReplyAbsMs: tFirstReply === null ? undefined : Math.round(tFirstReply), turnEndAbsMs: tTurnEnd === null ? undefined : Math.round(tTurnEnd), mainRequestStartAbsMs: mainModel ? Math.round(mainModel.tStartMs) : undefined,
     startupEgressSpanMs: mainModel && api.egress.length ? Math.round(mainModel.tStartMs - api.egress[0].tMs) : undefined },

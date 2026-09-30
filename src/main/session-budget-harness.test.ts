@@ -18,6 +18,8 @@ const fixture = await import(S('fixture.mjs'));
 const guard = await import(S('scratch-guard.mjs'));
 const mutants = await import(S('mutants.mjs'));
 const proc = await import(S('proc-census.mjs'));
+const armsMod = await import(S('arms.mjs'));
+const canary = await import(S('canary.mjs'));
 
 function scratch(prefix: string): string {
   const base = path.join(os.homedir(), '.cache', 'session-budget-test');
@@ -426,4 +428,90 @@ test('F1/F6 end to end: with bwrap unusable the driver is VOID rc 3 by default; 
     const keeperAfter = fs.existsSync(keeperBundle) ? fs.statSync(keeperBundle).mtimeMs : null;
     assert.equal(keeperAfter, keeperBefore, 'the driver rebuilt the keeper bundle from a unit test');
   } finally { fs.rmSync(shim, { recursive: true, force: true }); }
+});
+
+// ── canary: the probe targets must NEVER be a real address ────────────────────────────────────────
+
+test('canary targets are documentation-range addresses only (RFC 5737 192.0.2.0/24, RFC 3849 2001:db8::/32) — harmless even when containment is broken', async () => {
+  assert.equal(canary.CANARY.v4, '192.0.2.1');
+  assert.equal(canary.CANARY.v6, '2001:db8::1');
+  assert.ok(/^192\.0\.2\.\d+$/.test(canary.CANARY.v4) && /^2001:db8:/i.test(canary.CANARY.v6));
+  // and it returns the documented shape without throwing (host-independent; a short timeout keeps a routed host fast)
+  const p = await canary.containmentCanary({ timeoutMs: 100 });
+  assert.equal(typeof p.connect4, 'string');
+  assert.equal(typeof p.connect6, 'string');
+  assert.ok(Array.isArray(p.interfaces) && p.interfaces.length >= 1);
+  assert.equal(typeof p.nonLoopbackRoutes, 'number');
+});
+
+// ── the arm table and the rules that judge an arm are PINNED (C1 gate survivors: unpinned minBurst / positive control) ──
+
+const verdict = (id: string, actual: number, extra: object = {}) => ({ id, kind: 'budget', ok: false, actual, limit: 'at most 0', message: `BUDGET BROKEN ${id}: saw ${actual}`, ...extra });
+const iv = (id: string, message: string) => ({ id, kind: 'instrument', ok: false, actual: null, limit: 'required', message });
+const okJudge = { ok: true, void: false, verdicts: [{ id: 'x', kind: 'budget', ok: true, actual: 0, limit: 'at most 0', message: 'ok' }] };
+
+test('arm table pins: every number that gives an arm its meaning is a LITERAL here', () => {
+  const A = armsMod.ARMS;
+  assert.deepEqual(Object.keys(A), ['normal', 'boot-context-read', 'slow-startup', 'traffic-knob-in-env', 'app-egress-new-host', 'containment-canary', 'census-selftest', 'smoke-flag-path']);
+  assert.equal(A['boot-context-read'].minBurst, 50);
+  assert.equal(A['boot-context-read'].mustBreak, 'session.beforeFirstReply.countTokensRequests');
+  assert.deepEqual(A['slow-startup'].mustExercise, { host: 'api.anthropic.com:443', min: 4 });
+  assert.equal(A['slow-startup'].profile.mcpInitDelayMs, 1200);
+  assert.equal(A['slow-startup'].expect, 'pass');
+  assert.equal(A['app-egress-new-host'].minBurst, 1);
+  assert.equal(A['app-egress-new-host'].maxBurst, 1);
+  assert.equal(A['app-egress-new-host'].mustBreak, 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443');
+  assert.equal(A['traffic-knob-in-env'].mustName, 'DISABLE_TELEMETRY');
+  assert.equal(A['containment-canary'].mustAbort, 'containment');
+  assert.equal(A['containment-canary'].lieAboutContainment, true);
+});
+
+test('evaluateArm: the slow-startup positive control BITES while the arm is healthy (a run that never saw the retry proves nothing)', () => {
+  const spec = armsMod.ARMS['slow-startup'];
+  const at = (n: number) => armsMod.evaluateArm(spec, { report: { startupEgress: { 'api.anthropic.com:443': n } }, judgement: okJudge });
+  assert.equal(at(4).asExpected, true);
+  assert.equal(at(5).asExpected, true);
+  const three = at(3);
+  assert.equal(three.asExpected, false);
+  assert.equal(three.bad, true);
+  assert.match(three.why, /did not exercise the retry path \(saw 3 startup attempts at api\.anthropic\.com:443, need ≥ 4\) — it proves nothing/);
+  assert.equal(armsMod.evaluateArm(spec, { report: {}, judgement: okJudge }).asExpected, false, 'no startupEgress at all is not exercise');
+  // a plain pass arm has no control and needs no attempts
+  assert.equal(armsMod.evaluateArm(armsMod.ARMS.normal, { report: { startupEgress: {} }, judgement: okJudge }).asExpected, true);
+});
+
+test('evaluateArm: must-FAIL arms — a large burst for boot-context-read, EXACTLY one attempt for the new host', () => {
+  const boot = armsMod.ARMS['boot-context-read'];
+  const b = (n: number | null) => armsMod.evaluateArm(boot, { report: {}, judgement: { ok: false, void: false, verdicts: n === null ? [] : [verdict(boot.mustBreak, n)] } });
+  assert.equal(b(57).asExpected, true);
+  assert.equal(b(50).asExpected, true);
+  assert.equal(b(49).asExpected, false);
+  assert.match(b(49).why, /burst below 50/);
+  assert.equal(b(null).asExpected, false);
+  assert.match(b(null).why, /to break but it held/);
+  const app = armsMod.ARMS['app-egress-new-host'];
+  const a = (n: number) => armsMod.evaluateArm(app, { report: {}, judgement: { ok: false, void: false, verdicts: [verdict(app.mustBreak, n)] } });
+  assert.equal(a(1).asExpected, true);
+  assert.equal(a(2).asExpected, false);
+  assert.match(a(2).why, /2 attempts, expected exactly 1/);
+});
+
+test('evaluateArm: must-VOID arms name the instrument AND the knob; the canary arm must also have ABORTED before booting; an unexpected VOID on a pass arm counts as voided, not bad', () => {
+  const knob = armsMod.ARMS['traffic-knob-in-env'];
+  const voidJ = (id: string, msg: string) => ({ ok: false, void: true, verdicts: [iv(id, msg)] });
+  assert.equal(armsMod.evaluateArm(knob, { report: {}, judgement: voidJ('instrument.productionEnv', 'INSTRUMENT VOID …: traffic-suppressing env set: DISABLE_TELEMETRY — …') }).asExpected, true);
+  assert.equal(armsMod.evaluateArm(knob, { report: {}, judgement: voidJ('instrument.productionEnv', 'INSTRUMENT VOID …: set: DISABLE_AUTOUPDATER') }).asExpected, false, 'right instrument, wrong knob');
+  assert.equal(armsMod.evaluateArm(knob, { report: {}, judgement: voidJ('instrument.runCompleted', 'INSTRUMENT VOID … DISABLE_TELEMETRY') }).asExpected, false, 'wrong instrument');
+  const can = armsMod.ARMS['containment-canary'];
+  const canJ = voidJ('instrument.containmentProven', 'INSTRUMENT VOID …: want connect=ENETUNREACH (v4 and v6) …');
+  assert.equal(armsMod.evaluateArm(can, { report: {}, judgement: canJ, aborted: 'containment' }).asExpected, true);
+  const late = armsMod.evaluateArm(can, { report: {}, judgement: canJ });
+  assert.equal(late.asExpected, false, 'VOID after a full session ran is NOT the guard working');
+  assert.match(late.why, /not aborted before booting/);
+  // a pass arm that comes out VOID is an unexpected VOID (voided), not a budget failure
+  const v = armsMod.evaluateArm(armsMod.ARMS.normal, { report: {}, judgement: voidJ('instrument.mcpServersConnected', 'INSTRUMENT VOID …') });
+  assert.deepEqual({ asExpected: v.asExpected, voided: v.voided, bad: v.bad }, { asExpected: false, voided: true, bad: false });
+  // and a pass arm whose budget broke is bad, not voided
+  const br = armsMod.evaluateArm(armsMod.ARMS.normal, { report: {}, judgement: { ok: false, void: false, verdicts: [verdict('session.beforeFirstReply.modelRequests', 2)] } });
+  assert.deepEqual({ asExpected: br.asExpected, voided: br.voided, bad: br.bad }, { asExpected: false, voided: false, bad: true });
 });

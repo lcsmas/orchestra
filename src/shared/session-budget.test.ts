@@ -7,6 +7,8 @@ import {
   judgeSessionBudget,
   formatRequestSummary,
   summarizeWindow,
+  judgeContainmentProof,
+  type ContainmentProof,
   egressUpTo,
   sessionBudgetTerminator,
   startupRetryAllowance,
@@ -35,6 +37,7 @@ function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
     fixture: { skills: 60, memoryFiles: 50, mcpServers: 4, toolsPerServer: 15, claudeMdKB: 48 },
     containment: 'netns+pidns',
     timing: { timeToFirstReplyMs: 1400, fakeModelLatencyMs: 500, setupMs: 380, firstReplyAbsMs: 1780, turnEndAbsMs: 1900, mainRequestStartAbsMs: 1200, startupEgressSpanMs: 700 },
+    containmentProof: { connect4: 'ENETUNREACH', connect6: 'ENETUNREACH', interfaces: ['lo'], nonLoopbackRoutes: 0 },
     startupEgress: { [HOST]: 3 },
     envParity: { source: '/proc/4242/environ at the first reply', trafficKnobsSet: [] },
     requests: { beforeFirstReply: preOk(), afterFirstReply: counts(0, 57, 0, {}, { [HOST]: 3 }), total: counts(1, 57, 0, { [HAIKU]: 1 }, { [HOST]: 8 }) },
@@ -65,10 +68,10 @@ test('a healthy session passes every budget and every instrument check', () => {
   assert.equal(j.ok, true);
   assert.equal(j.void, false);
   assert.ok(j.verdicts.every((v) => v.ok), j.verdicts.filter((v) => !v.ok).map((v) => v.message).join('\n'));
-  // 5 budget lines (main, haiku side call, count_tokens, other, egress host) + containment, productionEnv, egress visible, startup not stalled, clock, runCompleted, keeper, cli,
+  // 5 budget lines (main, haiku side call, count_tokens, other, egress host) + containment, containmentProven, productionEnv, egress visible, startup not stalled, clock, runCompleted, keeper, cli,
   // firstReply, mcpConnected, mcpChildren, tools + 4 markers
   assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 5);
-  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 16);
+  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 17);
 });
 
 test('a boot-time context read (count_tokens burst before the first reply) breaks the budget NAMING it and the counts', () => {
@@ -283,3 +286,38 @@ test('a SLOW-but-healthy startup PASSES: the known host gets a retry allowance s
   assert.match(absurd.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.message, /INSTRUMENT VOID .*9000 ms \(> 8000\).*re-run/);
 });
 
+
+test('containment is PROVEN by the in-run canary, not trusted by name: ENETUNREACH v4+v6, interfaces=[lo], no non-lo route — anything else is VOID', () => {
+  const good: ContainmentProof = { connect4: 'ENETUNREACH', connect6: 'ENETUNREACH', interfaces: ['lo'], nonLoopbackRoutes: 0 };
+  assert.equal(judgeContainmentProof(good, false).ok, true);
+  const bad: Array<[string, ContainmentProof | undefined]> = [
+    ['v4 connect times out (a routed namespace swallows the SYN)', { ...good, connect4: 'TIMEOUT' }],
+    ['v6 connect times out', { ...good, connect6: 'TIMEOUT' }],
+    ['a connect that succeeds', { ...good, connect4: 'CONNECTED' }],
+    ['a host interface is visible', { ...good, interfaces: ['lo', 'wlp1s0f0'] }],
+    ['no loopback at all', { ...good, interfaces: [] }],
+    ['a route leaves lo', { ...good, nonLoopbackRoutes: 46 }],
+    ['no canary result', undefined],
+  ];
+  for (const [name, proof] of bad) {
+    const v = judgeContainmentProof(proof, false);
+    assert.equal(v.ok, false, name);
+    assert.equal(v.kind, 'instrument', name);
+    assert.match(v.message, /INSTRUMENT VOID instrument\.containmentProven: the namespace is not proven routeless — want connect=ENETUNREACH/, name);
+  }
+  // the message names what was SEEN (and abbreviates a long interface list)
+  const host = judgeContainmentProof({ connect4: 'TIMEOUT', connect6: 'TIMEOUT', interfaces: ['a', 'b', 'c', 'd', 'e', 'f'], nonLoopbackRoutes: 46 }, false);
+  assert.match(host.message, /connect\(192\.0\.2\.1:443\)=TIMEOUT connect\(\[2001:db8::1\]:443\)=TIMEOUT interfaces=\[a,b,c,d,…\+2\] non-lo routes=46/);
+  // the explicit opt-out proves nothing and says so
+  const opt = judgeContainmentProof({ ...good, connect4: 'TIMEOUT' }, true);
+  assert.equal(opt.ok, true);
+  assert.match(opt.message, /NOT proven — weak containment explicitly allowed/);
+});
+
+test('a whole report whose namespace is unproven (or whose canary result is missing) is VOID even when every budget holds', () => {
+  const lie = judgeSessionBudget(good({ containment: 'netns+pidns', containmentProof: { connect4: 'TIMEOUT', connect6: 'TIMEOUT', interfaces: ['lo', 'eth0'], nonLoopbackRoutes: 3 } }));
+  assert.equal(lie.void, true);
+  assert.equal(lie.ok, false);
+  assert.equal(lie.verdicts.filter((v) => v.kind === 'budget' && !v.ok).length, 0, 'the counts are fine — only the instrument sees the lie');
+  assert.equal(judgeSessionBudget(good({ containmentProof: undefined })).void, true);
+});

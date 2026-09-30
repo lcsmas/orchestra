@@ -69,6 +69,18 @@ export interface ProcessCensus {
   byKind: { cli: number; keeper: number; mcp: number; hook: number; other: number };
 }
 
+/** What the in-run containment canary read from INSIDE the namespace. */
+export interface ContainmentProof {
+  /** Outcome of connect() to 192.0.2.1:443 (RFC 5737 documentation range): an error code, `TIMEOUT` or `CONNECTED`. */
+  connect4: string;
+  /** Same for [2001:db8::1]:443 (RFC 3849). */
+  connect6: string;
+  /** Interface names in /proc/net/dev. */
+  interfaces: string[];
+  /** Routes (v4 + v6) whose interface is not `lo`. */
+  nonLoopbackRoutes: number;
+}
+
 /** What one session-budget run measured. Everything the judge and the printed report read. */
 export interface SessionBudgetReport {
   schema: 1;
@@ -79,6 +91,8 @@ export interface SessionBudgetReport {
   containment: 'netns+pidns' | 'netns' | 'proxy-only';
   /** True only when the run was started with SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT=1: a weaker containment is then tolerated, and printed. */
   containmentOptOut?: boolean;
+  /** What the in-run canary read from inside the namespace (scripts/session-budget/canary.mjs) — the proof, not the name. */
+  containmentProof?: ContainmentProof;
   /** Which traffic-suppressing knobs were set in the env the CLI was handed (must be none: production parity). */
   envParity?: { source?: string; trafficKnobsSet: string[] | null; error?: string };
   /** `timeToFirstReplyMs` = first text-delta minus the instant just before `sdkSend` (NOT runner setup). */
@@ -217,6 +231,25 @@ function instrumentVerdict(id: string, actual: number | null, min: number, why: 
   };
 }
 
+/**
+ * Judge the in-run containment canary (pure). Containment is PROVEN, not named: inside a routeless network namespace a connect() to a
+ * documentation-range address fails at once with ENETUNREACH (v4 and v6), `lo` is the only interface and no route leaves it. A host
+ * namespace answers TIMEOUT, lists real interfaces and routes. `optOut` = the explicit weak-containment opt-out (nothing to prove).
+ */
+export function judgeContainmentProof(proof: ContainmentProof | undefined, optOut: boolean): Verdict {
+  const id = 'instrument.containmentProven';
+  if (optOut) return { id, kind: 'instrument', ok: true, actual: 1, limit: 'required', message: `ok ${id}: NOT proven — weak containment explicitly allowed (${WEAK_CONTAINMENT_ENV}=1)` };
+  const ifaces = proof?.interfaces ?? [];
+  const okAll = !!proof && proof.connect4 === 'ENETUNREACH' && proof.connect6 === 'ENETUNREACH' && ifaces.length === 1 && ifaces[0] === 'lo' && proof.nonLoopbackRoutes === 0;
+  const seen = proof
+    ? `connect(192.0.2.1:443)=${proof.connect4} connect([2001:db8::1]:443)=${proof.connect6} interfaces=[${ifaces.slice(0, 4).join(',')}${ifaces.length > 4 ? `,…+${ifaces.length - 4}` : ''}] non-lo routes=${proof.nonLoopbackRoutes}`
+    : 'no canary result';
+  return {
+    id, kind: 'instrument', ok: okAll, actual: okAll ? 1 : null, limit: 'required',
+    message: okAll ? `ok ${id}: ${seen}` : `INSTRUMENT VOID ${id}: the namespace is not proven routeless — want connect=ENETUNREACH (v4 and v6), interfaces=[lo], non-lo routes=0; saw ${seen}`,
+  };
+}
+
 /** Judge one report against the budgets. Never throws on a malformed report: a missing measurement
  *  is a failed instrument check (VOID), not a pass. */
 export function judgeSessionBudget(report: SessionBudgetReport, budgets: SessionBudgets = SESSION_BUDGETS): Judgement {
@@ -262,6 +295,7 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
   verdicts.push(flagVerdict('instrument.clockStartedAtSend', drift !== null && drift <= 2 && (tm?.setupMs ?? 0) >= 1,
     `timeToFirstReplyMs ${tm?.timeToFirstReplyMs} + setupMs ${tm?.setupMs} = firstReplyAbsMs ${tm?.firstReplyAbsMs} (±2 ms rounding)`,
     `timeToFirstReplyMs + setupMs must equal the first-reply stamp within 2 ms (${drift === null ? 'no timing' : `off by ${drift} ms`}) — the clock did not start at sdkSend`));
+  verdicts.push(judgeContainmentProof(report.containmentProof, weakOk));
   verdicts.push(flagVerdict('instrument.runCompleted', !report.error, 'no setup/teardown/agent error', `the run raised: ${String(report.error).slice(0, 300)}`));
   verdicts.push(instrumentVerdict('instrument.keeperProcess', report.processes?.atFirstReply?.byKind?.keeper ?? null, 1, 'no keeper daemon at the first reply — the session did not go through the detached keeper'));
   verdicts.push(instrumentVerdict('instrument.cliProcess', report.processes?.atFirstReply?.byKind?.cli ?? null, 1, 'no claude CLI process at the first reply — the census sees no session'));
