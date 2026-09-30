@@ -18,7 +18,9 @@ const { assertScratch } = await import(`${HERE}/scratch-guard.mjs`);
 const home = path.join(root, 'home');
 const orchHome = path.join(root, 'orchestra');
 const cfgDir = path.join(home, '.claude');
-for (const [label, p] of [['HOME', home], ['ORCHESTRA_HOME', orchHome], ['CLAUDE_CONFIG_DIR', cfgDir]]) assertScratch(label, p, root, cfg.live ?? []);
+// Fails CLOSED: without the invoker's live-dir list the guard would compare against nothing (F10).
+if (!Array.isArray(cfg.live) || cfg.live.length === 0) throw new Error('session-runner: cfg.live (the invoker\'s live-dir list) is absent or empty — refusing to run without the scratch guard\'s live list');
+for (const [label, p] of [['HOME', home], ['ORCHESTRA_HOME', orchHome], ['CLAUDE_CONFIG_DIR', cfgDir]]) assertScratch(label, p, root, cfg.live);
 fs.mkdirSync(cfgDir, { recursive: true });
 fs.mkdirSync(orchHome, { recursive: true });
 process.env.HOME = home;
@@ -30,21 +32,24 @@ if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: imp
 const { startFakeApi } = await import(`${HERE}/fake-anthropic-api.mjs`);
 const { generateHeavyFixture } = await import(`${HERE}/fixture.mjs`);
 const { census } = await import(`${HERE}/proc-census.mjs`);
-const { judgeSessionBudget } = await import(`${REPO}/src/shared/session-budget.ts`);
+const { judgeSessionBudget, summarizeWindow, TRAFFIC_KNOBS } = await import(`${REPO}/src/shared/session-budget.ts`);
 
 const fx = generateHeavyFixture(path.join(root, 'repo'), profile);
 const api = await startFakeApi({ replyDelayMs, markers: fx.markers });
 
-// The CLI's environment (buildSdkEnv copies process.env): fake API, dummy key, traffic disabled, the
-// refusing proxy for anything that still reaches for a host. NO real credential is ever in this env.
+// The CLI's environment (buildSdkEnv copies process.env): fake API, dummy key, and the refusing proxy that NAMES
+// any host the CLI still reaches for. PRODUCTION PARITY (review F2): Orchestra sets NONE of the CLI's
+// traffic-disabling knobs (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_TELEMETRY, DISABLE_AUTOUPDATER,
+// DISABLE_ERROR_REPORTING — `git grep` finds them nowhere in src/ or scripts/ outside this suite), so this run
+// sets none either; the netns makes the resulting egress attempts harmless and the proxy names them.
+// NO real credential is ever in this env.
+for (const k of [...TRAFFIC_KNOBS, 'ANTHROPIC_AUTH_TOKEN']) delete process.env[k];
 Object.assign(process.env, {
   ANTHROPIC_BASE_URL: api.url,
   ANTHROPIC_API_KEY: 'sk-ant-api03-session-budget-fake-key-not-real',
   HTTPS_PROXY: api.proxyUrl, HTTP_PROXY: api.proxyUrl, https_proxy: api.proxyUrl, http_proxy: api.proxyUrl,
   NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1', DISABLE_ERROR_REPORTING: '1',
 });
-delete process.env.ANTHROPIC_AUTH_TOKEN;
 if (realApi) throw new Error('realApi smoke is driven by smoke-real.mjs, never by this runner (D6)');
 
 // The keeper bundle the app would have installed at startup (`installKeeper()` copies dist-electron/keeper.js).
@@ -97,7 +102,11 @@ const done = new Promise((resolve) => {
   const iv = setInterval(() => { if (tTurnEnd !== null || errorEvent) { clearInterval(iv); resolve(); } }, 25);
   setTimeout(() => { clearInterval(iv); resolve(); }, timeoutMs).unref();
 });
+let tSend = null;
+let trafficKnobsSet = null;
 try {
+  trafficKnobsSet = TRAFFIC_KNOBS.filter((k) => process.env[k] !== undefined); // what the SDK env copy will hold
+  tSend = api.now(); // F5: the clock for time-to-first-reply starts HERE, not at fake-API start (runner setup is ~1.5 s)
   await sdk.sdkSend(WS_ID, 'Reply with the single word ok.');
   await done;
   await new Promise((r) => setTimeout(r, settleMs)); // let post-reply traffic (the turn-end gauge refresh) land
@@ -120,14 +129,10 @@ try {
   error = error ?? `teardown: ${String(e?.stack ?? e)}`;
 }
 
-const beforeReq = tFirstReply === null ? api.requests : api.requests.filter((r) => r.tMs <= tFirstReply);
-const afterReq = tFirstReply === null ? [] : api.requests.filter((r) => r.tMs > tFirstReply);
-const countOf = (rs) => {
-  const c = { model: 0, count_tokens: 0, other: 0, total: rs.length };
-  for (const r of rs) c[r.type === 'model' || r.type === 'count_tokens' ? r.type : 'other']++;
-  return c;
-};
-const firstModel = api.requests.find((r) => r.type === 'model');
+const cut = tFirstReply ?? Infinity; // no first reply: everything counts as "before" (the run is VOID anyway)
+const win = (from, to) => summarizeWindow(api.requests, api.egress, from, to);
+// F2: the user's turn is the model call that CARRIES TOOLS — never "the first request" (a tool-less side call can precede it).
+const mainModel = api.requests.find((r) => r.type === 'model' && (r.tools ?? 0) > 0);
 const strip = ({ procs, ...c }) => c;
 const report = {
   schema: 1,
@@ -135,19 +140,22 @@ const report = {
   cli: { version: cliVersion, path: fs.realpathSync(cliPath) },
   fixture: { skills: fx.profile.skills, memoryFiles: fx.profile.memoryFiles, mcpServers: fx.profile.mcpServers, toolsPerServer: fx.profile.toolsPerServer, claudeMdKB: fx.profile.claudeMdKB },
   containment,
-  timing: { timeToFirstReplyMs: tFirstReply === null ? null : Math.round(tFirstReply), fakeModelLatencyMs: replyDelayMs },
-  requests: { beforeFirstReply: countOf(beforeReq), afterFirstReply: countOf(afterReq), total: countOf(api.requests) },
+  ...(cfg.containmentOptOut ? { containmentOptOut: true } : {}),
+  envParity: trafficKnobsSet === null ? undefined : { trafficKnobsSet },
+  timing: { timeToFirstReplyMs: tFirstReply === null || tSend === null ? null : Math.round(tFirstReply - tSend), fakeModelLatencyMs: replyDelayMs, setupMs: tSend === null ? undefined : Math.round(tSend) },
+  requests: { beforeFirstReply: win(-Infinity, cut), afterFirstReply: win(cut, Infinity), total: win(-Infinity, Infinity) },
   processes: { atFirstReply: strip(censusAtFirstReply ?? { total: 0, zombies: 0, rssKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 } }), atEnd: strip(censusAtEnd), survivorsAfterTeardown: survivors },
   egress: api.egress.map((e) => e.target),
   subject: {
-    firstModelRequestTools: firstModel?.tools ?? 0,
-    firstModelRequestBytes: firstModel?.bodyBytes ?? 0,
-    markersSeen: firstModel?.marks ?? [],
+    firstModelRequestTools: mainModel?.tools ?? 0,
+    firstModelRequestBytes: mainModel?.bodyBytes ?? 0,
+    markersSeen: mainModel?.marks ?? [],
     mcpServersConnected: (initEvent?.mcpServers ?? []).filter((s) => fx.mcpServerNames.includes(s.name) && s.status === 'connected').length,
     toolsAtInit: initEvent?.tools?.length ?? 0,
   },
   timeline: { initMs: tInit === null ? null : Math.round(tInit), turnEndMs: tTurnEnd === null ? null : Math.round(tTurnEnd) },
   paths: [...new Set(api.requests.map((r) => `${r.method} ${r.path}`))],
+  requestLog: api.requests.map((r) => ({ tMs: Math.round(r.tMs), type: r.type, path: r.path, model: r.model ?? null, tools: r.tools ?? null, ...((r.tools ?? 0) === 0 && r.type === 'model' ? { preview: r.preview } : {}) })),
   ...(error || errorEvent ? { error: error ?? `agent error event: ${errorEvent?.message}` } : {}),
 };
 const judgement = judgeSessionBudget(report);

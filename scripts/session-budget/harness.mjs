@@ -17,6 +17,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { liveDirs, assertScratch } from './scratch-guard.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
+export const WEAK_ENV = 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT';
+const WEAK_OK = process.env[WEAK_ENV] === '1';
 
 /** Rebuild the bundles the run EXECUTES (a stale keeper bundle reproduces perfectly in isolation). */
 export function ensureBuilt(repo) {
@@ -80,16 +82,20 @@ function sweepOld(base) {
 }
 
 /**
- * Run ONE arm and return `{ report, judgement }` (or `{ error }` when the run itself broke).
- * @param {{repo: string, arm: string, mutant?: string|null, profile?: object, replyDelayMs?: number,
- *          settleMs?: number, timeoutMs?: number, keep?: boolean, containment?: {name:string,prefix:string[]}}} o
+ * Run a script INSIDE the mandatory containment (net+pid namespaces, scratch HOME) and return its last
+ * JSON line starting with `resultPrefix`. Shared by the session arms and the host-dependent self-tests.
  */
-export async function runSessionArm(o) {
-  const { repo, arm, mutant = null, profile = {}, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000 } = o;
+async function runContained(o, script, label, extraCfg, resultPrefix) {
+  const { repo, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000 } = o;
   const containment = o.containment ?? detectContainment();
+  // F1: egress containment is part of the measurement — anything weaker than net+pid namespaces makes the run VOID,
+  // unless the caller says so explicitly (the opt-out is echoed into the report and printed in the verdict).
+  if (containment.name !== 'netns+pidns' && !WEAK_OK) {
+    return { void: true, error: `containment is '${containment.name}', not 'netns+pidns' (bwrap --unshare-net --unshare-pid unusable on this host) — egress is not contained, so nothing was measured. Set ${WEAK_ENV}=1 to run anyway (the verdict will say so).` };
+  }
   const base = path.join(os.homedir(), '.cache', 'session-budget');
   sweepOld(base);
-  const root = path.join(base, `${arm}-${process.pid}-${Date.now().toString(36).slice(-4)}`);
+  const root = path.join(base, `${label}-${process.pid}-${Date.now().toString(36).slice(-4)}`);
   const live = liveDirs(process.env);
   fs.mkdirSync(root, { recursive: true });
   assertScratch('root', root, base, live);
@@ -97,12 +103,12 @@ export async function runSessionArm(o) {
 
   const claude = findOnPath('claude');
   if (!claude) return { void: true, error: 'no `claude` CLI on PATH — the suite drives the real CLI, so nothing was measured', root };
-  const cfg = { REPO: repo, root, arm, mutant, profile, replyDelayMs, settleMs, timeoutMs, pidns: containment.name === 'netns+pidns', containment: containment.name, live };
+  const cfg = { REPO: repo, root, replyDelayMs, settleMs, timeoutMs, pidns: containment.name === 'netns+pidns', containment: containment.name, containmentOptOut: WEAK_OK, live, ...extraCfg };
   const env = {
     PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'),
     HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', SB_CONFIG: JSON.stringify(cfg),
   };
-  const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', 'session-runner.mjs')];
+  const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', script)];
   const child = spawn(argv[0], argv.slice(1), { cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let out = '', err = '';
   child.stdout.on('data', (d) => (out += d));
@@ -112,7 +118,7 @@ export async function runSessionArm(o) {
     // 'close', not 'exit': 'exit' can fire before stdout/stderr are drained, losing the result line or the error text.
     child.on('close', (code, sig) => { clearTimeout(t); resolve(code ?? sig); });
   });
-  const line = out.split('\n').reverse().find((l) => l.startsWith('{"report"'));
+  const line = out.split('\n').reverse().find((l) => l.startsWith(resultPrefix));
   let result;
   if (line) {
     try { result = JSON.parse(line); } catch (e) { result = { error: `unparsable result line: ${e}` }; }
@@ -125,4 +131,24 @@ export async function runSessionArm(o) {
   result.reaped = reapScratchProcesses(root); // 0 under a pid namespace; the keeper's descendants otherwise
   if (!o.keep && !process.env.SB_KEEP && !result.error) fs.rmSync(root, { recursive: true, force: true });
   return result;
+}
+
+/**
+ * Run ONE arm and return `{ report, judgement }` (or `{ error }` when the run itself broke, `{ void: true, error }`
+ * when the host cannot contain it).
+ * @param {{repo: string, arm: string, mutant?: string|null, profile?: object, replyDelayMs?: number,
+ *          settleMs?: number, timeoutMs?: number, keep?: boolean, containment?: {name:string,prefix:string[]}}} o
+ */
+export function runSessionArm(o) {
+  return runContained(o, 'session-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, profile: o.profile ?? {} }, '{"report"');
+}
+
+/**
+ * Host-dependent self-tests of the instruments themselves, run under the SAME containment as the arms (so they
+ * cannot live in `pnpm run test`, which must not depend on bwrap or a real `claude`). Modes: `census` (the
+ * pid-namespace census is exactly the runner's tree), `smoke` (the real-API smoke's flag path, real CLI, fake API).
+ * Returns `{ selftest, ok, ... }`.
+ */
+export function runSelfTest(o) {
+  return runContained(o, 'selftest-runner.mjs', `selftest-${o.mode}`, { mode: o.mode }, '{"selftest"');
 }

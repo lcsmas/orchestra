@@ -49,6 +49,7 @@ const cliArgs = ['-p', 'Reply with the single word ok.', '--model', model, '--ou
 
 const t0 = Date.now();
 const child = spawn('claude', cliArgs, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+child.on('error', (e) => { fs.rmSync(cwd, { recursive: true, force: true }); console.error(`smoke-real: could not run \`claude\`: ${e.message}`); console.log('REAL-API-SMOKE: FAIL'); process.exit(1); });
 let out = '', err = '';
 child.stdout.on('data', (d) => (out += d));
 child.stderr.on('data', (d) => (err += d));

@@ -85,6 +85,8 @@ function summarizeModelBody(buf, markers = {}) {
       messages: Array.isArray(b.messages) ? b.messages.length : 0,
       systemBytes: sysText.length,
       hasThinking: !!b.thinking,
+      // First ~100 chars of the first message / system prompt: identifies what a tool-less SIDE call is for.
+      preview: String(Array.isArray(b.messages) && b.messages[0] ? (typeof b.messages[0].content === 'string' ? b.messages[0].content : JSON.stringify(b.messages[0].content)) : sysText).replace(/\s+/g, ' ').slice(0, 100),
       // Which planted sentinels (opts.markers name -> substring) this request body carries.
       marks: Object.keys(markers).filter((k) => text.includes(markers[k])),
     };

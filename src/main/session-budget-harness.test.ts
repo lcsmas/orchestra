@@ -292,40 +292,95 @@ test('real-API smoke REFUSES without --real-api, without an explicit --config-di
   } finally { await f.stop(); fs.rmSync(cfg, { recursive: true, force: true }); }
 });
 
-test('real-API smoke, flag path against the FAKE API: one tiny cheap-model turn, ok, nothing else', async () => {
+test('real-API smoke flag path (hermetic: a STUB `claude`, fake API): cheap model, tiny turn, chosen account, base URL wired — the real-CLI arm is `smoke-flag-path` in test:session-budget', async () => {
+  const f = await api.startFakeApi();
+  const cfg = scratch('smoke-cfg');
+  const bin = scratch('smoke-bin');
+  const argvLog = path.join(bin, 'argv.json');
+  // The stub records argv + the env it was handed, makes ONE request to $ANTHROPIC_BASE_URL, and speaks stream-json.
+  fs.writeFileSync(path.join(bin, 'claude'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify({ argv: process.argv.slice(2), env: { base: process.env.ANTHROPIC_BASE_URL, cfg: process.env.CLAUDE_CONFIG_DIR, key: process.env.ANTHROPIC_API_KEY, home: process.env.HOME, nonessential: process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC } }));
+fetch(process.env.ANTHROPIC_BASE_URL + '/v1/messages', { method: 'POST', body: JSON.stringify({ model: process.argv[process.argv.indexOf('--model') + 1], max_tokens: 1, stream: true, messages: [] }) }).then((r) => r.text()).then(() => {
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-haiku-stub' }));
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0 }));
+});
+`, { mode: 0o755 });
+  try {
+    const child = spawn(process.execPath, [S('smoke-real.mjs'), '--real-api', '--config-dir', cfg, '--api-base', f.url], {
+      env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HTTPS_PROXY: f.proxyUrl, HTTP_PROXY: f.proxyUrl, NO_PROXY: '127.0.0.1,localhost' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '', err = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    const rc: number | null = await new Promise((r) => child.on('close', (c) => r(c)));
+    assert.equal(rc, 0, `${out}\n${err}`);
+    assert.match(out, /^REAL-API-SMOKE: PASS$/m);
+    const line = JSON.parse(out.split('\n')[0]);
+    assert.equal(line.ok, true);
+    assert.equal(line.mode, 'api-base');
+    const seen = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+    const has = (flag: string, val?: string) => { const i = seen.argv.indexOf(flag); return i >= 0 && (val === undefined || seen.argv[i + 1] === val); };
+    assert.ok(has('--model', 'haiku'), 'the cheap model alias');
+    assert.ok(has('--tools', ''), 'no tools');
+    assert.ok(has('--max-turns', '1'));
+    assert.ok(has('--max-budget-usd', '0.05'), 'a hard cost cap');
+    assert.ok(has('--no-session-persistence'));
+    assert.ok(has('--strict-mcp-config') && has('--setting-sources', 'project'));
+    assert.equal(seen.env.base, f.url, 'the base URL reached the CLI');
+    assert.equal(seen.env.cfg, path.resolve(cfg), 'the CHOSEN account dir reached the CLI');
+    assert.notEqual(seen.env.home, os.homedir(), 'HOME is scratch, not the invoker\'s');
+    assert.match(seen.env.key, /fake-key-not-real/, 'api-base mode uses a dummy key, never an ambient one');
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests[0].type, 'model');
+    assert.equal(f.requests[0].model, 'haiku');
+    assert.equal(f.egress.length, 0);
+  } finally { await f.stop(); fs.rmSync(cfg, { recursive: true, force: true }); fs.rmSync(bin, { recursive: true, force: true }); }
+});
+
+test('real-API smoke with no `claude` installed fails CLEANLY (rc 1, REAL-API-SMOKE: FAIL), not with an unhandled spawn error', async () => {
   const f = await api.startFakeApi();
   const cfg = scratch('smoke-cfg');
   try {
-    const r = await runSmoke(f, ['--real-api', '--config-dir', cfg]);
-    assert.equal(r.rc, 0, `${r.out}\n${r.err}`);
-    const line = JSON.parse(r.out.split('\n')[0]);
-    assert.equal(line.ok, true);
-    assert.equal(line.mode, 'api-base');
-    assert.equal(line.requestedModel, 'haiku');
-    assert.match(line.resolvedModel, /haiku/);
-    assert.match(r.out, /^REAL-API-SMOKE: PASS$/m);
-    const models = f.requests.filter((x: any) => x.type === 'model');
-    assert.equal(f.requests.length, 1, 'exactly one request in total');
-    assert.equal(models.length, 1);
-    assert.match(models[0].model, /haiku/, 'the cheap model, not the account default');
-    assert.equal(models[0].tools, 0, 'a tiny turn: no tools');
-    assert.equal(f.egress.length, 0);
+    const child = spawn(process.execPath, [S('smoke-real.mjs'), '--real-api', '--config-dir', cfg, '--api-base', f.url], { env: { PATH: '/nonexistent-bin' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    const rc: number | null = await new Promise((r) => child.on('close', (c) => r(c)));
+    assert.equal(rc, 1);
+    assert.match(out, /^REAL-API-SMOKE: FAIL$/m);
+    assert.match(err, /could not run `claude`/);
+    assert.doesNotMatch(err, /Unhandled 'error' event/);
   } finally { await f.stop(); fs.rmSync(cfg, { recursive: true, force: true }); }
 });
 
-test('census (pid-namespace mode) is EXACTLY the tree under the runner — not the namespace init, not the runner itself', async () => {
+// ── F1 / F10: the harness refuses weak containment; the runner refuses to run without the live-dir list ──────
+
+test('F1: runSessionArm is VOID (spawns nothing) when containment is weaker than net+pid namespaces', async () => {
   const harness = await import(S('harness.mjs'));
-  const c = harness.detectContainment();
-  if (c.name !== 'netns+pidns') { console.log(`# note: host has no bwrap pid namespace (containment=${c.name}); pidns census branch not exercised here`); return; }
-  const script = `const {census}=await import(${JSON.stringify(S('proc-census.mjs'))}); const {spawn}=await import('node:child_process');
-    const k=spawn('sleep',['30'],{stdio:'ignore'}); await new Promise(r=>setTimeout(r,150));
-    const c=census({pidns:true}); k.kill('SIGKILL'); console.log(JSON.stringify({total:c.total,other:c.byKind.other,pids:c.procs.map(p=>p.pid),self:process.pid}));`;
-  const child = spawn(c.prefix[0], [...c.prefix.slice(1), process.execPath, '--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
-  let out = '';
-  child.stdout.on('data', (d) => (out += d));
-  await new Promise((r) => child.on('exit', r));
-  const j = JSON.parse(out.trim().split('\n').pop()!);
-  assert.equal(j.total, 1, `census counted ${JSON.stringify(j)} — must be just the one child`);
-  assert.equal(j.other, 1);
-  assert.ok(!j.pids.includes(j.self) && !j.pids.includes(1));
+  for (const name of ['proxy-only', 'netns']) {
+    const r = await harness.runSessionArm({ repo: REPO, arm: 'normal', containment: { name, prefix: [] } });
+    assert.equal(r.void, true, name);
+    assert.match(r.error, new RegExp(`containment is '${name}', not 'netns\\+pidns'`));
+    assert.match(r.error, /SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT=1/);
+    assert.equal(r.report, undefined);
+  }
+});
+
+test('F10: session-runner FAILS CLOSED when cfg.live is absent or empty (never runs against an unchecked list)', async () => {
+  const root = scratch('runner-live');
+  try {
+    for (const live of [undefined, []]) {
+      const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', `${REPO}/scripts/.r2-register.mjs`, S('session-runner.mjs')], {
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', SB_CONFIG: JSON.stringify({ REPO, root, arm: 'x', ...(live ? { live } : {}) }) }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let err = '';
+      child.stderr.on('data', (d) => (err += d));
+      const rc: number | null = await new Promise((r) => child.on('close', (c) => r(c)));
+      assert.notEqual(rc, 0, `live=${JSON.stringify(live)}`);
+      assert.match(err, /cfg\.live .* absent or empty/);
+      assert.ok(!fs.existsSync(path.join(root, 'home')), 'nothing was created before the refusal');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
