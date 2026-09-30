@@ -50,6 +50,39 @@ const ARMS = {
     ],
     mustHold: HOLD_PROCS,
   },
+  // F1a: a wake (sdkSend) fired while the session is stopping and the keeper kill is in flight. `forbidKeeperLaunch`
+  // (the launch tombstone) must refuse it → 0 survivors that HOLD; without it the wake launches a keeper + CLI nobody kills.
+  // `mustSeeRefusal`: the positive control — the tombstone REALLY refused the wake (else 0 survivors would prove nothing).
+  'delete-cli-wake-race': { mutant: null, expect: 'pass', teardown: 'cli', profile: STUBBORN, deleteOpts: { wakeDuringDelete: true }, mustSeeRefusal: true },
+  'delete-cli-wake-race-no-tombstone': {
+    mutant: 'delete-drops-launch-tombstone', expect: 'fail', teardown: 'cli', profile: STUBBORN, deleteOpts: { wakeDuringDelete: true },
+    // NEW survivors (not in the pre-delete tree): only the pid-namespace half of the survivor census can see them (F1b).
+    checks: [
+      { id: 'session.delete.survivors', exact: 6, treeIncludes: ['keeper.js', 'claude', 'fixsrv4', 'NEW since the delete'] },
+      { id: 'session.delete.zeroWithinMs', never: true },
+    ],
+    mustHold: HOLD_PROCS,
+  },
+  // F1b+c: something is started 1.5 s AFTER the sweep. Seen only by the census half of `alive()` (it was never in the tree)
+  // and only because the zero is watched for `stableForMs` after it is first read.
+  'delete-cli-late-relaunch': {
+    mutant: 'delete-late-relaunch', expect: 'fail', teardown: 'cli', profile: STUBBORN,
+    checks: [
+      { id: 'session.delete.survivors', exact: 1, treeIncludes: ['sleep 600', 'NEW since the delete'] },
+      { id: 'session.delete.zeroWithinMs', never: true },
+    ],
+    mustHold: HOLD_PROCS,
+  },
+  // F4: a delete that never returns is raced against the bound, then the tree it left is named.
+  'delete-cli-hangs': {
+    mutant: 'delete-hangs', expect: 'fail', teardown: 'cli', profile: STUBBORN,
+    checks: [
+      { id: 'session.delete.returnsWithinMs', never: true },
+      { id: 'session.delete.survivors', exact: 6, treeIncludes: ['keeper.js', 'claude', 'fixsrv1', 'fixsrv4'] },
+      { id: 'session.delete.zeroWithinMs', never: true },
+    ],
+    mustHold: HOLD_PROCS,
+  },
   // The renderer route ALSO stops the session (sdkStopMany) before deleteWorkspace: measured 2026-09-30, skipping
   // stopStructuredSession alone leaves nothing on that route (masked, 0 survivors in 576 ms) — the CLI arm above is
   // the one that pins that clause; this arm removes BOTH stoppers so the UI arm can fail at all.
@@ -65,6 +98,15 @@ const ARMS = {
 
 /** The arms as run.mjs ARMS entries (all are session arms). */
 export const PROCS_ARMS = Object.fromEntries(Object.entries(ARMS).map(([k, v]) => [k, { kind: 'session', ...v }]));
+
+/** Positive controls of a must-PASS arm (its budgets already held): null when they hold, else what is missing. */
+export function passArmProblems(spec, report) {
+  if (spec.mustSeeRefusal) {
+    const r = report.delete?.wake?.refusals ?? [];
+    if (r.length < 1) return `held, but the launch tombstone never refused the racing wake (wake=${JSON.stringify(report.delete?.wake ?? null)}) — 0 survivors proves nothing`;
+  }
+  return null;
+}
 
 /** Judge a must-FAIL arm carrying `checks`. @returns {{ok: boolean, why: string}} */
 export function judgeProcsArm(spec, judgement) {

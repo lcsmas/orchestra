@@ -16,7 +16,7 @@ import {
   type RequestCounts,
   type SessionBudgetReport,
 } from './session-budget.ts';
-import { judgeProcsArm, PROCS_ARMS } from '../../scripts/session-budget/procs-arms.mjs';
+import { judgeProcsArm, passArmProblems, PROCS_ARMS } from '../../scripts/session-budget/procs-arms.mjs';
 import { MUTANTS } from '../../scripts/session-budget/mutants.mjs';
 import { identity } from '../../scripts/session-budget/delete-teardown.mjs';
 
@@ -69,14 +69,14 @@ function report(over: { first?: ProcEntry[]; end?: ProcEntry[]; mcpServers?: num
 }
 const brokenIds = (r: SessionBudgetReport) => judgeSessionBudget(r).verdicts.filter((v) => !v.ok).map((v) => v.id).sort();
 const del = (over: Partial<DeleteReport> = {}): DeleteReport => ({
-  via: 'cli', boundMs: 10_000, returnedMs: 120, elapsedMs: 130, treeBefore: healthyProcs(), survivors: [], storeRecordGone: true, ...over,
+  via: 'cli', boundMs: 10_000, returnedMs: 120, elapsedMs: 130, dwellMs: 2000, treeBefore: healthyProcs(), survivors: [], storeRecordGone: true, ...over,
 });
 
 test('the #210 budget numbers are these literals (one place, next to #208\'s)', () => {
   assert.deepEqual({ ...SESSION_BUDGETS.processes, memoryMB: { ...SESSION_BUDGETS.processes.memoryMB } }, {
     keeper: 1, cli: 1, mcpPerConfiguredServer: 1, hook: 0, other: 0, memoryMB: { base: 400, perMcpServer: 65 },
   });
-  assert.deepEqual({ ...SESSION_BUDGETS.afterDelete }, { survivors: 0, zeroWithinMs: 5000 });
+  assert.deepEqual({ ...SESSION_BUDGETS.afterDelete }, { survivors: 0, zeroWithinMs: 5000, stableForMs: 2000 });
 });
 
 test('the measured healthy tree passes every budget, at both windows (control: the arms below must differ)', () => {
@@ -181,7 +181,7 @@ test('delete timing: 5000 ms is the limit (boundary); never reaching zero is a b
   assert.equal(t(5001).actual, 5001);
   assert.equal(t(null).ok, false);
   assert.equal(t(null).actual, null);
-  assert.match(t(null).message, /never reached zero in 10000 ms/);
+  assert.match(t(null).message, /no such zero within 10000 ms/);
 });
 
 test('delete instruments: a delete that did not run, threw, or had no tree to remove is VOID — never a green zero', () => {
@@ -255,4 +255,153 @@ test('identity(): a live pid has one, a killed-not-yet-reaped ZOMBIE has none (a
   assert.equal(identity(pid), null, 'zombie ⇒ not a survivor');
   await new Promise((r) => child.once('exit', r));
   assert.equal(identity(pid), null, 'reaped ⇒ gone');
+});
+
+test('a HUNG delete is a budget failure naming the tree it left (returnsWithinMs), not a broken instrument', () => {
+  const hung = judgeSessionBudget(report({ del: del({ returnedMs: null, hung: true, storeRecordGone: false, elapsedMs: null, dwellMs: 0, survivors: healthyProcs() }) }));
+  assert.equal(hung.void, false, 'a hang is not VOID: the record staying in the store is what a hang looks like');
+  assert.deepEqual(hung.verdicts.filter((v) => !v.ok).map((v) => v.id).sort(), ['session.delete.returnsWithinMs', 'session.delete.survivors', 'session.delete.zeroWithinMs']);
+  const r = hung.verdicts.find((v) => v.id === 'session.delete.returnsWithinMs')!;
+  assert.equal(r.actual, null);
+  assert.match(r.message, /still pending after 10000 ms \(a HUNG delete, via cli\)/);
+  assert.match((r.tree ?? []).join('\n'), /\[22\] keeper .*from the pre-delete tree/);
+  // the delete hung but the tree is gone: returnsWithinMs alone breaks (the survivors budget cannot see a hang)
+  const hungClean = judgeSessionBudget(report({ del: del({ returnedMs: null, hung: true, storeRecordGone: false }) }));
+  assert.deepEqual(hungClean.verdicts.filter((v) => !v.ok).map((v) => v.id), ['session.delete.returnsWithinMs']);
+  // boundary: 5000 ms to return is the limit
+  const ret = (ms: number) => judgeSessionBudget(report({ del: del({ returnedMs: ms }) })).verdicts.find((v) => v.id === 'session.delete.returnsWithinMs')!;
+  assert.equal(ret(5000).ok, true);
+  assert.equal(ret(5001).ok, false);
+  assert.equal(ret(5001).actual, 5001);
+});
+
+test('a zero must have been WATCHED for 2000 ms to count: a shorter dwell is VOID (a late relaunch would pass unseen); with survivors present it is not asked', () => {
+  const dw = (dwellMs: number, survivors: ProcEntry[] = []) => judgeSessionBudget(report({ del: del({ dwellMs, survivors, elapsedMs: survivors.length ? null : 130 }) }));
+  assert.equal(dw(2000).void, false);
+  assert.equal(dw(1999).void, true);
+  assert.equal(dw(0).void, true);
+  assert.equal(dw(1999).verdicts.find((v) => v.id === 'instrument.delete.dwelled')!.ok, false);
+  assert.equal(dw(0, [healthyProcs()[5]]).void, false, 'survivors present: the dwell instrument does not apply');
+  assert.equal(dw(0, [healthyProcs()[5]]).verdicts.some((v) => v.id === 'instrument.delete.dwelled'), false);
+});
+
+test('a racing wake must have been fired while the session was stopping, else the wake arm races nothing (VOID)', () => {
+  const wk = (sessionStoppingBeforeWake: boolean) => judgeSessionBudget(report({ del: del({ wake: { firedAtMs: 4, sessionStoppingBeforeWake, result: 'accepted', refusals: [] } }) }));
+  assert.equal(wk(true).void, false);
+  assert.equal(wk(false).void, true);
+  assert.equal(wk(false).verdicts.find((v) => v.id === 'instrument.delete.wakeFired')!.ok, false);
+  assert.equal(judgeSessionBudget(report({ del: del() })).verdicts.some((v) => v.id === 'instrument.delete.wakeFired'), false, 'no wake, no instrument');
+});
+
+// ── every PROCS_ARMS entry, pinned as literals (review F2: J20/J21 were undetectable while only one entry was exercised) ──
+const S = { stubbornMcp: 1 };
+const HOLD = ['session.processes.', 'session.beforeFirstReply.'];
+const FIRST = 'session.processes.atFirstReply.';
+const SURV6 = { id: 'session.delete.survivors', exact: 6, treeIncludes: ['keeper.js', 'claude', 'fixsrv1', 'fixsrv4'] };
+const ZERO_NEVER = { id: 'session.delete.zeroWithinMs', never: true };
+const EXPECTED_ARMS = {
+  'delete-cli': { kind: 'session', mutant: null, expect: 'pass', teardown: 'cli', profile: S },
+  'delete-ui': { kind: 'session', mutant: null, expect: 'pass', teardown: 'ui', profile: S },
+  'procs-extra-child': {
+    kind: 'session', mutant: 'keeper-extra-child', expect: 'fail',
+    checks: [
+      { id: `${FIRST}other`, exact: 1, treeIncludes: ['sleep 600', 'keeper.js'] },
+      { id: `${FIRST}total`, exact: 7 },
+      { id: 'session.processes.atEnd.other', exact: 1, treeIncludes: ['sleep 600'] },
+      { id: 'session.processes.atEnd.total', exact: 7 },
+    ],
+    mustHold: [`${FIRST}keeper`, `${FIRST}cli`, `${FIRST}mcp`, `${FIRST}memoryMB`, 'session.beforeFirstReply.'],
+  },
+  'mem-keeper-ballast': {
+    kind: 'session', mutant: 'keeper-ballast', expect: 'fail',
+    checks: [
+      { id: `${FIRST}memoryMB`, min: 750, treeIncludes: ['keeper.js', 'claude'] },
+      { id: 'session.processes.atEnd.memoryMB', min: 750, treeIncludes: ['keeper.js'] },
+    ],
+    mustHold: [`${FIRST}keeper`, `${FIRST}cli`, `${FIRST}mcp`, `${FIRST}hook`, `${FIRST}other`, `${FIRST}total`, 'session.beforeFirstReply.'],
+  },
+  'delete-cli-skips-stop': { kind: 'session', mutant: 'delete-skips-stop', expect: 'fail', teardown: 'cli', profile: S, checks: [SURV6, ZERO_NEVER], mustHold: HOLD },
+  'delete-cli-skips-tree-sweep': {
+    kind: 'session', mutant: 'delete-skips-tree-sweep', expect: 'fail', teardown: 'cli', profile: S,
+    checks: [{ id: 'session.delete.survivors', exact: 1, treeIncludes: ['fixsrv4', '--stubborn', 'from the pre-delete tree'] }, ZERO_NEVER], mustHold: HOLD,
+  },
+  'delete-cli-wake-race': { kind: 'session', mutant: null, expect: 'pass', teardown: 'cli', profile: S, deleteOpts: { wakeDuringDelete: true }, mustSeeRefusal: true },
+  'delete-cli-wake-race-no-tombstone': {
+    kind: 'session', mutant: 'delete-drops-launch-tombstone', expect: 'fail', teardown: 'cli', profile: S, deleteOpts: { wakeDuringDelete: true },
+    checks: [{ id: 'session.delete.survivors', exact: 6, treeIncludes: ['keeper.js', 'claude', 'fixsrv4', 'NEW since the delete'] }, ZERO_NEVER], mustHold: HOLD,
+  },
+  'delete-cli-late-relaunch': {
+    kind: 'session', mutant: 'delete-late-relaunch', expect: 'fail', teardown: 'cli', profile: S,
+    checks: [{ id: 'session.delete.survivors', exact: 1, treeIncludes: ['sleep 600', 'NEW since the delete'] }, ZERO_NEVER], mustHold: HOLD,
+  },
+  'delete-cli-hangs': {
+    kind: 'session', mutant: 'delete-hangs', expect: 'fail', teardown: 'cli', profile: S,
+    checks: [{ id: 'session.delete.returnsWithinMs', never: true }, SURV6, ZERO_NEVER], mustHold: HOLD,
+  },
+  'delete-ui-skips-stop': { kind: 'session', mutant: 'delete-skips-stop+ui-skips-sdkstop', expect: 'fail', teardown: 'ui', profile: S, checks: [SURV6, ZERO_NEVER], mustHold: HOLD },
+};
+
+test('PROCS_ARMS is exactly this table (every constant of every arm is a pinned literal)', () => {
+  assert.deepEqual(PROCS_ARMS, EXPECTED_ARMS);
+});
+
+/** The report an ideal run of each must-FAIL arm produces (what the arm is FOR): golden inputs for judgeProcsArm. */
+const sleepProc = (pid: number, ppid: number) => proc(pid, ppid, 'other', 0, 'sleep 600');
+const withMemory = (mb: number): ProcEntry[] => { const p = healthyProcs(); p[0] = proc(22, 1, 'keeper', mb - (275 + 4 * 51), '/usr/bin/node-22 /o/bin/keeper.js ws-sb'); return p; };
+const newTree = (): ProcEntry[] => [
+  proc(150, 1, 'keeper', 52, '/usr/bin/node-22 /o/bin/keeper.js ws-sb'), proc(157, 150, 'cli', 262, 'claude --output-format stream-json'),
+  ...[1, 2, 3, 4].map((i) => proc(170 + i, 157, 'mcp', 50, `/usr/bin/node-22 /r/fake-mcp-server.mjs --name fixsrv${i} --tools 15${i === 4 ? ' --stubborn' : ''}`)),
+];
+const IDEAL: Record<string, () => SessionBudgetReport> = {
+  'procs-extra-child': () => report({ first: [...healthyProcs(), sleepProc(29, 22)] }),
+  'mem-keeper-ballast': () => report({ first: withMemory(820) }),
+  'delete-cli-skips-stop': () => report({ del: del({ survivors: healthyProcs(), elapsedMs: null, dwellMs: 0 }) }),
+  'delete-cli-skips-tree-sweep': () => report({ del: del({ survivors: [healthyProcs()[5]], elapsedMs: null, dwellMs: 0 }) }),
+  'delete-cli-wake-race-no-tombstone': () => report({ del: del({ survivors: newTree(), elapsedMs: null, dwellMs: 0, wake: { firedAtMs: 4, sessionStoppingBeforeWake: true, result: 'accepted', refusals: [] } }) }),
+  'delete-cli-late-relaunch': () => report({ del: del({ survivors: [sleepProc(149, 1)], elapsedMs: null, dwellMs: 2000 }) }),
+  'delete-cli-hangs': () => report({ del: del({ returnedMs: null, hung: true, storeRecordGone: false, survivors: healthyProcs(), elapsedMs: null, dwellMs: 0 }) }),
+  'delete-ui-skips-stop': () => report({ del: del({ via: 'ui', survivors: healthyProcs(), elapsedMs: null, dwellMs: 0 }) }),
+};
+
+test('every must-FAIL arm accepts the run it is FOR (golden), and there is a golden for every one of them', () => {
+  const failing = Object.entries(PROCS_ARMS).filter(([, a]) => a.expect === 'fail').map(([n]) => n).sort();
+  assert.deepEqual(Object.keys(IDEAL).sort(), failing);
+  for (const n of failing) {
+    const j = judgeSessionBudget(IDEAL[n]());
+    assert.equal(j.void, false, `${n}: the ideal run is not VOID: ${j.verdicts.filter((v) => !v.ok && v.kind === 'instrument').map((v) => v.message).join(' | ')}`);
+    const r = judgeProcsArm(PROCS_ARMS[n], j);
+    assert.equal(r.ok, true, `${n}: ${r.why}`);
+  }
+});
+
+test('judgeProcsArm clauses: min (boundary), never, exact, extra-broken-budget and mustHold each reject their own deviation', () => {
+  const ballast = PROCS_ARMS['mem-keeper-ballast'];
+  assert.equal(judgeProcsArm(ballast, judgeSessionBudget(report({ first: withMemory(750) }))).ok, true, 'min 750 holds at exactly 750');
+  const under = judgeProcsArm(ballast, judgeSessionBudget(report({ first: withMemory(749) })));
+  assert.equal(under.ok, false);
+  assert.match(under.why, /memoryMB: actual 749 < 750/);
+  // never: the delete-cli-skips-stop arm must see 'never reached zero' (null), not a slow zero
+  const slow = judgeProcsArm(PROCS_ARMS['delete-cli-skips-stop'], judgeSessionBudget(report({ del: del({ survivors: healthyProcs(), elapsedMs: 6000 }) })));
+  assert.equal(slow.ok, false);
+  assert.match(slow.why, /session\.delete\.zeroWithinMs: expected 'never reached zero', got 6000/);
+  // exact: 7 processes, not 8
+  const eight = judgeProcsArm(PROCS_ARMS['procs-extra-child'], judgeSessionBudget(report({ first: [...healthyProcs(), sleepProc(29, 22), sleepProc(30, 22)] })));
+  assert.equal(eight.ok, false);
+  assert.match(eight.why, /atFirstReply\.total: actual 8 != 7/);
+  // extra: an arm that also breaks a budget it did not aim at (the delete call took 6 s)
+  const extra = judgeProcsArm(PROCS_ARMS['delete-cli-skips-tree-sweep'], judgeSessionBudget(report({ del: del({ returnedMs: 6000, survivors: [healthyProcs()[5]], elapsedMs: null, dwellMs: 0 }) })));
+  assert.equal(extra.ok, false);
+  assert.match(extra.why, /unexpected extra broken budgets: session\.delete\.returnsWithinMs/);
+  // mustHold: the same arm also broke a process budget
+  const leak = judgeProcsArm(PROCS_ARMS['delete-cli-skips-tree-sweep'], judgeSessionBudget(report({ first: [...healthyProcs(), sleepProc(91, 22)], del: del({ survivors: [healthyProcs()[5]], elapsedMs: null, dwellMs: 0 }) })));
+  assert.equal(leak.ok, false);
+  assert.match(leak.why, /session\.processes\.atFirstReply\.other broke but must hold/);
+});
+
+test('passArmProblems: the wake-race PASS arm proves nothing unless the launch tombstone REALLY refused the wake', () => {
+  const arm = PROCS_ARMS['delete-cli-wake-race'];
+  const wake = (refusals: string[]) => report({ del: del({ wake: { firedAtMs: 4, sessionStoppingBeforeWake: true, result: 'accepted', refusals } }) });
+  assert.equal(passArmProblems(arm, wake(['Failed to spawn Claude Code process: workspace ws-sb was deleted — keeper start refused'])), null);
+  assert.match(String(passArmProblems(arm, wake([]))), /never refused the racing wake/);
+  assert.equal(passArmProblems(PROCS_ARMS['delete-cli'], report({ del: del() })), null, 'an arm without the control is not asked');
 });

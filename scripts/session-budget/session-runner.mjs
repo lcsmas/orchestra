@@ -32,7 +32,7 @@ if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: imp
 const { startFakeApi } = await import(`${HERE}/fake-anthropic-api.mjs`);
 const { generateHeavyFixture } = await import(`${HERE}/fixture.mjs`);
 const { census } = await import(`${HERE}/proc-census.mjs`);
-const { judgeSessionBudget, summarizeWindow, egressUpTo, TRAFFIC_KNOBS, STARTUP_CUT_MARGIN_MS } = await import(`${REPO}/src/shared/session-budget.ts`);
+const { SESSION_BUDGETS, judgeSessionBudget, summarizeWindow, egressUpTo, TRAFFIC_KNOBS, STARTUP_CUT_MARGIN_MS } = await import(`${REPO}/src/shared/session-budget.ts`);
 
 const fx = generateHeavyFixture(path.join(root, 'repo'), profile);
 // Fixed ports: this process was started with HTTPS_PROXY/NODE_USE_ENV_PROXY already aimed at the proxy port (the harness
@@ -69,6 +69,7 @@ fs.writeFileSync(path.join(orchHome, 'bin', 'keeper.js'), mutateBundle(mutant, f
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 const events = [];
+let deleteStarted = false; const refusals = []; // #210 (see the error branch below)
 let tInit = null, tFirstReply = null, tTurnEnd = null, initEvent = null, errorEvent = null;
 let censusAtFirstReply = null;
 let cliEnv = null;
@@ -79,7 +80,11 @@ initPlatform({
     const t = api.now();
     events.push({ t, type: ev.type });
     if (ev.type === 'session/init' && tInit === null) { tInit = t; initEvent = ev; }
-    if (ev.type === 'error' && !errorEvent) errorEvent = ev;
+    if (ev.type === 'error') {
+      // #210: the launch tombstone REFUSING a wake that raced the delete is the expected outcome of the wake-race arms, not a run error.
+      if (deleteStarted && /keeper start refused/.test(String(ev.message ?? ''))) refusals.push(String(ev.message));
+      else if (!errorEvent) errorEvent = ev;
+    }
     if (ev.type === 'text-delta' && tFirstReply === null) {
       tFirstReply = t; // the first token the user would see
       censusAtFirstReply = census({ pidns });
@@ -139,8 +144,10 @@ let deleteReport = null;
 if (teardown === 'cli' || teardown === 'ui') {
   try {
     const { deleteViaRealPath } = await import(`${HERE}/delete-teardown.mjs`);
-    deleteReport = await deleteViaRealPath({ REPO, wsId: WS_ID, via: teardown, pidns, census, boundMs: cfg.deleteBoundMs ?? 10_000 });
+    deleteStarted = true;
+    deleteReport = await deleteViaRealPath({ REPO, wsId: WS_ID, via: teardown, pidns, census, boundMs: cfg.deleteBoundMs ?? 10_000, stableForMs: SESSION_BUDGETS.afterDelete.stableForMs, ...(cfg.deleteOpts ?? {}) });
     survivors = deleteReport.survivors.length;
+    if (deleteReport.wake) deleteReport.wake.refusals = refusals.slice();
     if (deleteReport.error) error = error ?? `delete: ${deleteReport.error}`;
   } catch (e) {
     error = error ?? `delete teardown: ${String(e?.stack ?? e)}`;

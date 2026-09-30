@@ -76,10 +76,17 @@ export interface DeleteReport {
   via: 'cli' | 'ui';
   /** How long the run polled for the tree to disappear. */
   boundMs: number;
-  /** Delete call start → the call returned. */
-  returnedMs: number;
-  /** Delete call start → zero processes left; null when some were still alive at `boundMs`. */
+  /** Delete call start → the call returned; null when it had NOT returned at `boundMs` (a hung delete, `hung`). */
+  returnedMs: number | null;
+  /** The delete call was still pending at `boundMs`: the census ran anyway, so the tree it left is named. */
+  hung?: boolean;
+  /** Delete call start → the FIRST zero reading, and only when the zero then held for `dwellMs`; null when some
+   *  process was alive at `boundMs` or one (re)appeared during the dwell. */
   elapsedMs: number | null;
+  /** How long the tree was watched AFTER the first zero reading (0 when it never reached zero). */
+  dwellMs: number;
+  /** Present only when a wake (`sdkSend`) was fired concurrently with the delete (the racing-wake arms). */
+  wake?: { firedAtMs: number; sessionStoppingBeforeWake: boolean; result: string; /** The launch tombstone's `keeper start refused` errors the session emitted after the delete began. */ refusals?: string[] };
   treeBefore: ProcEntry[];
   /** Pre-delete tree members still alive BY IDENTITY, plus (pid namespace) anything still in the namespace. */
   survivors: ProcEntry[];
@@ -205,6 +212,7 @@ export const SESSION_BUDGETS = Object.freeze({
     cli: 1,
     /** Per configured MCP server (the report's `fixture.mcpServers`). */
     mcpPerConfiguredServer: 1,
+    /** `hook` is exercised by synthetic unit reports only — the fixture installs no Orchestra hooks (review F7). */
     hook: 0,
     other: 0,
     /** Tree memory, MB (RSS + swapped-out, summed): base (keeper + CLI, measured 327) + per configured MCP server
@@ -216,8 +224,13 @@ export const SESSION_BUDGETS = Object.freeze({
   afterDelete: Object.freeze({
     /** Nothing from the session tree may be alive once the delete has finished. */
     survivors: 0,
-    /** …and it must be gone within this long of the delete call. */
+    /** …the delete call must return, and the tree be gone, within this long of the call. Scope (review F8): the arms delete a
+     *  `kind:'scratch'` row (no archive script, no `git worktree remove`), and 5 s sits inside the product's own kill ladder
+     *  (keeper-client `killKeeperUnlocked`: ≤3 s socket wait + ≤5 s pid wait + 1 s + 1 s) — healthy runs take 33–633 ms, a
+     *  legitimately slow keeper can be red here. */
     zeroWithinMs: 5000,
+    /** …and the zero must HOLD this long (a keeper relaunched by a racing wake after the sweep appears later, review F1c). */
+    stableForMs: 2000,
   }),
 });
 
@@ -348,19 +361,31 @@ function deleteVerdicts(report: SessionBudgetReport, b: SessionBudgets['afterDel
   if (!d) return;
   const nMcp = report.fixture?.mcpServers ?? 0;
   out.push(instrumentVerdict('instrument.delete.treeExistedBefore', d.treeBefore?.length ?? null, 2 + nMcp, `the tree was not there before the delete (${d.treeBefore?.length ?? 0} processes) — a zero after it proves nothing`));
-  out.push(instrumentVerdict('instrument.delete.recordRemoved', d.storeRecordGone ? 1 : null, 1, `the delete (${d.via}) did not run to its end — the workspace record is still in the store`));
-  out.push(instrumentVerdict('instrument.delete.ran', d.error ? null : 1, 1, `the delete (${d.via}) threw: ${(d.error ?? '').split('\n')[0]}`));
+  // A hung delete is a BUDGET failure (returnsWithinMs, with the tree it left) — not a broken instrument.
+  if (!d.hung) {
+    out.push(instrumentVerdict('instrument.delete.recordRemoved', d.storeRecordGone ? 1 : null, 1, `the delete (${d.via}) did not run to its end — the workspace record is still in the store`));
+    out.push(instrumentVerdict('instrument.delete.ran', d.error ? null : 1, 1, `the delete (${d.via}) threw: ${(d.error ?? '').split('\n')[0]}`));
+  }
+  if (d.wake) out.push(instrumentVerdict('instrument.delete.wakeFired', d.wake.sessionStoppingBeforeWake ? 1 : null, 1, 'the racing wake was not fired while the session was stopping — the arm does not race anything'));
   const survivors = d.survivors ?? [];
   const before = new Set((d.treeBefore ?? []).map((p) => p.pid));
+  // A claimed zero must have been WATCHED to hold: a poll that ends at the first zero reading cannot see a later relaunch.
+  if (survivors.length === 0) out.push(instrumentVerdict('instrument.delete.dwelled', d.dwellMs ?? null, b.stableForMs, `the zero was not watched for ${b.stableForMs} ms after it was first read — a relaunch after the sweep would pass unseen`));
   const kinds = [...new Set(survivors.map((p) => p.kind))].join('+');
   out.push(withTree(
-    budgetVerdict('session.delete.survivors', 'max', b.survivors, survivors.length, `after deleting the workspace via ${d.via} ${survivors.length} process(es) (${kinds || 'none'}) of its session tree were still alive ${d.boundMs} ms later`),
+    budgetVerdict('session.delete.survivors', 'max', b.survivors, survivors.length, `after deleting the workspace via ${d.via} ${survivors.length} process(es) (${kinds || 'none'}) of its session tree were alive at the end of the observation (${d.boundMs} ms bound + ${b.stableForMs} ms stability window)`),
     survivorLines(survivors, before),
   ));
+  const okR = d.returnedMs !== null && d.returnedMs <= b.zeroWithinMs;
+  out.push({
+    id: 'session.delete.returnsWithinMs', kind: 'budget', ok: okR, actual: d.returnedMs, limit: `at most ${b.zeroWithinMs}`,
+    message: okR ? `ok session.delete.returnsWithinMs: ${d.returnedMs} (at most ${b.zeroWithinMs})` : `BUDGET BROKEN session.delete.returnsWithinMs: allowed at most ${b.zeroWithinMs} ms for the delete call to return, ${d.returnedMs === null ? `it was still pending after ${d.boundMs} ms (a HUNG delete, via ${d.via})` : `it took ${d.returnedMs} ms (via ${d.via})`}`,
+    ...(okR ? {} : { tree: survivorLines(survivors, before) }),
+  });
   const okT = d.elapsedMs !== null && d.elapsedMs <= b.zeroWithinMs;
   out.push({
     id: 'session.delete.zeroWithinMs', kind: 'budget', ok: okT, actual: d.elapsedMs, limit: `at most ${b.zeroWithinMs}`,
-    message: okT ? `ok session.delete.zeroWithinMs: ${d.elapsedMs} (at most ${b.zeroWithinMs})` : `BUDGET BROKEN session.delete.zeroWithinMs: allowed at most ${b.zeroWithinMs} ms until zero processes, ${d.elapsedMs === null ? `never reached zero in ${d.boundMs} ms` : `took ${d.elapsedMs} ms`} (delete call returned after ${d.returnedMs} ms, via ${d.via})`,
+    message: okT ? `ok session.delete.zeroWithinMs: ${d.elapsedMs} (at most ${b.zeroWithinMs})` : `BUDGET BROKEN session.delete.zeroWithinMs: allowed at most ${b.zeroWithinMs} ms until a zero that holds ${b.stableForMs} ms, ${d.elapsedMs === null ? `no such zero within ${d.boundMs} ms (${survivors.length} process(es) alive at the end)` : `took ${d.elapsedMs} ms`} (delete call ${d.returnedMs === null ? 'never returned' : `returned after ${d.returnedMs} ms`}, via ${d.via})`,
     ...(okT ? {} : { tree: survivorLines(survivors, before) }),
   });
 }

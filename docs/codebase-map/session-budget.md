@@ -76,10 +76,19 @@ at the first reply AND settled: exactly 1 keeper, 1 CLI, 1 process per configure
 - **Census reads `/proc/<pid>/status` `VmRSS`+`VmSwap`, never `statm`×4** — this host runs 16 KB pages (Asahi), `statm` read 4× low.
 - **Delete arms** (`delete-cli` = socket `/deleteWorkspace` → `dispatchDeleteWorkspaceRequest`; `delete-ui` = the renderer IPC
   handler `apiHandlers.deleteWorkspace` = `sdkStopMany` + `deleteWorkspace`) tear the session down through the REAL path
-  (`scripts/session-budget/delete-teardown.mjs`), then poll until zero or the bound. Survivors = pre-delete tree members alive
-  by (pid, start-time) **plus** anything left in the pid namespace — a subtree census alone loses an orphaned CLI (ppid → 1;
-  measured: proxy-only containment reads 0 with the identity clause mutated out, 1 with it) and a keeper relaunched after
-  the delete shows only in the namespace half.
+  (`scripts/session-budget/delete-teardown.mjs`). The delete call is RACED against the 10 s bound (a hung delete still gets its
+  tree censused and named: `session.delete.returnsWithinMs`), the tree is polled to its first zero, and that zero is then
+  WATCHED for `afterDelete.stableForMs` (2 s) — a relaunch after the sweep appears later, and `instrument.delete.dwelled` makes an
+  unwatched zero VOID. Survivors = pre-delete tree members alive by (pid, start-time) **plus** anything left in the pid
+  namespace (`alive()`'s two halves): a subtree census alone loses an orphaned CLI (ppid → 1; measured: proxy-only containment
+  reads 0 with the identity clause mutated out, 1 with it), and a process that was never in the tree shows only in the
+  namespace half.
+- **Racing wake** (`deleteOpts.wakeDuringDelete`): `sdkSend` fired while the session is stopping and `killKeeper` is in flight.
+  `delete-cli-wake-race` (must PASS) needs the launch tombstone (`forbidKeeperLaunch`) to REFUSE it — the session emits
+  `keeper start refused`, recorded as `wake.refusals` and required by `mustSeeRefusal` (else 0 survivors proves nothing);
+  `delete-cli-wake-race-no-tombstone` (mutant drops `forbidKeeperLaunch`) relaunches a whole NEW 6-process tree and fails naming it.
+  `delete-cli-late-relaunch` (a process started 1.5 s after the sweep) is caught only by the census half + the dwell;
+  `delete-cli-hangs` (the stop never returns) only by the race against the bound.
 - **`--stubborn` MCP** (`profile.stubbornMcp`) ignores stdin EOF/SIGTERM like an `npx` grandchild: the CLI's abrupt death
   (keeper SIGTERM) leaves it; only `killKeeperTree` (snapshot taken BEFORE the stop) reaps it.
 - **Masking to know:** the UI route also stops the session (`sdkStopMany` → graceful close), so a mutant skipping only
@@ -89,8 +98,17 @@ at the first reply AND settled: exactly 1 keeper, 1 CLI, 1 process per configure
   `api-handlers.ts` (load-time, nothing on disk) and BUNDLE mutants of the scratch `keeper.js` copy (`keeper-extra-child`,
   `keeper-ballast`); each arm names the budget it must break, its literal actual, the text its tree must contain, and the
   budgets that must stay green.
-- **Suite cost:** +7 session arms (`delete-cli`, `delete-ui`, `procs-extra-child`, `mem-keeper-ballast`, `delete-cli-skips-stop`,
-  `delete-cli-skips-tree-sweep`, `delete-ui-skips-stop`) ≈ +2 min on `pnpm run test:session-budget` and on the release gate.
+- **Suite cost:** +11 session arms (`delete-cli`, `delete-ui`, `delete-cli-wake-race`, `procs-extra-child`, `mem-keeper-ballast`,
+  `delete-cli-skips-stop`, `delete-cli-skips-tree-sweep`, `delete-cli-wake-race-no-tombstone`, `delete-cli-late-relaunch`,
+  `delete-cli-hangs`, `delete-ui-skips-stop`) ≈ +4 min on `pnpm run test:session-budget` and on the release gate (each survivor arm
+  burns the 10 s bound; every zero is watched 2 s more).
+- **Boundaries, not modelled:** a DOUBLE-FORKED descendant (reparented to init before the snapshot) escapes the product's
+  `snapshotKeeperTree` (it walks ppid) — the pid-ns census sees it but no arm creates one (`--stubborn` keeps its ppid chain);
+  `hook: 0` is exercised by synthetic unit reports only (the fixture installs no Orchestra hooks) and `zombies` is censused but
+  read by no verdict; `zeroWithinMs` (5 s) times a `kind:'scratch'` delete (no archive script / `git worktree remove`) and sits inside
+  the product's own kill ladder (`killKeeperUnlocked`: ≤3 s socket + ≤5 s pid + 1 s + 1 s — healthy 33–633 ms); removing only
+  `sdkStopIfLive` or only `killKeeper` from `stopStructuredSession` is caught with the wrong attribution (`agent error event`, no
+  tree named) — only the whole-stop and tree-sweep removals name the tree.
 - **NOT proven:** numbers are aarch64 / 16 KB pages / node 22 / CLI 2.1.284 against the fake API (a small context — the 275 MB CLI is
   not a production steady state; an x86 4 KB host reads lower, so the budget only gets less sensitive there); a real `npx`-wrapped MCP
   tree is modelled by `--stubborn`, not run; the renderer route is `apiHandlers.deleteWorkspace` called directly, not through Electron

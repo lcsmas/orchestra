@@ -147,10 +147,10 @@ async function runContained(o, script, label, extraCfg, resultPrefix) {
  * when the host cannot contain it).
  * @param {{repo: string, arm: string, mutant?: string|null, profile?: object, replyDelayMs?: number,
  *          settleMs?: number, timeoutMs?: number, keep?: boolean, containment?: {name:string,prefix:string[]},
- *          teardown?: 'manual'|'cli'|'ui'}} o  (#210: cli/ui = tear down through the REAL delete path)
+ *          teardown?: 'manual'|'cli'|'ui', deleteOpts?: {wakeDuringDelete?: boolean}}} o  (#210: cli/ui = tear down through the REAL delete path)
  */
 export function runSessionArm(o) {
-  return runContained(o, 'session-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, profile: o.profile ?? {}, teardown: o.teardown ?? 'manual' }, '{"report"');
+  return runContained(o, 'session-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, profile: o.profile ?? {}, teardown: o.teardown ?? 'manual', deleteOpts: o.deleteOpts ?? {} }, '{"report"');
 }
 
 /**

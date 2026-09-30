@@ -42,6 +42,24 @@ export const MUTANTS = {
     find: /  await killKeeperTree\(id, tree, 'workspace-deleted'\)\.catch\([^\n]*\n/g,
     replace: '',
   },
+  // The launch tombstone goes: a wake racing the delete launches a keeper + CLI nobody will kill (A3 review F4, #201 D-series).
+  'delete-drops-launch-tombstone': {
+    file: '/src/main/workspaces.ts',
+    find: /  forbidKeeperLaunch\(id\); \/\/ sync, before any await[^\n]*\n/g,
+    replace: '',
+  },
+  // Something starts AFTER the sweep (1.5 s later — past the first zero reading): a process the delete leaves behind late.
+  'delete-late-relaunch': {
+    file: '/src/main/workspaces.ts',
+    find: /(  await killKeeperTree\(id, tree, 'workspace-deleted'\)\.catch\([^\n]*\n)/g,
+    replace: "$1  setTimeout(() => { process.getBuiltinModule('node:child_process').spawn('sleep', ['600'], { stdio: 'ignore', detached: true }).unref(); }, 1500);\n",
+  },
+  // The stop never returns: the delete call hangs (a wedged keeper kill).
+  'delete-hangs': {
+    file: '/src/main/workspaces.ts',
+    find: /(async function stopStructuredSession\(id: string\): Promise<void> \{\n  forbidKeeperLaunch\(id\);[^\n]*\n)/g,
+    replace: '$1  await new Promise(() => {});\n',
+  },
   // The renderer IPC handler stops the live session BEFORE deleteWorkspace — a second, independent stopper.
   'ui-skips-sdkstop': {
     file: '/src/main/api-handlers.ts',
