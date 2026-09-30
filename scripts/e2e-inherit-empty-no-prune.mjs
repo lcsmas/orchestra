@@ -12,7 +12,7 @@
 //   ui_deselect          must-PASS: REAL setAccounts takes a FULL selection to empty → links/MCP pruned, own MCP + trust kept
 //   ui_normal_save       must-PASS: REAL setAccounts, selection unchanged → nothing pruned, no held-block warn
 //   boot_absent_seeded   control: `inherit` ABSENT is re-seeded by boot's seed (pre-existing) → dir keeps its links
-//   torn_json_boot     ★ (#238/C11) boot order, FULL selection, the login `.claude.json` caught mid-write (60% of it) → file byte-identical + ONE warn, links intact; whole again → next sync merges, trust kept
+//   torn_json_boot     ★ (#238/C11) boot order, FULL selection, the login `.claude.json` torn (60% of it; the tear's producer is unexplained — claude 2.1.284 writes tmp+rename under a lock) → file byte-identical + ONE warn, links intact; whole again → next sync merges, trust kept
 //   torn_json_ui_save  ★ (#238/C11) same through the REAL apiHandlers.setAccounts (a normal, unchanged-selection save)
 //
 // Run one arm:  node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-inherit-empty-no-prune.mjs <arm>
@@ -252,7 +252,7 @@ if (ARM === 'boot_empty_obj') {
   ok = control && out.preStoreNonEmpty && settled && out.links === 0 && out.mcp.join() === 'my-own'
     && out.manifest.symlinks.length === 0 && out.manifest.mcpServers.length === 0 && out.trustKept && out.storeAfter === null;
 } else if (ARM === 'torn_json_boot' || ARM === 'torn_json_ui_save') {
-  // #238/C11: the login `.claude.json` is caught mid-write by the sync (a live CLI's truncate+write). Selection stays FULL,
+  // #238/C11: the login `.claude.json` is found torn by the sync (fixture: a 60% truncation; the real producer is UNEXPLAINED). Selection stays FULL,
   // so the C10 guard does NOT block — only the torn-read handling stands between the file and a `{mcpServers}` rewrite.
   const cj = path.join(login, '.claude.json');
   const whole = fs.readFileSync(cj, 'utf8');
