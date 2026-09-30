@@ -377,6 +377,11 @@ owned-only cleanup, (3) the reaper's duplicate pass (`resources.md`). The **trac
 pid-file keeper (written only by the keeper that owns the socket). Not pinned by a deterministic arm:
 `listLiveKeepers` still prunes a stale pid file's sock unconditionally (microsecond window vs a successor's bind).
 
+## Session budget — processes, memory, zero survivors after delete (#210)
+
+The delete path above (`stopStructuredSession`: session stop → `killKeeper` → `killKeeperTree`) is pinned by real-CLI arms in the
+session-budget suite — see `session-budget.md` § Processes, memory, zero survivors after delete.
+
 ## Kill/quit semantics
 
 | Scenario | Outcome |

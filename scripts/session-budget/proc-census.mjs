@@ -75,7 +75,8 @@ export function census({ pidns, selfPid = process.pid }) {
     total: live.length,
     zombies: tree.length - live.length,
     rssKB: live.reduce((a, p) => a + p.rssKB, 0),
+    swapKB: live.reduce((a, p) => a + p.swapKB, 0),
     byKind,
-    procs: live.map((p) => ({ pid: p.pid, kind: classify(p), cmd: p.cmd.join(' ').slice(0, 140) })),
+    procs: live.map((p) => ({ pid: p.pid, ppid: p.ppid, kind: classify(p), rssKB: p.rssKB, swapKB: p.swapKB, cmd: p.cmd.join(' ').slice(0, 300) })),
   };
 }

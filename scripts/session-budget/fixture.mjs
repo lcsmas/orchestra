@@ -74,7 +74,12 @@ export function generateHeavyFixture(dir, overrides = {}) {
   }
   const mcpServerNames = Array.from({ length: profile.mcpServers }, (_, i) => `fixsrv${i + 1}`);
   const mcpServers = {};
-  for (const [i, n] of mcpServerNames.entries()) mcpServers[n] = { command: process.execPath, args: [FAKE_MCP_SERVER, '--name', n, '--tools', String(profile.toolsPerServer), ...(i === 0 && profile.mcpInitDelayMs > 0 ? ['--init-delay-ms', String(profile.mcpInitDelayMs)] : [])] };
+  // profile.stubbornMcp = how many of the LAST servers ignore stdin EOF/SIGTERM (#210: outlive a dead CLI);
+  // profile.mcpInitDelayMs delays server 0's `initialize` (#208 startup-stall arm).
+  for (const [i, n] of mcpServerNames.entries()) {
+    const stubborn = i >= mcpServerNames.length - (profile.stubbornMcp ?? 0);
+    mcpServers[n] = { command: process.execPath, args: [FAKE_MCP_SERVER, '--name', n, '--tools', String(profile.toolsPerServer), ...(i === 0 && profile.mcpInitDelayMs > 0 ? ['--init-delay-ms', String(profile.mcpInitDelayMs)] : []), ...(stubborn ? ['--stubborn'] : [])] };
+  }
   fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify({ mcpServers }, null, 2)}\n`);
   // Project-scoped .mcp.json servers only start once approved; approve them in the project settings.
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });

@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
-const { REPO, root, arm, mutant = null, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000, pidns = false, containment = 'proxy-only', profile = {}, realApi = null } = cfg;
+const { REPO, root, arm, mutant = null, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000, pidns = false, containment = 'proxy-only', profile = {}, realApi = null, teardown = 'manual' } = cfg;
 const HERE = path.join(REPO, 'scripts', 'session-budget');
 
 // D7: scratch HOME / config dir / ORCHESTRA_HOME only — refuse anything live BEFORE the app can boot.
@@ -63,7 +63,9 @@ if (realApi) throw new Error('realApi smoke is driven by smoke-real.mjs, never b
 const keeperSrc = path.join(REPO, 'dist-electron', 'keeper.js');
 if (!fs.existsSync(keeperSrc)) throw new Error(`dist-electron/keeper.js missing — run \`pnpm run build:keeper\` (harness.ensureBuilt does)`);
 fs.mkdirSync(path.join(orchHome, 'bin'), { recursive: true });
-fs.copyFileSync(keeperSrc, path.join(orchHome, 'bin', 'keeper.js'));
+// A BUNDLE mutant (#210) edits this scratch COPY only — dist-electron/keeper.js is never written.
+const { mutateBundle } = await import(`${HERE}/mutants.mjs`);
+fs.writeFileSync(path.join(orchHome, 'bin', 'keeper.js'), mutateBundle(mutant, fs.readFileSync(keeperSrc, 'utf8')));
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 const events = [];
@@ -129,18 +131,32 @@ try {
 }
 const censusAtEnd = census({ pidns });
 
-// Teardown exactly as a workspace delete does (workspaces.ts stopStructuredSession), then census survivors.
+// Teardown. `manual` (default) = the hand-rolled stop sequence a workspace delete performs (workspaces.ts
+// stopStructuredSession) then a survivor census. `cli`/`ui` (#210) = the REAL delete path itself
+// (delete-teardown.mjs), so a regression in the shipped delete code is what the arm sees.
 let survivors = null;
-try {
-  keeper.forbidKeeperLaunch(WS_ID);
-  const tree = keeper.snapshotKeeperTree(WS_ID);
-  await sdk.sdkStop?.(WS_ID).catch?.(() => {});
-  await keeper.killKeeper(WS_ID, 'session-budget-teardown').catch(() => {});
-  await keeper.killKeeperTree(WS_ID, tree, 'session-budget-teardown').catch(() => {});
-  await new Promise((r) => setTimeout(r, 1500));
-  survivors = census({ pidns }).total;
-} catch (e) {
-  error = error ?? `teardown: ${String(e?.stack ?? e)}`;
+let deleteReport = null;
+if (teardown === 'cli' || teardown === 'ui') {
+  try {
+    const { deleteViaRealPath } = await import(`${HERE}/delete-teardown.mjs`);
+    deleteReport = await deleteViaRealPath({ REPO, wsId: WS_ID, via: teardown, pidns, census, boundMs: cfg.deleteBoundMs ?? 10_000 });
+    survivors = deleteReport.survivors.length;
+    if (deleteReport.error) error = error ?? `delete: ${deleteReport.error}`;
+  } catch (e) {
+    error = error ?? `delete teardown: ${String(e?.stack ?? e)}`;
+  }
+} else {
+  try {
+    keeper.forbidKeeperLaunch(WS_ID);
+    const tree = keeper.snapshotKeeperTree(WS_ID);
+    await sdk.sdkStop?.(WS_ID).catch?.(() => {});
+    await keeper.killKeeper(WS_ID, 'session-budget-teardown').catch(() => {});
+    await keeper.killKeeperTree(WS_ID, tree, 'session-budget-teardown').catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500));
+    survivors = census({ pidns }).total;
+  } catch (e) {
+    error = error ?? `teardown: ${String(e?.stack ?? e)}`;
+  }
 }
 
 // The request windows end at the first turn's turn-end: the legitimate gauge refresh is triggered BY that event, so it can
@@ -152,7 +168,6 @@ const win = (from, to) => summarizeWindow(api.requests, api.egress, from, to);
 const mainModel = api.requests.find((r) => r.type === 'model' && (r.tools ?? 0) > 0);
 // STARTUP egress: attempts made before the main request STARTED (headers in, body not yet read) minus a margin — a causal cut, not a race with the reply or with the request-coupled attempts.
 const startupEgress = mainModel ? egressUpTo(api.egress, mainModel.tStartMs - STARTUP_CUT_MARGIN_MS) : undefined;
-const strip = ({ procs, ...c }) => c;
 const report = {
   schema: 1,
   arm,
@@ -165,7 +180,9 @@ const report = {
     startupEgressSpanMs: mainModel && api.egress.length ? Math.round(mainModel.tStartMs - api.egress[0].tMs) : undefined },
   startupEgress,
   requests: { beforeFirstReply: win(-Infinity, cut), afterFirstReply: win(cut, Infinity), total: win(-Infinity, Infinity) },
-  processes: { atFirstReply: strip(censusAtFirstReply ?? { total: 0, zombies: 0, rssKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 } }), atEnd: strip(censusAtEnd), survivorsAfterTeardown: survivors },
+  // #210: the census keeps its `procs` list (a broken process/memory verdict names the tree).
+  processes: { atFirstReply: censusAtFirstReply ?? { total: 0, zombies: 0, rssKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 }, procs: [] }, atEnd: censusAtEnd, survivorsAfterTeardown: survivors },
+  ...(deleteReport ? { delete: deleteReport } : {}),
   egress: api.egress.map((e) => e.target),
   egressLog: api.egress.map((e) => ({ tMs: Math.round(e.tMs), target: e.target })),
   subject: {

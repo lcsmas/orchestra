@@ -21,7 +21,8 @@ step 3 (`build-release.md`).
 | Harness API | `scripts/session-budget/harness.mjs` | `ensureBuilt(repo)`, `detectContainment()`, `runSessionArm({repo, arm, mutant?, profile?, containment?})`, `findOnPath`, `reapScratchProcesses`. Containment = `bwrap --unshare-net --unshare-pid --proc /proc --die-with-parent --tmpfs /tmp` (`netns+pidns`: no egress possible, every descendant dies with the run) and it is **mandatory**: `runSessionArm`/`runSelfTest` return `{void, error}` without spawning when it is unavailable (`netns`/`proxy-only` only with the explicit env opt-out, echoed in the report; reaped by scratch `HOME` in `/proc/*/environ`). NOT `unshare -r`: it maps uid 0 and the CLI then refuses `bypassPermissions`. |
 | Driver | `scripts/session-budget/run.mjs` (`scripts/e2e-session-budget.sh`) | Session arms `normal` (must PASS), `slow-startup` (a slow MCP server delays the main request ~1.7 s and the CLI retries one refused call: must PASS — the C4 false-red case), `boot-context-read` (must FAIL naming `session.beforeFirstReply.countTokensRequests`, burst ≥ 50), `traffic-knob-in-env` (a `buildSdkEnv` edit hands the CLI `DISABLE_TELEMETRY`: must be VOID naming `instrument.productionEnv`) and `app-egress-new-host` (an `ensureSession` edit `fetch()`es a new host: must FAIL naming it in `startupEgressAttempts`); self-test arms `census-selftest` (pid-namespace census = exactly the runner's tree) and `smoke-flag-path` (the real-API smoke's flag path, real CLI vs fake API) — host-dependent checks live HERE, never in `pnpm run test`, which must not need `bwrap` or a real `claude`. A run whose report carries `error` is `RUN BROKE` (rc 1). Prints requests by type (before/after first reply/total, with main/side/egress), each tool-less side call with a preview of its prompt, time to first reply (from just before `sdkSend`; runner setup reported apart), child-process census (`cli/keeper/mcp/hook/other`, rss, survivors after teardown), CLI version, egress, routes. Exit 0 / 1 / 3 (VOID); last line `SESSION-BUDGET: PASS|PARTIAL|PASS-WEAK|FAIL|VOID` (`sessionBudgetTerminator`: `PASS` only for a FULL run under full containment; `PARTIAL` = `--arm` ≠ all; `PASS-WEAK` = weak-containment opt-out; the release gate accepts nothing but the exact `PASS`). `SESSION_BUDGET_SKIP_BUILD=1` uses the prebuilt keeper bundle (the unit test that drives the driver must not rebuild it while `keeper.test.ts` spawns it). `--json` for one JSON line per arm. |
 | Must-FAIL mutant | `scripts/session-budget/mutants.mjs` | Node `load` hook that rewrites `src/main/agent-sdk.ts` **as it loads** (nothing on disk): re-adds `refreshContextUsage(wsId)` after `void consume(session)` (the pre-fix code, `git show 89ae8b4b^`). The anchor must match **exactly once** or the run throws `PATTERN-GONE` (unit-tested against the shipped file). |
-| Process census | `scripts/session-budget/proc-census.mjs` | `/proc` walk: in a pid namespace every process except pid 1/self, else the runner's descendants; zombies listed apart. Reused by C3. |
+| Process census | `scripts/session-budget/proc-census.mjs` | `/proc` walk: in a pid namespace every process except pid 1/self, else the runner's descendants; zombies listed apart; per-process `rssKB`/`swapKB` from `/proc/<pid>/status` (never `statm`×4 — 16 KB pages) and `procs[]` (the named tree). |
+| Real-delete teardown + #210 arms | `scripts/session-budget/delete-teardown.mjs`, `procs-arms.mjs`, `measure-procs.mjs` | `teardown: 'cli'\|'ui'` runs the REAL delete path and reports survivors; `PROCS_ARMS` + `judgeProcsArm` (must-FAIL shape checker); `measure-procs.mjs` prints the spread the budget numbers come from. See § Processes, memory, zero survivors after delete. |
 | Scratch guard (D7) | `scripts/session-budget/scratch-guard.mjs` | `assertScratch` refuses any HOME/config/`ORCHESTRA_HOME` that is, resolves into, or contains `~/.claude*`, `~/.orchestra*`, or the invoker's `CLAUDE_CONFIG_DIR`/`ORCHESTRA_HOME` (symlinks resolved). |
 | Optional real-API smoke | `scripts/session-budget/smoke-real.mjs` (`pnpm run smoke:session-budget-real`) | ONE tiny cheap-model turn (`--model haiku`, no tools/MCP, nothing persisted, `--max-budget-usd 0.05`). Refuses unless `--real-api` AND an explicit `--config-dir` (the account billed; never defaulted). `--api-base` redirects it (how tests prove the flag path against the fake API). The release gate runs it only when `RELEASE_REAL_API_SMOKE_CONFIG_DIR` is set. **Never run against the real API by tests or by the C1 author.** |
 
@@ -63,6 +64,37 @@ disappear (main=1, egress 0) — which is why the suite does NOT set it, and why
 - In SDK streaming mode `system/init` is emitted only after the first prompt; never gate the prompt on init.
 - Normal arm: the turn-end gauge refresh then sends ~57 `count_tokens` AFTER the first reply (legitimate; reported as
   `afterFirstReply`, not budgeted). Mutant arm: 57 BEFORE it.
+
+## Processes, memory, zero survivors after delete (#210)
+
+**Numbers live ONLY in `SESSION_BUDGETS.processes` / `.afterDelete`
+(`src/shared/session-budget.ts`)**, with the measured spread beside them; re-measure with
+`node scripts/session-budget/measure-procs.mjs --runs 8` before moving one. Every arm judges the process/memory budgets
+at the first reply AND settled: exactly 1 keeper, 1 CLI, 1 process per configured MCP server, 0 hook, 0 other, tree memory
+≤ 400 MB + 65 MB/server (RSS+swap; measured 498–530 MB). A broken verdict carries `tree` (pid/kind/MB/argv) —
+`formatProcessTree`. A census that saw no tree is VOID (a max-budget over nothing passes).
+- **Census reads `/proc/<pid>/status` `VmRSS`+`VmSwap`, never `statm`×4** — this host runs 16 KB pages (Asahi), `statm` read 4× low.
+- **Delete arms** (`delete-cli` = socket `/deleteWorkspace` → `dispatchDeleteWorkspaceRequest`; `delete-ui` = the renderer IPC
+  handler `apiHandlers.deleteWorkspace` = `sdkStopMany` + `deleteWorkspace`) tear the session down through the REAL path
+  (`scripts/session-budget/delete-teardown.mjs`), then poll until zero or the bound. Survivors = pre-delete tree members alive
+  by (pid, start-time) **plus** anything left in the pid namespace — a subtree census alone loses an orphaned CLI (ppid → 1;
+  measured: proxy-only containment reads 0 with the identity clause mutated out, 1 with it) and a keeper relaunched after
+  the delete shows only in the namespace half.
+- **`--stubborn` MCP** (`profile.stubbornMcp`) ignores stdin EOF/SIGTERM like an `npx` grandchild: the CLI's abrupt death
+  (keeper SIGTERM) leaves it; only `killKeeperTree` (snapshot taken BEFORE the stop) reaps it.
+- **Masking to know:** the UI route also stops the session (`sdkStopMany` → graceful close), so a mutant skipping only
+  `stopStructuredSession` leaves 0 survivors there (measured) — the CLI arm pins that clause; `delete-ui-skips-stop` removes
+  both stoppers.
+- Must-FAIL arms (`scripts/session-budget/procs-arms.mjs`, mutants in `mutants.mjs`): source mutants of `workspaces.ts` /
+  `api-handlers.ts` (load-time, nothing on disk) and BUNDLE mutants of the scratch `keeper.js` copy (`keeper-extra-child`,
+  `keeper-ballast`); each arm names the budget it must break, its literal actual, the text its tree must contain, and the
+  budgets that must stay green.
+- **Suite cost:** +7 session arms (`delete-cli`, `delete-ui`, `procs-extra-child`, `mem-keeper-ballast`, `delete-cli-skips-stop`,
+  `delete-cli-skips-tree-sweep`, `delete-ui-skips-stop`) ≈ +2 min on `pnpm run test:session-budget` and on the release gate.
+- **NOT proven:** numbers are aarch64 / 16 KB pages / node 22 / CLI 2.1.284 against the fake API (a small context — the 275 MB CLI is
+  not a production steady state; an x86 4 KB host reads lower, so the budget only gets less sensitive there); a real `npx`-wrapped MCP
+  tree is modelled by `--stubborn`, not run; the renderer route is `apiHandlers.deleteWorkspace` called directly, not through Electron
+  IPC; no arm runs without net+pid namespaces (the suite is VOID there by design — the identity clause was probed once by hand).
 
 ## Coverage — what a green suite does and does NOT prove
 

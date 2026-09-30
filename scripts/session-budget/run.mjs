@@ -8,6 +8,12 @@
 //   boot-context-read  the shipped code with the #176 boot-time getContextUsage() re-added at load time
 //                      (mutants.mjs); MUST FAIL naming session.beforeFirstReply.countTokensRequests with a
 //                      large burst — the proof the suite can see the defect it exists for.
+// #210 (child processes / memory / zero survivors after delete) — EVERY session arm also judges the process+memory budgets
+// (SESSION_BUDGETS.processes); these arms tear the session down through the REAL delete path (delete-teardown.mjs):
+//   delete-cli / delete-ui                     the socket route / the renderer IPC handler; MUST PASS (zero survivors).
+//   procs-extra-child, mem-keeper-ballast      keeper-bundle mutants: a helper process / 300 MB; MUST FAIL naming the tree.
+//   delete-cli-skips-stop, …-skips-tree-sweep,
+//   delete-ui-skips-stop                        source mutants of the delete path; MUST FAIL naming the survivors.
 // Self-test arms (host-dependent checks of the instruments themselves, kept out of `pnpm run test`):
 //   slow-startup         a slow MCP server delays the main request ~3 s (refused startup calls get retried): MUST PASS.
 //   traffic-knob-in-env  a buildSdkEnv edit hands the CLI DISABLE_TELEMETRY: MUST be VOID naming instrument.productionEnv
@@ -23,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureBuilt, runSessionArm, runSelfTest, detectContainment } from './harness.mjs';
 import fs from 'node:fs';
 import { formatRequestSummary, sessionBudgetTerminator } from '../../src/shared/session-budget.ts';
+import { PROCS_ARMS, judgeProcsArm } from './procs-arms.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);
@@ -38,6 +45,7 @@ const ARMS = {
   'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 }, mustExercise: { host: 'api.anthropic.com:443', min: 4 } },
   'traffic-knob-in-env': { kind: 'session', mutant: 'traffic-knob-in-sdk-env', expect: 'void', mustVoid: 'instrument.productionEnv', mustName: 'DISABLE_TELEMETRY' },
   'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
+  ...PROCS_ARMS,
   'census-selftest': { kind: 'selftest', mode: 'census' },
   'smoke-flag-path': { kind: 'selftest', mode: 'smoke' },
 };
@@ -63,7 +71,7 @@ for (const [name, spec] of Object.entries(ARMS)) {
   }
   const res = spec.kind === 'selftest'
     ? await runSelfTest({ repo: REPO, mode: spec.mode, containment })
-    : await runSessionArm({ repo: REPO, arm: name, mutant: spec.mutant, profile: spec.profile, containment });
+    : await runSessionArm({ repo: REPO, arm: name, mutant: spec.mutant, profile: spec.profile, teardown: spec.teardown, containment });
   if (res.reaped) say(`   (reaped ${res.reaped} leftover scratch process(es) — containment ${containment.name} did not contain the keeper)`);
   if (res.void) { voided++; console.log(JSON_OUT ? JSON.stringify({ arm: name, void: true, error: res.error }) : `== arm ${name}: VOID — ${res.error}`); continue; }
 
@@ -97,6 +105,12 @@ for (const [name, spec] of Object.entries(ARMS)) {
     const seen = report.startupEgress?.[spec.mustExercise?.host] ?? 0;
     if (asExpected && spec.mustExercise && seen < spec.mustExercise.min) { asExpected = false; why = `held, but the arm did not exercise the retry path (saw ${seen} startup attempts at ${spec.mustExercise.host}, need ≥ ${spec.mustExercise.min}) — it proves nothing`; }
   }
+  else if (spec.checks) {
+    // #210 must-FAIL arms: named budgets, literal actuals, named tree text, and the budgets that must stay green.
+    const r = judgeProcsArm(spec, judgement);
+    asExpected = r.ok;
+    why = r.why;
+  }
   else {
     const named = broke.find((v) => v.id === spec.mustBreak);
     asExpected = !!named && (named.actual ?? 0) >= spec.minBurst;
@@ -111,7 +125,16 @@ for (const [name, spec] of Object.entries(ARMS)) {
   const side = report.requestLog?.filter((r) => r.type === 'model' && !(r.tools > 0)) ?? [];
   for (const r of side) say(`   side call @${r.tMs} ms: ${r.model} (tools-less) — "${r.preview ?? ''}"`);
   say(`   time to first reply: ${report.timing.timeToFirstReplyMs} ms after sdkSend (incl. ${report.timing.fakeModelLatencyMs} ms fake model latency; runner setup ${report.timing.setupMs} ms not counted)`);
-  say(`   child processes at first reply: ${p.atFirstReply.total} (cli=${p.atFirstReply.byKind.cli} keeper=${p.atFirstReply.byKind.keeper} mcp=${p.atFirstReply.byKind.mcp} hook=${p.atFirstReply.byKind.hook} other=${p.atFirstReply.byKind.other}) · rss ${Math.round(p.atFirstReply.rssKB / 1024)} MB · after teardown: ${p.survivorsAfterTeardown}`);
+  say(`   child processes at first reply: ${p.atFirstReply.total} (cli=${p.atFirstReply.byKind.cli} keeper=${p.atFirstReply.byKind.keeper} mcp=${p.atFirstReply.byKind.mcp} hook=${p.atFirstReply.byKind.hook} other=${p.atFirstReply.byKind.other}) · mem ${Math.round((p.atFirstReply.rssKB + (p.atFirstReply.swapKB ?? 0)) / 1024)} MB (RSS+swap) · after teardown: ${p.survivorsAfterTeardown}`);
+  if (report.delete) say(`   delete via ${report.delete.via}: returned in ${report.delete.returnedMs} ms · zero processes after ${report.delete.elapsedMs === null ? `NEVER (${report.delete.boundMs} ms bound)` : `${report.delete.elapsedMs} ms`} · survivors ${report.delete.survivors.length} of ${report.delete.treeBefore.length}`);
+  const shown = new Set(); // the same named tree under several broken verdicts is printed once
+  for (const v of broke) {
+    const key = (v.tree ?? []).join('\n');
+    if (!key || shown.has(key)) continue;
+    shown.add(key);
+    say(`   process tree named by ${v.id}:`);
+    for (const l of v.tree) say(`     ${l}`);
+  }
   say(`   claude ${report.cli.version} · containment ${report.containment}${report.containmentOptOut ? ' (WEAK, explicit opt-out)' : ''} · fixture ${report.fixture.skills} skills / ${report.fixture.memoryFiles} rules / ${report.fixture.mcpServers}×${report.fixture.toolsPerServer} MCP tools · routes: ${report.paths.join(', ')}`);
 }
 // A run that needed the weak-containment opt-out never prints the plain PASS terminator: the release gate wants full containment.

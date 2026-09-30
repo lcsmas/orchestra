@@ -9,6 +9,14 @@ const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ?
 const NAME = arg('name', 'fake');
 const TOOLS = Number(arg('tools', '10'));
 const INIT_DELAY_MS = Number(arg('init-delay-ms', '0')); // slow-but-healthy server: answers `initialize` late (startup-stall experiments)
+// #210: `--stubborn` = a server that outlives its parent (ignores stdin EOF and SIGTERM/SIGHUP, like an
+// `npx`-wrapped server whose grandchild is orphaned when the CLI dies). Only SIGKILL ends it — the delete
+// arms use one to prove the descendant sweep (killKeeperTree), which the CLI's own exit does not do.
+const STUBBORN = process.argv.includes('--stubborn');
+if (STUBBORN) {
+  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) process.on(sig, () => {});
+  setInterval(() => {}, 1 << 30);
+}
 
 const tools = Array.from({ length: TOOLS }, (_, i) => ({
   name: `${NAME}_tool_${String(i).padStart(2, '0')}`,
@@ -46,4 +54,4 @@ rl.on('line', (line) => {
     default: return send({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: `no such method: ${m.method}` } });
   }
 });
-rl.on('close', () => process.exit(0));
+rl.on('close', () => { if (!STUBBORN) process.exit(0); });
