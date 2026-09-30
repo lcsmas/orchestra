@@ -12,6 +12,8 @@
 //   ui_deselect          must-PASS: REAL setAccounts takes a FULL selection to empty → links/MCP pruned, own MCP + trust kept
 //   ui_normal_save       must-PASS: REAL setAccounts, selection unchanged → nothing pruned, no held-block warn
 //   boot_absent_seeded   control: `inherit` ABSENT is re-seeded by boot's seed (pre-existing) → dir keeps its links
+//   torn_json_boot     ★ (#238/C11) boot order, FULL selection, the login `.claude.json` caught mid-write (60% of it) → file byte-identical + ONE warn, links intact; whole again → next sync merges, trust kept
+//   torn_json_ui_save  ★ (#238/C11) same through the REAL apiHandlers.setAccounts (a normal, unchanged-selection save)
 //
 // Run one arm:  node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-inherit-empty-no-prune.mjs <arm>
 // Run all:      node scripts/e2e-inherit-empty-no-prune.mjs all      (children + a live-dir listing canary before/after)
@@ -27,7 +29,7 @@ import { REAL_HOMES, REAL_CFG, checkScratch, liveCanary, canaryDiff } from './.s
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'all';
-const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded'];
+const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save'];
 
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-inherit-empty');
 
@@ -121,7 +123,7 @@ const LINKS = ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/fro
 const ACCOUNT = { id: 'rig-c10', label: 'mc', configDir: login };
 // Store seeded RAW before load: sanitizeAccountInherit would turn `{}` into absent, and `{}` is the shape
 // that survives boot's seed (`inherit === undefined` is the seed's only trigger).
-const seedInherit = ARM === 'ui_deselect' || ARM === 'ui_normal_save' || ARM === 'ui_configdir_swap' ? FULL : ARM === 'boot_absent_seeded' ? undefined : ARM === 'boot_vanished_only' ? { skills: ['gone'] } : {};
+const seedInherit = ARM === 'ui_deselect' || ARM === 'ui_normal_save' || ARM === 'ui_configdir_swap' || ARM === 'torn_json_boot' || ARM === 'torn_json_ui_save' ? FULL : ARM === 'boot_absent_seeded' ? undefined : ARM === 'boot_vanished_only' ? { skills: ['gone'] } : {};
 fs.mkdirSync(path.join(userData, 'orchestra'), { recursive: true });
 fs.writeFileSync(path.join(userData, 'orchestra', 'store.json'), JSON.stringify({
   repos: [], workspaces: [], selfTuneRuns: [],
@@ -249,6 +251,45 @@ if (ARM === 'boot_empty_obj') {
   });
   ok = control && out.preStoreNonEmpty && settled && out.links === 0 && out.mcp.join() === 'my-own'
     && out.manifest.symlinks.length === 0 && out.manifest.mcpServers.length === 0 && out.trustKept && out.storeAfter === null;
+} else if (ARM === 'torn_json_boot' || ARM === 'torn_json_ui_save') {
+  // #238/C11: the login `.claude.json` is caught mid-write by the sync (a live CLI's truncate+write). Selection stays FULL,
+  // so the C10 guard does NOT block — only the torn-read handling stands between the file and a `{mcpServers}` rewrite.
+  const cj = path.join(login, '.claude.json');
+  const whole = fs.readFileSync(cj, 'utf8');
+  const tornText = whole.slice(0, Math.floor(whole.length * 0.6));
+  const tornBytes = Buffer.from(tornText);
+  out.tornControl = (() => { try { JSON.parse(tornText); return false; } catch { return true; } })() && JSON.parse(whole).projects !== undefined; // really torn; the whole file really holds trust
+  fs.writeFileSync(cj, tornBytes);
+  const tornWarns = () => logLines().filter((l) => l.includes('is empty or unparseable') && l.includes(cj));
+  if (ARM === 'torn_json_boot') {
+    await inh.seedAccountInheritDefaults();
+    await inh.syncAllAccountsInheritance({ caller: 'boot' });
+    await sleep(200);
+  } else {
+    await apiHandlers.setAccounts([{ ...ACCOUNT, label: 'mc-renamed', inherit: FULL }]); // unchanged selection: a normal save
+    out.settled = await until(() => tornWarns().length > 0);
+    await sleep(300);
+  }
+  const afterBytes = fs.readFileSync(cj);
+  const tornAfter = snapshot();
+  Object.assign(out, {
+    byteIdentical: afterBytes.equals(tornBytes), warns: tornWarns().length, links: linksOf(tornAfter).length,
+    manifestMcp: manifest().mcpServers, strayTmp: fs.readdirSync(login).filter((n) => n.includes('.orchestra-tmp-')),
+  });
+  // The writer finishes (whole file, minus one injected server): the NEXT sync merges into it and keeps everything the CLI wrote.
+  const repaired = JSON.parse(whole);
+  delete repaired.mcpServers['linear-server'];
+  repaired.oauthAccount = { emailAddress: 'scratch@example.invalid' };
+  fs.writeFileSync(cj, JSON.stringify(repaired, null, 2));
+  await inh.syncAccountInheritance({ ...ACCOUNT, inherit: FULL }, { caller: 'rig-recover' });
+  const rec = JSON.parse(fs.readFileSync(cj, 'utf8'));
+  Object.assign(out, {
+    recoveredMcp: Object.keys(rec.mcpServers).sort(), recoveredTrust: JSON.stringify(rec.projects) === JSON.stringify({ '/scratch/proj': { hasTrustDialogAccepted: true } }),
+    recoveredOauth: rec.oauthAccount?.emailAddress === 'scratch@example.invalid',
+  });
+  ok = control && out.tornControl && (ARM === 'torn_json_boot' || out.settled) && out.byteIdentical && out.warns === 1 && out.links === LINKS.length
+    && out.manifestMcp.join() === 'github,linear-server,chrome-devtools' && out.strayTmp.length === 0
+    && out.recoveredMcp.join() === 'chrome-devtools,github,linear-server,my-own' && out.recoveredTrust && out.recoveredOauth;
 } else if (ARM === 'ui_normal_save') {
   await apiHandlers.setAccounts([{ ...ACCOUNT, label: 'mc-renamed', inherit: FULL }]);
   const changed = await until(() => store.accounts[0]?.label === 'mc-renamed');

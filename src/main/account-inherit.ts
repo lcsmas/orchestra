@@ -371,11 +371,120 @@ function removeOurSymlink(loginDir: string, rel: string): void {
   }
 }
 
+// ---- torn-safe login .claude.json write (#238) -----------------------------------
+//
+// The login `.claude.json` is also rewritten by every live CLI of that account, so a read can land mid-write.
+// Rule: an unreadable/unparseable file is NEVER rebuilt from `{}` (that erased trust + oauth state), and a
+// write only replaces exactly the bytes we read (fresh re-read + compare, then tmp + rename in the same dir).
+
+/** Bytes + mtime read through ONE fd; `raw === null` = definitely absent (ENOENT/ENOTDIR). Any other error throws. */
+interface FileView {
+  raw: Buffer | null;
+  mtimeNs: bigint;
+  mode: number;
+}
+
+function viewFile(p: string): FileView {
+  let fd: number;
+  try {
+    fd = fs.openSync(p, 'r');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { raw: null, mtimeNs: 0n, mode: 0 };
+    throw err;
+  }
+  try {
+    const st = fs.fstatSync(fd, { bigint: true });
+    return { raw: fs.readFileSync(fd), mtimeNs: st.mtimeNs, mode: Number(st.mode & 0o7777n) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Same bytes AND same mtime (a rewrite with identical bytes is still a writer at work → not "unchanged"). */
+function sameView(a: FileView, b: FileView): boolean {
+  if (a.raw === null || b.raw === null) return a.raw === b.raw;
+  return a.mtimeNs === b.mtimeNs && a.raw.equals(b.raw);
+}
+
+/** The JSON object in `raw`, or null for anything else (torn/empty/non-JSON, or JSON that is not a plain object). */
+function parseJsonObject(raw: Buffer): Record<string, unknown> | null {
+  try {
+    const v: unknown = JSON.parse(raw.toString('utf8'));
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where to write for `p`: `p` itself, or the file a symlinked `p` resolves to (rename would otherwise replace the
+ *  link). null = a dangling link — not ours to materialize. */
+function resolveWriteTarget(p: string): string | null {
+  let isLink: boolean;
+  try {
+    isLink = fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return p; // absent / unreadable: viewFile decides
+  }
+  if (!isLink) return p;
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+let tmpSeq = 0;
+
+/** Replace `target` with `content` iff it is still exactly `seen`: write a tmp in the SAME dir, re-read the target
+ *  immediately before, then rename (fresh target: hard-link, so a file created meanwhile is never overwritten).
+ *  'stale' = it changed since `seen` — nothing replaced, the next sync retries. Throws on I/O failure. The
+ *  remaining check→rename gap is sub-millisecond and cannot be closed without a lock the CLI does not take. */
+function replaceIfUnchanged(target: string, seen: FileView, content: string): 'written' | 'stale' {
+  const tmp = path.join(path.dirname(target), `.claude.json.orchestra-tmp-${process.pid}-${++tmpSeq}`);
+  try {
+    fs.writeFileSync(tmp, content, { flag: 'wx' });
+    if (seen.raw !== null) fs.chmodSync(tmp, seen.mode); // an in-place write kept the file's mode; so do we
+    const fd = fs.openSync(tmp, 'r+');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    let fresh: FileView;
+    try {
+      fresh = viewFile(target);
+    } catch {
+      return 'stale'; // cannot re-read it now → do not replace what we cannot see
+    }
+    if (!sameView(seen, fresh)) return 'stale';
+    if (seen.raw === null) {
+      try {
+        fs.linkSync(tmp, target);
+        return 'written';
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'stale';
+        /* filesystem without hard links → rename below */
+      }
+    }
+    fs.renameSync(tmp, target);
+    return 'written';
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* already renamed away */
+    }
+  }
+}
+
 // ---- MCP merge ---------------------------------------------------------------
 
 /** Merge the selected global mcpServers into the login dir's `.claude.json`,
  *  removing any we previously injected that are no longer selected. Preserves
  *  every other key in the file (project history, trust, the user's own servers).
+ *  A file we cannot read or parse — or that changes while we work — is left
+ *  byte-identical (one WARN, manifest unchanged, retried next sync; #238).
  *  Returns the keys that are now ours. */
 function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[]): string[] {
   // Read the global server definitions (null = missing/unreadable/torn → handled below).
@@ -404,11 +513,28 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
   if (want.length === 0 && toRemove.length === 0) return [];
 
   const claudeJsonPath = path.join(loginDir, '.claude.json');
-  let data: Record<string, unknown> = {};
+  const target = resolveWriteTarget(claudeJsonPath);
+  if (target === null) {
+    log.warn(`account-inherit: ${claudeJsonPath} is a dangling symlink — MCP servers left untouched for ${loginDir}`);
+    return prevKeys;
+  }
+  // #238: only a DEFINITE absence starts from {}; a torn/empty/non-object file or any other read error is
+  // "unknown" — skip the write (fail closed), the next sync retries once the file is whole again.
+  let seen: FileView;
   try {
-    data = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    /* missing/empty → start from {} */
+    seen = viewFile(target);
+  } catch (err) {
+    log.warn(`account-inherit: cannot read ${claudeJsonPath} — MCP servers left untouched for ${loginDir}`, err);
+    return prevKeys;
+  }
+  let data: Record<string, unknown> = {};
+  if (seen.raw !== null) {
+    const parsed = parseJsonObject(seen.raw);
+    if (parsed === null) {
+      log.warn(`account-inherit: ${claudeJsonPath} is empty or unparseable (torn read?) — MCP servers left untouched for ${loginDir}, retried next sync`);
+      return prevKeys;
+    }
+    data = parsed;
   }
   const servers: Record<string, unknown> =
     data.mcpServers && typeof data.mcpServers === 'object'
@@ -417,8 +543,14 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
   for (const k of toRemove) delete servers[k];
   for (const k of want) servers[k] = globalMcp[k];
   data.mcpServers = servers;
+  const content = JSON.stringify(data, null, 2);
+  // Already exactly what we would write → touch nothing (an idempotent per-spawn sync must not race a live CLI).
+  if (seen.raw !== null && seen.raw.toString('utf8') === content) return want;
   try {
-    fs.writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2));
+    if (replaceIfUnchanged(target, seen, content) === 'stale') {
+      log.warn(`account-inherit: ${claudeJsonPath} changed while syncing — MCP write skipped for ${loginDir}, retried next sync`);
+      return prevKeys;
+    }
   } catch (err) {
     log.warn(`account-inherit: failed to write ${claudeJsonPath}`, err);
     return prevKeys; // leave manifest unchanged on failure
