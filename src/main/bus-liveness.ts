@@ -26,7 +26,6 @@
 
 import { getBus, send, type BusDb } from './bus.ts';
 import { busSwitch, heldRunIds } from './bus-runs.ts';
-import { effectivePausedRunIds } from './bus-pause.ts';
 import { log } from './logger.ts';
 import {
   decideEscalation,
@@ -81,6 +80,8 @@ export interface LivenessMember {
    *  by a fast sibling (review-127 F1). */
   inFlightTools?: readonly { tool: string | null; startedAt: number }[];
   runId: string;
+  /** #252 fleet PAUSE: this member's run (or an ancestor along the live tree) is paused — silenced exactly like a held run. Absent = not paused. */
+  paused?: boolean;
 }
 
 let readMembers: () => LivenessMember[] = () => [];
@@ -346,14 +347,6 @@ export function sweepBusLiveness(): void {
     } catch (e) {
       log.warn('bus-liveness: hold read failed — treating as none held', e);
     }
-    // #252 fleet PAUSE (ledger #261 row 15): a paused run AND every descendant run is silenced exactly like a held one — the
-    // paused set is unioned INTO the held set, so `decideEscalation`'s `held` shield covers it. Unreadable = silence nothing.
-    try {
-      const paused = effectivePausedRunIds(db);
-      if (paused.size > 0) heldRuns = new Set([...heldRuns, ...paused]);
-    } catch (e) {
-      log.warn('bus-liveness: pause read failed — silencing nothing', e);
-    }
     // #204 (D4 i): coordinators with at least one member making PROGRESS (running
     // and not hung) — an idle OPS beside a working fleet is not stale.
     const activeCoordinators = new Set<string>();
@@ -384,7 +377,9 @@ export function sweepBusLiveness(): void {
       // released set. Same OR shape as `waiting`, same safe default (false/empty).
       doneAndReleased: (m.doneAndReleased ?? false) || released.has(m.reader),
       inFlightTools: m.inFlightTools,
-      held: heldRuns.has(m.runId),
+      // #252 (ledger #261 row 15): a member of a PAUSED run is silenced like a held one. `m.paused` comes from the roster's LIVE-TREE walk
+      // (pausedCarrierForWorkspace) — the same decision the gates use; `runs.parent_run_id` is write-once and would go stale on re-parent.
+      held: heldRuns.has(m.runId) || m.paused === true,
       fleetActive: activeCoordinators.has(m.reader),
     });
 

@@ -10,9 +10,17 @@
  *  AUTO (réveil, spawn, usage-limit auto-resume, watchdog, inbox/queue drains, …). */
 export type PauseOrigin = 'human' | 'auto';
 
+/** The fixed head of every refusal — how a caller that got a thrown error tells "paused" from any other failure. */
+export const PAUSE_REFUSAL_PREFIX = 'run en pause';
+
 /** What every refused start says. `runId` is the CARRIER (the run `orchestra run resume` lifts). */
 export function pauseRefusalMessage(runId: string): string {
-  return `run en pause — orchestra run resume --run ${runId}`;
+  return `${PAUSE_REFUSAL_PREFIX} — orchestra run resume --run ${runId}`;
+}
+
+/** Was this thrown value the pause refusal (and not some other start failure)? */
+export function isPauseRefusal(err: unknown): boolean {
+  return (err instanceof Error ? err.message : String(err)).startsWith(PAUSE_REFUSAL_PREFIX);
 }
 
 /** One link of the chain `[run, ...ancestors]` the gate walks, nearest first. */

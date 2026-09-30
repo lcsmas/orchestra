@@ -7,7 +7,7 @@ import * as bus from './bus.ts';
 import * as busRuns from './bus-runs.ts';
 import {
   activePauseFor,
-  effectivePausedRunIds,
+  pausedCarrierForWorkspace,
   getRunPause,
   pauseRefusalWith,
   runSubtreeIds,
@@ -146,7 +146,6 @@ test('PROPAGATION: descendants of a paused run are paused (carrier named), sibli
   assert.equal(activePauseFor(db, 'L'), null, 'ancestor not paused');
   assert.equal(activePauseFor(db, 'X'), null, 'sibling not paused');
   assert.equal(activePauseFor(db, 'ghost'), null, 'unknown run → not paused');
-  assert.deepEqual([...effectivePausedRunIds(db)].sort(), ['O', 'S']);
   assert.deepEqual(runSubtreeIds(db, 'O').sort(), ['O', 'S']);
   assert.deepEqual(runSubtreeIds(db, 'L').sort(), ['L', 'O', 'S', 'X']);
   db.close();
@@ -158,7 +157,6 @@ test('SWITCH OFF ⇒ INERT: a stale paused_at on a run whose frozen switch is OF
   db.prepare("UPDATE runs SET paused_at = 5, paused_by = 'x', pause_mode = 'hard' WHERE id = 'O'").run();
   assert.equal(activePauseFor(db, 'O'), null);
   assert.equal(activePauseFor(db, 'S'), null);
-  assert.equal(effectivePausedRunIds(db).size, 0);
   assert.deepEqual(runsOwingPauseTrap(db), []);
   // and the CARRIER's own switch decides, not the descendant's
   const { db: d2 } = freshDb();
@@ -186,7 +184,6 @@ test('CYCLE: a malformed parent_run_id cycle terminates', () => {
   tree(db);
   db.prepare("UPDATE runs SET parent_run_id = 'S' WHERE id = 'L'").run(); // L → S → O → L
   assert.equal(activePauseFor(db, 'S'), null);
-  assert.equal(effectivePausedRunIds(db).size, 0);
   assert.ok(runSubtreeIds(db, 'L').length <= 4);
   db.close();
 });
@@ -238,4 +235,57 @@ test('GATE: a paused run whose switch is OFF is byte-identical to no pause (null
   const deps = { getWorkspace: (id: string) => (id === 'O' ? OPS : MEMBER), getBus: () => db };
   assert.equal(pauseRefusalWith(deps, MEMBER, 'auto'), null);
   db.close();
+});
+
+// ── F2 (review D1a): the gate walks the LIVE workspace tree, not the write-once runs.parent_run_id ───────────────────────
+test('F2 LIVE TREE: an orchestrator attached under a paused run AFTER creation (parent_run_id stays NULL) is paused; detaching un-pauses it', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O' }, ON);
+  busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'O2' }, ON); // created top-level: parent_run_id NULL forever
+  setRunPause(db, 'O', true, 'O');
+  let o2: WaveNode = { id: 'O2', kind: 'orchestrator' };
+  const nodes = () => new Map<string, WaveNode>([['O', OPS], ['O2', o2], ['m', { id: 'm', parentId: 'O2' }]]);
+  const deps = { getWorkspace: (id: string) => nodes().get(id), getBus: () => db };
+  assert.equal(pauseRefusalWith(deps, nodes().get('m'), 'auto'), null, 'pre-state: O2 is top-level, not under O');
+  o2 = { id: 'O2', kind: 'orchestrator', parentId: 'O' };  // attach under the paused OPS (the store re-parents; the run row does not)
+  assert.equal(busRuns.getRun(db, 'O2')?.parent_run_id, null, 'control: parent_run_id is write-once — still NULL');
+  assert.equal(pauseRefusalWith(deps, nodes().get('m'), 'auto'), 'run en pause — orchestra run resume --run O', 'member of the re-parented run is paused');
+  o2 = { id: 'O2', kind: 'orchestrator' };                 // detach again → not paused (a stale parent_run_id never pauses it)
+  assert.equal(pauseRefusalWith(deps, nodes().get('m'), 'auto'), null);
+  db.close();
+});
+
+test('F2 LIVE TREE: a plain child of a RUN-ANCHORING plain parent (#221 mission row, no orchestrator) is paused with the parent as carrier', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'P', kind: 'mission', coordinator: 'P' }, ON);
+  setRunPause(db, 'P', true, 'P');
+  const nodes = new Map<string, WaveNode>([['P', { id: 'P' }], ['c', { id: 'c', parentId: 'P' }]]);
+  const deps = { getWorkspace: (id: string) => nodes.get(id), getBus: () => db };
+  assert.equal(pauseRefusalWith(deps, nodes.get('c'), 'auto'), 'run en pause — orchestra run resume --run P');
+  assert.equal(pauseRefusalWith(deps, { id: 'lone' }, 'auto'), null, 'control: an unrelated standalone workspace');
+  db.close();
+});
+
+test('F2 FALLBACK: parent_run_id is used ONLY when the live chain reaches a workspace gone from the store', () => {
+  const { db } = freshDb();
+  tree(db); // L ⊃ O ⊃ S ; X — run tree on the bus
+  setRunPause(db, 'O', true, 'ops-ws');
+  // S's workspace is present, its parent OPS workspace 'O' is GONE from the store (deleted) while the run row lives on
+  const nodes = new Map<string, WaveNode>([['S', { id: 'S', kind: 'orchestrator', parentId: 'O' }], ['m', { id: 'm', parentId: 'S' }]]);
+  const deps = { getWorkspace: (id: string) => nodes.get(id), getBus: () => db };
+  assert.equal(pauseRefusalWith(deps, nodes.get('m'), 'auto'), 'run en pause — orchestra run resume --run O', 'dangling ancestor → bus run tree fallback finds the carrier');
+  // same shape but the chain is fully in the store and S has NO live parent: the stale parent_run_id must NOT pause it
+  const live = new Map<string, WaveNode>([['S', { id: 'S', kind: 'orchestrator' }], ['m', { id: 'm', parentId: 'S' }]]);
+  assert.equal(pauseRefusalWith({ getWorkspace: (id: string) => live.get(id), getBus: () => db }, live.get('m'), 'auto'), null);
+  db.close();
+});
+
+test('F6 (review D1a): an UNAVAILABLE bus is fail-open but SAYS SO through onBusUnavailable (and never throws)', () => {
+  let said = 0;
+  const r = pauseRefusalWith({ getWorkspace: () => undefined, getBus: () => null, onBusUnavailable: () => { said++; } }, MEMBER, 'auto');
+  assert.equal(r, null);
+  assert.equal(said, 1);
+  let humanSaid = 0;
+  pauseRefusalWith({ getWorkspace: () => undefined, getBus: () => null, onBusUnavailable: () => { humanSaid++; } }, MEMBER, 'human');
+  assert.equal(humanSaid, 0, 'a HUMAN origin never reads the bus');
 });

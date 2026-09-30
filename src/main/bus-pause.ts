@@ -17,7 +17,7 @@ import {
   type PauseChainLink,
   type PauseOrigin,
 } from '../shared/bus-pause.ts';
-import { nearestOrchestratorId, type WaveNode } from './wave-run-id.ts';
+import type { WaveNode } from './wave-run-id.ts';
 
 /** The typed outcome of `orchestra run pause|resume` (pause half). */
 export type RunPauseOutcome =
@@ -120,30 +120,6 @@ export function getRunPause(db: BusDb, runId: string): RunPauseInfo | null {
   return { runId, pausedAt: row.pausedAt, pausedBy: row.pausedBy, mode: row.mode, trapAt: row.trapAt };
 }
 
-/**
- * Every run the pause currently covers: each carrier (frozen `pause` switch ON) AND every
- * descendant run below it. The SILENCE seam — liveness unions this into its held set. A run with
- * no row is simply absent (unknown ⇒ not paused).
- */
-export function effectivePausedRunIds(db: BusDb): Set<string> {
-  const rows = (db.prepare(SELECT_PAUSE_ROWS).all() as Record<string, unknown>[]).map(toPauseRow);
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const out = new Set<string>();
-  for (const r of rows) {
-    const seen = new Set<string>();
-    let cur: PauseRow | undefined = r;
-    while (cur && !seen.has(cur.id)) {
-      seen.add(cur.id);
-      if (cur.pausedAt !== null && cur.switchOn) {
-        out.add(r.id);
-        break;
-      }
-      cur = cur.parent ? byId.get(cur.parent) : undefined;
-    }
-  }
-  return out;
-}
-
 /** `rootRunId` plus every run below it (`parent_run_id` closure). For the host trap (D1b): the
  *  members of ALL these runs are the pause's members. Bounded against cycles. */
 export function runSubtreeIds(db: BusDb, rootRunId: string): string[] {
@@ -228,14 +204,57 @@ export interface PauseGateDeps {
   getWorkspace: (id: string) => WaveNode | undefined;
   getBus: () => BusDb | null;
   warn?: (msg: string, err?: unknown) => void;
+  /** Called when the bus is unavailable at a gate read: a pause the CLI wrote is then NOT enforced (fail-open by design). */
+  onBusUnavailable?: () => void;
+}
+
+/** The pause carrier governing `ws` through the LIVE workspace tree: `ws` itself and every ancestor along the store's `parentId`
+ *  chain are each checked as a possible carrier (a run id == its orchestrator's workspace id, or a run-anchoring plain parent's).
+ *  `runs.parent_run_id` is write-once (never re-pointed by attach/detach/demote), so it is used ONLY as the fallback when the chain
+ *  reaches a workspace that is no longer in the store. Exported for the liveness roster (the SILENCE seam uses the SAME walk). */
+export function pausedCarrierForWorkspace(
+  db: BusDb,
+  ws: WaveNode,
+  getWorkspace: (id: string) => WaveNode | undefined,
+): RunPauseInfo | null {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let cur: WaveNode | undefined = ws;
+  let dangling = false;
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    ids.push(cur.id);
+    if (!cur.parentId) break;
+    const parent = getWorkspace(cur.parentId);
+    if (!parent) {
+      dangling = true;
+      break;
+    }
+    cur = parent;
+  }
+  for (const id of ids) {
+    const row = readPauseRow(db, id);
+    if (row && row.pausedAt !== null && row.switchOn) {
+      return { runId: id, pausedAt: row.pausedAt, pausedBy: row.pausedBy, mode: row.mode, trapAt: row.trapAt };
+    }
+  }
+  if (dangling) {
+    // A workspace on the chain is gone from the store: the bus's own run tree is the only evidence left.
+    for (const id of ids) {
+      const hit = activePauseFor(db, id);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 /**
  * THE GATE DECISION: the refusal for `ws` (`run en pause — orchestra run resume --run <id>`) or
- * null when a start may proceed. The run is resolved NOW from the live workspace tree
- * (`nearestOrchestratorId`, the `resolveWaveRunId` walk) — never `$ORCHESTRA_RUN_ID`. A HUMAN
- * origin is never refused and never even reads the bus. Unknown (no ws, no bus, no run row, an
- * unreadable read — logged) ⇒ NOT paused.
+ * null when a start may proceed. The pause is resolved NOW from the live workspace tree
+ * ({@link pausedCarrierForWorkspace}) — never `$ORCHESTRA_RUN_ID`. A HUMAN origin is never refused
+ * and never even reads the bus. Unknown (no ws, no row, an unreadable read — logged) ⇒ NOT paused;
+ * so is an UNAVAILABLE bus (`onBusUnavailable`): fail-open on purpose — failing closed would freeze
+ * every agent behind a broken bus.
  */
 export function pauseRefusalWith(
   deps: PauseGateDeps,
@@ -246,8 +265,11 @@ export function pauseRefusalWith(
   if (!ws) return null;
   try {
     const db = deps.getBus();
-    if (!db) return null;
-    return pauseGateDecision(activePauseFor(db, nearestOrchestratorId(ws, deps.getWorkspace)));
+    if (!db) {
+      deps.onBusUnavailable?.();
+      return null;
+    }
+    return pauseGateDecision(pausedCarrierForWorkspace(db, ws, deps.getWorkspace));
   } catch (e) {
     deps.warn?.('pause gate: unreadable — treating as NOT paused', e);
     return null;

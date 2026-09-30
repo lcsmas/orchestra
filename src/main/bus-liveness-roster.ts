@@ -17,6 +17,8 @@ export interface LivenessRosterStore {
 export function buildLivenessRoster(
   store: LivenessRosterStore,
   waveRunId: (ws: Workspace) => string,
+  /** #252: is this member's run paused (live-tree walk)? Absent = never silenced by a pause (the pre-#252 roster). */
+  isPaused?: (ws: Workspace) => boolean,
 ): () => LivenessMember[] {
   return () =>
     store.workspaces.map((ws) => {
@@ -40,6 +42,7 @@ export function buildLivenessRoster(
         // Liveness v2 (#127): every in-flight call, for the per-call progress bound.
         inFlightTools: getInFlightTools(ws.id),
         runId: waveRunId(ws),
+        ...(isPaused ? { paused: isPaused(ws) } : {}),
       };
     });
 }

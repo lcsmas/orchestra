@@ -267,3 +267,24 @@ test('DURABLE + CROSS-PROCESS: the BUILT CLI (app down) pauses/resumes; the app\
   assert.equal(r.afterResume.delivery, 'live');
   assert.equal(r.ok, true);
 });
+
+test('F1 (review D1a) recover_mid: a pause landing MID-recovery restores the unsent pending prompts (none lost); the lift recovers them', () => {
+  const r = runArm('recover_mid');
+  assert.equal(r.pauseLanded, true);
+  assert.equal(r.oneTurnStartedBeforePause, 1, 'the first resend had already started');
+  assert.equal(r.unsentTurns, 0);
+  assert.deepEqual(r.pendingAfterMidPause, ['PENDING-ONE', 'PENDING-THREE', 'PENDING-TWO'], 'the two refused entries are back in sdkPendingPrompts (P1 is its own live re-append)');
+  assert.equal(r.unsentRecoveredAfterLift, true);
+  assert.equal(r.ok, true);
+});
+
+test('F2 (review D1a) live_tree: an orchestrator attached under a paused run AFTER creation and a plain child of a run-anchoring plain parent are paused; detach un-pauses', () => {
+  const r = runArm('live_tree');
+  assert.equal(r.o2BeforeAttach, 'live');
+  assert.equal(r.parentRunIdStillNull, true, 'control: parent_run_id is write-once');
+  assert.equal(r.o2AfterAttach, 'inbox');
+  assert.equal(r.o2Wakeable, false);
+  assert.equal(r.o2AfterDetach, 'live');
+  assert.equal(r.plainChild, 'inbox');
+  assert.equal(r.ok, true);
+});

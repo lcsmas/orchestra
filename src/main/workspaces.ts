@@ -4252,14 +4252,13 @@ their own seam.
 
 \`\`\`bash
 orchestra run pause --hard [--run <id>] [--as <handle>]   # PAUSE DURE of the run + every descendant run
-orchestra run resume [--run <id>] [--as <handle>]          # lift it (nothing restarts on its own)
+orchestra run resume [--run <id>] [--as <handle>]          # lift it (queued turns + pending mail resume)
 \`\`\`
 
 A pause is a durable state on the bus that the HOST enforces — not a message you
 must obey. While a run is paused: no réveil, no new turn, no spawn into it
 (refused with \`run en pause — orchestra run resume --run <id>\`), \`orchestra
-message\` to its members is parked in their inbox, liveness is silenced; the host
-also interrupts the turn and kills tool processes (never the session). Only the
+message\` to its members is parked in their inbox, liveness is silenced. Only the
 run's coordinator or an ancestor run's coordinator may pause/resume (the human
 acts \`--as\` the coordinator); a worker is refused. It needs the run's \`pause\`
 switch ON at wave start (frozen; default OFF) — otherwise the verb is refused.

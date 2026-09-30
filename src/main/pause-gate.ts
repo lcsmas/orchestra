@@ -11,10 +11,18 @@ import { log } from './logger.ts';
 import type { WaveNode } from './wave-run-id.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 
+// F6 (review D1a): a pause the CLI wrote is NOT enforced while the boot bus is unavailable (fail-open on purpose — fail-closed would freeze
+// every agent behind a broken bus). Say so ONCE per process instead of per gate read.
+let warnedNoBus = false;
 const realDeps: PauseGateDeps = {
   getWorkspace: (id) => store.getWorkspace(id),
   getBus,
   warn: (m, e) => log.warn(m, e),
+  onBusUnavailable: () => {
+    if (warnedNoBus) return;
+    warnedNoBus = true;
+    log.warn('pause gate: the bus is UNAVAILABLE — a fleet Pause written by the CLI is NOT enforced by the host (fail-open by design; see bus.md §Fleet PAUSE)');
+  },
 };
 
 /** The refusal for `ws`, or null when a start may proceed. `origin: 'human'` is never refused. */

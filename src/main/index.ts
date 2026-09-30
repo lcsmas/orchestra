@@ -195,6 +195,7 @@ import {
 import { buildLivenessRoster } from './bus-liveness-roster';
 import { sdkStartAndDeliver } from './sdk-delivery';
 import { wakeRosterEntry } from './wake-roster';
+import { pauseRefusal } from './pause-gate';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -532,7 +533,8 @@ async function createMainWindow() {
   // `readWaitingReaders` (the sender/opener parked on an open ask or gate), and
   // #120 subtracts that set, on top of the app-level `waiting` status. The
   // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
-  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId));
+  // #252 row 15: the SAME live-tree pause decision the gates use silences a paused run's members.
+  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null));
   // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
   // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's

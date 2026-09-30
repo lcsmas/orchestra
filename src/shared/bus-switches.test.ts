@@ -230,6 +230,15 @@ test('busSwitchNoticeLines names the authority side in both states', () => {
   assert.match(off, /COUNTS this mechanism, it does not fire it/);
 });
 
+test('F4 (review D1a): the `pause` notice line is pause-specific — never the false "OLD channel … COUNTS" wording; every other mechanism keeps the generic lines', () => {
+  const pauseLine = (sw: typeof ALL_ON) => busSwitchNoticeLines(sw).find((l) => l.includes('bus switch pause='))!;
+  assert.equal(pauseLine(ALL_OFF), '- bus switch pause=OFF — fleet Pause is not enforced in this run (orchestra run pause is refused).');
+  assert.equal(pauseLine(ALL_ON), '- bus switch pause=ON — a fleet Pause of this run is enforced by the host (a refused start says "run en pause"; lift with orchestra run resume).');
+  assert.doesNotMatch(pauseLine(ALL_OFF), /OLD channel|COUNTS/);
+  const liveness = busSwitchNoticeLines(ALL_OFF).find((l) => l.includes('bus switch liveness='))!;
+  assert.match(liveness, /the OLD channel stays authoritative/, 'the other mechanisms are unchanged');
+});
+
 test('busSwitchNotice: null only for no-switches; an all-OFF set still PRINTS', () => {
   assert.equal(busSwitchNotice(null), null);
   assert.equal(busSwitchNotice(undefined), null);

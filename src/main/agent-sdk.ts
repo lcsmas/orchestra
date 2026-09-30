@@ -48,7 +48,7 @@ import {
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
 import { notePauseHumanTurn, pauseRefusalById } from './pause-gate.ts';
-import type { PauseOrigin } from '../shared/bus-pause.ts';
+import { isPauseRefusal, type PauseOrigin } from '../shared/bus-pause.ts';
 import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
 import { forkBranchName } from '../shared/fork-session';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
@@ -3587,7 +3587,11 @@ async function recoverPendingPromptsInner(wsId: string, history: AgentEvent[]): 
   // separately and re-tagged with the origin it was delivered under, so a
   // recovered peer message is still a peer message. They queue in order behind
   // one another (sdkSend pushes; promptStream drains sequentially).
-  for (const p of missing) {
+  // #252 (review D1a F1): a pause can land AFTER the top gate and before a later send — sdkSend's commit-point gate then throws, and the
+  // entries were already dropped above. A refused entry (and every one after it) is put BACK, so a pause never loses a pending prompt.
+  const unsent: PendingPrompt[] = [];
+  for (let i = 0; i < missing.length; i++) {
+    const p = missing[i];
     try {
       // #227 r4 F1: an intentional stop keeps the brief's pending copy, so THIS is the redelivery of the opening task while it is still
       // owed — it must be the SAME delivery as a racing wake's claim (deduped), never a second copy.
@@ -3595,9 +3599,15 @@ async function recoverPendingPromptsInner(wsId: string, history: AgentEvent[]): 
       const isOwedBrief = !!cur?.lastTask && p.text.trim() === cur.lastTask.trim();   // dedupe only bites while a claimed brief is in flight, so a delivered brief is unaffected
       await sdkSend(wsId, p.text, undefined, p.peer ? { kind: 'peer', ...p.peer } : undefined, undefined, false, isOwedBrief);
     } catch (err) {
+      if (isPauseRefusal(err)) {
+        unsent.push(...missing.slice(i));
+        break;
+      }
       log.warn(`agent-sdk: pending-prompt recovery send failed for ${wsId}`, err);
     }
   }
+  for (const p of unsent) await appendPendingPrompt(wsId, p);
+  if (unsent.length > 0) log.info(`agent-sdk: pause landed mid-recovery for ${wsId} — ${unsent.length} pending prompt(s) restored`);
 }
 
 /** Cap on captured bash output so a runaway command (e.g. `yes`, `cat bigfile`)

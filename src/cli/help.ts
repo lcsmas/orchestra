@@ -240,18 +240,17 @@ all. Read-only.`,
             recorded and 'orchestra bus-status' shows a held run.
   pause     PAUSE DURE of the run and every descendant run: the host refuses every
             réveil, new turn and spawn into it ("run en pause — orchestra run resume
-            --run <id>") and silences liveness; the host then snapshots each worktree,
-            records what was running, interrupts the turn and kills tool processes
-            (never the session). Durable in the bus (survives an app relaunch, works
-            while the app is down), idempotent. Same authority + fencing as hold.
+            --run <id>") and silences liveness. Durable in the bus (survives an app
+            relaunch, works while the app is down), idempotent. Same authority +
+            fencing as hold.
             REFUSED unless the run's 'pause' bus switch was ON when its wave started
             (frozen; default OFF). Only --hard exists so far.
             A prompt a HUMAN types in a member's composer stays allowed and does NOT lift
             the pause (nor does restarting it from the toolbar); every automatic start is
             refused. A human lifts/pauses with --as <the run's coordinator>.
-  resume    Lift the pause (and the hold, if any) of the run. Nothing restarts on its own:
-            re-dispatch each member afterwards. A descendant run is lifted through the
-            run that carries the pause (the message names it). Clears the hold otherwise;
+  resume    Lift the pause (and the hold, if any) of the run: queued turns and pending
+            bus mail resume (there is no structured Reprise yet). A descendant run is
+            lifted through the run that carries the pause (the message names it);
             escalation is re-enabled on the next sweep.
 Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume refuse a run with no row.`,
   },

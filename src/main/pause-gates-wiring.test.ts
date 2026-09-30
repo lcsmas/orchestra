@@ -75,3 +75,19 @@ test('docs: `orchestra --help` lists run as hold / pause / resume', () => {
   const help = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'help.ts'), 'utf8');
   assert.match(help, /summary: "Admin: re-freeze a mission run's switches; hold \/ pause \/ resume a run"/);
 });
+
+test('F5 (review D1a): D1a\'s texts describe ONLY D1a — no Bilan/snapshot/interrupt/kill promise, and the lift says what really resumes', () => {
+  const src = read('workspaces.ts');
+  const skill = body(src, 'const COMMS_SKILL = `', 'const WORKSPACE_ADMIN_SKILL').replace(/\\`/g, '`');
+  const sect = skill.slice(skill.indexOf('## 7. Pause a run'));
+  const help = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'help.ts'), 'utf8');
+  const runHelp = body(help, "name: 'run',", "name: 'message'");
+  const verbs = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
+  const lifted = body(verbs, 'pause LIFTED', 'Its liveness hold was lifted too');
+  for (const [name, text] of [['skill §7', sect], ['run --help', runHelp], ['lift output', lifted]] as const) {
+    assert.doesNotMatch(text, /Bilan|snapshot|interrupts the turn|kills tool|Nothing restarts on its own/i, `${name} promises unshipped behaviour`);
+  }
+  assert.match(lifted, /Queued turns and pending bus mail resume now/);
+  assert.match(sect, /queued turns \+ pending mail resume/);
+  assert.match(runHelp, /queued turns and pending\s+bus mail resume/);
+});

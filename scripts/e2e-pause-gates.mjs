@@ -26,7 +26,7 @@ const ARMS = [
   'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume', 'migrate',
   'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
-  'off_identity', 'cli_cross_process',
+  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 
@@ -92,10 +92,12 @@ const OFFSW = { ...DEFAULT_BUS_SWITCHES, wake: true };
 
 // ── fake SDK query (no real CLI ever): counts spawns, records every turn the prompt stream yields, result on demand ──
 let factoryCalls = 0;
+let onFactory = null;                  // arm hook run inside the fake CLI spawn (lands a pause MID-operation)
 const yielded = [];                    // text of every turn the SDK prompt stream received (= a turn START)
 let emitResult = () => {};             // push one `result` into the newest fake session
 sdk.__setQueryFactoryForTests(({ prompt }) => {
   factoryCalls++;
+  onFactory?.();
   let push = () => {};
   const pending = [];
   let wake = null;
@@ -621,7 +623,8 @@ if (ARM === 'spawn') {
   await store.upsertWorkspace({ ...ws('ws-m1'), sdkSessionId: 's', hasInput: true });
   const rs = await dispatchRestartRequest({ id: 'ws-m1', fresh: false, trigger: 'cli' });
   const { wakeRosterEntry } = await import(`${REPO}/src/main/wake-roster.ts`);
-  const effective = busPause.effectivePausedRunIds(db);
+  const pg = await import(`${REPO}/src/main/pause-gate.ts`);
+  const effective = new Set(store.workspaces.filter((x) => pg.pauseRefusal(x, 'auto') !== null).map((x) => x.id));   // workspaces the live-tree gate would refuse
   rec('results', { spawn: sp.ok, msg: msg.delivery, wake: wk, restartRefusal: rs.error === PAUSED_MSG, wakeable: wakeRosterEntry(ws('ws-m1')).wakeable, effectivePaused: [...effective] });
   ok = refused === 'switch-off' && sp.ok === true && msg.delivery === 'started' && wk === true && out.results.restartRefusal === false && out.results.wakeable === true && effective.size === 0;
 
@@ -651,6 +654,52 @@ if (ARM === 'spawn') {
   ok = before.delivery === 'live' && p.rc === 0 && /PAUSED \(hard\)/.test(p.out) && out.appSeesPause === true
     && during.delivery === 'inbox' && worker.rc !== 0 && still.delivery === 'inbox' && r.rc === 0 && /pause LIFTED/.test(r.out) && after.delivery === 'live'
     && calls.awaiting.length === 2 && calls.awaiting.every((c) => c.text.includes('CP-BEFORE') || c.text.includes('CP-AFTER'));
+
+} else if (ARM === 'recover_mid') {
+  // review D1a F1 — a pause that lands AFTER the top gate and before a later resend must not LOSE the remaining pending prompts: the entries are
+  // dropped before the resend loop, so a refused send used to drop them for good. The pause lands inside the first send's fake CLI spawn.
+  await seedFleet();
+  const { pendingPromptKey } = await import(`${REPO}/src/shared/pending-prompts.ts`);
+  const pend = (id, text) => ({ id, key: pendingPromptKey({ text }), text });
+  await store.upsertWorkspace({ ...ws('ws-m1'), sdkPendingPrompts: [pend('p1', 'PENDING-ONE'), pend('p2', 'PENDING-TWO'), pend('p3', 'PENDING-THREE')] });
+  onFactory = () => { onFactory = null; pause(); };
+  await sdk.recoverPendingPrompts('ws-m1', []);
+  rec('pauseLanded', pauseOn());
+  rec('oneTurnStartedBeforePause', userMessages.filter((m) => m.text.includes('PENDING-ONE')).length);
+  const texts = () => (ws('ws-m1').sdkPendingPrompts ?? []).map((p) => p.text).sort();
+  rec('pendingAfterMidPause', texts());
+  rec('unsentTurns', userMessages.filter((m) => /PENDING-(TWO|THREE)/.test(m.text)).length);
+  lift();
+  await sdk.recoverPendingPrompts('ws-m1', []);
+  const re = rec('unsentRecoveredAfterLift', await untilOrFail(() => ['PENDING-TWO', 'PENDING-THREE'].every((t) => userMessages.some((m) => m.text.includes(t))), 4000));
+  ok = out.pauseLanded === true && out.oneTurnStartedBeforePause === 1 && out.unsentTurns === 0
+    && JSON.stringify(out.pendingAfterMidPause) === JSON.stringify(['PENDING-ONE', 'PENDING-THREE', 'PENDING-TWO']) && re;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'live_tree') {
+  // review D1a F2 — the gate follows the LIVE workspace tree, not the write-once runs.parent_run_id: an orchestrator attached under the paused OPS
+  // AFTER creation, and a plain child of a run-anchoring plain parent (#221), are paused; a detached one is not. Through the REAL message gate + roster entry.
+  useFakeSeam({ hasSession: (id) => id === 'ws-o2m' || id === 'ws-pc' });
+  await seedFleet();
+  const { wakeRosterEntry } = await import(`${REPO}/src/main/wake-roster.ts`);
+  busRuns.startRun(db, { id: 'ws-o2', kind: 'vague', coordinator: 'ws-o2' }, ON);           // created TOP-LEVEL: parent_run_id NULL, forever
+  busRuns.startRun(db, { id: 'ws-pp', kind: 'mission', coordinator: 'ws-pp' }, ON);          // a run-anchoring PLAIN parent (#221): a mission row, no orchestrator
+  await store.upsertWorkspace(mk('ws-o2', { kind: 'orchestrator' }));
+  await store.upsertWorkspace(mk('ws-o2m', { parentId: 'ws-o2' }));
+  await store.upsertWorkspace(mk('ws-pp'));
+  await store.upsertWorkspace(mk('ws-pc', { parentId: 'ws-pp' }));
+  const msg = (to, t) => workspaces.dispatchMessageRequest({ from: 'ws-xm', to, text: t, emergency: true });
+  pause();                                                                                    // pauses run ws-ops
+  const before = rec('o2BeforeAttach', (await msg('ws-o2m', 'LT-1')).delivery);             // not under the OPS yet → delivered live
+  await store.upsertWorkspace({ ...ws('ws-o2'), parentId: 'ws-ops' });                        // ATTACH under the paused OPS (the store re-parents; the run row does not)
+  rec('parentRunIdStillNull', busRuns.getRun(db, 'ws-o2')?.parent_run_id === null);
+  const attached = rec('o2AfterAttach', (await msg('ws-o2m', 'LT-2')).delivery);
+  rec('o2Wakeable', wakeRosterEntry(ws('ws-o2m')).wakeable);
+  await store.upsertWorkspace({ ...ws('ws-o2'), parentId: undefined });                       // DETACH again
+  const detached = rec('o2AfterDetach', (await msg('ws-o2m', 'LT-3')).delivery);
+  busPause.setRunPause(db, 'ws-pp', true, 'ws-pp');                                           // pause the plain parent's own run
+  const plain = rec('plainChild', (await msg('ws-pc', 'LT-4')).delivery);
+  ok = before === 'live' && out.parentRunIdStillNull === true && attached === 'inbox' && out.o2Wakeable === false && detached === 'live' && plain === 'inbox';
 
 } else {
   out.error = `arm not implemented yet: ${ARM}`;

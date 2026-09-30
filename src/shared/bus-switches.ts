@@ -259,6 +259,15 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     // which is the failure carry-forward 2 warns about. `mechanismToWire` is the
     // one mapping; writing `ask_gate` here by hand is what the file header forbids.
     const wire = mechanismToWire(m);
+    // #252 (review D1a F4): `pause` has no "old channel" and nothing is "counted" — the generic OFF/ON wording would be FALSE for it.
+    if (m === 'pause') {
+      lines.push(
+        on
+          ? `- bus switch ${wire}=ON — a fleet Pause of this run is enforced by the host (a refused start says "run en pause"; lift with orchestra run resume).`
+          : `- bus switch ${wire}=OFF — fleet Pause is not enforced in this run (orchestra run pause is refused).`,
+      );
+      continue;
+    }
     lines.push(
       on
         ? `- bus switch ${wire}=ON — the bus is AUTHORITATIVE for this mechanism in this run; use it.`

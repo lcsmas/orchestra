@@ -1038,7 +1038,7 @@ export function verbRunHold(
   if (lifted === 'lifted') {
     ctx.out(
       `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. ` +
-        `Nothing restarts on its own: re-dispatch each member (its Bilan de pause holds what it was doing).\n` +
+        `Queued turns and pending bus mail resume now (there is no structured Reprise yet — #255).\n` +
         (outcome === 'resumed' ? `Its liveness hold was lifted too.\n` : ''),
     );
     return;
