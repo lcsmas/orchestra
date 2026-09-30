@@ -188,7 +188,7 @@ try {
   }
 
   // 5. the host trap finishes
-  const done = await waitFor(() => { const s = runStatus(); return s.pause?.trapAt ? s : null; }, 90_000, 'pause_trap_at to be stamped').catch((e) => { check('trap_finished', false, String(e.message)); return null; });
+  const done = await waitFor(() => { const s = runStatus(); return s.pause?.trapAt ? s : null; }, mutant === 'no-trap' ? 12_000 : 90_000, 'pause_trap_at to be stamped').catch((e) => { check('trap_finished', false, String(e.message)); return null; });
   check('trap_finished', !!done, done ? `trap done ${Date.now() - tPause} ms after the pause` : 'never stamped');
   await sleep(1500);
 

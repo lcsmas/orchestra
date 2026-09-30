@@ -4,6 +4,13 @@
 
 /** name -> { file suffix, find (global regex), replace, mustRedden (the rig check that has to go red) } */
 export const MUTANTS = {
+  // The UNFIXED build (G1): master has no host trap at all — `startPauseTrap` does nothing, so a pause is only a bus row.
+  'no-trap': {
+    file: '/src/main/pause-trap.ts',
+    find: /export function startPauseTrap\(deps: TrapDeps\): void \{\n  if \(timer\) return;/g,
+    replace: 'export function startPauseTrap(deps: TrapDeps): void {\n  if (timer || true) return;',
+    mustRedden: 'no_surviving_tool_procs',
+  },
   // CLI killed: the killer also signals the CLI at the end of its run.
   'kill-cli': {
     file: '/src/main/pause-kill.ts',

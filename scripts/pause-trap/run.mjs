@@ -14,7 +14,7 @@
 //   pauser-exempt     the OPS pauses ITS OWN run: its live session + running tool are left alone (snapshotted + recorded), w1 is trapped
 //   turn-while-paused a background task is killed, the CLI starts a turn BY ITSELF (task notification) → interrupted + noted
 // Must-FAIL mutants (load-time edits of the shipped source; the named check must go red):
-//   kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-pauser-exemption
+//   no-trap (the unfixed build) · kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-pauser-exemption
 // Exit: 0 every arm as expected · 1 an arm broke expectation · 3 VOID (containment/tooling unavailable: nothing measured).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,6 +34,8 @@ const WANT = opt('arm', 'all');
 
 const NORMAL = ['blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'turn-while-paused', 'pauser-exempt'];
 const MUTANT_ARMS = [
+  // G1: the UNFIXED build (no host trap, as on master) must FAIL the same rig: nothing is interrupted, killed or snapshotted.
+  { name: 'unfixed:no-trap', arm: 'background', mutant: 'no-trap' },
   { name: 'mutant:kill-cli', arm: 'blocking', mutant: 'kill-cli' },
   { name: 'mutant:kill-keeper', arm: 'blocking', mutant: 'kill-keeper' },
   { name: 'mutant:snapshot-touches-index', arm: 'blocking', mutant: 'snapshot-touches-index' },
