@@ -32,6 +32,7 @@ const ARMS = {
   del_bulk_window: { mustFailOnMaster: true },
   del_prune_fast: { mustFailOnMaster: true },
   k4_bg_delete_kills: { mustFailOnMaster: true },
+  del_recycled_pid_spared: {},
   del_never_started: {},
   // #202
   race_n_starts: { mustFailOnMaster: true },
@@ -41,6 +42,7 @@ const ARMS = {
   l1_stale_claim_dead: { mustFailOnMaster: true },
   l1_stale_claim_old: { mustFailOnMaster: true },
   l1_claim_age: { mustFailOnMaster: true },
+  l1_giveback: { mustFailOnMaster: true }, // red on master by setup: no claim protocol to give back
   exit_owns_only: { mustFailOnMaster: true },
   exit_pidless_fallback: { mustFailOnMaster: true },
   survivor_killable: { mustFailOnMaster: true },
@@ -52,6 +54,9 @@ const ARMS = {
   kill_keeps_log: {},
   k4_bg_restart_spares: {},
   sweep_dead_claims: { mustFailOnMaster: true },
+  sweep_live_claim_kept: { mustFailOnMaster: true },
+  killtree_recycled_spared: { mustFailOnMaster: true },
+  killtree_identity_ctl: { mustFailOnMaster: true },
   kill_hung_keeper: { mustFailOnMaster: true },
   // #203
   reap_dup_live: { mustFailOnMaster: true },
@@ -120,6 +125,14 @@ setInterval(() => {}, 1000);
 const fakeCli = path.join(base, 'fake-cli.cjs');
 fs.writeFileSync(fakeCli, FAKE_CLI);
 fs.writeFileSync(path.join(base, 'bg-job.cjs'), 'setInterval(() => {}, 1000);');
+// F1: a preload that widens the stale-verdict → rename gap in ONE keeper daemon (env-gated), so a rig can swap a LIVE fresh
+// claim in exactly there. process.kill(holder, 0) throwing ESRCH IS the "holder is dead" verdict.
+fs.writeFileSync(path.join(base, 'p1-preload.cjs'), `
+const V = Number(process.env.P1_VERDICT_MS || 0);
+const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const realKill = process.kill.bind(process);
+process.kill = function (pid, sig) { try { return realKill(pid, sig); } catch (e) { if (sig === 0 && V) wait(V); throw e; } };
+`);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // A killed-but-unreaped process (zombie) is DEAD: kill(pid,0) still succeeds on it, so read /proc state.
@@ -263,6 +276,9 @@ async function runArm() {
   if (ARM === 'l1_stale_claim_dead' || ARM === 'l1_stale_claim_old') return l1StaleClaim();
   if (ARM === 'sweep_dead_claims') return sweepDeadClaims();
   if (ARM === 'l1_claim_age') return l1ClaimAge();
+  if (ARM === 'l1_giveback') return l1Giveback();
+  if (ARM === 'sweep_live_claim_kept') return sweepLiveClaimKept();
+  if (ARM === 'killtree_recycled_spared' || ARM === 'killtree_identity_ctl') return killtreeIdentity();
   if (ARM === 'k4_bg_restart_spares') return k4RestartSpares();
   if (ARM === 'exit_owns_only' || ARM === 'survivor_killable' || ARM === 'exit_pidless_fallback') return takeoverArms();
   if (ARM === 'sweep_spares_successor') return sweepArm();
@@ -405,6 +421,27 @@ async function deleteArms() {
     const after = { pruneMs, allGone, rows: ids.filter((id) => store.getWorkspace(id)).length };
     Object.assign(result, { after });
     result.ok = pruneMs < 3_000 && allGone && after.rows === 0;
+    return;
+  }
+
+  if (ARM === 'del_recycled_pid_spared') {
+    // F2: the pid file names a LIVE process that is NOT this workspace's keeper (pid recycled after a crash/reboot) and that
+    // process has a child: a delete must signal NEITHER (snapshotKeeperTree / killKeeperTree fail closed on identity).
+    // (`k4_bg_delete_kills` is the control: with a REAL keeper the same delete kills its background job.)
+    const A = W('a'); await seed(A);
+    const cf = path.join(base, 'p4child.pid');
+    const by = spawn(process.execPath, ['-e', "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)',process.argv[2]],{stdio:'ignore'});require('fs').writeFileSync(process.argv[1],String(c.pid));setInterval(()=>{},1000)", cf, base], { detached: true, stdio: 'ignore' });
+    by.unref();
+    if (!(await waitFor(() => fs.existsSync(cf) && fs.readFileSync(cf, 'utf8').trim(), 8_000))) throw new Error('setup: bystander child never spawned');
+    const childPid = Number(fs.readFileSync(cf, 'utf8'));
+    fs.mkdirSync(path.join(home, 'keepers'), { recursive: true });
+    fs.writeFileSync(pidFilePath(A), JSON.stringify({ pid: by.pid, wsId: A, startedAt: 1 }));
+    const control = { parentAlive: alive(by.pid), childAlive: alive(childPid) };
+    if (!control.parentAlive || !control.childAlive) throw new Error(`control failed: ${JSON.stringify(control)}`);
+    await wsm.deleteWorkspace(A);
+    const after = { parentAlive: alive(by.pid), childAlive: alive(childPid), inStore: !!store.getWorkspace(A) };
+    Object.assign(result, { control, after });
+    result.ok = after.parentAlive && after.childAlive && !after.inStore;
     return;
   }
 
@@ -681,6 +718,77 @@ async function l1StaleClaim() {
   }
   Object.assign(result, { rounds });
   result.ok = rounds.every((x) => x.got && x.live === 1);
+}
+
+async function l1Giveback() {
+  // F1 (D5): breaking a stale claim renames it ASIDE and re-verifies WHAT was moved. If a live, fresh claim was swapped in
+  // between the staleness verdict and the rename, it is GIVEN BACK — never destroyed (unlink-by-path / no give-back would let
+  // a 3rd daemon acquire over a live claim).
+  const WS = W('g');
+  fs.mkdirSync(path.join(home, 'keepers'), { recursive: true });
+  const old = await rawKeeper(WS);
+  if (pidFilePid(WS) !== old.pid) throw new Error('setup: seed keeper did not own the paths');
+  process.kill(old.pid, 'SIGKILL'); // stale sock
+  if (!(await waitFor(() => new Promise((res) => { const c = net.connect(kc.keeperSocketPath(WS)); c.once('connect', () => { c.destroy(); res(false); }); c.once('error', () => res(true)); }), 8_000))) throw new Error('setup: seed keeper still answers');
+  const claim = pidFilePath(WS) + '.claim';
+  const dead = spawn('true');
+  await new Promise((res) => dead.once('exit', res));
+  fs.writeFileSync(claim, String(dead.pid)); // S: stale (dead holder, fresh mtime)
+  const mk = (tag, env = {}) => {
+    const log = path.join(base, `${tag}.log`);
+    const c = spawn(process.execPath, [KEEPER_BIN, WS, kc.keeperSocketPath(WS), pidFilePath(WS), log], { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...env } });
+    c.unref();
+    return { pid: c.pid, log };
+  };
+  const has = (d, needle) => { try { return fs.readFileSync(d.log, 'utf8').includes(needle); } catch { return false; } };
+  // D1 decides "S is stale" (dead holder) then idles 1.2 s BEFORE the rename — in that gap the rig swaps S → F.
+  const d1 = mk('d1', { NODE_OPTIONS: `--require ${path.join(base, 'p1-preload.cjs')}`, P1_VERDICT_MS: '1200' });
+  if (!(await waitFor(() => has(d1, 'claiming the takeover'), 10_000))) throw new Error('setup: D1 never reached the takeover claim');
+  await sleep(200);
+  fs.writeFileSync(claim + '.F', String(process.pid)); // F: a LIVE holder (this rig), fresh
+  fs.renameSync(claim + '.F', claim);
+  await sleep(500);
+  const d3 = mk('d3'); // a normal daemon: a live fresh claim must make it WAIT
+  const acquired = await waitFor(() => has(d3, 'takeover claim acquired'), 3_500);
+  const finalClaim = (() => { try { return fs.readFileSync(claim, 'utf8'); } catch { return null; } })();
+  Object.assign(result, { d3AcquiredOverLiveClaim: acquired, claimIsStillTheRigs: finalClaim === String(process.pid) });
+  result.ok = !acquired && finalClaim === String(process.pid);
+}
+
+async function sweepLiveClaimKept() {
+  // F3 (D7 safety): a claim FILE (and a `.stale.<pid>`) whose owner is ALIVE must survive sweepStaleKeeperFiles; a dead owner's must not.
+  const WS = W('s');
+  if (typeof kc.sweepStaleKeeperFiles !== 'function') throw new Error('keeper-client has no sweepStaleKeeperFiles');
+  fs.mkdirSync(path.join(home, 'keepers'), { recursive: true });
+  const dead = spawn('true');
+  await new Promise((res) => dead.once('exit', res));
+  const b = pidFilePath(WS) + '.claim';
+  const liveClaim = b;
+  const liveStale = `${b}.stale.${process.pid}`;
+  const deadStale = `${b}.stale.${dead.pid}`;
+  fs.writeFileSync(liveClaim, String(process.pid));
+  fs.writeFileSync(liveStale, String(process.pid));
+  fs.writeFileSync(deadStale, String(dead.pid));
+  await kc.sweepStaleKeeperFiles(WS);
+  const after = { liveClaimKept: fs.existsSync(liveClaim), liveStaleKept: fs.existsSync(liveStale), deadStaleRemoved: !fs.existsSync(deadStale) };
+  for (const f of [liveClaim, liveStale]) { try { fs.unlinkSync(f); } catch { /* gone */ } }
+  Object.assign(result, { after });
+  result.ok = after.liveClaimKept && after.liveStaleKept && after.deadStaleRemoved;
+}
+
+async function killtreeIdentity() {
+  // F2: killKeeperTree given a snapshot entry whose pid now belongs to a DIFFERENT process (start-time mismatch) must spare
+  // it. `killtree_identity_ctl`: the same call with the CORRECT start-time must kill it (proves the arm can see a kill).
+  const by = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', base], { detached: true, stdio: 'ignore' }); // argv mentions the rig dir → finish() reaps it
+  by.unref();
+  const st = Number(fs.readFileSync(`/proc/${by.pid}/stat`, 'utf8').replace(/^.*\) /, '').split(' ')[19]);
+  const startTicks = ARM === 'killtree_identity_ctl' ? st : st + 12345;
+  if (typeof kc.killKeeperTree !== 'function') throw new Error('keeper-client has no killKeeperTree');
+  await kc.killKeeperTree(W('t'), [{ pid: by.pid, comm: 'node', startTicks }], 'rig');
+  await sleep(300);
+  const survived = alive(by.pid);
+  Object.assign(result, { startTicks, realStartTicks: st, survived });
+  result.ok = ARM === 'killtree_identity_ctl' ? !survived : survived;
 }
 
 async function l1ClaimAge() {

@@ -371,9 +371,6 @@ function descendantAlive(d: { pid: number; startTicks: number }): boolean {
   return isSameLiveProcess(d.startTicks, text);
 }
 
-/** SIGKILL snapshot members that are STILL the same process (pid + start-time) — the orphaned CLI/MCP a
- *  SIGKILLed (wedged) keeper leaves behind (ppid 1, no keeper root for anyone to reach it) — then wait
- *  (≤1 s) until they are gone, so `killKeeper` resolving means the CLI is dead too. Leaf-first. */
 /** The keeper's identity-stamped descendants, read NOW (before anything is killed). [] when there is no verified keeper. */
 export function snapshotKeeperTree(wsId: string): Array<{ pid: number; comm: string; startTicks: number }> {
   const pid = readKeeperPidFile(wsId);
@@ -389,6 +386,9 @@ export async function killKeeperTree(
   await killSurvivingDescendants(wsId, tree, reason);
 }
 
+/** SIGKILL snapshot members that are STILL the same process (pid + start-time) — the orphaned CLI/MCP a
+ *  SIGKILLed (wedged) keeper leaves behind (ppid 1, no keeper root for anyone to reach it) — then wait
+ *  (≤1 s) until they are gone, so `killKeeper` resolving means the CLI is dead too. Leaf-first. */
 async function killSurvivingDescendants(
   wsId: string,
   tree: Array<{ pid: number; comm: string; startTicks: number }>,
