@@ -359,6 +359,28 @@ function ensureSymlink(loginDir: string, rel: string, target: string, replaceRea
   }
 }
 
+/** `x` is `dir` or inside it (both already resolved). */
+function pathWithin(x: string, dir: string): boolean {
+  const rel = path.relative(dir, x);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/** #241: whose entry is `loginDir/rel`? 'ok' = the login dir's own slot (a child account inside the source included);
+ *  'source' = its parent resolves so the slot IS an entry of the source (login `skills/` symlinked to the source's) —
+ *  unlinking/repointing it would destroy the source's own link; 'unknown' = the parent cannot be resolved (fail closed).
+ *  Only 'ok' slots may be created, rewritten or pruned. */
+function slotOwner(loginDir: string, rel: string, realGlobal: string, realLogin: string): 'ok' | 'source' | 'unknown' {
+  let parent: string;
+  try {
+    parent = fs.realpathSync(path.dirname(path.join(loginDir, rel)));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'ok' : 'unknown';
+  }
+  const slot = path.join(parent, path.basename(rel));
+  return pathWithin(slot, realGlobal) && !pathWithin(slot, realLogin) ? 'source' : 'ok';
+}
+
 /** Remove a symlink we previously created (only if it is in fact a symlink). */
 function removeOurSymlink(loginDir: string, rel: string): void {
   const linkPath = path.join(loginDir, rel);
@@ -657,6 +679,29 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
     });
   }
 
+  // #241: entries (wanted now, or listed in the manifest for pruning) whose slot is really one of the SOURCE's own —
+  // never created, rewritten or pruned; not claimed in the manifest either. ONE warn per sync.
+  const realOr = (p: string): string => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const realGlobal = realOr(globalDir);
+  const realLogin = realOr(loginDir);
+  const untouchable = new Set<string>();
+  for (const rel of new Set([...wantLinks.keys(), ...prev.symlinks])) {
+    if (slotOwner(loginDir, rel, realGlobal, realLogin) !== 'ok') untouchable.add(rel);
+  }
+  if (untouchable.size > 0) {
+    const n = untouchable.size;
+    const dirs = [...new Set([...untouchable].map((r) => path.dirname(r)))].sort().join(', ');
+    log.warn(
+      `account-inherit: ${n} entr${n === 1 ? 'y' : 'ies'} of ${loginDir} (${dirs}) resolve${n === 1 ? 's' : ''} into the source ${globalDir} or cannot be resolved — left untouched (never pruned or rewritten)`,
+    );
+  }
+
   // #235 residual/C10: keyed on EFFECT, not selection shape. A sync that would leave NO inherited item
   // (empty selection, or one naming only missing sources / invalid names / slots holding a user's real dir)
   // over a dir that still holds inherited links / MCP servers is a full prune — only the UI setter's
@@ -668,7 +713,7 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   if (held.links.length + held.mcp.length > 0) {
     const globalMcp = readGlobalMcpServers();
     const alive =
-      [...wantLinks].filter(([rel, { target, replaceReal }]) => linkWouldBeLive(loginDir, rel, target, replaceReal)).length +
+      [...wantLinks].filter(([rel, { target, replaceReal }]) => !untouchable.has(rel) && linkWouldBeLive(loginDir, rel, target, replaceReal)).length +
       // an unreadable MCP source keeps the held servers (syncMcpServers), so it never makes a full prune
       (globalMcp === null ? held.mcp.length : (inherit?.mcpServers ?? []).filter((k) => k in globalMcp).length);
     if (alive === 0) {
@@ -693,11 +738,12 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   // Apply desired links; collect the ones actually present afterwards.
   const liveLinks: string[] = [];
   for (const [rel, { target, replaceReal }] of wantLinks) {
+    if (untouchable.has(rel)) continue;
     if (ensureSymlink(loginDir, rel, target, replaceReal)) liveLinks.push(rel);
   }
   // Remove links we created before that are no longer desired.
   for (const rel of prev.symlinks) {
-    if (!wantLinks.has(rel)) removeOurSymlink(loginDir, rel);
+    if (!wantLinks.has(rel) && !untouchable.has(rel)) removeOurSymlink(loginDir, rel);
   }
 
   // MCP servers (selective merge into the login dir's own .claude.json).

@@ -14,6 +14,7 @@
 //   boot_absent_seeded   control: `inherit` ABSENT is re-seeded by boot's seed (pre-existing) → dir keeps its links
 //   torn_json_boot     ★ (#238/C11) boot order, FULL selection, the login `.claude.json` torn (60% of it; the tear's producer is unexplained — claude 2.1.284 writes tmp+rename under a lock) → file byte-identical + ONE warn, links intact; whole again → next sync merges, trust kept
 //   torn_json_ui_save  ★ (#238/C11) same through the REAL apiHandlers.setAccounts (a normal, unchanged-selection save)
+//   alias_skills_ui_save ★ (#241/C14) login `skills/` symlinked to the source's dotfile-linked `skills/`; REAL setAccounts (unchanged FULL save) → the SOURCE's skill links intact, alias intact, ONE warn, the other 5 links kept
 //
 // Run one arm:  node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-inherit-empty-no-prune.mjs <arm>
 // Run all:      node scripts/e2e-inherit-empty-no-prune.mjs all      (children + a live-dir listing canary before/after)
@@ -29,7 +30,7 @@ import { REAL_HOMES, REAL_CFG, checkScratch, liveCanary, canaryDiff } from './.s
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'all';
-const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save'];
+const ARMS = ['refuse_live', 'boot_empty_obj', 'boot_vanished_only', 'ui_unrelated_save', 'ui_configdir_swap', 'ui_deselect', 'ui_normal_save', 'boot_absent_seeded', 'torn_json_boot', 'torn_json_ui_save', 'alias_skills_ui_save'];
 
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-inherit-empty');
 
@@ -123,7 +124,7 @@ const LINKS = ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills/fro
 const ACCOUNT = { id: 'rig-c10', label: 'mc', configDir: login };
 // Store seeded RAW before load: sanitizeAccountInherit would turn `{}` into absent, and `{}` is the shape
 // that survives boot's seed (`inherit === undefined` is the seed's only trigger).
-const seedInherit = ARM === 'ui_deselect' || ARM === 'ui_normal_save' || ARM === 'ui_configdir_swap' || ARM === 'torn_json_boot' || ARM === 'torn_json_ui_save' ? FULL : ARM === 'boot_absent_seeded' ? undefined : ARM === 'boot_vanished_only' ? { skills: ['gone'] } : {};
+const seedInherit = ARM === 'ui_deselect' || ARM === 'ui_normal_save' || ARM === 'ui_configdir_swap' || ARM === 'torn_json_boot' || ARM === 'torn_json_ui_save' || ARM === 'alias_skills_ui_save' ? FULL : ARM === 'boot_absent_seeded' ? undefined : ARM === 'boot_vanished_only' ? { skills: ['gone'] } : {};
 fs.mkdirSync(path.join(userData, 'orchestra'), { recursive: true });
 fs.writeFileSync(path.join(userData, 'orchestra', 'store.json'), JSON.stringify({
   repos: [], workspaces: [], selfTuneRuns: [],
@@ -290,6 +291,34 @@ if (ARM === 'boot_empty_obj') {
   ok = control && out.tornControl && (ARM === 'torn_json_boot' || out.settled) && out.byteIdentical && out.warns === 1 && out.links === LINKS.length
     && out.manifestMcp.join() === 'github,linear-server,chrome-devtools' && out.strayTmp.length === 0
     && out.recoveredMcp.join() === 'chrome-devtools,github,linear-server,my-own' && out.recoveredTrust && out.recoveredOauth;
+} else if (ARM === 'alias_skills_ui_save') {
+  // #241/C14: the source's skills are dotfile-style links and the login's `skills/` is a symlink to the SOURCE's `skills/`.
+  // Unguarded, the sync treats the login-side links as its own and unlinks/repoints the SOURCE's through the alias.
+  const srcDir = path.join(home, '.claude');
+  const dot = path.join(home, 'dotfiles', 'skills');
+  fs.rmSync(path.join(srcDir, 'skills'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(srcDir, 'skills'), { recursive: true });
+  for (const n of ['frontend-design', 'handoff']) {
+    put(path.join(dot, n, 'SKILL.md'), `# ${n}\n`);
+    fs.symlinkSync(path.join(dot, n), path.join(srcDir, 'skills', n));
+  }
+  fs.rmSync(path.join(login, 'skills'), { recursive: true, force: true }); // the mirror's real skills/ (its manifest still lists skills/*)
+  fs.symlinkSync(path.join(srcDir, 'skills'), path.join(login, 'skills'));
+  const srcBefore = snapshot(srcDir);
+  out.controlSrc = linksOf(srcBefore).join() === 'skills/frontend-design,skills/handoff' && fs.readlinkSync(path.join(login, 'skills')) === path.join(srcDir, 'skills');
+  await apiHandlers.setAccounts([{ ...ACCOUNT, label: 'mc-renamed', inherit: FULL }]); // unchanged selection: a normal save
+  const settled = await until(() => store.accounts[0]?.label === 'mc-renamed');
+  const aliasWarns = () => logLines().filter((l) => l.includes('resolve into the source') && l.includes(login));
+  await until(() => aliasWarns().length > 0);
+  await sleep(400);
+  const srcAfter = snapshot(srcDir);
+  Object.assign(out, {
+    settled, srcByteIdentical: JSON.stringify(srcAfter) === JSON.stringify(srcBefore), srcSkillLinks: linksOf(srcAfter).filter((l) => l.startsWith('skills/')),
+    aliasKept: fs.lstatSync(path.join(login, 'skills')).isSymbolicLink() && fs.readlinkSync(path.join(login, 'skills')) === path.join(srcDir, 'skills'),
+    warns: aliasWarns().length, loginLinks: linksOf(snapshot()).filter((l) => l !== 'skills'), manifestSymlinks: manifest().symlinks.slice().sort(),
+  });
+  ok = control && out.controlSrc && settled && out.srcByteIdentical && out.srcSkillLinks.length === 2 && out.aliasKept && out.warns === 1
+    && out.loginLinks.join() === 'CLAUDE.md,LESSONS.md,RTK.md,settings.json,statusline-command.sh' && out.manifestSymlinks.join() === out.loginLinks.join();
 } else if (ARM === 'ui_normal_save') {
   await apiHandlers.setAccounts([{ ...ACCOUNT, label: 'mc-renamed', inherit: FULL }]);
   const changed = await until(() => store.accounts[0]?.label === 'mc-renamed');

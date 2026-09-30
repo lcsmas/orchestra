@@ -144,6 +144,14 @@ reads them transiently to query usage.
   counts) and rig arms `torn_json_boot` / `torn_json_ui_save`. A UI de-select-all that lands on a torn/locked file
   is never completed (MCP prune skipped, then every later plain sync is blocked by (4)) — accepted, safe direction,
   same class as the burnt UI grant above.
+  ALIASED ENTRIES (#241/C14): a login `skills/` symlinked to the source's `skills/` makes every `skills/<n>` slot one of
+  the SOURCE's own links (often dotfile links) — the sync used to `unlink`/repoint them as "ours" (`ensureSymlink` `:313`
+  repoint, stale-drop, `removeOurSymlink` `:385`), destroying the source's. `slotOwner` `:372` resolves the slot's PARENT
+  (`realpath`) and returns 'source' when the slot lands inside the real source but outside the real login dir ('ok' for a
+  child account inside the source and for a not-yet-existing parent; 'unknown' = unresolvable, fail closed). Those rels
+  (wanted now OR listed in the manifest) form `untouchable` `:533`: ONE WARN per sync, skipped in the apply and prune loops,
+  not counted as "alive" for the C10 guard, and dropped from the manifest. Not covered: aliasing of a whole login dir
+  (C12) or of the MCP `.claude.json` file.
   Rig: `scripts/e2e-inherit-empty-no-prune.mjs all` (REAL `setAccounts` + store + logger,
   scratch HOME, live-dir `find` canary). Same-source partial prune/de-selection is
   unchanged. Rig traps: a fake-HOME boot pinned to a LIVE configDir stripped

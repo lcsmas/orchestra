@@ -1645,3 +1645,171 @@ test('#235 helper: snapshot() is sensitive, and the log stub captures a real war
   assert.equal(warns.length, 1);
   assert.match(warns[0], /nonexistent-server/);
 });
+
+// ---- #241: an entry that resolves INTO the source is never pruned or rewritten (login skills/ -> source skills/) ----
+
+/** The source's skills as dotfile-style symlinks (`~/.claude/skills/<n>` -> `~/dotfiles/skills/<n>`), as on the live machine. */
+function dotfileSkills(home: string): string[] {
+  const names = ['frontend-design', 'handoff'];
+  fs.rmSync(path.join(home, '.claude', 'skills'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(home, '.claude', 'skills'), { recursive: true });
+  for (const n of names) {
+    put(path.join(home, 'dotfiles', 'skills', n, 'SKILL.md'), `# ${n}\n`);
+    fs.symlinkSync(path.join(home, 'dotfiles', 'skills', n), path.join(home, '.claude', 'skills', n));
+  }
+  return names;
+}
+/** The login's `skills` IS the source's `skills` (a symlink to it): every `skills/<n>` slot is a source entry. */
+const aliasSkillsTo = (rig: Rig, dir: string): void => {
+  fs.mkdirSync(rig.login, { recursive: true });
+  fs.symlinkSync(dir, path.join(rig.login, 'skills'));
+};
+const aliasWarn = (rig: Rig, n: number, dirs: string): string =>
+  `account-inherit: ${n} entr${n === 1 ? 'y' : 'ies'} of ${rig.login} (${dirs}) resolve${n === 1 ? 's' : ''} into the source ${path.join(rig.home, '.claude')} or cannot be resolved — left untouched (never pruned or rewritten)`;
+
+test('#241 login skills/ symlinked to the source skills/ (dotfile-linked skills): source links survive, ONE pinned warn, the other entries are still managed', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  aliasSkillsTo(rig, path.join(rig.home, '.claude', 'skills'));
+  const src = path.join(rig.home, '.claude');
+  const srcBefore = snapshot(src)!;
+  const dotBefore = snapshot(path.join(rig.home, 'dotfiles'))!;
+  assert.deepEqual(linksOf(srcBefore), ['skills/frontend-design', 'skills/handoff'], 'precondition: the source skills are links');
+  const warns = await runSync(rig, { settings: true, skills: ['frontend-design', 'handoff'] }, { caller: 'spawn-sdk' });
+  assert.deepEqual(snapshot(src), srcBefore, "the SOURCE's own skill links are intact (not unlinked through the alias)");
+  assert.deepEqual(snapshot(path.join(rig.home, 'dotfiles')), dotBefore);
+  assert.equal(fs.readlinkSync(path.join(rig.login, 'skills')), path.join(src, 'skills'), 'the alias itself is untouched');
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json', 'skills'], 'settings + imports still linked; `skills` is the alias');
+  assert.deepEqual(manifestOf(rig.login), { symlinks: ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json'], mcpServers: [] }, 'the source links are never claimed as ours');
+});
+
+test('#241 the PRUNE path: a manifest that lists skills/<n> (old master-era sync) + skills/ aliased to the source → de-selecting them does not unlink the source links', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  aliasSkillsTo(rig, path.join(rig.home, '.claude', 'skills'));
+  put(manifestPath(rig.login), JSON.stringify({ source: path.join(rig.home, '.claude'), symlinks: ['skills/frontend-design', 'skills/handoff'], mcpServers: [] }));
+  const src = path.join(rig.home, '.claude');
+  const srcBefore = snapshot(src)!;
+  const warns = await runSync(rig, { settings: true }, { caller: 'spawn-pty' }); // skills de-selected
+  assert.deepEqual(snapshot(src), srcBefore, 'source links intact');
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+  assert.deepEqual(manifestOf(rig.login).symlinks, ['CLAUDE.md', 'LESSONS.md', 'RTK.md', 'settings.json'], 'the manifest sheds the entries that were never ours');
+});
+
+test('#241 a DANGLING source skill link behind the alias (its dotfile is gone) is not dropped as "stale"', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  fs.rmSync(path.join(rig.home, 'dotfiles', 'skills', 'handoff'), { recursive: true });
+  aliasSkillsTo(rig, path.join(rig.home, '.claude', 'skills'));
+  const src = path.join(rig.home, '.claude');
+  const srcBefore = snapshot(src)!;
+  assert.equal(fs.existsSync(path.join(src, 'skills', 'handoff')), false, 'precondition: dangling');
+  const warns = await runSync(rig, { skills: ['frontend-design', 'handoff'] }, { caller: 'spawn-sdk' });
+  assert.deepEqual(snapshot(src), srcBefore, 'both source links (one dangling) intact');
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+});
+
+test('#241 the alias may point at ANY dir inside the source, not only skills/ (login skills/ -> ~/.claude/plugins, whose entries are links)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const src = path.join(rig.home, '.claude');
+  put(path.join(rig.home, 'dotfiles', 'plugins', 'frontend-design', 'p.json'), '{}');
+  fs.mkdirSync(path.join(src, 'plugins'));
+  fs.symlinkSync(path.join(rig.home, 'dotfiles', 'plugins', 'frontend-design'), path.join(src, 'plugins', 'frontend-design'));
+  aliasSkillsTo(rig, path.join(src, 'plugins'));
+  const srcBefore = snapshot(src)!;
+  const warns = await runSync(rig, { skills: ['frontend-design'] }, { caller: 'spawn-sdk' });
+  assert.deepEqual(snapshot(src), srcBefore);
+  assert.deepEqual(warns, [aliasWarn(rig, 1, 'skills')]);
+});
+
+test('#241 real-dir source skills behind the alias stay intact too (ONE uniform warn instead of the per-entry "real file" ones)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  aliasSkillsTo(rig, path.join(rig.home, '.claude', 'skills'));
+  const src = path.join(rig.home, '.claude');
+  const srcBefore = snapshot(src)!;
+  const warns = await runSync(rig, { skills: ['frontend-design', 'handoff'] }, { caller: 'spawn-sdk' });
+  assert.deepEqual(snapshot(src), srcBefore);
+  assert.deepEqual(warns, [aliasWarn(rig, 2, 'skills')]);
+});
+
+test('#241 fail closed: a parent that cannot be resolved (login skills -> itself, ELOOP) is left alone — nothing rewritten, ONE warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  fs.mkdirSync(rig.login, { recursive: true });
+  fs.symlinkSync('skills', path.join(rig.login, 'skills')); // a loop
+  const before = snapshot(rig.login)!;
+  const warns = await runSync(rig, { skills: ['frontend-design'] }, { caller: 'spawn-sdk' });
+  assert.deepEqual(snapshot(rig.login)!['skills'], before['skills'], 'the loop link is untouched');
+  assert.deepEqual(warns, [aliasWarn(rig, 1, 'skills')]);
+});
+
+// Must-PASS: everything that is NOT an alias into the source is managed exactly as before.
+test('#241 must-PASS: dotfile-linked SOURCE skills + a normal (real) login skills/ dir → links created in the login, source intact, no warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  const src = path.join(rig.home, '.claude');
+  const srcBefore = snapshot(src)!;
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design', 'handoff'] }, { caller: 'spawn-sdk' }), []);
+  assert.deepEqual(snapshot(src), srcBefore);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills/frontend-design', 'skills/handoff']);
+  assert.equal(fs.readlinkSync(path.join(rig.login, 'skills', 'handoff')), path.join(src, 'skills', 'handoff'));
+});
+
+test('#241 must-PASS: login skills/ symlinked to a dir OUTSIDE the source (shared skills dir) is managed as before', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const shared = path.join(rig.home, 'shared-skills');
+  fs.mkdirSync(shared);
+  aliasSkillsTo(rig, shared);
+  assert.deepEqual(await runSync(rig, { skills: ['frontend-design', 'handoff'] }, { caller: 'spawn-sdk' }), []);
+  assert.deepEqual(fs.readdirSync(shared).sort(), ['frontend-design', 'handoff'], 'links created inside the shared dir');
+  assert.equal(fs.readlinkSync(path.join(shared, 'handoff')), path.join(rig.home, '.claude', 'skills', 'handoff'));
+  assert.deepEqual(manifestOf(rig.login).symlinks, ['skills/frontend-design', 'skills/handoff']);
+});
+
+test('#241 must-PASS: an account whose login dir is INSIDE the source (a child dir) still manages its own links, no warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const child = { home: rig.home, login: path.join(rig.home, '.claude', 'acct') };
+  assert.deepEqual(await runSync(child, FULL), []);
+  assert.deepEqual(linksOf(snapshot(child.login)!), LINKS);
+  assert.deepEqual(manifestOf(child.login), { symlinks: LINKS, mcpServers: ['github', 'linear-server', 'chrome-devtools'] });
+  // The dir now EXISTS (its slots resolve inside the source but inside the login dir): a re-sync and a partial de-selection still manage it.
+  assert.deepEqual(await runSync(child, FULL), [], 'second sync: no warn');
+  assert.deepEqual(await runSync(child, { ...FULL, skills: ['frontend-design'] }), []);
+  assert.deepEqual(linksOf(snapshot(child.login)!), LINKS.filter((l) => l !== 'skills/handoff'), 'the de-selected link is pruned');
+});
+
+test('#241 must-PASS: a normal login prunes a de-selected skill link as before (partial de-selection)', async () => {
+  const rig = newRig();
+  await buildLiveMirror(rig);
+  assert.deepEqual(await runSync(rig, { ...FULL, skills: ['frontend-design'] }, { caller: 'spawn-pty' }), []);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), LINKS.filter((l) => l !== 'skills/handoff'));
+});
+
+test('#241 an aliased-only selection leaves NOTHING inherited → the C10 guard still blocks a non-UI sync; the UI de-selection still prunes the rest', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  dotfileSkills(rig.home);
+  assert.deepEqual(await runSync(rig, { settings: true }), [], 'setup: four settings links');
+  aliasSkillsTo(rig, path.join(rig.home, '.claude', 'skills'));
+  const src = path.join(rig.home, '.claude');
+  const srcBefore = snapshot(src)!;
+  const before = snapshot(rig.login)!;
+  const warns = await runSync(rig, { skills: ['frontend-design'] }, { caller: 'boot' });
+  assert.deepEqual(snapshot(rig.login), before, 'non-UI: the four settings links are not pruned');
+  assert.equal(warns.length, 2, JSON.stringify(warns));
+  assert.equal(warns[0], aliasWarn(rig, 1, 'skills'));
+  assert.ok(warns[1].includes('would leave no inherited item') && warns[1].includes(`${rig.login} holds 4 inherited link(s) + 0 MCP server(s)`), warns[1]);
+  // The Accounts UI de-selection is the one authority to prune: the settings links go, the source and the alias stay.
+  await runSync(rig, { skills: ['frontend-design'] }, { caller: 'ui-save', userDeselected: true });
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills'], 'only the alias itself is left');
+  assert.deepEqual(snapshot(src), srcBefore, 'the source is intact');
+});
