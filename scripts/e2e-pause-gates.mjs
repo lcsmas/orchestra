@@ -26,7 +26,7 @@ const ARMS = [
   'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume', 'migrate',
   'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
-  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree',
+  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree', 'pty_brief',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 
@@ -161,6 +161,11 @@ const worktreeCount = () => { const d = path.join(tmpHome, '.orchestra', 'worktr
 
 const out = { arm: ARM };
 let ok = false;
+// A hung await (e.g. a gate removed → an unsettled promise) must be a RED verdict with JSON, never a silent exit 13: keep the loop alive and
+// bound the whole arm. `withTimeout` bounds one await to a named fallback.
+setInterval(() => {}, 1000);
+setTimeout(() => { console.log(JSON.stringify({ ...out, ok: false, abort: 'deadline: the arm hung (a removed gate can leave a promise unsettled)' })); process.exit(1); }, 75_000).unref?.();
+const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise((r) => setTimeout(() => r(fallback), ms))]);
 const rec = (k, v) => { out[k] = v; return v; };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -325,7 +330,7 @@ if (ARM === 'spawn') {
   const refusal = async (fn) => { try { await fn(); return null; } catch (e) { return e instanceof Error ? e.message : String(e); } };
   const a1 = rec('autoSend', await refusal(() => sdk.sdkSend('ws-m1', 'AUTO-TEXT')));
   const a2 = rec('autoWake', await refusal(() => sdk.sdkWake('ws-m1', 'AUTO-WAKE')));
-  const a3 = rec('peerDelivery', await sdk.sdkSendAwaitingStart('ws-m1', 'PEER-TEXT', undefined, 400));
+  const a3 = rec('peerDelivery', await withTimeout(sdk.sdkSendAwaitingStart('ws-m1', 'PEER-TEXT', undefined, 400), 4000, 'hung'));
   rec('noSideEffects', { factoryCalls, sessionLive: sdk.sdkHasSession('ws-m1'), turns: userMessages.length, errorRows: errorEvents.length, pending: (ws('ws-m1').sdkPendingPrompts ?? []).length });
   // HUMAN: the composer send goes through and starts the session + a turn; the pause is untouched
   const h = rec('humanSend', await sdk.sdkSend('ws-m1', 'HUMAN-TEXT', undefined, undefined, undefined, false, false, 'human').then((id) => typeof id === 'string', (e) => String(e)));
@@ -706,6 +711,33 @@ if (ARM === 'spawn') {
   busPause.setRunPause(db, 'ws-pp', true, 'ws-pp');                                           // pause the plain parent's own run
   const plain = rec('plainChild', (await msg('ws-pc', 'LT-4')).delivery);
   ok = before === 'live' && out.parentRunIdStillNull === true && attached === 'inbox' && out.o2Wakeable === false && detached === 'live' && plain === 'inbox';
+
+} else if (ARM === 'pty_brief') {
+  // row 11 — typing the opening brief into a freshly opened terminal agent is an AUTO turn start, gated at FIRE time. The REAL scheduler +
+  // the REAL gate over the real bus; only the pty writer is a recorder. (The Electron-bound handler just calls this function.)
+  await seedFleet();
+  const { scheduleOpeningBrief } = await import(`${REPO}/src/main/opening-brief-pty.ts`);
+  const writes = [];
+  const write = (id, data) => writes.push({ id, data });
+  pause();
+  scheduleOpeningBrief('ws-m1', 'BRIEF-PAUSED', write, 20);
+  scheduleOpeningBrief('ws-m3', 'BRIEF-DESCENDANT', write, 20);         // a member of a descendant run
+  scheduleOpeningBrief('ws-xm', 'BRIEF-OTHER-RUN', write, 20);          // control: an unrelated run IS typed
+  await sleep(300);
+  rec('whilePaused', writes.splice(0));
+  // fire time, not schedule time: scheduled while NOT paused, the pause lands before it fires
+  lift();
+  scheduleOpeningBrief('ws-m1', 'BRIEF-RACE', write, 200);
+  pause();
+  await sleep(450);
+  rec('pauseLandedBeforeFire', writes.splice(0));
+  lift();
+  scheduleOpeningBrief('ws-m1', 'BRIEF-LIFTED', write, 20);             // control: the lift types it
+  await sleep(250);
+  rec('afterLift', writes.splice(0));
+  ok = JSON.stringify(out.whilePaused) === JSON.stringify([{ id: 'ws-xm', data: 'BRIEF-OTHER-RUN\n' }])
+    && out.pauseLandedBeforeFire.length === 0
+    && JSON.stringify(out.afterLift) === JSON.stringify([{ id: 'ws-m1', data: 'BRIEF-LIFTED\n' }]);
 
 } else {
   out.error = `arm not implemented yet: ${ARM}`;

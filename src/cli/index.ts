@@ -725,7 +725,14 @@ async function openBusForVerb(): Promise<{
       runPause: {
         setRunPause: busPause.setRunPause,
         getRunPause: busPause.getRunPause,
-        activePauseFor: busPause.activePauseFor,
+        // The SAME live-tree walk the host gates use (the store file when readable — the app's own record of who is under whom), else the bus run tree.
+        coverFor: (d, runId) => {
+          const nodes = offlineWaveNodes();
+          const node = nodes.get(runId);
+          return node
+            ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
+            : busPause.activePauseFor(d, runId);
+        },
       },
       file,
     };
@@ -741,6 +748,29 @@ async function openBusForVerb(): Promise<{
  *  cost) on the common path. */
 function cliOrchestraHome(): string {
   return process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
+}
+
+/** The persisted workspace tree (`id → {parentId, kind, canOrchestrate}`) read off the store file — empty on any read/parse failure.
+ *  Used by `run resume` to ask the LIVE tree which ancestor still pauses a run (store-less verb: the app may be down). */
+export function offlineWaveNodes(): Map<string, WaveNode> {
+  const nodes = new Map<string, WaveNode>();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(cliOrchestraHome(), 'userData', 'orchestra', 'store.json'), 'utf8')) as {
+      workspaces?: Array<{ id?: unknown; parentId?: unknown; kind?: unknown; canOrchestrate?: unknown }>;
+    };
+    for (const w of Array.isArray(parsed.workspaces) ? parsed.workspaces : []) {
+      if (typeof w.id !== 'string' || !w.id) continue;
+      nodes.set(w.id, {
+        id: w.id,
+        parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
+        kind: typeof w.kind === 'string' ? w.kind : undefined,
+        canOrchestrate: w.canOrchestrate === true,
+      });
+    }
+  } catch {
+    /* unreadable store → empty: the caller falls back to the bus run tree */
+  }
+  return nodes;
 }
 
 /** Read the persisted workspace list off disk when the app is DOWN (#144).

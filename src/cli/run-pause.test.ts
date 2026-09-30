@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -216,4 +216,32 @@ test('pre-review: `resume` of a run whose ANCESTOR is still paused says so — n
   assert.equal(state(h, 'O'), null, 'its own pause really is cleared');
   const l = cli(h, ['run', 'resume', '--run', 'L'], 'lead-ws');
   assert.match(l.stdout, /^Run L pause LIFTED — réveils, turns and spawns are allowed again\./, 'control: the ancestor lifts normally');
+});
+
+/** The app's persisted workspace tree where the CLI looks for it (offline store). */
+function writeStore(h: string, workspaces: Array<{ id: string; parentId?: string; kind?: string }>): void {
+  const dir = path.join(h, 'userData', 'orchestra');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [], accounts: [], workspaces }));
+}
+
+test('follow-up (verifier MINOR 1): `resume` of a run re-parented AFTER creation names the ancestor that still pauses it — the live tree, not the write-once parent_run_id', needsBuild, (t) => {
+  const h = home(t);
+  const db = bus.openBus(path.join(h, 'bus.sqlite'));
+  try { busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db.close(); } // created top-level: parent_run_id NULL forever
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws').code, 0);
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws').code, 0);
+  // the store says O2 is now attached under the paused OPS (the store re-parents; the bus row does not)
+  writeStore(h, [{ id: 'L', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'O2', kind: 'orchestrator', parentId: 'O' }]);
+  const r = cli(h, ['run', 'resume', '--run', 'O2'], 'o2-ws');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, "Run O2's own pause is LIFTED, but it is still PAUSED by run O — lift that one: orchestra run resume --run O\n");
+  assert.doesNotMatch(r.stdout, /allowed again/);
+  // controls: detached in the store → the plain lift message; no store file at all → the bus run tree (O2 has no parent there)
+  const h2 = home(t);
+  const db2 = bus.openBus(path.join(h2, 'bus.sqlite'));
+  try { busRuns.startRun(db2, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db2.close(); }
+  cli(h2, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws'); cli(h2, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws');
+  writeStore(h2, [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }]);
+  assert.match(cli(h2, ['run', 'resume', '--run', 'O2'], 'o2-ws').stdout, /^Run O2 pause LIFTED — réveils, turns and spawns are allowed again\./, 'detached: plain lift');
 });

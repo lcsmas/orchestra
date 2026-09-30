@@ -164,7 +164,7 @@ import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { pauseRefusalById } from './pause-gate.ts';
+import { scheduleOpeningBrief } from './opening-brief-pty.ts';
 import type {
   Account,
   BrowserBounds,
@@ -872,14 +872,7 @@ export const apiHandlers: ApiHandlerTable = {
     // First-ever spawn: pipe the initial task (if any) into the agent once it
     // has had a moment to initialize its TUI.
     if (!resuming && ws.lastTask) {
-      const task = ws.lastTask;
-      setTimeout(() => {
-        // #252 fleet PAUSE (ledger #261 row 11): typing the opening brief is an AUTO turn start (the human only opened the terminal) — checked at fire time.
-        const pausedRun = pauseRefusalById(id, 'auto');
-        if (pausedRun) return log.info(`pty:start ${id}: opening brief not typed — ${pausedRun}`);
-        writePty(id, task + '\n');
-        // Status flips to running once Claude fires its UserPromptSubmit hook.
-      }, 1200);
+      scheduleOpeningBrief(id, ws.lastTask, writePty); // #252 row 11: gated at fire time (src/main/opening-brief-pty.ts)
     }
   },
 
