@@ -612,8 +612,8 @@ orchestrator; a genuine top-level standalone is its own non-orchestrator anchor)
 `resolveAnchorInfo(ws).anchorIsOrchestrator` from all three call sites and calls
 the pure `busSwitchNoticeDecision({runExists, anchorCanOrchestrate, frozen,
 live})` (`src/shared/bus-switches.ts`): `!anchorCanOrchestrate && !runExists` →
-one "anchors no run (standalone — not part of a fleet)… currently N/7 ON" line
-(live count via `countSwitchesOn`, never hardcoded), ZERO `=OFF` lines; otherwise
+one "anchors no run (standalone — not part of a fleet)… currently N/8 ON" line
+(live count via `countSwitchesOn`, never hardcoded — N/7 before #252 added the eighth switch, `pause`), ZERO `=OFF` lines; otherwise
 → the unchanged frozen notice (legacy frozen-OFF stays OFF; frozen-ON and an
 orchestrator-anchored member with an unstarted row never print the no-run line).
 A **down bus** (D1) can't tell run-less from run-exists, so it falls back to the
@@ -1651,6 +1651,77 @@ opening to HEAD and hand-DROPping what later migrations added (`bus-fencing.test
 T128.4, `bus-mirror.test.ts` C11) must also `DROP COLUMN held_at` AND `held_by` for
 `from < 8`, or the replay throws "duplicate column name"; `bus.test.ts` T130.4
 asserts a `SCHEMA_VERSION` floor (>= 7), never an absolute.
+
+## Fleet PAUSE — host-enforced, durable on the bus (#252, ADR 0003, wave D ledger #261)
+
+A **Pause dure** of a run (and every descendant run) is a bus state the host enforces; glossary in
+`CONTEXT.md` §Pause, rationale in `docs/adr/0003-fleet-pause-host-enforced-on-the-bus.md`. This section is the
+**state + gates** half (D1a); the **host trap** (snapshot ref, Bilan de pause, interrupt, kill — D1b) is a separate
+module that consumes the seams below.
+
+- **Schema — `MIGRATIONS[9]`, `SCHEMA_VERSION 8 → 9`** (`src/main/bus.ts`): `runs` += `paused_at INTEGER`, `paused_by TEXT`,
+  `pause_mode TEXT` ('hard'), `pause_trap_at INTEGER` (stamped by D1b when the trap finished; NULL = owed); table
+  `pause_records(id, run_id, ws_id, paused_at, activity, snapshot_ref, dirty, killed_json, error, created_at)` — the Bilan,
+  written only by D1b. **Distinct from `held_at`** (liveness-only): the two flags are independent; `run resume` lifts both.
+  **Descendant runs carry NO pause column** — readers walk `parent_run_id` to the carrier.
+- **Frozen switch `pause`** (`src/shared/bus-switches.ts`, wire == key, default **OFF**): read at wave start, frozen on the
+  run row like the other seven. A pause counts only while the **carrier row's** frozen `pause` is ON; a stale `paused_at` on an
+  OFF run is inert (`off_identity` rig arm). Runs started before this shipped have no `pause` key ⇒ OFF ⇒ `run pause` is refused.
+- **Verbs** (store-less, like `run hold`; work with the app down): `orchestra run pause --hard [--run <id>] [--as <handle>]`
+  (`verbRunPause` `src/cli/bus-verbs.ts:1115`, writer `setRunPause` `src/main/bus-pause.ts:195`) and `run resume`
+  (`verbRunHold` with the optional `pause` deps — lifts pause **and** hold; a never-paused run prints exactly what it always
+  printed). Authority = the hold rule (`runHoldAuthority`: the run's coordinator or an ancestor run's coordinator; a worker,
+  a descendant's coordinator or no identity is `refused`; the human acts `--as <coordinator>` — no new identity invented),
+  fenced through `fencedWrite` (`run-pause` / `run-resume`). Outcomes: `paused | already-paused | lifted | not-paused |
+  no-run | refused | switch-off` — a pause on an OFF run is **refused, never accepted-and-inert**. Without `--hard` the verb
+  refuses (only the hard pause exists; soft = #254). `run resume --run <descendant>` says which ancestor carries the pause.
+- **The one gate helper — `pauseRefusal(ws, origin)`** (`src/main/pause-gate.ts`, the twin of `sandboxPausedMessage`; decision
+  `pauseRefusalWith` `src/main/bus-pause.ts`, pure half `src/shared/bus-pause.ts`). Resolves the pause **at gate time through the LIVE
+  workspace tree** (`pausedCarrierForWorkspace`): the workspace and every ancestor along the store's `parentId` chain are each checked as a
+  possible carrier (run id == its orchestrator's — or a run-anchoring plain parent's — workspace id), never `$ORCHESTRA_RUN_ID`. `runs.parent_run_id`
+  is **write-once** (`startRun` is `INSERT OR IGNORE`; attach/detach/demote never re-point it), so it is consulted ONLY as a fallback when the chain
+  reaches a workspace that is gone from the store (review D1a F2). Returns `run en pause — orchestra run resume --run <carrier>` or null.
+  `origin: 'human'` is **never refused and never even reads the bus**. Unknown ⇒ not paused (no row, unreadable read — logged). **Fail-open when the
+  boot bus is unavailable** (review D1a F6, accepted gap): a pause the CLI wrote is then NOT enforced and the CLI still says "now PAUSED" — one WARN line
+  per process says so (`onBusUnavailable`); failing closed would freeze every agent behind a broken bus. The HUMAN origin is threaded as an explicit
+  `PauseOrigin` parameter (`sdkSend`'s last arg, `sdkWake`/`wakeAgentWithPrompt`/`sdkDeliver*`/`releaseInboxBlock` options); default `'auto'`.
+  **`--as <coordinator>` is caller-asserted** (same identity model as `hold`, review F3 accepted gap): a worker that passes the coordinator's handle can
+  pause/lift — authenticated human identity is out of #252.
+- **Gates** (each asserted by a named arm of `src/main/pause-gates.test.ts` via `scripts/e2e-pause-gates.mjs`, REAL modules + real bus;
+  ledger #261 row numbers): **1/2** composer = HUMAN → `sdkSend` commit-point gate `agent-sdk.ts:2954` (AUTO refused with no session/turn/
+  error row/pending prompt) · **4** `recoverPendingPromptsInner` `:3546` (held *before* `keepOnlyPendingPrompts` drops the entries) ·
+  **5/6/7** `dispatchRestartRequest` `restart-workspace.ts:80` (`trigger==='toolbar'` ⇒ human; refused before any stop) ·
+  **11** PTY opening brief, fire-time `api-handlers.ts:878` (wiring test only — Electron-bound) · **13** account-migrate resume
+  `workspaces.ts:2981` · **14** `wakeRosterEntry` `wake-roster.ts:24` (`wakeable` — else the sweep re-fires every tick) ·
+  **16** usage-limit auto-resume `prompt-queue.ts:235` (before budget, clear and re-mark) · **17** timer flush `:132` before the queue is
+  cleared (“Send now” `force` = human) · **18/19** `dispatchMessageRequestUnmirrored` `workspaces.ts:3488` (parked in the inbox) ·
+  **20/21** `dispatchSpawnRequest` `:1722` before the worktree exists (a human click has no `from`) · **23** inbox re-drive
+  `agent-sdk.ts:1524` (`shouldRedriveInbox({paused})`) · **24** `promptStream` drain `:1289` (AUTO entries wait, polled every
+  `PAUSE_DRAIN_POLL_MS`; HUMAN entries — `session.humanTurns` — go first) · **25/26/27** `watchdogTick` top-of-loop skip
+  `session-watchdog.ts:550` (no gate release, no recycle, no boot-wedge escalation; nothing mutated while paused) · **WAWP**
+  `wakeAgentWithPrompt` `workspaces.ts:3305`. **HUMAN, allowed, un-pauses nothing**: 3 attach, 8 model switch, 9 `/status`·`!bash`·MCP,
+  10 `pty:start`, 12 keystrokes, 22 tray release, 28 Fix checks / Send review (the `ENUMERATION` arm of `pause-gates-wiring.test.ts`
+  pins the exact set of `'human'` origin sites — a new one is a new bypass). **TRAP (D1b)**: 29 CLI-internal scheduled turns, 30 a turn
+  already running.
+- **SILENCE (row 15)**: the liveness **roster** (`buildLivenessRoster(store, waveRunId, isPaused)`, `bus-liveness-roster.ts`) sets `member.paused` from the
+  SAME live-tree decision the gates use (`index.ts` passes `pauseRefusal(ws,'auto') !== null`); `sweepBusLiveness` ORs it into `held`
+  (`bus-liveness.ts`: `held: heldRuns.has(m.runId) || m.paused === true`). A roster built without the seam never silences by pause; an unreadable pause read
+  silences nothing.
+- **Lift behaviour (D1a only)**: `run resume` is a plain lift — queued AUTO turns drain within ≤ `PAUSE_DRAIN_POLL_MS` and every pending reader is woken at
+  the next bus-wake sweep (a herd; the structured top-down Reprise is #255). The Bilan / snapshot / interrupt / kill are D1b's and are not promised by D1a's
+  help/skill/lift texts.
+- **Human-turn seam for D1b**: `setPauseHumanTurnObserver` / `notePauseHumanTurn` (`src/main/pause-gate.ts`) — `sdkSend` notes every HUMAN-origin send once, so the trap's turn-start observer can tell a fresh human turn from an automatic one.
+- **Seams for D1b** (`src/main/bus-pause.ts`): `runsOwingPauseTrap(db)` (carriers with `pause_trap_at` NULL), `runSubtreeIds(db, carrier)`
+  (the pause's member runs by `parent_run_id` — **stale for a run re-parented after creation; resolve members through the live tree / `pausedCarrierForWorkspace`**), `activePauseFor` (run-row walk), `pausedCarrierForWorkspace` (live tree), `getRunPause`. A lift clears `pause_trap_at` so the next pause owes a fresh trap.
+- **Slot trap**: tests that build an old-version DB by hand-DROPping (`bus-fencing.test.ts` T128.4, `bus-mirror.test.ts` C11) must also
+  drop the four pause columns + `pause_records` for `from < 9`, or the replay throws "duplicate column name".
+- **Not done here** (by design): soft pause (#254), structured Reprise (#255), usage-limit auto (#256), UI (#257), canary (#258). Not in
+  `orchestra bus-status` (its `/busStatus` wire shape is pinned; a forgotten pause surfaces through the refusal text).
+
+Gates: `src/shared/bus-pause.test.ts`, `src/main/bus-pause.test.ts` (schema v8→v9, writer matrix, propagation, switch OFF inert, gate
+decision), `src/main/bus-pause-liveness.test.ts` (row 15, the shipped roster + real sweep, incl. an orchestrator re-parented after creation), `src/cli/run-pause.test.ts` (built CLI, app down),
+`src/main/pause-gates.test.ts` + `scripts/e2e-pause-gates.mjs` (22 arms, scratch `ORCHESTRA_HOME`/`HOME`/`CLAUDE_CONFIG_DIR`),
+`src/main/pause-gates-wiring.test.ts` (Electron-bound sites, HUMAN enumeration, docs).
 
 ## COUNTED, not FIRED — the `liveness` switch (C5)
 

@@ -36,6 +36,7 @@ import type {
 } from '../main/bus.ts';
 import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
 import type { RunHoldOutcome } from '../main/bus-runs.ts';
+import type { RunPauseInfo, RunPauseOutcome } from '../main/bus-pause.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -1019,13 +1020,33 @@ export function verbRunHold(
     setRunHold: (db: BusDb, runId: string, hold: boolean, actor: string | null) => RunHoldOutcome;
     getRunHold: (db: BusDb, runId: string) => { heldAt: number; heldBy: string | null } | null;
     runHoldAuthority: (db: BusDb, runId: string) => { coordinator: string; ancestors: string[] } | null;
+    /** #252 — `resume` also LIFTS the run's PAUSE (one verb lifts both). Absent = hold-only (the
+     *  pre-#252 shape). A run that was never paused prints exactly what `resume` always printed. */
+    pause?: RunPauseDeps;
   },
   runId: string,
   isHold: boolean,
 ): void {
   const actor = ctx.id.handle.trim() || null;
   const verb = isHold ? 'hold' : 'resume';
-  const outcome = fenced(ctx, `run-${verb}`, () => hold.setRunHold(ctx.db, runId, isHold, actor));
+  const { outcome, lifted } = fenced(ctx, `run-${verb}`, () => {
+    // Pause first: same authority as the hold, so a `refused`/`no-run` here is the hold's too.
+    const lifted: RunPauseOutcome =
+      !isHold && hold.pause ? hold.pause.setRunPause(ctx.db, runId, false, actor) : 'not-paused';
+    return { lifted, outcome: hold.setRunHold(ctx.db, runId, isHold, actor) };
+  });
+  if (lifted === 'lifted') {
+    // An ANCESTOR run's pause still gates this run (descendants carry none of their own): never claim it is free to start again.
+    const cover = hold.pause?.activePauseFor(ctx.db, runId);
+    ctx.out(
+      cover
+        ? `Run ${runId}'s own pause is LIFTED, but it is still PAUSED by run ${cover.runId} — lift that one: orchestra run resume --run ${cover.runId}\n`
+        : `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. ` +
+            `Queued turns and pending bus mail resume now (there is no structured Reprise yet — #255).\n`,
+      );
+    if (outcome === 'resumed') ctx.out(`Its liveness hold was lifted too.\n`);
+    return;
+  }
   switch (outcome) {
     case 'no-run':
       ctx.fail(
@@ -1064,8 +1085,92 @@ export function verbRunHold(
     case 'resumed':
       ctx.out(`Run ${runId} resumed — liveness escalation is re-enabled for its members.\n`);
       return;
-    case 'not-held':
-      ctx.out(`Run ${runId} was not held — unchanged.\n`);
+    case 'not-held': {
+      // #252: a DESCENDANT run is paused by its ancestor's pause, which `resume` here cannot lift.
+      const cover = !isHold ? hold.pause?.activePauseFor(ctx.db, runId) : null;
+      ctx.out(
+        `Run ${runId} was not held — unchanged.\n` +
+          (cover
+            ? `It is still PAUSED by run ${cover.runId} — lift that one: orchestra run resume --run ${cover.runId}\n`
+            : ''),
+      );
       return;
+    }
+  }
+}
+
+/** The pause seams `run pause|resume` take (injected like the hold's, so the verb unit-tests
+ *  without a process). Production passes src/main/bus-pause.ts. */
+export interface RunPauseDeps {
+  setRunPause: (db: BusDb, runId: string, pause: boolean, actor: string | null) => RunPauseOutcome;
+  getRunPause: (db: BusDb, runId: string) => RunPauseInfo | null;
+  activePauseFor: (db: BusDb, runId: string) => RunPauseInfo | null;
+}
+
+/**
+ * `orchestra run pause --hard [--run <id>]` (#252, ADR 0003) — put the run (and every descendant
+ * run) in a PAUSE DURE. Same authority + fencing as `run hold` (the run's coordinator or an
+ * ancestor run's coordinator; a worker is refused; `--as <handle>` acts as one of them — the human
+ * path). Durable on the bus, store-less (works with the app down), idempotent, and REFUSED — never
+ * accepted-and-inert — while the run's FROZEN `pause` switch is OFF. The host then enforces it:
+ * no réveil / new turn / spawn into the run, liveness silenced; a member's composer prompt from a
+ * HUMAN stays allowed and does NOT lift it. `run resume` lifts it (see `verbRunHold`).
+ */
+export function verbRunPause(
+  ctx: BusVerbCtx,
+  deps: RunPauseDeps & {
+    runHoldAuthority: (db: BusDb, runId: string) => { coordinator: string; ancestors: string[] } | null;
+  },
+  runId: string,
+): void {
+  const actor = ctx.id.handle.trim() || null;
+  const outcome = fenced(ctx, 'run-pause', () => deps.setRunPause(ctx.db, runId, true, actor));
+  switch (outcome) {
+    case 'no-run':
+      ctx.fail(
+        `orchestra run pause: run ${JSON.stringify(runId)} has no row in the bus 'runs' table — ` +
+          `nothing to pause (pass --run <id>; \$ORCHESTRA_RUN_ID is your wave anchor, 'default' never has a row)`,
+      );
+    // eslint-disable-next-line no-fallthrough
+    case 'refused': {
+      const auth = deps.runHoldAuthority(ctx.db, runId);
+      const may = auth ? [auth.coordinator, ...auth.ancestors] : [];
+      ctx.fail(
+        `orchestra run pause: refused — run ${JSON.stringify(runId)} can only be paused ` +
+          `by its coordinator (${auth?.coordinator ?? '?'}) or by a coordinator of an ancestor run ` +
+          `(${auth && auth.ancestors.length ? auth.ancestors.join(', ') : 'none'}). ` +
+          (actor
+            ? `You are ${JSON.stringify(actor)}, who is none of ${may.join(', ')}.`
+            : `You have no identity (\$ORCHESTRA_WS_ID unset) — pass --as <handle> to act as one of them.`),
+      );
+    }
+    // eslint-disable-next-line no-fallthrough
+    case 'switch-off':
+      ctx.fail(
+        `orchestra run pause: the 'pause' switch is OFF for run ${JSON.stringify(runId)} (frozen at its wave start) — ` +
+          `nothing paused. Turn 'Pause' on in Settings → Fleet bus switches and start a new wave ` +
+          `(or \`orchestra run refreeze --run ${runId}\` for a mission run).`,
+      );
+    // eslint-disable-next-line no-fallthrough
+    case 'paused':
+      ctx.out(
+        `Run ${runId} is now PAUSED (hard) — no réveil, no new turn, no spawn into it (refused with ` +
+          `"run en pause"), liveness silenced; the same holds for every descendant run. ` +
+          `A prompt a HUMAN types in a member's composer is still allowed and does NOT lift the pause. ` +
+          `Lift with: orchestra run resume --run ${runId}\n`,
+      );
+      return;
+    case 'already-paused': {
+      const p = deps.getRunPause(ctx.db, runId);
+      ctx.out(
+        `Run ${runId} was already paused` +
+          (p ? ` (since ${new Date(p.pausedAt).toISOString()} by ${p.pausedBy ?? 'unknown'})` : '') +
+          ' — unchanged.\n',
+      );
+      return;
+    }
+    default:
+      // 'lifted' / 'not-paused' cannot come back from a pause write.
+      ctx.fail(`orchestra run pause: unexpected outcome ${outcome}`);
   }
 }

@@ -44,7 +44,8 @@ export type BusMechanism =
   | 'liveness'
   | 'fencing' // #128
   | 'capability' // #129
-  | 'receipts'; // #130
+  | 'receipts' // #130
+  | 'pause'; // #252 fleet Pause (ADR 0003)
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
@@ -55,6 +56,7 @@ export const BUS_MECHANISMS: readonly BusMechanism[] = [
   'fencing', // #128
   'capability', // #129
   'receipts', // #130
+  'pause', // #252
 ];
 
 /** One boolean per mechanism. */
@@ -76,6 +78,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   fencing: false, // #128
   capability: false, // #129
   receipts: false, // #130
+  pause: false, // #252 — opt-in per run; OFF ⇒ `run pause` refused and no gate ever fires
 });
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -87,6 +90,7 @@ export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   fencing: 'Fencing (coordinator generation)', // #128
   capability: 'Capability tokens (dispatch)', // #129
   receipts: 'Mutation receipts (idempotence)', // #130
+  pause: 'Pause (host-enforced fleet pause)', // #252
 };
 
 /**
@@ -196,7 +200,8 @@ export type BusMechanismWire =
   // MUST still route through this map so busSwitch(db,runId,'capability') and the
   // startup notice agree with everything else.
   | 'capability'
-  | 'receipts'; // #130 (wire == key)
+  | 'receipts' // #130 (wire == key)
+  | 'pause'; // #252 (wire == key)
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   delivery: 'delivery',
@@ -209,6 +214,7 @@ const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   // it still routes through this ONE map — the file header forbids writing the
   // literal anywhere else.
   receipts: 'receipts',
+  pause: 'pause', // #252 (wire == key; same single-map rule)
 };
 
 /** Wire name → internal key. Returns null for an unknown name (never a guess). */
@@ -253,6 +259,15 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     // which is the failure carry-forward 2 warns about. `mechanismToWire` is the
     // one mapping; writing `ask_gate` here by hand is what the file header forbids.
     const wire = mechanismToWire(m);
+    // #252 (review D1a F4): `pause` has no "old channel" and nothing is "counted" — the generic OFF/ON wording would be FALSE for it.
+    if (m === 'pause') {
+      lines.push(
+        on
+          ? `- bus switch ${wire}=ON — a fleet Pause of this run is enforced by the host (a refused start says "run en pause"; lift with orchestra run resume).`
+          : `- bus switch ${wire}=OFF — fleet Pause is not enforced in this run (orchestra run pause is refused).`,
+      );
+      continue;
+    }
     lines.push(
       on
         ? `- bus switch ${wire}=ON — the bus is AUTHORITATIVE for this mechanism in this run; use it.`

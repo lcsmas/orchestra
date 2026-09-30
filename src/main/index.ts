@@ -194,9 +194,9 @@ import {
   readReleasedReaders,
 } from './bus-liveness';
 import { buildLivenessRoster } from './bus-liveness-roster';
-import { sdkStartAndDeliver, sdkSessionLive } from './sdk-delivery';
-import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { startKeepsFailing } from '../shared/opening-task.ts';
+import { sdkStartAndDeliver } from './sdk-delivery';
+import { wakeRosterEntry } from './wake-roster';
+import { pauseRefusal } from './pause-gate';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -503,24 +503,7 @@ async function createMainWindow() {
   // platform seam through a directory import that node's strip-types test
   // runner cannot resolve, and importing it there would make the whole wake
   // module untestable under `pnpm run test`.
-  setWakeRoster(() =>
-    store.workspaces.map((ws) => ({
-      reader: ws.id,
-      // An archived workspace's session is a frozen leftover; waking it would
-      // resurrect a workspace the human retired. `ws.archived` is the flag the
-      // #90 watchdog gates on too (session-watchdog.ts:233).
-      // #226: a paused sandbox agent cannot be woken — not-wakeable, or the sweep re-fires (60 s + every WAL write) at a start that always refuses.
-      wakeable: !ws.archived && !!ws.worktreePath && sandboxPausedMessage(ws) === null && !startKeepsFailing(ws, sdkSessionLive(ws.id)),
-      // #134 — the WAVE run this reader belongs to (its tree anchor), the SAME
-      // id `$ORCHESTRA_RUN_ID` plumbs into the member's CLI, so the host looks
-      // for a reader's pending mail in the run the CLI actually wrote it to. Was
-      // hardcoded `'default'` (the CLI's pre-#134 fallback), which — now that
-      // members send under their wave run id — would have the sweep read an
-      // empty `default` run and never wake anyone. A root anchor resolves to
-      // itself; a member resolves to its anchor (walkToRootId).
-      runId: resolveWaveRunId(ws),
-    })),
-  );
+  setWakeRoster(() => store.workspaces.map(wakeRosterEntry));
   // #134 — wire the per-run switch readers the wake sweep consults. Until now
   // these stayed the shipped default `() => false`, so even a run frozen wake=ON
   // was COUNTED, never fired. Each reads the flag FROZEN ON THE RUN ROW (never
@@ -554,7 +537,8 @@ async function createMainWindow() {
   // `readWaitingReaders` (the sender/opener parked on an open ask or gate), and
   // #120 subtracts that set, on top of the app-level `waiting` status. The
   // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
-  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId));
+  // #252 row 15: the SAME live-tree pause decision the gates use silences a paused run's members.
+  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null));
   // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
   // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's

@@ -80,6 +80,8 @@ export interface LivenessMember {
    *  by a fast sibling (review-127 F1). */
   inFlightTools?: readonly { tool: string | null; startedAt: number }[];
   runId: string;
+  /** #252 fleet PAUSE: this member's run (or an ancestor along the live tree) is paused — silenced exactly like a held run. Absent = not paused. */
+  paused?: boolean;
 }
 
 let readMembers: () => LivenessMember[] = () => [];
@@ -375,7 +377,9 @@ export function sweepBusLiveness(): void {
       // released set. Same OR shape as `waiting`, same safe default (false/empty).
       doneAndReleased: (m.doneAndReleased ?? false) || released.has(m.reader),
       inFlightTools: m.inFlightTools,
-      held: heldRuns.has(m.runId),
+      // #252 (ledger #261 row 15): a member of a PAUSED run is silenced like a held one. `m.paused` comes from the roster's LIVE-TREE walk
+      // (pausedCarrierForWorkspace) — the same decision the gates use; `runs.parent_run_id` is write-once and would go stale on re-parent.
+      held: heldRuns.has(m.runId) || m.paused === true,
       fleetActive: activeCoordinators.has(m.reader),
     });
 

@@ -278,5 +278,5 @@ test('#236 one chokepoint: only idle-clock.ts reads the raw app-start floor; bot
   // the shipped builder (a hand-rolled roster in index.ts would bypass every arm above).
   assert.match(read('main/hibernation.ts'), /idleClockOf\(ws\)/);
   assert.match(read('main/bus-liveness-roster.ts'), /lastActivityAt: idleClockOf\(ws\)/);
-  assert.match(read('main/index.ts'), /setLivenessRoster\(buildLivenessRoster\(store, resolveWaveRunId\)\)/);
+  assert.match(read('main/index.ts'), /setLivenessRoster\(buildLivenessRoster\(store, resolveWaveRunId, \(ws\) => pauseRefusal\(ws, 'auto'\) !== null\)\)/); // #252: + the live-tree pause seam
 });

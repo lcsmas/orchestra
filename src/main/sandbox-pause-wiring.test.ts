@@ -59,7 +59,7 @@ test('enumeration: exactly ONE agent-start query() (inside the funnel); the othe
 test('wake: wakeAgentWithPrompt refuses a paused sandbox workspace before any wake branch', () => {
   const b = body(WORKSPACES, 'export async function wakeAgentWithPrompt(');
   assert.match(b, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) \{[\s\S]*?return false;\s*\n\s*\}/);
-  for (const later of ['clearHibernated(id)', 'sdkDeliver(id, prompt)', 'sdkStartAndDeliver(id, prompt)'])
+  for (const later of ['clearHibernated(id)', 'sdkDeliver(id, prompt', 'sdkStartAndDeliver(id, prompt'])
     before(b, 'sandboxPausedMessage(ws)', later);
   // #227 deleted the raw-PTY wake fallback: there is no `startPty` left in the wake for the guard to precede
   assert.doesNotMatch(b, /startPty\(/, 'the wake has no PTY fallback (#227)');
@@ -71,7 +71,7 @@ test('restart: dispatchRestartRequest refuses a paused sandbox workspace BEFORE 
   before(b, 'sandboxPausedMessage(ws)', 'await resolveRestart(');
   // #227: the owed-opening-task route (a kept child whose brief was never delivered) is a SECOND way to start an agent — the pause sits above it too
   before(b, 'sandboxPausedMessage(ws)', 'restartOwesOpeningTask(ws, live)');
-  before(b, 'sandboxPausedMessage(ws)', 'retryOpeningTask(id!, fresh)');
+  before(b, 'sandboxPausedMessage(ws)', 'retryOpeningTask(id!, fresh');
 });
 
 test('fix-checks / send-review handlers THROW the pause before doing any work (never answer `requested` into nothing)', () => {
@@ -87,8 +87,11 @@ test('fix-checks / send-review handlers THROW the pause before doing any work (n
 });
 
 test('bus-wake: the roster marks a paused sandbox workspace NOT wakeable (else the sweep re-fires at a start that always refuses)', () => {
-  const roster = INDEX.slice(INDEX.indexOf('setWakeRoster(() =>'), INDEX.indexOf('setWakeRoster(() =>') + 1500);
-  assert.match(roster, /wakeable: !ws\.archived && !!ws\.worktreePath && sandboxPausedMessage\(ws\) === null && !startKeepsFailing\(ws, sdkSessionLive\(ws\.id\)\),/);
+  // The entry lives in wake-roster.ts since #252 (index.ts cannot load under node --test); index.ts wires it.
+  assert.match(INDEX, /setWakeRoster\(\(\) => store\.workspaces\.map\(wakeRosterEntry\)\);/);
+  const roster = read('wake-roster.ts');
+  assert.match(roster, /!ws\.archived &&\s*\n\s*!!ws\.worktreePath &&\s*\n\s*sandboxPausedMessage\(ws\) === null &&/);
+  assert.match(roster, /!startKeepsFailing\(ws, sdkSessionLive\(ws\.id\)\),/);
 });
 
 test('spawn / Restart retry: startWorkspaceAgentOnce answers the pause before the SDK start (unreachable today — no producer spawns a sandbox ws)', () => {

@@ -56,6 +56,7 @@ import {
   type InboxBlock,
 } from '../shared/inbox-blocks.ts';
 import { recognizeFormattedPeerMessage, type PeerOrigin } from '../shared/peer-messages.ts';
+import type { PauseOrigin } from '../shared/bus-pause.ts';
 
 /** Mirrors `INBOX_ROOT` in workspaces.ts — the same directory `queueInbox`
  *  appends to and the inbox hook reads. Duplicated rather than exported from
@@ -192,6 +193,8 @@ function originFor(block: InboxBlock): PeerOrigin | undefined {
 export async function releaseInboxBlock(
   workspaceId: string,
   text: string,
+  /** #252 fleet PAUSE (ledger #261 row 22): the tray's click is 'human' (allowed while paused); the re-drive / watchdog callers stay AUTO. */
+  origin?: PauseOrigin,
 ): Promise<InboxActionOutcome> {
   const blocks = readInbox(workspaceId);
   const target = blocks.find((b) => b.text.trim() === text.trim());
@@ -202,7 +205,7 @@ export async function releaseInboxBlock(
     return { ok: false, reason: 'gone', remaining: blocks.length };
   }
 
-  const confirmed = await sdkDeliverConfirmed(workspaceId, target.text, originFor(target));
+  const confirmed = await sdkDeliverConfirmed(workspaceId, target.text, originFor(target), undefined, origin);
   if (confirmed !== 'started') {
     log.info(
       `inbox-tray: release for ${workspaceId} not delivered (${confirmed}) — block left parked`,
@@ -275,12 +278,13 @@ export async function refuseInboxBlock(
  *  first non-delivery and reports how many actually landed. */
 export async function releaseAllInboxBlocks(
   workspaceId: string,
+  origin?: PauseOrigin,
 ): Promise<{ released: number; remaining: number; failed?: InboxActionFailure }> {
   let released = 0;
   // Snapshot the texts up front, then act on each by content — the file is
   // rewritten between iterations, so indices would not survive the loop.
   for (const block of readInbox(workspaceId)) {
-    const res = await releaseInboxBlock(workspaceId, block.text);
+    const res = await releaseInboxBlock(workspaceId, block.text, origin);
     if (!res.ok) {
       if (res.reason === 'gone') continue; // drained under us; not a failure
       return { released, remaining: res.remaining, failed: res };

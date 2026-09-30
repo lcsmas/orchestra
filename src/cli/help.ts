@@ -221,9 +221,10 @@ all. Read-only.`,
   {
     name: 'run',
     group: 'Fleet bus',
-    summary: "Admin: re-freeze a mission run's switches; hold / resume a run's liveness",
+    summary: "Admin: re-freeze a mission run's switches; hold / pause / resume a run",
     detail: `usage: orchestra run refreeze [--run <id>]
        orchestra run hold [--run <id>] [--as <handle>]
+       orchestra run pause --hard [--run <id>] [--as <handle>]
        orchestra run resume [--run <id>] [--as <handle>]
 
   refreeze  Re-freeze a MISSION run's bus switches to the current live switches.
@@ -237,8 +238,21 @@ all. Read-only.`,
             hold/resume it (caller = --as, else $ORCHESTRA_WS_ID); anyone else
             is refused. Fenced like send/ack (--generation). The holder is
             recorded and 'orchestra bus-status' shows a held run.
-  resume    Clear the hold; escalation is re-enabled on the next sweep.
-Default run: $ORCHESTRA_RUN_ID or 'default'. hold/resume refuse a run with no row.`,
+  pause     PAUSE DURE of the run and every descendant run: the host refuses every
+            réveil, new turn and spawn into it ("run en pause — orchestra run resume
+            --run <id>") and silences liveness. Durable in the bus (survives an app
+            relaunch, works while the app is down), idempotent. Same authority +
+            fencing as hold.
+            REFUSED unless the run's 'pause' bus switch was ON when its wave started
+            (frozen; default OFF). Only --hard exists so far.
+            A prompt a HUMAN types in a member's composer stays allowed and does NOT lift
+            the pause (nor does restarting it from the toolbar); every automatic start is
+            refused. A human lifts/pauses with --as <the run's coordinator>.
+  resume    Lift the pause (and the hold, if any) of the run: queued turns and pending
+            bus mail resume (there is no structured Reprise yet). A descendant run is
+            lifted through the run that carries the pause (the message names it);
+            escalation is re-enabled on the next sweep.
+Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume refuse a run with no row.`,
   },
 
   // ── Legacy messaging ──────────────────────────────────────────────────
@@ -405,16 +419,16 @@ export function isHelpFlag(arg: string | undefined): boolean {
  *  (`gate open --help`). Never deeper — free text may contain "--help". */
 const SUBCOMMAND_VERBS = new Set(['open', 'resolve', 'list', 'refreeze', 'add', 'rm', 'pin']);
 
-/** `hold`/`resume` are `run` subcommands only — scoped so `orchestra status hold
- *  --help` (free text) is never read as a help request. */
-const RUN_SUBCOMMANDS = new Set(['hold', 'resume']);
+/** The `run` verbs that take FLAGS only (no free text): a help flag ANYWHERE after the verb is a help request, never a run — scoped to `run`
+ *  so `orchestra status hold --help` (free text) is never one. `run pause --hard --help` must print help, not pause the fleet (pre-review:
+ *  `--hard` is mandatory, so `--help` lands at args[2]). The ONLY place `hold`/`pause`/`resume` are recognised as help-able verbs. */
+const RUN_FLAG_ONLY_VERBS = new Set(['refreeze', 'hold', 'pause', 'resume']);
 
 export function wantsCommandHelp(args: string[], command?: string): boolean {
   if (isHelpFlag(args[0])) return true;
+  if (command === 'run' && RUN_FLAG_ONLY_VERBS.has(args[0] ?? '') && args.slice(1).some(isHelpFlag)) return true;
   if (!isHelpFlag(args[1])) return false;
-  return (
-    SUBCOMMAND_VERBS.has(args[0] ?? '') || (command === 'run' && RUN_SUBCOMMANDS.has(args[0] ?? ''))
-  );
+  return SUBCOMMAND_VERBS.has(args[0] ?? '');
 }
 
 export function commandHelp(name: string): string | undefined {

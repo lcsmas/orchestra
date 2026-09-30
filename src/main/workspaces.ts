@@ -66,6 +66,8 @@ import {
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
+import { pauseRefusal } from './pause-gate.ts';
+import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
   ACCOUNT_DEFAULT_MODEL,
   isValidModelArg,
@@ -1508,15 +1510,15 @@ const openingTaskStarts = new Map<string, Promise<SdkStartResult>>();
 
 /** Start the workspace's SDK session with `lastTask` as its opening turn. NO PTY fallback (#227): on failure the child
  *  stays stopped with the task retained (`owesOpeningTask`) and the reason is an error row in its Agent view; Restart retries. */
-export function startWorkspaceAgentHeadless(id: string): Promise<SdkStartResult> {
+export function startWorkspaceAgentHeadless(id: string, origin?: PauseOrigin): Promise<SdkStartResult> {
   const inFlight = openingTaskStarts.get(id);
   if (inFlight) return inFlight;
-  const p = startWorkspaceAgentOnce(id).finally(() => openingTaskStarts.delete(id));
+  const p = startWorkspaceAgentOnce(id, origin).finally(() => openingTaskStarts.delete(id));
   openingTaskStarts.set(id, p);
   return p;
 }
 
-async function startWorkspaceAgentOnce(id: string): Promise<SdkStartResult> {
+async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin): Promise<SdkStartResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
   if (isRunning(id)) return { ok: true };
@@ -1525,7 +1527,8 @@ async function startWorkspaceAgentOnce(id: string): Promise<SdkStartResult> {
   if (paused) return { ok: false, error: paused };
   // Nothing owed = nothing to deliver — a repeated Restart delivers the brief once (#227).
   if (!ws.lastTask || !owesOpeningTask(ws)) return { ok: true };
-  const started = await sdkStartAndDeliverResult(id, ws.lastTask, { openingBrief: true });
+  // #252: a HUMAN retry (toolbar Restart) carries its origin to the sdkSend gate; spawn / `orchestra restart` stay AUTO.
+  const started = await sdkStartAndDeliverResult(id, ws.lastTask, { openingBrief: true, ...(origin ? { origin } : {}) });
   if (!started.ok) return started;
   // #227 D7: wait (bounded) for the FIRST TURN's outcome — init alone proves nothing (a bad --model / no auth inits, then errors and exits).
   const turn = await sdkAwaitFirstTurn(id, initWaitMs());
@@ -1714,6 +1717,10 @@ export async function dispatchSpawnRequest(
 ): Promise<SpawnResult> {
   const task = input.task.trim();
   if (!task) return { ok: false, error: 'empty task' };
+  // #252 fleet PAUSE (ledger #261 row 20/21): a caller inside a paused run (or under a paused ancestor run) cannot spawn —
+  // refused BEFORE the worktree is created. The caller's run is resolved NOW; a human click has no `from` and is never gated.
+  const spawnPaused = pauseRefusal(input.from ? store.getWorkspace(input.from) : undefined, 'auto');
+  if (spawnPaused) return { ok: false, error: spawnPaused };
   // Explicit --model: charset guard only (a typo'd model errors loudly at the
   // agent's own launch). Absent → createWorkspace pins the default of `defaultKind`.
   const model = input.model?.trim() || undefined;
@@ -2970,7 +2977,10 @@ export async function dispatchMigrateAccountRequest(input: {
     // was idle stays idle (the user/agent resumes it when ready), matching the
     // "auto-stop → migrate → resume" contract without force-waking a cold one.
     let resumed = false;
-    if (wasRunning) {
+    // #252 fleet PAUSE (ledger #261 row 13): the stop/move/re-pin above start no turn, but this RESUME does — skipped while paused.
+    const migratePaused = wasRunning ? pauseRefusal(updated, 'auto') : null;
+    if (migratePaused) log.info(`migrate: resume of ${id} skipped — ${migratePaused}`);
+    if (wasRunning && !migratePaused) {
       try {
         await startAgentPty(
           updated,
@@ -3276,7 +3286,13 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
  * caller falls back (inbox, re-queue, error). Exported for the prompt-queue flusher, which delivers
  * usage-limit-parked prompts through the exact same live-or-wake path as peer
  * messages. */
-export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
+export async function wakeAgentWithPrompt(
+  id: string,
+  prompt: string,
+  /** #252 fleet PAUSE: 'human' (Send now, Fix checks, Send review) is allowed while the run is paused; AUTO callers (message,
+   *  usage-limit auto-resume, timer flush) are refused here and at the sdkSend gate. */
+  opts?: { origin?: PauseOrigin },
+): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
   // #226: sandbox agents are paused — refuse here too (sdkStartAndDeliver swallows the funnel's refusal; there is no PTY fallback to mask it, #227).
@@ -3285,16 +3301,22 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
     log.warn(`wake refused for ${id}: ${paused}`);
     return false;
   }
+  const origin: PauseOrigin = opts?.origin ?? 'auto';
+  const pausedRun = pauseRefusal(ws, origin);
+  if (pausedRun) {
+    log.warn(`wake refused for ${id}: ${pausedRun}`);
+    return false;
+  }
   // A wake is a restore: drop the hibernated chip up front. Idempotent when not hibernated.
   clearHibernated(id);
   // A live structured (SDK) session is the active agent even with no PTY: deliver
   // the prompt as its next turn rather than spawning a raw `claude` PTY beside it.
   // Returns true (delivered) so callers treat it exactly like a successful wake.
-  if (await sdkDeliver(id, prompt)) return true;
+  if (await sdkDeliver(id, prompt, undefined, opts?.origin)) return true;
   // No live session — STRUCTURED-FIRST wake: start an SDK session (resuming the
   // prior conversation) and hand it the prompt as its opening turn, so the woken
   // agent runs in the structured view instead of respawning the raw TUI.
-  if (await sdkStartAndDeliver(id, prompt)) {
+  if (await sdkStartAndDeliver(id, prompt, opts?.origin)) {
     // An OWED brief rides first and flips hasInput itself once the CLI's first non-error output lands (agent-sdk `consume`, #227 D7).
     if (!ws.hasInput && !owesOpeningTask(ws)) {
       const updated: Workspace = { ...ws, hasInput: true };
@@ -3461,6 +3483,14 @@ async function dispatchMessageRequestUnmirrored(
   // So we now WAIT for the turn to actually start, and every non-'started'
   // outcome falls through to the durable inbox rather than claiming delivery.
   // Reporting the weaker TRUE status beats reporting the stronger false one.
+  // #252 fleet PAUSE (ledger #261 row 18, incl. broadcast / --emergency): a message to a member of a paused run is NOT delivered
+  // (no live turn, no wake) — parked in the durable inbox, which a HUMAN prompt or the lift drains. Checked at THIS moment.
+  const pausedRun = pauseRefusal(target, 'auto');
+  if (pausedRun) {
+    log.info(`message to ${input.to}: ${pausedRun} — parked in inbox, not delivered`);
+    if (await queueInbox(input.to, body)) return { ok: true, delivery: 'inbox', branch: target.branch };
+    return { ok: false, error: 'inbox write failed' };
+  }
   const confirmed = await sdkDeliverConfirmed(input.to, body, peerOrigin);
   const reported = reportedDeliveryFor(confirmed);
   if (reported === 'live') {
@@ -4217,6 +4247,26 @@ arbiter agent with no stake in either branch (orchestra-spawn skill): its task
 names both branches, the conflicting files, and each child's stated intent,
 and it owns the resolution. Both children then review the arbiter's merge of
 their own seam.
+
+## 7. Pause a run (host-enforced)
+
+\`\`\`bash
+orchestra run pause --hard [--run <id>] [--as <handle>]   # PAUSE DURE of the run + every descendant run
+orchestra run resume [--run <id>] [--as <handle>]          # lift it (queued turns + pending mail resume)
+\`\`\`
+
+A pause is a durable state on the bus that the HOST enforces — not a message you
+must obey. While a run is paused: no réveil, no new turn, no spawn into it
+(refused with \`run en pause — orchestra run resume --run <id>\`), \`orchestra
+message\` to its members is parked in their inbox, liveness is silenced. Only the
+run's coordinator or an ancestor run's coordinator may pause/resume (the human
+acts \`--as\` the coordinator); a worker is refused. It needs the run's \`pause\`
+switch ON at wave start (frozen; default OFF) — otherwise the verb is refused.
+
+**A prompt a HUMAN types in a member's composer is still allowed and does NOT
+lift the pause** (nor does restarting it from the toolbar). Every automatic start
+is refused, including yours: if you are refused with \`run en pause\`, stop and
+wait — do not retry in a loop.
 `;
 
 const WORKSPACE_ADMIN_SKILL = `---

@@ -20,6 +20,7 @@ import {
   RESUME_NUDGE_TEXT,
 } from '../shared/usage-resume.ts';
 import { clearStopReason, markStoppedOnUsageLimit } from './activity';
+import { pauseRefusal } from './pause-gate.ts';
 
 // Prompt queue for usage-limited accounts. While a workspace's account is over
 // its 5h/7d limit, Claude answers every prompt with a "limit reached" error —
@@ -125,6 +126,13 @@ export async function flushQueuedPrompts(
   const queue = ws.queuedPrompts ?? [];
   if (queue.length === 0) return { ok: true, delivered: 0 };
 
+  // #252 fleet PAUSE (ledger #261 row 17): the TIMER flush is an AUTO turn start — refused BEFORE the queue is cleared, so the parked
+  // prompts stay queued until the lift. "Send now" (`force`, a human click) is allowed and un-pauses nothing.
+  if (!opts.force) {
+    const pausedRun = pauseRefusal(ws, 'auto');
+    if (pausedRun) return { ok: false, delivered: 0, error: pausedRun };
+  }
+
   if (!opts.force) {
     const usage = usageForWorkspace(ws);
     const now = Date.now();
@@ -167,7 +175,7 @@ export async function flushQueuedPrompts(
   }
 
   try {
-    if (await wakeAgentWithPrompt(id, body)) {
+    if (await wakeAgentWithPrompt(id, body, opts.force ? { origin: 'human' } : undefined)) {
       // Insurance mirrored from dispatchMessageRequest: a woken agent that
       // dies almost immediately lost the injected prompt — restore the queue
       // so the user still sees (and can re-send) it. A structured (SDK) session
@@ -222,6 +230,9 @@ async function resumeUsageLimited(now: number): Promise<void> {
   // `usage_limit` marker until it is actually woken.
   let budget = MAX_RESUMES_PER_TICK;
   for (const ws of candidates) {
+    // #252 fleet PAUSE (ledger #261 row 16): a paused run is not auto-resumed — skipped BEFORE the budget, the stop-marker clear and the
+    // re-mark, so the `usage_limit` marker stays put (no retry every tick) and the resume happens once the pause lifts.
+    if (pauseRefusal(ws, 'auto')) continue;
     if (budget <= 0) {
       log.info(
         `usage-limit auto-resume: ${candidates.length - MAX_RESUMES_PER_TICK} workspace(s) ` +
@@ -345,6 +356,11 @@ async function tick(): Promise<void> {
       }
     }
   }
+}
+
+/** Rig seam (#252 pause-gates rig): run ONE flusher tick (usage-limit auto-resume + queue flush) without waiting TICK_MS. */
+export async function __tickForTests(): Promise<void> {
+  await tick();
 }
 
 /** Start the queue flusher (idempotent). Ticks are pure cache reads unless a
