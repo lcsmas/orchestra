@@ -72,6 +72,40 @@ The human-readable projection of a mission or vague built from the bus;
 not a source of truth.
 _Avoid_: issue, ticket (the GitHub-issue form is one rendering of it)
 
+### Pause
+
+**Pause**:
+A run and all its descendant runs frozen by the host: no réveil, no new turn,
+no liveness escalation, until a Reprise. Has two modes that end in the same
+state. The whole fleet is paused by pausing each root run.
+_Avoid_: hold (today: liveness-only silence, now one effect of a Pause), stop, freeze
+
+**Pause douce** (soft pause):
+A Pause where each member finishes its running command, saves its own work,
+then stops; turns into a Pause dure when it overruns its deadline.
+_Avoid_: graceful stop
+
+**Pause dure** (hard pause):
+A Pause the host imposes at once: it snapshots every worktree to a pause ref,
+records what was running, interrupts the turn and kills the tool process
+trees — never the session itself, which stays resumable.
+_Avoid_: kill, sigkill, abort
+
+**Bilan de pause** (pause record):
+What the host recorded for each member when the Pause took effect: what it
+was doing, its snapshot ref, whether its tree was dirty, which commands it killed.
+_Avoid_: pause report, state dump
+
+**Reprise** (resume):
+Lifting a Pause top-down: the host wakes coordinators first, each OPS
+re-dispatches its members with a Consigne de reprise; nobody restarts on their own.
+_Avoid_: unpause, restart, relaunch
+
+**Consigne de reprise** (resume brief):
+The message an OPS sends one member at a Reprise, built from the member's
+Bilan de pause. Killed commands are listed, never re-run automatically.
+_Avoid_: resume nudge (that is the generic usage-limit auto-resume text)
+
 ### Workspaces
 
 **Spawned agent**:
