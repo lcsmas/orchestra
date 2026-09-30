@@ -75,7 +75,7 @@ reads them transiently to query usage.
   tracks injections for clean removal and stamps `source` (the `~/.claude` the
   links were built from). Key fns: `listInheritables` `:128`,
   `defaultInheritForAccount` `:155`, `seedAccountInheritDefaults` `:176`,
-  `syncAccountInheritance(account, opts)` `:444` (idempotent; run on account changes &
+  `syncAccountInheritance(account, opts)` `:576` (idempotent; run on account changes &
   each spawn). **A sync never strips because of its source (#235):** (1) `~/.claude`
   not a readable dir (`isReadableDir` `:190`) ⇒ return before ANY write (mkdir,
   dangling-link drop, prune, MCP removal, manifest) + one WARN; (2) PROVENANCE
@@ -89,7 +89,7 @@ reads them transiently to query usage.
   config dir from a fake-HOME app whose readable-but-skeletal `~/.claude`
   (self-tune `ensureFoldTargets`, `claude -p`) a "source has entries?" test cannot
   tell apart; a first sync on a fresh account still writes + stamps. (3)
-  `syncMcpServers` (`:380`) keeps injected servers + manifest list when
+  `syncMcpServers` (`:489`) keeps injected servers + manifest list when
   `~/.claude.json` is missing/unparseable. (4) FULL PRUNE (#235 residual/C10,
   incident #3), keyed on EFFECT not selection shape: when the dir HOLDS inherited state
   (`heldInherited` `:274` — manifest links still symlinks + manifest MCP keys still in the login
@@ -103,7 +103,7 @@ reads them transiently to query usage.
   setter grants that flag, PER ACCOUNT AND DIR: `apiHandlers.setAccounts` (`api-handlers.ts:534`, the
   only writer that can take a selection to empty — `seedAccountInheritDefaults` also writes
   `inherit`, absent → non-empty only) captures `store.accounts` BEFORE the save and
-  `syncAfterAccountsSave` (`:565`) grants `deselectedAccountIds(before, saved, sameDir)`
+  `syncAfterAccountsSave` (`:697`) grants `deselectedAccountIds(before, saved, sameDir)`
   (`shared/accounts.ts:118`: non-empty → empty on an UNCHANGED resolved `configDir`, so an unrelated save
   of an already-empty account, a new account, or a save that also repoints `configDir` is NOT a
   de-selection of the dir it names). Runs after the D10 guard (a foreign-source dir is refused first,
@@ -116,6 +116,34 @@ reads them transiently to query usage.
   gaps (safe direction): a UI de-select whose sync is skipped (unreadable/foreign source) burns the
   grant — re-select then de-select; two accounts on one dir. Out of scope: an account whose
   `configDir` IS `~/.claude` (no `sameDir(loginDir, globalDir)` guard).
+  (5) TORN-SAFE LOGIN `.claude.json` (#238/C11; `syncMcpServers` is its only writer). Premise, measured on claude
+  2.1.284 (inotify): the CLI writes it as `mkdir <file>.lock` → tmp in the same dir → rename → `rmdir`, so THAT CLI
+  never leaves a torn file — the producer of the field tear is UNEXPLAINED (the old in-place `writeFileSync` here is
+  one candidate); fail-closed is right regardless. `viewFile` `:389` reads bytes + mtime through one fd — ONLY
+  ENOENT/ENOTDIR is "absent" (start from `{}`); an empty/torn/non-JSON/non-object file (`parseJsonObject` `:413`;
+  a leading UTF-8 BOM is stripped, the CLI tolerates one) or any other read error (EACCES…: rename would replace an
+  unreadable file) ⇒ ONE WARN, file byte-identical, `prevKeys` returned so the manifest never claims servers it
+  did not write and still owns the ones the file holds (a skip never orphans them), the link half of the sync still
+  runs, the NEXT sync retries. A write is `replaceIfUnchanged` `:450`: tmp in the SAME dir (`.claude.json.orchestra-tmp-*`,
+  created at the target's mode — 0600 for a fresh file, like the CLI — then fsync) → take the CLI's own lock
+  (`mkdir <realpath>.lock`; EEXIST ⇒ `locked`: skip + WARN, retried next sync; a lock we did not create is NEVER broken,
+  so a lock left by a crashed CLI blocks MCP writes for that dir — one WARN per sync — until the CLI's own next write
+  clears it or the user removes it) → fresh re-read → replace only if bytes AND mtime still equal what was read (else
+  `stale`) → `rename` → `rmdir` (always, in `finally`). An absent file is created by `link` (EEXIST ⇒ stale); on a
+  filesystem WITHOUT hard links (EPERM…) it falls back to `rename`, which can overwrite a file created in that gap
+  (accepted: the lock already keeps a lock-honouring CLI out). A symlinked `.claude.json` is written through
+  (`resolveWriteTarget` `:426`; the lock sits next to the real file; dangling ⇒ skipped) — a symlink into a READ-ONLY
+  dir with a writable file now fails to write (tmp cannot be created there; one "failed to write" WARN per sync;
+  in-place writing used to work — accepted-gap). A merge that already equals the file writes NOTHING. Measured
+  (`~/.orchestra/ops-wave-c/reviewer-c11/p4.mjs` shape, lock-honouring writer, 8 s): without our lock the sync lost
+  166/867 CLI increments (writer 108/s) and 363/103096 (writer flat out); with it 0/843 and 0/76170. Residual: a
+  writer that does NOT take the lock can still land between the re-read and the rename (sub-ms). Arms:
+  `account-inherit.test.ts` "#238 …" (torn table ×12 incl. BOM-only, interleave ×6 via `hookOnce` on the write seam,
+  link-gap, rename-fail, re-read-fail, 000-mode, symlink/dangling, mode incl. 0664, idempotent, literal normal file,
+  BOM, link→EPERM, F1 lock held / lock held-and-released, F3 manifest retention at each of the 5 skip sites, F2 INFO
+  counts) and rig arms `torn_json_boot` / `torn_json_ui_save`. A UI de-select-all that lands on a torn/locked file
+  is never completed (MCP prune skipped, then every later plain sync is blocked by (4)) — accepted, safe direction,
+  same class as the burnt UI grant above.
   Rig: `scripts/e2e-inherit-empty-no-prune.mjs all` (REAL `setAccounts` + store + logger,
   scratch HOME, live-dir `find` canary). Same-source partial prune/de-selection is
   unchanged. Rig traps: a fake-HOME boot pinned to a LIVE configDir stripped

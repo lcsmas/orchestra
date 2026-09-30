@@ -371,11 +371,143 @@ function removeOurSymlink(loginDir: string, rel: string): void {
   }
 }
 
+// ---- torn-safe login .claude.json write (#238) -----------------------------------
+//
+// The login `.claude.json` is rewritten by the account's live CLIs. Measured on claude 2.1.284 (inotify): each write is
+// `mkdir <file>.lock` → tmp in the same dir → rename → `rmdir` — so THAT CLI never leaves a torn file, and the producer of
+// the field tear is UNEXPLAINED (the old in-place `writeFileSync` in this very function is one candidate).
+// Rule: an unreadable/unparseable file is NEVER rebuilt from `{}` (that erased trust + oauth state), and a write only
+// replaces exactly the bytes we read (tmp + fresh re-read + compare + rename, all under the CLI's own `<file>.lock`).
+
+/** Bytes + mtime read through ONE fd; `raw === null` = definitely absent (ENOENT/ENOTDIR). Any other error throws. */
+interface FileView {
+  raw: Buffer | null;
+  mtimeNs: bigint;
+  mode: number;
+}
+
+function viewFile(p: string): FileView {
+  let fd: number;
+  try {
+    fd = fs.openSync(p, 'r');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { raw: null, mtimeNs: 0n, mode: 0 };
+    throw err;
+  }
+  try {
+    const st = fs.fstatSync(fd, { bigint: true });
+    return { raw: fs.readFileSync(fd), mtimeNs: st.mtimeNs, mode: Number(st.mode & 0o7777n) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Same bytes AND same mtime (a rewrite with identical bytes is still a writer at work → not "unchanged"). */
+function sameView(a: FileView, b: FileView): boolean {
+  if (a.raw === null || b.raw === null) return a.raw === b.raw;
+  return a.mtimeNs === b.mtimeNs && a.raw.equals(b.raw);
+}
+
+/** The JSON object in `raw`, or null for anything else (torn/empty/non-JSON, or JSON that is not a plain object). */
+function parseJsonObject(raw: Buffer): Record<string, unknown> | null {
+  try {
+    let text = raw.toString('utf8');
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // the CLI tolerates a UTF-8 BOM; JSON.parse does not
+    const v: unknown = JSON.parse(text);
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where to write for `p`: `p` itself, or the file a symlinked `p` resolves to (rename would otherwise replace the
+ *  link). null = a dangling link — not ours to materialize. */
+function resolveWriteTarget(p: string): string | null {
+  let isLink: boolean;
+  try {
+    isLink = fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return p; // absent / unreadable: viewFile decides
+  }
+  if (!isLink) return p;
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+let tmpSeq = 0;
+
+/** Replace `target` with `content` iff it is still exactly `seen`: write a tmp in the SAME dir (mode = the target's, 0600
+ *  for a fresh file, set at creation), take the CLI's own `<target>.lock` (a directory; mkdir = acquire), re-read the
+ *  target, then rename (fresh target: hard-link, so a file created meanwhile is not overwritten — on a filesystem
+ *  without hard links it falls back to rename). 'stale' = it changed since `seen`; 'locked' = the lock exists (another
+ *  writer, or a crashed CLI's leftover — we NEVER break a lock we did not create, so nothing is replaced until it is gone).
+ *  Either way nothing is replaced and the next sync retries. Throws on I/O failure. Residual: a writer that does not
+ *  honour the lock can still land between the re-read and the rename (sub-ms). */
+function replaceIfUnchanged(target: string, seen: FileView, content: string): 'written' | 'stale' | 'locked' {
+  const tmp = path.join(path.dirname(target), `.claude.json.orchestra-tmp-${process.pid}-${++tmpSeq}`);
+  const lock = `${target}.lock`;
+  let held = false;
+  try {
+    fs.writeFileSync(tmp, content, { flag: 'wx', mode: seen.raw === null ? 0o600 : seen.mode });
+    if (seen.raw !== null) fs.chmodSync(tmp, seen.mode); // creation mode is masked by the umask; the target's own mode is exact
+    const fd = fs.openSync(tmp, 'r+');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.mkdirSync(lock);
+      held = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'locked';
+      throw err;
+    }
+    let fresh: FileView;
+    try {
+      fresh = viewFile(target);
+    } catch {
+      return 'stale'; // cannot re-read it now → do not replace what we cannot see
+    }
+    if (!sameView(seen, fresh)) return 'stale';
+    if (seen.raw === null) {
+      try {
+        fs.linkSync(tmp, target);
+        return 'written';
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'stale';
+        /* filesystem without hard links → rename below */
+      }
+    }
+    fs.renameSync(tmp, target);
+    return 'written';
+  } finally {
+    if (held) {
+      try {
+        fs.rmdirSync(lock);
+      } catch {
+        /* best effort — it is ours */
+      }
+    }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* already renamed away */
+    }
+  }
+}
+
 // ---- MCP merge ---------------------------------------------------------------
 
 /** Merge the selected global mcpServers into the login dir's `.claude.json`,
  *  removing any we previously injected that are no longer selected. Preserves
  *  every other key in the file (project history, trust, the user's own servers).
+ *  A file we cannot read or parse — or that changes while we work — is left
+ *  byte-identical (one WARN, manifest unchanged, retried next sync; #238).
  *  Returns the keys that are now ours. */
 function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[]): string[] {
   // Read the global server definitions (null = missing/unreadable/torn → handled below).
@@ -404,11 +536,28 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
   if (want.length === 0 && toRemove.length === 0) return [];
 
   const claudeJsonPath = path.join(loginDir, '.claude.json');
-  let data: Record<string, unknown> = {};
+  const target = resolveWriteTarget(claudeJsonPath);
+  if (target === null) {
+    log.warn(`account-inherit: ${claudeJsonPath} is a dangling symlink — MCP servers left untouched for ${loginDir}`);
+    return prevKeys;
+  }
+  // #238: only a DEFINITE absence starts from {}; a torn/empty/non-object file or any other read error is
+  // "unknown" — skip the write (fail closed), the next sync retries once the file is whole again.
+  let seen: FileView;
   try {
-    data = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    /* missing/empty → start from {} */
+    seen = viewFile(target);
+  } catch (err) {
+    log.warn(`account-inherit: cannot read ${claudeJsonPath} — MCP servers left untouched for ${loginDir}`, err);
+    return prevKeys;
+  }
+  let data: Record<string, unknown> = {};
+  if (seen.raw !== null) {
+    const parsed = parseJsonObject(seen.raw);
+    if (parsed === null) {
+      log.warn(`account-inherit: ${claudeJsonPath} is empty or unparseable (torn read?) — MCP servers left untouched for ${loginDir}, retried next sync`);
+      return prevKeys;
+    }
+    data = parsed;
   }
   const servers: Record<string, unknown> =
     data.mcpServers && typeof data.mcpServers === 'object'
@@ -417,8 +566,19 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
   for (const k of toRemove) delete servers[k];
   for (const k of want) servers[k] = globalMcp[k];
   data.mcpServers = servers;
+  const content = JSON.stringify(data, null, 2);
+  // Already exactly what we would write → touch nothing (an idempotent per-spawn sync must not race a live CLI).
+  if (seen.raw !== null && seen.raw.toString('utf8') === content) return want;
   try {
-    fs.writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2));
+    const outcome = replaceIfUnchanged(target, seen, content);
+    if (outcome === 'locked') {
+      log.warn(`account-inherit: ${claudeJsonPath} is locked (${target}.lock exists — another writer, or a crashed CLI's leftover; never broken here) — MCP write skipped for ${loginDir}, retried next sync`);
+      return prevKeys;
+    }
+    if (outcome === 'stale') {
+      log.warn(`account-inherit: ${claudeJsonPath} changed while syncing — MCP write skipped for ${loginDir}, retried next sync`);
+      return prevKeys;
+    }
   } catch (err) {
     log.warn(`account-inherit: failed to write ${claudeJsonPath}`, err);
     return prevKeys; // leave manifest unchanged on failure
@@ -504,6 +664,7 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   // writer unattributed). Any other caller: no write at all + ONE WARN. A swap to other, existing items
   // still applies (it leaves something), so the UI's own edits are never blocked.
   const held = heldInherited(loginDir, prev);
+  let uiPrune: { links: string[]; mcp: string[] } | null = null;
   if (held.links.length + held.mcp.length > 0) {
     const globalMcp = readGlobalMcpServers();
     const alive =
@@ -518,7 +679,7 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
         );
         return;
       }
-      log.info(`account-inherit: UI de-selection pruned ${held.links.length} link(s) + ${held.mcp.length} MCP server(s) from ${loginDir}`);
+      uiPrune = held; // logged AFTER the writes, with what was actually pruned (a skipped MCP write prunes 0)
     }
   }
 
@@ -543,6 +704,11 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   const liveMcp = syncMcpServers(loginDir, inherit?.mcpServers ?? [], prev.mcpServers);
 
   writeManifest(loginDir, { source: globalDir, symlinks: liveLinks, mcpServers: liveMcp });
+  if (uiPrune !== null) {
+    const links = uiPrune.links.filter((rel) => linkState(path.join(loginDir, rel)) === 'other').length;
+    const mcp = uiPrune.mcp.filter((k) => !liveMcp.includes(k)).length;
+    log.info(`account-inherit: UI de-selection pruned ${links} link(s) + ${mcp} MCP server(s) from ${loginDir}`);
+  }
 }
 
 /** Sync every configured account. Called after the accounts list changes so

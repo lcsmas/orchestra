@@ -1035,6 +1035,562 @@ test('C10/F4 fail closed: an lstat that CANNOT be read (EACCES on skills/) count
   assert.deepEqual(snapshot(rig.login), before, 'manifest not rewritten to `symlinks: []` while the links still exist');
 });
 
+// ---- #238: a torn / concurrently-rewritten login .claude.json is never rebuilt from {} -------------------
+//
+// Before the fix the sync parsed a torn read as `{}` and wrote back `{mcpServers}` only (trust flags + oauthAccount
+// erased). The producer of the field tear is UNEXPLAINED: claude 2.1.284 writes tmp+rename under `<file>.lock`, so it
+// never tears (the old in-place write in this very function is one candidate) — these arms feed the sync every shape a
+// torn/odd file can have.
+
+const cjOf = (rig: Rig): string => path.join(rig.login, '.claude.json');
+/** Leftovers of OUR write: the tmp file, and the `.claude.json.lock` dir we took (the CLI's protocol) — both must be gone. */
+const tmpLeft = (dir: string): string[] => fs.readdirSync(dir).filter((n) => n.includes('.orchestra-tmp-') || n.endsWith('.claude.json.lock'));
+const isTmpArg = (a: unknown[]): boolean => String(a[0]).includes('.claude.json.orchestra-tmp-');
+/** The write SEAM of the login .claude.json: its tmp file (fixed build) or the file itself (in-place write on master). */
+const isCjWrite = (rig: Rig) => (a: unknown[]): boolean =>
+  typeof a[0] === 'string' && path.dirname(a[0]) === rig.login && path.basename(a[0]).startsWith('.claude.json');
+/** A realistic CLI-written login file: 2-space JSON, trust flags, oauth state, a user-owned MCP server. */
+const CLI_DOC = {
+  numStartups: 41,
+  oauthAccount: { emailAddress: 'scratch@example.invalid', organizationUuid: 'org-1' },
+  projects: { '/scratch/proj': { hasTrustDialogAccepted: true }, '/scratch/other': { hasTrustDialogAccepted: false } },
+  mcpServers: { 'my-own': { command: 'mine' } },
+};
+const cliText = (over: Record<string, unknown> = {}): string => JSON.stringify({ ...CLI_DOC, ...over }, null, 2);
+const putCj = (rig: Rig, text: string | Buffer, mtimeSec = 1_700_000_000): void => {
+  fs.mkdirSync(rig.login, { recursive: true });
+  fs.writeFileSync(cjOf(rig), text);
+  fs.utimesSync(cjOf(rig), mtimeSec, mtimeSec); // a whole second: restorable exactly, so a test can isolate the content clause
+};
+const viewOf = (p: string): { bytes: Buffer | null; mtimeNs: bigint | null } =>
+  fs.existsSync(p) ? { bytes: fs.readFileSync(p), mtimeNs: fs.statSync(p, { bigint: true }).mtimeNs } : { bytes: null, mtimeNs: null };
+const sameViewOf = (a: ReturnType<typeof viewOf>, b: ReturnType<typeof viewOf>): boolean =>
+  a.mtimeNs === b.mtimeNs && (a.bytes === null ? b.bytes === null : b.bytes !== null && a.bytes.equals(b.bytes));
+
+/** Run `act` at the FIRST call of fs.<name> whose args satisfy `match` (the "other writer" landing at exactly that
+ *  seam), then delegate to the real call. `fired()` is the instrument control: a hook that never fires proves nothing. */
+function hookOnce(name: 'writeFileSync' | 'linkSync' | 'renameSync' | 'openSync', match: (a: unknown[]) => boolean, act: () => void) {
+  const f = fs as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const orig = f[name];
+  let n = 0;
+  f[name] = function (this: unknown, ...a: unknown[]) {
+    if (n === 0 && match(a)) { n++; f[name] = orig; act(); }
+    return orig.apply(this, a);
+  };
+  return { fired: () => n, restore: () => { f[name] = orig; } };
+}
+
+const TORN: Array<[string, () => string | Buffer]> = [
+  ['truncated mid-key (60% of a real file)', () => cliText().slice(0, Math.floor(cliText().length * 0.6))],
+  ['truncated mid-string', () => '{"mcpServers": {"github": {"comm'],
+  ['0 bytes (an emptied file)', () => ''],
+  ['whitespace only', () => ' \n'],
+  ['NUL-filled (sparse tear)', () => Buffer.alloc(64)],
+  ['valid JSON then garbage', () => cliText() + 'x'],
+  ['JSON null', () => 'null'],
+  ['JSON array', () => '[]'],
+  ['JSON string', () => '"x"'],
+  ['JSON number', () => '123'],
+  ['a UTF-8 BOM and nothing else', () => '\ufeff'],
+  ['a BOM then a truncated file', () => '\ufeff' + cliText().slice(0, 40)],
+];
+for (const [name, mk] of TORN) {
+  test(`#238 torn login .claude.json — ${name}: byte-identical after sync, ONE warn, link half still applied, next sync recovers`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    const bytes = Buffer.from(mk());
+    putCj(rig, bytes);
+    const warns = await runSync(rig, FULL, { caller: 'spawn-sdk' });
+    assert.ok(fs.readFileSync(cjOf(rig)).equals(bytes), 'the file is byte-identical — never rebuilt from {}');
+    assert.equal(warns.length, 1, `exactly ONE warn: ${JSON.stringify(warns)}`);
+    assert.ok(warns[0].includes(`${cjOf(rig)} is empty or unparseable`), `warn names the file: ${warns[0]}`);
+    assert.deepEqual(linksOf(snapshot(rig.login)!), LINKS, 'the symlink half of the sync still ran');
+    assert.deepEqual(manifestOf(rig.login), { symlinks: LINKS, mcpServers: [] }, 'the manifest does not claim servers it did not write');
+    assert.deepEqual(tmpLeft(rig.login), [], 'no tmp file left behind');
+    // The writer finishes; the NEXT sync merges into the whole file and keeps everything the CLI wrote.
+    putCj(rig, cliText());
+    assert.deepEqual(await runSync(rig, FULL), [], 'file whole again → no warn');
+    const d = JSON.parse(fs.readFileSync(cjOf(rig), 'utf8'));
+    assert.deepEqual(Object.keys(d.mcpServers).sort(), ['chrome-devtools', 'github', 'linear-server', 'my-own']);
+    assert.deepEqual(d.projects, CLI_DOC.projects);
+    assert.deepEqual(d.oauthAccount, CLI_DOC.oauthAccount);
+    assert.equal(d.numStartups, 41);
+  });
+}
+
+test('#238 a normal login .claude.json is updated EXACTLY as before (literal bytes: key order, own server, trust kept)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, cliText());
+  assert.deepEqual(await runSync(rig, FULL), []);
+  const expected = {
+    numStartups: 41,
+    oauthAccount: { emailAddress: 'scratch@example.invalid', organizationUuid: 'org-1' },
+    projects: { '/scratch/proj': { hasTrustDialogAccepted: true }, '/scratch/other': { hasTrustDialogAccepted: false } },
+    mcpServers: { 'my-own': { command: 'mine' }, github: { command: 'gh' }, 'linear-server': { url: 'u' }, 'chrome-devtools': { command: 'cd' } },
+  };
+  assert.equal(fs.readFileSync(cjOf(rig), 'utf8'), JSON.stringify(expected, null, 2));
+  assert.deepEqual(manifestOf(rig.login).mcpServers, ['github', 'linear-server', 'chrome-devtools']);
+  assert.deepEqual(tmpLeft(rig.login), []);
+  // De-selecting one server removes only that one (the removal half of the merge).
+  assert.deepEqual(await runSync(rig, { ...FULL, mcpServers: ['github'] }), []);
+  assert.deepEqual(mcpOf(rig.login), ['github', 'my-own']);
+});
+
+test('#238 a login with NO .claude.json still gets one (definite absence starts from {}), no tmp left', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, FULL), []);
+  assert.equal(
+    fs.readFileSync(cjOf(rig), 'utf8'),
+    JSON.stringify({ mcpServers: { github: { command: 'gh' }, 'linear-server': { url: 'u' }, 'chrome-devtools': { command: 'cd' } } }, null, 2),
+  );
+  assert.deepEqual(tmpLeft(rig.login), []);
+});
+
+test('#238 an idempotent sync WRITES NOTHING to a login file that already holds the merge (same inode + mtime)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, cliText());
+  await runSync(rig, FULL);
+  fs.utimesSync(cjOf(rig), 1_700_000_000, 1_700_000_000);
+  const a = fs.statSync(cjOf(rig), { bigint: true });
+  assert.deepEqual(await runSync(rig, FULL), []);
+  const b = fs.statSync(cjOf(rig), { bigint: true });
+  assert.equal(b.ino, a.ino, 'not replaced');
+  assert.equal(b.mtimeNs, a.mtimeNs, 'not rewritten');
+});
+
+// The interleave: another writer lands between our read and our replace → theirs survives, ours is skipped.
+const INTERLEAVE: Array<[string, (rig: Rig) => void]> = [
+  ['appends a project (size grows)', (rig) => putCj(rig, cliText({ numStartups: 42, projects: { ...CLI_DOC.projects, '/scratch/new': { hasTrustDialogAccepted: true } } }), 1_700_000_100)],
+  ['rewrites in place with the SAME length and restores the mtime (content is the only signal)', (rig) => putCj(rig, cliText({ numStartups: 43 }), 1_700_000_000)],
+  ['touches it (identical bytes, new mtime)', (rig) => fs.utimesSync(cjOf(rig), 1_700_000_001, 1_700_000_001)],
+  ['replaces it via rename (new inode, other content)', (rig) => {
+    const t = path.join(rig.login, 'cli-tmp');
+    fs.writeFileSync(t, cliText({ numStartups: 99 }));
+    fs.renameSync(t, cjOf(rig));
+  }],
+  ['deletes it', (rig) => fs.unlinkSync(cjOf(rig))],
+];
+for (const [name, act] of INTERLEAVE) {
+  test(`#238 interleave: another writer ${name} between our read and our replace → theirs untouched, ours skipped, retried next sync`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    putCj(rig, cliText());
+    const original = viewOf(cjOf(rig));
+    let theirs = original;
+    const h = hookOnce('writeFileSync', isCjWrite(rig), () => { act(rig); theirs = viewOf(cjOf(rig)); });
+    let warns: string[];
+    try {
+      warns = await runSync(rig, FULL, { caller: 'spawn-pty' });
+    } finally {
+      h.restore();
+    }
+    assert.equal(h.fired(), 1, 'instrument control: the other writer really landed at the write seam');
+    assert.ok(!sameViewOf(original, theirs), 'instrument control: the other writer really changed (bytes, mtime)');
+    assert.ok(sameViewOf(theirs, viewOf(cjOf(rig))), 'the other writer\'s file is exactly as they left it (no clobber, no mtime bump)');
+    assert.equal(warns.length, 1, `exactly ONE warn: ${JSON.stringify(warns)}`);
+    assert.ok(warns[0].includes(`${cjOf(rig)} changed while syncing`), warns[0]);
+    assert.deepEqual(tmpLeft(rig.login), [], 'the tmp file is cleaned up');
+    assert.deepEqual(manifestOf(rig.login), { symlinks: LINKS, mcpServers: [] }, 'manifest does not claim servers it did not write');
+    // Retry next sync: merges into THEIR version (their change is kept — no lost update).
+    assert.deepEqual(await runSync(rig, FULL), []);
+    const d = JSON.parse(fs.readFileSync(cjOf(rig), 'utf8'));
+    assert.deepEqual(Object.keys(d.mcpServers).sort(), ['chrome-devtools', 'github', 'linear-server', ...(theirs.bytes === null ? [] : ['my-own'])]);
+    if (theirs.bytes !== null) assert.deepEqual(d.oauthAccount, CLI_DOC.oauthAccount);
+  });
+}
+
+test('#238 interleave: the file did not exist at our read and the CLI creates it before our replace → theirs untouched', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const theirs = cliText({ numStartups: 1 });
+  const h = hookOnce('writeFileSync', isCjWrite(rig), () => { fs.mkdirSync(rig.login, { recursive: true }); fs.writeFileSync(cjOf(rig), theirs); });
+  let warns: string[];
+  try {
+    warns = await runSync(rig, FULL);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1);
+  assert.equal(fs.readFileSync(cjOf(rig), 'utf8'), theirs, 'the created file survives');
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('changed while syncing'), warns[0]);
+  assert.deepEqual(tmpLeft(rig.login), []);
+});
+
+test('#238 interleave: the CLI creates the file in the gap AFTER our fresh re-read (fresh-file case) → hard-link refuses to overwrite it', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const theirs = cliText({ numStartups: 2 });
+  const h = hookOnce('linkSync', isTmpArg, () => fs.writeFileSync(cjOf(rig), theirs));
+  let warns: string[];
+  try {
+    warns = await runSync(rig, FULL);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1, 'instrument control: the link seam was reached (fresh-file path)');
+  assert.equal(fs.readFileSync(cjOf(rig), 'utf8'), theirs, 'never overwritten');
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('changed while syncing'), warns[0]);
+  assert.deepEqual(tmpLeft(rig.login), [], 'tmp unlinked after the refused link');
+});
+
+test('#238 interleave: the file cannot be RE-READ for the staleness check (2nd open fails) → treated as changed, nothing replaced', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, cliText());
+  const before = viewOf(cjOf(rig));
+  let opens = 0;
+  const h = hookOnce('openSync', (a) => a[0] === cjOf(rig) && ++opens === 2, () => { throw Object.assign(new Error('EACCES: injected'), { code: 'EACCES' }); });
+  let warns: string[];
+  try {
+    warns = await runSync(rig, FULL);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1, 'instrument control: the fresh re-read was the 2nd open of the file');
+  assert.ok(sameViewOf(before, viewOf(cjOf(rig))), 'file untouched');
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('changed while syncing'), warns[0]);
+  assert.deepEqual(tmpLeft(rig.login), []);
+});
+
+test('#238 a failing replace (rename throws) → ONE "failed to write" warn, file intact, tmp cleaned, manifest unchanged', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, cliText());
+  const before = viewOf(cjOf(rig));
+  const h = hookOnce('renameSync', isTmpArg, () => { throw Object.assign(new Error('EACCES: injected'), { code: 'EACCES' }); });
+  let warns: string[];
+  try {
+    warns = await runSync(rig, FULL);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1);
+  assert.ok(sameViewOf(before, viewOf(cjOf(rig))), 'file untouched');
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes(`failed to write ${cjOf(rig)}`), warns[0]);
+  assert.deepEqual(tmpLeft(rig.login), []);
+  assert.deepEqual(manifestOf(rig.login).mcpServers, []);
+});
+
+test('#238 an UNREADABLE login .claude.json (mode 000) is left alone — rename would replace it, so read errors fail closed', { skip: process.getuid?.() === 0 ? 'root bypasses mode bits' : undefined }, async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, cliText());
+  const before = viewOf(cjOf(rig));
+  const ino = fs.statSync(cjOf(rig)).ino;
+  fs.chmodSync(cjOf(rig), 0o000);
+  let warns: string[];
+  try {
+    assert.throws(() => fs.readFileSync(cjOf(rig)), /EACCES/, 'precondition: really unreadable');
+    warns = await runSync(rig, FULL);
+  } finally {
+    fs.chmodSync(cjOf(rig), 0o600);
+  }
+  assert.equal(fs.statSync(cjOf(rig)).ino, ino, 'not replaced');
+  assert.ok(sameViewOf(before, viewOf(cjOf(rig))), 'bytes identical');
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes(`cannot read ${cjOf(rig)}`), warns[0]);
+  assert.deepEqual(tmpLeft(rig.login), []);
+});
+
+test('#238 file mode is preserved (0600 stays 0600 under umask 022, as an in-place write kept it)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, cliText());
+  fs.chmodSync(cjOf(rig), 0o600);
+  const old = process.umask(0o022);
+  try {
+    assert.deepEqual(await runSync(rig, FULL), []);
+  } finally {
+    process.umask(old);
+  }
+  assert.equal(fs.statSync(cjOf(rig)).mode & 0o777, 0o600);
+  assert.deepEqual(mcpOf(rig.login), ['chrome-devtools', 'github', 'linear-server', 'my-own'], 'and the merge really happened');
+});
+
+test('#238 a SYMLINKED login .claude.json stays a symlink; the file it points at is updated', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const real = path.join(rig.home, 'shared', 'claude.json');
+  put(real, cliText());
+  fs.mkdirSync(rig.login, { recursive: true });
+  fs.symlinkSync(real, cjOf(rig));
+  assert.deepEqual(await runSync(rig, FULL), []);
+  assert.ok(fs.lstatSync(cjOf(rig)).isSymbolicLink(), 'the link was not replaced by a regular file');
+  assert.equal(fs.readlinkSync(cjOf(rig)), real);
+  const d = JSON.parse(fs.readFileSync(real, 'utf8'));
+  assert.deepEqual(Object.keys(d.mcpServers).sort(), ['chrome-devtools', 'github', 'linear-server', 'my-own']);
+  assert.deepEqual(d.projects, CLI_DOC.projects);
+  assert.deepEqual(tmpLeft(rig.login), []);
+  assert.deepEqual(tmpLeft(path.dirname(real)), []);
+});
+
+test('#238 a DANGLING .claude.json symlink is not materialized: ONE warn, link still dangling', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const real = path.join(rig.home, 'nowhere', 'claude.json');
+  fs.mkdirSync(rig.login, { recursive: true });
+  fs.symlinkSync(real, cjOf(rig));
+  const warns = await runSync(rig, FULL);
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes(`${cjOf(rig)} is a dangling symlink`), warns[0]);
+  assert.ok(fs.lstatSync(cjOf(rig)).isSymbolicLink() && !fs.existsSync(real));
+  assert.deepEqual(tmpLeft(rig.login), []);
+});
+
+
+// ---- #238 review round 1 ------------------------------------------------------------------------------------
+
+/** A login whose manifest is NON-EMPTY (the sync injected github + linear-server) plus user-owned state in the file. */
+async function primedLogin(): Promise<Rig> {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server'] }), []);
+  const d = JSON.parse(fs.readFileSync(cjOf(rig), 'utf8'));
+  d.projects = CLI_DOC.projects;
+  d.oauthAccount = CLI_DOC.oauthAccount;
+  d.mcpServers['my-own'] = { command: 'mine' };
+  putCj(rig, JSON.stringify(d, null, 2));
+  assert.deepEqual(manifestOf(rig.login).mcpServers, ['github', 'linear-server']);
+  return rig;
+}
+const DESELECT_LINEAR: Inherit = { mcpServers: ['github'] }; // linear-server must be removed by the next successful write
+const RETAINED = ['github', 'linear-server'];
+/** After a skip: the manifest still owns linear-server; once the obstacle is gone the NEXT sync removes it and keeps everything else. */
+async function assertRetainedThenRecovers(rig: Rig): Promise<void> {
+  assert.deepEqual(manifestOf(rig.login).mcpServers, RETAINED, 'the manifest still owns the servers the file still holds (a skip must not orphan them)');
+  assert.deepEqual(await runSync(rig, DESELECT_LINEAR), [], 'obstacle gone → no warn');
+  assert.deepEqual(manifestOf(rig.login).mcpServers, ['github']);
+  const d = JSON.parse(fs.readFileSync(cjOf(rig), 'utf8'));
+  assert.deepEqual(Object.keys(d.mcpServers).sort(), ['github', 'my-own'], 'linear-server removed, the user\'s own kept');
+  assert.deepEqual(d.projects, CLI_DOC.projects);
+  assert.deepEqual(d.oauthAccount, CLI_DOC.oauthAccount);
+}
+
+test('#238/F3 manifest retention at the TORN-PARSE skip (non-empty prior manifest)', async () => {
+  const rig = await primedLogin();
+  const whole = fs.readFileSync(cjOf(rig));
+  putCj(rig, whole.subarray(0, Math.floor(whole.length * 0.6)));
+  const warns = await runSync(rig, DESELECT_LINEAR);
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('is empty or unparseable'), warns[0]);
+  putCj(rig, whole);
+  await assertRetainedThenRecovers(rig);
+});
+
+test('#238/F3 manifest retention at the STALE skip (non-empty prior manifest)', async () => {
+  const rig = await primedLogin();
+  const h = hookOnce('writeFileSync', isCjWrite(rig), () => putCj(rig, fs.readFileSync(cjOf(rig)).toString().replace('"numStartups": 41', '"numStartups": 42'), 1_700_000_100));
+  let warns: string[];
+  try {
+    warns = await runSync(rig, DESELECT_LINEAR);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1);
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('changed while syncing'), warns[0]);
+  await assertRetainedThenRecovers(rig);
+});
+
+test('#238/F3 manifest retention at the CANNOT-READ skip (mode 000, non-empty prior manifest)', { skip: process.getuid?.() === 0 ? 'root bypasses mode bits' : undefined }, async () => {
+  const rig = await primedLogin();
+  fs.chmodSync(cjOf(rig), 0o000);
+  let warns: string[];
+  try {
+    warns = await runSync(rig, DESELECT_LINEAR);
+  } finally {
+    fs.chmodSync(cjOf(rig), 0o600);
+  }
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes(`cannot read ${cjOf(rig)}`), warns[0]);
+  await assertRetainedThenRecovers(rig);
+});
+
+test('#238/F3 manifest retention at the DANGLING-SYMLINK skip (non-empty prior manifest)', async () => {
+  const rig = await primedLogin();
+  fs.renameSync(cjOf(rig), `${cjOf(rig)}.saved`);
+  fs.symlinkSync(path.join(rig.home, 'nowhere', 'claude.json'), cjOf(rig));
+  const warns = await runSync(rig, DESELECT_LINEAR);
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('is a dangling symlink'), warns[0]);
+  fs.unlinkSync(cjOf(rig));
+  fs.renameSync(`${cjOf(rig)}.saved`, cjOf(rig));
+  await assertRetainedThenRecovers(rig);
+});
+
+test('#238/F3 manifest retention at the WRITE-THROWS skip (rename fails, non-empty prior manifest)', async () => {
+  const rig = await primedLogin();
+  const h = hookOnce('renameSync', isTmpArg, () => { throw Object.assign(new Error('EACCES: injected'), { code: 'EACCES' }); });
+  let warns: string[];
+  try {
+    warns = await runSync(rig, DESELECT_LINEAR);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1);
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes(`failed to write ${cjOf(rig)}`), warns[0]);
+  await assertRetainedThenRecovers(rig);
+});
+
+// F1: the CLI's own lock. Measured on claude 2.1.284: mkdir <file>.lock -> tmp in the same dir -> rename -> rmdir.
+const lockOf = (rig: Rig): string => `${cjOf(rig)}.lock`;
+test('#238/F1 a held <file>.lock (a CLI mid-write, or a crashed CLI\'s leftover) → nothing replaced, the lock is NEVER broken, ONE pinned warn, manifest retained, next sync after release applies', async () => {
+  const rig = await primedLogin();
+  const before = viewOf(cjOf(rig));
+  fs.mkdirSync(lockOf(rig));
+  const warns = await runSync(rig, DESELECT_LINEAR);
+  assert.ok(sameViewOf(before, viewOf(cjOf(rig))), 'file untouched');
+  assert.ok(fs.statSync(lockOf(rig)).isDirectory(), 'a lock we did not create is left alone');
+  assert.deepEqual(warns, [`account-inherit: ${cjOf(rig)} is locked (${lockOf(rig)} exists — another writer, or a crashed CLI's leftover; never broken here) — MCP write skipped for ${rig.login}, retried next sync`]);
+  assert.deepEqual(fs.readdirSync(rig.login).filter((n) => n.includes('.orchestra-tmp-')), [], 'tmp cleaned');
+  fs.rmdirSync(lockOf(rig));
+  await assertRetainedThenRecovers(rig);
+});
+
+test('#238/F1 we HOLD <file>.lock from before the re-read until after the rename, and release it (plain file, fresh file, symlinked file)', async () => {
+  const seen: Record<string, boolean[]> = { plain: [], fresh: [], linked: [] };
+  // plain existing file: observed at the rename seam
+  const a = await primedLogin();
+  let h = hookOnce('renameSync', isTmpArg, () => { seen.plain.push(fs.statSync(lockOf(a)).isDirectory()); });
+  try { await runSync(a, DESELECT_LINEAR); } finally { h.restore(); }
+  assert.equal(h.fired(), 1);
+  assert.equal(fs.existsSync(lockOf(a)), false, 'released after the rename');
+  // fresh file: observed at the hard-link seam
+  const b = newRig();
+  makeSource(b.home);
+  h = hookOnce('linkSync', isTmpArg, () => { seen.fresh.push(fs.statSync(lockOf(b)).isDirectory()); });
+  try { await runSync(b, FULL); } finally { h.restore(); }
+  assert.equal(h.fired(), 1);
+  assert.equal(fs.existsSync(lockOf(b)), false);
+  // symlinked file: the lock sits next to the REAL file (the CLI locks the realpath), not next to the link
+  const c = newRig();
+  makeSource(c.home);
+  const real = path.join(c.home, 'shared', 'claude.json');
+  put(real, cliText());
+  fs.mkdirSync(c.login, { recursive: true });
+  fs.symlinkSync(real, cjOf(c));
+  h = hookOnce('renameSync', isTmpArg, () => { seen.linked.push(fs.statSync(`${real}.lock`).isDirectory() && !fs.existsSync(lockOf(c))); });
+  try { await runSync(c, FULL); } finally { h.restore(); }
+  assert.equal(h.fired(), 1);
+  assert.deepEqual(seen, { plain: [true], fresh: [true], linked: [true] });
+  assert.equal(fs.existsSync(`${real}.lock`), false);
+});
+
+// F5: the tmp holding the whole login file is created at the target's mode (0600 fresh), not chmod'd after.
+test('#238/F5 the tmp is CREATED at the target\'s mode: 0640 file → 0640 tmp, fresh file → 0600 tmp and 0600 result (umask 022)', async () => {
+  const old = process.umask(0o022);
+  try {
+    const a = newRig();
+    makeSource(a.home);
+    putCj(a, cliText());
+    fs.chmodSync(cjOf(a), 0o640);
+    let modeAtChmod = -1;
+    let h = hookOnce('chmodSync', (x) => isTmpArg(x), () => { modeAtChmod = fs.statSync(String(fs.readdirSync(a.login).map((n) => path.join(a.login, n)).find((n) => n.includes('.orchestra-tmp-')))).mode & 0o777; });
+    try { await runSync(a, FULL); } finally { h.restore(); }
+    assert.equal(h.fired(), 1);
+    assert.equal(modeAtChmod, 0o640, 'created at the target mode, before any chmod');
+    assert.equal(fs.statSync(cjOf(a)).mode & 0o777, 0o640);
+    const b = newRig();
+    makeSource(b.home);
+    let modeFresh = -1;
+    h = hookOnce('openSync', (x) => isTmpArg(x) && x[1] === 'r+', () => { modeFresh = fs.statSync(String(fs.readdirSync(b.login).map((n) => path.join(b.login, n)).find((n) => n.includes('.orchestra-tmp-')))).mode & 0o777; });
+    try { await runSync(b, FULL); } finally { h.restore(); }
+    assert.equal(h.fired(), 1);
+    assert.equal(modeFresh, 0o600, 'a fresh tmp is created 0600 (the CLI creates its file 0600)');
+    assert.equal(fs.statSync(cjOf(b)).mode & 0o777, 0o600);
+    // a target with group-write (0664) is beyond what the umask-masked creation mode can carry: the chmod restores it exactly
+    const c = newRig();
+    makeSource(c.home);
+    putCj(c, cliText());
+    fs.chmodSync(cjOf(c), 0o664);
+    assert.deepEqual(await runSync(c, FULL), []);
+    assert.equal(fs.statSync(cjOf(c)).mode & 0o777, 0o664, 'mode preserved exactly');
+  } finally {
+    process.umask(old);
+  }
+});
+
+// F4: the CLI tolerates a UTF-8 BOM (measured); so must the sync.
+test('#238/F4 a UTF-8 BOM file is merged (trust + oauth kept, no warn), rewritten without the BOM, then left alone', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  putCj(rig, '\ufeff' + cliText());
+  assert.deepEqual(await runSync(rig, FULL), []);
+  const raw = fs.readFileSync(cjOf(rig), 'utf8');
+  assert.equal(raw.charCodeAt(0), 0x7b, 'starts with { — the BOM is gone');
+  const d = JSON.parse(raw);
+  assert.deepEqual(Object.keys(d.mcpServers).sort(), ['chrome-devtools', 'github', 'linear-server', 'my-own']);
+  assert.deepEqual(d.projects, CLI_DOC.projects);
+  assert.deepEqual(d.oauthAccount, CLI_DOC.oauthAccount);
+  fs.utimesSync(cjOf(rig), 1_700_000_000, 1_700_000_000);
+  const a = fs.statSync(cjOf(rig), { bigint: true });
+  assert.deepEqual(await runSync(rig, FULL), []);
+  assert.equal(fs.statSync(cjOf(rig), { bigint: true }).ino, a.ino, 'second sync writes nothing');
+});
+
+// F3 (link): a filesystem without hard links falls back to rename (F6a: then a file created in the gap CAN be overwritten).
+test('#238/F3 link -> EPERM (no hard links on this FS): the fresh file is still created via the rename fallback, no warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const h = hookOnce('linkSync', isTmpArg, () => { throw Object.assign(new Error('EPERM: injected'), { code: 'EPERM' }); });
+  let warns: string[];
+  try {
+    warns = await runSync(rig, FULL);
+  } finally {
+    h.restore();
+  }
+  assert.equal(h.fired(), 1);
+  assert.deepEqual(warns, []);
+  assert.deepEqual(mcpOf(rig.login), ['chrome-devtools', 'github', 'linear-server']);
+  assert.deepEqual(tmpLeft(rig.login), []);
+});
+
+// F2: the UI INFO reports what was actually pruned.
+test('#238/F2 UI de-selection on a TORN file: the INFO says "pruned N link(s) + 0 MCP server(s)" and the manifest keeps the key; on a whole file it says 1', async () => {
+  const infoOf = (): string[] => ((globalThis as any).__a8Logs as LogRec[]).filter((l) => l.level === 'info').map((l) => l.msg);
+  const torn = newRig();
+  makeSource(torn.home);
+  assert.deepEqual(await runSync(torn, { mcpServers: ['github'] }), []);
+  putCj(torn, '{"mcpServers": {"github": {"comm');
+  await runSync(torn, undefined, { userDeselected: true, caller: 'ui-save' });
+  assert.deepEqual(infoOf(), [`account-inherit: UI de-selection pruned 0 link(s) + 0 MCP server(s) from ${torn.login}`], 'nothing was pruned, and it says so');
+  assert.deepEqual(manifestOf(torn.login).mcpServers, ['github'], 'the key stays owned (the never-completed de-select is an accepted gap: safe direction)');
+  const whole = newRig();
+  makeSource(whole.home);
+  assert.deepEqual(await runSync(whole, { mcpServers: ['github'] }), []);
+  await runSync(whole, undefined, { userDeselected: true, caller: 'ui-save' });
+  assert.deepEqual(infoOf(), [`account-inherit: UI de-selection pruned 0 link(s) + 1 MCP server(s) from ${whole.login}`]);
+  const mixed = newRig();
+  makeSource(mixed.home);
+  assert.deepEqual(await runSync(mixed, FULL), []);
+  putCj(mixed, '');
+  await runSync(mixed, undefined, { userDeselected: true, caller: 'ui-save' });
+  assert.deepEqual(infoOf(), [`account-inherit: UI de-selection pruned 7 link(s) + 0 MCP server(s) from ${mixed.login}`], 'links WERE pruned; the MCP write was skipped');
+});
+
+test('#238/F2 the INFO counts links actually pruned: skills/ read-only (unlink fails) → those two links stay and are not counted', { skip: process.getuid?.() === 0 ? 'root bypasses mode bits' : undefined }, async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, FULL), []);
+  fs.chmodSync(path.join(rig.login, 'skills'), 0o555);
+  try {
+    await runSync(rig, undefined, { userDeselected: true, caller: 'ui-save' });
+  } finally {
+    fs.chmodSync(path.join(rig.login, 'skills'), 0o755);
+  }
+  const info = ((globalThis as any).__a8Logs as LogRec[]).filter((l) => l.level === 'info').map((l) => l.msg);
+  assert.deepEqual(info, [`account-inherit: UI de-selection pruned 5 link(s) + 3 MCP server(s) from ${rig.login}`]);
+  assert.deepEqual(linksOf(snapshot(rig.login)!), ['skills/frontend-design', 'skills/handoff'], 'the two skill links really stayed');
+});
+
 // ---- the pure helpers -----------------------------------------------------------
 
 test('C10 isEmptyAccountInherit / deselectedAccountIds: literal table', async () => {
