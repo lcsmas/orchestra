@@ -515,3 +515,32 @@ test('evaluateArm: must-VOID arms name the instrument AND the knob; the canary a
   const br = armsMod.evaluateArm(armsMod.ARMS.normal, { report: {}, judgement: { ok: false, void: false, verdicts: [verdict('session.beforeFirstReply.modelRequests', 2)] } });
   assert.deepEqual({ asExpected: br.asExpected, voided: br.voided, bad: br.bad }, { asExpected: false, voided: false, bad: true });
 });
+
+test('canary logic against FAKE /proc/net files and a stub connect: reads what is there, never what it hopes for', async () => {
+  const dir = scratch('canary-proc');
+  try {
+    const write = (name: string, body: string) => fs.writeFileSync(path.join(dir, name), body);
+    write('dev', 'Inter-|   Receive\n face |bytes\n    lo: 1 2 3\n');
+    write('route', 'Iface\tDestination\tGateway\n');
+    write('ipv6_route', '00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001       lo\n');
+    const stub = (r4: string, r6 = r4) => async (host: string) => (host.includes(':') ? r6 : r4);
+    // a routeless namespace: only lo (v4 route table empty, v6 has just the loopback route), connects fail at once
+    let p = await canary.containmentCanary({ procNet: dir, connect: stub('ENETUNREACH') });
+    assert.deepEqual(p, { connect4: 'ENETUNREACH', connect6: 'ENETUNREACH', interfaces: ['lo'], nonLoopbackRoutes: 0 });
+    // the connect outcome is passed through, not assumed
+    p = await canary.containmentCanary({ procNet: dir, connect: stub('TIMEOUT', 'CONNECTED') });
+    assert.equal(p.connect4, 'TIMEOUT');
+    assert.equal(p.connect6, 'CONNECTED');
+    // a host-like namespace: extra interfaces, a default route, a non-lo v6 route
+    write('dev', 'Inter-|   Receive\n face |bytes\n    lo: 1\n wlp1s0f0: 2\n docker0: 3\n');
+    write('route', 'Iface\tDestination\tGateway\nwlp1s0f0\t00000000\t0101A8C0\nwlp1s0f0\t0001A8C0\t00000000\n');
+    write('ipv6_route', 'fe80... 40 0000 00 0000 00000100 00000001 00000000 00000001 wlp1s0f0\n00000000000000000000000000000001 80 0 00 0 00000000 00000002 00000000 80200001       lo\n');
+    p = await canary.containmentCanary({ procNet: dir, connect: stub('ENETUNREACH') });
+    assert.deepEqual(p.interfaces, ['docker0', 'lo', 'wlp1s0f0']);
+    assert.equal(p.nonLoopbackRoutes, 3, '2 v4 routes + 1 non-lo v6 route');
+    // unreadable /proc/net is never "clean"
+    const gone = await canary.containmentCanary({ procNet: path.join(dir, 'nope'), connect: stub('ENETUNREACH') });
+    assert.deepEqual(gone.interfaces, ['UNREADABLE']);
+    assert.ok(gone.nonLoopbackRoutes >= 1000);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
