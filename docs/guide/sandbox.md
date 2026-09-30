@@ -1,6 +1,8 @@
 # Remote sandbox agents
 
-A local workspace stops when your machine sleeps. The **sandbox** moves the whole workspace — agent, checkout, session — into an always-on Docker container, and Orchestra becomes a thin client streaming its terminal.
+A local workspace stops when your machine sleeps. The **sandbox** moves the whole workspace — agent, checkout, session — into an always-on Docker container, and Orchestra becomes a thin client for it.
+
+> **Paused.** Sandbox agents are PTY-only, and the terminal agent no longer exists ([ADR 0003](../adr/0003-remove-raw-pty-agent-view.md)): starting an agent for a sandbox-hosted workspace fails with an explicit "sandbox agents are paused" message until a follow-up ([#220](https://github.com/lcsmas/orchestra/issues/220)) reconciles them with the Agent view. Import/eject and backups below are unchanged.
 
 ## Import & eject
 

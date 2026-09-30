@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store';
 import { Sidebar, OrchestratorIcon, ZapIcon } from './components/Sidebar';
-import { TerminalView } from './components/Terminal';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
 import { BrowserPanel } from './components/BrowserPanel';
@@ -22,17 +21,14 @@ import { dlog } from './debug';
 import type { RepoEntry } from '../shared/types';
 import { isScratchLike } from '../shared/types';
 import { computeMountedIds } from '../shared/mounted-panes';
-import { readDefaultAgentView, terminalTabLabel } from './default-agent-view';
 
-// Max number of workspace panes (TerminalView + StructuredView) kept mounted at
-// once. Each mounted TerminalView holds a WebGL context; Chromium force-loses
-// WebGL contexts past ~16 per page and the shared GPU process buckles well
-// before dozens are live, which is what turned the whole content area black
-// (GL contexts lost, renderer still alive → nothing recovers it → manual
-// restart). 12 stays comfortably under the WebGL cap with headroom for the
-// occasional RunTerminal/login WebGL context, while keeping the dozen
-// most-recent workspaces instantly switchable. Older panes unmount and cold-
-// boot (~1-2s) on reopen — identical to opening a workspace for the first time.
+// Max number of workspace panes (StructuredView, the Agent view) kept mounted at
+// once. The cap dates from when every pane was an xterm holding a WebGL context
+// (Chromium force-loses contexts past ~16 per page and the GPU process buckles,
+// turning the content area black); the Agent view holds none, but 12 still bounds
+// the DOM/scroll state kept alive, leaves headroom for the occasional
+// RunTerminal/login WebGL context, and keeps the dozen most-recent workspaces
+// instantly switchable. Older panes unmount and cold-boot (~1-2s) on reopen.
 const MAX_MOUNTED_PANES = 12;
 
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
@@ -95,7 +91,7 @@ function startVisiblePoll(fn: () => void, ms: number): () => void {
 
 export function App() {
   // Atomic selectors, not a whole-store `useStore()` destructure: the latter
-  // re-renders App (and with it every mounted TerminalView) on ANY state change
+  // re-renders App (and with it every mounted pane) on ANY state change
   // — including the high-frequency `agent:tool` ticks and per-repo sync events
   // App never reads. Each selector below subscribes to exactly one slice with
   // Object.is equality, so App only re-renders when a slice it uses changes.
@@ -144,14 +140,10 @@ export function App() {
   }, [wsSetKey]);
   // LRU of workspace ids by most-recent activation, newest first. Drives which
   // panes stay mounted (see MAX_MOUNTED_PANES below): keeping every open
-  // workspace's TerminalView mounted means one WebGL context + 10k-line xterm
-  // per workspace, and with dozens of workspaces that overruns Chromium's
-  // ~16-context-per-page WebGL limit and stresses the shared GPU process until
-  // it crashes — the renderer survives but its GL contexts are lost and the
-  // content composites BLACK (the reported "app turns black, must restart"). We
-  // therefore mount only the most-recently-used panes; the rest unmount and
-  // rebuild instantly on reopen (a fresh xterm repaints from `claude
-  // --continue`, no agent state lost — that is already how first-open works).
+  // workspace's Agent view mounted holds its DOM and scroll offset for each of
+  // dozens of workspaces. We therefore mount only the most-recently-used panes;
+  // the rest unmount and rebuild on reopen (the folded session lives in the
+  // store and history backfills from the transcript — no agent state is lost).
   const [lruOrder, setLruOrder] = useState<string[]>([]);
   useEffect(() => {
     if (!activeId) return;
@@ -466,24 +458,23 @@ export function App() {
   });
   const mountedWorkspaces = liveWorkspaces.filter((w) => mountedIds.has(w.id));
   // Both scratch and orchestrator sessions are non-git and repo-less, so they
-  // get the same treatment for the GIT-ONLY surfaces (no Diff/Run/Merge/PR).
+  // get the same treatment for the GIT-ONLY surfaces (no Diff/Run/PR).
   // `isScratch` here means "scratch-like", covering both kinds. NOTE: the
-  // structured (SDK) agent view is NOT git-gated — the main-process SDK path is
-  // kind-agnostic (agent-sdk.ts even appends the ORCHESTRATOR_BRIEF for
-  // orchestrators), so scratch and orchestrator sessions get the Terminal AND
-  // Structured tabs, only lacking Run.
+  // Agent view is NOT git-gated — the main-process SDK path is kind-agnostic
+  // (agent-sdk.ts even appends the ORCHESTRATOR_BRIEF for orchestrators), so
+  // scratch and orchestrator sessions get the Agent tab, only lacking Run/Diff.
   const isScratch = !!active && isScratchLike(active);
   const isOrchestrator = active?.kind === 'orchestrator';
   const openPR = active ? prs[active.id]?.open ?? null : null;
 
   // A scratch-like session is non-git and has no repo, so the git-only `run`
   // view is unavailable. If the user had it selected and then switches to such a
-  // session, fall back to the terminal so the pane isn't left blank. The
+  // session, fall back to the Agent view so the pane isn't left blank. The
   // `structured` view stays valid for every kind, so it is NOT forced away.
   // `diff` is git-only for the same reason as `run` (a scratch/orchestrator
   // session has no worktree to diff), so it falls back the same way.
   useEffect(() => {
-    if (isScratch && (view === 'run' || view === 'diff')) setView('terminal');
+    if (isScratch && (view === 'run' || view === 'diff')) setView('structured');
   }, [isScratch, view, setView]);
   const onRestart = async () => {
     if (!active) return;
@@ -491,7 +482,7 @@ export function App() {
       const ok = await dialog.confirm({
         title: 'Restart agent?',
         message: `${active.branch} is mid-turn. Restarting will kill the current response.`,
-        detail: 'The conversation resumes via `claude --continue`, but in-flight output is lost.',
+        detail: 'The conversation resumes from its transcript, but in-flight output is lost.',
         tone: 'danger',
       });
       if (!ok) return;
@@ -644,15 +635,11 @@ export function App() {
               <div className="toolbar-views">
               <div className="tabs">
                 <button
-                  className={`tab ${view === 'terminal' ? 'active' : ''}`}
-                  onClick={() => setView('terminal')}
-                  title={
-                    readDefaultAgentView() === 'structured'
-                      ? 'Raw embedded terminal (Claude Code TUI) — the structured view is your default'
-                      : 'Embedded terminal (Claude Code TUI)'
-                  }
+                  className={`tab ${view === 'structured' ? 'active' : ''}`}
+                  onClick={() => setView('structured')}
+                  title="Agent view — streaming messages, tool cards, diffs, permission prompts (Claude Agent SDK)"
                 >
-                  {terminalTabLabel(readDefaultAgentView())}
+                  Agent
                 </button>
                 {!isScratch && (() => {
                   const repo = findRepo(active.repoPath);
@@ -674,13 +661,6 @@ export function App() {
                     </button>
                   );
                 })()}
-                <button
-                  className={`tab ${view === 'structured' ? 'active' : ''}`}
-                  onClick={() => setView('structured')}
-                  title="Structured agent view (Claude Agent SDK) — streaming messages, tool cards, diffs"
-                >
-                  Structured
-                </button>
                 {!isScratch && (
                   <button
                     className={`tab ${view === 'diff' ? 'active' : ''}`}
@@ -741,7 +721,7 @@ export function App() {
               <button
                 className="restart-btn"
                 onClick={onRestart}
-                title="Restart agent (resumes via --continue, picks up MCP / settings changes)"
+                title="Restart agent (resumes the conversation, picks up MCP / settings changes)"
                 aria-label="Restart agent"
               >
                 <svg
@@ -791,8 +771,8 @@ export function App() {
               </div>
             </div>
             {/* SetupBanner sits ABOVE .pane-row, not inside .pane. Inside,
-                the active TerminalView uses `position: absolute; inset: 0`
-                and would eclipse the banner on the Terminal tab. Above the
+                the active Agent view uses `position: absolute; inset: 0`
+                and would eclipse the banner on the Agent tab. Above the
                 row, it's a normal flex child taking its natural height when
                 visible, zero when null. The `setup-` key prefix avoids
                 colliding with sibling keys (RunTerminal also keys by
@@ -800,38 +780,25 @@ export function App() {
             <SetupBanner key={`setup-${active.id}`} workspace={active} />
             {/* Same above-the-row placement as SetupBanner, same reason: the
                 read-only ownership bar must not be eclipsed by the absolutely-
-                positioned TerminalView. Renders null for local workspaces. */}
+                positioned Agent view. Renders null for local workspaces. */}
             <SandboxControlBar key={`sandbox-${active.id}`} workspace={active} />
             {/* Usage-limit prompt queue — same above-the-row placement as the
                 banners above. Shows only while the active workspace's account
                 is over its usage limit or prompts are still queued. */}
             <PromptQueueBanner key={`queue-${active.id}`} workspace={active} />
-            {/* Render a TerminalView for the recently-used workspaces (see
-                mountedWorkspaces / MAX_MOUNTED_PANES) but only show the active
-                one. Keeping each xterm.js instance mounted preserves its
-                scrollback buffer across tab switches; capping the set at the LRU
-                bounds the number of live WebGL contexts so the GPU process
-                doesn't crash the whole content area to black. */}
+            {/* Render an Agent view (StructuredView) for the recently-used
+                workspaces (see mountedWorkspaces / MAX_MOUNTED_PANES) but only
+                show the active one. Keeping each mounted preserves its folded
+                session and the virtualized list's scroll offset across tab
+                switches. Every workspace kind (worktree, scratch, orchestrator)
+                has an SDK session — the main-process path is kind-agnostic — so
+                none are excluded. No terminal is mounted for the agent: the
+                Run script, nvim and login are the only terminals. */}
             <div
               ref={paneRowRef}
               className={`pane-row ${nvimOpen ? 'with-nvim' : ''}`}
             >
               <div className="pane">
-                {mountedWorkspaces.map((ws) => (
-                  <TerminalView
-                    key={ws.id}
-                    workspaceId={ws.id}
-                    isActive={ws.id === activeId && view === 'terminal'}
-                  />
-                ))}
-                {/* Structured view is kept mounted for the same recently-used
-                    workspaces as the terminals above (mountedWorkspaces) so the
-                    folded session and scroll position survive tab switches — its
-                    store state persists regardless, but keeping the component
-                    mounted preserves the virtualized list's scroll offset.
-                    Every workspace kind (worktree, scratch, orchestrator) has an
-                    SDK session — the main-process path is kind-agnostic — so none
-                    are excluded here. */}
                 {mountedWorkspaces.map((ws) => (
                   <StructuredView
                     key={`structured-${ws.id}`}
@@ -839,7 +806,7 @@ export function App() {
                     isActive={ws.id === activeId && view === 'structured'}
                   />
                 ))}
-                {/* Mounted only while selected, unlike the terminals above: the
+                {/* Mounted only while selected, unlike the Agent views above: the
                     pane holds no scrollback worth preserving and refetches on
                     activation anyway, so keeping it mounted would cost DOM for
                     a large diff with nothing to show for it. Annotations are
@@ -850,11 +817,9 @@ export function App() {
                 )}
                 {view === 'run' && (
                   <RunTerminal
-                    // Prefix avoids colliding with the sibling TerminalView's
-                    // key (it uses the same workspace id). Without the prefix,
-                    // when the active workspace's TerminalView and the
-                    // RunTerminal coexist as `.pane` children, React warns and
-                    // can reuse fibers across component types.
+                    // Prefix keeps the key distinct from the sibling panes'
+                    // (they key by the same workspace id) so React never reuses
+                    // fibers across component types.
                     key={`run-${active.id}`}
                     workspaceId={active.id}
                     isActive={true}
@@ -916,8 +881,8 @@ export function App() {
         )}
         {/* Insights & Improvements pane and the full-page Resources view are
             both overlays (absolute, above the pane row) rather than route
-            swaps: unmounting the workspace tree would kill every kept-alive
-            TerminalView's xterm scrollback. The store keeps them mutually
+            swaps: unmounting the workspace tree would drop every kept-alive
+            Agent view's scroll state. The store keeps them mutually
             exclusive, so at most one renders. */}
         {loaded && insightsOpen && <InsightsView />}
         {loaded && page === 'resources' && <ResourcesView />}

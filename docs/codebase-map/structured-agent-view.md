@@ -1029,7 +1029,8 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
       so ITS own shell lifecycle hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) fire
       and write `submit`/`pretool`/`stop` spool lines that the tailer replays into
       `applyAgentEvent` — the terminal path's mechanism, reused as-is.
-    - **`ownsSpool=false`** (a terminal/Raw PTY coexists, so `ORCHESTRA_WS_ID` is withheld):
+    - **`ownsSpool=false`** (a terminal/Raw PTY coexists, so `ORCHESTRA_WS_ID` is withheld —
+      **dead since #230**: no agent PTY is ever started now, #233 deletes this branch):
       the SDK's hooks no-op, and that PTY is usually an **idle Raw tab** running no turns, so
       NOBODY writes the running/tool/turn-end spool lines and the dot stuck `idle` while the
       SDK worked (the reported bug — verified live: the PTY-coexist spool held only
@@ -1059,12 +1060,11 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `!ws.sdkSessionId` so a resume doesn't duplicate it) — parity with the terminal path's
   `--append-system-prompt`. When the consume loop ends/throws, a `reconcileExited(wsId)`
   floor (guarded on no live PTY) self-heals a stuck `running` status dot, mirroring the
-  PTY exit handler. The terminal PTY
-  lazy-starts just when the Terminal tab is opened (`Terminal.tsx allowStartRef`), so
-  a structured-only session safely owns the spool; a live PTY keeps ownership and the
-  SDK session stays spool-free — avoiding the double-writer that corrupts the dot's
-  per-`wsId` `seq` counter. **Phase 6 makes the two mutually exclusive** (don't start
-  the PTY when structured is default) so the gate is always satisfied — see plan.
+  PTY exit handler. **Since #230 there is no Terminal tab and no agent PTY** (nothing
+  calls `pty:start`), so the SDK session always owns the spool and the gate is always
+  satisfied; the PTY-coexist branch survives only as dead code until #233. It used to be
+  that a live PTY kept ownership and the SDK session stayed spool-free — avoiding the
+  double-writer that corrupts the dot's per-`wsId` `seq` counter.
 - **`src/renderer/agent-event-queue.ts`** (+ `.test.ts`) — pure RAF-batch queue; coalesces
   a frame of events and folds them in one `setState` (test asserts batched-fold ==
   sequential-fold). ~1600 events/commit under load; holds 60fps at 600+ messages.
@@ -2150,16 +2150,14 @@ CLI = rename/peers/message/spawn/promote/attach, skills, peer-comms delivery via
 `sdk-delivery.ts`) entirely from the structured view, at parity with the
 terminal path.
 
-## Default-view preference (Phase 6)
+## Default view (Phase 6 preference — REMOVED in #230, ADR 0003)
 
-- **`src/renderer/default-agent-view.ts`** (+ `.test.ts`) — pure, localStorage-backed
-  preference (`orchestra:defaultAgentView`, **default `'structured'`** — the SDK pane
-  is the primary surface; only an explicit `'terminal'` opts back into the classic
-  TUI, and `terminalTabLabel` then relabels that tab "Raw"). `readDefaultAgentView()`
-  seeds the store's initial `view` (store.ts); `terminalTabLabel()` relabels the embedded
-  terminal tab to **"Raw"** when structured is the default. Toggled via
-  **`src/renderer/components/AgentViewSettings.tsx`** (a sidebar Settings modal, opened from
-  Sidebar.tsx next to the sound-settings button).
+- The Agent view is the only agent mode: `store.view` starts as `'structured'`, its tab is
+  labelled **Agent** (identifiers keep `structured`), and there is no Raw tab. The
+  `default-agent-view.ts` preference module, its test, the `AgentViewSettings.tsx` modal and
+  the sidebar header entry that opened it are deleted; a `terminal` value left in
+  `localStorage` (`orchestra:defaultAgentView`) is never read (no cleanup code). Rig arm
+  `stored_terminal_pref` seeds that value and reloads the renderer.
 - **`buildSdkEnv`** (`agent-sdk.ts`) sets the identity plumbing
   (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) and — when no terminal PTY is
   running for the workspace (`isPtyRunning(ws.id)`) — the events-spool trigger
@@ -2298,6 +2296,6 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   sees it, so it fixes SPELLING, not recognition.
 - `VoiceDictionarySettings.tsx` — textarea modal editing that global list
   (`.voice-dict-input`), opened from the Sidebar header mic button; mirrors
-  `SoundSettings` / `AgentViewSettings` (localStorage pref, persist-on-keystroke,
+  `SoundSettings` (localStorage pref, persist-on-keystroke,
   no Cancel). `parseVoiceDictionary` splits on comma/newline/semicolon, trims,
   drops case-insensitive dupes, preserves casing.

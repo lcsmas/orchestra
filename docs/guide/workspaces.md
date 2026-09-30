@@ -11,7 +11,7 @@ The standard unit: a **branch + isolated git worktree + Claude Code agent**. The
 - **Create** — the **+** button on a repo section (or an agent [spawns](multi-agent.md) one). Branch is cut from the repo's base branch; the setup script (if configured) runs first, with a progress banner.
 - **Archive** — one step removes the worktree and deletes the branch. Archived workspaces stay listed in a collapsed section; **unarchive** re-creates the worktree from the branch point.
 - **Delete** — permanently removes an archived workspace (bulk delete supported).
-- **Resume on restart** — workspaces that were running when Orchestra quit come back automatically with `claude --continue`. A very large session triggers a heavy-resume gate so you consciously drive Claude Code's compaction menu instead of silently burning usage.
+- **Resume on restart** — workspaces that were running when Orchestra quit come back and resume their conversation in the Agent view.
 - **Switch branch** — the branch chip in the toolbar lets you point an existing worktree at a different branch.
 
 ### Branch naming
@@ -26,13 +26,13 @@ New branches get an auto-generated placeholder name (e.g. `crimson-meadow`). The
 
 **🌿 Orchestrator** sessions coordinate instead of code: they spawn child agents for the actual work, and every workspace they spawn nests beneath them in the sidebar. See [Multi-agent orchestration](multi-agent.md#orchestrators) for the full story.
 
-## Terminals
+## Agent view & terminals
 
-Each workspace has up to three panes:
+Each workspace has up to three tabs, **Agent · Run · Diff** (scratch and orchestrator sessions have only **Agent**), plus a file-pane toggle. A workspace always opens on the Agent tab.
 
-- **Terminal** — the agent's real TTY (xterm.js): full color, resize, scrollback, image paste.
-- **Run** — a second, independent PTY that runs the repo's configured **run script** (dev server, test watcher) with Start/Stop. The tab is always visible so the affordance is discoverable; without a script it points you at the gear icon.
-- **Nvim** — a file-pane toggle splits the main pane with Neovim opened on the worktree, for when you want to poke at files yourself.
+- **Agent** — the only way to see and drive an agent: streaming messages, collapsible tool cards, real diffs, permission prompts and a composer with image paste, rendered from the Claude Agent SDK. There is no terminal for the agent.
+- **Run** — an independent terminal (PTY) that runs the repo's configured **run script** (dev server, test watcher) with Start/Stop. The tab is always visible so the affordance is discoverable; without a script it points you at the gear icon.
+- **Nvim** — the file-pane toggle splits the main pane with Neovim opened on the worktree, for when you want to poke at files yourself.
 
 ## Status at a glance
 

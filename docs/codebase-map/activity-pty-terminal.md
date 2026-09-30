@@ -2,8 +2,11 @@
 
 How Orchestra knows an agent's status (the sidebar dot) and how terminal I/O
 flows. Files: `src/main/activity.ts`, `events-spool.ts` (+ `.test.ts`),
-`pty.ts`, `logger.ts`; renderer `Terminal.tsx`, `RunTerminal.tsx`,
-`term-write-queue.ts` (+ `.test.ts`).
+`pty.ts`, `logger.ts`; renderer `Terminal.tsx` (the removed agent terminal — **no longer
+mounted since #230**, deleted in #231), `RunTerminal.tsx`, `term-write-queue.ts` (+ `.test.ts`).
+**Terminals** (ADR 0003): the only PTYs left are the Run script (`<ws>:run`), nvim
+(`<ws>:nvim`) and account login (`account-login:<id>`); the agent (`<ws>` id, kind `agent`) is
+the Agent view's SDK session and never a PTY — the removal rig below asserts exactly that.
 
 ## Activity is event-sourced, not polled
 Claude Code lifecycle hooks append events to a durable JSONL spool; the spool
@@ -510,13 +513,16 @@ build) under its own headless sway and reports (1) the rendered workspace tab la
 [resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (rig dir on btrfs under
 `~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
 `scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
-(`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). Not covered: nvim/login PTYs.
-`parseArgs` (`.mjs` :103) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
-ignored flag would run the default mode, the exact flip #230 performs (`args_selftest`).
-- **Modes** — every arm holds both expectations in `EXPECT` (:54): `baseline` = today
-  (tabs `Raw·Run·Structured·Diff`, opening Raw creates an agent-kind PTY) is green on master
-  and red on a Raw-less build; `after` = spec (tabs `Agent·Run·Diff`, no tab creates an agent
-  PTY) is red on master. Later tickets add one object to `ARMS` and flip values in `EXPECT`. A clause
+(`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). **`--mode` defaults to `after`** (#230 flipped it: a silently ignored flag must run the STRICT mode); pass `--mode baseline` against a PRE-change checkout to prove every removal arm can fail. nvim + login PTYs are covered by `other_terminals_work` (#230).
+`parseArgs` (`.mjs` :120) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
+ignored flag would run the default mode, which is `after` since #230 (`args_selftest`: `accepts:default-is-after`).
+- **Modes** — every arm holds both expectations in `EXPECT` (:57): `after` (DEFAULT) = the spec (tabs
+  `Agent·Run·Diff`, no tab of any workspace kind creates an agent PTY, a stored `terminal` preference ignored)
+  is green on a build with #230 and red on master; `baseline` = the pre-change behaviour (tabs
+  `Raw·Run·Structured·Diff`, opening Raw creates an agent-kind PTY, the preference honored) is green on a
+  pre-change build and red on a Raw-less one. Recorded outputs: `scripts/e2e-agent-view-removal.baseline.txt`
+  (`--mode baseline` on the pre-change master build) and `…after.txt` (`--mode after` on the #230 build).
+  Later tickets add one object to `ARMS` and a value pair to `EXPECT`. A clause
   that cannot measure in a mode prints `SKIP` (counted apart), so `clauses=` is comparable across modes.
 - **`legacy_restart` + `legacy_restart_fresh` (#228)** — the first ticket arms. `boot: {legacy:true}` makes `seedWorld` write a `hasInput:true`
   / no-`sdkSessionId` workspace plus a real-shaped terminal transcript under the scratch account dir, and the stub
@@ -529,7 +535,7 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   `ws.sdkSessionId===''`, no session started (baseline: a vierge PTY). Both need `dist-electron/keeper.js` (build with
   `pnpm run build:bundles`, which `test:agent-view-removal` now does): the wrapper ABORTs without it and each arm asserts
   `env/keeper-runtime-installed`, because without a keeper no session can start and every "no session" claim is vacuous.
-- **Arms** (`ARMS` :938): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
+- **Arms** (`ARMS` :1040): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
   (tally / retain / KEEP marker); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
@@ -553,39 +559,51 @@ ignored flag would run the default mode, the exact flip #230 performs (`args_sel
   (`--allow-stale`), `PASS-WITH-EXTERNAL-CHANGE`, with `allowed_stale=` / `external_change=` counted apart from `pass=`.
 - **Identity** — each boot prints `IDENTITY` (running version via `getAppVersion`, loaded bundle md5,
   target URL must contain `<app-dir>`, never `app.asar`) before any clause; `identity/dist-fresh`
-  (`distFreshness` :660, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
+  (`distFreshness` :693, pinned by `freshness_selftest`) REFUSES a `dist/` whose OLDEST artifact predates any `src/` file or
   `package.json`; `--allow-stale` proceeds but tallies `ALLOWED-STALE`, never a PASS. mtime ordering is not provenance
   (a `cp -r`'d dist passes).
 - **THE ACCOUNT IS A SCRATCH DIR, NEVER A LIVE ONE (review F1, MEASURED).** The app boot runs the
   account-inherit sync; under the rig's fake `HOME` its source `~/.claude` is missing, so it UNLINKS every
   inherited link / MCP server in whatever `configDir` the seeded account names — the first version pinned
   the invoker's live `~/.claude-mc` and stripped it on 46+ boots. Each boot now seeds `<home>/claude-config`
-  (stub `claude`, no login); `checkHandOff` (:386) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
+  (stub `claude`, no login); `checkHandOff` (:403) resolves HOME / `CLAUDE_CONFIG_DIR` / XDG_* / `ORCHESTRA_HOME`
   / every seeded `configDir` (symlinks resolved, `<home>-sibling` is outside) and REFUSES (named) if any is outside the
   boot home or is/overlaps `~/.claude`, a `~/.claude-*` sibling, the invoker's `$CLAUDE_CONFIG_DIR` or the real home.
   `refuse_live_handoff` proves each layer (seed-time guard incl. a symlinked `claude-config`, per-variable hand-off, and the
   `accounts[]` layer alone) refuses BEFORE any launch; every boot there goes through ONE `bootRefused` wrapper that forces
   `electron: '/bin/false'` (the wrapper's `env -i` drops an ambient `E2E_ELECTRON`), so a guard regression can never start a
-  real Electron. `liveSnapshot` (:331) asserts the protected dirs' inheritance surface (`liveDirs()`; `claudeSiblingDirs`
-  :373 skips a bad `~/.claude-*` entry ALONE) before/after every boot: `classifySnapshotChange` (:352) attributes by
+  real Electron. `liveSnapshot` (:348) asserts the protected dirs' inheritance surface (`liveDirs()`; `claudeSiblingDirs`
+  :390 skips a bad `~/.claude-*` entry ALONE) before/after every boot: `classifySnapshotChange` (:369) attributes by
   direction — REMOVALS FAIL (the app's failure mode), ADDITIONS-ONLY tally `EXTERNAL-CHANGE` (the live Orchestra re-syncing a
-  shared dir, which a fake-HOME app cannot do); `liveVerdict` (:348, pinned by `live_verdict_selftest`) is asserted to have run
+  shared dir, which a fake-HOME app cannot do); `liveVerdict` (:381, pinned by `live_verdict_selftest`) is asserted to have run
   for every boot arm (`isolation/live-config-check-ran`). A later arm that needs a login must COPY `.credentials.json` into
   the scratch dir (only while the access token has hours left — a refresh in the copy may rotate the source login,
   UNVERIFIED); `scripts/verify-keeper-detach.mjs` (probes the scratch copy, by-direction check, deletes the copy at exit, no
   pattern kill; exit/SIGINT/SIGTERM kill its own sway and remove the copy) and the `verify` skill's recipe (`LAUNCH-TRAPS.md`) do the same.
 - **Other guards** — isolation is read back from the RUNNING child (`/proc/<pid>/environ`: WAYLAND_DISPLAY
   == the rig's marker-verified socket, != wayland-1, no DISPLAY; pid in MY sway's `get_tree`; home not
-  tmpfs). `noAgentPty` (:710) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
+  tmpfs). `noAgentPty` (:743) REFUSES any "no agent PTY" claim unless the Run-tab positive control fired in
   that boot (`--broken-control` seeds no Run script to prove it) and counts only PTYs the step CREATED.
-- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:725;
-  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:736) removes only
-  `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :704 = realpath of the
+- **Retention** — a PASSED arm's bulky state (profile, repo, worktree, scratch config) is deleted via `retain` (:788;
+  `app.log` + screenshots kept); a FAILED arm keeps everything for forensics. `pruneStaleRigDirs` (:769) removes only
+  `e2e64c-<digits>` dirs whose `.avr-rig-owner` marker holds THIS invoker's identity (`RIG_OWNER` :767 = realpath of the
   worktree holding the scripts, from `fileURLToPath` — never another agent's dirs; no identity ⇒ prune NOTHING), older than 24 h, unreferenced by any live process (unreadable
   `/proc/*/environ`, e.g. under bwrap, reads as unreferenced — KEEP backstops it) and lacking `KEEP-UNTIL-CLEAN` (written at
   start, removed only by a 0-FAIL run, so failed/crashed runs keep their forensics), never the invocation's own dir; the
   wrapper deletes nothing. The invoker's config dir is only PROTECTED: a missing one is a warning and skips its cases.
-- **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the Raw-tab clause asserts the
+- **#230 arms** (`boot: { kinds: true }` seeds a SCRATCH and an ORCHESTRATOR record beside the worktree ws; `activateWorkspace` clicks a
+  sidebar row at a point that hit-tests to the ROW, not the account badge that swallows a mid-row click):
+  `open_tabs_agent_pty` (every tab of all three kinds creates no agent PTY, no agent xterm mounted — `agentXterms` = xterms outside
+  `.run-pane/.nvim-pane/.modal`), `kinds_fallback` (Run/Diff → scratch/orchestrator lands on the Agent view: 4 legs; baseline = terminal
+  fallback that STARTS an agent PTY), `stored_terminal_pref` (`localStorage['orchestra:defaultAgentView']='terminal'` + `Page.reload` →
+  still the Agent tab; no sidebar header entry titled "Default agent view", neighbours rendered as control), `effort_live_session`
+  (default effort + explicit effort frozen on `ws.sdkEffort`, the Agent view's `Effort: …` control, and the `--effort` argv of the
+  claude the composer send started, read via the stub log + `/proc/<pid>/cwd`; a model-default ws carries none — same in both modes, the
+  tab label is its only master-red clause), `legacy_composer_send` + `legacy_first_action_bash` / `legacy_first_action_mcp` (#228 O1/F1: whichever Agent-view action starts a
+  legacy ws's session FIRST — composer send, `!cmd`, the MCP popover — resumes the terminal transcript, because adoption is in `ensureSessionInner`;
+  baseline starts blank; a fresh ws adopts nothing) + `legacy_adopted_unresumable` (r2 F1: a resume-REFUSING stub (`RESUME_FAIL_STUB`, exit 1 on `--resume`) — the dead adopted id is cleared to `''`, the 2nd send starts fresh, no relaunch loop, no re-adoption), `other_terminals_work` (Run / nvim / account-login PTYs
+  still appear and run their programs). `--mode after` on master is red on every one of them except `other_terminals_work`.
+- **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the baseline Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
 - **Spawn-failure arms (#227)** — `spawn_failure_reported`, `restart_delivers_task_once` (boot arms with `sdkLess: true`).
   HOW THE SDK START IS FORCED TO FAIL: `makeSdkLessApp` boots a byte-identical COPY of `<app-dir>`'s build
@@ -754,7 +772,12 @@ long-idle agents and lets the existing resume paths bring them back.
   on the sidebar row plus a further-dimmed `.ws-dot.hibernated` (an explicit user
   bookmark still wins the dot), with a tooltip aging `hibernatedAt`.
 
-## Terminal.tsx (agent view, ~479 lines)
+## Terminal.tsx (agent view, ~479 lines) — UNMOUNTED since #230, deleted in #231
+
+> **ADR 0003 / #230:** `App.tsx` no longer imports or mounts `TerminalView`; there is no Terminal/Raw
+> tab and nothing calls `pty:start` for an agent. The section below documents the dormant component
+> until #231 deletes it (and #233 the launcher behind it).
+
 xterm.js with addons: **FitAddon**, **WebLinksAddon** (opens via IPC),
 themed via the shared `TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome
 bg/fg/cursor plus Ghostty's default ANSI-16 palette (Tomorrow Night); xterm's

@@ -12,9 +12,8 @@ interface Props {
 }
 
 /** Edit the GLOBAL voice dictionary — the terms the LLM cleanup stage uses to
- *  snap STT near-misses to the right spelling. Mirrors SoundSettings /
- *  AgentViewSettings: a small modal opened from the sidebar header, persisted
- *  in localStorage. Applies to the next utterance (the vocab is assembled when
+ *  snap STT near-misses to the right spelling. Mirrors SoundSettings: a small
+ *  modal opened from the sidebar header, persisted in localStorage. Applies to the next utterance (the vocab is assembled when
  *  the mic starts), so there is nothing to restart. */
 export function VoiceDictionarySettings({ onClose }: Props) {
   const [text, setText] = useState<string>(() => readVoiceDictionaryRaw());

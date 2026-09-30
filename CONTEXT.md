@@ -74,6 +74,17 @@ _Avoid_: issue, ticket (the GitHub-issue form is one rendering of it)
 
 ### Workspaces
 
+**Agent view**:
+The pane that shows a workspace's agent session (messages, tool cards, diffs,
+permission prompts) rendered from the Claude Agent SDK. The only way to see or
+drive an agent; its tab is labelled "Agent".
+_Avoid_: Raw, Terminal (classic), TUI, PTY agent, Structured view
+
+**Terminal**:
+An embedded shell pane that is not an agent: the Run script, the nvim file
+pane, or an account login. It never shows an agent session.
+_Avoid_: Raw, PTY (an implementation detail)
+
 **Spawned agent**:
 A workspace created by an agent through `orchestra spawn`. A workspace created
 by a human click is not a spawned agent, even when the click goes through the

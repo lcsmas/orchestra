@@ -19,6 +19,7 @@ const agentSdkSrc = readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8');
 const workspacesSrc = readFileSync(path.join(here, 'workspaces.ts'), 'utf8');
 const restartModeSrc = readFileSync(path.join(here, '..', 'shared', 'restart-mode.ts'), 'utf8');
 const restartWorkspaceSrc = readFileSync(path.join(here, 'restart-workspace.ts'), 'utf8');
+const apiHandlersSrc = readFileSync(path.join(here, 'api-handlers.ts'), 'utf8');
 
 /** The body of a named function, from its declaration to the next top-level
  *  `function`/`export function`/`export async function` — scopes a "does THIS
@@ -186,6 +187,39 @@ test('#228: sdkWakeRestart adopts the terminal transcript BEFORE sdkRestart, and
     body.indexOf(adopt) !== -1 && body.indexOf(adopt) < body.indexOf('await sdkRestart(wsId, opts);'),
     'adoption must run BEFORE sdkRestart (ensureSession resumes ws.sdkSessionId; adopting after it starts a blank session)',
   );
+});
+
+// ─── #230 (#228 review O1/F1): the session-start FUNNEL adopts the terminal transcript ─────────────
+// Only the built app (scripts/e2e-agent-view-removal.mjs `legacy_composer_send` / `legacy_first_action_*`) exercises the behaviour;
+// this pins the seam so a later wave rewriting ensureSessionInner cannot drop adoption or move it after the resume id is resolved.
+
+test('#230: ensureSessionInner adopts the terminal transcript AFTER the sandbox refusal and BEFORE resolveResumeId', () => {
+  const body = bodyOf(agentSdkSrc, 'async function ensureSessionInner');
+  const adopt = 'await adoptTerminalTranscript(wsId);';
+  assert.ok(callsUncommented(body, adopt), 'ensureSessionInner must adopt through the shared helper');
+  const at = body.indexOf(adopt);
+  const refuse = body.indexOf('if (paused) throw new Error(paused);');
+  const resolve = body.indexOf('resolveResumeId(ws.sdkSessionId');
+  assert.ok(refuse !== -1 && refuse < at, 'adoption must run AFTER the sandbox refusal (a refused start writes nothing)');
+  assert.ok(resolve !== -1 && at < resolve, 'adoption must run BEFORE resolveResumeId (adopting after it starts a blank session)');
+  // must-FAIL arm: the record must be RE-READ after the adoption (it persists sdkSessionId) — resolveResumeId reads the fresh one.
+  assert.ok(callsUncommented(body, 'ws = store.getWorkspace(wsId) ?? ws;'), 'ws must be re-read after the adoption persisted the resume id');
+});
+
+test('#230 r2 F1: consume clears an ADOPTED id whose CLI ended before any stream message — to the \'\' marker, never undefined', () => {
+  const body = bodyOf(agentSdkSrc, 'async function consume');
+  assert.ok(callsUncommented(body, "const adoptedDead = outcome.kind === 'error' && session.adoptedResume !== undefined && !session.firstMessageSeen;"), 'the adopted-id death signal must key on an errored end, an adopted resume and NO stream message');
+  assert.ok(callsUncommented(body, "void persistWorkspacePatch(session.wsId, { sdkSessionId: wasAdopted ? '' : undefined });"), "an adopted id clears to the '' marker; only a non-adopted bad-resume id clears to undefined (undefined re-adopts the same transcript for a hasInput workspace)");
+  // the id is recorded by the adoption and read ONCE at session creation
+  assert.ok(callsUncommented(bodyOf(agentSdkSrc, 'async function adoptTerminalTranscript'), 'adoptedTranscripts.set(wsId, adopted);'), 'adoptTerminalTranscript must record the id it adopted');
+  assert.ok(callsUncommented(bodyOf(agentSdkSrc, 'async function ensureSessionInner'), 'session.adoptedResume = adoptedId !== undefined && resumeId === adoptedId ? adoptedId : undefined;'), 'ensureSessionInner must stamp session.adoptedResume only when the resumed id IS the adopted one');
+});
+
+test('#230: the composer IPC is the bare sdkSend — adoption is the funnel\'s job, not one entry point\'s', () => {
+  const start = apiHandlersSrc.indexOf('agentSdkSend: async (wsId, text, images) => {');
+  assert.notEqual(start, -1, 'agentSdkSend handler not found');
+  const body = apiHandlersSrc.slice(start, apiHandlersSrc.indexOf('},', start));
+  assert.ok(callsUncommented(body, 'await sdkSend(wsId, text, images);'), 'agentSdkSend must call sdkSend(wsId, text, images)');
 });
 
 // ─── #179: the working-guard uses decideRestartGuard, and the fresh path

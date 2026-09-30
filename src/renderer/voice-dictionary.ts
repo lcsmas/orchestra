@@ -10,7 +10,7 @@
 //     + per-workspace terms (branch + repo folder, StructuredView.tsx)
 //
 // A renderer-side UI preference persisted in localStorage, exactly like the
-// chime and default-agent-view prefs. Pure + dependency-free so it is
+// chime and composer-vim prefs. Pure + dependency-free so it is
 // node-testable and readable from both the Settings UI and the voice hook.
 //
 // Storage is the raw string the user typed (not a parsed array) so their own

@@ -1,6 +1,6 @@
 # ADR 0001 — SDK-driven structured agent view (Strategy 1)
 
-Status: Accepted (2026-07-21) · Supersedes the implicit "embed the TUI forever" default
+Status: Accepted (2026-07-21), fallback clause superseded by [ADR 0003](0003-remove-raw-pty-agent-view.md) (2026-09-30) — the terminal "Raw" fallback no longer exists; the Agent view is the only agent mode · Supersedes the implicit "embed the TUI forever" default
 
 ## Context
 

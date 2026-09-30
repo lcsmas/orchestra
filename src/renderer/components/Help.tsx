@@ -2,7 +2,7 @@ import { useStore } from '../store';
 
 // Help / feature guide — the in-app answer to "what can Orchestra do?".
 // `HelpView` is a main-pane overlay (same contract as InsightsView: absolute
-// over the pane row so the kept-alive terminals never unmount), opened from
+// over the pane row so the kept-alive Agent views never unmount), opened from
 // the sidebar header's "?" button or the welcome screen. Content is static
 // data below — one section per feature area, one line per feature — kept
 // deliberately terse: this is a map of the app, not a manual. The full
@@ -50,7 +50,7 @@ const SECTIONS: HelpSection[] = [
   },
   {
     title: 'Review & ship',
-    intro: 'Track changes and go straight to a PR — without leaving the dashboard.',
+    intro: 'Track changes, review the diff and follow the PR — without leaving the dashboard.',
     items: [
       { name: 'Change counts', desc: '+/− line counts on every sidebar row show how much each workspace has changed vs. its base, refreshed live while the agent works.' },
       { name: 'PR tracking', desc: 'Ask the agent to open the PR. Once it links it, a PR #N button in the toolbar opens it and the sidebar tracks its state.' },
@@ -59,10 +59,10 @@ const SECTIONS: HelpSection[] = [
     ],
   },
   {
-    title: 'Terminals & status',
+    title: 'Agent view, terminals & status',
     items: [
-      { name: 'Live terminal', desc: 'A real TTY per agent — full color, resize, scrollback, image paste.' },
-      { name: 'Run tab', desc: 'A second terminal per workspace running the repo’s configured run script (dev server, tests) with Start/Stop.' },
+      { name: 'Agent view', desc: 'The Agent tab is the one way to see and drive an agent: streaming messages, collapsible tool cards, real diffs, permission prompts and a composer with image paste — rendered from the Claude Agent SDK. Every workspace opens on it.' },
+      { name: 'Run tab', desc: 'A terminal per workspace running the repo’s configured run script (dev server, tests) with Start/Stop.' },
       { name: 'Nvim pane', desc: 'Split the main pane with a Neovim editor opened on the worktree.' },
       { name: 'Status glyphs', desc: 'Per workspace, driven by Claude Code’s own lifecycle hooks — no polling, no terminal scraping. A spinner while it works, an amber “?” when the agent is blocked on your answer, an amber bell when it finished and you haven’t opened it yet, a green check once you have. Plus a live context-size badge per agent.' },
       { name: 'Chime', desc: 'A notification sound when an agent finishes while the window is unfocused — pick from ~20 synthesized sounds (bell icon).' },

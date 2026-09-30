@@ -12,17 +12,20 @@
 //
 // Run through the wrapper (own sway, env -i allowlist, SCRATCH account dir, btrfs base):
 //   scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list] [--broken-control] [--allow-stale]
-//   (`pnpm run test:agent-view-removal`; --broken-control = self-test knob, --allow-stale = proceed on a stale dist/, see below.)
+//   (`pnpm run test:agent-view-removal` = `--mode after` on this checkout; --broken-control = self-test knob, --allow-stale = proceed on a stale dist/, see below.)
 //   Any unrecognised flag (incl. `--mode=after`) is an ERROR, rc 2.
 //
-// MODES — every arm carries BOTH expectations, picked by --mode:
-//   baseline  today's behaviour (Raw tab present, opening Raw creates an agent-kind PTY).
-//             Must be GREEN on a pre-change master build; RED on a candidate that removed Raw.
-//   after     the removal spec (#219): tabs exactly Agent·Run·Diff, no agent PTY from any tab.
-//             Must be RED on master (proves the arm can fail); GREEN once the removal lands.
+// MODES — every arm carries BOTH expectations, picked by --mode (DEFAULT `after` since #230 landed the removal):
+//   after     the removal spec (#219): tabs exactly Agent·Run·Diff, no agent PTY from any tab, a stored `terminal`
+//             preference ignored. GREEN on a build with the removal (#230); RED on a pre-change master build.
+//   baseline  the PRE-#230 behaviour (Raw tab present, opening Raw creates an agent-kind PTY, `terminal` preference
+//             honored). GREEN on a pre-#230 master build, RED on a build that removed Raw — pass it explicitly, against a
+//             pre-change checkout, to prove every removal arm can FAIL (its output is scripts/e2e-agent-view-removal.baseline.txt).
+//             Arms whose own ticket already landed (`retiredBaseline`: #226 #227 #228 #229) SKIP here, named — their pre-change state is gone.
 // EXTENDING (tickets #226-#233): add one object to ARMS, put both expectations in EXPECT,
 // print through ctx.clause(name, ok, detail) so each line names the clause that fired.
-// Flipping a baseline assertion = edit its `baseline` value in EXPECT, nothing else.
+// A clause whose two modes differ reads its expectation from EXPECT (`pick`); the value that is never a removal
+// (e.g. an Agent-view effort) is asserted identically in both modes.
 //
 // GUARDS: an arm that asserts a PTY is ABSENT is REFUSED unless the Run-tab positive control
 // fired in the SAME boot (a listing that cannot see PTYs proves nothing). Every boot prints
@@ -87,6 +90,20 @@ const EXPECT = {
   // #227 D7 — the CLI INITS, then its first turn errors (the measured real shape): does `spawn` still answer ok on init alone? / is the brief marked delivered at init?
   firstTurnErrorSpawnOk: { baseline: true, after: false },
   silentBriefMarkedDelivered: { baseline: true, after: false },   // a silent CLI past the bound: init-based delivery (D6) vs first-output delivery (D7)
+  // #230: a `terminal` value in localStorage `orchestra:defaultAgentView` (what the removed "Default agent view" modal wrote):
+  // baseline honors it (the workspace opens on the terminal tab — labelled "Terminal", not "Raw", because the preference IS the terminal default; MEASURED on master), after ignores it (opens on the Agent tab).
+  storedTerminalPref: { baseline: 'Terminal', after: 'Agent' },
+  // #230: the sidebar header entry (button titled/aria-labelled "Default agent view …") that opened that modal.
+  defaultAgentViewEntry: { baseline: true, after: false },
+  // #230: switching from the Run/Diff tab to a scratch/orchestrator workspace (which has neither tab): baseline falls back to the
+  // TERMINAL tab (and, being active, that starts an agent PTY next to the SDK session); after lands on the Agent view.
+  fallbackTab: { baseline: 'Raw', after: 'Agent' },
+  fallbackCreatesAgentPty: { baseline: true, after: false },
+  // #230: an agent terminal (an xterm outside the Run / nvim / login containers) mounted in the renderer DOM.
+  agentTerminalMounted: { baseline: true, after: false },
+  // #230 (#228 review O1 + F1): the FIRST session start of a LEGACY terminal-only workspace adopts the terminal transcript, whichever Agent-view
+  // action causes it — composer send, `!cmd`, the MCP popover (baseline: the session starts BLANK while the history pane shows the old transcript).
+  firstStartAdopts: { baseline: false, after: true },
 };
 // #228 legacy seed: a real-shaped TERMINAL transcript (entrypoint 'cli') the wake path must adopt. A valid UUID: the SDK's session index keys on it.
 const LEGACY_SESSION_ID = '228c0de0-7e57-4a11-8b3a-00000000b301';
@@ -101,7 +118,7 @@ const KNOWN_FLAGS = { '--mode': true, '--arm': true, '--list': false, '--broken-
 /** Strict: ANY unrecognised `--*` (incl. `--mode=after`, `--mod`, `--allow_stale`), a missing/invalid value or a stray
  *  positional is an ERROR — a silently-ignored flag runs the default mode, which is exactly the flip B5 performs (F3). */
 function parseArgs(argv) {
-  const r = { mode: 'baseline', arm: null, list: false, brokenControl: false, allowStale: false, positional: [], error: null };
+  const r = { mode: 'after', arm: null, list: false, brokenControl: false, allowStale: false, positional: [], error: null };
   const seen = new Set();
   for (let i = 0; i < argv.length && !r.error; i++) {
     const a = argv[i];
@@ -394,6 +411,21 @@ function checkHandOff(env, accounts, home) {
   return { ok: true, clause: 'handoff-scratch', detail: `${Object.keys(vars).length} paths all inside ${home}` };
 }
 
+/** #228: the terminal agent's transcript, exactly where `claude --continue` / the SDK session index look for it:
+ *  <account configDir>/projects/<mangled worktree path>/<session>.jsonl (entrypoint 'cli' = written by the TUI). */
+function writeTerminalTranscript(configDir, wtPath) {
+  const projDir = path.join(configDir, 'projects', wtPath.replace(/[^A-Za-z0-9]/g, '-'));
+  fs.mkdirSync(projDir, { recursive: true });
+  const file = path.join(projDir, `${LEGACY_SESSION_ID}.jsonl`);
+  const env = { userType: 'external', entrypoint: 'cli', cwd: wtPath, sessionId: LEGACY_SESSION_ID, version: '2.1.284', gitBranch: 'e2e/avr-1' };
+  const u = '2280b3a1-0000-4000-8000-000000000001', a = '2280b3a1-0000-4000-8000-000000000002', t0 = Date.now() - 3600e3;
+  fs.writeFileSync(file, [
+    { parentUuid: null, isSidechain: false, promptId: 'avr-prompt-1', type: 'user', message: { role: 'user', content: LEGACY_SENTINEL_USER }, uuid: u, timestamp: new Date(t0).toISOString(), ...env },
+    { parentUuid: u, isSidechain: false, type: 'assistant', message: { id: 'msg_avr228', type: 'message', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: LEGACY_SENTINEL_ASSISTANT }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }, uuid: a, timestamp: new Date(t0 + 1000).toISOString(), ...env },
+  ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+  return file;
+}
+
 /** Seed: a real git repo + registered worktree (prune deletes what it cannot verify), the
  *  repo's Run script, the PINNED account, and a stub `claude` that never touches the API. */
 function seedWorld(home, opt = {}) {
@@ -432,18 +464,15 @@ function seedWorld(home, opt = {}) {
   // #228: the terminal agent's transcript, exactly where `claude --continue` / the SDK session index look for it:
   // <account configDir>/projects/<mangled worktree path>/<session>.jsonl.
   let legacyTranscript = null;
-  if (opt.legacy) {
-    const projDir = path.join(configDir, 'projects', wtDir.replace(/[^A-Za-z0-9]/g, '-'));
-    fs.mkdirSync(projDir, { recursive: true });
-    legacyTranscript = path.join(projDir, `${LEGACY_SESSION_ID}.jsonl`);
-    const env = { userType: 'external', entrypoint: 'cli', cwd: wtDir, sessionId: LEGACY_SESSION_ID, version: '2.1.284', gitBranch: 'e2e/avr-1' };
-    const u = '2280b3a1-0000-4000-8000-000000000001', a = '2280b3a1-0000-4000-8000-000000000002', t0 = Date.now() - 3600e3;
-    fs.writeFileSync(legacyTranscript, [
-      { parentUuid: null, isSidechain: false, promptId: 'avr-prompt-1', type: 'user', message: { role: 'user', content: LEGACY_SENTINEL_USER }, uuid: u, timestamp: new Date(t0).toISOString(), ...env },
-      { parentUuid: u, isSidechain: false, type: 'assistant', message: { id: 'msg_avr228', type: 'message', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: LEGACY_SENTINEL_ASSISTANT }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }, uuid: a, timestamp: new Date(t0 + 1000).toISOString(), ...env },
-    ].map((l) => JSON.stringify(l)).join('\n') + '\n');
-  }
+  if (opt.legacy) legacyTranscript = writeTerminalTranscript(configDir, wtDir);
   const repo = { path: repoDir, name: 'avr-repo', defaultBranch: 'main', scripts: BROKEN_CONTROL ? {} : { run: 'sleep 3600' }, accountId: account.id };
+  // #230 seeds (opt.kinds): a SCRATCH and an ORCHESTRATOR session as `createScratchLikeWorkspace` leaves them (repo-less, a plain dir, no branch
+  // tracking) — the two kinds that have no Run/Diff tab, so the tab-fallback and "no agent PTY from any tab" clauses can reach them. Listed AFTER the worktree
+  // workspace so it stays the store's first (active at boot). Every dir lives inside the boot home (checkScratchConfig / checkHandOff already refuse otherwise).
+  const kinds = opt.kinds ? Object.fromEntries([['scratch', 'avr-scratch'], ['orch', 'avr-orch']].map(([k, name]) => {
+    const dir = path.join(home, 'scratch', name); fs.mkdirSync(dir, { recursive: true });
+    return [k, { id: `ws-${name}`, name, kind: k === 'orch' ? 'orchestrator' : 'scratch', repoPath: '', worktreePath: dir, branch: name, baseBranch: '', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id, setupStatus: 'ok' }];
+  })) : null;
   // #226 seeds (opt.sandbox): two sandbox-hosted records as `importWorkspaceToSandbox` leaves them (host flipped, hasInput false,
   // local worktree retired). `gone` = retired path absent (the normal case); `live` = the retire step failed, so the local dir still
   // exists — the case where a PTY fallback WITHOUT `host` would start a local agent. Listed FIRST so the store's first ws is active at boot.
@@ -453,9 +482,13 @@ function seedWorld(home, opt = {}) {
   if (opt.sandbox) fs.mkdirSync(sbxLiveDir, { recursive: true });
   // `legacy` = a terminal-only sandbox ws (hasInput, NO sdkSessionId): the restart classifier routes it to the PTY (host-aware) launcher.
   // `owed` (#227) = an imported, NEVER-started sandbox ws that still owes its brief (lastTask, no hasInput, no session id): Restart's owed-task route must not reach it.
-  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir), legacy: sbxRec('legacy', path.join(home, 'wt', 'avr-sbx-legacy'), { hasInput: true, sdkSessionId: undefined }), owed: sbxRec('owed', path.join(home, 'wt', 'avr-sbx-owed'), { sdkSessionId: undefined, lastTask: 'AVR-SBX-OWED-BRIEF' }) } : null;
+  // `adoptx` (#230): a LEGACY sandbox ws (hasInput, no session id) whose local dir EXISTS and holds a terminal transcript — the one shape where adopting it
+  // before the pause refusal would persist a resume id on a workspace whose start is refused (a refused start must write nothing).
+  const sbxAdoptDir = path.join(home, 'wt', 'avr-sbx-adoptx');
+  if (opt.sandbox) { fs.mkdirSync(sbxAdoptDir, { recursive: true }); writeTerminalTranscript(configDir, sbxAdoptDir); }
+  const sbx = opt.sandbox ? { gone: sbxRec('gone', path.join(home, 'wt', 'avr-sbx-gone')), live: sbxRec('live', sbxLiveDir), legacy: sbxRec('legacy', path.join(home, 'wt', 'avr-sbx-legacy'), { hasInput: true, sdkSessionId: undefined }), owed: sbxRec('owed', path.join(home, 'wt', 'avr-sbx-owed'), { sdkSessionId: undefined, lastTask: 'AVR-SBX-OWED-BRIEF' }), adoptx: sbxRec('adoptx', sbxAdoptDir, { hasInput: true, sdkSessionId: undefined }) } : null;
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, sbx.legacy, sbx.owed, ws] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [repo], workspaces: sbx ? [sbx.gone, sbx.live, sbx.legacy, sbx.owed, sbx.adoptx, ws] : kinds ? [ws, kinds.scratch, kinds.orch] : [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
   // Stub claude: the legacy agent PTY execs `claude` from PATH; a stub keeps the baseline
   // free of API calls. Stays a shell (not exec) so its cmdline names the stub for identity.
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
@@ -473,7 +506,7 @@ function seedWorld(home, opt = {}) {
       `echo "gh: avr stub has no answer for: $*" >&2; exit 1\n`, { mode: 0o755 });
     fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\necho "$*" >> ${q('xdg-open.log')}\n`, { mode: 0o755 });
   }
-  return { fakeHome, repoDir, wtDir, ws, sbx, account, stubDir, stub, stubLog, legacyTranscript, storeFile: path.join(dir, 'store.json') };
+  return { fakeHome, repoDir, wtDir, ws, sbx, kinds, account, stubDir, stub, stubLog, legacyTranscript, storeFile: path.join(dir, 'store.json') };
 }
 
 async function bootApp(arm, opt = {}) {
@@ -796,9 +829,16 @@ const keeperControl = (ctx) => { const f = path.join(ctx.app.home, 'bin', 'keepe
 // ── #226 helpers: drive the Agent view like a user, and the REAL CLI against this boot's socket ──────────────
 /** Trusted click on a sidebar row by (unique) workspace name; asserts the row became active. */
 async function activateWorkspace(app, name) {
-  const row = await waitFor(`sidebar row '${name}'`, () => app.cdp.eval(`(() => { const e = [...document.querySelectorAll('.ws-item')].find(x => x.textContent.includes(${JSON.stringify(name)})); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 15000);
+  // Click a point of the row that hit-tests to the ROW ITSELF, not to a control inside it (the account badge / icon buttons sit mid-row and swallow the click).
+  const row = await waitFor(`sidebar row '${name}'`, () => app.cdp.eval(`(() => { const e = [...document.querySelectorAll('.ws-item')].find(x => x.textContent.includes(${JSON.stringify(name)})); if (!e) return null; const r = e.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0)) return null;
+    for (const f of [0.5, 0.12, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9]) { const cx = r.x + r.width * f, cy = r.y + r.height / 2; const h = document.elementFromPoint(cx, cy); if (h && e.contains(h) && !h.closest('button, .account-badge, .ws-icon-btn, a, input')) return { cx, cy }; }
+    return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`), 15000);
   await app.click(row.cx, row.cy);
-  await waitFor(`'${name}' active`, () => app.cdp.eval(`[...document.querySelectorAll('.ws-item.active')].some(x => x.textContent.includes(${JSON.stringify(name)}))`), 8000, 100);
+  await waitFor(`'${name}' active`, () => app.cdp.eval(`[...document.querySelectorAll('.ws-item.active')].some(x => x.textContent.includes(${JSON.stringify(name)}))`), 8000, 100).catch(async (e) => {
+    const rows = await app.cdp.eval(`[...document.querySelectorAll('.ws-item')].map(x => { const r = x.getBoundingClientRect(); return { text: x.textContent.trim().slice(0, 50), active: x.classList.contains('active'), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; })`).catch(() => '?');
+    const hit = await app.cdp.eval(`(() => { const e = document.elementFromPoint(${row.cx}, ${row.cy}); return e ? e.tagName + '.' + e.className + ' :: ' + e.textContent.trim().slice(0, 40) : null; })()`).catch(() => '?');
+    throw new Error(`${e.message} — clicked (${Math.round(row.cx)},${Math.round(row.cy)}) which hit-tests to ${hit}; rows=${JSON.stringify(rows)}`);
+  });
 }
 /** Open the Agent-view tab of the active workspace. Whichever label the build renders (Structured today, Agent after #230):
  *  this arm is about the START refusal, not the tab rename, so a build that has not renamed yet must still reach its clauses. */
@@ -900,6 +940,14 @@ const LOGGING_STUB = [
   // after stdin EOF: idle, but interruptibly (a foreground `sleep` would defer the TERM trap for an hour)
   'done', 'sleep 3600 &', 'SP=$!', 'wait $SP', '',
 ].join('\n');
+/** #230 review r2 F1: a `claude` that REFUSES `--resume` (stderr text + exit 1 at launch — the SDK reports only "process exited with code 1", which is NOT a
+ *  bad-resume signal) and otherwise behaves like the default stub. Logs every start to <home>/stub-argv.log (the observable `sessionStarts` reads). */
+const RESUME_FAIL_STUB = ['#!/bin/sh', 'D="$(dirname "$0")/.."', 'echo "$$ $*" >> "$D/stub-argv.log"',
+  'case "$*" in *--resume*) echo "No conversation found with session ID (avr resume-failing stub)" >&2; exit 1;; esac', 'echo AVR-STUB-CLAUDE "$@"', 'sleep 3600', ''].join('\n');
+/** #230 review r2 F1 CONTROL: a `claude` that ACCEPTS `--resume` (prints the stream-json `system/init` for the resumed session at once) and then dies (exit 1) —
+ *  a death AFTER init. The adopted id worked, so it must be KEPT (the clear is for a resume the CLI refused, before any stream message). */
+const RESUME_INIT_THEN_DIE_STUB = ['#!/bin/sh', 'D="$(dirname "$0")/.."', 'echo "$$ $*" >> "$D/stub-argv.log"',
+  `case "$*" in *--resume*) echo '{"type":"system","subtype":"init","session_id":"${LEGACY_SESSION_ID}","tools":[],"slash_commands":[]}'; sleep 1; exit 1;; esac`, 'echo AVR-STUB-CLAUDE "$@"', 'sleep 3600', ''].join('\n');
 /** D7 instrument: install the REAL measured failure (scripts/fixtures/real-cli-badmodel-2.1.284.jsonl, session id rewritten to the stub's) where the
  *  stub replays it; returns what the replay will say so the arm can assert the fixture really is the shape under test. */
 const REAL_SHAPE_FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'real-cli-badmodel-2.1.284.jsonl');
@@ -933,6 +981,60 @@ async function spawnChild(ctx, task = SPAWN_TASK, extra = []) {
   r.ms = Date.now() - t0;
   const fresh = (await listWs(app)).filter((w) => !known.has(w.id));
   return { r, fresh, child: fresh[0] ?? null };
+}
+
+// ── #230 helpers ─────────────────────────────────────────────────────────────
+const J = JSON.stringify;
+const AGENT_TAB_LABELS = ['Agent', 'Structured'];
+/** The build's Agent-view tab label among the rendered ones (Agent after #230, Structured before). */
+const agentTabOf = async (app) => { const labels = (await app.tabs()).map((t) => t.label); return AGENT_TAB_LABELS.find((l) => labels.includes(l)) ?? null; };
+/** Agent-terminal DOM oracle: xterm instances mounted OUTSIDE the Run / nvim / login containers (an xterm is what the removed Raw view rendered),
+ *  plus the removed component's own root class and — as the instrument control — the Run pane's xterms. */
+const agentXterms = (app) => app.cdp.eval(`(() => ({
+  xterms: [...document.querySelectorAll('.xterm')].filter((e) => !e.closest('.run-pane, .nvim-pane, .modal, .modal-backdrop')).length,
+  terminalPanes: document.querySelectorAll('.terminal-pane').length,
+  runXterms: document.querySelectorAll('.run-pane .xterm').length }))()`);
+/** Is the Agent view the pane the user sees? Its message list only has layout while its pane is the active one (inactive panes are display:none). */
+const agentViewVisible = (app) => app.cdp.eval(`[...document.querySelectorAll('.av-message-list')].some((l) => { const r = l.getBoundingClientRect(); return r.width > 50 && r.height > 50; })`);
+/** Reload the renderer — a fresh app start for everything the renderer keeps in localStorage — and wait for the NEW document's toolbar. */
+async function reloadRenderer(app) {
+  await app.cdp.eval('window.__avrPreReload = true');
+  await app.cdp.send('Page.reload', {});
+  await waitFor('renderer reloaded (marker gone)', () => app.cdp.eval('window.__avrPreReload === undefined && document.readyState === "complete"').catch(() => false), 30000, 250);
+  await ready(app);
+}
+const activeTabOf = async (app) => (await app.tabs()).find((t) => t.active)?.label ?? null;
+/** The cwd of a live process (the stub claude a keeper started), or null. */
+const cwdOfPid = (pid) => { try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return null; } };
+
+/** #230 F1: a LEGACY terminal-only workspace whose FIRST Agent-view action is `drive(app)` (not a composer send) must still start ITS session resuming the
+ *  terminal transcript — adoption sits at the session-start funnel, not at one entry point. `arm` names the action in the clause text. */
+async function legacyFirstAction(ctx, arm, drive) {
+  const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.firstStartAdopts);
+  keeperControl(ctx);
+  const agentTab = await agentTabOf(app); await app.clickTab(agentTab);
+  const rec0 = (await listWs(app)).find((x) => x.id === wsId);
+  ctx.clause('seed/legacy-shape', !!rec0 && rec0.hasInput === true && rec0.sdkSessionId === undefined, `hasInput=${rec0?.hasInput} sdkSessionId=${J(rec0?.sdkSessionId)} (want hasInput=true, sdkSessionId absent)`);
+  const ADOPT = `${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`;
+  const log0 = appLog(app);
+  ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log channel is unproven'}`);
+  // an SDK SESSION start = a claude whose argv carries the stream-json input flag (`claude auth status` / `--version` probes are not sessions)
+  const sdkStarts = () => sessionStarts(app).filter((x) => x.argv.includes('--input-format'));
+  ctx.clause('pre-state-no-session-no-adoption', !log0.includes(ADOPT) && sdkStarts().length === 0, `adoption line present=${log0.includes(ADOPT)}; SDK session starts so far=${sdkStarts().length}`);
+  const did = await drive(app);
+  ctx.clause(`${arm}/action-happened`, !!did.ok, did.detail);
+  const started = await waitFor('an SDK session start (stub argv log)', () => sdkStarts().length >= 1, 40000, 250).catch(() => false);
+  await sleep(ABSENCE_MS);
+  const starts = sdkStarts();
+  ctx.clause(`${arm}/started-a-session`, !!started, `SDK session starts=${starts.length} (${J(starts.map((x) => x.pid))})`);
+  const argv = starts[0]?.argv ?? []; const ro = resumeOf(argv);
+  const resumeOk = want ? ro.target === LEGACY_SESSION_ID && !ro.continue : !ro.resume && !ro.continue;
+  ctx.clause(`${arm}/resume-target`, resumeOk, `claude argv (${argv.length} args): --resume target=${J(ro.target)} --continue=${ro.continue}; expected(${MODE}) ${want ? `--resume=${LEGACY_SESSION_ID} (the terminal transcript's session)` : 'NO --resume (a blank conversation — the O1 defect)'}`);
+  ctx.clause(`${arm}/adoption-logged`, appLog(app).includes(ADOPT) === want, `'${ADOPT}' present=${appLog(app).includes(ADOPT)} expected(${MODE})=${want}`);
+  const got = (await waitFor('sdkSessionId adopted', async () => { const x = (await listWs(app)).find((y) => y.id === wsId); return x?.sdkSessionId === LEGACY_SESSION_ID ? x : null; }, want ? 10000 : 500, 250).catch(() => null)) ?? (await listWs(app)).find((x) => x.id === wsId);
+  ctx.clause(`${arm}/store-sdkSessionId`, want ? got?.sdkSessionId === LEGACY_SESSION_ID : got?.sdkSessionId === undefined, `ws.sdkSessionId after=${J(got?.sdkSessionId)} expected(${MODE})=${want ? LEGACY_SESSION_ID : 'absent'}`);
+  await runControl(ctx);
+  noAgentPty(ctx, `${arm}/no-agent-pty`, await app.ptys());
 }
 
 const ARMS = [
@@ -1252,7 +1354,9 @@ const ARMS = [
       const ok = parseArgs(['/app', '--mode', 'after', '--arm', 'tabs,open_tabs_agent_pty', '--allow-stale', '--broken-control']);
       ctx.clause('accepts:documented-forms', !ok.error && ok.mode === 'after' && ok.arm === 'tabs,open_tabs_agent_pty' && ok.allowStale && ok.brokenControl && ok.positional[0] === '/app', JSON.stringify(ok));
       const def = parseArgs(['/app']);
-      ctx.clause('accepts:default-is-baseline', !def.error && def.mode === 'baseline' && !def.list, `mode=${def.mode}`);
+      ctx.clause('accepts:default-is-after', !def.error && def.mode === 'after' && !def.list, `mode=${def.mode} (#230 flipped the default to the removal spec; a silently-ignored flag must run the STRICT mode)`);
+      const base = parseArgs(['/app', '--mode', 'baseline']);
+      ctx.clause('accepts:baseline-still-selectable', !base.error && base.mode === 'baseline', `mode=${base.mode} (the pre-change reference mode stays reachable, explicitly)`);
       ctx.clause('accepts:--list', !parseArgs(['--list']).error && parseArgs(['--list']).list, '--list alone is valid');
     },
   },
@@ -1287,7 +1391,7 @@ const ARMS = [
     },
   },
   {
-    name: 'legacy_restart', boots: true, ticket: '#228', boot: { legacy: true },
+    name: 'legacy_restart', boots: true, ticket: '#228', boot: { legacy: true }, retiredBaseline: '#228 landed on master (f8bbec86)',
     doc: 'a stopped LEGACY terminal-only workspace (hasInput, no sdkSessionId, a terminal transcript on disk) restarted through the REAL CLI: baseline = PTY restart (`--continue` in an agent PTY, no adoption); after = the SDK wake path adopts that transcript, the session resumes ITS id in the Agent view, no agent PTY, reply names no surface',
     async run(ctx) {
       const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.legacyRestart);
@@ -1302,7 +1406,7 @@ const ARMS = [
       const pre = await app.ptys();
       const already = new Set(pre.filter((p) => p.kind === 'agent').map((p) => p.ptyId));
       noAgentPty(ctx, 'pre-state-no-agent-pty', pre);
-      const ADOPT = `wake ${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`;
+      const ADOPT = `${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`;
       const log0 = appLog(app);
       ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log path/channel is unproven, so its silence below means nothing'}`);
       keeperControl(ctx);
@@ -1374,7 +1478,7 @@ const ARMS = [
     },
   },
   {
-    name: 'legacy_restart_fresh', boots: true, ticket: '#228', boot: { legacy: true },
+    name: 'legacy_restart_fresh', boots: true, ticket: '#228', boot: { legacy: true }, retiredBaseline: '#228 landed on master (f8bbec86)',
     doc: '`orchestra restart --fresh` of the same legacy workspace NEVER adopts the terminal transcript (the conversation is being dropped): baseline = a vierge agent PTY (no --continue, no --resume); after = sdkClear (ws.sdkSessionId \'\'), no adoption logged, no session started, no agent PTY',
     async run(ctx) {
       const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.legacyRestart);
@@ -1382,7 +1486,7 @@ const ARMS = [
       const pre = await app.ptys();
       const already = new Set(pre.filter((p) => p.kind === 'agent').map((p) => p.ptyId));
       noAgentPty(ctx, 'pre-state-no-agent-pty', pre);
-      const ADOPT = `wake ${wsId} adopting terminal transcript`;   // ANY adoption of this workspace's transcript
+      const ADOPT = `${wsId} adopting terminal transcript`;   // ANY adoption of this workspace's transcript
       const log0 = appLog(app);
       ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log channel is unproven'}`);
       keeperControl(ctx);
@@ -1434,38 +1538,51 @@ const ARMS = [
       const active = tabs.find((t) => t.active)?.label;
       ctx.clause('opens-on-agent-view', active === pick(EXPECT.agentTab), `active=${active} expected=${pick(EXPECT.agentTab)}`);
       ctx.clause('raw-tab', labels.includes('Raw') === (MODE === 'baseline'), `Raw present=${labels.includes('Raw')} expected(${MODE})=${MODE === 'baseline'}`);
+      // #230: no agent terminal is mounted for ANY workspace (baseline: one xterm per mounted workspace, whichever tab is active).
+      const x = await agentXterms(ctx.app);
+      ctx.clause('no-agent-terminal-mounted', (x.xterms > 0) === pick(EXPECT.agentTerminalMounted), `xterms outside Run/nvim/login containers=${x.xterms} (.terminal-pane=${x.terminalPanes}) expected(${MODE})=${pick(EXPECT.agentTerminalMounted) ? 'mounted' : 'none'}`);
     },
   },
   {
-    name: 'open_tabs_agent_pty', boots: true, ticket: '#225',
-    doc: 'opening each tab: baseline Raw creates an agent-kind PTY, every other tab creates none; after — NO tab creates one (gated on the Run-tab control)',
+    name: 'open_tabs_agent_pty', boots: true, ticket: '#225', boot: { kinds: true },
+    doc: 'opening each tab of a worktree, a scratch and an orchestrator workspace: baseline Raw creates an agent-kind PTY (per workspace), every other tab creates none; after — NO tab of ANY kind creates one (gated on the Run-tab control) and no agent terminal is mounted (#230)',
     async run(ctx) {
-      const { app } = ctx; const wsId = app.world.ws.id;
+      const { app } = ctx; const w = app.world;
       await runControl(ctx);
       const pre = await app.ptys();
       noAgentPty(ctx, 'pre-state-no-agent-pty', pre);
-      const labels = (await app.tabs()).map((t) => t.label);
-      for (const label of labels.filter((l) => l !== 'Raw')) {
-        const already = new Set((await app.ptys()).filter((p) => p.kind === 'agent').map((p) => p.ptyId));
-        await app.clickTab(label);
-        await sleep(ABSENCE_MS);
-        noAgentPty(ctx, `tab:${label}:no-agent-pty`, await app.ptys(), already);
-      }
-      if (labels.includes('Raw')) {
-        await app.clickTab('Raw');
-        const post = await waitFor(`agent-kind PTY ${wsId}`, async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === wsId && p.kind === 'agent') ? ps : null; }, 20000, 300).catch(() => null);
-        ctx.clause('tab:Raw:creates-agent-pty', !!post === pick(EXPECT.rawCreatesAgentPty), `pre=${fmtP(pre)} -> post=${post ? fmtP(post) : 'NO agent PTY appeared'} expected(${MODE})=${pick(EXPECT.rawCreatesAgentPty)}`);
-        if (post) {
-          const agent = post.find((p) => p.kind === 'agent');
-          const cmds = agent.pids.map(procCmdline);
-          ctx.clause('tab:Raw:agent-pty-is-the-stub', cmds.some((c) => c.includes(app.world.stub)), `no real claude was started; PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
-        } else ctx.skip('tab:Raw:agent-pty-is-the-stub', 'no agent PTY appeared — nothing to inspect');
-      } else {
-        ctx.skip('tab:Raw:creates-agent-pty', `no Raw tab rendered — nothing to open; agent-PTY absence is measured by end-state-agent-pty (expected(${MODE})=${pick(EXPECT.rawCreatesAgentPty)})`);
-        ctx.skip('tab:Raw:agent-pty-is-the-stub', 'no agent PTY was created — nothing to inspect');
+      const targets = [{ name: 'avr-1', id: w.ws.id }, { name: w.kinds.scratch.name, id: w.kinds.scratch.id }, { name: w.kinds.orch.name, id: w.kinds.orch.id }];
+      let rawOpened = 0;
+      for (const t of targets) {
+        await activateWorkspace(app, t.name);
+        const labels = (await app.tabs()).map((x) => x.label);
+        ctx.note(`${t.name} renders tabs ${JSON.stringify(labels)}`);
+        for (const label of labels.filter((l) => l !== 'Raw')) {
+          const already = new Set((await app.ptys()).filter((p) => p.kind === 'agent').map((p) => p.ptyId));
+          await app.clickTab(label);
+          await sleep(ABSENCE_MS);
+          noAgentPty(ctx, `${t.name}/tab:${label}:no-agent-pty`, await app.ptys(), already);
+          if (label !== 'Run') { const x = await agentXterms(app); ctx.clause(`${t.name}/tab:${label}:no-agent-terminal-mounted`, (x.xterms > 0) === pick(EXPECT.agentTerminalMounted), `xterms outside Run/nvim/login containers=${x.xterms} (.terminal-pane=${x.terminalPanes}) expected(${MODE})=${pick(EXPECT.agentTerminalMounted) ? 'the Raw view is mounted (kept alive on every tab)' : 'none'}`); }
+        }
+        if (labels.includes('Raw')) {
+          await app.clickTab('Raw');
+          const post = await waitFor(`agent-kind PTY ${t.id}`, async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === t.id && p.kind === 'agent') ? ps : null; }, 20000, 300).catch(() => null);
+          ctx.clause(`${t.name}/tab:Raw:creates-agent-pty`, !!post === pick(EXPECT.rawCreatesAgentPty), `post=${post ? fmtP(post) : 'NO agent PTY appeared'} expected(${MODE})=${pick(EXPECT.rawCreatesAgentPty)}`);
+          if (post) {
+            rawOpened++;
+            const agent = post.find((p) => p.ptyId === t.id && p.kind === 'agent');
+            const cmds = agent.pids.map(procCmdline);
+            ctx.clause(`${t.name}/tab:Raw:agent-pty-is-the-stub`, cmds.some((c) => c.includes(app.world.stub)), `no real claude was started; PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
+          } else ctx.skip(`${t.name}/tab:Raw:agent-pty-is-the-stub`, 'no agent PTY appeared — nothing to inspect');
+        } else {
+          ctx.skip(`${t.name}/tab:Raw:creates-agent-pty`, `no Raw tab rendered — nothing to open; agent-PTY absence is measured by end-state-agent-pty (expected(${MODE})=${pick(EXPECT.rawCreatesAgentPty)})`);
+          ctx.skip(`${t.name}/tab:Raw:agent-pty-is-the-stub`, 'no agent PTY was created — nothing to inspect');
+        }
+        // Leave on the Agent tab so the NEXT activation is not itself a terminal activation (baseline: a Raw-active view would start that workspace's PTY).
+        await app.clickTab(await agentTabOf(app));
       }
       const end = await app.ptys();
-      if (MODE === 'baseline') ctx.clause('end-state-agent-pty', end.filter((p) => p.kind === 'agent').length === 1, `baseline: Raw left exactly one agent-kind PTY (${fmtP(end)})`);
+      if (MODE === 'baseline') ctx.clause('end-state-agent-pty', end.filter((p) => p.kind === 'agent').length === rawOpened && rawOpened === targets.length, `baseline: Raw left exactly one agent-kind PTY per workspace (${rawOpened}/${targets.length}) (${fmtP(end)})`);
       else noAgentPty(ctx, 'end-state-agent-pty', end);
     },
   },
@@ -1531,7 +1648,7 @@ const ARMS = [
     },
   },
   {
-    name: 'toolbar_no_pr', boots: true, ticket: '#229', boot: { commitsAhead: 1 },
+    name: 'toolbar_no_pr', boots: true, ticket: '#229', boot: { commitsAhead: 1 }, retiredBaseline: '#229 landed on master (509ab236)',
     doc: 'no linked PR + 1 unpushed commit: baseline the toolbar has the amber "Open PR · ↑1" create button; after — no Open PR button, no "ready to push" affordance, no PR control at all; the merge IPC preload wrapper is gone',
     async run(ctx) {
       const { app } = ctx; const wsId = app.world.ws.id;
@@ -1565,7 +1682,7 @@ const ARMS = [
     },
   },
   {
-    name: 'toolbar_no_pr_fresh', boots: true, ticket: '#229', boot: {},
+    name: 'toolbar_no_pr_fresh', boots: true, ticket: '#229', boot: {}, retiredBaseline: '#229 landed on master (509ab236)',
     doc: 'FRESH no-PR workspace (0 commits ahead — the commonest no-PR state): baseline the toolbar has the plain "Open PR" create button (never primed); after — none. Control: the actions group rendered and findPR resolved empty',
     async run(ctx) {
       const { app } = ctx; const wsId = app.world.ws.id;
@@ -1629,7 +1746,7 @@ const ARMS = [
     },
   },
   {
-    name: 'sandbox_paused', boots: true, ticket: '#226', boot: { sandbox: true },
+    name: 'sandbox_paused', boots: true, ticket: '#226', boot: { sandbox: true }, retiredBaseline: '#226 landed on master (37ce7879)',
     doc: 'sandbox-hosted workspaces: starting their agent is refused naming the pause + #220 — Agent-view send (error row), CLI restart (rc!=0 + message), CLI message wake (no local PTY fallback); a local workspace in the same boot is unaffected',
     async run(ctx) {
       const { app } = ctx; const { sbx, ws: local } = app.world; const want = pick(EXPECT.sandboxPaused);
@@ -1657,6 +1774,23 @@ const ARMS = [
       ctx.clause('agent-view-send/error-names-pause-and-220', namesPause(errText) === want, `names pause+#220=${namesPause(errText)} expected(${MODE})=${want} :: ${oneLine(errText)}`);
       const listRect = await app.cdp.eval(`(() => { for (const l of document.querySelectorAll('.av-message-list')) { const r = l.getBoundingClientRect(); if (r.width > 50 && r.height > 50) return { x: r.x, y: r.y, width: r.width, height: r.height }; } return null; })()`);
       if (listRect) console.log(`SHOT      agent-view-send-error ${await app.shot('sandbox-agent-view-send', listRect)}`);
+
+      // ── 1b. #230: the composer's terminal-transcript adoption must NOT run for a sandbox workspace (a refused start writes nothing) ──
+      // `adoptx` is legacy-shaped (hasInput, no session id) with a terminal transcript on disk under its EXISTING local dir — adopting first would persist the id.
+      {
+        const wsA = sbx.adoptx.id; const ADOPTX = `${wsA} adopting terminal transcript`;
+        const rec0 = (await listWs(app)).find((x) => x.id === wsA);
+        ctx.clause('adoptx/seed-legacy-shape', !!rec0 && rec0.hasInput === true && rec0.sdkSessionId === undefined && fs.existsSync(path.join(app.world.account.configDir, 'projects', sbx.adoptx.worktreePath.replace(/[^A-Za-z0-9]/g, '-'), `${LEGACY_SESSION_ID}.jsonl`)), `hasInput=${rec0?.hasInput} sdkSessionId=${J(rec0?.sdkSessionId)} transcript on disk under its local dir`);
+        await activateWorkspace(app, 'avr-sbx-adoptx');
+        await openAgentTab(app);
+        const sentA = await composerSend(app, 'AVR-SEND-SBX-ADOPTX-52c1');
+        const errA = await waitFor('adoptx error row', async () => { const r = await messageRows(app); return r && r.errors.length ? r : null; }, 30000, 250).catch(() => null);
+        const recA = (await listWs(app)).find((x) => x.id === wsA);
+        console.log(`OBSERVED  agent-view-send(${wsA}) error rows=${errA ? errA.errors.length : 0} sdkSessionId now ${J(recA?.sdkSessionId)} adoption logged=${appLog(app).includes(ADOPTX)} composer pre=${J(oneLine(sentA.pre, 30))}`);
+        ctx.clause('adoptx/composer-send-adopts-nothing', recA?.sdkSessionId === undefined && !appLog(app).includes(ADOPTX), `ws.sdkSessionId after the composer send=${J(recA?.sdkSessionId)} (want absent); adoption line for it logged=${appLog(app).includes(ADOPTX)} (want false) — both modes: master never adopted on the composer path`);
+        if (want) ctx.clause('adoptx/send-refused-naming-pause', !!errA && namesPause(errA.errors.join(' | ')), `error rows=${J(errA ? errA.errors.map((e) => oneLine(e, 100)) : [])}`);
+        else ctx.skip('adoptx/send-refused-naming-pause', 'baseline (master): the lazy start "succeeds" — no pause row to read');
+      }
 
       // ── 2. CLI restart of the same workspace: not-ok, same message ───────────────────────────
       const rs = await runCli(app, ['restart', sbx.gone.id]);
@@ -1750,7 +1884,7 @@ const ARMS = [
     },
   },
   {
-    name: 'spawn_failure_reported', boots: true, sdkLess: true, ticket: '#227',
+    name: 'spawn_failure_reported', boots: true, sdkLess: true, ticket: '#227', retiredBaseline: '#227 landed on master (5d2873db)',
     doc: 'SDK start FORCED to fail (Agent SDK absent from the boot\'s node_modules): `orchestra spawn` returns not-ok naming the reason, the child is KEPT stopped with its task, the error shows in its Agent view, and a wake (message / prompt queue / review) never starts a PTY — baseline: the PTY fallback masks all of it',
     async run(ctx) {
       const { app } = ctx; const okWanted = pick(EXPECT.spawnOkWhenSdkFails); const wantPty = pick(EXPECT.spawnMakesAgentPty);
@@ -1830,7 +1964,7 @@ const ARMS = [
     },
   },
   {
-    name: 'restart_delivers_task_once', boots: true, sdkLess: true, stubScript: 'logging', ticket: '#227',
+    name: 'restart_delivers_task_once', boots: true, sdkLess: true, stubScript: 'logging', ticket: '#227', retiredBaseline: '#227 landed on master (5d2873db)',
     doc: 'after a failed spawn: Restart while the cause remains is REPORTED (task still owed, no PTY); after the cause is removed Restart starts the child and the CLI receives its task EXACTLY ONCE — also across Agent-view history loads (no duplicated brief)',
     async run(ctx) {
       const { app } = ctx; const okWanted = pick(EXPECT.spawnOkWhenSdkFails);
@@ -1881,7 +2015,7 @@ const ARMS = [
     },
   },
   {
-    name: 'spawn_init_wait', boots: true, stubScript: 'logging', ticket: '#227',
+    name: 'spawn_init_wait', boots: true, stubScript: 'logging', ticket: '#227', retiredBaseline: '#227 landed on master (5d2873db)',
     doc: 'D6/D7: `orchestra spawn` waits (bounded, 20 s) for the child\'s first TURN outcome — a CLI that dies before producing output (dead --model) is not-ok naming the model, a normal spawn returns at once, a silent CLI is ok WITH the not-confirmed note after the bound and its brief is not marked delivered',
     async run(ctx) {
       const { app } = ctx; const okOnDeath = pick(EXPECT.cliDeathSpawnOk); const wantNote = pick(EXPECT.slowInitNote);
@@ -1912,7 +2046,7 @@ const ARMS = [
     },
   },
   {
-    name: 'first_turn_error_reported', boots: true, stubScript: 'logging', ticket: '#227',
+    name: 'first_turn_error_reported', boots: true, stubScript: 'logging', ticket: '#227', retiredBaseline: '#227 landed on master (5d2873db)',
     doc: 'D7: the MEASURED real failure shape (claude 2.1.284 — init, then assistant API error + result is_error, exit 1; replayed from scripts/fixtures/real-cli-badmodel-2.1.284.jsonl): init alone is NOT success — `orchestra spawn` is not-ok naming the error, the brief stays owed (no delivered marker, session id cleared), the error shows once in the Agent view, Restart while broken is reported, and after the cause is removed Restart delivers the brief EXACTLY once',
     async run(ctx) {
       const { app } = ctx; const okWanted = pick(EXPECT.firstTurnErrorSpawnOk);
@@ -1969,7 +2103,7 @@ const ARMS = [
     },
   },
   {
-    name: 'first_turn_error_live_reported', boots: true, stubScript: 'logging', ticket: '#227',
+    name: 'first_turn_error_live_reported', boots: true, stubScript: 'logging', ticket: '#227', retiredBaseline: '#227 landed on master (5d2873db)',
     doc: 'D7 / round-3 F7: the same measured failure, but the CLI STAYS ALIVE after the errored result (exits only at stdin EOF): `orchestra spawn` is not-ok AND the CLI process is STOPPED (child kept stopped — spawn\'s sdkStopIfLive is driven), and after the cause is removed Restart delivers the brief exactly once',
     async run(ctx) {
       const { app } = ctx; const okWanted = pick(EXPECT.firstTurnErrorSpawnOk);
@@ -2000,7 +2134,7 @@ const ARMS = [
     },
   },
   {
-    name: 'brief_survives_other_start', boots: true, sdkLess: true, stubScript: 'logging', ticket: '#227',
+    name: 'brief_survives_other_start', boots: true, sdkLess: true, stubScript: 'logging', ticket: '#227', retiredBaseline: '#227 landed on master (5d2873db)',
     doc: 'F2: a kept child\'s retained brief reaches the CLI (once, FIRST) whichever start comes first after the cause is removed — a peer message wake or the composer — not only Restart',
     async run(ctx) {
       const { app } = ctx; const okWanted = pick(EXPECT.spawnOkWhenSdkFails);
@@ -2035,6 +2169,291 @@ const ARMS = [
       noAgentPty(ctx, 'brief/end-state-no-agent-pty', await again.ptys());
     },
   },
+  {
+    name: 'stored_terminal_pref', boots: true, ticket: '#230',
+    doc: 'the removed "Default agent view" setting: a stored `terminal` preference (localStorage `orchestra:defaultAgentView`, exactly what the old modal wrote) is IGNORED — baseline opens the workspace on the terminal tab ("Terminal") after a renderer reload, after on the Agent tab; and the sidebar header has no "Default agent view" entry (its neighbours render — control)',
+    async run(ctx) {
+      const { app } = ctx; const KEY = 'orchestra:defaultAgentView'; const J = JSON.stringify;
+      const preActive = await activeTabOf(app);
+      const stored0 = await app.cdp.eval(`localStorage.getItem(${J(KEY)})`);
+      ctx.clause('pre-state/no-stored-preference', stored0 === null, `localStorage[${KEY}]=${J(stored0)}, active tab=${preActive}`);
+      await app.cdp.eval(`localStorage.setItem(${J(KEY)}, 'terminal')`);
+      await reloadRenderer(app);
+      const stored1 = await app.cdp.eval(`localStorage.getItem(${J(KEY)})`);
+      ctx.clause('seed/preference-present-in-the-reloaded-app', stored1 === 'terminal', `localStorage[${KEY}]=${J(stored1)} after the reload (the app must IGNORE it, not clean it up)`);
+      const want = pick(EXPECT.storedTerminalPref); const postActive = await activeTabOf(app);
+      ctx.clause('stored-terminal-pref/opens-on', postActive === want, `active tab: before the preference=${preActive} -> after reload with the stored 'terminal' preference=${postActive}; expected(${MODE})=${want}`);
+      const visible = await agentViewVisible(app);
+      ctx.clause('stored-terminal-pref/agent-view-visible', visible === (want === 'Agent'), `Agent view's message list has layout=${visible} expected(${MODE})=${want === 'Agent'}`);
+      // The sidebar entry: control = its header neighbours rendered, so an absence is measured against a painted header.
+      const hdr = await app.cdp.eval(`(() => {
+        const btns = [...document.querySelectorAll('.header-icon-btn')].filter((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+        const label = (b) => (b.getAttribute('aria-label') || '') + ' | ' + (b.getAttribute('title') || '');
+        const hits = [...document.querySelectorAll('[aria-label],[title]')].filter((e) => /default agent view/i.test(label(e)));
+        const rs = btns.map((b) => b.getBoundingClientRect()); // the WHOLE icon row (+ the "New" button beside it), not one button
+        const x0 = Math.min(...rs.map((r) => r.left)), y0 = Math.min(...rs.map((r) => r.top)), x1 = Math.max(...rs.map((r) => r.right)), y1 = Math.max(...rs.map((r) => r.bottom));
+        const nb = document.querySelector('.new-menu-btn'), nr = nb ? nb.getBoundingClientRect() : null;
+        const rect = rs.length ? { x: Math.max(0, x0 - 6), y: Math.max(0, y0 - 6), width: Math.max(x1, nr ? nr.right : 0) - x0 + 12, height: Math.max(y1, nr ? nr.bottom : 0) - y0 + 12 } : null;
+        return { labels: btns.map((b) => b.getAttribute('aria-label')), entry: hits.length, text: /default agent view/i.test(document.body.innerText), rect };
+      })()`);
+      console.log(`OBSERVED  sidebar header buttons=${J(hdr.labels)}`);
+      const need = ['Claude accounts settings', 'Voice dictionary settings', 'Default model and effort settings'];
+      ctx.clause('control/header-neighbours-rendered', need.every((l) => hdr.labels.includes(l)), `rendered header buttons include ${J(need)}: ${need.map((l) => hdr.labels.includes(l))}`);
+      const entryWant = pick(EXPECT.defaultAgentViewEntry);
+      ctx.clause('sidebar/default-agent-view-entry', (hdr.entry > 0 || hdr.text) === entryWant, `elements titled/aria-labelled "Default agent view"=${hdr.entry}, text in body=${hdr.text} expected(${MODE})=${entryWant ? 'present' : 'absent'}`);
+      if (hdr.rect && hdr.rect.width > 20) { const f = await app.shot('stored-pref-sidebar-header', hdr.rect); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      sidebar-header ${f} md5=${md5f(f)} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+      const tb = await app.cdp.eval(`(() => { const e = document.querySelector('.toolbar'); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      if (tb) { const f = await app.shot('stored-pref-toolbar', tb); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      toolbar ${f} md5=${md5f(f)} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+    },
+  },
+  {
+    name: 'kinds_fallback', boots: true, ticket: '#230', boot: { kinds: true },
+    doc: 'switching from the Run or Diff tab of a worktree to a SCRATCH or ORCHESTRATOR workspace (neither has those tabs): baseline falls back to the terminal (Raw active, an agent PTY starts), after lands on the Agent view with no agent PTY and no agent terminal mounted; the Run tab\'s PTY is the positive control',
+    async run(ctx) {
+      const { app } = ctx; const { scratch, orch } = app.world.kinds; const wantTab = pick(EXPECT.fallbackTab); const createsWant = pick(EXPECT.fallbackCreatesAgentPty);
+      await runControl(ctx);
+      noAgentPty(ctx, 'pre-state-no-agent-pty', await app.ptys());
+      const started = new Set();
+      for (const [from, target] of [['Run', scratch], ['Diff', scratch], ['Run', orch], ['Diff', orch]]) {
+        const leg = `${from}->${target.name}`;
+        await activateWorkspace(app, 'avr-1');
+        await app.clickTab(from);
+        const tabs0 = await app.tabs();
+        ctx.clause(`${leg}/pre-state-on-${from}`, tabs0.find((t) => t.active)?.label === from, `worktree tabs=${J(tabs0.map((t) => t.label + (t.active ? '*' : '')))} (the fallback needs a Run/Diff tab to fall from)`);
+        const already = new Set((await app.ptys()).filter((p) => p.kind === 'agent').map((p) => p.ptyId));
+        await activateWorkspace(app, target.name);
+        await waitFor(`${target.name} tab bar (no Run/Diff)`, async () => { const l = (await app.tabs()).map((t) => t.label); return l.length > 0 && !l.includes('Run') && !l.includes('Diff'); }, 10000, 150);
+        const landed = await waitFor(`active tab '${wantTab}'`, async () => ((await activeTabOf(app)) === wantTab ? wantTab : null), 4000, 150).catch(() => null);
+        const tabs1 = await app.tabs();
+        ctx.clause(`${leg}/lands-on`, tabs1.find((t) => t.active)?.label === wantTab && !!landed, `${target.name} tabs=${J(tabs1.map((t) => t.label + (t.active ? '*' : '')))} expected(${MODE}) active=${wantTab}`);
+        const vis = await agentViewVisible(app);
+        ctx.clause(`${leg}/agent-view-visible`, vis === (wantTab === 'Agent'), `Agent view message list has layout=${vis} expected(${MODE})=${wantTab === 'Agent'}`);
+        await sleep(ABSENCE_MS);
+        const ps = await app.ptys();
+        if (createsWant) {
+          if (started.has(target.id)) ctx.skip(`${leg}/agent-pty`, `${target.name}'s agent PTY was already created by an earlier leg (it stays alive) — nothing new to observe`);
+          else { const made = ps.filter((p) => p.kind === 'agent' && p.ptyId === target.id && !already.has(p.ptyId)); ctx.clause(`${leg}/agent-pty`, made.length === 1, `baseline: the terminal fallback started an agent PTY for ${target.name}: ${made.length} (${fmtP(ps)})`); if (made.length) started.add(target.id); }
+        } else noAgentPty(ctx, `${leg}/no-agent-pty`, ps, already);
+        const x = await agentXterms(app);
+        ctx.clause(`${leg}/agent-terminal-mounted`, (x.xterms > 0) === pick(EXPECT.agentTerminalMounted), `xterms outside Run/nvim/login containers=${x.xterms} (.terminal-pane=${x.terminalPanes}) expected(${MODE})=${pick(EXPECT.agentTerminalMounted) ? 'mounted' : 'none'}`);
+      }
+      // Instrument control for the xterm oracle: the Run tab's terminal IS counted by the Run-pane selector while the agent oracle reads 0 there.
+      await activateWorkspace(app, 'avr-1'); await app.clickTab('Run');
+      const rx = await waitFor('Run pane xterm', async () => { const x = await agentXterms(app); return x.runXterms > 0 ? x : null; }, 10000, 250).catch(() => null);
+      ctx.clause('control/run-terminal-still-mounted', !!rx, `.run-pane .xterm=${rx ? rx.runXterms : 0} (the Run terminal is the one terminal that must still mount; agent-terminal oracle there reads ${rx ? rx.xterms : '?'})`);
+      const rect = await app.cdp.eval(`(() => { const e = document.querySelector('.pane'); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      if (rect) { const f = await app.shot('kinds-fallback-run-pane', rect); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      run-pane ${f} md5=${md5f(f)} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+    },
+  },
+  {
+    name: 'effort_live_session', boots: true, ticket: '#230',
+    doc: 'a workspace created with a NON-default effort reports it on its LIVE Agent-view session — ws.sdkEffort (the default setting frozen at creation, and an explicit effort), the Agent view\'s rendered Effort control, and the `--effort` argv of the claude process the composer send started; a workspace created under the "model default" marker carries none (in-arm inert control). Identical in both modes except the tab label (the SDK path always carried it — this pins that removing the PTY launcher does not lose it)',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const J = JSON.stringify;
+      const LABEL = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+      keeperControl(ctx);
+      const tabLabel = await agentTabOf(app);
+      ctx.clause('agent-tab-label', tabLabel === pick(EXPECT.agentTab), `the Agent view's tab reads '${tabLabel}' expected(${MODE})='${pick(EXPECT.agentTab)}'`);
+      const cases = [
+        { tag: 'default-low', defaults: { workspace: 'low', spawned: 'default' }, input: {}, want: 'low' },
+        { tag: 'explicit-xhigh', defaults: { workspace: 'low', spawned: 'default' }, input: { effort: 'xhigh' }, want: 'xhigh' },
+        { tag: 'model-default', defaults: { workspace: 'default', spawned: 'default' }, input: {}, want: null },
+      ];
+      const seen = new Set(sessionStarts(app).map((x) => x.pid));
+      for (const c of cases) {
+        await app.cdp.eval(`window.orchestra.setEffortDefaults(${J(c.defaults)})`);
+        const made = await app.cdp.eval(`window.orchestra.createWorkspace(${J({ repoPath: w.repoDir, ...c.input })}).then((x) => ({ id: x.id, branch: x.branch, worktreePath: x.worktreePath, sdkEffort: x.sdkEffort ?? null }))`);
+        const rec = (await listWs(app)).find((x) => x.id === made.id);
+        ctx.clause(`${c.tag}/store-sdkEffort`, (rec?.sdkEffort ?? null) === c.want && made.sdkEffort === c.want, `created ${made.branch}: ws.sdkEffort returned=${J(made.sdkEffort)} in the app store=${J(rec?.sdkEffort ?? null)} expected=${J(c.want)} (defaults ${J(c.defaults)}, input ${J(c.input)})`);
+        await activateWorkspace(app, made.branch);
+        await openAgentTab(app);
+        const wantLabel = `Effort: ${LABEL[c.want ?? 'high']}`;
+        const ctl = await waitFor('Effort control rendered', () => app.cdp.eval(`(() => { const e = [...document.querySelectorAll('[aria-label^="Effort:"]')].find((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); return e ? e.getAttribute('aria-label') : null; })()`), 15000, 250).catch(() => null);
+        ctx.clause(`${c.tag}/agent-view-effort-control`, ctl === wantLabel, `the Agent view's visible Effort control reads ${J(ctl)} expected ${J(wantLabel)}${c.want === null ? ' (unset = the model default, rendered as High)' : ''}`);
+        const sent = await composerSend(app, `AVR-EFFORT-${c.tag}`);
+        const real = fs.realpathSync(made.worktreePath);
+        const start = await waitFor(`claude session start in ${real}`, () => sessionStarts(app).find((x) => !seen.has(x.pid) && cwdOfPid(x.pid) === real), 40000, 250).catch(() => null);
+        ctx.clause(`${c.tag}/composer-send-started-a-session`, !!start && !!sent.pre?.includes(`AVR-EFFORT-${c.tag}`), `composer text pre=${J(oneLine(sent.pre, 40))}; a claude process with cwd=${real} ${start ? `started (pid ${start.pid})` : 'was NOT started within 40 s'}`);
+        if (!start) { ctx.clause(`${c.tag}/live-session-argv-effort`, false, 'no session start to read the argv of'); continue; }
+        seen.add(start.pid);
+        const i = start.argv.indexOf('--effort');
+        const got = i >= 0 ? start.argv[i + 1] ?? '' : null;
+        ctx.clause(`${c.tag}/live-session-argv-effort`, got === c.want, `live claude argv (${start.argv.length} args) --effort=${J(got)} expected=${J(c.want)}${c.want === null ? ' (no flag at all: the inert control proves the assertion can read "absent")' : ''}`);
+      }
+      await app.cdp.eval(`window.orchestra.setEffortDefaults({ workspace: 'default', spawned: 'default' })`);
+    },
+  },
+  {
+    name: 'legacy_composer_send', boots: true, ticket: '#230', boot: { legacy: true },
+    doc: '#228 review O1: the Agent-view COMPOSER\'s first send on a LEGACY terminal-only workspace (hasInput, no sdkSessionId, a terminal transcript on disk) resumes that transcript — baseline: the session starts BLANK (no --resume) while the history pane shows the old transcript; after: the composer path adopts it (`--resume=<its id>`, ws.sdkSessionId, the adoption log line). In-arm control: a NON-legacy workspace\'s composer send adopts nothing',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.firstStartAdopts); const J = JSON.stringify;
+      keeperControl(ctx);
+      const agentTab = await agentTabOf(app); await app.clickTab(agentTab);
+      const rec0 = (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('seed/legacy-shape', !!rec0 && rec0.hasInput === true && rec0.sdkSessionId === undefined, `hasInput=${rec0?.hasInput} sdkSessionId=${J(rec0?.sdkSessionId)} (want hasInput=true, sdkSessionId absent)`);
+      const ADOPT = `${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`;
+      const log0 = appLog(app);
+      ctx.clause('log/channel-alive', /loaded \d+ workspace/.test(log0), `${log0.length} bytes in logs/orchestra.log, boot line 'loaded N workspace(s)' ${/loaded \d+ workspace/.test(log0) ? 'present' : 'ABSENT — the log channel is unproven, so its silence below means nothing'}`);
+      ctx.clause('pre-state-no-session-no-adoption', !log0.includes(ADOPT) && sessionStarts(app).length === 0, `adoption line present=${log0.includes(ADOPT)}; claude SESSION starts so far=${sessionStarts(app).length}`);
+      // the history pane shows the old transcript (both builds) — the conversation the user believes they are continuing
+      const hist = await app.cdp.eval(`window.orchestra.agentSdkHistory(${J(wsId)}).then((h) => JSON.stringify(h))`).catch((e) => `ERR ${e.message}`);
+      ctx.clause('history-shows-the-terminal-transcript', hist.includes(LEGACY_SENTINEL_USER) && hist.includes(LEGACY_SENTINEL_ASSISTANT), `agent:sdkHistory carries the terminal transcript's sentinels (${hist.length} bytes; holds on both builds)`);
+      const sent = await composerSend(app, 'AVR-COMPOSER-LEGACY first message');
+      const started = await waitFor('a claude session start (stub argv log)', () => sessionStarts(app).length >= 1, 40000, 250).catch(() => false);
+      await sleep(ABSENCE_MS);
+      const starts = sessionStarts(app);
+      ctx.clause('composer-send/started-a-session', !!started && !!sent.pre?.includes('AVR-COMPOSER-LEGACY'), `composer text pre=${J(oneLine(sent.pre, 50))}; session starts=${starts.length}`);
+      ctx.clause('composer-send/exactly-one-cli-start', starts.length === 1, `${starts.length} claude session start(s) — ${J(starts.map((x) => x.pid))}`);
+      const argv = starts[0]?.argv ?? []; const ro = resumeOf(argv);
+      const resumeOk = want ? ro.target === LEGACY_SESSION_ID && !ro.continue : !ro.resume && !ro.continue;
+      ctx.clause('composer-send/resume-target', resumeOk, `claude argv (${argv.length} args): --resume target=${J(ro.target)} --continue=${ro.continue}; expected(${MODE}) ${want ? `--resume=${LEGACY_SESSION_ID} (the terminal transcript's session)` : 'NO --resume (a blank conversation — the O1 defect)'}`);
+      const log1 = appLog(app);
+      ctx.clause('composer-send/adoption-logged', log1.includes(ADOPT) === want, `'${ADOPT}' present=${log1.includes(ADOPT)} expected(${MODE})=${want}`);
+      const got = (await waitFor('sdkSessionId adopted', async () => { const x = (await listWs(app)).find((y) => y.id === wsId); return x?.sdkSessionId === LEGACY_SESSION_ID ? x : null; }, want ? 10000 : 500, 250).catch(() => null)) ?? (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('composer-send/store-sdkSessionId', want ? got?.sdkSessionId === LEGACY_SESSION_ID : got?.sdkSessionId === undefined, `ws.sdkSessionId after=${J(got?.sdkSessionId)} expected(${MODE})=${want ? LEGACY_SESSION_ID : 'absent'}`);
+      noAgentPty(ctx, 'composer-send/no-agent-pty', await (async () => { await runControl(ctx); return app.ptys(); })());
+      // CONTROL: a non-legacy workspace's composer send never adopts (the guard is on hasInput+no id, not on "any send")
+      const made = await app.cdp.eval(`window.orchestra.createWorkspace({ repoPath: ${J(w.repoDir)} }).then((x) => ({ id: x.id, branch: x.branch, worktreePath: x.worktreePath }))`);
+      await activateWorkspace(app, made.branch); await openAgentTab(app);
+      const seen = new Set(starts.map((x) => x.pid));
+      await composerSend(app, 'AVR-COMPOSER-FRESH first message');
+      const real = fs.realpathSync(made.worktreePath);
+      const st2 = await waitFor(`claude start in ${real}`, () => sessionStarts(app).find((x) => !seen.has(x.pid) && cwdOfPid(x.pid) === real), 40000, 250).catch(() => null);
+      const ro2 = resumeOf(st2?.argv ?? []);
+      ctx.clause('control/fresh-workspace-send-adopts-nothing', !!st2 && !ro2.resume && !appLog(app).includes(`${made.id} adopting terminal transcript`), `fresh workspace: session started=${!!st2}, --resume=${ro2.resume}, adoption line for it=${appLog(app).includes(`${made.id} adopting terminal transcript`)} (both modes: nothing to adopt)`);
+    },
+  },
+  {
+    name: 'legacy_first_action_bash', boots: true, ticket: '#230', boot: { legacy: true },
+    doc: '#230 review F1: a LEGACY terminal-only workspace whose FIRST Agent-view action is a `!cmd` (bash mode — `sdkRunBash` starts the session, not a composer send) still starts its session resuming the terminal transcript; baseline starts BLANK',
+    async run(ctx) {
+      await legacyFirstAction(ctx, 'bash-first', async (app) => {
+        const sent = await composerSend(app, '!echo AVR-BASH-FIRST');
+        return { ok: !!sent.pre?.includes('AVR-BASH-FIRST'), detail: `typed '!echo AVR-BASH-FIRST' into the composer and pressed Enter (composer text pre=${J(oneLine(sent.pre, 40))}; sawCleared=${sent.sawCleared})` };
+      });
+    },
+  },
+  {
+    name: 'legacy_first_action_mcp', boots: true, ticket: '#230', boot: { legacy: true },
+    doc: '#230 review F1: same for the MCP popover as the FIRST action (`/mcp` in the composer opens it; its mount calls `agentSdkMcpStatus`, which starts the session); baseline starts BLANK',
+    async run(ctx) {
+      await legacyFirstAction(ctx, 'mcp-first', async (app) => {
+        const sent = await composerSend(app, '/mcp');
+        const popover = () => app.cdp.eval(`(() => { const e = document.querySelector('[aria-label="MCP servers"]'); if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 50 && r.height > 20; })()`);
+        let open = await popover(); let enters = 1;
+        // The slash-command autocomplete may take the FIRST Enter (it completes `/mcp`); a second Enter SUBMITS it — as a user would.
+        if (!open) {
+          enters = 2;
+          await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r' });
+          await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+          open = await waitFor('MCP popover', popover, 10000, 250).catch(() => false);
+        }
+        return { ok: !!open, detail: `typed '/mcp' + ${enters} Enter(s) (composer text pre=${J(oneLine(sent.pre, 20))}; sawCleared=${sent.sawCleared}); the "MCP servers" popover is ${open ? 'open and visible' : 'NOT visible'}` };
+      });
+    },
+  },
+  {
+    name: 'legacy_adopted_unresumable', boots: true, ticket: '#230', boot: { legacy: true, stubScript: RESUME_FAIL_STUB },
+    doc: '#230 review r2 F1: a LEGACY workspace whose adopted terminal transcript the CLI REFUSES to resume (stub exits 1 on --resume, before init) is not wedged — the dead id is cleared to the `\'\'` marker (never undefined: a hasInput ws would re-adopt the same transcript), so the SECOND send starts FRESH (no --resume) and the CLI is not relaunched into the same failure; baseline (no adoption) starts blank both times',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.firstStartAdopts);
+      keeperControl(ctx);
+      const agentTab = await agentTabOf(app); await app.clickTab(agentTab);
+      const rec0 = (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('seed/legacy-shape', !!rec0 && rec0.hasInput === true && rec0.sdkSessionId === undefined, `hasInput=${rec0?.hasInput} sdkSessionId=${J(rec0?.sdkSessionId)} (want hasInput=true, sdkSessionId absent)`);
+      const sdkStarts = () => sessionStarts(app).filter((x) => x.argv.includes('--input-format'));
+      // ── send #1: adopts the terminal transcript and launches `--resume=<it>`; the refusing stub dies before any stream message ──
+      const s1 = await composerSend(app, 'AVR-RESUMEFAIL-1 first');
+      await waitFor('SDK session start #1', () => sdkStarts().length >= 1, 40000, 250).catch(() => false);
+      const a1 = sdkStarts()[0]?.argv ?? []; const r1 = resumeOf(a1);
+      ctx.clause('send-1/resumes-the-adopted-id', want ? r1.target === LEGACY_SESSION_ID : !r1.resume, `start #1 argv --resume target=${J(r1.target)} expected(${MODE}) ${want ? LEGACY_SESSION_ID : 'no --resume (blank start)'}; composer text pre=${J(oneLine(s1.pre, 30))}`);
+      // the death is observed by its EFFECT on the record: adopted id → cleared to '' (after); baseline never adopted, so nothing to clear
+      const cleared = await waitFor('the dead adopted id cleared', async () => ((await listWs(app)).find((x) => x.id === wsId)?.sdkSessionId === '' ? true : null), want ? 30000 : 1500, 250).catch(() => false);
+      const id1 = (await listWs(app)).find((x) => x.id === wsId)?.sdkSessionId;
+      ctx.clause('send-1/dead-adopted-id-cleared-to-marker', want ? cleared === true && id1 === '' : id1 === undefined, `ws.sdkSessionId after the refused resume=${J(id1)} expected(${MODE}) ${want ? "'' (the cleared marker — NOT undefined, which re-adopts, NOT the dead id, which relaunches the same --resume)" : 'absent (nothing was adopted)'}`);
+      ctx.clause('send-1/adopted-id-was-really-refused', !want || (appLog(app).includes(`${wsId} adopted terminal transcript ${LEGACY_SESSION_ID} did not resume`) && appLog(app).includes(`${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`)), `app log: adoption line=${appLog(app).includes(`${wsId} adopting terminal transcript ${LEGACY_SESSION_ID} as resume id`)}, refusal line=${appLog(app).includes(`${wsId} adopted terminal transcript ${LEGACY_SESSION_ID} did not resume`)} (control: the stub really refused and the app saw the death)`);
+      // ── send #2: must start FRESH — the wedge was every later send relaunching the same dead --resume ──
+      const seen = new Set(sdkStarts().map((x) => x.pid));
+      await composerSend(app, 'AVR-RESUMEFAIL-2 second');
+      if (want) {
+        const st2 = await waitFor('SDK session start #2', () => sdkStarts().find((x) => !seen.has(x.pid)), 40000, 250).catch(() => null);
+        const r2 = resumeOf(st2?.argv ?? []);
+        ctx.clause('send-2/starts-fresh', !!st2 && !r2.resume && !r2.continue, `start #2 ${st2 ? `argv --resume target=${J(r2.target)} --continue=${r2.continue}` : 'NEVER happened'}; want a fresh start (neither flag)`);
+        await sleep(ABSENCE_MS);
+        ctx.clause('no-relaunch-loop', sdkStarts().length === 2, `SDK session starts=${sdkStarts().length} (want exactly 2: the refused resume + the fresh one)`);
+      } else {
+        // baseline (no adoption): start #1 was blank and its (stub) CLI stays ALIVE, so send #2 is delivered to that live session — there is no second start to judge.
+        await sleep(ABSENCE_MS);
+        ctx.skip('send-2/starts-fresh', 'baseline: start #1 was blank and its CLI is alive — send #2 goes to the live session, no second start exists');
+        ctx.skip('no-relaunch-loop', `baseline: no death, no relaunch to judge (SDK session starts=${sdkStarts().length})`);
+      }
+      ctx.clause('send-2/does-not-re-adopt', (appLog(app).match(new RegExp(`${wsId} adopting terminal transcript`, 'g')) ?? []).length === (want ? 1 : 0), `adoption lines for this ws=${(appLog(app).match(new RegExp(`${wsId} adopting terminal transcript`, 'g')) ?? []).length} expected(${MODE})=${want ? 1 : 0} (a 2nd would be the '' marker being ignored)`);
+    },
+  },
+  {
+    name: 'legacy_adopted_dies_after_init', boots: true, ticket: '#230', boot: { legacy: true, stubScript: RESUME_INIT_THEN_DIE_STUB },
+    doc: '#230 review r2 F1 CONTROL (must-PASS): an adopted terminal transcript the CLI ACCEPTS (init emitted for the resumed session) whose process then dies keeps its id — the clear is only for a resume refused BEFORE any stream message; clearing here would silently drop a working conversation',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const want = pick(EXPECT.firstStartAdopts);
+      keeperControl(ctx);
+      const agentTab = await agentTabOf(app); await app.clickTab(agentTab);
+      const sdkStarts = () => sessionStarts(app).filter((x) => x.argv.includes('--input-format'));
+      const s1 = await composerSend(app, 'AVR-INIT-THEN-DIE first');
+      await waitFor('SDK session start', () => sdkStarts().length >= 1, 40000, 250).catch(() => false);
+      const r1 = resumeOf(sdkStarts()[0]?.argv ?? []);
+      ctx.clause('send-1/resumes-the-adopted-id', want ? r1.target === LEGACY_SESSION_ID : !r1.resume, `start #1 argv --resume target=${J(r1.target)} expected(${MODE}) ${want ? LEGACY_SESSION_ID : 'no --resume (blank start)'}; composer text pre=${J(oneLine(s1.pre, 30))}`);
+      if (!want) { ctx.skip('cli-died-after-init/id-kept', 'baseline: nothing was adopted and the stub never sees --resume, so there is no death to judge'); return; }
+      const died = await waitFor('the CLI process death seen by the app', () => appLog(app).includes(`session ${wsId} consume loop errored`) || null, 30000, 250).catch(() => false);
+      await sleep(1500); // the clear (if a regression made it) is an async persist right after the log line
+      const id = (await listWs(app)).find((x) => x.id === wsId)?.sdkSessionId;
+      ctx.clause('cli-died-after-init/death-observed', !!died, `app log 'session ${wsId} consume loop errored' present=${!!died} (control: the stub really died after its init)`);
+      ctx.clause('cli-died-after-init/id-kept', id === LEGACY_SESSION_ID, `ws.sdkSessionId after a death AFTER init=${J(id)} expected ${LEGACY_SESSION_ID} (kept — the resume worked); '' would mean a working conversation was dropped`);
+      ctx.clause('cli-died-after-init/no-refusal-logged', !appLog(app).includes(`${wsId} adopted terminal transcript ${LEGACY_SESSION_ID} did not resume`), 'the "did not resume" refusal line must be absent (the CLI got past init)');
+    },
+  },
+  {
+    name: 'other_terminals_work', boots: true, ticket: '#230',
+    doc: 'the terminals that SURVIVE the removal still work, identically in both modes: the Run tab (run-kind PTY), the nvim file pane (nvim-kind PTY running nvim) and the account login modal (login-kind PTY running `claude /login` in the account\'s scratch dir)',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id;
+      await runControl(ctx); // Run: control/run-pty-appears
+      const pre = await app.ptys();
+      const tog = await app.cdp.eval(`(() => { const b = document.querySelector('button.pane-toggle[aria-label="Show file pane"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`);
+      ctx.clause('nvim/toggle-rendered', !!tog, 'the "Show file pane" toggle is in the toolbar');
+      if (tog) {
+        await app.click(tog.cx, tog.cy);
+        const post = await waitFor('nvim-kind PTY', async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === `${wsId}:nvim` && p.kind === 'nvim') ? ps : null; }, 20000, 300).catch(() => null);
+        ctx.clause('nvim/pty-appears', !!post && !pre.some((p) => p.ptyId === `${wsId}:nvim`), `pre=${fmtP(pre)} -> post=${post ? fmtP(post) : 'NO nvim PTY appeared'}`);
+        const nv = post?.find((p) => p.ptyId === `${wsId}:nvim`);
+        const cmds = (nv?.pids ?? []).map(procCmdline);
+        ctx.clause('nvim/pty-runs-nvim', cmds.some((c) => /\bnvim\b/.test(c)), `PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}`);
+        const dom = await waitFor('nvim pane xterm', () => app.cdp.eval(`document.querySelectorAll('.nvim-pane .xterm').length`).then((n) => (n > 0 ? n : null)), 10000, 250).catch(() => 0);
+        ctx.clause('nvim/pane-terminal-mounted', dom > 0, `.nvim-pane .xterm elements=${dom}`);
+      }
+      const acc = await app.cdp.eval(`(() => { const b = document.querySelector('[aria-label="Claude accounts settings"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 }; })()`);
+      ctx.clause('login/accounts-entry-rendered', !!acc, 'the "Claude accounts settings" header button is present');
+      if (acc) {
+        await app.click(acc.cx, acc.cy);
+        const btn = await waitFor('Login button in the accounts modal', () => app.cdp.eval(`(() => { const b = document.querySelector('.accounts-login'); if (!b) return null; const r = b.getBoundingClientRect(); return r.width > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 15000, 250).catch(() => null);
+        ctx.clause('login/login-button-rendered', !!btn, 'the seeded account row has its Login button');
+        if (btn) {
+          const before = await app.ptys();
+          await app.click(btn.cx, btn.cy);
+          const id = `account-login:${w.account.id}`;
+          const post = await waitFor('login-kind PTY', async () => { const ps = await app.ptys(); return ps.some((p) => p.ptyId === id && p.kind === 'login') ? ps : null; }, 20000, 300).catch(() => null);
+          ctx.clause('login/pty-appears', !!post && !before.some((p) => p.ptyId === id), `pre=${fmtP(before)} -> post=${post ? fmtP(post) : 'NO login PTY appeared'}`);
+          const lg = post?.find((p) => p.ptyId === id);
+          const cmds = (lg?.pids ?? []).map(procCmdline);
+          ctx.clause('login/pty-runs-claude-login', cmds.some((c) => c.includes(w.stub)) || stubStarts(app).some((x) => x.argv.includes('/login')), `PTY tree cmdlines=${JSON.stringify(cmds.slice(0, 3))}; stub starts with /login=${stubStarts(app).filter((x) => x.argv.includes('/login')).length} (the stub stands in for claude; no real login happens)`);
+          const modal = await waitFor('login modal xterm', () => app.cdp.eval(`document.querySelectorAll('.modal .xterm, .modal-backdrop .xterm').length`).then((n) => (n > 0 ? n : null)), 10000, 250).catch(() => 0);
+          ctx.clause('login/modal-terminal-mounted', modal > 0, `login modal xterm elements=${modal}`);
+          const rect = await app.cdp.eval(`(() => { const e = document.querySelector('.modal-backdrop .xterm, .modal .xterm'); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 50 ? { x: r.x, y: r.y, width: r.width, height: r.height } : null; })()`);
+          if (rect) { const f = await app.shot('login-modal-terminal', rect); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      login-modal ${f} md5=${md5f(f)} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`); }
+        }
+      }
+    },
+  },
 ];
 
 // ── driver ───────────────────────────────────────────────────────────────────
@@ -2065,6 +2484,9 @@ async function main() {
   for (const arm of ARMS.filter((a) => sel.includes(a.name))) {
     const ctx = makeCtx(arm.name);
     console.log(`--- arm ${arm.name}: ${arm.doc}`);
+    // `--mode baseline` = the PRE-#230 behaviour. An arm whose ticket already landed on master has a baseline that no build of master shows any
+    // more (measured: 33 red clauses on master 37ce7879) — it is SKIPPED, named, and counted apart, never silently dropped or left red.
+    if (MODE === 'baseline' && arm.retiredBaseline) { ctx.skip('baseline/retired', `${arm.retiredBaseline}: its pre-change behaviour exists on no build of master; run --mode after (the arm's live contract)`); continue; }
     try {
       if (arm.boots) {
         ctx.app = await bootApp(arm.name, { ...(arm.boot ?? {}), sdkLess: !!arm.sdkLess, ...(arm.stubScript === 'logging' ? { stubScript: LOGGING_STUB } : {}) });

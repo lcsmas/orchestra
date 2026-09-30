@@ -78,7 +78,7 @@ Dependency-free (testable under `node --test`):
   lessons added"); running → one status row per step (spinner/✓/✕).
 - `InsightsView` — main-pane view opened by the row. Rendered as an *overlay*
   (`.insights-view`, absolute over `.main`) rather than a route swap so the
-  kept-alive TerminalViews' xterm scrollback survives. Shows the selected
+  kept-alive Agent views' scroll state survives. Shows the selected
   run's steps + live transcript (seed via `getSelfTuneOutput`, then
   `onSelfTuneOutput` appends), a Run-now button, per-login "open report"
   buttons, click-to-select run history, and a read-only LESSONS.md panel.

@@ -213,7 +213,7 @@ instrument with a positive control (open Run → a `run`-kind PTY appears) befor
 ## UI — ResourcesView.tsx
 Rendered by `App.tsx` as an **overlay** on `.main` (`position:absolute`,
 z-index 25) when `store.page === 'resources'` — never instead of the workspace
-panes, so every mounted TerminalView keeps its xterm scrollback. `store.page`
+panes, so every mounted Agent view keeps its scroll state. `store.page`
 (`'workspaces' | 'resources'`) is toggled by the sidebar footer button
 (`Sidebar.tsx`, highlights while open); Esc or the ✕ closes.
 

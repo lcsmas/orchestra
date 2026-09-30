@@ -324,14 +324,13 @@ endpoint}` = agent lives in an always-on container, see
 - There is **no startup auto-resume** (an earlier `resumeRunningWorkspaces`
   relaunched every previously-running agent at boot — removed: a restart with
   many live workspaces immediately spawned that many `claude --continue`
-  processes). `store.load()` resets persisted `running` → `idle`; the agent
-  relaunches with `--continue` (via `pty:start` → `startAgentPty`) the first
-  time the user opens the workspace — TerminalView only spawns once its tab is
-  visible (fit-dimensions gate, `Terminal.tsx`). During the cold boot the pane
-  shows a "Resuming previous session…" pill (see the cold-boot pill in
-  [activity-pty-terminal.md](activity-pty-terminal.md)) — Claude paints only
-  its splash header while the session reloads, so the pane would otherwise
-  look blank for a couple of seconds.
+  processes). `store.load()` resets persisted `running` → `idle`; the agent's SDK
+  session lazy-starts (resuming `sdkSessionId`) on the first send or wake for the
+  workspace — since #230 nothing opens an agent PTY (no Terminal tab; the renderer
+  no longer mounts `TerminalView`, so `pty:start` is never called for an agent). A
+  LEGACY terminal-only workspace (`hasInput`, no `sdkSessionId`) has its terminal
+  transcript adopted as the resume id by `adoptTerminalTranscript` on wake, restart
+  AND at the session-start funnel itself (`ensureSessionInner`, #230 / #228 review O1+F1), so any Agent-view action that starts the session first resumes it.
 
 ## Worktree mechanics (git.ts)
 - `createWorktree(repoPath, branch, baseBranch, worktreePath)` — `git worktree

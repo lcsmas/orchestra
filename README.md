@@ -6,13 +6,13 @@
 
 > **A Conductor-like app for Linux: run parallel Claude Code agents in isolated git worktrees — and let agents spawn agents.**
 
-If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that idea for Linux (it runs on macOS and Windows too, built from source). Each agent gets its own branch in its own git worktree, and you watch them all from one dashboard: live terminal, cumulative diff, PR tracking.
+If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that idea for Linux (it runs on macOS and Windows too, built from source). Each agent gets its own branch in its own git worktree, and you watch them all from one dashboard: the live Agent view, cumulative diff, PR tracking.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)
 ![Electron](https://img.shields.io/badge/electron-33-47848F?logo=electron&logoColor=white)
 
-![Orchestra dashboard with three parallel workspaces in the sidebar and a live agent terminal](docs/screenshot.png)
+![Orchestra dashboard with three parallel workspaces in the sidebar and a live agent](docs/screenshot.png)
 
 **New here?** The [user guide](docs/guide/README.md) walks through every feature and use case — and the same tour lives inside the app behind the **?** button in the sidebar.
 
@@ -30,7 +30,7 @@ If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that 
 - **Orchestrators** — coordinator agents that delegate instead of coding; the children they spawn nest beneath them in the sidebar, and a guard hook blocks them from editing children's files
 - **Self-naming branches** — the agent renames its branch once it understands the task
 - **Per-repo setup / run / archive scripts** and **one-step archive** (worktree + branch removed together)
-- **Resume on restart** — agents that were running when Orchestra quit come back live (`claude --continue`)
+- **Resume on restart** — agents that were running when Orchestra quit come back live, resuming their conversation
 
 ### Multi-agent orchestration
 - **Spawn** — any agent creates a sibling workspace + agent with `orchestra spawn --task "…"`
@@ -43,9 +43,9 @@ If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that 
 - **Merge & release pills** — merged / diverged / unpushed detection per branch, plus the earliest release containing the branch's commits
 - **Base sync** — behind/ahead counts vs. `origin/<base>`, refreshed on focus
 
-### Terminals & status
-- **Live terminals** — real TTY per agent, full color, resize, scrollback, image paste
-- **Run terminal** — a second PTY per workspace running the repo's run script (dev server, tests) with Start/Stop
+### Agent view, terminals & status
+- **Agent view** — the one way to see and drive an agent: streaming messages, collapsible tool cards, real diffs, permission prompts and a composer with image paste, rendered from the Claude Agent SDK. Tabs read **Agent · Run · Diff**
+- **Run terminal** — a PTY per workspace running the repo's run script (dev server, tests) with Start/Stop
 - **Nvim pane** — split the main pane with Neovim opened on the worktree
 - **Hook-based status** — running / waiting / idle / error flips off Claude Code's own hooks, no polling or terminal scraping; plus a live context-size badge per agent
 - **Chime** — a synthesized notification sound when an agent finishes while the window is unfocused (~20 to pick from)
@@ -101,7 +101,7 @@ pnpm run dev                 # vite + electron, hot reload
 ## How it works
 
 - **Worktrees** — each workspace lives at `~/.orchestra/worktrees/<repo>-<branch>-<uid>/`, created with `git worktree add` off the configured base branch. Archiving removes the worktree and deletes the branch.
-- **Agents** — spawned via `node-pty` in the worktree, wired to an xterm.js terminal in the UI.
+- **Agents** — driven through the Claude Agent SDK in the worktree (the `claude` process runs in a detached keeper, so a running turn survives quitting the app) and shown in the Agent view. `node-pty` + xterm.js only back the Run script, the nvim pane and account login.
 - **Hooks** — Orchestra installs Claude Code hooks into each worktree's `.claude/settings.local.json`. They talk to a Unix-socket HTTP server in the main process: activity status, agent-driven branch rename, and the `/spawn` endpoint that lets any agent create a new workspace + agent. All hooks are env-guarded, so running `claude` outside Orchestra is a silent no-op.
 - **Capability skills** — each worktree also gets a set of `orchestra-*` Claude Code skills (spawn, comms, rename, promote, attach, repos, migrate-account), so agents discover their powers on demand instead of carrying them in every prompt.
 - **PRs** — opened by the agent (`commit → push -u origin <branch> → gh pr create --base <baseBranch>`), then linked with `orchestra link --pr`; Orchestra only tracks and opens them.

@@ -1,5 +1,8 @@
 # Implementation plan — SDK-driven structured agent view
 
+> **Historical.** The "Raw" fallback tab, the Phase 6 default-view flag and the settings modal this plan describes
+> were removed by [ADR 0003](../adr/0003-remove-raw-pty-agent-view.md) (#219/#230): the Agent view is the only agent mode.
+
 Companion to `docs/adr/0001-sdk-structured-agent-view.md`. This is the phased build and
 the verified-fanout work breakdown. Every `file:line` below was verified against live
 source during recon (v0.5.96) — re-verify before editing, line numbers drift.

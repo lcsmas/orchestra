@@ -56,8 +56,11 @@ Bootstrap order matters; several steps run *before* the window:
   The root stressor — one WebGL context per open workspace — is bounded on the
   renderer side by the mounted-pane LRU cap (see `computeMountedIds` /
   `MAX_MOUNTED_PANES` in App.tsx + `src/shared/mounted-panes.ts`): only the 12
-  most-recently-used workspaces keep a `TerminalView`/`StructuredView` mounted;
-  older ones unmount (releasing their WebGL context) and cold-boot on reopen.
+  most-recently-used workspaces keep a `StructuredView` (the Agent view) mounted;
+  older ones unmount and cold-boot on reopen. Since #230 no agent xterm is
+  mounted at all (`TerminalView` is no longer imported by App.tsx; the file goes
+  in #231), so the cap now bounds DOM/scroll state and the WebGL contexts left
+  are the Run/nvim/login terminals.
 - **Single-instance lock** `:1011` — second instance `app.exit(0)`; primary
   focuses. Dev `ORCHESTRA_HOME` gets a separate lock so dev+packaged coexist.
 - **IPC wrapper** `handle()` `:228` — logs every handler failure with its channel
@@ -137,10 +140,10 @@ pruned in `onWorkspaceRemoved`/`onWorkspacesRemoved` alongside `contextTokens`.
 
 ## StructuredView.tsx — structured agent view (renderer skeleton)
 Container for the SDK-driven agent view, kept **always-mounted per workspace**
-(like `TerminalView`, hidden via `.av-view`/`.active`) so folded session + scroll
+(hidden via `.av-view`/`.active` when inactive) so folded session + scroll
 survive tab switches. A **virtualized** (windowed, measured-height + overscan)
 message list reads `store.agentSessions[wsId]`; a composer calls
-`agentSdkSend` (which **lazily starts** the session — no separate start IPC);
+`agentSdkSend` (which **lazily starts** the session — no separate start IPC; `ensureSessionInner` first adopts a legacy terminal-only workspace's terminal transcript, whichever action starts the session, #230);
 `agentSdkInterrupt` wires the Stop button. Message/tool/permission bodies are
 **placeholder slots** (extension points): message+tool bubbles, permission
 dialog, and the model/mode/turn-footer controls are filled by later swarm
@@ -183,25 +186,28 @@ widths to localStorage; resizes via rAF. `startVisiblePoll` runs a fn on an
 interval but **stops when the document is hidden** (re-fires on visible) — this
 is what pauses git/gh/du/Linear polling when minimized. Toolbar is grouped by
 function: the base→feature branch chip (with `BranchPicker`) on the left, then
-a **views group** (`.toolbar-views`: Terminal/Structured/Run tabs + the nvim
-pane-toggle), a hairline `.toolbar-sep`, and an **actions group**
+a **views group** (`.toolbar-views`: **Agent · Run · Diff** tabs, Agent first — the
+first tab is the Agent view (`view === 'structured'`, identifier kept per ADR 0003) —
++ the nvim pane-toggle), a hairline `.toolbar-sep`, and an **actions group**
 (`.toolbar-actions`: restart-agent, run play/stop, and the `PR #N` link as the
 rightmost button — rendered ONLY when the workspace has an open PR; there is no
 "Open PR" create button and no unpushed-commits primed state, #229).
 **Tab availability by kind** (`isScratch = isScratchLike(active)`, true for
-BOTH scratch and orchestrator): Terminal and **Structured** show for EVERY kind —
-the structured/SDK path is kind-agnostic (agent-sdk.ts appends the
+BOTH scratch and orchestrator): the **Agent** tab shows for EVERY kind —
+the SDK path is kind-agnostic (agent-sdk.ts appends the
 `ORCHESTRATOR_BRIEF` for orchestrators), so scratch and orchestrator sessions get
-the structured agent view too. Only the **git-only** surfaces are gated off for
-scratch-like: the **Run** tab/button, the **Diff/PR** actions. The
-force-view effect only redirects away from `view === 'run'` on a scratch-like
-session (not from `structured`, which is always valid). Each `TerminalView`/
-`StructuredView` for the **12 most-recently-used** workspaces is kept mounted
-(preserves xterm scrollback / structured scroll offset across switches) — capped
-by the LRU `computeMountedIds` / `MAX_MOUNTED_PANES` to bound live WebGL contexts
-(see crash-recovery note above); older panes unmount and cold-boot on reopen. The
-StructuredView panes mount for every mounted workspace regardless of kind; Run
-mounts only when selected.
+the Agent view too. Only the **git-only** surfaces are gated off for
+scratch-like: the **Run** and **Diff** tabs, the run button, the PR link. The
+force-view effect (`App.tsx`) redirects `view === 'run'` / `'diff'` to the Agent view
+on a scratch-like session (not from `structured`, which is always valid) — it used to
+fall back to the terminal, which started an agent PTY next to the SDK session (#230).
+`store.view` is `'structured' | 'run' | 'diff'` and starts as `'structured'`; the
+removed "Default agent view" setting's `localStorage` key (`orchestra:defaultAgentView`)
+is never read. Each `StructuredView` for the **12 most-recently-used** workspaces is
+kept mounted (preserves the structured scroll offset across switches), capped by the
+LRU `computeMountedIds` / `MAX_MOUNTED_PANES`; older panes unmount and cold-boot on
+reopen. StructuredView panes mount for every mounted workspace regardless of kind; Run
+and Diff mount only when selected.
 
 ## Sidebar.tsx (~2100 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.

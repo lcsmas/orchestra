@@ -14,8 +14,8 @@ Sandbox agents are PTY-only; the Agent view drives an SDK session that would run
 with the container's cwd (a cryptic spawn error). Until #220 — Reconcile sandbox agents with the Agent
 view — starting a sandbox-hosted workspace's agent through the **SDK, wake, restart, fix-checks / send-review and bus-wake**
 paths is refused with ONE message (`SANDBOX_PAUSED_MESSAGE`, `shared/sandbox-pause.ts`; pure decision
-`sandboxPausedMessage(ws)` = `ws.host.kind==='sandbox'`). **The one path NOT refused is the Raw-tab PTY launcher**
-(`startAgentPty`, the host-aware one; `restart`'s route INTO it is refused, opening the Raw tab is not) — #230/#233 delete it.
+`sandboxPausedMessage(ws)` = `ws.host.kind==='sandbox'`). **The one path once NOT refused was the Raw-tab PTY launcher**
+(`startAgentPty`, the host-aware one): since #230 nothing calls `pty:start` (no renderer component mounts an agent terminal), so it is unreachable from the UI and #233 deletes it.
 Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED and its tests stay green.
 - **The funnel** — `agent-sdk.ts` `ensureSessionInner` throws it first thing after the workspace lookup (before the
   rewind cut, hibernation clear, env build and the `query()` spawn). `ensureSession` is the ONLY caller and that `query({`
