@@ -398,6 +398,8 @@ test('F10: session-runner FAILS CLOSED when cfg.live is absent or empty (never r
 test('F1/F6 end to end: with bwrap unusable the driver is VOID rc 3 by default; under the explicit opt-out the self-tests are SKIPPED and a partial run prints PARTIAL — never PASS', async () => {
   const shim = scratch('bwrap-shim');
   fs.writeFileSync(path.join(shim, 'bwrap'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const keeperBundle = path.join(REPO, 'dist-electron', 'keeper.js');
+  const keeperBefore = fs.existsSync(keeperBundle) ? fs.statSync(keeperBundle).mtimeMs : null;
   const run = async (extraEnv: Record<string, string>) => {
     const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', S('run.mjs'), '--arm', 'census-selftest'], {
       // SESSION_BUDGET_SKIP_BUILD: never rebuild dist-electron/keeper.js from a unit test — keeper.test.ts runs in parallel and spawns it (F5)
@@ -420,5 +422,8 @@ test('F1/F6 end to end: with bwrap unusable the driver is VOID rc 3 by default; 
     assert.match(weak.out, /== arm census-selftest: SKIPPED — needs net\+pid namespaces/);
     assert.match(weak.out, /^SESSION-BUDGET: PARTIAL$/m, 'a --arm run is PARTIAL (the PASS-WEAK mapping is unit-tested on sessionBudgetTerminator)');
     assert.doesNotMatch(weak.out, /^SESSION-BUDGET: PASS(-WEAK)?$/m, 'a partial weak run must never print a PASS terminator');
+    // F5 (round 2): this unit must NOT rebuild dist-electron/keeper.js — keeper.test.ts spawns it in parallel and a build leaves it 0 bytes for a moment
+    const keeperAfter = fs.existsSync(keeperBundle) ? fs.statSync(keeperBundle).mtimeMs : null;
+    assert.equal(keeperAfter, keeperBefore, 'the driver rebuilt the keeper bundle from a unit test');
   } finally { fs.rmSync(shim, { recursive: true, force: true }); }
 });
