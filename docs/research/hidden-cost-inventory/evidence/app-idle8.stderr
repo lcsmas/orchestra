@@ -10,3 +10,4 @@ disk-guard OK: /home/lmas/.cache/hidden-cost/rigs free 389.9 GB of 550.0 GB, req
 [rig] rig dir: /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385 | fake HOME: /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385/home | ORCHESTRA_HOME: /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385/oh
 [hc-rig] launched electron pid=104 port=9302 N=8 version=0.5.298
 [hc-rig] UI ready after 1264 ms; warm 30s
+[rig] teardown: sway pid 176463; rig dir /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385 left for inspection
