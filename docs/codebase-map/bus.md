@@ -1674,7 +1674,11 @@ module that consumes the seams below.
   a descendant's coordinator or no identity is `refused`; the human acts `--as <coordinator>` — no new identity invented),
   fenced through `fencedWrite` (`run-pause` / `run-resume`). Outcomes: `paused | already-paused | lifted | not-paused |
   no-run | refused | switch-off` — a pause on an OFF run is **refused, never accepted-and-inert**. Without `--hard` the verb
-  refuses (only the hard pause exists; soft = #254). `run resume --run <descendant>` says which ancestor carries the pause.
+  refuses (only the hard pause exists; soft = #254). `run resume` never claims a run is free while an ancestor still pauses it: it asks
+  `RunPauseDeps.coverFor` (`src/cli/index.ts`) — the gates' live-tree walk (`pausedCarrierForWorkspace`) over the store the RUNNING APP writes
+  (`appStoreFile()` / `offlineWaveNodes()`: `$ORCHESTRA_HOME/userData/orchestra/store.json` only when ORCHESTRA_HOME is set, else Electron's
+  default `~/.config/orchestra/orchestra/store.json`; the store-less verb works with the app down), falling back to the bus run tree when that file is
+  unreadable. "Lifted, but still PAUSED by run X — lift that one" on the FIRST call, also for a run re-parented after creation.
 - **The one gate helper — `pauseRefusal(ws, origin)`** (`src/main/pause-gate.ts`, the twin of `sandboxPausedMessage`; decision
   `pauseRefusalWith` `src/main/bus-pause.ts`, pure half `src/shared/bus-pause.ts`). Resolves the pause **at gate time through the LIVE
   workspace tree** (`pausedCarrierForWorkspace`): the workspace and every ancestor along the store's `parentId` chain are each checked as a
@@ -1691,7 +1695,7 @@ module that consumes the seams below.
   ledger #261 row numbers): **1/2** composer = HUMAN → `sdkSend` commit-point gate `agent-sdk.ts:2954` (AUTO refused with no session/turn/
   error row/pending prompt) · **4** `recoverPendingPromptsInner` `:3546` (held *before* `keepOnlyPendingPrompts` drops the entries) ·
   **5/6/7** `dispatchRestartRequest` `restart-workspace.ts:80` (`trigger==='toolbar'` ⇒ human; refused before any stop) ·
-  **11** PTY opening brief, fire-time `api-handlers.ts:878` (wiring test only — Electron-bound) · **13** account-migrate resume
+  **11** PTY opening brief, fire-time — `scheduleOpeningBrief` (`src/main/opening-brief-pty.ts`, called from the `pty:start` handler; arm `pty_brief` drives the real scheduler + gate, the wiring test pins the handler call and forbids any other `writePty(`) · **13** account-migrate resume
   `workspaces.ts:2981` · **14** `wakeRosterEntry` `wake-roster.ts:24` (`wakeable` — else the sweep re-fires every tick) ·
   **16** usage-limit auto-resume `prompt-queue.ts:235` (before budget, clear and re-mark) · **17** timer flush `:132` before the queue is
   cleared (“Send now” `force` = human) · **18/19** `dispatchMessageRequestUnmirrored` `workspaces.ts:3488` (parked in the inbox) ·
@@ -1720,7 +1724,7 @@ module that consumes the seams below.
 
 Gates: `src/shared/bus-pause.test.ts`, `src/main/bus-pause.test.ts` (schema v8→v9, writer matrix, propagation, switch OFF inert, gate
 decision), `src/main/bus-pause-liveness.test.ts` (row 15, the shipped roster + real sweep, incl. an orchestrator re-parented after creation), `src/cli/run-pause.test.ts` (built CLI, app down),
-`src/main/pause-gates.test.ts` + `scripts/e2e-pause-gates.mjs` (22 arms, scratch `ORCHESTRA_HOME`/`HOME`/`CLAUDE_CONFIG_DIR`),
+`src/main/pause-gates.test.ts` + `scripts/e2e-pause-gates.mjs` (25 arms incl. `hang_selftest`, scratch `ORCHESTRA_HOME`/`HOME`/`CLAUDE_CONFIG_DIR`; an arm that hangs prints `ok:false` JSON + exit 1 at `PAUSE_RIG_DEADLINE_MS`, default 75 s — never a silent exit 13),
 `src/main/pause-gates-wiring.test.ts` (Electron-bound sites, HUMAN enumeration, docs).
 
 ## COUNTED, not FIRED — the `liveness` switch (C5)
@@ -2608,14 +2612,15 @@ full id BEFORE any row is written. **The bus never stores a short handle.**
 |---|---|
 | Pure resolver (rules, ambiguity/unknown refusals) | `src/cli/resolve-handle.ts` `resolveHandle()` |
 | Candidate fetch — socket up | `src/main/hooks-server.ts` `/resolveHandle` → `dispatchResolveHandleRequest` (`src/main/workspaces.ts`) |
-| Candidate fetch — app DOWN | `src/cli/index.ts` `offlineHandleCandidates()` reads `<ORCHESTRA_HOME>/userData/orchestra/store.json` |
+| Candidate fetch — app DOWN | `src/cli/index.ts` `offlineHandleCandidates()` reads `appStoreFile()` — `<ORCHESTRA_HOME>/userData/orchestra/store.json` only when ORCHESTRA_HOME is set, else the app's default `~/.config/orchestra/orchestra/store.json` (shares `readOfflineRecords` with `offlineWaveNodes`) |
 | Wired into the verb | `src/cli/index.ts` `send` case → `canonicalizeRecipientOrFail()` before `verbSend` |
 
-**The offline-path trap:** the app relocates userData to `<HOME>/userData` via
-`app.setPath` ONLY when NOT in CLI mode (`src/main/index.ts`), so
-`app.getPath('userData')` is the WRONG source from inside the CLI. The offline
-reader derives the home-relative path itself (`cliOrchestraHome()`), matching
-what the running app writes. An unreadable store yields `[]` → the send is
+**The offline-path trap:** the app relocates userData to `<ORCHESTRA_HOME>/userData` via
+`app.setPath` ONLY when ORCHESTRA_HOME is set and NOT in CLI mode (`src/main/index.ts`), so
+`app.getPath('userData')` is the WRONG source from inside the CLI — and in a DEFAULT install (no
+ORCHESTRA_HOME) the app's store is Electron's default `~/.config/orchestra/orchestra/store.json`, not
+`~/.orchestra/userData` (a stale file there). The offline reader derives the path itself
+(`appStoreFile()`, the app's own rule), matching what the running app writes. An unreadable store yields `[]` → the send is
 REFUSED (never a silent short-handle land).
 
 Resolution precedence (most specific first): exact id → exact name → id prefix.

@@ -741,15 +741,6 @@ async function openBusForVerb(): Promise<{
   }
 }
 
-/** The Orchestra home root, mirroring `orchestraHome()` in the main process
- *  (src/main/platform/index.ts) — `$ORCHESTRA_HOME` wins, else `~/.orchestra`.
- *  Re-derived here rather than imported because the CLI must resolve the offline
- *  store path WITHOUT paying for a main-process import (and its Electron/ABI
- *  cost) on the common path. */
-function cliOrchestraHome(): string {
-  return process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
-}
-
 /** Where the RUNNING APP keeps `store.json` — the app's own rule (src/main/index.ts:167): `$ORCHESTRA_HOME/userData/orchestra/` ONLY when
  *  ORCHESTRA_HOME is set, else Electron's default userData (`$XDG_CONFIG_HOME|~/.config` + `/orchestra`) + `/orchestra/`. NOT `~/.orchestra/userData`
  *  when unset — that is an abandoned, stale path in a default install (pre-review: the packaged app has no ORCHESTRA_HOME). */
@@ -768,86 +759,64 @@ export function appStoreFile(
   return path.join(userData, 'orchestra', 'store.json');
 }
 
-/** The persisted workspace tree (`id → {parentId, kind, canOrchestrate}`) read off the store file — empty on any read/parse failure.
- *  Used by `run resume` to ask the LIVE tree which ancestor still pauses a run (store-less verb: the app may be down). */
-export function offlineWaveNodes(file: string = appStoreFile()): Map<string, WaveNode> {
-  const nodes = new Map<string, WaveNode>();
+interface OfflineRecord {
+  id?: unknown;
+  name?: unknown;
+  archived?: unknown;
+  parentId?: unknown;
+  kind?: unknown;
+  canOrchestrate?: unknown;
+}
+
+/** The persisted workspace records off the app's store file — `[]` on any read/parse failure. The ONE reader both offline consumers share. */
+function readOfflineRecords(file: string): OfflineRecord[] {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
-      workspaces?: Array<{ id?: unknown; parentId?: unknown; kind?: unknown; canOrchestrate?: unknown }>;
-    };
-    for (const w of Array.isArray(parsed.workspaces) ? parsed.workspaces : []) {
-      if (typeof w.id !== 'string' || !w.id) continue;
-      nodes.set(w.id, {
-        id: w.id,
-        parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
-        kind: typeof w.kind === 'string' ? w.kind : undefined,
-        canOrchestrate: w.canOrchestrate === true,
-      });
-    }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { workspaces?: OfflineRecord[] };
+    return Array.isArray(parsed.workspaces) ? parsed.workspaces : [];
   } catch {
-    /* unreadable store → empty: the caller falls back to the bus run tree */
+    return [];
+  }
+}
+
+function toWaveNodes(ws: readonly OfflineRecord[]): Map<string, WaveNode> {
+  const nodes = new Map<string, WaveNode>();
+  for (const w of ws) {
+    if (typeof w.id !== 'string' || !w.id) continue;
+    nodes.set(w.id, {
+      id: w.id,
+      parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
+      kind: typeof w.kind === 'string' ? w.kind : undefined,
+      canOrchestrate: w.canOrchestrate === true,
+    });
   }
   return nodes;
 }
 
-/** Read the persisted workspace list off disk when the app is DOWN (#144).
- *
- *  The store lives at `<ORCHESTRA_HOME>/userData/orchestra/store.json` — the app
- *  writes it there via `app.setPath('userData', <HOME>/userData)` at boot
- *  (src/main/index.ts). Note that path override runs ONLY when NOT in CLI mode,
- *  so `app.getPath('userData')` is the WRONG source from inside the CLI; the
- *  home-relative path is the one both the running app and this reader agree on.
- *  Returns `[]` on any read/parse failure — the caller then refuses the send
- *  with "matches no workspace", which is correct: an unreadable store cannot
- *  canonicalize anything, and landing a short handle would reintroduce the bug. */
-export function offlineHandleCandidates(): HandleCandidate[] {
-  const file = path.join(cliOrchestraHome(), 'userData', 'orchestra', 'store.json');
-  try {
-    const raw = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(raw) as {
-      workspaces?: Array<{
-        id?: unknown;
-        name?: unknown;
-        archived?: unknown;
-        parentId?: unknown;
-        kind?: unknown;
-        canOrchestrate?: unknown;
-      }>;
-    };
-    const ws = Array.isArray(parsed.workspaces) ? parsed.workspaces : [];
-    // #221 — the recipient's wave run (nearest orchestrator, else itself) from the persisted
-    // records, so the offline path proves reachability like the socket path does.
-    const nodes = new Map<string, WaveNode>();
-    for (const w of ws) {
-      if (typeof w.id !== 'string' || !w.id) continue;
-      nodes.set(w.id, {
-        id: w.id,
-        parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
-        kind: typeof w.kind === 'string' ? w.kind : undefined,
-        canOrchestrate: w.canOrchestrate === true,
-      });
-    }
-    return ws
-      // EXCLUDE archived, to MATCH the online path (REVIEW-144 F1): the socket
-      // `dispatchResolveHandleRequest` filters `!w.archived`. Without the same
-      // filter here the two resolvers DISAGREE — a prefix hitting one live + one
-      // archived id would falsely refuse a legitimate send offline (ambiguous),
-      // and a prefix hitting only an archived id would resolve to a DEAD id
-      // nobody reads. `archived` is an optional boolean on the persisted record
-      // (types.ts), so `=== true` treats absent as not-archived.
-      .filter(
-        (w) =>
-          typeof w.id === 'string' && (w.id as string).length > 0 && w.archived !== true,
-      )
-      .map((w) => ({
-        id: w.id as string,
-        name: typeof w.name === 'string' ? (w.name as string) : '',
-        runId: nearestOrchestratorId(nodes.get(w.id as string)!, (id) => nodes.get(id)),
-      }));
-  } catch {
-    return [];
-  }
+/** The persisted workspace tree (`id → {parentId, kind, canOrchestrate}`) — empty on any read/parse failure. Used by `run resume` to ask the
+ *  LIVE tree which ancestor still pauses a run (store-less verb: the app may be down). */
+export function offlineWaveNodes(file: string = appStoreFile()): Map<string, WaveNode> {
+  return toWaveNodes(readOfflineRecords(file));
+}
+
+/** Read the persisted workspace list off disk when the app is DOWN (#144), from the file the RUNNING APP writes ({@link appStoreFile}:
+ *  `$ORCHESTRA_HOME/userData/orchestra/` when ORCHESTRA_HOME is set, else Electron's default userData — NOT `~/.orchestra/userData`, which a
+ *  default install never writes). Returns `[]` on any read/parse failure — the caller then refuses the send with "matches no workspace",
+ *  which is correct: an unreadable store cannot canonicalize anything, and landing a short handle would reintroduce the bug. */
+export function offlineHandleCandidates(file: string = appStoreFile()): HandleCandidate[] {
+  const ws = readOfflineRecords(file);
+  // #221 — the recipient's wave run (nearest orchestrator, else itself) from the persisted
+  // records, so the offline path proves reachability like the socket path does.
+  const nodes = toWaveNodes(ws);
+  return ws
+    // EXCLUDE archived, to MATCH the online path (REVIEW-144 F1): the socket `dispatchResolveHandleRequest` filters `!w.archived`. Without
+    // the same filter the two resolvers DISAGREE (a prefix hitting one live + one archived id falsely refuses offline; an archived-only hit
+    // resolves to a DEAD id). `archived` is an optional boolean (types.ts), so `=== true` treats absent as not-archived.
+    .filter((w) => typeof w.id === 'string' && (w.id as string).length > 0 && w.archived !== true)
+    .map((w) => ({
+      id: w.id as string,
+      name: typeof w.name === 'string' ? (w.name as string) : '',
+      runId: nearestOrchestratorId(nodes.get(w.id as string)!, (id) => nodes.get(id)),
+    }));
 }
 
 /** Canonicalize a `send --to` handle to a FULL workspace id (#144).

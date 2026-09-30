@@ -26,7 +26,7 @@ const ARMS = [
   'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume', 'migrate',
   'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
-  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree', 'pty_brief',
+  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree', 'pty_brief', 'hang_selftest',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 
@@ -163,8 +163,10 @@ const out = { arm: ARM };
 let ok = false;
 // A hung await (e.g. a gate removed → an unsettled promise) must be a RED verdict with JSON, never a silent exit 13: keep the loop alive and
 // bound the whole arm. `withTimeout` bounds one await to a named fallback.
+const DEADLINE_MS = Number(process.env.PAUSE_RIG_DEADLINE_MS ?? 75_000);   // env-tunable so the hung-arm behaviour is itself testable (`hang_selftest`)
+out.deadlineMs = DEADLINE_MS;                                              // printed in every verdict: the default is pinned by a test
 setInterval(() => {}, 1000);
-setTimeout(() => { console.log(JSON.stringify({ ...out, ok: false, abort: 'deadline: the arm hung (a removed gate can leave a promise unsettled)' })); process.exit(1); }, 75_000).unref?.();
+setTimeout(() => { console.log(JSON.stringify({ ...out, ok: false, abort: 'deadline: the arm hung (a removed gate can leave a promise unsettled)' })); process.exit(1); }, DEADLINE_MS).unref?.();
 const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise((r) => setTimeout(() => r(fallback), ms))]);
 const rec = (k, v) => { out[k] = v; return v; };
 
@@ -735,9 +737,22 @@ if (ARM === 'spawn') {
   scheduleOpeningBrief('ws-m1', 'BRIEF-LIFTED', write, 20);             // control: the lift types it
   await sleep(250);
   rec('afterLift', writes.splice(0));
+  // the DEFAULT delay (what the handler uses) is 1200 ms: nothing before 1000 ms, typed by 1600 ms
+  const t0 = Date.now();
+  scheduleOpeningBrief('ws-xm', 'BRIEF-DEFAULT', write);
+  await sleep(1000);
+  rec('defaultDelayAt1000', writes.length);
+  await sleep(600);
+  rec('defaultDelayAt1600', { writes: writes.splice(0), elapsedOk: Date.now() - t0 >= 1500 });
   ok = JSON.stringify(out.whilePaused) === JSON.stringify([{ id: 'ws-xm', data: 'BRIEF-OTHER-RUN\n' }])
     && out.pauseLandedBeforeFire.length === 0
-    && JSON.stringify(out.afterLift) === JSON.stringify([{ id: 'ws-m1', data: 'BRIEF-LIFTED\n' }]);
+    && JSON.stringify(out.afterLift) === JSON.stringify([{ id: 'ws-m1', data: 'BRIEF-LIFTED\n' }])
+    && out.defaultDelayAt1000 === 0 && JSON.stringify(out.defaultDelayAt1600.writes) === JSON.stringify([{ id: 'ws-xm', data: 'BRIEF-DEFAULT\n' }]);
+
+} else if (ARM === 'hang_selftest') {
+  // self-test of the rig's own safety net: an arm that never settles must still produce an `ok:false` JSON verdict + exit 1 (the deadline), never exit 13.
+  await new Promise(() => {});
+  ok = true;   // unreachable — if this ever printed ok:true the net is broken
 
 } else {
   out.error = `arm not implemented yet: ${ARM}`;

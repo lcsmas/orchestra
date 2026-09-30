@@ -22,9 +22,10 @@ const body = (src: string, start: string, end: string): string => {
 test('row 11 pty:start: the handler hands the brief to the REAL scheduler (gated at fire time, driven by the `pty_brief` rig arm) and the scheduler gates before it writes', () => {
   const b = body(API, 'ptyStart: async (id, cols, rows) =>', 'ptyWrite: async');
   assert.match(body(b, 'if (!resuming && ws.lastTask)', '\n  },'), /scheduleOpeningBrief\(id, ws\.lastTask, writePty\)/);
-  assert.doesNotMatch(b, /writePty\(id, task/, 'the handler no longer types the brief itself');
+  assert.doesNotMatch(b, /writePty\(/, 'the handler never calls the pty writer itself — `writePty` appears ONLY as the scheduler\'s argument (an extra ungated write must redden this)');
   assert.doesNotMatch(body(b, 'const resuming', 'if (!resuming && ws.lastTask)'), /pauseRefusal/, 'opening the terminal itself (HUMAN) is not gated');
   const sched = read('opening-brief-pty.ts');
+  assert.match(sched, /export const OPENING_BRIEF_DELAY_MS = 1200;/, 'the TUI-init delay is pinned (the rig\'s default-delay check measures it)');
   assert.ok(sched.indexOf("pauseRefusalById(id, 'auto')") >= 0 && sched.indexOf("pauseRefusalById(id, 'auto')") < sched.indexOf("write(id, task + '\\n')"), 'gate precedes the write');
 });
 
