@@ -97,6 +97,7 @@ import {
 } from './agent-sdk';
 import { getBus, send } from './bus.ts';
 import { busSwitch } from './bus-runs.ts';
+import { pauseRefusal } from './pause-gate.ts';
 import { killKeeper } from './keeper-client';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { normalizePendingPrompts } from '../shared/pending-prompts.ts';
@@ -540,6 +541,13 @@ export function surfaceFlapLimit(
 export async function watchdogTick(now: number = Date.now()): Promise<void> {
   for (const ws of store.workspaces) {
     if (ws.archived) continue;
+
+    // ── #252 fleet PAUSE (ledger #261 rows 25/26/27) ─────────────────────────
+    // A paused run's member is SKIPPED whole: no stranded-gate release (layer 1 lets the queue drain = a turn start), no recycle /
+    // boot-wedge restart (layer 2 = stop-then-start; checked here so it can never stop a session and then be refused), and no
+    // boot-wedge give-up escalation (SILENCE — the pause is the operator's own act). Nothing is mutated while paused (no ledger,
+    // no marks), so the lift resumes from a clean slate.
+    if (pauseRefusal(ws, 'auto')) continue;
 
     // ── Layer 1: a stranded gate, released non-destructively ────────────────
     //

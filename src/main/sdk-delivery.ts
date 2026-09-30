@@ -17,6 +17,7 @@
 
 import { log } from './logger';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
+import type { PauseOrigin } from '../shared/bus-pause.ts';
 
 /** The subset of the SDK session manager the lifecycle dispatchers need. */
 export interface SdkDelivery {
@@ -31,7 +32,7 @@ export interface SdkDelivery {
    *  messages reach a live session through this very seam, so without the tag
    *  they are byte-identical to a human prompt and render as full user bubbles.
    *  Only `dispatchMessageRequest` sets it. */
-  send(wsId: string, text: string, peerOrigin?: PeerOrigin): Promise<void>;
+  send(wsId: string, text: string, peerOrigin?: PeerOrigin, origin?: PauseOrigin): Promise<void>;
   /** Enqueue a text turn AND wait to learn whether it actually BECAME the
    *  session's turn (issue #57 fault b).
    *
@@ -48,13 +49,15 @@ export interface SdkDelivery {
     text: string,
     peerOrigin: PeerOrigin | undefined,
     timeoutMs: number,
+    /** #252 fleet PAUSE: 'human' (the inbox tray's release click) is allowed while paused. */
+    origin?: PauseOrigin,
   ): Promise<'started' | 'dropped' | 'timeout'>;
   /** START a structured session (or reuse a live one) and deliver `text` as its
    *  next turn — the spawn/wake entry point. Unlike `send` this does not require
    *  a live session: it lazy-starts one, resuming the workspace's prior
    *  conversation when there is one (agent-sdk's `sdkWake`).
    *  `opts.openingBrief`: this send is spawn / Restart's own delivery of `lastTask` (the only callers whose same-text in-flight send is deduped — #227 F5). */
-  start(wsId: string, text: string, opts?: { openingBrief?: boolean }): Promise<void>;
+  start(wsId: string, text: string, opts?: { openingBrief?: boolean; origin?: PauseOrigin }): Promise<void>;
   /** Resolve when the workspace's CURRENT session settles its first TURN (first non-error output, an errored turn, or death before
    *  either) or `timeoutMs` passes. Optional: a seam without it reports `unknown` (#227 D7). */
   awaitFirstTurn?(wsId: string, timeoutMs: number): Promise<SdkFirstTurnOutcome>;
@@ -94,9 +97,11 @@ export async function sdkDeliver(
   wsId: string,
   text: string,
   peerOrigin?: PeerOrigin,
+  /** #252 fleet PAUSE: 'human' (Send now, Fix checks, Send review) is allowed while paused. Default 'auto'. */
+  origin?: PauseOrigin,
 ): Promise<boolean> {
   if (!impl?.hasSession(wsId)) return false;
-  await impl.send(wsId, text, peerOrigin);
+  await impl.send(wsId, text, peerOrigin, origin);
   return true;
 }
 
@@ -120,9 +125,10 @@ export async function sdkDeliverConfirmed(
   text: string,
   peerOrigin?: PeerOrigin,
   timeoutMs: number = DELIVERY_START_TIMEOUT_MS,
+  origin?: PauseOrigin,
 ): Promise<'none' | 'started' | 'dropped' | 'timeout'> {
   if (!impl?.hasSession(wsId)) return 'none';
-  return impl.sendAwaitingStart(wsId, text, peerOrigin, timeoutMs);
+  return impl.sendAwaitingStart(wsId, text, peerOrigin, timeoutMs, origin);
 }
 
 /** `error` = the start failure's own message; `note` = an ok-with-a-caveat line for the caller to print (#227 D6). */
@@ -139,7 +145,7 @@ export type SdkFirstTurnOutcome =
 
 /** Start a structured session and deliver `text` as its opening turn (resuming prior context). No PTY fallback (#227):
  *  a failure is REPORTED here, and is an error row in the Agent view (agent-sdk `sdkSend`). */
-export async function sdkStartAndDeliverResult(wsId: string, text: string, opts?: { openingBrief?: boolean }): Promise<SdkStartResult> {
+export async function sdkStartAndDeliverResult(wsId: string, text: string, opts?: { openingBrief?: boolean; origin?: PauseOrigin }): Promise<SdkStartResult> {
   if (!impl) return { ok: false, error: 'the structured agent module is not loaded' };
   try {
     await impl.start(wsId, text, opts);
@@ -161,8 +167,8 @@ export function sdkFirstTurnFailed(wsId: string): boolean {
 }
 
 /** Boolean form of {@link sdkStartAndDeliverResult} for wake and the bus wake seam. */
-export async function sdkStartAndDeliver(wsId: string, text: string): Promise<boolean> {
-  return (await sdkStartAndDeliverResult(wsId, text)).ok;
+export async function sdkStartAndDeliver(wsId: string, text: string, origin?: PauseOrigin): Promise<boolean> {
+  return (await sdkStartAndDeliverResult(wsId, text, origin ? { origin } : undefined)).ok;
 }
 
 /** Stop a live structured session if one exists (best-effort). Even with NO

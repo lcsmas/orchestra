@@ -164,6 +164,7 @@ import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
+import { pauseRefusalById } from './pause-gate.ts';
 import type {
   Account,
   BrowserBounds,
@@ -821,10 +822,10 @@ export const apiHandlers: ApiHandlerTable = {
   //      wrong message. The action result reports what actually happened
   //      (including the normal 'gone' outcome) rather than throwing.
   listInbox: async (id) => readInbox(id),
-  releaseInboxMessage: (id, text) => releaseInboxBlock(id, text),
+  releaseInboxMessage: (id, text) => releaseInboxBlock(id, text, 'human'), // #252 row 22: the tray click is a human act
   refuseInboxMessage: (id, text) => refuseInboxBlock(id, text),
   releaseAllInboxMessages: async (id) => {
-    const res = await releaseAllInboxBlocks(id);
+    const res = await releaseAllInboxBlocks(id, 'human');
     return {
       released: res.released,
       remaining: res.remaining,
@@ -873,6 +874,9 @@ export const apiHandlers: ApiHandlerTable = {
     if (!resuming && ws.lastTask) {
       const task = ws.lastTask;
       setTimeout(() => {
+        // #252 fleet PAUSE (ledger #261 row 11): typing the opening brief is an AUTO turn start (the human only opened the terminal) — checked at fire time.
+        const pausedRun = pauseRefusalById(id, 'auto');
+        if (pausedRun) return log.info(`pty:start ${id}: opening brief not typed — ${pausedRun}`);
         writePty(id, task + '\n');
         // Status flips to running once Claude fires its UserPromptSubmit hook.
       }, 1200);
@@ -1006,7 +1010,8 @@ export const apiHandlers: ApiHandlerTable = {
   // is broadcast on `agent:event` from that module.
 
   agentSdkSend: async (wsId, text, images) => {
-    await sdkSend(wsId, text, images);
+    // #252 fleet PAUSE (ledger #261 row 1): a prompt the HUMAN types is allowed while the run is paused and un-pauses nothing.
+    await sdkSend(wsId, text, images, undefined, undefined, false, false, 'human');
   },
 
   agentSdkRunBash: async (wsId, command) => {
@@ -1268,7 +1273,7 @@ export const apiHandlers: ApiHandlerTable = {
     // Live SDK session or stopped agent: wakeAgentWithPrompt handles both
     // (deliver-as-next-turn / structured-first wake). It returns false when a
     // terminal PTY is live — then type it in.
-    if (!(await wakeAgentWithPrompt(id, prompt))) {
+    if (!(await wakeAgentWithPrompt(id, prompt, { origin: 'human' }))) { // #252: a human click (row 28)
       // #227: false is a live PTY (typed in, unchanged — #232) OR an SDK session that would not start (no
       // PTY to type into): never answer "requested" for a prompt that went nowhere.
       if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED);
@@ -1325,7 +1330,7 @@ export const apiHandlers: ApiHandlerTable = {
     // Exactly the fixChecks delivery seam: a live SDK session takes it as its
     // next turn, a stopped agent gets a structured-first wake, and a live
     // terminal PTY (where wakeAgentWithPrompt returns false) gets it typed in.
-    if (!(await wakeAgentWithPrompt(id, prompt))) {
+    if (!(await wakeAgentWithPrompt(id, prompt, { origin: 'human' }))) { // #252: a human click (row 28)
       if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED); // #227 — see fixChecks
       writePty(id, prompt);
       setTimeout(() => writePty(id, '\r'), 80);

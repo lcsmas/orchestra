@@ -26,6 +26,7 @@
 
 import { getBus, send, type BusDb } from './bus.ts';
 import { busSwitch, heldRunIds } from './bus-runs.ts';
+import { effectivePausedRunIds } from './bus-pause.ts';
 import { log } from './logger.ts';
 import {
   decideEscalation,
@@ -344,6 +345,14 @@ export function sweepBusLiveness(): void {
       heldRuns = heldRunIds(db);
     } catch (e) {
       log.warn('bus-liveness: hold read failed — treating as none held', e);
+    }
+    // #252 fleet PAUSE (ledger #261 row 15): a paused run AND every descendant run is silenced exactly like a held one — the
+    // paused set is unioned INTO the held set, so `decideEscalation`'s `held` shield covers it. Unreadable = silence nothing.
+    try {
+      const paused = effectivePausedRunIds(db);
+      if (paused.size > 0) heldRuns = new Set([...heldRuns, ...paused]);
+    } catch (e) {
+      log.warn('bus-liveness: pause read failed — silencing nothing', e);
     }
     // #204 (D4 i): coordinators with at least one member making PROGRESS (running
     // and not hung) — an idle OPS beside a working fleet is not stale.

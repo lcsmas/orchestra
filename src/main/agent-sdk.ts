@@ -47,6 +47,8 @@ import {
   maybeBumpCoordinatorOnReplacement,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
+import { pauseRefusalById } from './pause-gate.ts';
+import type { PauseOrigin } from '../shared/bus-pause.ts';
 import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
 import { forkBranchName } from '../shared/fork-session';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
@@ -288,6 +290,10 @@ interface Session {
    *  minted `uuid` because the queue array is spliced/reordered by the tray, so
    *  positional indexes would not survive. Entries are pruned as they drain. */
   coalesce: Set<string>;
+  /** #252 fleet PAUSE: queue entries the HUMAN typed (composer / Send now / toolbar). While the
+   *  session's run is paused {@link promptStream} drains only these; AUTO turns wait for the lift.
+   *  Pruned with `coalesce` in emitQueueUpdate. */
+  humanTurns: Set<string>;
   /** Resolver for the generator's current await — called to hand it the next
    *  queued message (or signal shutdown). */
   pump: (() => void) | null;
@@ -1244,6 +1250,9 @@ function makeOnElicitation(session: Session) {
   };
 }
 
+/** #252: how often a PAUSED session re-checks whether its run is still paused before draining a queued turn. */
+const PAUSE_DRAIN_POLL_MS = 2_000;
+
 /** The async-generator prompt: yields queued user turns, gating each follow-up
  *  turn on the prior turn's `result` (spike h) so the SDK never has two turns in
  *  flight. Ends when the session stops.
@@ -1272,6 +1281,28 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
       session.pump = null;
     }
     if (session.stopping) return;
+
+    // #252 fleet PAUSE (ledger #261 row 24): a turn queued BEFORE the pause must not drain. While
+    // this session's run is paused an AUTO entry waits (re-checked every PAUSE_DRAIN_POLL_MS — the
+    // lift is a bus write this process is not told about); a HUMAN-typed entry goes first, since
+    // the human prompt is allowed and un-pauses nothing. `pump` wakes us the instant a prompt lands.
+    while (!session.stopping && session.queue.length > 0 && pauseRefusalById(session.wsId, 'auto') !== null) {
+      const hi = session.queue.findIndex((m) => !!m.uuid && session.humanTurns.has(m.uuid));
+      if (hi >= 0) {
+        if (hi > 0) {
+          session.queue.unshift(...session.queue.splice(hi, 1));
+          emitQueueUpdate(session);
+        }
+        break;
+      }
+      await new Promise<void>((res) => {
+        session.pump = res;
+        setTimeout(res, PAUSE_DRAIN_POLL_MS).unref?.();
+      });
+      session.pump = null;
+    }
+    if (session.stopping) return;
+    if (session.queue.length === 0) continue; // emptied while held (tray cancel)
 
     const msg = session.queue.shift()!;
     // COALESCE: while the entry just taken is marked "merge with next", absorb
@@ -1489,6 +1520,8 @@ async function consume(session: Session): Promise<void> {
               cleared: session.cleared === true,
               parkedCount: parked.length,
               inFlightCount: session.inboxRedriveInFlight.size,
+              // #252 (ledger #261 row 23): a re-drive starts a turn — parked mail stays parked while paused.
+              paused: pauseRefusalById(session.wsId, 'auto') !== null,
             })
           ) {
             const key = parked[0].text.trim();
@@ -1828,6 +1861,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     ctx: cursorFor(wsId),
     queue: [],
     coalesce: new Set(),
+    humanTurns: new Set(),
     pump: null,
     turnGate: null,
     lastStreamAt: Date.now(),
@@ -2796,6 +2830,7 @@ function emitQueueUpdate(session: Session): void {
   // unbounded across a long session.
   const live = new Set<string>(session.queue.flatMap((m) => (m.uuid ? [m.uuid as string] : [])));
   for (const id of session.coalesce) if (!live.has(id)) session.coalesce.delete(id);
+  for (const id of session.humanTurns) if (!live.has(id)) session.humanTurns.delete(id);
   emit(
     session.wsId,
     stamp(session.ctx, {
@@ -2905,9 +2940,20 @@ export async function sdkSend(
   /** INTERNAL (#227 F5): true only for spawn / Restart's own send of `lastTask` — the ONLY callers whose same-text send while the brief is in
    *  flight is the SAME delivery. A user's identical message is never swallowed. */
   dedupeOpeningBrief = false,
+  /** #252 fleet PAUSE: who is asking. 'human' (composer, Send now, toolbar Restart) is ALLOWED while
+   *  the workspace's run is paused and un-pauses nothing; the default 'auto' (wake, peer message,
+   *  recovery, re-drive, spawn brief) is refused. Ledger #261 rows 1/2 — the origin rides to THIS gate. */
+  origin: PauseOrigin = 'auto',
   /** Resolves to the minted turn uuid — the handle a caller uses to await
    *  whether this turn actually STARTED (issue #57 b, sdkSendAwaitingStart). */
 ): Promise<string> {
+  // #252: the COMMIT-POINT pause gate for every AUTO start (a site gate upstream can be raced by a pause
+  // landing after it). Before ensureSession's error path so a refused start leaves NO red error row, queue
+  // entry or pending prompt. The brief claimant's nested send (`fromClaim`) rides its caller's decision.
+  if (!fromClaim) {
+    const pausedRun = pauseRefusalById(wsId, origin);
+    if (pausedRun) throw new Error(pausedRun);
+  }
   let session: Session;
   try {
     session = await ensureSession(wsId);
@@ -2955,7 +3001,7 @@ export async function sdkSend(
   if (claim) {
     try {
       await dropPendingText(wsId, claim.brief);
-      if (!claim.callerIsBrief) session.briefUuid = await sdkSend(wsId, claim.brief, undefined, undefined, undefined, true);
+      if (!claim.callerIsBrief) session.briefUuid = await sdkSend(wsId, claim.brief, undefined, undefined, undefined, true, false, origin);
     } finally {
       claim.release(); // waiters resume AFTER this synchronous run reaches its own queue push (no await in between)
     }
@@ -3064,6 +3110,7 @@ export async function sdkSend(
     // image + text blocks match the Messages API vision contract exactly.
     message: { role: 'user', content: content as SDKUserMessage['message']['content'] },
   };
+  if (origin === 'human') session.humanTurns.add(rewindId);
   // A turn already in flight means this prompt is PARKED, not started —
   // `turnGate` is non-null exactly while a turn runs (same idiom as consume()'s
   // hadOpenTurn check). Read it BEFORE pushing, and note that a non-empty queue
@@ -3155,6 +3202,7 @@ export async function sdkSendAwaitingStart(
   text: string,
   peerOrigin: PeerOrigin | undefined,
   timeoutMs: number,
+  origin: PauseOrigin = 'auto', // #252: 'human' = the inbox tray's release click
 ): Promise<SdkDeliveryOutcome | 'timeout'> {
   // The registrar is passed DOWN to sdkSend rather than parked in a module
   // global: concurrent senders must not be able to alias each other's watcher.
@@ -3171,7 +3219,7 @@ export async function sdkSendAwaitingStart(
     };
     // Kick the send from inside the executor so `register` is bound before any
     // await can interleave another sender.
-    void sdkSend(wsId, text, undefined, peerOrigin, register).then(
+    void sdkSend(wsId, text, undefined, peerOrigin, register, false, false, origin).then(
       (id) => {
         uuid = id;
       },
@@ -3384,9 +3432,13 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
  *  (`sdkSessionId === ''` is sdkClear's explicit "cleared" marker and starts
  *  fresh; a genuinely bad adopted id is cleared by sdkSend's isBadResumeError
  *  guard, so a corrupt transcript can't wedge future sends.) */
-export async function sdkWake(wsId: string, text: string, opts?: { openingBrief?: boolean }): Promise<void> {
+export async function sdkWake(
+  wsId: string,
+  text: string,
+  opts?: { openingBrief?: boolean; /** #252: 'human' = a person asked (toolbar Restart, Send now) — allowed while paused. */ origin?: PauseOrigin },
+): Promise<void> {
   await adoptTerminalTranscript(wsId);
-  await sdkSend(wsId, text, undefined, undefined, undefined, false, opts?.openingBrief === true);
+  await sdkSend(wsId, text, undefined, undefined, undefined, false, opts?.openingBrief === true, opts?.origin ?? 'auto');
 }
 
 /** The terminal-only → SDK adoption step shared by {@link sdkWake} and the legacy
@@ -3488,6 +3540,14 @@ async function recoverPendingPromptsInner(wsId: string, history: AgentEvent[]): 
   const ws = store.getWorkspace(wsId);
   const pending = normalizePendingPrompts(ws?.sdkPendingPrompts);
   if (pending.length === 0) return;
+  // #252 fleet PAUSE (ledger #261 row 4): a recovery re-SENDS the prompt — a turn start — and DROPS the
+  // recoverable entries from `sdkPendingPrompts` before it does (`keepOnlyPendingPrompts` below). Held
+  // here, before that drop, the pending prompts stay durable and recover once the pause lifts.
+  const pausedRun = pauseRefusalById(wsId, 'auto');
+  if (pausedRun) {
+    log.info(`agent-sdk: pending-prompt recovery for ${wsId} held — ${pausedRun}`);
+    return;
+  }
   // "Absent from the transcript" != "lost": a prompt still queued behind
   // session init is absent too. Ask the live session (#112, session-keeper.md).
   const { live, recoverable } = partitionLivePrompts(pending, livePromptIds(wsId));
@@ -5850,11 +5910,11 @@ export function sdkStopMany(wsIds: readonly string[]): void {
 registerSdkDelivery({
   hasSession: sdkHasSession,
   hasBackgroundTask: sdkHasBackgroundTask,
-  send: async (wsId, text, peerOrigin) => {
-    await sdkSend(wsId, text, undefined, peerOrigin);
+  send: async (wsId, text, peerOrigin, origin) => {
+    await sdkSend(wsId, text, undefined, peerOrigin, undefined, false, false, origin ?? 'auto');
   },
-  sendAwaitingStart: (wsId, text, peerOrigin, timeoutMs) =>
-    sdkSendAwaitingStart(wsId, text, peerOrigin, timeoutMs),
+  sendAwaitingStart: (wsId, text, peerOrigin, timeoutMs, origin) =>
+    sdkSendAwaitingStart(wsId, text, peerOrigin, timeoutMs, origin ?? 'auto'),
   start: (wsId, text, opts) => sdkWake(wsId, text, opts),
   awaitFirstTurn: sdkAwaitFirstTurn,
   firstTurnFailed: (wsId) => sessions.get(wsId)?.briefOutcome === 'failed',

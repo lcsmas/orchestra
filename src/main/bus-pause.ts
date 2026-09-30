@@ -11,7 +11,13 @@ import type { BusDb } from './bus.ts';
 import { getRun, runHoldAuthority } from './bus-runs.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
-import { activePauseInChain, type PauseChainLink } from '../shared/bus-pause.ts';
+import {
+  activePauseInChain,
+  pauseGateDecision,
+  type PauseChainLink,
+  type PauseOrigin,
+} from '../shared/bus-pause.ts';
+import { nearestOrchestratorId, type WaveNode } from './wave-run-id.ts';
 
 /** The typed outcome of `orchestra run pause|resume` (pause half). */
 export type RunPauseOutcome =
@@ -214,4 +220,36 @@ export function setRunPause(
     'UPDATE runs SET paused_at = NULL, paused_by = NULL, pause_mode = NULL, pause_trap_at = NULL WHERE id = ?',
   ).run(runId);
   return 'lifted';
+}
+
+/** Seams so the gate decision runs over a real bus + a fake workspace map without the Electron
+ *  store (src/main/pause-gate.ts binds the real ones; the unit suite binds fakes). */
+export interface PauseGateDeps {
+  getWorkspace: (id: string) => WaveNode | undefined;
+  getBus: () => BusDb | null;
+  warn?: (msg: string, err?: unknown) => void;
+}
+
+/**
+ * THE GATE DECISION: the refusal for `ws` (`run en pause — orchestra run resume --run <id>`) or
+ * null when a start may proceed. The run is resolved NOW from the live workspace tree
+ * (`nearestOrchestratorId`, the `resolveWaveRunId` walk) — never `$ORCHESTRA_RUN_ID`. A HUMAN
+ * origin is never refused and never even reads the bus. Unknown (no ws, no bus, no run row, an
+ * unreadable read — logged) ⇒ NOT paused.
+ */
+export function pauseRefusalWith(
+  deps: PauseGateDeps,
+  ws: WaveNode | null | undefined,
+  origin: PauseOrigin,
+): string | null {
+  if (origin === 'human') return null;
+  if (!ws) return null;
+  try {
+    const db = deps.getBus();
+    if (!db) return null;
+    return pauseGateDecision(origin, activePauseFor(db, nearestOrchestratorId(ws, deps.getWorkspace)));
+  } catch (e) {
+    deps.warn?.('pause gate: unreadable — treating as NOT paused', e);
+    return null;
+  }
 }

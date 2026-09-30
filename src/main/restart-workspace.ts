@@ -38,6 +38,8 @@ import { sdkRestart, sdkWakeRestart } from './agent-sdk';
 import { sdkSessionLive, sdkFirstTurnFailed } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
+import { pauseRefusal } from './pause-gate.ts';
+import type { PauseOrigin } from '../shared/bus-pause.ts';
 import { restartOwesOpeningTask } from '../shared/opening-task.ts';
 import type { RestartTrigger } from '../shared/types';
 
@@ -72,13 +74,18 @@ export async function dispatchRestartRequest(input: {
   // #226: sandbox agents are paused — refuse BEFORE the classifier so `--fresh` (sdkClear), a legacy hasInput/no-session ws (PTY route) and recordRestart's state write are all covered.
   const paused = sandboxPausedMessage(ws);
   if (paused) return { ok: false, error: paused };
+  // #252 fleet PAUSE (ledger #261 rows 5/6/7): the toolbar Restart is a HUMAN act (allowed, un-pauses nothing); `orchestra restart`
+  // and the re-parent restart are AUTO and refused here — BEFORE the classifier and any stop, so a refusal never stops a running session.
+  const restartOrigin: PauseOrigin = trigger === 'toolbar' ? 'human' : 'auto';
+  const pausedRun = pauseRefusal(ws, restartOrigin);
+  if (pausedRun) return { ok: false, error: pausedRun };
   const live = { ptyLive: id ? isRunning(id) : false, sdkLive: id ? sdkSessionLive(id) : false, sdkFailed: id ? sdkFirstTurnFailed(id) : false };
   // #227: a kept child whose SDK start failed owes its task and nothing ever ran (the classifier would say 'unknown'):
   // Restart retries THAT start, delivering the task once.
   const owed = !!(id && ws && restartOwesOpeningTask(ws, live));
   // ONE result, so the res.ok-gated stale-clear below covers both routes.
   let res: RestartResult;
-  if (owed) res = await retryOpeningTask(id!, fresh);
+  if (owed) res = await retryOpeningTask(id!, fresh, restartOrigin);
   else res = await resolveRestart({
     id,
     ws,
@@ -123,8 +130,8 @@ export async function dispatchRestartRequest(input: {
 }
 
 /** #227 — retry a kept child's SDK start (same operation as spawn); `fresh` is moot: nothing to keep or clear. */
-async function retryOpeningTask(id: string, fresh: boolean): Promise<RestartResult> {
-  const started = await startWorkspaceAgentHeadless(id);
+async function retryOpeningTask(id: string, fresh: boolean, origin: PauseOrigin): Promise<RestartResult> {
+  const started = await startWorkspaceAgentHeadless(id, origin);
   if (started.ok) return { ok: true, mode: 'structured', fresh, openingTask: true, ...(started.note ? { note: started.note } : {}) };
   log.warn(`restart: opening-task retry failed for ${id}: ${started.error}`);
   return { ok: false, error: `restart failed: ${started.error}` };

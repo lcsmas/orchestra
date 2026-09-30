@@ -195,8 +195,17 @@ export function shouldRedriveInbox(input: {
   cleared: boolean;
   parkedCount: number;
   inFlightCount: number;
+  /** #252 fleet PAUSE (ledger #261 row 23): the session's run is paused — a re-drive would START a
+   *  turn, so the parked mail stays parked (durable) until the pause lifts. Absent = not paused. */
+  paused?: boolean;
 }): boolean {
-  return input.queueLen === 0 && !input.cleared && input.parkedCount > 0 && input.inFlightCount === 0;
+  return (
+    input.queueLen === 0 &&
+    !input.cleared &&
+    input.parkedCount > 0 &&
+    input.inFlightCount === 0 &&
+    input.paused !== true
+  );
 }
 
 /** Max automatic session recycles per workspace per rolling hour.
