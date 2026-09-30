@@ -37,12 +37,8 @@ export function activePauseInChain(
   return null;
 }
 
-/** THE DECISION every gate runs: the refusal text, or null when the start may proceed. A HUMAN
- *  origin is never refused and never consults the pause (it un-pauses nothing either). */
-export function pauseGateDecision(
-  origin: PauseOrigin,
-  active: { runId: string } | null,
-): string | null {
-  if (origin === 'human') return null;
+/** THE DECISION every gate runs: the refusal text, or null when no pause governs. The HUMAN exemption
+ *  lives in ONE place — `pauseRefusalWith` (src/main/bus-pause.ts) returns before reading the pause at all. */
+export function pauseGateDecision(active: { runId: string } | null): string | null {
   return active ? pauseRefusalMessage(active.runId) : null;
 }

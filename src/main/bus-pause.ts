@@ -247,7 +247,7 @@ export function pauseRefusalWith(
   try {
     const db = deps.getBus();
     if (!db) return null;
-    return pauseGateDecision(origin, activePauseFor(db, nearestOrchestratorId(ws, deps.getWorkspace)));
+    return pauseGateDecision(activePauseFor(db, nearestOrchestratorId(ws, deps.getWorkspace)));
   } catch (e) {
     deps.warn?.('pause gate: unreadable — treating as NOT paused', e);
     return null;

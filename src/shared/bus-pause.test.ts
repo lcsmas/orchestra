@@ -38,12 +38,9 @@ test('activePauseInChain: paused_at 0 is a real timestamp, not "unset"', () => {
   assert.deepEqual(activePauseInChain([link('ops', 0, true)]), { runId: 'ops', pausedAt: 0 });
 });
 
-test('pauseGateDecision: AUTO is refused, HUMAN is never refused, no pause = null', () => {
-  const active = { runId: 'ops-7' };
-  assert.equal(pauseGateDecision('auto', active), 'run en pause — orchestra run resume --run ops-7');
-  assert.equal(pauseGateDecision('human', active), null);
-  assert.equal(pauseGateDecision('auto', null), null);
-  assert.equal(pauseGateDecision('human', null), null);
+test('pauseGateDecision: an active pause is refused with the carrier; none = null', () => {
+  assert.equal(pauseGateDecision({ runId: 'ops-7' }), 'run en pause — orchestra run resume --run ops-7');
+  assert.equal(pauseGateDecision(null), null);
 });
 
 test('shouldRedriveInbox: paused blocks the re-drive; absent/false changes nothing (row 23)', () => {

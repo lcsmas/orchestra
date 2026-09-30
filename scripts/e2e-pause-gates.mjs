@@ -24,7 +24,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? '';
 const ARMS = [
   'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume', 'migrate',
-  'send_funnel', 'drain', 'recover', 'redrive',
+  'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
   'off_identity',
 ];
@@ -50,6 +50,7 @@ const ranLog = path.join(tmpHome, 'claude-ran.log');
 fs.mkdirSync(stubBin, { recursive: true });
 fs.writeFileSync(path.join(stubBin, 'claude'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(ranLog)}\nsleep 30\n`, { mode: 0o755 });
 process.env.PATH = `${stubBin}:/usr/local/bin:/usr/bin:/bin`;
+process.env.ORCHESTRA_SPAWN_INIT_WAIT_MS = '400';   // the first-turn confirmation wait (default 20 s) — the fake CLI never confirms
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 const userMessages = [];   // agent:event user-message broadcasts = the turns a human would SEE
@@ -99,11 +100,14 @@ sdk.__setQueryFactoryForTests(({ prompt }) => {
   const pending = [];
   let wake = null;
   emitResult = () => { pending.push({ type: 'result', subtype: 'success', session_id: 'pg', is_error: false, num_turns: 1, duration_ms: 1, total_cost_usd: 0, result: 'done' }); wake?.(); };
+  let firstSeen = () => {};
+  const first = new Promise((r) => { firstSeen = r; });
   void (async () => {
-    try { for await (const m of prompt) yielded.push(JSON.stringify(m?.message?.content ?? '')); } catch { /* torn down */ }
+    try { for await (const m of prompt) { yielded.push(JSON.stringify(m?.message?.content ?? '')); firstSeen(); } } catch { /* torn down */ }
   })();
   return {
     async *[Symbol.asyncIterator]() {
+      await first;   // a REAL CLI inits only after its first user message (claude 2.1.284, measured in #227 F6) — a fake that inits at once clears the owed brief
       yield { type: 'system', subtype: 'init', session_id: 'pg', tools: [], slash_commands: [] };
       for (;;) {
         while (pending.length) yield pending.shift();
@@ -241,12 +245,21 @@ if (ARM === 'spawn') {
   // HUMAN: the toolbar Restart proceeds (it reaches sdkRestart → a fresh fake session)
   const tb = rec('toolbar', await dispatchRestartRequest({ id: 'ws-m1', fresh: false, trigger: 'toolbar' }));
   rec('spawnedByToolbar', factoryCalls - spawnsBefore);
+  // a KEPT child that still owes its opening brief (the retryOpeningTask route): `orchestra restart` refused, the toolbar's retry is HUMAN
+  await store.upsertWorkspace({ ...ws('ws-m2'), lastTask: 'OWED-BRIEF' });
+  const owedCli = rec('owedCli', await dispatchRestartRequest({ id: 'ws-m2', fresh: false, trigger: 'cli' }));
+  rec('owedStartsAfterCli', calls.start.filter((c) => c.wsId === 'ws-m2').length);
+  const owedTb = rec('owedToolbar', await dispatchRestartRequest({ id: 'ws-m2', fresh: false, trigger: 'toolbar' }));
+  rec('owedToolbarStart', calls.start.filter((c) => c.wsId === 'ws-m2').map((c) => ({ origin: c.origin, openingBrief: c.openingBrief, text: c.text })));
   // control: an unrelated run's CLI restart is not refused
   await store.upsertWorkspace({ ...ws('ws-xm'), sdkSessionId: 'sess-xm', hasInput: true });
   const x = rec('otherRun', await dispatchRestartRequest({ id: 'ws-xm', fresh: false, trigger: 'cli' }));
   ok = cli.ok === false && cli.error === PAUSED_MSG && rep.ok === false && rep.error === PAUSED_MSG
     && out.spawnedByRefused === 0 && out.stopsByRefused === 0 && out.stillPaused === true
-    && tb.ok === true && out.spawnedByToolbar >= 1 && x.ok === true;
+    && tb.ok === true && out.spawnedByToolbar >= 1 && x.ok === true
+    && owedCli.ok === false && owedCli.error === PAUSED_MSG && out.owedStartsAfterCli === 0 && owedTb.ok === true
+    && out.owedToolbarStart.length === 1 && out.owedToolbarStart[0].origin === 'human' && out.owedToolbarStart[0].openingBrief === true
+    && out.owedToolbarStart[0].text === 'OWED-BRIEF';
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'flush') {
@@ -312,13 +325,20 @@ if (ARM === 'spawn') {
   rec('stillPaused', pauseOn());
   // a LIVE session does not exempt an AUTO send (the gate is at the commit point, not the session start)
   const a4 = rec('autoSendLive', await refusal(() => sdk.sdkSend('ws-m1', 'AUTO-LIVE')));
+  // row 2: a member that still OWES its opening brief — the human's send claims the brief, which FOLLOWS ITS CALLER (human), so both run, brief first
+  await store.upsertWorkspace({ ...ws('ws-m2'), lastTask: 'OWED-BRIEF' });
+  await sdk.sdkSend('ws-m2', 'HUMAN-HI', undefined, undefined, undefined, false, false, 'human');
+  const briefRan = await untilOrFail(() => yielded.some((y) => y.includes('OWED-BRIEF')));
+  emitResult();
+  const hiRan = await untilOrFail(() => yielded.some((y) => y.includes('HUMAN-HI')));
+  rec('briefFollowsHumanCaller', briefRan && hiRan && yielded.findIndex((y) => y.includes('OWED-BRIEF')) < yielded.findIndex((y) => y.includes('HUMAN-HI')));
   // controls: an unrelated run is not gated; lifting restores AUTO sends on the paused one
   const x = rec('otherRun', await refusal(() => sdk.sdkSend('ws-xm', 'OTHER-TEXT')));
   lift();
   const l = rec('afterLift', await refusal(() => sdk.sdkSend('ws-m1', 'LIFTED-TEXT')));
   ok = a1 === PAUSED_MSG && a2 === PAUSED_MSG && a3 === 'dropped' && out.noSideEffects.factoryCalls === 0 && out.noSideEffects.sessionLive === false
     && out.noSideEffects.turns === 0 && out.noSideEffects.errorRows === 0 && out.noSideEffects.pending === 0
-    && h === true && out.humanTurns === 1 && out.stillPaused === true && a4 === PAUSED_MSG && x === null && l === null;
+    && h === true && out.humanTurns === 1 && out.stillPaused === true && a4 === PAUSED_MSG && out.briefFollowsHumanCaller === true && x === null && l === null;
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'drain') {
@@ -384,6 +404,60 @@ if (ARM === 'spawn') {
   const re = rec('redrivenAfterLift', await untilOrFail(() => userMessages.filter((m) => m.text.includes('REDRIVE-BLOCK')).length === 1, 4000));
   rec('parkedAfterLift', tray.readInbox('ws-m1').length);
   ok = out.parkedWhilePaused === 1 && out.blockTurnsWhilePaused === 0 && re && out.parkedAfterLift === 0;
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'tray') {
+  // row 22 (HUMAN) over the REAL seam: the inbox tray's release click delivers into a LIVE session of a paused run (origin threaded
+  // tray → sdkDeliverConfirmed → the seam → sdkSendAwaitingStart → sdkSend); the AUTO caller of the same function (re-drive/watchdog) is dropped.
+  await seedFleet();
+  const tray = await import(`${REPO}/src/main/inbox-tray.ts`);
+  await sdk.sdkSend('ws-m1', 'KICKOFF');                       // a live session BEFORE the pause
+  await untilOrFail(() => yielded.some((y) => y.includes('KICKOFF')));
+  emitResult();
+  const inboxPath = tray.inboxFilePath('ws-m1');
+  fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+  fs.writeFileSync(inboxPath, `${'='.repeat(60)}\nTRAY-HUMAN\n${'='.repeat(60)}\nTRAY-AUTO\n`, 'utf8');
+  pause();
+  const auto = rec('autoRelease', await tray.releaseInboxBlock('ws-m1', 'TRAY-AUTO'));
+  rec('autoTurns', userMessages.filter((m) => m.text.includes('TRAY-AUTO')).length);
+  const human = rec('humanRelease', await tray.releaseInboxBlock('ws-m1', 'TRAY-HUMAN', 'human'));
+  rec('humanTurns', userMessages.filter((m) => m.text.includes('TRAY-HUMAN')).length);
+  rec('remaining', tray.readInbox('ws-m1').map((b) => b.text.trim()));
+  rec('stillPaused', pauseOn());
+  ok = auto.ok === false && auto.reason === 'not-delivered' && out.autoTurns === 0 && human.ok === true && out.humanTurns === 1
+    && JSON.stringify(out.remaining) === JSON.stringify(['TRAY-AUTO']) && out.stillPaused === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'wake_live') {
+  // "Send now" / Fix checks / Send review (HUMAN) over the REAL seam into a LIVE paused session: origin threaded WAWP → sdkDeliver → seam.send
+  // → sdkSend. The AUTO wake of the same session is refused at WAWP.
+  await seedFleet();
+  await sdk.sdkSend('ws-m1', 'KICKOFF');
+  await untilOrFail(() => yielded.some((y) => y.includes('KICKOFF')));
+  emitResult();
+  pause();
+  const auto = rec('autoWake', await workspaces.wakeAgentWithPrompt('ws-m1', 'AUTO-WAKE-LIVE'));
+  const human = rec('humanWake', await workspaces.wakeAgentWithPrompt('ws-m1', 'HUMAN-WAKE-LIVE', { origin: 'human' }));
+  const ran = rec('humanYielded', await untilOrFail(() => yielded.some((y) => y.includes('HUMAN-WAKE-LIVE')), 3000));
+  rec('autoYielded', yielded.some((y) => y.includes('AUTO-WAKE-LIVE')));
+  rec('stillPaused', pauseOn());
+  ok = auto === false && human === true && ran && out.autoYielded === false && out.stillPaused === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'restart_real') {
+  // the toolbar Restart (HUMAN) of a kept child that owes its opening brief, over the REAL seam in a paused run: DRR → retryOpeningTask →
+  // startWorkspaceAgentHeadless → sdkStartAndDeliverResult → seam.start → sdkWake → sdkSend (origin human the whole way). `orchestra restart` is refused.
+  await seedFleet();
+  const { dispatchRestartRequest } = await import(`${REPO}/src/main/restart-workspace.ts`);
+  await store.upsertWorkspace({ ...ws('ws-m2'), lastTask: 'OWED-BRIEF-REAL' });
+  pause();
+  const cli = rec('cli', await dispatchRestartRequest({ id: 'ws-m2', fresh: false, trigger: 'cli' }));
+  rec('spawnsAfterCli', factoryCalls);
+  const tb = rec('toolbar', await dispatchRestartRequest({ id: 'ws-m2', fresh: false, trigger: 'toolbar' }));
+  const ran = rec('briefYielded', await untilOrFail(() => yielded.some((y) => y.includes('OWED-BRIEF-REAL')), 3000));
+  rec('stillPaused', pauseOn());
+  ok = cli.ok === false && cli.error === PAUSED_MSG && out.spawnsAfterCli === 0 && tb.ok === true && ran && out.stillPaused === true;
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'roster') {

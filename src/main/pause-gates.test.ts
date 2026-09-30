@@ -89,6 +89,10 @@ test('GATE row 5/6/7 restart: `orchestra restart` + re-parent restart refused BE
   assert.ok(r.spawnedByToolbar >= 1, 'the toolbar restart reached sdkRestart');
   assert.equal(r.stillPaused, true);
   assert.equal(r.otherRun.ok, true);
+  assert.deepEqual(r.owedCli, { ok: false, error: PAUSED }, 'a kept child owing its brief: `orchestra restart` is refused too');
+  assert.equal(r.owedStartsAfterCli, 0);
+  assert.equal(r.owedToolbar.ok, true);
+  assert.deepEqual(r.owedToolbarStart, [{ origin: 'human', openingBrief: true, text: 'OWED-BRIEF' }], 'the toolbar retry delivers the brief WITH origin human');
   assert.equal(r.ok, true);
 });
 
@@ -134,6 +138,7 @@ test('GATE rows 1/2 sdkSend funnel: every AUTO start is refused with NO side eff
   assert.equal(r.humanTurns, 1);
   assert.equal(r.stillPaused, true);
   assert.equal(r.autoSendLive, PAUSED);
+  assert.equal(r.briefFollowsHumanCaller, true, 'row 2: the claimed opening brief follows its HUMAN caller (runs first, then the human text)');
   assert.equal(r.otherRun, null);
   assert.equal(r.afterLift, null);
   assert.equal(r.ok, true);
@@ -167,6 +172,38 @@ test('GATE row 23 redrive: parked inbox mail is NOT re-driven at a turn boundary
   assert.equal(r.blockTurnsWhilePaused, 0);
   assert.equal(r.redrivenAfterLift, true);
   assert.equal(r.parkedAfterLift, 0);
+  assert.equal(r.ok, true);
+});
+
+test('HUMAN row 22 tray (REAL seam): the tray release click delivers into a LIVE session of a paused run; the AUTO release of the same function is dropped', () => {
+  const r = runArm('tray');
+  assert.equal(r.autoRelease.ok, false);
+  assert.equal(r.autoRelease.reason, 'not-delivered');
+  assert.equal(r.autoTurns, 0);
+  assert.equal(r.humanRelease.ok, true);
+  assert.equal(r.humanTurns, 1);
+  assert.deepEqual(r.remaining, ['TRAY-AUTO'], 'the refused block stays parked');
+  assert.equal(r.stillPaused, true);
+  assert.equal(r.ok, true);
+});
+
+test('HUMAN rows 17/28 Send now / Fix checks (REAL seam): a human wake reaches a LIVE paused session; the AUTO wake is refused', () => {
+  const r = runArm('wake_live');
+  assert.equal(r.autoWake, false);
+  assert.equal(r.humanWake, true);
+  assert.equal(r.humanYielded, true);
+  assert.equal(r.autoYielded, false);
+  assert.equal(r.stillPaused, true);
+  assert.equal(r.ok, true);
+});
+
+test('HUMAN row 5 toolbar Restart (REAL seam): a kept child owing its brief starts with origin human the whole way down; `orchestra restart` is refused', () => {
+  const r = runArm('restart_real');
+  assert.deepEqual(r.cli, { ok: false, error: PAUSED });
+  assert.equal(r.spawnsAfterCli, 0);
+  assert.equal(r.toolbar.ok, true);
+  assert.equal(r.briefYielded, true);
+  assert.equal(r.stillPaused, true);
   assert.equal(r.ok, true);
 });
 
