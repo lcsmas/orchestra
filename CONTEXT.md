@@ -106,6 +106,26 @@ The message an OPS sends one member at a Reprise, built from the member's
 Bilan de pause. Killed commands are listed, never re-run automatically.
 _Avoid_: resume nudge (that is the generic usage-limit auto-resume text)
 
+### Quality
+
+**Nomination**:
+A worker's claim that a named branch ref is ready to be gated for merge.
+_Avoid_: submission, done report, PR
+
+**Candidate**:
+The frozen ref a nomination names; every stage judges exactly this ref.
+_Avoid_: branch, tip (both move)
+
+**Stage**:
+One quality check a candidate passes through: pre-review, verifier gate,
+adversarial review, or post-merge use.
+_Avoid_: gate (only the verifier's stage), check
+
+**Escaped defect**:
+A defect found after its candidate merged, attributed to the ticket or merge
+that introduced it.
+_Avoid_: regression, bug (too broad)
+
 ### Workspaces
 
 **Spawned agent**:
