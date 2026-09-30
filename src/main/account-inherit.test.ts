@@ -844,6 +844,266 @@ test('C10 the D10 provenance guard still comes FIRST — even a UI de-selection 
   }
 });
 
+// ---- #239: an account whose configDir IS the inheritance source syncs nothing (never a self-loop) ---------------
+
+/** Sync a RAW stored `configDir` (template or path) as one account, HOME redirected to the rig; returns the WARN lines. */
+async function runSyncAt(rig: Rig, configDir: string, inherit?: Inherit, opts?: SyncOpts, homeEnv: string = rig.home): Promise<string[]> {
+  assertScratch(rig.home);
+  assertScratch(homeEnv);
+  assertScratch(configDir.replace(/^~/, homeEnv).replace('${HOME}', homeEnv)); // the expanded dir must be scratch
+  const m = await loadInherit();
+  const prev = process.env.HOME;
+  process.env.HOME = homeEnv;
+  try {
+    (globalThis as any).__a8Logs = [] as LogRec[];
+    await m.syncAccountInheritance({ id: 'a', label: 'mc', configDir, inherit }, opts);
+    return ((globalThis as any).__a8Logs as LogRec[]).filter((l) => l.level === 'warn').map((l) => l.msg);
+  } finally {
+    if (prev === undefined) delete process.env.HOME;
+    else process.env.HOME = prev;
+  }
+}
+
+/** The ways a stored configDir can name the source `<home>/.claude`. `want` = the login dir the WARN must print
+ *  (expandConfigDir's output), `seen` = the source as the module sees it (`$HOME/.claude`, HOME possibly a symlink). */
+interface SelfSpelling {
+  name: string;
+  dir: (rig: Rig) => string;
+  want: (rig: Rig) => string;
+  home?: (rig: Rig) => string;
+  seen?: (rig: Rig) => string;
+  setup?: (rig: Rig) => void;
+}
+const homelinkOf = (rig: Rig): string => path.join(path.dirname(rig.home), 'homelink');
+const SELF_SPELLINGS: SelfSpelling[] = [
+  { name: 'plain path', dir: (rig) => path.join(rig.home, '.claude'), want: (rig) => path.join(rig.home, '.claude') },
+  { name: 'trailing slash', dir: (rig) => path.join(rig.home, '.claude') + path.sep, want: (rig) => path.join(rig.home, '.claude') + path.sep },
+  { name: '`~` template', dir: () => '~/.claude', want: (rig) => path.join(rig.home, '.claude') },
+  { name: '`${HOME}` template', dir: () => '${HOME}/.claude', want: (rig) => path.join(rig.home, '.claude') },
+  {
+    name: '`..` segment',
+    dir: (rig) => `${rig.home}${path.sep}.claude-mc${path.sep}..${path.sep}.claude`,
+    want: (rig) => `${rig.home}${path.sep}.claude-mc${path.sep}..${path.sep}.claude`,
+  },
+  {
+    name: 'symlink alias of the source (same realpath)',
+    dir: (rig) => path.join(rig.home, '.claude-alias'),
+    want: (rig) => path.join(rig.home, '.claude-alias'),
+    setup: (rig) => fs.symlinkSync(path.join(rig.home, '.claude'), path.join(rig.home, '.claude-alias')),
+  },
+  {
+    name: 'configDir spelled through a symlink to HOME (HOME itself real)',
+    dir: (rig) => path.join(homelinkOf(rig), '.claude'),
+    want: (rig) => path.join(homelinkOf(rig), '.claude'),
+    setup: (rig) => fs.symlinkSync(rig.home, homelinkOf(rig)),
+  },
+  {
+    name: 'HOME IS a symlink, configDir the real path (only the realpath links them)',
+    dir: (rig) => path.join(rig.home, '.claude'),
+    want: (rig) => path.join(rig.home, '.claude'),
+    home: homelinkOf,
+    seen: (rig) => path.join(homelinkOf(rig), '.claude'),
+    setup: (rig) => fs.symlinkSync(rig.home, homelinkOf(rig)),
+  },
+];
+for (const sp of SELF_SPELLINGS) {
+  test(`#239 configDir == the source (${sp.name}) → no-op: source byte-identical (settings.json still a real file), no manifest, ONE pinned warn`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    sp.setup?.(rig);
+    const src = path.join(rig.home, '.claude');
+    const before = snapshot(src)!;
+    const jsonBefore = fs.readFileSync(path.join(rig.home, '.claude.json'));
+    assert.deepEqual(linksOf(before), [], 'precondition: no symlinks in the source');
+    if (sp.home) assert.ok(fs.lstatSync(sp.home(rig)).isSymbolicLink(), 'precondition: HOME really is a symlink');
+    const warns = await runSyncAt(rig, sp.dir(rig), FULL, { caller: 'spawn-sdk' }, sp.home?.(rig));
+    assert.deepEqual(snapshot(src), before, 'the source dir is byte-identical');
+    assert.equal(fs.lstatSync(path.join(src, 'settings.json')).isSymbolicLink(), false, 'settings.json was not turned into a self-loop');
+    assert.equal(fs.readFileSync(path.join(src, 'settings.json'), 'utf8'), '{"model":"opus"}\n');
+    assert.ok(!fs.existsSync(path.join(src, 'settings.json.orchestra-bak')), 'no .orchestra-bak of the source file');
+    assert.ok(!fs.existsSync(path.join(src, '.orchestra-inherited.json')), 'no manifest written into the source');
+    assert.ok(fs.readFileSync(path.join(rig.home, '.claude.json')).equals(jsonBefore), 'the MCP source is untouched');
+    assert.deepEqual(
+      warns,
+      [`account-inherit: ${sp.want(rig)} is the inheritance source ${sp.seen?.(rig) ?? src} itself — sync skipped, nothing to inherit from itself`],
+      'exactly ONE warn, with this exact text',
+    );
+  });
+}
+
+// A bind mount of the source has ANOTHER realpath but the same device+inode (review F2). A real bind needs privileges the
+// suite lacks, so the alias dir is a real empty dir whose stat is answered with the source's — the guard's only input.
+async function withStatAlias(aliases: Map<string, string>, body: () => Promise<void>): Promise<number> {
+  const f = fs as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const orig = f.statSync;
+  let hits = 0;
+  f.statSync = function (this: unknown, p: unknown, o?: unknown) {
+    const to = aliases.get(String(p));
+    if (to !== undefined) { hits++; return orig.call(this, to, o); }
+    return orig.call(this, p, o);
+  };
+  try {
+    await body();
+  } finally {
+    f.statSync = orig;
+  }
+  return hits;
+}
+test('#239/F2 configDir is a BIND MOUNT of the source (other realpath, same dev+ino) → no-op: the alias dir stays empty, ONE pinned warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const src = path.join(rig.home, '.claude');
+  const bind = path.join(rig.home, '.claude-bind');
+  fs.mkdirSync(bind);
+  const before = snapshot(src)!;
+  let warns: string[] = [];
+  const hits = await withStatAlias(new Map([[bind, src]]), async () => { warns = await runSyncAt(rig, bind, FULL, { caller: 'spawn-sdk' }); });
+  assert.ok(hits > 0, 'instrument control: the guard really stat-ed the alias');
+  assert.deepEqual(fs.readdirSync(bind), [], 'nothing written through the alias');
+  assert.deepEqual(snapshot(src), before);
+  assert.deepEqual(warns, [`account-inherit: ${bind} is the inheritance source ${src} itself — sync skipped, nothing to inherit from itself`]);
+});
+test('#239/F2 ino 0 is "unknown", never a match: two DIFFERENT dirs both reporting dev 1 / ino 0 still sync (D10 shares sameDir, so a false match would fail open)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const src = path.join(rig.home, '.claude');
+  const other = path.join(rig.home, '.claude-mc');
+  fs.mkdirSync(other);
+  const f = fs as unknown as Record<string, (...a: unknown[]) => any>;
+  const orig = f.statSync;
+  let faked = 0;
+  f.statSync = function (this: unknown, p: unknown, o?: any) {
+    const st = orig.call(this, p, o);
+    if (o?.bigint === true && (String(p) === src || String(p) === other)) { faked++; return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { dev: 1n, ino: 0n }); }
+    return st;
+  };
+  let warns: string[] = [];
+  try {
+    warns = await runSyncAt(rig, other, FULL);
+  } finally {
+    f.statSync = orig;
+  }
+  assert.ok(faked >= 2, `instrument control: both dirs were reported as dev1/ino0 (${faked})`);
+  assert.deepEqual(warns, []);
+  assert.deepEqual(linksOf(snapshot(other)!), LINKS);
+});
+
+const SELF_SELECTIONS: Array<[string, Inherit | undefined, SyncOpts]> = [
+  ['settings only', { settings: true }, {}],
+  ['statusline only', { statusline: true }, {}],
+  ['skills only', { skills: ['frontend-design'] }, {}],
+  ['MCP only', { mcpServers: ['github'] }, {}],
+  ['empty selection, non-UI', undefined, { caller: 'boot' }],
+  ['empty selection, UI de-select-all', undefined, { userDeselected: true, caller: 'ui-save' }],
+];
+for (const [name, inherit, opts] of SELF_SELECTIONS) {
+  test(`#239 configDir == the source, selection ${name} → still a no-op (source untouched, no manifest)`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    const src = path.join(rig.home, '.claude');
+    const before = snapshot(src)!;
+    const warns = await runSyncAt(rig, src, inherit, opts);
+    assert.deepEqual(snapshot(src), before);
+    assert.equal(warns.length, 1, JSON.stringify(warns));
+    assert.ok(warns[0].includes('is the inheritance source'), warns[0]);
+    assert.ok(!fs.existsSync(path.join(rig.home, '.claude', '.claude.json')), 'no login .claude.json created inside the source');
+  });
+}
+
+// The guard is EQUALITY, not prefix / containment: a look-alike, a child and another dir behind a symlink still sync normally.
+const NEAR_MISSES: Array<[string, (rig: Rig) => string, ((rig: Rig) => void) | undefined]> = [
+  ['`.claude-mc` (shares the `.claude` prefix)', (rig) => path.join(rig.home, '.claude-mc'), undefined],
+  ['a CHILD dir of the source', (rig) => path.join(rig.home, '.claude', 'acct'), undefined],
+  ['a symlink to a DIFFERENT dir', (rig) => path.join(rig.home, '.claude-alias'), (rig) => { fs.mkdirSync(path.join(rig.home, '.claude-other')); fs.symlinkSync(path.join(rig.home, '.claude-other'), path.join(rig.home, '.claude-alias')); }],
+];
+for (const [name, mkDir, setup] of NEAR_MISSES) {
+  test(`#239 must-PASS: configDir = ${name} is NOT the source → syncs exactly as before (7 links, 3 MCP servers, no warn)`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    setup?.(rig);
+    const dir = mkDir(rig);
+    assert.deepEqual(await runSyncAt(rig, dir, FULL), []);
+    assert.deepEqual(linksOf(snapshot(dir)!), LINKS);
+    assert.deepEqual(mcpOf(dir), ['chrome-devtools', 'github', 'linear-server']);
+    assert.deepEqual(manifestOf(dir), { symlinks: LINKS, mcpServers: ['github', 'linear-server', 'chrome-devtools'] });
+    assert.equal(fs.lstatSync(path.join(rig.home, '.claude', 'settings.json')).isSymbolicLink(), false, 'the source itself is untouched');
+  });
+}
+
+test('#239 setter: a save holding the source-pointed account AND a normal one → the normal one syncs fully, the source stays byte-identical, ONE warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const src = path.join(rig.home, '.claude');
+  const before = snapshot(src)!;
+  const other = secondLogin(rig, '.claude-b');
+  const warns = await runSave(rig.home, [], [acct('self', { login: src }, FULL), acct('b', other, FULL)]);
+  assert.deepEqual(snapshot(src), before, 'source untouched');
+  assert.equal(warns.length, 1, JSON.stringify(warns));
+  assert.ok(warns[0].includes('is the inheritance source'), warns[0]);
+  assert.deepEqual(linksOf(snapshot(other.login)!), LINKS, 'the other account is unchanged from before: fully synced');
+  assert.deepEqual(mcpOf(other.login), ['chrome-devtools', 'github', 'linear-server']);
+});
+
+// ---- #239 review F1: the login `.claude.json` IS the global MCP source (same FILE, not same dir) ---------------------------
+
+interface SharedJson { name: string; login: (rig: Rig) => Rig | { home: string; login: string }; prime: (rig: Rig) => Promise<void> }
+const SHARED_JSON: SharedJson[] = [
+  {
+    name: 'configDir = ~ (its .claude.json IS ~/.claude.json)',
+    login: (rig) => ({ home: rig.home, login: rig.home }),
+    prime: async (rig) => { put(path.join(rig.home, '.orchestra-inherited.json'), JSON.stringify({ source: path.join(rig.home, '.claude'), symlinks: [], mcpServers: ['linear-server', 'chrome-devtools'] })); },
+  },
+  {
+    name: 'the login .claude.json is a SYMLINK to ~/.claude.json',
+    login: (rig) => rig,
+    prime: async (rig) => {
+      assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server', 'chrome-devtools'] }), []);
+      fs.rmSync(cjOf(rig));
+      fs.symlinkSync(path.join(rig.home, '.claude.json'), cjOf(rig));
+    },
+  },
+  {
+    name: 'the login .claude.json is a HARD LINK to ~/.claude.json (dev+ino)',
+    login: (rig) => rig,
+    prime: async (rig) => {
+      assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server', 'chrome-devtools'] }), []);
+      fs.rmSync(cjOf(rig));
+      fs.linkSync(path.join(rig.home, '.claude.json'), cjOf(rig));
+    },
+  },
+];
+for (const sh of SHARED_JSON) {
+  test(`#239/F1 ${sh.name}: de-selecting a server leaves the GLOBAL ~/.claude.json byte-identical, ONE pinned warn, the manifest keeps its servers`, async () => {
+    const rig = newRig();
+    makeSource(rig.home);
+    await sh.prime(rig);
+    const acct_ = sh.login(rig);
+    const globalJson = path.join(rig.home, '.claude.json');
+    const before = viewOf(globalJson);
+    const manifestBefore = JSON.parse(fs.readFileSync(manifestPath(acct_.login), 'utf8'));
+    assert.equal(JSON.parse(before.bytes!.toString()).mcpServers['linear-server'].url, 'u', 'precondition: the global file holds linear-server');
+    const warns = await runSyncAt(acct_ as Rig, acct_.login, { mcpServers: ['github'] }, { caller: 'spawn-sdk' });
+    assert.ok(sameViewOf(before, viewOf(globalJson)), 'the GLOBAL file is byte-identical (bytes + mtime)');
+    assert.deepEqual(warns, [`account-inherit: ${path.join(acct_.login, '.claude.json')} is the global MCP source ${globalJson} itself — MCP servers left untouched for ${acct_.login}`]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(manifestPath(acct_.login), 'utf8')), manifestBefore, 'the manifest still owns its servers (nothing was removed)');
+    assert.deepEqual(tmpLeft(path.dirname(globalJson)), [], 'no tmp / lock left next to the global file');
+  });
+}
+
+test('#239/F1 must-PASS: a COPY of ~/.claude.json (same bytes, other inode) is a normal login file — the removal applies to the copy only', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  assert.deepEqual(await runSync(rig, { mcpServers: ['github', 'linear-server', 'chrome-devtools'] }), []);
+  const globalJson = path.join(rig.home, '.claude.json');
+  fs.rmSync(cjOf(rig));
+  fs.copyFileSync(globalJson, cjOf(rig));
+  const before = viewOf(globalJson);
+  assert.deepEqual(await runSyncAt(rig, rig.login, { mcpServers: ['github'] }, { caller: 'spawn-sdk' }), []);
+  assert.ok(sameViewOf(before, viewOf(globalJson)), 'the global file is untouched');
+  assert.deepEqual(mcpOf(rig.login), ['github'], 'linear-server + chrome-devtools removed from the login copy');
+  assert.deepEqual(manifestOf(rig.login).mcpServers, ['github']);
+});
+
 // ---- the UI setter's own step (`syncAfterAccountsSave`): per-ACCOUNT authority, driven through the real module ----
 
 const setStore = (accounts: Acct[]): void => { (globalThis as any).__a8Store.accounts = accounts; };

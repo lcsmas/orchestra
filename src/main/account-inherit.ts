@@ -554,6 +554,12 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
     log.warn(`account-inherit: ${claudeJsonPath} is a dangling symlink — MCP servers left untouched for ${loginDir}`);
     return prevKeys;
   }
+  // #239/F1: the login `.claude.json` IS the global MCP source (`configDir=~`, a symlink or hard link to `~/.claude.json`) —
+  // a merge/removal here would edit the USER's global config (de-selecting a server deletes it there). Same file, not same dir.
+  if (sameDir(target, globalClaudeJson())) {
+    log.warn(`account-inherit: ${claudeJsonPath} is the global MCP source ${globalClaudeJson()} itself — MCP servers left untouched for ${loginDir}`);
+    return prevKeys;
+  }
   // #238: only a DEFINITE absence starts from {}; a torn/empty/non-object file or any other read error is
   // "unknown" — skip the write (fail closed), the next sync retries once the file is whole again.
   let seen: FileView;
@@ -622,6 +628,12 @@ export async function syncAccountInheritance(account: Account, opts: SyncOptions
   // #235: a missing/unreadable source is "unknown", never "empty" — gates every destructive step below.
   if (!isReadableDir(globalDir)) {
     log.warn(`account-inherit: source ${globalDir} is missing or unreadable — sync skipped, ${loginDir} left untouched`);
+    return;
+  }
+  // #239: a login dir that IS the source has nothing to inherit from itself — linking would move the source's own
+  // settings.json/CLAUDE.md/imports to `.orchestra-bak` and leave self-loops. Equality (path | realpath | dev+ino), not containment.
+  if (sameDir(loginDir, globalDir)) {
+    log.warn(`account-inherit: ${loginDir} is the inheritance source ${globalDir} itself — sync skipped, nothing to inherit from itself`);
     return;
   }
 
