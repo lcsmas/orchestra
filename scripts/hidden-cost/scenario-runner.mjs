@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.HC_CONFIG ?? '{}');
-const { REPO, root, live, turns = [{ tools: 0 }, { tools: 1 }, { tools: 3 }], probeModels = false, httpMcp = 0, idleSeconds = 60, profile = {}, replyDelayMs = 150, hooks = true, execlogSo, label = 'scenario' } = cfg;
+const { REPO, root, live, turns = [{ tools: 0 }, { tools: 1 }, { tools: 3 }], probeModels = false, httpMcp = 0, parity = false, idleSeconds = 60, profile = {}, replyDelayMs = 150, hooks = true, execlogSo, label = 'scenario' } = cfg;
 const SB = path.join(REPO, 'scripts', 'session-budget');
 const { assertScratch } = await import(`${SB}/scratch-guard.mjs`);
 const home = path.join(root, 'home');
@@ -36,8 +36,10 @@ if (httpMcp > 0) {
 Object.assign(process.env, {
   ANTHROPIC_BASE_URL: api.url, ANTHROPIC_API_KEY: 'sk-ant-api03-hidden-cost-fake-key-not-real',
   HTTPS_PROXY: api.proxyUrl, HTTP_PROXY: api.proxyUrl, https_proxy: api.proxyUrl, http_proxy: api.proxyUrl, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1', DISABLE_ERROR_REPORTING: '1',
 });
+// PRODUCTION PARITY (--parity 1) leaves the CLI's non-essential traffic ON (telemetry, updater, error reporting, connector discovery): every such attempt is REFUSED by the egress proxy and
+// counted. The default keeps the knobs (like C1's first checkpoint) so the other numbers are not polluted by refused-retry noise.
+if (!parity) Object.assign(process.env, { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1', DISABLE_ERROR_REPORTING: '1' });
 delete process.env.ANTHROPIC_AUTH_TOKEN;
 
 fs.mkdirSync(path.join(orchHome, 'bin'), { recursive: true });
@@ -104,16 +106,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const windows = [];
 async function window_(name, fn) {
-  const m0 = process.cpuUsage(); const c0 = cpuNow(); const t0 = mono(); const r0 = api.requests.length; const b0 = { calls: bc.calls, bytes: bc.bytes, byType: { ...bc.byType } };
+  const m0 = process.cpuUsage(); const k0 = readProc(process.pid); const c0 = cpuNow(); const t0 = mono(); const r0 = api.requests.length; const b0 = { calls: bc.calls, bytes: bc.bytes, byType: { ...bc.byType } };
   const extra = await fn();
-  const t1 = mono(); const c1 = cpuNow(); const m1 = process.cpuUsage(m0); // Orchestra-main analogue: the runner process (agent-sdk consume, spool reader, hooks server, emitContext)
+  const t1 = mono(); const c1 = cpuNow(); const k1 = readProc(process.pid); const runnerKidsCpuMs = (k1.cutime + k1.cstime - k0.cutime - k0.cstime) * 10; // CPU of children the runner REAPED in this window (a short-lived throwaway CLI shows up only here)
+  const m1 = process.cpuUsage(m0); // Orchestra-main analogue: the runner process (agent-sdk consume, spool reader, hooks server, emitContext)
   const reqs = api.requests.slice(r0);
   const count = { model: 0, count_tokens: 0, other: 0 };
   for (const r of reqs) count[r.type === 'model' || r.type === 'count_tokens' ? r.type : 'other']++;
   const cpu = {};
   for (const k of new Set([...Object.keys(c0), ...Object.keys(c1)])) { const a = c0[k] ?? { own: 0, kids: 0 }, b = c1[k] ?? { own: 0, kids: 0, n: 0, rssKB: 0 }; cpu[k] = { ownCpuMs: (b.own - a.own) * 10, waitedKidsCpuMs: (b.kids - a.kids) * 10, n: b.n ?? 0, rssKB: b.rssKB ?? 0 }; }
   const rendererIpc = { events: bc.calls - b0.calls, jsonBytes: bc.bytes - b0.bytes, byType: Object.fromEntries(Object.entries(bc.byType).map(([k, n]) => [k, n - (b0.byType[k] ?? 0)]).filter(([, n]) => n > 0)) };
-  windows.push({ name, t0, t1, mainProcessCpuMs: Math.round((m1.user + m1.system) / 1000), rendererIpc, seconds: Number(((t1 - t0) / 1000).toFixed(2)), requests: count, otherPaths: [...new Set(reqs.filter((r) => r.type !== 'model' && r.type !== 'count_tokens').map((r) => `${r.method} ${r.path}`))], cpu, ...(extra ?? {}) });
+  windows.push({ name, t0, t1, runnerKidsCpuMs, mainProcessCpuMs: Math.round((m1.user + m1.system) / 1000), rendererIpc, seconds: Number(((t1 - t0) / 1000).toFixed(2)), requests: count, otherPaths: [...new Set(reqs.filter((r) => r.type !== 'model' && r.type !== 'count_tokens').map((r) => `${r.method} ${r.path}`))], cpu, ...(extra ?? {}) });
 }
 
 let error = null;
@@ -172,8 +175,9 @@ for (const w of windows) {
 }
 const first = api.requests.find((r) => r.type === 'model');
 const result = {
-  label, cfg: { turns, idleSeconds, hooks, profile, probeModels, httpMcp },
-  controls: { hooksInstalled, execlogLines: lines.length, ranAnyHookScript: windows.some((w) => w.hookScriptExecs > 0), firstModelTools: first?.tools ?? 0, egress: api.egress.map((e) => e.target), survivorsAfterTeardown: survivors },
+  label, cfg: { turns, idleSeconds, hooks, profile, probeModels, httpMcp, parity },
+  controls: { hooksInstalled, execlogLines: lines.length, ranAnyHookScript: windows.some((w) => w.hookScriptExecs > 0), firstModelTools: first?.tools ?? 0, egress: api.egress.map((e) => e.target), egressDetail: api.egress.map((e) => ({ tMs: Math.round(e.tMs), target: e.target })), parity, survivorsAfterTeardown: survivors },
+  requestLog: api.requests.filter((r) => r.type === 'model').map((r) => ({ tMs: Math.round(r.tMs), model: r.model, tools: r.tools, messages: r.messages, bodyBytes: r.bodyBytes, ...(r.preview ? { preview: r.preview } : {}) })),
   windows, finalRssKB: Object.fromEntries(Object.entries(censusEnd).map(([k, v]) => [k, v.rssKB])),
   ...(error || errorEvent ? { error: error ?? `agent error: ${errorEvent?.message}` } : {}),
 };

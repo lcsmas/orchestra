@@ -75,6 +75,7 @@ export async function startFakeApiWithTools(opts = {}) {
     let body = null;
     if (type === 'model' || type === 'count_tokens') { try { body = JSON.parse(raw.toString('utf8')); } catch { body = null; } }
     const rec = { seq: ++seq, tMs: now(), method: req.method, path: u.pathname, type, bodyBytes: raw.length, model: body?.model ?? null, stream: body?.stream === true, tools: Array.isArray(body?.tools) ? body.tools.length : 0, messages: Array.isArray(body?.messages) ? body.messages.length : 0 };
+    if (type === 'model' && rec.tools === 0) { const c = body?.messages?.[0]?.content; rec.preview = (typeof c === 'string' ? c : JSON.stringify(c ?? '')).replace(/\s+/g, ' ').slice(0, 110); }
     requests.push(rec);
     if (type === 'model') {
       const { k, done, stream, rate } = planFor(body);

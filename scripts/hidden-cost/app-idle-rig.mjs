@@ -29,8 +29,10 @@ const FAKE_NET = opt('fake-net', '0') === '1';  // seed a FAKE oauth token + FAK
 const FOCUS_CYCLES = Number(opt('focus-cycles', '0'));  // alt-tab K times (a second Wayland window steals focus) — counts what each `focus` event costs
 const SESSIONS = Number(opt('sessions', '0'));     // S REAL claude sessions inside the app (real CLI + keeper) against the FAKE API, each streaming --stream deltas at --rate/s
 const STREAM = Number(opt('stream', '600'));
+const STREAM_ON = opt('stream-on', '');   // comma list of workspace indexes that get the prompt (default: the first S); 0 is the ACTIVE (mounted) pane, the others are background panes
 const RATE = Number(opt('rate', '60'));
 const CLAUDE_DIR = opt('claude-dir', '');
+const RESOURCES_S = Number(opt('resources-page', '0'));  // open the Resources page (window.__orchestraSetState({page:'resources'})) for N s: its 2 s sampler + 30 s btrfs/du size scan
 const RUNNING = Number(opt('running', '0'));   // K sidebar rows driven to status=running through the REAL events spool
 const LABEL = opt('label', `ws${N}`);
 const CLK = 100; // getconf CLK_TCK, asserted below
@@ -154,8 +156,8 @@ function classify(p) {
   if (p.pid === child.pid) return 'electron-main';
   const ty = /--type=([a-z-]+)/.exec(line);
   if (ty && /electron|chrome/.test(p.cmd[0] ?? '')) return `electron-${ty[1]}`;
+  if (/keeper\.js/.test(line)) return 'keeper';   // before the electron check: with --sessions the keeper runs as Electron-as-node (argv0 = electron)
   if (/(^|\/)electron$/.test(p.cmd[0] ?? '')) return 'electron-other';
-  if (/keeper\.js/.test(line)) return 'keeper';
   if (/\/claude\/versions\//.test(p.cmd[0] ?? '')) return 'claude-cli';
   if (/(^|\/)claude$/.test(p.cmd[0] ?? '') || /stub-bin\/claude/.test(line) || /sleep 3600/.test(line)) return 'claude';  // the stub (no --sessions) or the REAL claude CLI (--sessions)
   if (/fake-mcp|mcp/.test(line)) return 'mcp-child';
@@ -183,6 +185,7 @@ async function cdpConnect(url) {
   const ws = new WebSocket(url);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws error')); });
   let id = 0; const pend = new Map();
+  ws.onclose = (ev) => { console.error(`[hc-rig] CDP websocket CLOSED code=${ev.code} reason=${ev.reason || '-'}`); for (const [i, pr] of pend) { pend.delete(i); pr.rej(new Error('cdp websocket closed')); } };
   ws.onmessage = (m) => { const d = JSON.parse(m.data); const p = pend.get(d.id); if (p) { pend.delete(d.id); d.error ? p.rej(new Error(JSON.stringify(d.error))) : p.res(d.result); } };
   const send = (method, params = {}) => new Promise((res, rej) => { const i = ++id; pend.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params })); setTimeout(() => { if (pend.delete(i)) rej(new Error(`cdp timeout ${method}`)); }, 20_000); });
   const evaluate = async (expr) => { const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
@@ -215,7 +218,19 @@ try {
 
   // windows: warm (discarded), steady (visible), optional hidden
   async function measure(name, seconds, action) {
-    const evalSafe = async (expr) => { for (let a = 0; a < 3; a++) { try { return await cdp.evaluate(expr); } catch (e) { if (a === 2) return `eval-failed: ${String(e.message).slice(0, 60)}`; await sleep(2000); } } };
+    const evalSafe = async (expr) => { if (result.stallDiag) return 'eval-failed: (already stalled)'; for (let a = 0; a < 3; a++) { try { return await cdp.evaluate(expr); } catch (e) { if (a === 0 && !result.stallDiag) { // first failure: capture WHAT the compositor shows and whether the app's own log says anything (stalls are not explained yet)
+        result.stallDiag = { at: name, error: String(e.message).slice(0, 80), t: Date.now() };
+        try { // is the app's MAIN thread blocked, and on what? (wchan of each thread + every live child of the main process)
+          const tids = fs.readdirSync(`/proc/${child.pid}/task`);
+          result.stallDiag.mainThreads = tids.slice(0, 40).map((t) => { try { return `${t}:${fs.readFileSync(`/proc/${child.pid}/task/${t}/wchan`, 'utf8')}`; } catch { return `${t}:?`; } });
+          const kids = new Set(); for (const t of tids) { try { for (const c of fs.readFileSync(`/proc/${child.pid}/task/${t}/children`, 'utf8').split(' ').filter(Boolean)) kids.add(c); } catch { /* */ } }
+          result.stallDiag.mainChildren = [...kids].map((c) => { try { return `${c}:${fs.readFileSync(`/proc/${c}/cmdline`, 'utf8').split('\0').join(' ').slice(0, 100)}:${fs.readFileSync(`/proc/${c}/wchan`, 'utf8')}`; } catch { return `${c}:gone`; } });
+          result.stallDiag.mainState = fs.readFileSync(`/proc/${child.pid}/status`, 'utf8').split('\n').filter((l) => /^(State|Threads)/.test(l));
+        } catch (de) { result.stallDiag.mainThreads = `diag failed: ${String(de.message).slice(0, 60)}`; }
+        try { execFileSync('grim', ['-o', 'HEADLESS-1', path.join(OUT, 'stall.png')], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: process.env.RIG_WAYLAND }, timeout: 15000 }); result.stallDiag.screenshot = 'stall.png'; } catch (ge) { result.stallDiag.screenshot = `grim failed: ${String(ge.message).slice(0, 60)}`; }
+        try { const t = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); result.stallDiag.targets = t.map((x) => ({ type: x.type, url: String(x.url).slice(-40), title: x.title })); } catch (fe) { result.stallDiag.targets = `json failed: ${fe.message}`; }
+        log(`CDP stall in window ${name}: ${JSON.stringify(result.stallDiag).slice(0, 300)}`);
+      } if (a === 2) return `eval-failed: ${String(e.message).slice(0, 60)}`; await sleep(2000); } } };
     const vis = await evalSafe('document.visibilityState');
     const t0 = Date.now(); const c0 = cpuTable(); const log0 = fs.statSync(EXECLOG).size;
     const ol = path.join(OHOME, 'logs', 'orchestra.log'); const ol0 = fs.existsSync(ol) ? fs.statSync(ol).size : 0;
@@ -229,40 +244,23 @@ try {
       w.cpu[k] = { ownCpuS: (b.own - a.own) / CLK, waitedKidsCpuS: (b.kids - a.kids) / CLK, n: b.n ?? 0, rssKB: b.rssKB ?? 0 };
     }
     windows.push(w);
+    if (result.stallDiag) throw new Error(`renderer/main stall detected in window ${name} — aborting the run (retry)`);
     return w;
   }
   log(`UI ready after ${result.bootToUiMs} ms; warm ${WARM_S}s`);
   await measure('warm', WARM_S);
   await measure('steady-visible', MEASURE_S);
-  if (FOCUS_CYCLES > 0) {
-    const swayEnv = { PATH: '/usr/bin:/bin', SWAYSOCK: process.env.SWAYSOCK, XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR };
-    const leaves = () => { const t = JSON.parse(execFileSync('swaymsg', ['-t', 'get_tree'], { env: swayEnv, encoding: 'utf8' })); const hits = []; const walk = (n) => { const kids = [...(n.nodes ?? []), ...(n.floating_nodes ?? [])]; if ((n.type === 'con' || n.type === 'floating_con') && kids.length === 0 && n.pid) hits.push(n); for (const c of kids) walk(c); }; walk(t); return hits; };
-    const other = spawn('foot', ['-e', 'sleep', '600'], { env: { PATH: '/usr/bin:/bin', HOME, XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: process.env.RIG_WAYLAND }, stdio: 'ignore' });
-    await waitFor('second window', async () => leaves().length === 2, 20_000, 300);
-    const wins = leaves(); const foot = wins.find((n) => n.app_id === 'foot'); const app = wins.find((n) => n.app_id !== 'foot');
-    if (!foot || !app) throw new Error(`could not tell the windows apart: ${JSON.stringify(wins.map((n) => n.app_id))}`);
-    const sw = (a) => execFileSync('swaymsg', [a], { env: swayEnv, encoding: 'utf8' });
-    const focusedApp = () => leaves().find((n) => n.id === app.id)?.focused === true;
-    await measure('focus-cycles', FOCUS_CYCLES * 12, async () => {
-      for (let i = 0; i < FOCUS_CYCLES; i++) { sw(`[con_id=${foot.id}] focus`); await sleep(4000); sw(`[con_id=${app.id}] focus`); await sleep(8000); }
-    });
-    result.focusCycles = { cycles: FOCUS_CYCLES, appFocusedAtEnd: focusedApp() };
-    try { other.kill('SIGKILL'); } catch { /* gone */ }
-  }
-  if (SESSIONS > 0) {
-    // S real sessions through the app's own IPC (agent:sdkSend): real keeper + real claude, fake API. Each streams STREAM deltas at RATE/s.
-    const ids = Array.from({ length: Math.min(SESSIONS, N) }, (_, i) => `ws-hc-${i}`);
-    const r0 = fakeApi.requests.length;
-    const prompt = `Reply with ok. TOOLS=0 STREAM=${STREAM} RATE=${RATE}`;
-    const streamS = Math.ceil(STREAM / RATE) + 8;
-    await measure('sessions-streaming', streamS, async () => {
-      await Promise.all(ids.map((id) => cdp.evaluate(`window.orchestra.agentSdkSend(${JSON.stringify(id)}, ${JSON.stringify(prompt)}).then(() => 'sent', (e) => 'ERR ' + e.message)`)));
-      await sleep(streamS * 1000);
-    });
-    const reqs = fakeApi.requests.slice(r0);
-    result.sessions = { requested: ids.length, modelRequests: reqs.filter((q) => q.type === 'model').length, countTokens: reqs.filter((q) => q.type === 'count_tokens').length, other: reqs.filter((q) => q.type !== 'model' && q.type !== 'count_tokens').length, plans: [...new Set(reqs.map((q) => q.plan).filter(Boolean))] };
-    if (!(result.sessions.modelRequests >= ids.length)) result.void.push(`sessions: expected >= ${ids.length} model requests, the fake API saw ${result.sessions.modelRequests}`);
-    await measure('sessions-idle', 45);
+  if (RESOURCES_S > 0) {
+    await cdp.evaluate(`window.__orchestraSetState({ page: 'resources' })`);
+    await sleep(3000);
+    result.resourcesPageOpen = await cdp.evaluate(`document.body.innerText.includes('Resources') || !!document.querySelector('[class*="resources"]')`).catch(() => null);
+    await measure('resources-page', RESOURCES_S);
+    await cdp.evaluate(`window.__orchestraSetState({ page: 'workspaces' })`).catch(() => {});
+    // the Bus pane (BusPane.tsx polls the bus every 2 s while mounted)
+    await cdp.evaluate(`window.__orchestraSetState({ page: 'bus' })`);
+    await sleep(3000);
+    await measure('bus-page', Math.min(RESOURCES_S, 60));
+    await cdp.evaluate(`window.__orchestraSetState({ page: 'workspaces' })`).catch(() => {});
   }
   if (RUNNING > 0) {
     // Drive K rows to `running` exactly as the hook does: append {"event":"submit"} to <events>/<wsid>.jsonl (the app's spool reader tails it).
@@ -290,6 +288,38 @@ try {
     result.hideProof = { before, moveResult: mv, after };
     await measure('steady-hidden', HIDDEN_S);
     if (!after || !after.length || after.some((n) => n.visible !== false)) result.void.push(`hidden window: sway did not report the app window visible=false (${JSON.stringify(after)})`);
+    // bring the window back (scratchpad show) so any later window measures a visible app
+    try { execFileSync('swaymsg', ['scratchpad show'], { env: swayEnv, encoding: 'utf8' }); await sleep(3000); } catch (e) { log(`scratchpad show failed: ${String(e.message).slice(0, 100)}`); }
+  }
+  if (FOCUS_CYCLES > 0) {
+    const swayEnv = { PATH: '/usr/bin:/bin', SWAYSOCK: process.env.SWAYSOCK, XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR };
+    const leaves = () => { const t = JSON.parse(execFileSync('swaymsg', ['-t', 'get_tree'], { env: swayEnv, encoding: 'utf8' })); const hits = []; const walk = (n) => { const kids = [...(n.nodes ?? []), ...(n.floating_nodes ?? [])]; if ((n.type === 'con' || n.type === 'floating_con') && kids.length === 0 && n.pid) hits.push(n); for (const c of kids) walk(c); }; walk(t); return hits; };
+    const other = spawn('foot', ['-e', 'sleep', '600'], { env: { PATH: '/usr/bin:/bin', HOME, XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: process.env.RIG_WAYLAND }, stdio: 'ignore' });
+    await waitFor('second window', async () => leaves().length === 2, 20_000, 300);
+    const wins = leaves(); const foot = wins.find((n) => n.app_id === 'foot'); const app = wins.find((n) => n.app_id !== 'foot');
+    if (!foot || !app) throw new Error(`could not tell the windows apart: ${JSON.stringify(wins.map((n) => n.app_id))}`);
+    const sw = (a) => execFileSync('swaymsg', [a], { env: swayEnv, encoding: 'utf8' });
+    const focusedApp = () => leaves().find((n) => n.id === app.id)?.focused === true;
+    await measure('focus-cycles', FOCUS_CYCLES * 12, async () => {
+      for (let i = 0; i < FOCUS_CYCLES; i++) { sw(`[con_id=${foot.id}] focus`); await sleep(4000); sw(`[con_id=${app.id}] focus`); await sleep(8000); }
+    });
+    result.focusCycles = { cycles: FOCUS_CYCLES, appFocusedAtEnd: focusedApp() };
+    try { other.kill('SIGKILL'); } catch { /* gone */ }
+  }
+  if (SESSIONS > 0) {
+    // S real sessions through the app's own IPC (agent:sdkSend): real keeper + real claude, fake API. Each streams STREAM deltas at RATE/s.
+    const ids = STREAM_ON ? STREAM_ON.split(',').map((i) => `ws-hc-${Number(i)}`) : Array.from({ length: Math.min(SESSIONS, N) }, (_, i) => `ws-hc-${i}`);
+    const r0 = fakeApi.requests.length;
+    const prompt = `Reply with ok. TOOLS=0 STREAM=${STREAM} RATE=${RATE}`;
+    const streamS = Math.ceil(STREAM / RATE) + 8;
+    await measure('sessions-streaming', streamS, async () => {
+      await Promise.all(ids.map((id) => cdp.evaluate(`window.orchestra.agentSdkSend(${JSON.stringify(id)}, ${JSON.stringify(prompt)}).then(() => 'sent', (e) => 'ERR ' + e.message)`)));
+      await sleep(streamS * 1000);
+    });
+    const reqs = fakeApi.requests.slice(r0);
+    result.sessions = { requested: ids.length, modelRequests: reqs.filter((q) => q.type === 'model').length, countTokens: reqs.filter((q) => q.type === 'count_tokens').length, other: reqs.filter((q) => q.type !== 'model' && q.type !== 'count_tokens').length, plans: [...new Set(reqs.map((q) => q.plan).filter(Boolean))] };
+    if (!(result.sessions.modelRequests >= ids.length)) result.void.push(`sessions: expected >= ${ids.length} model requests, the fake API saw ${result.sessions.modelRequests}`);
+    await measure('sessions-idle', 45);
   }
   result.timeAt = windows.map((w) => ({ name: w.name, t0: w.t0, t1: w.t1 }));
   result.versionFromApp = await cdp.evaluate(`(window.orchestra && window.orchestra.getAppVersion) ? window.orchestra.getAppVersion() : null`).catch(() => null);
@@ -367,6 +397,7 @@ if (!(result.controls.appOwnGitSpawns > 0)) result.void.push('LD_PRELOAD log hol
 if (!(result.controls.ghStubCalls > 0)) result.void.push('the gh stub was never invoked — linked-PR poll did not reach the real code path');
 if ((result.rowsMounted ?? 0) < N) result.void.push(`only ${result.rowsMounted}/${N} workspace rows mounted`);
 if ((result.windows ?? []).some((w) => w.name === 'steady-visible' && w.visibilityStart !== 'visible')) result.void.push('steady-visible window was not document.visibilityState=visible');
+if ((result.windows ?? []).some((w) => String(w.visibilityStart).startsWith('eval-failed') || String(w.visibilityEnd).startsWith('eval-failed'))) result.void.push(`renderer CDP stall in window(s) ${(result.windows ?? []).filter((w) => String(w.visibilityStart).startsWith('eval-failed') || String(w.visibilityEnd).startsWith('eval-failed')).map((w) => w.name).join(',')} — nothing measured after the stall is valid`);
 fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify(result, null, 1));
 console.log(JSON.stringify({ label: LABEL, out: OUT, void: result.void, bootToUiMs: result.bootToUiMs, controls: result.controls }));
 process.exit(result.void.length ? 3 : 0);

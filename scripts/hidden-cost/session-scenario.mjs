@@ -22,6 +22,7 @@ const profile = JSON.parse(opt('profile', '{}'));
 const outFile = opt('out', '');
 const probeModels = opt('probe-models', '0') === '1';
 const httpMcp = Number(opt('http-mcp', '0'));
+const parity = opt('parity', '0') === '1';
 
 const load1 = Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]);
 const memAvailKB = Number(/MemAvailable:\s+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))[1]);
@@ -40,7 +41,7 @@ const live = liveDirs(process.env);
 fs.mkdirSync(root, { recursive: true });
 assertScratch('root', root, base, live);
 const claude = spawnSync('sh', ['-c', 'command -v claude'], { encoding: 'utf8' }).stdout.trim();
-const cfg = { REPO, root, live, turns, idleSeconds, hooks, profile, probeModels, httpMcp, execlogSo: so, label, containment: containment.name };
+const cfg = { REPO, root, live, turns, idleSeconds, hooks, profile, probeModels, httpMcp, parity, execlogSo: so, label, containment: containment.name };
 // PATH: a scratch bin holding ONLY a `claude` symlink — ~/.local/bin also holds the `orchestra` shim (an AppImage that cannot FUSE-mount inside bwrap),
 // which the SessionStart hooks would call and fail on; the CLI's real cost is measured apart (scripts/hidden-cost/cli-cost.sh).
 const scratchBin = path.join(root, 'bin'); fs.mkdirSync(scratchBin, { recursive: true }); fs.symlinkSync(fs.realpathSync(claude), path.join(scratchBin, 'claude'));

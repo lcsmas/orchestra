@@ -9,8 +9,9 @@ N="node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/hidden-cost/sessi
 run() { local label="$1"; shift; echo "== $label: $*"; $N --label "$label" --out "$OUT/scn-$label.json" "$@" > "$OUT/scn-$label.stdout" 2> "$OUT/scn-$label.stderr"; echo "   rc=$? out=$OUT/scn-$label.json"; }
 pnpm run build:keeper >/dev/null 2>&1 || { echo "build:keeper failed" >&2; exit 2; }
 run base        --turns 0,1,3 --idle 60 --hooks 1                       # hooks ON: per-turn / per-tool-call / idle
-run nohooks     --turns 0,1,3 --idle 30 --hooks 0                       # same without Orchestra's hooks: the hook delta
+run replicate   --turns 0,1,3 --idle 30 --hooks 0                       # REPLICATE of base (agent-sdk installs the hooks itself, so --hooks 0 does NOT remove them): run-to-run noise
 run stream      --turns 0:600,0:2000 --idle 5 --hooks 0                 # streamed text deltas: renderer-IPC events/bytes per turn
 run probe       --turns 0 --idle 5 --hooks 0 --probe-models 1           # cold-workspace model picker: throwaway CLI cost
 run httpmcp     --turns 0 --idle 90 --hooks 0 --http-mcp 2             # 2 remote (http) MCP servers: connection attempts at start + idle retries
+run parity      --turns 0,1,1,1 --idle 180 --hooks 1 --parity 1              # PRODUCTION PARITY: CLI non-essential traffic left ON; every outbound attempt is refused + counted (does an idle session phone home?)
 echo "ALL-SCENARIOS-DONE"
