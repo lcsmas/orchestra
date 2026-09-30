@@ -6,6 +6,7 @@ import {
   classifyPtyId,
   collectTree,
   computeCpuPcts,
+  parseProcIdentity,
   parseProcStatLine,
   parsePsOutput,
   type ProcSample,
@@ -36,7 +37,7 @@ test('parseProcStatLine parses a normal stat line', () => {
   // pid=1234 comm=claude state=S ppid=42 ... utime=500 stime=250 ... rss=2048 pages
   const line =
     '1234 (claude) S 42 1234 1234 0 -1 4194304 9000 0 12 0 500 250 3 1 20 0 8 0 12345 999999 2048 18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 3 0 0 0 0 0';
-  const p = parseProcStatLine(line);
+  const p = parseProcStatLine(line, 4096);
   assert.ok(p);
   assert.equal(p.pid, 1234);
   assert.equal(p.ppid, 42);
@@ -49,11 +50,11 @@ test('parseProcStatLine parses a normal stat line', () => {
 
 test('parseProcStatLine startTicks is the REAL start time on a live /proc, and absent when malformed', () => {
   const malformed = '7 (x) S 1 7 7 0 -1 0 0 0 0 0 1 1 0 0 20 0 1 0 notanumber 1 1';
-  assert.equal(parseProcStatLine(malformed)?.startTicks, undefined);
+  assert.equal(parseProcStatLine(malformed, 4096)?.startTicks, undefined);
   if (process.platform !== 'linux') return;
   // Independent oracle: this test process started within the last 10 min, so its start-time
   // must sit within 10 min (in 100 Hz ticks) of machine uptime — utime/rss/etc. cannot.
-  const self = parseProcStatLine(fs.readFileSync('/proc/self/stat', 'utf8'));
+  const self = parseProcIdentity(fs.readFileSync('/proc/self/stat', 'utf8'));
   const uptimeTicks = Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) * 100;
   assert.ok(self && typeof self.startTicks === 'number');
   const ageTicks = uptimeTicks - self.startTicks;
@@ -63,7 +64,7 @@ test('parseProcStatLine startTicks is the REAL start time on a live /proc, and a
 test('parseProcStatLine survives spaces and parens in comm', () => {
   const line =
     '99 (tmux: server (1)) S 1 99 99 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 1 1 100 0 1 1 0 0 0 0 0 4096 0 0 0 0 17 0 0 0 0 0 0';
-  const p = parseProcStatLine(line);
+  const p = parseProcStatLine(line, 4096);
   assert.ok(p);
   assert.equal(p.pid, 99);
   assert.equal(p.comm, 'tmux: server (1)');
@@ -72,9 +73,9 @@ test('parseProcStatLine survives spaces and parens in comm', () => {
 });
 
 test('parseProcStatLine rejects malformed input', () => {
-  assert.equal(parseProcStatLine(''), null);
-  assert.equal(parseProcStatLine('no parens here'), null);
-  assert.equal(parseProcStatLine('x (comm) S'), null);
+  assert.equal(parseProcStatLine('', 4096), null);
+  assert.equal(parseProcStatLine('no parens here', 4096), null);
+  assert.equal(parseProcStatLine('x (comm) S', 4096), null);
 });
 
 test('parsePsOutput parses the non-Linux fallback, comm with spaces', () => {
@@ -178,4 +179,10 @@ test('aggregateSession: remote and pid-less sessions report empty local figures'
     assert.equal(stat.cpuPct, 0);
     assert.equal(stat.remote, root.remote);
   }
+});
+
+test('parseProcStatLine: RSS = stat pages × the PAGE SIZE it is given (a 16 KB host reads 4x low with a hardcoded 4096)', () => {
+  const stat = '4242 (claude) S 1 4242 4242 0 -1 4194560 100 0 0 0 30 12 0 0 20 0 5 0 987654 500000000 15000 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0';
+  assert.equal(parseProcStatLine(stat, 16384)?.memBytes, 15000 * 16384);
+  assert.equal(parseProcStatLine(stat, 4096)?.memBytes, 15000 * 4096);
 });

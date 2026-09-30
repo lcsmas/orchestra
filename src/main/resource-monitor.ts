@@ -14,6 +14,7 @@ import { orchestraHome, platform } from './platform';
 import { scoped } from './logger';
 import { store } from './store';
 import { keeperPidFilePath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
+import { hostPageSize, onPageSizeFallback } from './host-page-size';
 import {
   computeCpuPcts,
   parseProcStatLine,
@@ -41,6 +42,7 @@ import {
 } from '../shared/resource-monitor';
 
 const rlog = scoped('resources');
+onPageSizeFallback((m) => rlog.warn(m));
 const execFileP = promisify(execFile);
 
 export const TICK_MS = 60_000;
@@ -65,10 +67,11 @@ async function sampleProcTable(): Promise<ProcSample[]> {
     } catch {
       return out;
     }
+    const pageSize = hostPageSize();
     for (const name of names) {
       if (!/^\d+$/.test(name)) continue;
       try {
-        const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
+        const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'), pageSize);
         if (p) out.push(p);
       } catch {
         /* process exited mid-scan — skip */
@@ -244,7 +247,7 @@ const defaultDeps: ResourceMonitorDeps = {
   readProcStat: (pid) => {
     if (process.platform !== 'linux') return null;
     try {
-      return parseProcStatLine(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+      return parseProcStatLine(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), hostPageSize());
     } catch {
       return null;
     }
@@ -406,6 +409,7 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
   const line = buildResourceLogLine(
     {
       at: now,
+      pageSize: hostPageSize(),
       cpuCores: d.cpuCores(),
       memTotalBytes: d.memTotalBytes(),
       memUsedBytes: d.memUsedBytes(),

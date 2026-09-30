@@ -962,12 +962,12 @@ async function reapArms() {
   const R = await import(`${REPO}/src/shared/resources.ts`);
   const logs = [];
   const procTable = () => procs().map((p) => {
-    try { return R.parseProcStatLine(fs.readFileSync(`/proc/${p.pid}/stat`, 'utf8')); } catch { return null; }
+    try { return R.parseProcIdentity(fs.readFileSync(`/proc/${p.pid}/stat`, 'utf8')); } catch { return null; }
   }).filter(Boolean);
   const hand = {
     now: () => Date.now(), procTable: async () => procTable(), keeperRoots: () => kc.listKeeperRoots(),
     electronProcs: () => [], cpuCores: () => 1, memTotalBytes: () => 1, memUsedBytes: () => 1, appendLine: () => {},
-    readProcStat: (pid) => { try { return R.parseProcStatLine(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return null; } },
+    readProcStat: (pid) => { try { return R.parseProcIdentity(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return null; } },
     readCmdline: (pid) => { try { return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean); } catch { return null; } },
     signal: (pid, sig) => { try { process.kill(pid, sig); return true; } catch { return false; } },
     warn: (m) => logs.push(m), info: (m) => logs.push(m),
