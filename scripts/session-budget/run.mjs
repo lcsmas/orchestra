@@ -35,7 +35,7 @@ const ARMS = {
   normal: { kind: 'session', mutant: null, expect: 'pass' },
   'boot-context-read': { kind: 'session', mutant: 'boot-context-read', expect: 'fail', mustBreak: 'session.beforeFirstReply.countTokensRequests', minBurst: 50 },
   // A slow-but-healthy startup (a slow MCP server, as npx-launched ones are): the main request waits ~3 s and the CLI retries a refused call once. MUST PASS.
-  'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 } },
+  'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 }, mustExercise: { host: 'api.anthropic.com:443', min: 4 } },
   'traffic-knob-in-env': { kind: 'session', mutant: 'traffic-knob-in-sdk-env', expect: 'void', mustVoid: 'instrument.productionEnv', mustName: 'DISABLE_TELEMETRY' },
   'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
   'census-selftest': { kind: 'selftest', mode: 'census' },
@@ -91,7 +91,12 @@ for (const [name, spec] of Object.entries(ARMS)) {
     asExpected = judgement.void && !!named;
     why = named ? named.message : `expected ${spec.mustVoid} to VOID naming ${spec.mustName} but it did not (void=${judgement.void})`;
   } else if (judgement.void) { asExpected = false; why = `VOID — ${judgement.verdicts.filter((v) => v.kind === 'instrument' && !v.ok).map((v) => v.message).join(' | ')}`; voided++; }
-  else if (spec.expect === 'pass') { asExpected = judgement.ok; why = judgement.ok ? 'every budget held' : broke.map((v) => v.message).join(' | '); }
+  else if (spec.expect === 'pass') {
+    asExpected = judgement.ok; why = judgement.ok ? 'every budget held' : broke.map((v) => v.message).join(' | ');
+    // Positive control: a slow-but-healthy arm that never saw the retry proves nothing about the allowance it exists to protect.
+    const seen = report.startupEgress?.[spec.mustExercise?.host] ?? 0;
+    if (asExpected && spec.mustExercise && seen < spec.mustExercise.min) { asExpected = false; why = `held, but the arm did not exercise the retry path (saw ${seen} startup attempts at ${spec.mustExercise.host}, need ≥ ${spec.mustExercise.min}) — it proves nothing`; }
+  }
   else {
     const named = broke.find((v) => v.id === spec.mustBreak);
     asExpected = !!named && (named.actual ?? 0) >= spec.minBurst;
