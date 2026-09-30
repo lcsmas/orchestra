@@ -41,6 +41,11 @@ say(`session-budget: keeper bundle rebuilt (${new Date(build.mtimeMs).toISOStrin
 let bad = 0, voided = 0;
 for (const [name, spec] of Object.entries(ARMS)) {
   if (WANT !== 'all' && WANT !== name) continue;
+  if (spec.kind === 'selftest' && containment.name !== 'netns+pidns' && process.env.SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT === '1') {
+    // Explicit weak-containment opt-out: these instrument checks need net+pid namespaces, so they are SKIPPED — loudly, never counted as a pass.
+    console.log(JSON_OUT ? JSON.stringify({ arm: name, skipped: true }) : `== arm ${name}: SKIPPED — needs net+pid namespaces (weak containment explicitly allowed; the instrument is unchecked on this host)`);
+    continue;
+  }
   const res = spec.kind === 'selftest'
     ? await runSelfTest({ repo: REPO, mode: spec.mode, containment })
     : await runSessionArm({ repo: REPO, arm: name, mutant: spec.mutant, containment });
@@ -84,6 +89,7 @@ for (const [name, spec] of Object.entries(ARMS)) {
   say(`   child processes at first reply: ${p.atFirstReply.total} (cli=${p.atFirstReply.byKind.cli} keeper=${p.atFirstReply.byKind.keeper} mcp=${p.atFirstReply.byKind.mcp} hook=${p.atFirstReply.byKind.hook} other=${p.atFirstReply.byKind.other}) · rss ${Math.round(p.atFirstReply.rssKB / 1024)} MB · after teardown: ${p.survivorsAfterTeardown}`);
   say(`   claude ${report.cli.version} · containment ${report.containment}${report.containmentOptOut ? ' (WEAK, explicit opt-out)' : ''} · fixture ${report.fixture.skills} skills / ${report.fixture.memoryFiles} rules / ${report.fixture.mcpServers}×${report.fixture.toolsPerServer} MCP tools · routes: ${report.paths.join(', ')}`);
 }
-const status = voided ? 'VOID' : bad ? 'FAIL' : 'PASS';
+// A run that needed the weak-containment opt-out never prints the plain PASS terminator: the release gate wants full containment.
+const status = voided ? 'VOID' : bad ? 'FAIL' : containment.name === 'netns+pidns' ? 'PASS' : 'PASS-WEAK';
 say(`SESSION-BUDGET: ${status}`);
 process.exit(voided ? 3 : bad ? 1 : 0);

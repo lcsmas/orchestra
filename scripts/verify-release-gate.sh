@@ -9,7 +9,7 @@
 #
 # Arms: clean (steps EXACTLY `tsc test session-budget abi build gh-release`); tsc_error, test_fail, test_skipped,
 # test_todo, test_rc_only, test_zero, test_swallow_fail/hang, test_no_summary, test_no_skipped_line,
-# tree_dirtied, tree_moved, abi_fail, sb_fail, sb_void, sb_no_terminator, sb_missing_script -> REFUSED naming
+# tree_dirtied, tree_moved, abi_fail, sb_fail, sb_void, sb_no_terminator, sb_weak_containment, sb_missing_script -> REFUSED naming
 # the check + nothing tagged/pushed (sb_* = the #208 session-budget step, stubbed here); bypass
 # (+notes-file, =form) -> proceeds with the reason in the notes; bypass_no_reason/blank/flag/ci_only
 # -> rc 2; dry_run -> plan only. Must-FAIL on old code: RG_SCRIPTS_DIR=<dir with the old release.sh>.
@@ -102,6 +102,7 @@ PKG
       sbfail) echo "echo '== arm normal (expect PASS): UNEXPECTED — BUDGET BROKEN session.beforeFirstReply.countTokensRequests: allowed at most 0, saw 57'"; echo 'echo "SESSION-BUDGET: FAIL"; exit 1' ;;
       sbvoid) echo "echo '== arm normal (expect PASS): UNEXPECTED — VOID — INSTRUMENT VOID instrument.mcpChildProcesses: need at least 4, saw 0'"; echo 'echo "SESSION-BUDGET: VOID"; exit 3' ;;
       sbnoterm) echo "echo '   requests before first reply: model=1 count_tokens=0 other=0'"; echo 'exit 0' ;;
+      sbweak) echo "echo '   requests before first reply: model=1 count_tokens=0 other=0'"; echo 'echo "SESSION-BUDGET: PASS-WEAK"; exit 0' ;;
       *) echo "echo '   requests before first reply: model=1 count_tokens=0 other=0'"; echo 'echo "SESSION-BUDGET: PASS"' ;;
     esac
   } > "$W/scripts/sb-stub.sh"
@@ -236,6 +237,8 @@ mk_fixture sb_void ok sbvoid; run_release 0.5.271
 refused sb_void session-budget "VOID: nothing was measured" "tsc test session-budget"; nothing_shipped sb_void
 mk_fixture sb_no_terminator ok sbnoterm; run_release 0.5.271
 refused sb_no_terminator session-budget "SESSION-BUDGET: PASS' terminator" "tsc test session-budget"; nothing_shipped sb_no_terminator
+mk_fixture sb_weak_containment ok sbweak; run_release 0.5.271
+refused sb_weak_containment session-budget "WEAK egress containment" "tsc test session-budget"; nothing_shipped sb_weak_containment
 mk_fixture sb_missing_script ok sbmissing; run_release 0.5.271
 refused sb_missing_script session-budget "Missing script: test:session-budget" "tsc test"; nothing_shipped sb_missing_script
 

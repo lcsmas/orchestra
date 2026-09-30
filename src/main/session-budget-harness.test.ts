@@ -384,3 +384,32 @@ test('F10: session-runner FAILS CLOSED when cfg.live is absent or empty (never r
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// ── the driver's exit / terminator contract, hermetic (a shimmed `bwrap` that always fails; no `claude` needed) ──
+
+test('F1 end to end: with bwrap unusable the driver is VOID rc 3 by default; under the explicit opt-out the self-tests are SKIPPED and the terminator is PASS-WEAK (never plain PASS)', async () => {
+  const shim = scratch('bwrap-shim');
+  fs.writeFileSync(path.join(shim, 'bwrap'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const run = async (extraEnv: Record<string, string>) => {
+    const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', S('run.mjs'), '--arm', 'census-selftest'], {
+      cwd: REPO, env: { PATH: `${shim}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: os.homedir(), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const rc: number | null = await new Promise((r) => child.on('close', (c) => r(c)));
+    return { rc, out };
+  };
+  try {
+    const strict = await run({});
+    assert.equal(strict.rc, 3, strict.out);
+    assert.match(strict.out, /== arm census-selftest: VOID — containment is 'proxy-only', not 'netns\+pidns'/);
+    assert.match(strict.out, /^SESSION-BUDGET: VOID$/m);
+    const weak = await run({ SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT: '1' });
+    assert.equal(weak.rc, 0, weak.out);
+    assert.match(weak.out, /WEAK containment explicitly allowed/);
+    assert.match(weak.out, /== arm census-selftest: SKIPPED — needs net\+pid namespaces/);
+    assert.match(weak.out, /^SESSION-BUDGET: PASS-WEAK$/m);
+    assert.doesNotMatch(weak.out, /^SESSION-BUDGET: PASS$/m, 'a weak run must never print the plain PASS terminator');
+  } finally { fs.rmSync(shim, { recursive: true, force: true }); }
+});
