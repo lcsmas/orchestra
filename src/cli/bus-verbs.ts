@@ -1036,11 +1036,15 @@ export function verbRunHold(
     return { lifted, outcome: hold.setRunHold(ctx.db, runId, isHold, actor) };
   });
   if (lifted === 'lifted') {
+    // An ANCESTOR run's pause still gates this run (descendants carry none of their own): never claim it is free to start again.
+    const cover = hold.pause?.activePauseFor(ctx.db, runId);
     ctx.out(
-      `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. ` +
-        `Queued turns and pending bus mail resume now (there is no structured Reprise yet — #255).\n` +
-        (outcome === 'resumed' ? `Its liveness hold was lifted too.\n` : ''),
-    );
+      cover
+        ? `Run ${runId}'s own pause is LIFTED, but it is still PAUSED by run ${cover.runId} — lift that one: orchestra run resume --run ${cover.runId}\n`
+        : `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. ` +
+            `Queued turns and pending bus mail resume now (there is no structured Reprise yet — #255).\n`,
+      );
+    if (outcome === 'resumed') ctx.out(`Its liveness hold was lifted too.\n`);
     return;
   }
   switch (outcome) {

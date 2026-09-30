@@ -423,8 +423,13 @@ const SUBCOMMAND_VERBS = new Set(['open', 'resolve', 'list', 'refreeze', 'add', 
  *  --help` (free text) is never read as a help request. */
 const RUN_SUBCOMMANDS = new Set(['hold', 'resume', 'pause']);
 
+/** The `run` verbs that take FLAGS only (no free text): a help flag ANYWHERE after the verb is a help request, never a run.
+ *  `run pause --hard --help` must print help, not pause the fleet (pre-review: `--hard` is mandatory, so `--help` lands at args[2]). */
+const RUN_FLAG_ONLY_VERBS = new Set(['refreeze', 'hold', 'pause', 'resume']);
+
 export function wantsCommandHelp(args: string[], command?: string): boolean {
   if (isHelpFlag(args[0])) return true;
+  if (command === 'run' && RUN_FLAG_ONLY_VERBS.has(args[0] ?? '') && args.slice(1).some(isHelpFlag)) return true;
   if (!isHelpFlag(args[1])) return false;
   return (
     SUBCOMMAND_VERBS.has(args[0] ?? '') || (command === 'run' && RUN_SUBCOMMANDS.has(args[0] ?? ''))

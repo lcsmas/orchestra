@@ -183,3 +183,37 @@ test('help: `orchestra run --help` documents pause/resume + the human-prompt pol
   assert.equal(wantsCommandHelp(['pause', '--help'], 'run'), true);
   assert.equal(wantsCommandHelp(['pause', '--help'], 'status'), false, 'free text is never a help request');
 });
+
+test('pre-review MAJOR: `run pause --hard --help` (help flag at args[2]) prints help and pauses NOTHING — for every flag-only run verb', needsBuild, (t) => {
+  const h = home(t);
+  for (const args of [['run', 'pause', '--hard', '--help', '--run', 'O'], ['run', 'pause', '--run', 'O', '--hard', '-h'], ['run', 'hold', '--run', 'O', '--help'], ['run', 'resume', '--run', 'O', '-h']]) {
+    const r = cli(h, args);
+    assert.equal(r.code, 0, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stdout, /usage: orchestra run refreeze/, `${args.join(' ')} printed help`);
+    assert.doesNotMatch(r.stdout, /PAUSED|HELD|LIFTED/, 'and acted on nothing');
+  }
+  assert.equal(state(h, 'O'), null, 'nothing was paused by any of them');
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O']).code, 0, 'control: without the help flag the verb does pause');
+  assert.notEqual(state(h, 'O'), null);
+});
+
+test('pre-review: wantsCommandHelp honours a help flag anywhere after a flag-only run verb — and still never for free text', () => {
+  for (const a of [['pause', '--hard', '--help'], ['pause', '--run', 'O', '--hard', '-h'], ['hold', '--run', 'x', '--help'], ['resume', '--as', 'a', '-h'], ['refreeze', '--run', 'x', '--help']]) {
+    assert.equal(wantsCommandHelp(a, 'run'), true, a.join(' '));
+  }
+  assert.equal(wantsCommandHelp(['pause', '--hard', '--help'], 'status'), false, 'free text of another verb is never a help request');
+  assert.equal(wantsCommandHelp(['--run', 'O', 'pause', '--help'], 'run'), false, 'only the verb position counts');
+});
+
+test('pre-review: `resume` of a run whose ANCESTOR is still paused says so — never "allowed again" on the first call', needsBuild, (t) => {
+  const h = home(t);
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'L'], 'lead-ws').code, 0);
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws').code, 0);
+  const r = cli(h, ['run', 'resume', '--run', 'O'], 'ops-ws');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, "Run O's own pause is LIFTED, but it is still PAUSED by run L — lift that one: orchestra run resume --run L\n");
+  assert.doesNotMatch(r.stdout, /allowed again/);
+  assert.equal(state(h, 'O'), null, 'its own pause really is cleared');
+  const l = cli(h, ['run', 'resume', '--run', 'L'], 'lead-ws');
+  assert.match(l.stdout, /^Run L pause LIFTED — réveils, turns and spawns are allowed again\./, 'control: the ancestor lifts normally');
+});
