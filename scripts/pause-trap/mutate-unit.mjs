@@ -18,13 +18,13 @@ const T = { wiring: 'src/main/pause-trap-wiring.test.ts', snap: 'src/main/pause-
 
 const M = [
   // ── snapshot (pause-snapshot.ts)
-  { id: 'snap-real-index', file: SNAP, find: "await git(cwd, ['add', '-A', '--', ...pathspec], env);", rep: "await git(cwd, ['add', '-A', '--', ...pathspec], {});", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
+  { id: 'snap-real-index', file: SNAP, find: "await git(cwd, ['add', '-A', '--ignore-errors', '--', ...pathspec], env, undefined, [1]);", rep: "await git(cwd, ['add', '-A', '--ignore-errors', '--', ...pathspec], {}, undefined, [1]);", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
   { id: 'snap-large-files-captured', file: SNAP, find: 'if (st.isFile() && st.size > SNAPSHOT_MAX_UNTRACKED_BYTES) out.push', rep: 'if (false && st.isFile() && st.size > SNAPSHOT_MAX_UNTRACKED_BYTES) out.push', tests: [T.snap], expect: /over the size cap/ },
   { id: 'snap-ref-overwrite', file: SNAP, find: "await git(cwd, ['update-ref', ref, commit, ''], env);", rep: "await git(cwd, ['update-ref', ref, commit], env);", tests: [T.snap], expect: /same `at` twice/ },
   { id: 'snap-no-parent', file: SNAP, find: "...(head ? ['-p', head] : []), '-F', '-'", rep: "'-F', '-'", tests: [T.snap], expect: /captures unstaged|unborn|clean worktree/ },
-  { id: 'snap-no-torn-index-fallback', file: SNAP, find: '      tree = await buildTree(cwd, tmp.file, false, head, excludes);', rep: "      throw new Error('no fallback');", tests: [T.snap], expect: /corrupt\/torn/ },
+  { id: 'snap-no-torn-index-fallback', file: SNAP, find: '      tree = await buildTree(cwd, tmp.file, false, head, excludes, warnings);', rep: "      throw new Error('no fallback');", tests: [T.snap], expect: /corrupt\/torn/ },
   { id: 'snap-dirty-always-false', file: SNAP, find: 'const dirty = headTree === null ? true : headTree !== tree;', rep: 'const dirty = false;', tests: [T.snap, T.trap], expect: /captures unstaged|unborn|ORDER \+ CONTENT/ },
-  { id: 'snap-abort-on-unreadable', file: SNAP, find: "['add', '-A', '--ignore-errors', '--', ...pathspec], env, undefined, [1]", rep: "['add', '-A', '--', ...pathspec], env, undefined, []", tests: [T.snap], expect: /UNREADABLE untracked file/ },
+  { id: 'snap-abort-on-unreadable', file: SNAP, find: "['add', '-A', '--ignore-errors', '--', ...pathspec], env, undefined, [1]", rep: "['add', '-A', '--', ...pathspec], env, undefined, []", tests: [T.snap], expect: /unreadable untracked file/i },
   { id: 'snap-nested-repo-ref', file: SNAP, find: '        if (!fs.lstatSync(dotGit).isFile()) {', rep: '        if (false) {', tests: [T.snap], expect: /nested STANDALONE repository/ },
   // ── identity / lineage (pause-procs.ts)
   { id: 'procs-protected-pid-removed', file: PROCS, find: "  if (target.pid <= 1 || target.pid === plan.cli.pid || target.pid === protect.keeperPid || target.pid === protect.selfPid) {\n    return { ok: false, reason: 'protected-pid (cli/keeper/app/init)' };\n  }\n", rep: '', tests: [T.procs], expect: /NEVER signals the CLI/ },
