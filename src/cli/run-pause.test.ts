@@ -10,6 +10,7 @@ import * as busRuns from '../main/bus-runs.ts';
 import { getRunPause } from '../main/bus-pause.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import { commandHelp, wantsCommandHelp } from './help.ts';
+import { appStoreFile } from './index.ts';
 
 // #252 `orchestra run pause --hard` / `run resume` — the BUILT CLI in an isolated ORCHESTRA_HOME + HOME under the
 // real home (btrfs; never the live ~/.orchestra/bus.sqlite), socket dead on purpose (the verb is store-less: it must
@@ -27,11 +28,12 @@ interface Cli {
   stderr: string;
 }
 
-function cli(home: string, args: string[], wsId: string | null = 'ops-ws', runEnv: string | null = null): Cli {
+function cli(home: string, args: string[], wsId: string | null = 'ops-ws', runEnv: string | null = null, packagedDefault = false): Cli {
+  // packagedDefault = NO ORCHESTRA_HOME (the real install): the bus is `$HOME/.orchestra/bus.sqlite`, the app's store `$HOME/.config/orchestra/orchestra/store.json`.
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: home,
-    ORCHESTRA_HOME: home,
+    ...(packagedDefault ? {} : { ORCHESTRA_HOME: home }),
     ORCHESTRA_SOCK: path.join(home, 'no.sock'),
   };
   if (wsId !== null) env.ORCHESTRA_WS_ID = wsId;
@@ -244,4 +246,31 @@ test('follow-up (verifier MINOR 1): `resume` of a run re-parented AFTER creation
   cli(h2, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws'); cli(h2, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws');
   writeStore(h2, [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }]);
   assert.match(cli(h2, ['run', 'resume', '--run', 'O2'], 'o2-ws').stdout, /^Run O2 pause LIFTED — réveils, turns and spawns are allowed again\./, 'detached: plain lift');
+});
+
+test('pre-review MAJOR: the store is read where the RUNNING APP writes it — the packaged default (no ORCHESTRA_HOME) is `~/.config/orchestra/orchestra/store.json`, never the stale `~/.orchestra/userData`', needsBuild, (t) => {
+  // pure: the app's own rule, per platform / env
+  assert.equal(appStoreFile({ ORCHESTRA_HOME: '/o' }, '/h', 'linux'), '/o/userData/orchestra/store.json');
+  assert.equal(appStoreFile({}, '/h', 'linux'), '/h/.config/orchestra/orchestra/store.json');
+  assert.equal(appStoreFile({ XDG_CONFIG_HOME: '/x' }, '/h', 'linux'), '/x/orchestra/orchestra/store.json');
+  assert.equal(appStoreFile({}, '/h', 'darwin'), '/h/Library/Application Support/orchestra/orchestra/store.json');
+  // built CLI, packaged-default env: bus under $HOME/.orchestra, tree under $HOME/.config/orchestra/orchestra
+  const h = path.join(ROOT, `pk${n++}`);
+  mkdirSync(path.join(h, '.orchestra'), { recursive: true });
+  t.after(() => rmSync(h, { recursive: true, force: true }));
+  const db = bus.openBus(path.join(h, '.orchestra', 'bus.sqlite'));
+  try {
+    busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'ops-ws' }, ON);
+    busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); // top-level on the bus: parent_run_id NULL
+  } finally { db.close(); }
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws', null, true).code, 0);
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws', null, true).code, 0);
+  // a STALE store at the abandoned path says O2 is detached; the LIVE store says it is attached under O
+  const stale = path.join(h, '.orchestra', 'userData', 'orchestra'); mkdirSync(stale, { recursive: true });
+  writeFileSync(path.join(stale, 'store.json'), JSON.stringify({ workspaces: [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }] }));
+  const live = path.join(h, '.config', 'orchestra', 'orchestra'); mkdirSync(live, { recursive: true });
+  writeFileSync(path.join(live, 'store.json'), JSON.stringify({ workspaces: [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator', parentId: 'O' }] }));
+  const r = cli(h, ['run', 'resume', '--run', 'O2'], 'o2-ws', null, true);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /still PAUSED by run O — lift that one/, 'the LIVE (config-dir) tree decided, not the stale ~/.orchestra/userData copy');
 });
