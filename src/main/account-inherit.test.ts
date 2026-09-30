@@ -847,12 +847,13 @@ test('C10 the D10 provenance guard still comes FIRST — even a UI de-selection 
 // ---- #239: an account whose configDir IS the inheritance source syncs nothing (never a self-loop) ---------------
 
 /** Sync a RAW stored `configDir` (template or path) as one account, HOME redirected to the rig; returns the WARN lines. */
-async function runSyncAt(rig: Rig, configDir: string, inherit?: Inherit, opts?: SyncOpts): Promise<string[]> {
+async function runSyncAt(rig: Rig, configDir: string, inherit?: Inherit, opts?: SyncOpts, homeEnv: string = rig.home): Promise<string[]> {
   assertScratch(rig.home);
-  assertScratch(configDir.replace(/^~/, rig.home).replace('${HOME}', rig.home)); // the expanded dir must be scratch
+  assertScratch(homeEnv);
+  assertScratch(configDir.replace(/^~/, homeEnv).replace('${HOME}', homeEnv)); // the expanded dir must be scratch
   const m = await loadInherit();
   const prev = process.env.HOME;
-  process.env.HOME = rig.home;
+  process.env.HOME = homeEnv;
   try {
     (globalThis as any).__a8Logs = [] as LogRec[];
     await m.syncAccountInheritance({ id: 'a', label: 'mc', configDir, inherit }, opts);
@@ -863,36 +864,129 @@ async function runSyncAt(rig: Rig, configDir: string, inherit?: Inherit, opts?: 
   }
 }
 
-/** The ways a stored configDir can name the source `<home>/.claude`. */
-const SELF_SPELLINGS: Array<[string, (rig: Rig) => string, ((rig: Rig) => void) | undefined]> = [
-  ['plain path', (rig) => path.join(rig.home, '.claude'), undefined],
-  ['trailing slash', (rig) => path.join(rig.home, '.claude') + path.sep, undefined],
-  ['`~` template', () => '~/.claude', undefined],
-  ['`${HOME}` template', () => '${HOME}/.claude', undefined],
-  ['`..` segment', (rig) => `${rig.home}${path.sep}.claude-mc${path.sep}..${path.sep}.claude`, undefined],
-  ['symlink alias of the source (same realpath)', (rig) => path.join(rig.home, '.claude-alias'), (rig) => fs.symlinkSync(path.join(rig.home, '.claude'), path.join(rig.home, '.claude-alias'))],
-  ['source reached through a symlinked HOME', (rig) => path.join(path.dirname(rig.home), 'homelink', '.claude'), (rig) => fs.symlinkSync(rig.home, path.join(path.dirname(rig.home), 'homelink'))],
+/** The ways a stored configDir can name the source `<home>/.claude`. `want` = the login dir the WARN must print
+ *  (expandConfigDir's output), `seen` = the source as the module sees it (`$HOME/.claude`, HOME possibly a symlink). */
+interface SelfSpelling {
+  name: string;
+  dir: (rig: Rig) => string;
+  want: (rig: Rig) => string;
+  home?: (rig: Rig) => string;
+  seen?: (rig: Rig) => string;
+  setup?: (rig: Rig) => void;
+}
+const homelinkOf = (rig: Rig): string => path.join(path.dirname(rig.home), 'homelink');
+const SELF_SPELLINGS: SelfSpelling[] = [
+  { name: 'plain path', dir: (rig) => path.join(rig.home, '.claude'), want: (rig) => path.join(rig.home, '.claude') },
+  { name: 'trailing slash', dir: (rig) => path.join(rig.home, '.claude') + path.sep, want: (rig) => path.join(rig.home, '.claude') + path.sep },
+  { name: '`~` template', dir: () => '~/.claude', want: (rig) => path.join(rig.home, '.claude') },
+  { name: '`${HOME}` template', dir: () => '${HOME}/.claude', want: (rig) => path.join(rig.home, '.claude') },
+  {
+    name: '`..` segment',
+    dir: (rig) => `${rig.home}${path.sep}.claude-mc${path.sep}..${path.sep}.claude`,
+    want: (rig) => `${rig.home}${path.sep}.claude-mc${path.sep}..${path.sep}.claude`,
+  },
+  {
+    name: 'symlink alias of the source (same realpath)',
+    dir: (rig) => path.join(rig.home, '.claude-alias'),
+    want: (rig) => path.join(rig.home, '.claude-alias'),
+    setup: (rig) => fs.symlinkSync(path.join(rig.home, '.claude'), path.join(rig.home, '.claude-alias')),
+  },
+  {
+    name: 'configDir spelled through a symlink to HOME (HOME itself real)',
+    dir: (rig) => path.join(homelinkOf(rig), '.claude'),
+    want: (rig) => path.join(homelinkOf(rig), '.claude'),
+    setup: (rig) => fs.symlinkSync(rig.home, homelinkOf(rig)),
+  },
+  {
+    name: 'HOME IS a symlink, configDir the real path (only the realpath links them)',
+    dir: (rig) => path.join(rig.home, '.claude'),
+    want: (rig) => path.join(rig.home, '.claude'),
+    home: homelinkOf,
+    seen: (rig) => path.join(homelinkOf(rig), '.claude'),
+    setup: (rig) => fs.symlinkSync(rig.home, homelinkOf(rig)),
+  },
 ];
-for (const [name, mkDir, setup] of SELF_SPELLINGS) {
-  test(`#239 configDir == the source (${name}) → no-op: source byte-identical (settings.json still a real file), no manifest, ONE warn`, async () => {
+for (const sp of SELF_SPELLINGS) {
+  test(`#239 configDir == the source (${sp.name}) → no-op: source byte-identical (settings.json still a real file), no manifest, ONE pinned warn`, async () => {
     const rig = newRig();
     makeSource(rig.home);
-    setup?.(rig);
+    sp.setup?.(rig);
     const src = path.join(rig.home, '.claude');
     const before = snapshot(src)!;
     const jsonBefore = fs.readFileSync(path.join(rig.home, '.claude.json'));
     assert.deepEqual(linksOf(before), [], 'precondition: no symlinks in the source');
-    const warns = await runSyncAt(rig, mkDir(rig), FULL, { caller: 'spawn-sdk' });
+    if (sp.home) assert.ok(fs.lstatSync(sp.home(rig)).isSymbolicLink(), 'precondition: HOME really is a symlink');
+    const warns = await runSyncAt(rig, sp.dir(rig), FULL, { caller: 'spawn-sdk' }, sp.home?.(rig));
     assert.deepEqual(snapshot(src), before, 'the source dir is byte-identical');
     assert.equal(fs.lstatSync(path.join(src, 'settings.json')).isSymbolicLink(), false, 'settings.json was not turned into a self-loop');
     assert.equal(fs.readFileSync(path.join(src, 'settings.json'), 'utf8'), '{"model":"opus"}\n');
     assert.ok(!fs.existsSync(path.join(src, 'settings.json.orchestra-bak')), 'no .orchestra-bak of the source file');
     assert.ok(!fs.existsSync(path.join(src, '.orchestra-inherited.json')), 'no manifest written into the source');
     assert.ok(fs.readFileSync(path.join(rig.home, '.claude.json')).equals(jsonBefore), 'the MCP source is untouched');
-    assert.equal(warns.length, 1, `exactly ONE warn: ${JSON.stringify(warns)}`);
-    assert.ok(warns[0].includes(`${mkDir(rig)} is the inheritance source ${src} itself`) || warns[0].includes('is the inheritance source'), warns[0]);
+    assert.deepEqual(
+      warns,
+      [`account-inherit: ${sp.want(rig)} is the inheritance source ${sp.seen?.(rig) ?? src} itself — sync skipped, nothing to inherit from itself`],
+      'exactly ONE warn, with this exact text',
+    );
   });
 }
+
+// A bind mount of the source has ANOTHER realpath but the same device+inode (review F2). A real bind needs privileges the
+// suite lacks, so the alias dir is a real empty dir whose stat is answered with the source's — the guard's only input.
+async function withStatAlias(aliases: Map<string, string>, body: () => Promise<void>): Promise<number> {
+  const f = fs as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const orig = f.statSync;
+  let hits = 0;
+  f.statSync = function (this: unknown, p: unknown, o?: unknown) {
+    const to = aliases.get(String(p));
+    if (to !== undefined) { hits++; return orig.call(this, to, o); }
+    return orig.call(this, p, o);
+  };
+  try {
+    await body();
+  } finally {
+    f.statSync = orig;
+  }
+  return hits;
+}
+test('#239/F2 configDir is a BIND MOUNT of the source (other realpath, same dev+ino) → no-op: the alias dir stays empty, ONE pinned warn', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const src = path.join(rig.home, '.claude');
+  const bind = path.join(rig.home, '.claude-bind');
+  fs.mkdirSync(bind);
+  const before = snapshot(src)!;
+  let warns: string[] = [];
+  const hits = await withStatAlias(new Map([[bind, src]]), async () => { warns = await runSyncAt(rig, bind, FULL, { caller: 'spawn-sdk' }); });
+  assert.ok(hits > 0, 'instrument control: the guard really stat-ed the alias');
+  assert.deepEqual(fs.readdirSync(bind), [], 'nothing written through the alias');
+  assert.deepEqual(snapshot(src), before);
+  assert.deepEqual(warns, [`account-inherit: ${bind} is the inheritance source ${src} itself — sync skipped, nothing to inherit from itself`]);
+});
+test('#239/F2 ino 0 is "unknown", never a match: two DIFFERENT dirs both reporting dev 1 / ino 0 still sync (D10 shares sameDir, so a false match would fail open)', async () => {
+  const rig = newRig();
+  makeSource(rig.home);
+  const src = path.join(rig.home, '.claude');
+  const other = path.join(rig.home, '.claude-mc');
+  fs.mkdirSync(other);
+  const f = fs as unknown as Record<string, (...a: unknown[]) => any>;
+  const orig = f.statSync;
+  let faked = 0;
+  f.statSync = function (this: unknown, p: unknown, o?: any) {
+    const st = orig.call(this, p, o);
+    if (o?.bigint === true && (String(p) === src || String(p) === other)) { faked++; return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { dev: 1n, ino: 0n }); }
+    return st;
+  };
+  let warns: string[] = [];
+  try {
+    warns = await runSyncAt(rig, other, FULL);
+  } finally {
+    f.statSync = orig;
+  }
+  assert.ok(faked >= 2, `instrument control: both dirs were reported as dev1/ino0 (${faked})`);
+  assert.deepEqual(warns, []);
+  assert.deepEqual(linksOf(snapshot(other)!), LINKS);
+});
 
 const SELF_SELECTIONS: Array<[string, Inherit | undefined, SyncOpts]> = [
   ['settings only', { settings: true }, {}],
