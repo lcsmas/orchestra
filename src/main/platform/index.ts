@@ -57,6 +57,10 @@ export interface OrchestraPlatform {
   /** Whether a UI is attached (the Electron window is alive). Gates the
    *  events-spool drain: never consume events no UI can apply. */
   hasAttachedUi(): boolean;
+  /** Seconds since the user's last keyboard/mouse input (OS level), or null when
+   *  the host cannot say. OPTIONAL: only the soak scheduler (soak-scheduler.ts)
+   *  reads it, to avoid starting a load campaign under an active user. */
+  getSystemIdleSeconds?(): number | null;
   /** Surface an agent finished/needs-input notification (see
    *  {@link UiNotification}). Caller has already applied focus suppression. */
   notify(n: UiNotification): void;
@@ -116,6 +120,7 @@ export const platform: OrchestraPlatform = {
   canBroadcast: () => current().canBroadcast(),
   isFocused: () => current().isFocused(),
   hasAttachedUi: () => current().hasAttachedUi(),
+  getSystemIdleSeconds: () => current().getSystemIdleSeconds?.() ?? null,
   notify: (n) => current().notify(n),
   openExternal: (url) => current().openExternal(url),
   showItemInFolder: (p) => current().showItemInFolder(p),

@@ -295,3 +295,23 @@ export function sessionBudgetTerminator(o: { voided: boolean; bad: boolean; part
   if (o.partial) return 'PARTIAL';
   return o.strongContainment ? 'PASS' : 'PASS-WEAK';
 }
+
+// ── Load/soak campaign budgets (C5 #212) ────────────────────────────────────────────────────────────────────────────────────────
+// APPENDED block: the numbers a campaign of N concurrent sessions over 1–2 h is judged against, plus the D7 resource caps. The
+// judge + report live in src/shared/soak-campaign.ts (this file stays the ONE place a number is written). C6 #213 reuses these.
+export const SOAK_BUDGETS = Object.freeze({
+  /** D7 (ledger #237, machine shared with two waves): at most this many concurrent sessions. The ticket's 10–20 needs THIS raised, deliberately. */
+  maxSessions: 10,
+  /** D7: the campaign ABORTS itself (and its report says so) when free RAM (MemAvailable) drops below this… */
+  minMemAvailKB: 6 * 1024 * 1024,
+  /** …or the 1-minute load average rises above this. Checked before the start (projected) and at every sample. */
+  maxLoad1: 20,
+  /** Preflight projection: refuse to START when MemAvailable − (base + sessions × perSession) would already be under the floor. */
+  projected: Object.freeze({ baseMB: 400, perSessionMB: 600 }),
+  /** Every rate below is a MAX; 0 means "not one". A healthy campaign on the canned-OK fake API has no wedge, no error, no leftover. */
+  wedge: Object.freeze({ wedgedTurns: 0, wedgedSessions: 0, errorTurns: 0 }),
+  /** Slope of a session's process-tree RSS (Theil–Sen, MB/min) over the post-warm-up window, and of the app process (the runner). */
+  memory: Object.freeze({ maxSessionSlopeMBPerMin: 2, maxRunnerSlopeMBPerMin: 4, warmupFraction: 0.25, minWarmupSec: 60, minWindowSec: 120, minSamples: 8 }),
+  /** Processes left in the namespace after every workspace is deleted, and orphans (outside any session tree) at the end of the run. */
+  processes: Object.freeze({ survivorsAfterDelete: 0, strayAtEnd: 0 }),
+});

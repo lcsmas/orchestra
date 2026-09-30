@@ -1,4 +1,4 @@
-import { app, safeStorage, shell, BrowserWindow, Notification } from 'electron';
+import { app, safeStorage, shell, BrowserWindow, Notification, powerMonitor } from 'electron';
 import path from 'node:path';
 import { type OrchestraPlatform, type UiNotification } from './index';
 import { closeLoginBrowser, openLoginBrowser } from '../login-browser';
@@ -46,6 +46,17 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
 
     hasAttachedUi() {
       return canSend(getWindow());
+    },
+
+    // OS idle time (soak scheduler only). Some Linux/Wayland sessions cannot report it: null then, and the
+    // scheduler falls back to window focus + workspace activity (it never treats "unknown" as "idle").
+    getSystemIdleSeconds() {
+      try {
+        const s = powerMonitor.getSystemIdleTime();
+        return Number.isFinite(s) && s >= 0 ? s : null;
+      } catch {
+        return null;
+      }
     },
 
     notify(n: UiNotification) {

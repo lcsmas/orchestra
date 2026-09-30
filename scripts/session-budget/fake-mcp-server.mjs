@@ -9,6 +9,14 @@ const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ?
 const NAME = arg('name', 'fake');
 const TOOLS = Number(arg('tools', '10'));
 const INIT_DELAY_MS = Number(arg('init-delay-ms', '0')); // slow-but-healthy server: answers `initialize` late (startup-stall experiments)
+// SEEDED LEAK (soak campaign C5 #212, must-FAIL arm only): retain this many MB per minute, forever, TOUCHED so it is resident.
+// A session whose MCP child never frees memory — the campaign's per-session memory slope must name it.
+const LEAK_MB_PER_MIN = Number(arg('leak-mb-per-min', '0'));
+const leaked = [];
+if (LEAK_MB_PER_MIN > 0) {
+  const chunkMB = 1;
+  setInterval(() => { leaked.push(Buffer.alloc(chunkMB * 1024 * 1024, 1)); }, Math.max(50, Math.round((60_000 * chunkMB) / LEAK_MB_PER_MIN))).unref?.();
+}
 
 const tools = Array.from({ length: TOOLS }, (_, i) => ({
   name: `${NAME}_tool_${String(i).padStart(2, '0')}`,

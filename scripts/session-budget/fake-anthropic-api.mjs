@@ -105,6 +105,14 @@ function summarizeModelBody(buf, markers = {}) {
  * @param {number} [opts.replyDelayMs]  delay before the first SSE byte of a /v1/messages reply
  * @param {Record<string,string>} [opts.markers]  sentinel name -> substring to look for in request bodies
  * @param {(rec: object) => void} [opts.onRequest]  observer, called for every recorded request
+ * @param {(headers: object) => (string|undefined)} [opts.sessionTag]  attribute a request to a session from its headers
+ *                                    (the soak campaign gives each session its own fake API key); sets `rec.sid` and feeds `stats()`
+ * @param {number} [opts.retain]      keep only the last N request/egress records (a 2 h campaign must not grow this process
+ *                                    without bound — `stats()` counters are unaffected); default: keep everything
+ * @param {(rec: object) => ({kind: string}|null|undefined)} [opts.fault]  THE FAULT-INJECTION POINT (C6 #213 builds on it):
+ *                                    called for every model request after it is recorded; a returned `{kind}` is applied to
+ *                                    that request. Only `hang` (never answer, the connection stays open) exists — it is the
+ *                                    seeded wedge of the soak campaign; other kinds belong to C6 (see fault-plan.mjs).
  */
 export async function startFakeApi(opts = {}) {
   const t0 = process.hrtime.bigint();
@@ -113,6 +121,13 @@ export async function startFakeApi(opts = {}) {
   /** @type {any[]} */ const egress = [];
   let seq = 0;
   let modelSeq = 0;
+  const retain = opts.retain ?? Infinity;
+  const trim = (arr) => { if (arr.length > retain) arr.splice(0, arr.length - retain); };
+  /** Per-session counters (only when `opts.sessionTag` is set): never trimmed, O(sessions) memory. */
+  /** @type {Record<string, {model:number, main:number, side:number, count_tokens:number, other:number, held:number, lastMainAtMs:number|null, lastModelAtMs:number|null}>} */
+  const sessionStats = {};
+  const totals = { main: 0, side: 0, count_tokens: 0, other: 0, held: 0, egress: 0 };
+  const held = new Set();
 
   const server = http.createServer(async (req, res) => {
     req.socket.on('error', () => {});
@@ -128,10 +143,32 @@ export async function startFakeApi(opts = {}) {
       beta: String(req.headers['anthropic-beta'] ?? ''),
     };
     if (type === 'model' || type === 'count_tokens') Object.assign(rec, summarizeModelBody(body, opts.markers));
+    const sid = opts.sessionTag?.(req.headers);
+    if (sid !== undefined) rec.sid = sid;
     requests.push(rec);
+    trim(requests);
+    const isMain = type === 'model' && (rec.tools ?? 0) > 0;
+    totals[type === 'model' ? (isMain ? 'main' : 'side') : type === 'count_tokens' ? 'count_tokens' : 'other']++;
+    let st;
+    if (sid !== undefined) {
+      st = (sessionStats[sid] ??= { model: 0, main: 0, side: 0, count_tokens: 0, other: 0, held: 0, lastMainAtMs: null, lastModelAtMs: null });
+      if (type === 'model') { if (isMain) { st.main++; st.lastMainAtMs = rec.tMs; } else st.side++; st.model++; st.lastModelAtMs = rec.tMs; }
+      else if (type === 'count_tokens') st.count_tokens++;
+      else st.other++;
+    }
     try { opts.onRequest?.(rec); } catch { /* observer errors never break the fake */ }
 
     if (type === 'model') {
+      // Fault-injection point: `hang` = never answer. The socket stays open until stop() — a wedged upstream, not a refused one.
+      const fault = opts.fault?.(rec);
+      if (fault?.kind === 'hang') {
+        rec.fault = 'hang';
+        totals.held++;
+        if (st) st.held++;
+        held.add(res);
+        res.on('close', () => held.delete(res));
+        return;
+      }
       const override = opts.reply?.(rec);
       const text = override?.text ?? CANNED_TEXT;
       const id = `msg_fake_${++modelSeq}`;
@@ -168,12 +205,16 @@ export async function startFakeApi(opts = {}) {
     let target = req.url;
     try { const u = new URL(req.url); target = `${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)}`; } catch { /* keep raw */ }
     egress.push({ tMs: now(), via: 'http', method: req.method, target });
+    totals.egress++;
+    trim(egress);
     res.writeHead(403, { 'content-type': 'text/plain' });
     res.end('egress refused by session-budget suite');
   });
   proxy.on('connect', (req, sock) => {
     sock.on('error', () => {}); // a refused client may RST — never crash the fake on it
     egress.push({ tMs: now(), via: 'connect', target: req.url });
+    totals.egress++;
+    trim(egress);
     sock.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
   });
   proxy.on('clientError', (_e, sock) => { try { sock.destroy(); } catch { /* ignore */ } });
@@ -203,6 +244,10 @@ export async function startFakeApi(opts = {}) {
       const out = {};
       for (const r of requests) if (r.tMs >= since) out[r.type] = (out[r.type] ?? 0) + 1;
       return out;
+    },
+    /** Cumulative counters that survive `retain` trimming: `{ now, totals, sessions }` (sessions only with `opts.sessionTag`). */
+    stats() {
+      return { now: now(), totals: { ...totals, held: held.size, heldEver: totals.held }, sessions: JSON.parse(JSON.stringify(sessionStats)) };
     },
     summary() {
       return { total: requests.length, byType: byType(), egress: egress.map((e) => e.target), paths: [...new Set(requests.map((r) => `${r.method} ${r.path}`))] };

@@ -239,6 +239,7 @@ import {
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
+import { startSoakScheduler, stopSoakScheduler } from './soak-scheduler';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
 import { initLogger, log, isLevelEnabled } from './logger';
@@ -485,6 +486,9 @@ async function createMainWindow() {
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
   startSelfTuneScheduler();
+  // Load/soak campaign (C5 #212): when the machine and the user are idle AND the code or the claude CLI changed, run N fake-API sessions
+  // for an hour and log the rates (zero tokens, no UI). Started here; `stopSoakScheduler()` on quit.
+  startSoakScheduler();
   // Periodic fail-safe snapshots of every sandbox-hosted workspace — the
   // container is the only copy of unpushed work, so a dead sandbox must cost
   // at most one backup interval.
@@ -861,6 +865,7 @@ function shutdownSubsystems(): void {
   stopSessionWatchdog();
   stopResourceMonitor();
   stopSelfTuneScheduler();
+  stopSoakScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();
   disposeVoice();

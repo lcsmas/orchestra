@@ -47,6 +47,8 @@
     "test:context-seed": "bash scripts/e2e-context-seed-176.sh",
     "test:session-budget": "bash scripts/e2e-session-budget.sh",
     "smoke:session-budget-real": "node scripts/session-budget/smoke-real.mjs",
+    "soak:campaign": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/session-budget/soak-campaign.mjs",
+    "test:soak-campaign": "bash scripts/e2e-soak-campaign.sh",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",

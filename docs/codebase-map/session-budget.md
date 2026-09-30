@@ -90,3 +90,55 @@ detected when startup is fast (span < 1 s → exact 3): on a slow startup the re
   proxy that HOLDS refused connections open stalls the CLI's startup by ~5 s — refuse at once instead.
 - A refused-CONNECT socket may RST — the proxy swallows socket errors (found by the first spike; unit-tested).
 - Don't `pkill -f` a spike by a path token that also appears in your own command line (it kills the wrapper).
+
+## Load/soak campaign (#212) — N concurrent sessions for a long time, rates not a verdict
+
+`pnpm run soak:campaign -- --sessions 3 --duration 5m` (`scripts/session-budget/soak-campaign.mjs`) runs **N real sessions at once** —
+`sdkSend → ensureSession → keeper → real claude`, one heavy fixture repo each — against the same FAKE API (zero tokens, D6) inside the same
+net+pid namespaces, for a while, and writes a dated report `<out-dir>/soak-<UTC>-<label>.{json,md}` (default `~/.cache/session-budget/soak-reports/`):
+**the wedge rate** (wedged/turns, by session, by phase startup/steady, by third of the run), **each session's memory slope over time** (rss+swap of
+its keeper→CLI→MCP tree, Theil–Sen MB/min after a warm-up, OLS + growth printed beside it, the whole series kept), the **app-process** slope, and
+**processes left after deleting every workspace** (by kind and by session). Last line `SOAK-CAMPAIGN: PASS|FAIL|VOID|ABORTED|BROKE` (rc 0/1/3/4/1;
+2 = refused). Numbers: `SOAK_BUDGETS` (appended block of `src/shared/session-budget.ts` — the ONE place); judge/report/formatters:
+`src/shared/soak-campaign.ts`.
+
+| Piece | File | Role |
+|---|---|---|
+| Runner (the "app process") | `scripts/session-budget/soak-runner.mjs` | ONE process hosts N sessions like Orchestra's main does. Emits `{"soak":"start\|sample\|turn\|event\|abort\|final"}` lines only (it collects, the parent analyses — a runner that dies still leaves its lines). Per session: sequential launch under its own fake key `…-soak-sN` (`buildSdkEnv` copies `process.env` inside `ensureSession`, which `sdkSend` awaits), a turn every ~interval ±25%, a **deadline** (no `turn-end`/`error` in time = **wedged**, sends to it stop). Samples per tick: per-session tree (keeper pid from `readTrackedKeeperPid`, descendants by ppid), app process, API process, strays outside every tree, `MemAvailable`, load. Teardown as a delete does, then the namespace census = survivors. |
+| Fake API **process** | `soak-api-proc.mjs` (+ `fake-anthropic-api.mjs` additions) | The API runs in its OWN process (IPC `stats`/`stop`) so the runner's slope is the app's, not request bookkeeping; `retain` bounds its records (counters `stats()` are unbounded-safe: O(sessions)); `sessionTag` maps the `x-api-key` to `sN`. |
+| **Fault-injection point** (C6 #213) | `fault-plan.mjs` | JSON plan `{rules:[{match:{session,main}, after:N, action:{kind}}]}` → `opts.fault(rec)` in the fake API. Only `hang` (held open, never answered) is implemented — the seeded wedge. `delay/status/reset/truncate/blackhole` are RESERVED: they throw at compile time so a fault plan never silently runs fault-free. C6 adds kinds HERE. |
+| Seeded leak | `fake-mcp-server.mjs --leak-mb-per-min`, fixture `mcpLeakMbPerMin` | One MCP child retains touched MB forever: a session that never frees memory. |
+| Driver | `soak-lib.mjs` `runCampaign` | D7 preflight (usage refusals rc 2; RAM/load/projected footprint ⇒ an **ABORTED report**, nothing spawned), single-flight lock `~/.cache/session-budget/campaign.lock` (pid + /proc start time) **plus** a `/proc` scan for a live `soak-runner.mjs`, keeper bundle build, the runner, the parent's own cap **watchdog** (second channel next to the runner's per-sample check), abort = `<root>/ABORT` file (see Traps), code identity, report files. |
+| Pure half | `src/shared/soak-campaign.ts` | `decideAbort`/`preflight`/`tightenCaps`, `theilSenSlope`/`olsSlope`, `buildSoakReport`, `judgeSoak`, formatters. Unit: `soak-campaign.test.ts` (a synthetic campaign with a known leak/wedge/survivor per must-FAIL arm). |
+| Must-FAIL / must-PASS arms | `soak-selftest.mjs` (`pnpm run test:soak-campaign`, ~13 min, run when calm) | `seeded` (s1 leaks 60 MB/min, s2 hangs after 3 main requests; s0/s3 are in-run controls — MUST FAIL naming s1's slope and s2's wedge, NOT s0/s3, 0 survivors), `healthy` (MUST PASS), `abort-runner` / `abort-watchdog` / `abort-yield` (MUST be ABORTED naming the right cap/caller, 0 survivors, elapsed stamped). VOID (rc 3), never FAIL, when the machine was too busy to measure. |
+
+**D7 caps** (hard, in `SOAK_BUDGETS`): ≤ 10 sessions (refused above, not clamped), abort when `MemAvailable` < 6 GB or load1 > 20 — before the start
+(also when the PROJECTED footprint 400 MB + N × 600 MB would leave < 6 GB) and at every sample; a per-run override can only tighten (`tightenCaps`).
+Everything runs in a scratch HOME/config/`ORCHESTRA_HOME` (scratch guard) and the namespace dies with the run.
+
+### Automatic scheduling (no UI — D5)
+
+`src/main/soak-scheduler.ts` (started from `index.ts` beside the self-tune scheduler, `stopSoakScheduler()` at quit) ticks every 60 s; the decision is
+`decideSoakRun` (`src/shared/soak-schedule.ts`), the bookkeeping `soakTick` (`src/main/soak-tick.ts`, Electron-free so a test drives the REAL function).
+A campaign starts only when **all** hold: enabled (a registered repo with `scripts/session-budget/soak-campaign.mjs` + `package.json` name `orchestra`,
+or `<ORCHESTRA_HOME>/soak/config.json` `repo`; `ORCHESTRA_SOAK=0` disables) · app up ≥ 10 min · **the code or the `claude` CLI changed since the last
+campaign that RAN** (`lastCompleted` = PASS/FAIL only; key = `codeIdentity`: git tree hashes of `src`, `scripts/session-budget`, `pnpm-lock.yaml` +
+any uncommitted/untracked change; unreadable ⇒ skip) · ≥ 6 h since the last completed one, ≥ 1 h since the last attempt · **user idle**: window not
+focused, no workspace `running`/`waiting`, OS idle ≥ 15 min (`platform.getSystemIdleSeconds?` — null ⇒ fall back to the window's last focus) and no
+agent activity for 10 min · D7 caps hold, sessions = the largest N ≤ 10 that fits (≥ 3). A RUNNING campaign **yields** (SIGTERM → graceful ABORTED
+report) when the window is focused, a workspace starts, or input arrives within 60 s; the campaign also exits if the app dies (`--parent-pid`). The
+campaign parent gets an **allowlisted env** (`buildCampaignEnv`: no API key/token — zero tokens). Surfaced as `[soak]` log lines only: INFO on
+start/finish, ONE WARN naming the broken budgets and the report on a breach. State: `<ORCHESTRA_HOME>/soak/state.json`; reports:
+`<ORCHESTRA_HOME>/soak/reports/` (last 30 kept).
+
+### Traps
+
+- **Abort travels as a FILE, not a signal.** SIGTERM to the process group kills bwrap and with it the namespace at once — no teardown census, no report.
+  `runContained({signal})` writes `<root>/ABORT` (`{reason, detail}`); the runner polls it each second, stops sending, tears down, emits `final`. Only
+  `abortGraceMs` later is the group SIGKILLed.
+- **The fake API must not live in the app process**: its request log alone grew ~100 MB/h and would read as an app leak. Separate process, bounded records.
+- **rtk's `ps` output lies** about a running campaign (`ps | grep soak-runner` read "no process" while it ran): scan `/proc` (`otherRunnerAlive`).
+- The first minutes of a CLI session grow ~5–8 MB/min (warm-up) — a slope over a short window is noise; the report skips `max(60 s, 25 %)` and
+  refuses to judge a window under 120 s / 8 samples (`instrument.memoryWindow` ⇒ VOID).
+- A shared, busy machine trips the D7 load cap: a campaign that ABORTED says so in its report and never advances the change gate.
+- Teardown here is C1's replica of `stopStructuredSession`; once C3 #210 merges, switch `teardown()` in `soak-runner.mjs` to its real-delete-route driver.

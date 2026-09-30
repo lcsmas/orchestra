@@ -120,12 +120,22 @@ async function runContained(o, script, label, extraCfg, resultPrefix) {
   const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--disable-warning=UNDICI-EHPA', '--experimental-strip-types', '--import', path.join(repo, 'scripts', '.r2-register.mjs'), path.join(repo, 'scripts', 'session-budget', script)];
   const child = spawn(argv[0], argv.slice(1), { cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let out = '', err = '';
-  child.stdout.on('data', (d) => (out += d));
+  child.stdout.on('data', (d) => { out += d; try { o.onStdout?.(String(d)); } catch { /* an observer never breaks the run */ } });
   child.stderr.on('data', (d) => (err += d));
+  // `o.signal` (C5 soak): an external ABORT (the D7 watchdog, the app yielding to the user). A SIGTERM to the process group would kill bwrap and, with
+  // it, the whole namespace at once (no teardown census, no report), so the request travels as a FILE the runner polls — `<root>/ABORT` holds
+  // `signal.reason` as JSON ({reason, detail}); the runner tears down gracefully and reports it. Only `abortGraceMs` later is the group killed.
+  let abortKill = null;
+  const onAbort = () => {
+    const r = o.signal.reason;
+    try { fs.writeFileSync(path.join(root, 'ABORT'), JSON.stringify(r && typeof r === 'object' && r.reason ? r : { reason: 'signal', detail: String(r ?? 'aborted') })); } catch { /* the kill below still ends it */ }
+    abortKill = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }, o.abortGraceMs ?? 90_000);
+  };
+  if (o.signal) { if (o.signal.aborted) onAbort(); else o.signal.addEventListener('abort', onAbort, { once: true }); }
   const rc = await new Promise((resolve) => {
     const t = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } resolve('TIMEOUT'); }, timeoutMs + 60_000);
     // 'close', not 'exit': 'exit' can fire before stdout/stderr are drained, losing the result line or the error text.
-    child.on('close', (code, sig) => { clearTimeout(t); resolve(code ?? sig); });
+    child.on('close', (code, sig) => { clearTimeout(t); if (abortKill) clearTimeout(abortKill); resolve(code ?? sig); });
   });
   const line = out.split('\n').reverse().find((l) => l.startsWith(resultPrefix));
   let result;
@@ -160,4 +170,18 @@ export function runSessionArm(o) {
  */
 export function runSelfTest(o) {
   return runContained(o, 'selftest-runner.mjs', `selftest-${o.mode}`, { mode: o.mode }, '{"selftest"');
+}
+
+/**
+ * Run ONE soak campaign (C5 #212) inside the same containment: N concurrent sessions in one runner process for `durationMs`. The runner
+ * streams `{"soak":…}` lines (see soak-runner.mjs) — pass `onStdout` to collect them; the final line is returned as `result`.
+ * @param {{repo: string, sessions: number, durationMs: number, turnIntervalMs?: number, sampleMs?: number, turnDeadlineMs?: number,
+ *          replyDelayMs?: number, faultPlan?: object|null, seedLeak?: {session:number, mbPerMin:number}|null, profile?: object,
+ *          caps: {minMemAvailKB:number, maxLoad1:number}, containment?: object, signal?: AbortSignal, onStdout?: (chunk:string)=>void,
+ *          keep?: boolean, abortGraceMs?: number}} o
+ */
+export function runSoakCampaign(o) {
+  const { sessions, durationMs, turnIntervalMs = 20_000, sampleMs = 10_000, turnDeadlineMs = 60_000, faultPlan = null, seedLeak = null, profile = {}, caps } = o;
+  return runContained({ ...o, timeoutMs: durationMs + turnDeadlineMs + 240_000 }, 'soak-runner.mjs', 'soak',
+    { sessions, durationMs, turnIntervalMs, sampleMs, turnDeadlineMs, faultPlan, seedLeak, profile, caps }, '{"soak":"final"');
 }
