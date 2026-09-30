@@ -7,25 +7,29 @@ and processes** once `runs.paused_at` is set. Wave D ledger #261 (D4 = the destr
 
 ## What it does, in order (per member of the paused run and every descendant run)
 
-`trapMember` (`src/main/pause-trap.ts:89`) — every step records its own failure in the Bilan and the trap moves on:
+`trapMember` (`src/main/pause-trap.ts:123`; members run in parallel, bounded by `deps.concurrency`, default 3) — every step records its own failure in the Bilan and the trap moves on:
 
 1. **Read what it is doing** (`activityOf`): surface (structured/pty/none), turn running, in-flight tool calls, background tasks — BEFORE anything is interrupted.
-2. **Snapshot** the worktree to `refs/orchestra/pause/<run>/<ws>/<ms>` (`snapshotWorktree`, `src/main/pause-snapshot.ts:172`): a
+2. **Snapshot** the worktree to `refs/orchestra/pause/<run>/<ws>/<ms>` (`snapshotWorktree`, `src/main/pause-snapshot.ts:180`): a
    TEMPORARY index (`GIT_INDEX_FILE`, seeded from a copy of the real one, rebuilt from HEAD if the copy is torn) → `git add -A` into it →
    `write-tree` → `commit-tree -p HEAD` → `update-ref`. The worktree, the REAL index, HEAD and every branch are byte-identical
    before/after (D4; every git call runs `GIT_OPTIONAL_LOCKS=0`, none reads-then-rewrites the real index). Captures tracked edits,
-   staged work and untracked non-ignored files; untracked files > 25 MB are left out and REPORTED; checked-out submodules are
-   snapshotted in their own repo (`submodules[]`). Untracked/ignored semantics = plain `git add -A`.
+   staged work and untracked non-ignored files; untracked files > 25 MB are left out and REPORTED; ONE unreadable file does not abort the snapshot (`git add --ignore-errors`: the rest is captured, the file is named in
+   `snapshotWarnings`); checked-out submodules (`.git` FILE) are snapshotted in their own repo (`submodules[]`); a nested standalone repository (`.git` directory) is left untouched and reported. Untracked/ignored semantics = plain `git add -A`.
 3. **Bilan de pause row** (`pause_records`, `src/main/bus-pause-records.ts:94`) written BEFORE any process is touched, so the snapshot
    ref is durable even if the app dies next; `killed_json` stays NULL until step 5 (NULL = "owed", so a boot drain finishes it without a 2nd snapshot).
-4. **Interrupt** the running turn (`sdkInterruptForPause`, `src/main/agent-sdk.ts:3915`; PTY agents get ESC). Never stops the CLI session or the
-   keeper. A turn running in a DETACHED keeper this app run never attached to is attached first (attaching starts no turn). An idle session is left alone.
+4. **Arm + interrupt**. `arm` attaches the member's idle detached keeper (only a live, started, not-shutting-down one — `sdkAttachIfDetached` would KILL a
+   never-started keeper, which D4 forbids) so its CLI-started turns are observed. `sdkInterruptForPause` (`src/main/agent-sdk.ts:3989`) then interrupts the running
+   turn with a PLAIN interrupt: **the queue is never dropped** (queued AUTO prompts stay parked by `promptStream`'s pause hold and run after the lift; a HUMAN
+   prompt still runs first). PTY agents get ESC. Never stops the CLI session or the keeper. A turn running in a DETACHED keeper this app run never attached to
+   is attached first (attaching starts no turn). An idle session (no running or CLI-started turn) is left alone.
 5. **Kill the tool process trees** (`killToolTrees`, `src/main/pause-kill.ts:149`) under a CLI whose identity was proven (keeper argv + the CLI is the
    keeper's child). Result → `killed_json`; the row is complete.
 
 Then `runs.pause_trap_at` is stamped (guarded on `paused_at`, so a trap that outlived a resume + re-pause cannot stamp the NEW pause). A lift mid-trap
-stops the trap before the next process is touched. **The pauser is exempt from 4 and 5** (`paused_by` == the member's ws id): a coordinator that pauses its
-own run keeps its turn (otherwise it would kill the rest of its own `orchestra run pause … && …` chain and could not resume — réveils to a paused run are refused); it is still snapshotted and recorded (`exempt: pauser`).
+stops the trap before the next process is touched. **The pauser is spared only the pause-time interrupt/kill** (`paused_by` == the member's ws id): a coordinator that pauses its
+own run keeps the turn that issued the pause (otherwise it would kill the rest of its own `orchestra run pause … && …` chain); it is still snapshotted, armed and recorded (`exempt: pauser`).
+A CLI-started turn on the pauser is a new turn and IS trapped (rows 29/30). A human pausing `--as <coordinator>` therefore spares that coordinator's in-flight turn and background tasks.
 
 ## Destructive-act rules (D4) — `src/shared/pause-procs.ts`
 
@@ -42,20 +46,22 @@ own run keeps its turn (otherwise it would kill the rest of its own `orchestra r
 
 ## Detection (`src/main/pause-trap.ts`)
 
-`startPauseTrap` (`:328`, called from `src/main/index.ts:578`, stopped at `:884`): a boot drain, a 15 s sweep, and a **directory** watch on the bus dir (the `-wal` inode is recycled —
-same reason as `armBusWalWatcher`). `sweepPauseTrap` (`:300`) reads D1a's `runsOwingPauseTrap` (carrier paused, frozen `pause` switch ON, `pause_trap_at` NULL); concurrent sweeps trap a carrier once.
-Members = non-archived workspaces with a worktree whose `nearestOrchestratorId` ∈ `runSubtreeIds(carrier)` (resolved at TRAP time from the live store). **Switch OFF ⇒ `runsOwingPauseTrap` is empty ⇒ nothing happens.**
+`startPauseTrap` (`src/main/pause-trap.ts:437`, called from `src/main/index.ts:564`, stopped at `:870`): a boot drain, a 15 s sweep, and a **directory** watch on the bus dir (the `-wal` inode is recycled —
+same reason as `armBusWalWatcher`). `sweepPauseTrap` (`src/main/pause-trap.ts:403`) reads D1a's `runsOwingPauseTrap` (carrier paused, frozen `pause` switch ON, `pause_trap_at` NULL); concurrent sweeps trap a carrier once.
+Members = non-archived workspaces with a worktree that the gate would call paused by this carrier: the carrier's anchor is self-or-ancestor on the LIVE store `parentId` chain
+(`liveChainIncludes`, the same scope as D1a's `pausedCarrierForWorkspace`; `runSubtreeIds(carrier)` only as the fallback when the chain dangles — `parent_run_id` is write-once).
+Every sweep also RE-ARMS (`armPausedMembers`, `src/main/pause-trap.ts:364`) each member of every ACTIVE pause, finished trap or not, so an idle keeper's CLI-started turn is observed after an app restart. **Switch OFF ⇒ `runsOwingPauseTrap` is empty ⇒ nothing happens.**
 A pause that landed while the app was DOWN is drained at the next boot: the detached keepers kept running their tools meanwhile; the trap attaches, interrupts and kills.
 
 ## Rows 29 / 30 — a turn that starts on a paused member
 
-`onTurnStart` (`:252`): a **CLI-started turn** (model output with no app-yielded turn in flight — `src/main/agent-sdk.ts:1380`; also the `submit` chokepoint, `src/main/activity.ts:957`;
-e.g. `/loop`, cron, the task-notification a killed background task triggers) on a paused member is interrupted, its tool trees killed, and the Bilan notes it. A HUMAN send is allowed and un-pauses nothing
-(`markPauseHumanTurn`, `src/main/pause-trap.ts:228`, registered as D1a's `setPauseHumanTurnObserver` seam in `src/main/pause-gate.ts` — `sdkSend(origin 'human')` marks once per human send; single-use, 10 s TTL). PTY agents are not observed (their human keystrokes also fire `submit`).
+`onTurnStart` (`src/main/pause-trap.ts:305`): a **CLI-started turn** (model output with no app-yielded turn in flight — `src/main/agent-sdk.ts:1411`; also the `submit` chokepoint, `src/main/activity.ts:957`;
+e.g. `/loop`, cron, the task-notification a killed background task triggers) on a paused member (the observer asks the gate's own `pausedCarrierForWorkspace`) is interrupted, its tool trees killed, and the Bilan notes it; starts that land while the handler runs are coalesced into one re-run (none dropped). A HUMAN send is allowed and un-pauses nothing
+(`markPauseHumanTurn`, `src/main/pause-trap.ts:278`, registered as D1a's `setPauseHumanTurnObserver` seam in `src/main/pause-gate.ts` — `sdkSend(origin 'human')` marks once per human send; single-use, 10 s TTL). PTY agents are not observed (their human keystrokes also fire `submit`).
 
 ## Reading it
 
-`orchestra run status [--run <id>] [--json]` (`src/cli/run-status.ts`, store-less): paused by/since, the carrier (an inherited pause names the ancestor run to lift), trap done/owed, and per member: dirty tree, snapshot ref
+`orchestra run status [--run <id>] [--json]` (`src/cli/run-status.ts`, store-less; after the lift it still prints the LAST pause's Bilan — `pause_records` outlives `run resume`): paused by/since, the carrier (an inherited pause names the ancestor run to lift), trap done/owed, and per member: dirty tree, snapshot ref
 (`git diff <head> <ref>` = the uncommitted work), what it was doing, interrupt outcome, commands killed, survivors, refused, spared, notes, error. Reprise is NOT automatic: nothing restarts on its own.
 
 ## Gates
@@ -63,6 +69,6 @@ e.g. `/loop`, cron, the task-notification a killed background task triggers) on 
 | Gate | Command |
 |---|---|
 | Unit (real git, real bus, real processes, structural wiring) | `pnpm run test` — `pause-snapshot.test.ts`, `pause-kill.test.ts`, `pause-trap.test.ts`, `pause-trap-wiring.test.ts`, `shared/pause-procs.test.ts`, `cli/run-status.test.ts` |
-| Real keeper → real `claude` CLI → real Bash-tool processes, pid+net namespaces, scripted fake API (zero tokens), the pause written by the REAL built `orchestra run pause --hard` | `pnpm run test:pause-trap` (`scripts/pause-trap/run.mjs`; refuses to run at load > 20 / MemAvailable < 6 GB): arms `blocking · foreground · background · app-restart · app-restart-bg · turn-while-paused · pauser-exempt` must PASS (checks: tool procs present BEFORE, 0 after, CLI+keeper alive with the same start-time, pause ref holds the uncommitted+untracked work, worktree+REAL index byte-identical, Bilan content, session resumable + a human prompt allowed, nothing restarts); load-time mutants `kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-pauser-exemption` must each redden their named check. `--arm probe-interrupt` = what a plain interrupt leaves alive (the gap the kill exists for) |
+| Real keeper → real `claude` CLI → real Bash-tool processes, pid+net namespaces, scripted fake API (zero tokens), the pause written by the REAL built `orchestra run pause --hard` | `pnpm run test:pause-trap` (`scripts/pause-trap/run.mjs`; refuses to run at load > 20 / MemAvailable < 6 GB): arms `blocking · foreground · background · app-restart · app-restart-bg · app-restart-idle · turn-while-paused · pauser-exempt · queue-kept` must PASS (checks: tool procs present BEFORE, 0 after, CLI+keeper alive with the same start-time, pause ref holds the uncommitted+untracked work, worktree+REAL index byte-identical, Bilan content, session resumable + a human prompt allowed, nothing restarts); load-time mutants `kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · drop-queue-on-pause-interrupt` (+ `unfixed:no-trap` = master) must each redden their named check. `--arm probe-interrupt` = what a plain interrupt leaves alive (the gap the kill exists for) |
 | Real pid recycle (`ns_last_pid` in a user+pid namespace) | `pnpm run test:pause-trap-recycle`: the innocent that inherits a planned pid survives; with the signal-time identity re-read removed it is killed |
-| In-place unit mutants (byte-exact backup + `cmp`, clean control before/after, anchors match once) | `pnpm run test:pause-trap-mutants` — 37 mutants over every clause (snapshot no-touch, identity/lineage/fail-closed, kill ladder, orchestrator order/lift/dedupe, the DB stamp guard, the boot/stream/submit wiring) |
+| In-place unit mutants (byte-exact backup + `cmp`, clean control before/after, anchors match once) | `pnpm run test:pause-trap-mutants` — 60+ mutants over every clause (snapshot no-touch, identity/lineage/fail-closed, kill ladder, orchestrator order/lift/dedupe, the DB stamp guard, the boot/stream/submit wiring) |

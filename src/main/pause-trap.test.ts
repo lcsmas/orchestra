@@ -11,12 +11,13 @@ import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause } from './bus-pause.ts';
-import { bilanForMember, listBilan, listBilanForRun, markTrapDone } from './bus-pause-records.ts';
+import { activePauseCarriers, bilanForMember, latestPauseBilanFor, listBilan, listBilanForRun, markTrapDone } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { snapshotWorktree } from './pause-snapshot.ts';
 import {
   __resetPauseTrapForTests,
   liveChainIncludes,
+  armPausedMembers,
   markPauseHumanTurn,
   onTurnStart,
   runPauseTrap,
@@ -439,25 +440,125 @@ test('a stale human mark (older than its TTL) does not whitelist a later CLI-int
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
 });
 
-test('the pauser keeps its own turns (not interrupted by the observer either)', async (t) => {
+test('the pauser is spared only the PAUSE-TIME interrupt/kill: a CLI-started turn on it is a new turn and IS trapped', async (t) => {
   __resetPauseTrapForTests();
   const rig = newRig(t);
   const c = pauseW(rig, 'W', 'ops-w');
   void c;
-  assert.equal(await onTurnStart(rig.deps, tm('ops-w', 'W')), 'allowed');
-  assert.deepEqual(rig.calls, []);
+  assert.equal(await onTurnStart(rig.deps, tm('ops-w', 'W')), 'interrupted');
+  assert.deepEqual(rig.calls, ['interrupt:ops-w', 'cliOf:ops-w', 'kill:100/90']);
 });
 
-test('a burst of turn-start events for one member is handled once (1 s guard), not N interrupts', async (t) => {
+test('a burst of turn starts is COALESCED, not dropped: a start that lands while the handler runs re-runs it once; one Bilan note per second', async (t) => {
   __resetPauseTrapForTests();
   const rig = newRig(t);
   member(rig, 'w1', 'W');
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   rig.calls.length = 0;
-  const r1 = await onTurnStart(rig.deps, tm('w1', 'W'));
-  rig.clock -= 900; // still inside the guard
-  const r2 = await onTurnStart(rig.deps, tm('w1', 'W'));
-  assert.deepEqual([r1, r2], ['interrupted', 'skipped']);
-  assert.equal(rig.calls.filter((x) => x === 'interrupt:w1').length, 1);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const origInterrupt = rig.deps.interrupt;
+  let n = 0;
+  rig.deps.interrupt = async (m) => {
+    n++;
+    if (n === 1) await gate; // the first handler is busy when the second start arrives
+    return origInterrupt(m);
+  };
+  const first = onTurnStart(rig.deps, tm('w1', 'W'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'skipped', 'the concurrent start is noted, not run in parallel');
+  release();
+  assert.equal(await first, 'interrupted');
+  assert.equal(rig.calls.filter((x) => x === 'interrupt:w1').length, 2, 'the handler re-ran once for the start that landed meanwhile (its tools are killed too)');
+  assert.equal(rig.calls.filter((x) => x === 'kill:100/90').length, 2);
+  assert.equal((bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).length, 1, 'one note per burst');
 });
+
+test('arm: every member\'s idle keeper is re-armed at pause time (exempt pauser too) and for every ACTIVE pause even when nothing is owed (app restarted after the trap)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  member(rig, 'w1', 'W');
+  const armed: string[] = [];
+  rig.deps.arm = async (m) => {
+    armed.push(m.wsId);
+  };
+  const c = pauseW(rig, 'W', 'ops-w');
+  await runPauseTrap(rig.deps, c);
+  assert.deepEqual([...armed].sort(), ['ops-w', 'w1'], 'both armed during the trap, the exempt pauser included');
+  assert.ok(rig.calls.indexOf('activity:w1') < rig.calls.indexOf('interrupt:w1'));
+  armed.length = 0;
+  assert.notEqual(getRunPause(rig.db, 'W')?.trapAt, null, 'the trap is finished: nothing is owed');
+  assert.equal(await armPausedMembers(rig.deps), 2);
+  assert.deepEqual([...armed].sort(), ['ops-w', 'w1'], 'an active pause is re-armed on every pass, finished trap or not');
+  assert.equal(setRunPause(rig.db, 'W', false, 'ops-w'), 'lifted');
+  armed.length = 0;
+  assert.equal(await armPausedMembers(rig.deps), 0);
+  assert.deepEqual(armed, [], 'nothing is armed once the pause is lifted');
+});
+
+test('activePauseCarriers honours the FROZEN switch: a pause column on a run whose pause switch is OFF is not active', (t) => {
+  const rig = newRig(t, false);
+  rig.db.prepare("UPDATE runs SET paused_at = 5, paused_by = 'ops-w', pause_mode = 'hard' WHERE id = 'W'").run();
+  assert.deepEqual(activePauseCarriers(rig.db), []);
+  const on = newRig(t, true);
+  pauseW(on);
+  assert.deepEqual(activePauseCarriers(on.db).map((x) => x.runId), ['W']);
+});
+
+test('latestPauseBilanFor: the Bilan stays readable AFTER the lift (pause_records history outlives run resume); the newest pause wins; scope is the asking run', async (t) => {
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c1 = pauseW(rig);
+  await runPauseTrap(rig.deps, c1);
+  assert.equal(setRunPause(rig.db, 'W', false, 'ops-w'), 'lifted');
+  const end = Date.now() + 5;
+  while (Date.now() < end);
+  rig.roster.length = 0;
+  member(rig, 'w2', 'W');
+  const c2 = pauseW(rig);
+  await runPauseTrap(rig.deps, c2);
+  assert.equal(setRunPause(rig.db, 'W', false, 'ops-w'), 'lifted');
+  const last = latestPauseBilanFor(rig.db, 'W');
+  assert.equal(last?.pausedAt, c2.pausedAt, 'the newest pause');
+  assert.deepEqual(last?.rows.map((r) => r.wsId), ['w2']);
+  assert.equal(latestPauseBilanFor(rig.db, 'X'), null, 'a run with no members in any pause sees none');
+});
+
+test('arm failure is recorded in the Bilan and never blocks the interrupt/kill', async (t) => {
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.deps.arm = async () => {
+    throw new Error('attach refused');
+  };
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  assert.match(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.error ?? '', /arm: attach refused/);
+  assert.ok(rig.calls.includes('interrupt:w1') && rig.calls.includes('kill:100/90'));
+});
+
+test('members are trapped in PARALLEL (bounded by deps.concurrency): a slow snapshot of one worktree does not delay the interrupt of the rest', async (t) => {
+  const rig = newRig(t);
+  for (const id of ['a', 'b', 'c', 'd']) member(rig, id, 'W');
+  const c = pauseW(rig);
+  let cur = 0;
+  let max = 0;
+  const origSnap = rig.deps.snapshot;
+  rig.deps.snapshot = async (input) => {
+    cur++;
+    max = Math.max(max, cur);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      return await origSnap(input);
+    } finally {
+      cur--;
+    }
+  };
+  rig.deps.concurrency = 2;
+  const s = await runPauseTrap(rig.deps, c);
+  assert.equal(s.done, true);
+  assert.equal(max, 2, 'two at a time, never more than the bound');
+  assert.equal(listBilan(rig.db, 'W', c.pausedAt).length, 4);
+});
+

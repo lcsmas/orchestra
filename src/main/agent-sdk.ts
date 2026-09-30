@@ -3979,11 +3979,12 @@ export function sdkPauseActivity(
 export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed';
 
 /**
- * #252 D1b — interrupt the running turn of a PAUSED member. Unlike {@link sdkInterrupt} it never
- * fabricates a `turn-end` for a missing session and never touches an idle one (a stale
- * `interruptRequested` would relabel a later crash). A turn still running in a DETACHED keeper this
- * app run never attached to (the app was down when the pause landed) is attached first — attaching
- * starts no turn (ledger D5 row 3). Never stops the CLI session or the keeper.
+ * #252 D1b — interrupt the running turn of a PAUSED member. Unlike {@link sdkInterrupt} it never fabricates a
+ * `turn-end` for a missing session, never touches an idle one (a stale `interruptRequested` would relabel a later
+ * crash) and — the point — NEVER drops the queue: prompts queued behind the running turn (a human follow-up, a peer
+ * message) stay queued and {@link promptStream}'s pause hold keeps them until the lift, so a pause loses no input.
+ * A turn still running in a DETACHED keeper this app run never attached to (the app was down when the pause
+ * landed) is attached first — attaching starts no turn (ledger D5 row 3). Never stops the CLI session or the keeper.
  */
 export async function sdkInterruptForPause(wsId: string): Promise<PauseInterruptOutcome> {
   let attached = false;
@@ -3999,11 +4000,12 @@ export async function sdkInterruptForPause(wsId: string): Promise<PauseInterrupt
   }
   const session = sessions.get(wsId);
   if (!session) return 'no-session';
-  // `unexplainedTurnSeen`: a CLI-started turn (cron, task-notification) runs with no app-yielded turn in flight.
-  if (!attached && session.turnGate === null && session.queue.length === 0 && session.unexplainedTurnSeen !== true) return 'idle';
+  // `unexplainedTurnSeen`: a CLI-started turn (cron, task-notification) runs with no app-yielded turn in flight. A non-empty
+  // queue is NOT a reason to interrupt: nothing is running, and the pause hold keeps the queue parked.
+  if (!attached && session.turnGate === null && session.unexplainedTurnSeen !== true) return 'idle';
   session.interruptRequested = true;
   try {
-    await interruptCancellingQueued(session);
+    await session.q.interrupt(); // plain interrupt: no cancel_queued, no queue clearing
     return attached ? 'attached-then-interrupted' : 'interrupted';
   } catch (err) {
     log.warn(`agent-sdk: pause interrupt failed for ${wsId}`, err);

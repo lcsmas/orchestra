@@ -6,7 +6,7 @@ import { store } from './store';
 import { nearestOrchestratorId } from './wave-run-id';
 import { getBus } from './bus';
 import { pausedCarrierForWorkspace } from './bus-pause';
-import { sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
+import { sdkAttachIfDetached, sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
 import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-client';
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
@@ -125,6 +125,14 @@ export function buildPauseTrapDeps(): TrapDeps {
       const db = getBus();
       const ws = store.getWorkspace(m.wsId);
       return db && ws ? pausedCarrierForWorkspace(db, ws, (id) => store.getWorkspace(id)) : null;
+    },
+    // Attach only a keeper whose CLI is alive, has run a turn and is not shutting down: sdkAttachIfDetached KILLS a never-started
+    // (init-wedged) keeper, and D4 forbids this trap ever killing a keeper.
+    arm: async (m) => {
+      if (sdkPauseActivity(m.wsId) !== null) return;
+      const probe = await probeKeeper(m.wsId).catch(() => null);
+      if (!probe?.running || probe.everStarted === false || probe.shuttingDown === true) return;
+      await sdkAttachIfDetached(m.wsId);
     },
     snapshot: snapshotWorktree,
     killTrees: (cli, keeperPid) => killToolTrees(cli, keeperPid, kill),

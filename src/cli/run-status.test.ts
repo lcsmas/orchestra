@@ -17,6 +17,7 @@ const deps: RunStatusDeps = {
   activePauseFor: busPause.activePauseFor,
   listBilanForRun: records.listBilanForRun,
   runExists: (d, id) => getRun(d, id) !== null,
+  latestPauseBilan: records.latestPauseBilanFor,
 };
 
 function rig(t: { after: (f: () => void) => void }): BusDb {
@@ -106,6 +107,24 @@ test('--json shape is the RunStatus object (machine-readable Bilan)', (t) => {
   const db = rig(t);
   busPause.setRunPause(db, 'W', true, 'ops');
   const st = JSON.parse(JSON.stringify(gatherRunStatus(db, 'W', deps)));
-  assert.deepEqual(Object.keys(st).sort(), ['bilan', 'inherited', 'pause', 'runExists', 'runId']);
+  assert.deepEqual(Object.keys(st).sort(), ['bilan', 'inherited', 'lastPause', 'pause', 'runExists', 'runId']);
   assert.equal(st.pause.runId, 'W');
+});
+
+test('AFTER the lift the Bilan is still readable (the footer tells the coordinator to re-dispatch from it): "not paused" + the last pause\'s rows', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, { runId: 'W', wsId: 'ws-x', pausedAt: p.pausedAt, activity: { surface: 'sdk', memberRun: 'W', turnRunning: true }, snapshotRef: 'refs/orchestra/pause/W/ws-x/9', dirty: true, killed: { killed: [{ pid: 1, cmd: 'sleep 9', signal: 'SIGTERM', outcome: 'exited' }] }, error: null });
+  assert.equal(busPause.setRunPause(db, 'W', false, 'ops'), 'lifted');
+  const st = gatherRunStatus(db, 'W', deps);
+  assert.equal(st.pause, null);
+  assert.equal(st.lastPause?.carrierRunId, 'W');
+  const text = renderRunStatus(st);
+  assert.match(text, /Run W: not paused\./);
+  assert.match(text, /Last pause \(LIFTED\): carried by run W/);
+  assert.match(text, /snapshot: refs\/orchestra\/pause\/W\/ws-x\/9/);
+  assert.match(text, /killed: 1 tool process\(es\) — sleep 9/);
+  // a run that never had a pause says nothing extra
+  assert.ok(!/Last pause/.test(renderRunStatus(gatherRunStatus(db, 'M', { ...deps, latestPauseBilan: () => null }))));
 });

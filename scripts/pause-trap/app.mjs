@@ -124,6 +124,10 @@ for await (const line of rl) {
       // exactly what api-handlers agentSdkSend does for a composer prompt (origin 'human' → the registered observer marks it)
       await sdk.sdkSend(c.ws, c.text, undefined, undefined, undefined, false, false, 'human');
       out({ reply: 'human-send', ws: c.ws });
+    } else if (c.cmd === 'auto-send') {
+      // an AUTOMATIC send (peer message / queued follow-up): origin 'auto' — refused once paused, parked app-side if a turn is running
+      await sdk.sdkSend(c.ws, c.text);
+      out({ reply: 'auto-send', ws: c.ws });
     } else if (c.cmd === 'interrupt') {
       await sdk.sdkInterrupt(c.ws); // the plain human Stop button (no trap)
       out({ reply: 'interrupt', ws: c.ws });

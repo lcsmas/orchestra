@@ -94,6 +94,11 @@ const ARMS = {
   'turn-while-paused': { scenario: 'bgnotify', markers: [7718], rowTwentyNine: true, mustKill: ['sleep 7718'], idleAtPause: true },
   // the PAUSER (the OPS pausing its own run) is a member with a live session + a running tool: it keeps its turn
   'pauser-exempt': { scenario: 'blocking', markers: [7713], mustKill: [], pauser: { ws: 'ops', scenario: 'blockingops', markers: [7719] } },
+  // the keeper is IDLE (first turn ended, a background task still runs) when the app dies: the boot drain must ARM it (attach) so the CLI's own
+  // task-notification turn — started when the trap kills that task — is observed, interrupted and noted (row 29 after a restart)
+  'app-restart-idle': { scenario: 'bgnotify', markers: [7718], restart: true, rowTwentyNine: true, idleAtPause: true, settleBeforeKill: true, mustKill: ['sleep 7718'] },
+  // an AUTO prompt queued behind the running turn must survive the pause interrupt (not dropped, not drained) and run after the lift
+  'queue-kept': { scenario: 'blocking', markers: [7713], mustKill: [], queueKept: true },
   // PROBE (not a verdict arm): what does a plain human interrupt leave alive? — the gap the trap's kill exists for.
   'probe-dbg': { scenario: 'dbg', markers: [7715, 7716], probe: true, mustKill: [] },
   'probe-interrupt': { scenario: 'background', markers: [7714, 7715, 7716], probe: true, mustKill: [] },
@@ -165,11 +170,17 @@ try {
   const fp1 = fingerprint(WT.w1);
   await sleep(1200);
   check('fingerprint_is_stable_control', fp1 === fingerprint(WT.w1), 'two reads of the unpaused worktree agree (the instrument is deterministic)');
+  if (A.queueKept) {
+    app1.send({ cmd: 'auto-send', ws: 'w1', text: 'SCN:resume' });
+    await waitFor(() => app1.replies.some((r) => r.reply === 'auto-send'), 30_000, 'the auto-send to be accepted');
+    check('auto_prompt_is_queued_control', !app1.events.some((e) => e.ev === 'turn-end' && e.ws === 'w1'), 'the auto prompt is parked behind the running tool: no turn has ended yet');
+  }
   const fpBefore = fingerprint(WT.w1);
   const opsFpBefore = fingerprint(WT.ops);
 
   // 3. (restart arm) the app DIES first: keeper + CLI + tools must survive it — the pause then lands with the app down
   if (A.restart) {
+    if (A.settleBeforeKill) await sleep(3000); // let the first turn END: the keeper is idle when the app dies
     app1.child.kill('SIGKILL');
     await waitFor(() => app1.exited, 10_000, 'app1 to die');
     await sleep(1500);
@@ -178,6 +189,7 @@ try {
 
   // 4. THE PAUSE, through the real built CLI (store-less: writes the bus directly)
   const tPause = Date.now();
+  result.tPause = tPause;
   const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', A.pauser ? 'ops' : 'lead');
   check('cli_pause_accepted', p.rc === 0 && /PAUSED/.test(p.out), `rc=${p.rc} ${p.out.trim().slice(0, 200)}`);
   if (A.restart) {
@@ -242,6 +254,15 @@ try {
     check('cli_started_turn_ran_control', served, served ? 'the fake API served step 2 (tool_use sleep 7717) to the CLI-started turn: it really tried to run a tool' : 'the CLI never started a turn by itself — this arm proves nothing');
     const note = (w1b?.activity?.notes ?? []).find((n) => /turn started while paused/.test(n));
     check('turn_while_paused_interrupted', !!w1b && /interrupt=(interrupted|attached)/.test(note ?? '') && sleepers(7717).length === 0, note ? `note: ${note}` : 'no "turn started while paused" note');
+  }
+  if (A.queueKept) {
+    const endTurns = () => liveApp.events.filter((e) => e.ev === 'turn-end' && e.ws === 'w1' && e.t >= tPause && e.stopReason === 'end_turn' && e.isError !== true).length;
+    await sleep(3000);
+    check('queued_prompt_held_while_paused', endTurns() === 1, `only the HUMAN prompt ran (end_turn turn-ends since the pause: ${endTurns()}); the queued AUTO prompt is parked, not drained`);
+    const lift = cli('run', 'resume', '--run', 'ops', '--as', 'lead');
+    check('cli_resume_accepted', lift.rc === 0 && /LIFTED/.test(lift.out), `rc=${lift.rc} ${lift.out.trim().slice(0, 120)}`);
+    const ran = await waitFor(() => endTurns() >= 2, 60_000, 'the queued prompt to run after the lift').catch(() => false);
+    check('queued_prompt_survives_pause', !!ran, ran ? 'after `run resume` the queued prompt ran (end_turn #2): the pause interrupt did not drop it' : 'the queued prompt never ran: it was dropped by the pause interrupt');
   }
   // strays census (report, not judged): anything in the namespace that is not the rig's own tree
   const mine = new Set([process.pid, app1?.child.pid, app2?.child.pid, keeper.pid, cli0.pid].filter(Boolean));

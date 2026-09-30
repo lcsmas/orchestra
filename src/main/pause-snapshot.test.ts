@@ -286,6 +286,50 @@ test('submodule: a checked-out submodule is snapshotted in its OWN repo and its 
   }
 });
 
+test('ONE unreadable untracked file does not abort the snapshot: everything else is captured and the unreadable one is REPORTED', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  const bad = path.join(wt, 'secret.txt');
+  try {
+    dirtyUp(wt);
+    fs.writeFileSync(bad, 'cannot read me\n');
+    fs.chmodSync(bad, 0o000);
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 21 });
+    assert.equal(git(wt, 'show', `${r.ref}:untracked.txt`), 'brand new', 'the readable work is in the ref');
+    assert.equal(git(wt, 'show', `${r.ref}:tracked.txt`), 'edited-unstaged');
+    if (process.getuid?.() === 0) {
+      assert.equal(git(wt, 'show', `${r.ref}:secret.txt`), 'cannot read me', 'root reads it: captured');
+    } else {
+      assert.ok(r.warnings.some((w) => /secret\.txt/.test(w)), `the unreadable file is named: ${JSON.stringify(r.warnings)}`);
+      assert.throws(() => git(wt, 'cat-file', '-e', `${r.ref}:secret.txt`), 'and is not in the ref');
+    }
+  } finally {
+    try { fs.chmodSync(bad, 0o644); } catch { /* */ }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a nested STANDALONE repository (.git directory, not a submodule) is left untouched: no ref is written inside the worktree, it is reported', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    const nested = path.join(wt, 'vendor-copy');
+    fs.mkdirSync(nested);
+    git(nested, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(nested, 'n.txt'), 'n\n');
+    git(nested, 'add', '-A');
+    git(nested, 'commit', '-q', '-m', 'n');
+    fs.writeFileSync(path.join(nested, 'n.txt'), 'edited in nested\n');
+    const listGit = (): string => execFileSync('find', [path.join(nested, '.git'), '-printf', '%p %T@ %s\\n'], { encoding: 'utf8' }).split('\n').sort().join('\n');
+    const before = listGit();
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 22 });
+    assert.equal(listGit(), before, 'the nested repo\'s .git directory is byte-identical (no ref written inside the worktree)');
+    assert.equal(git(nested, 'for-each-ref', 'refs/orchestra').length, 0);
+    assert.equal(r.submodules.length, 1);
+    assert.match(r.submodules[0].error ?? '', /nested repository \(not a submodule\)/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('refuses a missing worktree with a clear error', async () => {
   await assert.rejects(
     snapshotWorktree({ worktreePath: '/nonexistent/path/xyz', runId: 'r', wsId: 'w', at: 1 }),

@@ -44,12 +44,14 @@ test('agent-sdk consume(): a CLI-started turn (no app turn in flight) notifies t
   assert.ok(resultArm.indexOf('session.unexplainedTurnSeen = false;') !== -1 && resultArm.indexOf('session.unexplainedTurnSeen = false;') < 600, 'the latch resets in the `result` branch');
 });
 
-test('sdkInterruptForPause never touches an idle session: it needs an in-flight app turn, a queue, a CLI-started turn, or an attach', () => {
+test('sdkInterruptForPause never touches an idle session and NEVER drops the queue (plain interrupt, no cancel_queued)', () => {
   const code = codeOf('src/main/agent-sdk.ts');
   const fn = code.slice(at(code, 'export async function sdkInterruptForPause('));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.ok(body.includes("if (!attached && session.turnGate === null && session.queue.length === 0 && session.unexplainedTurnSeen !== true) return 'idle';"));
+  assert.ok(body.includes("if (!attached && session.turnGate === null && session.unexplainedTurnSeen !== true) return 'idle';"));
   assert.ok(body.indexOf("return 'idle'") < body.indexOf('session.interruptRequested = true;'), 'the idle exit precedes the interruptRequested latch (a stale latch would relabel a later crash)');
+  assert.ok(body.includes('await session.q.interrupt();'), 'plain interrupt');
+  assert.ok(!body.includes('interruptCancellingQueued') && !body.includes('settleQueuedAsDropped') && !/queue\.length\s*=\s*0/.test(body), 'the queue is left intact (D5 row 24: queued BEFORE the pause must not be lost or drained)');
   assert.ok(!body.includes('emit('), 'never fabricates an event for a missing session (unlike sdkInterrupt)');
 });
 

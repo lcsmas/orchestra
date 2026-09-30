@@ -13,6 +13,8 @@ export interface RunStatusDeps {
   activePauseFor: (db: BusDb, runId: string) => RunPauseInfo | null;
   listBilanForRun: (db: BusDb, carrierRunId: string, runId: string, pausedAt: number) => BilanRow[];
   runExists: (db: BusDb, runId: string) => boolean;
+  /** The newest pause with Bilan rows in this run's scope — readable after the lift. Omitted ⇒ none. */
+  latestPauseBilan?: (db: BusDb, runId: string) => { carrierRunId: string; pausedAt: number; rows: BilanRow[] } | null;
 }
 
 export interface RunStatus {
@@ -23,17 +25,21 @@ export interface RunStatus {
   /** True when the pause is carried by an ANCESTOR run (`orchestra run resume --run <pause.runId>` lifts it). */
   inherited: boolean;
   bilan: BilanRow[];
+  /** Set only when NOT paused: the most recent (lifted) pause whose Bilan is still in `pause_records`. */
+  lastPause: { carrierRunId: string; pausedAt: number } | null;
 }
 
 export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): RunStatus {
   const runExists = deps.runExists(db, runId);
   const pause = deps.activePauseFor(db, runId);
+  const last = pause ? null : (deps.latestPauseBilan?.(db, runId) ?? null);
   return {
     runId,
     runExists,
     pause,
     inherited: pause !== null && pause.runId !== runId,
-    bilan: pause ? deps.listBilanForRun(db, pause.runId, runId, pause.pausedAt) : [],
+    bilan: pause ? deps.listBilanForRun(db, pause.runId, runId, pause.pausedAt) : (last?.rows ?? []),
+    lastPause: last ? { carrierRunId: last.carrierRunId, pausedAt: last.pausedAt } : null,
   };
 }
 
@@ -57,6 +63,10 @@ export function renderRunStatus(st: RunStatus): string {
   if (!st.runExists) out.push(`Run ${st.runId}: no row in the bus 'runs' table (unknown run, or this workspace anchors none).`);
   if (!st.pause) {
     out.push(`Run ${st.runId}: not paused.`);
+    if (st.lastPause) {
+      out.push(`Last pause (LIFTED): carried by run ${st.lastPause.carrierRunId}, since ${iso(st.lastPause.pausedAt)}. Its Bilan de pause (kept after the lift):`);
+      renderRows(st.bilan, out);
+    }
     return `${out.join('\n')}\n`;
   }
   const p = st.pause;
@@ -70,12 +80,21 @@ export function renderRunStatus(st: RunStatus): string {
       : `Host trap: NOT FINISHED — the app has not (fully) reacted yet (it runs when Orchestra is up; a pause that landed while it was closed is completed at the next launch).`,
   );
   out.push(`Bilan de pause (${st.bilan.length} member${st.bilan.length === 1 ? '' : 's'}):`);
-  for (const r of st.bilan) {
+  renderRows(st.bilan, out);
+  out.push(
+    'Reprise: `orchestra run resume` only lifts the pause — nothing restarts on its own. Re-dispatch each member from its Bilan; killed commands are listed, never re-run automatically.',
+  );
+  return `${out.join('\n')}\n`;
+}
+
+function renderRows(rows: BilanRow[], out: string[]): void {
+  for (const r of rows) {
     const a = r.activity;
     const dirtyTxt =
       r.dirty === null ? 'unknown' : r.dirty ? `yes${a?.changed ? ` (${a.changed.modified} modified, ${a.changed.added} added, ${a.changed.deleted} deleted)` : ''}` : 'no';
     out.push(`  • ${r.wsId}${a?.branch ? ` [${a.branch}]` : ''} — dirty tree: ${dirtyTxt}`);
     if (r.snapshotRef) out.push(`      snapshot: ${r.snapshotRef}   (git diff ${a?.head ? a.head.slice(0, 9) : 'HEAD'} ${r.snapshotRef} shows the uncommitted work)`);
+    if (a?.snapshotWarnings?.length) out.push(`      NOT captured (unreadable): ${a.snapshotWarnings.join(' | ').slice(0, 300)}`);
     if (a?.skippedLarge?.length) out.push(`      not captured (too large): ${a.skippedLarge.map((f) => `${f.path} (${Math.round(f.bytes / 1048576)} MB)`).join(', ')}`);
     for (const s of a?.submodules ?? []) out.push(`      submodule ${s.path}: ${s.error ? `snapshot failed (${s.error})` : `${s.dirty ? 'dirty, ' : ''}ref ${s.ref}`}`);
     if (a) {
@@ -104,8 +123,4 @@ export function renderRunStatus(st: RunStatus): string {
     for (const n of a?.notes ?? []) out.push(`      note: ${n}`);
     if (r.error) out.push(`      error: ${r.error}`);
   }
-  out.push(
-    'Reprise: `orchestra run resume` only lifts the pause — nothing restarts on its own. Re-dispatch each member from its Bilan; killed commands are listed, never re-run automatically.',
-  );
-  return `${out.join('\n')}\n`;
 }

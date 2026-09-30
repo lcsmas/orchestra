@@ -1852,6 +1852,7 @@ async function main(argv: string[]): Promise<void> {
             activePauseFor: busPause.activePauseFor,
             listBilanForRun: records.listBilanForRun,
             runExists: (d, id) => busRuns.getRun(d, id) !== null,
+            latestPauseBilan: records.latestPauseBilanFor,
           });
           process.stdout.write(stJson.present ? `${JSON.stringify(st, null, 2)}\n` : renderRunStatus(st));
         } finally {

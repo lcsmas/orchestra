@@ -46,6 +46,20 @@ export const MUTANTS = {
     replace: "throw new Error('mutant: snapshot skipped'); const r = await deps.snapshot({ worktreePath: m.worktreePath, runId: carrier.runId, wsId: m.wsId, at: deps.now() });",
     mustRedden: 'pause_ref_holds_uncommitted_work',
   },
+  // Idle detached keepers are never re-armed (attached): a CLI-started turn after an app restart runs unobserved (row 29 after a restart).
+  'no-arm': {
+    file: '/src/main/pause-trap-host.ts',
+    find: /      await sdkAttachIfDetached\(m\.wsId\);\n    \},/g,
+    replace: '      /* mutant: never attach */\n    },',
+    mustRedden: 'turn_while_paused_interrupted',
+  },
+  // The pause interrupt clears the app-side queue (the plain user Stop button's behaviour): a queued prompt is lost.
+  'drop-queue-on-pause-interrupt': {
+    file: '/src/main/agent-sdk.ts',
+    find: /    await session\.q\.interrupt\(\); \/\/ plain interrupt: no cancel_queued, no queue clearing/g,
+    replace: '    await interruptCancellingQueued(session);',
+    mustRedden: 'queued_prompt_survives_pause',
+  },
   // The pauser exemption removed: the coordinator that pauses its own run is interrupted + its tools killed.
   'no-pauser-exemption': {
     file: '/src/main/pause-trap.ts',

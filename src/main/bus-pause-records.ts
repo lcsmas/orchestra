@@ -7,7 +7,8 @@
 // stored as TEXT so the frozen schema never changes.
 
 import type { BusDb } from './bus.ts';
-import { runSubtreeIds } from './bus-pause.ts';
+import { runSubtreeIds, type RunPauseInfo } from './bus-pause.ts';
+import { parseSwitches } from '../shared/bus-switches.ts';
 
 /** What the member was doing when the Pause took effect + what the trap did (all optional but `surface`). */
 export interface BilanActivity {
@@ -23,6 +24,8 @@ export interface BilanActivity {
   head?: string | null;
   changed?: { modified: number; added: number; deleted: number };
   skippedLarge?: Array<{ path: string; bytes: number }>;
+  /** Files the snapshot could not read (everything else is in the ref). */
+  snapshotWarnings?: string[];
   submodules?: Array<{ path: string; ref: string | null; dirty: boolean; error?: string }>;
   /** `pauser`: the member that issued the pause keeps its turn (snapshot + row only). */
   exempt?: 'pauser';
@@ -198,4 +201,41 @@ export function appendBilanNote(db: BusDb, carrierRunId: string, wsId: string, p
     updateBilan(db, row.id, { activity: { ...a, notes: [...(a.notes ?? []), note].slice(-50) } });
   });
   tx.immediate();
+}
+
+/** Every carrier whose pause is ACTIVE (paused_at set AND its frozen `pause` switch ON), whether or not its trap finished.
+ *  The re-arm pass reads it: a member's idle keeper must be watched for CLI-started turns for the whole pause. */
+export function activePauseCarriers(db: BusDb): RunPauseInfo[] {
+  const rows = db
+    .prepare(
+      `SELECT r.id, r.paused_at, r.paused_by, r.pause_mode, r.pause_trap_at, f.flags AS flags_json
+         FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id
+        WHERE r.paused_at IS NOT NULL`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  return rows
+    .filter((r) => parseSwitches((r.flags_json as string | null | undefined) ?? null).pause === true)
+    .map((r) => ({
+      runId: String(r.id),
+      pausedAt: Number(r.paused_at),
+      pausedBy: (r.paused_by as string | null) ?? null,
+      mode: (r.pause_mode as string | null) ?? null,
+      trapAt: r.pause_trap_at === null || r.pause_trap_at === undefined ? null : Number(r.pause_trap_at),
+    }));
+}
+
+/** The NEWEST pause that has Bilan rows in scope of `runId` (its own run or any run of its subtree) — readable after the
+ *  lift: `pause_records` history outlives `run resume`. Null when none. */
+export function latestPauseBilanFor(db: BusDb, runId: string): { carrierRunId: string; pausedAt: number; rows: BilanRow[] } | null {
+  const inScope = new Set(runSubtreeIds(db, runId));
+  const recent = db.prepare('SELECT * FROM pause_records ORDER BY id DESC LIMIT 500').all() as RawRow[];
+  for (const raw of recent) {
+    const r = toRow(raw);
+    const mr = r.activity?.memberRun;
+    if (r.runId === runId || (mr !== undefined && inScope.has(mr))) {
+      const rows = listBilanForRun(db, r.runId, runId, r.pausedAt);
+      if (rows.length > 0) return { carrierRunId: r.runId, pausedAt: r.pausedAt, rows };
+    }
+  }
+  return null;
 }

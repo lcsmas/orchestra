@@ -39,15 +39,18 @@ export interface SnapshotResult {
   changed: { modified: number; added: number; deleted: number };
   /** Untracked files left out for size (path + bytes). */
   skippedLarge: Array<{ path: string; bytes: number }>;
+  /** Files `git add` could not read (permissions, vanished mid-add): everything else IS in the ref; these are not. */
+  warnings: string[];
   /** Gitlinks (submodules) whose own worktree was snapshotted too (path → ref), or failed. */
   submodules: Array<{ path: string; ref: string | null; dirty: boolean; error?: string }>;
 }
 
 interface GitOut {
   stdout: Buffer;
+  stderr: string;
 }
 
-function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: string): Promise<GitOut> {
+function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: string, okCodes: number[] = []): Promise<GitOut> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       'git',
@@ -61,10 +64,11 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: s
         timeout: GIT_TIMEOUT_MS,
       },
       (err, stdout, stderr) => {
-        if (err) {
+        const errText = stderr?.toString('utf8') ?? '';
+        if (err && !okCodes.includes(Number((err as { code?: unknown }).code))) {
           const e = err as Error & { stderr?: Buffer };
-          reject(new Error(`git ${args[0]} failed: ${(stderr?.toString('utf8') || e.message).trim().slice(0, 400)}`));
-        } else resolve({ stdout: stdout as unknown as Buffer });
+          reject(new Error(`git ${args[0]} failed: ${(errText || e.message).trim().slice(0, 400)}`));
+        } else resolve({ stdout: stdout as unknown as Buffer, stderr: errText });
       },
     );
     if (input !== undefined) child.stdin?.end(input);
@@ -126,6 +130,7 @@ async function buildTree(
   seedFromRealIndex: boolean,
   head: string | null,
   excludes: string[],
+  warnings: string[],
 ): Promise<string> {
   const env = { GIT_INDEX_FILE: indexFile };
   if (seedFromRealIndex) {
@@ -135,7 +140,10 @@ async function buildTree(
     await git(cwd, ['read-tree', head], env);
   }
   const pathspec = ['.', ...excludes.slice(0, MAX_EXCLUDES).map((p) => `:(exclude,literal)${p}`)];
-  await git(cwd, ['add', '-A', '--', ...pathspec], env);
+  // --ignore-errors: ONE unreadable file must not abort the whole snapshot (plain `git add -A` exits 128 and adds NOTHING);
+  // exit 1 = "some files could not be added" — the rest is staged and reported in `warnings`.
+  const added = await git(cwd, ['add', '-A', '--ignore-errors', '--', ...pathspec], env, undefined, [1]);
+  warnings.push(...added.stderr.split('\n').map((l) => l.trim()).filter((l) => /^(error|fatal):/.test(l)).slice(0, 10));
   return text(await git(cwd, ['write-tree'], env));
 }
 
@@ -191,15 +199,17 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
   // Every plumbing call below runs against the TEMP index, never the real one: a torn or
   // corrupt real index cannot break them, and none of them can write it.
   const env = { GIT_INDEX_FILE: tmp.file };
+  const warnings: string[] = [];
   try {
     let tree: string;
     try {
-      tree = await buildTree(cwd, tmp.file, true, head, excludes);
+      tree = await buildTree(cwd, tmp.file, true, head, excludes, warnings);
     } catch {
       // A torn copy (the agent wrote its index mid-copy) or a split/shared index that cannot
       // be replayed from a copy: rebuild from HEAD, which still captures every worktree file.
       fs.rmSync(tmp.file, { force: true });
-      tree = await buildTree(cwd, tmp.file, false, head, excludes);
+      warnings.length = 0;
+      tree = await buildTree(cwd, tmp.file, false, head, excludes, warnings);
     }
     const message = `orchestra pause snapshot\n\nrun: ${input.runId}\nworkspace: ${input.wsId}\nbranch: ${branch ?? '(detached)'}\nhead: ${head ?? '(unborn)'}\n`;
     const ident = {
@@ -230,7 +240,14 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
     if (depth < 2) {
       for (const sub of await gitlinkPaths(cwd, env, tree)) {
         const subPath = path.join(cwd, sub);
-        if (!fs.existsSync(path.join(subPath, '.git'))) continue; // not checked out
+        const dotGit = path.join(subPath, '.git');
+        if (!fs.existsSync(dotGit)) continue; // not checked out
+        // A real submodule's `.git` is a FILE (a gitfile into the parent's .git/modules). A `.git` DIRECTORY is a nested standalone
+        // repository: writing a ref into it would modify a path INSIDE the worktree, so it is reported and left untouched.
+        if (!fs.lstatSync(dotGit).isFile()) {
+          submodules.push({ path: sub, ref: null, dirty: false, error: 'nested repository (not a submodule) — left untouched, its own uncommitted work is not captured' });
+          continue;
+        }
         try {
           const r = await snapshotWorktree({ ...input, worktreePath: subPath, at }, depth + 1);
           submodules.push({ path: sub, ref: r.ref, dirty: r.dirty });
@@ -239,7 +256,7 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
         }
       }
     }
-    return { ref, commit, tree, head, branch, dirty: dirty || submodules.some((s) => s.dirty), changed, skippedLarge, submodules };
+    return { ref, commit, tree, head, branch, dirty: dirty || submodules.some((s) => s.dirty), changed, skippedLarge, warnings, submodules };
   } finally {
     tmp.cleanup();
   }

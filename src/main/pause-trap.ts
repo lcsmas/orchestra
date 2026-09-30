@@ -18,6 +18,7 @@ import type { BusDb } from './bus.ts';
 import { busPath } from './bus.ts';
 import { activePauseFor, getRunPause, runSubtreeIds, runsOwingPauseTrap, type RunPauseInfo } from './bus-pause.ts';
 import {
+  activePauseCarriers,
   appendBilanNote,
   bilanForMember,
   insertBilan,
@@ -70,6 +71,11 @@ export interface TrapDeps {
   interrupt(m: TrapMember): Promise<InterruptOutcome>;
   /** The verified CLI (+ keeper) whose tool trees may be killed, or an error/null ⇒ nothing is killed. */
   cliOf(m: TrapMember): Promise<{ cli: RootRef; keeperPid: number | null } | { error: string } | null>;
+  /** Make the member's idle detached keeper OBSERVED (attach its session; starts no turn) so a CLI-started turn during the
+   *  pause reaches `onTurnStart`. Never starts/kills anything. Omitted ⇒ no re-arming. */
+  arm?(m: TrapMember): Promise<void>;
+  /** Members trapped in parallel (snapshots of big worktrees must not serialize the interrupt of the last member). Default 3. */
+  concurrency?: number;
   snapshot(input: SnapshotInput): Promise<SnapshotResult>;
   killTrees(cli: RootRef, keeperPid: number | null): Promise<KillReport>;
   /** Pause between the interrupt and the first kill scan (the CLI reaps its own tool child). */
@@ -160,6 +166,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
         activity.head = r.head;
         activity.changed = r.changed;
         if (r.skippedLarge.length > 0) activity.skippedLarge = r.skippedLarge;
+        if (r.warnings.length > 0) activity.snapshotWarnings = r.warnings;
         if (r.submodules.length > 0) activity.submodules = r.submodules;
       } catch (e) {
         errors.push(`snapshot: ${errMsg(e)}`);
@@ -174,6 +181,8 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
 
   // A lift during the snapshot: stop before touching any process.
   if (!stillPaused(db, carrier)) return;
+  // Watch the session for CLI-started turns from now on (idle keepers included — exempt members too).
+  await deps.arm?.(m).catch((e) => errors.push(`arm: ${errMsg(e)}`));
 
   let killed: unknown = { skipped: 'exempt (pauser)' };
   if (!exempt) {
@@ -225,21 +234,34 @@ export async function runPauseTrap(deps: TrapDeps, carrier: RunPauseInfo): Promi
   const members = deps.members(runSubtreeIds(db, carrier.runId), carrier.runId);
   log.info(`pause-trap: run ${carrier.runId} hard-paused at ${carrier.pausedAt} — trapping ${members.length} member(s)`);
   let n = 0;
-  for (const m of members) {
-    if (!stillPaused(db, carrier)) return { ...base, members: n, done: false, aborted: 'lifted' };
-    try {
-      await trapMember(deps, db, carrier, m);
-    } catch (e) {
-      log.warn(`pause-trap: member ${m.wsId} failed`, e);
-      try {
-        appendBilanNote(db, carrier.runId, m.wsId, carrier.pausedAt, `trap failed: ${errMsg(e)}`);
-      } catch {
-        /* the bus itself is unwritable: the next sweep retries */
+  let failed = false;
+  let aborted = false;
+  const queue = [...members];
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const m = queue.shift();
+      if (!m || failed || aborted) return;
+      if (!stillPaused(db, carrier)) {
+        aborted = true;
+        return;
       }
-      return { ...base, members: n, done: false };
+      try {
+        await trapMember(deps, db, carrier, m);
+        n++;
+      } catch (e) {
+        failed = true;
+        log.warn(`pause-trap: member ${m.wsId} failed`, e);
+        try {
+          appendBilanNote(db, carrier.runId, m.wsId, carrier.pausedAt, `trap failed: ${errMsg(e)}`);
+        } catch {
+          /* the bus itself is unwritable: the next sweep retries */
+        }
+      }
     }
-    n++;
-  }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(deps.concurrency ?? 3, members.length)) }, () => worker()));
+  if (aborted) return { ...base, members: n, done: false, aborted: 'lifted' };
+  if (failed) return { ...base, members: n, done: false };
   if (!stillPaused(db, carrier)) return { ...base, members: n, done: false, aborted: 'lifted' };
   markTrapDone(db, carrier.runId, carrier.pausedAt, deps.now());
   log.info(`pause-trap: run ${carrier.runId} trapped (${n} member(s))`);
@@ -267,15 +289,18 @@ function consumeHumanMark(wsId: string, now: number): boolean {
 export function __resetPauseTrapForTests(): void {
   humanTurnMarks.clear();
   inflight.clear();
-  lastTurnTrap.clear();
+  turnTrap.clear();
+  arming = false;
 }
 
-const lastTurnTrap = new Map<string, number>();
+/** Per-member CLI-started-turn handler state: one handler at a time, a burst re-runs it once after it finishes. */
+const turnTrap = new Map<string, { running: boolean; again: boolean; lastNoteAt: number }>();
 
 /**
- * A turn START was observed on `m`'s session. If the member is paused, the start was not a
- * HUMAN send, and it is not the pauser: interrupt it, kill the tool trees it already spawned and
- * note it in the Bilan. Returns what it did. Never throws.
+ * A turn START was observed on `m`'s session. If the member is paused (by the gate's own live-tree decision) and the start was
+ * not a HUMAN send: interrupt it, kill the tool trees it already spawned and note it in the Bilan. The pauser is NOT exempt here
+ * (it is only spared the pause-time interrupt/kill of the turn that issued the pause): a CLI-started turn is "a new turn".
+ * Returns what it did. Never throws.
  */
 export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allowed' | 'interrupted' | 'not-paused' | 'skipped'> {
   try {
@@ -290,34 +315,75 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
       }
     }
     if (!carrier) return 'not-paused';
-    const now = deps.now();
-    if (consumeHumanMark(m.wsId, now)) return 'allowed';
-    if (carrier.pausedBy !== null && isCoordinatorHandle(carrier.pausedBy, m.wsId)) return 'allowed';
+    if (consumeHumanMark(m.wsId, deps.now())) return 'allowed';
     if (m.remote) return 'skipped';
-    const last = lastTurnTrap.get(m.wsId);
-    if (last !== undefined && now - last < 1000) return 'skipped'; // one handler per burst
-    lastTurnTrap.set(m.wsId, now);
-    const outcome = await deps.interrupt(m).catch((e) => `failed: ${errMsg(e)}`);
-    if (deps.settleMs > 0) await deps.sleep(deps.settleMs);
-    let killedN = 0;
-    const target = await deps.cliOf(m).catch(() => null);
-    if (target && !('error' in target)) {
-      const rep = await deps.killTrees(target.cli, target.keeperPid);
-      killedN = rep.killed.length;
+    const st = turnTrap.get(m.wsId) ?? { running: false, again: false, lastNoteAt: Number.NEGATIVE_INFINITY };
+    turnTrap.set(m.wsId, st);
+    if (st.running) {
+      st.again = true; // a turn started while we were handling the previous one: run once more when done
+      return 'skipped';
     }
-    appendBilanNote(
-      db,
-      carrier.runId,
-      m.wsId,
-      carrier.pausedAt,
-      `turn started while paused (not a human prompt — e.g. the CLI's /loop or cron) at ${new Date(now).toISOString()}: interrupt=${outcome}, ${killedN} tool process(es) killed`,
-    );
-    log.info(`pause-trap: turn started on paused member ${m.wsId} — interrupted (${outcome}), killed ${killedN}`);
+    st.running = true;
+    try {
+      for (let round = 0; round < 3; round++) {
+        st.again = false;
+        const now = deps.now();
+        const outcome = await deps.interrupt(m).catch((e) => `failed: ${errMsg(e)}`);
+        if (deps.settleMs > 0) await deps.sleep(deps.settleMs);
+        let killedN = 0;
+        const target = await deps.cliOf(m).catch(() => null);
+        if (target && !('error' in target)) {
+          const rep = await deps.killTrees(target.cli, target.keeperPid);
+          killedN = rep.killed.length;
+        }
+        if (now - st.lastNoteAt >= 1000) {
+          st.lastNoteAt = now;
+          appendBilanNote(
+            db,
+            carrier.runId,
+            m.wsId,
+            carrier.pausedAt,
+            `turn started while paused (not a human prompt — e.g. the CLI's /loop or cron) at ${new Date(now).toISOString()}: interrupt=${outcome}, ${killedN} tool process(es) killed`,
+          );
+        }
+        log.info(`pause-trap: turn started on paused member ${m.wsId} — interrupted (${outcome}), killed ${killedN}`);
+        if (!st.again) break;
+      }
+    } finally {
+      st.running = false;
+    }
     return 'interrupted';
   } catch (e) {
     log.warn(`pause-trap: onTurnStart failed for ${m.wsId}`, e);
     return 'skipped';
   }
+}
+
+/** Re-arm every member of every ACTIVE pause: attach idle detached keepers so their CLI-started turns are observed.
+ *  Covers "app restarted after the trap finished": nothing is owed, yet a `/loop` tick must still be caught. */
+export async function armPausedMembers(deps: TrapDeps): Promise<number> {
+  const db = deps.getBus();
+  if (!db || !deps.arm) return 0;
+  let carriers: RunPauseInfo[];
+  try {
+    carriers = activePauseCarriers(db);
+  } catch (e) {
+    log.warn('pause-trap: could not read active pauses', e);
+    return 0;
+  }
+  let n = 0;
+  for (const c of carriers) {
+    for (const m of deps.members(runSubtreeIds(db, c.runId), c.runId)) {
+      if (m.remote) continue;
+      try {
+        await deps.arm(m);
+        n++;
+      } catch (e) {
+        log.warn(`pause-trap: could not arm ${m.wsId}`, e);
+      }
+    }
+  }
+  return n;
 }
 
 // ── detection: bus-dir watcher + slow sweep + boot drain ─────────────────────
@@ -331,10 +397,18 @@ let activeDeps: TrapDeps | null = null;
 export const PAUSE_SWEEP_MS = 15_000;
 export const PAUSE_WATCH_DEBOUNCE_MS = 250;
 
+let arming = false;
+
 /** One pass: start a trap for every carrier that owes one and is not already being trapped. */
 export async function sweepPauseTrap(deps: TrapDeps): Promise<TrapSummary[]> {
   const db = deps.getBus();
   if (!db) return [];
+  if (!arming && deps.arm) {
+    arming = true;
+    void armPausedMembers(deps).finally(() => {
+      arming = false;
+    });
+  }
   let owing: RunPauseInfo[];
   try {
     owing = runsOwingPauseTrap(db);
