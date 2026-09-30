@@ -26,7 +26,7 @@ const ARMS = [
   'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume', 'migrate',
   'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
-  'off_identity',
+  'off_identity', 'cli_cross_process',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 
@@ -192,7 +192,9 @@ if (ARM === 'spawn') {
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'message') {
   // row 18 (+ broadcast / --emergency) — a message to a paused member is PARKED in the inbox, never delivered live, never wakes it.
-  useFakeSeam();
+  // m1/m3 have LIVE sessions in the fake seam: without the site gate the message is ATTEMPTED live (seam.sendAwaitingStart) — the WAWP gate and the
+  // sdkSend funnel would still refuse a wake, so only a live attempt distinguishes the site gate from those layers.
+  useFakeSeam({ hasSession: (id) => id === 'ws-m1' || id === 'ws-m3' });
   await seedFleet();
   const tray = await import(`${REPO}/src/main/inbox-tray.ts`);
   pause();
@@ -208,8 +210,8 @@ if (ARM === 'spawn') {
   lift();
   const d = rec('afterLift', await send('ws-m1', 'MSG-DELTA'));
   ok = a.ok === true && a.delivery === 'inbox' && b.ok === true && b.delivery === 'inbox' && out.inboxM1 && out.inboxM3
-    && out.deliveredWhilePaused === 0 && bc.results?.[0]?.delivery === 'inbox' && c.ok === true && c.delivery === 'started' && d.ok === true && d.delivery === 'started'
-    && calls.start.length === 2;
+    && out.deliveredWhilePaused === 0 && bc.results?.[0]?.delivery === 'inbox' && c.ok === true && c.delivery === 'started' && d.ok === true && d.delivery === 'live'
+    && calls.start.length === 1 && calls.awaiting.length === 1 && calls.awaiting[0].wsId === 'ws-m1';
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'wake') {
@@ -291,19 +293,21 @@ if (ARM === 'spawn') {
   useFakeSeam();
   await seedFleet();
   const pq = await import(`${REPO}/src/main/prompt-queue.ts`);
-  const limited = (extra = {}) => ({ lastStopReason: 'usage_limit', lastStopReasonAt: Date.now() - 10_000, usageLimitResetsAt: Date.now() - 5_000, ...extra });
+  const T0 = Date.now() - 10_000;
+  const limited = (extra = {}) => ({ lastStopReason: 'usage_limit', lastStopReasonAt: T0, usageLimitResetsAt: Date.now() - 5_000, ...extra });
   await store.upsertWorkspace({ ...ws('ws-ops'), ...limited() });          // coordinator of the paused run
   await store.upsertWorkspace({ ...ws('ws-xops'), ...limited() });         // coordinator of an UNRELATED run (control)
   pause();
   await pq.__tickForTests();
   rec('opsMarker', ws('ws-ops').lastStopReason);
+  rec('opsMarkerUntouched', ws('ws-ops').lastStopReasonAt === T0);   // a clear + re-mark (the retry-every-tick churn) would restamp it
   rec('startsByWs', calls.start.map((c) => c.wsId));
   rec('xopsMarkerCleared', ws('ws-xops').lastStopReason === undefined);
   lift();
   await pq.__tickForTests();
   rec('opsMarkerAfterLift', ws('ws-ops').lastStopReason ?? null);
   rec('startsAfterLift', calls.start.map((c) => c.wsId));
-  ok = out.opsMarker === 'usage_limit' && !out.startsByWs.includes('ws-ops') && out.startsByWs.includes('ws-xops') && out.xopsMarkerCleared
+  ok = out.opsMarker === 'usage_limit' && out.opsMarkerUntouched === true && !out.startsByWs.includes('ws-ops') && out.startsByWs.includes('ws-xops') && out.xopsMarkerCleared
     && out.opsMarkerAfterLift === null && out.startsAfterLift.includes('ws-ops');
 
 
@@ -396,18 +400,26 @@ if (ARM === 'spawn') {
   fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
   fs.writeFileSync(inboxPath, `${'='.repeat(60)}\nREDRIVE-BLOCK\n`, 'utf8');
   if (tray.readInbox('ws-m1').length !== 1) { console.log(JSON.stringify({ arm: ARM, ok: false, abort: 'seed: inbox block not parsed' })); process.exit(3); }
+  let attempts = 0;                                            // re-drive ATTEMPTS at the real seam (the sdkSend funnel would refuse one and leave the block parked, hiding a missing gate)
+  delivery.registerSdkDelivery({
+    hasSession: sdk.sdkHasSession, hasBackgroundTask: () => false,
+    send: async (wsId, text, peer, origin) => { await sdk.sdkSend(wsId, text, undefined, peer, undefined, false, false, origin ?? 'auto'); },
+    sendAwaitingStart: (wsId, text, peer, ms, origin) => { attempts++; return sdk.sdkSendAwaitingStart(wsId, text, peer, ms, origin ?? 'auto'); },
+    start: (wsId, text, opts) => sdk.sdkWake(wsId, text, opts), stop: sdk.sdkStop,
+  });
   await sdk.sdkSend('ws-m1', 'KICKOFF');
   await untilOrFail(() => yielded.some((y) => y.includes('KICKOFF')));
   pause();
   emitResult();                                                // the turn boundary
   await sleep(700);
+  rec('attemptsWhilePaused', attempts);
   rec('parkedWhilePaused', tray.readInbox('ws-m1').length);
   rec('blockTurnsWhilePaused', userMessages.filter((m) => m.text.includes('REDRIVE-BLOCK')).length);
   lift();
   emitResult();                                                // control: the next boundary re-drives it (proves the instrument sees a re-drive)
   const re = rec('redrivenAfterLift', await untilOrFail(() => userMessages.filter((m) => m.text.includes('REDRIVE-BLOCK')).length === 1, 4000));
   rec('parkedAfterLift', tray.readInbox('ws-m1').length);
-  ok = out.parkedWhilePaused === 1 && out.blockTurnsWhilePaused === 0 && re && out.parkedAfterLift === 0;
+  ok = out.attemptsWhilePaused === 0 && out.parkedWhilePaused === 1 && out.blockTurnsWhilePaused === 0 && re && out.parkedAfterLift === 0 && attempts === 1;
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -612,6 +624,33 @@ if (ARM === 'spawn') {
   const effective = busPause.effectivePausedRunIds(db);
   rec('results', { spawn: sp.ok, msg: msg.delivery, wake: wk, restartRefusal: rs.error === PAUSED_MSG, wakeable: wakeRosterEntry(ws('ws-m1')).wakeable, effectivePaused: [...effective] });
   ok = refused === 'switch-off' && sp.ok === true && msg.delivery === 'started' && wk === true && out.results.restartRefusal === false && out.results.wakeable === true && effective.size === 0;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'cli_cross_process') {
+  // The pause is a bus write from ANOTHER PROCESS (the built CLI, app "down": dead socket) that the app's LONG-LIVED boot connection sees on its next
+  // gate read — pause, then resume, through the real verb. Durable + cross-process, not a same-connection shortcut.
+  useFakeSeam({ hasSession: (id) => id === 'ws-m1' });
+  await seedFleet();
+  const CLI = path.join(REPO, 'dist-electron', 'cli.js');
+  if (!fs.existsSync(CLI)) { console.log(JSON.stringify({ arm: ARM, ok: false, abort: 'dist-electron/cli.js not built (pnpm run build:cli)' })); process.exit(3); }
+  const cli = (args, who = 'ws-ops') => {
+    try {
+      return { rc: 0, out: execFileSync(process.execPath, [CLI, ...args], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: path.join(tmpHome, 'no.sock'), ORCHESTRA_WS_ID: who } }) };
+    } catch (e) { return { rc: e.status ?? -1, out: String(e.stdout ?? '') + String(e.stderr ?? '') }; }
+  };
+  const msg = (t) => workspaces.dispatchMessageRequest({ from: 'ws-xm', to: 'ws-m1', text: t, emergency: true });
+  const before = rec('beforePause', await msg('CP-BEFORE'));                       // live delivery (control: the instrument sees a delivery)
+  const p = rec('cliPause', cli(['run', 'pause', '--hard', '--run', 'ws-ops']));
+  rec('appSeesPause', busPause.activePauseFor(busMod.getBus(), 'ws-ops') !== null);
+  const during = rec('whilePaused', await msg('CP-DURING'));
+  const worker = rec('workerResume', cli(['run', 'resume', '--run', 'ws-ops'], 'ws-m1'));   // a worker cannot lift it
+  const still = rec('stillPausedAfterWorker', await msg('CP-WORKER'));
+  const r = rec('cliResume', cli(['run', 'resume', '--run', 'ws-ops']));
+  const after = rec('afterResume', await msg('CP-AFTER'));
+  ok = before.delivery === 'live' && p.rc === 0 && /PAUSED \(hard\)/.test(p.out) && out.appSeesPause === true
+    && during.delivery === 'inbox' && worker.rc !== 0 && still.delivery === 'inbox' && r.rc === 0 && /pause LIFTED/.test(r.out) && after.delivery === 'live'
+    && calls.awaiting.length === 2 && calls.awaiting.every((c) => c.text.includes('CP-BEFORE') || c.text.includes('CP-AFTER'));
 
 } else {
   out.error = `arm not implemented yet: ${ARM}`;

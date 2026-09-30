@@ -60,10 +60,10 @@ test('GATE row 18 message: a message (incl. broadcast/--emergency) to a paused m
   assert.deepEqual(r.toMember, { ok: true, delivery: 'inbox' });
   assert.deepEqual(r.toDescendant, { ok: true, delivery: 'inbox' });
   assert.deepEqual([r.inboxM1, r.inboxM3], [true, true], 'the text is durable in the inbox file');
-  assert.equal(r.deliveredWhilePaused, 0, 'no live turn, no wake start');
+  assert.equal(r.deliveredWhilePaused, 0, 'no live turn (the paused members HAVE live sessions), no wake start — not even an attempt');
   assert.equal(r.broadcast.results[0].delivery, 'inbox');
   assert.equal(r.toOtherRun.delivery, 'started', 'control: an unrelated run is delivered');
-  assert.equal(r.afterLift.delivery, 'started', 'control: the lift restores delivery');
+  assert.equal(r.afterLift.delivery, 'live', 'control: the lift restores live delivery to the paused member');
   assert.equal(r.ok, true);
 });
 
@@ -112,6 +112,7 @@ test('GATE row 17 flush: the TIMER flush is refused BEFORE the queue is cleared;
 test('GATE row 16 usage-limit auto-resume: a limit-killed member of a paused run is NOT resumed and its marker stays (no retry every tick); the lift resumes it', () => {
   const r = runArm('usage_resume');
   assert.equal(r.opsMarker, 'usage_limit');
+  assert.equal(r.opsMarkerUntouched, true, 'the marker is not cleared-and-re-marked (no retry churn every tick)');
   assert.deepEqual(r.startsByWs, ['ws-xops'], 'only the unrelated run was resumed (control)');
   assert.equal(r.opsMarkerAfterLift, null);
   assert.deepEqual(r.startsAfterLift, ['ws-xops', 'ws-ops']);
@@ -169,6 +170,7 @@ test('GATE row 4 recover: pending-prompt recovery is HELD and the entries stay d
 
 test('GATE row 23 redrive: parked inbox mail is NOT re-driven at a turn boundary while paused; the lift re-drives it exactly once', () => {
   const r = runArm('redrive');
+  assert.equal(r.attemptsWhilePaused, 0, 'the re-drive is not even ATTEMPTED (the sdkSend funnel would refuse an attempt and hide a missing gate)');
   assert.equal(r.parkedWhilePaused, 1);
   assert.equal(r.blockTurnsWhilePaused, 0);
   assert.equal(r.redrivenAfterLift, true);
@@ -249,5 +251,19 @@ test('SWITCH OFF ⇒ byte-identical: with the frozen `pause` switch OFF nothing 
   const r = runArm('off_identity');
   assert.equal(r.pauseResult, 'switch-off');
   assert.deepEqual(r.results, { spawn: true, msg: 'started', wake: true, restartRefusal: false, wakeable: true, effectivePaused: [] });
+  assert.equal(r.ok, true);
+});
+
+test('DURABLE + CROSS-PROCESS: the BUILT CLI (app down) pauses/resumes; the app\'s long-lived bus connection gates on its next read; a worker cannot lift it', () => {
+  assert.ok(fs.existsSync(path.join(REPO, 'dist-electron', 'cli.js')), 'dist-electron/cli.js must be built (pretest) — never a skip');
+  const r = runArm('cli_cross_process');
+  assert.equal(r.beforePause.delivery, 'live');
+  assert.equal(r.cliPause.rc, 0);
+  assert.equal(r.appSeesPause, true);
+  assert.equal(r.whilePaused.delivery, 'inbox');
+  assert.notEqual(r.workerResume.rc, 0);
+  assert.equal(r.stillPausedAfterWorker.delivery, 'inbox');
+  assert.equal(r.cliResume.rc, 0);
+  assert.equal(r.afterResume.delivery, 'live');
   assert.equal(r.ok, true);
 });
