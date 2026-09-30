@@ -298,9 +298,23 @@ test('GATE row 11 pty_brief (follow-up): the opening brief typed into a fresh te
   assert.equal(r.ok, true);
 });
 
-test('follow-up: a hung arm is a RED verdict with JSON — the send_funnel arm names its peer-delivery outcome even when its gate is gone', () => {
-  const rig = fs.readFileSync(RIG, 'utf8');
-  assert.match(rig, /sdkSendAwaitingStart\('ws-m1', 'PEER-TEXT', undefined, 400\), 4000, 'hung'\)/, 'the await that hung without the commit-point gate is bounded');
-  assert.match(rig, /setInterval\(\(\) => \{\}, 1000\);/, 'a keepalive prevents the silent exit 13');
-  assert.match(rig, /abort: 'deadline: the arm hung/, 'and a deadline prints ok:false JSON');
+test('follow-up: a hung arm is a RED verdict with JSON and exit 1 (behavioural: a never-settling arm under a short deadline), and the DEFAULT deadline is pinned', () => {
+  // behaviour: the rig's own safety net
+  let rc = 0, stdout = '';
+  try {
+    stdout = execFileSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', REGISTER, RIG, 'hang_selftest'], {
+      encoding: 'utf8', timeout: 60_000, cwd: REPO, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.homedir(), PAUSE_RIG_HOME: PAUSE_HOME, PAUSE_RIG_DEADLINE_MS: '1500' },
+    });
+  } catch (e) { rc = (e as { status?: number }).status ?? -1; stdout = (e as { stdout?: string }).stdout ?? ''; }
+  assert.equal(rc, 1, 'the deadline exits 1 (a hang without process.exit would time this test out; exit 13 = the old crash)');
+  const v = JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) as R & { abort?: string; deadlineMs?: number };
+  assert.equal(v.arm, 'hang_selftest');
+  assert.equal(v.ok, false);
+  assert.match(String(v.abort), /^deadline: the arm hung/);
+  assert.equal(v.deadlineMs, 1500, 'the env knob reaches the deadline');
+  // the default deadline (no env) is the shipped 75 s: read off a normal arm's verdict
+  assert.equal(runArm('off_identity').deadlineMs, 75_000, 'the default deadline is pinned');
+  // and the hanging await the verifier found is bounded
+  assert.match(fs.readFileSync(RIG, 'utf8'), /sdkSendAwaitingStart\('ws-m1', 'PEER-TEXT', undefined, 400\), 4000, 'hung'\)/);
 });

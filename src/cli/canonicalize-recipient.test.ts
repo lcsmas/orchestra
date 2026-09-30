@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { offlineHandleCandidates } from './index.ts';
+import { appStoreFile, offlineHandleCandidates, offlineWaveNodes } from './index.ts';
 import { resolveHandle } from './resolve-handle.ts';
 
 // #144 — the OFFLINE half of the send canonicalizer: when the app is down the
@@ -121,4 +121,33 @@ test('#144 F1 repro B: a prefix hitting ONLY an archived id is REFUSED (never re
   withStore(t, [{ id: ARCHIVED, name: 'dead', archived: true }]);
   const r = resolveHandle('0a5c25bb', offlineHandleCandidates());
   assert.equal(r.ok, false, 'a prefix matching only an archived id must be refused');
+});
+
+// review D1a-followups F2: the handle canonicalizer reads the file the RUNNING APP writes — in a default install (no ORCHESTRA_HOME) that is
+// `~/.config/orchestra/orchestra/store.json`, never the stale `~/.orchestra/userData` copy.
+test('#144 offline (packaged default): handles resolve against the app\'s real store, not the stale ~/.orchestra/userData copy', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-home-144-pk-'));
+  const prevHome = process.env.HOME, prevOH = process.env.ORCHESTRA_HOME, prevXdg = process.env.XDG_CONFIG_HOME;
+  t.after(() => {
+    for (const [k, v] of [['HOME', prevHome], ['ORCHESTRA_HOME', prevOH], ['XDG_CONFIG_HOME', prevXdg]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  process.env.HOME = home; delete process.env.ORCHESTRA_HOME; delete process.env.XDG_CONFIG_HOME;
+  const write = (dir: string, workspaces: unknown) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ workspaces })); };
+  const STALE = 'dead0000-1111-4222-8333-444455556666';
+  write(path.join(home, '.orchestra', 'userData', 'orchestra'), [{ id: STALE, name: 'stale-only' }]);
+  write(path.join(home, '.config', 'orchestra', 'orchestra'), [{ id: FULL, name: 'live-only' }]);
+  assert.equal(appStoreFile(), path.join(home, '.config', 'orchestra', 'orchestra', 'store.json'));
+  const cands = offlineHandleCandidates();
+  assert.deepEqual(cands.map((c) => c.id), [FULL], 'only the live store is read');
+  assert.deepEqual(resolveHandle('0a5c25bb', cands), { ok: true, id: FULL });
+  assert.equal(resolveHandle('dead0000', cands).ok, false, 'the stale copy is invisible');
+});
+
+test('review: a malformed record (a null entry) yields [] / an empty tree exactly as a parse failure does — never a thrown TypeError', (t) => {
+  withStore(t, [null, { id: FULL, name: 'impl-144' }]);
+  assert.deepEqual(offlineHandleCandidates(), [], 'master semantics: any failure → [] → the send is refused');
+  assert.equal(offlineWaveNodes().size, 0);
 });
