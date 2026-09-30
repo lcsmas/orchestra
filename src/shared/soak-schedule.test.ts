@@ -118,10 +118,10 @@ test('ZERO TOKENS: the campaign parent env is an allowlist — no API key, no au
   const env = buildCampaignEnv({
     ANTHROPIC_API_KEY: 'sk-ant-REAL', ANTHROPIC_AUTH_TOKEN: 'tok', CLAUDE_CODE_OAUTH_TOKEN: 'oauth', GITHUB_TOKEN: 'gh', AWS_SECRET_ACCESS_KEY: 'aws',
     LANG: 'fr_FR.UTF-8', ORCHESTRA_HOME: '/home/u/.orchestra', CLAUDE_CONFIG_DIR: '/home/u/.claude-mc', PATH: '/weird',
-  }, '/home/u', '/home/u/.local/bin');
+  }, '/home/u', ['/home/u/.local/bin', '/home/u/.local/share/pnpm', null, '/usr/bin']);
   assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CONFIG_DIR', 'HOME', 'LANG', 'ORCHESTRA_HOME', 'PATH', 'TERM']);
-  assert.equal(env.PATH, '/home/u/.local/bin:/usr/local/bin:/usr/bin:/bin');
+  assert.equal(env.PATH, '/home/u/.local/bin:/home/u/.local/share/pnpm:/usr/bin:/usr/local/bin:/bin', 'the tool dirs first (deduped, null skipped), then the system dirs — nothing from the inherited PATH');
   assert.equal(env.HOME, '/home/u');
   assert.equal(JSON.stringify(env).includes('sk-ant'), false);
-  assert.deepEqual(Object.keys(buildCampaignEnv({}, '/h', null)).sort(), ['HOME', 'LANG', 'PATH', 'TERM']);
+  assert.deepEqual(Object.keys(buildCampaignEnv({}, '/h', [null])).sort(), ['HOME', 'LANG', 'PATH', 'TERM']);
 });

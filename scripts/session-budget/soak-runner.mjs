@@ -12,7 +12,7 @@ import { fork, execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
 const { REPO, root, sessions: N = 3, durationMs = 300_000, turnIntervalMs = 20_000, sampleMs = 10_000, turnDeadlineMs = 60_000,
-  replyDelayMs = 500, toolEvery = 0, faultPlan = null, profile = {}, seedLeak = null, pidns = false, containment = 'proxy-only', caps = null } = cfg;
+  replyDelayMs = 500, toolEvery = 0, faultPlan = null, profile = {}, seedLeak = null, seedAppLeak = null, pidns = false, containment = 'proxy-only', caps = null } = cfg;
 const HERE = path.join(REPO, 'scripts', 'session-budget');
 
 const { assertScratch } = await import(`${HERE}/scratch-guard.mjs`);
@@ -232,8 +232,13 @@ async function drive(s, first) {
 
 emit({ soak: 'start', at: new Date(t0).toISOString(), sessions: N, durationMs, turnIntervalMs, sampleMs, turnDeadlineMs, replyDelayMs, toolEvery, containment, pidns, cli: { version: cliVersion, path: fs.realpathSync(cliPath) },
   fixture: { skills: fixtures[0].profile.skills, memoryFiles: fixtures[0].profile.memoryFiles, mcpServers: fixtures[0].profile.mcpServers, toolsPerServer: fixtures[0].profile.toolsPerServer, claudeMdKB: fixtures[0].profile.claudeMdKB },
-  seedLeak, faultPlan, caps, pageKB: Math.round(Number(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8' })) / 1024), nproc: (await import('node:os')).cpus().length });
+  seedLeak, seedAppLeak, faultPlan, caps, pageKB: Math.round(Number(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8' })) / 1024), nproc: (await import('node:os')).cpus().length });
 
+// SEEDED APP-PROCESS LEAK (must-FAIL arm only): this process — the app analog — retains touched MB forever.
+if (seedAppLeak) {
+  const leaked = [];
+  setInterval(() => { leaked.push(Buffer.alloc(1 << 20, 1)); }, Math.max(50, Math.round(60_000 / seedAppLeak.mbPerMin))).unref();
+}
 await sample('boot');
 const sampler = setInterval(async () => {
   if (stopping) return;
@@ -259,6 +264,7 @@ try {
   emit({ soak: 'event', tSec: tSec(), kind: 'runner-error', detail: String(e?.stack ?? e).slice(0, 600) });
 }
 stopping = true;
+wake(); // release drivers sleeping between turns (idempotent: an abort already woke them)
 clearInterval(sampler);
 clearInterval(abortPoll);
 await Promise.race([Promise.allSettled(drives), sleep(turnDeadlineMs + 5000)]);

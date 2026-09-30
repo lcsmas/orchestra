@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Soak campaign SELF-TEST (C5 #212):  pnpm run test:soak-campaign [-- --arm <name>]
 // The real campaign (N real sessions vs the fake API, netns+pidns) run with SEEDS whose truth is known, so a detector that cannot fail is caught:
-//   seeded         4 sessions: s1's MCP child leaks 60 MB/min forever, s2's API hangs after its 3rd main request; s0/s3 are the in-run controls.
-//                  MUST FAIL naming soak.memory.slopeMBPerMin.s1 and soak.wedge.session.s2 — and NOT s0/s3, with no leftover process.
+//   seeded         4 sessions: s1's MCP child leaks 60 MB/min forever, s2's API hangs after its 3rd main request, the APP process leaks 20 MB/min;
+//                  s0/s3 are the in-run controls. MUST FAIL naming soak.memory.slopeMBPerMin.s1 / .runner and soak.wedge.session.s2 — and NOT s0/s3, no leftover process.
 //   healthy        3 sessions, no seed: MUST PASS (a detector that flags everything is as useless as one that flags nothing).
 //   abort-runner   the RUNNER's own per-sample cap check trips (D7): MUST be ABORTED naming high-load, torn down gracefully, 0 survivors.
 //   abort-watchdog the PARENT's independent cap watchdog trips mid-run (a load spike it reads): MUST be ABORTED naming it.
@@ -30,12 +30,13 @@ const base = { sessions: 3, durationSec: durOpt ?? 300, turnIntervalSec: 15, sam
 const V = (res, id) => res.report.verdicts?.find((v) => v.id === id);
 const ARMS = {
   seeded: {
-    run: () => runCampaign({ repo: REPO, params: { ...base, sessions: 4 }, seedLeak: { session: 1, mbPerMin: 60 }, faultPlan: { rules: [{ match: { session: 's2', main: true }, after: 3, action: { kind: 'hang' } }] }, outDir, label: 'seeded' }),
+    run: () => runCampaign({ repo: REPO, params: { ...base, sessions: 4 }, seedLeak: { session: 1, mbPerMin: 60 }, seedAppLeak: { mbPerMin: 20 }, faultPlan: { rules: [{ match: { session: 's2', main: true }, after: 3, action: { kind: 'hang' } }] }, outDir, label: 'seeded' }),
     expect: 'FAIL',
     check: (r) => [
       [V(r, 'soak.memory.slopeMBPerMin.s1')?.ok === false && V(r, 'soak.memory.slopeMBPerMin.s1').actual >= 30, `the seeded leak (60 MB/min) is named on s1: ${V(r, 'soak.memory.slopeMBPerMin.s1')?.message}`],
       [V(r, 'soak.wedge.session.s2')?.ok === false, `the seeded wedge is named on s2: ${V(r, 'soak.wedge.session.s2')?.message}`],
       [V(r, 'soak.wedge.wedgedTurns')?.actual === 1 && V(r, 'soak.wedge.wedgedSessions')?.actual === 1, `exactly 1 wedged turn in 1 session (saw ${V(r, 'soak.wedge.wedgedTurns')?.actual}/${V(r, 'soak.wedge.wedgedSessions')?.actual})`],
+      [V(r, 'soak.memory.slopeMBPerMin.runner')?.ok === false && V(r, 'soak.memory.slopeMBPerMin.runner').actual >= 10, `the seeded APP-PROCESS leak (20 MB/min) is named on the runner: ${V(r, 'soak.memory.slopeMBPerMin.runner')?.message}`],
       [['s0', 's3'].every((s) => V(r, `soak.memory.slopeMBPerMin.${s}`)?.ok === true), 'the control sessions s0 and s3 are NOT flagged for memory'],
       [['s0', 's1', 's3'].every((s) => V(r, `soak.wedge.session.${s}`)?.ok === true), 'the controls and the leaker are NOT flagged as wedged'],
       [(r.report.api?.sessions?.s2?.held ?? 0) >= 1, `the fake API HELD s2's request (positive control that the fault fired): held=${r.report.api?.sessions?.s2?.held}`],

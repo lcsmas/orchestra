@@ -88,7 +88,7 @@ export interface SoakEvent { tSec: number; kind: string; i?: number; detail?: st
 export interface SoakStart {
   at: string; sessions: number; durationMs: number; turnIntervalMs: number; sampleMs: number; turnDeadlineMs: number; replyDelayMs: number; containment: string; pidns: boolean;
   cli: { version: string; path: string }; fixture: { skills: number; memoryFiles: number; mcpServers: number; toolsPerServer: number; claudeMdKB: number };
-  seedLeak: { session: number; mbPerMin: number } | null; faultPlan: unknown; caps: SoakCaps; pageKB: number; nproc: number;
+  seedLeak: { session: number; mbPerMin: number } | null; seedAppLeak?: { mbPerMin: number } | null; faultPlan: unknown; caps: SoakCaps; pageKB: number; nproc: number;
 }
 export interface SoakSurvivor { pid: number; kind: string; session: number | null; rssKB: number; cmd: string }
 export interface SoakFinal {
@@ -137,7 +137,7 @@ export interface SoakReport {
   error?: string;
   startedAt: string | null; endedAt: string;
   subject: { cli: { version: string; path: string } | null; containment: string | null; meta: Record<string, unknown> };
-  params: { sessions: number; durationSec: number; turnIntervalSec: number; sampleSec: number; turnDeadlineSec: number; replyDelayMs: number; seedLeak: SoakStart['seedLeak']; faultPlan: unknown; fixture: SoakStart['fixture'] | null };
+  params: { sessions: number; durationSec: number; turnIntervalSec: number; sampleSec: number; turnDeadlineSec: number; replyDelayMs: number; seedLeak: SoakStart['seedLeak']; seedAppLeak: { mbPerMin: number } | null; faultPlan: unknown; fixture: SoakStart['fixture'] | null };
   conditions: { memAvailKB: { start: number | null; min: number | null; end: number | null }; load1: { start: number | null; max: number | null; end: number | null }; nproc: number | null; pageKB: number | null };
   wedge: {
     turns: number; ok: number; errors: number; wedged: number; unfinished: number; wedgedTurnRate: number | null; errorTurnRate: number | null; wedgedSessions: number[];
@@ -262,7 +262,7 @@ export function buildSoakReport(raw: SoakRaw, meta: Record<string, unknown> = {}
     ...(status === 'BROKE' ? { error: raw.harnessError ?? 'the runner produced no final line (crash, kill or timeout)' } : {}),
     startedAt: st?.at ?? null, endedAt,
     subject: { cli: raw.final?.cli ?? st?.cli ?? null, containment: raw.final?.containment ?? st?.containment ?? null, meta },
-    params: { sessions: N, durationSec, turnIntervalSec: (st?.turnIntervalMs ?? 0) / 1000, sampleSec: (st?.sampleMs ?? 0) / 1000, turnDeadlineSec: (st?.turnDeadlineMs ?? 0) / 1000, replyDelayMs: st?.replyDelayMs ?? 0, seedLeak: st?.seedLeak ?? null, faultPlan: st?.faultPlan ?? null, fixture: st?.fixture ?? null },
+    params: { sessions: N, durationSec, turnIntervalSec: (st?.turnIntervalMs ?? 0) / 1000, sampleSec: (st?.sampleMs ?? 0) / 1000, turnDeadlineSec: (st?.turnDeadlineMs ?? 0) / 1000, replyDelayMs: st?.replyDelayMs ?? 0, seedLeak: st?.seedLeak ?? null, seedAppLeak: st?.seedAppLeak ?? null, faultPlan: st?.faultPlan ?? null, fixture: st?.fixture ?? null },
     conditions,
     wedge: {
       ...all, unfinished: raw.turns.length - turns.length,
@@ -366,7 +366,7 @@ export function formatSoakText(r: SoakReport): string[] {
   const L: string[] = [];
   L.push(`SOAK CAMPAIGN ${r.startedAt ?? '(never started)'} → ${r.endedAt} — status ${r.status}${r.aborted ? ` (${r.aborted.reason}: ${r.aborted.detail} at ${r.aborted.tSec} s)` : ''}${r.error ? ` — ${r.error}` : ''}`);
   L.push(`subject: claude ${r.subject.cli?.version ?? '?'} · containment ${r.subject.containment ?? '?'} · ${Object.entries(r.subject.meta).map(([k, x]) => `${k}=${typeof x === 'string' ? x : JSON.stringify(x)}`).join(' · ')}`);
-  L.push(`params: ${p.sessions} sessions × ${p.durationSec} s, a turn every ~${p.turnIntervalSec} s (deadline ${p.turnDeadlineSec} s), sample every ${p.sampleSec} s, fake model latency ${p.replyDelayMs} ms${p.fixture ? `, fixture ${p.fixture.skills} skills / ${p.fixture.memoryFiles} rules / ${p.fixture.mcpServers}×${p.fixture.toolsPerServer} MCP` : ''}${p.seedLeak ? ` · SEEDED LEAK s${p.seedLeak.session} ${p.seedLeak.mbPerMin} MB/min` : ''}${p.faultPlan ? ` · FAULT PLAN ${JSON.stringify(p.faultPlan)}` : ''}`);
+  L.push(`params: ${p.sessions} sessions × ${p.durationSec} s, a turn every ~${p.turnIntervalSec} s (deadline ${p.turnDeadlineSec} s), sample every ${p.sampleSec} s, fake model latency ${p.replyDelayMs} ms${p.fixture ? `, fixture ${p.fixture.skills} skills / ${p.fixture.memoryFiles} rules / ${p.fixture.mcpServers}×${p.fixture.toolsPerServer} MCP` : ''}${p.seedLeak ? ` · SEEDED LEAK s${p.seedLeak.session} ${p.seedLeak.mbPerMin} MB/min` : ''}${p.seedAppLeak ? ` · SEEDED APP-PROCESS LEAK ${p.seedAppLeak.mbPerMin} MB/min` : ''}${p.faultPlan ? ` · FAULT PLAN ${JSON.stringify(p.faultPlan)}` : ''}`);
   L.push(`conditions: free RAM start ${gb(r.conditions.memAvailKB.start)} / min ${gb(r.conditions.memAvailKB.min)} / end ${gb(r.conditions.memAvailKB.end)} · load1 start ${r.conditions.load1.start ?? 'n/a'} / max ${r.conditions.load1.max ?? 'n/a'} / end ${r.conditions.load1.end ?? 'n/a'} · ${r.conditions.nproc ?? '?'} cpus · ${r.conditions.pageKB ?? '?'} KB pages`);
   const w = r.wedge;
   L.push(`WEDGE RATE: ${w.wedged}/${w.turns} turns = ${pct(w.wedgedTurnRate)} · sessions wedged ${w.wedgedSessions.length}/${p.sessions}${w.wedgedSessions.length ? ` (${w.wedgedSessions.map((i) => `s${i}`).join(', ')})` : ''} · errors ${w.errors} = ${pct(w.errorTurnRate)} · unfinished at abort ${w.unfinished}`);

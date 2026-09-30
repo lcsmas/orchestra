@@ -20,6 +20,9 @@ function scratch(prefix: string): string {
   fs.mkdirSync(base, { recursive: true });
   return fs.mkdtempSync(path.join(base, `${prefix}-`));
 }
+// Every test that calls runCampaign passes this: a regression in the guard under test (a broken lock, a broken scan) must end at the D7 preflight ABORT,
+// never in a REAL 5-minute campaign (a mutant of the lock once launched one from this very test — 308 s, 3 sessions, beside a live campaign).
+const NEVER_LAUNCH = { minMemAvailKB: 1024 ** 3 };
 const model = (tools: number, sid: string) => ({ type: 'model', tools, sid });
 
 // ── fault plan ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -100,10 +103,12 @@ test('seeded leak: the fake MCP server retains memory forever ONLY when told to;
   try {
     await new Promise((r) => setTimeout(r, 700)); // both past startup
     const l0 = rssKB(leaker.pid!), c0 = rssKB(control.pid!);
-    await new Promise((r) => setTimeout(r, 2500));
-    const l1 = rssKB(leaker.pid!), c1 = rssKB(control.pid!);
-    assert.ok(l1 - l0 >= 8 * 1024, `the seeded leaker grew ${Math.round((l1 - l0) / 1024)} MB in 2.5 s (want ≥ 8 MB)`);
-    assert.ok(c1 - c0 < 4 * 1024, `the control did not grow (${Math.round((c1 - c0) / 1024)} MB)`);
+    // bounded wait-until-or-fail (a loaded host starves the leak's timer): the leaker must gain ≥ 8 MB within 20 s
+    let l1 = l0;
+    for (let i = 0; i < 80 && l1 - l0 < 8 * 1024; i++) { await new Promise((r) => setTimeout(r, 250)); l1 = rssKB(leaker.pid!); }
+    const c1 = rssKB(control.pid!);
+    assert.ok(l1 - l0 >= 8 * 1024, `the seeded leaker grew ${Math.round((l1 - l0) / 1024)} MB (want ≥ 8 MB within 20 s)`);
+    assert.ok(c1 - c0 < 4 * 1024, `the control did not grow at the same time (${Math.round((c1 - c0) / 1024)} MB)`);
     const reply: any = await new Promise((resolve) => { leaker.stdout!.once('data', (d) => resolve(JSON.parse(String(d).split('\n')[0]))); leaker.stdin!.write('{"jsonrpc":"2.0","id":7,"method":"tools/list"}\n'); });
     assert.equal(reply.result.tools.length, 2, 'the leaker is still a working MCP server');
   } finally { leaker.kill('SIGKILL'); control.kill('SIGKILL'); }
@@ -181,10 +186,10 @@ test('code identity (the change gate\'s key): moves with code, lockfile and unco
 test('driver: >10 sessions is REFUSED outright (D7), spawning nothing and writing nothing', async () => {
   const out = scratch('refuse');
   try {
-    const r = await lib.runCampaign({ repo: REPO, params: { sessions: 11, durationSec: 300, turnIntervalSec: 20, sampleSec: 10, turnDeadlineSec: 60, replyDelayMs: 500 }, outDir: out, lockPath: path.join(out, 'l.lock') });
+    const r = await lib.runCampaign({ repo: REPO, params: { sessions: 11, durationSec: 30, turnIntervalSec: 20, sampleSec: 10, turnDeadlineSec: 60, replyDelayMs: 500 }, outDir: out, lockPath: path.join(out, 'l.lock') }); // durationSec 30 is ALSO a usage error: were the cap check broken, this still could not launch a campaign
     assert.match(r.refused.join('|'), /exceeds the D7 cap of 10 concurrent sessions/);
     assert.deepEqual(fs.readdirSync(out), [], 'no report, no lock');
-    const cli = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', S('soak-campaign.mjs'), '--sessions', '11'], { encoding: 'utf8' });
+    const cli = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', S('soak-campaign.mjs'), '--sessions', '11', '--duration', '30s'], { encoding: 'utf8' }); // 30 s is also refused (< 60 s): a broken cap check cannot launch a real campaign from here
     assert.equal(cli.status, 2);
     assert.match(cli.stderr, /REFUSED — sessions=11 exceeds the D7 cap of 10/);
     assert.equal(/SOAK-CAMPAIGN:/.test(cli.stdout), false, 'a refusal never prints a terminator that could be mistaken for a run');
@@ -196,10 +201,26 @@ test('driver: a second campaign is REFUSED while the lock is held (D7: never two
   const lp = path.join(out, 'l.lock');
   const held = lib.acquireLock(lp, 'other-campaign');
   try {
-    const r = await lib.runCampaign({ repo: REPO, params: { sessions: 3, durationSec: 300, turnIntervalSec: 20, sampleSec: 10, turnDeadlineSec: 60, replyDelayMs: 500 }, outDir: out, lockPath: lp });
+    const r = await lib.runCampaign({ repo: REPO, params: { sessions: 3, durationSec: 300, turnIntervalSec: 20, sampleSec: 10, turnDeadlineSec: 60, replyDelayMs: 500 }, outDir: out, lockPath: lp, runnerAlive: () => null, capsOverride: NEVER_LAUNCH });
     assert.match(r.refused.join('|'), /another campaign is running \(other-campaign/);
     assert.equal(fs.readdirSync(out).filter((f) => f.startsWith('soak-')).length, 0);
   } finally { held.release(); fs.rmSync(out, { recursive: true, force: true }); }
+});
+
+test('the live-runner scan sees a process by its argv, and stops seeing it when it dies (independent of the lock file)', async () => {
+  const needle = `soak-runner-scan-test-${process.pid}-${Date.now()}.mjs`;
+  const p = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)', needle], { stdio: 'ignore' });
+  try {
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(lib.otherRunnerAlive(needle), p.pid, 'found by argv');
+    const out = scratch('scan');
+    const held = lib.acquireLock(path.join(out, 'l.lock'), 'x'); held.release(); // no lock is held: the scan alone must refuse
+    const r = await lib.runCampaign({ repo: REPO, params: { sessions: 3, durationSec: 300, turnIntervalSec: 20, sampleSec: 10, turnDeadlineSec: 60, replyDelayMs: 500 }, outDir: out, lockPath: path.join(out, 'l.lock'), runnerAlive: () => lib.otherRunnerAlive(needle), capsOverride: NEVER_LAUNCH });
+    assert.match(r.refused.join('|'), /another campaign runner is alive \(pid \d+\)/);
+    fs.rmSync(out, { recursive: true, force: true });
+  } finally { p.kill('SIGKILL'); }
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(lib.otherRunnerAlive(needle), null, 'gone once it is dead');
 });
 
 test('D7 MUST-ABORT through the real driver: a machine below the RAM floor yields a dated ABORTED report, spawns nothing, rc 4', async () => {
@@ -208,7 +229,7 @@ test('D7 MUST-ABORT through the real driver: a machine below the RAM floor yield
     // capsOverride can only TIGHTEN: demanding 1 TB free makes this host "below the floor" without depending on how loaded it really is.
     const r = await lib.runCampaign({
       repo: REPO, params: { sessions: 3, durationSec: 300, turnIntervalSec: 20, sampleSec: 10, turnDeadlineSec: 60, replyDelayMs: 500 }, outDir: out, label: 'unit',
-      lockPath: path.join(out, 'l.lock'), capsOverride: { minMemAvailKB: 1024 ** 3 },
+      lockPath: path.join(out, 'l.lock'), capsOverride: { minMemAvailKB: 1024 ** 3 }, runnerAlive: () => null,
     });
     assert.equal(r.refused, undefined);
     assert.equal(r.terminator, 'ABORTED');
@@ -221,7 +242,7 @@ test('D7 MUST-ABORT through the real driver: a machine below the RAM floor yield
     const onDisk = JSON.parse(fs.readFileSync(r.files.json, 'utf8'));
     assert.equal(onDisk.terminator, 'ABORTED');
     assert.match(fs.readFileSync(r.files.md, 'utf8'), /status ABORTED \(low-ram/);
-    assert.equal(lib.otherRunnerAlive(), null, 'nothing was spawned');
+    assert.equal(r.report.startedAt, null, 'the runner never started (no `start` line): nothing was spawned');
     assert.equal(fs.existsSync(path.join(out, 'l.lock')), false, 'the lock was released');
   } finally { fs.rmSync(out, { recursive: true, force: true }); }
 });

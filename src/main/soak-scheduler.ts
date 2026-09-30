@@ -137,11 +137,13 @@ async function findNode(cfg: SoakConfig): Promise<string | null> {
   return null;
 }
 
-function claudeDir(): string | null {
-  for (const d of [...(process.env.PATH ?? '').split(path.delimiter), path.join(os.homedir(), '.local', 'bin'), '/usr/local/bin', '/usr/bin']) {
+/** The directory holding executable `bin` — on the app's PATH first, then the usual user-level install dirs (a desktop-launched app's PATH is thin). */
+function dirOf(bin: string): string | null {
+  const pnpmHome = process.env.PNPM_HOME;
+  for (const d of [...(process.env.PATH ?? '').split(path.delimiter), path.join(os.homedir(), '.local', 'bin'), ...(pnpmHome ? [pnpmHome] : []), path.join(os.homedir(), '.local', 'share', 'pnpm'), '/usr/local/bin', '/usr/bin']) {
     if (!d) continue;
     try {
-      fs.accessSync(path.join(d, 'claude'), fs.constants.X_OK);
+      fs.accessSync(path.join(d, bin), fs.constants.X_OK);
       return d;
     } catch {
       /* next */
@@ -150,7 +152,7 @@ function claudeDir(): string | null {
   return null;
 }
 
-const campaignEnv = (): NodeJS.ProcessEnv => buildCampaignEnv(process.env, os.homedir(), claudeDir());
+const campaignEnv = (): NodeJS.ProcessEnv => buildCampaignEnv(process.env, os.homedir(), [dirOf('claude'), dirOf('pnpm')]);
 
 let identityCache: { repo: string; at: number; value: { codeId: string | null; cliVersion: string | null } } | null = null;
 async function realIdentity(repo: string): Promise<{ codeId: string | null; cliVersion: string | null }> {

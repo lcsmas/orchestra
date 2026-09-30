@@ -127,10 +127,11 @@ export function shouldYield(a: SoakActivity, now: number, p: SoakSchedulePolicy 
 
 /** The env the campaign PARENT process gets: an ALLOWLIST (zero tokens — no account credential, no API key, nothing else rides along).
  *  ORCHESTRA_HOME / CLAUDE_CONFIG_DIR are passed ONLY so the campaign's scratch guard refuses them as live dirs; its sessions run under a
- *  scratch HOME/config of their own. `claudeDir` = the directory holding the user's `claude` (so the campaign finds the CLI it must exercise). */
-export function buildCampaignEnv(base: Record<string, string | undefined>, home: string, claudeDir: string | null): Record<string, string> {
+ *  scratch HOME/config of their own. `binDirs` = the directories holding the tools the campaign shells out to (`claude` — the CLI it must
+ *  exercise — and `pnpm`, which rebuilds the keeper bundle it execs); PATH is those plus the system dirs, nothing inherited. */
+export function buildCampaignEnv(base: Record<string, string | undefined>, home: string, binDirs: Array<string | null>): Record<string, string> {
   const env: Record<string, string> = {
-    PATH: [claudeDir, '/usr/local/bin', '/usr/bin', '/bin'].filter((d): d is string => !!d).join(':'),
+    PATH: [...new Set([...binDirs, '/usr/local/bin', '/usr/bin', '/bin'].filter((d): d is string => !!d))].join(':'),
     HOME: home,
     LANG: base.LANG ?? 'C.UTF-8',
     TERM: 'dumb',

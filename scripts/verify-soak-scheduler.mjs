@@ -76,9 +76,17 @@ const writeConfig = (c) => { fs.mkdirSync(path.join(HOME, 'soak'), { recursive: 
 console.log('A. disabled / no checkout');
 let d = await tick();
 check('no configured repo and none registered → skip, nothing spawned', d.run === false && invocations().length === 0, JSON.stringify(d));
-writeConfig({ repo: TMP, node: process.execPath }); // TMP has no scripts/session-budget/soak-campaign.mjs
-d = await tick();
-check('a repo without the campaign script / package name is not an Orchestra checkout → skip', d.run === false && invocations().length === 0, JSON.stringify(d));
+// (a) the right package name but NO campaign script; (b) the campaign script but ANOTHER package: neither is an Orchestra checkout
+const noScript = path.join(TMP, 'no-script'); fs.mkdirSync(noScript, { recursive: true }); fs.writeFileSync(path.join(noScript, 'package.json'), JSON.stringify({ name: 'orchestra' }));
+const otherPkg = path.join(TMP, 'other-pkg'); fs.mkdirSync(path.join(otherPkg, 'scripts', 'session-budget'), { recursive: true }); fs.writeFileSync(path.join(otherPkg, 'package.json'), JSON.stringify({ name: 'not-orchestra' }));
+fs.copyFileSync(path.join(REPO, 'scripts', 'session-budget', 'soak-campaign.mjs'), path.join(otherPkg, 'scripts', 'session-budget', 'soak-campaign.mjs'));
+fs.copyFileSync(path.join(REPO, 'fake-mode.json'), path.join(otherPkg, 'fake-mode.json'));
+for (const [why, dir] of [['package name orchestra but no campaign script', noScript], ['campaign script but package name not-orchestra', otherPkg]]) {
+  writeConfig({ repo: dir, node: process.execPath });
+  d = await tick();
+  // `disabled` (no checkout resolved) — NOT `identity-unreadable`, which a later probe failure would also give: only the repo check produces this reason.
+  check(`${why} → not an Orchestra checkout → skip 'disabled', nothing spawned`, d.run === false && d.skip === 'disabled' && invocations().length === 0 && !fs.existsSync(path.join(dir, 'invocations.jsonl')), JSON.stringify(d));
+}
 writeConfig({ repo: REPO, node: process.execPath });
 process.env.ORCHESTRA_SOAK = '0';
 d = await tick();
