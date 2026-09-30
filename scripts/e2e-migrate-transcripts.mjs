@@ -17,7 +17,12 @@
 //   dst_different_kept   ★ the target already has a DIFFERENT same-named transcript → never overwritten, kept in the source + a warning in the result
 //   src_unreadable       ★ the source project dir is unreadable (chmod 000) → NOT a silent ok:true: result.warnings names it, nothing lost
 //   live_writer          ★ a REAL agent PTY still appending to its transcript (ignores SIGTERM for ~2 s) when the migration starts → the move waits for its exit; NO appended line is lost or split
-//   live_writer_stuck    ★ the agent PTY does NOT exit within the bounded wait (ignores SIGTERM ~14 s) → ok:false "did not exit", NOTHING moved, pin unchanged (~10 s arm)
+//   live_writer_stuck    ★ an agent PTY that ignores HUP/TERM for ~15 s (appending by path): after the bounded wait it is SIGKILLed (pid + start-time verified) and the move goes ahead; a RETRY moves nothing under a live writer → 0 appends lost (~12 s arm)
+//   stuck_latch          ★ SIGKILL suppressed (seam) so the child survives the stop → latched: every migration of the workspace is refused, naming the pid, until it really dies
+//   stuck_identity       ★ at the escalation the pid no longer names the SAME process (start-time changed = recycled) → it is NEVER signalled (seam: /proc read)
+//   start_fence          ★ while a migration is between stop and re-pin, an agent PTY start AND an SDK ensureSession for that workspace are refused; the migration's own resume still works
+//   keeper_detached      ★ NO in-memory session, a REAL detached keeper (built keeper.js) + fake CLI appending by path → keeper AND CLI dead when the migration returns, 0 appends lost (needs `pnpm run build:keeper`)
+//   keeper_slowterm      ★ same, the CLI takes 1.5 s to die on SIGTERM → the move still waits for it
 //   concurrent           ★ two overlapping migrations of ONE workspace (the reviewer's shape) → 0 transcripts lost, the 2nd is refused "already in progress"
 //   exdev_subdir         ★ target on ANOTHER filesystem (tmpfs), session has a subdir → moves + source gone (master: EISDIR)
 //   different_dir_moves    must-PASS: genuinely different target → everything at the target byte-identical, mtimes kept, source gone
@@ -40,7 +45,7 @@ const ARM = process.argv[2] ?? 'all';
 const ARMS = [
   'trailing_slash', 'dot_segment', 'home_var_dotdot', 'symlink_alias', 'acct_trailing_slash', 'acct_symlink_alias',
   'shared_projects', 'bind_mount', 'copy_fail_midway', 'exdev_copy_fail', 'dst_different_kept', 'src_unreadable',
-  'concurrent', 'live_writer', 'live_writer_stuck', 'exdev_subdir', 'different_dir_moves', 'exdev_move',
+  'concurrent', 'live_writer', 'live_writer_stuck', 'stuck_latch', 'stuck_identity', 'start_fence', 'keeper_detached', 'keeper_slowterm', 'exdev_subdir', 'different_dir_moves', 'exdev_move',
 ];
 const BASE = process.env.E2E_HOME ?? path.join(REAL_HOMES[0], '.cache', 'e2e-migrate-transcripts'); // btrfs, under ~
 const XBASE = process.env.E2E_XHOME ?? path.join(os.tmpdir(), 'e2e-migrate-transcripts-x'); // tmpfs: a DIFFERENT filesystem (EXDEV)
@@ -136,6 +141,11 @@ const S = {
   concurrent:          { srcCfg: path.join(home, '.claude-a'), target: '~/.claude-b' },
   live_writer:         { target: '~/.claude-b' },
   live_writer_stuck:   { target: '~/.claude-b' },
+  stuck_latch:         { target: '~/.claude-b' },
+  stuck_identity:      { target: '~/.claude-b' },
+  start_fence:         { target: '~/.claude-b' },
+  keeper_detached:     { target: '~/.claude-b' },
+  keeper_slowterm:     { target: '~/.claude-b' },
   exdev_subdir:        { target: path.join(xroot, 'cfg-b') },
   different_dir_moves: { target: '~/.claude-b' },
   exdev_move:          { target: path.join(xroot, 'cfg-b') },
@@ -208,6 +218,7 @@ initLogger();
 const { store } = await import(`${REPO}/src/main/store.ts`);
 await store.load();
 const { dispatchMigrateAccountRequest } = await import(`${REPO}/src/main/workspaces.ts`);
+const fence = await import(`${REPO}/src/main/migration-fence.ts`); // every arm: whatever the outcome, the fence must be RELEASED when dispatch returns
 // The zero-token contract (D6): no credentials in any scratch dir ⇒ refreshAccountsNow() has nothing to fetch.
 const creds = [srcCfg, dstCfg].map((d) => path.join(d, '.credentials.json')).filter((f) => fs.existsSync(f));
 if (creds.length) bail(`SAFETY: credentials present in scratch config dir: ${creds}`);
@@ -274,8 +285,123 @@ if (ARM === 'concurrent') {
   process.exit(0);
 }
 
+// ---- arms that drive a REAL agent process around a migration (each dispatches itself and exits) --------------------
+const PROC_ARMS = ['live_writer_stuck', 'stuck_latch', 'stuck_identity', 'start_fence', 'keeper_detached', 'keeper_slowterm'];
+if (PROC_ARMS.includes(ARM)) {
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); } catch { return false; } try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /, '')[0] !== 'Z'; } catch { return false; } };
+  const lines = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n').filter((l) => /^late-\d+$/.test(l)).length : 0);
+  // `claude` (the resume after the move) is a scratch shim that exits at once: no real CLI, zero tokens.
+  const bin = path.join(root, 'bin'); mustBeScratch(bin); fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  const pty = await import(`${REPO}/src/main/pty.ts`);
+  const target = path.join(src, 'a.jsonl'); const countFile = path.join(root, 'count'); const dstP = projOf(dstCfg);
+  const startAgent = async (script) => {
+    await pty.startPty({ id: 'ws1', workspaceId: 'ws1', cwd: wtPath, cols: 80, rows: 24, command: '/bin/sh', args: ['-c', script] });
+    const pid = pty.getPtyPid('ws1'); await sleep(250);
+    if (!pty.isRunning('ws1') || !pid) bail('PRECONDITION: the fake agent PTY is not running');
+    return pid;
+  };
+  const finish = (extra, ok) => { restoreTree(root); restoreTree(xroot); const fenceReleased = !fence.isMigrating('ws1'); console.log(JSON.stringify({ ...out, control, ...extra, fenceReleased, ok: control && ok && fenceReleased })); process.exit(0); };
+
+  if (ARM === 'live_writer_stuck') {
+    // Ignores HUP/TERM for ~15 s, appending by path: past the 10 s bounded wait it is SIGKILLed; the retry is a no-op, never a move under a writer.
+    const pid = await startAgent(`trap '' TERM HUP; i=0; while [ $i -lt 300 ]; do echo "late-$i" >> '${target}' 2>/dev/null; i=$((i+1)); echo $i > '${countFile}'; sleep 0.05; done`);
+    const t0 = Date.now(); const r1 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id }); const ms1 = Date.now() - t0;
+    const alive1 = alive(pid);
+    const r2 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id }); // the user clicks Migrate again
+    await sleep(500);
+    const attempted = Number(fs.existsSync(countFile) ? fs.readFileSync(countFile, 'utf8') : -1);
+    const atDst = lines(path.join(dstP, 'a.jsonl')); const atSrc = lines(target);
+    const pinned = store.getWorkspace('ws1')?.accountId;
+    finish({ first: { ok: r1.ok, error: r1.error, ms: ms1, childAlive: alive1 }, retry: { ok: r2.ok, error: r2.error }, appends: { attempted, atDst, atSrc, lost: attempted - atDst - atSrc }, srcExists: fs.existsSync(src), pinned: pinned ?? null },
+      r1.ok === true && !alive1 && ms1 >= 9000 && r2.ok === true && atSrc === 0 && attempted > 0 && atDst >= attempted && !fs.existsSync(src) && pinned === ACCT_B.id);
+  }
+  if (ARM === 'stuck_latch') {
+    // SIGKILL suppressed by the test seam ⇒ the child survives the stop. It must then be LATCHED: no migration of this workspace while it lives.
+    const pid = await startAgent(`trap '' TERM HUP; sleep 40`);
+    const stopped = await pty.stopPtyAndWait('ws1', 300, 300, { kill: () => {} });
+    const latch = pty.stuckPtyWriter('ws1');
+    const r1 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id }); // isRunning('ws1') is false now: only the latch can refuse
+    const afterR1 = sig(src);
+    process.kill(pid, 'SIGKILL');
+    let released = false; for (let i = 0; i < 60 && !released; i++) { released = pty.stuckPtyWriter('ws1') === null; if (!released) await sleep(50); }
+    const r2 = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    const pinned = store.getWorkspace('ws1')?.accountId;
+    finish({ stopped, latch, first: { ok: r1.ok, error: r1.error }, srcIntactAfterRefusal: same(before, afterR1), released, second: { ok: r2.ok, error: r2.error }, movedIdentical: same(before, sig(dstP)), pinned: pinned ?? null },
+      stopped === false && latch?.pid === pid && r1.ok === false && new RegExp(`pid ${pid}.*still running`).test(r1.error ?? '') && same(before, afterR1) && released && r2.ok === true && same(before, sig(dstP)) && pinned === ACCT_B.id);
+  }
+  if (ARM === 'stuck_identity') {
+    // The child ignores the stop. At the escalation its /proc start-time reads DIFFERENT (as if the pid had been recycled): the stop must NOT
+    // signal that pid. (The child itself is real and alive — a wrong SIGKILL would kill it.)
+    const pid = await startAgent(`trap '' TERM HUP; sleep 40`);
+    const real = (p_) => { try { return fs.readFileSync(`/proc/${p_}/stat`, 'utf8'); } catch { return null; } };
+    let reads = 0; const signalled = [];
+    const readStat = (p_) => { const t = real(p_); reads++; return reads === 1 || t === null ? t : t.replace(/(\) (?:\S+ ){19})(\d+)/, (_m, a, b) => `${a}${Number(b) + 1}`); };
+    const res = await pty.stopPtyAndWait('ws1', 300, 300, { kill: (p_, sg) => { signalled.push([p_, sg]); }, readStat });
+    const stillAlive = alive(pid);
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+    finish({ resolved: res, signalled, childAliveAfter: stillAlive, statReads: reads }, res === true && signalled.length === 0 && stillAlive && reads >= 2);
+  }
+  if (ARM === 'start_fence') {
+    // The agent takes ~2.5 s to die on stop, so the migration sits between stop and re-pin. In that window neither start path may run an agent.
+    await import(`${REPO}/src/main/agent-sdk.ts`); // registers the SDK delivery seam, as the app does
+    const sdkd = await import(`${REPO}/src/main/sdk-delivery.ts`);
+    await startAgent(`trap '' TERM HUP; sleep 2.5`);
+    const p = dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+    await sleep(700);
+    let ptyErr = null; try { await pty.startPty({ id: 'ws1', workspaceId: 'ws1', cwd: wtPath, cols: 80, rows: 24, command: '/bin/sh', args: ['-c', 'sleep 0.2'] }); } catch (e) { ptyErr = String(e.message); }
+    const sdkRes = await sdkd.sdkStartAndDeliverResult('ws1', 'hello');
+    const during = { ptyRefused: /being migrated/.test(ptyErr ?? ''), ptyRunning: pty.isRunning('ws1'), sdkRefused: sdkRes.ok === false && /being migrated/.test(sdkRes.error ?? ''), sdkSession: sdkd.sdkSessionLive('ws1') };
+    const r = await p;
+    finish({ during, result: r },
+      during.ptyRefused && !during.ptyRunning && during.sdkRefused && !during.sdkSession && r.ok === true && r.resumed === true);
+  }
+  // keeper_detached / keeper_slowterm: a REAL detached keeper daemon (dist-electron/keeper.js) running a fake CLI that appends BY PATH —
+  // the app "relaunched": NO in-memory SDK session (agent-sdk is loaded, as in the app), isRunning() false.
+  const { spawn } = await import('node:child_process'); const net = await import('node:net');
+  const kc = await import(`${REPO}/src/main/keeper-client.ts`);
+  await import(`${REPO}/src/main/agent-sdk.ts`);
+  const keeperJs = path.join(REPO, 'dist-electron', 'keeper.js');
+  if (!fs.existsSync(keeperJs)) bail('PRECONDITION: dist-electron/keeper.js is missing — run `pnpm run build:keeper`');
+  const kdir = path.join(ohome, 'keepers'); fs.mkdirSync(kdir, { recursive: true }); fs.mkdirSync(path.join(ohome, 'bin'), { recursive: true });
+  fs.copyFileSync(keeperJs, path.join(ohome, 'bin', 'keeper.js'));
+  const WS = 'ws1';
+  if (!kc.keeperSocketPath(WS).startsWith(ohome + path.sep)) bail('VOID: keeper socket path fell back to a hashed tmp name');
+  const cli = path.join(root, 'fake-cli.cjs');
+  fs.writeFileSync(cli, `
+const fs=require('fs'); let i=0; const t=${JSON.stringify(target)}; const cnt=${JSON.stringify(path.join(root, 'child.done'))};
+setInterval(()=>{ try{ fs.appendFileSync(t, 'late-'+i+'\\n'); i++; }catch(e){} }, 50);
+process.on('SIGTERM',()=>{ const fin=()=>{ fs.writeFileSync(cnt,String(i)); process.exit(0); }; if(${ARM === 'keeper_slowterm'}) setTimeout(fin,1500); else fin(); });
+process.stdin.on('data',()=>{}); setTimeout(()=>{ fs.writeFileSync(cnt,String(i)); process.exit(0); }, 25000);
+`);
+  const pidFile = path.join(kdir, `${WS}.pid`);
+  const k = spawn(process.execPath, [path.join(ohome, 'bin', 'keeper.js'), WS, kc.keeperSocketPath(WS), pidFile, path.join(kdir, `${WS}.log`)], { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+  k.unref();
+  for (let i = 0; i < 250 && !fs.existsSync(pidFile); i++) await sleep(100);
+  const sock = net.connect(kc.keeperSocketPath(WS)); await new Promise((res, rej) => { sock.once('connect', res); sock.once('error', rej); });
+  sock.on('data', () => {}); sock.write(JSON.stringify({ t: 'hello', wsId: WS }) + '\n'); await sleep(150);
+  sock.write(JSON.stringify({ t: 'spawn', command: process.execPath, args: [cli], cwd: wtPath, env: { PATH: process.env.PATH } }) + '\n');
+  await sleep(600);
+  const keeperPid = JSON.parse(fs.readFileSync(pidFile, 'utf8')).pid;
+  const cliPid = Number(fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)).find((n) => { try { return fs.readFileSync(`/proc/${n}/cmdline`, 'utf8').split('\0')[1] === cli; } catch { return false; } })) || null;
+  const { sdkSessionLive } = await import(`${REPO}/src/main/sdk-delivery.ts`);
+  const kc0 = { keeperAlive: alive(keeperPid), cliAlive: alive(cliPid), isRunning: pty.isRunning('ws1'), sdkSessionLive: sdkSessionLive('ws1') };
+  if (!kc0.keeperAlive || !kc0.cliAlive || kc0.isRunning || kc0.sdkSessionLive) bail('PRECONDITION: ' + JSON.stringify(kc0));
+  await sleep(300); // the CLI is mid-append when the migration starts
+  const r = await dispatchMigrateAccountRequest({ id: 'ws1', accountId: ACCT_B.id });
+  await sleep(1800);
+  const attempted = Number(fs.existsSync(path.join(root, 'child.done')) ? fs.readFileSync(path.join(root, 'child.done'), 'utf8') : -1);
+  const atDst = lines(path.join(dstP, 'a.jsonl')); const atSrc = lines(target);
+  const res = { dispatchOk: r.ok, keeperAliveAfter: alive(keeperPid), cliAliveAfter: alive(cliPid), attempted, atDst, atSrc, lost: attempted - atDst - atSrc, pinned: store.getWorkspace('ws1')?.accountId ?? null };
+  for (const pid of [keeperPid, cliPid]) { try { if (pid) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  try { sock.destroy(); } catch { /* gone */ }
+  finish({ keeperControl: kc0, keeper: res }, r.ok === true && !res.keeperAliveAfter && !res.cliAliveAfter && res.lost === 0 && attempted > 0 && atSrc === 0 && res.pinned === ACCT_B.id);
+}
+
 let live = null;
-if (ARM === 'live_writer' || ARM === 'live_writer_stuck') {
+if (ARM === 'live_writer') {
   // A REAL PTY session (pty.ts, the plain-node child-process transport) running a fake "agent" that ignores SIGTERM/SIGHUP and
   // appends BY PATH to a.jsonl every 50 ms for 2 s — the CLI still dying/flushing after stop that F2 measured. `claude` (the
   // resume after the move) is a scratch shim that exits at once: no real CLI, zero tokens.
@@ -284,9 +410,7 @@ if (ARM === 'live_writer' || ARM === 'live_writer_stuck') {
   process.env.PATH = `${bin}:${process.env.PATH}`;
   const { startPty, isRunning, getPtyPid } = await import(`${REPO}/src/main/pty.ts`);
   const target = path.join(src, 'a.jsonl');
-  const script = ARM === 'live_writer'
-    ? `trap '' TERM HUP; i=0; while [ $i -lt 40 ]; do echo "late-$i" >> '${target}' 2>/dev/null; i=$((i+1)); sleep 0.05; done`
-    : `trap '' TERM HUP; sleep 14`; // stuck: outlives the 10 s bounded wait, writes nothing
+  const script = `trap '' TERM HUP; i=0; while [ $i -lt 40 ]; do echo "late-$i" >> '${target}' 2>/dev/null; i=$((i+1)); sleep 0.05; done`;
   await startPty({ id: 'ws1', workspaceId: 'ws1', cwd: wtPath, cols: 80, rows: 24, command: '/bin/sh', args: ['-c', script] });
   const pid = getPtyPid('ws1');
   live = { running: isRunning('ws1'), pid };
@@ -332,9 +456,6 @@ if (ALIAS) {
   const atDst = lines(path.join(dst, 'a.jsonl')); const atSrc = lines(path.join(src, 'a.jsonl'));
   out.late = { atDst: atDst.length, atSrc: atSrc.length, aliveAfter: live.aliveAfter };
   ok = control && r.ok === true && atDst.length === 40 && atSrc.length === 0 && live.aliveAfter === false && !fs.existsSync(src) && pinned === ACCT_B.id;
-} else if (ARM === 'live_writer_stuck') {
-  out.srcIntact = same(before, afterSrc);
-  ok = control && r.ok === false && /did not exit/.test(r.error ?? '') && out.srcIntact && Object.keys(afterDst).length === 0 && pinned === undefined;
 } else if (ARM === 'src_unreadable') {
   // An unreadable source dir is NOT "nothing to move": the result carries a warning naming it; nothing lost, nothing created.
   out.warned = (r.warnings ?? []).some((w) => /cannot read/.test(w));
@@ -347,6 +468,7 @@ if (ALIAS) {
   out.srcGone = !fs.existsSync(src);
   ok = control && r.ok === true && out.movedIdentical && out.orderKept && out.srcGone && pinned === ACCT_B.id;
 }
-out.ok = ok;
+out.fenceReleased = !fence.isMigrating('ws1');
+out.ok = ok && out.fenceReleased;
 console.log(JSON.stringify(out));
 process.exit(0);

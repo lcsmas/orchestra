@@ -17,6 +17,9 @@ import { createLocalPtyTransport } from './transport/local-pty';
 import { createRemoteTransport } from './transport/remote';
 import { getSandboxConnection } from './transport/sandbox-manager';
 import type { WorkspaceHost } from '../shared/types';
+import { isSameLiveProcess } from '../shared/resource-monitor';
+import { parseProcIdentity } from '../shared/resources';
+import { isMigrating, migratingMessage } from './migration-fence';
 
 /** Build the transport for a session given where its agent runs. Local is the
  *  default and unchanged (node-pty); a sandbox-hosted workspace rides a
@@ -249,6 +252,8 @@ export async function startPty(opts: {
   host?: WorkspaceHost;
 }) {
   if (sessions.has(opts.id)) return; // already running
+  // #240: no agent starts between a migration's stop and its re-pin — it would write to the OLD account's transcript dir.
+  if (opts.workspaceId && isMigrating(opts.workspaceId)) throw new Error(migratingMessage(opts.workspaceId));
   // The cwd lives in the sandbox for a remote session, so this local check only
   // applies to local node-pty spawns.
   if (opts.host?.kind !== 'sandbox' && !fs.existsSync(opts.cwd)) {
@@ -538,26 +543,101 @@ export function stopPty(id: string) {
   }
 }
 
-/** {@link stopPty}, then wait (bounded) for the child process to actually exit. Resolves true once it has (or there
- *  was no session), false on timeout. Account migration needs the writer DEAD before it moves a transcript: `kill()`
- *  is a SIGHUP that returns at once. The exit listener is attached BEFORE the kill — disposeSession drops the
- *  session's own, and the transport fires exit once. */
-export function stopPtyAndWait(id: string, timeoutMs = 10_000): Promise<boolean> {
+/** A PTY child that OUTLIVED {@link stopPtyAndWait} (SIGKILL included): identity = pid + /proc start-time. While it lives
+ *  the workspace's transcripts must not be moved — `stopPty` already dropped the session, so `isRunning()` no longer says so. */
+const stuckWriters = new Map<string, { pid?: number; startTicks?: number }>();
+
+const readProcStat = (pid: number): string | null => {
+  try {
+    return fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/** The latched still-alive PTY child of workspace `id`, or null. A pid whose start-time no longer matches (gone / recycled /
+ *  zombie) is released here; a child with no local pid (remote transport) is released by its exit event. */
+export function stuckPtyWriter(id: string): { pid?: number } | null {
+  const w = stuckWriters.get(id);
+  if (!w) return null;
+  if (w.pid !== undefined && w.startTicks !== undefined && !isSameLiveProcess(w.startTicks, readProcStat(w.pid))) {
+    stuckWriters.delete(id);
+    return null;
+  }
+  return w;
+}
+
+/** {@link stopPty}, then wait (bounded) for the child process to actually exit — and if it does not within `timeoutMs`,
+ *  SIGKILL it (only if pid + /proc start-time STILL match, re-read at signal time) and wait `killGraceMs` more. Resolves true
+ *  once the child is gone (or there was no session), false if it survived even that: it is then LATCHED ({@link stuckPtyWriter})
+ *  and cleared only when it really exits. Account migration needs the writer DEAD before it moves a transcript: `kill()`
+ *  is a SIGHUP that returns at once. The exit listener is attached BEFORE the kill — disposeSession drops the session's own,
+ *  and the transport fires exit once. `io.kill` is a test seam. */
+export function stopPtyAndWait(
+  id: string,
+  timeoutMs = 10_000,
+  killGraceMs = 3_000,
+  io: { kill?: (pid: number, signal: NodeJS.Signals) => void; readStat?: (pid: number) => string | null } = {},
+): Promise<boolean> {
   const s = sessions.get(id);
   if (!s) return Promise.resolve(true);
+  const readStat = io.readStat ?? readProcStat;
+  const pid = s.remote ? undefined : s.transport.pid;
+  const stat = pid === undefined ? null : parseProcIdentity(readStat(pid) ?? '');
+  const startTicks = stat?.startTicks;
   return new Promise<boolean>((resolve) => {
-    let sub: { dispose(): void } | undefined;
-    const done = (ok: boolean): void => {
-      clearTimeout(timer);
-      try {
-        sub?.dispose();
-      } catch {
-        /* ignore */
+    let exited = false;
+    let latched = false;
+    const timers: Array<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>> = [];
+    const sub = s.transport.onExit(() => {
+      exited = true;
+      if (latched) stuckWriters.delete(id); // it died after we gave up on it
+      finish(true);
+    });
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) {
+        clearTimeout(t as ReturnType<typeof setTimeout>);
+        clearInterval(t as ReturnType<typeof setInterval>);
+      }
+      if (ok) {
+        try {
+          sub.dispose();
+        } catch {
+          /* ignore */
+        }
       }
       resolve(ok);
     };
-    const timer = setTimeout(() => done(false), timeoutMs);
-    sub = s.transport.onExit(() => done(true));
+    // Gone = the exit event fired, or the pid no longer names the SAME live process (start-time re-read NOW: exited, zombie, recycled).
+    const gone = (): boolean => exited || (pid !== undefined && startTicks !== undefined && !isSameLiveProcess(startTicks, readStat(pid)));
+    timers.push(
+      setTimeout(() => {
+        if (gone()) return finish(true);
+        // Escalate — only a pid whose identity `gone()` just re-verified as the SAME live process (never a recycled one).
+        if (pid !== undefined && startTicks !== undefined) {
+          plog.warn(`stopPtyAndWait[${id}]: pid ${pid} ignored the stop for ${timeoutMs} ms — SIGKILL`);
+          try {
+            (io.kill ?? process.kill)(pid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }
+        const t0 = Date.now();
+        timers.push(
+          setInterval(() => {
+            if (gone()) return finish(true);
+            if (Date.now() - t0 < killGraceMs) return;
+            latched = true;
+            stuckWriters.set(id, { pid, startTicks }); // keep `sub`: the exit event still clears the latch
+            plog.warn(`stopPtyAndWait[${id}]: pid ${pid ?? '?'} survived SIGKILL — latched, transcripts will not be moved`);
+            finish(false);
+          }, 50),
+        );
+      }, timeoutMs),
+    );
     stopPty(id);
   });
 }

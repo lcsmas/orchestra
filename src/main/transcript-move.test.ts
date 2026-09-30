@@ -444,10 +444,56 @@ test('firstMismatch: identical → null; extra nodes at the destination are fine
   assert.match((await firstMismatch(path.join(base, 'f'), path.join(base, 't'))) ?? '', /MISSING/);
 });
 
+// ---- round 2 (#240 review r2): strand warnings, rollback warnings, leftover temp copies ----------------------
+
+test('a file created in the source AFTER the listing is reported, not silently stranded (rmdir ENOTEMPTY)', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  let fired = false;
+  const renameFn = async (f: string, t: string): Promise<void> => { await fsp.rename(f, t); if (!fired) { fired = true; put(path.join(proj, 'NEW-session.jsonl'), 'x'.repeat(500), 1_756_400_000); } };
+  const rep = await moveProjectTranscripts(proj, dstProj, { rename: renameFn });
+  assert.deepEqual(fs.readdirSync(proj), ['NEW-session.jsonl'], 'the new file is left where it is');
+  assert.equal(rep.warnings.length, 1);
+  assert.match(rep.warnings[0], /created after the move began.*NEW-session\.jsonl/);
+});
+
+test('rollback trouble travels on the thrown error: which entries are stranded at the destination', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  let n = 0;
+  const flaky = async (f: string, t: string): Promise<void> => {
+    if (f.startsWith(dstProj)) { if (path.basename(f) === 'b.jsonl') throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); } // put-back of b.jsonl fails
+    else if (++n === 4) throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' }); // the 4th forward rename fails
+    await fsp.rename(f, t);
+  };
+  const err = await moveProjectTranscripts(proj, dstProj, { rename: flaky }).then(() => null, (e: Error & { warnings?: string[] }) => e);
+  assert.ok(err, 'rejects');
+  assert.match(err.message, /EIO/);
+  assert.match(err.message, /could not put b\.jsonl back \(EACCES\)/, 'the stranded entry is named in the message the user sees');
+  assert.equal(err.warnings?.length, 1);
+  assert.equal(fs.existsSync(path.join(dstProj, 'b.jsonl')), true, 'and it really is stranded at the destination');
+});
+
+test('a leftover <name>.orchestra-mv-* temp copy is never carried onward: kept in the source with a warning', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  put(path.join(proj, 's0.jsonl.orchestra-mv-4242-lq3x9k'), 'partial', 1_756_000_000);
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  const rep = await moveProjectTranscripts(proj, dstProj);
+  assert.equal(fs.existsSync(path.join(dstProj, 's0.jsonl.orchestra-mv-4242-lq3x9k')), false, 'not moved');
+  assert.equal(fs.existsSync(path.join(proj, 's0.jsonl.orchestra-mv-4242-lq3x9k')), true, 'left in place');
+  assert.equal(rep.warnings.length, 1);
+  assert.match(rep.warnings[0], /kept s0\.jsonl\.orchestra-mv-4242-lq3x9k in the source.*interrupted move/);
+  assert.equal(fs.existsSync(path.join(dstProj, 'a.jsonl')), true, 'the real transcripts still move');
+});
+
 // ---- wiring (belt only — the driven proof is scripts/e2e-migrate-transcripts.mjs) ------------------------
 
-test('wiring: workspaces.ts routes the move through moveProjectTranscripts, awaits the writer\'s death, and locks per workspace', () => {
-  const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'workspaces.ts'), 'utf8');
+test('wiring: workspaces.ts routes the move through moveProjectTranscripts, awaits the writer\'s death, and fences per workspace', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, 'workspaces.ts'), 'utf8');
   const fn = src.slice(src.indexOf('async function moveWorkspaceTranscripts('), src.indexOf('export async function dispatchMigrateAccountRequest('));
   assert.ok(fn.length > 100 && fn.includes('moveProjectTranscripts('), 'the move goes through the identity-checked helper');
   assert.equal(/srcConfigDir\s*===?\s*dstConfigDir/.test(fn), false, 'no raw-string equality on the config dirs');
@@ -455,11 +501,17 @@ test('wiring: workspaces.ts routes the move through moveProjectTranscripts, awai
   const disp = src.slice(src.indexOf('export async function dispatchMigrateAccountRequest('));
   const body = disp.slice(0, disp.indexOf('\nexport '));
   for (const [re, what] of [
-    [/migratingNow\.has\(id\)/, 'per-workspace in-flight guard'],
-    [/migratingNow\.delete\(id\)/, 'guard released in finally'],
+    [/stuckPtyWriter\(id\)/, 'refuses while a previous stop left an agent process alive'],
+    [/!beginMigration\(id\)/, 'per-workspace in-flight fence'],
+    [/endMigration\(id\)/, 'fence released'],
     [/await sdkStopIfLive\(id\)/, 'unconditional SDK stop (detached keeper too)'],
     [/await killKeeper\(id\)/, 'awaits the keeper/CLI death'],
     [/await stopPtyAndWait\(id\)/, 'awaits the PTY child exit'],
   ] as const) assert.ok(re.test(body), `dispatchMigrateAccountRequest: ${what}`);
   assert.equal(/sdkSessionLive\(id\)/.test(body), false, 'the SDK stop is not gated on an in-memory session (a detached keeper has none)');
+  assert.ok(body.indexOf('await store.upsertWorkspace(updated)') < body.indexOf('endMigration(id); // re-pinned'), 'the fence drops only AFTER the re-pin');
+  assert.ok(/finally \{\s*endMigration\(id\);/.test(body), 'and always in a finally');
+  // the start fence at the two funnels an agent can start through
+  assert.ok(/isMigrating\(opts\.workspaceId\)/.test(fs.readFileSync(path.join(here, 'pty.ts'), 'utf8')), 'startPty refuses during a migration');
+  assert.ok(/isMigrating\(wsId\)/.test(fs.readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8')), 'ensureSessionInner refuses during a migration');
 });

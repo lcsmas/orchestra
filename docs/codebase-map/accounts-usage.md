@@ -52,8 +52,13 @@ reads them transiently to query usage.
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
   auto-stops the agent — `sdkStopIfLive` (always, so a detached keeper's CLI dies too), `killKeeper`
   (awaits the CLI/keeper death; `sdkStop` does not after a `result`) and `stopPtyAndWait` (`pty.ts`: awaits the PTY child's
-  exit, bounded 10 s, else the migration aborts with nothing moved) — under a per-workspace in-flight guard
-  (`migratingNow`: a 2nd overlapping call → `ok:false "already in progress"`); then `moveWorkspaceTranscripts` moves
+  exit for 10 s, then SIGKILLs it — only if pid + /proc start-time still match, re-read at signal time — and waits 3 s more;
+  a child that survives even that is LATCHED (`stuckPtyWriter`) and `dispatchMigrateAccountRequest` refuses every migration of
+  that workspace, `ok:false` naming the pid, until it really exits — `stopPty` already dropped the session, so `isRunning()`
+  no longer says so). The whole call runs under a per-workspace FENCE (`migration-fence.ts`, a leaf module): a 2nd overlapping
+  migration → `ok:false "already in progress"`, and `startPty` / `ensureSessionInner` refuse to start an agent for that
+  workspace (it would run on the OLD account and write into the dir being moved); the fence drops right after the
+  re-pin (so the resume below works) and always in a `finally`. Then `moveWorkspaceTranscripts` moves
   `<old>/projects/<mangled-worktree>/` → the new account's config dir via `moveProjectTranscripts`
   (`transcript-move.ts`, #240): a no-op when source and destination are the SAME dir by identity (`sameDir`,
   `same-dir.ts`: resolved path, realpath or dev+ino — trailing `/`, `..`, symlink alias, a shared `projects/`, a bind
@@ -62,8 +67,10 @@ reads them transiently to query usage.
   back what was moved). Cross-filesystem (EXDEV): `fs.cp` to a tmp name (mtimes kept) → verify (size + sha256) → rename
   into place → re-stat the source entry and remove it only if unchanged (else kept + warning). A destination entry of the
   same name is NEVER overwritten: identical = the source duplicate is dropped, different = kept in the source + a
-  warning. Failures surface: `moveProjectTranscripts` returns `{warnings}` (unreadable source dir, entries kept, an
-  unremovable duplicate) → logged and returned as `MigrateAccountResult.warnings` (the CLI prints them to stderr; the
+  warning; a leftover `<name>.orchestra-mv-*` temp copy of an interrupted move is never carried onward (kept + warning); files
+  created in the source after the listing are reported. Failures surface: `moveProjectTranscripts` returns `{warnings}`
+  (unreadable source dir, entries kept, an unremovable duplicate, stranded new files; a mid-way failure's rollback trouble rides
+  on the thrown error's message) → logged and returned as `MigrateAccountResult.warnings` (the CLI prints them to stderr; the
   renderer does not show them, D5). Then re-pins `ws.accountId`,
   `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
   running — at the winsize the PTY had before the stop (`getPtySize`, pty.ts),
@@ -411,9 +418,10 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 symlink survives; same-FS rename keeps inode + mtime and a fd-holding writer; mid-way rename/copy failure, truncated copy,
 size-preserving bit flip, skipped entry all leave the source intact; a different/appearing destination entry is never
 overwritten; a source that changed after it was read is kept; late file not deleted). Driven proof through the REAL
-`dispatchMigrateAccountRequest`: `scripts/e2e-migrate-transcripts.mjs all` (18 arms incl. bind mount under
-`unshare -rm`, a cross-filesystem EXDEV target, 2 overlapping migrations, a real agent PTY still writing, one that will
-not exit; scratch HOME, live-dir canary).
+`dispatchMigrateAccountRequest`: `scripts/e2e-migrate-transcripts.mjs all` (23 arms incl. bind mount under
+`unshare -rm`, a cross-filesystem EXDEV target, 2 overlapping migrations, a real agent PTY still writing / ignoring HUP+TERM
+(SIGKILL escalation, retry), a SIGKILL-proof child (latch), a recycled-pid guard, the start fence, and a REAL detached
+`keeper.js` + fake CLI — needs `pnpm run build:keeper`; scratch HOME, live-dir canary).
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
 `planAccountMigration` (migrate/noop/error, default-login clear, trimming),

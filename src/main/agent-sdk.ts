@@ -29,6 +29,7 @@ import { decideGateRelease, isProofOfLifeMessage, shouldRedriveInbox } from '../
 import { resolveLaunchModel } from '../shared/model-defaults.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
+import { isMigrating, migratingMessage } from './migration-fence';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
@@ -1753,6 +1754,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // shares, before any side effect (rewind cut, hibernation clear, env, spawn), naming the pause.
   const paused = sandboxPausedMessage(ws);
   if (paused) throw new Error(paused);
+  // #240: an account migration is between its stop and its re-pin — a session started now would run on the OLD account.
+  if (isMigrating(wsId)) throw new Error(migratingMessage(wsId));
 
   // A pending rewind cut, consumed EXACTLY ONCE by the restart it was queued
   // for (see sdkRewind). Read-and-clear before any `await` below so a second

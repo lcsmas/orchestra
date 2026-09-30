@@ -32,6 +32,9 @@ export interface MoveIo {
 const defaultCopy = (from: string, to: string): Promise<void> =>
   cp(from, to, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true, verbatimSymlinks: true });
 
+/** A temp copy of an interrupted cross-filesystem move (`<name>.orchestra-mv-<pid>-<time>`, see copyVerifyPlace). */
+const TMP_COPY_RE = /\.orchestra-mv-\d+-[a-z0-9]+$/;
+
 const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException | null)?.code;
 const exists = (p: string): Promise<boolean> => lstat(p).then(() => true, () => false);
 
@@ -131,13 +134,17 @@ export async function moveProjectTranscripts(srcDir: string, dstDir: string, io:
   // (dropped below, guarded); different content = kept in the source with a warning.
   const moves: Item[] = [];
   const dups: Item[] = [];
+  const kept = new Set<string>(); // entries deliberately left in the source (each has a warning)
+  const keep = (name: string, why: string): void => { kept.add(name); warnings.push(`kept ${name} in the source: ${why}`); };
   for (const name of entries) {
     const item: Item = { name, from: path.join(srcDir, name), to: path.join(dstDir, name) };
+    // A crash-orphaned temp copy is not a transcript: never carried onward (it would be moved as if it were one).
+    if (TMP_COPY_RE.test(name)) { keep(name, 'it is the leftover temp copy of an interrupted move, not a transcript'); continue; }
     if (!(await exists(item.to))) { moves.push(item); continue; }
     item.pre = await statSig(item.from);
     const bad = await firstMismatch(item.from, item.to);
     if (bad === null) dups.push(item);
-    else warnings.push(`kept ${name} in the source: the destination already has a different ${name} (${bad})`);
+    else keep(name, `the destination already has a different ${name} (${bad})`);
   }
 
   const renameFn = io.rename ?? rename;
@@ -153,7 +160,15 @@ export async function moveProjectTranscripts(srcDir: string, dstDir: string, io:
         if (await exists(it.from)) warnings.push(`could not put ${it.name} back: ${it.from} was recreated meanwhile — it is at ${it.to}`);
         else await renameFn(it.to, it.from).catch((e) => warnings.push(`could not put ${it.name} back (${errCode(e)}) — it is at ${it.to}`));
       }
-      if (errCode(err) !== 'EXDEV') throw err;
+      if (errCode(err) !== 'EXDEV') {
+        // The rollback's own trouble (an entry that could not be put back) must reach the caller: it is on the error.
+        const stranded = warnings.filter((w) => w.startsWith('could not put '));
+        if (stranded.length && err instanceof Error) {
+          err.message = `${err.message} — ${stranded.join('; ')}`;
+          Object.assign(err, { warnings: stranded });
+        }
+        throw err;
+      }
       viaCopy = true; // e.g. overlay/FUSE: same st_dev, yet rename refuses → copy path below
     }
   }
@@ -165,20 +180,26 @@ export async function moveProjectTranscripts(srcDir: string, dstDir: string, io:
   // Sources that are now provably duplicated at the destination: remove each only if unchanged since it was read.
   for (const it of [...copied, ...dups]) {
     const [a, b] = [await idOf(it.from), await idOf(it.to)];
-    if (a === null || b === null || a === b) { warnings.push(`kept ${it.name} in the source: it cannot be told apart from its destination copy`); continue; }
+    if (a === null || b === null || a === b) { keep(it.name, 'it cannot be told apart from its destination copy'); continue; }
     if (it.pre !== undefined && (await statSig(it.from).catch(() => null)) !== it.pre) {
-      warnings.push(`kept ${it.name} in the source: it changed while it was being copied (a writer is still alive?) — the destination copy may be stale`);
+      keep(it.name, 'it changed while it was being copied (a writer is still alive?) — the destination copy may be stale');
       continue;
     }
     try {
       await rm(it.from, { recursive: true, force: true });
     } catch (err) {
+      kept.add(it.name);
       warnings.push(`could not remove ${it.from} (${errCode(err) ?? err}) — its transcripts are at ${it.to}; a duplicate remains in the source`);
     }
   }
   // The dir itself only if — and only if — it is empty (non-recursive: a file that appeared meanwhile is never deleted).
-  await rmdir(srcDir).catch((err) => {
-    if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(errCode(err) ?? '')) warnings.push(`could not remove ${srcDir} (${errCode(err) ?? err})`);
+  await rmdir(srcDir).catch(async (err) => {
+    if (errCode(err) === 'ENOENT') return;
+    if (['ENOTEMPTY', 'EEXIST'].includes(errCode(err) ?? '')) {
+      // Left-overs we did not deliberately keep were created AFTER the listing (a session that started mid-move): say so.
+      const stranded = (await readdir(srcDir).catch(() => [] as string[])).filter((n) => !kept.has(n));
+      if (stranded.length) warnings.push(`left in ${srcDir}, created after the move began (not moved): ${stranded.join(', ')}`);
+    } else warnings.push(`could not remove ${srcDir} (${errCode(err) ?? err})`);
   });
   return { warnings };
 }

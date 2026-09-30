@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { moveProjectTranscripts, type MoveReport } from './transcript-move';
+import { beginMigration, endMigration } from './migration-fence';
 import { store } from './store';
 import { forbidKeeperLaunch, killKeeper, killKeeperTree, snapshotKeeperTree } from './keeper-client';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
@@ -38,6 +39,7 @@ import {
   isRunning,
   stopPty,
   stopPtyAndWait,
+  stuckPtyWriter,
   clearScrollback,
   startPty,
   writePty,
@@ -2818,8 +2820,6 @@ export interface MigrateAccountResult {
   warnings?: string[];
 }
 
-/** One migration per workspace at a time (#240 F1): two overlapping moves of one transcript dir raced. */
-const migratingNow = new Set<string>();
 
 /** Fallback PTY geometry for an agent auto-resumed after an account migration
  * (80×24 is the universal default). Only reached when the pre-stop size could
@@ -2904,8 +2904,10 @@ export async function dispatchMigrateAccountRequest(input: {
     ? expandConfigDir(targetAccount.configDir, os.homedir(), process.env) || defaultDir
     : defaultDir;
 
-  if (migratingNow.has(id)) return { ok: false, error: `a migration of workspace ${id} is already in progress` };
-  migratingNow.add(id);
+  // #240: a previous stop that timed out left a PTY child alive (SIGKILL survived): its transcripts must not move under it.
+  const stuck = stuckPtyWriter(id);
+  if (stuck) return { ok: false, error: `the agent process${stuck.pid ? ` (pid ${stuck.pid})` : ''} of workspace ${id} is still running after stop — migration refused until it exits` };
+  if (!beginMigration(id)) return { ok: false, error: `a migration of workspace ${id} is already in progress` };
   try {
     const wasRunning = isRunning(id);
     // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
@@ -2940,6 +2942,7 @@ export async function dispatchMigrateAccountRequest(input: {
     if (targetAccountId) updated.accountId = targetAccountId;
     else delete updated.accountId;
     await store.upsertWorkspace(updated);
+    endMigration(id); // re-pinned: an agent may start again (on the NEW account) — the resume below is one
     platform.broadcast('workspace:update', updated);
     // Re-broadcast the workspace→account map here rather than only in the IPC
     // handler: the socket route (`orchestra migrate-account`) reaches this
@@ -2987,7 +2990,7 @@ export async function dispatchMigrateAccountRequest(input: {
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
   } finally {
-    migratingNow.delete(id);
+    endMigration(id);
   }
 }
 
