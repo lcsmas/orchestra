@@ -222,7 +222,7 @@ export async function runPauseTrap(deps: TrapDeps, carrier: RunPauseInfo): Promi
 
 /** Workspaces the HUMAN just sent a prompt to: the next observed turn start is allowed (un-pauses nothing). */
 const humanTurnMarks = new Map<string, number>();
-const HUMAN_MARK_TTL_MS = 30_000;
+const HUMAN_MARK_TTL_MS = 10_000;
 
 /** The composer (or any other HUMAN-origin send) calls this just before starting a turn. */
 export function notePauseHumanTurn(wsId: string, now = Date.now()): void {

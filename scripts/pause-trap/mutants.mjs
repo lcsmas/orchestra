@@ -1,0 +1,71 @@
+// Load-time MUTANTS of the shipped pause-trap source (#252 D1b G2) — same mechanism as
+// scripts/session-budget/mutants.mjs: the source text is rewritten as node loads it (nothing on disk,
+// nothing to restore). Every anchor must match EXACTLY ONCE or the run throws PATTERN-GONE.
+
+/** name -> { file suffix, find (global regex), replace, mustRedden (the rig check that has to go red) } */
+export const MUTANTS = {
+  // CLI killed: the killer also signals the CLI at the end of its run.
+  'kill-cli': {
+    file: '/src/main/pause-kill.ts',
+    find: /(  const finalPlan = planNow\(\);\n)/g,
+    replace: "  deps.signal(cli.pid, 'SIGTERM');\n$1",
+    mustRedden: 'cli_and_keeper_alive',
+  },
+  // Keeper killed.
+  'kill-keeper': {
+    file: '/src/main/pause-kill.ts',
+    find: /(  const finalPlan = planNow\(\);\n)/g,
+    replace: "  if (keeperPid) deps.signal(keeperPid, 'SIGTERM');\n$1",
+    mustRedden: 'cli_and_keeper_alive',
+  },
+  // Snapshot touches the REAL index: `git add -A` without the temporary GIT_INDEX_FILE.
+  'snapshot-touches-index': {
+    file: '/src/main/pause-snapshot.ts',
+    find: /await git\(cwd, \['add', '-A', '--', \.\.\.pathspec\], env\);/g,
+    replace: "await git(cwd, ['add', '-A', '--', ...pathspec], {});",
+    mustRedden: 'snapshot_no_touch',
+  },
+  // The trap never kills (interrupt + snapshot only).
+  'skip-kill': {
+    file: '/src/main/pause-trap.ts',
+    find: /const rep = await deps\.killTrees\(target\.cli, target\.keeperPid\);\n        killed = rep;/g,
+    replace: "const rep = { cliPid: target.cli.pid, killed: [], refused: [], spared: [], survivors: [], rounds: 0 };\n        killed = rep;",
+    mustRedden: 'trap_killed_what_survives_an_interrupt', // (also reddens no_surviving_tool_procs on the background arm)
+  },
+  // The trap never snapshots.
+  'skip-snapshot': {
+    file: '/src/main/pause-trap.ts',
+    find: /const r = await deps\.snapshot\(\{ worktreePath: m\.worktreePath, runId: carrier\.runId, wsId: m\.wsId, at: deps\.now\(\) \}\);/g,
+    replace: "throw new Error('mutant: snapshot skipped'); const r = await deps.snapshot({ worktreePath: m.worktreePath, runId: carrier.runId, wsId: m.wsId, at: deps.now() });",
+    mustRedden: 'pause_ref_holds_uncommitted_work',
+  },
+  // The signal-time identity re-read removed: a recycled pid is signalled (real pid reuse: recycle-rig.mjs).
+  'identity-reread-removed': {
+    file: '/src/shared/pause-procs.ts',
+    find: /  if \(fresh\.startTicks !== target\.startTicks\) return \{ ok: false, reason: 'reused \(start-time changed\)' \};\n/g,
+    replace: '',
+    mustRedden: 'innocent_inheritor_survives',
+  },
+  // The turn-start observer is never registered (rows 29/30).
+  'no-turn-observer': {
+    file: '/src/main/pause-trap-host.ts',
+    find: /void onTurnStart\(deps, toMember\(ws\)\)/g,
+    replace: "void Promise.resolve('allowed')",
+    mustRedden: 'turn_while_paused_interrupted',
+  },
+};
+
+let active = null;
+export async function initialize(data) {
+  active = data?.mutant ?? null;
+  if (active && !MUTANTS[active]) throw new Error(`unknown mutant: ${active}`);
+}
+export async function load(url, context, nextLoad) {
+  const result = await nextLoad(url, context);
+  if (!active || !url.endsWith(MUTANTS[active].file)) return result;
+  const m = MUTANTS[active];
+  const src = String(result.source);
+  const hits = [...src.matchAll(m.find)].length;
+  if (hits !== 1) throw new Error(`mutant ${active}: PATTERN-GONE — anchor matched ${hits}× in ${m.file} (want exactly 1); the mutant no longer describes the shipped code`);
+  return { ...result, source: src.replace(m.find, m.replace) };
+}

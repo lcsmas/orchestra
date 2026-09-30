@@ -79,6 +79,7 @@ import {
   markLooping,
   markStoppedOnMaxTurns,
   markStoppedOnUsageLimit,
+  notifyTurnStart,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
@@ -514,6 +515,9 @@ interface Session {
    *  interrupt resolves fast but the CLI never serviced it). Set in consume()'s
    *  `result` branch; a fresh session starts `false`. */
   sawResult: boolean;
+  /** #252 D1b: a CLI-started turn (no app-yielded turn in flight) was already reported to the pause
+   *  observer — once per turn, reset at its `result`. */
+  unexplainedTurnSeen?: boolean;
 }
 
 /** Silence after a turn is armed, with no proof of life, before the workspace
@@ -1401,6 +1405,12 @@ async function consume(session: Session): Promise<void> {
         // inits only after its first user message, MEASURED on claude 2.1.284): nothing is owed to it, so the snapshot must not be re-sent.
         if (session.openingBrief === undefined) session.owedBrief = undefined;
       }
+      // #252 D1b (rows 29/30): model output with NO app-yielded turn in flight = the CLI started a turn
+      // itself (cron, /loop, a task-notification). The pause trap interrupts it when this member is paused.
+      if (session.turnGate === null && !session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant' || msg.type === 'stream_event')) {
+        session.unexplainedTurnSeen = true;
+        notifyTurnStart(session.wsId);
+      }
       const emitted = emitFrom(session, msg);
       // #227 D7: init is proof of LIFE, not of delivery. While the claimed brief's first turn is undecided this message may decide it:
       // the first non-error output delivers the brief; the turn's ERRORED END (`result is_error` — the synthetic API-error assistant
@@ -1435,6 +1445,7 @@ async function consume(session: Session): Promise<void> {
         // is serviceable and sdkStop's graceful close terminates without the
         // no-result fall-through kill. See Session.sawResult.
         session.sawResult = true;
+        session.unexplainedTurnSeen = false;
         // Turn boundary — the interrupt (if any) is fully accounted for, so
         // reset the flag: it must not linger and mislabel/suppress a FUTURE
         // turn's genuine error as interrupt fallout. (emitFrom already ran for
@@ -3962,7 +3973,7 @@ export function sdkPauseActivity(
 ): { turnRunning: boolean; queued: number; bgTasks: BackgroundTask[] } | null {
   const s = sessions.get(wsId);
   if (!s || s.stopping) return null;
-  return { turnRunning: s.turnGate !== null, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
+  return { turnRunning: s.turnGate !== null || s.unexplainedTurnSeen === true, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
 }
 
 export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed';
@@ -3988,7 +3999,8 @@ export async function sdkInterruptForPause(wsId: string): Promise<PauseInterrupt
   }
   const session = sessions.get(wsId);
   if (!session) return 'no-session';
-  if (!attached && session.turnGate === null && session.queue.length === 0) return 'idle';
+  // `unexplainedTurnSeen`: a CLI-started turn (cron, task-notification) runs with no app-yielded turn in flight.
+  if (!attached && session.turnGate === null && session.queue.length === 0 && session.unexplainedTurnSeen !== true) return 'idle';
   session.interruptRequested = true;
   try {
     await interruptCancellingQueued(session);
