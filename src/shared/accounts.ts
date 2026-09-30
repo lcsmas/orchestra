@@ -102,6 +102,26 @@ export function sanitizeAccountInherit(v: unknown): AccountInherit | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+/** True when `inherit` selects nothing — absent, `{}`, all-false / empty lists. Single-sourced on
+ *  {@link sanitizeAccountInherit} so "empty" means what the store persists (#235 residual/C10). */
+export function isEmptyAccountInherit(v: unknown): boolean {
+  return sanitizeAccountInherit(v) === undefined;
+}
+
+/** #235 residual/C10: ids of accounts whose selection the user just took from NON-empty (`before`) to
+ *  EMPTY (`after`). The Accounts UI setter is the only writer of `inherit`, so this transition is the
+ *  one "de-select everything" that may prune a login dir down to nothing; an account that was already
+ *  empty is not a de-selection. Pure. */
+export function deselectedAccountIds(before: readonly Account[], after: readonly Account[]): Set<string> {
+  const was = new Map(before.map((a) => [a.id, a]));
+  const out = new Set<string>();
+  for (const a of after) {
+    const b = was.get(a.id);
+    if (b && !isEmptyAccountInherit(b.inherit) && isEmptyAccountInherit(a.inherit)) out.add(a.id);
+  }
+  return out;
+}
+
 /** A rolling usage window (5-hour session or 7-day weekly). Mirrors the
  *  `five_hour` / `seven_day` objects from `/api/oauth/usage`. */
 export interface UsageWindowDetail {

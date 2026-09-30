@@ -73,29 +73,48 @@ reads them transiently to query usage.
   **symlink**; MCP servers → **merge** into the login dir's `.claude.json`
   (can't symlink — holds per-project trust). Manifest `.orchestra-inherited.json`
   tracks injections for clean removal and stamps `source` (the `~/.claude` the
-  links were built from). Key fns: `listInheritables` `:116`,
-  `defaultInheritForAccount` `:143`, `seedAccountInheritDefaults` `:164`,
-  `syncAccountInheritance(account)` `:388` (idempotent; run on account changes &
+  links were built from). Key fns: `listInheritables` `:122`,
+  `defaultInheritForAccount` `:149`, `seedAccountInheritDefaults` `:170`,
+  `syncAccountInheritance(account, opts)` `:420` (idempotent; run on account changes &
   each spawn). **A sync never strips because of its source (#235):** (1) `~/.claude`
-  not a readable dir (`isReadableDir` `:178`) ⇒ return before ANY write (mkdir,
+  not a readable dir (`isReadableDir` `:184`) ⇒ return before ANY write (mkdir,
   dangling-link drop, prune, MCP removal, manifest) + one WARN; (2) PROVENANCE
-  (D10, `builtFromElsewhere` `:233`): a manifest whose `source` differs from the
+  (D10, `builtFromElsewhere` `:239`): a manifest whose `source` differs from the
   current `~/.claude` (`sameDir`: same path or realpath) — or, legacy manifest
   without `source`, a link resolving outside it — ⇒ refused, no write, one WARN
   naming the OTHER source dir and the manifest to delete to re-home it. A source /
-  link target that is definitely GONE (`isGone` `:220`: ENOENT/ENOTDIR, so a moved
+  link target that is definitely GONE (`isGone` `:226`: ENOENT/ENOTDIR, so a moved
   HOME, a poisoned stamp whose scratch HOME was deleted, a dangling link) is no
   evidence ⇒ re-home like master; ELOOP/EACCES stay refused. This protects a live
   config dir from a fake-HOME app whose readable-but-skeletal `~/.claude`
   (self-tune `ensureFoldTargets`, `claude -p`) a "source has entries?" test cannot
   tell apart; a first sync on a fresh account still writes + stamps. (3)
-  `syncMcpServers` (`:326`) keeps injected servers + manifest list when
-  `~/.claude.json` is missing/unparseable. Same-source prune/de-selection is
+  `syncMcpServers` (`:348`) keeps injected servers + manifest list when
+  `~/.claude.json` is missing/unparseable. (4) EMPTY SELECTION (#235 residual/C10,
+  incident #3): an empty/absent `inherit` (`isEmptyAccountInherit`, `shared/accounts.ts:107`,
+  = what `sanitizeAccountInherit` persists as absent) over a dir that still HOLDS inherited
+  state (`heldInherited` `:256` — manifest links still present as symlinks + manifest MCP
+  keys still in the login `.claude.json`, by presence not by manifest list) ⇒ no write +
+  ONE WARN naming the dir, held counts and `[caller= pid= HOME= ORCHESTRA_HOME=]`, unless
+  `opts.userDeselected`. Only the Accounts UI setter grants that flag, PER ACCOUNT:
+  `apiHandlers.setAccounts` (`api-handlers.ts:534`, the only writer of `inherit` — IPC
+  `accounts:set`) captures `store.accounts` BEFORE the save and `syncAfterAccountsSave`
+  (`:532`) grants `deselectedAccountIds(before, saved)` (`shared/accounts.ts:115`: non-empty →
+  empty, so an unrelated save of an already-empty account, or a new account, is NOT a
+  de-selection). Runs after the D10 guard (a foreign-source dir is refused first, even for a
+  UI de-selection); a partial de-selection (non-empty selection) prunes as before. Every
+  caller tags itself (`caller`: `boot` / `ui-save` / `spawn-sdk` / `spawn-pty` / `migrate` /
+  `sandbox-import` / `login`) so a stray empty sync is attributable from the WARN; a
+  successful sync logs NOTHING, so "the live app logged no sync" is not evidence.
+  Pre-existing: boot's seed re-seeds an account whose `inherit` is ABSENT (a UI
+  de-select-all does not survive a restart); only `inherit: {}` reaches boot's sync empty.
+  Rig: `scripts/e2e-inherit-empty-no-prune.mjs all` (REAL `setAccounts` + store + logger,
+  scratch HOME, live-dir `find` canary). Same-source partial prune/de-selection is
   unchanged. Rig traps: a fake-HOME boot pinned to a LIVE configDir stripped
   `~/.claude-mc` twice (2026-09-29) — never point a rig's configDir at a live
   `~/.claude*` (`account-inherit.test.ts` scratch-only harness refuses one).
   Accepted gaps: links present but an empty/absent/torn manifest (unattributable
-  until the first same-source sync stamps it); the MCP source `~/.claude.json` is
+  until the first same-source sync stamps it; also invisible to (4)); the MCP source `~/.claude.json` is
   not stamped (needs a fake HOME whose `~/.claude` symlinks the live one).
 - **Login flow:** interactive `claude /login` in a dedicated PTY
   (`account-login:<accountId>`); `armLoginWatch` (`account-usage.ts:284`) +

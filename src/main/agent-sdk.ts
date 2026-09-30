@@ -1693,7 +1693,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     if (ws.accountId) {
       const account = store.accounts.find((a) => a.id === ws.accountId);
       if (account) {
-        await syncAccountInheritance(account).catch((err) =>
+        await syncAccountInheritance(account, { caller: 'spawn-sdk' }).catch((err) =>
           log.warn(`agent-sdk: account-inherit sync failed for ${wsId}`, err),
         );
       }

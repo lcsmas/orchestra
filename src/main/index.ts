@@ -332,7 +332,7 @@ async function createMainWindow() {
   await seedAccountInheritDefaults().catch((err) =>
     log.warn('account-inherit: seeding failed', err),
   );
-  void syncAllAccountsInheritance();
+  void syncAllAccountsInheritance({ caller: 'boot' });
   await ensureRoot();
 
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship

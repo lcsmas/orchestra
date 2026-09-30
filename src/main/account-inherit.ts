@@ -24,7 +24,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { store } from './store';
-import { expandConfigDir, type Account, type AccountInherit } from '../shared/accounts';
+import {
+  deselectedAccountIds,
+  expandConfigDir,
+  isEmptyAccountInherit,
+  type Account,
+  type AccountInherit,
+} from '../shared/accounts';
 import { parseClaudeMdImports } from '../shared/claude-md-imports';
 import { log } from './logger';
 
@@ -244,6 +250,22 @@ function builtFromElsewhere(loginDir: string, globalDir: string, prev: InheritMa
   return null;
 }
 
+/** #235 residual/C10: the inherited state in `loginDir` a full prune would destroy — manifest links still
+ *  present as symlinks + manifest MCP keys still present in its `.claude.json`. Presence, not the manifest
+ *  list alone, so a stale manifest over an already-clean dir does not block reconciling it. */
+function heldInherited(loginDir: string, prev: InheritManifest): { links: string[]; mcp: string[] } {
+  const links = prev.symlinks.filter((rel) => isSymlink(path.join(loginDir, rel)));
+  let mcp: string[] = [];
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(loginDir, '.claude.json'), 'utf8')) as { mcpServers?: Record<string, unknown> };
+    const have = d.mcpServers && typeof d.mcpServers === 'object' ? d.mcpServers : {};
+    mcp = prev.mcpServers.filter((k) => k in have);
+  } catch {
+    /* no/torn login .claude.json → no injected server to protect */
+  }
+  return { links, mcp };
+}
+
 /** Ensure `loginDir/rel` is a symlink to `target`.
  *  Returns true if the link is present afterwards (created/already-correct),
  *  false if it was skipped (missing source, or a real file is in the way and
@@ -382,10 +404,20 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
 
 // ---- public sync -------------------------------------------------------------
 
+/** Per-call context for {@link syncAccountInheritance}. */
+export interface SyncOptions {
+  /** #235 residual/C10: true ONLY when the Accounts UI setter just took THIS account's selection from
+   *  non-empty to empty ({@link deselectedAccountIds}) — the sole authority to prune a dir to nothing.
+   *  Never derive it from the account object itself (empty `inherit` is also what a bad store looks like). */
+  userDeselected?: boolean;
+  /** Who is syncing — named in the blocked-prune WARN so the writer of a stray empty sync is attributable. */
+  caller?: string;
+}
+
 /** Materialize `account.inherit` into the account's login dir. Idempotent and
  *  non-destructive; safe to call before every agent spawn. No-ops for an account
  *  with no usable config dir. */
-export async function syncAccountInheritance(account: Account): Promise<void> {
+export async function syncAccountInheritance(account: Account, opts: SyncOptions = {}): Promise<void> {
   const loginDir = expandConfigDir(account.configDir, os.homedir(), process.env);
   if (!loginDir) return;
   const inherit = account.inherit;
@@ -403,6 +435,23 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
   if (from !== null) {
     log.warn(`account-inherit: ${loginDir} was built from ${from}, not ${globalDir} — sync skipped (delete ${MANIFEST_NAME} there to re-home it)`);
     return;
+  }
+
+  // #235 residual/C10: an EMPTY/absent selection over a dir that still holds inherited links / MCP servers
+  // is a de-selection only when the UI setter says so (incident #3: a real-HOME sync with no selection
+  // full-pruned the live dir, writer unattributed). Any other caller: no write at all + ONE WARN.
+  if (isEmptyAccountInherit(inherit)) {
+    const held = heldInherited(loginDir, prev);
+    if (held.links.length + held.mcp.length > 0) {
+      if (!opts.userDeselected) {
+        log.warn(
+          `account-inherit: empty inherit selection but ${loginDir} holds ${held.links.length} inherited link(s) + ${held.mcp.length} MCP server(s) — sync skipped, only the Accounts UI may de-select everything` +
+            ` [caller=${opts.caller ?? 'unknown'} pid=${process.pid} HOME=${os.homedir()} ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME ?? ''}]`,
+        );
+        return;
+      }
+      log.info(`account-inherit: UI de-selection pruned ${held.links.length} link(s) + ${held.mcp.length} MCP server(s) from ${loginDir}`);
+    }
   }
 
   try {
@@ -465,11 +514,21 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
 }
 
 /** Sync every configured account. Called after the accounts list changes so
- *  edits apply immediately (not just on the next agent spawn). */
-export async function syncAllAccountsInheritance(): Promise<void> {
+ *  edits apply immediately (not just on the next agent spawn). `deselectedIds`
+ *  (UI setter only) names the accounts allowed to prune to an empty selection. */
+export async function syncAllAccountsInheritance(
+  opts: { caller?: string; deselectedIds?: ReadonlySet<string> } = {},
+): Promise<void> {
   for (const account of store.accounts) {
-    await syncAccountInheritance(account).catch((err) =>
-      log.warn(`account-inherit: sync failed for ${account.label}`, err),
-    );
+    await syncAccountInheritance(account, {
+      caller: opts.caller,
+      userDeselected: opts.deselectedIds?.has(account.id) === true,
+    }).catch((err) => log.warn(`account-inherit: sync failed for ${account.label}`, err));
   }
+}
+
+/** The Accounts-UI setter's post-save step: `before` is `store.accounts` captured BEFORE the save,
+ *  `saved` what the store persisted. Only accounts the user just took to an empty selection may prune. */
+export function syncAfterAccountsSave(before: readonly Account[], saved: readonly Account[]): Promise<void> {
+  return syncAllAccountsInheritance({ caller: 'ui-save', deselectedIds: deselectedAccountIds(before, saved) });
 }

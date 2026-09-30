@@ -2954,7 +2954,7 @@ export async function dispatchMigrateAccountRequest(input: {
     // dir so a non-resumed workspace is ready for its next manual launch (the
     // resume path below also does this, but a stopped workspace won't hit it).
     if (targetAccount) {
-      await syncAccountInheritance(targetAccount).catch((err) =>
+      await syncAccountInheritance(targetAccount, { caller: 'migrate' }).catch((err) =>
         log.warn(`account-inherit: migrate-time sync failed for ${id}`, err),
       );
     }
@@ -5188,7 +5188,7 @@ export async function startAgentPty(
   if (ws.accountId) {
     const account = store.accounts.find((a) => a.id === ws.accountId);
     if (account) {
-      await syncAccountInheritance(account).catch((err) =>
+      await syncAccountInheritance(account, { caller: 'spawn-pty' }).catch((err) =>
         log.warn(`account-inherit: spawn-time sync failed for ${ws.id}`, err),
       );
     }
