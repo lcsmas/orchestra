@@ -24,6 +24,8 @@ import {
   type ResourceSnapshot,
 } from '../shared/resources';
 
+import { hostPageSize } from './host-page-size';
+
 const execFileP = promisify(execFile);
 
 /** Read the full local process table. Linux reads /proc directly (no child
@@ -38,11 +40,12 @@ async function sampleProcTable(): Promise<ProcSample[]> {
     } catch {
       return out;
     }
+    const pageSize = hostPageSize();
     for (const name of names) {
       if (!/^\d+$/.test(name)) continue;
       try {
         const text = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
-        const p = parseProcStatLine(text);
+        const p = parseProcStatLine(text, pageSize);
         if (p) out.push(p);
       } catch {
         /* process exited mid-scan — skip */

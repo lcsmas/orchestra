@@ -35,7 +35,7 @@ import {
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
-import { parseProcStatLine } from '../shared/resources';
+import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
 import { log } from './logger';
@@ -338,7 +338,7 @@ function snapshotDescendants(rootPid: number): Array<{ pid: number; comm: string
   for (const name of names) {
     if (!/^\d+$/.test(name)) continue;
     try {
-      const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
+      const p = parseProcIdentity(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
       if (p && p.startTicks !== undefined) {
         byPpid.set(p.ppid, [...(byPpid.get(p.ppid) ?? []), { pid: p.pid, comm: p.comm, startTicks: p.startTicks }]);
       }

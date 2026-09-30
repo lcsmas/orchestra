@@ -131,6 +131,20 @@ Dependency-free so `node --test` covers it without Electron:
 - Process table: Linux reads `/proc/*/stat` directly (no child process per
   tick); elsewhere shells out to `ps`. Keeps a module-level `prevTicks` map so
   the first tick after open reads 0% CPU and the second is real.
+- **RSS units (#214 finding).** `/proc/<pid>/stat` field 24 is RSS in PAGES. `parseProcStatLine(text, pageSizeBytes)`
+  multiplies by the page size it is GIVEN — the argument is REQUIRED; identity-only readers (`keeper-client`, the reap
+  identity check) call `parseProcIdentity` (memBytes 0). The two memory readers (`sampleProcTable` here and in
+  `resource-monitor.ts`) pass `hostPageSize()` (`src/main/host-page-size.ts`): `AT_PAGESZ` from `/proc/self/auxv` (the
+  kernel's own answer), else `KernelPageSize` at the head of `/proc/self/smaps`; only a power of two in [4 KiB, 64 KiB] is
+  accepted (a hugetlb first VMA is refused). Only a SUCCESSFUL read is cached; a failure returns 4096, warns once
+  (`resources: cannot read the host page size …`) and retries on the next sample. The sources are injectable
+  (`PageSizeSources`) so a test feeds 16 KB on any host. A hardcoded 4096 read RSS **4× low on 16 KB-page hosts**
+  (Asahi/aarch64): the Resources page, `resources.jsonl` and the `SESSION_RSS_WARN_BYTES` advisory. **Every
+  `resources.jsonl` line now carries `pageSize`** (regime marker); lines WITHOUT it predate the fix and on a 16 KB host are
+  4× low — rescale by `pageSize/4096` (the #214 field replay does). Gates: `scripts/e2e-rss-page-size.mjs` — real
+  `procTable`/`sampleTick` AND the real `sampleResources()` (`scripts/rss-page-size/`, only pty/events/statfs/platform
+  stubbed) over a real tree vs `VmRSS`; the rig arms are non-discriminating on a 4 KB host (said loudly there) — the
+  injected-source unit arms carry the proof anywhere.
 - PTY roots come from `listPtySessions()` (`pty.ts`) — `{id, pid, remote}`.
   Sessions now carry a `remote` flag: a sandbox session's pid is
   **container-side** and must never be resolved against the local table.

@@ -247,6 +247,7 @@ test('buildResourceLogLine assembles totals, electron and per-session rows', () 
   const line = buildResourceLogLine(
     {
       at: 1_700_000_000_000,
+      pageSize: 16384,
       cpuCores: 8,
       memTotalBytes: 32 * 1024 * 1024 * 1024,
       memUsedBytes: 18 * 1024 * 1024 * 1024,
@@ -260,6 +261,7 @@ test('buildResourceLogLine assembles totals, electron and per-session rows', () 
     () => null,
   );
   assert.equal(line.at, 1_700_000_000_000);
+  assert.equal(line.pageSize, 16384, 'every line carries the page size its RSS was computed with (regime marker)');
   assert.equal(line.t, new Date(1_700_000_000_000).toISOString());
   assert.equal(line.totals.cpuCores, 8);
   assert.equal(line.totals.memUsedBytes, 18 * 1024 * 1024 * 1024);

@@ -3,7 +3,7 @@
 // Dependency-free so `node --test` covers the reap DECISION without a real /proc or store.
 
 import type { ProcSample } from './resources.ts';
-import { collectTree, parseProcStatLine } from './resources.ts';
+import { collectTree, parseProcIdentity } from './resources.ts';
 
 // ─── The JSONL line shape ────────────────────────────────────────────────────
 
@@ -42,6 +42,9 @@ export interface ResourceLogLine {
   t: string;
   /** Epoch ms of the sample. */
   at: number;
+  /** Page size (bytes) the RSS figures were computed with — the regime marker: lines written before the page-size
+   *  fix (#214) have NO such field and, on a 16 KB host, read RSS 4x low (rescale by hostPageSize/4096). */
+  pageSize: number;
   totals: {
     cpuCores: number;
     memTotalBytes: number;
@@ -108,6 +111,7 @@ export interface KeeperRoot {
 
 export interface BuildLogLineInput {
   at: number;
+  pageSize: number;
   cpuCores: number;
   memTotalBytes: number;
   memUsedBytes: number | null;
@@ -167,6 +171,7 @@ export function buildResourceLogLine(
   return {
     t: new Date(input.at).toISOString(),
     at: input.at,
+    pageSize: input.pageSize,
     totals: {
       cpuCores: input.cpuCores,
       memTotalBytes: input.memTotalBytes,
@@ -361,7 +366,7 @@ export function bootFallbackKills(
  *  — same start-time (pid not recycled) and not a zombie? Pure, so the identity clauses are unit-pinned (review D3). */
 export function isSameLiveProcess(expectedStartTicks: number, statText: string | null): boolean {
   if (statText === null) return false;
-  const p = parseProcStatLine(statText);
+  const p = parseProcIdentity(statText);
   if (!p || p.startTicks !== expectedStartTicks) return false;
   return !/\) Z /.test(statText);
 }
