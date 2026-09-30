@@ -50,16 +50,21 @@ reads them transiently to query usage.
 - **Migration** (existing workspace → another account): re-pinning alone breaks
   `--continue` (its transcript lives in the *old* config dir), so migration
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
-  auto-stops the agent, `moveWorkspaceTranscripts` moves
-  `<old>/projects/<mangled-worktree>/` → the new account's config dir via
-  `moveProjectTranscripts` (`transcript-move.ts`, #240): a no-op when source and
-  destination are the SAME dir by identity (`sameDir`, `same-dir.ts`: resolved path,
-  realpath or dev+ino — trailing `/`, `..`, symlink alias, a shared `projects/`, a bind
-  mount; NEVER the raw config-dir strings, which used to `rm -r` the history), else
-  `fs.cp` (timestamps kept, works across filesystems and for session subdirs) of every
-  entry, VERIFY (each node present, same size + sha256), and only then remove the source
-  entries (dir removed non-recursively, so a late file survives); any failure throws with the
-  source untouched and this call's partial copies removed. Then re-pins `ws.accountId`,
+  auto-stops the agent — `sdkStopIfLive` (always, so a detached keeper's CLI dies too), `killKeeper`
+  (awaits the CLI/keeper death; `sdkStop` does not after a `result`) and `stopPtyAndWait` (`pty.ts`: awaits the PTY child's
+  exit, bounded 10 s, else the migration aborts with nothing moved) — under a per-workspace in-flight guard
+  (`migratingNow`: a 2nd overlapping call → `ok:false "already in progress"`); then `moveWorkspaceTranscripts` moves
+  `<old>/projects/<mangled-worktree>/` → the new account's config dir via `moveProjectTranscripts`
+  (`transcript-move.ts`, #240): a no-op when source and destination are the SAME dir by identity (`sameDir`,
+  `same-dir.ts`: resolved path, realpath or dev+ino — trailing `/`, `..`, symlink alias, a shared `projects/`, a bind
+  mount; NEVER the raw config-dir strings, which used to `rm -r` the history; a FS reporting inode 0 is refused). Same
+  filesystem: plain per-entry `rename` (atomic, a writer holding the fd follows the inode; a mid-way failure renames
+  back what was moved). Cross-filesystem (EXDEV): `fs.cp` to a tmp name (mtimes kept) → verify (size + sha256) → rename
+  into place → re-stat the source entry and remove it only if unchanged (else kept + warning). A destination entry of the
+  same name is NEVER overwritten: identical = the source duplicate is dropped, different = kept in the source + a
+  warning. Failures surface: `moveProjectTranscripts` returns `{warnings}` (unreadable source dir, entries kept, an
+  unremovable duplicate) → logged and returned as `MigrateAccountResult.warnings` (the CLI prints them to stderr; the
+  renderer does not show them, D5). Then re-pins `ws.accountId`,
   `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
   running — at the winsize the PTY had before the stop (`getPtySize`, pty.ts),
   not a blind 80×24: an already-visible terminal never re-asserts its size
@@ -403,10 +408,12 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 ## Tests
 `transcript-move.test.ts` covers `sameDir` (every spelling, hard link = the dev+ino clause, look-alikes) and
 `moveProjectTranscripts` (same dir via trailing slash / `..` / symlink / shared `projects/` / project-dir
-symlink survives; different dir moves byte-identical with mtimes; mid-way copy failure, truncated copy,
-size-preserving bit flip, skipped entry all leave the source intact; late file not deleted). Driven proof through the
-REAL `dispatchMigrateAccountRequest`: `scripts/e2e-migrate-transcripts.mjs all` (12 arms incl. bind mount under
-`unshare -rm` and a cross-filesystem EXDEV target; scratch HOME, live-dir canary).
+symlink survives; same-FS rename keeps inode + mtime and a fd-holding writer; mid-way rename/copy failure, truncated copy,
+size-preserving bit flip, skipped entry all leave the source intact; a different/appearing destination entry is never
+overwritten; a source that changed after it was read is kept; late file not deleted). Driven proof through the REAL
+`dispatchMigrateAccountRequest`: `scripts/e2e-migrate-transcripts.mjs all` (18 arms incl. bind mount under
+`unshare -rm`, a cross-filesystem EXDEV target, 2 overlapping migrations, a real agent PTY still writing, one that will
+not exit; scratch HOME, live-dir canary).
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
 `planAccountMigration` (migrate/noop/error, default-login clear, trimming),

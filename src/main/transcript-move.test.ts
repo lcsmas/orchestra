@@ -5,6 +5,7 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,8 +97,9 @@ async function assertSurvives(srcCfg: string, dstCfg: string, why: string): Prom
   const proj = path.join(srcCfg, 'projects', 'M');
   const before = sig(proj);
   assert.ok(Object.values(before).filter(isFile).length >= 5, 'control: the source really holds transcripts');
-  await moveProjectTranscripts(proj, path.join(dstCfg, 'projects', 'M'));
+  const rep = await moveProjectTranscripts(proj, path.join(dstCfg, 'projects', 'M'));
   assert.deepEqual(sig(proj), before, `${why}: transcripts must survive byte-identical (content + mtime)`);
+  assert.deepEqual(rep.warnings, [], `${why}: a same-dir no-op is not a warning`);
 }
 
 test('same dir: trailing slash / dot segment / double slash on the destination — transcripts survive', async () => {
@@ -137,68 +139,156 @@ test('same dir: the destination PROJECT dir is a symlink to the source project d
   await assertSurvives(a, b, 'project-dir symlink');
 });
 
-test('same file at entry level (dst entry is a hard link of the src entry): rejects, BOTH names keep the content', async () => {
+test('same file at entry level (dst entry is a hard link of the src entry): left in BOTH places, never removed or truncated, with a warning', async () => {
   const base = fresh();
-  const a = path.join(base, '.claude-a'); const b = path.join(base, '.claude-b');
-  const proj = seed(a);
-  const dstProj = path.join(b, 'projects', 'M');
+  const proj = seed(path.join(base, '.claude-a'));
+  const dstProj = path.join(base, '.claude-b', 'projects', 'M');
   fs.mkdirSync(dstProj, { recursive: true });
   fs.linkSync(path.join(proj, 'a.jsonl'), path.join(dstProj, 'a.jsonl'));
-  const before = sig(proj);
-  await assert.rejects(moveProjectTranscripts(proj, dstProj));
-  assert.deepEqual(sig(proj), before, 'source untouched');
-  assert.equal(fs.readFileSync(path.join(dstProj, 'a.jsonl'), 'utf8'), body('a', 40), 'the shared inode was not truncated');
+  const rep = await moveProjectTranscripts(proj, dstProj);
+  assert.equal(fs.readFileSync(path.join(proj, 'a.jsonl'), 'utf8'), body('a', 40), 'the shared inode is intact under the source name');
+  assert.equal(fs.readFileSync(path.join(dstProj, 'a.jsonl'), 'utf8'), body('a', 40), 'and under the destination name');
+  assert.match(rep.warnings.join('|'), /kept a\.jsonl in the source: it cannot be told apart/);
+  assert.equal(fs.existsSync(path.join(dstProj, 'b.jsonl')), true, 'the other entries still move');
 });
 
 // ---- a genuinely different target still moves ------------------------------------------------------------
 
-test('different dir: everything lands at the destination byte-identical (mtimes kept), source removed', async () => {
+test('different dir (same filesystem): plain rename — byte-identical, mtimes AND inodes kept, source removed', async () => {
   const base = fresh();
   const a = path.join(base, '.claude'); const b = path.join(base, '.claude-b'); // prefix look-alike, distinct dir
   const proj = seed(a);
   const before = sig(proj);
+  const inoBefore = fs.statSync(path.join(proj, 'a.jsonl')).ino;
   const dstProj = path.join(b, 'projects', 'M');
-  await moveProjectTranscripts(proj, dstProj);
+  const rep = await moveProjectTranscripts(proj, dstProj);
+  assert.deepEqual(rep.warnings, []);
   assert.deepEqual(sig(dstProj), before, 'content + mtime + subtree identical at the destination');
-  assert.equal(fs.existsSync(proj), false, 'source project dir removed after the verified copy');
+  assert.equal(fs.statSync(path.join(dstProj, 'a.jsonl')).ino, inoBefore, 'same inode = a rename, not a copy');
+  assert.equal(fs.existsSync(proj), false, 'source project dir removed');
   assert.equal(fs.existsSync(path.join(a, 'projects')), true, 'only the project dir is removed, not the config tree');
 });
 
-test('different dir: merges into a pre-existing destination project dir, leaving its other files alone', async () => {
+test('a writer holding the fd of a transcript keeps appending to it AFTER the move (rename follows the inode)', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  const fd = fs.openSync(path.join(proj, 'a.jsonl'), 'a');
+  await moveProjectTranscripts(proj, dstProj);
+  fs.writeSync(fd, 'LATE-LINE\n');
+  fs.closeSync(fd);
+  assert.ok(fs.readFileSync(path.join(dstProj, 'a.jsonl'), 'utf8').endsWith('LATE-LINE\n'), 'the late append landed in the moved file');
+  assert.equal(fs.existsSync(path.join(proj, 'a.jsonl')), false);
+});
+
+const exdev = async (): Promise<void> => { throw Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' }); };
+
+test('cross-filesystem (rename says EXDEV): copy → verify → place; byte-identical incl. subtree and mtimes; source removed', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const before = sig(proj);
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  const rep = await moveProjectTranscripts(proj, dstProj, { rename: exdev });
+  assert.deepEqual(rep.warnings, []);
+  assert.deepEqual(sig(dstProj), before);
+  assert.equal(fs.existsSync(proj), false);
+  assert.deepEqual(fs.readdirSync(dstProj).filter((n) => n.includes('.orchestra-mv-')), [], 'no tmp leftovers');
+});
+
+test('EXDEV on the 3rd rename: what was renamed is put back, then the copy path moves everything', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const before = sig(proj);
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  let n = 0;
+  const flaky = async (f: string, t: string): Promise<void> => { if (++n === 3) await exdev(); await fsp.rename(f, t); };
+  await moveProjectTranscripts(proj, dstProj, { rename: flaky });
+  assert.deepEqual(sig(dstProj), before);
+  assert.equal(fs.existsSync(proj), false);
+});
+
+test('merges nothing into a pre-existing destination: an IDENTICAL entry already there is a duplicate (source dropped), a DIFFERENT one is never overwritten', async () => {
   const base = fresh();
   const proj = seed(path.join(base, 'A'));
   const dstProj = path.join(base, 'B', 'projects', 'M');
   put(path.join(dstProj, 'other.jsonl'), 'keep me\n', 1_700_000_000);
-  put(path.join(dstProj, 'c', 'extra.txt'), 'keep me too\n', 1_700_000_000);
-  await moveProjectTranscripts(proj, dstProj);
+  put(path.join(dstProj, 'a.jsonl'), body('a', 40), 1_756_000_000); // identical to the source's
+  put(path.join(dstProj, 'b.jsonl'), 'DST-HAS-A-DIFFERENT-CONVERSATION\n', 1_756_999_999); // different + newer
+  const dstB = fs.readFileSync(path.join(dstProj, 'b.jsonl'));
+  const srcB = fs.readFileSync(path.join(proj, 'b.jsonl'));
+  const rep = await moveProjectTranscripts(proj, dstProj);
+  assert.deepEqual(fs.readFileSync(path.join(dstProj, 'b.jsonl')), dstB, 'the destination b.jsonl is untouched');
+  assert.deepEqual(fs.readFileSync(path.join(proj, 'b.jsonl')), srcB, 'the source b.jsonl is kept');
+  assert.equal(rep.warnings.length, 1);
+  assert.match(rep.warnings[0], /kept b\.jsonl in the source.*different b\.jsonl/);
+  assert.equal(fs.existsSync(path.join(proj, 'a.jsonl')), false, 'the identical duplicate was dropped from the source');
   assert.equal(fs.readFileSync(path.join(dstProj, 'other.jsonl'), 'utf8'), 'keep me\n');
-  assert.equal(fs.readFileSync(path.join(dstProj, 'c', 'extra.txt'), 'utf8'), 'keep me too\n');
-  assert.equal(fs.readFileSync(path.join(dstProj, 'c', 'subagents', 'agent-1.jsonl'), 'utf8'), body('s', 12));
-  assert.equal(fs.existsSync(proj), false);
+  assert.equal(fs.existsSync(path.join(dstProj, 'c.jsonl')), true, 'the remaining entries moved');
+  assert.deepEqual(fs.readdirSync(proj), ['b.jsonl'], 'source dir kept because it still holds the refused entry');
 });
 
-test('missing or empty source project dir: no-op, destination not created', async () => {
+test('the copy path never overwrites either: a different destination entry survives byte-identical', async () => {
   const base = fresh();
-  await moveProjectTranscripts(path.join(base, 'A', 'projects', 'M'), path.join(base, 'B', 'projects', 'M'));
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  put(path.join(dstProj, 'c', 'extra.txt'), 'keep me too\n', 1_700_000_000); // a `c` session dir that differs from the source's
+  const dstBefore = sig(dstProj);
+  const rep = await moveProjectTranscripts(proj, dstProj, { rename: exdev });
+  assert.match(rep.warnings.join('|'), /kept c in the source/);
+  assert.equal(fs.readFileSync(path.join(dstProj, 'c', 'extra.txt'), 'utf8'), 'keep me too\n');
+  assert.equal(fs.existsSync(path.join(dstProj, 'c', 'subagents')), false, 'nothing merged into the different dir');
+  for (const k of Object.keys(dstBefore)) assert.ok(k in sig(dstProj), `pre-existing ${k} still there`);
+  assert.equal(fs.existsSync(path.join(proj, 'c', 'subagents', 'agent-1.jsonl')), true, 'the refused entry stays in the source');
+});
+
+test('missing or empty source project dir: no-op, destination not created, no warning', async () => {
+  const base = fresh();
+  const r1 = await moveProjectTranscripts(path.join(base, 'A', 'projects', 'M'), path.join(base, 'B', 'projects', 'M'));
   fs.mkdirSync(path.join(base, 'A2', 'projects', 'M'), { recursive: true });
-  await moveProjectTranscripts(path.join(base, 'A2', 'projects', 'M'), path.join(base, 'B2', 'projects', 'M'));
+  const r2 = await moveProjectTranscripts(path.join(base, 'A2', 'projects', 'M'), path.join(base, 'B2', 'projects', 'M'));
+  assert.deepEqual([r1.warnings, r2.warnings], [[], []]);
   assert.equal(fs.existsSync(path.join(base, 'B')), false);
   assert.equal(fs.existsSync(path.join(base, 'B2')), false);
 });
 
 // ---- failure leaves the source intact --------------------------------------------------------------------
 
-test('copy failure mid-way (2nd of 4 entries unwritable): rejects, source FULLY intact, no orphan copy, dst pre-state untouched', async () => {
+test('rename failing on the 3rd entry: rejects, everything renamed so far is put back — source FULLY intact, destination empty', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const before = sig(proj);
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  let n = 0;
+  const failing = async (f: string, t: string): Promise<void> => { if (++n === 3) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); await fsp.rename(f, t); };
+  await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: failing }), /EACCES/);
+  assert.deepEqual(sig(proj), before, 'every source entry back, byte-identical (content + mtime)');
+  assert.deepEqual(Object.keys(sig(dstProj)), [], 'nothing left at the destination');
+});
+
+test('the copy path writes to a TMP name beside the destination and only then renames into place (never the final name)', async () => {
   const base = fresh();
   const proj = seed(path.join(base, 'A'));
   const dstProj = path.join(base, 'B', 'projects', 'M');
-  put(path.join(dstProj, 'b.jsonl', 'precious.txt'), 'pre-existing dst content\n', 1_700_000_000); // a dir where b.jsonl must go
+  const seen: string[] = [];
+  const copy = async (f: string, t: string): Promise<void> => { seen.push(path.basename(t)); fs.cpSync(f, t, { recursive: true, preserveTimestamps: true }); };
+  await moveProjectTranscripts(proj, dstProj, { rename: exdev, copy });
+  assert.equal(seen.length, 4);
+  assert.ok(seen.every((n) => /\.orchestra-mv-/.test(n)), `every copy target is a tmp name: ${seen}`);
+  assert.deepEqual(fs.readdirSync(dstProj).sort(), ['a.jsonl', 'b.jsonl', 'c', 'c.jsonl'], 'and they were renamed into place');
+});
+
+test('copy failing on the 2nd entry: rejects, source intact, our tmp copies removed, pre-existing destination files untouched', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
   const before = sig(proj);
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  put(path.join(dstProj, 'other.jsonl'), 'keep me\n', 1_700_000_000);
   const dstBefore = sig(dstProj);
-  await assert.rejects(moveProjectTranscripts(proj, dstProj));
-  assert.deepEqual(sig(proj), before, 'every source entry still present, byte-identical');
-  assert.equal(fs.existsSync(path.join(dstProj, 'a.jsonl')), false, 'the copy of entry 1 made by this call was removed again');
-  assert.deepEqual(sig(dstProj), dstBefore, 'destination is exactly as it was');
+  let n = 0;
+  const copy = async (f: string, t: string): Promise<void> => { if (++n === 2) throw new Error('ENOSPC: no space left'); fs.cpSync(f, t, { recursive: true }); };
+  await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: exdev, copy }), /ENOSPC/);
+  assert.deepEqual(sig(proj), before);
+  assert.deepEqual(sig(dstProj), dstBefore, 'destination exactly as it was');
 });
 
 test('a copy that silently truncates one file is caught by verification: rejects, source intact, our copies removed', async () => {
@@ -210,7 +300,7 @@ test('a copy that silently truncates one file is caught by verification: rejects
     fs.cpSync(from, to, { recursive: true });
     if (path.basename(from) === 'b.jsonl') fs.truncateSync(to, 100);
   };
-  await assert.rejects(moveProjectTranscripts(proj, dstProj, { copy }), /not verified.*b\.jsonl/);
+  await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: exdev, copy }), /not verified.*b\.jsonl/);
   assert.deepEqual(sig(proj), before);
   assert.deepEqual(Object.keys(sig(dstProj)), [], 'no half-copy left at the destination');
 });
@@ -224,7 +314,7 @@ test('a copy that flips bytes but keeps the SIZE is caught (hash, not just size)
     fs.cpSync(from, to, { recursive: true });
     if (path.basename(from) === 'a.jsonl') { const b = fs.readFileSync(to); b[10] = b[10] ^ 0xff; fs.writeFileSync(to, b); }
   };
-  await assert.rejects(moveProjectTranscripts(proj, dstProj, { copy }), /not verified.*a\.jsonl/);
+  await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: exdev, copy }), /not verified.*a\.jsonl/);
   assert.deepEqual(sig(proj), before);
 });
 
@@ -238,7 +328,7 @@ test('a copy that "succeeds" without writing an entry, or drops a nested file, i
       if (path.basename(from) === skip) return; // "success" that copied nothing
       fs.cpSync(from, to, { recursive: true });
     };
-    await assert.rejects(moveProjectTranscripts(proj, dstProj, { copy }), /not verified/);
+    await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: exdev, copy }), /not verified/);
     assert.deepEqual(sig(proj), before, `source intact (skipped ${skip})`);
   }
   const base = fresh();
@@ -248,8 +338,38 @@ test('a copy that "succeeds" without writing an entry, or drops a nested file, i
     fs.cpSync(from, to, { recursive: true });
     if (path.basename(from) === 'c') fs.rmSync(path.join(to, 'subagents', 'agent-1.jsonl'));
   };
-  await assert.rejects(moveProjectTranscripts(proj, dstProj, { copy }), /not verified.*subagents\/agent-1\.jsonl/);
+  await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: exdev, copy }), /not verified.*subagents\/agent-1\.jsonl/);
   assert.equal(fs.existsSync(path.join(proj, 'c', 'subagents', 'agent-1.jsonl')), true);
+});
+
+test('a destination entry that APPEARS during the copy is never overwritten: rejects, source intact, that entry untouched, our tmp copies removed', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const before = sig(proj);
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  const copy = async (f: string, t: string): Promise<void> => {
+    fs.cpSync(f, t, { recursive: true, preserveTimestamps: true });
+    if (path.basename(f) === 'a.jsonl') put(path.join(dstProj, 'a.jsonl'), 'CREATED-BY-SOMEONE-ELSE\n', 1_700_000_000); // lands between plan and placement
+  };
+  await assert.rejects(moveProjectTranscripts(proj, dstProj, { rename: exdev, copy }), /appeared during the move/);
+  assert.deepEqual(sig(proj), before);
+  assert.equal(fs.readFileSync(path.join(dstProj, 'a.jsonl'), 'utf8'), 'CREATED-BY-SOMEONE-ELSE\n', 'not overwritten, not removed');
+  assert.deepEqual(fs.readdirSync(dstProj).filter((n) => n.includes('.orchestra-mv-')), [], 'our tmp copies are gone');
+});
+
+test('a source entry that CHANGES after it was read (writer still alive) is kept, with a warning — the copy is stale', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  const copy = async (from: string, to: string): Promise<void> => {
+    fs.cpSync(from, to, { recursive: true, preserveTimestamps: true });
+    if (path.basename(from) === 'b.jsonl') { const t = new Date(1_800_000_000 * 1000); fs.utimesSync(from, t, t); } // touched right after being copied
+  };
+  const rep = await moveProjectTranscripts(proj, dstProj, { rename: exdev, copy });
+  assert.equal(fs.existsSync(path.join(proj, 'b.jsonl')), true, 'the changed source is NOT removed');
+  assert.equal(fs.existsSync(path.join(dstProj, 'b.jsonl')), true);
+  assert.match(rep.warnings.join('|'), /kept b\.jsonl in the source: it changed while it was being copied/);
+  assert.equal(fs.existsSync(path.join(proj, 'a.jsonl')), false, 'unchanged entries are still removed');
 });
 
 test('removal is non-recursive on the dir: a file that appears in the source mid-move is never deleted', async () => {
@@ -260,10 +380,56 @@ test('removal is non-recursive on the dir: a file that appears in the source mid
     fs.cpSync(from, to, { recursive: true, preserveTimestamps: true });
     put(path.join(proj, 'late.jsonl'), 'written after readdir\n', 1_756_300_000);
   };
-  await moveProjectTranscripts(proj, dstProj, { copy });
+  await moveProjectTranscripts(proj, dstProj, { rename: exdev, copy });
   assert.equal(fs.readFileSync(path.join(proj, 'late.jsonl'), 'utf8'), 'written after readdir\n', 'the late file survives');
   assert.deepEqual(fs.readdirSync(proj), ['late.jsonl'], 'only the verified entries were removed');
   assert.equal(fs.existsSync(path.join(dstProj, 'a.jsonl')), true);
+});
+
+// ---- identity assertions (F5) -----------------------------------------------------------------------------
+
+test('a filesystem that reports inode 0 is refused BEFORE anything moves', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const before = sig(proj);
+  const lstatSeam = async (p: string, o: { bigint: true }): Promise<fs.BigIntStats> => {
+    const st = await fsp.lstat(p, o);
+    return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { ino: 0n }) as fs.BigIntStats;
+  };
+  await assert.rejects(moveProjectTranscripts(proj, path.join(base, 'B', 'projects', 'M'), { lstat: lstatSeam }), /cannot tell .* from .*no stable inode/);
+  assert.deepEqual(sig(proj), before);
+});
+
+test('a source entry that turns out to be the SAME object as its destination copy is never removed', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  let armed = false;
+  const lstatSeam = async (p: string, o: { bigint: true }): Promise<fs.BigIntStats> =>
+    fsp.lstat(armed && p === path.join(proj, 'a.jsonl') ? path.join(dstProj, 'a.jsonl') : p, o); // from-side of a.jsonl now aliases its copy
+  const copy = async (f: string, t: string): Promise<void> => { fs.cpSync(f, t, { recursive: true, preserveTimestamps: true }); if (path.basename(f) === 'c.jsonl') armed = true; };
+  const rep = await moveProjectTranscripts(proj, dstProj, { rename: exdev, copy, lstat: lstatSeam });
+  assert.equal(fs.existsSync(path.join(proj, 'a.jsonl')), true, 'not removed');
+  assert.match(rep.warnings.join('|'), /kept a\.jsonl in the source: it cannot be told apart/);
+  assert.equal(fs.existsSync(path.join(proj, 'b.jsonl')), false, 'others still removed');
+});
+
+// ---- F4: failures are reported, not swallowed --------------------------------------------------------------
+
+test('a source entry that cannot be removed after the verified copy → a warning naming it (not silent), history safe at the destination', async () => {
+  const base = fresh();
+  const proj = seed(path.join(base, 'A'));
+  const dstProj = path.join(base, 'B', 'projects', 'M');
+  const copy = async (f: string, t: string): Promise<void> => { fs.cpSync(f, t, { recursive: true, preserveTimestamps: true }); };
+  // make ONE source entry unremovable: a dir whose parent stays writable but which holds an immutable-by-permission child
+  fs.chmodSync(path.join(proj, 'c', 'tool-results'), 0o555);
+  try {
+    const rep = await moveProjectTranscripts(proj, dstProj, { rename: exdev, copy });
+    assert.match(rep.warnings.join('|'), /could not remove .*\/c \(EACCES\)/);
+    assert.equal(fs.readFileSync(path.join(dstProj, 'c', 'tool-results', 'r.txt'), 'utf8'), 'result\n'.repeat(300));
+  } finally {
+    fs.chmodSync(path.join(proj, 'c', 'tool-results'), 0o755);
+  }
 });
 
 test('firstMismatch: identical → null; extra nodes at the destination are fine; a differing/missing node is named', async () => {
@@ -280,10 +446,20 @@ test('firstMismatch: identical → null; extra nodes at the destination are fine
 
 // ---- wiring (belt only — the driven proof is scripts/e2e-migrate-transcripts.mjs) ------------------------
 
-test('wiring: workspaces.ts routes the move through moveProjectTranscripts and compares no config-dir strings', () => {
+test('wiring: workspaces.ts routes the move through moveProjectTranscripts, awaits the writer\'s death, and locks per workspace', () => {
   const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'workspaces.ts'), 'utf8');
   const fn = src.slice(src.indexOf('async function moveWorkspaceTranscripts('), src.indexOf('export async function dispatchMigrateAccountRequest('));
   assert.ok(fn.length > 100 && fn.includes('moveProjectTranscripts('), 'the move goes through the identity-checked helper');
   assert.equal(/srcConfigDir\s*===?\s*dstConfigDir/.test(fn), false, 'no raw-string equality on the config dirs');
   assert.equal(/rm\(\s*srcDir/.test(fn), false, 'no unconditional rm of the source dir');
+  const disp = src.slice(src.indexOf('export async function dispatchMigrateAccountRequest('));
+  const body = disp.slice(0, disp.indexOf('\nexport '));
+  for (const [re, what] of [
+    [/migratingNow\.has\(id\)/, 'per-workspace in-flight guard'],
+    [/migratingNow\.delete\(id\)/, 'guard released in finally'],
+    [/await sdkStopIfLive\(id\)/, 'unconditional SDK stop (detached keeper too)'],
+    [/await killKeeper\(id\)/, 'awaits the keeper/CLI death'],
+    [/await stopPtyAndWait\(id\)/, 'awaits the PTY child exit'],
+  ] as const) assert.ok(re.test(body), `dispatchMigrateAccountRequest: ${what}`);
+  assert.equal(/sdkSessionLive\(id\)/.test(body), false, 'the SDK stop is not gated on an in-memory session (a detached keeper has none)');
 });

@@ -1,26 +1,49 @@
 // Relocating one workspace's transcript dir between account config dirs (#240). Pure node:fs — no electron, no
 // store — so `node --test` loads it directly.
 //
-// Invariant: a transcript byte exists at the source OR at the destination at every instant. The source is removed
-// only after EVERY entry was copied AND verified (present, same size + sha256) at the destination, and never when
-// source and destination are the same directory however they are spelled (trailing slash, `..`, symlink, shared
-// `projects/`, bind mount). Master `rename`d then `rm -r`'d by raw-string compare: an aliased target wiped the history.
+// Invariant: a transcript byte exists at the source OR at the destination at every instant, and the source is never
+// removed unless it is provably the SAME data as a verified destination copy.
+//  - never on the same dir however spelled (trailing slash, `..`, symlink, shared `projects/`, bind mount) — master
+//    compared strings, "moved" the dir onto itself and `rm -r`'d it;
+//  - same filesystem: plain `rename` per entry (atomic; a writer holding the fd follows the inode). A mid-way failure
+//    renames back what this call moved;
+//  - cross-filesystem (EXDEV): copy to a tmp name → verify (size + sha256) → rename into place → re-stat the source
+//    entry and remove it only if unchanged since the copy; an existing destination entry is NEVER overwritten.
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { cp, lstat, mkdir, readdir, readlink, rm, rmdir } from 'node:fs/promises';
+import { createReadStream, type BigIntStats } from 'node:fs';
+import { cp, lstat, mkdir, readdir, readlink, rename, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { sameDir } from './same-dir.ts';
 
+export interface MoveReport {
+  /** Things the caller should surface (kept entries, leftover duplicates, an unreadable source). Empty = clean. */
+  warnings: string[];
+}
+
 export interface MoveIo {
-  /** Test seam: how one entry (file or directory tree) is copied. Default = `fs.cp`, timestamps preserved
-   *  (`claude --continue` resumes the NEWEST transcript, so mtimes are part of the data). */
+  /** Test seams. `copy` = how one entry (file or tree) is copied (default `fs.cp`, timestamps kept — `claude
+   *  --continue` resumes the NEWEST transcript); `rename` = the same-filesystem move (default `fs.rename`). */
   copy?: (from: string, to: string) => Promise<void>;
+  rename?: (from: string, to: string) => Promise<void>;
+  /** Identity probe (`dev:ino`) — lets a test model a filesystem that reports inode 0 / a source that aliases its copy. */
+  lstat?: (p: string, opts: { bigint: true }) => Promise<BigIntStats>;
 }
 
 const defaultCopy = (from: string, to: string): Promise<void> =>
-  cp(from, to, { recursive: true, force: true, preserveTimestamps: true, verbatimSymlinks: true });
+  cp(from, to, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true, verbatimSymlinks: true });
 
+const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException | null)?.code;
 const exists = (p: string): Promise<boolean> => lstat(p).then(() => true, () => false);
+
+/** `dev:ino` of a path (a final symlink is not followed), or null when the FS reports no stable inode (0) or it is gone. */
+async function objectId(p: string, lstatFn: NonNullable<MoveIo['lstat']> = lstat): Promise<string | null> {
+  try {
+    const st = await lstatFn(p, { bigint: true });
+    return st.ino === 0n ? null : `${st.dev}:${st.ino}`;
+  } catch {
+    return null;
+  }
+}
 
 async function sha256(file: string): Promise<string> {
   const h = createHash('sha256');
@@ -45,8 +68,8 @@ async function snapshot(root: string): Promise<Map<string, string>> {
   return out;
 }
 
-/** null when every node under `from` exists under `to` with an equal signature (extra nodes under `to` are fine —
- *  a pre-existing session dir is merged into), else a description of the first difference. */
+/** null when every node under `from` exists under `to` with an equal signature (extra nodes under `to` are fine),
+ *  else a description of the first difference. */
 export async function firstMismatch(from: string, to: string): Promise<string | null> {
   const a = await snapshot(from);
   const b = await snapshot(to);
@@ -57,40 +80,133 @@ export async function firstMismatch(from: string, to: string): Promise<string | 
   return null;
 }
 
+/** Cheap change detector for a source entry (no hashing): mode + size + mtime + inode of every node, directories
+ *  included (a dir's mtime moves when an entry is added or removed). Re-taken right before a source is removed. */
+async function statSig(root: string): Promise<string> {
+  const parts: string[] = [];
+  const walk = async (p: string, rel: string): Promise<void> => {
+    const st = await lstat(p, { bigint: true });
+    parts.push(`${rel}|${st.mode}|${st.size}|${st.mtimeNs}|${st.ino}`);
+    if (st.isDirectory()) for (const n of (await readdir(p)).sort()) await walk(path.join(p, n), rel ? `${rel}/${n}` : n);
+  };
+  await walk(root, '');
+  return parts.join('\n');
+}
+
+interface Item {
+  name: string;
+  from: string;
+  to: string;
+  /** statSig of the source taken BEFORE it was copied / compared. */
+  pre?: string;
+  tmp?: string;
+}
+
 /** Move every entry of `srcDir` into `dstDir` (created if needed). No-op when `srcDir` is missing/empty or IS
- *  `dstDir` (identity, not string). Throws — with the source untouched — when any copy or verification fails;
- *  copies this call created at the destination are removed again (never a path that pre-existed). */
-export async function moveProjectTranscripts(srcDir: string, dstDir: string, io: MoveIo = {}): Promise<void> {
+ *  `dstDir` (identity, not string). Throws — source untouched — when a move/copy/verification fails. Never
+ *  overwrites an existing destination entry (kept in the source + a warning). */
+export async function moveProjectTranscripts(srcDir: string, dstDir: string, io: MoveIo = {}): Promise<MoveReport> {
+  const warnings: string[] = [];
   let entries: string[];
   try {
     entries = await readdir(srcDir);
-  } catch {
-    return; // no project dir under the source account → nothing to move
-  }
-  if (entries.length === 0) return;
-  entries.sort();
-  if (sameDir(srcDir, dstDir)) return; // the SAME dir however spelled: nothing to move, nothing may be removed
-  await mkdir(dstDir, { recursive: true });
-
-  const copy = io.copy ?? defaultCopy;
-  const created: string[] = [];
-  try {
-    for (const name of entries) {
-      const to = path.join(dstDir, name);
-      if (!(await exists(to))) created.push(to);
-      await copy(path.join(srcDir, name), to);
+  } catch (err) {
+    // ENOENT/ENOTDIR = nothing recorded yet. Anything else (EACCES…) is history we could not even list: say so.
+    if (errCode(err) !== 'ENOENT' && errCode(err) !== 'ENOTDIR') {
+      warnings.push(`cannot read ${srcDir} (${errCode(err) ?? err}) — its transcripts were NOT moved`);
     }
-    for (const name of entries) {
-      const bad = await firstMismatch(path.join(srcDir, name), path.join(dstDir, name));
-      if (bad) throw new Error(`transcript copy not verified (${name} — ${bad}); source left intact`);
+    return { warnings };
+  }
+  if (entries.length === 0) return { warnings };
+  entries.sort();
+  if (sameDir(srcDir, dstDir)) return { warnings }; // the SAME dir however spelled: nothing to move, nothing may be removed
+  await mkdir(dstDir, { recursive: true });
+  const idOf = (p: string): Promise<string | null> => objectId(p, io.lstat);
+  const [srcId, dstId] = [await idOf(srcDir), await idOf(dstDir)];
+  if (srcId === null || dstId === null) {
+    throw new Error(`cannot tell ${srcDir} from ${dstDir} on this filesystem (no stable inode) — nothing was moved`);
+  }
+
+  // Plan: a destination entry of the same name is never overwritten — identical content = the source is a duplicate
+  // (dropped below, guarded); different content = kept in the source with a warning.
+  const moves: Item[] = [];
+  const dups: Item[] = [];
+  for (const name of entries) {
+    const item: Item = { name, from: path.join(srcDir, name), to: path.join(dstDir, name) };
+    if (!(await exists(item.to))) { moves.push(item); continue; }
+    item.pre = await statSig(item.from);
+    const bad = await firstMismatch(item.from, item.to);
+    if (bad === null) dups.push(item);
+    else warnings.push(`kept ${name} in the source: the destination already has a different ${name} (${bad})`);
+  }
+
+  const renameFn = io.rename ?? rename;
+  const copied: Item[] = [];
+  let viaCopy = (await lstat(srcDir)).dev !== (await lstat(dstDir)).dev;
+  if (!viaCopy) {
+    const moved: Item[] = [];
+    try {
+      for (const it of moves) { await renameFn(it.from, it.to); moved.push(it); }
+    } catch (err) {
+      // Atomic renames: every file is in exactly one place. Put back what THIS call moved so the source is whole again.
+      for (const it of moved.reverse()) {
+        if (await exists(it.from)) warnings.push(`could not put ${it.name} back: ${it.from} was recreated meanwhile — it is at ${it.to}`);
+        else await renameFn(it.to, it.from).catch((e) => warnings.push(`could not put ${it.name} back (${errCode(e)}) — it is at ${it.to}`));
+      }
+      if (errCode(err) !== 'EXDEV') throw err;
+      viaCopy = true; // e.g. overlay/FUSE: same st_dev, yet rename refuses → copy path below
+    }
+  }
+  if (viaCopy) {
+    await copyVerifyPlace(moves, io.copy ?? defaultCopy);
+    copied.push(...moves);
+  }
+
+  // Sources that are now provably duplicated at the destination: remove each only if unchanged since it was read.
+  for (const it of [...copied, ...dups]) {
+    const [a, b] = [await idOf(it.from), await idOf(it.to)];
+    if (a === null || b === null || a === b) { warnings.push(`kept ${it.name} in the source: it cannot be told apart from its destination copy`); continue; }
+    if (it.pre !== undefined && (await statSig(it.from).catch(() => null)) !== it.pre) {
+      warnings.push(`kept ${it.name} in the source: it changed while it was being copied (a writer is still alive?) — the destination copy may be stale`);
+      continue;
+    }
+    try {
+      await rm(it.from, { recursive: true, force: true });
+    } catch (err) {
+      warnings.push(`could not remove ${it.from} (${errCode(err) ?? err}) — its transcripts are at ${it.to}; a duplicate remains in the source`);
+    }
+  }
+  // The dir itself only if — and only if — it is empty (non-recursive: a file that appeared meanwhile is never deleted).
+  await rmdir(srcDir).catch((err) => {
+    if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(errCode(err) ?? '')) warnings.push(`could not remove ${srcDir} (${errCode(err) ?? err})`);
+  });
+  return { warnings };
+}
+
+/** Cross-filesystem move of `items`: copy each to a tmp name beside its destination, verify ALL, then rename them into
+ *  place. Throws with the source untouched and every tmp / placed copy of THIS call removed. The source is not
+ *  removed here (the caller does it, guarded). Sets `pre` on each item. */
+async function copyVerifyPlace(items: Item[], copy: (from: string, to: string) => Promise<void>): Promise<void> {
+  const tag = `.orchestra-mv-${process.pid}-${Date.now().toString(36)}`;
+  const ours: string[] = [];
+  try {
+    for (const it of items) {
+      it.pre = await statSig(it.from);
+      it.tmp = `${it.to}${tag}`;
+      ours.push(it.tmp);
+      await copy(it.from, it.tmp);
+    }
+    for (const it of items) {
+      const bad = await firstMismatch(it.from, it.tmp as string);
+      if (bad) throw new Error(`transcript copy not verified (${it.name} — ${bad}); source left intact`);
+    }
+    for (const it of items) {
+      if (await exists(it.to)) throw new Error(`destination ${it.name} appeared during the move; source left intact`);
+      await rename(it.tmp as string, it.to); // within the destination filesystem: atomic
+      ours.push(it.to);
     }
   } catch (err) {
-    for (const to of created) await rm(to, { recursive: true, force: true }).catch(() => undefined);
+    for (const p of ours) await rm(p, { recursive: true, force: true }).catch(() => undefined);
     throw err;
   }
-  // Verified at the destination: only now drop the source, entry by entry (a failure leaves a harmless duplicate;
-  // the history is safe at dst), then the dir itself if — and only if — it is empty (non-recursive: a file that
-  // appeared meanwhile is never deleted).
-  for (const name of entries) await rm(path.join(srcDir, name), { recursive: true, force: true }).catch(() => undefined);
-  await rmdir(srcDir).catch(() => undefined);
 }

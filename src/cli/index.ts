@@ -2139,6 +2139,7 @@ async function main(argv: string[]): Promise<void> {
       const label = target ?? 'default login';
       const resumed = res.resumed === true ? ' (resumed)' : '';
       process.stdout.write(`Migrated ${res.id as string} to ${label}${resumed}\n`);
+      for (const w of Array.isArray(res.warnings) ? (res.warnings as string[]) : []) process.stderr.write(`warning: ${w}\n`);
       return;
     }
 

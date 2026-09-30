@@ -54,6 +54,8 @@ export interface MigrateAccountResult {
   /** True when the agent was running and was auto-resumed after the move. */
   resumed?: boolean;
   error?: string;
+  /** #240: transcripts the move left behind / duplicated (logged; not rendered — D5). Absent = clean. */
+  warnings?: string[];
 }
 
 export interface OrchestraAPI {

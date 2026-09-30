@@ -6,7 +6,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
-import { moveProjectTranscripts } from './transcript-move';
+import { moveProjectTranscripts, type MoveReport } from './transcript-move';
 import { store } from './store';
 import { forbidKeeperLaunch, killKeeper, killKeeperTree, snapshotKeeperTree } from './keeper-client';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
@@ -37,6 +37,7 @@ import {
 import {
   isRunning,
   stopPty,
+  stopPtyAndWait,
   clearScrollback,
   startPty,
   writePty,
@@ -2812,7 +2813,13 @@ export interface MigrateAccountResult {
   /** True when the agent was running and was auto-resumed after the move. */
   resumed?: boolean;
   error?: string;
+  /** #240: things the move left for a human (entries kept in the source, a leftover duplicate, an unreadable source
+   *  dir). Absent = clean. Logged; the CLI prints them; the renderer does not show them (D5). */
+  warnings?: string[];
 }
+
+/** One migration per workspace at a time (#240 F1): two overlapping moves of one transcript dir raced. */
+const migratingNow = new Set<string>();
 
 /** Fallback PTY geometry for an agent auto-resumed after an account migration
  * (80×24 is the universal default). Only reached when the pre-stop size could
@@ -2838,9 +2845,9 @@ async function moveWorkspaceTranscripts(
   worktreePath: string,
   srcConfigDir: string,
   dstConfigDir: string,
-): Promise<void> {
+): Promise<MoveReport> {
   const mangled = mangleProjectDir(worktreePath);
-  await moveProjectTranscripts(
+  return moveProjectTranscripts(
     path.join(srcConfigDir, 'projects', mangled),
     path.join(dstConfigDir, 'projects', mangled),
   );
@@ -2897,6 +2904,8 @@ export async function dispatchMigrateAccountRequest(input: {
     ? expandConfigDir(targetAccount.configDir, os.homedir(), process.env) || defaultDir
     : defaultDir;
 
+  if (migratingNow.has(id)) return { ok: false, error: `a migration of workspace ${id} is already in progress` };
+  migratingNow.add(id);
   try {
     const wasRunning = isRunning(id);
     // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
@@ -2907,19 +2916,25 @@ export async function dispatchMigrateAccountRequest(input: {
     // ws.sdkSessionId from the now-relocated transcript). Structured sessions are
     // reopened by the renderer on demand, so there is no main-side auto-resume to
     // mirror the PTY one below.
-    const hadSdkSession = sdkSessionLive(id);
-    if (hadSdkSession) await sdkStopIfLive(id);
+    // #240 F2: ALWAYS stop (not only when an in-memory session exists — a detached keeper's CLI survives an app
+    // relaunch) and AWAIT the CLI/keeper's death: sdkStop deliberately does not after a `result`, and moving a
+    // transcript out from under a live writer loses what it appends next.
+    await sdkStopIfLive(id);
+    await killKeeper(id).catch(() => undefined);
     // Capture the live winsize before the stop: the resume below happens
     // main-side (no renderer round-trip), and an already-visible terminal
     // won't re-assert its size, so respawning at the old size is what keeps
     // Claude's TUI drawing at the pane's real width.
     const priorSize = wasRunning ? getPtySize(id) : null;
-    if (wasRunning) stopPty(id);
+    if (wasRunning && !(await stopPtyAndWait(id))) {
+      return { ok: false, error: 'the agent did not exit after stop — migration aborted, nothing was moved' };
+    }
 
     // Move the conversation before re-pinning so a failure leaves the workspace
     // on its original account (with its history intact) rather than pinned to an
     // account whose config dir has no transcript.
-    await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+    const moveReport = await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+    for (const w of moveReport.warnings) log.warn(`migrate ${id}: ${w}`);
 
     const updated: Workspace = { ...ws };
     if (targetAccountId) updated.accountId = targetAccountId;
@@ -2961,9 +2976,18 @@ export async function dispatchMigrateAccountRequest(input: {
       }
     }
 
-    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, resumed };
+    return {
+      ok: true,
+      id,
+      branch: ws.branch,
+      accountId: targetAccountId ?? null,
+      resumed,
+      ...(moveReport.warnings.length ? { warnings: moveReport.warnings } : {}),
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
+  } finally {
+    migratingNow.delete(id);
   }
 }
 

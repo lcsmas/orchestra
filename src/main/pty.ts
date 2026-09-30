@@ -538,6 +538,30 @@ export function stopPty(id: string) {
   }
 }
 
+/** {@link stopPty}, then wait (bounded) for the child process to actually exit. Resolves true once it has (or there
+ *  was no session), false on timeout. Account migration needs the writer DEAD before it moves a transcript: `kill()`
+ *  is a SIGHUP that returns at once. The exit listener is attached BEFORE the kill — disposeSession drops the
+ *  session's own, and the transport fires exit once. */
+export function stopPtyAndWait(id: string, timeoutMs = 10_000): Promise<boolean> {
+  const s = sessions.get(id);
+  if (!s) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let sub: { dispose(): void } | undefined;
+    const done = (ok: boolean): void => {
+      clearTimeout(timer);
+      try {
+        sub?.dispose();
+      } catch {
+        /* ignore */
+      }
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    sub = s.transport.onExit(() => done(true));
+    stopPty(id);
+  });
+}
+
 // Set once the app is tearing down (before-quit / window-all-closed). It flips
 // the exit handler from "self-heal the status dot" to "preserve `running` as a
 // resume marker": an agent that was working when the app closed should come
