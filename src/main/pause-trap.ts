@@ -272,8 +272,12 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   if (pauser) activity.interrupt = 'exempt';
   else if (target !== null && 'error' in target) {
     // The pauser can only be recognised through a PROVEN CLI: a flaking probe must never interrupt it, so the interrupt waits for the retry (round-2 F2).
-    activity.interrupt = 'skipped';
-    activity.notes = [...(activity.notes ?? []), 'CLI identity not proven on this attempt — the interrupt is deferred to the retry (the pauser cannot be ruled out)'];
+    // An interrupt a PREVIOUS attempt already made stays on the Bilan (pre-review r2 #3): only a never-interrupted member reads "skipped".
+    if (prior?.interrupt === 'interrupted' || prior?.interrupt === 'attached-then-interrupted') activity.interrupt = prior.interrupt;
+    else {
+      activity.interrupt = 'skipped';
+      activity.notes = [...(activity.notes ?? []), 'CLI identity not proven on this attempt — the interrupt is deferred to the retry (the pauser cannot be ruled out)'];
+    }
   } else if (humanDuringTrap) {
     activity.interrupt = 'skipped';
     activity.notes = [...(activity.notes ?? []), 'a HUMAN prompt started a turn during the trap: that turn is allowed and was not interrupted; only processes older than it are killed'];
@@ -511,7 +515,8 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
     if (!carrier) return 'not-paused';
     if (trapArming.has(m.wsId)) return 'skipped'; // the member trap's own arm() attach fired this start: trapMember handles the turn (pauser-aware)
     // a human turn IN FLIGHT (exact) OR a fresh mark (the hook of a very short turn can land after its result); BOTH are consumed — a leftover mark must not admit a later CLI turn
-    const humanNow = deps.humanTurnInFlight?.(m) === true;
+    // anchored on the pause (pre-review r2 #1): a human turn yielded BEFORE the pause, whose hook lands late, is still trapped (it was in flight at the pause)
+    const humanNow = deps.humanTurnInFlight?.(m) === true && (lastHumanTurnStart(m.wsId) ?? 0) >= carrier.pausedAt;
     const marked = consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);
     if (humanNow || marked) return 'allowed';
     if (m.remote) return 'skipped';

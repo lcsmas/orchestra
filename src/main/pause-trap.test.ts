@@ -1007,3 +1007,34 @@ test('round-2 F3 an exact-allowed start also CONSUMES the fresh mark (a leftover
   rig.clock = c.pausedAt + 50;
   assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted', 'the mark was consumed with the exact allow');
 });
+
+test('pre-review r2 #1: a human turn yielded BEFORE the pause whose hook lands late is still TRAPPED — the exact human allow is anchored on the pause (it was in flight when the pause landed)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  markPauseHumanTurn('w1', Date.now() - 2_000); // yielded 2 s before the pause (real clock: pausedAt is real)
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  rig.calls.length = 0;
+  rig.clock = c.pausedAt + 40_000;
+  rig.deps.humanTurnInFlight = () => true;
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+  assert.ok(rig.calls.includes('interrupt:w1'));
+});
+
+test('pre-review r2 #3: an interrupt attempt 1 made stays on the Bilan when attempt 2\'s probe flakes (never rewritten to "skipped", no second interrupt)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const okKill = rig.deps.killTrees;
+  rig.deps.killTrees = async () => { throw new Error('kill boom'); }; // attempt 1: interrupts, then incomplete
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interrupt, 'interrupted');
+  rig.calls.length = 0;
+  rig.deps.killTrees = okKill;
+  rig.cliResult = { error: 'keeper unresponsive' }; // attempt 2: the probe flakes
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interrupt, 'interrupted', 'the first attempt\'s interrupt is kept');
+  assert.ok(!rig.calls.includes('interrupt:w1'), 'and it is not repeated while the CLI is unproven');
+});

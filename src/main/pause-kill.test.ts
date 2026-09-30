@@ -424,7 +424,7 @@ setInterval(() => {}, 1000);
 console.log('ready');
 `;
 
-test('round-2 F1b REAL: a tool that starts 100 ms AFTER a human turn began is SPARED by the cutoff; the older tool is killed (a biased start-time reads the newer one as older and kills it)', async () => {
+test('round-2 F1b REAL: a tool that starts 1.1 s AFTER a human turn began is SPARED by the cutoff; the older tool is killed (a biased start-time reads the newer one as older and kills it)', async () => {
   if (process.platform !== 'linux') return;
   const spawned: ChildProcess[] = [];
   try {
@@ -435,7 +435,7 @@ test('round-2 F1b REAL: a tool that starts 100 ms AFTER a human turn began is SP
     await waitFor(() => findByArgv('sleep 7793').length === 1);
     await new Promise((r) => setTimeout(r, 500));
     const humanStart = Date.now(); // the human turn begins here
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 1100)); // > 1 s: the floored-btime error is < 1 s, so the OLD read flips this tool to "older" on EVERY boot
     cli.stdin!.write('b');
     await waitFor(() => findByArgv('sleep 7794').length === 1);
     const cliId = real.read(cli.pid!) as ProcIdent;
