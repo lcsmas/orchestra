@@ -128,7 +128,7 @@ rg_run_gate() {
   echo "release-gate: PASS — tsc clean; $detail; tree $(git rev-parse --short=12 'HEAD^{tree}')"
 }
 
-# After the suite (node ABI 127) and before the packaged build (Electron ABI 130).
+# After the suite (node ABI 127) and before the packaged build (Electron ABI 130). Sets _RG_NATIVE_READY for rg_ui_idle_budget.
 rg_prepare_native() {
   local log; log="$(mktemp "${TMPDIR:-/tmp}/release-gate-abi.XXXXXX")" || return 1
   echo "  pnpm run build:bus-abi (the packaged build needs the Electron ABI, the suite leaves node's)"
@@ -138,10 +138,46 @@ rg_prepare_native() {
     return 1
   fi
   rm -f "$log"
+  _RG_NATIVE_READY=1
+}
+
+# UI idle budget (#215): the built app under its OWN headless sway (no visible window) must do zero per-frame work on idle panes.
+# Builds this tree's bundles, then scripts/e2e-ui-idle-budget.sh: rc 0 pass, 1 budget breached, 4 a control refused, else a rig fault.
+rg_ui_idle_budget() {
+  local dir rc=0 head0 dirt; dir="$(mktemp -d "${TMPDIR:-/tmp}/release-gate-ui.XXXXXX")" || return 1
+  head0="$(git rev-parse HEAD)"
+  echo "  gate: UI idle budget (pnpm run build:bundles -> scripts/e2e-ui-idle-budget.sh, own headless sway)"
+  [ "${_RG_NATIVE_READY:-0}" = 1 ] || rg_prepare_native || return 1
+  if ! pnpm run build:bundles >"$dir/bundles.log" 2>&1; then
+    _rg_refuse ui-idle-budget "'pnpm run build:bundles' exited nonzero. Log: $dir/bundles.log"; tail -15 "$dir/bundles.log" >&2; return 1
+  fi
+  # Bounded (#215 F7): one wedged compositor or renderer must not hang a release. RG_UI_TIMEOUT is the rig's test seam (default 600 s).
+  timeout -k 30 "${RG_UI_TIMEOUT:-600}" bash scripts/e2e-ui-idle-budget.sh --require-bus --json "$dir/ui.json" >"$dir/ui.log" 2>&1 || rc=$?   # the shipped app has a fleet bus: a run without it proves less
+  local lines; lines="$(grep -E '^(FAIL|REFUSE|REFUSED|ABORT|ui-idle-budget:)' "$dir/ui.log" | cut -c1-400 | head -8 | tr '\n' ';' || true)"
+  case "$rc" in
+    0) : ;;
+    1) _rg_refuse ui-idle-budget "an idle pane does per-frame work: $lines Log: $dir/ui.log"; return 1 ;;
+    4) _rg_refuse ui-idle-budget "a positive control refused, so the run proves nothing (fails closed): $lines Log: $dir/ui.log"; return 1 ;;
+    124) _rg_refuse ui-idle-budget "timed out after ${RG_UI_TIMEOUT:-600} s (a wedged compositor or renderer): $(tail -3 "$dir/ui.log" | tr '\n' ';') Log: $dir/ui.log"; return 1 ;;
+    *) _rg_refuse ui-idle-budget "the rig itself failed (rc=$rc): $(tail -3 "$dir/ui.log" | tr '\n' ';') Log: $dir/ui.log"; return 1 ;;
+  esac
+  # rc 0 alone is not a pass (a silent or truncated run also exits 0): the rig's own terminator line, and separately its JSON verdict, must be there.
+  if ! grep -q '^ui-idle-budget: PASS' "$dir/ui.log"; then
+    _rg_refuse ui-idle-budget "rc=0 but no 'ui-idle-budget: PASS' terminator line, so a silent or truncated run cannot be told from a pass (fails closed). Log: $dir/ui.log"; return 1
+  fi
+  if ! grep -q '"verdict": "PASS"' "$dir/ui.json" 2>/dev/null; then
+    _rg_refuse ui-idle-budget "rc=0 and a PASS line but the JSON verdict is missing or not PASS ($dir/ui.json) (fails closed). Log: $dir/ui.log"; return 1
+  fi
+  dirt="$(_rg_tree_dirt)"
+  if [ "$(git rev-parse HEAD)" != "$head0" ] || [ -n "$dirt" ]; then
+    _rg_refuse tree "the tree changed while the UI budget ran: HEAD ${head0:0:8}->$(git rev-parse --short=8 HEAD) $dirt"; return 1
+  fi
+  echo "  ok: $(grep -E '^ui-idle-budget: PASS' "$dir/ui.log" | head -1 | cut -c1-300)"
+  rm -rf "$dir"
 }
 
 # The record appended to the release notes when the gate is bypassed.
 rg_bypass_record() { # reason
-  printf '\n## ⚠ Release gate bypassed\n\nCut with `--skip-release-gate`: `npx tsc --noEmit`, the full test suite and the session-budget suite were **not run** on this tree.\n\n- reason: %s\n- tree: %s\n- date: %s\n' \
+  printf '\n## ⚠ Release gate bypassed\n\nCut with `--skip-release-gate`: `npx tsc --noEmit`, the full test suite, the session-budget suite and the UI idle budget were **not run** on this tree.\n\n- reason: %s\n- tree: %s\n- date: %s\n' \
     "$1" "$(git rev-parse --short=12 'HEAD^{tree}')" "$(date -u +%Y-%m-%dT%H:%MZ)"
 }

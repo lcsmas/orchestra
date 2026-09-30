@@ -7,10 +7,10 @@
 # stub build scripts): nothing real is tagged, pushed or published. Observable = rc, refusal text,
 # sandbox tags/commits and the ordered step log.
 #
-# Arms: clean (steps EXACTLY `tsc test session-budget abi build gh-release`); tsc_error, test_fail, test_skipped,
+# Arms: clean (steps EXACTLY `tsc test session-budget abi bundles ui-budget build gh-release`); tsc_error, test_fail, test_skipped,
 # test_todo, test_rc_only, test_zero, test_swallow_fail/hang, test_no_summary, test_no_skipped_line,
-# tree_dirtied, tree_moved, abi_fail, sb_fail, sb_void, sb_no_terminator, sb_weak_containment, sb_partial, sb_missing_script -> REFUSED naming
-# the check + nothing tagged/pushed (sb_* = the #208 session-budget step, stubbed here); bypass
+# tree_dirtied, tree_moved, abi_fail, sb_fail, sb_void, sb_no_terminator, sb_weak_containment, sb_partial, sb_missing_script, ui_fail/ui_refused/ui_rigfault/ui_bundles_fail/ui_tree/ui_silent_rc0/ui_no_json/ui_timeout -> REFUSED naming
+# the check + nothing tagged/pushed (sb_* = the #208 session-budget step, ui_* = the #215 UI idle budget rig; both stubbed here); bypass
 # (+notes-file, =form) -> proceeds with the reason in the notes; bypass_no_reason/blank/flag/ci_only
 # -> rc 2; dry_run -> plan only. Must-FAIL on old code: RG_SCRIPTS_DIR=<dir with the old release.sh>.
 set -uo pipefail
@@ -19,6 +19,7 @@ SUT="${RG_SCRIPTS_DIR:-$REPO/scripts}"
 BASE="${RG_RIG_BASE:-$HOME/.orchestra/tmp}"
 mkdir -p "$BASE"
 SB="$(mktemp -d "$BASE/release-gate-rig.XXXXXX")"
+mkdir -p "$SB/tmp"   # release.sh / the gate mktemp their logs here, not in shared /tmp: a refusal arm leaves its log dir behind by design (3248 leaked into /tmp before this)
 trap 'rm -rf "$SB"' EXIT
 REAL_TSC="$REPO/node_modules/.bin/tsc"
 [ -x "$REAL_TSC" ] || { echo "rig fault: $REAL_TSC missing — pnpm install first" >&2; exit 2; }
@@ -55,7 +56,7 @@ FAILED=0
 pass() { printf '  ok   %-34s %s\n' "$1" "$2"; }
 fail() { printf '  FAIL %-34s %s\n' "$1" "$2"; FAILED=1; }
 
-# mk_fixture <name> <ts:ok|err> <test:pass|sbfail|sbvoid|sbnoterm|sbmissing|fail|skip|todo|nosummary|dirty|moved|rcfail|zero|abifail|swallowfail|swallowhang|noskipped|nofail|nopass|notests|mismatch|untrackedbytest|untracked|touch|touchbytest>
+# mk_fixture <name> <ts:ok|err> <test:pass|sbfail|sbvoid|sbnoterm|sbmissing|fail|skip|todo|nosummary|dirty|moved|rcfail|zero|abifail|swallowfail|swallowhang|noskipped|nofail|nopass|notests|mismatch|untrackedbytest|untracked|touch|touchbytest|uifail|uirefused|uirigfault|bundlesfail|uitree|uisilent|uinojson|uitimeout>
 # Sets D W ORIGIN LOG. The fixture repo is at v0.5.270 with 1 commit of work ahead.
 mk_fixture() {
   local name="$1" ts="$2" tv="$3"
@@ -85,12 +86,33 @@ mk_fixture() {
   [ "$tv" = abifail ] && abicmd='exit 7'
   local sbscript='"test:session-budget": "bash scripts/sb-stub.sh", "smoke:session-budget-real": "bash scripts/smoke-stub.sh",'
   [ "$tv" = sbmissing ] && sbscript=''
+  local bundlescmd='echo bundles >> \"$RG_FX_LOG\"'
+  [ "$tv" = bundlesfail ] && bundlescmd='exit 5'
+  # #215: stub of scripts/e2e-ui-idle-budget.sh (the real rig needs sway + Electron): logs itself + its args, then rc 0 pass (PASS line + the
+  # --json verdict) / 1 breached / 4 refused / 2 rig fault; uisilent = rc 0 with NO output and NO json; uinojson = PASS line but no json; uitimeout = hangs.
+  local uirc=0 uiout='ui-idle-budget: PASS — stub' uipre=':' uijson=1
+  [ "$tv" = uifail ] && { uirc=1; uiout='FAIL   budget/idle-raf: 372 rAF callback(s) fired; top schedulers: __rig_offender x372'; }
+  [ "$tv" = uirefused ] && { uirc=4; uiout='REFUSE control/raf-instrument: rig stub'; }
+  [ "$tv" = uirigfault ] && { uirc=2; uiout='ABORT: rig stub fault'; }
+  [ "$tv" = uitree ] && uipre='echo drift >> tracked.txt'
+  [ "$tv" = uisilent ] && { uiout=''; uijson=0; }
+  [ "$tv" = uinojson ] && uijson=0
+  [ "$tv" = uitimeout ] && uipre='sleep 8'
+  {
+    printf '#!/bin/sh\necho ui-budget >> "$RG_FX_LOG"\necho "$*" > "$RG_FX_LOG.uiargs"\n'
+    printf 'json=""; prev=""; for a in "$@"; do [ "$prev" = --json ] && json="$a"; prev="$a"; done\n'
+    printf '%s\n' "$uipre"
+    [ -n "$uiout" ] && printf 'echo "%s"\n' "$uiout"
+    [ "$uirc" = 0 ] && [ "$uijson" = 1 ] && printf '%s\n' 'printf "{\"verdict\": \"PASS\"}\n" > "$json"'
+    printf 'exit %s\n' "$uirc"
+  } > "$W/scripts/e2e-ui-idle-budget.sh"
   cat > "$W/package.json" <<PKG
 { "name": "fx", "version": "0.5.270",
   "scripts": { "a":"a","b":"b","c":"c",
     $sbscript
     "test": "$testcmd",
     "build:bus-abi": "$abicmd",
+    "build:bundles": "$bundlescmd",
     "build": "echo build >> \"\$RG_FX_LOG\" && mkdir -p release && : > release/Orchestra.AppImage",
     "release": "bash scripts/release.sh" },
   "devDependencies": {}, "build": {} }
@@ -148,7 +170,7 @@ PKG
 
 # run_release <args...> -> OUT (stdout+stderr), RC
 run_release() {
-  OUT="$(cd "$W" && PATH="$SB/bin:$PATH" RG_FX_LOG="$LOG" bash scripts/release.sh "$@" 2>&1)"; RC=$?
+  OUT="$(cd "$W" && PATH="$SB/bin:$PATH" TMPDIR="$SB/tmp" RG_FX_LOG="$LOG" bash scripts/release.sh "$@" 2>&1)"; RC=$?
 }
 steps() { tr '\n' ' ' < "$LOG" | sed 's/ $//'; }
 nothing_shipped() { # name — no bump commit, no local/origin tag, origin master unmoved
@@ -179,11 +201,12 @@ refused() { # name check-name [extra-marker] [expected-steps]
 
 # ── clean ────────────────────────────────────────────────────────────────────
 mk_fixture clean ok pass; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi bundles ui-budget build gh-release" ]; then
   pass "clean proceeds, ordered, once" "rc=0 steps=[$(steps)]"
-else fail "clean proceeds, ordered, once" "rc=$RC steps=[$(steps)] want [tsc test session-budget abi build gh-release]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+else fail "clean proceeds, ordered, once" "rc=$RC steps=[$(steps)] want [tsc test session-budget abi bundles ui-budget build gh-release]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 [ "$(git -C "$W" log -1 --format=%s)" = "chore: bump version to 0.5.271" ] && pass "clean bump message unchanged" "chore: bump version to 0.5.271" || fail "clean bump message unchanged" "$(git -C "$W" log -1 --format=%s)"
 [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ] && pass "clean tag-pushed" "v0.5.271 on the sandbox origin" || fail "clean tag-pushed" "no v0.5.271 on origin"
+grep -qF -- '--require-bus' "$LOG.uiargs" 2>/dev/null && pass "clean UI rig gets --require-bus" "args=[$(cat "$LOG.uiargs")]" || fail "clean UI rig gets --require-bus" "args=[$(cat "$LOG.uiargs" 2>/dev/null)]"
 case "$OUT" in *"release-gate: PASS"*"session budget held (requests before first reply: model=1 count_tokens=0 other=0)"*) pass "clean pass-line" "$(printf '%s' "$OUT" | grep -F 'release-gate: PASS' | head -1)" ;; *) fail "clean pass-line" "no 'release-gate: PASS' line carrying the session-budget detail" ;; esac
 if grep -qi 'bypass' "$LOG.notes" 2>/dev/null; then fail "clean notes-untouched" "bypass text in a clean release's notes"; else pass "clean notes-untouched" "no gate text in notes (as today)"; fi
 
@@ -250,7 +273,7 @@ mk_fixture smoke_off ok pass; run_release 0.5.271
 if [ "$RC" = 0 ] && ! grep -qx smoke "$LOG" && [[ "$OUT" != *"real-API smoke"* ]]; then pass "smoke_off: never runs unless asked" "rc=0 steps=[$(steps)]"
 else fail "smoke_off: never runs unless asked" "rc=$RC steps=[$(steps)]"; fi
 mk_fixture smoke_pass ok pass; RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget smoke abi build gh-release" ] && [[ "$OUT" == *"real-API smoke passed"* ]]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget smoke abi bundles ui-budget build gh-release" ] && [[ "$OUT" == *"real-API smoke passed"* ]]; then
   pass "smoke_pass: runs once, after the budget step" "rc=0 steps=[$(steps)]"
 else fail "smoke_pass: runs once, after the budget step" "rc=$RC steps=[$(steps)]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 mk_fixture smoke_fail ok pass; RG_SMOKE_MODE=fail RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
@@ -273,25 +296,45 @@ mk_fixture untracked_by_test ok untrackedbytest; run_release 0.5.271
 refused untracked_by_test tree "untracked" "tsc test session-budget"; nothing_shipped untracked_by_test
 
 mk_fixture mtime_touch ok touch; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then pass "mtime-only touch is not dirty" "rc=0, released"
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi bundles ui-budget build gh-release" ]; then pass "mtime-only touch is not dirty" "rc=0, released"
 else fail "mtime-only touch is not dirty" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 
 mk_fixture mtime_by_test ok touchbytest; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then pass "mtime-only touch by a test is not dirty" "rc=0, released"
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi bundles ui-budget build gh-release" ]; then pass "mtime-only touch by a test is not dirty" "rc=0, released"
 else fail "mtime-only touch by a test is not dirty" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+
+# ── #215 UI idle budget (stubbed rig: rc 0 / 1 / 4 / 2) — part of the gate, before the first mutation ──
+mk_fixture ui_fail ok uifail; run_release 0.5.271
+refused ui_fail ui-idle-budget "__rig_offender" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_fail
+mk_fixture ui_refused ok uirefused; run_release 0.5.271
+refused ui_refused ui-idle-budget "a positive control refused" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_refused
+mk_fixture ui_rigfault ok uirigfault; run_release 0.5.271
+refused ui_rigfault ui-idle-budget "the rig itself failed (rc=2)" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_rigfault
+mk_fixture ui_bundles_fail ok bundlesfail; run_release 0.5.271
+refused ui_bundles_fail ui-idle-budget "build:bundles" "tsc test session-budget abi"; nothing_shipped ui_bundles_fail
+mk_fixture ui_tree ok uitree; run_release 0.5.271
+refused ui_tree tree "the tree changed while the UI budget ran" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_tree
+mk_fixture ui_silent_rc0 ok uisilent; run_release 0.5.271
+refused ui_silent_rc0 ui-idle-budget "no 'ui-idle-budget: PASS' terminator line" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_silent_rc0
+mk_fixture ui_no_json ok uinojson; run_release 0.5.271
+refused ui_no_json ui-idle-budget "the JSON verdict is missing or not PASS" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_no_json
+mk_fixture ui_timeout ok uitimeout; RG_UI_TIMEOUT=1 run_release 0.5.271
+refused ui_timeout ui-idle-budget "timed out after 1 s" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ui_timeout
 
 # ── --ci-only / --to-master ordering (the gate is neither skipped nor late) ───
 mk_fixture ci_only_refused err pass; run_release 0.5.271 --ci-only
 refused ci_only_refused tsc "" "tsc"; nothing_shipped ci_only_refused
 mk_fixture ci_only_clean ok pass; run_release 0.5.271 --ci-only
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget" ] && [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ]; then
-  pass "ci_only clean: gate runs, no local build" "rc=0 steps=[$(steps)] tag pushed"
-else fail "ci_only clean: gate runs, no local build" "rc=$RC steps=[$(steps)]"; fi
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi bundles ui-budget" ] && [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ]; then
+  pass "ci_only clean: gate + UI budget run, no local package build" "rc=0 steps=[$(steps)] tag pushed"
+else fail "ci_only clean: gate + UI budget run, no local package build" "rc=$RC steps=[$(steps)]"; fi
+mk_fixture ci_only_ui_fail ok uifail; run_release 0.5.271 --ci-only
+refused ci_only_ui_fail ui-idle-budget "__rig_offender" "tsc test session-budget abi bundles ui-budget"; nothing_shipped ci_only_ui_fail
 
 FX_BRANCH=feat mk_fixture to_master_refused err pass; run_release 0.5.271 --to-master
 refused to_master_refused tsc "" "tsc"; nothing_shipped to_master_refused
 FX_BRANCH=feat mk_fixture to_master_clean ok pass; run_release 0.5.271 --to-master
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ] \
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi bundles ui-budget build gh-release" ] \
    && [ "$(git -C "$ORIGIN" rev-parse master)" = "$(git -C "$W" rev-parse HEAD)" ]; then
   pass "to_master clean: master fast-forwarded" "rc=0 origin/master == bump commit"
 else fail "to_master clean: master fast-forwarded" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
@@ -341,9 +384,9 @@ usage_err bypass_ci_only "can't be combined with --ci-only"
 
 # ── dry-run ──────────────────────────────────────────────────────────────────
 mk_fixture dry_run err fail; run_release 0.5.271 --dry-run
-if [ "$RC" = 0 ] && [ -z "$(steps)" ] && [[ "$OUT" == *"[dry-run] release gate"* ]]; then
-  pass "dry_run prints plan, runs nothing" "rc=0, no check executed"
-else fail "dry_run prints plan, runs nothing" "rc=$RC steps=[$(steps)]"; fi
+if [ "$RC" = 0 ] && [ -z "$(steps)" ] && [[ "$OUT" == *"[dry-run] release gate"* ]] && [[ "$OUT" == *"[dry-run] ui idle budget"* ]]; then
+  pass "dry_run prints plan (incl. UI budget), runs nothing" "rc=0, no check executed"
+else fail "dry_run prints plan (incl. UI budget), runs nothing" "rc=$RC steps=[$(steps)]"; fi
 nothing_shipped dry_run
 
 echo

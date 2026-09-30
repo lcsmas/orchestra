@@ -62,7 +62,9 @@ whole map instead of hand-editing.
   partial green is the failure mode this hook exists to prevent.
 - Release: the **`ship` skill** drives `scripts/release.sh` (worktree-safe; never
   checks out master). It refuses to tag unless `npx tsc --noEmit` and the full suite
-  (0 fail, 0 skipped) pass — the #207 gate. See `docs/codebase-map/build-release.md`.
+  (0 fail, 0 skipped) pass — the #207 gate — and the built app's idle panes do zero
+  per-frame work (`scripts/e2e-ui-idle-budget.sh`, #215, own headless sway).
+  See `docs/codebase-map/build-release.md`.
 
 ## Conventions
 

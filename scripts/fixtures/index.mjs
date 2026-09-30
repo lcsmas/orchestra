@@ -28,6 +28,12 @@
 //       `tool_result_meta` sidecar. RUNTIME SUPERSET: 0 occurrences in sdk.d.ts
 //       at SDK 0.3.241, 3 in the CLI 2.1.241 binary (verified by `strings` with
 //       a positive and a negative control). Shipped by PR #46 (#26).
+//   rich-session.transcript.jsonl ....... 15 REAL Claude Code transcript lines (assistant markdown list + a
+//       fenced code block, Read/Edit/Bash tool_use + tool_result pairs, the Edit's structured patch) cut from an
+//       Orchestra session on this machine (2026-09-28, repo docs merge; scanned: no keys/emails). Feeds
+//       `transcriptToEvents` (the app's history adapter). NO thinking capture exists: the CLI redacts thinking on
+//       disk (9177 blocks scanned, 0 non-empty; agent-transcript.ts drops them) and the app renders an empty one as
+//       nothing, so an idle pane has no thinking DOM to mount. Used by the UI idle-budget rig (#215).
 //   background-tasks-changed.sequence.json  a 4-frame REPLACE-semantics
 //       sequence (grow → grow → shrink → empty); frame 1 is the organic capture
 //       from docs/research/sdk-runtime-payloads.md §4.
@@ -54,7 +60,8 @@ import {
   isDeferredCategory,
 } from '../../src/shared/context-usage.ts';
 import { buildContextBreakdown } from '../../src/shared/context-breakdown.ts';
-import { normalizeSdkMessage, indexToolResultMeta, toNonExecutionKind } from '../../src/shared/agent-events.ts';
+import { normalizeSdkMessage, indexToolResultMeta, toNonExecutionKind, foldEvents, emptySession } from '../../src/shared/agent-events.ts';
+import { transcriptToEvents } from '../../src/shared/agent-transcript.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const payloadDir = path.join(here, 'payloads');
@@ -311,6 +318,56 @@ export function backgroundTasksSequence(overrides) {
   return frames;
 }
 
+/** A background-task LIFECYCLE for a mounted panel: the REAL capture's frames carry only the level set (`background_tasks_changed`),
+ *  and the fold creates a card only from `task_started` — so the `task_started` / `task_notification` wrappers are DERIVED from the
+ *  capture's own (task_id, task_type, description) rows in the sdk.d.ts wire shape, then the real frames interleave. Ends settled
+ *  (one stopped by leaving the level set, one completed) and drained: nothing running, cards + panel toggle mount. Every message is
+ *  normalized by the app's own `normalizeSdkMessage`; returns the SdkMessages. */
+export function backgroundTaskLifecycle() {
+  const frames = backgroundTasksSequence();
+  const rows = new Map();
+  for (const f of frames) for (const t of f.tasks) if (!rows.has(t.task_id)) rows.set(t.task_id, t);
+  const started = (t) => ({ type: 'system', subtype: 'task_started', task_id: t.task_id, task_type: t.task_type, description: t.description });
+  const [first, second] = [...rows.values()];
+  must(first && second, 'backgroundTaskLifecycle: the capture must carry two distinct tasks');
+  const msgs = [
+    started(first), frames[0], started(second), frames[1], frames[2],
+    { type: 'system', subtype: 'task_notification', task_id: second.task_id, status: 'completed', summary: second.description },
+    frames[3],
+  ];
+  for (const [i, m] of msgs.entries()) {
+    const evs = normalizeSdkMessage(m, { seq: 0, now: () => FIXTURE_AT });
+    must(Array.isArray(evs) && evs.length === 1 && evs[0].type === 'task', `backgroundTaskLifecycle: msg[${i}] (${m.subtype}) did not normalize to one task event`);
+  }
+  // fold check: both cards exist and neither is running
+  const sess = foldEvents(emptySession('bg'), msgs.flatMap((m) => normalizeSdkMessage(m, { seq: 0, now: () => FIXTURE_AT })));
+  const st = Object.values(sess.tasks).map((t) => t.status).sort();
+  must(st.length === 2 && !st.includes('running'), `backgroundTaskLifecycle: expected 2 settled tasks, got [${st.join(',')}]`);
+  return msgs;
+}
+
+/** A REAL transcript slice → AgentEvents through the app's own history adapter, validated by folding: the session
+ *  must settle (running=false) and carry the shapes an idle pane can mount — an assistant message with a markdown list
+ *  AND a fenced code block, Read/Edit/Bash tool cards, the Edit's old/new strings (the diff card). Returns
+ *  `{ events, session }`; `overrides.jsonl` swaps the text (the self-test's malformed cases). */
+export function richSessionEvents(overrides) {
+  const file = path.join(payloadDir, 'rich-session.transcript.jsonl');
+  must(overrides?.jsonl != null || fs.existsSync(file), `captured payload missing: ${file}`);
+  const jsonl = overrides?.jsonl ?? fs.readFileSync(file, 'utf8');
+  const events = transcriptToEvents(jsonl, { seq: 0, now: () => FIXTURE_AT });
+  must(events.length > 0, 'richSessionEvents: the transcript produced no events');
+  const session = foldEvents(emptySession('rich'), events);
+  must(session.running === false, 'richSessionEvents: the folded session did not settle (running=true) — an idle pane needs a closed turn');
+  const assistant = session.messages.filter((m) => m.role === 'assistant');
+  must(assistant.some((m) => (m.text ?? '').includes('```')), 'richSessionEvents: no assistant message carries a fenced code block');
+  must(assistant.some((m) => /^\s*[-*] /m.test(m.text ?? '')), 'richSessionEvents: no assistant message carries a markdown list');
+  const tools = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => m.toolUse?.name));
+  for (const t of ['Read', 'Edit', 'Bash']) must(tools.has(t), `richSessionEvents: no ${t} tool card (got ${[...tools].join(',') || 'none'})`);
+  const edit = session.messages.find((m) => m.role === 'tool' && m.toolUse?.name === 'Edit');
+  must(typeof edit?.toolUse?.input?.old_string === 'string' && typeof edit?.toolUse?.input?.new_string === 'string', 'richSessionEvents: the Edit card has no old_string/new_string (no diff to render)');
+  return { events, session };
+}
+
 /** Everything, for a harness that just wants the whole library validated. */
 export function allFixtures() {
   return {
@@ -318,6 +375,8 @@ export function allFixtures() {
     contextCommandUsage: contextCommandUsage(),
     toolResultMetaTrio: toolResultMetaTrio(),
     backgroundTasksSequence: backgroundTasksSequence(),
+    richSessionEvents: richSessionEvents(),
+    backgroundTaskLifecycle: backgroundTaskLifecycle(),
   };
 }
 

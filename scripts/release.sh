@@ -54,7 +54,7 @@
 #   3. GitHub Actions creates release with x64 and arm64 AppImages
 #
 # RELEASE GATE (#207/#208): before any tag/push the tree must pass `npx tsc --noEmit`, the full
-# suite and the session-budget suite (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build. Escape hatch:
+# suite and the session-budget suite (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build and the UI idle budget (#215). Escape hatch:
 # --skip-release-gate "<reason>" (mandatory, appended to the release notes; not with --ci-only).
 #
 # Requirements: a clean working tree on a non-detached branch, up to date with
@@ -396,13 +396,19 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '  [dry-run] release gate: npx tsc --noEmit -> pnpm run test (0 fail, 0 skipped) -> pnpm run test:session-budget%s\n' \
     "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
 elif [ "$SKIP_GATE" = 1 ]; then
-  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite and the session-budget suite were NOT run. Reason: %s\n' "$SKIP_GATE_REASON" >&2
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite, the session-budget suite and the UI idle budget were NOT run. Reason: %s\n' "$SKIP_GATE_REASON" >&2
   echo "  (this is recorded in the release notes)" >&2
 else
   rg_run_gate || exit 1
 fi
 if [ "$CI_ONLY" = 0 ]; then
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] pnpm run build:bus-abi\n'; else rg_prepare_native || exit 1; fi
+fi
+# UI idle budget (#215): part of the gate — this tree's bundles, own headless sway, still before the first mutation.
+if [ "$DRY_RUN" = 1 ]; then
+  printf '  [dry-run] ui idle budget: pnpm run build:bundles -> scripts/e2e-ui-idle-budget.sh (own headless sway)%s\n' "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED')"
+elif [ "$SKIP_GATE" != 1 ]; then
+  rg_ui_idle_budget || exit 1
 fi
 
 # ------------------------------------------------- advance master (pre-bump) ---

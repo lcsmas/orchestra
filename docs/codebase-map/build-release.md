@@ -161,7 +161,21 @@ not with `--ci-only`) prints a `release-gate: BYPASSED` banner, appends a
 `## ⚠ Release gate bypassed` section (reason, tree, date) to a COPY of the notes
 handed to `gh release create` (`--notes-file`, or alongside `--generate-notes`),
 and stamps `[release gate bypassed: <reason>]` on the bump commit and tag message.
-`--dry-run` prints the plan and runs nothing. **Accepted gap:** a hand-pushed
+`--dry-run` prints the plan and runs nothing.
+**UI idle budget (issue #215, `rg_ui_idle_budget`)** is the last step of the same gate: after
+`build:bus-abi` (run here too under `--ci-only`, which otherwise skips it) and still before the
+first mutation, it runs `pnpm run build:bundles` on THIS tree and then
+`timeout -k 30 600 scripts/e2e-ui-idle-budget.sh --require-bus --json …` — the built app under its OWN
+headless sway (no visible window), scratch HOME + config dir, zero tokens, fleet bus required to open —
+and refuses (`check 'ui-idle-budget'`: rc 1 breached / 4 a control refused / 124 timed out / else rig
+fault) unless idle panes stay inside `scripts/ui-idle-budget.json` (0 rAF, 0 recurring short timers,
+RO/MO/metrics baselines, the `name@selector` animation allowlist). rc 0 alone is not a pass: the
+`^ui-idle-budget: PASS` terminator line AND the JSON `"verdict": "PASS"` are each required (two
+separate refusals); it then re-checks tree == HEAD. Bypassed with the rest of the gate by
+`--skip-release-gate` (banner + notes name it). The sandbox rig stubs the rig
+(`ui_fail/ui_refused/ui_rigfault/ui_bundles_fail/ui_tree/ui_silent_rc0/ui_no_json/ui_timeout`, ordered steps
+`tsc test abi bundles ui-budget build gh-release`, the stub records that it got `--require-bus`); the
+real rig's arms and contract: `structured-agent-view.md` § UI idle budget. **Accepted gap:** a hand-pushed
 `v*` tag or `workflow_dispatch` still builds ungated in CI (outside the release
 path). `scripts/verify-release-gate.sh` (`pnpm run test:release-gate`) drives the
 real `release.sh` in a sandbox (local bare origin, fake `gh`, real tsc/`node

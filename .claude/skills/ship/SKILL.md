@@ -39,9 +39,14 @@ documents every flag (`--to-master`, `--install`, `--notes-file`, `--dry-run`,
 3. **Typecheck now; the release gate runs the full suite.** Run
    `[ -d node_modules ] || pnpm install` and `npx tsc --noEmit` (~5 s) now, so a
    type error surfaces before the UI and perf steps. Do NOT run the suite:
-   `release.sh` runs `tsc`, then `pnpm run test` (0 fail, **0 skipped**), then
-   `pnpm run build:bus-abi` itself, before anything is tagged or pushed (#207;
-   `scripts/release-gate.sh`). A refusal names the failed check and leaves the
+   `release.sh` runs `tsc`, then `pnpm run test` (0 fail, **0 skipped**), then the
+   session budget suite (#208: real CLI vs a local fake API, zero tokens), then
+   `pnpm run build:bus-abi`, then the UI idle budget (#215: `build:bundles` +
+   `scripts/e2e-ui-idle-budget.sh --require-bus`, ~1 min in its own headless sway —
+   no window on your screen; do not run it yourself) itself, before anything is
+   tagged or pushed (#207; `scripts/release-gate.sh`; detail in
+   `docs/codebase-map/build-release.md`). A refusal names the failed check
+   (`tsc`, `test`, `session-budget`, `tree`, `build:bus-abi`, `ui-idle-budget`) and leaves the
    repo untouched: fix it and re-run step 7. The gate is bypassable only with
    `--skip-release-gate "<reason>"`, recorded in the notes, the bump commit and
    the tag — never use it to get past a red suite.

@@ -1248,6 +1248,60 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   Lowering those animations is a visual change — decision for the human, not made
   here.
 
+  **UI idle budget — the standing gate for all of the above (#215 / C8).**
+  `scripts/e2e-ui-idle-budget.sh` (`pnpm run test:ui-idle-budget`; own headless
+  sway via `e2e-contained-rig.sh`, scratch HOME + config dir under the rig dir,
+  `env -i`, ~40 s) boots the BUILT app and mounts 6 IDLE structured panes: renderer
+  fakes carrying a filler transcript + a REAL one (`scripts/fixtures/payloads/rich-session.transcript.jsonl`
+  → the app's own `transcriptToEvents`: assistant markdown list + fenced code, Read/Edit/Bash
+  tool runs with the Edit's diff) + the real background-task frames
+  (`backgroundTaskLifecycle()`, `task_started`/`task_notification` derived from the capture's
+  own rows), every turn CLOSED (`running` false — a bare `user-message` opens a turn and the
+  pane legitimately animates), the tasks panel opened by a trusted click and the composer
+  focused (the worst-case idle state: its caret blinks). Thinking is not mounted: the CLI
+  redacts it on disk (9177 blocks, 0 non-empty) and the app renders an empty one as nothing.
+  After a quiet period it COUNTS, over a 10 s window, never OS CPU as a verdict:
+  (1) rAF callbacks FIRED — budget **0**; (2) recurring short-delay (< 100 ms) `setTimeout`/`setInterval`
+  SITES (>= 2 fires) — **0**; (3) `ResizeObserver` / `MutationObserver` callbacks — measured
+  baseline 0, budget 10; (4) infinite (or > 1000-iteration) animations running at BOTH ends of the
+  window by animation NAME, walking open shadow roots, against the `name@selector` allowlist;
+  (5) a catch-all on `Performance.getMetrics` deltas (RecalcStyleCount / LayoutCount / TaskDuration,
+  calibrated with margins; TaskDuration is VOID above load 20) for work no counter names (a
+  MessageChannel loop). The counters are installed with `Page.addScriptToEvaluateOnNewDocument` +
+  reload so they precede the app's first script (a module-load `const raf = requestAnimationFrame`
+  cannot dodge them; `control/instrument-first`); each hit is attributed to its scheduling site
+  (3 frames + a bundle snippet). The verdict is the pure `src/shared/ui-idle-budget.ts`
+  (`judge`, unit-tested): **PASS 0 · FAIL 1** (a budget clause names the offender) **· REFUSED 4**
+  (one of 13 positive controls failed — the run proves nothing) · 90 isolation refusal. Controls:
+  panes mounted at start AND end with rows; rich subject (>= 80 distinct `av-*` classes and every
+  marker: markdown list, code block, tool runs, diff, task panel, composer focus); no pane mid-turn;
+  the counter sees the app's own rAF; rig probes through the wrapped timer/RO/MO are counted; frames
+  delivered before/after on a visible page (a hidden page reads 0 vacuously); open-turn animations
+  > closed-turn ones; a rig-injected animation seen then gone; metrics read; same page epoch; fleet bus
+  opened (`--require-bus`, passed by the release gate); running script sha == on-disk bundle.
+  **Baseline on master (measured, 5 runs at host load 10–30):** 0 rAF / 0 short-timer loops / 0 RO / 0 MO;
+  RecalcStyleCount 87–109, LayoutCount 0–2, TaskDuration 0.04–0.05 s per 10 s; the ONLY steady infinite
+  animation is `cm-blink` ×2 — the focused composer's CodeMirror cursor layers
+  (`cm-blink@div.cm-cursorLayer.cm-vimCursorLayer`, `cm-blink@div.cm-layer.cm-layer-above.cm-cursorLayer`)
+  on the one VISIBLE pane (hidden panes are `display:none`). It is allowlisted as the measured baseline
+  per the OPS ruling, NOT endorsed: T9 priced it at ~4% of a core (renderer+GPU, software GL), and
+  removing/slowing a visible caret is a UI change for the human (D5 of #237). With an open turn:
+  + `av-shimmer` / `av-spark-spin` / `av-pulse` — by design, out of idle scope. Accepted gaps: iframes
+  (0 in tree), terminal-view xterm panes (need real PTYs). Self-test `scripts/verify-ui-idle-budget.mjs`
+  (`pnpm run test:ui-idle-budget-selftest`, ~25 boots): in-place mutants of the BUILT bundle (byte-exact
+  backup, `cmp`-verified restore), each reddening ITS clause and naming itself — per-pane rAF loop →
+  `budget/idle-raf`; infinite CSS on an idle pane → `budget/infinite-animations`; `setInterval(16)` and a
+  `setTimeout(0)` chain → `budget/short-timer-loops`; RO self-resize loop → `budget/resize-observer`; MO
+  re-mutate loop (200 ms, not a short timer) → `budget/mutation-observer`; a MessageChannel style-thrash
+  loop → ONLY `budget/metrics`; 1e8-iteration + class-churn + open-shadow-root evasions → all three named;
+  a bundle capturing rAF at module load → `budget/idle-raf`. Rig mutants → REFUSED (rc 4) naming the
+  control, never PASS: blind rAF counter, blind timer/RO/MO wrappers, late instrument install, hidden
+  window, no seed, no rich subject, turns left open, `bus.sqlite` made a directory. Strict zero
+  animations on the clean build → FAIL naming `cm-blink`; `--unfixed-app <pre-T9 checkout>` drives the
+  REAL historical defect (4c1d2dc5: 1794 rAF / 5 s, one named scheduler) → FAIL; isolation refusals
+  (wayland-1, injected `DISPLAY`, config dir pinned at a live `~/.claude*`) → 90 naming their clause with
+  nothing launched. Wired into the release gate — `build-release.md`.
+
   The **composer** auto-grows and accepts **pasted images**
   (`onPaste` → base64 via FileReader → thumbnail strip → sent on submit as
   `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,

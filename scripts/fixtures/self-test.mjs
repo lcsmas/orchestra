@@ -15,6 +15,8 @@ import {
   contextCommandUsage,
   toolResultMetaTrio,
   backgroundTasksSequence,
+  richSessionEvents,
+  backgroundTaskLifecycle,
   rawLiveContextUsagePayload,
   rawContextCommandPayload,
 } from './index.mjs';
@@ -100,9 +102,26 @@ builds('background_tasks_changed sequence validates', () => backgroundTasksSeque
   return null;
 });
 
+builds('rich session transcript (real capture) folds into markdown + fence + Read/Edit/Bash cards', () => richSessionEvents(), ({ events, session }) => {
+  if (events.length < 20) return `only ${events.length} events`;
+  if (session.messages.filter((m) => m.role === 'tool').length < 5) return 'fewer than 5 tool cards';
+  return null;
+});
+
+builds('background task lifecycle (derived from the real frames) settles two cards, nothing running', () => backgroundTaskLifecycle(), (m) => (m.length === 7 && m.filter((x) => x.subtype === 'task_started').length === 2 ? null : `unexpected message list (${m.length})`));
+
 console.log('\nARM 2 — malformed fixtures are REJECTED (each validator watched failing):');
 
 // Every case below is a real rig-side defect shape from the two retrospectives.
+// The rich slice is a fixture too: a cut that loses the fence, the Edit or the closing turn must be rejected.
+{
+  const lines = (await import('node:fs')).readFileSync(new URL('./payloads/rich-session.transcript.jsonl', import.meta.url), 'utf8').split('\n').filter(Boolean);
+  const dropTool = (name) => lines.filter((l) => !l.includes(`"name":"${name}"`)).join('\n');
+  rejects('a rich slice with the fenced code block stripped', () => richSessionEvents({ jsonl: lines.join('\n').split('```').join('~~~') }));
+  rejects('a rich slice with no Edit tool_use (no diff card)', () => richSessionEvents({ jsonl: dropTool('Edit') }));
+  rejects('an EMPTY rich slice', () => richSessionEvents({ jsonl: '' }));
+}
+
 rejects('a category row missing `kind` on the /context wire shape', () =>
   contextCommandUsage({
     categories: [

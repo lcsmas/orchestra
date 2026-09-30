@@ -90,7 +90,7 @@ MARK_B="$(printf '%02X' $(( $$ % 251 + 5 )))"
 MARKER="FF${MARK_G}${MARK_B}"
 MARK_R_DEC=255; MARK_G_DEC=$((16#${MARK_G})); MARK_B_DEC=$((16#${MARK_B}))
 log "unique marker for this rig: #${MARKER} (rgb ${MARK_R_DEC},${MARK_G_DEC},${MARK_B_DEC})"
-swaymsg_mine() { SWAYSOCK="${SWAYSOCK_MINE}" swaymsg "$@" >/dev/null 2>&1; }
+swaymsg_mine() { SWAYSOCK="${SWAYSOCK_MINE}" timeout 10 swaymsg "$@" >/dev/null 2>&1; }
 swaymsg_mine -- "output HEADLESS-1 background #${MARKER} solid_color" \
   || die "could not set the marker on my own output"
 
@@ -142,7 +142,7 @@ for sock in /run/user/1000/wayland-*; do
   [[ "${sock}" == *.lock ]] && continue
   n="$(basename "${sock}")"
   shot="${RIG_DIR}/marker-${n}.png"
-  env -u DISPLAY WAYLAND_DISPLAY="${n}" grim -o HEADLESS-1 "${shot}" 2>/dev/null || continue
+  env -u DISPLAY WAYLAND_DISPLAY="${n}" timeout 10 grim -o HEADLESS-1 "${shot}" 2>/dev/null || continue   # bounded: a sibling's wedged compositor must not hang the scan
   pct="$(decode_marker "${shot}")"
   READINGS="${READINGS}${n}=${pct}%  "
   if [[ "${pct}" == "100.00" ]]; then
@@ -157,7 +157,7 @@ log "verified MY display: ${MINE}"
 # Reset the background, then re-grim: a later 100% reading can then only mean we
 # re-set it, never a stale frame.
 swaymsg_mine -- 'output HEADLESS-1 background #1a1f26 solid_color'
-env -u DISPLAY WAYLAND_DISPLAY="${MINE}" grim -o HEADLESS-1 "${RIG_DIR}/marker-reset.png" 2>/dev/null || true
+env -u DISPLAY WAYLAND_DISPLAY="${MINE}" timeout 10 grim -o HEADLESS-1 "${RIG_DIR}/marker-reset.png" 2>/dev/null || true
 RESET_PCT="$(decode_marker "${RIG_DIR}/marker-reset.png" 2>/dev/null || echo 'n/a')"
 log "after reset, ${MINE} reads ${RESET_PCT}% of #${MARKER} (must be 0.00)"
 [[ "${RESET_PCT}" == "0.00" ]] || die "marker did not clear (${RESET_PCT}%) — the reading may be stale"
