@@ -1,0 +1,267 @@
+// Pause trap — PURE process-tree half (#252 D1b, LEAD ruling D4). Dependency-free so
+// `node --test` covers the decisions without a real /proc.
+//
+// D4: kill ONLY tool process trees, by identity re-read AT SIGNAL TIME (pid + /proc
+// start-time + ancestry under the session's CLI), fail closed when unreadable, and
+// NEVER the CLI or its keeper. A "tool" = a direct child of the CLI that is a shell
+// run with `-c` (how the CLI runs Bash-tool commands, background tasks and hooks) and
+// everything in its tree. MCP servers and other non-shell sidecars are SPARED and listed.
+//
+// Orphans: a job a tool backgrounded (`cmd &`, `nohup cmd &`) that outlived its shell is
+// reparented away from the CLI, so the ppid chain cannot prove it is ours. Two lineage
+// proofs survive that (each re-read at signal time): (1) SESSION — each tool shell leads
+// its own session (sid == pid, measured) and the kernel never reuses a pid number while
+// it is still a session id of a live process, so `sid == root.pid` keeps proving it while
+// the root is alive or known from an earlier round; (2) ENV — the CLI exports
+// `CLAUDE_PID=<its pid>` to every tool it runs (measured, inherited by all descendants,
+// immutable after exec), and the orphan must have started AFTER the CLI. A process with
+// neither proof (scrubbed env, root long dead) is left alone: fail closed.
+
+import { parseProcIdentity } from './resources.ts';
+
+export interface ProcIdent {
+  pid: number;
+  ppid: number;
+  /** Session id (/proc stat field 6). */
+  sid: number;
+  /** /proc stat field 22 — with `pid` the process identity (a recycled pid differs). */
+  startTicks: number;
+  comm: string;
+  /** One-letter /proc state; `Z` = zombie (already dead, nothing to signal). */
+  state: string;
+  argv: string[] | null;
+}
+
+/** The CLI whose tool trees are planned (pid + start-time, verified by the caller). */
+export interface RootRef {
+  pid: number;
+  startTicks: number;
+}
+
+export interface ToolProc {
+  pid: number;
+  ppid: number;
+  sid: number;
+  startTicks: number;
+  comm: string;
+  cmd: string;
+  /** Pid of the tool shell that roots this process's tree (itself for a root). */
+  rootPid: number;
+  /** True when the root is its own session leader (sid == pid) — enables the session lineage. */
+  rootIsSessionLeader: boolean;
+  isRoot: boolean;
+  /** Distance below the root (0 = root); orphans that only match by session/env get a large depth. */
+  depth: number;
+  /** How the planner attached it: the ppid tree under a tool shell, a session orphan, or an env-proven orphan. */
+  via: 'tree' | 'session' | 'env';
+}
+
+export interface SparedProc {
+  pid: number;
+  comm: string;
+  cmd: string;
+  reason: string;
+}
+
+export interface ToolPlan {
+  cli: RootRef;
+  members: ToolProc[];
+  spared: SparedProc[];
+}
+
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'ash']);
+
+function baseName(s: string): string {
+  return s.split('/').pop() ?? s;
+}
+
+export function cmdOf(argv: string[] | null, comm: string): string {
+  const s = argv && argv.length > 0 ? argv.join(' ') : `[${comm}]`;
+  return s.length > 400 ? `${s.slice(0, 400)}…` : s;
+}
+
+/** Parse /proc/<pid>/stat (+ optional NUL-separated cmdline) into a ProcIdent. */
+export function parseProcIdent(statText: string, cmdlineText: string | null): ProcIdent | null {
+  const p = parseProcIdentity(statText);
+  if (!p || p.startTicks === undefined) return null;
+  const close = statText.lastIndexOf(')');
+  const rest = statText.slice(close + 1).trim().split(/\s+/);
+  const sid = Number(rest[3]);
+  if (!Number.isFinite(sid)) return null;
+  const argv = cmdlineText === null ? null : cmdlineText.split('\0').filter((a) => a.length > 0);
+  return { pid: p.pid, ppid: p.ppid, sid, startTicks: p.startTicks, comm: p.comm, state: rest[0] ?? '?', argv };
+}
+
+/** A shell invoked with `-c` (incl. `-lc`/`-ic`): the CLI's way of running a command. */
+export function isToolShell(p: ProcIdent): boolean {
+  const argv = p.argv;
+  if (!argv || argv.length < 2) return false;
+  const shell = baseName(argv[0]).replace(/^-/, '');
+  if (!SHELLS.has(shell) && !SHELLS.has(p.comm)) return false;
+  return argv.slice(1).some((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
+}
+
+/**
+ * Plan the tool trees under `cli` from a FRESH process table. Membership of a root R =
+ * R + its ppid-descendants + every process whose sid is R.pid (when R leads its session).
+ * `cli` itself and anything not under a shell root are never members.
+ */
+export interface PlanOptions {
+  /** `CLAUDE_PID` from the process's environ (null = absent/unreadable). Omitted ⇒ no env-proven orphans. */
+  claudePidOf?: (p: ProcIdent) => number | null;
+  /** Tool-shell roots found in EARLIER rounds (possibly dead now): their session orphans are still ours. */
+  priorRoots?: readonly RootRef[];
+}
+
+export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: PlanOptions = {}): ToolPlan {
+  const byPid = new Map<number, ProcIdent>();
+  const children = new Map<number, ProcIdent[]>();
+  for (const p of table) {
+    if (p.state === 'Z') continue; // already dead
+    byPid.set(p.pid, p);
+    const l = children.get(p.ppid);
+    if (l) l.push(p);
+    else children.set(p.ppid, [p]);
+  }
+  const cliNow = byPid.get(cli.pid);
+  const members = new Map<number, ToolProc>();
+  const spared: SparedProc[] = [];
+  if (!cliNow || cliNow.startTicks !== cli.startTicks) return { cli, members: [], spared }; // CLI gone/recycled: plan nothing
+  const roots: ProcIdent[] = [];
+  for (const c of children.get(cli.pid) ?? []) {
+    if (isToolShell(c)) roots.push(c);
+    else spared.push({ pid: c.pid, comm: c.comm, cmd: cmdOf(c.argv, c.comm), reason: 'not-a-shell-command (sidecar/MCP)' });
+  }
+  const add = (p: ProcIdent, root: ProcIdent | null, depth: number, via: ToolProc['via'] = 'tree'): void => {
+    if (p.pid === cli.pid || members.has(p.pid)) return;
+    members.set(p.pid, {
+      pid: p.pid,
+      ppid: p.ppid,
+      sid: p.sid,
+      startTicks: p.startTicks,
+      comm: p.comm,
+      cmd: cmdOf(p.argv, p.comm),
+      rootPid: root ? root.pid : 0,
+      rootIsSessionLeader: root ? root.sid === root.pid : false,
+      isRoot: root ? p.pid === root.pid : false,
+      depth,
+      via,
+    });
+  };
+  for (const root of roots) {
+    const queue: Array<[ProcIdent, number]> = [[root, 0]];
+    const seen = new Set<number>();
+    while (queue.length) {
+      const [p, d] = queue.shift() as [ProcIdent, number];
+      if (seen.has(p.pid)) continue;
+      seen.add(p.pid);
+      add(p, root, d);
+      for (const k of children.get(p.pid) ?? []) queue.push([k, d + 1]);
+    }
+    if (root.sid === root.pid) {
+      for (const p of byPid.values()) if (p.sid === root.pid && p.pid !== cli.pid) add(p, root, 99, 'session');
+    }
+  }
+  // Session orphans of tool shells seen in an earlier round (the shell itself may be dead now).
+  for (const pr of opts.priorRoots ?? []) {
+    for (const p of byPid.values()) {
+      if (p.sid === pr.pid && p.pid !== pr.pid && p.pid !== cli.pid && p.startTicks > pr.startTicks) {
+        add(p, { ...p, pid: pr.pid, sid: pr.pid, startTicks: pr.startTicks }, 99, 'session');
+      }
+    }
+  }
+  // Env-proven orphans: started after the CLI, exported CLAUDE_PID=<cli pid>, and NOT inside a sidecar's subtree.
+  if (opts.claudePidOf) {
+    const sidecar = new Set<number>();
+    for (const s of spared) {
+      const q = [s.pid];
+      while (q.length) {
+        const x = q.pop() as number;
+        if (sidecar.has(x)) continue;
+        sidecar.add(x);
+        for (const k of children.get(x) ?? []) q.push(k.pid);
+      }
+    }
+    for (const p of byPid.values()) {
+      if (members.has(p.pid) || p.pid === cli.pid || sidecar.has(p.pid) || p.startTicks <= cli.startTicks) continue;
+      if (opts.claudePidOf(p) === cli.pid) add(p, null, 99, 'env');
+    }
+  }
+  return { cli, members: [...members.values()], spared };
+}
+
+/** Kill order: deepest first, tool roots last. */
+export function killOrder(members: readonly ToolProc[]): ToolProc[] {
+  return [...members].sort((a, b) => Number(a.isRoot) - Number(b.isRoot) || b.depth - a.depth);
+}
+
+export type FreshRead = ProcIdent | 'gone' | 'unreadable';
+export type SignalVerdict =
+  | { ok: true; via: 'root-under-cli' | 'chain' | 'session' | 'env' }
+  | { ok: false; reason: string };
+
+/**
+ * THE signal-time identity check (D4). `read` must do a FRESH /proc read on every call;
+ * `readClaudePid` a fresh environ read (null = absent, 'unreadable' = fail closed).
+ * Fail closed: anything not positively proven the planned tool process is refused.
+ * Proof order: root under the CLI → ppid chain → session → env provenance.
+ */
+export function verifyAtSignal(
+  target: ToolProc,
+  plan: ToolPlan,
+  protect: { keeperPid: number | null; selfPid: number },
+  read: (pid: number) => FreshRead,
+  readClaudePid: (pid: number) => number | null | 'unreadable' = () => 'unreadable',
+): SignalVerdict {
+  if (target.pid <= 1 || target.pid === plan.cli.pid || target.pid === protect.keeperPid || target.pid === protect.selfPid) {
+    return { ok: false, reason: 'protected-pid (cli/keeper/app/init)' };
+  }
+  const fresh = read(target.pid);
+  if (fresh === 'gone') return { ok: false, reason: 'gone' };
+  if (fresh === 'unreadable') return { ok: false, reason: 'unreadable' };
+  if (fresh.startTicks !== target.startTicks) return { ok: false, reason: 'reused (start-time changed)' };
+  if (fresh.state === 'Z') return { ok: false, reason: 'zombie' };
+  const cli = read(plan.cli.pid);
+  if (cli === 'gone' || cli === 'unreadable' || cli.startTicks !== plan.cli.startTicks || cli.state === 'Z') {
+    // Without a provable CLI there is no ancestry to prove: fail closed.
+    return { ok: false, reason: 'cli-identity-unprovable' };
+  }
+  if (target.isRoot) {
+    return fresh.ppid === plan.cli.pid ? { ok: true, via: 'root-under-cli' } : { ok: false, reason: 'root-not-under-cli' };
+  }
+  let reason = 'no-lineage-proof';
+  // 1. ppid chain up to a planned root under the CLI (every hop identity-checked).
+  if (target.via === 'tree') {
+    const chain = chainToRoot(fresh, plan, read);
+    if (chain === true) return { ok: true, via: 'chain' };
+    reason = chain;
+  }
+  // 2. session lineage: still in the planned root's session (root alive = same identity, or dead).
+  if (target.rootIsSessionLeader && fresh.sid === target.rootPid && target.via !== 'env') {
+    const root = read(target.rootPid);
+    const rootStart = plan.members.find((m) => m.pid === target.rootPid)?.startTicks;
+    const rootOk = root === 'gone' || (root !== 'unreadable' && (rootStart === undefined || root.startTicks === rootStart));
+    if (rootOk) return { ok: true, via: 'session' };
+    reason = 'session-root-mismatch';
+  }
+  // 3. env provenance: CLAUDE_PID == this CLI's pid (re-read now) and started after the CLI.
+  const env = readClaudePid(target.pid);
+  if (env === 'unreadable') return { ok: false, reason: reason === 'no-lineage-proof' ? 'environ-unreadable' : reason };
+  if (env === plan.cli.pid && fresh.startTicks > plan.cli.startTicks) return { ok: true, via: 'env' };
+  return { ok: false, reason };
+}
+
+function chainToRoot(fresh: ProcIdent, plan: ToolPlan, read: (pid: number) => FreshRead): true | string {
+  const byPid = new Map(plan.members.map((m) => [m.pid, m]));
+  let cur: ProcIdent = fresh;
+  for (let hop = 0; hop < 64; hop++) {
+    if (cur.ppid === plan.cli.pid) return byPid.get(cur.pid)?.isRoot ? true : 'chain-ends-at-cli-without-root';
+    const parentPlan = byPid.get(cur.ppid);
+    if (!parentPlan) return 'reparented (parent not a planned tool process)';
+    const parent = read(cur.ppid);
+    if (parent === 'gone' || parent === 'unreadable') return `parent-${parent}`;
+    if (parent.startTicks !== parentPlan.startTicks || parent.state === 'Z') return 'parent-identity-changed';
+    cur = parent;
+  }
+  return 'chain-too-deep';
+}
