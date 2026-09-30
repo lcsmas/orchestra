@@ -320,30 +320,49 @@ export function backgroundTasksSequence(overrides) {
 
 /** A background-task LIFECYCLE for a mounted panel: the REAL capture's frames carry only the level set (`background_tasks_changed`),
  *  and the fold creates a card only from `task_started` — so the `task_started` / `task_notification` wrappers are DERIVED from the
- *  capture's own (task_id, task_type, description) rows in the sdk.d.ts wire shape, then the real frames interleave. Ends settled
- *  (one stopped by leaving the level set, one completed) and drained: nothing running, cards + panel toggle mount. Every message is
- *  normalized by the app's own `normalizeSdkMessage`; returns the SdkMessages. */
-export function backgroundTaskLifecycle() {
+ *  capture's own (task_id, task_type, description) rows in the sdk.d.ts wire shape, then the real frames interleave. Every message is
+ *  normalized by the app's own `normalizeSdkMessage` and the result is validated by folding.
+ *  `{ running: true }` (the default; an ordinary idle state — the agent finished its turn while a background shell keeps going) ends with
+ *  the FIRST task still running (it is in the last level frame) and the second completed. `{ running: false }` drains: one stopped by
+ *  leaving the level set, one completed, nothing running. Returns the SdkMessages. */
+export function backgroundTaskLifecycle({ running = true } = {}) {
   const frames = backgroundTasksSequence();
   const rows = new Map();
   for (const f of frames) for (const t of f.tasks) if (!rows.has(t.task_id)) rows.set(t.task_id, t);
   const started = (t) => ({ type: 'system', subtype: 'task_started', task_id: t.task_id, task_type: t.task_type, description: t.description });
   const [first, second] = [...rows.values()];
   must(first && second, 'backgroundTaskLifecycle: the capture must carry two distinct tasks');
-  const msgs = [
-    started(first), frames[0], started(second), frames[1], frames[2],
-    { type: 'system', subtype: 'task_notification', task_id: second.task_id, status: 'completed', summary: second.description },
-    frames[3],
-  ];
+  const done = { type: 'system', subtype: 'task_notification', task_id: second.task_id, status: 'completed', summary: second.description };
+  const msgs = running
+    ? [started(first), frames[0], started(second), frames[1], done, frames[0]]       // ends: live set = [first] → first RUNNING, second completed
+    : [started(first), frames[0], started(second), frames[1], frames[2], done, frames[3]];
   for (const [i, m] of msgs.entries()) {
     const evs = normalizeSdkMessage(m, { seq: 0, now: () => FIXTURE_AT });
     must(Array.isArray(evs) && evs.length === 1 && evs[0].type === 'task', `backgroundTaskLifecycle: msg[${i}] (${m.subtype}) did not normalize to one task event`);
   }
-  // fold check: both cards exist and neither is running
   const sess = foldEvents(emptySession('bg'), msgs.flatMap((m) => normalizeSdkMessage(m, { seq: 0, now: () => FIXTURE_AT })));
   const st = Object.values(sess.tasks).map((t) => t.status).sort();
-  must(st.length === 2 && !st.includes('running'), `backgroundTaskLifecycle: expected 2 settled tasks, got [${st.join(',')}]`);
+  must(st.length === 2, `backgroundTaskLifecycle: expected 2 task cards, got ${st.length}`);
+  if (running) must(st.filter((x) => x === 'running').length === 1 && st.includes('completed'), `backgroundTaskLifecycle(running): expected one running + one completed, got [${st.join(',')}]`);
+  else must(!st.includes('running'), `backgroundTaskLifecycle(drained): expected nothing running, got [${st.join(',')}]`);
   return msgs;
+}
+
+/** An in-progress TodoWrite (an ordinary idle state: the agent ended its turn with an item still marked in_progress, and the checklist mark
+ *  spins by design). SPEC-SHAPED, NOT A CAPTURE: 0 `TodoWrite` tool_use lines exist in any transcript on this machine (this CLI version's
+ *  sessions do not emit it), so the two transcript lines follow the tool-input shape documented at renderer tool-util.ts (`TodoItem`) and the
+ *  real tool_use / tool_result line envelopes of rich-session.transcript.jsonl. Validated by folding: a TodoWrite card with an in_progress item. */
+export function todoWriteLines(activeStatus = 'in_progress') {
+  const id = 'toolu_01UibTodoWriteFixture0000';
+  const todos = [
+    { content: 'Reproduce the idle CPU floor', status: 'completed', activeForm: 'Reproducing the idle CPU floor' },
+    { content: 'Budget the metrics catch-all', status: activeStatus, activeForm: 'Budgeting the metrics catch-all' },
+    { content: 'Wire the release gate', status: 'pending', activeForm: 'Wiring the release gate' },
+  ];
+  return [
+    { type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'TodoWrite', input: { todos }, caller: { type: 'direct' } }] } },
+    { type: 'user', isSidechain: false, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress.', is_error: false }] } },
+  ].map((o) => JSON.stringify(o));
 }
 
 /** A REAL transcript slice → AgentEvents through the app's own history adapter, validated by folding: the session
@@ -353,7 +372,7 @@ export function backgroundTaskLifecycle() {
 export function richSessionEvents(overrides) {
   const file = path.join(payloadDir, 'rich-session.transcript.jsonl');
   must(overrides?.jsonl != null || fs.existsSync(file), `captured payload missing: ${file}`);
-  const jsonl = overrides?.jsonl ?? fs.readFileSync(file, 'utf8');
+  const jsonl = overrides?.jsonl ?? `${fs.readFileSync(file, 'utf8').trimEnd()}\n${todoWriteLines(overrides?.todoStatus).join('\n')}\n`;
   const events = transcriptToEvents(jsonl, { seq: 0, now: () => FIXTURE_AT });
   must(events.length > 0, 'richSessionEvents: the transcript produced no events');
   const session = foldEvents(emptySession('rich'), events);
@@ -363,6 +382,10 @@ export function richSessionEvents(overrides) {
   must(assistant.some((m) => /^\s*[-*] /m.test(m.text ?? '')), 'richSessionEvents: no assistant message carries a markdown list');
   const tools = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => m.toolUse?.name));
   for (const t of ['Read', 'Edit', 'Bash']) must(tools.has(t), `richSessionEvents: no ${t} tool card (got ${[...tools].join(',') || 'none'})`);
+  if (overrides?.jsonl == null) {   // the default subject must carry the in-progress todo (an explicit `jsonl` is the malformed-slice arms)
+    const todo = session.messages.find((m) => m.role === 'tool' && m.toolUse?.name === 'TodoWrite');
+    must(Array.isArray(todo?.toolUse?.input?.todos) && todo.toolUse.input.todos.some((t) => t.status === 'in_progress'), 'richSessionEvents: no TodoWrite card with an in_progress item');
+  }
   const edit = session.messages.find((m) => m.role === 'tool' && m.toolUse?.name === 'Edit');
   must(typeof edit?.toolUse?.input?.old_string === 'string' && typeof edit?.toolUse?.input?.new_string === 'string', 'richSessionEvents: the Edit card has no old_string/new_string (no diff to render)');
   return { events, session };

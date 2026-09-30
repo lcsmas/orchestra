@@ -3,7 +3,7 @@
 // on every exit path. Every arm asserts the rc AND the clause/site STRING it must name (an rc alone is never the verdict).
 //   node scripts/verify-ui-idle-budget.mjs [<app-dir>] [--window-ms N] [--only a,b] [--unfixed-app <built pre-T9 checkout>]
 //   (build first: pnpm run build:bundles). --unfixed-app adds the REAL historical defect: a build from before #198 T9 (e.g. 4c1d2dc5) must FAIL.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -81,6 +81,24 @@ const MUTANTS = {
     js: paneInject('(function __c8MutantEvade(){if(window.__c8ev)return;window.__c8ev=1;var f=document.createElement("div");f.style.cssText="position:fixed;left:0;top:2px;width:3px;height:3px";document.body.appendChild(f);var st=document.createElement("style");st.textContent="@keyframes c8-flip{from{opacity:1}to{opacity:.99}}.c8f{animation:c8-flip 1s linear infinite}";document.head.appendChild(st);var i=0;f.className="c8f c8flip-0";setInterval(function(){f.className="c8f c8flip-"+(++i)},500);var h=document.createElement("div");document.body.appendChild(h);var sr=h.attachShadow({mode:"open"});var e=document.createElement("div");e.style.cssText="width:3px;height:3px";sr.appendChild(e);e.animate([{opacity:1},{opacity:.99}],{duration:1000,iterations:Infinity,id:"c8-shadow"})})();'),
     css: '\n@keyframes c8-big{from{opacity:1}to{opacity:.999}}.av-message-list{animation:c8-big 1s linear 100000000}\n',
   },
+  // Round 2 F1: sub-budget work the count clauses cannot see — only ThreadTime / RecalcStyleCount can. ONE instance per page (a guard inside the IIFE).
+  timeout100w3: { js: paneInject('(function(){if(window.__c8t100)return;window.__c8t100=1;(function __c8MutantTimeout100W3(){var t=performance.now();while(performance.now()-t<3);setTimeout(__c8MutantTimeout100W3,100)})()})();') },
+  transition1000: { js: paneInject('(function(){if(window.__c8tr)return;window.__c8tr=1;(function __c8MutantTr1000(){var d=document.createElement("div");d.style.cssText="position:fixed;left:0;top:4px;width:6px;height:6px;background:#000;transition:opacity 200ms linear;opacity:1";document.body.appendChild(d);var n=0;setInterval(function(){d.style.opacity=(n++%2?"1":"0.2")},1000)})()})();') },
+  // Round 2 F3: 500 ms x 1000 iterations (500 s remaining = infinite for a 10 s window) and an animation NAME swapped every 3333 ms.
+  cssIter1000: { css: '\n@keyframes c8-iter{from{opacity:1}to{opacity:.999}}.av-message-list{animation:c8-iter 500ms linear 1000}\n' },
+  nameChurn: {
+    js: paneInject('(function(){if(window.__c8nc)return;window.__c8nc=1;(function __c8MutantNameChurn(){var d=document.createElement("div");d.style.cssText="position:fixed;left:0;top:8px;width:4px;height:4px";d.className="c8n-a";document.body.appendChild(d);var i=0;setInterval(function(){d.className=(++i%2?"c8n-b":"c8n-a")},3333)})()})();'),
+    css: '\n@keyframes nc-a{from{opacity:1}to{opacity:.99}}@keyframes nc-b{from{opacity:1}to{opacity:.98}}.c8n-a{animation:nc-a 1s linear infinite}.c8n-b{animation:nc-b 1s linear infinite}\n',
+  },
+  // Round 2 F2: loops INSIDE the by-design states' own code must still fail. rAF in the background panel's running-task tick effect; a different
+  // infinite animation on the running task's status dot (replaces the granted av-bgtask-pulse, so its name is not on the list).
+  bgPanelRaf: { js: (src) => {
+    const re = /if\(!(\w+)\)return;const (\w+)=setInterval\(\(\)=>(\w+)\(Date\.now\(\)\),1e3\);return\(\)=>clearInterval\(\2\)/g;
+    const hits = [...src.matchAll(re)];
+    if (hits.length !== 1) throw new Error(`PATTERN-GONE (not a survivor): background-panel tick anchor matched ${hits.length}x (want exactly 1) — re-aim the mutant`);
+    return src.replace(re, (m, flag) => m.replace(`if(!${flag})return;`, `if(!${flag})return;(function __c8MutantBgPanelRaf(){requestAnimationFrame(__c8MutantBgPanelRaf)})();`));
+  } },
+  bgDotAnimation: { css: '\n.av-bgtask-status-dot[data-status="running"]{animation:c8-dot 1s linear infinite}@keyframes c8-dot{from{opacity:1}to{opacity:.999}}\n' },
   // F4: the bundle captures requestAnimationFrame AT MODULE LOAD and loops through the captured reference.
   capturedRaf: { js: (src) => paneInject('(function __c8MutantCapturedRafLoop(){__c8Raf(__c8MutantCapturedRafLoop)})();')(`var __c8Raf=window.requestAnimationFrame.bind(window);\n${src}`) },
 };
@@ -108,10 +126,17 @@ function runGate(args, { env = {}, app = APP } = {}) {
 
 const RESULTS = [];
 let cleanSha = null;
-function arm(name, { mutant = null, args = [], env = {}, app = APP, rc, must = [], mustNot = [], note = '', extra = null }) {
+// Pinned-core contention (round-2 F1): N busy loops pinned to cores 0..N-1 while the gate runs. Killed by pid in a finally; the gate's verdict
+// must not depend on them (ThreadTime is CPU time, not wall time).
+function withBurners(n, fn) {
+  const pids = [];
+  for (let c = 0; c < n; c++) pids.push(spawn('taskset', ['-c', String(c), 'sh', '-c', 'while :; do :; done'], { stdio: 'ignore' }));
+  try { return fn(); } finally { for (const b of pids) { try { b.kill('SIGKILL'); } catch { /* gone */ } } }
+}
+function arm(name, { mutant = null, args = [], env = {}, app = APP, burners = 0, rc, must = [], mustNot = [], note = '', extra = null }) {
   if (ONLY && !ONLY.includes(name)) return;
   applyMutant(mutant);
-  const r = runGate(args, { env, app });
+  const r = burners ? withBurners(burners, () => runGate(args, { env, app })) : runGate(args, { env, app });
   const fails = [];
   if (r.rc !== rc) fails.push(`rc ${r.rc} != ${rc}`);
   for (const s of must) if (!r.out.includes(s)) fails.push(`output lacks «${s}»`);
@@ -147,6 +172,16 @@ arm('mutant-timeout0-chain', { mutant: 'timeoutChain', rc: 1, must: ['FAIL   bud
 arm('mutant-resize-observer-loop', { mutant: 'roLoop', rc: 1, must: ['FAIL   budget/resize-observer', '__c8MutantRoInit'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: ResizeObserver self-resize loop → budget/resize-observer naming __c8MutantRoInit' });
 arm('mutant-mutation-observer-loop', { mutant: 'moLoop', rc: 1, must: ['FAIL   budget/mutation-observer', '__c8MutantMoInit', 'ok     budget/short-timer-loops'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: MutationObserver re-mutate loop (200 ms, not a short timer) → budget/mutation-observer only' });
 arm('mutant-metrics-only-loop', { mutant: 'mcLoop', rc: 1, must: ['FAIL   budget/metrics', 'OVER:', 'ok     budget/idle-raf', 'ok     budget/short-timer-loops', 'ok     budget/resize-observer', 'ok     budget/mutation-observer'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: MessageChannel loop no counter names → ONLY the getMetrics catch-all reddens' });
+// Round 2 F1: the reviewer's sub-budget probes must FAIL on the metrics leg alone; the clean build must PASS under pinned-core contention
+arm('mutant-timeout100-3ms', { mutant: 'timeout100w3', rc: 1, must: ['FAIL   budget/metrics', 'ThreadTime', 'ok     budget/short-timer-loops', 'ok     budget/idle-raf', 'ok     budget/resize-observer'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: 3 ms JS every 100 ms (~3% of a core, a 100 ms timer is not a short one) → ONLY budget/metrics (ThreadTime)' });
+arm('mutant-transition-1000ms', { mutant: 'transition1000', rc: 1, must: ['FAIL   budget/metrics', 'OVER:', 'ok     budget/short-timer-loops', 'ok     budget/idle-raf'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: JS-retriggered 200 ms CSS transition every 1 s → budget/metrics' });
+arm('clean-under-contention', { burners: 2, rc: 0, must: ['ui-idle-budget: PASS', 'ok     budget/metrics'], note: 'must-PASS: 2 CPU burners pinned to cores 0-1 — ThreadTime is CPU time, so contention cannot fail (or hide) a clean build' });
+// Round 2 F3: census evasions — remaining duration >= window, and name presence over >= 3 mid-window samples
+arm('mutant-css-iterations-1000', { mutant: 'cssIter1000', rc: 1, must: ['FAIL   budget/infinite-animations', 'c8-iter@'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: animation 500ms x 1000 iterations (500 s remaining) → named' });
+arm('mutant-animation-name-churn', { mutant: 'nameChurn', rc: 1, must: ['FAIL   budget/infinite-animations', 'nc-a@', 'nc-b@'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: an infinite animation NAME swapped every 3333 ms (a both-ends intersection misses it) → both names' });
+// Round 2 F2: the by-design states are allowlisted, their CODE is not
+arm('mutant-bgpanel-raf', { mutant: 'bgPanelRaf', rc: 1, must: ['FAIL   budget/idle-raf', '__c8MutantBgPanelRaf'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: rAF loop inside the running-task panel effect → budget/idle-raf naming it' });
+arm('mutant-bgdot-other-animation', { mutant: 'bgDotAnimation', rc: 1, must: ['FAIL   budget/infinite-animations', 'c8-dot@span.av-bgtask-status-dot'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: a different infinite animation on the running task dot is not the granted av-bgtask-pulse' });
 // F3: census evasions (iteration count 1e8, churning class, open shadow root)
 arm('mutant-census-evasions', { mutant: 'evasions', rc: 1, must: ['FAIL   budget/infinite-animations', 'c8-big@', 'c8-flip@', 'wapi:c8-shadow@'], mustNot: ['ui-idle-budget: PASS'], note: 'must-FAIL: 1e8 iterations + class churn + open shadow root → all three named' });
 // F4: a bundle that captured requestAnimationFrame at module load — caught by the first-script instrument, escapes a late one (which must REFUSE)
@@ -159,7 +194,7 @@ arm('bus-required-refused', { args: ['--selftest-break-bus'], rc: 4, must: ['REF
 // …and only reported (never refused) on a dev run
 arm('bus-down-informational', { args: ['--no-require-bus', '--selftest-break-bus'], rc: 0, must: ['ui-idle-budget: PASS', 'ok     control/bus-open', 'informational'], note: 'same broken bus without --require-bus → PASS, reported as informational' });
 // A6: strict zero on the CLEAN build fails naming the caret blink — the allowlist is load-bearing
-arm('strict-zero-names-caret-blink', { args: ['--budget', 'none'], rc: 1, must: ['FAIL   budget/infinite-animations', 'cm-blink'], mustNot: ['ui-idle-budget: PASS'], note: 'the allowlist is what lets the clean build pass: strict zero → FAIL naming cm-blink' });
+arm('strict-zero-names-caret-blink', { args: ['--budget', 'none'], rc: 1, must: ['FAIL   budget/infinite-animations', 'cm-blink', 'av-spin@span.av-todo-mark>svg', 'av-bgtask-pulse@span.av-bgtask-status-dot'], mustNot: ['ui-idle-budget: PASS'], note: 'the allowlists are what let the clean build pass: strict zero → FAIL naming cm-blink AND the two by-design animations' });
 // A7-A9: isolation refusals — each names ITS clause and launches nothing
 arm('refuse-wayland-1', { args: ['--selftest-force-wayland', 'wayland-1'], rc: 90, must: ['REFUSED before launch [refuse-wayland-1]'], mustNot: ['app pid'], note: "child forced onto the human's compositor" });
 arm('refuse-x11-display', { args: ['--selftest-add-display', ':0'], rc: 90, must: ['REFUSED before launch [x11-display-set]'], mustNot: ['app pid'], note: 'DISPLAY injected into the child env' });

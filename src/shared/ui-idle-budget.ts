@@ -4,7 +4,8 @@
 //   budgets   — rAF callbacks fired (zero) · recurring short timers (zero) · ResizeObserver / MutationObserver callbacks
 //               (measured baseline) · infinite animations (`name@selector` allowlist) · Performance.getMetrics deltas
 //               (a catch-all for per-frame work no counter names: a MessageChannel loop, an idle-callback chain, …)
-// Never OS CPU as a verdict: it is noisy. The one timing-sensitive number (TaskDuration) is VOID above a load ceiling.
+// Never OS process CPU as a verdict (noisy). The metrics leg budgets ThreadTime — the main thread's CPU time, robust to contention — and is
+// never voided by host load: a measurement that goes blind under load is exactly when a loop hides.
 
 /** `snippet`: ~140 chars of the shipped bundle around the scheduling frame (the site is minified: `z (index-x.js:338:20904)` alone says nothing). */
 export interface RafSite { site: string; scheduled: number; fired: number; snippet?: string }
@@ -12,7 +13,8 @@ export interface RafSite { site: string; scheduled: number; fired: number; snipp
 export interface InfiniteAnim { key: string; name: string; selector: string; count: number }
 export interface TimerSite { site: string; fired: number }
 export interface ObserverSite { site: string; kind: 'ro' | 'mo'; fired: number }
-export interface Metrics { RecalcStyleCount: number; LayoutCount: number; TaskDuration: number }
+/** `ThreadTime` = main-thread CPU seconds (Performance.getMetrics); wall `TaskDuration` is NOT used (preemption inflates it). */
+export interface Metrics { RecalcStyleCount: number; LayoutCount: number; ThreadTime: number }
 
 export interface IdleMeasurement {
   windowMs: number;
@@ -42,9 +44,7 @@ export interface IdleMeasurement {
   observers: { resizeFired: number; mutationFired: number; bySite: ObserverSite[] };
   /** `Performance.getMetrics` deltas over the window (null = the read failed). */
   metrics: Metrics | null;
-  /** 1-minute load average when the window ended (TaskDuration is wall time: preemption inflates it). */
-  load1: number;
-  /** Infinite animations running at BOTH ends of the window (a transient one is not steady-state per-frame work). */
+  /** Steady infinite animations: the output of {@link steadyAnimations} over the mid-window samples. */
   infiniteAnimations: InfiniteAnim[];
   controls: {
     /** rAF callbacks the APP's own queue fired while the rig drove an event burst through `__injectAgentEvent`. */
@@ -96,14 +96,31 @@ export interface Budget {
   minDistinctAvClasses: number;
   /** `name@selector` -> max steady infinite animations allowed (an explicit, reviewed allowlist; empty = none). */
   infiniteAnimations: Record<string, number>;
-  /** TaskDuration is VOID (not judged, reported) when load1 exceeds this. */
-  loadVoidAbove: number;
+  /** Extra allowance granted ONLY while the named rich marker is present (the ordinary idle state that animates by design: an
+   *  in-progress todo's spinner, a running background task's dot). marker -> `name@selector` -> max. Absent marker = no grant. */
+  infiniteAnimationsWhen: Record<string, Record<string, number>>;
 }
 
 export const DEFAULT_BUDGET: Budget = {
   rafFired: 0, shortTimerLoops: 0, resizeObserverFired: 0, mutationObserverFired: 0,
-  metricsPer10s: { RecalcStyleCount: 0, LayoutCount: 0, TaskDuration: 0 }, minDistinctAvClasses: 0, infiniteAnimations: {}, loadVoidAbove: 20,
+  metricsPer10s: { RecalcStyleCount: 0, LayoutCount: 0, ThreadTime: 0 }, minDistinctAvClasses: 0, infiniteAnimations: {}, infiniteAnimationsWhen: {},
 };
+
+/** Steady infinite animations from per-sample censuses taken across the window: a NAME is steady when it is present in at least
+ *  `minSamples` samples (so a name swapped every few seconds is caught where a both-ends intersection would miss it, and class
+ *  churn cannot hide it); its entries are those of the LAST sample that held it. */
+export function steadyAnimations(samples: InfiniteAnim[][], minSamples = 3): InfiniteAnim[] {
+  const seen = new Map<string, { n: number; last: InfiniteAnim[] }>();
+  for (const sample of samples) {
+    const byName = new Map<string, InfiniteAnim[]>();
+    for (const a of sample) (byName.get(a.name) ?? byName.set(a.name, []).get(a.name)!).push(a);
+    for (const [name, list] of byName) {
+      const e = seen.get(name) ?? seen.set(name, { n: 0, last: [] }).get(name)!;
+      e.n += 1; e.last = list;
+    }
+  }
+  return [...seen.values()].filter((e) => e.n >= minSamples).flatMap((e) => e.last);
+}
 
 export interface Clause { name: string; kind: 'control' | 'budget'; ok: boolean; detail: string }
 export interface Verdict {
@@ -163,22 +180,22 @@ export function judge(m: IdleMeasurement, budget: Budget = DEFAULT_BUDGET): Verd
     `${m.observers.resizeFired} ResizeObserver callback(s) (budget ${budget.resizeObserverFired})${m.observers.resizeFired > budget.resizeObserverFired ? `; top: ${topOf(m.observers.bySite.filter((s) => s.kind === 'ro'), (s) => `${s.site} ×${s.fired}`)}` : ''}`);
   bud('mutation-observer', m.observers.mutationFired <= budget.mutationObserverFired,
     `${m.observers.mutationFired} MutationObserver callback(s) (budget ${budget.mutationObserverFired})${m.observers.mutationFired > budget.mutationObserverFired ? `; top: ${topOf(m.observers.bySite.filter((s) => s.kind === 'mo'), (s) => `${s.site} ×${s.fired}`)}` : ''}`);
-  // The catch-all: per-frame work no counter names (a MessageChannel loop, an idle-callback chain) still costs style + layout + task time.
+  // The catch-all: per-frame work no counter names (a MessageChannel loop, an idle-callback chain) still costs style + layout + main-thread CPU.
   if (m.metrics) {
     const scale = m.windowMs / 10000;
     const lim = (k: keyof Metrics) => budget.metricsPer10s[k] * scale;
     const over: string[] = [];
     for (const k of ['RecalcStyleCount', 'LayoutCount'] as const) if (m.metrics[k] > lim(k)) over.push(`${k} ${m.metrics[k]} > ${+lim(k).toFixed(2)}`);
-    const voided = m.load1 > budget.loadVoidAbove;
-    if (!voided && m.metrics.TaskDuration > lim('TaskDuration')) over.push(`TaskDuration ${m.metrics.TaskDuration.toFixed(3)} s > ${+lim('TaskDuration').toFixed(3)} s`);
+    if (m.metrics.ThreadTime > lim('ThreadTime')) over.push(`ThreadTime ${m.metrics.ThreadTime.toFixed(3)} s > ${+lim('ThreadTime').toFixed(3)} s`);
     bud('metrics', over.length === 0,
-      `Performance.getMetrics over ${m.windowMs} ms: RecalcStyleCount ${m.metrics.RecalcStyleCount} (≤ ${+lim('RecalcStyleCount').toFixed(2)}), LayoutCount ${m.metrics.LayoutCount} (≤ ${+lim('LayoutCount').toFixed(2)}), TaskDuration ${m.metrics.TaskDuration.toFixed(3)} s (≤ ${+lim('TaskDuration').toFixed(3)} s${voided ? `; VOID — load ${m.load1} > ${budget.loadVoidAbove}, not judged` : ''})${over.length ? `; OVER: ${over.join(', ')}` : ''}`);
+      `Performance.getMetrics over ${m.windowMs} ms: RecalcStyleCount ${m.metrics.RecalcStyleCount} (≤ ${+lim('RecalcStyleCount').toFixed(2)}), LayoutCount ${m.metrics.LayoutCount} (≤ ${+lim('LayoutCount').toFixed(2)}), ThreadTime ${m.metrics.ThreadTime.toFixed(3)} s (≤ ${+lim('ThreadTime').toFixed(3)} s)${over.length ? `; OVER: ${over.join(', ')}` : ''}`);
   }
   const byKey = new Map<string, number>();
   for (const a of m.infiniteAnimations) byKey.set(a.key, (byKey.get(a.key) ?? 0) + a.count);
   const over: string[] = [];
+  const granted = (key: string) => Object.entries(budget.infiniteAnimationsWhen).reduce((n, [marker, grants]) => n + (m.rich.markers[marker] ? grants[key] ?? 0 : 0), 0);
   for (const [key, total] of byKey) {
-    const allowed = budget.infiniteAnimations[key] ?? 0;
+    const allowed = (budget.infiniteAnimations[key] ?? 0) + granted(key);
     if (total > allowed) over.push(`${key} ×${total} (allowed ${allowed})`);
   }
   bud('infinite-animations', over.length === 0,
@@ -194,7 +211,7 @@ export function renderClauses(v: Verdict): string[] {
   return v.clauses.map((x) => `${x.ok ? 'ok    ' : x.kind === 'control' ? 'REFUSE' : 'FAIL  '} ${x.name}: ${x.detail}`);
 }
 
-const KEYS = new Set(['_comment', 'rafFired', 'shortTimerLoops', 'resizeObserverFired', 'mutationObserverFired', 'metricsPer10s', 'minDistinctAvClasses', 'infiniteAnimations', 'loadVoidAbove']);
+const KEYS = new Set(['_comment', 'rafFired', 'shortTimerLoops', 'resizeObserverFired', 'mutationObserverFired', 'metricsPer10s', 'minDistinctAvClasses', 'infiniteAnimations', 'infiniteAnimationsWhen']);
 const nonNegInt = (v: unknown, what: string): number => {
   if (!Number.isInteger(v) || (v as number) < 0) throw new Error(`${what} must be a non-negative integer`);
   return v as number;
@@ -213,14 +230,26 @@ export function parseBudget(raw: unknown): Budget {
   const d = DEFAULT_BUDGET;
   const ia = o.infiniteAnimations ?? {};
   if (typeof ia !== 'object' || Array.isArray(ia) || ia === null) throw new Error('infiniteAnimations must be an object');
+  const keyRe = /^[^@\s]+@\S+$/;
   const infiniteAnimations: Record<string, number> = {};
   for (const [k, v] of Object.entries(ia)) {
-    if (!/^[^@\s]+@\S+$/.test(k)) throw new Error(`infiniteAnimations key '${k}' must be name@selector`);
+    if (!keyRe.test(k)) throw new Error(`infiniteAnimations key '${k}' must be name@selector`);
     infiniteAnimations[k] = nonNegInt(v, `infiniteAnimations.${k}`);
+  }
+  const iw = o.infiniteAnimationsWhen ?? {};
+  if (typeof iw !== 'object' || Array.isArray(iw) || iw === null) throw new Error('infiniteAnimationsWhen must be an object');
+  const infiniteAnimationsWhen: Record<string, Record<string, number>> = {};
+  for (const [marker, grants] of Object.entries(iw)) {
+    if (typeof grants !== 'object' || Array.isArray(grants) || grants === null) throw new Error(`infiniteAnimationsWhen.${marker} must be an object`);
+    infiniteAnimationsWhen[marker] = {};
+    for (const [k, v] of Object.entries(grants)) {
+      if (!keyRe.test(k)) throw new Error(`infiniteAnimationsWhen.${marker} key '${k}' must be name@selector`);
+      infiniteAnimationsWhen[marker][k] = nonNegInt(v, `infiniteAnimationsWhen.${marker}.${k}`);
+    }
   }
   const mp = (o.metricsPer10s ?? d.metricsPer10s) as Record<string, unknown>;
   if (typeof mp !== 'object' || mp === null || Array.isArray(mp)) throw new Error('metricsPer10s must be an object');
-  for (const k of Object.keys(mp)) if (k !== 'RecalcStyleCount' && k !== 'LayoutCount' && k !== 'TaskDuration') throw new Error(`unknown metricsPer10s key '${k}'`);
+  for (const k of Object.keys(mp)) if (k !== 'RecalcStyleCount' && k !== 'LayoutCount' && k !== 'ThreadTime') throw new Error(`unknown metricsPer10s key '${k}'`);
   return {
     rafFired: o.rafFired === undefined ? d.rafFired : nonNegInt(o.rafFired, 'rafFired'),
     shortTimerLoops: o.shortTimerLoops === undefined ? d.shortTimerLoops : nonNegInt(o.shortTimerLoops, 'shortTimerLoops'),
@@ -229,10 +258,10 @@ export function parseBudget(raw: unknown): Budget {
     metricsPer10s: {
       RecalcStyleCount: mp.RecalcStyleCount === undefined ? d.metricsPer10s.RecalcStyleCount : nonNegNum(mp.RecalcStyleCount, 'metricsPer10s.RecalcStyleCount'),
       LayoutCount: mp.LayoutCount === undefined ? d.metricsPer10s.LayoutCount : nonNegNum(mp.LayoutCount, 'metricsPer10s.LayoutCount'),
-      TaskDuration: mp.TaskDuration === undefined ? d.metricsPer10s.TaskDuration : nonNegNum(mp.TaskDuration, 'metricsPer10s.TaskDuration'),
+      ThreadTime: mp.ThreadTime === undefined ? d.metricsPer10s.ThreadTime : nonNegNum(mp.ThreadTime, 'metricsPer10s.ThreadTime'),
     },
     minDistinctAvClasses: o.minDistinctAvClasses === undefined ? d.minDistinctAvClasses : nonNegInt(o.minDistinctAvClasses, 'minDistinctAvClasses'),
     infiniteAnimations,
-    loadVoidAbove: o.loadVoidAbove === undefined ? d.loadVoidAbove : nonNegNum(o.loadVoidAbove, 'loadVoidAbove'),
+    infiniteAnimationsWhen,
   };
 }

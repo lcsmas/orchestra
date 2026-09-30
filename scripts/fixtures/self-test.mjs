@@ -108,7 +108,12 @@ builds('rich session transcript (real capture) folds into markdown + fence + Rea
   return null;
 });
 
-builds('background task lifecycle (derived from the real frames) settles two cards, nothing running', () => backgroundTaskLifecycle(), (m) => (m.length === 7 && m.filter((x) => x.subtype === 'task_started').length === 2 ? null : `unexpected message list (${m.length})`));
+builds('background task lifecycle (derived from the real frames): one RUNNING + one completed card', () => backgroundTaskLifecycle(), (m) => (m.length === 6 && m.filter((x) => x.subtype === 'task_started').length === 2 ? null : `unexpected message list (${m.length})`));
+builds('background task lifecycle, drained variant: two settled cards, nothing running', () => backgroundTaskLifecycle({ running: false }), (m) => (m.length === 7 ? null : `unexpected message list (${m.length})`));
+builds('the rich session carries a TodoWrite with an in_progress item (spec-shaped: no capture exists)', () => richSessionEvents(), ({ session }) => {
+  const t = session.messages.find((x) => x.role === 'tool' && x.toolUse?.name === 'TodoWrite');
+  return t?.toolUse?.input?.todos?.some((x) => x.status === 'in_progress') ? null : 'no in_progress todo';
+});
 
 console.log('\nARM 2 — malformed fixtures are REJECTED (each validator watched failing):');
 
@@ -120,6 +125,7 @@ console.log('\nARM 2 — malformed fixtures are REJECTED (each validator watched
   rejects('a rich slice with the fenced code block stripped', () => richSessionEvents({ jsonl: lines.join('\n').split('```').join('~~~') }));
   rejects('a rich slice with no Edit tool_use (no diff card)', () => richSessionEvents({ jsonl: dropTool('Edit') }));
   rejects('an EMPTY rich slice', () => richSessionEvents({ jsonl: '' }));
+  rejects('a rich session whose TodoWrite has NO in_progress item', () => richSessionEvents({ todoStatus: 'completed' }));
 }
 
 rejects('a category row missing `kind` on the /context wire shape', () =>

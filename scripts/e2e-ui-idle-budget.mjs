@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { judge, renderClauses, parseBudget } from '../src/shared/ui-idle-budget.ts';
+import { judge, renderClauses, parseBudget, steadyAnimations } from '../src/shared/ui-idle-budget.ts';
 import { normalizeSdkMessage } from '../src/shared/agent-events.ts';
 import { richSessionEvents, backgroundTaskLifecycle, FIXTURE_AT } from './fixtures/index.mjs';
 
@@ -211,16 +211,24 @@ const INSTRUMENT = `(() => {
     walk(document);
     return out;
   };
-  window.__uibCensus = () => {
+  // An animation counts as infinite when its REMAINING duration reaches the window (minRemainingMs): a finite one that outlives the window
+  // (500ms linear 1000 = 500 s) is as good as infinite, a 200 ms transition is not. Selectors read the class ATTRIBUTE (an SVG's className is
+  // not a string) and fall back to the parent's classes for a class-less element (span.av-todo-mark>svg).
+  const selOf = (el) => {
+    const one = (e) => { const c = e.getAttribute && e.getAttribute('class'); return e.tagName.toLowerCase() + (c && c.trim() ? '.' + c.trim().split(/\\s+/).slice(0, 3).join('.') : ''); };
+    const own = one(el);
+    return (own.indexOf('.') < 0 && el.parentElement ? one(el.parentElement) + '>' : '') + own;
+  };
+  window.__uibCensus = (minRemainingMs) => {
     const by = {};
     for (const root of roots()) {
       for (const a of root.getAnimations()) {
         if (a.playState !== 'running') continue;
         let t; try { t = a.effect.getComputedTiming(); } catch { continue; }
-        if (!(t.iterations === Infinity || t.iterations > 1000)) continue;   // 1e8 iterations is infinite for every practical purpose
+        const remaining = t.endTime === Infinity ? Infinity : t.endTime - (a.currentTime || 0);
+        if (!(remaining >= minRemainingMs)) continue;
         const el = a.effect.target;
-        const cls = el && typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.') : '';
-        const selector = el ? el.tagName.toLowerCase() + cls + (a.effect.pseudoElement || '') : '?';
+        const selector = el ? selOf(el) + (a.effect.pseudoElement || '') : '?';
         const name = a.animationName || ('wapi:' + (a.id || 'anon'));
         const key = name + '@' + selector;
         (by[key] = by[key] || { key, name, selector, count: 0 }).count++;
@@ -300,7 +308,7 @@ async function main() {
   // `--budget none` = the shipped file with an EMPTY animation allowlist (strict zero animations; every other budget unchanged).
   const budgetPath = BUDGET_FILE === 'none' ? path.join(HERE, 'ui-idle-budget.json') : BUDGET_FILE;
   const budget = parseBudget(JSON.parse(fs.readFileSync(budgetPath, 'utf8')));
-  if (BUDGET_FILE === 'none') budget.infiniteAnimations = {};
+  if (BUDGET_FILE === 'none') { budget.infiniteAnimations = {}; budget.infiniteAnimationsWhen = {}; }
   log(`budget: ${BUDGET_FILE === 'none' ? 'shipped file, animation allowlist EMPTY (--budget none)' : BUDGET_FILE} = ${JSON.stringify(budget)}`);
   if (!RIG.rigDir || !RIG.wayland) { console.error('ABORT: not launched via scripts/e2e-ui-idle-budget.sh (RIG_DIR / RIG_WAYLAND unset)'); process.exit(2); }
 
@@ -432,6 +440,7 @@ async function main() {
   //    a component that never mounts is invisible to every counter, so `rich-subject` refuses a pane that lacks any of it. ──
   const richMarkersExpr = `(() => { const q = (s) => document.querySelector(s), n = (s) => document.querySelectorAll(s).length;
     return { 'md-list': !!q('.av-md-ul, .av-md-ol'), 'code-block': !!q('.av-code-block'), 'tool-runs': n('.av-tool-run') >= 2, 'diff': !!q('.av-tool-run-diff, .av-diff-add'), 'bgtask-panel': !!q('.av-bgtask-panel'),
+      'todo-in-progress': !!q('.av-todo-in_progress'), 'bgtask-running': !!q('.av-bgtask-status-dot[data-status="running"]'),
       'composer-focused': !!document.activeElement?.closest?.('.cm-editor') }; })()`;
   const distinctAvExpr = `new Set(Array.from(document.querySelectorAll('[class]'), (e) => Array.from(e.classList)).flat().filter((c) => c.startsWith('av-'))).size`;
   if (!ST.noRich) {
@@ -479,10 +488,10 @@ async function main() {
   await sleep(700);
   const s1 = await cdp.eval(`__uibSnap()`);
   const appBurstRafFired = s1.fired - s0.fired;
-  const openTurnAnimCount = total(await cdp.eval(`__uibCensus()`));
+  const openTurnAnimCount = total(await cdp.eval(`__uibCensus(${WINDOW_MS})`));
   if (!ST.openTurns) await cdp.eval(turnEndExpr('ws-0', 9100));
   await sleep(1500);
-  const closedTurnAnimCount = total(await cdp.eval(`__uibCensus()`));
+  const closedTurnAnimCount = total(await cdp.eval(`__uibCensus(${WINDOW_MS})`));
   // (b) frames are being delivered (a hidden/throttled page reads 0 vacuously).
   const framesBefore = (await cdp.eval(`__uibFrames(5)`)).ok;
   // (b2) the timer / ResizeObserver / MutationObserver wrappers count what goes THROUGH them, and the instrument preceded the app.
@@ -495,10 +504,10 @@ async function main() {
     document.head.appendChild(st);
     const el = document.createElement('div'); el.className = 'uib-probe'; document.body.appendChild(el);
     await window.__uibFrames(3);
-    const seen = window.__uibCensus().some((a) => a.name === 'uib-probe');
+    const seen = window.__uibCensus(1000).some((a) => a.name === 'uib-probe');
     el.remove(); st.remove();
     await window.__uibFrames(3);
-    const cleared = !window.__uibCensus().some((a) => a.name === 'uib-probe');
+    const cleared = !window.__uibCensus(1000).some((a) => a.name === 'uib-probe');
     return { seen, cleared };
   })()`);
   await sleep(1000);
@@ -510,20 +519,20 @@ async function main() {
   const getMetrics = async () => { try { return Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map((x) => [x.name, x.value])); } catch { return null; } };
   await cdp.send('Performance.enable').catch(() => { /* metrics-read control refuses */ });
   const richStart = ST.noRich ? {} : await cdp.eval(richMarkersExpr);
-  const c0 = await cdp.eval(`__uibCensus()`);
   const pm0 = await getMetrics();
   const w0 = await cdp.eval(`__uibSnap()`);
   log(`window ${WINDOW_MS} ms over ${PANES} idle panes …`);
+  const censusSamples = [];
   const perSecond = [];   // 1 s buckets: a perpetual loop fills every one, a stray one-shot sits in one
   for (let left = WINDOW_MS, prev = w0.fired; left > 0; left -= 1000) {
     await sleep(Math.min(1000, left));
     const f = await cdp.eval(`__uibSnap().fired`);
     perSecond.push(f - prev); prev = f;
+    censusSamples.push(await cdp.eval(`__uibCensus(${WINDOW_MS})`));   // mid-window samples: a swapped name or churned class still shows up in >= 3 of them
   }
   const w1 = await cdp.eval(`__uibSnap()`);
   const pm1 = await getMetrics();
-  const load1 = Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]);
-  const c1 = await cdp.eval(`__uibCensus()`);
+  const load1 = Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]);   // logged only: the verdict is never voided by host load
   const richEnd = ST.noRich ? {} : await cdp.eval(richMarkersExpr);
   const distinctAvClasses = await cdp.eval(distinctAvExpr);
   const framesAfter = (await cdp.eval(`__uibFrames(5)`)).ok;
@@ -553,9 +562,8 @@ async function main() {
       s.snippet = line.slice(Math.max(0, col - 50), col + 90).replace(/\s+/g, ' ');
     } catch { /* bundle unreadable: the site string still names it */ }
   }
-  // steady = present at BOTH ends by animation NAME (a churning class cannot evade it); reported at its end-of-window selector
-  const names0 = new Set(c0.map((a) => a.name));
-  const steady = c1.filter((a) => names0.has(a.name)).map((a) => ({ key: a.key, name: a.name, selector: a.selector, count: a.count }));
+  // steady = a NAME present in >= 3 of the per-second mid-window samples (src/shared/ui-idle-budget.ts steadyAnimations), reported at its last selector
+  const steady = steadyAnimations(censusSamples, 3);
   const timerRows = Object.entries(w1.tSites).map(([k, v]) => ({ site: k, short: v.shortFired - (w0.tSites[k]?.shortFired ?? 0) }));
   const observerRows = Object.entries(w1.oSites).map(([k, v]) => ({ site: k.replace(/^(ro|mo):/, ''), kind: v.kind, fired: v.fired - (w0.oSites[k]?.fired ?? 0) })).filter((x) => x.fired > 0);
   const mk = (a, b, k) => (a && b ? b[k] - a[k] : NaN);
@@ -568,8 +576,7 @@ async function main() {
     raf: { fired: w1.fired - w0.fired, scheduled: w1.sched - w0.sched, bySite, perSecond },
     timers: { totalFired: w1.tFired - w0.tFired, shortFired: w1.tShortFired - w0.tShortFired, loopSites: timerRows.filter((x) => x.short >= 2).map((x) => ({ site: x.site, fired: x.short })) },
     observers: { resizeFired: w1.roFired - w0.roFired, mutationFired: w1.moFired - w0.moFired, bySite: observerRows },
-    metrics: pm0 && pm1 ? { RecalcStyleCount: mk(pm0, pm1, 'RecalcStyleCount'), LayoutCount: mk(pm0, pm1, 'LayoutCount'), TaskDuration: mk(pm0, pm1, 'TaskDuration') } : null,
-    load1,
+    metrics: pm0 && pm1 ? { RecalcStyleCount: mk(pm0, pm1, 'RecalcStyleCount'), LayoutCount: mk(pm0, pm1, 'LayoutCount'), ThreadTime: mk(pm0, pm1, 'ThreadTime') } : null,
     infiniteAnimations: steady,
     controls: { appBurstRafFired, openTurnAnimCount, closedTurnAnimCount, probeTimerFired: probes.timer, probeRoFired: probes.ro, probeMoFired: probes.mo,
       framesBefore, framesAfter, visibility, animProbeSeen: probe.seen, animProbeCleared: probe.cleared,

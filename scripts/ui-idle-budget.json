@@ -1,10 +1,14 @@
 {
-  "_comment": "UI idle budget (#215), 6 idle panes over a 10 s window, rich real-transcript subject, composer focused. Zero: rAF callbacks, recurring <100 ms timer sites. Calibrated on 5 clean runs at host load 10-30 (2026-09-30): RO 0, MO 0, RecalcStyleCount 87-109, LayoutCount 0-2, TaskDuration 0.040-0.052 s, 89 distinct av-* classes; budgets = RO/MO 10 callbacks (baseline 0), RecalcStyleCount 300 (2.75x the max; the weakest injected loop measured 1231), LayoutCount 10, TaskDuration 0.5 s (10x; VOID above load 20), min 80 distinct av-* (10% margin). infiniteAnimations = the reviewed name@selector allowlist: cm-blink = the focused composer's CodeMirror cursor layers (normal + vim) on the ONE visible pane, kept as the measured baseline per OPS ruling (D5, #237: removing the caret blink is a UI-visible change; T9 priced it at ~4% of a core). Widen only in a reviewed change that names the animation and why.",
+  "_comment": "UI idle budget (#215): 6 idle panes, 10 s window, rich real-transcript subject + an in_progress todo + a RUNNING background task (task panel open, composer focused). Zero: rAF callbacks, recurring <100 ms timer sites. Calibrated on 10 clean runs (5 quiet at host load 9-20, 5 under 2 pinned-core burners; 2026-09-30): RO 0, MO 0, RecalcStyleCount 135-163, LayoutCount 10-11 (the running task's 1 s elapsed tick), ThreadTime 0.108-0.161 s (main-thread CPU: contention did not inflate it), 115 distinct av-* classes. Budgets: RO/MO 10 callbacks (baseline 0); RecalcStyleCount 200 (+23% over the max; a JS-retriggered 200 ms transition every 1 s adds ~100 and fails); LayoutCount 15; ThreadTime 0.27 s = clean max + ~1.1% of a core over the window (a 3 ms JS tick every 100 ms adds 0.3 s and fails) — never voided by host load; min 100 distinct av-* (13% margin). infiniteAnimations = the reviewed name@selector allowlist: cm-blink = the focused composer's CodeMirror cursor layers (normal + vim) on the ONE visible pane, kept as the measured baseline per OPS ruling (D5, #237: removing the caret blink is a UI-visible change; T9 priced it at ~4% of a core). infiniteAnimationsWhen = animations that run BY DESIGN in an ordinary idle state, granted ONLY while that state's marker is mounted (in-progress todo: the checklist mark spins; running background task: the status dot pulses); no UI change (D5). Widen only in a reviewed change that names the animation and why.",
   "rafFired": 0,
   "shortTimerLoops": 0,
   "resizeObserverFired": 10,
   "mutationObserverFired": 10,
-  "metricsPer10s": { "RecalcStyleCount": 300, "LayoutCount": 10, "TaskDuration": 0.5 },
-  "minDistinctAvClasses": 80,
-  "infiniteAnimations": { "cm-blink@div.cm-cursorLayer.cm-vimCursorLayer": 1, "cm-blink@div.cm-layer.cm-layer-above.cm-cursorLayer": 1 }
+  "metricsPer10s": { "RecalcStyleCount": 200, "LayoutCount": 15, "ThreadTime": 0.27 },
+  "minDistinctAvClasses": 100,
+  "infiniteAnimations": { "cm-blink@div.cm-cursorLayer.cm-vimCursorLayer": 1, "cm-blink@div.cm-layer.cm-layer-above.cm-cursorLayer": 1 },
+  "infiniteAnimationsWhen": {
+    "todo-in-progress": { "av-spin@span.av-todo-mark>svg": 1 },
+    "bgtask-running": { "av-bgtask-pulse@span.av-bgtask-status-dot": 1 }
+  }
 }

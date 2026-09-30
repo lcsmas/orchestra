@@ -1,15 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { judge, parseBudget, renderClauses, DEFAULT_BUDGET, type Budget, type IdleMeasurement } from './ui-idle-budget.ts';
+import { judge, parseBudget, renderClauses, steadyAnimations, DEFAULT_BUDGET, type Budget, type IdleMeasurement, type InfiniteAnim } from './ui-idle-budget.ts';
 
 const CM1 = 'cm-blink@div.cm-cursorLayer.cm-vimCursorLayer';
 const CM2 = 'cm-blink@div.cm-layer.cm-layer-above.cm-cursorLayer';
+const TODO = 'av-spin@span.av-todo-mark>svg';
+const DOT = 'av-bgtask-pulse@span.av-bgtask-status-dot';
 // The shipped shape of scripts/ui-idle-budget.json (parsed for real in the last tests).
 const budget: Budget = {
   rafFired: 0, shortTimerLoops: 0, resizeObserverFired: 10, mutationObserverFired: 10,
-  metricsPer10s: { RecalcStyleCount: 300, LayoutCount: 10, TaskDuration: 0.5 }, minDistinctAvClasses: 80,
-  infiniteAnimations: { [CM1]: 1, [CM2]: 1 }, loadVoidAbove: 20,
+  metricsPer10s: { RecalcStyleCount: 200, LayoutCount: 15, ThreadTime: 0.27 }, minDistinctAvClasses: 100,
+  infiniteAnimations: { [CM1]: 1, [CM2]: 1 },
+  infiniteAnimationsWhen: { 'todo-in-progress': { [TODO]: 1 }, 'bgtask-running': { [DOT]: 1 } },
 };
 
 // A clean, healthy measurement: 6 idle panes with a rich subject, 0 per-frame work, only the allowlisted caret blink, every control satisfied.
@@ -17,15 +20,16 @@ const good = (): IdleMeasurement => ({
   windowMs: 10000,
   panesWanted: 6,
   panes: { avViews: 6, rowsPerPane: [90, 90, 90, 90, 90, 90], visibleRows: 51, avViewsAtEnd: 6, openTurns: 0 },
-  rich: { distinctAvClasses: 89, markers: { 'md-list': true, 'code-block': true, 'tool-runs': true, diff: true, 'bgtask-panel': true, 'composer-focused': true } },
+  rich: { distinctAvClasses: 115, markers: { 'md-list': true, 'code-block': true, 'tool-runs': true, diff: true, 'bgtask-panel': true, 'todo-in-progress': true, 'bgtask-running': true, 'composer-focused': true } },
   raf: { fired: 0, scheduled: 0, bySite: [], perSecond: [0, 0, 0] },
   timers: { totalFired: 2, shortFired: 0, loopSites: [] },
   observers: { resizeFired: 0, mutationFired: 0, bySite: [] },
-  metrics: { RecalcStyleCount: 89, LayoutCount: 0, TaskDuration: 0.045 },
-  load1: 8,
+  metrics: { RecalcStyleCount: 149, LayoutCount: 10, ThreadTime: 0.149 },
   infiniteAnimations: [
     { key: CM1, name: 'cm-blink', selector: 'div.cm-cursorLayer.cm-vimCursorLayer', count: 1 },
     { key: CM2, name: 'cm-blink', selector: 'div.cm-layer.cm-layer-above.cm-cursorLayer', count: 1 },
+    { key: TODO, name: 'av-spin', selector: 'span.av-todo-mark>svg', count: 1 },
+    { key: DOT, name: 'av-bgtask-pulse', selector: 'span.av-bgtask-status-dot', count: 1 },
   ],
   controls: { appBurstRafFired: 2, openTurnAnimCount: 5, closedTurnAnimCount: 2, probeTimerFired: 50, probeRoFired: 6, probeMoFired: 5,
     framesBefore: true, framesAfter: true, visibility: 'visible', animProbeSeen: true, animProbeCleared: true, sameEpoch: true, elapsedMs: 10004,
@@ -91,31 +95,49 @@ test('ResizeObserver / MutationObserver callbacks over the measured baseline FAI
   assert.equal(judge(m, budget).verdict, 'FAIL', 'one MutationObserver callback over fails too (its own boundary)');
 });
 
-test('the metrics catch-all: style / layout / task-time over budget FAIL naming the metric; scaled by window; TaskDuration is VOID under load', () => {
+test('the RO and MO budgets are independent: with RO 10 / MO 4 each fires on its own limit only (neither budget can stand in for the other)', () => {
+  const b2: Budget = { ...budget, resizeObserverFired: 10, mutationObserverFired: 4 };
   const m = good();
-  m.metrics = { RecalcStyleCount: 1231, LayoutCount: 2, TaskDuration: 1.07 };
+  m.observers = { resizeFired: 0, mutationFired: 5, bySite: [] };
+  let v = judge(m, b2);
+  assert.equal(clause(v, 'budget/mutation-observer').ok, false, 'MO 5 > its own budget 4');
+  assert.equal(clause(v, 'budget/resize-observer').ok, true);
+  m.observers = { resizeFired: 5, mutationFired: 0, bySite: [] };
+  v = judge(m, b2);
+  assert.equal(clause(v, 'budget/resize-observer').ok, true, 'RO 5 is under its own budget 10 although over the MO budget 4');
+  assert.equal(v.verdict, 'PASS');
+  m.observers = { resizeFired: 11, mutationFired: 0, bySite: [] };
+  assert.equal(clause(judge(m, b2), 'budget/resize-observer').ok, false);
+  m.observers = { resizeFired: 0, mutationFired: 4, bySite: [] };
+  assert.equal(judge(m, b2).verdict, 'PASS', 'MO exactly at its budget passes');
+});
+
+test('the metrics catch-all: style / layout / ThreadTime over budget FAIL naming the metric, each at its own boundary; scaled by window; never voided', () => {
+  const m = good();
+  m.metrics = { RecalcStyleCount: 1231, LayoutCount: 2, ThreadTime: 1.07 };
   let v = judge(m, budget);
   assert.equal(v.verdict, 'FAIL');
-  assert.match(clause(v, 'budget/metrics').detail, /OVER: RecalcStyleCount 1231 > 300, TaskDuration 1\.070 s > 0\.5 s/);
-  m.metrics = { RecalcStyleCount: 89, LayoutCount: 604, TaskDuration: 0.045 };
-  assert.match(clause(judge(m, budget), 'budget/metrics').detail, /OVER: LayoutCount 604 > 10/);
-  // at the limit passes, one over fails
-  m.metrics = { RecalcStyleCount: 300, LayoutCount: 10, TaskDuration: 0.5 };
+  assert.match(clause(v, 'budget/metrics').detail, /OVER: RecalcStyleCount 1231 > 200, ThreadTime 1\.070 s > 0\.27 s/);
+  m.metrics = { RecalcStyleCount: 149, LayoutCount: 604, ThreadTime: 0.149 };
+  assert.match(clause(judge(m, budget), 'budget/metrics').detail, /OVER: LayoutCount 604 > 15/);
+  // each metric: at the limit passes, one step over fails (an interchangeable-metric mutant cannot survive)
+  const at = { RecalcStyleCount: 200, LayoutCount: 15, ThreadTime: 0.27 };
+  m.metrics = { ...at };
   assert.equal(judge(m, budget).verdict, 'PASS');
-  m.metrics = { RecalcStyleCount: 301, LayoutCount: 10, TaskDuration: 0.5 };
-  assert.equal(judge(m, budget).verdict, 'FAIL');
+  for (const [k, over] of [['RecalcStyleCount', 201], ['LayoutCount', 16], ['ThreadTime', 0.271]] as const) {
+    m.metrics = { ...at, [k]: over };
+    v = judge(m, budget);
+    assert.equal(v.verdict, 'FAIL', `${k} one step over must fail`);
+    assert.match(clause(v, 'budget/metrics').detail, new RegExp(`OVER: ${k} `));
+  }
   // a 20 s window doubles the allowance; a 5 s window halves it
-  m.metrics = { RecalcStyleCount: 500, LayoutCount: 0, TaskDuration: 0.1 };
+  m.metrics = { RecalcStyleCount: 300, LayoutCount: 20, ThreadTime: 0.4 };
   assert.equal(judge({ ...m, windowMs: 20000, controls: { ...m.controls, elapsedMs: 20004 } }, budget).verdict, 'PASS');
   assert.equal(judge({ ...m, windowMs: 5000 }, budget).verdict, 'FAIL');
-  // load > ceiling: TaskDuration is not judged (reported VOID); the deterministic counts still are
-  m.windowMs = 10000;
-  m.metrics = { RecalcStyleCount: 89, LayoutCount: 0, TaskDuration: 9 }; m.load1 = 25;
-  v = judge(m, budget);
-  assert.equal(v.verdict, 'PASS');
-  assert.match(clause(v, 'budget/metrics').detail, /VOID — load 25 > 20, not judged/);
-  m.metrics = { RecalcStyleCount: 5000, LayoutCount: 0, TaskDuration: 9 };
-  assert.equal(judge(m, budget).verdict, 'FAIL', 'a VOID TaskDuration never voids the deterministic style count');
+  // CPU time is judged unconditionally: there is no load ceiling that turns the leg off (a blind gate is when a loop hides)
+  m.metrics = { RecalcStyleCount: 149, LayoutCount: 10, ThreadTime: 9 };
+  assert.equal(judge(m, budget).verdict, 'FAIL');
+  assert.doesNotMatch(clause(judge(m, budget), 'budget/metrics').detail, /VOID|not judged/);
 });
 
 test('the animation allowlist is keyed name@selector: another selector, a 2nd instance, or an unlisted name FAIL; exact keys pass', () => {
@@ -134,6 +156,47 @@ test('the animation allowlist is keyed name@selector: another selector, a 2nd in
   assert.equal(judge(good(), DEFAULT_BUDGET).verdict, 'FAIL', 'strict default: even the allowlisted caret blink breaches it');
 });
 
+test('by-design animations are granted ONLY while their state is mounted, and only for the exact name@selector', () => {
+  const m = good();
+  assert.equal(judge(m, budget).verdict, 'PASS', 'todo + running task present: their spinner / pulse are within the grants');
+  m.rich.markers['todo-in-progress'] = false;   // the state is gone but its animation still runs → not granted (the run is REFUSED too: rich-subject)
+  assert.match(clause(judge(m, budget), 'budget/infinite-animations').detail, /av-spin@span\.av-todo-mark>svg ×1 \(allowed 0\)/);
+  m.rich.markers['todo-in-progress'] = true; m.rich.markers['bgtask-running'] = false;
+  assert.match(clause(judge(m, budget), 'budget/infinite-animations').detail, /av-bgtask-pulse@span\.av-bgtask-status-dot ×1 \(allowed 0\)/);
+  // a DIFFERENT animation on the granted selector (the mutant that replaces the pulse) and a 2nd instance are both over
+  const m2 = good();
+  m2.infiniteAnimations = m2.infiniteAnimations.filter((a) => a.key !== DOT).concat([{ key: 'c8-dot@span.av-bgtask-status-dot', name: 'c8-dot', selector: 'span.av-bgtask-status-dot', count: 1 }]);
+  assert.match(clause(judge(m2, budget), 'budget/infinite-animations').detail, /c8-dot@span\.av-bgtask-status-dot ×1 \(allowed 0\)/);
+  const m3 = good();
+  m3.infiniteAnimations = m3.infiniteAnimations.map((a) => (a.key === TODO ? { ...a, count: 2 } : a));
+  assert.ok(clause(judge(m3, budget), 'budget/infinite-animations').detail.includes(`${TODO} ×2 (allowed 1)`));
+  // grants add to the always-on list for the same key
+  const b3: Budget = { ...budget, infiniteAnimations: { ...budget.infiniteAnimations, [DOT]: 1 } };
+  const m4 = good(); m4.infiniteAnimations = m4.infiniteAnimations.map((a) => (a.key === DOT ? { ...a, count: 2 } : a));
+  assert.equal(clause(judge(m4, b3), 'budget/infinite-animations').ok, true, 'always-on 1 + granted 1 = 2 allowed');
+  assert.equal(clause(judge(m4, budget), 'budget/infinite-animations').ok, false, 'granted 1 alone allows only 1');
+});
+
+test('steadyAnimations: a NAME is steady at >= 3 samples (swap / churn cannot hide), reported at its last selector; a short-lived one is not', () => {
+  const a = (name: string, selector = 'div.x', count = 1): InfiniteAnim => ({ key: `${name}@${selector}`, name, selector, count });
+  // name swap every ~3.3 s over 10 one-second samples: each name holds 3-4 consecutive samples
+  const swap = [a('nc-a'), a('nc-a'), a('nc-a'), a('nc-b'), a('nc-b'), a('nc-b'), a('nc-a'), a('nc-a'), a('nc-a'), a('nc-b')].map((x) => [x]);
+  assert.deepEqual(steadyAnimations(swap).map((x) => x.name).sort(), ['nc-a', 'nc-b']);
+  // present in only 2 samples: not steady; exactly 3: steady (boundary)
+  assert.deepEqual(steadyAnimations([[a('t')], [a('t')], [], [], []]), []);
+  assert.equal(steadyAnimations([[a('t')], [], [a('t')], [], [a('t')]]).length, 1, 'non-consecutive presence counts');
+  // class churn: the selector changes every sample, the NAME persists → steady, reported at the LAST sample's selector
+  const churn = [0, 1, 2, 3, 4].map((i) => [a('c8-flip', `div.c8f.c8flip-${i}`)]);
+  const r = steadyAnimations(churn);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].key, 'c8-flip@div.c8f.c8flip-4');
+  // minSamples is honoured, counts are the last sample's, and several names are independent
+  assert.equal(steadyAnimations([[a('x')], [a('x')]], 2).length, 1);
+  assert.equal(steadyAnimations([[a('x', 'div.x', 1)], [a('x', 'div.x', 3)], [a('x', 'div.x', 2)]]).map((y) => y.count).join(), '2');
+  assert.deepEqual(steadyAnimations([[a('p'), a('q')], [a('p')], [a('p'), a('q')]]).map((y) => y.name), ['p']);
+  assert.deepEqual(steadyAnimations([]), []);
+});
+
 // Each control must REFUSE (rc 4) on its own — a run that could not have seen the work must never read PASS, even with 0 of everything.
 const controlMutants: Array<[string, (m: IdleMeasurement) => void]> = [
   ['control/panes-mounted', (m) => { m.panes.avViews = 3; }],
@@ -141,9 +204,11 @@ const controlMutants: Array<[string, (m: IdleMeasurement) => void]> = [
   ['control/panes-mounted', (m) => { m.panes.rowsPerPane = [90, 90, 0, 90, 90, 90]; }],
   ['control/panes-mounted', (m) => { m.panes.rowsPerPane = [90, 90, 90]; }],
   ['control/panes-mounted', (m) => { m.panes.visibleRows = 0; }],
-  ['control/rich-subject', (m) => { m.rich.distinctAvClasses = 46; }],
+  ['control/rich-subject', (m) => { m.rich.distinctAvClasses = 99; }],
   ['control/rich-subject', (m) => { m.rich.markers['tool-runs'] = false; }],
   ['control/rich-subject', (m) => { m.rich.markers['bgtask-panel'] = false; }],
+  ['control/rich-subject', (m) => { m.rich.markers['todo-in-progress'] = false; }],
+  ['control/rich-subject', (m) => { m.rich.markers['bgtask-running'] = false; }],
   ['control/rich-subject', (m) => { m.rich.markers = {}; }],
   ['control/panes-idle', (m) => { m.panes.openTurns = 1; }],
   ['control/raf-instrument', (m) => { m.controls.appBurstRafFired = 0; }],
@@ -158,7 +223,7 @@ const controlMutants: Array<[string, (m: IdleMeasurement) => void]> = [
   ['control/animation-census', (m) => { m.controls.animProbeSeen = false; }],
   ['control/animation-census', (m) => { m.controls.animProbeCleared = false; }],
   ['control/metrics-read', (m) => { m.metrics = null; }],
-  ['control/metrics-read', (m) => { m.metrics = { RecalcStyleCount: NaN, LayoutCount: 0, TaskDuration: 0 }; }],
+  ['control/metrics-read', (m) => { m.metrics = { RecalcStyleCount: NaN, LayoutCount: 0, ThreadTime: 0 }; }],
   ['control/window-intact', (m) => { m.controls.sameEpoch = false; }],
   ['control/window-intact', (m) => { m.controls.elapsedMs = 4000; }],
   ['control/bus-open', (m) => { m.controls.busOpen = false; }],
@@ -201,12 +266,14 @@ test('the bus is only REQUIRED when asked: a dev run (requireBus off) passes wit
 
 test('parseBudget: defaults, the shipped shape, and refusal of typos / bad values / a bare animation name', () => {
   assert.deepEqual(parseBudget({}), DEFAULT_BUDGET);
+  assert.deepEqual(parseBudget({ infiniteAnimationsWhen: { 'todo-in-progress': { 'av-spin@svg': 1 } } }), { ...DEFAULT_BUDGET, infiniteAnimationsWhen: { 'todo-in-progress': { 'av-spin@svg': 1 } } });
   assert.deepEqual(parseBudget({ _comment: 'x', rafFired: 2, infiniteAnimations: { 'cm-blink@div.x': 2 }, metricsPer10s: { RecalcStyleCount: 1.5 } }),
     { ...DEFAULT_BUDGET, rafFired: 2, infiniteAnimations: { 'cm-blink@div.x': 2 }, metricsPer10s: { ...DEFAULT_BUDGET.metricsPer10s, RecalcStyleCount: 1.5 } });
   for (const bad of [null, [], 'x', { rafFired: -1 }, { rafFired: 1.5 }, { rafFired: '0' }, { rafFired: 0, infiniteAnimation: {} }, { infiniteAnimations: [] },
     { infiniteAnimations: { 'cm-blink': 1 } }, { infiniteAnimations: { 'cm-blink@': 1 } }, { infiniteAnimations: { 'a@b': -1 } }, { infiniteAnimations: { 'a@b': 'x' } },
     { shortTimerLoops: -1 }, { resizeObserverFired: 1.5 }, { mutationObserverFired: '1' }, { minDistinctAvClasses: -1 },
-    { metricsPer10s: { Recalc: 1 } }, { metricsPer10s: { TaskDuration: -1 } }, { metricsPer10s: { LayoutCount: 'x' } }, { metricsPer10s: [] }, { loadVoidAbove: -1 }]) {
+    { metricsPer10s: { Recalc: 1 } }, { metricsPer10s: { TaskDuration: 1 } }, { metricsPer10s: { ThreadTime: -1 } }, { metricsPer10s: { LayoutCount: 'x' } }, { metricsPer10s: [] }, { loadVoidAbove: 20 },
+    { infiniteAnimationsWhen: [] }, { infiniteAnimationsWhen: { m: [] } }, { infiniteAnimationsWhen: { m: { 'cm-blink': 1 } } }, { infiniteAnimationsWhen: { m: { 'a@b': -1 } } }, { infiniteAnimationsWhen: 'x' }]) {
     assert.throws(() => parseBudget(bad), undefined, JSON.stringify(bad));
   }
 });
