@@ -1578,8 +1578,9 @@ const ARMS = [
       // F4: a LEGACY sandbox ws (hasInput, no session id) classifies to the host-aware PTY route — must be refused before the classifier.
       const lg = await runCli(app, ['restart', sbx.legacy.id]);
       console.log(`OBSERVED  cli restart legacy ${sbx.legacy.id}: rc=${lg.rc} stdout=${JSON.stringify(oneLine(lg.stdout))} stderr=${JSON.stringify(oneLine(lg.stderr))}`);
-      ctx.clause('cli-restart-legacy/not-ok', lg.rc !== null && lg.rc !== 0, `rc=${lg.rc} (both modes: master dials the container and fails; the pause refuses without dialling)`);
-      ctx.clause('cli-restart-legacy/names-pause-and-220', namesPause(lg.stderr) === want, `names pause+#220=${namesPause(lg.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(lg.stderr)} (baseline: ECONNREFUSED = it dialled the sandbox)`);
+      // baseline (measured on master AFTER #228): the legacy ws is routed to the SDK wake path, whose lazy start "succeeds" (rc 0); before #228 it dialled the container (ECONNREFUSED).
+      ctx.clause('cli-restart-legacy/not-ok', lg.rc !== null && (lg.rc !== 0) === want, `rc=${lg.rc} expected(${MODE}) ${want ? 'not-ok (refused before the classifier, no dial)' : 'ok — the pre-pause lazy wake'}`);
+      ctx.clause('cli-restart-legacy/names-pause-and-220', namesPause(lg.stderr) === want, `names pause+#220=${namesPause(lg.stderr)} expected(${MODE})=${want} :: stderr=${oneLine(lg.stderr)}`);
       // r2 F1: the TOOLBAR Restart (`restartAgent` IPC) must REJECT naming the pause — its callers show the rejection — not resolve into a silent neutral "Resume your session" row.
       const tb = await ipcSettle(app, `window.orchestra.restartAgent(${JSON.stringify(sbx.gone.id)})`);
       console.log(`OBSERVED  restartAgent(${sbx.gone.id}) [toolbar Restart]: ${JSON.stringify(tb)}`);
