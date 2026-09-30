@@ -2907,11 +2907,15 @@ input:focus, textarea:focus, select:focus {
    The terminal/structured panes hid this for a long time because they are
    `position: absolute; inset: 0` and contribute zero intrinsic height — the
    Diff pane is the first in-flow pane whose content is arbitrarily tall. */
-.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; --toolbar-h: 48px; }
+/* The toolbar (z-index 20) paints over inset:0 overlays and hid their first 48px (#253); offset only when one precedes them. */
+.toolbar ~ .bus-pane,
+.toolbar ~ .insights-view,
+.toolbar ~ .help-view { top: var(--toolbar-h); }
 .toolbar {
   position: relative;
   z-index: 20;
-  height: 48px;
+  height: var(--toolbar-h);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
