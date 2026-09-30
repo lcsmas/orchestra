@@ -24,6 +24,8 @@ import {
   verbToken,
   verbGate,
   verbRunHold,
+  verbRunPause,
+  type RunPauseDeps,
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
@@ -676,6 +678,8 @@ async function openBusForVerb(): Promise<{
   runHold: typeof import('../main/bus-runs.ts').setRunHold;
   runHoldInfo: typeof import('../main/bus-runs.ts').getRunHold;
   runHoldAuthority: typeof import('../main/bus-runs.ts').runHoldAuthority;
+  // #252 — the fleet PAUSE seams behind `run pause|resume` (same dynamic import).
+  runPause: RunPauseDeps;
   file: string;
 }> {
   // Resolved BEFORE the try. It can itself fail(), and a CliFailure raised
@@ -694,6 +698,7 @@ async function openBusForVerb(): Promise<{
     // here, inside the same guarded block, so a bus-runs load failure surfaces
     // as a bus-open refusal rather than a bare stack trace.
     const busRuns = await import('../main/bus-runs.ts');
+    const busPause = await import('../main/bus-pause.ts');
     // The CONSTRUCT + migrate. Anything ABI-shaped throws here, not above.
     const db = bus.openBus(file, { busyTimeoutMs });
     // The verb slice injected into busCtx: the base bus.ts verbs, #128 fencing
@@ -717,6 +722,11 @@ async function openBusForVerb(): Promise<{
       runHold: busRuns.setRunHold,
       runHoldInfo: busRuns.getRunHold,
       runHoldAuthority: busRuns.runHoldAuthority,
+      runPause: {
+        setRunPause: busPause.setRunPause,
+        getRunPause: busPause.getRunPause,
+        activePauseFor: busPause.activePauseFor,
+      },
       file,
     };
   } catch (err) {
@@ -1796,7 +1806,7 @@ async function main(argv: string[]): Promise<void> {
       // `isRunning` ground truth; the CLI is a thin wrapper that resolves the run
       // and prints the typed outcome.
       const sub = args[0];
-      if (sub === 'hold' || sub === 'resume') {
+      if (sub === 'hold' || sub === 'resume' || sub === 'pause') {
         // #204 — the per-run HOLD flag. STORE-LESS like send/ack: it writes the bus
         // directly, so a hold lands while the app is down (before a relaunch).
         // Authorized (D7) + fenced (F7): the caller is --as > $ORCHESTRA_WS_ID.
@@ -1806,7 +1816,19 @@ async function main(argv: string[]): Promise<void> {
         const holdTarget =
           holdRunArg.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
         const holdActor = resolveBusIdentity({ as: holdAsArg.value }, process.env)?.handle ?? '';
-        const { db, bus, runHold, runHoldInfo, runHoldAuthority } = await openBusForVerb();
+        // #252 — `pause` takes the SAME flags as hold/resume plus a mandatory `--hard` (the soft
+        // pause is a later ticket: refuse it loudly rather than silently do the hard one).
+        const hardFlag = takeBoolFlag(holdAsArg.rest, '--hard');
+        if (sub === 'pause' && !hardFlag.present) {
+          fail(
+            'usage: orchestra run pause --hard [--run <id>] [--as <handle>] — only the HARD pause ' +
+              '(pause dure) exists so far; there is no soft pause yet',
+          );
+        }
+        if (sub !== 'pause' && hardFlag.present) {
+          fail(`orchestra run ${sub}: --hard only applies to \`run pause\``);
+        }
+        const { db, bus, runHold, runHoldInfo, runHoldAuthority, runPause } = await openBusForVerb();
         try {
           // Fenced as the coordinator of the FIRST run in [target, ...ancestors] it
           // coordinates (R1): its own generation + that run's `fencing` switch (R3 —
@@ -1814,19 +1836,24 @@ async function main(argv: string[]): Promise<void> {
           const fenceRun =
             fenceRunForHold(runHoldAuthority(db, holdTarget)?.chain ?? [], holdActor) ?? holdTarget;
           const fencing = await resolveFencing(db, fenceRun, holdGen.value);
-          verbRunHold(
-            busCtx(db, bus, { runId: fenceRun, handle: holdActor }, fencing),
-            { setRunHold: runHold, getRunHold: runHoldInfo, runHoldAuthority },
-            holdTarget,
-            sub === 'hold',
-          );
+          const holdCtx = busCtx(db, bus, { runId: fenceRun, handle: holdActor }, fencing);
+          if (sub === 'pause') {
+            verbRunPause(holdCtx, { ...runPause, runHoldAuthority }, holdTarget);
+          } else {
+            verbRunHold(
+              holdCtx,
+              { setRunHold: runHold, getRunHold: runHoldInfo, runHoldAuthority, pause: runPause },
+              holdTarget,
+              sub === 'hold',
+            );
+          }
         } finally {
           db.close();
         }
         return;
       }
       if (sub !== 'refreeze') {
-        fail('usage: orchestra run refreeze|hold|resume [--run <id>]');
+        fail('usage: orchestra run refreeze|hold|resume|pause --hard [--run <id>]');
       }
       const { value: runFlag } = takeFlag(args.slice(1), '--run');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An

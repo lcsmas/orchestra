@@ -138,8 +138,9 @@ export interface BusDecisionGate {
  *  SQL (wave B trap) — hence 7, not a reused 5/6. Never edit a merged migration.
  *
  *  8 = the per-run HOLD flag (#204 remainder, wave #224 track A4 — the only track
- *  of that wave allowed a slot). */
-export const SCHEMA_VERSION = 8;
+ *  of that wave allowed a slot).
+ *  9 = the fleet PAUSE state (#252, wave D ledger #261 — D1a is the slot's sole author). */
+export const SCHEMA_VERSION = 9;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -464,6 +465,31 @@ export const MIGRATIONS: Record<number, string> = {
   8: `
     ALTER TABLE runs ADD COLUMN held_at INTEGER;
     ALTER TABLE runs ADD COLUMN held_by TEXT;
+  `,
+  // #252 fleet PAUSE (ADR 0003, wave D ledger #261 D5 schema freeze). `paused_at` NULL = not
+  // paused, else the epoch-ms a `run pause --hard` began (paused_by = the caller's handle,
+  // pause_mode = 'hard'; a later ticket adds 'soft'). `pause_trap_at` = when the HOST TRAP
+  // (snapshot + Bilan + interrupt + kill, D1b) finished for this pause; NULL = owed. Descendant
+  // runs carry NO pause of their own — the gate walks `parent_run_id` to the carrier.
+  // `pause_records` = the Bilan de pause, one row per member per trap (written by D1b; the
+  // table is frozen here so both halves share one slot). Distinct from `held_at` (liveness-only).
+  9: `
+    ALTER TABLE runs ADD COLUMN paused_at INTEGER;
+    ALTER TABLE runs ADD COLUMN paused_by TEXT;
+    ALTER TABLE runs ADD COLUMN pause_mode TEXT;
+    ALTER TABLE runs ADD COLUMN pause_trap_at INTEGER;
+    CREATE TABLE IF NOT EXISTS pause_records (
+      id            INTEGER PRIMARY KEY,
+      run_id        TEXT NOT NULL,
+      ws_id         TEXT NOT NULL,
+      paused_at     INTEGER NOT NULL,
+      activity      TEXT,
+      snapshot_ref  TEXT,
+      dirty         INTEGER,
+      killed_json   TEXT,
+      error         TEXT,
+      created_at    INTEGER NOT NULL
+    );
   `,
 };
 

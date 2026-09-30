@@ -29,6 +29,9 @@ const MECHANISM_DESC: Record<BusMechanism, string> = {
   // #130 — mutation receipts.
   receipts:
     'Retried CLI mutations (send / ack / gate resolve) carrying a request id are made idempotent — a replay returns the original receipt. While OFF the retry is counted but re-executes (v1 behaviour).',
+  // #252 — host-enforced fleet pause.
+  pause:
+    'A run can be paused with “orchestra run pause --hard”: the host refuses réveils, new turns and spawns into it and its descendant runs (a human prompt stays allowed). While OFF the verb is refused and nothing is ever gated.',
 };
 
 /**

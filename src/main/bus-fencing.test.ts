@@ -73,6 +73,11 @@ test('T128.4 — MIGRATIONS[5]: a from-4 DB migrates and coordinator_generation 
   seed.exec('ALTER TABLE runs DROP COLUMN coordinator_generation');
   seed.exec('ALTER TABLE runs DROP COLUMN held_at'); // MIGRATIONS[8] (#204) re-runs on the replay
   seed.exec('ALTER TABLE runs DROP COLUMN held_by');
+  // MIGRATIONS[9] (#252) re-runs on the replay too: drop its columns + table.
+  seed.exec('DROP TABLE IF EXISTS pause_records');
+  for (const c of ['paused_at', 'paused_by', 'pause_mode', 'pause_trap_at']) {
+    seed.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
+  }
   seed.pragma('user_version = 4');
   // CONTROL, same command (carry-forward 4): the column is genuinely ABSENT at v4.
   const colsAt4 = (seed.pragma('table_info(runs)') as { name: string }[]).map((c) => c.name);

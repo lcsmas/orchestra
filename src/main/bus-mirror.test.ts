@@ -671,6 +671,13 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
       seed.exec('ALTER TABLE runs DROP COLUMN held_at');
       seed.exec('ALTER TABLE runs DROP COLUMN held_by');
     }
+    // MIGRATIONS[9] (#252) ADDed the pause columns + pause_records; every `from` is < 9.
+    if (from < 9) {
+      seed.exec('DROP TABLE IF EXISTS pause_records');
+      for (const c of ['paused_at', 'paused_by', 'pause_mode', 'pause_trap_at']) {
+        seed.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
+      }
+    }
     seed.pragma(`user_version = ${from}`);
     // A row written BEFORE the upgrade — it must survive.
     const seq = busSend(seed, {
@@ -705,6 +712,12 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
     if (from < 8) {
       probe.exec('ALTER TABLE runs DROP COLUMN held_at');
       probe.exec('ALTER TABLE runs DROP COLUMN held_by');
+    }
+    if (from < 9) {
+      probe.exec('DROP TABLE IF EXISTS pause_records');
+      for (const c of ['paused_at', 'paused_by', 'pause_mode', 'pause_trap_at']) {
+        probe.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
+      }
     }
     probe.pragma(`user_version = ${from}`);
     const mirrorTables = (
