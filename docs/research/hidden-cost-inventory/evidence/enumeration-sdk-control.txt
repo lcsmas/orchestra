@@ -1,0 +1,33 @@
+src/main/session-watchdog.ts:56:// `sdkStop`, which calls `session.q.interrupt()`. Worse, the guard being leaned
+src/main/agent-sdk.ts:2435:      session.q.supportedModels(),
+src/main/agent-sdk.ts:2513:      q.supportedModels(),
+src/main/agent-sdk.ts:2530: *  CLI's own accounting (`Query.getContextUsage()`), the same figure its
+src/main/agent-sdk.ts:2548:      session.q.getContextUsage(),
+src/main/agent-sdk.ts:3797:/** The control-request escape hatch. `Query.interrupt()` hardcodes
+src/main/agent-sdk.ts:3843:  await session.q.interrupt();
+src/main/agent-sdk.ts:3908://  • `Query.stopTask(taskId)` KILLS a task that is already running in the
+src/main/agent-sdk.ts:3943:    await session.q.stopTask(taskId);
+src/main/agent-sdk.ts:4319:    await session.q.setModel(model);
+src/main/agent-sdk.ts:4350:    await session.q.applyFlagSettings({ effortLevel: effort });
+src/main/agent-sdk.ts:4379:    await session.q.setPermissionMode(mode as never);
+src/main/agent-sdk.ts:4461:    const res = await session.q.reloadSkills();
+src/main/agent-sdk.ts:4502:    const res = await session.q.reloadPlugins();
+src/main/agent-sdk.ts:4709:  const raw = await q.mcpServerStatus();
+src/main/agent-sdk.ts:4741:    await q.toggleMcpServer(serverName, enabled);
+src/main/agent-sdk.ts:4812: *  The SDK's `Query.setMcpServers()` looks like the obvious replacement for
+src/main/agent-sdk.ts:5107:    await q.reconnectMcpServer(serverName);
+src/main/agent-sdk.ts:5287:    .mcpAuthenticate(serverName)
+src/main/agent-sdk.ts:5318:      q.mcpServerStatus().catch(() => STUCK),
+src/main/agent-sdk.ts:5362:    await q.reconnectMcpServer(serverName).catch((err) => {
+src/main/agent-sdk.ts:5436:    await withTimeout(session.q.interrupt(), STOP_INTERRUPT_TIMEOUT_MS, 'interrupt');
+src/main/agent-sdk.ts:5567:      files = await withTimeout(session.q.rewindFiles(rewindId), REWIND_FILES_TIMEOUT_MS, 'rewindFiles');
+src/main/agent-sdk.ts:5803:      session.q.rewindFiles(rewindId, { dryRun: true }),
+src/renderer/components/agent/BackgroundTasksPanel.tsx:11://  • Stop — `Query.stopTask()` via `agentSdkStopTask`. The click records only a
+src/renderer/components/agent/TurnFooter.tsx:162: *     `Query.getContextUsage()`). The CLI's own accounting, always carries a
+src/shared/background-task-actions.ts:6:// CHANGE. `Query.stopTask()` resolves as soon as the CLI accepts the request;
+src/shared/context-usage.ts:8://   1. `Query.getContextUsage()` — the live SDK control request. The CLI's OWN
+src/shared/context-usage.ts:183:/** The camelCase payload returned by `Query.getContextUsage()`.
+src/shared/context-usage.ts:360:/** Normalize a `Query.getContextUsage()` response.
+src/shared/session-wedge.ts:290:   *  `recycleSession` calls `sdkStop`, which calls `session.q.interrupt()`.
+src/shared/types.ts:1603: *  the Claude Code runtime (Agent SDK `query.supportedModels()`) — so newly
+src/shared/types.ts:1633: *  `Query.getContextUsage()` — the CLI's OWN accounting, the same figure its

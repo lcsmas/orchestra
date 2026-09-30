@@ -32,6 +32,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Embedded browser panel: per-workspace `WebContentsView`, user + agent shared surface, `webContents.debugger` driving, `mcp__browser__*` SDK tools, URL bar / pane wiring | `docs/codebase-map/browser-panel.md` |
 | Session budget suite: the real session path + real `claude` CLI against a LOCAL FAKE Anthropic API (zero tokens) — fake API + egress proxy, generated heavy fixture, budget numbers (`src/shared/session-budget.ts`), must-FAIL boot-context-read mutant, process census, release-gate step, opt-in real-API smoke | `docs/codebase-map/session-budget.md` |
 | Fleet bus: `<ORCHESTRA_HOME>/bus.sqlite` (WAL) as the fleet's source of truth — schema (runs/messages/deliveries/cursors/decision_gates), `send`/`check`/`ack`/`openGate`/`resolveGate`, the better-sqlite3 Electron-ABI native build and its `require()`-is-not-a-gate trap, boot gate, contention rig; the read-only bus PANE and the per-mechanism SWITCHES frozen on the run row (`run_flags`, `busSwitch()`, the startup-notice injection) | `docs/codebase-map/bus.md` |
+| Hidden-cost inventory: measured per-session / per-turn / background costs (spawns, network, CPU, memory), the whole-app idle rig, exec/connect logger, field census | `docs/codebase-map/hidden-cost.md` |
 
 The map is reference material — verify a `file:line` against live source before
 relying on it, since line numbers drift.

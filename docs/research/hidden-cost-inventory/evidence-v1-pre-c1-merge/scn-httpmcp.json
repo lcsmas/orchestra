@@ -1,0 +1,191 @@
+{
+ "label": "httpmcp",
+ "cfg": {
+  "turns": [
+   {
+    "tools": 0,
+    "stream": 0
+   }
+  ],
+  "idleSeconds": 90,
+  "hooks": false,
+  "profile": {},
+  "probeModels": false,
+  "httpMcp": 2
+ },
+ "controls": {
+  "hooksInstalled": false,
+  "execlogLines": 130,
+  "ranAnyHookScript": true,
+  "firstModelTools": 91,
+  "egress": [
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443",
+   "mcp-remote-2.hidden-cost.invalid:443",
+   "mcp-remote-1.hidden-cost.invalid:443"
+  ],
+  "survivorsAfterTeardown": 0
+ },
+ "windows": [
+  {
+   "name": "turn0-tools0",
+   "t0": 68172228,
+   "t1": 68176208,
+   "runnerKidsCpuMs": 0,
+   "mainProcessCpuMs": 279,
+   "rendererIpc": {
+    "events": 9,
+    "jsonBytes": 23584,
+    "byType": {
+     "user-message": 1,
+     "queue-update": 1,
+     "session/init": 1,
+     "session/status": 1,
+     "block-start": 1,
+     "text-delta": 1,
+     "block-stop": 1,
+     "turn-end": 1,
+     "session/context": 1
+    }
+   },
+   "seconds": 3.98,
+   "requests": {
+    "model": 1,
+    "count_tokens": 57,
+    "other": 0
+   },
+   "otherPaths": [],
+   "cpu": {
+    "keeper": {
+     "ownCpuMs": 90,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 54144
+    },
+    "cli": {
+     "ownCpuMs": 830,
+     "waitedKidsCpuMs": 50,
+     "n": 1,
+     "rssKB": 271376
+    },
+    "mcp": {
+     "ownCpuMs": 310,
+     "waitedKidsCpuMs": 0,
+     "n": 4,
+     "rssKB": 207136
+    }
+   },
+   "turnEnded": true,
+   "execByKey": {
+    "node-22 /home/lmas/.orchestra/worktr": 4,
+    "sh [hook orchestra-hook.sh]": 3,
+    "bash [hook orchestra-hook.sh]": 3,
+    "mkdir": 3,
+    "flock": 3,
+    "cat /home/lmas/.cache/hidden-cos": 3,
+    "rg": 3,
+    "git remote": 2,
+    "sh [hook rename-instruction.sh]": 2,
+    "bash [hook rename-instruction.sh]": 2,
+    "sh [hook inbox-instruction.sh]": 2,
+    "bash [hook inbox-instruction.sh]": 2,
+    "cat": 2,
+    "sh [hook link-instruction.sh]": 2,
+    "bash [hook link-instruction.sh]": 2,
+    "claude (CLI)": 1,
+    "git ls-files": 1,
+    "git status": 1,
+    "git log": 1,
+    "git config": 1,
+    "sh [": 1,
+    "sh [hook bus-switches-instruction.sh]": 1,
+    "sh [hook fieldguide-instruction.sh]": 1,
+    "bash [hook bus-switches-instruction.sh]": 1,
+    "bash [hook fieldguide-instruction.sh]": 1,
+    "sh [hook orchestrator-instruction.sh]": 1,
+    "bash [hook orchestrator-instruction.sh]": 1,
+    "sh [hook self-modify-instruction.sh]": 1,
+    "bash [hook self-modify-instruction.sh]": 1,
+    "grep": 1,
+    "sh [hook comms-resurface.sh]": 1,
+    "bash [hook comms-resurface.sh]": 1
+   },
+   "execTotal": 55,
+   "hookScriptExecs": 28,
+   "dns": {},
+   "connectInet": {
+    "127.0.0.1:34691": 12,
+    "127.0.0.1:42707": 56
+   }
+  },
+  {
+   "name": "idle",
+   "t0": 68176209,
+   "t1": 68266209,
+   "runnerKidsCpuMs": 0,
+   "mainProcessCpuMs": 91,
+   "rendererIpc": {
+    "events": 0,
+    "jsonBytes": 0,
+    "byType": {}
+   },
+   "seconds": 90,
+   "requests": {
+    "model": 0,
+    "count_tokens": 0,
+    "other": 0
+   },
+   "otherPaths": [],
+   "cpu": {
+    "keeper": {
+     "ownCpuMs": 10,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 51952
+    },
+    "cli": {
+     "ownCpuMs": 220,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 268528
+    },
+    "mcp": {
+     "ownCpuMs": 30,
+     "waitedKidsCpuMs": 0,
+     "n": 4,
+     "rssKB": 199792
+    }
+   },
+   "execByKey": {
+    "git": 1,
+    "git worktree": 1
+   },
+   "execTotal": 2,
+   "hookScriptExecs": 0,
+   "dns": {},
+   "connectInet": {
+    "127.0.0.1:34691": 4
+   }
+  }
+ ],
+ "finalRssKB": {
+  "keeper": 51952,
+  "cli": 268528,
+  "mcp": 199792
+ },
+ "rc": 0,
+ "containment": "netns+pidns",
+ "loadavgAtStart": 8.83
+}

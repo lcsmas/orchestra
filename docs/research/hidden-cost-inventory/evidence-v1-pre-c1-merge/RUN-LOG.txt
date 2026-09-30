@@ -1,0 +1,147 @@
+06:45:27 run-all start: HEAD=1242bf2a claude=2.1.284 (Claude Code) node=v22.22.0 kernel=6.19.14-400.asahi.fc42.aarch64+16k pagesize=16384 nproc=10
+06:45:27 scenarios
+== base: --turns 0,1,3 --idle 60 --hooks 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-base.json
+== nohooks: --turns 0,1,3 --idle 30 --hooks 0
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-nohooks.json
+== stream: --turns 0:600,0:2000 --idle 5 --hooks 0
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-stream.json
+== probe: --turns 0 --idle 5 --hooks 0 --probe-models 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-probe.json
+== httpmcp: --turns 0 --idle 90 --hooks 0 --http-mcp 2
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-httpmcp.json
+ALL-SCENARIOS-DONE
+06:49:33 app rig idle8: --ws 8 --fake-net 1 --warm 30 --measure 300
+{"label":"idle8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-2244738/out-idle8","void":[],"bootToUiMs":981,"controls":{"execlogLines":1760,"appOwnGitSpawns":1463,"ghStubCalls":61,"execlogSawGh":61,"visibilities":["warm:visible->visible","steady-visible:visible->visible"]}}
+06:55:13   rc=0
+06:55:13 app rig ws24: --ws 24 --warm 30 --measure 180
+{"label":"ws24","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-2322430/out-ws24","void":[],"bootToUiMs":1502,"controls":{"execlogLines":3031,"appOwnGitSpawns":2874,"ghStubCalls":51,"execlogSawGh":51,"visibilities":["warm:visible->visible","steady-visible:visible->visible"]}}
+06:58:55   rc=0
+06:58:55 app rig ws8focus: --ws 8 --focus-cycles 5 --running 8 --hidden 90 --warm 20 --measure 120
+{"label":"ws8focus","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-2388403/out-ws8focus","void":[],"bootToUiMs":897,"controls":{"execlogLines":1165,"appOwnGitSpawns":1018,"ghStubCalls":36,"execlogSawGh":36,"visibilities":["warm:visible->visible","steady-visible:visible->visible","focus-cycles:visible->visible","steady-running:visible->eval-failed: cdp timeout Runtime.evaluate","steady-hidden:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate"]}}
+07:10:38   rc=0
+07:10:38 app rig sess4: --ws 8 --sessions 4 --stream 600 --rate 60 --warm 20 --measure 90
+{"label":"sess4","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/out-sess4","void":["run error: Error: cdp timeout Runtime.evaluate","steady-visible window was not document.visibilityState=visible"],"bootToUiMs":1607,"controls":{"execlogLines":115,"appOwnGitSpawns":44,"ghStubCalls":13,"execlogSawGh":13,"visibilities":["warm:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate","steady-visible:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate"]}}
+07:20:27   rc=3
+07:20:27 git-poll-cost /home/lmas/dev/metarepo
+repo=/home/lmas/dev/metarepo branch=bloc2-nmc306-abo-findings tracked_files=196 load=9.19 12.79 13.55
+git diff --numstat HEAD                      wall     3.1 ms   cpu(user+sys)     2.5 ms   per spawn (mean of 20)
+git ls-files --others --exclude-standard     wall     1.8 ms   cpu(user+sys)     1.8 ms   per spawn (mean of 20)
+git rev-parse --verify origin/<branch>       wall     1.4 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+git rev-parse <branch> main                  wall     2.3 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+git rev-parse --abbrev-ref HEAD              wall     1.3 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+07:20:27 git-poll-cost /home/lmas/Applications/orchestra
+repo=/home/lmas/Applications/orchestra branch=fix-keeper-missing-from-package tracked_files=327 load=9.82 12.86 13.57
+git diff --numstat HEAD                      wall     3.5 ms   cpu(user+sys)     3.0 ms   per spawn (mean of 20)
+git ls-files --others --exclude-standard     wall     3.2 ms   cpu(user+sys)     2.6 ms   per spawn (mean of 20)
+git rev-parse --verify origin/<branch>       wall     1.5 ms   cpu(user+sys)     1.4 ms   per spawn (mean of 20)
+git rev-parse <branch> main                  wall     1.2 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+git rev-parse --abbrev-ref HEAD              wall     1.8 ms   cpu(user+sys)     1.4 ms   per spawn (mean of 20)
+07:20:28 loop-scan-cost
+{"generatedAt":"2026-09-30T05:20:29.044Z","ws":32,"runs":5,"capBytes":8388608,"loadavg":"9.82 12.86 13.57","cases":[{"transcriptMB":0.25,"bytesReadPerWorkspace":262144,"bytesReadPerSweep":8388608,"wallMsMedian":25,"cpuMsMedian":32,"unchangedFleetControl":{"wallMs":3,"cpuMs":2}},{"transcriptMB":2.4,"bytesReadPerWorkspace":2516582,"bytesReadPerSweep":80530624,"wallMsMedian":160,"cpuMsMedian":158,"unchangedFleetControl":{"wallMs":2,"cpuMs":2}},{"transcriptMB":9,"bytesReadPerWorkspace":8388608,"bytesReadPerSweep":268435456,"wallMsMedian":539,"cpuMsMedian":523,"unchangedFleetControl":{"wallMs":2,"cpuMs":1}}]}
+07:20:36 cli-cost help / whoami
+orchestra=/home/lmas/.orchestra/bin/orchestra -> /home/lmas/Applications/orchestra/release/Orchestra.AppImage (298234849 bytes) load=10.63 12.98 13.60 verb='help'
+runs=10  wall median 389 ms (min 323, max 495)  cpu(user+sys) median 190 ms  processes/call median 7
+exec kinds per call: {'orchestra': 3.0, 'Orchestra.AppImage': 1.0, 'bash': 1.0, 'unshare': 1.0, 'true': 1.0}
+orchestra=/home/lmas/.orchestra/bin/orchestra -> /home/lmas/Applications/orchestra/release/Orchestra.AppImage (298234849 bytes) load=10.66 12.94 13.59 verb='whoami'
+runs=10  wall median 502 ms (min 468, max 610)  cpu(user+sys) median 326 ms  processes/call median 8
+exec kinds per call: {'orchestra': 3.0, 'Orchestra.AppImage': 1.0, 'bash': 1.0, 'unshare': 1.0, 'true': 1.0, 'exe': 1.0}
+07:20:45 npx-mcp-cost
+pkg=@modelcontextprotocol/server-filesystem load=10.29 12.83 13.55 npm=10.9.4 prefer-offline=false
+runs=5 replies_ok=5/5  wall to reply+exit median 1314 ms (min 1257 max 1467)  cpu(user+sys) median 1805 ms  processes/start median 4
+exec kinds per start: {'npx': 1.0, 'sh': 1.0, 'mcp-server-filesystem': 1.0, 'node': 1.0}
+DNS lookups per start: {'registry.npmjs.org': 1.0}
+inet connects per start: {'[2606:4700::6810:22]:443': 0.4, '[2606:4700::6810:422]:443': 0.2, '[2606:4700::6810:622]:443': 0.2, '[2606:4700::6810:b22]:443': 0.2}
+07:20:52 hook-cost
+built /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/scripts/hidden-cost/execlog/execlog.so
+07:20:54 field census + live watcher
+census @ 2026-09-30T05:20:54.971Z load=9.79 12.64 13.47 MemAvailable=13307 MB procs=629
+   18    6430 MB     3220 cpu-s  age  18.6 h  claude-cli
+  499    2872 MB     8118 cpu-s  age  18.6 h  other
+   28    2764 MB     5060 cpu-s  age  18.6 h  chromium
+   18     902 MB       56 cpu-s  age  18.6 h  orchestra-keeper
+   17     622 MB        2 cpu-s  age    15 h  mcp-lazy-wrapper
+    1     434 MB    20633 cpu-s  age   8.8 h  (65.2% of 1 core lifetime) orchestra-electron-renderer
+    8     330 MB     2565 cpu-s  age  18.6 h  orchestra-electron-main
+   34     114 MB      561 cpu-s  age  18.6 h  shell
+    1      61 MB     6529 cpu-s  age   8.8 h  (20.6% of 1 core lifetime) orchestra-electron-gpu-process
+    2      16 MB        2 cpu-s  age   8.8 h  orchestra-electron-utility
+    3      16 MB        0 cpu-s  age   8.8 h  orchestra-electron-zygote
+claude CLIs: 18; avg children/CLI 4.39; avg MCP children/CLI 0.94; avg CLI RSS 357 MB
+live main pid=4135931 watched 90s distinct child pids seen=1490
+  677   451.3/min  ?
+  244   162.7/min  git diff
+  232   154.7/min  git rev-parse
+  162   108.0/min  git ls-files
+   77    51.3/min  gh api repos/{owner}/{repo}/releases?per_page=N
+   76    50.7/min  orchestra
+   16    10.7/min  node /home/lmas/.orchestra/bin/keep
+    2     1.3/min  orchestra --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,9333098631685288976,6012384182622260336,262144 --disable-features=SpareRendererForSitePerProcess --variations-seed-version
+    2     1.3/min  gh api repos/{owner}/{repo}/actions/runs?per_page=N
+    1     0.7/min  orchestra --type=zygote --no-zygote-sandbox
+    1     0.7/min  orchestra --type=zygote
+--- detail: full argv (first 160 chars) + observed lifetime ms, for classes orchestra / node / ?
+  658x  life median      5 ms  
+   76x  life median     11 ms  /tmp/.mount_OrcheskMjHcm/orchestra
+   19x  life median     -0 ms  ?
+    1x  life median  90000 ms  /tmp/.mount_OrcheskMjHcm/orchestra --type=zygote --no-zygote-sandbox
+    1x  life median  90000 ms  /tmp/.mount_OrcheskMjHcm/orchestra --type=zygote
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 07f665b1-daed-4520-b33c-9c403293908e /home/lmas/.orchestra/keepers/07f665b1-daed-4520-b33c-9c403293908e.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js f4e20bf8-0f63-44a0-902d-34e39a07d29d /home/lmas/.orchestra/keepers/f4e20bf8-0f63-44a0-902d-34e39a07d29d.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js e3ff51f3-abb2-4cef-b960-82d2fad0cbb3 /home/lmas/.orchestra/keepers/e3ff51f3-abb2-4cef-b960-82d2fad0cbb3.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 06637ca8-f5e1-47c4-8023-492a13bdc443 /home/lmas/.orchestra/keepers/06637ca8-f5e1-47c4-8023-492a13bdc443.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 90819ba2-f1d6-4301-aeef-b826d2c6825f /home/lmas/.orchestra/keepers/90819ba2-f1d6-4301-aeef-b826d2c6825f.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 81d3bab8-aa3b-4e5e-bd0c-1b100bc1609d /home/lmas/.orchestra/keepers/81d3bab8-aa3b-4e5e-bd0c-1b100bc1609d.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 612f1597-c08f-4a73-83ed-36f2fb1b61bc /home/lmas/.orchestra/keepers/612f1597-c08f-4a73-83ed-36f2fb1b61bc.sock /
+07:22:25 run-all done
+07:22:44 app rig vis8 attempt 1: --ws 8 --running 8 --hidden 90 --warm 20 --measure 120
+{"label":"vis8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-2880541/out-vis8","void":[],"bootToUiMs":965,"controls":{"execlogLines":957,"appOwnGitSpawns":832,"ghStubCalls":35,"execlogSawGh":35,"visibilities":["warm:visible->visible","steady-visible:visible->visible","steady-running:visible->eval-failed: cdp timeout Runtime.evaluate","steady-hidden:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate"]}}
+07:33:35   rc=0
+07:33:35 app rig focus8 attempt 1: --ws 8 --focus-cycles 5 --warm 20 --measure 90
+{"label":"focus8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/out-focus8","void":[],"bootToUiMs":1269,"controls":{"execlogLines":986,"appOwnGitSpawns":849,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","focus-cycles:visible->visible"]}}
+07:36:35   rc=0
+07:36:35 app rig sess4 attempt 1: --ws 8 --sessions 4 --stream 600 --rate 60 --warm 20 --measure 90
+{"label":"sess4","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/out-sess4","void":[],"bootToUiMs":1564,"controls":{"execlogLines":1307,"appOwnGitSpawns":859,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","sessions-streaming:visible->visible","sessions-idle:visible->visible"]}}
+07:39:42   rc=0
+07:39:42 run-app-arms done
+== base: --turns 0,1,3 --idle 60 --hooks 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-base.json
+== replicate: --turns 0,1,3 --idle 30 --hooks 0
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-replicate.json
+== stream: --turns 0:600,0:2000 --idle 5 --hooks 0
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-stream.json
+== probe: --turns 0 --idle 5 --hooks 0 --probe-models 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-probe.json
+== httpmcp: --turns 0 --idle 90 --hooks 0 --http-mcp 2
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-httpmcp.json
+ALL-SCENARIOS-DONE
+REST_DONE
+07:43:51 app rig vis8 attempt 1: --ws 8 --running 8 --hidden 90 --warm 20 --measure 120
+{"label":"vis8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3150111/out-vis8","void":["renderer CDP stall in window(s) steady-running,steady-hidden — nothing measured after the stall is valid"],"bootToUiMs":826,"controls":{"execlogLines":882,"appOwnGitSpawns":765,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","steady-running:visible->eval-failed: cdp timeout Runtime.evaluate","steady-hidden:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate"]}}
+07:59:37   rc=3
+07:59:37   VOID attempt 1 kept in evidence/discarded/
+07:59:37 app rig vis8 attempt 2: --ws 8 --running 8 --hidden 90 --warm 20 --measure 120
+{"label":"vis8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3303399/out-vis8","void":["renderer CDP stall in window(s) steady-running,steady-hidden — nothing measured after the stall is valid"],"bootToUiMs":915,"controls":{"execlogLines":852,"appOwnGitSpawns":735,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","steady-running:visible->eval-failed: cdp timeout Runtime.evaluate","steady-hidden:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate"]}}
+08:15:24   rc=3
+08:15:24   VOID attempt 2 kept in evidence/discarded/
+08:15:24 app rig vis8 attempt 3: --ws 8 --running 8 --hidden 90 --warm 20 --measure 120
+{"label":"vis8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3512126/out-vis8","void":["run error: Error: timeout waiting for sidebar rows","only undefined/8 workspace rows mounted"],"controls":{"execlogLines":107,"appOwnGitSpawns":31,"ghStubCalls":9,"execlogSawGh":9,"visibilities":[]}}
+08:17:36   rc=3
+08:17:36   VOID attempt 3 kept in evidence/discarded/
+08:17:36 app rig fg1 attempt 1: --ws 8 --sessions 1 --stream-on 0 --stream 1200 --rate 60 --warm 20 --measure 60
+{"label":"fg1","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3525347/out-fg1","void":[],"bootToUiMs":845,"controls":{"execlogLines":954,"appOwnGitSpawns":753,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","sessions-streaming:visible->visible","sessions-idle:visible->visible"]}}
+08:20:20   rc=0
+08:20:20 app rig bg1 attempt 1: --ws 8 --sessions 1 --stream-on 3 --stream 1200 --rate 60 --warm 20 --measure 60
+{"label":"bg1","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3580757/out-bg1","void":[],"bootToUiMs":1343,"controls":{"execlogLines":956,"appOwnGitSpawns":753,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","sessions-streaming:visible->visible","sessions-idle:visible->visible"]}}
+08:23:06   rc=0
+08:23:06 app rig res8 attempt 1: --ws 8 --resources-page 60 --warm 20 --measure 60
+{"label":"res8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3611339/out-res8","void":[],"bootToUiMs":1489,"controls":{"execlogLines":1081,"appOwnGitSpawns":935,"ghStubCalls":39,"execlogSawGh":39,"visibilities":["warm:visible->visible","steady-visible:visible->visible","resources-page:visible->visible","bus-page:visible->visible"]}}
+08:26:46   rc=0
+REST2_DONE
+08:28:57 app rig hid8 attempt 1: --ws 8 --hidden 90 --warm 20 --measure 90
+{"label":"hid8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3731262/out-hid8","void":[],"bootToUiMs":876,"controls":{"execlogLines":1084,"appOwnGitSpawns":945,"ghStubCalls":36,"execlogSawGh":36,"visibilities":["warm:visible->visible","steady-visible:visible->visible","steady-hidden:visible->visible"]}}
+08:32:33   rc=0
+08:32:33 app rig run8 attempt 1: --ws 8 --running 8 --warm 20 --measure 90
+{"label":"run8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-3791491/out-run8","void":[],"bootToUiMs":899,"controls":{"execlogLines":924,"appOwnGitSpawns":799,"ghStubCalls":31,"execlogSawGh":31,"visibilities":["warm:visible->visible","steady-visible:visible->visible","steady-running:visible->visible"]}}
+08:35:34   rc=0
+08:35:34 run-app-arms done

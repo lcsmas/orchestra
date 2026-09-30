@@ -1,0 +1,7 @@
+src/cli/index.ts:121:    const req = http.request(
+src/keeper/index.ts:211:const server = net.createServer((sock) => {
+src/keeper/index.ts:342:      const s = net.connect(sockPath);
+src/main/hooks-server.ts:77:  // and http.request({ socketPath }) accept that string, so the rest of the
+src/main/hooks-server.ts:137:  server = http.createServer((req, res) => {
+src/main/keeper-client.ts:185:    const sock = net.connect(sockPath);
+src/main/transport/sandbox-manager.ts:220:  const ws = new WebSocket(endpoint);

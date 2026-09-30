@@ -1,0 +1,245 @@
+ctx-def	src/main/agent-sdk.ts:2463	refreshContextUsage
+ctx-call	src/main/agent-sdk.ts:1382	refreshContextUsage
+ctx-get	src/main/agent-sdk.ts:2434	sdkGetContextUsage
+models	src/main/agent-sdk.ts:2278	sdkListModels
+runtime	src/main/agent-sdk.ts:2352	currentClaudeRuntime
+probe	src/main/agent-sdk.ts:2384	probeRuntimeModels
+ckpt	src/main/agent-sdk.ts:1948	enableFileCheckpointing
+partial	src/main/agent-sdk.ts:1816	includePartialMessages
+keeper-spawn	src/main/agent-sdk.ts:1890	makeKeeperSpawn
+hook-cmd	src/main/workspaces.ts:3851	activityHookCmd
+hook-submit	src/main/workspaces.ts:5703	HOOK_ACTIVITY_SUBMIT
+hook-session	src/main/workspaces.ts:5773	HOOK_SESSION_START_READY
+tail-bytes	src/main/activity.ts:820	TRANSCRIPT_TAIL_BYTES
+ctx-tokens	src/main/activity.ts:835	computeContextTokens
+posttool-ctx	src/main/activity.ts:1055	emitContext
+merge-state	src/main/activity.ts:559	detectAndUpdateMergeState
+branch-probe	src/main/activity.ts:644	detectAndUpdateBranchName
+release-state	src/main/activity.ts:687	detectAndUpdateReleaseState
+releases	src/main/git.ts:1133	getPublishedReleases
+release-ttl	src/main/git.ts:1119	RELEASE_CACHE_TTL
+diff-stats	src/main/git.ts:236	getDiffStats
+ref-shas	src/main/git.ts:500	getRefShas
+pr-inflight	src/main/git.ts:800	repoPRInflight
+checks-inflight	src/main/git.ts:1044	repoChecksInflight
+sync-base	src/main/git.ts:1614	syncBaseBranch
+focus-sync	src/main/index.ts:712	focus
+visible-poll	src/renderer/App.tsx:71	startVisiblePoll
+poll-stats	src/renderer/App.tsx:320	8000
+poll-pr	src/renderer/App.tsx:340	12000
+poll-checks	src/renderer/App.tsx:347	30000
+poll-linear	src/renderer/App.tsx:356	60000
+poll-tickets	src/renderer/App.tsx:366	120000
+poll-sizes	src/renderer/App.tsx:333	30000
+poll-conc	src/renderer/store.ts:44	POLL_CONCURRENCY
+css-spin	src/renderer/styles.css:1773	ws-glyph-spin
+css-dot	src/renderer/styles.css:1679	ws-dot-pulse
+usage-poll	src/main/usage.ts:171	POLL_MS
+acct-poll	src/main/account-usage.ts:43	POLL_MS
+acct-cache	src/main/account-usage.ts:36	CACHE_MS
+acct-probe	src/main/account-usage.ts:39	USAGE_PROBE_MODEL
+res-start	src/main/resource-monitor.ts:435	startResourceMonitor
+res-table	src/main/resource-monitor.ts:59	sampleProcTable
+res-keepers	src/main/resource-monitor.ts:202	scanKeeperProcs
+loop-ms	src/main/loop-scan.ts:27	SWEEP_MS
+tail-max	src/shared/tail-read.ts:19	TAIL_MAX_BYTES
+wd-tick	src/main/session-watchdog.ts:133	TICK_MS
+pq-tick	src/main/prompt-queue.ts:42	TICK_MS
+spool-poll	src/main/events-spool.ts:59	POLL_MS
+wake-ms	src/main/bus-wake.ts:58	SWEEP_MS
+live-ms	src/main/bus-liveness.ts:44	SWEEP_MS
+hib-start	src/main/hibernation.ts:200	startHibernationSweeper
+tune-ms	src/main/self-tune.ts:337	CHECK_EVERY_MS
+sbx-ms	src/main/sandbox-import.ts:293	BACKUP_INTERVAL_MS
+keeper-tick	src/keeper/index.ts:51	TICK_MS
+deps	src/main/deps.ts:22	command
+shell-env	src/main/index.ts:152	shellEnvSync
+backfill	src/main/index.ts:576	backfillWorkspaceLinks
+prime-sync	src/main/index.ts:708	primeLocalSyncStates
+peers-route	src/main/hooks-server.ts:285	/peers
+comms-curl	src/main/workspaces.ts:4540	curl
+cli-mode	src/main/index.ts:18	ORCHESTRA_CLI_MODE
+sdk-control	src/main/session-watchdog.ts:56	// `sdkStop`, which calls `s
+sdk-control	src/main/agent-sdk.ts:2326	session.q.supportedModels(),
+sdk-control	src/main/agent-sdk.ts:2404	q.supportedModels(),
+sdk-control	src/main/agent-sdk.ts:2421	*  CLI's own accounting (`Qu
+sdk-control	src/main/agent-sdk.ts:2439	session.q.getContextUsage(),
+sdk-control	src/main/agent-sdk.ts:3650	/** The control-request esca
+sdk-control	src/main/agent-sdk.ts:3696	await session.q.interrupt();
+sdk-control	src/main/agent-sdk.ts:3761	//  • `Query.stopTask(taskId
+sdk-control	src/main/agent-sdk.ts:3796	await session.q.stopTask(tas
+sdk-control	src/main/agent-sdk.ts:4079	await session.q.setModel(mod
+sdk-control	src/main/agent-sdk.ts:4110	await session.q.applyFlagSet
+sdk-control	src/main/agent-sdk.ts:4139	await session.q.setPermissio
+sdk-control	src/main/agent-sdk.ts:4221	const res = await session.q.
+sdk-control	src/main/agent-sdk.ts:4262	const res = await session.q.
+sdk-control	src/main/agent-sdk.ts:4469	const raw = await q.mcpServe
+sdk-control	src/main/agent-sdk.ts:4501	await q.toggleMcpServer(serv
+sdk-control	src/main/agent-sdk.ts:4572	*  The SDK's `Query.setMcpSe
+sdk-control	src/main/agent-sdk.ts:4867	await q.reconnectMcpServer(s
+sdk-control	src/main/agent-sdk.ts:5047	.mcpAuthenticate(serverName)
+sdk-control	src/main/agent-sdk.ts:5078	q.mcpServerStatus().catch(()
+sdk-control	src/main/agent-sdk.ts:5122	await q.reconnectMcpServer(s
+sdk-control	src/main/agent-sdk.ts:5196	await withTimeout(session.q.
+sdk-control	src/main/agent-sdk.ts:5327	files = await withTimeout(se
+sdk-control	src/main/agent-sdk.ts:5563	session.q.rewindFiles(rewind
+sdk-control	src/renderer/components/agent/BackgroundTasksPanel.tsx:11	//  • Stop — `Query.stopTask
+sdk-control	src/renderer/components/agent/TurnFooter.tsx:162	*     `Query.getContextUsage
+sdk-control	src/shared/background-task-actions.ts:6	// CHANGE. `Query.stopTask()
+sdk-control	src/shared/context-usage.ts:8	//   1. `Query.getContextUsa
+sdk-control	src/shared/context-usage.ts:183	/** The camelCase payload re
+sdk-control	src/shared/context-usage.ts:360	/** Normalize a `Query.getCo
+sdk-control	src/shared/session-wedge.ts:290	*  `recycleSession` calls `s
+sdk-control	src/shared/types.ts:1597	*  the Claude Code runtime (
+sdk-control	src/shared/types.ts:1627	*  `Query.getContextUsage()`
+sdk-query	src/main/agent-browser-tools.ts:40	// `query({ mcpServers: { br
+sdk-query	src/main/keeper-client.ts:6	// module gives agent-sdk.ts
+sdk-query	src/main/keeper-client.ts:674	* Build the `spawnClaudeCode
+sdk-query	src/main/agent-sdk.ts:1752	// #178 seam (a) — the ONLY 
+sdk-query	src/main/agent-sdk.ts:1808	session.q = query({
+sdk-query	src/main/agent-sdk.ts:1981	*  here so a resume never ha
+sdk-query	src/main/agent-sdk.ts:2392	const q = query({
+sdk-query	src/main/agent-sdk.ts:4653	*     `ws.sdkSessionId` via 
+sdk-query	src/main/agent-sdk.ts:4799	// Resumes ws.sdkSessionId (
+sdk-query	src/shared/resume-guard.ts:23	// exists) BEFORE handing it
+sdk-query	src/shared/resume-guard.ts:42	/** Decide the resume id to 
+sdk-query	src/shared/types.ts:184	*  RESUMES the prior convers
+proc-spawn	src/keeper/index.ts:172	child = spawn(command, args,
+proc-spawn	src/main/git.ts:336	const r = await pexec('git',
+proc-spawn	src/main/git.ts:425	const child = execFile(
+proc-spawn	src/main/git.ts:819	const { stdout } = await pex
+proc-spawn	src/main/git.ts:955	const { stdout } = await pex
+proc-spawn	src/main/git.ts:1055	const { stdout } = await pex
+proc-spawn	src/main/git.ts:1144	const { stdout } = await pex
+proc-spawn	src/main/git.ts:1208	await pexec('git', ['merge-b
+proc-spawn	src/main/git.ts:1585	const { stdout } = await pex
+proc-spawn	src/main/keeper-client.ts:310	const out = execFileSync('ps
+proc-spawn	src/main/keeper-client.ts:655	const child = spawn(runtime.
+proc-spawn	src/main/login-browser.ts:84	const child = spawn(bin, chr
+proc-spawn	src/main/resource-monitor.ts:80	const { stdout } = await exe
+proc-spawn	src/main/resources.ts:54	const { stdout } = await exe
+proc-spawn	src/main/resources.ts:93	({ stdout: out } = await exe
+proc-spawn	src/main/scripts.ts:98	proc = spawn(command, args, 
+proc-spawn	src/main/self-tune.ts:207	const child = spawn(claudeCm
+proc-spawn	src/main/transport/local-pty.ts:71	const proc = pty.spawn(opts.
+proc-spawn	src/main/voice.ts:87	this.proc = spawn(
+proc-spawn	src/main/voice.ts:188	const p = spawn(PARAKEET_BIN
+proc-spawn	src/main/agent-sdk.ts:2362	const child = spawn(real, ['
+proc-spawn	src/main/agent-sdk.ts:3465	const child = spawn(bin, ['a
+proc-spawn	src/main/agent-sdk.ts:3597	child = spawn(shell, ['-l', 
+proc-spawn	src/main/agent-sdk.ts:5476	fork(ws.sdkSessionId as stri
+proc-spawn	src/main/index.ts:96	spawn(APPIMAGE_PATH, [], {
+proc-spawn	src/main/sandbox-import.ts:48	const { stdout } = await exe
+proc-spawn	src/main/sandbox-import.ts:121	await execFileP('tar', [
+proc-spawn	src/main/sandbox-import.ts:236	await execFileP('git', ['-C'
+proc-spawn	src/main/sandbox-import.ts:414	await execFileP('tar', ['-xz
+proc-spawn	src/main/sandbox-import.ts:431	await execFileP('git', ['-C'
+proc-spawn	src/main/sandbox-import.ts:442	await execFileP('cp', ['-a',
+proc-spawn	src/main/workspaces.ts:407	({ stdout: out } = await exe
+proc-spawn	src/main/workspaces.ts:424	({ stdout: out } = await exe
+pty	src/main/transport/local-pty.ts:66	*  if the underlying `pty.sp
+pty	src/main/index.ts:428	// ORCHESTRA_SOCK from the e
+net-fetch	src/main/account-usage.ts:175	const res = await fetch(USAG
+net-fetch	src/main/account-usage.ts:221	const res = await fetch(url,
+net-fetch	src/main/linear.ts:117	const res = await fetch(LINE
+net-fetch	src/main/usage.ts:135	const res = await fetch(USAG
+net-fetch	src/main/agent-sdk.ts:3507	const res = await fetch(new 
+net-http	src/cli/index.ts:121	const req = http.request(
+net-http	src/keeper/index.ts:211	const server = net.createSer
+net-http	src/keeper/index.ts:342	const s = net.connect(sockPa
+net-http	src/main/hooks-server.ts:77	// and http.request({ socket
+net-http	src/main/hooks-server.ts:137	server = http.createServer((
+net-http	src/main/keeper-client.ts:185	const sock = net.connect(soc
+net-http	src/main/transport/sandbox-manager.ts:220	const ws = new WebSocket(end
+timer-interval	src/keeper/index.ts:316	setInterval(() => {
+timer-interval	src/main/account-usage.ts:145	pollTimer = setInterval(chec
+timer-interval	src/main/bus-wake.ts:988	timer = setInterval(() => vo
+timer-interval	src/main/events-spool.ts:412	poll = setInterval(drainAll,
+timer-interval	src/main/loop-scan.ts:109	timer = setInterval(() => vo
+timer-interval	src/main/prompt-queue.ts:354	timer = setInterval(() => vo
+timer-interval	src/main/resource-monitor.ts:438	timer = setInterval(() => {
+timer-interval	src/main/self-tune.ts:367	timer = setInterval(autoRunI
+timer-interval	src/main/session-watchdog.ts:817	timer = setInterval(() => {
+timer-interval	src/main/bus-liveness.ts:570	timer = setInterval(() => sw
+timer-interval	src/main/hibernation.ts:216	timer = setInterval(() => {
+timer-interval	src/main/sandbox-import.ts:368	backupTimer = setInterval(()
+timer-interval	src/renderer/App.tsx:82	timer = setInterval(fn, ms);
+timer-interval	src/renderer/components/AsksSection.tsx:26	const t = setInterval(() => 
+timer-interval	src/renderer/components/BootStall.tsx:14	const t = setInterval(() => 
+timer-interval	src/renderer/components/BrowserPanel.tsx:127	const timer = setInterval(()
+timer-interval	src/renderer/components/BusPane.tsx:458	const t = setInterval(() => 
+timer-interval	src/renderer/components/PromptQueueBanner.tsx:47	const t = setInterval(() => 
+timer-interval	src/renderer/components/QueueStallBadge.tsx:48	if (!timer) timer = setInter
+timer-interval	src/renderer/components/ResourcesView.tsx:463	timer = setInterval(() => vo
+timer-interval	src/renderer/components/Sidebar.tsx:989	const t = setInterval(refres
+timer-interval	src/renderer/components/UsageBars.tsx:237	const t = setInterval(() => 
+timer-interval	src/renderer/components/agent/AskRow.tsx:38	const t = setInterval(() => 
+timer-interval	src/renderer/components/agent/BackgroundTasksPanel.tsx:222	const id = setInterval(() =>
+timer-interval	src/renderer/components/agent/TurnFooter.tsx:40	const id = setInterval(() =>
+watch	src/main/account-usage.ts:137	fsWatcher = fs.watch(dir, { 
+watch	src/main/bus-wake.ts:897	* The shipped watcher armed 
+watch	src/main/bus-wake.ts:948	watcher = fs.watch(dir, (_ev
+watch	src/main/events-spool.ts:393	watcher = fs.watch(EVENTS_DI
+watch	src/main/human-gates.ts:217	watcher = fs.watch(dir, (_ev
+watch	src/main/inbox-tray.ts:309	watcher = fs.watch(INBOX_ROO
+watch	src/main/agent-sdk.ts:4171	//     CLI itself (a chokida
+git-net	src/main/git.ts:1619	await runGit(repoPath, ['fet
+git-net	src/main/git.ts:1627	await runGit(repoPath, ['pul
+git-net	src/main/git.ts:1633	await runGit(repoPath, ['fet
+shell-env	src/main/scripts.ts:54	* `shell-env` (`$SHELL -ilc 
+shell-env	src/main/index.ts:5	import { shellEnvSync } from
+shell-env	src/main/index.ts:68	// This must run BEFORE the 
+shell-env	src/main/index.ts:132	// spawns a child process, a
+shell-env	src/main/index.ts:143	// shell env below, so the s
+shell-env	src/main/index.ts:146	// shellEnvSync merge, since
+shell-env	src/main/index.ts:154	// shell-env already falls b
+shell-env	src/main/workspaces.ts:137	// resolves from the shell e
+simple-git	src/main/git.ts:42	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:64	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:84	const git = simpleGit(p);
+simple-git	src/main/git.ts:93	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:109	const git = simpleGit(worktr
+simple-git	src/main/git.ts:133	const wtGit = simpleGit(work
+simple-git	src/main/git.ts:144	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:158	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:168	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:177	const git = simpleGit(worktr
+simple-git	src/main/git.ts:240	const git = simpleGit(worktr
+simple-git	src/main/git.ts:318	const git = simpleGit(worktr
+simple-git	src/main/git.ts:324	const git = simpleGit(worktr
+simple-git	src/main/git.ts:382	const git = simpleGit(worktr
+simple-git	src/main/git.ts:447	const git = simpleGit(worktr
+simple-git	src/main/git.ts:456	const git = simpleGit(worktr
+simple-git	src/main/git.ts:506	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:540	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:702	return branchAuthoredItsTip(
+simple-git	src/main/git.ts:1169	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:1227	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:1248	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:1324	const git = simpleGit(repoPa
+simple-git	src/main/git.ts:1457	const git = simpleGit(repoPa
+simple-git	src/main/workspaces.ts:473	// guard for a whole failure
+simple-git	src/renderer/components/Sidebar.tsx:2124	`createWorktree('')` → `simp
+css-infinite	src/renderer/agent-view-defaults.css:102	animation: av-blink 1s steps
+css-infinite	src/renderer/agent-view-defaults.css:357	animation: av-thinking-pulse
+css-infinite	src/renderer/agent-view-theme.css:369	animation: av-breathe 2.2s v
+css-infinite	src/renderer/agent-view-theme.css:507	animation: av-blink 1.06s st
+css-infinite	src/renderer/agent-view-theme.css:535	animation: av-shimmer 2s lin
+css-infinite	src/renderer/agent-view-theme.css:756	.av-todo-in_progress .av-tod
+css-infinite	src/renderer/agent-view-theme.css:1181	.av-controls-interrupt:not(:
+css-infinite	src/renderer/agent-view-theme.css:1250	animation: av-pulse 2s var(-
+css-infinite	src/renderer/agent-view-theme.css:1580	animation: av-mcp-ind-pulse 
+css-infinite	src/renderer/agent-view-theme.css:1605	animation: av-mcp-spin 0.9s 
+css-infinite	src/renderer/agent-view-theme.css:1695	display: inline-block; anima
+css-infinite	src/renderer/agent-view-theme.css:1711	animation: av-shimmer 2s lin
+css-infinite	src/renderer/agent-view-theme.css:1727	animation: av-spin 0.7s line
+css-infinite	src/renderer/agent-view-theme.css:1899	.av-composer-mic[data-state=
+css-infinite	src/renderer/agent-view-theme.css:2031	animation: av-localcmd-spin 
+css-infinite	src/renderer/agent-view-theme.css:2305	animation: av-bgtask-pulse 1
+css-infinite	src/renderer/styles.css:1448	animation: repo-sync-spin 0.
+css-infinite	src/renderer/styles.css:1807	animation: ws-glyph-spin 4s 
+css-infinite	src/renderer/styles.css:2533	animation: setup-spin 0.7s l
+css-infinite	src/renderer/styles.css:3413	animation: browser-spin 0.7s
+css-infinite	src/renderer/styles.css:3667	animation: setup-spin 0.7s l
+css-infinite	src/renderer/styles.css:4191	animation: setup-spin 0.7s l
+css-infinite	src/renderer/styles.css:5119	animation: res-pulse 2s ease

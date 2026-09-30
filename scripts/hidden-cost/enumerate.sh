@@ -6,7 +6,7 @@
 # Positive control: the first line asserts the grep instrument itself finds a known-present site.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
-SRC=(src)
+SRC=(${HC_ENUM_SRC:-src})   # override only for the instrument self-test (a wrong tree must trip the control grep)
 INC=(--include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.sh')
 # Production code only: tests and the session-budget rig itself are not Orchestra's runtime.
 prod() { grep -vE '\.test\.(ts|tsx|mjs)|/session-budget/|/hidden-cost/'; }

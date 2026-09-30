@@ -1,0 +1,12 @@
+built /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/scripts/hidden-cost/execlog/execlog.so
+disk-guard OK: /home/lmas/.cache/hidden-cost/rigs free 389.9 GB of 550.0 GB, required 256.0 MB for contained E2E rig
+[rig] sway pid=176463 sock=/home/lmas/.cache/hidden-cost/rigs/e2e64c-176385/sway.sock
+[rig] unique marker for this rig: #FFBEBC (rgb 255,190,188)
+[rig] marker #FFBEBC readings: wayland-2=0.00%  wayland-3=100.00%  
+[rig] verified MY display: wayland-3
+[rig] after reset, wayland-3 reads 0.00% of #FFBEBC (must be 0.00)
+[rig] PREFLIGHT: child WAYLAND_DISPLAY='wayland-3' must equal my sway's socket 'wayland-3'
+[rig] PREFLIGHT PASSED: child gets WAYLAND_DISPLAY=wayland-3, DISPLAY absent (verified against the constructed env)
+[rig] rig dir: /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385 | fake HOME: /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385/home | ORCHESTRA_HOME: /home/lmas/.cache/hidden-cost/rigs/e2e64c-176385/oh
+[hc-rig] launched electron pid=104 port=9302 N=8 version=0.5.298
+[hc-rig] UI ready after 1264 ms; warm 30s

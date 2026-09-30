@@ -1,0 +1,34 @@
+src/keeper/index.ts:172:  child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+src/main/deps.ts:22:    await pExecFile('command', ['-v', cmd], { shell: '/bin/sh' });
+src/main/git.ts:336:      const r = await pexec('git', ['diff', '--no-color', '--no-index', '/dev/null', file], {
+src/main/git.ts:425:    const child = execFile(
+src/main/git.ts:819:    const { stdout } = await pexec(
+src/main/git.ts:955:    const { stdout } = await pexec(
+src/main/git.ts:1055:    const { stdout } = await pexec(
+src/main/git.ts:1144:    const { stdout } = await pexec(
+src/main/git.ts:1208:    await pexec('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: repoPath });
+src/main/git.ts:1585:    const { stdout } = await pexec('git', args, {
+src/main/login-browser.ts:84:    const child = spawn(bin, chromiumLoginArgv(profileDir, url), {
+src/main/scripts.ts:98:      proc = spawn(command, args, {
+src/main/self-tune.ts:207:    const child = spawn(claudeCmd(), args, { cwd: os.homedir(), env });
+src/main/transport/local-pty.ts:71:  const proc = pty.spawn(opts.command, opts.args, {
+src/main/voice.ts:87:    this.proc = spawn(
+src/main/voice.ts:188:    const p = spawn(PARAKEET_BIN, ['-m', PARAKEET_MODEL, '-t', String(threads), '-np', '-f', wav]);
+src/main/sandbox-import.ts:48:  const { stdout } = await execFileP('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 });
+src/main/sandbox-import.ts:121:  await execFileP('tar', [
+src/main/sandbox-import.ts:236:    await execFileP('git', ['-C', ws.repoPath, 'worktree', 'prune']);
+src/main/sandbox-import.ts:414:    await execFileP('tar', ['-xzf', tgz, '-C', tmp]);
+src/main/sandbox-import.ts:431:    await execFileP('git', ['-C', ws.repoPath, 'fetch', bundle, `+${branch}:${branch}`]);
+src/main/sandbox-import.ts:442:      await execFileP('cp', ['-a', `${overlay}/.`, `${worktreePath}/`]);
+src/main/agent-sdk.ts:2471:      const child = spawn(real, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+src/main/agent-sdk.ts:3612:    const child = spawn(bin, ['auth', 'status'], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+src/main/agent-sdk.ts:3744:      child = spawn(shell, ['-l', '-c', cmd], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+src/main/agent-sdk.ts:5716:    fork(ws.sdkSessionId as string, {
+src/main/index.ts:96:        spawn(APPIMAGE_PATH, [], {
+src/main/keeper-client.ts:310:      const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 });
+src/main/keeper-client.ts:655:  const child = spawn(runtime.cmd, [target, wsId, sockPath, keeperPidPath(wsId), keeperLogPath(wsId)], {
+src/main/resource-monitor.ts:83:    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,pcpu=,comm=']);
+src/main/resources.ts:57:    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,pcpu=,comm=']);
+src/main/resources.ts:96:      ({ stdout: out } = await execFileP('du', ['-sk', ...existing.map(([, d]) => d)]));
+src/main/workspaces.ts:411:        ({ stdout: out } = await execFileP('btrfs', ['filesystem', 'du', '-s', '--raw', ...targets]));
+src/main/workspaces.ts:428:    ({ stdout: out } = await execFileP('du', ['-k', '--max-depth=1', ORCHESTRA_ROOT]));

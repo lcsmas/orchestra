@@ -1,0 +1,6 @@
+src/main/account-usage.ts:175:    const res = await fetch(USAGE_URL, {
+src/main/account-usage.ts:221:    const res = await fetch(url, {
+src/main/linear.ts:117:    const res = await fetch(LINEAR_GRAPHQL_ENDPOINT, {
+src/main/usage.ts:135:    const res = await fetch(USAGE_URL, {
+src/main/agent-sdk.ts:3654:    const res = await fetch(new URL('/', baseUrl), { signal: ctrl.signal });
+src/shared/session-budget.ts:138: *  network namespace, with the app process's own fetch()/http(s) routed through the recording proxy too. Measured on CLI

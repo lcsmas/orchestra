@@ -1,0 +1,21 @@
+09:31:34 run-all start: HEAD=a007b0d9 pkg=0.5.298 claude=2.1.284 (Claude Code) node=v22.22.0 kernel=6.19.14-400.asahi.fc42.aarch64+16k pagesize=16384 nproc=10
+09:31:34 enumeration
+09:31:35 scenarios
+== base: --turns 0,1,3 --idle 60 --hooks 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-base.json
+== replicate: --turns 0,1,3 --idle 30 --hooks 0
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-replicate.json
+== stream: --turns 0:600,0:2000 --idle 5 --hooks 0
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-stream.json
+== probe: --turns 0 --idle 5 --hooks 0 --probe-models 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-probe.json
+== httpmcp: --turns 0 --idle 90 --hooks 0 --http-mcp 2
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-httpmcp.json
+== parity: --turns 0,1,1,1 --idle 180 --hooks 1 --parity 1
+   rc=0 out=docs/research/hidden-cost-inventory/evidence/scn-parity.json
+ALL-SCENARIOS-DONE
+09:38:57 app rig idle8 attempt 1: --ws 8 --fake-net 1 --warm 30 --measure 300
+{"label":"idle8","out":"/home/lmas/.cache/hidden-cost/rigs/e2e64c-127375/out-idle8","void":["run error: Error: renderer/main stall detected in window steady-visible — aborting the run (retry)","renderer CDP stall in window(s) steady-visible — nothing measured after the stall is valid"],"bootToUiMs":1195,"controls":{"execlogLines":588,"appOwnGitSpawns":413,"ghStubCalls":22,"execlogSawGh":22,"visibilities":["warm:visible->visible","steady-visible:visible->eval-failed: cdp timeout Runtime.evaluate"]}}
+09:50:41   rc=3
+09:50:41   VOID attempt 1 kept in evidence/discarded/
+09:50:41 app rig idle8 attempt 2: --ws 8 --fake-net 1 --warm 30 --measure 300

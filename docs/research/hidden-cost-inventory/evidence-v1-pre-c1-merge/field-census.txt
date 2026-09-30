@@ -1,0 +1,13 @@
+census @ 2026-09-30T05:20:54.971Z load=9.79 12.64 13.47 MemAvailable=13307 MB procs=629
+   18    6430 MB     3220 cpu-s  age  18.6 h  claude-cli
+  499    2872 MB     8118 cpu-s  age  18.6 h  other
+   28    2764 MB     5060 cpu-s  age  18.6 h  chromium
+   18     902 MB       56 cpu-s  age  18.6 h  orchestra-keeper
+   17     622 MB        2 cpu-s  age    15 h  mcp-lazy-wrapper
+    1     434 MB    20633 cpu-s  age   8.8 h  (65.2% of 1 core lifetime) orchestra-electron-renderer
+    8     330 MB     2565 cpu-s  age  18.6 h  orchestra-electron-main
+   34     114 MB      561 cpu-s  age  18.6 h  shell
+    1      61 MB     6529 cpu-s  age   8.8 h  (20.6% of 1 core lifetime) orchestra-electron-gpu-process
+    2      16 MB        2 cpu-s  age   8.8 h  orchestra-electron-utility
+    3      16 MB        0 cpu-s  age   8.8 h  orchestra-electron-zygote
+claude CLIs: 18; avg children/CLI 4.39; avg MCP children/CLI 0.94; avg CLI RSS 357 MB

@@ -1,0 +1,4 @@
+src/main/git.ts:1619:    await runGit(repoPath, ['fetch', 'origin', `${baseBranch}:${baseBranch}`]);
+src/main/git.ts:1627:      await runGit(repoPath, ['pull', '--ff-only', 'origin', baseBranch]);
+src/main/git.ts:1633:  await runGit(repoPath, ['fetch', 'origin', baseBranch]);
+src/main/sandbox-import.ts:431:    await execFileP('git', ['-C', ws.repoPath, 'fetch', bundle, `+${branch}:${branch}`]);

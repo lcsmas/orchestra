@@ -1,0 +1,1308 @@
+EXEC 67844584 107 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox --no-sandbox
+EXEC 67844585 108 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-sandbox
+CONNECT 67844617 105 unix /run/dbus/system_bus_socket
+EXEC 67844787 126 105 /usr/bin/zsh /usr/bin/zsh -ilc echo -n "_SHELL_ENV_DELIMITER_"; command env; echo -n "_SHELL_ENV_DELIMITER_"; exit
+EXEC 67844793 127 126 /usr/bin/clear clear
+EXEC 67844794 128 126 /usr/bin/id /usr/bin/id -un
+EXEC 67844795 129 126 /usr/bin/hostnamectl /usr/bin/hostnamectl --transient
+CONNECT 67844797 129 unix /run/dbus/system_bus_socket
+EXEC 67844798 130 126 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 67844799 131 130 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 67844800 132 126 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 67844802 133 132 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 67844803 134 126 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 67844804 135 134 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 67844807 137 136 /usr/bin/find find /etc/debuginfod -name *.urls -print0
+EXEC 67844807 138 136 /usr/bin/xargs xargs -0 cat
+EXEC 67844807 139 136 /usr/bin/tr tr \n  
+EXEC 67844808 140 138 cat cat /etc/debuginfod/elfutils.urls
+EXEC 67844810 142 141 /usr/bin/find find /etc/debuginfod -name *.certpath -print0
+EXEC 67844810 143 141 /usr/bin/xargs xargs -0 cat
+EXEC 67844811 144 143 cat cat /etc/debuginfod/elfutils.certpath
+EXEC 67844811 145 141 /usr/bin/tr tr \n :
+EXEC 67844813 147 146 /usr/bin/flatpak flatpak --installations
+EXEC 67844823 149 126 /usr/bin/tty tty
+EXEC 67844824 150 126 /usr/bin/locale /usr/bin/locale
+EXEC 67844825 151 126 /usr/bin/sed /usr/bin/sed -r -e s/^[[:blank:]]*([[:upper:]_]+)=([[:print:][:digit:]\._-]+|"[[:print:][:digit:]\._-]+")/export \1=\2/;t;d /etc/locale.conf
+EXEC 67844827 153 152 /usr/bin/readlink readlink /proc/126/exe
+EXEC 67844828 152 126 /usr/bin/basename basename /usr/bin/zsh
+EXEC 67844830 154 126 /usr/bin/env env
+CONNECT 67844833 105 unix /run/user/1000/wayland-3
+CONNECT 67844834 105 unix /run/user/1000/wayland-3
+CONNECT 67844835 105 unix /run/dbus/system_bus_socket
+CONNECT 67844882 105 unix /run/dbus/system_bus_socket
+EXEC 67844916 176 105 /bin/sh /bin/sh -c command -v git
+EXEC 67844920 177 105 /bin/sh /bin/sh -c command -v gh
+EXEC 67844926 178 105 /bin/sh /bin/sh -c command -v claude
+EXEC 67844931 179 105 /proc/self/exe /proc/self/exe --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --enable-crash-reporter=9b989bb5-fcef-4923-98c8-ceea1ff13960,no_channel --user-data-dir=/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/userData --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,4583013274760494389,5492745865771645110,262144 --disable-features=SpareRendererForSitePerProcess --variations-seed-version
+CONNECT 67844939 171 unix /run/user/1000/wayland-3
+EXEC 67845019 197 105 git git worktree list --porcelain
+CONNECT 67845025 179 inet6 [2001:4860:4860::8888]:443
+CONNECT 67845026 179 inet 127.0.0.1:33073
+EXEC 67845146 210 105 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67845152 211 105 git git rev-list --count main..origin/main
+EXEC 67845156 212 105 git git rev-list --count origin/main..main
+EXEC 67845166 213 105 git git fetch origin main:main
+EXEC 67845169 214 213 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/origin.git'
+EXEC 67845170 214 213 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/origin.git
+EXEC 67845176 215 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67845179 216 105 git git pull --ff-only origin main
+EXEC 67845180 217 216 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67845182 218 217 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/origin.git'
+EXEC 67845182 218 217 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/origin.git
+EXEC 67845184 219 217 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67845194 220 217 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67845209 222 216 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67845231 223 105 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67845238 224 105 git git rev-list --count main..origin/main
+EXEC 67845249 225 105 git git rev-list --count origin/main..main
+EXEC 67845405 226 105 git git config --get remote.origin.url
+EXEC 67845600 243 105 /home/lmas/.local/share/claude/versions/2.1.284 /home/lmas/.local/share/claude/versions/2.1.284 --version
+EXEC 67845610 244 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67845612 245 105 git git rev-parse hc/ws-0 main
+EXEC 67845614 246 105 git git diff --numstat HEAD
+EXEC 67845617 247 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67845622 248 105 git git rev-parse hc/ws-1 main
+EXEC 67845624 249 105 git git diff --numstat HEAD
+EXEC 67845626 250 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67845630 251 105 git git rev-parse hc/ws-2 main
+EXEC 67845633 252 105 git git diff --numstat HEAD
+EXEC 67845636 253 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67845639 254 105 git git rev-parse hc/ws-3 main
+EXEC 67845642 255 105 git git diff --numstat HEAD
+EXEC 67845645 256 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67845646 257 256 /usr/bin/date date +%s%3N
+EXEC 67845648 258 105 gh gh api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845651 259 258 /usr/bin/date date +%s%3N
+EXEC 67845653 260 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67845656 262 260 /usr/bin/date date +%s%3N
+EXEC 67845657 261 105 gh gh api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845659 263 261 /usr/bin/date date +%s%3N
+EXEC 67845660 264 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67845662 266 105 gh gh api repos/fixture/repo/pulls/102 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845662 265 264 /usr/bin/date date +%s%3N
+EXEC 67845663 267 266 /usr/bin/date date +%s%3N
+EXEC 67845665 268 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67845667 269 268 /usr/bin/date date +%s%3N
+EXEC 67845668 270 105 gh gh api repos/fixture/repo/pulls/103 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845670 271 270 /usr/bin/date date +%s%3N
+EXEC 67845671 272 105 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 67845672 273 272 /usr/bin/date date +%s%3N
+EXEC 67845678 276 105 git git ls-files --others --exclude-standard
+EXEC 67845683 280 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67845686 281 105 git git ls-files --others --exclude-standard
+EXEC 67845693 282 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67845698 283 105 git git ls-files --others --exclude-standard
+EXEC 67845706 284 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67845713 285 105 git git ls-files --others --exclude-standard
+EXEC 67845717 286 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67845721 287 105 gh gh api repos/fixture/repo/pulls/104 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845726 288 287 /usr/bin/date date +%s%3N
+EXEC 67845726 289 105 gh gh api repos/fixture/repo/pulls/105 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845729 290 289 /usr/bin/date date +%s%3N
+EXEC 67845730 291 105 gh gh api repos/fixture/repo/pulls/106 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845732 292 291 /usr/bin/date date +%s%3N
+EXEC 67845734 293 105 gh gh api repos/fixture/repo/pulls/107 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67845736 294 293 /usr/bin/date date +%s%3N
+EXEC 67845740 295 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67845746 296 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67845752 297 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67845755 298 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67845762 299 105 git git rev-list --count main..hc/ws-3
+EXEC 67845765 300 105 git git rev-list --count main..hc/ws-2
+EXEC 67845768 301 105 git git rev-list --count main..hc/ws-1
+EXEC 67845772 302 105 git git rev-list --count main..hc/ws-0
+EXEC 67845777 303 105 git git rev-list --count main..hc/ws-0
+EXEC 67845781 304 105 git git rev-list --count main..hc/ws-1
+EXEC 67845785 305 105 git git rev-list --count main..hc/ws-2
+EXEC 67845793 306 105 git git rev-list --count main..hc/ws-3
+EXEC 67845880 309 105 /home/lmas/.local/bin/claude /home/lmas/.local/bin/claude --output-format stream-json --verbose --input-format stream-json --setting-sources= --permission-mode default
+CONNECT 67845892 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.sock
+EXEC 67845995 317 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67846000 318 105 git git rev-parse hc/ws-4 main
+EXEC 67846006 319 105 git git diff --numstat HEAD
+EXEC 67846017 320 309 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /tmp ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67846020 321 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67846024 322 309 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url origin
+EXEC 67846026 323 105 git git rev-parse hc/ws-5 main
+EXEC 67846030 324 105 git git diff --numstat HEAD
+EXEC 67846034 326 309 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote
+EXEC 67846038 325 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67846047 327 105 git git rev-parse hc/ws-6 main
+EXEC 67846050 328 105 git git diff --numstat HEAD
+EXEC 67846054 329 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67846058 330 105 git git rev-parse hc/ws-7 main
+EXEC 67846062 331 105 git git diff --numstat HEAD
+EXEC 67846066 332 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67846070 333 105 git git ls-files --others --exclude-standard
+EXEC 67846074 334 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67846077 335 105 git git ls-files --others --exclude-standard
+EXEC 67846082 336 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67846086 337 105 git git ls-files --others --exclude-standard
+EXEC 67846089 338 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67846095 339 105 git git rev-parse hc/ws-0 main
+EXEC 67846099 340 105 git git diff --numstat HEAD
+EXEC 67846103 341 105 git git rev-parse hc/ws-1 main
+EXEC 67846108 343 105 git git diff --numstat HEAD
+EXEC 67846110 344 309 /home/lmas/.local/share/claude/versions/2.1.284 rg --version
+EXEC 67846112 345 309 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/claude-config/plugins/cache
+EXEC 67846113 346 105 git git rev-parse hc/ws-2 main
+EXEC 67846116 347 309 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden /tmp
+EXEC 67846117 348 105 git git diff --numstat HEAD
+EXEC 67846132 361 105 git git rev-parse hc/ws-3 main
+EXEC 67846137 362 105 git git diff --numstat HEAD
+EXEC 67846152 363 105 git git ls-files --others --exclude-standard
+EXEC 67846161 364 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67846169 365 105 git git ls-files --others --exclude-standard
+EXEC 67846172 366 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67846177 367 105 git git ls-files --others --exclude-standard
+EXEC 67846181 368 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67846185 369 105 git git ls-files --others --exclude-standard
+EXEC 67846189 370 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67846192 371 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67846196 372 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67846201 373 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67846209 374 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67846213 375 105 git git ls-files --others --exclude-standard
+EXEC 67846221 376 105 git git rev-list --count main..hc/ws-7
+EXEC 67846229 377 105 git git rev-list --count main..hc/ws-6
+EXEC 67846236 378 105 git git rev-list --count main..hc/ws-5
+EXEC 67846241 379 105 git git rev-list --count main..hc/ws-4
+EXEC 67846247 380 105 git git rev-list --count main..hc/ws-4
+EXEC 67846251 381 105 git git rev-list --count main..hc/ws-5
+EXEC 67846255 382 105 git git rev-list --count main..hc/ws-6
+EXEC 67846258 383 105 git git rev-list --count main..hc/ws-7
+EXEC 67846310 384 105 git git rev-parse hc/ws-4 main
+EXEC 67846314 385 105 git git diff --numstat HEAD
+EXEC 67846322 386 105 git git rev-parse hc/ws-5 main
+EXEC 67846326 387 105 git git diff --numstat HEAD
+EXEC 67846330 388 105 git git rev-parse hc/ws-6 main
+EXEC 67846335 389 105 git git diff --numstat HEAD
+EXEC 67846340 390 105 git git rev-parse hc/ws-7 main
+EXEC 67846343 391 105 git git diff --numstat HEAD
+EXEC 67846361 392 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67846368 393 105 git git ls-files --others --exclude-standard
+EXEC 67846376 394 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67846379 395 105 git git ls-files --others --exclude-standard
+EXEC 67846384 396 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67846390 397 105 git git ls-files --others --exclude-standard
+EXEC 67846396 398 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67846408 399 105 git git ls-files --others --exclude-standard
+EXEC 67854006 400 105 git git rev-parse hc/ws-0 main
+EXEC 67854009 401 105 git git diff --numstat HEAD
+EXEC 67854013 402 105 git git rev-parse hc/ws-1 main
+EXEC 67854016 403 105 git git diff --numstat HEAD
+EXEC 67854019 404 105 git git rev-parse hc/ws-2 main
+EXEC 67854022 405 105 git git diff --numstat HEAD
+EXEC 67854026 406 105 git git rev-parse hc/ws-3 main
+EXEC 67854029 407 105 git git diff --numstat HEAD
+EXEC 67854033 408 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67854036 409 105 git git ls-files --others --exclude-standard
+EXEC 67854039 410 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67854043 411 105 git git ls-files --others --exclude-standard
+EXEC 67854045 412 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67854048 413 105 git git ls-files --others --exclude-standard
+EXEC 67854053 414 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67854060 415 105 git git ls-files --others --exclude-standard
+EXEC 67854109 416 105 git git rev-parse hc/ws-4 main
+EXEC 67854112 417 105 git git diff --numstat HEAD
+EXEC 67854115 418 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67854118 419 105 git git rev-parse hc/ws-5 main
+EXEC 67854121 420 105 git git diff --numstat HEAD
+EXEC 67854124 421 105 git git rev-parse hc/ws-6 main
+EXEC 67854126 422 105 git git diff --numstat HEAD
+EXEC 67854129 423 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67854132 424 105 git git ls-files --others --exclude-standard
+EXEC 67854135 425 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67854138 426 105 git git ls-files --others --exclude-standard
+EXEC 67854141 427 105 git git rev-parse hc/ws-7 main
+EXEC 67854144 428 105 git git diff --numstat HEAD
+EXEC 67854146 429 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67854148 430 105 git git ls-files --others --exclude-standard
+EXEC 67854153 431 105 git git ls-files --others --exclude-standard
+EXEC 67860016 432 105 /bin/true /bin/true -p /insights --dangerously-skip-permissions
+EXEC 67860020 433 105 /bin/true /bin/true -p You are running the monthly insights self-tune (headless, no user present).
+
+Insights reports were just regenerated for every Claude Code login. The newest
+repo --dangerously-skip-permissions
+EXEC 67862006 434 105 git git rev-parse hc/ws-0 main
+EXEC 67862008 435 105 git git diff --numstat HEAD
+EXEC 67862010 436 105 git git rev-parse hc/ws-1 main
+EXEC 67862015 437 105 git git diff --numstat HEAD
+EXEC 67862017 438 105 git git rev-parse hc/ws-2 main
+EXEC 67862021 439 105 git git diff --numstat HEAD
+EXEC 67862023 440 105 git git rev-parse hc/ws-3 main
+EXEC 67862025 441 105 git git diff --numstat HEAD
+EXEC 67862029 442 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67862031 443 105 git git ls-files --others --exclude-standard
+EXEC 67862033 444 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67862035 445 105 git git ls-files --others --exclude-standard
+EXEC 67862038 446 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67862039 447 105 git git ls-files --others --exclude-standard
+EXEC 67862041 448 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67862044 449 105 git git ls-files --others --exclude-standard
+EXEC 67862097 450 105 git git rev-parse hc/ws-4 main
+EXEC 67862099 451 105 git git diff --numstat HEAD
+EXEC 67862101 452 105 git git rev-parse hc/ws-5 main
+EXEC 67862106 453 105 git git diff --numstat HEAD
+EXEC 67862108 454 105 git git rev-parse hc/ws-6 main
+EXEC 67862111 455 105 git git diff --numstat HEAD
+EXEC 67862114 456 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67862118 457 105 git git ls-files --others --exclude-standard
+EXEC 67862120 458 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67862125 459 105 git git ls-files --others --exclude-standard
+EXEC 67862128 460 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67862132 461 105 git git ls-files --others --exclude-standard
+EXEC 67862135 462 105 git git rev-parse hc/ws-7 main
+EXEC 67862138 463 105 git git diff --numstat HEAD
+EXEC 67862141 464 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67862143 465 105 git git ls-files --others --exclude-standard
+EXEC 67870014 466 105 git git rev-parse hc/ws-0 main
+EXEC 67870016 467 105 git git diff --numstat HEAD
+EXEC 67870021 468 105 git git rev-parse hc/ws-1 main
+EXEC 67870024 469 105 git git diff --numstat HEAD
+EXEC 67870031 470 105 git git rev-parse hc/ws-2 main
+EXEC 67870035 471 105 git git diff --numstat HEAD
+EXEC 67870038 472 105 git git rev-parse hc/ws-3 main
+EXEC 67870045 473 105 git git diff --numstat HEAD
+EXEC 67870049 474 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67870051 475 105 git git ls-files --others --exclude-standard
+EXEC 67870054 476 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67870058 477 105 git git ls-files --others --exclude-standard
+EXEC 67870061 478 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67870064 479 105 git git ls-files --others --exclude-standard
+EXEC 67870066 480 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67870068 481 105 git git ls-files --others --exclude-standard
+EXEC 67870134 482 105 git git rev-parse hc/ws-4 main
+EXEC 67870168 483 105 git git diff --numstat HEAD
+EXEC 67870175 484 105 git git rev-parse hc/ws-5 main
+EXEC 67870178 485 105 git git diff --numstat HEAD
+EXEC 67870183 486 105 git git rev-parse hc/ws-6 main
+EXEC 67870186 487 105 git git diff --numstat HEAD
+EXEC 67870191 488 105 git git rev-parse hc/ws-7 main
+EXEC 67870195 489 105 git git diff --numstat HEAD
+EXEC 67870203 490 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67870206 491 105 git git ls-files --others --exclude-standard
+EXEC 67870211 492 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67870215 493 105 git git ls-files --others --exclude-standard
+EXEC 67870218 494 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67870223 495 105 git git ls-files --others --exclude-standard
+EXEC 67870227 496 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67870235 497 105 git git ls-files --others --exclude-standard
+EXEC 67878015 498 105 git git rev-parse hc/ws-0 main
+EXEC 67878020 499 105 git git diff --numstat HEAD
+EXEC 67878046 500 105 git git rev-parse hc/ws-1 main
+EXEC 67878059 501 105 git git diff --numstat HEAD
+EXEC 67878072 502 105 git git rev-parse hc/ws-2 main
+EXEC 67878104 503 105 git git diff --numstat HEAD
+EXEC 67878115 504 105 git git rev-parse hc/ws-3 main
+EXEC 67878127 505 105 git git diff --numstat HEAD
+EXEC 67878136 506 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67878143 507 105 git git ls-files --others --exclude-standard
+EXEC 67878151 508 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67878156 509 105 git git ls-files --others --exclude-standard
+EXEC 67878171 510 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67878177 511 105 git git ls-files --others --exclude-standard
+EXEC 67878186 512 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67878193 513 105 git git ls-files --others --exclude-standard
+EXEC 67878244 514 105 git git rev-parse hc/ws-4 main
+EXEC 67878250 515 105 git git diff --numstat HEAD
+EXEC 67878255 516 105 git git rev-parse hc/ws-5 main
+EXEC 67878264 517 105 git git diff --numstat HEAD
+EXEC 67878269 518 105 git git rev-parse hc/ws-6 main
+EXEC 67878279 519 105 git git diff --numstat HEAD
+EXEC 67878283 520 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67878289 521 105 git git ls-files --others --exclude-standard
+EXEC 67878296 522 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67878309 523 105 git git ls-files --others --exclude-standard
+EXEC 67878317 524 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67878326 525 105 git git ls-files --others --exclude-standard
+EXEC 67878333 526 105 git git rev-parse hc/ws-7 main
+EXEC 67878339 527 105 git git diff --numstat HEAD
+EXEC 67878351 528 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67878355 529 105 git git ls-files --others --exclude-standard
+EXEC 67882006 530 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67882008 531 530 /usr/bin/date date +%s%3N
+EXEC 67882009 532 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67882012 533 532 /usr/bin/date date +%s%3N
+EXEC 67882013 534 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67882015 535 534 /usr/bin/date date +%s%3N
+EXEC 67882016 536 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67882018 537 536 /usr/bin/date date +%s%3N
+EXEC 67886006 538 105 git git rev-parse hc/ws-0 main
+EXEC 67886008 539 105 git git diff --numstat HEAD
+EXEC 67886011 540 105 git git rev-parse hc/ws-1 main
+EXEC 67886013 541 105 git git diff --numstat HEAD
+EXEC 67886016 542 105 git git rev-parse hc/ws-2 main
+EXEC 67886018 543 105 git git diff --numstat HEAD
+EXEC 67886019 544 105 git git rev-parse hc/ws-3 main
+EXEC 67886021 545 105 git git diff --numstat HEAD
+EXEC 67886024 546 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67886025 547 105 git git ls-files --others --exclude-standard
+EXEC 67886027 548 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67886029 549 105 git git ls-files --others --exclude-standard
+EXEC 67886030 550 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67886033 551 105 git git ls-files --others --exclude-standard
+EXEC 67886035 552 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67886038 553 105 git git ls-files --others --exclude-standard
+EXEC 67886092 554 105 git git rev-parse hc/ws-4 main
+EXEC 67886097 555 105 git git diff --numstat HEAD
+EXEC 67886100 556 105 git git rev-parse hc/ws-5 main
+EXEC 67886110 557 105 git git diff --numstat HEAD
+EXEC 67886114 558 105 git git rev-parse hc/ws-6 main
+EXEC 67886118 559 105 git git diff --numstat HEAD
+EXEC 67886122 560 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67886125 561 105 git git ls-files --others --exclude-standard
+EXEC 67886129 562 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67886133 563 105 git git ls-files --others --exclude-standard
+EXEC 67886137 564 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67886143 565 105 git git ls-files --others --exclude-standard
+EXEC 67886152 566 105 git git rev-parse hc/ws-7 main
+EXEC 67886157 567 105 git git diff --numstat HEAD
+EXEC 67886162 568 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67886165 569 105 git git ls-files --others --exclude-standard
+EXEC 67894006 570 105 git git rev-parse hc/ws-0 main
+EXEC 67894009 571 105 git git diff --numstat HEAD
+EXEC 67894011 572 105 git git rev-parse hc/ws-1 main
+EXEC 67894013 573 105 git git diff --numstat HEAD
+EXEC 67894017 574 105 git git rev-parse hc/ws-2 main
+EXEC 67894020 575 105 git git diff --numstat HEAD
+EXEC 67894022 576 105 git git rev-parse hc/ws-3 main
+EXEC 67894024 577 105 git git diff --numstat HEAD
+EXEC 67894028 578 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67894030 579 105 git git ls-files --others --exclude-standard
+EXEC 67894032 580 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67894034 581 105 git git ls-files --others --exclude-standard
+EXEC 67894036 582 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67894037 583 105 git git ls-files --others --exclude-standard
+EXEC 67894040 584 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67894044 585 105 git git ls-files --others --exclude-standard
+EXEC 67894095 586 105 git git rev-parse hc/ws-4 main
+EXEC 67894097 587 105 git git diff --numstat HEAD
+EXEC 67894100 588 105 git git rev-parse hc/ws-5 main
+EXEC 67894103 589 105 git git diff --numstat HEAD
+EXEC 67894107 590 105 git git rev-parse hc/ws-6 main
+EXEC 67894111 591 105 git git diff --numstat HEAD
+EXEC 67894114 592 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67894117 593 105 git git ls-files --others --exclude-standard
+EXEC 67894120 594 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67894123 595 105 git git ls-files --others --exclude-standard
+EXEC 67894125 596 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67894129 597 105 git git ls-files --others --exclude-standard
+EXEC 67894131 598 105 git git rev-parse hc/ws-7 main
+EXEC 67894134 599 105 git git diff --numstat HEAD
+EXEC 67894138 600 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67894141 601 105 git git ls-files --others --exclude-standard
+EXEC 67902011 602 105 git git rev-parse hc/ws-0 main
+EXEC 67902016 603 105 git git diff --numstat HEAD
+EXEC 67902030 604 105 git git rev-parse hc/ws-1 main
+EXEC 67902038 605 105 git git diff --numstat HEAD
+EXEC 67902051 606 105 git git rev-parse hc/ws-2 main
+EXEC 67902058 607 105 git git diff --numstat HEAD
+EXEC 67902067 608 105 git git rev-parse hc/ws-3 main
+EXEC 67902070 609 105 git git diff --numstat HEAD
+EXEC 67902077 610 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67902082 611 105 git git ls-files --others --exclude-standard
+EXEC 67902088 612 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67902095 613 105 git git ls-files --others --exclude-standard
+EXEC 67902101 614 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67902112 615 105 git git ls-files --others --exclude-standard
+EXEC 67902119 616 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67902126 617 105 git git ls-files --others --exclude-standard
+EXEC 67902187 618 105 git git rev-parse hc/ws-4 main
+EXEC 67902192 619 105 git git diff --numstat HEAD
+EXEC 67902197 620 105 git git rev-parse hc/ws-5 main
+EXEC 67902200 621 105 git git diff --numstat HEAD
+EXEC 67902207 622 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67902215 623 105 git git ls-files --others --exclude-standard
+EXEC 67902218 624 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67902224 625 105 git git ls-files --others --exclude-standard
+EXEC 67902227 626 105 git git rev-parse hc/ws-6 main
+EXEC 67902230 627 105 git git diff --numstat HEAD
+EXEC 67902238 628 105 git git rev-parse hc/ws-7 main
+EXEC 67902244 629 105 git git diff --numstat HEAD
+EXEC 67902254 630 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67902257 631 105 git git ls-files --others --exclude-standard
+EXEC 67902265 632 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67902280 633 105 git git ls-files --others --exclude-standard
+EXEC 67906006 634 105 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 67906008 635 634 /usr/bin/date date +%s%3N
+EXEC 67910006 636 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910013 637 105 git git rev-parse hc/ws-0 main
+EXEC 67910018 638 105 git git diff --numstat HEAD
+EXEC 67910023 639 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910029 640 105 git git rev-parse hc/ws-1 main
+EXEC 67910037 641 105 git git diff --numstat HEAD
+EXEC 67910046 642 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910062 643 105 git git rev-parse hc/ws-2 main
+EXEC 67910067 644 105 git git diff --numstat HEAD
+EXEC 67910071 645 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910073 646 105 git git rev-parse hc/ws-3 main
+EXEC 67910077 647 105 git git diff --numstat HEAD
+EXEC 67910084 648 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67910086 649 105 git git ls-files --others --exclude-standard
+EXEC 67910089 650 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67910092 651 105 git git ls-files --others --exclude-standard
+EXEC 67910101 652 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67910104 653 105 git git ls-files --others --exclude-standard
+EXEC 67910108 654 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67910111 655 105 git git ls-files --others --exclude-standard
+EXEC 67910163 656 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910167 657 105 git git rev-parse hc/ws-4 main
+EXEC 67910172 658 105 git git diff --numstat HEAD
+EXEC 67910175 659 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910181 660 105 git git rev-parse hc/ws-5 main
+EXEC 67910187 661 105 git git diff --numstat HEAD
+EXEC 67910191 662 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910194 663 105 git git rev-parse hc/ws-6 main
+EXEC 67910198 664 105 git git diff --numstat HEAD
+EXEC 67910203 665 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67910206 666 105 git git ls-files --others --exclude-standard
+EXEC 67910211 667 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67910215 668 105 git git ls-files --others --exclude-standard
+EXEC 67910219 669 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67910223 670 105 git git ls-files --others --exclude-standard
+EXEC 67910229 671 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67910234 672 105 git git rev-parse hc/ws-7 main
+EXEC 67910237 673 105 git git diff --numstat HEAD
+EXEC 67910240 674 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67910244 675 105 git git ls-files --others --exclude-standard
+EXEC 67918009 676 105 git git rev-parse hc/ws-0 main
+EXEC 67918012 677 105 git git diff --numstat HEAD
+EXEC 67918017 678 105 git git rev-parse hc/ws-1 main
+EXEC 67918019 679 105 git git diff --numstat HEAD
+EXEC 67918021 680 105 git git rev-parse hc/ws-2 main
+EXEC 67918023 681 105 git git diff --numstat HEAD
+EXEC 67918025 682 105 git git rev-parse hc/ws-3 main
+EXEC 67918026 683 105 git git diff --numstat HEAD
+EXEC 67918031 684 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67918033 685 684 /usr/bin/date date +%s%3N
+EXEC 67918036 686 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67918038 687 686 /usr/bin/date date +%s%3N
+EXEC 67918040 688 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67918042 689 688 /usr/bin/date date +%s%3N
+EXEC 67918043 690 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67918044 691 690 /usr/bin/date date +%s%3N
+EXEC 67918047 692 105 git git ls-files --others --exclude-standard
+EXEC 67918051 693 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67918056 694 105 git git ls-files --others --exclude-standard
+EXEC 67918061 695 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67918064 696 105 git git ls-files --others --exclude-standard
+EXEC 67918067 697 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67918070 698 105 git git ls-files --others --exclude-standard
+EXEC 67918072 699 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67918125 700 105 git git rev-parse hc/ws-4 main
+EXEC 67918127 701 105 git git diff --numstat HEAD
+EXEC 67918129 702 105 git git rev-parse hc/ws-5 main
+EXEC 67918130 703 105 git git diff --numstat HEAD
+EXEC 67918132 704 105 git git rev-parse hc/ws-6 main
+EXEC 67918134 705 105 git git diff --numstat HEAD
+EXEC 67918136 706 105 git git rev-parse hc/ws-7 main
+EXEC 67918139 707 105 git git diff --numstat HEAD
+EXEC 67918142 708 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67918144 709 105 git git ls-files --others --exclude-standard
+EXEC 67918146 710 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67918148 711 105 git git ls-files --others --exclude-standard
+EXEC 67918150 712 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67918152 713 105 git git ls-files --others --exclude-standard
+EXEC 67918154 714 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67918157 715 105 git git ls-files --others --exclude-standard
+EXEC 67926010 716 105 git git rev-parse hc/ws-0 main
+EXEC 67926018 717 105 git git diff --numstat HEAD
+EXEC 67926026 718 105 git git rev-parse hc/ws-1 main
+EXEC 67926033 719 105 git git diff --numstat HEAD
+EXEC 67926039 720 105 git git rev-parse hc/ws-2 main
+EXEC 67926047 721 105 git git diff --numstat HEAD
+EXEC 67926055 722 105 git git rev-parse hc/ws-3 main
+EXEC 67926062 723 105 git git diff --numstat HEAD
+EXEC 67926071 724 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67926077 725 105 git git ls-files --others --exclude-standard
+EXEC 67926084 726 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67926090 727 105 git git ls-files --others --exclude-standard
+EXEC 67926096 728 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67926102 729 105 git git ls-files --others --exclude-standard
+EXEC 67926108 730 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67926116 731 105 git git ls-files --others --exclude-standard
+EXEC 67926164 732 105 git git rev-parse hc/ws-4 main
+EXEC 67926166 733 105 git git diff --numstat HEAD
+EXEC 67926170 734 105 git git rev-parse hc/ws-5 main
+EXEC 67926172 735 105 git git diff --numstat HEAD
+EXEC 67926175 736 105 git git rev-parse hc/ws-6 main
+EXEC 67926179 737 105 git git diff --numstat HEAD
+EXEC 67926183 738 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67926185 739 105 git git ls-files --others --exclude-standard
+EXEC 67926188 740 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67926191 741 105 git git ls-files --others --exclude-standard
+EXEC 67926194 742 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67926197 743 105 git git ls-files --others --exclude-standard
+EXEC 67926200 744 105 git git rev-parse hc/ws-7 main
+EXEC 67926202 745 105 git git diff --numstat HEAD
+EXEC 67926205 746 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67926208 747 105 git git ls-files --others --exclude-standard
+EXEC 67934007 748 105 git git rev-parse hc/ws-0 main
+EXEC 67934010 749 105 git git diff --numstat HEAD
+EXEC 67934013 750 105 git git rev-parse hc/ws-1 main
+EXEC 67934015 751 105 git git diff --numstat HEAD
+EXEC 67934018 752 105 git git rev-parse hc/ws-2 main
+EXEC 67934021 753 105 git git diff --numstat HEAD
+EXEC 67934025 754 105 git git rev-parse hc/ws-3 main
+EXEC 67934029 755 105 git git diff --numstat HEAD
+EXEC 67934033 756 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67934036 757 105 git git ls-files --others --exclude-standard
+EXEC 67934040 758 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67934045 759 105 git git ls-files --others --exclude-standard
+EXEC 67934050 760 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67934054 761 105 git git ls-files --others --exclude-standard
+EXEC 67934061 762 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67934068 763 105 git git ls-files --others --exclude-standard
+EXEC 67934117 764 105 git git rev-parse hc/ws-4 main
+EXEC 67934120 765 105 git git diff --numstat HEAD
+EXEC 67934125 766 105 git git rev-parse hc/ws-5 main
+EXEC 67934128 767 105 git git diff --numstat HEAD
+EXEC 67934131 768 105 git git rev-parse hc/ws-6 main
+EXEC 67934134 769 105 git git diff --numstat HEAD
+EXEC 67934137 770 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67934142 771 105 git git ls-files --others --exclude-standard
+EXEC 67934149 772 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67934151 773 105 git git ls-files --others --exclude-standard
+EXEC 67934156 774 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67934162 775 105 git git ls-files --others --exclude-standard
+EXEC 67934166 776 105 git git rev-parse hc/ws-7 main
+EXEC 67934170 777 105 git git diff --numstat HEAD
+EXEC 67934175 778 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67934179 779 105 git git ls-files --others --exclude-standard
+EXEC 67942006 780 105 git git rev-parse hc/ws-0 main
+EXEC 67942009 781 105 git git diff --numstat HEAD
+EXEC 67942011 782 105 git git rev-parse hc/ws-1 main
+EXEC 67942015 783 105 git git diff --numstat HEAD
+EXEC 67942018 784 105 git git rev-parse hc/ws-2 main
+EXEC 67942021 785 105 git git diff --numstat HEAD
+EXEC 67942024 786 105 git git rev-parse hc/ws-3 main
+EXEC 67942026 787 105 git git diff --numstat HEAD
+EXEC 67942028 788 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67942033 789 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67942038 790 105 git git ls-files --others --exclude-standard
+EXEC 67942042 791 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67942045 792 105 git git ls-files --others --exclude-standard
+EXEC 67942048 793 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67942051 794 105 git git ls-files --others --exclude-standard
+EXEC 67942053 795 105 git git ls-files --others --exclude-standard
+EXEC 67942102 796 105 git git rev-parse hc/ws-4 main
+EXEC 67942104 797 105 git git diff --numstat HEAD
+EXEC 67942105 798 105 git git rev-parse hc/ws-5 main
+EXEC 67942107 799 105 git git diff --numstat HEAD
+EXEC 67942110 800 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67942113 801 105 git git ls-files --others --exclude-standard
+EXEC 67942115 802 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67942118 803 105 git git ls-files --others --exclude-standard
+EXEC 67942124 804 105 git git rev-parse hc/ws-6 main
+EXEC 67942126 805 105 git git diff --numstat HEAD
+EXEC 67942133 806 105 git git rev-parse hc/ws-7 main
+EXEC 67942138 807 105 git git diff --numstat HEAD
+EXEC 67942141 808 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67942144 809 105 git git ls-files --others --exclude-standard
+EXEC 67942147 810 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67942151 811 105 git git ls-files --others --exclude-standard
+EXEC 67950006 812 105 git git rev-parse hc/ws-0 main
+EXEC 67950009 813 105 git git diff --numstat HEAD
+EXEC 67950012 814 105 git git rev-parse hc/ws-1 main
+EXEC 67950016 815 105 git git diff --numstat HEAD
+EXEC 67950019 816 105 git git rev-parse hc/ws-2 main
+EXEC 67950022 817 105 git git diff --numstat HEAD
+EXEC 67950028 818 105 git git rev-parse hc/ws-3 main
+EXEC 67950033 819 105 git git diff --numstat HEAD
+EXEC 67950040 820 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67950045 821 105 git git ls-files --others --exclude-standard
+EXEC 67950050 822 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67950055 823 105 git git ls-files --others --exclude-standard
+EXEC 67950060 824 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67950064 825 105 git git ls-files --others --exclude-standard
+EXEC 67950069 826 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67950076 827 105 git git ls-files --others --exclude-standard
+EXEC 67950126 828 105 git git rev-parse hc/ws-4 main
+EXEC 67950130 829 105 git git diff --numstat HEAD
+EXEC 67950136 830 105 git git rev-parse hc/ws-5 main
+EXEC 67950141 831 105 git git diff --numstat HEAD
+EXEC 67950148 832 105 git git rev-parse hc/ws-6 main
+EXEC 67950154 833 105 git git diff --numstat HEAD
+EXEC 67950161 834 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67950166 835 105 git git ls-files --others --exclude-standard
+EXEC 67950172 836 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67950178 837 105 git git ls-files --others --exclude-standard
+EXEC 67950184 838 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67950194 839 105 git git ls-files --others --exclude-standard
+EXEC 67950200 840 105 git git rev-parse hc/ws-7 main
+EXEC 67950206 841 105 git git diff --numstat HEAD
+EXEC 67950213 842 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67950221 843 105 git git ls-files --others --exclude-standard
+EXEC 67954006 844 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67954008 845 844 /usr/bin/date date +%s%3N
+EXEC 67954009 846 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67954011 847 846 /usr/bin/date date +%s%3N
+EXEC 67954012 848 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67954014 849 848 /usr/bin/date date +%s%3N
+EXEC 67954015 850 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67954017 851 850 /usr/bin/date date +%s%3N
+CONNECT 67956330 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.sock
+CONNECT 67956335 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-1.sock
+EXEC 67956341 852 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/keeper.js ws-hc-0 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.sock /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.pid /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.log
+CONNECT 67956343 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.sock
+EXEC 67956346 853 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/keeper.js ws-hc-1 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-1.sock /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-1.pid /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-1.log
+CONNECT 67956348 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-1.sock
+CONNECT 67956352 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-3.sock
+CONNECT 67956357 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-2.sock
+EXEC 67956361 854 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/keeper.js ws-hc-3 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-3.sock /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-3.pid /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-3.log
+CONNECT 67956363 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-3.sock
+EXEC 67956365 855 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/keeper.js ws-hc-2 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-2.sock /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-2.pid /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-2.log
+CONNECT 67956366 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-2.sock
+CONNECT 67956448 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-0.sock
+CONNECT 67956448 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-1.sock
+EXEC 67956451 884 852 /home/lmas/.local/bin/claude /home/lmas/.local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-turns 200 --model claude-opus-4-8 --debug-file /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/logs/sessions/ws-hc-0__2026-09-30T05-38-35-724Z.log --permission-prompt-tool stdio --setting-sources=user,project,local --permission-mode bypassPermissions --allow-dangerously-skip-permissions --include-partial-messages --settings {"crossSessionInbound":"hold"}
+EXEC 67956452 885 853 /home/lmas/.local/bin/claude /home/lmas/.local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-turns 200 --model claude-opus-4-8 --debug-file /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/logs/sessions/ws-hc-1__2026-09-30T05-38-35-733Z.log --permission-prompt-tool stdio --setting-sources=user,project,local --permission-mode bypassPermissions --allow-dangerously-skip-permissions --include-partial-messages --settings {"crossSessionInbound":"hold"}
+CONNECT 67956466 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-3.sock
+CONNECT 67956466 105 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/keepers/ws-hc-2.sock
+EXEC 67956470 891 854 /home/lmas/.local/bin/claude /home/lmas/.local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-turns 200 --model claude-opus-4-8 --debug-file /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/logs/sessions/ws-hc-3__2026-09-30T05-38-35-749Z.log --permission-prompt-tool stdio --setting-sources=user,project,local --permission-mode bypassPermissions --allow-dangerously-skip-permissions --include-partial-messages --settings {"crossSessionInbound":"hold"}
+EXEC 67956470 890 855 /home/lmas/.local/bin/claude /home/lmas/.local/bin/claude --output-format stream-json --verbose --input-format stream-json --max-turns 200 --model claude-opus-4-8 --debug-file /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/logs/sessions/ws-hc-2__2026-09-30T05-38-35-753Z.log --permission-prompt-tool stdio --setting-sources=user,project,local --permission-mode bypassPermissions --allow-dangerously-skip-permissions --include-partial-messages --settings {"crossSessionInbound":"hold"}
+EXEC 67956549 916 885 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1 ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956549 915 884 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0 ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956551 918 884 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/fixture ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956551 917 885 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/fixture ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956554 919 891 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3 ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956555 920 891 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/fixture ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956557 921 884 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url origin
+EXEC 67956557 922 885 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url origin
+EXEC 67956560 923 891 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url origin
+EXEC 67956571 926 884 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= config --get remote.origin.url
+EXEC 67956571 925 885 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= config --get remote.origin.url
+EXEC 67956571 924 891 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= config --get remote.origin.url
+EXEC 67956574 927 884 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url --push origin
+EXEC 67956576 928 885 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url --push origin
+EXEC 67956576 929 891 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url --push origin
+EXEC 67956582 931 884 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks status --short --ignore-submodules=dirty
+EXEC 67956582 932 884 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks log --oneline -n 5
+EXEC 67956583 933 884 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false config user.name
+EXEC 67956586 935 891 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks status --short --ignore-submodules=dirty
+EXEC 67956586 934 885 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks status --short --ignore-submodules=dirty
+EXEC 67956587 936 891 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks log --oneline -n 5
+EXEC 67956587 938 891 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false config user.name
+EXEC 67956588 937 885 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks log --oneline -n 5
+EXEC 67956589 939 885 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false config user.name
+EXEC 67956593 940 890 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2 ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956594 941 890 /usr/bin/git git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/fixture ls-files --error-unmatch -- :(icase).claude/settings.local.json
+EXEC 67956603 942 890 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url origin
+EXEC 67956606 943 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" session || true
+EXEC 67956607 944 884 /bin/sh /bin/sh -c [ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true
+EXEC 67956608 945 943 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/orchestra-hook.sh session
+EXEC 67956608 946 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956610 948 945 /usr/bin/cat cat
+EXEC 67956610 947 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956611 950 945 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67956612 949 946 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/inbox-instruction.sh
+EXEC 67956612 951 947 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/rename-instruction.sh
+EXEC 67956613 953 945 /usr/bin/flock flock -w 2 9
+EXEC 67956614 952 890 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= config --get remote.origin.url
+EXEC 67956614 956 955 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-0.seq
+EXEC 67956615 954 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956615 958 890 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= remote get-url --push origin
+EXEC 67956615 959 954 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/orchestrator-instruction.sh
+EXEC 67956617 960 957 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0 rev-parse --abbrev-ref HEAD
+EXEC 67956618 961 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/self-modify-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956618 963 951 /usr/bin/cat cat
+EXEC 67956618 964 961 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/self-modify-instruction.sh
+EXEC 67956619 965 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956620 967 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956622 968 965 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/bus-switches-instruction.sh
+EXEC 67956622 969 967 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/fieldguide-instruction.sh
+EXEC 67956623 966 964 /usr/bin/grep grep -q "name": *"orchestra" /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/package.json
+EXEC 67956623 970 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956624 972 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956624 973 972 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/link-instruction.sh
+EXEC 67956625 974 970 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/link-instruction.sh
+EXEC 67956625 976 971 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956626 977 971 /usr/bin/awk awk $1=="parent"{print $2}
+EXEC 67956626 978 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956626 976 971 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956627 981 978 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/fieldguide-instruction.sh
+EXEC 67956627 982 979 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3 rev-parse --abbrev-ref HEAD
+EXEC 67956629 984 983 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0 rev-parse --abbrev-ref HEAD
+EXEC 67956630 985 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956630 987 885 /bin/sh /bin/sh -c [ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true
+EXEC 67956630 989 986 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956631 990 986 /usr/bin/awk awk $1=="parent"{print $2}
+EXEC 67956631 991 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/self-modify-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956631 995 988 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67956632 993 988 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67956632 999 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956632 1000 991 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/self-modify-instruction.sh
+EXEC 67956633 994 988 /usr/bin/head head -1
+EXEC 67956633 989 986 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956634 996 988 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67956634 1002 999 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/orchestrator-instruction.sh
+EXEC 67956634 998 985 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/bus-switches-instruction.sh
+EXEC 67956634 1007 997 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67956634 1006 997 /usr/bin/head head -1
+EXEC 67956634 1001 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" session || true
+EXEC 67956634 1003 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956635 1005 997 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67956636 1010 1001 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/orchestra-hook.sh session
+EXEC 67956637 1012 1003 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/inbox-instruction.sh
+EXEC 67956637 1009 1000 /usr/bin/grep grep -q "name": *"orchestra" /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/package.json
+EXEC 67956638 1013 1011 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956638 1008 997 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67956638 1014 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956639 1015 1010 /usr/bin/cat cat
+EXEC 67956639 1016 890 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks status --short --ignore-submodules=dirty
+EXEC 67956640 1017 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956640 1019 1010 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67956640 1020 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" session || true
+EXEC 67956640 1013 1011 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956641 1021 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956642 1023 891 /bin/sh /bin/sh -c [ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true
+EXEC 67956642 1025 890 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false --no-optional-locks log --oneline -n 5
+EXEC 67956643 1018 1014 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/rename-instruction.sh
+EXEC 67956643 1024 1020 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/orchestra-hook.sh session
+EXEC 67956644 1027 1021 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/fieldguide-instruction.sh
+EXEC 67956644 1022 1017 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/link-instruction.sh
+EXEC 67956645 1030 890 /usr/bin/git /usr/bin/git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false config user.name
+EXEC 67956645 1028 1024 /usr/bin/cat cat
+EXEC 67956646 1026 1010 /usr/bin/flock flock -w 2 9
+EXEC 67956646 1037 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956646 1034 1031 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956647 1040 1033 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956647 1035 1031 /usr/bin/awk awk $1=="parent"{print $2}
+EXEC 67956647 1038 1032 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3 rev-parse --abbrev-ref HEAD
+EXEC 67956647 1041 1039 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-1.seq
+EXEC 67956648 1044 1024 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67956648 1042 1037 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/bus-switches-instruction.sh
+EXEC 67956648 1043 1036 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1 rev-parse --abbrev-ref HEAD
+EXEC 67956649 1034 1031 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956649 1040 1033 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956649 1045 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/self-modify-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956652 1048 1045 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/self-modify-instruction.sh
+EXEC 67956652 1050 1046 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67956652 1047 1024 /usr/bin/flock flock -w 2 9
+EXEC 67956653 1051 1046 /usr/bin/head head -1
+EXEC 67956653 1052 1046 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67956653 1053 1046 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67956654 1055 1048 /usr/bin/grep grep -q "name": *"orchestra" /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/package.json
+EXEC 67956654 1056 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956655 1054 1018 /usr/bin/cat cat
+EXEC 67956658 1057 1056 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/orchestrator-instruction.sh
+EXEC 67956658 1058 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956659 1061 1059 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956660 1062 1058 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/inbox-instruction.sh
+EXEC 67956660 1063 1060 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-3.seq
+EXEC 67956660 1061 1059 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956662 1064 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956664 1065 1064 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/rename-instruction.sh
+EXEC 67956673 1069 1067 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1 rev-parse --abbrev-ref HEAD
+EXEC 67956674 1070 989 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956675 1071 1065 /usr/bin/cat cat
+EXEC 67956679 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956694 1076 976 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956694 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956696 1082 1034 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956697 1085 1040 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956698 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956701 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956701 1089 890 /bin/sh /bin/sh -c [ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true
+EXEC 67956701 1090 1013 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956703 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956710 1093 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" session || true
+EXEC 67956712 1095 1093 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/orchestra-hook.sh session
+EXEC 67956713 1096 1061 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956714 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956714 1099 1095 /usr/bin/cat cat
+EXEC 67956717 1097 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956718 1100 1097 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/rename-instruction.sh
+EXEC 67956720 1103 1101 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2 rev-parse --abbrev-ref HEAD
+EXEC 67956721 1102 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956722 1105 1095 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67956722 1106 1102 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/inbox-instruction.sh
+EXEC 67956723 1107 1100 /usr/bin/cat cat
+EXEC 67956723 1110 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+CONNECT 67956723 989 unix /run/dbus/system_bus_socket
+EXEC 67956724 1118 1095 /usr/bin/flock flock -w 2 9
+EXEC 67956727 1120 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/self-modify-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956728 1119 1110 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/orchestrator-instruction.sh
+EXEC 67956729 1122 1120 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/self-modify-instruction.sh
+EXEC 67956730 1123 1121 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-2.seq
+EXEC 67956730 1124 1122 /usr/bin/grep grep -q "name": *"orchestra" /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/package.json
+EXEC 67956733 1125 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956734 1130 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956737 1128 1125 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/bus-switches-instruction.sh
+EXEC 67956738 1137 1130 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/fieldguide-instruction.sh
+EXEC 67956742 1138 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67956742 1142 1138 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/link-instruction.sh
+EXEC 67956743 1140 1139 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956743 1141 1139 /usr/bin/awk awk $1=="parent"{print $2}
+EXEC 67956745 1140 1139 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67956747 1150 1144 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2 rev-parse --abbrev-ref HEAD
+EXEC 67956752 1166 1157 /usr/bin/head head -1
+EXEC 67956753 1167 1157 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67956753 1168 1157 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67956753 1165 1157 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67956757 1171 1170 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67956758 1171 1170 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+CONNECT 67956774 1061 unix /run/dbus/system_bus_socket
+EXEC 67956798 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67956801 1218 1140 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956819 1228 1171 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67956819 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67957078 1298 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" submit || true
+EXEC 67957079 1300 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957079 1299 1298 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/orchestra-hook.sh submit
+EXEC 67957083 1301 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-resurface.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957084 1302 1300 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/inbox-instruction.sh
+EXEC 67957085 1303 1301 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/comms-resurface.sh
+EXEC 67957090 1304 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957090 1306 1305 /usr/bin/curl curl -s --max-time 5 --unix-socket /run/user/1000/orchestra-94cafef6d491.sock --data-binary {"from":"ws-hc-0"} http://x/peers
+EXEC 67957091 1307 1304 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/rename-instruction.sh
+EXEC 67957097 1309 1308 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0 rev-parse --abbrev-ref HEAD
+EXEC 67957097 1310 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" submit || true
+EXEC 67957098 1311 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" prompt || true
+EXEC 67957099 1314 1311 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/link-instruction.sh prompt
+EXEC 67957101 1315 1307 /usr/bin/cat cat
+EXEC 67957105 1312 1310 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/orchestra-hook.sh submit
+EXEC 67957106 1316 1299 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67957106 1317 1299 /usr/bin/flock flock -w 2 9
+EXEC 67957107 1318 1312 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67957107 1320 1319 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-0.seq
+EXEC 67957108 1322 1321 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0 rev-parse --abbrev-ref HEAD
+EXEC 67957108 1313 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957110 1323 1312 /usr/bin/flock flock -w 2 9
+EXEC 67957111 1324 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-resurface.sh"; [ -f "$f" ] && bash "$f" || true
+CONNECT 67957112 1306 unix /run/user/1000/orchestra-94cafef6d491.sock
+EXEC 67957112 1325 1313 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/rename-instruction.sh
+EXEC 67957113 1328 1326 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-3.seq
+EXEC 67957114 1327 1324 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/comms-resurface.sh
+EXEC 67957116 1330 1329 /usr/bin/curl curl -s --max-time 5 --unix-socket /run/user/1000/orchestra-94cafef6d491.sock --data-binary {"from":"ws-hc-3"} http://x/peers
+CONNECT 67957119 1330 unix /run/user/1000/orchestra-94cafef6d491.sock
+EXEC 67957120 1334 1331 /usr/bin/head head -1
+EXEC 67957120 1333 1331 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67957120 1336 1331 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67957120 1335 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957121 1337 1331 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67957121 1338 1335 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/inbox-instruction.sh
+EXEC 67957122 1339 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" prompt || true
+EXEC 67957126 1344 1341 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67957126 1342 1339 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/link-instruction.sh prompt
+EXEC 67957127 1343 1340 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3 rev-parse --abbrev-ref HEAD
+EXEC 67957127 1344 1341 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67957132 1346 1345 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3 rev-parse --abbrev-ref HEAD
+EXEC 67957135 1347 1325 /usr/bin/cat cat
+EXEC 67957137 1350 1348 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67957137 1351 1348 /usr/bin/head head -1
+EXEC 67957137 1352 1348 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67957138 1353 1348 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67957145 1354 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" submit || true
+EXEC 67957145 1355 1354 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/orchestra-hook.sh submit
+EXEC 67957146 1356 1355 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67957147 1359 1357 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67957149 1358 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957149 1359 1357 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67957151 1360 1355 /usr/bin/flock flock -w 2 9
+EXEC 67957152 1361 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" prompt || true
+EXEC 67957152 1364 1363 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-1.seq
+EXEC 67957152 1362 1358 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/rename-instruction.sh
+EXEC 67957153 1365 1361 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/link-instruction.sh prompt
+EXEC 67957154 1367 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957155 1368 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-resurface.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957157 1369 1367 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/inbox-instruction.sh
+EXEC 67957157 1371 1366 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1 rev-parse --abbrev-ref HEAD
+EXEC 67957159 1372 1370 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1 rev-parse --abbrev-ref HEAD
+EXEC 67957161 1374 1368 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/comms-resurface.sh
+EXEC 67957164 1376 1362 /usr/bin/cat cat
+EXEC 67957165 1378 1377 /usr/bin/curl curl -s --max-time 5 --unix-socket /run/user/1000/orchestra-94cafef6d491.sock --data-binary {"from":"ws-hc-1"} http://x/peers
+EXEC 67957167 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67957169 1379 1344 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+CONNECT 67957170 1378 unix /run/user/1000/orchestra-94cafef6d491.sock
+EXEC 67957173 1381 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" submit || true
+EXEC 67957173 1382 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957174 1383 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-resurface.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957174 1384 1382 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/rename-instruction.sh
+EXEC 67957175 1386 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true
+EXEC 67957175 1387 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" prompt || true
+EXEC 67957176 1385 1381 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/orchestra-hook.sh submit
+EXEC 67957176 1388 1386 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/inbox-instruction.sh
+EXEC 67957176 1390 1387 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/link-instruction.sh prompt
+EXEC 67957177 1391 1389 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2 rev-parse --abbrev-ref HEAD
+EXEC 67957180 1393 1383 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/comms-resurface.sh
+EXEC 67957183 1394 1392 /usr/bin/git git -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2 rev-parse --abbrev-ref HEAD
+EXEC 67957184 1395 1385 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67957185 1397 1384 /usr/bin/cat cat
+EXEC 67957186 1401 1396 /usr/bin/head head -1
+EXEC 67957186 1402 1396 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67957187 1400 1396 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67957187 1403 1396 /usr/bin/tr tr [:lower:] [:upper:]
+EXEC 67957188 1405 1385 /usr/bin/flock flock -w 2 9
+EXEC 67957189 1406 1404 /usr/bin/curl curl -s --max-time 5 --unix-socket /run/user/1000/orchestra-94cafef6d491.sock --data-binary {"from":"ws-hc-2"} http://x/peers
+EXEC 67957193 1411 1409 /usr/bin/grep grep -Eio (^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|$)
+EXEC 67957193 1414 1409 /usr/bin/head head -1
+EXEC 67957194 1415 1409 /usr/bin/grep grep -Eio [a-z]{2,}-[0-9]+
+EXEC 67957194 1416 1409 /usr/bin/tr tr [:lower:] [:upper:]
+CONNECT 67957194 1406 unix /run/user/1000/orchestra-94cafef6d491.sock
+EXEC 67957195 1418 1408 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-2.seq
+EXEC 67957198 1424 1412 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67957199 1424 1412 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67957208 1426 1425 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/bin/orchestra orchestra whoami
+EXEC 67957210 1426 1425 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron cli whoami
+EXEC 67957219 1429 1359 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67957220 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+CONNECT 67957248 1359 unix /run/dbus/system_bus_socket
+EXEC 67957259 1444 1426 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67957262 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+EXEC 67957271 1452 1424 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox
+EXEC 67957275 1 0 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote
+CONNECT 67957350 1426 unix /run/dbus/system_bus_socket
+CONNECT 67957482 891 inet 127.0.0.1:42389
+EXEC 67957498 1529 891 /home/lmas/.local/share/claude/versions/2.1.284 rg --version
+EXEC 67957501 1534 891 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/claude-config/plugins/cache
+EXEC 67957519 1535 891 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3
+CONNECT 67957568 884 inet 127.0.0.1:42389
+EXEC 67957570 1549 884 /home/lmas/.local/share/claude/versions/2.1.284 rg --version
+EXEC 67957572 1550 884 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/claude-config/plugins/cache
+EXEC 67957580 1551 884 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0
+CONNECT 67957673 885 inet 127.0.0.1:42389
+EXEC 67957676 1569 885 /home/lmas/.local/share/claude/versions/2.1.284 rg --version
+EXEC 67957690 1570 885 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/claude-config/plugins/cache
+CONNECT 67957698 890 inet 127.0.0.1:42389
+EXEC 67957698 1572 885 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1
+EXEC 67957699 1573 890 /home/lmas/.local/share/claude/versions/2.1.284 rg --version
+EXEC 67957701 1574 890 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/claude-config/plugins/cache
+EXEC 67957705 1587 890 /home/lmas/.local/share/claude/versions/2.1.284 rg --no-config --files --hidden /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2
+EXEC 67958009 1600 105 git git rev-parse hc/ws-0 main
+EXEC 67958013 1601 105 git git diff --numstat HEAD
+EXEC 67958017 1602 105 git git rev-parse hc/ws-1 main
+EXEC 67958019 1603 105 git git diff --numstat HEAD
+EXEC 67958023 1604 105 git git rev-parse hc/ws-2 main
+EXEC 67958025 1605 105 git git diff --numstat HEAD
+EXEC 67958028 1606 105 git git rev-parse hc/ws-3 main
+EXEC 67958031 1607 105 git git diff --numstat HEAD
+EXEC 67958036 1608 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67958042 1609 105 git git ls-files --others --exclude-standard
+EXEC 67958047 1610 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67958051 1611 105 git git ls-files --others --exclude-standard
+EXEC 67958056 1612 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67958061 1613 105 git git ls-files --others --exclude-standard
+EXEC 67958067 1614 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67958075 1615 105 git git ls-files --others --exclude-standard
+EXEC 67958080 1616 105 git git rev-parse hc/ws-4 main
+EXEC 67958084 1617 105 git git diff --numstat HEAD
+EXEC 67958089 1618 105 git git rev-parse hc/ws-5 main
+EXEC 67958096 1619 105 git git diff --numstat HEAD
+EXEC 67958110 1620 105 git git rev-parse hc/ws-6 main
+EXEC 67958114 1621 105 git git diff --numstat HEAD
+EXEC 67958119 1622 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67958122 1623 105 git git ls-files --others --exclude-standard
+EXEC 67958123 1624 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67958127 1625 105 git git ls-files --others --exclude-standard
+EXEC 67958132 1626 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67958146 1627 105 git git ls-files --others --exclude-standard
+EXEC 67958151 1628 105 git git rev-parse hc/ws-7 main
+EXEC 67958156 1629 105 git git diff --numstat HEAD
+EXEC 67958165 1630 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67958172 1631 105 git git ls-files --others --exclude-standard
+EXEC 67962553 1632 891 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= --version
+EXEC 67962554 1633 891 /usr/bin/git /usr/bin/git -c core.askPass= -c protocol.ext.allow=never -c submodule.recurse=false -c log.showSignature=false -c gc.auto=0 -c maintenance.auto=false -c core.hooksPath=/dev/null -c core.fsmonitor= -C /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/repos/fixture worktree list --porcelain -z
+EXEC 67966006 1634 105 git git rev-parse hc/ws-0 main
+EXEC 67966009 1635 105 git git diff --numstat HEAD
+EXEC 67966011 1636 105 git git rev-parse hc/ws-1 main
+EXEC 67966014 1637 105 git git diff --numstat HEAD
+EXEC 67966017 1638 105 git git rev-parse hc/ws-2 main
+EXEC 67966020 1639 105 git git diff --numstat HEAD
+EXEC 67966023 1640 105 git git rev-parse hc/ws-3 main
+EXEC 67966026 1641 105 git git diff --numstat HEAD
+EXEC 67966033 1642 105 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 67966036 1643 1642 /usr/bin/date date +%s%3N
+EXEC 67966044 1644 105 git git ls-files --others --exclude-standard
+EXEC 67966050 1645 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67966056 1646 105 git git ls-files --others --exclude-standard
+EXEC 67966062 1647 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67966068 1648 105 git git ls-files --others --exclude-standard
+EXEC 67966074 1649 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67966081 1650 105 git git ls-files --others --exclude-standard
+EXEC 67966087 1651 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67966105 1652 105 git git rev-parse hc/ws-4 main
+EXEC 67966110 1653 105 git git diff --numstat HEAD
+EXEC 67966115 1654 105 git git rev-parse hc/ws-5 main
+EXEC 67966118 1655 105 git git diff --numstat HEAD
+EXEC 67966121 1656 105 git git rev-parse hc/ws-6 main
+EXEC 67966125 1657 105 git git diff --numstat HEAD
+EXEC 67966128 1658 105 git git rev-parse hc/ws-7 main
+EXEC 67966130 1659 105 git git diff --numstat HEAD
+EXEC 67966133 1660 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67966134 1661 105 git git ls-files --others --exclude-standard
+EXEC 67966136 1662 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67966138 1663 105 git git ls-files --others --exclude-standard
+EXEC 67966140 1664 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67966142 1665 105 git git ls-files --others --exclude-standard
+EXEC 67966145 1666 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67966148 1667 105 git git ls-files --others --exclude-standard
+EXEC 67967737 1668 891 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" stop || true
+EXEC 67967738 1669 1668 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-3/.orchestra/orchestra-hook.sh stop
+EXEC 67967739 1670 1669 /usr/bin/cat cat
+EXEC 67967740 1671 1669 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67967741 1672 1669 /usr/bin/flock flock -w 2 9
+EXEC 67967741 1674 1673 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-3.seq
+EXEC 67967744 1675 105 git git rev-parse hc/ws-3 main
+EXEC 67967748 1676 105 git git rev-parse --verify origin/hc/ws-3
+CONNECT 67967753 891 inet 127.0.0.1:42389
+CONNECT 67967753 891 inet 127.0.0.1:42389
+CONNECT 67967753 891 inet 127.0.0.1:42389
+CONNECT 67967753 891 inet 127.0.0.1:42389
+CONNECT 67967753 891 inet 127.0.0.1:42389
+CONNECT 67967753 891 inet 127.0.0.1:42389
+EXEC 67967764 1677 105 /proc/self/exe /proc/self/exe --type=utility --utility-sub-type=audio.mojom.AudioService --lang=en-US --service-sandbox-type=none --no-sandbox --enable-crash-reporter=9b989bb5-fcef-4923-98c8-ceea1ff13960,no_channel --user-data-dir=/home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/userData --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,4583013274760494389,5492745865771645110,262144 --disable-features=SpareRendererForSitePerProcess --variations-seed-version
+EXEC 67967802 1682 884 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" stop || true
+CONNECT 67967803 1677 unix /run/user/1000/pulse/native
+EXEC 67967803 1684 1682 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-0/.orchestra/orchestra-hook.sh stop
+EXEC 67967805 1685 1684 /usr/bin/cat cat
+EXEC 67967806 1686 1684 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67967807 1687 1684 /usr/bin/flock flock -w 2 9
+EXEC 67967808 1689 1688 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-0.seq
+EXEC 67967811 1690 105 git git rev-parse hc/ws-0 main
+EXEC 67967816 1691 105 git git rev-parse --verify origin/hc/ws-0
+CONNECT 67967821 1677 unix /run/user/1000/pulse/native
+CONNECT 67967831 884 inet 127.0.0.1:42389
+CONNECT 67967831 884 inet 127.0.0.1:42389
+CONNECT 67967831 884 inet 127.0.0.1:42389
+CONNECT 67967831 884 inet 127.0.0.1:42389
+CONNECT 67967831 884 inet 127.0.0.1:42389
+CONNECT 67967831 884 inet 127.0.0.1:42389
+EXEC 67967907 1695 885 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" stop || true
+EXEC 67967909 1696 1695 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-1/.orchestra/orchestra-hook.sh stop
+EXEC 67967910 1697 1696 /usr/bin/cat cat
+EXEC 67967912 1698 1696 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67967913 1699 1696 /usr/bin/flock flock -w 2 9
+EXEC 67967915 1701 1700 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-1.seq
+EXEC 67967918 1702 105 git git rev-parse hc/ws-1 main
+EXEC 67967922 1703 105 git git rev-parse --verify origin/hc/ws-1
+CONNECT 67967938 885 inet 127.0.0.1:42389
+CONNECT 67967938 885 inet 127.0.0.1:42389
+CONNECT 67967938 885 inet 127.0.0.1:42389
+CONNECT 67967938 885 inet 127.0.0.1:42389
+CONNECT 67967938 885 inet 127.0.0.1:42389
+CONNECT 67967938 885 inet 127.0.0.1:42389
+EXEC 67967942 1704 890 /bin/sh /bin/sh -c f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" stop || true
+EXEC 67967943 1705 1704 /usr/bin/bash bash /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/wt/ws-2/.orchestra/orchestra-hook.sh stop
+EXEC 67967944 1706 1705 /usr/bin/cat cat
+EXEC 67967945 1707 1705 /usr/bin/mkdir mkdir -p /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events
+EXEC 67967946 1708 1705 /usr/bin/flock flock -w 2 9
+EXEC 67967947 1710 1709 /usr/bin/cat cat /home/lmas/.cache/hidden-cost/rigs/e2e64c-3065004/oh/events/ws-hc-2.seq
+EXEC 67967953 1711 105 git git rev-parse hc/ws-2 main
+EXEC 67967960 1712 105 git git rev-parse --verify origin/hc/ws-2
+CONNECT 67967967 890 inet 127.0.0.1:42389
+CONNECT 67967967 890 inet 127.0.0.1:42389
+CONNECT 67967967 890 inet 127.0.0.1:42389
+CONNECT 67967967 890 inet 127.0.0.1:42389
+CONNECT 67967967 890 inet 127.0.0.1:42389
+CONNECT 67967967 890 inet 127.0.0.1:42389
+EXEC 67974008 1717 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974014 1718 105 git git rev-parse hc/ws-0 main
+EXEC 67974020 1719 105 git git diff --numstat HEAD
+EXEC 67974025 1720 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974028 1721 105 git git rev-parse hc/ws-1 main
+EXEC 67974035 1722 105 git git diff --numstat HEAD
+EXEC 67974041 1723 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974047 1724 105 git git rev-parse hc/ws-2 main
+EXEC 67974053 1725 105 git git diff --numstat HEAD
+EXEC 67974057 1726 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974061 1727 105 git git rev-parse hc/ws-3 main
+EXEC 67974066 1728 105 git git diff --numstat HEAD
+EXEC 67974074 1729 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67974078 1730 105 git git ls-files --others --exclude-standard
+EXEC 67974083 1731 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67974087 1732 105 git git ls-files --others --exclude-standard
+EXEC 67974092 1733 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67974100 1734 105 git git ls-files --others --exclude-standard
+EXEC 67974104 1735 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67974111 1736 105 git git ls-files --others --exclude-standard
+EXEC 67974114 1737 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974119 1738 105 git git rev-parse hc/ws-4 main
+EXEC 67974123 1739 105 git git diff --numstat HEAD
+EXEC 67974127 1740 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974131 1741 105 git git rev-parse hc/ws-5 main
+EXEC 67974136 1742 105 git git diff --numstat HEAD
+EXEC 67974139 1743 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974147 1744 105 git git rev-parse hc/ws-6 main
+EXEC 67974151 1745 105 git git diff --numstat HEAD
+EXEC 67974157 1746 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67974161 1747 105 git git ls-files --others --exclude-standard
+EXEC 67974165 1748 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67974168 1749 105 git git ls-files --others --exclude-standard
+EXEC 67974171 1750 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67974175 1751 105 git git ls-files --others --exclude-standard
+EXEC 67974180 1752 105 git git rev-parse --abbrev-ref HEAD
+EXEC 67974184 1753 105 git git rev-parse hc/ws-7 main
+EXEC 67974189 1754 105 git git diff --numstat HEAD
+EXEC 67974196 1755 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67974205 1756 105 git git ls-files --others --exclude-standard
+EXEC 67982007 1761 105 git git rev-parse hc/ws-0 main
+EXEC 67982009 1762 105 git git diff --numstat HEAD
+EXEC 67982011 1763 105 git git rev-parse hc/ws-1 main
+EXEC 67982014 1764 105 git git diff --numstat HEAD
+EXEC 67982017 1765 105 git git rev-parse hc/ws-2 main
+EXEC 67982018 1766 105 git git diff --numstat HEAD
+EXEC 67982023 1767 105 git git rev-parse hc/ws-3 main
+EXEC 67982026 1768 105 git git diff --numstat HEAD
+EXEC 67982032 1769 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67982036 1770 105 git git ls-files --others --exclude-standard
+EXEC 67982041 1771 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67982044 1772 105 git git ls-files --others --exclude-standard
+EXEC 67982047 1773 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67982049 1774 105 git git ls-files --others --exclude-standard
+EXEC 67982052 1775 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67982056 1776 105 git git ls-files --others --exclude-standard
+EXEC 67982060 1777 105 git git rev-parse hc/ws-4 main
+EXEC 67982063 1778 105 git git diff --numstat HEAD
+EXEC 67982066 1779 105 git git rev-parse hc/ws-5 main
+EXEC 67982068 1780 105 git git diff --numstat HEAD
+EXEC 67982072 1781 105 git git rev-parse hc/ws-6 main
+EXEC 67982074 1782 105 git git diff --numstat HEAD
+EXEC 67982077 1783 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67982079 1784 105 git git ls-files --others --exclude-standard
+EXEC 67982082 1785 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67982083 1786 105 git git ls-files --others --exclude-standard
+EXEC 67982085 1787 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67982089 1788 105 git git ls-files --others --exclude-standard
+EXEC 67982091 1789 105 git git rev-parse hc/ws-7 main
+EXEC 67982092 1790 105 git git diff --numstat HEAD
+EXEC 67982095 1791 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67982098 1792 105 git git ls-files --others --exclude-standard
+EXEC 67990009 1793 105 git git rev-parse hc/ws-0 main
+EXEC 67990014 1794 105 git git diff --numstat HEAD
+EXEC 67990020 1795 105 git git rev-parse hc/ws-1 main
+EXEC 67990026 1796 105 git git diff --numstat HEAD
+EXEC 67990032 1797 105 git git rev-parse hc/ws-2 main
+EXEC 67990035 1798 105 git git diff --numstat HEAD
+EXEC 67990037 1799 105 git git rev-parse hc/ws-3 main
+EXEC 67990040 1800 105 git git diff --numstat HEAD
+EXEC 67990042 1801 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67990043 1802 1801 /usr/bin/date date +%s%3N
+EXEC 67990044 1803 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67990046 1804 1803 /usr/bin/date date +%s%3N
+EXEC 67990047 1805 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67990049 1806 1805 /usr/bin/date date +%s%3N
+EXEC 67990050 1807 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67990052 1808 1807 /usr/bin/date date +%s%3N
+EXEC 67990054 1809 105 git git ls-files --others --exclude-standard
+EXEC 67990057 1810 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67990060 1811 105 git git ls-files --others --exclude-standard
+EXEC 67990063 1812 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67990066 1813 105 git git ls-files --others --exclude-standard
+EXEC 67990069 1814 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67990071 1815 105 git git ls-files --others --exclude-standard
+EXEC 67990076 1816 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67990083 1817 105 git git rev-parse hc/ws-4 main
+EXEC 67990088 1818 105 git git diff --numstat HEAD
+EXEC 67990092 1819 105 git git rev-parse hc/ws-5 main
+EXEC 67990097 1820 105 git git diff --numstat HEAD
+EXEC 67990101 1821 105 git git rev-parse hc/ws-6 main
+EXEC 67990106 1822 105 git git diff --numstat HEAD
+EXEC 67990111 1823 105 git git rev-parse hc/ws-7 main
+EXEC 67990115 1824 105 git git diff --numstat HEAD
+EXEC 67990120 1825 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67990125 1826 105 git git ls-files --others --exclude-standard
+EXEC 67990130 1827 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67990134 1828 105 git git ls-files --others --exclude-standard
+EXEC 67990138 1829 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67990142 1830 105 git git ls-files --others --exclude-standard
+EXEC 67990147 1831 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67990152 1832 105 git git ls-files --others --exclude-standard
+EXEC 67998010 1833 105 git git rev-parse hc/ws-0 main
+EXEC 67998018 1834 105 git git diff --numstat HEAD
+EXEC 67998024 1835 105 git git rev-parse hc/ws-1 main
+EXEC 67998031 1836 105 git git diff --numstat HEAD
+EXEC 67998037 1837 105 git git rev-parse hc/ws-2 main
+EXEC 67998043 1838 105 git git diff --numstat HEAD
+EXEC 67998049 1839 105 git git rev-parse hc/ws-3 main
+EXEC 67998054 1840 105 git git diff --numstat HEAD
+EXEC 67998062 1841 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 67998068 1842 105 git git ls-files --others --exclude-standard
+EXEC 67998074 1843 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 67998080 1844 105 git git ls-files --others --exclude-standard
+EXEC 67998086 1845 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 67998093 1846 105 git git ls-files --others --exclude-standard
+EXEC 67998099 1847 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 67998109 1848 105 git git ls-files --others --exclude-standard
+EXEC 67998116 1849 105 git git rev-parse hc/ws-4 main
+EXEC 67998122 1850 105 git git diff --numstat HEAD
+EXEC 67998128 1851 105 git git rev-parse hc/ws-5 main
+EXEC 67998134 1852 105 git git diff --numstat HEAD
+EXEC 67998140 1853 105 git git rev-parse hc/ws-6 main
+EXEC 67998146 1854 105 git git diff --numstat HEAD
+EXEC 67998154 1855 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 67998159 1856 105 git git ls-files --others --exclude-standard
+EXEC 67998165 1857 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 67998171 1858 105 git git ls-files --others --exclude-standard
+EXEC 67998177 1859 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 67998184 1860 105 git git rev-parse hc/ws-7 main
+EXEC 67998190 1861 105 git git diff --numstat HEAD
+EXEC 67998197 1862 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 67998203 1863 105 git git ls-files --others --exclude-standard
+EXEC 67998209 1864 105 git git ls-files --others --exclude-standard
+EXEC 68006006 1865 105 git git rev-parse hc/ws-0 main
+EXEC 68006010 1866 105 git git diff --numstat HEAD
+EXEC 68006017 1867 105 git git rev-parse hc/ws-1 main
+EXEC 68006021 1868 105 git git diff --numstat HEAD
+EXEC 68006025 1869 105 git git rev-parse hc/ws-2 main
+EXEC 68006030 1870 105 git git diff --numstat HEAD
+EXEC 68006034 1871 105 git git rev-parse hc/ws-3 main
+EXEC 68006037 1872 105 git git diff --numstat HEAD
+EXEC 68006041 1873 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 68006046 1874 105 git git ls-files --others --exclude-standard
+EXEC 68006048 1875 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 68006050 1876 105 git git ls-files --others --exclude-standard
+EXEC 68006054 1877 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 68006059 1878 105 git git ls-files --others --exclude-standard
+EXEC 68006063 1879 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 68006070 1880 105 git git ls-files --others --exclude-standard
+EXEC 68006075 1881 105 git git rev-parse hc/ws-4 main
+EXEC 68006080 1882 105 git git diff --numstat HEAD
+EXEC 68006084 1883 105 git git rev-parse hc/ws-5 main
+EXEC 68006088 1884 105 git git diff --numstat HEAD
+EXEC 68006092 1885 105 git git rev-parse hc/ws-6 main
+EXEC 68006095 1886 105 git git diff --numstat HEAD
+EXEC 68006100 1887 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 68006104 1888 105 git git ls-files --others --exclude-standard
+EXEC 68006107 1889 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 68006111 1890 105 git git ls-files --others --exclude-standard
+EXEC 68006114 1891 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 68006117 1892 105 git git ls-files --others --exclude-standard
+EXEC 68006121 1893 105 git git rev-parse hc/ws-7 main
+EXEC 68006123 1894 105 git git diff --numstat HEAD
+EXEC 68006134 1895 105 git git ls-files --others --exclude-standard
+EXEC 68006137 1896 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 68014006 1897 105 git git rev-parse hc/ws-0 main
+EXEC 68014060 1898 105 git git diff --numstat HEAD
+EXEC 68014064 1899 105 git git rev-parse hc/ws-1 main
+EXEC 68014067 1900 105 git git diff --numstat HEAD
+EXEC 68014073 1901 105 git git rev-parse hc/ws-2 main
+EXEC 68014077 1902 105 git git diff --numstat HEAD
+EXEC 68014081 1903 105 git git rev-parse hc/ws-3 main
+EXEC 68014085 1904 105 git git diff --numstat HEAD
+EXEC 68014089 1905 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 68014092 1906 105 git git ls-files --others --exclude-standard
+EXEC 68014094 1907 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 68014097 1908 105 git git ls-files --others --exclude-standard
+EXEC 68014099 1909 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 68014103 1910 105 git git ls-files --others --exclude-standard
+EXEC 68014108 1911 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 68014113 1912 105 git git ls-files --others --exclude-standard
+EXEC 68014122 1913 105 git git rev-parse hc/ws-4 main
+EXEC 68014129 1914 105 git git diff --numstat HEAD
+EXEC 68014138 1915 105 git git rev-parse hc/ws-5 main
+EXEC 68014146 1916 105 git git diff --numstat HEAD
+EXEC 68014159 1917 105 git git rev-parse hc/ws-6 main
+EXEC 68014164 1918 105 git git diff --numstat HEAD
+EXEC 68014175 1919 105 git git rev-parse --verify origin/hc/ws-6
+EXEC 68014183 1920 105 git git ls-files --others --exclude-standard
+EXEC 68014198 1921 105 git git rev-parse --verify origin/hc/ws-5
+EXEC 68014205 1922 105 git git ls-files --others --exclude-standard
+EXEC 68014210 1923 105 git git rev-parse --verify origin/hc/ws-4
+EXEC 68014214 1924 105 git git ls-files --others --exclude-standard
+EXEC 68014217 1925 105 git git rev-parse hc/ws-7 main
+EXEC 68014220 1926 105 git git diff --numstat HEAD
+EXEC 68014226 1927 105 git git rev-parse --verify origin/hc/ws-7
+EXEC 68014235 1928 105 git git ls-files --others --exclude-standard

@@ -1,0 +1,24 @@
+src/renderer/App.tsx:295:      if (!raf) raf = requestAnimationFrame(paint);
+src/renderer/agent-event-queue.ts:46:/** Scheduling seam. Browser callers use the default (requestAnimationFrame);
+src/renderer/agent-event-queue.ts:59:  const schedule = opts?.schedule ?? ((cb: () => void) => requestAnimationFrame(cb));
+src/renderer/components/AccountBadge.tsx:259:    const raf = requestAnimationFrame(place);
+src/renderer/components/AccountLoginModal.tsx:121:    const raf = requestAnimationFrame(start);
+src/renderer/components/BranchPicker.tsx:77:    const raf = requestAnimationFrame(() => inputRef.current?.focus());
+src/renderer/components/BrowserPanel.tsx:86:        requestAnimationFrame(syncBounds);
+src/renderer/components/NvimView.tsx:120:    const raf = requestAnimationFrame(start);
+src/renderer/components/NvimView.tsx:136:    const raf = requestAnimationFrame(() => {
+src/renderer/components/RunTerminal.tsx:185:    const raf = requestAnimationFrame(() => {
+src/renderer/components/StructuredView.tsx:447:      (cb) => requestAnimationFrame(cb),
+src/renderer/components/StructuredView.tsx:882:  requestAnimationFrame(() => {
+src/renderer/components/Terminal.tsx:221:    const thumbSyncRaf = requestAnimationFrame(syncThumb);
+src/renderer/components/Terminal.tsx:517:    const raf = requestAnimationFrame(start);
+src/renderer/components/Terminal.tsx:532:      requestAnimationFrame(() => {
+src/renderer/components/Terminal.tsx:557:      requestAnimationFrame(() => {
+src/renderer/components/Terminal.tsx:605:    const raf = requestAnimationFrame(() => {
+src/renderer/components/agent/useTypewriter.ts:8: * Returns the currently-revealed PREFIX of `text`. A `requestAnimationFrame`
+src/renderer/components/agent/useTypewriter.ts:37:const canAnimate = typeof requestAnimationFrame === 'function';
+src/renderer/components/agent/useTypewriter.ts:95:        rafRef.current = requestAnimationFrame(tick);
+src/renderer/components/agent/useTypewriter.ts:106:      rafRef.current = requestAnimationFrame(tick);
+src/renderer/term-write-queue.ts:36: * to a full frame for the next requestAnimationFrame tick. xterm still paints
+src/renderer/term-write-queue.ts:64: *  (requestAnimationFrame/performance.now); tests inject fakes so held frames
+src/renderer/term-write-queue.ts:76:  const schedule = opts?.schedule ?? ((cb: () => void) => requestAnimationFrame(cb));

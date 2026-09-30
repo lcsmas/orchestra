@@ -1,0 +1,9 @@
+src/main/scripts.ts:54: * `shell-env` (`$SHELL -ilc env`) captures the env at startup. */
+src/main/index.ts:5:import { shellEnvSync } from 'shell-env';
+src/main/index.ts:68:// This must run BEFORE the shellEnvSync merge below: the user's rc may export
+src/main/index.ts:132:// spawns a child process, and merge it onto process.env. shell-env runs
+src/main/index.ts:143:// shell env below, so the shell-env child (which inherits our env) and every
+src/main/index.ts:146:// shellEnvSync merge, since that runs after this and re-sources their rc.
+src/main/index.ts:152:    Object.assign(process.env, shellEnvSync());
+src/main/index.ts:154:    // shell-env already falls back internally; ignore any unexpected failure.
+src/main/workspaces.ts:141:  // resolves from the shell exports shellEnvSync merged at boot) rides along,

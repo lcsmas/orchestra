@@ -1,0 +1,987 @@
+EXEC 67660170 106 104 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox --no-sandbox
+EXEC 67660170 107 104 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-sandbox
+EXEC 67660356 126 104 /usr/bin/zsh /usr/bin/zsh -ilc echo -n "_SHELL_ENV_DELIMITER_"; command env; echo -n "_SHELL_ENV_DELIMITER_"; exit
+EXEC 67660362 127 126 /usr/bin/clear clear
+EXEC 67660363 128 126 /usr/bin/id /usr/bin/id -un
+EXEC 67660364 129 126 /usr/bin/hostnamectl /usr/bin/hostnamectl --transient
+CONNECT 67660367 129 unix /run/dbus/system_bus_socket
+EXEC 67660370 130 126 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 67660372 131 130 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 67660373 132 126 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 67660375 133 132 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 67660377 134 126 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 67660378 135 134 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 67660382 138 136 /usr/bin/xargs xargs -0 cat
+EXEC 67660383 137 136 /usr/bin/find find /etc/debuginfod -name *.urls -print0
+EXEC 67660383 139 136 /usr/bin/tr tr \n  
+EXEC 67660384 140 138 cat cat /etc/debuginfod/elfutils.urls
+EXEC 67660387 142 141 /usr/bin/find find /etc/debuginfod -name *.certpath -print0
+EXEC 67660389 143 141 /usr/bin/xargs xargs -0 cat
+EXEC 67660389 144 141 /usr/bin/tr tr \n :
+EXEC 67660393 145 143 cat cat /etc/debuginfod/elfutils.certpath
+EXEC 67660396 147 146 /usr/bin/flatpak flatpak --installations
+EXEC 67660406 149 126 /usr/bin/tty tty
+EXEC 67660408 150 126 /usr/bin/locale /usr/bin/locale
+EXEC 67660409 151 126 /usr/bin/sed /usr/bin/sed -r -e s/^[[:blank:]]*([[:upper:]_]+)=([[:print:][:digit:]\._-]+|"[[:print:][:digit:]\._-]+")/export \1=\2/;t;d /etc/locale.conf
+EXEC 67660413 153 152 /usr/bin/readlink readlink /proc/126/exe
+EXEC 67660416 152 126 /usr/bin/basename basename /usr/bin/zsh
+EXEC 67660421 154 126 /usr/bin/env env
+CONNECT 67660424 104 unix /run/user/1000/wayland-3
+CONNECT 67660425 104 unix /run/user/1000/wayland-3
+CONNECT 67660431 104 unix /run/dbus/system_bus_socket
+CONNECT 67660476 104 unix /run/dbus/system_bus_socket
+CONNECT 67660477 104 unix /run/dbus/system_bus_socket
+EXEC 67660526 174 104 /bin/sh /bin/sh -c command -v git
+EXEC 67660533 175 104 /bin/sh /bin/sh -c command -v gh
+EXEC 67660537 177 104 /bin/sh /bin/sh -c command -v claude
+CONNECT 67660542 169 unix /run/user/1000/wayland-3
+EXEC 67660545 178 104 /proc/self/exe /proc/self/exe --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --enable-crash-reporter=b887658e-d9cd-4e2e-ac4d-cc1f707e5fd6,no_channel --user-data-dir=/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/userData --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,12515865487691207577,2100850313008338813,262144 --disable-features=SpareRendererForSitePerProcess --variations-seed-version
+EXEC 67660639 202 104 git git worktree list --porcelain
+CONNECT 67660646 178 inet6 [2001:4860:4860::8888]:443
+DNS 67660647 104 redirector.gvt1.com
+CONNECT 67660648 104 unix /run/systemd/resolve/io.systemd.Resolve
+CONNECT 67660680 178 inet6 [2a00:1450:4007:81c::200e]:443
+CONNECT 67660680 178 inet 172.217.22.174:443
+EXEC 67660762 220 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67660772 221 104 git git rev-list --count main..origin/main
+EXEC 67660777 222 104 git git rev-list --count origin/main..main
+EXEC 67660784 223 104 git git fetch origin main:main
+EXEC 67660788 224 223 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67660790 224 223 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67660796 225 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67660801 226 104 git git pull --ff-only origin main
+EXEC 67660805 227 226 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67660809 228 227 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67660811 228 227 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67660815 229 227 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67660823 230 227 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67660827 232 226 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67660831 233 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67660835 234 104 git git rev-list --count main..origin/main
+EXEC 67660838 235 104 git git rev-list --count origin/main..main
+EXEC 67660956 236 104 git git config --get remote.origin.url
+EXEC 67661161 245 104 /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/stub-bin/claude /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/stub-bin/claude --version
+EXEC 67661166 246 245 /usr/bin/date date +%s%3N
+EXEC 67661167 247 245 /usr/bin/sleep sleep 3600
+EXEC 67661173 248 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661178 249 104 git git rev-parse hc/ws-0 main
+EXEC 67661182 250 104 git git diff --numstat HEAD
+EXEC 67661185 251 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661190 252 104 git git rev-parse hc/ws-1 main
+EXEC 67661193 253 104 git git diff --numstat HEAD
+EXEC 67661197 254 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661202 255 104 git git rev-parse hc/ws-2 main
+EXEC 67661207 256 104 git git diff --numstat HEAD
+EXEC 67661213 257 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661221 258 104 git git rev-parse hc/ws-3 main
+EXEC 67661227 259 104 git git diff --numstat HEAD
+EXEC 67661239 260 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67661243 262 260 /usr/bin/date date +%s%3N
+EXEC 67661243 261 104 gh gh api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661249 264 261 /usr/bin/date date +%s%3N
+EXEC 67661254 268 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67661256 269 268 /usr/bin/date date +%s%3N
+EXEC 67661256 270 104 gh gh api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661258 271 270 /usr/bin/date date +%s%3N
+EXEC 67661260 272 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67661262 273 272 /usr/bin/date date +%s%3N
+EXEC 67661264 274 104 gh gh api repos/fixture/repo/pulls/102 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661267 275 274 /usr/bin/date date +%s%3N
+EXEC 67661268 276 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67661272 278 276 /usr/bin/date date +%s%3N
+EXEC 67661272 277 104 gh gh api repos/fixture/repo/pulls/103 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661278 279 277 /usr/bin/date date +%s%3N
+EXEC 67661278 280 104 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 67661284 281 280 /usr/bin/date date +%s%3N
+EXEC 67661292 282 104 git git ls-files --others --exclude-standard
+EXEC 67661295 283 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67661300 284 104 git git ls-files --others --exclude-standard
+EXEC 67661303 285 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67661306 286 104 git git ls-files --others --exclude-standard
+EXEC 67661311 287 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67661315 288 104 git git ls-files --others --exclude-standard
+EXEC 67661321 289 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67661328 290 104 gh gh api repos/fixture/repo/pulls/104 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661331 291 290 /usr/bin/date date +%s%3N
+EXEC 67661333 292 104 gh gh api repos/fixture/repo/pulls/105 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661340 293 292 /usr/bin/date date +%s%3N
+EXEC 67661340 294 104 gh gh api repos/fixture/repo/pulls/106 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661343 295 104 gh gh api repos/fixture/repo/pulls/107 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 67661344 296 294 /usr/bin/date date +%s%3N
+EXEC 67661345 297 295 /usr/bin/date date +%s%3N
+EXEC 67661348 298 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67661353 299 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67661357 300 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67661361 301 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67661370 302 104 git git rev-list --count main..hc/ws-3
+EXEC 67661374 303 104 git git rev-list --count main..hc/ws-2
+EXEC 67661379 304 104 git git rev-list --count main..hc/ws-1
+EXEC 67661382 305 104 git git rev-list --count main..hc/ws-0
+EXEC 67661388 306 104 git git rev-list --count main..hc/ws-1
+EXEC 67661394 307 104 git git rev-list --count main..hc/ws-2
+EXEC 67661398 308 104 git git rev-list --count main..hc/ws-3
+EXEC 67661409 309 104 git git rev-list --count main..hc/ws-0
+CONNECT 67661511 104 unix /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/keepers/ws-hc-0.sock
+EXEC 67661601 310 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661604 311 104 git git rev-parse hc/ws-4 main
+EXEC 67661615 312 104 git git diff --numstat HEAD
+EXEC 67661621 313 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67661625 314 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661631 315 104 git git rev-parse hc/ws-5 main
+EXEC 67661636 316 104 git git diff --numstat HEAD
+EXEC 67661640 317 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661644 318 104 git git rev-parse hc/ws-6 main
+EXEC 67661650 319 104 git git diff --numstat HEAD
+EXEC 67661653 320 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67661657 321 104 git git rev-parse hc/ws-7 main
+EXEC 67661660 322 104 git git diff --numstat HEAD
+EXEC 67661663 323 104 git git rev-parse hc/ws-0 main
+EXEC 67661667 324 104 git git diff --numstat HEAD
+EXEC 67661670 325 104 git git rev-parse hc/ws-1 main
+EXEC 67661674 326 104 git git diff --numstat HEAD
+EXEC 67661680 327 104 git git rev-parse hc/ws-2 main
+EXEC 67661684 328 104 git git diff --numstat HEAD
+EXEC 67661688 329 104 git git rev-parse hc/ws-3 main
+EXEC 67661692 330 104 git git diff --numstat HEAD
+EXEC 67661697 331 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67661706 332 104 git git ls-files --others --exclude-standard
+EXEC 67661711 333 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67661715 334 104 git git ls-files --others --exclude-standard
+EXEC 67661717 335 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67661719 336 104 git git ls-files --others --exclude-standard
+EXEC 67661723 337 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67661726 338 104 git git ls-files --others --exclude-standard
+EXEC 67661728 339 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67661731 340 104 git git ls-files --others --exclude-standard
+EXEC 67661734 341 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67661737 342 104 git git ls-files --others --exclude-standard
+EXEC 67661742 343 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67661746 344 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67661748 345 104 git git ls-files --others --exclude-standard
+EXEC 67661755 346 104 git git rev-list --count main..hc/ws-4
+EXEC 67661759 347 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67661764 348 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67661767 349 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67661771 350 104 git git ls-files --others --exclude-standard
+EXEC 67661774 351 104 git git rev-list --count main..hc/ws-7
+EXEC 67661777 352 104 git git rev-list --count main..hc/ws-6
+EXEC 67661780 353 104 git git rev-list --count main..hc/ws-5
+EXEC 67661786 354 104 git git rev-list --count main..hc/ws-4
+EXEC 67661793 355 104 git git rev-list --count main..hc/ws-5
+EXEC 67661797 356 104 git git rev-list --count main..hc/ws-6
+EXEC 67661801 357 104 git git rev-list --count main..hc/ws-7
+EXEC 67661823 358 104 git git rev-parse hc/ws-4 main
+EXEC 67661826 359 104 git git diff --numstat HEAD
+EXEC 67661828 360 104 git git rev-parse hc/ws-5 main
+EXEC 67661831 361 104 git git diff --numstat HEAD
+EXEC 67661834 362 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67661837 363 104 git git ls-files --others --exclude-standard
+EXEC 67661840 364 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67661843 365 104 git git rev-parse hc/ws-6 main
+EXEC 67661846 366 104 git git diff --numstat HEAD
+EXEC 67661850 367 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67661853 368 104 git git ls-files --others --exclude-standard
+EXEC 67661857 369 104 git git ls-files --others --exclude-standard
+EXEC 67661861 370 104 git git rev-parse hc/ws-7 main
+EXEC 67661864 371 104 git git diff --numstat HEAD
+EXEC 67661866 372 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67661872 373 104 git git ls-files --others --exclude-standard
+EXEC 67669608 374 104 git git rev-parse hc/ws-0 main
+EXEC 67669614 375 104 git git diff --numstat HEAD
+EXEC 67669619 376 104 git git rev-parse hc/ws-1 main
+EXEC 67669624 377 104 git git diff --numstat HEAD
+EXEC 67669630 378 104 git git rev-parse hc/ws-2 main
+EXEC 67669633 379 104 git git diff --numstat HEAD
+EXEC 67669638 380 104 git git rev-parse hc/ws-3 main
+EXEC 67669642 381 104 git git diff --numstat HEAD
+EXEC 67669649 382 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67669655 383 104 git git ls-files --others --exclude-standard
+EXEC 67669659 384 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67669662 385 104 git git ls-files --others --exclude-standard
+EXEC 67669665 386 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67669668 387 104 git git ls-files --others --exclude-standard
+EXEC 67669671 388 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67669679 389 104 git git ls-files --others --exclude-standard
+EXEC 67669728 390 104 git git rev-parse hc/ws-4 main
+EXEC 67669730 391 104 git git diff --numstat HEAD
+EXEC 67669739 392 104 git git rev-parse hc/ws-5 main
+EXEC 67669743 393 104 git git diff --numstat HEAD
+EXEC 67669748 394 104 git git rev-parse hc/ws-6 main
+EXEC 67669752 395 104 git git diff --numstat HEAD
+EXEC 67669756 396 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67669759 397 104 git git ls-files --others --exclude-standard
+EXEC 67669763 398 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67669769 399 104 git git ls-files --others --exclude-standard
+EXEC 67669772 400 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67669779 401 104 git git ls-files --others --exclude-standard
+EXEC 67669783 402 104 git git rev-parse hc/ws-7 main
+EXEC 67669787 403 104 git git diff --numstat HEAD
+EXEC 67669791 404 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67669799 405 104 git git ls-files --others --exclude-standard
+EXEC 67675634 406 104 /bin/true /bin/true -p /insights --dangerously-skip-permissions
+EXEC 67675638 407 104 /bin/true /bin/true -p You are running the monthly insights self-tune (headless, no user present).
+
+Insights reports were just regenerated for every Claude Code login. The newest
+repo --dangerously-skip-permissions
+EXEC 67677608 408 104 git git rev-parse hc/ws-0 main
+EXEC 67677610 409 104 git git diff --numstat HEAD
+EXEC 67677612 410 104 git git rev-parse hc/ws-1 main
+EXEC 67677615 411 104 git git diff --numstat HEAD
+EXEC 67677619 412 104 git git rev-parse hc/ws-2 main
+EXEC 67677622 413 104 git git diff --numstat HEAD
+EXEC 67677628 414 104 git git rev-parse hc/ws-3 main
+EXEC 67677631 415 104 git git diff --numstat HEAD
+EXEC 67677636 416 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67677639 417 104 git git ls-files --others --exclude-standard
+EXEC 67677642 418 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67677644 419 104 git git ls-files --others --exclude-standard
+EXEC 67677645 420 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67677647 421 104 git git ls-files --others --exclude-standard
+EXEC 67677650 422 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67677653 423 104 git git ls-files --others --exclude-standard
+EXEC 67677706 424 104 git git rev-parse hc/ws-4 main
+EXEC 67677711 425 104 git git diff --numstat HEAD
+EXEC 67677715 426 104 git git rev-parse hc/ws-5 main
+EXEC 67677719 427 104 git git diff --numstat HEAD
+EXEC 67677724 428 104 git git rev-parse hc/ws-6 main
+EXEC 67677727 429 104 git git diff --numstat HEAD
+EXEC 67677731 430 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67677735 431 104 git git ls-files --others --exclude-standard
+EXEC 67677739 432 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67677743 433 104 git git ls-files --others --exclude-standard
+EXEC 67677746 434 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67677750 435 104 git git ls-files --others --exclude-standard
+EXEC 67677754 436 104 git git rev-parse hc/ws-7 main
+EXEC 67677757 437 104 git git diff --numstat HEAD
+EXEC 67677760 438 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67677763 439 104 git git ls-files --others --exclude-standard
+EXEC 67685609 440 104 git git rev-parse hc/ws-0 main
+EXEC 67685613 441 104 git git diff --numstat HEAD
+EXEC 67685621 442 104 git git rev-parse hc/ws-1 main
+EXEC 67685627 443 104 git git diff --numstat HEAD
+EXEC 67685636 444 104 git git rev-parse hc/ws-2 main
+EXEC 67685653 445 104 git git diff --numstat HEAD
+EXEC 67685661 446 104 git git rev-parse hc/ws-3 main
+EXEC 67685673 447 104 git git diff --numstat HEAD
+EXEC 67685697 448 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67685700 449 104 git git ls-files --others --exclude-standard
+EXEC 67685707 450 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67685713 451 104 git git ls-files --others --exclude-standard
+EXEC 67685721 452 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67685727 453 104 git git ls-files --others --exclude-standard
+EXEC 67685736 454 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67685753 455 104 git git ls-files --others --exclude-standard
+EXEC 67685800 456 104 git git rev-parse hc/ws-4 main
+EXEC 67685811 457 104 git git diff --numstat HEAD
+EXEC 67685823 458 104 git git rev-parse hc/ws-5 main
+EXEC 67685827 459 104 git git diff --numstat HEAD
+EXEC 67685831 460 104 git git rev-parse hc/ws-6 main
+EXEC 67685837 461 104 git git diff --numstat HEAD
+EXEC 67685843 462 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67685850 463 104 git git ls-files --others --exclude-standard
+EXEC 67685859 464 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67685865 465 104 git git ls-files --others --exclude-standard
+EXEC 67685874 466 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67685883 467 104 git git ls-files --others --exclude-standard
+EXEC 67685888 468 104 git git rev-parse hc/ws-7 main
+EXEC 67685895 469 104 git git diff --numstat HEAD
+EXEC 67685908 470 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67685915 471 104 git git ls-files --others --exclude-standard
+EXEC 67693614 472 104 git git rev-parse hc/ws-0 main
+EXEC 67693620 473 104 git git diff --numstat HEAD
+EXEC 67693628 474 104 git git rev-parse hc/ws-1 main
+EXEC 67693630 475 104 git git diff --numstat HEAD
+EXEC 67693643 476 104 git git rev-parse hc/ws-2 main
+EXEC 67693651 477 104 git git diff --numstat HEAD
+EXEC 67693660 478 104 git git rev-parse hc/ws-3 main
+EXEC 67693667 479 104 git git diff --numstat HEAD
+EXEC 67693680 480 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67693684 481 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67693694 482 104 git git ls-files --others --exclude-standard
+EXEC 67693699 483 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67693716 484 104 git git ls-files --others --exclude-standard
+EXEC 67693742 485 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67693778 486 104 git git ls-files --others --exclude-standard
+EXEC 67693788 487 104 git git ls-files --others --exclude-standard
+EXEC 67693821 488 104 git git rev-parse hc/ws-4 main
+EXEC 67693838 489 104 git git diff --numstat HEAD
+EXEC 67693842 490 104 git git rev-parse hc/ws-5 main
+EXEC 67693851 491 104 git git diff --numstat HEAD
+EXEC 67693856 492 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67693865 493 104 git git ls-files --others --exclude-standard
+EXEC 67693873 494 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67693887 495 104 git git rev-parse hc/ws-6 main
+EXEC 67693919 496 104 git git diff --numstat HEAD
+EXEC 67694000 497 104 git git rev-parse hc/ws-7 main
+EXEC 67694026 498 104 git git diff --numstat HEAD
+EXEC 67694035 499 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67694039 500 104 git git ls-files --others --exclude-standard
+EXEC 67694053 501 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67694062 502 104 git git ls-files --others --exclude-standard
+EXEC 67694076 503 104 git git ls-files --others --exclude-standard
+EXEC 67697608 504 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67697609 505 504 /usr/bin/date date +%s%3N
+EXEC 67697613 506 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67697619 507 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67697624 508 506 /usr/bin/date date +%s%3N
+EXEC 67697625 510 507 /usr/bin/date date +%s%3N
+EXEC 67697628 509 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67697637 511 509 /usr/bin/date date +%s%3N
+EXEC 67701610 512 104 git git rev-parse hc/ws-0 main
+EXEC 67701616 513 104 git git diff --numstat HEAD
+EXEC 67701629 514 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67701637 515 104 git git rev-parse hc/ws-1 main
+EXEC 67701645 516 104 git git diff --numstat HEAD
+EXEC 67701650 517 104 git git rev-parse hc/ws-2 main
+EXEC 67701656 518 104 git git diff --numstat HEAD
+EXEC 67701660 519 104 git git rev-parse hc/ws-3 main
+EXEC 67701664 520 104 git git diff --numstat HEAD
+EXEC 67701673 521 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67701681 522 104 git git ls-files --others --exclude-standard
+EXEC 67701696 523 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67701707 524 104 git git ls-files --others --exclude-standard
+EXEC 67701714 525 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67701716 526 104 git git ls-files --others --exclude-standard
+EXEC 67701727 527 104 git git ls-files --others --exclude-standard
+EXEC 67701787 528 104 git git rev-parse hc/ws-4 main
+EXEC 67701795 529 104 git git diff --numstat HEAD
+EXEC 67701800 530 104 git git rev-parse hc/ws-5 main
+EXEC 67701807 531 104 git git diff --numstat HEAD
+EXEC 67701817 532 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67701823 533 104 git git ls-files --others --exclude-standard
+EXEC 67701827 534 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67701832 535 104 git git rev-parse hc/ws-6 main
+EXEC 67701838 536 104 git git diff --numstat HEAD
+EXEC 67701841 537 104 git git rev-parse hc/ws-7 main
+EXEC 67701848 538 104 git git diff --numstat HEAD
+EXEC 67701857 539 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67701861 540 104 git git ls-files --others --exclude-standard
+EXEC 67701865 541 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67701869 542 104 git git ls-files --others --exclude-standard
+EXEC 67701878 543 104 git git ls-files --others --exclude-standard
+EXEC 67709610 544 104 git git rev-parse hc/ws-0 main
+EXEC 67709623 545 104 git git diff --numstat HEAD
+EXEC 67709627 546 104 git git rev-parse hc/ws-1 main
+EXEC 67709631 547 104 git git diff --numstat HEAD
+EXEC 67709634 548 104 git git rev-parse hc/ws-2 main
+EXEC 67709639 549 104 git git diff --numstat HEAD
+EXEC 67709643 550 104 git git rev-parse hc/ws-3 main
+EXEC 67709650 551 104 git git diff --numstat HEAD
+EXEC 67709656 552 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67709663 553 104 git git ls-files --others --exclude-standard
+EXEC 67709666 554 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67709669 555 104 git git ls-files --others --exclude-standard
+EXEC 67709674 556 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67709679 557 104 git git ls-files --others --exclude-standard
+EXEC 67709681 558 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67709686 559 104 git git ls-files --others --exclude-standard
+EXEC 67709741 560 104 git git rev-parse hc/ws-4 main
+EXEC 67709746 561 104 git git diff --numstat HEAD
+EXEC 67709752 562 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67709756 563 104 git git rev-parse hc/ws-5 main
+EXEC 67709766 564 104 git git diff --numstat HEAD
+EXEC 67709780 565 104 git git rev-parse hc/ws-6 main
+EXEC 67709788 566 104 git git diff --numstat HEAD
+EXEC 67709799 567 104 git git rev-parse hc/ws-7 main
+EXEC 67709807 568 104 git git diff --numstat HEAD
+EXEC 67709820 569 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67709826 570 104 git git ls-files --others --exclude-standard
+EXEC 67709833 571 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67709841 572 104 git git ls-files --others --exclude-standard
+EXEC 67709848 573 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67709858 574 104 git git ls-files --others --exclude-standard
+EXEC 67709865 575 104 git git ls-files --others --exclude-standard
+EXEC 67717608 576 104 git git rev-parse hc/ws-0 main
+EXEC 67717610 577 104 git git diff --numstat HEAD
+EXEC 67717612 578 104 git git rev-parse hc/ws-1 main
+EXEC 67717616 579 104 git git diff --numstat HEAD
+EXEC 67717622 580 104 git git rev-parse hc/ws-2 main
+EXEC 67717625 581 104 git git diff --numstat HEAD
+EXEC 67717628 582 104 git git rev-parse hc/ws-3 main
+EXEC 67717631 583 104 git git diff --numstat HEAD
+EXEC 67717635 584 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67717638 585 104 git git ls-files --others --exclude-standard
+EXEC 67717642 586 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67717647 587 104 git git ls-files --others --exclude-standard
+EXEC 67717651 588 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67717655 589 104 git git ls-files --others --exclude-standard
+EXEC 67717658 590 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67717662 591 104 git git ls-files --others --exclude-standard
+EXEC 67717713 592 104 git git rev-parse hc/ws-4 main
+EXEC 67717715 593 104 git git diff --numstat HEAD
+EXEC 67717718 594 104 git git rev-parse hc/ws-5 main
+EXEC 67717722 595 104 git git diff --numstat HEAD
+EXEC 67717725 596 104 git git rev-parse hc/ws-6 main
+EXEC 67717728 597 104 git git diff --numstat HEAD
+EXEC 67717732 598 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67717734 599 104 git git ls-files --others --exclude-standard
+EXEC 67717740 600 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67717743 601 104 git git ls-files --others --exclude-standard
+EXEC 67717746 602 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67717751 603 104 git git ls-files --others --exclude-standard
+EXEC 67717756 604 104 git git rev-parse hc/ws-7 main
+EXEC 67717759 605 104 git git diff --numstat HEAD
+EXEC 67717762 606 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67717766 607 104 git git ls-files --others --exclude-standard
+EXEC 67721612 608 104 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 67721616 609 608 /usr/bin/date date +%s%3N
+EXEC 67725618 610 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725623 611 104 git git rev-parse hc/ws-0 main
+EXEC 67725635 612 104 git git diff --numstat HEAD
+EXEC 67725639 613 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725648 614 104 git git rev-parse hc/ws-1 main
+EXEC 67725650 615 104 git git diff --numstat HEAD
+EXEC 67725656 616 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725662 617 104 git git rev-parse hc/ws-2 main
+EXEC 67725665 618 104 git git diff --numstat HEAD
+EXEC 67725667 619 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725669 620 104 git git rev-parse hc/ws-3 main
+EXEC 67725670 621 104 git git diff --numstat HEAD
+EXEC 67725672 622 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67725674 623 104 git git ls-files --others --exclude-standard
+EXEC 67725676 624 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67725678 625 104 git git ls-files --others --exclude-standard
+EXEC 67725679 626 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67725682 627 104 git git ls-files --others --exclude-standard
+EXEC 67725685 628 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67725690 629 104 git git ls-files --others --exclude-standard
+EXEC 67725740 630 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725743 631 104 git git rev-parse hc/ws-4 main
+EXEC 67725747 632 104 git git diff --numstat HEAD
+EXEC 67725751 633 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725755 634 104 git git rev-parse hc/ws-5 main
+EXEC 67725759 635 104 git git diff --numstat HEAD
+EXEC 67725762 636 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725764 637 104 git git rev-parse hc/ws-6 main
+EXEC 67725767 638 104 git git diff --numstat HEAD
+EXEC 67725770 639 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67725773 640 104 git git ls-files --others --exclude-standard
+EXEC 67725777 641 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67725781 642 104 git git ls-files --others --exclude-standard
+EXEC 67725784 643 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67725788 644 104 git git ls-files --others --exclude-standard
+EXEC 67725795 645 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67725799 646 104 git git rev-parse hc/ws-7 main
+EXEC 67725802 647 104 git git diff --numstat HEAD
+EXEC 67725807 648 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67725813 649 104 git git ls-files --others --exclude-standard
+EXEC 67733610 650 104 git git rev-parse hc/ws-0 main
+EXEC 67733614 651 104 git git diff --numstat HEAD
+EXEC 67733618 652 104 git git rev-parse hc/ws-1 main
+EXEC 67733626 653 104 git git diff --numstat HEAD
+EXEC 67733632 654 104 git git rev-parse hc/ws-2 main
+EXEC 67733635 655 104 git git diff --numstat HEAD
+EXEC 67733638 656 104 git git rev-parse hc/ws-3 main
+EXEC 67733641 657 104 git git diff --numstat HEAD
+EXEC 67733644 658 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67733645 659 658 /usr/bin/date date +%s%3N
+EXEC 67733646 660 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67733649 661 660 /usr/bin/date date +%s%3N
+EXEC 67733650 662 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67733654 664 662 /usr/bin/date date +%s%3N
+EXEC 67733654 663 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67733658 665 663 /usr/bin/date date +%s%3N
+EXEC 67733659 666 104 git git ls-files --others --exclude-standard
+EXEC 67733662 667 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67733665 668 104 git git ls-files --others --exclude-standard
+EXEC 67733670 669 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67733677 670 104 git git ls-files --others --exclude-standard
+EXEC 67733680 671 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67733682 672 104 git git ls-files --others --exclude-standard
+EXEC 67733686 673 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67733743 674 104 git git rev-parse hc/ws-4 main
+EXEC 67733750 675 104 git git diff --numstat HEAD
+EXEC 67733755 676 104 git git rev-parse hc/ws-5 main
+EXEC 67733762 677 104 git git diff --numstat HEAD
+EXEC 67733766 678 104 git git rev-parse hc/ws-6 main
+EXEC 67733768 679 104 git git diff --numstat HEAD
+EXEC 67733772 680 104 git git rev-parse hc/ws-7 main
+EXEC 67733778 681 104 git git diff --numstat HEAD
+EXEC 67733785 682 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67733788 683 104 git git ls-files --others --exclude-standard
+EXEC 67733791 684 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67733796 685 104 git git ls-files --others --exclude-standard
+EXEC 67733799 686 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67733802 687 104 git git ls-files --others --exclude-standard
+EXEC 67733805 688 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67733808 689 104 git git ls-files --others --exclude-standard
+EXEC 67741608 690 104 git git rev-parse hc/ws-0 main
+EXEC 67741611 691 104 git git diff --numstat HEAD
+EXEC 67741613 692 104 git git rev-parse hc/ws-1 main
+EXEC 67741616 693 104 git git diff --numstat HEAD
+EXEC 67741619 694 104 git git rev-parse hc/ws-2 main
+EXEC 67741622 695 104 git git diff --numstat HEAD
+EXEC 67741625 696 104 git git rev-parse hc/ws-3 main
+EXEC 67741627 697 104 git git diff --numstat HEAD
+EXEC 67741631 698 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67741634 699 104 git git ls-files --others --exclude-standard
+EXEC 67741637 700 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67741639 701 104 git git ls-files --others --exclude-standard
+EXEC 67741642 702 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67741645 703 104 git git ls-files --others --exclude-standard
+EXEC 67741648 704 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67741652 705 104 git git ls-files --others --exclude-standard
+EXEC 67741703 706 104 git git rev-parse hc/ws-4 main
+EXEC 67741705 707 104 git git diff --numstat HEAD
+EXEC 67741707 708 104 git git rev-parse hc/ws-5 main
+EXEC 67741708 709 104 git git diff --numstat HEAD
+EXEC 67741710 710 104 git git rev-parse hc/ws-6 main
+EXEC 67741713 711 104 git git diff --numstat HEAD
+EXEC 67741719 712 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67741722 713 104 git git ls-files --others --exclude-standard
+EXEC 67741724 714 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67741729 715 104 git git ls-files --others --exclude-standard
+EXEC 67741732 716 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67741735 717 104 git git ls-files --others --exclude-standard
+EXEC 67741738 718 104 git git rev-parse hc/ws-7 main
+EXEC 67741741 719 104 git git diff --numstat HEAD
+EXEC 67741744 720 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67741747 721 104 git git ls-files --others --exclude-standard
+EXEC 67749609 722 104 git git rev-parse hc/ws-0 main
+EXEC 67749612 723 104 git git diff --numstat HEAD
+EXEC 67749614 724 104 git git rev-parse hc/ws-1 main
+EXEC 67749615 725 104 git git diff --numstat HEAD
+EXEC 67749617 726 104 git git rev-parse hc/ws-2 main
+EXEC 67749618 727 104 git git diff --numstat HEAD
+EXEC 67749620 728 104 git git rev-parse hc/ws-3 main
+EXEC 67749622 729 104 git git diff --numstat HEAD
+EXEC 67749624 730 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67749626 731 104 git git ls-files --others --exclude-standard
+EXEC 67749627 732 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67749629 733 104 git git ls-files --others --exclude-standard
+EXEC 67749631 734 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67749633 735 104 git git ls-files --others --exclude-standard
+EXEC 67749636 736 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67749640 737 104 git git ls-files --others --exclude-standard
+EXEC 67749690 738 104 git git rev-parse hc/ws-4 main
+EXEC 67749693 739 104 git git diff --numstat HEAD
+EXEC 67749696 740 104 git git rev-parse hc/ws-5 main
+EXEC 67749698 741 104 git git diff --numstat HEAD
+EXEC 67749701 742 104 git git rev-parse hc/ws-6 main
+EXEC 67749702 743 104 git git diff --numstat HEAD
+EXEC 67749705 744 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67749707 745 104 git git ls-files --others --exclude-standard
+EXEC 67749710 746 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67749712 747 104 git git ls-files --others --exclude-standard
+EXEC 67749715 748 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67749718 749 104 git git ls-files --others --exclude-standard
+EXEC 67749722 750 104 git git rev-parse hc/ws-7 main
+EXEC 67749724 751 104 git git diff --numstat HEAD
+EXEC 67749727 752 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67749730 753 104 git git ls-files --others --exclude-standard
+EXEC 67757610 754 104 git git rev-parse hc/ws-0 main
+EXEC 67757614 755 104 git git diff --numstat HEAD
+EXEC 67757619 756 104 git git rev-parse hc/ws-1 main
+EXEC 67757623 757 104 git git diff --numstat HEAD
+EXEC 67757627 758 104 git git rev-parse hc/ws-2 main
+EXEC 67757631 759 104 git git diff --numstat HEAD
+EXEC 67757637 760 104 git git rev-parse hc/ws-3 main
+EXEC 67757641 761 104 git git diff --numstat HEAD
+EXEC 67757646 762 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67757650 763 104 git git ls-files --others --exclude-standard
+EXEC 67757654 764 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67757660 765 104 git git ls-files --others --exclude-standard
+EXEC 67757667 766 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67757672 767 104 git git ls-files --others --exclude-standard
+EXEC 67757682 768 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67757687 769 104 git git ls-files --others --exclude-standard
+EXEC 67757737 770 104 git git rev-parse hc/ws-4 main
+EXEC 67757739 771 104 git git diff --numstat HEAD
+EXEC 67757744 772 104 git git rev-parse hc/ws-5 main
+EXEC 67757746 773 104 git git diff --numstat HEAD
+EXEC 67757749 774 104 git git rev-parse hc/ws-6 main
+EXEC 67757751 775 104 git git diff --numstat HEAD
+EXEC 67757761 776 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67757764 777 104 git git ls-files --others --exclude-standard
+EXEC 67757766 778 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67757768 779 104 git git ls-files --others --exclude-standard
+EXEC 67757770 780 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67757773 781 104 git git ls-files --others --exclude-standard
+EXEC 67757776 782 104 git git rev-parse hc/ws-7 main
+EXEC 67757778 783 104 git git diff --numstat HEAD
+EXEC 67757782 784 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67757789 785 104 git git ls-files --others --exclude-standard
+EXEC 67765610 786 104 git git rev-parse hc/ws-0 main
+EXEC 67765614 787 104 git git diff --numstat HEAD
+EXEC 67765635 788 104 git git rev-parse hc/ws-1 main
+EXEC 67765642 789 104 git git diff --numstat HEAD
+EXEC 67765648 790 104 git git rev-parse hc/ws-2 main
+EXEC 67765659 791 104 git git diff --numstat HEAD
+EXEC 67765664 792 104 git git rev-parse hc/ws-3 main
+EXEC 67765672 793 104 git git diff --numstat HEAD
+EXEC 67765680 794 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67765684 795 104 git git ls-files --others --exclude-standard
+EXEC 67765687 796 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67765691 797 104 git git ls-files --others --exclude-standard
+EXEC 67765695 798 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67765704 799 104 git git ls-files --others --exclude-standard
+EXEC 67765712 800 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67765716 801 104 git git ls-files --others --exclude-standard
+EXEC 67765772 802 104 git git rev-parse hc/ws-4 main
+EXEC 67765783 803 104 git git diff --numstat HEAD
+EXEC 67765791 804 104 git git rev-parse hc/ws-5 main
+EXEC 67765801 805 104 git git diff --numstat HEAD
+EXEC 67765813 806 104 git git rev-parse hc/ws-6 main
+EXEC 67765819 807 104 git git diff --numstat HEAD
+EXEC 67765828 808 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67765834 809 104 git git ls-files --others --exclude-standard
+EXEC 67765844 810 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67765849 811 104 git git ls-files --others --exclude-standard
+EXEC 67765855 812 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67765862 813 104 git git ls-files --others --exclude-standard
+EXEC 67765868 814 104 git git rev-parse hc/ws-7 main
+EXEC 67765875 815 104 git git diff --numstat HEAD
+EXEC 67765881 816 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67765892 817 104 git git ls-files --others --exclude-standard
+EXEC 67769609 818 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67769615 819 818 /usr/bin/date date +%s%3N
+EXEC 67769615 820 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67769618 821 820 /usr/bin/date date +%s%3N
+EXEC 67769619 822 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67769622 823 822 /usr/bin/date date +%s%3N
+EXEC 67769623 824 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67769626 825 824 /usr/bin/date date +%s%3N
+EXEC 67773608 846 104 git git rev-parse hc/ws-0 main
+EXEC 67773610 847 104 git git diff --numstat HEAD
+EXEC 67773613 848 104 git git rev-parse hc/ws-1 main
+EXEC 67773615 849 104 git git diff --numstat HEAD
+EXEC 67773617 850 104 git git rev-parse hc/ws-2 main
+EXEC 67773621 851 104 git git diff --numstat HEAD
+EXEC 67773624 852 104 git git rev-parse hc/ws-3 main
+EXEC 67773625 853 104 git git diff --numstat HEAD
+EXEC 67773628 854 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67773632 855 104 git git ls-files --others --exclude-standard
+EXEC 67773634 856 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67773636 857 104 git git ls-files --others --exclude-standard
+EXEC 67773639 858 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67773642 859 104 git git ls-files --others --exclude-standard
+EXEC 67773646 860 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67773651 861 104 git git ls-files --others --exclude-standard
+EXEC 67773703 862 104 git git rev-parse hc/ws-4 main
+EXEC 67773705 863 104 git git diff --numstat HEAD
+EXEC 67773708 864 104 git git rev-parse hc/ws-5 main
+EXEC 67773711 865 104 git git diff --numstat HEAD
+EXEC 67773714 866 104 git git rev-parse hc/ws-6 main
+EXEC 67773717 867 104 git git diff --numstat HEAD
+EXEC 67773719 868 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67773722 869 104 git git ls-files --others --exclude-standard
+EXEC 67773724 870 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67773725 871 104 git git ls-files --others --exclude-standard
+EXEC 67773728 872 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67773732 873 104 git git ls-files --others --exclude-standard
+EXEC 67773735 874 104 git git rev-parse hc/ws-7 main
+EXEC 67773737 875 104 git git diff --numstat HEAD
+EXEC 67773741 876 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67773744 877 104 git git ls-files --others --exclude-standard
+EXEC 67776110 879 104 git git fetch origin main:main
+EXEC 67776119 880 879 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67776120 880 879 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67776142 881 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67776152 882 104 git git pull --ff-only origin main
+EXEC 67776160 883 882 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67776173 884 883 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67776176 884 883 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67776179 885 883 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67776184 886 883 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67776189 888 882 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67776196 889 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67776203 890 104 git git rev-list --count main..origin/main
+EXEC 67776210 891 104 git git rev-list --count origin/main..main
+EXEC 67781609 892 104 git git rev-parse hc/ws-0 main
+EXEC 67781616 893 104 git git diff --numstat HEAD
+EXEC 67781621 894 104 git git rev-parse hc/ws-1 main
+EXEC 67781629 895 104 git git diff --numstat HEAD
+EXEC 67781636 896 104 git git rev-parse hc/ws-2 main
+EXEC 67781643 897 104 git git diff --numstat HEAD
+EXEC 67781646 898 104 git git rev-parse hc/ws-3 main
+EXEC 67781654 899 104 git git diff --numstat HEAD
+EXEC 67781665 900 104 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 67781669 901 900 /usr/bin/date date +%s%3N
+EXEC 67781676 902 104 git git ls-files --others --exclude-standard
+EXEC 67781680 903 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67781685 904 104 git git ls-files --others --exclude-standard
+EXEC 67781691 905 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67781698 906 104 git git ls-files --others --exclude-standard
+EXEC 67781703 907 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67781709 908 104 git git ls-files --others --exclude-standard
+EXEC 67781719 909 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67781779 910 104 git git rev-parse hc/ws-4 main
+EXEC 67781784 911 104 git git diff --numstat HEAD
+EXEC 67781795 912 104 git git rev-parse hc/ws-5 main
+EXEC 67781803 913 104 git git diff --numstat HEAD
+EXEC 67781812 914 104 git git rev-parse hc/ws-6 main
+EXEC 67781819 915 104 git git diff --numstat HEAD
+EXEC 67781829 916 104 git git rev-parse hc/ws-7 main
+EXEC 67781833 917 104 git git diff --numstat HEAD
+EXEC 67781841 918 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67781845 919 104 git git ls-files --others --exclude-standard
+EXEC 67781850 920 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67781853 921 104 git git ls-files --others --exclude-standard
+EXEC 67781856 922 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67781861 923 104 git git ls-files --others --exclude-standard
+EXEC 67781865 924 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67781871 925 104 git git ls-files --others --exclude-standard
+EXEC 67788128 928 104 git git fetch origin main:main
+EXEC 67788137 929 928 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67788138 929 928 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67788144 930 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67788157 931 104 git git pull --ff-only origin main
+EXEC 67788162 932 931 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67788166 933 932 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67788167 933 932 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67788174 934 932 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67788181 935 932 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67788194 937 931 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67788204 938 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67788214 939 104 git git rev-list --count main..origin/main
+EXEC 67788221 940 104 git git rev-list --count origin/main..main
+EXEC 67789613 941 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789618 942 104 git git rev-parse hc/ws-0 main
+EXEC 67789622 943 104 git git diff --numstat HEAD
+EXEC 67789627 944 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789632 945 104 git git rev-parse hc/ws-1 main
+EXEC 67789634 946 104 git git diff --numstat HEAD
+EXEC 67789653 947 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789663 948 104 git git rev-parse hc/ws-2 main
+EXEC 67789679 949 104 git git diff --numstat HEAD
+EXEC 67789686 950 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789692 951 104 git git rev-parse hc/ws-3 main
+EXEC 67789697 952 104 git git diff --numstat HEAD
+EXEC 67789704 953 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67789717 954 104 git git ls-files --others --exclude-standard
+EXEC 67789733 955 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67789739 956 104 git git ls-files --others --exclude-standard
+EXEC 67789746 957 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67789751 958 104 git git ls-files --others --exclude-standard
+EXEC 67789759 959 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67789775 960 104 git git ls-files --others --exclude-standard
+EXEC 67789818 961 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789827 962 104 git git rev-parse hc/ws-4 main
+EXEC 67789837 963 104 git git diff --numstat HEAD
+EXEC 67789848 964 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789853 965 104 git git rev-parse hc/ws-5 main
+EXEC 67789861 966 104 git git diff --numstat HEAD
+EXEC 67789869 967 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67789882 968 104 git git ls-files --others --exclude-standard
+EXEC 67789890 969 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67789902 970 104 git git ls-files --others --exclude-standard
+EXEC 67789913 971 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789929 972 104 git git rev-parse hc/ws-6 main
+EXEC 67789946 973 104 git git diff --numstat HEAD
+EXEC 67789956 974 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67789968 975 104 git git rev-parse hc/ws-7 main
+EXEC 67789985 976 104 git git diff --numstat HEAD
+EXEC 67789997 977 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67790003 978 104 git git ls-files --others --exclude-standard
+EXEC 67790010 979 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67790019 980 104 git git ls-files --others --exclude-standard
+EXEC 67797613 982 104 git git rev-parse hc/ws-0 main
+EXEC 67797622 983 104 git git diff --numstat HEAD
+EXEC 67797628 984 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67797643 985 104 git git rev-parse hc/ws-1 main
+EXEC 67797648 986 104 git git diff --numstat HEAD
+EXEC 67797656 987 104 git git rev-parse hc/ws-2 main
+EXEC 67797662 988 104 git git diff --numstat HEAD
+EXEC 67797671 989 104 git git rev-parse hc/ws-3 main
+EXEC 67797680 990 104 git git diff --numstat HEAD
+EXEC 67797695 991 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67797705 992 104 git git ls-files --others --exclude-standard
+EXEC 67797712 993 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67797719 994 104 git git ls-files --others --exclude-standard
+EXEC 67797727 995 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67797745 996 104 git git ls-files --others --exclude-standard
+EXEC 67797761 997 104 git git ls-files --others --exclude-standard
+EXEC 67797813 998 104 git git rev-parse hc/ws-4 main
+EXEC 67797820 999 104 git git diff --numstat HEAD
+EXEC 67797835 1000 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67797843 1001 104 git git rev-parse hc/ws-5 main
+EXEC 67797847 1002 104 git git diff --numstat HEAD
+EXEC 67797851 1003 104 git git rev-parse hc/ws-6 main
+EXEC 67797854 1004 104 git git diff --numstat HEAD
+EXEC 67797860 1005 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67797864 1006 104 git git ls-files --others --exclude-standard
+EXEC 67797868 1007 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67797874 1008 104 git git ls-files --others --exclude-standard
+EXEC 67797885 1009 104 git git rev-parse hc/ws-7 main
+EXEC 67797888 1010 104 git git diff --numstat HEAD
+EXEC 67797893 1011 104 git git ls-files --others --exclude-standard
+EXEC 67797899 1012 104 git git ls-files --others --exclude-standard
+EXEC 67797905 1013 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67800138 1015 104 git git fetch origin main:main
+EXEC 67800140 1016 1015 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67800140 1016 1015 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67800153 1017 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67800157 1018 104 git git pull --ff-only origin main
+EXEC 67800159 1019 1018 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67800166 1020 1019 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67800167 1020 1019 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67800178 1021 1019 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67800192 1022 1019 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67800197 1024 1018 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67800203 1025 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67800208 1026 104 git git rev-list --count main..origin/main
+EXEC 67800210 1027 104 git git rev-list --count origin/main..main
+EXEC 67805608 1028 104 git git rev-parse hc/ws-0 main
+EXEC 67805610 1029 104 git git diff --numstat HEAD
+EXEC 67805612 1030 104 git git rev-parse hc/ws-1 main
+EXEC 67805614 1031 104 git git diff --numstat HEAD
+EXEC 67805617 1032 104 git git rev-parse hc/ws-2 main
+EXEC 67805621 1033 104 git git diff --numstat HEAD
+EXEC 67805626 1034 104 git git rev-parse hc/ws-3 main
+EXEC 67805630 1035 104 git git diff --numstat HEAD
+EXEC 67805635 1036 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67805637 1037 1036 /usr/bin/date date +%s%3N
+EXEC 67805639 1038 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67805641 1039 1038 /usr/bin/date date +%s%3N
+EXEC 67805643 1040 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67805647 1041 1040 /usr/bin/date date +%s%3N
+EXEC 67805648 1042 104 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 67805652 1043 1042 /usr/bin/date date +%s%3N
+EXEC 67805656 1044 104 git git ls-files --others --exclude-standard
+EXEC 67805660 1045 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67805664 1046 104 git git ls-files --others --exclude-standard
+EXEC 67805668 1047 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67805671 1048 104 git git ls-files --others --exclude-standard
+EXEC 67805674 1049 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67805677 1050 104 git git ls-files --others --exclude-standard
+EXEC 67805680 1051 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67805738 1052 104 git git rev-parse hc/ws-4 main
+EXEC 67805741 1053 104 git git diff --numstat HEAD
+EXEC 67805743 1054 104 git git rev-parse hc/ws-5 main
+EXEC 67805746 1055 104 git git diff --numstat HEAD
+EXEC 67805750 1056 104 git git rev-parse hc/ws-6 main
+EXEC 67805756 1057 104 git git diff --numstat HEAD
+EXEC 67805759 1058 104 git git rev-parse hc/ws-7 main
+EXEC 67805763 1059 104 git git diff --numstat HEAD
+EXEC 67805768 1060 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67805771 1061 104 git git ls-files --others --exclude-standard
+EXEC 67805774 1062 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67805779 1063 104 git git ls-files --others --exclude-standard
+EXEC 67805784 1064 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67805790 1065 104 git git ls-files --others --exclude-standard
+EXEC 67805794 1066 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67805799 1067 104 git git ls-files --others --exclude-standard
+EXEC 67812145 1070 104 git git fetch origin main:main
+EXEC 67812149 1071 1070 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67812150 1071 1070 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67812157 1072 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67812177 1073 104 git git pull --ff-only origin main
+EXEC 67812184 1074 1073 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67812185 1075 1074 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67812186 1075 1074 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67812195 1076 1074 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67812198 1077 1074 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67812199 1079 1073 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67812209 1080 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67812221 1081 104 git git rev-list --count main..origin/main
+EXEC 67812227 1082 104 git git rev-list --count origin/main..main
+EXEC 67813608 1083 104 git git rev-parse hc/ws-0 main
+EXEC 67813612 1084 104 git git diff --numstat HEAD
+EXEC 67813615 1085 104 git git rev-parse hc/ws-1 main
+EXEC 67813616 1086 104 git git diff --numstat HEAD
+EXEC 67813621 1087 104 git git rev-parse hc/ws-2 main
+EXEC 67813625 1088 104 git git diff --numstat HEAD
+EXEC 67813630 1089 104 git git rev-parse hc/ws-3 main
+EXEC 67813632 1090 104 git git diff --numstat HEAD
+EXEC 67813635 1091 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67813638 1092 104 git git ls-files --others --exclude-standard
+EXEC 67813642 1093 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67813645 1094 104 git git ls-files --others --exclude-standard
+EXEC 67813650 1095 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67813655 1096 104 git git ls-files --others --exclude-standard
+EXEC 67813661 1097 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67813667 1098 104 git git ls-files --others --exclude-standard
+EXEC 67813716 1099 104 git git rev-parse hc/ws-4 main
+EXEC 67813720 1100 104 git git diff --numstat HEAD
+EXEC 67813723 1101 104 git git rev-parse hc/ws-5 main
+EXEC 67813727 1102 104 git git diff --numstat HEAD
+EXEC 67813730 1103 104 git git rev-parse hc/ws-6 main
+EXEC 67813733 1104 104 git git diff --numstat HEAD
+EXEC 67813737 1105 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67813741 1106 104 git git ls-files --others --exclude-standard
+EXEC 67813744 1107 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67813747 1108 104 git git ls-files --others --exclude-standard
+EXEC 67813750 1109 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67813754 1110 104 git git ls-files --others --exclude-standard
+EXEC 67813757 1111 104 git git rev-parse hc/ws-7 main
+EXEC 67813759 1112 104 git git diff --numstat HEAD
+EXEC 67813764 1113 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67813768 1114 104 git git ls-files --others --exclude-standard
+EXEC 67821610 1116 104 git git rev-parse hc/ws-0 main
+EXEC 67821614 1117 104 git git diff --numstat HEAD
+EXEC 67821617 1118 104 git git rev-parse hc/ws-1 main
+EXEC 67821619 1119 104 git git diff --numstat HEAD
+EXEC 67821623 1120 104 git git rev-parse hc/ws-2 main
+EXEC 67821628 1121 104 git git diff --numstat HEAD
+EXEC 67821631 1122 104 git git rev-parse hc/ws-3 main
+EXEC 67821635 1123 104 git git diff --numstat HEAD
+EXEC 67821640 1124 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67821647 1125 104 git git ls-files --others --exclude-standard
+EXEC 67821652 1126 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67821655 1127 104 git git ls-files --others --exclude-standard
+EXEC 67821660 1128 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67821668 1129 104 git git ls-files --others --exclude-standard
+EXEC 67821676 1130 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67821682 1131 104 git git ls-files --others --exclude-standard
+EXEC 67821739 1132 104 git git rev-parse hc/ws-4 main
+EXEC 67821743 1133 104 git git diff --numstat HEAD
+EXEC 67821748 1134 104 git git rev-parse hc/ws-5 main
+EXEC 67821752 1135 104 git git diff --numstat HEAD
+EXEC 67821755 1136 104 git git rev-parse hc/ws-6 main
+EXEC 67821760 1137 104 git git diff --numstat HEAD
+EXEC 67821763 1138 104 git git rev-parse hc/ws-7 main
+EXEC 67821765 1139 104 git git diff --numstat HEAD
+EXEC 67821767 1140 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67821771 1141 104 git git ls-files --others --exclude-standard
+EXEC 67821775 1142 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67821780 1143 104 git git ls-files --others --exclude-standard
+EXEC 67821785 1144 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67821788 1145 104 git git ls-files --others --exclude-standard
+EXEC 67821795 1146 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67821803 1147 104 git git ls-files --others --exclude-standard
+EXEC 67824152 1149 104 git git fetch origin main:main
+EXEC 67824155 1150 1149 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67824156 1150 1149 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67824164 1151 104 git git rev-parse --abbrev-ref HEAD
+EXEC 67824169 1152 104 git git pull --ff-only origin main
+EXEC 67824171 1153 1152 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 67824172 1154 1153 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git'
+EXEC 67824172 1154 1153 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-3018939/oh/repos/origin.git
+EXEC 67824176 1155 1153 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 67824179 1156 1153 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 67824181 1158 1152 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 67824186 1159 104 git git rev-parse --verify refs/remotes/origin/main
+EXEC 67824190 1160 104 git git rev-list --count main..origin/main
+EXEC 67824194 1161 104 git git rev-list --count origin/main..main
+EXEC 67829608 1162 104 git git rev-parse hc/ws-0 main
+EXEC 67829611 1163 104 git git diff --numstat HEAD
+EXEC 67829613 1164 104 git git rev-parse hc/ws-1 main
+EXEC 67829616 1165 104 git git diff --numstat HEAD
+EXEC 67829619 1166 104 git git rev-parse hc/ws-2 main
+EXEC 67829622 1167 104 git git diff --numstat HEAD
+EXEC 67829624 1168 104 git git rev-parse hc/ws-3 main
+EXEC 67829627 1169 104 git git diff --numstat HEAD
+EXEC 67829631 1170 104 git git rev-parse --verify origin/hc/ws-3
+EXEC 67829634 1171 104 git git ls-files --others --exclude-standard
+EXEC 67829636 1172 104 git git rev-parse --verify origin/hc/ws-2
+EXEC 67829639 1173 104 git git ls-files --others --exclude-standard
+EXEC 67829642 1174 104 git git rev-parse --verify origin/hc/ws-1
+EXEC 67829645 1175 104 git git ls-files --others --exclude-standard
+EXEC 67829650 1176 104 git git rev-parse --verify origin/hc/ws-0
+EXEC 67829657 1177 104 git git ls-files --others --exclude-standard
+EXEC 67829707 1178 104 git git rev-parse hc/ws-4 main
+EXEC 67829710 1179 104 git git diff --numstat HEAD
+EXEC 67829715 1180 104 git git rev-parse --verify origin/hc/ws-4
+EXEC 67829720 1181 104 git git rev-parse hc/ws-5 main
+EXEC 67829724 1182 104 git git diff --numstat HEAD
+EXEC 67829730 1183 104 git git rev-parse hc/ws-6 main
+EXEC 67829734 1184 104 git git diff --numstat HEAD
+EXEC 67829742 1185 104 git git rev-parse --verify origin/hc/ws-6
+EXEC 67829747 1186 104 git git ls-files --others --exclude-standard
+EXEC 67829750 1187 104 git git rev-parse --verify origin/hc/ws-5
+EXEC 67829752 1188 104 git git ls-files --others --exclude-standard
+EXEC 67829755 1189 104 git git rev-parse hc/ws-7 main
+EXEC 67829757 1190 104 git git diff --numstat HEAD
+EXEC 67829761 1191 104 git git rev-parse --verify origin/hc/ws-7
+EXEC 67829764 1192 104 git git ls-files --others --exclude-standard
+EXEC 67829767 1193 104 git git ls-files --others --exclude-standard

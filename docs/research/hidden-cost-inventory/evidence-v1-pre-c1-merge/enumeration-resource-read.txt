@@ -1,0 +1,26 @@
+src/main/disk-space.ts:8:// 16 GiB tmpfs — verified 2026-08-25 with `df -h /tmp $HOME` and
+src/main/keeper-client.ts:307:      return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter((a) => a.length > 0);
+src/main/keeper-client.ts:341:      const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
+src/main/keeper-client.ts:367:    text = fs.readFileSync(`/proc/${d.pid}/stat`, 'utf8');
+src/main/pty.ts:565: *  (`ps -p <pid>`), and a pid read AFTER the kill is already gone. The
+src/main/resource-monitor.ts:71:        const p = parseProcStatLine(fs.readFileSync(`/proc/${name}/stat`, 'utf8'));
+src/main/resource-monitor.ts:107:  /** Fresh single-pid /proc/<pid>/stat read; null = gone/unreadable/non-Linux. */
+src/main/resource-monitor.ts:109:  /** /proc/<pid>/cmdline argv; null = gone/unreadable/non-Linux. */
+src/main/resource-monitor.ts:118:/** total − MemAvailable from /proc/meminfo; null when unreadable — never a fabricated figure. */
+src/main/resource-monitor.ts:126:    const text = fs.readFileSync('/proc/meminfo', 'utf8');
+src/main/resource-monitor.ts:214:      const argv = fs.readFileSync(`/proc/${name}/cmdline`, 'utf8').split('\0').filter((a) => a.length > 0);
+src/main/resource-monitor.ts:247:      return parseProcStatLine(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+src/main/resource-monitor.ts:256:        .readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+src/main/resources.ts:44:        const text = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
+src/main/hibernation.ts:166:    // makes process death assertable by `ps -p <pid>`: UI text or an absent
+src/main/workspaces.ts:336: *  - btrfs (the typical Linux setup): one `btrfs filesystem du -s --raw` pass
+src/main/workspaces.ts:344: *    `du -k --max-depth=1` pass over the root — apparent size, as before.
+src/shared/disk-space.ts:56: *      Command: `du -sk dist dist-electron` immediately after the build.
+src/shared/disk-space.ts:69: *      176 KiB (`du -sk /tmp/e2e64c-*  | sort -rn | head`). Individually
+src/shared/disk-space.ts:95: *  (2026-08-25, `du -sk dist dist-electron`). Rounded up an order of magnitude
+src/shared/resource-monitor.ts:360:/** Is the process whose `/proc/<pid>/stat` text is `statText` (null = unreadable/gone) still the SAME live process
+src/shared/resources.ts:21:   *  (`ps -o pcpu` on macOS); null on Linux where the percentage is derived
+src/shared/resources.ts:113:/** Parse one /proc/<pid>/stat file. The comm field is wrapped in parentheses
+src/shared/resources.ts:145:/** Parse `ps -axo pid=,ppid=,rss=,pcpu=,comm=` output (the non-Linux
+src/shared/worktree-sizes.ts:22: * Parse `du -k --max-depth=1 <root>` output — "<KiB>\t<absolute path>" lines —
+src/shared/worktree-sizes.ts:45: * Parse `btrfs filesystem du -s --raw <path…>` output into a path → EXCLUSIVE

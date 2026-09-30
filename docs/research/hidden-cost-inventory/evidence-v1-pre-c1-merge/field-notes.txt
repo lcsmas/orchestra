@@ -1,0 +1,8 @@
+store.json: 39 workspaces, 33 active, 4 repos
+  active by kind: {('scratch', 'local'): 4, ('orchestrator', 'local'): 1, ('worktree', 'local'): 28}
+  active per repoPath: {'(none)': 4, 'metarepo': 10, 'orchestra': 19}
+  with linkedPrs: 4  accounts: 2
+transcripts: 31 workspaces, median 3.31 MB, max 47.8 MB; loop-scan (5 min sweep, cap 8 MB) would read 42.7 MB from the 11 transcripts changed in the last 5 min (110.2 MB if all changed)
+live log /home/lmas/.config/orchestra/logs/orchestra.log: 88 'electron-cpu over threshold' warnings (one per minute the process is >100% CPU); first 2026-09-30T02:34:03.243Z last 2026-09-30T05:23:04.184Z = 169 min span; distinct (type,pid): [('Tab', '4136054')]
+gh rate_limit core (env GITHUB_TOKEN): {"limit":5000,"remaining":5000,"reset":1790749422,"used":0}
+gh rate_limit core (hosts.yml token): {"limit":5000,"remaining":5000,"reset":1790749422,"used":0}

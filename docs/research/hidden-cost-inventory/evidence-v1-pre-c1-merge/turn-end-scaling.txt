@@ -1,0 +1,8 @@
+heavy (default)                    after-first-reply count_tokens=57 model=0 other=0 | before: model=2 ct=0 | instrument-void=false
+memoryFiles=0                      after-first-reply count_tokens=7 model=0 other=0 | before: model=2 ct=0 | instrument-void=true instrument.modelRequestCarries.rule_last
+memoryFiles=25                     after-first-reply count_tokens=32 model=0 other=0 | before: model=2 ct=0 | instrument-void=false
+skills=0                           after-first-reply count_tokens=57 model=0 other=0 | before: model=2 ct=0 | instrument-void=true instrument.modelRequestCarries.skill_last
+skills=30                          after-first-reply count_tokens=57 model=0 other=0 | before: model=2 ct=0 | instrument-void=false
+mcpServers=0                       after-first-reply count_tokens=57 model=0 other=0 | before: model=2 ct=0 | instrument-void=true instrument.modelRequestCarries.mcp_tool_last
+toolsPerServer=5                   after-first-reply count_tokens=57 model=0 other=0 | before: model=2 ct=0 | instrument-void=false
+bare (0 rules, 0 skills, 0 mcp)    after-first-reply count_tokens=7 model=0 other=0 | before: model=2 ct=0 | instrument-void=true instrument.modelRequestCarries.rule_last,instrument.modelRequestCarries.skill_last,instrument.modelRequestCarries.mcp_tool_last

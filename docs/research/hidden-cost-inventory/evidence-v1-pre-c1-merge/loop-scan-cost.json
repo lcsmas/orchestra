@@ -1,0 +1,42 @@
+{
+ "generatedAt": "2026-09-30T05:20:29.044Z",
+ "ws": 32,
+ "runs": 5,
+ "capBytes": 8388608,
+ "loadavg": "9.82 12.86 13.57",
+ "cases": [
+  {
+   "transcriptMB": 0.25,
+   "bytesReadPerWorkspace": 262144,
+   "bytesReadPerSweep": 8388608,
+   "wallMsMedian": 25,
+   "cpuMsMedian": 32,
+   "unchangedFleetControl": {
+    "wallMs": 3,
+    "cpuMs": 2
+   }
+  },
+  {
+   "transcriptMB": 2.4,
+   "bytesReadPerWorkspace": 2516582,
+   "bytesReadPerSweep": 80530624,
+   "wallMsMedian": 160,
+   "cpuMsMedian": 158,
+   "unchangedFleetControl": {
+    "wallMs": 2,
+    "cpuMs": 2
+   }
+  },
+  {
+   "transcriptMB": 9,
+   "bytesReadPerWorkspace": 8388608,
+   "bytesReadPerSweep": 268435456,
+   "wallMsMedian": 539,
+   "cpuMsMedian": 523,
+   "unchangedFleetControl": {
+    "wallMs": 2,
+    "cpuMs": 1
+   }
+  }
+ ]
+}

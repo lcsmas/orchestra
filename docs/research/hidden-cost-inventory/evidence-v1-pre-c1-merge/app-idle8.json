@@ -1,0 +1,296 @@
+{
+ "label": "idle8",
+ "ws": 8,
+ "fakeNet": true,
+ "pkgVersion": "0.5.298",
+ "warmS": 30,
+ "measureS": 300,
+ "void": [],
+ "windows": [
+  {
+   "name": "warm",
+   "seconds": 30.001,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790743779709,
+   "t1": 1790743809710,
+   "execlogBytes0": 14429,
+   "orchestraLogBytes": 1166,
+   "rssKB": 696816,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 0.55,
+     "waitedKidsCpuS": 0.4,
+     "n": 1,
+     "rssKB": 212144
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 110736
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 0.35,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 134704
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 74016
+    },
+    "electron-renderer": {
+     "ownCpuS": 0.63,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 163152
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    },
+    "other": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 0,
+     "rssKB": 0
+    }
+   }
+  },
+  {
+   "name": "steady-visible",
+   "seconds": 300.003,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790743809714,
+   "t1": 1790744109717,
+   "execlogBytes0": 23636,
+   "orchestraLogBytes": 14425,
+   "rssKB": 710240,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 3.4,
+     "waitedKidsCpuS": 3.77,
+     "n": 1,
+     "rssKB": 220192
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 110736
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 3.09,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 133360
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73840
+    },
+    "electron-renderer": {
+     "ownCpuS": 4.83,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 170048
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    }
+   }
+  }
+ ],
+ "bootToUiMs": 981,
+ "rowsMounted": 8,
+ "timeAt": [
+  {
+   "name": "warm",
+   "t0": 1790743779709,
+   "t1": 1790743809710
+  },
+  {
+   "name": "steady-visible",
+   "t0": 1790743809714,
+   "t1": 1790744109717
+  }
+ ],
+ "versionFromApp": "0.5.298",
+ "rigArtifactExecs": 65,
+ "events": {
+  "warm": {
+   "execTotal": 148,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 72,
+     "perMin": 144
+    },
+    "git ls-files": {
+     "count": 36,
+     "perMin": 72
+    },
+    "git diff": {
+     "count": 32,
+     "perMin": 64
+    },
+    "git rev-list": {
+     "count": 8,
+     "perMin": 16
+    }
+   },
+   "dns": {
+    "api.anthropic.com": {
+     "count": 1,
+     "perMin": 2
+    }
+   },
+   "connectInet": {
+    "[2607:6bc0::10]:443": {
+     "count": 1,
+     "perMin": 2
+    },
+    "160.79.104.10:443": {
+     "count": 1,
+     "perMin": 2
+    }
+   },
+   "connectUnixCount": 1
+  },
+  "steady-visible": {
+   "execTotal": 1304,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 648,
+     "perMin": 129.6
+    },
+    "git diff": {
+     "count": 304,
+     "perMin": 60.8
+    },
+    "git ls-files": {
+     "count": 304,
+     "perMin": 60.8
+    },
+    "gh api repos/{owner}/{repo}/releases?per_page=N": {
+     "count": 36,
+     "perMin": 7.2
+    },
+    "gh api <o>/<r>/repo/pulls/N": {
+     "count": 8,
+     "perMin": 1.6
+    },
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": {
+     "count": 4,
+     "perMin": 0.8
+    }
+   },
+   "dns": {
+    "api.anthropic.com": {
+     "count": 15,
+     "perMin": 3
+    }
+   },
+   "connectInet": {
+    "[2607:6bc0::10]:443": {
+     "count": 15,
+     "perMin": 3
+    },
+    "160.79.104.10:443": {
+     "count": 15,
+     "perMin": 3
+    }
+   },
+   "connectUnixCount": 15
+  },
+  "boot": {
+   "execTotal": 88,
+   "execByKey": {
+    "git rev-parse": 19,
+    "gh api <o>/<r>/repo/pulls/N": 8,
+    "git rev-list": 5,
+    "git diff": 4,
+    "gh api repos/{owner}/{repo}/releases?per_page=N": 4,
+    "git ls-files": 4,
+    "grepconf.sh": 3,
+    "grep": 3,
+    "sh -c command": 3,
+    "electron --type=zygote": 2,
+    "find /etc/debuginfod": 2,
+    "xargs": 2,
+    "tr \\n": 2,
+    "git fetch": 2,
+    "sh -c git-upload-pack": 2,
+    "git-upload-pack /home/lmas/.cache/hidden-cost/": 2,
+    "zsh -c -ilc": 1,
+    "clear": 1,
+    "id": 1,
+    "hostnamectl": 1,
+    "cat /etc/debuginfod/elfutils.urls": 1,
+    "cat /etc/debuginfod/elfutils.certp": 1,
+    "flatpak": 1,
+    "tty": 1,
+    "locale": 1,
+    "sed": 1,
+    "readlink /proc/125/exe": 1,
+    "basename /usr/bin/zsh": 1,
+    "env": 1,
+    "exe": 1,
+    "git worktree": 1,
+    "git pull": 1,
+    "git maintenance": 1,
+    "git merge": 1,
+    "git config": 1,
+    "claude": 1,
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": 1
+   },
+   "dns": {
+    "api.anthropic.com": 2,
+    "api.linear.app": 8,
+    "redirector.gvt1.com": 1
+   },
+   "connectInet": {
+    "[2607:6bc0::10]:443": 2,
+    "[2001:4860:4860::8888]:443": 1,
+    "160.79.104.10:443": 2,
+    "[2a00:1450:4007:809::200e]:443": 1,
+    "142.251.39.206:443": 1,
+    "[2a06:98c1:3105::6812:282d]:443": 8,
+    "104.18.40.45:443": 8,
+    "[2606:4700:440a::ac40:93d3]:443": 8,
+    "172.64.147.211:443": 8
+   }
+  }
+ },
+ "controls": {
+  "execlogLines": 1760,
+  "appOwnGitSpawns": 1463,
+  "ghStubCalls": 61,
+  "execlogSawGh": 61,
+  "visibilities": [
+   "warm:visible->visible",
+   "steady-visible:visible->visible"
+  ]
+ },
+ "ghCallsSample": [
+  "1790743779364 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790743779369 api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790743779374 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790743779380 api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790743779382 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}"
+ ]
+}

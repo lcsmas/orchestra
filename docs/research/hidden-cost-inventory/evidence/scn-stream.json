@@ -1,0 +1,263 @@
+{
+ "label": "stream",
+ "cfg": {
+  "turns": [
+   {
+    "tools": 0,
+    "stream": 600
+   },
+   {
+    "tools": 0,
+    "stream": 2000
+   }
+  ],
+  "idleSeconds": 5,
+  "hooks": false,
+  "profile": {},
+  "probeModels": false,
+  "httpMcp": 0,
+  "parity": false
+ },
+ "controls": {
+  "hooksInstalled": false,
+  "execlogLines": 132,
+  "ranAnyHookScript": true,
+  "firstModelTools": 91,
+  "egress": [],
+  "egressDetail": [],
+  "parity": false,
+  "survivorsAfterTeardown": 0
+ },
+ "requestLog": [
+  {
+   "tMs": 1280,
+   "model": "claude-opus-4-8",
+   "tools": 91,
+   "messages": 2,
+   "bodyBytes": 402869
+  },
+  {
+   "tMs": 4642,
+   "model": "claude-opus-4-8",
+   "tools": 91,
+   "messages": 5,
+   "bodyBytes": 406687
+  }
+ ],
+ "windows": [
+  {
+   "name": "turn0-tools0-stream600",
+   "t0": 72508259,
+   "t1": 72512289,
+   "runnerKidsCpuMs": 0,
+   "mainProcessCpuMs": 287,
+   "rendererIpc": {
+    "events": 608,
+    "jsonBytes": 72503,
+    "byType": {
+     "user-message": 1,
+     "queue-update": 1,
+     "session/init": 1,
+     "session/status": 1,
+     "block-start": 1,
+     "text-delta": 600,
+     "block-stop": 1,
+     "turn-end": 1,
+     "session/context": 1
+    }
+   },
+   "seconds": 4.03,
+   "requests": {
+    "model": 1,
+    "count_tokens": 57,
+    "other": 0
+   },
+   "otherPaths": [],
+   "cpu": {
+    "keeper": {
+     "ownCpuMs": 90,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 55360
+    },
+    "cli": {
+     "ownCpuMs": 900,
+     "waitedKidsCpuMs": 50,
+     "n": 1,
+     "rssKB": 293984
+    },
+    "mcp": {
+     "ownCpuMs": 280,
+     "waitedKidsCpuMs": 0,
+     "n": 4,
+     "rssKB": 207504
+    }
+   },
+   "turnEnded": true,
+   "execByKey": {
+    "node-22 /home/lmas/.orchestra/worktr": 4,
+    "sh [hook orchestra-hook.sh]": 3,
+    "bash [hook orchestra-hook.sh]": 3,
+    "mkdir": 3,
+    "flock": 3,
+    "cat /home/lmas/.cache/hidden-cos": 3,
+    "rg": 3,
+    "git remote": 2,
+    "sh [hook inbox-instruction.sh]": 2,
+    "bash [hook inbox-instruction.sh]": 2,
+    "sh [hook rename-instruction.sh]": 2,
+    "bash [hook rename-instruction.sh]": 2,
+    "cat": 2,
+    "sh [hook link-instruction.sh]": 2,
+    "bash [hook link-instruction.sh]": 2,
+    "claude (CLI)": 1,
+    "git ls-files": 1,
+    "git status": 1,
+    "git log": 1,
+    "git config": 1,
+    "sh [": 1,
+    "sh [hook orchestrator-instruction.sh]": 1,
+    "bash [hook orchestrator-instruction.sh]": 1,
+    "sh [hook bus-switches-instruction.sh]": 1,
+    "bash [hook bus-switches-instruction.sh]": 1,
+    "sh [hook fieldguide-instruction.sh]": 1,
+    "sh [hook self-modify-instruction.sh]": 1,
+    "bash [hook self-modify-instruction.sh]": 1,
+    "grep": 1,
+    "bash [hook fieldguide-instruction.sh]": 1,
+    "sh [hook comms-resurface.sh]": 1,
+    "bash [hook comms-resurface.sh]": 1
+   },
+   "execTotal": 55,
+   "hookScriptExecs": 28,
+   "dns": {},
+   "connectInet": {
+    "127.0.0.1:38525": 55
+   }
+  },
+  {
+   "name": "turn1-tools0-stream2000",
+   "t0": 72512293,
+   "t1": 72515601,
+   "runnerKidsCpuMs": 0,
+   "mainProcessCpuMs": 88,
+   "rendererIpc": {
+    "events": 2008,
+    "jsonBytes": 189018,
+    "byType": {
+     "user-message": 1,
+     "queue-update": 1,
+     "session/init": 1,
+     "session/status": 1,
+     "block-start": 1,
+     "text-delta": 2000,
+     "block-stop": 1,
+     "turn-end": 1,
+     "session/context": 1
+    }
+   },
+   "seconds": 3.31,
+   "requests": {
+    "model": 1,
+    "count_tokens": 0,
+    "other": 0
+   },
+   "otherPaths": [],
+   "cpu": {
+    "keeper": {
+     "ownCpuMs": 70,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 62992
+    },
+    "cli": {
+     "ownCpuMs": 230,
+     "waitedKidsCpuMs": 20,
+     "n": 1,
+     "rssKB": 302080
+    },
+    "mcp": {
+     "ownCpuMs": 0,
+     "waitedKidsCpuMs": 0,
+     "n": 4,
+     "rssKB": 207504
+    }
+   },
+   "turnEnded": true,
+   "execByKey": {
+    "sh [hook orchestra-hook.sh]": 2,
+    "bash [hook orchestra-hook.sh]": 2,
+    "mkdir": 2,
+    "flock": 2,
+    "cat /home/lmas/.cache/hidden-cos": 2,
+    "sh [hook rename-instruction.sh]": 1,
+    "bash [hook rename-instruction.sh]": 1,
+    "sh [hook comms-resurface.sh]": 1,
+    "sh [hook inbox-instruction.sh]": 1,
+    "bash [hook comms-resurface.sh]": 1,
+    "sh [hook link-instruction.sh]": 1,
+    "bash [hook link-instruction.sh]": 1,
+    "bash [hook inbox-instruction.sh]": 1,
+    "cat": 1,
+    "git": 1,
+    "git worktree": 1
+   },
+   "execTotal": 21,
+   "hookScriptExecs": 12,
+   "dns": {},
+   "connectInet": {}
+  },
+  {
+   "name": "idle",
+   "t0": 72515602,
+   "t1": 72520602,
+   "runnerKidsCpuMs": 0,
+   "mainProcessCpuMs": 88,
+   "rendererIpc": {
+    "events": 0,
+    "jsonBytes": 0,
+    "byType": {}
+   },
+   "seconds": 5,
+   "requests": {
+    "model": 0,
+    "count_tokens": 0,
+    "other": 0
+   },
+   "otherPaths": [],
+   "cpu": {
+    "keeper": {
+     "ownCpuMs": 20,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 59088
+    },
+    "cli": {
+     "ownCpuMs": 20,
+     "waitedKidsCpuMs": 0,
+     "n": 1,
+     "rssKB": 301952
+    },
+    "mcp": {
+     "ownCpuMs": 70,
+     "waitedKidsCpuMs": 0,
+     "n": 4,
+     "rssKB": 200160
+    }
+   },
+   "execByKey": {},
+   "execTotal": 0,
+   "hookScriptExecs": 0,
+   "dns": {},
+   "connectInet": {}
+  }
+ ],
+ "finalRssKB": {
+  "keeper": 59088,
+  "cli": 301952,
+  "mcp": 200160
+ },
+ "rc": 0,
+ "containment": "netns+pidns",
+ "loadavgAtStart": 8.66
+}

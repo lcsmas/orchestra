@@ -1,0 +1,116 @@
+src/main/activity.ts:936: *  Used at SessionStart when the hook's `source` says the context was just
+src/main/activity.ts:985:   *  spool path never queues a submit (UserPromptSubmit fires at a real prompt
+src/main/activity.ts:1113:      // SessionStart. The `tool` slot carries the hook payload's `source`
+src/main/events-spool.ts:267:    // #127: the tool_use id the hook mined from the PreToolUse/PostToolUse
+src/main/hooks-server.ts:50:// (UserPromptSubmit, Stop) whose command POSTs `{id, event}` JSON here, so
+src/main/inbox-tray.ts:6:// hook printed and deleted it at the target's next SessionStart or
+src/main/inbox-tray.ts:7:// UserPromptSubmit, so a parked message sat unseen for as long as the workspace
+src/main/inbox-tray.ts:27://    `cat "$f"; rm -f "$f"` on every SessionStart AND every UserPromptSubmit
+src/main/link-backfill.ts:83:  // own links" — an unbackfilled workspace is asked by the SessionStart hook.
+src/main/session-watchdog.ts:322:/** How long to let the wake turn's `UserPromptSubmit` hook drain land before
+src/main/session-watchdog.ts:429:  //    stayed on disk, and that very turn's `UserPromptSubmit` hook then
+src/main/session-watchdog.ts:454:  //    The wake turn runs `UserPromptSubmit`, whose INBOX_INSTRUCTION_SCRIPT
+src/main/hibernation-activity.ts:86:   *  spool hook mines it from the PreToolUse payload. `null` when unknown (an old
+src/main/agent-sdk.ts:660: *  spool — shell hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) that
+src/main/agent-sdk.ts:975:  // Auto-rename gate parity with startAgentPty (workspaces.ts): the SessionStart
+src/main/agent-sdk.ts:976:  // /UserPromptSubmit rename-instruction hook hard-gates on
+src/main/agent-sdk.ts:1364:      // exactly what both facts record. SessionStart hook events precede init,
+src/main/agent-sdk.ts:2036:      // across compaction is still the orchestrator-instruction SessionStart hook
+src/main/agent-sdk.ts:3078:  // parity with the terminal path's UserPromptSubmit hook.
+src/main/agent-sdk.ts:3195:    // durable inbox, which the UserPromptSubmit hook drains into the target's
+src/main/api-handlers.ts:877:        // Status flips to running once Claude fires its UserPromptSubmit hook.
+src/main/api-handlers.ts:909:    // status itself flips from Claude's own UserPromptSubmit hook.
+src/main/workspaces.ts:302: * SessionStart hook (HOOK_SESSION_START_READY_CMD) touches it the instant the
+src/main/workspaces.ts:1452:/** Remove the orchestrator sentinel so the standing reminder and the PreToolUse
+src/main/workspaces.ts:1470:// How long to wait for an agent's SessionStart readiness sentinel before giving
+src/main/workspaces.ts:1484:// flips off `idle` the instant the agent's UserPromptSubmit hook fires. If it
+src/main/workspaces.ts:1648: * UserPromptSubmit hook (`submit` → `running`) the instant it accepts the
+src/main/workspaces.ts:2131:      // Same sentinel as the scratch path: it flips the SessionStart standing
+src/main/workspaces.ts:2133:      // dual-role wording for a worktree (it has a repo), and the PreToolUse
+src/main/workspaces.ts:2271:    // Drop the sentinel so the standing delegation reminder and the PreToolUse
+src/main/workspaces.ts:2524:    // the dual-role SessionStart reminder already describes.
+src/main/workspaces.ts:3018:// which the peer drains into context on its next SessionStart.
+src/main/workspaces.ts:3316: * target drains into context on its next SessionStart. */
+src/main/workspaces.ts:3671: * on write failure. The inbox SessionStart/UserPromptSubmit hook prints + clears
+src/main/workspaces.ts:3785:// 1. Agent-driven branch rename. A SessionStart hook injects an instruction
+src/main/workspaces.ts:3792:// 2. Activity tracking. UserPromptSubmit + Stop + Notification + PreToolUse +
+src/main/workspaces.ts:3793://    PostToolUse(+Failure) + PostToolBatch hooks each append one JSON line to a durable per-workspace
+src/main/workspaces.ts:3818:// A tool call can END without PostToolUse (#199 residual, T6b): a FAILED call fires
+src/main/workspaces.ts:3819:// PostToolUseFailure instead, and a DENIED call fires neither — only the batch's
+src/main/workspaces.ts:3821:const POSTTOOL_HOOK_EVENTS = ['PostToolUse', 'PostToolUseFailure'] as const;
+src/main/workspaces.ts:3823:// SessionStart, whose payload `source` distinguishes startup/resume from
+src/main/workspaces.ts:3828:// SessionStart hook delegates to a small shell script we drop into the
+src/main/workspaces.ts:3841:// SessionStart hooks. They moved to Claude Code project skills
+src/main/workspaces.ts:3846:// Peer-gated comms reminder, fired on every UserPromptSubmit (the script
+src/main/workspaces.ts:3854:// Drains any queued peer messages into context. Runs on SessionStart AND every
+src/main/workspaces.ts:3855:// UserPromptSubmit so a message that landed in the inbox while the agent was
+src/main/workspaces.ts:3861:// SessionStart ONLY (the script self-silences on non-orchestrator workspaces).
+src/main/workspaces.ts:3862:// SessionStart covers startup, resume, clear AND post-compaction — exactly the
+src/main/workspaces.ts:3865:// child-sized work itself. Deliberately NOT wired to UserPromptSubmit: a
+src/main/workspaces.ts:3869:// SessionStarts is the zero-token orchestrator-guard PreToolUse hook below.
+src/main/workspaces.ts:3873:// Field-guide injection for spawned children, SessionStart only (same cadence
+src/main/workspaces.ts:3875:// transcript, while SessionStart covers startup/resume/clear/post-compaction —
+src/main/workspaces.ts:3880:// PR/Linear link nudge, SessionStart. The script self-silences once both
+src/main/workspaces.ts:3885:// Same script in `prompt` mode, on UserPromptSubmit: the narrow re-ask for a
+src/main/workspaces.ts:3888:// here and nowhere else). A distinct command string from the SessionStart one,
+src/main/workspaces.ts:3893:// Hard enforcement of the orchestrator contract: a PreToolUse hook on the
+src/main/workspaces.ts:3909:// on SessionStart only (startup / resume / clear / post-compaction — the same
+src/main/workspaces.ts:3916:// Fleet-bus switch states, SessionStart only (#118, ledger #123). Tells the
+src/main/workspaces.ts:3919:// rationale as the other SessionStart injections: the switch set is frozen for
+src/main/workspaces.ts:3925:// Touches the readiness sentinel the instant the TUI fires SessionStart, so the
+src/main/workspaces.ts:3939:# e.g. when the user explicitly asks). Runs on SessionStart AND every
+src/main/workspaces.ts:3940:# UserPromptSubmit so the nudge re-surfaces the moment the work scope sharpens.
+src/main/workspaces.ts:3987:// (with embedded curl payloads) on every SessionStart. That text then lived in
+src/main/workspaces.ts:4482:// UserPromptSubmit. The `orchestra-comms` skill's description is always in
+src/main/workspaces.ts:4517:// hook re-injects a compact version of the contract on every SessionStart —
+src/main/workspaces.ts:4529:# on SessionStart (startup / resume / clear / post-compaction) so it survives
+src/main/workspaces.ts:4553:// line-budgeted notes file injected into every child at SessionStart, so
+src/main/workspaces.ts:4557:// write it — the PreToolUse guard blocks only OTHER workspaces' files — and
+src/main/workspaces.ts:4559:// each SessionStart: `parentId` is mutable (`/attach`), so baking it into pty
+src/main/workspaces.ts:4566:# guide on SessionStart. Safe no-op outside orchestra / no parent / no guide.
+src/main/workspaces.ts:4586:// rewritten on every spawn — so this SessionStart notice spells them out at
+src/main/workspaces.ts:4657://   SessionStart (no arg) — the full ask, whenever EITHER link is missing. Once
+src/main/workspaces.ts:4661://   UserPromptSubmit (`prompt`) — a re-ask that fires ONLY when the branch name
+src/main/workspaces.ts:4663://     LINK_PROMPT_NUDGE_BUDGET times ever. This exists because SessionStart
+src/main/workspaces.ts:4687:#   (no arg)  SessionStart : the full ask while either link is missing.
+src/main/workspaces.ts:4688:#   prompt    UserPromptSubmit : re-ask ONLY when the branch names a plausible
+src/main/workspaces.ts:4740:# present, and stay SILENT otherwise — nagging on every SessionStart because
+src/main/workspaces.ts:4761:    # later be cleared, the SessionStart ask still covers it.
+src/main/workspaces.ts:4772:# --- SessionStart: the full ask.
+src/main/workspaces.ts:4788:// Hard-enforcement companion to the reminder above, wired as a PreToolUse
+src/main/workspaces.ts:4900:    # posttool). PreToolUse/PostToolUse/PostToolUseFailure payloads carry it as their LAST
+src/main/workspaces.ts:4903:    # SessionStart carries no tool; reuse the tool slot for its "source"
+src/main/workspaces.ts:4994: * Claude Code `matcher` (e.g. `'Edit|Write'` on PreToolUse). Presence is keyed
+src/main/workspaces.ts:5151:  // Expose the current branch and auto-rename gate to hooks. The SessionStart
+src/main/workspaces.ts:5246:      // command must still force the one reinstall (T6b added PostToolUseFailure).
+src/main/workspaces.ts:5404: * Write the fleet-bus switch states into the worktree, for the SessionStart
+src/main/workspaces.ts:5641:    // three full-prose SessionStart instruction scripts and the ungated
+src/main/workspaces.ts:5653:    let submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
+src/main/workspaces.ts:5661:    // work scope is clear — not only at the context-free SessionStart.
+src/main/workspaces.ts:5675:    // The orchestrator reminder is deliberately NOT on UserPromptSubmit (a
+src/main/workspaces.ts:5677:    // SessionStart, and the PreToolUse guard enforces between resets. Evict
+src/main/workspaces.ts:5682:    hooks.UserPromptSubmit = submitList;
+src/main/workspaces.ts:5699:    // Per-tool granularity: PreToolUse surfaces which tool the agent is about
+src/main/workspaces.ts:5700:    // to run (Bash, Edit, …) and PostToolUse clears it. Status stays `running`
+src/main/workspaces.ts:5702:    const preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
+src/main/workspaces.ts:5708:    hooks.PreToolUse = preToolList;
+src/main/workspaces.ts:5721:    let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
+src/main/workspaces.ts:5726:    // possible in the SessionStart fan-out rather than after the instruction
+src/main/workspaces.ts:5736:    // Fleet-bus switch states (#118) — SessionStart only; the set is frozen for
+src/main/workspaces.ts:5747:    hooks.SessionStart = sessionStartList;
+src/renderer/components/StructuredView.tsx:1320:  // UserPromptSubmit hook drains the inbox exactly as a turn begins). This makes
+src/renderer/components/StructuredView.tsx:1374:  // Re-derive on every turn start: the UserPromptSubmit hook `cat`s and `rm`s
+src/renderer/store.ts:861:  // PreToolUse/PostToolUse hook of every running agent. zustand notifies all
+src/shared/agent-events.ts:1320: *  (UserPromptSubmit/PreToolUse/PostToolUse/Notification/Stop). The Claude Agent
+src/shared/agent-events.ts:1330:      // A submitted turn — the agent is now working (↔ UserPromptSubmit).
+src/shared/agent-events.ts:1333:      // A tool is about to run: `running` + the active-tool label (↔ PreToolUse).
+src/shared/agent-events.ts:1336:      // Tool finished: stay `running`, clear the label (↔ PostToolUse).
+src/shared/bus-mirror.ts:23: *   - `inbox`     parked in the durable inbox file for the next SessionStart
+src/shared/cross-session-inbound.ts:47: * per-workspace inbox file drained by a SessionStart hook. In CODE, at
+src/shared/inbox-blocks.ts:35:// SessionStart AND every UserPromptSubmit (workspaces.ts) and does
+src/shared/inbox-blocks.ts:147: *  hook drains the file on every SessionStart and UserPromptSubmit, so a block
+src/shared/ipc.ts:732:   *  PreToolUse hook (the agent is about to run Bash/Edit/…) and with `null`
+src/shared/ipc.ts:733:   *  on PostToolUse / turn end. Not persisted — purely a live UI label. */
+src/shared/session-wedge.ts:35://     UserPromptSubmit SHELL HOOK, i.e. only by a turn starting
+src/shared/session-wedge.ts:107: *  SessionStart `system/hook_*` events are always emitted ~1 s BEFORE init — on
+src/shared/types.ts:494:   * (SessionStart source=clear); when the transcript reconcile finds the last

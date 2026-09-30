@@ -1,0 +1,21 @@
+control ok (session.q.getContextUsage sites: 1)
+25	css-infinite	infinite
+18	gh-cli	'gh'|"gh"|gh (pr|api|run|issue)
+4	git-net	'(fetch|push|pull|ls-remote)'|"(fetch|push|pull|ls-remote)"
+116	hook-script	hookTimeout|PreToolUse|PostToolUse|UserPromptSubmit|SessionStart|"Stop"
+6	net-fetch	\bfetch\(
+7	net-http	https?\.(request|get)\(|net\.request\(|net\.(connect|createConnection)\(|new WebSocket|createServer\(
+0	net-updater	autoUpdater|checkForUpdates
+0	npx	npx |bunx |pnpm dlx|@latest
+36	proc-exec	\bexec\(
+34	proc-spawn	\b(spawn|spawnSync|execFile|execFileSync|execSync|fork|pexec|pExecFile|execFileP|execFileAsync)\(
+3	pty	pty\.spawn|nodePty|spawnLocalPty
+24	raf	requestAnimationFrame
+34	resource-read	/proc/|readdir\(.*proc|ps -|tasklist|df -|du -
+33	sdk-control	\.(getContextUsage|supportedModels|supportedCommands|supportedAgents|mcpServerStatus|setMcpServers|initializationResult|accountInfo|reloadPlugins|reloadSkills|applyFlagSettings|setModel|setPermissionMode|setMaxThinkingTokens|rewindFiles|interrupt|streamInput|reconnectMcpServer|toggleMcpServer|mcpAuthenticate|stopTask)\(
+13	sdk-query	\bquery\(\{|spawnClaudeCodeProcess|sdkQuery\(
+9	shell-env	shellEnvSync|shell-env
+26	simple-git	simpleGit\(
+25	timer-interval	setInterval\(
+79	timer-timeout	setTimeout\(
+7	watch	fs\.watch\(|watchFile\(|chokidar|\.watch\(

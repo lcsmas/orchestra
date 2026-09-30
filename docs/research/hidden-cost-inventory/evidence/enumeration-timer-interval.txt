@@ -1,0 +1,25 @@
+src/keeper/index.ts:316:setInterval(() => {
+src/main/account-usage.ts:145:  pollTimer = setInterval(check, 1500);
+src/main/bus-wake.ts:988:  timer = setInterval(() => void sweepBusWake(), SWEEP_MS);
+src/main/events-spool.ts:412:  poll = setInterval(drainAll, POLL_MS);
+src/main/loop-scan.ts:109:  timer = setInterval(() => void sweepLoopScan(), SWEEP_MS);
+src/main/prompt-queue.ts:354:  timer = setInterval(() => void tick(), TICK_MS);
+src/main/self-tune.ts:367:  timer = setInterval(autoRunIfDue, CHECK_EVERY_MS);
+src/main/session-watchdog.ts:817:  timer = setInterval(() => {
+src/main/bus-liveness.ts:570:  timer = setInterval(() => sweepBusLiveness(), SWEEP_MS);
+src/main/hibernation.ts:216:  timer = setInterval(() => {
+src/main/sandbox-import.ts:368:  backupTimer = setInterval(() => {
+src/main/resource-monitor.ts:442:  timer = setInterval(() => {
+src/renderer/App.tsx:82:    timer = setInterval(fn, ms);
+src/renderer/components/AsksSection.tsx:26:    const t = setInterval(() => setNow(Date.now()), 30_000);
+src/renderer/components/BootStall.tsx:14:    const t = setInterval(() => setNow(Date.now()), 1000);
+src/renderer/components/BrowserPanel.tsx:127:    const timer = setInterval(() => {
+src/renderer/components/BusPane.tsx:458:    const t = setInterval(() => void refresh(), 2000);
+src/renderer/components/PromptQueueBanner.tsx:47:    const t = setInterval(() => setNow(Date.now()), 30_000);
+src/renderer/components/QueueStallBadge.tsx:48:    if (!timer) timer = setInterval(() => {
+src/renderer/components/ResourcesView.tsx:463:      timer = setInterval(() => void tick(), SAMPLE_MS);
+src/renderer/components/UsageBars.tsx:237:    const t = setInterval(() => setNow(Date.now()), 60_000);
+src/renderer/components/agent/AskRow.tsx:38:    const t = setInterval(() => setNow(Date.now()), 30_000);
+src/renderer/components/agent/BackgroundTasksPanel.tsx:222:    const id = setInterval(() => setNow(Date.now()), 1000);
+src/renderer/components/agent/TurnFooter.tsx:40:    const id = setInterval(() => setTick((t) => t + 1), ms);
+src/renderer/components/Sidebar.tsx:989:    const t = setInterval(refreshEnvStatus, 60_000);

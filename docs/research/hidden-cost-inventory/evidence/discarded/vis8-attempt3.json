@@ -1,0 +1,38 @@
+{
+ "label": "vis8",
+ "ws": 8,
+ "fakeNet": false,
+ "pkgVersion": "0.5.298",
+ "warmS": 20,
+ "measureS": 120,
+ "void": [
+  "run error: Error: timeout waiting for sidebar rows",
+  "only undefined/8 workspace rows mounted"
+ ],
+ "windows": [],
+ "domText": "evaluate failed: Error: cdp timeout Runtime.evaluate",
+ "error": "Error: timeout waiting for sidebar rows\n    at waitFor (file:///home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/scripts/hidden-cost/app-idle-rig.mjs:194:158)\n    at async file:///home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/scripts/hidden-cost/app-idle-rig.mjs:207:5",
+ "rigArtifactExecs": 11,
+ "events": {
+  "boot": {
+   "execTotal": 0,
+   "execByKey": {},
+   "dns": {},
+   "connectInet": {}
+  }
+ },
+ "controls": {
+  "execlogLines": 107,
+  "appOwnGitSpawns": 31,
+  "ghStubCalls": 9,
+  "execlogSawGh": 9,
+  "visibilities": []
+ },
+ "ghCallsSample": [
+  "1790748930553 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790748930557 api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790748930562 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790748930567 api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790748930574 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}"
+ ]
+}

@@ -1,0 +1,6 @@
+repo=/home/lmas/dev/metarepo branch=bloc2-nmc306-abo-findings tracked_files=196 load=9.19 12.79 13.55
+git diff --numstat HEAD                      wall     3.1 ms   cpu(user+sys)     2.5 ms   per spawn (mean of 20)
+git ls-files --others --exclude-standard     wall     1.8 ms   cpu(user+sys)     1.8 ms   per spawn (mean of 20)
+git rev-parse --verify origin/<branch>       wall     1.4 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+git rev-parse <branch> main                  wall     2.3 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+git rev-parse --abbrev-ref HEAD              wall     1.3 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)

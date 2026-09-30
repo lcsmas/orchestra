@@ -1,0 +1,13 @@
+src/main/agent-browser-tools.ts:40:// `query({ mcpServers: { browser: buildBrowserToolServer(wsId) } })`. Tools
+src/main/agent-sdk.ts:1859:  // #178 seam (a) — the ONLY query({resume}) in the codebase. PROACTIVELY
+src/main/agent-sdk.ts:1915:  session.q = query({
+src/main/agent-sdk.ts:1997:            spawnClaudeCodeProcess: makeKeeperSpawn(wsId, (pid, turnInFlight) => {
+src/main/agent-sdk.ts:2090: *  here so a resume never hands `query({resume})` a phantom id whose transcript
+src/main/agent-sdk.ts:2501:  const q = query({
+src/main/agent-sdk.ts:4893: *     `ws.sdkSessionId` via query({resume}) — the agent keeps its memory). No
+src/main/agent-sdk.ts:5039:  // Resumes ws.sdkSessionId (query({resume})) → same transcript, fresh CLI that
+src/main/keeper-client.ts:6:// module gives agent-sdk.ts a `spawnClaudeCodeProcess` implementation
+src/main/keeper-client.ts:674: * Build the `spawnClaudeCodeProcess` implementation for a workspace. The
+src/shared/resume-guard.ts:23:// exists) BEFORE handing it to `query({resume})` / `claude --continue`.
+src/shared/resume-guard.ts:42:/** Decide the resume id to hand `query({ resume })` for a structured
+src/shared/types.ts:184:   *  RESUMES the prior conversation (query({ resume }) — the agent keeps its

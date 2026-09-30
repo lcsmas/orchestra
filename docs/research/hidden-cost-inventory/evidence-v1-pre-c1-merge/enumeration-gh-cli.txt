@@ -1,0 +1,18 @@
+src/main/deps.ts:34:    checkCommand('gh'),
+src/main/git.ts:777: *  `gh pr list --head <branch>` therefore issued ~45 network calls to answer a
+src/main/git.ts:787: *   2. The REST `/pulls` endpoint instead of `gh pr list`. `gh pr list` is a
+src/main/git.ts:820:      'gh',
+src/main/git.ts:913: * `gh api repos/<owner>/<repo>/pulls/<number>` — rather than being looked up
+src/main/git.ts:922: *     `gh pr list` uses and that this subsystem already exhausted once). The
+src/main/git.ts:956:      'gh',
+src/main/git.ts:1056:      'gh',
+src/main/git.ts:1145:      'gh',
+src/main/link-backfill.ts:71:  // `findPullRequest` fetches every PR in a repo with `gh api --paginate` and
+src/main/agent-sdk.ts:862:  // PARENT session's ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR through process.env.
+src/main/api-handlers.ts:1255:      ? `gh run view ${checks.runId} --log-failed`
+src/main/api-handlers.ts:1256:      : `gh run list --branch "${ws.branch}" --limit 5` + ' then `gh run view <id> --log-failed`';
+src/shared/ci-state.ts:21:  /** Run id — lets "fix broken checks" point the agent at `gh run view`. */
+src/shared/linear.ts:132: * `gh api repos/<owner>/<repo>/pulls/<number>` call, which needs no local
+src/shared/types.ts:589:   * re-read from GitHub every poll (`gh api repos/<owner>/<repo>/pulls/<n>`),
+src/shared/types.ts:787: * `gh api repos/<owner>/<repo>/pulls/<number>` call, needing no local checkout,
+src/shared/types.ts:832:   * `gh run view <id> --log-failed`. */

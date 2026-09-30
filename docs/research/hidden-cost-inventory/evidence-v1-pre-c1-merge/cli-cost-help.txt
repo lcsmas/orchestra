@@ -1,0 +1,3 @@
+orchestra=/home/lmas/.orchestra/bin/orchestra -> /home/lmas/Applications/orchestra/release/Orchestra.AppImage (298234849 bytes) load=10.63 12.98 13.60 verb='help'
+runs=10  wall median 389 ms (min 323, max 495)  cpu(user+sys) median 190 ms  processes/call median 7
+exec kinds per call: {'orchestra': 3.0, 'Orchestra.AppImage': 1.0, 'bash': 1.0, 'unshare': 1.0, 'true': 1.0}

@@ -1,0 +1,78 @@
+src/cli/index.ts:570:            timer = setTimeout(finish, FLUSH_STALL_MS);
+src/cli/index.ts:573:          timer = setTimeout(finish, FLUSH_STALL_MS);
+src/cli/index.ts:591:    setTimeout(() => process.exit(code), FLUSH_STALL_MS);
+src/keeper/index.ts:143:  const kill = setTimeout(() => {
+src/keeper/index.ts:166:  const term = setTimeout(() => escalateKill(ESCALATE_KILL_MS, 'SIGTERM'), ESCALATE_TERM_MS);
+src/keeper/index.ts:343:      const to = setTimeout(() => {
+src/keeper/index.ts:362:      await new Promise((r) => setTimeout(r, 100));
+src/keeper/index.ts:413:      await new Promise((r) => setTimeout(r, 100));
+src/main/account-usage.ts:173:  const timer = setTimeout(() => ctrl.abort(), 15_000);
+src/main/account-usage.ts:218:  const timer = setTimeout(() => ctrl.abort(), 15_000);
+src/main/account-usage.ts:440:  timer = setTimeout(() => {
+src/main/browser-panel.ts:449:      setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms),
+src/main/bus-wake.ts:944:    debounce = setTimeout(() => void sweepBusWake(), WATCH_DEBOUNCE_MS);
+src/main/disk-space.ts:67:    const timer = setTimeout(() => reject(new Error(`statfs timed out after ${ms}ms`)), ms);
+src/main/human-gates.ts:212:    debounce = setTimeout(() => broadcastHumanGates(), WATCH_DEBOUNCE_MS);
+src/main/keeper-client.ts:186:    const to = setTimeout(() => {
+src/main/keeper-client.ts:210:      const to = setTimeout(() => resolve(null), 2000);
+src/main/keeper-client.ts:408:  for (let i = 0; i < 20 && signalled.some(descendantAlive); i++) await new Promise((r) => setTimeout(r, 50));
+src/main/keeper-client.ts:477:    await new Promise((r) => setTimeout(r, 50));
+src/main/keeper-client.ts:531:      const to = setTimeout(() => resolve(), 3000);
+src/main/keeper-client.ts:557:      await new Promise((r) => setTimeout(r, 100));
+src/main/keeper-client.ts:568:      for (let i = 0; i < 20 && waiting(); i++) await new Promise((r) => setTimeout(r, 50));
+src/main/keeper-client.ts:667:      await new Promise((r) => setTimeout(r, 100));
+src/main/keeper-client.ts:793:        const to = setTimeout(() => {
+src/main/linear.ts:114:  const timer = setTimeout(() => controller.abort(), 10_000);
+src/main/link-backfill.ts:95:          new Promise((r) => setTimeout(r, WARM_TIMEOUT_MS)),
+src/main/link-backfill.ts:112:          new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
+src/main/prompt-queue.ts:165:    setTimeout(() => writePty(id, '\r'), 80);
+src/main/prompt-queue.ts:177:      setTimeout(() => {
+src/main/pty.ts:221:    s.flushTimer = setTimeout(() => {
+src/main/pty.ts:519:  setTimeout(() => {
+src/main/resource-monitor.ts:271:  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+src/main/self-tune.ts:366:  kickoff = setTimeout(autoRunIfDue, STARTUP_DELAY_MS);
+src/main/session-watchdog.ts:481:    await new Promise((r) => setTimeout(r, INBOX_DRAIN_GRACE_MS));
+src/main/transport/sandbox-manager.ts:222:    const timer = setTimeout(() => {
+src/main/transport/sandbox-manager.ts:246:    const timer = setTimeout(resolve, ms);
+src/main/usage.ts:133:  const timer = setTimeout(() => ctrl.abort(), 15_000);
+src/main/usage.ts:200:  timer = setTimeout(() => {
+src/main/voice.ts:129:        const timer = setTimeout(() => {
+src/main/agent-sdk.ts:496:  session.bootStallTimer = setTimeout(() => {
+src/main/agent-sdk.ts:2330:        setTimeout(() => reject(new Error('supportedModels timed out')), 3000),
+src/main/agent-sdk.ts:2363:      const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+src/main/agent-sdk.ts:2406:        setTimeout(() => reject(new Error('model probe timed out')), 15_000),
+src/main/agent-sdk.ts:2441:        setTimeout(() => reject(new Error('getContextUsage timed out')), 3000),
+src/main/agent-sdk.ts:3051:    const t = setTimeout(() => resolve('timeout'), timeoutMs);
+src/main/agent-sdk.ts:3466:    const timer = setTimeout(() => {
+src/main/agent-sdk.ts:3504:  const timer = setTimeout(() => ctrl.abort(), 5_000);
+src/main/agent-sdk.ts:3589:    const timer = setTimeout(() => {
+src/main/agent-sdk.ts:4338:  if (withPlugins) await new Promise((r) => setTimeout(r, PLUGIN_RELOAD_SETTLE_MS));
+src/main/agent-sdk.ts:4625:    await new Promise((r) => setTimeout(r, MCP_REFRESH_SETTLE_POLL_MS));
+src/main/agent-sdk.ts:5010:      await new Promise((r) => setTimeout(r, 3_000));
+src/main/agent-sdk.ts:5061:  await Promise.race([authPromise, new Promise((r) => setTimeout(r, 1_500))]);
+src/main/agent-sdk.ts:5079:      new Promise<typeof STUCK>((r) => setTimeout(() => r(STUCK), MCP_STATUS_TIMEOUT_MS)),
+src/main/agent-sdk.ts:5101:    await Promise.race([authPromise, new Promise((r) => setTimeout(r, MCP_AUTH_POLL_MS))]);
+src/main/agent-sdk.ts:5276:    timer = setTimeout(
+src/main/api-handlers.ts:871:      setTimeout(() => {
+src/main/api-handlers.ts:1269:      setTimeout(() => writePty(id, '\r'), 80);
+src/main/api-handlers.ts:1323:      setTimeout(() => writePty(id, '\r'), 80);
+src/main/api-handlers.ts:1403:      setTimeout(() => resizePty(runId, cols, rows), 40);
+src/main/index.ts:48:      setTimeout(() => process.exit(1), 10_000);
+src/main/index.ts:634:    setTimeout(() => {
+src/main/workspaces.ts:317:    await new Promise((r) => setTimeout(r, 60));
+src/main/workspaces.ts:1579:    await new Promise((r) => setTimeout(r, READY_FALLBACK_MS));
+src/main/workspaces.ts:1619:      await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
+src/main/workspaces.ts:1624:      await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
+src/main/workspaces.ts:1670:    await new Promise((r) => setTimeout(r, SUBMIT_POLL_MS));
+src/main/workspaces.ts:3537:    setTimeout(() => writePty(input.to, '\r'), 80);
+src/main/workspaces.ts:3553:      setTimeout(() => {
+src/main/workspaces.ts:5134:      setTimeout(() => {
+src/renderer/App.tsx:142:    const t = setTimeout(() => setWsSetRev((r) => r + 1), 400);
+src/renderer/components/DiffPane.tsx:330:    const t = setTimeout(() => setToast(null), 2600);
+src/renderer/components/RowActionsPopover.tsx:60:    closeTimer.current = setTimeout(() => setTarget(null), CLOSE_DELAY_MS);
+src/renderer/components/Terminal.tsx:339:      bootTimer = setTimeout(clearBoot, BOOT_PILL_MAX_MS);
+src/renderer/components/UsageBars.tsx:254:    closeTimer.current = setTimeout(() => setOpen(false), 120);
+src/renderer/components/agent/CmComposer.tsx:499:      setTimeout(() => {
+src/renderer/components/agent/CodeBlock.tsx:76:              window.setTimeout(() => setCopied(false), 1200);
+src/renderer/components/agent/RemoteControl.tsx:117:      window.setTimeout(() => setCopied(false), 1600);
+src/renderer/components/agent/UsageWarningStrip.tsx:28:    const t = setTimeout(bump, ms + 1_000);

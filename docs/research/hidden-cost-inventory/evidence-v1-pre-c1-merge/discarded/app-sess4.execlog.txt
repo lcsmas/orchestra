@@ -1,0 +1,115 @@
+EXEC 66284472 107 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-zygote-sandbox --no-sandbox
+EXEC 66284475 108 105 /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron /home/lmas/.orchestra/worktrees/orchestra-lunar-river-d938bb1b/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron --type=zygote --no-sandbox
+CONNECT 66284572 105 unix /run/dbus/system_bus_socket
+EXEC 66284870 125 105 /usr/bin/zsh /usr/bin/zsh -ilc echo -n "_SHELL_ENV_DELIMITER_"; command env; echo -n "_SHELL_ENV_DELIMITER_"; exit
+EXEC 66284873 126 125 /usr/bin/clear clear
+EXEC 66284876 127 125 /usr/bin/id /usr/bin/id -un
+EXEC 66284877 128 125 /usr/bin/hostnamectl /usr/bin/hostnamectl --transient
+CONNECT 66284883 128 unix /run/dbus/system_bus_socket
+EXEC 66284888 129 125 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 66284889 130 129 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 66284895 131 125 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 66284898 132 131 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 66284900 133 125 /usr/libexec/grepconf.sh /usr/libexec/grepconf.sh -c
+EXEC 66284905 134 133 /usr/bin/grep grep -qsi ^COLOR.*none /etc/GREP_COLORS
+EXEC 66284907 136 135 /usr/bin/find find /etc/debuginfod -name *.urls -print0
+EXEC 66284908 137 135 /usr/bin/xargs xargs -0 cat
+EXEC 66284908 138 135 /usr/bin/tr tr \n  
+EXEC 66284910 139 137 cat cat /etc/debuginfod/elfutils.urls
+EXEC 66284913 141 140 /usr/bin/find find /etc/debuginfod -name *.certpath -print0
+EXEC 66284913 142 140 /usr/bin/xargs xargs -0 cat
+EXEC 66284914 143 140 /usr/bin/tr tr \n :
+EXEC 66284916 144 142 cat cat /etc/debuginfod/elfutils.certpath
+EXEC 66284918 146 145 /usr/bin/flatpak flatpak --installations
+EXEC 66284930 148 125 /usr/bin/tty tty
+EXEC 66284932 149 125 /usr/bin/locale /usr/bin/locale
+EXEC 66284933 150 125 /usr/bin/sed /usr/bin/sed -r -e s/^[[:blank:]]*([[:upper:]_]+)=([[:print:][:digit:]\._-]+|"[[:print:][:digit:]\._-]+")/export \1=\2/;t;d /etc/locale.conf
+EXEC 66284936 152 151 /usr/bin/readlink readlink /proc/125/exe
+EXEC 66284937 151 125 /usr/bin/basename basename /usr/bin/zsh
+EXEC 66284941 153 125 /usr/bin/env env
+CONNECT 66284952 105 unix /run/user/1000/wayland-3
+CONNECT 66284953 105 unix /run/user/1000/wayland-3
+CONNECT 66284954 105 unix /run/dbus/system_bus_socket
+CONNECT 66285004 105 unix /run/dbus/system_bus_socket
+EXEC 66285041 173 105 /bin/sh /bin/sh -c command -v git
+EXEC 66285044 174 105 /bin/sh /bin/sh -c command -v gh
+EXEC 66285045 175 105 /bin/sh /bin/sh -c command -v claude
+EXEC 66285049 176 105 /proc/self/exe /proc/self/exe --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --enable-crash-reporter=5259305a-3956-450f-b4fe-5fcbc22433f3,no_channel --user-data-dir=/home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/userData --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15337065347587339833,7650103670211817668,262144 --disable-features=SpareRendererForSitePerProcess --variations-seed-version
+CONNECT 66285092 169 unix /run/user/1000/wayland-3
+EXEC 66285118 198 105 git git worktree list --porcelain
+CONNECT 66285123 176 inet6 [2001:4860:4860::8888]:443
+CONNECT 66285123 176 inet 127.0.0.1:35245
+EXEC 66285432 212 105 git git rev-parse --verify refs/remotes/origin/main
+EXEC 66285441 213 105 git git config --get remote.origin.url
+EXEC 66285446 215 105 git git rev-list --count main..origin/main
+EXEC 66285451 216 105 git git rev-list --count origin/main..main
+EXEC 66285461 217 105 git git fetch origin main:main
+EXEC 66285464 218 217 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/repos/origin.git'
+EXEC 66285464 218 217 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/repos/origin.git
+EXEC 66285468 219 105 git git rev-parse --abbrev-ref HEAD
+EXEC 66285476 220 105 git git pull --ff-only origin main
+EXEC 66285478 221 220 /usr/libexec/git-core/git /usr/libexec/git-core/git fetch --update-head-ok origin main
+EXEC 66285481 222 221 /bin/sh /bin/sh -c git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/repos/origin.git' git-upload-pack '/home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/repos/origin.git'
+EXEC 66285482 222 221 /usr/libexec/git-core/git-upload-pack git-upload-pack /home/lmas/.cache/hidden-cost/rigs/e2e64c-2579046/oh/repos/origin.git
+EXEC 66285484 223 221 /usr/libexec/git-core/git /usr/libexec/git-core/git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+EXEC 66285488 224 221 /usr/libexec/git-core/git /usr/libexec/git-core/git maintenance run --auto --no-quiet --detach
+EXEC 66285492 226 220 /usr/libexec/git-core/git /usr/libexec/git-core/git merge --ff-only FETCH_HEAD
+EXEC 66285500 227 105 git git rev-parse --verify refs/remotes/origin/main
+EXEC 66285507 228 105 git git rev-list --count main..origin/main
+EXEC 66285511 229 105 git git rev-list --count origin/main..main
+EXEC 66285765 231 105 /home/lmas/.local/share/claude/versions/2.1.284 /home/lmas/.local/share/claude/versions/2.1.284 --version
+EXEC 66285789 232 105 git git rev-parse --abbrev-ref HEAD
+EXEC 66285794 233 105 git git rev-parse hc/ws-0 main
+EXEC 66285799 234 105 git git diff --numstat HEAD
+EXEC 66285807 235 105 git git rev-parse --abbrev-ref HEAD
+EXEC 66285822 236 105 git git rev-parse hc/ws-1 main
+EXEC 66285829 237 105 git git diff --numstat HEAD
+EXEC 66285844 238 105 git git rev-parse --abbrev-ref HEAD
+EXEC 66285860 239 105 git git rev-parse hc/ws-2 main
+EXEC 66285868 240 105 git git diff --numstat HEAD
+EXEC 66285874 241 105 git git rev-parse --abbrev-ref HEAD
+EXEC 66285887 242 105 git git rev-parse hc/ws-3 main
+EXEC 66285894 243 105 git git diff --numstat HEAD
+EXEC 66285899 244 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 66285904 246 105 gh gh api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66285905 245 244 /usr/bin/date date +%s%3N
+EXEC 66285913 247 246 /usr/bin/date date +%s%3N
+EXEC 66285914 248 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 66285922 249 248 /usr/bin/date date +%s%3N
+EXEC 66285924 250 105 gh gh api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66285925 251 250 /usr/bin/date date +%s%3N
+EXEC 66285936 252 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 66285952 253 252 /usr/bin/date date +%s%3N
+EXEC 66285953 254 105 gh gh api repos/fixture/repo/pulls/102 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66285964 255 105 gh gh api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}
+EXEC 66285965 256 254 /usr/bin/date date +%s%3N
+EXEC 66285975 257 105 gh gh api repos/fixture/repo/pulls/103 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66285979 258 105 gh gh api repos/{owner}/{repo}/actions/runs?per_page=100 --jq .workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}
+EXEC 66285979 260 255 /usr/bin/date date +%s%3N
+EXEC 66285980 259 257 /usr/bin/date date +%s%3N
+EXEC 66285983 261 258 /usr/bin/date date +%s%3N
+EXEC 66285986 262 105 git git ls-files --others --exclude-standard
+EXEC 66285992 263 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 66286000 264 105 git git ls-files --others --exclude-standard
+EXEC 66286006 265 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 66286010 266 105 git git ls-files --others --exclude-standard
+EXEC 66286013 267 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 66286024 268 105 git git ls-files --others --exclude-standard
+EXEC 66286028 269 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 66286037 270 105 gh gh api repos/fixture/repo/pulls/104 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66286043 276 105 gh gh api repos/fixture/repo/pulls/105 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66286044 275 270 /usr/bin/date date +%s%3N
+EXEC 66286046 277 276 /usr/bin/date date +%s%3N
+EXEC 66286049 278 105 gh gh api repos/fixture/repo/pulls/106 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66286054 279 278 /usr/bin/date date +%s%3N
+EXEC 66286057 280 105 git git rev-parse --verify origin/hc/ws-0
+EXEC 66286060 281 105 git git rev-parse --verify origin/hc/ws-1
+EXEC 66286065 282 105 git git rev-parse --verify origin/hc/ws-2
+EXEC 66286072 283 105 git git rev-parse --verify origin/hc/ws-3
+EXEC 66286076 284 105 gh gh api repos/fixture/repo/pulls/107 --jq {url: .html_url, number, title, state: (if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}
+EXEC 66286083 285 284 /usr/bin/date date +%s%3N
+EXEC 66286086 286 105 git git rev-list --count main..hc/ws-3
+EXEC 66286090 287 105 git git rev-list --count main..hc/ws-2
+EXEC 66286095 288 105 git git rev-list --count main..hc/ws-1
+EXEC 66286103 289 105 git git rev-list --count main..hc/ws-0
+EXEC 66286113 299 105 git git rev-list --count main..hc/ws-0

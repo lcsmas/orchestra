@@ -1,0 +1,5 @@
+pkg=@modelcontextprotocol/server-filesystem load=10.29 12.83 13.55 npm=10.9.4 prefer-offline=false
+runs=5 replies_ok=5/5  wall to reply+exit median 1314 ms (min 1257 max 1467)  cpu(user+sys) median 1805 ms  processes/start median 4
+exec kinds per start: {'npx': 1.0, 'sh': 1.0, 'mcp-server-filesystem': 1.0, 'node': 1.0}
+DNS lookups per start: {'registry.npmjs.org': 1.0}
+inet connects per start: {'[2606:4700::6810:22]:443': 0.4, '[2606:4700::6810:422]:443': 0.2, '[2606:4700::6810:622]:443': 0.2, '[2606:4700::6810:b22]:443': 0.2}

@@ -1,0 +1,25 @@
+live main pid=4135931 watched 90s distinct child pids seen=1490
+  677   451.3/min  ?
+  244   162.7/min  git diff
+  232   154.7/min  git rev-parse
+  162   108.0/min  git ls-files
+   77    51.3/min  gh api repos/{owner}/{repo}/releases?per_page=N
+   76    50.7/min  orchestra
+   16    10.7/min  node /home/lmas/.orchestra/bin/keep
+    2     1.3/min  orchestra --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,9333098631685288976,6012384182622260336,262144 --disable-features=SpareRendererForSitePerProcess --variations-seed-version
+    2     1.3/min  gh api repos/{owner}/{repo}/actions/runs?per_page=N
+    1     0.7/min  orchestra --type=zygote --no-zygote-sandbox
+    1     0.7/min  orchestra --type=zygote
+--- detail: full argv (first 160 chars) + observed lifetime ms, for classes orchestra / node / ?
+  658x  life median      5 ms  
+   76x  life median     11 ms  /tmp/.mount_OrcheskMjHcm/orchestra
+   19x  life median     -0 ms  ?
+    1x  life median  90000 ms  /tmp/.mount_OrcheskMjHcm/orchestra --type=zygote --no-zygote-sandbox
+    1x  life median  90000 ms  /tmp/.mount_OrcheskMjHcm/orchestra --type=zygote
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 07f665b1-daed-4520-b33c-9c403293908e /home/lmas/.orchestra/keepers/07f665b1-daed-4520-b33c-9c403293908e.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js f4e20bf8-0f63-44a0-902d-34e39a07d29d /home/lmas/.orchestra/keepers/f4e20bf8-0f63-44a0-902d-34e39a07d29d.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js e3ff51f3-abb2-4cef-b960-82d2fad0cbb3 /home/lmas/.orchestra/keepers/e3ff51f3-abb2-4cef-b960-82d2fad0cbb3.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 06637ca8-f5e1-47c4-8023-492a13bdc443 /home/lmas/.orchestra/keepers/06637ca8-f5e1-47c4-8023-492a13bdc443.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 90819ba2-f1d6-4301-aeef-b826d2c6825f /home/lmas/.orchestra/keepers/90819ba2-f1d6-4301-aeef-b826d2c6825f.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 81d3bab8-aa3b-4e5e-bd0c-1b100bc1609d /home/lmas/.orchestra/keepers/81d3bab8-aa3b-4e5e-bd0c-1b100bc1609d.sock /
+    1x  life median  90000 ms  /usr/bin/node /home/lmas/.orchestra/bin/keeper.js 612f1597-c08f-4a73-83ed-36f2fb1b61bc /home/lmas/.orchestra/keepers/612f1597-c08f-4a73-83ed-36f2fb1b61bc.sock /

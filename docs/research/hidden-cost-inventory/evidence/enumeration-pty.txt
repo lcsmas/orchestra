@@ -1,0 +1,3 @@
+src/main/transport/local-pty.ts:66: *  if the underlying `pty.spawn` fails — the caller logs and unwinds. */
+src/main/transport/local-pty.ts:71:  const proc = pty.spawn(opts.command, opts.args, {
+src/main/index.ts:429:  // ORCHESTRA_SOCK from the env set on the pty.spawn call, and that value is

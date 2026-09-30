@@ -1,0 +1,7 @@
+src/main/account-usage.ts:137:    fsWatcher = fs.watch(dir, { persistent: false }, (_evt, name) => {
+src/main/bus-wake.ts:897: * The shipped watcher armed `fs.watch(bus.sqlite-wal)`, which pins the inotify
+src/main/bus-wake.ts:948:    watcher = fs.watch(dir, (_event, filename) => {
+src/main/events-spool.ts:393:    watcher = fs.watch(EVENTS_DIR, (_event, filename) => {
+src/main/human-gates.ts:217:    watcher = fs.watch(dir, (_event, filename) => {
+src/main/inbox-tray.ts:309:    watcher = fs.watch(INBOX_ROOT, (_event, filename) => {
+src/main/agent-sdk.ts:4171://     CLI itself (a chokidar watch over `.md`, depth 2) and hot-reload on their

@@ -1,0 +1,552 @@
+{
+ "label": "ws8focus",
+ "ws": 8,
+ "fakeNet": false,
+ "pkgVersion": "0.5.298",
+ "warmS": 20,
+ "measureS": 120,
+ "void": [],
+ "windows": [
+  {
+   "name": "warm",
+   "seconds": 20.002,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790744341748,
+   "t1": 1790744361750,
+   "execlogBytes0": 11550,
+   "orchestraLogBytes": 150,
+   "rssKB": 725664,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 0.38,
+     "waitedKidsCpuS": 0.37,
+     "n": 1,
+     "rssKB": 221808
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 109344
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 0.28,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 135184
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 74096
+    },
+    "electron-renderer": {
+     "ownCpuS": 0.41,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 183168
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    },
+    "other": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 0,
+     "rssKB": 0
+    }
+   }
+  },
+  {
+   "name": "steady-visible",
+   "seconds": 120.002,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790744361753,
+   "t1": 1790744481755,
+   "execlogBytes0": 18757,
+   "orchestraLogBytes": 0,
+   "rssKB": 695504,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 1.46,
+     "waitedKidsCpuS": 1.57,
+     "n": 1,
+     "rssKB": 213904
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 109344
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 1.22,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 133760
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73936
+    },
+    "electron-renderer": {
+     "ownCpuS": 2.03,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 162496
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    }
+   }
+  },
+  {
+   "name": "focus-cycles",
+   "seconds": 60.047,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790744482088,
+   "t1": 1790744542135,
+   "execlogBytes0": 50949,
+   "orchestraLogBytes": 0,
+   "rssKB": 731232,
+   "nProcs": 9,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 0.83,
+     "waitedKidsCpuS": 0.93,
+     "n": 1,
+     "rssKB": 215968
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 109344
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 0.84,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 136160
+    },
+    "electron-utility": {
+     "ownCpuS": 0.01,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73936
+    },
+    "electron-renderer": {
+     "ownCpuS": 0.92,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 170784
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    },
+    "other": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 22976
+    }
+   }
+  },
+  {
+   "name": "steady-running",
+   "seconds": 60.001,
+   "visibilityStart": "visible",
+   "visibilityEnd": "eval-failed: cdp timeout Runtime.evaluate",
+   "runningCssAnimations": "eval-failed: cdp timeout Runtime.evaluate",
+   "t0": 1790744542548,
+   "t1": 1790744602549,
+   "execlogBytes0": 76506,
+   "orchestraLogBytes": 0,
+   "rssKB": 765024,
+   "nProcs": 8,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 0.37,
+     "waitedKidsCpuS": 0.09,
+     "n": 1,
+     "rssKB": 215568
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 109344
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 2.03,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 136864
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73936
+    },
+    "electron-renderer": {
+     "ownCpuS": 0.85,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 175072
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    },
+    "electron-other": {
+     "ownCpuS": 0.02,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 52176
+    }
+   }
+  },
+  {
+   "name": "steady-hidden",
+   "seconds": 90.003,
+   "visibilityStart": "eval-failed: cdp timeout Runtime.evaluate",
+   "visibilityEnd": "eval-failed: cdp timeout Runtime.evaluate",
+   "runningCssAnimations": "eval-failed: cdp timeout Runtime.evaluate",
+   "t0": 1790744796576,
+   "t1": 1790744886579,
+   "execlogBytes0": 78703,
+   "orchestraLogBytes": 0,
+   "rssKB": 765344,
+   "nProcs": 8,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 0.01,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 215824
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 109344
+    },
+    "electron-other": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 52176
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 0.27,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 136864
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73920
+    },
+    "electron-renderer": {
+     "ownCpuS": 0.02,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 175152
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2064
+    }
+   }
+  }
+ ],
+ "bootToUiMs": 897,
+ "rowsMounted": 8,
+ "focusCycles": {
+  "cycles": 5,
+  "appFocusedAtEnd": true
+ },
+ "runningRowsRendered": 8,
+ "hideProof": {
+  "before": [
+   {
+    "visible": true,
+    "focused": true,
+    "app_id": "orchestra",
+    "name": "Orchestra"
+   }
+  ],
+  "moveResult": "[\n  {\n    \"success\": true\n  }\n]",
+  "after": [
+   {
+    "visible": false,
+    "focused": false,
+    "app_id": "orchestra",
+    "name": "Orchestra"
+   }
+  ]
+ },
+ "timeAt": [
+  {
+   "name": "warm",
+   "t0": 1790744341748,
+   "t1": 1790744361750
+  },
+  {
+   "name": "steady-visible",
+   "t0": 1790744361753,
+   "t1": 1790744481755
+  },
+  {
+   "name": "focus-cycles",
+   "t0": 1790744482088,
+   "t1": 1790744542135
+  },
+  {
+   "name": "steady-running",
+   "t0": 1790744542548,
+   "t1": 1790744602549
+  },
+  {
+   "name": "steady-hidden",
+   "t0": 1790744796576,
+   "t1": 1790744886579
+  }
+ ],
+ "versionFromApp": null,
+ "rigArtifactExecs": 40,
+ "events": {
+  "warm": {
+   "execTotal": 116,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 56,
+     "perMin": 167.98
+    },
+    "git ls-files": {
+     "count": 28,
+     "perMin": 83.99
+    },
+    "git diff": {
+     "count": 24,
+     "perMin": 71.99
+    },
+    "git rev-list": {
+     "count": 8,
+     "perMin": 24
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "steady-visible": {
+   "execTotal": 510,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 256,
+     "perMin": 128
+    },
+    "git diff": {
+     "count": 120,
+     "perMin": 60
+    },
+    "git ls-files": {
+     "count": 120,
+     "perMin": 60
+    },
+    "gh api repos/{owner}/{repo}/releases?per_page=N": {
+     "count": 12,
+     "perMin": 6
+    },
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": {
+     "count": 2,
+     "perMin": 1
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "focus-cycles": {
+   "execTotal": 342,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 146,
+     "perMin": 145.89
+    },
+    "git diff": {
+     "count": 64,
+     "perMin": 63.95
+    },
+    "git ls-files": {
+     "count": 64,
+     "perMin": 63.95
+    },
+    "git rev-list": {
+     "count": 15,
+     "perMin": 14.99
+    },
+    "git fetch": {
+     "count": 10,
+     "perMin": 9.99
+    },
+    "sh -c git-upload-pack": {
+     "count": 10,
+     "perMin": 9.99
+    },
+    "git-upload-pack /home/lmas/.cache/hidden-cost/": {
+     "count": 10,
+     "perMin": 9.99
+    },
+    "gh api repos/{owner}/{repo}/releases?per_page=N": {
+     "count": 8,
+     "perMin": 7.99
+    },
+    "git pull": {
+     "count": 5,
+     "perMin": 5
+    },
+    "git maintenance": {
+     "count": 5,
+     "perMin": 5
+    },
+    "git merge": {
+     "count": 5,
+     "perMin": 5
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "steady-running": {
+   "execTotal": 34,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 17,
+     "perMin": 17
+    },
+    "git diff": {
+     "count": 8,
+     "perMin": 8
+    },
+    "git ls-files": {
+     "count": 8,
+     "perMin": 8
+    },
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": {
+     "count": 1,
+     "perMin": 1
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "steady-hidden": {
+   "execTotal": 0,
+   "execByKey": {},
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "boot": {
+   "execTotal": 88,
+   "execByKey": {
+    "git rev-parse": 19,
+    "gh api <o>/<r>/repo/pulls/N": 8,
+    "git rev-list": 5,
+    "git diff": 4,
+    "gh api repos/{owner}/{repo}/releases?per_page=N": 4,
+    "git ls-files": 4,
+    "grepconf.sh": 3,
+    "grep": 3,
+    "sh -c command": 3,
+    "electron --type=zygote": 2,
+    "find /etc/debuginfod": 2,
+    "tr \\n": 2,
+    "xargs": 2,
+    "git fetch": 2,
+    "sh -c git-upload-pack": 2,
+    "git-upload-pack /home/lmas/.cache/hidden-cost/": 2,
+    "zsh -c -ilc": 1,
+    "clear": 1,
+    "id": 1,
+    "hostnamectl": 1,
+    "cat /etc/debuginfod/elfutils.urls": 1,
+    "cat /etc/debuginfod/elfutils.certp": 1,
+    "flatpak": 1,
+    "tty": 1,
+    "locale": 1,
+    "sed": 1,
+    "readlink /proc/126/exe": 1,
+    "basename /usr/bin/zsh": 1,
+    "env": 1,
+    "exe": 1,
+    "git worktree": 1,
+    "git pull": 1,
+    "git maintenance": 1,
+    "git merge": 1,
+    "git config": 1,
+    "claude": 1,
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": 1
+   },
+   "dns": {
+    "redirector.gvt1.com": 1
+   },
+   "connectInet": {
+    "[2001:4860:4860::8888]:443": 1,
+    "[2a00:1450:4007:812::200e]:443": 1,
+    "142.251.39.206:443": 1
+   }
+  }
+ },
+ "controls": {
+  "execlogLines": 1165,
+  "appOwnGitSpawns": 1018,
+  "ghStubCalls": 36,
+  "execlogSawGh": 36,
+  "visibilities": [
+   "warm:visible->visible",
+   "steady-visible:visible->visible",
+   "focus-cycles:visible->visible",
+   "steady-running:visible->eval-failed: cdp timeout Runtime.evaluate",
+   "steady-hidden:eval-failed: cdp timeout Runtime.evaluate->eval-failed: cdp timeout Runtime.evaluate"
+  ]
+ },
+ "ghCallsSample": [
+  "1790744341469 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790744341469 api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790744341472 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790744341476 api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790744341478 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}"
+ ]
+}

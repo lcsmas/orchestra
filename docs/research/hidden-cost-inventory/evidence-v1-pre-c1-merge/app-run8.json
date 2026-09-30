@@ -1,0 +1,344 @@
+{
+ "label": "run8",
+ "ws": 8,
+ "fakeNet": false,
+ "pkgVersion": "0.5.298",
+ "warmS": 20,
+ "measureS": 90,
+ "void": [],
+ "windows": [
+  {
+   "name": "warm",
+   "seconds": 20.002,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790749960081,
+   "t1": 1790749980083,
+   "execlogBytes0": 11295,
+   "orchestraLogBytes": 150,
+   "rssKB": 726432,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 0.35,
+     "waitedKidsCpuS": 0.4,
+     "n": 1,
+     "rssKB": 221520
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 110768
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 0.3,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 136544
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 74048
+    },
+    "electron-renderer": {
+     "ownCpuS": 0.41,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 181504
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2048
+    }
+   }
+  },
+  {
+   "name": "steady-visible",
+   "seconds": 90,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 2,
+   "t0": 1790749980087,
+   "t1": 1790750070087,
+   "execlogBytes0": 19146,
+   "orchestraLogBytes": 0,
+   "rssKB": 695664,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 1.05,
+     "waitedKidsCpuS": 1.05,
+     "n": 1,
+     "rssKB": 211328
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 110768
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 0.93,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 135056
+    },
+    "electron-utility": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73904
+    },
+    "electron-renderer": {
+     "ownCpuS": 1.54,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 162560
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2048
+    }
+   }
+  },
+  {
+   "name": "steady-running",
+   "seconds": 60.001,
+   "visibilityStart": "visible",
+   "visibilityEnd": "visible",
+   "runningCssAnimations": 10,
+   "t0": 1790750070499,
+   "t1": 1790750130500,
+   "execlogBytes0": 43150,
+   "orchestraLogBytes": 0,
+   "rssKB": 711936,
+   "nProcs": 7,
+   "cpu": {
+    "electron-main": {
+     "ownCpuS": 1.67,
+     "waitedKidsCpuS": 0.85,
+     "n": 1,
+     "rssKB": 215952
+    },
+    "electron-zygote": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 2,
+     "rssKB": 110768
+    },
+    "electron-gpu-process": {
+     "ownCpuS": 6.9,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 136736
+    },
+    "electron-utility": {
+     "ownCpuS": 0.01,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 73888
+    },
+    "electron-renderer": {
+     "ownCpuS": 2.86,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 172544
+    },
+    "claude": {
+     "ownCpuS": 0,
+     "waitedKidsCpuS": 0,
+     "n": 1,
+     "rssKB": 2048
+    }
+   }
+  }
+ ],
+ "bootToUiMs": 899,
+ "rowsMounted": 8,
+ "runningRowsRendered": 8,
+ "timeAt": [
+  {
+   "name": "warm",
+   "t0": 1790749960081,
+   "t1": 1790749980083
+  },
+  {
+   "name": "steady-visible",
+   "t0": 1790749980087,
+   "t1": 1790750070087
+  },
+  {
+   "name": "steady-running",
+   "t0": 1790750070499,
+   "t1": 1790750130500
+  }
+ ],
+ "versionFromApp": "0.5.298",
+ "rigArtifactExecs": 35,
+ "events": {
+  "warm": {
+   "execTotal": 128,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 64,
+     "perMin": 191.98
+    },
+    "git diff": {
+     "count": 28,
+     "perMin": 83.99
+    },
+    "git ls-files": {
+     "count": 28,
+     "perMin": 83.99
+    },
+    "git rev-list": {
+     "count": 8,
+     "perMin": 24
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "steady-visible": {
+   "execTotal": 373,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 184,
+     "perMin": 122.67
+    },
+    "git diff": {
+     "count": 88,
+     "perMin": 58.67
+    },
+    "git ls-files": {
+     "count": 88,
+     "perMin": 58.67
+    },
+    "gh api repos/{owner}/{repo}/releases?per_page=N": {
+     "count": 12,
+     "perMin": 8
+    },
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": {
+     "count": 1,
+     "perMin": 0.67
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "steady-running": {
+   "execTotal": 269,
+   "execByKey": {
+    "git rev-parse": {
+     "count": 136,
+     "perMin": 136
+    },
+    "git diff": {
+     "count": 64,
+     "perMin": 64
+    },
+    "git ls-files": {
+     "count": 64,
+     "perMin": 64
+    },
+    "gh api repos/{owner}/{repo}/releases?per_page=N": {
+     "count": 4,
+     "perMin": 4
+    },
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": {
+     "count": 1,
+     "perMin": 1
+    }
+   },
+   "dns": {},
+   "connectInet": {},
+   "connectUnixCount": 0
+  },
+  "boot": {
+   "execTotal": 80,
+   "execByKey": {
+    "git rev-parse": 15,
+    "git rev-list": 5,
+    "git diff": 4,
+    "gh api repos/{owner}/{repo}/releases?per_page=N": 4,
+    "gh api <o>/<r>/repo/pulls/N": 4,
+    "git ls-files": 4,
+    "grepconf.sh": 3,
+    "grep": 3,
+    "sh -c command": 3,
+    "electron --type=zygote": 2,
+    "find /etc/debuginfod": 2,
+    "tr \\n": 2,
+    "xargs": 2,
+    "git fetch": 2,
+    "sh -c git-upload-pack": 2,
+    "git-upload-pack /home/lmas/.cache/hidden-cost/": 2,
+    "zsh -c -ilc": 1,
+    "clear": 1,
+    "id": 1,
+    "hostnamectl": 1,
+    "cat /etc/debuginfod/elfutils.urls": 1,
+    "cat /etc/debuginfod/elfutils.certp": 1,
+    "flatpak": 1,
+    "tty": 1,
+    "locale": 1,
+    "sed": 1,
+    "readlink /proc/141/exe": 1,
+    "basename /usr/bin/zsh": 1,
+    "env": 1,
+    "exe": 1,
+    "git worktree": 1,
+    "git pull": 1,
+    "git maintenance": 1,
+    "git merge": 1,
+    "git config": 1,
+    "claude": 1,
+    "gh api repos/{owner}/{repo}/<o>/<r>?per_page=N": 1
+   },
+   "dns": {
+    "redirector.gvt1.com": 1
+   },
+   "connectInet": {
+    "[2001:4860:4860::8888]:443": 1,
+    "[2a00:1450:400c:c04::66]:443": 1,
+    "[2a00:1450:400c:c04::8a]:443": 1,
+    "[2a00:1450:400c:c04::8b]:443": 1,
+    "[2a00:1450:400c:c04::65]:443": 1,
+    "74.125.206.100:443": 1,
+    "74.125.206.138:443": 1,
+    "74.125.206.101:443": 1,
+    "74.125.206.139:443": 1,
+    "74.125.206.113:443": 1,
+    "74.125.206.102:443": 1
+   }
+  }
+ },
+ "controls": {
+  "execlogLines": 924,
+  "appOwnGitSpawns": 799,
+  "ghStubCalls": 31,
+  "execlogSawGh": 31,
+  "visibilities": [
+   "warm:visible->visible",
+   "steady-visible:visible->visible",
+   "steady-running:visible->visible"
+  ]
+ },
+ "ghCallsSample": [
+  "1790749959802 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790749959804 api repos/fixture/repo/pulls/100 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790749959808 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}",
+  "1790749959810 api repos/fixture/repo/pulls/101 --jq {url: .html_url, number, title, state: (if .merged_at then \"MERGED\" elif .state == \"open\" then \"OPEN\" else \"CLOSED\" end)}",
+  "1790749959815 api repos/{owner}/{repo}/releases?per_page=50 --jq .[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, publishedAt: .published_at}"
+ ]
+}

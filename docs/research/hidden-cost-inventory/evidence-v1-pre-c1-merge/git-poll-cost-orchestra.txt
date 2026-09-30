@@ -1,0 +1,6 @@
+repo=/home/lmas/Applications/orchestra branch=fix-keeper-missing-from-package tracked_files=327 load=9.82 12.86 13.57
+git diff --numstat HEAD                      wall     3.5 ms   cpu(user+sys)     3.0 ms   per spawn (mean of 20)
+git ls-files --others --exclude-standard     wall     3.2 ms   cpu(user+sys)     2.6 ms   per spawn (mean of 20)
+git rev-parse --verify origin/<branch>       wall     1.5 ms   cpu(user+sys)     1.4 ms   per spawn (mean of 20)
+git rev-parse <branch> main                  wall     1.2 ms   cpu(user+sys)     1.2 ms   per spawn (mean of 20)
+git rev-parse --abbrev-ref HEAD              wall     1.8 ms   cpu(user+sys)     1.4 ms   per spawn (mean of 20)

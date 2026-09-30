@@ -1,0 +1,26 @@
+src/main/git.ts:42:  const git = simpleGit(repoPath);
+src/main/git.ts:64:  const git = simpleGit(repoPath);
+src/main/git.ts:84:    const git = simpleGit(p);
+src/main/git.ts:93:  const git = simpleGit(repoPath);
+src/main/git.ts:109:  const git = simpleGit(worktreePath);
+src/main/git.ts:133:  const wtGit = simpleGit(worktreePath);
+src/main/git.ts:144:  const git = simpleGit(repoPath);
+src/main/git.ts:158:  const git = simpleGit(repoPath);
+src/main/git.ts:168:  const git = simpleGit(repoPath);
+src/main/git.ts:177:  const git = simpleGit(worktreePath);
+src/main/git.ts:240:  const git = simpleGit(worktreePath);
+src/main/git.ts:318:  const git = simpleGit(worktreePath);
+src/main/git.ts:324:  const git = simpleGit(worktreePath);
+src/main/git.ts:382:  const git = simpleGit(worktreePath);
+src/main/git.ts:447:  const git = simpleGit(worktreePath);
+src/main/git.ts:456:  const git = simpleGit(worktreePath);
+src/main/git.ts:506:    const git = simpleGit(repoPath);
+src/main/git.ts:540:    const git = simpleGit(repoPath);
+src/main/git.ts:702:  return branchAuthoredItsTip(simpleGit(repoPath), branch);
+src/main/git.ts:1169:    const git = simpleGit(repoPath);
+src/main/git.ts:1227:    const git = simpleGit(repoPath);
+src/main/git.ts:1248:    const git = simpleGit(repoPath);
+src/main/git.ts:1324:    const git = simpleGit(repoPath);
+src/main/git.ts:1457:    const git = simpleGit(repoPath);
+src/main/workspaces.ts:473:  // guard for a whole failure class, not defensive noise — `simpleGit('')` does
+src/renderer/components/Sidebar.tsx:2124:                    `createWorktree('')` → `simpleGit('')`, and simple-git does
