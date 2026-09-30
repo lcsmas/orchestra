@@ -312,6 +312,9 @@ if (ARM === 'spawn') {
   // rows 1/2 + the COMMIT-POINT gate: every AUTO start reaching sdkSend is refused with NO side effect (no session, no turn, no red
   // error row, no pending prompt); the HUMAN composer send is allowed and un-pauses nothing. REAL agent-sdk + fake query.
   await seedFleet();
+  const pauseGate = await import(`${REPO}/src/main/pause-gate.ts`);
+  const marks = [];
+  pauseGate.setPauseHumanTurnObserver((id) => marks.push(id));   // D1b's seam: one mark per HUMAN send
   pause();
   const refusal = async (fn) => { try { await fn(); return null; } catch (e) { return e instanceof Error ? e.message : String(e); } };
   const a1 = rec('autoSend', await refusal(() => sdk.sdkSend('ws-m1', 'AUTO-TEXT')));
@@ -322,6 +325,7 @@ if (ARM === 'spawn') {
   const h = rec('humanSend', await sdk.sdkSend('ws-m1', 'HUMAN-TEXT', undefined, undefined, undefined, false, false, 'human').then((id) => typeof id === 'string', (e) => String(e)));
   await untilOrFail(() => userMessages.some((m) => m.text.includes('HUMAN-TEXT')));
   rec('humanTurns', userMessages.filter((m) => m.text.includes('HUMAN-TEXT')).length);
+  rec('marksAfterHumanOnly', marks.slice());
   rec('stillPaused', pauseOn());
   // a LIVE session does not exempt an AUTO send (the gate is at the commit point, not the session start)
   const a4 = rec('autoSendLive', await refusal(() => sdk.sdkSend('ws-m1', 'AUTO-LIVE')));
@@ -338,7 +342,7 @@ if (ARM === 'spawn') {
   const l = rec('afterLift', await refusal(() => sdk.sdkSend('ws-m1', 'LIFTED-TEXT')));
   ok = a1 === PAUSED_MSG && a2 === PAUSED_MSG && a3 === 'dropped' && out.noSideEffects.factoryCalls === 0 && out.noSideEffects.sessionLive === false
     && out.noSideEffects.turns === 0 && out.noSideEffects.errorRows === 0 && out.noSideEffects.pending === 0
-    && h === true && out.humanTurns === 1 && out.stillPaused === true && a4 === PAUSED_MSG && out.briefFollowsHumanCaller === true && x === null && l === null;
+    && h === true && out.humanTurns === 1 && JSON.stringify(out.marksAfterHumanOnly) === JSON.stringify(['ws-m1']) && out.stillPaused === true && a4 === PAUSED_MSG && out.briefFollowsHumanCaller === true && x === null && l === null;
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'drain') {

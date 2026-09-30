@@ -241,6 +241,8 @@ async function runDispatch(fate: Fate, db: BusDb | null): Promise<RunResult> {
       return true;
     },
     log: { info: () => {}, warn: () => {}, error: () => {} },
+    // #252: the fleet-pause gate in the shipped body — the stub answers "not paused" (the real gate is driven by pause-gates.test.ts).
+    pauseRefusal: () => null,
   };
 
   const fn = new Function(

@@ -32,3 +32,20 @@ export function pauseRefusalById(
 ): string | null {
   return wsId ? pauseRefusal(store.getWorkspace(wsId), origin) : null;
 }
+
+// D1b seam (host trap): it observes every HUMAN-origin turn so a turn that starts on a paused member WITHOUT a fresh human mark is
+// interrupted. Registered by the trap at init; sdkSend calls `notePauseHumanTurn` once per HUMAN send (composer, Send now, tray release,
+// toolbar retry, the brief claimed by a human send). A throwing observer never breaks a send.
+let humanTurnObserver: ((wsId: string) => void) | null = null;
+
+export function setPauseHumanTurnObserver(fn: ((wsId: string) => void) | null): void {
+  humanTurnObserver = fn;
+}
+
+export function notePauseHumanTurn(wsId: string): void {
+  try {
+    humanTurnObserver?.(wsId);
+  } catch (e) {
+    log.warn('pause gate: human-turn observer threw', e);
+  }
+}

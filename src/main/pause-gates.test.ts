@@ -136,6 +136,7 @@ test('GATE rows 1/2 sdkSend funnel: every AUTO start is refused with NO side eff
   assert.deepEqual(r.noSideEffects, { factoryCalls: 0, sessionLive: false, turns: 0, errorRows: 0, pending: 0 });
   assert.equal(r.humanSend, true);
   assert.equal(r.humanTurns, 1);
+  assert.deepEqual(r.marksAfterHumanOnly, ['ws-m1'], "D1b seam: exactly one human-turn mark, for the HUMAN send only (auto refusals mark nothing)");
   assert.equal(r.stillPaused, true);
   assert.equal(r.autoSendLive, PAUSED);
   assert.equal(r.briefFollowsHumanCaller, true, 'row 2: the claimed opening brief follows its HUMAN caller (runs first, then the human text)');

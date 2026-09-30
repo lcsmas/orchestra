@@ -47,7 +47,7 @@ import {
   maybeBumpCoordinatorOnReplacement,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
-import { pauseRefusalById } from './pause-gate.ts';
+import { notePauseHumanTurn, pauseRefusalById } from './pause-gate.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
 import { forkBranchName } from '../shared/fork-session';
@@ -3110,7 +3110,10 @@ export async function sdkSend(
     // image + text blocks match the Messages API vision contract exactly.
     message: { role: 'user', content: content as SDKUserMessage['message']['content'] },
   };
-  if (origin === 'human') session.humanTurns.add(rewindId);
+  if (origin === 'human') {
+    session.humanTurns.add(rewindId);
+    notePauseHumanTurn(wsId); // D1b: the trap's turn-start observer lets a turn with a fresh HUMAN mark through
+  }
   // A turn already in flight means this prompt is PARKED, not started —
   // `turnGate` is non-null exactly while a turn runs (same idiom as consume()'s
   // hadOpenTurn check). Read it BEFORE pushing, and note that a non-empty queue

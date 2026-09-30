@@ -1699,6 +1699,7 @@ module that consumes the seams below.
   already running.
 - **SILENCE (row 15)**: `sweepBusLiveness` unions `effectivePausedRunIds(db)` (carriers + descendant runs, switch ON) into the held set
   (`bus-liveness.ts:352`); unreadable ⇒ silences nothing.
+- **Human-turn seam for D1b**: `setPauseHumanTurnObserver` / `notePauseHumanTurn` (`src/main/pause-gate.ts`) — `sdkSend` notes every HUMAN-origin send once, so the trap's turn-start observer can tell a fresh human turn from an automatic one.
 - **Seams for D1b** (`src/main/bus-pause.ts`): `runsOwingPauseTrap(db)` (carriers with `pause_trap_at` NULL), `runSubtreeIds(db, carrier)`
   (the pause's member runs), `activePauseFor`, `getRunPause`. A lift clears `pause_trap_at` so the next pause owes a fresh trap.
 - **Slot trap**: tests that build an old-version DB by hand-DROPping (`bus-fencing.test.ts` T128.4, `bus-mirror.test.ts` C11) must also

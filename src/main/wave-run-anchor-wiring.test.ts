@@ -174,9 +174,11 @@ test('P2a — ORCHESTRA_RUN_ID is set in startAgentPty extraEnv to waveRunId', (
 // ─── P2b — the wake roster maps the real run id, not the hardcoded default ────
 
 test('P2b — setWakeRoster maps runId to resolveWaveRunId(ws), not the string default', () => {
+  // The roster entry lives in wake-roster.ts since #252 (index.ts cannot load under node --test); index.ts wires it.
   const start = indexSrc.indexOf('setWakeRoster(');
   assert.ok(start > 0, 'setWakeRoster not found');
-  const body = indexSrc.slice(start, start + 1400);
+  assert.match(indexSrc.slice(start, start + 200), /setWakeRoster\(\(\) => store\.workspaces\.map\(wakeRosterEntry\)\)/, 'index.ts must wire the shipped roster entry');
+  const body = read('src/main/wake-roster.ts');
   assert.match(body, /runId:\s*resolveWaveRunId\(ws\)/, 'the roster must carry the wave run id');
   // The exact master defect: a hardcoded 'default' inside the roster mapper.
   assert.doesNotMatch(
