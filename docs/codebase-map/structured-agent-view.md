@@ -763,6 +763,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   image; `.av-peer-run*` classes). Gate: `scripts/peer-rows-render-smoke.mjs`
   (collapsed + expanded + a human-turn CONTROL whose text mimics a peer
   envelope), wired into `pnpm run test:render`.
+- **Avis de tâche (task notices) → quiet rows** (#273). The CLI's
+  `<task-notification>` turns (origin badge `task notification`, live and
+  backfill) used to render as a user bubble of raw XML. `parseTaskNotice`
+  (`src/shared/task-notices.ts:143`) maps each observed `<summary>` wording to
+  our own label + tone (`ok` / `fail` red with the reason inline / `stopped`
+  neutral incl. "previous session ended" orphans / `event` for Monitor events),
+  usage meta, and expanded-only `result` / `event` / `note`. A body that is not
+  exactly one envelope with a summary returns null → the plain bubble stays.
+  `buildRenderItems` (StructuredView.tsx:1007) groups consecutive notices into a
+  `task-notices` item → `TaskNoticeGroup.tsx` (lone notice = one row; ≥2 =
+  "N task notices · K failed"; `.av-tnotice*`). Gates: `task-notices.test.ts`
+  (incl. must-FAIL envelopes) + `scripts/task-notice-rows-render-smoke.mjs` in
+  `test:render`. Jump-to-origin-card follow-up: #274.
 - **Bus wake orders + deliveries → first-class rows** (issue #145, "Variant A —
   quiet rows", the human's mockup pick). Two fleet-bus artefacts used to render
   as raw noise indistinguishable from the conversation: a WAKE arrived as a

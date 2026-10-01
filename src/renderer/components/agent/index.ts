@@ -41,6 +41,8 @@ export {
   buildAskUserQuestionReply,
 } from './askUserQuestion';
 export { PeerMessageGroup } from './PeerMessageGroup';
+export { TaskNoticeGroup, TaskNoticeRow } from './TaskNoticeGroup';
+export type { TaskNoticeItem } from './TaskNoticeGroup';
 export { WakeRow } from './WakeRow';
 export { DeliveryRow } from './DeliveryRow';
 export { RestartRow } from './RestartRow';

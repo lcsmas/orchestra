@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { isPeerMessage } from '../../shared/peer-messages';
+import { isTaskNoticeMessage, parseTaskNotice } from '../../shared/task-notices';
 import { createMeasurePassGuard } from '../../shared/measure-pass-guard';
 import {
   isBusWakeMessage,
@@ -47,6 +48,7 @@ import { BootStallRow } from './BootStall';
 import { InboxTray } from './agent/InboxTray';
 import { AskRow } from './agent/AskRow';
 import type { HumanGateView } from '../../shared/human-gates';
+import type { TaskNoticeItem } from './agent';
 import { resolveInboxReDerive, type InboxBlock } from '../../shared/inbox-blocks';
 import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
@@ -83,6 +85,7 @@ import {
   AgentMessage,
   ToolGroup,
   PeerMessageGroup,
+  TaskNoticeGroup,
   WakeRow,
   DeliveryRow,
   RestartRow,
@@ -919,6 +922,9 @@ type RenderItem =
   // A run of consecutive INTER-AGENT messages, collapsed to compact rows so
   // fleet traffic doesn't drown the human's conversation (issue #56).
   | { kind: 'peer-group'; id: string; messages: RenderMessage[] }
+  // A run of consecutive AVIS DE TÂCHE (the CLI's <task-notification> turns),
+  // parsed into quiet rows instead of raw-XML bubbles (#273).
+  | { kind: 'task-notices'; id: string; items: TaskNoticeItem[] }
   // A bus WAKE ORDER — the synthetic "run the check command(s)…" prompt,
   // rendered as a compact dedicated row instead of raw text (issue #145).
   | { kind: 'wake'; id: string; message: RenderMessage; divider?: TurnDivider }
@@ -969,6 +975,14 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
     }
     peerRun = null;
   };
+  // Consecutive avis de tâche group the same way (#273).
+  let noticeRun: TaskNoticeItem[] | null = null;
+  const flushNotices = () => {
+    if (noticeRun && noticeRun.length > 0) {
+      items.push({ kind: 'task-notices', id: `tn:${noticeRun[0].message.id}`, items: noticeRun });
+    }
+    noticeRun = null;
+  };
   const flush = () => {
     if (run && run.length > 0) {
       items.push({ kind: 'tool-group', id: `tg:${run[0].id}`, tools: run });
@@ -982,11 +996,24 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
     // its text, can never land here.
     if (isPeerMessage(m)) {
       flush();
+      flushNotices();
       (peerRun ??= []).push(m);
       if (m.at !== undefined) prevAt = m.at;
       continue;
     }
     flushPeers();
+    // AVIS DE TÂCHE (#273): keyed on the structural origin badge; a body the
+    // parser does not fully recognize returns null and keeps the plain bubble.
+    if (isTaskNoticeMessage(m)) {
+      const notice = parseTaskNotice(m.text);
+      if (notice) {
+        flush();
+        (noticeRun ??= []).push({ message: m, notice });
+        if (m.at !== undefined) prevAt = m.at;
+        continue;
+      }
+    }
+    flushNotices();
     // BUS WAKE (issue #145): a synthetic `role:'user'` prompt whose text is the
     // wake order (marker-keyed via `isBusWakeMessage`, never body text — a human
     // turn saying "lot pending" fails the structured shape and falls through to
@@ -1046,6 +1073,7 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
   }
   flush();
   flushPeers();
+  flushNotices();
   return items;
 }
 
@@ -1058,6 +1086,7 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
 function ItemSlot({ item }: { item: RenderItem }) {
   if (item.kind === 'tool-group') return <ToolGroup tools={item.tools} />;
   if (item.kind === 'peer-group') return <PeerMessageGroup messages={item.messages} />;
+  if (item.kind === 'task-notices') return <TaskNoticeGroup items={item.items} />;
   // Bus DELIVERY row (issue #145) — no turn divider (it is not a user turn).
   if (item.kind === 'delivery') return <DeliveryRow delivery={item.delivery} />;
   // A bus WAKE row (issue #145) and an ordinary `message` both carry an optional

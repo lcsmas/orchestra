@@ -3461,6 +3461,84 @@ h6.av-md-h {
 }
 .av-peer-msg-text { color: var(--av-text-dim); font-size: var(--av-fs-small); }
 
+/* ── Avis de tâche (task notices, #273) ────────────────────────────────────
+   The CLI's <task-notification> turns as quiet one-line rows (peer-row idiom):
+   icon + our label + inline detail + meta, expanding to the agent result /
+   full event / folded note. Only the icon is tinted, except a FAILURE, whose
+   whole line goes --av-error so it survives a skim (and its count survives a
+   collapsed group). */
+.av-tnotice, .av-tnotice-run {
+  margin: 1px 24px;
+  border: none; border-radius: 8px; background: none;
+}
+.av-tnotice.av-open, .av-tnotice-run.av-open {
+  margin: 4px 24px 8px;
+  border: 1px solid var(--av-hairline);
+  background: var(--av-surface-raised);
+  overflow: hidden;
+}
+.av-tnotice-run-body > .av-tnotice { margin: 0; border: none; background: none; }
+.av-tnotice-run-body > .av-tnotice + .av-tnotice { border-top: 1px solid var(--av-hairline-faint); border-radius: 0; }
+.av-tnotice-run-body { padding: 2px 0; border-top: 1px solid var(--av-hairline-faint); }
+.av-tnotice-header {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0;
+  padding: 3px 8px; background: none; border: none; box-shadow: none;
+  color: var(--av-text-faint);
+  font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
+  transition: color 120ms var(--av-ease);
+}
+.av-tnotice-header:disabled { cursor: default; opacity: 1; }
+.av-tnotice-header:hover { background: none; box-shadow: none; color: var(--av-text-dim); }
+.av-tnotice-header:active { transform: none; }
+.av-tnotice-header:focus-visible {
+  outline: none; box-shadow: none; color: var(--av-text-dim);
+  text-decoration: underline; text-underline-offset: 3px;
+  text-decoration-color: var(--av-hairline-strong);
+}
+.av-tnotice-header .av-caret { flex: none; display: inline-flex; width: 10px; transition: transform 120ms var(--av-ease); }
+.av-tnotice-header .av-caret-open { transform: rotate(90deg); }
+.av-tnotice-icon { flex: none; width: 1em; text-align: center; font-size: 0.95em; }
+.av-tnotice[data-task-notice='ok'] .av-tnotice-icon { color: var(--av-user); }
+.av-tnotice[data-task-notice='event'] .av-tnotice-icon { color: var(--av-task); }
+.av-tnotice[data-task-notice='stopped'] .av-tnotice-icon { color: var(--av-text-faint); opacity: 0.8; }
+.av-tnotice[data-task-notice='fail'] > .av-tnotice-header { color: var(--av-error); }
+.av-tnotice-label {
+  flex: 0 1 auto; min-width: 0; font-weight: 500; letter-spacing: 0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.av-tnotice-detail {
+  flex: 0 1000 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85;
+}
+.av-tnotice-meta, .av-tnotice-failed {
+  flex: none; margin-left: auto; padding-left: 8px;
+  font-family: var(--font-mono); font-size: 10px; white-space: nowrap; opacity: 0.85;
+}
+.av-tnotice-failed { margin-left: 0; padding-left: 0; color: var(--av-error); opacity: 1; font-weight: 600; }
+.av-tnotice-body {
+  padding: 8px 12px 10px 30px;
+  border-top: 1px solid var(--av-hairline-faint);
+  color: var(--av-text-dim); font-size: var(--av-fs-small);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.av-tnotice-pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--font-mono); font-size: 11px; color: var(--av-text-dim);
+}
+.av-tnotice-facts {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--av-text-faint);
+}
+.av-tnotice-open {
+  padding: 1px 8px; border: 1px solid var(--av-hairline); border-radius: 999px;
+  background: none; box-shadow: none; color: var(--av-text-dim);
+  font: inherit; cursor: pointer;
+}
+.av-tnotice-open:hover { background: var(--av-highlight); color: var(--av-text); box-shadow: none; }
+.av-tnotice-note { color: var(--av-text-faint); font-size: 11px; }
+.av-tnotice-note > summary { cursor: pointer; }
+.av-tnotice-note > p { margin: 4px 0 0; }
+
 /* ── Bus wake orders + deliveries as first-class rows (#145, Variant A) ────────
    "Quiet rows" in the peer/inbox (#56/#64) idiom: a bus WAKE is an amber bell
    chip line expanding to the ordered check commands; a bus DELIVERY is a

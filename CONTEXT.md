@@ -147,3 +147,18 @@ nobody names one — same two kinds as the default model (human-created / spawne
 agent), same freeze-at-creation rule. *Model default* pins nothing (the model's
 own effort). Unlike the model, a workspace with no pinned effort never follows
 the setting later.
+
+### Agent view
+
+**Tâche de fond** (background task):
+Work an agent starts and does not wait for — a sub-agent, a backgrounded
+shell command, or a Monitor. It outlives the turn that started it.
+_Avoid_: job, background process
+
+**Avis de tâche** (task notice):
+The message the Claude Code CLI injects into a session when a tâche de fond
+finishes, fails, is found orphaned after a restart, or (Monitor) emits an
+event. It starts a turn by itself. Not a réveil: a réveil comes from the
+fleet bus and carries no content; an avis de tâche comes from the CLI and
+reports on one task.
+_Avoid_: notification (blurs it with a réveil), alert
