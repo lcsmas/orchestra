@@ -97,6 +97,7 @@ test('round-2 F3: the session carries a dedicated gateTurnHuman flag (humanTurns
   const sdk = codeOf('src/main/agent-sdk.ts');
   assert.ok(sdk.includes('session.gateTurnHuman = humanTurn;'), 'set at the gate arm from the computed humanTurn');
   assert.equal((sdk.match(/session\.gateTurnHuman = false;/g) ?? []).length, 2, 'cleared in releaseTurnGate AND the stranded-gate force release');
+  assert.equal((sdk.match(/if \(session\.gateTurnHuman\) markPauseHumanTurnEnd\(session\.wsId\);[^\n]*\n\s*session\.gateTurnHuman = false;/g) ?? []).length, 2, 'the human window is CLOSED at both releases, BEFORE the flag is cleared (round-3 F3i; swapped = a dead call)');
   assert.ok(sdk.includes('export function sdkHumanTurnInFlight('));
   assert.ok(/s\.turnGate !== null && s\.gateTurnHuman === true/.test(sdk));
   assert.ok(codeOf('src/main/pause-trap-host.ts').includes('humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),'));

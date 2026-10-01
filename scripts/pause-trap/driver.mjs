@@ -202,7 +202,9 @@ try {
     app1.send({ cmd: 'human-send', ws: 'ops', text: 'SCN:pauserself' });
     await waitFor(() => sleepers(A.pauser.otherTree).length >= 1, 90_000, `the coordinator's background task ${A.pauser.otherTree}`);
     const st = await waitFor(() => { const x = runStatus(); return x.pause ? x : null; }, 90_000, 'the coordinator\'s own tool to pause its run');
-    check('pause_issued_from_inside_the_member_tool', st.pause.pausedBy === 'ops' && sleepers(7719).length >= 1, `pausedBy=${st.pause.pausedBy}; the tool that holds the call (sleep 7719) is running`);
+    // the pause row lands BEFORE the CLI exits and the shell starts `sleep 7719`: wait for the tool that holds the call (a bounded poll — a read at the instant of the row raced it under load)
+    const holdsCall = await waitFor(() => sleepers(7719).length >= 1, 15_000, 'sleep 7719 (the tool holding the pause call)').then(() => true, () => false);
+    check('pause_issued_from_inside_the_member_tool', st.pause.pausedBy === 'ops' && holdsCall, `pausedBy=${st.pause.pausedBy}; the tool that holds the call (sleep 7719) is running`);
   } else {
     const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', A.pauser ? 'ops' : 'lead');
     check('cli_pause_accepted', p.rc === 0 && /PAUSED/.test(p.out), `rc=${p.rc} ${p.out.trim().slice(0, 200)}`);
@@ -231,8 +233,14 @@ try {
   const leftover = A.markers.filter((n) => sleepers(n).length > 0);
   check('no_surviving_tool_procs', leftover.length === 0, leftover.length ? `still alive: sleep ${leftover.join(',')}` : `sleep ${A.markers.join(',')} all gone`);
   check('cli_and_keeper_alive', alive(keeper.pid, keeper.start) && alive(cli0.pid, cli0.start), `keeper ${keeper.pid} / CLI ${cli0.pid} alive with their original start-times`);
-  const w1row = done?.bilan?.find((r) => r.wsId === 'w1');
-  const opsrow = done?.bilan?.find((r) => r.wsId === 'ops');
+  // The kills may be recorded by the pause-time trap (`killed`), by the turn observer that raced it on a reattached in-flight turn (`observerKilled`, appended AFTER its kill rounds
+  // return) or by an earlier incomplete attempt (`earlierKilled`): wait (bounded) until every expected command is listed somewhere instead of a single read that raced the observer's append.
+  const killedIn = (st) => { const r = st?.bilan?.find((x) => x.wsId === 'w1'); return [...(r?.killed?.killed ?? []), ...(r?.activity?.observerKilled ?? []), ...(r?.activity?.earlierKilled ?? [])].map((k) => k.cmd); };
+  const doneNow = done && A.mustKill.length > 0
+    ? await waitFor(() => { const st = runStatus(); return A.mustKill.every((c) => killedIn(st).some((k) => k.includes(c))) ? st : null; }, 20_000, 'the expected kills to be listed in the Bilan').catch(() => runStatus())
+    : done;
+  const w1row = doneNow?.bilan?.find((r) => r.wsId === 'w1');
+  const opsrow = doneNow?.bilan?.find((r) => r.wsId === 'ops');
   const ref = w1row?.snapshotRef ?? null;
   let refOk = false, refDetail = 'no snapshot ref in the Bilan';
   if (ref) {
@@ -245,7 +253,7 @@ try {
   check('pause_ref_holds_uncommitted_work', refOk, refDetail);
   // (pauser-self: ops's own session starts writing into its worktree AFTER the baseline was taken, so only w1 — the member the trap alone touched — is compared)
   check('snapshot_no_touch', fingerprint(WT.w1) === fpBefore && (A.pauser?.mode === 'self' || fingerprint(WT.ops) === opsFpBefore), 'worktree contents+mtimes, REAL index bytes, HEAD and branches are byte-identical after the trap (w1 and ops)');
-  const killedCmds = [...(w1row?.killed?.killed ?? []).map((k) => k.cmd), ...(w1row?.activity?.observerKilled ?? []).map((k) => k.cmd)]; // the pause-time trap's list + what the turn observer killed on a reattached in-flight turn
+  const killedCmds = killedIn(doneNow); // the pause-time trap's list + what the turn observer killed on a reattached in-flight turn + earlier incomplete attempts
   // (After an app restart the arm pass can attach the member first: the observer then interrupts the reattached in-flight turn before the trap's own
   // interrupt runs, which finds it already over — `idle` is honest IF a Bilan note records the observer's interrupt.)
   check('bilan_w1', !!w1row && w1row.dirty === true && Array.isArray(w1row.killed?.killed) && !w1row.error
@@ -256,7 +264,7 @@ try {
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
   if (A.mustKill.includes('sleep 7715')) {
     // LEAD ruling D11: the daemonized orphan is listed with pid, cmdline, cwd and the reason that matched (CLI identity = pid + start-time).
-    const o = (w1row?.killed?.killed ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.observerKilled ?? []).find((k) => k.cmd === 'sleep 7715');
+    const o = (w1row?.killed?.killed ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.observerKilled ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.earlierKilled ?? []).find((k) => k.cmd === 'sleep 7715');
     check('orphan_listed_with_cwd_and_reason', !!o && typeof o.pid === 'number' && o.via === 'env' && o.cwd === WT.w1 && /CLAUDE_PID=\d+ names this member's CLI \(pid \d+, start-time \d+\)/.test(o.evidence ?? ''),
       JSON.stringify(o ?? null));
   }
@@ -273,6 +281,17 @@ try {
   }
   check('run_still_paused', done?.pause?.runId === 'ops' && !!done?.pause?.pausedAt, `pause=${JSON.stringify(done?.pause ?? null).slice(0, 120)}`);
 
+  // 6b. row 29 — BEFORE the human prompt below: a human send attaches the session, which would let the observer see a CLI-started turn that only the host's own `arm` (idle keeper
+  // re-armed after the app restart) could have observed — the `no-arm` mutant then survived (r3 run: the task-notification turn was still in flight when the human attached).
+  if (A.rowTwentyNine) {
+    const served = await waitFor(() => api.requests.some((r) => r.scn === 'bgnotify' && r.idx === 2), 45_000, 'the CLI-started turn to reach its tool call').then(() => true, () => false);
+    check('cli_started_turn_ran_control', served, served ? 'the fake API served step 2 (tool_use sleep 7717) to the CLI-started turn: it really tried to run a tool' : 'the CLI never started a turn by itself — this arm proves nothing');
+    const w1b = await waitFor(() => { const r = runStatus().bilan?.find((x) => x.wsId === 'w1'); return (r?.activity?.notes ?? []).some((n) => /turn started while paused/.test(n)) ? r : null; }, 20_000, 'the Bilan note for the CLI-started turn').catch(() => null);
+    await sleep(2000); // the observer's interrupt + kill settle
+    const note = (w1b?.activity?.notes ?? []).find((n) => /turn started while paused/.test(n));
+    check('turn_while_paused_interrupted', !!w1b && /interrupt=(interrupted|attached)/.test(note ?? '') && sleepers(7717).length === 0, note ? `note: ${note}` : 'no "turn started while paused" note');
+  }
+
   // 7. the session is still RESUMABLE (and a HUMAN prompt is allowed while paused, un-pausing nothing)
   const liveApp = app2 ?? app1;
   const tHuman = Date.now();
@@ -286,14 +305,6 @@ try {
   if (A.scenario === 'background') {
     await sleep(3000);
     check('nothing_restarts_on_its_own', A.markers.every((n) => sleepers(n).length === 0), 'after 3 s still no tool process');
-  }
-  // 9. row 29: the CLI started a turn by itself while paused (background task killed → task notification)
-  if (A.rowTwentyNine) {
-    const w1b = await waitFor(() => { const r = runStatus().bilan?.find((x) => x.wsId === 'w1'); return (r?.activity?.notes ?? []).some((n) => /turn started while paused/.test(n)) ? r : null; }, 45_000, 'the Bilan note for the CLI-started turn').catch(() => null);
-    const served = api.requests.some((r) => r.scn === 'bgnotify' && r.idx === 2);
-    check('cli_started_turn_ran_control', served, served ? 'the fake API served step 2 (tool_use sleep 7717) to the CLI-started turn: it really tried to run a tool' : 'the CLI never started a turn by itself — this arm proves nothing');
-    const note = (w1b?.activity?.notes ?? []).find((n) => /turn started while paused/.test(n));
-    check('turn_while_paused_interrupted', !!w1b && /interrupt=(interrupted|attached)/.test(note ?? '') && sleepers(7717).length === 0, note ? `note: ${note}` : 'no "turn started while paused" note');
   }
   if (A.queueKept) {
     const endTurns = () => liveApp.events.filter((e) => e.ev === 'turn-end' && e.ws === 'w1' && e.t >= tPause && e.stopReason === 'end_turn' && e.isError !== true).length;

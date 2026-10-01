@@ -34,15 +34,27 @@ export interface BilanActivity {
   branch?: string | null;
   head?: string | null;
   changed?: { modified: number; added: number; deleted: number };
-  skippedLarge?: Array<{ path: string; bytes: number }>;
+  skippedLarge?: Array<{ path: string; bytes: number; reason?: 'file-cap' | 'total-cap'; files?: number }>;
+  /** The snapshot did not finish (`git add` exceeded its timeout on a very large untracked tree): NO ref was written; the pause went on (interrupt + kill). */
+  snapshotIncomplete?: 'timeout';
+  /** Entries left out in total (`skippedLarge` keeps only the largest 200). */
+  skippedLargeCount?: number;
+  /** Caveats about what IS in the ref (oversize files git < 2.25 could not exclude): captured, not "not captured". */
+  snapshotNotes?: string[];
   /** Files the snapshot could not read (everything else is in the ref). */
   snapshotWarnings?: string[];
   submodules?: Array<{ path: string; ref: string | null; dirty: boolean; error?: string }>;
   /** `pauser`: the member whose CLI is a process ancestor of the `orchestra run pause` call keeps its turn and the tool tree containing that call
    *  (snapshot + row; its other trees ARE killed). Keyed on process ancestry, never on the `--as` handle (review F5). */
   exempt?: 'pauser';
+  /** The CLI identity (pid + /proc start-time) that PROVED the pauser: a later attempt whose probe flakes keeps the exemption while this CLI is unreadable (round-3 F2). */
+  pauserCli?: { pid: number; startTicks: number };
   /** Only on the reserved {@link PAUSE_ORIGIN_WS} row: the process chain of the `orchestra run pause` call, captured by the CLI at pause time. */
   origin?: { chain: PauseOriginProc[] };
+  /** How many attempts skipped the interrupt because the CLI could not be proven (bounded: the pauser cannot be ruled out forever — round-3 F2). */
+  interruptDeferrals?: number;
+  /** Processes killed by an EARLIER pause-time attempt that stayed incomplete (e.g. the CLI vanished mid-kill) — `killed_json` stays NULL until a retry completes, so they are kept here (round-3 F5). */
+  earlierKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>;
   /** Free-text trail: turn starts observed while paused, partial failures. */
   notes?: string[];
   /** Processes the TURN OBSERVER (a CLI-started turn while paused) killed — kept apart from `killed_json`, which belongs to the pause-time trap

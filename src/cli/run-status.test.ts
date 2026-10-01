@@ -180,3 +180,84 @@ test('F11 (round 2): EVERY recorded string is sanitized — orphan cwd/evidence,
   assert.ok(!/^\s*(FORGED|killed: FORGED)/m.test(text), 'a newline inside a value did not start a forged line');
   assert.match(text, /orphan killed \(left the CLI's tree, via env\)/);
 });
+
+test('round-3 F8/F7/F5: U+202E / U+2028 are stripped from every recorded string; the snapshot line says "uncommitted non-ignored work"; a total-cap skip names its reason; kills of an incomplete earlier attempt are listed', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-e', pausedAt: p.pausedAt,
+    activity: {
+      surface: 'sdk', memberRun: 'W',
+      skippedLarge: [{ path: 'huge\u202e.bin', bytes: 300 * 1048576, reason: 'file-cap' }, { path: 'dropped.dat', bytes: 40 * 1048576, reason: 'total-cap' }],
+      earlierKilled: [{ pid: 77, cmd: 'sleep 9\u2028killed: FORGED', signal: 'SIGTERM', outcome: 'exited' }],
+      notes: ['n\u202eote'],
+    },
+    snapshotRef: 'refs/orchestra/pause/W/ws-e/1', dirty: true, error: 'e\u2029rr',
+    killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.ok(!/[\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(text), 'no Unicode line separator / bidi override survives');
+  assert.ok(!/^\s*killed: FORGED/m.test(text));
+  assert.match(text, /shows the uncommitted non-ignored work/);
+  assert.match(text, /dropped\.dat \(40 MB, total size cap\)/);
+  assert.match(text, /killed by EARLIER incomplete attempt\(s\) of the trap: sleep 9 killed: FORGED \(pid 77\)/);
+});
+
+test('round-3 review nits: a small skipped file reads "3.0 MB" (never "0 MB"), the skip list is bounded to 20 (+N more), and U+200E / U+200F / U+061C are stripped', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-f', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', skippedLarge: Array.from({ length: 25 }, (_, i) => ({ path: `f${i}\u200e\u200f\u061c.bin`, bytes: 3 * 1048576, reason: 'total-cap' as const })) },
+    snapshotRef: 'refs/x', dirty: true, error: null, killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /f0\s*\s*\s*\.bin \(3\.0 MB, total size cap\)/);
+  assert.match(text, /; \+5 more/);
+  assert.equal((text.match(/\.bin \(3\.0 MB/g) ?? []).length, 20, 'only 20 are printed');
+  assert.ok(!/[\u200e\u200f\u061c]/.test(text));
+});
+
+test('round-3 F5b: invisible formatting characters (U+200B/2060/FEFF/00AD/180E) and the Unicode TAG block (U+E00xx) never reach the terminal', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-g', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', notes: ['a\u200bb\u2060c\ufeffd\u00ade\u180ef\u{e0041}\u{e0042}g'] },
+    snapshotRef: null, dirty: null, error: null, killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.ok(!/[\u200b\u2060\ufeff\u00ad\u180e\u{e0000}-\u{e007f}]/u.test(text), 'no invisible character survives');
+  assert.match(text, /a b c d e f  g/);
+});
+
+test('round-3 F1/F4a: snapshot notes (oversize files git < 2.25 could not exclude) read "captured despite the cap", a dropped DIRECTORY shows its file count, and the +N more uses the full count', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-h', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', skippedLarge: [{ path: 'vendor/', bytes: 900 * 1048576, reason: 'total-cap', files: 240000 }], skippedLargeCount: 1500, snapshotNotes: ['30 oversize entr(ies) could NOT be excluded (git < 2.25) — they ARE in the ref'] },
+    snapshotRef: 'refs/x', dirty: true, error: null, killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /vendor\/ \(900 MB, 240000 files, total size cap\); \+1499 more/);
+  assert.match(text, /captured despite the cap: 30 oversize entr\(ies\) could NOT be excluded/);
+});
+
+test('round-4: a snapshot that timed out reads "snapshot: INCOMPLETE (timeout)" with the error, no ref line', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-i', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', snapshotIncomplete: 'timeout' },
+    snapshotRef: null, dirty: null, error: 'snapshot incomplete: timeout — git add exceeded 120000 ms', killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /snapshot: INCOMPLETE \(timeout\) — no ref was written; the interrupt and the kills still ran/);
+  assert.match(text, /error: snapshot incomplete: timeout/);
+});

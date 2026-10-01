@@ -13,14 +13,20 @@ import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause } from './bus-pause.ts';
 import { activePauseCarriers, appendObserverKills, bilanForMember, latestPauseBilanFor, listBilan, listBilanForRun, markTrapDone, recordPauseOrigin } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
-import { snapshotWorktree } from './pause-snapshot.ts';
+import { snapshotWorktree, SnapshotTimeoutError } from './pause-snapshot.ts';
+import { log } from './logger.ts';
 import {
   __resetPauseTrapForTests,
   liveChainIncludes,
   armPausedMembers,
   lastHumanTurnStart,
   markPauseHumanTurn,
+  markPauseHumanTurnEnd,
+  humanWindowsSince,
   PAUSE_RETRY_MS,
+  PAUSE_RETRY_MAX_MS,
+  MAX_INTERRUPT_DEFERRALS,
+  pauseRetryDelay,
   onTurnStart,
   runPauseTrap,
   sweepPauseTrap,
@@ -668,9 +674,11 @@ test('F2 a HUMAN turn that STARTS during the trap window is not interrupted; its
   await runPauseTrap(rig.deps, c);
   assert.ok(lastHumanTurnStart('w1')! >= c.pausedAt);
   assert.ok(!rig.calls.includes('interrupt:w1'), 'the human turn is allowed: no interrupt');
-  const sb = rig.killOpts[0]?.startedBeforeMs;
-  assert.equal(typeof sb, 'function', 'the kill re-reads the human-turn start at EVERY signal (pre-review M5)');
-  assert.equal(typeof (sb as () => number | undefined)(), 'number', 'the kill only reaches processes older than the human turn');
+  const hw = rig.killOpts[0]?.humanWindows;
+  assert.equal(typeof hw, 'function', 'the kill re-reads the human-turn windows at EVERY signal (pre-review M5)');
+  const wins = (hw as () => Array<{ from: number; to?: number }>)();
+  assert.equal(wins.length, 1, 'the kill shields the tool roots the human turn started');
+  assert.ok(wins[0].from >= c.pausedAt && wins[0].to === undefined, 'a window opened at the human turn\'s start, still open');
   const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
   assert.equal(row.activity?.interrupt, 'skipped');
   assert.match((row.activity?.notes ?? []).join(' '), /HUMAN prompt started a turn during the trap/);
@@ -684,8 +692,7 @@ test('F2 control: a human mark from BEFORE the trap began does not suppress the 
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   assert.ok(rig.calls.includes('interrupt:w1'));
-  const sb0 = rig.killOpts[0]?.startedBeforeMs;
-  assert.equal(typeof sb0 === 'function' ? sb0() : sb0, undefined, 'no human turn during the trap: every process is a target');
+  assert.deepEqual(rig.killOpts[0]?.humanWindows?.(), [], 'no human turn during the trap: every process is a target');
 });
 
 test('a stale human mark (older than its TTL) does not whitelist a later CLI-internal start', async (t) => {
@@ -1037,4 +1044,292 @@ test('pre-review r2 #3: an interrupt attempt 1 made stays on the Bilan when atte
   await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
   assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interrupt, 'interrupted', 'the first attempt\'s interrupt is kept');
   assert.ok(!rig.calls.includes('interrupt:w1'), 'and it is not repeated while the CLI is unproven');
+});
+
+// ── round 3 ──
+
+test('round-3 F1c/F3i: the interrupt skip needs a human turn in flight NOW; its WINDOW closes with the turn — a tool root started inside it stays shielded after the end, one started after is not (windows are what the killer gets)', async (t) => {
+  for (const inFlight of [false, true]) {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, 'w1', 'W');
+    const c = pauseW(rig);
+    markPauseHumanTurn('w1', c.pausedAt + 5); // a human turn began after the pause
+    if (!inFlight) markPauseHumanTurnEnd('w1', c.pausedAt + 100); // ...and ended seconds later (the agent-sdk gate release)
+    rig.clock = c.pausedAt + 600_000; // the trap (or its retry) runs 10 minutes later
+    rig.deps.humanTurnInFlight = () => inFlight;
+    await runPauseTrap(rig.deps, c);
+    const wins = rig.killOpts[0]?.humanWindows?.() ?? [];
+    assert.equal(wins.length, 1);
+    if (inFlight) {
+      assert.ok(!rig.calls.includes('interrupt:w1'), 'control: the human turn is in flight — not interrupted');
+      assert.equal(wins[0].to, undefined, 'its window is still open');
+    } else {
+      assert.ok(rig.calls.includes('interrupt:w1'), 'the human turn ended: the interrupt runs');
+      assert.equal(wins[0].to, c.pausedAt + 100, 'its window is CLOSED at the turn end: roots started inside stay shielded, later ones are not');
+    }
+  }
+});
+
+test('round-3 F3i: markPauseHumanTurnEnd closes the LAST open window; windows before the pause are not shielded', () => {
+  __resetPauseTrapForTests();
+  markPauseHumanTurn('w9', 100);
+  markPauseHumanTurnEnd('w9', 150);
+  markPauseHumanTurn('w9', 200);
+  markPauseHumanTurnEnd('w9', 250);
+  markPauseHumanTurn('w9', 300); // still open
+  assert.deepEqual(humanWindowsSince('w9', 0), [{ from: 100, to: 150 }, { from: 200, to: 250 }, { from: 300 }]);
+  assert.deepEqual(humanWindowsSince('w9', 180), [{ from: 200, to: 250 }, { from: 300 }], 'a human turn that began BEFORE the pause was in flight at the pause: trapped, not shielded');
+});
+
+test('round-3 F2 (reviewer probe D1): a pauser PROVED on attempt 1 is never interrupted by later probe flakes — not after the 3-deferral bound, not on a healthy retry; a replaced CLI is re-derived', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // attempt 1: the arm hangs ⇒ incomplete, but cliOf proves the pauser first
+  await runPauseTrap(rig.deps, c);
+  const r1 = bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!;
+  assert.equal(r1.activity?.exempt, 'pauser');
+  assert.deepEqual(r1.activity?.pauserCli, { pid: 100, startTicks: 1000 });
+  rig.deps.arm = async () => {};
+  rig.cliResult = { error: 'keeper busy' };
+  for (let i = 0; i < MAX_INTERRUPT_DEFERRALS + 3; i++) await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // far past the deferral bound
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'the proven pauser is never interrupted while its CLI is unreadable');
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.exempt, 'pauser', 'the exemption is carried');
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'and a healthy retry re-derives the same pauser');
+});
+
+test('round-3 F2: the interrupt deferral is BOUNDED — MAX_INTERRUPT_DEFERRALS attempts with an unproven CLI, then the interrupt runs anyway (a turn must not run under a hard pause for ever); the count survives on the Bilan row', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.cliResult = { error: 'keeper unresponsive' };
+  for (let i = 1; i <= MAX_INTERRUPT_DEFERRALS; i++) {
+    await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+    assert.ok(!rig.calls.includes('interrupt:w1'), `attempt ${i}: deferred`);
+  }
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interruptDeferrals, MAX_INTERRUPT_DEFERRALS);
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.ok(rig.calls.includes('interrupt:w1'), 'the next attempt interrupts anyway');
+  assert.match((bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).join(' '), /still unproven after 3 attempts — interrupting anyway/);
+});
+
+test('round-3 F5: a CLI that vanished/was replaced mid-trap makes the member INCOMPLETE (retried, never "0 killed, complete"), with a note; what it killed before stays on the Bilan (earlierKilled) and survives the retry', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.killReport = { ...rig.killReport, cliGone: true, error: 'the CLI exited or was replaced DURING the kill (a Restart?)' };
+  const s1 = await runPauseTrap(rig.deps, c);
+  assert.equal(s1.done, false);
+  assert.equal(s1.incomplete, 1);
+  const r1 = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(r1.killed, null, 'the member stays owed');
+  assert.match((r1.activity?.notes ?? []).join(' '), /CLI changed identity during the trap/);
+  assert.equal(r1.activity?.earlierKilled?.[0]?.pid, 201, 'the kill that did happen is kept');
+  rig.killReport = { ...rig.killReport, cliGone: undefined, error: undefined, killed: [] };
+  const s2 = await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.equal(s2.done, true, 'the retry against the current CLI completes');
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.earlierKilled?.[0]?.pid, 201, 'and the earlier kill is still listed');
+});
+
+test('round-3 F6: the retry delay DOUBLES per failed attempt up to PAUSE_RETRY_MAX_MS (a persistently failing member is not re-snapshotted every 5 s)', async (t) => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 9].map(pauseRetryDelay), [5_000, 10_000, 20_000, 40_000, 60_000, 60_000, 60_000]);
+  assert.equal(PAUSE_RETRY_MAX_MS, 60_000);
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.cliResult = { error: 'unresponsive' };
+  pauseW(rig);
+  let ran = (await sweepPauseTrap(rig.deps)).length; // attempt 1
+  assert.equal(ran, 1);
+  rig.clock += pauseRetryDelay(0) + 1;
+  assert.equal((await sweepPauseTrap(rig.deps)).length, 1, 'attempt 2 after 5 s');
+  rig.clock += pauseRetryDelay(0) + 1; // only 5 s since attempt 2 — the 2nd failure needs 10 s
+  assert.equal((await sweepPauseTrap(rig.deps)).length, 0, 'inside the doubled delay: NOT retried');
+  rig.clock += pauseRetryDelay(1);
+  ran = (await sweepPauseTrap(rig.deps)).length;
+  assert.equal(ran, 1, 'after 10 s: retried');
+});
+
+test('round-3 F6: a retried trap WARNS ONCE per pause (not on every attempt) and logs its start once', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.cliResult = { error: 'unresponsive' };
+  const c = pauseW(rig);
+  const warns: string[] = [];
+  const infos: string[] = [];
+  const ow = log.warn;
+  const oi = log.info;
+  log.warn = (m: string) => { warns.push(m); };
+  log.info = (m: string) => { infos.push(m); };
+  try {
+    for (let i = 0; i < 4; i++) await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  } finally {
+    log.warn = ow;
+    log.info = oi;
+  }
+  assert.equal(warns.filter((m) => /could not be proven interrupted\/killed/.test(m)).length, 1, `one warning for 4 incomplete attempts: ${warns.join(' | ')}`);
+  assert.equal(infos.filter((m) => /hard-paused at/.test(m)).length, 1, 'the start line is logged once');
+  void c;
+});
+
+test('round-3 verifier MINOR: a turn start within seconds of the trap\'s OWN kill is recorded as the task-notification turn of the killed background task; one 20 s later (aged, not reset) or after a trap that killed NOTHING is not', async (t) => {
+  const taskNote = async (kills: boolean, waitMs: number): Promise<string> => {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, 'w1', 'W');
+    if (!kills) rig.killReport = { ...rig.killReport, killed: [] };
+    const c = pauseW(rig);
+    await runPauseTrap(rig.deps, c);
+    rig.clock += waitMs;
+    await onTurnStart(rig.deps, tm('w1', 'W'));
+    return (bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).filter((n) => /turn started while paused/.test(n)).join(' | ');
+  };
+  assert.match(await taskNote(true, 1_000), /task-notification of a background task THIS trap just killed/, 'a start 1 s after the trap\'s kill');
+  assert.doesNotMatch(await taskNote(true, 20_000), /task-notification/, 'a start 20 s later: outside the window (the stamp ages, it is not cleared)');
+  assert.doesNotMatch(await taskNote(false, 1_000), /task-notification/, 'the trap killed nothing: no attribution');
+});
+
+test('round-3 review #3: earlierKilled is BOUNDED (the last 100) however many incomplete attempts killed', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  const many = Array.from({ length: 120 }, (_, i) => ({ pid: 1000 + i, comm: 'sleep', cmd: `sleep ${i}`, startTicks: 5, cwd: '/w', evidence: 'test', signal: 'SIGTERM', via: 'chain', outcome: 'exited' }));
+  rig.killReport = { ...rig.killReport, killed: many as KillReport['killed'], cliGone: true, error: 'the CLI exited' };
+  await runPauseTrap(rig.deps, c);
+  const ek = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.earlierKilled ?? [];
+  assert.equal(ek.length, 100);
+  assert.equal(ek[0].pid, 1020, 'the OLDEST entries are the ones dropped');
+});
+
+test('round-3 F2 (carry): the deferral COUNT survives an attempt that did not defer (cliOf healthy but the kill failed) — flake, kill-fail, flake counts 2, not 1', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  const okKill = rig.deps.killTrees;
+  rig.cliResult = { error: 'flake' };
+  await runPauseTrap(rig.deps, c); // attempt 1: deferred (count 1)
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  rig.interruptResult = 'idle';
+  rig.deps.killTrees = async () => { throw new Error('kill boom'); };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // attempt 2: no deferral, incomplete (the count must be carried)
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interruptDeferrals, 1, 'carried through the non-deferring attempt');
+  rig.deps.killTrees = okKill;
+  rig.cliResult = { error: 'flake' };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // attempt 3: deferred again
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interruptDeferrals, 2);
+});
+
+test('round-3 F4e: earlierKilled is written ONLY for attempts that stayed incomplete — a clean, complete trap never shows "killed by EARLIER incomplete attempt(s)"', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c); // complete, with kills (rig.killReport has one)
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.notEqual(row.killed, null);
+  assert.equal(row.activity?.earlierKilled, undefined);
+});
+
+test('round-3 review #5: an OPEN human window with no human turn in flight any more (session stopped/died before the release) is clamped to NOW — it shields nothing started later', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  markPauseHumanTurn('w1', c.pausedAt + 5); // opened, never closed (teardown path)
+  rig.clock = c.pausedAt + 900;
+  rig.deps.humanTurnInFlight = () => false;
+  await runPauseTrap(rig.deps, c);
+  const wins = rig.killOpts[0]?.humanWindows?.() ?? [];
+  assert.equal(wins.length, 1);
+  assert.notEqual(wins[0].to, undefined, 'clamped');
+  assert.ok((wins[0].to as number) < c.pausedAt + 600_000);
+});
+
+test('round-3 review #6: markPauseHumanTurnEnd closes the LAST open window, not the first (a stale open window stays as it was)', () => {
+  __resetPauseTrapForTests();
+  markPauseHumanTurn('w8', 100); // stale: its release never fired
+  markPauseHumanTurn('w8', 200);
+  markPauseHumanTurnEnd('w8', 250);
+  assert.deepEqual(humanWindowsSince('w8', 0), [{ from: 100 }, { from: 200, to: 250 }]);
+});
+
+test('round-3 review #7: a pauser PROVED on an earlier attempt is still on the Bilan row when the next attempt starts (the provisional write keeps exempt + pauserCli — an app death mid-attempt must not lose it)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // attempt 1 stays incomplete
+  await runPauseTrap(rig.deps, c);
+  let seen: { exempt?: string; pauserCli?: unknown } | undefined;
+  rig.deps.arm = async () => { seen = bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity ?? undefined; }; // runs right AFTER the provisional write of attempt 2
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.equal(seen?.exempt, 'pauser');
+  assert.deepEqual(seen?.pauserCli, { pid: 100, startTicks: 1000 });
+});
+
+test('round-3 review #7 (clear): a pauser proved on attempt 1 is NOT carried onto an attempt whose CLI is a DIFFERENT process (replaced) — exempt is cleared and the interrupt runs', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // attempt 1: pauser proved, incomplete
+  await runPauseTrap(rig.deps, c);
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.exempt, 'pauser');
+  rig.deps.arm = async () => {};
+  rig.cliResult = { cli: { pid: 100, startTicks: 2222 }, keeperPid: 90 }; // the CLI was REPLACED (same pid, other start-time): the recorded chain no longer names it
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  const row = bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!;
+  assert.equal(row.activity?.exempt, undefined, 'the stale exemption label is gone');
+  assert.equal(row.activity?.pauserCli, undefined);
+  assert.ok(rig.calls.includes('interrupt:ops-w'), 'and the replaced CLI\'s member is interrupted like any other');
+});
+
+test('round-4: a snapshot TIMEOUT is recorded loud (snapshotIncomplete: timeout, no ref) and the pause GOES ON — interrupt + kill run, the member completes', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.deps.snapshot = async () => { throw new SnapshotTimeoutError(120_000); };
+  const s = await runPauseTrap(rig.deps, c);
+  assert.equal(s.done, true, 'the trap completes');
+  assert.ok(rig.calls.includes('interrupt:w1') && rig.calls.includes('kill:100/90'), 'interrupt + kill still ran');
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(row.snapshotRef, null);
+  assert.equal(row.activity?.snapshotIncomplete, 'timeout');
+  assert.match(row.error ?? '', /snapshot incomplete: timeout/);
+});
+
+test('round-4 review #1: a TIMED-OUT snapshot is never re-taken on a retry (each retry would wait the full timeout before the interrupt) and the label stays true — no ref, snapshotIncomplete kept', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  let snaps = 0;
+  rig.deps.snapshot = async () => { snaps++; throw new SnapshotTimeoutError(120_000); };
+  rig.cliResult = { error: 'keeper unresponsive' }; // attempt 1 stays incomplete
+  await runPauseTrap(rig.deps, c);
+  assert.equal(snaps, 1);
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // the retry
+  assert.equal(snaps, 1, 'the retry did NOT call the snapshot again');
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(row.snapshotRef, null);
+  assert.equal(row.activity?.snapshotIncomplete, 'timeout');
+  assert.match(row.error ?? '', /snapshot incomplete: timeout/);
+  assert.notEqual(row.killed, null, 'and the retry completed the member (interrupt + kill ran)');
 });

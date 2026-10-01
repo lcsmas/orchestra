@@ -56,7 +56,15 @@ interface KilledShape {
 
 /** Control characters (ESC, CR, NL, NUL…) in ANY recorded string (argv, cwd, paths, errors, notes) must never reach the coordinator's terminal nor forge a line (review F11). */
 function c(s: unknown): string {
-  return String(s ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+  // C0/DEL/C1, plus the Unicode line/paragraph separators and bidi overrides/isolates (U+2028/2029, U+202A-202E, U+2066-2069) that forge or reorder a line (round-3 F8)
+  // + zero-width / invisible formatting (U+200B-200D, 2060-2064, FEFF, 00AD, 180E) and the TAG block (U+E0000-E007F): invisible text from a hostile file name or cmdline (round-3 F5b)
+  return String(s ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu, ' ');
+}
+
+/** Sizes: one decimal under 10 MB (a small file reads "0.0 MB" never "0 MB"), whole MB above. */
+function mb(bytes: number): string {
+  const m = bytes / 1048576;
+  return `${m < 10 ? m.toFixed(1) : Math.round(m)} MB`;
 }
 
 function short(s: string, n = 90): string {
@@ -100,9 +108,11 @@ function renderRows(rows: BilanRow[], out: string[]): void {
     const dirtyTxt =
       r.dirty === null ? 'unknown' : r.dirty ? `yes${a?.changed ? ` (${a.changed.modified} modified, ${a.changed.added} added, ${a.changed.deleted} deleted)` : ''}` : 'no';
     out.push(`  • ${c(r.wsId)}${a?.branch ? ` [${c(a.branch)}]` : ''} — dirty tree: ${dirtyTxt}`);
-    if (r.snapshotRef) out.push(`      snapshot: ${c(r.snapshotRef)}   (git diff ${a?.head ? c(a.head).slice(0, 9) : 'HEAD'} ${c(r.snapshotRef)} shows the uncommitted work)`);
+    if (a?.snapshotIncomplete) out.push(`      snapshot: INCOMPLETE (${c(a.snapshotIncomplete)}) — no ref was written; the interrupt and the kills still ran`);
+    if (r.snapshotRef) out.push(`      snapshot: ${c(r.snapshotRef)}   (git diff ${a?.head ? c(a.head).slice(0, 9) : 'HEAD'} ${c(r.snapshotRef)} shows the uncommitted non-ignored work)`);
     if (a?.snapshotWarnings?.length) out.push(`      NOT captured (unreadable): ${c(a.snapshotWarnings.join(' | ')).slice(0, 300)}`);
-    if (a?.skippedLarge?.length) out.push(`      not captured (too large): ${a.skippedLarge.map((f) => `${c(f.path)} (${Math.round(Number(f.bytes) / 1048576)} MB)`).join(', ')}`);
+    if (a?.skippedLarge?.length) out.push(`      not captured (too large): ${a.skippedLarge.slice(0, 20).map((f) => `${c(f.path)} (${mb(Number(f.bytes))}${f.files !== undefined ? `, ${c(f.files)} files` : ''}${f.reason === 'total-cap' ? ', total size cap' : ''})`).join(', ')}${(a.skippedLargeCount ?? a.skippedLarge.length) > Math.min(20, a.skippedLarge.length) ? `; +${(a.skippedLargeCount ?? a.skippedLarge.length) - Math.min(20, a.skippedLarge.length)} more` : ''}`);
+    for (const n of a?.snapshotNotes ?? []) out.push(`      captured despite the cap: ${c(n)}`);
     for (const s of a?.submodules ?? []) out.push(`      submodule ${c(s.path)}: ${s.error ? `snapshot failed (${c(s.error)})` : `${s.dirty ? 'dirty, ' : ''}ref ${c(s.ref)}`}`);
     if (a) {
       const doing: string[] = [];
@@ -135,6 +145,7 @@ function renderRows(rows: BilanRow[], out: string[]): void {
     for (const o of (a?.observerKilled ?? []).filter((x) => x.via === 'env' || x.via === 'session')) {
       out.push(`      orphan killed by the turn observer (via ${c(o.via)}): ${short(o.cmd, 70)} pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);
     }
+    if (a?.earlierKilled?.length) out.push(`      killed by EARLIER incomplete attempt(s) of the trap: ${a.earlierKilled.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)})`).join('; ')}${a.earlierKilled.length > 6 ? `; +${a.earlierKilled.length - 6} more` : ''}`);
     for (const n of a?.notes ?? []) out.push(`      note: ${c(n)}`);
     if (r.error) out.push(`      error: ${c(r.error)}`);
   }

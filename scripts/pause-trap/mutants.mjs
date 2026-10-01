@@ -28,8 +28,8 @@ export const MUTANTS = {
   // Snapshot touches the REAL index: `git add -A` without the temporary GIT_INDEX_FILE.
   'snapshot-touches-index': {
     file: '/src/main/pause-snapshot.ts',
-    find: /await git\(cwd, \['add', '-A', '--ignore-errors', '--', \.\.\.pathspec\], env, undefined, \[1\]\);/g,
-    replace: "await git(cwd, ['add', '-A', '--ignore-errors', '--', ...pathspec], {}, undefined, [1]);",
+    find: /return git\(cwd, \['add', '-A', '--ignore-errors', '--', \.\.\.argv\], env, undefined, \[1\], timeoutMs\);/g,
+    replace: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1], timeoutMs);",
     mustRedden: 'snapshot_no_touch',
   },
   // The trap never kills (interrupt + snapshot only).
@@ -90,7 +90,7 @@ export const MUTANTS = {
   'env-pid-not-matched': {
     file: '/src/shared/pause-procs.ts',
     edits: [
-      { find: /      if \(opts\.claudePidOf\(p\) === cli\.pid\) add\(p, null, 99, 'env'\);/g, replace: "      if (opts.claudePidOf(p) !== null) add(p, null, 99, 'env');" },
+      { find: /      if \(opts\.claudePidOf\(p\) !== cli\.pid\) continue;/g, replace: "      if (opts.claudePidOf(p) === null) continue;" },
       { find: /  if \(env === plan\.cli\.pid && fresh\.startTicks > plan\.cli\.startTicks\) \{/g, replace: '  if (env !== null && fresh.startTicks > plan.cli.startTicks) {' },
     ],
     mustRedden: 'other_member_orphan_survives',

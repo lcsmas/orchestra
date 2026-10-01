@@ -190,7 +190,7 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
     supervisorMemo.set(pid, hit);
     return hit;
   };
-  const add = (p: ProcIdent, root: ProcIdent | null, depth: number, via: ToolProc['via'] = 'tree'): void => {
+  const add = (p: ProcIdent, root: ProcIdent | null, depth: number, via: ToolProc['via'] = 'tree', originTicks?: number): void => {
     if (p.pid === cli.pid || members.has(p.pid)) return;
     if (via !== 'tree' && (hasSupervisor(p.pid) || supervisorAncestorOf(p, (pid) => byPid.get(pid) ?? 'gone', cli.pid) !== 'no')) {
       // an orphan proven only by session/env that IS (or has a descendant) another session's keeper/CLI/app: never a tool
@@ -214,7 +214,7 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
       cmd: cmdOf(p.argv, p.comm),
       rootPid: root ? root.pid : 0,
       rootIsSessionLeader: root ? root.sid === root.pid : false,
-      rootStartTicks: root ? root.startTicks : undefined,
+      rootStartTicks: root ? root.startTicks : originTicks,
       isRoot: root ? p.pid === root.pid : false,
       depth,
       via,
@@ -258,7 +258,19 @@ export function planToolTrees(table: readonly ProcIdent[], cli: RootRef, opts: P
     }
     for (const p of byPid.values()) {
       if (members.has(p.pid) || p.pid === cli.pid || p.pid === cliNow.ppid || p.pid <= 1 || sidecar.has(p.pid) || p.startTicks <= cli.startTicks) continue;
-      if (opts.claudePidOf(p) === cli.pid) add(p, null, 99, 'env');
+      if (opts.claudePidOf(p) !== cli.pid) continue;
+      // ORIGIN start (round-3 F1a): the earliest start along its ppid chain of members / env-proven ancestors — a worker a daemonized pre-pause rig forks later belongs to the RIG
+      // (the human-turn cutoff compares this, not the worker's own late start, so it dies with the rig instead of being spared and orphaned).
+      let origin = p.startTicks;
+      const seenUp = new Set<number>();
+      for (let q = byPid.get(p.ppid); q && q.pid > 1 && q.pid !== cli.pid && !seenUp.has(q.pid); q = byPid.get(q.ppid)) {
+        seenUp.add(q.pid);
+        const m = members.get(q.pid);
+        if (m) origin = Math.min(origin, m.rootStartTicks ?? m.startTicks);
+        else if (q.startTicks > cli.startTicks && opts.claudePidOf(q) === cli.pid) origin = Math.min(origin, q.startTicks);
+        else break;
+      }
+      add(p, null, 99, 'env', origin);
     }
   }
   return { cli, members: [...members.values()], spared };
