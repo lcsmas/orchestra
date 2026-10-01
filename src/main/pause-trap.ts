@@ -182,6 +182,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     if (prior.head !== undefined) activity.head = prior.head;
     if (prior.changed) activity.changed = prior.changed;
     if (prior.skippedLarge) activity.skippedLarge = prior.skippedLarge;
+    if (prior.snapshotIncomplete) activity.snapshotIncomplete = prior.snapshotIncomplete;
     if (prior.skippedLargeCount !== undefined) activity.skippedLargeCount = prior.skippedLargeCount;
     if (prior.snapshotNotes) activity.snapshotNotes = prior.snapshotNotes;
     if (prior.snapshotWarnings) activity.snapshotWarnings = prior.snapshotWarnings;
@@ -212,7 +213,9 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
         if (r.warnings.length > 0) activity.snapshotWarnings = r.warnings;
         if (r.submodules.length > 0) activity.submodules = r.submodules;
       } catch (e) {
-        errors.push(`snapshot: ${errMsg(e)}`);
+        // a TIMEOUT is its own, loud outcome: no ref, `snapshotIncomplete`, and the pause goes on (interrupt + kill follow below) — never a silent success
+        if (e instanceof Error && e.name === 'SnapshotTimeoutError') activity.snapshotIncomplete = 'timeout';
+        errors.push(e instanceof Error && e.name === 'SnapshotTimeoutError' ? errMsg(e) : `snapshot: ${errMsg(e)}`);
       }
     }
   }

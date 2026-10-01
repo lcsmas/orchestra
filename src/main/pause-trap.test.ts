@@ -13,7 +13,7 @@ import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause } from './bus-pause.ts';
 import { activePauseCarriers, appendObserverKills, bilanForMember, latestPauseBilanFor, listBilan, listBilanForRun, markTrapDone, recordPauseOrigin } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
-import { snapshotWorktree } from './pause-snapshot.ts';
+import { snapshotWorktree, SnapshotTimeoutError } from './pause-snapshot.ts';
 import { log } from './logger.ts';
 import {
   __resetPauseTrapForTests,
@@ -1297,4 +1297,19 @@ test('round-3 review #7 (clear): a pauser proved on attempt 1 is NOT carried ont
   assert.equal(row.activity?.exempt, undefined, 'the stale exemption label is gone');
   assert.equal(row.activity?.pauserCli, undefined);
   assert.ok(rig.calls.includes('interrupt:ops-w'), 'and the replaced CLI\'s member is interrupted like any other');
+});
+
+test('round-4: a snapshot TIMEOUT is recorded loud (snapshotIncomplete: timeout, no ref) and the pause GOES ON — interrupt + kill run, the member completes', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  rig.deps.snapshot = async () => { throw new SnapshotTimeoutError(120_000); };
+  const s = await runPauseTrap(rig.deps, c);
+  assert.equal(s.done, true, 'the trap completes');
+  assert.ok(rig.calls.includes('interrupt:w1') && rig.calls.includes('kill:100/90'), 'interrupt + kill still ran');
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(row.snapshotRef, null);
+  assert.equal(row.activity?.snapshotIncomplete, 'timeout');
+  assert.match(row.error ?? '', /snapshot incomplete: timeout/);
 });

@@ -108,6 +108,7 @@ function renderRows(rows: BilanRow[], out: string[]): void {
     const dirtyTxt =
       r.dirty === null ? 'unknown' : r.dirty ? `yes${a?.changed ? ` (${a.changed.modified} modified, ${a.changed.added} added, ${a.changed.deleted} deleted)` : ''}` : 'no';
     out.push(`  • ${c(r.wsId)}${a?.branch ? ` [${c(a.branch)}]` : ''} — dirty tree: ${dirtyTxt}`);
+    if (a?.snapshotIncomplete) out.push(`      snapshot: INCOMPLETE (${c(a.snapshotIncomplete)}) — no ref was written; the interrupt and the kills still ran`);
     if (r.snapshotRef) out.push(`      snapshot: ${c(r.snapshotRef)}   (git diff ${a?.head ? c(a.head).slice(0, 9) : 'HEAD'} ${c(r.snapshotRef)} shows the uncommitted non-ignored work)`);
     if (a?.snapshotWarnings?.length) out.push(`      NOT captured (unreadable): ${c(a.snapshotWarnings.join(' | ')).slice(0, 300)}`);
     if (a?.skippedLarge?.length) out.push(`      not captured (too large): ${a.skippedLarge.slice(0, 20).map((f) => `${c(f.path)} (${mb(Number(f.bytes))}${f.files !== undefined ? `, ${c(f.files)} files` : ''}${f.reason === 'total-cap' ? ', total size cap' : ''})`).join(', ')}${(a.skippedLargeCount ?? a.skippedLarge.length) > Math.min(20, a.skippedLarge.length) ? `; +${(a.skippedLargeCount ?? a.skippedLarge.length) - Math.min(20, a.skippedLarge.length)} more` : ''}`);

@@ -35,6 +35,8 @@ export interface BilanActivity {
   head?: string | null;
   changed?: { modified: number; added: number; deleted: number };
   skippedLarge?: Array<{ path: string; bytes: number; reason?: 'file-cap' | 'total-cap'; files?: number }>;
+  /** The snapshot did not finish (`git add` exceeded its timeout on a very large untracked tree): NO ref was written; the pause went on (interrupt + kill). */
+  snapshotIncomplete?: 'timeout';
   /** Entries left out in total (`skippedLarge` keeps only the largest 200). */
   skippedLargeCount?: number;
   /** Caveats about what IS in the ref (oversize files git < 2.25 could not exclude): captured, not "not captured". */

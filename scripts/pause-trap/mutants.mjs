@@ -28,8 +28,8 @@ export const MUTANTS = {
   // Snapshot touches the REAL index: `git add -A` without the temporary GIT_INDEX_FILE.
   'snapshot-touches-index': {
     file: '/src/main/pause-snapshot.ts',
-    find: /return git\(cwd, \['add', '-A', '--ignore-errors', '--', \.\.\.argv\], env, undefined, \[1\]\);/g,
-    replace: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1]);",
+    find: /return git\(cwd, \['add', '-A', '--ignore-errors', '--', \.\.\.argv\], env, undefined, \[1\], timeoutMs\);/g,
+    replace: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1], timeoutMs);",
     mustRedden: 'snapshot_no_touch',
   },
   // The trap never kills (interrupt + snapshot only).

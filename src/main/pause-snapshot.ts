@@ -32,6 +32,8 @@ export interface SnapshotInput {
   at: number;
   /** Size caps (defaults: {@link SNAPSHOT_MAX_UNTRACKED_BYTES} per file, {@link SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES} in total). Tests shrink them. */
   limits?: { perFileBytes?: number; totalBytes?: number };
+  /** Timeout of the `git add` calls (default {@link GIT_TIMEOUT_MS}); tests shrink it. */
+  gitTimeoutMs?: number;
   /** Force the argv-only pathspec (what git < 2.25 gets): excludes beyond 200 are NOT applied — those files ARE in the ref and are reported in `notes`. */
   legacyPathspec?: boolean;
 }
@@ -63,7 +65,28 @@ interface GitOut {
   stderr: string;
 }
 
-function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: string, okCodes: number[] = []): Promise<GitOut> {
+/** A failed git call. `timedOut` = the {@link GIT_TIMEOUT_MS} timer killed it (empty stderr — NOT a version problem); `exitCode` 129 = usage error (an option this git does not know). */
+class GitError extends Error {
+  exitCode: number | null; // (no parameter properties: node's strip-only TypeScript mode rejects them)
+  timedOut: boolean;
+  stderr: string;
+  constructor(message: string, exitCode: number | null, timedOut: boolean, stderr: string) {
+    super(message);
+    this.exitCode = exitCode;
+    this.timedOut = timedOut;
+    this.stderr = stderr;
+  }
+}
+
+/** The snapshot did not finish in time (a very large untracked tree): NO ref was written, nothing was staged beyond the temp index; the pause goes on (round-4: never read as "git < 2.25", never fall back to staging everything). */
+export class SnapshotTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`snapshot incomplete: timeout — git add exceeded ${ms} ms on a very large untracked tree; no ref was written (the pause still interrupts and kills)`);
+    this.name = 'SnapshotTimeoutError';
+  }
+}
+
+function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: string, okCodes: number[] = [], timeoutMs: number = GIT_TIMEOUT_MS): Promise<GitOut> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       'git',
@@ -75,13 +98,16 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: s
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env },
         encoding: 'buffer',
         maxBuffer: 256 * 1024 * 1024,
-        timeout: GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
       },
       (err, stdout, stderr) => {
         const errText = stderr?.toString('utf8') ?? '';
         if (err && !okCodes.includes(Number((err as { code?: unknown }).code))) {
-          const e = err as Error & { stderr?: Buffer };
-          reject(new Error(`git ${args[0]} failed: ${(errText || e.message).trim().slice(0, 400)}`));
+          const e = err as Error & { killed?: boolean; code?: unknown; signal?: unknown };
+          const timedOut = e.killed === true;
+          const code = typeof e.code === 'number' ? e.code : null;
+          // the message is built from git's STDERR only — never `e.message` ("Command failed: git … --pathspec-from-file=…"), which carries the command text a version-sniffing regex would match
+          reject(new GitError(timedOut ? `git ${args[0]} timed out after ${timeoutMs} ms` : `git ${args[0]} failed: ${errText.trim().slice(0, 400) || `exit ${code ?? String(e.signal ?? '?')}`}`, code, timedOut, errText));
         } else resolve({ stdout: stdout as unknown as Buffer, stderr: errText });
       },
     );
@@ -222,6 +248,7 @@ async function buildTree(
   warnings: string[],
   notes: string[],
   legacyPathspec = false,
+  timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<{ tree: string; applied: number }> {
   const env = { GIT_INDEX_FILE: indexFile };
   if (seedFromRealIndex) {
@@ -237,7 +264,7 @@ async function buildTree(
     const argv = specs.slice(0, limit).map((b) => b.toString('utf8'));
     applied = Math.min(excludes.length, argv.length - 1);
     if (specs.length > argv.length) notes.push(`${specs.length - argv.length} oversize entr(ies) could NOT be excluded (git < 2.25: exclude list capped at ${limit - 1}) — they ARE in the ref`);
-    return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);
+    return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1], timeoutMs);
   };
   // --ignore-errors: ONE unreadable file must not abort the whole snapshot (plain `git add -A` exits 128 and adds NOTHING);
   // exit 1 = "some files could not be added" — the rest is staged and reported in `warnings`.
@@ -249,10 +276,10 @@ async function buildTree(
     const specFile = `${indexFile}.pathspec`;
     fs.writeFileSync(specFile, Buffer.concat(specs.flatMap((b, i) => (i === 0 ? [b] : [Buffer.from([0]), b]))));
     try {
-      added = await git(cwd, ['add', '-A', '--ignore-errors', `--pathspec-from-file=${specFile}`, '--pathspec-file-nul'], env, undefined, [1]);
+      added = await git(cwd, ['add', '-A', '--ignore-errors', `--pathspec-from-file=${specFile}`, '--pathspec-file-nul'], env, undefined, [1], timeoutMs);
     } catch (e) {
-      // git < 2.25 does not know the option (exit 129): fall back to the capped argv, saying so
-      if (!/unknown option|pathspec-from-file|usage: git add/i.test(e instanceof Error ? e.message : String(e)) || !allUtf8) throw e;
+      // git < 2.25 does not know the option: usage error, exit 129, "unknown option" on STDERR — never a timeout (empty stderr) and never the command text. Anything else rethrows.
+      if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129 || !/unknown option/i.test(e.stderr) || !allUtf8) throw e;
       added = await viaArgv(1 + 200);
     } finally {
       fs.rmSync(specFile, { force: true });
@@ -308,6 +335,7 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
   } catch {
     branch = null; // detached
   }
+  const addTimeout = input.gitTimeoutMs ?? GIT_TIMEOUT_MS;
   const perFileBytes = input.limits?.perFileBytes ?? SNAPSHOT_MAX_UNTRACKED_BYTES;
   const skipped = selectSkipped(await scanUntracked(cwd, perFileBytes), perFileBytes, input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES);
   const excludes = skipped.map((f) => f.raw);
@@ -321,14 +349,20 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
     let tree: string;
     let applied: number;
     try {
-      ({ tree, applied } = await buildTree(cwd, tmp.file, true, head, excludes, warnings, notes, input.legacyPathspec === true));
-    } catch {
+      ({ tree, applied } = await buildTree(cwd, tmp.file, true, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));
+    } catch (e) {
+      if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(addTimeout); // a rebuild would only wait another full timeout
       // A torn copy (the agent wrote its index mid-copy) or a split/shared index that cannot
       // be replayed from a copy: rebuild from HEAD, which still captures every worktree file.
       fs.rmSync(tmp.file, { force: true });
       warnings.length = 0;
       notes.length = 0;
-      ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true));
+      try {
+        ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));
+      } catch (e) {
+        if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(addTimeout);
+        throw e;
+      }
     }
     const message = `orchestra pause snapshot\n\nrun: ${input.runId}\nworkspace: ${input.wsId}\nbranch: ${branch ?? '(detached)'}\nhead: ${head ?? '(unborn)'}\n`;
     const ident = {

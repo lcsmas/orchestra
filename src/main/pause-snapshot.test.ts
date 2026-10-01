@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pauseRefName, refSegment, selectSkipped, snapshotWorktree, SNAPSHOT_MAX_UNTRACKED_BYTES } from './pause-snapshot.ts';
+import { pauseRefName, refSegment, selectSkipped, snapshotWorktree, SnapshotTimeoutError, SNAPSHOT_MAX_UNTRACKED_BYTES } from './pause-snapshot.ts';
 
 const ENV = {
   ...process.env,
@@ -556,6 +556,65 @@ test('round-3 review #4 (real): a wholly-untracked directory bigger than the PER
     assert.deepEqual(r.skippedLarge, []);
     assert.equal(git(wt, 'show', `${r.ref}:pkg/f3.txt`), 'x'.repeat(10));
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A PATH shim `git`: logs every `add`, then misbehaves as `mode` says; everything else goes to the real git. */
+function gitShim(root: string, mode: 'hang' | 'unrelated-failure'): { dir: string; log: string } {
+  const dir = path.join(root, 'shim-' + mode);
+  fs.mkdirSync(dir);
+  const log = path.join(dir, 'add.log');
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const body =
+    mode === 'hang'
+      ? 'echo "add $*" >> "$LOG"; exec sleep 30'
+      : 'echo "add $*" >> "$LOG"; case "$*" in *--pathspec-from-file=*) echo "fatal: unrelated failure (disk quota)" >&2; exit 128;; esac';
+  fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\nLOG=${log}\nfor a in "$@"; do if [ "$a" = add ]; then ${body}; fi; done\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+  return { dir, log };
+}
+
+test('round-4 (verifier MAJOR): a git add TIMEOUT is not "git < 2.25" — no fallback, nothing staged, NO ref; SnapshotTimeoutError says so; exactly ONE add was run (no argv retry, no HEAD rebuild)', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  const shim = gitShim(root, 'hang');
+  const oldPath = process.env.PATH;
+  try {
+    fs.mkdirSync(path.join(wt, 'tracked-dir'));
+    fs.writeFileSync(path.join(wt, 'tracked-dir/t.txt'), 'tracked\n');
+    git(wt, 'add', 'tracked-dir/t.txt');
+    git(wt, 'commit', '-q', '-m', 'dir');
+    for (let i = 0; i < 300; i++) fs.writeFileSync(path.join(wt, `tracked-dir/big-${i}.bin`), 'x'.repeat(40)); // flat untracked files in a TRACKED dir: per-file excludes (> 50) ⇒ the pathspec-file path
+    process.env.PATH = `${shim.dir}:${oldPath}`;
+    await assert.rejects(
+      snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 40, limits: { perFileBytes: 10, totalBytes: 1 << 20 }, gitTimeoutMs: 800 }),
+      (e: unknown) => e instanceof SnapshotTimeoutError && /snapshot incomplete: timeout/.test(e.message),
+    );
+    process.env.PATH = oldPath;
+    assert.equal(fs.readFileSync(shim.log, 'utf8').trim().split('\n').length, 1, 'ONE git add: no capped-argv fallback and no rebuild from HEAD (each would wait another timeout)');
+    assert.equal(git(wt, 'for-each-ref', 'refs/orchestra/pause'), '', 'no ref was written');
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-4: the old-git fallback needs a USAGE error (exit 129 + "unknown option" on stderr) — an unrelated git failure whose COMMAND TEXT contains --pathspec-from-file is rethrown, never read as an old git', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  const shim = gitShim(root, 'unrelated-failure');
+  const oldPath = process.env.PATH;
+  try {
+    for (let i = 0; i < 80; i++) fs.writeFileSync(path.join(wt, `big-${i}.bin`), 'x'.repeat(40));
+    process.env.PATH = `${shim.dir}:${oldPath}`;
+    await assert.rejects(
+      snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 41, limits: { perFileBytes: 10, totalBytes: 1 << 20 } }),
+      (e: unknown) => e instanceof Error && /unrelated failure \(disk quota\)/.test(e.message) && !(e instanceof SnapshotTimeoutError),
+    );
+    process.env.PATH = oldPath;
+    const adds = fs.readFileSync(shim.log, 'utf8').trim().split('\n');
+    assert.ok(adds.every((l) => l.includes('--pathspec-from-file=')), `no capped-argv fallback was attempted (the two adds are the existing seeded-index / rebuild-from-HEAD pair): ${adds.join(' | ').slice(0, 300)}`);
+    assert.equal(git(wt, 'for-each-ref', 'refs/orchestra/pause'), '');
+  } finally {
+    process.env.PATH = oldPath;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -247,3 +247,17 @@ test('round-3 F1/F4a: snapshot notes (oversize files git < 2.25 could not exclud
   assert.match(text, /vendor\/ \(900 MB, 240000 files, total size cap\); \+1499 more/);
   assert.match(text, /captured despite the cap: 30 oversize entr\(ies\) could NOT be excluded/);
 });
+
+test('round-4: a snapshot that timed out reads "snapshot: INCOMPLETE (timeout)" with the error, no ref line', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-i', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', snapshotIncomplete: 'timeout' },
+    snapshotRef: null, dirty: null, error: 'snapshot incomplete: timeout — git add exceeded 120000 ms', killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /snapshot: INCOMPLETE \(timeout\) — no ref was written; the interrupt and the kills still ran/);
+  assert.match(text, /error: snapshot incomplete: timeout/);
+});

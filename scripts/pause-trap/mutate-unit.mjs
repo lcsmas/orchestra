@@ -20,11 +20,11 @@ const T = { rigguard: 'src/main/pause-rig-guard.test.ts', wiring: 'src/main/paus
 
 const M = [
   // ── snapshot (pause-snapshot.ts)
-  { id: 'snap-real-index', file: SNAP, find: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);", rep: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1]);", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
+  { id: 'snap-real-index', file: SNAP, find: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1], timeoutMs);", rep: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1], timeoutMs);", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
   { id: 'snap-large-files-captured', file: SNAP, find: "files.filter((f) => !f.dir && f.bytes > perFileBytes)", rep: "files.filter((f) => false && !f.dir && f.bytes > perFileBytes)", tests: [T.snap], expect: /over the size cap/ },
   { id: 'snap-ref-overwrite', file: SNAP, find: "await git(cwd, ['update-ref', ref, commit, ''], env);", rep: "await git(cwd, ['update-ref', ref, commit], env);", tests: [T.snap], expect: /same `at` twice/ },
   { id: 'snap-no-parent', file: SNAP, find: "...(head ? ['-p', head] : []), '-F', '-'", rep: "'-F', '-'", tests: [T.snap], expect: /captures unstaged|unborn|clean worktree/ },
-  { id: 'snap-no-torn-index-fallback', file: SNAP, find: "      ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true));", rep: "      throw new Error('no fallback');", tests: [T.snap], expect: /corrupt\/torn/ },
+  { id: 'snap-no-torn-index-fallback', file: SNAP, find: "      try {\n        ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));", rep: "      throw new Error('no fallback');\n      try {\n        ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));", tests: [T.snap], expect: /corrupt\/torn/ },
   { id: 'snap-dirty-always-false', file: SNAP, find: 'const dirty = headTree === null ? true : headTree !== tree;', rep: 'const dirty = false;', tests: [T.snap, T.trap], expect: /captures unstaged|unborn|ORDER \+ CONTENT/ },
   { id: 'snap-runs-repo-hooks', file: SNAP, find: "'-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],", rep: "'-c', 'commit.gpgsign=false', ...args],", tests: [T.snap], expect: /HOOKS never run/ },
   { id: 'snap-abort-on-unreadable', file: SNAP, find: "['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]", rep: "['add', '-A', '--', ...argv], env, undefined, []", tests: [T.snap], expect: /unreadable untracked file/i },
@@ -182,8 +182,8 @@ const M = [
     { find: 'if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {', rep: 'if (true) {' },
     { find: 'added = await viaArgv(legacyPathspec ? 1 + 200 : specs.length);', rep: 'added = await viaArgv(1 + 200);' },
   ], tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
-  { id: 'snap-real-index-pathspec-file', file: SNAP, find: "'--pathspec-file-nul'], env, undefined, [1]);", rep: "'--pathspec-file-nul'], {}, undefined, [1]);", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
-  { id: 'snap-pathspec-file-not-nul', file: SNAP, find: ", '--pathspec-file-nul'], env, undefined, [1]);", rep: '], env, undefined, [1]);', tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
+  { id: 'snap-real-index-pathspec-file', file: SNAP, find: "'--pathspec-file-nul'], env, undefined, [1], timeoutMs);", rep: "'--pathspec-file-nul'], {}, undefined, [1], timeoutMs);", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
+  { id: 'snap-pathspec-file-not-nul', file: SNAP, find: ", '--pathspec-file-nul'], env, undefined, [1], timeoutMs);", rep: "], env, undefined, [1], timeoutMs);", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
   { id: 'status-bidi-not-stripped', file: 'src/cli/run-status.ts', find: "/[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff\\u{e0000}-\\u{e007f}]/gu", rep: "/[\\u0000-\\u001f\\u007f-\\u009f]/g", tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
   { id: 'status-wording-reverted', file: 'src/cli/run-status.ts', find: 'shows the uncommitted non-ignored work)`);', rep: 'shows the uncommitted work)`);', tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
   { id: 'status-earlier-kills-hidden', file: 'src/cli/run-status.ts', find: 'if (a?.earlierKilled?.length) out.push(', rep: 'if (false) out.push(', tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
@@ -205,7 +205,7 @@ const M = [
   { id: 'snap-stored-uncapped', file: SNAP, find: "      .slice(0, SKIPPED_LARGE_STORED)\n", rep: "", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
   { id: 'snap-count-is-stored-length', file: SNAP, find: "skippedLargeCount: excluded.length", rep: "skippedLargeCount: skippedLarge.length", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
   { id: 'snap-legacy-lists-unapplied', file: SNAP, find: "const excluded = skipped.slice(0, applied);", rep: "const excluded = skipped;", tests: [T.snap], expect: /round-3 F4a/ },
-  { id: 'snap-legacy-fallback-not-taken', file: SNAP, find: "      if (!/unknown option|pathspec-from-file|usage: git add/i.test(e instanceof Error ? e.message : String(e)) || !allUtf8) throw e;", rep: "      throw e;", tests: [T.snap], expect: /round-3 F4a/ },
+  { id: 'snap-legacy-fallback-not-taken', file: SNAP, find: "      if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129 || !/unknown option/i.test(e.stderr) || !allUtf8) throw e;", rep: "      throw e;", tests: [T.snap], expect: /round-3 F4a/ },
   { id: 'snap-spec-file-in-worktree', file: SNAP, find: "const specFile = `${indexFile}.pathspec`;", rep: "const specFile = path.join(cwd, '.pt-spec');", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
   { id: 'kill-window-ignored', file: KILL, find: "    return (opts.humanWindows?.() ?? []).some((w) => ms >= w.from && (w.to === undefined || ms <= w.to));", rep: "    return false;", tests: [T.kill], expect: /round-3 F3i/ },
   { id: 'kill-window-end-unbounded', file: KILL, find: "(w.to === undefined || ms <= w.to)", rep: "true", tests: [T.kill], expect: /round-3 F3i/ },
@@ -232,6 +232,14 @@ const M = [
   { id: 'sdk-window-closed-after-flag-clear', file: SDK, find: "  if (session.gateTurnHuman) markPauseHumanTurnEnd(session.wsId); // closes the window the trap shields (round-3 F3i)\n  session.gateTurnHuman = false;", rep: "  session.gateTurnHuman = false;\n  if (session.gateTurnHuman) markPauseHumanTurnEnd(session.wsId); // closes the window the trap shields (round-3 F3i)", tests: [T.wiring], expect: /round-2 F3: the session carries/ },
   { id: 'trap-prior-pauser-not-kept-on-provisional', file: TRAP, find: "    if (prior.exempt) activity.exempt = prior.exempt;\n    if (prior.pauserCli) activity.pauserCli = prior.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7/ },
   { id: 'trap-stale-exempt-not-cleared', file: TRAP, find: "    delete activity.exempt; // not a pauser on this attempt (proof gone / CLI replaced): never a stale label\n    delete activity.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7|F5 a RECYCLED CLI pid/ },
+  // ── last delta: a git add TIMEOUT is not old git
+  { id: 'snap-rebuild-after-timeout', file: SNAP, find: "      if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(addTimeout); // a rebuild would only wait another full timeout\n", rep: "", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)/ },
+  { id: 'snap-fallback-ignores-timeout', file: SNAP, find: "if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129", rep: "if (!(e instanceof GitError) || e.exitCode !== 129 && !e.timedOut", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)/ },
+  { id: 'snap-fallback-takes-any-failure', file: SNAP, edits: [
+    { find: "e.exitCode !== 129 || !/unknown option/i.test(e.stderr) || ", rep: "" },
+  ], tests: [T.snap], expect: /round-4: the old-git fallback needs a USAGE error/ },
+  { id: 'trap-timeout-not-flagged', file: TRAP, find: "        if (e instanceof Error && e.name === 'SnapshotTimeoutError') activity.snapshotIncomplete = 'timeout';\n", rep: "", tests: [T.trap], expect: /round-4: a snapshot TIMEOUT is recorded loud/ },
+  { id: 'status-incomplete-hidden', file: 'src/cli/run-status.ts', find: "if (a?.snapshotIncomplete) out.push(", rep: "if (false) out.push(", tests: [T.status], expect: /round-4: a snapshot that timed out reads/ },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },
