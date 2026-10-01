@@ -202,7 +202,9 @@ try {
     app1.send({ cmd: 'human-send', ws: 'ops', text: 'SCN:pauserself' });
     await waitFor(() => sleepers(A.pauser.otherTree).length >= 1, 90_000, `the coordinator's background task ${A.pauser.otherTree}`);
     const st = await waitFor(() => { const x = runStatus(); return x.pause ? x : null; }, 90_000, 'the coordinator\'s own tool to pause its run');
-    check('pause_issued_from_inside_the_member_tool', st.pause.pausedBy === 'ops' && sleepers(7719).length >= 1, `pausedBy=${st.pause.pausedBy}; the tool that holds the call (sleep 7719) is running`);
+    // the pause row lands BEFORE the CLI exits and the shell starts `sleep 7719`: wait for the tool that holds the call (a bounded poll — a read at the instant of the row raced it under load)
+    const holdsCall = await waitFor(() => sleepers(7719).length >= 1, 15_000, 'sleep 7719 (the tool holding the pause call)').then(() => true, () => false);
+    check('pause_issued_from_inside_the_member_tool', st.pause.pausedBy === 'ops' && holdsCall, `pausedBy=${st.pause.pausedBy}; the tool that holds the call (sleep 7719) is running`);
   } else {
     const p = cli('run', 'pause', '--hard', '--run', 'ops', '--as', A.pauser ? 'ops' : 'lead');
     check('cli_pause_accepted', p.rc === 0 && /PAUSED/.test(p.out), `rc=${p.rc} ${p.out.trim().slice(0, 200)}`);
@@ -273,6 +275,17 @@ try {
   }
   check('run_still_paused', done?.pause?.runId === 'ops' && !!done?.pause?.pausedAt, `pause=${JSON.stringify(done?.pause ?? null).slice(0, 120)}`);
 
+  // 6b. row 29 — BEFORE the human prompt below: a human send attaches the session, which would let the observer see a CLI-started turn that only the host's own `arm` (idle keeper
+  // re-armed after the app restart) could have observed — the `no-arm` mutant then survived (r3 run: the task-notification turn was still in flight when the human attached).
+  if (A.rowTwentyNine) {
+    const served = await waitFor(() => api.requests.some((r) => r.scn === 'bgnotify' && r.idx === 2), 45_000, 'the CLI-started turn to reach its tool call').then(() => true, () => false);
+    check('cli_started_turn_ran_control', served, served ? 'the fake API served step 2 (tool_use sleep 7717) to the CLI-started turn: it really tried to run a tool' : 'the CLI never started a turn by itself — this arm proves nothing');
+    const w1b = await waitFor(() => { const r = runStatus().bilan?.find((x) => x.wsId === 'w1'); return (r?.activity?.notes ?? []).some((n) => /turn started while paused/.test(n)) ? r : null; }, 20_000, 'the Bilan note for the CLI-started turn').catch(() => null);
+    await sleep(2000); // the observer's interrupt + kill settle
+    const note = (w1b?.activity?.notes ?? []).find((n) => /turn started while paused/.test(n));
+    check('turn_while_paused_interrupted', !!w1b && /interrupt=(interrupted|attached)/.test(note ?? '') && sleepers(7717).length === 0, note ? `note: ${note}` : 'no "turn started while paused" note');
+  }
+
   // 7. the session is still RESUMABLE (and a HUMAN prompt is allowed while paused, un-pausing nothing)
   const liveApp = app2 ?? app1;
   const tHuman = Date.now();
@@ -286,14 +299,6 @@ try {
   if (A.scenario === 'background') {
     await sleep(3000);
     check('nothing_restarts_on_its_own', A.markers.every((n) => sleepers(n).length === 0), 'after 3 s still no tool process');
-  }
-  // 9. row 29: the CLI started a turn by itself while paused (background task killed → task notification)
-  if (A.rowTwentyNine) {
-    const w1b = await waitFor(() => { const r = runStatus().bilan?.find((x) => x.wsId === 'w1'); return (r?.activity?.notes ?? []).some((n) => /turn started while paused/.test(n)) ? r : null; }, 45_000, 'the Bilan note for the CLI-started turn').catch(() => null);
-    const served = api.requests.some((r) => r.scn === 'bgnotify' && r.idx === 2);
-    check('cli_started_turn_ran_control', served, served ? 'the fake API served step 2 (tool_use sleep 7717) to the CLI-started turn: it really tried to run a tool' : 'the CLI never started a turn by itself — this arm proves nothing');
-    const note = (w1b?.activity?.notes ?? []).find((n) => /turn started while paused/.test(n));
-    check('turn_while_paused_interrupted', !!w1b && /interrupt=(interrupted|attached)/.test(note ?? '') && sleepers(7717).length === 0, note ? `note: ${note}` : 'no "turn started while paused" note');
   }
   if (A.queueKept) {
     const endTurns = () => liveApp.events.filter((e) => e.ev === 'turn-end' && e.ws === 'w1' && e.t >= tPause && e.stopReason === 'end_turn' && e.isError !== true).length;
