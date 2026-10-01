@@ -1172,3 +1172,22 @@ test('round-3 review #3: earlierKilled is BOUNDED (the last 100) however many in
   assert.equal(ek.length, 100);
   assert.equal(ek[0].pid, 1020, 'the OLDEST entries are the ones dropped');
 });
+
+test('round-3 F2 (carry): the deferral COUNT survives an attempt that did not defer (cliOf healthy but the kill failed) — flake, kill-fail, flake counts 2, not 1', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  const okKill = rig.deps.killTrees;
+  rig.cliResult = { error: 'flake' };
+  await runPauseTrap(rig.deps, c); // attempt 1: deferred (count 1)
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  rig.interruptResult = 'idle';
+  rig.deps.killTrees = async () => { throw new Error('kill boom'); };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // attempt 2: no deferral, incomplete (the count must be carried)
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interruptDeferrals, 1, 'carried through the non-deferring attempt');
+  rig.deps.killTrees = okKill;
+  rig.cliResult = { error: 'flake' };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // attempt 3: deferred again
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interruptDeferrals, 2);
+});

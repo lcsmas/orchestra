@@ -216,5 +216,6 @@ test('round-3 review nits: a small skipped file reads "3.0 MB" (never "0 MB"), t
   const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
   assert.match(text, /f0\s*\s*\s*\.bin \(3\.0 MB, total size cap\)/);
   assert.match(text, /; \+5 more/);
+  assert.equal((text.match(/\.bin \(3\.0 MB/g) ?? []).length, 20, 'only 20 are printed');
   assert.ok(!/[\u200e\u200f\u061c]/.test(text));
 });

@@ -189,10 +189,10 @@ const M = [
   { id: 'status-earlier-kills-hidden', file: 'src/cli/run-status.ts', find: 'if (a?.earlierKilled?.length) out.push(', rep: 'if (false) out.push(', tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
   // round-3 review fixes
   { id: 'procs-env-origin-own-start', file: PROCS, find: "      add(p, null, 99, 'env', origin);", rep: "      add(p, null, 99, 'env');", tests: [T.kill], expect: /round-3 F1a \(env orphans\)/ },
-  { id: 'kill-cli-unreadable-ok', file: KILL, find: "    return c === 'gone' || c === 'unreadable' || c.startTicks !== cli.startTicks || c.state === 'Z';", rep: "    return c === 'gone' || c.startTicks !== cli.startTicks || c.state === 'Z';", tests: [T.kill], expect: /round-3 review #2/ },
-  { id: 'snap-non-utf8-name-lstat', file: SNAP, find: 'const st = fs.lstatSync(Buffer.concat([base, name]));', rep: "const st = fs.lstatSync(Buffer.concat([base, name]).toString('utf8'));", tests: [T.snap], expect: /round-3 review #4/ },
-  { id: 'snap-non-utf8-through-argv', file: SNAP, find: 'if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {', rep: 'if (excludes.length <= MAX_ARGV_EXCLUDES || legacyPathspec) {', tests: [T.snap], expect: /round-3 review #4/ },
-  { id: 'trap-earlier-kills-uncapped', file: TRAP, find: '.slice(-100); // bounded like observerKilled', rep: '; // uncapped', tests: [T.trap], expect: /round-3 review #3/ },
+  { id: 'kill-cli-unreadable-ok', file: KILL, find: "    return c === 'gone' || c === 'unreadable' || c.startTicks !== cli.startTicks || c.state === 'Z';", rep: "    return c === 'gone' || (c !== 'unreadable' && (c.startTicks !== cli.startTicks || c.state === 'Z'));", tests: [T.kill], expect: /round-3 review .?#2/ },
+  { id: 'snap-non-utf8-name-lstat', file: SNAP, find: 'const st = fs.lstatSync(Buffer.concat([base, name]));', rep: "const st = fs.lstatSync(Buffer.concat([base, name]).toString('utf8'));", tests: [T.snap], expect: /round-3 review .?#4/ },
+  { id: 'snap-non-utf8-through-argv', file: SNAP, find: 'if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {', rep: 'if (excludes.length <= MAX_ARGV_EXCLUDES || legacyPathspec) {', tests: [T.snap], expect: /round-3 review .?#4/ },
+  { id: 'trap-earlier-kills-uncapped', file: TRAP, find: '.slice(-100); // bounded like observerKilled', rep: '; // uncapped', tests: [T.trap], expect: /round-3 review .?#3/ },
   { id: 'trap-deferral-count-not-carried', file: TRAP, find: '    if (prior.interruptDeferrals) activity.interruptDeferrals = prior.interruptDeferrals;\n', rep: '', tests: [T.trap], expect: /round-3 F2: the interrupt deferral is BOUNDED/ },
   { id: 'trap-note-window-unbounded', file: TRAP, find: '<= TASK_NOTIFICATION_WINDOW_MS', rep: '<= 1e15', tests: [T.trap], expect: /round-3 verifier MINOR/ },
   { id: 'trap-kill-stamp-without-kills', file: TRAP, find: '      if (rep.killed.length > 0) trapKilledAt.set(m.wsId, deps.now());', rep: '      trapKilledAt.set(m.wsId, deps.now());', tests: [T.trap], expect: /round-3 verifier MINOR/ },
@@ -215,6 +215,17 @@ if (process.argv.includes('--anchors-only')) {
     for (const e of (m.edits ?? [{ find: m.find }])) {
       const hits = src.split(e.find).length - 1;
       if (hits !== 1) { gone++; console.log(`✗ ${m.id}: anchor matched ${hits}× in ${m.file}: ${e.find.slice(0, 70)}`); }
+    }
+  }
+  // the LOAD-TIME mutants of the real-path rigs (mutants.mjs, regex anchors) too — a stale one only surfaced as "rig broke under the mutant" at the very end of a battery
+  if (!ONLY) {
+    const { MUTANTS } = await import('./mutants.mjs');
+    for (const [id, m] of Object.entries(MUTANTS)) {
+      const src = fs.readFileSync(path.join(REPO, m.file), 'utf8');
+      for (const e of (m.edits ?? [{ find: m.find }])) {
+        const hits = [...src.matchAll(e.find)].length;
+        if (hits !== 1) { gone++; console.log(`✗ load-time ${id}: anchor matched ${hits}× in ${m.file}: ${String(e.find).slice(0, 80)}`); }
+      }
     }
   }
   console.log(`ANCHORS: ${gone === 0 ? 'OK' : 'FAIL'} (${sel.length} mutants, ${gone} stale)`);

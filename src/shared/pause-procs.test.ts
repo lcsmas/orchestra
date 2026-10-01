@@ -310,6 +310,17 @@ test('F1: a TREE member that is a claude sub-invocation run by the tool itself i
   assert.ok(plan.members.some((m) => m.pid === 203 && m.via === 'tree'));
 });
 
+test('round-3 F4 pin (signal-time, session proof): a TREE member named claude whose ppid chain BROKE (reparented) still passes through the same-session proof — the supervisor guard never reaches a planned tool member', () => {
+  const t = [...table(), p(203, 200, { sid: 200, comm: 'claude', argv: ['claude', '-p', 'x'] })];
+  const pl = planToolTrees(t, CLI, {});
+  const m = pl.members.find((x) => x.pid === 203)!;
+  assert.equal(m.via, 'tree');
+  const reparented = t.map((x) => (x.pid === 203 ? { ...x, ppid: 1 } : x)); // its parent shell died / it was reparented: the chain proof fails, the session proof remains
+  const v = verifyAtSignal(m, pl, { keeperPid: KEEPER, selfPid: SELF }, reader(reparented), () => null);
+  assert.equal(v.ok, true);
+  assert.equal((v as { via: string }).via, 'session');
+});
+
 test('round-3 F4 pin (signal-time): a TREE member named claude / keeper.js passes the re-read (the supervisor guard is for ORPHANS only); the same names as ORPHANS are refused', () => {
   const t = [...table(), p(203, 200, { sid: 200, comm: 'claude', argv: ['claude', '-p', 'x'] }), p(204, 200, { sid: 200, comm: 'node', argv: ['node', '-e', 'x', '/x/keeper.js', 'ws'] })];
   const pl = planToolTrees(t, CLI, {});
