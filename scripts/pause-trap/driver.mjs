@@ -233,8 +233,14 @@ try {
   const leftover = A.markers.filter((n) => sleepers(n).length > 0);
   check('no_surviving_tool_procs', leftover.length === 0, leftover.length ? `still alive: sleep ${leftover.join(',')}` : `sleep ${A.markers.join(',')} all gone`);
   check('cli_and_keeper_alive', alive(keeper.pid, keeper.start) && alive(cli0.pid, cli0.start), `keeper ${keeper.pid} / CLI ${cli0.pid} alive with their original start-times`);
-  const w1row = done?.bilan?.find((r) => r.wsId === 'w1');
-  const opsrow = done?.bilan?.find((r) => r.wsId === 'ops');
+  // The kills may be recorded by the pause-time trap (`killed`), by the turn observer that raced it on a reattached in-flight turn (`observerKilled`, appended AFTER its kill rounds
+  // return) or by an earlier incomplete attempt (`earlierKilled`): wait (bounded) until every expected command is listed somewhere instead of a single read that raced the observer's append.
+  const killedIn = (st) => { const r = st?.bilan?.find((x) => x.wsId === 'w1'); return [...(r?.killed?.killed ?? []), ...(r?.activity?.observerKilled ?? []), ...(r?.activity?.earlierKilled ?? [])].map((k) => k.cmd); };
+  const doneNow = done && A.mustKill.length > 0
+    ? await waitFor(() => { const st = runStatus(); return A.mustKill.every((c) => killedIn(st).some((k) => k.includes(c))) ? st : null; }, 20_000, 'the expected kills to be listed in the Bilan').catch(() => runStatus())
+    : done;
+  const w1row = doneNow?.bilan?.find((r) => r.wsId === 'w1');
+  const opsrow = doneNow?.bilan?.find((r) => r.wsId === 'ops');
   const ref = w1row?.snapshotRef ?? null;
   let refOk = false, refDetail = 'no snapshot ref in the Bilan';
   if (ref) {
@@ -247,7 +253,7 @@ try {
   check('pause_ref_holds_uncommitted_work', refOk, refDetail);
   // (pauser-self: ops's own session starts writing into its worktree AFTER the baseline was taken, so only w1 — the member the trap alone touched — is compared)
   check('snapshot_no_touch', fingerprint(WT.w1) === fpBefore && (A.pauser?.mode === 'self' || fingerprint(WT.ops) === opsFpBefore), 'worktree contents+mtimes, REAL index bytes, HEAD and branches are byte-identical after the trap (w1 and ops)');
-  const killedCmds = [...(w1row?.killed?.killed ?? []).map((k) => k.cmd), ...(w1row?.activity?.observerKilled ?? []).map((k) => k.cmd)]; // the pause-time trap's list + what the turn observer killed on a reattached in-flight turn
+  const killedCmds = killedIn(doneNow); // the pause-time trap's list + what the turn observer killed on a reattached in-flight turn + earlier incomplete attempts
   // (After an app restart the arm pass can attach the member first: the observer then interrupts the reattached in-flight turn before the trap's own
   // interrupt runs, which finds it already over — `idle` is honest IF a Bilan note records the observer's interrupt.)
   check('bilan_w1', !!w1row && w1row.dirty === true && Array.isArray(w1row.killed?.killed) && !w1row.error
@@ -258,7 +264,7 @@ try {
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
   if (A.mustKill.includes('sleep 7715')) {
     // LEAD ruling D11: the daemonized orphan is listed with pid, cmdline, cwd and the reason that matched (CLI identity = pid + start-time).
-    const o = (w1row?.killed?.killed ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.observerKilled ?? []).find((k) => k.cmd === 'sleep 7715');
+    const o = (w1row?.killed?.killed ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.observerKilled ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.earlierKilled ?? []).find((k) => k.cmd === 'sleep 7715');
     check('orphan_listed_with_cwd_and_reason', !!o && typeof o.pid === 'number' && o.via === 'env' && o.cwd === WT.w1 && /CLAUDE_PID=\d+ names this member's CLI \(pid \d+, start-time \d+\)/.test(o.evidence ?? ''),
       JSON.stringify(o ?? null));
   }
