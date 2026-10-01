@@ -448,3 +448,121 @@ test('round-2 F1b REAL: a tool that starts 1.1 s AFTER a human turn began is SPA
     for (const c of spawned) c.kill('SIGKILL');
   }
 });
+
+// ── round 3: F1a (cutoff per tool ROOT), F5 (CLI vanished/replaced), F4 (pin both sides of the supervisor sparing) ──
+
+test('round-3 F1a: the human cutoff is per tool ROOT — forks a PRE-pause rig makes after the human turn began are killed with it (not spared + orphaned); a human turn\'s own tree, forks included, is spared', async () => {
+  const os = world();
+  os.add(mk(207, 200, { sid: 200, comm: 'sleep', argv: ['sleep', '4321'], startTicks: 2600 })); // a fork of the OLD rig (root 200 started at 2200), after the cutoff
+  os.add(shellC(500, 100, 'human tool')); // root started at 2500 (after the cutoff)
+  os.add(mk(507, 500, { sid: 500, comm: 'sleep', argv: ['sleep', '9'], startTicks: 2700 }));
+  const r = await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: 2450 });
+  assert.ok(!os.procs.has(207) && !os.procs.has(200) && !os.procs.has(201), 'the whole OLD tree is killed, the late fork included');
+  assert.ok(os.procs.has(500) && os.procs.has(507), 'the human turn\'s tree (root + its fork) is left running');
+  assert.ok(r.spared.some((x) => x.pid === 507 && /HUMAN turn/.test(x.reason)));
+});
+
+test('round-3 F5: a CLI that EXITED or was REPLACED (a Restart) is reported cliGone — never "0 killed, complete" — and what was killed before it vanished stays listed', async () => {
+  const gone = world();
+  gone.procs.delete(100);
+  const r1 = await killToolTrees(CLI, 90, gone.deps());
+  assert.equal(r1.cliGone, true);
+  assert.match(r1.error ?? '', /exited or was replaced before the kill/);
+  const replaced = world();
+  replaced.add(mk(100, 90, { startTicks: 9999, comm: 'claude', argv: ['claude'] })); // same pid, another process
+  assert.equal((await killToolTrees(CLI, 90, replaced.deps())).cliGone, true);
+  const dies = world();
+  dies.add(shellC(400, 100, 'make'));
+  dies.onSignal = () => dies.procs.delete(100); // the CLI exits right after the first signal
+  const r3 = await killToolTrees(CLI, 90, dies.deps());
+  assert.equal(r3.cliGone, true);
+  assert.match(r3.error ?? '', /DURING the kill/);
+  assert.ok(r3.killed.length >= 1, 'what was killed before is still reported');
+  const healthy = await killToolTrees(CLI, 90, world().deps());
+  assert.equal(healthy.cliGone, undefined, 'control: a healthy CLI is not cliGone');
+});
+
+test('round-3 F4 pin (tree side): a supervisor-NAMED process that is a TOOL\'s own descendant (a member\'s `claude -p`, a `node keeper.js`) IS killed; (orphan side below: the same names are SPARED)', async () => {
+  const os = world();
+  os.add(mk(205, 200, { sid: 200, comm: 'claude', argv: ['claude', '-p', 'x'] }));
+  os.add(mk(206, 200, { sid: 200, comm: 'node', argv: ['node', '-e', 'x', '/x/.orchestra/bin/keeper.js', 'ws'] }));
+  await killToolTrees(CLI, 90, os.deps());
+  assert.ok(!os.procs.has(205) && !os.procs.has(206), 'the tool\'s own claude / keeper.js invocations are killed with it');
+});
+
+test('round-3 F4 pin (orphan side): an env-proven ORPHAN named claude / keeper.js is SPARED and listed (D4 literal: never the CLI/keeper of any session)', async () => {
+  const os = world();
+  os.add(mk(710, 1, { sid: 710, startTicks: 5000, comm: 'claude', argv: ['claude', '--print'] }));
+  os.add(mk(711, 1, { sid: 711, startTicks: 5001, comm: 'node', argv: ['node', '/x/.orchestra/bin/keeper.js', 'ws'] }));
+  os.add(mk(712, 1, { sid: 712, startTicks: 5002, comm: 'sleep', argv: ['sleep', '9'] })); // control: an ordinary orphan IS killed
+  for (const pid of [710, 711, 712]) os.env.set(pid, 100);
+  const r = await killToolTrees(CLI, 90, os.deps());
+  assert.ok(os.procs.has(710) && os.procs.has(711), 'supervisor-named orphans survive');
+  assert.ok(!os.procs.has(712), 'control: the ordinary orphan was killed');
+  assert.ok(r.spared.some((x) => x.pid === 710) && r.spared.some((x) => x.pid === 711), 'and are listed as spared');
+});
+
+// real processes: one standin "CLI" driven over stdin
+const PIN_STANDIN = `
+const { spawn } = require('child_process');
+const o = { detached: true, stdio: 'ignore', env: { ...process.env, CLAUDE_PID: String(process.pid) } };
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (d) => { for (const c of d) {
+  // a TOOL whose own descendants are named like supervisors (tree side: must be killed)
+  if (c === 't') spawn('/bin/bash', ['-c', 'bash -c "exec -a claude sleep 7796" & node -e "setInterval(()=>{},1000)" /x/.orchestra/bin/keeper.js 7798 & wait'], o).unref();
+  // a daemonized ORPHAN named claude (orphan side: must be spared)
+  if (c === 'o') spawn('/bin/bash', ['-c', '( exec -a claude sleep 7799 ) >/dev/null 2>&1 & exit 0'], o).unref();
+  // F1a: an OLD rig that keeps forking workers
+  if (c === 'r') spawn('/bin/bash', ['-c', 'while :; do sleep 7795 & sleep 0.3; done'], o).unref();
+} });
+setInterval(() => {}, 1000);
+console.log('ready');
+`;
+
+function findNamed(arg0: string, arg1: string): number[] {
+  return real.readTable().filter((p) => p.argv?.[0] === arg0 && p.argv?.[1] === arg1 && p.state !== 'Z').map((p) => p.pid);
+}
+
+test('round-3 F4 pin REAL: a tool\'s `claude`-named and `keeper.js`-operand descendants are killed; a daemonized `claude`-named orphan is spared and listed', async () => {
+  if (process.platform !== 'linux') return;
+  const spawned: ChildProcess[] = [];
+  try {
+    const cli = spawn(process.execPath, ['-e', PIN_STANDIN, 'fake-cli-pin'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    spawned.push(cli);
+    await new Promise<void>((res) => cli.stdout!.once('data', () => res()));
+    cli.stdin!.write('to');
+    await waitFor(() => findNamed('claude', '7796').length === 1 && findNamed('claude', '7799').length === 1 && real.readTable().some((p) => p.argv?.includes('7798')));
+    const cliId = real.read(cli.pid!) as ProcIdent;
+    const rep = await killToolTrees({ pid: cli.pid!, startTicks: cliId.startTicks }, null, { ...real, selfPid: -1 }, { termGraceMs: 300 });
+    assert.equal(findNamed('claude', '7796').length, 0, 'tree side: the tool\'s own `claude`-named descendant is killed');
+    assert.equal(real.readTable().filter((p) => p.argv?.includes('7798') && p.state !== 'Z').length, 0, 'tree side: the `keeper.js`-operand descendant is killed');
+    assert.equal(findNamed('claude', '7799').length, 1, 'orphan side: the daemonized claude-named orphan survives');
+    assert.ok(rep.spared.some((x) => /7799/.test(x.cmd)), 'and is listed as spared');
+  } finally {
+    for (const p of real.readTable()) if ((p.argv?.[0] === 'claude' && ['7796', '7799'].includes(p.argv[1])) || p.argv?.includes('7798') || p.argv?.at(-1) === 'fake-cli-pin') { try { process.kill(p.pid, 'SIGKILL'); } catch { /* gone */ } }
+    for (const c of spawned) c.kill('SIGKILL');
+  }
+});
+
+test('round-3 F1a REAL: an OLD rig that keeps forking workers after a human turn began is killed WITH its late forks (none survive orphaned); control: the human-started rig is spared', async () => {
+  if (process.platform !== 'linux') return;
+  const spawned: ChildProcess[] = [];
+  try {
+    const cli = spawn(process.execPath, ['-e', PIN_STANDIN, 'fake-cli-forks'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    spawned.push(cli);
+    await new Promise<void>((res) => cli.stdout!.once('data', () => res()));
+    cli.stdin!.write('r');
+    await waitFor(() => findByArgv('sleep 7795').length >= 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    const humanStart = Date.now();
+    await new Promise((r) => setTimeout(r, 1200)); // the rig forks a few more workers AFTER the human turn began
+    const cliId = real.read(cli.pid!) as ProcIdent;
+    const rep = await killToolTrees({ pid: cli.pid!, startTicks: cliId.startTicks }, null, { ...real, selfPid: -1 }, { termGraceMs: 300, startedBeforeMs: humanStart });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(findByArgv('sleep 7795').length, 0, `no worker of the old rig survives (late forks included): ${JSON.stringify(rep.killed.length)} killed`);
+  } finally {
+    for (const n of ['sleep 7795', 'fake-cli-forks']) for (const pid of findByArgv(n)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    for (const p of real.readTable()) if (p.argv?.[0] === '/bin/bash' && p.argv.join(' ').includes('sleep 7795')) { try { process.kill(p.pid, 'SIGKILL'); } catch { /* gone */ } }
+    for (const c of spawned) c.kill('SIGKILL');
+  }
+});

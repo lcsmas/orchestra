@@ -68,6 +68,8 @@ export interface KillReport {
   rounds: number;
   /** The pause was lifted/re-written while killing: the remaining signals were NOT sent. */
   aborted?: 'lifted';
+  /** The CLI the plan was made against EXITED or was REPLACED (a Restart): its tools' orphans are unreachable by identity — the trap is INCOMPLETE and retried against the new CLI (round-3 F5). */
+  cliGone?: boolean;
   error?: string;
 }
 
@@ -241,9 +243,15 @@ export async function killToolTrees(
   });
   // re-read at every plan AND every signal: a human turn may begin while the kill rounds run (D9, pre-review M5)
   const beforeMs = (): number | undefined => (typeof opts.startedBeforeMs === 'function' ? opts.startedBeforeMs() : opts.startedBeforeMs);
+  // A tree belongs to the human turn only if its ROOT started after it: forks a pre-pause rig makes LATER are the rig's (round-3 F1a — spared per process, they
+  // were orphaned when the root died). Env orphans have no root: their own start. Session orphans carry their (possibly dead) root's start.
   const tooNew = (m: ToolProc): boolean => {
     const b = beforeMs();
-    return b !== undefined && deps.startMs(m.startTicks) >= b;
+    return b !== undefined && deps.startMs(m.rootStartTicks ?? m.startTicks) >= b;
+  };
+  const cliGone = (): boolean => {
+    const c = deps.read(cli.pid);
+    return c === 'gone' || (c !== 'unreadable' && (c.startTicks !== cli.startTicks || c.state === 'Z'));
   };
   const planNow = (): ToolPlan => {
     const pl = planToolTrees(deps.readTable(), cli, planOpts());
@@ -257,12 +265,11 @@ export async function killToolTrees(
       }
       pl.members = keep;
     }
-    const before = beforeMs();
-    if (before !== undefined) {
+    if (beforeMs() !== undefined) {
       const keep: ToolProc[] = [];
       for (const m of pl.members) {
-        if (deps.startMs(m.startTicks) < before) keep.push(m);
-        else pl.spared.push({ pid: m.pid, comm: m.comm, cmd: m.cmd, reason: 'started after a HUMAN turn began during the trap — the human prompt is allowed (D9)' });
+        if (!tooNew(m)) keep.push(m);
+        else pl.spared.push({ pid: m.pid, comm: m.comm, cmd: m.cmd, reason: 'its tool tree started after a HUMAN turn began during the trap — the human prompt is allowed (D9)' });
       }
       pl.members = keep;
     }
@@ -275,6 +282,12 @@ export async function killToolTrees(
     }
     return true;
   };
+
+  if (cliGone()) {
+    report.cliGone = true;
+    report.error = 'the CLI exited or was replaced before the kill (a Restart?) — the tools it left behind are not reachable by identity; retried against the current CLI';
+    return report;
+  }
 
   for (let round = 1; round <= maxRounds; round++) {
     if (!paused()) break;
@@ -325,6 +338,10 @@ export async function killToolTrees(
   report.killed = [...killed.values()];
   report.refused = [...refused.values()];
   report.spared = [...spared.values()];
+  if (cliGone()) {
+    report.cliGone = true;
+    report.error = report.error ?? 'the CLI exited or was replaced DURING the kill (a Restart?) — what was killed is listed; its remaining orphans are not reachable by identity; retried against the current CLI';
+  }
   report.survivors = finalPlan.members.map((m) => ({
     pid: m.pid,
     comm: m.comm,

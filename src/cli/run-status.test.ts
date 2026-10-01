@@ -180,3 +180,26 @@ test('F11 (round 2): EVERY recorded string is sanitized — orphan cwd/evidence,
   assert.ok(!/^\s*(FORGED|killed: FORGED)/m.test(text), 'a newline inside a value did not start a forged line');
   assert.match(text, /orphan killed \(left the CLI's tree, via env\)/);
 });
+
+test('round-3 F8/F7/F5: U+202E / U+2028 are stripped from every recorded string; the snapshot line says "uncommitted non-ignored work"; a total-cap skip names its reason; kills of an incomplete earlier attempt are listed', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-e', pausedAt: p.pausedAt,
+    activity: {
+      surface: 'sdk', memberRun: 'W',
+      skippedLarge: [{ path: 'huge\u202e.bin', bytes: 300 * 1048576, reason: 'file-cap' }, { path: 'dropped.dat', bytes: 40 * 1048576, reason: 'total-cap' }],
+      earlierKilled: [{ pid: 77, cmd: 'sleep 9\u2028killed: FORGED', signal: 'SIGTERM', outcome: 'exited' }],
+      notes: ['n\u202eote'],
+    },
+    snapshotRef: 'refs/orchestra/pause/W/ws-e/1', dirty: true, error: 'e\u2029rr',
+    killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.ok(!/[\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(text), 'no Unicode line separator / bidi override survives');
+  assert.ok(!/^\s*killed: FORGED/m.test(text));
+  assert.match(text, /shows the uncommitted non-ignored work/);
+  assert.match(text, /dropped\.dat \(40 MB, total size cap\)/);
+  assert.match(text, /killed by EARLIER incomplete attempt\(s\) of the trap: sleep 9 killed: FORGED \(pid 77\)/);
+});

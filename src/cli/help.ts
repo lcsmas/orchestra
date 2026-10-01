@@ -260,7 +260,7 @@ all. Read-only.`,
   status    Is the run paused (by whom, since when, which run carries the pause),
             has the host trap finished, and the BILAN DE PAUSE of every member:
             what it was doing, its snapshot ref (refs/orchestra/pause/…, holds the
-            uncommitted + untracked work), dirty tree, the tool processes the host
+            uncommitted + untracked NON-IGNORED work), dirty tree, the tool processes the host
             killed (never the session or keeper), errors. Read-only; --json for tools.
 Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume refuse a run with no row.`,
   },

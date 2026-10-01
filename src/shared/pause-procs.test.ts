@@ -310,6 +310,17 @@ test('F1: a TREE member that is a claude sub-invocation run by the tool itself i
   assert.ok(plan.members.some((m) => m.pid === 203 && m.via === 'tree'));
 });
 
+test('round-3 F4 pin (signal-time): a TREE member named claude / keeper.js passes the re-read (the supervisor guard is for ORPHANS only); the same names as ORPHANS are refused', () => {
+  const t = [...table(), p(203, 200, { sid: 200, comm: 'claude', argv: ['claude', '-p', 'x'] }), p(204, 200, { sid: 200, comm: 'node', argv: ['node', '-e', 'x', '/x/keeper.js', 'ws'] })];
+  const pl = planToolTrees(t, CLI, {});
+  for (const pid of [203, 204]) {
+    const m = pl.members.find((x) => x.pid === pid)!;
+    assert.equal(m.via, 'tree');
+    const v = verifyAtSignal(m, pl, { keeperPid: KEEPER, selfPid: SELF }, reader(t), () => null);
+    assert.equal(v.ok, true, `${pid} is a tool's own descendant: killable`);
+  }
+});
+
 // ── pre-review M1/M2 (round 2): supervisor ANCESTORS, and the `orchestra` CLI client is not a supervisor ──
 
 function tableWithSupervisorChildren(): ProcIdent[] {

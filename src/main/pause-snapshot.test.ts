@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pauseRefName, refSegment, snapshotWorktree, SNAPSHOT_MAX_UNTRACKED_BYTES } from './pause-snapshot.ts';
+import { pauseRefName, refSegment, selectSkipped, snapshotWorktree, SNAPSHOT_MAX_UNTRACKED_BYTES } from './pause-snapshot.ts';
 
 const ENV = {
   ...process.env,
@@ -223,7 +223,7 @@ test('untracked files over the size cap are left out of the ref and REPORTED (no
     fs.truncateSync(big, SNAPSHOT_MAX_UNTRACKED_BYTES + 1);
     fs.writeFileSync(path.join(wt, 'small.txt'), 's\n');
     const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 8 });
-    assert.deepEqual(r.skippedLarge, [{ path: 'big.bin', bytes: SNAPSHOT_MAX_UNTRACKED_BYTES + 1 }]);
+    assert.deepEqual(r.skippedLarge, [{ path: 'big.bin', bytes: SNAPSHOT_MAX_UNTRACKED_BYTES + 1, reason: 'file-cap' }]);
     assert.throws(() => git(wt, 'cat-file', '-e', `${r.ref}:big.bin`));
     assert.equal(git(wt, 'show', `${r.ref}:small.txt`), 's');
   } finally {
@@ -356,4 +356,53 @@ test('refuses a missing worktree with a clear error', async () => {
     snapshotWorktree({ worktreePath: '/nonexistent/path/xyz', runId: 'r', wsId: 'w', at: 1 }),
     /does not exist/,
   );
+});
+
+test('round-3 F7: selectSkipped — per-file cap first, then the LARGEST of the rest are dropped until the total fits (reason total-cap); under the caps nothing is skipped', () => {
+  const f = (path: string, bytes: number) => ({ path, bytes });
+  assert.deepEqual(selectSkipped([f('a', 10), f('b', 20)], 100, 1000), []);
+  assert.deepEqual(selectSkipped([f('huge', 500), f('a', 10)], 100, 1000), [{ path: 'huge', bytes: 500, reason: 'file-cap' }]);
+  const r = selectSkipped([f('c', 60), f('a', 100), f('d', 70), f('b', 90), f('e', 80)], 1000, 250); // total 400 > 250: drop 100, then 90 (210 fits)
+  assert.deepEqual(r, [{ path: 'a', bytes: 100, reason: 'total-cap' }, { path: 'b', bytes: 90, reason: 'total-cap' }]);
+});
+
+test('round-3 F7: a TOTAL size cap on untracked work — the largest files are left out of the ref and REPORTED with their reason; the rest is captured', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    for (const [n, size] of [['f100', 100], ['f90', 90], ['f80', 80], ['f70', 70], ['f60', 60]] as const) fs.writeFileSync(path.join(wt, n), 'x'.repeat(size));
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 20, limits: { perFileBytes: 1000, totalBytes: 250 } });
+    assert.deepEqual(r.skippedLarge.map((x) => `${x.path}:${x.reason}`).sort(), ['f100:total-cap', 'f90:total-cap']);
+    assert.throws(() => git(wt, 'cat-file', '-e', `${r.ref}:f100`));
+    assert.equal(git(wt, 'show', `${r.ref}:f80`).length, 80, 'the files that fit are in the ref');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-3 F8: MORE than 200 oversize files are ALL excluded (pathspec file, no silent truncation) — none of them is in the ref, none is reported "not captured" while actually captured', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    for (let i = 0; i < 260; i++) fs.writeFileSync(path.join(wt, `big-${i}.bin`), 'x'.repeat(40));
+    fs.writeFileSync(path.join(wt, 'small.txt'), 's\n');
+    const before = fingerprint(wt);
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 21, limits: { perFileBytes: 10, totalBytes: 1 << 20 } });
+    assert.equal(fingerprint(wt), before, 'NO-TOUCH holds on the pathspec-file path too: worktree, REAL index, HEAD and branches byte-identical');
+    assert.equal(r.skippedLarge.length, 261 - 1, 'all 260 big files reported');
+    const inRef = git(wt, 'ls-tree', '-r', '--name-only', r.ref).split('\n').filter((n) => n.startsWith('big-'));
+    assert.deepEqual(inRef, [], 'and NONE of them is in the ref (201+ used to be captured while reported skipped)');
+    assert.equal(git(wt, 'show', `${r.ref}:small.txt`), 's');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-3 F8 legacy git (< 2.25, argv-only pathspec): excludes beyond 200 are NOT applied and the WARNING says so (never "not captured" for a file that is in the ref)', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    for (let i = 0; i < 230; i++) fs.writeFileSync(path.join(wt, `big-${i}.bin`), 'x'.repeat(40));
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 22, limits: { perFileBytes: 10, totalBytes: 1 << 20 }, legacyPathspec: true });
+    assert.match(r.warnings.join(' | '), /30 oversize file\(s\) could NOT be excluded/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
