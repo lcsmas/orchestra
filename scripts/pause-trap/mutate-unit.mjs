@@ -8,10 +8,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
+const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null; // one id, or a comma-separated list (one control, one post-control)
+const ONLY_SET = ONLY ? new Set(ONLY.split(',')) : null;
 const SNAP = 'src/main/pause-snapshot.ts', PROCS = 'src/shared/pause-procs.ts', KILL = 'src/main/pause-kill.ts', TRAP = 'src/main/pause-trap.ts', REC = 'src/main/bus-pause-records.ts';
 const IDX = 'src/main/index.ts', SDK = 'src/main/agent-sdk.ts', ACT = 'src/main/activity.ts', HOST = 'src/main/pause-trap-host.ts';
 const GUARD = 'scripts/pause-trap/pidns-guard.mjs', PROV = 'scripts/pause-trap/provenance-inner.mjs';
@@ -237,7 +238,7 @@ const M = [
   { id: 'wire-host-observer-pty-too', file: HOST, find: '    if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own\n', rep: '', tests: [T.wiring], expect: /host observer stands down/ },
 ];
 
-const sel = ONLY ? M.filter((m) => m.id === ONLY) : M;
+const sel = ONLY ? M.filter((m) => ONLY_SET.has(m.id)) : M;
 if (sel.length === 0) { console.error(`unknown mutant ${ONLY}`); process.exit(2); }
 
 // --anchors-only: every anchor must match the CURRENT source exactly once (cheap; run after ANY edit of a mutated clause — a stale anchor is PATTERN-GONE, never a pass).
@@ -271,9 +272,19 @@ if (process.argv.includes('--anchors-only')) {
   process.exit(gone === 0 ? 0 : 1);
 }
 
+// ASYNC on purpose: a synchronous spawn keeps the event loop busy for the whole run, so the SIGINT/SIGTERM restore handler below could never fire and a killed harness left the source MUTATED.
 function runTests(files) {
-  const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', ...files], { cwd: REPO, encoding: 'utf8', timeout: 240_000 });
-  const out = (r.stdout ?? '') + (r.stderr ?? '');
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--test', '--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', ...files], { cwd: REPO });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 240_000);
+    child.on('close', () => { clearTimeout(timer); resolve(parseRun(out)); });
+  });
+}
+
+function parseRun(out) {
   const fail = Number(/^# fail (\d+)/m.exec(out)?.[1] ?? NaN);
   const pass = Number(/^# pass (\d+)/m.exec(out)?.[1] ?? NaN);
   const red = [...out.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1]);
@@ -286,7 +297,7 @@ function rebuildCli() {
 }
 // Gate 0: a clean control over every file any mutant uses — a tree that is already red proves nothing.
 const allFiles = [...new Set(sel.flatMap((m) => m.tests))];
-const control = runTests(allFiles);
+const control = await runTests(allFiles);
 console.log(`control (clean tree, ${allFiles.length} files): pass ${control.pass}, fail ${control.fail}`);
 if (control.fail !== 0 || !(control.pass > 0)) { console.log(`MUTATE-UNIT: FAIL — the clean control is not green (${control.red.join(' | ')})`); process.exit(1); }
 
@@ -308,7 +319,7 @@ for (const m of sel) {
   try {
     fs.writeFileSync(abs, edits.reduce((acc, e) => acc.replace(e.find, () => e.rep), src));
     if (m.build) rebuildCli(); // the tests EXEC the built bundle: a stale one would run the unmutated code (vacuous survivor)
-    res = runTests(m.tests);
+    res = await runTests(m.tests);
   } finally {
     fs.copyFileSync(backup, abs); // byte-exact restore
     activeRestore = null;
@@ -322,7 +333,7 @@ for (const m of sel) {
 }
 const gitDirty = spawnSync('git', ['diff', '--quiet', '--', ...[...new Set(sel.map((m) => m.file))]], { cwd: REPO }).status;
 fs.rmSync(bak, { recursive: true, force: true });
-const post = runTests(allFiles);
+const post = await runTests(allFiles);
 console.log(`post-restore control: pass ${post.pass}, fail ${post.fail}; changed vs index for mutated files: ${gitDirty === 0 ? 'no (only what was already uncommitted)' : 'see git diff (uncommitted edits exist)'}`);
 const ok = caught === sel.length && post.fail === 0;
 console.log(`MUTATE-UNIT: ${ok ? 'PASS' : 'FAIL'} (${caught}/${sel.length} caught)`);
