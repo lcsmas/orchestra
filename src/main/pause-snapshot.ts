@@ -285,6 +285,7 @@ async function buildTree(
       added = await git(cwd, ['add', '-A', '--ignore-errors', `--pathspec-from-file=${specFile}`, '--pathspec-file-nul'], env, undefined, [1], timeoutMs);
     } catch (e) {
       // git < 2.25 does not know the option: usage error, exit 129, "unknown option" on STDERR — never a timeout (empty stderr) and never the command text. Anything else rethrows.
+      // (`timedOut` is belt and braces: execFile destroys the pipes on a timeout, so a killed git has empty stderr and exit code null — it can never satisfy the two clauses after it)
       if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129 || !/unknown option/i.test(e.stderr) || !allUtf8) throw e;
       added = await viaArgv(1 + 200);
     } finally {

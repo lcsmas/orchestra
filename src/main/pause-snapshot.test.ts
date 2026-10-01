@@ -619,15 +619,14 @@ test('round-4: the old-git fallback needs a USAGE error (exit 129 + "unknown opt
   }
 });
 
-/** A generic PATH shim `git` for ONE subcommand: `hang` (sleeps past the timeout), `term-usage` (on SIGTERM prints a usage error and exits 129 — a timed-out git that LOOKS like an old git), `fail-then-hang` (first call exits 128, later calls hang), `log` (records the locale, then runs the real git). */
-function gitShimFor(root: string, on: string, behavior: 'hang' | 'term-usage' | 'fail-then-hang' | 'log'): { dir: string; log: string } {
+/** A generic PATH shim `git` for ONE subcommand: `hang` (sleeps past the timeout), `fail-then-hang` (first call exits 128, later calls hang), `log` (records the locale, then runs the real git). */
+function gitShimFor(root: string, on: string, behavior: 'hang' | 'fail-then-hang' | 'log'): { dir: string; log: string } {
   const dir = path.join(root, `shim-${on}-${behavior}`);
   fs.mkdirSync(dir);
   const log = path.join(dir, 'calls.log');
   const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
   const actions: Record<string, string> = {
     hang: 'exec sleep 5',
-    'term-usage': `trap 'echo "error: unknown option \\\`pathspec-from-file'"'"'" >&2; exit 129' TERM; sleep 5 & wait $!`,
     'fail-then-hang': `if [ "$(wc -l < "$LOG")" -le 1 ]; then echo "fatal: transient failure" >&2; exit 128; else exec sleep 5; fi`,
     log: ':',
   };
@@ -652,20 +651,6 @@ function flatTracked(wt: string, n: number): void {
   git(wt, 'commit', '-q', '-m', 'dir');
   for (let i = 0; i < n; i++) fs.writeFileSync(path.join(wt, `tracked-dir/big-${i}.bin`), 'x'.repeat(40));
 }
-
-test('round-4 review #2: a TIMED-OUT git that exits 129 with "unknown option" (SIGTERM handler) is still a TIMEOUT, never an old git — no capped-argv fallback', async () => {
-  const { wt, root } = makeLinkedWorktree();
-  try {
-    flatTracked(wt, 300);
-    const shim = gitShimFor(root, 'add', 'term-usage');
-    await withShim(shim, () => assert.rejects(snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 42, limits: { perFileBytes: 10, totalBytes: 1 << 20 }, gitTimeoutMs: 800 }), (e: unknown) => e instanceof SnapshotTimeoutError));
-    const adds = fs.readFileSync(shim.log, 'utf8').trim().split('\n');
-    assert.equal(adds.length, 1, `ONE add (no fallback): ${adds.join(' | ').slice(0, 200)}`);
-    assert.equal(git(wt, 'for-each-ref', 'refs/orchestra/pause'), '');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test('round-4 review #3: a hang on the CAPPED-ARGV path (≤ 50 excludes) times out too (timeoutMs reaches viaArgv); a non-timeout failure then a hang on the REBUILD is still a timeout', async () => {
   const { wt, root } = makeLinkedWorktree();

@@ -234,7 +234,6 @@ const M = [
   { id: 'trap-stale-exempt-not-cleared', file: TRAP, find: "    delete activity.exempt; // not a pauser on this attempt (proof gone / CLI replaced): never a stale label\n    delete activity.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7|F5 a RECYCLED CLI pid/ },
   // ── last delta: a git add TIMEOUT is not old git
   { id: 'snap-rebuild-after-timeout', file: SNAP, find: "      if (e instanceof GitError && e.timedOut) throw e; // a rebuild would only wait another full timeout (mapped to SnapshotTimeoutError by the caller)\n", rep: "", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)/ },
-  { id: 'snap-fallback-ignores-timeout', file: SNAP, find: "if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129", rep: "if (!(e instanceof GitError) || e.exitCode !== 129 && !e.timedOut", tests: [T.snap], expect: /round-4 review .?#2/ },
   { id: 'snap-fallback-takes-any-failure', file: SNAP, edits: [
     { find: "e.exitCode !== 129 || !/unknown option/i.test(e.stderr) || ", rep: "" },
   ], tests: [T.snap], expect: /round-4: the old-git fallback needs a USAGE error/ },
