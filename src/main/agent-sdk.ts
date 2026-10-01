@@ -79,8 +79,10 @@ import {
   markLooping,
   markStoppedOnMaxTurns,
   markStoppedOnUsageLimit,
+  notifyTurnStart,
 } from './activity';
-import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
+import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
+import { markPauseHumanTurn } from './pause-trap';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
@@ -418,6 +420,9 @@ interface Session {
    *  silent rather than a later, healthy one that reused the gate slot. Null
    *  whenever no turn is in flight. */
   gateTurnUuid: string | null;
+  /** #252 D1b (round-2 F3): the turn the gate is held for contains a HUMAN-typed prompt. Set/cleared WITH `gateTurnUuid` — `humanTurns` itself is pruned to the queue at
+   *  every `emitQueueUpdate` (the entry has left it by the time the gate opens), so it cannot answer "is the turn in flight human". */
+  gateTurnHuman: boolean;
   /** Set by {@link sdkInterrupt} just before calling the SDK's `interrupt()`, so
    *  the consume loop's catch can label the resulting throw "interrupted" from
    *  OUR OWN action instead of pattern-matching /abort/ against arbitrary error
@@ -514,6 +519,9 @@ interface Session {
    *  interrupt resolves fast but the CLI never serviced it). Set in consume()'s
    *  `result` branch; a fresh session starts `false`. */
   sawResult: boolean;
+  /** #252 D1b: a CLI-started turn (no app-yielded turn in flight) was already reported to the pause
+   *  observer — once per turn, reset at its `result`. */
+  unexplainedTurnSeen?: boolean;
 }
 
 /** Silence after a turn is armed, with no proof of life, before the workspace
@@ -1305,6 +1313,9 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     if (session.queue.length === 0) continue; // emptied while held (tray cancel)
 
     const msg = session.queue.shift()!;
+    // #252 D1b (review F2): is a HUMAN-typed prompt part of the turn about to start? Marked at the YIELD below (the turn's real start), so a prompt
+    // parked behind a running turn — or a second one typed during the first — is allowed when IT starts, however late.
+    let humanTurn = !!msg.uuid && session.humanTurns.has(msg.uuid);
     // COALESCE: while the entry just taken is marked "merge with next", absorb
     // the following entry's text into it so the agent receives ONE turn instead
     // of several. Marks are dropped as they're consumed. The loop is bounded by
@@ -1312,6 +1323,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // absorb (the user merged, then cancelled what followed).
     while (msg.uuid && session.coalesce.has(msg.uuid) && session.queue.length > 0) {
       const nextMsg = session.queue.shift()!;
+      if (nextMsg.uuid && session.humanTurns.has(nextMsg.uuid)) humanTurn = true;
       session.coalesce.delete(msg.uuid);
       // The absorbed entry's TEXT does reach the model (inside this turn), so
       // its delivery receipt is honest: settle it STARTED (issue #57 fault b).
@@ -1338,6 +1350,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // can prove it is releasing the turn it watched go silent, never a later
     // healthy turn that reused the slot.
     session.gateTurnUuid = msg.uuid ?? null;
+    session.gateTurnHuman = humanTurn;
     session.lastStreamAt = Date.now();
     if (!session.firstMessageSeen) scheduleBootStallCheck(session, session.lastStreamAt);
     // This entry is now genuinely the session's turn — tell anyone who is
@@ -1346,6 +1359,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     // NEXT turn is requested, so settling after it would strand the sender for
     // the whole duration of the turn it just started.
     settleDelivery(msg.uuid, true);
+    if (humanTurn) markPauseHumanTurn(session.wsId); // the pause trap's turn-start observer lets exactly this start through
     yield msg;
   }
 }
@@ -1365,6 +1379,7 @@ function releaseTurnGate(session: Session): void {
   const openNext = session.turnGate;
   session.turnGate = null;
   session.gateTurnUuid = null;
+  session.gateTurnHuman = false;
   openNext?.();
 }
 
@@ -1401,6 +1416,12 @@ async function consume(session: Session): Promise<void> {
         // inits only after its first user message, MEASURED on claude 2.1.284): nothing is owed to it, so the snapshot must not be re-sent.
         if (session.openingBrief === undefined) session.owedBrief = undefined;
       }
+      // #252 D1b (rows 29/30): model output with NO app-yielded turn in flight = the CLI started a turn
+      // itself (cron, /loop, a task-notification). The pause trap interrupts it when this member is paused.
+      if (session.turnGate === null && !session.unexplainedTurnSeen && !session.stopping && (msg.type === 'assistant' || msg.type === 'stream_event')) {
+        session.unexplainedTurnSeen = true;
+        notifyTurnStart(session.wsId);
+      }
       const emitted = emitFrom(session, msg);
       // #227 D7: init is proof of LIFE, not of delivery. While the claimed brief's first turn is undecided this message may decide it:
       // the first non-error output delivers the brief; the turn's ERRORED END (`result is_error` — the synthetic API-error assistant
@@ -1435,6 +1456,7 @@ async function consume(session: Session): Promise<void> {
         // is serviceable and sdkStop's graceful close terminates without the
         // no-result fall-through kill. See Session.sawResult.
         session.sawResult = true;
+        session.unexplainedTurnSeen = false;
         // Turn boundary — the interrupt (if any) is fully accounted for, so
         // reset the flag: it must not linger and mislabel/suppress a FUTURE
         // turn's genuine error as interrupt fallout. (emitFrom already ran for
@@ -1871,6 +1893,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     lastStreamMessageAt: Date.now(),
     firstMessageSeen: false,
     gateTurnUuid: null,
+    gateTurnHuman: false,
     pending: new Map(),
     pendingDialogs: new Map(),
     pendingElicitations: new Map(),
@@ -2040,6 +2063,12 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
                 const attachEv = stamp(live.ctx, { type: 'session/attach' as const, turnInFlight });
                 emit(wsId, attachEv);
                 driveStatusFromEvent(live, attachEv);
+                // #252 D1b: a turn this app never yielded is RUNNING in the reattached CLI — the same "CLI-started turn" as consume()'s
+                // detector (no app turnGate), so the pause interrupt must not read it as idle, and the observer must see it.
+                if (turnInFlight) {
+                  live.unexplainedTurnSeen = true;
+                  notifyTurnStart(wsId);
+                }
               }
             }) as never,
           }),
@@ -3420,6 +3449,7 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
   const openNext = session.turnGate;
   session.turnGate = null;
   session.gateTurnUuid = null;
+  session.gateTurnHuman = false;
   openNext?.();
   return true;
 }
@@ -3952,6 +3982,66 @@ export async function sdkInterrupt(wsId: string): Promise<void> {
         willRetry: false,
       }),
     );
+  }
+}
+
+/** #252 D1b — read-only view of a live structured session for the Bilan de pause (null = no live
+ *  session object in THIS app run). Reads only; never starts or stops anything. */
+export function sdkPauseActivity(
+  wsId: string,
+): { turnRunning: boolean; queued: number; bgTasks: BackgroundTask[] } | null {
+  const s = sessions.get(wsId);
+  if (!s || s.stopping) return null;
+  return { turnRunning: s.turnGate !== null || s.unexplainedTurnSeen === true, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
+}
+
+/** #252 D1b (round-2 F3): is the turn in flight RIGHT NOW one a human typed? Exact and TTL-free (a cold-started paused member can take far longer than any timer between the
+ *  yield and the CLI's turn-start hook). The pause trap's turn-start observer lets such a turn through. */
+export function sdkHumanTurnInFlight(wsId: string): boolean {
+  const s = sessions.get(wsId);
+  return !!s && !s.stopping && s.turnGate !== null && s.gateTurnHuman === true;
+}
+
+export type PauseInterruptOutcome = 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'unresponsive';
+
+/**
+ * #252 D1b — interrupt the running turn of a PAUSED member. Unlike {@link sdkInterrupt} it never fabricates a
+ * `turn-end` for a missing session, never touches an idle one (a stale `interruptRequested` would relabel a later
+ * crash) and — the point — NEVER drops the queue: prompts queued behind the running turn (a human follow-up, a peer
+ * message) stay queued and {@link promptStream}'s pause hold keeps them until the lift, so a pause loses no input.
+ * A turn still running in a DETACHED keeper this app run never attached to (the app was down when the pause
+ * landed) is attached first — attaching starts no turn (ledger D5 row 3). Never stops the CLI session or the keeper.
+ */
+export async function sdkInterruptForPause(wsId: string): Promise<PauseInterruptOutcome> {
+  let attached = false;
+  if (!sessions.has(wsId)) {
+    const probe = await probeKeeper(wsId);
+    if (!probe) {
+      // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer is 'unresponsive' (the trap retries), not 'idle'.
+      const kp = readTrackedKeeperPid(wsId);
+      const ks = kp === null ? 'gone' : keeperPidState(kp, wsId);
+      return ks === 'keeper' || ks === 'unknown' ? 'unresponsive' : 'idle'; // 'unknown' (alive, argv unreadable) is UNKNOWN, not "no keeper" (pre-review M8)
+    }
+    if (!probe.running || probe.turnInFlight !== true) return 'idle';
+    try {
+      attached = await sdkAttachIfDetached(wsId);
+    } catch {
+      attached = false;
+    }
+    if (!attached) return 'no-session';
+  }
+  const session = sessions.get(wsId);
+  if (!session) return 'no-session';
+  // `unexplainedTurnSeen`: a CLI-started turn (cron, task-notification) runs with no app-yielded turn in flight. A non-empty
+  // queue is NOT a reason to interrupt: nothing is running, and the pause hold keeps the queue parked.
+  if (!attached && session.turnGate === null && session.unexplainedTurnSeen !== true) return 'idle';
+  session.interruptRequested = true;
+  try {
+    await session.q.interrupt(); // plain interrupt: no cancel_queued, no queue clearing
+    return attached ? 'attached-then-interrupted' : 'interrupted';
+  } catch (err) {
+    log.warn(`agent-sdk: pause interrupt failed for ${wsId}`, err);
+    return 'failed';
   }
 }
 

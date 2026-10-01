@@ -214,7 +214,9 @@ import {
   probeKeeper,
   setAppQuitting,
 } from './keeper-client';
-import { restoreRunningFromKeeper } from './activity';
+import { restoreRunningFromKeeper, setTurnStartObserver } from './activity';
+import { startPauseTrap, stopPauseTrap } from './pause-trap';
+import { buildPauseTrapDeps, makeTurnStartObserver } from './pause-trap-host';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
 import { startLoopScan, stopLoopScan } from './loop-scan';
@@ -554,6 +556,15 @@ async function createMainWindow() {
   // roster — the durable bus signal is authoritative here).
   setLivenessReleased(readReleasedReaders);
   startBusLiveness();
+  // Fleet PAUSE host trap (#252 D1b, ADR 0003): when a run becomes hard-paused (the CLI writes the
+  // bus directly) snapshot every member worktree to a pause ref, write the Bilan de pause, interrupt
+  // the turn and kill the tool process trees — never the session or keeper. Drains a pause that
+  // landed while the app was down. Inert unless a run's FROZEN `pause` switch is ON and it is paused.
+  {
+    const pauseTrapDeps = buildPauseTrapDeps();
+    setTurnStartObserver(makeTurnStartObserver(pauseTrapDeps));
+    startPauseTrap(pauseTrapDeps);
+  }
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
@@ -857,6 +868,7 @@ function shutdownSubsystems(): void {
   // Same reason as stopBusWake: the liveness sweep reads the bus connection, so
   // stop its timer before closeBus() so it can never fire against a closed handle.
   stopBusLiveness();
+  stopPauseTrap();
   // Last: a clean close checkpoints the WAL back into the main file and
   // truncates it to 0 (spike #109 arm 3 measured ~600 KB left behind by a
   // crash). Committed rows survive either way — WAL recovery reads them on the

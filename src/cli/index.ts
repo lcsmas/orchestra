@@ -29,6 +29,7 @@ import {
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
   BUS_MECHANISMS,
@@ -38,6 +39,8 @@ import {
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
+import type { BusDb } from '../main/bus.ts';
+import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
   commandHelp,
   isHelpFlag,
@@ -725,14 +728,7 @@ async function openBusForVerb(): Promise<{
       runPause: {
         setRunPause: busPause.setRunPause,
         getRunPause: busPause.getRunPause,
-        // The SAME live-tree walk the host gates use (the store file when readable — the app's own record of who is under whom), else the bus run tree.
-        coverFor: (d, runId) => {
-          const nodes = offlineWaveNodes();
-          const node = nodes.get(runId);
-          return node
-            ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
-            : busPause.activePauseFor(d, runId);
-        },
+        coverFor: (d, runId) => coverFor(d, runId, busPause),
       },
       file,
     };
@@ -800,6 +796,18 @@ export function offlineWaveNodes(file: string = appStoreFile()): Map<string, Wav
   } catch {
     return new Map(); // a malformed record (e.g. a null entry) drops the whole tree, exactly as a parse failure does — never a thrown TypeError
   }
+}
+
+/** ONE resolver of "which pause covers this run" for every store-less reader (`run resume`, `run status`): the SAME live-tree walk the host gates use
+ *  (the store file when readable — the app's own record of who is under whom), else the bus run tree. */
+export function coverFor(
+  d: BusDb,
+  runId: string,
+  busPause: Pick<typeof import('../main/bus-pause.ts'), 'pausedCarrierForWorkspace' | 'activePauseFor'>,
+  nodes: Map<string, WaveNode> = offlineWaveNodes(),
+): RunPauseInfo | null {
+  const node = nodes.get(runId);
+  return node ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id)) : busPause.activePauseFor(d, runId);
 }
 
 /** Read the persisted workspace list off disk when the app is DOWN (#144), from the file the RUNNING APP writes ({@link appStoreFile}:
@@ -1834,6 +1842,31 @@ async function main(argv: string[]): Promise<void> {
       // `isRunning` ground truth; the CLI is a thin wrapper that resolves the run
       // and prints the typed outcome.
       const sub = args[0];
+
+      if (sub === 'status') {
+        // #252 D1b — the Bilan de pause reader: is the run paused, has the host trap finished, and
+        // what did it record per member (snapshot ref, dirty tree, commands killed). STORE-LESS.
+        const stJson = takeBoolFlag(args.slice(1), '--json');
+        const stRun = takeFlag(stJson.rest, '--run');
+        const stTarget = stRun.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        const { db: stDb } = await openBusForVerb();
+        try {
+          const busPause = await import('../main/bus-pause.ts');
+          const records = await import('../main/bus-pause-records.ts');
+          const busRuns = await import('../main/bus-runs.ts');
+          const st = gatherRunStatus(stDb, stTarget, {
+            getRunPause: busPause.getRunPause,
+            activePauseFor: (d, id) => coverFor(d, id, busPause),
+            listBilanForRun: records.listBilanForRun,
+            runExists: (d, id) => busRuns.getRun(d, id) !== null,
+            latestPauseBilan: records.latestPauseBilanFor,
+          });
+          process.stdout.write(stJson.present ? `${JSON.stringify(st, null, 2)}\n` : renderRunStatus(st));
+        } finally {
+          stDb.close();
+        }
+        return;
+      }
       if (sub === 'hold' || sub === 'resume' || sub === 'pause') {
         // #204 — the per-run HOLD flag. STORE-LESS like send/ack: it writes the bus
         // directly, so a hold lands while the app is down (before a relaunch).
@@ -1866,7 +1899,20 @@ async function main(argv: string[]): Promise<void> {
           const fencing = await resolveFencing(db, fenceRun, holdGen.value);
           const holdCtx = busCtx(db, bus, { runId: fenceRun, handle: holdActor }, fencing);
           if (sub === 'pause') {
+            const pauseCallAt = Date.now();
             verbRunPause(holdCtx, { ...runPause, runHoldAuthority }, holdTarget);
+            // #252 D1b (review F5): record WHO called — this process's ancestry — so the host trap can spare the tool tree that issued the pause
+            // (the member whose CLI is an ancestor) and exempt nobody for a human typing `--as <coordinator>` in a plain shell. Best-effort.
+            try {
+              const made = runPause.getRunPause(db, holdTarget);
+              if (made && made.pausedAt >= pauseCallAt) {
+                const records = await import('../main/bus-pause-records.ts');
+                const origin = await import('../main/pause-origin.ts');
+                records.recordPauseOrigin(db, holdTarget, made.pausedAt, origin.readProcessChain(process.pid));
+              }
+            } catch {
+              /* no origin recorded ⇒ nobody is spared by the trap: the safe direction */
+            }
           } else {
             verbRunHold(
               holdCtx,
@@ -1881,7 +1927,7 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       if (sub !== 'refreeze') {
-        fail('usage: orchestra run refreeze|hold|resume|pause --hard [--run <id>]');
+        fail('usage: orchestra run refreeze|hold|resume|pause --hard|status [--run <id>]');
       }
       const { value: runFlag } = takeFlag(args.slice(1), '--run');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An

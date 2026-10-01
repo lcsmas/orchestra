@@ -226,6 +226,7 @@ all. Read-only.`,
        orchestra run hold [--run <id>] [--as <handle>]
        orchestra run pause --hard [--run <id>] [--as <handle>]
        orchestra run resume [--run <id>] [--as <handle>]
+       orchestra run status [--run <id>] [--json]
 
   refreeze  Re-freeze a MISSION run's bus switches to the current live switches.
             For a FLAT orchestrator whose mission never picks up a switch flip.
@@ -242,7 +243,11 @@ all. Read-only.`,
             réveil, new turn and spawn into it ("run en pause — orchestra run resume
             --run <id>") and silences liveness. Durable in the bus (survives an app
             relaunch, works while the app is down), idempotent. Same authority +
-            fencing as hold.
+            fencing as hold. The host also TRAPS every member: snapshots its worktree
+            (uncommitted + untracked NON-IGNORED work) to refs/orchestra/pause/<run>/<ws>/<ts> without
+            touching the worktree/index/branches, records a Bilan de pause, interrupts the
+            turn and kills its tool processes (never the session or the keeper); read it
+            with 'status'. The pauser's own turn is left running.
             REFUSED unless the run's 'pause' bus switch was ON when its wave started
             (frozen; default OFF). Only --hard exists so far.
             A prompt a HUMAN types in a member's composer stays allowed and does NOT lift
@@ -252,6 +257,11 @@ all. Read-only.`,
             bus mail resume (there is no structured Reprise yet). A descendant run is
             lifted through the run that carries the pause (the message names it);
             escalation is re-enabled on the next sweep.
+  status    Is the run paused (by whom, since when, which run carries the pause),
+            has the host trap finished, and the BILAN DE PAUSE of every member:
+            what it was doing, its snapshot ref (refs/orchestra/pause/…, holds the
+            uncommitted + untracked work), dirty tree, the tool processes the host
+            killed (never the session or keeper), errors. Read-only; --json for tools.
 Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume refuse a run with no row.`,
   },
 

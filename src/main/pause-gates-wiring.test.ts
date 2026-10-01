@@ -87,9 +87,15 @@ test('F5 (review D1a): D1a\'s texts describe ONLY D1a — no Bilan/snapshot/inte
   const runHelp = body(help, "name: 'run',", "name: 'message'");
   const verbs = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
   const lifted = body(verbs, 'pause LIFTED', 'Its liveness hold was lifted too');
-  for (const [name, text] of [['skill §7', sect], ['run --help', runHelp], ['lift output', lifted]] as const) {
-    assert.doesNotMatch(text, /Bilan|snapshot|interrupts the turn|kills tool|Nothing restarts on its own/i, `${name} promises unshipped behaviour`);
+  // The lift output still promises none of the host-trap behaviour. Skill §7 and run --help DO describe it once D1b's trap ships in the same
+  // tree (D1b adds that wording with its code, ledger #261 F5 disposition) — they must still never claim "nothing restarts on its own".
+  assert.doesNotMatch(lifted, /Bilan|snapshot|interrupts the turn|kills tool|Nothing restarts on its own/i, 'lift output promises unshipped behaviour');
+  for (const [name, text] of [['skill §7', sect], ['run --help', runHelp]] as const) {
+    assert.doesNotMatch(text, /Nothing restarts on its own/i, `${name} promises unshipped behaviour`);
   }
+  assert.match(sect, /refs\/orchestra\/pause\/<run>\/<ws>\/<ts>/, 'skill §7 names the pause ref D1b ships');
+  assert.match(sect, /orchestra run status/, 'skill §7 documents the Bilan reader');
+  assert.match(runHelp, /Bilan de pause/, 'run --help documents the Bilan');
   assert.match(lifted, /Queued turns and pending bus mail resume now/);
   assert.match(sect, /queued turns \+ pending mail resume/);
   assert.match(runHelp, /queued turns and pending\s+bus mail resume/);
