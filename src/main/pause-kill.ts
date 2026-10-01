@@ -251,7 +251,8 @@ export async function killToolTrees(
   };
   const cliGone = (): boolean => {
     const c = deps.read(cli.pid);
-    return c === 'gone' || (c !== 'unreadable' && (c.startTicks !== cli.startTicks || c.state === 'Z'));
+    // 'unreadable' is UNPROVEN, not healthy: the planner drops an unreadable CLI from its table and would plan nothing — reported as incomplete, never "0 killed, complete"
+    return c === 'gone' || c === 'unreadable' || c.startTicks !== cli.startTicks || c.state === 'Z';
   };
   const planNow = (): ToolPlan => {
     const pl = planToolTrees(deps.readTable(), cli, planOpts());
@@ -285,7 +286,7 @@ export async function killToolTrees(
 
   if (cliGone()) {
     report.cliGone = true;
-    report.error = 'the CLI exited or was replaced before the kill (a Restart?) — the tools it left behind are not reachable by identity; retried against the current CLI';
+    report.error = 'the CLI exited, was replaced or could not be read before the kill (a Restart?) — the tools it left behind are not reachable by identity; retried against the current CLI';
     return report;
   }
 

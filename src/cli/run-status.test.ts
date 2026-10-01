@@ -203,3 +203,18 @@ test('round-3 F8/F7/F5: U+202E / U+2028 are stripped from every recorded string;
   assert.match(text, /dropped\.dat \(40 MB, total size cap\)/);
   assert.match(text, /killed by EARLIER incomplete attempt\(s\) of the trap: sleep 9 killed: FORGED \(pid 77\)/);
 });
+
+test('round-3 review nits: a small skipped file reads "3.0 MB" (never "0 MB"), the skip list is bounded to 20 (+N more), and U+200E / U+200F / U+061C are stripped', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-f', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', skippedLarge: Array.from({ length: 25 }, (_, i) => ({ path: `f${i}\u200e\u200f\u061c.bin`, bytes: 3 * 1048576, reason: 'total-cap' as const })) },
+    snapshotRef: 'refs/x', dirty: true, error: null, killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /f0\s*\s*\s*\.bin \(3\.0 MB, total size cap\)/);
+  assert.match(text, /; \+5 more/);
+  assert.ok(!/[\u200e\u200f\u061c]/.test(text));
+});

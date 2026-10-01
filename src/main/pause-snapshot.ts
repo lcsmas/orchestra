@@ -111,20 +111,25 @@ async function makeTempIndexPath(gitDir: string): Promise<{ file: string; cleanu
   throw new Error(`no writable dir for the temporary index: ${String(lastErr)}`);
 }
 
-/** Untracked (not ignored) regular files with their sizes. */
-async function listUntracked(cwd: string): Promise<Array<{ path: string; bytes: number }>> {
+/** Untracked (not ignored) regular files with their sizes. Names are handled as BYTES: a non-UTF8 name must still be sized, excluded and reported (round-3 review #4). */
+async function listUntracked(cwd: string): Promise<Array<{ path: string; raw: Buffer; bytes: number }>> {
   let raw: Buffer;
   try {
     raw = (await git(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])).stdout;
   } catch {
     return [];
   }
-  const out: Array<{ path: string; bytes: number }> = [];
-  for (const rel of raw.toString('utf8').split('\0')) {
-    if (!rel) continue;
+  const out: Array<{ path: string; raw: Buffer; bytes: number }> = [];
+  const base = Buffer.from(`${cwd}${path.sep}`);
+  let start = 0;
+  for (let i = 0; i <= raw.length; i++) {
+    if (i < raw.length && raw[i] !== 0) continue;
+    const name = raw.subarray(start, i);
+    start = i + 1;
+    if (name.length === 0) continue;
     try {
-      const st = fs.lstatSync(path.join(cwd, rel));
-      if (st.isFile()) out.push({ path: rel, bytes: st.size });
+      const st = fs.lstatSync(Buffer.concat([base, name]));
+      if (st.isFile()) out.push({ path: name.toString('utf8'), raw: Buffer.from(name), bytes: st.size });
     } catch {
       /* vanished mid-scan */
     }
@@ -133,16 +138,16 @@ async function listUntracked(cwd: string): Promise<Array<{ path: string; bytes: 
 }
 
 /** What is left OUT of the snapshot for size: every file over the per-file cap, then — if the rest still exceeds the total cap — the largest of the rest until it fits. */
-export function selectSkipped(
-  files: ReadonlyArray<{ path: string; bytes: number }>,
+export function selectSkipped<T extends { path: string; bytes: number }>(
+  files: ReadonlyArray<T>,
   perFileBytes: number,
   totalBytes: number,
-): Array<{ path: string; bytes: number; reason: 'file-cap' | 'total-cap' }> {
-  const skipped: Array<{ path: string; bytes: number; reason: 'file-cap' | 'total-cap' }> = files.filter((f) => f.bytes > perFileBytes).map((f) => ({ ...f, reason: 'file-cap' as const }));
+): Array<T & { reason: 'file-cap' | 'total-cap' }> {
+  const skipped: Array<T & { reason: 'file-cap' | 'total-cap' }> = files.filter((f) => f.bytes > perFileBytes).map((f) => ({ ...f, reason: 'file-cap' as const }));
   const rest = files.filter((f) => f.bytes <= perFileBytes).sort((a, b) => b.bytes - a.bytes);
   let total = rest.reduce((n, f) => n + f.bytes, 0);
   while (total > totalBytes && rest.length > 0) {
-    const f = rest.shift() as { path: string; bytes: number };
+    const f = rest.shift() as T;
     skipped.push({ ...f, reason: 'total-cap' });
     total -= f.bytes;
   }
@@ -154,7 +159,7 @@ async function buildTree(
   indexFile: string,
   seedFromRealIndex: boolean,
   head: string | null,
-  excludes: string[],
+  excludes: Buffer[],
   warnings: string[],
   legacyPathspec = false,
 ): Promise<string> {
@@ -165,20 +170,28 @@ async function buildTree(
   } else if (head) {
     await git(cwd, ['read-tree', head], env);
   }
-  const specs = ['.', ...excludes.map((p) => `:(exclude,literal)${p}`)];
+  const specs: Buffer[] = [Buffer.from('.'), ...excludes.map((r) => Buffer.concat([Buffer.from(':(exclude,literal)'), r]))];
+  const allUtf8 = excludes.every((r) => Buffer.from(r.toString('utf8'), 'utf8').equals(r)); // a non-UTF8 name cannot go through argv
+  const viaArgv = async (limit: number): Promise<GitOut> => {
+    const argv = specs.slice(0, limit).map((b) => b.toString('utf8'));
+    if (specs.length > argv.length) warnings.push(`${specs.length - argv.length} oversize file(s) could NOT be excluded (git < 2.25: exclude list capped at ${limit - 1}) — they ARE in the ref`);
+    return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);
+  };
   // --ignore-errors: ONE unreadable file must not abort the whole snapshot (plain `git add -A` exits 128 and adds NOTHING);
   // exit 1 = "some files could not be added" — the rest is staged and reported in `warnings`.
   let added: GitOut;
-  if (excludes.length <= MAX_ARGV_EXCLUDES || legacyPathspec) {
-    const argv = legacyPathspec ? specs.slice(0, 1 + 200) : specs;
-    if (legacyPathspec && specs.length > argv.length) warnings.push(`${specs.length - argv.length} oversize file(s) could NOT be excluded (git < 2.25: exclude list capped at 200) — they ARE in the ref`);
-    added = await git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);
+  if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {
+    added = await viaArgv(legacyPathspec ? 1 + 200 : specs.length);
   } else {
-    // Many excludes: a NUL-separated pathspec file (git >= 2.25) — never truncated, no argv size limit (round-2 F8).
+    // Many excludes (or a non-UTF8 name): a NUL-separated pathspec file (git >= 2.25) — never truncated, no argv limit (round-3 F8).
     const specFile = `${indexFile}.pathspec`;
-    fs.writeFileSync(specFile, specs.join('\0'));
+    fs.writeFileSync(specFile, Buffer.concat(specs.flatMap((b, i) => (i === 0 ? [b] : [Buffer.from([0]), b]))));
     try {
       added = await git(cwd, ['add', '-A', '--ignore-errors', `--pathspec-from-file=${specFile}`, '--pathspec-file-nul'], env, undefined, [1]);
+    } catch (e) {
+      // git < 2.25 does not know the option (exit 129): fall back to the capped argv, saying so
+      if (!/unknown option|pathspec-from-file|usage: git add/i.test(e instanceof Error ? e.message : String(e)) || !allUtf8) throw e;
+      added = await viaArgv(1 + 200);
     } finally {
       fs.rmSync(specFile, { force: true });
     }
@@ -233,8 +246,9 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
   } catch {
     branch = null; // detached
   }
-  const skippedLarge = selectSkipped(await listUntracked(cwd), input.limits?.perFileBytes ?? SNAPSHOT_MAX_UNTRACKED_BYTES, input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES);
-  const excludes = skippedLarge.map((f) => f.path);
+  const skipped = selectSkipped(await listUntracked(cwd), input.limits?.perFileBytes ?? SNAPSHOT_MAX_UNTRACKED_BYTES, input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES);
+  const skippedLarge = skipped.map((f) => ({ path: f.path, bytes: f.bytes, reason: f.reason }));
+  const excludes = skipped.map((f) => f.raw);
   const tmp = await makeTempIndexPath(gitDir);
   // Every plumbing call below runs against the TEMP index, never the real one: a torn or
   // corrupt real index cannot break them, and none of them can write it.

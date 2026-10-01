@@ -1143,19 +1143,32 @@ test('round-3 F6: a retried trap WARNS ONCE per pause (not on every attempt) and
   void c;
 });
 
-test('round-3 verifier MINOR: a turn start within seconds of the trap\'s OWN kill is recorded as the task-notification turn of the killed background task (1 short request before the interrupt); later starts are not', async (t) => {
+test('round-3 verifier MINOR: a turn start within seconds of the trap\'s OWN kill is recorded as the task-notification turn of the killed background task; one 20 s later (aged, not reset) or after a trap that killed NOTHING is not', async (t) => {
+  const taskNote = async (kills: boolean, waitMs: number): Promise<string> => {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, 'w1', 'W');
+    if (!kills) rig.killReport = { ...rig.killReport, killed: [] };
+    const c = pauseW(rig);
+    await runPauseTrap(rig.deps, c);
+    rig.clock += waitMs;
+    await onTurnStart(rig.deps, tm('w1', 'W'));
+    return (bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).filter((n) => /turn started while paused/.test(n)).join(' | ');
+  };
+  assert.match(await taskNote(true, 1_000), /task-notification of a background task THIS trap just killed/, 'a start 1 s after the trap\'s kill');
+  assert.doesNotMatch(await taskNote(true, 20_000), /task-notification/, 'a start 20 s later: outside the window (the stamp ages, it is not cleared)');
+  assert.doesNotMatch(await taskNote(false, 1_000), /task-notification/, 'the trap killed nothing: no attribution');
+});
+
+test('round-3 review #3: earlierKilled is BOUNDED (the last 100) however many incomplete attempts killed', async (t) => {
   __resetPauseTrapForTests();
   const rig = newRig(t);
   member(rig, 'w1', 'W');
   const c = pauseW(rig);
-  await runPauseTrap(rig.deps, c); // kills sleep 600 (rig.killReport)
-  rig.clock += 1_000; // a turn starts a second after the trap's own kill
-  await onTurnStart(rig.deps, tm('w1', 'W'));
-  const notes1 = (bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).join(' | ');
-  assert.match(notes1, /task-notification of a background task THIS trap just killed/);
-  __resetPauseTrapForTests(); // clears the kill stamp; a later, unrelated start
-  rig.clock += 600_000;
-  await onTurnStart(rig.deps, tm('w1', 'W'));
-  const notes2 = (bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).filter((n) => /turn started while paused/.test(n));
-  assert.ok(notes2.some((n) => !/task-notification/.test(n)), 'a start with no recent trap kill carries no such attribution');
+  const many = Array.from({ length: 120 }, (_, i) => ({ pid: 1000 + i, comm: 'sleep', cmd: `sleep ${i}`, startTicks: 5, cwd: '/w', evidence: 'test', signal: 'SIGTERM', via: 'chain', outcome: 'exited' }));
+  rig.killReport = { ...rig.killReport, killed: many as KillReport['killed'], cliGone: true, error: 'the CLI exited' };
+  await runPauseTrap(rig.deps, c);
+  const ek = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.earlierKilled ?? [];
+  assert.equal(ek.length, 100);
+  assert.equal(ek[0].pid, 1020, 'the OLDEST entries are the ones dropped');
 });

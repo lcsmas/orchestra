@@ -19,7 +19,7 @@ const T = { rigguard: 'src/main/pause-rig-guard.test.ts', wiring: 'src/main/paus
 
 const M = [
   // ── snapshot (pause-snapshot.ts)
-  { id: 'snap-real-index', file: SNAP, find: "added = await git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);", rep: "added = await git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1]);", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
+  { id: 'snap-real-index', file: SNAP, find: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);", rep: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1]);", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
   { id: 'snap-large-files-captured', file: SNAP, find: 'files.filter((f) => f.bytes > perFileBytes)', rep: 'files.filter((f) => false && f.bytes > perFileBytes)', tests: [T.snap], expect: /over the size cap/ },
   { id: 'snap-ref-overwrite', file: SNAP, find: "await git(cwd, ['update-ref', ref, commit, ''], env);", rep: "await git(cwd, ['update-ref', ref, commit], env);", tests: [T.snap], expect: /same `at` twice/ },
   { id: 'snap-no-parent', file: SNAP, find: "...(head ? ['-p', head] : []), '-F', '-'", rep: "'-F', '-'", tests: [T.snap], expect: /captures unstaged|unborn|clean worktree/ },
@@ -37,7 +37,7 @@ const M = [
   { id: 'procs-kill-order-root-first', file: PROCS, find: 'return [...members].sort((a, b) => Number(a.isRoot) - Number(b.isRoot) || b.depth - a.depth);', rep: 'return [...members].sort((a, b) => Number(b.isRoot) - Number(a.isRoot) || a.depth - b.depth);', tests: [T.procs, T.kill], expect: /killOrder|leaf-first/ },
   { id: 'procs-env-older-than-cli', file: PROCS, find: '|| p.startTicks <= cli.startTicks) continue;', rep: ') continue;', tests: [T.procs], expect: /env provenance/ },
   { id: 'procs-env-sidecar-descendants', file: PROCS, find: '|| sidecar.has(p.pid) ||', rep: '||', tests: [T.procs], expect: /env provenance/ },
-  { id: 'procs-env-planner-pid-unmatched', file: PROCS, find: "      if (opts.claudePidOf(p) === cli.pid) add(p, null, 99, 'env');", rep: "      if (opts.claudePidOf(p) !== null) add(p, null, 99, 'env');", tests: [T.procs], expect: /env provenance/ },
+  { id: 'procs-env-planner-pid-unmatched', file: PROCS, find: "      if (opts.claudePidOf(p) !== cli.pid) continue;", rep: "      if (opts.claudePidOf(p) === null) continue;", tests: [T.procs], expect: /env provenance/ },
   { id: 'procs-env-evidence-dropped', file: PROCS, find: "      evidence: `re-read now: environ CLAUDE_PID=${env} == CLI ${plan.cli.pid} whose start-time ${plan.cli.startTicks} was just re-verified; process started after it (${fresh.startTicks} > ${plan.cli.startTicks})`,", rep: "      evidence: '',", tests: [T.procs], expect: /D11: planner records cwd/ },
   { id: 'kill-cwd-not-recorded', file: KILL, find: '    cwdOf: (p: ProcIdent) => deps.readCwd(p.pid),\n', rep: '', tests: [T.kill], expect: /listed with its cmdline, cwd/ },
   // TWO LAYERS cover each other (the structural ppid/pid<=1 exclusion AND the F1 descendant-supervisor guard: the keeper always has the CLI below it): the mutant removes BOTH.
@@ -119,7 +119,7 @@ const M = [
   { id: 'trap-observer-no-stillpaused-opt', file: TRAP, find: '{ stillPaused: () => resolveCarrier(deps, db, m) !== null }', rep: '{}', tests: [T.trap], expect: /F8 the turn observer stops/ },
   { id: 'rec-origin-listed-as-member', file: REC, find: '  return rows.map(toRow).filter((r) => r.wsId !== PAUSE_ORIGIN_WS);', rep: '  return rows.map(toRow);', tests: [T.trap], expect: /F5 the PAUSER/ },
   { id: 'trap-retry-blanks-error', file: TRAP, find: "errors.length ? errors.join('; ') : (cur.error ?? null) }), cur.id)", rep: "errors.length ? errors.join('; ') : null }), cur.id)", tests: [T.trap], expect: /F4 a RETRY keeps/ },
-  { id: 'status-control-chars-not-stripped', file: 'src/cli/run-status.ts', find: "  return String(s ?? '').replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]/g, ' ');", rep: "  return String(s ?? '');", tests: [T.status], expect: /F11/ },
+  { id: 'status-control-chars-not-stripped', file: 'src/cli/run-status.ts', find: "  return String(s ?? '').replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]/g, ' ');", rep: "  return String(s ?? '');", tests: [T.status], expect: /F11/ },
   // follow-up review F1: `run status` and `run resume` share ONE live cover walk. These tests EXEC dist-electron/cli.js → `build: true` rebuilds it per mutant.
   { id: 'status-uses-write-once-walk', file: 'src/cli/index.ts', find: 'activePauseFor: (d, id) => coverFor(d, id, busPause),', rep: 'activePauseFor: busPause.activePauseFor,', tests: [T.runpause], expect: /follow-up review F1/, build: true },
   { id: 'cover-for-ignores-live-tree', file: 'src/cli/index.ts', find: '  return node ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id)) : busPause.activePauseFor(d, runId);', rep: '  return busPause.activePauseFor(d, runId);', tests: [T.runpause], expect: /follow-up review F1|re-parented AFTER creation/, build: true },
@@ -161,14 +161,14 @@ const M = [
   { id: 'trap-flake-retry-erases-interrupt', file: TRAP, find: "    if (prior?.interrupt === 'interrupted' || prior?.interrupt === 'attached-then-interrupted') activity.interrupt = prior.interrupt;\n    else {", rep: '    if (false) activity.interrupt = prior!.interrupt;\n    else {', tests: [T.trap], expect: /pre-review r2 .?#3/ },
   // ── round 3 (follow-ups): F1a F1c F2-bound F4 pins F5 F6 F7 F8 + verifier MINOR
   { id: 'kill-cutoff-per-process', file: KILL, find: 'return b !== undefined && deps.startMs(m.rootStartTicks ?? m.startTicks) >= b;', rep: 'return b !== undefined && deps.startMs(m.startTicks) >= b;', tests: [T.kill], expect: /round-3 F1a/ },
-  { id: 'kill-cli-gone-start-unchecked', file: KILL, find: "  if (cliGone()) {\n    report.cliGone = true;\n    report.error = 'the CLI exited or was replaced before the kill", rep: "  if (false) {\n    report.cliGone = true;\n    report.error = 'the CLI exited or was replaced before the kill", tests: [T.kill], expect: /round-3 F5: a CLI that EXITED/ },
+  { id: 'kill-cli-gone-start-unchecked', file: KILL, find: "  if (cliGone()) {\n    report.cliGone = true;\n    report.error = 'the CLI exited, was replaced or could not be read before the kill", rep: "  if (false) {\n    report.cliGone = true;\n    report.error = 'the CLI exited, was replaced or could not be read before the kill", tests: [T.kill], expect: /round-3 F5: a CLI that EXITED/ },
   { id: 'kill-cli-gone-end-unchecked', file: KILL, find: "  if (cliGone()) {\n    report.cliGone = true;\n    report.error = report.error ??", rep: "  if (false) {\n    report.cliGone = true;\n    report.error = report.error ??", tests: [T.kill], expect: /round-3 F5: a CLI that EXITED/ },
   { id: 'procs-tree-supervisor-spared', file: PROCS, find: "    if (via !== 'tree' && (hasSupervisor(p.pid) ||", rep: "    if ((hasSupervisor(p.pid) ||", tests: [T.procs, T.kill], expect: /F4 pin|F1: a TREE member/ },
   { id: 'procs-tree-supervisor-refused-at-signal', file: PROCS, find: "  if (target.via !== 'tree' && isSupervisorProc(fresh)) return", rep: "  if (isSupervisorProc(fresh)) return", tests: [T.procs], expect: /round-3 F4 pin \(signal-time\)/ },
   { id: 'trap-human-cutoff-not-bounded', file: TRAP, find: 'return h !== undefined && h >= carrier.pausedAt && humanInFlightNow() ? h : undefined;', rep: 'return h !== undefined && h >= carrier.pausedAt ? h : undefined;', tests: [T.trap], expect: /round-3 F1c/ },
   { id: 'trap-human-interrupt-skip-not-bounded', file: TRAP, find: 'humanAtInterrupt >= carrier.pausedAt && humanInFlightNow();', rep: 'humanAtInterrupt >= carrier.pausedAt;', tests: [T.trap], expect: /round-3 F1c/ },
   { id: 'trap-interrupt-deferral-unbounded', file: TRAP, find: "  else if (target !== null && 'error' in target && deferrals < MAX_INTERRUPT_DEFERRALS) {", rep: "  else if (target !== null && 'error' in target) {", tests: [T.trap], expect: /round-3 F2: the interrupt deferral is BOUNDED/ },
-  { id: 'trap-notes-prefer-fresh', file: TRAP, find: 'notes: [...new Set([...(fresh?.activity?.notes ?? []), ...(activity.notes ?? [])])],', rep: 'notes: fresh?.activity?.notes ?? activity.notes,', tests: [T.trap], expect: /round-3 F2: the interrupt deferral is BOUNDED/ },
+  { id: 'trap-notes-prefer-fresh', file: TRAP, find: 'notes: [...new Set([...(fresh?.activity?.notes ?? []), ...(activity.notes ?? [])])].slice(-50),', rep: 'notes: fresh?.activity?.notes ?? activity.notes,', tests: [T.trap], expect: /round-3 F2: the interrupt deferral is BOUNDED/ },
   { id: 'trap-cli-gone-not-incomplete', file: TRAP, find: '      if (rep.cliGone) {', rep: '      if (false) {', tests: [T.trap], expect: /round-3 F5/ },
   { id: 'trap-earlier-kills-dropped', file: TRAP, find: '  if (incomplete && attemptKills.length > 0) merged.earlierKilled', rep: '  if (false && attemptKills.length > 0) merged.earlierKilled', tests: [T.trap], expect: /round-3 F5/ },
   { id: 'sweep-retry-not-backed-off', file: TRAP, find: 'nextAttempt.set(key, deps.now() + pauseRetryDelay(n));', rep: 'nextAttempt.set(key, deps.now() + PAUSE_RETRY_MS);', tests: [T.trap], expect: /round-3 F6: the retry delay DOUBLES/ },
@@ -179,14 +179,25 @@ const M = [
   { id: 'snap-total-cap-ignored', file: SNAP, find: 'while (total > totalBytes && rest.length > 0) {', rep: 'while (false) {', tests: [T.snap], expect: /round-3 F7/ },
   // TWO edits: the exclude list capped (and always on argv) again — the pre-round-3 behaviour (file 201+ in the ref yet reported skipped)
   { id: 'snap-excludes-capped-again', file: SNAP, edits: [
-    { find: 'if (excludes.length <= MAX_ARGV_EXCLUDES || legacyPathspec) {', rep: 'if (true) {' },
-    { find: 'const argv = legacyPathspec ? specs.slice(0, 1 + 200) : specs;', rep: 'const argv = specs.slice(0, 1 + 200);' },
+    { find: 'if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {', rep: 'if (true) {' },
+    { find: 'added = await viaArgv(legacyPathspec ? 1 + 200 : specs.length);', rep: 'added = await viaArgv(1 + 200);' },
   ], tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
   { id: 'snap-real-index-pathspec-file', file: SNAP, find: "'--pathspec-file-nul'], env, undefined, [1]);", rep: "'--pathspec-file-nul'], {}, undefined, [1]);", tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
   { id: 'snap-pathspec-file-not-nul', file: SNAP, find: ", '--pathspec-file-nul'], env, undefined, [1]);", rep: '], env, undefined, [1]);', tests: [T.snap], expect: /round-3 F8: MORE than 200/ },
-  { id: 'status-bidi-not-stripped', file: 'src/cli/run-status.ts', find: "/[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]/g", rep: "/[\\u0000-\\u001f\\u007f-\\u009f]/g", tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
+  { id: 'status-bidi-not-stripped', file: 'src/cli/run-status.ts', find: "/[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]/g", rep: "/[\\u0000-\\u001f\\u007f-\\u009f]/g", tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
   { id: 'status-wording-reverted', file: 'src/cli/run-status.ts', find: 'shows the uncommitted non-ignored work)`);', rep: 'shows the uncommitted work)`);', tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
   { id: 'status-earlier-kills-hidden', file: 'src/cli/run-status.ts', find: 'if (a?.earlierKilled?.length) out.push(', rep: 'if (false) out.push(', tests: [T.status], expect: /round-3 F8\/F7\/F5/ },
+  // round-3 review fixes
+  { id: 'procs-env-origin-own-start', file: PROCS, find: "      add(p, null, 99, 'env', origin);", rep: "      add(p, null, 99, 'env');", tests: [T.kill], expect: /round-3 F1a \(env orphans\)/ },
+  { id: 'kill-cli-unreadable-ok', file: KILL, find: "    return c === 'gone' || c === 'unreadable' || c.startTicks !== cli.startTicks || c.state === 'Z';", rep: "    return c === 'gone' || c.startTicks !== cli.startTicks || c.state === 'Z';", tests: [T.kill], expect: /round-3 review #2/ },
+  { id: 'snap-non-utf8-name-lstat', file: SNAP, find: 'const st = fs.lstatSync(Buffer.concat([base, name]));', rep: "const st = fs.lstatSync(Buffer.concat([base, name]).toString('utf8'));", tests: [T.snap], expect: /round-3 review #4/ },
+  { id: 'snap-non-utf8-through-argv', file: SNAP, find: 'if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {', rep: 'if (excludes.length <= MAX_ARGV_EXCLUDES || legacyPathspec) {', tests: [T.snap], expect: /round-3 review #4/ },
+  { id: 'trap-earlier-kills-uncapped', file: TRAP, find: '.slice(-100); // bounded like observerKilled', rep: '; // uncapped', tests: [T.trap], expect: /round-3 review #3/ },
+  { id: 'trap-deferral-count-not-carried', file: TRAP, find: '    if (prior.interruptDeferrals) activity.interruptDeferrals = prior.interruptDeferrals;\n', rep: '', tests: [T.trap], expect: /round-3 F2: the interrupt deferral is BOUNDED/ },
+  { id: 'trap-note-window-unbounded', file: TRAP, find: '<= TASK_NOTIFICATION_WINDOW_MS', rep: '<= 1e15', tests: [T.trap], expect: /round-3 verifier MINOR/ },
+  { id: 'trap-kill-stamp-without-kills', file: TRAP, find: '      if (rep.killed.length > 0) trapKilledAt.set(m.wsId, deps.now());', rep: '      trapKilledAt.set(m.wsId, deps.now());', tests: [T.trap], expect: /round-3 verifier MINOR/ },
+  { id: 'status-mb-integer', file: 'src/cli/run-status.ts', find: 'return `${m < 10 ? m.toFixed(1) : Math.round(m)} MB`;', rep: 'return `${Math.round(m)} MB`;', tests: [T.status], expect: /round-3 review nits/ },
+  { id: 'status-skip-list-uncapped', file: 'src/cli/run-status.ts', find: 'a.skippedLarge.slice(0, 20).map(', rep: 'a.skippedLarge.map(', tests: [T.status], expect: /round-3 review nits/ },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },

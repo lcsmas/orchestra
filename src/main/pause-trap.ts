@@ -351,11 +351,11 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   const merged: BilanActivity = {
     ...activity,
     // union, order kept: notes the turn observer appended meanwhile (fresh) AND the ones this attempt added (activity) — preferring `fresh` alone dropped the trap's own (round-3 F2 arm)
-    notes: [...new Set([...(fresh?.activity?.notes ?? []), ...(activity.notes ?? [])])],
+    notes: [...new Set([...(fresh?.activity?.notes ?? []), ...(activity.notes ?? [])])].slice(-50), // bounded like appendBilanNote
     ...(fresh?.activity?.observerKilled ? { observerKilled: fresh.activity.observerKilled } : {}),
   };
   // An attempt that kills but stays INCOMPLETE (the CLI vanished, a failed interrupt…) leaves `killed_json` NULL — what it killed is kept, never dropped (D11 / round-3 F5).
-  if (incomplete && attemptKills.length > 0) merged.earlierKilled = [...(activity.earlierKilled ?? []), ...attemptKills.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome, via: k.via, cwd: k.cwd, evidence: k.evidence }))];
+  if (incomplete && attemptKills.length > 0) merged.earlierKilled = [...(activity.earlierKilled ?? []), ...attemptKills.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome, via: k.via, cwd: k.cwd, evidence: k.evidence }))].slice(-100); // bounded like observerKilled
   if (!merged.notes?.length) delete merged.notes;
   // `killed` stays NULL while incomplete: NULL means "this member's trap is still owed" (the next sweep redoes interrupt + kill, not the snapshot).
   updateBilan(db, rowId, { activity: merged, killed: incomplete ? null : killed, error: errors.length ? errors.join('; ') : null });

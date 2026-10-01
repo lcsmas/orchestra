@@ -406,3 +406,20 @@ test('round-3 F8 legacy git (< 2.25, argv-only pathspec): excludes beyond 200 ar
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('round-3 review #4: a NON-UTF8 file name over the cap is still sized, excluded from the ref and REPORTED (the utf8 decode used to hide it from both caps); names with spaces/newlines/leading dashes are excluded exactly', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    const odd = Buffer.concat([Buffer.from(wt + '/'), Buffer.from([0x62, 0x69, 0x67, 0xff, 0x2e, 0x62, 0x69, 0x6e])]);
+    fs.writeFileSync(odd, 'x'.repeat(40));
+    for (const n of ['-lead dash.bin', 'new\nline.bin', 'sp ace.bin']) fs.writeFileSync(path.join(wt, n), 'x'.repeat(40));
+    fs.writeFileSync(path.join(wt, 'small.txt'), 's\n');
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 23, limits: { perFileBytes: 10, totalBytes: 1 << 20 } });
+    assert.equal(r.skippedLarge.length, 4, `all four oversize files reported: ${JSON.stringify(r.skippedLarge.map((x) => x.path))}`);
+    const inRef = git(wt, 'ls-tree', '-r', '--name-only', '-z', r.ref).split('\0').filter(Boolean);
+    assert.deepEqual(inRef.filter((n) => n.includes('bin')), [], 'none of them is in the ref');
+    assert.ok(inRef.includes('small.txt'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
