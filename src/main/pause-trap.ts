@@ -198,7 +198,9 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   let incompleteEarly = false;
   let snapshotRef = existing?.snapshotRef ?? null;
   let dirty: boolean | null = existing?.dirty ?? null;
-  if (!snapshotRef) {
+  // a snapshot that TIMED OUT is never re-taken (each retry would wait the full timeout again before the interrupt, forever on a persistently incomplete member, and leave unreachable objects in the member's .git)
+  if (!snapshotRef && prior?.snapshotIncomplete === 'timeout') errors.push('snapshot incomplete: timeout (an earlier attempt; not retried — a retry would wait the full timeout again)');
+  else if (!snapshotRef) {
     if (!m.worktreePath) errors.push('snapshot: workspace has no worktree');
     else {
       try {

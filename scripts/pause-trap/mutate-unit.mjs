@@ -22,7 +22,7 @@ const M = [
   // ── snapshot (pause-snapshot.ts)
   { id: 'snap-real-index', file: SNAP, find: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1], timeoutMs);", rep: "return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], {}, undefined, [1], timeoutMs);", tests: [T.snap], expect: /NO-TOUCH|captures unstaged/ },
   { id: 'snap-large-files-captured', file: SNAP, find: "files.filter((f) => !f.dir && f.bytes > perFileBytes)", rep: "files.filter((f) => false && !f.dir && f.bytes > perFileBytes)", tests: [T.snap], expect: /over the size cap/ },
-  { id: 'snap-ref-overwrite', file: SNAP, find: "await git(cwd, ['update-ref', ref, commit, ''], env);", rep: "await git(cwd, ['update-ref', ref, commit], env);", tests: [T.snap], expect: /same `at` twice/ },
+  { id: 'snap-ref-overwrite', file: SNAP, find: "await git(cwd, ['update-ref', ref, commit, ''], env, undefined, [], addTimeout);", rep: "await git(cwd, ['update-ref', ref, commit], env, undefined, [], addTimeout);", tests: [T.snap], expect: /same `at` twice/ },
   { id: 'snap-no-parent', file: SNAP, find: "...(head ? ['-p', head] : []), '-F', '-'", rep: "'-F', '-'", tests: [T.snap], expect: /captures unstaged|unborn|clean worktree/ },
   { id: 'snap-no-torn-index-fallback', file: SNAP, find: "      try {\n        ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));", rep: "      throw new Error('no fallback');\n      try {\n        ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));", tests: [T.snap], expect: /corrupt\/torn/ },
   { id: 'snap-dirty-always-false', file: SNAP, find: 'const dirty = headTree === null ? true : headTree !== tree;', rep: 'const dirty = false;', tests: [T.snap, T.trap], expect: /captures unstaged|unborn|ORDER \+ CONTENT/ },
@@ -63,7 +63,7 @@ const M = [
   { id: 'trap-members-without-descendants', file: TRAP, find: 'const members = deps.members(runSubtreeIds(db, carrier.runId), carrier.runId);', rep: 'const members = deps.members([carrier.runId], carrier.runId);', tests: [T.trap], expect: /DESCENDANTS/ },
   { id: 'trap-human-mark-reusable', file: TRAP, find: '      humanTurnMarks.set(wsId, marks);\n      return true;', rep: '      humanTurnMarks.set(wsId, [at, ...marks]);\n      return true;', tests: [T.trap], expect: /HUMAN prompt is ALLOWED/ },
   { id: 'trap-sweep-not-reentrant', file: TRAP, find: '    if (inflight.has(key)) continue;\n', rep: '', tests: [T.trap], expect: /SWEEP/ },
-  { id: 'trap-always-resnapshot', file: TRAP, find: '  if (!snapshotRef) {\n    if (!m.worktreePath)', rep: '  if (true) {\n    if (!m.worktreePath)', tests: [T.trap], expect: /BOOT COMPLETION/ },
+  { id: 'trap-always-resnapshot', file: TRAP, find: "  else if (!snapshotRef) {\n    if (!m.worktreePath)", rep: "  else if (true) {\n    if (!m.worktreePath)", tests: [T.trap], expect: /BOOT COMPLETION/ },
   { id: 'trap-done-member-redone', file: TRAP, find: "  if (existing && existing.killed !== null) return 'complete'; // already fully trapped (boot completion after a mid-trap quit)\n", rep: '', tests: [T.trap], expect: /BOOT COMPLETION/ },
   { id: 'rec-trap-stamp-unguarded', file: REC, find: "'UPDATE runs SET pause_trap_at = ? WHERE id = ? AND paused_at = ? AND pause_trap_at IS NULL'", rep: "'UPDATE runs SET pause_trap_at = ? WHERE id = ? AND ? IS NOT NULL AND pause_trap_at IS NULL'", tests: [T.trap], expect: /markTrapDone is keyed on paused_at/ },
   // ── wiring (index.ts / agent-sdk.ts / activity.ts / pause-trap-host.ts) — pause-trap-wiring.test.ts
@@ -224,7 +224,7 @@ const M = [
   { id: 'trap-earlier-kills-for-complete', file: TRAP, find: "  if (incomplete && attemptKills.length > 0) merged.earlierKilled", rep: "  if (attemptKills.length > 0) merged.earlierKilled", tests: [T.trap], expect: /round-3 F4e/ },
   { id: 'status-notes-hidden', file: 'src/cli/run-status.ts', find: "for (const n of a?.snapshotNotes ?? [])", rep: "for (const n of [] as string[])", tests: [T.status], expect: /round-3 F1\/F4a/ },
   // ── pre-review of the fix round
-  { id: 'snap-ignored-counted', file: SNAP, find: "listZ(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])", rep: "listZ(cwd, ['ls-files', '--others', '-z'])", tests: [T.snap], expect: /round-3 review .?#1/ },
+  { id: 'snap-ignored-counted', file: SNAP, find: "['ls-files', '--others', '--exclude-standard', '-z'], env, timeoutMs)", rep: "['ls-files', '--others', '-z'], env, timeoutMs)", tests: [T.snap], expect: /round-3 review .?#1/ },
   { id: 'snap-selectskipped-dir-as-file-cap', file: SNAP, find: "files.filter((f) => !f.dir && f.bytes > perFileBytes)", rep: "files.filter((f) => f.bytes > perFileBytes)", tests: [T.snap], expect: /round-3 review .?#4/ },
   { id: 'snap-selectskipped-dir-not-counted', file: SNAP, find: "files.filter((f) => f.dir || f.bytes <= perFileBytes)", rep: "files.filter((f) => f.bytes <= perFileBytes)", tests: [T.snap], expect: /round-3 review .?#4/ },
   { id: 'trap-window-open-not-clamped', file: TRAP, find: "(w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w)", rep: "w", tests: [T.trap], expect: /round-3 review .?#5/ },
@@ -233,13 +233,19 @@ const M = [
   { id: 'trap-prior-pauser-not-kept-on-provisional', file: TRAP, find: "    if (prior.exempt) activity.exempt = prior.exempt;\n    if (prior.pauserCli) activity.pauserCli = prior.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7/ },
   { id: 'trap-stale-exempt-not-cleared', file: TRAP, find: "    delete activity.exempt; // not a pauser on this attempt (proof gone / CLI replaced): never a stale label\n    delete activity.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7|F5 a RECYCLED CLI pid/ },
   // ── last delta: a git add TIMEOUT is not old git
-  { id: 'snap-rebuild-after-timeout', file: SNAP, find: "      if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(addTimeout); // a rebuild would only wait another full timeout\n", rep: "", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)/ },
-  { id: 'snap-fallback-ignores-timeout', file: SNAP, find: "if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129", rep: "if (!(e instanceof GitError) || e.exitCode !== 129 && !e.timedOut", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)/ },
+  { id: 'snap-rebuild-after-timeout', file: SNAP, find: "      if (e instanceof GitError && e.timedOut) throw e; // a rebuild would only wait another full timeout (mapped to SnapshotTimeoutError by the caller)\n", rep: "", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)/ },
+  { id: 'snap-fallback-ignores-timeout', file: SNAP, find: "if (!(e instanceof GitError) || e.timedOut || e.exitCode !== 129", rep: "if (!(e instanceof GitError) || e.exitCode !== 129 && !e.timedOut", tests: [T.snap], expect: /round-4 review .?#2/ },
   { id: 'snap-fallback-takes-any-failure', file: SNAP, edits: [
     { find: "e.exitCode !== 129 || !/unknown option/i.test(e.stderr) || ", rep: "" },
   ], tests: [T.snap], expect: /round-4: the old-git fallback needs a USAGE error/ },
   { id: 'trap-timeout-not-flagged', file: TRAP, find: "        if (e instanceof Error && e.name === 'SnapshotTimeoutError') activity.snapshotIncomplete = 'timeout';\n", rep: "", tests: [T.trap], expect: /round-4: a snapshot TIMEOUT is recorded loud/ },
   { id: 'status-incomplete-hidden', file: 'src/cli/run-status.ts', find: "if (a?.snapshotIncomplete) out.push(", rep: "if (false) out.push(", tests: [T.status], expect: /round-4: a snapshot that timed out reads/ },
+  // ── last delta, pre-review fixes
+  { id: 'trap-timeout-snapshot-retried', file: TRAP, find: "if (!snapshotRef && prior?.snapshotIncomplete === 'timeout') errors.push(", rep: "if (false) errors.push(", tests: [T.trap], expect: /round-4 review .?#1/ },
+  { id: 'snap-timeout-not-mapped-by-wrapper', file: SNAP, find: "    if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(input.gitTimeoutMs ?? GIT_TIMEOUT_MS, e.cmd);\n", rep: "", tests: [T.snap], expect: /round-4 \(verifier MAJOR\)|round-4 review .?#[235]/ },
+  { id: 'snap-locale-not-forced', file: SNAP, find: "LC_ALL: 'C', ", rep: "", tests: [T.snap], expect: /round-4 review .?#4/ },
+  { id: 'snap-listing-failure-swallowed', file: SNAP, find: "    if (e instanceof GitError && e.timedOut) throw e;\n    [collapsed, files] = await list(await headIndex());", rep: "    [collapsed, files] = [[], []];", tests: [T.snap], expect: /round-4 review .?#5: a ls-files TIMEOUT/ },
+  { id: 'snap-update-ref-retries-timeout', file: SNAP, find: "if (attempt >= 5 || (e instanceof GitError && e.timedOut)) throw e;", rep: "if (attempt >= 5) throw e;", tests: [T.snap], expect: /round-4 review .?#5: a timeout in update-ref/ },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },

@@ -70,18 +70,20 @@ class GitError extends Error {
   exitCode: number | null; // (no parameter properties: node's strip-only TypeScript mode rejects them)
   timedOut: boolean;
   stderr: string;
-  constructor(message: string, exitCode: number | null, timedOut: boolean, stderr: string) {
+  cmd: string; // the git subcommand (add, ls-files, write-tree…)
+  constructor(message: string, exitCode: number | null, timedOut: boolean, stderr: string, cmd: string) {
     super(message);
     this.exitCode = exitCode;
     this.timedOut = timedOut;
     this.stderr = stderr;
+    this.cmd = cmd;
   }
 }
 
 /** The snapshot did not finish in time (a very large untracked tree): NO ref was written, nothing was staged beyond the temp index; the pause goes on (round-4: never read as "git < 2.25", never fall back to staging everything). */
 export class SnapshotTimeoutError extends Error {
-  constructor(ms: number) {
-    super(`snapshot incomplete: timeout — git add exceeded ${ms} ms on a very large untracked tree; no ref was written (the pause still interrupts and kills)`);
+  constructor(ms: number, cmd = 'add') {
+    super(`snapshot incomplete: timeout — git ${cmd} exceeded ${ms} ms on a very large tree; no ref was written (the pause still interrupts and kills)`);
     this.name = 'SnapshotTimeoutError';
   }
 }
@@ -95,7 +97,7 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: s
       ['-c', 'gc.auto=0', '-c', 'core.fsmonitor=false', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
       {
         cwd,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env },
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C', ...env }, // LC_ALL=C: git's messages are matched (usage error) and must not be localized
         encoding: 'buffer',
         maxBuffer: 256 * 1024 * 1024,
         timeout: timeoutMs,
@@ -107,7 +109,7 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: s
           const timedOut = e.killed === true;
           const code = typeof e.code === 'number' ? e.code : null;
           // the message is built from git's STDERR only — never `e.message` ("Command failed: git … --pathspec-from-file=…"), which carries the command text a version-sniffing regex would match
-          reject(new GitError(timedOut ? `git ${args[0]} timed out after ${timeoutMs} ms` : `git ${args[0]} failed: ${errText.trim().slice(0, 400) || `exit ${code ?? String(e.signal ?? '?')}`}`, code, timedOut, errText));
+          reject(new GitError(timedOut ? `git ${args[0]} timed out after ${timeoutMs} ms` : `git ${args[0]} failed: ${errText.trim().slice(0, 400) || `exit ${code ?? String(e.signal ?? '?')}`}`, code, timedOut, errText, args[0]));
         } else resolve({ stdout: stdout as unknown as Buffer, stderr: errText });
       },
     );
@@ -154,13 +156,8 @@ interface Unit {
 const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
 
 /** NUL-separated names from a git listing, as BYTES. */
-async function listZ(cwd: string, args: string[]): Promise<Buffer[]> {
-  let raw: Buffer;
-  try {
-    raw = (await git(cwd, args)).stdout;
-  } catch {
-    return [];
-  }
+async function listZ(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs: number = GIT_TIMEOUT_MS): Promise<Buffer[]> {
+  const raw = (await git(cwd, args, env, undefined, [], timeoutMs)).stdout; // a failed or timed-out listing THROWS: swallowing it returned [] ⇒ no excludes ⇒ the size caps silently defeated (stage everything)
   const out: Buffer[] = [];
   let start = 0;
   for (let i = 0; i <= raw.length; i++) {
@@ -177,8 +174,17 @@ async function listZ(cwd: string, args: string[]): Promise<Buffer[]> {
  * with its directory, and a directory holding only ignored files is no unit at all. A dropped directory is excluded by ONE directory pathspec: no tracked file lives below it, so
  * no tracked edit is lost — a 240k-file un-ignored tree costs one exclude (the per-file version took 150 s and froze the main process). Names are BYTES; the scan yields to the event loop.
  */
-async function scanUntracked(cwd: string, perFileBytes: number): Promise<Unit[]> {
-  const [collapsed, files] = await Promise.all([listZ(cwd, ['ls-files', '--others', '--exclude-standard', '--directory', '-z']), listZ(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])]);
+async function scanUntracked(cwd: string, perFileBytes: number, headIndex: () => Promise<NodeJS.ProcessEnv>, timeoutMs: number = GIT_TIMEOUT_MS): Promise<Unit[]> {
+  const list = (env: NodeJS.ProcessEnv): Promise<[Buffer[], Buffer[]]> => Promise.all([listZ(cwd, ['ls-files', '--others', '--exclude-standard', '--directory', '-z'], env, timeoutMs), listZ(cwd, ['ls-files', '--others', '--exclude-standard', '-z'], env, timeoutMs)]);
+  let collapsed: Buffer[];
+  let files: Buffer[];
+  try {
+    [collapsed, files] = await list({});
+  } catch (e) {
+    // a TIMEOUT propagates (loud, no ref); a torn / split real index makes the listing fail too — list against a HEAD-seeded temp index instead (the same fallback the build has), never "no excludes"
+    if (e instanceof GitError && e.timedOut) throw e;
+    [collapsed, files] = await list(await headIndex());
+  }
   const base = Buffer.from(`${cwd}${path.sep}`);
   const out: Unit[] = [];
   const dirs = new Map<string, Unit>(); // latin1(dir path without the trailing slash) → unit
@@ -320,6 +326,16 @@ async function gitlinkPaths(cwd: string, env: NodeJS.ProcessEnv, tree: string): 
  * Re-running with the same `at` is refused by `update-ref` (a ref is never overwritten).
  */
 export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise<SnapshotResult> {
+  try {
+    return await snapshotWorktreeInner(input, depth);
+  } catch (e) {
+    // ANY git call that hit the timeout (ls-files, add, write-tree, commit-tree…) is the same loud outcome: incomplete, no ref, the pause goes on
+    if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(input.gitTimeoutMs ?? GIT_TIMEOUT_MS, e.cmd);
+    throw e;
+  }
+}
+
+async function snapshotWorktreeInner(input: SnapshotInput, depth: number): Promise<SnapshotResult> {
   const cwd = input.worktreePath;
   if (!fs.existsSync(cwd)) throw new Error(`worktree ${cwd} does not exist`);
   const gitDir = text(await git(cwd, ['rev-parse', '--absolute-git-dir']));
@@ -337,8 +353,6 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
   }
   const addTimeout = input.gitTimeoutMs ?? GIT_TIMEOUT_MS;
   const perFileBytes = input.limits?.perFileBytes ?? SNAPSHOT_MAX_UNTRACKED_BYTES;
-  const skipped = selectSkipped(await scanUntracked(cwd, perFileBytes), perFileBytes, input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES);
-  const excludes = skipped.map((f) => f.raw);
   const tmp = await makeTempIndexPath(gitDir);
   // Every plumbing call below runs against the TEMP index, never the real one: a torn or
   // corrupt real index cannot break them, and none of them can write it.
@@ -346,12 +360,23 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
   const warnings: string[] = [];
   const notes: string[] = [];
   try {
+    const headIndexFile = `${tmp.file}.headlist`;
+    const skipped = selectSkipped(
+      await scanUntracked(cwd, perFileBytes, async () => {
+        if (head) await git(cwd, ['read-tree', head], { GIT_INDEX_FILE: headIndexFile }, undefined, [], addTimeout); // unborn: a missing index file = an empty index
+        return { GIT_INDEX_FILE: headIndexFile };
+      }, addTimeout),
+      perFileBytes,
+      input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES,
+    );
+    fs.rmSync(headIndexFile, { force: true });
+    const excludes = skipped.map((f) => f.raw);
     let tree: string;
     let applied: number;
     try {
       ({ tree, applied } = await buildTree(cwd, tmp.file, true, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));
     } catch (e) {
-      if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(addTimeout); // a rebuild would only wait another full timeout
+      if (e instanceof GitError && e.timedOut) throw e; // a rebuild would only wait another full timeout (mapped to SnapshotTimeoutError by the caller)
       // A torn copy (the agent wrote its index mid-copy) or a split/shared index that cannot
       // be replayed from a copy: rebuild from HEAD, which still captures every worktree file.
       fs.rmSync(tmp.file, { force: true });
@@ -360,7 +385,6 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
       try {
         ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true, addTimeout));
       } catch (e) {
-        if (e instanceof GitError && e.timedOut) throw new SnapshotTimeoutError(addTimeout);
         throw e;
       }
     }
@@ -378,10 +402,10 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
     let ref = pauseRefName(input.runId, input.wsId, at);
     for (let attempt = 0; ; attempt++) {
       try {
-        await git(cwd, ['update-ref', ref, commit, ''], env); // '' = the ref must not exist yet
+        await git(cwd, ['update-ref', ref, commit, ''], env, undefined, [], addTimeout); // '' = the ref must not exist yet
         break;
       } catch (e) {
-        if (attempt >= 5) throw e;
+        if (attempt >= 5 || (e instanceof GitError && e.timedOut)) throw e; // a timeout is not "the ref exists": never retried
         at += 1;
         ref = pauseRefName(input.runId, input.wsId, at);
       }
@@ -417,6 +441,7 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
       .map((f) => ({ path: f.path, bytes: f.bytes, reason: f.reason, ...(f.dir ? { files: f.files } : {}) }));
     return { ref, commit, tree, head, branch, dirty: dirty || submodules.some((s) => s.dirty), changed, skippedLarge, skippedLargeCount: excluded.length, notes, warnings, submodules };
   } finally {
+    fs.rmSync(`${tmp.file}.headlist`, { force: true });
     tmp.cleanup();
   }
 }

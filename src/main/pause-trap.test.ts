@@ -1313,3 +1313,23 @@ test('round-4: a snapshot TIMEOUT is recorded loud (snapshotIncomplete: timeout,
   assert.equal(row.activity?.snapshotIncomplete, 'timeout');
   assert.match(row.error ?? '', /snapshot incomplete: timeout/);
 });
+
+test('round-4 review #1: a TIMED-OUT snapshot is never re-taken on a retry (each retry would wait the full timeout before the interrupt) and the label stays true — no ref, snapshotIncomplete kept', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  let snaps = 0;
+  rig.deps.snapshot = async () => { snaps++; throw new SnapshotTimeoutError(120_000); };
+  rig.cliResult = { error: 'keeper unresponsive' }; // attempt 1 stays incomplete
+  await runPauseTrap(rig.deps, c);
+  assert.equal(snaps, 1);
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // the retry
+  assert.equal(snaps, 1, 'the retry did NOT call the snapshot again');
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.equal(row.snapshotRef, null);
+  assert.equal(row.activity?.snapshotIncomplete, 'timeout');
+  assert.match(row.error ?? '', /snapshot incomplete: timeout/);
+  assert.notEqual(row.killed, null, 'and the retry completed the member (interrupt + kill ran)');
+});
