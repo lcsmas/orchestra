@@ -45,6 +45,7 @@ import {
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
+import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
@@ -3935,6 +3936,12 @@ const HOOK_ORCHESTRATOR_GUARD_CMD =
 // CLI — stays unguarded.
 const ORCHESTRATOR_GUARD_MATCHER = 'Edit|MultiEdit|Write|NotebookEdit';
 
+// Denies a tool call naming a NEW entry at $HOME root (agents littered ~ with
+// rigs/logs); points them at ~/.orchestra/agent-tmp/<wsid>/. See home-root-guard.ts.
+// No `|| true`: it turns the script's exit 2 into 0 and the deny never lands.
+const HOOK_HOME_ROOT_GUARD_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/home-root-guard.sh"; [ -f "$f" ] || exit 0; bash "$f"';
+
 // Self-modification notice for agents working on Orchestra's OWN repo, fired
 // on SessionStart only (startup / resume / clear / post-compaction — the same
 // context-reset moments as the orchestrator reminder). The script self-gates
@@ -5284,6 +5291,7 @@ const HOOKS_VERSION = createHash('sha256')
       INBOX_INSTRUCTION_SCRIPT,
       ORCHESTRATOR_INSTRUCTION_SCRIPT,
       ORCHESTRATOR_GUARD_SCRIPT,
+      HOME_ROOT_GUARD_SCRIPT,
       SELF_MODIFY_INSTRUCTION_SCRIPT,
       BUS_SWITCHES_INSTRUCTION_SCRIPT,
       FIELDGUIDE_INSTRUCTION_SCRIPT,
@@ -5316,6 +5324,8 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_LINK_INSTRUCTION_CMD,
       HOOK_LINK_PROMPT_CMD,
       ORCHESTRATOR_GUARD_MATCHER,
+      HOOK_HOME_ROOT_GUARD_CMD,
+      HOME_ROOT_GUARD_MATCHER,
     ].join('\0'),
   )
   .digest('hex');
@@ -5615,6 +5625,7 @@ export async function installOrchestraHooks(
       w('inbox-instruction.sh', INBOX_INSTRUCTION_SCRIPT),
       w('orchestrator-instruction.sh', ORCHESTRATOR_INSTRUCTION_SCRIPT),
       w('orchestrator-guard.sh', ORCHESTRATOR_GUARD_SCRIPT),
+      w('home-root-guard.sh', HOME_ROOT_GUARD_SCRIPT),
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
       w('bus-switches-instruction.sh', BUS_SWITCHES_INSTRUCTION_SCRIPT),
       w('fieldguide-instruction.sh', FIELDGUIDE_INSTRUCTION_SCRIPT),
@@ -5762,6 +5773,8 @@ export async function installOrchestraHooks(
     // workspace (the script self-silences on non-orchestrator workspaces).
     // Zero token cost until it fires, unlike an injected reminder.
     upsertMatcherHookCommand(preToolList, ORCHESTRATOR_GUARD_MATCHER, HOOK_ORCHESTRATOR_GUARD_CMD);
+    // Every workspace: deny creating new entries at $HOME root.
+    upsertMatcherHookCommand(preToolList, HOME_ROOT_GUARD_MATCHER, HOOK_HOME_ROOT_GUARD_CMD);
     hooks.PreToolUse = preToolList;
 
     // Every per-call END signal → `posttool` (see POSTTOOL_HOOK_EVENTS), plus the

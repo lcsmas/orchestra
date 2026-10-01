@@ -115,6 +115,19 @@ Scripts and the Claude Code events they fire on:
   `orchestra message`, which #169 retired as a coordination path on a bus run.
   Own-worktree writes
   (notes, plans), relative paths, and parse misses fail open.
+  **Caveat:** its install command ends `&& bash "$f" || true`, and the
+  `|| true` turns the exit 2 into 0, so the deny never reaches the CLI
+  (measured 2026-10-01 with a real `claude -p` against the same wrapper).
+- **`home-root-guard.sh`** — PreToolUse, matcher
+  `Bash|Edit|MultiEdit|Write|NotebookEdit`, every workspace. Script lives in
+  `src/shared/home-root-guard.ts` (its test runs that same string). **Denies
+  (exit 2)** a call that names a NON-existent, non-dot entry directly under
+  `$HOME` (`~/x`, `$HOME/x`, `${HOME}/x`, or the literal home path). Bash calls
+  scan the whole payload, while file tools scan only `file_path`/`notebook_path`.
+  The deny message points the agent at `~/.orchestra/agent-tmp/<wsid>/`.
+  Existing entries pass. Relative paths (`cd ~ && mkdir x`) slip through, and
+  so does a script that writes there by itself. The command has no `|| true`
+  (see the caveat above).
 - **`fieldguide-instruction.sh`** — SessionStart ONLY. Injects the parent
   orchestrator's **swarm field guide** (`<orchestra-home>/fieldguide/
   <orchestrator-id>.md`, written by the orchestrator per the `orchestra-spawn`
