@@ -224,14 +224,14 @@ const M = [
   { id: 'trap-earlier-kills-for-complete', file: TRAP, find: "  if (incomplete && attemptKills.length > 0) merged.earlierKilled", rep: "  if (attemptKills.length > 0) merged.earlierKilled", tests: [T.trap], expect: /round-3 F4e/ },
   { id: 'status-notes-hidden', file: 'src/cli/run-status.ts', find: "for (const n of a?.snapshotNotes ?? [])", rep: "for (const n of [] as string[])", tests: [T.status], expect: /round-3 F1\/F4a/ },
   // ── pre-review of the fix round
-  { id: 'snap-ignored-counted', file: SNAP, find: "listZ(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])", rep: "listZ(cwd, ['ls-files', '--others', '-z'])", tests: [T.snap], expect: /round-3 review #1/ },
-  { id: 'snap-selectskipped-dir-as-file-cap', file: SNAP, find: "files.filter((f) => !f.dir && f.bytes > perFileBytes)", rep: "files.filter((f) => f.bytes > perFileBytes)", tests: [T.snap], expect: /round-3 review #4/ },
-  { id: 'snap-selectskipped-dir-not-counted', file: SNAP, find: "files.filter((f) => f.dir || f.bytes <= perFileBytes)", rep: "files.filter((f) => f.bytes <= perFileBytes)", tests: [T.snap], expect: /round-3 review #4/ },
-  { id: 'trap-window-open-not-clamped', file: TRAP, find: "(w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w)", rep: "w", tests: [T.trap], expect: /round-3 review #5/ },
-  { id: 'trap-window-end-closes-first', file: TRAP, find: "  for (let i = (ws?.length ?? 0) - 1; i >= 0; i--) {", rep: "  for (let i = 0; i < (ws?.length ?? 0); i++) {", tests: [T.trap], expect: /round-3 review #6/ },
+  { id: 'snap-ignored-counted', file: SNAP, find: "listZ(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])", rep: "listZ(cwd, ['ls-files', '--others', '-z'])", tests: [T.snap], expect: /round-3 review .?#1/ },
+  { id: 'snap-selectskipped-dir-as-file-cap', file: SNAP, find: "files.filter((f) => !f.dir && f.bytes > perFileBytes)", rep: "files.filter((f) => f.bytes > perFileBytes)", tests: [T.snap], expect: /round-3 review .?#4/ },
+  { id: 'snap-selectskipped-dir-not-counted', file: SNAP, find: "files.filter((f) => f.dir || f.bytes <= perFileBytes)", rep: "files.filter((f) => f.bytes <= perFileBytes)", tests: [T.snap], expect: /round-3 review .?#4/ },
+  { id: 'trap-window-open-not-clamped', file: TRAP, find: "(w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w)", rep: "w", tests: [T.trap], expect: /round-3 review .?#5/ },
+  { id: 'trap-window-end-closes-first', file: TRAP, find: "  for (let i = (ws?.length ?? 0) - 1; i >= 0; i--) {", rep: "  for (let i = 0; i < (ws?.length ?? 0); i++) {", tests: [T.trap], expect: /round-3 review .?#6/ },
   { id: 'sdk-window-closed-after-flag-clear', file: SDK, find: "  if (session.gateTurnHuman) markPauseHumanTurnEnd(session.wsId); // closes the window the trap shields (round-3 F3i)\n  session.gateTurnHuman = false;", rep: "  session.gateTurnHuman = false;\n  if (session.gateTurnHuman) markPauseHumanTurnEnd(session.wsId); // closes the window the trap shields (round-3 F3i)", tests: [T.wiring], expect: /round-2 F3: the session carries/ },
-  { id: 'trap-prior-pauser-not-kept-on-provisional', file: TRAP, find: "    if (prior.exempt) activity.exempt = prior.exempt;\n    if (prior.pauserCli) activity.pauserCli = prior.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review #7/ },
-  { id: 'trap-stale-exempt-not-cleared', file: TRAP, find: "    delete activity.exempt; // not a pauser on this attempt (proof gone / CLI replaced): never a stale label\n    delete activity.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review #7|F5 a RECYCLED CLI pid/ },
+  { id: 'trap-prior-pauser-not-kept-on-provisional', file: TRAP, find: "    if (prior.exempt) activity.exempt = prior.exempt;\n    if (prior.pauserCli) activity.pauserCli = prior.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7/ },
+  { id: 'trap-stale-exempt-not-cleared', file: TRAP, find: "    delete activity.exempt; // not a pauser on this attempt (proof gone / CLI replaced): never a stale label\n    delete activity.pauserCli;\n", rep: "", tests: [T.trap], expect: /round-3 review .?#7|F5 a RECYCLED CLI pid/ },
   { id: 'trap-live-chain-never-climbs', file: TRAP, find: '    cur = node.parentId;\n', rep: '    cur = undefined;\n', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },
@@ -266,7 +266,8 @@ if (process.argv.includes('--anchors-only')) {
   const titlesOf = (f) => [...fs.readFileSync(path.join(REPO, f), 'utf8').matchAll(/\btest\((['"`])((?:\\.|(?!\1)[^\\])*)\1/g)].map((x) => x[2].replace(/\\'/g, "'"));
   for (const m of sel) {
     const titles = m.tests.flatMap(titlesOf);
-    if (!titles.some((t) => m.expect.test(t) || m.expect.test(t.replace(/#/g, '\\#')))) { gone++; console.log(`✗ ${m.id}: expect ${m.expect} matches no test title in ${m.tests.join(', ')}`); }
+    // the harness matches the TAP output, where `#` is printed as `\#`
+    if (!titles.some((t) => m.expect.test(t.replace(/#/g, '\\#')))) { gone++; console.log(`✗ ${m.id}: expect ${m.expect} matches no test title in ${m.tests.join(', ')}`); }
   }
   console.log(`ANCHORS: ${gone === 0 ? 'OK' : 'FAIL'} (${sel.length} mutants, ${gone} stale)`);
   process.exit(gone === 0 ? 0 : 1);

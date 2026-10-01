@@ -1279,3 +1279,22 @@ test('round-3 review #7: a pauser PROVED on an earlier attempt is still on the B
   assert.equal(seen?.exempt, 'pauser');
   assert.deepEqual(seen?.pauserCli, { pid: 100, startTicks: 1000 });
 });
+
+test('round-3 review #7 (clear): a pauser proved on attempt 1 is NOT carried onto an attempt whose CLI is a DIFFERENT process (replaced) — exempt is cleared and the interrupt runs', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // attempt 1: pauser proved, incomplete
+  await runPauseTrap(rig.deps, c);
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.exempt, 'pauser');
+  rig.deps.arm = async () => {};
+  rig.cliResult = { cli: { pid: 100, startTicks: 2222 }, keeperPid: 90 }; // the CLI was REPLACED (same pid, other start-time): the recorded chain no longer names it
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  const row = bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!;
+  assert.equal(row.activity?.exempt, undefined, 'the stale exemption label is gone');
+  assert.equal(row.activity?.pauserCli, undefined);
+  assert.ok(rig.calls.includes('interrupt:ops-w'), 'and the replaced CLI\'s member is interrupted like any other');
+});
