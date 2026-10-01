@@ -422,6 +422,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { for (const c of d) {
   if (c === 'a') spawn('/bin/bash', ['-c', 'sleep ${K + 1}; true'], o).unref();
   if (c === 'b') spawn('/bin/bash', ['-c', 'sleep ${K + 2}; true'], o).unref();
+  if (c === 'c') spawn('/bin/bash', ['-c', 'sleep ${K + 7}; true'], o).unref();
 } });
 setInterval(() => {}, 1000);
 console.log('ready');
@@ -588,4 +589,73 @@ test('round-3 review #2: an UNREADABLE CLI is unproven — cliGone (incomplete),
   const r = await killToolTrees(CLI, 90, os.deps());
   assert.equal(r.cliGone, true);
   assert.deepEqual(os.signals, [], 'and nothing is signalled');
+});
+
+test('round-3 F3i: a tool root started INSIDE a human turn\'s window stays shielded after the turn ENDED; one started before or after the window is killed (windows, not a one-sided cutoff)', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'before the human turn')); // start 2400
+  os.add(shellC(500, 100, 'started by the human turn')); // start 2500 — inside the window below
+  os.add(shellC(600, 100, 'after the human turn ended')); // start 2700
+  const r = await killToolTrees(CLI, 90, os.deps(), { humanWindows: () => [{ from: 2450, to: 2550 }] });
+  assert.ok(os.procs.has(500), 'the human turn\'s own tool survives although the turn is over');
+  assert.ok(!os.procs.has(400) && !os.procs.has(600), 'before / after the window: killed');
+  assert.ok(r.spared.some((x) => x.pid === 500 && /HUMAN turn/.test(x.reason)));
+});
+
+test('round-3 F3i REAL: a tool started inside a closed human window survives; one started after the window is killed', async () => {
+  if (process.platform !== 'linux') return;
+  const spawned: ChildProcess[] = [];
+  try {
+    const cli = spawn(process.execPath, ['-e', GATED_STANDIN, 'fake-cli-windows'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    spawned.push(cli);
+    await new Promise<void>((res) => cli.stdout!.once('data', () => res()));
+    await new Promise((r) => setTimeout(r, 300));
+    const from = Date.now();
+    await new Promise((r) => setTimeout(r, 1100));
+    cli.stdin!.write('b'); // inside the window
+    await waitFor(() => findByArgv(`sleep ${K + 2}`).length === 1);
+    await new Promise((r) => setTimeout(r, 400));
+    const to = Date.now(); // the human turn ends here
+    await new Promise((r) => setTimeout(r, 1100));
+    cli.stdin!.write('c'); // after the window
+    await waitFor(() => findByArgv(`sleep ${K + 7}`).length === 1);
+    const cliId = real.read(cli.pid!) as ProcIdent;
+    await killToolTrees({ pid: cli.pid!, startTicks: cliId.startTicks }, null, { ...real, selfPid: -1 }, { termGraceMs: 300, humanWindows: () => [{ from, to }] });
+    assert.equal(findByArgv(`sleep ${K + 2}`).length, 1, 'the tool started inside the window is spared');
+    assert.equal(findByArgv(`sleep ${K + 7}`).length, 0, 'the tool started after the window ended is killed');
+  } finally {
+    for (const n of [`sleep ${K + 2}`, `sleep ${K + 7}`, 'fake-cli-windows']) for (const pid of findByArgv(n)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    for (const c of spawned) c.kill('SIGKILL');
+  }
+});
+
+test('round-3 F4d: a ZOMBIE CLI is unproven (cliGone) — the planner drops zombies, so without the clause the member reads "0 killed, complete"', async () => {
+  const os = world();
+  os.add(mk(100, 90, { startTicks: 1000, comm: 'claude', argv: ['claude'], state: 'Z' }));
+  const r = await killToolTrees(CLI, 90, os.deps());
+  assert.equal(r.cliGone, true);
+  assert.deepEqual(os.signals, []);
+});
+
+test('round-3 F4c (origin walk, members branch): an env orphan whose PARENT is a session-orphan member of an old tool shell takes that member\'s ROOT start — killed under the cutoff', async () => {
+  const os = world();
+  // tool shell 200 (sid 200, start 2200) died; its session orphan 850 (sid 200, ppid 1) is a MEMBER via the session proof; its env-proven child 851 started late
+  os.add(mk(850, 1, { sid: 200, startTicks: 2300, comm: 'bash', argv: ['bash', 'daemon.sh'] }));
+  os.add(mk(851, 850, { sid: 851, startTicks: 2600, comm: 'sleep', argv: ['sleep', '1'] }));
+  os.env.set(851, 100);
+  os.procs.delete(201); // the tool shell's children are gone; shell 200 stays the root of the session
+  await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: 2450 });
+  assert.ok(!os.procs.has(850) && !os.procs.has(851), 'the late env child of an old session member dies with it');
+});
+
+test('round-3 F4c (origin walk, never-break): a NON-candidate between a late env orphan and an old rig stops the walk — the late orphan keeps its own start and is spared (it is not provably the rig\'s)', async () => {
+  const os = world();
+  os.add(mk(860, 1, { sid: 860, startTicks: 2200, comm: 'bash', argv: ['bash', 'rig.sh'] })); // old env-proven rig
+  os.add(mk(861, 860, { sid: 861, startTicks: 2650, comm: 'zsh', argv: ['zsh'] })); // a human-turn shell: NO CLAUDE_PID (not a candidate)
+  os.add(mk(862, 861, { sid: 862, startTicks: 2700, comm: 'sleep', argv: ['sleep', '2'] })); // env-proven, under 861
+  os.env.set(860, 100);
+  os.env.set(862, 100);
+  await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: 2450 });
+  assert.ok(!os.procs.has(860), 'the old rig is killed');
+  assert.ok(os.procs.has(862), 'its late descendant behind a non-candidate keeps its OWN start and is spared');
 });

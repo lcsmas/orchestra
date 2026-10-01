@@ -80,6 +80,8 @@ export interface KillOptions {
   stillPaused?: () => boolean;
   /** Only processes that started BEFORE this epoch-ms are targets (a HUMAN turn that began during the trap is allowed to run — D9, review F2). */
   startedBeforeMs?: number | (() => number | undefined);
+  /** Tool roots whose start falls inside one of these windows (a HUMAN turn's [start, end]; `to` undefined = still in flight) are spared, even after the turn ended (D9, round-3 F3i). */
+  humanWindows?: () => Array<{ from: number; to?: number }>;
   /** Tool-shell roots whose whole tree is SPARED (the tree that contains the `orchestra run pause` call — pauser exemption, review F5). */
   spareRoots?: readonly number[];
 }
@@ -246,8 +248,10 @@ export async function killToolTrees(
   // A tree belongs to the human turn only if its ROOT started after it: forks a pre-pause rig makes LATER are the rig's (round-3 F1a — spared per process, they
   // were orphaned when the root died). Env orphans have no root: their own start. Session orphans carry their (possibly dead) root's start.
   const tooNew = (m: ToolProc): boolean => {
+    const ms = deps.startMs(m.rootStartTicks ?? m.startTicks);
     const b = beforeMs();
-    return b !== undefined && deps.startMs(m.rootStartTicks ?? m.startTicks) >= b;
+    if (b !== undefined && ms >= b) return true;
+    return (opts.humanWindows?.() ?? []).some((w) => ms >= w.from && (w.to === undefined || ms <= w.to));
   };
   const cliGone = (): boolean => {
     const c = deps.read(cli.pid);
@@ -266,7 +270,7 @@ export async function killToolTrees(
       }
       pl.members = keep;
     }
-    if (beforeMs() !== undefined) {
+    if (beforeMs() !== undefined || opts.humanWindows) {
       const keep: ToolProc[] = [];
       for (const m of pl.members) {
         if (!tooNew(m)) keep.push(m);

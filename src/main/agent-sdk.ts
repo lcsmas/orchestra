@@ -82,7 +82,7 @@ import {
   notifyTurnStart,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
-import { markPauseHumanTurn } from './pause-trap';
+import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
@@ -1379,6 +1379,7 @@ function releaseTurnGate(session: Session): void {
   const openNext = session.turnGate;
   session.turnGate = null;
   session.gateTurnUuid = null;
+  if (session.gateTurnHuman) markPauseHumanTurnEnd(session.wsId); // closes the window the trap shields (round-3 F3i)
   session.gateTurnHuman = false;
   openNext?.();
 }
@@ -3449,6 +3450,7 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
   const openNext = session.turnGate;
   session.turnGate = null;
   session.gateTurnUuid = null;
+  if (session.gateTurnHuman) markPauseHumanTurnEnd(session.wsId);
   session.gateTurnHuman = false;
   openNext?.();
   return true;

@@ -385,9 +385,21 @@ test('round-3 F8: MORE than 200 oversize files are ALL excluded (pathspec file, 
     for (let i = 0; i < 260; i++) fs.writeFileSync(path.join(wt, `big-${i}.bin`), 'x'.repeat(40));
     fs.writeFileSync(path.join(wt, 'small.txt'), 's\n');
     const before = fingerprint(wt);
-    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 21, limits: { perFileBytes: 10, totalBytes: 1 << 20 } });
+    const touched: string[] = [];
+    await new Promise((r) => setTimeout(r, 200));
+    const watcher = fs.watch(wt, { recursive: true }, (_ev, name) => touched.push(String(name))); // ANY create/modify/delete inside the worktree while the snapshot runs (a transient spec file leaves no trace afterwards)
+    let r;
+    try {
+      r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 21, limits: { perFileBytes: 10, totalBytes: 1 << 20 } });
+      await new Promise((res) => setTimeout(res, 300));
+    } finally {
+      watcher.close();
+    }
+    assert.deepEqual(touched, [], 'D4: NOTHING is written inside the worktree during the snapshot (not even a transient pathspec file)');
     assert.equal(fingerprint(wt), before, 'NO-TOUCH holds on the pathspec-file path too: worktree, REAL index, HEAD and branches byte-identical');
-    assert.equal(r.skippedLarge.length, 261 - 1, 'all 260 big files reported');
+    assert.equal(r.skippedLargeCount, 260, 'all 260 big files counted');
+    assert.equal(r.skippedLarge.length, 200, 'and the largest 200 stored (a 100k-file tree must not bloat the Bilan row)');
+    assert.deepEqual(git(wt, 'ls-tree', '-r', '--name-only', r.ref).split('\n').sort(), ['.gitignore', 'other.txt', 'small.txt', 'tracked.txt'], 'the EXACT ref tree: tracked files + small.txt, no spec file, no big file');
     const inRef = git(wt, 'ls-tree', '-r', '--name-only', r.ref).split('\n').filter((n) => n.startsWith('big-'));
     assert.deepEqual(inRef, [], 'and NONE of them is in the ref (201+ used to be captured while reported skipped)');
     assert.equal(git(wt, 'show', `${r.ref}:small.txt`), 's');
@@ -401,7 +413,9 @@ test('round-3 F8 legacy git (< 2.25, argv-only pathspec): excludes beyond 200 ar
   try {
     for (let i = 0; i < 230; i++) fs.writeFileSync(path.join(wt, `big-${i}.bin`), 'x'.repeat(40));
     const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 22, limits: { perFileBytes: 10, totalBytes: 1 << 20 }, legacyPathspec: true });
-    assert.match(r.warnings.join(' | '), /30 oversize file\(s\) could NOT be excluded/);
+    assert.match(r.notes.join(' | '), /30 oversize entr\(ies\) could NOT be excluded/);
+    assert.equal(r.skippedLargeCount, 200, 'skippedLarge lists only what was ACTUALLY excluded');
+    assert.equal(r.skippedLarge.length, 200);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -420,6 +434,89 @@ test('round-3 review #4: a NON-UTF8 file name over the cap is still sized, exclu
     assert.deepEqual(inRef.filter((n) => n.includes('bin')), [], 'none of them is in the ref');
     assert.ok(inRef.includes('small.txt'));
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-3 F1: a wholly-untracked DIRECTORY dropped by the total cap is ONE entry (one exclude, files counted); a tracked edit in a MIXED directory is never lost with it', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    fs.mkdirSync(path.join(wt, 'vendor/a/b'), { recursive: true });
+    for (let i = 0; i < 300; i++) fs.writeFileSync(path.join(wt, `vendor/a/b/f${i}.js`), 'x'.repeat(10));
+    fs.mkdirSync(path.join(wt, 'mixed'));
+    fs.writeFileSync(path.join(wt, 'mixed/tracked-in-mixed.txt'), 'v1\n');
+    git(wt, 'add', 'mixed/tracked-in-mixed.txt');
+    git(wt, 'commit', '-q', '-m', 'mixed');
+    fs.writeFileSync(path.join(wt, 'mixed/tracked-in-mixed.txt'), 'EDITED v2\n'); // a tracked edit inside a mixed dir
+    for (let i = 0; i < 100; i++) fs.writeFileSync(path.join(wt, `mixed/u${i}.dat`), 'y'.repeat(30)); // untracked files in the same mixed dir
+    fs.writeFileSync(path.join(wt, 'loose.txt'), 'l\n');
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 24, limits: { perFileBytes: 1 << 20, totalBytes: 3500 } });
+    const names = git(wt, 'ls-tree', '-r', '--name-only', r.ref).split('\n');
+    assert.ok(!names.some((n) => n.startsWith('vendor/')), 'the whole vendor/ tree is out of the ref');
+    const dirEntry = r.skippedLarge.find((x) => x.path === 'vendor/');
+    assert.ok(dirEntry && dirEntry.files === 300 && dirEntry.reason === 'total-cap', `ONE entry for the directory: ${JSON.stringify(r.skippedLarge.slice(0, 3))}`);
+    assert.equal(git(wt, 'show', `${r.ref}:mixed/tracked-in-mixed.txt`), 'EDITED v2', 'the tracked edit in the MIXED directory is captured (a directory exclude would have lost it)');
+    assert.equal(git(wt, 'show', `${r.ref}:loose.txt`), 'l');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-3 F1 PERF: selectSkipped is linear — 200k files select in well under 2 s (shift() made it quadratic: 150 s on 240k files)', () => {
+  const files = Array.from({ length: 200_000 }, (_, i) => ({ path: `f${i}`, bytes: 1 + (i % 7) }));
+  const t0 = Date.now();
+  const r = selectSkipped(files, 100, 1000);
+  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+  assert.ok(r.length > 195_000, 'nearly everything is dropped to fit the 1000-byte cap');
+});
+
+test('round-3 F1 PERF: a 60k-file un-ignored tree over the total cap snapshots in seconds, with the event loop never frozen and ONE entry per directory (master took 18 s, the first cap 150 s)', { timeout: 180_000 }, async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    for (let d = 0; d < 100; d++) {
+      const dir = path.join(wt, `pkg${d}`, 'lib');
+      fs.mkdirSync(dir, { recursive: true });
+      for (let i = 0; i < 600; i++) fs.writeFileSync(path.join(dir, `m${i}.js`), 'x'.repeat(20));
+    }
+    let maxLag = 0;
+    let last = Date.now();
+    const timer = setInterval(() => { const now = Date.now(); maxLag = Math.max(maxLag, now - last - 25); last = now; }, 25);
+    const t0 = Date.now();
+    let r;
+    try {
+      r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 25, limits: { perFileBytes: 1 << 20, totalBytes: 100_000 } });
+    } finally {
+      clearInterval(timer);
+    }
+    const took = Date.now() - t0;
+    assert.ok(took < 30_000, `snapshot took ${took} ms`);
+    assert.ok(maxLag < 2000, `event-loop lag ${maxLag} ms`);
+    assert.ok(r.skippedLargeCount <= 100, `one entry per directory, not per file: ${r.skippedLargeCount}`);
+    assert.ok(r.skippedLarge.every((x) => x.path.endsWith('/') && x.files === 600));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-3 F4a: git < 2.25 (a PATH shim that rejects --pathspec-from-file with exit 129) — the fallback excludes 200, the other 30 ARE in the ref and are said so; skippedLarge lists only what was really excluded', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  const shimDir = path.join(root, 'shim');
+  fs.mkdirSync(shimDir);
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(shimDir, 'git'), `#!/bin/sh\nfor a in "$@"; do case "$a" in --pathspec-from-file=*) echo "error: unknown option \\\`pathspec-from-file'" >&2; echo "usage: git add [<options>] [--] <pathspec>..." >&2; exit 129;; esac; done\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  try {
+    for (let i = 0; i < 230; i++) fs.writeFileSync(path.join(wt, `big-${i}.bin`), 'x'.repeat(40));
+    process.env.PATH = `${shimDir}:${oldPath}`;
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 26, limits: { perFileBytes: 10, totalBytes: 1 << 20 } });
+    process.env.PATH = oldPath;
+    const inRef = git(wt, 'ls-tree', '-r', '--name-only', r.ref).split('\n').filter((n) => n.startsWith('big-'));
+    assert.equal(inRef.length, 30, 'the 30 beyond the argv cap ARE in the ref');
+    assert.equal(r.skippedLargeCount, 200);
+    assert.ok(r.skippedLarge.every((x) => !inRef.includes(x.path)), 'nothing listed as left out is in the ref');
+    assert.match(r.notes.join(' | '), /30 oversize entr\(ies\) could NOT be excluded/);
+  } finally {
+    process.env.PATH = oldPath;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -21,6 +21,8 @@ import {
   armPausedMembers,
   lastHumanTurnStart,
   markPauseHumanTurn,
+  markPauseHumanTurnEnd,
+  humanWindowsSince,
   PAUSE_RETRY_MS,
   PAUSE_RETRY_MAX_MS,
   MAX_INTERRUPT_DEFERRALS,
@@ -672,9 +674,11 @@ test('F2 a HUMAN turn that STARTS during the trap window is not interrupted; its
   await runPauseTrap(rig.deps, c);
   assert.ok(lastHumanTurnStart('w1')! >= c.pausedAt);
   assert.ok(!rig.calls.includes('interrupt:w1'), 'the human turn is allowed: no interrupt');
-  const sb = rig.killOpts[0]?.startedBeforeMs;
-  assert.equal(typeof sb, 'function', 'the kill re-reads the human-turn start at EVERY signal (pre-review M5)');
-  assert.equal(typeof (sb as () => number | undefined)(), 'number', 'the kill only reaches processes older than the human turn');
+  const hw = rig.killOpts[0]?.humanWindows;
+  assert.equal(typeof hw, 'function', 'the kill re-reads the human-turn windows at EVERY signal (pre-review M5)');
+  const wins = (hw as () => Array<{ from: number; to?: number }>)();
+  assert.equal(wins.length, 1, 'the kill shields the tool roots the human turn started');
+  assert.ok(wins[0].from >= c.pausedAt && wins[0].to === undefined, 'a window opened at the human turn\'s start, still open');
   const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
   assert.equal(row.activity?.interrupt, 'skipped');
   assert.match((row.activity?.notes ?? []).join(' '), /HUMAN prompt started a turn during the trap/);
@@ -688,8 +692,7 @@ test('F2 control: a human mark from BEFORE the trap began does not suppress the 
   const c = pauseW(rig);
   await runPauseTrap(rig.deps, c);
   assert.ok(rig.calls.includes('interrupt:w1'));
-  const sb0 = rig.killOpts[0]?.startedBeforeMs;
-  assert.equal(typeof sb0 === 'function' ? sb0() : sb0, undefined, 'no human turn during the trap: every process is a target');
+  assert.deepEqual(rig.killOpts[0]?.humanWindows?.(), [], 'no human turn during the trap: every process is a target');
 });
 
 test('a stale human mark (older than its TTL) does not whitelist a later CLI-internal start', async (t) => {
@@ -1045,25 +1048,60 @@ test('pre-review r2 #3: an interrupt attempt 1 made stays on the Bilan when atte
 
 // ── round 3 ──
 
-test('round-3 F1c: the human-turn shield is bounded by "a human turn is in flight NOW" — one that already ENDED shields nothing on a retry (interrupt runs, no cutoff); control: in flight ⇒ shielded', async (t) => {
+test('round-3 F1c/F3i: the interrupt skip needs a human turn in flight NOW; its WINDOW closes with the turn — a tool root started inside it stays shielded after the end, one started after is not (windows are what the killer gets)', async (t) => {
   for (const inFlight of [false, true]) {
     __resetPauseTrapForTests();
     const rig = newRig(t);
     member(rig, 'w1', 'W');
     const c = pauseW(rig);
     markPauseHumanTurn('w1', c.pausedAt + 5); // a human turn began after the pause
-    rig.clock = c.pausedAt + 600_000; // the retry comes 10 minutes later
+    if (!inFlight) markPauseHumanTurnEnd('w1', c.pausedAt + 100); // ...and ended seconds later (the agent-sdk gate release)
+    rig.clock = c.pausedAt + 600_000; // the trap (or its retry) runs 10 minutes later
     rig.deps.humanTurnInFlight = () => inFlight;
     await runPauseTrap(rig.deps, c);
-    const sb = rig.killOpts[0]?.startedBeforeMs;
+    const wins = rig.killOpts[0]?.humanWindows?.() ?? [];
+    assert.equal(wins.length, 1);
     if (inFlight) {
-      assert.ok(!rig.calls.includes('interrupt:w1'), 'control: the human turn is in flight — shielded');
-      assert.equal(typeof (typeof sb === 'function' ? sb() : sb), 'number');
+      assert.ok(!rig.calls.includes('interrupt:w1'), 'control: the human turn is in flight — not interrupted');
+      assert.equal(wins[0].to, undefined, 'its window is still open');
     } else {
       assert.ok(rig.calls.includes('interrupt:w1'), 'the human turn ended: the interrupt runs');
-      assert.equal(typeof sb === 'function' ? sb() : sb, undefined, 'and no cutoff spares anything');
+      assert.equal(wins[0].to, c.pausedAt + 100, 'its window is CLOSED at the turn end: roots started inside stay shielded, later ones are not');
     }
   }
+});
+
+test('round-3 F3i: markPauseHumanTurnEnd closes the LAST open window; windows before the pause are not shielded', () => {
+  __resetPauseTrapForTests();
+  markPauseHumanTurn('w9', 100);
+  markPauseHumanTurnEnd('w9', 150);
+  markPauseHumanTurn('w9', 200);
+  markPauseHumanTurnEnd('w9', 250);
+  markPauseHumanTurn('w9', 300); // still open
+  assert.deepEqual(humanWindowsSince('w9', 0), [{ from: 100, to: 150 }, { from: 200, to: 250 }, { from: 300 }]);
+  assert.deepEqual(humanWindowsSince('w9', 180), [{ from: 200, to: 250 }, { from: 300 }], 'a human turn that began BEFORE the pause was in flight at the pause: trapped, not shielded');
+});
+
+test('round-3 F2 (reviewer probe D1): a pauser PROVED on attempt 1 is never interrupted by later probe flakes — not after the 3-deferral bound, not on a healthy retry; a replaced CLI is re-derived', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // attempt 1: the arm hangs ⇒ incomplete, but cliOf proves the pauser first
+  await runPauseTrap(rig.deps, c);
+  const r1 = bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!;
+  assert.equal(r1.activity?.exempt, 'pauser');
+  assert.deepEqual(r1.activity?.pauserCli, { pid: 100, startTicks: 1000 });
+  rig.deps.arm = async () => {};
+  rig.cliResult = { error: 'keeper busy' };
+  for (let i = 0; i < MAX_INTERRUPT_DEFERRALS + 3; i++) await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // far past the deferral bound
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'the proven pauser is never interrupted while its CLI is unreadable');
+  assert.equal(bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity?.exempt, 'pauser', 'the exemption is carried');
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.ok(!rig.calls.includes('interrupt:ops-w'), 'and a healthy retry re-derives the same pauser');
 });
 
 test('round-3 F2: the interrupt deferral is BOUNDED — MAX_INTERRUPT_DEFERRALS attempts with an unproven CLI, then the interrupt runs anyway (a turn must not run under a hard pause for ever); the count survives on the Bilan row', async (t) => {
@@ -1190,4 +1228,15 @@ test('round-3 F2 (carry): the deferral COUNT survives an attempt that did not de
   rig.cliResult = { error: 'flake' };
   await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!); // attempt 3: deferred again
   assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interruptDeferrals, 2);
+});
+
+test('round-3 F4e: earlierKilled is written ONLY for attempts that stayed incomplete — a clean, complete trap never shows "killed by EARLIER incomplete attempt(s)"', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c); // complete, with kills (rig.killReport has one)
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.notEqual(row.killed, null);
+  assert.equal(row.activity?.earlierKilled, undefined);
 });

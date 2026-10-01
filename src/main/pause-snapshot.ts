@@ -19,6 +19,8 @@ export const SNAPSHOT_MAX_UNTRACKED_BYTES = 25 * 1024 * 1024;
 /** ALL untracked (non-ignored) files together above this: the largest are left out (listed, reason `total-cap`) until the rest fits — a pause must not write tens of GB. */
 export const SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES = 1024 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 120_000;
+/** Entries of `skippedLarge` kept on the result / the Bilan row (the rest is only counted — a 100k-file un-ignored tree must not bloat `pause_records`). */
+export const SKIPPED_LARGE_STORED = 200;
 /** Excludes passed as argv up to this many; more go through `--pathspec-from-file` (no argv limit, no silent truncation — round-2 F8). */
 const MAX_ARGV_EXCLUDES = 50;
 
@@ -30,7 +32,7 @@ export interface SnapshotInput {
   at: number;
   /** Size caps (defaults: {@link SNAPSHOT_MAX_UNTRACKED_BYTES} per file, {@link SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES} in total). Tests shrink them. */
   limits?: { perFileBytes?: number; totalBytes?: number };
-  /** Force the argv-only pathspec (what git < 2.25 gets): excludes beyond 200 are NOT applied and are reported in `warnings`. */
+  /** Force the argv-only pathspec (what git < 2.25 gets): excludes beyond 200 are NOT applied — those files ARE in the ref and are reported in `notes`. */
   legacyPathspec?: boolean;
 }
 
@@ -45,7 +47,11 @@ export interface SnapshotResult {
   dirty: boolean;
   changed: { modified: number; added: number; deleted: number };
   /** Untracked files left out for size (path + bytes): `file-cap` = over the per-file cap, `total-cap` = the largest dropped to fit the total cap. */
-  skippedLarge: Array<{ path: string; bytes: number; reason?: 'file-cap' | 'total-cap' }>;
+  skippedLarge: Array<{ path: string; bytes: number; reason?: 'file-cap' | 'total-cap'; /** set on a wholly-untracked DIRECTORY dropped as one entry (`path` ends with `/`): the files it holds */ files?: number }>;
+  /** How many entries were left out in total (`skippedLarge` keeps the {@link SKIPPED_LARGE_STORED} largest). */
+  skippedLargeCount: number;
+  /** Caveats about what IS in the ref (e.g. oversize files git < 2.25 could not exclude) — NOT "not captured". */
+  notes: string[];
   /** Files `git add` could not read (permissions, vanished mid-add): everything else IS in the ref; these are not. */
   warnings: string[];
   /** Gitlinks (submodules) whose own worktree was snapshotted too (path → ref), or failed. */
@@ -111,45 +117,100 @@ async function makeTempIndexPath(gitDir: string): Promise<{ file: string; cleanu
   throw new Error(`no writable dir for the temporary index: ${String(lastErr)}`);
 }
 
-/** Untracked (not ignored) regular files with their sizes. Names are handled as BYTES: a non-UTF8 name must still be sized, excluded and reported (round-3 review #4). */
-async function listUntracked(cwd: string): Promise<Array<{ path: string; raw: Buffer; bytes: number }>> {
+interface Unit {
+  path: string;
+  raw: Buffer;
+  bytes: number;
+  files: number;
+  dir?: boolean;
+}
+
+const DOT_GIT = Buffer.from('.git');
+const SLASH = Buffer.from('/');
+const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+/**
+ * Untracked (not ignored) work as UNITS: loose files, and every wholly-untracked DIRECTORY as ONE unit (git's own `--directory` collapse; its size is the sum of its files
+ * under the per-file cap — larger ones inside are their own units). Names are BYTES (a non-UTF8 name must still be sized/excluded/reported). A dropped directory is excluded by
+ * ONE directory pathspec: no tracked file lives below it, so no tracked edit is lost — and a 240k-file `node_modules` costs one exclude, not 240k. The scan yields to the event
+ * loop (the snapshot runs in the Electron main process, before the interrupt).
+ */
+async function scanUntracked(cwd: string, perFileBytes: number): Promise<Unit[]> {
   let raw: Buffer;
   try {
-    raw = (await git(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])).stdout;
+    raw = (await git(cwd, ['ls-files', '--others', '--exclude-standard', '--directory', '-z'])).stdout;
   } catch {
     return [];
   }
-  const out: Array<{ path: string; raw: Buffer; bytes: number }> = [];
+  const out: Unit[] = [];
   const base = Buffer.from(`${cwd}${path.sep}`);
+  let n = 0;
   let start = 0;
   for (let i = 0; i <= raw.length; i++) {
     if (i < raw.length && raw[i] !== 0) continue;
     const name = raw.subarray(start, i);
     start = i + 1;
     if (name.length === 0) continue;
-    try {
-      const st = fs.lstatSync(Buffer.concat([base, name]));
-      if (st.isFile()) out.push({ path: name.toString('utf8'), raw: Buffer.from(name), bytes: st.size });
-    } catch {
-      /* vanished mid-scan */
+    const isDir = name[name.length - 1] === 0x2f;
+    const rel = Buffer.from(isDir ? name.subarray(0, name.length - 1) : name);
+    if (!isDir) {
+      try {
+        const st = fs.lstatSync(Buffer.concat([base, rel]));
+        if (st.isFile()) out.push({ path: rel.toString('utf8'), raw: rel, bytes: st.size, files: 1 });
+      } catch {
+        /* vanished mid-scan */
+      }
+      if (++n % 2000 === 0) await yieldLoop();
+      continue;
     }
+    const unit: Unit = { path: `${rel.toString('utf8')}/`, raw: rel, bytes: 0, files: 0, dir: true };
+    const stack: Buffer[] = [rel];
+    while (stack.length > 0) {
+      const d = stack.pop() as Buffer;
+      let ents: Buffer[];
+      try {
+        ents = fs.readdirSync(Buffer.concat([base, d]), { encoding: 'buffer' }) as Buffer[];
+      } catch {
+        continue;
+      }
+      for (const e of ents) {
+        if (e.equals(DOT_GIT)) continue;
+        const relE = Buffer.concat([d, SLASH, e]);
+        let st: fs.Stats;
+        try {
+          st = fs.lstatSync(Buffer.concat([base, relE]));
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) stack.push(relE);
+        else if (st.isFile()) {
+          if (st.size > perFileBytes) out.push({ path: relE.toString('utf8'), raw: relE, bytes: st.size, files: 1 }); // over the per-file cap inside a kept dir: its own exclude
+          else {
+            unit.bytes += st.size;
+            unit.files++;
+          }
+        }
+        if (++n % 2000 === 0) await yieldLoop();
+      }
+    }
+    if (unit.files > 0) out.push(unit);
   }
   return out;
 }
 
-/** What is left OUT of the snapshot for size: every file over the per-file cap, then — if the rest still exceeds the total cap — the largest of the rest until it fits. */
-export function selectSkipped<T extends { path: string; bytes: number }>(
+/** What is left OUT of the snapshot for size: every FILE over the per-file cap, then — if the rest still exceeds the total cap — the LARGEST units of the rest (a file or a whole untracked directory) until it fits. */
+export function selectSkipped<T extends { path: string; bytes: number; dir?: boolean }>(
   files: ReadonlyArray<T>,
   perFileBytes: number,
   totalBytes: number,
 ): Array<T & { reason: 'file-cap' | 'total-cap' }> {
-  const skipped: Array<T & { reason: 'file-cap' | 'total-cap' }> = files.filter((f) => f.bytes > perFileBytes).map((f) => ({ ...f, reason: 'file-cap' as const }));
-  const rest = files.filter((f) => f.bytes <= perFileBytes).sort((a, b) => b.bytes - a.bytes);
-  let total = rest.reduce((n, f) => n + f.bytes, 0);
-  while (total > totalBytes && rest.length > 0) {
-    const f = rest.shift() as T;
-    skipped.push({ ...f, reason: 'total-cap' });
-    total -= f.bytes;
+  const skipped: Array<T & { reason: 'file-cap' | 'total-cap' }> = files.filter((f) => !f.dir && f.bytes > perFileBytes).map((f) => ({ ...f, reason: 'file-cap' as const }));
+  const rest = files.filter((f) => f.dir || f.bytes <= perFileBytes).sort((a, b) => b.bytes - a.bytes);
+  let total = 0;
+  for (const f of rest) total += f.bytes;
+  for (let i = 0; i < rest.length && total > totalBytes; i++) { // an index, never shift(): O(N), not O(N²) (240k files cost 150 s)
+    skipped.push({ ...rest[i], reason: 'total-cap' });
+    total -= rest[i].bytes;
   }
   return skipped;
 }
@@ -161,8 +222,9 @@ async function buildTree(
   head: string | null,
   excludes: Buffer[],
   warnings: string[],
+  notes: string[],
   legacyPathspec = false,
-): Promise<string> {
+): Promise<{ tree: string; applied: number }> {
   const env = { GIT_INDEX_FILE: indexFile };
   if (seedFromRealIndex) {
     const real = text(await git(cwd, ['rev-parse', '--git-path', 'index']));
@@ -172,9 +234,11 @@ async function buildTree(
   }
   const specs: Buffer[] = [Buffer.from('.'), ...excludes.map((r) => Buffer.concat([Buffer.from(':(exclude,literal)'), r]))];
   const allUtf8 = excludes.every((r) => Buffer.from(r.toString('utf8'), 'utf8').equals(r)); // a non-UTF8 name cannot go through argv
+  let applied = excludes.length;
   const viaArgv = async (limit: number): Promise<GitOut> => {
     const argv = specs.slice(0, limit).map((b) => b.toString('utf8'));
-    if (specs.length > argv.length) warnings.push(`${specs.length - argv.length} oversize file(s) could NOT be excluded (git < 2.25: exclude list capped at ${limit - 1}) — they ARE in the ref`);
+    applied = Math.min(excludes.length, argv.length - 1);
+    if (specs.length > argv.length) notes.push(`${specs.length - argv.length} oversize entr(ies) could NOT be excluded (git < 2.25: exclude list capped at ${limit - 1}) — they ARE in the ref`);
     return git(cwd, ['add', '-A', '--ignore-errors', '--', ...argv], env, undefined, [1]);
   };
   // --ignore-errors: ONE unreadable file must not abort the whole snapshot (plain `git add -A` exits 128 and adds NOTHING);
@@ -183,7 +247,7 @@ async function buildTree(
   if ((excludes.length <= MAX_ARGV_EXCLUDES && allUtf8) || legacyPathspec) {
     added = await viaArgv(legacyPathspec ? 1 + 200 : specs.length);
   } else {
-    // Many excludes (or a non-UTF8 name): a NUL-separated pathspec file (git >= 2.25) — never truncated, no argv limit (round-3 F8).
+    // Many excludes (or a non-UTF8 name): a NUL-separated pathspec file in the TEMP dir — never truncated, no argv limit (round-3 F8). Never inside the worktree (D4).
     const specFile = `${indexFile}.pathspec`;
     fs.writeFileSync(specFile, Buffer.concat(specs.flatMap((b, i) => (i === 0 ? [b] : [Buffer.from([0]), b]))));
     try {
@@ -197,7 +261,7 @@ async function buildTree(
     }
   }
   warnings.push(...added.stderr.split('\n').map((l) => l.trim()).filter((l) => /^(error|fatal):/.test(l)).slice(0, 10));
-  return text(await git(cwd, ['write-tree'], env));
+  return { tree: text(await git(cwd, ['write-tree'], env)), applied };
 }
 
 /** Count M/A/D between HEAD's tree and the snapshot tree (no real-index read). */
@@ -246,24 +310,27 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
   } catch {
     branch = null; // detached
   }
-  const skipped = selectSkipped(await listUntracked(cwd), input.limits?.perFileBytes ?? SNAPSHOT_MAX_UNTRACKED_BYTES, input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES);
-  const skippedLarge = skipped.map((f) => ({ path: f.path, bytes: f.bytes, reason: f.reason }));
+  const perFileBytes = input.limits?.perFileBytes ?? SNAPSHOT_MAX_UNTRACKED_BYTES;
+  const skipped = selectSkipped(await scanUntracked(cwd, perFileBytes), perFileBytes, input.limits?.totalBytes ?? SNAPSHOT_MAX_TOTAL_UNTRACKED_BYTES);
   const excludes = skipped.map((f) => f.raw);
   const tmp = await makeTempIndexPath(gitDir);
   // Every plumbing call below runs against the TEMP index, never the real one: a torn or
   // corrupt real index cannot break them, and none of them can write it.
   const env = { GIT_INDEX_FILE: tmp.file };
   const warnings: string[] = [];
+  const notes: string[] = [];
   try {
     let tree: string;
+    let applied: number;
     try {
-      tree = await buildTree(cwd, tmp.file, true, head, excludes, warnings, input.legacyPathspec === true);
+      ({ tree, applied } = await buildTree(cwd, tmp.file, true, head, excludes, warnings, notes, input.legacyPathspec === true));
     } catch {
       // A torn copy (the agent wrote its index mid-copy) or a split/shared index that cannot
       // be replayed from a copy: rebuild from HEAD, which still captures every worktree file.
       fs.rmSync(tmp.file, { force: true });
       warnings.length = 0;
-      tree = await buildTree(cwd, tmp.file, false, head, excludes, warnings, input.legacyPathspec === true);
+      notes.length = 0;
+      ({ tree, applied } = await buildTree(cwd, tmp.file, false, head, excludes, warnings, notes, input.legacyPathspec === true));
     }
     const message = `orchestra pause snapshot\n\nrun: ${input.runId}\nworkspace: ${input.wsId}\nbranch: ${branch ?? '(detached)'}\nhead: ${head ?? '(unborn)'}\n`;
     const ident = {
@@ -310,7 +377,13 @@ export async function snapshotWorktree(input: SnapshotInput, depth = 0): Promise
         }
       }
     }
-    return { ref, commit, tree, head, branch, dirty: dirty || submodules.some((s) => s.dirty), changed, skippedLarge, warnings, submodules };
+    // only what was ACTUALLY excluded is "left out" (git < 2.25 cannot exclude more than 200: the rest is in the ref — said in `notes`); store the largest, count the rest
+    const excluded = skipped.slice(0, applied);
+    const skippedLarge = [...excluded]
+      .sort((a, b) => b.bytes - a.bytes)
+      .slice(0, SKIPPED_LARGE_STORED)
+      .map((f) => ({ path: f.path, bytes: f.bytes, reason: f.reason, ...(f.dir ? { files: f.files } : {}) }));
+    return { ref, commit, tree, head, branch, dirty: dirty || submodules.some((s) => s.dirty), changed, skippedLarge, skippedLargeCount: excluded.length, notes, warnings, submodules };
   } finally {
     tmp.cleanup();
   }

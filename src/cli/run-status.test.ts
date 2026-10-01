@@ -219,3 +219,31 @@ test('round-3 review nits: a small skipped file reads "3.0 MB" (never "0 MB"), t
   assert.equal((text.match(/\.bin \(3\.0 MB/g) ?? []).length, 20, 'only 20 are printed');
   assert.ok(!/[\u200e\u200f\u061c]/.test(text));
 });
+
+test('round-3 F5b: invisible formatting characters (U+200B/2060/FEFF/00AD/180E) and the Unicode TAG block (U+E00xx) never reach the terminal', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-g', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', notes: ['a\u200bb\u2060c\ufeffd\u00ade\u180ef\u{e0041}\u{e0042}g'] },
+    snapshotRef: null, dirty: null, error: null, killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.ok(!/[\u200b\u2060\ufeff\u00ad\u180e\u{e0000}-\u{e007f}]/u.test(text), 'no invisible character survives');
+  assert.match(text, /a b c d e f  g/);
+});
+
+test('round-3 F1/F4a: snapshot notes (oversize files git < 2.25 could not exclude) read "captured despite the cap", a dropped DIRECTORY shows its file count, and the +N more uses the full count', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-h', pausedAt: p.pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', skippedLarge: [{ path: 'vendor/', bytes: 900 * 1048576, reason: 'total-cap', files: 240000 }], skippedLargeCount: 1500, snapshotNotes: ['30 oversize entr(ies) could NOT be excluded (git < 2.25) — they ARE in the ref'] },
+    snapshotRef: 'refs/x', dirty: true, error: null, killed: { killed: [] },
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /vendor\/ \(900 MB, 240000 files, total size cap\); \+1499 more/);
+  assert.match(text, /captured despite the cap: 30 oversize entr\(ies\) could NOT be excluded/);
+});
