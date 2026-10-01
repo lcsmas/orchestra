@@ -520,3 +520,42 @@ test('round-3 F4a: git < 2.25 (a PATH shim that rejects --pathspec-from-file wit
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('round-3 review #1 (MAJOR): IGNORED content never counts toward a directory unit — untracked source next to an ignored 3 MB node_modules stays in the ref when the cap fires on nothing else; a directory holding only ignored files is no unit', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    fs.mkdirSync(path.join(wt, 'newpkg/src'), { recursive: true });
+    fs.mkdirSync(path.join(wt, 'newpkg/node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'newpkg/src/a.ts'), 'abc');
+    fs.writeFileSync(path.join(wt, 'newpkg/node_modules/big.bin'), 'x'.repeat(3_000_000)); // ignored (fixture .gitignore)
+    fs.writeFileSync(path.join(wt, 'newpkg/ignored.log'), 'noise');
+    fs.mkdirSync(path.join(wt, 'onlyignored'));
+    fs.writeFileSync(path.join(wt, 'onlyignored/ignored.log'), 'y'.repeat(2_000_000));
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 27, limits: { perFileBytes: 1 << 20, totalBytes: 1_000_000 } });
+    assert.deepEqual(r.skippedLarge, [], `nothing non-ignored is over the cap: ${JSON.stringify(r.skippedLarge)}`);
+    assert.equal(git(wt, 'show', `${r.ref}:newpkg/src/a.ts`), 'abc', 'the untracked source is in the ref');
+    const names = git(wt, 'ls-tree', '-r', '--name-only', r.ref).split('\n');
+    assert.ok(!names.some((n) => n.includes('node_modules') || n.endsWith('ignored.log')), 'ignored files are not captured (as before)');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('round-3 review #4: selectSkipped — a DIRECTORY unit over the per-file cap is not a "file-cap" entry and still counts toward (and can be dropped by) the total cap', () => {
+  const dir = { path: 'vendor/', bytes: 30 * 1048576, dir: true };
+  assert.deepEqual(selectSkipped([dir], 25 * 1048576, 1 << 30), [], 'fits the total: kept, never "file-cap"');
+  assert.deepEqual(selectSkipped([dir], 25 * 1048576, 10 * 1048576).map((x) => `${x.path}:${x.reason}`), ['vendor/:total-cap'], 'over the total: dropped by the total cap, not vanished from the accounting');
+});
+
+test('round-3 review #4 (real): a wholly-untracked directory bigger than the PER-FILE cap but under the total stays in the ref', async () => {
+  const { wt, root } = makeLinkedWorktree();
+  try {
+    fs.mkdirSync(path.join(wt, 'pkg'));
+    for (let i = 0; i < 20; i++) fs.writeFileSync(path.join(wt, `pkg/f${i}.txt`), 'x'.repeat(10)); // 200 B in total, each 10 B
+    const r = await snapshotWorktree({ worktreePath: wt, runId: 'r', wsId: 'w', at: 28, limits: { perFileBytes: 100, totalBytes: 1 << 20 } });
+    assert.deepEqual(r.skippedLarge, []);
+    assert.equal(git(wt, 'show', `${r.ref}:pkg/f3.txt`), 'x'.repeat(10));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

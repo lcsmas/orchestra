@@ -125,75 +125,73 @@ interface Unit {
   dir?: boolean;
 }
 
-const DOT_GIT = Buffer.from('.git');
-const SLASH = Buffer.from('/');
 const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
 
-/**
- * Untracked (not ignored) work as UNITS: loose files, and every wholly-untracked DIRECTORY as ONE unit (git's own `--directory` collapse; its size is the sum of its files
- * under the per-file cap — larger ones inside are their own units). Names are BYTES (a non-UTF8 name must still be sized/excluded/reported). A dropped directory is excluded by
- * ONE directory pathspec: no tracked file lives below it, so no tracked edit is lost — and a 240k-file `node_modules` costs one exclude, not 240k. The scan yields to the event
- * loop (the snapshot runs in the Electron main process, before the interrupt).
- */
-async function scanUntracked(cwd: string, perFileBytes: number): Promise<Unit[]> {
+/** NUL-separated names from a git listing, as BYTES. */
+async function listZ(cwd: string, args: string[]): Promise<Buffer[]> {
   let raw: Buffer;
   try {
-    raw = (await git(cwd, ['ls-files', '--others', '--exclude-standard', '--directory', '-z'])).stdout;
+    raw = (await git(cwd, args)).stdout;
   } catch {
     return [];
   }
-  const out: Unit[] = [];
-  const base = Buffer.from(`${cwd}${path.sep}`);
-  let n = 0;
+  const out: Buffer[] = [];
   let start = 0;
   for (let i = 0; i <= raw.length; i++) {
     if (i < raw.length && raw[i] !== 0) continue;
-    const name = raw.subarray(start, i);
+    if (i > start) out.push(Buffer.from(raw.subarray(start, i)));
     start = i + 1;
-    if (name.length === 0) continue;
-    const isDir = name[name.length - 1] === 0x2f;
-    const rel = Buffer.from(isDir ? name.subarray(0, name.length - 1) : name);
-    if (!isDir) {
-      try {
-        const st = fs.lstatSync(Buffer.concat([base, rel]));
-        if (st.isFile()) out.push({ path: rel.toString('utf8'), raw: rel, bytes: st.size, files: 1 });
-      } catch {
-        /* vanished mid-scan */
+  }
+  return out;
+}
+
+/**
+ * Untracked (not ignored) work as UNITS: loose files, and every wholly-untracked DIRECTORY as ONE unit. `git ls-files --others --directory` only CHOOSES the units (its collapse also
+ * swallows a directory that holds an ignored `node_modules`); the SIZES come from the plain non-ignored listing, grouped by unit — ignored content is never counted, never dropped
+ * with its directory, and a directory holding only ignored files is no unit at all. A dropped directory is excluded by ONE directory pathspec: no tracked file lives below it, so
+ * no tracked edit is lost — a 240k-file un-ignored tree costs one exclude (the per-file version took 150 s and froze the main process). Names are BYTES; the scan yields to the event loop.
+ */
+async function scanUntracked(cwd: string, perFileBytes: number): Promise<Unit[]> {
+  const [collapsed, files] = await Promise.all([listZ(cwd, ['ls-files', '--others', '--exclude-standard', '--directory', '-z']), listZ(cwd, ['ls-files', '--others', '--exclude-standard', '-z'])]);
+  const base = Buffer.from(`${cwd}${path.sep}`);
+  const out: Unit[] = [];
+  const dirs = new Map<string, Unit>(); // latin1(dir path without the trailing slash) → unit
+  let n = 0;
+  const sizeOf = (rel: Buffer): number | null => {
+    try {
+      const st = fs.lstatSync(Buffer.concat([base, rel]));
+      return st.isFile() ? st.size : null;
+    } catch {
+      return null; // vanished mid-scan
+    }
+  };
+  for (const name of collapsed) {
+    if (name[name.length - 1] === 0x2f) {
+      const rel = Buffer.from(name.subarray(0, name.length - 1));
+      dirs.set(rel.toString('latin1'), { path: `${rel.toString('utf8')}/`, raw: rel, bytes: 0, files: 0, dir: true });
+    } else {
+      const sz = sizeOf(name);
+      if (sz !== null) out.push({ path: name.toString('utf8'), raw: name, bytes: sz, files: 1 });
+      if (++n % 2000 === 0) await yieldLoop();
+    }
+  }
+  if (dirs.size > 0) {
+    for (const name of files) {
+      if (name[name.length - 1] === 0x2f) continue; // a nested repository entry: git records a gitlink, its files are not ours
+      const key = name.toString('latin1');
+      let unit: Unit | undefined;
+      for (let i = key.indexOf('/'); i >= 0 && !unit; i = key.indexOf('/', i + 1)) unit = dirs.get(key.slice(0, i));
+      if (!unit) continue; // a loose file: handled above
+      const sz = sizeOf(name);
+      if (sz === null) continue;
+      if (sz > perFileBytes) out.push({ path: name.toString('utf8'), raw: name, bytes: sz, files: 1 }); // over the per-file cap inside a kept dir: its own exclude
+      else {
+        unit.bytes += sz;
+        unit.files++;
       }
       if (++n % 2000 === 0) await yieldLoop();
-      continue;
     }
-    const unit: Unit = { path: `${rel.toString('utf8')}/`, raw: rel, bytes: 0, files: 0, dir: true };
-    const stack: Buffer[] = [rel];
-    while (stack.length > 0) {
-      const d = stack.pop() as Buffer;
-      let ents: Buffer[];
-      try {
-        ents = fs.readdirSync(Buffer.concat([base, d]), { encoding: 'buffer' }) as Buffer[];
-      } catch {
-        continue;
-      }
-      for (const e of ents) {
-        if (e.equals(DOT_GIT)) continue;
-        const relE = Buffer.concat([d, SLASH, e]);
-        let st: fs.Stats;
-        try {
-          st = fs.lstatSync(Buffer.concat([base, relE]));
-        } catch {
-          continue;
-        }
-        if (st.isDirectory()) stack.push(relE);
-        else if (st.isFile()) {
-          if (st.size > perFileBytes) out.push({ path: relE.toString('utf8'), raw: relE, bytes: st.size, files: 1 }); // over the per-file cap inside a kept dir: its own exclude
-          else {
-            unit.bytes += st.size;
-            unit.files++;
-          }
-        }
-        if (++n % 2000 === 0) await yieldLoop();
-      }
-    }
-    if (unit.files > 0) out.push(unit);
+    for (const u of dirs.values()) if (u.files > 0) out.push(u);
   }
   return out;
 }

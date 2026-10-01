@@ -659,3 +659,13 @@ test('round-3 F4c (origin walk, never-break): a NON-candidate between a late env
   assert.ok(!os.procs.has(860), 'the old rig is killed');
   assert.ok(os.procs.has(862), 'its late descendant behind a non-candidate keeps its OWN start and is spared');
 });
+
+test('round-3 F1a (env orphans, env-ancestor branch): the origin walk reaches an env-proven ANCESTOR even when the child is processed BEFORE its parent (insertion order must not matter)', async () => {
+  const os = world();
+  os.add(mk(871, 870, { sid: 871, startTicks: 2600, comm: 'sleep', argv: ['sleep', '4321'] })); // the late fork FIRST...
+  os.add(mk(870, 1, { sid: 870, startTicks: 2200, comm: 'bash', argv: ['bash', 'rig.sh'] })); // ...its old env-proven parent AFTER (a higher table position)
+  os.env.set(870, 100);
+  os.env.set(871, 100);
+  await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: 2450 });
+  assert.ok(!os.procs.has(870) && !os.procs.has(871), 'the late fork carries its old env-proven parent\'s origin and dies with it');
+});

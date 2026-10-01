@@ -1240,3 +1240,42 @@ test('round-3 F4e: earlierKilled is written ONLY for attempts that stayed incomp
   assert.notEqual(row.killed, null);
   assert.equal(row.activity?.earlierKilled, undefined);
 });
+
+test('round-3 review #5: an OPEN human window with no human turn in flight any more (session stopped/died before the release) is clamped to NOW — it shields nothing started later', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  markPauseHumanTurn('w1', c.pausedAt + 5); // opened, never closed (teardown path)
+  rig.clock = c.pausedAt + 900;
+  rig.deps.humanTurnInFlight = () => false;
+  await runPauseTrap(rig.deps, c);
+  const wins = rig.killOpts[0]?.humanWindows?.() ?? [];
+  assert.equal(wins.length, 1);
+  assert.notEqual(wins[0].to, undefined, 'clamped');
+  assert.ok((wins[0].to as number) < c.pausedAt + 600_000);
+});
+
+test('round-3 review #6: markPauseHumanTurnEnd closes the LAST open window, not the first (a stale open window stays as it was)', () => {
+  __resetPauseTrapForTests();
+  markPauseHumanTurn('w8', 100); // stale: its release never fired
+  markPauseHumanTurn('w8', 200);
+  markPauseHumanTurnEnd('w8', 250);
+  assert.deepEqual(humanWindowsSince('w8', 0), [{ from: 100 }, { from: 200, to: 250 }]);
+});
+
+test('round-3 review #7: a pauser PROVED on an earlier attempt is still on the Bilan row when the next attempt starts (the provisional write keeps exempt + pauserCli — an app death mid-attempt must not lose it)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'ops-w', 'W');
+  const c = pauseW(rig, 'W', 'ops-w');
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+  rig.deps.armTimeoutMs = 20;
+  rig.deps.arm = () => new Promise<void>(() => {}); // attempt 1 stays incomplete
+  await runPauseTrap(rig.deps, c);
+  let seen: { exempt?: string; pauserCli?: unknown } | undefined;
+  rig.deps.arm = async () => { seen = bilanForMember(rig.db, 'W', 'ops-w', c.pausedAt)!.activity ?? undefined; }; // runs right AFTER the provisional write of attempt 2
+  await runPauseTrap(rig.deps, getRunPause(rig.db, 'W')!);
+  assert.equal(seen?.exempt, 'pauser');
+  assert.deepEqual(seen?.pauserCli, { pid: 100, startTicks: 1000 });
+});

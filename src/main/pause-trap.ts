@@ -187,6 +187,9 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     if (prior.snapshotWarnings) activity.snapshotWarnings = prior.snapshotWarnings;
     if (prior.submodules) activity.submodules = prior.submodules;
     if (prior.interruptDeferrals) activity.interruptDeferrals = prior.interruptDeferrals;
+    // a pauser an earlier attempt proved stays on the row through the provisional write (an app death before the final write must not lose it); re-derived / cleared below
+    if (prior.exempt) activity.exempt = prior.exempt;
+    if (prior.pauserCli) activity.pauserCli = prior.pauserCli;
     if (prior.earlierKilled) activity.earlierKilled = prior.earlierKilled;
   }
 
@@ -277,6 +280,10 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
 
   // A lift while arming / probing the CLI / waiting for the origin (up to seconds): never interrupt a turn the lift just released (pre-review M7).
   if (!stillPaused(db, carrier)) return 'lifted';
+  if (!pauser && !carriedPauser) {
+    delete activity.exempt; // not a pauser on this attempt (proof gone / CLI replaced): never a stale label
+    delete activity.pauserCli;
+  }
   let killed: unknown = null;
   // 4. Interrupt — the model must stop issuing tool calls before the trees are killed. Skipped for the pauser, and for a HUMAN turn that began
   // during the trap (D9: a human prompt is allowed — never interrupted by the trap).
@@ -331,7 +338,8 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
         stillPaused: () => stillPaused(db, carrier),
         // re-read at EVERY signal: a human turn may start (or end) while the kill rounds run (D9). A tool root started inside a human turn's window is spared even after the turn ENDED
         // (round-3 F3i: a prompt that starts a background task and ends in seconds must not lose the task to a later round / retry); one started after the end is not.
-        humanWindows: () => humanWindowsSince(m.wsId, carrier.pausedAt),
+        // an OPEN window with no human turn in flight any more (session stopped / died / interrupted before the release fired) is clamped to NOW: a dead turn shields nothing later
+        humanWindows: () => humanWindowsSince(m.wsId, carrier.pausedAt).map((w) => (w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w)),
         ...(spareRoot !== undefined ? { spareRoots: [spareRoot] } : {}),
       });
       killed = rep;
