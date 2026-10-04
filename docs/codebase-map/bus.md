@@ -1673,8 +1673,8 @@ module that consumes the seams below.
   printed). Authority = the hold rule (`runHoldAuthority`: the run's coordinator or an ancestor run's coordinator; a worker,
   a descendant's coordinator or no identity is `refused`; the human acts `--as <coordinator>` — no new identity invented),
   fenced through `fencedWrite` (`run-pause` / `run-resume`). Outcomes: `paused | already-paused | lifted | not-paused |
-  no-run | refused | switch-off` — a pause on an OFF run is **refused, never accepted-and-inert**. Without `--hard` the verb
-  refuses (only the hard pause exists; soft = #254). `run resume` never claims a run is free while an ancestor still pauses it: it asks
+  no-run | refused | switch-off` — a pause on an OFF run is **refused, never accepted-and-inert**. Without `--hard` the pause is a
+  **Pause douce** (#254, `docs/codebase-map/pause-trap.md` §Pause douce). `run resume` never claims a run is free while an ancestor still pauses it: it asks
   `RunPauseDeps.coverFor` (`src/cli/index.ts`) — the gates' live-tree walk (`pausedCarrierForWorkspace`) over the store the RUNNING APP writes
   (`appStoreFile()` / `offlineWaveNodes()`: `$ORCHESTRA_HOME/userData/orchestra/store.json` only when ORCHESTRA_HOME is set, else Electron's
   default `~/.config/orchestra/orchestra/store.json`; the store-less verb works with the app down), falling back to the bus run tree when that file is
@@ -1719,8 +1719,7 @@ module that consumes the seams below.
   (the pause's member runs by `parent_run_id` — **stale for a run re-parented after creation; resolve members through the live tree / `pausedCarrierForWorkspace`**), `activePauseFor` (run-row walk), `pausedCarrierForWorkspace` (live tree), `getRunPause`. A lift clears `pause_trap_at` so the next pause owes a fresh trap.
 - **Slot trap**: tests that build an old-version DB by hand-DROPping (`bus-fencing.test.ts` T128.4, `bus-mirror.test.ts` C11) must also
   drop the four pause columns + `pause_records` for `from < 9`, or the replay throws "duplicate column name".
-- **Not done here** (by design): soft pause (#254), structured Reprise (#255), usage-limit auto (#256), UI (#257), canary (#258). Not in
-  `orchestra bus-status` (its `/busStatus` wire shape is pinned; a forgotten pause surfaces through the refusal text).
+- **Not done here** (by design): structured Reprise (#255), usage-limit auto (#256), UI (#257), canary (#258). `orchestra bus-status` prints a `pause:` line (phase + "N/M en pause — manquent : …") only while a pause governs the run (#254; the older reply shape is unchanged when not paused). The Pause douce (#254) is in `docs/codebase-map/pause-trap.md`.
 
 Gates: `src/shared/bus-pause.test.ts`, `src/main/bus-pause.test.ts` (schema v8→v9, writer matrix, propagation, switch OFF inert, gate
 decision), `src/main/bus-pause-liveness.test.ts` (row 15, the shipped roster + real sweep, incl. an orchestrator re-parented after creation), `src/cli/run-pause.test.ts` (built CLI, app down),

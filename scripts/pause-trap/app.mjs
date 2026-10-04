@@ -13,6 +13,11 @@ import { pathToFileURL } from 'node:url';
 
 const cfg = JSON.parse(process.env.PT_CONFIG ?? '{}');
 const { REPO, root, phase, apiUrl, mutant = null, scenario } = cfg;
+// SRC = the tree whose src/main + keeper bundle this stand-in loads (default the working tree; the `unfixed:` arms point it at a MASTER checkout).
+const SRC = cfg.SRC ?? REPO;
+// #254: the fleet's workers. Default = the legacy single `w1`; douce arms pass several ({ id, scenario?, files? }).
+const workers = cfg.workers ?? [{ id: 'w1', scenario, legacy: true }];
+const pauseSwitch = cfg.pauseSwitch !== false;
 const HERE = path.join(REPO, 'scripts', 'pause-trap');
 const { assertScratch } = await import(`${REPO}/scripts/session-budget/scratch-guard.mjs`);
 const home = path.join(root, 'home');
@@ -35,7 +40,7 @@ for (const k of ['ANTHROPIC_AUTH_TOKEN', 'HTTPS_PROXY', 'HTTP_PROXY', 'https_pro
 if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: import.meta.url, data: { mutant } });
 
 const out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
-const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
+const { initPlatform } = await import(`${SRC}/src/main/platform/index.ts`);
 initPlatform({
   kind: 'headless-pause-trap',
   broadcast: (channel, wsId, ev) => {
@@ -53,18 +58,18 @@ initPlatform({
 });
 const app = { sawText: new Set() };
 
-const { store } = await import(`${REPO}/src/main/store.ts`);
-const busMod = await import(`${REPO}/src/main/bus.ts`);
-const runsMod = await import(`${REPO}/src/main/bus-runs.ts`);
-const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
-const sdk = await import(`${REPO}/src/main/agent-sdk.ts`);
-const activity = await import(`${REPO}/src/main/activity.ts`);
-const trap = await import(`${REPO}/src/main/pause-trap.ts`);
-const host = await import(`${REPO}/src/main/pause-trap-host.ts`);
+const { store } = await import(`${SRC}/src/main/store.ts`);
+const busMod = await import(`${SRC}/src/main/bus.ts`);
+const runsMod = await import(`${SRC}/src/main/bus-runs.ts`);
+const { DEFAULT_BUS_SWITCHES } = await import(`${SRC}/src/shared/bus-switches.ts`);
+const sdk = await import(`${SRC}/src/main/agent-sdk.ts`);
+const activity = await import(`${SRC}/src/main/activity.ts`);
+const trap = await import(`${SRC}/src/main/pause-trap.ts`);
+const host = await import(`${SRC}/src/main/pause-trap-host.ts`);
 
 // The keeper bundle the app would have installed at startup.
 fs.mkdirSync(path.join(orchHome, 'bin'), { recursive: true });
-fs.copyFileSync(path.join(REPO, 'dist-electron', 'keeper.js'), path.join(orchHome, 'bin', 'keeper.js'));
+fs.copyFileSync(path.join(SRC, 'dist-electron', 'keeper.js'), path.join(orchHome, 'bin', 'keeper.js'));
 
 // A fresh install has no store.json (load() then leaves loadedFromDisk=false); the fleet this rig seeds is an EXISTING install, so start from an
 // (empty) store file on disk — F10: the trap refuses to act on a store that was not loaded from disk.
@@ -74,11 +79,7 @@ await store.load?.();
 const version = busMod.initBus(); // the real boot gate: opens <ORCHESTRA_HOME>/bus.sqlite + migrates
 out({ ev: 'booted', phase, busSchema: version });
 
-const W = {
-  lead: path.join(root, 'wt-lead'),
-  ops: path.join(root, 'wt-ops'),
-  w1: path.join(root, 'wt-w1'),
-};
+const W = { lead: path.join(root, 'wt-lead'), ops: path.join(root, 'wt-ops'), ...Object.fromEntries(workers.map((w) => [w.id, path.join(root, `wt-${w.id}`)])) };
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 'rig', GIT_AUTHOR_EMAIL: 'r@r', GIT_COMMITTER_NAME: 'rig', GIT_COMMITTER_EMAIL: 'r@r' } }).trim();
 
 if (phase === 'first') {
@@ -89,20 +90,30 @@ if (phase === 'first') {
     git(dir, 'add', '-A');
     git(dir, 'commit', '-q', '-m', 'init');
   }
-  // w1 carries UNCOMMITTED work (tracked edit + staged-then-edited + untracked): what the pause ref must hold.
-  fs.writeFileSync(path.join(W.w1, 'a.txt'), 'UNCOMMITTED-EDIT\n');
-  fs.writeFileSync(path.join(W.w1, 'untracked.txt'), 'UNTRACKED-WORK\n');
+  // legacy w1 carries UNCOMMITTED work (tracked edit + staged-then-edited + untracked): what the pause ref must hold.
+  if (workers.some((w) => w.legacy)) {
+    fs.writeFileSync(path.join(W.w1, 'a.txt'), 'UNCOMMITTED-EDIT\n');
+    fs.writeFileSync(path.join(W.w1, 'untracked.txt'), 'UNTRACKED-WORK\n');
+  }
+  // #254 douce workers: a local BARE origin (the member's "commit + push your own work" lands there) and its own uncommitted files.
+  for (const w of workers.filter((x) => !x.legacy)) {
+    const bare = path.join(root, `origin-${w.id}.git`);
+    git(root, 'init', '-q', '--bare', '-b', 'main', bare);
+    git(W[w.id], 'remote', 'add', 'origin', bare);
+    git(W[w.id], 'push', '-q', 'origin', 'main');
+    for (const [name, content] of Object.entries(w.files ?? {})) fs.writeFileSync(path.join(W[w.id], name), content);
+  }
   const mk = (id, extra) => store.upsertWorkspace({ id, name: id, kind: 'scratch', repoPath: '', baseBranch: '', branch: id, worktreePath: W[id], status: 'idle', createdAt: Date.now(), hasInput: true, ...extra });
   await mk('lead', { kind: 'orchestrator' });
   await mk('ops', { kind: 'orchestrator', parentId: 'lead' });
-  await mk('w1', { parentId: 'ops', lastTask: 'rig task: run the long command' });
+  for (const w of workers) await mk(w.id, { parentId: 'ops', lastTask: `rig task of ${w.id}` });
   const db = busMod.getBus();
-  const sw = { ...DEFAULT_BUS_SWITCHES, pause: true };
+  const sw = { ...DEFAULT_BUS_SWITCHES, pause: pauseSwitch };
   runsMod.startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, sw);
   runsMod.startRun(db, { id: 'ops', kind: 'vague', coordinator: 'ops', parentRunId: 'lead' }, sw);
   // make sure store.json has the fleet on disk before anything can kill this process (the restart arm)
   const storeFile = () => { try { return fs.readFileSync(STORE_FILE, 'utf8'); } catch { return ''; } };
-  for (let i = 0; i < 100 && !(storeFile().includes('"w1"') && storeFile().includes('"ops"')); i++) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 100 && !(storeFile().includes(`"${workers.at(-1).id}"`) && storeFile().includes('"ops"')); i++) await new Promise((r) => setTimeout(r, 50));
 }
 
 // THE PRODUCTION WIRING (index.ts): host deps + the turn-start observer + detection (WAL watch + sweep + boot drain).
@@ -116,6 +127,33 @@ if (phase === 'first' && scenario) {
   if (cfg.opsScenario) await sdk.sdkSend('ops', `SCN:${cfg.opsScenario}`); // the coordinator has its OWN live session + tool (pauser-exempt arm)
   await sdk.sdkSend('w1', `SCN:${scenario}`);
   out({ ev: 'sent', ws: 'w1', scenario });
+}
+if (phase === 'first' && !scenario) {
+  // #254: each douce worker starts its own turn (the order the arm lists them in)
+  for (const w of workers.filter((x) => x.scenario)) {
+    await sdk.sdkSend(w.id, `SCN:${w.scenario}`);
+    out({ ev: 'sent', ws: w.id, scenario: w.scenario, t: Date.now() });
+  }
+  out({ ev: 'all-sent' });
+}
+
+// #254: a stand-in for the app's socket: `/busStatus` answered with the REAL bus readers, so the REAL built `orchestra bus-status` prints the pause line.
+if (process.env.ORCHESTRA_SOCK && cfg.statusSock) {
+  const douce = await import(`${SRC}/src/main/pause-douce.ts`).catch(() => null);
+  const http = await import('node:http');
+  try { fs.rmSync(process.env.ORCHESTRA_SOCK, { force: true }); } catch { /* none */ }
+  http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      let runId = 'default';
+      try { runId = JSON.parse(body).runId || runId; } catch { /* default */ }
+      const db = busMod.getBus();
+      const payload = { ok: true, runId: 'host-rig', counters: [], busAvailable: !!db, badRecipientCount: 0, badRecipients: [], ...(db ? runsMod.busStatusRunView(db, runId, '{}') : {}), ...(db && douce ? douce.busStatusPausePayload(db, runId, (id) => store.getWorkspace(id)?.name ?? null) : {}) };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    });
+  }).listen(process.env.ORCHESTRA_SOCK);
 }
 
 const rl = readline.createInterface({ input: process.stdin });

@@ -67,7 +67,9 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
 test('docs: the orchestra-comms skill SOURCE (COMMS_SKILL) documents the verbs, the refusal text and the human-prompt policy', () => {
   const src = read('workspaces.ts');
   const skill = body(src, 'const COMMS_SKILL = `', 'const WORKSPACE_ADMIN_SKILL').replace(/\\`/g, '`'); // un-escape the template literal's \\`
-  assert.match(skill, /orchestra run pause --hard \[--run <id>\]/);
+  assert.match(skill, /orchestra run pause \[--hard\] \[--run <id>\]/);
+  assert.match(skill, /orchestra run confirm pause \[--run <id>\]/);
+  assert.match(skill, /\*\*Pause douce\*\*/);
   assert.match(skill, /orchestra run resume \[--run <id>\]/);
   assert.match(skill, /run en pause — orchestra run resume --run <id>/);
   assert.match(skill, /A prompt a HUMAN types in a member's composer is still allowed and does NOT\s*\nlift the pause/);

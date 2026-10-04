@@ -36,8 +36,21 @@ const JSON_OUT = args.includes('--json');
 const KEEP = args.includes('--keep') || process.env.PT_KEEP === '1';
 const WANT = opt('arm', 'all');
 
-const NORMAL = ['blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
+const DOUCE = ['douce-obey', 'douce-failcall', 'douce-subagent', 'douce-quota', 'douce-blocked', 'douce-silent', 'douce-mixed', 'douce-fleet', 'douce-restart', 'douce-off'];
+const NORMAL = [...DOUCE, 'blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
 const MUTANT_ARMS = [
+  // #254 Pause douce. G1: the UNFIXED build (master: `run pause` without --hard is refused, no douce at all) must FAIL the same rig.
+  { name: 'unfixed:no-douce', arm: 'douce-obey', mutant: 'master', master: true },
+  // each load-time mutant must redden its named check; `deadlineSec` shortens the real 3 min (a fixture) so a mutant arm does not wait for it
+  { name: 'mutant:no-deadline-escalation', arm: 'douce-blocked', mutant: 'no-deadline-escalation', deadlineSec: 25 },
+  { name: 'mutant:escalate-on-any-confirm', arm: 'douce-mixed', mutant: 'escalate-on-any-confirm' },
+  { name: 'mutant:trap-owed-before-escalation', arm: 'douce-mixed', mutant: 'trap-owed-before-escalation' },
+  { name: 'mutant:no-order-file', arm: 'douce-obey', mutant: 'no-order-file' },
+  { name: 'mutant:host-idle-for-running', arm: 'douce-obey', mutant: 'host-idle-for-running' },
+  { name: 'mutant:summary-counts-all', arm: 'douce-mixed', mutant: 'summary-counts-all' },
+  { name: 'mutant:subagent-takes-order', arm: 'douce-subagent', mutant: 'subagent-takes-order' },
+  { name: 'mutant:no-trap-roster', arm: 'douce-blocked', mutant: 'no-trap-roster', deadlineSec: 25 },
+  { name: 'mutant:sweep-ignores-switch', arm: 'douce-off', mutant: 'sweep-ignores-switch' },
   // G1: the UNFIXED build (no host trap, as on master) must FAIL the same rig: nothing is interrupted, killed or snapshotted.
   { name: 'unfixed:no-trap', arm: 'background', mutant: 'no-trap' },
   { name: 'mutant:kill-cli', arm: 'blocking', mutant: 'kill-cli' },
@@ -90,13 +103,40 @@ say(`pause-trap rig: claude ${cliVersion} · containment ${containment.name} · 
 const base = path.join(os.homedir(), '.cache', 'pause-trap');
 const live = liveDirs(process.env);
 let bad = 0;
-for (const sel of selected) {
+// #254: the MASTER tree the `unfixed:` arms drive (G1: the same rig on master must go red). Built once, in a detached worktree of origin/master.
+let masterDir = null;
+function masterTree() {
+  if (masterDir) return masterDir;
+  // PINNED to master as it was BEFORE wave E (b34c8b58, no Pause douce): `origin/master` would go green-for-the-wrong-reason once the douce itself is merged.
+  const sha = spawnSync('git', ['rev-parse', `${process.env.PT_UNFIXED_SHA ?? 'b34c8b58'}^{commit}`], { cwd: REPO, encoding: 'utf8' }).stdout.trim();
+  if (!sha) { console.log('PAUSE-TRAP: VOID — the pre-douce commit b34c8b58 is not in this repo (set PT_UNFIXED_SHA)'); process.exit(3); }
+  const dir = path.join(base, `master-${sha.slice(0, 8)}`);
+  if (!fs.existsSync(path.join(dir, 'dist-electron', 'cli.js'))) {
+    if (!fs.existsSync(dir)) {
+      const w = spawnSync('git', ['worktree', 'add', '--detach', dir, sha], { cwd: REPO, encoding: 'utf8' });
+      if (w.status !== 0) { console.log(`PAUSE-TRAP: VOID — cannot create the master worktree: ${w.stderr.slice(-200)}`); process.exit(3); }
+      fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'));
+    }
+    for (const script of ['build:cli', 'build:keeper']) {
+      const r = spawnSync('pnpm', ['run', script], { cwd: dir, encoding: 'utf8' });
+      if (r.status !== 0) { console.log(`PAUSE-TRAP: VOID — master ${script} failed: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); }
+    }
+  }
+  masterDir = dir;
+  return dir;
+}
+
+const PARALLEL = Number(opt('parallel', process.env.PT_PARALLEL ?? '1')) || 1;
+const queue = [...selected];
+if (selected.some((x) => x.master)) masterTree(); // before any arm starts (one build, not racing builds)
+
+async function runOne(sel) {
   const root = path.join(base, `${sel.name.replace(/[^a-z0-9-]/gi, '_')}-${process.pid}-${Date.now().toString(36).slice(-4)}`);
   fs.mkdirSync(root, { recursive: true });
   assertScratch('root', root, base, live);
   const apiPort = 31000 + Math.floor(Math.random() * 15000);
-  const cfg = { REPO, root, arm: sel.arm, mutant: sel.mutant, live, apiPort };
-  const env = { PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', PT_CONFIG: JSON.stringify(cfg) };
+  const cfg = { REPO, root, arm: sel.arm, mutant: sel.master ? null : sel.mutant, live, apiPort, ...(sel.master ? { SRC: masterTree() } : {}), ...(sel.deadlineSec ? { deadlineSec: sel.deadlineSec } : {}) };
+  const env = { PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', PT_CONFIG: JSON.stringify(cfg), ...(process.env.PT_DUMP_API ? { PT_DUMP_API: process.env.PT_DUMP_API } : {}) };
   fs.mkdirSync(path.join(root, 'home'), { recursive: true });
   const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(REPO, 'scripts', 'pause-trap', 'driver.mjs')];
   const t0 = Date.now();
@@ -115,16 +155,16 @@ for (const sel of selected) {
   if (!res) {
     bad++;
     console.log(`== ${sel.name}: RUN BROKE (rc=${rc}, ${secs}s) — no result line. stderr tail: ${err.trim().slice(-400).replace(/\s+/g, ' ')} | stdout tail: ${out.trim().slice(-300).replace(/\s+/g, ' ')}\n   scratch kept at ${root}`);
-    continue;
+    return;
   }
   let asExpected, why;
   const red = res.checks.filter((c) => !c.ok);
   if (sel.mutant) {
-    const want = MUTANTS[sel.mutant].mustRedden;
+    const want = sel.master ? 'cli_pause_soft_accepted' : MUTANTS[sel.mutant].mustRedden;
     const named = res.checks.find((c) => c.id === want);
-    const ran = !res.checks.some((c) => c.id === 'rig_ran_to_completion' && !c.ok);
+    const ran = sel.master ? true : !res.checks.some((c) => c.id === 'rig_ran_to_completion' && !c.ok);
     asExpected = !!named && !named.ok && ran;
-    why = asExpected ? `mutant caught: check '${want}' went RED (${named.detail})${red.length > 1 ? ` · also red: ${red.filter((c) => c.id !== want).map((c) => c.id).join(', ')}` : ''}` : !ran ? `the rig itself broke under the mutant: ${red.map((c) => `${c.id}: ${c.detail}`).join(' | ')}` : `MUTANT SURVIVED — check '${want}' stayed ${named ? 'green' : 'absent'}`;
+    why = asExpected ? `${sel.master ? 'unfixed (master) caught' : 'mutant caught'}: check '${want}' went RED (${named.detail})${red.length > 1 ? ` · also red: ${red.filter((c) => c.id !== want).map((c) => c.id).join(', ')}` : ''}` : !ran ? `the rig itself broke under the mutant: ${red.map((c) => `${c.id}: ${c.detail}`).join(' | ')}` : `MUTANT SURVIVED — check '${want}' stayed ${named ? 'green' : 'absent'}`;
   } else {
     asExpected = res.ok;
     why = res.ok ? `${res.checks.length} checks green` : `RED: ${red.map((c) => `${c.id} (${c.detail})`).join(' | ')}`;
@@ -134,10 +174,13 @@ for (const sel of selected) {
   else {
     console.log(`== ${sel.name} (${sel.mutant ? 'must-FAIL' : 'must-PASS'}) ${secs}s: ${asExpected ? 'AS EXPECTED' : 'UNEXPECTED'} — ${why}`);
     for (const c of res.checks) console.log(`   ${c.ok ? 'ok ' : 'RED'} ${c.id}${c.detail ? ` — ${c.detail.slice(0, 220)}` : ''}`);
+    if (res.metrics) { const m = res.metrics; console.log(`   METRICS ${sel.name}: time-to-all-paused ${m.timeToAllPausedMs === null || m.timeToAllPausedMs === undefined ? 'n/a' : (m.timeToAllPausedMs / 1000).toFixed(1) + ' s'} (deadline ${(m.deadlineMs / 1000).toFixed(0)} s, escalated after ${m.escalatedAfterMs === null || m.escalatedAfterMs === undefined ? 'n/a' : (m.escalatedAfterMs / 1000).toFixed(1) + ' s'}) · time-to-all-confirmed ${m.timeToAllConfirmedMs === null || m.timeToAllConfirmedMs === undefined ? 'n/a' : (m.timeToAllConfirmedMs / 1000).toFixed(1) + ' s'} · lost-work ${m.lostWork ?? 'n/a'} · order latency ${JSON.stringify(m.orderLatencyMs ?? {})}`); }
     if (res.strays?.length) console.log(`   strays in the namespace: ${res.strays.join(' ; ')}`);
   }
   if (!KEEP && asExpected) fs.rmSync(root, { recursive: true, force: true });
   else console.log(`   scratch kept at ${root}`);
 }
+await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, async () => { for (let sel = queue.shift(); sel; sel = queue.shift()) await runOne(sel); }));
+if (masterDir && !KEEP) { spawnSync('git', ['worktree', 'remove', '--force', masterDir], { cwd: REPO }); fs.rmSync(masterDir, { recursive: true, force: true }); }
 console.log(`PAUSE-TRAP: ${bad === 0 ? (WANT === 'all' ? 'PASS' : 'PARTIAL') : 'FAIL'}`);
 process.exit(bad === 0 ? 0 : 1);

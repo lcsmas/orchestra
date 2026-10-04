@@ -37,6 +37,9 @@ import type {
 import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
 import type { RunHoldOutcome } from '../main/bus-runs.ts';
 import type { RunPauseInfo, RunPauseOutcome } from '../main/bus-pause.ts';
+import { SOFT_PAUSE_DEADLINE_MS, type PauseMode } from '../shared/pause-lifecycle.ts';
+import { renderPauseRosterLine, type PauseStatusView } from '../shared/pause-douce.ts';
+import type { ConfirmPauseOutcome } from '../main/pause-douce.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -1102,7 +1105,7 @@ export function verbRunHold(
 /** The pause seams `run pause|resume` take (injected like the hold's, so the verb unit-tests
  *  without a process). Production passes src/main/bus-pause.ts. */
 export interface RunPauseDeps {
-  setRunPause: (db: BusDb, runId: string, pause: boolean, actor: string | null) => RunPauseOutcome;
+  setRunPause: (db: BusDb, runId: string, pause: boolean, actor: string | null, mode?: PauseMode) => RunPauseOutcome;
   getRunPause: (db: BusDb, runId: string) => RunPauseInfo | null;
   /** The pause (if any) that still GATES `runId` through an ancestor — the SAME live-tree walk the host gates use (follow-up: the
    *  write-once `runs.parent_run_id` misses a run re-parented after creation). Production: src/cli/index.ts `coverFor`. */
@@ -1110,8 +1113,9 @@ export interface RunPauseDeps {
 }
 
 /**
- * `orchestra run pause --hard [--run <id>]` (#252, ADR 0003) — put the run (and every descendant
- * run) in a PAUSE DURE. Same authority + fencing as `run hold` (the run's coordinator or an
+ * `orchestra run pause [--hard] [--run <id>]` (#252/#254, ADR 0003) — put the run (and every descendant
+ * run) in a PAUSE DURE (`--hard`) or a PAUSE DOUCE (default: members get 3 min to finish, commit, push and confirm;
+ * the host then takes the stragglers to Pause dure). Same authority + fencing as `run hold` (the run's coordinator or an
  * ancestor run's coordinator; a worker is refused; `--as <handle>` acts as one of them — the human
  * path). Durable on the bus, store-less (works with the app down), idempotent, and REFUSED — never
  * accepted-and-inert — while the run's FROZEN `pause` switch is OFF. The host then enforces it:
@@ -1124,9 +1128,10 @@ export function verbRunPause(
     runHoldAuthority: (db: BusDb, runId: string) => { coordinator: string; ancestors: string[] } | null;
   },
   runId: string,
+  mode: PauseMode = 'hard',
 ): void {
   const actor = ctx.id.handle.trim() || null;
-  const outcome = fenced(ctx, 'run-pause', () => deps.setRunPause(ctx.db, runId, true, actor));
+  const outcome = fenced(ctx, 'run-pause', () => deps.setRunPause(ctx.db, runId, true, actor, mode));
   switch (outcome) {
     case 'no-run':
       ctx.fail(
@@ -1155,11 +1160,27 @@ export function verbRunPause(
       );
     // eslint-disable-next-line no-fallthrough
     case 'paused':
+      if (mode === 'soft') {
+        ctx.out(
+          `Run ${runId} is now in PAUSE DOUCE — no réveil, no new turn, no spawn into it (refused with "run en pause"), liveness silenced; ` +
+            `the same holds for every descendant run. Each member with a turn running is told to finish its command, commit+push and run ` +
+            `\`orchestra run confirm pause\`; idle members are confirmed by the host. At ${SOFT_PAUSE_DEADLINE_MS / 60_000} min — or as soon as everyone ` +
+            `confirmed — the host takes over (Pause dure: snapshot to refs/orchestra/pause/…, interrupt, kill). Watch: orchestra bus-status / run status. ` +
+            `A prompt a HUMAN types in a member's composer is still allowed and does NOT lift the pause. Lift with: orchestra run resume --run ${runId}\n`,
+        );
+        return;
+      }
       ctx.out(
         `Run ${runId} is now PAUSED (hard) — no réveil, no new turn, no spawn into it (refused with ` +
           `"run en pause"), liveness silenced; the same holds for every descendant run. ` +
           `A prompt a HUMAN types in a member's composer is still allowed and does NOT lift the pause. ` +
           `Lift with: orchestra run resume --run ${runId}\n`,
+      );
+      return;
+    case 'escalated':
+      ctx.out(
+        `Run ${runId} was in a Pause douce — escalated to PAUSE DURE now: the host takes every member that has not confirmed ` +
+          `(snapshot to refs/orchestra/pause/…, interrupt, kill). Watch: orchestra run status. Lift with: orchestra run resume --run ${runId}\n`,
       );
       return;
     case 'already-paused': {
@@ -1175,4 +1196,37 @@ export function verbRunPause(
       // 'lifted' / 'not-paused' cannot come back from a pause write.
       ctx.fail(`orchestra run pause: unexpected outcome ${outcome}`);
   }
+}
+
+/** The member-side seam of `orchestra run confirm pause` (#254): resolves the caller's carrier (live-tree walk, like `run resume`) and records its accusé. */
+export interface RunConfirmPauseDeps {
+  confirmPause: (db: BusDb, who: string) => { outcome: ConfirmPauseOutcome; view: PauseStatusView | null; carrierRunId: string | null };
+  /** Drop the member's undelivered pause order (the tool-result hook would now inject a stale one). Best effort. */
+  dropOrder?: (who: string) => void;
+}
+
+/**
+ * `orchestra run confirm pause` (#254) — the member's PAUSE ACCUSÉ: "my running command is finished, my work is committed and pushed".
+ * Identity = `$ORCHESTRA_WS_ID` / `--as` (caller-asserted, like every bus verb); store-less. Idempotent: the first accusé keeps its time.
+ * Never refused for a missing pause — it says so (a late confirm after the lift is harmless).
+ */
+export function verbRunConfirmPause(ctx: BusVerbCtx, deps: RunConfirmPauseDeps): void {
+  const who = ctx.id.handle.trim();
+  if (!who) ctx.fail('orchestra run confirm pause: you have no identity ($ORCHESTRA_WS_ID unset) — pass --as <your workspace id>');
+  const r = deps.confirmPause(ctx.db, who);
+  try {
+    deps.dropOrder?.(who);
+  } catch {
+    /* best effort */
+  }
+  if (r.outcome === 'not-paused') {
+    ctx.out(`No active pause covers ${who} — nothing to confirm (the pause was lifted, or its 'pause' switch is OFF).\n`);
+    return;
+  }
+  const line = r.view ? renderPauseRosterLine(r.view.summary) : '';
+  ctx.out(
+    (r.outcome === 'confirmed' ? `Pause accusée for ${who} on run ${r.carrierRunId}.` : `Pause already confirmed for ${who} on run ${r.carrierRunId} — unchanged.`) +
+      (line ? ` ${line}.` : '') +
+      ` Stop here: start no new command; the host takes it from now. Reprise is the coordinator's call (never automatic).\n`,
+  );
 }

@@ -232,7 +232,8 @@ all. Read-only.`,
     summary: "Admin: re-freeze a mission run's switches; hold / pause / resume a run",
     detail: `usage: orchestra run refreeze [--run <id>]
        orchestra run hold [--run <id>] [--as <handle>]
-       orchestra run pause --hard [--run <id>] [--as <handle>]
+       orchestra run pause [--hard] [--run <id>] [--as <handle>]
+       orchestra run confirm pause [--run <id>] [--as <handle>]
        orchestra run resume [--run <id>] [--as <handle>]
        orchestra run status [--run <id>] [--json]
 
@@ -247,20 +248,30 @@ all. Read-only.`,
             hold/resume it (caller = --as, else $ORCHESTRA_WS_ID); anyone else
             is refused. Fenced like send/ack (--generation). The holder is
             recorded and 'orchestra bus-status' shows a held run.
-  pause     PAUSE DURE of the run and every descendant run: the host refuses every
-            réveil, new turn and spawn into it ("run en pause — orchestra run resume
-            --run <id>") and silences liveness. Durable in the bus (survives an app
-            relaunch, works while the app is down), idempotent. Same authority +
-            fencing as hold. The host also TRAPS every member: snapshots its worktree
+  pause     PAUSE of the run and every descendant run. Without --hard it is a PAUSE DOUCE:
+            the host refuses every réveil, new turn and spawn into it at once
+            ("run en pause — orchestra run resume --run <id>") and silences liveness;
+            every member with a turn running reads the order at its next tool-result
+            boundary (and as a 'pause' bus row): finish ONLY the command running now, commit + push your own
+            work, then 'orchestra run confirm pause'. A member with no turn running is
+            confirmed by the host. When everyone confirmed — or 3 min after the pause —
+            the host takes over (Pause dure, below) for every member, the stragglers
+            included. Watch it: 'orchestra bus-status' / 'run status' print "N/M en pause —
+            manquent : <who>". --hard skips the wait: PAUSE DURE at once (also cuts a
+            douce short). Pause dure = the host TRAPS every member: snapshots its worktree
             (uncommitted + untracked NON-IGNORED work) to refs/orchestra/pause/<run>/<ws>/<ts> without
             touching the worktree/index/branches, records a Bilan de pause, interrupts the
             turn and kills its tool processes (never the session or the keeper); read it
             with 'status'. The pauser's own turn is left running.
-            REFUSED unless the run's 'pause' bus switch was ON when its wave started
-            (frozen; default OFF). Only --hard exists so far.
+            Durable in the bus (survives an app relaunch, works while the app is down),
+            idempotent. Same authority + fencing as hold. REFUSED unless the run's
+            'pause' bus switch was ON when its wave started (frozen; default OFF).
             A prompt a HUMAN types in a member's composer stays allowed and does NOT lift
             the pause (nor does restarting it from the toolbar); every automatic start is
             refused. A human lifts/pauses with --as <the run's coordinator>.
+  confirm   'confirm pause' = a member's PAUSE ACCUSÉ (caller = --as, else $ORCHESTRA_WS_ID):
+            "my running command is finished, my work is committed and pushed". Store-less,
+            idempotent; prints "N/M en pause". Stop there — start no new command.
   resume    Lift the pause (and the hold, if any) of the run: queued turns and pending
             bus mail resume (there is no structured Reprise yet). A descendant run is
             lifted through the run that carries the pause (the message names it);
@@ -438,9 +449,9 @@ export function isHelpFlag(arg: string | undefined): boolean {
 const SUBCOMMAND_VERBS = new Set(['open', 'resolve', 'list', 'refreeze', 'add', 'rm', 'pin']);
 
 /** The `run` verbs that take FLAGS only (no free text): a help flag ANYWHERE after the verb is a help request, never a run — scoped to `run`
- *  so `orchestra status hold --help` (free text) is never one. `run pause --hard --help` must print help, not pause the fleet (pre-review:
- *  `--hard` is mandatory, so `--help` lands at args[2]). The ONLY place `hold`/`pause`/`resume` are recognised as help-able verbs. */
-const RUN_FLAG_ONLY_VERBS = new Set(['refreeze', 'hold', 'pause', 'resume']);
+ *  so `orchestra status hold --help` (free text) is never one. `run pause --help` / `run pause --hard --help` must print help, not pause the fleet (pre-review:
+ *  a help flag lands at args[1] or args[2]). The ONLY place `hold`/`pause`/`resume` are recognised as help-able verbs. */
+const RUN_FLAG_ONLY_VERBS = new Set(['refreeze', 'hold', 'pause', 'resume', 'confirm']);
 
 export function wantsCommandHelp(args: string[], command?: string): boolean {
   if (isHelpFlag(args[0])) return true;

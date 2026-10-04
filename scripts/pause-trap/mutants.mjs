@@ -4,6 +4,70 @@
 
 /** name -> { file suffix, find (global regex), replace, mustRedden (the rig check that has to go red) } */
 export const MUTANTS = {
+  // The hook lets a SUBAGENT's tool call take the order (the member's own next boundary never sees it).
+  'subagent-takes-order': {
+    file: '/src/main/workspaces.ts',
+    find: /        \*'"agent_id"'\*\) ;;\n/g,
+    replace: '',
+    mustRedden: 'subagent_calls_never_took_the_order_msb',
+  },
+  // ── #254 Pause douce (each edits the shipped host code in memory; the named douce-arm check must go red) ──
+  // The 3-min deadline never escalates: a member that never answers is waited on for ever.
+  'no-deadline-escalation': {
+    file: '/src/main/pause-douce.ts',
+    find: /  if \(allConfirmed \|\| now >= deadline\) \{/g,
+    replace: '  if (allConfirmed) {',
+    mustRedden: 'straggler_not_cut_short_then_escalated_at_deadline',
+  },
+  // The accusé COUNT: escalates as soon as ANY member confirmed (instead of ALL): a straggler is cut short.
+  'escalate-on-any-confirm': {
+    file: '/src/main/pause-douce.ts',
+    find: /const allConfirmed = members\.length > 0 && sum\.confirmed === members\.length;/g,
+    replace: 'const allConfirmed = members.length > 0 && sum.confirmed > 0;',
+    mustRedden: 'straggler_not_cut_short_then_escalated_at_deadline',
+  },
+  // The trap is owed at once for a douce too (trapOwed ignores the escalation): stragglers are taken before the deadline.
+  'trap-owed-before-escalation': {
+    file: '/src/main/bus-pause.ts',
+    find: /        trapOwed\(\{\n          pausedAt: r\.pausedAt,/g,
+    replace: '        ((_c: unknown) => r.trapAt === null)({\n          pausedAt: r.pausedAt,',
+    mustRedden: 'trap_not_started_before_escalation',
+  },
+  // The host sends the pause row but drops the order the member's tool-result hook injects: nobody ever sees the Pause.
+  'no-order-file': {
+    file: '/src/main/pause-douce.ts',
+    find: /        deps\.pauseOrders\?\.write\(m\.wsId, text\); \/\/ the order file first[^\n]*\n/g,
+    replace: '        /* mutant: order not written */\n',
+    mustRedden: 'order_delivered_at_tool_boundary_mid',
+  },
+  // Every member is read as idle: confirmed `host-idle` without ever being told (a running turn is never notified).
+  'host-idle-for-running': {
+    file: '/src/main/pause-douce.ts',
+    find: /      const act = await deps\.activityOf\(m\);\n      running = act\.turnRunning \|\| act\.unknown === true;/g,
+    replace: '      await deps.activityOf(m);\n      running = false;',
+    mustRedden: 'order_delivered_at_tool_boundary_mid',
+  },
+  // bus-status counts every roster row as "en pause": the N/M line lies.
+  'summary-counts-all': {
+    file: '/src/shared/pause-lifecycle.ts',
+    find: /    done: rows\.filter\(isDone\)\.length,/g,
+    replace: '    done: rows.length,',
+    mustRedden: 'bus_status_names_who_is_missing',
+  },
+  // The trap never records the members it took: a straggler stays "not confirmed" in the roster for ever.
+  'no-trap-roster': {
+    file: '/src/main/pause-trap.ts',
+    find: /            confirmByTrap\(db, carrier, m, deps\.now\(\)\); \/\/ #254: taken by the host = paused \(a member that already confirmed keeps its own accusé\)/g,
+    replace: '            /* mutant: trap not recorded */',
+    mustRedden: 'roster_accusés_by_kind',
+  },
+  // The douce sweep ignores the frozen `pause` switch: a stale soft pause on an OFF run is acted on.
+  'sweep-ignores-switch': {
+    file: '/src/main/pause-douce.ts',
+    find: /\.pause === true\)\n    \.map\(\(r\) => \(\{\n      runId: String\(r\.id\),\n      pausedAt: Number\(r\.paused_at\),\n      pausedBy: \(r\.paused_by as string \| null\) \?\? null,\n      mode: 'soft',/g,
+    replace: ".pause === true || true)\n    .map((r) => ({\n      runId: String(r.id),\n      pausedAt: Number(r.paused_at),\n      pausedBy: (r.paused_by as string | null) ?? null,\n      mode: 'soft',",
+    mustRedden: 'off_host_inert_on_a_stale_soft_pause',
+  },
   // The UNFIXED build (G1): master has no host trap at all — `startPauseTrap` does nothing, so a pause is only a bus row.
   'no-trap': {
     file: '/src/main/pause-trap.ts',

@@ -4258,9 +4258,10 @@ their own seam.
 ## 7. Pause a run (host-enforced)
 
 \`\`\`bash
-orchestra run pause --hard [--run <id>] [--as <handle>]   # PAUSE DURE of the run + every descendant run
+orchestra run pause [--hard] [--run <id>] [--as <handle>]  # PAUSE DOUCE (default) / PAUSE DURE (--hard) of the run + every descendant run
+orchestra run confirm pause [--run <id>] [--as <handle>]   # a member's pause accusé: "command finished, work committed + pushed"
 orchestra run resume [--run <id>] [--as <handle>]          # lift it (queued turns + pending mail resume)
-orchestra run status [--run <id>] [--json]                 # the Bilan de pause of every member
+orchestra run status [--run <id>] [--json]                 # phase, "N/M en pause — manquent : …", the Bilan de pause of every member
 \`\`\`
 
 A pause is a durable state on the bus that the HOST enforces — not a message you
@@ -4276,6 +4277,16 @@ in progress), which commands were killed. Only the
 run's coordinator or an ancestor run's coordinator may pause/resume (the human
 acts \`--as\` the coordinator); a worker is refused. It needs the run's \`pause\`
 switch ON at wave start (frozen; default OFF) — otherwise the verb is refused.
+
+**Pause douce** (no \`--hard\`): the block above is the same, but the host first gives
+each member up to 3 min to save its own work. A member with a turn running reads the order
+at its next tool-result boundary (an \`[orchestra] PAUSE DOUCE\` text in a tool result, and a
+\`pause\` bus row): **finish ONLY the command running now, start no other, commit + push your
+own work, then run \`orchestra run confirm pause\` and stop.** A member with no turn running
+is confirmed by the host. When everyone confirmed — or at 3 min — the host takes over (the
+Pause dure above) for every member, stragglers included. \`orchestra bus-status\` and \`run
+status\` print "N/M en pause — manquent : <who>" — nobody checks by hand. \`--hard\` cuts a
+douce short. Reprise is never automatic.
 
 **A prompt a HUMAN types in a member's composer is still allowed and does NOT
 lift the pause** (nor does restarting it from the toolbar). Every automatic start
@@ -5042,6 +5053,31 @@ fi
 # so an event is never silently dropped.
 if [ "\$line_written" = 0 ]; then
   printf '{"seq":%s,"event":"%s","tool":"%s","toolUseId":"%s","transcript":"%s","crons":"%s"}\\n' "0" "\$event" "\$tool" "\$tooluseid" "\$transcript" "\$crons" >> "\$spool"
+fi
+
+# #254 Pause douce: deliver the host's pause order ONCE, at this tool-result boundary, as the tool result's additionalContext. The order file holds
+# ONE JSON string literal; the rename makes delivery once-only and its ctime is the delivery receipt. No order = one stat, no fork. A SUBAGENT's call
+# (the CLI adds agent_id to its payload) never takes it: the order waits for the member's own next boundary. An order older than 5 min is stale (the
+# douce lasts 3): dropped, never injected.
+if [ "\$event" = posttool ]; then
+  po="\${dir%/*}/pause-orders/\$ORCHESTRA_WS_ID"
+  if [ -s "\$po.json" ]; then
+    if [ -n "\$(find "\$po.json" -mmin +5 2>/dev/null)" ]; then
+      rm -f "\$po.json"
+    else
+      case "\$payload" in
+        *'"agent_id"'*) ;;
+        *)
+          if mv "\$po.json" "\$po.taken" 2>/dev/null; then
+            hen="PostToolUse"
+            mine hook_event_name && hen="\$mined"
+            case "\$hen" in PostToolUse|PostToolUseFailure) ;; *) hen="PostToolUse" ;; esac
+            printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":%s}}\\n' "\$hen" "\$(cat "\$po.taken")"
+          fi
+          ;;
+      esac
+    fi
+  fi
 fi
 exit 0
 `;

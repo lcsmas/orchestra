@@ -88,12 +88,16 @@ test('pause --hard by the coordinator (app DOWN): rc 0, durable row, states the 
   assert.equal(state(h, 'S'), null, 'descendant run carries no pause column of its own');
 });
 
-test('pause without --hard is refused with a usage line (no soft pause exists yet)', needsBuild, (t) => {
+test('pause without --hard is a PAUSE DOUCE (#254): soft mode + a 3-min deadline on the row, the verb says what happens next', needsBuild, (t) => {
   const h = home(t);
   const r = cli(h, ['run', 'pause', '--run', 'O']);
-  assert.notEqual(r.code, 0);
-  assert.match(r.stderr, /only the HARD pause \(pause dure\) exists so far/);
-  assert.equal(state(h, 'O'), null);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Run O is now in PAUSE DOUCE/);
+  assert.match(r.stdout, /orchestra run confirm pause/);
+  const s = state(h, 'O')!;
+  assert.equal(s.mode, 'soft');
+  assert.equal(s.deadlineAt, s.pausedAt + 180_000);
+  assert.equal(s.escalatedAt, null);
 });
 
 test('authority = the hold rule: a worker / descendant coordinator / no identity is REFUSED and writes nothing; an ancestor coordinator and `--as <coordinator>` (the human path) may pause', needsBuild, (t) => {
@@ -178,7 +182,7 @@ test('--hard only applies to `run pause`', needsBuild, (t) => {
 
 test('help: `orchestra run --help` documents pause/resume + the human-prompt policy; `run pause --help` is a help request', () => {
   const help = commandHelp('run') ?? '';
-  assert.match(help, /orchestra run pause --hard \[--run <id>\]/);
+  assert.match(help, /orchestra run pause \[--hard\] \[--run <id>\]/);
   assert.match(help, /run en pause/);
   assert.match(help, /A prompt a HUMAN types in a member's composer stays allowed and does NOT lift/);
   assert.match(help, /'pause' bus switch/);

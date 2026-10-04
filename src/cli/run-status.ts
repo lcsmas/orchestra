@@ -6,6 +6,7 @@
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import type { BilanRow } from '../main/bus-pause-records.ts';
+import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 
 /** The bus reads this verb needs, injected (production passes the real modules — dynamic import in index.ts). */
 export interface RunStatusDeps {
@@ -15,6 +16,8 @@ export interface RunStatusDeps {
   runExists: (db: BusDb, runId: string) => boolean;
   /** The newest pause with Bilan rows in this run's scope — readable after the lift. Omitted ⇒ none. */
   latestPauseBilan?: (db: BusDb, runId: string) => { carrierRunId: string; pausedAt: number; rows: BilanRow[] } | null;
+  /** #254: the carrier's phase + roster ("N/M en pause — manquent : …"). Omitted ⇒ none. */
+  pauseStatus?: (db: BusDb, carrierRunId: string) => PauseStatusView | null;
 }
 
 export interface RunStatus {
@@ -22,6 +25,8 @@ export interface RunStatus {
   runExists: boolean;
   /** The pause governing this run (its own or an ancestor's), or null. */
   pause: RunPauseInfo | null;
+  /** #254: the pause's phase + roster — present only while paused (and only when the caller wired `pauseStatus`), so the older JSON shape is unchanged. */
+  roster?: PauseStatusView;
   /** True when the pause is carried by an ANCESTOR run (`orchestra run resume --run <pause.runId>` lifts it). */
   inherited: boolean;
   bilan: BilanRow[];
@@ -37,6 +42,7 @@ export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): 
     runId,
     runExists,
     pause,
+    ...(pause && deps.pauseStatus ? { roster: deps.pauseStatus(db, pause.runId) ?? undefined } : {}),
     inherited: pause !== null && pause.runId !== runId,
     bilan: pause ? deps.listBilanForRun(db, pause.runId, runId, pause.pausedAt) : (last?.rows ?? []),
     lastPause: last ? { carrierRunId: last.carrierRunId, pausedAt: last.pausedAt } : null,
@@ -89,10 +95,20 @@ export function renderRunStatus(st: RunStatus): string {
     `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${c(p.pausedBy ?? 'unknown')}` +
       (st.inherited ? ` — carried by ancestor run ${p.runId}; lift it with: orchestra run resume --run ${p.runId}` : `; lift with: orchestra run resume --run ${p.runId}`),
   );
+  if (st.roster) {
+    out.push(`Pause: ${renderPauseStatusLine(st.roster, { label: c, now: Date.now() })}`);
+    for (const r of st.roster.rows) {
+      out.push(
+        `  • ${c(r.wsId)} [${r.role}] — ${r.pauseConfirmedAt !== null ? `en pause (${r.pauseConfirmVia ?? '?'}) ${iso(r.pauseConfirmedAt)}` : 'pas encore confirmé'}`,
+      );
+    }
+  }
   out.push(
     p.trapAt !== null
       ? `Host trap: DONE at ${iso(p.trapAt)}.`
-      : `Host trap: NOT FINISHED — the app has not (fully) reacted yet (it runs when Orchestra is up; a pause that landed while it was closed is completed at the next launch).`,
+      : p.mode === 'soft' && p.escalatedAt == null
+        ? `Host trap: NOT OWED YET — Pause douce still waiting for its members (the host takes over when all confirmed or at ${p.deadlineAt ? iso(p.deadlineAt) : 'the 3-min deadline'}).`
+        : `Host trap: NOT FINISHED — the app has not (fully) reacted yet (it runs when Orchestra is up; a pause that landed while it was closed is completed at the next launch).`,
   );
   out.push(`Bilan de pause (${st.bilan.length} member${st.bilan.length === 1 ? '' : 's'}):`);
   renderRows(st.bilan, out);

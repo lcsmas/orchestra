@@ -30,6 +30,8 @@ import {
 import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
+import { busStatusPausePayload } from './pause-douce.ts';
+import { store } from './store';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
 import {
@@ -444,6 +446,13 @@ export async function startHooksServer(): Promise<void> {
               // bus — the coexistence-safe direction); live from the store; the hold
               // (#204) rides along. One pure view, pinned by bus-run-hold.test.ts (H1).
               runFlagsExtra = busStatusRunView(getBus(), cliRunId, serializeSwitches(getLiveSwitches()));
+              // #254: the pause governing this run + its roster ("N/M en pause — manquent : …"); absent when not paused (older shape unchanged).
+              try {
+                const pdb = getBus();
+                if (pdb) runFlagsExtra = { ...runFlagsExtra, ...busStatusPausePayload(pdb, cliRunId, (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? id) : null; }) };
+              } catch {
+                /* a pause read never breaks bus-status */
+              }
             }
             // #144 — flag any message whose recipient is not a full workspace id
             // (the canary's short handles). Cross-run: a bad recipient anywhere

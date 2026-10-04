@@ -2,6 +2,7 @@
 // src/main/pause-trap.ts to the real store, structured sessions, keepers, PTYs and /proc.
 // Kept apart from pause-trap.ts so that file (and its tests) never import Electron-coupled modules.
 
+import path from 'node:path';
 import { store } from './store';
 import { nearestOrchestratorId } from './wave-run-id';
 import { getBus } from './bus';
@@ -11,6 +12,8 @@ import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-clie
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
 import { snapshotWorktree } from './pause-snapshot';
+import { pauseOrderFiles } from './pause-douce';
+import { getEventsDir } from './events-spool';
 import { killToolTrees, realKillDeps } from './pause-kill';
 import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
 import { log } from './logger';
@@ -58,10 +61,16 @@ async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<
   }
 }
 
+/** #254: where a member's pause order waits for its tool-result hook — a sibling of the events dir (the hook derives the same path from $ORCHESTRA_EVENTS_DIR). */
+export function pauseOrdersDir(): string {
+  return path.join(path.dirname(getEventsDir()), 'pause-orders');
+}
+
 export function buildPauseTrapDeps(): TrapDeps {
   const kill = realKillDeps();
   return {
     getBus,
+    pauseOrders: pauseOrderFiles(pauseOrdersDir()),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     settleMs: SETTLE_MS,
@@ -82,8 +91,20 @@ export function buildPauseTrapDeps(): TrapDeps {
       const ptyLive = isPtyRunning(m.wsId);
       const surface: MemberActivity['surface'] = sdk || probe?.running ? 'sdk' : ptyLive ? 'pty' : 'none';
       const now = Date.now();
+      // UNKNOWN is not NONE (#254): no session, no PTY and no probe answer — but a tracked keeper process IS alive (busy/stopped): its turn may well be running
+      const keeperUnknown =
+        !sdk &&
+        !probe &&
+        !ptyLive &&
+        (() => {
+          const kp = readTrackedKeeperPid(m.wsId);
+          if (kp === null) return false;
+          const ks = keeperPidState(kp, m.wsId);
+          return ks === 'keeper' || ks === 'unknown';
+        })();
       return {
         surface,
+        ...(keeperUnknown ? { unknown: true } : {}),
         turnRunning: sdk ? sdk.turnRunning : probe?.running ? probe.turnInFlight === true : ptyLive && m.status === 'running',
         inFlightTools: getInFlightTools(m.wsId).map((t) => ({ tool: t.tool, toolUseId: t.toolUseId, sinceMs: now - t.startedAt })),
         bgTasks: (sdk?.bgTasks ?? []).map((b) => ({ id: b.id, type: b.taskType, description: b.description, status: b.status })),

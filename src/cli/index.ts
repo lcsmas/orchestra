@@ -25,6 +25,7 @@ import {
   verbGate,
   verbRunHold,
   verbRunPause,
+  verbRunConfirmPause,
   type RunPauseDeps,
   unknownRunRefusalMessage,
   type BusVerbCtx,
@@ -39,6 +40,7 @@ import {
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
+import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
@@ -1890,16 +1892,53 @@ async function main(argv: string[]): Promise<void> {
           const busPause = await import('../main/bus-pause.ts');
           const records = await import('../main/bus-pause-records.ts');
           const busRuns = await import('../main/bus-runs.ts');
+          const douceMod = await import('../main/pause-douce.ts');
           const st = gatherRunStatus(stDb, stTarget, {
             getRunPause: busPause.getRunPause,
             activePauseFor: (d, id) => coverFor(d, id, busPause),
             listBilanForRun: records.listBilanForRun,
             runExists: (d, id) => busRuns.getRun(d, id) !== null,
             latestPauseBilan: records.latestPauseBilanFor,
+            pauseStatus: (d, id) => douceMod.pauseStatusView(d, id),
           });
           process.stdout.write(stJson.present ? `${JSON.stringify(st, null, 2)}\n` : renderRunStatus(st));
         } finally {
           stDb.close();
+        }
+        return;
+      }
+      if (sub === 'confirm') {
+        // #254 — the member's PAUSE ACCUSÉ (`run confirm pause`). STORE-LESS: it writes the bus roster directly, so it lands while the app is down too.
+        if (args[1] !== 'pause') fail('usage: orchestra run confirm pause [--run <id>] [--as <handle>]');
+        const cfRun = takeFlag(args.slice(2), '--run');
+        const cfAs = takeFlag(cfRun.rest, '--as');
+        const cfActor = resolveBusIdentity({ as: cfAs.value }, process.env)?.handle ?? '';
+        const cfEnvRun = cfRun.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || '';
+        const { db: cfDb, bus: cfBus } = await openBusForVerb();
+        try {
+          const busPause = await import('../main/bus-pause.ts');
+          const douce = await import('../main/pause-douce.ts');
+          const nodes = offlineWaveNodes();
+          const cfCtx = busCtx(cfDb, cfBus, { runId: cfEnvRun || DEFAULT_RUN_ID, handle: cfActor }, { generation: null, fencingOn: false });
+          verbRunConfirmPause(cfCtx, {
+            confirmPause: (d, who) => {
+              // The carrier by the SAME live-tree walk the gates use, from the CALLER's own workspace (fallback: the run id the env names).
+              const node = nodes.get(who);
+              // no readable store: the run the caller named / its env run, else the pause whose roster (written by the host before it sent the order) holds the caller
+              const carrier = node
+                ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
+                : (cfEnvRun ? coverFor(d, cfEnvRun, busPause, nodes) : null) ?? douce.carrierFromRoster(d, who);
+              const memberRun = node ? nearestOrchestratorId(node, (id) => nodes.get(id)) : null; // never guess: a wrong run would overwrite what the host enrolled
+              return { ...douce.confirmPauseFor(d, carrier, { wsId: who, memberRun }), carrierRunId: carrier?.runId ?? null };
+            },
+            // an order the member's hook has not injected yet would now be stale (the sibling dir of $ORCHESTRA_EVENTS_DIR, as the hook derives it)
+            dropOrder: (who) => {
+              const ev = process.env.ORCHESTRA_EVENTS_DIR?.trim();
+              if (ev) douce.pauseOrderFiles(path.join(path.dirname(ev), 'pause-orders')).remove(who);
+            },
+          });
+        } finally {
+          cfDb.close();
         }
         return;
       }
@@ -1913,15 +1952,8 @@ async function main(argv: string[]): Promise<void> {
         const holdTarget =
           holdRunArg.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
         const holdActor = resolveBusIdentity({ as: holdAsArg.value }, process.env)?.handle ?? '';
-        // #252 — `pause` takes the SAME flags as hold/resume plus a mandatory `--hard` (the soft
-        // pause is a later ticket: refuse it loudly rather than silently do the hard one).
+        // #252/#254 — `pause` takes the SAME flags as hold/resume plus `--hard` (Pause dure); without it the pause is DOUCE.
         const hardFlag = takeBoolFlag(holdAsArg.rest, '--hard');
-        if (sub === 'pause' && !hardFlag.present) {
-          fail(
-            'usage: orchestra run pause --hard [--run <id>] [--as <handle>] — only the HARD pause ' +
-              '(pause dure) exists so far; there is no soft pause yet',
-          );
-        }
         if (sub !== 'pause' && hardFlag.present) {
           fail(`orchestra run ${sub}: --hard only applies to \`run pause\``);
         }
@@ -1936,7 +1968,7 @@ async function main(argv: string[]): Promise<void> {
           const holdCtx = busCtx(db, bus, { runId: fenceRun, handle: holdActor }, fencing);
           if (sub === 'pause') {
             const pauseCallAt = Date.now();
-            verbRunPause(holdCtx, { ...runPause, runHoldAuthority }, holdTarget);
+            verbRunPause(holdCtx, { ...runPause, runHoldAuthority }, holdTarget, hardFlag.present ? 'hard' : 'soft');
             // #252 D1b (review F5): record WHO called — this process's ancestry — so the host trap can spare the tool tree that issued the pause
             // (the member whose CLI is an ancestor) and exempt nobody for a human typing `--as <coordinator>` in a plain shell. Best-effort.
             try {
@@ -1963,7 +1995,7 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       if (sub !== 'refreeze') {
-        fail('usage: orchestra run refreeze|hold|resume|pause --hard|status [--run <id>]');
+        fail('usage: orchestra run refreeze|hold|resume|pause [--hard]|confirm pause|status [--run <id>]');
       }
       const { value: runFlag } = takeFlag(args.slice(1), '--run');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
@@ -2054,6 +2086,13 @@ async function main(argv: string[]): Promise<void> {
           `hold: HELD since ${new Date(res.heldAt).toISOString()} by ${
             typeof res.heldBy === 'string' ? res.heldBy : 'unknown'
           } — liveness skips this run's members (undo: orchestra run resume --run ${shownRunId})\n`,
+        );
+      }
+      // #254: a PAUSED run says so, with the roster ("N/M en pause — manquent : …"). No line when not paused, so existing output is unchanged.
+      if (res.pause && typeof res.pause === 'object') {
+        const labels = (res.pauseLabels ?? {}) as Record<string, string>;
+        process.stdout.write(
+          `pause: ${renderPauseStatusLine(res.pause as PauseStatusView, { label: (id) => labels[id] ?? id, now: Date.now() })} (run ${(res.pause as PauseStatusView).carrierRunId}; lift: orchestra run resume --run ${(res.pause as PauseStatusView).carrierRunId})\n`,
         );
       }
       // Printed unconditionally, not only when it is false: an operator reading

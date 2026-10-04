@@ -85,6 +85,13 @@ A Pause where each member finishes its running command, saves its own work,
 then stops; turns into a Pause dure when it overruns its deadline.
 _Avoid_: graceful stop
 
+**Accusé de pause** (pause accusé):
+In a Pause douce, a member's confirmation that its running command is finished
+and its work committed and pushed (`orchestra run confirm pause`); the host
+confirms for a member with no turn running, and the trap for a straggler it took.
+Counted "N/M en pause" — the Pause douce ends (escalates) when all N confirmed or at the deadline.
+_Avoid_: ack (a bus `ack` closes a mail lot, a different thing)
+
 **Pause dure** (hard pause):
 A Pause the host imposes at once: it snapshots every worktree to a pause ref,
 records what was running, interrupts the turn and kills the tool process

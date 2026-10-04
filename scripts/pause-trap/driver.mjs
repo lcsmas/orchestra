@@ -11,6 +11,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.PT_CONFIG ?? '{}');
 const { REPO, root, arm, mutant = null, apiPort } = cfg;
+const SRC = cfg.SRC ?? REPO; // the tree whose built CLI + src the arm drives (default: this one; `unfixed:` arms point at a MASTER checkout)
 const HERE = path.join(REPO, 'scripts', 'pause-trap');
 const home = path.join(root, 'home');
 const orchHome = path.join(root, 'orchestra');
@@ -110,6 +111,10 @@ const ARMS = {
   'probe-dbg': { scenario: 'dbg', markers: [7715, 7716], probe: true, mustKill: [] },
   'probe-interrupt': { scenario: 'background', markers: [7714, 7715, 7716], probe: true, mustKill: [] },
 };
+// #254 Pause douce arms (scripts/pause-trap/douce-arm.mjs): function scenarios + their own driver path.
+import { DOUCE_ARMS, douceScenarios, runDouce } from './douce-arm.mjs';
+Object.assign(SCENARIOS, douceScenarios(path.join(SRC, 'dist-electron', 'cli.js')));
+for (const [k, v] of Object.entries(DOUCE_ARMS)) ARMS[k] = { ...v, douce: true };
 const A = ARMS[arm];
 if (!A) throw new Error(`unknown arm ${arm}`);
 
@@ -120,6 +125,7 @@ const api = await startScriptedApi({ apiPort, scenarios: SCENARIOS });
 function startApp(phase, extra = {}) {
   const env = {
     PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', TERM: 'dumb',
+    ...(extra.statusSock ? { ORCHESTRA_SOCK: path.join(root, 'orch.sock') } : {}),
     PT_CONFIG: JSON.stringify({ ...cfg, phase, apiUrl: api.url, ...extra }),
   };
   const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--disable-warning=UNDICI-EHPA', '--experimental-strip-types', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(HERE, 'app.mjs')],
@@ -136,8 +142,14 @@ function startApp(phase, extra = {}) {
 
 // ── the REAL built CLI ──────────────────────────────────────────────────────
 function cli(...args) {
-  const r = spawnSync(process.execPath, [path.join(REPO, 'dist-electron', 'cli.js'), ...args], {
+  const r = spawnSync(process.execPath, [path.join(SRC, 'dist-electron', 'cli.js'), ...args], {
     env: { PATH: process.env.PATH, HOME: home, ORCHESTRA_HOME: orchHome, LANG: 'C.UTF-8' }, encoding: 'utf8', timeout: 60_000,
+  });
+  return { rc: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') };
+}
+function cliWith(args, extraEnv = {}) {
+  const r = spawnSync(process.execPath, [path.join(SRC, 'dist-electron', 'cli.js'), ...args], {
+    env: { PATH: process.env.PATH, HOME: home, ORCHESTRA_HOME: orchHome, LANG: 'C.UTF-8', ...extraEnv }, encoding: 'utf8', timeout: 60_000,
   });
   return { rc: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') };
 }
@@ -145,6 +157,24 @@ const runStatus = () => { const r = cli('run', 'status', '--run', 'ops', '--json
 
 let app1 = null, app2 = null;
 const result = { pause_trap: true, arm, mutant };
+if (A.douce) {
+  // #254: the Pause douce arms have their own flow (douce-arm.mjs); the teardown + result line are the same as below.
+  const tracked = [];
+  const trackedStart = (phase, extra) => { const a = startApp(phase, extra); tracked.push(a); return a; };
+  try {
+    await runDouce({ A, arm, api, cfg, startApp: trackedStart, cli, cliWith, waitFor, sleep, check, result, allProcs, live, alive, gitOut, readProc, home, orchHome, REPO, SRC, root, importSrc: (rel) => import(path.join(SRC, rel)) });
+  } catch (e) {
+    check('rig_ran_to_completion', false, String(e?.stack ?? e).slice(0, 500));
+  }
+  result.appErr = tracked.map((a) => a.err.slice(-1500));
+  result.checks = checks;
+  result.ok = checks.length > 0 && checks.every((c) => c.ok);
+  result.requests = api.requests.length;
+  for (const a of tracked) { try { a.send({ cmd: 'quit' }); a.child.kill('SIGKILL'); } catch { /* */ } }
+  await api.stop().catch(() => {});
+  console.log(JSON.stringify(result));
+  process.exit(0);
+}
 try {
   // 1. fleet up, turn in flight
   app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe, ...(A.pauser?.scenario ? { opsScenario: A.pauser.scenario } : {}) });

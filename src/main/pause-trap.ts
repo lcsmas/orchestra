@@ -28,6 +28,7 @@ import {
   updateBilan,
   type BilanActivity,
 } from './bus-pause-records.ts';
+import { carrierPhase, confirmByTrap, enrollRoster, sweepSoftPauses, __resetPauseDouceForTests, type PauseOrderDeps } from './pause-douce.ts';
 import type { KillReport } from './pause-kill.ts';
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
 import type { RootRef } from '../shared/pause-procs.ts';
@@ -50,6 +51,8 @@ export interface TrapMember {
 export interface MemberActivity {
   surface: 'sdk' | 'pty' | 'none';
   turnRunning: boolean;
+  /** #254: the read could not tell (a tracked keeper is alive but did not answer the probe): `turnRunning` is then a guess. A Pause douce reads it as RUNNING (UNKNOWN is not NONE). */
+  unknown?: boolean;
   inFlightTools: NonNullable<BilanActivity['inFlightTools']>;
   bgTasks: NonNullable<BilanActivity['bgTasks']>;
 }
@@ -91,6 +94,10 @@ export interface TrapDeps {
   originWaitMs?: number;
   /** Deadline for `arm` (ms, default 15000): a hung attach must not stall the member with no retry — it is an error, the trap stays open. */
   armTimeoutMs?: number;
+  /** #254 Pause douce: where a member's pause order is dropped for its tool-result hook (omitted ⇒ the bus row alone). */
+  pauseOrders?: PauseOrderDeps;
+  /** #254: how often a Pause douce still waiting re-checks its members' turns (ms, default {@link DOUCE_POLL_MS}); a turn ending is not a bus write. */
+  douceCheckMs?: number;
   /** Pause between the interrupt and the first kill scan (the CLI reaps its own tool child). */
   sleep(ms: number): Promise<void>;
   settleMs: number;
@@ -416,6 +423,11 @@ export async function runPauseTrap(deps: TrapDeps, carrier: RunPauseInfo): Promi
     warnOnce(`${carrier.runId}@${carrier.pausedAt}:none`, `pause-trap: run ${carrier.runId} is paused but no member workspace was found — NOT stamping the trap done (retried)`);
     return { ...base, members: 0, done: false, aborted: 'no-members' };
   }
+  try {
+    enrollRoster(db, carrier, members); // #254: every member of a hard pause / an escalated douce has a roster row (idempotent)
+  } catch (e) {
+    log.warn('pause-trap: could not enrol the pause roster', e);
+  }
   // once per pause: a retried trap must not log (and fill the log) every attempt (round-3 F6)
   if (!warned.has(`${carrier.runId}@${carrier.pausedAt}:start`)) {
     warned.add(`${carrier.runId}@${carrier.pausedAt}:start`);
@@ -438,7 +450,14 @@ export async function runPauseTrap(deps: TrapDeps, carrier: RunPauseInfo): Promi
         const out = await trapMember(deps, db, carrier, m);
         if (out === 'lifted') aborted = true;
         else if (out === 'incomplete') incompleteN++;
-        else n++;
+        else {
+          n++;
+          try {
+            confirmByTrap(db, carrier, m, deps.now()); // #254: taken by the host = paused (a member that already confirmed keeps its own accusé)
+          } catch (e) {
+            log.warn(`pause-trap: could not record ${m.wsId} as trapped in the roster`, e);
+          }
+        }
       } catch (e) {
         failed = true;
         warnOnce(`${carrier.runId}@${carrier.pausedAt}:member:${m.wsId}:${errMsg(e)}`, `pause-trap: member ${m.wsId} failed`, e);
@@ -538,6 +557,10 @@ export function __resetPauseTrapForTests(): void {
   turnTrap.clear();
   trapArming.clear();
   arming = false;
+  if (douceTimer) clearTimeout(douceTimer);
+  douceTimer = null;
+  douceStopped = false;
+  __resetPauseDouceForTests();
 }
 
 /** Members whose `arm` is running inside a member trap (their attach-fired turn start is the trap's own business). */
@@ -583,6 +606,8 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
     const carrier = resolveCarrier(deps, db, m);
     if (!carrier) return 'not-paused';
     if (trapArming.has(m.wsId)) return 'skipped'; // the member trap's own arm() attach fired this start: trapMember handles the turn (pauser-aware)
+    // #254: a Pause douce still WAITING lets the running command finish — an unexplained turn start here is most often a keeper REATTACH mid-turn (app restart + opening the workspace), not a cron turn; the escalation's trap takes whatever still runs.
+    if (carrierPhase(db, carrier.runId) === 'pausing') return 'skipped';
     // a human turn IN FLIGHT (exact) OR a fresh mark (the hook of a very short turn can land after its result); BOTH are consumed — a leftover mark must not admit a later CLI turn
     // anchored on the pause (pre-review r2 #1): a human turn yielded BEFORE the pause, whose hook lands late, is still trapped (it was in flight at the pause)
     const humanNow = deps.humanTurnInFlight?.(m) === true && (lastHumanTurnStart(m.wsId) ?? 0) >= carrier.pausedAt;
@@ -650,6 +675,9 @@ export async function armPausedMembers(deps: TrapDeps): Promise<number> {
   }
   let n = 0;
   for (const c of carriers) {
+    // #254: a Pause douce still waiting does NOT attach idle/mid-turn keepers — an attach mid-turn reads as a CLI-started turn and the observer would
+    // interrupt the very command the douce lets finish. The escalated trap arms its members itself (and this pass re-arms them from then on).
+    if (carrierPhase(db, c.runId) === 'pausing') continue;
     for (const m of deps.members(runSubtreeIds(db, c.runId), c.runId)) {
       if (m.remote) continue;
       try {
@@ -700,6 +728,13 @@ export async function sweepPauseTrap(deps: TrapDeps): Promise<TrapSummary[]> {
       arming = false;
     });
   }
+  // #254: a Pause douce first — notify/confirm/escalate (escalation makes the trap owed, read just below). The deadline timer lands the escalation AT 3 min.
+  try {
+    const { dueAt } = await sweepSoftPauses(deps);
+    armDouceTimer(deps, dueAt);
+  } catch (e) {
+    log.warn('pause-trap: pause-douce sweep failed', e);
+  }
   let owing: RunPauseInfo[];
   try {
     owing = runsOwingPauseTrap(db);
@@ -736,9 +771,28 @@ export async function sweepPauseTrap(deps: TrapDeps): Promise<TrapSummary[]> {
   return Promise.all(out);
 }
 
+let douceTimer: ReturnType<typeof setTimeout> | null = null;
+/** Set by `stopPauseTrap`, cleared by `startPauseTrap`: a sweep still in flight must not re-arm the poll after the stop. */
+let douceStopped = false;
+/** A Pause douce still waiting re-checks its members every this long: a member's turn ENDING (quota, crash, done without confirming) is not a bus write, so no watcher would tell the host. */
+export const DOUCE_POLL_MS = 3_000;
+/** One-shot sweep at min(the earliest pending Pause-douce deadline, now + poll) (+ 50 ms): the escalation lands AT the deadline, a finished turn is seen within seconds. Re-armed by every sweep; null = nothing pending. */
+function armDouceTimer(deps: TrapDeps, dueAt: number | null): void {
+  if (douceTimer) clearTimeout(douceTimer);
+  douceTimer = null;
+  if (dueAt === null || douceStopped) return;
+  const at = Math.min(dueAt, deps.now() + (deps.douceCheckMs ?? DOUCE_POLL_MS));
+  douceTimer = setTimeout(() => {
+    douceTimer = null;
+    void sweepPauseTrap(deps);
+  }, Math.max(0, at - deps.now()) + 50);
+  douceTimer.unref?.();
+}
+
 /** Start detection (idempotent): boot drain now, a slow safety sweep, and a bus-directory watch. */
 export function startPauseTrap(deps: TrapDeps): void {
   if (timer) return;
+  douceStopped = false;
   activeDeps = deps;
   void sweepPauseTrap(deps);
   timer = setInterval(() => void sweepPauseTrap(deps), PAUSE_SWEEP_MS);
@@ -766,6 +820,9 @@ export function startPauseTrap(deps: TrapDeps): void {
 export function stopPauseTrap(): void {
   if (timer) clearInterval(timer);
   timer = null;
+  if (douceTimer) clearTimeout(douceTimer);
+  douceTimer = null;
+  douceStopped = true;
   if (debounce) clearTimeout(debounce);
   debounce = null;
   watcher?.close();

@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { DOUCE_UNIT_MUTANTS } from './mutants-douce-unit.mjs'; // #254 Pause douce (wave E)
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null; // one id, or a comma-separated list (one control, one post-control)
@@ -249,6 +250,8 @@ const M = [
   { id: 'trap-live-chain-no-cycle-guard', file: TRAP, find: 'while (cur !== undefined && !seen.has(cur)) {', rep: 'while (cur !== undefined) {\n    if (seen.has(cur)) return { includes: true, dangling: false };', tests: [T.trap], expect: /liveChainIncludes/ },
   { id: 'wire-reattach-turn-not-flagged', file: SDK, find: '                  live.unexplainedTurnSeen = true;\n                  notifyTurnStart(wsId);\n', rep: '                  notifyTurnStart(wsId);\n', tests: [T.wiring], expect: /keeper REATTACH with a turn in flight/ },
   { id: 'wire-host-observer-pty-too', file: HOST, find: '    if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own\n', rep: '', tests: [T.wiring], expect: /host observer stands down/ },
+  // ── #254 Pause douce (scripts/pause-trap/mutants-douce-unit.mjs)
+  ...DOUCE_UNIT_MUTANTS,
 ];
 
 const sel = ONLY ? M.filter((m) => ONLY_SET.has(m.id)) : M;

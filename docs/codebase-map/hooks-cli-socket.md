@@ -53,7 +53,7 @@ shell scripts, mode 0755) and merges commands into
 `claude` outside Orchestra is a silent no-op.
 
 Scripts and the Claude Code events they fire on:
-- **`orchestra-hook.sh`** (`ORCHESTRA_HOOK_SCRIPT`, ~`workspaces.ts:4849`) — UserPromptSubmit, Stop,
+- **`orchestra-hook.sh`** (`ORCHESTRA_HOOK_SCRIPT`, ~`workspaces.ts:4849`; on `posttool` it also delivers a Pause douce ORDER once as the tool result's `additionalContext` — `<events dir>/../pause-orders/<ws>.json` → `.taken`, #254, `docs/codebase-map/pause-trap.md`) — UserPromptSubmit, Stop,
   Notification, PreToolUse, PostToolUse(+Failure), PostToolBatch, SessionStart. The **durable activity
   writer**: appends one JSON line per event to
   `~/.orchestra/events/<wsid>.jsonl`, allocating a monotonic `seq` under `flock`

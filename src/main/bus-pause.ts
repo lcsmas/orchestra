@@ -17,12 +17,15 @@ import {
   type PauseChainLink,
   type PauseOrigin,
 } from '../shared/bus-pause.ts';
+import { trapOwed, type PauseMode } from '../shared/pause-lifecycle.ts';
+import { softDeadlineAt } from '../shared/pause-douce.ts';
 import type { WaveNode } from './wave-run-id.ts';
 
 /** The typed outcome of `orchestra run pause|resume` (pause half). */
 export type RunPauseOutcome =
   | 'paused'
   | 'already-paused'
+  | 'escalated' // `--hard` over a Pause douce still waiting: the douce is cut short, the host trap is owed now (#254)
   | 'lifted'
   | 'not-paused'
   | 'no-run'
@@ -36,6 +39,10 @@ export interface RunPauseInfo {
   mode: string | null;
   /** `pause_trap_at` — when the host trap finished; null = still owed (D1b). */
   trapAt: number | null;
+  /** #254 Pause douce: `paused_at + 3 min` (null = hard). */
+  deadlineAt?: number | null;
+  /** #254: when the douce stopped waiting (all confirmed, or the deadline); null = still waiting / hard. */
+  escalatedAt?: number | null;
 }
 
 interface PauseRow {
@@ -45,6 +52,9 @@ interface PauseRow {
   pausedBy: string | null;
   mode: string | null;
   trapAt: number | null;
+  deadlineAt: number | null;
+  escalatedAt: number | null;
+  resumeStartedAt: number | null;
   switchOn: boolean;
 }
 
@@ -56,6 +66,9 @@ function toPauseRow(r: Record<string, unknown>): PauseRow {
     pausedBy: (r.paused_by as string | null) ?? null,
     mode: (r.pause_mode as string | null) ?? null,
     trapAt: r.pause_trap_at === null || r.pause_trap_at === undefined ? null : Number(r.pause_trap_at),
+    deadlineAt: r.pause_deadline_at === null || r.pause_deadline_at === undefined ? null : Number(r.pause_deadline_at),
+    escalatedAt: r.pause_escalated_at === null || r.pause_escalated_at === undefined ? null : Number(r.pause_escalated_at),
+    resumeStartedAt: r.resume_started_at === null || r.resume_started_at === undefined ? null : Number(r.resume_started_at),
     // A row with no run_flags reads ALL-OFF (never the live store) — `parseSwitches(null)`.
     switchOn: parseSwitches((r.flags_json as string | null | undefined) ?? null).pause === true,
   };
@@ -63,6 +76,7 @@ function toPauseRow(r: Record<string, unknown>): PauseRow {
 
 const SELECT_PAUSE_ROWS = `
   SELECT r.id, r.parent_run_id, r.paused_at, r.paused_by, r.pause_mode, r.pause_trap_at,
+         r.pause_deadline_at, r.pause_escalated_at, r.resume_started_at,
          f.flags AS flags_json
     FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id`;
 
@@ -110,6 +124,8 @@ export function activePauseFor(db: BusDb, runId: string): RunPauseInfo | null {
     pausedBy: carrier.pausedBy,
     mode: carrier.mode,
     trapAt: carrier.trapAt,
+    deadlineAt: carrier.deadlineAt,
+    escalatedAt: carrier.escalatedAt,
   };
 }
 
@@ -117,7 +133,19 @@ export function activePauseFor(db: BusDb, runId: string): RunPauseInfo | null {
 export function getRunPause(db: BusDb, runId: string): RunPauseInfo | null {
   const row = readPauseRow(db, runId);
   if (!row || row.pausedAt === null) return null;
-  return { runId, pausedAt: row.pausedAt, pausedBy: row.pausedBy, mode: row.mode, trapAt: row.trapAt };
+  return infoOf(row, row.pausedAt);
+}
+
+function infoOf(row: PauseRow, pausedAt: number): RunPauseInfo {
+  return {
+    runId: row.id,
+    pausedAt,
+    pausedBy: row.pausedBy,
+    mode: row.mode,
+    trapAt: row.trapAt,
+    deadlineAt: row.deadlineAt,
+    escalatedAt: row.escalatedAt,
+  };
 }
 
 /** `rootRunId` plus every run below it (`parent_run_id` closure). For the host trap (D1b): the
@@ -144,23 +172,32 @@ export function runSubtreeIds(db: BusDb, rootRunId: string): string[] {
   return out;
 }
 
-/** Carriers whose host trap is still OWED: `paused_at` set, frozen switch ON, `pause_trap_at`
- *  NULL. D1b polls this (app up) and drains it at boot (app was down when the pause landed). */
+/** Carriers whose host trap is still OWED (`trapOwed`, the frozen state machine): `paused_at` set, frozen switch ON, `pause_trap_at` NULL,
+ *  and — for a Pause douce (#254) — only once it ESCALATED (all confirmed, or the 3-min deadline). D1b polls this (app up) and drains it at
+ *  boot (app was down when the pause landed). */
 export function runsOwingPauseTrap(db: BusDb): RunPauseInfo[] {
   const rows = (db.prepare(SELECT_PAUSE_ROWS).all() as Record<string, unknown>[]).map(toPauseRow);
   return rows
-    .filter((r) => r.pausedAt !== null && r.switchOn && r.trapAt === null)
-    .map((r) => ({
-      runId: r.id,
-      pausedAt: r.pausedAt as number,
-      pausedBy: r.pausedBy,
-      mode: r.mode,
-      trapAt: null,
-    }));
+    .filter(
+      (r) =>
+        r.pausedAt !== null &&
+        r.switchOn &&
+        trapOwed({
+          pausedAt: r.pausedAt,
+          mode: r.mode === 'soft' ? 'soft' : r.mode === 'hard' ? 'hard' : null,
+          deadlineAt: r.deadlineAt,
+          escalatedAt: r.escalatedAt,
+          trapAt: r.trapAt,
+          resumeStartedAt: r.resumeStartedAt,
+        }),
+    )
+    .map((r) => ({ ...infoOf(r, r.pausedAt as number), trapAt: null }));
 }
 
 /**
- * PAUSE / LIFT a run (`orchestra run pause --hard` / `run resume`). Authority = the HOLD rule
+ * PAUSE / LIFT a run (`orchestra run pause [--hard]` / `run resume`). `mode` 'hard' (default) = Pause dure (#252); 'soft' = Pause douce (#254:
+ * `pause_deadline_at = paused_at + 3 min`, the trap is owed only once escalated). `--hard` over a douce still waiting cuts it short
+ * (`escalated`). Authority = the HOLD rule
  * (`runHoldAuthority`: the run's coordinator or an ANCESTOR run's coordinator; a worker, a
  * descendant's coordinator, or no identity is `refused`). A pause needs the run's FROZEN
  * `pause` switch ON (`switch-off` otherwise: nothing written, never inert-but-accepted). A
@@ -173,6 +210,7 @@ export function setRunPause(
   runId: string,
   pause: boolean,
   actor: string | null | undefined,
+  mode: PauseMode = 'hard',
 ): RunPauseOutcome {
   const auth = runHoldAuthority(db, runId);
   if (!auth) return 'no-run';
@@ -184,16 +222,29 @@ export function setRunPause(
   const isPaused = row !== null && row.pausedAt !== null;
   if (pause) {
     if (!getRun(db, runId)?.flags.pause) return 'switch-off';
-    if (isPaused) return 'already-paused';
+    if (isPaused) {
+      // `--hard` over a douce that is still waiting = escalate NOW (the trap becomes owed); anything else keeps the original pause.
+      if (mode === 'hard' && row!.mode === 'soft' && row!.escalatedAt === null && row!.trapAt === null && row!.resumeStartedAt === null) {
+        const done = db.prepare(
+          `UPDATE runs SET pause_mode = 'hard', pause_escalated_at = ?
+            WHERE id = ? AND paused_at = ? AND pause_mode = 'soft' AND pause_escalated_at IS NULL AND pause_trap_at IS NULL`,
+        ).run(Date.now(), runId, row!.pausedAt).changes;
+        if (done > 0) return 'escalated';
+      }
+      return 'already-paused';
+    }
+    const now = Date.now();
     db.prepare(
-      `UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_trap_at = NULL
+      `UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = ?, pause_deadline_at = ?, pause_escalated_at = NULL,
+              resume_started_at = NULL, pause_auto = NULL, pause_trap_at = NULL
         WHERE id = ? AND paused_at IS NULL`,
-    ).run(Date.now(), who, runId);
+    ).run(now, who, mode, mode === 'soft' ? softDeadlineAt(now) : null, runId);
     return 'paused';
   }
   if (!isPaused) return 'not-paused';
   db.prepare(
-    'UPDATE runs SET paused_at = NULL, paused_by = NULL, pause_mode = NULL, pause_trap_at = NULL WHERE id = ?',
+    `UPDATE runs SET paused_at = NULL, paused_by = NULL, pause_mode = NULL, pause_trap_at = NULL, pause_deadline_at = NULL,
+            pause_escalated_at = NULL, resume_started_at = NULL, pause_auto = NULL WHERE id = ?`,
   ).run(runId);
   return 'lifted';
 }
@@ -235,7 +286,7 @@ export function pausedCarrierForWorkspace(
   for (const id of ids) {
     const row = readPauseRow(db, id);
     if (row && row.pausedAt !== null && row.switchOn) {
-      return { runId: id, pausedAt: row.pausedAt, pausedBy: row.pausedBy, mode: row.mode, trapAt: row.trapAt };
+      return infoOf(row, row.pausedAt);
     }
   }
   if (dangling) {
