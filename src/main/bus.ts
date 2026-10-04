@@ -68,7 +68,11 @@ export type BusMessageKind =
   | 'handoff'
   | 'decision_gate'
   | 'question'
-  | 'heartbeat';
+  | 'heartbeat'
+  // Wave E (ledger #276 D3): host → member rows. 'pause' = a Pause douce reached you (#254); 'reprise' = your
+  // Consigne de reprise / a coordinator's Bilan at Reprise (#255).
+  | 'pause'
+  | 'reprise';
 
 const MESSAGE_KINDS: readonly BusMessageKind[] = [
   'status',
@@ -79,6 +83,8 @@ const MESSAGE_KINDS: readonly BusMessageKind[] = [
   'decision_gate',
   'question',
   'heartbeat',
+  'pause',
+  'reprise',
 ];
 
 /** One row of `messages`, as `check()` hands it to a reader. */
@@ -140,7 +146,7 @@ export interface BusDecisionGate {
  *  8 = the per-run HOLD flag (#204 remainder, wave #224 track A4 — the only track
  *  of that wave allowed a slot).
  *  9 = the fleet PAUSE state (#252, wave D ledger #261 — D1a is the slot's sole author). */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -489,6 +495,28 @@ export const MIGRATIONS: Record<number, string> = {
       killed_json   TEXT,
       error         TEXT,
       created_at    INTEGER NOT NULL
+    );
+  `,
+  // Wave E fleet PAUSE lifecycle (ledger #276 D3 frozen interface; src/shared/pause-lifecycle.ts): Pause douce (#254),
+  // structured Reprise (#255), auto pause on usage limit (#256). `pause_mode` gains 'soft'. `pause_members` = one row per
+  // member per pause epoch (run_id = CARRIER, paused_at = runs.paused_at at pause time): pause accusé, release, reprise accusé.
+  10: `
+    ALTER TABLE runs ADD COLUMN pause_deadline_at INTEGER;
+    ALTER TABLE runs ADD COLUMN pause_escalated_at INTEGER;
+    ALTER TABLE runs ADD COLUMN resume_started_at INTEGER;
+    ALTER TABLE runs ADD COLUMN pause_auto TEXT;
+    CREATE TABLE IF NOT EXISTS pause_members (
+      run_id               TEXT NOT NULL,
+      paused_at            INTEGER NOT NULL,
+      ws_id                TEXT NOT NULL,
+      role                 TEXT NOT NULL,
+      member_run           TEXT,
+      pause_confirmed_at   INTEGER,
+      pause_confirm_via    TEXT,
+      released_at          INTEGER,
+      released_by          TEXT,
+      reprise_confirmed_at INTEGER,
+      PRIMARY KEY (run_id, paused_at, ws_id)
     );
   `,
 };

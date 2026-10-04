@@ -45,10 +45,17 @@ function tree(db: bus.BusDb, sw: BusSwitches = ON): void {
 const cols = (db: bus.BusDb, table: string): string[] =>
   (db.pragma(`table_info(${table})`) as { name: string }[]).map((c) => c.name);
 
-test('SCHEMA: SCHEMA_VERSION is 9 and a fresh DB has exactly the frozen pause columns + pause_records', () => {
+test('SCHEMA: SCHEMA_VERSION is 10 and a fresh DB has exactly the frozen pause columns + pause_records + pause_members', () => {
   const { db } = freshDb();
-  assert.equal(bus.SCHEMA_VERSION, 9);
-  assert.equal(bus.schemaVersion(db), 9);
+  assert.equal(bus.SCHEMA_VERSION, 10);
+  assert.equal(bus.schemaVersion(db), 10);
+  for (const c of ['pause_deadline_at', 'pause_escalated_at', 'resume_started_at', 'pause_auto']) {
+    assert.ok(cols(db, 'runs').includes(c), `runs.${c}`);
+  }
+  assert.deepEqual(cols(db, 'pause_members'), [
+    'run_id', 'paused_at', 'ws_id', 'role', 'member_run', 'pause_confirmed_at', 'pause_confirm_via',
+    'released_at', 'released_by', 'reprise_confirmed_at',
+  ]);
   for (const c of ['paused_at', 'paused_by', 'pause_mode', 'pause_trap_at', 'held_at', 'held_by']) {
     assert.ok(cols(db, 'runs').includes(c), `runs.${c}`);
   }
@@ -58,19 +65,41 @@ test('SCHEMA: SCHEMA_VERSION is 9 and a fresh DB has exactly the frozen pause co
   db.close();
 });
 
-test('SCHEMA: a DB stamped v8 (no pause columns) migrates to v9 in place and keeps its rows', () => {
+test('SCHEMA: a DB stamped v8 (no pause columns) migrates to HEAD in place and keeps its rows', () => {
   const { db, file } = freshDb();
   tree(db);
+  db.exec('DROP TABLE pause_members');
+  for (const c of ['pause_deadline_at', 'pause_escalated_at', 'resume_started_at', 'pause_auto']) db.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
   db.exec('DROP TABLE pause_records');
   for (const c of ['paused_at', 'paused_by', 'pause_mode', 'pause_trap_at']) db.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
   db.pragma('user_version = 8');
   assert.equal(cols(db, 'runs').includes('paused_at'), false, 'pre-state: column absent at v8');
   db.close();
   const again = bus.openBus(file); // open() migrates
-  assert.equal(bus.schemaVersion(again), 9);
+  assert.equal(bus.schemaVersion(again), 10);
   assert.ok(cols(again, 'runs').includes('pause_trap_at'));
+  assert.ok(cols(again, 'runs').includes('resume_started_at'));
   assert.equal(busRuns.getRun(again, 'O')?.coordinator, 'ops-ws', 'existing run rows survive');
   assert.equal(getRunPause(again, 'O'), null, 'and read as not paused');
+  again.close();
+});
+
+test('SCHEMA: a DB stamped v9 (wave D pause, no lifecycle) migrates to v10 in place, keeps a live pause and its Bilan', () => {
+  const { db, file } = freshDb();
+  tree(db);
+  db.exec('DROP TABLE pause_members');
+  for (const c of ['pause_deadline_at', 'pause_escalated_at', 'resume_started_at', 'pause_auto']) db.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
+  db.exec(`UPDATE runs SET paused_at = 1000, paused_by = 'lead-ws', pause_mode = 'hard' WHERE id = 'O'`);
+  db.exec(`INSERT INTO pause_records (run_id, ws_id, paused_at, created_at) VALUES ('O', 'w1', 1000, 1001)`);
+  db.pragma('user_version = 9');
+  db.close();
+  const again = bus.openBus(file);
+  assert.equal(bus.schemaVersion(again), 10);
+  assert.equal(getRunPause(again, 'O')?.pausedAt, 1000, 'a v9 pause survives the migration');
+  const r = again.prepare(`SELECT resume_started_at, pause_auto, pause_deadline_at FROM runs WHERE id = 'O'`).get() as Record<string, unknown>;
+  assert.deepEqual(r, { resume_started_at: null, pause_auto: null, pause_deadline_at: null }, 'new columns read NULL (manual hard pause)');
+  assert.equal((again.prepare('SELECT COUNT(*) AS n FROM pause_records').get() as { n: number }).n, 1);
+  assert.equal((again.prepare('SELECT COUNT(*) AS n FROM pause_members').get() as { n: number }).n, 0);
   again.close();
 });
 

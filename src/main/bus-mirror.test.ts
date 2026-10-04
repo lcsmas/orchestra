@@ -674,6 +674,13 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
       seed.exec('ALTER TABLE runs DROP COLUMN held_by');
     }
     // MIGRATIONS[9] (#252) ADDed the pause columns + pause_records; every `from` is < 9.
+    // MIGRATIONS[10] (wave E, ledger #276 D3) ADDed the lifecycle columns + pause_members; every `from` is < 10.
+    if (from < 10) {
+      seed.exec('DROP TABLE IF EXISTS pause_members');
+      for (const c of ['pause_deadline_at', 'pause_escalated_at', 'resume_started_at', 'pause_auto']) {
+        seed.exec(`ALTER TABLE runs DROP COLUMN ${c}`);
+      }
+    }
     if (from < 9) {
       seed.exec('DROP TABLE IF EXISTS pause_records');
       for (const c of ['paused_at', 'paused_by', 'pause_mode', 'pause_trap_at']) {
