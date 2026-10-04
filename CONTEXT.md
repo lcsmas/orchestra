@@ -105,3 +105,9 @@ no default account (the bare `~/.claude` fallback goes away). Settled with the
 user 2026-09-30.
 _Avoid_: profil / profile (collides with the isolated browser profile used
 during sign-in), login (that is the act, not the thing)
+
+**Connexion** (sign-in):
+A Compte's signed-in session with claude.ai. It has an end date fixed when the
+human signs in (refreshing never extends it); when it ends or is revoked, the
+human must sign in again. The only auth state the UI ever shows.
+_Avoid_: token (internal, renewed silently; its expiry is never a problem to show), login
