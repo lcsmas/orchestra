@@ -304,6 +304,17 @@ only the run's coordinator or an ancestor run's coordinator (D7); FENCED through
 frozen `pause` switch is OFF; `run resume` lifts the pause AND the hold; see `bus.md` §Fleet PAUSE),
 Fully non-interactive (destructive `delete` needs `--yes`).
 
+### Message bodies (`src/cli/body-args.ts`)
+`send`, `ask`, `gate open` and `status` build their body with `resolveBody` (via
+`bodyOrFail` in `index.ts`), BEFORE any bus write or socket call: options only
+before a `--` separator (`splitAtSeparator`), an unknown `--option` left in the
+body is REFUSED (rc 1, "nothing was sent", the verb's options listed), and
+`--body-file <path>` (`-` = stdin) reads a long body (exclusive with inline text;
+missing/empty refused). Before this, `send … --file x` delivered the text
+"--file x" with rc 0 (2026-10-04). `message` keeps its verbatim body (#59 —
+slated for removal by ADR 0002). Tests: `body-args.test.ts` (pure),
+`body-unknown-flag.test.ts` (built CLI, real bus, dead `ORCHESTRA_SOCK`).
+
 ### Help (`src/cli/help.ts`)
 `COMMANDS` is the single help registry (group, one-line summary, full detail per
 verb); `overview()` renders the grouped `orchestra --help`. `main()` short-circuits

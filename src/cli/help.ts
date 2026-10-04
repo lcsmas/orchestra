@@ -57,11 +57,13 @@ parent, repo, base.`,
     name: 'status',
     group: 'Workspaces',
     summary: "Set/clear THIS workspace's one-line status note",
-    detail: `usage: orchestra status <text...>
+    detail: `usage: orchestra status <text...> | --body-file <path>
        orchestra status --clear
 
 Set THIS workspace's one-line status note — shown under its sidebar row and
-in 'peers'. --clear removes it.`,
+in 'peers'. --clear removes it.
+Body: an unknown --option is REFUSED (nothing is written); put text that starts
+with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long body.`,
   },
   {
     name: 'spawn',
@@ -131,7 +133,7 @@ is REQUIRED — without it the command refuses.`,
     name: 'send',
     group: 'Fleet bus',
     summary: 'Append a message to the fleet bus',
-    detail: `usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] <body...>
+    detail: `usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] (<body...> | --body-file <path>)
 
 Append a message to the FLEET BUS. Writes SQLite directly, so it lands even
 while the app is down. Prints the message's sequence.
@@ -147,6 +149,8 @@ while the app is down. Prints the message's sequence.
   --request-id <id>  idempotency key for receipts
 --type dispatch also mints a capability token (printed on a 2nd line) — hand
 it to the worker (who can re-fetch it with 'orchestra token').
+Body: an unknown --option is REFUSED (nothing is written); put text that starts
+with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long body.
 ${BUS_IDENTITY}`,
   },
   {
@@ -176,10 +180,12 @@ ${BUS_IDENTITY}`,
     name: 'ask',
     group: 'Fleet bus',
     summary: 'Park a question for a handle and exit (never waits)',
-    detail: `usage: orchestra ask --to <handle> <question...>
+    detail: `usage: orchestra ask --to <handle> (<question...> | --body-file <path>)
 
 Park a question on the bus for <handle>, print its id and EXIT — never waits
 (the answer comes back as an ordinary bus message).
+Body: an unknown --option is REFUSED (nothing is written); put text that starts
+with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long body.
 ${BUS_IDENTITY}`,
   },
   {
@@ -197,7 +203,7 @@ ${BUS_IDENTITY}`,
     name: 'gate',
     group: 'Fleet bus',
     summary: 'Open / resolve / list decision gates',
-    detail: `usage: orchestra gate open [--to <handle>] <question...>
+    detail: `usage: orchestra gate open [--to <handle>] (<question...> | --body-file <path>)
        orchestra gate resolve <id> --resolution <r>
        orchestra gate list
 
@@ -206,6 +212,8 @@ ${BUS_IDENTITY}`,
   resolve   record the Ruling (refuses to overwrite one)
   list      open gates addressed to you (also shown by 'check')
   --generation <n>   coordinator generation fence (#128)
+Body: an unknown --option is REFUSED (nothing is written); put text that starts
+with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long body. (open only)
 ${BUS_IDENTITY}`,
   },
   {

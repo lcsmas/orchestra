@@ -50,6 +50,7 @@ import {
 } from './help.ts';
 import { staleRunRefusalMessage } from '../shared/reparent-run.ts';
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
+import { resolveBody, splitAtSeparator } from './body-args.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -633,6 +634,22 @@ function exitWith(code: number): never {
  * post-request callback context. Throwing makes the control-flow guarantee the
  * type signature already claims (`: never`) independent of `process.exit`'s
  * timing, so any script or agent gating on `$?` sees the refusal. */
+/** The body of a body-taking verb, or fail() BEFORE any write: refuses an unknown
+ *  `--option` (it used to be glued into the body, rc 0) and reads --body-file. */
+function bodyOrFail(verb: string, flagArgs: string[], rest: string[], tail: string[], knownFlags: string[], bodyFile?: string): string {
+  const r = resolveBody({
+    verb,
+    rest,
+    tail,
+    knownFlags,
+    bodyFilePresent: flagArgs.includes('--body-file'),
+    bodyFile,
+    readFile: (p) => fs.readFileSync(p === '-' ? 0 : p, 'utf8'),
+  });
+  if ('error' in r) fail(r.error);
+  return r.body;
+}
+
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
@@ -1610,7 +1627,8 @@ async function main(argv: string[]): Promise<void> {
       // ledger #146 D1 condition 3). If #144 later moves `send` into a shared
       // module, this gate moves with it (ledger #146 D1).
       refuseIfStaleRun();
-      const t = takeFlag(args, '--type');
+      const sendSplit = splitAtSeparator(args);
+      const t = takeFlag(sendSplit.flagArgs, '--type');
       const to = takeFlag(t.rest, '--to');
       const th = takeFlag(to.rest, '--thread');
       const gen = takeFlag(th.rest, '--generation'); // #128 hunk (fencing)
@@ -1620,6 +1638,9 @@ async function main(argv: string[]): Promise<void> {
       const reqId = takeFlag(capf.rest, '--request-id'); // #130 hunk (receipts)
       const run = takeFlag(reqId.rest, '--run');
       const as = takeFlag(run.rest, '--as');
+      const sendBf = takeFlag(as.rest, '--body-file');
+      const sendBody = bodyOrFail('send', sendSplit.flagArgs, sendBf.rest, sendSplit.tail,
+        ['--type', '--to', '--thread', '--cap', '--request-id', '--generation', '--run', '--as', '--body-file'], sendBf.value);
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       // #144 — canonicalize the recipient to a FULL workspace id BEFORE the row
       // is written. The bus never stores a short handle: the wake predicate and
@@ -1653,7 +1674,7 @@ async function main(argv: string[]): Promise<void> {
           thread: th.value ?? null,
           cap: capf.value ?? null,
           requestId: reqId.value ?? null,
-          body: as.rest.join(' '),
+          body: sendBody,
         });
       } finally {
         db.close();
@@ -1708,9 +1729,13 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'ask': {
-      const to = takeFlag(args, '--to');
+      const askSplit = splitAtSeparator(args);
+      const to = takeFlag(askSplit.flagArgs, '--to');
       const run = takeFlag(to.rest, '--run');
       const as = takeFlag(run.rest, '--as');
+      const askBf = takeFlag(as.rest, '--body-file');
+      const askBody = bodyOrFail('ask', askSplit.flagArgs, askBf.rest, askSplit.tail,
+        ['--to', '--run', '--as', '--body-file'], askBf.value);
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       // #221 — same canonicalize as `send` (full id + the recipient's wave run) so an unreachable
       // recipient is refused loudly instead of parking a question nobody reads. `human` is a surface.
@@ -1727,7 +1752,7 @@ async function main(argv: string[]): Promise<void> {
         verbAsk(
           busCtx(db, bus, id, { generation: null, fencingOn: false }),
           askTo?.id ?? to.value,
-          as.rest.join(' '),
+          askBody,
           askTo?.runId ?? null,
         );
       } finally {
@@ -1756,7 +1781,9 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'gate': {
-      const gen = takeFlag(args, '--generation'); // #128 hunk (fencing gate-resolve)
+      // `gate open` body: options only before a `--`; `resolve` keeps its own parsing.
+      const gateSplit = args[0] === 'open' ? splitAtSeparator(args) : { flagArgs: args, tail: [] as string[] };
+      const gen = takeFlag(gateSplit.flagArgs, '--generation'); // #128 hunk (fencing gate-resolve)
       const run = takeFlag(gen.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
@@ -1765,9 +1792,15 @@ async function main(argv: string[]): Promise<void> {
       let gateToRunId: string | null = null;
       if (as.rest[0] === 'open') {
         const gt = takeFlag(gateArgs, '--to');
+        const gbf = takeFlag(gt.rest, '--body-file');
+        const question = bodyOrFail('gate open', gateSplit.flagArgs, gbf.rest, gateSplit.tail,
+          ['--to', '--generation', '--run', '--as', '--body-file'], gbf.value);
+        // The question travels as ONE element so verbGate's own --to scan never
+        // re-reads a word inside it.
+        gateArgs = gt.value !== undefined ? ['--to', gt.value, question] : [question];
         if (gt.value?.trim() && gt.value.trim() !== 'human') {
           const c = await canonicalizeRecipientOrFail(gt.value, 'gate open');
-          gateArgs = ['--to', c.id, ...gt.rest];
+          gateArgs = ['--to', c.id, question];
           gateToRunId = c.runId;
         }
       }
@@ -1821,10 +1854,13 @@ async function main(argv: string[]): Promise<void> {
     case 'status': {
       // Self-targeted by design: each agent narrates its OWN workspace. The id
       // comes from the PTY/SDK env, so there is nothing to pass or mistype.
-      const { present: clear, rest } = takeBoolFlag(args, '--clear');
+      const stSplit = splitAtSeparator(args);
+      const { present: clear, rest } = takeBoolFlag(stSplit.flagArgs, '--clear');
+      const stBf = takeFlag(rest, '--body-file');
+      const stBody = bodyOrFail('status', stSplit.flagArgs, stBf.rest, stSplit.tail, ['--clear', '--body-file'], stBf.value);
       const id = selfWorkspaceId();
       if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
-      const text = clear ? '' : rest.join(' ').trim();
+      const text = clear ? '' : stBody.trim();
       if (!text && !clear) {
         fail('usage: orchestra status <text...> | orchestra status --clear');
       }
