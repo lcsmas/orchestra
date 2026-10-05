@@ -84,7 +84,7 @@ function humanOptionSites(source: string, fileName = 'x.ts'): { passes: number; 
   return out;
 }
 
-test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): no `human` property is PASSED anywhere but src/main/pause-ui.ts (by AST — every LITERAL spelling, each file parsed as its own kind); a RELAYED object (spread / variable) cannot reach a writer from the CLI because the CLI\'s deps are TYPED without the option', () => {
+test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): no `human` property is PASSED anywhere but src/main/pause-ui.ts (by AST — every LITERAL spelling, each file parsed as its own kind); a RELAYED object (spread / variable) is stopped by the two pins below (every call site of the four writers by arity + argument kinds, and the single importer of the UI entry points) and, for `bus-verbs.ts`, by its deps being TYPED without the option', () => {
   const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []));
   const passes: Record<string, number> = {};
   const reads: Record<string, number> = {};
@@ -103,7 +103,7 @@ test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): no `h
   const cli = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
   assert.ok(/export type CliRepriseEntry = [^;]*Omit<NonNullable<Parameters<RepriseEntry>\[3\]>, 'human'>/.test(cli) && /beginReprise\?: CliRepriseEntry;/.test(cli), 'RunPauseDeps.beginReprise is CliRepriseEntry (RepriseEntry minus `human`)');
   assert.ok(!/beginReprise\?: RepriseEntry/.test(cli));
-  // …and the other three CLI writer deps take NO options parameter at all: a relayed `{ ...opts }` is a type error there (the static scan cannot follow a relayed object — the types do)
+  // …and the other three `bus-verbs.ts` writer deps take NO options parameter at all: a relayed `{ ...opts }` is a type error THERE (only there — the pins below cover every other file)
   assert.ok(cli.includes('setRunPause: (db: BusDb, runId: string, pause: boolean, actor: string | null, mode?: PauseMode) => RunPauseOutcome;'), 'RunPauseDeps.setRunPause has no options parameter');
   assert.ok(cli.includes('setRunHold: (db: BusDb, runId: string, hold: boolean, actor: string | null) => RunHoldOutcome;'), 'RunHoldDeps.setRunHold has no options parameter');
   assert.ok(cli.includes("releaseMembers?: (db: BusDb, carrierRunId: string, actor: string, targets: readonly string[] | 'all') => ReleaseResult;"), 'RunPauseDeps.releaseMembers has no options parameter');
@@ -122,6 +122,81 @@ test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): no `h
   assert.equal(probe('const { human: h } = o;').reads, 1);
   assert.equal(probe('type T = { human?: boolean }').declares, 1);
   assert.deepEqual(probe("const s = '/* human: true */'; // human: true\nconst t = \"*/\"; f({ human: true })"), { passes: 1, reads: 0, declares: 0 }, 'a comment / string mentioning it is not a site; a `*/` inside a string does not hide the real one');
+});
+
+/** Every non-test source file of src/, parsed as its own kind. */
+function sourceFiles(): Array<{ rel: string; sf: ts.SourceFile }> {
+  const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []));
+  return walk(path.join(process.cwd(), 'src')).map((f) => ({ rel: path.relative(process.cwd(), f), sf: ts.createSourceFile(f, fs.readFileSync(f, 'utf8'), ts.ScriptTarget.ES2022, true, f.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS) }));
+}
+
+/** Files that import / re-export / `import()` / `require()` the module `target` (a path relative to the repo root, extension-less), by AST. */
+function importersOf(target: string, files = sourceFiles()): string[] {
+  const hits: string[] = [];
+  for (const { rel, sf } of files) {
+    const resolves = (spec: string): boolean => spec.startsWith('.') && path.normalize(path.join(path.dirname(rel), spec)).replace(/\.(ts|tsx)$/, '') === target;
+    let hit = false;
+    const visit = (n: ts.Node): void => {
+      if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteralLike(n.moduleSpecifier) && resolves(n.moduleSpecifier.text)) hit = true;
+      else if (ts.isCallExpression(n) && n.arguments.length > 0 && ts.isStringLiteralLike(n.arguments[0]) && ((n.expression.kind === ts.SyntaxKind.ImportKeyword) || (ts.isIdentifier(n.expression) && n.expression.text === 'require')) && resolves(n.arguments[0].text)) hit = true;
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    if (hit) hits.push(rel);
+  }
+  return hits.sort();
+}
+
+const WRITERS = new Set(['setRunPause', 'setRunHold', 'beginReprise', 'releaseMembers']);
+
+/** Every CALL of a writer (`x.setRunPause(…)`, `deps.releaseMembers!(…)`, `f?.()`…) outside the UI layer: `name/argc:kinds`, plus any object-literal argument that is not plain `host` / `reason` properties. */
+function writerCalls(files = sourceFiles()): { sites: Record<string, string[]>; badObjects: string[] } {
+  const sites: Record<string, string[]> = {};
+  const badObjects: string[] = [];
+  for (const { rel, sf } of files) {
+    if (rel === 'src/main/pause-ui.ts') continue; // the human's own call sites: pinned by the test above
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n)) {
+        let c: ts.Expression = n.expression;
+        while (ts.isNonNullExpression(c) || ts.isParenthesizedExpression(c)) c = c.expression;
+        const name = ts.isIdentifier(c) ? c.text : ts.isPropertyAccessExpression(c) ? c.name.text : null;
+        if (name && WRITERS.has(name)) {
+          (sites[rel] ??= []).push(`${name}/${n.arguments.length}:${n.arguments.map((a) => ts.SyntaxKind[a.kind]).join(',')}`);
+          for (const a of n.arguments) {
+            if (ts.isObjectLiteralExpression(a) && !a.properties.every((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ['host', 'reason'].includes(p.name.text))) badObjects.push(`${rel}: ${a.getText().slice(0, 60)}`);
+          }
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  for (const k of Object.keys(sites)) sites[k].sort();
+  return { sites, badObjects };
+}
+
+test('ENUMERATION (importers + call sites): the UI entry points uiPause / uiResume / uiRelease have ONE importer (pause-ui-host.ts, behind ipcMain); every call of the four Pause writers outside pause-ui.ts is pinned by arity and argument kinds, its object arguments are plain host / reason — a socket route, a relayed object or an aliased call is a NEW site and fails here (review m-A)', () => {
+  assert.deepEqual(importersOf('src/main/pause-ui'), ['src/main/pause-ui-host.ts'], 'who imports / re-exports / dynamically loads src/main/pause-ui.ts (the module that holds the human authority)');
+  const { sites, badObjects } = writerCalls();
+  assert.deepEqual(badObjects, [], 'a writer call whose object argument is not plain { host, reason } (a spread / computed key / `human` could relay the human option)');
+  assert.deepEqual(sites, {
+    'src/cli/bus-verbs.ts': ['beginReprise/4:PropertyAccessExpression,Identifier,Identifier,ObjectLiteralExpression', 'releaseMembers/4:PropertyAccessExpression,Identifier,Identifier,Identifier', 'setRunHold/4:PropertyAccessExpression,Identifier,Identifier,Identifier', 'setRunPause/4:PropertyAccessExpression,Identifier,FalseKeyword,Identifier', 'setRunPause/5:PropertyAccessExpression,Identifier,TrueKeyword,Identifier,Identifier'],
+    'src/main/pause-auto.ts': ['beginReprise/4:Identifier,PropertyAccessExpression,StringLiteral,ObjectLiteralExpression'],
+  }, 'the CLI verbs (typed deps) and the host auto-Reprise — no other file calls a writer');
+  // the pin sees what it claims to see: planted evasions, each in a fresh file set
+  const plant = (rel: string, code: string) => ({ rel, sf: ts.createSourceFile(rel, code, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS) });
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/api-handlers.ts', "import { uiPause } from './pause-ui';")]), ['src/main/api-handlers.ts']);
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import * as ui from './pause-ui.ts';")]), ['src/main/x.ts']);
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "export { uiResume } from './pause-ui';")]), ['src/main/x.ts']);
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "const m = await import('./pause-ui');")]), ['src/main/x.ts']);
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/cli/x.ts', "import { uiPause } from '../main/pause-ui';")]), ['src/cli/x.ts']);
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import { x } from './pause-ui-host';")]), [], 'a sibling module is not the target');
+  assert.deepEqual(writerCalls([plant('src/cli/index.ts', "busPause.setRunPause(db, id, true, a, 'hard', JSON.parse(s));")]).sites['src/cli/index.ts'], ['setRunPause/6:Identifier,Identifier,TrueKeyword,Identifier,StringLiteral,CallExpression']);
+  assert.equal(writerCalls([plant('src/x.ts', 'deps.releaseMembers!(db, c, a, t, 1, o);')]).sites['src/x.ts'].length, 1, 'a non-null-asserted call is seen');
+  assert.equal(writerCalls([plant('src/x.ts', 'deps.setRunHold?.(db, r, false, a, o);')]).sites['src/x.ts'].length, 1, 'an optional call is seen');
+  assert.equal(writerCalls([plant('src/x.ts', 'beginReprise(db, c, a, { ...opts });')]).badObjects.length, 1, 'a relayed spread');
+  assert.equal(writerCalls([plant('src/x.ts', 'beginReprise(db, c, a, { host: true, reason: x });')]).badObjects.length, 0, 'plain host / reason is fine');
+  assert.equal(writerCalls([plant('src/x.ts', 'beginReprise(db, c, a, { ["hu" + "man"]: true });')]).badObjects.length, 1, 'a computed key');
 });
 
 test('docs: the orchestra-comms skill SOURCE (COMMS_SKILL) documents the verbs, the refusal text and the human-prompt policy', () => {
