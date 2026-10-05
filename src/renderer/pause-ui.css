@@ -1,0 +1,35 @@
+/* Fleet Pause UI (#257): colours = the app's own tokens — amber (--yellow) while a member is being taken, blue (--accent) while held, green (--green) once back, red (--red) for a refusal.
+   Separate file on purpose: styles.css is appended to by every wave (scripts/resolve-css-append.mjs exists for the conflicts). */
+.pause-icon { display: block; flex: none; }
+.pause-badge { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 15px; padding: 0 5px; border-radius: 999px; font-size: 9px; font-weight: 600; letter-spacing: 0.03em; line-height: 1; border: 1px solid transparent; white-space: nowrap; }
+.pause-badge.is-compact { height: 13px; padding: 0 4px; font-size: 8.5px; }
+.pause-t-paused { color: var(--accent); background: rgba(110, 168, 255, 0.1); border-color: rgba(110, 168, 255, 0.3); }
+.pause-t-pausing { color: var(--yellow); background: rgba(255, 200, 87, 0.1); border-color: rgba(255, 200, 87, 0.32); }
+.pause-t-resumed { color: var(--green); background: rgba(91, 214, 139, 0.12); border-color: rgba(91, 214, 139, 0.36); }
+.pause-badge.is-blocked { background: rgba(110, 168, 255, 0.06); border-color: rgba(110, 168, 255, 0.22); }
+.pause-glyph { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: none; background: none; border: none; }
+.pause-glyph.pause-t-paused { color: var(--accent); }
+.pause-glyph.pause-t-pausing { color: var(--yellow); }
+.pause-glyph.pause-t-resumed { color: var(--green); }
+.ws-item.pause-dim .ws-name { color: var(--text-dim); }
+.pause-bar { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.pause-bar > i { display: block; height: 100%; border-radius: 2px; transition: width 240ms var(--ease); }
+.pause-fill-paused { background: var(--accent); }
+.pause-fill-pausing { background: var(--yellow); }
+.pause-fill-resumed { background: var(--green); }
+.pause-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: var(--radius-sm); font-size: 11.5px; font-weight: 600; white-space: nowrap; border: 1px solid var(--border-strong); background: var(--bg-3); color: var(--text); box-shadow: none; }
+.pause-btn-primary { background: rgba(110, 168, 255, 0.1); border-color: rgba(110, 168, 255, 0.35); color: var(--accent); }
+.pause-btn-go { background: rgba(91, 214, 139, 0.1); border-color: rgba(91, 214, 139, 0.38); color: var(--green); }
+.pause-btn-warn { background: rgba(255, 200, 87, 0.09); border-color: rgba(255, 200, 87, 0.34); color: var(--yellow); }
+.pause-btn-ghost { background: transparent; border-color: var(--border); color: var(--text-dim); }
+.pause-btn:hover:not(.is-off) { filter: brightness(1.15); }
+.pause-btn.is-off { opacity: 0.45; cursor: not-allowed; }
+.pause-explain { display: flex; gap: 9px; padding: 9px 11px; border: 1px solid rgba(255, 107, 107, 0.32); border-left: 3px solid var(--red); border-radius: var(--radius-sm); background: rgba(255, 107, 107, 0.07); font-size: 11.5px; line-height: 1.4; }
+.pause-explain > svg { margin-top: 1px; color: var(--red); }
+.pause-explain b { display: block; font-size: 12px; margin-bottom: 2px; }
+.pause-explain-why { display: block; color: var(--text-dim); }
+.pause-explain-fix { margin: 6px 0 0; padding-left: 16px; color: var(--text-dim); }
+.pause-explain.is-info { border-color: rgba(110, 168, 255, 0.3); border-left-color: var(--accent); background: rgba(110, 168, 255, 0.06); }
+.pause-explain.is-info > svg { color: var(--accent); }
+.pause-explain.is-warn { border-color: rgba(255, 200, 87, 0.34); border-left-color: var(--yellow); background: rgba(255, 200, 87, 0.07); }
+.pause-explain.is-warn > svg { color: var(--yellow); }

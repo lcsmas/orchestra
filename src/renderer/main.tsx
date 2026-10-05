@@ -2,6 +2,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './styles.css';
+// Fleet Pause UI (#257) — its own sheet (styles.css is appended to by every wave).
+import './pause-ui.css';
 // Structured agent-view styles — three cascade layers, LAST WINS:
 //   1. agent-view-defaults.css   (A3) component structural defaults
 //   2. agent-view-structure.css  (A2) layout / DOM scaffolding
