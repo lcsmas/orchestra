@@ -95,6 +95,7 @@ import {
   cancelLoginWatch,
 } from './account-usage';
 import { listInheritables, syncAccountInheritance, syncAfterAccountsSave } from './account-inherit';
+import { pauseAutoOnLogin } from './pause-auto-host';
 import { getSandboxControlState, takeSandboxControl } from './transport/sandbox-manager';
 import {
   importWorkspaceToSandbox,
@@ -557,6 +558,7 @@ export const apiHandlers: ApiHandlerTable = {
   saveAccountApiKey: async (accountId, key) => {
     await setAccountApiKey(accountId, key);
     void refreshAccountsNow();
+    void pauseAutoOnLogin(accountId); // #256: a replaced key is a new credential — forced fresh reading for the paused runs waiting on this account
   },
 
   listAccountBaseUrlIds: async () => accountBaseUrlIds(),
@@ -564,6 +566,7 @@ export const apiHandlers: ApiHandlerTable = {
   saveAccountBaseUrl: async (accountId, url) => {
     await setAccountBaseUrl(accountId, url);
     void refreshAccountsNow();
+    void pauseAutoOnLogin(accountId);
   },
 
   clearAccountApiKey: async (accountId) => {
@@ -621,6 +624,8 @@ export const apiHandlers: ApiHandlerTable = {
       platform.closeAccountLogin(accountId);
       platform.broadcast('accounts:loginDone', accountId);
       void refreshAccountsNow();
+      // #256: re-login = a NEW token — force a fresh reading of this account for the paused runs waiting on it and re-evaluate them now.
+      void pauseAutoOnLogin(accountId);
     });
     // Intercept claude's automatic browser-open so the OAuth page lands in
     // this account's ISOLATED login surface, not the system browser whose

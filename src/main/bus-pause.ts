@@ -249,14 +249,21 @@ export function setRunPause(
         ).run(Date.now(), runId, row!.pausedAt).changes;
         if (done > 0) return 'escalated';
       }
+      // #256: a human re-asserting a pause the HOST wrote on a usage limit takes it over — `pause_auto` NULL = manual, never auto-resumed (D6).
+      db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ? AND paused_at IS NOT NULL').run(runId);
       return 'already-paused';
     }
     const now = Date.now();
-    db.prepare(
+    const wrote = db.prepare(
       `UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = ?, pause_deadline_at = ?, pause_escalated_at = NULL,
               resume_started_at = NULL, pause_auto = NULL, pause_trap_at = NULL
         WHERE id = ? AND paused_at IS NULL`,
     ).run(now, who, mode, mode === 'soft' ? softDeadlineAt(now) : null, runId);
+    if (wrote.changes === 0) {
+      // a pause (the host's auto pause on a usage limit?) landed between the read and this write: the caller's pause IS that pause now — adopt it (#256, D6)
+      db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ? AND paused_at IS NOT NULL').run(runId);
+      return 'already-paused';
+    }
     return 'paused';
   }
   if (!isPaused) return 'not-paused';

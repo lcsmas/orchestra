@@ -159,6 +159,14 @@ interface CacheEntry {
 // accountId -> last status + the dir it was fetched against.
 const cache = new Map<string, CacheEntry>();
 
+/** Two overlapping refreshes (a forced one and a plain one) can land out of order: the OLDER reading must never replace a newer one of the same dir
+ *  (#256: a forced fresh reading overwritten by an older plain fetch would read as "taken for the old account"). */
+function setIfNewer(id: string, entry: CacheEntry): void {
+  const prev = cache.get(id);
+  if (prev && prev.dir === entry.dir && prev.status.fetchedAt > entry.status.fetchedAt) return;
+  cache.set(id, entry);
+}
+
 function fail(
   accountId: string,
   errorKind: AccountUsageStatus['errorKind'],
@@ -254,7 +262,10 @@ async function fetchApiKeyUsage(
 /** Ensure each account has a status no older than CACHE_MS, doing network work
  *  only for accounts whose token is present and whose cache is stale. Returns
  *  the full per-account status map and whether anything changed. */
-async function refreshStale(now: number): Promise<{ byId: Record<string, AccountUsageStatus>; changed: boolean }> {
+async function refreshStale(
+  now: number,
+  force: ReadonlySet<string> = new Set(),
+): Promise<{ byId: Record<string, AccountUsageStatus>; changed: boolean }> {
   const accounts = store.accounts;
   let changed = false;
 
@@ -276,7 +287,7 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
     if (isApiKeyAccount(acc)) {
       const dir = accountConfigDir(acc);
       const prev = cache.get(acc.id);
-      const fresh = prev && prev.dir === dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS;
+      const fresh = prev && prev.dir === dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS && !force.has(acc.id);
       if (fresh) continue;
       const [apiKey, baseUrl] = await Promise.all([
         getAccountApiKey(acc.id),
@@ -327,14 +338,14 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
       continue;
     }
     const prev = cache.get(acc.id);
-    const fresh = prev && prev.dir === creds.dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS;
+    const fresh = prev && prev.dir === creds.dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS && !force.has(acc.id);
     if (!fresh) toFetch.push({ id: acc.id, token: creds.token, dir: creds.dir });
   }
 
   if (toFetch.length > 0) {
     const results = await Promise.all(toFetch.map((t) => fetchUsage(t.id, t.token, now)));
     for (let i = 0; i < results.length; i++) {
-      cache.set(toFetch[i].id, { status: results[i], dir: toFetch[i].dir });
+      setIfNewer(toFetch[i].id, { status: results[i], dir: toFetch[i].dir });
     }
     changed = true;
   }
@@ -344,7 +355,7 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
       toProbe.map((t) => fetchApiKeyUsage(t.id, t.apiKey, t.baseUrl, now)),
     );
     for (let i = 0; i < results.length; i++) {
-      cache.set(toProbe[i].id, { status: results[i], dir: toProbe[i].dir });
+      setIfNewer(toProbe[i].id, { status: results[i], dir: toProbe[i].dir });
     }
     changed = true;
   }
@@ -459,8 +470,9 @@ export function stopAccountUsagePolling(): void {
 
 /** Called when accounts or repo→account assignments change so the renderer's
  *  mapping and usage refresh promptly without waiting for the next poll tick. */
-export async function refreshAccountsNow(): Promise<void> {
+export async function refreshAccountsNow(opts: { force?: readonly string[] } = {}): Promise<void> {
   broadcastWorkspaceAccounts();
-  const { byId } = await refreshStale(Date.now());
+  // `force` (#256): these accounts are re-read even inside the ≥180 s cache window — a migration / re-login made the cached reading one of the OLD account.
+  const { byId } = await refreshStale(Date.now(), new Set(opts.force ?? []));
   broadcastUsage(byId);
 }

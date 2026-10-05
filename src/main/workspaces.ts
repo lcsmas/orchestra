@@ -105,6 +105,7 @@ import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
+import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { mirrorDispatch } from './bus-mirror.ts';
@@ -2973,6 +2974,8 @@ export async function dispatchMigrateAccountRequest(input: {
     log.info(
       `migrated ${ws.branch} (${id}) from account ${currentAccountId ?? 'default'} to ${targetAccountId ?? 'default'}`,
     );
+    // #256: a trigger member of an auto-paused run changed account — force a fresh reading of its new account and re-evaluate the run NOW.
+    void pauseAutoOnMigrate(id);
 
     // Resume only if the agent was live when we stepped in — a workspace that
     // was idle stays idle (the user/agent resumes it when ready), matching the

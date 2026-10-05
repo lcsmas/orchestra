@@ -112,7 +112,7 @@ e.g. `/loop`, cron, the task-notification a killed background task triggers) on 
 ## Reading it
 
 `orchestra run status [--run <id>] [--json]` (`src/cli/run-status.ts`, store-less; after the lift it still prints the LAST pause's Bilan — `pause_records` outlives `run resume`): paused by/since, the carrier (an inherited pause names the ancestor run to lift — resolved by the ONE exported `coverFor` in `src/cli/index.ts`, the live-tree walk `run resume` uses too, so a run re-parented after creation reads the same in both), trap done/owed, and per member: dirty tree, snapshot ref
-(`git diff <head> <ref>` = the uncommitted non-ignored work), what it was doing, interrupt outcome, commands killed, survivors, refused, spared, notes, error. Reprise is NOT automatic: `run resume` starts the structured Reprise below — nothing restarts on its own.
+(`git diff <head> <ref>` = the uncommitted non-ignored work), what it was doing, interrupt outcome, commands killed, survivors, refused, spared, notes, error. Reprise is NOT automatic: `run resume` starts the structured Reprise below — nothing restarts on its own, except a pause the host wrote itself on a usage-limit stop (`pause_auto`), Reprised when the quota is back (`accounts-usage.md` §Auto Pause on a usage limit, #256).
 
 ## Reprise — coordinators first, Consigne de reprise per member (#255, wave E E2)
 

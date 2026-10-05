@@ -360,6 +360,58 @@ off mid-task and had nothing queued.
   structured limit signal. A `/loop` wakeup armed before a limit hit is still
   not re-armed at the reset (`src/main/loop-scan.ts`): declared OUT of v1.
 
+## Auto Pause on a usage limit / auto Reprise (#256, wave E ledger #276 D6)
+
+A usage-limit stop on a **structured** member puts its run in **Pause dure** (`docs/codebase-map/pause-trap.md`), and the host starts the
+**Reprise** (#255 `beginReprise`, `{host:true, reason:'usage_limit'}`) once the PINNED account of every triggering member has quota again — at the
+reset, on a fresh reading, after an account switch or a re-login. It plugs into #74's tick (no 2nd poller/timer). PTY members never record a limit
+stop: out of scope. **Switch `pause` OFF on every run above the member ⇒ nothing is written, and the tick adds ONE `SELECT` (rig arm `off_identity`).**
+
+- **Files.** Pure policy `src/shared/pause-auto.ts` (`memberVerdict` `:103`, `decideRunReprise` `:134`, the `pause_auto` codec `parsePauseAuto` `:42` /
+  `mergePauseAuto` `:60`); bus half, Electron-free like `bus-pause.ts`, `src/main/pause-auto.ts` (`autoPauseOnLimit` `:144`, `autoPausedRuns` `:220`,
+  `evaluateAutoPaused` `:317`, `afterAccountChange` `:379`); host binding `src/main/pause-auto-host.ts` (real store / pollers / activity observer);
+  the ONE cache read #74, the queue flusher and the Reprise share: `src/main/usage-reading.ts` (`usageForAccount`).
+- **Trigger.** `markStoppedOnUsageLimit` (`activity.ts:450`) notifies `usageLimitStopObserver` (`:500`, registered by `startPromptQueueFlusher`
+  `prompt-queue.ts:367`) once the marker is persisted — NOT for #74's own failed-wake re-mark (`{remark:true}`, `prompt-queue.ts:316`: re-marking is not a
+  new limit). Carrier = the FIRST run walking up the LIVE `parentId` chain whose FROZEN `pause` switch is ON (`carrierRunFor` `pause-auto.ts:91`; the
+  bus `parent_run_id` tree only when the chain dangles). Write = the hard-pause columns + `pause_auto` (no `setRunPause`: a host caller has no coordinator
+  handle), `paused_by = 'host:usage_limit'`, an EMPTY origin chain recorded (`recordPauseOrigin`) so the trap neither waits its 3 s origin grace nor spares anybody.
+  Already governed by a pause: an AUTO one absorbs the member; a MANUAL one still PAUSED (`pause_auto` NULL) is left byte-identical; a run that is RESUMING and has
+  RELEASED the member no longer governs it — a RESUMING auto (or human-led) run goes back to `paused` in a NEW epoch through #255's `revertResumeToPaused({auto})` (the old
+  epoch's Bilan rows read "fully trapped"; nothing stays released), while a FARTHER resuming run leaves the new pause to the NEAREST switch-ON run.
+- **`runs.pause_auto`** = the frozen `PauseAutoReason` JSON (`{reason:'usage_limit', wsIds, accountIds}`, index-parallel) **+ `epoch` (= `runs.paused_at`)**: a
+  reader that finds another `paused_at` — or malformed JSON, or an unknown reason — reads **MANUAL**, so a stale column that survived a lift can never turn a
+  later manual pause into one the host lifts. Manual pauses are never selected (`autoPausedRuns`).
+- **Evaluation** (`evaluatePausedRuns`, head of `resumeUsageLimited`, `prompt-queue.ts:214`; every 20 s `TICK_MS`; ancestor runs first; one run throwing never starves the
+  others). Per triggering member, on its CURRENT pinned account (a migration moved it; a deleted trigger falls back to the stored account): a reading fetched AFTER the
+  block (`lastStopReasonAt`, else the pause time) **and after the last account change** is conclusive — usable ⇒ OK (**this overrides the stored reset time**, which #74 alone
+  waits out), still limited until a reset that is ahead ⇒ wait; a "limited" reading whose own reset has passed is stale. No conclusive reading: a known reset + `RESET_GRACE_MS`
+  (5 min, `shared/pause-auto.ts:21`) is the last resort — but never the OLD account's reset after a migration; an UNKNOWN reset never resumes blind. The run is Reprised when EVERY trigger is OK,
+  **no ancestor run is still fully paused** (the gates govern a member by its nearest paused carrier — a child Reprised under a paused parent would leak; the LIVE
+  workspace tree decides, the bus `parent_run_id` tree only when the live chain dangles; a switch-OFF ancestor's stale column is inert), the **flap guard** has elapsed,
+  and **the host trap stamped** (`pause_trap_at`: the Bilans are the Consigne's source; `TRAP_WAIT_MAX_MS` 10 min, `shared/pause-auto.ts:33`, bounds a trap that never stamps). Flap guard
+  (`repriseBackoffMs`): a limit the 5h/7d windows cannot show (a Fable-only cap, a non-plan 429) reads as "quota" at once — without it the fleet loops pause → trap (snapshot +
+  kill tool trees) → Reprise → limit; a run Reprised in the last 2 h waits 5, 10, 20, 40, then 60 min after its LATEST limit stop (in-memory streak: a restart forgets it; an
+  explicit account switch / re-login ends it). Nothing is evaluated while the workspace store is unloaded (every trigger would read as deleted). The row is re-read right before `beginReprise` (a human lift / manual re-pause in between is never Reprised). **#74's `usage_limit` markers are deliberately LEFT**: #74 stays the safety
+  net that restarts a limit-killed member once it may start (released by its OPS, reset passed) — clearing them would freeze a member whose Reprise wake never happens (`wake`
+  switch OFF) with its pause glyph gone. A reset that passed / is unknown with no conclusive reading asks the poller for one (`requestRefresh`, ≤ once per 120 s per account).
+- **Account switch / re-login** (`afterAccountChange`; `workspaces.ts:2978` after the migrate re-pin, `api-handlers.ts` in the login watcher and after a saved API key / base URL).
+  Only when an auto-paused run has the member as a trigger (migrate) or a trigger pinned to that account (login): the member is stamped `accountChangedAt` (a reading older than
+  it was taken for the OLD account / login), the account(s) are **forced** — `refreshAccountsNow({force})` bypasses the ≥180 s cache (`account-usage.ts:290/341`), the default
+  login goes through `refreshUsageNow()` — and the runs are re-evaluated AT ONCE: measured 20–25 ms from the switch to `resume_started_at` (rig, fake API), vs "waits for the stored
+  reset" on the base. Nothing waiting ⇒ nothing forced (no extra fetch when the switch is OFF). Two overlapping refreshes (the handler's plain one + the forced one) can land out of
+  order: `setIfNewer` (`account-usage.ts`) never lets an older fetch replace a newer reading of the same dir (rig arm `relogin_race`).
+- **Not covered / known limits.** The #249 addendum (an expired / revoked **Connexion** as a second cause) is NOT built: no structural producer exists (`classifyTurnError` reads 429/529
+  only) and `PauseAutoReason.reason` is frozen to `'usage_limit'`. A re-login of the DEFAULT `~/.claude` login has no hook (the 60 s global poller picks it up). The default login's
+  extra-credit pool is not part of its reading (`usage-reading.ts`, same as #74 today). `run status` shows the auto pause only as `paused by host:usage_limit`. The ancestor check
+  walks the live tree first (see Evaluation). A human `run pause` over an auto pause adopts it (`pause_auto` NULL — `setRunPause`, also when it loses a race to the host's write) but still prints "already paused … unchanged".
+- **Gates.** `src/shared/pause-auto.test.ts` (policy) · `src/main/pause-auto.test.ts` (real bus, fake seams: carrier rules, merge, repause, evaluation, account change) ·
+  `src/main/pause-auto-wiring.test.ts` (the Electron-bound seams, comments stripped before matching) · `src/main/pause-auto-rig.test.ts` over `scripts/e2e-pause-auto.mjs` (the
+  `limit_pause` arm drives the REAL agent-sdk producer → activity → bus; the others call `markStoppedOnUsageLimit` and then the real tick, `dispatchMigrateAccountRequest` and
+  `accountLoginStart`; fake usage API on a local port, every other fetch refused; scratch
+  `ORCHESTRA_HOME`/`HOME`/`CLAUDE_CONFIG_DIR` — `PAUSE_AUTO_REPO=<tree>` runs the SAME script on another tree: the must-FAIL base) · `node scripts/pause-auto/mutate-unit.mjs`
+  (in-place mutants, byte-exact restore + `cmp`, every anchor once).
+
 ## Prompt queue on usage limit — prompt-queue.ts
 While a workspace's account is over its 5h/7d limit, prompts can be parked on
 the workspace record (`Workspace.queuedPrompts`, `types.ts` — persisted, so a

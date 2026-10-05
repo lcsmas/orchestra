@@ -103,6 +103,14 @@ What the host recorded for each member when the Pause took effect: what it
 was doing, its snapshot ref, whether its tree was dirty, which commands it killed.
 _Avoid_: pause report, state dump
 
+**Pause automatique** (auto Pause):
+A Pause dure the host imposes when a structured member stops on its account's
+usage limit (`runs.pause_auto` = who and which account); lifted by an automatic
+Reprise once the accounts those members are pinned to have quota again — at the
+reset, on a fresh usage reading, after an account switch or a re-login. A manual
+Pause is never lifted this way.
+_Avoid_: auto-resume (that is the per-session usage-limit nudge, #74)
+
 **Reprise** (resume):
 Lifting a Pause top-down: the host releases coordinators first, each OPS
 re-dispatches its members with a Consigne de reprise; nobody restarts on their own.

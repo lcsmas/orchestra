@@ -5,8 +5,9 @@ import { store } from './store';
 import { isRunning, writePty } from './pty';
 import { wakeAgentWithPrompt } from './workspaces';
 import { sdkSessionLive } from './sdk-delivery';
-import { getAccountUsage, refreshAccountsNow } from './account-usage';
-import { getLastUsage } from './usage';
+import { refreshAccountsNow } from './account-usage';
+import { usageForAccount } from './usage-reading';
+import { evaluatePausedRuns, startPauseAuto, stopPauseAuto } from './pause-auto-host';
 import {
   canAutoFlushQueue,
   resolveWorkspaceAccountId,
@@ -59,15 +60,7 @@ function broadcast(ws: Workspace): void {
  *  otherwise. Null when that source has nothing yet. */
 function usageForWorkspace(ws: Workspace): { fetchedAt: number; data: UsageWindows | null } | null {
   const knownIds = new Set(store.accounts.map((a) => a.id));
-  const accountId = resolveWorkspaceAccountId(ws.accountId, knownIds);
-  if (accountId) {
-    const status = getAccountUsage(accountId);
-    return status ? { fetchedAt: status.fetchedAt, data: status.data } : null;
-  }
-  const snap = getLastUsage();
-  return snap
-    ? { fetchedAt: snap.fetchedAt, data: { fiveHour: snap.fiveHour, sevenDay: snap.sevenDay } }
-    : null;
+  return usageForAccount(resolveWorkspaceAccountId(ws.accountId, knownIds));
 }
 
 /** Park a prompt on a workspace's queue. Rejects unknown/archived workspaces,
@@ -215,6 +208,10 @@ const lastNudge = new Map<string, number>();
  *  starts asking it for work — which is exactly what did NOT happen in the
  *  field incident this ticket comes from. */
 async function resumeUsageLimited(now: number): Promise<void> {
+  // #256 fleet PAUSE auto: a run the host paused on a usage limit is Reprised (beginReprise) once its triggering members' pinned accounts
+  // have quota — a fresh reading beats the stored reset time. Runs FIRST (a Reprise changes who the nudge below may wake). The `usage_limit` markers are
+  // LEFT: #74 stays the safety net for a member the Reprise releases but nobody restarts. Switch OFF / no auto-paused run ⇒ one SELECT, nothing else.
+  await evaluatePausedRuns();
   const candidates = store.workspaces
     .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit')
     // Coordinators first (see above). Stable within each group otherwise.
@@ -316,7 +313,7 @@ async function resumeUsageLimited(now: number): Promise<void> {
     // Re-marked with its ORIGINAL reset time: the limit did not move, and
     // fabricating a new one would push the retry further out each attempt.
     log.warn(`usage-limit auto-resume: could not wake ${ws.id} — re-marking so a later tick retries`);
-    await markStoppedOnUsageLimit(ws.id, ws.usageLimitResetsAt ?? null).catch((e) =>
+    await markStoppedOnUsageLimit(ws.id, ws.usageLimitResetsAt ?? null, { remark: true }).catch((e) =>
       log.warn(`usage-limit auto-resume: re-mark failed for ${ws.id}`, e),
     );
   }
@@ -367,10 +364,12 @@ export async function __tickForTests(): Promise<void> {
  *  queue is actually waiting, so the steady-state cost is nil. */
 export function startPromptQueueFlusher(): void {
   if (timer) return;
+  startPauseAuto(); // #256: a recorded limit stop auto-pauses the member's run (the observer lives with #74's driver, not a 2nd mechanism)
   timer = setInterval(() => void tick(), TICK_MS);
 }
 
 export function stopPromptQueueFlusher(): void {
+  stopPauseAuto();
   if (timer) {
     clearInterval(timer);
     timer = null;

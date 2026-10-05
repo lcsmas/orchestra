@@ -450,6 +450,7 @@ export async function markStoppedOnMaxTurns(id: string): Promise<void> {
 export async function markStoppedOnUsageLimit(
   id: string,
   resetsAtMs: number | null,
+  opts: { remark?: boolean } = {},
 ): Promise<void> {
   const res = await setStatus(id, 'idle', 'usage_limit');
   // Persist the reset time alongside the reason. Written AFTER setStatus so we
@@ -486,6 +487,21 @@ export async function markStoppedOnUsageLimit(
   // transition); an unconditional second broadcast is harmless but noisy, and
   // the renderer re-renders every workspace row on each one.
   if (!res?.changed) platform.broadcast('workspace:update', next);
+  // #256: a REAL limit stop (not #74's own failed-wake re-mark) is what auto-pauses the member's run. A throwing observer never breaks the mark.
+  if (!opts.remark) {
+    try {
+      usageLimitStopObserver?.(id);
+    } catch (e) {
+      log.warn('activity: usage-limit stop observer threw', e);
+    }
+  }
+}
+
+let usageLimitStopObserver: ((wsId: string) => void) | null = null;
+
+/** Seam for the fleet-Pause auto trigger (#256, src/main/pause-auto-host.ts): called once per recorded limit stop, after the marker is persisted. */
+export function setUsageLimitStopObserver(fn: ((wsId: string) => void) | null): void {
+  usageLimitStopObserver = fn;
 }
 
 /** Clear the usage-limit pause marker after the auto-resume driver has acted on

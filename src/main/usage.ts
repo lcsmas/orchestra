@@ -187,9 +187,12 @@ async function poll(): Promise<void> {
     rateLimitStreak++;
   } else if (snapshot) {
     rateLimitStreak = 0;
-    lastSnapshot = snapshot;
-    persist(snapshot);
-    platform.broadcast('usage:update', snapshot);
+    // an OLDER overlapping fetch (the scheduled poll vs a forced `refreshUsageNow`, #256) never replaces a newer snapshot
+    if (!lastSnapshot || snapshot.fetchedAt >= lastSnapshot.fetchedAt) {
+      lastSnapshot = snapshot;
+      persist(snapshot);
+      platform.broadcast('usage:update', snapshot);
+    }
   }
   // A skip (no creds / expired / non-429 error) neither advances nor resets the
   // backoff — we just retry at the current cadence.
@@ -200,6 +203,11 @@ function schedule(): void {
   timer = setTimeout(() => {
     void poll().finally(() => schedule());
   }, nextDelay());
+}
+
+/** One poll NOW (#256: a migration to the default login forces a fresh reading of the global poller too). Never throws. */
+export async function refreshUsageNow(): Promise<void> {
+  await poll().catch(() => undefined);
 }
 
 export function startUsagePolling(): void {
