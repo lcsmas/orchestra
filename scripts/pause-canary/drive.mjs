@@ -260,8 +260,10 @@ async function runExercise(name) {
       // The ONE exemption: the limited member's own request that answers the harness's human `SCN:limit` prompt (a human turn is allowed in a Pause) — a 15 s window, that member only.
       const forb = [{ role: '*', from: hold.tTrapDone, until: tR, label: 'hold' }, ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
       const bad = forbiddenRequests(api.requests, forb).filter((b) => !(exempt && b.role === exempt.qw.k && b.t >= exempt.from && b.t < exempt.until));
-      const restarted = new Set([...bad.map((b) => b.role), ...hold.replaced, ...hold.gone, ...hold.procEvents.map((e) => e.split(':')[0])]);
-      cyc.selfRestarts = { members: [...restarted].map((kk) => `pc-${kk}`), probes: hold.probes, detail: `requests-in-forbidden-windows=${bad.length} (${[...new Set(bad.map((b) => `${b.role}/${b.window}`))].join(',') || '-'}); tool-procs-back=${hold.procEvents.length}; sessions-replaced=${hold.replaced.concat(hold.gone).join(',') || '-'}; probes ${hold.probeNotes.join(' ')}${exempt ? `; exempt: ${exempt.qw.k}'s own limit-prompt turn` : ''}` };
+      // WORK written after the trap is unambiguous evidence of a restart (a request alone can be the documented task-notification blip: killing a BACKGROUND task makes the CLI start ONE turn that the host interrupts)
+      const grew = spec.workers.filter((w) => ((readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length) > (cyc.loopAtTrap?.[w.k] ?? Infinity)).map((w) => `${w.k}:+${(readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length - cyc.loopAtTrap[w.k]} loop line(s)`);
+      const restarted = new Set([...bad.map((b) => b.role), ...hold.replaced, ...hold.gone, ...hold.procEvents.map((e) => e.split(':')[0]), ...grew.map((g) => g.split(':')[0])]);
+      cyc.selfRestarts = { members: [...restarted].map((kk) => `pc-${kk}`), probes: hold.probes, detail: `requests-in-forbidden-windows=${bad.length} (${bad.map((b) => `${b.role}@${((b.t - hold.tTrapDone) / 1000).toFixed(2)}s after the trap stamp/${b.window}/answered ${b.tool ?? 'text'}`).join(', ') || '-'}); work-written-after-the-trap=${grew.join(',') || 'none'}; tool-procs-back=${hold.procEvents.length}; sessions-replaced=${hold.replaced.concat(hold.gone).join(',') || '-'}; probes ${hold.probeNotes.join(' ')}${exempt ? `; exempt: ${exempt.qw.k}'s own limit-prompt turn` : ''}` };
       const idEnd = identities();
       const compared = Object.keys(idPre).filter((kk) => !skipIdentity.includes(kk));
       const replacedEnd = compared.filter((kk) => idEnd[kk] && !sameSession(idEnd[kk], idPre[kk]));
@@ -273,14 +275,16 @@ async function runExercise(name) {
       let toolsDeadAt = null;
       const trapRow = await waitFor(async () => { if (toolsDeadAt === null && toolProcs().length === 0) toolsDeadAt = Date.now(); const r = await runRow(carrierRun); return r?.pause_trap_at ? r : null; }, 120000, 250);
       if (toolsDeadAt === null) await waitFor(() => { if (toolProcs().length === 0) { toolsDeadAt = Date.now(); return true; } return false; }, 20000, 250);
-      return { trapRow, toolsDeadAt, tTrap: trapRow?.pause_trap_at ?? null };
+      const loopAtTrap = Object.fromEntries(spec.workers.map((w) => [w.k, (readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length]));   // work on disk the instant the trap is seen: any growth later = a member that WORKED after the pause
+      return { trapRow, toolsDeadAt, tTrap: trapRow?.pause_trap_at ?? null, loopAtTrap };
     }
     async function doDure(cyc, c, pre, idPre, seq0, staged) {
       const tP = Date.now();
       const pz = await app.cli(spec.lead, ['run', 'pause', '--hard', '--run', spec.lead], { run: spec.lead });
       check(cyc, 'pause_accepted', pz.code === 0, `rc=${pz.code} (${pz.ms} ms) ${(pz.out + pz.err).slice(0, 120).replace(/\n/g, ' | ')}`);
       if (pz.code !== 0) throw abort(cyc, 'pause refused');
-      const { trapRow, toolsDeadAt, tTrap } = await waitTrap(spec.lead);
+      const { trapRow, toolsDeadAt, tTrap, loopAtTrap } = await waitTrap(spec.lead);
+      cyc.loopAtTrap = loopAtTrap;
       cyc.tAllPausedS = tTrap && toolsDeadAt ? (Math.max(tTrap, toolsDeadAt) - tP) / 1000 : null;
       cyc.tTrapStampS = tTrap ? (tTrap - tP) / 1000 : null; cyc.tToolsDeadS = toolsDeadAt ? (toolsDeadAt - tP) / 1000 : null;
       check(cyc, 'trap_finished', !!trapRow, `trap stamped +${cyc.tTrapStampS?.toFixed(1) ?? 'never'} s; every worker tool tree gone +${cyc.tToolsDeadS?.toFixed(1) ?? 'never'} s`);
@@ -340,7 +344,8 @@ async function runExercise(name) {
       cyc.escalatedAtS = tEsc && row0?.paused_at ? (tEsc - row0.paused_at) / 1000 : null;   // from the pause the HOST wrote: the deadline is relative to it (tP also carries the CLI's ~0.3 s spawn)
       const hasBlocked = spec.workers.some((w) => w.kind === 'blocked');
       check(cyc, 'straggler_not_cut_short', !hasBlocked || (cyc.escalatedAtS !== null && cyc.escalatedAtS >= BARS.softDeadlineS - 5), `escalated at ${cyc.escalatedAtS?.toFixed(1) ?? 'never'} s with a blocked member present (deadline ${BARS.softDeadlineS} s): a straggler must not be cut short`);
-      const { trapRow, toolsDeadAt, tTrap } = await waitTrap(spec.lead);
+      const { trapRow, toolsDeadAt, tTrap, loopAtTrap } = await waitTrap(spec.lead);
+      cyc.loopAtTrap = loopAtTrap;
       cyc.tAllPausedS = tTrap && toolsDeadAt ? (Math.max(tTrap, toolsDeadAt) - tP) / 1000 : null;
       cyc.tTrapStampS = tTrap ? (tTrap - tP) / 1000 : null;
       check(cyc, 'trap_finished', !!trapRow, `escalation +${cyc.escalatedAtS?.toFixed(1) ?? 'never'} s, trap stamped +${cyc.tTrapStampS?.toFixed(1) ?? 'never'} s`);
@@ -382,7 +387,8 @@ async function runExercise(name) {
       if (!paused) throw abort(cyc, 'no auto pause');
       cyc.tLimitToPauseS = (paused.paused_at - tL) / 1000;
       const tP = paused.paused_at;   // the host wrote this pause itself (no command to time): its origin is the pause row
-      const { trapRow, toolsDeadAt, tTrap } = await waitTrap(spec.ops);
+      const { trapRow, toolsDeadAt, tTrap, loopAtTrap } = await waitTrap(spec.ops);
+      cyc.loopAtTrap = loopAtTrap;
       cyc.tAllPausedS = tTrap && toolsDeadAt ? (Math.max(tTrap, toolsDeadAt) - tP) / 1000 : null;
       cyc.tTrapStampS = tTrap ? (tTrap - tP) / 1000 : null;
       check(cyc, 'trap_finished', !!trapRow, `auto Pause dure: trap stamped +${cyc.tTrapStampS?.toFixed(1) ?? 'never'} s after the pause was written; every tool tree gone +${toolsDeadAt ? ((toolsDeadAt - tP) / 1000).toFixed(1) : 'never'} s`);

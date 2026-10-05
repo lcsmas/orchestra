@@ -39,7 +39,7 @@ export function forbiddenRequests(requests, forbidden) {
   for (const r of requests) {
     if (!(r.tools > 0)) continue;
     for (const w of forbidden) {
-      if ((w.role === '*' || w.role === r.role) && r.t >= w.from && (w.until === null || w.until === undefined || r.t < w.until)) { out.push({ role: r.role, t: r.t, window: w.label ?? '' }); break; }
+      if ((w.role === '*' || w.role === r.role) && r.t >= w.from && (w.until === null || w.until === undefined || r.t < w.until)) { out.push({ role: r.role, t: r.t, tool: r.tool ?? null, window: w.label ?? '' }); break; }
     }
   }
   return out;
