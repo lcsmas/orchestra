@@ -421,8 +421,10 @@ export function CmComposer({
               return false;
             },
             drop: (e) => {
+              // Handled here: stop the bubble, or the card's React onDrop runs it twice.
               cb.current.onDrop(e);
-              return false;
+              e.stopPropagation();
+              return true;
             },
             // vim swallows keys before React sees them, so mode changes need
             // their own pump to keep the chip live.
