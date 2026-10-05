@@ -34,9 +34,10 @@ const PROOF_ARMS = [
   { name: 'control:clean-douce', exercise: 'douce', expect: 'PASS', slow: true },
   // skip-kill needs the `bg` member (4+ workers): a plain interrupt already aborts a FOREGROUND command, so only a background task proves the trap's kill (measured: with 3 workers the mutant ran `killed: []` and tools_dead stayed green)
   ...Object.entries(MUTANTS).map(([m, d]) => ({ name: `mutant:${m}`, mutant: m, exercise: d.exercise, redden: d.redden, slow: d.exercise === 'douce', ...(m === 'skip-kill' ? { members: 4 } : {}) })),
-  // harness-level instrument controls: the drive sabotages its own evidence after the pause — the lost-work instrument must read RED for a rewound branch and for a deleted pause ref
+  // harness-level instrument controls: the drive sabotages its own evidence after the pause — the lost-work instrument must read RED for a rewound branch and for a deleted pause ref, the session-identity instrument for a killed CLI
   { name: 'control:sabotage-branch', exercise: 'dure', sabotage: 'branch', redden: ['bar:lost_work_is_zero'] },
   { name: 'control:sabotage-ref', exercise: 'dure', sabotage: 'ref', redden: ['bar:lost_work_is_zero'] },
+  { name: 'control:sabotage-session', exercise: 'dure', sabotage: 'session', redden: ['sessions_intact_through_the_cycle'] },   // the session-identity instrument: a member's CLI is SIGTERMed after the pause
   { name: 'control:pause-switch-off', exercise: 'dure', pause: 'off', redden: ['pause_accepted'] },
   { name: 'unfixed:pre-wave-E-douce', exercise: 'douce', unfixed: true, redden: ['pause_accepted'] },
   { name: 'unfixed:pre-wave-E-reprise', exercise: 'dure', unfixed: true, redden: ['coordinators_woken', 'bar:every_member_reprise_accused'] },
@@ -48,8 +49,8 @@ function hostNow() {
   const mem = fs.readFileSync('/proc/meminfo', 'utf8');
   return { availGB: Number(/MemAvailable:\s+(\d+) kB/.exec(mem)[1]) / 1048576, load1: Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]) };
 }
-/** What a rig of `members` workers costs in MemAvailable (measured 2026-10-05: 3 workers ≈ 0.7 GB, 10 ≈ 2.4 GB → ≈ 0.25 GB/worker + the app): a run must START with the bar PLUS this, or it dips under the bar at once. */
-const rigFootprintGB = (members) => 0.2 + 0.25 * members;
+/** What a rig of `members` workers costs in MemAvailable (measured 2026-10-05: 3 workers Δ ≈ 0.7 GB, 10 workers Δ ≈ 3.0 GB incl. page cache + the app's helpers → ≈ 0.33 GB/worker: 6 → start ≥ 8.0 GB, 10 → ≥ 9.3 GB): a run must START with the bar PLUS this, or it dips under the bar at once. */
+const rigFootprintGB = (members) => 0.33 * members;
 /** Patience, not a lower bar: wait (up to --wait-host-min, default 20) until MemAvailable ≥ bar + the rig's footprint and load ≤ 20; the bar itself is never relaxed. */
 async function waitForHost(members = 0) {
   const maxMs = Number(opt('wait-host-min', '20')) * 60000;
@@ -76,9 +77,20 @@ const git = (...a) => sh('git', a).stdout.trim();
 
 // ── the packaged app under test: build it from THIS tree unless one is given (rebuild what you exec — a stale bundle reproduces perfectly) ──
 function srcStamp() {
-  const dirty = sh('git', ['status', '--porcelain', '--', 'src', 'package.json', 'pnpm-lock.yaml', 'vite.config.ts', 'vite.cli.config.ts', 'vite.keeper.config.ts', 'scripts/after-pack-check.cjs']).stdout.trim();
-  const tree = git('rev-parse', 'HEAD:src') + git('rev-parse', 'HEAD:package.json');
-  return createHash('sha256').update('recipe2' + tree + dirty + (dirty ? sh('git', ['diff', 'HEAD', '--', 'src', 'package.json']).stdout : '')).digest('hex').slice(0, 12);
+  const paths = ['src', ':(exclude)src/**/*.test.ts', 'package.json', 'pnpm-lock.yaml', 'vite.config.ts', 'vite.cli.config.ts', 'vite.keeper.config.ts', 'scripts/after-pack-check.cjs'];   // test files are not in the bundle
+  const dirty = sh('git', ['status', '--porcelain', '-uall', '--', ...paths]).stdout.trim();
+  const tree = sh('git', ['ls-files', '-s', '--', ...paths]).stdout;
+  // uncommitted/untracked app source: the bytes are not in the stamp, so such a tree is NEVER reused (a stale bundle reproduces perfectly)
+  return createHash('sha256').update('recipe3' + tree + (dirty ? `dirty-${Date.now()}-${dirty}` : '')).digest('hex').slice(0, 12);
+}
+/** `pnpm run test` flips node_modules' better-sqlite3 to the node ABI; the packaged app needs the Electron one (afterPack fails otherwise): rebuild both when node_modules does not hold the Electron binding. */
+function ensureElectronAbi() {
+  const live = path.join(REPO, 'node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node');
+  const el = fs.readdirSync(path.join(REPO, 'build', 'bus-abi')).find((f) => /abi130\.node$/.test(f));
+  if (el && fs.existsSync(live) && sh('cmp', ['-s', live, path.join(REPO, 'build', 'bus-abi', el)]).status === 0) return;
+  say('app: node_modules does not hold the Electron-ABI better-sqlite3 — running build:bus-abi …');
+  const r = sh('pnpm', ['run', 'build:bus-abi']);
+  if (r.status !== 0) { say(`PAUSE-CANARY: VOID — build:bus-abi failed: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); }
 }
 function ensureApp() {
   if (opt('app', null)) return path.resolve(opt('app'));
@@ -86,6 +98,7 @@ function ensureApp() {
   if (fs.existsSync(path.join(dir, 'orchestra'))) { say(`app: reusing ${dir} (source stamp unchanged)`); return path.join(dir, 'orchestra'); }
   say(`app: building the PACKAGED app from ${REPO} (HEAD ${git('rev-parse', '--short', 'HEAD')}) …`);
   if (!fs.existsSync(path.join(REPO, 'build', 'bus-abi'))) { const r = sh('pnpm', ['run', 'build:bus-abi']); if (r.status !== 0) { say(`PAUSE-CANARY: VOID — build:bus-abi failed: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); } }
+  ensureElectronAbi();
   for (const d of ['dist', 'dist-electron', 'release']) fs.rmSync(path.join(REPO, d), { recursive: true, force: true });   // a stale chunk left by an earlier build would ship in app.asar as dead code
   for (const [c, a] of [['pnpm', ['run', 'build:bundles']], ['npx', ['electron-builder', '--dir']]]) { const r = sh(c, a); if (r.status !== 0) { say(`PAUSE-CANARY: VOID — ${c} ${a.join(' ')} failed: ${(r.stdout + r.stderr).slice(-400)}`); process.exit(3); } }
   const unpacked = fs.readdirSync(path.join(REPO, 'release')).find((d) => /-unpacked$/.test(d));
@@ -129,14 +142,18 @@ if (!flag('proof')) {
   const appBin = ensureApp();
   const exercise = opt('exercise', 'douce,dure,reprise,auto');
   const cycles = Number(opt('cycles', '3')), members = Number(opt('members', '10'));
+  const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
+  const wantedEx = exercise.split(',').filter(Boolean);
+  if (wantedEx.length === 0 || wantedEx.some((e) => !KNOWN.includes(e)) || !Number.isInteger(cycles) || cycles < 1 || !Number.isInteger(members) || members < 1 || members > 10) { say(`usage: --exercise ⊂ ${KNOWN} (got ${JSON.stringify(exercise)}), --cycles ≥ 1, --members 1..10`); process.exit(2); }
   say(`pause canary: claude ${claudeVersion} · app ${appBin} · exercises ${exercise} × ${cycles} cycles · ${members} workers + OPS + LEAD · MemAvailable ${h0.availGB.toFixed(2)} GB load ${h0.load1.toFixed(1)}`);
   // one drive per exercise: a VOID exercise (the host dipped below the bar mid-run) is no verdict — wait for the host and run THAT exercise again (the bar is never relaxed)
   const label0 = opt('label', `canary-${Date.now().toString(36).slice(-4)}`);
-  const parts = [];
+  const parts = [], voidLogs = [];
   for (const ex of exercise.split(',').filter(Boolean)) {
     const w0 = await waitForHost(members);
     let p = w0.ok ? await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null) }) : { rc: 3, label: label0, logFile: '', exercises: [{ exercise: ex, result: 'VOID', cycles: 0, wanted: cycles, reason: 'host below the bar' }], cycles: [], checks: [], host: null, verdict: 'VOID' };
     for (let n = 1; p.verdict === 'VOID' && n <= Number(opt('void-retries', '2')); n++) {
+      voidLogs.push(p.logFile);
       const w = await waitForHost(members);
       say(`   ${ex}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
       if (!w.ok) break;
@@ -148,11 +165,14 @@ if (!flag('proof')) {
   const table = renderTable(r.cycles);
   const gi = gitInfo();
   const reds = r.checks.filter((c) => !c.ok);
-  const md = [`# Pause canary 1 — dummy fleet (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}** (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
+  const md = [`# Pause canary 1 — dummy fleet (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !(KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3) ? ' (PARTIAL: not 4 exercises × ≥ 3 cycles)' : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
   writeReport('report', md);
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ git: gi, claude: claudeVersion, app: appBin, drive: r }, null, 1));
   say(`\n${table}\n`);
-  say(`PAUSE-CANARY: ${r.verdict}`);
+  // the contract shape is 4 exercises × ≥ 3 cycles: a green run of less is PARTIAL, never PASS (`--exercise dures` / `--cycles 0` can no longer print a PASS over an empty table)
+  const full = KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === wantedEx.length;
+  const word = r.verdict === 'PASS' && !full ? 'PARTIAL' : r.verdict;
+  say(`PAUSE-CANARY: ${word}${members < 10 ? ` (${members} workers — labelled, not the 10 of the ticket)` : ''}`);
   process.exit(r.verdict === 'PASS' ? 0 : r.verdict === 'VOID' ? 3 : 1);
 }
 
@@ -208,19 +228,21 @@ for (const arm of sel) {
     r = await runArm();
   }
   const red = r.checks.filter((c) => !c.ok);
-  const reached = r.checks.some((c) => c.id === 'workers_mid_work' && c.ok);   // the rig itself must have worked: a drive that never got the fleet to mid-work proves nothing
+  const reached = r.checks.some((c) => c.id === 'workers_mid_work' && c.ok);   // the rig itself must have worked: a drive that never got the fleet to mid-work proves nothing (no exemption for any arm)
   let verdict, why;
   if (r.verdict === 'VOID') { verdict = 'VOID'; why = 'host guard'; }
   else if (arm.redden) {
-    const hit = arm.redden.filter((id) => red.some((c) => c.id === id));
-    verdict = hit.length > 0 && (reached || arm.unfixed || arm.name === 'control:pause-switch-off') ? 'AS-EXPECTED (RED)' : !reached ? 'RIG-BROKE' : 'MUTANT-SURVIVED';
-    why = `${hit.length ? `RED: ${hit.join(', ')}` : `named check(s) ${arm.redden.join(', ')} stayed green/absent`}; all RED: ${red.map((c) => `c${c.cycle} ${c.id}`).slice(0, 8).join(' · ') || 'none'}`;
+    // the named instrument must be RED with a MEASURED reason: a check that is red only because its metric is absent ("NOT MEASURED": an aborted cycle, a refused pause) proves nothing about the instrument
+    const hit = arm.redden.filter((id) => red.some((c) => c.id === id && !/NOT MEASURED/.test(c.detail)));
+    const unmeasured = arm.redden.filter((id) => red.some((c) => c.id === id && /NOT MEASURED/.test(c.detail)));
+    verdict = hit.length > 0 && reached ? 'AS-EXPECTED (RED)' : !reached ? 'RIG-BROKE' : 'MUTANT-SURVIVED';
+    why = `${hit.length ? `RED with a measured reason: ${hit.join(', ')}` : `named check(s) ${arm.redden.join(', ')} stayed green${unmeasured.length ? ` or red only as NOT MEASURED (${unmeasured.join(', ')})` : '/absent'}`}; all RED: ${red.map((c) => `c${c.cycle} ${c.id}`).slice(0, 8).join(' · ') || 'none'}`;
   } else { verdict = r.verdict === 'PASS' ? 'AS-EXPECTED (PASS)' : 'UNEXPECTED-RED'; why = r.verdict === 'PASS' ? `${r.checks.length} checks green` : `RED: ${red.map((c) => `c${c.cycle} ${c.id} (${c.detail.slice(0, 100)})`).slice(0, 6).join(' · ')}`; }
   rows.push({ arm: arm.name, verdict, why, log: r.logFile });
   say(`=== ${arm.name}: ${verdict} — ${why}`);
 }
 const bad = rows.filter((r) => !/^AS-EXPECTED/.test(r.verdict));
-const md = [`# Pause canary — harness proof (G3 F2)`, '', `tree ${gitInfo().head.slice(0, 8)} · claude ${claudeVersion} · ${members} workers × ${opt('cycles', '1')} cycle · host MemAvailable at start ${h0.availGB.toFixed(2)} GB`, '', '| arm | verdict | evidence |', '|---|---|---|', ...rows.map((r) => `| ${r.arm} | ${r.verdict} | ${r.why.replace(/\|/g, '/')} |`), '', `PROOF: ${bad.length === 0 ? 'PASS' : 'NOT PROVEN'}`, ''].join('\n');
+const md = [`# Pause canary — harness proof (G3 F2)`, '', `tree ${gitInfo().head.slice(0, 8)} · claude ${claudeVersion} · ${members} workers × ${opt('cycles', '1')} cycle · host MemAvailable at start ${h0.availGB.toFixed(2)} GB`, '', '| arm | verdict | evidence |', '|---|---|---|', ...rows.map((r) => `| ${r.arm} | ${r.verdict} | ${r.why.replace(/\|/g, '/')} |`), '', `PROOF: ${bad.length === 0 ? (only.size === 0 ? 'PASS' : `PARTIAL (${rows.length}/${PROOF_ARMS.length} arms)`) : 'NOT PROVEN'}`, ''].join('\n');
 writeReport('proof', md);
-say(`\nPAUSE-CANARY PROOF: ${bad.length === 0 ? 'PASS' : `FAIL (${bad.map((r) => `${r.arm}:${r.verdict}`).join(', ')})`}`);
+say(`\nPAUSE-CANARY PROOF: ${bad.length === 0 ? (only.size === 0 ? 'PASS' : `PARTIAL (${rows.length}/${PROOF_ARMS.length} arms)`) : `FAIL (${bad.map((r) => `${r.arm}:${r.verdict}`).join(', ')})`}`);
 process.exit(bad.length === 0 ? 0 : bad.some((r) => r.verdict === 'VOID') && bad.every((r) => r.verdict === 'VOID') ? 3 : 1);

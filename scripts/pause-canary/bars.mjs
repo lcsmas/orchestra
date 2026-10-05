@@ -50,8 +50,10 @@ export function evaluateCycle(m) {
   const checks = [];
   const add = (id, ok, detail) => checks.push({ id, ok: ok === true, detail });
   if (m.mode === 'soft') {
+    // the ticket's 3 min is a CONSTANT of this harness, never read back from the app under test: an app whose deadline regressed to 10 min must read RED
     const esc = m.escalatedAtS;
-    add('bar:soft_escalated_by_deadline', num(esc) && num(m.deadlineS) && esc <= m.deadlineS + BARS.softEscalationSlackS, `escalated at ${fmt(esc)} after the order (deadline ${fmt(m.deadlineS)} + ${BARS.softEscalationSlackS} s slack)`);
+    add('bar:soft_deadline_is_3_min', num(m.deadlineS) && Math.abs(m.deadlineS - BARS.softDeadlineS) <= 1, `the app's own pause deadline = ${fmt(m.deadlineS)} (the ticket's bar: ${BARS.softDeadlineS} s)`);
+    add('bar:soft_escalated_by_deadline', num(esc) && esc <= BARS.softDeadlineS + BARS.softEscalationSlackS, `escalated at ${fmt(esc)} after the pause was written (deadline ${BARS.softDeadlineS} s + ${BARS.softEscalationSlackS} s slack)`);
     add('bar:soft_all_paused_lt_deadline_plus_hard_bar', num(m.tAllPausedS) && num(esc) && m.tAllPausedS < esc + BARS.softTrapAfterEscalationS, `all paused at ${fmt(m.tAllPausedS)} (escalation ${fmt(esc)} + trap < ${BARS.softTrapAfterEscalationS} s, so < 3 min + escalation)`);
   } else {
     add('bar:hard_all_paused_lt_60s', num(m.tAllPausedS) && m.tAllPausedS < BARS.hardAllPausedS, `all paused at ${fmt(m.tAllPausedS)} (bar < ${BARS.hardAllPausedS} s)`);
@@ -65,7 +67,7 @@ export function evaluateCycle(m) {
   add('published:time_to_all_resumed', num(m.tAllResumedS), `all resumed at ${fmt(m.tAllResumedS)} (published; no bar)`);
   if (m.mode === 'soft') {
     const pa = m.pauseAccused;
-    add('bar:every_member_pause_accused', !!pa && num(pa.m) && pa.m > 0 && pa.n === pa.m, pa ? `${pa.n}/${pa.m} roster rows paused (${Object.entries(pa.via ?? {}).map(([k, v]) => `${k}:${v}`).join(' ')})` : 'NOT MEASURED');
+    add('bar:every_member_pause_accused', !!pa && num(pa.m) && pa.m > 0 && pa.n === pa.m && pa.m >= (m.rosterMin ?? 1), pa ? `${pa.n}/${pa.m} roster rows paused (${Object.entries(pa.via ?? {}).map(([k, v]) => `${k}:${v}`).join(' ')})` : 'NOT MEASURED');
   }
   return checks;
 }

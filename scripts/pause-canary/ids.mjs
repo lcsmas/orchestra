@@ -1,8 +1,8 @@
 // Pause canary (#258, wave F ledger #281) — fleet topology shared by lib.mjs / bus-tool.mjs / fleet.mjs / drive.mjs (pure, no I/O).
 // Fleet = LEAD (mission run) ⊃ OPS (vague run) ⊃ w1..wN (workers: no run of their own). Branch of workspace <k> = `pc-<k>`.
 
-/** Worker kinds, assigned round-robin so ANY member count keeps the interesting shapes (3 = obey + blocked + quota; 10 = 5 obey, bg, blocked, 3 quota). */
-export const KIND_ORDER = ['obey', 'blocked', 'quota', 'bg', 'obey', 'obey', 'obey', 'obey', 'quota', 'quota'];
+/** Worker kinds, assigned round-robin so ANY member count keeps the interesting shapes (3 = obey + blocked + quota; 6 = obey + blocked + bg + 3 quota — one quota member per cycle; 10 = 5 obey, bg, blocked, 3 quota). */
+export const KIND_ORDER = ['obey', 'blocked', 'quota', 'bg', 'quota', 'quota', 'obey', 'obey', 'obey', 'obey'];
 /**  obey    works command-by-command (a tool-result boundary every ~1 s) and obeys a Pause douce order (commit + push + accusé)
  *   blocked sits in ONE long foreground command (+ a bg task): never reaches a boundary, only the deadline / hard trap takes it
  *   bg      like obey, plus a BACKGROUND task that survives an interrupt (only the trap kills it)

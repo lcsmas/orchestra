@@ -49,7 +49,7 @@ export const MUTANTS = {
   // douce deadline instrument: the 3-min deadline never escalates a straggler
   'no-deadline-escalation': {
     desc: 'the Pause douce deadline never escalates (only "all confirmed" does)',
-    exercise: 'douce', redden: ['bar:soft_escalated_by_deadline'],
+    exercise: 'douce', redden: ['straggler_not_cut_short', 'bar:soft_escalated_by_deadline'],
     edits: [rx(/return (\w+)\|\|(\w+)>=(\w+)\?\((\w+)\((\w+),(\w+)\.runId,\6\.pausedAt,\2\)&&\((\w+)\.escalated=\1\?"all-confirmed":"deadline"/, (m) => `return ${m[1]}||${'0'.padEnd(m[2].length)}>=${m[3]}?(${m[4]}(${m[5]},${m[6]}.runId,${m[6]}.pausedAt,${m[2]})&&(${m[7]}.escalated=${m[1]}?"all-confirmed":"deadline"`)],
   },
   // auto-Pause instrument: the host's usage-limit pause UPDATE can never match

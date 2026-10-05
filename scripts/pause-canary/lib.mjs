@@ -18,21 +18,26 @@ export const say = (...a) => console.log(...a);
 /** the passwd home — `$HOME` inside the contained rig is the FAKE home */
 export const REAL_HOME = os.userInfo().homedir;
 const LIVE = ['.orchestra', '.claude', '.claude-mc', '.claude-perso', '.config'].map((d) => path.join(REAL_HOME, d));
+/** any top-level dir of the real home that LOOKS like a live agent/config home (`.claude-work`, `.orchestra-dev`, `.config`…) is off limits too */
+const liveLike = (r) => { const rel = path.relative(REAL_HOME, r); return !rel.startsWith('..') && !path.isAbsolute(rel) && /^\.(claude|orchestra|config)/.test(rel.split(path.sep)[0] ?? ''); };
+const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
 let BASE = null;
 /** Declare the scratch base once (the runner passes it). It must not be, or be inside, a live config dir. */
 export function initBase(base) {
-  const r = path.resolve(base);
+  const r = real(path.resolve(base));
   for (const l of LIVE) if ((r + path.sep).startsWith(l + path.sep) || (l + path.sep).startsWith(r + path.sep)) throw new Error(`SCRATCH-ONLY: base ${r} overlaps live ${l}`);
+  if (liveLike(r)) throw new Error(`SCRATCH-ONLY: base ${r} sits in a live-looking home dir`);
   BASE = r;
   process.env.PC_BASE = r;
 }
 export const scratchBase = () => BASE;
 export function assertScratch(label, p) {
   if (!BASE) throw new Error('SCRATCH-ONLY: initBase() was not called');
-  const r = path.resolve(p);
-  if (!(r + path.sep).startsWith(BASE + path.sep)) throw new Error(`SCRATCH-ONLY: ${label}=${r} is outside ${BASE}`);
+  const r = real(path.resolve(p));
+  if (!(r + path.sep).startsWith(BASE + path.sep) || r === BASE) throw new Error(`SCRATCH-ONLY: ${label}=${r} is not strictly inside ${BASE}`);
   for (const l of LIVE) if ((r + path.sep).startsWith(l + path.sep)) throw new Error(`SCRATCH-ONLY: ${label}=${r} is inside live ${l}`);
+  if (liveLike(r)) throw new Error(`SCRATCH-ONLY: ${label}=${r} sits in a live-looking home dir`);
 }
 
 // ── containment: the values must come from the rig's own sway (e2e-contained-rig.sh) ────────────────────────────
@@ -158,6 +163,7 @@ export const ACCT_B = 'pc-b';
 
 export async function makeRig({ label, spec, apiUrl, appBin, claudeBin }) {
   if (!appBin || !fs.existsSync(path.join(path.dirname(appBin), 'resources', 'app.asar'))) throw new Error(`ABORT: appBin ${appBin} is not a PACKAGED build (no resources/app.asar beside it) — the session \`orchestra\` shim only works packaged`);
+  if (!/^[A-Za-z0-9._-]+$/.test(label) || label.includes('..')) throw new Error(`ABORT: rig label ${JSON.stringify(label)} must be [A-Za-z0-9._-]+ (it names a directory that is rm -rf'd)`);
   const H = path.join(BASE, `h-${label}`);
   assertScratch('H', H);
   fs.rmSync(H, { recursive: true, force: true });

@@ -38,6 +38,7 @@ test('lost work: ONE lost marker, one non-intact branch, no markers at all, or n
   assert.deepEqual(red(evaluateCycle(good({ lostWork: { markers: 40, lostCount: 1, lost: ['w1: x'], branches: 10, branchesIntact: 10 } }))), ['bar:lost_work_is_zero']);
   assert.deepEqual(red(evaluateCycle(good({ lostWork: { markers: 40, lostCount: 0, lost: [], branches: 10, branchesIntact: 9 } }))), ['bar:lost_work_is_zero']);
   assert.deepEqual(red(evaluateCycle(good({ lostWork: { markers: 0, lostCount: 0, lost: [], branches: 10, branchesIntact: 10 } }))), ['bar:lost_work_is_zero'], 'zero markers checked is a vacuous pass');
+  assert.deepEqual(red(evaluateCycle(good({ lostWork: { markers: 40, lostCount: 0, lost: [], branches: 0, branchesIntact: 0 } }))), ['bar:lost_work_is_zero'], 'no branch checked is a vacuous pass');
   assert.deepEqual(red(evaluateCycle(good({ lostWork: undefined }))), ['bar:lost_work_is_zero']);
 });
 
@@ -58,15 +59,24 @@ test('time to all-resumed is published: absent = RED (it can never be silently d
   assert.deepEqual(red(evaluateCycle(good({ tAllResumedS: null }))), ['published:time_to_all_resumed']);
 });
 
-const soft = (over: Record<string, unknown> = {}) => good({ mode: 'soft', deadlineS: 180, escalatedAtS: 180.4, tAllPausedS: 183.1, pauseAccused: { n: 12, m: 12, via: { member: 6, trap: 1 } }, ...over });
+const soft = (over: Record<string, unknown> = {}) => good({ mode: 'soft', deadlineS: 180, escalatedAtS: 180.4, tAllPausedS: 183.1, rosterMin: 12, pauseAccused: { n: 12, m: 12, via: { member: 6, trap: 1 } }, ...over });
 
-test('Pause douce bars: escalation by the 3-min deadline (+5 s slack) and the trap within the hard bar after it', () => {
+test('Pause douce bars: the 3-min deadline is a CONSTANT of the harness (an app deadline of 10 min reads RED, even when escalation is "on time" by ITS clock)', () => {
+  assert.equal(BARS.softDeadlineS, 180, 'the ticket\'s 3 min');
   assert.deepEqual(red(evaluateCycle(soft())), []);
   assert.deepEqual(red(evaluateCycle(soft({ escalatedAtS: 185 }))), []);
   assert.deepEqual(red(evaluateCycle(soft({ escalatedAtS: 185.5, tAllPausedS: 190 }))), ['bar:soft_escalated_by_deadline']);
+  assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 600, escalatedAtS: 600.4, tAllPausedS: 603 }))), ['bar:soft_deadline_is_3_min', 'bar:soft_escalated_by_deadline'], 'a regressed deadline: both the deadline and the escalation time are RED');
+  assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 600 }))), ['bar:soft_deadline_is_3_min']);
+  assert.deepEqual(red(evaluateCycle(soft({ deadlineS: null }))), ['bar:soft_deadline_is_3_min']);
   assert.deepEqual(red(evaluateCycle(soft({ escalatedAtS: null, tAllPausedS: null }))), ['bar:soft_escalated_by_deadline', 'bar:soft_all_paused_lt_deadline_plus_hard_bar']);
   assert.deepEqual(red(evaluateCycle(soft({ tAllPausedS: 180.4 + 60 }))), ['bar:soft_all_paused_lt_deadline_plus_hard_bar']);
+});
+
+test('douce accusés: a missing accusé, an empty roster, or a roster smaller than the fleet (3/3 out of 12) is RED', () => {
   assert.deepEqual(red(evaluateCycle(soft({ pauseAccused: { n: 11, m: 12, via: {} } }))), ['bar:every_member_pause_accused']);
+  assert.deepEqual(red(evaluateCycle(soft({ pauseAccused: { n: 3, m: 3, via: {} } }))), ['bar:every_member_pause_accused']);
+  assert.deepEqual(red(evaluateCycle(soft({ pauseAccused: undefined }))), ['bar:every_member_pause_accused']);
 });
 
 test('lostWorkOf: a marker is lost only when its needle is in NONE of branch / pushed / pause ref; a non-ancestor branch is lost', () => {
@@ -90,6 +100,8 @@ test('forbiddenRequests: a tool-carrying request inside a window is flagged; out
   const before = forbiddenRequests(reqs, [{ role: 'w2', from: 0, until: 450 }, { role: 'w1', from: 0, until: 50 }]);
   assert.deepEqual(before.map((h: { t: number }) => h.t), [200], 'w2 asked before its release (450); w1 was released at 50 so its requests are legit');
   assert.equal(forbiddenRequests(reqs, [{ role: 'w1', from: 120, until: null }]).length, 1, 'an open window (never released) flags every later request');
+  const edge = [{ t: 120, role: 'w1', tools: 1 }, { t: 300, role: 'w1', tools: 1 }];
+  assert.deepEqual(forbiddenRequests(edge, [{ role: '*', from: 120, until: 300 }]).map((h: { t: number }) => h.t), [120], 'from is inclusive, until is exclusive (a worker released AT t may start AT t)');
 });
 
 // fragments of the REAL minified bundle (identifiers change per build; the second test renames them to prove the anchors are name-agnostic and the edits stay same-length)
@@ -132,6 +144,8 @@ test('the regex anchors are name-agnostic: the same mutants still apply when the
 test('the dummy fleet always carries a blocked member and a quota member from 3 workers up, and 10 workers = 5 obey + bg + blocked + 3 quota', () => {
   const kinds = (n: number) => fleetSpec(n).workers.map((w: { kind: string }) => w.kind);
   for (const n of [3, 5, 10]) { assert.ok(kinds(n).includes('blocked'), `${n}: blocked`); assert.ok(kinds(n).includes('quota'), `${n}: quota`); }
+  assert.equal(kinds(6).filter((k: string) => k === 'quota').length, 3, '6 workers (the OPS-decided canary size) keep one quota member per cycle');
+  assert.ok(kinds(6).includes('bg') && kinds(6).includes('blocked') && kinds(6).includes('obey'));
   const ten = kinds(10);
   assert.equal(ten.length, 10);
   assert.equal(ten.filter((k: string) => k === 'obey').length, 5);
