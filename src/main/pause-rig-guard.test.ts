@@ -42,7 +42,11 @@ test('F7 a DIRECT run of each destructive inner rig (host pid namespace, or miss
     canaries.push(spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)', '/x/.orchestra/bin/keeper.js', 'canary'], { stdio: 'ignore' }));
     canaries.push(spawn('/bin/sleep', ['7811'], { stdio: 'ignore' }));
     await new Promise((r) => setTimeout(r, 300));
-    const before = aliveArgv((a) => a.some((x) => x.endsWith('keeper.js') && x.includes('/x/.orchestra')) || (a[0]?.endsWith('sleep') && a[1] === '7811'));
+    // ONLY this test's own canaries: pause-kill.test.ts spawns real `…/x/.orchestra/bin/keeper.js` processes (and a sibling's rig a `sleep 7811`) concurrently in the same suite run —
+    // a host-wide scan counted THEIR pids as "touched" (flaky once the suite grew). A rig that kills host-wide keeper.js / sleep-N kills THESE canaries too.
+    const mine = new Set(canaries.map((c) => c.pid));
+    const ours = (pids: number[]): number[] => pids.filter((p) => mine.has(p));
+    const before = ours(aliveArgv((a) => a.some((x) => x.endsWith('keeper.js') && x.includes('/x/.orchestra')) || (a[0]?.endsWith('sleep') && a[1] === '7811')));
     assert.ok(before.length >= 2, 'control: both canaries are up before the refused runs');
     for (const inner of ['provenance-inner.mjs', 'recycle-inner.mjs']) {
       for (const cfg of [
@@ -56,7 +60,7 @@ test('F7 a DIRECT run of each destructive inner rig (host pid namespace, or miss
         assert.ok((r.stdout ?? '').includes(REFUSAL), `${inner}: the refusal names the guard (got: ${(r.stdout ?? '').slice(0, 200)})`);
       }
     }
-    const after = aliveArgv((a) => a.some((x) => x.endsWith('keeper.js') && x.includes('/x/.orchestra')) || (a[0]?.endsWith('sleep') && a[1] === '7811'));
+    const after = ours(aliveArgv((a) => a.some((x) => x.endsWith('keeper.js') && x.includes('/x/.orchestra')) || (a[0]?.endsWith('sleep') && a[1] === '7811')));
     assert.deepEqual(after.sort(), before.sort(), 'no canary was touched');
   } finally {
     killTagged(tag);
