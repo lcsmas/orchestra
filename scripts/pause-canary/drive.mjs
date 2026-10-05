@@ -288,7 +288,7 @@ async function runExercise(name) {
       cyc.tAllPausedS = tTrap && toolsDeadAt ? (Math.max(tTrap, toolsDeadAt) - tP) / 1000 : null;
       cyc.tTrapStampS = tTrap ? (tTrap - tP) / 1000 : null; cyc.tToolsDeadS = toolsDeadAt ? (toolsDeadAt - tP) / 1000 : null;
       check(cyc, 'trap_finished', !!trapRow, `trap stamped +${cyc.tTrapStampS?.toFixed(1) ?? 'never'} s; every worker tool tree gone +${cyc.tToolsDeadS?.toFixed(1) ?? 'never'} s`);
-      check(cyc, 'tools_dead', toolProcs().length === 0, `${toolProcs().length} tool process(es) alive after the trap (${toolProcs().map((p) => p.cmd.slice(0, 30)).join('; ')})`);
+      { const alive = toolProcs(); check(cyc, 'tools_dead', alive.length === 0, `${alive.length} tool process(es) alive after the trap (${alive.map((p) => `${memberOfCwd(rig, p)}:${p.cmd.slice(0, 40)}`).join('; ')})`); }   // ONE census feeds both the verdict and the evidence
       await bilanChecks(cyc, spec.lead, trapRow?.paused_at);
       // a sabotage that did not take effect proves nothing: each one is VERIFIED (else the drive throws — never a silent green control)
       if (SABOTAGE === 'branch') {
@@ -349,7 +349,7 @@ async function runExercise(name) {
       cyc.tAllPausedS = tTrap && toolsDeadAt ? (Math.max(tTrap, toolsDeadAt) - tP) / 1000 : null;
       cyc.tTrapStampS = tTrap ? (tTrap - tP) / 1000 : null;
       check(cyc, 'trap_finished', !!trapRow, `escalation +${cyc.escalatedAtS?.toFixed(1) ?? 'never'} s, trap stamped +${cyc.tTrapStampS?.toFixed(1) ?? 'never'} s`);
-      check(cyc, 'tools_dead', toolProcs().length === 0, `${toolProcs().length} tool process(es) alive after the trap`);
+      { const alive = toolProcs(); check(cyc, 'tools_dead', alive.length === 0, `${alive.length} tool process(es) alive after the trap (${alive.map((p) => `${memberOfCwd(rig, p)}:${p.cmd.slice(0, 40)}`).join('; ')})`); }
       const orderSeen = spec.workers.filter((w) => w.kind === 'obey' || w.kind === 'bg').map((w) => ({ k: w.k, t: api.requests.find((r) => r.role === w.k && r.order && r.t >= tP)?.t ?? null }));
       cyc.orderLatencyS = orderSeen.map((o) => (o.t ? (o.t - tP) / 1000 : null));
       check(cyc, 'order_delivered_at_tool_boundary', orderSeen.every((o) => o.t), `order seen by ${orderSeen.filter((o) => o.t).length}/${orderSeen.length} working members; latency (s) ${cyc.orderLatencyS.map((v) => v?.toFixed(1) ?? 'never').join(' ')}`);
