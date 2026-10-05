@@ -67,8 +67,10 @@ test('index.ts registers the channels at MODULE scope (a second registration thr
 test('every write re-publishes (forced) and the push is skipped while neither the bus fingerprint nor the live tree moved', () => {
   const host = codeOf('src/main/pause-ui-host.ts');
   for (const c of ['pause:pause', 'pause:resume', 'pause:release']) {
-    const body = host.slice(at(host, `ipcMain.handle('${c}'`));
-    assert.ok(body.slice(0, 900).includes('broadcastPauseOverview(true)'), `${c} forces a publish`);
+    const start = at(host, `ipcMain.handle('${c}'`);
+    const next = host.indexOf('ipcMain.handle(', start + 10);
+    const body = host.slice(start, next === -1 ? start + 1500 : next); // THIS handler only (the next one carries the same call)
+    assert.ok(body.includes('broadcastPauseOverview(true)') && body.includes('invalidatePauseOverviewBroadcast()'), `${c} forces a publish`);
   }
   const fn = host.slice(at(host, 'export function broadcastPauseOverview('));
   assert.ok(fn.slice(0, 700).includes('if (!force && key === lastKey) return null;'), 'unchanged fingerprint = no rebuild');

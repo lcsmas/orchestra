@@ -78,26 +78,10 @@ export function toBilanLine(b: BilanRow): PauseUiBilanLine {
   };
 }
 
-/** Carriers whose pause is ACTIVE for the UI: `paused_at` set AND the frozen `pause` switch ON (the same filter every gate applies). */
+/** Carriers that hold a pause column. The FROZEN `pause` switch filter is `pauseStatusView` → `activePauseFor`'s (a carrier whose switch is OFF reads null there: never a run, never a badge). */
 function activeCarrierIds(db: BusDb): Array<{ id: string; auto: boolean; title: string | null }> {
-  const rows = db
-    .prepare(
-      `SELECT r.id, r.title, r.pause_auto, f.flags AS flags_json
-         FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id
-        WHERE r.paused_at IS NOT NULL ORDER BY r.paused_at, r.id`,
-    )
-    .all() as Array<{ id: string; title: string | null; pause_auto: string | null; flags_json: string | null }>;
-  const out: Array<{ id: string; auto: boolean; title: string | null }> = [];
-  for (const r of rows) {
-    let pauseOn = false;
-    try {
-      pauseOn = (JSON.parse(r.flags_json ?? '{}') as { pause?: boolean }).pause === true;
-    } catch {
-      pauseOn = false; // a malformed flags blob reads all-OFF, like parseSwitches
-    }
-    if (pauseOn) out.push({ id: r.id, auto: r.pause_auto !== null && r.pause_auto !== undefined, title: r.title ?? null });
-  }
-  return out;
+  const rows = db.prepare('SELECT id, title, pause_auto FROM runs WHERE paused_at IS NOT NULL ORDER BY paused_at, id').all() as Array<{ id: string; title: string | null; pause_auto: string | null }>;
+  return rows.map((r) => ({ id: r.id, auto: r.pause_auto !== null && r.pause_auto !== undefined, title: r.title ?? null }));
 }
 
 function memberOf(

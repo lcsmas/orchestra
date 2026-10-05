@@ -307,6 +307,57 @@ test("a member RELEASED by an inner carrier but still blocked by an outer one re
   db.close();
 });
 
+test("a member that JOINS the tree during the Reprise (not in the roster yet) reads BLOCKED — fail closed, never 'libéré'", () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  trap(db);
+  uiResume(db, deps, { wsId: 'L' });
+  const late: WaveNode = { id: 'late', parentId: 'O' };
+  NODES.push(late);
+  byId.set('late', late);
+  try {
+    const o = readPauseOverview(db, deps);
+    assert.deepEqual([o.byWorkspace.late.ui, o.byWorkspace.late.role], ['blocked', null], 'seeded BLOCKED by the host sweep; until then the UI says blocked too');
+  } finally {
+    NODES.pop();
+    byId.delete('late');
+  }
+  db.close();
+});
+
+test('an orchestrator row whose run names ANOTHER coordinator is not anchored: its control is refused by the hold rule, explained before the click', () => {
+  const db = freshDb();
+  tree(db);
+  busRuns.startRun(db, { id: 'R', kind: 'vague', coordinator: 'R2' }, ON); // the run id is R's workspace id, but its coordinator is a successor
+  const r: WaveNode = { id: 'R', kind: 'orchestrator' };
+  NODES.push(r);
+  byId.set('R', r);
+  try {
+    const o = readPauseOverview(db, deps);
+    assert.equal(o.controls.R.anchored, false);
+    assert.deepEqual(o.controls.R.can.pauseSoft, { ok: false, code: 'refused' });
+    const click = uiPause(db, deps, { wsId: 'R', mode: 'soft' });
+    assert.equal(click.outcome, 'refused', 'and the writer agrees: nothing written');
+    assert.equal(getRunPause(db, 'R'), null);
+  } finally {
+    NODES.pop();
+    byId.delete('R');
+  }
+  db.close();
+});
+
+test("a stale pause column on a switch-OFF CHILD run under a live pause is not a second run (the carrier view must be its OWN)", () => {
+  const db = freshDb();
+  tree(db);
+  busRuns.startRun(db, { id: 'Y', kind: 'vague', coordinator: 'Y', parentRunId: 'L' }, OFF);
+  db.prepare('UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = ? WHERE id = ?').run(Date.now(), 'Y', 'hard', 'Y');
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  const o = readPauseOverview(db, deps);
+  assert.deepEqual(o.runs.map((r) => r.carrierRunId), ['L'], 'only the live carrier; Y\'s column is stale (its frozen switch is OFF) and must not echo L\'s pause under its own id');
+  db.close();
+});
+
 test('toBilanLine caps the killed list (newest 12, total kept) and the notes, and never throws on a sparse row', () => {
   const killed = Array.from({ length: 30 }, (_, i) => ({ pid: i, cmd: `c${i}`, cwd: null, signal: 'SIGTERM', outcome: 'exited' }));
   const line = toBilanLine({ id: 1, runId: 'L', wsId: 'x', pausedAt: 1, activity: { surface: 'sdk', notes: Array.from({ length: 20 }, (_, i) => `n${i}`) }, snapshotRef: null, dirty: null, killed, error: 'boom', createdAt: 1 });
