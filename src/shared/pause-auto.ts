@@ -15,6 +15,18 @@ export const PAUSE_AUTO_BY = 'host:usage_limit';
  *  different `paused_at` ignores it, so a stale column that survived a lift can never turn a LATER manual pause into an auto one. */
 export interface StoredPauseAuto extends PauseAutoReason {
   epoch: number;
+  /** Set while the auto-Reprise is HELD (#256 R4): quota is back but the Reprise could not wake every coordinator it addresses (frozen `wake` OFF). Epoch-bound like the rest. */
+  held?: AutoHeld;
+}
+
+/** What `orchestra run status` shows for a held auto-Reprise, and what makes the escalation idempotent across app restarts. */
+export interface AutoHeld {
+  /** epoch ms the hold was first escalated for THIS addressee set. */
+  at: number;
+  /** the wake-OFF addressees, `wsId@runId`, sorted — a different set escalates again. */
+  addressees: string[];
+  /** who was told: the nearest unpaused ancestor coordinator's handle, or 'human' (a decision gate). */
+  to: string;
 }
 
 /** No fresh reading can be had (endpoint down, 429…): the stored reset time is then the only evidence — act this long after it. */
@@ -32,9 +44,27 @@ export function repriseBackoffMs(streak: number): number {
 /** A pause whose host trap never stamps (no members found, store not ready…) must not freeze the fleet forever: Reprise anyway after this. */
 export const TRAP_WAIT_MAX_MS = 10 * 60_000;
 
-export function encodePauseAuto(reason: PauseAutoReason, epoch: number): string {
-  const stored: StoredPauseAuto = { reason: reason.reason, wsIds: [...reason.wsIds], accountIds: [...reason.accountIds], epoch };
+export function encodePauseAuto(reason: PauseAutoReason, epoch: number, held: AutoHeld | null = null): string {
+  const stored: StoredPauseAuto = { reason: reason.reason, wsIds: [...reason.wsIds], accountIds: [...reason.accountIds], epoch, ...(held ? { held: { at: held.at, addressees: [...held.addressees], to: held.to } } : {}) };
   return JSON.stringify(stored);
+}
+
+/** The hold of the auto pause that began at `pausedAt`, or null (none / malformed / another epoch). Never throws. */
+export function parseAutoHeld(json: string | null | undefined, pausedAt: number | null): AutoHeld | null {
+  if (!parsePauseAuto(json, pausedAt)) return null; // only a valid auto pause of THIS epoch carries a hold
+  try {
+    const h = (JSON.parse(json as string) as { held?: unknown }).held as Record<string, unknown> | undefined;
+    if (!h || typeof h !== 'object') return null;
+    if (typeof h.at !== 'number' || typeof h.to !== 'string' || !Array.isArray(h.addressees) || !h.addressees.every((x) => typeof x === 'string')) return null;
+    return { at: h.at, addressees: [...(h.addressees as string[])], to: h.to };
+  } catch {
+    return null;
+  }
+}
+
+/** Order-insensitive key of an addressee set (`ws@run`), what {@link AutoHeld.addressees} stores. */
+export function heldAddresseesKey(addressees: ReadonlyArray<{ wsId: string; runId: string }>): string[] {
+  return addressees.map((a) => `${a.wsId}@${a.runId}`).sort();
 }
 
 /** The auto reason of the pause that began at `pausedAt`, or null = MANUAL. Malformed / unknown reason / other epoch ⇒ null (fail safe:

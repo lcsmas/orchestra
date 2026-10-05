@@ -16,8 +16,9 @@ const ONLY_SET = ONLY ? new Set(ONLY.split(',')) : null;
 const POL = 'src/shared/pause-auto.ts', CORE = 'src/main/pause-auto.ts', HOST = 'src/main/pause-auto-host.ts';
 const ACT = 'src/main/activity.ts', PQ = 'src/main/prompt-queue.ts', WS = 'src/main/workspaces.ts', API = 'src/main/api-handlers.ts', AU = 'src/main/account-usage.ts';
 const BP = 'src/main/bus-pause.ts';
+const CLIIDX = 'src/cli/index.ts', RST = 'src/cli/run-status.ts';
 const T = {
-  pure: 'src/shared/pause-auto.test.ts', unit: 'src/main/pause-auto.test.ts', wiring: 'src/main/pause-auto-wiring.test.ts', rig: 'src/main/pause-auto-rig.test.ts',
+  pure: 'src/shared/pause-auto.test.ts', unit: 'src/main/pause-auto.test.ts', wiring: 'src/main/pause-auto-wiring.test.ts', rig: 'src/main/pause-auto-rig.test.ts', status: 'src/cli/run-status-held.test.ts',
 };
 
 const M = [
@@ -50,7 +51,6 @@ const M = [
   { id: 'pause-manual-adopted', file: CORE, find: "if (row.pausedAt === null || (auto === null && !resuming)) return 'manual-pause';", rep: "if (row.pausedAt === null) return 'manual-pause';", tests: [T.unit, T.rig], expect: /PAUSE manual|PAUSE ancestor|RIG manual_never/ },
   { id: 'pause-soft-mode', file: CORE, find: "SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_deadline_at", rep: "SET paused_at = ?, paused_by = ?, pause_mode = 'soft', pause_deadline_at", tests: [T.unit, T.rig], expect: /PAUSE: a worker|RIG limit_pause/ },
   { id: 'pause-trap-stamped-at-write', file: CORE, find: "pause_trap_at = NULL, resume_started_at = NULL, pause_auto = ?\n        WHERE id = ? AND paused_at IS NULL", rep: "pause_trap_at = 1, resume_started_at = NULL, pause_auto = ?\n        WHERE id = ? AND paused_at IS NULL", tests: [T.unit], expect: /PAUSE: a worker/ },
-  { id: 'pause-merge-dropped', file: CORE, find: "run(encodePauseAuto(merged, row.pausedAt as number), gov.runId, row.pausedAt);", rep: "run(encodePauseAuto(auto, row.pausedAt as number), gov.runId, row.pausedAt);", tests: [T.unit], expect: /PAUSE merge|PAUSE ancestor/ },
   { id: 'pause-resuming-not-repaused', file: CORE, find: "    if (resuming) {\n      // A Pause while RESUMING", rep: "    if (false) {\n      // A Pause while RESUMING", tests: [T.unit, T.rig], expect: /PAUSE while RESUMING|RIG repause/ },
   { id: 'int-repause-reason-dropped', file: CORE, find: "{ auto: (epoch) => encodePauseAuto(merged, epoch) }", rep: "{}", tests: [T.unit, T.rig], expect: /PAUSE while RESUMING|RIG repause/ },
   { id: 'int-repause-owned-by-someone-else', file: CORE, find: "revertResumeToPaused(db, gov.runId, PAUSE_AUTO_BY, deps.now()", rep: "revertResumeToPaused(db, gov.runId, 'someone', deps.now()", tests: [T.unit], expect: /PAUSE while RESUMING/ },
@@ -82,7 +82,6 @@ const M = [
   { id: 'change-forces-when-idle', file: CORE, find: "  if (runs.length === 0) return none;\n", rep: "", tests: [T.unit, T.rig], expect: /ACCOUNT CHANGE nothing waiting|RIG off_identity/ },
   { id: 'change-login-matches-any', file: CORE, find: "(change.kind === 'login' && account === change.accountId)", rep: "(change.kind === 'login')", tests: [T.unit], expect: /ACCOUNT CHANGE login|ACCOUNT CHANGE nothing waiting/ },
   { id: 'change-migrate-matches-any', file: CORE, find: "(change.kind === 'migrate' && wsId === change.wsId)", rep: "(change.kind === 'migrate')", tests: [T.unit], expect: /ACCOUNT CHANGE nothing waiting/ },
-  { id: 'change-display-account-stale', file: CORE, find: "          db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ?').run(encodePauseAuto(merged, run.pausedAt), run.runId, run.pausedAt);\n", rep: "", tests: [T.unit, T.rig], expect: /ACCOUNT CHANGE migrate: forces|RIG switch_resume/ },
   { id: 'change-no-reevaluate', file: CORE, find: "  return { runs, forced, evaluated: await evaluateAutoPaused(deps) };", rep: "  return { runs, forced, evaluated: [] };", tests: [T.unit, T.rig], expect: /ACCOUNT CHANGE migrate|RIG switch_resume|RIG relogin_resume/ },
   { id: 'change-force-failure-aborts', file: CORE, find: "    deps.log.warn('pause-auto: forced usage refresh failed — evaluating on what is cached', e);", rep: "    throw e;", tests: [T.unit], expect: /ACCOUNT CHANGE: a failed forced read/ },
   { id: 'verdict-reset-survives-account-change', file: POL, find: "const resetsAtMs = e.accountChangedAt !== null ? null : e.resetsAtMs;", rep: "const resetsAtMs = e.resetsAtMs;", tests: [T.pure, T.unit], expect: /VERDICT account change: the stored reset|ACCOUNT CHANGE reset/ },
@@ -146,14 +145,40 @@ const M = [
   { id: 'r3-archived-count', file: CORE, find: "      return !!w && !w.archived;\n", rep: "      return !!w;\n", tests: [T.unit], expect: /PAUSE wake guard \(bus fallback\)/ },
   { id: 'r3-warn-every-time', file: CORE, find: "    if (deps.once(`no-wake:${carrier}`)) deps.log.warn(", rep: "    if (true) deps.log.warn(", tests: [T.unit], expect: /PAUSE wake guard: `no-wake` is WARNED once/ },
   { id: 'r3-recheck-removed', file: CORE, find: "  const off = wakeOffAddressees(db, deps, run.runId, run.pausedAt);\n  if (off.length > 0) {", rep: "  const off = wakeOffAddressees(db, deps, run.runId, run.pausedAt);\n  if (false as boolean) {", tests: [T.unit, T.wiring, T.rig], expect: /REPRISE no-wake addressee|WIRING one enumeration|RIG wake_off_after_pause/ },
-  { id: 'r3-escalation-every-tick', file: CORE, find: "    if (deps.once(`no-wake-reprise:${run.runId}@${run.pausedAt}`)) {", rep: "    if (true) {", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee|RIG wake_off_after_pause/ },
-  { id: 'r3-escalation-not-sent', file: CORE, find: "      escalateNoWake(db, deps, run.runId, list);\n", rep: "", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee|RIG wake_off_after_pause/ },
-  { id: 'r3-escalation-wrong-recipient', file: CORE, find: "      recipient: coordinator,\n      kind: 'escalation',", rep: "      recipient: 'nobody',\n      kind: 'escalation',", tests: [T.unit], expect: /REPRISE no-wake addressee/ },
   { id: 'r3-held-reprise-anyway', file: CORE, find: "    return { runId: run.runId, action: 'wait', why: 'no-wake-addressee' };\n", rep: "", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee|RIG wake_off_after_pause/ },
   { id: 'r3-enumeration-forked-seed', file: 'src/main/pause-reprise.ts', find: "  return planRoster(db, carrierRunId, pausedAt ?? 0, subtreeRunIds)\n    .filter((i) => i.role === 'coordinator')", rep: "  return planRoster(db, carrierRunId, pausedAt ?? 0, subtreeRunIds)\n    .filter((i) => i.role === 'worker')", tests: [T.unit], expect: /INTEGRATION addressees/ },
   { id: 'r3-addressee-run-wrong', file: 'src/main/pause-reprise.ts', find: ".map((i) => ({ wsId: i.wsId, runId: envRunOf(tree, i.wsId, bilans.get(i.wsId)?.memberRun ?? null, coordinatedRun(tree, nodes, i.wsId)) }));", rep: ".map((i) => ({ wsId: i.wsId, runId: carrierRunId }));", tests: [T.unit, T.rig], expect: /INTEGRATION addressees|RIG wake_off_after_pause|PAUSE wake guard \(R3-1\)/ },
   { id: 'n2-row-run-wake-ignored', file: CORE, find: "      if (getRun(db, r.run_id)?.flags.wake !== true) continue;\n", rep: "", tests: [T.unit], expect: /MARKERS wake \(N2\)/ },
   { id: 'n4-kind-unpinned', file: CORE, find: "AND sequence <= ? AND kind = 'reprise' AND recipient IS NOT NULL", rep: "AND sequence <= ? AND recipient IS NOT NULL", tests: [T.unit], expect: /MARKERS kind \(N4\)/ },
+  { id: 'pause-merge-drops-held', file: CORE, find: "run(encodePauseAuto(merged, row.pausedAt as number, parseAutoHeld(row.pauseAuto, row.pausedAt)), gov.runId, row.pausedAt);", rep: "run(encodePauseAuto(merged, row.pausedAt as number), gov.runId, row.pausedAt);", tests: [T.unit], expect: /REPRISE no-wake addressee: a DIFFERENT addressee set/ },
+  { id: 'change-display-drops-held', file: CORE, find: "run(encodePauseAuto(merged, run.pausedAt, run.held), run.runId, run.pausedAt);", rep: "run(encodePauseAuto(merged, run.pausedAt), run.runId, run.pausedAt);", tests: [T.unit], expect: /REPRISE no-wake addressee|ACCOUNT CHANGE/ },
+  { id: 'r4-held-codec-epoch-unbound', file: POL, find: "  if (!parsePauseAuto(json, pausedAt)) return null; // only a valid auto pause of THIS epoch carries a hold\n", rep: "", tests: [T.pure, T.unit], expect: /HELD codec|REPRISE no-wake addressee: a DIFFERENT/ },
+  { id: 'r4-held-codec-shape-unchecked', file: POL, find: "    if (typeof h.at !== 'number' || typeof h.to !== 'string' || !Array.isArray(h.addressees) || !h.addressees.every((x) => typeof x === 'string')) return null;\n", rep: "", tests: [T.pure], expect: /HELD codec/ },
+  { id: 'r4-held-key-unsorted', file: POL, find: "  return addressees.map((a) => `${a.wsId}@${a.runId}`).sort();", rep: "  return addressees.map((a) => `${a.wsId}@${a.runId}`);", tests: [T.pure], expect: /HELD codec/ },
+  // TWO LAYERS cover each other (the carrier-first walk AND the "itself paused" skip: the carrier is paused by definition): the mutant removes BOTH — the escalation then goes to the paused carrier.
+  { id: 'r4-target-includes-carrier', file: CORE, edits: [
+    { find: "  for (const id of ancestors) {\n    const run = getRun(db, id);", rep: "  for (const id of [carrier, ...ancestors]) {\n    const run = getRun(db, id);" },
+    { find: "    if (pausedCarrierForWorkspace(db, w, deps.getWorkspace) !== null) continue; // itself paused ⇒ cannot read either\n", rep: "" },
+  ], tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee|RIG wake_off_/ },
+  { id: 'r4-target-paused-ancestor-ok', file: CORE, find: "    if (pausedCarrierForWorkspace(db, w, deps.getWorkspace) !== null) continue; // itself paused ⇒ cannot read either\n", rep: "", tests: [T.unit], expect: /REPRISE no-wake addressee \(target\)/ },
+  { id: 'r4-target-wake-off-ancestor-ok', file: CORE, find: "    if (!run || run.flags.wake !== true) continue; // not a run, or one the sweep never wakes\n", rep: "    if (!run) continue;\n", tests: [T.unit], expect: /REPRISE no-wake addressee: no unpaused ancestor/ },
+  { id: 'r4-target-gone-coordinator-ok', file: CORE, find: "    if (!w || w.archived) continue; // a gone coordinator reads nothing\n", rep: "", tests: [T.unit], expect: /REPRISE no-wake addressee|PAUSE wake guard/ },
+  { id: 'r4-target-bus-always', file: CORE, find: "  if (!chain || chain.dangling) {\n    for (let cur", rep: "  if (true) {\n    for (let cur", tests: [T.unit], expect: /REPRISE no-wake addressee \(target\)/ },
+  { id: 'r4-target-bus-never', file: CORE, find: "  if (!chain || chain.dangling) {\n    for (let cur", rep: "  if (false as boolean) {\n    for (let cur", tests: [T.unit], expect: /REPRISE no-wake addressee \(target\)/ },
+  { id: 'r4-human-gate-never', file: CORE, find: "      else openGate(db, run.runId, target.asker, body, HUMAN_GATE_RECIPIENT);\n", rep: "", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee: no unpaused ancestor|RIG wake_off_after_pause/ },
+  { id: 'r4-gate-not-human', file: CORE, find: "      else openGate(db, run.runId, target.asker, body, HUMAN_GATE_RECIPIENT);\n", rep: "      else openGate(db, run.runId, target.asker, body, null);\n", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee: no unpaused ancestor|RIG wake_off_after_pause/ },
+  { id: 'r4-row-wrong-recipient', file: CORE, find: "send(db, { runId: target.runId, sender: 'host', recipient: target.coordinator, kind: 'escalation', body });", rep: "send(db, { runId: target.runId, sender: 'host', recipient: 'nobody', kind: 'escalation', body });", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee \(re-check\)|RIG wake_off_held_ancestor/ },
+  { id: 'r4-row-wrong-run', file: CORE, find: "send(db, { runId: target.runId, sender: 'host', recipient: target.coordinator, kind: 'escalation', body });", rep: "send(db, { runId: run.runId, sender: 'host', recipient: target.coordinator, kind: 'escalation', body });", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee \(re-check\)|RIG wake_off_held_ancestor/ },
+  { id: 'r4-held-not-recorded', file: CORE, find: "      if (upd.changes !== 1) throw new Error('the auto pause changed meanwhile'); // rolls the row back too\n", rep: "", tests: [T.wiring], expect: /WIRING hold \(R4\)/ },
+  { id: 'r4-held-record-skipped', file: CORE, find: "encodePauseAuto(reason, run.pausedAt, held), run.runId, run.pausedAt, rawPauseAuto);", rep: "encodePauseAuto(reason, run.pausedAt, null), run.runId, run.pausedAt, rawPauseAuto);", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee|RIG wake_off_/ },
+  { id: 'r4-failure-claims-success', file: CORE, find: "    deps.log.warn(`pause-auto: HELD escalation for run ${run.runId} failed — retried next tick`, e);\n    return null;", rep: "    deps.log.warn(`pause-auto: HELD escalation for run ${run.runId} failed — retried next tick`, e);\n    return { at: deps.now(), addressees: heldAddresseesKey(off), to: 'x' };", tests: [T.unit], expect: /REPRISE no-wake addressee \(R4-2\)/ },
+  { id: 'r4-held-set-change-ignored', file: CORE, find: "    if (!curHeld || curHeld.addressees.join('|') !== key.join('|')) {", rep: "    if (!curHeld) {", tests: [T.unit], expect: /REPRISE no-wake addressee: a DIFFERENT/ },
+  { id: 'r4-held-always-escalates', file: CORE, find: "    if (!curHeld || curHeld.addressees.join('|') !== key.join('|')) {", rep: "    if (true) {", tests: [T.unit, T.rig], expect: /REPRISE no-wake addressee|RIG wake_off_/ },
+  { id: 'r4-held-never-cleared', file: CORE, find: "  if (parseAutoHeld(cur.pauseAuto, cur.pausedAt)) clearHeld(db, run, cur.pauseAuto); // the offending run is gone: the hold ends with it\n", rep: "", tests: [T.unit], expect: /REPRISE no-wake addressee: a DIFFERENT/ },
+  { id: 'r4-addressee-coordinatedrun-only', file: 'src/main/pause-reprise.ts', find: "runId: envRunOf(tree, i.wsId, bilans.get(i.wsId)?.memberRun ?? null, coordinatedRun(tree, nodes, i.wsId)) }));", rep: "runId: coordinatedRun(tree, nodes, i.wsId) }));", tests: [T.unit], expect: /INTEGRATION addressees \(R4-3\)/ },
+  { id: 'r4-status-line-removed', file: RST, find: "  if (st.autoHeld) {\n    out.push(", rep: "  if (false as boolean && st.autoHeld) {\n    out.push(", tests: [T.status], expect: /run status \(built CLI\): a HELD auto-Reprise/, build: true },
+  { id: 'r4-status-dep-unwired', file: CLIIDX, find: "            autoHeld: (d, id) => {", rep: "            autoHeldOff: (d: unknown, id: unknown) => {", tests: [T.status], expect: /run status \(built CLI\): a HELD auto-Reprise/, build: true },
+  { id: 'r4-status-shape-always', file: RST, find: "      return held ? { autoHeld: held } : {};", rep: "      return { autoHeld: held };", tests: [T.status], expect: /run status \(built CLI\): an auto pause that is NOT held/, build: true },
   { id: 'host-default-login-not-forced', file: HOST, find: "    if (ids.includes(null)) jobs.push(refreshUsageNow());", rep: "", tests: [T.rig], expect: /RIG switch_default_login/ },
   { id: 'host-core-imports-store', file: CORE, find: "import type { WaveNode } from './wave-run-id.ts';\n", rep: "import type { WaveNode } from './wave-run-id.ts';\nimport { store as _s } from './store.ts';\nvoid _s;\n", tests: [T.wiring], expect: /WIRING pause-auto\.ts is Electron-free/ },
 ];
@@ -201,7 +226,7 @@ function parseRun(out) {
   return { fail, pass, red, raw: out };
 }
 
-function rebuildCli() { // (no mutant here builds the CLI; kept for the shared runner shape)
+function rebuildCli() { // the CLI-side mutants (index.ts / run-status.ts) exec the BUILT bundle: rebuild it under the mutation and again after the restore
   const r = spawnSync('pnpm', ['run', 'build:cli'], { cwd: REPO, encoding: 'utf8', timeout: 120_000 });
   if (r.status !== 0) { console.error(`build:cli failed rc=${r.status}: ${(r.stderr ?? '').slice(-300)}`); process.exit(3); }
 }

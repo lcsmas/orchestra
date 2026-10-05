@@ -7,8 +7,10 @@ import {
   TRAP_WAIT_MAX_MS,
   decideRunReprise,
   encodePauseAuto,
+  heldAddresseesKey,
   memberVerdict,
   mergePauseAuto,
+  parseAutoHeld,
   parsePauseAuto,
   repriseBackoffMs,
   type MemberEvidence,
@@ -144,4 +146,21 @@ test('RUN decision: the flap guard holds a Reprise until its instant, after the 
 test('constants: the flap guard doubles from 5 min to a 60 min cap; the streak window is 2 h', () => {
   assert.deepEqual([0, 1, 2, 3, 4, 5, 9].map(repriseBackoffMs), [0, 300_000, 600_000, 1_200_000, 2_400_000, 3_600_000, 3_600_000]);
   assert.equal(REPRISE_STREAK_WINDOW_MS, 7_200_000);
+});
+
+test('HELD codec (R4): encode/parse round-trips for ITS epoch only; malformed or foreign shapes read none; a hold needs a valid auto pause; the key is order-insensitive', () => {
+  const held = { at: T0 + 5, addressees: ['Zc@Zc', 'Zd@Zd'], to: 'L' };
+  const json = encodePauseAuto({ reason: 'usage_limit', wsIds: ['w1'], accountIds: ['A'] }, T0, held);
+  assert.deepEqual(parseAutoHeld(json, T0), held);
+  assert.equal(parseAutoHeld(json, T0 + 1), null, 'epoch-bound');
+  assert.equal(parseAutoHeld(json, null), null);
+  assert.equal(parseAutoHeld(encodePauseAuto({ reason: 'usage_limit', wsIds: ['w1'], accountIds: ['A'] }, T0), T0), null, 'no hold recorded');
+  assert.deepEqual(parsePauseAuto(json, T0), { reason: 'usage_limit', wsIds: ['w1'], accountIds: ['A'] }, 'the reason codec ignores the hold');
+  for (const bad of [{ at: 'x', addressees: [], to: 'L' }, { at: 1, addressees: [1], to: 'L' }, { at: 1, addressees: [], to: 2 }, null, 'str', { addressees: [], to: 'L' }]) {
+    const j = JSON.stringify({ reason: 'usage_limit', wsIds: [], accountIds: [], epoch: T0, held: bad });
+    assert.equal(parseAutoHeld(j, T0), null, JSON.stringify(bad));
+  }
+  assert.equal(parseAutoHeld('{', T0), null);
+  assert.equal(parseAutoHeld(JSON.stringify({ reason: 'auth', wsIds: [], accountIds: [], epoch: T0, held }), T0), null, 'a hold on a non-auto pause is nothing');
+  assert.deepEqual(heldAddresseesKey([{ wsId: 'Zd', runId: 'Zd' }, { wsId: 'Zc', runId: 'R' }]), ['Zc@R', 'Zd@Zd']);
 });

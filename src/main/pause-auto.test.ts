@@ -19,7 +19,7 @@ import { readPauseOrigin, insertBilan } from './bus-pause-records.ts';
 import { beginReprise as realBeginReprise, setRunPause } from './bus-pause.ts';
 import { releaseMembers, repriseAddressees, setLiveTreeSource } from './pause-reprise.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
-import { PAUSE_AUTO_BY, REPRISE_STREAK_WINDOW_MS, RESET_GRACE_MS, TRAP_WAIT_MAX_MS, encodePauseAuto, parsePauseAuto, repriseBackoffMs, type UsageReading } from '../shared/pause-auto.ts';
+import { PAUSE_AUTO_BY, REPRISE_STREAK_WINDOW_MS, RESET_GRACE_MS, TRAP_WAIT_MAX_MS, encodePauseAuto, parseAutoHeld, parsePauseAuto, repriseBackoffMs, type UsageReading } from '../shared/pause-auto.ts';
 import type { RepriseEntry } from '../shared/pause-lifecycle.ts';
 import type { UsageWindows } from '../shared/accounts.ts';
 
@@ -965,26 +965,120 @@ test('INTEGRATION addressees: `repriseAddressees` = exactly the recipients (and 
   assert.deepEqual(sent, planned);
 });
 
-test('REPRISE no-wake addressee (re-check): a wake-OFF run created/attached AFTER the pause HOLDS the Reprise — warned + ONE escalation to the carrier\'s coordinator — and releases it once the run is gone', async () => {
-  const r = rig();
-  pausedByLimit(r, { account: 'A' }); // paused with every addressee wake ON
+const escRows = (r: Rig) => r.db.prepare("SELECT sender, recipient, run_id, body FROM messages WHERE kind = 'escalation' ORDER BY sequence").all() as Array<{ sender: string; recipient: string; run_id: string; body: string }>;
+const gateRows = (r: Rig) => r.db.prepare('SELECT run_id, asked_by, recipient, question, resolved_at FROM decision_gates ORDER BY id').all() as Array<{ run_id: string; asked_by: string; recipient: string | null; question: string; resolved_at: number | null }>;
+/** O auto-paused, trap done, quota back, then a wake-OFF OPS `Zc` appears under O — the hold scenario. */
+function heldFixture(sw: { L?: BusSwitches } = {}): Rig {
+  const r = rig(sw);
+  pausedByLimit(r, { account: 'A' });
   r.ws.get('w1')!.accountId = 'A';
-  wakeOffRun(r, 'Zc', 'O'); // a wake-OFF OPS appears under O afterwards
+  wakeOffRun(r, 'Zc', 'O');
   r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
   r.clock.now = T0 + 60_000;
   fresh(r, 'A', usable);
+  return r;
+}
+
+test('REPRISE no-wake addressee (re-check): a wake-OFF run created/attached AFTER the pause HOLDS the Reprise — recorded in pause_auto.held, ONE escalation to the NEAREST UNPAUSED ANCESTOR coordinator (never the paused carrier\'s own) — and releases it once the run is gone', async () => {
+  const r = heldFixture();
   assert.deepEqual(await evaluateAutoPaused(r.deps), [{ runId: 'O', action: 'wait', why: 'no-wake-addressee' }]);
   assert.equal(r.calls.reprise.length, 0, 'no Reprise nobody would receive');
-  const esc = () => r.db.prepare("SELECT sender, recipient, run_id, body FROM messages WHERE kind = 'escalation'").all() as Array<{ sender: string; recipient: string; run_id: string; body: string }>;
-  assert.equal(esc().length, 1);
-  assert.deepEqual([esc()[0].sender, esc()[0].recipient, esc()[0].run_id], ['host', 'O', 'O']);
-  assert.ok(esc()[0].body.includes('Zc (run Zc)') && esc()[0].body.includes('orchestra run resume --run O'));
-  assert.equal(r.calls.logs.filter((l) => l.startsWith('WARN pause-auto:') && l.includes('Reprise HELD')).length, 1);
+  assert.equal(escRows(r).length, 1);
+  assert.deepEqual([escRows(r)[0].sender, escRows(r)[0].recipient, escRows(r)[0].run_id], ['host', 'L', 'L'], 'L = O\'s nearest unpaused ancestor, read in ITS run — the carrier O is paused and cannot read');
+  assert.ok(escRows(r)[0].body.includes('Zc (run Zc)') && escRows(r)[0].body.includes('orchestra run resume --run O'));
+  const held = parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0);
+  assert.deepEqual([held?.addressees, held?.to, held?.at], [['Zc@Zc'], 'L', T0 + 60_000]);
+  assert.equal(r.calls.logs.filter((l) => l.startsWith('WARN pause-auto:') && l.includes('Reprise HELD') && l.includes('escalated to L')).length, 1);
   await evaluateAutoPaused(r.deps);
-  assert.equal(esc().length, 1, 'ONE escalation per carrier + epoch');
+  await evaluateAutoPaused({ ...r.deps, once: () => true }); // a fresh process: nothing in memory — the hold is on the bus row
+  assert.equal(escRows(r).length, 1, 'ONE escalation per addressee set, restart-proof');
   assert.equal(runRow(r.db, 'O').resume_started_at, null, 'the run stays PAUSED');
-  r.ws.delete('Zc'); // the offending OPS is removed ⇒ the next tick Reprises
+  r.ws.delete('Zc'); // the offending OPS is removed ⇒ the next tick Reprises and the hold ends
   assert.equal((await evaluateAutoPaused(r.deps))[0].action, 'reprise');
+});
+
+test('REPRISE no-wake addressee: no unpaused ancestor coordinator that can read ⇒ a HUMAN decision gate (asked by the carrier\'s coordinator, in the carrier run); an ancestor with wake OFF is skipped', async () => {
+  const top = rig({ O: OFF }); // carrier L itself (top of the tree): nobody above it
+  top.ws.set('wl', { id: 'wl', parentId: 'L' });
+  limitStop(top, 'wl', { account: 'A', resetsAtMs: T0 + 3_600_000 }); // carrier = L (O pause OFF)
+  assert.equal(runRow(top.db, 'L').paused_at, T0);
+  top.db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(T0 + 1_000, 'L');
+  wakeOffRun(top, 'Zt', 'L');
+  top.ws.set('Zt', { id: 'Zt', parentId: 'L', canOrchestrate: true });
+  top.clock.now = T0 + 60_000;
+  fresh(top, 'A', usable);
+  assert.equal((await evaluateAutoPaused(top.deps))[0].why, 'no-wake-addressee');
+  assert.equal(escRows(top).length, 0, 'no coordinator row');
+  assert.deepEqual(gateRows(top).map((g) => [g.run_id, g.asked_by, g.recipient, g.resolved_at]), [['L', 'L', 'human', null]]);
+  assert.ok(gateRows(top)[0].question.includes('Zt (run Zt)'));
+  assert.equal(parseAutoHeld(runRow(top.db, 'L').pause_auto as string, T0)?.to, 'human');
+  await evaluateAutoPaused(top.deps);
+  assert.equal(gateRows(top).length, 1, 'ONE gate');
+  // an ancestor whose run has wake OFF is not a reader the sweep wakes ⇒ skipped ⇒ the human
+  const skip = heldFixture({ L: { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false } });
+  await evaluateAutoPaused(skip.deps);
+  assert.equal(escRows(skip).length, 0);
+  assert.deepEqual(gateRows(skip).map((g) => [g.run_id, g.asked_by, g.recipient]), [['O', 'O', 'human']]);
+});
+
+test('REPRISE no-wake addressee (R4-2): the latch is the RECORD written WITH the row — a failed write records nothing, logs no "escalated", and is retried at the next tick', async () => {
+  const r = heldFixture();
+  const real = r.db;
+  let failed = 0;
+  const flaky = new Proxy(real, {
+    get(t, k) {
+      const v = (t as unknown as Record<PropertyKey, unknown>)[k];
+      if (k === 'prepare') return (sql: string) => { if (failed === 0 && /INSERT INTO messages/.test(sql)) { failed++; throw new Error('SQLITE_BUSY'); } return t.prepare(sql); };
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+    },
+  });
+  r.deps = { ...r.deps, getBus: () => flaky };
+  await evaluateAutoPaused(r.deps);
+  assert.equal(failed, 1);
+  assert.equal(escRows(r).length, 0);
+  assert.equal(parseAutoHeld(runRow(real, 'O').pause_auto as string, T0), null, 'nothing recorded');
+  assert.ok(!r.calls.logs.some((l) => l.includes('escalated to')), 'the log never claims an escalation that was not written');
+  assert.ok(r.calls.logs.some((l) => l.startsWith('WARN pause-auto: HELD escalation for run O failed')));
+  await evaluateAutoPaused(r.deps);
+  assert.equal(escRows(r).length, 1, 'retried and written');
+  assert.ok(parseAutoHeld(runRow(real, 'O').pause_auto as string, T0));
+  assert.ok(r.calls.logs.some((l) => l.includes('escalated to L')));
+});
+
+test('REPRISE no-wake addressee: a DIFFERENT addressee set escalates again; the hold is dropped when the set is empty; epoch-bound (another epoch reads none); merge keeps it', async () => {
+  const r = heldFixture();
+  await evaluateAutoPaused(r.deps);
+  wakeOffRun(r, 'Zd', 'O');
+  r.ws.set('Zd', { id: 'Zd', parentId: 'O', canOrchestrate: true });
+  await evaluateAutoPaused(r.deps);
+  assert.equal(escRows(r).length, 2, 'a changed set is news');
+  assert.deepEqual(parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0)?.addressees, ['Zc@Zc', 'Zd@Zd']);
+  assert.equal(parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0 + 1), null, 'epoch-bound: a stale hold of an earlier pause never shows');
+  limitStop(r, 'w2', { account: 'A' }); // another member joins the same auto pause: the hold survives the merge
+  assert.deepEqual(parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0)?.addressees, ['Zc@Zc', 'Zd@Zd']);
+  r.ws.delete('Zc');
+  r.ws.delete('Zd');
+  r.ws.get('w2')!.accountId = 'A';
+  r.clock.now = T0 + 120_000; // w2's limit stop was recorded at T0+60 s: a reading AFTER it is needed
+  fresh(r, 'A', usable);
+  // quota back AND no offender: the hold is cleared before the Reprise (which then also clears pause_auto at close)
+  const out = await evaluateAutoPaused({ ...r.deps, beginReprise: () => 'not-paused' });
+  assert.equal(out[0].action, 'reprise');
+  assert.equal(parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0), null, 'hold cleared');
+});
+
+test('INTEGRATION addressees (R4-3): a PLAIN run-anchoring carrier\'s `reprise` row is sent in the run of its nearest ORCHESTRATOR (envRunOf), and the guard checks THAT run — the carrier\'s own run having wake ON must not hide a wake-OFF run the row lands in', () => {
+  const r = rig();
+  // D: an orchestrator (run D, wake OFF) above a plain workspace X that anchors a mission run X (wake ON, pause ON) — #221
+  busRuns.startRun(r.db, { id: 'D', kind: 'vague', coordinator: 'D' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false });
+  busRuns.startRun(r.db, { id: 'X2', kind: 'mission', coordinator: 'X2' }, ON);
+  r.ws.set('D', { id: 'D', canOrchestrate: true });
+  r.ws.set('X2', { id: 'X2', parentId: 'D' }); // plain: not an orchestrator
+  r.ws.set('wx', { id: 'wx', parentId: 'X2' });
+  assert.deepEqual(repriseAddressees(r.db, 'X2', ['X2']), [{ wsId: 'X2', runId: 'D' }], 'the row lands in run D — where the sweep reads the coordinator\'s mail');
+  const before = allRuns(r.db);
+  assert.equal(limitStop(r, 'wx', { account: 'A' }), 'no-wake');
+  assert.equal(allRuns(r.db), before);
 });
 
 test('PAUSE wake guard (bus fallback): an OPS whose live chain DANGLES (its parent workspace was deleted) is known only through the bus subtree — still an addressee (wake OFF ⇒ no-wake), unless archived or wake ON', () => {
@@ -1001,4 +1095,64 @@ test('PAUSE wake guard (bus fallback): an OPS whose live chain DANGLES (its pare
   assert.deepEqual(wakeOffAddressees(off.db, off.deps, 'L'), [{ wsId: 'Q', runId: 'Q' }]);
   assert.equal(limitStop(mk('on'), 'wl', { account: 'A' }), 'paused');
   assert.equal(limitStop(mk('archived'), 'wl', { account: 'A' }), 'paused', 'an archived workspace is nobody to wake');
+});
+
+test('REPRISE no-wake addressee (target): an ancestor coordinator that is itself paused (its resuming ancestor has not released it) is skipped — the next one up reads it; the bus run tree is only a fallback for a dangling live chain', async () => {
+  const r = rig();
+  busRuns.startRun(r.db, { id: 'G', kind: 'mission', coordinator: 'G' }, ON);
+  r.db.prepare("UPDATE runs SET parent_run_id = 'G' WHERE id = 'L'").run(); // G above L? keep it simple: make G the top, L = A (middle), O the carrier
+  r.ws.set('G', { id: 'G', kind: 'orchestrator' });
+  r.ws.get('L')!.parentId = 'G';
+  // G is RESUMING: its own coordinator was released, A (= L) was NOT — so L is still governed by G's pause and cannot read
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'G', pause_mode = 'hard', pause_trap_at = ?, resume_started_at = ? WHERE id = 'G'").run(T0 - 5_000, T0 - 4_000, T0 - 3_000);
+  r.db.prepare("INSERT INTO pause_members (run_id, paused_at, ws_id, role, member_run, released_at, released_by) VALUES ('G', ?, 'G', 'coordinator', 'G', ?, 'host')").run(T0 - 5_000, T0 - 2_000);
+  r.db.prepare("INSERT INTO pause_members (run_id, paused_at, ws_id, role, member_run) VALUES ('G', ?, 'L', 'coordinator', 'L')").run(T0 - 5_000);
+  // O (the carrier) auto-paused by w1 (set directly: w1 is still governed by G)
+  r.db.prepare('UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = ?, pause_trap_at = ?, pause_auto = ? WHERE id = ?').run(T0, PAUSE_AUTO_BY, 'hard', T0 + 1_000, encodePauseAuto({ reason: 'usage_limit', wsIds: ['w1'], accountIds: ['A'] }, T0), 'O');
+  r.ws.get('w1')!.accountId = 'A';
+  r.ws.get('w1')!.lastStopReason = 'usage_limit';
+  r.ws.get('w1')!.lastStopReasonAt = T0;
+  wakeOffRun(r, 'Zc', 'O');
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.clock.now = T0 + 60_000;
+  fresh(r, 'A', usable);
+  assert.equal((await evaluateAutoPaused(r.deps))[0].why, 'no-wake-addressee');
+  assert.deepEqual(escRows(r).map((e) => [e.recipient, e.run_id]), [['G', 'G']], 'L is skipped (still paused by G), G reads it');
+  // the bus run tree is only a fallback: a COMPLETE live chain that does not reach L (O detached) ⇒ nobody above ⇒ the human, whatever parent_run_id says
+  const d = heldFixture();
+  d.ws.get('O')!.parentId = undefined;
+  await evaluateAutoPaused(d.deps);
+  assert.equal(escRows(d).length, 0);
+  assert.deepEqual(gateRows(d).map((g) => g.recipient), ['human']);
+  // …but a DANGLING live chain (the parent workspace was deleted) falls back to the bus parent (L, alive, unpaused)
+  const f = heldFixture();
+  f.ws.get('O')!.parentId = 'gone';
+  await evaluateAutoPaused(f.deps);
+  assert.deepEqual(escRows(f).map((e) => [e.recipient, e.run_id]), [['L', 'L']]);
+});
+
+test('REPRISE no-wake addressee (target): an archived or deleted ancestor coordinator reads nothing — skipped, the human is asked', async () => {
+  const archived = heldFixture();
+  archived.ws.get('L')!.archived = true;
+  await evaluateAutoPaused(archived.deps);
+  assert.equal(escRows(archived).length, 0);
+  assert.deepEqual(gateRows(archived).map((g) => g.recipient), ['human']);
+  const deleted = heldFixture();
+  deleted.ws.delete('L'); // O's live chain dangles ⇒ the bus parent (run L) is the evidence — but its coordinator workspace is gone
+  await evaluateAutoPaused(deleted.deps);
+  assert.equal(escRows(deleted).length, 0);
+  assert.deepEqual(gateRows(deleted).map((g) => g.recipient), ['human']);
+});
+
+test('ACCOUNT CHANGE keeps the hold: the stored-account refresh of a migrated trigger does not drop pause_auto.held (no second escalation)', async () => {
+  const r = heldFixture();
+  await evaluateAutoPaused(r.deps);
+  assert.equal(escRows(r).length, 1);
+  r.ws.get('w1')!.accountId = 'B';
+  r.clock.now = T0 + 90_000;
+  r.onForce = () => fresh(r, 'B', usable);
+  const res = await afterAccountChange(r.deps, { kind: 'migrate', wsId: 'w1' });
+  assert.equal(res.evaluated[0].why, 'no-wake-addressee');
+  assert.deepEqual(parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0)?.addressees, ['Zc@Zc']);
+  assert.equal(escRows(r).length, 1, 'the migration did not re-escalate');
 });

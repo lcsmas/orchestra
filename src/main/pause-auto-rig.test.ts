@@ -170,12 +170,24 @@ test('RIG wake_off_reparented: an OPS created top-level (bus parent NULL, wake O
   assert.equal(r.ok, true);
 });
 
-test('RIG wake_off_after_pause: a wake-OFF OPS attached AFTER the pause HOLDS the auto-Reprise (one escalation to the carrier coordinator, run stays paused); detaching it lets the next tick Reprise', () => {
+test('RIG wake_off_after_pause: a wake-OFF OPS attached AFTER the pause HOLDS the auto-Reprise — the paused carrier cannot read an escalation and has no ancestor ⇒ ONE human decision gate (recorded in pause_auto.held); the run stays paused; detaching it lets the next tick Reprise', () => {
   const r = runArm('wake_off_after_pause');
   assert.equal(r.paused, true);
   assert.equal(r.resumedWhileHeld, false);
-  assert.deepEqual(r.escalations, ['ws-ops@ws-ops'], 'exactly one escalation, to the carrier\'s coordinator, in its run');
+  assert.deepEqual(r.escalations, [], 'no row to the paused carrier\'s own coordinator');
+  assert.deepEqual(r.gates, ['ws-ops/ws-ops/human'], 'exactly one open gate addressed to the human, asked in the carrier run');
+  assert.equal(r.heldRecorded, 'human');
   assert.equal(r.resumedAfterDetach, true);
+  assert.equal(r.ok, true);
+});
+
+test('RIG wake_off_held_ancestor: the HELD escalation goes to the nearest UNPAUSED ancestor coordinator, in ITS run (never the paused carrier, no human gate)', () => {
+  const r = runArm('wake_off_held_ancestor');
+  assert.equal(r.paused, true);
+  assert.equal(r.leadPaused, false);
+  assert.deepEqual(r.escalations, ['ws-lead@ws-lead']);
+  assert.equal(r.gates, 0);
+  assert.equal(r.heldTo, 'ws-lead');
   assert.equal(r.ok, true);
 });
 

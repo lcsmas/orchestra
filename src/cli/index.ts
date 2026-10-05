@@ -33,6 +33,7 @@ import {
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
+import { parseAutoHeld } from '../shared/pause-auto.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
 import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
@@ -1939,6 +1940,11 @@ async function main(argv: string[]): Promise<void> {
             pauseStatus: (d, id) => douceMod.pauseStatusView(d, id),
             repriseView: (await import('../main/pause-reprise.ts')).repriseStatusView,
             gatePauseFor: (d, id) => coverFor(d, id, busPause),
+            // #256: the HELD auto-Reprise of the carrier (store-less: one column read + the shared parser)
+            autoHeld: (d, id) => {
+              const r = d.prepare('SELECT paused_at, pause_auto FROM runs WHERE id = ?').get(id) as { paused_at: number | null; pause_auto: string | null } | undefined;
+              return r ? parseAutoHeld(r.pause_auto, r.paused_at === null || r.paused_at === undefined ? null : Number(r.paused_at)) : null;
+            },
           });
           process.stdout.write(stJson.present ? `${JSON.stringify(st, null, 2)}\n` : renderRunStatus(st));
         } finally {

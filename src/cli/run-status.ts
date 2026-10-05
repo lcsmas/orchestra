@@ -8,6 +8,7 @@ import type { RunPauseInfo } from '../main/bus-pause.ts';
 import type { BilanRow } from '../main/bus-pause-records.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
+import type { AutoHeld } from '../shared/pause-auto.ts';
 
 /** The bus reads this verb needs, injected (production passes the real modules — dynamic import in index.ts). */
 export interface RunStatusDeps {
@@ -23,6 +24,8 @@ export interface RunStatusDeps {
   gatePauseFor?: (db: BusDb, runId: string) => RunPauseInfo | null;
   /** #255: the open Reprise (resuming, or active with accusés still missing) — "N/M repris — manquent : …". Omitted ⇒ none. */
   repriseView?: (db: BusDb, runId: string) => RepriseStatusView | null;
+  /** #256: the HELD auto-Reprise of the carrier (`pause_auto.held`) — "quota is back but the Reprise could not wake …". Omitted ⇒ none. */
+  autoHeld?: (db: BusDb, carrierRunId: string) => AutoHeld | null;
 }
 
 export interface RunStatus {
@@ -41,6 +44,8 @@ export interface RunStatus {
   reprise: RepriseStatusView | null;
   /** An ANCESTOR run's pause that still gates this run although its nearer carrier is RESUMING (null otherwise). */
   stillPausedBy: RunPauseInfo | null;
+  /** #256: present only while the carrier's auto-Reprise is HELD (older JSON shape unchanged otherwise). */
+  autoHeld?: AutoHeld;
 }
 
 export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): RunStatus {
@@ -56,6 +61,10 @@ export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): 
     bilan: pause ? deps.listBilanForRun(db, pause.runId, runId, pause.pausedAt) : (last?.rows ?? []),
     lastPause: last ? { carrierRunId: last.carrierRunId, pausedAt: last.pausedAt } : null,
     reprise: deps.repriseView?.(db, runId) ?? null,
+    ...(() => {
+      const held = pause && deps.autoHeld ? deps.autoHeld(db, pause.runId) : null;
+      return held ? { autoHeld: held } : {};
+    })(),
     stillPausedBy: (() => {
       if (!pause?.resumeStartedAt || !deps.gatePauseFor) return null;
       const g = deps.gatePauseFor(db, runId);
@@ -136,6 +145,12 @@ export function renderRunStatus(st: RunStatus): string {
           ? `Host trap: NOT OWED YET — Pause douce still waiting for its members (the host takes over when all confirmed or at ${p.deadlineAt ? iso(p.deadlineAt) : 'the 3-min deadline'}).`
         : `Host trap: NOT FINISHED — the app has not (fully) reacted yet (it runs when Orchestra is up; a pause that landed while it was closed is completed at the next launch).`,
   );
+  if (st.autoHeld) {
+    out.push(
+      `Auto-Reprise: HELD since ${iso(st.autoHeld.at)} — the usage quota is back, but the Reprise could not wake ${st.autoHeld.addressees.map((a) => c(a)).join(', ')} (a run with its frozen \`wake\` switch OFF: nobody would receive its \`reprise\` row); ` +
+        `told ${st.autoHeld.to === 'human' ? 'the human (decision gate)' : c(st.autoHeld.to)}. Detach that run (the next tick Reprises) or lift by hand: orchestra run resume --run ${p.runId}`,
+    );
+  }
   if (p.resumeStartedAt) out.push(`Reprise: RESUMING since ${iso(p.resumeStartedAt)} — coordinators are released; every other member stays BLOCKED until its coordinator runs \`orchestra run release\`.`);
   if (st.reprise) out.push(...renderRepriseStatus(st.reprise, { countShownAbove: pauseLineCoversReprise(st.reprise, st.roster) }));
   out.push(`Bilan de pause (${st.bilan.length} member${st.bilan.length === 1 ? '' : 's'}):`);

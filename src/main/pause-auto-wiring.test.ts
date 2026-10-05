@@ -107,7 +107,17 @@ test('WIRING one enumeration (R3-1): the wake guard asks #255\'s OWN plan — se
   assert.match(rep, /return planRoster\(db, carrierRunId, pausedAt \?\? 0, subtreeRunIds\)\s*\.filter\(\(i\) => i\.role === 'coordinator'\)/);
   const core = read('pause-auto.ts');
   assert.match(core, /return repriseAddressees\(db, carrier, runSubtreeIds\(db, carrier\), pausedAt\)\s*\.filter\(\(a\) => \{\s*const w = deps\.getWorkspace\(a\.wsId\);\s*return !!w && !w\.archived;\s*\}\)\s*\.filter\(\(a\) => getRun\(db, a\.runId\)\?\.flags\.wake !== true\);/);
-  assert.match(core, /const off = wakeOffAddressees\(db, deps, run\.runId, run\.pausedAt\);\s*if \(off\.length > 0\) \{[\s\S]*?escalateNoWake\(db, deps, run\.runId, list\);[\s\S]*?why: 'no-wake-addressee'/);
+  assert.match(core, /const off = wakeOffAddressees\(db, deps, run\.runId, run\.pausedAt\);\s*if \(off\.length > 0\) \{[\s\S]*?escalateNoWake\(db, deps, run, cur\.pauseAuto, off\);[\s\S]*?why: 'no-wake-addressee'/);
   assert.ok(!/runSubtreeIds\(db, carrier\)\.some/.test(core), 'no second (bus-only) enumeration');
   assert.match(read('pause-auto-host.ts'), /once: \(key\) => \(onceKeys\.has\(key\) \? false : \(onceKeys\.add\(key\), true\)\),/);
+});
+
+test('WIRING hold (R4): the escalation + the `pause_auto.held` record are ONE transaction (no latch before the write); the target walks ancestors only; `run status` reads the hold through the CLI dep', () => {
+  const core = read('pause-auto.ts');
+  assert.match(core, /db\.transaction\(\(\) => \{\s*if \(target\.kind === 'coordinator'\) send\(db, \{ runId: target\.runId, sender: 'host', recipient: target\.coordinator, kind: 'escalation', body \}\);\s*else openGate\(db, run\.runId, target\.asker, body, HUMAN_GATE_RECIPIENT\);/);
+  assert.match(core, /if \(upd\.changes !== 1\) throw new Error\('the auto pause changed meanwhile'\);/);
+  assert.match(core, /for \(const id of ancestors\) \{/);
+  assert.ok(!/deps\.once\(`no-wake-reprise/.test(core), 'no in-memory latch for the hold');
+  assert.match(read('../cli/index.ts'), /autoHeld: \(d, id\) => \{\s*const r = d\.prepare\('SELECT paused_at, pause_auto FROM runs WHERE id = \?'\)/);
+  assert.match(read('../cli/run-status.ts'), /const held = pause && deps\.autoHeld \? deps\.autoHeld\(db, pause\.runId\) : null;/);
 });

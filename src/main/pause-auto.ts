@@ -9,22 +9,26 @@
 //    coordinators first, workers only via their OPS). Manual pauses are never selected.
 //  • `afterAccountChange` — migration / re-login: force a fresh reading of the account(s) the paused runs wait on and re-evaluate AT ONCE.
 
-import { send, type BusDb } from './bus.ts';
+import { openGate, send, type BusDb } from './bus.ts';
 import { getRun } from './bus-runs.ts';
 import { pausedCarrierForWorkspace, runSubtreeIds } from './bus-pause.ts';
 import { recordPauseOrigin } from './bus-pause-records.ts';
 import { repriseAddressees, revertResumeToPaused } from './pause-reprise.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
+import { HUMAN_GATE_RECIPIENT } from '../shared/human-gates.ts';
 import { resolveWorkspaceAccountId } from '../shared/accounts.ts';
 import type { PauseAutoReason, RepriseEntry } from '../shared/pause-lifecycle.ts';
 import {
   PAUSE_AUTO_BY,
   decideRunReprise,
   encodePauseAuto,
+  heldAddresseesKey,
   memberVerdict,
   mergePauseAuto,
+  parseAutoHeld,
   parsePauseAuto,
   repriseBackoffMs,
+  type AutoHeld,
   type MemberVerdict,
   type UsageReading,
 } from '../shared/pause-auto.ts';
@@ -198,7 +202,7 @@ export function autoPauseOnLimit(deps: PauseAutoDeps, wsId: string, attempt = 0)
       }
       return attempt === 0 ? autoPauseOnLimit(deps, wsId, 1) : 'manual-pause'; // the Reprise finished / another pause landed meanwhile: classify again, once
     }
-    db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ?').run(encodePauseAuto(merged, row.pausedAt as number), gov.runId, row.pausedAt);
+    db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ?').run(encodePauseAuto(merged, row.pausedAt as number, parseAutoHeld(row.pauseAuto, row.pausedAt)), gov.runId, row.pausedAt);
     return 'merged';
   }
 
@@ -243,6 +247,8 @@ interface AutoPausedRun {
   pausedAt: number;
   trapAt: number | null;
   reason: PauseAutoReason;
+  /** the hold recorded for THIS epoch (`pause_auto.held`), or null. */
+  held: AutoHeld | null;
   depth: number;
 }
 
@@ -272,7 +278,7 @@ export function autoPausedRuns(db: BusDb): AutoPausedRun[] {
     const pausedAt = Number(r.paused_at);
     const reason = parsePauseAuto((r.pause_auto as string | null) ?? null, pausedAt);
     if (!reason) continue;
-    out.push({ runId: String(r.id), pausedAt, trapAt: r.pause_trap_at === null || r.pause_trap_at === undefined ? null : Number(r.pause_trap_at), reason, depth: depthOf(String(r.id)) });
+    out.push({ runId: String(r.id), pausedAt, trapAt: r.pause_trap_at === null || r.pause_trap_at === undefined ? null : Number(r.pause_trap_at), reason, held: parseAutoHeld((r.pause_auto as string | null) ?? null, pausedAt), depth: depthOf(String(r.id)) });
   }
   return out.sort((a, b) => a.depth - b.depth);
 }
@@ -362,22 +368,57 @@ export async function evaluateAutoPaused(deps: PauseAutoDeps): Promise<AutoEvalE
   return out;
 }
 
-function escalateNoWake(db: BusDb, deps: PauseAutoDeps, carrier: string, list: string): void {
-  try {
-    const coordinator = getRun(db, carrier)?.coordinator;
-    if (!coordinator) return;
-    send(db, {
-      runId: carrier,
-      sender: 'host',
-      recipient: coordinator,
-      kind: 'escalation',
-      body:
-        `Auto-Reprise HELD for run ${carrier}: the usage quota is back, but the Reprise would address ${list}, whose run has its frozen \`wake\` switch OFF — nobody would receive its \`reprise\` row ` +
-        `and every worker below would stay blocked. The run stays PAUSED. Detach/remove that run, or lift the pause yourself once it is safe (\`orchestra run resume --run ${carrier}\`).`,
-    });
-  } catch (e) {
-    deps.log.warn(`pause-auto: no-wake escalation for run ${carrier} failed`, e);
+/** Who must hear that the auto-Reprise is HELD: the carrier's own coordinator is a member of the paused run — it cannot read (its wake is refused by the very pause the row asks to
+ *  lift). So: the NEAREST ancestor run whose coordinator is not itself paused and can be woken (frozen wake ON), the live tree first and the bus run tree after; none ⇒ the human. */
+function escalationTarget(db: BusDb, deps: PauseAutoDeps, carrier: string): { kind: 'coordinator'; runId: string; coordinator: string } | { kind: 'human'; asker: string } {
+  const seen = new Set<string>([carrier.toLowerCase()]);
+  const ancestors: string[] = [];
+  const own = deps.getWorkspace(carrier);
+  const chain = own ? liveChain(deps, own) : null;
+  if (chain) for (const id of chain.ids.slice(1)) if (!seen.has(id.toLowerCase())) (seen.add(id.toLowerCase()), ancestors.push(id));
+  // the live tree first (`runs.parent_run_id` is write-once: a detached OPS is no longer under its old parent); the bus run tree only when the live chain is unknown or dangles
+  if (!chain || chain.dangling) {
+    for (let cur = getRun(db, carrier)?.parent_run_id ?? null; cur && !seen.has(cur.toLowerCase()); cur = getRun(db, cur)?.parent_run_id ?? null) (seen.add(cur.toLowerCase()), ancestors.push(cur));
   }
+  for (const id of ancestors) {
+    const run = getRun(db, id);
+    if (!run || run.flags.wake !== true) continue; // not a run, or one the sweep never wakes
+    const w = deps.getWorkspace(run.coordinator);
+    if (!w || w.archived) continue; // a gone coordinator reads nothing
+    if (pausedCarrierForWorkspace(db, w, deps.getWorkspace) !== null) continue; // itself paused ⇒ cannot read either
+    return { kind: 'coordinator', runId: id, coordinator: run.coordinator };
+  }
+  return { kind: 'human', asker: getRun(db, carrier)?.coordinator ?? carrier };
+}
+
+/** Tell someone that the Reprise of `run` is HELD, and record the hold in `pause_auto.held` — ONE transaction: the row/gate AND the record land together or neither does (a failed write
+ *  is retried at the next tick and the log never claims an escalation that was not written). Returns the recorded hold, or null on failure. */
+function escalateNoWake(db: BusDb, deps: PauseAutoDeps, run: AutoPausedRun, rawPauseAuto: string | null, off: Array<{ wsId: string; runId: string }>): AutoHeld | null {
+  try {
+    const reason = parsePauseAuto(rawPauseAuto, run.pausedAt);
+    if (!reason) return null; // no longer THIS auto pause
+    const list = off.map((a) => `${a.wsId} (run ${a.runId})`).join(', ');
+    const target = escalationTarget(db, deps, run.runId);
+    const body =
+      `Auto-Reprise HELD for run ${run.runId}: the usage quota is back, but the Reprise would address ${list}, whose run has its frozen \`wake\` switch OFF — nobody would receive its \`reprise\` row ` +
+      `and every worker below would stay blocked. The run stays PAUSED. Detach/remove that run, or lift the pause yourself once it is safe (\`orchestra run resume --run ${run.runId}\`).`;
+    const held: AutoHeld = { at: deps.now(), addressees: heldAddresseesKey(off), to: target.kind === 'human' ? HUMAN_GATE_RECIPIENT : target.coordinator };
+    db.transaction(() => {
+      if (target.kind === 'coordinator') send(db, { runId: target.runId, sender: 'host', recipient: target.coordinator, kind: 'escalation', body });
+      else openGate(db, run.runId, target.asker, body, HUMAN_GATE_RECIPIENT);
+      const upd = db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ? AND pause_auto = ?').run(encodePauseAuto(reason, run.pausedAt, held), run.runId, run.pausedAt, rawPauseAuto);
+      if (upd.changes !== 1) throw new Error('the auto pause changed meanwhile'); // rolls the row back too
+    }).immediate();
+    return held;
+  } catch (e) {
+    deps.log.warn(`pause-auto: HELD escalation for run ${run.runId} failed — retried next tick`, e);
+    return null;
+  }
+}
+
+function clearHeld(db: BusDb, run: AutoPausedRun, rawPauseAuto: string | null): void {
+  const reason = parsePauseAuto(rawPauseAuto, run.pausedAt);
+  if (reason) db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ? AND pause_auto = ?').run(encodePauseAuto(reason, run.pausedAt, null), run.runId, run.pausedAt, rawPauseAuto);
 }
 
 function evaluateOne(deps: PauseAutoDeps, db: BusDb, run: AutoPausedRun): AutoEvalEntry {
@@ -396,16 +437,19 @@ function evaluateOne(deps: PauseAutoDeps, db: BusDb, run: AutoPausedRun): AutoEv
     return { runId: run.runId, action: 'wait', why: 'changed-meanwhile' };
   }
   // The addressee set is re-read NOW (a wake-OFF run created or attached after the pause is unknown at pause time): a Reprise nobody receives would leave every worker blocked forever.
-  // Held instead — warned + escalated ONCE to the carrier's coordinator, who can detach the run or `run resume` by hand; re-evaluated every tick (the set may change).
+  // Held instead — recorded in `pause_auto.held` (shown by `run status`) and told ONCE per addressee set to the nearest unpaused ancestor coordinator, else the human (decision gate);
+  // re-evaluated every tick (the set may change: detaching the run lets the next tick Reprise, which also clears the hold).
   const off = wakeOffAddressees(db, deps, run.runId, run.pausedAt);
   if (off.length > 0) {
-    if (deps.once(`no-wake-reprise:${run.runId}@${run.pausedAt}`)) {
-      const list = off.map((a) => `${a.wsId} (run ${a.runId})`).join(', ');
-      deps.log.warn(`pause-auto: quota is back for run ${run.runId} but its Reprise could not wake ${list} (frozen wake switch OFF) — Reprise HELD, escalated to the coordinator`);
-      escalateNoWake(db, deps, run.runId, list);
+    const key = heldAddresseesKey(off);
+    const curHeld = parseAutoHeld(cur.pauseAuto, cur.pausedAt);
+    if (!curHeld || curHeld.addressees.join('|') !== key.join('|')) {
+      const held = escalateNoWake(db, deps, run, cur.pauseAuto, off);
+      if (held) deps.log.warn(`pause-auto: quota is back for run ${run.runId} but its Reprise could not wake ${off.map((a) => `${a.wsId} (run ${a.runId})`).join(', ')} (frozen wake switch OFF) — Reprise HELD, ${held.to === HUMAN_GATE_RECIPIENT ? 'asked the human (decision gate)' : `escalated to ${held.to}`}`);
     }
     return { runId: run.runId, action: 'wait', why: 'no-wake-addressee' };
   }
+  if (parseAutoHeld(cur.pauseAuto, cur.pausedAt)) clearHeld(db, run, cur.pauseAuto); // the offending run is gone: the hold ends with it
   let outcome: string;
   try {
     outcome = deps.beginReprise(db, run.runId, 'host', { host: true, reason: 'usage_limit' });
@@ -497,7 +541,7 @@ export async function afterAccountChange(deps: PauseAutoDeps, change: AccountCha
         if (change.kind === 'migrate') {
           // keep the stored (display) account of the trigger in step with the pin
           const merged = mergePauseAuto(run.reason, { wsId, accountId: account });
-          db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ?').run(encodePauseAuto(merged, run.pausedAt), run.runId, run.pausedAt);
+          db.prepare('UPDATE runs SET pause_auto = ? WHERE id = ? AND paused_at = ?').run(encodePauseAuto(merged, run.pausedAt, run.held), run.runId, run.pausedAt);
         }
       }
     }

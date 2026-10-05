@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(process.env.PAUSE_AUTO_REPO ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'wake_off_nested', 'wake_off_reparented', 'wake_off_after_pause', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
+const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'wake_off_nested', 'wake_off_reparented', 'wake_off_after_pause', 'wake_off_held_ancestor', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 const TICK_MS = 20_000;   // prompt-queue TICK_MS — "one poll tick" (pinned by pause-auto-wiring.test.ts)
 
@@ -503,8 +503,8 @@ if (ARM === 'limit_pause') {
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'wake_off_after_pause') {
-  // The addressees are re-read at the auto-Reprise: a wake-OFF OPS attached AFTER the pause HOLDS the Reprise (no row nobody receives): warned + ONE escalation to the carrier's
-  // coordinator, run stays PAUSED; detaching it lets the next tick Reprise.
+  // The addressees are re-read at the auto-Reprise: a wake-OFF OPS attached AFTER the pause HOLDS the Reprise (no row nobody receives). The carrier ws-ops is a member of the paused run — it cannot
+  // read an escalation — and has nobody above it: the HUMAN is asked (one decision gate, recorded in pause_auto.held); the run stays PAUSED; detaching the OPS lets the next tick Reprise.
   await seed({ aLimitedMs: 0 });
   await activity.markStoppedOnUsageLimit('ws-m1', Date.now() + 3_600_000);
   await sleep(25);
@@ -516,12 +516,35 @@ if (ARM === 'limit_pause') {
   await pq.__tickForTests();
   await pq.__tickForTests();
   rec('resumedWhileHeld', resumeStarted() !== null);
-  const esc = db.prepare("SELECT recipient, run_id FROM messages WHERE kind = 'escalation'").all();
-  rec('escalations', esc.map((e) => `${e.recipient}@${e.run_id}`));
+  rec('escalations', db.prepare("SELECT recipient, run_id FROM messages WHERE kind = 'escalation'").all().map((e) => `${e.recipient}@${e.run_id}`));
+  rec('gates', db.prepare('SELECT run_id, asked_by, recipient FROM decision_gates WHERE resolved_at IS NULL').all().map((g) => `${g.run_id}/${g.asked_by}/${g.recipient}`));
+  rec('heldRecorded', JSON.parse(run('ws-ops').pause_auto ?? '{}').held?.to ?? null);
   await store.upsertWorkspace({ ...ws('ws-late'), parentId: undefined });                               // detached
   await pq.__tickForTests();
   rec('resumedAfterDetach', resumeStarted() !== null);
-  ok = out.paused && out.resumedWhileHeld === false && JSON.stringify(out.escalations) === '["ws-ops@ws-ops"]' && out.resumedAfterDetach === true;
+  ok = out.paused && out.resumedWhileHeld === false && JSON.stringify(out.escalations) === '[]' && JSON.stringify(out.gates) === '["ws-ops/ws-ops/human"]' && out.heldRecorded === 'human' && out.resumedAfterDetach === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'wake_off_held_ancestor') {
+  // Same hold, but the carrier has an UNPAUSED ancestor coordinator (ws-lead, wake ON): the escalation goes to IT, in ITS run — not to the paused carrier, not to a human gate.
+  await seed({ aLimitedMs: 0 });
+  busRuns.startRun(db, { id: 'ws-lead', kind: 'mission', coordinator: 'ws-lead' }, ON);
+  await store.upsertWorkspace(mk('ws-lead', { kind: 'orchestrator', accountId: 'acct-a' }));
+  await store.upsertWorkspace({ ...ws('ws-ops'), parentId: 'ws-lead' });
+  await activity.markStoppedOnUsageLimit('ws-m1', Date.now() + 3_600_000);
+  await sleep(25);
+  await acctUsage.refreshAccountsNow();
+  rec('paused', run('ws-ops').paused_at !== null);
+  rec('leadPaused', run('ws-lead').paused_at !== null);
+  trapDone();
+  busRuns.startRun(db, { id: 'ws-late', kind: 'vague', coordinator: 'ws-late' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false });
+  await store.upsertWorkspace(mk('ws-late', { kind: 'orchestrator', parentId: 'ws-ops', accountId: 'acct-a' }));
+  await pq.__tickForTests();
+  await pq.__tickForTests();
+  rec('escalations', db.prepare("SELECT recipient, run_id FROM messages WHERE kind = 'escalation'").all().map((e) => `${e.recipient}@${e.run_id}`));
+  rec('gates', db.prepare('SELECT run_id FROM decision_gates').all().length);
+  rec('heldTo', JSON.parse(run('ws-ops').pause_auto ?? '{}').held?.to ?? null);
+  ok = out.paused && out.leadPaused === false && JSON.stringify(out.escalations) === '["ws-lead@ws-lead"]' && out.gates === 0 && out.heldTo === 'ws-lead';
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'release_clears_marker') {
