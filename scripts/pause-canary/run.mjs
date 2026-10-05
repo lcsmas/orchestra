@@ -63,7 +63,7 @@ const git = (...a) => sh('git', a).stdout.trim();
 function srcStamp() {
   const dirty = sh('git', ['status', '--porcelain', '--', 'src', 'package.json', 'pnpm-lock.yaml', 'vite.config.ts', 'vite.cli.config.ts', 'vite.keeper.config.ts', 'scripts/after-pack-check.cjs']).stdout.trim();
   const tree = git('rev-parse', 'HEAD:src') + git('rev-parse', 'HEAD:package.json');
-  return createHash('sha256').update(tree + dirty + (dirty ? sh('git', ['diff', 'HEAD', '--', 'src', 'package.json']).stdout : '')).digest('hex').slice(0, 12);
+  return createHash('sha256').update('recipe2' + tree + dirty + (dirty ? sh('git', ['diff', 'HEAD', '--', 'src', 'package.json']).stdout : '')).digest('hex').slice(0, 12);
 }
 function ensureApp() {
   if (opt('app', null)) return path.resolve(opt('app'));
@@ -71,6 +71,7 @@ function ensureApp() {
   if (fs.existsSync(path.join(dir, 'orchestra'))) { say(`app: reusing ${dir} (source stamp unchanged)`); return path.join(dir, 'orchestra'); }
   say(`app: building the PACKAGED app from ${REPO} (HEAD ${git('rev-parse', '--short', 'HEAD')}) …`);
   if (!fs.existsSync(path.join(REPO, 'build', 'bus-abi'))) { const r = sh('pnpm', ['run', 'build:bus-abi']); if (r.status !== 0) { say(`PAUSE-CANARY: VOID — build:bus-abi failed: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); } }
+  for (const d of ['dist', 'dist-electron', 'release']) fs.rmSync(path.join(REPO, d), { recursive: true, force: true });   // a stale chunk left by an earlier build would ship in app.asar as dead code
   for (const [c, a] of [['pnpm', ['run', 'build:bundles']], ['npx', ['electron-builder', '--dir']]]) { const r = sh(c, a); if (r.status !== 0) { say(`PAUSE-CANARY: VOID — ${c} ${a.join(' ')} failed: ${(r.stdout + r.stderr).slice(-400)}`); process.exit(3); } }
   const unpacked = fs.readdirSync(path.join(REPO, 'release')).find((d) => /-unpacked$/.test(d));
   if (!unpacked) { say('PAUSE-CANARY: VOID — electron-builder produced no *-unpacked dir'); process.exit(3); }

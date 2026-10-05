@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, renderTable } from '../../scripts/pause-canary/bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { MUTANTS } from '../../scripts/pause-canary/mutants.mjs';
+import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { fleetSpec, KIND_ORDER } from '../../scripts/pause-canary/ids.mjs';
 
@@ -92,16 +92,41 @@ test('forbiddenRequests: a tool-carrying request inside a window is flagged; out
   assert.equal(forbiddenRequests(reqs, [{ role: 'w1', from: 120, until: null }]).length, 1, 'an open window (never released) flags every later request');
 });
 
-test('every build-level mutant edit is a SAME-LENGTH replacement (offsets in app.asar stay valid) and names an exercise + the checks it must redden', () => {
-  for (const [name, m] of Object.entries(MUTANTS) as Array<[string, { exercise: string; redden: string[]; edits: Array<{ find: string; replace: string; expect: number }> }]>) {
+// fragments of the REAL minified bundle (identifiers change per build; the second test renames them to prove the anchors are name-agnostic and the edits stay same-length)
+const FRAGMENTS: Record<string, string> = {
+  'skip-snapshot': 'Oe(e,["add","-A","--ignore-errors","--",...m],u,void 0,[1],c)};let g;try{g=await Oe(e,["add","-A","--ignore-errors",`--pathspec-from-file=${h}`,"--pathspec-file-nul"],u)}',
+  'skip-kill': 'readTable:()=>{if(!e)return[];const t=[];let n;try{n=S.readdirSync("/proc")}catch{return t}},signal:(t,n)=>{try{return process.kill(t,n),!0}catch{return!1}}}}function y_(e,t){}',
+  'slow-detect': 'Ec=!1;const vc=15e3,sx=250;let Zc=!1;async function Xo(e){}',
+  'gate-ignores-pause': 'for(const c of s){const u=Ki(e,c);if(u&&u.pausedAt!==null&&u.switchOn){if(!(r!=null&&r.includeReleased)&&u.resumeStartedAt!==null)continue;return rd(u,u.pausedAt)}}',
+  'no-confirm-reprise': 'e.prepare("UPDATE pause_members SET reprise_confirmed_at = ? WHERE run_id = ? AND paused_at = ? AND ws_id = ?").run(n,i.run_id)',
+  'no-deadline-escalation': 'const l=a.length>0&&o.confirmed===a.length;return l||r>=s?(Fy(t,n.runId,n.pausedAt,r)&&(o.escalated=l?"all-confirmed":"deadline",y.info(`x`)),o.pending=[],{sum:o,dueAt:null}):{sum:o,dueAt:s}',
+  'no-auto-pause': 'prepare(`UPDATE runs SET paused_at = ?, pause_mode = \'hard\', pause_auto = ?\n        WHERE id = ? AND paused_at IS NULL`).run(d,wm,sr(f,d),u).changes===1',
+};
+
+test('every build-level mutant matches its anchor in a real-bundle fragment — also with renamed identifiers — and changes it WITHOUT changing its length (asar offsets stay valid)', () => {
+  assert.deepEqual(Object.keys(FRAGMENTS).sort(), Object.keys(MUTANTS).sort(), 'every mutant has a fragment');
+  for (const [name, m] of Object.entries(MUTANTS) as Array<[string, { exercise: string; redden: string[]; edits: Array<{ expect: number }> }]>) {
     assert.ok(['douce', 'dure', 'reprise', 'auto'].includes(m.exercise), `${name} exercise`);
     assert.ok(m.redden.length > 0, `${name} names the check it must redden`);
-    for (const e of m.edits) {
-      assert.equal(Buffer.byteLength(e.find), Buffer.byteLength(e.replace), `${name}: same length`);
-      assert.notEqual(e.find, e.replace, `${name}: the edit changes something`);
-      assert.ok(e.expect >= 1, `${name}: expected hit count`);
-    }
+    const frag = FRAGMENTS[name];
+    const r = applyEdits(frag, m.edits as never);
+    assert.ok(r.hits.every((h: number) => h >= 1), `${name}: every edit hits the real fragment (${r.hits})`);
+    assert.equal(r.out.length, frag.length, `${name}: same length`);
+    assert.notEqual(r.out, frag, `${name}: the edit changes something`);
+    assert.ok((applyEdits(r.out, m.edits as never).hits as number[]).every((h) => h === 0), `${name}: the mutated text no longer matches its anchor (idempotent)`);
   }
+});
+
+test('the regex anchors are name-agnostic: the same mutants still apply when the minifier renames the identifiers (and the pause-kill anchor does not match the resource reaper)', () => {
+  const renamed = (name: string) => FRAGMENTS[name].replace(/signal:\(t,n\)=>\{try\{return process\.kill\(t,n\)/, 'signal:(tt,nn)=>{try{return process.kill(tt,nn)').replace(/const vc=15e3,sx=250/, 'const vcc=15e3,sxx=250').replace(/\(Fy\(t,n\.runId,n\.pausedAt,r\)&&\(o\.escalated=l\?/, '(Fyy(tt,nn.runId,nn.pausedAt,rr)&&(oo.escalated=l?').replace('l||r>=s?', 'l||rr>=s?');
+  for (const name of ['skip-kill', 'slow-detect', 'no-deadline-escalation']) {
+    const frag = renamed(name);
+    const r = applyEdits(frag, (MUTANTS as Record<string, { edits: never }>)[name].edits);
+    assert.ok(r.hits.every((h: number) => h === 1), `${name} renamed: ${r.hits}`);
+    assert.equal(r.out.length, frag.length, `${name} renamed: same length`);
+  }
+  const reaper = 'readProcStat:e=>{},readCmdline:e=>{},signal:(e,t)=>{try{return process.kill(e,t),!0}catch{return!1}},sleep:e=>new Promise(t=>setTimeout(t,e))';
+  assert.deepEqual(applyEdits(reaper, MUTANTS['skip-kill'].edits).hits, [0], 'the resource reaper has its own `signal` and must NOT be patched (readTable anchors the pause-kill deps)');
 });
 
 test('the dummy fleet always carries a blocked member and a quota member from 3 workers up, and 10 workers = 5 obey + bg + blocked + 3 quota', () => {
