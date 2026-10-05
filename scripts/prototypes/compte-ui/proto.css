@@ -118,3 +118,5 @@ code { font-family: var(--font-mono); font-size: 12px; background: var(--bg-3); 
 .p-table { display: block; overflow-x: auto; max-width: calc(100% - 32px); }
 .p-claude-btn { color: #1f1e1d !important; } .p-claude-dark { color: #fff !important; } .p-claude-input { background: #fff !important; color: #1f1e1d !important; }
 .p-d-section { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-x: auto; }
+/* the app locks html/body/#root to overflow:hidden (styles.css:144); the stage scrolls instead */
+.p-stage { height: 100%; overflow-y: auto; }
