@@ -32,7 +32,8 @@ const PROOF_ARMS = [
   { name: 'control:clean-reprise', exercise: 'reprise', expect: 'PASS' },
   { name: 'control:clean-auto', exercise: 'auto', expect: 'PASS' },
   { name: 'control:clean-douce', exercise: 'douce', expect: 'PASS', slow: true },
-  ...Object.entries(MUTANTS).map(([m, d]) => ({ name: `mutant:${m}`, mutant: m, exercise: d.exercise, redden: d.redden, slow: d.exercise === 'douce' })),
+  // skip-kill needs the `bg` member (4+ workers): a plain interrupt already aborts a FOREGROUND command, so only a background task proves the trap's kill (measured: with 3 workers the mutant ran `killed: []` and tools_dead stayed green)
+  ...Object.entries(MUTANTS).map(([m, d]) => ({ name: `mutant:${m}`, mutant: m, exercise: d.exercise, redden: d.redden, slow: d.exercise === 'douce', ...(m === 'skip-kill' ? { members: 4 } : {}) })),
   // harness-level instrument controls: the drive sabotages its own evidence after the pause — the lost-work instrument must read RED for a rewound branch and for a deleted pause ref
   { name: 'control:sabotage-branch', exercise: 'dure', sabotage: 'branch', redden: ['bar:lost_work_is_zero'] },
   { name: 'control:sabotage-ref', exercise: 'dure', sabotage: 'ref', redden: ['bar:lost_work_is_zero'] },
@@ -47,8 +48,22 @@ function hostNow() {
   const mem = fs.readFileSync('/proc/meminfo', 'utf8');
   return { availGB: Number(/MemAvailable:\s+(\d+) kB/.exec(mem)[1]) / 1048576, load1: Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]) };
 }
+/** What a rig of `members` workers costs in MemAvailable (measured 2026-10-05: 3 workers ≈ 0.7 GB, 10 ≈ 2.4 GB → ≈ 0.25 GB/worker + the app): a run must START with the bar PLUS this, or it dips under the bar at once. */
+const rigFootprintGB = (members) => 0.2 + 0.25 * members;
+/** Patience, not a lower bar: wait (up to --wait-host-min, default 20) until MemAvailable ≥ bar + the rig's footprint and load ≤ 20; the bar itself is never relaxed. */
+async function waitForHost(members = 0) {
+  const maxMs = Number(opt('wait-host-min', '20')) * 60000;
+  const need = MIN_AVAIL_GB + rigFootprintGB(members);
+  const t0 = Date.now();
+  for (;;) {
+    const h = hostNow();
+    const ok = process.env.PC_IGNORE_HOST === '1' || (h.availGB >= need && h.load1 <= 20);
+    if (ok || Date.now() - t0 >= maxMs) return { ...h, need, ok, waitedS: Math.round((Date.now() - t0) / 1000) };
+    await new Promise((r) => setTimeout(r, 15000));
+  }
+}
 const h0 = hostNow();
-if (process.env.PC_IGNORE_HOST !== '1' && (h0.availGB < MIN_AVAIL_GB || h0.load1 > 20)) {
+if (process.env.PC_IGNORE_HOST !== '1' && (h0.availGB < MIN_AVAIL_GB || h0.load1 > 20) && !(await waitForHost(Number(opt('members', '10')))).ok) {
   say(`PAUSE-CANARY: VOID — host below the bar (MemAvailable ${h0.availGB.toFixed(2)} GB < ${MIN_AVAIL_GB}, or load ${h0.load1.toFixed(1)} > 20); nothing was measured (ask the OPS rather than lowering the bar)`);
   process.exit(3);
 }
@@ -115,11 +130,25 @@ if (!flag('proof')) {
   const exercise = opt('exercise', 'douce,dure,reprise,auto');
   const cycles = Number(opt('cycles', '3')), members = Number(opt('members', '10'));
   say(`pause canary: claude ${claudeVersion} · app ${appBin} · exercises ${exercise} × ${cycles} cycles · ${members} workers + OPS + LEAD · MemAvailable ${h0.availGB.toFixed(2)} GB load ${h0.load1.toFixed(1)}`);
-  const r = await drive({ appBin, exercise, cycles, members, label: opt('label', `canary-${Date.now().toString(36).slice(-4)}`), pause: opt('pause', null), dwell: opt('dwell-s', null) });
+  // one drive per exercise: a VOID exercise (the host dipped below the bar mid-run) is no verdict — wait for the host and run THAT exercise again (the bar is never relaxed)
+  const label0 = opt('label', `canary-${Date.now().toString(36).slice(-4)}`);
+  const parts = [];
+  for (const ex of exercise.split(',').filter(Boolean)) {
+    const w0 = await waitForHost(members);
+    let p = w0.ok ? await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null) }) : { rc: 3, label: label0, logFile: '', exercises: [{ exercise: ex, result: 'VOID', cycles: 0, wanted: cycles, reason: 'host below the bar' }], cycles: [], checks: [], host: null, verdict: 'VOID' };
+    for (let n = 1; p.verdict === 'VOID' && n <= Number(opt('void-retries', '2')); n++) {
+      const w = await waitForHost(members);
+      say(`   ${ex}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
+      if (!w.ok) break;
+      p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}-r${n}`, pause: opt('pause', null), dwell: opt('dwell-s', null) });
+    }
+    parts.push(p);
+  }
+  const r = { rc: parts.every((x) => x.rc === 0) ? 0 : 1, label: label0, logFile: parts.map((x) => x.logFile).filter(Boolean).join(' + '), exercises: parts.flatMap((x) => x.exercises), cycles: parts.flatMap((x) => x.cycles), checks: parts.flatMap((x) => x.checks), host: parts.map((x) => x.host).filter(Boolean).reduce((a, h) => (a ? { minAvailGB: Math.min(a.minAvailGB, h.minAvailGB), maxLoad: Math.max(a.maxLoad, h.maxLoad), samples: a.samples + h.samples } : h), null), verdict: parts.every((x) => x.verdict === 'PASS') ? 'PASS' : parts.some((x) => x.verdict === 'FAIL' || x.verdict === 'NO-RESULT') ? 'FAIL' : 'VOID' };
   const table = renderTable(r.cycles);
   const gi = gitInfo();
   const reds = r.checks.filter((c) => !c.ok);
-  const md = [`# Pause canary 1 — dummy fleet (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}** (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · per-exercise rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-<exercise>/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
+  const md = [`# Pause canary 1 — dummy fleet (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}** (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
   writeReport('report', md);
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ git: gi, claude: claudeVersion, app: appBin, drive: r }, null, 1));
   say(`\n${table}\n`);
@@ -162,15 +191,22 @@ function ensureUnfixed() {
 say(`harness proof: ${sel.length} arm(s) at ${members} workers × ${opt('cycles', '1')} cycle(s) · base app ${baseApp}`);
 const rows = [];
 for (const arm of sel) {
-  const h = hostNow();
-  if (process.env.PC_IGNORE_HOST !== '1' && (h.availGB < MIN_AVAIL_GB || h.load1 > 20)) { rows.push({ arm: arm.name, verdict: 'VOID', why: `host below the bar (MemAvailable ${h.availGB.toFixed(2)} GB, load ${h.load1.toFixed(1)})` }); continue; }
+  const hw = await waitForHost(arm.members ?? members);
+  if (!hw.ok) { rows.push({ arm: arm.name, verdict: 'VOID', why: `host below the bar+rig (${hw.need.toFixed(1)} GB) for ${hw.waitedS} s (MemAvailable ${hw.availGB.toFixed(2)} GB, load ${hw.load1.toFixed(1)})` }); continue; }
   let appBin = baseApp, appTree = null, mutInfo = null;
   try {
     if (arm.mutant) { mutInfo = makeMutantApp(baseDir, arm.mutant, path.join(BASE, 'apps', `mut-${arm.mutant}`)); appBin = mutInfo.bin; say(`   mutant ${arm.mutant}: ${mutInfo.edits.map((e) => `${e.hits}×`).join(' ')} edit(s), copy ${mutInfo.copySha} vs base ${mutInfo.baseSha}`); }
     if (arm.unfixed) { const u = ensureUnfixed(); appBin = u.app; appTree = u.tree; }
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
-  const r = await drive({ appBin, appTree, exercise: arm.exercise, cycles: Number(opt('cycles', '1')), members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: arm.sabotage ? ['--sabotage', arm.sabotage] : [] });
+  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: arm.sabotage ? ['--sabotage', arm.sabotage] : [] });
+  let r = await runArm();
+  for (let n = 1; r.verdict === 'VOID' && n <= Number(opt('void-retries', '2')); n++) {   // a VOID drive (host dipped below the bar mid-run) is no verdict: wait for the host, run it again — the bar is never relaxed
+    const w = await waitForHost(arm.members ?? members);
+    say(`   ${arm.name}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
+    if (!w.ok) break;
+    r = await runArm();
+  }
   const red = r.checks.filter((c) => !c.ok);
   const reached = r.checks.some((c) => c.id === 'workers_mid_work' && c.ok);   // the rig itself must have worked: a drive that never got the fleet to mid-work proves nothing
   let verdict, why;

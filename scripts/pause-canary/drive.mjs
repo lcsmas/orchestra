@@ -260,8 +260,21 @@ async function runExercise(name) {
       check(cyc, 'trap_finished', !!trapRow, `trap stamped +${cyc.tTrapStampS?.toFixed(1) ?? 'never'} s; every worker tool tree gone +${cyc.tToolsDeadS?.toFixed(1) ?? 'never'} s`);
       check(cyc, 'tools_dead', toolProcs().length === 0, `${toolProcs().length} tool process(es) alive after the trap (${toolProcs().map((p) => p.cmd.slice(0, 30)).join('; ')})`);
       await bilanChecks(cyc, spec.lead, trapRow?.paused_at);
-      if (SABOTAGE === 'branch') say(`   SABOTAGE branch: ${gitSafe(rig.repo, 'branch', '-f', 'pc-w1', git(rig.repo, 'rev-parse', 'master'))}`);
-      if (SABOTAGE === 'ref') for (const r of gitSafe(rig.repo, 'for-each-ref', '--format=%(refname)', `refs/orchestra/pause/*/${spec.workers[0].id}/*`).split('\n').filter(Boolean)) say(`   SABOTAGE ref: delete ${r} ${gitSafe(rig.repo, 'update-ref', '-d', r)}`);
+      // a sabotage that did not take effect proves nothing: each one is VERIFIED (else the drive throws — never a silent green control)
+      if (SABOTAGE === 'branch') {
+        const before = gitSafe(rig.repo, 'rev-parse', 'refs/heads/pc-w1');
+        gitSafe(rig.repo, 'update-ref', 'refs/heads/pc-w1', git(rig.repo, 'rev-parse', 'master'));   // (`branch -f` refuses a branch checked out in a worktree)
+        const after = gitSafe(rig.repo, 'rev-parse', 'refs/heads/pc-w1');
+        say(`   SABOTAGE branch: pc-w1 ${before.slice(0, 8)} → ${after.slice(0, 8)}`);
+        if (before === after) throw new Error('SABOTAGE branch had no effect (the control would be vacuous)');
+      }
+      if (SABOTAGE === 'ref') {
+        const refsW1 = gitSafe(rig.repo, 'for-each-ref', '--format=%(refname)', `refs/orchestra/pause/*/${spec.workers[0].id}/*`).split('\n').filter((l) => l && !l.startsWith('ERR'));
+        for (const r of refsW1) gitSafe(rig.repo, 'update-ref', '-d', r);
+        const left = gitSafe(rig.repo, 'for-each-ref', '--format=%(refname)', `refs/orchestra/pause/*/${spec.workers[0].id}/*`).split('\n').filter((l) => l && !l.startsWith('ERR'));
+        say(`   SABOTAGE ref: deleted ${refsW1.length} pause ref(s) of ${spec.workers[0].k}, ${left.length} left`);
+        if (refsW1.length === 0 || left.length > 0) throw new Error('SABOTAGE ref had no effect (the control would be vacuous)');
+      }
       await snapshotFacts(cyc, c, pre, tP);
       const unchanged = spec.workers.filter((w) => gitSafe(wtOf(w.k), 'status', '--porcelain').split('\n').filter((l) => l && !/loop-/.test(l)).sort().join('\n') !== pre[w.k].porcelain);
       check(cyc, 'worktrees_untouched_by_pause', unchanged.length === 0 && spec.workers.every((w) => !!readWt(w.k, `mark-${w.k}-c${c}.txt`)), `worktree status identical before/after for ${spec.workers.length - unchanged.length}/${spec.workers.length} members (D4: the host never touches a worktree)${unchanged.length ? ` — changed: ${unchanged.map((w) => w.k).join(',')}` : ''}`);
