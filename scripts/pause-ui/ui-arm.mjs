@@ -141,6 +141,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
 
     // ── 4. refusals, explained ───────────────────────────────────────────────────────────────────
     const before = J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode]));
+    const rosterBefore = bus().roster.length;
     await hover('worker-1');
     await press(`.ws-row-actions-pop [data-pause-action="soft"][data-pause-for="${I.w1}"]`, '⏸ on a worker row');
     const ex1 = await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the refusal for a worker');
@@ -161,7 +162,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the switch-OFF refusal');
     const ex2Text = await ev(`document.querySelector('[data-pause-panel="explain"]').textContent`);
     const ex2Code = await ev(`document.querySelector('[data-pause-explain-code]').getAttribute('data-pause-explain-code')`);
-    clause(arm, 'G3/refusal-switch-off-explained-nothing-written', ex2Code === 'switch-off' && /Pause désactivée sur cette vague/.test(ex2Text) && /figé au démarrage/.test(ex2Text) && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before && bus().roster.length === 7, `code=${ex2Code}; "${ex2Text.replace(/\s+/g, ' ').slice(0, 200)}"; every run's pause columns unchanged after BOTH refusals`);
+    clause(arm, 'G3/refusal-switch-off-explained-nothing-written', ex2Code === 'switch-off' && /Pause désactivée sur cette vague/.test(ex2Text) && /figé au démarrage/.test(ex2Text) && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before && bus().roster.length === rosterBefore, `code=${ex2Code}; "${ex2Text.replace(/\s+/g, ' ').slice(0, 200)}"; every run's pause columns AND the roster (${rosterBefore} rows) unchanged after BOTH refusals`);
     await shot('5-refusal-switch-off', { x: 0, y: 100, width: 700, height: 420 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await sleep(300);
