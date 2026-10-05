@@ -45,7 +45,7 @@ function RunCard({ run }: { run: PauseUiRun }) {
         <div className="pause-run-title">
           <b>{h.title}</b> <span className="pause-run-carrier">{run.carrierLabel}</span>
           <div className="pause-run-sub">{h.sub}</div>
-          {run.progress.missing.length > 0 && run.phase !== 'active' && <div className="pause-run-sub">manquent : {run.progress.missing.map((id) => run.members.find((m) => m.wsId === id)?.label ?? id.slice(0, 8)).join(', ')}</div>}
+          {run.progress.missing.length > 0 && (run.phase === 'pausing' || run.phase === 'paused') && <div className="pause-run-sub">manquent : {run.progress.missing.map((id) => run.members.find((m) => m.wsId === id)?.label ?? id.slice(0, 8)).join(', ')}</div>}
         </div>
         <div className="pause-run-prog">
           <PauseBar fraction={h.fraction} tone={h.tone} done={run.progress.done} total={run.progress.total} kind={run.progress.kind} />
@@ -76,7 +76,7 @@ function RunCard({ run }: { run: PauseUiRun }) {
       </div>
       {explains.length > 0 && (
         <div className="pause-run-explains">
-          {explains.map((e, i) => <PauseExplain key={i} explain={e} />)}
+          {explains.map((e, i) => <PauseExplain key={i} explain={e} onAction={(a) => { if (a.kind === 'resume') void act(runResume(a.wsId, null)); }} />)}
         </div>
       )}
       <h3>Bilan de pause</h3>

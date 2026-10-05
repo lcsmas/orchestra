@@ -74,3 +74,5 @@
 .pause-bilan-dim { color: var(--text-dim); }
 .pause-bilan-ref { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pause-bilan-act { text-align: right; white-space: nowrap; }
+
+.pause-explain-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

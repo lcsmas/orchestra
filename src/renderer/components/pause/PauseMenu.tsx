@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '../../store';
 import { agentsUnder } from '../../../shared/pause-ui-view';
 import { PauseExplain, PauseIcon } from './PauseBlocks';
-import { runPause, usePausePanel } from './pause-actions';
+import { runPause, runResume, usePausePanel } from './pause-actions';
 
 const OFFSET_X = 6;
 const PANEL_W = 288;
@@ -44,7 +44,14 @@ export function PauseMenuHost() {
           </button>
         </>
       ) : (
-        panel.explains.map((e, i) => <PauseExplain key={i} explain={e} code={panel.codes[i]} />)
+        panel.explains.map((e, i) => (
+          <PauseExplain
+            key={i}
+            explain={e}
+            code={panel.codes[i]}
+            onAction={(a) => (a.kind === 'pause' ? usePausePanel.getState().show({ kind: 'choose', wsId: a.wsId, anchor: panel.anchor }) : void runResume(a.wsId, panel.anchor))}
+          />
+        ))
       )}
     </div>,
     document.body,

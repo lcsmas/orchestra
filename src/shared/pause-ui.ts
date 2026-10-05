@@ -161,6 +161,15 @@ export interface PauseUiExplain {
   why: string;
   /** Short remedies, one per entry (a button label or a command). */
   fix: string[];
+  /** The remedies the UI can DO for the human (a button each): pause / resume another workspace row (the one that has the authority). Absent = text only. */
+  actions?: PauseUiExplainAction[];
+}
+
+export interface PauseUiExplainAction {
+  kind: 'pause' | 'resume';
+  /** The workspace row the action is attributed to (the writer's actor). */
+  wsId: string;
+  label: string;
 }
 
 export interface ExplainCtx {
@@ -187,6 +196,7 @@ export function explainPauseOutcome(outcome: string, c: ExplainCtx): PauseUiExpl
         title: `Pause refusée — ${c.actorLabel} n'est pas coordinateur de ${c.runLabel}`,
         why: `La pause se pose sur une vague, pas sur un agent seul : seul son coordinateur (${join(c.mayBe.slice(0, 1).map(c.label))}) ou un coordinateur d'une vague au-dessus (${join(c.mayBe.slice(1).map(c.label))}) la décide. Rien n'a été écrit.`,
         fix: c.mayBe.map((id) => `Mettre ${c.label(id)} en pause`),
+        actions: c.mayBe.map((id) => ({ kind: 'pause' as const, wsId: id, label: `Mettre ${c.label(id)} en pause…` })),
       };
     case 'switch-off':
       return {
@@ -219,10 +229,11 @@ export function explainResumeOutcome(outcome: string, c: ExplainCtx): PauseUiExp
         title: `Reprise refusée — ${c.actorLabel} n'est pas coordinateur de ${c.runLabel}`,
         why: `Seul le coordinateur de ${c.runLabel} (${join(c.mayBe.slice(0, 1).map(c.label))}) ou d'une vague au-dessus (${join(c.mayBe.slice(1).map(c.label))}) la reprend. Rien n'a été écrit.`,
         fix: c.mayBe.map((id) => `Reprendre depuis ${c.label(id)}`),
+        actions: c.mayBe.map((id) => ({ kind: 'resume' as const, wsId: id, label: `Reprendre depuis ${c.label(id)}…` })),
       };
     case 'not-paused':
       return c.cover
-        ? { tone: 'info', title: `${c.cover.label} tient déjà ${c.runLabel} en pause`, why: `${c.runLabel} n'a pas de pause propre : c'est celle de ${c.cover.label}. Reprenez depuis ${c.cover.label}.`, fix: [`Reprendre ${c.cover.label}`] }
+        ? { tone: 'info', title: `${c.cover.label} tient déjà ${c.runLabel} en pause`, why: `${c.runLabel} n'a pas de pause propre : c'est celle de ${c.cover.label}. Reprenez depuis ${c.cover.label}.`, fix: [`Reprendre ${c.cover.label}`], actions: [{ kind: 'resume', wsId: c.cover.runId, label: `Reprendre ${c.cover.label}…` }] }
         : { tone: 'info', title: `${c.runLabel} n'est pas en pause`, why: 'Rien à reprendre.', fix: [] };
     case 'already-resuming':
       return { tone: 'info', title: `La reprise de ${c.runLabel} est déjà en cours`, why: 'Rien n\'est renvoyé : les coordinateurs ont déjà reçu leur Bilan ; libérez les workers bloqués.', fix: ['Libérer les bloqués'] };

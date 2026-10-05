@@ -3,7 +3,7 @@
 // Every element carries a `data-pause-*` hook: the G3 drive (scripts/pause-ui/) reads state and clicks through them, never through text.
 
 import { useEffect, useState } from 'react';
-import type { PauseUiExplain, PauseUiMemberState } from '../../../shared/pause-ui';
+import type { PauseUiExplain, PauseUiExplainAction, PauseUiMemberState } from '../../../shared/pause-ui';
 import { PAUSE_STATE_WORD, stateTone } from '../../../shared/pause-ui-view';
 
 export type PauseIconKind = 'pause' | 'play' | 'clock' | 'check' | 'stop' | 'ban' | 'info' | 'chev';
@@ -84,14 +84,23 @@ export function PauseActionButton({ kind, wsId, tone = 'ghost', disabled, childr
 }
 
 /** A refusal / info / warning from an outcome, explained (never a bare failure): what happened, what was (not) written, what to do. */
-export function PauseExplain({ explain, code }: { explain: PauseUiExplain; code?: string }) {
+export function PauseExplain({ explain, code, onAction }: { explain: PauseUiExplain; code?: string; onAction?: (a: PauseUiExplainAction) => void }) {
   return (
     <div className={`pause-explain is-${explain.tone}`} data-pause-explain={explain.tone} data-pause-explain-code={code} role={explain.tone === 'error' ? 'alert' : 'status'}>
       <PauseIcon kind={explain.tone === 'error' ? 'ban' : 'info'} size={13} />
       <div>
         <b>{explain.title}</b>
         <span className="pause-explain-why">{explain.why}</span>
-        {explain.fix.length > 0 && (
+        {explain.actions && explain.actions.length > 0 && onAction ? (
+          <div className="pause-explain-actions">
+            {explain.actions.map((a) => (
+              <button key={`${a.kind}:${a.wsId}`} type="button" className={`pause-btn pause-btn-${a.kind === 'resume' ? 'go' : 'primary'}`} data-pause-fix={a.kind} data-pause-for={a.wsId} onClick={() => onAction(a)}>
+                <PauseIcon kind={a.kind === 'resume' ? 'play' : 'pause'} size={11} />
+                {a.label}
+              </button>
+            ))}
+          </div>
+        ) : explain.fix.length > 0 && (
           <ul className="pause-explain-fix">
             {explain.fix.map((f) => (
               <li key={f}>{f}</li>

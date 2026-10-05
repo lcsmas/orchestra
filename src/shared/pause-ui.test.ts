@@ -33,6 +33,7 @@ test('explainPauseOutcome: a success explains nothing; every refusal names what 
   assert.match(worker.why, /fleet-lead\)/);
   assert.match(worker.why, /Rien n'a été écrit/);
   assert.deepEqual(worker.fix, ['Mettre wave-ops en pause', 'Mettre fleet-lead en pause']);
+  assert.deepEqual(worker.actions, [{ kind: 'pause', wsId: 'O', label: 'Mettre wave-ops en pause…' }, { kind: 'pause', wsId: 'L', label: 'Mettre fleet-lead en pause…' }], 'the same remedies, as buttons the UI can press');
   assert.match(explainPauseOutcome('switch-off', ctx)!.why, /figé au démarrage de la vague/);
   assert.match(explainPauseOutcome('no-run', ctx)!.title, /Pas de run/);
   assert.equal(explainPauseOutcome('already-paused', ctx)!.tone, 'info');
@@ -47,6 +48,8 @@ test('explainResumeOutcome: refused names who may; not-paused on a COVERED run n
   assert.equal(covered.tone, 'info');
   assert.match(covered.title, /fleet-lead tient déjà wave-ops en pause/);
   assert.deepEqual(covered.fix, ['Reprendre fleet-lead']);
+  assert.deepEqual(covered.actions, [{ kind: 'resume', wsId: 'L', label: 'Reprendre fleet-lead…' }], 'one button: resume the run that holds it');
+  assert.deepEqual(explainResumeOutcome('refused', ctx)!.actions, [{ kind: 'resume', wsId: 'O', label: 'Reprendre depuis wave-ops…' }, { kind: 'resume', wsId: 'L', label: 'Reprendre depuis fleet-lead…' }]);
   assert.match(explainResumeOutcome('not-paused', ctx)!.title, /n'est pas en pause/);
   assert.equal(explainResumeOutcome('already-resuming', ctx)!.tone, 'info');
 });
