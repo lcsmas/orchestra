@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import { killToolTrees, realKillDeps, startWallMs, type KillDeps } from './pause-kill.ts';
+import { killToolTrees, realKillDeps, startWallMs, stopWithin, type KillDeps } from './pause-kill.ts';
 import type { FreshRead, ProcIdent } from '../shared/pause-procs.ts';
 
 // ── (1) fake OS ─────────────────────────────────────────────────────────────
@@ -962,4 +962,65 @@ test('#282: only what was ALIVE when the CLI was asked and gone right after is l
   const asked: string[] = [];
   const r = await killToolTrees(CLI, 90, deps, { stopTask: fakeStop(os, new Map([['blist0001', 200]]), asked) });
   assert.deepEqual(r.killed.map((k) => [k.pid, k.signal]), [[200, 'stop_task']], 'pid 201 left on its own: it is not listed as ended by the CLI');
+});
+
+// ── review F3 follow-up (R1 R2 R3) ──────────────────────────────────────────────────────────────────
+
+test('R1 REAL: a task\'s output file UNLINKED while the task runs (tmpfiles-clean, a /tmp sweep) still names the task — /proc reads `…/<id>.output (deleted)`; without it the link is lost and the original bug returns in silence', async () => {
+  if (process.platform !== 'linux') return;
+  const dir = fs.mkdtempSync('/tmp/pause-kill-deleted-');
+  fs.mkdirSync(`${dir}/proj/sess/tasks`, { recursive: true });
+  const file = `${dir}/proj/sess/tasks/bDel_007.output`;
+  const fd = fs.openSync(file, 'a');
+  const child = spawn('sleep', ['7741'], { stdio: ['ignore', fd, fd] });
+  try {
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(real.readTaskId?.(child.pid!), 'bDel_007', 'control: the link names the task before the unlink');
+    fs.unlinkSync(file);
+    assert.match(fs.readlinkSync(`/proc/${child.pid}/fd/1`), /bDel_007\.output \(deleted\)$/, 'the kernel appends " (deleted)" (the shape this test is about)');
+    assert.equal(real.readTaskId?.(child.pid!), 'bDel_007', 'an unlinked output file still names the task');
+  } finally {
+    child.kill('SIGKILL');
+    fs.closeSync(fd);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('R2: stopWithin bounds ONE stop_task request — a CLI that answers nothing costs `ms`, not a hang; a rejection / throw is a failed stop too; a fast answer passes through untouched and the timer is cleared', async () => {
+  const t0 = Date.now();
+  const hungOrBounded = await Promise.race([stopWithin(40, new Promise<{ ok: boolean }>(() => {})), new Promise<'HUNG'>((r) => setTimeout(() => r('HUNG'), 1500))]);
+  assert.notEqual(hungOrBounded, 'HUNG', 'a request the CLI never answers must come back after the bound, not hang');
+  const hung = hungOrBounded as { ok: boolean; note?: string };
+  assert.equal(hung.ok, false);
+  assert.match((hung as { note?: string }).note ?? '', /timed out after 40 ms/);
+  assert.ok(Date.now() - t0 >= 35 && Date.now() - t0 < 2000, `returned after the bound (${Date.now() - t0} ms)`);
+  assert.deepEqual(await stopWithin(5000, Promise.resolve({ ok: true })), { ok: true }, 'a fast ok passes through');
+  assert.deepEqual(await stopWithin(5000, Promise.resolve({ ok: false, note: 'unknown task' })), { ok: false, note: 'unknown task' }, 'a fast failure passes through');
+  const rej = await stopWithin(5000, Promise.reject(new Error('boom')));
+  assert.deepEqual(rej, { ok: false, note: 'boom' });
+  const handlesBefore = process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length;
+  await stopWithin(60_000, Promise.resolve({ ok: true }));
+  assert.equal(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, handlesBefore, 'the 60 s timer of a settled request is cleared (no leaked handle keeps the process alive)');
+});
+
+test('R3: when the CLI has ended EVERY root a re-plan still runs — a root born during the stop window is caught by round 2 (the "≤3 re-plans" promise), not left as a survivor', async () => {
+  const os = world();
+  os.taskIds.set(200, 'bwin00001');
+  let spawned = false;
+  const stop = async (id: string) => {
+    assert.equal(id, 'bwin00001');
+    os.die(201); os.die(200);
+    if (!spawned) { spawned = true; os.add(shellC(210, 100, 'sleep 601')); os.add(mk(211, 210, { sid: 210, comm: 'sleep', argv: ['sleep', '601'] })); } // a tool the model starts while the CLI is stopping the task
+    return { ok: true };
+  };
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: stop });
+  assert.ok(r.rounds >= 2, `a second round ran (${r.rounds})`);
+  assert.deepEqual(r.survivors, [], 'the late root did not survive');
+  assert.ok(!os.procs.has(210) && !os.procs.has(211));
+  assert.ok(r.killed.some((k) => k.pid === 210 && k.signal === 'SIGTERM'), 'killed by signal in round 2');
+  // control: nothing born ⇒ no pointless extra round
+  const os2 = world();
+  os2.taskIds.set(200, 'bwin00002');
+  const r2 = await killToolTrees(CLI, 90, os2.deps(), { stopTask: fakeStop(os2, new Map([['bwin00002', 200]]), []) });
+  assert.equal(r2.rounds, 1, 'the CLI ended everything and nothing new appeared: one round (the empty re-plan breaks before counting)');
 });

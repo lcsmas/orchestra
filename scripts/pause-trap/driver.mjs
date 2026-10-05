@@ -102,6 +102,10 @@ const ARMS = {
   'bg-notify': { scenario: 'bgnotify', markers: [7718], bgNotify: true, idleAtPause: true, mustKill: ['sleep 7718'] },
   // the member is MID-TURN (blocked in a foreground command) with a background task + a daemonized job when the pause lands: the interrupt ends the turn, the trap ends the task through the CLI
   'bg-notify-running': { scenario: 'background', markers: [7714, 7715, 7716], bgNotify: true, bgCmd: 'sleep 7714', mustKill: ['sleep 7714', 'sleep 7715'] },
+  // review F3 R1: the task's `.output` file is UNLINKED while the task runs (tmpfiles-clean, a /tmp sweep): /proc shows `…/<id>.output (deleted)` — the link must still name the task, or the original bug returns in silence
+  'bg-notify-deleted': { scenario: 'bgnotify', markers: [7718], bgNotify: true, deletedOutput: true, idleAtPause: true, mustKill: ['sleep 7718'] },
+  // review F3 R2: the member's CLI is WEDGED (SIGSTOPped; an idle member's interrupt needs no CLI round trip) — `stop_task` gets no answer: the trap must stay BOUNDED (5 s per request), end the task by signal and make 0 requests
+  'bg-notify-wedged': { scenario: 'bgnotify', markers: [7718], wedgedCli: true, idleAtPause: true, mustKill: ['sleep 7718'] },
   'bg-notify-restart': { scenario: 'bgnotify', markers: [7718], bgNotify: true, restart: true, idleAtPause: true, settleBeforeKill: true, mustKill: ['sleep 7718'] },
   // the PAUSER (the OPS pausing its own run) is a member with a live session + a running tool: it keeps its turn
   // review F5: a human typing `--as <coordinator>` in a plain shell exempts NOBODY (the handle is not identity): the coordinator is interrupted + its tool killed
@@ -267,6 +271,15 @@ try {
   }
 
   if (A.keeperStopped) process.kill(keeper.pid, 'SIGSTOP'); // alive but unresponsive
+  if (A.deletedOutput) {
+    await sleep(1500);
+    const sl = sleepers(7718)[0]; let root = sl && readProc(sl.pid);
+    while (root && root.ppid !== cli0.pid && root.ppid > 1) root = readProc(root.ppid);
+    let linkBefore = null, linkAfter = null;
+    try { linkBefore = fs.readlinkSync(`/proc/${root.pid}/fd/1`); fs.unlinkSync(linkBefore); linkAfter = fs.readlinkSync(`/proc/${root.pid}/fd/1`); } catch (e) { linkAfter = `ERR ${String(e.message).slice(0, 100)}`; }
+    check('output_file_unlinked_control', !!linkBefore && /\/tasks\/[A-Za-z0-9_-]+\.output$/.test(linkBefore) && /\.output \(deleted\)$/.test(linkAfter ?? ''), `the bg task's stdout link ${linkBefore} → ${linkAfter} after the unlink (the shape this arm is about)`);
+  }
+  if (A.wedgedCli) { await sleep(1500); process.kill(cli0.pid, 'SIGSTOP'); check('cli_wedged_control', readProc(cli0.pid)?.state === 'T', `the member's CLI ${cli0.pid} is SIGSTOPped (state ${readProc(cli0.pid)?.state}); its keeper ${keeper.pid} still answers`); } // a CLI that answers nothing, keeper alive
   // 4. THE PAUSE, through the real built CLI (store-less: writes the bus directly) — or, for pauser-self, by the coordinator's OWN tool
   const tPause = Date.now();
   result.tPause = tPause;
@@ -300,7 +313,13 @@ try {
   const done = await waitFor(() => { const s = runStatus(); return s.pause?.trapAt ? s : null; }, mutant === 'no-trap' ? 12_000 : 90_000, 'pause_trap_at to be stamped').catch((e) => { check('trap_finished', false, String(e.message)); return null; });
   check('trap_finished', !!done, done ? `trap done ${Date.now() - tPause} ms after the pause` : 'never stamped');
   await sleep(1500);
-  if (A.bgNotify) {
+  if (A.wedgedCli) {
+    const trapMs = done?.pause?.trapAt ? Number(done.pause.trapAt) - tPause : null;
+    check('trap_bounded_with_wedged_cli', trapMs !== null && trapMs < 20_000, `the trap stamped ${trapMs} ms after the pause with a wedged CLI (each stop_task request is bounded at 5 s, then the signals take over; unbounded = never)`);
+    try { process.kill(cli0.pid, 'SIGCONT'); } catch { /* gone */ }
+    await sleep(3000);
+  }
+  if (A.bgNotify || A.wedgedCli) {
     // #282: the unfixed CLI's notification turn lands 0.1–2 s after the kill; wait well past it, THEN count what the paused member sent to the model since the pause (main, tool-carrying requests; the member was IDLE at the pause)
     await sleep(6000);
     const sent = api.requests.filter((r) => r.t >= tPause && r.tools > 0);
@@ -341,6 +360,11 @@ try {
         : (w1row.activity?.turnRunning === true && (['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt) || (w1row.activity?.interrupt === 'idle' && (w1row.activity?.notes ?? []).some((n) => /interrupt=interrupted/.test(n)))))))
     , w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
+  if (A.wedgedCli) {
+    const st = w1row?.killed?.stopTask ?? [];
+    check('wedged_stop_reported_failed', st.length >= 1 && st.every((x) => x.ok === false) && st.some((x) => /timed out after \d+ ms/.test(x.note ?? '')), `killed_json.stopTask = ${JSON.stringify(st).slice(0, 300)}`);
+    check('wedged_task_ended_by_signal', (w1row?.killed?.killed ?? []).some((k) => k.cmd === 'sleep 7718' && k.signal !== 'stop_task'), `the Bilan lists sleep 7718 as ended by ${JSON.stringify((w1row?.killed?.killed ?? []).filter((k) => k.cmd === 'sleep 7718').map((k) => k.signal))}`);
+  }
   if (A.bgNotify) {
     // #282: the Bilan says HOW — through the CLI's own stop_task — and the app saw the CLI's own `task_notification stopped`; no CLI-started turn was ever noted
     const bgCmd = A.bgCmd ?? 'sleep 7718';

@@ -56,7 +56,7 @@ const M = [
     { find: "      const v = verifyAtSignal(m, plan, protect, deps.read, deps.readClaudePid);\n      if (v.ok && deps.signal(m.pid, 'SIGKILL')) {", rep: "      const v = { ok: true as const, via: 'chain' as const };\n      if (v.ok && deps.signal(m.pid, 'SIGKILL')) {" },
   ], tests: [T.kill], expect: /between SIGTERM and SIGKILL/ },
   { id: 'kill-unbounded-rounds', file: KILL, find: 'for (let round = 1; round <= maxRounds; round++) {', rep: 'for (let round = 1; round <= maxRounds + 5; round++) {', tests: [T.kill], expect: /keeps respawning/ },
-  { id: 'kill-no-replan', file: KILL, find: '    if (signalled === 0) break; // nothing provable to signal: more rounds cannot change that', rep: '    break;', tests: [T.kill], expect: /spawned WHILE killing|keeps respawning/ },
+  { id: 'kill-no-replan', file: KILL, find: '    if (signalled === 0 && asked === 0) break; // nothing provable to signal NOR to ask the CLI: more rounds cannot change that (a CLI that ended every root still gets a re-plan: a tool born during the stop window is caught)', rep: '    break;', tests: [T.kill], expect: /spawned WHILE killing|keeps respawning/ },
   // ── orchestrator (pause-trap.ts) + records
   { id: 'trap-no-pauser-exemption', file: TRAP, find: '  const pauser = spareRoot !== undefined;', rep: '  const pauser = false;', tests: [T.trap], expect: /F5 the PAUSER/ },
   { id: 'trap-interrupt-never-called', file: TRAP, find: "      activity.interrupt = await deps.interrupt(m);\n      if (activity.interrupt === 'failed' || activity.interrupt === 'unresponsive') {", rep: "      activity.interrupt = 'interrupted';\n      if (activity.interrupt === 'failed' || activity.interrupt === 'unresponsive') {", tests: [T.trap], expect: /ORDER \+ CONTENT|PAUSER|surviving/ },

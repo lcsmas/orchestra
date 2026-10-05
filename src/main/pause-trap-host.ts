@@ -16,7 +16,7 @@ import { snapshotWorktree } from './pause-snapshot';
 import { pauseOrderFiles } from './pause-douce';
 import { keeperActivityUnknown } from '../shared/pause-douce';
 import { getEventsDir } from './events-spool';
-import { killToolTrees, realKillDeps } from './pause-kill';
+import { killToolTrees, realKillDeps, stopWithin } from './pause-kill';
 import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
 import { log } from './logger';
 import { mergeInFlight } from '../shared/open-tools';
@@ -174,13 +174,7 @@ export function buildPauseTrapDeps(): TrapDeps {
     humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),
     snapshot: snapshotWorktree,
     killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),
-    stopTask: async (m, taskId) => {
-      try {
-        return await withTimeout(sdkStopTaskForPause(m.wsId, taskId), STOP_TASK_TIMEOUT_MS, 'sdk stop_task');
-      } catch (e) {
-        return { ok: false, note: e instanceof Error ? e.message : String(e) };
-      }
-    },
+    stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),
     storeReady: () => store.loadedFromDisk,
   };
 }

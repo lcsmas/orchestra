@@ -7,10 +7,10 @@ const REREAD = "      if (again === 'gone' || again === 'unreadable' || again.st
 
 export const MUTANTS = [
   // ── the killer (pause-kill.ts)
-  { id: 'stop-roots-not-called', file: KILL, find: '    await stopRoots(plan);\n    let signalled = 0;', rep: '    let signalled = 0;', tests: [T.kill, T.wiring], expect: /is stopped through the CLI BEFORE any signal|pause-kill asks the CLI/ },
+  { id: 'stop-roots-not-called', file: KILL, find: '    const asked = await stopRoots(plan);\n    let signalled = 0;', rep: '    const asked = 0;\n    let signalled = 0;', tests: [T.kill, T.wiring], expect: /is stopped through the CLI BEFORE any signal|pause-kill asks the CLI/ },
   // the ORDER is the fix: asked after the SIGTERM round the task's exit has already enqueued the notification
   { id: 'stop-roots-after-signals', file: KILL, edits: [
-    { find: '    await stopRoots(plan);\n    let signalled = 0;', rep: '    let signalled = 0;' },
+    { find: '    const asked = await stopRoots(plan);\n    let signalled = 0;', rep: '    const asked = 0;\n    let signalled = 0;' },
     { find: '    await waitUntilGone(termed, deps, 500);\n', rep: '    await waitUntilGone(termed, deps, 500);\n    await stopRoots(plan);\n' },
   ], tests: [T.kill, T.wiring], expect: /is stopped through the CLI BEFORE any signal|pause-kill asks the CLI/ },
   // TWO LAYERS (the lineage proof + the post-read identity re-read) cover each other for a recycled pid: the mutant removes BOTH
@@ -31,7 +31,7 @@ export const MUTANTS = [
   { id: 'stop-throw-escapes', file: KILL, find: '      } catch (e) {\n        return { ok: false, note: e instanceof Error ? e.message : String(e) };\n      }\n    }));', rep: '      } finally {\n        /* mutant: a throw escapes the kill */\n      }\n    }));', tests: [T.kill], expect: /stop_task that THROWS/ },
   { id: 'stop-report-key-always', file: KILL, find: '  if (stopped.size > 0) report.stopTask =', rep: '  report.stopTask =', tests: [T.kill], expect: /old behaviour is byte-for-byte/ },
   { id: 'stop-evidence-dropped', file: KILL, find: 'the CLI ended it itself: control request stop_task(${e.taskId}) accepted', rep: 'ended', tests: [T.kill], expect: /is stopped through the CLI BEFORE any signal/ },
-  { id: 'taskid-regex-any-output', file: KILL, find: "const TASK_OUTPUT_RE = /\\/tasks\\/([A-Za-z0-9_-]+)\\.output$/;", rep: "const TASK_OUTPUT_RE = /\\/([A-Za-z0-9_-]+)\\.output$/;", tests: [T.kill], expect: /readTaskId reads a process/ },
+  { id: 'taskid-regex-any-output', file: KILL, find: "const TASK_OUTPUT_RE = /\\/tasks\\/([A-Za-z0-9_-]+)\\.output(?: \\(deleted\\))?$/;", rep: "const TASK_OUTPUT_RE = /\\/([A-Za-z0-9_-]+)\\.output(?: \\(deleted\\))?$/;", tests: [T.kill], expect: /readTaskId reads a process/ },
   { id: 'taskid-stdout-only', file: KILL, find: '  for (const fd of [1, 2]) {', rep: '  for (const fd of [1]) {', tests: [T.kill], expect: /readTaskId reads a process/ },
   // ── the orchestrator (pause-trap.ts)
   { id: 'trap-stoptask-unbound-pausetime', file: TRAP, find: "        ...(offerStop ? { stopTask: (taskId: string) => deps.stopTask!(m, taskId) } : {}),\n      });\n      killed = rep;", rep: '      });\n      killed = rep;', tests: [T.trap, T.wiring], expect: /trapMember hands the kill a stopTask|BOTH call sites/ },
@@ -48,6 +48,13 @@ export const MUTANTS = [
   { id: 'stop-listing-requires-ok', file: KILL, find: "      for (const x of aliveBefore) if (x.rootPid === b.m.pid && !isAlive(x, deps)) endedByCli.set(", rep: "      if (ok) for (const x of aliveBefore) if (x.rootPid === b.m.pid && !isAlive(x, deps)) endedByCli.set(", tests: [T.kill], expect: /a stop that FAILED but whose tree went away anyway is still LISTED|wait also covers a FAILED/ },
   { id: 'stop-wait-only-after-ok', file: KILL, find: "    await waitUntilGone(batch.map((b) => b.m), deps,", rep: "    await waitUntilGone(batch.filter((b, i) => results[i].ok).map((b) => b.m), deps,", tests: [T.kill], expect: /wait also covers a FAILED/ },
   { id: 'stop-failed-evidence-claims-acceptance', file: KILL, find: "FAILED${e.note ?", rep: "ACCEPTED${e.note ?", tests: [T.kill], expect: /a stop that FAILED but whose tree went away anyway is still LISTED/ },
+  // ── review F3 follow-up (R1 R2 R3)
+  { id: 'taskid-regex-no-deleted', file: KILL, find: "\\.output(?: \\(deleted\\))?$/;", rep: "\\.output$/;", tests: [T.kill], expect: /R1 REAL: a task.s output file UNLINKED/ },
+  { id: 'stop-within-no-timeout', file: KILL, find: "    return await Promise.race([req, new Promise<StopTaskResult>((resolve) => { t = setTimeout(() => resolve({ ok: false, note: `sdk stop_task timed out after ${ms} ms` }), ms); })]);", rep: '    return await req;', tests: [T.kill], expect: /R2: stopWithin bounds ONE stop_task request/ },
+  { id: 'stop-within-timer-leak', file: KILL, find: "  } finally {\n    if (t) clearTimeout(t);\n  }\n}", rep: "  } finally {\n    /* mutant: the timer is left running */\n  }\n}", tests: [T.kill], expect: /R2: stopWithin bounds ONE stop_task request/ },
+  { id: 'stop-within-rejection-escapes', file: KILL, find: "  } catch (e) {\n    return { ok: false, note: e instanceof Error ? e.message : String(e) };\n  } finally {\n    if (t) clearTimeout(t);", rep: "  } finally {\n    if (t) clearTimeout(t);", tests: [T.kill], expect: /R2: stopWithin bounds ONE stop_task request/ },
+  { id: 'stop-asked-roots-no-replan', file: KILL, find: 'if (signalled === 0 && asked === 0) break;', rep: 'if (signalled === 0) break;', tests: [T.kill], expect: /R3: when the CLI has ended EVERY root a re-plan still runs/ },
+  { id: 'stop-asked-count-zero', file: KILL, find: '    return batch.length;\n  };', rep: '    return 0;\n  };', tests: [T.kill], expect: /R3: when the CLI has ended EVERY root a re-plan still runs/ },
   { id: 'trap-stoptask-stamps-notification-window', file: TRAP, find: "if (rep.killed.some((k) => k.signal !== 'stop_task' && k.via === 'root-under-cli')) trapKilledAt.set", rep: "if (rep.killed.length > 0) trapKilledAt.set", tests: [T.trap], expect: /NOT attributed to a later turn/ },
   { id: 'trap-unlinked-root-note-dropped', file: TRAP, find: "      if (unlinked.length > 0) activity.notes =", rep: "      if (false) activity.notes =", tests: [T.trap], expect: /had no task link/ },
   { id: 'trap-unlinked-root-note-for-linked', file: TRAP, find: "k.via === 'root-under-cli' && !(rep.stopTask ?? []).some((x) => x.pid === k.pid))", rep: "k.via === 'root-under-cli')", tests: [T.trap], expect: /had no task link/ },
@@ -59,9 +66,9 @@ export const MUTANTS = [
   { id: 'status-stoptask-failure-hidden', file: 'src/cli/run-status.ts', find: '        if (stopBad.length) out.push(', rep: '        if (false) out.push(', tests: [T.status], expect: /ended THROUGH THE CLI says so/ },
   { id: 'status-stoptask-id-raw', file: 'src/cli/run-status.ts', find: '${stopBad.slice(0, 6).map((x) => `${c(x.taskId)}', rep: '${stopBad.slice(0, 6).map((x) => `${x.taskId}', tests: [T.status], expect: /ended THROUGH THE CLI says so/ },
   // ── the host + the SDK (pause-trap-host.ts / agent-sdk.ts)
-  { id: 'wire-host-stoptask-unwired', file: HOST, find: '    stopTask: async (m, taskId) => {', rep: '    stopTaskUnused: async (m: { wsId: string }, taskId: string) => {', tests: [T.wiring], expect: /the host binds deps.stopTask/ },
-  { id: 'wire-host-stoptask-unbounded', file: HOST, find: "return await withTimeout(sdkStopTaskForPause(m.wsId, taskId), STOP_TASK_TIMEOUT_MS, 'sdk stop_task');", rep: 'return await sdkStopTaskForPause(m.wsId, taskId);', tests: [T.wiring], expect: /the host binds deps.stopTask/ },
-  { id: 'wire-host-stoptask-wrong-ws', file: HOST, find: 'sdkStopTaskForPause(m.wsId, taskId), STOP_TASK_TIMEOUT_MS', rep: "sdkStopTaskForPause('', taskId), STOP_TASK_TIMEOUT_MS", tests: [T.wiring], expect: /the host binds deps.stopTask/ },
+  { id: 'wire-host-stoptask-unwired', file: HOST, find: '    stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),', rep: '    stopTaskUnused: (m: { wsId: string }, taskId: string) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),', tests: [T.wiring], expect: /the host binds deps.stopTask/ },
+  { id: 'wire-host-stoptask-unbounded', file: HOST, find: 'stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),', rep: 'stopTask: (m, taskId) => sdkStopTaskForPause(m.wsId, taskId),', tests: [T.wiring], expect: /the host binds deps.stopTask/ },
+  { id: 'wire-host-stoptask-wrong-ws', file: HOST, find: 'stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId))', rep: "stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause('', taskId))", tests: [T.wiring], expect: /the host binds deps.stopTask/ },
   { id: 'wire-sdk-stoptask-noop', file: SDK, find: '    await session.q.stopTask(taskId);\n    return { ok: true };', rep: '    return { ok: true };', tests: [T.wiring], expect: /the host binds deps.stopTask/ },
   { id: 'wire-sdk-stoptask-stopping-session', file: SDK, find: "  if (!session || session.stopping) return { ok: false, note: 'no live SDK session in this app run — stop_task unavailable' };", rep: "  if (!session) return { ok: false, note: 'no live SDK session in this app run — stop_task unavailable' };", tests: [T.wiring], expect: /the host binds deps.stopTask/ },
 ];

@@ -83,6 +83,19 @@ export interface StopTaskResult {
   note?: string;
 }
 
+/** Bound ONE `stop_task` request: a CLI that answers nothing (SIGSTOPped / wedged — an idle member's interrupt needs no CLI round trip, so nothing else would notice) must cost `ms`, never hang the trap;
+ *  a timeout, a rejection and a throw are all a FAILED stop (`ok:false`), so the signal path takes over. The timer is always cleared. */
+export async function stopWithin(ms: number, req: Promise<StopTaskResult>): Promise<StopTaskResult> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([req, new Promise<StopTaskResult>((resolve) => { t = setTimeout(() => resolve({ ok: false, note: `sdk stop_task timed out after ${ms} ms` }), ms); })]);
+  } catch (e) {
+    return { ok: false, note: e instanceof Error ? e.message : String(e) };
+  } finally {
+    if (t) clearTimeout(t);
+  }
+}
+
 export interface KillOptions {
   termGraceMs?: number;
   maxRounds?: number;
@@ -104,7 +117,7 @@ export interface KillOptions {
 const DEFAULT_TERM_GRACE_MS = 2_000;
 const DEFAULT_STOP_WAIT_MS = 1_500;
 /** The CLI's task output file: a background task's shell has stdout/stderr on `<tmp>/…/tasks/<taskId>.output` (measured on claude 2.1.289) — the exact process-root ↔ task-id link. */
-const TASK_OUTPUT_RE = /\/tasks\/([A-Za-z0-9_-]+)\.output$/;
+const TASK_OUTPUT_RE = /\/tasks\/([A-Za-z0-9_-]+)\.output(?: \(deleted\))?$/; // `(deleted)`: /proc shows it for a link whose file was unlinked (tmpfiles-clean, a /tmp sweep) while the task still runs
 const DEFAULT_ROUNDS = 3;
 const POLL_MS = 50;
 
@@ -325,8 +338,8 @@ export async function killToolTrees(
   const planned = new Map<string, ToolProc>(); // key pid:startTicks — every member any round planned
   const stopped = new Map<string, { m: ToolProc; taskId: string; ok: boolean; note?: string }>();
   const endedByCli = new Map<string, { m: ToolProc; taskId: string; accepted: boolean; note?: string }>(); // members seen alive when the CLI was asked and gone after, without a signal
-  const stopRoots = async (plan: ToolPlan): Promise<void> => {
-    if (!opts.stopTask || !deps.readTaskId) return;
+  const stopRoots = async (plan: ToolPlan): Promise<number> => {
+    if (!opts.stopTask || !deps.readTaskId) return 0;
     const batch: Array<{ m: ToolProc; taskId: string }> = [];
     for (const m of plan.members) {
       if (!m.isRoot) continue;
@@ -342,7 +355,7 @@ export async function killToolTrees(
       batch.push({ m, taskId });
       stopped.set(key, { m, taskId, ok: false, note: 'requested' });
     }
-    if (batch.length === 0) return;
+    if (batch.length === 0) return 0;
     const trees = plan.members.filter((x) => batch.some((b) => b.m.pid === x.rootPid));
     const aliveBefore = trees.filter((x) => isAlive(x, deps)); // alive when the CLI is asked: only these can be credited to the CLI's stop
     // ALL requests at once: one wedged CLI costs ONE timeout, not one per task (N roots × 5 s would eat the Pause bar before the first signal)
@@ -365,6 +378,7 @@ export async function killToolTrees(
       // listed whatever the reply was: a request that failed / timed out but whose tree went away inside the wait (the CLI's own kill landing late) must still be in the Bilan — the Consigne reads the command from `killed[]`
       for (const x of aliveBefore) if (x.rootPid === b.m.pid && !isAlive(x, deps)) endedByCli.set(`${x.pid}:${x.startTicks}`, { m: x, taskId: b.taskId, accepted: r.ok, ...(r.note ? { note: r.note } : {}) });
     });
+    return batch.length;
   };
 
   if (cliGone()) {
@@ -380,7 +394,7 @@ export async function killToolTrees(
     if (plan.members.length === 0) break;
     report.rounds = round;
     for (const m of plan.members) planned.set(`${m.pid}:${m.startTicks}`, m);
-    await stopRoots(plan);
+    const asked = await stopRoots(plan);
     let signalled = 0;
     const termed: ToolProc[] = [];
     for (const m of killOrder(plan.members)) {
@@ -414,7 +428,7 @@ export async function killToolTrees(
       }
     }
     await waitUntilGone(termed, deps, 500);
-    if (signalled === 0) break; // nothing provable to signal: more rounds cannot change that
+    if (signalled === 0 && asked === 0) break; // nothing provable to signal NOR to ask the CLI: more rounds cannot change that (a CLI that ended every root still gets a re-plan: a tool born during the stop window is caught)
   }
 
   const finalPlan = planNow();

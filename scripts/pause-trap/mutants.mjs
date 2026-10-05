@@ -207,18 +207,32 @@ export const MUTANTS = {
   // #282: the trap never asks the CLI to stop a background task (stopTask unwired): the task dies by SIGTERM and the CLI starts a task-notification turn by itself.
   'no-stop-task': {
     file: '/src/main/pause-trap-host.ts',
-    find: /    stopTask: async \(m, taskId\) => \{/g,
-    replace: '    stopTask: undefined as never, __stopTaskUnused: async (m: { wsId: string }, taskId: string) => {',
+    find: /    stopTask: \(m, taskId\) => stopWithin\(/g,
+    replace: '    stopTask: undefined as never, __stopTaskUnused: (m: { wsId: string }, taskId: string) => stopWithin(',
     mustRedden: 'no_model_request_while_paused',
   },
   // #282: the stop_task requests are made AFTER the signal rounds (the order is the fix: a task the CLI did not stop itself is notified when its process exits).
   'stop-task-after-signals': {
     file: '/src/main/pause-kill.ts',
     edits: [
-      { find: /    await stopRoots\(plan\);\n    let signalled = 0;/g, replace: '    let signalled = 0;' },
+      { find: /    const asked = await stopRoots\(plan\);\n    let signalled = 0;/g, replace: '    const asked = 0;\n    let signalled = 0;' },
       { find: /    await waitUntilGone\(termed, deps, 500\);\n/g, replace: '    await waitUntilGone(termed, deps, 500);\n    await stopRoots(plan);\n' },
     ],
     mustRedden: 'no_model_request_while_paused',
+  },
+  // #282 review R1: the `(deleted)` suffix of an unlinked task output file is not matched — the link is lost, the SIGTERM path starts the task-notification turn.
+  'deleted-link-unmatched': {
+    file: '/src/main/pause-kill.ts',
+    find: /\.output\(\?: \\\(deleted\\\)\)\?\$\/;/g,
+    replace: '.output$/;',
+    mustRedden: 'no_model_request_while_paused',
+  },
+  // #282 review R2: the stop_task request is NOT bounded — a wedged CLI hangs the trap for ever.
+  'no-stop-timeout': {
+    file: '/src/main/pause-kill.ts',
+    find: /    return await Promise\.race\(\[req, new Promise<StopTaskResult>\(\(resolve\) => \{ t = setTimeout\(\(\) => resolve\(\{ ok: false, note: `sdk stop_task timed out after \$\{ms\} ms` \}\), ms\); \}\)\]\);/g,
+    replace: '    return await req;',
+    mustRedden: 'trap_finished',
   },
   // The turn-start observer is never registered (rows 29/30).
   'no-turn-observer': {

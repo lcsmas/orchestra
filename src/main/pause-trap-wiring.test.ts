@@ -132,10 +132,8 @@ test('CONTROL: codeOf really strips comments (a needle that only appears in a co
 test('#282: the host binds deps.stopTask to the member\'s OWN live session (sdkStopTaskForPause, bounded by a timeout, a throw/timeout = ok:false so the signals take over); the SDK call is the CLI\'s `stopTask`, silent, refused on a stopping/absent session', () => {
   const host = codeOf('src/main/pause-trap-host.ts');
   assert.ok(host.includes('sdkStopTaskForPause } from \'./agent-sdk\';'), 'imported from agent-sdk');
-  const b = host.slice(at(host, 'stopTask: async (m, taskId) => {'));
-  const body = b.slice(0, b.indexOf('\n    },') + 8);
-  assert.ok(body.includes('await withTimeout(sdkStopTaskForPause(m.wsId, taskId), STOP_TASK_TIMEOUT_MS, \'sdk stop_task\')'), 'the member\'s own wsId + a bounded wait');
-  assert.ok(/catch \(e\) \{\s*return \{ ok: false, note:/.test(body), 'a throw or timeout is a failed stop (ok:false), never an exception out of the kill');
+  assert.ok(host.includes('stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),'), 'the member\'s own wsId + the bounded wait (stopWithin is unit-tested: a timeout / throw = ok:false)');
+  assert.ok(host.includes('stopWithin } from \'./pause-kill\';'), 'imported from pause-kill');
   const sdk = codeOf('src/main/agent-sdk.ts');
   const fn = sdk.slice(at(sdk, 'export async function sdkStopTaskForPause('));
   const fbody = fn.slice(0, fn.indexOf('\n}\n') + 3);
@@ -157,10 +155,10 @@ test('#282: pause-kill asks the CLI (stopRoots) AFTER the plan and BEFORE the fi
   const code = codeOf('src/main/pause-kill.ts');
   const loop = code.slice(at(code, 'for (let round = 1; round <= maxRounds; round++) {'));
   const plan = at(loop, 'const plan: ToolPlan = planNow();');
-  const stop = at(loop, 'await stopRoots(plan);');
+  const stop = at(loop, 'const asked = await stopRoots(plan);');
   const sig = at(loop, "deps.signal(m.pid, 'SIGTERM')");
   assert.ok(plan < stop && stop < sig, 'plan → stopRoots → SIGTERM');
-  const fn = code.slice(at(code, 'const stopRoots = async (plan: ToolPlan): Promise<void> => {'));
+  const fn = code.slice(at(code, 'const stopRoots = async (plan: ToolPlan): Promise<number> => {'));
   const body = fn.slice(0, fn.indexOf('\n  };\n') + 6);
   assert.ok(body.indexOf('verifyAtSignal(') !== -1 && body.indexOf('verifyAtSignal(') < body.indexOf('deps.readTaskId(m.pid)') && body.indexOf('deps.readTaskId(m.pid)') < body.indexOf('const again = deps.read(m.pid);') && body.indexOf('const again = deps.read(m.pid);') < body.indexOf('opts.stopTask!(b.taskId)'), 'identity check → task id → identity re-read → request');
   assert.ok(body.includes('if (!paused()) break;') && body.includes('if (tooNew(m)) continue;'), 'the lift check and the human-window shield apply to this destructive act too');
