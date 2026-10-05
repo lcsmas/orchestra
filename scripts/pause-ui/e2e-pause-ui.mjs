@@ -40,7 +40,9 @@ async function bootArm(arm, size = [1440, 900]) {
   clause(arm, 'ctl/app-in-my-sway', inSway, `app pid ${a.app.pid} present in my sway's get_tree (polled: the window maps a moment after the page target)`);
   await waitFor(() => a.cdp.eval(`document.querySelectorAll('.ws-item').length`).then((n) => n >= FLEET.length), 60000, `${FLEET.length} workspace rows`);
   const ver = JSON.parse(fs.readFileSync(path.join(APP_DIR ?? REPO, 'package.json'), 'utf8')).version;
-  clause(arm, 'ctl/app-version', true, `package.json ${ver}; ${FLEET.length} sidebar rows rendered`);
+  const running = await a.cdp.eval('window.orchestra.getAppVersion()').catch((e) => `ERR ${e.message}`);
+  // a build WITHOUT the feature (--expect-red) legitimately has another version: it only has to answer; the candidate must be THIS tree's version
+  clause(arm, 'ctl/app-version', EXPECT_RED ? typeof running === 'string' && /^\d+\.\d+\.\d+/.test(running) : running === ver, `version read out of the RUNNING app: ${running}; this tree's package.json: ${ver}${EXPECT_RED ? ' (must-FAIL arm: any build without the feature)' : ''}; ${FLEET.length} sidebar rows rendered`);
   return { armDir, world, a, liveBusCheck: () => { const r = liveBusOpenedBy(world.ohome, LIVE_HOME); clause(arm, 'ctl/live-bus-never-opened', r.holders.length === 0 && r.opened === path.join(world.ohome, 'bus.sqlite'), `the app opened ${r.opened} (= its scratch bus); rig processes holding ~/.orchestra/bus.sqlite open: ${r.holders.length ? r.holders.join(',') : 'none'}`); } };
 }
 
