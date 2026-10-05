@@ -66,8 +66,9 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
 });
 
 /** Every place a source file PASSES, READS or DECLARES a property named `human` — by AST (so `{human:true}`, `{ human }`, `{ "human": true }`, `opts.human`, `opts['human']`, `const { human } = opts` all count, and a `*\/` inside a string cannot swallow code). */
-function humanOptionSites(source: string): { passes: number; reads: number; declares: number } {
-  const sf = ts.createSourceFile('x.ts', source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+function humanOptionSites(source: string, fileName = 'x.ts'): { passes: number; reads: number; declares: number } {
+  // parsed AS WHAT THE FILE IS: a `.ts` as TSX would read `<any>{ human: true }` / a generic arrow as JSX and miss the site (review m1)
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ES2022, true, fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const out = { passes: 0, reads: 0, declares: 0 };
   const named = (n: ts.PropertyName | undefined): boolean => !!n && (ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && n.text === 'human';
   const visit = (n: ts.Node): void => {
@@ -83,13 +84,13 @@ function humanOptionSites(source: string): { passes: number; reads: number; decl
   return out;
 }
 
-test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): the ONLY site that PASSES the writers\' `human` option is src/main/pause-ui.ts; only the four coordinator-rule writers READ it — by AST, spelling-proof; the CLI deps are TYPED without it', () => {
+test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): no `human` property is PASSED anywhere but src/main/pause-ui.ts (by AST — every LITERAL spelling, each file parsed as its own kind); a RELAYED object (spread / variable) cannot reach a writer from the CLI because the CLI\'s deps are TYPED without the option', () => {
   const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []));
   const passes: Record<string, number> = {};
   const reads: Record<string, number> = {};
   const declares: Record<string, number> = {};
   for (const f of walk(path.join(process.cwd(), 'src'))) {
-    const s = humanOptionSites(fs.readFileSync(f, 'utf8'));
+    const s = humanOptionSites(fs.readFileSync(f, 'utf8'), f);
     const rel = path.relative(process.cwd(), f);
     if (s.passes) passes[rel] = s.passes;
     if (s.reads) reads[rel] = s.reads;
@@ -102,12 +103,18 @@ test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): the O
   const cli = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
   assert.ok(/export type CliRepriseEntry = [^;]*Omit<NonNullable<Parameters<RepriseEntry>\[3\]>, 'human'>/.test(cli) && /beginReprise\?: CliRepriseEntry;/.test(cli), 'RunPauseDeps.beginReprise is CliRepriseEntry (RepriseEntry minus `human`)');
   assert.ok(!/beginReprise\?: RepriseEntry/.test(cli));
+  // …and the other three CLI writer deps take NO options parameter at all: a relayed `{ ...opts }` is a type error there (the static scan cannot follow a relayed object — the types do)
+  assert.ok(cli.includes('setRunPause: (db: BusDb, runId: string, pause: boolean, actor: string | null, mode?: PauseMode) => RunPauseOutcome;'), 'RunPauseDeps.setRunPause has no options parameter');
+  assert.ok(cli.includes('setRunHold: (db: BusDb, runId: string, hold: boolean, actor: string | null) => RunHoldOutcome;'), 'RunHoldDeps.setRunHold has no options parameter');
+  assert.ok(cli.includes("releaseMembers?: (db: BusDb, carrierRunId: string, actor: string, targets: readonly string[] | 'all') => ReleaseResult;"), 'RunPauseDeps.releaseMembers has no options parameter');
   // the scanner itself: every spelling an evasion could use is seen (and prose / strings are not)
   const probe = (code: string) => humanOptionSites(code);
   assert.equal(probe('f({human:true})').passes, 1);
   assert.equal(probe('const human = go(); f({ human })').passes, 1);
   assert.equal(probe('f({ "human": true })').passes, 1);
   assert.equal(probe('f({ [`x`]: 1, human: flag })').passes, 1);
+  assert.equal(humanOptionSites('const o = <any>{ human: true };', 'x.ts').passes, 1, 'a type assertion in a .ts file (parsed as TS, not as JSX)');
+  assert.equal(humanOptionSites('const f = <T,>(x: T) => ({ human: true });', 'x.tsx').passes, 1);
   assert.equal(probe('o?.human').reads, 1);
   assert.equal(probe('o.human').reads, 1);
   assert.equal(probe("o['human']").reads, 1);

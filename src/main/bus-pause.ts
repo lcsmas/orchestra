@@ -250,10 +250,13 @@ export function setRunPause(
           `UPDATE runs SET pause_mode = 'hard', pause_escalated_at = ?
             WHERE id = ? AND paused_at = ? AND pause_mode = 'soft' AND pause_escalated_at IS NULL AND pause_trap_at IS NULL`,
         ).run(Date.now(), runId, row!.pausedAt).changes;
-        if (done > 0) return 'escalated';
+        if (done > 0) {
+          // the HUMAN's Pause dure over an agent's douce is the human's Pause now (Q1/Q2): `paused_by` says so (the caller records an EMPTY origin — nobody is the pauser, nobody is spared)
+          if (human) db.prepare('UPDATE runs SET paused_by = ? WHERE id = ? AND paused_at = ?').run(PAUSE_HUMAN_BY, runId, row!.pausedAt);
+          return 'escalated';
+        }
       }
-      // #256: a human re-asserting a pause the HOST wrote on a usage limit takes it over — `pause_auto` NULL = manual, never auto-resumed (D6).
-      db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ? AND paused_at IS NOT NULL').run(runId);
+      adoptPause(db, runId, human);
       return 'already-paused';
     }
     const now = Date.now();
@@ -264,7 +267,7 @@ export function setRunPause(
     ).run(now, who, mode, mode === 'soft' ? softDeadlineAt(now) : null, runId);
     if (wrote.changes === 0) {
       // a pause (the host's auto pause on a usage limit?) landed between the read and this write: the caller's pause IS that pause now — adopt it (#256, D6)
-      db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ? AND paused_at IS NOT NULL').run(runId);
+      adoptPause(db, runId, human);
       return 'already-paused';
     }
     return 'paused';
@@ -272,6 +275,13 @@ export function setRunPause(
   if (!isPaused) return 'not-paused';
   clearPauseColumns(db, runId); // every pause column (incl. wave E's) — a stale `resume_started_at` would read the NEXT pause as RESUMING
   return 'lifted';
+}
+
+/** A pause already in force is taken over by whoever re-asserts it (#256, D6): `pause_auto` NULL = manual, never auto-resumed. The HUMAN's takeover of a HOST auto-pause is recorded as the human's (`paused_by`, Q1) — a re-press of a
+ *  coordinator's own pause rewrites nothing (the `pause_auto IS NOT NULL` guard). */
+function adoptPause(db: BusDb, runId: string, human: boolean): void {
+  if (human) db.prepare('UPDATE runs SET paused_by = ? WHERE id = ? AND paused_at IS NOT NULL AND pause_auto IS NOT NULL').run(PAUSE_HUMAN_BY, runId);
+  db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ? AND paused_at IS NOT NULL').run(runId);
 }
 
 /**

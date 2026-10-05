@@ -302,6 +302,19 @@ export function recordPauseOrigin(db: BusDb, carrierRunId: string, pausedAt: num
   tx.immediate();
 }
 
+/** The HUMAN took this Pause over (a Pause dure over an agent's douce, D-pick Q1/Q2): REPLACE the recorded chain — nobody is the pauser any more, nobody is spared (`recordPauseOrigin` is first-wins, so it cannot). Inserts when none was recorded. */
+export function replacePauseOrigin(db: BusDb, carrierRunId: string, pausedAt: number, chain: PauseOriginProc[]): void {
+  const tx = db.transaction(() => {
+    const row = bilanForMember(db, carrierRunId, PAUSE_ORIGIN_WS, pausedAt);
+    if (!row) {
+      insertBilan(db, { runId: carrierRunId, wsId: PAUSE_ORIGIN_WS, pausedAt, activity: { surface: 'none', origin: { chain } }, snapshotRef: null, dirty: null, killed: null, error: null });
+      return;
+    }
+    updateBilan(db, row.id, { activity: { ...(row.activity ?? { surface: 'none' }), origin: { chain } } });
+  });
+  tx.immediate();
+}
+
 /** The recorded chain of the call that made THIS pause, or null when none was recorded (an older CLI, or a pause written another way). */
 export function readPauseOrigin(db: BusDb, carrierRunId: string, pausedAt: number): PauseOriginProc[] | null {
   return bilanForMember(db, carrierRunId, PAUSE_ORIGIN_WS, pausedAt)?.activity?.origin?.chain ?? null;

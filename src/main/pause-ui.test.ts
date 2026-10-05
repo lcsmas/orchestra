@@ -7,7 +7,7 @@ import * as bus from './bus.ts';
 import * as busRuns from './bus-runs.ts';
 import { beginReprise, getRunPause, setRunPause } from './bus-pause.ts';
 import { getRunHold, setRunHold } from './bus-runs.ts';
-import { appendBilanNote, insertBilan, readPauseOrigin } from './bus-pause-records.ts';
+import { appendBilanNote, insertBilan, readPauseOrigin, recordPauseOrigin, replacePauseOrigin } from './bus-pause-records.ts';
 import { confirmMember, enrollMember } from './pause-douce.ts';
 import { confirmReprise, readCarrierColumns, readRoster, releaseMembers, setLiveTreeSource } from './pause-reprise.ts';
 import { pauseOverviewFingerprint, readPauseOverview, toBilanLine, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui.ts';
@@ -772,4 +772,85 @@ test('a host auto-pause TAKEN OVER by a human keeps `paused_by = host:usage_limi
   const run = readPauseOverview(db, deps).runs[0];
   assert.equal(run.pausedByLabel, "l'hôte (limite d'usage)");
   db.close();
+});
+
+test('M1: the Bus card of an ARCHIVED carrier still Reprend / Libère it — a row that owns a run is its own action target whatever its archive state; only the LINK skips archived ANCESTORS', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'O', mode: 'hard' });
+  trap(db, 'O');
+  const O = byId.get('O')! as WaveNode & { archived?: boolean };
+  O.archived = true; // the sidebar hides it; the Bus card of its pause stays (the buttons act with `actor = carrierRunId`)
+  try {
+    assert.equal(readPauseOverview(db, deps).runs.find((r) => r.carrierRunId === 'O')?.phase, 'paused', 'the card is still listed');
+    const r = uiResume(db, deps, { wsId: 'O' });
+    assert.equal(r.outcome, 'resuming', 'not « O est un agent, pas une vague »');
+    const rel = uiRelease(db, deps, { wsId: 'O', targets: 'all', carrierRunId: 'O' });
+    assert.deepEqual(rel.result!.released.slice().sort(), ['o1', 'o2'], 'and « Libérer tout » releases its own wave');
+    // a worker under the archived carrier is still a worker row, linked to the next LIVE run owner (L), never to the archived row
+    const w = uiPause(db, deps, { wsId: 'o1', mode: 'soft' });
+    assert.equal(w.outcome, 'refused');
+    assert.deepEqual(w.explain!.actions, [{ kind: 'goto', wsId: 'L', label: 'Aller à fleet-lead' }]);
+  } finally {
+    delete O.archived;
+  }
+  db.close();
+});
+
+test('M2: the human\'s Pause dure over an AGENT\'s douce is the human\'s (Q1/Q2): paused_by → « humain » and the recorded origin chain is REPLACED by [] — the coordinator that paused it is no longer exempt; a coordinator\'s own escalation keeps its record', () => {
+  const chain = [{ pid: 4242, ppid: 1, startTicks: 7, comm: 'claude' }];
+  const db = freshDb();
+  tree(db);
+  assert.equal(setRunPause(db, 'L', true, 'L', 'soft'), 'paused'); // what an OPS does with `orchestra run pause`
+  const at = getRunPause(db, 'L')!.pausedAt;
+  recordPauseOrigin(db, 'L', at, chain); // …and the CLI records its process chain (the pauser is spared by the trap)
+  assert.equal(getRunPause(db, 'L')!.pausedBy, 'L');
+  assert.deepEqual(readPauseOrigin(db, 'L', at), chain);
+  const r = uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  assert.equal(r.outcome, 'escalated');
+  assert.equal(getRunPause(db, 'L')!.pausedBy, PAUSE_HUMAN_BY, 'the Pause is the human\'s now');
+  assert.deepEqual(readPauseOrigin(db, 'L', at), [], 'nobody is spared any more');
+  assert.equal(r.overview.runs[0].pausedByLabel, 'un humain');
+  assert.equal(r.actor, PAUSE_HUMAN_BY);
+  // control: the COORDINATOR\'s own escalation (no human option) keeps paused_by and its origin chain
+  const db2 = freshDb();
+  tree(db2);
+  setRunPause(db2, 'L', true, 'L', 'soft');
+  const at2 = getRunPause(db2, 'L')!.pausedAt;
+  recordPauseOrigin(db2, 'L', at2, chain);
+  assert.equal(setRunPause(db2, 'L', true, 'L', 'hard'), 'escalated');
+  assert.equal(getRunPause(db2, 'L')!.pausedBy, 'L');
+  assert.deepEqual(readPauseOrigin(db2, 'L', at2), chain);
+  // replacePauseOrigin inserts when none was recorded
+  const db3 = freshDb();
+  tree(db3);
+  setRunPause(db3, 'L', true, 'L', 'hard');
+  const at3 = getRunPause(db3, 'L')!.pausedAt;
+  replacePauseOrigin(db3, 'L', at3, []);
+  assert.deepEqual(readPauseOrigin(db3, 'L', at3), []);
+  db.close(); db2.close(); db3.close();
+});
+
+test('M2 (host pause): a human re-asserting a HOST auto-pause takes it over AS THE HUMAN (paused_by « humain », pause_auto cleared — never auto-resumed); a coordinator\'s takeover keeps the host record; re-pressing a coordinator\'s own pause changes nothing', () => {
+  const mk = (): bus.BusDb => {
+    const d = freshDb();
+    tree(d);
+    setRunPause(d, 'L', true, 'L', 'hard');
+    d.prepare('UPDATE runs SET paused_by = ?, pause_auto = ? WHERE id = ?').run(PAUSE_AUTO_BY, JSON.stringify({ reason: 'usage_limit', wsIds: ['o1'], accountIds: [null], epoch: getRunPause(d, 'L')!.pausedAt }), 'L');
+    return d;
+  };
+  const a = mk();
+  assert.equal(uiPause(a, deps, { wsId: 'L', mode: 'hard' }).outcome, 'already-paused');
+  assert.equal(getRunPause(a, 'L')!.pausedBy, PAUSE_HUMAN_BY);
+  assert.equal((a.prepare('SELECT pause_auto AS p FROM runs WHERE id = ?').get('L') as { p: string | null }).p, null);
+  const b = mk();
+  assert.equal(setRunPause(b, 'L', true, 'L', 'hard'), 'already-paused'); // a coordinator's takeover (CLI)
+  assert.equal(getRunPause(b, 'L')!.pausedBy, PAUSE_AUTO_BY, 'the host record stays (unchanged behaviour)');
+  assert.equal((b.prepare('SELECT pause_auto AS p FROM runs WHERE id = ?').get('L') as { p: string | null }).p, null);
+  const c = freshDb();
+  tree(c);
+  setRunPause(c, 'L', true, 'L', 'hard');
+  assert.equal(uiPause(c, deps, { wsId: 'L', mode: 'hard' }).outcome, 'already-paused');
+  assert.equal(getRunPause(c, 'L')!.pausedBy, 'L', 're-pressing a coordinator\'s own pause is a no-op: it is NOT rewritten as the human\'s');
+  a.close(); b.close(); c.close();
 });

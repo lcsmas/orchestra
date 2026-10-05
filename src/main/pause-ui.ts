@@ -9,7 +9,7 @@
 import type { BusDb } from './bus.ts';
 import { getRun, runHoldAuthority, setRunHold } from './bus-runs.ts';
 import { beginReprise, getRunPause, pausedCarrierForWorkspace, setRunPause, type RunPauseOutcome } from './bus-pause.ts';
-import { listBilan, recordPauseOrigin, type BilanRow } from './bus-pause-records.ts';
+import { listBilan, recordPauseOrigin, replacePauseOrigin, type BilanRow } from './bus-pause-records.ts';
 import { pauseStatusView } from './pause-douce.ts';
 import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
@@ -337,7 +337,7 @@ function targetOf(db: BusDb | null, deps: PauseUiDeps, wsId: string): { ws: Wave
   return { ws, runId: nearestRunOf(db, ws, deps) };
 }
 
-/** The first row at or above `ws` that orchestrates or anchors a bus run (R2-4: a child of a plain run-anchoring parent is explained against THAT parent, not as « no run »). `ws` itself when none. */
+/** The first row at or above `ws` that orchestrates or anchors a bus run (R2-4: a child of a plain run-anchoring parent is explained against THAT parent, not as « no run »). `ws` itself when none. `ws` ITSELF counts even when archived; an archived ANCESTOR is skipped (no row to point at). */
 function nearestRunOf(db: BusDb | null, ws: WaveNode, deps: PauseUiDeps): string {
   // an archived (or vanished) row has no line to point at: skipped, the next ancestor is named instead — an orchestrator included
   const usable = (id: string): boolean => {
@@ -355,7 +355,8 @@ function nearestRunOf(db: BusDb | null, ws: WaveNode, deps: PauseUiDeps): string
   let cur: WaveNode = ws;
   const seen = new Set<string>([cur.id]);
   for (;;) {
-    if (usable(cur.id) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;
+    // the CLICKED row owns its run whatever its archive state (the Bus card of an archived carrier must still Reprendre / Libérer it); the archive skip is for the LINK's target — an ANCESTOR
+    if ((cur.id === ws.id || usable(cur.id)) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;
     if (!cur.parentId) break;
     const parent = deps.getWorkspace(cur.parentId);
     if (!parent || seen.has(parent.id)) break;
@@ -382,6 +383,11 @@ export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string
   let outcome: RunPauseOutcome;
   try {
     outcome = setRunPause(db, t.runId, true, actor, req.mode, { human: true });
+    if (outcome === 'escalated') {
+      // the human's Pause dure over an agent's douce: the writer made `paused_by` the human's; the recorded origin chain (who was exempt) goes too — nobody is spared (Q2)
+      const made = getRunPause(db, t.runId);
+      if (made) replacePauseOrigin(db, t.runId, made.pausedAt, []);
+    }
     if (outcome === 'paused') {
       // A UI click has no CLI process chain: record an EMPTY origin (the shipped writer, as the CLI does after its own pause) so the host trap does not wait up to 3 s for one before it
       // interrupts a live member, and the Bilan says what is true — nobody is the pauser, nobody is spared.
