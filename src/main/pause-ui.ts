@@ -8,13 +8,14 @@
 
 import type { BusDb } from './bus.ts';
 import { getRun, runHoldAuthority } from './bus-runs.ts';
-import { beginReprise, pausedCarrierForWorkspace, setRunPause, type RunPauseOutcome } from './bus-pause.ts';
-import { listBilan, type BilanRow } from './bus-pause-records.ts';
+import { beginReprise, getRunPause, pausedCarrierForWorkspace, setRunPause, type RunPauseOutcome } from './bus-pause.ts';
+import { listBilan, recordPauseOrigin, type BilanRow } from './bus-pause-records.ts';
 import { pauseStatusView } from './pause-douce.ts';
 import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { pausePhaseOf, pauseRosterSummary, type PauseMode, type PausePhase, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
+import { killedCommands } from '../shared/pause-consigne.ts';
 import {
   availabilityFor,
   explainPauseOutcome,
@@ -52,10 +53,17 @@ const NOTES_CAP = 8;
 const short = (id: string): string => (/^[0-9a-f]{8}-/i.test(id) ? id.slice(0, 8) : id);
 const labeler = (deps: PauseUiDeps) => (id: string): string => deps.labelOf(id) ?? short(id);
 
-/** One Bilan row → what a screen shows. Pure over the row; capped so the push payload stays small. */
+type KillReportLike = { killed?: Array<{ cmd?: string; cwd?: string | null; pid?: number; outcome?: string }>; survivors?: Array<{ cmd?: string; pid?: number; reason?: string }>; refused?: Array<{ cmd?: string; pid?: number; reason?: string }>; skipped?: string };
+
+/** One Bilan row → what a screen shows. Pure over the row; capped so the push payload stays small. `killed_json` is the trap's KillReport (`{killed, survivors, refused, spared…}`), `{skipped}` for a remote member, or NULL
+ *  while the trap has not finished for this member — read exactly as `orchestra run status` and the Consigne de reprise read it (`killedCommands` is the Consigne's own merge). */
 export function toBilanLine(b: BilanRow): PauseUiBilanLine {
   const a = b.activity;
-  const killed = Array.isArray(b.killed) ? (b.killed as Array<{ cmd?: unknown; cwd?: unknown; outcome?: unknown }>) : [];
+  const report: KillReportLike | null = b.killed && typeof b.killed === 'object' && !Array.isArray(b.killed) ? (b.killed as KillReportLike) : null;
+  const merged = killedCommands({ snapshotRef: b.snapshotRef, dirty: b.dirty, killed: b.killed, error: b.error, activity: a });
+  const rawKilled = [...(report?.killed ?? []), ...(a?.earlierKilled ?? []), ...(a?.observerKilled ?? [])];
+  const outcomeByCmd = new Map(rawKilled.map((k) => [`${k.cwd ?? ''}\u0000${k.cmd}`, (k as { outcome?: string }).outcome ?? null]));
+  const trap: PauseUiBilanLine['trap'] = b.killed === null || b.killed === undefined ? 'pending' : report?.skipped ? 'skipped' : 'done';
   return {
     snapshotRef: b.snapshotRef,
     branch: a?.branch ?? null,
@@ -71,8 +79,13 @@ export function toBilanLine(b: BilanRow): PauseUiBilanLine {
     },
     interrupt: a?.interrupt ?? null,
     exempt: a?.exempt === 'pauser' || a?.interrupt === 'exempt',
-    killed: killed.slice(-KILLED_CAP).map((k) => ({ cmd: String(k.cmd ?? '').slice(0, 300), cwd: typeof k.cwd === 'string' ? k.cwd : null, outcome: String(k.outcome ?? '') })),
-    killedCount: killed.length,
+    killed: merged.slice(-KILLED_CAP).map((k) => ({ cmd: k.cmd.slice(0, 300), cwd: k.cwd, outcome: outcomeByCmd.get(`${k.cwd ?? ''}\u0000${k.cmd}`) ?? null })),
+    killedCount: merged.length,
+    trap,
+    skipped: report?.skipped ? String(report.skipped).slice(0, 200) : null,
+    survivors: (report?.survivors ?? []).slice(0, 6).map((x) => ({ cmd: String(x.cmd ?? '').slice(0, 200), pid: Number(x.pid ?? 0), reason: String(x.reason ?? '').slice(0, 200) })),
+    refused: (report?.refused ?? []).slice(0, 6).map((x) => ({ cmd: String(x.cmd ?? '').slice(0, 200), pid: Number(x.pid ?? 0), reason: String(x.reason ?? '').slice(0, 200) })),
+    warnings: (a?.snapshotWarnings ?? []).slice(0, NOTES_CAP),
     notes: (a?.notes ?? []).slice(-NOTES_CAP),
     error: b.error,
   };
@@ -291,6 +304,8 @@ function targetOf(deps: PauseUiDeps, wsId: string): { ws: WaveNode; runId: strin
   return { ws, runId: nearestOrchestratorId(ws, deps.getWorkspace) };
 }
 
+const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 /** `orchestra run pause [--hard]` from a workspace row (`mode` 'soft' = Pause douce, 'hard' = Pause dure; `hard` over a douce still waiting escalates it). */
 export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string; mode: PauseMode }): PauseUiWriteResult {
   const t = targetOf(deps, req.wsId);
@@ -299,8 +314,33 @@ export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string
     return { outcome, runId: t?.runId ?? null, actor: null, explain: explainPauseOutcome(outcome, ctxStub(deps, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   }
   const actor = uiActor(req.wsId);
-  const outcome = setRunPause(db, t.runId, true, actor, req.mode);
+  const at = Date.now();
+  let outcome: RunPauseOutcome;
+  try {
+    outcome = setRunPause(db, t.runId, true, actor, req.mode);
+    if (outcome === 'paused') {
+      // A UI click has no CLI process chain: record an EMPTY origin (the shipped writer, as the CLI does after its own pause) so the host trap does not wait up to 3 s for one before it
+      // interrupts a live member, and the Bilan says what is true — nobody is the pauser, nobody is spared.
+      const made = getRunPause(db, t.runId);
+      if (made && made.pausedAt >= at) recordPauseOrigin(db, t.runId, made.pausedAt, []);
+    }
+  } catch (e) {
+    return failed(db, deps, t.runId, actor, e);
+  }
   return { outcome, runId: t.runId, actor, explain: explainPauseOutcome(outcome, ctxFor(db, deps, t.runId, actor, null)), cover: null, overview: readPauseOverview(db, deps) };
+}
+
+/** A writer THREW (SQLITE_BUSY past the 5 s busy_timeout, a full disk…): never a rejected invoke and never a silent panel — a typed `write-failed` the UI explains. */
+function failed(db: BusDb, deps: PauseUiDeps, runId: string, actor: string, e: unknown): PauseUiWriteResult {
+  // the bus that just threw may throw again on the reads below: the explanation must still come out
+  let ctx: ExplainCtx;
+  try {
+    ctx = ctxFor(db, deps, runId, actor, null);
+  } catch {
+    ctx = ctxStub(deps, actor);
+  }
+  const explain = explainPauseOutcome('write-failed', { ...ctx, error: msgOf(e) });
+  return { outcome: 'write-failed', runId, actor, explain, cover: null, overview: readPauseOverview(db, deps) };
 }
 
 /** `orchestra run resume` from a workspace row: starts the structured Reprise (`beginReprise` — coordinators first, workers released afterwards). Does NOT touch the liveness hold (spec question 4). */
@@ -311,7 +351,12 @@ export function uiResume(db: BusDb | null, deps: PauseUiDeps, req: { wsId: strin
     return { outcome, runId: t?.runId ?? null, actor: null, explain: explainResumeOutcome(outcome, ctxStub(deps, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   }
   const actor = uiActor(req.wsId);
-  const outcome = beginReprise(db, t.runId, actor, { reason: 'manual' });
+  let outcome: RepriseOutcome;
+  try {
+    outcome = beginReprise(db, t.runId, actor, { reason: 'manual' });
+  } catch (e) {
+    return failed(db, deps, t.runId, actor, e);
+  }
   // `not-paused` on a run an ANCESTOR still pauses: say so (the CLI's "still PAUSED by run X — lift that one")
   let cover: PauseUiWriteResult['cover'] = null;
   if (outcome === 'not-paused') {
@@ -338,17 +383,40 @@ export function uiRelease(
     return { result: null, runId: t?.runId ?? null, carrierRunId: null, actor: null, explain: ex ? [ex] : [], overview: readPauseOverview(db, deps) };
   }
   const actor = uiActor(req.wsId);
-  const carrier = req.carrierRunId ?? resumingCarrierFor(db, t.runId, liveChainIds(deps, req.wsId));
-  if (!carrier) {
-    // not under a RESUMING pause: the writer itself would say `not-resuming` / `not-paused` — ask it against the run so the typed answer is the writer's
-    const result = releaseMembers(db, t.runId, actor, req.targets);
-    return { result, runId: t.runId, carrierRunId: null, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, t.runId, actor, null), all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
+  let carrier: string | null = null;
+  let result: ReleaseResult;
+  try {
+    carrier = req.carrierRunId ?? resumingCarrierFor(db, t.runId, liveChainIds(deps, req.wsId));
+    // not under a RESUMING pause: the writer itself says `not-resuming` / `not-paused` — ask it against the run so the typed answer is the writer's
+    result = releaseMembers(db, carrier ?? t.runId, actor, req.targets);
+  } catch (e) {
+    const f = failed(db, deps, t.runId, actor, e);
+    return { result: null, runId: t.runId, carrierRunId: carrier, actor, explain: f.explain ? [f.explain] : [], overview: f.overview };
   }
-  const result = releaseMembers(db, carrier, actor, req.targets);
-  return { result, runId: t.runId, carrierRunId: carrier, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, carrier, actor, null), all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
+  return { result, runId: t.runId, carrierRunId: carrier, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, carrier ?? t.runId, actor, null), all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
 }
 
 function ctxStub(deps: PauseUiDeps, wsId: string): ExplainCtx {
   const label = labeler(deps);
-  return { label, runLabel: label(wsId), actorLabel: label(wsId), mayBe: [], cover: null };
+  return { label, runLabel: label(wsId), runId: wsId, actorLabel: label(wsId), mayBe: [], cover: null };
+}
+
+// ── the push fingerprint ─────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a bus write can change in the overview, as a string: a handful of aggregate queries (no row dump). A message / ack / wake touches none of these tables' overview columns, so the (heavier)
+ * overview is not rebuilt for it; EVERY column the overview reads moves it (pause columns, `pause_auto`, the coordinator of each run, the roster's timestamps / roles / member runs, a Bilan row's
+ * content length — a note appended, a kill recorded, an error set — and the frozen flags). Unit-tested per column in pause-ui.test.ts.
+ */
+export function pauseOverviewFingerprint(db: BusDb): string {
+  const one = (sql: string) => db.prepare(sql).get() as Record<string, unknown>;
+  const runs = one(`SELECT COUNT(*) AS n, COALESCE(SUM(paused_at),0) AS p, COALESCE(SUM(resume_started_at),0) AS s, COALESCE(SUM(pause_escalated_at),0) AS e, COALESCE(SUM(pause_trap_at),0) AS t,
+                           COALESCE(SUM(pause_deadline_at),0) AS d, COALESCE(SUM(pause_auto IS NOT NULL),0) AS a, COALESCE(SUM(pause_mode = 'soft'),0) AS m,
+                           COALESCE(group_concat(id || ':' || coordinator, ','),'') AS who, COALESCE(SUM(length(coalesce(title,''))),0) AS ti FROM (SELECT * FROM runs ORDER BY id)`);
+  const roster = one(`SELECT COUNT(*) AS n, COALESCE(SUM(pause_confirmed_at),0) AS c, COALESCE(SUM(released_at),0) AS r, COALESCE(SUM(reprise_confirmed_at),0) AS a, COALESCE(SUM(role = 'coordinator'),0) AS k,
+                             COALESCE(SUM(length(coalesce(member_run,''))),0) AS mr, COALESCE(SUM(pause_confirm_via = 'trap'),0) AS v FROM pause_members`);
+  const bilan = one(`SELECT COUNT(*) AS n, COALESCE(MAX(id),0) AS m, COALESCE(SUM(length(coalesce(activity,''))),0) AS a, COALESCE(SUM(length(coalesce(killed_json,''))),0) AS k, COALESCE(SUM(killed_json IS NOT NULL),0) AS kn,
+                            COALESCE(SUM(length(coalesce(error,''))),0) AS e, COALESCE(SUM(coalesce(dirty,0)),0) AS d, COALESCE(SUM(length(coalesce(snapshot_ref,''))),0) AS r FROM pause_records`);
+  const flags = one('SELECT COUNT(*) AS n, COALESCE(SUM(length(flags)),0) AS l FROM run_flags');
+  return JSON.stringify([runs, roster, bilan, flags]);
 }

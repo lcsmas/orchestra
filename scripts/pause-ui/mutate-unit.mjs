@@ -17,13 +17,13 @@ const T = { main: 'src/main/pause-ui.test.ts', shared: 'src/shared/pause-ui.test
 
 const M = [
   // ── who acts / which run (pause-ui.ts)
-  { id: 'actor-is-run-coordinator', file: MAIN, find: '  const actor = uiActor(req.wsId);\n  const outcome = setRunPause(', rep: '  const actor = t.runId;\n  const outcome = setRunPause(', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
+  { id: 'actor-is-run-coordinator', file: MAIN, find: '  const actor = uiActor(req.wsId);\n  const at = Date.now();', rep: '  const actor = t.runId;\n  const at = Date.now();', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
   { id: 'target-run-is-the-clicked-ws', file: MAIN, find: 'return { ws, runId: nearestOrchestratorId(ws, deps.getWorkspace) };', rep: 'return { ws, runId: ws.id };', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
   { id: 'pause-mode-dropped', file: MAIN, find: 'setRunPause(db, t.runId, true, actor, req.mode)', rep: 'setRunPause(db, t.runId, true, actor)', tests: [T.main], expect: /uiPause as an ORCHESTRATOR row/ },
   { id: 'resume-cover-dropped', file: MAIN, find: '    if (c && c.runId !== t.runId) cover = {', rep: '    if (false && c && c.runId !== t.runId) cover = {', tests: [T.main], expect: /uiResume: not-paused/ },
   { id: 'resume-reason-not-manual', file: MAIN, find: "beginReprise(db, t.runId, actor, { reason: 'manual' })", rep: "beginReprise(db, t.runId, actor, { host: true, reason: 'usage_limit' })", tests: [T.main], expect: /uiResume: not-paused/ },
-  { id: 'release-wrong-carrier', file: MAIN, find: '  const result = releaseMembers(db, carrier, actor, req.targets);', rep: '  const result = releaseMembers(db, t.runId, actor, req.targets);', tests: [T.main], expect: /FULL CYCLE/ },
-  { id: 'release-carrier-not-resolved', file: MAIN, find: 'const carrier = req.carrierRunId ?? resumingCarrierFor(db, t.runId, liveChainIds(deps, req.wsId));', rep: 'const carrier = req.carrierRunId ?? null;', tests: [T.main], expect: /FULL CYCLE/ },
+  { id: 'release-wrong-carrier', file: MAIN, find: 'result = releaseMembers(db, carrier ?? t.runId, actor, req.targets);', rep: 'result = releaseMembers(db, t.runId, actor, req.targets);', tests: [T.main], expect: /FULL CYCLE/ },
+  { id: 'release-carrier-not-resolved', file: MAIN, find: 'carrier = req.carrierRunId ?? resumingCarrierFor(db, t.runId, liveChainIds(deps, req.wsId));', rep: 'carrier = req.carrierRunId ?? null;', tests: [T.main], expect: /FULL CYCLE/ },
   // ── the read
   { id: 'overview-trusts-stale-column', file: MAIN, find: '  if (!pv || pv.carrierRunId !== carrierId) return null;', rep: '  if (!pv) return null;', tests: [T.main], expect: /stale pause column on a switch-OFF CHILD/ },
   { id: 'overview-down-bus-looks-empty', file: MAIN, find: "  if (!db) return unavailableOverview('The fleet bus is not open (see the log for the open failure).', at);", rep: "  if (!db) return { available: true, error: null, at, runs: [], controls: {}, byWorkspace: {} };", tests: [T.main], expect: /overview with no bus/ },
@@ -34,7 +34,7 @@ const M = [
   { id: 'controls-for-workers', file: MAIN, find: '      if (!nodeOrchestrates(ws)) continue; // a worker row', rep: '      if (false) continue; // a worker row', tests: [T.main], expect: /nothing paused: no run, no badge/ },
   { id: 'anchored-always-true', file: MAIN, find: 'const anchored = run !== null && isCoordinatorHandle(run.coordinator, ws.id);', rep: 'const anchored = run !== null;', tests: [T.main], expect: /ANOTHER coordinator is not anchored/ },
   { id: 'controls-phase-ignores-switch', file: MAIN, find: '      const phase: PausePhase = cols && switchOn === true\n', rep: '      const phase: PausePhase = cols\n', tests: [T.main], expect: /FROZEN switch is OFF is not a pause/ },
-  { id: 'bilan-killed-uncapped', file: MAIN, find: 'killed: killed.slice(-KILLED_CAP).map(', rep: 'killed: killed.map(', tests: [T.main], expect: /toBilanLine caps/ },
+  { id: 'bilan-killed-uncapped', file: MAIN, find: 'killed: merged.slice(-KILLED_CAP).map(', rep: 'killed: merged.map(', tests: [T.main], expect: /toBilanLine reads the REAL killed_json/ },
   { id: 'bilan-pauser-flag-forced', file: MAIN, find: "exempt: a?.exempt === 'pauser' || a?.interrupt === 'exempt',", rep: 'exempt: true,', tests: [T.main], expect: /FULL CYCLE/ },
   { id: 'closed-reprise-untracked', file: MAIN, find: "  if (!rp || rp.carrier !== carrierId || rp.phase !== 'active') return null;", rep: '  return null;', tests: [T.main], expect: /FULL CYCLE/ },
   // ── pure explainers / state (shared)
@@ -56,7 +56,7 @@ const M = [
   { id: 'host-fingerprint-skip-removed', file: HOST, find: '  if (!force && key === lastKey) return null;', rep: '', tests: [T.wiring], expect: /every write re-publishes/ },
   { id: 'host-overview-marked-write', file: HOST, find: "{ channel: 'pause:overview', writes: false,", rep: "{ channel: 'pause:overview', writes: true,", tests: [T.wiring], expect: /enumerated with their read\/write marks/ },
   { id: 'host-write-unlisted', file: HOST, find: "  { channel: 'pause:release', writes: true, what: 'releaseMembers (<ws>… | all) as the workspace row' },\n", rep: '', tests: [T.wiring], expect: /enumerated with their read\/write marks/ },
-  { id: 'host-raw-sql-write', file: HOST, find: "    const r = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(paused_at),0)", rep: "    db.prepare('UPDATE runs SET paused_at = NULL').run();\n    const r = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(paused_at),0)", tests: [T.wiring], expect: /NO SECOND WRITE PATH/ },
+  { id: 'ui-raw-sql-write-after-a-select', file: MAIN, find: 'const one = (sql: string) => db.prepare(sql).get() as Record<string, unknown>;', rep: "const one = (sql: string) => db.prepare(sql).get() as Record<string, unknown>;\n  db.exec('UPDATE runs SET paused_at = NULL');", tests: [T.wiring], expect: /NO SECOND WRITE PATH/ },
   { id: 'index-register-inside-window', file: IDX, find: '\nregisterPauseUiIpc();', rep: '\n  registerPauseUiIpc();', tests: [T.wiring], expect: /MODULE scope/ },
   { id: 'index-no-watcher-stop', file: IDX, find: '  stopPauseUiWatcher();', rep: '', tests: [T.wiring], expect: /MODULE scope/ },
   { id: 'preload-channel-typo', file: PRE, find: "ipcRenderer.invoke('pause:resume', wsId)", rep: "ipcRenderer.invoke('pause:resumee', wsId)", tests: [T.wiring], expect: /preload maps every/ },

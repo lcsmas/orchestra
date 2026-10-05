@@ -61,7 +61,7 @@ export function runHeadline(run: PauseUiRun, now: number): PauseHeadline {
     const released = run.members.filter((m) => m.releasedAt !== null).length;
     return { tone: 'resumed', title: pausePhaseWord('resuming', run.mode), count, sub: `${released}/${total} libérés · ${run.blocked.length} bloqué${run.blocked.length > 1 ? 's' : ''}`, fraction };
   }
-  return { tone: 'paused', title: pausePhaseWord('paused', run.mode), count, sub: `${by}${when}`, fraction: 1 };
+  return { tone: 'paused', title: pausePhaseWord('paused', run.mode), count, sub: `${by}${when}`, fraction: total > 0 ? fraction : 1 };
 }
 
 /** What the Bilan line says about the worktree: "propre" · "3 modifiés · 1 ajouté" · "pas encore de Bilan". */
@@ -75,11 +75,31 @@ export function treeText(b: PauseUiBilanLine | null): string {
   return parts.length ? parts.join(' · ') : 'modifié';
 }
 
-/** "2 outils tués" · "aucun outil tué" · "pauseur exempté" (a CLI pause only). */
+/** "2 outils tués" · "aucun outil tué" · "trap en cours" (killed_json NULL) · "non applicable" (a remote member) · "pauseur exempté" (a CLI pause only) — plus "⚠ N encore vivant" when a tool survived the last round. */
 export function killedText(b: PauseUiBilanLine | null): string {
   if (!b) return '';
   if (b.exempt) return 'pauseur exempté';
-  return b.killedCount === 0 ? 'aucun outil tué' : `${b.killedCount} outil${b.killedCount > 1 ? 's' : ''} tué${b.killedCount > 1 ? 's' : ''}`;
+  if (b.trap === 'pending') return 'trap en cours';
+  if (b.trap === 'skipped') return 'non applicable';
+  const base = b.killedCount === 0 ? 'aucun outil tué' : `${b.killedCount} outil${b.killedCount > 1 ? 's' : ''} tué${b.killedCount > 1 ? 's' : ''}`;
+  const n = b.survivors.length;
+  return n > 0 ? `${base} · ⚠ ${n} encore vivant${n > 1 ? 's' : ''}` : base;
+}
+
+/** Everything in a Bilan row that needs a human's eyes, worst first — shown under the row, never dropped (an error, a survivor, an unconfirmed interrupt, an incomplete snapshot, unreadable files, a trap still owed). */
+export function bilanAttention(b: PauseUiBilanLine | null): Array<{ tone: 'error' | 'warn' | 'info'; text: string }> {
+  if (!b) return [];
+  const out: Array<{ tone: 'error' | 'warn' | 'info'; text: string }> = [];
+  if (b.error) out.push({ tone: 'error', text: `erreur : ${b.error}` });
+  for (const x of b.survivors) out.push({ tone: 'error', text: `encore vivant après la pause : ${x.cmd} (pid ${x.pid}) — ${x.reason}` });
+  if (b.trap === 'pending') out.push({ tone: 'warn', text: "le trap n'est pas terminé pour cet agent : certaines de ses commandes peuvent ne pas avoir été tuées" });
+  for (const x of b.refused) out.push({ tone: 'warn', text: `non tué (identité non prouvée) : ${x.cmd} — ${x.reason}` });
+  if (b.snapshotIncomplete) out.push({ tone: 'warn', text: 'snapshot incomplet (trop volumineux) : aucune ref — son worktree est la seule copie du travail non commité' });
+  for (const w of b.warnings) out.push({ tone: 'warn', text: `absent du snapshot (illisible) : ${w}` });
+  if (b.interrupt === 'unresponsive' || b.interrupt === 'failed') out.push({ tone: 'warn', text: `interruption non confirmée (${b.interrupt}) : son tour a pu continuer` });
+  if (b.trap === 'skipped' && b.skipped) out.push({ tone: 'info', text: `non applicable : ${b.skipped}` });
+  for (const n of b.notes.slice(-3)) out.push({ tone: 'info', text: n });
+  return out;
 }
 
 /** What the member was doing when the pause landed: the in-flight command / background task, else "au repos". */
@@ -157,4 +177,10 @@ export function agentsUnder(wsId: string, workspaces: ReadonlyArray<{ id: string
   const queue = [wsId];
   while (queue.length) for (const k of kids.get(queue.shift()!) ?? []) if (!seen.has(k)) { seen.add(k); queue.push(k); }
   return seen.size;
+}
+
+/** ` pause-dim` for a workspace that is HELD (pausing / paused / blocked) — not one that is released / back (it runs again, its name reads normal). */
+export function pauseDimClass(o: PauseUiOverview | null | undefined, wsId: string): string {
+  const st = pauseStateOf(o, wsId);
+  return st && (st.ui === 'pausing' || st.ui === 'paused' || st.ui === 'blocked') ? ' pause-dim' : '';
 }

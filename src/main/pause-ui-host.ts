@@ -11,7 +11,7 @@ import { store } from './store';
 import { platform } from './platform';
 import { log } from './logger';
 import { busPath, getBus } from './bus';
-import { readPauseOverview, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui';
+import { pauseOverviewFingerprint, readPauseOverview, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui';
 import type { PauseMode } from '../shared/pause-lifecycle';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
 
@@ -44,16 +44,11 @@ function treeKey(deps: PauseUiDeps): string {
     .join('\n');
 }
 
-/** What a bus write can change in the overview, read with 4 tiny aggregate queries — a message / ack / wake does not touch any of it, so the (heavier) overview is not rebuilt for it. */
 function busKey(): string {
   const db = getBus();
   if (!db) return 'no-bus';
   try {
-    const r = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(paused_at),0) AS p, COALESCE(SUM(resume_started_at),0) AS s, COALESCE(SUM(pause_escalated_at),0) AS e, COALESCE(SUM(pause_trap_at),0) AS t, COALESCE(SUM(held_at),0) AS h FROM runs').get() as Record<string, number>;
-    const m = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(pause_confirmed_at),0) AS c, COALESCE(SUM(released_at),0) AS r, COALESCE(SUM(reprise_confirmed_at),0) AS a FROM pause_members').get() as Record<string, number>;
-    const b = db.prepare('SELECT COUNT(*) AS n, COALESCE(MAX(id),0) AS m, COALESCE(SUM(killed_json IS NOT NULL),0) AS k FROM pause_records').get() as Record<string, number>;
-    const f = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(length(flags)),0) AS l FROM run_flags').get() as Record<string, number>;
-    return JSON.stringify([r, m, b, f]);
+    return pauseOverviewFingerprint(db);
   } catch (e) {
     return `err:${e instanceof Error ? e.message : String(e)}`;
   }

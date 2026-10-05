@@ -1,10 +1,10 @@
 // Fleet Pause, option A (#257) — the "Pause de flotte" section of the Bus page: one header card per pause carrier (phase, N/M, the actions) and its Bilan de pause as a compact table.
 // Pure render over `pauseOverview` (the store slice) — the page's own 2 s poll is untouched; the overview rides its own push. Nothing renders while no run holds a pause / Reprise.
 
-import { useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import type { PauseUiExplain, PauseUiMember, PauseUiRun } from '../../../shared/pause-ui';
-import { killedText, releasableIds, runHeadline, treeText } from '../../../shared/pause-ui-view';
+import { bilanAttention, killedText, releasableIds, runHeadline, treeText, wasDoingText } from '../../../shared/pause-ui-view';
 import { PauseActionButton, PauseBadge, PauseBar, PauseExplain, PauseGlyph, PauseIcon, useNowTick } from './PauseBlocks';
 import { runPause, runRelease, runReleaseAll, runResume, selectPauseOverview } from './pause-actions';
 
@@ -12,28 +12,50 @@ const VIA: Record<string, string> = { member: 'accusé', 'host-idle': 'au repos'
 
 function BilanRow({ run, m, onRelease }: { run: PauseUiRun; m: PauseUiMember; onRelease: (m: PauseUiMember) => void }) {
   const b = m.bilan;
+  const attention = bilanAttention(b);
+  const doing = b && (b.wasDoing.turnRunning || b.wasDoing.inFlight.length > 0 || b.wasDoing.bgTasks.length > 0) ? wasDoingText(b) : null;
+  const killed = b ? b.killed.slice(0, 4) : [];
+  const hasDetail = attention.length > 0 || killed.length > 0 || doing !== null;
   return (
-    <tr data-pause-bilan={m.wsId} data-pause-state={m.ui}>
-      <td className="pause-bilan-agent"><PauseGlyph wsId={m.wsId} ui={m.ui} />{m.label}</td>
-      <td className="pause-bilan-dim">{m.role === 'coordinator' ? 'coord.' : 'worker'}</td>
-      <td><PauseBadge wsId={m.wsId} ui={m.ui} /></td>
-      <td className="pause-bilan-dim">{m.confirmVia ? VIA[m.confirmVia] : '—'}</td>
-      <td className="pause-bilan-ref" title={b?.snapshotRef ?? undefined}>{b?.snapshotRef ?? '—'}</td>
-      <td>{b ? treeText(b) : '—'}</td>
-      <td className="pause-bilan-dim" title={b?.killed.map((k) => k.cmd).join('\n')}>{b ? killedText(b) : "après l'escalade"}</td>
-      <td className="pause-bilan-act">
-        {run.phase === 'resuming' && m.ui === 'blocked' ? (
-          <PauseActionButton kind="release" wsId={run.carrierRunId} tone="go" onClick={() => onRelease(m)}>Libérer</PauseActionButton>
-        ) : null}
-      </td>
-    </tr>
+    <Fragment>
+      <tr data-pause-bilan={m.wsId} data-pause-state={m.ui}>
+        <td className="pause-bilan-agent"><PauseGlyph wsId={m.wsId} ui={m.ui} />{m.label}</td>
+        <td className="pause-bilan-dim">{m.role === 'coordinator' ? 'coord.' : 'worker'}</td>
+        <td><PauseBadge wsId={m.wsId} ui={m.ui} /></td>
+        <td className="pause-bilan-dim">{m.confirmVia ? VIA[m.confirmVia] : '—'}</td>
+        <td className="pause-bilan-ref" title={b?.snapshotRef ?? undefined}>{b?.snapshotRef ?? '—'}</td>
+        <td>{b ? treeText(b) : '—'}</td>
+        <td className={b && (b.survivors.length > 0 || b.error) ? 'pause-bilan-warn' : 'pause-bilan-dim'}>{b ? killedText(b) : "après l'escalade"}</td>
+        <td className="pause-bilan-act">
+          {run.phase === 'resuming' && m.ui === 'blocked' ? (
+            <PauseActionButton kind="release" wsId={run.carrierRunId} tone="go" onClick={() => onRelease(m)}>Libérer</PauseActionButton>
+          ) : null}
+        </td>
+      </tr>
+      {hasDetail && (
+        <tr className="pause-bilan-detail" data-pause-bilan-detail={m.wsId}>
+          <td colSpan={8}>
+            {doing !== null && <div className="pause-bilan-line">faisait : <code>{doing}</code></div>}
+            {killed.map((k, i) => (
+              <div key={i} className="pause-bilan-line">tué : <code>{k.cmd}</code>{k.cwd ? <span className="pause-bilan-dim"> · {k.cwd}</span> : null}{k.outcome === 'survived' ? <span className="pause-bilan-warn"> · a survécu</span> : null}</div>
+            ))}
+            {b && b.killedCount > killed.length && <div className="pause-bilan-line pause-bilan-dim">+ {b.killedCount - killed.length} autre(s) (orchestra run status)</div>}
+            {attention.map((x, i) => (
+              <div key={i} className={`pause-bilan-line pause-bilan-${x.tone}`} data-pause-attention={x.tone}>{x.text}</div>
+            ))}
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
 
 function RunCard({ run }: { run: PauseUiRun }) {
-  const now = useNowTick(run.phase === 'pausing');
+  const now = useNowTick(run.phase !== 'active', run.phase === 'pausing' ? 1000 : 30_000); // the countdown ticks each second; "il y a N min" each 30 s
   const [explains, setExplains] = useState<PauseUiExplain[]>([]);
   const [repause, setRepause] = useState(false);
+  // an explanation belongs to the state it answered: a new phase / epoch clears it
+  useEffect(() => { setExplains([]); setRepause(false); }, [run.phase, run.pausedAt]);
   const h = runHeadline(run, now);
   const actor = run.carrierRunId;
   const blocked = releasableIds(run).length;
@@ -76,7 +98,7 @@ function RunCard({ run }: { run: PauseUiRun }) {
       </div>
       {explains.length > 0 && (
         <div className="pause-run-explains">
-          {explains.map((e, i) => <PauseExplain key={i} explain={e} onAction={(a) => { if (a.kind === 'resume') void act(runResume(a.wsId, null)); }} />)}
+          {explains.map((e, i) => <PauseExplain key={i} explain={{ ...e, actions: e.actions?.filter((a) => a.kind === 'resume') }} onAction={(a) => { if (a.kind === 'resume') void act(runResume(a.wsId, null)); }} />)}
         </div>
       )}
       <h3>Bilan de pause</h3>

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentsUnder, agoText, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseStateOf, PAUSE_STATE_WORD, releasableIds, rowNoteText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
+import { agentsUnder, agoText, bilanAttention, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseDimClass, pauseStateOf, PAUSE_STATE_WORD, releasableIds, rowNoteText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
 import type { PauseUiBilanLine, PauseUiControl, PauseUiMember, PauseUiOverview, PauseUiRun } from './pause-ui.ts';
 
 const mem = (wsId: string, role: 'coordinator' | 'worker', ui: PauseUiMember['ui'], memberRun: string | null, extra: Partial<PauseUiMember> = {}): PauseUiMember => ({
@@ -10,7 +10,7 @@ const run = (over: Partial<PauseUiRun>): PauseUiRun => ({
   carrierRunId: 'L', carrierLabel: 'fleet-lead', title: null, phase: 'paused', mode: 'hard', pausedAt: 1_000_000, pausedBy: 'L', pausedByLabel: 'fleet-lead', deadlineAt: null, escalatedAt: null, trapAt: null, resumeStartedAt: null, auto: false,
   progress: { kind: 'en-pause', done: 7, total: 7, missing: [] }, blocked: [], members: [], ...over,
 });
-const bilan = (over: Partial<PauseUiBilanLine>): PauseUiBilanLine => ({ snapshotRef: 'refs/orchestra/pause/L/w/1', branch: 'b', head: 'h', dirty: true, changed: { modified: 3, added: 1, deleted: 0 }, snapshotIncomplete: null, wasDoing: { turnRunning: true, inFlight: ['npx tsc --noEmit'], bgTasks: [], lastTask: null }, interrupt: 'interrupted', exempt: false, killed: [], killedCount: 2, notes: [], error: null, ...over });
+const bilan = (over: Partial<PauseUiBilanLine>): PauseUiBilanLine => ({ snapshotRef: 'refs/orchestra/pause/L/w/1', branch: 'b', head: 'h', dirty: true, changed: { modified: 3, added: 1, deleted: 0 }, snapshotIncomplete: null, wasDoing: { turnRunning: true, inFlight: ['npx tsc --noEmit'], bgTasks: [], lastTask: null }, interrupt: 'interrupted', exempt: false, killed: [], killedCount: 2, trap: 'done', skipped: null, survivors: [], refused: [], warnings: [], notes: [], error: null, ...over });
 
 test('words and tones: the mockups\' vocabulary, blue for held (blocked included), green for back', () => {
   assert.deepEqual(PAUSE_STATE_WORD, { pausing: 'finit…', paused: 'en pause', blocked: 'bloqué', released: 'libéré', resumed: 'repris' });
@@ -32,6 +32,7 @@ test('runHeadline: douce waiting names the deadline; dure; escalated; resuming c
   assert.equal(Math.round(douce.fraction * 100), 71);
   const dure = runHeadline(run({}), 1_000_000 + 8 * 60_000);
   assert.deepEqual([dure.tone, dure.title, dure.fraction], ['paused', 'Pause dure', 1]);
+  assert.equal(runHeadline(run({ progress: { kind: 'en-pause', done: 3, total: 7, missing: [] } }), 2_000_000).fraction.toFixed(2), '0.43', 'a hard pause whose trap is still taking members: the bar says 3/7, not full');
   assert.equal(runHeadline(run({ mode: 'soft', escalatedAt: 5 }), 2_000_000).title, 'Pause douce → dure (escaladée)');
   const rs = runHeadline(run({ phase: 'resuming', progress: { kind: 'repris', done: 3, total: 7, missing: [] }, blocked: ['x', 'y', 'z'], members: [mem('a', 'coordinator', 'resumed', 'L', { releasedAt: 1 }), mem('b', 'worker', 'blocked', 'L')] }), 2_000_000);
   assert.deepEqual([rs.tone, rs.title, rs.count], ['resumed', 'Reprise en cours', '3/7 repris']);
@@ -52,6 +53,9 @@ test('Bilan texts: tree / tools / what it was doing — never a guess for a miss
   assert.equal(killedText(bilan({ killedCount: 1 })), '1 outil tué');
   assert.equal(killedText(bilan({})), '2 outils tués');
   assert.equal(killedText(bilan({ exempt: true })), 'pauseur exempté');
+  assert.equal(killedText(bilan({ trap: 'pending', killedCount: 0 })), 'trap en cours', 'killed_json NULL is NOT "aucun outil tué"');
+  assert.equal(killedText(bilan({ trap: 'skipped', killedCount: 0 })), 'non applicable');
+  assert.equal(killedText(bilan({ survivors: [{ cmd: 'sleep 600', pid: 2, reason: 'alive' }] })), '2 outils tués · ⚠ 1 encore vivant');
   assert.equal(wasDoingText(null), '—');
   assert.equal(wasDoingText(bilan({})), 'npx tsc --noEmit');
   assert.equal(wasDoingText(bilan({ wasDoing: { turnRunning: false, inFlight: [], bgTasks: [], lastTask: null } })), 'au repos');
@@ -96,4 +100,22 @@ test('agentsUnder: the row itself + every live descendant, archived ones left ou
   assert.equal(agentsUnder('O', ws), 3);
   assert.equal(agentsUnder('a', ws), 1);
   assert.equal(agentsUnder('c1', ws), 2);
+});
+
+test('bilanAttention: an error, a survivor, an incomplete trap / snapshot, an unconfirmed interrupt are SHOWN (worst first) — a clean Bilan says nothing', () => {
+  assert.deepEqual(bilanAttention(null), []);
+  assert.deepEqual(bilanAttention(bilan({})), []);
+  const rows = bilanAttention(bilan({ error: 'kill: 2 tool process(es) still alive after the trap', survivors: [{ cmd: 'sleep 600', pid: 7, reason: 'same identity' }], refused: [{ cmd: 'x', pid: 9, reason: 'unreadable' }], trap: 'pending', snapshotIncomplete: 'timeout', warnings: ['a.bin'], interrupt: 'unresponsive', notes: ['n1', 'n2', 'n3', 'n4'] }));
+  assert.deepEqual(rows.map((r) => r.tone), ['error', 'error', 'warn', 'warn', 'warn', 'warn', 'warn', 'info', 'info', 'info']);
+  assert.match(rows[0].text, /^erreur : kill: 2 tool process/);
+  assert.match(rows[1].text, /encore vivant après la pause : sleep 600 \(pid 7\)/);
+  assert.equal(rows.filter((r) => r.tone === 'info').map((r) => r.text).join(), 'n2,n3,n4', 'the last 3 notes');
+  assert.match(bilanAttention(bilan({ trap: 'skipped', skipped: 'sandbox member' }))[0].text, /non applicable : sandbox member/);
+});
+
+test('pauseDimClass: held (pausing / paused / blocked) dims the name; released / resumed does not', () => {
+  const o = (ui: PauseUiOverview['byWorkspace'][string]['ui']): PauseUiOverview => ({ available: true, error: null, at: 0, runs: [], controls: {}, byWorkspace: { w: { wsId: 'w', carrierRunId: 'L', phase: 'resuming', ui, role: 'worker', via: null } } });
+  assert.deepEqual(['pausing', 'paused', 'blocked', 'released', 'resumed'].map((u) => pauseDimClass(o(u as never), 'w')), [' pause-dim', ' pause-dim', ' pause-dim', '', '']);
+  assert.equal(pauseDimClass(o('paused'), 'zz'), '');
+  assert.equal(pauseDimClass(null, 'w'), '');
 });

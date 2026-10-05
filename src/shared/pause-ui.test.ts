@@ -37,6 +37,9 @@ test('explainPauseOutcome: a success explains nothing; every refusal names what 
   assert.match(explainPauseOutcome('switch-off', ctx)!.why, /figé au démarrage de la vague/);
   assert.match(explainPauseOutcome('no-run', ctx)!.title, /Pas de run/);
   assert.equal(explainPauseOutcome('already-paused', ctx)!.tone, 'info');
+  assert.match(explainPauseOutcome('already-paused', ctx)!.why, /devient manuelle/, 'it does NOT claim "unchanged": a repeat takes over a host-written pause');
+  assert.match(explainPauseOutcome('write-failed', { ...ctx, error: 'SQLITE_BUSY' })!.why, /SQLITE_BUSY — rien n'est garanti écrit/);
+  assert.deepEqual(explainPauseOutcome('unknown-workspace', { ...ctx, runId: 'abc' })!.fix, ['orchestra run resume --run abc (CLI : la vague n\'a plus de ligne dans la sidebar)']);
   assert.match(explainPauseOutcome('bus-unavailable', ctx)!.why, /ni lu ni écrit/);
   assert.equal(explainPauseOutcome('???', ctx), null, 'an outcome the UI does not know is not invented');
 });

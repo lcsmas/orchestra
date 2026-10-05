@@ -6,10 +6,10 @@ import path from 'node:path';
 import * as bus from './bus.ts';
 import * as busRuns from './bus-runs.ts';
 import { getRunPause, setRunPause } from './bus-pause.ts';
-import { insertBilan } from './bus-pause-records.ts';
+import { appendBilanNote, insertBilan, readPauseOrigin } from './bus-pause-records.ts';
 import { confirmMember, enrollMember } from './pause-douce.ts';
 import { confirmReprise, readCarrierColumns, setLiveTreeSource } from './pause-reprise.ts';
-import { readPauseOverview, toBilanLine, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui.ts';
+import { pauseOverviewFingerprint, readPauseOverview, toBilanLine, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import type { WaveNode } from './wave-run-id.ts';
 
@@ -54,6 +54,8 @@ const deps: PauseUiDeps = {
 };
 setLiveTreeSource(() => ({ get: (id) => byId.get(id), ids: () => NODES.filter((w) => !w.archived).map((w) => w.id) }));
 
+/** What the host trap really stores in `pause_records.killed_json` (src/main/pause-kill.ts `KillReport`), NOT a bare array. */
+const killReport = (killed: unknown[], extra: Record<string, unknown> = {}) => ({ cliPid: 100, cli: { pid: 100, startTicks: 1 }, killed, refused: [], spared: [], survivors: [], rounds: 1, ...extra });
 const memberRun = (ws: string): string => (['L', 'l1'].includes(ws) ? 'L' : ['S', 's1'].includes(ws) ? 'S' : 'O');
 /** What the host does after a hard pause of L: enrol every member, trap each (Bilan row + confirm via 'trap'), stamp the trap. */
 function trap(db: bus.BusDb, carrier = 'L'): number {
@@ -67,7 +69,7 @@ function trap(db: bus.BusDb, carrier = 'L'): number {
       activity: { surface: 'sdk', memberRun: memberRun(ws), turnRunning: ws === 'o1', branch: `br-${ws}`, head: 'abc1234', changed: { modified: ws === 'o1' ? 3 : 0, added: 1, deleted: 0 }, ...(ws === 'o1' ? { interrupt: 'interrupted' as const, inFlightTools: [{ tool: 'Bash', toolUseId: 't', sinceMs: 9, input: 'npx tsc --noEmit' }] } : {}) },
       snapshotRef: `refs/orchestra/pause/${carrier}/${ws}/1`,
       dirty: ws === 'o1',
-      killed: ws === 'o1' ? [{ pid: 7, cmd: 'tsc --noEmit', cwd: '/w/o1', signal: 'SIGTERM', outcome: 'exited' }] : [],
+      killed: killReport(ws === 'o1' ? [{ pid: 7, cmd: 'tsc --noEmit', cwd: '/w/o1', signal: 'SIGTERM', outcome: 'exited' }] : []),
       error: null,
     });
     confirmMember(db, carrier, pausedAt, { wsId: ws, memberRun: memberRun(ws) }, 'trap', pausedAt + 5);
@@ -242,6 +244,8 @@ test('FULL CYCLE: pause → Bilan → progress "N/M en pause" → Reprise → "N
   assert.deepEqual(o1.bilan!.changed, { modified: 3, added: 1, deleted: 0 });
   assert.deepEqual(o1.bilan!.wasDoing.inFlight, ['npx tsc --noEmit']);
   assert.deepEqual(o1.bilan!.killed, [{ cmd: 'tsc --noEmit', cwd: '/w/o1', outcome: 'exited' }]);
+  assert.equal(o1.bilan!.killedCount, 1);
+  assert.equal(o1.bilan!.trap, 'done');
   assert.equal(o1.bilan!.exempt, false, 'a UI pause has no CLI chain: nobody is the pauser');
   assert.equal(run.members.find((m) => m.wsId === 'O')!.role, 'coordinator');
   assert.equal(o.byWorkspace.o1.ui, 'paused');
@@ -358,17 +362,106 @@ test("a stale pause column on a switch-OFF CHILD run under a live pause is not a
   db.close();
 });
 
-test('toBilanLine caps the killed list (newest 12, total kept) and the notes, and never throws on a sparse row', () => {
-  const killed = Array.from({ length: 30 }, (_, i) => ({ pid: i, cmd: `c${i}`, cwd: null, signal: 'SIGTERM', outcome: 'exited' }));
-  const line = toBilanLine({ id: 1, runId: 'L', wsId: 'x', pausedAt: 1, activity: { surface: 'sdk', notes: Array.from({ length: 20 }, (_, i) => `n${i}`) }, snapshotRef: null, dirty: null, killed, error: 'boom', createdAt: 1 });
-  assert.equal(line.killed.length, 12);
-  assert.equal(line.killed[11].cmd, 'c29');
-  assert.equal(line.killedCount, 30);
+test('toBilanLine reads the REAL killed_json (a KillReport: killed + survivors + refused) ∪ earlier attempts ∪ the observer, like the Consigne; null = trap pending; {skipped} = remote', () => {
+  const k = (i: number) => ({ pid: i, cmd: `c${i}`, cwd: `/w${i}`, signal: 'SIGTERM', outcome: i === 2 ? 'survived' : 'exited' });
+  const report = killReport([k(1), k(2), k(3)], { survivors: [{ pid: 2, comm: 'sleep', cmd: 'sleep 600', reason: 'same identity after SIGKILL' }], refused: [{ pid: 9, comm: 'x', cmd: 'x', reason: 'unreadable' }] });
+  const line = toBilanLine({ id: 1, runId: 'L', wsId: 'x', pausedAt: 1, activity: { surface: 'sdk', earlierKilled: [{ pid: 50, cmd: 'earlier', cwd: null, signal: 'SIGTERM', outcome: 'exited' }], observerKilled: [{ pid: 60, cmd: 'observer', cwd: '/o', signal: 'SIGTERM', outcome: 'exited' }, { pid: 1, cmd: 'c1', cwd: '/w1', signal: 'SIGTERM', outcome: 'exited' }], snapshotWarnings: ['unreadable.bin'], notes: Array.from({ length: 20 }, (_, i) => `n${i}`) }, snapshotRef: 'refs/orchestra/pause/L/x/1', dirty: true, killed: report, error: 'kill: 1 still alive', createdAt: 1 });
+  assert.deepEqual(line.killed.map((x) => x.cmd), ['c1', 'c2', 'c3', 'earlier', 'observer'], 'the Consigne\'s merge: trap kills ∪ earlier ∪ observer, de-duplicated (c1 appears twice)');
+  assert.equal(line.killedCount, 5);
+  assert.equal(line.killed.find((x) => x.cmd === 'c2')!.outcome, 'survived', 'the trap\'s own per-process outcome is kept');
+  assert.equal(line.trap, 'done');
+  assert.deepEqual(line.survivors, [{ cmd: 'sleep 600', pid: 2, reason: 'same identity after SIGKILL' }]);
+  assert.deepEqual(line.refused, [{ cmd: 'x', pid: 9, reason: 'unreadable' }]);
+  assert.deepEqual(line.warnings, ['unreadable.bin']);
   assert.equal(line.notes.length, 8);
-  assert.equal(line.error, 'boom');
-  const sparse = toBilanLine({ id: 2, runId: 'L', wsId: 'y', pausedAt: 1, activity: null, snapshotRef: null, dirty: null, killed: null, error: null, createdAt: 1 });
-  assert.deepEqual(sparse.killed, []);
-  assert.equal(sparse.wasDoing.turnRunning, false);
+  assert.equal(line.error, 'kill: 1 still alive');
+  const many = toBilanLine({ id: 1, runId: 'L', wsId: 'x', pausedAt: 1, activity: null, snapshotRef: null, dirty: null, killed: killReport(Array.from({ length: 30 }, (_, i) => k(i + 10))), error: null, createdAt: 1 });
+  assert.equal(many.killed.length, 12, 'newest 12');
+  assert.equal(many.killed[11].cmd, 'c39');
+  assert.equal(many.killedCount, 30);
+  const pending = toBilanLine({ id: 2, runId: 'L', wsId: 'y', pausedAt: 1, activity: null, snapshotRef: null, dirty: null, killed: null, error: null, createdAt: 1 });
+  assert.deepEqual([pending.trap, pending.killedCount, pending.skipped], ['pending', 0, null], 'NULL killed_json = the trap has not finished for this member — never "no tool killed"');
+  const remote = toBilanLine({ id: 3, runId: 'L', wsId: 'z', pausedAt: 1, activity: { surface: 'remote' }, snapshotRef: null, dirty: null, killed: { skipped: 'sandbox member: not applicable' }, error: null, createdAt: 1 });
+  assert.deepEqual([remote.trap, remote.skipped, remote.killedCount], ['skipped', 'sandbox member: not applicable', 0]);
+  assert.equal(toBilanLine({ id: 4, runId: 'L', wsId: 'w', pausedAt: 1, activity: { surface: 'sdk', interrupt: 'exempt' }, snapshotRef: null, dirty: null, killed: killReport([]), error: null, createdAt: 1 }).exempt, true);
+});
+
+test('a UI pause records an EMPTY origin (the shipped writer): the trap does not wait for a CLI chain, and nobody is spared', () => {
+  const db = freshDb();
+  tree(db);
+  const r = uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  assert.equal(r.outcome, 'paused');
+  assert.deepEqual(readPauseOrigin(db, 'L', getRunPause(db, 'L')!.pausedAt), [], 'an empty chain is "recorded, no pauser" (readPauseOrigin returns [] not null)');
+  assert.equal(uiPause(db, deps, { wsId: 'L', mode: 'hard' }).outcome, 'already-paused', 'a repeat does not write a second origin');
+  assert.equal(readPauseOverview(db, deps).runs[0].members.length, 0, 'and the origin row is never listed as a member');
+  db.close();
+});
+
+test('a writer that THROWS is a typed write-failed with the reason — never a rejected invoke, never a silent panel', () => {
+  const db = freshDb();
+  tree(db);
+  const bad = new Proxy(db, { get: (t, k) => (k === 'prepare' ? () => { throw new Error('SQLITE_BUSY: database is locked'); } : (t as never)[k]) }) as unknown as bus.BusDb;
+  const p = uiPause(bad, deps, { wsId: 'L', mode: 'soft' });
+  assert.equal(p.outcome, 'write-failed');
+  assert.match(p.explain!.why, /SQLITE_BUSY: database is locked/);
+  assert.match(p.explain!.why, /rien n'est garanti écrit/);
+  const rs = uiResume(bad, deps, { wsId: 'L' });
+  assert.equal(rs.outcome, 'write-failed');
+  const rl = uiRelease(bad, deps, { wsId: 'L', targets: ['O'] });
+  assert.equal(rl.result, null);
+  assert.equal(rl.explain[0].title, 'Écriture refusée par le bus');
+  db.close();
+});
+
+test('uiPause over a RESUMING run = back to PAUSED in a NEW epoch owned by this row (the UI "Re-pause"), nothing stays released', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  const first = trap(db);
+  uiResume(db, deps, { wsId: 'L' });
+  uiRelease(db, deps, { wsId: 'O', targets: ['o1'] });
+  const again = uiPause(db, deps, { wsId: 'L', mode: 'soft' });
+  assert.equal(again.outcome, 'paused');
+  const p = getRunPause(db, 'L')!;
+  assert.ok(p.pausedAt > first, 'a NEW epoch');
+  assert.equal(p.mode, 'soft');
+  assert.equal(readCarrierColumns(db, 'L')!.resumeStartedAt, null);
+  const run = again.overview.runs.find((r) => r.carrierRunId === 'L')!;
+  assert.equal(run.phase, 'pausing');
+  assert.equal(run.progress.done, 0, 'the new epoch starts with an empty roster — o1 is held again');
+  assert.equal(again.overview.byWorkspace.o1.ui, 'pausing');
+  db.close();
+});
+
+test('pauseOverviewFingerprint: EVERY column the overview reads moves it; a message / ack does not', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  const pausedAt = getRunPause(db, 'L')!.pausedAt;
+  const moved = (label: string, change: () => void): void => {
+    const before = pauseOverviewFingerprint(db);
+    change();
+    assert.notEqual(pauseOverviewFingerprint(db), before, `${label} must move the fingerprint`);
+  };
+  const still = (label: string, change: () => void): void => {
+    const before = pauseOverviewFingerprint(db);
+    change();
+    assert.equal(pauseOverviewFingerprint(db), before, `${label} must NOT move it`);
+  };
+  trap(db);
+  still('a bus message', () => bus.send(db, { runId: 'L', sender: 'L', recipient: 'O', kind: 'status', body: 'hi' }));
+  moved('a Bilan note appended after the trap', () => appendBilanNote(db, 'L', 'o1', pausedAt, 'late note'));
+  moved('pause_auto cleared (a human takes over a host pause)', () => { db.prepare("UPDATE runs SET pause_auto = '{}' WHERE id = 'L'").run(); void 0; });
+  moved('pause_auto set', () => db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ?').run('L'));
+  moved('a roster role flip', () => db.prepare("UPDATE pause_members SET role = 'worker' WHERE ws_id = 'O'").run());
+  moved('a member_run filled', () => db.prepare("UPDATE pause_members SET member_run = 'LL' WHERE ws_id = 'l1'").run());
+  moved('a Bilan error set', () => db.prepare("UPDATE pause_records SET error = 'boom' WHERE ws_id = 'o2'").run());
+  moved('a kill recorded', () => db.prepare("UPDATE pause_records SET killed_json = ? WHERE ws_id = 'o2'").run(JSON.stringify(killReport([{ pid: 1, cmd: 'x', cwd: null, signal: 'SIGTERM', outcome: 'exited' }]))));
+  moved('a coordinator swap on a run (same length id)', () => db.prepare("UPDATE runs SET coordinator = 'Q' WHERE id = 'S'").run());
+  moved('the Reprise starts', () => uiResume(db, deps, { wsId: 'L' }));
+  moved('a release', () => uiRelease(db, deps, { wsId: 'O', targets: ['o1'] }));
+  moved('a frozen flag changed', () => db.prepare("UPDATE run_flags SET flags = flags || ' ' WHERE run_id = 'Z'").run());
+  db.close();
 });
 
 test('a pause on a run whose FROZEN switch is OFF is not a pause for the UI (a stale column never paints a badge)', () => {

@@ -7,7 +7,14 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const [H, cmd, ...rest] = process.argv.slice(2);
 const TREE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-if (!H || /\/\.orchestra\/bus\.sqlite$/.test(H) || path.resolve(H) === path.join(process.env.HOME ?? '', '.orchestra')) { console.error('seed-bus: refusing the live orchestra home', H); process.exit(97); }
+// REAL home (os.userInfo, not $HOME — the rig sets HOME to a scratch dir): never the live orchestra home, never inside a live ~/.claude*, and a rig home must sit under a rig base (an `arm-…` dir) or the agent scratch.
+import os from 'node:os';
+const REAL_HOME = os.userInfo().homedir;
+const resolved = H ? path.resolve(H) : '';
+const live = [path.join(REAL_HOME, '.orchestra'), ...fs.readdirSync(REAL_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(REAL_HOME, n))];
+const underLive = live.some((l) => resolved === l || resolved.startsWith(l + path.sep)) && !resolved.startsWith(path.join(REAL_HOME, '.orchestra', 'agent-tmp') + path.sep);
+const looksLikeRig = /(^|\/)(arm-[^/]+\/oh|h-[^/]+)$|\/agent-tmp\//.test(resolved) || /\/e2e-pause-ui\//.test(resolved);
+if (!H || underLive || !looksLikeRig || /bus\.sqlite$/.test(H)) { console.error('seed-bus: refusing a non-rig home', H); process.exit(97); }
 if (!fs.existsSync(path.join(H, 'userData/orchestra/store.json'))) { console.error('seed-bus: not a rig home (no store.json)', H); process.exit(97); }
 const bus = await import(`${TREE}/src/main/bus.ts`);
 const runs = await import(`${TREE}/src/main/bus-runs.ts`);

@@ -48,7 +48,7 @@ import { dialog } from './Dialog';
 // #257 — fleet Pause UI (option A): the row parts + the floating panel; each renders nothing while the fleet is not under a pause.
 import { PauseAwareGlyph, PauseRowActions, PauseRowBadge, PauseRowBar, PauseRowNote } from './pause/PauseRow';
 import { PauseMenuHost } from './pause/PauseMenu';
-import { pauseStateOf } from '../../shared/pause-ui-view';
+import { pauseDimClass } from '../../shared/pause-ui-view';
 
 interface Props {
   onNewFromRepo: () => void;
@@ -1555,7 +1555,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         return (
           <div
             key={w.id}
-            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseStateOf(pauseOverview, w.id) ? ' pause-dim' : ''}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
             // Actions float OUTSIDE the sidebar, anchored to this row — see
@@ -2254,7 +2254,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseStateOf(pauseOverview, w.id) ? ' pause-dim' : ''}${wsDnd}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
                   // Actions float outside the sidebar, anchored to this row.

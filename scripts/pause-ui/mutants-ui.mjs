@@ -28,7 +28,7 @@ export const MUTANTS = [
   { id: 'bus-release-on-every-row', file: BUS, find: "run.phase === 'resuming' && m.ui === 'blocked' ? (", rep: "run.phase === 'resuming' ? (", tests: [SMOKE], expect: /Reprise: "N\/M repris"/ },
   { id: 'bus-closed-reprise-has-actions', file: BUS, find: "{run.phase === 'paused' && <PauseActionButton kind=\"resume\"", rep: "{(run.phase === 'paused' || run.phase === 'active') && <PauseActionButton kind=\"resume\"", tests: [SMOKE], expect: /closed Reprise still collecting/ },
   { id: 'bus-missing-hidden', file: BUS, find: "{run.progress.missing.length > 0 && (run.phase === 'pausing' || run.phase === 'paused') && ", rep: '{false && ', tests: [SMOKE], expect: /douce waiting/ },
-  { id: 'bus-bilan-without-escalade-note', file: BUS, find: "b ? killedText(b) : \"après l'escalade\"", rep: "b ? killedText(b) : ''", tests: [SMOKE], expect: /douce waiting/ },
+  { id: 'bus-bilan-without-escalade-note', file: BUS, find: "{b ? killedText(b) : \"après l'escalade\"}", rep: "{b ? killedText(b) : ''}", tests: [SMOKE], expect: /douce waiting/ },
   // ── building blocks
   { id: 'blk-blocked-not-dim', file: BLK, find: "${ui === 'blocked' ? ' is-blocked' : ''}", rep: '', tests: [SMOKE], expect: /blocked badge carries is-blocked/ },
   { id: 'blk-bar-unclamped', file: BLK, find: 'Math.round(Math.max(0, Math.min(1, fraction)) * 100)', rep: 'Math.round(fraction * 100)', tests: [SMOKE], expect: /progress bar clamps/ },
@@ -38,10 +38,24 @@ export const MUTANTS = [
   { id: 'blk-actions-as-bullets', file: BLK, find: 'explain.actions && explain.actions.length > 0 && onAction ? (', rep: 'false ? (', tests: [SMOKE], expect: /remedies the UI can DO/ },
   { id: 'blk-action-wrong-row', file: BLK, find: 'data-pause-fix={a.kind} data-pause-for={a.wsId}', rep: 'data-pause-fix={a.kind} data-pause-for="x"', tests: [SMOKE], expect: /remedies the UI can DO/ },
   { id: 'bus-manquent-in-reprise', file: BUS, find: "(run.phase === 'pausing' || run.phase === 'paused') && ", rep: "run.phase !== 'active' && ", tests: [SMOKE], expect: /Reprise: "N\/M repris"/ },
+  { id: 'act-double-click-sends-twice', file: ACT, find: '  if (inflight.has(key)) return fallback;', rep: '', tests: [SMOKE], expect: /double-click sends ONE write/ },
+  { id: 'act-ipc-failure-unhandled', file: ACT, find: "return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);\n    }\n  });\n}\n\nexport async function runResume", rep: "throw e;\n    }\n  });\n}\n\nexport async function runResume", tests: [SMOKE], expect: /a rejected invoke is EXPLAINED/ },
+  { id: 'act-resume-ipc-failure-unhandled', file: ACT, find: "return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);\n    }\n  });\n}\n\n/** \"Libérer", rep: "throw e;\n    }\n  });\n}\n\n/** \"Libérer", tests: [SMOKE], expect: /a rejected invoke is EXPLAINED/ },
+  { id: 'bus-detail-rows-dropped', file: BUS, find: '{hasDetail && (', rep: '{false && (', tests: [SMOKE], expect: /a member with a problem SHOWS it/ },
+  { id: 'bus-killed-not-listed', file: BUS, find: 'const killed = b ? b.killed.slice(0, 4) : [];', rep: 'const killed: never[] = [];', tests: [SMOKE], expect: /what it was doing and what was killed/ },
+  { id: 'menu-escape-bubbles', file: 'src/renderer/components/pause/PauseMenu.tsx', find: 'e.stopImmediatePropagation(); ', rep: '', tests: [WIRING], expect: /Escape closes the PANEL only/ },
+  { id: 'menu-escape-not-capture', file: 'src/renderer/components/pause/PauseMenu.tsx', find: "window.addEventListener('keydown', onKey, true);", rep: "window.addEventListener('keydown', onKey);", tests: [WIRING], expect: /Escape closes the PANEL only/ },
   // ── pure view helpers
   { id: 'view-releasable-includes-released', file: VIEW, find: "return run.members.filter((m) => m.ui === 'blocked').map((m) => m.wsId);", rep: "return run.members.filter((m) => m.ui !== 'resumed').map((m) => m.wsId);", tests: [VT], expect: /groupByMemberRun keeps/ },
   { id: 'view-countdown-negative', file: VIEW, find: 'const s = Math.max(0, Math.round((deadlineAt - now) / 1000));', rep: 'const s = Math.round((deadlineAt - now) / 1000);', tests: [VT], expect: /countdown \/ ago/ },
   { id: 'view-agents-counts-archived', file: VIEW, find: 'if (!w.archived && w.parentId)', rep: 'if (w.parentId)', tests: [VT], expect: /agentsUnder/ },
+  { id: 'view-killed-pending-reads-none', file: VIEW, find: "  if (b.trap === 'pending') return 'trap en cours';\n", rep: '', tests: [VT], expect: /Bilan texts/ },
+  { id: 'view-killed-survivors-hidden', file: VIEW, find: "  return n > 0 ? `${base} · ⚠ ${n} encore vivant${n > 1 ? 's' : ''}` : base;", rep: '  return base;', tests: [VT], expect: /Bilan texts/ },
+  { id: 'view-attention-error-dropped', file: VIEW, find: "  if (b.error) out.push({ tone: 'error', text: `erreur : ${b.error}` });", rep: '', tests: [VT], expect: /bilanAttention/ },
+  { id: 'view-attention-survivor-dropped', file: VIEW, find: "  for (const x of b.survivors) out.push(", rep: "  for (const x of []) out.push(", tests: [VT], expect: /bilanAttention/ },
+  { id: 'view-attention-interrupt-dropped', file: VIEW, find: "  if (b.interrupt === 'unresponsive' || b.interrupt === 'failed') out.push(", rep: "  if (false) out.push(", tests: [VT], expect: /bilanAttention/ },
+  { id: 'view-dim-for-released', file: VIEW, find: "return st && (st.ui === 'pausing' || st.ui === 'paused' || st.ui === 'blocked') ? ' pause-dim' : '';", rep: "return st ? ' pause-dim' : '';", tests: [VT], expect: /pauseDimClass/ },
+  { id: 'view-paused-bar-always-full', file: VIEW, find: 'sub: `${by}${when}`, fraction: total > 0 ? fraction : 1 };', rep: 'sub: `${by}${when}`, fraction: 1 };', tests: [VT], expect: /runHeadline/ },
   { id: 'view-blocked-green', file: VIEW, find: "return ui === 'pausing' ? 'pausing' : ui === 'paused' || ui === 'blocked' ? 'paused' : 'resumed';", rep: "return ui === 'pausing' ? 'pausing' : ui === 'paused' ? 'paused' : 'resumed';", tests: [VT], expect: /words and tones/ },
   { id: 'view-auto-owner-hidden', file: VIEW, find: "const by = run.auto ? 'posée par l\\'hôte (limite d\\'usage)'", rep: "const by = false ? 'posée par l\\'hôte (limite d\\'usage)'", tests: [VT], expect: /runHeadline/ },
   { id: 'view-douce-no-deadline', file: VIEW, find: "const left = run.deadlineAt !== null ? ` · dure dans ${countdown(run.deadlineAt, now)}` : '';", rep: "const left = '';", tests: [VT], expect: /rowNoteText/ },
@@ -52,6 +66,22 @@ export const MUTANTS = [
   { id: 'app-no-pause-slot', file: APP, find: '<BusPane pauseSlot={<BusPauseSection />} />', rep: '<BusPane />', tests: [WIRING], expect: /BUS PAGE/ },
   { id: 'store-push-merges', file: STORE, find: 'useStore.setState({ pauseOverview: overview });', rep: 'useStore.setState((s) => ({ pauseOverview: s.pauseOverview ?? overview }));', tests: [WIRING], expect: /RENDERER: the overview slice/ },
 ];
+
+// the main-side clauses added by the pre-review (pause-ui.ts)
+MUTANTS.push(
+  { id: 'bilan-killed-read-as-array', file: 'src/main/pause-ui.ts', find: '  const merged = killedCommands({ snapshotRef: b.snapshotRef, dirty: b.dirty, killed: b.killed, error: b.error, activity: a });', rep: '  const merged = Array.isArray(b.killed) ? (b.killed as Array<{ cmd: string; cwd: string | null }>) : [];', tests: ['src/main/pause-ui.test.ts'], expect: /toBilanLine reads the REAL killed_json/ },
+  { id: 'bilan-pending-reads-done', file: 'src/main/pause-ui.ts', find: "b.killed === null || b.killed === undefined ? 'pending' : report?.skipped ? 'skipped' : 'done'", rep: "report?.skipped ? 'skipped' : 'done'", tests: ['src/main/pause-ui.test.ts'], expect: /toBilanLine reads the REAL killed_json/ },
+  { id: 'bilan-survivors-dropped', file: 'src/main/pause-ui.ts', find: 'survivors: (report?.survivors ?? []).slice(0, 6).map(', rep: 'survivors: ([] as Array<{ cmd?: string; pid?: number; reason?: string }>).slice(0, 6).map(', tests: ['src/main/pause-ui.test.ts'], expect: /toBilanLine reads the REAL killed_json/ },
+  { id: 'origin-not-recorded', file: 'src/main/pause-ui.ts', find: '      if (made && made.pausedAt >= at) recordPauseOrigin(db, t.runId, made.pausedAt, []);', rep: '      void made;', tests: ['src/main/pause-ui.test.ts'], expect: /records an EMPTY origin/ },
+  { id: 'pause-writer-throw-escapes', file: 'src/main/pause-ui.ts', find: '    return failed(db, deps, t.runId, actor, e);\n  }\n  return { outcome, runId: t.runId, actor, explain: explainPauseOutcome(', rep: '    throw e;\n  }\n  return { outcome, runId: t.runId, actor, explain: explainPauseOutcome(', tests: ['src/main/pause-ui.test.ts'], expect: /writer that THROWS/ },
+  { id: 'release-writer-throw-escapes', file: 'src/main/pause-ui.ts', find: '    const f = failed(db, deps, t.runId, actor, e);\n    return { result: null,', rep: '    throw e;\n    const f = failed(db, deps, t.runId, actor, e);\n    return { result: null,', tests: ['src/main/pause-ui.test.ts'], expect: /writer that THROWS/ },
+  { id: 'failed-ctx-throws-again', file: 'src/main/pause-ui.ts', find: '  } catch {\n    ctx = ctxStub(deps, actor);\n  }', rep: '  } catch (e2) {\n    throw e2;\n  }', tests: ['src/main/pause-ui.test.ts'], expect: /writer that THROWS/ },
+  { id: 'fingerprint-misses-pause-auto', file: 'src/main/pause-ui.ts', find: "COALESCE(SUM(pause_auto IS NOT NULL),0) AS a, COALESCE(SUM(pause_mode = 'soft'),0) AS m,", rep: "COALESCE(SUM(pause_mode = 'soft'),0) AS m,", tests: ['src/main/pause-ui.test.ts'], expect: /pauseOverviewFingerprint/ },
+  { id: 'fingerprint-misses-bilan-notes', file: 'src/main/pause-ui.ts', find: "COALESCE(SUM(length(coalesce(activity,''))),0) AS a, ", rep: '', tests: ['src/main/pause-ui.test.ts'], expect: /pauseOverviewFingerprint/ },
+  { id: 'fingerprint-misses-roster-role', file: 'src/main/pause-ui.ts', find: "COALESCE(SUM(role = 'coordinator'),0) AS k,\n", rep: '\n', tests: ['src/main/pause-ui.test.ts'], expect: /pauseOverviewFingerprint/ },
+  { id: 'fingerprint-misses-coordinator', file: 'src/main/pause-ui.ts', find: "COALESCE(group_concat(id || ':' || coordinator, ','),'') AS who", rep: "COALESCE(group_concat(id, ','),'') AS who", tests: ['src/main/pause-ui.test.ts'], expect: /pauseOverviewFingerprint/ },
+  { id: 'fingerprint-thrashes-on-messages', file: 'src/main/pause-ui.ts', find: "const flags = one('SELECT COUNT(*) AS n, COALESCE(SUM(length(flags)),0) AS l FROM run_flags');", rep: "const flags = one('SELECT COUNT(*) AS n, COALESCE(SUM(length(flags)),0) AS l, (SELECT COUNT(*) FROM messages) AS msgs FROM run_flags');", tests: ['src/main/pause-ui.test.ts'], expect: /pauseOverviewFingerprint/ },
+);
 
 // the explainers' remedy buttons (shared, pure)
 MUTANTS.push(

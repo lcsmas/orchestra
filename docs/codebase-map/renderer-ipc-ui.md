@@ -87,7 +87,7 @@ channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 `agent:tool`, `agent:context`, `repo:syncState`, `usage:update`,
 `accounts:usageUpdate`, `accounts:workspaceAccounts`, `repos:update`,
 `sandbox:control` (cross-machine ownership broadcasts), and `human-gates:update`
-(#161 — the open human-directed decision gates, rebuilt from the bus DB).
+(#161 — the open human-directed decision gates, rebuilt from the bus DB), and `pause:update` (#257 — the whole fleet-Pause overview, rebuilt from the bus; the `pause:*` write channels are registered by `src/main/pause-ui-host.ts`, NOT through the read-only bus-pane registrar).
 
 ## Renderer state — store.ts (Zustand, ~479 lines)
 Single source of truth; **atomic selectors** so high-frequency events
@@ -536,6 +536,8 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `src/main/human-gates.ts`; see `docs/codebase-map/bus.md` §"Human-directed
   gates". The gate LIFECYCLE (resolved_by=human, re-wake) is the #119/#158
   agent-gate machinery, unchanged.
+
+- **Fleet Pause UI — option A (issue #257, wave F ledger #281; D-pick pending, A built as the reversible default).** The human pauses / resumes / releases a fleet from the app; data layer + wire shapes in `docs/codebase-map/pause-trap.md` §UI. Renderer: store slice `pauseOverview` (`store.ts`, filled at load and replaced wholesale on the `pause:update` push; actions `pausePause|pauseResume|pauseRelease` take the reply's overview). **The building blocks are separate from the layout** so another option swaps the composition only: `src/renderer/components/pause/PauseBlocks.tsx` (badge, glyph, bar, refusal block `PauseExplain` with remedy buttons, action button, `useNowTick` — a clock mounted ONLY while a douce waits), `pause-actions.ts` (click handlers over the store + the ONE floating-panel store; "Libérer les N bloqués" sends EXPLICIT ids), `src/shared/pause-ui-view.ts` (pure words/tones/countdown/headline/Bilan texts/selectors) and `src/renderer/pause-ui.css` (own sheet). **Option A layout**: `PauseRow.tsx` (status-glyph swap, badge on the name line, the orchestrator's note line + thin bar, dim, the hover buttons ⏸ / ■ / ▶ — each renders nothing while the fleet is not under a pause), `PauseMenu.tsx` (`PauseMenuHost`, portalled beside the sidebar: the douce / dure choice or a refusal explained; Esc / outside click close), `BusPauseSection.tsx` (header card + Bilan table + Libérer per member on the Bus page, injected by `App.tsx` as `BusPane`'s `pauseSlot` so `BusPane.tsx` stays store-free for the render smokes). `Sidebar.tsx`: BOTH row render paths (pinned spawn trees, repo sections) carry the same five parts (`pause-ui-wiring.test.ts` pins the pairing) + one `<PauseMenuHost />`. Every element has a `data-pause-*` hook (the G3 drive never reads text to find things). Gates: `node scripts/pause-ui-render-smoke.mjs` (SSR over a seeded store, 33 checks; in `test:render`), `node scripts/pause-ui/mutate-unit.mjs` (86 in-place clause mutants incl. the components), `scripts/pause-ui/e2e-pause-ui.sh <app-dir|--packaged bin> --arms ipc,ui` (built app, contained sway, trusted hover/click, decoded screenshots, `--expect-red` on a build without the feature).
 
 ## chime.ts (~517 lines) & debug.ts
 **chime.ts** synthesizes ~20 notification sounds with the Web Audio API (no

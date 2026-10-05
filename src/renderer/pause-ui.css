@@ -76,3 +76,12 @@
 .pause-bilan-act { text-align: right; white-space: nowrap; }
 
 .pause-explain-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+.pause-bilan-detail td { border-top: none; padding: 0 8px 6px 22px; }
+.pause-bilan-line { font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+.pause-bilan-line code { font-family: var(--font-mono); font-size: 10.5px; color: var(--text); }
+.pause-bilan-error, .pause-bilan-warn.pause-bilan-line, td.pause-bilan-warn { color: var(--red); }
+.pause-bilan-warn { color: var(--yellow); }
+.pause-bilan-line.pause-bilan-warn { color: var(--yellow); }
+.pause-bilan-line.pause-bilan-error { color: var(--red); }
+.pause-bilan-line.pause-bilan-info { color: var(--text-dim); }

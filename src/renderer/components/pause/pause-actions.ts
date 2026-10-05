@@ -34,27 +34,68 @@ function report(wsId: string, anchor: PauseAnchor | null, explains: PauseUiExpla
   return explains;
 }
 
+/** One write per (row, kind) at a time: a double-click must not send two writes (the second answers `already-paused` and re-opens an info panel over the success). */
+const inflight = new Set<string>();
+async function once<T>(key: string, fallback: T, fn: () => Promise<T>): Promise<T> {
+  if (inflight.has(key)) return fallback;
+  inflight.add(key);
+  try {
+    return await fn();
+  } finally {
+    inflight.delete(key);
+  }
+}
+
+/** A rejected invoke (the main process gone, a handler that threw) is still EXPLAINED — never an unhandled rejection with the panel left open and silent. */
+function ipcFailure(e: unknown): PauseUiExplain {
+  return { tone: 'error', title: "La commande n'a pas atteint l'hôte", why: `${e instanceof Error ? e.message : String(e)} — rien n'est garanti écrit : relisez l'état (page Bus) avant de réessayer.`, fix: [] };
+}
+
 export async function runPause(wsId: string, mode: PauseMode, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
-  const res = await useStore.getState().pausePause(wsId, mode);
-  return report(wsId, anchor, res.explain ? [res.explain] : [], [res.outcome]);
+  return once(`pause:${wsId}`, [], async () => {
+    try {
+      const res = await useStore.getState().pausePause(wsId, mode);
+      return report(wsId, anchor, res.explain ? [res.explain] : [], [res.outcome]);
+    } catch (e) {
+      return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);
+    }
+  });
 }
 
 export async function runResume(wsId: string, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
-  const res = await useStore.getState().pauseResume(wsId);
-  return report(wsId, anchor, res.explain ? [res.explain] : [], [res.outcome]);
+  return once(`resume:${wsId}`, [], async () => {
+    try {
+      const res = await useStore.getState().pauseResume(wsId);
+      return report(wsId, anchor, res.explain ? [res.explain] : [], [res.outcome]);
+    } catch (e) {
+      return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);
+    }
+  });
 }
 
 /** "Libérer les N bloqués" = EXPLICIT ids (`releasableIds`): `'all'` is the acting row's own run only and would leave a nested wave's workers `below`. */
 export async function runReleaseAll(wsId: string, run: PauseUiRun, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
   const ids = releasableIds(run);
   if (ids.length === 0) return report(wsId, anchor, [], []);
-  const res = await useStore.getState().pauseRelease(wsId, ids, run.carrierRunId);
-  return report(wsId, anchor, res.explain, res.explain.map((e) => e.tone));
+  return once(`release:${run.carrierRunId}`, [], async () => {
+    try {
+      const res = await useStore.getState().pauseRelease(wsId, ids, run.carrierRunId);
+      return report(wsId, anchor, res.explain, res.explain.map((e) => e.tone));
+    } catch (e) {
+      return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);
+    }
+  });
 }
 
 export async function runRelease(wsId: string, targetWsId: string, carrierRunId: string, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
-  const res = await useStore.getState().pauseRelease(wsId, [targetWsId], carrierRunId);
-  return report(wsId, anchor, res.explain, res.explain.map((e) => e.tone));
+  return once(`release:${carrierRunId}:${targetWsId}`, [], async () => {
+    try {
+      const res = await useStore.getState().pauseRelease(wsId, [targetWsId], carrierRunId);
+      return report(wsId, anchor, res.explain, res.explain.map((e) => e.tone));
+    } catch (e) {
+      return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);
+    }
+  });
 }
 
 /** The overview selector every row part uses (one subscription shape). */

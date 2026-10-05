@@ -104,6 +104,19 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     clause(arm, 'G3/bus-reprise-progress-and-blocked', J(blockedIds) === J([I.docs, I.w1, I.w2, I.w3, I.w4].sort()) && resRows.filter((r) => r[1] === 'released').length === 2 && (await ev(`document.querySelector('[data-pause-count="${I.lead}"]')?.textContent`)) === '0/7 repris' && (await ev(`document.querySelectorAll('[data-pause-action="release"]').length`)) === 5, `coordinators released (2), workers BLOCKED: ${blockedIds.map(nm).join(', ')}; count "${await ev(`document.querySelector('[data-pause-count="${I.lead}"]')?.textContent`)}"; ${await ev(`document.querySelectorAll('[data-pause-action="release"]').length`)} Libérer buttons`);
     const resShot = await shot('3-bus-reprise', { x: 345, y: 48, width: vp.w - 345, height: Math.min(600, vp.h - 48) });
     clause(arm, 'G3/bus-reprise-pixels', pixelsNear(resShot, GREEN, 40) > 300, `${pixelsNear(resShot, GREEN, 40)} green px (the Libérer buttons, the released badges, the headline rule)`);
+    // Re-pause while resuming (the Bus page's Re-pause → dure): a NEW epoch, nothing stays released, then Reprendre again
+    const epoch0 = run(I.lead).paused_at;
+    await press(`[data-pause-section="${I.lead}"] [data-pause-action="repause"]`, 'Re-pause');
+    const choice = await ev(`[...document.querySelectorAll('[data-pause-section="${I.lead}"] [data-pause-action]')].map((e) => e.getAttribute('data-pause-action')).filter((a) => a === 'soft' || a === 'hard').join()`);
+    await press(`[data-pause-section="${I.lead}"] [data-pause-action="hard"]`, 'Re-pause → dure');
+    await waitFor(() => run(I.lead).paused_at > epoch0 && run(I.lead).resume_started_at === null, 15000, 'a NEW pause epoch', 200);
+    await waitFor(() => run(I.lead).pause_trap_at !== null, 90000, 'the trap on the new epoch', 400);
+    await waitFor(() => ev(`document.querySelector('[data-pause-section="${I.lead}"]')?.getAttribute('data-pause-phase') === 'paused' && document.querySelectorAll('[data-pause-bilan][data-pause-state="paused"]').length === 7`), 20000, 'the Bus section back in phase paused (7 rows)');
+    clause(arm, 'G3/bus-repause-while-resuming-new-epoch', choice === 'soft,hard' && bus().roster.filter((r) => r.paused_at === run(I.lead).paused_at && r.released_at !== null).length === 0 && run(I.lead).pause_mode === 'hard', `the Re-pause offers douce / dure; dure → a new epoch (+${run(I.lead).paused_at - epoch0} ms), the Reprise is cancelled, the new roster has 0 released members, all 7 back to "en pause"`);
+    await press(`[data-pause-section="${I.lead}"] [data-pause-action="resume"]`, 'Reprendre (2nd)');
+    await waitFor(() => run(I.lead).resume_started_at !== null, 20000, 'the 2nd Reprise', 300);
+    await waitFor(() => ev(`document.querySelector('[data-pause-section="${I.lead}"]')?.getAttribute('data-pause-phase') === 'resuming'`), 15000, 'phase resuming again');
+    await parkAndSettle();
     // one member by hand, then the rest
     await press(`[data-pause-bilan="${I.w1}"] [data-pause-action="release"]`, 'Libérer worker-1');
     await waitFor(() => bus().roster.some((r) => r.ws_id === I.w1 && r.released_at !== null), 15000, 'worker-1 released in the bus', 300);

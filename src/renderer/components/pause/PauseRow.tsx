@@ -21,15 +21,10 @@ export function PauseRowBadge({ wsId }: { wsId: string }) {
   return st ? <PauseBadge wsId={wsId} ui={st.ui} /> : null;
 }
 
-/** ` pause-dim` while the agent is held (its name reads dim, like a stopped one). */
-export function usePauseDim(wsId: string): string {
-  return pauseStateOf(useStore(selectPauseOverview), wsId) ? ' pause-dim' : '';
-}
-
 function NoteLine({ wsId }: { wsId: string }) {
   const o = useStore(selectPauseOverview);
   const run = runOfControl(o, controlOf(o, wsId));
-  const now = useNowTick(run?.phase === 'pausing');
+  const now = useNowTick(!!run && run.phase !== 'active', run?.phase === 'pausing' ? 1000 : 30_000);
   if (!run || run.phase === 'active') return null;
   const n = rowNoteText(run, now);
   return (
@@ -50,7 +45,7 @@ export function PauseRowNote({ wsId, children }: { wsId: string; children: React
 export function PauseRowBar({ wsId }: { wsId: string }) {
   const o = useStore(selectPauseOverview);
   const run = runOfControl(o, controlOf(o, wsId));
-  const now = useNowTick(run?.phase === 'pausing');
+  const now = useNowTick(!!run && run.phase !== 'active', run?.phase === 'pausing' ? 1000 : 30_000);
   if (!run || run.phase === 'active') return null;
   const n = rowNoteText(run, now);
   return (

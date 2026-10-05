@@ -39,9 +39,17 @@ export interface PauseUiBilanLine {
   interrupt: string | null;
   /** The pauser of a CLI pause (process ancestry): its turn was NOT interrupted. Never set for a UI pause (no CLI chain). */
   exempt: boolean;
-  /** Commands the trap killed (listed, NEVER re-run), newest 12; `killedCount` is the total. */
-  killed: Array<{ cmd: string; cwd: string | null; outcome: string }>;
+  /** Commands killed — the trap's `killed_json` KillReport ∪ earlier incomplete attempts ∪ the turn observer's (the SAME merge the Consigne de reprise makes), listed, NEVER re-run; newest 12, `killedCount` is the total. */
+  killed: Array<{ cmd: string; cwd: string | null; outcome: string | null }>;
   killedCount: number;
+  /** `killed_json`: 'done' = a KillReport; 'pending' = NULL, the trap has not finished for this member (some of its commands may NOT have been killed); 'skipped' = `{skipped}` (a remote member: not applicable). */
+  trap: 'done' | 'pending' | 'skipped';
+  skipped: string | null;
+  /** Tool-tree members still alive after the last round / planned kills the identity re-read REFUSED — the pause did NOT stop them. */
+  survivors: Array<{ cmd: string; pid: number; reason: string }>;
+  refused: Array<{ cmd: string; pid: number; reason: string }>;
+  /** Files the snapshot could not read (everything else is in the ref). */
+  warnings: string[];
   notes: string[];
   error: string | null;
 }
@@ -116,7 +124,8 @@ export type PauseUiRefusalCode =
   | 'already-resuming'
   | 'covered'
   | 'bus-unavailable'
-  | 'unknown-workspace';
+  | 'unknown-workspace'
+  | 'write-failed';
 
 /** Can the control be used right now, and if not WHY (so a control is explained before the click, never silently dead). */
 export type PauseUiAvailability = { ok: true } | { ok: false; code: PauseUiRefusalCode };
@@ -176,6 +185,10 @@ export interface ExplainCtx {
   /** Display names (the writer's raw ids stay in the result's `outcome`/`mayBe`). */
   label: (wsId: string) => string;
   runLabel: string;
+  /** The run id, when known (named in a CLI remedy). */
+  runId?: string;
+  /** The message of a writer that THREW (`write-failed`). */
+  error?: string;
   actorLabel: string;
   /** `runHoldAuthority(run)` coordinators who MAY act on the run (the run's coordinator, then the ancestors'). */
   mayBe: readonly string[];
@@ -206,13 +219,15 @@ export function explainPauseOutcome(outcome: string, c: ExplainCtx): PauseUiExpl
         fix: ['Réglages › Fleet bus switches › Pause ON, puis une nouvelle vague', 'ou : orchestra run refreeze --run <id> (run de mission)'],
       };
     case 'already-paused':
-      return { tone: 'info', title: `${c.runLabel} est déjà en pause`, why: 'Inchangé : la pause garde son heure et son auteur d\'origine.', fix: [] };
+      return { tone: 'info', title: `${c.runLabel} est déjà en pause`, why: "La pause garde son heure et son auteur d'origine. Si l'hôte l'avait posée sur une limite d'usage, elle devient manuelle : plus de reprise automatique.", fix: [] };
     case 'not-paused':
       return { tone: 'info', title: `${c.runLabel} n'est pas en pause`, why: 'Rien à lever.', fix: [] };
     case 'bus-unavailable':
       return { tone: 'error', title: 'Bus de flotte indisponible', why: "L'état de pause ne peut être ni lu ni écrit — rien n'a été changé. Le bus ne bloque pas le démarrage de l'app ; voir le journal (bus.sqlite).", fix: ["Page Bus", "Journal de l'app"] };
     case 'unknown-workspace':
-      return { tone: 'error', title: 'Workspace inconnu', why: "Ce workspace n'existe plus dans le store : rien n'a été écrit.", fix: [] };
+      return { tone: 'error', title: 'Workspace inconnu', why: "Ce workspace n'existe plus dans le store : rien n'a été écrit.", fix: c.runId ? [`orchestra run resume --run ${c.runId} (CLI : la vague n'a plus de ligne dans la sidebar)`] : [] };
+    case 'write-failed':
+      return { tone: 'error', title: "Écriture refusée par le bus", why: `${c.error ?? 'erreur inconnue'} — rien n'est garanti écrit : relisez l'état (page Bus) avant de réessayer.`, fix: ['Page Bus', "Journal de l'app"] };
     default:
       return null;
   }
@@ -239,6 +254,7 @@ export function explainResumeOutcome(outcome: string, c: ExplainCtx): PauseUiExp
       return { tone: 'info', title: `La reprise de ${c.runLabel} est déjà en cours`, why: 'Rien n\'est renvoyé : les coordinateurs ont déjà reçu leur Bilan ; libérez les workers bloqués.', fix: ['Libérer les bloqués'] };
     case 'bus-unavailable':
     case 'unknown-workspace':
+    case 'write-failed':
       return explainPauseOutcome(outcome, c);
     default:
       return null;
@@ -322,7 +338,8 @@ export type PauseUiWriteOutcome =
   | 'resuming'
   | 'already-resuming'
   | 'bus-unavailable'
-  | 'unknown-workspace';
+  | 'unknown-workspace'
+  | 'write-failed';
 
 export interface PauseUiWriteResult {
   /** The writer's outcome, untouched — or 'bus-unavailable' / 'unknown-workspace' when no writer ran. */

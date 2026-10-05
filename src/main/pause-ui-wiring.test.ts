@@ -20,13 +20,18 @@ const at = (code: string, needle: string): number => {
 };
 
 test('NO SECOND WRITE PATH: pause-ui.ts and pause-ui-host.ts contain no SQL write — every bus write is a shipped writer', () => {
+  // drop ONLY the string literals that are SELECT queries (up to THEIR own closing quote — a non-greedy "from the first SELECT to the next backtick" would swallow the code after it)
+  const stripSelects = (code: string): string => code.replace(/(['"`])\s*SELECT\b[^]*?\1/g, '""');
   for (const f of ['src/main/pause-ui.ts', 'src/main/pause-ui-host.ts']) {
-    const code = codeOf(f);
-    assert.ok(!/\b(INSERT|UPDATE|DELETE|REPLACE)\b\s+(INTO|OR|FROM)?/.test(code.replace(/SELECT[\s\S]*?`/g, '')), `${f}: a SQL write`);
-    assert.ok(!/\.run\(/.test(code), `${f}: a prepared-statement write`);
+    const code = stripSelects(codeOf(f));
+    assert.ok(!/\b(INSERT|UPDATE|DELETE|REPLACE)\b\s+(INTO|OR|FROM)?|\bUPDATE\s+\w/.test(code), `${f}: a SQL write`);
+    assert.ok(!/\.run\(|\.exec\(/.test(code), `${f}: a prepared-statement / exec write`);
   }
+  // self-test of the guard: a write placed AFTER a SELECT literal (the case the previous regex could not see) is caught
+  const planted = stripSelects('const a = db.prepare(`SELECT 1 FROM runs`).get();\n db.exec("UPDATE runs SET paused_at = NULL");');
+  assert.ok(/\bUPDATE\s+\w/.test(planted) && /\.exec\(/.test(planted), 'the guard sees a write that follows a SELECT');
   const ui = codeOf('src/main/pause-ui.ts');
-  for (const w of ['setRunPause(db, t.runId, true, actor, req.mode)', "beginReprise(db, t.runId, actor, { reason: 'manual' })", 'releaseMembers(db, carrier, actor, req.targets)']) assert.ok(ui.includes(w), `the shipped writer call: ${w}`);
+  for (const w of ['setRunPause(db, t.runId, true, actor, req.mode)', "beginReprise(db, t.runId, actor, { reason: 'manual' })", 'releaseMembers(db, carrier ?? t.runId, actor, req.targets)', 'recordPauseOrigin(db, t.runId, made.pausedAt, [])']) assert.ok(ui.includes(w), `the shipped writer call: ${w}`);
 });
 
 test('the Pause channels are enumerated with their read/write marks, and ONLY the overview is a read', () => {
@@ -79,7 +84,7 @@ test('every write re-publishes (forced) and the push is skipped while neither th
 test('SIDEBAR: both row render paths (the pinned spawn trees AND the repo sections) carry every Pause part; the menu host is mounted once', () => {
   const sb = codeOf('src/renderer/components/Sidebar.tsx');
   const count = (needle: string) => sb.split(needle).length - 1;
-  for (const part of ['<PauseAwareGlyph wsId={w.id}>', '<PauseRowBadge wsId={w.id} />', '<PauseRowNote wsId={w.id}>', '<PauseRowBar wsId={w.id} />', '<PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />', "pauseStateOf(pauseOverview, w.id) ? ' pause-dim' : ''"]) {
+  for (const part of ['<PauseAwareGlyph wsId={w.id}>', '<PauseRowBadge wsId={w.id} />', '<PauseRowNote wsId={w.id}>', '<PauseRowBar wsId={w.id} />', '<PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />', '${pauseDimClass(pauseOverview, w.id)}']) {
     assert.equal(count(part), 2, `${part} — once per render path (they must change together or the two kinds of orchestrator drift apart)`);
   }
   assert.equal(count('<PauseMenuHost />'), 1, 'one floating panel host');
@@ -101,4 +106,11 @@ test('RENDERER: the overview slice is filled at load and replaced WHOLESALE by t
   for (const a of ['pausePause', 'pauseResume', 'pauseRelease']) assert.ok(new RegExp(`${a}: async \\([^)]*\\) => \\{[^}]*set\\(\\{ pauseOverview: res\\.overview \\}\\)`).test(st), `${a} stores the reply's overview`);
   const css = codeOf('src/renderer/main.tsx');
   assert.ok(css.includes("import './pause-ui.css';"), 'the sheet is imported');
+});
+
+test('the floating panel: Escape closes the PANEL only (capture phase, swallowed — other Escape handlers must not also fire), outside click closes it', () => {
+  const m = codeOf('src/renderer/components/pause/PauseMenu.tsx');
+  assert.ok(m.includes("window.addEventListener('keydown', onKey, true);") && m.includes('e.stopImmediatePropagation();'), 'capture + stopImmediatePropagation');
+  assert.ok(m.includes("window.addEventListener('mousedown', onDown, true);") && m.includes("closest('[data-pause-panel]')"), 'outside mousedown closes');
+  assert.ok(m.includes("window.removeEventListener('keydown', onKey, true);") && m.includes("window.removeEventListener('mousedown', onDown, true);"), 'both listeners removed on close/unmount');
 });

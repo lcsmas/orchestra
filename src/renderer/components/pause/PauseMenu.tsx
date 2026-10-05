@@ -17,11 +17,12 @@ export function PauseMenuHost() {
   const workspaces = useStore((s) => s.workspaces);
   useEffect(() => {
     if (!panel) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    // capture phase + swallowed: while the panel is open Escape closes the PANEL only (the Resources page, an open dialog… have their own Escape handlers)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); e.preventDefault(); close(); } };
     const onDown = (e: MouseEvent) => { if (!(e.target as HTMLElement | null)?.closest('[data-pause-panel]')) close(); };
-    window.addEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
     window.addEventListener('mousedown', onDown, true);
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('mousedown', onDown, true); };
+    return () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('mousedown', onDown, true); };
   }, [panel, close]);
   if (!panel) return null;
   const sidebar = document.querySelector('.sidebar')?.getBoundingClientRect();
