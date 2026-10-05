@@ -4130,6 +4130,21 @@ export async function sdkStopTask(wsId: string, taskId: string): Promise<boolean
   }
 }
 
+/** #282 — end ONE background task of a PAUSED member through the CLI's own `stop_task` control request. The CLI marks a task it stopped itself as notified, so it
+ *  enqueues no `<task-notification>` turn: an external SIGTERM makes it enqueue one and an idle CLI then starts a turn BY ITSELF (a model request on a paused member, measured
+ *  on claude 2.1.289 — pause-trap.md §Rows 29/30). Unlike {@link sdkStopTask} it is silent (no UI notice) and reports why it could not. */
+export async function sdkStopTaskForPause(wsId: string, taskId: string): Promise<{ ok: boolean; note?: string }> {
+  const session = sessions.get(wsId);
+  if (!session || session.stopping) return { ok: false, note: 'no live SDK session in this app run — stop_task unavailable' };
+  try {
+    await session.q.stopTask(taskId);
+    return { ok: true };
+  } catch (err) {
+    log.warn(`agent-sdk: pause stopTask failed for ${wsId} (${taskId})`, err);
+    return { ok: false, note: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Move in-flight FOREGROUND work into the background — the SDK's Ctrl+B
  *  parity (`Query.backgroundTasks`). Without `toolUseId` it backgrounds every
  *  foreground task; with one it targets just that tool_use block.

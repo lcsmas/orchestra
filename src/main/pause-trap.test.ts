@@ -50,7 +50,7 @@ interface Rig {
   killReport: KillReport;
   interruptResult: InterruptOutcome;
   cliResult: { cli: { pid: number; startTicks: number }; keeperPid: number | null } | { error: string } | null;
-  killOpts: Array<{ stillPaused?: () => boolean; startedBeforeMs?: number | (() => number | undefined); spareRoots?: readonly number[] } | undefined>;
+  killOpts: Array<{ stillPaused?: () => boolean; startedBeforeMs?: number | (() => number | undefined); spareRoots?: readonly number[]; stopTask?: (taskId: string) => Promise<{ ok: boolean; note?: string }> } | undefined>;
   onSnapshot: (() => void) | null;
   onInterrupt: (() => void) | null;
   clock: number;
@@ -1188,6 +1188,7 @@ test('round-3 verifier MINOR: a turn start within seconds of the trap\'s OWN kil
     const rig = newRig(t);
     member(rig, 'w1', 'W');
     if (!kills) rig.killReport = { ...rig.killReport, killed: [] };
+    else rig.killReport = { ...rig.killReport, killed: rig.killReport.killed.map((k) => ({ ...k, via: 'root-under-cli' })) }; // the task's tool ROOT ended by signal
     const c = pauseW(rig);
     await runPauseTrap(rig.deps, c);
     rig.clock += waitMs;
@@ -1413,4 +1414,187 @@ test('RE-PAUSE during RESUMING (pre-review BLOCKING): the NEW epoch has no Bilan
   for (const step of ['snapshot:w1', 'interrupt:w1']) assert.ok(rig.calls.includes(step), `${step} ran again on the new epoch: ${rig.calls.join(' ')}`);
   assert.ok(rig.calls.some((x) => x.startsWith('kill:')), `the tool trees were killed again: ${rig.calls.join(' ')}`);
   assert.notEqual(bilanForMember(rig.db, 'W', 'w1', c2.pausedAt)?.snapshotRef, null, 'a FRESH snapshot of what w1 did since the Reprise');
+});
+
+// ── #282: the kill is handed a `stop_task` bound to THE MEMBER (the CLI ends a bg task itself → no task-notification turn → no model request on a paused member) ──
+
+test('#282: trapMember hands the kill a stopTask bound to THIS member — each task id the killer asks for reaches deps.stopTask(member, id)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  member(rig, 'w2', 'W');
+  const asked: string[] = [];
+  rig.deps.stopTask = async (m, taskId) => { asked.push(`${m.wsId}:${taskId}`); return { ok: true }; };
+  const origKill = rig.deps.killTrees;
+  rig.deps.killTrees = async (cli, keeper, opts) => {
+    assert.equal(typeof opts?.stopTask, 'function', 'the kill gets a stopTask');
+    assert.deepEqual(await opts!.stopTask!('bt1'), { ok: true });
+    return origKill(cli, keeper, opts);
+  };
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  assert.deepEqual(asked.sort(), ['w1:bt1', 'w2:bt1'], 'each member\'s kill asks THROUGH its own member (never another session)');
+});
+
+test('#282: without deps.stopTask (PTY agent, fallback) the kill gets NO stopTask — signals only, as before', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  assert.equal(rig.killOpts.length, 1);
+  assert.equal('stopTask' in (rig.killOpts[0] ?? {}), false);
+});
+
+test('#282: the turn OBSERVER\'s kill goes through stop_task too (a CLI-started turn\'s bg task SIGTERMed there would start yet another notification turn)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  rig.killOpts.length = 0;
+  const asked: string[] = [];
+  rig.deps.stopTask = async (m, taskId) => { asked.push(`${m.wsId}:${taskId}`); return { ok: true }; };
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+  assert.equal(typeof rig.killOpts[0]?.stopTask, 'function');
+  await rig.killOpts[0]!.stopTask!('bt9');
+  assert.deepEqual(asked, ['w1:bt9']);
+});
+
+test('#282: a stop_task that FAILED is said in the Bilan (the signal kill ended it: a task-notification turn may follow, the observer interrupts it) — never silent', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.killReport = { ...rig.killReport, stopTask: [{ taskId: 'bfail01', pid: 200, cmd: 'sleep 7718', ok: false, note: 'stop_task: unknown task' }] };
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  const row = bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!;
+  assert.ok((row.activity?.notes ?? []).some((n) => /stop_task failed for bfail01 \(sleep 7718: stop_task: unknown task\) — not confirmed: the task was ended by signal/.test(n)), JSON.stringify(row.activity?.notes));
+  assert.equal(row.error, null, 'a failed stop is a note, not an error: the signal path still ended the task, so the trap is complete');
+  const ok = newRig(t);
+  member(ok, 'w1', 'W');
+  ok.killReport = { ...ok.killReport, stopTask: [{ taskId: 'bgood001', pid: 200, cmd: 'sleep 7718', ok: true }] };
+  const c2 = pauseW(ok);
+  await runPauseTrap(ok.deps, c2);
+  assert.ok(!(bilanForMember(ok.db, 'W', 'w1', c2.pausedAt)!.activity?.notes ?? []).some((n) => /stop_task failed/.test(n)), 'a stop that worked adds no note');
+});
+
+test('#282: stop_task is offered ONLY once the member\'s turn is provably over (interrupted / idle) and for a STRUCTURED member (a proven keeper): the exempt pauser, a failed / unresponsive / no-session / skipped interrupt and a PTY agent (no keeper) get signals only — a foreground tool\'s shell carries a task id too, stopping it under a live turn would just continue that turn', async (t) => {
+  const offered = async (setup: (rig: Rig) => void | Promise<void>, pauser = false): Promise<boolean> => {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, pauser ? 'ops-w' : 'w1', 'W');
+    rig.deps.stopTask = async () => ({ ok: true });
+    await setup(rig);
+    const c = pauseW(rig, 'W', 'ops-w');
+    if (pauser) recordPauseOrigin(rig.db, 'W', c.pausedAt, CHAIN_FROM_TOOL);
+    await runPauseTrap(rig.deps, c);
+    return typeof rig.killOpts[0]?.stopTask === 'function';
+  };
+  assert.equal(await offered(() => {}), true, 'interrupted: offered');
+  assert.equal(await offered((r) => { r.interruptResult = 'idle'; }), true, 'idle (no turn was running): offered');
+  assert.equal(await offered((r) => { r.interruptResult = 'attached-then-interrupted'; }), true, 'attached-then-interrupted: offered');
+  assert.equal(await offered(() => {}, true), false, 'the exempt PAUSER keeps its turn: signals only');
+  assert.equal(await offered((r) => { r.interruptResult = 'unresponsive'; }), false, 'an interrupt that could not be confirmed');
+  assert.equal(await offered((r) => { r.interruptResult = 'failed'; }), false, 'a failed interrupt');
+  assert.equal(await offered((r) => { r.interruptResult = 'no-session'; }), false, 'no session: nothing to ask');
+  assert.equal(await offered((r) => { r.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: null }; }), false, 'a PTY agent (the pty child IS the CLI, no keeper) has no SDK session to ask');
+  // a HUMAN turn started during the trap: the trap skips its interrupt (that turn is allowed) — its foreground tools may be running, so no stop_task
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.deps.stopTask = async () => ({ ok: true });
+  const c = pauseW(rig);
+  rig.onSnapshot = () => markPauseHumanTurn('w1', c.pausedAt + 5);
+  await runPauseTrap(rig.deps, c);
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.interrupt, 'skipped');
+  assert.equal('stopTask' in (rig.killOpts[0] ?? {}), false, 'a skipped interrupt (a human turn in flight): signals only');
+});
+
+test('#282: the structured-member gate reads THIS attempt\'s proven keeper, not the surface a retry carried over — a first attempt that could not probe (surface none) must not disable stop_task for the retry that reaches a good keeper', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.deps.stopTask = async () => ({ ok: true });
+  let n = 0;
+  const act = rig.deps.activityOf;
+  rig.deps.activityOf = async (m) => ({ ...(await act(m)), surface: n++ === 0 ? 'none' : 'sdk' });
+  const origCli = rig.deps.cliOf;
+  let k = 0;
+  rig.deps.cliOf = async (m) => (k++ === 0 ? { error: 'keeper 90 is alive (keeper) but did not answer the probe (busy/unresponsive)' } : origCli(m));
+  const c = pauseW(rig);
+  const first = await runPauseTrap(rig.deps, c);
+  assert.equal(first.done, false, 'attempt 1 could not prove the CLI: the trap stays open');
+  assert.equal(rig.killOpts.length, 0);
+  const next = await runPauseTrap(rig.deps, c);
+  assert.equal(next.done, true);
+  assert.equal(bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.surface, 'none', 'the retry carried the first attempt\'s surface');
+  assert.equal(typeof rig.killOpts[0]?.stopTask, 'function', '…yet the proven keeper of THIS attempt lets stop_task be offered');
+});
+
+test('#282: the turn OBSERVER offers stop_task only after its interrupt took effect (a failed interrupt ⇒ signals only)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  rig.deps.stopTask = async () => ({ ok: true });
+  rig.killOpts.length = 0;
+  rig.deps.interrupt = async () => { throw new Error('boom'); };
+  assert.equal(await onTurnStart(rig.deps, tm('w1', 'W')), 'interrupted');
+  assert.equal('stopTask' in (rig.killOpts[0] ?? {}), false, 'interrupt failed: no stop_task');
+  void c;
+});
+
+test('#282: a kill ended by the CLI (stop_task) is NOT attributed to a later turn as "the task-notification of a task THIS trap killed" — the stop suppresses that notification; a SIGNAL kill still is', async (t) => {
+  const note = async (signal: string): Promise<string> => {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, 'w1', 'W');
+    rig.killReport = { ...rig.killReport, killed: [{ ...rig.killReport.killed[0], signal: signal as 'SIGTERM', via: 'root-under-cli' }] };
+    const c = pauseW(rig);
+    await runPauseTrap(rig.deps, c);
+    rig.clock += 1_000;
+    await onTurnStart(rig.deps, tm('w1', 'W'));
+    return (bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).filter((n) => /turn started while paused/.test(n)).join(' | ');
+  };
+  assert.match(await note('SIGTERM'), /task-notification of a background task THIS trap just killed/);
+  assert.doesNotMatch(await note('stop_task'), /task-notification/);
+  // an ORPHAN killed by signal is no task: it cannot be followed by a notification, so it stamps nothing (the mixed case: root stopped by the CLI + a daemonized job SIGTERMed)
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.killReport = { ...rig.killReport, killed: [{ ...rig.killReport.killed[0], signal: 'stop_task', via: 'cli-stop-task' }, { ...rig.killReport.killed[0], pid: 700, signal: 'SIGTERM', via: 'env' }] };
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  rig.clock += 1_000;
+  await onTurnStart(rig.deps, tm('w1', 'W'));
+  assert.doesNotMatch((bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).filter((n) => /turn started while paused/.test(n)).join(' | '), /task-notification/);
+});
+
+test('#282: a tool ROOT ended by signal although stop_task was offered had no task link — the Bilan says so (the original bug can silently return for a CLI whose output path differs); a linked/stopped root adds no such note', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  rig.deps.stopTask = async () => ({ ok: true });
+  rig.killReport = { ...rig.killReport, killed: [{ pid: 201, comm: 'sleep', cmd: 'sleep 7718', startTicks: 5, cwd: '/w', evidence: 'x', signal: 'SIGTERM', via: 'root-under-cli', outcome: 'exited' }] };
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  assert.ok((bilanForMember(rig.db, 'W', 'w1', c.pausedAt)!.activity?.notes ?? []).some((n) => /ended by signal with no task link \(sleep 7718\)/.test(n)));
+  const ok = newRig(t);
+  member(ok, 'w1', 'W');
+  ok.deps.stopTask = async () => ({ ok: true });
+  ok.killReport = { ...ok.killReport, killed: [{ pid: 201, comm: 'sleep', cmd: 'sleep 7718', startTicks: 5, cwd: '/w', evidence: 'x', signal: 'stop_task', via: 'cli-stop-task', outcome: 'exited' }], stopTask: [{ taskId: 'b1', pid: 201, cmd: 'sleep 7718', ok: true }] };
+  const c2 = pauseW(ok);
+  await runPauseTrap(ok.deps, c2);
+  assert.ok(!(bilanForMember(ok.db, 'W', 'w1', c2.pausedAt)!.activity?.notes ?? []).some((n) => /no task link/.test(n)));
+  // a root that WAS asked (the stop failed) and ended by signal is the failed-stop note's business — not also "no task link"
+  const bad = newRig(t);
+  member(bad, 'w1', 'W');
+  bad.deps.stopTask = async () => ({ ok: false });
+  bad.killReport = { ...bad.killReport, killed: [{ pid: 201, comm: 'sleep', cmd: 'sleep 7718', startTicks: 5, cwd: '/w', evidence: 'x', signal: 'SIGTERM', via: 'root-under-cli', outcome: 'exited' }], stopTask: [{ taskId: 'b1', pid: 201, cmd: 'sleep 7718', ok: false, note: 'unknown task' }] };
+  const c3 = pauseW(bad);
+  await runPauseTrap(bad.deps, c3);
+  const notes = bilanForMember(bad.db, 'W', 'w1', c3.pausedAt)!.activity?.notes ?? [];
+  assert.ok(notes.some((n) => /stop_task failed for b1/.test(n)) && !notes.some((n) => /no task link/.test(n)), JSON.stringify(notes));
 });

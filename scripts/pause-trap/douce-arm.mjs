@@ -105,7 +105,7 @@ export async function runDouce(ctx) {
   const sleepFor = sleep;
 
   // 1. fleet up: every member starts its own turn
-  const app = startApp('first', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), pauseSwitch: !A.off, statusSock: true });
+  const app = startApp('first', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), pauseSwitch: !A.off, statusSock: true, noStopTask: !!A.humanmark });
   const sockEnv = { ORCHESTRA_SOCK: path.join(root, 'orch.sock') };
   await app.waitEv((e) => e.ev === 'all-sent', 180_000, 'every member to be sent its turn');
 
@@ -163,7 +163,7 @@ export async function runDouce(ctx) {
   // 4a. (keeperstopped) the restarted app: the member has NO session there, and its keeper does not answer — it must be NOTIFIED, not confirmed idle
   let tBoot0 = null;
   if (A.keeperstopped) {
-    gateApp = startApp('second', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), statusSock: true });
+    gateApp = startApp('second', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), statusSock: true, noStopTask: !!A.humanmark });
     await gateApp.waitEv((e) => e.ev === 'trap-started', 120_000, 'app2 boot');
     tBoot0 = Date.now();
     await sleepFor(9000); // several sweeps + polls with the keeper stopped
@@ -189,7 +189,7 @@ export async function runDouce(ctx) {
     await sleepFor(Math.max(0, deadlineAt - Date.now()) + 5000); // past the deadline, app DOWN
     const row = carrierRow();
     check('app_down_nothing_escalates_or_traps', row.pause_escalated_at === null && row.pause_trap_at === null && alive(alive0.keeper, keepers[first.id].start) && linesNow(first).length > l0, `escalated=${row.pause_escalated_at} trap=${row.pause_trap_at}; the member kept working while the app was down (${l0} → ${linesNow(first).length} lines)`);
-    const app2 = startApp('second', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), statusSock: true });
+    const app2 = startApp('second', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), statusSock: true, noStopTask: !!A.humanmark });
     await app2.waitEv((e) => e.ev === 'trap-started', 120_000, 'app2 boot');
     tBoot = Date.now();
   }

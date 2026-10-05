@@ -28,6 +28,8 @@ export interface KillDeps {
   readCwd(pid: number): string | null;
   /** `CLAUDE_PID` from /proc/<pid>/environ, read NOW (null = absent, 'unreadable' = fail closed). */
   readClaudePid(pid: number): number | null | 'unreadable';
+  /** #282: the CLI background-task id this process writes to (its stdout/stderr is `…/tasks/<id>.output`), read NOW; null = not a task's process / unreadable. Omitted ⇒ no stop_task. */
+  readTaskId?(pid: number): string | null;
   /** Epoch ms a process with this /proc start-time began (boot time + ticks / CLK_TCK). */
   startMs(startTicks: number): number;
   /** Deliver a signal; false when it was not delivered (ESRCH/EPERM). */
@@ -47,8 +49,8 @@ export interface KilledProc {
   cwd: string | null;
   /** What the signal-time identity re-read proved for THIS process — the Bilan's "reason matched". */
   evidence: string;
-  /** The last signal sent (SIGKILL only when SIGTERM left it alive). */
-  signal: 'SIGTERM' | 'SIGKILL';
+  /** The last signal sent (SIGKILL only when SIGTERM left it alive); 'stop_task' = ended through the CLI's own control request (#282), no signal sent. */
+  signal: 'SIGTERM' | 'SIGKILL' | 'stop_task';
   via: string;
   /** exited = gone or zombie at the final census; survived = still the same live process. */
   outcome: 'exited' | 'survived';
@@ -70,7 +72,15 @@ export interface KillReport {
   aborted?: 'lifted';
   /** The CLI the plan was made against EXITED or was REPLACED (a Restart): its tools' orphans are unreachable by identity — the trap is INCOMPLETE and retried against the new CLI (round-3 F5). */
   cliGone?: boolean;
+  /** #282: tool roots that ARE background tasks, ended through the CLI's `stop_task` BEFORE any signal (the CLI marks the task stopped itself ⇒ it enqueues no task-notification turn). `ok:false` = the request failed: the signal path killed it and a notification turn may follow. */
+  stopTask?: Array<{ taskId: string; pid: number; cmd: string; ok: boolean; note?: string }>;
   error?: string;
+}
+
+/** Outcome of one `stop_task` request (the host binds it to the member's live SDK session). */
+export interface StopTaskResult {
+  ok: boolean;
+  note?: string;
 }
 
 export interface KillOptions {
@@ -84,9 +94,17 @@ export interface KillOptions {
   humanWindows?: () => Array<{ from: number; to?: number }>;
   /** Tool-shell roots whose whole tree is SPARED (the tree that contains the `orchestra run pause` call — pauser exemption, review F5). */
   spareRoots?: readonly number[];
+  /** #282: end a background task THROUGH THE CLI (control request `stop_task`). Asked for every planned+verified tool root whose process is a task's (`deps.readTaskId`), BEFORE any signal:
+   *  a task the CLI stops itself is marked notified, so no `<task-notification>` turn (= a model request on a paused member) follows — an external SIGTERM makes the CLI enqueue one. Omitted ⇒ signals only. */
+  stopTask?: (taskId: string) => Promise<StopTaskResult>;
+  /** How long the CLI gets to end a stopped task's tree before the signal rounds start (default {@link DEFAULT_STOP_WAIT_MS}). */
+  stopTaskWaitMs?: number;
 }
 
 const DEFAULT_TERM_GRACE_MS = 2_000;
+const DEFAULT_STOP_WAIT_MS = 1_500;
+/** The CLI's task output file: a background task's shell has stdout/stderr on `<tmp>/…/tasks/<taskId>.output` (measured on claude 2.1.289) — the exact process-root ↔ task-id link. */
+const TASK_OUTPUT_RE = /\/tasks\/([A-Za-z0-9_-]+)\.output$/;
 const DEFAULT_ROUNDS = 3;
 const POLL_MS = 50;
 
@@ -146,6 +164,18 @@ function readClaudePidOf(pid: number): number | null | 'unreadable' {
   }
 }
 
+function readTaskIdOf(pid: number): string | null {
+  for (const fd of [1, 2]) {
+    try {
+      const m = TASK_OUTPUT_RE.exec(fs.readlinkSync(`/proc/${pid}/fd/${fd}`));
+      if (m) return m[1];
+    } catch {
+      /* gone / unreadable: not provably a task's process */
+    }
+  }
+  return null;
+}
+
 function readOne(pid: number): FreshRead {
   let stat: string;
   try {
@@ -174,6 +204,7 @@ export function realKillDeps(): KillDeps {
     read: (pid) => (supported ? readOne(pid) : 'unreadable'),
     readClaudePid: (pid) => (supported ? readClaudePidOf(pid) : 'unreadable'),
     readCwd: (pid) => (supported ? readCwdOf(pid) : null),
+    readTaskId: (pid) => (supported ? readTaskIdOf(pid) : null),
     startMs: startMsOf,
     readTable: () => {
       if (!supported) return [];
@@ -287,6 +318,54 @@ export async function killToolTrees(
     }
     return true;
   };
+  // #282 — a tool root that IS a CLI task (the background ones are what matters) is ended through the CLI (`stop_task`) before any signal: the CLI marks a task it stopped itself as notified, so it enqueues no
+  // `<task-notification>` turn; an external SIGTERM makes it enqueue one and an idle CLI starts a turn BY ITSELF (a model request on a paused member, measured on claude 2.1.289).
+  // The SAME roots the signal rounds would kill (exemptions, human windows and refusals already applied), each identity-re-read just before the request. A FOREGROUND tool's shell carries a task id too: the CALLER
+  // only offers `stopTask` once the member's turn is provably over (the interrupt took effect), so what is still running then is a background task or a leftover, never a live turn's tool.
+  const planned = new Map<string, ToolProc>(); // key pid:startTicks — every member any round planned
+  const stopped = new Map<string, { m: ToolProc; taskId: string; ok: boolean; note?: string }>();
+  const endedByCli = new Map<string, { m: ToolProc; taskId: string; accepted: boolean; note?: string }>(); // members seen alive when the CLI was asked and gone after, without a signal
+  const stopRoots = async (plan: ToolPlan): Promise<void> => {
+    if (!opts.stopTask || !deps.readTaskId) return;
+    const batch: Array<{ m: ToolProc; taskId: string }> = [];
+    for (const m of plan.members) {
+      if (!m.isRoot) continue;
+      const key = `${m.pid}:${m.startTicks}`;
+      if (stopped.has(key)) continue;
+      if (!paused()) break;
+      if (tooNew(m)) continue;
+      if (!verifyAtSignal(m, plan, protect, deps.read, deps.readClaudePid).ok) continue; // refusals / gone are recorded by the signal rounds below
+      const taskId = deps.readTaskId(m.pid);
+      if (!taskId) continue;
+      const again = deps.read(m.pid); // the id came from a link read AFTER the identity check: the same process must still hold it
+      if (again === 'gone' || again === 'unreadable' || again.startTicks !== m.startTicks || again.state === 'Z') continue;
+      batch.push({ m, taskId });
+      stopped.set(key, { m, taskId, ok: false, note: 'requested' });
+    }
+    if (batch.length === 0) return;
+    const trees = plan.members.filter((x) => batch.some((b) => b.m.pid === x.rootPid));
+    const aliveBefore = trees.filter((x) => isAlive(x, deps)); // alive when the CLI is asked: only these can be credited to the CLI's stop
+    // ALL requests at once: one wedged CLI costs ONE timeout, not one per task (N roots × 5 s would eat the Pause bar before the first signal)
+    const results = await Promise.all(batch.map(async (b): Promise<StopTaskResult> => {
+      try {
+        return await opts.stopTask!(b.taskId);
+      } catch (e) {
+        return { ok: false, note: e instanceof Error ? e.message : String(e) };
+      }
+    }));
+    // the CLI's own kill ends the tree: give it a moment (also after a failed/timed-out request — it may still be in flight); what is still alive afterwards is signalled as before
+    await waitUntilGone(batch.map((b) => b.m), deps, opts.stopTaskWaitMs ?? DEFAULT_STOP_WAIT_MS);
+    batch.forEach((b, i) => {
+      const r = results[i];
+      const gone = !isAlive(b.m, deps);
+      // `ok` = the CLI's own stop ENDED it: the request being accepted is not enough (the CLI also answers success for a task it no longer knows) — the root must be gone without a signal
+      const ok = r.ok && gone;
+      const note = ok ? undefined : r.ok ? `accepted by the CLI but the process was still alive after ${opts.stopTaskWaitMs ?? DEFAULT_STOP_WAIT_MS} ms — signalled (the CLI may not have known the task)` : r.note;
+      stopped.set(`${b.m.pid}:${b.m.startTicks}`, { m: b.m, taskId: b.taskId, ok, ...(note ? { note } : {}) });
+      // listed whatever the reply was: a request that failed / timed out but whose tree went away inside the wait (the CLI's own kill landing late) must still be in the Bilan — the Consigne reads the command from `killed[]`
+      for (const x of aliveBefore) if (x.rootPid === b.m.pid && !isAlive(x, deps)) endedByCli.set(`${x.pid}:${x.startTicks}`, { m: x, taskId: b.taskId, accepted: r.ok, ...(r.note ? { note: r.note } : {}) });
+    });
+  };
 
   if (cliGone()) {
     report.cliGone = true;
@@ -300,6 +379,8 @@ export async function killToolTrees(
     for (const s of plan.spared) spared.set(s.pid, s);
     if (plan.members.length === 0) break;
     report.rounds = round;
+    for (const m of plan.members) planned.set(`${m.pid}:${m.startTicks}`, m);
+    await stopRoots(plan);
     let signalled = 0;
     const termed: ToolProc[] = [];
     for (const m of killOrder(plan.members)) {
@@ -340,7 +421,20 @@ export async function killToolTrees(
   for (const s of finalPlan.spared) spared.set(s.pid, s);
   const aliveKeys = new Set(finalPlan.members.map((m) => `${m.pid}:${m.startTicks}`));
   for (const [key, k] of killed) k.outcome = aliveKeys.has(key) ? 'survived' : 'exited';
+  // #282: what the CLI ended by itself is listed like a kill (D11: every killed process is in the Bilan — the Consigne reads the command from it, never to re-run it)
+  for (const [key, e] of endedByCli) {
+    if (killed.has(key) || aliveKeys.has(key)) continue;
+    const m = e.m;
+    killed.set(key, {
+      pid: m.pid, comm: m.comm, cmd: m.cmd, startTicks: m.startTicks, cwd: m.cwd,
+      evidence: e.accepted
+        ? `${m.matched} | the CLI ended it itself: control request stop_task(${e.taskId}) accepted and the process was gone right after (task stopped by the CLI — no task-notification turn); no signal sent`
+        : `${m.matched} | gone within the wait after control request stop_task(${e.taskId}) FAILED${e.note ? ` (${e.note.slice(0, 80)})` : ''} — most likely the CLI's own kill landing late; no signal sent by the trap (a task-notification turn is possible)`,
+      signal: 'stop_task', via: 'cli-stop-task', outcome: 'exited',
+    });
+  }
   report.killed = [...killed.values()];
+  if (stopped.size > 0) report.stopTask = [...stopped.values()].map((st) => ({ taskId: st.taskId, pid: st.m.pid, cmd: st.m.cmd, ok: st.ok, ...(st.note ? { note: st.note } : {}) }));
   report.refused = [...refused.values()];
   report.spared = [...spared.values()];
   if (cliGone()) {

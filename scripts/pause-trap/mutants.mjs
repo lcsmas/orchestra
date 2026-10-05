@@ -204,6 +204,22 @@ export const MUTANTS = {
     replace: '',
     mustRedden: 'innocent_inheritor_survives',
   },
+  // #282: the trap never asks the CLI to stop a background task (stopTask unwired): the task dies by SIGTERM and the CLI starts a task-notification turn by itself.
+  'no-stop-task': {
+    file: '/src/main/pause-trap-host.ts',
+    find: /    stopTask: async \(m, taskId\) => \{/g,
+    replace: '    stopTask: undefined as never, __stopTaskUnused: async (m: { wsId: string }, taskId: string) => {',
+    mustRedden: 'no_model_request_while_paused',
+  },
+  // #282: the stop_task requests are made AFTER the signal rounds (the order is the fix: a task the CLI did not stop itself is notified when its process exits).
+  'stop-task-after-signals': {
+    file: '/src/main/pause-kill.ts',
+    edits: [
+      { find: /    await stopRoots\(plan\);\n    let signalled = 0;/g, replace: '    let signalled = 0;' },
+      { find: /    await waitUntilGone\(termed, deps, 500\);\n/g, replace: '    await waitUntilGone(termed, deps, 500);\n    await stopRoots(plan);\n' },
+    ],
+    mustRedden: 'no_model_request_while_paused',
+  },
   // The turn-start observer is never registered (rows 29/30).
   'no-turn-observer': {
     file: '/src/main/pause-trap-host.ts',

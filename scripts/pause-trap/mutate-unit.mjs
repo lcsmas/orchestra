@@ -118,7 +118,7 @@ const M = [
   { id: 'trap-human-window-ignored', file: TRAP, find: '  const humanDuringTrap = humanAtInterrupt !== undefined && humanAtInterrupt >= carrier.pausedAt && humanInFlightNow();', rep: '  const humanDuringTrap = false;', tests: [T.trap], expect: /F2 a HUMAN turn that STARTS during the trap window/ },
   { id: 'trap-human-mark-only-first', file: TRAP, find: '    if (now - at <= HUMAN_MARK_TTL_MS && at >= notBefore) {\n      humanTurnMarks.set(wsId, marks);', rep: '    if (now - at <= HUMAN_MARK_TTL_MS && at >= notBefore) {\n      marks.length = 0;\n      humanTurnMarks.set(wsId, marks);', tests: [T.trap], expect: /F2 a human prompt PARKED/ },
   { id: 'trap-observer-no-lift-recheck', file: TRAP, find: '        if (round > 0 && !resolveCarrier(deps, db, m)) break; // lifted meanwhile (review F8): never touch a turn the lift just released\n', rep: '', tests: [T.trap], expect: /F8 the turn observer stops/ },
-  { id: 'trap-observer-no-stillpaused-opt', file: TRAP, find: '{ stillPaused: () => resolveCarrier(deps, db, m) !== null }', rep: '{}', tests: [T.trap], expect: /F8 the turn observer stops/ },
+  { id: 'trap-observer-no-stillpaused-opt', file: TRAP, find: '{ stillPaused: () => resolveCarrier(deps, db, m) !== null, ...(deps.stopTask', rep: '{ ...(deps.stopTask', tests: [T.trap], expect: /F8 the turn observer stops/ },
   { id: 'rec-origin-listed-as-member', file: REC, find: '  return rows.map(toRow).filter((r) => r.wsId !== PAUSE_ORIGIN_WS);', rep: '  return rows.map(toRow);', tests: [T.trap], expect: /F5 the PAUSER/ },
   { id: 'trap-retry-blanks-error', file: TRAP, find: "errors.length ? errors.join('; ') : (cur.error ?? null) }), cur.id)", rep: "errors.length ? errors.join('; ') : null }), cur.id)", tests: [T.trap], expect: /F4 a RETRY keeps/ },
   { id: 'status-control-chars-not-stripped', file: 'src/cli/run-status.ts', find: "  return String(s ?? '').replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff\\u{e0000}-\\u{e007f}]/gu, ' ');", rep: "  return String(s ?? '');", tests: [T.status], expect: /F11/ },
@@ -142,7 +142,7 @@ const M = [
   { id: 'trap-arm-hang-not-incomplete', file: TRAP, find: '    if (e instanceof DeadlineError) incompleteEarly = true;', rep: '', tests: [T.trap], expect: /M8 a HUNG arm/ },
   { id: 'host-unknown-keeper-is-none', file: HOST, find: "(ks === 'keeper' || ks === 'unknown')", rep: "(ks === 'keeper')", tests: [T.wiring], expect: /snapshots through the no-touch/ },
   { id: 'sdk-unknown-keeper-is-idle', file: SDK, find: "return ks === 'keeper' || ks === 'unknown' ? 'unresponsive' : 'idle';", rep: "return ks === 'keeper' ? 'unresponsive' : 'idle';", tests: [T.wiring], expect: /unknown/ },
-  { id: 'status-orphan-cwd-raw', file: 'src/cli/run-status.ts', find: "pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);\n        }\n        if (k.survivors", rep: "pid ${c(o.pid)} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);\n        }\n        if (k.survivors", tests: [T.status], expect: /F11 \(round 2\)/ },
+  { id: 'status-orphan-cwd-raw', file: 'src/cli/run-status.ts', find: "pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);\n        }\n        // #282:", rep: "pid ${c(o.pid)} cwd ${o.cwd ?? '?'} — ${o.evidence ?? ''}`);\n        }\n        // #282:", tests: [T.status], expect: /F11 \(round 2\)/ },
   { id: 'status-error-raw', file: 'src/cli/run-status.ts', find: 'out.push(`      error: ${c(r.error)}`);', rep: 'out.push(`      error: ${r.error}`);', tests: [T.status], expect: /F11 \(round 2\)/ },
   { id: 'status-note-raw', file: 'src/cli/run-status.ts', find: 'out.push(`      note: ${c(n)}`);', rep: 'out.push(`      note: ${n}`);', tests: [T.status], expect: /F11 \(round 2\)/ },
   // ── round-2 delta (F1b F2 F3 F7)
@@ -176,7 +176,7 @@ const M = [
   { id: 'trap-warns-every-attempt', file: TRAP, find: 'warnOnce(`${carrier.runId}@${carrier.pausedAt}:incomplete`,', rep: 'warnOnce(`${carrier.runId}@${carrier.pausedAt}:incomplete:${Math.random()}`,', tests: [T.trap], expect: /round-3 F6: a retried trap WARNS ONCE/ },
   { id: 'trap-start-logged-every-attempt', file: TRAP, find: 'if (!warned.has(`${carrier.runId}@${carrier.pausedAt}:start`)) {', rep: 'if (true) {', tests: [T.trap], expect: /round-3 F6: a retried trap WARNS ONCE/ },
   { id: 'trap-no-task-notification-note', file: TRAP, find: '(now - (trapKilledAt.get(m.wsId) ?? Number.NEGATIVE_INFINITY) <= TASK_NOTIFICATION_WINDOW_MS', rep: '(false', tests: [T.trap], expect: /round-3 verifier MINOR/ },
-  { id: 'trap-kill-stamp-missing', file: TRAP, find: '      if (rep.killed.length > 0) trapKilledAt.set(m.wsId, deps.now());\n', rep: '', tests: [T.trap], expect: /round-3 verifier MINOR/ },
+  { id: 'trap-kill-stamp-missing', file: TRAP, find: "      if (rep.killed.some((k) => k.signal !== 'stop_task' && k.via === 'root-under-cli')) trapKilledAt.set(m.wsId, deps.now()); // only a tool ROOT ended by SIGNAL can be followed by a task-notification turn (a CLI stop_task suppresses it; an orphan is no task)\n", rep: '', tests: [T.trap], expect: /round-3 verifier MINOR/ },
   { id: 'snap-total-cap-ignored', file: SNAP, find: "for (let i = 0; i < rest.length && total > totalBytes; i++) {", rep: "for (let i = 0; i < 0; i++) {", tests: [T.snap], expect: /round-3 F7/ },
   // TWO edits: the exclude list capped (and always on argv) again — the pre-round-3 behaviour (file 201+ in the ref yet reported skipped)
   { id: 'snap-excludes-capped-again', file: SNAP, edits: [
@@ -196,7 +196,7 @@ const M = [
   { id: 'trap-earlier-kills-uncapped', file: TRAP, find: '.slice(-100); // bounded like observerKilled', rep: '; // uncapped', tests: [T.trap], expect: /round-3 review .?#3/ },
   { id: 'trap-deferral-count-not-carried', file: TRAP, find: '    if (prior.interruptDeferrals) activity.interruptDeferrals = prior.interruptDeferrals;\n', rep: '', tests: [T.trap], expect: /round-3 F2 \(carry\)/ },
   { id: 'trap-note-window-unbounded', file: TRAP, find: '<= TASK_NOTIFICATION_WINDOW_MS', rep: '<= 1e15', tests: [T.trap], expect: /round-3 verifier MINOR/ },
-  { id: 'trap-kill-stamp-without-kills', file: TRAP, find: '      if (rep.killed.length > 0) trapKilledAt.set(m.wsId, deps.now());', rep: '      trapKilledAt.set(m.wsId, deps.now());', tests: [T.trap], expect: /round-3 verifier MINOR/ },
+  { id: 'trap-kill-stamp-without-kills', file: TRAP, find: "      if (rep.killed.some((k) => k.signal !== 'stop_task' && k.via === 'root-under-cli')) trapKilledAt.set(m.wsId, deps.now());", rep: '      trapKilledAt.set(m.wsId, deps.now());', tests: [T.trap], expect: /round-3 verifier MINOR/ },
   { id: 'status-mb-integer', file: 'src/cli/run-status.ts', find: 'return `${m < 10 ? m.toFixed(1) : Math.round(m)} MB`;', rep: 'return `${Math.round(m)} MB`;', tests: [T.status], expect: /round-3 review nits/ },
   { id: 'status-skip-list-uncapped', file: 'src/cli/run-status.ts', find: 'a.skippedLarge.slice(0, 20).map(', rep: 'a.skippedLarge.map(', tests: [T.status], expect: /round-3 review nits/ },
   // ── fix round (review of pause-trap-followups): F1 perf/dir units, F2 carried pauser, F3i windows, F4 pins, F5b
@@ -256,6 +256,8 @@ const M = [
 
 // wave E (#255 structured Reprise): its clause mutants live in their own file (same schema; the harness below is shared).
 M.push(...(await import('./mutants-reprise.mjs')).MUTANTS);
+// wave F (#282 stop the background task through the CLI): its clause mutants live in their own file too.
+M.push(...(await import('./mutants-stoptask.mjs')).MUTANTS);
 
 const sel = ONLY ? M.filter((m) => ONLY_SET.has(m.id)) : M;
 if (sel.length === 0) { console.error(`unknown mutant ${ONLY}`); process.exit(2); }

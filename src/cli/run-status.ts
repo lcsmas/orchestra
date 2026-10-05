@@ -83,6 +83,8 @@ interface KilledShape {
   refused?: Array<{ pid: number; cmd: string; reason: string }>;
   spared?: Array<{ pid: number; cmd: string }>;
   skipped?: string;
+  /** #282: tool roots that were background tasks, asked to stop THROUGH THE CLI before any signal (`ok:false` = the signal path ended it). */
+  stopTask?: Array<{ taskId: string; pid: number; cmd: string; ok: boolean; note?: string }>;
 }
 
 /** Control characters (ESC, CR, NL, NUL…) in ANY recorded string (argv, cwd, paths, errors, notes) must never reach the coordinator's terminal nor forge a line (review F11). */
@@ -198,6 +200,10 @@ function renderRows(rows: BilanRow[], out: string[]): void {
         for (const o of killed.filter((x) => x.via === 'env' || x.via === 'session')) {
           out.push(`      orphan killed (left the CLI's tree, via ${c(o.via)}): ${short(o.cmd, 70)} pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);
         }
+        // #282: a background task the CLI ended itself starts no task-notification turn; one ended by signal (a failed stop_task) may — say which, never silently
+        const stopOk = (k.stopTask ?? []).filter((x) => x.ok), stopBad = (k.stopTask ?? []).filter((x) => !x.ok);
+        if (stopOk.length) out.push(`      background task(s) ended through the CLI (stop_task — no task-notification turn): ${stopOk.slice(0, 6).map((x) => `${c(x.taskId)} (${short(x.cmd, 50)})`).join('; ')}${stopOk.length > 6 ? `; +${stopOk.length - 6} more` : ''}`);
+        if (stopBad.length) out.push(`      stop_task FAILED (ended by signal instead — the CLI may have started a task-notification turn): ${stopBad.slice(0, 6).map((x) => `${c(x.taskId)} (${short(x.cmd, 50)}${x.note ? `: ${short(x.note, 60)}` : ''})`).join('; ')}`);
         if (k.survivors?.length) out.push(`      STILL ALIVE: ${k.survivors.map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)}: ${c(x.reason)})`).join('; ')}`);
         if (k.refused?.length) out.push(`      refused (identity not provable): ${k.refused.map((x) => `pid ${c(x.pid)}: ${c(x.reason)}`).join('; ')}`);
         if (k.spared?.length) out.push(`      left running (not tool processes): ${k.spared.map((x) => short(x.cmd, 50)).join('; ')}`);

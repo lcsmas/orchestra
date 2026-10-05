@@ -30,7 +30,7 @@ import {
   type BilanActivity,
 } from './bus-pause-records.ts';
 import { carrierPhase, confirmByTrap, enrollRoster, sweepSoftPauses, __resetPauseDouceForTests, type PauseOrderDeps } from './pause-douce.ts';
-import type { KillReport } from './pause-kill.ts';
+import type { KillReport, StopTaskResult } from './pause-kill.ts';
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
 import type { RootRef } from '../shared/pause-procs.ts';
 import { log } from './logger.ts';
@@ -87,8 +87,11 @@ export interface TrapDeps {
   killTrees(
     cli: RootRef,
     keeperPid: number | null,
-    opts?: { stillPaused?: () => boolean; startedBeforeMs?: number | (() => number | undefined); humanWindows?: () => Array<{ from: number; to?: number }>; spareRoots?: readonly number[] },
+    opts?: { stillPaused?: () => boolean; startedBeforeMs?: number | (() => number | undefined); humanWindows?: () => Array<{ from: number; to?: number }>; spareRoots?: readonly number[]; stopTask?: (taskId: string) => Promise<StopTaskResult> },
   ): Promise<KillReport>;
+  /** #282: end one of the member's background tasks through the CLI's own `stop_task` (the CLI then enqueues no task-notification turn, which a SIGTERM makes it do — a model request on a paused member).
+   *  Called by the kill for each tool root that is a task, BEFORE any signal. Omitted ⇒ signals only (the old behaviour). */
+  stopTask?(m: TrapMember, taskId: string): Promise<StopTaskResult>;
   /** false while the workspace store has not been loaded from disk: an empty member list then means "unknown", never "none" (review F10). */
   storeReady?(): boolean;
   /** How long a recent pause waits for the CLI to record the pausing call's process chain (ms, default 3000). */
@@ -116,6 +119,8 @@ export interface TrapSummary {
 }
 
 const ACTIVITY_LASTTASK_CHARS = 200;
+/** Interrupt outcomes after which no turn of this member is running (#282: only then is `stop_task` offered to the kill). */
+const TURN_OVER: ReadonlySet<string> = new Set(['interrupted', 'attached-then-interrupted', 'idle']);
 
 /** Is `carrierRunId` (a run id = its anchor workspace id) `startId` itself or one of its ancestors on the LIVE `parentId` chain?
  *  `dangling` = the walk reached a parent the store no longer has — the same case D1a's gate falls back to `parent_run_id` for.
@@ -348,6 +353,10 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   else if ('error' in target) killed = null; // unproven ⇒ not complete (see above)
   else {
     try {
+      // #282: through the CLI only once the member's turn is PROVABLY over (the interrupt took effect / nothing ran) and for a STRUCTURED member (keeper → CLI; a PTY agent has no SDK session to ask):
+      // a foreground tool's shell carries a task id too, and stopping it under a live turn (the exempt pauser's other tool, a failed/skipped interrupt) would only continue that turn.
+      // Read from THIS attempt's proven keeper, never the surface a retry carried over from an attempt that could not probe.
+      const offerStop = !!deps.stopTask && target.keeperPid !== null && TURN_OVER.has(String(activity.interrupt));
       const rep = await deps.killTrees(target.cli, target.keeperPid, {
         stillPaused: () => stillPaused(db, carrier),
         // re-read at EVERY signal: a human turn may start (or end) while the kill rounds run (D9). A tool root started inside a human turn's window is spared even after the turn ENDED
@@ -355,6 +364,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
         // an OPEN window with no human turn in flight any more (session stopped / died / interrupted before the release fired) is clamped to NOW: a dead turn shields nothing later
         humanWindows: () => humanWindowsSince(m.wsId, carrier.pausedAt).map((w) => (w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w)),
         ...(spareRoot !== undefined ? { spareRoots: [spareRoot] } : {}),
+        ...(offerStop ? { stopTask: (taskId: string) => deps.stopTask!(m, taskId) } : {}),
       });
       killed = rep;
       attemptKills = rep.killed;
@@ -363,7 +373,12 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
         updateBilan(db, rowId, { activity, killed: rep, error: errors.length ? errors.join('; ') : null });
         return 'lifted';
       }
-      if (rep.killed.length > 0) trapKilledAt.set(m.wsId, deps.now());
+      if (rep.killed.some((k) => k.signal !== 'stop_task' && k.via === 'root-under-cli')) trapKilledAt.set(m.wsId, deps.now()); // only a tool ROOT ended by SIGNAL can be followed by a task-notification turn (a CLI stop_task suppresses it; an orphan is no task)
+      const failedStops = (rep.stopTask ?? []).filter((x) => !x.ok);
+      if (failedStops.length > 0) activity.notes = [...(activity.notes ?? []), `stop_task failed for ${failedStops.map((x) => `${x.taskId} (${x.cmd.slice(0, 60)}${x.note ? `: ${x.note.slice(0, 80)}` : ''})`).join(', ')} — not confirmed: the task was ended by signal (or by the CLI's own kill landing late), so the CLI may have started a task-notification turn by itself (the turn observer interrupts it)`];
+      // a tool ROOT killed by signal although `stop_task` was offered had no task link (tasks/<id>.output on its stdout — a CLI whose path differs, a Monitor-style task): if it was a background task the CLI may start a task-notification turn
+      const unlinked = offerStop ? rep.killed.filter((k) => k.via === 'root-under-cli' && !(rep.stopTask ?? []).some((x) => x.pid === k.pid)) : [];
+      if (unlinked.length > 0) activity.notes = [...(activity.notes ?? []), `tool root(s) ended by signal with no task link (${unlinked.slice(0, 3).map((k) => k.cmd.slice(0, 50)).join(' | ')}): if one was a background task the CLI may have started a task-notification turn by itself (the turn observer interrupts it)`];
       if (rep.cliGone) {
         // the CLI exited / was replaced (a Restart): not "0 killed, complete" — retried against the current CLI; what WAS killed stays listed (round-3 F5)
         incomplete = true;
@@ -637,7 +652,7 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
         let killedN = 0;
         const target = await deps.cliOf(m).catch(() => null);
         if (target && !('error' in target)) {
-          const rep = await deps.killTrees(target.cli, target.keeperPid, { stillPaused: () => resolveCarrier(deps, db, m) !== null });
+          const rep = await deps.killTrees(target.cli, target.keeperPid, { stillPaused: () => resolveCarrier(deps, db, m) !== null, ...(deps.stopTask && target.keeperPid !== null && TURN_OVER.has(String(outcome)) ? { stopTask: (taskId: string) => deps.stopTask!(m, taskId) } : {}) });
           killedN = rep.killed.length;
           appendObserverKills(db, carrier.runId, m.wsId, carrier.pausedAt, rep.killed);
         }
