@@ -187,12 +187,15 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     clause(arm, 'G3/ui-douce-written-by-the-menu-and-completed', run(I.lead).pause_mode === 'soft' && run(I.lead).pause_deadline_at - run(I.lead).paused_at === 180000 && run(I.lead).pause_escalated_at !== null, `mode soft, deadline = +3 min, escalated at +${run(I.lead).pause_escalated_at - run(I.lead).paused_at} ms (every member idle ⇒ confirmed by the host, no 3-min wait), trap done`);
     await waitFor(async () => (await badges()).length === 7, 15000, 'badges after the douce');
     await parkAndSettle();
+    const heldOpsOutcome = world.hold(I.ops).outcome; // `orchestra run hold --run wave-ops` (the shipped setRunHold): a ▶ on the covered row still lifts it — as the CLI verb does — and must SAY so (R2-1)
+    const heldOpsBefore = run(I.ops).held_at;
     await hover('wave-ops');
     await press(`.ws-row-actions-pop [data-pause-action="resume"][data-pause-for="${I.ops}"]`, '▶ on the covered OPS row');
     await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the covered-run explanation');
     const ex3Text = await ev(`document.querySelector('[data-pause-panel="explain"]').textContent`);
     clause(arm, 'G3/refusal-covered-remedy-names-the-ancestor-no-button', (await ev(`document.querySelectorAll('[data-pause-panel="explain"] button').length`)) === 0 && /Reprendre fleet-lead/.test(await ev(`document.querySelector('[data-pause-panel="explain"] .pause-explain-fix')?.textContent ?? ''`)), 'the remedy names fleet-lead (the run that holds the pause) as text: no button resumes a wider run');
     clause(arm, 'G3/refusal-covered-run-names-the-ancestor', /fleet-lead tient déjà wave-ops en pause/.test(ex3Text) && run(I.ops).paused_at === null && run(I.lead).resume_started_at === null, `"${ex3Text.replace(/\s+/g, ' ').slice(0, 200)}"; wave-ops has no pause of its own, the lead's Reprise did not start`);
+    clause(arm, 'G3/refusal-covered-resume-says-the-hold-was-lifted', heldOpsOutcome === 'held' && heldOpsBefore !== null && run(I.ops).held_at === null && /hold de liveness/.test(ex3Text) && /wave-ops/.test(ex3Text), `hold seeded (${heldOpsOutcome}, held_at ${heldOpsBefore}) → held_at ${run(I.ops).held_at} after ▶ on the covered row; the explanation says so: "${ex3Text.replace(/\s+/g, ' ').slice(0, 260)}"`);
     await shot('5-refusal-covered', { x: 0, y: 100, width: 700, height: 420 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await sleep(300);

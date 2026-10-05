@@ -93,3 +93,17 @@ test('availabilityFor: the control is explained BEFORE the click', () => {
   assert.deepEqual(resuming.resume, { ok: false, code: 'already-resuming' });
   assert.deepEqual(availabilityFor({ anchored: true, runKnown: true, switchOn: true, phase: 'active', covered: true }).resume, { ok: false, code: 'covered' });
 });
+
+test('explainResumeOutcome names a lifted liveness HOLD (the CLI verb prints "liveness escalation is re-enabled") — on a covered row, on a plain not-paused row, and never when nothing was lifted (R2-1)', () => {
+  const covered = explainResumeOutcome('not-paused', { ...ctx, cover: { runId: 'L', label: 'fleet-lead' }, holdLifted: true })!;
+  assert.match(covered.title, /fleet-lead tient déjà wave-ops en pause/, 'the covered explanation is still the covered one');
+  assert.match(covered.why, /Le hold de liveness de wave-ops a quand même été levé/);
+  assert.match(covered.why, /orchestra run resume/);
+  assert.match(covered.why, /ses membres restent suspendus tant que fleet-lead tient la pause/, 'a covered run\'s members are still silenced by the ancestor\'s pause: never "liveness is active again"');
+  assert.doesNotMatch(covered.why, /de nouveau active/);
+  assert.match(explainResumeOutcome('not-paused', { ...ctx, holdLifted: true })!.why, /^Rien à reprendre\. Le hold de liveness de wave-ops.*l'escalade de liveness est de nouveau active/);
+  assert.match(explainResumeOutcome('already-resuming', { ...ctx, holdLifted: true })!.why, /hold de liveness/);
+  assert.doesNotMatch(explainResumeOutcome('not-paused', { ...ctx, cover: { runId: 'L', label: 'fleet-lead' } })!.why, /hold/, 'no hold lifted → not a word about it');
+  assert.doesNotMatch(explainResumeOutcome('not-paused', { ...ctx, cover: null, holdLifted: false })!.why, /hold/);
+  assert.equal(explainResumeOutcome('resuming', { ...ctx, holdLifted: true }), null, 'a successful Reprise has nothing to explain (the hold lift is the verb\'s own effect)');
+});

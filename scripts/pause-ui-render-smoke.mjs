@@ -113,8 +113,13 @@ check('a READABLE overview shows no unreadable strip anywhere (the sidebar strip
   noBilan({ phase: 'paused', trapAt: Date.now() });
   const gone = html(h(all.BusPauseSection));
   check('no Bilan row once the trap is DONE: "aucun Bilan" + the worktree-is-the-only-copy line (never "après l\'escalade" forever)', gone.includes('aucun Bilan') && /data-pause-bilan-detail="w1".{0,400}aucun Bilan pour cet agent/.test(gone) && !gone.includes('après l&#x27;escalade'), gone.slice(0, 200));
-  noBilan({ phase: 'resuming', trapAt: null, progress: { kind: 'repris', done: 1, total: 4, missing: ['w1'] }, blocked: ['w1'] });
-  check('no Bilan row during a Reprise: absent, said so', html(h(all.BusPauseSection)).includes('aucun Bilan'));
+  noBilan({ phase: 'resuming', trapAt: Date.now(), progress: { kind: 'repris', done: 1, total: 4, missing: ['w1'] }, blocked: ['w1'] });
+  check('no Bilan row during a Reprise AFTER a trap: absent, said so', html(h(all.BusPauseSection)).includes('aucun Bilan'));
+  noBilan({ phase: 'resuming', trapAt: null, mode: 'soft', escalatedAt: null, progress: { kind: 'repris', done: 1, total: 4, missing: ['w1'] }, blocked: ['w1'] });
+  const cancelled = html(h(all.BusPauseSection));
+  noBilan({ phase: 'resuming', trapAt: null, mode: 'hard', progress: { kind: 'repris', done: 1, total: 4, missing: ['w1'] }, blocked: ['w1'] });
+  check('a Reprise of a dure whose trap never finished (trapAt null, trap OWED): the missing Bilan still warns (pre-review r2)', /data-pause-bilan-detail="w1".{0,400}aucun Bilan pour cet agent/.test(html(h(all.BusPauseSection))));
+  check('a Reprise of a douce CANCELLED before it escalated (no trap ever ran): no "aucun Bilan", no worktree alarm — a harmless gesture is not an alert (R2-2)', !cancelled.includes('aucun Bilan') && !cancelled.includes('data-pause-bilan-detail="w1"') && !cancelled.includes('après l&#x27;escalade'), cancelled.slice(0, 200));
 }
 seed({ runs: [mkRun()] });
 const bus1 = html(h(all.BusPauseSection));

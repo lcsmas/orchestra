@@ -166,19 +166,30 @@ test('releaseLabel: honest about its scope — never counts the workers « tout 
   assert.equal(releaseLabel({ own: [], below: ['x'] }), 'Libérer… (1 plus bas, à part)');
 });
 
-test('noBilanState / memberAttention: a member with no Bilan row is PENDING while the trap is owed, ABSENT (and said so) once it is done or the Reprise started', () => {
-  assert.equal(noBilanState({ phase: 'pausing', trapAt: null }), 'pending');
-  assert.equal(noBilanState({ phase: 'paused', trapAt: null }), 'pending', 'a dure whose trap is still taking members');
-  assert.equal(noBilanState({ phase: 'paused', trapAt: 5 }), 'absent', 'the trap is done: no Bilan is coming');
-  assert.equal(noBilanState({ phase: 'pausing', trapAt: 5 }), 'absent');
-  assert.equal(noBilanState({ phase: 'resuming', trapAt: null }), 'absent', 'a Reprise: nothing more will be recorded');
-  assert.equal(noBilanState({ phase: 'active', trapAt: null }), 'absent');
-  assert.deepEqual(memberAttention(null, { phase: 'paused', trapAt: null }), []);
-  const gone = memberAttention(null, { phase: 'resuming', trapAt: 5 });
+test('noBilanState / memberAttention: a member with no Bilan row is PENDING while the trap is coming, ABSENT (and said so) once it ran or an OWED trap never finished, NONE when no trap was ever owed', () => {
+  const r = (phase: PauseUiRun['phase'], trapAt: number | null, mode: PauseUiRun['mode'] = 'hard', escalatedAt: number | null = null) => ({ phase, trapAt, mode, escalatedAt });
+  assert.equal(noBilanState(r('pausing', null, 'soft')), 'pending');
+  assert.equal(noBilanState(r('paused', null)), 'pending', 'a dure whose trap is still taking members');
+  assert.equal(noBilanState(r('paused', 5)), 'absent', 'the trap is done: no Bilan is coming');
+  assert.equal(noBilanState(r('pausing', 5, 'soft')), 'absent');
+  assert.equal(noBilanState(r('resuming', 5)), 'absent', 'a Reprise AFTER a trap: nothing more will be recorded, and some member has none');
+  assert.equal(noBilanState(r('resuming', 5, 'soft', 3)), 'absent');
+  assert.equal(noBilanState(r('resuming', 5, 'soft', null)), 'absent', 'a RECORDED trap wins over the mode/escalation inference');
+  // a trap that was OWED and never finished (trapOwed: a dure, or an escalated douce) leaves members with no Bilan: that stays an alarm
+  assert.equal(noBilanState(r('resuming', null, 'hard')), 'absent', 'a dure whose trap FAILED part-way, then ▶: still an alarm (pre-review r2)');
+  assert.equal(noBilanState(r('resuming', null, 'soft', 3)), 'absent', 'an escalated douce whose trap never finished');
+  // no trap was ever owed: a douce cancelled before it escalated — nothing interrupted, no alarm (R2-2)
+  assert.equal(noBilanState(r('resuming', null, 'soft', null)), 'none', 'a douce CANCELLED before it escalated');
+  assert.equal(noBilanState(r('active', null, null)), 'none', 'a closed Reprise: the pause columns are cleared (mode null) — nothing left to tell the cases apart');
+  assert.equal(noBilanState(r('active', 5, 'hard')), 'absent', '…unless the trap is recorded');
+  assert.deepEqual(memberAttention(null, r('resuming', null, 'soft', null)), [], 'none: no warn line either');
+  assert.deepEqual(memberAttention(null, r('paused', null)), []);
+  const gone = memberAttention(null, r('resuming', 5));
   assert.equal(gone.length, 1);
   assert.equal(gone[0].tone, 'warn');
   assert.match(gone[0].text, /aucun Bilan.*seule copie/);
-  assert.deepEqual(memberAttention(bilan({ error: 'boom', snapshotRef: null }), { phase: 'paused', trapAt: 5 }), bilanAttention(bilan({ error: 'boom', snapshotRef: null })), 'a member WITH a Bilan: its own attention, unchanged');
+  assert.equal(memberAttention(null, r('resuming', null, 'hard')).length, 1, 'an unfinished owed trap warns too');
+  assert.deepEqual(memberAttention(bilan({ error: 'boom', snapshotRef: null }), r('paused', 5)), bilanAttention(bilan({ error: 'boom', snapshotRef: null })), 'a member WITH a Bilan: its own attention, unchanged');
 });
 
 test('newerOverview: an OLDER host-stamped overview never replaces a newer one (a write reply racing a fresher push); unstamped ones always win', () => {

@@ -29,7 +29,7 @@ export const MUTANTS = [
   { id: 'bus-release-on-every-row', file: BUS, find: "run.phase === 'resuming' && m.ui === 'blocked' ? (", rep: "run.phase === 'resuming' ? (", tests: [SMOKE], expect: /Reprise: "N\/M repris"/ },
   { id: 'bus-closed-reprise-has-actions', file: BUS, find: "{run.phase === 'paused' && <PauseActionButton kind=\"resume\"", rep: "{(run.phase === 'paused' || run.phase === 'active') && <PauseActionButton kind=\"resume\"", tests: [SMOKE], expect: /closed Reprise still collecting/ },
   { id: 'bus-missing-hidden', file: BUS, find: "{run.progress.missing.length > 0 && (run.phase === 'pausing' || run.phase === 'paused') && ", rep: '{false && ', tests: [SMOKE], expect: /douce waiting/ },
-  { id: 'bus-bilan-without-escalade-note', file: BUS, find: "missing === 'absent' ? 'aucun Bilan' : \"après l'escalade\"}", rep: "missing === 'absent' ? 'aucun Bilan' : ''}", tests: [SMOKE], expect: /douce waiting/ },
+  { id: 'bus-bilan-without-escalade-note', file: BUS, find: "missing === 'pending' ? \"après l'escalade\" : '—'}", rep: "missing === 'pending' ? '' : '—'}", tests: [SMOKE], expect: /douce waiting/ },
   // ── building blocks
   { id: 'blk-blocked-not-dim', file: BLK, find: "${ui === 'blocked' ? ' is-blocked' : ''}", rep: '', tests: [SMOKE], expect: /blocked badge carries is-blocked/ },
   { id: 'blk-bar-unclamped', file: BLK, find: 'Math.round(Math.max(0, Math.min(1, fraction)) * 100)', rep: 'Math.round(fraction * 100)', tests: [SMOKE], expect: /progress bar clamps/ },
@@ -115,7 +115,6 @@ MUTANTS.push(
   { id: 'resume-hold-lifted-by-anyone', file: 'src/main/pause-ui.ts', find: "    holdLifted = setRunHold(db, t.runId, false, actor) === 'resumed';", rep: "    holdLifted = setRunHold(db, t.runId, false, t.runId) === 'resumed';", tests: ['src/main/pause-ui.test.ts'], expect: /uiResume = `orchestra run resume`/ },
   // R1-4 run anchors
   { id: 'controls-only-orchestrators', file: 'src/main/pause-ui.ts', find: '      if (!nodeOrchestrates(ws) && !ownsRun) continue;', rep: '      if (!nodeOrchestrates(ws)) continue;', tests: ['src/main/pause-ui.test.ts'], expect: /PLAIN run-anchoring parent/ },
-  { id: 'anchor-target-ignored', file: 'src/main/pause-ui.ts', find: '  return { ws, runId: own ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace) };', rep: '  return { ws, runId: nearestOrchestratorId(ws, deps.getWorkspace) };', tests: ['src/main/pause-ui.test.ts'], expect: /PLAIN run-anchoring parent/ },
   // R1-2 « tout libérer »
   { id: 'explain-below-no-second-gesture', file: 'src/shared/pause-ui.ts', find: "      ...(c.actorId && c.carrierRunId\n        ? {", rep: "      ...(false\n        ? {", tests: [SHARED], expect: /explainReleaseResult/ },
   { id: 'release-ctx-ids-dropped', file: 'src/main/pause-ui.ts', find: 'actorId: actor, carrierRunId: carrier ?? t.runId, all: req.targets', rep: 'all: req.targets', tests: ['src/main/pause-ui.test.ts'], expect: /« Libérer tout » = `release --all`/ },
@@ -142,11 +141,9 @@ MUTANTS.push(
   { id: 'strip-drops-reason', file: BLK, find: "{error ?? ''}</span>", rep: '</span>', tests: [SMOKE], expect: /overview UNREADABLE/ },
   // R1b-3 a member with no Bilan row, past the trap
   { id: 'bus-absent-no-warn', file: BUS, find: 'const attention = memberAttention(b, run);', rep: 'const attention = b ? memberAttention(b, run) : [];', tests: [SMOKE], expect: /no Bilan row once the trap is DONE/ },
-  { id: 'bus-absent-shows-pending', file: BUS, find: "{b ? killedText(b) : missing === 'absent' ? 'aucun Bilan' : \"après l'escalade\"}", rep: "{b ? killedText(b) : \"après l'escalade\"}", tests: [SMOKE], expect: /no Bilan row once the trap is DONE/ },
-  { id: 'bus-pending-shows-absent', file: BUS, find: "missing === 'absent' ? 'aucun Bilan' : \"après l'escalade\"}", rep: "'aucun Bilan'}", tests: [SMOKE], expect: /no Bilan row while the trap is still owed/ },
-  { id: 'view-nobilan-always-pending', file: VIEW, find: "? (run.trapAt !== null ? 'absent' : 'pending') : 'absent';", rep: "? 'pending' : 'pending';", tests: [VT], expect: /noBilanState/ },
-  { id: 'view-nobilan-trap-done-pending', file: VIEW, find: "? (run.trapAt !== null ? 'absent' : 'pending') : 'absent';", rep: "? 'pending' : 'absent';", tests: [VT], expect: /noBilanState/ },
-  { id: 'view-nobilan-resuming-pending', file: VIEW, find: "? (run.trapAt !== null ? 'absent' : 'pending') : 'absent';", rep: "? (run.trapAt !== null ? 'absent' : 'pending') : 'pending';", tests: [VT], expect: /noBilanState/ },
+  { id: 'bus-absent-shows-pending', file: BUS, find: "{b ? killedText(b) : missing === 'absent' ? 'aucun Bilan' : missing === 'pending' ? \"après l'escalade\" : '—'}", rep: "{b ? killedText(b) : \"après l'escalade\"}", tests: [SMOKE], expect: /no Bilan row once the trap is DONE/ },
+  { id: 'bus-pending-shows-absent', file: BUS, find: "missing === 'absent' ? 'aucun Bilan' : missing === 'pending' ? \"après l'escalade\" : '—'}", rep: "'aucun Bilan'}", tests: [SMOKE], expect: /no Bilan row while the trap is still owed/ },
+  { id: 'view-nobilan-always-pending', file: VIEW, find: "  if (run.trapAt !== null) return 'absent';", rep: "  if (false) return 'absent';", tests: [VT], expect: /noBilanState/ },
   { id: 'view-member-attention-silent', file: VIEW, find: "  return noBilanState(run) === 'absent' ? [{ tone: 'warn'", rep: "  return false ? [{ tone: 'warn'", tests: [VT], expect: /noBilanState/ },
   // R1b-2 a write reply racing a fresher push
   { id: 'view-newer-always-next', file: VIEW, find: 'next.rev < cur.rev ? cur : next;', rep: 'false ? cur : next;', tests: [VT], expect: /newerOverview/ },
@@ -168,4 +165,38 @@ MUTANTS.push(
   { id: 'label-unsanitized', file: 'src/main/pause-ui.ts', find: 'cl(deps.labelOf(id) ?? short(id), 160);', rep: '(deps.labelOf(id) ?? short(id));', tests: ['src/main/pause-ui.test.ts'], expect: /LABELS are sanitized/ },
   { id: 'label-not-kept', file: 'src/main/pause-ui.ts', find: 'cl(deps.labelOf(id) ?? short(id), 160);', rep: "cl(deps.labelOf(id) ?? short(id), 160).replace(/[a-z]/g, '');", tests: ['src/main/pause-ui.test.ts'], expect: /LABELS are sanitized/ },
   { id: 'strip-206f-missing', file: 'src/shared/pause-consigne.ts', find: '[0x2060, 0x206f],', rep: '[0x2060, 0x2064], [0x2066, 0x2069],', tests: ['src/main/pause-ui.test.ts'], expect: /LABELS are sanitized|strips control/ },
+);
+
+// ── follow-up r2 (review round 2: R2-1..R2-4)
+MUTANTS.push(
+  // R2-1 a lifted hold is said
+  { id: 'explain-hold-not-named', file: 'src/shared/pause-ui.ts', find: 'if (!base || !c.holdLifted) return base;', rep: 'return base;', tests: [SHARED], expect: /names a lifted liveness HOLD/ },
+  { id: 'explain-hold-always-named', file: 'src/shared/pause-ui.ts', find: 'if (!base || !c.holdLifted) return base;', rep: 'if (!base) return base;', tests: [SHARED], expect: /names a lifted liveness HOLD/ },
+  { id: 'explain-hold-wrong-run', file: 'src/shared/pause-ui.ts', find: 'Le hold de liveness de ${c.runLabel} a quand même été levé', rep: 'Le hold de liveness de ${c.actorLabel} a quand même été levé', tests: [SHARED], expect: /names a lifted liveness HOLD/ },
+  { id: 'resume-hold-not-passed-to-explain', file: 'src/main/pause-ui.ts', find: '{ ...ctxFor(db, deps, t.runId, actor, cover), holdLifted }', rep: 'ctxFor(db, deps, t.runId, actor, cover)', tests: ['src/main/pause-ui.test.ts'], expect: /R2-1/ },
+  // R2-2 a cancelled douce raises no alarm
+  { id: 'view-nobilan-trap-ignored-in-resuming', file: VIEW, find: "  if (run.trapAt !== null) return 'absent';", rep: "  if (run.trapAt !== null && run.phase !== 'resuming') return 'absent';", tests: [VT], expect: /noBilanState/ },
+  { id: 'bus-none-shows-absent', file: BUS, find: "<td>{b ? treeText(b) : missing === 'absent' ? 'aucun Bilan' : '—'}</td>", rep: "<td>{b ? treeText(b) : 'aucun Bilan'}</td>", tests: [SMOKE], expect: /CANCELLED before it escalated/ },
+  { id: 'bus-none-cell-absent', file: BUS, find: "missing === 'pending' ? \"après l'escalade\" : '—'}</td>", rep: "missing === 'pending' ? \"après l'escalade\" : 'aucun Bilan'}</td>", tests: [SMOKE], expect: /CANCELLED before it escalated/ },
+  // R2-3 « tout libérer » is pinned in the release gate (`pnpm test`)
+  { id: 'act-release-all-explicit-ids-in-gate', file: ACT, find: "useStore.getState().pauseRelease(wsId, 'all', run.carrierRunId)", rep: 'useStore.getState().pauseRelease(wsId, releasableIds(run), run.carrierRunId)', tests: [WIRING], expect: /pinned in the RELEASE gate/ },
+  { id: 'act-release-all-no-carrier-in-gate', file: ACT, find: "useStore.getState().pauseRelease(wsId, 'all', run.carrierRunId)", rep: "useStore.getState().pauseRelease(wsId, 'all', null)", tests: [WIRING], expect: /pinned in the RELEASE gate/ },
+  { id: 'act-many-sends-all-in-gate', file: ACT, find: 'useStore.getState().pauseRelease(wsId, ids.slice(), carrierRunId)', rep: "useStore.getState().pauseRelease(wsId, 'all', carrierRunId)", tests: [WIRING], expect: /pinned in the RELEASE gate/ },
+  { id: 'host-expands-all', file: 'src/main/pause-ui-host.ts', find: "targets: targets === 'all' ? 'all' :", rep: "targets: targets === 'ALL' ? 'all' :", tests: [WIRING], expect: /pinned in the RELEASE gate/ },
+  { id: 'row-release-all-not-all', file: ROW, find: 'runReleaseAll(wsId, run, rect)', rep: 'runReleaseMany(wsId, releasableIds(run), run.carrierRunId, rect)', tests: [WIRING], expect: /pinned in the RELEASE gate/ },
+  // R2-4 a child of a plain run-anchoring parent is explained against that parent
+  { id: 'nearest-run-ignores-anchors', file: 'src/main/pause-ui.ts', find: 'if (nodeOrchestrates(cur) || anchors(cur.id)) return cur.id;', rep: 'if (nodeOrchestrates(cur)) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+  { id: 'nearest-run-no-walk', file: 'src/main/pause-ui.ts', find: 'const parent = deps.getWorkspace(cur.parentId);', rep: 'const parent = undefined as WaveNode | undefined;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+  { id: 'nearest-run-anchor-over-orchestrator', file: 'src/main/pause-ui.ts', find: 'if (nodeOrchestrates(cur) || anchors(cur.id)) return cur.id;', rep: 'if (anchors(cur.id)) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+);
+
+// ── follow-up r2, after the pre-review (R2-2 hard trap that never finished, covered-hold wording, archived anchor)
+MUTANTS.push(
+  { id: 'view-nobilan-paused-not-pending', file: VIEW, find: "if (run.phase === 'pausing' || run.phase === 'paused') return 'pending';", rep: "if (false) return 'pending';", tests: [VT], expect: /noBilanState/ },
+  { id: 'view-nobilan-active-absent', file: VIEW, find: "if (run.phase === 'active') return 'none';", rep: "if (false) return 'none';", tests: [VT], expect: /noBilanState/ },
+  { id: 'view-nobilan-hard-unfinished-none', file: VIEW, find: "run.mode !== 'soft' || run.escalatedAt !== null ? 'absent' : 'none'", rep: "run.escalatedAt !== null ? 'absent' : 'none'", tests: [VT, SMOKE], expect: /noBilanState|a dure whose trap never finished/ },
+  { id: 'view-nobilan-escalated-douce-none', file: VIEW, find: "run.mode !== 'soft' || run.escalatedAt !== null ? 'absent' : 'none'", rep: "run.mode !== 'soft' ? 'absent' : 'none'", tests: [VT], expect: /noBilanState/ },
+  { id: 'view-nobilan-cancelled-douce-absent', file: VIEW, find: "run.mode !== 'soft' || run.escalatedAt !== null ? 'absent' : 'none'", rep: "'absent'", tests: [VT, SMOKE], expect: /noBilanState|CANCELLED before it escalated/ },
+  { id: 'explain-hold-covered-wrong', file: 'src/shared/pause-ui.ts', find: 'ses membres restent suspendus tant que ${c.cover.label} tient la pause', rep: "l'escalade de liveness est de nouveau active pour ses membres", tests: [SHARED], expect: /names a lifted liveness HOLD/ },
+  { id: 'nearest-run-archived-anchor', file: 'src/main/pause-ui.ts', find: 'if (!w || w.archived) return false;', rep: 'if (!w) return false;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
 );

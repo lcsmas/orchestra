@@ -163,3 +163,15 @@ test('an explanation that carries « Libérer aussi ces N » is closed when its 
   const m = codeOf('src/renderer/components/pause/PauseMenu.tsx');
   assert.ok(m.includes('${id}:${r.phase}@${r.pausedAt}') && m.includes('seen.current.epoch !== epoch') && /seen\.current = null; close\(\);/.test(m), 'the panel compares the carrier run phase@epoch it opened with, and closes on a change');
 });
+
+test('« Libérer tout » sends \'all\' (the acting row\'s OWN run) — pinned in the RELEASE gate (`pnpm test`), not only in the render smoke (R2-3)', () => {
+  const a = codeOf('src/renderer/components/pause/pause-actions.ts');
+  const all = a.slice(at(a, 'export async function runReleaseAll'), at(a, 'export async function runReleaseMany'));
+  assert.deepEqual([...all.matchAll(/pauseRelease\(wsId, ([^,]+),/g)].map((m) => m[1]), ["'all'"], "runReleaseAll hands the writer 'all' — never every blocked id in one click");
+  assert.ok(all.includes("pauseRelease(wsId, 'all', run.carrierRunId)"), 'with the carrier it acts on');
+  const many = a.slice(at(a, 'export async function runReleaseMany'));
+  assert.deepEqual([...many.matchAll(/pauseRelease\(wsId, ([^,]+(?:\(\))?),/g)].map((m) => m[1]), ['ids.slice()'], 'the second gesture / a per-member « Libérer » send explicit ids (and only those)');
+  assert.ok(codeOf('src/renderer/components/pause/PauseRow.tsx').includes('runReleaseAll(wsId, run, rect)'), 'the sidebar row button is « tout libérer »');
+  assert.ok(codeOf('src/renderer/components/pause/BusPauseSection.tsx').includes('runReleaseAll(actor, run, null)'), 'so is the Bus card button');
+  assert.ok(codeOf('src/main/pause-ui-host.ts').includes("targets: targets === 'all' ? 'all' :"), "the host forwards 'all' as is (never expands it)");
+});

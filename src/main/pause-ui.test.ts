@@ -608,3 +608,65 @@ test('an UNKNOWN pause mode is refused (typed write-failed, nothing written) —
   assert.equal(uiPause(db, deps, { wsId: 'L', mode: 'soft' }).outcome, 'paused', 'a valid mode still works');
   db.close();
 });
+
+test('R2-1: ▶ on a COVERED row still lifts its liveness hold (the verb does) and the explanation SAYS so', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  trap(db);
+  setRunHold(db, 'O', true, 'O');
+  assert.notEqual(getRunHold(db, 'O'), null, 'held before');
+  const r = uiResume(db, deps, { wsId: 'O' });
+  assert.equal(r.outcome, 'not-paused');
+  assert.equal(r.holdLifted, true);
+  assert.equal(getRunHold(db, 'O'), null, 'the hold really was lifted');
+  assert.match(r.explain!.title, /fleet-lead tient déjà wave-ops en pause/);
+  assert.match(r.explain!.why, /Le hold de liveness de wave-ops a quand même été levé/, 'said in the explanation, not only in a field no screen reads');
+  assert.equal(getRunPause(db, 'L') !== null, true, 'L is still paused');
+  const none = uiResume(db, deps, { wsId: 'S' });
+  assert.doesNotMatch(none.explain?.why ?? '', /hold/, 'nothing held → nothing said');
+  db.close();
+});
+
+test('R2-4: ⏸ on a CHILD of a plain run-anchoring parent is the writer\'s own `refused` naming that parent — not « no run »', () => {
+  const db = freshDb();
+  tree(db);
+  busRuns.startRun(db, { id: 'P', kind: 'mission', coordinator: 'P' }, ON);
+  const P: WaveNode = { id: 'P', parentId: 'O' }; // under an orchestrator's wave: P still anchors its OWN run
+  const pc: WaveNode = { id: 'pc', parentId: 'P' };
+  const pcc: WaveNode = { id: 'pcc', parentId: 'pc' };
+  busRuns.startRun(db, { id: 'PA', kind: 'mission', coordinator: 'PA' }, ON);
+  const extra: Array<WaveNode & { archived?: boolean }> = [
+    { id: 'PA', parentId: 'O', archived: true }, // an ARCHIVED anchor: no line to point at
+    { id: 'pa1', parentId: 'PA' },
+    { id: 'Q', kind: 'orchestrator', parentId: 'L' }, // an orchestrator WITHOUT a bus run: still the nearest run-owner
+    { id: 'q1', parentId: 'Q' },
+  ];
+  const added = [P, pc, pcc, ...extra];
+  NODES.push(...added);
+  for (const n of added) byId.set(n.id, n);
+  try {
+    for (const child of ['pc', 'pcc']) {
+      const r = uiPause(db, deps, { wsId: child, mode: 'soft' });
+      assert.equal(r.outcome, 'refused', `${child}: the writer's own refusal, not no-run`);
+      assert.equal(r.runId, 'P', `${child}: explained against the run it sits in`);
+      assert.match(r.explain!.title, new RegExp(`${child} n'est pas coordinateur de P`));
+      assert.match(r.explain!.fix[0], /mettre en pause sa vague P/, 'the remedy names the anchor');
+      assert.equal(r.explain!.actions, undefined, 'text only, never a button');
+      assert.equal(getRunPause(db, 'P'), null, 'nothing written');
+    }
+    assert.equal(uiResume(db, deps, { wsId: 'pc' }).outcome, 'refused');
+    const arch = uiPause(db, deps, { wsId: 'pa1', mode: 'soft' });
+    assert.equal(arch.outcome, 'refused', 'an archived anchor is skipped: the next ancestor that exists is named');
+    assert.equal(arch.runId, 'O', 'the visible orchestrator above, not the archived row');
+    const q = uiPause(db, deps, { wsId: 'q1', mode: 'soft' });
+    assert.equal(q.outcome, 'no-run', 'an orchestrator with no bus run is the nearest run-owner (the writer says no-run for IT), not skipped for a run further up');
+    assert.equal(q.runId, 'Q');
+    assert.equal(uiPause(db, deps, { wsId: 'plain', mode: 'soft' }).outcome, 'no-run', 'a row under NO run is still no-run');
+    assert.equal(uiPause(db, deps, { wsId: 'P', mode: 'soft' }).outcome, 'paused', 'the anchor itself still pauses its own run');
+  } finally {
+    for (let i = 0; i < added.length; i++) NODES.pop();
+    for (const n of added) byId.delete(n.id);
+  }
+  db.close();
+});

@@ -211,6 +211,8 @@ export interface ExplainCtx {
   mayBe: readonly string[];
   /** The ancestor pause governing this run (explains `not-paused` on a covered run). */
   cover: { runId: string; label: string } | null;
+  /** `uiResume` lifted the run's liveness hold (it does, whatever the Reprise outcome — the CLI verb prints "liveness escalation is re-enabled"): an explanation must SAY so (R2-1). */
+  holdLifted?: boolean;
 }
 
 const join = (xs: readonly string[]): string => (xs.length ? xs.join(', ') : 'personne');
@@ -250,8 +252,15 @@ export function explainPauseOutcome(outcome: string, c: ExplainCtx): PauseUiExpl
   }
 }
 
-/** The `beginReprise` outcome (pause-reprise.ts) → what to tell the human. `null` = `resuming`. */
+/** The `beginReprise` outcome (pause-reprise.ts) → what to tell the human. `null` = `resuming`. A lifted liveness hold is always named (the CLI verb does). */
 export function explainResumeOutcome(outcome: string, c: ExplainCtx): PauseUiExplain | null {
+  const base = explainResumeBase(outcome, c);
+  if (!base || !c.holdLifted) return base;
+  const tail = c.cover ? `ses membres restent suspendus tant que ${c.cover.label} tient la pause` : "l'escalade de liveness est de nouveau active pour ses membres";
+  return { ...base, why: `${base.why} Le hold de liveness de ${c.runLabel} a quand même été levé (comme \`orchestra run resume\`) : ${tail}.` };
+}
+
+function explainResumeBase(outcome: string, c: ExplainCtx): PauseUiExplain | null {
   switch (outcome) {
     case 'no-run':
       return explainPauseOutcome('no-run', c);

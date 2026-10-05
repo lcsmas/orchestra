@@ -27,7 +27,7 @@ function BilanRow({ run, m, onRelease }: { run: PauseUiRun; m: PauseUiMember; on
         <td className="pause-bilan-dim">{m.confirmVia ? VIA[m.confirmVia] : '—'}</td>
         <td className="pause-bilan-ref" title={b?.snapshotRef ?? undefined}>{b?.snapshotRef ?? '—'}</td>
         <td>{b ? treeText(b) : missing === 'absent' ? 'aucun Bilan' : '—'}</td>
-        <td className={attention.some((x) => x.tone === 'error') ? 'pause-bilan-warn' : 'pause-bilan-dim'} title={b?.skipped ?? undefined}>{b ? killedText(b) : missing === 'absent' ? 'aucun Bilan' : "après l'escalade"}</td>
+        <td className={attention.some((x) => x.tone === 'error') ? 'pause-bilan-warn' : 'pause-bilan-dim'} title={b?.skipped ?? undefined}>{b ? killedText(b) : missing === 'absent' ? 'aucun Bilan' : missing === 'pending' ? "après l'escalade" : '—'}</td>
         <td className="pause-bilan-act">
           {run.phase === 'resuming' && m.ui === 'blocked' ? (
             <PauseActionButton kind="release" wsId={run.carrierRunId} tone="go" onClick={() => onRelease(m)}>Libérer</PauseActionButton>

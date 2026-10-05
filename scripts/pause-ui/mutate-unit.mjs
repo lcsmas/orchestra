@@ -18,7 +18,7 @@ const T = { main: 'src/main/pause-ui.test.ts', shared: 'src/shared/pause-ui.test
 const M = [
   // ── who acts / which run (pause-ui.ts)
   { id: 'actor-is-run-coordinator', file: MAIN, find: '  const actor = uiActor(req.wsId);\n  // an unknown mode is REFUSED', rep: '  const actor = t.runId;\n  // an unknown mode is REFUSED', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
-  { id: 'target-run-is-the-clicked-ws', file: MAIN, find: 'return { ws, runId: own ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace) };', rep: 'return { ws, runId: ws.id };', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
+  { id: 'target-run-is-the-clicked-ws', file: MAIN, find: 'return { ws, runId: nearestRunOf(db, ws, deps) };', rep: 'return { ws, runId: ws.id };', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
   { id: 'pause-mode-dropped', file: MAIN, find: 'setRunPause(db, t.runId, true, actor, req.mode)', rep: 'setRunPause(db, t.runId, true, actor)', tests: [T.main], expect: /uiPause as an ORCHESTRATOR row/ },
   { id: 'resume-cover-dropped', file: MAIN, find: '    if (c && c.runId !== t.runId) cover = {', rep: '    if (false && c && c.runId !== t.runId) cover = {', tests: [T.main], expect: /uiResume: not-paused/ },
   { id: 'resume-reason-not-manual', file: MAIN, find: "beginReprise(db, t.runId, actor, { reason: 'manual' })", rep: "beginReprise(db, t.runId, actor, { host: true, reason: 'usage_limit' })", tests: [T.main], expect: /uiResume: not-paused/ },

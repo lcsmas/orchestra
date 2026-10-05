@@ -122,13 +122,18 @@ export function bilanAttention(b: PauseUiBilanLine | null): Array<{ tone: 'error
   return out;
 }
 
-/** A roster member with NO Bilan row: 'pending' while the trap is still owed (a douce waiting, a dure in progress); once the trap is done or the Reprise started, none will ever come. */
-export function noBilanState(run: Pick<PauseUiRun, 'phase' | 'trapAt'>): 'pending' | 'absent' {
-  return run.phase === 'pausing' || run.phase === 'paused' ? (run.trapAt !== null ? 'absent' : 'pending') : 'absent';
+/** A roster member with NO Bilan row: 'absent' once the trap ran (every member should have one) or when a trap that was OWED never finished (`trapOwed`: a dure, or an escalated douce — a failed trap leaves members
+ *  without a Bilan); 'pending' while it is still coming (a douce waiting, a dure in progress); 'none' when no trap was ever owed (a douce cancelled before it escalated — nothing interrupted, no alarm, R2-2) or the
+ *  Reprise is closed (the pause columns are cleared: nothing left to tell the two apart). */
+export function noBilanState(run: Pick<PauseUiRun, 'phase' | 'trapAt' | 'mode' | 'escalatedAt'>): 'pending' | 'absent' | 'none' {
+  if (run.trapAt !== null) return 'absent';
+  if (run.phase === 'pausing' || run.phase === 'paused') return 'pending';
+  if (run.phase === 'active') return 'none';
+  return run.mode !== 'soft' || run.escalatedAt !== null ? 'absent' : 'none';
 }
 
 /** Everything a Bilan row needs a human's eyes on — a member WITHOUT a Bilan (past the trap) included: nothing was snapshotted or killed for it, its worktree is the only copy. */
-export function memberAttention(b: PauseUiBilanLine | null, run: Pick<PauseUiRun, 'phase' | 'trapAt'>): Array<{ tone: 'error' | 'warn' | 'info'; text: string }> {
+export function memberAttention(b: PauseUiBilanLine | null, run: Pick<PauseUiRun, 'phase' | 'trapAt' | 'mode' | 'escalatedAt'>): Array<{ tone: 'error' | 'warn' | 'info'; text: string }> {
   if (b) return bilanAttention(b);
   return noBilanState(run) === 'absent' ? [{ tone: 'warn', text: "aucun Bilan pour cet agent : rien n'a été snapshotté ni tué à la pause — son worktree est la seule copie du travail non commité" }] : [];
 }

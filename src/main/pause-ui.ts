@@ -318,19 +318,37 @@ function ctxFor(db: BusDb, deps: PauseUiDeps, runId: string, actor: string, cove
   return { label: labeler(deps), runLabel: labeler(deps)(runId), actorLabel: labeler(deps)(actor), mayBe: auth ? [auth.coordinator, ...auth.ancestors] : [], cover };
 }
 
-/** The run a workspace row's control acts on: the run it ANCHORS (its own id, when the bus has a run whose coordinator is that row — an orchestrator, or a plain run-anchoring parent #221), else its
- *  nearest orchestrator's (a worker: where the writer REFUSES it by the hold rule). */
+/** The run a workspace row's control acts on: the run it ANCHORS (its own id, when the bus has a run whose coordinator is that row — an orchestrator, or a plain run-anchoring parent #221), else the nearest
+ *  ancestor's that ANCHORS a run or orchestrates (a worker: the writer REFUSES it by the hold rule and the explanation names that coordinator), else the row itself (`no-run`). */
 function targetOf(db: BusDb | null, deps: PauseUiDeps, wsId: string): { ws: WaveNode; runId: string } | null {
   const ws = deps.getWorkspace(wsId);
   if (!ws) return null;
-  let own = false;
-  try {
-    const r = db ? getRun(db, ws.id) : null;
-    own = r !== null && isCoordinatorHandle(r.coordinator, ws.id);
-  } catch {
-    own = false;
+  return { ws, runId: nearestRunOf(db, ws, deps) };
+}
+
+/** The first row at or above `ws` that orchestrates or anchors a bus run (R2-4: a child of a plain run-anchoring parent is explained against THAT parent, not as « no run »). `ws` itself when none. */
+function nearestRunOf(db: BusDb | null, ws: WaveNode, deps: PauseUiDeps): string {
+  const anchors = (id: string): boolean => {
+    const w = deps.getWorkspace(id);
+    if (!w || w.archived) return false; // an archived row has no line to point at: skip it, the next ancestor is named instead
+    try {
+      const r = db ? getRun(db, id) : null;
+      return r !== null && isCoordinatorHandle(r.coordinator, id);
+    } catch {
+      return false;
+    }
+  };
+  let cur: WaveNode = ws;
+  const seen = new Set<string>([cur.id]);
+  for (;;) {
+    if (nodeOrchestrates(cur) || anchors(cur.id)) return cur.id;
+    if (!cur.parentId) break;
+    const parent = deps.getWorkspace(cur.parentId);
+    if (!parent || seen.has(parent.id)) break;
+    seen.add(parent.id);
+    cur = parent;
   }
-  return { ws, runId: own ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace) };
+  return ws.id;
 }
 
 const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -397,7 +415,7 @@ export function uiResume(db: BusDb | null, deps: PauseUiDeps, req: { wsId: strin
     const c = pausedCarrierForWorkspace(db, t.ws, deps.getWorkspace, { includeReleased: true });
     if (c && c.runId !== t.runId) cover = { runId: c.runId, label: labeler(deps)(c.runId) };
   }
-  return { outcome, runId: t.runId, actor, explain: explainResumeOutcome(outcome, ctxFor(db, deps, t.runId, actor, cover)), cover, holdLifted, overview: readPauseOverview(db, deps) };
+  return { outcome, runId: t.runId, actor, explain: explainResumeOutcome(outcome, { ...ctxFor(db, deps, t.runId, actor, cover), holdLifted }), cover, holdLifted, overview: readPauseOverview(db, deps) };
 }
 
 /**
