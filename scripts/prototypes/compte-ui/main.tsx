@@ -285,8 +285,72 @@ function VariantC({ m }: { m: Model }) {
   );
 }
 
+// ---------- Variant D — A (cards) + B's inheritance grid + C's "who uses which" ----------
+function InheritGrid({ m }: { m: Model }) {
+  return (
+    <table className="p-matrix"><thead><tr><th /> {m.comptes.map((x) => <th key={x.id}>{x.label}</th>)}</tr></thead>
+      <tbody>{['settings.json', 'statusline', `skills (${SOURCE.skills})`, `MCP (${SOURCE.mcp})`].map((r, i) => (
+        <tr key={r}><td>{r}</td>{m.comptes.map((x) => <td key={x.id}><input type="checkbox" defaultChecked={x.id !== 'test' && i < 3} /></td>)}</tr>))}</tbody></table>
+  );
+}
+function WhoUses({ m }: { m: Model }) {
+  const repos = ['orchestra', 'metarepo', 'next-api', 'dotfiles'];
+  const owner = (r: string) => m.comptes.find((c) => c.repos.includes(r))?.id;
+  return (
+    <div className="p-d-section">
+      <div className="p-b-list-title">Qui utilise quel Compte</div>
+      <table className="p-matrix"><thead><tr><th /> {m.comptes.map((c) => <th key={c.id}>{c.label}</th>)}</tr></thead>
+        <tbody>
+          {repos.map((r) => (<tr key={r}><td>dépôt {r}</td>{m.comptes.map((c) => <td key={c.id}><input type="radio" name={`d-${r}`} defaultChecked={owner(r) === c.id} /></td>)}</tr>))}
+          <tr><td>sessions scratch / orchestrateur</td>{m.comptes.map((c) => <td key={c.id}><input type="radio" name="d-scratch" checked={!!c.scratchDefault} onChange={() => m.setScratch(c.id)} /></td>)}</tr>
+        </tbody></table>
+      <div className="p-dim p-small">Obligatoire : chaque dépôt et les sessions scratch ont toujours un Compte. Un agent lancé par un autre agent prend le Compte de son créateur.</div>
+    </div>
+  );
+}
+function VariantD({ m }: { m: Model }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [inherit, setInherit] = useState(false);
+  return (
+    <div className="modal accounts-settings p-modal">
+      <div className="modal-header"><div><h2>Comptes</h2><div className="modal-sub">Chaque Compte a sa connexion, son historique et son usage</div></div>
+        <button className="p-btn p-primary" onClick={m.startAdd}>+ Ajouter un compte</button></div>
+      <div className="modal-body p-a-body">
+        {m.comptes.map((c) => (
+          <div key={c.id} className={`p-a-card p-a-${c.conn}`}>
+            <div className="p-a-head">
+              <Avatar c={c} />
+              <div className="p-a-id">
+                {editing === c.id
+                  ? <input autoFocus className="accounts-input" defaultValue={c.label} onBlur={(e) => { m.rename(c.id, e.target.value); setEditing(null); }} />
+                  : <span className="p-a-label" onDoubleClick={() => setEditing(c.id)} title="Double-clic pour renommer">{c.label}</span>}
+                <span className="p-dim">{c.email} · {c.plan}</span>
+              </div>
+              <ConnChip c={c} />
+            </div>
+            <IdentityNotice c={c} />
+            <Usage c={c} />
+            <div className="p-a-foot">
+              <span className="p-dim p-small">{c.workspaces} espaces</span>
+              <span className="p-row"><ResignButton c={c} m={m} /><button className="p-btn p-ghost" title="Renommer, dossier, env, supprimer">⋯</button></span>
+            </div>
+          </div>
+        ))}
+        <WhoUses m={m} />
+        <div className="p-source p-d-source">
+          <span className="p-source-icon">⌂</span>
+          <div><strong>Configuration source</strong> <code>{SOURCE.path}</code>
+            <div className="p-dim p-small">{SOURCE.skills} skills · {SOURCE.mcp} serveurs MCP · settings. Pas un Compte : aucun agent n'y tourne.</div></div>
+          <button className="p-btn p-ghost" onClick={() => setInherit((x) => !x)}>{inherit ? 'Masquer' : "Gérer l'héritage"}</button>
+        </div>
+        {inherit && <div className="p-d-section"><InheritGrid m={m} /></div>}
+      </div>
+    </div>
+  );
+}
+
 // ---------- switcher ----------
-const VARIANTS = { A: 'Cartes', B: 'Liste + détail', C: 'Tableau de bord' } as const;
+const VARIANTS = { A: 'Cartes', B: 'Liste + détail', C: 'Tableau de bord', D: 'A + grilles B/C' } as const;
 type V = keyof typeof VARIANTS;
 function App() {
   const initial = (new URLSearchParams(location.search).get('variant') ?? 'A') as V;
@@ -311,6 +375,7 @@ function App() {
       {v === 'A' && <VariantA m={m} />}
       {v === 'B' && <VariantB m={m} />}
       {v === 'C' && <VariantC m={m} />}
+      {v === 'D' && <VariantD m={m} />}
       <Toast m={m} />
       <SignInWindow m={m} />
       <div className="p-switcher">
