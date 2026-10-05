@@ -76,6 +76,7 @@ async function runExercise(name) {
   const cycles = [];
   const wsChecks = [];   // exercise-level checks (not tied to a cycle)
   let curCyc = null;     // the cycle in flight (its checks survive a VOID / an abort)
+  let lateInject = null;   // --inject late-request: the harness sends the FIRST member the host completes a human prompt (allowed in a Pause) so it makes a request inside the blind window (declared BEFORE the cycles loop: a `let` below it is in its temporal dead zone)
   const allChecks = () => [...wsChecks, ...cycles.flatMap((x) => x.checks), ...(curCyc && !cycles.includes(curCyc) ? curCyc.checks : [])];
   const reqsOf = (role, since, until = Infinity) => api.requests.filter((r) => r.role === role && r.t >= since && r.t < until && r.tools > 0).length;
   // an older app's schema lacks the wave-E columns: they read as null (absent ≠ undefined), so a pre-wave-E arm fails on its NAMED check, not on noise
@@ -298,7 +299,6 @@ async function runExercise(name) {
       return { tR, rows };
     }
     // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-    let lateInject = null;   // --inject late-request: the harness sends the FIRST member the host completes a human prompt (allowed in a Pause) so it makes a request inside the blind window
     async function waitTrap(carrierRun) {
       let toolsDeadAt = null;
       const trapRow = await waitFor(async () => {
