@@ -3,6 +3,8 @@ import type { BusSwitches } from './bus-switches.ts';
 import type { ModelDefaults } from './model-defaults.ts';
 import type { EffortDefaults } from './effort-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
+import type { PauseMode } from './pause-lifecycle.ts';
+import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from './pause-ui.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
@@ -154,6 +156,20 @@ export interface OrchestraAPI {
    *  change (so surface A and B stay in sync and backfill==live). Returns an
    *  unsubscribe fn. */
   onHumanGatesUpdate: (cb: (gates: HumanGateView[]) => void) => () => void;
+
+  // ---- Fleet Pause UI (#257, wave F ledger #281). The data layer of the Pause / Reprise controls: the READ is `pause:overview`; the WRITES are the SHIPPED writers
+  //      (`setRunPause` / `beginReprise` / `releaseMembers`) run AS THE WORKSPACE ROW the control belongs to, their typed outcome returned untouched (a refusal is an
+  //      outcome, never a throw). Not pane channels (the Bus pane's registrar is read-only) — registered by src/main/pause-ui-host.ts. docs/codebase-map/pause-trap.md §UI.
+  /** The pause state of the whole fleet: carriers + rosters + Bilan, per-orchestrator controls, per-workspace badges. NEVER rejects (`available:false` + the reason). */
+  pauseOverview: () => Promise<PauseUiOverview>;
+  /** Live push: the whole overview, rebuilt from the bus whenever a Pause column / roster / Bilan row changes (CLI, host sweep and these writes alike). Returns an unsubscribe fn. */
+  onPauseOverviewUpdate: (cb: (overview: PauseUiOverview) => void) => () => void;
+  /** Pause douce (`soft`) or dure (`hard`; over a douce still waiting it escalates). Acts as workspace `wsId` — a worker row comes back `refused`, nothing written. */
+  pausePause: (wsId: string, mode: PauseMode) => Promise<PauseUiWriteResult>;
+  /** Start the structured Reprise (coordinators first). Same actor rule as {@link pausePause}. */
+  pauseResume: (wsId: string) => Promise<PauseUiWriteResult>;
+  /** Release members during a Reprise: roster ws ids (or unique ≥ 6-char prefixes) or `'all'` (the acting row's own run). */
+  pauseRelease: (wsId: string, targets: string[] | 'all', carrierRunId?: string | null) => Promise<PauseUiReleaseResult>;
 
   // ---- Accounts. Each account is a Claude Code config dir (CLAUDE_CONFIG_DIR)
   //      with its own login. store.json holds only {id, label, configDir} —

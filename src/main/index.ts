@@ -174,6 +174,7 @@ import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { initBus, closeBus, busPath, getBus, expireAllOrphanedAsks } from './bus';
 import { registerBusPaneIpc, registerStaleRunSource } from './bus-pane';
+import { reconcilePauseUi, registerPauseUiIpc, startPauseUiWatcher, stopPauseUiWatcher } from './pause-ui-host';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import {
   startBusWake,
@@ -454,6 +455,9 @@ async function createMainWindow() {
   // paints/clears correctly at boot (the DB row is the source of truth).
   startHumanGatesWatcher();
   reconcileHumanGates();
+  // #257 — the fleet Pause overview push (rides the same bus-dir watch) + a boot publish: a pause may have landed while the app was down.
+  startPauseUiWatcher();
+  reconcilePauseUi();
   // Re-derive every workspace's parked-inbox count from disk (#88). The counts
   // are persisted, but the inbox FILES are the source of truth and the shell
   // hook drains them without the main process — including while the app was
@@ -749,6 +753,8 @@ registerBusPaneIpc();
 // with --no-restart (store flag `busRunStale`). A LAZY read at snapshot time, so
 // top-level registration is safe (same shape as the counter source seam).
 registerStaleRunSource(listStaleRunWorkspaces);
+// #257 — the fleet Pause UI channels (`pause:*`): ONE read + the three shipped writers, each marked in PAUSE_UI_IPC_CHANNELS. NOT through registerBusPaneIpc() (read-only).
+registerPauseUiIpc();
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
 // settings write cannot be smuggled in as a pane channel. It writes the store
@@ -857,6 +863,7 @@ function shutdownSubsystems(): void {
   stopPromptQueueFlusher();
   stopInboxWatcher();
   stopHumanGatesWatcher();
+  stopPauseUiWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
   stopHibernationSweeper();

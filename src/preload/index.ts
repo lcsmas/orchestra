@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { OrchestraAPI } from '../shared/ipc';
 import type { HumanGateView } from '../shared/human-gates';
+import type { PauseUiOverview } from '../shared/pause-ui';
 
 const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
@@ -39,6 +40,17 @@ const api: OrchestraAPI = {
     ipcRenderer.on('human-gates:update', listener);
     return () => ipcRenderer.off('human-gates:update', listener);
   },
+
+  // #257 — fleet Pause UI
+  pauseOverview: () => ipcRenderer.invoke('pause:overview'),
+  onPauseOverviewUpdate: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload as PauseUiOverview);
+    ipcRenderer.on('pause:update', listener);
+    return () => ipcRenderer.off('pause:update', listener);
+  },
+  pausePause: (wsId, mode) => ipcRenderer.invoke('pause:pause', wsId, mode),
+  pauseResume: (wsId) => ipcRenderer.invoke('pause:resume', wsId),
+  pauseRelease: (wsId, targets, carrierRunId) => ipcRenderer.invoke('pause:release', wsId, targets, carrierRunId ?? null),
 
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),

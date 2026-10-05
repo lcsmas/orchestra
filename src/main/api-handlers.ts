@@ -219,6 +219,12 @@ type ServableApi = Omit<
   // like setBusSwitches. Neither goes through this generic table.
   | 'busHumanGates'
   | 'resolveHumanGate'
+  // #257 — the Pause UI channels (`pause:*`) are registered by registerPauseUiIpc() (src/main/pause-ui-host.ts), with the same read/write split as the bus pane:
+  // not from this generic table (a write must not be reachable as a "served read").
+  | 'pauseOverview'
+  | 'pausePause'
+  | 'pauseResume'
+  | 'pauseRelease'
 >;
 
 /** Served backend methods that are not part of the renderer-facing
