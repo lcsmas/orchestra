@@ -9,7 +9,7 @@
 import type { BusDb } from './bus.ts';
 import { getRun, runHoldAuthority, setRunHold } from './bus-runs.ts';
 import { beginReprise, getRunPause, pausedCarrierForWorkspace, setRunPause, type RunPauseOutcome } from './bus-pause.ts';
-import { listBilan, recordPauseOrigin, replacePauseOrigin, type BilanRow } from './bus-pause-records.ts';
+import { listBilan, readPauseOrigin, recordPauseOrigin, replacePauseOrigin, type BilanRow } from './bus-pause-records.ts';
 import { pauseStatusView } from './pause-douce.ts';
 import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
@@ -383,10 +383,11 @@ export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string
   let outcome: RunPauseOutcome;
   try {
     outcome = setRunPause(db, t.runId, true, actor, req.mode, { human: true });
-    if (outcome === 'escalated') {
-      // the human's Pause dure over an agent's douce: the writer made `paused_by` the human's; the recorded origin chain (who was exempt) goes too — nobody is spared (Q2)
+    if (outcome === 'escalated' || outcome === 'already-paused') {
+      // the human's Pause dure over an agent's douce: the writer made `paused_by` the human's; the recorded origin chain (who was exempt) goes too — nobody is spared (Q2). Idempotent AND epoch-safe: it acts only
+      // while the CURRENT epoch is the human's and a chain is still recorded (a retry after a failed replace repairs it; a coordinator's own pause, re-pressed, is never touched).
       const made = getRunPause(db, t.runId);
-      if (made) replacePauseOrigin(db, t.runId, made.pausedAt, []);
+      if (made && made.pausedBy === PAUSE_HUMAN_BY && (readPauseOrigin(db, t.runId, made.pausedAt)?.length ?? 0) > 0) replacePauseOrigin(db, t.runId, made.pausedAt, []);
     }
     if (outcome === 'paused') {
       // A UI click has no CLI process chain: record an EMPTY origin (the shipped writer, as the CLI does after its own pause) so the host trap does not wait up to 3 s for one before it

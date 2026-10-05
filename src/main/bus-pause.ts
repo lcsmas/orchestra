@@ -215,9 +215,9 @@ export function runsOwingPauseTrap(db: BusDb): RunPauseInfo[] {
  * `pause_deadline_at = paused_at + 3 min`, the trap is owed only once escalated). `--hard` over a douce still waiting cuts it short
  * (`escalated`). Authority = the HOLD rule
  * (`runHoldAuthority`: the run's coordinator or an ANCESTOR run's coordinator; a worker, a
- * descendant's coordinator, or no identity is `refused`). A pause needs the run's FROZEN
+ * descendant's coordinator, or no identity is `refused`) — except the HUMAN at the app (`opts.human`, pause-ui.ts only), above every coordinator. A pause needs the run's FROZEN
  * `pause` switch ON (`switch-off` otherwise: nothing written, never inert-but-accepted). A
- * repeat pause keeps the ORIGINAL time/holder. A pure UPDATE — it never creates a row and never
+ * repeat pause keeps the ORIGINAL time/holder (the HUMAN's escalation of a douce, and the human's takeover of a HOST auto-pause, are recorded as the human's). A pure UPDATE — it never creates a row and never
  * touches `run_flags`. A LIFT works whatever the switch says and clears `pause_trap_at` too, so
  * the next pause owes a fresh trap; `pause_records` history is kept.
  */
@@ -246,15 +246,12 @@ export function setRunPause(
       if (revertResumeToPaused(db, runId, who, Date.now(), { mode, deadlineAt: (epoch) => (mode === 'soft' ? softDeadlineAt(epoch) : null) })) return 'paused';
       // `--hard` over a douce that is still waiting = escalate NOW (the trap becomes owed); anything else keeps the original pause.
       if (mode === 'hard' && row!.mode === 'soft' && row!.escalatedAt === null && row!.trapAt === null && row!.resumeStartedAt === null) {
+        // ONE statement: the HUMAN's Pause dure over an agent's douce is the human's Pause now (Q1/Q2) — `paused_by` moves with the escalation, never a half-written state (the caller then replaces the recorded origin: nobody spared)
         const done = db.prepare(
-          `UPDATE runs SET pause_mode = 'hard', pause_escalated_at = ?
+          `UPDATE runs SET pause_mode = 'hard', pause_escalated_at = ?${human ? ', paused_by = ?' : ''}
             WHERE id = ? AND paused_at = ? AND pause_mode = 'soft' AND pause_escalated_at IS NULL AND pause_trap_at IS NULL`,
-        ).run(Date.now(), runId, row!.pausedAt).changes;
-        if (done > 0) {
-          // the HUMAN's Pause dure over an agent's douce is the human's Pause now (Q1/Q2): `paused_by` says so (the caller records an EMPTY origin — nobody is the pauser, nobody is spared)
-          if (human) db.prepare('UPDATE runs SET paused_by = ? WHERE id = ? AND paused_at = ?').run(PAUSE_HUMAN_BY, runId, row!.pausedAt);
-          return 'escalated';
-        }
+        ).run(...(human ? [Date.now(), PAUSE_HUMAN_BY, runId, row!.pausedAt] : [Date.now(), runId, row!.pausedAt])).changes;
+        if (done > 0) return 'escalated';
       }
       adoptPause(db, runId, human);
       return 'already-paused';

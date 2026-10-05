@@ -249,7 +249,7 @@ export function explainPauseOutcome(outcome: string, c: ExplainCtx): PauseUiExpl
         fix: ['Réglages › Fleet bus switches › Pause ON, puis une nouvelle vague', 'ou : orchestra run refreeze --run <id> (run de mission)'],
       };
     case 'already-paused':
-      return { tone: 'info', title: `${c.runLabel} est déjà en pause`, why: "La pause garde son heure et son auteur d'origine. Si l'hôte l'avait posée sur une limite d'usage, elle devient manuelle : plus de reprise automatique.", fix: [] };
+      return { tone: 'info', title: `${c.runLabel} est déjà en pause`, why: "La pause garde son heure et son auteur. Si l'hôte l'avait posée sur une limite d'usage, elle devient manuelle — la vôtre : plus de reprise automatique.", fix: [] };
     case 'not-paused':
       return { tone: 'info', title: `${c.runLabel} n'est pas en pause`, why: 'Rien à lever.', fix: [] };
     case 'bus-unavailable':

@@ -764,7 +764,7 @@ test('uiPause / uiResume / uiRelease record the HUMAN everywhere a screen or the
   db.close();
 });
 
-test('a host auto-pause TAKEN OVER by a human keeps `paused_by = host:usage_limit`: the screen says « l\'hôte (limite d\'usage) », never the raw handle', () => {
+test('a host auto-pause taken over by a COORDINATOR (CLI) keeps `paused_by = host:usage_limit`: the screen says « l\'hôte (limite d\'usage) », never the raw handle', () => {
   const db = freshDb();
   tree(db);
   uiPause(db, deps, { wsId: 'L', mode: 'hard' });
@@ -852,5 +852,53 @@ test('M2 (host pause): a human re-asserting a HOST auto-pause takes it over AS T
   setRunPause(c, 'L', true, 'L', 'hard');
   assert.equal(uiPause(c, deps, { wsId: 'L', mode: 'hard' }).outcome, 'already-paused');
   assert.equal(getRunPause(c, 'L')!.pausedBy, 'L', 're-pressing a coordinator\'s own pause is a no-op: it is NOT rewritten as the human\'s');
+  a.close(); b.close(); c.close();
+});
+
+test('M2 (idempotent + epoch-safe): a retry after a failed origin replace repairs it; a coordinator\'s own pause, re-pressed, never has its chain touched; a host pause that lands DURING the human\'s write is adopted as the human\'s', () => {
+  const chain = [{ pid: 4242, ppid: 1, startTicks: 7, comm: 'claude' }];
+  // (1) the writer escalated as the human but the origin replace never happened (BUSY / crash): the next click repairs it
+  const a = freshDb();
+  tree(a);
+  setRunPause(a, 'L', true, 'L', 'soft');
+  const atA = getRunPause(a, 'L')!.pausedAt;
+  recordPauseOrigin(a, 'L', atA, chain);
+  assert.equal(setRunPause(a, 'L', true, 'x', 'hard', { human: true }), 'escalated'); // the writer alone: paused_by is the human's, the chain is still the agent's
+  assert.equal(getRunPause(a, 'L')!.pausedBy, PAUSE_HUMAN_BY);
+  assert.deepEqual(readPauseOrigin(a, 'L', atA), chain, 'half-done: the pauser would still be spared');
+  assert.equal(uiPause(a, deps, { wsId: 'L', mode: 'hard' }).outcome, 'already-paused');
+  assert.deepEqual(readPauseOrigin(a, 'L', atA), [], 'the retry repaired it');
+  // (2) a coordinator's own HARD pause, re-pressed by the human: nothing rewritten (paused_by, chain)
+  const b = freshDb();
+  tree(b);
+  setRunPause(b, 'L', true, 'L', 'hard');
+  const atB = getRunPause(b, 'L')!.pausedAt;
+  recordPauseOrigin(b, 'L', atB, chain);
+  assert.equal(uiPause(b, deps, { wsId: 'L', mode: 'hard' }).outcome, 'already-paused');
+  assert.equal(getRunPause(b, 'L')!.pausedBy, 'L');
+  assert.deepEqual(readPauseOrigin(b, 'L', atB), chain, 'the coordinator keeps its record: it is not the human\'s pause');
+  // (3) the RACE branch: a host auto-pause lands between the writer\'s read and its write — adopted as the human\'s
+  const c = freshDb();
+  tree(c);
+  let raced = false;
+  const racing = new Proxy(c, {
+    get(t, k) {
+      const v = (t as unknown as Record<string | symbol, unknown>)[k];
+      if (k === 'prepare') {
+        return (sql: string) => {
+          if (!raced && /^\s*UPDATE runs SET paused_at = \?/.test(sql)) {
+            raced = true; // the competing HOST pause
+            t.prepare("UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_auto = ? WHERE id = ? AND paused_at IS NULL").run(Date.now() - 5, PAUSE_AUTO_BY, '{"reason":"usage_limit"}', 'L');
+          }
+          return t.prepare(sql);
+        };
+      }
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+    },
+  }) as bus.BusDb;
+  assert.equal(setRunPause(racing, 'L', true, 'x', 'hard', { human: true }), 'already-paused');
+  assert.ok(raced);
+  assert.equal(getRunPause(c, 'L')!.pausedBy, PAUSE_HUMAN_BY, 'adopted AS THE HUMAN');
+  assert.equal((c.prepare('SELECT pause_auto AS p FROM runs WHERE id = ?').get('L') as { p: string | null }).p, null, 'and manual (never auto-resumed)');
   a.close(); b.close(); c.close();
 });
