@@ -45,6 +45,26 @@ export function forbiddenRequests(requests, forbidden) {
   return out;
 }
 
+/** Is `p` a MEMBER's tool process? `p` = a /proc census entry { pid, ppid, cwd, cmd }; `byPid` = Map pid → entry (the whole rig census); `kindOf(entry)` = 'keeper' | 'claude' | 'app' | …;
+ *  `memberOf(entry)` = the member (`w3`) whose worktree it runs in, or null. A tool is anything in a member's worktree that is not its keeper / CLI / the app / an `orchestra cli` client AND whose ancestry does
+ *  NOT reach the APP before a CLI or keeper: the app itself runs git in the worktrees (status / diff refresh: `git ls-files --others …`, ppid = app, seen 31 s after a trap — F3, ledger #281 c/6001999281) and that is
+ *  host work, not a member restarting. An ORPHAN (ancestry ends without reaching the app) still counts: a killed command that escaped its tree is exactly what the instrument must see. */
+export function isMemberTool(p, byPid, kindOf, memberOf) {
+  if (!memberOf(p)) return false;
+  if (['keeper', 'claude', 'app'].includes(kindOf(p))) return false;
+  if (/orchestra cli /.test(p.cmd) || / cli /.test(p.cmd)) return false;
+  let q = p;
+  for (let hops = 0; hops < 64; hops++) {
+    const parent = byPid.get(q.ppid);
+    if (!parent) return true;                                   // orphan / parent outside the rig: counts
+    const k = kindOf(parent);
+    if (k === 'claude' || k === 'keeper') return true;          // a member's own tree
+    if (k === 'app') return false;                              // the app's own child (git refresh…)
+    q = parent;
+  }
+  return true;
+}
+
 /** The checks of ONE cycle from its measured metrics. Every check is RED when its metric is absent. `m.mode` = 'soft' | 'hard'. */
 export function evaluateCycle(m) {
   const checks = [];

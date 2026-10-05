@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, renderTable } from '../../scripts/pause-canary/bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, isMemberTool, renderTable } from '../../scripts/pause-canary/bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
@@ -205,4 +205,43 @@ test('pre-flight: a keeper socket ALREADY at a path this rig would use (another 
     assert.throws(() => assertNoForeignKeeperSockets(H, spec), /already exist/);
   } finally { fs.rmSync(first.path, { force: true }); }
   assert.doesNotThrow(() => assertNoForeignKeeperSockets(H, spec), 'cleaned up again');
+});
+
+// a tiny rig census: each entry carries its own `kind` (what lib.mjs `kindOf` derives from the cmdline)
+type P = { pid: number; ppid: number; kind: string; cwd: string; cmd: string };
+const proc = (pid: number, ppid: number, kind: string, cmd: string, cwd = '/h/rig'): P => ({ pid, ppid, kind, cwd, cmd });
+const CENSUS: P[] = [
+  proc(100, 1, 'app', '/app/orchestra --ozone-platform=wayland'),
+  proc(101, 100, 'app', '/app/orchestra --type=utility'),
+  proc(200, 100, 'keeper', '/app/orchestra keeper.js w3', '/h/rig/wt-w3'),            // the keeper is a child of the app
+  proc(201, 200, 'claude', '/h/rig/bin/claude --output-format stream-json', '/h/rig/wt-w3'),
+  proc(202, 201, 'tool-shell', '/usr/bin/zsh -c sleep 7400', '/h/rig/wt-w3'),
+  proc(203, 202, 'tool-sleep', 'sleep 7400', '/h/rig/wt-w3'),
+  proc(300, 100, 'other', 'git ls-files --others --exclude-standard', '/h/rig/wt-w5'),    // F3's capture: the APP's own git, ppid = app
+  proc(301, 101, 'other', 'git status --porcelain', '/h/rig/wt-w5'),                       // via an Electron utility process
+  proc(302, 300, 'other', 'git-remote-helper', '/h/rig/wt-w5'),                            // …and ITS child
+  proc(400, 1, 'tool-sleep', 'sleep 7402', '/h/rig/wt-w4'),                                // an ORPHAN: its tree is gone, ppid 1 is outside the rig
+  proc(500, 100, 'other', '/app/orchestra cli run confirm pause', '/h/rig/wt-w1'),         // an `orchestra cli` client of the app
+  proc(501, 202, 'other', '/app/orchestra cli run confirm pause', '/h/rig/wt-w3'),         // …and one run by a member\'s OWN tool shell (its ancestry reaches the CLI: only the cmd exclusion keeps it out)
+  proc(600, 200, 'tool-sleep', 'sleep 1', '/h/rig'),                                       // not in a member worktree
+];
+const byPid = new Map(CENSUS.map((x) => [x.pid, x]));
+const memberOf = (x: P) => /^\/h\/rig\/wt-([a-z0-9]+)/.exec(x.cwd)?.[1] ?? null;
+const kindOf = (x: P) => x.kind;
+const isTool = (pid: number) => isMemberTool(byPid.get(pid), byPid, kindOf, memberOf);
+
+test('isMemberTool: a member\'s own tree counts (even though its keeper is a child of the app); an orphan counts', () => {
+  assert.equal(isTool(203), true, 'sleep ← zsh ← claude ← keeper ← app: stops at the CLI, a tool');
+  assert.equal(isTool(202), true, 'the tool shell itself');
+  assert.equal(isTool(400), true, 'an orphaned killed command that escaped its tree is exactly what the instrument must see');
+});
+
+test('isMemberTool: the APP\'s own git in a member worktree is NOT a member restarting (F3\'s false positive: ppid = app, 31 s after the trap), directly or through an Electron helper or a grandchild', () => {
+  assert.equal(isTool(300), false);
+  assert.equal(isTool(301), false);
+  assert.equal(isTool(302), false);
+});
+
+test('isMemberTool: keeper, CLI, the app, an `orchestra cli` client and a process outside any member worktree are never tools', () => {
+  for (const pid of [100, 101, 200, 201, 500, 501, 600]) assert.equal(isTool(pid), false, `pid ${pid}`);
 });

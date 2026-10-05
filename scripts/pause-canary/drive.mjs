@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns, startBusReader, launchApp, census, kindOf, memberOfCwd, rigMemory, teardown, git, gitSafe, gitShow, say, sleep, B_KEY, ACCT_B } from './lib.mjs';
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, renderTable } from './bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, isMemberTool, renderTable } from './bars.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -80,8 +80,8 @@ async function runExercise(name) {
   const waitFor = async (fn, ms = 60000, step = 250) => { const t0 = Date.now(); for (;;) { stopIfVoid(); const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(step); } };
   const wtOf = (k) => rig.wt(k);
   const readWt = (k, f) => { try { return fs.readFileSync(path.join(wtOf(k), f), 'utf8'); } catch { return null; } };
-  /** processes a member's Bash tool tree left alive: anything in a member worktree that is not its keeper / CLI / the app / an `orchestra cli` client */
-  const toolProcs = () => census(rig).filter((p) => memberOfCwd(rig, p) && !['keeper', 'claude', 'app'].includes(kindOf(p)) && !/orchestra cli /.test(p.cmd) && !/ cli /.test(p.cmd));
+  /** processes a member's Bash tool tree left alive (`isMemberTool`: in a member worktree, not its keeper / CLI / the app / an `orchestra cli` client, and not the APP's own git refresh) */
+  const toolProcs = () => { const c = census(rig); const byPid = new Map(c.map((x) => [x.pid, x])); return c.filter((x) => isMemberTool(x, byPid, kindOf, (y) => memberOfCwd(rig, y))); };
   /** per-member session identity (keeper = ppid of the member's CLI): pid + /proc start ticks */
   const identities = () => {
     const c = census(rig);

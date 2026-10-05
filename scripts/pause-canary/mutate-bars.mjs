@@ -39,6 +39,11 @@ const MUTANTS = [
   ['until-inclusive', 'r.t < w.until)', 'r.t <= w.until)'],
   ['tools-ignored', 'if (!(r.tools > 0)) continue;', ''],
   ['limitprompt-dropped', "limitPrompt: r.limitPrompt === true,", ''],
+  ['tool-app-exclusion-removed', "if (k === 'app') return false;", "if (k === 'app') return true;"],
+  ['tool-cli-stop-removed', "if (k === 'claude' || k === 'keeper') return true;", "if (false) return true;"],
+  ['tool-orphan-not-counted', "if (!parent) return true;", "if (!parent) return false;"],
+  ['tool-member-check-removed', "if (!memberOf(p)) return false;", ""],
+  ['tool-cli-client-counted', "if (/orchestra cli /.test(p.cmd) || / cli /.test(p.cmd)) return false;", ""],
 ];
 const clean = run();
 let bad = 0;
