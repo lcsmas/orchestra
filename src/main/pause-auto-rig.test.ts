@@ -153,6 +153,14 @@ test('RIG wake_off_no_pause: a carrier with the frozen `wake` switch OFF gets NO
   assert.equal(r.ok, true);
 });
 
+test('RIG wake_off_nested: a child OPS run with wake OFF under a pause+wake ON carrier stops the auto Pause (its coordinator could not be woken) — nothing written; the unrelated run pauses', () => {
+  const r = runArm('wake_off_nested');
+  assert.equal(r.runsIdentical, true);
+  assert.equal(r.pausedCarrier, false);
+  assert.equal(r.pausedControl, true);
+  assert.equal(r.ok, true);
+});
+
 test('RIG release_clears_marker: a member sent its Reprise row (coordinator Bilan at beginReprise, worker Consigne at `run release`) loses its #74 marker BEFORE the nudge — no second wake', () => {
   const r = runArm('release_clears_marker');
   assert.equal(r.resuming, true);

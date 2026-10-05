@@ -11,7 +11,7 @@
 
 import type { BusDb } from './bus.ts';
 import { getRun } from './bus-runs.ts';
-import { pausedCarrierForWorkspace } from './bus-pause.ts';
+import { pausedCarrierForWorkspace, runSubtreeIds } from './bus-pause.ts';
 import { recordPauseOrigin } from './bus-pause-records.ts';
 import { revertResumeToPaused } from './pause-reprise.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
@@ -144,7 +144,7 @@ export type AutoPauseOutcome =
   | 'repaused' // the run was RESUMING (auto): back to paused in a NEW epoch, the new member joined
   | 'manual-pause' // the member is already under a manual pause: untouched
   | 'no-carrier' // no run above the member has the frozen `pause` switch ON
-  | 'no-wake' // the carrier's frozen `wake` switch is OFF: a Reprise could wake nobody — nothing is written (= master)
+  | 'no-wake' // a run of the carrier's subtree has its frozen `wake` switch OFF: a Reprise could not wake its coordinator — nothing is written (= master)
   | 'no-workspace'
   | 'no-bus';
 
@@ -189,9 +189,10 @@ export function autoPauseOnLimit(deps: PauseAutoDeps, wsId: string, attempt = 0)
 
   const carrier = nearest;
   if (!carrier) return 'no-carrier';
-  // `pause` and `wake` are independent frozen opt-ins: with `wake` OFF the Reprise's bus rows wake nobody and #74's nudge is refused by the pause — the fleet would stall for
-  // good (worse than master, where the nudge wakes the member at the reset). So no auto Pause then: write nothing.
-  if (getRun(db, carrier)?.flags.wake !== true) return 'no-wake';
+  // `pause` and `wake` are independent frozen opt-ins, frozen PER RUN: with `wake` OFF the Reprise's bus rows wake nobody and #74's nudge is refused by the pause — the fleet would
+  // stall for good (worse than master, where the nudge wakes the member at the reset). The Reprise sends a row to a coordinator in EVERY run of the subtree and the DEEPER run's
+  // flag governs its wake, so EVERY run of `runSubtreeIds(carrier)` needs wake ON — else no auto Pause: write nothing.
+  if (runSubtreeIds(db, carrier).some((id) => getRun(db, id)?.flags.wake !== true)) return 'no-wake';
   const now = deps.now();
   const reason = mergePauseAuto(null, { wsId, accountId });
   const res = db
@@ -383,7 +384,7 @@ export interface MarkerClearEntry {
 /** A `reprise` row (the coordinator's Bilan at `beginReprise`, a worker's Consigne at `run release`) addressed to a member whose #74 marker is older than the row:
  *  its restart is the Reprise's job — drop the marker, or #74's generic nudge would wake it a SECOND time (no second mechanism, D5/D6). Runs at the head of every tick,
  *  before #74's candidates, so the marker is gone before the nudge could read it. Incremental over `messages.sequence` (rowid range); only runs with the `pause` switch ON
- *  ever have `reprise` rows ⇒ nothing happens when the switch is OFF. */
+ *  ever have `reprise` rows ⇒ nothing happens when the switch is OFF; and only when the row's run has `wake` ON (else nothing would deliver it). */
 export async function clearRepriseDeliveredMarkers(deps: PauseAutoDeps): Promise<MarkerClearEntry[]> {
   const db = deps.getBus();
   if (!db) return [];
@@ -395,11 +396,13 @@ export async function clearRepriseDeliveredMarkers(deps: PauseAutoDeps): Promise
   const byId = new Map(marked.map((m) => [m.id.toLowerCase(), m]));
   if (byId.size > 0) {
     const rows = db
-      .prepare("SELECT sequence, recipient, created_at FROM messages WHERE sequence > ? AND sequence <= ? AND kind = 'reprise' AND recipient IS NOT NULL ORDER BY sequence")
-      .all(from, hi) as Array<{ sequence: number; recipient: string; created_at: number }>;
+      .prepare("SELECT sequence, run_id, recipient, created_at FROM messages WHERE sequence > ? AND sequence <= ? AND kind = 'reprise' AND recipient IS NOT NULL ORDER BY sequence")
+      .all(from, hi) as Array<{ sequence: number; run_id: string; recipient: string; created_at: number }>;
     for (const r of rows) {
       const m = byId.get(String(r.recipient).toLowerCase());
       if (!m || r.created_at < m.markedAt) continue; // an OLDER row says nothing about THIS limit stop
+      // the row is delivered by the wake of ITS run (the deeper run's frozen flag governs): with wake OFF there nobody is woken, so #74's nudge stays the member's only restart — human / manual path included
+      if (getRun(db, r.run_id)?.flags.wake !== true) continue;
       byId.delete(m.id.toLowerCase());
       try {
         await deps.clearLimitMarker(m.id);

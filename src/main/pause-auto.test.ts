@@ -27,7 +27,7 @@ import type { UsageWindows } from '../shared/accounts.ts';
 
 const ROOT = path.join(os.homedir(), '.cache', `pause-auto-bus-${process.pid}`);
 const ON: BusSwitches = { ...DEFAULT_BUS_SWITCHES, pause: true, wake: true }; // the auto Pause needs BOTH frozen opt-ins (a Reprise must be able to wake someone)
-const OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES };
+const OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES, wake: true }; // pause switch OFF, wake ON (a run of the subtree with wake OFF would stop the auto Pause: N1)
 const T0 = 1_800_000_000_000;
 let n = 0;
 test.after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
@@ -773,8 +773,9 @@ test('PAUSE wake guard (M1): a carrier whose frozen `wake` switch is OFF gets NO
 });
 
 /** a `reprise` row as E2 sends it (host → coordinator at beginReprise, coordinator → worker at release) */
-function repriseRow(r: Rig, to: string, at: number): number {
-  return bus.send(r.db, { runId: 'O', sender: 'host', kind: 'reprise', recipient: to, body: 'Reprise' }) && (r.db.prepare('UPDATE messages SET created_at = ? WHERE recipient = ? AND kind = ?').run(at, to, 'reprise'), 0);
+function repriseRow(r: Rig, to: string, at: number, runId = 'O', kind: 'reprise' | 'status' = 'reprise'): void {
+  const seq = bus.send(r.db, { runId, sender: 'host', kind, recipient: to, body: 'Reprise' });
+  r.db.prepare('UPDATE messages SET created_at = ? WHERE sequence = ?').run(at, seq);
 }
 
 test('MARKERS (m1): a member sent its `reprise` row loses its #74 marker (no second wake); an OLDER row, another recipient or no marker clears nothing; the cursor advances', async () => {
@@ -842,4 +843,51 @@ test('REPRISE archived trigger (m2): an archived workspace is GONE — the store
   fresh(r, 'A', limited(T0 + 3_600_000));
   fresh(r, 'B', usable);
   assert.equal((await evaluateAutoPaused(r.deps))[0].action, 'reprise');
+});
+
+// ─── reviewer-e3-r2 fix round ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('PAUSE wake guard (N1): EVERY run of the carrier\'s subtree needs wake ON — a deeper run with pause OFF / wake OFF stops the auto Pause (its coordinator could not be woken), a sibling run too', () => {
+  const nested = rig({ O: { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false } }); // L pause+wake ON (the carrier), child OPS run O pause OFF / wake OFF
+  const before = allRuns(nested.db);
+  assert.equal(limitStop(nested, 'w1', { account: 'A' }), 'no-wake');
+  assert.equal(allRuns(nested.db), before, 'runs table byte-identical');
+  const sibling = rig({ X: { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false } }); // O is the carrier of w1 (subtree [O]); X is not below it ⇒ allowed
+  assert.equal(limitStop(sibling, 'w1', { account: 'A' }), 'paused');
+  const above = rig({ X: { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false }, O: OFF }); // carrier L (O pause OFF): the subtree is L, O, X ⇒ X wake OFF stops it
+  assert.equal(limitStop(above, 'w1', { account: 'A' }), 'no-wake');
+  const allOn = rig({ O: { ...DEFAULT_BUS_SWITCHES, pause: false, wake: true } }); // control: every wake ON ⇒ L pauses
+  assert.equal(limitStop(allOn, 'w1', { account: 'A' }), 'paused');
+  assert.equal(runRow(allOn.db, 'L').paused_at, T0);
+});
+
+test('MARKERS wake (N2): a `reprise` row only clears the marker when ITS run has wake ON (else nothing would deliver it — #74\'s nudge stays the only restart); a wake-ON row still clears after a wake-OFF one', async () => {
+  const off = rig({ O: { ...DEFAULT_BUS_SWITCHES, pause: true, wake: false } });
+  off.ws.get('w1')!.lastStopReason = 'usage_limit';
+  off.ws.get('w1')!.lastStopReasonAt = T0;
+  repriseRow(off, 'w1', T0 + 500, 'O'); // run O: wake OFF
+  assert.deepEqual(await clearRepriseDeliveredMarkers(off.deps), []);
+  assert.equal(off.ws.get('w1')!.lastStopReason, 'usage_limit');
+  const on = rig();
+  on.ws.get('w1')!.lastStopReason = 'usage_limit';
+  on.ws.get('w1')!.lastStopReasonAt = T0;
+  on.ws.set('x2', { id: 'x2', parentId: 'X' });
+  on.ws.get('x2')!.lastStopReason = 'usage_limit';
+  on.ws.get('x2')!.lastStopReasonAt = T0;
+  repriseRow(on, 'x2', T0 + 400, 'X');
+  assert.deepEqual((await clearRepriseDeliveredMarkers(on.deps)).map((e) => e.wsId), ['x2']);
+  // a wake-OFF row first, a wake-ON row later for the same member: the later one clears (the skipped one did not consume the marker)
+  const two = rig({ O: { ...DEFAULT_BUS_SWITCHES, pause: true, wake: false } });
+  two.ws.get('w1')!.lastStopReason = 'usage_limit';
+  two.ws.get('w1')!.lastStopReasonAt = T0;
+  repriseRow(two, 'w1', T0 + 500, 'O');
+  repriseRow(two, 'w1', T0 + 600, 'X');
+  assert.deepEqual((await clearRepriseDeliveredMarkers(two.deps)).map((e) => e.wsId), ['w1']);
+});
+
+test('MARKERS kind (N4): only a `reprise` row clears a marker — any other mail to a limit-stopped member does not', async () => {
+  const r = rig();
+  limitStop(r, 'w1', { account: 'A' });
+  repriseRow(r, 'w1', T0 + 500, 'O', 'status');
+  assert.deepEqual(await clearRepriseDeliveredMarkers(r.deps), []);
+  assert.equal(r.ws.get('w1')!.lastStopReason, 'usage_limit');
 });

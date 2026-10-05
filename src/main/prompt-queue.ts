@@ -209,8 +209,8 @@ const lastNudge = new Map<string, number>();
  *  field incident this ticket comes from. */
 async function resumeUsageLimited(now: number): Promise<void> {
   // #256 fleet PAUSE auto: a run the host paused on a usage limit is Reprised (beginReprise) once its triggering members' pinned accounts
-  // have quota — a fresh reading beats the stored reset time. Runs FIRST (a Reprise changes who the nudge below may wake). The `usage_limit` markers are
-  // LEFT: #74 stays the safety net for a member the Reprise releases but nobody restarts. Switch OFF / no auto-paused run ⇒ one SELECT, nothing else.
+  // have quota — a fresh reading beats the stored reset time. Runs FIRST: a member sent its `reprise` row (wake ON in its run) loses its #74 marker here, before
+  // the nudge below could wake it a SECOND time; a member not sent one yet keeps its marker (#74 stays its safety net). Switch OFF / no auto-paused run ⇒ one SELECT, nothing else.
   await evaluatePausedRuns();
   const candidates = store.workspaces
     .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit')

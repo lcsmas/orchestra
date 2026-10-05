@@ -83,8 +83,11 @@ test('WIRING markers (m1): the host clears a member\'s #74 marker once its `repr
   assert.ok(!/clearStopReason|clearLimitMarker/.test(read('pause-auto.ts').replace(/clearLimitMarker: \(wsId: string\) => Promise<void>;|await deps\.clearLimitMarker\(m\.id\);/g, '')), 'the core only clears through clearRepriseDeliveredMarkers');
 });
 
-test('WIRING wake guard (M1): the fresh auto Pause needs the carrier\'s frozen wake switch ON', () => {
-  assert.match(read('pause-auto.ts'), /if \(getRun\(db, carrier\)\?\.flags\.wake !== true\) return 'no-wake';/);
+test('WIRING wake guard (M1/N1): the fresh auto Pause needs the frozen wake switch ON in EVERY run of the carrier\'s subtree; a marker is cleared only for a row whose run has wake ON, kind reprise', () => {
+  const core = read('pause-auto.ts');
+  assert.match(core, /if \(runSubtreeIds\(db, carrier\)\.some\(\(id\) => getRun\(db, id\)\?\.flags\.wake !== true\)\) return 'no-wake';/);
+  assert.match(core, /if \(getRun\(db, r\.run_id\)\?\.flags\.wake !== true\) continue;/);
+  assert.match(core, /FROM messages WHERE sequence > \? AND sequence <= \? AND kind = 'reprise' AND recipient IS NOT NULL/);
 });
 
 test('WIRING pause-auto.ts is Electron-free (importable under node --test like bus-pause.ts); the host binding holds the real store / pollers', () => {

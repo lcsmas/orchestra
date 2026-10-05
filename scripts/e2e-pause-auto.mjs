@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(process.env.PAUSE_AUTO_REPO ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
+const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'wake_off_nested', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 const TICK_MS = 20_000;   // prompt-queue TICK_MS — "one poll tick" (pinned by pause-auto-wiring.test.ts)
 
@@ -61,8 +61,8 @@ const issued = {};
 const server = http.createServer((req, res) => {
   const tok = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? '';
   hits[tok] = (hits[tok] ?? 0) + 1;
-  const st = tokenState.get(tok);
   const answer = () => {
+    const st = tokenState.get(tok);   // state is read AT ANSWER time: a late answer reflects what changed meanwhile (arm usage_newer_wins)
     if (!st) { res.writeHead(401).end('{}'); return; }
     if (st.fail) { res.writeHead(500).end('{}'); return; }
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(usageBody(st)));
@@ -459,6 +459,22 @@ if (ARM === 'limit_pause') {
   await activity.markStoppedOnUsageLimit('ws-xm', Date.now() + 3_600_000);   // control: ws-xops has pause + wake ON
   rec('pausedControl', run('ws-xops').paused_at !== null);
   ok = out.runsIdentical === true && out.pausedOps === false && out.pausedControl === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'wake_off_nested') {
+  // N1: the Reprise sends a row to a coordinator in EVERY run of the subtree and the DEEPER run's frozen wake governs its delivery. A child OPS run with pause OFF / wake OFF under
+  // a pause+wake ON carrier would never be woken: the auto Pause must not land (nothing written). Control: the unrelated wake-ON run pauses.
+  await seed();
+  busRuns.startRun(db, { id: 'ws-sub', kind: 'vague', coordinator: 'ws-sub', parentRunId: 'ws-ops' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false });
+  await store.upsertWorkspace(mk('ws-sub', { kind: 'orchestrator', parentId: 'ws-ops', accountId: 'acct-a' }));
+  await store.upsertWorkspace(mk('ws-m3', { parentId: 'ws-sub', accountId: 'acct-a' }));
+  const runsBefore = allRuns();
+  await activity.markStoppedOnUsageLimit('ws-m3', Date.now() + 3_600_000);
+  rec('runsIdentical', allRuns() === runsBefore);
+  rec('pausedCarrier', run('ws-ops').paused_at !== null);
+  await activity.markStoppedOnUsageLimit('ws-xm', Date.now() + 3_600_000);   // control
+  rec('pausedControl', run('ws-xops').paused_at !== null);
+  ok = out.runsIdentical === true && out.pausedCarrier === false && out.pausedControl === true;
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'release_clears_marker') {
