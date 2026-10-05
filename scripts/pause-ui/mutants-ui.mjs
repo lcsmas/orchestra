@@ -324,3 +324,19 @@ MUTANTS.push(
   { id: 'call-new-site-in-cli-index', file: 'src/cli/index.ts', find: 'setRunPause: busPause.setRunPause,', rep: "setRunPause: busPause.setRunPause,\n        __x: busPause.setRunPause(db, 'a', true, 'b', 'hard', JSON.parse('{}')),", tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
   { id: 'call-new-site-in-main', file: 'src/main/pause-auto.ts', find: "outcome = deps.beginReprise(db, run.runId, 'host', { host: true, reason: 'usage_limit' });", rep: "outcome = deps.beginReprise(db, run.runId, 'host', { host: true, reason: 'usage_limit' });\n    releaseMembers(db, run.runId, 'x', 'all');", tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
 );
+
+// ── D-pick follow-up, after the guard's pre-review (casts / element access / .call-.apply-.bind / beginRepriseCore / host / JS files / the UI layer's own objects)
+const IDX_ANCHOR = 'setRunPause: busPause.setRunPause,';
+const NEW_SITE = (code) => IDX_ANCHOR + '\n        __x: ' + code + ',';
+MUTANTS.push(
+  { id: 'site-cast-callee', file: 'src/cli/index.ts', find: IDX_ANCHOR, rep: NEW_SITE("(busPause.setRunPause as any)(db, 'a', true, 'b', 'hard', JSON.parse('{}'))"), tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'site-type-assertion-callee', file: 'src/cli/index.ts', find: IDX_ANCHOR, rep: NEW_SITE("(<any>busPause.setRunPause)(db, 'a', true, 'b', 'hard', JSON.parse('{}'))"), tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'site-element-access', file: 'src/cli/index.ts', find: IDX_ANCHOR, rep: NEW_SITE("busPause['setRunPause'](db, 'a', true, 'b', 'hard', JSON.parse('{}'))"), tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'site-dot-call', file: 'src/cli/index.ts', find: IDX_ANCHOR, rep: NEW_SITE("busPause.setRunPause.call(busPause, db, 'a', true, 'b', 'hard', JSON.parse('{}'))"), tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'site-dot-apply', file: 'src/cli/index.ts', find: IDX_ANCHOR, rep: NEW_SITE("busPause.setRunPause.apply(busPause, [db, 'a', true, 'b', 'hard', JSON.parse('{}')])"), tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'site-begin-reprise-core', file: 'src/cli/index.ts', find: IDX_ANCHOR, rep: NEW_SITE("beginRepriseCore(db, 'a', 'b', JSON.parse('{}'), [])"), tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'host-key-in-cli-reprise', file: 'src/cli/bus-verbs.ts', find: "hold.pause.beginReprise(ctx.db, runId, actor, { reason: 'manual' })", rep: "hold.pause.beginReprise(ctx.db, runId, actor, { reason: 'manual', host: true })", tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'ui-layer-relayed-object', file: 'src/main/pause-ui.ts', find: '{ human: true, ownRuns: [t.runId] }', rep: '{ ...({ human: true }), ownRuns: [t.runId] }', tests: [GATES], expect: /ENUMERATION/ },
+  { id: 'importer-js-file-dot-js-specifier', file: 'src/renderer/components/agent/__smoke__/run-smoke.mjs', find: "import { dirname, resolve } from 'node:path';", rep: "import { dirname, resolve } from 'node:path';\nimport { uiPause as __u } from '../../../../main/pause-ui.js';\nvoid __u;", tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+  { id: 'importer-type-only', file: 'src/main/api-handlers.ts', find: "import path from 'node:path';", rep: "import path from 'node:path';\nimport type { PauseUiDeps as __D } from './pause-ui';", tests: [GATES], expect: /ENUMERATION \(importers \+ call sites\)/ },
+);

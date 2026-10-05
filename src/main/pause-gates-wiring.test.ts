@@ -124,20 +124,22 @@ test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): no `h
   assert.deepEqual(probe("const s = '/* human: true */'; // human: true\nconst t = \"*/\"; f({ human: true })"), { passes: 1, reads: 0, declares: 0 }, 'a comment / string mentioning it is not a site; a `*/` inside a string does not hide the real one');
 });
 
-/** Every non-test source file of src/, parsed as its own kind. */
+/** Every non-test source file of src/ (ts / tsx / mts / cts / js / mjs / cjs), parsed as its own kind. */
 function sourceFiles(): Array<{ rel: string; sf: ts.SourceFile }> {
-  const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []));
-  return walk(path.join(process.cwd(), 'src')).map((f) => ({ rel: path.relative(process.cwd(), f), sf: ts.createSourceFile(f, fs.readFileSync(f, 'utf8'), ts.ScriptTarget.ES2022, true, f.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS) }));
+  const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.(ts|tsx|mts|cts|js|mjs|cjs)$/.test(e.name) && !/\.test\.[a-z]+$/.test(e.name) ? [path.join(d, e.name)] : []));
+  const kindOf = (f: string): ts.ScriptKind => (f.endsWith('.tsx') ? ts.ScriptKind.TSX : /\.(js|mjs|cjs)$/.test(f) ? ts.ScriptKind.JS : ts.ScriptKind.TS);
+  return walk(path.join(process.cwd(), 'src')).map((f) => ({ rel: path.relative(process.cwd(), f), sf: ts.createSourceFile(f, fs.readFileSync(f, 'utf8'), ts.ScriptTarget.ES2022, true, kindOf(f)) }));
 }
 
-/** Files that import / re-export / `import()` / `require()` the module `target` (a path relative to the repo root, extension-less), by AST. */
+/** Files that import / re-export / `import()` / `require()` the module `target` (a path relative to the repo root, extension-less) — type-only imports included — by AST. */
 function importersOf(target: string, files = sourceFiles()): string[] {
   const hits: string[] = [];
   for (const { rel, sf } of files) {
-    const resolves = (spec: string): boolean => spec.startsWith('.') && path.normalize(path.join(path.dirname(rel), spec)).replace(/\.(ts|tsx)$/, '') === target;
+    const resolves = (spec: string): boolean => spec.startsWith('.') && path.normalize(path.join(path.dirname(rel), spec)).replace(/\.(ts|tsx|mts|cts|js|mjs|cjs)$/, '') === target;
     let hit = false;
     const visit = (n: ts.Node): void => {
       if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteralLike(n.moduleSpecifier) && resolves(n.moduleSpecifier.text)) hit = true;
+      else if (ts.isImportTypeNode(n) && ts.isLiteralTypeNode(n.argument) && ts.isStringLiteralLike(n.argument.literal) && resolves(n.argument.literal.text)) hit = true;
       else if (ts.isCallExpression(n) && n.arguments.length > 0 && ts.isStringLiteralLike(n.arguments[0]) && ((n.expression.kind === ts.SyntaxKind.ImportKeyword) || (ts.isIdentifier(n.expression) && n.expression.text === 'require')) && resolves(n.arguments[0].text)) hit = true;
       ts.forEachChild(n, visit);
     };
@@ -147,23 +149,46 @@ function importersOf(target: string, files = sourceFiles()): string[] {
   return hits.sort();
 }
 
-const WRITERS = new Set(['setRunPause', 'setRunHold', 'beginReprise', 'releaseMembers']);
+const WRITERS = new Set(['setRunPause', 'setRunHold', 'beginReprise', 'beginRepriseCore', 'releaseMembers']);
+/** Object-literal arguments of a writer call may carry ONLY these properties (a spread / computed key / another name could relay an authority bypass): the CLI verbs pass `reason`; the host auto-Reprise `host` + `reason`; the UI layer its own. */
+const ALLOWED_PROPS: Record<string, string[]> = { 'src/main/pause-ui.ts': ['human', 'ownRuns', 'reason'], 'src/main/pause-auto.ts': ['host', 'reason'] };
 
-/** Every CALL of a writer (`x.setRunPause(…)`, `deps.releaseMembers!(…)`, `f?.()`…) outside the UI layer: `name/argc:kinds`, plus any object-literal argument that is not plain `host` / `reason` properties. */
+const unwrapCallee = (e: ts.Expression): ts.Expression => {
+  while (ts.isNonNullExpression(e) || ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
+  return e;
+};
+/** The name a call is made through: `f(…)`, `x.f(…)`, `x['f'](…)`, with any `!` / parentheses / `as` / `<T>` / `satisfies` wrapped around the callee. */
+const calleeName = (e0: ts.Expression): string | null => {
+  const e = unwrapCallee(e0);
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e)) return e.name.text;
+  if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression)) return e.argumentExpression.text;
+  return null;
+};
+
+/** Every CALL of a writer — including through `.call` / `.apply` / `.bind` — as `name/argc:kinds`, plus any object-literal argument whose properties are not plain allowed ones. */
 function writerCalls(files = sourceFiles()): { sites: Record<string, string[]>; badObjects: string[] } {
   const sites: Record<string, string[]> = {};
   const badObjects: string[] = [];
   for (const { rel, sf } of files) {
-    if (rel === 'src/main/pause-ui.ts') continue; // the human's own call sites: pinned by the test above
+    const allowed = ALLOWED_PROPS[rel] ?? ['reason'];
+    const okProp = (p: ts.ObjectLiteralElementLike): boolean => {
+      const nm = ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) ? (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) ? p.name.text : null) : null;
+      return nm !== null && allowed.includes(nm);
+    };
     const visit = (n: ts.Node): void => {
       if (ts.isCallExpression(n)) {
-        let c: ts.Expression = n.expression;
-        while (ts.isNonNullExpression(c) || ts.isParenthesizedExpression(c)) c = c.expression;
-        const name = ts.isIdentifier(c) ? c.text : ts.isPropertyAccessExpression(c) ? c.name.text : null;
+        let name = calleeName(n.expression);
+        let via = '';
+        if (name === 'call' || name === 'apply' || name === 'bind') {
+          const c = unwrapCallee(n.expression);
+          const inner = ts.isPropertyAccessExpression(c) || ts.isElementAccessExpression(c) ? calleeName(c.expression) : null;
+          if (inner && WRITERS.has(inner)) { via = `.${name}`; name = inner; }
+        }
         if (name && WRITERS.has(name)) {
-          (sites[rel] ??= []).push(`${name}/${n.arguments.length}:${n.arguments.map((a) => ts.SyntaxKind[a.kind]).join(',')}`);
+          (sites[rel] ??= []).push(`${name}${via}/${n.arguments.length}:${n.arguments.map((a) => ts.SyntaxKind[a.kind]).join(',')}`);
           for (const a of n.arguments) {
-            if (ts.isObjectLiteralExpression(a) && !a.properties.every((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ['host', 'reason'].includes(p.name.text))) badObjects.push(`${rel}: ${a.getText().slice(0, 60)}`);
+            if (ts.isObjectLiteralExpression(a) && !a.properties.every(okProp)) badObjects.push(`${rel}: ${a.getText().slice(0, 60)}`);
           }
         }
       }
@@ -175,28 +200,51 @@ function writerCalls(files = sourceFiles()): { sites: Record<string, string[]>; 
   return { sites, badObjects };
 }
 
-test('ENUMERATION (importers + call sites): the UI entry points uiPause / uiResume / uiRelease have ONE importer (pause-ui-host.ts, behind ipcMain); every call of the four Pause writers outside pause-ui.ts is pinned by arity and argument kinds, its object arguments are plain host / reason — a socket route, a relayed object or an aliased call is a NEW site and fails here (review m-A)', () => {
+test('ENUMERATION (importers + call sites): the UI entry points uiPause / uiResume / uiRelease have ONE importer (pause-ui-host.ts, the file that registers them on ipcMain); EVERY call of the five Pause writers is pinned by arity + argument kinds (casts, element access, .call / .apply / .bind seen through), their object arguments are plain `reason` (`host` only in the host auto-Reprise, the UI layer\'s own keys only in pause-ui.ts) — a route that imports pause-ui or calls a writer by name, a relayed object or an extra argument is a NEW site and fails here (review m-A). An ALIASED call (`const f = w.setRunPause; f(…)`) is outside what a static scan follows', () => {
   assert.deepEqual(importersOf('src/main/pause-ui'), ['src/main/pause-ui-host.ts'], 'who imports / re-exports / dynamically loads src/main/pause-ui.ts (the module that holds the human authority)');
   const { sites, badObjects } = writerCalls();
-  assert.deepEqual(badObjects, [], 'a writer call whose object argument is not plain { host, reason } (a spread / computed key / `human` could relay the human option)');
+  assert.deepEqual(badObjects, [], 'a writer call whose object argument is not plain (allowed keys only, no spread / computed key)');
   assert.deepEqual(sites, {
     'src/cli/bus-verbs.ts': ['beginReprise/4:PropertyAccessExpression,Identifier,Identifier,ObjectLiteralExpression', 'releaseMembers/4:PropertyAccessExpression,Identifier,Identifier,Identifier', 'setRunHold/4:PropertyAccessExpression,Identifier,Identifier,Identifier', 'setRunPause/4:PropertyAccessExpression,Identifier,FalseKeyword,Identifier', 'setRunPause/5:PropertyAccessExpression,Identifier,TrueKeyword,Identifier,Identifier'],
+    'src/main/bus-pause.ts': ['beginRepriseCore/5:Identifier,Identifier,Identifier,Identifier,CallExpression'], // the RepriseEntry wrapper `beginReprise` relays its (typed) opts to the core — the ONE place a relayed opts object legitimately flows
     'src/main/pause-auto.ts': ['beginReprise/4:Identifier,PropertyAccessExpression,StringLiteral,ObjectLiteralExpression'],
-  }, 'the CLI verbs (typed deps) and the host auto-Reprise — no other file calls a writer');
+    'src/main/pause-ui.ts': ['beginReprise/4:Identifier,PropertyAccessExpression,Identifier,ObjectLiteralExpression', 'releaseMembers/6:Identifier,BinaryExpression,Identifier,PropertyAccessExpression,CallExpression,ObjectLiteralExpression', 'setRunHold/5:Identifier,PropertyAccessExpression,FalseKeyword,Identifier,ObjectLiteralExpression', 'setRunPause/6:Identifier,PropertyAccessExpression,TrueKeyword,Identifier,PropertyAccessExpression,ObjectLiteralExpression'],
+  }, 'the CLI verbs (typed deps), the host auto-Reprise and the human\'s UI layer — no other file calls a writer');
   // the pin sees what it claims to see: planted evasions, each in a fresh file set
-  const plant = (rel: string, code: string) => ({ rel, sf: ts.createSourceFile(rel, code, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS) });
+  const plant = (rel: string, code: string, kind = ts.ScriptKind.TS) => ({ rel, sf: ts.createSourceFile(rel, code, ts.ScriptTarget.ES2022, true, kind) });
+  const callsIn = (code: string, rel = 'src/x.ts') => writerCalls([plant(rel, code)]);
   assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/api-handlers.ts', "import { uiPause } from './pause-ui';")]), ['src/main/api-handlers.ts']);
   assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import * as ui from './pause-ui.ts';")]), ['src/main/x.ts']);
   assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "export { uiResume } from './pause-ui';")]), ['src/main/x.ts']);
   assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "const m = await import('./pause-ui');")]), ['src/main/x.ts']);
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "const m = require('./pause-ui');", ts.ScriptKind.JS)]), ['src/main/x.ts'], 'a require() in a JS file');
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import type { PauseUiDeps } from './pause-ui';")]), ['src/main/x.ts'], 'a type-only import is an importer too (nothing but the host may even name it)');
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "type T = import('./pause-ui').PauseUiDeps;")]), ['src/main/x.ts'], 'an import() TYPE');
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import { uiPause } from './pause-ui.js';")]), ['src/main/x.ts'], 'a .js specifier (bundler resolution)');
   assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/cli/x.ts', "import { uiPause } from '../main/pause-ui';")]), ['src/cli/x.ts']);
   assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import { x } from './pause-ui-host';")]), [], 'a sibling module is not the target');
-  assert.deepEqual(writerCalls([plant('src/cli/index.ts', "busPause.setRunPause(db, id, true, a, 'hard', JSON.parse(s));")]).sites['src/cli/index.ts'], ['setRunPause/6:Identifier,Identifier,TrueKeyword,Identifier,StringLiteral,CallExpression']);
-  assert.equal(writerCalls([plant('src/x.ts', 'deps.releaseMembers!(db, c, a, t, 1, o);')]).sites['src/x.ts'].length, 1, 'a non-null-asserted call is seen');
-  assert.equal(writerCalls([plant('src/x.ts', 'deps.setRunHold?.(db, r, false, a, o);')]).sites['src/x.ts'].length, 1, 'an optional call is seen');
-  assert.equal(writerCalls([plant('src/x.ts', 'beginReprise(db, c, a, { ...opts });')]).badObjects.length, 1, 'a relayed spread');
-  assert.equal(writerCalls([plant('src/x.ts', 'beginReprise(db, c, a, { host: true, reason: x });')]).badObjects.length, 0, 'plain host / reason is fine');
-  assert.equal(writerCalls([plant('src/x.ts', 'beginReprise(db, c, a, { ["hu" + "man"]: true });')]).badObjects.length, 1, 'a computed key');
+  assert.deepEqual(importersOf('src/main/pause-ui', [plant('src/main/x.ts', "import type { PauseUiOverview } from '../shared/pause-ui';")]), [], 'the SHARED pause-ui module is not the target');
+  assert.deepEqual(callsIn("busPause.setRunPause(db, id, true, a, 'hard', JSON.parse(s));", 'src/cli/index.ts').sites['src/cli/index.ts'], ['setRunPause/6:Identifier,Identifier,TrueKeyword,Identifier,StringLiteral,CallExpression']);
+  assert.equal(callsIn('deps.releaseMembers!(db, c, a, t, 1, o);').sites['src/x.ts'].length, 1, 'a non-null-asserted call is seen');
+  assert.equal(callsIn('deps.setRunHold?.(db, r, false, a, o);').sites['src/x.ts'].length, 1, 'an optional call is seen');
+  assert.equal(callsIn('(deps.setRunPause as any)(db, id, true, a, m, opts);').sites['src/x.ts'].length, 1, 'a CAST callee is seen (review: the standard way to defeat the typed deps)');
+  assert.equal(callsIn('(<any>deps.setRunPause)(db, id, true, a, m, opts);').sites['src/x.ts'].length, 1, 'a type-assertion callee');
+  assert.equal(callsIn('(deps.setRunPause satisfies F)(db, id, true, a, m, opts);').sites['src/x.ts'].length, 1, 'a satisfies callee');
+  assert.equal(callsIn("deps['setRunPause'](db, id, true, a, m, opts);").sites['src/x.ts'].length, 1, 'an element-access call');
+  assert.deepEqual(callsIn('deps.setRunPause.call(deps, db, id, true, a, m, opts);').sites['src/x.ts'], ['setRunPause.call/7:Identifier,Identifier,Identifier,TrueKeyword,Identifier,Identifier,Identifier'], '.call is seen through');
+  assert.equal(callsIn('deps.setRunHold.apply(deps, [db, r, false, a, o]);').sites['src/x.ts'].length, 1, '.apply is seen through');
+  assert.equal(callsIn('const f = deps.releaseMembers.bind(deps);').sites['src/x.ts'].length, 1, '.bind is seen through');
+  assert.equal(callsIn('beginRepriseCore(db, c, a, relayed, ids);').sites['src/x.ts'].length, 1, 'beginRepriseCore is a writer too (it reads host AND human)');
+  assert.equal(callsIn('beginReprise(db, c, a, { ...opts });').badObjects.length, 1, 'a relayed spread');
+  assert.equal(callsIn("beginReprise(db, c, a, { reason: 'manual' });").badObjects.length, 0, 'plain reason is fine');
+  assert.equal(callsIn('beginReprise(db, c, a, { reason });').badObjects.length, 0, 'shorthand reason is fine');
+  assert.equal(callsIn("beginReprise(db, c, a, { 'reason': x });").badObjects.length, 0, 'a string-literal key is fine');
+  assert.equal(callsIn('beginReprise(db, c, a, { host: true, reason: x });').badObjects.length, 1, '`host` skips the coordinator rule too: only the host auto-Reprise may pass it');
+  assert.equal(callsIn('beginReprise(db, c, a, { host: true, reason: x });', 'src/main/pause-auto.ts').badObjects.length, 0, '…and that file may');
+  assert.equal(callsIn('beginReprise(db, c, a, { ["hu" + "man"]: true });').badObjects.length, 1, 'a computed key');
+  assert.equal(callsIn('setRunHold(db, r, false, a, { human: true });').badObjects.length, 1, 'the human key outside pause-ui.ts');
+  assert.equal(callsIn('setRunHold(db, r, false, a, { human: true });', 'src/main/pause-ui.ts').badObjects.length, 0, '…and inside it');
+  assert.equal(callsIn('setRunHold(db, r, false, a, { ...x, human: true });', 'src/main/pause-ui.ts').badObjects.length, 1, 'a spread even in the UI layer');
 });
 
 test('docs: the orchestra-comms skill SOURCE (COMMS_SKILL) documents the verbs, the refusal text and the human-prompt policy', () => {
