@@ -138,19 +138,21 @@ test('pause on an unknown run is refused (no-run), $ORCHESTRA_RUN_ID is the defa
   assert.deepEqual(state(h, 'O'), first);
 });
 
-test('resume LIFTS the pause (all four columns) — a worker cannot; a descendant run points at the carrier', needsBuild, (t) => {
+test('resume STARTS the Reprise (the pause is not lifted at once) — a worker cannot; a descendant run points at the carrier', needsBuild, (t) => {
   const h = home(t);
   cli(h, ['run', 'pause', '--hard', '--run', 'O']);
   const w = cli(h, ['run', 'resume', '--run', 'O'], 'worker-ws');
   assert.notEqual(w.code, 0);
-  assert.notEqual(state(h, 'O'), null, 'still paused after a refused lift');
+  assert.equal(state(h, 'O')!.resumeStartedAt ?? null, null, 'no Reprise started by a refused resume');
   const desc = cli(h, ['run', 'resume', '--run', 'S'], 'sub-ws');
   assert.equal(desc.code, 0);
   assert.match(desc.stdout, /Run S was not held — unchanged\.\nIt is still PAUSED by run O — lift that one: orchestra run resume --run O\n/);
   const r = cli(h, ['run', 'resume', '--run', 'O']);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^Run O pause LIFTED — réveils, turns and spawns are allowed again\./);
-  assert.equal(state(h, 'O'), null);
+  assert.match(r.stdout, /^Run O: REPRISE STARTED — the host released ONLY the coordinators of its subtree/);
+  assert.match(r.stdout, /orchestra run release <workspace-id>\|--all/);
+  assert.notEqual(state(h, 'O')!.resumeStartedAt ?? null, null, 'RESUMING: resume_started_at stamped, the pause itself still carried');
+  assert.match(cli(h, ['run', 'resume', '--run', 'O']).stdout, /^Run O: already RESUMING/);
 });
 
 test('resume on a run that was NEVER paused prints exactly what it always printed (switch-OFF byte-identity of the verb)', needsBuild, (t) => {
@@ -162,15 +164,15 @@ test('resume on a run that was NEVER paused prints exactly what it always printe
     'Run O resumed — liveness escalation is re-enabled for its members.\n');
 });
 
-test('pause and hold are independent flags: resume lifts both and says so', needsBuild, (t) => {
+test('pause and hold are independent flags: resume starts the Reprise AND lifts the hold, and says so', needsBuild, (t) => {
   const h = home(t);
   cli(h, ['run', 'hold', '--run', 'O']);
   cli(h, ['run', 'pause', '--hard', '--run', 'O']);
   const r = cli(h, ['run', 'resume', '--run', 'O']);
-  assert.match(r.stdout, /pause LIFTED/);
+  assert.match(r.stdout, /REPRISE STARTED/);
   assert.match(r.stdout, /Its liveness hold was lifted too\./);
-  assert.equal(state(h, 'O'), null);
-  assert.equal(cli(h, ['run', 'resume', '--run', 'O']).stdout, 'Run O was not held — unchanged.\n', 'hold is gone too');
+  assert.match(cli(h, ['run', 'resume', '--run', 'O']).stdout, /^Run O: already RESUMING/, 'hold is gone too (no hold line again)');
+  assert.doesNotMatch(cli(h, ['run', 'resume', '--run', 'O']).stdout, /liveness hold/);
 });
 
 test('--hard only applies to `run pause`', needsBuild, (t) => {
@@ -217,11 +219,13 @@ test('pre-review: `resume` of a run whose ANCESTOR is still paused says so — n
   assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws').code, 0);
   const r = cli(h, ['run', 'resume', '--run', 'O'], 'ops-ws');
   assert.equal(r.code, 0, r.stderr);
-  assert.equal(r.stdout, "Run O's own pause is LIFTED, but it is still PAUSED by run L — lift that one: orchestra run resume --run L\n");
+  assert.match(r.stdout, /^Run O: REPRISE STARTED/);
+  assert.match(r.stdout, /Run O is still PAUSED by run L — its members stay blocked until that one resumes too: orchestra run resume --run L\n$/);
   assert.doesNotMatch(r.stdout, /allowed again/);
-  assert.equal(state(h, 'O'), null, 'its own pause really is cleared');
+  assert.notEqual(state(h, 'O')!.resumeStartedAt ?? null, null, "its own Reprise really started");
   const l = cli(h, ['run', 'resume', '--run', 'L'], 'lead-ws');
-  assert.match(l.stdout, /^Run L pause LIFTED — réveils, turns and spawns are allowed again\./, 'control: the ancestor lifts normally');
+  assert.match(l.stdout, /^Run L: REPRISE STARTED/, 'control: the ancestor starts its Reprise normally');
+  assert.doesNotMatch(l.stdout, /still PAUSED by/);
 });
 
 /** The app's persisted workspace tree where the CLI looks for it (offline store). */
@@ -234,22 +238,24 @@ function writeStore(h: string, workspaces: Array<{ id: string; parentId?: string
 test('follow-up (verifier MINOR 1): `resume` of a run re-parented AFTER creation names the ancestor that still pauses it — the live tree, not the write-once parent_run_id', needsBuild, (t) => {
   const h = home(t);
   const db = bus.openBus(path.join(h, 'bus.sqlite'));
-  try { busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db.close(); } // created top-level: parent_run_id NULL forever
+  try { busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'O2' }, ON); } finally { db.close(); } // created top-level: parent_run_id NULL forever
   assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws').code, 0);
-  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws').code, 0);
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O2'], 'O2').code, 0);
   // the store says O2 is now attached under the paused OPS (the store re-parents; the bus row does not)
   writeStore(h, [{ id: 'L', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'O2', kind: 'orchestrator', parentId: 'O' }]);
-  const r = cli(h, ['run', 'resume', '--run', 'O2'], 'o2-ws');
+  const r = cli(h, ['run', 'resume', '--run', 'O2'], 'O2');
   assert.equal(r.code, 0, r.stderr);
-  assert.equal(r.stdout, "Run O2's own pause is LIFTED, but it is still PAUSED by run O — lift that one: orchestra run resume --run O\n");
+  assert.match(r.stdout, /Run O2 is still PAUSED by run O — its members stay blocked until that one resumes too: orchestra run resume --run O\n$/);
   assert.doesNotMatch(r.stdout, /allowed again/);
   // controls: detached in the store → the plain lift message; no store file at all → the bus run tree (O2 has no parent there)
   const h2 = home(t);
   const db2 = bus.openBus(path.join(h2, 'bus.sqlite'));
-  try { busRuns.startRun(db2, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db2.close(); }
-  cli(h2, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws'); cli(h2, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws');
+  try { busRuns.startRun(db2, { id: 'O2', kind: 'vague', coordinator: 'O2' }, ON); } finally { db2.close(); }
+  cli(h2, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws'); cli(h2, ['run', 'pause', '--hard', '--run', 'O2'], 'O2');
   writeStore(h2, [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }]);
-  assert.match(cli(h2, ['run', 'resume', '--run', 'O2'], 'o2-ws').stdout, /^Run O2 pause LIFTED — réveils, turns and spawns are allowed again\./, 'detached: plain lift');
+  const plain = cli(h2, ['run', 'resume', '--run', 'O2'], 'O2').stdout;
+  assert.match(plain, /^Run O2: REPRISE STARTED/, 'detached: its own Reprise');
+  assert.doesNotMatch(plain, /still PAUSED by/, 'and no ancestor covers it');
 });
 
 test('pre-review MAJOR: the store is read where the RUNNING APP writes it — the packaged default (no ORCHESTRA_HOME) is `~/.config/orchestra/orchestra/store.json`, never the stale `~/.orchestra/userData`', needsBuild, (t) => {
@@ -265,36 +271,36 @@ test('pre-review MAJOR: the store is read where the RUNNING APP writes it — th
   const db = bus.openBus(path.join(h, '.orchestra', 'bus.sqlite'));
   try {
     busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'ops-ws' }, ON);
-    busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); // top-level on the bus: parent_run_id NULL
+    busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'O2' }, ON); // top-level on the bus: parent_run_id NULL
   } finally { db.close(); }
   assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws', null, true).code, 0);
-  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O2'], 'o2-ws', null, true).code, 0);
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O2'], 'O2', null, true).code, 0);
   // a STALE store at the abandoned path says O2 is detached; the LIVE store says it is attached under O
   const stale = path.join(h, '.orchestra', 'userData', 'orchestra'); mkdirSync(stale, { recursive: true });
   writeFileSync(path.join(stale, 'store.json'), JSON.stringify({ workspaces: [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }] }));
   const live = path.join(h, '.config', 'orchestra', 'orchestra'); mkdirSync(live, { recursive: true });
   writeFileSync(path.join(live, 'store.json'), JSON.stringify({ workspaces: [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator', parentId: 'O' }] }));
-  const r = cli(h, ['run', 'resume', '--run', 'O2'], 'o2-ws', null, true);
+  const r = cli(h, ['run', 'resume', '--run', 'O2'], 'O2', null, true);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /still PAUSED by run O — lift that one/, 'the LIVE (config-dir) tree decided, not the stale ~/.orchestra/userData copy');
+  assert.match(r.stdout, /still PAUSED by run O — its members stay blocked/, 'the LIVE (config-dir) tree decided, not the stale ~/.orchestra/userData copy');
 });
 
 test('follow-up review F1: `run status` and `run resume` read the SAME live cover walk — a run re-parented AFTER creation under a paused run reads PAUSED (inherited) in status, not "not paused"', needsBuild, (t) => {
   const h = home(t);
   const db = bus.openBus(path.join(h, 'bus.sqlite'));
-  try { busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db.close(); } // created top-level: parent_run_id NULL forever
+  try { busRuns.startRun(db, { id: 'O2', kind: 'vague', coordinator: 'O2' }, ON); } finally { db.close(); } // created top-level: parent_run_id NULL forever
   assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws').code, 0); // only O is paused; O2 has no pause of its own
   writeStore(h, [{ id: 'L', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'O2', kind: 'orchestrator', parentId: 'O' }]);
-  const st = JSON.parse(cli(h, ['run', 'status', '--run', 'O2', '--json'], 'o2-ws').stdout) as { pause: { runId: string } | null; inherited: boolean };
+  const st = JSON.parse(cli(h, ['run', 'status', '--run', 'O2', '--json'], 'O2').stdout) as { pause: { runId: string } | null; inherited: boolean };
   assert.equal(st.pause?.runId, 'O', 'status names the ancestor that pauses O2 via the live tree');
   assert.equal(st.inherited, true);
-  assert.match(cli(h, ['run', 'status', '--run', 'O2'], 'o2-ws').stdout, /orchestra run resume --run O/);
-  assert.match(cli(h, ['run', 'resume', '--run', 'O2'], 'o2-ws').stdout, /still PAUSED by run O|PAUSED by run O/, 'resume agrees');
+  assert.match(cli(h, ['run', 'status', '--run', 'O2'], 'O2').stdout, /orchestra run resume --run O/);
+  assert.match(cli(h, ['run', 'resume', '--run', 'O2'], 'O2').stdout, /still PAUSED by run O|PAUSED by run O/, 'resume agrees');
   // control: detached in the store → O2 is not covered, status agrees with the plain lift
   const h2 = home(t);
   const db2 = bus.openBus(path.join(h2, 'bus.sqlite'));
-  try { busRuns.startRun(db2, { id: 'O2', kind: 'vague', coordinator: 'o2-ws' }, ON); } finally { db2.close(); }
+  try { busRuns.startRun(db2, { id: 'O2', kind: 'vague', coordinator: 'O2' }, ON); } finally { db2.close(); }
   cli(h2, ['run', 'pause', '--hard', '--run', 'O'], 'ops-ws');
   writeStore(h2, [{ id: 'O', kind: 'orchestrator' }, { id: 'O2', kind: 'orchestrator' }]);
-  assert.equal((JSON.parse(cli(h2, ['run', 'status', '--run', 'O2', '--json'], 'o2-ws').stdout) as { pause: unknown }).pause, null, 'detached: not paused');
+  assert.equal((JSON.parse(cli(h2, ['run', 'status', '--run', 'O2', '--json'], 'O2').stdout) as { pause: unknown }).pause, null, 'detached: not paused');
 });

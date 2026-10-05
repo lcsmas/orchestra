@@ -28,7 +28,8 @@ export interface BilanActivity {
   status?: string;
   turnRunning?: boolean;
   interrupt?: 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'unresponsive' | 'exempt' | 'skipped';
-  inFlightTools?: Array<{ tool: string | null; toolUseId: string | null; sinceMs: number | null }>;
+  /** `input`: a one-line summary of the call's input (the Bash command) — what the interrupt ABORTED (#255 M2); null/absent = not recorded (terminal agent). */
+  inFlightTools?: Array<{ tool: string | null; toolUseId: string | null; sinceMs: number | null; input?: string | null }>;
   bgTasks?: Array<{ id: string; type?: string; description: string; status: string }>;
   lastTask?: string;
   branch?: string | null;

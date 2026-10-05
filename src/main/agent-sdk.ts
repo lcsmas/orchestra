@@ -83,6 +83,8 @@ import {
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
 import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
+import { noteToolDetail } from './hibernation-activity';
+import { applyToolEvent, type OpenTool } from '../shared/open-tools.ts';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
@@ -340,6 +342,9 @@ interface Session {
   /** Background tasks this session owns, folded from its `task` events (same fold as
    *  the panel). Session-scoped so it dies with the CLI; read by the hibernation sweep. */
   bgTasks: Record<string, BackgroundTask>;
+  /** `tool_use` blocks of the CURRENT turn that have no `tool_result` yet (toolUseId → what it is): the hook-independent answer to "which calls did a Pause interrupt" — read by
+   *  `sdkPauseActivity` for the Bilan de pause (#255 review M2). Cleared at the turn boundary; bounded. */
+  openToolUses: Map<string, OpenTool>;
   /** Set by sdkStop when the idle-hibernate sweep stops THIS session; read by consume()'s catch. */
   hibernating?: boolean;
   /** Last Remote Control state emitted for this session, so a fresh `ensureSession`
@@ -797,6 +802,9 @@ function emitFrom(session: Session, msg: SdkMessage): AgentEvent[] {
     if (ev.type === 'tool-use' && ev.name === 'ScheduleWakeup') {
       void markLooping(session.wsId, ev.input?.stop !== true);
     }
+    // #255 (review M2): remember WHAT the call is (the Bash command…) so a Pause interrupting it can name it in the Bilan de pause — the hook's `pretool` carries only the tool name.
+    if (ev.type === 'tool-use') noteToolDetail(session.wsId, ev.toolUseId, applyToolEvent(session.openToolUses, ev));
+    else applyToolEvent(session.openToolUses, ev);
     // ── #69: the turn-limit REASON, outside the single-writer gate ──
     // MEASURED (docs/research/issue-69-maxturns-findings.md, third correction):
     // a turn that dies on `error_max_turns` is the ONLY thing #69 actually
@@ -1902,6 +1910,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     permissionMode,
     driveStatus,
     bgTasks: {},
+    openToolUses: new Map(),
     pendingLocalContext: [],
     recentEchoes: [],
     sawResult: false,
@@ -3991,10 +4000,16 @@ export async function sdkInterrupt(wsId: string): Promise<void> {
  *  session object in THIS app run). Reads only; never starts or stops anything. */
 export function sdkPauseActivity(
   wsId: string,
-): { turnRunning: boolean; queued: number; bgTasks: BackgroundTask[] } | null {
+): { turnRunning: boolean; queued: number; bgTasks: BackgroundTask[]; openTools: Array<{ tool: string; toolUseId: string; input: string | null; sinceMs: number }> } | null {
   const s = sessions.get(wsId);
   if (!s || s.stopping) return null;
-  return { turnRunning: s.turnGate !== null || s.unexplainedTurnSeen === true, queued: s.queue.length, bgTasks: Object.values(s.bgTasks) };
+  const now = Date.now();
+  return {
+    turnRunning: s.turnGate !== null || s.unexplainedTurnSeen === true,
+    queued: s.queue.length,
+    bgTasks: Object.values(s.bgTasks),
+    openTools: [...s.openToolUses].map(([toolUseId, t]) => ({ tool: t.tool, toolUseId, input: t.input, sinceMs: now - t.startedAt })),
+  };
 }
 
 /** #252 D1b (round-2 F3): is the turn in flight RIGHT NOW one a human typed? Exact and TTL-free (a cold-started paused member can take far longer than any timer between the

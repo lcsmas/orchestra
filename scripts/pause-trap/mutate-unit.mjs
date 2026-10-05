@@ -123,8 +123,8 @@ const M = [
   { id: 'trap-retry-blanks-error', file: TRAP, find: "errors.length ? errors.join('; ') : (cur.error ?? null) }), cur.id)", rep: "errors.length ? errors.join('; ') : null }), cur.id)", tests: [T.trap], expect: /F4 a RETRY keeps/ },
   { id: 'status-control-chars-not-stripped', file: 'src/cli/run-status.ts', find: "  return String(s ?? '').replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff\\u{e0000}-\\u{e007f}]/gu, ' ');", rep: "  return String(s ?? '');", tests: [T.status], expect: /F11/ },
   // follow-up review F1: `run status` and `run resume` share ONE live cover walk. These tests EXEC dist-electron/cli.js → `build: true` rebuilds it per mutant.
-  { id: 'status-uses-write-once-walk', file: 'src/cli/index.ts', find: 'activePauseFor: (d, id) => coverFor(d, id, busPause),', rep: 'activePauseFor: busPause.activePauseFor,', tests: [T.runpause], expect: /follow-up review F1/, build: true },
-  { id: 'cover-for-ignores-live-tree', file: 'src/cli/index.ts', find: '  return node ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id)) : busPause.activePauseFor(d, runId);', rep: '  return busPause.activePauseFor(d, runId);', tests: [T.runpause], expect: /follow-up review F1|re-parented AFTER creation/, build: true },
+  { id: 'status-uses-write-once-walk', file: 'src/cli/index.ts', find: 'activePauseFor: (d, id) => coverFor(d, id, busPause, undefined, { includeReleased: true }),', rep: 'activePauseFor: busPause.activePauseFor,', tests: [T.runpause], expect: /follow-up review F1/, build: true },
+  { id: 'cover-for-ignores-live-tree', file: 'src/cli/index.ts', find: '  return node\n    ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id), opts)\n    : opts?.includeReleased', rep: '  return opts?.includeReleased', tests: [T.runpause], expect: /follow-up review F1|re-parented AFTER creation/, build: true },
   // ── pre-review round 2 (M1 M2 M3 M4 M5 M7 M8 M9 + F11 every string)
   { id: 'procs-no-supervisor-ancestor-plan', file: PROCS, find: "(hasSupervisor(p.pid) || supervisorAncestorOf(p, (pid) => byPid.get(pid) ?? 'gone', cli.pid) !== 'no')", rep: 'hasSupervisor(p.pid)', tests: [T.procs], expect: /M1: an env-proven process UNDER/ },
   { id: 'procs-no-supervisor-ancestor-signal', file: PROCS, find: "  if (target.via !== 'tree' && supervisorAncestorOf(fresh, read, plan.cli.pid) !== 'no') return", rep: "  if (false) return", tests: [T.procs], expect: /M1: the signal-time re-read refuses a process under/ },
@@ -253,6 +253,9 @@ const M = [
   // ── #254 Pause douce (scripts/pause-trap/mutants-douce-unit.mjs)
   ...DOUCE_UNIT_MUTANTS,
 ];
+
+// wave E (#255 structured Reprise): its clause mutants live in their own file (same schema; the harness below is shared).
+M.push(...(await import('./mutants-reprise.mjs')).MUTANTS);
 
 const sel = ONLY ? M.filter((m) => ONLY_SET.has(m.id)) : M;
 if (sel.length === 0) { console.error(`unknown mutant ${ONLY}`); process.exit(2); }

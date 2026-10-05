@@ -104,7 +104,7 @@ was doing, its snapshot ref, whether its tree was dirty, which commands it kille
 _Avoid_: pause report, state dump
 
 **Reprise** (resume):
-Lifting a Pause top-down: the host wakes coordinators first, each OPS
+Lifting a Pause top-down: the host releases coordinators first, each OPS
 re-dispatches its members with a Consigne de reprise; nobody restarts on their own.
 _Avoid_: unpause, restart, relaunch
 
@@ -112,6 +112,16 @@ _Avoid_: unpause, restart, relaunch
 The message an OPS sends one member at a Reprise, built from the member's
 Bilan de pause. Killed commands are listed, never re-run automatically.
 _Avoid_: resume nudge (that is the generic usage-limit auto-resume text)
+
+**Libération** (release):
+During a Reprise, the act that lets one member start again: the host releases
+the coordinators; a coordinator releases its workers with `orchestra run release`,
+which also sends each its Consigne de reprise. A member not yet released stays blocked.
+_Avoid_: unblock, wake (a release opens the gate; it does not start anything)
+
+**Reprise accusé** (resume acknowledgement):
+A member's confirmation (`orchestra run confirm reprise`) that it read its Consigne
+and is back on its feet. Tracking only — it gates nothing; `bus-status` shows "N/M repris".
 
 ### Quality
 

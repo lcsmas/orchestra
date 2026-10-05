@@ -7,6 +7,7 @@ import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import type { BilanRow } from '../main/bus-pause-records.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
+import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
 
 /** The bus reads this verb needs, injected (production passes the real modules — dynamic import in index.ts). */
 export interface RunStatusDeps {
@@ -18,6 +19,10 @@ export interface RunStatusDeps {
   latestPauseBilan?: (db: BusDb, runId: string) => { carrierRunId: string; pausedAt: number; rows: BilanRow[] } | null;
   /** #254: the carrier's phase + roster ("N/M en pause — manquent : …"). Omitted ⇒ none. */
   pauseStatus?: (db: BusDb, carrierRunId: string) => PauseStatusView | null;
+  /** #255: the pause that still GATES this run once the nearer carrier has released its coordinator (release-aware — the gate's own read). Omitted ⇒ not asked. */
+  gatePauseFor?: (db: BusDb, runId: string) => RunPauseInfo | null;
+  /** #255: the open Reprise (resuming, or active with accusés still missing) — "N/M repris — manquent : …". Omitted ⇒ none. */
+  repriseView?: (db: BusDb, runId: string) => RepriseStatusView | null;
 }
 
 export interface RunStatus {
@@ -32,6 +37,10 @@ export interface RunStatus {
   bilan: BilanRow[];
   /** Set only when NOT paused: the most recent (lifted) pause whose Bilan is still in `pause_records`. */
   lastPause: { carrierRunId: string; pausedAt: number } | null;
+  /** The open Reprise of this run's carrier, or null. */
+  reprise: RepriseStatusView | null;
+  /** An ANCESTOR run's pause that still gates this run although its nearer carrier is RESUMING (null otherwise). */
+  stillPausedBy: RunPauseInfo | null;
 }
 
 export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): RunStatus {
@@ -46,6 +55,12 @@ export function gatherRunStatus(db: BusDb, runId: string, deps: RunStatusDeps): 
     inherited: pause !== null && pause.runId !== runId,
     bilan: pause ? deps.listBilanForRun(db, pause.runId, runId, pause.pausedAt) : (last?.rows ?? []),
     lastPause: last ? { carrierRunId: last.carrierRunId, pausedAt: last.pausedAt } : null,
+    reprise: deps.repriseView?.(db, runId) ?? null,
+    stillPausedBy: (() => {
+      if (!pause?.resumeStartedAt || !deps.gatePauseFor) return null;
+      const g = deps.gatePauseFor(db, runId);
+      return g && g.runId !== pause.runId ? g : null;
+    })(),
   };
 }
 
@@ -84,6 +99,7 @@ export function renderRunStatus(st: RunStatus): string {
   if (!st.runExists) out.push(`Run ${st.runId}: no row in the bus 'runs' table (unknown run, or this workspace anchors none).`);
   if (!st.pause) {
     out.push(`Run ${st.runId}: not paused.`);
+    if (st.reprise) out.push(...renderRepriseStatus(st.reprise));
     if (st.lastPause) {
       out.push(`Last pause (LIFTED): carried by run ${st.lastPause.carrierRunId}, since ${iso(st.lastPause.pausedAt)}. Its Bilan de pause (kept after the lift):`);
       renderRows(st.bilan, out);
@@ -92,28 +108,42 @@ export function renderRunStatus(st: RunStatus): string {
   }
   const p = st.pause;
   out.push(
-    `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${c(p.pausedBy ?? 'unknown')}` +
-      (st.inherited ? ` — carried by ancestor run ${p.runId}; lift it with: orchestra run resume --run ${p.runId}` : `; lift with: orchestra run resume --run ${p.runId}`),
+    p.resumeStartedAt
+      ? // #255: the carrier is RESUMING — still a carried pause (workers blocked), but it is being lifted: say so, never "lift it with resume" again
+        `Run ${st.runId}: RESUMING — the ${p.mode ?? 'hard'} pause of ${iso(p.pausedAt)} (by ${c(p.pausedBy ?? 'unknown')}) is being lifted by the Reprise` +
+        (st.inherited ? `, carried by ancestor run ${p.runId}` : '')
+      : `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${c(p.pausedBy ?? 'unknown')}` +
+        (st.inherited ? ` — carried by ancestor run ${p.runId}; lift it with: orchestra run resume --run ${p.runId}` : `; lift with: orchestra run resume --run ${p.runId}`),
   );
+  if (st.stillPausedBy) out.push(`Still PAUSED by run ${st.stillPausedBy.runId} (an ancestor) — its members stay blocked until that one resumes too: orchestra run resume --run ${st.stillPausedBy.runId}`);
   if (st.roster) {
     out.push(`Pause: ${renderPauseStatusLine(st.roster, { label: c, now: Date.now() })}`);
-    for (const r of st.roster.rows) {
-      out.push(
-        `  • ${c(r.wsId)} [${r.role}] — ${r.pauseConfirmedAt !== null ? `en pause (${r.pauseConfirmVia ?? '?'}) ${iso(r.pauseConfirmedAt)}` : 'pas encore confirmé'}`,
-      );
+    // the per-member lines read "pas encore confirmé" = the PAUSE accusé: meaningless once the Reprise began (the Reprise view below lists who is released / accused)
+    if (st.roster.phase !== 'resuming') {
+      for (const r of st.roster.rows) {
+        out.push(
+          `  • ${c(r.wsId)} [${r.role}] — ${r.pauseConfirmedAt !== null ? `en pause (${r.pauseConfirmVia ?? '?'}) ${iso(r.pauseConfirmedAt)}` : 'pas encore confirmé'}`,
+        );
+      }
     }
   }
   out.push(
     p.trapAt !== null
       ? `Host trap: DONE at ${iso(p.trapAt)}.`
-      : p.mode === 'soft' && p.escalatedAt == null
-        ? `Host trap: NOT OWED YET — Pause douce still waiting for its members (the host takes over when all confirmed or at ${p.deadlineAt ? iso(p.deadlineAt) : 'the 3-min deadline'}).`
+      : p.resumeStartedAt
+        ? `Host trap: not owed any more — the Reprise began before it finished (nothing is interrupted or killed after that).`
+        : p.mode === 'soft' && p.escalatedAt == null
+          ? `Host trap: NOT OWED YET — Pause douce still waiting for its members (the host takes over when all confirmed or at ${p.deadlineAt ? iso(p.deadlineAt) : 'the 3-min deadline'}).`
         : `Host trap: NOT FINISHED — the app has not (fully) reacted yet (it runs when Orchestra is up; a pause that landed while it was closed is completed at the next launch).`,
   );
+  if (p.resumeStartedAt) out.push(`Reprise: RESUMING since ${iso(p.resumeStartedAt)} — coordinators are released; every other member stays BLOCKED until its coordinator runs \`orchestra run release\`.`);
+  if (st.reprise) out.push(...renderRepriseStatus(st.reprise, { countShownAbove: pauseLineCoversReprise(st.reprise, st.roster) }));
   out.push(`Bilan de pause (${st.bilan.length} member${st.bilan.length === 1 ? '' : 's'}):`);
   renderRows(st.bilan, out);
   out.push(
-    'Reprise: `orchestra run resume` only lifts the pause — nothing restarts on its own. Re-dispatch each member from its Bilan; killed commands are listed, never re-run automatically.',
+    p.resumeStartedAt
+      ? 'Reprise in progress: killed commands are listed, never re-run automatically; each member receives its Consigne de reprise when its coordinator releases it.'
+      : 'Reprise: `orchestra run resume` starts it — nothing restarts on its own: only the coordinators are released (each gets the Bilan of its wave); workers stay blocked until their coordinator runs `orchestra run release`, which sends each its Consigne de reprise. Killed commands are listed, never re-run automatically.',
   );
   return `${out.join('\n')}\n`;
 }

@@ -47,6 +47,7 @@ export function forgetHibernationActivity(wsId: string): void {
   deleting.add(wsId);
   lastActivity.delete(wsId);
   inFlightTools.delete(wsId);
+  toolDetail.delete(wsId);
 }
 
 // --- in-flight tool-call tracking (liveness v2, issue #127) ------------------
@@ -86,9 +87,32 @@ export interface InFlightTool {
    *  spool hook mines it from the PreToolUse payload. `null` when unknown (an old
    *  hook), in which case posttool pairing falls back to FIFO. */
   toolUseId: string | null;
+  /** A one-line summary of the call's INPUT (the Bash command…), when the SDK path reported it (`noteToolDetail`) — absent for a terminal/spool call. Read by the Bilan de pause. */
+  detail?: string;
 }
 
 const inFlightTools = new Map<string, InFlightTool[]>();
+/** toolUseId → input summary, per workspace (bounded). Kept apart from the list because the SDK `tool-use` event (which has the input) and the hook's `pretool`
+ *  (which starts the call) are two independent writers in no fixed order. */
+const toolDetail = new Map<string, Map<string, string>>();
+const TOOL_DETAIL_CAP = 64;
+
+/** Record the input summary of the call `toolUseId` (SDK `tool-use` event). Bounded FIFO per workspace; a call that already ended never reads it back (cleared with it). */
+export function noteToolDetail(wsId: string, toolUseId: string | null, detail: string | null): void {
+  if (!toolUseId || !detail) return;
+  const m = toolDetail.get(wsId) ?? new Map<string, string>();
+  m.delete(toolUseId);
+  m.set(toolUseId, detail);
+  while (m.size > TOOL_DETAIL_CAP) m.delete(m.keys().next().value as string);
+  toolDetail.set(wsId, m);
+}
+function dropToolDetail(wsId: string, toolUseId: string | null): void {
+  if (!toolUseId) return;
+  const m = toolDetail.get(wsId);
+  if (!m) return;
+  m.delete(toolUseId);
+  if (m.size === 0) toolDetail.delete(wsId);
+}
 
 /** Record that a tool call STARTED for `wsId` (an `applyAgentEvent` `pretool`).
  *  APPENDS to the in-flight list so parallel calls each get their own ceiling
@@ -150,7 +174,8 @@ export function noteToolEnd(
     if (idx === -1) idx = list.findIndex((c) => c.toolUseId === null);
     if (idx === -1) return;
   }
-  list.splice(idx, 1);
+  const [ended] = list.splice(idx, 1);
+  dropToolDetail(wsId, ended?.toolUseId ?? null);
   if (list.length === 0) inFlightTools.delete(wsId);
   else inFlightTools.set(wsId, list);
 }
@@ -186,13 +211,17 @@ export function noteToolBatchEnd(wsId: string, idList: string | null): void {
  *     reaches a new `submit`, and the ceiling still catches it (#108 Q16). */
 export function clearInFlightTools(wsId: string): void {
   inFlightTools.delete(wsId);
+  toolDetail.delete(wsId);
 }
 
 /** Every in-flight tool call for `wsId` (empty array when none). Read by the
  *  liveness roster (index.ts) each sweep; the policy reasons over the whole set
  *  so a hung call is never masked by a fast sibling. */
 export function getInFlightTools(wsId: string): InFlightTool[] {
-  return inFlightTools.get(wsId) ?? [];
+  const list = inFlightTools.get(wsId) ?? [];
+  const m = toolDetail.get(wsId);
+  if (!m) return list;
+  return list.map((c) => (c.toolUseId !== null && m.has(c.toolUseId) ? { ...c, detail: m.get(c.toolUseId) } : c));
 }
 
 /** Reset the app-start floor. Called once when the sweeper starts. */

@@ -18,8 +18,8 @@ export const DOUCE_UNIT_MUTANTS = [
   { id: 'douce-writer-no-deadline', file: BP, find: 'mode === \'soft\' ? softDeadlineAt(now) : null', rep: 'null', tests: [UT], expect: /WRITER soft/ },
   { id: 'douce-writer-mode-always-hard', file: BP, find: ').run(now, who, mode, mode === \'soft\'', rep: ').run(now, who, \'hard\', mode === \'soft\'', tests: [UT], expect: /WRITER soft/ },
   { id: 'douce-hard-over-soft-not-escalated', file: BP, find: "      if (mode === 'hard' && row!.mode === 'soft'", rep: "      if (false && row!.mode === 'soft'", tests: [UT], expect: /`--hard` over a douce/ },
-  { id: 'douce-lift-keeps-deadline', file: BP, find: 'pause_trap_at = NULL, pause_deadline_at = NULL,\n            pause_escalated_at = NULL,', rep: 'pause_trap_at = NULL,\n            pause_escalated_at = NULL,', tests: [UT], expect: /WRITER lift/ },
-  { id: 'douce-lift-keeps-escalation', file: BP, find: '            pause_escalated_at = NULL, resume_started_at = NULL, pause_auto = NULL WHERE id = ?`', rep: '            resume_started_at = NULL, pause_auto = NULL WHERE id = ?`', tests: [UT], expect: /WRITER lift/ },
+  { id: 'douce-lift-keeps-deadline', file: 'src/main/pause-reprise.ts', find: 'pause_trap_at = NULL, pause_deadline_at = NULL, pause_escalated_at = NULL,', rep: 'pause_trap_at = NULL, pause_escalated_at = NULL,', tests: [UT], expect: /WRITER lift/ },
+  { id: 'douce-lift-keeps-escalation', file: 'src/main/pause-reprise.ts', find: 'pause_deadline_at = NULL, pause_escalated_at = NULL, resume_started_at = NULL, pause_auto = NULL\';', rep: 'pause_deadline_at = NULL, resume_started_at = NULL, pause_auto = NULL\';', tests: [UT], expect: /WRITER lift/ },
   { id: 'douce-switch-off-writes', file: BP, find: "    if (!getRun(db, runId)?.flags.pause) return 'switch-off';", rep: '', tests: [UT], expect: /WRITER switch OFF/ },
   // ── the roster and the accusé
   { id: 'douce-accusé-overwrites', file: D, find: '          WHERE run_id = ? AND paused_at = ? AND ws_id = ? AND pause_confirmed_at IS NULL`', rep: '          WHERE run_id = ? AND paused_at = ? AND ws_id = ?`', tests: [UT], expect: /ACCUSÉ: the first writer wins/ },

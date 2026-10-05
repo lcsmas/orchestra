@@ -10,7 +10,7 @@ import { startRun, getRun } from '../main/bus-runs.ts';
 import * as busPause from '../main/bus-pause.ts';
 import * as records from '../main/bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
-import { gatherRunStatus, renderRunStatus, type RunStatusDeps } from './run-status.ts';
+import { gatherRunStatus, renderRunStatus, type RunStatus, type RunStatusDeps } from './run-status.ts';
 
 const deps: RunStatusDeps = {
   getRunPause: busPause.getRunPause,
@@ -107,7 +107,7 @@ test('--json shape is the RunStatus object (machine-readable Bilan)', (t) => {
   const db = rig(t);
   busPause.setRunPause(db, 'W', true, 'ops');
   const st = JSON.parse(JSON.stringify(gatherRunStatus(db, 'W', deps)));
-  assert.deepEqual(Object.keys(st).sort(), ['bilan', 'inherited', 'lastPause', 'pause', 'runExists', 'runId']);
+  assert.deepEqual(Object.keys(st).sort(), ['bilan', 'inherited', 'lastPause', 'pause', 'reprise', 'runExists', 'runId', 'stillPausedBy']);
   assert.equal(st.pause.runId, 'W');
 });
 
@@ -260,4 +260,43 @@ test('round-4: a snapshot that timed out reads "snapshot: INCOMPLETE (timeout)" 
   const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
   assert.match(text, /snapshot: INCOMPLETE \(timeout\) — no ref was written; the interrupt and the kills still ran/);
   assert.match(text, /error: snapshot incomplete: timeout/);
+});
+
+test('RESUMING: the "N/M repris" count is printed ONCE (the Pause roster line) — the reprise view adds only libérés + bloqués; after ACTIVE (no Pause line left) the count shows', () => {
+  const at = 1_780_000_000_000;
+  const resuming = {
+    runId: 'M',
+    runExists: true,
+    pause: { runId: 'M', pausedAt: at, pausedBy: 'lead', mode: 'hard', trapAt: at + 1, resumeStartedAt: at + 2 },
+    roster: { carrierRunId: 'M', mode: 'hard', phase: 'resuming', pausedAt: at, pausedBy: 'lead', deadlineAt: null, escalatedAt: null, trapAt: at + 1, summary: { phase: 'resuming', total: 2, done: 0, missing: ['a', 'b'] }, rows: [] },
+    inherited: false,
+    bilan: [],
+    lastPause: null,
+    reprise: { carrier: 'M', pausedAt: at, phase: 'resuming', total: 2, released: 1, done: 0, missing: ['a', 'b'], blocked: ['b'] },
+    stillPausedBy: null,
+  } as unknown as RunStatus;
+  const text = renderRunStatus(resuming);
+  assert.equal((text.match(/0\/2 repris/g) ?? []).length, 1, text);
+  assert.match(text, /^reprise: RESUMING \(carrier M\) — 1\/2 libérés$/m);
+  assert.match(text, /^reprise: BLOQUÉS .* : b$/m);
+  const active = { ...resuming, pause: null, roster: undefined, reprise: { carrier: 'M', pausedAt: at, phase: 'active', total: 2, released: 2, done: 1, missing: ['b'], blocked: [] } } as unknown as RunStatus;
+  const t2 = renderRunStatus(active);
+  assert.match(t2, /^reprise: 1\/2 repris — manquent : b$/m, t2);
+});
+
+test('NESTED: a nearer carrier merely PAUSED under a RESUMING ancestor prints its own roster line — the ancestor\'s "N/M repris — manquent" is NOT dropped', () => {
+  const at = 1_780_000_000_000;
+  const st = {
+    runId: 'O',
+    runExists: true,
+    pause: { runId: 'O', pausedAt: at + 9, pausedBy: 'lead', mode: 'hard', trapAt: null },
+    roster: { carrierRunId: 'O', mode: 'hard', phase: 'paused', pausedAt: at + 9, pausedBy: 'lead', deadlineAt: null, escalatedAt: null, trapAt: null, summary: { phase: 'paused', total: 1, done: 0, missing: ['x'] }, rows: [] },
+    inherited: false,
+    bilan: [],
+    lastPause: null,
+    reprise: { carrier: 'L', pausedAt: at, phase: 'resuming', total: 3, released: 1, done: 0, missing: ['a', 'b', 'c'], blocked: ['b'] },
+    stillPausedBy: null,
+  } as unknown as RunStatus;
+  const text = renderRunStatus(st);
+  assert.match(text, /^reprise: RESUMING \(carrier L\) — 1\/3 libérés — 0\/3 repris — manquent : a, b, c$/m, text);
 });

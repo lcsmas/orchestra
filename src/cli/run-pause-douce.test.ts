@@ -96,7 +96,7 @@ test('`run confirm pause`: no pause ⇒ says so (rc 0, writes nothing); no ident
   const anon = cli(h, ['run', 'confirm', 'pause'], null);
   assert.notEqual(anon.code, 0);
   assert.match(anon.stderr, /no identity/);
-  const bad = cli(h, ['run', 'confirm', 'reprise'], 'w1');
+  const bad = cli(h, ['run', 'confirm', 'nonsense'], 'w1'); // (was `reprise` before #255 shipped it as a real verb)
   assert.notEqual(bad.code, 0);
   assert.match(bad.stderr, /usage: orchestra run confirm pause/);
   const help = cli(h, ['run', 'confirm', 'pause', '--help'], 'w1');

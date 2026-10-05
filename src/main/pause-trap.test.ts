@@ -10,7 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
-import { setRunPause, getRunPause } from './bus-pause.ts';
+import { setRunPause, getRunPause, beginReprise, pausedCarrierForWorkspace, runsOwingPauseTrap } from './bus-pause.ts';
+import { releaseMembers } from './pause-reprise.ts';
 import { activePauseCarriers, appendObserverKills, bilanForMember, latestPauseBilanFor, listBilan, listBilanForRun, markTrapDone, recordPauseOrigin } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { snapshotWorktree, SnapshotTimeoutError } from './pause-snapshot.ts';
@@ -1332,4 +1333,84 @@ test('round-4 review #1: a TIMED-OUT snapshot is never re-taken on a retry (each
   assert.equal(row.activity?.snapshotIncomplete, 'timeout');
   assert.match(row.error ?? '', /snapshot incomplete: timeout/);
   assert.notEqual(row.killed, null, 'and the retry completed the member (interrupt + kill ran)');
+});
+
+// ── #255 structured Reprise: the trap stops the moment the Reprise begins, and a RELEASED member is no longer observed ─────────────────────────
+
+test('REPRISE (not a lift) landing mid-trap: no process is touched after `resume_started_at`, the trap is not stamped and is not owed again (E2 stillPaused)', async (t) => {
+  for (const where of ['snapshot', 'interrupt'] as const) {
+    __resetPauseTrapForTests();
+    const rig = newRig(t);
+    member(rig, 'w1', 'W');
+    member(rig, 'w2', 'W');
+    const c = pauseW(rig);
+    const begin = () => assert.equal(beginReprise(rig.db, 'W', 'ops-w'), 'resuming');
+    if (where === 'snapshot') rig.onSnapshot = begin;
+    else rig.onInterrupt = begin;
+    const s = await runPauseTrap(rig.deps, c);
+    assert.equal(s.done, false, where);
+    assert.equal(s.aborted, 'lifted', where);
+    assert.ok(!rig.calls.some((x) => x.startsWith('kill:')), `Reprise during ${where}: no kill after it began — ${rig.calls.join(' ')}`);
+    if (where === 'snapshot') assert.ok(!rig.calls.some((x) => x.startsWith('interrupt')), `no interrupt either: ${rig.calls.join(' ')}`);
+    assert.equal(getRunPause(rig.db, 'W')?.trapAt, null, 'not stamped');
+    assert.deepEqual(runsOwingPauseTrap(rig.db), [], 'and a RESUMING carrier owes no trap');
+  }
+});
+
+test('REPRISE: a CLI-started turn on a RELEASED member is left alone; the same on a member still BLOCKED is interrupted (the observer reads the gate\'s own decision)', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  const w1 = member(rig, 'w1', 'W');
+  const w2 = member(rig, 'w2', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c); // the Bilan rows the Reprise seeds its roster from
+  const nodes = new Map([['W', { id: 'W', kind: 'orchestrator' }], ['w1', { id: 'w1', parentId: 'W' }], ['w2', { id: 'w2', parentId: 'W' }]]);
+  rig.deps.carrierFor = (m) => pausedCarrierForWorkspace(rig.db, nodes.get(m.wsId)!, (id) => nodes.get(id));
+  assert.equal(beginReprise(rig.db, 'W', 'ops-w'), 'resuming');
+  assert.deepEqual(releaseMembers(rig.db, 'W', 'ops-w', ['w1']).released, ['w1']);
+  rig.calls.length = 0;
+  assert.equal(await onTurnStart(rig.deps, w1), 'not-paused', 'released: not observed');
+  assert.ok(!rig.calls.some((x) => x.startsWith('interrupt')), rig.calls.join(' '));
+  assert.equal(await onTurnStart(rig.deps, w2), 'interrupted', 'still blocked: a CLI-started turn is trapped');
+  assert.ok(rig.calls.includes('interrupt:w2'), rig.calls.join(' '));
+});
+
+test('REPRISE: the host SWEEP (sweepPauseTrap) completes a RESUMING carrier\'s roster from the live store and closes it when everyone is released', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c = pauseW(rig);
+  await runPauseTrap(rig.deps, c);
+  assert.equal(beginReprise(rig.db, 'W', 'ops-w'), 'resuming');
+  member(rig, 'late', 'W'); // a live member the Bilan never saw
+  await sweepPauseTrap(rig.deps);
+  const ws = (rig.db.prepare('SELECT ws_id, released_at FROM pause_members WHERE run_id = ?').all('W') as Array<{ ws_id: string; released_at: number | null }>);
+  assert.deepEqual(ws.map((r) => r.ws_id).sort(), ['late', 'ops-w', 'w1'], 'the sweep added the straggler to the roster');
+  assert.equal(ws.find((r) => r.ws_id === 'late')!.released_at, null, '…BLOCKED');
+  assert.notEqual(getRunPause(rig.db, 'W'), null, 'still RESUMING');
+  releaseMembers(rig.db, 'W', 'ops-w', 'all');
+  assert.equal(getRunPause(rig.db, 'W'), null, 'closed by the last release');
+});
+
+test('RE-PAUSE during RESUMING (pre-review BLOCKING): the NEW epoch has no Bilan rows, so the host trap really snapshots, interrupts and kills a RELEASED member again — not a "complete" no-op over the old epoch', async (t) => {
+  __resetPauseTrapForTests();
+  const rig = newRig(t);
+  member(rig, 'w1', 'W');
+  const c1 = pauseW(rig);
+  const first = await runPauseTrap(rig.deps, c1);
+  assert.equal(first.done, true, 'epoch 1 fully trapped (every Bilan row has killed_json)');
+  assert.equal(beginReprise(rig.db, 'W', 'ops-w'), 'resuming');
+  assert.deepEqual(releaseMembers(rig.db, 'W', 'ops-w', ['w1']).released, ['w1']); // w1 is released and runs on…
+  rig.calls.length = 0;
+  const end = Date.now() + 3;
+  while (Date.now() < end);
+  assert.equal(setRunPause(rig.db, 'W', true, 'ops-w'), 'paused'); // …then a human re-pauses
+  const c2 = getRunPause(rig.db, 'W')!;
+  assert.ok(c2.pausedAt > c1.pausedAt, 'a new epoch');
+  assert.deepEqual(runsOwingPauseTrap(rig.db).map((r) => r.runId), ['W']);
+  const second = await runPauseTrap(rig.deps, c2);
+  assert.equal(second.done, true);
+  for (const step of ['snapshot:w1', 'interrupt:w1']) assert.ok(rig.calls.includes(step), `${step} ran again on the new epoch: ${rig.calls.join(' ')}`);
+  assert.ok(rig.calls.some((x) => x.startsWith('kill:')), `the tool trees were killed again: ${rig.calls.join(' ')}`);
+  assert.notEqual(bilanForMember(rig.db, 'W', 'w1', c2.pausedAt)?.snapshotRef, null, 'a FRESH snapshot of what w1 did since the Reprise');
 });

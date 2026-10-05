@@ -26,11 +26,14 @@ import {
   verbRunHold,
   verbRunPause,
   verbRunConfirmPause,
+  verbRunRelease,
+  verbRunConfirmReprise,
   type RunPauseDeps,
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
+import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
 import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
   BUS_MECHANISMS,
@@ -721,6 +724,15 @@ async function openBusForVerb(): Promise<{
     // as a bus-open refusal rather than a bare stack trace.
     const busRuns = await import('../main/bus-runs.ts');
     const busPause = await import('../main/bus-pause.ts');
+    const pauseReprise = await import('../main/pause-reprise.ts');
+    // #255 (review M3): coordinators / member runs / release authority come from the LIVE workspace tree (the app's store.json off disk), the bus run tree only as the fallback.
+    pauseReprise.setLiveTreeSource(() => {
+      // like the host: an archived workspace stays resolvable (`get`, chains walk through it) but is never enumerated as a live member (`ids`)
+      const records = readOfflineRecords(appStoreFile());
+      const nodes = toWaveNodes(records);
+      const alive = new Set(records.filter((w) => w.archived !== true).map((w) => w.id));
+      return { get: (id) => nodes.get(id), ids: () => [...nodes.keys()].filter((id) => alive.has(id)) };
+    });
     // The CONSTRUCT + migrate. Anything ABI-shaped throws here, not above.
     const db = bus.openBus(file, { busyTimeoutMs });
     // The verb slice injected into busCtx: the base bus.ts verbs, #128 fencing
@@ -748,6 +760,12 @@ async function openBusForVerb(): Promise<{
         setRunPause: busPause.setRunPause,
         getRunPause: busPause.getRunPause,
         coverFor: (d, runId) => coverFor(d, runId, busPause),
+        // #255 — the structured Reprise (same dynamic import, same ABI gate).
+        beginReprise: busPause.beginReprise,
+        repriseView: pauseReprise.repriseStatusView,
+        releaseMembers: pauseReprise.releaseMembers,
+        confirmReprise: pauseReprise.confirmReprise,
+        resumingCarrier: (d, runId) => pauseReprise.resumingCarrierFor(d, runId, liveChainIds(runId)),
       },
       file,
     };
@@ -817,16 +835,35 @@ export function offlineWaveNodes(file: string = appStoreFile()): Map<string, Wav
   }
 }
 
+/** The live workspace-tree ids from `startId` up (self first) off the app's store file — what a store-less verb walks to find the carrier above a run. [] when unreadable. */
+export function liveChainIds(startId: string, nodes: Map<string, WaveNode> = offlineWaveNodes()): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let cur = nodes.get(startId);
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    out.push(cur.id);
+    cur = cur.parentId ? nodes.get(cur.parentId) : undefined;
+  }
+  return out;
+}
+
 /** ONE resolver of "which pause covers this run" for every store-less reader (`run resume`, `run status`): the SAME live-tree walk the host gates use
  *  (the store file when readable — the app's own record of who is under whom), else the bus run tree. */
 export function coverFor(
   d: BusDb,
   runId: string,
-  busPause: Pick<typeof import('../main/bus-pause.ts'), 'pausedCarrierForWorkspace' | 'activePauseFor'>,
+  busPause: Pick<typeof import('../main/bus-pause.ts'), 'pausedCarrierForWorkspace' | 'activePauseFor' | 'activePauseForCoordinator'>,
   nodes: Map<string, WaveNode> = offlineWaveNodes(),
+  /** `includeReleased` (run status): report the carrier even when it already RELEASED this run's coordinator — a RESUMING run is still a carried pause for the reader. */
+  opts?: { includeReleased?: boolean },
 ): RunPauseInfo | null {
   const node = nodes.get(runId);
-  return node ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id)) : busPause.activePauseFor(d, runId);
+  return node
+    ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id), opts)
+    : opts?.includeReleased
+      ? busPause.activePauseFor(d, runId)
+      : busPause.activePauseForCoordinator(d, runId);
 }
 
 /** Read the persisted workspace list off disk when the app is DOWN (#144), from the file the RUNNING APP writes ({@link appStoreFile}:
@@ -1895,11 +1932,13 @@ async function main(argv: string[]): Promise<void> {
           const douceMod = await import('../main/pause-douce.ts');
           const st = gatherRunStatus(stDb, stTarget, {
             getRunPause: busPause.getRunPause,
-            activePauseFor: (d, id) => coverFor(d, id, busPause),
+            activePauseFor: (d, id) => coverFor(d, id, busPause, undefined, { includeReleased: true }),
             listBilanForRun: records.listBilanForRun,
             runExists: (d, id) => busRuns.getRun(d, id) !== null,
             latestPauseBilan: records.latestPauseBilanFor,
             pauseStatus: (d, id) => douceMod.pauseStatusView(d, id),
+            repriseView: (await import('../main/pause-reprise.ts')).repriseStatusView,
+            gatePauseFor: (d, id) => coverFor(d, id, busPause),
           });
           process.stdout.write(stJson.present ? `${JSON.stringify(st, null, 2)}\n` : renderRunStatus(st));
         } finally {
@@ -1908,8 +1947,22 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       if (sub === 'confirm') {
+        if (args[1] === 'reprise') {
+          // #255 — the member's reprise accusé. STORE-LESS; keyed on the caller's workspace id (works after the run went active). Never fenced: a member is not a coordinator.
+          const cfAs = takeFlag(args.slice(2), '--as');
+          if (cfAs.rest.length > 0) fail(`orchestra run confirm reprise: unexpected argument ${JSON.stringify(cfAs.rest[0])} — usage: orchestra run confirm reprise [--as <handle>]`);
+          const cfActor = resolveBusIdentity({ as: cfAs.value }, process.env)?.handle ?? '';
+          const cf = await openBusForVerb();
+          try {
+            const cfRun = process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+            verbRunConfirmReprise(busCtx(cf.db, cf.bus, { runId: cfRun, handle: cfActor }, { generation: null, fencingOn: false }), cf.runPause);
+          } finally {
+            cf.db.close();
+          }
+          return;
+        }
         // #254 — the member's PAUSE ACCUSÉ (`run confirm pause`). STORE-LESS: it writes the bus roster directly, so it lands while the app is down too.
-        if (args[1] !== 'pause') fail('usage: orchestra run confirm pause [--run <id>] [--as <handle>]');
+        if (args[1] !== 'pause') fail('usage: orchestra run confirm pause [--run <id>] [--as <handle>] | orchestra run confirm reprise [--as <handle>]');
         const cfRun = takeFlag(args.slice(2), '--run');
         const cfAs = takeFlag(cfRun.rest, '--as');
         const cfActor = resolveBusIdentity({ as: cfAs.value }, process.env)?.handle ?? '';
@@ -1942,7 +1995,7 @@ async function main(argv: string[]): Promise<void> {
         }
         return;
       }
-      if (sub === 'hold' || sub === 'resume' || sub === 'pause') {
+      if (sub === 'hold' || sub === 'resume' || sub === 'pause' || sub === 'release') {
         // #204 — the per-run HOLD flag. STORE-LESS like send/ack: it writes the bus
         // directly, so a hold lands while the app is down (before a relaunch).
         // Authorized (D7) + fenced (F7): the caller is --as > $ORCHESTRA_WS_ID.
@@ -1954,6 +2007,16 @@ async function main(argv: string[]): Promise<void> {
         const holdActor = resolveBusIdentity({ as: holdAsArg.value }, process.env)?.handle ?? '';
         // #252/#254 — `pause` takes the SAME flags as hold/resume plus `--hard` (Pause dure); without it the pause is DOUCE.
         const hardFlag = takeBoolFlag(holdAsArg.rest, '--hard');
+        // #255 — `release <ws>… | --all`: the positionals are workspace ids.
+        const releaseAll = takeBoolFlag(hardFlag.rest, '--all');
+        if (sub !== 'release' && releaseAll.present) fail(`orchestra run ${sub}: --all only applies to \`run release\``);
+        const releaseTargets = releaseAll.rest;
+        if (sub === 'release') {
+          const bad = releaseTargets.find((a) => a.startsWith('-'));
+          if (bad) fail(`orchestra run release: unknown option ${JSON.stringify(bad)} — usage: orchestra run release <workspace-id>... | --all [--run <id>] [--as <handle>]`);
+          if (!releaseAll.present && releaseTargets.length === 0) fail('usage: orchestra run release <workspace-id>... | --all [--run <id>] [--as <handle>]');
+          if (releaseAll.present && releaseTargets.length > 0) fail('orchestra run release: give workspace ids OR --all, not both');
+        }
         if (sub !== 'pause' && hardFlag.present) {
           fail(`orchestra run ${sub}: --hard only applies to \`run pause\``);
         }
@@ -1966,7 +2029,9 @@ async function main(argv: string[]): Promise<void> {
             fenceRunForHold(runHoldAuthority(db, holdTarget)?.chain ?? [], holdActor) ?? holdTarget;
           const fencing = await resolveFencing(db, fenceRun, holdGen.value);
           const holdCtx = busCtx(db, bus, { runId: fenceRun, handle: holdActor }, fencing);
-          if (sub === 'pause') {
+          if (sub === 'release') {
+            verbRunRelease(holdCtx, runPause, runPause.resumingCarrier?.(db, holdTarget) ?? null, holdTarget, releaseAll.present ? 'all' : releaseTargets);
+          } else if (sub === 'pause') {
             const pauseCallAt = Date.now();
             verbRunPause(holdCtx, { ...runPause, runHoldAuthority }, holdTarget, hardFlag.present ? 'hard' : 'soft');
             // #252 D1b (review F5): record WHO called — this process's ancestry — so the host trap can spare the tool tree that issued the pause
@@ -1995,7 +2060,7 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       if (sub !== 'refreeze') {
-        fail('usage: orchestra run refreeze|hold|resume|pause [--hard]|confirm pause|status [--run <id>]');
+        fail('usage: orchestra run refreeze|hold|resume|pause [--hard]|release|confirm pause|confirm reprise|status [--run <id>]');
       }
       const { value: runFlag } = takeFlag(args.slice(1), '--run');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
@@ -2094,6 +2159,10 @@ async function main(argv: string[]): Promise<void> {
         process.stdout.write(
           `pause: ${renderPauseStatusLine(res.pause as PauseStatusView, { label: (id) => labels[id] ?? id, now: Date.now() })} (run ${(res.pause as PauseStatusView).carrierRunId}; lift: orchestra run resume --run ${(res.pause as PauseStatusView).carrierRunId})\n`,
         );
+      }
+      // #255: an open Reprise says who is back and who is still missing / blocked. No line when there is none, so existing output is unchanged.
+      if (res.reprise && typeof res.reprise === 'object') {
+        process.stdout.write(`${renderRepriseStatus(res.reprise as RepriseStatusView, { countShownAbove: pauseLineCoversReprise(res.reprise as RepriseStatusView, res.pause as PauseStatusView | undefined) }).join('\n')}\n`);
       }
       // Printed unconditionally, not only when it is false: an operator reading
       // a row of zeros must be able to tell "nothing diverged" from "nothing

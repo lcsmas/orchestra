@@ -32,6 +32,7 @@ import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
 import { store } from './store';
+import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
 import {
@@ -452,6 +453,14 @@ export async function startHooksServer(): Promise<void> {
                 if (pdb) runFlagsExtra = { ...runFlagsExtra, ...busStatusPausePayload(pdb, cliRunId, (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? id) : null; }) };
               } catch {
                 /* a pause read never breaks bus-status */
+              }
+              // #255: "N/M repris — manquent : …" while a Reprise is open (read-only; absent otherwise, so a never-paused run's reply is unchanged).
+              try {
+                const repDb = getBus();
+                const reprise = repDb ? repriseStatusView(repDb, cliRunId) : null;
+                if (reprise) runFlagsExtra = { ...runFlagsExtra, reprise };
+              } catch {
+                /* an unreadable roster never breaks bus-status */
               }
             }
             // #144 — flag any message whose recipient is not a full workspace id

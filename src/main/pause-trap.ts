@@ -17,6 +17,7 @@ import path from 'node:path';
 import type { BusDb } from './bus.ts';
 import { busPath } from './bus.ts';
 import { activePauseFor, getRunPause, runSubtreeIds, runsOwingPauseTrap, type RunPauseInfo } from './bus-pause.ts';
+import { sweepReprise } from './pause-reprise.ts';
 import {
   activePauseCarriers,
   appendBilanNote,
@@ -138,7 +139,8 @@ export function liveChainIncludes(
 
 function stillPaused(db: BusDb, carrier: RunPauseInfo): boolean {
   const cur = getRunPause(db, carrier.runId);
-  return cur !== null && cur.pausedAt === carrier.pausedAt;
+  // #255: once the Reprise began (`resume_started_at`) the trap touches NOTHING more — members are being released, not trapped.
+  return cur !== null && cur.pausedAt === carrier.pausedAt && (cur.resumeStartedAt ?? null) === null;
 }
 
 /** Outcome of trapping one member: `incomplete` = an interrupt/kill could not be PROVEN (retry; never stamp the trap DONE). */
@@ -738,6 +740,12 @@ export async function sweepPauseTrap(deps: TrapDeps): Promise<TrapSummary[]> {
     armDouceTimer(deps, dueAt);
   } catch (e) {
     log.warn('pause-trap: pause-douce sweep failed', e);
+  }
+  // #255: complete the roster of every RESUMING carrier from the live tree and close a finished Reprise. Idempotent; a switch-OFF run is never resuming.
+  try {
+    sweepReprise({ getBus: deps.getBus, members: (ids, carrier) => deps.members(ids, carrier), subtree: runSubtreeIds, storeReady: deps.storeReady, warn: (m, e) => log.warn(m, e) });
+  } catch (e) {
+    log.warn('pause-trap: reprise sweep failed', e);
   }
   let owing: RunPauseInfo[];
   try {

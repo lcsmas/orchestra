@@ -15,7 +15,7 @@
 //   pauser-self       the OPS pauses ITS OWN run from inside its own tool: its turn + that tool tree are spared, its other tool tree (a bg task) is killed, w1 is trapped (review F5)
 //   pauser-human      a human types `--as <coordinator>` in a plain shell: the coordinator is NOT exempt (interrupted, tool killed)
 //   keeper-stopped    the keeper is SIGSTOPped (alive, unresponsive): nothing killed, trap NOT stamped done, completes once it answers (review F4)
-//   queue-kept        an AUTO prompt queued behind the running turn is NOT dropped by the pause interrupt, is held while paused (a human prompt still runs first), and runs after `run resume`
+//   queue-kept        an AUTO prompt queued behind the running turn is NOT dropped by the pause interrupt, is held while paused (a human prompt still runs first), and runs after the Reprise releases w1 (`run resume` + `run release`)
 //   turn-while-paused a background task is killed, the CLI starts a turn BY ITSELF (task notification) → interrupted + noted
 // Must-FAIL mutants (load-time edits of the shipped source; the named check must go red):
 //   no-trap (the unfixed build) · kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · exempt-by-handle · stamp-on-unknown · drop-queue-on-pause-interrupt

@@ -255,7 +255,7 @@ test('SWITCH OFF ⇒ byte-identical: with the frozen `pause` switch OFF nothing 
   assert.equal(r.ok, true);
 });
 
-test('DURABLE + CROSS-PROCESS: the BUILT CLI (app down) pauses/resumes; the app\'s long-lived bus connection gates on its next read; a worker cannot lift it', () => {
+test('DURABLE + CROSS-PROCESS: the BUILT CLI (app down) pauses/resumes/releases; the app\'s long-lived bus connection gates on its next read; a worker cannot resume', () => {
   assert.ok(fs.existsSync(path.join(REPO, 'dist-electron', 'cli.js')), 'dist-electron/cli.js must be built (pretest) — never a skip');
   const r = runArm('cli_cross_process');
   assert.equal(r.beforePause.delivery, 'live');
@@ -265,7 +265,17 @@ test('DURABLE + CROSS-PROCESS: the BUILT CLI (app down) pauses/resumes; the app\
   assert.notEqual(r.workerResume.rc, 0);
   assert.equal(r.stillPausedAfterWorker.delivery, 'inbox');
   assert.equal(r.cliResume.rc, 0);
-  assert.equal(r.afterResume.delivery, 'live');
+  // #255: `run resume` starts the structured Reprise — the worker is NOT released by it, so it stays parked until its coordinator releases it
+  assert.equal(r.afterResume.delivery, 'inbox');
+  assert.equal(r.afterSweep.delivery, 'inbox');
+  assert.equal(r.releaseOne.rc, 0);
+  assert.equal(r.m1AfterRelease.delivery, 'live');
+  assert.equal(r.m2StillBlocked.delivery, 'inbox', 'no mass wake: the other worker waits for ITS release');
+  assert.equal(r.releaseAll.rc, 0);
+  assert.equal(r.m2AfterReleaseAll.delivery, 'live');
+  assert.equal(r.releaseSub.rc, 0, 'a worker of the run BELOW is released by explicit id (--all leaves it, review M1)');
+  assert.equal(r.openUntilHostSweep, true, 'the host trap never finished here: the last CLI release does not close the run…');
+  assert.equal(r.runActive, true, '…the host sweep does');
   assert.equal(r.ok, true);
 });
 

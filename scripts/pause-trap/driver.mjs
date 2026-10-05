@@ -340,10 +340,15 @@ try {
     const endTurns = () => liveApp.events.filter((e) => e.ev === 'turn-end' && e.ws === 'w1' && e.t >= tPause && e.stopReason === 'end_turn' && e.isError !== true).length;
     await sleep(3000);
     check('queued_prompt_held_while_paused', endTurns() === 1, `only the HUMAN prompt ran (end_turn turn-ends since the pause: ${endTurns()}); the queued AUTO prompt is parked, not drained`);
+    // #255: `run resume` starts the structured Reprise — w1 is NOT released by it, so its parked AUTO prompt still waits; the OPS (a coordinator, `--as ops`) releases it
     const lift = cli('run', 'resume', '--run', 'ops', '--as', 'lead');
-    check('cli_resume_accepted', lift.rc === 0 && /LIFTED/.test(lift.out), `rc=${lift.rc} ${lift.out.trim().slice(0, 120)}`);
-    const ran = await waitFor(() => endTurns() >= 2, 60_000, 'the queued prompt to run after the lift').catch(() => false);
-    check('queued_prompt_survives_pause', !!ran, ran ? 'after `run resume` the queued prompt ran (end_turn #2): the pause interrupt did not drop it' : 'the queued prompt never ran: it was dropped by the pause interrupt');
+    check('cli_resume_accepted', lift.rc === 0 && /REPRISE STARTED|LIFTED/.test(lift.out), `rc=${lift.rc} ${lift.out.trim().slice(0, 120)}`);
+    await sleep(3000);
+    check('queued_prompt_held_until_released', endTurns() === 1, `RESUMING: w1 is not released yet, the queued AUTO prompt is still parked (end_turn turn-ends since the pause: ${endTurns()})`);
+    const rel = cli('run', 'release', 'w1', '--run', 'ops', '--as', 'ops');
+    check('cli_release_accepted', rel.rc === 0 && /Released 1 member\(s\): w1/.test(rel.out), `rc=${rel.rc} ${rel.out.trim().slice(0, 120)}`);
+    const ran = await waitFor(() => endTurns() >= 2, 60_000, 'the queued prompt to run after the release').catch(() => false);
+    check('queued_prompt_survives_pause', !!ran, ran ? 'after `run release` the queued prompt ran (end_turn #2): the pause interrupt did not drop it' : 'the queued prompt never ran: it was dropped by the pause interrupt');
   }
   // strays census (report, not judged): anything in the namespace that is not the rig's own tree
   const mine = new Set([process.pid, app1?.child.pid, app2?.child.pid, keeper.pid, cli0.pid].filter(Boolean));

@@ -7,6 +7,7 @@ import { store } from './store';
 import { nearestOrchestratorId } from './wave-run-id';
 import { getBus } from './bus';
 import { pausedCarrierForWorkspace } from './bus-pause';
+import { setLiveTreeSource } from './pause-reprise';
 import { sdkAttachIfDetached, sdkHumanTurnInFlight, sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
 import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-client';
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
@@ -18,6 +19,7 @@ import { getEventsDir } from './events-spool';
 import { killToolTrees, realKillDeps } from './pause-kill';
 import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
 import { log } from './logger';
+import { mergeInFlight } from '../shared/open-tools';
 import type { Workspace } from '../shared/types';
 
 /** Claude Code's interrupt key in the terminal UI. */
@@ -69,6 +71,8 @@ export function pauseOrdersDir(): string {
 
 export function buildPauseTrapDeps(): TrapDeps {
   const kill = realKillDeps();
+  // #255 (review M3): the Reprise's coordinators / member runs / release authority come from the SAME live workspace tree the gate and the trap walk — not the write-once `runs.parent_run_id`.
+  setLiveTreeSource(() => ({ get: (id) => store.getWorkspace(id), ids: () => store.workspaces.filter((w) => !w.archived).map((w) => w.id) }));
   return {
     getBus,
     pauseOrders: pauseOrderFiles(pauseOrdersDir()),
@@ -105,7 +109,11 @@ export function buildPauseTrapDeps(): TrapDeps {
         surface,
         ...(keeperUnknown ? { unknown: true } : {}),
         turnRunning: sdk ? sdk.turnRunning : probe?.running ? probe.turnInFlight === true : ptyLive && m.status === 'running',
-        inFlightTools: getInFlightTools(m.wsId).map((t) => ({ tool: t.tool, toolUseId: t.toolUseId, sinceMs: now - t.startedAt })),
+        // a live SDK session's own open tool_use blocks are AUTHORITATIVE (hook-independent); the hook-fed liveness tracker only when there is none (terminal agent, surviving keeper)
+        inFlightTools: mergeInFlight(
+          sdk ? sdk.openTools.map((t) => ({ tool: t.tool, toolUseId: t.toolUseId, sinceMs: t.sinceMs, input: t.input })) : null,
+          getInFlightTools(m.wsId).map((t) => ({ tool: t.tool, toolUseId: t.toolUseId, sinceMs: now - t.startedAt, input: t.detail ?? null })),
+        ),
         bgTasks: (sdk?.bgTasks ?? []).map((b) => ({ id: b.id, type: b.taskType, description: b.description, status: b.status })),
       };
     },

@@ -338,10 +338,13 @@ export async function runDouce(ctx) {
     const got = await waitFor(() => (/turn started while paused/.test(noteOf()) ? noteOf() : null), 25_000, 'the observer note for the CLI-started turn').catch(() => null);
     check('human_mark_spent_cli_turn_trapped_after_escalation', !!got && sleepersOf(7718).length === 0, got ? `Bilan note: ${(JSON.parse(got).notes ?? []).find((n) => /turn started while paused/.test(n))?.slice(0, 160)}` : 'no "turn started while paused" note: the CLI-started turn after the escalation was ADMITTED (the human mark was still unspent)');
   }
-  // 11. lift: one verb clears every pause column
+  // 11. lift: `run resume` starts the structured Reprise (#255) — the pause is carried until the OPS releases the roster; the last release clears every pause column
   const lift = cli('run', 'resume', '--run', 'ops', '--as', 'lead');
+  const resuming = withRo((db) => db.prepare('SELECT paused_at, resume_started_at FROM runs WHERE id = ?').get('ops'));
+  check('resume_starts_the_reprise', lift.rc === 0 && /REPRISE STARTED/.test(lift.out) && resuming.paused_at !== null && resuming.resume_started_at !== null, `rc=${lift.rc} ${JSON.stringify(resuming)} ${lift.out.trim().slice(0, 100)}`);
+  const rel = cli('run', 'release', '--all', '--run', 'ops', '--as', 'ops');
   const cleared = carrierRow();
-  check('resume_clears_every_pause_column', lift.rc === 0 && cleared.paused_at === null && cleared.pause_mode === null && cleared.pause_deadline_at === null && cleared.pause_escalated_at === null && cleared.pause_trap_at === null, `rc=${lift.rc} ${JSON.stringify(cleared)}`);
+  check('release_all_clears_every_pause_column', rel.rc === 0 && cleared.paused_at === null && cleared.pause_mode === null && cleared.pause_deadline_at === null && cleared.pause_escalated_at === null && cleared.pause_trap_at === null, `rc=${rel.rc} ${JSON.stringify(cleared)} ${rel.out.trim().slice(0, 120)}`);
   check('rig_ran_to_completion', true, '');
   result.members = members.map((m) => ({ id: m.id, kind: m.kind, via: got[m.id] ?? null, confirmedAfterMs: confirmedAt[m.id] ? confirmedAt[m.id].t - pausedAt : null }));
   return;

@@ -645,7 +645,7 @@ if (ARM === 'spawn') {
 } else if (ARM === 'cli_cross_process') {
   // The pause is a bus write from ANOTHER PROCESS (the built CLI, app "down": dead socket) that the app's LONG-LIVED boot connection sees on its next
   // gate read — pause, then resume, through the real verb. Durable + cross-process, not a same-connection shortcut.
-  useFakeSeam({ hasSession: (id) => id === 'ws-m1' });
+  useFakeSeam({ hasSession: (id) => id === 'ws-m1' || id === 'ws-m2' });
   await seedFleet();
   const CLI = path.join(REPO, 'dist-electron', 'cli.js');
   if (!fs.existsSync(CLI)) { console.log(JSON.stringify({ arm: ARM, ok: false, abort: 'dist-electron/cli.js not built (pnpm run build:cli)' })); process.exit(3); }
@@ -655,18 +655,38 @@ if (ARM === 'spawn') {
         env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: path.join(tmpHome, 'no.sock'), ORCHESTRA_WS_ID: who } }) };
     } catch (e) { return { rc: e.status ?? -1, out: String(e.stdout ?? '') + String(e.stderr ?? '') }; }
   };
-  const msg = (t) => workspaces.dispatchMessageRequest({ from: 'ws-xm', to: 'ws-m1', text: t, emergency: true });
+  const msgTo = (to, t) => workspaces.dispatchMessageRequest({ from: 'ws-xm', to, text: t, emergency: true });
+  const msg = (t) => msgTo('ws-m1', t);
   const before = rec('beforePause', await msg('CP-BEFORE'));                       // live delivery (control: the instrument sees a delivery)
   const p = rec('cliPause', cli(['run', 'pause', '--hard', '--run', 'ws-ops']));
   rec('appSeesPause', busPause.activePauseFor(busMod.getBus(), 'ws-ops') !== null);
   const during = rec('whilePaused', await msg('CP-DURING'));
-  const worker = rec('workerResume', cli(['run', 'resume', '--run', 'ws-ops'], 'ws-m1'));   // a worker cannot lift it
+  const worker = rec('workerResume', cli(['run', 'resume', '--run', 'ws-ops'], 'ws-m1'));   // a worker cannot start the Reprise
   const still = rec('stillPausedAfterWorker', await msg('CP-WORKER'));
+  // #255: `run resume` STARTS the structured Reprise — the pause is carried until the roster is released; a worker is NOT released by it
   const r = rec('cliResume', cli(['run', 'resume', '--run', 'ws-ops']));
   const after = rec('afterResume', await msg('CP-AFTER'));
+  // the host sweep (the app's own, here called directly with the live members) completes the roster: every worker joins BLOCKED
+  const reprise = await import(`${REPO}/src/main/pause-reprise.ts`);
+  const members = [['ws-m1', 'ws-ops'], ['ws-m2', 'ws-ops'], ['ws-m3', 'ws-sub']].map(([wsId, runId]) => ({ wsId, runId }));
+  reprise.sweepReprise({ getBus: () => busMod.getBus(), members: () => members, subtree: busPause.runSubtreeIds });
+  const stillAfterSweep = rec('afterSweep', await msg('CP-SWEEP'));
+  const relOne = rec('releaseOne', cli(['run', 'release', 'ws-m1', '--run', 'ws-ops']));
+  const m1Live = rec('m1AfterRelease', await msg('CP-M1'));
+  const m2Blocked = rec('m2StillBlocked', await msgTo('ws-m2', 'CP-M2-EARLY'));        // no mass wake: the other worker waits for ITS release
+  const relAll = rec('releaseAll', cli(['run', 'release', '--all', '--run', 'ws-ops']));
+  const m2Live = rec('m2AfterReleaseAll', await msgTo('ws-m2', 'CP-M2-LATE'));
+  const relSub = rec('releaseSub', cli(['run', 'release', 'ws-m3', '--run', 'ws-ops']));   // ws-m3 belongs to the run BELOW (ws-sub): `--all` left it, an explicit id releases it (review M1)
+  rec('openUntilHostSweep', busPause.activePauseFor(busMod.getBus(), 'ws-ops') !== null);        // the host trap never finished here: the CLI's last release does not close it…
+  reprise.sweepReprise({ getBus: () => busMod.getBus(), members: () => members, subtree: busPause.runSubtreeIds });   // …the HOST sweep does
+  rec('runActive', busPause.activePauseFor(busMod.getBus(), 'ws-ops') === null);
   ok = before.delivery === 'live' && p.rc === 0 && /PAUSED \(hard\)/.test(p.out) && out.appSeesPause === true
-    && during.delivery === 'inbox' && worker.rc !== 0 && still.delivery === 'inbox' && r.rc === 0 && /pause LIFTED/.test(r.out) && after.delivery === 'live'
-    && calls.awaiting.length === 2 && calls.awaiting.every((c) => c.text.includes('CP-BEFORE') || c.text.includes('CP-AFTER'));
+    && during.delivery === 'inbox' && worker.rc !== 0 && still.delivery === 'inbox' && r.rc === 0 && /REPRISE STARTED/.test(r.out)
+    && after.delivery === 'inbox' && stillAfterSweep.delivery === 'inbox'
+    && relOne.rc === 0 && /Released 1 member\(s\): ws-m1/.test(relOne.out) && m1Live.delivery === 'live' && m2Blocked.delivery === 'inbox'
+    && relAll.rc === 0 && /Released 1 member\(s\): ws-m2/.test(relAll.out) && /belong to a run BELOW yours/.test(relAll.out) && m2Live.delivery === 'live'
+    && relSub.rc === 0 && /Released 1 member\(s\): ws-m3/.test(relSub.out) && out.openUntilHostSweep === true && out.runActive === true
+    && calls.awaiting.length === 3 && calls.awaiting.every((c) => /CP-BEFORE|CP-M1|CP-M2-LATE/.test(c.text));
 
 } else if (ARM === 'recover_mid') {
   // review D1a F1 — a pause that lands AFTER the top gate and before a later resend must not LOSE the remaining pending prompts: the entries are

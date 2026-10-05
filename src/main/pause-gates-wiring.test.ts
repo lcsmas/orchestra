@@ -81,24 +81,26 @@ test('docs: `orchestra --help` lists run as hold / pause / resume', () => {
   assert.match(help, /summary: "Admin: re-freeze a mission run's switches; hold \/ pause \/ resume a run"/);
 });
 
-test('F5 (review D1a): D1a\'s texts describe ONLY D1a — no Bilan/snapshot/interrupt/kill promise, and the lift says what really resumes', () => {
+test('F5 → #255 (wave E): the texts describe the SHIPPED behaviour — `resume` starts a STRUCTURED Reprise (coordinators first, workers blocked until released); the plain lift of a stale pause still says only what really resumes', () => {
   const src = read('workspaces.ts');
   const skill = body(src, 'const COMMS_SKILL = `', 'const WORKSPACE_ADMIN_SKILL').replace(/\\`/g, '`');
   const sect = skill.slice(skill.indexOf('## 7. Pause a run'));
   const help = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'help.ts'), 'utf8');
   const runHelp = body(help, "name: 'run',", "name: 'message'");
   const verbs = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
-  const lifted = body(verbs, 'pause LIFTED', 'Its liveness hold was lifted too');
-  // The lift output still promises none of the host-trap behaviour. Skill §7 and run --help DO describe it once D1b's trap ships in the same
-  // tree (D1b adds that wording with its code, ledger #261 F5 disposition) — they must still never claim "nothing restarts on its own".
-  assert.doesNotMatch(lifted, /Bilan|snapshot|interrupts the turn|kills tool|Nothing restarts on its own/i, 'lift output promises unshipped behaviour');
-  for (const [name, text] of [['skill §7', sect], ['run --help', runHelp]] as const) {
-    assert.doesNotMatch(text, /Nothing restarts on its own/i, `${name} promises unshipped behaviour`);
+  // The PLAIN lift (the legacy path: a stale pause column on a switch-OFF run, or deps without beginReprise) promises none of the host-trap behaviour.
+  const plain = [...verbs.matchAll(/pause LIFTED — réveils, turns and spawns are allowed again\./g)].map((m) => verbs.slice(m.index, m.index! + 220));
+  assert.ok(plain.length >= 2, 'both plain-lift texts exist');
+  for (const t of plain) {
+    assert.doesNotMatch(t, /Bilan|snapshot|interrupts the turn|kills tool|Nothing restarts on its own/i, 'plain lift output promises behaviour it does not have');
+    assert.match(t, /Queued turns and pending bus mail resume now/);
   }
+  // Skill §7 and run --help describe the Pause trap AND the structured Reprise (#255 ships them in this tree).
   assert.match(sect, /refs\/orchestra\/pause\/<run>\/<ws>\/<ts>/, 'skill §7 names the pause ref D1b ships');
   assert.match(sect, /orchestra run status/, 'skill §7 documents the Bilan reader');
   assert.match(runHelp, /Bilan de pause/, 'run --help documents the Bilan');
-  assert.match(lifted, /Queued turns and pending bus mail resume now/);
-  assert.match(sect, /queued turns \+ pending mail resume/);
-  assert.match(runHelp, /queued turns and pending\s+bus mail resume/);
+  assert.match(sect, /releases ONLY the coordinators/, 'skill §7 says who resume wakes');
+  assert.match(sect, /orchestra run release <ws>/);
+  assert.match(runHelp, /Nothing restarts on its own: the host releases ONLY the coordinators/, 'run --help says the same');
+  assert.match(runHelp, /Every worker stays BLOCKED/);
 });

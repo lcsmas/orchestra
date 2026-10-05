@@ -37,7 +37,7 @@ Object.assign(process.env, {
 });
 for (const k of ['ANTHROPIC_AUTH_TOKEN', 'HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) delete process.env[k];
 
-if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: import.meta.url, data: { mutant } });
+if (mutant) register(pathToFileURL(`${HERE}/${mutant.startsWith('reprise-') ? 'mutants-reprise-rig.mjs' : 'mutants.mjs'}`).href, { parentURL: import.meta.url, data: { mutant } });
 
 const out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const { initPlatform } = await import(`${SRC}/src/main/platform/index.ts`);
@@ -53,7 +53,7 @@ initPlatform({
   broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false,
   notify: () => {}, openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {},
   openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
-  getUserDataDir: () => orchHome, getLogsDir: () => `${orchHome}/logs`, getAppVersion: () => '0.0.0-pause-trap',
+  getUserDataDir: () => path.join(orchHome, 'userData'), getLogsDir: () => `${orchHome}/logs`, getAppVersion: () => '0.0.0-pause-trap',
   getAppMetrics: () => [], isEncryptionAvailable: () => false, encryptString: (s) => s, decryptString: (s) => s,
 });
 const app = { sawText: new Set() };
@@ -73,7 +73,7 @@ fs.copyFileSync(path.join(SRC, 'dist-electron', 'keeper.js'), path.join(orchHome
 
 // A fresh install has no store.json (load() then leaves loadedFromDisk=false); the fleet this rig seeds is an EXISTING install, so start from an
 // (empty) store file on disk — F10: the trap refuses to act on a store that was not loaded from disk.
-const STORE_FILE = path.join(orchHome, 'orchestra', 'store.json'); // userData(=ORCHESTRA_HOME)/orchestra/store.json — the real store's path
+const STORE_FILE = path.join(orchHome, 'userData', 'orchestra', 'store.json'); // $ORCHESTRA_HOME/userData/orchestra/store.json — the real app's path (and where the store-less CLI looks, #255 M3)
 if (!fs.existsSync(STORE_FILE)) { fs.mkdirSync(path.dirname(STORE_FILE), { recursive: true }); fs.writeFileSync(STORE_FILE, JSON.stringify({ repos: [], workspaces: [], accounts: [], selfTuneRuns: [] })); }
 await store.load?.();
 const version = busMod.initBus(); // the real boot gate: opens <ORCHESTRA_HOME>/bus.sqlite + migrates
@@ -125,6 +125,7 @@ out({ ev: 'trap-started', phase, noTrap: !!cfg.noTrap });
 
 if (phase === 'first' && scenario) {
   if (cfg.opsScenario) await sdk.sdkSend('ops', `SCN:${cfg.opsScenario}`); // the coordinator has its OWN live session + tool (pauser-exempt arm)
+  if (cfg.w2Scenario && W.w2) await sdk.sdkSend('w2', `SCN:${cfg.w2Scenario}`);
   await sdk.sdkSend('w1', `SCN:${scenario}`);
   out({ ev: 'sent', ws: 'w1', scenario });
 }

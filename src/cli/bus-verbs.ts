@@ -37,9 +37,11 @@ import type {
 import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
 import type { RunHoldOutcome } from '../main/bus-runs.ts';
 import type { RunPauseInfo, RunPauseOutcome } from '../main/bus-pause.ts';
-import { SOFT_PAUSE_DEADLINE_MS, type PauseMode } from '../shared/pause-lifecycle.ts';
+import { SOFT_PAUSE_DEADLINE_MS, type PauseMode, type RepriseEntry, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
 import { renderPauseRosterLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import type { ConfirmPauseOutcome } from '../main/pause-douce.ts';
+import type { ConfirmRepriseResult, ReleaseResult } from '../main/pause-reprise.ts';
+import { renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -1034,10 +1036,43 @@ export function verbRunHold(
   const verb = isHold ? 'hold' : 'resume';
   const { outcome, lifted } = fenced(ctx, `run-${verb}`, () => {
     // Pause first: same authority as the hold, so a `refused`/`no-run` here is the hold's too.
-    const lifted: RunPauseOutcome =
-      !isHold && hold.pause ? hold.pause.setRunPause(ctx.db, runId, false, actor) : 'not-paused';
+    // #255: `resume` starts the structured Reprise (`beginReprise`) when the deps carry it — it does NOT lift a pause with a roster at once.
+    const lifted: RunPauseOutcome | RepriseOutcome =
+      !isHold && hold.pause
+        ? hold.pause.beginReprise
+          ? hold.pause.beginReprise(ctx.db, runId, actor, { reason: 'manual' })
+          : hold.pause.setRunPause(ctx.db, runId, false, actor)
+        : 'not-paused';
     return { lifted, outcome: hold.setRunHold(ctx.db, runId, isHold, actor) };
   });
+  if (lifted === 'resuming' || lifted === 'already-resuming') {
+    const left = hold.pause?.getRunPause(ctx.db, runId);
+    const view = hold.pause?.repriseView?.(ctx.db, runId) ?? null;
+    // An ANCESTOR run's pause still gates this run (descendants carry none of their own) — whether this run's Reprise is open or closed at once.
+    const cover = hold.pause?.coverFor(ctx.db, runId);
+    const covered = !!cover && cover.runId !== runId;
+    if (lifted === 'resuming' && !left) {
+      // Closed at once (a stale pause column on a switch-OFF run, or a trap-finished roster of coordinators only): the plain-lift text — unless an ancestor still pauses it.
+      ctx.out(
+        covered
+          ? `Run ${runId}'s own pause is LIFTED, but it is still PAUSED by run ${cover!.runId} — lift that one: orchestra run resume --run ${cover!.runId}\n`
+          : `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. Queued turns and pending bus mail resume now.\n`,
+      );
+    } else {
+      ctx.out(
+        `Run ${runId}: ${lifted === 'resuming' ? 'REPRISE STARTED' : 'already RESUMING'} — the host released ONLY the coordinators of its subtree (top-down) and sent each ` +
+          `its Bilan de pause. Workers stay BLOCKED (no réveil, no turn, no spawn) until their coordinator runs ` +
+          `\`orchestra run release <workspace-id>|--all\` (each then gets its Consigne de reprise); the run is active again once every member is released. ` +
+          `Nothing restarts on its own; killed commands are listed, never re-run.\n` +
+          (view ? `${renderRepriseStatus(view).join('\n')}\n` : ''),
+      );
+    }
+    if (left && covered) {
+      ctx.out(`Run ${runId} is still PAUSED by run ${cover!.runId} — its members stay blocked until that one resumes too: orchestra run resume --run ${cover!.runId}\n`);
+    }
+    if (outcome === 'resumed') ctx.out(`Its liveness hold was lifted too.\n`);
+    return;
+  }
   if (lifted === 'lifted') {
     // An ANCESTOR run's pause still gates this run (descendants carry none of their own): never claim it is free to start again.
     const cover = hold.pause?.coverFor(ctx.db, runId);
@@ -1045,7 +1080,7 @@ export function verbRunHold(
       cover
         ? `Run ${runId}'s own pause is LIFTED, but it is still PAUSED by run ${cover.runId} — lift that one: orchestra run resume --run ${cover.runId}\n`
         : `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. ` +
-            `Queued turns and pending bus mail resume now (there is no structured Reprise yet — #255).\n`,
+            `Queued turns and pending bus mail resume now.\n`,
       );
     if (outcome === 'resumed') ctx.out(`Its liveness hold was lifted too.\n`);
     return;
@@ -1110,6 +1145,13 @@ export interface RunPauseDeps {
   /** The pause (if any) that still GATES `runId` through an ancestor — the SAME live-tree walk the host gates use (follow-up: the
    *  write-once `runs.parent_run_id` misses a run re-parented after creation). Production: src/cli/index.ts `coverFor`. */
   coverFor: (db: BusDb, runId: string) => RunPauseInfo | null;
+  /** #255 — the structured Reprise seams (src/main/bus-pause.ts / pause-reprise.ts). Absent = the pre-wave-E plain lift (`setRunPause(…, false)`). */
+  beginReprise?: RepriseEntry;
+  repriseView?: (db: BusDb, runId: string) => RepriseStatusView | null;
+  releaseMembers?: (db: BusDb, carrierRunId: string, actor: string, targets: readonly string[] | 'all') => ReleaseResult;
+  confirmReprise?: (db: BusDb, wsId: string) => ConfirmRepriseResult;
+  /** The RESUMING carrier governing `runId` through the live tree (or its roster), regardless of who is already released. */
+  resumingCarrier?: (db: BusDb, runId: string) => string | null;
 }
 
 /**
@@ -1235,4 +1277,96 @@ export function verbRunConfirmPause(ctx: BusVerbCtx, deps: RunConfirmPauseDeps):
       (line ? ` ${line}.` : '') +
       ` Stop here: start no new command; the host takes it from now. Reprise is the coordinator's call (never automatic).\n`,
   );
+}
+
+/**
+ * `orchestra run release <ws>… | --all [--run <id>]` (#255) — during a Reprise, a COORDINATOR releases members of its wave: each is unblocked
+ * (the gate) and sent its Consigne de reprise as a `reprise` bus row built from its Bilan de pause. Authority = the coordinator of the member's run
+ * or of an ancestor run; the host already released the coordinators themselves. Store-less. `carrierRunId` = the RESUMING carrier the caller's run
+ * falls under (resolved by the caller through the live tree). `--all` releases only the unreleased members of the caller's OWN run (a worker of a run below it is named as `below`, left to its own OPS or an explicit id).
+ */
+export function verbRunRelease(
+  ctx: BusVerbCtx,
+  deps: Pick<RunPauseDeps, 'releaseMembers' | 'coverFor'>,
+  carrierRunId: string | null,
+  runId: string,
+  targets: readonly string[] | 'all',
+): void {
+  const actor = ctx.id.handle.trim();
+  if (!actor) ctx.fail(`orchestra run release: you have no identity ($ORCHESTRA_WS_ID unset) — pass --as <handle> (a coordinator)`);
+  if (!deps.releaseMembers) ctx.fail('orchestra run release: not available in this build');
+  if (!carrierRunId) {
+    ctx.fail(
+      `orchestra run release: run ${JSON.stringify(runId)} is not under a RESUMING pause — nothing to release ` +
+        `(a run is released after \`orchestra run resume\`; \`orchestra run status --run ${runId}\` says where it stands)`,
+    );
+  }
+  const res = fenced(ctx, 'run-release', () => deps.releaseMembers!(ctx.db, carrierRunId, actor, targets));
+  if (res.error === 'no-run') ctx.fail(`orchestra run release: run ${JSON.stringify(carrierRunId)} has no row in the bus 'runs' table`);
+  if (res.error === 'not-paused') ctx.fail(`orchestra run release: run ${carrierRunId} is not paused — nothing to release`);
+  if (res.error === 'not-resuming') {
+    ctx.fail(`orchestra run release: run ${carrierRunId} is still PAUSED, not resuming — start the Reprise first: orchestra run resume --run ${carrierRunId}`);
+  }
+  const lines: string[] = [];
+  let failAfter: string | null = null;
+  if (res.released.length) {
+    lines.push(`Released ${res.released.length} member(s): ${res.released.join(', ')} — each was sent its Consigne de reprise (bus kind 'reprise') and may start again.`);
+  }
+  if (res.already.length) lines.push(`Already released: ${res.already.join(', ')}.`);
+  if (res.finished) {
+    const cover = deps.coverFor?.(ctx.db, carrierRunId);
+    lines.push(
+      cover && cover.runId !== carrierRunId
+        ? `Run ${carrierRunId}: every member is released — its own pause is LIFTED, but it is still PAUSED by run ${cover.runId} — lift that one: orchestra run resume --run ${cover.runId}`
+        : `Run ${carrierRunId}: every member is released — the pause is LIFTED, the run is ACTIVE. Track the accusés: orchestra bus-status.`,
+    );
+  }
+  else if (res.released.length === 0 && targets === 'all' && res.refused.length === 0 && res.below.length === 0) lines.push('Nothing left for you to release.');
+  if (res.below.length) {
+    lines.push(
+      `${res.below.length} member(s) belong to a run BELOW yours — \`--all\` leaves them to their own coordinator (or release them by explicit id): ${res.below.slice(0, 10).join(', ')}${res.below.length > 10 ? `, +${res.below.length - 10} more` : ''}`,
+    );
+  }
+  if (res.refused.length) {
+    const msg =
+      `${res.refused.length} member(s) belong to another coordinator's wave — not released: ` +
+      res.refused.slice(0, 10).map((r) => `${r.wsId} (may be released by ${r.mayBe.join(' / ') || 'nobody'})`).join('; ') +
+      (res.refused.length > 10 ? `; +${res.refused.length - 10} more` : '');
+    if (targets === 'all') lines.push(msg);
+    else failAfter = `orchestra run release: ${actor} may not release them — ${msg}`;
+  }
+  if (res.unknown.length) {
+    const unknownMsg = `orchestra run release: no member of the Reprise of run ${carrierRunId} matches: ${res.unknown.join(', ')} (full ids, or a unique prefix of ≥ 6 characters; \`orchestra run status --run ${carrierRunId}\` lists them)`;
+    failAfter = failAfter ? `${failAfter}\n${unknownMsg}` : unknownMsg; // never let one failure hide the other
+  }
+  // what WAS released is committed: say so BEFORE failing (a partial release must never read as "nothing happened")
+  if (lines.length) ctx.out(`${lines.join('\n')}\n`);
+  if (failAfter) ctx.fail(failAfter);
+}
+
+/**
+ * `orchestra run confirm reprise` (#255) — the member's reprise accusé: recorded on the roster of every Reprise that released it. Tracking only
+ * (`orchestra bus-status` "N/M repris — manquent : …"); it gates nothing. Store-less; keyed on the caller's workspace id, so it also works after
+ * the run went active (the last worker confirms once its coordinator released it).
+ */
+export function verbRunConfirmReprise(ctx: BusVerbCtx, deps: Pick<RunPauseDeps, 'confirmReprise'>): void {
+  const who = ctx.id.handle.trim();
+  if (!who) ctx.fail(`orchestra run confirm reprise: you have no identity ($ORCHESTRA_WS_ID unset) — pass --as <handle>`);
+  if (!deps.confirmReprise) ctx.fail('orchestra run confirm reprise: not available in this build');
+  const res = deps.confirmReprise(ctx.db, who);
+  if (res.confirmed.length) {
+    ctx.out(`Reprise accusé recorded for ${who} (${res.confirmed.map((c) => `run ${c.runId}`).join(', ')}).\n`);
+    return;
+  }
+  if (res.already.length) {
+    ctx.out(`Your reprise accusé was already recorded (${res.already.map((c) => `run ${c.runId}`).join(', ')}) — unchanged.\n`);
+    return;
+  }
+  if (res.notReleased.length) {
+    ctx.fail(
+      `orchestra run confirm reprise: you are not released yet (run ${res.notReleased.map((c) => c.runId).join(', ')}) — ` +
+        `your coordinator releases you with \`orchestra run release\`; wait for your Consigne de reprise`,
+    );
+  }
+  ctx.fail(`orchestra run confirm reprise: ${who} is in no Reprise roster — nothing to confirm (no fleet Pause covered you, or it was lifted another way)`);
 }

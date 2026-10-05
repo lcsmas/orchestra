@@ -1711,15 +1711,16 @@ module that consumes the seams below.
   SAME live-tree decision the gates use (`index.ts` passes `pauseRefusal(ws,'auto') !== null`); `sweepBusLiveness` ORs it into `held`
   (`bus-liveness.ts`: `held: heldRuns.has(m.runId) || m.paused === true`). A roster built without the seam never silences by pause; an unreadable pause read
   silences nothing.
-- **Lift behaviour (D1a only)**: `run resume` is a plain lift — queued AUTO turns drain within ≤ `PAUSE_DRAIN_POLL_MS` and every pending reader is woken at
-  the next bus-wake sweep (a herd; the structured top-down Reprise is #255). The Bilan / snapshot / interrupt / kill are D1b's and are not promised by D1a's
-  help/skill/lift texts.
+- **Lift behaviour**: since wave E (#255) `run resume` STARTS A STRUCTURED REPRISE instead of a plain lift — see `docs/codebase-map/pause-trap.md` §Reprise
+  (`beginReprise`, `src/main/pause-reprise.ts`): only the coordinators are released (a `reprise` bus row each = the Bilan of their wave); every worker stays blocked until
+  its coordinator runs `orchestra run release`; the pause columns clear when the whole `pause_members` roster is released. The PLAIN lift (`setRunPause(…, false)`, which clears
+  EVERY pause column via `clearPauseColumns`) remains for a stale pause column on a run whose frozen `pause` switch is OFF and for verb deps without `beginReprise`.
 - **Human-turn seam for D1b**: `setPauseHumanTurnObserver` / `notePauseHumanTurn` (`src/main/pause-gate.ts`) — `sdkSend` notes every HUMAN-origin send once, so the trap's turn-start observer can tell a fresh human turn from an automatic one.
 - **Seams for D1b** (`src/main/bus-pause.ts`): `runsOwingPauseTrap(db)` (carriers with `pause_trap_at` NULL), `runSubtreeIds(db, carrier)`
   (the pause's member runs by `parent_run_id` — **stale for a run re-parented after creation; resolve members through the live tree / `pausedCarrierForWorkspace`**), `activePauseFor` (run-row walk), `pausedCarrierForWorkspace` (live tree), `getRunPause`. A lift clears `pause_trap_at` so the next pause owes a fresh trap.
 - **Slot trap**: tests that build an old-version DB by hand-DROPping (`bus-fencing.test.ts` T128.4, `bus-mirror.test.ts` C11) must also
   drop the four pause columns + `pause_records` for `from < 9`, or the replay throws "duplicate column name".
-- **Not done here** (by design): structured Reprise (#255), usage-limit auto (#256), UI (#257), canary (#258). `orchestra bus-status` prints a `pause:` line (phase + "N/M en pause — manquent : …") only while a pause governs the run (#254; the older reply shape is unchanged when not paused). The Pause douce (#254) is in `docs/codebase-map/pause-trap.md`.
+- **Not done here** (by design): usage-limit auto (#256), UI (#257), canary (#258). `orchestra bus-status` prints a `pause:` line (phase + "N/M en pause — manquent : …") only while a pause governs the run (#254; the older reply shape is unchanged when not paused). The Pause douce (#254) and the structured Reprise (#255) are in `docs/codebase-map/pause-trap.md`; while a Reprise is open `/busStatus` also carries `reprise` ("N/M repris — manquent : …" + who is still BLOCKED, #255).
 
 Gates: `src/shared/bus-pause.test.ts`, `src/main/bus-pause.test.ts` (schema v8→v9, writer matrix, propagation, switch OFF inert, gate
 decision), `src/main/bus-pause-liveness.test.ts` (row 15, the shipped roster + real sweep, incl. an orchestrator re-parented after creation), `src/cli/run-pause.test.ts` (built CLI, app down),

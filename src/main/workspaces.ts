@@ -4260,7 +4260,9 @@ their own seam.
 \`\`\`bash
 orchestra run pause [--hard] [--run <id>] [--as <handle>]  # PAUSE DOUCE (default) / PAUSE DURE (--hard) of the run + every descendant run
 orchestra run confirm pause [--run <id>] [--as <handle>]   # a member's pause accusé: "command finished, work committed + pushed"
-orchestra run resume [--run <id>] [--as <handle>]          # lift it (queued turns + pending mail resume)
+orchestra run resume [--run <id>] [--as <handle>]          # start the REPRISE (coordinators first — see below)
+orchestra run release <ws>... | --all [--run <id>]         # (a coordinator) release your workers: each gets its Consigne de reprise
+orchestra run confirm reprise                              # your reprise accusé, once you are back on your feet
 orchestra run status [--run <id>] [--json]                 # phase, "N/M en pause — manquent : …", the Bilan de pause of every member
 \`\`\`
 
@@ -4292,6 +4294,24 @@ douce short. Reprise is never automatic.
 lift the pause** (nor does restarting it from the toolbar). Every automatic start
 is refused, including yours: if you are refused with \`run en pause\`, stop and
 wait — do not retry in a loop.
+
+**Reprise is structured, never a mass wake.** \`run resume\` does not lift the
+pause for everyone: the host releases ONLY the coordinators of the run's subtree,
+top-down, and sends each a \`reprise\` bus row (read it with \`orchestra check\`) =
+the Bilan de pause of its wave. Every worker stays blocked (refused with \`run en
+pause\`) until ITS coordinator runs \`orchestra run release <ws>\` (or \`--all\`),
+which unblocks it and sends it its Consigne de reprise.
+
+- **If you are a coordinator that was released:** read your wave's Bilan, then
+  release your workers (\`release --all\` releases the members of YOUR OWN run; a
+  worker of a run below yours is released by ITS OPS — or by you with its explicit
+  id). Nobody restarts on their own — a worker you never release stays blocked.
+- **If you received a Consigne de reprise** (a \`reprise\` row addressed to you):
+  your tree was NOT touched by the Pause; the snapshot ref is a backup
+  (\`git diff <head> <ref>\`). The commands it lists were KILLED — they are listed,
+  never re-run for you: re-run one only if you still need it, after checking the
+  tree. Then confirm: \`orchestra run confirm reprise\`.
+- \`orchestra bus-status\` shows "N/M repris — manquent : …" and who is still blocked.
 `;
 
 const WORKSPACE_ADMIN_SKILL = `---

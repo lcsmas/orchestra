@@ -235,6 +235,8 @@ all. Read-only.`,
        orchestra run pause [--hard] [--run <id>] [--as <handle>]
        orchestra run confirm pause [--run <id>] [--as <handle>]
        orchestra run resume [--run <id>] [--as <handle>]
+       orchestra run release <workspace-id>... | --all [--run <id>] [--as <handle>]
+       orchestra run confirm reprise [--as <handle>]
        orchestra run status [--run <id>] [--json]
 
   refreeze  Re-freeze a MISSION run's bus switches to the current live switches.
@@ -272,16 +274,30 @@ all. Read-only.`,
   confirm   'confirm pause' = a member's PAUSE ACCUSÉ (caller = --as, else $ORCHESTRA_WS_ID):
             "my running command is finished, my work is committed and pushed". Store-less,
             idempotent; prints "N/M en pause". Stop there — start no new command.
-  resume    Lift the pause (and the hold, if any) of the run: queued turns and pending
-            bus mail resume (there is no structured Reprise yet). A descendant run is
-            lifted through the run that carries the pause (the message names it);
-            escalation is re-enabled on the next sweep.
+  resume    Start the structured REPRISE of a paused run (and lift its hold, if any).
+            Nothing restarts on its own: the host releases ONLY the coordinators of the
+            run's subtree, top-down (the mission's, then each OPS's), and sends each a
+            'reprise' bus row = the Bilan de pause of its wave. Every worker stays BLOCKED
+            (no réveil, no turn, no spawn) until its coordinator releases it. The run is
+            active again once every member is released. A descendant run is resumed
+            through the run that carries the pause (the message names it).
+  release   (a coordinator, during a Reprise) Release members of YOUR wave — the workers of
+            the run you coordinate or of a run below it: each is unblocked and sent its
+            CONSIGNE DE REPRISE (a 'reprise' bus row built from its Bilan de pause: its
+            snapshot ref, whether its tree was dirty, and the commands the Pause KILLED —
+            listed, never re-run automatically). <workspace-id>... (exact ids or unique
+            prefixes: any member you may release) or --all (every unreleased member of YOUR OWN
+            run — a worker of a run BELOW yours is left to its own OPS, or released by you with
+            its explicit id, so the LEAD's --all never dispatches every OPS's workers).
+  confirm   'confirm reprise' = your reprise accusé, once you are back on your feet after
+            your Consigne. Tracking only: nothing is gated by it. 'orchestra bus-status'
+            shows "N/M repris — manquent : …".
   status    Is the run paused (by whom, since when, which run carries the pause),
             has the host trap finished, and the BILAN DE PAUSE of every member:
             what it was doing, its snapshot ref (refs/orchestra/pause/…, holds the
             uncommitted + untracked NON-IGNORED work), dirty tree, the tool processes the host
             killed (never the session or keeper), errors. Read-only; --json for tools.
-Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume refuse a run with no row.`,
+Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume/release refuse a run with no row.`,
   },
 
   // ── Legacy messaging ──────────────────────────────────────────────────
@@ -449,9 +465,9 @@ export function isHelpFlag(arg: string | undefined): boolean {
 const SUBCOMMAND_VERBS = new Set(['open', 'resolve', 'list', 'refreeze', 'add', 'rm', 'pin']);
 
 /** The `run` verbs that take FLAGS only (no free text): a help flag ANYWHERE after the verb is a help request, never a run — scoped to `run`
- *  so `orchestra status hold --help` (free text) is never one. `run pause --help` / `run pause --hard --help` must print help, not pause the fleet (pre-review:
- *  a help flag lands at args[1] or args[2]). The ONLY place `hold`/`pause`/`resume` are recognised as help-able verbs. */
-const RUN_FLAG_ONLY_VERBS = new Set(['refreeze', 'hold', 'pause', 'resume', 'confirm']);
+ *  so `orchestra status hold --help` (free text) is never one. `run pause --hard --help` must print help, not pause the fleet (pre-review:
+ *  `--hard` is mandatory, so `--help` lands at args[2]). The ONLY place `hold`/`pause`/`resume`/`release`/`confirm` are recognised as help-able verbs (`run release --all --help` must print help, never release). */
+const RUN_FLAG_ONLY_VERBS = new Set(['refreeze', 'hold', 'pause', 'resume', 'release', 'confirm']);
 
 export function wantsCommandHelp(args: string[], command?: string): boolean {
   if (isHelpFlag(args[0])) return true;

@@ -7,7 +7,7 @@
 // trap (snapshot / Bilan / interrupt / kill — D1b) consumes `runsOwingPauseTrap` + `runSubtreeIds`
 // and stamps `pause_trap_at`; it is NOT in this module.
 
-import type { BusDb } from './bus.ts';
+import { runCoordinator, type BusDb } from './bus.ts';
 import { getRun, runHoldAuthority } from './bus-runs.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
@@ -17,9 +17,10 @@ import {
   type PauseChainLink,
   type PauseOrigin,
 } from '../shared/bus-pause.ts';
-import { trapOwed, type PauseMode } from '../shared/pause-lifecycle.ts';
+import { trapOwed, type PauseMode, type RepriseEntry } from '../shared/pause-lifecycle.ts';
 import { softDeadlineAt } from '../shared/pause-douce.ts';
 import type { WaveNode } from './wave-run-id.ts';
+import { beginRepriseCore, clearPauseColumns, readCarrierColumns, releasedWhileResuming, revertResumeToPaused } from './pause-reprise.ts';
 
 /** The typed outcome of `orchestra run pause|resume` (pause half). */
 export type RunPauseOutcome =
@@ -43,6 +44,8 @@ export interface RunPauseInfo {
   deadlineAt?: number | null;
   /** #254: when the douce stopped waiting (all confirmed, or the deadline); null = still waiting / hard. */
   escalatedAt?: number | null;
+  /** `resume_started_at` (#255): set = the Reprise began (RESUMING) — the host trap must stop touching members. Absent/null = not resuming. */
+  resumeStartedAt?: number | null;
 }
 
 interface PauseRow {
@@ -109,10 +112,21 @@ function pauseChain(db: BusDb, runId: string): PauseRow[] {
  * `pause` switch is OFF): a missed pause is loud on the next check, a phantom one is not.
  */
 export function activePauseFor(db: BusDb, runId: string): RunPauseInfo | null {
+  return resolvePause(db, runId, null);
+}
+
+/** {@link activePauseFor} seen from the run's own COORDINATOR as the member (#255): a carrier that is RESUMING and has already released it no longer
+ *  pauses it — the store-less twin of the gate's `memberMayStart` (what `run resume` / `run status` ask when the app's store file is not readable). */
+export function activePauseForCoordinator(db: BusDb, runId: string): RunPauseInfo | null {
+  return resolvePause(db, runId, runCoordinator(db, runId));
+}
+
+function resolvePause(db: BusDb, runId: string, asMember: string | null): RunPauseInfo | null {
   const chain = pauseChain(db, runId);
   const links: PauseChainLink[] = chain.map((c) => ({
     runId: c.id,
-    pausedAt: c.pausedAt,
+    // a link that RELEASED `asMember` during its Reprise carries no pause for it (the walk goes on: an ancestor may still pause it)
+    pausedAt: asMember !== null && c.pausedAt !== null && c.resumeStartedAt !== null && releasedWhileResuming(db, c.id, c.pausedAt, asMember) ? null : c.pausedAt,
     pauseSwitchOn: c.switchOn,
   }));
   const hit = activePauseInChain(links);
@@ -126,6 +140,7 @@ export function activePauseFor(db: BusDb, runId: string): RunPauseInfo | null {
     trapAt: carrier.trapAt,
     deadlineAt: carrier.deadlineAt,
     escalatedAt: carrier.escalatedAt,
+    resumeStartedAt: carrier.resumeStartedAt,
   };
 }
 
@@ -145,6 +160,7 @@ function infoOf(row: PauseRow, pausedAt: number): RunPauseInfo {
     trapAt: row.trapAt,
     deadlineAt: row.deadlineAt,
     escalatedAt: row.escalatedAt,
+    resumeStartedAt: row.resumeStartedAt,
   };
 }
 
@@ -223,6 +239,8 @@ export function setRunPause(
   if (pause) {
     if (!getRun(db, runId)?.flags.pause) return 'switch-off';
     if (isPaused) {
+      // #255: a Pause WHILE RESUMING = back to PAUSED in a NEW epoch owned by this caller (the trap runs again on fresh Bilan rows; nothing stays released) — in the mode the caller asked for.
+      if (revertResumeToPaused(db, runId, who, Date.now(), { mode, deadlineAt: (epoch) => (mode === 'soft' ? softDeadlineAt(epoch) : null) })) return 'paused';
       // `--hard` over a douce that is still waiting = escalate NOW (the trap becomes owed); anything else keeps the original pause.
       if (mode === 'hard' && row!.mode === 'soft' && row!.escalatedAt === null && row!.trapAt === null && row!.resumeStartedAt === null) {
         const done = db.prepare(
@@ -242,12 +260,19 @@ export function setRunPause(
     return 'paused';
   }
   if (!isPaused) return 'not-paused';
-  db.prepare(
-    `UPDATE runs SET paused_at = NULL, paused_by = NULL, pause_mode = NULL, pause_trap_at = NULL, pause_deadline_at = NULL,
-            pause_escalated_at = NULL, resume_started_at = NULL, pause_auto = NULL WHERE id = ?`,
-  ).run(runId);
+  clearPauseColumns(db, runId); // every pause column (incl. wave E's) — a stale `resume_started_at` would read the NEXT pause as RESUMING
   return 'lifted';
 }
+
+/**
+ * THE structured Reprise entry (#255, ledger #276 D3 — signature = `RepriseEntry`): `orchestra run resume` calls it with the caller's handle,
+ * the auto Reprise (#256) with `{ host: true, reason: 'usage_limit' }` (a host caller is never refused). It does NOT lift the pause: it starts
+ * the RESUMING phase, releases the coordinators of the subtree and sends each its `reprise` row — see src/main/pause-reprise.ts.
+ */
+export const beginReprise: RepriseEntry = (db, carrierRunId, actor, opts) => {
+  const bus = db as BusDb;
+  return beginRepriseCore(bus, carrierRunId, actor, opts, runSubtreeIds(bus, carrierRunId));
+};
 
 /** Seams so the gate decision runs over a real bus + a fake workspace map without the Electron
  *  store (src/main/pause-gate.ts binds the real ones; the unit suite binds fakes). */
@@ -267,6 +292,8 @@ export function pausedCarrierForWorkspace(
   db: BusDb,
   ws: WaveNode,
   getWorkspace: (id: string) => WaveNode | undefined,
+  /** `includeReleased`: also report a carrier that is RESUMING and has already released `ws` (the release/confirm verbs and `run status` need the carrier itself). */
+  opts?: { includeReleased?: boolean },
 ): RunPauseInfo | null {
   const ids: string[] = [];
   const seen = new Set<string>();
@@ -286,13 +313,16 @@ export function pausedCarrierForWorkspace(
   for (const id of ids) {
     const row = readPauseRow(db, id);
     if (row && row.pausedAt !== null && row.switchOn) {
+      // #255 `memberMayStart`: a member RELEASED by its coordinator during the RESUMING phase may start; the walk goes on (an ANCESTOR carrier may still pause it).
+      if (!opts?.includeReleased && row.resumeStartedAt !== null && releasedWhileResuming(db, id, row.pausedAt, ws.id)) continue;
       return infoOf(row, row.pausedAt);
     }
   }
   if (dangling) {
     // A workspace on the chain is gone from the store: the bus's own run tree is the only evidence left.
     for (const id of ids) {
-      const hit = activePauseFor(db, id);
+      // the release exemption is evaluated for THIS workspace along the whole run chain (an ancestor carrier may still pause it), exactly like the live walk
+      const hit = resolvePause(db, id, opts?.includeReleased ? null : ws.id);
       if (hit) return hit;
     }
   }
