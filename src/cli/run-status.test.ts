@@ -145,6 +145,35 @@ test('D11: a killed ORPHAN is listed with its cmdline, pid, cwd and the reason t
   assert.equal((text.match(/orphan killed/g) ?? []).length, 1, 'only the orphan (not the ppid-tree child) is listed as one');
 });
 
+test('#282: a background task ended THROUGH THE CLI says so (no task-notification turn); a failed stop_task says the signal ended it and a turn may follow — both in the Bilan text and --json', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops');
+  const p = busPause.getRunPause(db, 'W')!;
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'ws-s', pausedAt: p.pausedAt, activity: { surface: 'sdk', memberRun: 'W' }, snapshotRef: null, dirty: null, error: null,
+    killed: { cli: { pid: 100, startTicks: 1000 }, killed: [
+      { pid: 9, cmd: 'sleep 7718', signal: 'stop_task', outcome: 'exited', via: 'cli-stop-task', cwd: '/w', evidence: 'the CLI ended it itself: control request stop_task(bq1) accepted' },
+    ], stopTask: [
+      { taskId: 'bq1zk3m8a', pid: 8, cmd: 'sleep 7718', ok: true },
+      { taskId: 'bfail\u001b[31m01', pid: 12, cmd: 'sleep 7719', ok: false, note: 'stop_task: unknown task' },
+    ] },
+  });
+  const st = gatherRunStatus(db, 'W', deps);
+  const text = renderRunStatus(st);
+  assert.match(text, /killed: 1 tool process\(es\) — sleep 7718 \(pid 9\)/);
+  assert.match(text, /background task\(s\) ended through the CLI \(stop_task — no task-notification turn\): bq1zk3m8a \(sleep 7718\)/);
+  assert.match(text, /stop_task FAILED \(ended by signal instead — the CLI may have started a task-notification turn\): bfail {1}\[31m01 \(sleep 7719: stop_task: unknown task\)/, 'a control character in a recorded id never reaches the terminal');
+  assert.ok(!text.includes('\u001b'));
+  const j = JSON.parse(JSON.stringify(st));
+  assert.equal(j.bilan[0].killed.stopTask.length, 2, '--json carries the stop_task report');
+  // no stopTask key ⇒ no such line (the old reports render exactly as before)
+  const db2 = rig(t);
+  busPause.setRunPause(db2, 'W', true, 'ops');
+  const p2 = busPause.getRunPause(db2, 'W')!;
+  records.insertBilan(db2, { runId: 'W', wsId: 'ws-t', pausedAt: p2.pausedAt, activity: { surface: 'sdk', memberRun: 'W' }, snapshotRef: null, dirty: null, error: null, killed: { cli: { pid: 100, startTicks: 1000 }, killed: [] } });
+  assert.ok(!/stop_task/.test(renderRunStatus(gatherRunStatus(db2, 'W', deps))));
+});
+
 test('F11: control characters in a raw argv / task text are stripped before they reach the terminal (no ESC / CR / NUL in the output)', (t) => {
   const db = rig(t);
   busPause.setRunPause(db, 'W', true, 'ops');

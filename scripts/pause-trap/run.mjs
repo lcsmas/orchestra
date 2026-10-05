@@ -16,9 +16,13 @@
 //   pauser-human      a human types `--as <coordinator>` in a plain shell: the coordinator is NOT exempt (interrupted, tool killed)
 //   keeper-stopped    the keeper is SIGSTOPped (alive, unresponsive): nothing killed, trap NOT stamped done, completes once it answers (review F4)
 //   queue-kept        an AUTO prompt queued behind the running turn is NOT dropped by the pause interrupt, is held while paused (a human prompt still runs first), and runs after the Reprise releases w1 (`run resume` + `run release`)
-//   turn-while-paused a background task is killed, the CLI starts a turn BY ITSELF (task notification) → interrupted + noted
+//   turn-while-paused a background task is killed BY SIGNAL (the documented fallback, `noStopTask`), the CLI starts a turn BY ITSELF (task notification) → interrupted + noted
+//   bg-notify         (#282) the hard pause lands on an IDLE member with a background task: the trap ends it THROUGH THE CLI (stop_task) → ZERO model requests from the paused member; the Bilan lists it
+//   bg-notify-running (#282) same with the member MID-TURN (blocked in a foreground command) + a background task + a daemonized job
+//   bg-notify-restart (#282) same, the app dies first and the boot drain arms the idle keeper + stops the task
 // Must-FAIL mutants (load-time edits of the shipped source; the named check must go red):
 //   no-trap (the unfixed build) · kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · exempt-by-handle · stamp-on-unknown · drop-queue-on-pause-interrupt
+//   #282: unfixed:bg-notify (master v0.5.306) · no-stop-task · stop-task-after-signals · no-arm-bg-notify
 // Exit: 0 every arm as expected · 1 an arm broke expectation · 3 VOID (containment/tooling unavailable: nothing measured).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,7 +41,7 @@ const KEEP = args.includes('--keep') || process.env.PT_KEEP === '1';
 const WANT = opt('arm', 'all');
 
 const DOUCE = ['douce-keeperstopped', 'douce-forged', 'douce-humanmark', 'douce-obey', 'douce-failcall', 'douce-subagent', 'douce-quota', 'douce-blocked', 'douce-silent', 'douce-mixed', 'douce-fleet', 'douce-restart', 'douce-off'];
-const NORMAL = [...DOUCE, 'blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
+const NORMAL = [...DOUCE, 'blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'bg-notify', 'bg-notify-running', 'bg-notify-restart', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
 const MUTANT_ARMS = [
   // #254 Pause douce. G1: the UNFIXED build (master: `run pause` without --hard is refused, no douce at all) must FAIL the same rig.
   { name: 'unfixed:no-douce', arm: 'douce-obey', mutant: 'master', master: true },
@@ -57,6 +61,13 @@ const MUTANT_ARMS = [
   { name: 'mutant:subagent-takes-order', arm: 'douce-subagent', mutant: 'subagent-takes-order' },
   { name: 'mutant:no-trap-roster', arm: 'douce-blocked', mutant: 'no-trap-roster', deadlineSec: 25 },
   { name: 'mutant:sweep-ignores-switch', arm: 'douce-off', mutant: 'sweep-ignores-switch' },
+  // #282 G1: the UNFIXED build (master v0.5.306: the bg task is SIGTERMed, the CLI starts a task-notification turn by itself) must FAIL the same rig on the request count.
+  { name: 'unfixed:bg-notify', arm: 'bg-notify', mutant: 'master', master: true, masterPin: 'bg-notify', redden: 'no_model_request_while_paused' },
+  { name: 'unfixed:bg-notify-running', arm: 'bg-notify-running', mutant: 'master', master: true, masterPin: 'bg-notify', redden: 'no_model_request_while_paused' },
+  { name: 'mutant:no-stop-task', arm: 'bg-notify', mutant: 'no-stop-task' },
+  { name: 'mutant:no-stop-task-running', arm: 'bg-notify-running', mutant: 'no-stop-task' },
+  { name: 'mutant:stop-task-after-signals', arm: 'bg-notify', mutant: 'stop-task-after-signals' },
+  { name: 'mutant:no-arm-bg-notify', arm: 'bg-notify-restart', mutant: 'no-arm', redden: 'no_model_request_while_paused' },
   // G1: the UNFIXED build (no host trap, as on master) must FAIL the same rig: nothing is interrupted, killed or snapshotted.
   { name: 'unfixed:no-trap', arm: 'background', mutant: 'no-trap' },
   { name: 'mutant:kill-cli', arm: 'blocking', mutant: 'kill-cli' },
@@ -71,7 +82,7 @@ const MUTANT_ARMS = [
   { name: 'mutant:exempt-by-handle', arm: 'pauser-human', mutant: 'exempt-by-handle' },
   { name: 'mutant:stamp-on-unknown', arm: 'keeper-stopped', mutant: 'stamp-on-unknown' },
 ];
-const all = [...NORMAL, 'probe-interrupt', 'probe-dbg'].map((a) => ({ name: a, arm: a, mutant: null }));
+const all = [...NORMAL, 'probe-interrupt', 'probe-dbg', 'probe-bg-sigterm', 'probe-bg-stoptask'].map((a) => ({ name: a, arm: a, mutant: null }));
 all.push(...MUTANT_ARMS);
 const wanted = new Set(WANT.split(',').map((x) => x.trim()));
 const selected = WANT === 'all'
@@ -110,12 +121,13 @@ const base = path.join(os.homedir(), '.cache', 'pause-trap');
 const live = liveDirs(process.env);
 let bad = 0;
 // #254: the MASTER tree the `unfixed:` arms drive (G1: the same rig on master must go red). Built once, in a detached worktree of origin/master.
-let masterDir = null;
-function masterTree() {
-  if (masterDir) return masterDir;
-  // PINNED to master as it was BEFORE wave E (b34c8b58, no Pause douce): `origin/master` would go green-for-the-wrong-reason once the douce itself is merged.
-  const sha = spawnSync('git', ['rev-parse', `${process.env.PT_UNFIXED_SHA ?? 'b34c8b58'}^{commit}`], { cwd: REPO, encoding: 'utf8' }).stdout.trim();
-  if (!sha) { console.log('PAUSE-TRAP: VOID — the pre-douce commit b34c8b58 is not in this repo (set PT_UNFIXED_SHA)'); process.exit(3); }
+const masterDirs = new Map();
+// Each `unfixed:` arm names the commit that predates ITS fix (`sel.masterSha`; env override `sel.masterEnv`): `origin/master` would go green-for-the-wrong-reason once the fix itself is merged.
+function masterTree(pin = { sha: 'b34c8b58', env: 'PT_UNFIXED_SHA', what: 'pre-douce' }) {
+  const wantSha = process.env[pin.env] ?? pin.sha;
+  if (masterDirs.has(wantSha)) return masterDirs.get(wantSha);
+  const sha = spawnSync('git', ['rev-parse', `${wantSha}^{commit}`], { cwd: REPO, encoding: 'utf8' }).stdout.trim();
+  if (!sha) { console.log(`PAUSE-TRAP: VOID — the ${pin.what} commit ${wantSha} is not in this repo (set ${pin.env})`); process.exit(3); }
   const dir = path.join(base, `master-${sha.slice(0, 8)}`);
   if (!fs.existsSync(path.join(dir, 'dist-electron', 'cli.js'))) {
     if (!fs.existsSync(dir)) {
@@ -128,9 +140,12 @@ function masterTree() {
       if (r.status !== 0) { console.log(`PAUSE-TRAP: VOID — master ${script} failed: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); }
     }
   }
-  masterDir = dir;
+  masterDirs.set(wantSha, dir);
   return dir;
 }
+/** The pins: `unfixed:no-douce` = master before wave E; `unfixed:bg-notify` = master v0.5.306, before #282 (stop_task through the CLI). */
+const PIN_BG_NOTIFY = { sha: '53e93c81', env: 'PT_BGNOTIFY_UNFIXED_SHA', what: 'pre-#282' };
+const pinOf = (sel) => (sel.masterPin === 'bg-notify' ? PIN_BG_NOTIFY : undefined);
 
 // follow-up: BUILT mutants (`sel.built`): a detached worktree of HEAD (the committed tree), mutated at ONE anchor (exactly once, else VOID), then built; the arm drives it as SRC.
 const builtDirs = new Map();
@@ -156,14 +171,14 @@ for (const sel of selected) if (sel.built) builtTree(sel); // sequential builds,
 
 const PARALLEL = Number(opt('parallel', process.env.PT_PARALLEL ?? '1')) || 1;
 const queue = [...selected];
-if (selected.some((x) => x.master)) masterTree(); // before any arm starts (one build, not racing builds)
+for (const x of selected) if (x.master) masterTree(pinOf(x)); // before any arm starts (one build per pin, not racing builds)
 
 async function runOne(sel) {
   const root = path.join(base, `${sel.name.replace(/[^a-z0-9-]/gi, '_')}-${process.pid}-${Date.now().toString(36).slice(-4)}`);
   fs.mkdirSync(root, { recursive: true });
   assertScratch('root', root, base, live);
   const apiPort = 31000 + Math.floor(Math.random() * 15000);
-  const cfg = { REPO, root, arm: sel.arm, mutant: sel.master || sel.built ? null : sel.mutant, live, apiPort, ...(sel.master ? { SRC: masterTree() } : sel.built ? { SRC: builtTree(sel) } : {}), ...(sel.deadlineSec ? { deadlineSec: sel.deadlineSec } : {}) };
+  const cfg = { REPO, root, arm: sel.arm, mutant: sel.master || sel.built ? null : sel.mutant, live, apiPort, ...(sel.master ? { SRC: masterTree(pinOf(sel)) } : sel.built ? { SRC: builtTree(sel) } : {}), ...(sel.deadlineSec ? { deadlineSec: sel.deadlineSec } : {}) };
   const env = { PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', PT_CONFIG: JSON.stringify(cfg), ...(process.env.PT_DUMP_API ? { PT_DUMP_API: process.env.PT_DUMP_API } : {}) };
   fs.mkdirSync(path.join(root, 'home'), { recursive: true });
   const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(REPO, 'scripts', 'pause-trap', 'driver.mjs')];
@@ -210,6 +225,6 @@ async function runOne(sel) {
 }
 await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, async () => { for (let sel = queue.shift(); sel; sel = queue.shift()) await runOne(sel); }));
 for (const d of builtDirs.values()) if (!KEEP) { spawnSync('git', ['worktree', 'remove', '--force', d], { cwd: REPO }); fs.rmSync(d, { recursive: true, force: true }); }
-if (masterDir && !KEEP) { spawnSync('git', ['worktree', 'remove', '--force', masterDir], { cwd: REPO }); fs.rmSync(masterDir, { recursive: true, force: true }); }
+if (!KEEP) for (const d of masterDirs.values()) { spawnSync('git', ['worktree', 'remove', '--force', d], { cwd: REPO }); fs.rmSync(d, { recursive: true, force: true }); }
 console.log(`PAUSE-TRAP: ${bad === 0 ? (WANT === 'all' ? 'PASS' : 'PARTIAL') : 'FAIL'}`);
 process.exit(bad === 0 ? 0 : 1);

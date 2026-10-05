@@ -94,7 +94,15 @@ const ARMS = {
   // the boot drain must KILL too (not only interrupt): a background task + a daemonized job survive the interrupt
   'app-restart-bg': { scenario: 'background', markers: [7714, 7715, 7716], restart: true, mustKill: ['sleep 7714', 'sleep 7715'] },
   // the first turn has ENDED when the pause lands (only the background task is alive): interrupt = 'idle' is the right outcome
-  'turn-while-paused': { scenario: 'bgnotify', markers: [7718], rowTwentyNine: true, mustKill: ['sleep 7718'], idleAtPause: true },
+  // (#282: `noStopTask` = the trap has NO stop_task, the documented FALLBACK (PTY agent, a CLI whose task-output link is unreadable, no live session): the bg task is ended by SIGTERM, which makes the CLI
+  //  start a notification turn BY ITSELF — the only deterministic generator of a CLI-started turn, so the OBSERVER (rows 29/30) keeps its must-FAIL coverage. The production path is `bg-notify` below.)
+  'turn-while-paused': { scenario: 'bgnotify', markers: [7718], rowTwentyNine: true, mustKill: ['sleep 7718'], idleAtPause: true, noStopTask: true },
+  // #282 (ticket: "killing a paused member's background task makes its CLI start a turn on its own"): the trap ends the bg task THROUGH THE CLI (stop_task) before any signal, so no <task-notification> turn
+  // starts: ZERO model requests from the paused member after the kill. The app stays up (`bg-notify`) or dies and the boot drain arms the idle keeper (`bg-notify-restart`).
+  'bg-notify': { scenario: 'bgnotify', markers: [7718], bgNotify: true, idleAtPause: true, mustKill: ['sleep 7718'] },
+  // the member is MID-TURN (blocked in a foreground command) with a background task + a daemonized job when the pause lands: the interrupt ends the turn, the trap ends the task through the CLI
+  'bg-notify-running': { scenario: 'background', markers: [7714, 7715, 7716], bgNotify: true, bgCmd: 'sleep 7714', mustKill: ['sleep 7714', 'sleep 7715'] },
+  'bg-notify-restart': { scenario: 'bgnotify', markers: [7718], bgNotify: true, restart: true, idleAtPause: true, settleBeforeKill: true, mustKill: ['sleep 7718'] },
   // the PAUSER (the OPS pausing its own run) is a member with a live session + a running tool: it keeps its turn
   // review F5: a human typing `--as <coordinator>` in a plain shell exempts NOBODY (the handle is not identity): the coordinator is interrupted + its tool killed
   'pauser-human': { scenario: 'blocking', markers: [7713], mustKill: [], pauser: { ws: 'ops', scenario: 'blockingops', markers: [7719], mode: 'human' } },
@@ -104,12 +112,15 @@ const ARMS = {
   'keeper-stopped': { scenario: 'blocking', markers: [7713], mustKill: [], keeperStopped: true },
   // the keeper is IDLE (first turn ended, a background task still runs) when the app dies: the boot drain must ARM it (attach) so the CLI's own
   // task-notification turn — started when the trap kills that task — is observed, interrupted and noted (row 29 after a restart)
-  'app-restart-idle': { scenario: 'bgnotify', markers: [7718], restart: true, rowTwentyNine: true, idleAtPause: true, settleBeforeKill: true, mustKill: ['sleep 7718'] },
+  'app-restart-idle': { scenario: 'bgnotify', markers: [7718], restart: true, rowTwentyNine: true, idleAtPause: true, settleBeforeKill: true, mustKill: ['sleep 7718'], noStopTask: true },
   // an AUTO prompt queued behind the running turn must survive the pause interrupt (not dropped, not drained) and run after the lift
   'queue-kept': { scenario: 'blocking', markers: [7713], mustKill: [], queueKept: true },
   // PROBE (not a verdict arm): what does a plain human interrupt leave alive? — the gap the trap's kill exists for.
   'probe-dbg': { scenario: 'dbg', markers: [7715, 7716], probe: true, mustKill: [] },
   'probe-interrupt': { scenario: 'background', markers: [7714, 7715, 7716], probe: true, mustKill: [] },
+  // #282 PROBES (not verdict arms): the bg task of an IDLE member is ended (a) by SIGTERM (what the trap does) or (b) by the CLI's own stop_task; count the model requests that follow
+  'probe-bg-sigterm': { scenario: 'bgnotify', markers: [7718], bgprobe: 'sigterm', mustKill: [] },
+  'probe-bg-stoptask': { scenario: 'bgnotify', markers: [7718], bgprobe: 'stoptask', mustKill: [] },
 };
 // #254 Pause douce arms (scripts/pause-trap/douce-arm.mjs): function scenarios + their own driver path.
 import { DOUCE_ARMS, douceScenarios, runDouce } from './douce-arm.mjs';
@@ -177,7 +188,7 @@ if (A.douce) {
 }
 try {
   // 1. fleet up, turn in flight
-  app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe, ...(A.pauser?.scenario ? { opsScenario: A.pauser.scenario } : {}) });
+  app1 = startApp('first', { scenario: A.scenario, noTrap: !!A.probe, noStopTask: !!A.noStopTask, ...(A.pauser?.scenario ? { opsScenario: A.pauser.scenario } : {}) });
   await app1.waitEv((e) => e.ev === 'sent', 120_000, 'the first turn to be sent');
   // 2. POSITIVE CONTROL: the real CLI really spawned the real tool processes
   await waitFor(() => A.markers.every((n) => sleepers(n).length >= 1), 90_000, `tool processes ${A.markers.join(',')} to appear`);
@@ -189,6 +200,37 @@ try {
     const orphan = sleepers(7715)[0];
     const parent = orphan && readProc(orphan.ppid);
     check('orphan_is_reparented_control', !!orphan && orphan.ppid !== cli0.pid && !(parent && /zsh|bash/.test(parent.comm) && parent.state !== 'Z' && parent.argv.includes('-c')), `orphan sleep 7715 ppid=${orphan?.ppid} (${parent?.comm})`);
+  }
+  if (A.bgprobe) {
+    // wait for the first turn to END (the member is IDLE, only the bg task lives), then end the task and watch the fake API
+    await waitFor(() => app1.events.find((e) => e.ev === 'turn-end' && e.ws === 'w1'), 60_000, 'the first turn to end');
+    await sleep(1500);
+    const root = sleepers(7718)[0];
+    const procOf = (pid) => { try { return { fd: [0, 1, 2].map((n) => { try { return fs.readlinkSync(`/proc/${pid}/fd/${n}`); } catch { return null; } }), env: fs.readFileSync(`/proc/${pid}/environ`, 'latin1').split('\0').filter((x) => /CLAUDE|TASK|ORCH/i.test(x) && !/KEY|TOKEN/i.test(x)), cmd: fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').split('\0').join(' ').slice(0, 300) }; } catch { return null; } };
+    const par = root && readProc(root.ppid);
+    result.mapping = { sleeper: root && procOf(root.pid), parent: par && { pid: par.pid, ...procOf(par.pid) } };
+    app1.send({ cmd: 'bgtasks', ws: 'w1' });
+    const bt = await waitFor(() => app1.replies.find((r) => r.reply === 'bgtasks'), 10_000, 'bgtasks reply');
+    result.tasks = bt.tasks;
+    const req0 = api.requests.length, t0 = Date.now();
+    if (A.bgprobe === 'sigterm') process.kill(root.pid, 'SIGTERM');
+    else {
+      const id = (bt.tasks ?? []).find((t) => t.status === 'running')?.id;
+      result.stopTaskId = id ?? null;
+      app1.send({ cmd: 'stop-task', ws: 'w1', taskId: id });
+      result.stopReply = (await waitFor(() => app1.replies.find((r) => r.reply === 'stop-task'), 15_000, 'stop-task reply').catch(() => null)) ?? null;
+    }
+    await sleep(12_000);
+    result.requestsAfter = api.requests.slice(req0).map((r) => ({ seq: r.seq, dt: r.t - t0, scn: r.scn, idx: r.idx, tool: r.tool }));
+    result.sleeperAfter = sleepers(7718).length;
+    result.taskEvents = app1.events.filter((e) => e.ev === 'task' && e.t >= t0).map((e) => ({ dt: e.t - t0, kind: e.kind, status: e.status, taskId: e.taskId, liveIds: e.liveIds }));
+    result.turnEnds = app1.events.filter((e) => e.ev === 'turn-end' && e.t >= t0).map((e) => ({ dt: e.t - t0, stop: e.stopReason }));
+    result.checks = [{ id: 'probe', ok: true, detail: `${A.bgprobe}: ${result.requestsAfter.length} request(s) after the end of the bg task` }];
+    result.ok = true;
+    for (const a of [app1, app2]) { try { a?.send({ cmd: 'quit' }); a?.child.kill('SIGKILL'); } catch { /* */ } }
+    await api.stop().catch(() => {});
+    console.log(JSON.stringify(result));
+    process.exit(0);
   }
   if (A.probe) {
     const o = sleepers(7715)[0];
@@ -250,7 +292,7 @@ try {
   if (A.restart) {
     await sleep(2500);
     check('app_down_trap_owed_control', A.markers.every((n) => sleepers(n).length >= 1) && (runStatus().pause?.trapAt ?? null) === null, 'app is down: nothing killed yet, run status says the trap is NOT finished (proves the reaction is the host\'s)');
-    app2 = startApp('second');
+    app2 = startApp('second', { noStopTask: !!A.noStopTask });
     await app2.waitEv((e) => e.ev === 'trap-started', 120_000, 'app2 boot');
   }
 
@@ -258,6 +300,13 @@ try {
   const done = await waitFor(() => { const s = runStatus(); return s.pause?.trapAt ? s : null; }, mutant === 'no-trap' ? 12_000 : 90_000, 'pause_trap_at to be stamped').catch((e) => { check('trap_finished', false, String(e.message)); return null; });
   check('trap_finished', !!done, done ? `trap done ${Date.now() - tPause} ms after the pause` : 'never stamped');
   await sleep(1500);
+  if (A.bgNotify) {
+    // #282: the unfixed CLI's notification turn lands 0.1–2 s after the kill; wait well past it, THEN count what the paused member sent to the model since the pause (main, tool-carrying requests; the member was IDLE at the pause)
+    await sleep(6000);
+    const sent = api.requests.filter((r) => r.t >= tPause && r.tools > 0);
+    result.requestsAfterPause = sent.map((r) => ({ seq: r.seq, dt: r.t - tPause, scn: r.scn, idx: r.idx, tool: r.tool }));
+    check('no_model_request_while_paused', sent.length === 0, sent.length === 0 ? `0 model requests from the paused member in the ${Math.round((Date.now() - tPause) / 1000)} s after the pause (its bg task was ended)` : `${sent.length} model request(s) from the PAUSED member after the pause: ${JSON.stringify(result.requestsAfterPause)}`);
+  }
 
   // 6. assertions — only what the OS / git / the CLI can show
   const leftover = A.markers.filter((n) => sleepers(n).length > 0);
@@ -292,6 +341,17 @@ try {
         : (w1row.activity?.turnRunning === true && (['interrupted', 'attached-then-interrupted'].includes(w1row.activity?.interrupt) || (w1row.activity?.interrupt === 'idle' && (w1row.activity?.notes ?? []).some((n) => /interrupt=interrupted/.test(n)))))))
     , w1row ? `dirty=${w1row.dirty} turnRunning=${w1row.activity?.turnRunning} interrupt=${w1row.activity?.interrupt} in-flight=${(w1row.activity?.inFlightTools ?? []).map((t) => t.tool).join(',')} killed=[${killedCmds.join(' | ')}] error=${w1row.error}` : 'no Bilan row for w1');
   check('trap_killed_what_survives_an_interrupt', A.mustKill.every((c) => killedCmds.some((k) => k.includes(c))), `the Bilan lists killed commands ${JSON.stringify(A.mustKill)}: got [${killedCmds.join(' | ')}]`);
+  if (A.bgNotify) {
+    // #282: the Bilan says HOW — through the CLI's own stop_task — and the app saw the CLI's own `task_notification stopped`; no CLI-started turn was ever noted
+    const bgCmd = A.bgCmd ?? 'sleep 7718';
+    const bgK = (w1row?.killed?.killed ?? []).find((k) => k.cmd === bgCmd);
+    const stopIds = (w1row?.killed?.stopTask ?? []).filter((x) => x.ok === true).map((x) => x.taskId); // the task ids the trap asked the CLI to stop AND the CLI's stop ended
+    check('bg_task_ended_through_the_cli', !!bgK && bgK.signal === 'stop_task' && bgK.via === 'cli-stop-task' && stopIds.some((id) => (bgK.evidence ?? '').includes(`stop_task(${id}) accepted`)), JSON.stringify({ killed: bgK ?? null, stopTask: w1row?.killed?.stopTask ?? null }).slice(0, 400));
+    const liveApp0 = app2 ?? app1;
+    const stoppedEv = liveApp0.events.find((e) => e.ev === 'task' && e.ws === 'w1' && e.kind === 'notification' && e.status === 'stopped' && stopIds.includes(e.taskId));
+    check('cli_reported_the_task_stopped', !!stoppedEv, stoppedEv ? `the CLI's own task_notification {status:'stopped'} for the task ${stoppedEv.taskId} the trap stopped` : `no task_notification {stopped} from w1 for a task the trap stopped (ids ${JSON.stringify(stopIds)}) reached the app`);
+    check('no_cli_started_turn_noted', !(w1row?.activity?.notes ?? []).some((n) => /turn started while paused/.test(n)) && (w1row?.activity?.observerKilled ?? []).length === 0, `notes=${JSON.stringify(w1row?.activity?.notes ?? [])} observerKilled=${(w1row?.activity?.observerKilled ?? []).length}`);
+  }
   if (A.mustKill.includes('sleep 7715')) {
     // LEAD ruling D11: the daemonized orphan is listed with pid, cmdline, cwd and the reason that matched (CLI identity = pid + start-time).
     const o = (w1row?.killed?.killed ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.observerKilled ?? []).find((k) => k.cmd === 'sleep 7715') ?? (w1row?.activity?.earlierKilled ?? []).find((k) => k.cmd === 'sleep 7715');

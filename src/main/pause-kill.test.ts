@@ -29,9 +29,13 @@ class FakeOs {
   env = new Map<number, number>();
   /** cwd per pid (what /proc/<pid>/cwd would say). */
   cwds = new Map<number, string>();
+  /** #282: background-task id per pid (what /proc/<pid>/fd/1 → `…/tasks/<id>.output` would say). */
+  taskIds = new Map<number, string>();
   /** run after every delivered signal (a tool respawning as it is killed). */
   onSignal: ((pid: number, sig: string) => void) | null = null;
   supported = true;
+  /** pids that survive even SIGKILL (a root that never dies: the rounds are bounded). */
+  ignoresKill = new Set<number>();
 
   add(p: ProcIdent): void {
     this.procs.set(p.pid, p);
@@ -59,12 +63,14 @@ class FakeOs {
       },
       readClaudePid: (pid) => (this.unreadable.has(pid) ? 'unreadable' : (this.env.get(pid) ?? null)),
       readCwd: (pid) => this.cwds.get(pid) ?? null,
+      readTaskId: (pid) => this.taskIds.get(pid) ?? null,
       startMs: (t) => t,
       signal: (pid, sig) => {
         const target = this.procs.get(pid);
         this.signals.push({ pid, sig, target });
         if (!target) return false;
         if (sig === 'SIGTERM' && this.ignoresTerm.has(pid)) return true;
+        if (sig === 'SIGKILL' && this.ignoresKill.has(pid)) return true;
         this.die(pid);
         this.onSignal?.(pid, sig);
         return true;
@@ -668,4 +674,292 @@ test('round-3 F1a (env orphans, env-ancestor branch): the origin walk reaches an
   os.env.set(871, 100);
   await killToolTrees(CLI, 90, os.deps(), { startedBeforeMs: 2450 });
   assert.ok(!os.procs.has(870) && !os.procs.has(871), 'the late fork carries its old env-proven parent\'s origin and dies with it');
+});
+
+// ── #282: a background task is ended THROUGH THE CLI (stop_task) before any signal ──────────────────────────────
+// An external SIGTERM makes the CLI enqueue a <task-notification> and an idle CLI starts a turn by itself (a model request on a paused member);
+// the CLI's own stop marks the task notified first. Measured on the real claude 2.1.289 (scripts/pause-trap probe-bg-sigterm / probe-bg-stoptask).
+
+/** A fake CLI answer: ends the task's whole tree (what the real CLI's kill does) and records the ask. */
+function fakeStop(os: FakeOs, tasks: Map<string, number>, asked: string[], ok = true) {
+  return async (taskId: string) => {
+    asked.push(taskId);
+    if (!ok) return { ok: false, note: 'stop_task: unknown task' };
+    const root = tasks.get(taskId);
+    if (root !== undefined) {
+      for (const [pid, p] of [...os.procs]) if (p.ppid === root) os.die(pid);
+      os.die(root);
+    }
+    return { ok: true };
+  };
+}
+
+test('#282: a tool root that IS a background task is stopped through the CLI BEFORE any signal — no SIGTERM, listed as stop_task with its command', async () => {
+  const os = world();
+  os.taskIds.set(200, 'bq1zk3m8a');
+  const asked: string[] = [];
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: fakeStop(os, new Map([['bq1zk3m8a', 200]]), asked) });
+  assert.deepEqual(asked, ['bq1zk3m8a']);
+  assert.deepEqual(os.signals, [], 'the CLI ended the tree: not one signal was sent');
+  assert.deepEqual(r.killed.map((k) => [k.pid, k.cmd, k.signal, k.via, k.outcome]).sort(), [[200, '/usr/bin/zsh -c sleep 600', 'stop_task', 'cli-stop-task', 'exited'], [201, 'sleep 600', 'stop_task', 'cli-stop-task', 'exited']]);
+  assert.match(r.killed[0].evidence, /stop_task\(bq1zk3m8a\) accepted/);
+  assert.deepEqual(r.stopTask, [{ taskId: 'bq1zk3m8a', pid: 200, cmd: '/usr/bin/zsh -c sleep 600', ok: true }]);
+  assert.deepEqual(r.survivors, []);
+});
+
+test('#282: a root with NO task id (a foreground tool\'s shell, an orphan) is signalled as before; only the task root is stopped through the CLI', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'make'));
+  os.add(mk(401, 400, { sid: 400, comm: 'make', argv: ['make'] }));
+  os.taskIds.set(200, 'btask0001');
+  const asked: string[] = [];
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: fakeStop(os, new Map([['btask0001', 200]]), asked) });
+  assert.deepEqual(asked, ['btask0001']);
+  assert.deepEqual(os.signals.map((x) => `${x.pid}:${x.sig}`), ['401:SIGTERM', '400:SIGTERM'], 'the non-task tree is killed by signal, leaf first');
+  assert.ok(r.killed.some((k) => k.pid === 400 && k.signal === 'SIGTERM') && r.killed.some((k) => k.pid === 200 && k.signal === 'stop_task'));
+});
+
+test('#282: stop_task FAILED (the CLI refuses / is gone): the signal path still kills the task, the failure is reported (ok:false + note), nothing is listed as CLI-stopped', async () => {
+  const os = world();
+  os.taskIds.set(200, 'btask0002');
+  const asked: string[] = [];
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: fakeStop(os, new Map(), asked, false) });
+  assert.deepEqual(os.signals.map((x) => `${x.pid}:${x.sig}`), ['201:SIGTERM', '200:SIGTERM']);
+  assert.deepEqual(r.stopTask, [{ taskId: 'btask0002', pid: 200, cmd: '/usr/bin/zsh -c sleep 600', ok: false, note: 'stop_task: unknown task' }]);
+  assert.ok(r.killed.every((k) => k.signal === 'SIGTERM'));
+});
+
+test('#282: a stop_task that THROWS is a failed stop (signals take over), never an exception out of the kill', async () => {
+  const os = world();
+  os.taskIds.set(200, 'btask0003');
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: async () => { throw new Error('boom'); } });
+  assert.equal(r.stopTask?.[0].ok, false);
+  assert.match(r.stopTask?.[0].note ?? '', /boom/);
+  assert.ok(!os.procs.has(200), 'the signal path killed it');
+});
+
+test('#282: the exemptions apply BEFORE the request — the pauser\'s spared tree and a root inside a HUMAN window are never stop_task\'ed', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'bg of the other tree'));
+  os.add(shellC(500, 100, 'human turn bg'));
+  os.taskIds.set(200, 'bpauser01'); // the tree holding `orchestra run pause`
+  os.taskIds.set(400, 'bother001');
+  os.taskIds.set(500, 'bhuman001');
+  const asked: string[] = [];
+  const tasks = new Map([['bpauser01', 200], ['bother001', 400], ['bhuman001', 500]]);
+  await killToolTrees(CLI, 90, os.deps(), { spareRoots: [200], humanWindows: () => [{ from: 2450, to: 2550 }], stopTask: fakeStop(os, tasks, asked) });
+  assert.deepEqual(asked, ['bother001'], 'only the root the signal rounds would have killed is asked for');
+  assert.ok(os.procs.has(200) && os.procs.has(500), 'the pauser\'s tree and the human turn\'s task are untouched');
+});
+
+test('#282: the pause lifting before the request stops it — no stop_task, no signal (re-checked right before EACH request, not only at the round\'s start)', async () => {
+  const os = world();
+  os.taskIds.set(200, 'btask0004');
+  const asked: string[] = [];
+  const r = await killToolTrees(CLI, 90, os.deps(), { stillPaused: () => false, stopTask: fakeStop(os, new Map([['btask0004', 200]]), asked) });
+  assert.deepEqual(asked, []);
+  assert.deepEqual(os.signals, []);
+  assert.equal(r.aborted, 'lifted');
+  // the lift lands AFTER the round started (the round-level check passed): the request itself must not be made
+  const os2 = world();
+  os2.taskIds.set(200, 'btask0004b');
+  const asked2: string[] = [];
+  let calls = 0;
+  const r2 = await killToolTrees(CLI, 90, os2.deps(), { stillPaused: () => ++calls <= 1, stopTask: fakeStop(os2, new Map([['btask0004b', 200]]), asked2) });
+  assert.deepEqual(asked2, [], 'no request after the lift');
+  assert.deepEqual(os2.signals, [], 'and no signal either');
+  assert.equal(r2.aborted, 'lifted');
+});
+
+test('#282: a HUMAN turn that begins AFTER the plan shields the task it started — the window is re-read for each root right before its request (not only at plan time)', async () => {
+  const os = world();
+  os.add(shellC(400, 100, 'pre-pause bg'));
+  os.add(shellC(500, 100, 'human turn bg')); // start 2500
+  os.taskIds.set(200, 'b200');
+  os.taskIds.set(400, 'b400');
+  os.taskIds.set(500, 'b500');
+  let windows: Array<{ from: number; to?: number }> = [];
+  const asked: string[] = [];
+  const tasks = new Map([['b200', 200], ['b400', 400], ['b500', 500]]);
+  const stop = fakeStop(os, tasks, asked);
+  const deps = os.deps();
+  const readTaskId = deps.readTaskId!;
+  deps.readTaskId = (pid) => { windows = [{ from: 2450, to: 2550 }]; return readTaskId(pid); }; // the human turn begins while the roots are being examined
+  await killToolTrees(CLI, 90, deps, { humanWindows: () => windows, stopTask: stop });
+  assert.deepEqual(asked.sort(), ['b200', 'b400'], 'the task the human turn started (b500) is never asked for');
+  assert.ok(os.procs.has(500), 'and it was not signalled either');
+});
+
+test('#282: a pid RECYCLED between the plan and the request is not stopped (identity re-read first); an unreadable root is not stopped either', async () => {
+  const os = world();
+  os.taskIds.set(200, 'btask0005');
+  os.afterTable = () => os.procs.set(200, mk(200, 100, { startTicks: 9999, comm: 'zsh', argv: ['zsh', '-c', 'innocent'] })); // recycled after the plan
+  const asked: string[] = [];
+  await killToolTrees(CLI, 90, os.deps(), { stopTask: fakeStop(os, new Map([['btask0005', 200]]), asked) });
+  assert.deepEqual(asked, [], 'a changed start-time = another process: nothing asked');
+  const os2 = world();
+  os2.taskIds.set(200, 'btask0006');
+  os2.unreadable.add(200);
+  const asked2: string[] = [];
+  await killToolTrees(CLI, 90, os2.deps(), { stopTask: fakeStop(os2, new Map([['btask0006', 200]]), asked2) });
+  assert.deepEqual(asked2, [], 'fail closed');
+});
+
+test('#282: a stop the CLI ACCEPTED but that left the process alive is signalled as before and reported ok:false (accepted ≠ ended)', async () => {
+  const os = world();
+  os.taskIds.set(200, 'btask0007');
+  const asked: string[] = [];
+  const stuck = async (id: string) => { asked.push(id); return { ok: true }; }; // accepted, but the process keeps running (the CLI\'s own kill is slow)
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: stuck, stopTaskWaitMs: 100 });
+  assert.deepEqual(asked, ['btask0007']);
+  assert.ok(!os.procs.has(200), 'SIGTERM took over');
+  assert.ok(r.killed.find((k) => k.pid === 200)?.signal === 'SIGTERM', 'signalled as before');
+  assert.equal(r.stopTask?.[0].ok, false, '`ok` = the CLI\'s own stop ENDED it: a request the CLI accepted but that left the process alive is NOT claimed (the CLI also answers success for a task it no longer knows)');
+  assert.match(r.stopTask?.[0].note ?? '', /accepted by the CLI but the process was still alive after 100 ms — signalled/);
+});
+
+test('#282: without a stopTask option (or without readTaskId) the old behaviour is byte-for-byte: signals only, no `stopTask` key on the report', async () => {
+  const os = world();
+  os.taskIds.set(200, 'btask0008');
+  const r = await killToolTrees(CLI, 90, os.deps());
+  assert.deepEqual(os.signals.map((x) => `${x.pid}:${x.sig}`), ['201:SIGTERM', '200:SIGTERM']);
+  assert.equal('stopTask' in r, false);
+});
+
+test('#282 REAL: readTaskId reads a process\'s stdout/stderr link — `…/tasks/<id>.output` is a task\'s process, a pipe / a plain file is not', async () => {
+  if (process.platform !== 'linux') return;
+  const dir = fs.mkdtempSync('/tmp/pause-kill-task-');
+  fs.mkdirSync(`${dir}/proj/sess/tasks`, { recursive: true });
+  const out = fs.openSync(`${dir}/proj/sess/tasks/bAbC_123-x.output`, 'a');
+  const plain = fs.openSync(`${dir}/plain.log`, 'a');
+  const task = spawn('sleep', ['7731'], { stdio: ['ignore', out, out] });
+  const filed = spawn('sleep', ['7732'], { stdio: ['ignore', plain, plain] });
+  const piped = spawn('sleep', ['7733'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  fs.writeFileSync(`${dir}/stray.output`, '');
+  const strayFd = fs.openSync(`${dir}/stray.output`, 'a');
+  const stray = spawn('sleep', ['7734'], { stdio: ['ignore', strayFd, strayFd] }); // `.output` but NOT under a tasks/ dir
+  const errOnly = spawn('sleep', ['7735'], { stdio: ['ignore', 'ignore', out] }); // only stderr is the task's file
+  try {
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(real.readTaskId?.(stray.pid!), null, 'an `.output` file outside a tasks/ directory is not a task output');
+    assert.equal(real.readTaskId?.(errOnly.pid!), 'bAbC_123-x', 'stderr counts too');
+    assert.equal(real.readTaskId?.(task.pid!), 'bAbC_123-x');
+    assert.equal(real.readTaskId?.(filed.pid!), null, 'a plain log file is not a task output');
+    assert.equal(real.readTaskId?.(piped.pid!), null, 'a pipe is not a task output');
+    assert.equal(real.readTaskId?.(99999999), null, 'a gone pid is null, never a throw');
+  } finally {
+    for (const c of [task, filed, piped, stray, errOnly]) c.kill('SIGKILL');
+    fs.closeSync(out);
+    fs.closeSync(plain);
+    fs.closeSync(strayFd);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#282: the CLI gets a moment to end the task\'s tree before the signals — a stop accepted whose tree dies a little LATER sends no signal at all', async () => {
+  const os = world();
+  os.taskIds.set(200, 'blate0001');
+  let askedAt = -1;
+  const slow = async (id: string) => {
+    askedAt = os.clock;
+    const root = 200;
+    const dieAt = os.clock + 600; // the CLI's own kill lands 600 ms after it accepted the request
+    const prev = os.onSleep;
+    os.onSleep = () => {
+      prev?.();
+      if (os.clock >= dieAt && os.procs.has(root)) { os.die(201); os.die(root); }
+    };
+    assert.equal(id, 'blate0001');
+    return { ok: true };
+  };
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: slow });
+  assert.ok(askedAt >= 0);
+  assert.deepEqual(os.signals, [], 'no SIGTERM raced the CLI\'s own kill');
+  assert.ok(r.killed.every((k) => k.signal === 'stop_task'));
+});
+
+test('#282: a root that keeps living is asked ONCE across all rounds (not once per round), then killed by signals / reported as a survivor', async () => {
+  const os = world();
+  os.taskIds.set(200, 'bimmortal');
+  os.ignoresTerm.add(200);
+  os.ignoresKill.add(200);
+  const asked: string[] = [];
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: async (id) => { asked.push(id); return { ok: true }; }, stopTaskWaitMs: 50, termGraceMs: 50 });
+  assert.ok(r.rounds >= 2, `more than one round ran (${r.rounds})`);
+  assert.deepEqual(asked, ['bimmortal']);
+  assert.ok(r.survivors.some((x) => x.pid === 200));
+});
+
+test('#282: a stop that FAILED but whose tree went away anyway is still LISTED (the Consigne reads the command from killed[] — it must never be re-run): the failure is in the evidence, the report entry stays ok:false', async () => {
+  const os = world();
+  os.taskIds.set(200, 'bhalf0001');
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: async () => { os.die(201); os.die(200); return { ok: false, note: 'answered an error after the kill' }; } });
+  assert.deepEqual(os.signals, [], 'nothing left to signal');
+  assert.deepEqual(r.killed.map((k) => [k.pid, k.signal, k.via]).sort(), [[200, 'stop_task', 'cli-stop-task'], [201, 'stop_task', 'cli-stop-task']]);
+  assert.match(r.killed[0].evidence, /gone within the wait after control request stop_task\(bhalf0001\) FAILED \(answered an error after the kill\)/);
+  assert.deepEqual(r.stopTask, [{ taskId: 'bhalf0001', pid: 200, cmd: '/usr/bin/zsh -c sleep 600', ok: false, note: 'answered an error after the kill' }]);
+});
+
+test('#282: the wait also covers a FAILED / timed-out request — the CLI\'s own kill may still be in flight: a tree that goes away 600 ms later gets no signal and is listed', async () => {
+  const os = world();
+  os.taskIds.set(200, 'blatefail1');
+  const slowFail = async () => {
+    const dieAt = os.clock + 600;
+    const prev = os.onSleep;
+    os.onSleep = () => { prev?.(); if (os.clock >= dieAt && os.procs.has(200)) { os.die(201); os.die(200); } };
+    return { ok: false, note: 'sdk stop_task timed out after 5000 ms' };
+  };
+  const r = await killToolTrees(CLI, 90, os.deps(), { stopTask: slowFail });
+  assert.deepEqual(os.signals, [], 'no SIGTERM raced the CLI\'s late kill');
+  assert.ok(r.killed.length === 2 && r.killed.every((k) => k.signal === 'stop_task'));
+  assert.equal(r.stopTask?.[0].ok, false);
+});
+
+test('#282: the task id is read AFTER the identity check and the process must STILL be the planned root afterwards — a pid recycled between the two reads is not stopped', async () => {
+  const os = world();
+  const asked: string[] = [];
+  const deps = os.deps();
+  deps.readTaskId = (pid) => {
+    // the race window: the planned root dies and an innocent inherits pid 200 right after verifyAtSignal passed
+    if (pid === 200) os.procs.set(200, mk(200, 100, { startTicks: 7777, comm: 'zsh', argv: ['zsh', '-c', 'innocent'] }));
+    return 'brace00001';
+  };
+  await killToolTrees(CLI, 90, deps, { stopTask: async (id) => { asked.push(id); return { ok: true }; } });
+  assert.deepEqual(asked, [], 'the post-read identity re-read refused it');
+});
+
+test('#282: a root that is no longer a direct child of the CLI by the time of the request is NOT stopped (the signal-time lineage proof runs first — the post-read re-read alone would not see a reparenting)', async () => {
+  const os = world();
+  os.taskIds.set(200, 'breparent1');
+  os.afterTable = () => os.procs.set(200, { ...os.procs.get(200)!, ppid: 1 }); // reparented after the plan, same start-time
+  const asked: string[] = [];
+  await killToolTrees(CLI, 90, os.deps(), { stopTask: async (id) => { asked.push(id); return { ok: true }; } });
+  assert.deepEqual(asked, []);
+});
+
+test('#282: ALL stop requests are in flight at once — a wedged CLI costs ONE timeout, not one per task (8 roots × 5 s would eat the 60 s Pause bar before the first signal)', async () => {
+  const os = world();
+  for (const pid of [400, 410, 420]) { os.add(shellC(pid, 100, `bg ${pid}`)); os.taskIds.set(pid, `bc${pid}`); }
+  os.taskIds.set(200, 'bc200');
+  let inFlight = 0, maxInFlight = 0;
+  const stop = async (_id: string) => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 30)); // a slow CLI: a sequential driver would never see more than 1 in flight
+    inFlight--;
+    return { ok: false, note: 'timed out' };
+  };
+  await killToolTrees(CLI, 90, os.deps(), { stopTask: stop, stopTaskWaitMs: 10 });
+  assert.equal(maxInFlight, 4, `all four requests were made concurrently (saw ${maxInFlight})`);
+});
+
+test('#282: only what was ALIVE when the CLI was asked and gone right after is listed as ended by the CLI — a child that had already exited by itself is not claimed', async () => {
+  const os = world();
+  os.taskIds.set(200, 'blist0001');
+  const deps = os.deps();
+  const readTaskId = deps.readTaskId!;
+  deps.readTaskId = (pid) => { os.procs.delete(201); return readTaskId(pid); }; // the root's child exits on its own between the plan and the request
+  const asked: string[] = [];
+  const r = await killToolTrees(CLI, 90, deps, { stopTask: fakeStop(os, new Map([['blist0001', 200]]), asked) });
+  assert.deepEqual(r.killed.map((k) => [k.pid, k.signal]), [[200, 'stop_task']], 'pid 201 left on its own: it is not listed as ended by the CLI');
 });

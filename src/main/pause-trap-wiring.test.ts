@@ -128,3 +128,40 @@ test('CONTROL: codeOf really strips comments (a needle that only appears in a co
   assert.equal(code.includes('Claude Code\'s interrupt key'), false);
   assert.throws(() => at(code, 'Production wiring of the fleet-Pause host trap'));
 });
+
+test('#282: the host binds deps.stopTask to the member\'s OWN live session (sdkStopTaskForPause, bounded by a timeout, a throw/timeout = ok:false so the signals take over); the SDK call is the CLI\'s `stopTask`, silent, refused on a stopping/absent session', () => {
+  const host = codeOf('src/main/pause-trap-host.ts');
+  assert.ok(host.includes('sdkStopTaskForPause } from \'./agent-sdk\';'), 'imported from agent-sdk');
+  const b = host.slice(at(host, 'stopTask: async (m, taskId) => {'));
+  const body = b.slice(0, b.indexOf('\n    },') + 8);
+  assert.ok(body.includes('await withTimeout(sdkStopTaskForPause(m.wsId, taskId), STOP_TASK_TIMEOUT_MS, \'sdk stop_task\')'), 'the member\'s own wsId + a bounded wait');
+  assert.ok(/catch \(e\) \{\s*return \{ ok: false, note:/.test(body), 'a throw or timeout is a failed stop (ok:false), never an exception out of the kill');
+  const sdk = codeOf('src/main/agent-sdk.ts');
+  const fn = sdk.slice(at(sdk, 'export async function sdkStopTaskForPause('));
+  const fbody = fn.slice(0, fn.indexOf('\n}\n') + 3);
+  assert.ok(fbody.includes('const session = sessions.get(wsId);') && fbody.includes('if (!session || session.stopping)') && fbody.includes('await session.q.stopTask(taskId);'), 'looks up THIS workspace\'s live session and calls the CLI\'s control request');
+  assert.ok(!fbody.includes('emit('), 'silent: no UI notice (unlike sdkStopTask)');
+});
+
+test('#282: the trap hands stopTask to the kill at BOTH call sites (the pause-time trap and the turn observer), bound to the member', () => {
+  const code = codeOf('src/main/pause-trap.ts');
+  const bound = 'stopTask: (taskId: string) => deps.stopTask!(m, taskId)';
+  assert.equal(code.split(bound).length - 1, 2, 'trapMember + onTurnStart');
+  assert.ok(code.includes('const offerStop = !!deps.stopTask && target.keeperPid !== null && TURN_OVER.has(String(activity.interrupt));') && code.includes('...(offerStop ? { ' + bound), 'trapMember: only for a structured member (this attempt\'s proven keeper) whose turn is over (the interrupt took effect)');
+  assert.ok(code.includes('...(deps.stopTask && target.keeperPid !== null && TURN_OVER.has(String(outcome)) ? { ' + bound), 'the observer: only after ITS interrupt took effect');
+  assert.ok(code.includes("const TURN_OVER: ReadonlySet<string> = new Set(['interrupted', 'attached-then-interrupted', 'idle']);"), 'the set of outcomes that mean no turn is running');
+  assert.ok(code.split('deps.killTrees(').length - 1 === 2, 'exactly two kill call sites exist (a third would be unbound)');
+});
+
+test('#282: pause-kill asks the CLI (stopRoots) AFTER the plan and BEFORE the first signal of the round; the roots it asks are identity-verified (verifyAtSignal + a post-read re-read)', () => {
+  const code = codeOf('src/main/pause-kill.ts');
+  const loop = code.slice(at(code, 'for (let round = 1; round <= maxRounds; round++) {'));
+  const plan = at(loop, 'const plan: ToolPlan = planNow();');
+  const stop = at(loop, 'await stopRoots(plan);');
+  const sig = at(loop, "deps.signal(m.pid, 'SIGTERM')");
+  assert.ok(plan < stop && stop < sig, 'plan → stopRoots → SIGTERM');
+  const fn = code.slice(at(code, 'const stopRoots = async (plan: ToolPlan): Promise<void> => {'));
+  const body = fn.slice(0, fn.indexOf('\n  };\n') + 6);
+  assert.ok(body.indexOf('verifyAtSignal(') !== -1 && body.indexOf('verifyAtSignal(') < body.indexOf('deps.readTaskId(m.pid)') && body.indexOf('deps.readTaskId(m.pid)') < body.indexOf('const again = deps.read(m.pid);') && body.indexOf('const again = deps.read(m.pid);') < body.indexOf('opts.stopTask!(b.taskId)'), 'identity check → task id → identity re-read → request');
+  assert.ok(body.includes('if (!paused()) break;') && body.includes('if (tooNew(m)) continue;'), 'the lift check and the human-window shield apply to this destructive act too');
+});

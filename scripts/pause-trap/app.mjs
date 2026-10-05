@@ -45,6 +45,7 @@ initPlatform({
   kind: 'headless-pause-trap',
   broadcast: (channel, wsId, ev) => {
     if (channel !== 'agent:event' || !ev) return;
+    if (ev.type === 'task') out({ ev: 'task', ws: wsId, kind: ev.kind, taskId: ev.taskId ?? null, status: ev.status ?? null, liveIds: ev.liveIds ?? null, t: Date.now() }); // #282: the CLI's own task lifecycle (a stop_task answers with kind 'notification' status 'stopped')
     if (['turn-end', 'error', 'session/attach', 'session/init'].includes(ev.type) || (ev.type === 'text-delta' && !app.sawText.has(wsId))) {
       if (ev.type === 'text-delta') app.sawText.add(wsId);
       out({ ev: ev.type, ws: wsId, stopReason: ev.stopReason ?? null, isError: ev.isError ?? null, message: ev.message ?? null, turnInFlight: ev.turnInFlight ?? null, t: Date.now() });
@@ -118,6 +119,7 @@ if (phase === 'first') {
 
 // THE PRODUCTION WIRING (index.ts): host deps + the turn-start observer + detection (WAL watch + sweep + boot drain).
 const deps = host.buildPauseTrapDeps();
+if (cfg.noStopTask) delete deps.stopTask; // #282: the documented FALLBACK (signals only) — keeps the CLI-started-turn OBSERVER arms (rows 29/30) honest: a SIGTERMed bg task makes the CLI start a turn by itself
 activity.setTurnStartObserver(host.makeTurnStartObserver(deps));
 if (!cfg.noTrap) trap.startPauseTrap(deps);
 // NO rig-side sweep: detection is ONLY the production path (startPauseTrap: boot drain + WAL dir watch + timer) — a second trigger here defeated the no-trap mutant
@@ -173,6 +175,11 @@ for await (const line of rl) {
     } else if (c.cmd === 'interrupt') {
       await sdk.sdkInterrupt(c.ws); // the plain human Stop button (no trap)
       out({ reply: 'interrupt', ws: c.ws });
+    } else if (c.cmd === 'bgtasks') {
+      // #282 probe: the background tasks the app-side session tracks for this member (ids come from the CLI's task_started / background_tasks_changed)
+      out({ reply: 'bgtasks', ws: c.ws, tasks: sdk.sdkPauseActivity(c.ws)?.bgTasks ?? null });
+    } else if (c.cmd === 'stop-task') {
+      out({ reply: 'stop-task', ws: c.ws, taskId: c.taskId, ok: await sdk.sdkStopTask(c.ws, c.taskId) });
     } else if (c.cmd === 'state') {
       const ws = store.getWorkspace(c.ws);
       out({ reply: 'state', ws: c.ws, status: ws?.status ?? null, hasSession: sdk.sdkHasSession(c.ws) });

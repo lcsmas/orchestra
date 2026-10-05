@@ -8,7 +8,7 @@ import { nearestOrchestratorId } from './wave-run-id';
 import { getBus } from './bus';
 import { pausedCarrierForWorkspace } from './bus-pause';
 import { setLiveTreeSource } from './pause-reprise';
-import { sdkAttachIfDetached, sdkHumanTurnInFlight, sdkInterruptForPause, sdkPauseActivity } from './agent-sdk';
+import { sdkAttachIfDetached, sdkHumanTurnInFlight, sdkInterruptForPause, sdkPauseActivity, sdkStopTaskForPause } from './agent-sdk';
 import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-client';
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
@@ -26,6 +26,8 @@ import type { Workspace } from '../shared/types';
 const PTY_INTERRUPT = '\x1b';
 const SETTLE_MS = 400;
 const INTERRUPT_TIMEOUT_MS = 10_000;
+/** One `stop_task` control request (#282): a hung CLI must not stall the trap — a timeout falls back to the signal kill. */
+const STOP_TASK_TIMEOUT_MS = 5_000;
 
 /** The live `parentId` chain, self first (bounded by a seen-set; a dangling parent ends it). */
 function liveChain(ws: Workspace): string[] {
@@ -172,6 +174,13 @@ export function buildPauseTrapDeps(): TrapDeps {
     humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),
     snapshot: snapshotWorktree,
     killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),
+    stopTask: async (m, taskId) => {
+      try {
+        return await withTimeout(sdkStopTaskForPause(m.wsId, taskId), STOP_TASK_TIMEOUT_MS, 'sdk stop_task');
+      } catch (e) {
+        return { ok: false, note: e instanceof Error ? e.message : String(e) };
+      }
+    },
     storeReady: () => store.loadedFromDisk,
   };
 }
