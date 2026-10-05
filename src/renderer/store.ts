@@ -25,6 +25,8 @@ import type {
 } from '../shared/types';
 import type { InboxBlock } from '../shared/inbox-blocks';
 import type { HumanGateView } from '../shared/human-gates';
+import type { PauseMode } from '../shared/pause-lifecycle';
+import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -136,6 +138,10 @@ interface State {
    *  surface B (the sidebar "Asks" section) aggregates the whole fleet, and
    *  surface A filters it by `askedBy === workspaceId`. */
   humanGates: HumanGateView[];
+  /** Fleet Pause state (#257): carriers + rosters + Bilan, per-orchestrator controls, per-workspace badges. The bus is the source of truth; this is a cache replaced
+   *  WHOLESALE on every `pause:update` push and by every write's own reply (a snapshot cannot drift). null = not loaded yet; `available:false` = the bus is down (say so — never
+   *  paint it as "nothing is paused"). */
+  pauseOverview: PauseUiOverview | null;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -214,6 +220,10 @@ interface State {
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources' | 'bus') => void;
   setHelpOpen: (open: boolean) => void;
+  /** Fleet Pause writes (#257): the shipped writers run as the workspace row; the typed outcome comes back untouched and the store takes the reply's fresh overview. */
+  pausePause: (wsId: string, mode: PauseMode) => Promise<PauseUiWriteResult>;
+  pauseResume: (wsId: string) => Promise<PauseUiWriteResult>;
+  pauseRelease: (wsId: string, targets: string[] | 'all', carrierRunId?: string | null) => Promise<PauseUiReleaseResult>;
   load: () => Promise<void>;
   refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
@@ -270,6 +280,7 @@ export const useStore = create<State>((set, get) => ({
   parkedInbox: {},
   parkedInboxGen: {},
   humanGates: [],
+  pauseOverview: null,
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -370,6 +381,22 @@ export const useStore = create<State>((set, get) => ({
   setPage: (p) =>
     set(p !== 'workspaces' ? { page: p, insightsOpen: false, helpOpen: false } : { page: p }),
 
+  pausePause: async (wsId, mode) => {
+    const res = await window.orchestra.pausePause(wsId, mode);
+    set({ pauseOverview: res.overview });
+    return res;
+  },
+  pauseResume: async (wsId) => {
+    const res = await window.orchestra.pauseResume(wsId);
+    set({ pauseOverview: res.overview });
+    return res;
+  },
+  pauseRelease: async (wsId, targets, carrierRunId) => {
+    const res = await window.orchestra.pauseRelease(wsId, targets, carrierRunId);
+    set({ pauseOverview: res.overview });
+    return res;
+  },
+
   load: async () => {
     // Each of these falls back to an EMPTY value on failure, so a broken backend
     // call renders as a legitimately-empty UI section (no accounts, no tickets,
@@ -381,7 +408,7 @@ export const useStore = create<State>((set, get) => ({
         slog.warn(`startup load: ${what} failed — rendering as empty`, e);
         return fallback;
       });
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -397,6 +424,8 @@ export const useStore = create<State>((set, get) => ({
         // Open human gates for the initial paint (#161); live updates then ride
         // the human-gates:update push. Empty on a down bus.
         orEmpty('busHumanGates', window.orchestra.busHumanGates(), { gates: [] }),
+        // Fleet Pause overview for the initial paint (#257); live updates then ride `pause:update`.
+        orEmpty('pauseOverview', window.orchestra.pauseOverview(), null as PauseUiOverview | null),
       ]);
     slog.info(
       `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
@@ -421,6 +450,7 @@ export const useStore = create<State>((set, get) => ({
       globalUsage: globalUsage ?? null,
       selfTuneRuns,
       humanGates: humanGatesRes?.gates ?? [],
+      pauseOverview,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -996,6 +1026,11 @@ window.orchestra.onInboxUpdate((wsId, count) => {
 // fresh render and one after a restart.
 window.orchestra.onHumanGatesUpdate((gates) => {
   useStore.setState({ humanGates: gates });
+});
+// The fleet Pause overview changed (#257) — a pause / confirm / escalation / Bilan row / release written by the CLI, the host sweep or this UI. Main rebuilds the whole overview
+// from the bus and pushes it; replace wholesale (never merge): the sidebar badges, the controls and the Bus page all read this one slice.
+window.orchestra.onPauseOverviewUpdate((overview) => {
+  useStore.setState({ pauseOverview: overview });
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.
