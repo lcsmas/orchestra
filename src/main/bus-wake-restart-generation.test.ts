@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkHomeScratch } from '../shared/home-scratch.ts';
 import {
   openBus,
   send,
@@ -46,8 +46,7 @@ import { isWakeOrder } from '../shared/bus-wake.ts';
 // $HOME (btrfs, contract rule 4) — the live bus is never touched.
 
 function tmpDb(t: { after: (fn: () => void) => void }): BusDb {
-  const base = process.env.HOME || os.homedir();
-  const dir = fs.mkdtempSync(path.join(base, '.orchestra-wake-restart-gen-test-'));
+  const dir = mkHomeScratch('wake-restart-gen-test-');
   const db = openBus(path.join(dir, 'bus.sqlite'));
   t.after(() => {
     try {

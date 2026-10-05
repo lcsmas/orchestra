@@ -18,8 +18,8 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkHomeScratch } from '../shared/home-scratch.ts';
 import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
 import { getRun, refreezeRun, startRun, busSwitch, type BusRunRow } from './bus-runs.ts';
@@ -121,7 +121,7 @@ interface World {
 }
 
 function tmpHome(t: After, tag: string): string {
-  const dir = fs.mkdtempSync(path.join(os.homedir(), `.orchestra-a5-${tag}-`));
+  const dir = mkHomeScratch(`a5-${tag}-`);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -846,7 +846,7 @@ test('#221 F3 runAnchorProbe answers FALSE for no bus, a throwing bus getter and
     'throwing read',
   );
   // Positive control: a real row reads TRUE, an absent one FALSE.
-  const dir = fs.mkdtempSync(path.join(os.homedir(), '.orchestra-a5-probe-'));
+  const dir = mkHomeScratch('a5-probe-');
   const db = openBus(path.join(dir, 'bus.sqlite'));
   try {
     startRun(db, { id: 'anchored', kind: 'mission', coordinator: 'anchored' }, ALL_ON);

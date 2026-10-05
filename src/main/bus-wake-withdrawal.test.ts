@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkHomeScratch } from '../shared/home-scratch.ts';
 import { openBus, send, type BusDb } from './bus.ts';
 import {
   sweepBusWake,
@@ -62,8 +62,7 @@ import { isWakeOrder, wakeOrderRuns } from '../shared/bus-wake.ts';
 // independent — the $HOME pin is convention-parity with the sibling bus tests.
 
 function tmpDb(t: { after: (fn: () => void) => void }): BusDb {
-  const base = process.env.HOME || os.homedir();
-  const dir = fs.mkdtempSync(path.join(base, '.orchestra-wake-withdrawal-test-'));
+  const dir = mkHomeScratch('wake-withdrawal-test-');
   const db = openBus(path.join(dir, 'bus.sqlite'));
   t.after(() => {
     try {

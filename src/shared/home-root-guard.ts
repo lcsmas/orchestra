@@ -13,7 +13,7 @@ export const AGENT_TMP_REL = '.orchestra/agent-tmp';
 
 export const HOME_ROOT_GUARD_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Denies a tool call that would create a new entry
-# directly in $HOME. Existing entries and dot-entries stay allowed. Fail-open.
+# directly in $HOME, dot-entries included. Existing entries stay allowed. Fail-open.
 export LC_ALL=C
 home="\${HOME:-}"
 case "$home" in ''|/) exit 0 ;; esac
@@ -21,13 +21,14 @@ command -v grep >/dev/null 2>&1 || exit 0
 input="$(cat 2>/dev/null || true)"
 [ -n "$input" ] || exit 0
 if printf '%s' "$input" | grep -qE '"tool_name": *"Bash"'; then
-  text="$input"
+  # Hook metadata (transcript/cwd) is not the call: drop it before scanning.
+  text="$(printf '%s' "$input" | sed -E 's/"(transcript_path|cwd)": *"[^"]*"//g')"
 else
   text="$(printf '%s' "$input" | grep -oE '"(file_path|notebook_path)": *"[^"]*"')"
 fi
 [ -n "$text" ] || exit 0
 hre="$(printf '%s' "$home" | sed 's/[][\\.*^$+?(){}|]/\\\\&/g')"
-re='(^|[^A-Za-z0-9_.-])(~|\\$HOME|\\$\\{HOME\\}|'"$hre"')/[A-Za-z0-9_+@%,=-][A-Za-z0-9_.+@%,=-]*'
+re='(^|[^A-Za-z0-9_.-])(~|\\$HOME|\\$\\{HOME\\}|'"$hre"')/[A-Za-z0-9_.+@%,=-][A-Za-z0-9_.+@%,=-]*'
 cands="$(printf '%s' "$text" | sed 's/\\\\[nrt]/ /g' | grep -oE "$re" | sed 's#.*/##' | sort -u)"
 bad=""
 for name in $cands; do

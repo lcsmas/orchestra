@@ -73,7 +73,7 @@ if (!ARMS[ARM]) {
 }
 
 // Short per-arm dir: a unix socket path must stay < ~100 bytes or keeperSocketPath hashes it into /tmp.
-const base = path.join(process.env.A2_HOME ?? path.join(REAL_HOME, '.a2-rig', 'arms'), createHash('sha1').update(ARM).digest('hex').slice(0, 8));
+const base = path.join(process.env.A2_HOME ?? path.join(REAL_HOME, '.cache', 'a2-rig', 'arms'), createHash('sha1').update(ARM).digest('hex').slice(0, 8));
 if (!base.startsWith(REAL_HOME + path.sep)) throw new Error(`refusing rig dir outside $HOME: ${base}`);
 fs.rmSync(base, { recursive: true, force: true });
 const home = path.join(base, 'home');

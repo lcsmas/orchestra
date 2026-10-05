@@ -17,8 +17,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkHomeScratch } from '../shared/home-scratch.ts';
 import {
   noteToolStart,
   noteToolEnd,
@@ -53,7 +53,7 @@ function runHook(
   runs: Array<{ event: string; payload: object }>,
   timeoutMs = 10_000,
 ): Array<{ seq: number; event: string; tool: string; toolUseId: string }> {
-  const dir = fs.mkdtempSync(path.join(os.homedir(), '.t6b-hook-test-'));
+  const dir = mkHomeScratch('t6b-hook-test-');
   try {
     const script = path.join(dir, 'orchestra-hook.sh');
     fs.writeFileSync(script, realHookScript(), { mode: 0o755 });

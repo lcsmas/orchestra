@@ -33,7 +33,9 @@ const { loadDatabaseCtor } = await import(path.join(repoRoot, 'src/main/bus-bind
 const Database = loadDatabaseCtor();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const home = fs.mkdtempSync(path.join(os.homedir(), '.orchestra-diag149-'));
+const scratchBase = path.join(os.homedir(), '.cache', 'orchestra-test'); // same btrfs as $HOME, not its top
+fs.mkdirSync(scratchBase, { recursive: true });
+const home = fs.mkdtempSync(path.join(scratchBase, 'diag149-'));
 const busFile = path.join(home, 'bus.sqlite');
 const walFile = `${busFile}-wal`;
 const walBase = path.basename(walFile);

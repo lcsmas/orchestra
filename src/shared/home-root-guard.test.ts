@@ -43,6 +43,9 @@ const BLOCK: Array<[string, unknown]> = [
   ['Write at home root', file('Write', { file_path: `${home}/w1-gl2.md`, content: 'x' })],
   ['Edit under a new home dir', file('Edit', { file_path: `${home}/b4-rig/a.ts`, old_string: 'a', new_string: 'b' })],
   ['NotebookEdit', file('NotebookEdit', { notebook_path: `${home}/nb.ipynb`, new_source: 'x' })],
+  ['new dot dir', bash('mkdir -p ~/.a2-rig/arms')],
+  ['new dot file via ORCHESTRA_HOME', bash('ORCHESTRA_HOME=$HOME/.orchestra-wake149-rig node x.mjs')],
+  ['Write a new dot file', file('Write', { file_path: `${home}/.w6b`, content: 'x' })],
   ['spaced JSON', `{"tool_name": "Bash", "tool_input": {"command": "mkdir ~/spaced"}}`],
 ];
 for (const [name, payload] of BLOCK) {
@@ -58,7 +61,8 @@ const ALLOW: Array<[string, unknown]> = [
   ['existing dir', bash('mkdir -p ~/dev/x && echo > $HOME/dev/y')],
   ['existing file', bash(`cat ${home}/notes.md`)],
   ['dangling symlink (exists as a link)', bash('ls ~/dangling')],
-  ['dot entry, even new', bash('mkdir -p ~/.orchestra/agent-tmp/ws-1/rig ~/.cache/zz')],
+  ['existing dot entry', bash('mkdir -p ~/.orchestra/agent-tmp/ws-1/rig && ls $HOME/.orchestra')],
+  ['bare ~/. and ~/..', bash('ls ~/. ~/.. && echo $HOME/...')],
   ['outside home', bash('mkdir -p /var/tmp/x && ls /home/someone-else/x')],
   ['home-prefix lookalike', bash(`mkdir ${home}other/x`)],
   ['trailing period after an existing name', bash('echo "see ~/dev."')],

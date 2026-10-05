@@ -84,7 +84,7 @@ function runArm(arm: string): Promise<Verdict | { ok: false; error: string }> {
   });
 }
 
-const RIG_DIR = path.join(os.homedir(), '.a2-rig', `u${process.pid}`);
+const RIG_DIR = path.join(os.homedir(), '.cache', 'a2-rig', `u${process.pid}`);
 
 /** Live (non-zombie) pids whose argv mentions this file's rig dir — keepers, `timeout` wrappers, fake CLIs. */
 function rigPids(): number[] {

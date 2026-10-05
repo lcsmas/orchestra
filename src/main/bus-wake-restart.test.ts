@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkHomeScratch } from '../shared/home-scratch.ts';
 import { openBus, send, check, ack, type BusDb } from './bus.ts';
 import { log } from './logger.ts';
 import {
@@ -48,8 +48,7 @@ function tmpDb(t: { after: (fn: () => void) => void }): BusDb {
   // $HOME (btrfs), NOT os.tmpdir() (tmpfs): a bus rig must run on the same FS as
   // prod (contract rule 4). This arm does not depend on WAL inode behaviour, but
   // the whole file follows the rule so no arm is silently substrate-dependent.
-  const base = process.env.HOME || os.homedir();
-  const dir = fs.mkdtempSync(path.join(base, '.orchestra-wake-restart-test-'));
+  const dir = mkHomeScratch('wake-restart-test-');
   const db = openBus(path.join(dir, 'bus.sqlite'));
   t.after(() => {
     try {

@@ -121,12 +121,15 @@ Scripts and the Claude Code events they fire on:
 - **`home-root-guard.sh`** — PreToolUse, matcher
   `Bash|Edit|MultiEdit|Write|NotebookEdit`, every workspace. Script lives in
   `src/shared/home-root-guard.ts` (its test runs that same string). **Denies
-  (exit 2)** a call that names a NON-existent, non-dot entry directly under
-  `$HOME` (`~/x`, `$HOME/x`, `${HOME}/x`, or the literal home path). Bash calls
-  scan the whole payload, while file tools scan only `file_path`/`notebook_path`.
+  (exit 2)** a call that names a NON-existent entry (dot-entries included)
+  directly under `$HOME` (`~/x`, `$HOME/x`, `${HOME}/x`, or the literal home
+  path). Bash calls scan the payload minus `transcript_path`/`cwd`, while file
+  tools scan only `file_path`/`notebook_path`.
   The deny message points the agent at `~/.orchestra/agent-tmp/<wsid>/`.
   Existing entries pass. Relative paths (`cd ~ && mkdir x`) slip through, and
-  so does a script that writes there by itself. The command has no `|| true`
+  so does a script that writes there by itself — so tests/rigs needing
+  `$HOME`'s btrfs use `mkHomeScratch()` (`src/shared/home-scratch.ts`,
+  `~/.cache/orchestra-test/`). The command has no `|| true`
   (see the caveat above).
 - **`fieldguide-instruction.sh`** — SessionStart ONLY. Injects the parent
   orchestrator's **swarm field guide** (`<orchestra-home>/fieldguide/

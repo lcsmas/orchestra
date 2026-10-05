@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mkHomeScratch } from '../shared/home-scratch.ts';
 import { execSync } from 'node:child_process';
 import { openBus, open as openBusConn, send, type BusDb } from './bus.ts';
 import {
@@ -62,7 +63,7 @@ const HOME_FS = (() => {
 })();
 
 function realBus(t: { after: (fn: () => void) => void }): { db: BusDb; busFile: string; dir: string } {
-  const dir = fs.mkdtempSync(path.join(os.homedir(), '.orchestra-wake149-test-'));
+  const dir = mkHomeScratch('wake149-test-');
   const busFile = path.join(dir, 'bus.sqlite');
   const db = openBus(busFile);
   t.after(() => {
