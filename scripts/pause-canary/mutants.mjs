@@ -24,9 +24,11 @@ export const MUTANTS = {
   },
   // hold instrument (Pause dure not held): the killer's signal sender delivers signal 0 (an existence probe) instead of SIGTERM/SIGKILL
   'skip-kill': {
-    desc: 'the kill ladder signals with 0 (no process is ever killed)',
+    desc: 'the kill ladder signals with 0 AND the CLI stop_task (#282) is claimed accepted without being asked: no process is ever killed',
     exercise: 'dure', redden: ['tools_dead'],
-    edits: [rx(/(readTable:[\s\S]{1,300}?\},)signal:\((\w+),(\w+)\)=>\{try\{return process\.kill\(\2,\3\),!0\}catch\{return!1\}\}/, (m) => `${m[1]}signal:(${m[2]},${m[3]})=>{try{return process.kill(${m[2]},${'0'.padEnd(m[3].length)}),!0}catch{return!1}}`)],   // the pause-kill deps (the resource reaper has its own \`signal\`, no readTable)
+    edits: [rx(/(readTable:[\s\S]{1,300}?\},)signal:\((\w+),(\w+)\)=>\{try\{return process\.kill\(\2,\3\),!0\}catch\{return!1\}\}/, (m) => `${m[1]}signal:(${m[2]},${m[3]})=>{try{return process.kill(${m[2]},${'0'.padEnd(m[3].length)}),!0}catch{return!1}}`),
+      // #282: the host's pause stop_task (`return await <sdk>.q.stopTask(<id>),{ok:!0}`) is no longer asked: it still reports ok, the process stays alive, the signal fallback above is dead too
+      rx(/return await (\w+)\.q\.stopTask\((\w+)\),\{ok:!0\}/, (m) => `return await ${'0'.padEnd(m[1].length + 12 + m[2].length + 1)},{ok:!0}`)],   // the pause-kill deps (the resource reaper has its own \`signal\`, no readTable)
   },
   // chrono instrument: the host notices the pause 90 s late (watch debounce 250 ms → 90 s, sweep interval 15 s → 10 days)
   'slow-detect': {

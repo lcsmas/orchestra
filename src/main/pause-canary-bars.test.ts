@@ -116,7 +116,7 @@ test('forbiddenRequests: a tool-carrying request inside a window is flagged; out
 // fragments of the REAL minified bundle (identifiers change per build; the second test renames them to prove the anchors are name-agnostic and the edits stay same-length)
 const FRAGMENTS: Record<string, string> = {
   'skip-snapshot': 'Oe(e,["add","-A","--ignore-errors","--",...m],u,void 0,[1],c)};let g;try{g=await Oe(e,["add","-A","--ignore-errors",`--pathspec-from-file=${h}`,"--pathspec-file-nul"],u)}',
-  'skip-kill': 'readTable:()=>{if(!e)return[];const t=[];let n;try{n=S.readdirSync("/proc")}catch{return t}},signal:(t,n)=>{try{return process.kill(t,n),!0}catch{return!1}}}}function y_(e,t){}',
+  'skip-kill': 'readTable:()=>{if(!e)return[];const t=[];let n;try{n=S.readdirSync("/proc")}catch{return t}},signal:(t,n)=>{try{return process.kill(t,n),!0}catch{return!1}}}}function y_(e,t){} async function fU(e,t){const n=V.get(e);if(!n||n.stopping)return{ok:!1,note:"x"};try{return await n.q.stopTask(t),{ok:!0}}catch(r){return{ok:!1}}}',
   'slow-detect': 'Ec=!1;const vc=15e3,sx=250;let Zc=!1;async function Xo(e){}',
   'gate-ignores-pause': 'for(const c of s){const u=Ki(e,c);if(u&&u.pausedAt!==null&&u.switchOn){if(!(r!=null&&r.includeReleased)&&u.resumeStartedAt!==null)continue;return rd(u,u.pausedAt)}}',
   'no-confirm-reprise': 'e.prepare("UPDATE pause_members SET reprise_confirmed_at = ? WHERE run_id = ? AND paused_at = ? AND ws_id = ?").run(n,i.run_id)',
@@ -147,7 +147,7 @@ test('the regex anchors are name-agnostic: the same mutants still apply when the
     assert.equal(r.out.length, frag.length, `${name} renamed: same length`);
   }
   const reaper = 'readProcStat:e=>{},readCmdline:e=>{},signal:(e,t)=>{try{return process.kill(e,t),!0}catch{return!1}},sleep:e=>new Promise(t=>setTimeout(t,e))';
-  assert.deepEqual(applyEdits(reaper, MUTANTS['skip-kill'].edits).hits, [0], 'the resource reaper has its own `signal` and must NOT be patched (readTable anchors the pause-kill deps)');
+  assert.deepEqual(applyEdits(reaper, MUTANTS['skip-kill'].edits).hits, [0, 0], 'the resource reaper has its own `signal` and must NOT be patched (readTable anchors the pause-kill deps)');
 });
 
 test('the dummy fleet always carries a blocked member and a quota member from 3 workers up, and 10 workers = 5 obey + bg + blocked + 3 quota', () => {
