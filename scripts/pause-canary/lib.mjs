@@ -17,7 +17,8 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const say = (...a) => console.log(...a);
 /** the passwd home — `$HOME` inside the contained rig is the FAKE home */
 export const REAL_HOME = os.userInfo().homedir;
-const LIVE = ['.orchestra', '.claude', '.claude-mc', '.claude-perso', '.config'].map((d) => path.join(REAL_HOME, d));
+const realpathOr = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const LIVE = ['.orchestra', '.claude', '.claude-mc', '.claude-perso', '.config'].flatMap((d) => { const a = path.join(REAL_HOME, d); const b = realpathOr(a); return b === a ? [a] : [a, b]; });   // the symlink AND what it points to (a dotfiles-managed ~/.claude)
 /** any top-level dir of the real home that LOOKS like a live agent/config home (`.claude-work`, `.orchestra-dev`, `.config`…) is off limits too */
 const liveLike = (r) => { const rel = path.relative(REAL_HOME, r); return !rel.startsWith('..') && !path.isAbsolute(rel) && /^\.(claude|orchestra|config)/.test(rel.split(path.sep)[0] ?? ''); };
 const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
@@ -121,12 +122,15 @@ export async function startApi({ decide, usageHeaders = null }) {
       let lastAsst = -1;
       for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'assistant') { lastAsst = i; break; }
       const order = tools > 0 && messages.slice(lastAsst + 1).some((m) => ORDER_RE.test(textOf(m.content)));
+      // the request answers the harness's own human `SCN:limit` prompt AND nothing else: a 429 leaves no assistant reply, so a LATER wake still carries that prompt in its tail — it is told apart by its own text
+      const tailText = messages.slice(lastAsst + 1).map((m) => textOf(m.content)).join('\n');
+      const limitPrompt = tools > 0 && /SCN:limit/.test(tailText) && !/lot pending|task-notification|PAUSE DOUCE|consigne de reprise/i.test(tailText);
       const cred = String(req.headers['x-api-key'] ?? req.headers.authorization ?? '').replace(/^Bearer /, '');
       const sysText = textOf(b.system);
       const role = (ROLE_RE.exec(JSON.stringify(messages.slice(0, 4)))?.[1]) ?? (ROLE_RE.exec(JSON.stringify(messages))?.[1]) ?? (/\/wt-([a-z0-9]+)\b/.exec(sysText)?.[1]) ?? null;
       let step = { text: 'ok' };
       if (tools > 0) { try { step = (await decide({ messages, lastText, tools, seq: n + 1, sys: sysText, role, cred, order })) ?? step; } catch (e) { step = { text: `decide-error ${e}` }; } }
-      const rec = { seq: ++n, t, model: b.model, tools, stream: b.stream === true, role, cred, order, tool: step.tool?.name ?? null, http: step.http?.status ?? 200, probe: tools === 0 && b.max_tokens === 1, last: lastText.slice(0, 200) };
+      const rec = { seq: ++n, t, model: b.model, tools, stream: b.stream === true, role, cred, order, limitPrompt, tool: step.tool?.name ?? null, http: step.http?.status ?? 200, probe: tools === 0 && b.max_tokens === 1, last: lastText.slice(0, 200) };
       requests.push(rec);
       if (step.http) { res.writeHead(step.http.status, { 'content-type': 'application/json', ...(step.http.headers ?? {}) }); res.end(JSON.stringify(step.http.body ?? {})); return; }
       const id = `msg_fake_${n}`;

@@ -55,6 +55,7 @@
     "test:pause-reprise": "node scripts/pause-trap/reprise-run.mjs",
     "canary:pause": "node scripts/pause-canary/run.mjs",
     "canary:pause-proof": "node scripts/pause-canary/run.mjs --proof",
+    "canary:pause-bars-mutants": "node scripts/pause-canary/mutate-bars.mjs",
     "smoke:session-budget-real": "node scripts/session-budget/smoke-real.mjs",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",

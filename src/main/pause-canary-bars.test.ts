@@ -68,6 +68,9 @@ test('Pause douce bars: the 3-min deadline is a CONSTANT of the harness (an app 
   assert.deepEqual(red(evaluateCycle(soft({ escalatedAtS: 185.5, tAllPausedS: 190 }))), ['bar:soft_escalated_by_deadline']);
   assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 600, escalatedAtS: 600.4, tAllPausedS: 603 }))), ['bar:soft_deadline_is_3_min', 'bar:soft_escalated_by_deadline'], 'a regressed deadline: both the deadline and the escalation time are RED');
   assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 600 }))), ['bar:soft_deadline_is_3_min']);
+  assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 181 }))), [], 'the app\'s deadline tolerance is ±1 s');
+  assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 181.5 }))), ['bar:soft_deadline_is_3_min']);
+  assert.deepEqual(red(evaluateCycle(soft({ deadlineS: 178.9 }))), ['bar:soft_deadline_is_3_min']);
   assert.deepEqual(red(evaluateCycle(soft({ deadlineS: null }))), ['bar:soft_deadline_is_3_min']);
   assert.deepEqual(red(evaluateCycle(soft({ escalatedAtS: null, tAllPausedS: null }))), ['bar:soft_escalated_by_deadline', 'bar:soft_all_paused_lt_deadline_plus_hard_bar']);
   assert.deepEqual(red(evaluateCycle(soft({ tAllPausedS: 180.4 + 60 }))), ['bar:soft_all_paused_lt_deadline_plus_hard_bar']);
@@ -100,6 +103,8 @@ test('forbiddenRequests: a tool-carrying request inside a window is flagged; out
   const before = forbiddenRequests(reqs, [{ role: 'w2', from: 0, until: 450 }, { role: 'w1', from: 0, until: 50 }]);
   assert.deepEqual(before.map((h: { t: number }) => h.t), [200], 'w2 asked before its release (450); w1 was released at 50 so its requests are legit');
   assert.equal(forbiddenRequests(reqs, [{ role: 'w1', from: 120, until: null }]).length, 1, 'an open window (never released) flags every later request');
+  const lp = forbiddenRequests([{ t: 130, role: 'w3', tools: 1, limitPrompt: true }, { t: 140, role: 'w3', tools: 1 }], [{ role: '*', from: 120, until: 300 }]);
+  assert.deepEqual(lp.map((h: { limitPrompt: boolean }) => h.limitPrompt), [true, false], 'the limit-prompt flag is carried so the drive can exempt BY CONTENT, never by a time window');
   const edge = [{ t: 120, role: 'w1', tools: 1 }, { t: 300, role: 'w1', tools: 1 }];
   assert.deepEqual(forbiddenRequests(edge, [{ role: '*', from: 120, until: 300 }]).map((h: { t: number }) => h.t), [120], 'from is inclusive, until is exclusive (a worker released AT t may start AT t)');
 });

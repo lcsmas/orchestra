@@ -181,10 +181,10 @@ async function runExercise(name) {
       const missing = spec.workers.filter((w) => !byWs[w.id]?.snapshot_ref || byWs[w.id]?.killed_json === null).map((w) => nm[w.id]);
       check(cyc, 'bilan_row_per_worker', missing.length === 0, `${spec.workers.length - missing.length}/${spec.workers.length} workers have a Bilan row with a snapshot ref and a stamped kill list${missing.length ? ` — missing ${missing.join(', ')}` : ''}`);
     }
-    /** a quota member hits the simulated usage limit while the run is PAUSED (a HUMAN prompt is allowed in a Pause): the Pause must stay as it was (no auto Pause on top of a manual one). Returns { qw, from, until } (the exempt window of ITS OWN request) or null. */
+    /** a quota member hits the simulated usage limit while the run is PAUSED (a HUMAN prompt is allowed in a Pause): the Pause must stay as it was (no auto Pause on top of a manual one). Returns { qw } (only requests answering the limit prompt are exempted, by content) or null. */
     async function limitDuringPause(cyc, c, carrierRun, pausedAt, wantMode) {
       const qw = quotaWorkers[c - 1];
-      if (!qw) { cyc.limitMember = `none (only ${quotaWorkers.length} quota member(s) for ${CYCLES} cycles)`; say(`   limit member: ${cyc.limitMember}`); return null; }
+      if (!qw) { cyc.limitMember = 'none'; check(cyc, 'limit_member_available', false, `only ${quotaWorkers.length} quota member(s) for cycle ${c}: the drill cannot put a member on a usage limit this cycle (use --members ≥ 6 for 3 cycles)`); return null; }
       limited.add(qw.k);
       const from = Date.now();
       await sendTo(qw.id, 'SCN:limit go');   // the real CLI turns the fake unified 429 into a real rate_limit_event
@@ -192,7 +192,7 @@ async function runExercise(name) {
       const rN = await runRow(carrierRun);
       cyc.limitMember = qw.k;
       check(cyc, 'limit_during_pause_stays_manual', !!lim && !!rN && rN.paused_at === pausedAt && rN.pause_auto === null && (wantMode === null || rN.pause_mode === wantMode), `${qw.k}.lastStopReason=${storeWs(qw.id)?.lastStopReason}; run paused_at same=${rN?.paused_at === pausedAt} pause_mode=${rN?.pause_mode} pause_auto=${rN?.pause_auto}`);
-      return { qw, from, until: Date.now() + 15000 };
+      return { qw, from };
     }
     /** wake attempts to EVERY worker + a polling window: any request / process / session change after the trap and before the Reprise is a member that restarted ON ITS OWN */
     async function holdWindow(cyc, c, tTrapDone, idPre, carrierRun) {
@@ -259,11 +259,11 @@ async function runExercise(name) {
       // self-restarts: (a) any turn during the hold window; (b) a worker's turn BEFORE its own release; (c) tool processes back / session replaced during the hold.
       // The ONE exemption: the limited member's own request that answers the harness's human `SCN:limit` prompt (a human turn is allowed in a Pause) — a 15 s window, that member only.
       const forb = [{ role: '*', from: hold.tTrapDone, until: tR, label: 'hold' }, ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
-      const bad = forbiddenRequests(api.requests, forb).filter((b) => !(exempt && b.role === exempt.qw.k && b.t >= exempt.from && b.t < exempt.until));
+      const bad = forbiddenRequests(api.requests, forb).filter((b) => !(exempt && b.role === exempt.qw.k && b.limitPrompt));   // exempt BY CONTENT: only a request that answers the harness's own `SCN:limit` human prompt (a wake of that member for any other reason still counts)
       // WORK written after the trap is unambiguous evidence of a restart (a request alone can be the documented task-notification blip: killing a BACKGROUND task makes the CLI start ONE turn that the host interrupts)
       const grew = spec.workers.filter((w) => ((readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length) > (cyc.loopAtTrap?.[w.k] ?? Infinity)).map((w) => `${w.k}:+${(readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length - cyc.loopAtTrap[w.k]} loop line(s)`);
       const restarted = new Set([...bad.map((b) => b.role), ...hold.replaced, ...hold.gone, ...hold.procEvents.map((e) => e.split(':')[0]), ...grew.map((g) => g.split(':')[0])]);
-      cyc.selfRestarts = { members: [...restarted].map((kk) => `pc-${kk}`), probes: hold.probes, detail: `requests-in-forbidden-windows=${bad.length} (${bad.map((b) => `${b.role}@${((b.t - hold.tTrapDone) / 1000).toFixed(2)}s after the trap stamp/${b.window}/answered ${b.tool ?? 'text'}`).join(', ') || '-'}); work-written-after-the-trap=${grew.join(',') || 'none'}; tool-procs-back=${hold.procEvents.length}; sessions-replaced=${hold.replaced.concat(hold.gone).join(',') || '-'}; probes ${hold.probeNotes.join(' ')}${exempt ? `; exempt: ${exempt.qw.k}'s own limit-prompt turn` : ''}` };
+      cyc.selfRestarts = { members: [...restarted].map((kk) => `pc-${kk}`), probes: hold.probes, detail: `requests-in-forbidden-windows=${bad.length} (${bad.map((b) => `${b.role}@${((b.t - hold.tTrapDone) / 1000).toFixed(2)}s after the trap stamp/${b.window}/answered ${b.tool ?? 'text'}`).join(', ') || '-'}); work-written-after-the-trap=${grew.join(',') || 'none'}; tool-procs-back=${hold.procEvents.length}; sessions-replaced=${hold.replaced.concat(hold.gone).join(',') || '-'}; probes ${hold.probeNotes.join(' ')}${exempt ? `; exempt: ${exempt.qw.k}'s requests that answer the harness's own limit prompt` : ''}` };
       const idEnd = identities();
       const compared = Object.keys(idPre).filter((kk) => !skipIdentity.includes(kk));
       const replacedEnd = compared.filter((kk) => idEnd[kk] && !sameSession(idEnd[kk], idPre[kk]));
@@ -420,20 +420,22 @@ async function runExercise(name) {
     }
     result = allChecks().every((kk) => kk.ok) && cycles.length === CYCLES ? 'PASS' : 'FAIL';
   } catch (e) {
-    const partial = () => { if (curCyc && !cycles.includes(curCyc) && curCyc.checks.length) { cycles.push(curCyc); emit('PC-CYCLE', { ...curCyc, aborted: true }); } };
+    const partial = (why) => { if (curCyc && !cycles.includes(curCyc) && curCyc.checks.length) { if (!curCyc.checks.some((k) => k.id === 'cycle_aborted' || k.id === 'cycle_incomplete')) check(curCyc, 'cycle_incomplete', false, why); cycles.push(curCyc); emit('PC-CYCLE', { ...curCyc, aborted: true }); } };
     if (e instanceof VoidError) {
       say(`[${name}] VOID(${e.kind}) ${e.message}`);
       if (e.kind === 'blowup') check(curCyc, 'rig_memory_blowup', false, e.message);   // the RIG itself grew: a product-side defect, not a busy host
       // a RED measured before the host dipped is a real result: it must not vanish into a VOID + a clean re-run
       result = allChecks().some((kk) => !kk.ok) ? 'FAIL' : 'VOID';
-      if (result === 'FAIL') partial();
+      if (result === 'FAIL') partial(`cut short by a VOID (${e.message.slice(0, 120)}) after a RED was already measured`);
     } else {
       say(`[${name}] DRIVE-ERROR ${String(e.stack ?? e).slice(0, 900)}`);
       // an aborted cycle is NOT evaluated against the bars (absent metrics would paint every bar "NOT MEASURED"): it reports the abort itself
       const target = e.cyc ?? curCyc;
       if (target) check(target, 'cycle_aborted', false, String(e.message).slice(0, 200));
-      partial();
-      result = allChecks().some((kk) => !kk.ok) ? 'FAIL' : 'ERROR';
+      partial(`aborted: ${String(e.message).slice(0, 120)}`);
+      // the host guard had ALREADY fired (a CLI that timed out under load, …) and nothing but the abort's own symptoms is red: that is a VOID, not a product bug
+      const symptoms = new Set(['pause_accepted', 'workers_mid_work', 'cycle_aborted', 'cycle_incomplete', 'resume_accepted', 'limit_during_pause_stays_manual']);
+      result = voidReason && allChecks().filter((kk) => !kk.ok).every((kk) => symptoms.has(kk.id)) ? 'VOID' : allChecks().some((kk) => !kk.ok) ? 'FAIL' : 'ERROR';
     }
   } finally {
     try { fs.writeFileSync(`${rig.H}/api-requests.json`, JSON.stringify(api.requests)); } catch { /* */ }
