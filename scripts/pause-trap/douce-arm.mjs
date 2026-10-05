@@ -274,7 +274,9 @@ export async function runDouce(ctx) {
     check(`subagent_calls_never_took_the_order_${m.id}`, subAfterPause.length >= 2 && subAfterPause.every((r) => !r.order), `${subAfterPause.length} subagent request(s) after the pause (each follows a subagent tool call that fired the hook), ${subAfterPause.filter((r) => r.order).length} carried the order (the subagent's hook calls have agent_id: the order waits for the member's own boundary)`);
   }
   const must = members.filter((m) => ['obey', 'silent', 'blocked'].includes(m.kind)).map((m) => m.id);
-  const may = members.filter((m) => m.kind === 'quota').map((m) => m.id);
+  // douce-humanmark: `bgn` (finished turn, only its background task runs) may get ONE stray `pause` row — the first activity read intermittently says "turn running" (`turnGate !== null || unexplainedTurnSeen`),
+  // the host host-idle-confirms it at the next sweep: measured RED 7/12 on master 0963ade2 (verifier, ledger #276 c/5987918985), harmless (order pruned at the confirm, no lost work)
+  const may = members.filter((m) => m.kind === 'quota' || (A.humanmark && m.kind === 'bgnotify')).map((m) => m.id);
   const got1 = pauseRows.map((r) => r.recipient);
   check('pause_rows_to_running_members_only', must.every((id) => got1.includes(id)) && got1.every((id) => must.includes(id) || may.includes(id)) && new Set(got1).size === got1.length && pauseRows.every((r) => r.sender === 'host'), `ONE row per running member from the host: [${got1.join(',')}]; required [${must.join(',')}], allowed [${may.join(',')}]; idle members get none`);
 
