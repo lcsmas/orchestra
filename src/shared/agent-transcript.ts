@@ -43,6 +43,7 @@ import {
   transcriptContextTokens,
   type TranscriptUsage,
 } from './context-usage.ts';
+import { attachmentFromBlock } from './attachments.ts';
 
 /** Block indexes for synthesized history blocks start here — far above any real
  *  SDK content-block index (single digits), so a live session's early blocks
@@ -275,14 +276,8 @@ export function transcriptToEvents(
         // images and attach them to the turn's user-message.
         const images: AgentImage[] = [];
         for (const b of blocks) {
-          if (
-            b?.type === 'image' &&
-            b.source?.type === 'base64' &&
-            typeof b.source.media_type === 'string' &&
-            typeof b.source.data === 'string'
-          ) {
-            images.push({ mediaType: b.source.media_type, dataBase64: b.source.data });
-          }
+          const att = attachmentFromBlock(b); // image OR pasted PDF document
+          if (att) images.push(att);
         }
         let imagesAttached = false;
         // Attach the images to the FIRST text block so they render on the same

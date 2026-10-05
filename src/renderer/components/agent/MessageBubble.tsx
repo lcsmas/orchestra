@@ -7,6 +7,8 @@ import { useTypewriter } from './useTypewriter';
 import { RewindControl } from './RewindControl';
 import { ForkControl } from './ForkControl';
 import { useRewind } from './rewind-context';
+import { PdfChip } from './PdfChip';
+import { isPdfMediaType } from '../../../shared/attachments';
 import { formatClock, formatFullStamp } from '../../../shared/message-time';
 
 interface Props {
@@ -89,14 +91,18 @@ function MessageBubbleImpl({ message }: Props) {
       {role === 'error' ? <div className="av-message-eyebrow">Error</div> : null}
       {hasImages ? (
         <div className="av-message-images">
-          {images!.map((img, i) => (
-            <img
-              key={i}
-              className="av-message-image"
-              src={`data:${img.mediaType};base64,${img.dataBase64}`}
-              alt="Attached"
-            />
-          ))}
+          {images!.map((img, i) =>
+            isPdfMediaType(img.mediaType) ? (
+              <PdfChip key={i} />
+            ) : (
+              <img
+                key={i}
+                className="av-message-image"
+                src={`data:${img.mediaType};base64,${img.dataBase64}`}
+                alt="Attached"
+              />
+            ),
+          )}
         </div>
       ) : null}
       <div className="av-message-text">

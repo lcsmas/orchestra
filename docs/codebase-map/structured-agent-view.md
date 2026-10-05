@@ -913,7 +913,8 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   compact_boundary `post_tokens` — never the `result` message's `usage`, which is
   session-cumulative and pinned the gauge at 100%); **Esc interrupts** the
   in-flight turn from the composer; **drag-and-drop** files onto the composer
-  (images → attachments, other files → absolute path inserted);
+  (images/PDFs → attachments, other files → absolute path via preload
+  `pathForFile` = `webUtils.getPathForFile`; Electron 32+ dropped `File.path`);
   **ExitPlanMode renders a plan-review card** (markdown plan +
   Keep planning / Approve·accept edits / Approve&run, the latter two calling
   `agentSdkSetPermissionMode`) instead of the generic raw-JSON dialog.
@@ -1001,9 +1002,12 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   interrupt/footer react before the first SDK event lands. **Pasted images** ride
   the same path: `AgentImage[]` (`{mediaType,dataBase64}`, shared/types.ts) on
   `agentSdkSend`/`AgentUserMessageEvent`/`makeUserMessage`/`RenderMessage.images`.
-  When present, `sdkSend` builds the SDK `content` as an array of `image` (base64
-  source) + `text` blocks instead of a bare string; the echo carries the images so
-  the user bubble renders them (MessageBubble `.av-message-image`).
+  **PDFs ride it too** (`application/pdf`): `shared/attachments.ts`
+  `attachmentContentBlock` maps each to an `image` or `document` (base64) block, so
+  `sdkSend` builds `content` as `[...blocks, text]` instead of a bare string; the echo
+  carries them so the user bubble renders them (`.av-message-image`, or `PdfChip`
+  for a PDF — no thumbnail). A file copied in a file manager (`text/uri-list`)
+  reaches the paste event as a `File` (measured, Electron 33 / Wayland).
 - **`src/main/agent-sdk.ts`** — per-workspace SDK session manager. Owns the `query`
   object, the async-generator prompt queue, the `canUseTool` bridge (parks the call, emits
   a `permission-request` event, resolves on the renderer's `agentSdkPermissionReply`), and
@@ -1263,7 +1267,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
 
   The **composer** auto-grows and accepts **pasted images**
   (`onPaste` → base64 via FileReader → thumbnail strip → sent on submit as
-  `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,
+  `AgentImage[]`) and **pasted/dropped PDFs** (same pipeline, `isAttachableMediaType`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,
   **`BackgroundTasksPanel`**. A floating top-right **toggle** (`av-bgtask-toggle`,
   running-count badge) appears once `session.tasks` is non-empty and opens/closes
   the panel; the panel **stays closed by default** when a task spins up (it never
@@ -1452,7 +1456,8 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   differ from the live stream: assistant text is finalized (no stream_events → we
   synthesize block-start/delta/stop triplets at indexes ≥100k), there are no `result`
   lines (one quiet terminal `turn-end` is appended), and `isSidechain: true` lines
-  (Task-subagent transcripts) are skipped. **A user turn's `image` content blocks are
+  (Task-subagent transcripts) are skipped. **A user turn's `image` (and base64 PDF
+  `document`, via `attachmentFromBlock`) content blocks are
   reconstructed into the `user-message`'s `images`** (Messages-API `{source:{base64}}`
   shape → `AgentImage[]`), so pasted images survive a reopen — the live echo carried
   them but the backfill formerly dropped `image` blocks, so they vanished on reload.

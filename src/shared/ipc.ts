@@ -80,6 +80,9 @@ export interface OrchestraAPI {
    *  repo. Returns the updated repo. */
   setRepoDefaultBranch: (repoPath: string, branch: string) => Promise<RepoEntry>;
   pickDirectory: () => Promise<string | null>;
+  /** Absolute path of a dropped/pasted `File` ('' if none) — Electron 32+ removed
+   *  `File.path`; preload-local via `webUtils.getPathForFile`. */
+  pathForFile: (file: File) => string;
   openExternal: (url: string) => Promise<void>;
   /** The running app's version (from package.json). */
   getAppVersion: () => Promise<string>;

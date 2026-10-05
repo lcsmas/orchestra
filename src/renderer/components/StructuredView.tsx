@@ -73,6 +73,8 @@ import { computeTurnDivider, type TurnDivider } from '../../shared/message-time'
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
 import { appendPickToDraft } from '../../shared/design-mode';
+import { isAttachableMediaType, isPdfMediaType } from '../../shared/attachments';
+import { PdfChip } from './agent/PdfChip';
 import { shouldRequestHistory } from '../history-backfill';
 import { resolveAnchorIndex } from '../scroll-anchor';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
@@ -1316,7 +1318,7 @@ function Composer({
   // Images pasted into the composer, pending send. Each carries the base64 for
   // the wire plus a data URL for the thumbnail preview.
   const [pendingImages, setPendingImages] = useState<
-    { id: string; mediaType: string; dataBase64: string; url: string }[]
+    { id: string; mediaType: string; dataBase64: string; url: string; name?: string }[]
   >([]);
   // Imperative handle on the CodeMirror editor (focus / read / set text).
   const cmRef = useRef<CmComposerHandle | null>(null);
@@ -1563,13 +1565,13 @@ function Composer({
   const bashMode = text.startsWith('!');
   const bashCommand = bashMode ? text.slice(1) : '';
 
-  // Accept image data from a clipboard/paste event: read each image item as a
+  // Accept image/PDF data from a clipboard/paste event: read each item as a
   // data URL, split off the base64 payload, and stash it for send + preview.
   const addPastedImages = useCallback((items: DataTransferItemList | null) => {
     if (!items) return false;
     const files: File[] = [];
     for (const it of Array.from(items)) {
-      if (it.kind === 'file' && it.type.startsWith('image/')) {
+      if (it.kind === 'file' && isAttachableMediaType(it.type)) {
         const f = it.getAsFile();
         if (f) files.push(f);
       }
@@ -1591,6 +1593,7 @@ function Composer({
             mediaType: m[1],
             dataBase64: m[2],
             url,
+            name: f.name,
           },
         ]);
       };
@@ -1798,8 +1801,8 @@ function Composer({
       if (!dt) return;
       addPastedImages(dt.items);
       const paths = Array.from(dt.files)
-        .filter((f) => !f.type.startsWith('image/'))
-        .map((f) => (f as File & { path?: string }).path)
+        .filter((f) => !isAttachableMediaType(f.type))
+        .map((f) => window.orchestra.pathForFile(f))
         .filter((p): p is string => !!p);
       if (paths.length > 0) {
         setText((prev) => (prev ? `${prev.trimEnd()} ` : '') + paths.join(' '));
@@ -1900,14 +1903,18 @@ function Composer({
             </span>
           )}
           {pendingImages.length > 0 && (
-            <div className="av-composer-attachments" aria-label="Pasted images">
+            <div className="av-composer-attachments" aria-label="Pasted attachments">
               {pendingImages.map((img) => (
                 <div key={img.id} className="av-composer-attachment">
-                  <img src={img.url} alt="Pasted attachment" />
+                  {isPdfMediaType(img.mediaType) ? (
+                    <PdfChip name={img.name} />
+                  ) : (
+                    <img src={img.url} alt="Pasted attachment" />
+                  )}
                   <button
                     type="button"
                     className="av-composer-attachment-remove"
-                    aria-label="Remove image"
+                    aria-label="Remove attachment"
                     title="Remove"
                     onClick={() => removePendingImage(img.id)}
                   >
@@ -1931,7 +1938,7 @@ function Composer({
             placeholder={
               bashMode
                 ? 'Enter a shell command — runs in the worktree, output shared with the agent'
-                : 'Message the agent — / for skills, ! for bash, paste an image…'
+                : 'Message the agent — / for skills, ! for bash, paste an image or PDF…'
             }
             vimEnabled={vimEnabled}
             onVimMode={setVimMode}

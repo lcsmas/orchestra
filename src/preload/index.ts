@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { OrchestraAPI } from '../shared/ipc';
 import type { HumanGateView } from '../shared/human-gates';
 
@@ -13,6 +13,7 @@ const api: OrchestraAPI = {
   setRepoDefaultBranch: (repoPath, branch) =>
     ipcRenderer.invoke('repos:setDefaultBranch', repoPath, branch),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
+  pathForFile: (file) => webUtils.getPathForFile(file),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
   getEnvStatus: () => ipcRenderer.invoke('app:envStatus'),

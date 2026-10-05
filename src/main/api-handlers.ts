@@ -198,6 +198,7 @@ type ApiMethodName = {
 type ServableApi = Omit<
   Pick<OrchestraAPI, ApiMethodName>,
   | 'pickDirectory'
+  | 'pathForFile'
   | 'voiceAvailable'
   | 'voiceStart'
   | 'voicePcm'

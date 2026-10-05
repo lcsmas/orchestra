@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { accountAgentEnv, isApiKeyAccount } from '../shared/accounts';
+import { attachmentContentBlock } from '../shared/attachments';
 // TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
 // @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
 // only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
@@ -3105,14 +3106,7 @@ export async function sdkSend(
   const content =
     images && images.length > 0
       ? [
-          ...images.map((img) => ({
-            type: 'image' as const,
-            source: {
-              type: 'base64' as const,
-              media_type: img.mediaType,
-              data: img.dataBase64,
-            },
-          })),
+          ...images.map(attachmentContentBlock), // image, or `document` for a PDF
           ...(sendText ? [{ type: 'text' as const, text: sendText }] : []),
         ]
       : sendText;

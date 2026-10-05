@@ -120,6 +120,25 @@ test('transcript: an image-only turn (no caption) still renders a bubble', () =>
   assert.equal(user!.images![0].dataBase64, 'BBBB');
 });
 
+test('transcript: a pasted PDF (document block) reconstructs on the user bubble', () => {
+  const jsonl = lines([
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBE' } },
+          { type: 'text', text: 'summarize' },
+        ],
+      },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  const user = s.messages.find((m) => m.role === 'user')!;
+  assert.equal(user.text, 'summarize');
+  assert.deepEqual(user.images, [{ mediaType: 'application/pdf', dataBase64: 'JVBE' }]);
+});
+
 test('transcript: history block ids never collide with a live session at low indexes', () => {
   const jsonl = lines([
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'old history' }] } },
