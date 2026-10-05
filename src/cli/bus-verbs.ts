@@ -1219,6 +1219,12 @@ export function verbRunConfirmPause(ctx: BusVerbCtx, deps: RunConfirmPauseDeps):
   } catch {
     /* best effort */
   }
+  if (r.outcome === 'not-a-member') {
+    ctx.fail(
+      `orchestra run confirm pause: ${JSON.stringify(who)} is not a member of run ${r.carrierRunId}'s pause roster — nothing recorded ` +
+        `(a pause accusé is a member's own: identity = $ORCHESTRA_WS_ID, in the paused run's tree)`,
+    );
+  }
   if (r.outcome === 'not-paused') {
     ctx.out(`No active pause covers ${who} — nothing to confirm (the pause was lifted, or its 'pause' switch is OFF).\n`);
     return;

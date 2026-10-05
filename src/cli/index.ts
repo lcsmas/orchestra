@@ -1929,7 +1929,7 @@ async function main(argv: string[]): Promise<void> {
                 ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
                 : (cfEnvRun ? coverFor(d, cfEnvRun, busPause, nodes) : null) ?? douce.carrierFromRoster(d, who);
               const memberRun = node ? nearestOrchestratorId(node, (id) => nodes.get(id)) : null; // never guess: a wrong run would overwrite what the host enrolled
-              return { ...douce.confirmPauseFor(d, carrier, { wsId: who, memberRun }), carrierRunId: carrier?.runId ?? null };
+              return { ...douce.confirmPauseFor(d, carrier, { wsId: who, memberRun }, Date.now(), { proven: !!node }), carrierRunId: carrier?.runId ?? null };
             },
             // an order the member's hook has not injected yet would now be stale (the sibling dir of $ORCHESTRA_EVENTS_DIR, as the hook derives it)
             dropOrder: (who) => {

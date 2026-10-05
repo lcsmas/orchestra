@@ -2,6 +2,7 @@
 // byte-exact backup + `cmp`, clean control before/after, every anchor must match EXACTLY ONCE, the named test must go RED).
 // `expect` = a regex over the TITLE of a test in `tests`.
 const D = 'src/main/pause-douce.ts', BP = 'src/main/bus-pause.ts', TRAP = 'src/main/pause-trap.ts', WS = 'src/main/workspaces.ts', IDX = 'src/cli/index.ts', RS = 'src/cli/run-status.ts';
+const HOSTF = 'src/main/pause-trap-host.ts', WIRING = 'src/main/pause-trap-wiring.test.ts';
 const UT = 'src/main/pause-douce.test.ts', CT = 'src/cli/run-pause-douce.test.ts';
 
 export const DOUCE_UNIT_MUTANTS = [
@@ -71,4 +72,23 @@ export const DOUCE_UNIT_MUTANTS = [
   { id: 'hook-forks-dirname', file: WS, find: 'po="\\${dir%/*}/pause-orders/\\$ORCHESTRA_WS_ID"', rep: 'po="\\$(dirname "\\$dir")/pause-orders/\\$ORCHESTRA_WS_ID"', tests: [UT], expect: /PIN: the host writes the order where the hook looks/ },
   { id: 'cli-confirm-guesses-member-run', file: IDX, find: ': null; // never guess: a wrong run would overwrite what the host enrolled', rep: ': cfEnvRun || null;', tests: [CT], expect: /never overwrites what the host enrolled/, build: true },
   { id: 'cli-confirm-no-drop-order', file: IDX, find: "              if (ev) douce.pauseOrderFiles(path.join(path.dirname(ev), 'pause-orders')).remove(who);", rep: '', tests: [CT], expect: /READABLE store walks the live tree/, build: true },
+  // ── follow-up (reviewer-e1 R1-1 / R1-2)
+  { id: 'douce-confirm-authority-removed', file: D, find: '  if (opts.proven !== true && !listRoster(db, carrier.runId, carrier.pausedAt).some((r) => r.wsId === who.wsId)) {', rep: '  if (false) {', tests: [UT, CT], expect: /AUTHORITY \(follow-up R1-1\)|from a NON-member/ },
+  { id: 'douce-confirm-proven-ignored', file: D, find: '  if (opts.proven !== true && !listRoster(', rep: '  if (!listRoster(', tests: [UT], expect: /AUTHORITY \(follow-up R1-1\)/ },
+  { id: 'cli-confirm-always-proven', file: IDX, find: 'Date.now(), { proven: !!node })', rep: 'Date.now(), { proven: true })', tests: [CT], expect: /from a NON-member/, build: true },
+  { id: 'trap-observer-pausing-before-human-mark', file: TRAP, edits: [
+    { find: "    if (carrierPhase(db, carrier.runId) === 'pausing') return 'skipped';\n    if (m.remote) return 'skipped';", rep: "    if (m.remote) return 'skipped';" },
+    { find: '    const humanNow = deps.humanTurnInFlight?.(m) === true && (lastHumanTurnStart(m.wsId) ?? 0) >= carrier.pausedAt;', rep: "    if (carrierPhase(db, carrier.runId) === 'pausing') return 'skipped';\n    const humanNow = deps.humanTurnInFlight?.(m) === true && (lastHumanTurnStart(m.wsId) ?? 0) >= carrier.pausedAt;" },
+  ], tests: [UT], expect: /OBSERVER \(follow-up R1-2\)/ },
+  { id: 'trap-observer-mark-survives-escalation', file: TRAP, find: '    const marked = consumeHumanMark(m.wsId, deps.now(), since);', rep: '    const marked = consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);', tests: [UT], expect: /OBSERVER \(follow-up R1-2\)/ },
+  // ── follow-up V-F1 (the keeperUnknown clause, now a pure function + the full cliOf pin)
+  { id: 'keeper-unknown-state-unknown-is-none', file: 'src/shared/pause-douce.ts', find: "return i.keeperPidState === 'keeper' || i.keeperPidState === 'unknown';", rep: "return i.keeperPidState === 'keeper';", tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'keeper-unknown-state-keeper-is-none', file: 'src/shared/pause-douce.ts', find: "return i.keeperPidState === 'keeper' || i.keeperPidState === 'unknown';", rep: "return i.keeperPidState === 'unknown';", tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'keeper-unknown-ignores-state', file: 'src/shared/pause-douce.ts', find: "return i.keeperPidState === 'keeper' || i.keeperPidState === 'unknown';", rep: 'return true;', tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'keeper-unknown-untracked-is-unknown', file: 'src/shared/pause-douce.ts', find: '  if (i.trackedKeeperPid === null) return false;\n', rep: '', tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'keeper-unknown-answered-probe-ignored', file: 'src/shared/pause-douce.ts', find: '  if (i.hasSession || i.probeAnswered || i.ptyLive) return false;', rep: '  if (i.hasSession || i.ptyLive) return false;', tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'keeper-unknown-session-ignored', file: 'src/shared/pause-douce.ts', find: '  if (i.hasSession || i.probeAnswered || i.ptyLive) return false;', rep: '  if (i.probeAnswered || i.ptyLive) return false;', tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'keeper-unknown-pty-ignored', file: 'src/shared/pause-douce.ts', find: '  if (i.hasSession || i.probeAnswered || i.ptyLive) return false;', rep: '  if (i.hasSession || i.probeAnswered) return false;', tests: [UT], expect: /keeperActivityUnknown \(V-F1\)/ },
+  { id: 'host-keeper-unknown-not-reported', file: HOSTF, find: '        ...(keeperUnknown ? { unknown: true } : {}),\n', rep: '', tests: [WIRING], expect: /snapshots through the no-touch/ },
+  { id: 'host-keeper-unknown-facts-wrong', file: HOSTF, find: '        probeAnswered: !!probe,\n', rep: '        probeAnswered: false,\n', tests: [WIRING], expect: /snapshots through the no-touch/ },
 ];

@@ -4,6 +4,20 @@
 
 /** name -> { file suffix, find (global regex), replace, mustRedden (the rig check that has to go red) } */
 export const MUTANTS = {
+  // V-F1: a tracked, alive, unanswering keeper reads as NONE (idle): the member is confirmed host-idle while its turn may be running.
+  'keeper-unknown-is-none': {
+    file: '/src/shared/pause-douce.ts',
+    find: /  return i\.keeperPidState === 'keeper' \|\| i\.keeperPidState === 'unknown';/g,
+    replace: '  return false;',
+    mustRedden: 'keeper_stopped_member_not_confirmed_idle',
+  },
+  // follow-up R1-2: a human mark made in the waiting window still admits the first CLI-started turn AFTER the escalation (its notBefore is the pause, not the escalation).
+  'mark-left-in-pausing': {
+    file: '/src/main/pause-trap.ts',
+    find: /    const marked = consumeHumanMark\(m\.wsId, deps\.now\(\), since\);/g,
+    replace: '    const marked = consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);',
+    mustRedden: 'human_mark_spent_cli_turn_trapped_after_escalation',
+  },
   // The hook lets a SUBAGENT's tool call take the order (the member's own next boundary never sees it).
   'subagent-takes-order': {
     file: '/src/main/workspaces.ts',

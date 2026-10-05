@@ -606,13 +606,17 @@ export async function onTurnStart(deps: TrapDeps, m: TrapMember): Promise<'allow
     const carrier = resolveCarrier(deps, db, m);
     if (!carrier) return 'not-paused';
     if (trapArming.has(m.wsId)) return 'skipped'; // the member trap's own arm() attach fired this start: trapMember handles the turn (pauser-aware)
-    // #254: a Pause douce still WAITING lets the running command finish — an unexplained turn start here is most often a keeper REATTACH mid-turn (app restart + opening the workspace), not a cron turn; the escalation's trap takes whatever still runs.
-    if (carrierPhase(db, carrier.runId) === 'pausing') return 'skipped';
     // a human turn IN FLIGHT (exact) OR a fresh mark (the hook of a very short turn can land after its result); BOTH are consumed — a leftover mark must not admit a later CLI turn
     // anchored on the pause (pre-review r2 #1): a human turn yielded BEFORE the pause, whose hook lands late, is still trapped (it was in flight at the pause)
     const humanNow = deps.humanTurnInFlight?.(m) === true && (lastHumanTurnStart(m.wsId) ?? 0) >= carrier.pausedAt;
-    const marked = consumeHumanMark(m.wsId, deps.now(), carrier.pausedAt);
+    // follow-up R1-2: a mark made BEFORE the escalation is void after it (the M4 rule applied to the moment a douce turns hard): a human prompt typed in the waiting window
+    // leaves single-use marks (one at the send, one at the yield) that would otherwise admit the first CLI-started turn after the escalation.
+    const since = Math.max(carrier.pausedAt, carrier.escalatedAt ?? 0);
+    const marked = consumeHumanMark(m.wsId, deps.now(), since);
     if (humanNow || marked) return 'allowed';
+    // #254: a Pause douce still WAITING lets the running command finish — an unexplained turn start here is most often a keeper REATTACH mid-turn (app restart + opening the workspace), not a cron turn; the escalation's trap takes whatever still runs.
+    // AFTER the human mark above: a human prompt typed in the window must spend ITS mark at its own start, or it would admit the first CLI-started turn after the escalation (follow-up R1-2).
+    if (carrierPhase(db, carrier.runId) === 'pausing') return 'skipped';
     if (m.remote) return 'skipped';
     const st = turnTrap.get(m.wsId) ?? { running: false, again: false, lastNoteAt: Number.NEGATIVE_INFINITY };
     turnTrap.set(m.wsId, st);

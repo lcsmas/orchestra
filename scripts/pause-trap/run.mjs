@@ -36,7 +36,7 @@ const JSON_OUT = args.includes('--json');
 const KEEP = args.includes('--keep') || process.env.PT_KEEP === '1';
 const WANT = opt('arm', 'all');
 
-const DOUCE = ['douce-obey', 'douce-failcall', 'douce-subagent', 'douce-quota', 'douce-blocked', 'douce-silent', 'douce-mixed', 'douce-fleet', 'douce-restart', 'douce-off'];
+const DOUCE = ['douce-keeperstopped', 'douce-forged', 'douce-humanmark', 'douce-obey', 'douce-failcall', 'douce-subagent', 'douce-quota', 'douce-blocked', 'douce-silent', 'douce-mixed', 'douce-fleet', 'douce-restart', 'douce-off'];
 const NORMAL = [...DOUCE, 'blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
 const MUTANT_ARMS = [
   // #254 Pause douce. G1: the UNFIXED build (master: `run pause` without --hard is refused, no douce at all) must FAIL the same rig.
@@ -48,6 +48,12 @@ const MUTANT_ARMS = [
   { name: 'mutant:no-order-file', arm: 'douce-obey', mutant: 'no-order-file' },
   { name: 'mutant:host-idle-for-running', arm: 'douce-obey', mutant: 'host-idle-for-running' },
   { name: 'mutant:summary-counts-all', arm: 'douce-mixed', mutant: 'summary-counts-all' },
+  // follow-up (R1-1): a BUILT mutant — the guard lives in the CLI bundle, which a load-time mutant of the app stand-in cannot reach: a detached worktree of HEAD is mutated, built, and driven (SRC).
+  // the "0 lost work" instrument can say FAIL: no snapshot ⇒ the blocked member's work is in no ref (reviewer-e1 coverage note)
+  { name: 'mutant:skip-snapshot-douce', arm: 'douce-blocked', mutant: 'skip-snapshot', redden: 'lost_work_is_zero', deadlineSec: 25 },
+  { name: 'mutant:keeper-unknown-is-none', arm: 'douce-keeperstopped', mutant: 'keeper-unknown-is-none' },
+  { name: 'mutant:confirm-accepts-non-members', arm: 'douce-forged', mutant: 'confirm-accepts-non-members', built: { file: 'src/main/pause-douce.ts', find: '  if (opts.proven !== true && !listRoster(db, carrier.runId, carrier.pausedAt).some((r) => r.wsId === who.wsId)) {', replace: '  if (false) {' }, redden: 'ghost_confirm_refused' },
+  { name: 'mutant:mark-left-in-pausing', arm: 'douce-humanmark', mutant: 'mark-left-in-pausing', redden: 'human_mark_spent_cli_turn_trapped_after_escalation' },
   { name: 'mutant:subagent-takes-order', arm: 'douce-subagent', mutant: 'subagent-takes-order' },
   { name: 'mutant:no-trap-roster', arm: 'douce-blocked', mutant: 'no-trap-roster', deadlineSec: 25 },
   { name: 'mutant:sweep-ignores-switch', arm: 'douce-off', mutant: 'sweep-ignores-switch' },
@@ -126,6 +132,28 @@ function masterTree() {
   return dir;
 }
 
+// follow-up: BUILT mutants (`sel.built`): a detached worktree of HEAD (the committed tree), mutated at ONE anchor (exactly once, else VOID), then built; the arm drives it as SRC.
+const builtDirs = new Map();
+function builtTree(sel) {
+  if (builtDirs.has(sel.name)) return builtDirs.get(sel.name);
+  const dir = path.join(base, `built-${sel.name.replace(/[^a-z0-9-]/gi, '_')}-${process.pid}`);
+  const w = spawnSync('git', ['worktree', 'add', '--detach', dir, 'HEAD'], { cwd: REPO, encoding: 'utf8' });
+  if (w.status !== 0) { console.log(`PAUSE-TRAP: VOID — cannot create the built-mutant worktree: ${w.stderr.slice(-200)}`); process.exit(3); }
+  fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'));
+  const abs = path.join(dir, sel.built.file);
+  const src = fs.readFileSync(abs, 'utf8');
+  const hits = src.split(sel.built.find).length - 1;
+  if (hits !== 1) { console.log(`PAUSE-TRAP: VOID — built mutant ${sel.name}: PATTERN-GONE (anchor matched ${hits}× in ${sel.built.file})`); process.exit(3); }
+  fs.writeFileSync(abs, src.replace(sel.built.find, () => sel.built.replace));
+  for (const script of ['build:cli', 'build:keeper']) {
+    const r = spawnSync('pnpm', ['run', script], { cwd: dir, encoding: 'utf8' });
+    if (r.status !== 0) { console.log(`PAUSE-TRAP: VOID — built mutant ${sel.name}: ${script} failed: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); }
+  }
+  builtDirs.set(sel.name, dir);
+  return dir;
+}
+for (const sel of selected) if (sel.built) builtTree(sel); // sequential builds, before any arm starts
+
 const PARALLEL = Number(opt('parallel', process.env.PT_PARALLEL ?? '1')) || 1;
 const queue = [...selected];
 if (selected.some((x) => x.master)) masterTree(); // before any arm starts (one build, not racing builds)
@@ -135,7 +163,7 @@ async function runOne(sel) {
   fs.mkdirSync(root, { recursive: true });
   assertScratch('root', root, base, live);
   const apiPort = 31000 + Math.floor(Math.random() * 15000);
-  const cfg = { REPO, root, arm: sel.arm, mutant: sel.master ? null : sel.mutant, live, apiPort, ...(sel.master ? { SRC: masterTree() } : {}), ...(sel.deadlineSec ? { deadlineSec: sel.deadlineSec } : {}) };
+  const cfg = { REPO, root, arm: sel.arm, mutant: sel.master || sel.built ? null : sel.mutant, live, apiPort, ...(sel.master ? { SRC: masterTree() } : sel.built ? { SRC: builtTree(sel) } : {}), ...(sel.deadlineSec ? { deadlineSec: sel.deadlineSec } : {}) };
   const env = { PATH: [path.dirname(claude), path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: path.join(root, 'home'), LANG: 'C.UTF-8', TERM: 'dumb', PT_CONFIG: JSON.stringify(cfg), ...(process.env.PT_DUMP_API ? { PT_DUMP_API: process.env.PT_DUMP_API } : {}) };
   fs.mkdirSync(path.join(root, 'home'), { recursive: true });
   const argv = [...containment.prefix, process.execPath, '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--experimental-strip-types', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(REPO, 'scripts', 'pause-trap', 'driver.mjs')];
@@ -160,7 +188,7 @@ async function runOne(sel) {
   let asExpected, why;
   const red = res.checks.filter((c) => !c.ok);
   if (sel.mutant) {
-    const want = sel.master ? 'cli_pause_soft_accepted' : MUTANTS[sel.mutant].mustRedden;
+    const want = sel.redden ?? (sel.master ? 'cli_pause_soft_accepted' : MUTANTS[sel.mutant].mustRedden);
     const named = res.checks.find((c) => c.id === want);
     const ran = sel.master ? true : !res.checks.some((c) => c.id === 'rig_ran_to_completion' && !c.ok);
     asExpected = !!named && !named.ok && ran;
@@ -181,6 +209,7 @@ async function runOne(sel) {
   else console.log(`   scratch kept at ${root}`);
 }
 await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, async () => { for (let sel = queue.shift(); sel; sel = queue.shift()) await runOne(sel); }));
+for (const d of builtDirs.values()) if (!KEEP) { spawnSync('git', ['worktree', 'remove', '--force', d], { cwd: REPO }); fs.rmSync(d, { recursive: true, force: true }); }
 if (masterDir && !KEEP) { spawnSync('git', ['worktree', 'remove', '--force', masterDir], { cwd: REPO }); fs.rmSync(masterDir, { recursive: true, force: true }); }
 console.log(`PAUSE-TRAP: ${bad === 0 ? (WANT === 'all' ? 'PASS' : 'PARTIAL') : 'FAIL'}`);
 process.exit(bad === 0 ? 0 : 1);

@@ -185,7 +185,8 @@ export function carrierFromRoster(db: BusDb, wsId: string): RunPauseInfo | null 
   return null;
 }
 
-/** Record a member's PAUSE accusé (`via`). First writer wins: a later confirmation never overwrites the time/via. true = this call wrote it. */
+/** Record a member's PAUSE accusé (`via`). First writer wins: a later confirmation never overwrites the time/via. true = this call wrote it.
+ *  `enroll` (default) creates the roster row when absent (the host / a live-tree-proven member); `enroll: false` only UPDATES an existing row. */
 export function confirmMember(
   db: BusDb,
   carrierRunId: string,
@@ -193,8 +194,9 @@ export function confirmMember(
   m: MemberIdentity,
   via: PauseConfirmVia,
   now: number,
+  enroll = true,
 ): boolean {
-  enrollMember(db, carrierRunId, pausedAt, m);
+  if (enroll) enrollMember(db, carrierRunId, pausedAt, m);
   return (
     db
       .prepare(
@@ -441,17 +443,23 @@ export function pauseStatusView(db: BusDb, runId: string): PauseStatusView | nul
 
 // ── the member's accusé (`orchestra run confirm pause`) ─────────────────────
 
-export type ConfirmPauseOutcome = 'confirmed' | 'already-confirmed' | 'not-paused';
+export type ConfirmPauseOutcome = 'confirmed' | 'already-confirmed' | 'not-paused' | 'not-a-member';
 
 /** Record the CALLER's pause accusé on `carrier` (resolved by the live-tree walk, like `run resume`) AND on every ancestor run that is itself in an active pause
- *  (a nested douce: the outer carrier enrolled the same member and would otherwise wait for it until its deadline). First writer wins. */
+ *  (a nested douce: the outer carrier enrolled the same member and would otherwise wait for it until its deadline). First writer wins.
+ *  AUTHORITY (follow-up R1-1): the caller must BE a member — either `proven` (the live-tree walk from its own workspace found this carrier) or already in the epoch's
+ *  roster (the host enrols before it sends the order). Anyone else is `not-a-member`: nothing is written (no phantom roster row, no forged "all confirmed"). */
 export function confirmPauseFor(
   db: BusDb,
   carrier: RunPauseInfo | null,
   who: MemberIdentity,
   now: number = Date.now(),
+  opts: { proven?: boolean } = {},
 ): { outcome: ConfirmPauseOutcome; view: PauseStatusView | null } {
   if (!carrier) return { outcome: 'not-paused', view: null };
+  if (opts.proven !== true && !listRoster(db, carrier.runId, carrier.pausedAt).some((r) => r.wsId === who.wsId)) {
+    return { outcome: 'not-a-member', view: pauseStatusView(db, carrier.runId) };
+  }
   const wrote = confirmMember(db, carrier.runId, carrier.pausedAt, who, 'member', now);
   const seen = new Set<string>([carrier.runId]);
   let cur = (db.prepare('SELECT parent_run_id AS p FROM runs WHERE id = ?').get(carrier.runId) as { p: string | null } | undefined)?.p ?? null;

@@ -24,8 +24,8 @@ import {
   sweepSoftPauses,
   __resetPauseDouceForTests,
 } from './pause-douce.ts';
-import { __resetPauseTrapForTests, armPausedMembers, onTurnStart, runPauseTrap, stopPauseTrap, sweepPauseTrap, type TrapDeps, type TrapMember } from './pause-trap.ts';
-import { renderPauseOrder, renderPauseRosterLine, renderPauseStatusLine } from '../shared/pause-douce.ts';
+import { __resetPauseTrapForTests, armPausedMembers, markPauseHumanTurn, onTurnStart, runPauseTrap, stopPauseTrap, sweepPauseTrap, type TrapDeps, type TrapMember } from './pause-trap.ts';
+import { keeperActivityUnknown, renderPauseOrder, renderPauseRosterLine, renderPauseStatusLine } from '../shared/pause-douce.ts';
 import { pauseRosterSummary, SOFT_PAUSE_DEADLINE_MS } from '../shared/pause-lifecycle.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 
@@ -458,6 +458,20 @@ test('UNKNOWN is not NONE (production shape): an activity read flagged `unknown`
   assert.equal(out.summaries[0].escalated, null);
 });
 
+test('keeperActivityUnknown (V-F1): a TRACKED keeper that is alive (argv = its keeper, or unreadable) with no session, no PTY and no probe answer is UNKNOWN — every other combination is a real read', () => {
+  const base = { hasSession: false, probeAnswered: false, ptyLive: false, trackedKeeperPid: 4242, keeperPidState: 'keeper' as string | null };
+  assert.equal(keeperActivityUnknown(base), true, 'tracked + alive + silent ⇒ unknown');
+  assert.equal(keeperActivityUnknown({ ...base, keeperPidState: 'unknown' }), true, 'alive with an UNREADABLE argv is unknown too (never "no keeper")');
+  assert.equal(keeperActivityUnknown({ ...base, keeperPidState: 'gone' }), false, 'a dead keeper really is idle');
+  assert.equal(keeperActivityUnknown({ ...base, keeperPidState: 'other' }), false, 'a reused pid is not the keeper');
+  assert.equal(keeperActivityUnknown({ ...base, keeperPidState: null }), false, 'state not read');
+  assert.equal(keeperActivityUnknown({ ...base, trackedKeeperPid: null, keeperPidState: null }), false, 'no tracked keeper ⇒ nothing to wait on');
+  assert.equal(keeperActivityUnknown({ ...base, trackedKeeperPid: null }), false, 'no tracked keeper pid ⇒ nothing to wait on, whatever a stale state says');
+  assert.equal(keeperActivityUnknown({ ...base, probeAnswered: true }), false, 'the keeper answered: it is a real read');
+  assert.equal(keeperActivityUnknown({ ...base, hasSession: true }), false, 'a live session reads itself');
+  assert.equal(keeperActivityUnknown({ ...base, ptyLive: true }), false, 'a live PTY reads itself');
+});
+
 test('OBSERVER: a turn that starts while a Pause douce is still WAITING is not interrupted (a keeper reattach mid-turn reads as a CLI-started turn); once escalated it is', async (t) => {
   const r = rig(t);
   const m = mem(r, 'w1', 'W', true);
@@ -482,13 +496,13 @@ test('NESTED douces: a member\'s accusé on the inner carrier also confirms it o
   const outer = getRunPause(r.db, 'M')!;
   const who = { wsId: 'w1', memberRun: 'W' };
   confirmMember(r.db, 'M', outer.pausedAt, { wsId: 'w9', memberRun: 'W' }, 'member', 1); // an unrelated row stays untouched
-  assert.equal(confirmPauseFor(r.db, inner, who, 7).outcome, 'confirmed');
+  assert.equal(confirmPauseFor(r.db, inner, who, 7, { proven: true }).outcome, 'confirmed');
   assert.deepEqual(listRoster(r.db, 'M', outer.pausedAt).filter((x) => x.wsId === 'w1').map((x) => [x.pauseConfirmedAt, x.pauseConfirmVia]), [[7, 'member']]);
   assert.deepEqual(listRoster(r.db, 'W', inner.pausedAt).map((x) => [x.wsId, x.pauseConfirmedAt]), [['w1', 7]]);
   // an outer run that is NOT paused is not touched
   const q = rig(t);
   setRunPause(q.db, 'W', true, 'ops-ws', 'soft');
-  confirmPauseFor(q.db, getRunPause(q.db, 'W')!, who, 7);
+  confirmPauseFor(q.db, getRunPause(q.db, 'W')!, who, 7, { proven: true });
   assert.equal(q.db.prepare("SELECT COUNT(*) AS c FROM pause_members WHERE run_id = 'M'").get()?.c, 0);
 });
 
@@ -517,10 +531,10 @@ test('ACCUSÉ: the first writer wins (member vs host-idle vs trap); a late confi
   setRunPause(r.db, 'W', true, 'ops-ws', 'soft');
   const carrier = activePauseFor(r.db, 'W')!;
   const who = { wsId: 'w1', memberRun: 'W' };
-  const a = confirmPauseFor(r.db, carrier, who, 111);
+  const a = confirmPauseFor(r.db, carrier, who, 111, { proven: true });
   assert.equal(a.outcome, 'confirmed');
   assert.deepEqual(a.view?.summary, { phase: 'pausing', total: 1, done: 1, missing: [] });
-  const b = confirmPauseFor(r.db, carrier, who, 222);
+  const b = confirmPauseFor(r.db, carrier, who, 222, { proven: true });
   assert.equal(b.outcome, 'already-confirmed');
   const row = listRoster(r.db, 'W', carrier.pausedAt)[0];
   assert.deepEqual([row.pauseConfirmedAt, row.pauseConfirmVia], [111, 'member']);
@@ -528,12 +542,65 @@ test('ACCUSÉ: the first writer wins (member vs host-idle vs trap); a late confi
   assert.equal(confirmPauseFor(r.db, null, who).outcome, 'not-paused');
 });
 
+test('AUTHORITY (follow-up R1-1): a confirm from a NON-member (not in the epoch roster, not proven by the live tree) is refused with ZERO writes — no phantom row, N/M untouched, no forged "all confirmed"', async (t) => {
+  const r = rig(t);
+  mem(r, 'w1', 'W', false); // idle ⇒ host-idle
+  mem(r, 'w2', 'W', true); // running a command: the only straggler
+  setRunPause(r.db, 'W', true, 'ops-ws', 'soft');
+  const p = getRunPause(r.db, 'W')!;
+  await sweepSoftPauses(r.deps);
+  const carrier = activePauseFor(r.db, 'W')!;
+  const before = changes(r);
+  const ghost = confirmPauseFor(r.db, carrier, { wsId: 'not-a-member', memberRun: null }, 9);
+  assert.equal(ghost.outcome, 'not-a-member');
+  assert.equal(changes(r), before, 'a refused confirm writes nothing');
+  assert.deepEqual(listRoster(r.db, 'W', p.pausedAt).map((x) => x.wsId), ['w1', 'w2'], 'no phantom roster row');
+  assert.deepEqual(pauseStatusView(r.db, 'W')!.summary, { phase: 'pausing', total: 2, done: 1, missing: ['w2'] }, 'the ghost counts in neither N nor M');
+  const again = await sweepSoftPauses(r.deps);
+  assert.equal(again.summaries[0].escalated, null, 'the ghost\'s accusé must not complete the roster: the running member is still waited on');
+  // the controls: a roster member is accepted; a live-tree-proven caller (not yet enrolled) is accepted
+  assert.equal(confirmPauseFor(r.db, carrier, { wsId: 'w2', memberRun: 'W' }, 10).outcome, 'confirmed');
+  assert.equal(confirmPauseFor(r.db, carrier, { wsId: 'late-joiner', memberRun: 'W' }, 11, { proven: true }).outcome, 'confirmed');
+});
+
+test('OBSERVER (follow-up R1-2): a HUMAN prompt typed while the douce WAITS spends its mark at its own start — after the escalation the first CLI-started turn is trapped, exactly as in a Pause dure', async (t) => {
+  const r = rig(t);
+  const m = mem(r, 'w1', 'W', true);
+  setRunPause(r.db, 'W', true, 'ops-ws', 'soft');
+  const p = getRunPause(r.db, 'W')!;
+  markPauseHumanTurn('w1', p.pausedAt + 1); // the human prompt yields (its mark is single-use, TTL 30 s)
+  assert.equal(await onTurnStart(r.deps, m), 'allowed', 'the human turn\'s own start is allowed and CONSUMES the mark');
+  escalateSoftPause(r.db, 'W', p.pausedAt, p.pausedAt + 2);
+  assert.equal(await onTurnStart(r.deps, m), 'interrupted', 'a CLI-started turn after the escalation is trapped (the stale mark must not admit it)');
+  assert.deepEqual(r.interrupts, ['w1']);
+  // the REAL flow leaves TWO marks per human turn (one at the send, one at the yield) and only the submit's onTurnStart spends one: the second is made BEFORE the escalation ⇒ void after it
+  const q = rig(t);
+  const qm = mem(q, 'w1', 'W', true);
+  setRunPause(q.db, 'W', true, 'ops-ws', 'soft');
+  const qp = getRunPause(q.db, 'W')!;
+  markPauseHumanTurn('w1', qp.pausedAt + 1);
+  markPauseHumanTurn('w1', qp.pausedAt + 2);
+  assert.equal(await onTurnStart(q.deps, qm), 'allowed', 'the human submit spends ONE mark');
+  escalateSoftPause(q.db, 'W', qp.pausedAt, qp.pausedAt + 50);
+  assert.equal(await onTurnStart(q.deps, qm), 'interrupted', 'the other mark predates the escalation: it must not admit the first CLI-started turn after it');
+  // control: a mark made AFTER the escalation (a human prompt typed in the hard phase) still admits its own turn
+  markPauseHumanTurn('w1', qp.pausedAt + 60);
+  assert.equal(await onTurnStart(q.deps, qm), 'allowed');
+  // control: the hard pause behaves the same
+  const h = rig(t);
+  const hm = mem(h, 'w1', 'W', true);
+  setRunPause(h.db, 'W', true, 'ops-ws', 'hard');
+  markPauseHumanTurn('w1', getRunPause(h.db, 'W')!.pausedAt + 1);
+  assert.equal(await onTurnStart(h.deps, hm), 'allowed');
+  assert.equal(await onTurnStart(h.deps, hm), 'interrupted');
+});
+
 test('ACCUSÉ by the CLI before the host enrolled anyone creates the row with the SAME role the host would (coordinator by runs.coordinator)', (t) => {
   const r = rig(t);
   setRunPause(r.db, 'M', true, 'lead-ws', 'soft');
   const c = activePauseFor(r.db, 'M')!;
-  confirmPauseFor(r.db, c, { wsId: 'ops-ws', memberRun: 'W' }, 5);
-  confirmPauseFor(r.db, c, { wsId: 'w1', memberRun: 'W' }, 6);
+  confirmPauseFor(r.db, c, { wsId: 'ops-ws', memberRun: 'W' }, 5, { proven: true });
+  confirmPauseFor(r.db, c, { wsId: 'w1', memberRun: 'W' }, 6, { proven: true });
   assert.deepEqual(listRoster(r.db, 'M', c.pausedAt).map((x) => [x.wsId, x.role, x.memberRun]), [['ops-ws', 'coordinator', 'W'], ['w1', 'worker', 'W']]);
 });
 

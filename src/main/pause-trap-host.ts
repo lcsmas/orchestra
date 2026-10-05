@@ -13,6 +13,7 @@ import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
 import { snapshotWorktree } from './pause-snapshot';
 import { pauseOrderFiles } from './pause-douce';
+import { keeperActivityUnknown } from '../shared/pause-douce';
 import { getEventsDir } from './events-spool';
 import { killToolTrees, realKillDeps } from './pause-kill';
 import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
@@ -92,16 +93,14 @@ export function buildPauseTrapDeps(): TrapDeps {
       const surface: MemberActivity['surface'] = sdk || probe?.running ? 'sdk' : ptyLive ? 'pty' : 'none';
       const now = Date.now();
       // UNKNOWN is not NONE (#254): no session, no PTY and no probe answer — but a tracked keeper process IS alive (busy/stopped): its turn may well be running
-      const keeperUnknown =
-        !sdk &&
-        !probe &&
-        !ptyLive &&
-        (() => {
-          const kp = readTrackedKeeperPid(m.wsId);
-          if (kp === null) return false;
-          const ks = keeperPidState(kp, m.wsId);
-          return ks === 'keeper' || ks === 'unknown';
-        })();
+      const trackedKeeperPid = !sdk && !probe && !ptyLive ? readTrackedKeeperPid(m.wsId) : null;
+      const keeperUnknown = keeperActivityUnknown({
+        hasSession: !!sdk,
+        probeAnswered: !!probe,
+        ptyLive,
+        trackedKeeperPid,
+        keeperPidState: trackedKeeperPid !== null ? keeperPidState(trackedKeeperPid, m.wsId) : null,
+      });
       return {
         surface,
         ...(keeperUnknown ? { unknown: true } : {}),

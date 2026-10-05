@@ -61,6 +61,7 @@ const OBEYSUB = { id: 'msb', scenario: 'parentsub', kind: 'obey', sub: true, fil
 const BLOCKED = { id: 'blk', scenario: 'longcmd', kind: 'blocked', files: {}, marker: 7731 };
 const SILENT = { id: 'sil', scenario: 'loopsilent', kind: 'silent', files: {} };
 const QUOTA = { id: 'qta', scenario: 'loopquota', kind: 'quota', files: {} };
+const BGN = { id: 'bgn', scenario: 'bgnotify', kind: 'bgnotify', files: {}, marker: 7718 }; // turn ended, a BACKGROUND task still runs (the CLI starts a turn by itself when the trap kills it)
 const IDLE = { id: 'idl', scenario: 'idleend', kind: 'idle', files: { 'idle-work.txt': 'IDLE-WORK\n' } };
 
 /** `deadlineSec`: null = the REAL 3 min; a number rewrites `pause_deadline_at` (a fixture: the mutant arms must not each wait 3 min). `early`: the escalation must come BEFORE the deadline. */
@@ -75,6 +76,13 @@ export const DOUCE_ARMS = {
   'douce-fleet': { members: [OBEY, BLOCKED, QUOTA, SILENT, IDLE], early: false, deadlineSec: null, quota: true },
   // the app DIES mid-douce (after the order was delivered): nothing escalates while it is down, the keeper + CLI keep working; the restarted app's boot drain escalates (deadline long past) and traps
   'douce-restart': { members: [SILENT], early: false, deadlineSec: 25, restart: true },
+  // follow-up R1-1: a confirm from a NON-member (a ghost) is refused with no write; the straggler still waits for the deadline
+  'douce-forged': { members: [BLOCKED], early: false, deadlineSec: 25, forge: true },
+  // follow-up R1-2: a HUMAN prompt typed while the douce waits spends its mark at its own start — the CLI-started turn after the escalation is trapped
+  'douce-humanmark': { members: [BGN, SILENT], early: false, deadlineSec: 25, humanmark: true },
+  // follow-up V-F1 (REAL process): the app dies, the member's keeper is SIGSTOPped (alive, unanswering), the douce lands with the app DOWN; the restarted app has no session for the
+  // member and its probe gets no answer — a tracked keeper that is alive must read as RUNNING (order sent), never as idle (host-idle ⇒ a premature "all confirmed")
+  'douce-keeperstopped': { members: [SILENT], early: false, deadlineSec: 40, keeperstopped: true },
   'douce-off': { members: [OBEY], off: true },
 };
 
@@ -105,6 +113,9 @@ export async function runDouce(ctx) {
   for (const m of members) {
     if (m.kind === 'idle') {
       await app.waitEv((e) => e.ev === 'turn-end' && e.ws === m.id, 90_000, `${m.id}'s turn to end`);
+    } else if (m.kind === 'bgnotify') {
+      await app.waitEv((e) => e.ev === 'turn-end' && e.ws === m.id, 90_000, `${m.id}'s first turn to end`);
+      await waitFor(() => sleepersOf(m.marker).length >= 1, 90_000, `${m.id}'s background task`);
     } else if (m.kind === 'blocked') {
       await waitFor(() => sleepersOf(m.marker).length >= 1, 90_000, `${m.id}'s long command`);
     } else if (m.sub) {
@@ -122,6 +133,12 @@ export async function runDouce(ctx) {
   if (A.quota) api.flags.quota = true; // from now on the quota member's NEXT request is refused (its in-flight command still finishes)
   const pre = Object.fromEntries(members.map((m) => [m.id, { lines: linesNow(m), blocked: read(m.id, 'blocked-work.txt'), idle: read(m.id, 'idle-work.txt') }]));
 
+  if (A.keeperstopped) {
+    app.child.kill('SIGKILL');
+    await waitFor(() => app.exited, 10_000, 'the app to die');
+    process.kill(keepers[members[0].id].pid, 'SIGSTOP'); // alive but unresponsive: the probe will time out
+    await sleepFor(500);
+  }
   // 3. THE PAUSE (Pause douce) through the REAL built CLI
   const tPause = Date.now();
   result.tPause = tPause;
@@ -142,8 +159,22 @@ export async function runDouce(ctx) {
 
   // 4. the gates refuse every AUTO start AT ONCE
   const target = members[0].id;
-  app.send({ cmd: 'auto-send', ws: target, text: 'SCN:idleend' });
-  const gate = await waitFor(() => app.replies.find((r) => r.cmd === 'auto-send' || r.reply === 'auto-send' || (r.reply === 'error' && r.cmd === 'auto-send')), 15_000, 'the auto-send answer').catch(() => null);
+  let gateApp = app;
+  // 4a. (keeperstopped) the restarted app: the member has NO session there, and its keeper does not answer — it must be NOTIFIED, not confirmed idle
+  let tBoot0 = null;
+  if (A.keeperstopped) {
+    gateApp = startApp('second', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), statusSock: true });
+    await gateApp.waitEv((e) => e.ev === 'trap-started', 120_000, 'app2 boot');
+    tBoot0 = Date.now();
+    await sleepFor(9000); // several sweeps + polls with the keeper stopped
+    const m0 = members[0];
+    const rowK = rosterNow(pausedAt).find((r) => r.wsId === m0.id);
+    const sentK = withRo((db) => db.prepare("SELECT COUNT(*) AS c FROM messages WHERE kind = 'pause' AND recipient = ?").get(m0.id).c);
+    check('keeper_stopped_member_not_confirmed_idle', !!rowK && rowK.pauseConfirmedAt === null && !carrierRow().pause_escalated_at && sentK === 1, `roster row: ${JSON.stringify(rowK && { via: rowK.pauseConfirmVia, at: rowK.pauseConfirmedAt })}; escalated=${carrierRow().pause_escalated_at}; pause rows sent=${sentK} (a live-but-silent keeper's turn may be running: UNKNOWN is not NONE)`);
+    process.kill(keepers[m0.id].pid, 'SIGCONT');
+  }
+  gateApp.send({ cmd: 'auto-send', ws: target, text: 'SCN:idleend' });
+  const gate = await waitFor(() => gateApp.replies.find((r) => r.cmd === 'auto-send' || r.reply === 'auto-send' || (r.reply === 'error' && r.cmd === 'auto-send')), 15_000, 'the auto-send answer').catch(() => null);
   check('gate_refuses_auto_start_at_once', !!gate && gate.reply === 'error' && /run en pause/.test(gate.error ?? ''), gate ? `${gate.reply}: ${String(gate.error ?? '').split('\n')[0].slice(0, 120)}` : 'no answer');
 
   // 4b. the app dies mid-douce (restart arm): the order was delivered, then nothing can act until the app is back
@@ -161,6 +192,23 @@ export async function runDouce(ctx) {
     const app2 = startApp('second', { workers: members.map((m) => ({ id: m.id, scenario: m.scenario, files: m.files })), statusSock: true });
     await app2.waitEv((e) => e.ev === 'trap-started', 120_000, 'app2 boot');
     tBoot = Date.now();
+  }
+
+  // 4c. follow-up R1-1: a GHOST (not a member) tries to confirm — refused, nothing written
+  if (A.forge) {
+    const g = cli('run', 'confirm', 'pause', '--as', 'not-a-member', '--run', 'ops');
+    check('ghost_confirm_refused', g.rc !== 0 && /not a member/.test(g.out), `rc=${g.rc} ${g.out.trim().slice(0, 200)}`);
+    await sleepFor(1500);
+    const ids = rosterNow(pausedAt).map((r) => r.wsId);
+    check('ghost_left_no_roster_row', !ids.includes('not-a-member'), `roster: ${ids.join(',')}`);
+  }
+  // 4d. follow-up R1-2: a HUMAN prompt typed while the douce WAITS is allowed (and spends its mark at its own start)
+  let humanTurnEnded = null;
+  if (A.humanmark) {
+    const tHuman = Date.now();
+    app.send({ cmd: 'human-send', ws: 'bgn', text: 'SCN:resume' });
+    humanTurnEnded = await app.waitEv((e) => e.ev === 'turn-end' && e.ws === 'bgn' && e.t >= tHuman, 30_000, 'the human turn to end').catch(() => null);
+    check('human_prompt_allowed_while_the_douce_waits', !!humanTurnEnded && humanTurnEnded.isError !== true && !carrierRow().pause_escalated_at, humanTurnEnded ? `the human turn ended ${humanTurnEnded.t - tHuman} ms after it was typed, before the escalation` : 'the human turn never ended');
   }
 
   // 5. watch the roster until the trap is done (or the budget runs out)
@@ -212,7 +260,7 @@ export async function runDouce(ctx) {
     const lat = latencyOf(m);
     if (m.kind === 'obey' || m.kind === 'silent') {
       result.metrics.orderLatencyMs[m.id] = lat;
-      check(`order_delivered_at_tool_boundary_${m.id}`, lat !== null && lat < (m.sub ? 20_000 : 8000) && (!m.sub || lat > 2000), lat === null ? `${m.id}'s model never saw the pause order` : `the order reached ${m.id}'s model ${lat} ms after the pause (next tool-result boundary; its tool calls are 1 s)`);
+      check(`order_delivered_at_tool_boundary_${m.id}`, lat !== null && lat < (m.sub || A.keeperstopped ? 40_000 : 8000) && (!m.sub || lat > 2000), lat === null ? `${m.id}'s model never saw the pause order` : `the order reached ${m.id}'s model ${lat} ms after the pause (next tool-result boundary; its tool calls are 1 s)`);
     } else if (m.kind === 'quota') {
       result.metrics.orderLatencyMs[m.id] = lat; // out of quota: it may die before the boundary — reported, not required
     } else if (m.kind === 'blocked') {
@@ -231,7 +279,7 @@ export async function runDouce(ctx) {
   check('pause_rows_to_running_members_only', must.every((id) => got1.includes(id)) && got1.every((id) => must.includes(id) || may.includes(id)) && new Set(got1).size === got1.length && pauseRows.every((r) => r.sender === 'host'), `ONE row per running member from the host: [${got1.join(',')}]; required [${must.join(',')}], allowed [${may.join(',')}]; idle members get none`);
 
   // 8. ACCUSÉS: who confirmed how
-  const want = { obey: 'member', idle: 'host-idle', quota: 'host-idle', blocked: 'trap', silent: 'trap' };
+  const want = { obey: 'member', idle: 'host-idle', quota: 'host-idle', blocked: 'trap', silent: 'trap', bgnotify: 'host-idle' };
   const got = Object.fromEntries(roster.map((r) => [r.wsId, r.pauseConfirmVia]));
   check('roster_accusés_by_kind', members.every((m) => got[m.id] === want[m.kind]) && got.ops === 'host-idle', `want ${members.map((m) => `${m.id}:${want[m.kind]}`).join(' ')} ops:host-idle; got ${JSON.stringify(got)}`);
   check('every_member_confirmed', roster.length === members.length + 1 && roster.every((r) => r.pauseConfirmedAt !== null), `${roster.filter((r) => r.pauseConfirmedAt !== null).length}/${roster.length} confirmed`);
@@ -283,6 +331,12 @@ export async function runDouce(ctx) {
     await sleepFor(4000);
     const b = grow.map((m) => linesNow(m).length);
     check('stragglers_stopped_working', JSON.stringify(a) === JSON.stringify(b), `progress lines ${a.join(',')} → ${b.join(',')} over 4 s after the trap`);
+  }
+  if (A.humanmark) {
+    // the trap kills the background task; the CLI starts a turn BY ITSELF (task notification) → the observer must interrupt + NOTE it (the stale human mark must not admit it)
+    const noteOf = () => withRo((db) => db.prepare("SELECT activity FROM pause_records WHERE run_id = 'ops' AND paused_at = ? AND ws_id = 'bgn'").get(pausedAt)?.activity ?? '');
+    const got = await waitFor(() => (/turn started while paused/.test(noteOf()) ? noteOf() : null), 25_000, 'the observer note for the CLI-started turn').catch(() => null);
+    check('human_mark_spent_cli_turn_trapped_after_escalation', !!got && sleepersOf(7718).length === 0, got ? `Bilan note: ${(JSON.parse(got).notes ?? []).find((n) => /turn started while paused/.test(n))?.slice(0, 160)}` : 'no "turn started while paused" note: the CLI-started turn after the escalation was ADMITTED (the human mark was still unspent)');
   }
   // 11. lift: one verb clears every pause column
   const lift = cli('run', 'resume', '--run', 'ops', '--as', 'lead');

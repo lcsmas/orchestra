@@ -110,7 +110,9 @@ test('pause-trap-host snapshots through the no-touch snapshotWorktree and kills 
   assert.ok(code.includes('storeReady: () => store.loadedFromDisk,'), 'an unloaded store defers the trap (F10)');
   assert.ok(code.includes('if (isPtyRunning(wsId)) return;'), 'a live Raw terminal stands the observer down (human keystrokes fire submit)');
   assert.ok(code.includes('did not answer the probe (busy/unresponsive)'), 'a tracked-but-unresponsive keeper is an ERROR, not "no keeper" (F4)');
-  assert.ok(code.includes("ks === 'keeper' || ks === 'unknown'"), "an ALIVE keeper whose argv is unreadable ('unknown') is unresponsive too, never \"no keeper\" (pre-review M8)");
+  assert.ok(code.includes("if (kp !== null && (ks === 'keeper' || ks === 'unknown')) return { error:"), "an ALIVE keeper whose argv is unreadable ('unknown') is unresponsive too, never \"no keeper\" (pre-review M8) — the FULL cliOf line (V-F1: a substring also matched the activity clause)");
+  assert.ok(/keeperActivityUnknown\(\{\s*hasSession: !!sdk,\s*probeAnswered: !!probe,\s*ptyLive,\s*trackedKeeperPid,\s*keeperPidState: trackedKeeperPid !== null \? keeperPidState\(trackedKeeperPid, m\.wsId\) : null,\s*\}\)/.test(code), 'activityOf asks the pure keeperActivityUnknown with the real facts (a tracked, unresponsive keeper is UNKNOWN, not idle — #254)');
+  assert.ok(code.includes('...(keeperUnknown ? { unknown: true } : {}),'), 'and reports it, so the Pause douce reads the member as running');
   assert.ok(!/process\.kill\(|\.kill\(/.test(code), 'the host binding contains no direct kill call');
 });
 

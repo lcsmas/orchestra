@@ -63,3 +63,20 @@ export function renderPauseStatusLine(v: PauseStatusView, opts: { label?: (wsId:
   }
   return `${pausePhaseWord(v.phase, v.mode)} — ${roster}${tail}`;
 }
+
+/** UNKNOWN is not NONE (#254): is a member's "no turn running" read really a guess? True when the app holds no live session, no PTY and the keeper probe got no
+ *  answer — BUT a tracked keeper process IS alive (its argv is the workspace's keeper, or unreadable): busy/stopped/slow, its turn may well be running. The pure
+ *  decision behind `activityOf().unknown` (src/main/pause-trap-host.ts reads the facts, this decides). */
+export function keeperActivityUnknown(i: {
+  hasSession: boolean;
+  probeAnswered: boolean;
+  ptyLive: boolean;
+  /** The pid file's keeper pid (null = no tracked keeper). */
+  trackedKeeperPid: number | null;
+  /** `keeperPidState()` of that pid read NOW ('keeper' | 'other' | 'gone' | 'unknown'), or null when not read. */
+  keeperPidState: string | null;
+}): boolean {
+  if (i.hasSession || i.probeAnswered || i.ptyLive) return false;
+  if (i.trackedKeeperPid === null) return false;
+  return i.keeperPidState === 'keeper' || i.keeperPidState === 'unknown';
+}

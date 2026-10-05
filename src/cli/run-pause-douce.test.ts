@@ -151,3 +151,15 @@ test('`run confirm pause --run <x>` never overwrites what the host enrolled (a w
   assert.equal(r.code, 0, r.stderr);
   assert.deepEqual(withDb(h, (db) => listRoster(db, 'O', p.pausedAt)).map((x) => [x.wsId, x.role, x.memberRun, x.pauseConfirmVia]), [['ops-ws', 'coordinator', 'O', 'member']]);
 });
+
+test('`run confirm pause` from a NON-member (`--as ghost --run O`) is refused: rc 1, "not a member", nothing written (R1-1) — a real member still confirms', needsBuild, (t) => {
+  const h = home(t);
+  assert.equal(cli(h, ['run', 'pause', '--run', 'O']).code, 0);
+  const p = withDb(h, (db) => getRunPause(db, 'O'))!;
+  withDb(h, (db) => enrollMember(db, 'O', p.pausedAt, { wsId: 'w1', memberRun: 'O' }));
+  const ghost = cli(h, ['run', 'confirm', 'pause', '--as', 'not-a-member', '--run', 'O'], 'w1');
+  assert.notEqual(ghost.code, 0);
+  assert.match(ghost.stderr, /"not-a-member" is not a member of run O's pause roster — nothing recorded/);
+  assert.deepEqual(withDb(h, (db) => listRoster(db, 'O', p.pausedAt)).map((x) => [x.wsId, x.pauseConfirmVia]), [['w1', null]], 'no phantom row, nobody confirmed');
+  assert.match(cli(h, ['run', 'confirm', 'pause', '--run', 'O'], 'w1').stdout, /Pause accusée for w1 on run O\. 1\/1 en pause\./);
+});
