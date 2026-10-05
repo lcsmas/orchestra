@@ -240,8 +240,11 @@ for (const arm of sel) {
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
   const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: arm.sabotage ? ['--sabotage', arm.sabotage] : [] });
+  const hitsOf = (rr) => (arm.redden ?? []).filter((id) => rr.checks.some((c) => !c.ok && c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
+  // a cycle CUT SHORT by the host guard before the named check could be evaluated proves nothing either way: it is a VOID, re-run it (a RED already measured by the named check is kept)
+  const cutShortWithoutEvidence = (rr) => !!arm.redden && rr.checks.some((c) => c.id === 'cycle_incomplete' && /cut short by a VOID/.test(c.detail)) && hitsOf(rr).length === 0;
   let r = await runArm();
-  for (let n = 1; r.verdict === 'VOID' && n <= Number(opt('void-retries', '2')); n++) {   // a VOID drive (host dipped below the bar mid-run) is no verdict: wait for the host, run it again — the bar is never relaxed
+  for (let n = 1; (r.verdict === 'VOID' || cutShortWithoutEvidence(r)) && n <= Number(opt('void-retries', '2')); n++) {   // a VOID drive (host dipped below the bar mid-run) is no verdict: wait for the host, run it again — the bar is never relaxed
     const w = await waitForHost(arm.members ?? members);
     say(`   ${arm.name}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
     if (!w.ok) break;
@@ -250,7 +253,7 @@ for (const arm of sel) {
   const red = r.checks.filter((c) => !c.ok);
   const reached = r.checks.some((c) => c.id === 'workers_mid_work' && c.ok);   // the rig itself must have worked: a drive that never got the fleet to mid-work proves nothing (no exemption for any arm)
   let verdict, why;
-  if (r.verdict === 'VOID') { verdict = 'VOID'; why = 'host guard'; }
+  if (r.verdict === 'VOID' || cutShortWithoutEvidence(r)) { verdict = 'VOID'; why = 'host guard (the drive was cut short before the named check could be evaluated)'; }
   else if (arm.redden) {
     // the named instrument must be RED with a MEASURED reason: a check that is red only because its metric is absent ("NOT MEASURED": an aborted cycle, a refused pause) proves nothing about the instrument
     const hit = arm.redden.filter((id) => red.some((c) => c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));   // + the specific reason where one is known (a refusal text, the killed member)
