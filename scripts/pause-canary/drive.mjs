@@ -115,8 +115,8 @@ async function runExercise(name) {
       // a real command that "came back": started in its own session, parent = this drive (outside the rig census) ⇒ an orphan from the census' point of view
       const c = spawn('setsid', ['sleep', '7403'], { cwd: wt, env, detached: true, stdio: 'ignore' }); c.unref(); injected.push(c.pid);
     } else if (kind === 'app-git') {
-      // a helper whose cmdline reads as the APP (`<app> --type=…`: kindOf → 'app') running git + a child in the worktree = the shape of the app's own `git ls-files --others` (ppid = app)
-      const c = spawn('bash', ['-c', `exec -a "${rig.appBin} --type=fake-app-helper" bash -c 'git ls-files --others --exclude-standard >/dev/null; sleep 8'`], { cwd: wt, env, detached: true, stdio: 'ignore' }); c.unref(); injected.push(c.pid);
+      // a helper whose cmdline reads as the APP (`<app> --type=…`: kindOf → 'app') running git + a child in the worktree = the shape of the app's own `git ls-files --others` (ppid = app). The trailing `:` matters: bash `-c` EXECs its last simple command, so `sleep 8` would REPLACE the helper (cmdline `sleep 8`, parent outside the rig = an orphan)
+      const c = spawn('bash', ['-c', `exec -a "${rig.appBin} --type=fake-app-helper" bash -c 'git ls-files --others --exclude-standard >/dev/null; sleep 8; :'`], { cwd: wt, env, detached: true, stdio: 'ignore' }); c.unref(); injected.push(c.pid);
     }
     say(`   INJECT ${kind}: started pid ${injected[injected.length - 1]} in ${wt}`);
   };
