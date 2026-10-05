@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(process.env.PAUSE_AUTO_REPO ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'off_identity', 'hang_selftest'];
+const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 const TICK_MS = 20_000;   // prompt-queue TICK_MS — "one poll tick" (pinned by pause-auto-wiring.test.ts)
 
@@ -64,6 +64,7 @@ const server = http.createServer((req, res) => {
   const st = tokenState.get(tok);
   const answer = () => {
     if (!st) { res.writeHead(401).end('{}'); return; }
+    if (st.fail) { res.writeHead(500).end('{}'); return; }
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(usageBody(st)));
   };
   const late = Number(req.headers['x-rig-delay'] ?? 0);
@@ -177,15 +178,15 @@ const writeCreds = (id, token) => {
   fs.mkdirSync(acctDir(id), { recursive: true });
   fs.writeFileSync(path.join(acctDir(id), '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: token, refreshToken: 'r', expiresAt: Date.now() + 86_400_000 } }));
 };
-async function seed({ pauseSwitch = true, aLimitedMs = 3_600_000, realFlusher = false } = {}) {
+async function seed({ pauseSwitch = true, aLimitedMs = 3_600_000, realFlusher = false, wake = true } = {}) {
   writeCreds('acct-a', 'tok-a');
   writeCreds('acct-b', 'tok-b');
   tokenState.set('tok-a', { limitedUntil: aLimitedMs ? Date.now() + aLimitedMs : null });
   tokenState.set('tok-b', { limitedUntil: null });
   await store.setAccounts([{ id: 'acct-a', label: 'A', configDir: acctDir('acct-a') }, { id: 'acct-b', label: 'B', configDir: acctDir('acct-b') }]);
-  busRuns.startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops' }, pauseSwitch ? ON : OFFSW);
+  busRuns.startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops' }, pauseSwitch ? (wake ? ON : { ...ON, wake: false }) : OFFSW);
   busRuns.startRun(db, { id: 'ws-xops', kind: 'vague', coordinator: 'ws-xops' }, ON);
-  await store.upsertWorkspace(mk('ws-ops', { kind: 'orchestrator' }));
+  await store.upsertWorkspace(mk('ws-ops', { kind: 'orchestrator', accountId: 'acct-a' }));
   await store.upsertWorkspace(mk('ws-m1', { parentId: 'ws-ops', accountId: 'acct-a' }));
   await store.upsertWorkspace(mk('ws-m2', { parentId: 'ws-ops', accountId: 'acct-a' }));
   await store.upsertWorkspace(mk('ws-xops', { kind: 'orchestrator' }));
@@ -445,6 +446,85 @@ if (ARM === 'limit_pause') {
   await activity.markStoppedOnUsageLimit('ws-m2', Date.now() + 3_600_000);  // control: a REAL stop
   rec('pausedByRealStop', run('ws-ops').paused_at !== null);
   ok = out.pausedBefore === false && out.wakeAttempts === 1 && out.markerRestored === 'usage_limit' && out.pausedByRemark === false && out.pausedByRealStop === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'wake_off_no_pause') {
+  // M1: `pause` and `wake` are independent frozen opt-ins. With wake OFF a Reprise's bus rows wake nobody and #74's nudge is refused by the pause — the fleet would stall
+  // for good. So NO auto Pause: a limit stop writes nothing (= master). Control in the same arm: a run with wake ON pauses.
+  await seed({ wake: false });
+  const runsBefore = allRuns();
+  await activity.markStoppedOnUsageLimit('ws-m1', Date.now() + 3_600_000);
+  rec('runsIdentical', allRuns() === runsBefore);
+  rec('pausedOps', run('ws-ops').paused_at !== null);
+  await activity.markStoppedOnUsageLimit('ws-xm', Date.now() + 3_600_000);   // control: ws-xops has pause + wake ON
+  rec('pausedControl', run('ws-xops').paused_at !== null);
+  ok = out.runsIdentical === true && out.pausedOps === false && out.pausedControl === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'release_clears_marker') {
+  // m1: a member sent its Reprise row (the coordinator's Bilan at beginReprise, a worker's Consigne at `run release`) loses its #74 marker BEFORE #74's candidates are read —
+  // else the generic nudge (429 path: reset unknown, fresh reading ⇒ nudge at once) wakes it a SECOND time next to the Consigne.
+  await seed({ aLimitedMs: 0 });
+  await activity.markStoppedOnUsageLimit('ws-m1', null);      // worker trigger, 429 path (no reset time)
+  await activity.markStoppedOnUsageLimit('ws-ops', null);     // the OPS itself (coordinator trigger), merged into the same pause
+  await sleep(25);
+  await acctUsage.refreshAccountsNow();                       // readings fetched AFTER both markers
+  rec('paused', run('ws-ops').paused_at !== null);
+  rec('reason', autoReason()?.wsIds ?? null);
+  trapDone();
+  const starts0 = calls.start.length;
+  await pq.__tickForTests();                                  // evaluate → beginReprise (coordinator row) → marker of ws-ops cleared → #74 sees no candidate for it
+  rec('resuming', resumeStarted() !== null);
+  rec('opsMarker', ws('ws-ops')?.lastStopReason ?? null);
+  rec('m1MarkerBlocked', ws('ws-m1')?.lastStopReason ?? null);
+  rec('startsAfterReprise', calls.start.length - starts0);
+  let released = null;
+  try {
+    const reprise = await import(`${REPO}/src/main/pause-reprise.ts`);
+    released = reprise.releaseMembers(db, 'ws-ops', 'ws-ops', ['ws-m1'])?.released ?? null;   // the OPS releases m1: its Consigne is sent
+  } catch (e) { released = String(e); }
+  rec('released', released);
+  await pq.__tickForTests();                                  // m1 may start now AND would be nudged by #74 — unless its marker is gone first
+  rec('m1MarkerAfterRelease', ws('ws-m1')?.lastStopReason ?? null);
+  rec('startsAfterRelease', calls.start.length - starts0);
+  ok = out.paused && JSON.stringify(out.reason) === '["ws-m1","ws-ops"]' && out.resuming && out.opsMarker === null && out.m1MarkerBlocked === 'usage_limit' && out.startsAfterReprise === 0
+    && JSON.stringify(out.released) === '["ws-m1"]' && out.m1MarkerAfterRelease === null && out.startsAfterRelease === 0;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'nudge_throttle') {
+  // m2: a reset that is unknown / passed with NO conclusive reading asks the poller for one — at most once per 120 s per account (a failed status is never "fresh": without the
+  // throttle every 20 s tick would hit the usage endpoint).
+  await seed({ aLimitedMs: 0 });
+  tokenState.set('tok-a', { limitedUntil: null, fail: true });   // acct-a's usage endpoint answers 500
+  await activity.markStoppedOnUsageLimit('ws-m1', null);         // reset unknown ⇒ refresh wanted every tick
+  await sleep(25);
+  await acctUsage.refreshAccountsNow();                           // acct-a: a FAILED status (data null)
+  rec('failedStatus', acctUsage.getAccountUsage('acct-a')?.ok === false);
+  trapDone();
+  await sleep(150);
+  const h0 = hits['tok-a'] ?? 0;
+  for (let i = 0; i < 3; i++) { await pq.__tickForTests(); await sleep(250); }
+  rec('fetchesOver3Ticks', (hits['tok-a'] ?? 0) - h0);
+  rec('resumed', resumeStarted() !== null);
+  ok = out.failedStatus === true && out.fetchesOver3Ticks === 1 && out.resumed === false;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'usage_newer_wins') {
+  // m3: the default-login poller — a plain poll ISSUED BEFORE a forced `refreshUsageNow` lands AFTER it and must not replace its snapshot (ordered by issue sequence).
+  fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok-d', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 } }));
+  tokenState.set('tok-d', { limitedUntil: null });
+  delayFirst.set('tok-d', 600);                                   // the FIRST request issued (the plain poll) answers 600 ms late
+  const usageMod = await import(`${REPO}/src/main/usage.ts`);
+  if (typeof usageMod.refreshUsageNow !== 'function') { out.error = 'no refreshUsageNow (unfixed base)'; ok = false; }
+  else {
+    usageMod.startUsagePolling();                                  // plain poll #1 (issued first, answered late)
+    await usageMod.refreshUsageNow();                              // forced poll #2 (answered at once, quota)
+    rec('forcedSnapshot', usageMod.getLastUsage()?.fiveHour?.utilization ?? null);
+    tokenState.set('tok-d', { limitedUntil: Date.now() + 3_600_000 });   // the late answer is computed NOW: it says "limited"
+    await sleep(1300);
+    rec('afterLateAnswer', usageMod.getLastUsage()?.fiveHour?.utilization ?? null);
+    ok = out.forcedSnapshot === 10 && out.afterLateAnswer === 10;
+  }
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'off_identity') {

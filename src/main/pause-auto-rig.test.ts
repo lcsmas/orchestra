@@ -145,6 +145,40 @@ test('RIG remark_no_repause: #74\'s own failed-wake re-mark is not a new limit s
   assert.equal(r.ok, true);
 });
 
+test('RIG wake_off_no_pause: a carrier with the frozen `wake` switch OFF gets NO auto Pause (a Reprise could wake nobody) — nothing written; a wake-ON run pauses (control)', () => {
+  const r = runArm('wake_off_no_pause');
+  assert.equal(r.runsIdentical, true);
+  assert.equal(r.pausedOps, false);
+  assert.equal(r.pausedControl, true);
+  assert.equal(r.ok, true);
+});
+
+test('RIG release_clears_marker: a member sent its Reprise row (coordinator Bilan at beginReprise, worker Consigne at `run release`) loses its #74 marker BEFORE the nudge — no second wake', () => {
+  const r = runArm('release_clears_marker');
+  assert.equal(r.resuming, true);
+  assert.equal(r.opsMarker, null, 'the coordinator trigger: cleared in the SAME tick as its Bilan row');
+  assert.equal(r.m1MarkerBlocked, 'usage_limit', 'the blocked worker keeps its marker (its OPS has not released it)');
+  assert.equal(r.startsAfterReprise, 0);
+  assert.deepEqual(r.released, ['ws-m1']);
+  assert.equal(r.m1MarkerAfterRelease, null);
+  assert.equal(r.startsAfterRelease, 0, '#74 did NOT nudge the released worker next to its Consigne (429 path: reset unknown + fresh reading would have)');
+  assert.equal(r.ok, true);
+});
+
+test('RIG nudge_throttle: a reset unknown / passed with no conclusive reading asks the poller for one at most once per 120 s per account (a failed status is never fresh)', () => {
+  const r = runArm('nudge_throttle');
+  assert.equal(r.failedStatus, true);
+  assert.equal(r.fetchesOver3Ticks, 1, 'three 20 s ticks ⇒ ONE usage fetch, not three');
+  assert.equal(r.resumed, false);
+  assert.equal(r.ok, true);
+});
+
+test('RIG usage_newer_wins: a plain default-login poll issued BEFORE a forced refreshUsageNow and landing after it never replaces its snapshot (issue-sequence order)', () => {
+  const r = runArm('usage_newer_wins');
+  assert.deepEqual([r.forcedSnapshot, r.afterLateAnswer], [10, 10]);
+  assert.equal(r.ok, true);
+});
+
 test('RIG off_identity: switch OFF ⇒ a limit stop writes no pause column, a tick forces/fetches nothing extra, an account switch forces nothing, #74 still waits for the stored reset', () => {
   const r = runArm('off_identity');
   assert.equal(r.runsIdentical, true);

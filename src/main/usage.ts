@@ -179,7 +179,13 @@ function nextDelay(): number {
   return Math.min(backed, BACKOFF_CAP_MS);
 }
 
-async function poll(): Promise<void> {
+// #256: issue sequence of each poll; `forcedSeq` = the latest FORCED poll applied. An OLDER-issued poll landing after a forced one never replaces its snapshot
+// (ordered by issue sequence, not wall-clock). No forced poll ⇒ `forcedSeq` stays 0 ⇒ every snapshot is applied exactly as before.
+let pollSeq = 0;
+let forcedSeq = 0;
+
+async function poll(forced = false): Promise<void> {
+  const seq = ++pollSeq;
   // Stamp the fetch time in the main process rather than the renderer so the
   // "as of" instant is when we actually queried, not when the IPC landed.
   const { snapshot, rateLimited } = await fetchUsage(Date.now());
@@ -187,8 +193,8 @@ async function poll(): Promise<void> {
     rateLimitStreak++;
   } else if (snapshot) {
     rateLimitStreak = 0;
-    // an OLDER overlapping fetch (the scheduled poll vs a forced `refreshUsageNow`, #256) never replaces a newer snapshot
-    if (!lastSnapshot || snapshot.fetchedAt >= lastSnapshot.fetchedAt) {
+    if (seq > forcedSeq) {
+      if (forced) forcedSeq = seq;
       lastSnapshot = snapshot;
       persist(snapshot);
       platform.broadcast('usage:update', snapshot);
@@ -207,7 +213,7 @@ function schedule(): void {
 
 /** One poll NOW (#256: a migration to the default login forces a fresh reading of the global poller too). Never throws. */
 export async function refreshUsageNow(): Promise<void> {
-  await poll().catch(() => undefined);
+  await poll(true).catch(() => undefined);
 }
 
 export function startUsagePolling(): void {

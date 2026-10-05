@@ -60,6 +60,12 @@ export interface PauseAutoDeps {
   noteReprise: (runId: string, now: number) => void;
   /** An explicit account change / re-login is NEW evidence: it ends the flap guard's streak (the guard exists for an UNEXPLAINED loop). */
   resetStreak: (runId: string) => void;
+  /** Workspaces whose #74 marker (`lastStopReason === 'usage_limit'`) is set, with the time it was recorded. */
+  limitMarkedWorkspaces: () => Array<{ id: string; markedAt: number }>;
+  /** Drop a member's marker (activity `clearStopReason`) — its Reprise row / Consigne was sent, so #74's generic nudge must not ALSO wake it. */
+  clearLimitMarker: (wsId: string) => Promise<void>;
+  /** Cursor over `messages.sequence` for the `reprise` rows already seen (in-memory: a restart re-reads them, harmless). */
+  repriseCursor: { get: () => number; set: (seq: number) => void };
   /** The workspace store is loaded from disk (the trap's rule: an unloaded store reads every trigger as "deleted"). Absent = always ready. */
   storeReady?: () => boolean;
   now: () => number;
@@ -138,6 +144,7 @@ export type AutoPauseOutcome =
   | 'repaused' // the run was RESUMING (auto): back to paused in a NEW epoch, the new member joined
   | 'manual-pause' // the member is already under a manual pause: untouched
   | 'no-carrier' // no run above the member has the frozen `pause` switch ON
+  | 'no-wake' // the carrier's frozen `wake` switch is OFF: a Reprise could wake nobody — nothing is written (= master)
   | 'no-workspace'
   | 'no-bus';
 
@@ -182,6 +189,9 @@ export function autoPauseOnLimit(deps: PauseAutoDeps, wsId: string, attempt = 0)
 
   const carrier = nearest;
   if (!carrier) return 'no-carrier';
+  // `pause` and `wake` are independent frozen opt-ins: with `wake` OFF the Reprise's bus rows wake nobody and #74's nudge is refused by the pause — the fleet would stall for
+  // good (worse than master, where the nudge wakes the member at the reset). So no auto Pause then: write nothing.
+  if (getRun(db, carrier)?.flags.wake !== true) return 'no-wake';
   const now = deps.now();
   const reason = mergePauseAuto(null, { wsId, accountId });
   const res = db
@@ -356,12 +366,52 @@ function evaluateOne(deps: PauseAutoDeps, db: BusDb, run: AutoPausedRun): AutoEv
   }
   if (outcome === 'resuming' || outcome === 'already-resuming') {
     deps.noteReprise(run.runId, now);
-    // #74's `usage_limit` markers are deliberately LEFT: #74 stays the safety net that restarts a limit-killed member once it may start (released, reset passed).
+    // #74's marker of a trigger is dropped once ITS `reprise` row is sent (`clearRepriseDeliveredMarkers`, next tick head) — until then #74 stays the safety net.
     deps.log.info(`pause-auto: quota is back — run ${run.runId} Reprise started (${outcome}; triggers ${run.reason.wsIds.join(',')}; streak ${streak + 1})`);
   } else if (outcome === 'refused') {
     deps.log.warn(`pause-auto: Reprise of run ${run.runId} REFUSED for a host caller — contract breach (#276 D3)`);
   }
   return { runId: run.runId, action: 'reprise', outcome };
+}
+
+// ─── #74's marker once the member's Reprise row was sent ─────────────────────────────────────────────────────────────────────────────────
+export interface MarkerClearEntry {
+  wsId: string;
+  sequence: number;
+}
+
+/** A `reprise` row (the coordinator's Bilan at `beginReprise`, a worker's Consigne at `run release`) addressed to a member whose #74 marker is older than the row:
+ *  its restart is the Reprise's job — drop the marker, or #74's generic nudge would wake it a SECOND time (no second mechanism, D5/D6). Runs at the head of every tick,
+ *  before #74's candidates, so the marker is gone before the nudge could read it. Incremental over `messages.sequence` (rowid range); only runs with the `pause` switch ON
+ *  ever have `reprise` rows ⇒ nothing happens when the switch is OFF. */
+export async function clearRepriseDeliveredMarkers(deps: PauseAutoDeps): Promise<MarkerClearEntry[]> {
+  const db = deps.getBus();
+  if (!db) return [];
+  const marked = deps.limitMarkedWorkspaces();
+  const hi = (db.prepare('SELECT MAX(sequence) AS m FROM messages').get() as { m: number | null }).m ?? 0;
+  const from = deps.repriseCursor.get();
+  if (hi <= from) return [];
+  const out: MarkerClearEntry[] = [];
+  const byId = new Map(marked.map((m) => [m.id.toLowerCase(), m]));
+  if (byId.size > 0) {
+    const rows = db
+      .prepare("SELECT sequence, recipient, created_at FROM messages WHERE sequence > ? AND sequence <= ? AND kind = 'reprise' AND recipient IS NOT NULL ORDER BY sequence")
+      .all(from, hi) as Array<{ sequence: number; recipient: string; created_at: number }>;
+    for (const r of rows) {
+      const m = byId.get(String(r.recipient).toLowerCase());
+      if (!m || r.created_at < m.markedAt) continue; // an OLDER row says nothing about THIS limit stop
+      byId.delete(m.id.toLowerCase());
+      try {
+        await deps.clearLimitMarker(m.id);
+        out.push({ wsId: m.id, sequence: Number(r.sequence) });
+        deps.log.info(`pause-auto: ${m.id} was sent its Reprise row — #74 marker cleared (no second wake)`);
+      } catch (e) {
+        deps.log.warn(`pause-auto: marker clear failed for ${m.id}`, e);
+      }
+    }
+  }
+  deps.repriseCursor.set(hi);
+  return out;
 }
 
 // ─── account migration / re-login ─────────────────────────────────────────────────────────────────────────────────────────────────────────

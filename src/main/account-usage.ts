@@ -150,6 +150,8 @@ function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => voi
 }
 
 interface CacheEntry {
+  /** Issue sequence of the FORCED refresh (#256) that wrote this entry; absent on every plain refresh (so nothing changes while no forced refresh exists). */
+  forcedSeq?: number;
   status: AccountUsageStatus;
   /** The config dir this status was fetched for. If an account's dir later
    *  resolves differently, the cache is invalidated. */
@@ -159,11 +161,14 @@ interface CacheEntry {
 // accountId -> last status + the dir it was fetched against.
 const cache = new Map<string, CacheEntry>();
 
-/** Two overlapping refreshes (a forced one and a plain one) can land out of order: the OLDER reading must never replace a newer one of the same dir
- *  (#256: a forced fresh reading overwritten by an older plain fetch would read as "taken for the old account"). */
-function setIfNewer(id: string, entry: CacheEntry): void {
+let refreshSeq = 0;
+
+/** A plain refresh ISSUED BEFORE a forced one (#256) can land after it: it must not replace the forced reading (that would read as "taken for the old account").
+ *  Ordered by ISSUE sequence, never wall-clock (a clock step cannot drop a reading), and only against entries a FORCED refresh wrote — with no forced refresh every
+ *  write is master's replace-always. */
+function setUnlessSuperseded(id: string, entry: CacheEntry, seq: number): void {
   const prev = cache.get(id);
-  if (prev && prev.dir === entry.dir && prev.status.fetchedAt > entry.status.fetchedAt) return;
+  if (prev && prev.dir === entry.dir && prev.forcedSeq !== undefined && prev.forcedSeq > seq) return;
   cache.set(id, entry);
 }
 
@@ -267,6 +272,7 @@ async function refreshStale(
   force: ReadonlySet<string> = new Set(),
 ): Promise<{ byId: Record<string, AccountUsageStatus>; changed: boolean }> {
   const accounts = store.accounts;
+  const seq = ++refreshSeq;
   let changed = false;
 
   // Drop cache entries for accounts that no longer exist.
@@ -345,7 +351,7 @@ async function refreshStale(
   if (toFetch.length > 0) {
     const results = await Promise.all(toFetch.map((t) => fetchUsage(t.id, t.token, now)));
     for (let i = 0; i < results.length; i++) {
-      setIfNewer(toFetch[i].id, { status: results[i], dir: toFetch[i].dir });
+      setUnlessSuperseded(toFetch[i].id, { status: results[i], dir: toFetch[i].dir, ...(force.has(toFetch[i].id) ? { forcedSeq: seq } : {}) }, seq);
     }
     changed = true;
   }
@@ -355,7 +361,7 @@ async function refreshStale(
       toProbe.map((t) => fetchApiKeyUsage(t.id, t.apiKey, t.baseUrl, now)),
     );
     for (let i = 0; i < results.length; i++) {
-      setIfNewer(toProbe[i].id, { status: results[i], dir: toProbe[i].dir });
+      setUnlessSuperseded(toProbe[i].id, { status: results[i], dir: toProbe[i].dir, ...(force.has(toProbe[i].id) ? { forcedSeq: seq } : {}) }, seq);
     }
     changed = true;
   }

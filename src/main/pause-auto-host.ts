@@ -5,7 +5,7 @@ import { store } from './store.ts';
 import { getBus } from './bus.ts';
 import { beginReprise } from './bus-pause.ts';
 import { log } from './logger.ts';
-import { setUsageLimitStopObserver } from './activity.ts';
+import { clearStopReason, setUsageLimitStopObserver } from './activity.ts';
 import { refreshAccountsNow } from './account-usage.ts';
 import { refreshUsageNow } from './usage.ts';
 import { usageForAccount } from './usage-reading.ts';
@@ -13,6 +13,7 @@ import { REPRISE_STREAK_WINDOW_MS } from '../shared/pause-auto.ts';
 import {
   afterAccountChange,
   autoPauseOnLimit,
+  clearRepriseDeliveredMarkers,
   evaluateAutoPaused,
   type AccountChangeResult,
   type AutoEvalEntry,
@@ -26,6 +27,8 @@ const lastNudge = new Map<string, number>();
 const accountChanged = new Map<string, number>();
 /** runId → when the host auto-Reprised it (the flap guard's streak; forgotten by a restart). */
 const reprises = new Map<string, number[]>();
+/** Highest `messages.sequence` already scanned for `reprise` rows (see `clearRepriseDeliveredMarkers`). */
+let repriseSeq = 0;
 
 const realDeps: PauseAutoDeps = {
   getBus,
@@ -56,6 +59,10 @@ const realDeps: PauseAutoDeps = {
   },
   noteReprise: (runId, now) => void reprises.set(runId, [...(reprises.get(runId) ?? []), now]),
   resetStreak: (runId) => void reprises.delete(runId),
+  limitMarkedWorkspaces: () =>
+    store.workspaces.filter((w) => !w.archived && w.lastStopReason === 'usage_limit').map((w) => ({ id: w.id, markedAt: w.lastStopReasonAt ?? 0 })),
+  clearLimitMarker: (wsId) => clearStopReason(wsId),
+  repriseCursor: { get: () => repriseSeq, set: (seq) => void (repriseSeq = seq) },
   storeReady: () => store.loadedFromDisk,
   now: () => Date.now(),
   log: { info: (m) => log.info(m), warn: (m, e) => log.warn(m, e) },
@@ -82,6 +89,7 @@ export function stopPauseAuto(): void {
   lastNudge.clear();
   accountChanged.clear();
   reprises.clear();
+  repriseSeq = 0;
 }
 
 // Coalesce: the tick and an account-change hook may both evaluate; a Reprise must start ONCE.
@@ -90,6 +98,11 @@ let inflight: Promise<AutoEvalEntry[]> | null = null;
 /** One evaluation of every auto-paused run (cheap: one indexed-less SELECT when none). Called from #74's tick. */
 export function evaluatePausedRuns(): Promise<AutoEvalEntry[]> {
   inflight ??= evaluateAutoPaused(realDeps)
+    .then(async (entries) => {
+      // after the Reprises of this tick: a member just sent its Reprise row loses its #74 marker BEFORE #74's candidates are read (same tick, after this returns)
+      await clearRepriseDeliveredMarkers(realDeps).catch((e) => log.warn('pause-auto: marker clearing failed', e));
+      return entries;
+    })
     .catch((e) => {
       log.warn('pause-auto: evaluation failed', e);
       return [] as AutoEvalEntry[];

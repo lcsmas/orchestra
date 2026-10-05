@@ -9,12 +9,14 @@ import {
   afterAccountChange,
   autoPauseOnLimit,
   autoPausedRuns,
+  clearRepriseDeliveredMarkers,
   evaluateAutoPaused,
   type AutoWorkspace,
   type PauseAutoDeps,
 } from './pause-auto.ts';
 import { readPauseOrigin, insertBilan } from './bus-pause-records.ts';
 import { beginReprise as realBeginReprise, setRunPause } from './bus-pause.ts';
+import { releaseMembers } from './pause-reprise.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import { PAUSE_AUTO_BY, REPRISE_STREAK_WINDOW_MS, RESET_GRACE_MS, TRAP_WAIT_MAX_MS, encodePauseAuto, parsePauseAuto, repriseBackoffMs, type UsageReading } from '../shared/pause-auto.ts';
 import type { RepriseEntry } from '../shared/pause-lifecycle.ts';
@@ -24,7 +26,7 @@ import type { UsageWindows } from '../shared/accounts.ts';
 // home (btrfs — never /tmp, never the live bus), fake store/usage seams. Named arms are what scripts/pause-auto/mutate-unit.mjs reddens.
 
 const ROOT = path.join(os.homedir(), '.cache', `pause-auto-bus-${process.pid}`);
-const ON: BusSwitches = { ...DEFAULT_BUS_SWITCHES, pause: true };
+const ON: BusSwitches = { ...DEFAULT_BUS_SWITCHES, pause: true, wake: true }; // the auto Pause needs BOTH frozen opt-ins (a Reprise must be able to wake someone)
 const OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES };
 const T0 = 1_800_000_000_000;
 let n = 0;
@@ -47,6 +49,8 @@ interface Rig {
   /** what `forceRefresh` installs for an account: a reading fetched "now" */
   onForce: (ids: Array<string | null>) => void;
   storeReady: boolean;
+  markerCleared: string[];
+  cursor: number;
 }
 
 /** L (lead) ⊃ O (ops, own run) ⊃ w1 w2 ; L ⊃ X (ops, own run) ⊃ x1. Workspace id == run id for orchestrators (the gates' walk). */
@@ -73,6 +77,8 @@ function rig(sw: { L?: BusSwitches; O?: BusSwitches; X?: BusSwitches } = {}, o: 
     deps: undefined as unknown as PauseAutoDeps,
     onForce: () => {},
     storeReady: true,
+    markerCleared: [],
+    cursor: 0,
   };
   const beginReprise: RepriseEntry = (d, run, actor, opts) => {
     r.calls.reprise.push({ run, actor, opts });
@@ -96,6 +102,13 @@ function rig(sw: { L?: BusSwitches; O?: BusSwitches; X?: BusSwitches } = {}, o: 
     resetStreak: (run) => void r.reprises.delete(run),
     now: () => r.clock.now,
     storeReady: () => r.storeReady,
+    limitMarkedWorkspaces: () => [...ws.values()].filter((w) => !w.archived && w.lastStopReason === 'usage_limit').map((w) => ({ id: w.id, markedAt: w.lastStopReasonAt ?? 0 })),
+    clearLimitMarker: async (id) => {
+      r.markerCleared.push(id);
+      const w = ws.get(id);
+      if (w) { w.lastStopReason = undefined; w.lastStopReasonAt = undefined; w.usageLimitResetsAt = undefined; }
+    },
+    repriseCursor: { get: () => r.cursor, set: (n) => void (r.cursor = n) },
     log: { info: (m) => void r.calls.logs.push(m), warn: (m) => void r.calls.logs.push(`WARN ${m}`) },
   };
   return r;
@@ -743,5 +756,90 @@ test('REPRISE store not ready: with the workspace store unloaded every trigger w
   assert.deepEqual(await evaluateAutoPaused(r.deps), []);
   assert.equal(r.calls.reprise.length, 0);
   r.storeReady = true;
+  assert.equal((await evaluateAutoPaused(r.deps))[0].action, 'reprise');
+});
+
+// ─── reviewer-e3 fix round ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('PAUSE wake guard (M1): a carrier whose frozen `wake` switch is OFF gets NO auto Pause — nothing is written (= master), and no farther run is paused instead', () => {
+  const r = rig({ O: { ...DEFAULT_BUS_SWITCHES, pause: true, wake: false } });
+  const before = allRuns(r.db);
+  assert.equal(limitStop(r, 'w1', { account: 'A' }), 'no-wake');
+  assert.equal(allRuns(r.db), before, 'runs table byte-identical');
+  assert.equal(runRow(r.db, 'L').paused_at, null, 'L (pause+wake ON) is NOT used as a stand-in: the nearest switch-ON run decides');
+  assert.deepEqual(autoPausedRuns(r.db), []);
+  // control: the same fleet with wake ON pauses (the instrument can see a pause)
+  const r2 = rig();
+  assert.equal(limitStop(r2, 'w1', { account: 'A' }), 'paused');
+});
+
+/** a `reprise` row as E2 sends it (host → coordinator at beginReprise, coordinator → worker at release) */
+function repriseRow(r: Rig, to: string, at: number): number {
+  return bus.send(r.db, { runId: 'O', sender: 'host', kind: 'reprise', recipient: to, body: 'Reprise' }) && (r.db.prepare('UPDATE messages SET created_at = ? WHERE recipient = ? AND kind = ?').run(at, to, 'reprise'), 0);
+}
+
+test('MARKERS (m1): a member sent its `reprise` row loses its #74 marker (no second wake); an OLDER row, another recipient or no marker clears nothing; the cursor advances', async () => {
+  const r = rig();
+  limitStop(r, 'w1', { account: 'A' }); // marker at T0
+  limitStop(r, 'w2', { account: 'A' });
+  repriseRow(r, 'w1', T0 + 500);
+  assert.deepEqual((await clearRepriseDeliveredMarkers(r.deps)).map((e) => e.wsId), ['w1']);
+  assert.equal(r.ws.get('w1')!.lastStopReason, undefined);
+  assert.equal(r.ws.get('w2')!.lastStopReason, 'usage_limit', 'w2 has not been sent its row');
+  const seq = (r.db.prepare('SELECT MAX(sequence) AS m FROM messages').get() as { m: number }).m;
+  assert.equal(r.cursor, seq, 'incremental: the cursor is the highest sequence scanned');
+  assert.deepEqual(await clearRepriseDeliveredMarkers(r.deps), [], 'nothing new');
+  // a row OLDER than the marker says nothing about this limit stop
+  const r2 = rig();
+  repriseRow(r2, 'w1', T0 - 1000);
+  limitStop(r2, 'w1', { account: 'A' }); // marker at T0, after the row
+  assert.deepEqual(await clearRepriseDeliveredMarkers(r2.deps), []);
+  assert.equal(r2.ws.get('w1')!.lastStopReason, 'usage_limit');
+  // recipient matching is case-insensitive (E2 keys on lower-cased ids); a stop recorded in the same ms counts
+  const r3 = rig();
+  limitStop(r3, 'w1', { account: 'A' });
+  repriseRow(r3, 'W1', T0);
+  assert.deepEqual((await clearRepriseDeliveredMarkers(r3.deps)).map((e) => e.wsId), ['w1']);
+});
+
+test('MARKERS (m1) real flow: beginReprise sends the coordinator its row (its marker goes), the blocked worker keeps its marker until `run release` sends ITS Consigne', async () => {
+  const r = rig();
+  r.db.prepare("UPDATE runs SET coordinator = 'O' WHERE id = 'O'").run(); // the run's coordinator handle IS its workspace id (real fleets)
+  limitStop(r, 'w1', { account: 'A', resetsAtMs: null });
+  r.ws.get('O')!.accountId = 'A';
+  limitStop(r, 'O', { account: 'A', resetsAtMs: null }); // the OPS itself is limited too (merged into the same pause)
+  assert.deepEqual(parsePauseAuto(runRow(r.db, 'O').pause_auto as string, T0)?.wsIds, ['w1', 'O']);
+  insertBilan(r.db, { runId: 'O', wsId: 'w1', pausedAt: T0, activity: { surface: 'none' }, snapshotRef: null, dirty: false, killed: [], error: null }); // the host trap finished
+  r.db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(T0 + 1_000, 'O');
+  r.ws.get('w1')!.accountId = 'A';
+  r.clock.now = T0 + 60_000;
+  fresh(r, 'A', usable);
+  assert.equal((await evaluateAutoPaused(r.deps))[0].outcome, 'resuming');
+  const stamp = (at: number) => r.db.prepare("UPDATE messages SET created_at = ? WHERE kind = 'reprise' AND created_at < ?").run(at, at); // the bus stamps real time; the fixture's clock is synthetic
+  stamp(T0 + 60_000);
+  assert.deepEqual((await clearRepriseDeliveredMarkers(r.deps)).map((e) => e.wsId), ['O'], 'the coordinator was sent its Bilan row at beginReprise: its marker goes in the same tick');
+  assert.equal(r.ws.get('w1')!.lastStopReason, 'usage_limit', 'the blocked worker keeps its marker');
+  assert.deepEqual(releaseMembers(r.db, 'O', 'O', ['w1'], T0 + 70_000).released, ['w1']);
+  stamp(T0 + 70_000);
+  assert.deepEqual((await clearRepriseDeliveredMarkers(r.deps)).map((e) => e.wsId), ['w1'], 'its Consigne was sent: the marker goes');
+});
+
+test('REPRISE stored reset (m2): the stored reset time only counts WITH the marker that carries it — a restarted trigger (marker cleared, reset left) is not resumed on its old reset + grace', async () => {
+  const r = rig();
+  pausedByLimit(r, { account: 'A' });
+  r.ws.get('w1')!.accountId = 'A';
+  r.ws.get('w1')!.lastStopReason = undefined; // setStatus(_, null) cleared the marker…
+  r.ws.get('w1')!.usageLimitResetsAt = T0 + 600_000; // …but not the reset time
+  r.clock.now = T0 + 600_000 + RESET_GRACE_MS + 1;
+  assert.deepEqual(await evaluateAutoPaused(r.deps), [{ runId: 'O', action: 'wait', why: 'quota-not-back' }]);
+});
+
+test('REPRISE archived trigger (m2): an archived workspace is GONE — the stored account decides, not the archived one\'s pin', async () => {
+  const r = rig();
+  pausedByLimit(r, { account: 'B' }); // paused while on B (quota back below)
+  r.ws.get('w1')!.accountId = 'A'; // the archived record is pinned to A, which is still limited
+  r.ws.get('w1')!.archived = true;
+  r.clock.now = T0 + 60_000;
+  fresh(r, 'A', limited(T0 + 3_600_000));
+  fresh(r, 'B', usable);
   assert.equal((await evaluateAutoPaused(r.deps))[0].action, 'reprise');
 });

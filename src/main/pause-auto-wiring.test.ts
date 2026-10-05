@@ -42,10 +42,12 @@ test('WIRING api-handlers.ts: a completed re-login tells pause-auto (forced fres
   assert.match(s, /import \{ pauseAutoOnLogin \} from '\.\/pause-auto-host';/);
 });
 
-test('WIRING account-usage.ts: an OLDER overlapping fetch never replaces a newer reading of the same dir (both write sites)', () => {
+test('WIRING account-usage.ts: a plain refresh ISSUED BEFORE a forced one never replaces the forced reading — by issue sequence, only against forced entries (no forced refresh ⇒ replace-always, as before)', () => {
   const s = read('account-usage.ts');
-  assert.match(s, /function setIfNewer\(id: string, entry: CacheEntry\): void \{\s*const prev = cache\.get\(id\);\s*if \(prev && prev\.dir === entry\.dir && prev\.status\.fetchedAt > entry\.status\.fetchedAt\) return;\s*cache\.set\(id, entry\);/);
-  assert.equal((s.match(/setIfNewer\(to(Fetch|Probe)\[i\]\.id,/g) ?? []).length, 2);
+  assert.match(s, /function setUnlessSuperseded\(id: string, entry: CacheEntry, seq: number\): void \{\s*const prev = cache\.get\(id\);\s*if \(prev && prev\.dir === entry\.dir && prev\.forcedSeq !== undefined && prev\.forcedSeq > seq\) return;\s*cache\.set\(id, entry\);/);
+  assert.equal((s.match(/setUnlessSuperseded\(to(Fetch|Probe)\[i\]\.id,/g) ?? []).length, 2);
+  assert.equal((s.match(/\.\.\.\(force\.has\(to(Fetch|Probe)\[i\]\.id\) \? \{ forcedSeq: seq \} : \{\}\)/g) ?? []).length, 2);
+  assert.match(s, /const seq = \+\+refreshSeq;/);
 });
 
 test('WIRING account-usage.ts: `force` bypasses the 180 s cache for BOTH the OAuth and the API-key branch, and refreshAccountsNow passes it', () => {
@@ -62,24 +64,27 @@ test('WIRING api-handlers.ts: a replaced API key / base URL is a new credential 
   assert.match(s, /saveAccountBaseUrl: async \(accountId, url\) => \{\s*await setAccountBaseUrl\(accountId, url\);\s*void refreshAccountsNow\(\);\s*void pauseAutoOnLogin\(accountId\);/);
 });
 
-test('WIRING usage.ts: an OLDER overlapping default-login fetch never replaces a newer snapshot; the host binds storeReady + resetStreak', () => {
-  assert.match(read('usage.ts'), /if \(!lastSnapshot \|\| snapshot\.fetchedAt >= lastSnapshot\.fetchedAt\) \{\s*lastSnapshot = snapshot;/);
+test('WIRING usage.ts: an OLDER-issued poll never replaces a FORCED poll\'s snapshot (issue sequence; forcedSeq stays 0 without a forced poll); the host binds storeReady + resetStreak', () => {
+  const u = read('usage.ts');
+  assert.match(u, /async function poll\(forced = false\): Promise<void> \{\s*const seq = \+\+pollSeq;/);
+  assert.match(u, /if \(seq > forcedSeq\) \{\s*if \(forced\) forcedSeq = seq;\s*lastSnapshot = snapshot;/);
+  assert.match(u, /export async function refreshUsageNow\(\): Promise<void> \{\s*await poll\(true\)/);
   const host = read('pause-auto-host.ts');
-  assert.match(host, /resetStreak: \(runId\) => void reprises\.delete\(runId\),\s*storeReady: \(\) => store\.loadedFromDisk,/);
+  assert.match(host, /resetStreak: \(runId\) => void reprises\.delete\(runId\),/);
+  assert.match(host, /storeReady: \(\) => store\.loadedFromDisk,/);
 });
 
-test('WIRING #74\'s markers are LEFT by a Reprise: nothing in the host binding clears a usage_limit marker', () => {
-  assert.ok(!/clearStopReason|clearLimitMarker/.test(read('pause-auto-host.ts')) && !/clearLimitMarker|clearStopReason/.test(read('pause-auto.ts')));
+test('WIRING markers (m1): the host clears a member\'s #74 marker once its `reprise` row was sent — after the Reprises of the tick, before #74\'s candidates; nothing clears at Reprise itself', () => {
+  const host = read('pause-auto-host.ts');
+  assert.match(host, /\.then\(async \(entries\) => \{\s*await clearRepriseDeliveredMarkers\(realDeps\)/);
+  assert.match(host, /clearLimitMarker: \(wsId\) => clearStopReason\(wsId\),/);
+  assert.match(host, /limitMarkedWorkspaces: \(\) =>\s*store\.workspaces\.filter\(\(w\) => !w\.archived && w\.lastStopReason === 'usage_limit'\)/);
+  assert.match(host, /repriseCursor: \{ get: \(\) => repriseSeq, set: \(seq\) => void \(repriseSeq = seq\) \},/);
+  assert.ok(!/clearStopReason|clearLimitMarker/.test(read('pause-auto.ts').replace(/clearLimitMarker: \(wsId: string\) => Promise<void>;|await deps\.clearLimitMarker\(m\.id\);/g, '')), 'the core only clears through clearRepriseDeliveredMarkers');
 });
 
-test('WIRING #255: the host binds the REAL beginReprise, the carrier lookup includes a RELEASED member, and a human re-assert adopts an auto pause', () => {
-  const host = read('pause-auto-host.ts');
-  assert.match(host, /import \{ beginReprise \} from '\.\/bus-pause\.ts';/);
-  assert.match(host, /const realDeps: PauseAutoDeps = \{[\s\S]*?\n  beginReprise,\n/);
-  assert.ok(!/stubBeginReprise/.test(read('pause-auto.ts')) && !/stubBeginReprise/.test(host));
-  assert.match(read('pause-auto.ts'), /pausedCarrierForWorkspace\(db, ws, deps\.getWorkspace, \{ includeReleased: true \}\)/);
-  assert.match(read('bus-pause.ts'), /return 'escalated';\s*\}\s*db\.prepare\('UPDATE runs SET pause_auto = NULL WHERE id = \? AND paused_at IS NOT NULL'\)\.run\(runId\);\s*return 'already-paused';/);
-  assert.match(read('bus-pause.ts'), /if \(wrote\.changes === 0\) \{\s*db\.prepare\('UPDATE runs SET pause_auto = NULL WHERE id = \? AND paused_at IS NOT NULL'\)\.run\(runId\);\s*return 'already-paused';/);
+test('WIRING wake guard (M1): the fresh auto Pause needs the carrier\'s frozen wake switch ON', () => {
+  assert.match(read('pause-auto.ts'), /if \(getRun\(db, carrier\)\?\.flags\.wake !== true\) return 'no-wake';/);
 });
 
 test('WIRING pause-auto.ts is Electron-free (importable under node --test like bus-pause.ts); the host binding holds the real store / pollers', () => {
