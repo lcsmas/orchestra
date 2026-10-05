@@ -55,14 +55,29 @@ function hostNow() {
 /** What a rig of `members` workers costs in MemAvailable (measured 2026-10-05: 3 workers Δ ≈ 0.7 GB, 10 workers Δ ≈ 3.0 GB incl. page cache + the app's helpers → ≈ 0.33 GB/worker: 6 → start ≥ 8.0 GB, 10 → ≥ 9.3 GB): a run must START with the bar PLUS this, or it dips under the bar at once. */
 const rigFootprintGB = (members) => 0.33 * members;
 /** Patience, not a lower bar: wait (up to --wait-host-min, default 20) until MemAvailable ≥ bar + the rig's footprint and load ≤ 20; the bar itself is never relaxed. */
+/** Another agent's pause-canary rig on this host (a `drive.mjs` whose --base is not ours): two heavy rigs void each other on the 6 GB bar, so a run waits for the other to finish ("one heavy rig at a time"). */
+function foreignRigs() {
+  const out = [];
+  for (const d of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(d)) continue;
+    try {
+      const argv = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0');
+      if (!argv.some((a) => /pause-canary\/drive\.mjs$/.test(a))) continue;
+      const base = argv[argv.indexOf('--base') + 1];
+      if (base && path.resolve(base) !== BASE) out.push(Number(d));
+    } catch { /* gone */ }
+  }
+  return out;
+}
 async function waitForHost(members = 0) {
   const maxMs = Number(opt('wait-host-min', '20')) * 60000;
   const need = MIN_AVAIL_GB + rigFootprintGB(members);
   const t0 = Date.now();
   for (;;) {
     const h = hostNow();
-    const ok = process.env.PC_IGNORE_HOST === '1' || (h.availGB >= need && h.load1 <= 20);
-    if (ok || Date.now() - t0 >= maxMs) return { ...h, need, ok, waitedS: Math.round((Date.now() - t0) / 1000) };
+    const others = foreignRigs();
+    const ok = process.env.PC_IGNORE_HOST === '1' || (h.availGB >= need && h.load1 <= 20 && others.length === 0);
+    if (ok || Date.now() - t0 >= maxMs) return { ...h, need, ok, waitedS: Math.round((Date.now() - t0) / 1000), foreign: others.length };
     await new Promise((r) => setTimeout(r, 15000));
   }
 }
