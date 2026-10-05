@@ -111,3 +111,9 @@ A Compte's signed-in session with claude.ai. It has an end date fixed when the
 human signs in (refreshing never extends it); when it ends or is revoked, the
 human must sign in again. The only auth state the UI ever shows.
 _Avoid_: token (internal, renewed silently; its expiry is never a problem to show), login
+
+**Configuration source**:
+The `~/.claude` directory as the place every Compte inherits skills, MCP
+servers and settings from. It is not a Compte: no agent runs under it, and any
+sign-in it holds is ignored.
+_Avoid_: default account, default login, global account
