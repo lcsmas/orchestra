@@ -15,7 +15,8 @@ function BilanRow({ run, m, onRelease }: { run: PauseUiRun; m: PauseUiMember; on
   const attention = bilanAttention(b);
   const doing = b && (b.wasDoing.turnRunning || b.wasDoing.inFlight.length > 0 || b.wasDoing.bgTasks.length > 0) ? wasDoingText(b) : null;
   const killed = b ? b.killed.slice(0, 4) : [];
-  const hasDetail = attention.length > 0 || killed.length > 0 || doing !== null;
+  // info-only lines (a remote member's "non applicable", the not-a-git note of an orchestrator, trap notes) do NOT open a detail row on their own: they would sit under every idle member
+  const hasDetail = attention.some((x) => x.tone !== 'info') || killed.length > 0 || doing !== null;
   return (
     <Fragment>
       <tr data-pause-bilan={m.wsId} data-pause-state={m.ui}>
@@ -25,7 +26,7 @@ function BilanRow({ run, m, onRelease }: { run: PauseUiRun; m: PauseUiMember; on
         <td className="pause-bilan-dim">{m.confirmVia ? VIA[m.confirmVia] : '—'}</td>
         <td className="pause-bilan-ref" title={b?.snapshotRef ?? undefined}>{b?.snapshotRef ?? '—'}</td>
         <td>{b ? treeText(b) : '—'}</td>
-        <td className={b && (b.survivors.length > 0 || b.error) ? 'pause-bilan-warn' : 'pause-bilan-dim'}>{b ? killedText(b) : "après l'escalade"}</td>
+        <td className={attention.some((x) => x.tone === 'error') ? 'pause-bilan-warn' : 'pause-bilan-dim'} title={b?.skipped ?? undefined}>{b ? killedText(b) : "après l'escalade"}</td>
         <td className="pause-bilan-act">
           {run.phase === 'resuming' && m.ui === 'blocked' ? (
             <PauseActionButton kind="release" wsId={run.carrierRunId} tone="go" onClick={() => onRelease(m)}>Libérer</PauseActionButton>

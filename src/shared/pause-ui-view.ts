@@ -90,7 +90,9 @@ export function killedText(b: PauseUiBilanLine | null): string {
 export function bilanAttention(b: PauseUiBilanLine | null): Array<{ tone: 'error' | 'warn' | 'info'; text: string }> {
   if (!b) return [];
   const out: Array<{ tone: 'error' | 'warn' | 'info'; text: string }> = [];
-  if (b.error) out.push({ tone: 'error', text: `erreur : ${b.error}` });
+  // a workspace with no git worktree (a scratch session, an ORCHESTRATOR) cannot be snapshotted — the trap records "not a git repository" for every such member on every pause: expected, not an alarm
+  if (b.error && b.snapshotRef === null && /not a git repository/i.test(b.error)) out.push({ tone: 'info', text: "pas un dépôt git : rien n'a pu être snapshotté (workspace scratch / orchestrateur, sans worktree)" });
+  else if (b.error) out.push({ tone: 'error', text: `erreur : ${b.error}` });
   for (const x of b.survivors) out.push({ tone: 'error', text: `encore vivant après la pause : ${x.cmd} (pid ${x.pid}) — ${x.reason}` });
   if (b.trap === 'pending') out.push({ tone: 'warn', text: "le trap n'est pas terminé pour cet agent : certaines de ses commandes peuvent ne pas avoir été tuées" });
   for (const x of b.refused) out.push({ tone: 'warn', text: `non tué (identité non prouvée) : ${x.cmd} — ${x.reason}` });

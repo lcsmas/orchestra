@@ -111,6 +111,10 @@ test('bilanAttention: an error, a survivor, an incomplete trap / snapshot, an un
   assert.match(rows[1].text, /encore vivant après la pause : sleep 600 \(pid 7\)/);
   assert.equal(rows.filter((r) => r.tone === 'info').map((r) => r.text).join(), 'n2,n3,n4', 'the last 3 notes');
   assert.match(bilanAttention(bilan({ trap: 'skipped', skipped: 'sandbox member' }))[0].text, /non applicable : sandbox member/);
+  const nogit = bilanAttention(bilan({ snapshotRef: null, error: 'snapshot: git rev-parse failed: fatal: not a git repository (or any parent up to mount point /)' }));
+  assert.deepEqual(nogit.map((r) => r.tone), ['info'], 'a workspace without a git worktree (an orchestrator, a scratch session) is EXPECTED: info, not a red error on every pause');
+  assert.deepEqual(bilanAttention(bilan({ snapshotRef: null, error: 'snapshot: git add timed out' })).map((r) => r.tone), ['error'], 'any other snapshot error stays an error');
+  assert.deepEqual(bilanAttention(bilan({ snapshotRef: 'refs/orchestra/pause/L/w/1', error: 'fatal: not a git repository' })).map((r) => r.tone), ['error'], 'but a member that HAS a ref and still reports it is odd: error');
 });
 
 test('pauseDimClass: held (pausing / paused / blocked) dims the name; released / resumed does not', () => {
