@@ -54,6 +54,8 @@ const MUTANTS = [
   ['gap-member-route-flagged', "if (via === 'member') continue;", ""],
   ['gap-route-ignored', "if (via !== 'trap' && via !== 'host-idle') {", "if (false) {"],
   ['gap-unstamped-ignored', "if (!num(row.pause_confirmed_at)) gaps.push(", "if (false) gaps.push("],
+  ['verdict-premise-ignored', "!reached || premiseRed.length ? 'RIG-BROKE'", "!reached ? 'RIG-BROKE'"],
+  ['verdict-reached-ignored', "!reached || premiseRed.length ? 'RIG-BROKE'", "premiseRed.length ? 'RIG-BROKE'"],
   ['kind-app-anywhere', "/^(\\S*\\/)?orchestra( |$)/.test(p.cmd)", "/orchestra( |$)/.test(p.cmd)", 'lib.mjs'],
   ['snapshot-transient-listed', ".filter((n) => !isTransientName(n))", "", 'lib.mjs'],
 ];

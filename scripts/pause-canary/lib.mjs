@@ -128,12 +128,13 @@ export async function startApi({ decide, usageHeaders = null }) {
       // the request answers the harness's own human `SCN:limit` prompt AND nothing else: a 429 leaves no assistant reply, so a LATER wake still carries that prompt in its tail — it is told apart by its own text
       const tailText = messages.slice(lastAsst + 1).map((m) => textOf(m.content)).join('\n');
       const limitPrompt = tools > 0 && /SCN:limit/.test(tailText) && !/lot pending|task-notification|PAUSE DOUCE|consigne de reprise/i.test(tailText);
+      const latePrompt = tools > 0 && /SCN:late/.test(tailText);   // the request that answers the harness's `--inject late-request` human prompt (the tail, not the last block: the CLI appends reminder blocks after the prompt)
       const cred = String(req.headers['x-api-key'] ?? req.headers.authorization ?? '').replace(/^Bearer /, '');
       const sysText = textOf(b.system);
       const role = (ROLE_RE.exec(JSON.stringify(messages.slice(0, 4)))?.[1]) ?? (ROLE_RE.exec(JSON.stringify(messages))?.[1]) ?? (/\/wt-([a-z0-9]+)\b/.exec(sysText)?.[1]) ?? null;
       let step = { text: 'ok' };
       if (tools > 0) { try { step = (await decide({ messages, lastText, tools, seq: n + 1, sys: sysText, role, cred, order })) ?? step; } catch (e) { step = { text: `decide-error ${e}` }; } }
-      const rec = { seq: ++n, t, model: b.model, tools, stream: b.stream === true, role, cred, order, limitPrompt, tool: step.tool?.name ?? null, http: step.http?.status ?? 200, probe: tools === 0 && b.max_tokens === 1, last: lastText.slice(0, 200) };
+      const rec = { seq: ++n, t, model: b.model, tools, stream: b.stream === true, role, cred, order, limitPrompt, latePrompt, tool: step.tool?.name ?? null, http: step.http?.status ?? 200, probe: tools === 0 && b.max_tokens === 1, last: lastText.slice(0, 200) };
       requests.push(rec);
       if (step.http) { res.writeHead(step.http.status, { 'content-type': 'application/json', ...(step.http.headers ?? {}) }); res.end(JSON.stringify(step.http.body ?? {})); return; }
       const id = `msg_fake_${n}`;

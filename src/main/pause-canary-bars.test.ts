@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from '../../scripts/pause-canary/bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, mustFailVerdict, renderTable } from '../../scripts/pause-canary/bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
@@ -328,4 +328,11 @@ test('liveSnapshot: a live config dir\'s own transient files (.claude.json.tmp, 
     fs.writeFileSync(path.join(home, '.claude', 'projects'), '');
     assert.equal(liveSnapshot(home)['.claude'].n, 2, 'a real new entry is seen');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('mustFailVerdict: the named instrument RED counts only when the fleet reached mid-work AND the arm\'s own premise checks are green; a RED premise is RIG-BROKE, a green named check is MUTANT-SURVIVED', () => {
+  assert.equal(mustFailVerdict({ reached: true, premiseRed: [], hit: ['bar:no_self_restart'] }), 'AS-EXPECTED (RED)');
+  assert.equal(mustFailVerdict({ reached: true, premiseRed: [{ id: 'inject_lands_in_the_blind_window' }], hit: ['bar:no_self_restart'] }), 'RIG-BROKE', 'premise RED + named RED: the arm proves nothing');
+  assert.equal(mustFailVerdict({ reached: false, premiseRed: [], hit: ['bar:no_self_restart'] }), 'RIG-BROKE');
+  assert.equal(mustFailVerdict({ reached: true, premiseRed: [], hit: [] }), 'MUTANT-SURVIVED');
 });

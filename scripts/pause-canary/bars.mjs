@@ -99,6 +99,12 @@ export function isMemberTool(p, byPid, kindOf, memberOf) {
   return true;
 }
 
+/** The runner's verdict for a MUST-FAIL proof arm: `reached` = the fleet got to mid-work; `premiseRed` = the arm's own PREMISE checks (`inject_*`: the injected thing landed / was observable) that read RED — then the arm proves nothing even if the named instrument is RED too
+ *  (the first late-request arm read AS-EXPECTED while its premise was RED); `hit` = the named instrument(s) RED with a measured reason. */
+export function mustFailVerdict({ reached, premiseRed, hit }) {
+  return !reached || premiseRed.length ? 'RIG-BROKE' : hit.length > 0 ? 'AS-EXPECTED (RED)' : 'MUTANT-SURVIVED';
+}
+
 /** The checks of ONE cycle from its measured metrics. Every check is RED when its metric is absent. `m.mode` = 'soft' | 'hard'. */
 export function evaluateCycle(m) {
   const checks = [];

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { makeMutantApp, MUTANTS } from './mutants.mjs';
-import { renderTable, BARS } from './bars.mjs';
+import { renderTable, BARS, mustFailVerdict } from './bars.mjs';
 import { initBase } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -265,8 +265,9 @@ for (const arm of sel) {
     // the named instrument must be RED with a MEASURED reason: a check that is red only because its metric is absent ("NOT MEASURED": an aborted cycle, a refused pause) proves nothing about the instrument
     const hit = arm.redden.filter((id) => red.some((c) => c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));   // + the specific reason where one is known (a refusal text, the killed member)
     const unmeasured = arm.redden.filter((id) => red.some((c) => c.id === id && /NOT MEASURED/.test(c.detail)));
-    verdict = hit.length > 0 && reached ? 'AS-EXPECTED (RED)' : !reached ? 'RIG-BROKE' : 'MUTANT-SURVIVED';
-    why = `${hit.length ? `RED with a measured reason: ${hit.join(', ')}` : `named check(s) ${arm.redden.join(', ')} stayed green${unmeasured.length ? ` or red only as NOT MEASURED (${unmeasured.join(', ')})` : '/absent'}`}; all RED: ${red.map((c) => `c${c.cycle} ${c.id}`).slice(0, 8).join(' · ') || 'none'}`;
+    const premiseRed = red.filter((c) => /^inject_/.test(c.id));   // an injection arm's own PREMISE check (the injected thing was observable / landed) RED = the arm proves nothing, even when the named instrument is RED too
+    verdict = mustFailVerdict({ reached, premiseRed, hit });
+    why = `${premiseRed.length ? `PREMISE RED (${premiseRed.map((c) => c.id).join(', ')}); ` : ''}${hit.length ? `RED with a measured reason: ${hit.join(', ')}` : `named check(s) ${arm.redden.join(', ')} stayed green${unmeasured.length ? ` or red only as NOT MEASURED (${unmeasured.join(', ')})` : '/absent'}`}; all RED: ${red.map((c) => `c${c.cycle} ${c.id}`).slice(0, 8).join(' · ') || 'none'}`;
   } else { verdict = r.verdict === 'PASS' ? 'AS-EXPECTED (PASS)' : 'UNEXPECTED-RED'; why = r.verdict === 'PASS' ? `${r.checks.length} checks green` : `RED: ${red.map((c) => `c${c.cycle} ${c.id} (${c.detail.slice(0, 100)})`).slice(0, 6).join(' · ')}`; }
   rows.push({ arm: arm.name, verdict, why, log: r.logFile });
   say(`=== ${arm.name}: ${verdict} — ${why}`);

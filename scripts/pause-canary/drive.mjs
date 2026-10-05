@@ -360,7 +360,7 @@ async function runExercise(name) {
       const hold = await holdWindow(cyc, c, tTrap ?? Date.now(), idPre, spec.lead);
       hold.tTrapDone = tTrap ?? Date.now();
       if (INJECT === 'late-request') {
-        const hit = lateInject ? api.requests.find((r) => r.role === lateInject.k && r.tools > 0 && /SCN:late/.test(r.last ?? '') && r.t >= lateInject.confirmedAt && r.t < (tTrap ?? Infinity)) : null;
+        const hit = lateInject ? api.requests.find((r) => r.role === lateInject.k && r.tools > 0 && r.latePrompt === true && r.t >= lateInject.confirmedAt && r.t < (tTrap ?? Infinity)) : null;
         check(cyc, 'inject_lands_in_the_blind_window', !!hit, hit ? `${lateInject.k} made a request ${((hit.t - lateInject.confirmedAt) / 1000).toFixed(2)} s after ITS completion and ${(((tTrap ?? 0) - hit.t) / 1000).toFixed(2)} s BEFORE the run stamp: invisible to a run-level window` : `no request of the injected member between its completion and the run stamp (inject ${JSON.stringify(lateInject)}) — the arm proves nothing`);
       }
       if (INJECT === 'orphan-tool' || INJECT === 'app-git') check(cyc, 'inject_is_observable', hold.legacySeen === true, `the injected ${INJECT} process was seen by the LEGACY classifier during the hold (${hold.legacySeen}) — an injection nobody can see proves nothing`);
