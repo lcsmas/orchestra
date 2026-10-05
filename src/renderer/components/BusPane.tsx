@@ -358,9 +358,12 @@ export function BusSwitchSummary({ live }: { live: Record<BusMechanism, boolean>
 export function BusPaneView({
   snapshot,
   onSelectRun,
+  pauseSlot,
 }: {
   snapshot: BusSnapshot;
   onSelectRun: (id: string) => void;
+  /** #257 — the fleet-Pause section, injected by the container (it reads the store; this view stays pure for the render smokes). */
+  pauseSlot?: React.ReactNode;
 }) {
   if (!snapshot.available) {
     return (
@@ -372,6 +375,7 @@ export function BusPaneView({
   return (
     <div className="bus-pane" data-bus-pane="root" data-bus-state="available">
       <BusSwitchSummary live={snapshot.liveSwitches} />
+      {pauseSlot}
       <section className="bus-section" data-section="runs">
         <h3>Runs</h3>
         <BusRunTree
@@ -422,8 +426,8 @@ export function BusPaneView({
   );
 }
 
-/** Container: polls the read-only snapshot. */
-export function BusPane() {
+/** Container: polls the read-only snapshot. `pauseSlot` (#257) is the fleet-Pause section, handed in by App.tsx: it reads the store, which this file (imported by the render smokes) must not. */
+export function BusPane({ pauseSlot }: { pauseSlot?: React.ReactNode } = {}) {
   const [snapshot, setSnapshot] = useState<BusSnapshot | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
 
@@ -460,5 +464,5 @@ export function BusPane() {
   }, [refresh]);
 
   if (!snapshot) return <div className="bus-pane" data-bus-pane="loading" />;
-  return <BusPaneView snapshot={snapshot} onSelectRun={setRunId} />;
+  return <BusPaneView snapshot={snapshot} onSelectRun={setRunId} pauseSlot={pauseSlot} />;
 }

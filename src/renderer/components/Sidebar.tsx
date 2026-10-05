@@ -45,6 +45,10 @@ import {
   WorkspaceRowAccountBadge,
 } from './AccountBadge';
 import { dialog } from './Dialog';
+// #257 — fleet Pause UI (option A): the row parts + the floating panel; each renders nothing while the fleet is not under a pause.
+import { PauseAwareGlyph, PauseRowActions, PauseRowBadge, PauseRowBar, PauseRowNote } from './pause/PauseRow';
+import { PauseMenuHost } from './pause/PauseMenu';
+import { pauseStateOf } from '../../shared/pause-ui-view';
 
 interface Props {
   onNewFromRepo: () => void;
@@ -903,6 +907,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
+  // #257 — read once: the row class below is a plain derivation (the row PARTS subscribe themselves).
+  const pauseOverview = useStore((s) => s.pauseOverview);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
   // Header "+ New" menu — the single entry point for creating a session of
@@ -1549,7 +1555,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         return (
           <div
             key={w.id}
-            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseStateOf(pauseOverview, w.id) ? ' pause-dim' : ''}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
             // Actions float OUTSIDE the sidebar, anchored to this row — see
@@ -1564,6 +1570,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 content: (
                   <>
                     <UnreadToggle w={w} onToggle={onToggleUnread} />
+                    <PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />
                     {childIsGit ? (
                       <button
                         className="ws-icon-btn"
@@ -1628,6 +1635,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 indent alone and every row's glyph starts at the same x. A left
                 caret had to reserve its width on every row including leaves,
                 which pushed children's content right for no reason. */}
+            <PauseAwareGlyph wsId={w.id}>
             <WorkspaceStatusGlyph
               status={w.status as WorkspaceStatus}
               hibernated={w.hibernatedAt !== undefined}
@@ -1637,6 +1645,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
               title={statusGlyphTitle(w, tools[w.id])}
             />
+            </PauseAwareGlyph>
             <div className="ws-body">
               <div className="ws-name-row ws-name-row-login">
                 {renamingId === w.id ? (
@@ -1703,6 +1712,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                   )}
                 </span>
+                <PauseRowBadge wsId={w.id} />
                 <HibernatedChip w={w} />
                 {/* #88 — "N deliveries waiting, no turn started in X". Renders
                     null unless this workspace is actually stalled, so it costs
@@ -1714,11 +1724,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     WorkspaceRowAccountBadge. Root rows always show theirs. */}
                 <WorkspaceRowAccountBadge workspaceId={w.id} parentId={w.parentId} />
               </div>
-              {w.statusText && (
-                <div className="ws-status-note" title={statusNoteTitle(w)}>
-                  {w.statusText}
-                </div>
-              )}
+              <PauseRowNote wsId={w.id}>
+                {w.statusText && (
+                  <div className="ws-status-note" title={statusNoteTitle(w)}>
+                    {w.statusText}
+                  </div>
+                )}
+              </PauseRowNote>
             </div>
             {/* Collapse control, right-aligned. It sits OUTSIDE
                 `.ws-row-actions` (which is absolutely positioned and only
@@ -1747,6 +1759,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             {isDeleting && (
               <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
             )}
+            <PauseRowBar wsId={w.id} />
           </div>
         );
           })}
@@ -2241,7 +2254,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${wsDnd}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseStateOf(pauseOverview, w.id) ? ' pause-dim' : ''}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
                   // Actions float outside the sidebar, anchored to this row.
@@ -2253,6 +2266,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       content: (
                         <>
                           <UnreadToggle w={w} onToggle={onToggleUnread} />
+                    <PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />
                           {!w.host ? (
                             <button
                               className="ws-icon-btn"
@@ -2347,6 +2361,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       (below). A promoted worktree renders through THIS path,
                       never the pinned one, so both paths must change together
                       or the two kinds of orchestrator drift apart visually. */}
+                  <PauseAwareGlyph wsId={w.id}>
                   <WorkspaceStatusGlyph
                     status={w.status as WorkspaceStatus}
                     hibernated={w.hibernatedAt !== undefined}
@@ -2356,6 +2371,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
                     title={statusGlyphTitle(w, tools[w.id])}
                   />
+                  </PauseAwareGlyph>
                   <div className="ws-body">
                     <div className="ws-name-row">
                       {renamingId === w.id ? (
@@ -2384,6 +2400,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {w.branch}
                         </div>
                       )}
+                      <PauseRowBadge wsId={w.id} />
                       <HibernatedChip w={w} />
                       {/* #88 — same badge on the repo-section render path.
                           Both paths render the same component so the two can
@@ -2506,11 +2523,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                       </span>
                     </div>
-                    {w.statusText && (
-                      <div className="ws-status-note" title={statusNoteTitle(w)}>
-                        {w.statusText}
-                      </div>
-                    )}
+                    <PauseRowNote wsId={w.id}>
+                      {w.statusText && (
+                        <div className="ws-status-note" title={statusNoteTitle(w)}>
+                          {w.statusText}
+                        </div>
+                      )}
+                    </PauseRowNote>
                   </div>
                   {/* Right-edge collapse control — mirrors the pinned-tree
                       rows. A promoted worktree gets its chevron here. */}
@@ -2532,6 +2551,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <ChevronIcon open={!isCollapsed} />
                     </button>
                   )}
+                  <PauseRowBar wsId={w.id} />
                 </div>
               );
                 }; // end renderWs
@@ -2875,6 +2895,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         onEnter={rowActions.cancelClose}
         onLeave={rowActions.scheduleHide}
       />
+      {/* #257 — the Pause douce / dure choice, or a refusal explained; portalled like the pill above. */}
+      <PauseMenuHost />
     </aside>
   );
 }

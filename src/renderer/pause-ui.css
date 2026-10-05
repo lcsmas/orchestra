@@ -33,3 +33,44 @@
 .pause-explain.is-info > svg { color: var(--accent); }
 .pause-explain.is-warn { border-color: rgba(255, 200, 87, 0.34); border-left-color: var(--yellow); background: rgba(255, 200, 87, 0.07); }
 .pause-explain.is-warn > svg { color: var(--yellow); }
+
+/* Option A — the floating panel (hung off the hovered row, beside the sidebar) */
+.pause-panel { position: fixed; z-index: 70; display: flex; flex-direction: column; gap: 2px; padding: var(--space-1); background: var(--bg-3); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow-md); }
+.pause-panel-h { padding: 6px 9px 4px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+.pause-panel-item { display: flex; align-items: flex-start; gap: 9px; padding: 7px 9px; background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); box-shadow: none; text-align: left; cursor: pointer; }
+.pause-panel-item:hover { background: var(--bg-4); border-color: transparent; }
+.pause-panel-item b { display: block; font-size: 12px; font-weight: 600; color: var(--text); }
+.pause-panel-item small { display: block; font-size: 10.5px; color: var(--text-dim); margin-top: 1px; }
+.pause-panel-icon { display: inline-flex; margin-top: 1px; background: none; border: none; }
+.pause-panel > .pause-explain { margin: 2px; }
+
+/* Option A — the row parts */
+.pause-note.pause-t-pausing { color: var(--yellow); background: none; border: none; }
+.pause-note.pause-t-paused { color: var(--accent); background: none; border: none; }
+.pause-note.pause-t-resumed { color: var(--green); background: none; border: none; }
+.pause-rowbar { position: absolute; left: 12px; right: 8px; bottom: 0; pointer-events: none; }
+.pause-rowbar .pause-bar { height: 2px; border-radius: 0; }
+
+/* Option A — the Bus page section */
+.pause-run { margin-bottom: 14px; }
+.pause-run-head { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: 6px; }
+.pause-run-pausing { border-left-color: var(--yellow); }
+.pause-run-paused { border-left-color: var(--accent); }
+.pause-run-resumed { border-left-color: var(--green); }
+.pause-run-icon { display: inline-flex; background: none; border: none; }
+.pause-run-title { flex: 1; min-width: 0; font-size: 12.5px; }
+.pause-run-carrier { font-size: 11px; color: var(--text-dim); font-weight: 400; margin-left: 4px; }
+.pause-run-sub { color: var(--text-dim); font-size: 11px; margin-top: 1px; }
+.pause-run-prog { width: 150px; flex: none; }
+.pause-run-count { font-size: 10.5px; color: var(--text-dim); margin-top: 3px; text-align: right; font-variant-numeric: tabular-nums; }
+.pause-run-actions { display: flex; gap: 6px; flex: none; }
+.pause-run-explains { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.pause-run-blocked { margin-top: 8px; }
+.pause-bilan { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.pause-bilan th { text-align: left; font-weight: 500; color: var(--text-dim); padding: 4px 8px 4px 0; }
+.pause-bilan td { padding: 5px 8px 5px 0; border-top: 1px solid var(--border); vertical-align: middle; }
+.pause-bilan-agent { white-space: nowrap; }
+.pause-bilan-agent .pause-glyph { vertical-align: -2px; margin-right: 5px; }
+.pause-bilan-dim { color: var(--text-dim); }
+.pause-bilan-ref { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pause-bilan-act { text-align: right; white-space: nowrap; }

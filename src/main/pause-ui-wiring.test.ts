@@ -75,3 +75,30 @@ test('every write re-publishes (forced) and the push is skipped while neither th
   const fn = host.slice(at(host, 'export function broadcastPauseOverview('));
   assert.ok(fn.slice(0, 700).includes('if (!force && key === lastKey) return null;'), 'unchanged fingerprint = no rebuild');
 });
+
+test('SIDEBAR: both row render paths (the pinned spawn trees AND the repo sections) carry every Pause part; the menu host is mounted once', () => {
+  const sb = codeOf('src/renderer/components/Sidebar.tsx');
+  const count = (needle: string) => sb.split(needle).length - 1;
+  for (const part of ['<PauseAwareGlyph wsId={w.id}>', '<PauseRowBadge wsId={w.id} />', '<PauseRowNote wsId={w.id}>', '<PauseRowBar wsId={w.id} />', '<PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />', "pauseStateOf(pauseOverview, w.id) ? ' pause-dim' : ''"]) {
+    assert.equal(count(part), 2, `${part} — once per render path (they must change together or the two kinds of orchestrator drift apart)`);
+  }
+  assert.equal(count('<PauseMenuHost />'), 1, 'one floating panel host');
+  assert.ok(sb.includes('const pauseOverview = useStore((s) => s.pauseOverview);'), 'the row class reads the store slice');
+});
+
+test('BUS PAGE: the section is injected from App.tsx (BusPane.tsx stays store-free — the render smokes import it), and sits right after the live-switch summary', () => {
+  const app = codeOf('src/renderer/App.tsx');
+  assert.ok(app.includes("<BusPane pauseSlot={<BusPauseSection />} />"), 'App passes the section');
+  const pane = codeOf('src/renderer/components/BusPane.tsx');
+  assert.ok(!/from '\.\.\/store'|from '\.\/pause\//.test(pane), 'BusPane.tsx imports neither the store nor the pause components');
+  assert.ok(at(pane, '<BusSwitchSummary live={snapshot.liveSwitches} />') < at(pane, '{pauseSlot}') && at(pane, '{pauseSlot}') < at(pane, 'data-section="runs"'), 'order: switches, Pause, runs');
+});
+
+test('RENDERER: the overview slice is filled at load and replaced WHOLESALE by the push; the actions take the reply\'s overview', () => {
+  const st = codeOf('src/renderer/store.ts');
+  assert.ok(st.includes("window.orchestra.pauseOverview()"), 'initial paint');
+  assert.ok(/window\.orchestra\.onPauseOverviewUpdate\(\(overview\) => \{\s*useStore\.setState\(\{ pauseOverview: overview \}\);/.test(st), 'wholesale replace on push');
+  for (const a of ['pausePause', 'pauseResume', 'pauseRelease']) assert.ok(new RegExp(`${a}: async \\([^)]*\\) => \\{[^}]*set\\(\\{ pauseOverview: res\\.overview \\}\\)`).test(st), `${a} stores the reply's overview`);
+  const css = codeOf('src/renderer/main.tsx');
+  assert.ok(css.includes("import './pause-ui.css';"), 'the sheet is imported');
+});

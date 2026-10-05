@@ -131,3 +131,30 @@ export function coveringRun(o: PauseUiOverview | null | undefined, ctl: PauseUiC
   if (!o || !ctl?.coveredBy) return null;
   return o.runs.find((r) => r.carrierRunId === ctl.coveredBy!.runId) ?? null;
 }
+
+// ── sidebar row parts ─────────────────────────────────────────────────────────────────────────────────
+
+/** The orchestrator row's note line while its run holds a pause / Reprise (mockup A2–A4): "Pause douce · 5/7 · dure dans 1:50" · "En pause · 7/7 · depuis 8 min" · "Reprise · 3/7 repris · 3 bloqués". */
+export function rowNoteText(run: PauseUiRun, now: number): { tone: PauseTone; text: string; fraction: number } {
+  const { done, total } = run.progress;
+  const fraction = total > 0 ? Math.min(1, done / total) : 0;
+  if (run.phase === 'pausing') {
+    const left = run.deadlineAt !== null ? ` · dure dans ${countdown(run.deadlineAt, now)}` : '';
+    return { tone: 'pausing', text: `Pause douce · ${done}/${total}${left}`, fraction };
+  }
+  if (run.phase === 'resuming') {
+    return { tone: 'resumed', text: `Reprise · ${done}/${total} repris · ${run.blocked.length} bloqué${run.blocked.length > 1 ? 's' : ''}`, fraction };
+  }
+  const since = run.pausedAt !== null ? ` · ${agoText(run.pausedAt, now).replace('il y a ', 'depuis ')}` : '';
+  return { tone: 'paused', text: `En pause${run.mode === 'soft' ? ' (douce → dure)' : ''} · ${done}/${total}${since}`, fraction: total > 0 ? fraction : 1 };
+}
+
+/** How many agents a pause on `wsId` concerns: itself + every descendant on the live `parentId` tree (what the menu says before the click). */
+export function agentsUnder(wsId: string, workspaces: ReadonlyArray<{ id: string; parentId?: string; archived?: boolean }>): number {
+  const kids = new Map<string, string[]>();
+  for (const w of workspaces) if (!w.archived && w.parentId) kids.set(w.parentId, [...(kids.get(w.parentId) ?? []), w.id]);
+  const seen = new Set<string>([wsId]);
+  const queue = [wsId];
+  while (queue.length) for (const k of kids.get(queue.shift()!) ?? []) if (!seen.has(k)) { seen.add(k); queue.push(k); }
+  return seen.size;
+}

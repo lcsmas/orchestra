@@ -15,6 +15,7 @@ import { InsightsView } from './components/Insights';
 import { JumpPalette } from './components/JumpPalette';
 import { ResourcesView } from './components/ResourcesView';
 import { BusPane } from './components/BusPane';
+import { BusPauseSection } from './components/pause/BusPauseSection';
 import { HelpView, HelpIcon } from './components/Help';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
@@ -922,7 +923,7 @@ export function App() {
         {loaded && insightsOpen && <InsightsView />}
         {loaded && page === 'resources' && <ResourcesView />}
         {/* Read-only fleet-bus projection (#118) — same overlay contract. */}
-        {loaded && page === 'bus' && <BusPane />}
+        {loaded && page === 'bus' && <BusPane pauseSlot={<BusPauseSection />} />}
         {/* Help / feature guide pane — same overlay contract as Insights. */}
         {loaded && helpOpen && <HelpView />}
       </main>

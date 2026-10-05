@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agoText, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseStateOf, PAUSE_STATE_WORD, releasableIds, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
+import { agentsUnder, agoText, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseStateOf, PAUSE_STATE_WORD, releasableIds, rowNoteText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
 import type { PauseUiBilanLine, PauseUiControl, PauseUiMember, PauseUiOverview, PauseUiRun } from './pause-ui.ts';
 
 const mem = (wsId: string, role: 'coordinator' | 'worker', ui: PauseUiMember['ui'], memberRun: string | null, extra: Partial<PauseUiMember> = {}): PauseUiMember => ({
@@ -77,4 +77,23 @@ test('selectors: a row\'s state, its control, the run it anchors, the run that c
   assert.equal(coveringRun(o, controlOf(o, 'O'))?.carrierRunId, 'L');
   assert.equal(coveringRun(o, controlOf(o, 'L')), null);
   for (const f of [pauseStateOf(null, 'w1'), controlOf(undefined, 'L'), runOfControl(null, null), coveringRun(null, null)]) assert.equal(f, null);
+});
+
+test('rowNoteText: the three note lines of the mockup (douce countdown / dure since / Reprise blocked)', () => {
+  const douce = rowNoteText(run({ phase: 'pausing', mode: 'soft', deadlineAt: 1_000_000 + 180_000, progress: { kind: 'en-pause', done: 5, total: 7, missing: ['a', 'b'] } }), 1_070_000);
+  assert.deepEqual([douce.tone, douce.text], ['pausing', 'Pause douce · 5/7 · dure dans 1:50']);
+  const dure = rowNoteText(run({}), 1_000_000 + 8 * 60_000);
+  assert.deepEqual([dure.tone, dure.text, dure.fraction], ['paused', 'En pause · 7/7 · depuis 8 min', 1]);
+  assert.equal(rowNoteText(run({ mode: 'soft', escalatedAt: 1 }), 1_000_000 + 60_000).text, 'En pause (douce → dure) · 7/7 · depuis 1 min');
+  const rs = rowNoteText(run({ phase: 'resuming', progress: { kind: 'repris', done: 3, total: 7, missing: [] }, blocked: ['a', 'b', 'c'] }), 2_000_000);
+  assert.deepEqual([rs.tone, rs.text], ['resumed', 'Reprise · 3/7 repris · 3 bloqués']);
+  assert.equal(rowNoteText(run({ phase: 'resuming', progress: { kind: 'repris', done: 6, total: 7, missing: [] }, blocked: ['a'] }), 2_000_000).text, 'Reprise · 6/7 repris · 1 bloqué');
+});
+
+test('agentsUnder: the row itself + every live descendant, archived ones left out, a cycle ends', () => {
+  const ws = [{ id: 'L' }, { id: 'O', parentId: 'L' }, { id: 'a', parentId: 'O' }, { id: 'b', parentId: 'O' }, { id: 'x', parentId: 'O', archived: true }, { id: 'z' }, { id: 'c1', parentId: 'c2' }, { id: 'c2', parentId: 'c1' }];
+  assert.equal(agentsUnder('L', ws), 4);
+  assert.equal(agentsUnder('O', ws), 3);
+  assert.equal(agentsUnder('a', ws), 1);
+  assert.equal(agentsUnder('c1', ws), 2);
 });

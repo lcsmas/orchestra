@@ -78,7 +78,7 @@ if (process.argv.includes('--anchors-only')) {
       if (hits !== 1) { gone++; console.log(`✗ ${m.id}: anchor matched ${hits}× in ${m.file}: ${e.find.slice(0, 70)}`); }
     }
   }
-  const titlesOf = (f) => [...fs.readFileSync(path.join(REPO, f), 'utf8').matchAll(/\btest\((['"`])((?:\\.|(?!\1)[^\\])*)\1/g)].map((x) => x[2].replace(/\\'/g, "'"));
+  const titlesOf = (f) => [...fs.readFileSync(path.join(REPO, f), 'utf8').matchAll(f.endsWith('.mjs') ? /\bcheck\((['"`])((?:\\.|(?!\1)[^\\])*)\1/g : /\btest\((['"`])((?:\\.|(?!\1)[^\\])*)\1/g)].map((x) => x[2].replace(/\\'/g, "'"));
   for (const m of sel) {
     const titles = m.tests.flatMap(titlesOf);
     if (!titles.some((t) => m.expect.test(t.replace(/#/g, '\\#')))) { gone++; console.log(`✗ ${m.id}: expect ${m.expect} matches no test title in ${m.tests.join(', ')}`); }
@@ -88,15 +88,35 @@ if (process.argv.includes('--anchors-only')) {
 }
 
 // ASYNC on purpose: a synchronous spawn keeps the event loop busy, so the restore handler below could never fire on a signal.
-function runTests(files) {
+// `*-render-smoke.mjs` files are NOT TAP: they print `  ok …` / `  FAIL <label>` lines and exit 0/1 — run each on its own and fold the counts into the same shape.
+function spawnCollect(args, timeoutMs = 240_000) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['--test', '--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', ...files], { cwd: REPO });
+    const child = spawn(process.execPath, args, { cwd: REPO });
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { out += d; });
-    const timer = setTimeout(() => child.kill('SIGKILL'), 240_000);
-    child.on('close', () => { clearTimeout(timer); resolve(parseRun(out)); });
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.on('close', (code) => { clearTimeout(timer); resolve({ out, code }); });
   });
+}
+async function runTests(files) {
+  const tap = files.filter((f) => !f.endsWith('-render-smoke.mjs'));
+  const smokes = files.filter((f) => f.endsWith('-render-smoke.mjs'));
+  const agg = { fail: 0, pass: 0, skipped: 0, red: [], raw: '' };
+  if (tap.length) {
+    const { out } = await spawnCollect(['--test', '--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', ...tap]);
+    const r = parseRun(out);
+    agg.fail += r.fail; agg.pass += r.pass; agg.skipped += r.skipped; agg.red.push(...r.red); agg.raw += out;
+  }
+  for (const f of smokes) {
+    const { out, code } = await spawnCollect([f]);
+    const reds = [...out.matchAll(/^  FAIL (.+?)(?: — .*)?$/gm)].map((m) => m[1]);
+    const oks = (out.match(/^  ok /gm) || []).length;
+    // a crash (no FAIL line, non-zero exit) is red too — never a silent pass
+    if (reds.length === 0 && (code !== 0 || oks === 0)) reds.push(`${path.basename(f)} crashed or ran no check`);
+    agg.fail += reds.length; agg.pass += oks; agg.red.push(...reds); agg.raw += out;
+  }
+  return agg;
 }
 function parseRun(out) {
   const fail = Number(/^# fail (\d+)/m.exec(out)?.[1] ?? NaN);
