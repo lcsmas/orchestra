@@ -370,7 +370,7 @@ export async function evaluateAutoPaused(deps: PauseAutoDeps): Promise<AutoEvalE
 
 /** Who must hear that the auto-Reprise is HELD: the carrier's own coordinator is a member of the paused run — it cannot read (its wake is refused by the very pause the row asks to
  *  lift). So: the NEAREST ancestor run whose coordinator is not itself paused and can be woken (frozen wake ON), the live tree first and the bus run tree after; none ⇒ the human. */
-function escalationTarget(db: BusDb, deps: PauseAutoDeps, carrier: string): { kind: 'coordinator'; runId: string; coordinator: string } | { kind: 'human'; asker: string } {
+function escalationTarget(db: BusDb, deps: PauseAutoDeps, carrier: string): { kind: 'coordinator'; runId: string; coordinator: string } | { kind: 'gate'; asker: string } {
   const seen = new Set<string>([carrier.toLowerCase()]);
   const ancestors: string[] = [];
   const own = deps.getWorkspace(carrier);
@@ -388,7 +388,7 @@ function escalationTarget(db: BusDb, deps: PauseAutoDeps, carrier: string): { ki
     if (pausedCarrierForWorkspace(db, w, deps.getWorkspace) !== null) continue; // itself paused ⇒ cannot read either
     return { kind: 'coordinator', runId: id, coordinator: run.coordinator };
   }
-  return { kind: 'human', asker: getRun(db, carrier)?.coordinator ?? carrier };
+  return { kind: 'gate', asker: getRun(db, carrier)?.coordinator ?? carrier };
 }
 
 /** Tell someone that the Reprise of `run` is HELD, and record the hold in `pause_auto.held` — ONE transaction: the row/gate AND the record land together or neither does (a failed write
@@ -402,7 +402,7 @@ function escalateNoWake(db: BusDb, deps: PauseAutoDeps, run: AutoPausedRun, rawP
     const body =
       `Auto-Reprise HELD for run ${run.runId}: the usage quota is back, but the Reprise would address ${list}, whose run has its frozen \`wake\` switch OFF — nobody would receive its \`reprise\` row ` +
       `and every worker below would stay blocked. The run stays PAUSED. Detach/remove that run, or lift the pause yourself once it is safe (\`orchestra run resume --run ${run.runId}\`).`;
-    const held: AutoHeld = { at: deps.now(), addressees: heldAddresseesKey(off), to: target.kind === 'human' ? HUMAN_GATE_RECIPIENT : target.coordinator };
+    const held: AutoHeld = { at: deps.now(), addressees: heldAddresseesKey(off), to: target.kind === 'gate' ? HUMAN_GATE_RECIPIENT : target.coordinator };
     db.transaction(() => {
       if (target.kind === 'coordinator') send(db, { runId: target.runId, sender: 'host', recipient: target.coordinator, kind: 'escalation', body });
       else openGate(db, run.runId, target.asker, body, HUMAN_GATE_RECIPIENT);
