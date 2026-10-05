@@ -62,6 +62,8 @@ export function makeModel({ kindOfRole, plan, limited, resetS }) {
     }
     if (consignes > confirms) return bash('orchestra run confirm reprise; echo CONFIRM_RC=$?', 'reprise accusé');
     if (coord) return { text: 'ok' };
+    // the harness's `--inject late-request` prompt: ONE plain reply, never the old work scenario still in the history (it would loop for ever)
+    if (/SCN:late/.test(lastUser)) return { text: 'late ok' };
     // ── work (a worker's scenario, one cycle) ──
     let from = -1, n = 0;
     for (let i = messages.length - 1; i >= 0; i--) {
