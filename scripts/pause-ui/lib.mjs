@@ -197,9 +197,20 @@ export function liveCanary(liveHome) {
     let mcp = ''; for (const f of [path.join(d, '.claude.json'), path.join(liveHome, '.claude.json')]) { try { mcp += Object.keys(JSON.parse(fs.readFileSync(f, 'utf8')).mcpServers || {}).sort().join(',') + ';'; } catch { /* none */ } }
     snap[d] = md5(links) + ':' + md5(mcp) + ` (${links.split('|').filter(Boolean).length} symlinks)`;
   }
-  const bus = path.join(liveHome, '.orchestra', 'bus.sqlite');
-  try { const st = fs.statSync(bus); snap.liveBus = `${st.size}:${Math.floor(st.mtimeMs)}`; } catch { snap.liveBus = 'absent'; }
+  // NOT the live bus's size:mtime: ~35 sibling agents write it all day, so it moves for reasons that are not ours. Our own evidence is `liveBusOpenedBy` below (no rig process holds it open).
   return snap;
+}
+
+/** Rig processes (identity = environ ORCHESTRA_HOME) that hold the LIVE bus (or its -wal / -shm) open right now — must be none. Also the path the app's own log says it opened. */
+export function liveBusOpenedBy(home, liveHome) {
+  const live = new Set(['', '-wal', '-shm'].map((x) => path.join(liveHome, '.orchestra', `bus.sqlite${x}`)));
+  const holders = [];
+  for (const pid of listProcsByHome(home)) {
+    try { for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) { try { if (live.has(fs.readlinkSync(`/proc/${pid}/fd/${fd}`))) holders.push(pid); } catch { /* fd closed */ } } } catch { /* gone */ }
+  }
+  let opened = null;
+  try { const log = fs.readFileSync(path.join(home, 'logs', 'orchestra.log'), 'utf8'); opened = [...log.matchAll(/bus: opened (\S+)/g)].map((m) => m[1]).pop() ?? null; } catch { /* no log */ }
+  return { holders: [...new Set(holders)], opened };
 }
 
 export function makeRecorder(OUT) {

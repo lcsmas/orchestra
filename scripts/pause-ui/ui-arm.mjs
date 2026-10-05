@@ -11,7 +11,7 @@ const J = JSON.stringify;
 export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
   const arm = 'ui';
   const { clause, saveShot } = rec;
-  const { world, a } = await bootArm(arm);
+  const { world, a, liveBusCheck } = await bootArm(arm);
   const cdp = a.cdp;
   const bus = () => world.readBus();
   const run = (id) => bus().runs.find((r) => r.id === id);
@@ -42,7 +42,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await waitFor(async () => (await ev(`document.querySelectorAll('.ws-item').length`)) >= FLEET.length, 30000, 'rows');
     await sleep(1500);
     await parkAndSettle();
-    clause(arm, 'G3/ui-baseline-no-pause-chrome', (await ev(`document.querySelectorAll('[data-pause-badge],[data-pause-glyph],[data-pause-note],.pause-rowbar').length`)) === 0, 'no badge / glyph / note / bar on an ordinary fleet (the rows are byte-for-byte what they were)');
+    clause(arm, 'ctl/ui-baseline-no-pause-chrome', (await ev(`document.querySelectorAll('[data-pause-badge],[data-pause-glyph],[data-pause-note],.pause-rowbar').length`)) === 0, 'no badge / glyph / note / bar on an ordinary fleet (the rows are byte-for-byte what they were)');
     const base = await shot('0-baseline-sidebar', sideClip);
     clause(arm, 'ctl/ui-baseline-painted', distinctColours(base) > 30, `${distinctColours(base)} distinct colours in the sidebar clip (a glyph-less frame has ~1)`);
     const baseAccent = pixelsNear(base, ACCENT), baseGreen = pixelsNear(base, GREEN, 40);
@@ -208,6 +208,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     try { saveShot(`${LABEL}-ui-abort.png`, await cdp.shot()); } catch { /* the page may be gone */ }
   } finally {
     cdp.close();
+    liveBusCheck();
     const left = await a.kill();
     clause(arm, 'ctl/teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
   }

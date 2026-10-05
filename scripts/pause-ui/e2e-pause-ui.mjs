@@ -5,7 +5,7 @@
 //   --expect-red = the must-FAIL arm (run against a build WITHOUT the feature, e.g. master): exit 0 only if every `G*` clause is RED and every `ctl/*` clause GREEN.
 import fs from 'node:fs';
 import path from 'node:path';
-import { Cdp, FLEET, IDS, NAME_OF, REPO, buildWorld, git, launchApp, liveCanary, makeGuard, makeRecorder, md5, sh, sleep, waitFor } from './lib.mjs';
+import { Cdp, FLEET, IDS, NAME_OF, REPO, buildWorld, git, launchApp, liveBusOpenedBy, liveCanary, makeGuard, makeRecorder, md5, sh, sleep, waitFor } from './lib.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -36,17 +36,18 @@ async function bootArm(arm, size = [1440, 900]) {
   const environ = fs.readFileSync(`/proc/${a.app.pid}/environ`, 'utf8').split('\0');
   const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
   clause(arm, 'ctl/scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.home && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND, `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
-  clause(arm, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${a.app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${a.app.pid} present in my sway's get_tree`);
+  const inSway = await waitFor(() => new RegExp(`"pid":\\s*${a.app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), 20000, "the app window in my sway's tree", 500).catch(() => false);
+  clause(arm, 'ctl/app-in-my-sway', inSway, `app pid ${a.app.pid} present in my sway's get_tree (polled: the window maps a moment after the page target)`);
   await waitFor(() => a.cdp.eval(`document.querySelectorAll('.ws-item').length`).then((n) => n >= FLEET.length), 60000, `${FLEET.length} workspace rows`);
   const ver = JSON.parse(fs.readFileSync(path.join(APP_DIR ?? REPO, 'package.json'), 'utf8')).version;
   clause(arm, 'ctl/app-version', true, `package.json ${ver}; ${FLEET.length} sidebar rows rendered`);
-  return { armDir, world, a };
+  return { armDir, world, a, liveBusCheck: () => { const r = liveBusOpenedBy(world.ohome, LIVE_HOME); clause(arm, 'ctl/live-bus-never-opened', r.holders.length === 0 && r.opened === path.join(world.ohome, 'bus.sqlite'), `the app opened ${r.opened} (= its scratch bus); rig processes holding ~/.orchestra/bus.sqlite open: ${r.holders.length ? r.holders.join(',') : 'none'}`); } };
 }
 
 // ── arm ipc ──────────────────────────────────────────────────────────────────────────────────────────
 async function armIpc() {
   const arm = 'ipc';
-  const { world, a } = await bootArm(arm);
+  const { world, a, liveBusCheck } = await bootArm(arm);
   const cdp = a.cdp;
   const call = (expr) => cdp.eval(`(async () => JSON.parse(JSON.stringify(await (${expr}))))()`);
   const I = IDS;
@@ -131,6 +132,7 @@ async function armIpc() {
     clause(arm, 'G1/ipc-arm-completed', false, `ARM ABORTED: ${e.stack || e}`);
   } finally {
     cdp.close();
+    liveBusCheck();
     const left = await a.kill();
     clause(arm, 'ctl/teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
   }
@@ -146,7 +148,7 @@ for (const arm of ARMS) {
 }
 const after = liveCanary(LIVE_HOME);
 const same = JSON.stringify(before) === JSON.stringify(after);
-clause('rig', 'ctl/live-dirs-untouched', same, `${Object.keys(before).length} live entries (~/.claude* symlink-set + mcpServers hashes, live bus size:mtime) ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
+clause('rig', 'ctl/live-dirs-untouched', same, `${Object.keys(before).length} live ~/.claude* dirs (symlink-set + mcpServers hashes) ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
 
 console.log('\n== shots (md5) ==');
 for (const s of rec.shots) console.log(`  ${s.md5}  ${s.file}`);
