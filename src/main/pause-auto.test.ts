@@ -10,13 +10,14 @@ import {
   autoPauseOnLimit,
   autoPausedRuns,
   clearRepriseDeliveredMarkers,
+  wakeOffAddressees,
   evaluateAutoPaused,
   type AutoWorkspace,
   type PauseAutoDeps,
 } from './pause-auto.ts';
 import { readPauseOrigin, insertBilan } from './bus-pause-records.ts';
 import { beginReprise as realBeginReprise, setRunPause } from './bus-pause.ts';
-import { releaseMembers } from './pause-reprise.ts';
+import { releaseMembers, repriseAddressees, setLiveTreeSource } from './pause-reprise.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import { PAUSE_AUTO_BY, REPRISE_STREAK_WINDOW_MS, RESET_GRACE_MS, TRAP_WAIT_MAX_MS, encodePauseAuto, parsePauseAuto, repriseBackoffMs, type UsageReading } from '../shared/pause-auto.ts';
 import type { RepriseEntry } from '../shared/pause-lifecycle.ts';
@@ -57,11 +58,11 @@ interface Rig {
 function rig(sw: { L?: BusSwitches; O?: BusSwitches; X?: BusSwitches } = {}, o: { childFirst?: boolean } = {}): Rig {
   fs.mkdirSync(ROOT, { recursive: true });
   const db = bus.openBus(path.join(ROOT, `b${n++}.sqlite`));
-  const startL = () => busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'lead-ws' }, sw.L ?? ON);
-  const startO = () => busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'ops-ws', parentRunId: 'L' }, sw.O ?? ON);
+  const startL = () => busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, sw.L ?? ON);
+  const startO = () => busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O', parentRunId: 'L' }, sw.O ?? ON);
   // `childFirst`: the child's row precedes its parent's in the table, so a SELECT without ORDER BY returns the child first
   if (o.childFirst) { startO(); startL(); } else { startL(); startO(); }
-  busRuns.startRun(db, { id: 'X', kind: 'vague', coordinator: 'sib-ws', parentRunId: 'L' }, sw.X ?? ON);
+  busRuns.startRun(db, { id: 'X', kind: 'vague', coordinator: 'X', parentRunId: 'L' }, sw.X ?? ON);
   const ws = new Map<string, AutoWorkspace>([
     ['L', { id: 'L', kind: 'orchestrator' }],
     ['O', { id: 'O', parentId: 'L', canOrchestrate: true }],
@@ -84,8 +85,13 @@ function rig(sw: { L?: BusSwitches; O?: BusSwitches; X?: BusSwitches } = {}, o: 
     r.calls.reprise.push({ run, actor, opts });
     return realBeginReprise(d, run, actor, opts);
   };
+  // the host registers the LIVE workspace tree for #255 (pause-trap-host.ts): the Reprise's coordinators — and #256's wake guard — read it. One module-global ⇒ re-registered at every bus read of THIS rig.
+  const liveTree = { get: (id: string) => ws.get(id), ids: () => [...ws.values()].filter((w) => !w.archived).map((w) => w.id) };
+  setLiveTreeSource(() => liveTree);
+  const onceKeys = new Set<string>();
   r.deps = {
-    getBus: () => db,
+    getBus: () => { setLiveTreeSource(() => liveTree); return db; },
+    once: (k) => (onceKeys.has(k) ? false : (onceKeys.add(k), true)),
     getWorkspace: (id) => ws.get(id),
     knownAccountIds: () => r.accounts,
     readingFor: (a) => r.readings.get(a ?? 'default') ?? null,
@@ -200,7 +206,7 @@ test('PAUSE merge: a second limited member of an auto-paused run joins the reaso
 
 test('PAUSE manual: a run already under a MANUAL pause is left EXACTLY as it is — never turned into an auto pause', () => {
   const r = rig();
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'ops-ws', pause_mode = 'hard' WHERE id = 'O'").run(T0 - 1000);
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'O', pause_mode = 'hard' WHERE id = 'O'").run(T0 - 1000);
   const before = allRuns(r.db);
   assert.equal(limitStop(r, 'w1', { account: 'A' }), 'manual-pause');
   assert.equal(allRuns(r.db), before);
@@ -209,7 +215,7 @@ test('PAUSE manual: a run already under a MANUAL pause is left EXACTLY as it is 
 
 test('PAUSE ancestor: a member whose ANCESTOR run is paused is governed by it — manual stays manual, auto absorbs the member (no nested pause)', () => {
   const r = rig();
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'lead-ws', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000);
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'L', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000);
   assert.equal(limitStop(r, 'w1'), 'manual-pause');
   assert.equal(runRow(r.db, 'O').paused_at, null, 'no nested pause under a manual ancestor pause');
   const r2 = rig();
@@ -294,7 +300,7 @@ test('REPRISE waits while the account is still limited (fresh reading limited un
 
 test('REPRISE manual: a MANUAL pause is never selected, whatever the usage says — and neither is one carrying another pause\'s stale reason', async () => {
   const r = rig();
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'ops-ws', pause_mode = 'hard', pause_trap_at = ? WHERE id = 'O'").run(T0, T0 + 1);
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'O', pause_mode = 'hard', pause_trap_at = ? WHERE id = 'O'").run(T0, T0 + 1);
   r.ws.get('w1')!.accountId = 'A';
   r.clock.now = T0 + 60_000; // evidence that WOULD Reprise an auto pause is in place: a mis-selected manual pause would go
   fresh(r, 'A', usable);
@@ -417,7 +423,7 @@ test('REPRISE refresh: a passed / unknown reset with no usable reading asks the 
 test('REPRISE ancestor: a child run waits for EVERY ancestor run still paused (top-down) — a manual parent pause holds it; the lift (or a resuming parent) frees it', async () => {
   const r = rig();
   pausedByLimit(r, { account: 'A' }); // O auto-paused, quota back below
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'lead-ws', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000); // L manually paused
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'L', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000); // L manually paused
   r.ws.get('w1')!.accountId = 'A';
   r.clock.now = T0 + 60_000;
   fresh(r, 'A', usable);
@@ -429,7 +435,7 @@ test('REPRISE ancestor: a child run waits for EVERY ancestor run still paused (t
   const r2 = rig();
   pausedByLimit(r2, { account: 'A' });
   r2.ws.get('w1')!.accountId = 'A';
-  r2.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'lead-ws', pause_mode = 'hard', resume_started_at = ? WHERE id = 'L'").run(T0 - 1000, T0 - 500);
+  r2.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'L', pause_mode = 'hard', resume_started_at = ? WHERE id = 'L'").run(T0 - 1000, T0 - 500);
   r2.clock.now = T0 + 60_000;
   fresh(r2, 'A', usable);
   assert.equal((await evaluateAutoPaused(r2.deps))[0].action, 'reprise');
@@ -566,7 +572,7 @@ test('ACCOUNT CHANGE login: re-logging an account forces ITS fresh reading for t
 test('ACCOUNT CHANGE nothing waiting: no auto-paused run touched ⇒ NOTHING is forced or evaluated (switch OFF / manual pause / unrelated member — identical to today)', async () => {
   const r = rig();
   assert.deepEqual(await afterAccountChange(r.deps, { kind: 'migrate', wsId: 'w1' }), { runs: [], forced: [], evaluated: [] });
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'ops-ws', pause_mode = 'hard' WHERE id = 'O'").run(T0);
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'O', pause_mode = 'hard' WHERE id = 'O'").run(T0);
   assert.deepEqual(await afterAccountChange(r.deps, { kind: 'login', accountId: 'A' }), { runs: [], forced: [], evaluated: [] });
   const r2 = rig();
   pausedByLimit(r2, { account: 'A' });
@@ -600,8 +606,8 @@ test('INTEGRATION Reprise: the REAL beginReprise (host, usage_limit) releases th
   assert.equal(o.paused_at, T0);
   assert.deepEqual(parsePauseAuto(o.pause_auto as string, T0)?.wsIds, ['w1'], 'pause_auto stays until the run closes');
   const rows = r.db.prepare("SELECT ws_id, role, released_by FROM pause_members WHERE run_id = 'O' ORDER BY ws_id").all() as Array<Record<string, unknown>>;
-  assert.deepEqual(rows.map((x) => [x.ws_id, x.role, x.released_by]), [['ops-ws', 'coordinator', 'host'], ['w1', 'worker', null]]);
-  assert.equal((r.db.prepare("SELECT COUNT(*) AS c FROM messages WHERE kind = 'reprise' AND recipient = 'ops-ws'").get() as { c: number }).c, 1, 'the coordinator got its Bilan row');
+  assert.deepEqual(rows.map((x) => [x.ws_id, x.role, x.released_by]), [['O', 'coordinator', 'host'], ['w1', 'worker', null]]);
+  assert.equal((r.db.prepare("SELECT COUNT(*) AS c FROM messages WHERE kind = 'reprise' AND recipient = 'O'").get() as { c: number }).c, 1, 'the coordinator got its Bilan row');
   assert.deepEqual(await evaluateAutoPaused(r.deps), [], 'a RESUMING run is not evaluated again');
 });
 
@@ -621,7 +627,7 @@ test('INTEGRATION released member: a worker RELEASED during the Reprise that hit
   const r = rig();
   pausedByLimit(r, { account: 'A' });
   r.db.prepare('UPDATE runs SET resume_started_at = ? WHERE id = ?').run(T0 + 2_000, 'O');
-  r.db.prepare("INSERT OR REPLACE INTO pause_members (run_id, paused_at, ws_id, role, member_run, released_at, released_by) VALUES ('O', ?, 'w1', 'worker', 'O', ?, 'ops-ws')").run(T0, T0 + 3_000);
+  r.db.prepare("INSERT OR REPLACE INTO pause_members (run_id, paused_at, ws_id, role, member_run, released_at, released_by) VALUES ('O', ?, 'w1', 'worker', 'O', ?, 'O')").run(T0, T0 + 3_000);
   r.clock.now = T0 + 20_000;
   assert.equal(limitStop(r, 'w1', { account: 'A' }), 'repaused');
   const o = runRow(r.db, 'O');
@@ -634,7 +640,7 @@ test('INTEGRATION human re-assert: a human `run pause` over an AUTO pause TAKES 
   r.ws.get('w1')!.accountId = 'A';
   r.clock.now = T0 + 60_000;
   fresh(r, 'A', usable);
-  assert.equal(setRunPause(r.db, 'O', true, 'ops-ws'), 'already-paused');
+  assert.equal(setRunPause(r.db, 'O', true, 'O'), 'already-paused');
   assert.equal(runRow(r.db, 'O').pause_auto, null);
   assert.equal(runRow(r.db, 'O').paused_by, PAUSE_AUTO_BY, 'the pause itself is untouched');
   assert.deepEqual(await evaluateAutoPaused(r.deps), []);
@@ -657,17 +663,17 @@ function racing(db: bus.BusDb, re: RegExp, before: () => void): bus.BusDb {
 test('PAUSE race: a MANUAL pause landing between the host\'s read and its write is never overwritten', () => {
   const r = rig();
   const real = r.db;
-  r.deps = { ...r.deps, getBus: () => racing(real, /UPDATE runs SET paused_at = \?, paused_by = \?, pause_mode = 'hard'/, () => { real.prepare("UPDATE runs SET paused_at = ?, paused_by = 'ops-ws', pause_mode = 'hard' WHERE id = 'O'").run(T0 - 5); }) };
+  r.deps = { ...r.deps, getBus: () => racing(real, /UPDATE runs SET paused_at = \?, paused_by = \?, pause_mode = 'hard'/, () => { real.prepare("UPDATE runs SET paused_at = ?, paused_by = 'O', pause_mode = 'hard' WHERE id = 'O'").run(T0 - 5); }) };
   assert.equal(limitStop(r, 'w1', { account: 'A' }), 'manual-pause');
   const o = runRow(real, 'O');
-  assert.deepEqual([o.paused_at, o.paused_by, o.pause_auto], [T0 - 5, 'ops-ws', null]);
+  assert.deepEqual([o.paused_at, o.paused_by, o.pause_auto], [T0 - 5, 'O', null]);
 });
 
 test('INTEGRATION human race: a human `run pause` that loses the race to the host\'s auto pause ADOPTS it (pause_auto NULL) instead of reporting a manual pause that is not', () => {
   const r = rig();
   const real = r.db;
   const racy = racing(real, /UPDATE runs SET paused_at = \?, paused_by = \?, pause_mode = \?, pause_deadline_at/, () => { limitStop(r, 'w1', { account: 'A' }); });
-  assert.equal(setRunPause(racy, 'O', true, 'ops-ws'), 'already-paused');
+  assert.equal(setRunPause(racy, 'O', true, 'O'), 'already-paused');
   const o = runRow(real, 'O');
   assert.equal(o.paused_by, PAUSE_AUTO_BY, 'the host\'s pause stands…');
   assert.equal(o.pause_auto, null, '…but it is now a human\'s: never auto-resumed');
@@ -675,8 +681,8 @@ test('INTEGRATION human race: a human `run pause` that loses the race to the hos
 
 test('PAUSE manual Reprise: a member RELEASED by a human-led Reprise that hits the limit gets a NEW (auto) pause — a released member is no longer governed', () => {
   const r = rig();
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'ops-ws', pause_mode = 'hard', pause_trap_at = ?, resume_started_at = ? WHERE id = 'O'").run(T0 - 1000, T0 - 900, T0 - 800);
-  r.db.prepare("INSERT INTO pause_members (run_id, paused_at, ws_id, role, member_run, released_at, released_by) VALUES ('O', ?, 'w1', 'worker', 'O', ?, 'ops-ws')").run(T0 - 1000, T0 - 700);
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'O', pause_mode = 'hard', pause_trap_at = ?, resume_started_at = ? WHERE id = 'O'").run(T0 - 1000, T0 - 900, T0 - 800);
+  r.db.prepare("INSERT INTO pause_members (run_id, paused_at, ws_id, role, member_run, released_at, released_by) VALUES ('O', ?, 'w1', 'worker', 'O', ?, 'O')").run(T0 - 1000, T0 - 700);
   assert.equal(limitStop(r, 'w1', { account: 'A' }), 'repaused');
   const o = runRow(r.db, 'O');
   assert.deepEqual([o.resume_started_at, o.paused_by], [null, PAUSE_AUTO_BY]);
@@ -724,7 +730,7 @@ test('REPRISE ancestor: the LIVE tree decides — an OPS detached from its old p
   const r = rig();
   pausedByLimit(r, { account: 'A' });
   r.ws.get('w1')!.accountId = 'A';
-  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'lead-ws', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000); // L manually paused
+  r.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'L', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000); // L manually paused
   r.ws.get('O')!.parentId = undefined; // …but O was detached live (parent_run_id is write-once)
   r.clock.now = T0 + 60_000;
   fresh(r, 'A', usable);
@@ -732,7 +738,7 @@ test('REPRISE ancestor: the LIVE tree decides — an OPS detached from its old p
   const r2 = rig();
   pausedByLimit(r2, { account: 'A' });
   r2.ws.get('w1')!.accountId = 'A';
-  r2.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'lead-ws', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000);
+  r2.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'L', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000);
   r2.ws.delete('L'); // O's live parent is GONE: the chain dangles ⇒ the bus tree (parent_run_id = L) is the evidence
   r2.clock.now = T0 + 60_000;
   fresh(r2, 'A', usable);
@@ -740,7 +746,7 @@ test('REPRISE ancestor: the LIVE tree decides — an OPS detached from its old p
   const r3 = rig({ L: OFF });
   pausedByLimit(r3, { account: 'A' });
   r3.ws.get('w1')!.accountId = 'A';
-  r3.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'lead-ws', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000); // a STALE column on a switch-OFF run
+  r3.db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'L', pause_mode = 'hard' WHERE id = 'L'").run(T0 - 1000); // a STALE column on a switch-OFF run
   r3.clock.now = T0 + 60_000;
   fresh(r3, 'A', usable);
   assert.equal((await evaluateAutoPaused(r3.deps))[0].action, 'reprise');
@@ -890,4 +896,109 @@ test('MARKERS kind (N4): only a `reprise` row clears a marker — any other mail
   repriseRow(r, 'w1', T0 + 500, 'O', 'status');
   assert.deepEqual(await clearRepriseDeliveredMarkers(r.deps), []);
   assert.equal(r.ws.get('w1')!.lastStopReason, 'usage_limit');
+});
+
+// ─── reviewer-e3-r3 fix round: the wake guard follows the Reprise's OWN addressees ──────────────────────────────────────────────────────
+const WAKE_OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false };
+const wakeOffRun = (r: Rig, id: string, parentRun: string | null = null): void => void busRuns.startRun(r.db, { id, kind: 'vague', coordinator: id, ...(parentRun ? { parentRunId: parentRun } : {}) }, WAKE_OFF);
+
+test('PAUSE wake guard (R3-1): an OPS created top-level (bus parent_run_id NULL, wake OFF) and ATTACHED under the carrier in the LIVE tree is an addressee — no auto Pause; wake ON ⇒ paused', () => {
+  const r = rig();
+  wakeOffRun(r, 'Z'); // bus run with NO parent: the bus subtree of L does not contain it
+  r.ws.set('Z', { id: 'Z', parentId: 'L', canOrchestrate: true }); // …but the live tree attached it under L
+  r.ws.set('wz', { id: 'wz', parentId: 'Z' });
+  assert.deepEqual(busSubtree(r), ['L', 'O', 'X'], 'the bus subtree misses Z (write-once parent_run_id)');
+  const before = allRuns(r.db);
+  assert.equal(limitStop(r, 'wz', { account: 'A' }), 'no-wake');
+  assert.equal(allRuns(r.db), before, 'runs table byte-identical');
+  assert.deepEqual(wakeOffAddressees(r.db, r.deps, 'L'), [{ wsId: 'Z', runId: 'Z' }]);
+  // control: the same re-attached OPS with wake ON ⇒ the auto Pause lands
+  const ok = rig();
+  busRuns.startRun(ok.db, { id: 'Z', kind: 'vague', coordinator: 'Z' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: true });
+  ok.ws.set('Z', { id: 'Z', parentId: 'L', canOrchestrate: true });
+  ok.ws.set('wz', { id: 'wz', parentId: 'Z' });
+  assert.equal(limitStop(ok, 'wz', { account: 'A' }), 'paused');
+});
+
+function busSubtree(r: Rig): string[] {
+  return (r.db.prepare("WITH RECURSIVE t(id) AS (SELECT 'L' UNION ALL SELECT r.id FROM runs r JOIN t ON r.parent_run_id = t.id) SELECT id FROM t").all() as Array<{ id: string }>).map((x) => x.id).sort();
+}
+
+test('PAUSE wake guard (R3-2): historical / deleted / archived runs are not addressees — a wake-OFF bus run of a workspace that no longer exists does not stop the auto Pause', () => {
+  const r = rig();
+  wakeOffRun(r, 'H', 'O'); // a run row of a DELETED OPS workspace (not in the store): wake OFF, under the carrier O
+  assert.equal(limitStop(r, 'w1', { account: 'A' }), 'paused', 'nobody to wake there');
+  const arch = rig();
+  wakeOffRun(arch, 'Y', 'O'); // an ARCHIVED OPS under the carrier
+  arch.ws.set('Y', { id: 'Y', parentId: 'O', canOrchestrate: true, archived: true });
+  assert.equal(limitStop(arch, 'w1', { account: 'A' }), 'paused');
+  const live = rig();
+  wakeOffRun(live, 'Y', 'O'); // control: the same OPS, alive ⇒ addressed ⇒ blocks
+  live.ws.set('Y', { id: 'Y', parentId: 'O', canOrchestrate: true });
+  assert.equal(limitStop(live, 'w1', { account: 'A' }), 'no-wake');
+});
+
+test('PAUSE wake guard: `no-wake` is WARNED once per carrier naming the addressee and its run — repeated limit stops do not repeat the line', () => {
+  const r = rig();
+  wakeOffRun(r, 'Zc', 'O');
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  assert.equal(limitStop(r, 'w1', { account: 'A' }), 'no-wake');
+  assert.equal(limitStop(r, 'w2', { account: 'A' }), 'no-wake');
+  const warns = r.calls.logs.filter((l) => l.startsWith('WARN pause-auto:') && l.includes('NOT auto-paused'));
+  assert.equal(warns.length, 1);
+  assert.ok(warns[0].includes('Zc (run Zc, wake OFF)') && warns[0].includes('run O'), warns[0]);
+});
+
+test('INTEGRATION addressees: `repriseAddressees` = exactly the recipients (and runs) of the `reprise` rows beginReprise sends the coordinators — one enumeration', async () => {
+  const r = rig();
+  busRuns.startRun(r.db, { id: 'Zc', kind: 'vague', coordinator: 'Zc', parentRunId: 'O' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: true });
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.ws.set('wc', { id: 'wc', parentId: 'Zc' });
+  pausedByLimit(r, { account: 'A' });
+  r.ws.get('w1')!.accountId = 'A';
+  const planned = repriseAddressees(r.db, 'O', ['O', 'Zc']).map((a) => `${a.wsId}@${a.runId}`).sort();
+  assert.deepEqual(planned, ['O@O', 'Zc@Zc']);
+  r.clock.now = T0 + 60_000;
+  fresh(r, 'A', usable);
+  assert.equal((await evaluateAutoPaused(r.deps))[0].outcome, 'resuming');
+  const sent = (r.db.prepare("SELECT recipient, run_id FROM messages WHERE kind = 'reprise' ORDER BY sequence").all() as Array<{ recipient: string; run_id: string }>).map((m) => `${m.recipient}@${m.run_id}`).sort();
+  assert.deepEqual(sent, planned);
+});
+
+test('REPRISE no-wake addressee (re-check): a wake-OFF run created/attached AFTER the pause HOLDS the Reprise — warned + ONE escalation to the carrier\'s coordinator — and releases it once the run is gone', async () => {
+  const r = rig();
+  pausedByLimit(r, { account: 'A' }); // paused with every addressee wake ON
+  r.ws.get('w1')!.accountId = 'A';
+  wakeOffRun(r, 'Zc', 'O'); // a wake-OFF OPS appears under O afterwards
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.clock.now = T0 + 60_000;
+  fresh(r, 'A', usable);
+  assert.deepEqual(await evaluateAutoPaused(r.deps), [{ runId: 'O', action: 'wait', why: 'no-wake-addressee' }]);
+  assert.equal(r.calls.reprise.length, 0, 'no Reprise nobody would receive');
+  const esc = () => r.db.prepare("SELECT sender, recipient, run_id, body FROM messages WHERE kind = 'escalation'").all() as Array<{ sender: string; recipient: string; run_id: string; body: string }>;
+  assert.equal(esc().length, 1);
+  assert.deepEqual([esc()[0].sender, esc()[0].recipient, esc()[0].run_id], ['host', 'O', 'O']);
+  assert.ok(esc()[0].body.includes('Zc (run Zc)') && esc()[0].body.includes('orchestra run resume --run O'));
+  assert.equal(r.calls.logs.filter((l) => l.startsWith('WARN pause-auto:') && l.includes('Reprise HELD')).length, 1);
+  await evaluateAutoPaused(r.deps);
+  assert.equal(esc().length, 1, 'ONE escalation per carrier + epoch');
+  assert.equal(runRow(r.db, 'O').resume_started_at, null, 'the run stays PAUSED');
+  r.ws.delete('Zc'); // the offending OPS is removed ⇒ the next tick Reprises
+  assert.equal((await evaluateAutoPaused(r.deps))[0].action, 'reprise');
+});
+
+test('PAUSE wake guard (bus fallback): an OPS whose live chain DANGLES (its parent workspace was deleted) is known only through the bus subtree — still an addressee (wake OFF ⇒ no-wake), unless archived or wake ON', () => {
+  const mk = (q: 'off' | 'on' | 'archived'): Rig => {
+    const r = rig();
+    r.ws.delete('O'); // the OPS workspace between L and Q was deleted (its run row stays)
+    busRuns.startRun(r.db, { id: 'Q', kind: 'vague', coordinator: 'Q', parentRunId: 'O' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: q === 'on' }); // the archived variant is wake OFF too: only the archived filter can save it
+    r.ws.set('Q', { id: 'Q', parentId: 'O', canOrchestrate: true, ...(q === 'archived' ? { archived: true } : {}) }); // chain Q → O (gone) dangles
+    r.ws.set('wl', { id: 'wl', parentId: 'L' });
+    return r;
+  };
+  const off = mk('off');
+  assert.equal(limitStop(off, 'wl', { account: 'A' }), 'no-wake');
+  assert.deepEqual(wakeOffAddressees(off.db, off.deps, 'L'), [{ wsId: 'Q', runId: 'Q' }]);
+  assert.equal(limitStop(mk('on'), 'wl', { account: 'A' }), 'paused');
+  assert.equal(limitStop(mk('archived'), 'wl', { account: 'A' }), 'paused', 'an archived workspace is nobody to wake');
 });

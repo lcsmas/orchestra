@@ -161,6 +161,24 @@ test('RIG wake_off_nested: a child OPS run with wake OFF under a pause+wake ON c
   assert.equal(r.ok, true);
 });
 
+test('RIG wake_off_reparented: an OPS created top-level (bus parent NULL, wake OFF) and ATTACHED under the carrier in the LIVE tree is an addressee of the Reprise — no auto Pause; wake-ON control pauses', () => {
+  const r = runArm('wake_off_reparented');
+  assert.equal(r.runsIdentical, true);
+  assert.equal(r.pausedCarrier, false);
+  assert.equal(r.pausedByOtherMember, false);
+  assert.equal(r.pausedControl, true);
+  assert.equal(r.ok, true);
+});
+
+test('RIG wake_off_after_pause: a wake-OFF OPS attached AFTER the pause HOLDS the auto-Reprise (one escalation to the carrier coordinator, run stays paused); detaching it lets the next tick Reprise', () => {
+  const r = runArm('wake_off_after_pause');
+  assert.equal(r.paused, true);
+  assert.equal(r.resumedWhileHeld, false);
+  assert.deepEqual(r.escalations, ['ws-ops@ws-ops'], 'exactly one escalation, to the carrier\'s coordinator, in its run');
+  assert.equal(r.resumedAfterDetach, true);
+  assert.equal(r.ok, true);
+});
+
 test('RIG release_clears_marker: a member sent its Reprise row (coordinator Bilan at beginReprise, worker Consigne at `run release`) loses its #74 marker BEFORE the nudge — no second wake', () => {
   const r = runArm('release_clears_marker');
   assert.equal(r.resuming, true);

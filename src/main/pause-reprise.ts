@@ -323,6 +323,15 @@ function runNodes(db: BusDb, runIds: readonly string[]): RunNode[] {
  * the live tree does not know — the coordinators of the bus run tree. WORKERS (role 'worker', `member_run` = the run it belongs to): every Bilan member and any `extra` the
  * caller knows (the host sweep's live enumeration), their run read from the live tree when it knows them. Idempotent: rows already there keep their accusés.
  */
+/** One roster row to write (what {@link planRoster} decides and {@link seedRoster} upserts). */
+export interface RosterIntent {
+  wsId: string;
+  role: 'coordinator' | 'worker';
+  memberRun: string | null;
+  /** upsert `force` flag (the live tree / the bus tree said so, vs a Bilan-only guess). */
+  live: boolean;
+}
+
 export function seedRoster(
   db: BusDb,
   carrierRunId: string,
@@ -330,16 +339,31 @@ export function seedRoster(
   subtreeRunIds: readonly string[],
   extra: ReadonlyArray<{ wsId: string; runId: string }> = [],
 ): void {
+  for (const i of planRoster(db, carrierRunId, pausedAt, subtreeRunIds, extra)) {
+    upsertRosterMember(db, { runId: carrierRunId, pausedAt, wsId: i.wsId, role: i.role, memberRun: i.memberRun }, i.live);
+  }
+}
+
+/** THE enumeration of who the Reprise addresses (coordinators) and holds (workers) — decides, never writes. {@link seedRoster} writes it; {@link repriseAddressees} reads its
+ *  coordinators; #256's auto Pause asks the SAME plan whether every addressee can be woken (no second enumeration to drift from the Reprise). */
+export function planRoster(
+  db: BusDb,
+  carrierRunId: string,
+  pausedAt: number,
+  subtreeRunIds: readonly string[],
+  extra: ReadonlyArray<{ wsId: string; runId: string }> = [],
+): RosterIntent[] {
+  const intents: RosterIntent[] = [];
   const tree = liveTree();
   const nodes = runNodes(db, subtreeRunIds);
   const busCoord = new Map<string, RunNode>(); // bus fallback: coordinator ws id → the run it coordinates (shallowest wins)
   for (const nd of nodes) if (!busCoord.has(nd.coordinator.toLowerCase())) busCoord.set(nd.coordinator.toLowerCase(), nd);
   // `member_run` of a COORDINATOR = the run it coordinates (the Pause douce's convention: the member's own nearest orchestrator, itself included); its parent run is derived on the fly
-  const coord = (wsId: string, ownRun: string) => upsertRosterMember(db, { runId: carrierRunId, pausedAt, wsId, role: 'coordinator', memberRun: ownRun }, true);
+  const coord = (wsId: string, ownRun: string) => void intents.push({ wsId, role: 'coordinator', memberRun: ownRun, live: true });
   const worker = (wsId: string, memberRun: string | null, live: boolean) =>
     // an UNKNOWN run stays NULL (a Bilan row the observer created has no `memberRun`): never a wrong default — a later live read fills it, and until then
     // the carrier's own rule releases it and the wave filters read NULL as the carrier run
-    upsertRosterMember(db, { runId: carrierRunId, pausedAt, wsId, role: 'worker', memberRun }, live);
+    void intents.push({ wsId, role: 'worker', memberRun, live });
   const done = new Set<string>();
   const carrierCoordinator = nodes.find((nd) => nd.id === carrierRunId)?.coordinator ?? carrierRunId; // the run's own coordinator, whatever the tree says
   coord(carrierCoordinator, carrierRunId);
@@ -381,6 +405,24 @@ export function seedRoster(
     coord(nd.coordinator, nd.id);
     done.add(key);
   }
+  return intents;
+}
+
+/** A coordinator the Reprise addresses, and the run its `reprise` row is SENT in (= the run whose frozen `wake` switch the sweep reads to wake it). */
+export interface RepriseAddressee {
+  wsId: string;
+  runId: string;
+}
+
+/** The coordinators `beginReprise` would address for this carrier, each with the run its row is sent in — derived from {@link planRoster} (the live tree first, the bus run tree
+ *  only for ids the live tree does not know) and the same run rule as {@link releaseCoordinators}. `pausedAt` (when a Bilan exists) refines the run of a workspace the live tree does not know. */
+export function repriseAddressees(db: BusDb, carrierRunId: string, subtreeRunIds: readonly string[], pausedAt?: number): RepriseAddressee[] {
+  const tree = liveTree();
+  const nodes = runNodes(db, subtreeRunIds);
+  const bilans = pausedAt === undefined ? new Map<string, BilanRec>() : new Map(readBilanRecs(db, carrierRunId, pausedAt).map((b) => [b.wsId, b]));
+  return planRoster(db, carrierRunId, pausedAt ?? 0, subtreeRunIds)
+    .filter((i) => i.role === 'coordinator')
+    .map((i) => ({ wsId: i.wsId, runId: envRunOf(tree, i.wsId, bilans.get(i.wsId)?.memberRun ?? null, coordinatedRun(tree, nodes, i.wsId)) }));
 }
 
 // ─── consignes ───────────────────────────────────────────────────────────────

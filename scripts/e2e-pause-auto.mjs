@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(process.env.PAUSE_AUTO_REPO ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'wake_off_nested', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
+const ARMS = ['limit_pause', 'switch_resume', 'switch_default_login', 'relogin_resume', 'relogin_race', 'quota_back_tick', 'manual_never', 'trap_wait', 'repause', 'remark_no_repause', 'wake_off_no_pause', 'wake_off_nested', 'wake_off_reparented', 'wake_off_after_pause', 'release_clears_marker', 'nudge_throttle', 'usage_newer_wins', 'off_identity', 'hang_selftest'];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 const TICK_MS = 20_000;   // prompt-queue TICK_MS — "one poll tick" (pinned by pause-auto-wiring.test.ts)
 
@@ -114,6 +114,9 @@ const acctUsage = await import(`${REPO}/src/main/account-usage.ts`);
 const pq = await import(`${REPO}/src/main/prompt-queue.ts`);
 const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
 
+// the booted app registers the LIVE workspace tree for #255 (pause-trap-host.ts) — the Reprise's coordinators and #256's wake guard read it
+const reprisesMod = await import(`${REPO}/src/main/pause-reprise.ts`);
+reprisesMod.setLiveTreeSource?.(() => ({ get: (id) => store.getWorkspace(id), ids: () => store.workspaces.filter((w) => !w.archived).map((w) => w.id) }));
 busMod.initBus();
 const db = busMod.getBus();
 if (!db) { console.error('bus failed to open'); process.exit(3); }
@@ -475,6 +478,50 @@ if (ARM === 'limit_pause') {
   await activity.markStoppedOnUsageLimit('ws-xm', Date.now() + 3_600_000);   // control
   rec('pausedControl', run('ws-xops').paused_at !== null);
   ok = out.runsIdentical === true && out.pausedCarrier === false && out.pausedControl === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'wake_off_reparented') {
+  // R3-1: the guard follows what the Reprise ADDRESSES (live tree first), not the write-once bus subtree: an OPS created top-level (bus parent_run_id NULL, wake OFF) and then ATTACHED
+  // under the carrier in the live tree would never be woken by the Reprise — no auto Pause. Control in the same arm: the same OPS with wake ON lets the pause land.
+  await seed();
+  busRuns.startRun(db, { id: 'ws-att', kind: 'vague', coordinator: 'ws-att' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false });   // top-level run, wake OFF
+  await store.upsertWorkspace(mk('ws-att', { kind: 'orchestrator', accountId: 'acct-a' }));
+  await store.upsertWorkspace(mk('ws-attm', { parentId: 'ws-att', accountId: 'acct-a' }));
+  await store.upsertWorkspace({ ...ws('ws-att'), parentId: 'ws-ops' });                                  // the human ATTACHES it under the carrier
+  const runsBefore = allRuns();
+  await activity.markStoppedOnUsageLimit('ws-attm', Date.now() + 3_600_000);
+  rec('runsIdentical', allRuns() === runsBefore);
+  rec('pausedCarrier', run('ws-ops').paused_at !== null);
+  await activity.markStoppedOnUsageLimit('ws-m1', Date.now() + 3_600_000);   // control: a member that is NOT below the attached OPS… still blocked (the OPS is an addressee of the carrier)
+  rec('pausedByOtherMember', run('ws-ops').paused_at !== null);
+  busRuns.startRun(db, { id: 'ws-att2', kind: 'vague', coordinator: 'ws-att2' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: true });   // control arm: wake ON
+  await store.upsertWorkspace(mk('ws-att2', { kind: 'orchestrator', parentId: 'ws-xops', accountId: 'acct-b' }));
+  await store.upsertWorkspace(mk('ws-att2m', { parentId: 'ws-att2', accountId: 'acct-b' }));
+  await activity.markStoppedOnUsageLimit('ws-att2m', Date.now() + 3_600_000);
+  rec('pausedControl', run('ws-xops').paused_at !== null);
+  ok = out.runsIdentical === true && out.pausedCarrier === false && out.pausedByOtherMember === false && out.pausedControl === true;
+
+// ═════════════════════════════════════════════════════════════════════════════
+} else if (ARM === 'wake_off_after_pause') {
+  // The addressees are re-read at the auto-Reprise: a wake-OFF OPS attached AFTER the pause HOLDS the Reprise (no row nobody receives): warned + ONE escalation to the carrier's
+  // coordinator, run stays PAUSED; detaching it lets the next tick Reprise.
+  await seed({ aLimitedMs: 0 });
+  await activity.markStoppedOnUsageLimit('ws-m1', Date.now() + 3_600_000);
+  await sleep(25);
+  await acctUsage.refreshAccountsNow();
+  rec('paused', run('ws-ops').paused_at !== null);
+  trapDone();
+  busRuns.startRun(db, { id: 'ws-late', kind: 'vague', coordinator: 'ws-late' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false });
+  await store.upsertWorkspace(mk('ws-late', { kind: 'orchestrator', parentId: 'ws-ops', accountId: 'acct-a' }));
+  await pq.__tickForTests();
+  await pq.__tickForTests();
+  rec('resumedWhileHeld', resumeStarted() !== null);
+  const esc = db.prepare("SELECT recipient, run_id FROM messages WHERE kind = 'escalation'").all();
+  rec('escalations', esc.map((e) => `${e.recipient}@${e.run_id}`));
+  await store.upsertWorkspace({ ...ws('ws-late'), parentId: undefined });                               // detached
+  await pq.__tickForTests();
+  rec('resumedAfterDetach', resumeStarted() !== null);
+  ok = out.paused && out.resumedWhileHeld === false && JSON.stringify(out.escalations) === '["ws-ops@ws-ops"]' && out.resumedAfterDetach === true;
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'release_clears_marker') {

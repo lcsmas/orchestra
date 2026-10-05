@@ -29,6 +29,8 @@ const accountChanged = new Map<string, number>();
 const reprises = new Map<string, number[]>();
 /** Highest `messages.sequence` already scanned for `reprise` rows (see `clearRepriseDeliveredMarkers`). */
 let repriseSeq = 0;
+/** First-time latches of the `no-wake` warn / escalation (see `PauseAutoDeps.once`). */
+const onceKeys = new Set<string>();
 
 const realDeps: PauseAutoDeps = {
   getBus,
@@ -59,6 +61,7 @@ const realDeps: PauseAutoDeps = {
   },
   noteReprise: (runId, now) => void reprises.set(runId, [...(reprises.get(runId) ?? []), now]),
   resetStreak: (runId) => void reprises.delete(runId),
+  once: (key) => (onceKeys.has(key) ? false : (onceKeys.add(key), true)),
   limitMarkedWorkspaces: () =>
     store.workspaces.filter((w) => !w.archived && w.lastStopReason === 'usage_limit').map((w) => ({ id: w.id, markedAt: w.lastStopReasonAt ?? 0 })),
   clearLimitMarker: (wsId) => clearStopReason(wsId),
@@ -90,6 +93,7 @@ export function stopPauseAuto(): void {
   accountChanged.clear();
   reprises.clear();
   repriseSeq = 0;
+  onceKeys.clear();
 }
 
 // Coalesce: the tick and an account-change hook may both evaluate; a Reprise must start ONCE.

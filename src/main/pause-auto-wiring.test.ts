@@ -85,7 +85,8 @@ test('WIRING markers (m1): the host clears a member\'s #74 marker once its `repr
 
 test('WIRING wake guard (M1/N1): the fresh auto Pause needs the frozen wake switch ON in EVERY run of the carrier\'s subtree; a marker is cleared only for a row whose run has wake ON, kind reprise', () => {
   const core = read('pause-auto.ts');
-  assert.match(core, /if \(runSubtreeIds\(db, carrier\)\.some\(\(id\) => getRun\(db, id\)\?\.flags\.wake !== true\)\) return 'no-wake';/);
+  assert.match(core, /const off = wakeOffAddressees\(db, deps, carrier\);\s*if \(off\.length > 0\) \{\s*if \(deps\.once\(`no-wake:\$\{carrier\}`\)\) deps\.log\.warn\(/);
+  assert.match(core, /return 'no-wake';\s*\}/);
   assert.match(core, /if \(getRun\(db, r\.run_id\)\?\.flags\.wake !== true\) continue;/);
   assert.match(core, /FROM messages WHERE sequence > \? AND sequence <= \? AND kind = 'reprise' AND recipient IS NOT NULL/);
 });
@@ -98,4 +99,15 @@ test('WIRING pause-auto.ts is Electron-free (importable under node --test like b
   const host = read('pause-auto-host.ts');
   for (const need of ["from './store.ts'", "from './bus.ts'", "from './account-usage.ts'", "from './usage.ts'", "from './activity.ts'"]) assert.ok(host.includes(need), need);
   assert.match(host, /forceRefresh: async \(ids\) => \{/);
+});
+
+test('WIRING one enumeration (R3-1): the wake guard asks #255\'s OWN plan — seedRoster and repriseAddressees both read planRoster; the guard reads repriseAddressees minus ghosts, and re-checks at the Reprise', () => {
+  const rep = read('pause-reprise.ts');
+  assert.match(rep, /for \(const i of planRoster\(db, carrierRunId, pausedAt, subtreeRunIds, extra\)\) \{\s*upsertRosterMember\(/);
+  assert.match(rep, /return planRoster\(db, carrierRunId, pausedAt \?\? 0, subtreeRunIds\)\s*\.filter\(\(i\) => i\.role === 'coordinator'\)/);
+  const core = read('pause-auto.ts');
+  assert.match(core, /return repriseAddressees\(db, carrier, runSubtreeIds\(db, carrier\), pausedAt\)\s*\.filter\(\(a\) => \{\s*const w = deps\.getWorkspace\(a\.wsId\);\s*return !!w && !w\.archived;\s*\}\)\s*\.filter\(\(a\) => getRun\(db, a\.runId\)\?\.flags\.wake !== true\);/);
+  assert.match(core, /const off = wakeOffAddressees\(db, deps, run\.runId, run\.pausedAt\);\s*if \(off\.length > 0\) \{[\s\S]*?escalateNoWake\(db, deps, run\.runId, list\);[\s\S]*?why: 'no-wake-addressee'/);
+  assert.ok(!/runSubtreeIds\(db, carrier\)\.some/.test(core), 'no second (bus-only) enumeration');
+  assert.match(read('pause-auto-host.ts'), /once: \(key\) => \(onceKeys\.has\(key\) \? false : \(onceKeys\.add\(key\), true\)\),/);
 });

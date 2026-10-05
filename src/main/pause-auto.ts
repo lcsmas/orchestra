@@ -9,11 +9,11 @@
 //    coordinators first, workers only via their OPS). Manual pauses are never selected.
 //  • `afterAccountChange` — migration / re-login: force a fresh reading of the account(s) the paused runs wait on and re-evaluate AT ONCE.
 
-import type { BusDb } from './bus.ts';
+import { send, type BusDb } from './bus.ts';
 import { getRun } from './bus-runs.ts';
 import { pausedCarrierForWorkspace, runSubtreeIds } from './bus-pause.ts';
 import { recordPauseOrigin } from './bus-pause-records.ts';
-import { revertResumeToPaused } from './pause-reprise.ts';
+import { repriseAddressees, revertResumeToPaused } from './pause-reprise.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
 import { resolveWorkspaceAccountId } from '../shared/accounts.ts';
 import type { PauseAutoReason, RepriseEntry } from '../shared/pause-lifecycle.ts';
@@ -66,6 +66,8 @@ export interface PauseAutoDeps {
   clearLimitMarker: (wsId: string) => Promise<void>;
   /** Cursor over `messages.sequence` for the `reprise` rows already seen (in-memory: a restart re-reads them, harmless). */
   repriseCursor: { get: () => number; set: (seq: number) => void };
+  /** First-time-only latch (true = first call for this key): the `no-wake` warn / escalation fire ONCE per carrier (+epoch). In-memory is enough: a restart repeats one line. */
+  once: (key: string) => boolean;
   /** The workspace store is loaded from disk (the trap's rule: an unloaded store reads every trigger as "deleted"). Absent = always ready. */
   storeReady?: () => boolean;
   now: () => number;
@@ -137,6 +139,19 @@ function recordHostOrigin(db: BusDb, deps: PauseAutoDeps, carrier: string, pause
   }
 }
 
+// ─── can the Reprise wake everyone it addresses? ─────────────────────────────────────────────────────────────────────────────────────────
+/** The coordinators the Reprise would address for `carrier` whose run has its frozen `wake` switch OFF — i.e. that the bus-wake sweep would never wake. The addressee set is
+ *  #255's OWN plan (`repriseAddressees` ⇐ `planRoster`: the live workspace tree first, the bus run tree only for ids the live tree does not know) — never a second enumeration —
+ *  minus workspaces that no longer exist / are archived (a deleted OPS's historical run row is nobody to wake). A run with no row reads all-OFF (unknown ⇒ not woken). */
+export function wakeOffAddressees(db: BusDb, deps: Pick<PauseAutoDeps, 'getWorkspace'>, carrier: string, pausedAt?: number): Array<{ wsId: string; runId: string }> {
+  return repriseAddressees(db, carrier, runSubtreeIds(db, carrier), pausedAt)
+    .filter((a) => {
+      const w = deps.getWorkspace(a.wsId);
+      return !!w && !w.archived;
+    })
+    .filter((a) => getRun(db, a.runId)?.flags.wake !== true);
+}
+
 // ─── Pause on a usage-limit stop ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 export type AutoPauseOutcome =
   | 'paused' // a new Pause dure was written
@@ -144,7 +159,7 @@ export type AutoPauseOutcome =
   | 'repaused' // the run was RESUMING (auto): back to paused in a NEW epoch, the new member joined
   | 'manual-pause' // the member is already under a manual pause: untouched
   | 'no-carrier' // no run above the member has the frozen `pause` switch ON
-  | 'no-wake' // a run of the carrier's subtree has its frozen `wake` switch OFF: a Reprise could not wake its coordinator — nothing is written (= master)
+  | 'no-wake' // a coordinator the Reprise would address sits in a run with its frozen `wake` switch OFF: a Reprise could not wake it — nothing is written (= master)
   | 'no-workspace'
   | 'no-bus';
 
@@ -190,9 +205,13 @@ export function autoPauseOnLimit(deps: PauseAutoDeps, wsId: string, attempt = 0)
   const carrier = nearest;
   if (!carrier) return 'no-carrier';
   // `pause` and `wake` are independent frozen opt-ins, frozen PER RUN: with `wake` OFF the Reprise's bus rows wake nobody and #74's nudge is refused by the pause — the fleet would
-  // stall for good (worse than master, where the nudge wakes the member at the reset). The Reprise sends a row to a coordinator in EVERY run of the subtree and the DEEPER run's
-  // flag governs its wake, so EVERY run of `runSubtreeIds(carrier)` needs wake ON — else no auto Pause: write nothing.
-  if (runSubtreeIds(db, carrier).some((id) => getRun(db, id)?.flags.wake !== true)) return 'no-wake';
+  // stall for good (worse than master, where the nudge wakes the member at the reset). The Reprise sends a row to every coordinator it addresses and the flag of the run each row
+  // is sent in governs its wake: EVERY addressee (#255's own plan) needs wake ON — else no auto Pause: write nothing, say so once.
+  const off = wakeOffAddressees(db, deps, carrier);
+  if (off.length > 0) {
+    if (deps.once(`no-wake:${carrier}`)) deps.log.warn(`pause-auto: member ${wsId} hit the usage limit but run ${carrier} is NOT auto-paused — its Reprise could not wake ${off.map((a) => `${a.wsId} (run ${a.runId}, wake OFF)`).join(', ')}; nothing written (same as before auto Pause)`);
+    return 'no-wake';
+  }
   const now = deps.now();
   const reason = mergePauseAuto(null, { wsId, accountId });
   const res = db
@@ -343,6 +362,24 @@ export async function evaluateAutoPaused(deps: PauseAutoDeps): Promise<AutoEvalE
   return out;
 }
 
+function escalateNoWake(db: BusDb, deps: PauseAutoDeps, carrier: string, list: string): void {
+  try {
+    const coordinator = getRun(db, carrier)?.coordinator;
+    if (!coordinator) return;
+    send(db, {
+      runId: carrier,
+      sender: 'host',
+      recipient: coordinator,
+      kind: 'escalation',
+      body:
+        `Auto-Reprise HELD for run ${carrier}: the usage quota is back, but the Reprise would address ${list}, whose run has its frozen \`wake\` switch OFF — nobody would receive its \`reprise\` row ` +
+        `and every worker below would stay blocked. The run stays PAUSED. Detach/remove that run, or lift the pause yourself once it is safe (\`orchestra run resume --run ${carrier}\`).`,
+    });
+  } catch (e) {
+    deps.log.warn(`pause-auto: no-wake escalation for run ${carrier} failed`, e);
+  }
+}
+
 function evaluateOne(deps: PauseAutoDeps, db: BusDb, run: AutoPausedRun): AutoEvalEntry {
   const now = deps.now();
   if (ancestorStillPaused(db, deps, run.runId)) return { runId: run.runId, action: 'wait', why: 'ancestor-paused' };
@@ -357,6 +394,17 @@ function evaluateOne(deps: PauseAutoDeps, db: BusDb, run: AutoPausedRun): AutoEv
   const cur = readCarrier(db, run.runId);
   if (!cur || cur.pausedAt !== run.pausedAt || cur.resumeStartedAt !== null || parsePauseAuto(cur.pauseAuto, cur.pausedAt) === null) {
     return { runId: run.runId, action: 'wait', why: 'changed-meanwhile' };
+  }
+  // The addressee set is re-read NOW (a wake-OFF run created or attached after the pause is unknown at pause time): a Reprise nobody receives would leave every worker blocked forever.
+  // Held instead — warned + escalated ONCE to the carrier's coordinator, who can detach the run or `run resume` by hand; re-evaluated every tick (the set may change).
+  const off = wakeOffAddressees(db, deps, run.runId, run.pausedAt);
+  if (off.length > 0) {
+    if (deps.once(`no-wake-reprise:${run.runId}@${run.pausedAt}`)) {
+      const list = off.map((a) => `${a.wsId} (run ${a.runId})`).join(', ');
+      deps.log.warn(`pause-auto: quota is back for run ${run.runId} but its Reprise could not wake ${list} (frozen wake switch OFF) — Reprise HELD, escalated to the coordinator`);
+      escalateNoWake(db, deps, run.runId, list);
+    }
+    return { runId: run.runId, action: 'wait', why: 'no-wake-addressee' };
   }
   let outcome: string;
   try {
