@@ -33,6 +33,7 @@ const M = [
   { id: 'badge-unenrolled-resuming-open', file: MAIN, find: "ui: row ? memberUiState(phase, row) : phase === 'resuming' ? 'blocked' : 'pausing',", rep: "ui: row ? memberUiState(phase, row) : 'pausing',", tests: [T.main], expect: /JOINS the tree during the Reprise/ },
   { id: 'controls-for-workers', file: MAIN, find: '      if (!nodeOrchestrates(ws)) continue; // a worker row', rep: '      if (false) continue; // a worker row', tests: [T.main], expect: /nothing paused: no run, no badge/ },
   { id: 'anchored-always-true', file: MAIN, find: 'const anchored = run !== null && isCoordinatorHandle(run.coordinator, ws.id);', rep: 'const anchored = run !== null;', tests: [T.main], expect: /ANOTHER coordinator is not anchored/ },
+  { id: 'controls-phase-ignores-switch', file: MAIN, find: '      const phase: PausePhase = cols && switchOn === true\n', rep: '      const phase: PausePhase = cols\n', tests: [T.main], expect: /FROZEN switch is OFF is not a pause/ },
   { id: 'bilan-killed-uncapped', file: MAIN, find: 'killed: killed.slice(-KILLED_CAP).map(', rep: 'killed: killed.map(', tests: [T.main], expect: /toBilanLine caps/ },
   { id: 'bilan-pauser-flag-forced', file: MAIN, find: "exempt: a?.exempt === 'pauser' || a?.interrupt === 'exempt',", rep: 'exempt: true,', tests: [T.main], expect: /FULL CYCLE/ },
   { id: 'closed-reprise-untracked', file: MAIN, find: "  if (!rp || rp.carrier !== carrierId || rp.phase !== 'active') return null;", rep: '  return null;', tests: [T.main], expect: /FULL CYCLE/ },

@@ -378,5 +378,6 @@ test('a pause on a run whose FROZEN switch is OFF is not a pause for the UI (a s
   const o = readPauseOverview(db, deps);
   assert.deepEqual(o.runs, []);
   assert.deepEqual(o.byWorkspace, {});
+  assert.equal(o.controls.Z.phase, 'active', 'the control agrees: an unenforced column is not a paused run');
   db.close();
 });

@@ -236,7 +236,9 @@ export function readPauseOverview(db: BusDb | null, deps: PauseUiDeps): PauseUiO
       const cols = db.prepare('SELECT paused_at, pause_mode, pause_deadline_at, pause_escalated_at, pause_trap_at, resume_started_at FROM runs WHERE id = ?').get(runId) as
         | { paused_at: number | null; pause_mode: string | null; pause_deadline_at: number | null; pause_escalated_at: number | null; pause_trap_at: number | null; resume_started_at: number | null }
         | undefined;
-      const phase: PausePhase = cols
+      const switchOn = run ? run.flags.pause === true : null;
+      // UNKNOWN is not NONE (the gates' own rule): a pause column on a run whose FROZEN switch is OFF is not enforced — the control reads ACTIVE, never "paused"
+      const phase: PausePhase = cols && switchOn === true
         ? pausePhaseOf({
             pausedAt: cols.paused_at === null ? null : Number(cols.paused_at),
             mode: cols.pause_mode === 'soft' ? 'soft' : cols.pause_mode === 'hard' ? 'hard' : null,
@@ -249,7 +251,6 @@ export function readPauseOverview(db: BusDb | null, deps: PauseUiDeps): PauseUiO
       const carrier = phase === 'active' ? pausedCarrierForWorkspace(db, ws, deps.getWorkspace, { includeReleased: true }) : null;
       const coveredBy = carrier && carrier.runId !== runId ? { runId: carrier.runId, label: label(carrier.runId) } : null;
       const anchored = run !== null && isCoordinatorHandle(run.coordinator, ws.id);
-      const switchOn = run ? run.flags.pause === true : null;
       controls[ws.id] = {
         wsId: ws.id,
         runId,
