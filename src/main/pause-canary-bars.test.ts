@@ -4,13 +4,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, isMemberTool, renderTable } from '../../scripts/pause-canary/bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, isMemberTool, renderTable } from '../../scripts/pause-canary/bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { fleetSpec, KIND_ORDER } from '../../scripts/pause-canary/ids.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { keeperSocketOf, assertNoForeignKeeperSockets } from '../../scripts/pause-canary/lib.mjs';
+import { keeperSocketOf, assertNoForeignKeeperSockets, isTransientName } from '../../scripts/pause-canary/lib.mjs';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 
@@ -244,4 +244,30 @@ test('isMemberTool: the APP\'s own git in a member worktree is NOT a member rest
 
 test('isMemberTool: keeper, CLI, the app, an `orchestra cli` client and a process outside any member worktree are never tools', () => {
   for (const pid of [100, 101, 200, 201, 500, 501, 600]) assert.equal(isTool(pid), false, `pid ${pid}`);
+});
+
+// H-1 (verifier n°2): the hold window is PER MEMBER from ITS completion, so a member finished early cannot make a request unseen while the last members still run
+const row = (wsId: string, via: string | null, at: number | null) => ({ ws_id: wsId, pause_confirm_via: via, pause_confirmed_at: at });
+const MEMBERS = [{ role: 'w1', wsId: 'A' }, { role: 'w2', wsId: 'B' }, { role: 'w3', wsId: 'C' }, { role: 'w4', wsId: 'D' }];
+test('holdWindows: a member the HOST took (trap / host-idle) is paused from ITS OWN completion; a self-confirmed one (douce) and an unconfirmed one wait for the run stamp; the run window always stays', () => {
+  const rows = [row('A', 'trap', 1000), row('B', 'host-idle', 1100), row('C', 'member', 900), row('D', null, null)];
+  const w = holdWindows({ rows, tTrapDone: 2300, tR: 9000, members: MEMBERS });
+  assert.deepEqual(w.map((x: { role: string; from: number }) => [x.role, x.from]), [['w1', 1000], ['w2', 1100], ['*', 2300]]);
+  assert.ok(w.every((x: { until: number }) => x.until === 9000));
+  const legacy = holdWindows({ rows, tTrapDone: 2300, tR: 9000, members: MEMBERS, legacy: true });
+  assert.deepEqual(legacy.map((x: { role: string; from: number }) => [x.role, x.from]), [['*', 2300]], 'the legacy (blind) window is the run stamp only');
+  assert.equal(holdWindows({ rows: [row('A', 'trap', 2500)], tTrapDone: 2300, tR: 9000, members: MEMBERS }).length, 1, 'a completion AFTER the run stamp never makes a window LESS strict than the run window');
+});
+
+test('H-1 end to end: a request 0.5 s after a member\'s completion and before the run stamp is flagged by the per-member window and MISSED by the legacy one', () => {
+  const rows = [row('A', 'trap', 1000), row('B', 'trap', 2300)];
+  const reqs = [{ t: 1500, role: 'w1', tools: 1 }];
+  const members = [{ role: 'w1', wsId: 'A' }, { role: 'w2', wsId: 'B' }];
+  assert.equal(forbiddenRequests(reqs, holdWindows({ rows, tTrapDone: 2300, tR: 9000, members })).length, 1);
+  assert.equal(forbiddenRequests(reqs, holdWindows({ rows, tTrapDone: 2300, tR: 9000, members, legacy: true })).length, 0, 'the old window cannot see it — the verifier n°2 finding');
+});
+
+test('isTransientName: tmp / lock / swap names of a live config dir are ignored (liveSnapshot flapped on .claude.json.tmp), real entries are not', () => {
+  for (const n of ['.claude.json.tmp', '.claude.json.tmp.1234', '.claude.json.lock', 'x.swp', 'settings.json~', '.orchestra-inherited.json.tmp-9']) assert.equal(isTransientName(n), true, n);
+  for (const n of ['settings.json', 'projects', 'skills', '.claude.json', 'CLAUDE.md', 'tmpl', 'timelock-notes']) assert.equal(isTransientName(n), false, n);
 });

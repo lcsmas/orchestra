@@ -45,6 +45,24 @@ export function forbiddenRequests(requests, forbidden) {
   return out;
 }
 
+/** The forbidden-request windows of the HOLD (verifier n°2 H-1, ledger #281 c/6002392986). A window that opens only at the RUN's trap stamp is blind to a member that finished EARLIER: the trap runs members in waves
+ *  (concurrency 3), so a member done at +1.0 s whose CLI sends a request at +1.5 s is invisible when the last member (the stamp) completes at +2.3 s. A member the HOST took (`trap`) or found idle (`host-idle`) is paused from ITS OWN
+ *  completion — `pause_members.pause_confirmed_at`, stamped by `confirmByTrap` right after `trapMember` returned (interrupt + kill DONE; `pause_records.created_at` is written BEFORE the interrupt, so it would flag in-flight requests).
+ *  A member that confirmed ITSELF (Pause douce `member`) still makes its final request after its accusé: its window stays the run stamp. `rows` = the pause epoch's roster; `members` = [{ role, wsId }]. The `*` window (run stamp) always stays. */
+export function holdWindows({ rows, tTrapDone, tR, members, legacy = false }) {
+  const out = [];
+  if (!legacy) {
+    for (const m of members) {
+      const row = rows.find((x) => x.ws_id === m.wsId);
+      const done = row?.pause_confirmed_at;
+      const own = (row?.pause_confirm_via === 'trap' || row?.pause_confirm_via === 'host-idle') && num(done);
+      if (own && done < tTrapDone) out.push({ role: m.role, from: done, until: tR, label: 'hold-own' });
+    }
+  }
+  out.push({ role: '*', from: tTrapDone, until: tR, label: 'hold' });
+  return out;
+}
+
 /** Is `p` a MEMBER's tool process? `p` = a /proc census entry { pid, ppid, cwd, cmd }; `byPid` = Map pid → entry (the whole rig census); `kindOf(entry)` = 'keeper' | 'claude' | 'app' | …;
  *  `memberOf(entry)` = the member (`w3`) whose worktree it runs in, or null. A tool is anything in a member's worktree that is not its keeper / CLI / the app / an `orchestra cli` client AND whose ancestry does
  *  NOT reach the APP before a CLI or keeper: the app itself runs git in the worktrees (status / diff refresh: `git ls-files --others …`, ppid = app, seen 31 s after a trap — F3, ledger #281 c/6001999281) and that is

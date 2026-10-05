@@ -43,6 +43,10 @@ const MUTANTS = [
   ['tool-cli-stop-removed', "if (k === 'claude' || k === 'keeper') return true;", "if (false) return true;"],
   ['tool-orphan-not-counted', "if (!parent) return true;", "if (!parent) return false;"],
   ['tool-member-check-removed', "if (!memberOf(p)) return false;", ""],
+  ['window-own-via-removed', "const own = (row?.pause_confirm_via === 'trap' || row?.pause_confirm_via === 'host-idle') && num(done);", "const own = num(done);"],
+  ['window-own-never', "if (own && done < tTrapDone)", "if (false)"],
+  ['window-run-stamp-dropped', "out.push({ role: '*', from: tTrapDone, until: tR, label: 'hold' });", ""],
+  ['window-legacy-ignored', "if (!legacy) {", "if (true) {"],
   ['tool-cli-client-counted', "if (/orchestra cli /.test(p.cmd) || / cli /.test(p.cmd)) return false;", ""],
 ];
 const clean = run();

@@ -52,12 +52,14 @@ export function preflight() {
 }
 
 // ── live snapshot (D6: nothing under ~/.claude* / the live bus may change during a drill) ───────────────────────
+/** A name a live config dir creates and removes by itself (`.claude.json.tmp`, `*.lock`, editor swap files): counting it made `liveSnapshot` flap (`.claude` 43→42 with identical manifests = a FALSE FAIL, verifier n°2 H-2). */
+export const isTransientName = (n) => /(^|\.)(tmp|lock|swp)(\.|-|$)|\.tmp\b|~$/.test(n);
 export function liveSnapshot() {
   const out = {};
   for (const d of ['.claude', '.claude-mc', '.claude-perso']) {
     const p = path.join(REAL_HOME, d);
     try {
-      const names = fs.readdirSync(p).sort();
+      const names = fs.readdirSync(p).filter((n) => !isTransientName(n)).sort();
       const links = names.filter((n) => { try { return fs.lstatSync(path.join(p, n)).isSymbolicLink(); } catch { return false; } });
       const man = path.join(p, '.orchestra-inherited.json');
       out[d] = { n: names.length, links: links.length, manifest: fs.existsSync(man) ? execFileSync('sha256sum', [man], { encoding: 'utf8' }).slice(0, 16) : null };

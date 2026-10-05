@@ -13,7 +13,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns, startBusReader, launchApp, census, kindOf, memberOfCwd, rigMemory, teardown, git, gitSafe, gitShow, say, sleep, B_KEY, ACCT_B } from './lib.mjs';
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, isMemberTool, renderTable } from './bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, isMemberTool, renderTable } from './bars.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -34,19 +34,21 @@ const SABOTAGE = opt('sabotage', null);   // 'branch' (rewind a branch to master
 // proof-only process INJECTION during the hold window (dure only): 'orphan-tool' = a REAL command that came back in a member worktree (an orphan: must stay detected);
 // 'app-git' = a process whose ancestry is the APP's (a fake app helper running a child in the worktree: what the app's own `git ls-files --others` looks like: must NOT be flagged).
 const INJECT = opt('inject', null);
+const WINDOW = opt('window', 'member');   // 'legacy' = the pre-fix run-level hold window only (the proof's blind-window arm)
 const TOOLPROCS = opt('toolprocs', 'fixed');   // 'legacy' = the pre-fix definition (any non-keeper/CLI/app process in a member worktree): the proof's must-FAIL arm for the app-git injection
 if (!BASE || !REPO || !APP || !CLAUDE) { console.error('usage: drive.mjs --base --repo --app --claude …'); process.exit(2); }
 const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
-if (INJECT && (!['orphan-tool', 'app-git'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git applies to `--exercise dure` only'); process.exit(2); }
+if (INJECT && (!['orphan-tool', 'app-git', 'late-request'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git|late-request applies to `--exercise dure` only'); process.exit(2); }
+if (!['member', 'legacy'].includes(WINDOW)) { console.error('--window member|legacy'); process.exit(2); }
 if (!['fixed', 'legacy'].includes(TOOLPROCS)) { console.error('--toolprocs fixed|legacy'); process.exit(2); }
 if (SABOTAGE && (!['branch', 'ref', 'session'].includes(SABOTAGE) || EXERCISES.join() !== 'dure')) { console.error('--sabotage branch|ref|session applies to `--exercise dure` only (anywhere else it would be a silent no-op control)'); process.exit(2); }
 initBase(BASE);
 preflight();
 const before = liveSnapshot();
 say(`LIVE-BEFORE ${JSON.stringify(before)}`);
-say(`REPO=${REPO} HEAD=${git(REPO, 'rev-parse', 'HEAD')} APP=${APP} claude=${execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()} exercises=${EXERCISES} cycles=${CYCLES} members=${MEMBERS} dwell=${DWELL_S}s pause=${PAUSE_SWITCH} douce-limit=${DOUCE_LIMIT} sabotage=${SABOTAGE ?? '-'} inject=${INJECT ?? '-'} toolprocs=${TOOLPROCS}`);
+say(`REPO=${REPO} HEAD=${git(REPO, 'rev-parse', 'HEAD')} APP=${APP} claude=${execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()} exercises=${EXERCISES} cycles=${CYCLES} members=${MEMBERS} dwell=${DWELL_S}s pause=${PAUSE_SWITCH} douce-limit=${DOUCE_LIMIT} sabotage=${SABOTAGE ?? '-'} inject=${INJECT ?? '-'} toolprocs=${TOOLPROCS} window=${WINDOW}`);
 
 class VoidError extends Error { constructor(msg, kind = 'host') { super(msg); this.kind = kind; } }
 let voidReason = null, voidKind = null;
@@ -283,7 +285,7 @@ async function runExercise(name) {
       check(cyc, 'run_active_after_reprise', !!active, `carrier run ${active ? 'ACTIVE' : 'still resuming/paused'} +${tActive ? ((tActive - tR) / 1000).toFixed(1) : 'never'} s`);
       // self-restarts: (a) any turn during the hold window; (b) a worker's turn BEFORE its own release; (c) tool processes back / session replaced during the hold.
       // The ONE exemption: the limited member's own request that answers the harness's human `SCN:limit` prompt (a human turn is allowed in a Pause) — a 15 s window, that member only.
-      const forb = [{ role: '*', from: hold.tTrapDone, until: tR, label: 'hold' }, ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
+      const forb = [...holdWindows({ rows, tTrapDone: hold.tTrapDone, tR, legacy: WINDOW === 'legacy', members: [{ role: carrierRun === spec.lead ? 'lead' : 'ops', wsId: carrierRun }, ...(carrierRun === spec.lead ? [{ role: 'ops', wsId: spec.ops }] : []), ...spec.workers.map((w) => ({ role: w.k, wsId: w.id }))] }), ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
       const bad = forbiddenRequests(api.requests, forb).filter((b) => !(exempt && b.role === exempt.qw.k && b.limitPrompt));   // exempt BY CONTENT: only a request that answers the harness's own `SCN:limit` human prompt (a wake of that member for any other reason still counts)
       // WORK written after the trap is unambiguous evidence of a restart (a request alone can be the documented task-notification blip: killing a BACKGROUND task makes the CLI start ONE turn that the host interrupts)
       const grew = spec.workers.filter((w) => ((readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length) > (cyc.loopAtTrap?.[w.k] ?? Infinity)).map((w) => `${w.k}:+${(readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length - cyc.loopAtTrap[w.k]} loop line(s)`);
@@ -296,9 +298,19 @@ async function runExercise(name) {
       return { tR, rows };
     }
     // ─────────────────────────────────────────────────────────────────────────────────────────────────────
+    let lateInject = null;   // --inject late-request: the harness sends the FIRST member the host completes a human prompt (allowed in a Pause) so it makes a request inside the blind window
     async function waitTrap(carrierRun) {
       let toolsDeadAt = null;
-      const trapRow = await waitFor(async () => { if (toolsDeadAt === null && toolProcs().length === 0) toolsDeadAt = Date.now(); const r = await runRow(carrierRun); return r?.pause_trap_at ? r : null; }, 120000, 250);
+      const trapRow = await waitFor(async () => {
+        if (toolsDeadAt === null && toolProcs().length === 0) toolsDeadAt = Date.now();
+        const r = await runRow(carrierRun);
+        if (INJECT === 'late-request' && !lateInject && r?.paused_at) {
+          const rows = await rosterOf(carrierRun, r.paused_at);
+          const first = spec.workers.find((w) => rows.some((x) => x.ws_id === w.id && x.pause_confirm_via === 'trap' && x.pause_confirmed_at));
+          if (first) { lateInject = { k: first.k, confirmedAt: rows.find((x) => x.ws_id === first.id).pause_confirmed_at, sentAt: Date.now() }; sendTo(first.id, 'SCN:late go').catch(() => {}); say(`   INJECT late-request: ${first.k} completed at ${lateInject.confirmedAt}, human prompt sent at ${lateInject.sentAt}`); }
+        }
+        return r?.pause_trap_at ? r : null;
+      }, 120000, 50);
       if (toolsDeadAt === null) await waitFor(() => { if (toolProcs().length === 0) { toolsDeadAt = Date.now(); return true; } return false; }, 20000, 250);
       const loopAtTrap = Object.fromEntries(spec.workers.map((w) => [w.k, (readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length]));   // work on disk the instant the trap is seen: any growth later = a member that WORKED after the pause
       return { trapRow, toolsDeadAt, tTrap: trapRow?.pause_trap_at ?? null, loopAtTrap };
@@ -344,7 +356,11 @@ async function runExercise(name) {
       const lim = await limitDuringPause(cyc, c, spec.lead, trapRow?.paused_at, 'hard');
       const hold = await holdWindow(cyc, c, tTrap ?? Date.now(), idPre, spec.lead);
       hold.tTrapDone = tTrap ?? Date.now();
-      if (INJECT) check(cyc, 'inject_is_observable', hold.legacySeen === true, `the injected ${INJECT} process was seen by the LEGACY classifier during the hold (${hold.legacySeen}) — an injection nobody can see proves nothing`);
+      if (INJECT === 'late-request') {
+        const hit = lateInject ? api.requests.find((r) => r.role === lateInject.k && r.tools > 0 && r.t >= lateInject.confirmedAt && r.t < (tTrap ?? Infinity)) : null;
+        check(cyc, 'inject_lands_in_the_blind_window', !!hit, hit ? `${lateInject.k} made a request ${((hit.t - lateInject.confirmedAt) / 1000).toFixed(2)} s after ITS completion and ${(((tTrap ?? 0) - hit.t) / 1000).toFixed(2)} s BEFORE the run stamp: invisible to a run-level window` : `no request of the injected member between its completion and the run stamp (inject ${JSON.stringify(lateInject)}) — the arm proves nothing`);
+      }
+      if (INJECT === 'orphan-tool' || INJECT === 'app-git') check(cyc, 'inject_is_observable', hold.legacySeen === true, `the injected ${INJECT} process was seen by the LEGACY classifier during the hold (${hold.legacySeen}) — an injection nobody can see proves nothing`);
       if (lim) {
         const mg = await app.cli(spec.ops, ['migrate-account', lim.qw.id, ACCT_B], { run: spec.ops });   // the simulated account switch: from here the limited member is NOT limited
         check(cyc, 'migrate_account_accepted', mg.code === 0, `rc=${mg.code} ${(mg.out + mg.err).replace(/\n/g, ' | ').slice(0, 120)}`);
