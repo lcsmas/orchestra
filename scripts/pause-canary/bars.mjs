@@ -47,7 +47,8 @@ export function forbiddenRequests(requests, forbidden) {
 
 /** The forbidden-request windows of the HOLD (verifier n°2 H-1, ledger #281 c/6002392986). A window that opens only at the RUN's trap stamp is blind to a member that finished EARLIER: the trap runs members in waves
  *  (concurrency 3), so a member done at +1.0 s whose CLI sends a request at +1.5 s is invisible when the last member (the stamp) completes at +2.3 s. A member the HOST took (`trap`) or found idle (`host-idle`) is paused from ITS OWN
- *  completion — `pause_members.pause_confirmed_at`, stamped by `confirmByTrap` right after `trapMember` returned (interrupt + kill DONE; `pause_records.created_at` is written BEFORE the interrupt, so it would flag in-flight requests).
+ *  completion — `pause_members.pause_confirmed_at`: `trap` = stamped by `confirmByTrap` right after `trapMember` returned (interrupt + kill DONE; `pause_records.created_at` is written BEFORE the interrupt, so it would flag in-flight requests);
+ *  `host-idle` = stamped by the douce SOFT sweep (`pause-douce.ts:323,334`), up to the 3-min deadline BEFORE the trap — a stricter window, so a quota member's `SCN:limit` request falls inside it and only the `limitPrompt` exemption keeps it green.
  *  A member that confirmed ITSELF (Pause douce `member`) still makes its final request after its accusé: its window stays the run stamp. `rows` = the pause epoch's roster; `members` = [{ role, wsId }]. The `*` window (run stamp) always stays. */
 export function holdWindows({ rows, tTrapDone, tR, members, legacy = false }) {
   const out = [];
@@ -61,6 +62,21 @@ export function holdWindows({ rows, tTrapDone, tR, members, legacy = false }) {
   }
   out.push({ role: '*', from: tTrapDone, until: tR, label: 'hold' });
   return out;
+}
+
+/** Members whose PER-MEMBER window `holdWindows` cannot build — it then falls back SILENTLY to the run-level window (the H-1 blind spot; review R-M1: `confirmByTrap` failing is only a `log.warn` in the app, so a hard pause can leave unstamped rows and read GREEN).
+ *  Gap = no roster row (unless `optional`), a confirm route that is not member|host-idle|trap, or a trap/host-idle row without a finite stamp. A `member` (self-confirmed douce) row waits for the run stamp BY DESIGN: no gap. Any gap must read RED. */
+export function holdWindowGaps({ rows, members }) {
+  const gaps = [];
+  for (const m of members) {
+    const row = rows.find((x) => x.ws_id === m.wsId);
+    const via = row?.pause_confirm_via;
+    if (!row) { if (!m.optional) gaps.push(`${m.role}: no roster row`); continue; }
+    if (via === 'member') continue;
+    if (via !== 'trap' && via !== 'host-idle') { gaps.push(`${m.role}: confirm route ${JSON.stringify(via ?? null)} is not member|host-idle|trap`); continue; }
+    if (!num(row.pause_confirmed_at)) gaps.push(`${m.role}: ${via} row without a finite pause_confirmed_at (${JSON.stringify(row.pause_confirmed_at ?? null)})`);
+  }
+  return gaps;
 }
 
 /** Is `p` a MEMBER's tool process? `p` = a /proc census entry { pid, ppid, cwd, cmd }; `byPid` = Map pid → entry (the whole rig census); `kindOf(entry)` = 'keeper' | 'claude' | 'app' | …;

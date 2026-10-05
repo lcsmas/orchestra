@@ -13,7 +13,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns, startBusReader, launchApp, census, kindOf, memberOfCwd, rigMemory, teardown, git, gitSafe, gitShow, say, sleep, B_KEY, ACCT_B } from './lib.mjs';
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, isMemberTool, renderTable } from './bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -231,7 +231,7 @@ async function runExercise(name) {
       while (Date.now() - tHold0 < DWELL_S * 1000) {
         stopIfVoid();
         n++;
-        if (!legacySeen && INJECT && legacyToolProcs().length > 0) legacySeen = true;
+        if (!legacySeen && INJECT && legacyToolProcs().some((x) => /^sleep (7403|8)$/.test(x.cmd))) legacySeen = true;   // the injected `sleep 7403` (orphan) / `sleep 8` (app-git child) — by content, never any process
         const tp = toolProcs();
         if (tp.length) procEvents.push(...tp.map((p) => `${memberOfCwd(rig, p)}:${p.cmd.slice(0, 40)}`));
         await sleep(500);
@@ -286,7 +286,10 @@ async function runExercise(name) {
       check(cyc, 'run_active_after_reprise', !!active, `carrier run ${active ? 'ACTIVE' : 'still resuming/paused'} +${tActive ? ((tActive - tR) / 1000).toFixed(1) : 'never'} s`);
       // self-restarts: (a) any turn during the hold window; (b) a worker's turn BEFORE its own release; (c) tool processes back / session replaced during the hold.
       // The ONE exemption: the limited member's own request that answers the harness's human `SCN:limit` prompt (a human turn is allowed in a Pause) — a 15 s window, that member only.
-      const forb = [...holdWindows({ rows, tTrapDone: hold.tTrapDone, tR, legacy: WINDOW === 'legacy', members: [{ role: carrierRun === spec.lead ? 'lead' : 'ops', wsId: carrierRun }, ...(carrierRun === spec.lead ? [{ role: 'ops', wsId: spec.ops }] : []), ...spec.workers.map((w) => ({ role: w.k, wsId: w.id }))] }), ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
+      const holdMembers = [{ role: carrierRun === spec.lead ? 'lead' : 'ops', wsId: carrierRun, optional: true }, ...(carrierRun === spec.lead ? [{ role: 'ops', wsId: spec.ops, optional: true }] : []), ...spec.workers.map((w) => ({ role: w.k, wsId: w.id }))];
+      const gaps = holdWindowGaps({ rows, members: holdMembers });
+      check(cyc, 'hold_windows_per_member', gaps.length === 0, gaps.length ? `NO per-member hold window for ${gaps.join(' | ')} — the verdict would fall back to the run-level window (H-1 blind spot)` : `${holdMembers.length} member(s): a per-member (or by-design run-level) hold window exists for every roster row`);
+      const forb = [...holdWindows({ rows, tTrapDone: hold.tTrapDone, tR, legacy: WINDOW === 'legacy', members: holdMembers }), ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
       const bad = forbiddenRequests(api.requests, forb).filter((b) => !(exempt && b.role === exempt.qw.k && b.limitPrompt));   // exempt BY CONTENT: only a request that answers the harness's own `SCN:limit` human prompt (a wake of that member for any other reason still counts)
       // WORK written after the trap is unambiguous evidence of a restart (a request alone can be the documented task-notification blip: killing a BACKGROUND task makes the CLI start ONE turn that the host interrupts)
       const grew = spec.workers.filter((w) => ((readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length) > (cyc.loopAtTrap?.[w.k] ?? Infinity)).map((w) => `${w.k}:+${(readWt(w.k, `loop-${w.k}.txt`) ?? '').split('\n').filter(Boolean).length - cyc.loopAtTrap[w.k]} loop line(s)`);
@@ -357,7 +360,7 @@ async function runExercise(name) {
       const hold = await holdWindow(cyc, c, tTrap ?? Date.now(), idPre, spec.lead);
       hold.tTrapDone = tTrap ?? Date.now();
       if (INJECT === 'late-request') {
-        const hit = lateInject ? api.requests.find((r) => r.role === lateInject.k && r.tools > 0 && r.t >= lateInject.confirmedAt && r.t < (tTrap ?? Infinity)) : null;
+        const hit = lateInject ? api.requests.find((r) => r.role === lateInject.k && r.tools > 0 && /SCN:late/.test(r.last ?? '') && r.t >= lateInject.confirmedAt && r.t < (tTrap ?? Infinity)) : null;
         check(cyc, 'inject_lands_in_the_blind_window', !!hit, hit ? `${lateInject.k} made a request ${((hit.t - lateInject.confirmedAt) / 1000).toFixed(2)} s after ITS completion and ${(((tTrap ?? 0) - hit.t) / 1000).toFixed(2)} s BEFORE the run stamp: invisible to a run-level window` : `no request of the injected member between its completion and the run stamp (inject ${JSON.stringify(lateInject)}) — the arm proves nothing`);
       }
       if (INJECT === 'orphan-tool' || INJECT === 'app-git') check(cyc, 'inject_is_observable', hold.legacySeen === true, `the injected ${INJECT} process was seen by the LEGACY classifier during the hold (${hold.legacySeen}) — an injection nobody can see proves nothing`);

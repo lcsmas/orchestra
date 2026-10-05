@@ -15,8 +15,8 @@ fs.mkdirSync(path.join(tmp, 'src', 'main'), { recursive: true });
 fs.mkdirSync(path.join(tmp, 'scripts', 'pause-canary'), { recursive: true });
 for (const f of fs.readdirSync(path.join(REPO, 'scripts', 'pause-canary'))) if (f.endsWith('.mjs')) fs.copyFileSync(path.join(REPO, 'scripts', 'pause-canary', f), path.join(tmp, 'scripts', 'pause-canary', f));
 fs.copyFileSync(path.join(REPO, 'src', 'main', 'pause-canary-bars.test.ts'), path.join(tmp, 'src', 'main', 'pause-canary-bars.test.ts'));
-const target = path.join(tmp, 'scripts', 'pause-canary', 'bars.mjs');
-const orig = fs.readFileSync(target, 'utf8');
+const targetOf = (f) => path.join(tmp, 'scripts', 'pause-canary', f);
+const origOf = Object.fromEntries(['bars.mjs', 'lib.mjs'].map((f) => [f, fs.readFileSync(targetOf(f), 'utf8')]));
 const run = () => { const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', 'src/main/pause-canary-bars.test.ts'], { cwd: tmp, encoding: 'utf8' }); return { pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1) }; };
 
 const MUTANTS = [
@@ -48,22 +48,31 @@ const MUTANTS = [
   ['window-run-stamp-dropped', "out.push({ role: '*', from: tTrapDone, until: tR, label: 'hold' });", ""],
   ['window-legacy-ignored', "if (!legacy) {", "if (true) {"],
   ['tool-cli-client-counted', "if (/orchestra cli /.test(p.cmd) || / cli /.test(p.cmd)) return false;", ""],
+  ['window-stamp-guard-removed', "&& num(done);", ";"],
+  ['gap-missing-row-ignored', "if (!row) { if (!m.optional) gaps.push(`${m.role}: no roster row`); continue; }", "if (!row) continue;"],
+  ['gap-optional-ignored', "if (!m.optional) gaps.push", "if (true) gaps.push"],
+  ['gap-member-route-flagged', "if (via === 'member') continue;", ""],
+  ['gap-route-ignored', "if (via !== 'trap' && via !== 'host-idle') {", "if (false) {"],
+  ['gap-unstamped-ignored', "if (!num(row.pause_confirmed_at)) gaps.push(", "if (false) gaps.push("],
+  ['kind-app-anywhere', "/^(\\S*\\/)?orchestra( |$)/.test(p.cmd)", "/orchestra( |$)/.test(p.cmd)", 'lib.mjs'],
+  ['snapshot-transient-listed', ".filter((n) => !isTransientName(n))", "", 'lib.mjs'],
 ];
 const clean = run();
 let bad = 0;
 console.log(`CLEAN control: pass ${clean.pass} fail ${clean.fail}`);
 if (clean.fail !== 0 || clean.pass < 1) { console.log('CLEAN control is not clean — nothing measured'); process.exit(1); }
-for (const [name, find, replace] of MUTANTS) {
+for (const [name, find, replace, file = 'bars.mjs'] of MUTANTS) {
+  const orig = origOf[file];
   const hits = orig.split(find).length - 1;
   if (hits !== 1) { console.log(`${name}: PATTERN-GONE (anchor matched ${hits}×)`); bad++; continue; }
-  fs.writeFileSync(target, orig.replace(find, () => replace));
+  fs.writeFileSync(targetOf(file), orig.replace(find, () => replace));
   const r = run();
+  fs.writeFileSync(targetOf(file), orig);
   const killed = r.fail > 0;
   if (!killed) bad++;
   console.log(`${name}: ${killed ? 'killed' : 'SURVIVED'} (pass ${r.pass} fail ${r.fail})`);
 }
-fs.writeFileSync(target, orig);
-const same = fs.readFileSync(target, 'utf8') === orig;
+const same = Object.keys(origOf).every((f) => fs.readFileSync(targetOf(f), 'utf8') === origOf[f]);
 const after = run();
 console.log(`restored byte-exact: ${same}; CLEAN control after: pass ${after.pass} fail ${after.fail}`);
 fs.rmSync(tmp, { recursive: true, force: true });

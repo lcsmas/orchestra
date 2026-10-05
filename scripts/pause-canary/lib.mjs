@@ -52,12 +52,12 @@ export function preflight() {
 }
 
 // ── live snapshot (D6: nothing under ~/.claude* / the live bus may change during a drill) ───────────────────────
-/** A name a live config dir creates and removes by itself (`.claude.json.tmp`, `*.lock`, editor swap files): counting it made `liveSnapshot` flap (`.claude` 43→42 with identical manifests = a FALSE FAIL, verifier n°2 H-2). */
+/** A name a live config dir creates and removes by itself (`.claude.json.tmp`, `*.lock`, editor swap files): counting it made `liveSnapshot` flap (`.claude` 43→42 with identical manifests = a FALSE FAIL, verifier n°2 H-2). Trade-off: a leak NAMED like this is ignored too (the real CLI writes such names itself); every other entry, link count and the inherit-manifest hash are still compared. */
 export const isTransientName = (n) => /(^|\.)(tmp|lock|swp)(\.|-|$)|\.tmp\b|~$/.test(n);
-export function liveSnapshot() {
+export function liveSnapshot(home = REAL_HOME) {
   const out = {};
   for (const d of ['.claude', '.claude-mc', '.claude-perso']) {
-    const p = path.join(REAL_HOME, d);
+    const p = path.join(home, d);
     try {
       const names = fs.readdirSync(p).filter((n) => !isTransientName(n)).sort();
       const links = names.filter((n) => { try { return fs.lstatSync(path.join(p, n)).isSymbolicLink(); } catch { return false; } });
@@ -66,7 +66,7 @@ export function liveSnapshot() {
     } catch { out[d] = null; }
   }
   // the live bus MUST NOT be read for content (D6) — only its identity (it grows with live traffic, so size/mtime are not compared: existence only)
-  out.liveBusPresent = fs.existsSync(path.join(REAL_HOME, '.orchestra', 'bus.sqlite'));
+  out.liveBusPresent = fs.existsSync(path.join(home, '.orchestra', 'bus.sqlite'));
   return out;
 }
 
@@ -321,7 +321,7 @@ export function census(rig) {
   }
   return out;
 }
-export const kindOf = (p) => (/keeper\.js/.test(p.cmd) ? 'keeper' : /\/claude(\s|$)|claude-code|\.local\/share\/claude\/versions|cli\.js.*--output-format/.test(p.cmd) || /\/versions\/\d/.test(p.cmd) ? 'claude' : /orchestra( |$)/.test(p.cmd) && !/ cli /.test(p.cmd) ? 'app' : /^sleep |\bsleep \d/.test(p.cmd) ? 'tool-sleep' : /bash|sh -c/.test(p.cmd) ? 'tool-shell' : 'other');
+export const kindOf = (p) => (/keeper\.js/.test(p.cmd) ? 'keeper' : /\/claude(\s|$)|claude-code|\.local\/share\/claude\/versions|cli\.js.*--output-format/.test(p.cmd) || /\/versions\/\d/.test(p.cmd) ? 'claude' : /^(\S*\/)?orchestra( |$)/.test(p.cmd) && !/ cli /.test(p.cmd) ? 'app' : /^sleep |\bsleep \d/.test(p.cmd) ? 'tool-sleep' : /bash|sh -c/.test(p.cmd) ? 'tool-shell' : 'other');
 /** Rig memory by process kind (PSS from /proc/<pid>/smaps_rollup: shared Electron/node pages counted once, so the sum is the real footprint; RSS when unreadable). */
 export function rigMemory(rig) {
   const by = {};

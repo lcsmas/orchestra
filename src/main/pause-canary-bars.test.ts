@@ -4,15 +4,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, isMemberTool, renderTable } from '../../scripts/pause-canary/bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from '../../scripts/pause-canary/bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { fleetSpec, KIND_ORDER } from '../../scripts/pause-canary/ids.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { keeperSocketOf, assertNoForeignKeeperSockets, isTransientName } from '../../scripts/pause-canary/lib.mjs';
+import { keeperSocketOf, assertNoForeignKeeperSockets, isTransientName, liveSnapshot, kindOf as realKindOf } from '../../scripts/pause-canary/lib.mjs';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 type Check = { id: string; ok: boolean; detail: string };
 const good = (over: Record<string, unknown> = {}) => ({
@@ -270,4 +272,60 @@ test('H-1 end to end: a request 0.5 s after a member\'s completion and before th
 test('isTransientName: tmp / lock / swap names of a live config dir are ignored (liveSnapshot flapped on .claude.json.tmp), real entries are not', () => {
   for (const n of ['.claude.json.tmp', '.claude.json.tmp.1234', '.claude.json.lock', 'x.swp', 'settings.json~', '.orchestra-inherited.json.tmp-9']) assert.equal(isTransientName(n), true, n);
   for (const n of ['settings.json', 'projects', 'skills', '.claude.json', 'CLAUDE.md', 'tmpl', 'timelock-notes']) assert.equal(isTransientName(n), false, n);
+});
+
+// review R-M1: `holdWindows` falls back to the run-level (blind) window for a member it cannot build a window for — that must be a RED check, never a silent green
+test('holdWindows: a trap / host-idle row whose stamp is missing, NaN, a string or absent never yields a per-member window starting at null (`null < 2300` is true in JS)', () => {
+  for (const at of [null, undefined, Number.NaN, '1000' as unknown as number]) {
+    const w = holdWindows({ rows: [row('A', 'trap', at as number), row('B', 'host-idle', at as number)], tTrapDone: 2300, tR: 9000, members: MEMBERS });
+    assert.deepEqual(w.map((x: { role: string }) => x.role), ['*'], `stamp ${String(at)}`);
+  }
+  assert.deepEqual(holdWindows({ rows: [], tTrapDone: 2300, tR: 9000, members: MEMBERS }).map((x: { role: string }) => x.role), ['*'], 'no roster row');
+});
+
+test('holdWindowGaps: a missing row, an unknown/absent confirm route, or a trap/host-idle row without a finite stamp is a GAP (RED); self-confirmed and an optional absent coordinator are not', () => {
+  const ok = [row('A', 'trap', 1000), row('B', 'host-idle', 1100), row('C', 'member', 900)];
+  assert.deepEqual(holdWindowGaps({ rows: ok, members: MEMBERS.slice(0, 3) }), []);
+  assert.equal(holdWindowGaps({ rows: ok, members: MEMBERS }).length, 1, 'D has no roster row');
+  assert.match(holdWindowGaps({ rows: ok, members: MEMBERS })[0], /w4: no roster row/);
+  assert.equal(holdWindowGaps({ rows: ok, members: [...MEMBERS.slice(0, 3), { role: 'ops', wsId: 'Z', optional: true }] }).length, 0, 'an optional coordinator row may be absent');
+  for (const at of [null, undefined, Number.NaN, '1000' as unknown as number]) assert.equal(holdWindowGaps({ rows: [row('A', 'trap', at as number)], members: [MEMBERS[0]] }).length, 1, `trap stamp ${String(at)}`);
+  assert.equal(holdWindowGaps({ rows: [row('A', 'host-idle', null)], members: [MEMBERS[0]] }).length, 1, 'host-idle without a stamp');
+  assert.equal(holdWindowGaps({ rows: [row('A', 'bogus', 1000)], members: [MEMBERS[0]] }).length, 1, 'an unknown confirm route (with a stamp) is still a gap');
+  assert.equal(holdWindowGaps({ rows: [row('A', null, null)], members: [MEMBERS[0]] }).length, 1, 'an unconfirmed row');
+  assert.equal(holdWindowGaps({ rows: [row('A', 'member', null)], members: [MEMBERS[0]] }).length, 0, 'a self-confirmed (douce) row waits for the run stamp BY DESIGN — no gap');
+});
+
+// review MINOR 2: the APP is the process whose FIRST token is the orchestra binary — a member's tool shell that merely mentions `orchestra ` is a TOOL, and so is its child
+test('kindOf: the app (and its helpers) is the orchestra binary; a member\'s shell that mentions `orchestra send` is NOT the app, so its long-lived child still counts as a tool', () => {
+  assert.equal(realKindOf({ cmd: '/x/apps/src-1/orchestra --ozone-platform=wayland' }), 'app');
+  assert.equal(realKindOf({ cmd: '/x/apps/src-1/orchestra --type=utility --utility-sub-type=node.mojom.NodeService' }), 'app');
+  assert.equal(realKindOf({ cmd: '/x/apps/src-1/orchestra --type=fake-app-helper -c git ls-files' }), 'app');
+  assert.equal(realKindOf({ cmd: '/x/apps/src-1/orchestra cli run confirm pause' }) === 'app', false, 'an `orchestra cli` client is not the app');
+  assert.equal(realKindOf({ cmd: '/usr/bin/bash -c orchestra send --to x hi; sleep 7400' }) === 'app', false);
+  assert.equal(realKindOf({ cmd: 'bash -c /usr/local/bin/orchestra check; sleep 7400' }) === 'app', false);
+  const c: P[] = [
+    proc(10, 1, realKindOf({ cmd: '/x/orchestra --ozone-platform=wayland' }), '/x/orchestra --ozone-platform=wayland'),
+    proc(20, 10, 'keeper', '/x/orchestra keeper.js w3', '/h/rig/wt-w3'),
+    proc(21, 20, 'claude', '/h/rig/bin/claude --output-format stream-json', '/h/rig/wt-w3'),
+    proc(22, 21, realKindOf({ cmd: '/usr/bin/bash -c orchestra send --to x hi; sleep 7400' }), '/usr/bin/bash -c orchestra send --to x hi; sleep 7400', '/h/rig/wt-w3'),
+    proc(23, 22, realKindOf({ cmd: 'sleep 7400' }), 'sleep 7400', '/h/rig/wt-w3'),
+  ];
+  const m = new Map(c.map((x) => [x.pid, x]));
+  assert.equal(isMemberTool(m.get(23), m, (x: P) => realKindOf(x), memberOf), true, 'sleep ← shell("orchestra send…") ← claude: a member tool (a loose `orchestra ` match hid it)');
+});
+
+test('liveSnapshot: a live config dir\'s own transient files (.claude.json.tmp, *.lock) do not change the snapshot (H-2 flap); a real entry does', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pcsnap-'));
+  try {
+    fs.mkdirSync(path.join(home, '.claude'));
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{}');
+    const a = liveSnapshot(home);
+    assert.equal(a['.claude'].n, 1);
+    fs.writeFileSync(path.join(home, '.claude', '.claude.json.tmp'), '');
+    fs.writeFileSync(path.join(home, '.claude', 'x.lock'), '');
+    assert.deepEqual(liveSnapshot(home), a, 'transient names are ignored');
+    fs.writeFileSync(path.join(home, '.claude', 'projects'), '');
+    assert.equal(liveSnapshot(home)['.claude'].n, 2, 'a real new entry is seen');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
