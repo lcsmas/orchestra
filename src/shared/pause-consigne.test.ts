@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { consigneFromBilan, renderConsigne, renderCoordinatorReprise, renderWaveLine, stripControl, type BilanLike } from './pause-consigne.ts';
+import { consigneFromBilan, interruptKind, renderConsigne, renderCoordinatorReprise, renderWaveLine, stripControl, type BilanLike } from './pause-consigne.ts';
 import { pauseLineCoversReprise, renderRepriseStatus } from './pause-reprise-view.ts';
 
 // #255 — the Consigne de reprise is derived ONLY from the Bilan row + the roster row. Expectations are literals (the arms name the clause each in-place mutant breaks).
@@ -19,6 +19,7 @@ const BILAN: BilanLike = {
   error: null,
   activity: {
     turnRunning: true,
+    interrupt: 'interrupted',
     inFlightTools: [{ tool: 'Bash', input: 'npm test -- --watch' }, { tool: 'Read' }],
     bgTasks: [{ type: 'shell', description: 'pnpm test rig', status: 'running' }],
     lastTask: 'wire the rig',
@@ -44,6 +45,8 @@ test('CONSIGNE fields: snapshot ref, dirty tree, killed commands (trap + retry +
   ]);
   assert.equal(c.branch, 'feature-x');
   assert.equal(c.head, 'abcdef1234567890');
+  assert.equal(c.interrupt, 'interrupted');
+  assert.equal(c.bilanRecorded, true);
   assert.deepEqual(c.wasDoing, { turnRunning: true, inFlightTools: ['Bash: npm test -- --watch', 'Read (command text not recorded)'], bgTasks: ['shell: pnpm test rig'], lastTask: 'wire the rig' });
   assert.equal(c.confirmedVia, 'trap');
   assert.equal(c.mode, 'hard');
@@ -160,7 +163,7 @@ test('CONSIGNE: kills of an EARLIER Pause the member was never released from joi
     ...input,
     bilan: { ...BILAN, killed: { killed: [{ pid: 1, cmd: 'make rig', cwd: '/w' }] }, activity: {} },
     earlier: [
-      { pausedAt: 1_780_000_000_000, snapshotRef: 'refs/orchestra/pause/RUN-A/ws-impl/1780000000000', killed: [{ cmd: 'make rig', cwd: '/w' }, { cmd: 'tail -f /var/log/x', cwd: null }], inFlight: ['Bash: pnpm test', 'Read (command text not recorded)'] },
+      { pausedAt: 1_780_000_000_000, snapshotRef: 'refs/orchestra/pause/RUN-A/ws-impl/1780000000000', killed: [{ cmd: 'make rig', cwd: '/w' }, { cmd: 'tail -f /var/log/x', cwd: null }], inFlight: ['Bash: pnpm test', 'Read (command text not recorded)'], interrupt: 'interrupted' },
       { pausedAt: 1_770_000_000_000, snapshotRef: null, killed: [] },
     ],
   });
@@ -168,14 +171,14 @@ test('CONSIGNE: kills of an EARLIER Pause the member was never released from joi
   assert.ok(c.notes.some((n) => /an EARLIER Pause of this run \(.*\) took you too and you were never released from it: its snapshot ref refs\/orchestra\/pause\/RUN-A\/ws-impl\/1780000000000; it killed 2 command\(s\) — merged into the list of killed commands/.test(n)), c.notes.join('|'));
   assert.ok(c.notes.some((n) => /its snapshot ref none; it killed nothing/.test(n)), c.notes.join('|'));
   assert.deepEqual(c.wasDoing.inFlightTools, ['Bash: pnpm test', 'Read (command text not recorded)'], 'the earlier Pause\'s ABORTED in-flight calls are merged (deduplicated) — the member never learned them either');
-  assert.ok(c.notes.some((n) => /the interrupt aborted 2 in-flight call\(s\) — merged into the list of aborted calls/.test(n)), c.notes.join('|'));
+  assert.ok(c.notes.some((n) => /the interrupt aborted 2 in-flight call\(s\) — listed with the calls in flight/.test(n)), c.notes.join('|'));
   const text = renderConsigne(c);
   assert.ok(text.includes('  - tail -f /var/log/x'), text);
   assert.ok(text.includes('refs/orchestra/pause/RUN-A/ws-impl/1780000000000'), text);
 });
 
 test('CONSIGNE M2: a command ABORTED by the interrupt (a foreground tool the host trap kills nothing for) is named — never "Commands killed by the Pause: none." while a call was in flight', () => {
-  const fg: BilanLike = { snapshotRef: 'refs/orchestra/pause/RUN-A/ws-impl/1', dirty: true, killed: { killed: [] }, error: null, activity: { turnRunning: true, inFlightTools: [{ tool: 'Bash', input: 'npm test' }], branch: 'b', head: 'h' } };
+  const fg: BilanLike = { snapshotRef: 'refs/orchestra/pause/RUN-A/ws-impl/1', dirty: true, killed: { killed: [] }, error: null, activity: { turnRunning: true, interrupt: 'interrupted', inFlightTools: [{ tool: 'Bash', input: 'npm test' }], branch: 'b', head: 'h' } };
   const c = consigneFromBilan({ ...input, bilan: fg });
   assert.deepEqual(c.killed, [], 'the host trap itself killed nothing (a foreground tool dies with the interrupt)');
   assert.deepEqual(c.wasDoing.inFlightTools, ['Bash: npm test']);
@@ -191,7 +194,7 @@ test('CONSIGNE M2: a command ABORTED by the interrupt (a foreground tool the hos
 });
 
 test('CONSIGNE M2b: a turn WAS running but no call is recorded (a session that survived an app restart) — never the bare "Commands killed by the Pause: none."', () => {
-  const noCall: BilanLike = { snapshotRef: 'refs/orchestra/pause/RUN-A/ws-impl/1', dirty: true, killed: { killed: [] }, error: null, activity: { turnRunning: true, branch: 'b', head: 'h' } };
+  const noCall: BilanLike = { snapshotRef: 'refs/orchestra/pause/RUN-A/ws-impl/1', dirty: true, killed: { killed: [] }, error: null, activity: { turnRunning: true, interrupt: 'interrupted', branch: 'b', head: 'h' } };
   const text = renderConsigne(consigneFromBilan({ ...input, bilan: noCall }));
   assert.equal(text.includes('Commands killed by the Pause: none.'), false, text);
   assert.ok(text.includes('Commands killed by the Pause: none recorded — but a turn was running and no call is recorded for it, so the interrupt may have aborted a call that is not listed here'), text);
@@ -203,6 +206,124 @@ test('CONSIGNE M2b: a turn WAS running but no call is recorded (a session that s
   // idle member: nothing was interrupted, the plain "none" is true
   const idle = renderConsigne(consigneFromBilan({ ...input, bilan: { ...noCall, activity: { turnRunning: false, branch: 'b', head: 'h' } } }));
   assert.ok(idle.includes('Commands killed by the Pause: none.'), idle);
+});
+
+test('CONSIGNE R2r2-m1a: "ABORTED" is said ONLY when the interrupt is recorded as having taken effect — the pauser (exempt), an unresponsive/failed interrupt, a skipped member and an unrecorded outcome each read differently', () => {
+  const inflight = [{ tool: 'Bash', input: 'orchestra run pause --hard --run L' }];
+  const textFor = (interrupt: string | undefined, killed: unknown = { killed: [] }) =>
+    renderConsigne(consigneFromBilan({ ...input, bilan: { snapshotRef: 'refs/x', dirty: false, killed, error: null, activity: { turnRunning: true, ...(interrupt ? { interrupt } : {}), inFlightTools: inflight, branch: 'b', head: 'h' } } }));
+  for (const k of ['interrupted', 'attached-then-interrupted']) {
+    const t = textFor(k);
+    assert.ok(t.includes('the interrupt ABORTED them'), t);
+    assert.ok(t.includes('Commands killed by the host trap: none — the in-flight call(s) above were aborted by the interrupt itself.'), t);
+  }
+  const exempt = textFor('exempt');
+  assert.ok(exempt.includes('you were EXEMPT from the interrupt (you ran the Pause yourself), so it did NOT abort them'), exempt);
+  assert.equal(exempt.includes('ABORTED'), false, exempt);
+  assert.ok(exempt.includes('  - Bash: orchestra run pause --hard --run L'), 'still listed');
+  assert.ok(exempt.includes('Commands killed by the host trap: none.') && !exempt.includes('aborted by the interrupt itself'), exempt);
+  for (const k of ['unresponsive', 'failed']) {
+    const t = textFor(k, k === 'unresponsive' ? null : { killed: [] });
+    assert.ok(t.includes(`the interrupt could NOT be confirmed for you (${k}): they MAY have been aborted or MAY still have been running`), t);
+    assert.equal(t.includes('ABORTED'), false, t);
+  }
+  for (const k of ['skipped', 'idle', 'no-session']) {
+    const t = textFor(k);
+    assert.ok(t.includes(`no turn was interrupted for you (${k})`), t);
+    assert.equal(t.includes('ABORTED'), false, t);
+  }
+  const unknown = textFor(undefined);
+  assert.ok(unknown.includes('how the interrupt ended for you is NOT recorded: they MAY have been aborted'), unknown);
+  assert.equal(unknown.includes('ABORTED'), false, unknown);
+  assert.equal(unknown.includes('aborted by the interrupt itself'), false, unknown);
+  // the table itself
+  assert.deepEqual(
+    ['interrupted', 'attached-then-interrupted', 'exempt', 'unresponsive', 'failed', 'idle', 'no-session', 'skipped', 'whatever', null, undefined].map((k) => interruptKind(k)),
+    ['aborted', 'aborted', 'exempt', 'unconfirmed', 'unconfirmed', 'not-interrupted', 'not-interrupted', 'not-interrupted', 'unknown', 'unknown', 'unknown'],
+  );
+  // the wave line a coordinator reads follows the same rule
+  const w = (interrupt: string | undefined) => renderWaveLine(consigneFromBilan({ ...input, bilan: { snapshotRef: 'refs/x', dirty: false, killed: { killed: [] }, error: null, activity: { turnRunning: true, ...(interrupt ? { interrupt } : {}), inFlightTools: inflight, branch: 'b', head: 'h' } } }));
+  assert.ok(w('interrupted').includes('1 in flight, aborted by the interrupt: Bash: orchestra run pause'), w('interrupted'));
+  assert.ok(w('exempt').includes('1 in flight at the Pause (interrupt: exempt): Bash: orchestra run pause') && !w('exempt').includes('aborted by the interrupt'), w('exempt'));
+  assert.ok(w(undefined).includes('(interrupt: not recorded)'), w(undefined));
+});
+
+test('CONSIGNE R2r2-m1a: the "turn was running, no call recorded" gap is named only where the interrupt may have aborted something — not for the exempt pauser or a member that was never interrupted', () => {
+  const t = (interrupt: string | undefined) =>
+    renderConsigne(consigneFromBilan({ ...input, bilan: { snapshotRef: 'refs/x', dirty: false, killed: { killed: [] }, error: null, activity: { turnRunning: true, ...(interrupt ? { interrupt } : {}), branch: 'b', head: 'h' } } }));
+  for (const k of ['interrupted', 'unresponsive', undefined]) assert.ok(t(k).includes('none recorded — but a turn was running'), `${k}`);
+  for (const k of ['exempt', 'skipped']) {
+    assert.ok(t(k).includes('Commands killed by the Pause: none.') && !t(k).includes('none recorded'), `${k}: ${t(k)}`);
+  }
+});
+
+test('CONSIGNE R2r2-m1a: calls from an EARLIER Pause keep THAT Pause\'s interrupt outcome, each group under its own header, whatever the latest Pause found', () => {
+  const idle: BilanLike = { snapshotRef: 'refs/x', dirty: false, killed: { killed: [] }, error: null, activity: { turnRunning: false, interrupt: 'idle', branch: 'b', head: 'h' } };
+  const c = consigneFromBilan({
+    ...input,
+    bilan: idle,
+    earlier: [
+      { pausedAt: 1_780_000_000_000, snapshotRef: 'refs/e1', killed: [], inFlight: ['Bash: npm test'], interrupt: 'interrupted' },
+      { pausedAt: 1_770_000_000_000, snapshotRef: 'refs/e2', killed: [], inFlight: ['Bash: orchestra run pause --hard'], interrupt: 'exempt' },
+    ],
+  });
+  assert.deepEqual(c.inFlightGroups, [
+    { interrupt: 'interrupted', lines: ['Bash: npm test'], earlierAt: 1_780_000_000_000 },
+    { interrupt: 'exempt', lines: ['Bash: orchestra run pause --hard'], earlierAt: 1_770_000_000_000 },
+  ]);
+  assert.deepEqual(c.wasDoing.inFlightTools, ['Bash: npm test', 'Bash: orchestra run pause --hard'], 'the flat frozen list still carries both');
+  const text = renderConsigne(c);
+  assert.ok(text.includes('Calls IN FLIGHT when an EARLIER Pause (2026-05-28T20:26:40.000Z) interrupted your turn (1) — that interrupt ABORTED them'), text);
+  assert.ok(text.includes('Calls in flight when an EARLIER Pause (2026-02-02T02:40:00.000Z) began (1) — you were EXEMPT from the interrupt'), text);
+  assert.equal(c.notes.length, 2, 'one note per earlier Pause');
+  assert.equal(text.includes('no turn was interrupted for you'), false, 'the idle latest epoch does not relabel the earlier calls');
+  // MIXED outcomes (one aborted, one exempt): neither "none — aborted by the interrupt itself" nor "aborted" in the wave line may cover the exempt call
+  assert.ok(text.includes('Commands killed by the host trap: none.') && !text.includes('aborted by the interrupt itself'), text);
+  assert.ok(renderWaveLine(c).includes('2 in flight at the Pause (interrupt: interrupted / exempt): Bash: npm test') && !renderWaveLine(c).includes('aborted by the interrupt'), renderWaveLine(c));
+  // …and when EVERY group was aborted, the plain claim stands
+  const allAborted = consigneFromBilan({ ...input, bilan: idle, earlier: [{ pausedAt: 1_780_000_000_000, snapshotRef: 'refs/e1', killed: [], inFlight: ['Bash: npm test'], interrupt: 'interrupted' }] });
+  assert.ok(renderConsigne(allAborted).includes('Commands killed by the host trap: none — the in-flight call(s) above were aborted by the interrupt itself.'));
+  assert.ok(renderWaveLine(allAborted).includes('1 in flight, aborted by the interrupt: Bash: npm test'), renderWaveLine(allAborted));
+  // an UNRECORDED earlier outcome is not papered over by the latest epoch's: the wave line says so
+  const unrecordedEarlier = consigneFromBilan({ ...input, bilan: { ...idle, activity: { turnRunning: true, interrupt: 'interrupted', branch: 'b', head: 'h' } }, earlier: [{ pausedAt: 1_780_000_000_000, snapshotRef: 'refs/e1', killed: [], inFlight: ['Bash: npm test'] }] });
+  assert.ok(renderWaveLine(unrecordedEarlier).includes('(interrupt: not recorded)') && !renderWaveLine(unrecordedEarlier).includes('aborted by the interrupt'), renderWaveLine(unrecordedEarlier));
+  // the earlier-Pause NOTE follows that epoch's outcome too (an exempt Pause\'s call was not "aborted")
+  assert.ok(c.notes.some((n) => /1 call\(s\) were in flight then \(interrupt: exempt\) — listed with the calls in flight/.test(n) && !/the interrupt aborted 1/.test(n)), c.notes.join('|'));
+  assert.ok(c.notes.some((n) => /the interrupt aborted 1 in-flight call\(s\) — listed with the calls in flight/.test(n)), c.notes.join('|'));
+  // a call already listed for the CURRENT Pause is not listed again for an earlier one
+  const dup = consigneFromBilan({ ...input, bilan: { ...idle, activity: { turnRunning: true, interrupt: 'interrupted', inFlightTools: [{ tool: 'Bash', input: 'npm test' }], branch: 'b', head: 'h' } }, earlier: [{ pausedAt: 1_780_000_000_000, snapshotRef: 'refs/e1', killed: [], inFlight: ['Bash: npm test'], interrupt: 'interrupted' }] });
+  assert.deepEqual(dup.inFlightGroups, [{ interrupt: 'interrupted', lines: ['Bash: npm test'], earlierAt: null }]);
+  assert.equal((renderConsigne(dup).match(/  - Bash: npm test/g) ?? []).length, 1);
+  // the CURRENT epoch is listed first, under the plain header
+  const both = renderConsigne(consigneFromBilan({ ...input, bilan: { ...idle, activity: { turnRunning: true, interrupt: 'interrupted', inFlightTools: [{ tool: 'Bash', input: 'make' }], branch: 'b', head: 'h' } }, earlier: [{ pausedAt: 1_780_000_000_000, snapshotRef: 'refs/e1', killed: [], inFlight: ['Bash: npm test'], interrupt: 'interrupted' }] }));
+  assert.ok(both.indexOf('Calls IN FLIGHT when the Pause interrupted your turn (1)') < both.indexOf('Calls IN FLIGHT when an EARLIER Pause'), both);
+});
+
+test('CONSIGNE R2r2-m1b: a member with NO Bilan row is told nothing is known — never "idle (no turn running)", a guess', () => {
+  const none = consigneFromBilan({ ...input, bilan: null });
+  assert.equal(none.bilanRecorded, false);
+  const text = renderConsigne(none);
+  assert.ok(text.includes('You were: unknown (no Bilan de pause was recorded for you).'), text);
+  assert.equal(text.includes('idle (no turn running)'), false, text);
+  assert.ok(renderWaveLine(none).includes('NO Bilan recorded (nothing known)') && !renderWaveLine(none).includes('nothing killed'), renderWaveLine(none));
+  // a recorded idle member still reads idle
+  const idle = renderConsigne(consigneFromBilan({ ...input, bilan: { ...BILAN, activity: { turnRunning: false, branch: 'b', head: 'h' } } }));
+  assert.ok(idle.includes('You were: idle (no turn running).'), idle);
+  // a plain frozen-type Consigne (no facts: a stub) renders as before
+  const { bilanRecorded: _a, interrupt: _b, ...plain } = consigneFromBilan({ ...input, bilan: null });
+  assert.ok(renderConsigne(plain).includes('You were: idle (no turn running).'));
+});
+
+test('CONSIGNE R2r2-m3: C1 control characters (U+0080-009F, incl. the CSI U+009B) are stripped from every recorded string; a command is cut at 300 characters with an ellipsis', () => {
+  assert.equal(stripControl('a\u009bb\u0085c\u0080d\u009fe'), 'a b c d e', 'C1 range ends included');
+  assert.equal(stripControl('a\u007fb'), 'a b', 'DEL');
+  assert.equal(stripControl('a\u00a0b'), 'a\u00a0b', 'U+00A0 is NOT a control character');
+  const long = 'x'.repeat(400);
+  const c = consigneFromBilan({ ...input, bilan: { ...BILAN, killed: { killed: [{ pid: 1, cmd: long, cwd: null }] }, activity: { branch: 'b', head: 'h', interrupt: 'interrupted' } } });
+  const line = renderConsigne(c).split('\n').find((l) => l.startsWith('  - x'))!;
+  assert.equal(line, `  - ${'x'.repeat(299)}…`, 'exactly 300 characters incl. the ellipsis');
+  const exact = consigneFromBilan({ ...input, bilan: { ...BILAN, killed: { killed: [{ pid: 1, cmd: 'y'.repeat(300), cwd: null }] }, activity: { branch: 'b', head: 'h', interrupt: 'interrupted' } } });
+  assert.equal(renderConsigne(exact).split('\n').find((l) => l.startsWith('  - y')), `  - ${'y'.repeat(300)}`, 'a 300-character command is kept whole');
 });
 
 test('stripControl removes the Unicode TAG block (U+E0000-E007F, invisible text smuggled in a cmdline) along with C0/C1, bidi and zero-width characters', () => {

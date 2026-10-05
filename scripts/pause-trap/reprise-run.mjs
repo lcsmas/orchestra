@@ -15,7 +15,7 @@
 //   reprise-repause          a Pause lands WHILE RESUMING, with the released OPS mid-command: the NEW epoch's host trap interrupts/kills it again (fresh snapshot), it is blocked again,
 //                            a second Reprise completes, and the Consigne still names what the FIRST Pause killed
 // Must-FAIL (the same rig, 1 cycle; the named check must go red):
-//   unfixed:master           the SAME rig against a copy of origin/master (plain lift, no release verb): workers are NOT blocked  → c0:workers_blocked_no_mass_wake
+//   unfixed:master           the SAME rig against a built copy of the PRE-Reprise master (PT_REPRISE_UNFIXED_SHA, default 0963ade2: plain lift, no release verb): workers are NOT blocked  → c0:workers_blocked_no_mass_wake
 //   mutant:reprise-gate-ignores-release   a released coordinator is still gated        → c0:ops_coordinator_may_start
 //   mutant:reprise-gate-releases-everyone every roster member reads as released        → c0:workers_blocked_no_mass_wake
 // Exit: 0 every arm as expected · 1 an arm broke expectation · 3 VOID (containment/tooling unavailable: nothing measured).
@@ -81,14 +81,16 @@ const base = path.join(os.homedir(), '.cache', 'pause-trap');
 fs.mkdirSync(base, { recursive: true });
 const live = liveDirs(process.env);
 
-/** A BUILT copy of origin/master + THIS rig's scripts overlaid: the SAME rig against the unfixed code (master has no structured Reprise). Removed at the end unless --keep. */
+/** A BUILT copy of the PRE-Reprise master + THIS rig's scripts overlaid: the SAME rig against the unfixed code. PINNED (default 0963ade2, the last master before structured Reprise): `origin/master` itself
+ *  contains the Reprise once it merged, and a must-FAIL arm that goes green on the fixed tree is a vacuous gate. Removed at the end unless --keep. */
 let masterDir = null;
 function masterCopy() {
   if (masterDir) return masterDir;
   const git = (...a) => spawnSync('git', ['-C', MY_REPO, ...a], { encoding: 'utf8' });
   git('fetch', '-q', 'origin', 'master');
-  const sha = git('rev-parse', 'origin/master').stdout.trim();
-  if (!/^[0-9a-f]{40}$/.test(sha)) { console.log('PAUSE-REPRISE: VOID — cannot resolve origin/master'); process.exit(3); }
+  const pin = process.env.PT_REPRISE_UNFIXED_SHA ?? '0963ade2';
+  const sha = git('rev-parse', `${pin}^{commit}`).stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) { console.log(`PAUSE-REPRISE: VOID — cannot resolve the unfixed reference ${pin}`); process.exit(3); }
   const dir = path.join(base, `master-copy-${sha.slice(0, 8)}-${process.pid}`);
   const r = git('worktree', 'add', '--detach', dir, sha);
   if (r.status !== 0) { console.log(`PAUSE-REPRISE: VOID — git worktree add failed: ${r.stderr.slice(-200)}`); process.exit(3); }
@@ -97,7 +99,7 @@ function masterCopy() {
   for (const rel of ['scripts/pause-trap', 'scripts/session-budget']) fs.cpSync(path.join(MY_REPO, rel), path.join(dir, rel), { recursive: true });
   for (const f of fs.readdirSync(path.join(MY_REPO, 'scripts')).filter((x) => x.startsWith('.r2-'))) fs.copyFileSync(path.join(MY_REPO, 'scripts', f), path.join(dir, 'scripts', f));
   build(dir);
-  say(`  (unfixed arm runs against a built copy of origin/master ${sha.slice(0, 8)} at ${dir})`);
+  say(`  (unfixed arm runs against a built copy of the pre-Reprise master ${sha.slice(0, 8)} at ${dir})`);
   return dir;
 }
 

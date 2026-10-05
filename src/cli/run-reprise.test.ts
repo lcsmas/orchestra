@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -247,4 +247,74 @@ test('a PARTIAL release is reported before the failure: `release o1 ghost` relea
   assert.notEqual(both.code, 0);
   assert.match(both.stderr, /may not release them/);
   assert.match(both.stderr, /no member of the Reprise of run L matches: ghost-ws/);
+});
+
+// ── review r2 (R2r2-m2 / R2r2-m3): the CLI reads the LIVE tree from the app's store.json ─────────────────────────────────────────
+
+const STORE_WS = [
+  { id: 'L', kind: 'orchestrator' },
+  { id: 'O', kind: 'orchestrator', parentId: 'L' },
+  { id: 'o1', parentId: 'O' },
+  { id: 'o2', parentId: 'O' },
+];
+const writeStore = (h: string, content: unknown) => {
+  const f = path.join(h, 'userData', 'orchestra', 'store.json');
+  mkdirSync(path.dirname(f), { recursive: true });
+  writeFileSync(f, typeof content === 'string' ? content : JSON.stringify({ workspaces: content }));
+};
+/** L mission, O created TOP-LEVEL (no `parent_run_id`, write-once) and re-parented under L by the store later; the host trap finished. */
+function reparentedFleet(t: { after: (fn: () => void) => void }, storeAtResume: unknown): string {
+  const h = path.join(ROOT, `rp${n++}`);
+  mkdirSync(h, { recursive: true });
+  t.after(() => rmSync(h, { recursive: true, force: true }));
+  writeStore(h, STORE_WS);
+  const db = bus.openBus(path.join(h, 'bus.sqlite'));
+  try {
+    busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
+    busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O' }, ON);
+  } finally {
+    db.close();
+  }
+  assert.equal(cli(h, ['run', 'pause', '--hard', '--run', 'L'], 'L').code, 0);
+  const d2 = bus.openBus(path.join(h, 'bus.sqlite'));
+  try {
+    const pausedAt = getRunPause(d2, 'L')!.pausedAt;
+    for (const [ws, run] of [['L', 'L'], ['O', 'O'], ['o1', 'O'], ['o2', 'O']] as const) {
+      insertBilan(d2, { runId: 'L', wsId: ws, pausedAt, activity: { surface: 'sdk', memberRun: run, branch: `br-${ws}`, head: `h-${ws}` }, snapshotRef: `refs/orchestra/pause/L/${ws}/1`, dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+    }
+    d2.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'L');
+  } finally {
+    d2.close();
+  }
+  writeStore(h, storeAtResume);
+  return h;
+}
+const rosterOf = (h: string) => read(h, (db) => readRoster(db, 'L', readCarrierColumns(db, 'L')!.pausedAt!).map((r) => `${r.wsId}:${r.role}:${r.releasedBy ?? '-'}`).sort());
+
+test('R2r2-m3 CLI live tree (store.json): a re-parented OPS is a host-RELEASED coordinator at `run resume`, releases its own workers with --all, and its own run shows the Reprise', needsBuild, (t) => {
+  const h = reparentedFleet(t, STORE_WS);
+  const r = cli(h, ['run', 'resume', '--run', 'L'], 'L');
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(rosterOf(h), ['L:coordinator:host', 'O:coordinator:host', 'o1:worker:-', 'o2:worker:-'], 'O is a coordinator the HOST released (the bus tree alone would call it a worker)');
+  assert.equal(read(h, (db) => (db.prepare("SELECT COUNT(*) AS c FROM messages WHERE kind = 'reprise' AND recipient = 'O' AND sender = 'host'").get() as { c: number }).c), 1, 'O got its wave\'s Bilan row');
+  // R2r2-m2b read side: from the re-parented OPS's own run the Reprise is visible (the bus walk from O alone ends at O)
+  const st = cli(h, ['run', 'status', '--run', 'O'], 'O').stdout;
+  assert.match(st, /^reprise: RESUMING \(carrier L\) — 2\/4 libérés/m, st);
+  assert.match(st, /^reprise: BLOQUÉS .* : o1, o2$/m, st);
+  const all = cli(h, ['run', 'release', '--all', '--run', 'O'], 'O');
+  assert.equal(all.code, 0, all.stderr + all.stdout);
+  assert.match(all.stdout, /Released 2 member\(s\): o1, o2/);
+  assert.equal(read(h, (db) => readCarrierColumns(db, 'L')!.pausedAt), null, 'the run is ACTIVE again');
+});
+
+test('R2r2-m3 CLI: `run resume` survives an UNREADABLE store.json (absent / corrupt / a null entry) — the Reprise begins from the bus run tree, a re-parented OPS is a blocked worker the host sweep fixes later', needsBuild, (t) => {
+  for (const [label, store] of [['absent', null], ['corrupt', '{"workspaces":[{"id":"L"'], ['null entry', '{"workspaces":[null,{"id":"L","kind":"orchestrator"}]}']] as const) {
+    const h = reparentedFleet(t, STORE_WS);
+    if (store === null) rmSync(path.join(h, 'userData', 'orchestra', 'store.json'), { force: true });
+    else writeStore(h, store);
+    const r = cli(h, ['run', 'resume', '--run', 'L'], 'L');
+    assert.equal(r.code, 0, `${label}: ${r.stderr}`);
+    assert.match(r.stdout, /^Run L: REPRISE STARTED/, label);
+    assert.deepEqual(rosterOf(h), ['L:coordinator:host', 'O:worker:-', 'o1:worker:-', 'o2:worker:-'], `${label}: O is a blocked worker (the live tree could not say otherwise)`);
+  }
 });

@@ -410,7 +410,7 @@ function earlierEpochs(db: BusDb, carrierRunId: string, wsId: string, pausedAt: 
       killed: parseJson<unknown>(r.killed_json),
       error: r.error ?? null,
     };
-    out.push({ pausedAt: epoch, snapshotRef: like.snapshotRef, killed: killedCommands(like), inFlight: inFlightLines(like) });
+    out.push({ pausedAt: epoch, snapshotRef: like.snapshotRef, killed: killedCommands(like), inFlight: inFlightLines(like), interrupt: like.activity?.interrupt ?? null });
     if (out.length >= EARLIER_EPOCHS) break;
   }
   return out;
@@ -493,13 +493,15 @@ function coordinatedRun(tree: LiveTree | null, nodes: readonly RunNode[], wsId: 
   return nodes.find((x) => sameId(x.coordinator, wsId))?.id ?? wsId;
 }
 
-/** Release the coordinators in depth order (live chain length, else bus BFS); each gets ONE `reprise` row = its OWN Bilan + the Bilan de pause of its wave. */
+/** Release the coordinators in depth order (live chain length, else bus BFS); each gets ONE `reprise` row = its OWN Bilan + the Bilan de pause of its wave. `only` narrows the set
+ *  (the host sweep's LATE pass: a coordinator the begin could not see). The caller holds the bus write lock (`tx.immediate()`), so the roster read here cannot go stale. */
 function releaseCoordinators(
   db: BusDb,
   carrierRunId: string,
   cols: CarrierPauseColumns & { pausedBy: string | null },
   subtreeRunIds: readonly string[],
   now: number,
+  only?: (row: PauseMemberRow) => boolean,
 ): void {
   const pausedAt = cols.pausedAt as number;
   const tree = liveTree();
@@ -517,9 +519,11 @@ function releaseCoordinators(
   const ordered = [...coordRows].sort((x, y) => depthOf(x) - depthOf(y));
   for (const row of ordered) {
     if (row.releasedAt !== null) continue;
+    if (only && !only(row)) continue;
     const run = coordinatedRun(tree, nodes, row.wsId);
     // Its wave = the workers that belong to the run it coordinates + the coordinators it releases (its direct reports, whose releaser run is this run).
-    const childCoords = coordRows.filter((c) => c !== row && sameId(parentRunOf(c), run));
+    // only the coordinators released NOW (a late pass skips the ones the begin already released and the ones it leaves blocked)
+    const childCoords = coordRows.filter((c) => c !== row && c.releasedAt === null && (!only || only(c)) && sameId(parentRunOf(c), run));
     const waveRows = roster.filter(
       (r) => r.wsId.toLowerCase() !== row.wsId.toLowerCase() && ((r.role === 'worker' && sameId(r.memberRun ?? carrierRunId, run)) || childCoords.includes(r)),
     );
@@ -798,7 +802,12 @@ export function repriseStatusView(db: BusDb, runId: string): RepriseStatusView |
     chain.push(cur);
     cur = ((parent.get(cur) as { p: string | null } | undefined)?.p ?? null) as string | null;
   }
-  for (const id of chain) {
+  // A run created top-level and re-parented LATER (`parent_run_id` is write-once) has a STALE or no bus parent: where the live tree knows the run, ITS chain decides (run id == anchor
+  // workspace id), nearest first; the bus-only ancestors follow.
+  const tree = liveTree();
+  const live = tree ? liveChain(tree, runId) : [];
+  const ordered = [...live, ...chain.filter((c) => !live.some((l) => sameId(l, c)))];
+  for (const id of ordered) {
     const cols = readCarrierColumns(db, id);
     if (!cols) continue;
     let pausedAt: number;
@@ -872,7 +881,13 @@ export function sweepReprise(deps: RepriseSweepDeps): string[] {
         db.transaction(() => {
           // re-read INSIDE the lock: the last `release` may have closed this epoch since the SELECT — never seed a finished one
           const cur = readCarrierColumns(db, c.id);
-          if (cur && cur.pausedAt === Number(c.paused_at) && cur.resumeStartedAt !== null) seedRoster(db, c.id, Number(c.paused_at), subtree, members);
+          if (cur && cur.pausedAt === Number(c.paused_at) && cur.resumeStartedAt !== null) {
+            seedRoster(db, c.id, Number(c.paused_at), subtree, members);
+            // LATE coordinators: a Bilan'd member the live tree NOW says orchestrates, which the begin saw as a plain worker (an unreadable store at `run resume`) — nobody else would
+            // host-release it. A coordinator with NO Bilan row joined during the Reprise (a sub-OPS a released OPS spawned): it stays BLOCKED until its own parent releases it.
+            const bilanned = new Set(readBilanRecs(db, c.id, Number(c.paused_at)).map((b) => b.wsId.toLowerCase()));
+            releaseCoordinators(db, c.id, cur, subtree, Date.now(), (r) => bilanned.has(r.wsId.toLowerCase()));
+          }
         }).immediate();
       }
       if (finishRepriseIfDone(db, c.id)) done.push(c.id);

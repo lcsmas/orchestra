@@ -18,6 +18,8 @@ export interface BilanLike {
 
 export interface BilanActivityLike {
   turnRunning?: boolean;
+  /** `BilanActivity.interrupt`: how the turn interrupt ended for this member ('interrupted' | 'exempt' | 'unresponsive' | 'skipped' | …). Absent = not recorded. */
+  interrupt?: string;
   inFlightTools?: Array<{ tool: string | null; input?: string | null }>;
   bgTasks?: Array<{ type?: string; description: string; status?: string }>;
   lastTask?: string;
@@ -40,6 +42,38 @@ interface KilledReportLike {
   skipped?: string;
 }
 
+/** Facts the Consigne states that the FROZEN `ConsigneDeReprise` does not carry (optional on purpose: a plain `ConsigneDeReprise` from a stub still renders, as before). */
+export interface ConsigneFacts {
+  /** false = the member has NO Bilan row: nothing is known about what it was doing. */
+  bilanRecorded: boolean;
+  /** `activity.interrupt` of the Bilan, or null when not recorded. */
+  interrupt: string | null;
+  /** The calls in flight, grouped by the epoch (and so the interrupt outcome) that recorded them: the CURRENT Pause first (`earlierAt` null), then each EARLIER Pause the member was never released from. */
+  inFlightGroups: Array<{ interrupt: string | null; lines: string[]; earlierAt: number | null }>;
+}
+export type ConsigneWithFacts = ConsigneDeReprise & Partial<ConsigneFacts>;
+
+/** What the interrupt did to the calls that were in flight — decides whether "ABORTED" may be said. */
+export type InterruptKind = 'aborted' | 'exempt' | 'unconfirmed' | 'not-interrupted' | 'unknown';
+export function interruptKind(interrupt: string | null | undefined): InterruptKind {
+  switch (interrupt) {
+    case 'interrupted':
+    case 'attached-then-interrupted':
+      return 'aborted';
+    case 'exempt':
+      return 'exempt'; // the member that ran `orchestra run pause` keeps its turn: the interrupt did NOT abort its calls
+    case 'unresponsive':
+    case 'failed':
+      return 'unconfirmed'; // the interrupt may not have taken effect: the call may have been aborted OR still running
+    case 'idle':
+    case 'no-session':
+    case 'skipped':
+      return 'not-interrupted';
+    default:
+      return 'unknown'; // not recorded (a row written before the interrupt step, or an older Bilan)
+  }
+}
+
 export interface ConsigneInput {
   /** The pause CARRIER run and epoch (`runs.paused_at`). */
   runId: string;
@@ -53,7 +87,7 @@ export interface ConsigneInput {
   bilan: BilanLike | null;
   /** EARLIER Pauses of the same carrier that took this member and from which it was NEVER released (a re-Pause during a Reprise opens a new epoch: the member
    *  was never told what the first one killed). Their killed commands join the list; their snapshot refs are named in the notes. */
-  earlier?: Array<{ pausedAt: number; snapshotRef: string | null; killed: Array<{ cmd: string; cwd: string | null }>; inFlight?: string[] }>;
+  earlier?: Array<{ pausedAt: number; snapshotRef: string | null; killed: Array<{ cmd: string; cwd: string | null }>; inFlight?: string[]; interrupt?: string | null }>;
 }
 
 /** Code-point ranges stripped from any recorded string: C0/DEL/C1, soft hyphen, ALM, Mongolian vowel separator, zero-width + bidi marks/overrides/isolates,
@@ -102,7 +136,7 @@ export function inFlightLines(b: BilanLike | null): string[] {
 }
 
 /** Derive the Consigne of ONE member. Never throws on a partial/odd Bilan: a missing fact is `null`/`[]` and a note says so. */
-export function consigneFromBilan(i: ConsigneInput): ConsigneDeReprise {
+export function consigneFromBilan(i: ConsigneInput): ConsigneWithFacts {
   const b = i.bilan;
   const a = b?.activity ?? null;
   const k = (b?.killed && typeof b.killed === 'object' ? (b.killed as KilledReportLike) : null) ?? {};
@@ -131,7 +165,11 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneDeReprise {
   const killed = killedCommands(b);
   const seenKilled = new Set(killed.map((k) => `${k.cmd}\u0000${k.cwd ?? ''}`));
   const inFlight = inFlightLines(b);
+  const groups: ConsigneFacts['inFlightGroups'] = inFlight.length ? [{ interrupt: a?.interrupt ?? null, lines: [...inFlight], earlierAt: null }] : [];
   for (const e of i.earlier ?? []) {
+    // each epoch's calls keep THEIR interrupt outcome: a call an EARLIER Pause's interrupt aborted must not read "no turn was interrupted" because the latest Pause found the member idle
+    const fresh = (e.inFlight ?? []).filter((t) => !inFlight.includes(t));
+    if (fresh.length) groups.push({ interrupt: e.interrupt ?? null, lines: fresh, earlierAt: e.pausedAt });
     for (const t of e.inFlight ?? []) if (!inFlight.includes(t)) inFlight.push(t);
     for (const k of e.killed) {
       const key = `${k.cmd}\u0000${k.cwd ?? ''}`;
@@ -140,7 +178,7 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneDeReprise {
     notes.push(
       `an EARLIER Pause of this run (${iso(e.pausedAt)}) took you too and you were never released from it: its snapshot ref ${e.snapshotRef ?? 'none'}` +
         `${e.killed.length ? `; it killed ${e.killed.length} command(s) — merged into the list of killed commands` : '; it killed nothing'}` +
-        `${e.inFlight?.length ? `; the interrupt aborted ${e.inFlight.length} in-flight call(s) — merged into the list of aborted calls` : ''}`,
+        `${e.inFlight?.length ? (interruptKind(e.interrupt) === 'aborted' ? `; the interrupt aborted ${e.inFlight.length} in-flight call(s) — listed with the calls in flight` : `; ${e.inFlight.length} call(s) were in flight then (interrupt: ${e.interrupt ? stripControl(e.interrupt) : 'not recorded'}) — listed with the calls in flight`) : ''}`,
     );
   }
   return {
@@ -163,6 +201,9 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneDeReprise {
     dirty: b?.dirty ?? null,
     killed,
     notes,
+    bilanRecorded: b !== null,
+    interrupt: a?.interrupt ?? null,
+    inFlightGroups: groups,
   };
 }
 
@@ -172,14 +213,15 @@ const iso = (ms: number): string => new Date(ms).toISOString();
  * The text a member reads at its release. Every field is LITERAL (the tests pin them): the snapshot ref, the killed commands (listed,
  * never re-run), the dirty tree. English on purpose — it is a prompt for an agent, like every other bus row.
  */
-export function renderConsigne(c: ConsigneDeReprise, opts?: { releasedBy?: string | null }): string {
+export function renderConsigne(c: ConsigneWithFacts, opts?: { releasedBy?: string | null }): string {
   const out: string[] = [];
   out.push(`CONSIGNE DE REPRISE — workspace ${stripControl(c.wsId)}, run ${stripControl(c.runId)}`);
   out.push(
     `The fleet Pause (${c.mode}, since ${iso(c.pausedAt)}${c.pausedBy ? ` by ${trimTo(c.pausedBy, 80)}` : ''}) is lifted for you` +
       `${opts?.releasedBy ? `: ${trimTo(opts.releasedBy, 80)} released you` : ''}. Nothing was restarted for you — you decide what to resume.`,
   );
-  const doing: string[] = [c.wasDoing.turnRunning ? 'a turn was running' : 'idle (no turn running)'];
+  // no Bilan row ⇒ nothing is known about the member: "idle" would be a guess (the Pause landed while a douce still waited, or the app was down)
+  const doing: string[] = [c.bilanRecorded === false ? 'unknown (no Bilan de pause was recorded for you)' : c.wasDoing.turnRunning ? 'a turn was running' : 'idle (no turn running)'];
   if (c.wasDoing.bgTasks.length) doing.push(`background tasks: ${c.wasDoing.bgTasks.slice(0, 5).map((t) => `"${trimTo(t, 80)}"`).join(', ')}${c.wasDoing.bgTasks.length > 5 ? ', …' : ''}`);
   out.push(`You were: ${doing.join(' · ')}.`);
   if (c.wasDoing.lastTask) out.push(`Your last task: ${trimTo(c.wasDoing.lastTask, 200)}`);
@@ -194,18 +236,37 @@ export function renderConsigne(c: ConsigneDeReprise, opts?: { releasedBy?: strin
     out.push(`Snapshot ref: none${c.snapshotIncomplete ? ` (the snapshot did not finish: ${c.snapshotIncomplete})` : ''} — your worktree is the only copy of your work.`);
   }
   const aborted = c.wasDoing.inFlightTools;
-  if (aborted.length) {
-    // a FOREGROUND tool dies with the interrupt (the host trap kills nothing for it): the interrupt is what aborted it — name it, or "none" below would be a lie
-    out.push(`Calls IN FLIGHT when the Pause interrupted your turn (${aborted.length}) — the interrupt ABORTED them: LISTED, NOT re-run. Re-run one only if you still need it, after checking the tree:`);
-    for (const t of aborted.slice(0, KILLED_LISTED)) out.push(`  - ${trimTo(t, CMD_CHARS)}`);
-    if (aborted.length > KILLED_LISTED) out.push(`  - … +${aborted.length - KILLED_LISTED} more (orchestra run status --run ${stripControl(c.runId)})`);
+  const kind = interruptKind(c.interrupt);
+  const groups = c.inFlightGroups ?? (aborted.length ? [{ interrupt: c.interrupt ?? null, lines: aborted, earlierAt: null }] : []);
+  for (const g of groups) {
+    const gk = interruptKind(g.interrupt);
+    const n = g.lines.length;
+    const when = g.earlierAt === null ? 'the Pause' : `an EARLIER Pause (${iso(g.earlierAt)})`;
+    // "ABORTED" is a claim about the interrupt: only when it is recorded as having taken effect. A FOREGROUND tool then dies with it (the host trap kills nothing for it) — name it, or "none" below would be a lie.
+    out.push(
+      gk === 'aborted'
+        ? `Calls IN FLIGHT when ${when} interrupted your turn (${n}) — ${g.earlierAt === null ? 'the' : 'that'} interrupt ABORTED them: LISTED, NOT re-run. Re-run one only if you still need it, after checking the tree:`
+        : gk === 'exempt'
+          ? `Calls in flight when ${when} began (${n}) — you were EXEMPT from the interrupt (you ran the Pause yourself), so it did NOT abort them (the command that ran the Pause is among them): LISTED, NOT re-run. Check the tree before re-running anything:`
+          : gk === 'unconfirmed'
+            ? `Calls in flight when ${when} began (${n}) — the interrupt could NOT be confirmed for you (${stripControl(g.interrupt)}): they MAY have been aborted or MAY still have been running: LISTED, NOT re-run. Check the tree first:`
+            : gk === 'not-interrupted'
+              ? `Calls recorded in flight (${n}) — no turn was interrupted for you (${stripControl(g.interrupt)}): LISTED, NOT re-run. Check the tree first:`
+              : `Calls recorded in flight when ${when} began (${n}) — how the interrupt ended for you is NOT recorded: they MAY have been aborted. LISTED, NOT re-run. Check the tree first:`,
+    );
+    for (const t of g.lines.slice(0, KILLED_LISTED)) out.push(`  - ${trimTo(t, CMD_CHARS)}`);
+    if (n > KILLED_LISTED) out.push(`  - … +${n - KILLED_LISTED} more (orchestra run status --run ${stripControl(c.runId)})`);
   }
-  // a turn WAS running but no call is recorded for it (a session that survived an app restart is not tracked): "none" would be a guess — say it is unrecorded
-  const unrecorded = c.wasDoing.turnRunning && aborted.length === 0;
+  // "none — aborted by the interrupt itself" only when the interrupt took effect for EVERY listed call (one exempt / unconfirmed group makes it a half-truth)
+  const anyAborted = groups.length > 0 && groups.every((g) => interruptKind(g.interrupt) === 'aborted');
+  // a turn WAS running but no call is recorded (a session that survived an app restart is not tracked): "none" would be a guess — say it is unrecorded. Not for a member whose turn the interrupt never touched.
+  const unrecorded = c.wasDoing.turnRunning && aborted.length === 0 && (kind === 'aborted' || kind === 'unknown' || kind === 'unconfirmed');
   if (c.killed.length === 0) {
     out.push(
       aborted.length
-        ? 'Commands killed by the host trap: none — the in-flight call(s) above were aborted by the interrupt itself.'
+        ? anyAborted
+          ? 'Commands killed by the host trap: none — the in-flight call(s) above were aborted by the interrupt itself.'
+          : 'Commands killed by the host trap: none.'
         : unrecorded
           ? 'Commands killed by the Pause: none recorded — but a turn was running and no call is recorded for it, so the interrupt may have aborted a call that is not listed here: check the tree before assuming nothing was lost.'
           : 'Commands killed by the Pause: none.',
@@ -227,11 +288,22 @@ export function renderConsigne(c: ConsigneDeReprise, opts?: { releasedBy?: strin
 }
 
 /** One compact line per member for a COORDINATOR's wave Bilan (the full Consigne is sent to each member when its coordinator releases it). */
-export function renderWaveLine(c: ConsigneDeReprise): string {
-  const killed = c.killed.length
-    ? `${c.killed.length} killed: ${c.killed.slice(0, 3).map((k) => trimTo(k.cmd, 60)).join('; ')}${c.killed.length > 3 ? '; …' : ''}`
-    : 'nothing killed';
-  const aborted = c.wasDoing.inFlightTools.length ? `; ${c.wasDoing.inFlightTools.length} in flight, aborted by the interrupt: ${c.wasDoing.inFlightTools.slice(0, 2).map((t) => trimTo(t, 60)).join('; ')}${c.wasDoing.inFlightTools.length > 2 ? '; …' : ''}` : '';
+export function renderWaveLine(c: ConsigneWithFacts): string {
+  const killed =
+    c.bilanRecorded === false
+      ? 'NO Bilan recorded (nothing known)'
+      : c.killed.length
+        ? `${c.killed.length} killed: ${c.killed.slice(0, 3).map((k) => trimTo(k.cmd, 60)).join('; ')}${c.killed.length > 3 ? '; …' : ''}`
+        : 'nothing killed';
+  const n = c.wasDoing.inFlightTools.length;
+  const what = `${c.wasDoing.inFlightTools.slice(0, 2).map((t) => trimTo(t, 60)).join('; ')}${n > 2 ? '; …' : ''}`;
+  // the outcome of EVERY epoch that recorded a call (a re-Pause's idle member keeps the EARLIER epoch's calls): "aborted" only when it took effect for all of them
+  const outcomes = c.inFlightGroups ? c.inFlightGroups.map((g) => g.interrupt) : [c.interrupt ?? null];
+  const aborted = !n
+    ? ''
+    : outcomes.every((o) => interruptKind(o) === 'aborted')
+      ? `; ${n} in flight, aborted by the interrupt: ${what}`
+      : `; ${n} in flight at the Pause (interrupt: ${[...new Set(outcomes.map((o) => (o ? trimTo(o, 30) : 'not recorded')))].join(' / ')}): ${what}`;
   return (
     `  • ${stripControl(c.wsId)}${c.branch ? ` [${trimTo(c.branch, 60)}]` : ''} — dirty tree: ${c.dirty === null ? 'unknown' : c.dirty ? 'yes' : 'no'}; ` +
     `snapshot ref: ${c.snapshotRef ? trimTo(c.snapshotRef, 160) : 'none'}; ${killed}${aborted}`
@@ -246,11 +318,11 @@ export function renderCoordinatorReprise(args: {
   pausedBy: string | null;
   mode: PauseMode | null;
   /** Members of this coordinator's wave (workers it must release), in roster order. */
-  wave: ConsigneDeReprise[];
+  wave: ConsigneWithFacts[];
   /** Child-run coordinators — released by the host at the same time, shown for context. */
   coordinators: string[];
   /** The coordinator's OWN Consigne (its snapshot ref, dirty tree, the commands the Pause killed in ITS session): the host released it without one, so it rides here. */
-  self?: ConsigneDeReprise;
+  self?: ConsigneWithFacts;
 }): string {
   const out: string[] = [];
   out.push(`REPRISE — you are released first (coordinator of run ${stripControl(args.runId)}; the Pause is carried by run ${stripControl(args.carrierRunId)}).`);

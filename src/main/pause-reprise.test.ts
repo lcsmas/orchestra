@@ -30,6 +30,7 @@ import {
   seedRoster,
   setLiveTreeSource,
   sweepReprise,
+  upsertRosterMember,
 } from './pause-reprise.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import { pausePhaseOf } from '../shared/pause-lifecycle.ts';
@@ -88,7 +89,7 @@ function pauseAndTrap(db: bus.BusDb, killO1 = true): number {
       runId: 'L',
       wsId: ws,
       pausedAt,
-      activity: { surface: 'sdk', memberRun: run, turnRunning: ws === 'o1' || ws === 'o2', branch: `br-${ws}`, head: `head${ws}00000000`, ...(ws === 'o2' ? { notes: ['o2 note'], inFlightTools: [{ tool: 'Bash', toolUseId: 'tu-o2', sinceMs: 5000, input: 'npm test -- --watch' }] } : {}) },
+      activity: { surface: 'sdk', memberRun: run, turnRunning: ws === 'o1' || ws === 'o2', ...(ws === 'o1' || ws === 'o2' ? { interrupt: 'interrupted' as const } : {}), branch: `br-${ws}`, head: `head${ws}00000000`, ...(ws === 'o2' ? { notes: ['o2 note'], inFlightTools: [{ tool: 'Bash', toolUseId: 'tu-o2', sinceMs: 5000, input: 'npm test -- --watch' }] } : {}) },
       snapshotRef: `refs/orchestra/pause/L/${ws}/1`,
       dirty: ws !== 'o2',
       killed: { killed, survivors: [], refused: [], spared: [] },
@@ -676,6 +677,35 @@ test('CARRY-FORWARD: a re-Pause during RESUMING must not hide what the FIRST Pau
   db.close();
 });
 
+test('CARRY-FORWARD keeps each epoch\'s INTERRUPT OUTCOME: a call epoch 1\'s interrupt ABORTED is still "ABORTED" after a re-Pause that found the member idle (never "no turn was interrupted")', () => {
+  const { db } = freshDb();
+  tree(db);
+  const trapAll = (o1: { turnRunning: boolean; interrupt: string; inFlight: Array<{ tool: string; toolUseId: string; sinceMs: number; input: string }> }): number => {
+    assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+    const at = getRunPause(db, 'L')!.pausedAt;
+    const run: Record<string, string> = { L: 'L', O: 'O', S: 'S', X: 'X', o1: 'O', o2: 'O', s1: 'S', x1: 'X', l1: 'L' };
+    for (const [ws, r] of Object.entries(run)) {
+      insertBilan(db, { runId: 'L', wsId: ws, pausedAt: at, activity: { surface: 'sdk', memberRun: r, branch: `br-${ws}`, head: `h-${ws}`, ...(ws === 'o1' ? { turnRunning: o1.turnRunning, interrupt: o1.interrupt as 'interrupted', inFlightTools: o1.inFlight } : {}) }, snapshotRef: `refs/orchestra/pause/L/${ws}/${at}`, dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+    }
+    db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(at + 5, 'L');
+    return at;
+  };
+  trapAll({ turnRunning: true, interrupt: 'interrupted', inFlight: [{ tool: 'Bash', toolUseId: 'tu1', sinceMs: 100, input: 'npm test' }] }); // epoch 1: o1 was mid foreground call, the interrupt ABORTED it
+  beginReprise(db, 'L', 'L'); // o1 is NOT released
+  const end = Date.now() + 3;
+  while (Date.now() < end);
+  trapAll({ turnRunning: false, interrupt: 'idle', inFlight: [] }); // epoch 2 (re-Pause): o1 idle, nothing in flight, no turn to interrupt
+  beginReprise(db, 'L', 'L');
+  const before = reprRows(db).length;
+  assert.deepEqual(releaseMembers(db, 'L', 'O', ['o1']).released, ['o1']);
+  const body = reprRows(db)[before].body;
+  assert.match(body, /Calls IN FLIGHT when an EARLIER Pause \(\S+\) interrupted your turn \(1\) — that interrupt ABORTED them/, body);
+  assert.ok(body.includes('  - Bash: npm test'), body);
+  assert.equal(body.includes('no turn was interrupted for you'), false, body);
+  assert.ok(body.includes('Commands killed by the host trap: none — the in-flight call(s) above were aborted by the interrupt itself.'), body);
+  db.close();
+});
+
 test('PAUSE while RESUMING by ANOTHER coordinator: the new epoch is owned by the RE-pauser (paused_by), not the original one', () => {
   const { db } = freshDb();
   tree(db);
@@ -1104,5 +1134,178 @@ test('the forced roster upsert is a TRUE no-op on repeat: a second seed changes 
     seedRoster(db, 'L', pausedAt, runSubtreeIds(db, 'L'));
     assert.equal(total(), before, 'no INSERT, no UPDATE: the seed is idempotent at the row level');
   });
+  db.close();
+});
+
+// ── review r2 (R2r2-m2, R2r2-m3) ──────────────────────────────────────────────
+
+/** A fleet whose O was created top-level and re-parented under L LATER (`parent_run_id` write-once ⇒ no bus parent): the bus tree cannot see O, only the live tree can. */
+function reparentedFleet(): { db: bus.BusDb; pausedAt: number; nodes: WaveNode[] } {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
+  busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O' }, ON);
+  assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+  const pausedAt = getRunPause(db, 'L')!.pausedAt;
+  for (const [ws, run] of [['L', 'L'], ['O', 'O'], ['o1', 'O'], ['o2', 'O']] as const) insertBilanRow(db, 'L', ws, pausedAt, run);
+  db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'L');
+  const nodes: WaveNode[] = [{ id: 'L', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'o1', parentId: 'O' }, { id: 'o2', parentId: 'O' }];
+  return { db, pausedAt, nodes };
+}
+
+test('R2r2-m2a UNREADABLE tree at `run resume`: a re-parented OPS begins as a blocked worker — the host sweep, once the live tree is readable, makes it a COORDINATOR and host-releases it with its wave\'s Bilan (nobody else would)', () => {
+  const { db, pausedAt, nodes } = reparentedFleet();
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming'); // no live tree registered: the bus tree sees only L
+  const at = () => new Map(readRoster(db, 'L', pausedAt).map((r) => [r.wsId, r]));
+  assert.deepEqual([at().get('O')!.role, at().get('O')!.releasedAt], ['worker', null], 'degraded begin: O is a blocked worker');
+  assert.equal(reprRows(db).some((r) => r.recipient === 'O'), false);
+  withLiveTree(nodes, () => {
+    sweepReprise({ getBus: () => db, members: () => [{ wsId: 'o1', runId: 'O' }, { wsId: 'o2', runId: 'O' }], subtree: runSubtreeIds });
+    assert.deepEqual([at().get('O')!.role, at().get('O')!.releasedBy], ['coordinator', 'host'], 'the sweep flipped the role AND host-released it');
+    const row = reprRows(db).filter((r) => r.recipient === 'O');
+    assert.equal(row.length, 1, 'exactly ONE reprise row, in O\'s own run');
+    assert.deepEqual([row[0].sender, row[0].run_id], ['host', 'O']);
+    assert.ok(row[0].body.includes('REPRISE — you are released first (coordinator of run O') && row[0].body.includes('o1') && row[0].body.includes('o2'), row[0].body);
+    assert.equal(at().get('o1')!.releasedAt, null, 'its workers stay BLOCKED until it dispatches them');
+    sweepReprise({ getBus: () => db, members: () => [{ wsId: 'o1', runId: 'O' }, { wsId: 'o2', runId: 'O' }], subtree: runSubtreeIds });
+    assert.equal(reprRows(db).filter((r) => r.recipient === 'O').length, 1, 'a second sweep sends nothing more');
+    const own = releaseMembers(db, 'L', 'O', 'all');
+    assert.deepEqual(own.released.sort(), ['o1', 'o2']);
+  });
+  assert.equal(readCarrierColumns(db, 'L')!.pausedAt, null, 'the Reprise closes');
+  db.close();
+});
+
+test('R2r2-m2a the LATE host release is for Bilan\'d coordinators ONLY: a sub-OPS that joined during the Reprise (no Bilan row) stays BLOCKED until its own parent releases it; a coordinator the LEAD already released by hand is not released twice', () => {
+  const { db, pausedAt, nodes } = reparentedFleet();
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  const withJoiner: WaveNode[] = [...nodes, { id: 'S', kind: 'orchestrator', parentId: 'O' }, { id: 's1', parentId: 'S' }];
+  withLiveTree(withJoiner, () => {
+    // the LEAD releases O by hand BEFORE the sweep ran
+    assert.deepEqual(releaseMembers(db, 'L', 'L', ['O']).released, ['O']);
+    sweepReprise({ getBus: () => db, members: () => [{ wsId: 'o1', runId: 'O' }, { wsId: 's1', runId: 'S' }], subtree: runSubtreeIds });
+    const roster = new Map(readRoster(db, 'L', pausedAt).map((r) => [r.wsId, r]));
+    assert.equal(roster.get('O')!.releasedBy, 'L', 'the hand release stands — the sweep did not overwrite it');
+    assert.equal(reprRows(db).filter((r) => r.recipient === 'O').length, 1, 'ONE row for O (the LEAD\'s), none from the host');
+    assert.deepEqual([roster.get('S')!.role, roster.get('S')!.releasedAt], ['coordinator', null], 'S joined later: no Bilan row ⇒ NOT host-released');
+    assert.equal(reprRows(db).some((r) => r.recipient === 'S'), false);
+  });
+  db.close();
+});
+
+test('R2r2-m2b `repriseStatusView` walks the LIVE chain too: a re-parented OPS (no bus parent) sees the ancestor carrier\'s "N/M repris" from its own run; without a live tree it cannot', () => {
+  const { db, nodes } = reparentedFleet();
+  withLiveTree(nodes, () => assert.equal(beginReprise(db, 'L', 'L'), 'resuming'));
+  assert.equal(repriseStatusView(db, 'O'), null, 'no live tree: O has no bus parent — the walk ends at O');
+  withLiveTree(nodes, () => {
+    const v = repriseStatusView(db, 'O');
+    assert.ok(v, 'the live chain O → L finds the resuming carrier');
+    assert.deepEqual([v!.carrier, v!.phase, v!.total, v!.released, v!.blocked.sort()], ['L', 'resuming', 4, 2, ['o1', 'o2']]);
+    assert.equal(repriseStatusView(db, 'L')!.carrier, 'L');
+  });
+  db.close();
+});
+
+test('R2r2-m3 `releasers` admits only ORCHESTRATORS above the member, not any live ancestor: a plain workspace between the OPS and its worker may not release it', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
+  busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O', parentRunId: 'L' }, ON);
+  assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+  const pausedAt = getRunPause(db, 'L')!.pausedAt;
+  for (const [ws, run] of [['L', 'L'], ['O', 'O'], ['p', 'O'], ['m', 'O']] as const) insertBilanRow(db, 'L', ws, pausedAt, run);
+  db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'L');
+  const nodes: WaveNode[] = [{ id: 'L', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'p', kind: 'scratch', parentId: 'O' }, { id: 'm', parentId: 'p' }];
+  withLiveTree(nodes, () => {
+    beginReprise(db, 'L', 'L');
+    const r = releaseMembers(db, 'L', 'p', ['m']);
+    assert.deepEqual([r.released, r.refused.map((x) => x.wsId)], [[], ['m']], 'a plain workspace above m is no coordinator');
+    assert.deepEqual(r.refused[0].mayBe.sort(), ['L', 'O'], 'only the orchestrators (and the carrier\'s own) are named');
+    assert.deepEqual(releaseMembers(db, 'L', 'O', ['m']).released, ['m']);
+  });
+  db.close();
+});
+
+test('R2r2-m3 the FORCED upsert corrects `member_run`: members the Pause douce enrolled under their OWN run (a plain-anchor carrier) are re-homed to the carrier run, so its coordinator\'s `--all` releases them', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'P', kind: 'mission', coordinator: 'P' }, ON);
+  assert.equal(setRunPause(db, 'P', true, 'P'), 'paused');
+  const pausedAt = getRunPause(db, 'P')!.pausedAt;
+  for (const [ws, run] of [['P', 'P'], ['w1', 'w1'], ['w2', 'w2']] as const) insertBilanRow(db, 'P', ws, pausedAt, run);
+  db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'P');
+  // what the douce's enrolment wrote: workers under their own (standalone) run id
+  for (const ws of ['w1', 'w2']) upsertRosterMember(db, { runId: 'P', pausedAt, wsId: ws, role: 'worker', memberRun: ws });
+  const nodes: WaveNode[] = [{ id: 'P', kind: 'scratch' }, { id: 'w1', parentId: 'P' }, { id: 'w2', parentId: 'P' }];
+  withLiveTree(nodes, () => {
+    assert.equal(beginReprise(db, 'P', 'P'), 'resuming');
+    assert.deepEqual(readRoster(db, 'P', pausedAt).filter((r) => r.role === 'worker').map((r) => r.memberRun), ['P', 'P'], 'the live truth overruled the enrolment');
+    const all = releaseMembers(db, 'P', 'P', 'all');
+    assert.deepEqual([all.released.sort(), all.below], [['w1', 'w2'], []]);
+  });
+  db.close();
+});
+
+test('R2r2-m3 an UNREADABLE live tree (the source throws, or its enumeration does) is "no tree": the Reprise still begins from the bus run tree', () => {
+  for (const mode of ['source', 'ids'] as const) {
+    const { db } = freshDb();
+    tree(db);
+    pauseAndTrap(db);
+    setLiveTreeSource(() => {
+      if (mode === 'source') throw new Error('store.json unreadable');
+      return { get: (id) => byId.get(id), ids: () => { if (mode === 'ids') throw new Error('torn read'); return NODES.map((w) => w.id); } };
+    });
+    try {
+      assert.equal(beginReprise(db, 'L', 'L'), 'resuming', mode);
+      assert.deepEqual(readRoster(db, 'L', getRunPause(db, 'L')!.pausedAt).filter((r) => r.role === 'coordinator').map((r) => r.wsId).sort(), ['L', 'O', 'S', 'X'], `${mode}: coordinators from the bus run tree`);
+    } finally {
+      setLiveTreeSource(null);
+    }
+    db.close();
+  }
+});
+
+test('R2r2-m3 a workspace that coordinates TWO runs of the subtree is homed in the SHALLOWEST one (bus fallback, no live tree)', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
+  busRuns.startRun(db, { id: 'A', kind: 'vague', coordinator: 'X', parentRunId: 'L' }, ON);
+  busRuns.startRun(db, { id: 'B', kind: 'vague', coordinator: 'X', parentRunId: 'A' }, ON);
+  assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+  const pausedAt = getRunPause(db, 'L')!.pausedAt;
+  for (const [ws, run] of [['L', 'L'], ['X', 'A']] as const) insertBilanRow(db, 'L', ws, pausedAt, run);
+  db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'L');
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  const x = readRoster(db, 'L', pausedAt).find((r) => r.wsId === 'X')!;
+  assert.deepEqual([x.role, x.memberRun], ['coordinator', 'A'], 'shallowest wins: A (depth 1), not B (depth 2)');
+  db.close();
+});
+
+test('R2r2-m2a the LATE pass\'s coordinator body names only the coordinators released WITH it: a sub-OPS left blocked (no Bilan row) is not announced as released', () => {
+  const { db, nodes } = reparentedFleet();
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming'); // degraded begin
+  const withJoiner: WaveNode[] = [...nodes, { id: 'S', kind: 'orchestrator', parentId: 'O' }, { id: 's1', parentId: 'S' }];
+  withLiveTree(withJoiner, () => {
+    sweepReprise({ getBus: () => db, members: () => [{ wsId: 'o1', runId: 'O' }, { wsId: 's1', runId: 'S' }], subtree: runSubtreeIds });
+  });
+  const body = reprRows(db).find((r) => r.recipient === 'O')!.body;
+  assert.equal(body.includes('Other coordinators released at the same time by the host'), false, body);
+  assert.equal(reprRows(db).some((r) => r.recipient === 'S'), false, 'S itself is not released');
+  db.close();
+});
+
+test('R2r2-m2b `repriseStatusView` trusts the LIVE chain over a STALE bus parent: an OPS re-parented from B1 to L1 (both RESUMING) shows L1\'s Reprise, not B1\'s', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'L1', kind: 'mission', coordinator: 'L1' }, ON);
+  busRuns.startRun(db, { id: 'B1', kind: 'mission', coordinator: 'B1' }, ON);
+  busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O', parentRunId: 'B1' }, ON); // created under B1, moved under L1 by the store later
+  for (const c of ['L1', 'B1']) assert.equal(setRunPause(db, c, true, c), 'paused');
+  const at = (c: string) => getRunPause(db, c)!.pausedAt;
+  for (const [ws, run] of [['L1', 'L1'], ['O', 'O'], ['o1', 'O']] as const) insertBilanRow(db, 'L1', ws, at('L1'), run);
+  for (const [ws, run] of [['B1', 'B1'], ['b1', 'B1']] as const) insertBilanRow(db, 'B1', ws, at('B1'), run);
+  for (const c of ['L1', 'B1']) db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(at(c) + 1, c);
+  const nodes: WaveNode[] = [{ id: 'L1', kind: 'orchestrator' }, { id: 'O', kind: 'orchestrator', parentId: 'L1' }, { id: 'o1', parentId: 'O' }, { id: 'B1', kind: 'orchestrator' }, { id: 'b1', parentId: 'B1' }];
+  withLiveTree(nodes, () => {
+    assert.equal(beginReprise(db, 'L1', 'L1'), 'resuming');
+    assert.equal(beginReprise(db, 'B1', 'B1'), 'resuming');
+    assert.equal(repriseStatusView(db, 'O')?.carrier, 'L1', 'the live chain O → L1 decides');
+  });
+  assert.equal(repriseStatusView(db, 'O')?.carrier, 'B1', 'without a live tree only the (stale) bus parent is known — the control that proves the order matters');
   db.close();
 });
