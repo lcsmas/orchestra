@@ -158,7 +158,7 @@ export interface OrchestraAPI {
   onHumanGatesUpdate: (cb: (gates: HumanGateView[]) => void) => () => void;
 
   // ---- Fleet Pause UI (#257, wave F ledger #281). The data layer of the Pause / Reprise controls: the READ is `pause:overview`; the WRITES are the SHIPPED writers
-  //      (`setRunPause` / `beginReprise` / `releaseMembers`) run AS THE WORKSPACE ROW the control belongs to, their typed outcome returned untouched (a refusal is an
+  //      (`setRunPause` / `beginReprise` / `releaseMembers`) run AS THE HUMAN (D-pick Q1: `PAUSE_HUMAN_BY`), their typed outcome returned untouched (a WORKER row's refusal is the UI's own, with a link to its orchestrator — an
   //      outcome, never a throw). Not pane channels (the Bus pane's registrar is read-only) — registered by src/main/pause-ui-host.ts. docs/codebase-map/pause-trap.md §UI.
   /** The pause state of the whole fleet: carriers + rosters + Bilan, per-orchestrator controls, per-workspace badges. NEVER rejects (`available:false` + the reason). */
   pauseOverview: () => Promise<PauseUiOverview>;

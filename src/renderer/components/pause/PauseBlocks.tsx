@@ -103,12 +103,19 @@ export function PauseExplain({ explain, code, onAction }: { explain: PauseUiExpl
         <span className="pause-explain-why">{explain.why}</span>
         {explain.actions && explain.actions.length > 0 && onAction ? (
           <div className="pause-explain-actions">
-            {explain.actions.map((a) => (
-              <button key={`${a.kind}:${a.wsId}:${a.ids.join(',')}`} type="button" className="pause-btn pause-btn-go" data-pause-fix={a.kind} data-pause-for={a.wsId} data-pause-ids={a.ids.join(',')} onClick={() => onAction(a)}>
-                <PauseIcon kind="play" size={11} />
-                {a.label}
-              </button>
-            ))}
+            {explain.actions.map((a) =>
+              a.kind === 'goto' ? (
+                // NAVIGATION only (spec Q5): a link to the worker's orchestrator — it selects that row, it acts on nothing
+                <button key={`goto:${a.wsId}`} type="button" className="pause-link" data-pause-fix="goto" data-pause-for={a.wsId} onClick={() => onAction(a)}>
+                  {a.label} →
+                </button>
+              ) : (
+                <button key={`release:${a.wsId}:${a.ids.join(',')}`} type="button" className="pause-btn pause-btn-go" data-pause-fix="release" data-pause-for={a.wsId} data-pause-ids={a.ids.join(',')} onClick={() => onAction(a)}>
+                  <PauseIcon kind="play" size={11} />
+                  {a.label}
+                </button>
+              ),
+            )}
           </div>
         ) : explain.fix.length > 0 && (
           <ul className="pause-explain-fix">

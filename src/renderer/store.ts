@@ -221,7 +221,7 @@ interface State {
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources' | 'bus') => void;
   setHelpOpen: (open: boolean) => void;
-  /** Fleet Pause writes (#257): the shipped writers run as the workspace row; the typed outcome comes back untouched and the store takes the reply's fresh overview. */
+  /** Fleet Pause writes (#257): the shipped writers run as the human (D-pick Q1); the typed outcome comes back untouched and the store takes the reply's fresh overview. */
   pausePause: (wsId: string, mode: PauseMode) => Promise<PauseUiWriteResult>;
   pauseResume: (wsId: string) => Promise<PauseUiWriteResult>;
   pauseRelease: (wsId: string, targets: string[] | 'all', carrierRunId?: string | null) => Promise<PauseUiReleaseResult>;

@@ -56,6 +56,8 @@ const ex = html(h(all.PauseExplain, { code: 'refused', explain: { tone: 'error',
 check('refusal block: alert role, tone, code hook, title, why, fix list', ex.includes('role="alert"') && ex.includes('data-pause-explain="error"') && ex.includes('data-pause-explain-code="refused"') && ex.includes('Pause refusée') && ex.includes('Rien n&#x27;a été écrit.') && ex.includes('<li>Mettre wave-ops en pause</li>'), ex);
 const exA = html(h(all.PauseExplain, { onAction: () => {}, explain: { tone: 'warn', title: 't', why: 'w', fix: [], actions: [{ kind: 'release', wsId: 'L', carrierRunId: 'L', ids: ['w1', 'w2'], label: 'Libérer aussi ces 2 : worker-1, worker-2' }] } }));
 check('the ONE follow-up an explanation may carry (« libérer aussi ces N ») renders as a button attributed to the acting row, carrying the explicit ids', exA.includes('data-pause-fix="release"') && exA.includes('data-pause-for="L"') && exA.includes('data-pause-ids="w1,w2"') && exA.includes('Libérer aussi ces 2') && !exA.includes('<li>'), exA);
+const exG = html(h(all.PauseExplain, { onAction: () => {}, explain: { tone: 'error', title: 'Pause refusée — worker-1 est un agent, pas une vague', why: 'w', fix: [], actions: [{ kind: 'goto', wsId: 'O', label: 'Aller à wave-ops' }] } }));
+check('a worker refusal LINKS to its orchestrator (spec Q5): a navigation link, not a button that acts — no release button, no ids', exG.includes('data-pause-fix="goto"') && exG.includes('data-pause-for="O"') && exG.includes('Aller à wave-ops →') && exG.includes('class="pause-link"') && !exG.includes('pause-btn') && !exG.includes('data-pause-ids') && !exG.includes('data-pause-fix="release"'), exG);
 const exB = html(h(all.PauseExplain, { explain: { tone: 'error', title: 't', why: 'w', fix: ['Pour worker : mettre en pause sa vague wave-ops'] } }));
 check('a refusal NAMES the run to act on as text (no button that pauses / resumes another row for the human — spec Q5)', exB.includes('<li>Pour worker : mettre en pause sa vague wave-ops</li>') && !exB.includes('data-pause-fix'), exB);
 check('info block is a status, not an alert', html(h(all.PauseExplain, { explain: { tone: 'info', title: 't', why: 'w', fix: [] } })).includes('role="status"'));
@@ -94,6 +96,8 @@ seed({ controls: { L: ctl('L', 'L', 'active'), W: ctl('W', 'W', 'pausing'), P: c
 check('hover actions follow the phase: active → ⏸ ; pausing → ■ dure maintenant + ▶ ; paused → ▶ ; resuming → ▶ libérer + ⏸ re-pause ; covered → ▶ (explained) ; switch OFF → ⏸ (explained on click)', JSON.stringify([A('L'), A('W'), A('P'), A('R'), A('C'), A('Z')]) === JSON.stringify([['soft'], ['hard', 'resume'], ['resume'], ['release-all', 'repause'], ['resume'], ['soft']]), JSON.stringify([A('L'), A('W'), A('P'), A('R'), A('C'), A('Z')]));
 check('a WORKER row not under a pause gets ⏸ (the writer\'s own refusal explains it); a worker UNDER a pause gets none', JSON.stringify([A('w9'), A('wp')]) === JSON.stringify([['soft'], []]), JSON.stringify([A('w9'), A('wp')]));
 check('release-all names ITS scope in its tooltip (1 of its own run, +2 below left to their coordinator), never the workers it will not release', html(h(all.PauseRowActions, { wsId: 'R', rect: { top: 0, bottom: 1, right: 2 } })).includes('title="Libérer 1 bloqué (+2 plus bas, à part)"'));
+
+check('the Bus header says a HUMAN paused it (Q1): « posée par un humain », never the coordinator', (() => { seed({ runs: [mkRun({ pausedBy: 'humain', pausedByLabel: 'un humain' })] }); const b = html(h(all.BusPauseSection)); return b.includes('posée par un humain') && !b.includes('posée par fleet-lead'); })());
 
 console.log('\nBus page section (option A):');
 seed({});
@@ -159,6 +163,21 @@ console.log('\nClick handlers (the store actions → the preload API; the panel 
   calls.length = 0;
   const ex = await actions.runPause('w1', 'soft', { top: 0, bottom: 20, right: 300 });
   check('a refusal comes back EXPLAINED and the floating panel shows it (nothing swallowed)', ex.length === 1 && ex[0].title === 'Pause refusée' && mods.actions.usePausePanel.getState().panel?.kind === 'explain' && mods.actions.usePausePanel.getState().panel.wsId === 'w1' && JSON.stringify(calls[0]) === JSON.stringify(['pausePause', 'w1', 'soft']), JSON.stringify(calls[0]));
+  {
+    // NAVIGATION (Q5): the link selects the orchestrator row, closes the panel, and writes NOTHING
+    const st = useStore;
+    const setActiveCalls = [];
+    st.setState({ workspaces: [{ id: 'O', name: 'wave-ops', branch: 'wave-ops' }, { id: 'gone', name: 'x', archived: true }], setActive: (id) => setActiveCalls.push(id) });
+    mods.actions.usePausePanel.getState().show({ kind: 'explain', wsId: 'w1', anchor: { top: 0, bottom: 1, right: 2 }, explains: [], codes: [] });
+    const nCalls = calls.length;
+    const went = actions.gotoWorkspace('O');
+    check('« Aller à wave-ops »: selects that row and closes the panel — no write of any kind', went === true && JSON.stringify(setActiveCalls) === '["O"]' && mods.actions.usePausePanel.getState().panel === null && calls.length === nCalls, JSON.stringify([went, setActiveCalls, calls]));
+    mods.actions.usePausePanel.getState().show({ kind: 'explain', wsId: 'w1', anchor: { top: 0, bottom: 1, right: 2 }, explains: [], codes: [] });
+    const missing = actions.gotoWorkspace('nope') === false;
+    const goneP = mods.actions.usePausePanel.getState().panel;
+    check('a link to a workspace that no longer exists (or is archived) selects nothing AND says so — never a silent dead link', missing && actions.gotoWorkspace('gone') === false && setActiveCalls.length === 1 && goneP?.kind === 'explain' && goneP.explains[0]?.title === "Cette ligne n'existe plus" && goneP.codes[0] === 'gone', JSON.stringify(goneP));
+    mods.actions.usePausePanel.getState().show({ kind: 'explain', wsId: 'w1', anchor: { top: 0, bottom: 1, right: 2 }, explains: [{ tone: 'error', title: 'Pause refusée', why: 'x', fix: [] }], codes: ['refused'] });
+  }
   const ok = await actions.runResume('L', { top: 0, bottom: 20, right: 300 });
   check('a success closes the panel and explains nothing', ok.length === 0 && mods.actions.usePausePanel.getState().panel === null && JSON.stringify(calls[1]) === JSON.stringify(['pauseResume', 'L']));
   // a double-click: ONE write; a rejected invoke is explained, never an unhandled rejection

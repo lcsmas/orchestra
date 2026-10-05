@@ -3,7 +3,7 @@
 // A Consigne is derived ONLY from the member's Bilan de pause row (`pause_records`) + its `pause_members` row — the host trap already
 // recorded everything a member needs to know. Killed commands are LISTED, never re-run: the member decides.
 
-import type { ConsigneDeReprise, PauseConfirmVia, PauseMode } from './pause-lifecycle.ts';
+import { actorText, type ConsigneDeReprise, type PauseConfirmVia, type PauseMode } from './pause-lifecycle.ts';
 
 /** The structural subset of a Bilan row (`BilanRow` in src/main/bus-pause-records.ts) this module reads — kept structural so
  *  src/shared never imports from src/main. */
@@ -217,8 +217,8 @@ export function renderConsigne(c: ConsigneWithFacts, opts?: { releasedBy?: strin
   const out: string[] = [];
   out.push(`CONSIGNE DE REPRISE — workspace ${stripControl(c.wsId)}, run ${stripControl(c.runId)}`);
   out.push(
-    `The fleet Pause (${c.mode}, since ${iso(c.pausedAt)}${c.pausedBy ? ` by ${trimTo(c.pausedBy, 80)}` : ''}) is lifted for you` +
-      `${opts?.releasedBy ? `: ${trimTo(opts.releasedBy, 80)} released you` : ''}. Nothing was restarted for you — you decide what to resume.`,
+    `The fleet Pause (${c.mode}, since ${iso(c.pausedAt)}${c.pausedBy ? ` by ${trimTo(actorText(c.pausedBy) ?? c.pausedBy, 80)}` : ''}) is lifted for you` +
+      `${opts?.releasedBy ? `: ${trimTo(actorText(opts.releasedBy) ?? opts.releasedBy, 80)} released you` : ''}. Nothing was restarted for you — you decide what to resume.`,
   );
   // no Bilan row ⇒ nothing is known about the member: "idle" would be a guess (the Pause landed while a douce still waited, or the app was down)
   const doing: string[] = [c.bilanRecorded === false ? 'unknown (no Bilan de pause was recorded for you)' : c.wasDoing.turnRunning ? 'a turn was running' : 'idle (no turn running)'];
@@ -327,7 +327,7 @@ export function renderCoordinatorReprise(args: {
   const out: string[] = [];
   out.push(`REPRISE — you are released first (coordinator of run ${stripControl(args.runId)}; the Pause is carried by run ${stripControl(args.carrierRunId)}).`);
   out.push(
-    `Pause (${args.mode ?? 'hard'}) since ${iso(args.pausedAt)}${args.pausedBy ? ` by ${trimTo(args.pausedBy, 80)}` : ''}. ` +
+    `Pause (${args.mode ?? 'hard'}) since ${iso(args.pausedAt)}${args.pausedBy ? ` by ${trimTo(actorText(args.pausedBy) ?? args.pausedBy, 80)}` : ''}. ` +
       'Your workers are STILL BLOCKED — nobody restarts on their own. Release them yourself; each one then receives its own Consigne de reprise built from its Bilan de pause:',
   );
   out.push('  orchestra run release <workspace-id>   (one member)      orchestra run release --all   (every member of YOUR OWN run — a worker of a run below yours is released by its own OPS, or by you with its explicit id)');

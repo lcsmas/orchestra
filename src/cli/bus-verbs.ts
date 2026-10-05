@@ -37,7 +37,7 @@ import type {
 import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
 import type { RunHoldOutcome } from '../main/bus-runs.ts';
 import type { RunPauseInfo, RunPauseOutcome } from '../main/bus-pause.ts';
-import { SOFT_PAUSE_DEADLINE_MS, type PauseMode, type RepriseEntry, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
+import { actorText, SOFT_PAUSE_DEADLINE_MS, type PauseMode, type RepriseEntry, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
 import { renderPauseRosterLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import type { ConfirmPauseOutcome } from '../main/pause-douce.ts';
 import type { ConfirmRepriseResult, ReleaseResult } from '../main/pause-reprise.ts';
@@ -1137,6 +1137,9 @@ export function verbRunHold(
   }
 }
 
+/** `RepriseEntry` WITHOUT the in-process `human` option (src/main/pause-ui.ts only): a CLI verb cannot pass it — the type says so (enumerated by pause-gates-wiring.test.ts). */
+export type CliRepriseEntry = (db: BusDb, carrierRunId: string, actor: string | null, opts?: Omit<NonNullable<Parameters<RepriseEntry>[3]>, 'human'>) => RepriseOutcome;
+
 /** The pause seams `run pause|resume` take (injected like the hold's, so the verb unit-tests
  *  without a process). Production passes src/main/bus-pause.ts. */
 export interface RunPauseDeps {
@@ -1146,7 +1149,7 @@ export interface RunPauseDeps {
    *  write-once `runs.parent_run_id` misses a run re-parented after creation). Production: src/cli/index.ts `coverFor`. */
   coverFor: (db: BusDb, runId: string) => RunPauseInfo | null;
   /** #255 — the structured Reprise seams (src/main/bus-pause.ts / pause-reprise.ts). Absent = the pre-wave-E plain lift (`setRunPause(…, false)`). */
-  beginReprise?: RepriseEntry;
+  beginReprise?: CliRepriseEntry;
   repriseView?: (db: BusDb, runId: string) => RepriseStatusView | null;
   releaseMembers?: (db: BusDb, carrierRunId: string, actor: string, targets: readonly string[] | 'all') => ReleaseResult;
   confirmReprise?: (db: BusDb, wsId: string) => ConfirmRepriseResult;
@@ -1229,7 +1232,7 @@ export function verbRunPause(
       const p = deps.getRunPause(ctx.db, runId);
       ctx.out(
         `Run ${runId} was already paused` +
-          (p ? ` (since ${new Date(p.pausedAt).toISOString()} by ${p.pausedBy ?? 'unknown'})` : '') +
+          (p ? ` (since ${new Date(p.pausedAt).toISOString()} by ${actorText(p.pausedBy) ?? 'unknown'})` : '') +
           ' — unchanged.\n',
       );
       return;

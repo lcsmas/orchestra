@@ -92,7 +92,7 @@ export function PauseRowActions({ wsId, rect, onDone }: { wsId: string; rect: Pa
       btns.push({ kind: 'soft', title: 'Mettre la vague en pause…', icon: 'pause', onClick: ctl.can.pauseSoft.ok ? choose : () => void runPause(wsId, 'soft', rect) });
     }
   } else if (!under) {
-    // a worker row: the click is the writer's own `refused`, explained (it names the run to pause) — nothing is written
+    // a worker row: the click is the UI's own `refused` (Q5), explained with a LINK to its orchestrator — nothing is written
     btns.push({ kind: 'soft', title: 'Mettre en pause…', icon: 'pause', onClick: () => void runPause(wsId, 'soft', rect) });
   }
   if (btns.length === 0) return null;

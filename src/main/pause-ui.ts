@@ -2,9 +2,9 @@
 // (`setRunPause`, `beginReprise`, `releaseMembers`), every read the SHIPPED reader (`pauseStatusView`, `repriseStatusView`, `listBilan`,
 // `pausedCarrierForWorkspace`) — no second path (ADR 0003 §the bus is the source of truth). Electron-free: the host binds it in pause-ui-host.ts.
 //
-// WHO ACTS (spec question 1, ledger #281): the writers take a coordinator HANDLE (the hold rule). The UI acts AS THE WORKSPACE ROW THE CONTROL BELONGS TO:
-// an orchestrator row is the coordinator of the run it anchors (accepted); a worker row is not (the writer REFUSES it — the typed `refused` outcome comes back
-// untouched, and nothing is written). `uiActor` is the ONE place that decides it, so a different answer to the spec question is a one-function change.
+// WHO ACTS (spec Q1, ledger #281 D-pick): the HUMAN. The writers get `{ human: true }` (the ONLY in-process callers — enumerated by pause-gates-wiring.test.ts): the coordinator rule is skipped (the human is above
+// every coordinator) and `paused_by` / `released_by` / the `reprise` sender / the Consigne / the Bilan say « humain » (`PAUSE_HUMAN_BY`), never the run's coordinator. What a row may do is a UI rule (spec Q5): a WORKER
+// row is not a wave — the typed outcome `refused` (UI-emitted, nothing written) explains it and LINKS to its orchestrator; the writers' own `refused` is the CLI's.
 
 import type { BusDb } from './bus.ts';
 import { getRun, runHoldAuthority, setRunHold } from './bus-runs.ts';
@@ -14,13 +14,15 @@ import { pauseStatusView } from './pause-douce.ts';
 import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
-import { pausePhaseOf, pauseRosterSummary, type PauseMode, type PausePhase, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
+import { PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
+import { actorText, PAUSE_HUMAN_BY, pausePhaseOf, pauseRosterSummary, type PauseMode, type PausePhase, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
 import { killedCommands, stripControl } from '../shared/pause-consigne.ts';
 import {
   availabilityFor,
   explainPauseOutcome,
   explainReleaseResult,
   explainResumeOutcome,
+  explainWorkerRow,
   memberUiState,
   unavailableOverview,
   type ExplainCtx,
@@ -150,7 +152,7 @@ function runView(db: BusDb, deps: PauseUiDeps, carrierId: string, auto: boolean,
     mode: pv.mode === 'soft' ? 'soft' : pv.mode === 'hard' ? 'hard' : null,
     pausedAt: pv.pausedAt,
     pausedBy: pv.pausedBy,
-    pausedByLabel: pv.pausedBy ? label(pv.pausedBy) : null,
+    pausedByLabel: pv.pausedBy ? (pv.pausedBy === PAUSE_HUMAN_BY ? actorText(pv.pausedBy, 'fr') : pv.pausedBy === PAUSE_AUTO_BY ? "l'hôte (limite d'usage)" : label(pv.pausedBy)) : null,
     deadlineAt: pv.deadlineAt,
     escalatedAt: pv.escalatedAt,
     trapAt: pv.trapAt,
@@ -261,7 +263,7 @@ export function readPauseOverview(db: BusDb | null, deps: PauseUiDeps): PauseUiO
     const anchoredRuns = new Set((db.prepare('SELECT id, coordinator FROM runs').all() as Array<{ id: string; coordinator: string }>).filter((r) => isCoordinatorHandle(r.coordinator, r.id)).map((r) => r.id));
     for (const ws of workspaces) {
       // a row gets a control when it ANCHORS a run: an orchestrator, or a plain workspace the host gave a mission run (#221: a parent that spawned children). A worker row's control is explained by
-      // the writer's own `refused` at click time (it has an orchestrator above and no run of its own).
+      // the UI's own `refused` at click time (Q5: it has an orchestrator above and no run of its own) with a link to that orchestrator.
       const ownsRun = anchoredRuns.has(ws.id);
       if (!nodeOrchestrates(ws) && !ownsRun) continue;
       const runId = ownsRun ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace);
@@ -308,18 +310,27 @@ const _releaseShape = (r: ReleaseResult): PauseUiReleaseRaw => r;
 void _outcomesCovered;
 void _releaseShape;
 
-/** THE actor decision (spec question 1): the workspace row the control belongs to. See the file header. */
-export function uiActor(wsId: string): string {
-  return wsId;
+/** A worker row (not a wave): its nearest run owner is ANOTHER row. The refusal is the UI's (Q5): nothing is written, the explanation links to the orchestrator. */
+function isWorkerRow(t: { runId: string }, wsId: string): boolean {
+  return t.runId !== wsId;
+}
+
+/** `ctxFor` that never throws: a failing bus read must not turn a refusal into a rejected invoke. */
+function safeCtx(db: BusDb, deps: PauseUiDeps, runId: string, rowId: string, cover: ExplainCtx['cover'] = null): ExplainCtx {
+  try {
+    return ctxFor(db, deps, runId, rowId, cover);
+  } catch {
+    return { ...ctxStub(deps, rowId), runId };
+  }
 }
 
 function ctxFor(db: BusDb, deps: PauseUiDeps, runId: string, actor: string, cover: ExplainCtx['cover']): ExplainCtx {
   const auth = runHoldAuthority(db, runId);
-  return { label: labeler(deps), runLabel: labeler(deps)(runId), actorLabel: labeler(deps)(actor), mayBe: auth ? [auth.coordinator, ...auth.ancestors] : [], cover };
+  return { label: labeler(deps), runLabel: labeler(deps)(runId), runId, actorLabel: labeler(deps)(actor), mayBe: auth ? [auth.coordinator, ...auth.ancestors] : [], cover };
 }
 
 /** The run a workspace row's control acts on: the run it ANCHORS (its own id, when the bus has a run whose coordinator is that row — an orchestrator, or a plain run-anchoring parent #221), else the nearest
- *  ancestor's that ANCHORS a run or orchestrates (a worker: the writer REFUSES it by the hold rule and the explanation names that coordinator), else the row itself (`no-run`). */
+ *  ancestor's that ANCHORS a run or orchestrates (a worker: the UI REFUSES it and the explanation links to that row), else the row itself (`no-run`). */
 function targetOf(db: BusDb | null, deps: PauseUiDeps, wsId: string): { ws: WaveNode; runId: string } | null {
   const ws = deps.getWorkspace(wsId);
   if (!ws) return null;
@@ -328,9 +339,12 @@ function targetOf(db: BusDb | null, deps: PauseUiDeps, wsId: string): { ws: Wave
 
 /** The first row at or above `ws` that orchestrates or anchors a bus run (R2-4: a child of a plain run-anchoring parent is explained against THAT parent, not as « no run »). `ws` itself when none. */
 function nearestRunOf(db: BusDb | null, ws: WaveNode, deps: PauseUiDeps): string {
-  const anchors = (id: string): boolean => {
+  // an archived (or vanished) row has no line to point at: skipped, the next ancestor is named instead — an orchestrator included
+  const usable = (id: string): boolean => {
     const w = deps.getWorkspace(id);
-    if (!w || w.archived) return false; // an archived row has no line to point at: skip it, the next ancestor is named instead
+    return !!w && !w.archived;
+  };
+  const anchors = (id: string): boolean => {
     try {
       const r = db ? getRun(db, id) : null;
       return r !== null && isCoordinatorHandle(r.coordinator, id);
@@ -341,7 +355,7 @@ function nearestRunOf(db: BusDb | null, ws: WaveNode, deps: PauseUiDeps): string
   let cur: WaveNode = ws;
   const seen = new Set<string>([cur.id]);
   for (;;) {
-    if (nodeOrchestrates(cur) || anchors(cur.id)) return cur.id;
+    if (usable(cur.id) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;
     if (!cur.parentId) break;
     const parent = deps.getWorkspace(cur.parentId);
     if (!parent || seen.has(parent.id)) break;
@@ -360,13 +374,14 @@ export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string
     const outcome = !db ? 'bus-unavailable' : 'unknown-workspace';
     return { outcome, runId: t?.runId ?? null, actor: null, explain: explainPauseOutcome(outcome, ctxStub(deps, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   }
-  const actor = uiActor(req.wsId);
+  const actor = PAUSE_HUMAN_BY;
   // an unknown mode is REFUSED, never defaulted to the destructive one (a renderer bug must not become a Pause dure)
   if (req.mode !== 'soft' && req.mode !== 'hard') return failed(db, deps, t.runId, actor, new Error(`unknown pause mode ${JSON.stringify(String(req.mode).slice(0, 20))} — nothing was written`));
+  if (isWorkerRow(t, req.wsId)) return { outcome: 'refused', runId: t.runId, actor: null, explain: explainWorkerRow('pause', safeCtx(db, deps, t.runId, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   const at = Date.now();
   let outcome: RunPauseOutcome;
   try {
-    outcome = setRunPause(db, t.runId, true, actor, req.mode);
+    outcome = setRunPause(db, t.runId, true, actor, req.mode, { human: true });
     if (outcome === 'paused') {
       // A UI click has no CLI process chain: record an EMPTY origin (the shipped writer, as the CLI does after its own pause) so the host trap does not wait up to 3 s for one before it
       // interrupts a live member, and the Bilan says what is true — nobody is the pauser, nobody is spared.
@@ -376,7 +391,7 @@ export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string
   } catch (e) {
     return failed(db, deps, t.runId, actor, e);
   }
-  return { outcome, runId: t.runId, actor, explain: explainPauseOutcome(outcome, ctxFor(db, deps, t.runId, actor, null)), cover: null, overview: readPauseOverview(db, deps) };
+  return { outcome, runId: t.runId, actor, explain: explainPauseOutcome(outcome, ctxFor(db, deps, t.runId, req.wsId, null)), cover: null, overview: readPauseOverview(db, deps) };
 }
 
 /** A writer THREW (SQLITE_BUSY past the 5 s busy_timeout, a full disk…): never a rejected invoke and never a silent panel — a typed `write-failed` the UI explains. */
@@ -399,13 +414,14 @@ export function uiResume(db: BusDb | null, deps: PauseUiDeps, req: { wsId: strin
     const outcome = !db ? 'bus-unavailable' : 'unknown-workspace';
     return { outcome, runId: t?.runId ?? null, actor: null, explain: explainResumeOutcome(outcome, ctxStub(deps, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   }
-  const actor = uiActor(req.wsId);
+  if (isWorkerRow(t, req.wsId)) return { outcome: 'refused', runId: t.runId, actor: null, explain: explainWorkerRow('resume', safeCtx(db, deps, t.runId, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
+  const actor = PAUSE_HUMAN_BY;
   let outcome: RepriseOutcome;
   let holdLifted = false;
   try {
-    outcome = beginReprise(db, t.runId, actor, { reason: 'manual' });
-    // `orchestra run resume` is ONE verb for both: after the Reprise it lifts the run's liveness HOLD too (verbRunHold) — same writer, same authority rule (a refusal there writes nothing)
-    holdLifted = setRunHold(db, t.runId, false, actor) === 'resumed';
+    outcome = beginReprise(db, t.runId, actor, { reason: 'manual', human: true });
+    // `orchestra run resume` is ONE verb for both: after the Reprise it lifts the run's liveness HOLD too (verbRunHold) — same writer, as the human
+    holdLifted = setRunHold(db, t.runId, false, actor, { human: true }) === 'resumed';
   } catch (e) {
     return failed(db, deps, t.runId, actor, e);
   }
@@ -415,7 +431,7 @@ export function uiResume(db: BusDb | null, deps: PauseUiDeps, req: { wsId: strin
     const c = pausedCarrierForWorkspace(db, t.ws, deps.getWorkspace, { includeReleased: true });
     if (c && c.runId !== t.runId) cover = { runId: c.runId, label: labeler(deps)(c.runId) };
   }
-  return { outcome, runId: t.runId, actor, explain: explainResumeOutcome(outcome, { ...ctxFor(db, deps, t.runId, actor, cover), holdLifted }), cover, holdLifted, overview: readPauseOverview(db, deps) };
+  return { outcome, runId: t.runId, actor, explain: explainResumeOutcome(outcome, { ...ctxFor(db, deps, t.runId, req.wsId, cover), holdLifted }), cover, holdLifted, overview: readPauseOverview(db, deps) };
 }
 
 /**
@@ -434,18 +450,19 @@ export function uiRelease(
     const ex = explainPauseOutcome(outcome, ctxStub(deps, req.wsId));
     return { result: null, runId: t?.runId ?? null, carrierRunId: null, actor: null, explain: ex ? [ex] : [], overview: readPauseOverview(db, deps) };
   }
-  const actor = uiActor(req.wsId);
+  if (isWorkerRow(t, req.wsId)) return { result: null, runId: t.runId, carrierRunId: null, actor: null, explain: [explainWorkerRow('release', safeCtx(db, deps, t.runId, req.wsId))], overview: readPauseOverview(db, deps) };
+  const actor = PAUSE_HUMAN_BY;
   let carrier: string | null = null;
   let result: ReleaseResult;
   try {
     carrier = req.carrierRunId ?? resumingCarrierFor(db, t.runId, liveChainIds(deps, req.wsId));
-    // not under a RESUMING pause: the writer itself says `not-resuming` / `not-paused` — ask it against the run so the typed answer is the writer's
-    result = releaseMembers(db, carrier ?? t.runId, actor, req.targets);
+    // not under a RESUMING pause: the writer itself says `not-resuming` / `not-paused` — ask it against the run so the typed answer is the writer's. `--all` = the members of the CLICKED row's run (`ownRuns`)
+    result = releaseMembers(db, carrier ?? t.runId, actor, req.targets, Date.now(), { human: true, ownRuns: [t.runId] });
   } catch (e) {
     const f = failed(db, deps, t.runId, actor, e);
     return { result: null, runId: t.runId, carrierRunId: carrier, actor, explain: f.explain ? [f.explain] : [], overview: f.overview };
   }
-  return { result, runId: t.runId, carrierRunId: carrier, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, carrier ?? t.runId, actor, null), actorId: actor, carrierRunId: carrier ?? t.runId, all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
+  return { result, runId: t.runId, carrierRunId: carrier, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, carrier ?? t.runId, req.wsId, null), actorId: req.wsId, carrierRunId: carrier ?? t.runId, all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
 }
 
 function ctxStub(deps: PauseUiDeps, wsId: string): ExplainCtx {

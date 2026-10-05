@@ -140,7 +140,7 @@ export type PauseUiAvailability = { ok: true } | { ok: false; code: PauseUiRefus
 /** The controls of one workspace row, resolved from the run it anchors. `anchored: false` = it coordinates no run (a worker). */
 export interface PauseUiControl {
   wsId: string;
-  /** The run the row's control acts on (a worker's = its orchestrator's run, where the writer REFUSES it by the hold rule). */
+  /** The run the row's control acts on (a worker's = its orchestrator's run, where the UI REFUSES it — spec Q5: a worker row is not a wave). */
   runId: string;
   anchored: boolean;
   /** The run row's FROZEN `pause` switch (null = no run row). */
@@ -179,21 +179,24 @@ export interface PauseUiExplain {
   why: string;
   /** Short remedies, one per entry (a button label or a command). */
   fix: string[];
-  /** A follow-up the human can take with ONE more explicit gesture (today only: "libérer aussi ces N" after a « tout libérer » left some below). A refusal never carries a button that pauses / resumes
-   *  ANOTHER row for the human — it NAMES the run to act on (spec Q5: no shortcut). Absent = text only. */
+  /** A follow-up the human can take with ONE more explicit gesture: « libérer aussi ces N » after a « tout libérer » left some below (a write, explicit), or a LINK to a worker's orchestrator (navigation). A refusal never carries a
+   *  button that pauses / resumes ANOTHER row for the human (spec Q5: no shortcut). Absent = text only. */
   actions?: PauseUiExplainAction[];
 }
 
-export interface PauseUiExplainAction {
-  kind: 'release';
-  /** The workspace row the action is attributed to (the writer's actor). */
-  wsId: string;
-  /** The RESUMING carrier the release targets. */
-  carrierRunId: string;
-  /** Explicit roster ids (an explicit id releases any member the caller may). */
-  ids: string[];
-  label: string;
-}
+export type PauseUiExplainAction =
+  | {
+      kind: 'release';
+      /** The workspace row the action is attributed to (the row the human clicked — the write itself is the human's). */
+      wsId: string;
+      /** The RESUMING carrier the release targets. */
+      carrierRunId: string;
+      /** Explicit roster ids. */
+      ids: string[];
+      label: string;
+    }
+  // NAVIGATION only (spec Q5): select a workspace row (a worker's orchestrator). It acts on nothing and writes nothing.
+  | { kind: 'goto'; wsId: string; label: string };
 
 export interface ExplainCtx {
   /** Display names (the writer's raw ids stay in the result's `outcome`/`mayBe`). */
@@ -201,7 +204,7 @@ export interface ExplainCtx {
   runLabel: string;
   /** The run id, when known (named in a CLI remedy). */
   runId?: string;
-  /** The workspace row the write was attributed to / the carrier a release targeted — what a follow-up button acts on. */
+  /** The workspace row the human clicked / the carrier a release targeted — what a follow-up button acts on (the write itself is the human's). */
   actorId?: string;
   carrierRunId?: string;
   /** The message of a writer that THREW (`write-failed`). */
@@ -217,19 +220,27 @@ export interface ExplainCtx {
 
 const join = (xs: readonly string[]): string => (xs.length ? xs.join(', ') : 'personne');
 
+/** A row that is an AGENT, not a wave (a worker): pause / resume / release are decided from its ORCHESTRATOR's row. The human acts above every coordinator (spec Q1), so this is a UI rule, not the writers' hold rule:
+ *  nothing was written, and the explanation LINKS to the orchestrator (navigation only, spec Q5 — no button that acts for the human). */
+export function explainWorkerRow(verb: 'pause' | 'resume' | 'release', c: ExplainCtx): PauseUiExplain {
+  const boss = c.runId; // the ROW that owns the run (a run id is its anchor row's workspace id) — not the coordinator handle, which may be a successor / not a row
+  const noun = verb === 'pause' ? 'Pause' : verb === 'resume' ? 'Reprise' : 'Libération';
+  return {
+    tone: 'error',
+    title: `${noun} refusée — ${c.actorLabel} est un agent, pas une vague`,
+    why: `Cette action porte sur une vague, pas sur un agent seul : elle se fait depuis la ligne de son orchestrateur${boss ? ` (${c.label(boss)})` : ''}. Rien n'a été écrit.`,
+    fix: [],
+    ...(boss ? { actions: [{ kind: 'goto' as const, wsId: boss, label: `Aller à ${c.label(boss)}` }] } : {}),
+  };
+}
+
 /** The `setRunPause` outcome (bus-pause.ts) → what to tell the human. `null` = a success (`paused` / `escalated` / `lifted`) — nothing to explain. */
 export function explainPauseOutcome(outcome: string, c: ExplainCtx): PauseUiExplain | null {
   switch (outcome) {
     case 'no-run':
       return { tone: 'error', title: `Pas de run sur le bus pour ${c.runLabel}`, why: `${c.runLabel} n'a aucun run enregistré (jamais démarré comme vague, ou le bus l'ignore) : rien à mettre en pause, rien n'a été écrit.`, fix: [] };
     case 'refused':
-      return {
-        tone: 'error',
-        title: `Pause refusée — ${c.actorLabel} n'est pas coordinateur de ${c.runLabel}`,
-        why: `La pause se pose sur une vague, pas sur un agent seul : seul son coordinateur (${join(c.mayBe.slice(0, 1).map(c.label))}) ou un coordinateur d'une vague au-dessus (${join(c.mayBe.slice(1).map(c.label))}) la décide. Rien n'a été écrit.`,
-        // NAMED, not offered as a button: the second entry pauses a WIDER run (everything under the ancestor), which must be a deliberate click on THAT row
-        fix: c.mayBe.map((id, i) => (i === 0 ? `Pour ${c.actorLabel} : mettre en pause sa vague ${c.label(id)} (survol de la ligne ${c.label(id)} → ⏸)` : `Plus large : mettre ${c.label(id)} en pause suspend TOUTE sa vague, ${c.runLabel} comprise`)),
-      };
+      return explainWorkerRow('pause', c);
     case 'switch-off':
       return {
         tone: 'error',
@@ -265,12 +276,7 @@ function explainResumeBase(outcome: string, c: ExplainCtx): PauseUiExplain | nul
     case 'no-run':
       return explainPauseOutcome('no-run', c);
     case 'refused':
-      return {
-        tone: 'error',
-        title: `Reprise refusée — ${c.actorLabel} n'est pas coordinateur de ${c.runLabel}`,
-        why: `Seul le coordinateur de ${c.runLabel} (${join(c.mayBe.slice(0, 1).map(c.label))}) ou d'une vague au-dessus (${join(c.mayBe.slice(1).map(c.label))}) la reprend. Rien n'a été écrit.`,
-        fix: c.mayBe.map((id) => `Reprendre depuis ${c.label(id)} (survol de sa ligne → ▶)`),
-      };
+      return explainWorkerRow('resume', c);
     case 'not-paused':
       return c.cover
         ? { tone: 'info', title: `${c.cover.label} tient déjà ${c.runLabel} en pause`, why: `${c.runLabel} n'a pas de pause propre : c'est celle de ${c.cover.label}. Reprenez depuis ${c.cover.label}.`, fix: [`Reprendre ${c.cover.label} (survol de sa ligne → ▶)`] }
@@ -339,8 +345,8 @@ export function availabilityFor(i: {
   const no = (code: PauseUiRefusalCode): PauseUiAvailability => ({ ok: false, code });
   const ok: PauseUiAvailability = { ok: true };
   if (!i.runKnown) return { pauseSoft: no('no-run'), pauseHard: no('no-run'), resume: no('no-run'), release: no('no-run') };
-  // a worker's control is shown (so the click is EXPLAINED, not silently absent): the writer refuses it by the hold rule
-  const authority = i.anchored ? ok : no('refused');
+  // the human is above every coordinator (spec Q1): a row's control never depends on whose run it is (`anchored` is information); a WORKER row has no control at all (its click is the UI's explained refusal)
+  const authority = ok;
   const pausable: PauseUiAvailability = i.switchOn === false ? no('switch-off') : authority;
   const active = i.phase === 'active';
   return {
@@ -374,7 +380,7 @@ export interface PauseUiWriteResult {
   outcome: PauseUiWriteOutcome;
   /** The run the write targeted (null = the workspace is unknown). */
   runId: string | null;
-  /** The handle the writer saw (`paused_by` for a pause) — the workspace row the control belongs to. */
+  /** The handle the writer saw: `PAUSE_HUMAN_BY` for every UI write (the human acts, spec Q1); null when the UI refused or no writer ran. */
   actor: string | null;
   /** `null` = a success (nothing to explain). */
   explain: PauseUiExplain | null;

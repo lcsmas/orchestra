@@ -17,6 +17,7 @@
 
 import type { BusDb } from './bus.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
+import { PAUSE_HUMAN_BY } from '../shared/pause-lifecycle.ts';
 import {
   type BusSwitches,
   freezeSwitches,
@@ -296,11 +297,14 @@ export function setRunHold(
   runId: string,
   hold: boolean,
   actor: string | null | undefined,
+  /** `human`: the HUMAN at the app (src/main/pause-ui.ts only — no CLI verb sets it): above every coordinator; recorded as `PAUSE_HUMAN_BY`. */
+  opts?: { human?: boolean },
 ): RunHoldOutcome {
   const auth = runHoldAuthority(db, runId);
   if (!auth) return 'no-run';
-  const who = actor?.trim() ?? '';
-  if (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who))) {
+  const human = opts?.human === true;
+  const who = human ? PAUSE_HUMAN_BY : (actor?.trim() ?? '');
+  if (!human && (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {
     return 'refused';
   }
   const row = db.prepare('SELECT held_at AS h FROM runs WHERE id = ?').get(runId) as

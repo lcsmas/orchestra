@@ -68,7 +68,7 @@ async function armIpc() {
     // 2. refusals: typed outcomes, NOTHING written
     const busBefore = JSON.stringify(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode]));
     const wk = await call(`window.orchestra.pausePause(${JSON.stringify(I.w1)}, 'soft')`);
-    clause(arm, 'G1/ipc-refusal-worker', wk.outcome === 'refused' && wk.runId === I.ops && wk.explain?.tone === 'error' && /n'est pas coordinateur/.test(wk.explain?.title ?? ''), `worker-1 → outcome=${wk.outcome} run=${NAME_OF[wk.runId] ?? wk.runId}; "${wk.explain?.title}"`);
+    clause(arm, 'G1/ipc-refusal-worker', wk.outcome === 'refused' && wk.runId === I.ops && wk.explain?.tone === 'error' && /worker-1 est un agent, pas une vague/.test(wk.explain?.title ?? '') && wk.actor === null && wk.explain?.actions?.length === 1 && wk.explain.actions[0].kind === 'goto' && wk.explain.actions[0].wsId === I.ops && wk.explain.fix.length === 0, `worker-1 → outcome=${wk.outcome} run=${NAME_OF[wk.runId] ?? wk.runId}; "${wk.explain?.title}"; actions=${JSON.stringify(wk.explain?.actions?.map((a) => [a.kind, NAME_OF[a.wsId]]))} (a LINK to its orchestrator, nothing that acts — Q5)`);
     const off = await call(`window.orchestra.pausePause(${JSON.stringify(I.legacy)}, 'hard')`);
     clause(arm, 'G1/ipc-refusal-switch-off', off.outcome === 'switch-off' && /désactivée/.test(off.explain?.title ?? ''), `legacy-sweep → outcome=${off.outcome}; "${off.explain?.title}"`);
     const ghost = await call(`window.orchestra.pausePause('00000000-0000-4000-8000-00000000dead', 'soft')`);
@@ -79,7 +79,7 @@ async function armIpc() {
     // 3. Pause dure from the lead row — the REAL host trap
     const t0 = Date.now();
     const p = await call(`window.orchestra.pausePause(${JSON.stringify(I.lead)}, 'hard')`);
-    clause(arm, 'G1/ipc-pause-dure-written-by-the-shipped-writer', p.outcome === 'paused' && p.actor === I.lead && runRow(I.lead).paused_by === I.lead && runRow(I.lead).pause_mode === 'hard', `outcome=${p.outcome}; bus: paused_by=${NAME_OF[runRow(I.lead).paused_by]} mode=${runRow(I.lead).pause_mode}`);
+    clause(arm, 'G1/ipc-pause-dure-written-by-the-shipped-writer', p.outcome === 'paused' && p.actor === 'humain' && runRow(I.lead).paused_by === 'humain' && runRow(I.lead).pause_mode === 'hard' && p.overview.runs.find((r) => r.carrierRunId === I.lead)?.pausedByLabel === 'un humain', `outcome=${p.outcome}; bus: paused_by=${runRow(I.lead).paused_by} (the human, Q1 — not the coordinator ${NAME_OF[I.lead]}) mode=${runRow(I.lead).pause_mode}; screen label "${p.overview.runs.find((r) => r.carrierRunId === I.lead)?.pausedByLabel}"`);
     await waitFor(() => runRow(I.lead).pause_trap_at !== null, TRAP_DEADLINE_MS, 'the host trap to finish', 500);
     const dureMs = Date.now() - t0;
     const b1 = bus();
@@ -109,10 +109,10 @@ async function armIpc() {
     const blocked = (run2?.blocked ?? []).map((id) => NAME_OF[id]).sort();
     clause(arm, 'G1/ipc-reprise-coordinators-first', rs.outcome === 'resuming' && run2?.phase === 'resuming' && run2.progress.kind === 'repris' && JSON.stringify(blocked) === JSON.stringify(['docs-sweep', 'worker-1', 'worker-2', 'worker-3', 'worker-4']), `outcome=${rs.outcome}; phase=${run2?.phase}; blocked=[${blocked.join(', ')}]; coordinators released=${run2?.members.filter((m) => m.role === 'coordinator' && m.releasedAt !== null).length}/2`);
     const wr = await call(`window.orchestra.pauseRelease(${JSON.stringify(I.w1)}, [${JSON.stringify(I.w2)}])`);
-    clause(arm, 'G1/ipc-release-refused-for-a-worker', wr.result?.refused?.length === 1 && wr.result.released.length === 0 && wr.explain.some((e) => e.tone === 'error'), `worker-1 releasing worker-2 → refused=${JSON.stringify(wr.result?.refused?.map((x) => [NAME_OF[x.wsId], x.mayBe.map((m) => NAME_OF[m])]))}, released=${wr.result?.released.length}`);
+    clause(arm, 'G1/ipc-release-refused-for-a-worker', wr.result === null && wr.explain.some((e) => e.tone === 'error' && e.actions?.[0]?.kind === 'goto' && e.actions[0].wsId === I.ops) && !bus().roster.some((r) => r.ws_id === I.w2 && r.released_at !== null), `worker-1 releasing worker-2 → the UI's refusal (result=${wr.result}), a link to ${NAME_OF[wr.explain?.[0]?.actions?.[0]?.wsId]}; worker-2 still blocked`);
     const ra = await call(`window.orchestra.pauseRelease(${JSON.stringify(I.ops)}, ${JSON.stringify([I.w1, I.w2, I.w3, I.w4])})`);
     const rb = await call(`window.orchestra.pauseRelease(${JSON.stringify(I.lead)}, ${JSON.stringify([I.docs])})`);
-    clause(arm, 'G1/ipc-release-by-owner', ra.result.released.length === 4 && rb.result.released.length === 1 && rb.result.finished === true, `wave-ops released ${ra.result.released.length}/4 workers; fleet-lead released docs-sweep (${rb.result.released.length}); finished=${rb.result.finished}`);
+    clause(arm, 'G1/ipc-release-by-owner', ra.result.released.length === 4 && rb.result.released.length === 1 && rb.result.finished === true && bus().roster.filter((r) => r.released_by === 'humain').length === 7 && bus().roster.filter((r) => r.released_by === 'host').length === 0 && bus().messages.filter((m) => m.kind === 'reprise' && m.sender === 'humain').length === 7, `wave-ops row released ${ra.result.released.length}/4 workers; fleet-lead row released docs-sweep (${rb.result.released.length}); finished=${rb.result.finished}; released_by = « humain » on ${bus().roster.filter((r) => r.released_by === 'humain').length}/7 members (the 2 coordinators of a HUMAN Reprise included, none « host »), ${bus().messages.filter((m) => m.kind === 'reprise' && m.sender === 'humain').length} reprise rows sent by the human`);
     const ov3 = await call('window.orchestra.pauseOverview()');
     clause(arm, 'G1/ipc-badges-clear', runRow(I.lead).paused_at === null && Object.keys(ov3.byWorkspace).length === 0, `paused_at=${runRow(I.lead).paused_at}; badges ${Object.keys(ov3.byWorkspace).length}; tracked run: ${ov3.runs.map((r) => `${NAME_OF[r.carrierRunId]} ${r.phase} ${r.progress.done}/${r.progress.total} ${r.progress.kind}`).join('; ') || 'none'}`);
 

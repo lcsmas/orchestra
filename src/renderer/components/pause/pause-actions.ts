@@ -1,4 +1,4 @@
-// Fleet Pause — the click handlers every surface shares (#257): call the store action (= the shipped writer as the workspace row), then either close the floating panel (a success) or
+// Fleet Pause — the click handlers every surface shares (#257): call the store action (= the shipped writer as the human), then either close the floating panel (a success) or
 // show the writer's own typed outcome EXPLAINED (a refusal — never a silent failure). Non-hook functions over the store + the panel store, so a Bus-page button and a sidebar menu agree.
 
 import { create } from 'zustand';
@@ -106,3 +106,19 @@ export function runRelease(wsId: string, targetWsId: string, carrierRunId: strin
 
 /** The overview selector every row part uses (one subscription shape). */
 export const selectPauseOverview = (s: { pauseOverview: PauseUiOverview | null }): PauseUiOverview | null => s.pauseOverview;
+
+export const GONE_ROW: PauseUiExplain = { tone: 'info', title: "Cette ligne n'existe plus", why: "L'orchestrateur a été supprimé ou archivé depuis l'affichage de ce message : rien n'a été écrit.", fix: [] };
+
+/** NAVIGATION (spec Q5): select a workspace row — a worker's orchestrator, linked from a refusal. Closes the floating panel; writes nothing. False = no such (non-archived) workspace in the store. */
+export function gotoWorkspace(wsId: string): boolean {
+  const st = useStore.getState();
+  if (!st.workspaces.some((w) => w.id === wsId && !w.archived)) {
+    // never a silent dead link: the panel (when there is one) says the row is gone
+    const p = usePausePanel.getState().panel;
+    if (p && p.kind === 'explain') usePausePanel.getState().show({ ...p, explains: [GONE_ROW], codes: ['gone'] });
+    return false;
+  }
+  usePausePanel.getState().close();
+  st.setActive(wsId);
+  return true;
+}

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 // #252 fleet PAUSE — the sites the rig (pause-gates.test.ts) cannot LOAD (Electron-bound api-handlers.ts / index.ts), pinned by source
 // position, plus the ENUMERATION guard for HUMAN origins. Each arm is what an in-place mutant of that clause reddens (ledger #261).
@@ -62,6 +63,58 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
     'prompt-queue.ts': 1,       // "Send now" (force)
     'restart-workspace.ts': 1,  // trigger 'toolbar' → human
   });
+});
+
+/** Every place a source file PASSES, READS or DECLARES a property named `human` — by AST (so `{human:true}`, `{ human }`, `{ "human": true }`, `opts.human`, `opts['human']`, `const { human } = opts` all count, and a `*\/` inside a string cannot swallow code). */
+function humanOptionSites(source: string): { passes: number; reads: number; declares: number } {
+  const sf = ts.createSourceFile('x.ts', source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+  const out = { passes: 0, reads: 0, declares: 0 };
+  const named = (n: ts.PropertyName | undefined): boolean => !!n && (ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && n.text === 'human';
+  const visit = (n: ts.Node): void => {
+    if (ts.isPropertyAssignment(n) && named(n.name)) out.passes++;
+    else if (ts.isShorthandPropertyAssignment(n) && n.name.text === 'human') out.passes++;
+    else if (ts.isPropertyAccessExpression(n) && n.name.text === 'human') out.reads++;
+    else if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === 'human') out.reads++;
+    else if (ts.isBindingElement(n) && ((n.propertyName && named(n.propertyName)) || (!n.propertyName && ts.isIdentifier(n.name) && n.name.text === 'human'))) out.reads++;
+    else if (ts.isPropertySignature(n) && named(n.name)) out.declares++;
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+test('ENUMERATION (extends the guard above to the human ACTOR, D-pick Q1): the ONLY site that PASSES the writers\' `human` option is src/main/pause-ui.ts; only the four coordinator-rule writers READ it — by AST, spelling-proof; the CLI deps are TYPED without it', () => {
+  const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []));
+  const passes: Record<string, number> = {};
+  const reads: Record<string, number> = {};
+  const declares: Record<string, number> = {};
+  for (const f of walk(path.join(process.cwd(), 'src'))) {
+    const s = humanOptionSites(fs.readFileSync(f, 'utf8'));
+    const rel = path.relative(process.cwd(), f);
+    if (s.passes) passes[rel] = s.passes;
+    if (s.reads) reads[rel] = s.reads;
+    if (s.declares) declares[rel] = s.declares;
+  }
+  assert.deepEqual(passes, { 'src/main/pause-ui.ts': 4 }, 'setRunPause, beginReprise, setRunHold, releaseMembers — all in uiPause / uiResume / uiRelease');
+  assert.deepEqual(reads, { 'src/main/bus-pause.ts': 1, 'src/main/bus-runs.ts': 1, 'src/main/pause-reprise.ts': 3 }, 'setRunPause, setRunHold, beginRepriseCore (+ who releases the coordinators), releaseMembers');
+  assert.deepEqual(declares, { 'src/main/bus-pause.ts': 1, 'src/main/bus-runs.ts': 1, 'src/main/pause-reprise.ts': 2, 'src/shared/pause-lifecycle.ts': 1 }, 'where the option is DECLARED (the writers\' opts types + RepriseEntry)');
+  // the CLI verbs take the Reprise seam WITHOUT `human`: a verb that tried to pass it would not typecheck
+  const cli = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
+  assert.ok(/export type CliRepriseEntry = [^;]*Omit<NonNullable<Parameters<RepriseEntry>\[3\]>, 'human'>/.test(cli) && /beginReprise\?: CliRepriseEntry;/.test(cli), 'RunPauseDeps.beginReprise is CliRepriseEntry (RepriseEntry minus `human`)');
+  assert.ok(!/beginReprise\?: RepriseEntry/.test(cli));
+  // the scanner itself: every spelling an evasion could use is seen (and prose / strings are not)
+  const probe = (code: string) => humanOptionSites(code);
+  assert.equal(probe('f({human:true})').passes, 1);
+  assert.equal(probe('const human = go(); f({ human })').passes, 1);
+  assert.equal(probe('f({ "human": true })').passes, 1);
+  assert.equal(probe('f({ [`x`]: 1, human: flag })').passes, 1);
+  assert.equal(probe('o?.human').reads, 1);
+  assert.equal(probe('o.human').reads, 1);
+  assert.equal(probe("o['human']").reads, 1);
+  assert.equal(probe('const { human } = o;').reads, 1);
+  assert.equal(probe('const { human: h } = o;').reads, 1);
+  assert.equal(probe('type T = { human?: boolean }').declares, 1);
+  assert.deepEqual(probe("const s = '/* human: true */'; // human: true\nconst t = \"*/\"; f({ human: true })"), { passes: 1, reads: 0, declares: 0 }, 'a comment / string mentioning it is not a site; a `*/` inside a string does not hide the real one');
 });
 
 test('docs: the orchestra-comms skill SOURCE (COMMS_SKILL) documents the verbs, the refusal text and the human-prompt policy', () => {

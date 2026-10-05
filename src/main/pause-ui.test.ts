@@ -5,13 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import * as bus from './bus.ts';
 import * as busRuns from './bus-runs.ts';
-import { getRunPause, setRunPause } from './bus-pause.ts';
+import { beginReprise, getRunPause, setRunPause } from './bus-pause.ts';
 import { getRunHold, setRunHold } from './bus-runs.ts';
 import { appendBilanNote, insertBilan, readPauseOrigin } from './bus-pause-records.ts';
 import { confirmMember, enrollMember } from './pause-douce.ts';
-import { confirmReprise, readCarrierColumns, setLiveTreeSource } from './pause-reprise.ts';
+import { confirmReprise, readCarrierColumns, readRoster, releaseMembers, setLiveTreeSource } from './pause-reprise.ts';
 import { pauseOverviewFingerprint, readPauseOverview, toBilanLine, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
+import { PAUSE_HUMAN_BY } from '../shared/pause-lifecycle.ts';
+import { PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
 import type { WaveNode } from './wave-run-id.ts';
 
 // #257 — the UI's DATA LAYER over a REAL bus.sqlite (btrfs under the real home, never /tmp, never the live bus). Every write goes through the SHIPPED writers; the
@@ -117,23 +119,24 @@ test('overview survives a read that throws: available=false carrying the error, 
 
 // ── writes: the shipped writers, typed outcomes untouched ───────────────────────────────────────────────
 
-test('uiPause as an ORCHESTRATOR row = setRunPause as its own coordinator: paused_by is the row, mode/deadline are the douce\'s, the members read "pausing" (UNKNOWN is not NONE)', () => {
+test('uiPause as an ORCHESTRATOR row = setRunPause AS THE HUMAN (Q1): paused_by is « humain », not the row; mode/deadline are the douce\'s, the members read "pausing" (UNKNOWN is not NONE)', () => {
   const db = freshDb();
   tree(db);
   const r = uiPause(db, deps, { wsId: 'L', mode: 'soft' });
   assert.equal(r.outcome, 'paused');
   assert.equal(r.runId, 'L');
-  assert.equal(r.actor, 'L');
+  assert.equal(r.actor, PAUSE_HUMAN_BY);
   assert.equal(r.explain, null, 'a success has nothing to explain');
   const p = getRunPause(db, 'L')!;
-  assert.equal(p.pausedBy, 'L');
+  assert.equal(p.pausedBy, PAUSE_HUMAN_BY, 'the Pause records the HUMAN, never the run\'s coordinator');
+  assert.equal(PAUSE_HUMAN_BY, 'humain');
   assert.equal(p.mode, 'soft');
   assert.equal(p.deadlineAt, p.pausedAt + 180_000);
   const run = r.overview.runs[0];
   assert.equal(run.phase, 'pausing');
   assert.equal(run.mode, 'soft');
   assert.equal(run.carrierLabel, 'fleet-lead');
-  assert.equal(run.pausedByLabel, 'fleet-lead');
+  assert.equal(run.pausedByLabel, 'un humain', 'the screen says a human paused it');
   assert.deepEqual(run.progress, { kind: 'en-pause', done: 0, total: 0, missing: [] }, 'the roster is empty until the host enrols (no phantom members)');
   // the sidebar badges come from the GATE'S OWN walk, so a member the host has not enrolled yet is "pausing", never absent
   for (const ws of ['L', 'O', 'S', 'o1', 'o2', 's1', 'l1']) assert.equal(r.overview.byWorkspace[ws]?.ui, 'pausing', ws);
@@ -153,23 +156,34 @@ test('uiPause dure over a douce still waiting escalates it (the writer\'s own `e
   db.close();
 });
 
-test('REFUSAL — a WORKER row: the writer\'s own `refused` (nothing written), explained with who MAY (the coordinator, then the ancestors)', () => {
+test('REFUSAL — a WORKER row (Q5): the UI\'s typed `refused` (nothing written), explained + a LINK to its orchestrator (navigation, no shortcut); pause, resume and release alike', () => {
   const db = freshDb();
   tree(db);
   const r = uiPause(db, deps, { wsId: 'o1', mode: 'hard' });
   assert.equal(r.outcome, 'refused');
   assert.equal(r.runId, 'O', 'a worker\'s control targets ITS orchestrator\'s run');
-  assert.equal(r.actor, 'o1');
+  assert.equal(r.actor, null, 'no writer ran: nobody acted');
   assert.equal(r.explain?.tone, 'error');
-  assert.match(r.explain!.title, /worker-1 n'est pas coordinateur de wave-ops/);
-  assert.match(r.explain!.why, /wave-ops/);
-  assert.match(r.explain!.why, /fleet-lead/, 'the ancestor coordinator who may too');
-  assert.equal(r.explain!.fix.length, 2);
-  assert.match(r.explain!.fix[0], /mettre en pause sa vague wave-ops/);
-  assert.match(r.explain!.fix[1], /suspend TOUTE sa vague/);
-  assert.equal(r.explain!.actions, undefined, 'a refusal NAMES the run, it does not offer to pause it (Q5)');
+  assert.match(r.explain!.title, /Pause refusée — worker-1 est un agent, pas une vague/);
+  assert.match(r.explain!.why, /depuis la ligne de son orchestrateur \(wave-ops\)/);
+  assert.match(r.explain!.why, /Rien n'a été écrit/);
+  assert.doesNotMatch(r.explain!.why, /fleet-lead/, 'no wider shortcut named (Q5)');
+  assert.deepEqual(r.explain!.fix, [], 'no remedy text that pauses another row for the human');
+  assert.deepEqual(r.explain!.actions, [{ kind: 'goto', wsId: 'O', label: 'Aller à wave-ops' }], 'ONE link — navigation, not an action');
   assert.equal(getRunPause(db, 'O'), null, 'NOTHING was written');
   assert.deepEqual(r.overview.runs, []);
+  const res = uiResume(db, deps, { wsId: 'o1' });
+  assert.equal(res.outcome, 'refused');
+  assert.match(res.explain!.title, /Reprise refusée — worker-1 est un agent/);
+  assert.deepEqual(res.explain!.actions, [{ kind: 'goto', wsId: 'O', label: 'Aller à wave-ops' }]);
+  const rel = uiRelease(db, deps, { wsId: 'o1', targets: 'all' });
+  assert.equal(rel.result, null);
+  assert.match(rel.explain[0].title, /Libération refusée — worker-1 est un agent/);
+  assert.deepEqual(rel.explain[0].actions, [{ kind: 'goto', wsId: 'O', label: 'Aller à wave-ops' }]);
+  // a worker UNDER a sub-orchestrator links to the NEAREST one
+  const s1 = uiPause(db, deps, { wsId: 's1', mode: 'soft' });
+  assert.equal(s1.runId, 'S');
+  assert.deepEqual(s1.explain!.actions, [{ kind: 'goto', wsId: 'S', label: 'Aller à sub-ops' }]);
   db.close();
 });
 
@@ -272,12 +286,13 @@ test('FULL CYCLE: pause → Bilan → progress "N/M en pause" → Reprise → "N
   assert.deepEqual(lead.result!.released, ['l1']);
   assert.deepEqual(lead.result!.below.slice().sort(), ['o1', 'o2', 's1'], "every worker of a run BELOW the lead's own is left to its coordinator");
   assert.ok(lead.explain.some((e) => e.tone === 'warn' && /laissé/.test(e.title)), 'below is explained, not silent');
-  // a WORKER row cannot release (typed `refused` + who may)
+  // a WORKER row cannot release: the UI's refusal (Q5), nothing written, a link to its orchestrator
   const w = uiRelease(db, deps, { wsId: 'o1', targets: ['o2'] });
-  assert.equal(w.result!.refused[0].wsId, 'o2');
-  assert.ok(w.result!.refused[0].mayBe.includes('O'));
-  assert.equal(w.result!.released.length, 0);
-  assert.ok(w.explain.some((e) => e.tone === 'error'));
+  assert.equal(w.result, null);
+  assert.ok(w.explain.some((e) => e.tone === 'error' && e.actions?.[0]?.kind === 'goto'));
+  assert.equal(readRoster(db, 'L', readCarrierColumns(db, 'L')!.pausedAt as number).find((r) => r.wsId === 'o2')!.releasedAt, null, 'o2 is still blocked');
+  assert.equal(lead.result!.released.length, 1, 'and the human\'s own releases are recorded as the human\'s');
+  assert.equal(readRoster(db, 'L', readCarrierColumns(db, 'L')!.pausedAt as number).find((r) => r.wsId === 'l1')!.releasedBy, PAUSE_HUMAN_BY);
   // the OPS releases its own wave one by one, then the sub-OPS its worker
   assert.deepEqual(uiRelease(db, deps, { wsId: 'O', targets: ['o1'] }).result!.released, ['o1']);
   assert.deepEqual(uiRelease(db, deps, { wsId: 'O', targets: ['o2'] }).result!.released, ['o2']);
@@ -334,7 +349,7 @@ test("a member that JOINS the tree during the Reprise (not in the roster yet) re
   db.close();
 });
 
-test('an orchestrator row whose run names ANOTHER coordinator is not anchored: its control is refused by the hold rule, explained before the click', () => {
+test('an orchestrator row whose run names ANOTHER coordinator is NOT anchored — information, not a refusal: the human is above every coordinator and may still pause its run (Q1)', () => {
   const db = freshDb();
   tree(db);
   busRuns.startRun(db, { id: 'R', kind: 'vague', coordinator: 'R2' }, ON); // the run id is R's workspace id, but its coordinator is a successor
@@ -343,11 +358,11 @@ test('an orchestrator row whose run names ANOTHER coordinator is not anchored: i
   byId.set('R', r);
   try {
     const o = readPauseOverview(db, deps);
-    assert.equal(o.controls.R.anchored, false);
-    assert.deepEqual(o.controls.R.can.pauseSoft, { ok: false, code: 'refused' });
+    assert.equal(o.controls.R.anchored, false, 'the overview still says whose run it is');
+    assert.deepEqual(o.controls.R.can.pauseSoft, { ok: true }, 'but the control is not greyed out: no coordinator rule applies to the human');
     const click = uiPause(db, deps, { wsId: 'R', mode: 'soft' });
-    assert.equal(click.outcome, 'refused', 'and the writer agrees: nothing written');
-    assert.equal(getRunPause(db, 'R'), null);
+    assert.equal(click.outcome, 'paused');
+    assert.equal(getRunPause(db, 'R')!.pausedBy, PAUSE_HUMAN_BY);
   } finally {
     NODES.pop();
     byId.delete('R');
@@ -530,7 +545,7 @@ test('a PLAIN run-anchoring parent (#221: a non-orchestrator whose run the host 
   db.close();
 });
 
-test('uiResume = `orchestra run resume`: the Reprise THEN the liveness hold lifted (same verb, same authority); a refused caller lifts nothing', () => {
+test('uiResume = `orchestra run resume`: the Reprise THEN the liveness hold lifted (same verb, as the human); a refused (worker) row lifts nothing', () => {
   const db = freshDb();
   tree(db);
   uiPause(db, deps, { wsId: 'L', mode: 'hard' });
@@ -540,7 +555,7 @@ test('uiResume = `orchestra run resume`: the Reprise THEN the liveness hold lift
   assert.notEqual(getRunHold(db, 'L'), null, 'held before');
   const worker = uiResume(db, deps, { wsId: 'o1' });
   assert.equal(worker.outcome, 'refused');
-  assert.equal(worker.holdLifted, false);
+  assert.equal(worker.holdLifted, undefined, 'a worker row: the UI refuses before any writer runs');
   assert.notEqual(getRunHold(db, 'O'), null, 'a refused resume (a worker row) lifts NOTHING — the hold of ITS run stays (the lift is the CALLER\'s authority, never the coordinator\'s)');
   assert.notEqual(getRunHold(db, 'L'), null, 'nor the ancestor\'s hold');
   const go = uiResume(db, deps, { wsId: 'L' });
@@ -581,7 +596,7 @@ test('LABELS are sanitized like every other recorded string: a workspace name / 
   const db = freshDb();
   tree(db);
   const hostile: PauseUiDeps = { ...deps, labelOf: (id) => (id === 'L' ? 'fleet\u202Elead\u206A\u2065x' : id === 'o1' ? 'wor\u200Bker\x1b[2J-1' : deps.labelOf(id)) };
-  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  setRunPause(db, 'L', true, 'L', 'hard'); // a COORDINATOR's pause (the CLI path): `paused_by` is a workspace id the labeler renders
   trap(db);
   const o = readPauseOverview(db, hostile);
   const bad = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff]/u;
@@ -628,7 +643,7 @@ test('R2-1: ▶ on a COVERED row still lifts its liveness hold (the verb does) a
   db.close();
 });
 
-test('R2-4: ⏸ on a CHILD of a plain run-anchoring parent is the writer\'s own `refused` naming that parent — not « no run »', () => {
+test('R2-4: ⏸ on a CHILD of a plain run-anchoring parent is the UI\'s `refused` linking to that parent — not « no run »', () => {
   const db = freshDb();
   tree(db);
   busRuns.startRun(db, { id: 'P', kind: 'mission', coordinator: 'P' }, ON);
@@ -641,32 +656,120 @@ test('R2-4: ⏸ on a CHILD of a plain run-anchoring parent is the writer\'s own 
     { id: 'pa1', parentId: 'PA' },
     { id: 'Q', kind: 'orchestrator', parentId: 'L' }, // an orchestrator WITHOUT a bus run: still the nearest run-owner
     { id: 'q1', parentId: 'Q' },
+    { id: 'RS', kind: 'orchestrator', parentId: 'L' }, // an orchestrator whose run names a SUCCESSOR coordinator (the link goes to THIS row, not to the handle)
+    { id: 'rs1', parentId: 'RS' },
+    { id: 'QA', kind: 'orchestrator', parentId: 'L', archived: true }, // an ARCHIVED orchestrator: no row to link to
+    { id: 'qa1', parentId: 'QA' },
   ];
+  busRuns.startRun(db, { id: 'RS', kind: 'vague', coordinator: 'RS2', parentRunId: 'L' }, ON);
   const added = [P, pc, pcc, ...extra];
   NODES.push(...added);
   for (const n of added) byId.set(n.id, n);
   try {
     for (const child of ['pc', 'pcc']) {
       const r = uiPause(db, deps, { wsId: child, mode: 'soft' });
-      assert.equal(r.outcome, 'refused', `${child}: the writer's own refusal, not no-run`);
+      assert.equal(r.outcome, 'refused', `${child}: the UI's refusal, not no-run`);
       assert.equal(r.runId, 'P', `${child}: explained against the run it sits in`);
-      assert.match(r.explain!.title, new RegExp(`${child} n'est pas coordinateur de P`));
-      assert.match(r.explain!.fix[0], /mettre en pause sa vague P/, 'the remedy names the anchor');
-      assert.equal(r.explain!.actions, undefined, 'text only, never a button');
+      assert.match(r.explain!.title, new RegExp(`${child} est un agent, pas une vague`));
+      assert.match(r.explain!.why, /\(P\)/, 'the orchestrator named is the ANCHOR');
+      assert.deepEqual(r.explain!.actions, [{ kind: 'goto', wsId: 'P', label: 'Aller à P' }], 'a link to the anchor');
       assert.equal(getRunPause(db, 'P'), null, 'nothing written');
     }
     assert.equal(uiResume(db, deps, { wsId: 'pc' }).outcome, 'refused');
     const arch = uiPause(db, deps, { wsId: 'pa1', mode: 'soft' });
     assert.equal(arch.outcome, 'refused', 'an archived anchor is skipped: the next ancestor that exists is named');
     assert.equal(arch.runId, 'O', 'the visible orchestrator above, not the archived row');
+    assert.deepEqual(arch.explain!.actions, [{ kind: 'goto', wsId: 'O', label: 'Aller à wave-ops' }]);
     const q = uiPause(db, deps, { wsId: 'q1', mode: 'soft' });
-    assert.equal(q.outcome, 'no-run', 'an orchestrator with no bus run is the nearest run-owner (the writer says no-run for IT), not skipped for a run further up');
-    assert.equal(q.runId, 'Q');
+    assert.equal(q.outcome, 'refused', 'a worker under an orchestrator that has no bus run is still a worker row');
+    assert.equal(q.runId, 'Q', 'an orchestrator with no bus run is the nearest run-owner, not skipped for a run further up');
+    assert.equal(uiPause(db, deps, { wsId: 'Q', mode: 'soft' }).outcome, 'no-run', 'and clicking the orchestrator itself is the writer\'s no-run');
+    assert.deepEqual(q.explain!.actions, [{ kind: 'goto', wsId: 'Q', label: 'Aller à Q' }], 'an orchestrator with no bus run is still a row to link to (no empty « depuis la ligne de son orchestrateur. » without a name)');
+    const succ = uiPause(db, deps, { wsId: 'rs1', mode: 'soft' });
+    assert.equal(succ.outcome, 'refused');
+    assert.deepEqual(succ.explain!.actions, [{ kind: 'goto', wsId: 'RS', label: 'Aller à RS' }], 'the link is the ROW that holds the control, not the successor coordinator handle RS2');
+    const dead = uiPause(db, deps, { wsId: 'qa1', mode: 'soft' });
+    assert.equal(dead.outcome, 'refused');
+    assert.equal(dead.runId, 'L', 'an archived orchestrator is skipped: the next live run owner is named');
+    assert.deepEqual(dead.explain!.actions, [{ kind: 'goto', wsId: 'L', label: 'Aller à fleet-lead' }], 'never a link to a row that is not on screen');
     assert.equal(uiPause(db, deps, { wsId: 'plain', mode: 'soft' }).outcome, 'no-run', 'a row under NO run is still no-run');
     assert.equal(uiPause(db, deps, { wsId: 'P', mode: 'soft' }).outcome, 'paused', 'the anchor itself still pauses its own run');
   } finally {
     for (let i = 0; i < added.length; i++) NODES.pop();
     for (const n of added) byId.delete(n.id);
   }
+  db.close();
+});
+
+test('Q1 writers: the HUMAN skips the coordinator rule ONLY through the in-process `human` option — the string « humain » alone grants nothing (a CLI caller cannot impersonate); everything is recorded as the human\'s', () => {
+  const db = freshDb();
+  tree(db);
+  // CLI path (no option): the hold rule stands, whatever the actor string says
+  assert.equal(setRunPause(db, 'L', true, PAUSE_HUMAN_BY, 'hard'), 'refused', 'the magic string is NOT a credential');
+  assert.equal(setRunPause(db, 'L', true, 'o1', 'hard'), 'refused', 'a worker');
+  assert.equal(getRunPause(db, 'L'), null, 'nothing written by the refusals');
+  // the in-process human option: any actor string is IGNORED, the Pause is the human\'s
+  assert.equal(setRunPause(db, 'L', true, 'whoever', 'hard', { human: true }), 'paused');
+  assert.equal(getRunPause(db, 'L')!.pausedBy, PAUSE_HUMAN_BY);
+  trap(db);
+  assert.equal(beginReprise(db, 'L', PAUSE_HUMAN_BY, { reason: 'manual' }), 'refused', 'Reprise: the string alone grants nothing');
+  assert.equal(setRunHold(db, 'O', true, PAUSE_HUMAN_BY), 'refused', 'a hold by the bare string is refused too');
+  assert.equal(setRunHold(db, 'O', true, 'whoever', { human: true }), 'held', 'the human may hold');
+  assert.equal(getRunHold(db, 'O')!.heldBy, PAUSE_HUMAN_BY, 'recorded as the human\'s');
+  assert.equal(setRunHold(db, 'O', false, 'whoever', { human: true }), 'resumed');
+  setRunHold(db, 'L', true, 'L');
+  assert.equal(setRunHold(db, 'L', false, PAUSE_HUMAN_BY), 'refused', 'hold: the string alone grants nothing');
+  assert.equal(setRunHold(db, 'L', false, 'whoever', { human: true }), 'resumed');
+  assert.equal(beginReprise(db, 'L', 'whoever', { human: true, reason: 'manual' }), 'resuming');
+  // release: refused for a non-coordinator; the human releases (explicit id), recorded as the human, the Consigne says so
+  assert.equal(releaseMembers(db, 'L', PAUSE_HUMAN_BY, ['o1']).refused[0]?.wsId, 'o1', 'release: the string alone grants nothing');
+  const rel = releaseMembers(db, 'L', 'whoever', ['o1'], Date.now(), { human: true });
+  assert.deepEqual(rel.released, ['o1']);
+  assert.deepEqual(rel.refused, []);
+  const row = readRoster(db, 'L', readCarrierColumns(db, 'L')!.pausedAt as number).find((r) => r.wsId === 'o1')!;
+  assert.equal(row.releasedBy, PAUSE_HUMAN_BY, 'released_by = the human');
+  const msg = db.prepare("SELECT sender, body FROM messages WHERE kind = 'reprise' AND recipient = 'o1'").get() as { sender: string; body: string };
+  assert.equal(msg.sender, PAUSE_HUMAN_BY, 'the reprise row\'s sender is the human');
+  assert.match(msg.body, /The fleet Pause \(hard, since [^ ]+ by a human \(from the Orchestra app\)\) is lifted for you: a human \(from the Orchestra app\) released you/, 'the Consigne says a human paused it and a human released it (not the coordinator, not « humain »)');
+  // `--all` for the human = the members of the CLICKED row\'s run (ownRuns); a worker of a run below is left, as for a coordinator\'s --all
+  const all = releaseMembers(db, 'L', 'whoever', 'all', Date.now(), { human: true, ownRuns: ['L'] });
+  assert.deepEqual(all.released, ['l1']);
+  assert.deepEqual(all.below.slice().sort(), ['o2', 's1'], 'the workers of the nested waves stay (a second explicit gesture)');
+  assert.deepEqual(releaseMembers(db, 'L', 'whoever', 'all', Date.now(), { human: true }).released, [], 'no ownRuns → nothing is « own »: every blocked member is `below`');
+  db.close();
+});
+
+test('uiPause / uiResume / uiRelease record the HUMAN everywhere a screen or the CLI reads a pauser (Q1): paused_by, `orchestra run status`, the Consigne, the overview label', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  trap(db);
+  const run = readPauseOverview(db, deps).runs[0];
+  assert.equal(run.pausedBy, PAUSE_HUMAN_BY);
+  assert.equal(run.pausedByLabel, 'un humain');
+  assert.equal(readCarrierColumns(db, 'L')!.pausedBy, PAUSE_HUMAN_BY);
+  uiResume(db, deps, { wsId: 'L' });
+  const coordRows = readRoster(db, 'L', readCarrierColumns(db, 'L')!.pausedAt as number).filter((x) => x.role === 'coordinator' && x.releasedAt !== null);
+  assert.ok(coordRows.length >= 1 && coordRows.every((x) => x.releasedBy === PAUSE_HUMAN_BY), 'the coordinators a HUMAN Reprise releases are the human\'s too (a host-driven Reprise stays « host »)');
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind = 'reprise' AND sender = 'host'").get() as { n: number }).n, 0, 'no reprise row is sent by the host in a human Reprise');
+  const coord = db.prepare("SELECT body FROM messages WHERE kind = 'reprise' AND recipient = 'O'").get() as { body: string };
+  assert.match(coord.body, /Pause \(hard\) since \S+ by a human \(from the Orchestra app\)/, 'the coordinator\'s Reprise row says it too');
+  const r = uiRelease(db, deps, { wsId: 'L', targets: ['o1'], carrierRunId: 'L' });
+  assert.deepEqual(r.result!.released, ['o1']);
+  assert.equal(r.actor, PAUSE_HUMAN_BY);
+  const msg = db.prepare("SELECT sender, body FROM messages WHERE kind = 'reprise' AND recipient = 'o1'").get() as { sender: string; body: string };
+  assert.equal(msg.sender, PAUSE_HUMAN_BY);
+  assert.match(msg.body, /by a human \(from the Orchestra app\)/);
+  assert.doesNotMatch(msg.body, /by L\b|by fleet-lead/, 'never the run\'s coordinator');
+  db.close();
+});
+
+test('a host auto-pause TAKEN OVER by a human keeps `paused_by = host:usage_limit`: the screen says « l\'hôte (limite d\'usage) », never the raw handle', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  db.prepare('UPDATE runs SET paused_by = ?, pause_auto = NULL WHERE id = ?').run(PAUSE_AUTO_BY, 'L'); // what a host pause that a human re-asserted looks like
+  const run = readPauseOverview(db, deps).runs[0];
+  assert.equal(run.pausedByLabel, "l'hôte (limite d'usage)");
   db.close();
 });

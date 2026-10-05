@@ -90,6 +90,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     const bilanRows = await ev(`[...document.querySelectorAll('[data-pause-bilan]')].map((e) => [e.getAttribute('data-pause-bilan'), e.getAttribute('data-pause-state'), e.querySelector('.pause-bilan-ref')?.textContent])`);
     const w1Row = await ev(`document.querySelector('[data-pause-bilan="${I.w1}"]')?.textContent`);
     clause(arm, 'G3/bus-pause-section-with-bilan', bilanRows.length === 7 && bilanRows.every((r) => r[1] === 'paused') && bilanRows.filter((r) => /^refs\/orchestra\/pause\//.test(r[2])).length === 5 && bilanRows.filter((r) => r[2] === '—').length === 2 && /1 modifié · 1 ajouté/.test(w1Row ?? '') && (await ev(`document.querySelector('[data-pause-count="${I.lead}"]')?.textContent`)) === '7/7 en pause', `${bilanRows.length} Bilan rows (a snapshot ref on each of the 5 git worktrees; the 2 orchestrators are scratch dirs: no ref, "—"); count "${await ev(`document.querySelector('[data-pause-count="${I.lead}"]')?.textContent`)}"; worker-1 row: "${(w1Row ?? '').replace(/\s+/g, ' ').slice(0, 140)}"`);
+    clause(arm, 'G3/bus-says-a-human-paused-it', run(I.lead).paused_by === 'humain' && /posée par un humain/.test(await ev(`document.querySelector('[data-pause-section="${I.lead}"] .pause-run-sub')?.textContent ?? ''`)), `bus paused_by=${run(I.lead).paused_by}; header "${await ev(`document.querySelector('[data-pause-section="${I.lead}"] .pause-run-sub')?.textContent`)}"`);
     const busRect = await ev(`(() => { const b = document.querySelector('[data-pause-section="${I.lead}"]').getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; })()`);
     clause(arm, 'G3/bus-section-below-the-toolbar-inside-viewport', busRect.left >= 345 && busRect.right <= vp.w && busRect.top >= 48, `section ${Math.round(busRect.left)}..${Math.round(busRect.right)} × ${Math.round(busRect.top)}..${Math.round(busRect.bottom)} in ${vp.w}x${vp.h}`);
     const busShot = await shot('3-bus-dure', { x: 345, y: 48, width: vp.w - 345, height: Math.min(600, vp.h - 48) });
@@ -125,7 +126,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await press(`[data-pause-bilan="${I.w1}"] [data-pause-action="release"]`, 'Libérer worker-1');
     await waitFor(() => bus().roster.some((r) => r.ws_id === I.w1 && r.released_at !== null), 15000, 'worker-1 released in the bus', 300);
     await sleep(600);
-    clause(arm, 'G3/bus-release-one-member', (await ev(`document.querySelector('[data-pause-bilan="${I.w1}"]')?.getAttribute('data-pause-state')`)) === 'released' && bus().roster.filter((r) => r.released_at !== null && r.released_by === I.lead).length === 1, `worker-1 → released (released_by fleet-lead = the carrier row); the other 4 workers still blocked`);
+    clause(arm, 'G3/bus-release-one-member', (await ev(`document.querySelector('[data-pause-bilan="${I.w1}"]')?.getAttribute('data-pause-state')`)) === 'released' && bus().roster.filter((r) => r.paused_at === run(I.lead).paused_at && r.role === 'worker' && r.released_at !== null && r.released_by === 'humain').length === 1 && bus().roster.filter((r) => r.paused_at === run(I.lead).paused_at && r.role === 'coordinator' && r.released_by === 'humain').length === 2 && !bus().roster.some((r) => r.paused_at === run(I.lead).paused_at && r.released_by === 'host'), `worker-1 → released (released_by « humain » — the human, Q1, not the carrier row; the 2 coordinators of this human Reprise are the human's too); the other 4 workers still blocked`);
     const busRelLabel = await ev(`document.querySelector('[data-pause-section="${I.lead}"] [data-pause-action="release-all"]')?.textContent.trim()`);
     await press(`[data-pause-section="${I.lead}"] [data-pause-action="release-all"]`, 'Libérer 1 bloqué (+3 plus bas, à part)');
     await waitFor(() => bus().roster.some((r) => r.ws_id === I.docs && r.released_at !== null), 15000, 'docs released by « tout libérer »', 300);
@@ -160,14 +161,23 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     const ex1 = await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the refusal for a worker');
     const ex1Text = await ev(`document.querySelector('[data-pause-panel="explain"]').textContent`);
     const ex1Code = await ev(`document.querySelector('[data-pause-explain-code]').getAttribute('data-pause-explain-code')`);
-    clause(arm, 'G3/refusal-worker-explained', ex1Code === 'refused' && /worker-1 n'est pas coordinateur de wave-ops/.test(ex1Text) && /fleet-lead/.test(ex1Text) && /mettre en pause sa vague wave-ops/.test(ex1Text) && inView(ex1, vp.w, vp.h), `code=${ex1Code}; "${ex1Text.replace(/\s+/g, ' ').slice(0, 220)}"; rect inside viewport`);
-    const fixButtons = await ev(`document.querySelectorAll('[data-pause-panel="explain"] [data-pause-fix], [data-pause-panel="explain"] button').length`);
-    const fixItems = await ev(`[...document.querySelectorAll('[data-pause-panel="explain"] .pause-explain-fix li')].map((e) => e.textContent.trim())`);
-    clause(arm, 'G3/refusal-worker-remedy-is-text-never-a-button', fixButtons === 0 && fixItems.length === 2 && /wave-ops/.test(fixItems[0]) && /fleet-lead/.test(fixItems[1]) && /TOUTE sa vague/.test(fixItems[1]) && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before, `${fixButtons} buttons in the refusal; the remedy names the authority: ${J(fixItems.map((t) => t.slice(0, 90)))}; nothing written`);
+    clause(arm, 'G3/refusal-worker-explained', ex1Code === 'refused' && /worker-1 est un agent, pas une vague/.test(ex1Text) && /depuis la ligne de son orchestrateur \(wave-ops\)/.test(ex1Text) && !/fleet-lead/.test(ex1Text) && inView(ex1, vp.w, vp.h), `code=${ex1Code}; "${ex1Text.replace(/\s+/g, ' ').slice(0, 220)}"; rect inside viewport; the wider run (fleet-lead) is NOT offered (Q5: no shortcut)`);
+    const linkSel = `[data-pause-panel="explain"] [data-pause-fix="goto"][data-pause-for="${I.ops}"]`;
+    const nBtns = await ev(`document.querySelectorAll('[data-pause-panel="explain"] button').length`);
+    clause(arm, 'G3/refusal-worker-links-to-its-orchestrator-nothing-else', nBtns === 1 && !!(await btnRect(linkSel)) && /Aller à wave-ops/.test(await ev(`document.querySelector(${J(linkSel)}).textContent`)) && (await ev(`document.querySelectorAll('[data-pause-panel="explain"] .pause-explain-fix li').length`)) === 0 && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before, `${nBtns} button in the refusal: the link "Aller à wave-ops →" (navigation) — no remedy that pauses anything; nothing written`);
     await shot('5-refusal-worker', { x: 0, y: 100, width: 700, height: 420 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await sleep(300);
     clause(arm, 'G3/refusal-panel-closes-on-escape', (await ev(`document.querySelectorAll('[data-pause-panel]').length`)) === 0, 'Escape closes the panel');
+    // the LINK: navigation — the orchestrator's row becomes the active one, the panel closes, NOTHING is written
+    await hover('worker-1');
+    await press(`.ws-row-actions-pop [data-pause-action="soft"][data-pause-for="${I.w1}"]`, '⏸ on a worker row (again, for the link)');
+    const linkBtn = await waitFor(() => btnRect(linkSel), 8000, 'the link to the orchestrator');
+    const activeBefore = await ev(`document.querySelector('.ws-item.active .ws-name')?.textContent`);
+    await cdp.click(linkBtn.x, linkBtn.y); await sleep(600);
+    const activeAfter = await ev(`document.querySelector('.ws-item.active .ws-name')?.textContent`);
+    clause(arm, 'G3/refusal-link-navigates-and-writes-nothing', activeBefore !== 'wave-ops' && activeAfter === 'wave-ops' && (await ev(`document.querySelectorAll('[data-pause-panel]').length`)) === 0 && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before && bus().roster.length === rosterBefore, `active row "${activeBefore}" → "${activeAfter}"; the panel closed; every run's pause columns and the roster (${rosterBefore} rows) unchanged`);
+    await parkAndSettle();
     await hover('legacy-sweep');
     await press(`.ws-row-actions-pop [data-pause-action="soft"][data-pause-for="${I.legacy}"]`, '⏸ on the switch-OFF orchestrator');
     await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the switch-OFF refusal');
@@ -220,7 +230,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     // ── 5. the in-flight Pause douce (state-injected: an idle fleet is confirmed within a sweep, so the waiting phase cannot be held on the real path without live sessions — the F2 canary drives that) ──
     const injected = await ev(`(() => { const now = Date.now(); const ids = ${J(wave)}; const names = ${J(Object.fromEntries(Object.entries(NAME_OF)))}; const mem = (id, i) => ({ wsId: id, label: names[id], role: i < 2 ? 'coordinator' : 'worker', memberRun: i === 0 ? ${J(I.lead)} : ${J(I.ops)}, ui: i < 5 ? 'paused' : 'pausing', confirmVia: i < 5 ? 'member' : null, confirmedAt: i < 5 ? now : null, releasedAt: null, releasedBy: null, repriseConfirmedAt: null, bilan: null });
       const members = ids.map(mem);
-      const run = { carrierRunId: ${J(I.lead)}, carrierLabel: 'fleet-lead', title: null, phase: 'pausing', mode: 'soft', pausedAt: now - 70000, pausedBy: ${J(I.lead)}, pausedByLabel: 'fleet-lead', deadlineAt: now + 110000, escalatedAt: null, trapAt: null, resumeStartedAt: null, auto: false, progress: { kind: 'en-pause', done: 5, total: 7, missing: ids.slice(5) }, blocked: [], members };
+      const run = { carrierRunId: ${J(I.lead)}, carrierLabel: 'fleet-lead', title: null, phase: 'pausing', mode: 'soft', pausedAt: now - 70000, pausedBy: 'humain', pausedByLabel: 'un humain', deadlineAt: now + 110000, escalatedAt: null, trapAt: null, resumeStartedAt: null, auto: false, progress: { kind: 'en-pause', done: 5, total: 7, missing: ids.slice(5) }, blocked: [], members };
       const byWorkspace = Object.fromEntries(members.map((m) => [m.wsId, { wsId: m.wsId, carrierRunId: ${J(I.lead)}, phase: 'pausing', ui: m.ui, role: m.role, via: m.confirmVia }]));
       return { run, byWorkspace }; })()`);
     const ctlLead = { wsId: I.lead, runId: I.lead, anchored: true, switchOn: true, phase: 'pausing', coveredBy: null, can: { pauseSoft: { ok: false, code: 'already-paused' }, pauseHard: { ok: true }, resume: { ok: true }, release: { ok: false, code: 'not-resuming' } } };

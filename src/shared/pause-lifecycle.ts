@@ -60,7 +60,7 @@ export interface PauseMemberRow {
   pauseConfirmedAt: number | null;
   pauseConfirmVia: PauseConfirmVia | null;
   releasedAt: number | null;
-  /** 'host' (coordinators at Reprise) or the releasing coordinator's handle. */
+  /** 'host' (coordinators at a host-driven Reprise), `PAUSE_HUMAN_BY` (the human at the app — workers, and coordinators of a Reprise the human started) or the releasing coordinator's handle. */
   releasedBy: string | null;
   /** The member's reprise accusé (`orchestra run confirm reprise`). Tracking only — never gates. */
   repriseConfirmedAt: number | null;
@@ -93,6 +93,17 @@ export function pauseRosterSummary(phase: PausePhase, rows: readonly PauseMember
   };
 }
 
+/** `runs.paused_by` / `pause_members.released_by` / a `reprise` row's sender when the HUMAN acted from the app (spec Q1, ledger #281 D-pick): the Pause, the Bilan and the Consigne say « humain », never the run's coordinator.
+ *  DISPLAY ONLY — authority never keys on this string (a CLI caller passing it gains nothing): the ONLY way a human act skips the coordinator rule is the writers' in-process `human` option, which no CLI verb or socket route sets
+ *  (enumerated by `pause-gates-wiring.test.ts`). */
+export const PAUSE_HUMAN_BY = 'humain';
+
+/** How a recorded pauser / releaser reads: the human as "a human (from the Orchestra app)" (English: Consigne, `orchestra run status`) or « un humain » (French: the UI); anything else verbatim. */
+export function actorText(by: string | null | undefined, lang: 'en' | 'fr' = 'en'): string | null {
+  if (by === null || by === undefined || by === '') return null;
+  return by === PAUSE_HUMAN_BY ? (lang === 'fr' ? 'un humain' : 'a human (from the Orchestra app)') : by;
+}
+
 /** `runs.pause_auto` (JSON). null = a MANUAL pause — never auto-resumed (#256, D6). */
 export interface PauseAutoReason {
   reason: 'usage_limit';
@@ -119,7 +130,7 @@ export type RepriseEntry = (
   db: unknown,
   carrierRunId: string,
   actor: string | null,
-  opts?: { host?: boolean; reason?: 'manual' | 'usage_limit' },
+  opts?: { host?: boolean; human?: boolean; reason?: 'manual' | 'usage_limit' },
 ) => RepriseOutcome;
 
 /** What a Consigne de reprise carries — derived ONLY from the member's Bilan de pause row (+ its pause_members row). */

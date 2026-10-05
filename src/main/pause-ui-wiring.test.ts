@@ -31,7 +31,15 @@ test('NO SECOND WRITE PATH: pause-ui.ts and pause-ui-host.ts contain no SQL writ
   const planted = stripSelects('const a = db.prepare(`SELECT 1 FROM runs`).get();\n db.exec("UPDATE runs SET paused_at = NULL");');
   assert.ok(/\bUPDATE\s+\w/.test(planted) && /\.exec\(/.test(planted), 'the guard sees a write that follows a SELECT');
   const ui = codeOf('src/main/pause-ui.ts');
-  for (const w of ['setRunPause(db, t.runId, true, actor, req.mode)', "beginReprise(db, t.runId, actor, { reason: 'manual' })", 'releaseMembers(db, carrier ?? t.runId, actor, req.targets)', 'recordPauseOrigin(db, t.runId, made.pausedAt, [])']) assert.ok(ui.includes(w), `the shipped writer call: ${w}`);
+  for (const w of [
+    'setRunPause(db, t.runId, true, actor, req.mode, { human: true })',
+    "beginReprise(db, t.runId, actor, { reason: 'manual', human: true })",
+    'setRunHold(db, t.runId, false, actor, { human: true })',
+    'releaseMembers(db, carrier ?? t.runId, actor, req.targets, Date.now(), { human: true, ownRuns: [t.runId] })',
+    'recordPauseOrigin(db, t.runId, made.pausedAt, [])',
+  ]) assert.ok(ui.includes(w), `the shipped writer call: ${w}`);
+  assert.equal((ui.match(/const actor = PAUSE_HUMAN_BY;/g) ?? []).length, 3, 'the actor of every UI write is the HUMAN (PAUSE_HUMAN_BY), never a workspace row (D-pick Q1)');
+  assert.ok(!ui.includes('uiActor'), 'no per-row actor decision is left');
 });
 
 test('the Pause channels are enumerated with their read/write marks, and ONLY the overview is a read', () => {
@@ -174,4 +182,16 @@ test('« Libérer tout » sends \'all\' (the acting row\'s OWN run) — pinned i
   assert.ok(codeOf('src/renderer/components/pause/PauseRow.tsx').includes('runReleaseAll(wsId, run, rect)'), 'the sidebar row button is « tout libérer »');
   assert.ok(codeOf('src/renderer/components/pause/BusPauseSection.tsx').includes('runReleaseAll(actor, run, null)'), 'so is the Bus card button');
   assert.ok(codeOf('src/main/pause-ui-host.ts').includes("targets: targets === 'all' ? 'all' :"), "the host forwards 'all' as is (never expands it)");
+});
+
+test('an explanation action is routed by KIND: « Libérer aussi » → the explicit release; the orchestrator LINK → navigation only (spec Q5) — in the floating panel AND on the Bus card', () => {
+  for (const f of ['src/renderer/components/pause/PauseMenu.tsx', 'src/renderer/components/pause/BusPauseSection.tsx']) {
+    const code = codeOf(f);
+    assert.ok(/a\.kind === 'release' \? [^]*?runReleaseMany\(a\.wsId, a\.ids, a\.carrierRunId, [^)]*\)[^]*? : gotoWorkspace\(a\.wsId\)/.test(code), `${f}: release → runReleaseMany, anything else → gotoWorkspace`);
+  }
+  assert.ok(codeOf('src/renderer/components/pause/BusPauseSection.tsx').includes('gotoWorkspace(a.wsId) || setExplains([GONE_ROW])'), 'the Bus card says so when the linked row is gone — never a silent dead link');
+  const a = codeOf('src/renderer/components/pause/pause-actions.ts');
+  const g = a.slice(at(a, 'export function gotoWorkspace'));
+  assert.ok(g.includes('!w.archived') && g.includes('usePausePanel.getState().close();') && g.includes('st.setActive(wsId);') && g.includes('explains: [GONE_ROW]'), 'the link selects a LIVE workspace row and closes the panel; a vanished one is said in the panel');
+  assert.ok(!/pauseRelease|pausePause|pauseResume/.test(g), 'and writes nothing: no IPC write call in the navigation path');
 });

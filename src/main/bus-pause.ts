@@ -17,7 +17,7 @@ import {
   type PauseChainLink,
   type PauseOrigin,
 } from '../shared/bus-pause.ts';
-import { trapOwed, type PauseMode, type RepriseEntry } from '../shared/pause-lifecycle.ts';
+import { PAUSE_HUMAN_BY, trapOwed, type PauseMode, type RepriseEntry } from '../shared/pause-lifecycle.ts';
 import { softDeadlineAt } from '../shared/pause-douce.ts';
 import type { WaveNode } from './wave-run-id.ts';
 import { beginRepriseCore, clearPauseColumns, readCarrierColumns, releasedWhileResuming, revertResumeToPaused } from './pause-reprise.ts';
@@ -227,11 +227,14 @@ export function setRunPause(
   pause: boolean,
   actor: string | null | undefined,
   mode: PauseMode = 'hard',
+  /** `human`: the HUMAN at the app (src/main/pause-ui.ts only — no CLI verb sets it): above every coordinator, so the coordinator rule is skipped and the pause is recorded as the human's (`PAUSE_HUMAN_BY`). */
+  opts?: { human?: boolean },
 ): RunPauseOutcome {
   const auth = runHoldAuthority(db, runId);
   if (!auth) return 'no-run';
-  const who = actor?.trim() ?? '';
-  if (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who))) {
+  const human = opts?.human === true;
+  const who = human ? PAUSE_HUMAN_BY : (actor?.trim() ?? '');
+  if (!human && (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {
     return 'refused';
   }
   const row = readPauseRow(db, runId);

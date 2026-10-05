@@ -300,3 +300,22 @@ test('NESTED: a nearer carrier merely PAUSED under a RESUMING ancestor prints it
   const text = renderRunStatus(st);
   assert.match(text, /^reprise: RESUMING \(carrier L\) — 1\/3 libérés — 0\/3 repris — manquent : a, b, c$/m, text);
 });
+
+test('`run status` says a HUMAN paused it (D-pick Q1): `by a human (from the Orchestra app)` — PAUSED and RESUMING lines — never the raw « humain » handle; a coordinator\'s handle is verbatim', () => {
+  const at = 1_780_000_000_000;
+  const mk = (pausedBy: string, resumeStartedAt: number | null) => ({
+    runId: 'M',
+    runExists: true,
+    pause: { runId: 'M', pausedAt: at, pausedBy, mode: 'hard', trapAt: at + 1, resumeStartedAt },
+    roster: null,
+    inherited: false,
+    bilan: [],
+    lastPause: null,
+    reprise: null,
+    stillPausedBy: null,
+  }) as unknown as RunStatus;
+  assert.match(renderRunStatus(mk('humain', null)), /PAUSED \(hard\) since \S+ by a human \(from the Orchestra app\)/);
+  assert.match(renderRunStatus(mk('humain', at + 2)), /RESUMING — the hard pause of \S+ \(by a human \(from the Orchestra app\)\)/);
+  assert.match(renderRunStatus(mk('lead', null)), /PAUSED \(hard\) since \S+ by lead/);
+  assert.doesNotMatch(renderRunStatus(mk('humain', null)), /by humain/);
+});

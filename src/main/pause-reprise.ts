@@ -16,6 +16,7 @@ import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
 import {
   memberMayStart,
+  PAUSE_HUMAN_BY,
   pausePhaseOf,
   pauseRosterSummary,
   type CarrierPauseColumns,
@@ -485,7 +486,7 @@ function consigneFor(
  * `runSubtreeIds(db, carrier)` (BFS = depth order), passed in because this module is a leaf.
  *
  *  - no run row → 'no-run'; not paused → 'not-paused'; a CLI caller that is neither the carrier's coordinator nor an ancestor run's → 'refused'
- *    (HOST callers — E3's `{ host: true }` — are never refused); already resuming → 'already-resuming' (nothing is re-sent);
+ *    (HOST callers — E3's `{ host: true }` — and the HUMAN at the app — `{ human: true }`, pause-ui.ts — are never refused); already resuming → 'already-resuming' (nothing is re-sent);
  *  - a carrier whose FROZEN `pause` switch is OFF (a stale column) is lifted plain, exactly as before wave E;
  *  - else: stamp `resume_started_at`, seed the roster, release the coordinators in depth order and send each ONE `reprise` row (the Bilan de pause of
  *    its wave). The run goes ACTIVE when the roster is fully released (the last `release`, or the host sweep for a roster that needs no worker).
@@ -494,14 +495,14 @@ export function beginRepriseCore(
   db: BusDb,
   carrierRunId: string,
   actor: string | null,
-  opts: { host?: boolean; reason?: 'manual' | 'usage_limit' } | undefined,
+  opts: { host?: boolean; human?: boolean; reason?: 'manual' | 'usage_limit' } | undefined,
   subtreeRunIds: readonly string[],
   now = Date.now(),
 ): RepriseOutcome {
   const tx = db.transaction((): RepriseOutcome => {
     const auth = runHoldAuthority(db, carrierRunId);
     if (!auth) return 'no-run';
-    if (opts?.host !== true) {
+    if (opts?.host !== true && opts?.human !== true) { // a HOST caller and the HUMAN at the app (`human`, src/main/pause-ui.ts only) are never refused
       const who = actor?.trim() ?? '';
       if (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who))) return 'refused';
     }
@@ -517,7 +518,7 @@ export function beginRepriseCore(
       .run(now, carrierRunId, pausedAt);
     if (started.changes !== 1) return 'already-resuming';
     seedRoster(db, carrierRunId, pausedAt, subtreeRunIds);
-    releaseCoordinators(db, carrierRunId, cols, subtreeRunIds, now);
+    releaseCoordinators(db, carrierRunId, cols, subtreeRunIds, now, undefined, opts?.human === true ? PAUSE_HUMAN_BY : HOST_SENDER);
     // Closed here ONLY when the host trap FINISHED (`pause_trap_at`): then every member that existed at the trap has a Bilan row, so the roster is complete for the paused fleet
     // (a workspace that joins the tree LATER — e.g. a worker a released OPS spawns during the Reprise — is seeded BLOCKED by the host sweep and released with `release --all`). Otherwise
     // this store-less caller cannot see a live member the Bilan never recorded — the HOST sweep completes the roster from the live tree first, then
@@ -544,6 +545,8 @@ function releaseCoordinators(
   subtreeRunIds: readonly string[],
   now: number,
   only?: (row: PauseMemberRow) => boolean,
+  /** Who releases them: the host's own mechanics by default; the HUMAN at the app when the Reprise is theirs (`PAUSE_HUMAN_BY` — `released_by` and the `reprise` row's sender). */
+  by: string = HOST_SENDER,
 ): void {
   const pausedAt = cols.pausedAt as number;
   const tree = liveTree();
@@ -581,9 +584,9 @@ function releaseCoordinators(
       self: consigneFor(db, carrierRunId, base, row, row.wsId, bilans.get(row.wsId) ?? null),
     });
     db.prepare(
-      `UPDATE pause_members SET released_at = ?, released_by = 'host' WHERE run_id = ? AND paused_at = ? AND ws_id = ? AND released_at IS NULL`,
-    ).run(now, carrierRunId, pausedAt, row.wsId);
-    send(db, { runId: envRunOf(tree, row.wsId, bilans.get(row.wsId)?.memberRun ?? null, run), sender: HOST_SENDER, kind: 'reprise', recipient: row.wsId, body });
+      `UPDATE pause_members SET released_at = ?, released_by = ? WHERE run_id = ? AND paused_at = ? AND ws_id = ? AND released_at IS NULL`,
+    ).run(now, by, carrierRunId, pausedAt, row.wsId);
+    send(db, { runId: envRunOf(tree, row.wsId, bilans.get(row.wsId)?.memberRun ?? null, run), sender: by, kind: 'reprise', recipient: row.wsId, body });
   }
 }
 
@@ -728,6 +731,9 @@ function ownRuns(db: BusDb, tree: LiveTree | null, actor: string): string[] {
  * the member's run or an ancestor run (live tree). An EXPLICIT id releases any member the caller may; `--all` releases only the members of the caller's OWN run — a worker of
  * a run below it (another OPS's wave) is left to its own OPS and reported as `below` (review M1: the LEAD's `--all` must not dispatch every OPS's workers). `targets` are roster
  * ws ids (exact) or unique prefixes.
+ *
+ * `opts.human` (src/main/pause-ui.ts only — no CLI verb sets it): the HUMAN at the app releases. Above every coordinator, so the coordinator rule is skipped; the release is recorded as the human's
+ * (`released_by` / the `reprise` row's sender / the Consigne = `PAUSE_HUMAN_BY`). `--all` then means the members of `opts.ownRuns` (the run of the row the human clicked) — the same `below` split as a coordinator's `--all`.
  */
 export function releaseMembers(
   db: BusDb,
@@ -735,6 +741,7 @@ export function releaseMembers(
   actor: string,
   targets: readonly string[] | 'all',
   now = Date.now(),
+  opts?: { human?: boolean; ownRuns?: readonly string[] },
 ): ReleaseResult {
   const tx = db.transaction((): ReleaseResult => {
     const res: ReleaseResult = { error: null, phase: null, released: [], already: [], refused: [], below: [], unknown: [], finished: false };
@@ -760,14 +767,16 @@ export function releaseMembers(
     }
     const bilans = new Map(readBilanRecs(db, carrierRunId, pausedAt).map((b) => [b.wsId, b]));
     const tree = liveTree();
-    const mine = targets === 'all' ? ownRuns(db, tree, actor) : [];
+    const human = opts?.human === true;
+    const by = human ? PAUSE_HUMAN_BY : actor;
+    const mine = targets === 'all' ? (human ? [...(opts?.ownRuns ?? [])] : ownRuns(db, tree, actor)) : [];
     for (const row of rows) {
       if (row.releasedAt !== null) {
         if (targets !== 'all') res.already.push(row.wsId);
         continue;
       }
       const may = releasers(db, tree, row, carrierRunId);
-      if (!may.some((c) => isCoordinatorHandle(c, actor))) {
+      if (!human && !may.some((c) => isCoordinatorHandle(c, actor))) {
         res.refused.push({ wsId: row.wsId, mayBe: may });
         continue;
       }
@@ -777,10 +786,10 @@ export function releaseMembers(
       }
       const upd = db
         .prepare('UPDATE pause_members SET released_at = ?, released_by = ? WHERE run_id = ? AND paused_at = ? AND ws_id = ? AND released_at IS NULL')
-        .run(now, actor, carrierRunId, pausedAt, row.wsId);
+        .run(now, by, carrierRunId, pausedAt, row.wsId);
       if (upd.changes !== 1) continue;
-      const body = renderConsigne(consigneFor(db, carrierRunId, { pausedAt, pausedBy: cols.pausedBy, mode: cols.mode }, row, row.wsId, bilans.get(row.wsId) ?? null), { releasedBy: actor });
-      send(db, { runId: envRunOf(tree, row.wsId, bilans.get(row.wsId)?.memberRun ?? null, row.memberRun ?? carrierRunId), sender: actor, kind: 'reprise', recipient: row.wsId, body });
+      const body = renderConsigne(consigneFor(db, carrierRunId, { pausedAt, pausedBy: cols.pausedBy, mode: cols.mode }, row, row.wsId, bilans.get(row.wsId) ?? null), { releasedBy: by });
+      send(db, { runId: envRunOf(tree, row.wsId, bilans.get(row.wsId)?.memberRun ?? null, row.memberRun ?? carrierRunId), sender: by, kind: 'reprise', recipient: row.wsId, body });
       res.released.push(row.wsId);
     }
     // Closed here ONLY when the host trap finished (the roster is then complete — same rule as beginRepriseCore); else the host sweep seeds the live

@@ -6,7 +6,7 @@ import { useStore } from '../../store';
 import type { PauseUiExplain, PauseUiMember, PauseUiRun } from '../../../shared/pause-ui';
 import { killedText, memberAttention, noBilanState, releaseLabel, releaseScope, runHeadline, treeText, wasDoingText } from '../../../shared/pause-ui-view';
 import { PauseActionButton, PauseBadge, PauseBar, PauseExplain, PauseGlyph, PauseIcon, PauseUnreadable, useNowTick } from './PauseBlocks';
-import { runPause, runRelease, runReleaseAll, runReleaseMany, runResume, selectPauseOverview } from './pause-actions';
+import { GONE_ROW, gotoWorkspace, runPause, runRelease, runReleaseAll, runReleaseMany, runResume, selectPauseOverview } from './pause-actions';
 
 const VIA: Record<string, string> = { member: 'accusé', 'host-idle': 'au repos', trap: 'trap hôte' };
 
@@ -105,7 +105,7 @@ function RunCard({ run }: { run: PauseUiRun }) {
       </div>
       {explains.length > 0 && (
         <div className="pause-run-explains">
-          {explains.map((e, i) => <PauseExplain key={i} explain={e} onAction={(a) => void act(runReleaseMany(a.wsId, a.ids, a.carrierRunId, null))} />)}
+          {explains.map((e, i) => <PauseExplain key={i} explain={e} onAction={(a) => (a.kind === 'release' ? void act(runReleaseMany(a.wsId, a.ids, a.carrierRunId, null)) : gotoWorkspace(a.wsId) || setExplains([GONE_ROW]))} />)}
         </div>
       )}
       <h3>Bilan de pause</h3>

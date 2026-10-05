@@ -18,9 +18,9 @@ import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '
 
 export const PAUSE_UI_IPC_CHANNELS: ReadonlyArray<{ channel: string; writes: boolean; what: string }> = [
   { channel: 'pause:overview', writes: false, what: 'read the pause overview: carriers + rosters + Bilan, per-orchestrator controls, per-workspace badges' },
-  { channel: 'pause:pause', writes: true, what: 'setRunPause (douce | dure) as the workspace row the control belongs to' },
-  { channel: 'pause:resume', writes: true, what: 'beginReprise (the structured Reprise) as the workspace row' },
-  { channel: 'pause:release', writes: true, what: 'releaseMembers (<ws>… | all) as the workspace row' },
+  { channel: 'pause:pause', writes: true, what: 'setRunPause (douce | dure) as the HUMAN (D-pick Q1)' },
+  { channel: 'pause:resume', writes: true, what: 'beginReprise (the structured Reprise) + the hold lift, as the HUMAN' },
+  { channel: 'pause:release', writes: true, what: 'releaseMembers (<ws>… | all) as the HUMAN (`all` = the clicked row\'s own run)' },
 ];
 /** The push the renderer subscribes to (the whole overview, rebuilt from the bus; a snapshot, not a delta — it cannot drift). */
 export const PAUSE_UI_PUSH_CHANNEL = 'pause:update';

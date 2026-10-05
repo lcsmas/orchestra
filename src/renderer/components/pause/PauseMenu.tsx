@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '../../store';
 import { agentsUnder } from '../../../shared/pause-ui-view';
 import { PauseExplain, PauseIcon } from './PauseBlocks';
-import { runPause, runReleaseMany, selectPauseOverview, usePausePanel } from './pause-actions';
+import { gotoWorkspace, runPause, runReleaseMany, selectPauseOverview, usePausePanel } from './pause-actions';
 
 const OFFSET_X = 6;
 const PANEL_W = 288;
@@ -17,7 +17,7 @@ export function PauseMenuHost() {
   const workspaces = useStore((s) => s.workspaces);
   // an explanation carrying « Libérer aussi ces N » belongs to the Reprise EPOCH it answered: a re-pause / a finished Reprise closes it (its ids must never be released into a later epoch unreviewed)
   const overview = useStore(selectPauseOverview);
-  const epoch = !panel || panel.kind !== 'explain' ? '' : panel.explains.flatMap((e) => (e.actions ?? []).map((a) => a.carrierRunId)).map((id) => { const r = overview?.runs.find((x) => x.carrierRunId === id); return r ? `${id}:${r.phase}@${r.pausedAt}` : `${id}:none`; }).join('|');
+  const epoch = !panel || panel.kind !== 'explain' ? '' : panel.explains.flatMap((e) => (e.actions ?? []).flatMap((a) => (a.kind === 'release' ? [a.carrierRunId] : []))).map((id) => { const r = overview?.runs.find((x) => x.carrierRunId === id); return r ? `${id}:${r.phase}@${r.pausedAt}` : `${id}:none`; }).join('|');
   const seen = useRef<{ panel: unknown; epoch: string } | null>(null);
   useEffect(() => {
     if (!panel || epoch === '') { seen.current = null; return; }
@@ -59,7 +59,7 @@ export function PauseMenuHost() {
             key={i}
             explain={e}
             code={panel.codes[i]}
-            onAction={(a) => void runReleaseMany(a.wsId, a.ids, a.carrierRunId, panel.anchor)}
+            onAction={(a) => (a.kind === 'release' ? void runReleaseMany(a.wsId, a.ids, a.carrierRunId, panel.anchor) : gotoWorkspace(a.wsId))}
           />
         ))
       )}

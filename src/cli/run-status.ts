@@ -7,6 +7,7 @@ import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import type { BilanRow } from '../main/bus-pause-records.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
+import { actorText } from '../shared/pause-lifecycle.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
 import type { AutoHeld } from '../shared/pause-auto.ts';
 
@@ -119,9 +120,9 @@ export function renderRunStatus(st: RunStatus): string {
   out.push(
     p.resumeStartedAt
       ? // #255: the carrier is RESUMING — still a carried pause (workers blocked), but it is being lifted: say so, never "lift it with resume" again
-        `Run ${st.runId}: RESUMING — the ${p.mode ?? 'hard'} pause of ${iso(p.pausedAt)} (by ${c(p.pausedBy ?? 'unknown')}) is being lifted by the Reprise` +
+        `Run ${st.runId}: RESUMING — the ${p.mode ?? 'hard'} pause of ${iso(p.pausedAt)} (by ${c(actorText(p.pausedBy) ?? 'unknown')}) is being lifted by the Reprise` +
         (st.inherited ? `, carried by ancestor run ${p.runId}` : '')
-      : `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${c(p.pausedBy ?? 'unknown')}` +
+      : `Run ${st.runId}: PAUSED (${p.mode ?? 'hard'}) since ${iso(p.pausedAt)} by ${c(actorText(p.pausedBy) ?? 'unknown')}` +
         (st.inherited ? ` — carried by ancestor run ${p.runId}; lift it with: orchestra run resume --run ${p.runId}` : `; lift with: orchestra run resume --run ${p.runId}`),
   );
   if (st.stillPausedBy) out.push(`Still PAUSED by run ${st.stillPausedBy.runId} (an ancestor) — its members stay blocked until that one resumes too: orchestra run resume --run ${st.stillPausedBy.runId}`);

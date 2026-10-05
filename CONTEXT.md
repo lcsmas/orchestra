@@ -80,6 +80,14 @@ no liveness escalation, until a Reprise. Has two modes that end in the same
 state. The whole fleet is paused by pausing each root run.
 _Avoid_: hold (today: liveness-only silence, now one effect of a Pause), stop, freeze
 
+**Pause humaine** (human Pause):
+A Pause, Reprise or Libération done from the app's own controls (⏸ / ▶ / Libérer):
+the actor is the human, recorded « humain » in `paused_by` / `released_by`, the
+Consigne and `orchestra run status` — above every coordinator, so the
+coordinator rule does not apply (a CLI caller never gets that exemption). A
+worker row has no such control: its ⏸ explains and links to its orchestrator.
+_Avoid_: manual pause as the human's `--as <coordinator>` (the old stand-in)
+
 **Pause douce** (soft pause):
 A Pause where each member finishes its running command, saves its own work,
 then stops; turns into a Pause dure when it overruns its deadline.

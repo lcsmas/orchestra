@@ -37,7 +37,7 @@ export const MUTANTS = [
   { id: 'blk-disabled-unexplained', file: BLK, find: 'title={disabled ? why : undefined}', rep: 'title={undefined}', tests: [SMOKE], expect: /disabled action is EXPLAINED/ },
   { id: 'blk-explain-fix-dropped', file: BLK, find: ') : explain.fix.length > 0 && (', rep: ') : false && (', tests: [SMOKE], expect: /refusal block/ },
   { id: 'blk-actions-as-bullets', file: BLK, find: 'explain.actions && explain.actions.length > 0 && onAction ? (', rep: 'false ? (', tests: [SMOKE], expect: /the ONE follow-up an explanation may carry/ },
-  { id: 'blk-action-wrong-row', file: BLK, find: 'data-pause-fix={a.kind} data-pause-for={a.wsId}', rep: 'data-pause-fix={a.kind} data-pause-for="x"', tests: [SMOKE], expect: /the ONE follow-up an explanation may carry/ },
+  { id: 'blk-release-wrong-row', file: BLK, find: 'data-pause-fix="release" data-pause-for={a.wsId}', rep: 'data-pause-fix="release" data-pause-for="x"', tests: [SMOKE], expect: /the ONE follow-up an explanation may carry/ },
   { id: 'blk-action-ids-dropped', file: BLK, find: 'data-pause-ids={a.ids.join(\',\')}', rep: 'data-pause-ids=""', tests: [SMOKE], expect: /the ONE follow-up an explanation may carry/ },
   { id: 'bus-manquent-in-reprise', file: BUS, find: "(run.phase === 'pausing' || run.phase === 'paused') && ", rep: "run.phase !== 'active' && ", tests: [SMOKE], expect: /Reprise: "N\/M repris"/ },
   { id: 'act-double-click-sends-twice', file: ACT, find: '  if (inflight.has(key)) return fallback;', rep: '', tests: [SMOKE], expect: /double-click sends ONE write/ },
@@ -111,16 +111,15 @@ MUTANTS.push(
   { id: 'bilan-submodule-path-unclean', file: 'src/main/pause-ui.ts', find: "submodules: (a?.submodules ?? []).slice(0, 6).map((m) => ({ path: cl(m.path, 300),", rep: "submodules: (a?.submodules ?? []).slice(0, 6).map((m) => ({ path: m.path,", tests: ['src/main/pause-ui.test.ts'], expect: /strips control/ },
   { id: 'bilan-survivor-reason-unclean', file: 'src/main/pause-ui.ts', find: "survivors: (report?.survivors ?? []).slice(0, 6).map((x) => ({ cmd: cl(x.cmd, 200), pid: Number(x.pid ?? 0), reason: cl(x.reason, 200) })),", rep: "survivors: (report?.survivors ?? []).slice(0, 6).map((x) => ({ cmd: cl(x.cmd, 200), pid: Number(x.pid ?? 0), reason: String(x.reason ?? '') })),", tests: ['src/main/pause-ui.test.ts'], expect: /strips control/ },
   // R1-3 hold
-  { id: 'resume-hold-not-lifted', file: 'src/main/pause-ui.ts', find: "    holdLifted = setRunHold(db, t.runId, false, actor) === 'resumed';", rep: '    holdLifted = false;', tests: ['src/main/pause-ui.test.ts'], expect: /uiResume = `orchestra run resume`/ },
-  { id: 'resume-hold-lifted-by-anyone', file: 'src/main/pause-ui.ts', find: "    holdLifted = setRunHold(db, t.runId, false, actor) === 'resumed';", rep: "    holdLifted = setRunHold(db, t.runId, false, t.runId) === 'resumed';", tests: ['src/main/pause-ui.test.ts'], expect: /uiResume = `orchestra run resume`/ },
+  { id: 'resume-hold-not-lifted', file: 'src/main/pause-ui.ts', find: "    holdLifted = setRunHold(db, t.runId, false, actor, { human: true }) === 'resumed';", rep: '    holdLifted = false;', tests: ['src/main/pause-ui.test.ts'], expect: /uiResume = `orchestra run resume`/ },
+  { id: 'resume-hold-human-option-dropped', file: 'src/main/pause-ui.ts', find: "    holdLifted = setRunHold(db, t.runId, false, actor, { human: true }) === 'resumed';", rep: "    holdLifted = setRunHold(db, t.runId, false, actor) === 'resumed';", tests: ['src/main/pause-ui.test.ts'], expect: /uiResume = `orchestra run resume`/ },
   // R1-4 run anchors
   { id: 'controls-only-orchestrators', file: 'src/main/pause-ui.ts', find: '      if (!nodeOrchestrates(ws) && !ownsRun) continue;', rep: '      if (!nodeOrchestrates(ws)) continue;', tests: ['src/main/pause-ui.test.ts'], expect: /PLAIN run-anchoring parent/ },
   // R1-2 « tout libérer »
   { id: 'explain-below-no-second-gesture', file: 'src/shared/pause-ui.ts', find: "      ...(c.actorId && c.carrierRunId\n        ? {", rep: "      ...(false\n        ? {", tests: [SHARED], expect: /explainReleaseResult/ },
-  { id: 'release-ctx-ids-dropped', file: 'src/main/pause-ui.ts', find: 'actorId: actor, carrierRunId: carrier ?? t.runId, all: req.targets', rep: 'all: req.targets', tests: ['src/main/pause-ui.test.ts'], expect: /« Libérer tout » = `release --all`/ },
+  { id: 'release-ctx-ids-dropped', file: 'src/main/pause-ui.ts', find: 'actorId: req.wsId, carrierRunId: carrier ?? t.runId, all: req.targets', rep: 'all: req.targets', tests: ['src/main/pause-ui.test.ts'], expect: /« Libérer tout » = `release --all`/ },
   { id: 'view-release-scope-all-own', file: VIEW, find: "    if (m.role === 'worker' && m.memberRun !== null && m.memberRun !== run.carrierRunId) below.push(m.wsId);\n    else own.push(m.wsId);", rep: '    own.push(m.wsId);', tests: [VT], expect: /releaseScope/ },
   // R1-7 no remedy shortcut
-  { id: 'explain-refused-offers-button', file: 'src/shared/pause-ui.ts', find: "        // NAMED, not offered as a button:", rep: "        actions: c.mayBe.map((id) => ({ kind: 'release' as const, wsId: id, carrierRunId: id, ids: [], label: 'x' })),\n        // NAMED, not offered as a button:", tests: [SHARED, 'src/main/pause-ui.test.ts'], expect: /explainPauseOutcome|REFUSAL — a WORKER row/ },
   // R1-8 empty roster
   { id: 'view-empty-roster-full-bar', file: VIEW, find: '  const count = total === 0 && run.phase !== \'active\' ?', rep: '  const count = false ?', tests: [VT], expect: /EMPTY roster/ },
   { id: 'view-note-empty-roster-count', file: VIEW, find: "  if (total === 0 && run.phase !== 'active') {\n    const word", rep: "  if (false) {\n    const word", tests: [VT], expect: /EMPTY roster/ },
@@ -173,7 +172,7 @@ MUTANTS.push(
   { id: 'explain-hold-not-named', file: 'src/shared/pause-ui.ts', find: 'if (!base || !c.holdLifted) return base;', rep: 'return base;', tests: [SHARED], expect: /names a lifted liveness HOLD/ },
   { id: 'explain-hold-always-named', file: 'src/shared/pause-ui.ts', find: 'if (!base || !c.holdLifted) return base;', rep: 'if (!base) return base;', tests: [SHARED], expect: /names a lifted liveness HOLD/ },
   { id: 'explain-hold-wrong-run', file: 'src/shared/pause-ui.ts', find: 'Le hold de liveness de ${c.runLabel} a quand même été levé', rep: 'Le hold de liveness de ${c.actorLabel} a quand même été levé', tests: [SHARED], expect: /names a lifted liveness HOLD/ },
-  { id: 'resume-hold-not-passed-to-explain', file: 'src/main/pause-ui.ts', find: '{ ...ctxFor(db, deps, t.runId, actor, cover), holdLifted }', rep: 'ctxFor(db, deps, t.runId, actor, cover)', tests: ['src/main/pause-ui.test.ts'], expect: /R2-1/ },
+  { id: 'resume-hold-not-passed-to-explain', file: 'src/main/pause-ui.ts', find: '{ ...ctxFor(db, deps, t.runId, req.wsId, cover), holdLifted }', rep: 'ctxFor(db, deps, t.runId, req.wsId, cover)', tests: ['src/main/pause-ui.test.ts'], expect: /R2-1/ },
   // R2-2 a cancelled douce raises no alarm
   { id: 'view-nobilan-trap-ignored-in-resuming', file: VIEW, find: "  if (run.trapAt !== null) return 'absent';", rep: "  if (run.trapAt !== null && run.phase !== 'resuming') return 'absent';", tests: [VT], expect: /noBilanState/ },
   { id: 'bus-none-shows-absent', file: BUS, find: "<td>{b ? treeText(b) : missing === 'absent' ? 'aucun Bilan' : '—'}</td>", rep: "<td>{b ? treeText(b) : 'aucun Bilan'}</td>", tests: [SMOKE], expect: /CANCELLED before it escalated/ },
@@ -185,9 +184,9 @@ MUTANTS.push(
   { id: 'host-expands-all', file: 'src/main/pause-ui-host.ts', find: "targets: targets === 'all' ? 'all' :", rep: "targets: targets === 'ALL' ? 'all' :", tests: [WIRING], expect: /pinned in the RELEASE gate/ },
   { id: 'row-release-all-not-all', file: ROW, find: 'runReleaseAll(wsId, run, rect)', rep: 'runReleaseMany(wsId, releasableIds(run), run.carrierRunId, rect)', tests: [WIRING], expect: /pinned in the RELEASE gate/ },
   // R2-4 a child of a plain run-anchoring parent is explained against that parent
-  { id: 'nearest-run-ignores-anchors', file: 'src/main/pause-ui.ts', find: 'if (nodeOrchestrates(cur) || anchors(cur.id)) return cur.id;', rep: 'if (nodeOrchestrates(cur)) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+  { id: 'nearest-run-ignores-anchors', file: 'src/main/pause-ui.ts', find: 'if (usable(cur.id) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;', rep: 'if (usable(cur.id) && nodeOrchestrates(cur)) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
   { id: 'nearest-run-no-walk', file: 'src/main/pause-ui.ts', find: 'const parent = deps.getWorkspace(cur.parentId);', rep: 'const parent = undefined as WaveNode | undefined;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
-  { id: 'nearest-run-anchor-over-orchestrator', file: 'src/main/pause-ui.ts', find: 'if (nodeOrchestrates(cur) || anchors(cur.id)) return cur.id;', rep: 'if (anchors(cur.id)) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+  { id: 'nearest-run-anchor-over-orchestrator', file: 'src/main/pause-ui.ts', find: 'if (usable(cur.id) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;', rep: 'if (usable(cur.id) && anchors(cur.id)) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
 );
 
 // ── follow-up r2, after the pre-review (R2-2 hard trap that never finished, covered-hold wording, archived anchor)
@@ -198,5 +197,86 @@ MUTANTS.push(
   { id: 'view-nobilan-escalated-douce-none', file: VIEW, find: "run.mode !== 'soft' || run.escalatedAt !== null ? 'absent' : 'none'", rep: "run.mode !== 'soft' ? 'absent' : 'none'", tests: [VT], expect: /noBilanState/ },
   { id: 'view-nobilan-cancelled-douce-absent', file: VIEW, find: "run.mode !== 'soft' || run.escalatedAt !== null ? 'absent' : 'none'", rep: "'absent'", tests: [VT, SMOKE], expect: /noBilanState|CANCELLED before it escalated/ },
   { id: 'explain-hold-covered-wrong', file: 'src/shared/pause-ui.ts', find: 'ses membres restent suspendus tant que ${c.cover.label} tient la pause', rep: "l'escalade de liveness est de nouveau active pour ses membres", tests: [SHARED], expect: /names a lifted liveness HOLD/ },
-  { id: 'nearest-run-archived-anchor', file: 'src/main/pause-ui.ts', find: 'if (!w || w.archived) return false;', rep: 'if (!w) return false;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+  { id: 'nearest-run-archived-anchor', file: 'src/main/pause-ui.ts', find: 'return !!w && !w.archived;', rep: 'return !!w;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+);
+
+// ── D-pick delta (Q1 the UI acts as the HUMAN; Q3 both release paths exist; Q5 worker refusal = explanation + LINK to its orchestrator)
+const SH = 'src/shared/pause-ui.ts', GATES = 'src/main/pause-gates-wiring.test.ts', CLI_STATUS = 'src/cli/run-status.test.ts', LIFE = 'src/shared/pause-lifecycle.ts', CONS = 'src/shared/pause-consigne.ts';
+const BP = 'src/main/bus-pause.ts', BR = 'src/main/bus-runs.ts', PR = 'src/main/pause-reprise.ts', UIM = 'src/main/pause-ui.ts', UIT = 'src/main/pause-ui.test.ts';
+const RULE_PAUSE = "if (!human && (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {";
+MUTANTS.push(
+  // the writers: the human skips the coordinator rule ONLY through the option; recorded as the human
+  { id: 'human-pause-who-is-actor', file: BP, find: "const who = human ? PAUSE_HUMAN_BY : (actor?.trim() ?? '');", rep: "const who = actor?.trim() ?? '';", tests: [UIT], expect: /Q1 writers/ },
+  { id: 'human-pause-rule-not-skipped', file: BP, find: RULE_PAUSE, rep: "if ((!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {", tests: [UIT], expect: /Q1 writers|uiPause as an ORCHESTRATOR row/ },
+  { id: 'human-pause-string-is-a-credential', file: BP, find: RULE_PAUSE, rep: "if (!human && who !== PAUSE_HUMAN_BY && (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {", tests: [UIT], expect: /Q1 writers/ },
+  { id: 'human-hold-who-is-actor', file: BR, find: "const who = human ? PAUSE_HUMAN_BY : (actor?.trim() ?? '');", rep: "const who = actor?.trim() ?? '';", tests: [UIT], expect: /Q1 writers|uiResume = `orchestra run resume`/ },
+  { id: 'human-hold-rule-not-skipped', file: BR, find: RULE_PAUSE, rep: "if ((!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {", tests: [UIT], expect: /Q1 writers|uiResume = `orchestra run resume`/ },
+  { id: 'human-hold-string-is-a-credential', file: BR, find: RULE_PAUSE, rep: "if (!human && who !== PAUSE_HUMAN_BY && (!who || ![auth.coordinator, ...auth.ancestors].some((c) => isCoordinatorHandle(c, who)))) {", tests: [UIT], expect: /Q1 writers/ },
+  { id: 'human-reprise-rule-not-skipped', file: PR, find: 'if (opts?.host !== true && opts?.human !== true) {', rep: 'if (opts?.host !== true) {', tests: [UIT], expect: /Q1 writers|uiResume|FULL CYCLE/ },
+  { id: 'human-reprise-string-is-a-credential', file: PR, find: 'if (opts?.host !== true && opts?.human !== true) {', rep: 'if (opts?.host !== true && opts?.human !== true && actor !== PAUSE_HUMAN_BY) {', tests: [UIT], expect: /Q1 writers/ },
+  { id: 'human-release-by-is-actor', file: PR, find: 'const by = human ? PAUSE_HUMAN_BY : actor;', rep: 'const by = actor;', tests: [UIT], expect: /Q1 writers|record the HUMAN/ },
+  { id: 'human-release-rule-not-skipped', file: PR, find: 'if (!human && !may.some((c) => isCoordinatorHandle(c, actor))) {', rep: 'if (!may.some((c) => isCoordinatorHandle(c, actor))) {', tests: [UIT], expect: /Q1 writers|FULL CYCLE|record the HUMAN/ },
+  { id: 'human-release-string-is-a-credential', file: PR, find: 'if (!human && !may.some((c) => isCoordinatorHandle(c, actor))) {', rep: 'if (!human && actor !== PAUSE_HUMAN_BY && !may.some((c) => isCoordinatorHandle(c, actor))) {', tests: [UIT], expect: /Q1 writers/ },
+  { id: 'human-release-all-ignores-ownruns', file: PR, find: "(human ? [...(opts?.ownRuns ?? [])] : ownRuns(db, tree, actor))", rep: 'ownRuns(db, tree, actor)', tests: [UIT], expect: /Q1 writers|FULL CYCLE/ },
+  { id: 'human-release-all-everything-own', file: PR, find: "(human ? [...(opts?.ownRuns ?? [])] : ownRuns(db, tree, actor))", rep: "(human ? ['L', 'O', 'S', 'Z'] : ownRuns(db, tree, actor))", tests: [UIT], expect: /Q1 writers|FULL CYCLE/ },
+  { id: 'human-release-sender-is-actor', file: PR, find: "row.memberRun ?? carrierRunId), sender: by, kind: 'reprise',", rep: "row.memberRun ?? carrierRunId), sender: actor, kind: 'reprise',", tests: [UIT], expect: /Q1 writers|record the HUMAN/ },
+  { id: 'human-release-consigne-by-actor', file: PR, find: '{ releasedBy: by }', rep: '{ releasedBy: actor }', tests: [UIT], expect: /Q1 writers|record the HUMAN/ },
+  // display: « humain » never reaches a screen / the Consigne / the CLI raw
+  { id: 'consigne-pauser-raw', file: CONS, find: 'trimTo(actorText(c.pausedBy) ?? c.pausedBy, 80)', rep: 'trimTo(c.pausedBy, 80)', tests: [UIT], expect: /Q1 writers|record the HUMAN/ },
+  { id: 'consigne-releaser-raw', file: CONS, find: 'trimTo(actorText(opts.releasedBy) ?? opts.releasedBy, 80)', rep: 'trimTo(opts.releasedBy, 80)', tests: [UIT], expect: /Q1 writers|record the HUMAN/ },
+  { id: 'consigne-coordinator-row-pauser-raw', file: CONS, find: 'trimTo(actorText(args.pausedBy) ?? args.pausedBy, 80)', rep: 'trimTo(args.pausedBy, 80)', tests: [UIT], expect: /record the HUMAN/ },
+  { id: 'cli-status-paused-raw', file: 'src/cli/run-status.ts', find: "since ${iso(p.pausedAt)} by ${c(actorText(p.pausedBy) ?? 'unknown')}`", rep: "since ${iso(p.pausedAt)} by ${c(p.pausedBy ?? 'unknown')}`", tests: [CLI_STATUS], expect: /says a HUMAN paused it/ },
+  { id: 'cli-status-resuming-raw', file: 'src/cli/run-status.ts', find: "(by ${c(actorText(p.pausedBy) ?? 'unknown')}) is being lifted", rep: "(by ${c(p.pausedBy ?? 'unknown')}) is being lifted", tests: [CLI_STATUS], expect: /says a HUMAN paused it/ },
+  { id: 'actor-text-fr-for-en', file: LIFE, find: "(lang === 'fr' ? 'un humain' : 'a human (from the Orchestra app)')", rep: "(lang === 'fr' ? 'a human (from the Orchestra app)' : 'un humain')", tests: [SHARED], expect: /actorText/ },
+  { id: 'actor-text-human-verbatim', file: LIFE, find: "return by === PAUSE_HUMAN_BY ? (", rep: "return by === 'never' ? (", tests: [SHARED], expect: /actorText/ },
+  { id: 'actor-text-empty-not-null', file: LIFE, find: "if (by === null || by === undefined || by === '') return null;", rep: "if (by === null || by === undefined) return null;", tests: [SHARED], expect: /actorText/ },
+  { id: 'human-constant-renamed', file: LIFE, find: "export const PAUSE_HUMAN_BY = 'humain';", rep: "export const PAUSE_HUMAN_BY = 'human';", tests: [SHARED, UIT], expect: /actorText|uiPause as an ORCHESTRATOR row/ },
+  // the UI layer: the human acts; a worker row is not a wave
+  { id: 'ui-pause-human-option-dropped', file: UIM, find: 'setRunPause(db, t.runId, true, actor, req.mode, { human: true })', rep: 'setRunPause(db, t.runId, true, actor, req.mode)', tests: [UIT], expect: /uiPause as an ORCHESTRATOR row/ },
+  { id: 'ui-resume-human-option-dropped', file: UIM, find: "beginReprise(db, t.runId, actor, { reason: 'manual', human: true })", rep: "beginReprise(db, t.runId, actor, { reason: 'manual' })", tests: [UIT], expect: /FULL CYCLE|uiResume|R2-1/ },
+  { id: 'ui-release-human-option-dropped', file: UIM, find: '{ human: true, ownRuns: [t.runId] }', rep: 'undefined', tests: [UIT], expect: /FULL CYCLE|record the HUMAN/ },
+  { id: 'ui-release-ownruns-empty', file: UIM, find: '{ human: true, ownRuns: [t.runId] }', rep: '{ human: true, ownRuns: [] }', tests: [UIT], expect: /FULL CYCLE/ },
+  { id: 'ui-worker-row-allowed', file: UIM, find: 'return t.runId !== wsId;', rep: 'return false;', tests: [UIT], expect: /REFUSAL — a WORKER row/ },
+  { id: 'ui-worker-row-inverted', file: UIM, find: 'return t.runId !== wsId;', rep: 'return t.runId === wsId;', tests: [UIT], expect: /REFUSAL — a WORKER row|uiPause as an ORCHESTRATOR row/ },
+  { id: 'ui-worker-resume-not-refused', file: UIM, find: "if (isWorkerRow(t, req.wsId)) return { outcome: 'refused', runId: t.runId, actor: null, explain: explainWorkerRow('resume'", rep: "if (false) return { outcome: 'refused', runId: t.runId, actor: null, explain: explainWorkerRow('resume'", tests: [UIT], expect: /REFUSAL — a WORKER row|uiResume/ },
+  { id: 'ui-worker-release-not-refused', file: UIM, find: "if (isWorkerRow(t, req.wsId)) return { result: null,", rep: "if (false) return { result: null,", tests: [UIT], expect: /REFUSAL — a WORKER row|FULL CYCLE/ },
+  { id: 'ui-pausedby-label-raw', file: UIM, find: "pv.pausedBy === PAUSE_HUMAN_BY ? actorText(pv.pausedBy, 'fr') : pv.pausedBy === PAUSE_AUTO_BY ? \"l'hôte (limite d'usage)\" : label(pv.pausedBy)", rep: "pv.pausedBy === PAUSE_AUTO_BY ? \"l'hôte (limite d'usage)\" : label(pv.pausedBy)", tests: [UIT], expect: /uiPause as an ORCHESTRATOR row|record the HUMAN/ },
+  // Q5: the worker refusal links to the orchestrator and offers nothing that acts
+  { id: 'worker-refusal-no-link', file: SH, find: "...(boss ? { actions: [{ kind: 'goto' as const, wsId: boss, label: `Aller à ${c.label(boss)}` }] } : {}),", rep: '', tests: [SHARED, UIT], expect: /explainPauseOutcome|REFUSAL — a WORKER row/ },
+  { id: 'worker-refusal-link-to-ancestor', file: SH, find: 'const boss = c.runId;', rep: 'const boss = c.mayBe[0] ?? c.runId;', tests: [SHARED, UIT], expect: /explainPauseOutcome|explainResumeOutcome|REFUSAL — a WORKER row|R2-4/ },
+  { id: 'worker-refusal-offers-a-shortcut', file: SH, find: "    fix: [],\n    ...(boss ?", rep: "    fix: [`Mettre ${c.label(c.mayBe[c.mayBe.length - 1] ?? 'x')} en pause`],\n    ...(boss ?", tests: [SHARED, UIT], expect: /explainPauseOutcome|REFUSAL — a WORKER row/ },
+  { id: 'worker-refusal-title-not-agent', file: SH, find: "est un agent, pas une vague`", rep: "n'est pas coordinateur`", tests: [SHARED], expect: /explainPauseOutcome/ },
+  { id: 'worker-refusal-label-wrong', file: SH, find: "label: `Aller à ${c.label(boss)}` }", rep: "label: `Aller à ${boss}` }", tests: [SHARED], expect: /explainPauseOutcome/ },
+  { id: 'avail-no-run-still-checked', file: SH, find: "if (!i.runKnown) return {", rep: "if (false) return {", tests: [SHARED], expect: /availabilityFor/ },
+  // renderer: the link is navigation only
+  { id: 'blk-goto-wrong-row', file: BLK, find: 'data-pause-fix="goto" data-pause-for={a.wsId}', rep: 'data-pause-fix="goto" data-pause-for="x"', tests: [SMOKE], expect: /LINKS to its orchestrator/ },
+  { id: 'blk-goto-is-a-button', file: BLK, find: 'className="pause-link" data-pause-fix="goto"', rep: 'className="pause-btn pause-btn-go" data-pause-fix="goto"', tests: [SMOKE], expect: /LINKS to its orchestrator/ },
+  { id: 'blk-goto-label-dropped', file: BLK, find: '{a.label} →', rep: '→', tests: [SMOKE], expect: /LINKS to its orchestrator/ },
+  { id: 'goto-no-setactive', file: ACT, find: '  st.setActive(wsId);\n  return true;', rep: '  return true;', tests: [SMOKE, WIRING], expect: /Aller à wave-ops|routed by KIND/ },
+  { id: 'goto-archived-allowed', file: ACT, find: 'w.id === wsId && !w.archived', rep: 'w.id === wsId', tests: [SMOKE, WIRING], expect: /no longer exists|routed by KIND/ },
+  { id: 'goto-panel-not-closed', file: ACT, find: '  usePausePanel.getState().close();\n  st.setActive(wsId);', rep: '  st.setActive(wsId);', tests: [SMOKE, WIRING], expect: /Aller à wave-ops|routed by KIND/ },
+  { id: 'menu-goto-not-routed', file: 'src/renderer/components/pause/PauseMenu.tsx', find: ' : gotoWorkspace(a.wsId))}', rep: ' : undefined)}', tests: [WIRING], expect: /routed by KIND/ },
+  { id: 'bus-goto-not-routed', file: BUS, find: ' : gotoWorkspace(a.wsId) || setExplains([GONE_ROW]))}', rep: ' : undefined)}', tests: [WIRING], expect: /routed by KIND/ },
+  { id: 'bus-says-pauser-label-raw', file: VIEW, find: "run.pausedByLabel ? `posée par ${run.pausedByLabel}` : 'posée'", rep: "'posée'", tests: [SMOKE], expect: /says a HUMAN paused it/ },
+  // the guard: the human option is passed by pause-ui.ts only, never by the CLI / the socket
+  { id: 'enum-extra-human-site', file: UIM, find: '{ human: true, ownRuns: [t.runId] }', rep: '{ human: true, human: true, ownRuns: [t.runId] }', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
+  { id: 'enum-cli-sets-human', file: 'src/cli/bus-verbs.ts', find: 'deps.setRunPause(ctx.db, runId, true, actor, mode)', rep: 'deps.setRunPause(ctx.db, runId, true, actor, mode, { human: true })', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
+  { id: 'enum-writer-reads-extra-site', file: BR, find: 'const human = opts?.human === true;', rep: 'const human = opts?.human === true || opts?.human === true;', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
+);
+
+// ── D-pick delta, after the pre-review (link target = the row that owns the run; archived rows; a spelling-proof guard; a human Reprise's coordinators)
+MUTANTS.push(
+  { id: 'worker-link-to-coordinator-handle', file: 'src/main/pause-ui.ts', find: 'runLabel: labeler(deps)(runId), runId, actorLabel', rep: 'runLabel: labeler(deps)(runId), actorLabel', tests: ['src/main/pause-ui.test.ts'], expect: /REFUSAL — a WORKER row|R2-4/ },
+  { id: 'nearest-run-archived-orchestrator', file: 'src/main/pause-ui.ts', find: 'if (usable(cur.id) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;', rep: 'if (nodeOrchestrates(cur) || (usable(cur.id) && anchors(cur.id))) return cur.id;', tests: ['src/main/pause-ui.test.ts'], expect: /R2-4/ },
+  { id: 'goto-gone-silent', file: ACT, find: "    if (p && p.kind === 'explain') usePausePanel.getState().show({ ...p, explains: [GONE_ROW], codes: ['gone'] });", rep: '', tests: [SMOKE, WIRING], expect: /never a silent dead link|routed by KIND/ },
+  { id: 'bus-goto-gone-silent', file: BUS, find: 'gotoWorkspace(a.wsId) || setExplains([GONE_ROW])', rep: 'gotoWorkspace(a.wsId)', tests: [WIRING], expect: /routed by KIND/ },
+  { id: 'human-reprise-coordinators-host', file: 'src/main/pause-reprise.ts', find: 'now, undefined, opts?.human === true ? PAUSE_HUMAN_BY : HOST_SENDER);', rep: 'now, undefined, HOST_SENDER);', tests: ['src/main/pause-ui.test.ts'], expect: /record the HUMAN everywhere/ },
+  { id: 'cli-reprise-releaser-not-host', file: 'src/main/pause-reprise.ts', find: 'now, undefined, opts?.human === true ? PAUSE_HUMAN_BY : HOST_SENDER);', rep: 'now, undefined, PAUSE_HUMAN_BY);', tests: ['src/main/pause-reprise.test.ts'], expect: /RESUMING: stamps resume_started_at|REPRISE ROWS/ },
+  { id: 'coordinator-release-sender-not-by', file: 'src/main/pause-reprise.ts', find: 'bilans.get(row.wsId)?.memberRun ?? null, run), sender: by, kind', rep: 'bilans.get(row.wsId)?.memberRun ?? null, run), sender: HOST_SENDER, kind', tests: ['src/main/pause-ui.test.ts'], expect: /record the HUMAN everywhere/ },
+  { id: 'takeover-label-raw', file: 'src/main/pause-ui.ts', find: "pv.pausedBy === PAUSE_AUTO_BY ? \"l'hôte (limite d'usage)\" : label(pv.pausedBy)", rep: 'label(pv.pausedBy)', tests: ['src/main/pause-ui.test.ts'], expect: /taken over by a human|TAKEN OVER/i },
+  { id: 'cli-reprise-dep-not-fenced', file: 'src/cli/bus-verbs.ts', find: '  beginReprise?: CliRepriseEntry;', rep: '  beginReprise?: RepriseEntry;', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
+  // evasion spellings in a NEW site (the AST guard sees them all)
+  { id: 'enum-evasion-string-key', file: 'src/cli/bus-verbs.ts', find: 'deps.setRunPause(ctx.db, runId, true, actor, mode)', rep: 'deps.setRunPause(ctx.db, runId, true, actor, mode, { "human": true })', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
+  { id: 'enum-evasion-shorthand', file: 'src/cli/bus-verbs.ts', find: 'deps.setRunPause(ctx.db, runId, true, actor, mode)', rep: 'deps.setRunPause(ctx.db, runId, true, actor, mode, ((human) => ({ human }))(true))', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
+  { id: 'enum-evasion-reader-destructure', file: BR, find: 'const human = opts?.human === true;', rep: 'const human = opts?.human === true;\n  const { human: viaDestructure } = opts ?? {};\n  void viaDestructure;', tests: [GATES], expect: /ENUMERATION \(extends the guard/ },
 );
