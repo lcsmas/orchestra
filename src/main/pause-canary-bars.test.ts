@@ -9,6 +9,10 @@ import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, renderTable } from 
 import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { fleetSpec, KIND_ORDER } from '../../scripts/pause-canary/ids.mjs';
+// @ts-expect-error — plain .mjs harness module, no declaration file
+import { keeperSocketOf, assertNoForeignKeeperSockets } from '../../scripts/pause-canary/lib.mjs';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 
 type Check = { id: string; ok: boolean; detail: string };
 const good = (over: Record<string, unknown> = {}) => ({
@@ -167,4 +171,38 @@ test('renderTable prints one row per cycle with the verdict (a FAIL row names it
   assert.match(t, /\| dure \| 1 \| 10\/12 \| 12\.3 \| — \| 31\.4 \| 0\/40 \| 10\/10 \| 0 \| 12\/12 \| PASS \|/);
   assert.match(t, /FAIL \(lost_work_is_zero\)/);
   assert.equal(BARS.hardAllPausedS, 60, 'the bar the ticket states');
+});
+
+test('workspace ids are RANDOM PER RIG, UUID-shaped and unique inside a fleet (two concurrent rigs must never share a ws id: the keeper socket fallback is home-independent)', () => {
+  const a = fleetSpec(10), b = fleetSpec(10);
+  const ids = (s: { lead: string; ops: string; workers: Array<{ id: string }> }) => [s.lead, s.ops, ...s.workers.map((w) => w.id)];
+  assert.equal(new Set(ids(a)).size, 12);
+  assert.equal(ids(a).filter((id: string) => ids(b).includes(id)).length, 0, 'two rigs share NO workspace id');
+  for (const id of ids(a)) assert.match(id, /^[0-9a-f]{8}-0000-4000-8000-\d{12}$/);
+  assert.notEqual(a.prefix, b.prefix);
+  assert.equal(fleetSpec(3, 'deadbeef').lead, 'deadbeef-0000-4000-8000-000000000001', 'an explicit prefix is honoured (the seed receives the SAME ids)');
+});
+
+test('keeperSocketOf mirrors keeper-client.ts: <= 100 chars stays in the rig, longer falls back to the home-independent /tmp/okeeper-<sha256(wsId)[:16]>', () => {
+  const id = 'deadbeef-0000-4000-8000-000000000011';
+  const short = keeperSocketOf('/h/x', id);
+  assert.equal(short.hashed, false);
+  assert.equal(short.path, `/h/x/keepers/${id}.sock`);
+  const long = keeperSocketOf('/home/lmas/.cache/pause-canary/h-canary6c-douce-douce', id);
+  assert.equal(long.hashed, true);
+  assert.equal(long.len, 103 - 36 + id.length + 0, 'the measured 103-char rig path');
+  assert.equal(long.path, `/tmp/okeeper-${createHash('sha256').update(id).digest('hex').slice(0, 16)}.sock`);
+});
+
+test('pre-flight: a keeper socket ALREADY at a path this rig would use (another rig, same ws id) aborts the rig; absent sockets pass', () => {
+  const spec = fleetSpec(3);
+  const H = '/home/lmas/.cache/pause-canary/h-unit-preflight-check-for-a-long-rig-label-xx';
+  const first = keeperSocketOf(H, spec.workers[0].id);
+  assert.equal(first.hashed, true, 'the fixture path is long enough to take the /tmp fallback');
+  assert.doesNotThrow(() => assertNoForeignKeeperSockets(H, spec));
+  fs.writeFileSync(first.path, '');
+  try {
+    assert.throws(() => assertNoForeignKeeperSockets(H, spec), /already exist/);
+  } finally { fs.rmSync(first.path, { force: true }); }
+  assert.doesNotThrow(() => assertNoForeignKeeperSockets(H, spec), 'cleaned up again');
 });

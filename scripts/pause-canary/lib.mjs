@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { uid, branchOf, namesOf } from './ids.mjs';
 
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -165,11 +166,27 @@ export const B_KEY = 'sk-ant-api03-pc-b-key-not-real';
 export const ACCT_A = 'pc-a';
 export const ACCT_B = 'pc-b';
 
+/** Where the keeper of `wsId` listens (mirror of src/main/keeper-client.ts `keeperSocketPath`): `<home>/keepers/<id>.sock` when ≤ 100 chars, else the HOME-INDEPENDENT `/tmp/okeeper-<sha256(wsId)[:16]>.sock`. */
+export function keeperSocketOf(H, wsId) {
+  const full = path.join(H, 'keepers', `${wsId}.sock`);
+  return full.length <= 100 ? { path: full, hashed: false, len: full.length } : { path: path.join(os.tmpdir(), `okeeper-${createHash('sha256').update(wsId).digest('hex').slice(0, 16)}.sock`), hashed: true, len: full.length };
+}
+/** Pre-flight: no keeper socket may ALREADY exist at a path this rig will use (another rig on the host with the same ws id would be cross-connected). Throws when one does. */
+export function assertNoForeignKeeperSockets(H, spec) {
+  const ids = [spec.lead, spec.ops, ...spec.workers.map((w) => w.id)];
+  const socks = ids.map((id) => keeperSocketOf(H, id));
+  const clash = socks.filter((s) => fs.existsSync(s.path));
+  if (clash.length) throw new Error(`ABORT: keeper socket(s) already exist at ${clash.map((s) => s.path).join(', ')} — another rig on this host uses the same workspace ids (ids are random per rig: a stale socket of a crashed rig, or a collision) — refusing to cross-connect`);
+  return { hashed: socks.filter((s) => s.hashed).length, total: socks.length, maxLen: Math.max(...socks.map((s) => s.len)) };
+}
+
 export async function makeRig({ label, spec, apiUrl, appBin, claudeBin }) {
   if (!appBin || !fs.existsSync(path.join(path.dirname(appBin), 'resources', 'app.asar'))) throw new Error(`ABORT: appBin ${appBin} is not a PACKAGED build (no resources/app.asar beside it) — the session \`orchestra\` shim only works packaged`);
   if (!/^[A-Za-z0-9._-]+$/.test(label) || label.includes('..')) throw new Error(`ABORT: rig label ${JSON.stringify(label)} must be [A-Za-z0-9._-]+ (it names a directory that is rm -rf'd)`);
   const H = path.join(BASE, `h-${label}`);
   assertScratch('H', H);
+  const sockInfo = assertNoForeignKeeperSockets(H, spec);
+  say(`[${label}] keeper sockets: ${sockInfo.hashed}/${sockInfo.total} fall back to /tmp/okeeper-<hash(wsId)> (path ≤ 100: no; longest ${sockInfo.maxLen} chars) — ids are per-rig random (${spec.prefix}), none pre-exists`);
   fs.rmSync(H, { recursive: true, force: true });
   for (const d of ['home', 'cfg', 'cfg-b', 'bin', 'userData/orchestra']) fs.mkdirSync(path.join(H, d), { recursive: true });
   fs.symlinkSync(fs.realpathSync(claudeBin), path.join(H, 'bin', 'claude'));
@@ -198,12 +215,12 @@ export async function makeRig({ label, spec, apiUrl, appBin, claudeBin }) {
     ...spec.workers.map((w) => mk(w.k, w.id, { parentId: spec.ops, lastTask: `pc task ${w.k}` })),
   ];
   fs.writeFileSync(path.join(H, 'userData/orchestra/store.json'), JSON.stringify({ repos: [], workspaces: wsList, accounts: [acct, acctB], selfTuneRuns: [] }, null, 2));
-  return { H, cfg, cfgB, repo, remote, wt, acct, acctB, wsList, spec, names: namesOf(spec), appBin, bus: null };
+  return { H, cfg, cfgB, repo, remote, wt, acct, acctB, wsList, spec, names: namesOf(spec), appBin, bus: null, sockInfo };
 }
 
 /** Seed the lead (mission) and ops (vague, parent lead) run rows with every switch ON (`seedTree` = the SOURCE tree matching the app under drive). */
 export function seedRuns(rig, seedTree, mode = 'none') {
-  const out = execFileSync(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(HERE, 'bus-tool.mjs'), 'seed', rig.H, seedTree, mode], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: path.join(rig.H, 'home'), PC_BASE: BASE }, maxBuffer: 16 << 20 });
+  const out = execFileSync(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(HERE, 'bus-tool.mjs'), 'seed', rig.H, seedTree, rig.spec.lead, rig.spec.ops, mode], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: path.join(rig.H, 'home'), PC_BASE: BASE }, maxBuffer: 16 << 20 });
   const line = out.split('\n').filter((l) => l.startsWith('{')).pop();
   return line ? JSON.parse(line) : null;
 }

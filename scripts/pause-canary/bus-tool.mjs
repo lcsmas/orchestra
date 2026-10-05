@@ -1,10 +1,9 @@
 // Pause canary (#258) — the rig's ISOLATED bus (<H>/bus.sqlite), never the live one.
-//   seed  <H> <TREE> [pause-off|wake-off]   create the LEAD (mission) + OPS (vague, parent LEAD) runs with every switch ON (a real wave's frozen flags + `pause`), using the modules of TREE (the source tree matching the app under drive)
+//   seed  <H> <TREE> <leadId> <opsId> [pause-off|wake-off]   create the LEAD (mission) + OPS (vague, parent LEAD) runs with every switch ON (a real wave's frozen flags + `pause`), using the modules of TREE (the source tree matching the app under drive)
 //   serve <H> <TREE>                        persistent read-only SQL server: one JSON line {id,sql,args} in → {id,rows|err} out (the drive polls at 250 ms; a node spawn per poll would skew the timings)
 import path from 'node:path';
 import fs from 'node:fs';
 import readline from 'node:readline';
-import { uid } from './ids.mjs';
 
 const [cmd, H, TREE, ...rest] = process.argv.slice(2);
 // the rig home must sit under the scratch base the runner declared and never be (or contain) the live bus
@@ -22,12 +21,14 @@ if (cmd === 'seed') {
   const db = bus.openBus(dbFile, {});
   try {
     const all = Object.fromEntries(BUS_MECHANISMS.map((m) => [m, true]));
-    if (rest[0] === 'pause-off') all.pause = false;   // the must-FAIL control arm: the same drive with the switch OFF
-    if (rest[0] === 'wake-off') all.wake = false;
+    const [LEAD, OPS, mode] = rest;   // the rig's own (random-prefixed) ids
+    if (!LEAD || !OPS) throw new Error('seed needs <leadId> <opsId>');
+    if (mode === 'pause-off') all.pause = false;   // the must-FAIL control arm: the same drive with the switch OFF
+    if (mode === 'wake-off') all.wake = false;
     const sw = { ...DEFAULT_BUS_SWITCHES, ...all };
-    startRun(db, { id: uid(1), kind: 'mission', coordinator: uid(1) }, sw);
-    startRun(db, { id: uid(2), kind: 'vague', coordinator: uid(2), parentRunId: uid(1) }, sw);
-    console.log(JSON.stringify({ seeded: [uid(1), uid(2)], schema: db.pragma('user_version', { simple: true }), switches: BUS_MECHANISMS.map((m) => `${m}=${all[m]}`).join(',') }));
+    startRun(db, { id: LEAD, kind: 'mission', coordinator: LEAD }, sw);
+    startRun(db, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD }, sw);
+    console.log(JSON.stringify({ seeded: [LEAD, OPS], schema: db.pragma('user_version', { simple: true }), switches: BUS_MECHANISMS.map((m) => `${m}=${all[m]}`).join(',') }));
   } finally { db.close(); }
 } else if (cmd === 'serve') {
   let db = null;

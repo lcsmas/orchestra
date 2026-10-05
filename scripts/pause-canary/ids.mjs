@@ -8,13 +8,16 @@ export const KIND_ORDER = ['obey', 'blocked', 'quota', 'bg', 'quota', 'quota', '
  *   bg      like obey, plus a BACKGROUND task that survives an interrupt (only the trap kills it)
  *   quota   idle after its setup turn (dirty tree, no process); the auto-Pause exercise puts it on a simulated usage limit */
 
-export const uid = (n) => `9c9c9c9c-0000-4000-8000-${String(n).padStart(12, '0')}`;
+/** A PER-RIG random 8-hex prefix. Workspace ids must be unique across every rig on the host: `keeperSocketPath` falls back to `/tmp/okeeper-<sha256(wsId)>.sock` when `<home>/keepers/<id>.sock` exceeds 100 chars
+ *  (a rig path always does) and that hash does NOT contain ORCHESTRA_HOME — two concurrent rigs with the same ids would share keeper sockets (verifier n°2, ledger #281). */
+export const randomPrefix = () => Array.from({ length: 8 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+export const uid = (n, prefix) => `${prefix}-0000-4000-8000-${String(n).padStart(12, '0')}`;
 export const MAX_WORKERS = 10;
 
-export function fleetSpec(nWorkers) {
+export function fleetSpec(nWorkers, prefix = randomPrefix()) {
   if (!Number.isInteger(nWorkers) || nWorkers < 1 || nWorkers > MAX_WORKERS) throw new Error(`members must be 1..${MAX_WORKERS}, got ${nWorkers}`);
-  const workers = Array.from({ length: nWorkers }, (_, i) => ({ k: `w${i + 1}`, kind: KIND_ORDER[i % KIND_ORDER.length], id: uid(10 + i + 1) }));
-  return { lead: uid(1), ops: uid(2), workers };
+  const workers = Array.from({ length: nWorkers }, (_, i) => ({ k: `w${i + 1}`, kind: KIND_ORDER[i % KIND_ORDER.length], id: uid(10 + i + 1, prefix) }));
+  return { prefix, lead: uid(1, prefix), ops: uid(2, prefix), workers };
 }
 
 export const branchOf = (k) => `pc-${k}`;
