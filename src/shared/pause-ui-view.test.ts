@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agoText, countdown, groupByMemberRun, killedText, PAUSE_STATE_WORD, releasableIds, runHeadline, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
-import type { PauseUiBilanLine, PauseUiMember, PauseUiRun } from './pause-ui.ts';
+import { agoText, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseStateOf, PAUSE_STATE_WORD, releasableIds, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
+import type { PauseUiBilanLine, PauseUiControl, PauseUiMember, PauseUiOverview, PauseUiRun } from './pause-ui.ts';
 
 const mem = (wsId: string, role: 'coordinator' | 'worker', ui: PauseUiMember['ui'], memberRun: string | null, extra: Partial<PauseUiMember> = {}): PauseUiMember => ({
   wsId, label: wsId, role, memberRun, ui, confirmVia: null, confirmedAt: null, releasedAt: null, releasedBy: null, repriseConfirmedAt: null, bilan: null, ...extra,
@@ -63,4 +63,18 @@ test('groupByMemberRun keeps first-seen run order, coordinators first inside a g
   const g = groupByMemberRun(ms);
   assert.deepEqual(g.map((x) => [x.runId, x.members.map((m) => m.wsId)]), [['O', ['O', 'w1', 'w2']], ['L', ['L', 'd']]]);
   assert.deepEqual(releasableIds(run({ members: ms })), ['w1', 'd']);
+});
+
+test('selectors: a row\'s state, its control, the run it anchors, the run that covers it — null while the overview is not loaded', () => {
+  const ctl = (wsId: string, runId: string, coveredBy: PauseUiControl['coveredBy'] = null): PauseUiControl => ({ wsId, runId, anchored: true, switchOn: true, phase: 'active', coveredBy, can: { pauseSoft: { ok: true }, pauseHard: { ok: true }, resume: { ok: true }, release: { ok: true } } });
+  const o: PauseUiOverview = { available: true, error: null, at: 0, runs: [run({ carrierRunId: 'L' })], controls: { L: ctl('L', 'L'), O: ctl('O', 'O', { runId: 'L', label: 'fleet-lead' }) }, byWorkspace: { w1: { wsId: 'w1', carrierRunId: 'L', phase: 'paused', ui: 'paused', role: 'worker', via: 'trap' } } };
+  assert.equal(pauseStateOf(o, 'w1')?.ui, 'paused');
+  assert.equal(pauseStateOf(o, 'zzz'), null);
+  assert.equal(controlOf(o, 'L')?.runId, 'L');
+  assert.equal(controlOf(o, 'w1'), null, 'a worker row has no control');
+  assert.equal(runOfControl(o, controlOf(o, 'L'))?.carrierRunId, 'L');
+  assert.equal(runOfControl(o, controlOf(o, 'O')), null, 'O anchors a run that holds no pause of its own');
+  assert.equal(coveringRun(o, controlOf(o, 'O'))?.carrierRunId, 'L');
+  assert.equal(coveringRun(o, controlOf(o, 'L')), null);
+  for (const f of [pauseStateOf(null, 'w1'), controlOf(undefined, 'L'), runOfControl(null, null), coveringRun(null, null)]) assert.equal(f, null);
 });

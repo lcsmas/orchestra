@@ -2,7 +2,7 @@
 // The numbers are the SAME ones `orchestra bus-status` prints (`PauseUiProgress` ← `pauseRosterSummary`); the wording reuses ./pause-douce.ts (`pausePhaseWord`).
 
 import { pausePhaseWord } from './pause-douce.ts';
-import type { PauseUiBilanLine, PauseUiMember, PauseUiMemberState, PauseUiRun } from './pause-ui.ts';
+import type { PauseUiBilanLine, PauseUiControl, PauseUiMember, PauseUiMemberState, PauseUiOverview, PauseUiRun, PauseUiWorkspaceState } from './pause-ui.ts';
 
 /** A member's badge word (the mockups' vocabulary: "en pause" / "finit…" / "bloqué" / "libéré" / "repris"). */
 export const PAUSE_STATE_WORD: Record<PauseUiMemberState, string> = {
@@ -105,4 +105,29 @@ export function groupByMemberRun(members: readonly PauseUiMember[]): Array<{ run
 /** The ids "Libérer les N bloqués" sends — EXPLICIT (an explicit id releases any member the caller may; `'all'` is the acting row's own run only and would leave a nested wave's workers `below`). */
 export function releasableIds(run: PauseUiRun): string[] {
   return run.members.filter((m) => m.ui === 'blocked').map((m) => m.wsId);
+}
+
+// ── selectors over the overview (the store slice) ─────────────────────────────────────────────────────
+
+
+/** The badge state of a workspace (null = not under a pause / Reprise, or the overview is not loaded). */
+export function pauseStateOf(o: PauseUiOverview | null | undefined, wsId: string): PauseUiWorkspaceState | null {
+  return o?.byWorkspace[wsId] ?? null;
+}
+
+/** The control of an ORCHESTRATOR row (null for a worker row, an unloaded overview, or a bus that is down). */
+export function controlOf(o: PauseUiOverview | null | undefined, wsId: string): PauseUiControl | null {
+  return o?.controls[wsId] ?? null;
+}
+
+/** The pause carrier a row's control is about: the run it anchors (its own pause, its Reprise, or a closed Reprise still collecting accusés). null = nothing to show. */
+export function runOfControl(o: PauseUiOverview | null | undefined, ctl: PauseUiControl | null): PauseUiRun | null {
+  if (!o || !ctl) return null;
+  return o.runs.find((r) => r.carrierRunId === ctl.runId) ?? null;
+}
+
+/** The run whose pause COVERS this row (an ancestor's) — what a "covered" row points the human to. */
+export function coveringRun(o: PauseUiOverview | null | undefined, ctl: PauseUiControl | null): PauseUiRun | null {
+  if (!o || !ctl?.coveredBy) return null;
+  return o.runs.find((r) => r.carrierRunId === ctl.coveredBy!.runId) ?? null;
 }
