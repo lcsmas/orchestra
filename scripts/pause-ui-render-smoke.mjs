@@ -137,9 +137,20 @@ console.log('\nClick handlers (the store actions → the preload API; the panel 
   calls.length = 0;
   const [d1, d2] = await Promise.all([actions.runPause('L', 'soft', { top: 0, bottom: 1, right: 2 }), actions.runPause('L', 'soft', { top: 0, bottom: 1, right: 2 })]);
   check('a double-click sends ONE write (the second is ignored while the first is in flight)', calls.filter((c) => c[0] === 'pausePause').length === 1 && d1.length + d2.length === 1, JSON.stringify(calls));
+  const rejects = async (fn) => { try { return await fn(); } catch (e) { return `THROWN: ${e.message}`; } }; // an unhandled rejection must FAIL a check, not crash the smoke
   window.orchestra.pauseResume = async () => { throw new Error('Error invoking remote method: the main process went away'); };
-  const down = await actions.runResume('L', { top: 0, bottom: 1, right: 2 });
-  check('a rejected invoke is EXPLAINED ("La commande n\'a pas atteint l\'hôte" + the reason), the panel shows it', down.length === 1 && /n'a pas atteint l'hôte/.test(down[0].title) && /main process went away/.test(down[0].why) && mods.actions.usePausePanel.getState().panel?.kind === 'explain');
+  const down = await rejects(() => actions.runResume('L', { top: 0, bottom: 1, right: 2 }));
+  check('a rejected invoke is EXPLAINED ("La commande n\'a pas atteint l\'hôte" + the reason), the panel shows it (resume)', Array.isArray(down) && down.length === 1 && /n'a pas atteint l'hôte/.test(down[0].title) && /main process went away/.test(down[0].why) && mods.actions.usePausePanel.getState().panel?.kind === 'explain', String(down));
+  mods.actions.usePausePanel.getState().close();
+  window.orchestra.pausePause = async () => { throw new Error('ipc closed'); };
+  const downP = await rejects(() => actions.runPause('L', 'hard', { top: 0, bottom: 1, right: 2 }));
+  check('a rejected invoke is EXPLAINED too for a pause', Array.isArray(downP) && downP.length === 1 && /ipc closed/.test(downP[0].why), String(downP));
+  window.orchestra.pauseRelease = async () => { throw new Error('release ipc closed'); };
+  const downR = await rejects(() => actions.runReleaseAll('L', run, null));
+  const downR1 = await rejects(() => actions.runRelease('L', 'w1', 'L', null));
+  check('a rejected invoke is EXPLAINED for both Libérer paths', Array.isArray(downR) && downR.length === 1 && /release ipc closed/.test(downR[0].why) && Array.isArray(downR1) && downR1.length === 1, `${String(downR)} / ${String(downR1)}`);
+  window.orchestra.pauseRelease = async (...a) => { calls.push(['pauseRelease', ...a]); return { result: { released: a[1], refused: [], below: [], unknown: [], already: [], error: null, finished: false }, explain: [], overview: ov }; };
+  window.orchestra.pausePause = async (...a) => { calls.push(['pausePause', ...a]); return { outcome: 'refused', runId: 'O', actor: a[0], explain: { tone: 'error', title: 'Pause refusée', why: 'x', fix: [] }, cover: null, overview: ov }; };
   mods.actions.usePausePanel.getState().close();
   window.orchestra.pauseResume = async (...a) => { calls.push(['pauseResume', ...a]); return { outcome: 'resuming', runId: 'L', actor: a[0], explain: null, cover: null, overview: ov }; };
   calls.length = 0;
