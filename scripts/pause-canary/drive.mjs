@@ -9,7 +9,7 @@
 // Verdicts: PASS · FAIL (a measured RED, kept even if the host later dips) · VOID (host below the 6 GB bar with NOTHING red yet: no verdict, re-run) — a cycle that ABORTS reports `cycle_aborted`, never bars painted "NOT MEASURED".
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns, startBusReader, launchApp, census, kindOf, memberOfCwd, rigMemory, teardown, git, gitSafe, gitShow, say, sleep, B_KEY, ACCT_B } from './lib.mjs';
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
@@ -31,16 +31,22 @@ const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
 const CYCLE_RESULTS_FILE = opt('out', null);
 // harness-level INSTRUMENT controls (proof arms only): after the pause, sabotage one member's evidence — the matching instrument must read RED
 const SABOTAGE = opt('sabotage', null);   // 'branch' (rewind a branch to master) | 'ref' (delete a pause ref) | 'session' (SIGTERM a member's CLI)
+// proof-only process INJECTION during the hold window (dure only): 'orphan-tool' = a REAL command that came back in a member worktree (an orphan: must stay detected);
+// 'app-git' = a process whose ancestry is the APP's (a fake app helper running a child in the worktree: what the app's own `git ls-files --others` looks like: must NOT be flagged).
+const INJECT = opt('inject', null);
+const TOOLPROCS = opt('toolprocs', 'fixed');   // 'legacy' = the pre-fix definition (any non-keeper/CLI/app process in a member worktree): the proof's must-FAIL arm for the app-git injection
 if (!BASE || !REPO || !APP || !CLAUDE) { console.error('usage: drive.mjs --base --repo --app --claude …'); process.exit(2); }
 const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
+if (INJECT && (!['orphan-tool', 'app-git'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git applies to `--exercise dure` only'); process.exit(2); }
+if (!['fixed', 'legacy'].includes(TOOLPROCS)) { console.error('--toolprocs fixed|legacy'); process.exit(2); }
 if (SABOTAGE && (!['branch', 'ref', 'session'].includes(SABOTAGE) || EXERCISES.join() !== 'dure')) { console.error('--sabotage branch|ref|session applies to `--exercise dure` only (anywhere else it would be a silent no-op control)'); process.exit(2); }
 initBase(BASE);
 preflight();
 const before = liveSnapshot();
 say(`LIVE-BEFORE ${JSON.stringify(before)}`);
-say(`REPO=${REPO} HEAD=${git(REPO, 'rev-parse', 'HEAD')} APP=${APP} claude=${execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()} exercises=${EXERCISES} cycles=${CYCLES} members=${MEMBERS} dwell=${DWELL_S}s pause=${PAUSE_SWITCH} douce-limit=${DOUCE_LIMIT} sabotage=${SABOTAGE ?? '-'}`);
+say(`REPO=${REPO} HEAD=${git(REPO, 'rev-parse', 'HEAD')} APP=${APP} claude=${execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()} exercises=${EXERCISES} cycles=${CYCLES} members=${MEMBERS} dwell=${DWELL_S}s pause=${PAUSE_SWITCH} douce-limit=${DOUCE_LIMIT} sabotage=${SABOTAGE ?? '-'} inject=${INJECT ?? '-'} toolprocs=${TOOLPROCS}`);
 
 class VoidError extends Error { constructor(msg, kind = 'host') { super(msg); this.kind = kind; } }
 let voidReason = null, voidKind = null;
@@ -81,7 +87,10 @@ async function runExercise(name) {
   const wtOf = (k) => rig.wt(k);
   const readWt = (k, f) => { try { return fs.readFileSync(path.join(wtOf(k), f), 'utf8'); } catch { return null; } };
   /** processes a member's Bash tool tree left alive (`isMemberTool`: in a member worktree, not its keeper / CLI / the app / an `orchestra cli` client, and not the APP's own git refresh) */
-  const toolProcs = () => { const c = census(rig); const byPid = new Map(c.map((x) => [x.pid, x])); return c.filter((x) => isMemberTool(x, byPid, kindOf, (y) => memberOfCwd(rig, y))); };
+  // the pre-fix definition, kept ONLY as the proof's must-FAIL arm (`--toolprocs legacy`): anything in a member worktree that is not its keeper / CLI / the app / an `orchestra cli` client
+  const legacyToolProcs = () => census(rig).filter((x) => memberOfCwd(rig, x) && !['keeper', 'claude', 'app'].includes(kindOf(x)) && !/orchestra cli /.test(x.cmd) && !/ cli /.test(x.cmd));
+  const fixedToolProcs = () => { const c = census(rig); const byPid = new Map(c.map((x) => [x.pid, x])); return c.filter((x) => isMemberTool(x, byPid, kindOf, (y) => memberOfCwd(rig, y))); };
+  const toolProcs = TOOLPROCS === 'legacy' ? legacyToolProcs : fixedToolProcs;
   /** per-member session identity (keeper = ppid of the member's CLI): pid + /proc start ticks */
   const identities = () => {
     const c = census(rig);
@@ -94,6 +103,20 @@ async function runExercise(name) {
       out[k] = { claude: `${p.pid}@${p.startTicks}`, keeper: kp ? `${kp.pid}@${kp.startTicks}` : null, pid: p.pid, startTicks: p.startTicks };
     }
     return out;
+  };
+  /** proof-only: start the injected process(es) in w1's worktree, with the rig's ORCHESTRA_HOME in their env (so the census sees them like any rig process). */
+  const injected = [];
+  const injectProc = (kind) => {
+    const wt = wtOf('w1');
+    const env = { PATH: '/usr/bin:/bin', HOME: path.join(rig.H, 'home'), ORCHESTRA_HOME: rig.H };
+    if (kind === 'orphan-tool') {
+      // a real command that "came back": started in its own session, parent = this drive (outside the rig census) ⇒ an orphan from the census' point of view
+      const c = spawn('setsid', ['sleep', '7403'], { cwd: wt, env, detached: true, stdio: 'ignore' }); c.unref(); injected.push(c.pid);
+    } else if (kind === 'app-git') {
+      // a helper whose cmdline reads as the APP (`<app> --type=…`: kindOf → 'app') running git + a child in the worktree = the shape of the app's own `git ls-files --others` (ppid = app)
+      const c = spawn('bash', ['-c', `exec -a "${rig.appBin} --type=fake-app-helper" bash -c 'git ls-files --others --exclude-standard >/dev/null; sleep 8'`], { cwd: wt, env, detached: true, stdio: 'ignore' }); c.unref(); injected.push(c.pid);
+    }
+    say(`   INJECT ${kind}: started pid ${injected[injected.length - 1]} in ${wt}`);
   };
   const sameSession = (a, b) => a && b && a.claude === b.claude && a.keeper === b.keeper;
   const check = (cyc, id, ok, detail) => { const row = { exercise: name, cycle: cyc?.cycle ?? 0, id, ok: !!ok, detail }; (cyc ? cyc.checks : wsChecks).push(row); say(`${ok ? 'ok ' : 'RED'} [${name}${cyc ? ` c${cyc.cycle}` : ''}] ${id} — ${detail}`); emit('PC-CHECK', row); };
@@ -200,10 +223,12 @@ async function runExercise(name) {
       const probes = probeResults.filter((x) => x.endsWith('rc0')).length;
       const tHold0 = Date.now();
       const procEvents = [];
-      let n = 0;
+      let n = 0, legacySeen = false;
+      if (INJECT) injectProc(INJECT);
       while (Date.now() - tHold0 < DWELL_S * 1000) {
         stopIfVoid();
         n++;
+        if (!legacySeen && INJECT && legacyToolProcs().length > 0) legacySeen = true;
         const tp = toolProcs();
         if (tp.length) procEvents.push(...tp.map((p) => `${memberOfCwd(rig, p)}:${p.cmd.slice(0, 40)}`));
         await sleep(500);
@@ -211,7 +236,7 @@ async function runExercise(name) {
       const idNow = identities();
       const replaced = Object.keys(idPre).filter((kk) => idNow[kk] && !sameSession(idNow[kk], idPre[kk]));
       const gone = Object.keys(idPre).filter((kk) => !idNow[kk]);
-      return { probes, probeNotes: probeResults, tHold0, procEvents: [...new Set(procEvents)], replaced, gone, polls: n };
+      return { probes, probeNotes: probeResults, tHold0, procEvents: [...new Set(procEvents)], replaced, gone, polls: n, legacySeen };
     }
     // ─────────────────────────────────────────────────────────────────────────────────────────────────────
     async function doReprise(cyc, c, carrierRun, epochPausedAt, hold, idPre, seq0, { manual, rosterMin, tStartOverride = null, skipIdentity = [], exempt = null }) {
@@ -319,6 +344,7 @@ async function runExercise(name) {
       const lim = await limitDuringPause(cyc, c, spec.lead, trapRow?.paused_at, 'hard');
       const hold = await holdWindow(cyc, c, tTrap ?? Date.now(), idPre, spec.lead);
       hold.tTrapDone = tTrap ?? Date.now();
+      if (INJECT) check(cyc, 'inject_is_observable', hold.legacySeen === true, `the injected ${INJECT} process was seen by the LEGACY classifier during the hold (${hold.legacySeen}) — an injection nobody can see proves nothing`);
       if (lim) {
         const mg = await app.cli(spec.ops, ['migrate-account', lim.qw.id, ACCT_B], { run: spec.ops });   // the simulated account switch: from here the limited member is NOT limited
         check(cyc, 'migrate_account_accepted', mg.code === 0, `rc=${mg.code} ${(mg.out + mg.err).replace(/\n/g, ' | ').slice(0, 120)}`);

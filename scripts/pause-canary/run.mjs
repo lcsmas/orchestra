@@ -41,6 +41,10 @@ const PROOF_ARMS = [
   { name: 'control:sabotage-branch', exercise: 'dure', sabotage: 'branch', redden: ['bar:lost_work_is_zero'] },
   { name: 'control:sabotage-ref', exercise: 'dure', sabotage: 'ref', redden: ['bar:lost_work_is_zero'] },
   { name: 'control:sabotage-session', exercise: 'dure', sabotage: 'session', redden: ['sessions_intact_through_the_cycle'], expectDetail: /replaced: w1/ },   // the session-identity instrument: a member's CLI is SIGTERMed after the pause
+  // F3's instrument false positive (ledger #281 c/6001999281): the APP's own git in a member worktree is host work, a REAL command that came back is a restart
+  { name: 'control:inject-orphan-tool', exercise: 'dure', inject: 'orphan-tool', redden: ['bar:no_self_restart'], expectDetail: /tool-procs-back=[1-9]/ },
+  { name: 'control:inject-app-git', exercise: 'dure', inject: 'app-git', expect: 'PASS' },
+  { name: 'unfixed:legacy-toolprocs-app-git', exercise: 'dure', inject: 'app-git', toolprocs: 'legacy', redden: ['bar:no_self_restart'], expectDetail: /tool-procs-back=[1-9]/ },
   { name: 'control:pause-switch-off', exercise: 'dure', pause: 'off', redden: ['pause_accepted'], expectDetail: /'pause' switch is OFF/ },
   { name: 'unfixed:pre-wave-E-douce', exercise: 'douce', unfixed: true, redden: ['pause_accepted'], expectDetail: /only the HARD pause/ },
   { name: 'unfixed:pre-wave-E-reprise', exercise: 'dure', unfixed: true, redden: ['coordinators_woken', 'bar:every_member_reprise_accused'] },
@@ -239,7 +243,7 @@ for (const arm of sel) {
     if (arm.unfixed) { const u = ensureUnfixed(); appBin = u.app; appTree = u.tree; }
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
-  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: arm.sabotage ? ['--sabotage', arm.sabotage] : [] });
+  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : [])] });
   const hitsOf = (rr) => (arm.redden ?? []).filter((id) => rr.checks.some((c) => !c.ok && c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
   // a cycle CUT SHORT by the host guard before the named check could be evaluated proves nothing either way: it is a VOID, re-run it (a RED already measured by the named check is kept)
   const cutShortWithoutEvidence = (rr) => !!arm.redden && rr.checks.some((c) => c.id === 'cycle_incomplete' && /cut short by a VOID/.test(c.detail)) && hitsOf(rr).length === 0;
