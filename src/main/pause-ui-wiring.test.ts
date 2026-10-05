@@ -75,8 +75,10 @@ test('every write re-publishes (forced) and the push is skipped while neither th
     const start = at(host, `ipcMain.handle('${c}'`);
     const next = host.indexOf('ipcMain.handle(', start + 10);
     const body = host.slice(start, next === -1 ? start + 1500 : next); // THIS handler only (the next one carries the same call)
-    assert.ok(body.includes('broadcastPauseOverview(true)') && body.includes('invalidatePauseOverviewBroadcast()'), `${c} forces a publish`);
+    assert.ok(body.includes('return afterWrite(res)'), `${c} answers through afterWrite (the forced publish)`);
   }
+  const aw = host.slice(at(host, 'function afterWrite'), at(host, 'export function registerPauseUiIpc'));
+  assert.ok(aw.includes('broadcastPauseOverview(true)') && aw.includes('invalidatePauseOverviewBroadcast()'), 'afterWrite forces a publish');
   const fn = host.slice(at(host, 'export function broadcastPauseOverview('));
   assert.ok(fn.slice(0, 700).includes('if (!force && key === lastKey) return null;'), 'unchanged fingerprint = no rebuild');
 });
@@ -102,8 +104,8 @@ test('BUS PAGE: the section is injected from App.tsx (BusPane.tsx stays store-fr
 test('RENDERER: the overview slice is filled at load and replaced WHOLESALE by the push; the actions take the reply\'s overview', () => {
   const st = codeOf('src/renderer/store.ts');
   assert.ok(st.includes("window.orchestra.pauseOverview()"), 'initial paint');
-  assert.ok(/window\.orchestra\.onPauseOverviewUpdate\(\(overview\) => \{\s*useStore\.setState\(\{ pauseOverview: overview \}\);/.test(st), 'wholesale replace on push');
-  for (const a of ['pausePause', 'pauseResume', 'pauseRelease']) assert.ok(new RegExp(`${a}: async \\([^)]*\\) => \\{[^}]*set\\(\\{ pauseOverview: res\\.overview \\}\\)`).test(st), `${a} stores the reply's overview`);
+  assert.ok(/window\.orchestra\.onPauseOverviewUpdate\(\(overview\) => \{\s*useStore\.setState\(\(st\) => \(\{ pauseOverview: newerOverview\(st\.pauseOverview, overview\) \}\)\);/.test(st), 'replace on push (unless older)');
+  for (const a of ['pausePause', 'pauseResume', 'pauseRelease']) assert.ok(new RegExp(`${a}: async \\([^)]*\\) => \\{[^}]*set\\(\\(st\\) => \\(\\{ pauseOverview: newerOverview\\(st\\.pauseOverview, res\\.overview\\) \\}\\)\\)`).test(st), `${a} stores the reply's overview`);
   const css = codeOf('src/renderer/main.tsx');
   assert.ok(css.includes("import './pause-ui.css';"), 'the sheet is imported');
 });
@@ -113,4 +115,51 @@ test('the floating panel: Escape closes the PANEL only (capture phase, swallowed
   assert.ok(m.includes("window.addEventListener('keydown', onKey, true);") && m.includes('e.stopImmediatePropagation();'), 'capture + stopImmediatePropagation');
   assert.ok(m.includes("window.addEventListener('mousedown', onDown, true);") && m.includes("closest('[data-pause-panel]')"), 'outside mousedown closes');
   assert.ok(m.includes("window.removeEventListener('keydown', onKey, true);") && m.includes("window.removeEventListener('mousedown', onDown, true);"), 'both listeners removed on close/unmount');
+});
+
+test('the bus-directory watch feeds the push through the max-wait coalescer (a plain trailing debounce starved under sustained writes — R1-5)', () => {
+  const host = codeOf('src/main/pause-ui-host.ts');
+  assert.ok(host.includes('createCoalescer('), 'the coalescer is built');
+  assert.ok(/WATCH_MAX_WAIT_MS = 1000/.test(host) && host.includes('maxWaitMs: WATCH_MAX_WAIT_MS'), 'with a 1 s max-wait');
+  const watch = host.slice(at(host, 'watcher = fs.watch(dir'));
+  assert.ok(watch.slice(0, 400).includes('coalescer.poke();'), 'every bus write pokes it');
+  assert.ok(!watch.slice(0, 400).includes('setTimeout('), 'no second, private debounce in the watch callback');
+  assert.ok(host.includes('coalescer.cancel();'), 'cancelled at quit');
+});
+
+test('a write reply can never be OLDER than the push it triggered: every overview is host-stamped with a monotonic rev, the write handlers answer with the PUSHED one, the store drops older ones (R1b-2)', () => {
+  const host = codeOf('src/main/pause-ui-host.ts');
+  assert.ok(host.includes('rev: ++overviewRev'), 'the rev is a strictly increasing counter');
+  assert.ok(host.includes("ipcMain.handle('pause:overview', (): PauseUiOverview => stamped("), 'the boot read is stamped too');
+  assert.ok(host.includes('platform.broadcast(PAUSE_UI_PUSH_CHANNEL, overview)') && host.includes('const overview = stamped(built);'), 'the push carries a stamped overview');
+  const after = host.slice(at(host, 'function afterWrite'), at(host, 'export function registerPauseUiIpc'));
+  assert.ok(after.includes('broadcastPauseOverview(true)') && after.includes('overview: pushed'), 'afterWrite answers with the overview it just pushed');
+  const reg = host.slice(at(host, 'export function registerPauseUiIpc'), at(host, 'let watcher'));
+  assert.equal((reg.match(/return afterWrite\(res\)/g) ?? []).length, 3, 'pause, resume and release all go through afterWrite');
+  assert.ok(!/return res;/.test(reg), 'no write handler answers with the pre-push overview');
+  assert.ok(!reg.includes("'soft' : 'hard'"), 'an unknown mode is not defaulted to the destructive one');
+  const st = codeOf('src/renderer/store.ts');
+  assert.equal((st.match(/newerOverview\(/g) ?? []).length, 5, 'the three write replies, the push subscription and the boot read all go through newerOverview');
+  assert.ok(!/set\(\{ pauseOverview: res\.overview \}\)/.test(st) && !/setState\(\{ pauseOverview: overview \}\)/.test(st), 'no site replaces the slice unconditionally');
+  assert.ok(st.includes('pauseOverview: pauseOverview ? newerOverview(get().pauseOverview, pauseOverview) : pauseOverview'), 'the boot read keeps a push that landed while it was in flight');
+});
+
+test('the coalescer runs on a MONOTONIC clock (a wall-clock step must not push the max-wait deadline out)', () => {
+  const host = codeOf('src/main/pause-ui-host.ts');
+  const c = host.slice(at(host, 'const coalescer = createCoalescer('), at(host, 'export function startPauseUiWatcher'));
+  assert.ok(c.includes('now: () => performance.now()') && !c.includes('Date.now()'), 'performance.now(), not Date.now()');
+});
+
+test('an UNREADABLE overview is said out loud: a sidebar strip + the Bus section render it (never an empty "nothing is paused") (R1b-1)', () => {
+  const sb = codeOf('src/renderer/components/Sidebar.tsx');
+  assert.ok(sb.includes('<PauseUnreadableStrip />'), 'the sidebar mounts the strip');
+  const row = codeOf('src/renderer/components/pause/PauseRow.tsx');
+  assert.ok(/o && !o\.available \? <PauseUnreadable error=\{o\.error\} \/> : null/.test(row), 'it renders only when available is false');
+  const bus = codeOf('src/renderer/components/pause/BusPauseSection.tsx');
+  assert.ok(/if \(!o\.available\) return <section[^]*<PauseUnreadable error=\{o\.error\} \/>/.test(bus), 'the Bus section too');
+});
+
+test('an explanation that carries « Libérer aussi ces N » is closed when its Reprise epoch changes (a re-pause / a finished Reprise) (R1b)', () => {
+  const m = codeOf('src/renderer/components/pause/PauseMenu.tsx');
+  assert.ok(m.includes('${id}:${r.phase}@${r.pausedAt}') && m.includes('seen.current.epoch !== epoch') && /seen\.current = null; close\(\);/.test(m), 'the panel compares the carrier run phase@epoch it opened with, and closes on a change');
 });

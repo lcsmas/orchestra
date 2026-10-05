@@ -4,15 +4,16 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import type { PauseUiExplain, PauseUiMember, PauseUiRun } from '../../../shared/pause-ui';
-import { bilanAttention, killedText, releasableIds, runHeadline, treeText, wasDoingText } from '../../../shared/pause-ui-view';
-import { PauseActionButton, PauseBadge, PauseBar, PauseExplain, PauseGlyph, PauseIcon, useNowTick } from './PauseBlocks';
-import { runPause, runRelease, runReleaseAll, runResume, selectPauseOverview } from './pause-actions';
+import { killedText, memberAttention, noBilanState, releaseLabel, releaseScope, runHeadline, treeText, wasDoingText } from '../../../shared/pause-ui-view';
+import { PauseActionButton, PauseBadge, PauseBar, PauseExplain, PauseGlyph, PauseIcon, PauseUnreadable, useNowTick } from './PauseBlocks';
+import { runPause, runRelease, runReleaseAll, runReleaseMany, runResume, selectPauseOverview } from './pause-actions';
 
 const VIA: Record<string, string> = { member: 'accusé', 'host-idle': 'au repos', trap: 'trap hôte' };
 
 function BilanRow({ run, m, onRelease }: { run: PauseUiRun; m: PauseUiMember; onRelease: (m: PauseUiMember) => void }) {
   const b = m.bilan;
-  const attention = bilanAttention(b);
+  const attention = memberAttention(b, run);
+  const missing = b ? null : noBilanState(run); // no Bilan row: still owed ('pending') or never coming ('absent')
   const doing = b && (b.wasDoing.turnRunning || b.wasDoing.inFlight.length > 0 || b.wasDoing.bgTasks.length > 0) ? wasDoingText(b) : null;
   const killed = b ? b.killed.slice(0, 4) : [];
   // info-only lines (a remote member's "non applicable", the not-a-git note of an orchestrator, trap notes) do NOT open a detail row on their own: they would sit under every idle member
@@ -25,8 +26,8 @@ function BilanRow({ run, m, onRelease }: { run: PauseUiRun; m: PauseUiMember; on
         <td><PauseBadge wsId={m.wsId} ui={m.ui} /></td>
         <td className="pause-bilan-dim">{m.confirmVia ? VIA[m.confirmVia] : '—'}</td>
         <td className="pause-bilan-ref" title={b?.snapshotRef ?? undefined}>{b?.snapshotRef ?? '—'}</td>
-        <td>{b ? treeText(b) : '—'}</td>
-        <td className={attention.some((x) => x.tone === 'error') ? 'pause-bilan-warn' : 'pause-bilan-dim'} title={b?.skipped ?? undefined}>{b ? killedText(b) : "après l'escalade"}</td>
+        <td>{b ? treeText(b) : missing === 'absent' ? 'aucun Bilan' : '—'}</td>
+        <td className={attention.some((x) => x.tone === 'error') ? 'pause-bilan-warn' : 'pause-bilan-dim'} title={b?.skipped ?? undefined}>{b ? killedText(b) : missing === 'absent' ? 'aucun Bilan' : "après l'escalade"}</td>
         <td className="pause-bilan-act">
           {run.phase === 'resuming' && m.ui === 'blocked' ? (
             <PauseActionButton kind="release" wsId={run.carrierRunId} tone="go" onClick={() => onRelease(m)}>Libérer</PauseActionButton>
@@ -59,7 +60,8 @@ function RunCard({ run }: { run: PauseUiRun }) {
   useEffect(() => { setExplains([]); setRepause(false); }, [run.phase, run.pausedAt]);
   const h = runHeadline(run, now);
   const actor = run.carrierRunId;
-  const blocked = releasableIds(run).length;
+  const scope = releaseScope(run);
+  const blocked = scope.own.length + scope.below.length;
   const act = async (p: Promise<PauseUiExplain[]>) => setExplains(await p);
   return (
     <div className="pause-run" data-pause-section={run.carrierRunId} data-pause-phase={run.phase} data-pause-mode={run.mode ?? ''}>
@@ -84,7 +86,11 @@ function RunCard({ run }: { run: PauseUiRun }) {
           {run.phase === 'paused' && <PauseActionButton kind="resume" wsId={actor} tone="go" onClick={() => void act(runResume(actor, null))}>Reprendre</PauseActionButton>}
           {run.phase === 'resuming' && (
             <>
-              {blocked > 0 && <PauseActionButton kind="release-all" wsId={actor} tone="go" onClick={() => void act(runReleaseAll(actor, run, null))}>Libérer les {blocked} bloqué{blocked > 1 ? 's' : ''}</PauseActionButton>}
+              {blocked > 0 && (
+                <PauseActionButton kind="release-all" wsId={actor} tone="go" onClick={() => void act(runReleaseAll(actor, run, null))}>
+                  {releaseLabel(scope)}
+                </PauseActionButton>
+              )}
               {!repause ? (
                 <PauseActionButton kind="repause" wsId={actor} onClick={() => setRepause(true)}>Re-pause</PauseActionButton>
               ) : (
@@ -99,7 +105,7 @@ function RunCard({ run }: { run: PauseUiRun }) {
       </div>
       {explains.length > 0 && (
         <div className="pause-run-explains">
-          {explains.map((e, i) => <PauseExplain key={i} explain={{ ...e, actions: e.actions?.filter((a) => a.kind === 'resume') }} onAction={(a) => { if (a.kind === 'resume') void act(runResume(a.wsId, null)); }} />)}
+          {explains.map((e, i) => <PauseExplain key={i} explain={e} onAction={(a) => void act(runReleaseMany(a.wsId, a.ids, a.carrierRunId, null))} />)}
         </div>
       )}
       <h3>Bilan de pause</h3>
@@ -121,7 +127,10 @@ function RunCard({ run }: { run: PauseUiRun }) {
 /** Rendered by BusPane after the live-switch summary; null while nothing is paused or resuming. */
 export function BusPauseSection() {
   const o = useStore(selectPauseOverview);
-  if (!o || !o.available || o.runs.length === 0) return null;
+  if (!o) return null;
+  // an unreadable overview is NOT "nothing paused": say so (the sidebar strip says it too)
+  if (!o.available) return <section className="bus-section" data-section="pause"><h3>Pause de flotte</h3><PauseUnreadable error={o.error} /></section>;
+  if (o.runs.length === 0) return null;
   return (
     <section className="bus-section" data-section="pause">
       <h3>Pause de flotte</h3>

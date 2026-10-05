@@ -73,13 +73,13 @@ export async function runResume(wsId: string, anchor: PauseAnchor | null): Promi
   });
 }
 
-/** "Libérer les N bloqués" = EXPLICIT ids (`releasableIds`): `'all'` is the acting row's own run only and would leave a nested wave's workers `below`. */
+/** « Libérer tout » = `orchestra run release --all` for the acting row: the members of ITS OWN run only. A blocked worker of a run BELOW (another coordinator's wave) comes back as `below` and is NOT released —
+ *  the writer's own explanation then offers a second, explicit gesture (« libérer aussi ces N », `runReleaseMany`). Never explicit ids here: that would dispatch another OPS's workers in one click. */
 export async function runReleaseAll(wsId: string, run: PauseUiRun, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
-  const ids = releasableIds(run);
-  if (ids.length === 0) return report(wsId, anchor, [], []);
+  if (releasableIds(run).length === 0) return report(wsId, anchor, [], []);
   return once(`release:${run.carrierRunId}`, [], async () => {
     try {
-      const res = await useStore.getState().pauseRelease(wsId, ids, run.carrierRunId);
+      const res = await useStore.getState().pauseRelease(wsId, 'all', run.carrierRunId);
       return report(wsId, anchor, res.explain, res.explain.map((e) => e.tone));
     } catch (e) {
       return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);
@@ -87,15 +87,21 @@ export async function runReleaseAll(wsId: string, run: PauseUiRun, anchor: Pause
   });
 }
 
-export async function runRelease(wsId: string, targetWsId: string, carrierRunId: string, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
-  return once(`release:${carrierRunId}:${targetWsId}`, [], async () => {
+/** Explicit ids: a per-member « Libérer », or the second gesture after « tout libérer » left some `below`. An explicit id releases any member the caller may (carrier authority). */
+export async function runReleaseMany(wsId: string, ids: readonly string[], carrierRunId: string, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
+  if (ids.length === 0) return report(wsId, anchor, [], []);
+  return once(`release:${carrierRunId}:${ids.join(',')}`, [], async () => {
     try {
-      const res = await useStore.getState().pauseRelease(wsId, [targetWsId], carrierRunId);
+      const res = await useStore.getState().pauseRelease(wsId, ids.slice(), carrierRunId);
       return report(wsId, anchor, res.explain, res.explain.map((e) => e.tone));
     } catch (e) {
       return report(wsId, anchor, [ipcFailure(e)], ['ipc-failed']);
     }
   });
+}
+
+export function runRelease(wsId: string, targetWsId: string, carrierRunId: string, anchor: PauseAnchor | null): Promise<PauseUiExplain[]> {
+  return runReleaseMany(wsId, [targetWsId], carrierRunId, anchor);
 }
 
 /** The overview selector every row part uses (one subscription shape). */

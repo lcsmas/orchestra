@@ -91,10 +91,10 @@ export interface ConsigneInput {
 }
 
 /** Code-point ranges stripped from any recorded string: C0/DEL/C1, soft hyphen, ALM, Mongolian vowel separator, zero-width + bidi marks/overrides/isolates,
- *  line/paragraph separators, invisible formatting, BOM and the TAG block. Built from NUMBERS so no invisible character lives in this source. */
+ *  line/paragraph separators, invisible formatting (U+2060-206F, deprecated format controls included), BOM and the TAG block. Built from NUMBERS so no invisible character lives in this source. */
 const STRIP_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x2029],
-  [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x2069], [0xfeff, 0xfeff], [0xe0000, 0xe007f],
+  [0x202a, 0x202e], [0x2060, 0x206f], [0xfeff, 0xfeff], [0xe0000, 0xe007f],
 ];
 const cp = (n: number): string => `\\u{${n.toString(16)}}`;
 const STRIP_RE = new RegExp(`[${STRIP_RANGES.map(([a, b]) => (a === b ? cp(a) : `${cp(a)}-${cp(b)}`)).join('')}]`, 'gu');

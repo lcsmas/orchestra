@@ -17,8 +17,8 @@ const T = { main: 'src/main/pause-ui.test.ts', shared: 'src/shared/pause-ui.test
 
 const M = [
   // ── who acts / which run (pause-ui.ts)
-  { id: 'actor-is-run-coordinator', file: MAIN, find: '  const actor = uiActor(req.wsId);\n  const at = Date.now();', rep: '  const actor = t.runId;\n  const at = Date.now();', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
-  { id: 'target-run-is-the-clicked-ws', file: MAIN, find: 'return { ws, runId: nearestOrchestratorId(ws, deps.getWorkspace) };', rep: 'return { ws, runId: ws.id };', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
+  { id: 'actor-is-run-coordinator', file: MAIN, find: '  const actor = uiActor(req.wsId);\n  // an unknown mode is REFUSED', rep: '  const actor = t.runId;\n  // an unknown mode is REFUSED', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
+  { id: 'target-run-is-the-clicked-ws', file: MAIN, find: 'return { ws, runId: own ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace) };', rep: 'return { ws, runId: ws.id };', tests: [T.main], expect: /REFUSAL — a WORKER row/ },
   { id: 'pause-mode-dropped', file: MAIN, find: 'setRunPause(db, t.runId, true, actor, req.mode)', rep: 'setRunPause(db, t.runId, true, actor)', tests: [T.main], expect: /uiPause as an ORCHESTRATOR row/ },
   { id: 'resume-cover-dropped', file: MAIN, find: '    if (c && c.runId !== t.runId) cover = {', rep: '    if (false && c && c.runId !== t.runId) cover = {', tests: [T.main], expect: /uiResume: not-paused/ },
   { id: 'resume-reason-not-manual', file: MAIN, find: "beginReprise(db, t.runId, actor, { reason: 'manual' })", rep: "beginReprise(db, t.runId, actor, { host: true, reason: 'usage_limit' })", tests: [T.main], expect: /uiResume: not-paused/ },
@@ -31,7 +31,7 @@ const M = [
   { id: 'badge-released-before-blocking', file: MAIN, find: 'const carrier = pausedCarrierForWorkspace(db, ws, deps.getWorkspace) ?? pausedCarrierForWorkspace(db, ws, deps.getWorkspace, { includeReleased: true });', rep: 'const carrier = pausedCarrierForWorkspace(db, ws, deps.getWorkspace, { includeReleased: true });', tests: [T.main], expect: /RELEASED by an inner carrier/ },
   { id: 'badge-unenrolled-reads-none', file: MAIN, find: "ui: row ? memberUiState(phase, row) : phase === 'resuming' ? 'blocked' : 'pausing',", rep: "ui: row ? memberUiState(phase, row) : phase === 'resuming' ? 'blocked' : 'paused',", tests: [T.main], expect: /uiPause as an ORCHESTRATOR row/ },
   { id: 'badge-unenrolled-resuming-open', file: MAIN, find: "ui: row ? memberUiState(phase, row) : phase === 'resuming' ? 'blocked' : 'pausing',", rep: "ui: row ? memberUiState(phase, row) : 'pausing',", tests: [T.main], expect: /JOINS the tree during the Reprise/ },
-  { id: 'controls-for-workers', file: MAIN, find: '      if (!nodeOrchestrates(ws)) continue; // a worker row', rep: '      if (false) continue; // a worker row', tests: [T.main], expect: /nothing paused: no run, no badge/ },
+  { id: 'controls-for-workers', file: MAIN, find: '      if (!nodeOrchestrates(ws) && !ownsRun) continue;', rep: '      if (false) continue;', tests: [T.main], expect: /nothing paused: no run, no badge/ },
   { id: 'anchored-always-true', file: MAIN, find: 'const anchored = run !== null && isCoordinatorHandle(run.coordinator, ws.id);', rep: 'const anchored = run !== null;', tests: [T.main], expect: /ANOTHER coordinator is not anchored/ },
   { id: 'controls-phase-ignores-switch', file: MAIN, find: '      const phase: PausePhase = cols && switchOn === true\n', rep: '      const phase: PausePhase = cols\n', tests: [T.main], expect: /FROZEN switch is OFF is not a pause/ },
   { id: 'bilan-killed-uncapped', file: MAIN, find: 'killed: merged.slice(-KILLED_CAP).map(', rep: 'killed: merged.map(', tests: [T.main], expect: /toBilanLine reads the REAL killed_json/ },
@@ -41,7 +41,7 @@ const M = [
   { id: 'member-state-resumed-lost', file: SH, find: "return row.repriseConfirmedAt !== null ? 'resumed' : 'released';", rep: "return 'released';", tests: [T.shared], expect: /memberUiState/ },
   { id: 'member-state-hard-unconfirmed-paused', file: SH, find: "return row.pauseConfirmedAt !== null ? 'paused' : 'pausing';", rep: "return 'paused';", tests: [T.shared], expect: /memberUiState/ },
   { id: 'member-state-release-ignored', file: SH, find: "    if (row.releasedAt === null) return 'blocked';", rep: "    if (row.releasedAt === null) return 'released';", tests: [T.shared], expect: /memberUiState/ },
-  { id: 'explain-refused-names-nobody', file: SH, find: "        fix: c.mayBe.map((id) => `Mettre ${c.label(id)} en pause`),", rep: '        fix: [],', tests: [T.shared], expect: /explainPauseOutcome/ },
+  { id: 'explain-refused-names-nobody', file: SH, find: "        fix: c.mayBe.map((id, i) =>", rep: "        fix: ([] as string[]).map((id, i) =>", tests: [T.shared], expect: /explainPauseOutcome/ },
   { id: 'explain-switch-off-silent', file: SH, find: "    case 'switch-off':\n      return {", rep: "    case 'switch-off':\n      return null;\n      return {", tests: [T.shared, T.main], expect: /explainPauseOutcome|REFUSAL — switch OFF/ },
   { id: 'explain-covered-unnamed', file: SH, find: "      return c.cover\n        ? {", rep: "      return false && c.cover\n        ? {", tests: [T.shared], expect: /explainResumeOutcome/ },
   { id: 'explain-below-silent', file: SH, find: '  if (r.below.length) {', rep: '  if (false && r.below.length) {', tests: [T.shared], expect: /explainReleaseResult/ },
@@ -52,7 +52,7 @@ const M = [
   { id: 'avail-covered-resume-allowed', file: SH, find: "resume: i.phase === 'active' ? (i.covered ? no('covered') : no('not-paused'))", rep: "resume: i.phase === 'active' ? no('not-paused')", tests: [T.shared], expect: /availabilityFor/ },
   { id: 'avail-release-outside-reprise', file: SH, find: "release: i.phase === 'resuming' ? authority : no('not-resuming'),", rep: 'release: authority,', tests: [T.shared], expect: /availabilityFor/ },
   // ── host wiring
-  { id: 'host-write-not-republished', file: HOST, find: "as ${res.actor ?? '?'} → ${res.outcome}`);\n    invalidatePauseOverviewBroadcast();\n    broadcastPauseOverview(true);\n    return res;\n  });\n  ipcMain.handle('pause:resume'", rep: "as ${res.actor ?? '?'} → ${res.outcome}`);\n    return res;\n  });\n  ipcMain.handle('pause:resume'", tests: [T.wiring], expect: /every write re-publishes/ },
+  { id: 'host-write-not-republished', file: HOST, find: "as ${res.actor ?? '?'} → ${res.outcome}`);\n    return afterWrite(res);\n  });\n  ipcMain.handle('pause:resume'", rep: "as ${res.actor ?? '?'} → ${res.outcome}`);\n    return res;\n  });\n  ipcMain.handle('pause:resume'", tests: [T.wiring], expect: /every write re-publishes/ },
   { id: 'host-fingerprint-skip-removed', file: HOST, find: '  if (!force && key === lastKey) return null;', rep: '', tests: [T.wiring], expect: /every write re-publishes/ },
   { id: 'host-overview-marked-write', file: HOST, find: "{ channel: 'pause:overview', writes: false,", rep: "{ channel: 'pause:overview', writes: true,", tests: [T.wiring], expect: /enumerated with their read\/write marks/ },
   { id: 'host-write-unlisted', file: HOST, find: "  { channel: 'pause:release', writes: true, what: 'releaseMembers (<ws>… | all) as the workspace row' },\n", rep: '', tests: [T.wiring], expect: /enumerated with their read\/write marks/ },

@@ -151,7 +151,7 @@ export function buildWorld(armDir, guard) {
   fs.writeFileSync(path.join(ohome, 'userData', 'orchestra', 'store.json'), JSON.stringify({ repos: [], workspaces, accounts: [], selfTuneRuns: [] }, null, 2));
   const seeder = (cmd, ...a) => { const out = sh(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(REPO, 'scripts/pause-ui/seed-bus.mjs'), ohome, cmd, ...a], { env: { PATH: '/usr/bin:/bin', HOME: home } }); return JSON.parse(out.split('\n').filter((l) => l.startsWith('{') || l.startsWith('[')).pop()); };
   seeder('seed');
-  return { home, ohome, cfg, repo, bin, workspaces, readBus: () => seeder('read'), sql: (q, ...a) => seeder('sql', q, ...a) };
+  return { home, ohome, cfg, repo, bin, workspaces, readBus: () => seeder('read'), sql: (q, ...a) => seeder('sql', q, ...a), hold: (runId) => seeder('hold', runId) };
 }
 
 export function listProcsByHome(home) { // identity = /proc/<pid>/environ carrying THIS arm's ORCHESTRA_HOME

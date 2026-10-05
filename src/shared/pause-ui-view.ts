@@ -47,7 +47,8 @@ export interface PauseHeadline {
 export function runHeadline(run: PauseUiRun, now: number): PauseHeadline {
   const { done, total } = run.progress;
   const fraction = total > 0 ? Math.min(1, done / total) : 0;
-  const count = run.progress.kind === 'repris' ? `${done}/${total} repris` : `${done}/${total} en pause`;
+  // an EMPTY roster is "the host has not reacted yet" (it enrols within a sweep; the CLI says the same) — never "0/0 en pause" next to a full bar
+  const count = total === 0 && run.phase !== 'active' ? "en attente de l'hôte" : run.progress.kind === 'repris' ? `${done}/${total} repris` : `${done}/${total} en pause`;
   if (run.phase === 'active') {
     return { tone: 'resumed', title: 'Reprise : accusés en attente', count, sub: run.progress.missing.length ? `${run.progress.missing.length} accusé${run.progress.missing.length > 1 ? 's' : ''} manquant${run.progress.missing.length > 1 ? 's' : ''}` : 'tous les accusés sont reçus', fraction };
   }
@@ -61,7 +62,7 @@ export function runHeadline(run: PauseUiRun, now: number): PauseHeadline {
     const released = run.members.filter((m) => m.releasedAt !== null).length;
     return { tone: 'resumed', title: pausePhaseWord('resuming', run.mode), count, sub: `${released}/${total} libérés · ${run.blocked.length} bloqué${run.blocked.length > 1 ? 's' : ''}`, fraction };
   }
-  return { tone: 'paused', title: pausePhaseWord('paused', run.mode), count, sub: `${by}${when}`, fraction: total > 0 ? fraction : 1 };
+  return { tone: 'paused', title: pausePhaseWord('paused', run.mode), count, sub: `${by}${when}`, fraction };
 }
 
 /** What the Bilan line says about the worktree: "propre" · "3 modifiés · 1 ajouté" · "pas encore de Bilan". */
@@ -86,6 +87,13 @@ export function killedText(b: PauseUiBilanLine | null): string {
   return n > 0 ? `${base} · ⚠ ${n} encore vivant${n > 1 ? 's' : ''}` : base;
 }
 
+/** "3,0 Go" / "800 Mo" / "4,2 Mo" — French decimals, one under 10 of the unit. */
+export function sizeText(bytes: number): string {
+  const mo = bytes / 1048576;
+  const f = (n: number) => (n < 10 ? n.toFixed(1) : String(Math.round(n))).replace('.', ',');
+  return mo >= 1024 ? `${f(mo / 1024)} Go` : `${f(mo)} Mo`;
+}
+
 /** Everything in a Bilan row that needs a human's eyes, worst first — shown under the row, never dropped (an error, a survivor, an unconfirmed interrupt, an incomplete snapshot, unreadable files, a trap still owed). */
 export function bilanAttention(b: PauseUiBilanLine | null): Array<{ tone: 'error' | 'warn' | 'info'; text: string }> {
   if (!b) return [];
@@ -97,11 +105,37 @@ export function bilanAttention(b: PauseUiBilanLine | null): Array<{ tone: 'error
   if (b.trap === 'pending') out.push({ tone: 'warn', text: "le trap n'est pas terminé pour cet agent : certaines de ses commandes peuvent ne pas avoir été tuées" });
   for (const x of b.refused) out.push({ tone: 'warn', text: `non tué (identité non prouvée) : ${x.cmd} — ${x.reason}` });
   if (b.snapshotIncomplete) out.push({ tone: 'warn', text: 'snapshot incomplet (trop volumineux) : aucune ref — son worktree est la seule copie du travail non commité' });
+  // what the snapshot did NOT capture — the worktree is the ONLY copy of it (the same facts `orchestra run status` prints: "not captured (too large)", "submodule …: snapshot failed")
+  if (b.notCapturedCount > 0) {
+    const shown = b.notCaptured.map((f) => `${f.path} (${sizeText(f.bytes)}${f.files !== null ? `, ${f.files} fichiers` : ''}${f.reason === 'total-cap' ? ', plafond total' : ''})`).join(', ');
+    out.push({ tone: 'warn', text: `NON capturé dans le snapshot (trop volumineux, ${b.notCapturedCount}) : ${shown}${b.notCapturedCount > b.notCaptured.length ? `, +${b.notCapturedCount - b.notCaptured.length} autres` : ''} — son worktree en est la seule copie` });
+  }
+  for (const m of b.submodules) {
+    if (m.error) out.push({ tone: 'warn', text: `submodule ${m.path} : snapshot échoué (${m.error}) — absent de toute ref` });
+    else out.push({ tone: 'info', text: `submodule ${m.path} : ${m.dirty ? 'modifié, ' : ''}ref ${m.ref ?? '—'}` });
+  }
+  for (const n of b.snapshotNotes) out.push({ tone: 'info', text: `capturé malgré le plafond : ${n}` });
   for (const w of b.warnings) out.push({ tone: 'warn', text: `absent du snapshot (illisible) : ${w}` });
   if (b.interrupt === 'unresponsive' || b.interrupt === 'failed') out.push({ tone: 'warn', text: `interruption non confirmée (${b.interrupt}) : son tour a pu continuer` });
   if (b.trap === 'skipped' && b.skipped) out.push({ tone: 'info', text: `non applicable : ${b.skipped}` });
   for (const n of b.notes.slice(-3)) out.push({ tone: 'info', text: n });
   return out;
+}
+
+/** A roster member with NO Bilan row: 'pending' while the trap is still owed (a douce waiting, a dure in progress); once the trap is done or the Reprise started, none will ever come. */
+export function noBilanState(run: Pick<PauseUiRun, 'phase' | 'trapAt'>): 'pending' | 'absent' {
+  return run.phase === 'pausing' || run.phase === 'paused' ? (run.trapAt !== null ? 'absent' : 'pending') : 'absent';
+}
+
+/** Everything a Bilan row needs a human's eyes on — a member WITHOUT a Bilan (past the trap) included: nothing was snapshotted or killed for it, its worktree is the only copy. */
+export function memberAttention(b: PauseUiBilanLine | null, run: Pick<PauseUiRun, 'phase' | 'trapAt'>): Array<{ tone: 'error' | 'warn' | 'info'; text: string }> {
+  if (b) return bilanAttention(b);
+  return noBilanState(run) === 'absent' ? [{ tone: 'warn', text: "aucun Bilan pour cet agent : rien n'a été snapshotté ni tué à la pause — son worktree est la seule copie du travail non commité" }] : [];
+}
+
+/** The overview the renderer should hold: `next`, unless it is OLDER than `cur` (host-stamped `rev` on both) — a write reply racing a fresher push, a boot read racing the first push. */
+export function newerOverview(cur: PauseUiOverview | null, next: PauseUiOverview): PauseUiOverview {
+  return cur !== null && cur.rev !== undefined && next.rev !== undefined && next.rev < cur.rev ? cur : next;
 }
 
 /** What the member was doing when the pause landed: the in-flight command / background task, else "au repos". */
@@ -124,7 +158,28 @@ export function groupByMemberRun(members: readonly PauseUiMember[]): Array<{ run
   return order.map((runId) => ({ runId, members: by.get(runId)!.slice().sort((a, b) => Number(b.role === 'coordinator') - Number(a.role === 'coordinator')) }));
 }
 
-/** The ids "Libérer les N bloqués" sends — EXPLICIT (an explicit id releases any member the caller may; `'all'` is the acting row's own run only and would leave a nested wave's workers `below`). */
+/** What « tout libérer » (`orchestra run release --all`) covers for the carrier's own row, and what it leaves `below`: the blocked WORKERS of the carrier's own run are its own; a blocked member of a run
+ *  BELOW (another coordinator's wave) is not — the writer returns it as `below` and the UI offers a second, explicit gesture. */
+export function releaseScope(run: PauseUiRun): { own: string[]; below: string[] } {
+  const own: string[] = [];
+  const below: string[] = [];
+  for (const m of run.members) {
+    if (m.ui !== 'blocked') continue;
+    if (m.role === 'worker' && m.memberRun !== null && m.memberRun !== run.carrierRunId) below.push(m.wsId);
+    else own.push(m.wsId);
+  }
+  return { own, below };
+}
+
+/** The « Libérer tout » button's label, honest about its scope (never counts the workers it will NOT release). */
+export function releaseLabel(sc: { own: readonly string[]; below: readonly string[] }): string {
+  const n = sc.own.length;
+  const m = sc.below.length;
+  if (n === 0) return `Libérer… (${m} plus bas, à part)`;
+  return `Libérer ${n} bloqué${n > 1 ? 's' : ''}${m > 0 ? ` (+${m} plus bas, à part)` : ''}`;
+}
+
+/** EVERY blocked member, as explicit ids — what a per-member « Libérer » and the second gesture (« libérer aussi ces N ») send (an explicit id releases any member the caller may). */
 export function releasableIds(run: PauseUiRun): string[] {
   return run.members.filter((m) => m.ui === 'blocked').map((m) => m.wsId);
 }
@@ -160,6 +215,10 @@ export function coveringRun(o: PauseUiOverview | null | undefined, ctl: PauseUiC
 export function rowNoteText(run: PauseUiRun, now: number): { tone: PauseTone; text: string; fraction: number } {
   const { done, total } = run.progress;
   const fraction = total > 0 ? Math.min(1, done / total) : 0;
+  if (total === 0 && run.phase !== 'active') {
+    const word = run.phase === 'resuming' ? 'Reprise' : run.mode === 'soft' && run.phase === 'pausing' ? 'Pause douce' : 'Pause dure';
+    return { tone: run.phase === 'resuming' ? 'resumed' : run.phase === 'pausing' ? 'pausing' : 'paused', text: `${word} · en attente de l'hôte`, fraction: 0 };
+  }
   if (run.phase === 'pausing') {
     const left = run.deadlineAt !== null ? ` · dure dans ${countdown(run.deadlineAt, now)}` : '';
     return { tone: 'pausing', text: `Pause douce · ${done}/${total}${left}`, fraction };
@@ -168,7 +227,7 @@ export function rowNoteText(run: PauseUiRun, now: number): { tone: PauseTone; te
     return { tone: 'resumed', text: `Reprise · ${done}/${total} repris · ${run.blocked.length} bloqué${run.blocked.length > 1 ? 's' : ''}`, fraction };
   }
   const since = run.pausedAt !== null ? ` · ${agoText(run.pausedAt, now).replace('il y a ', 'depuis ')}` : '';
-  return { tone: 'paused', text: `En pause${run.mode === 'soft' ? ' (douce → dure)' : ''} · ${done}/${total}${since}`, fraction: total > 0 ? fraction : 1 };
+  return { tone: 'paused', text: `En pause${run.mode === 'soft' ? ' (douce → dure)' : ''} · ${done}/${total}${since}`, fraction };
 }
 
 /** How many agents a pause on `wsId` concerns: itself + every descendant on the live `parentId` tree (what the menu says before the click). */

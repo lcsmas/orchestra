@@ -50,6 +50,13 @@ export interface PauseUiBilanLine {
   refused: Array<{ cmd: string; pid: number; reason: string }>;
   /** Files the snapshot could not read (everything else is in the ref). */
   warnings: string[];
+  /** What the snapshot did NOT capture (too large): that worktree is the ONLY copy of it. `notCapturedCount` is the total (the list keeps the largest 6). */
+  notCaptured: Array<{ path: string; bytes: number; files: number | null; reason: 'file-cap' | 'total-cap' | null }>;
+  notCapturedCount: number;
+  /** "captured despite the cap" notes (git < 2.25 could not exclude them: they ARE in the ref). */
+  snapshotNotes: string[];
+  /** Checked-out submodules snapshotted in their own repo (a failed one is NOT in any ref). */
+  submodules: Array<{ path: string; ref: string | null; dirty: boolean; error: string | null }>;
   notes: string[];
   error: string | null;
 }
@@ -149,6 +156,8 @@ export interface PauseUiOverview {
   available: boolean;
   error: string | null;
   at: number;
+  /** Host-stamped, strictly increasing per main process: the renderer drops an overview OLDER than the one it holds (a write reply racing a fresher push). Absent on pure-layer results. */
+  rev?: number;
   runs: PauseUiRun[];
   /** Per workspace id (non-archived workspaces only), for the sidebar controls. */
   controls: Record<string, PauseUiControl>;
@@ -170,14 +179,19 @@ export interface PauseUiExplain {
   why: string;
   /** Short remedies, one per entry (a button label or a command). */
   fix: string[];
-  /** The remedies the UI can DO for the human (a button each): pause / resume another workspace row (the one that has the authority). Absent = text only. */
+  /** A follow-up the human can take with ONE more explicit gesture (today only: "libérer aussi ces N" after a « tout libérer » left some below). A refusal never carries a button that pauses / resumes
+   *  ANOTHER row for the human — it NAMES the run to act on (spec Q5: no shortcut). Absent = text only. */
   actions?: PauseUiExplainAction[];
 }
 
 export interface PauseUiExplainAction {
-  kind: 'pause' | 'resume';
+  kind: 'release';
   /** The workspace row the action is attributed to (the writer's actor). */
   wsId: string;
+  /** The RESUMING carrier the release targets. */
+  carrierRunId: string;
+  /** Explicit roster ids (an explicit id releases any member the caller may). */
+  ids: string[];
   label: string;
 }
 
@@ -187,6 +201,9 @@ export interface ExplainCtx {
   runLabel: string;
   /** The run id, when known (named in a CLI remedy). */
   runId?: string;
+  /** The workspace row the write was attributed to / the carrier a release targeted — what a follow-up button acts on. */
+  actorId?: string;
+  carrierRunId?: string;
   /** The message of a writer that THREW (`write-failed`). */
   error?: string;
   actorLabel: string;
@@ -208,8 +225,8 @@ export function explainPauseOutcome(outcome: string, c: ExplainCtx): PauseUiExpl
         tone: 'error',
         title: `Pause refusée — ${c.actorLabel} n'est pas coordinateur de ${c.runLabel}`,
         why: `La pause se pose sur une vague, pas sur un agent seul : seul son coordinateur (${join(c.mayBe.slice(0, 1).map(c.label))}) ou un coordinateur d'une vague au-dessus (${join(c.mayBe.slice(1).map(c.label))}) la décide. Rien n'a été écrit.`,
-        fix: c.mayBe.map((id) => `Mettre ${c.label(id)} en pause`),
-        actions: c.mayBe.map((id) => ({ kind: 'pause' as const, wsId: id, label: `Mettre ${c.label(id)} en pause…` })),
+        // NAMED, not offered as a button: the second entry pauses a WIDER run (everything under the ancestor), which must be a deliberate click on THAT row
+        fix: c.mayBe.map((id, i) => (i === 0 ? `Pour ${c.actorLabel} : mettre en pause sa vague ${c.label(id)} (survol de la ligne ${c.label(id)} → ⏸)` : `Plus large : mettre ${c.label(id)} en pause suspend TOUTE sa vague, ${c.runLabel} comprise`)),
       };
     case 'switch-off':
       return {
@@ -243,12 +260,11 @@ export function explainResumeOutcome(outcome: string, c: ExplainCtx): PauseUiExp
         tone: 'error',
         title: `Reprise refusée — ${c.actorLabel} n'est pas coordinateur de ${c.runLabel}`,
         why: `Seul le coordinateur de ${c.runLabel} (${join(c.mayBe.slice(0, 1).map(c.label))}) ou d'une vague au-dessus (${join(c.mayBe.slice(1).map(c.label))}) la reprend. Rien n'a été écrit.`,
-        fix: c.mayBe.map((id) => `Reprendre depuis ${c.label(id)}`),
-        actions: c.mayBe.map((id) => ({ kind: 'resume' as const, wsId: id, label: `Reprendre depuis ${c.label(id)}…` })),
+        fix: c.mayBe.map((id) => `Reprendre depuis ${c.label(id)} (survol de sa ligne → ▶)`),
       };
     case 'not-paused':
       return c.cover
-        ? { tone: 'info', title: `${c.cover.label} tient déjà ${c.runLabel} en pause`, why: `${c.runLabel} n'a pas de pause propre : c'est celle de ${c.cover.label}. Reprenez depuis ${c.cover.label}.`, fix: [`Reprendre ${c.cover.label}`], actions: [{ kind: 'resume', wsId: c.cover.runId, label: `Reprendre ${c.cover.label}…` }] }
+        ? { tone: 'info', title: `${c.cover.label} tient déjà ${c.runLabel} en pause`, why: `${c.runLabel} n'a pas de pause propre : c'est celle de ${c.cover.label}. Reprenez depuis ${c.cover.label}.`, fix: [`Reprendre ${c.cover.label} (survol de sa ligne → ▶)`] }
         : { tone: 'info', title: `${c.runLabel} n'est pas en pause`, why: 'Rien à reprendre.', fix: [] };
     case 'already-resuming':
       return { tone: 'info', title: `La reprise de ${c.runLabel} est déjà en cours`, why: 'Rien n\'est renvoyé : les coordinateurs ont déjà reçu leur Bilan ; libérez les workers bloqués.', fix: ['Libérer les bloqués'] };
@@ -289,8 +305,11 @@ export function explainReleaseResult(
     out.push({
       tone: 'warn',
       title: `Tout libérer : ${r.below.length} agent${r.below.length > 1 ? 's' : ''} laissé${r.below.length > 1 ? 's' : ''} à leur coordinateur`,
-      why: `${r.below.map(c.label).join(', ')} appartiennent à une vague en dessous de ${c.actorLabel} : « tout libérer » ne libère que les membres de sa propre vague.`,
-      fix: r.below.map((id) => `Libérer ${c.label(id)}`),
+      why: `${r.below.map(c.label).join(', ')} appartiennent à une vague en dessous de ${c.actorLabel} : « tout libérer » ne libère que les membres de sa propre vague (comme \`orchestra run release --all\`) ; leur coordinateur les libère, ou vous les libérez ici d'un geste de plus.`,
+      fix: [],
+      ...(c.actorId && c.carrierRunId
+        ? { actions: [{ kind: 'release' as const, wsId: c.actorId, carrierRunId: c.carrierRunId, ids: r.below.slice(), label: `Libérer aussi ces ${r.below.length} : ${r.below.slice(0, 3).map(c.label).join(', ')}${r.below.length > 3 ? '…' : ''}` }] }
+        : {}),
     });
   }
   if (r.unknown.length) {
@@ -352,6 +371,8 @@ export interface PauseUiWriteResult {
   explain: PauseUiExplain | null;
   /** The ancestor pause that governs this run, when a resume found nothing of its own to lift. */
   cover: { runId: string; label: string } | null;
+  /** Resume only: the run's liveness hold was lifted too (`orchestra run resume` does both). */
+  holdLifted?: boolean;
   overview: PauseUiOverview;
 }
 

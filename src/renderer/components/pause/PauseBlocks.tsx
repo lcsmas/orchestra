@@ -83,6 +83,16 @@ export function PauseActionButton({ kind, wsId, tone = 'ghost', disabled, childr
   );
 }
 
+/** The overview could not be read (bus down / a read threw): the badges are NOT reliable — said out loud, never an empty "nothing is paused". */
+export function PauseUnreadable({ error }: { error: string | null }) {
+  return (
+    <div className="pause-unreadable" role="alert" data-pause-unreadable="">
+      <PauseIcon kind="ban" size={12} />
+      <span><b>Pause : état illisible</b> — une flotte en pause peut ne pas s'afficher ici. {error ?? ''}</span>
+    </div>
+  );
+}
+
 /** A refusal / info / warning from an outcome, explained (never a bare failure): what happened, what was (not) written, what to do. */
 export function PauseExplain({ explain, code, onAction }: { explain: PauseUiExplain; code?: string; onAction?: (a: PauseUiExplainAction) => void }) {
   return (
@@ -94,8 +104,8 @@ export function PauseExplain({ explain, code, onAction }: { explain: PauseUiExpl
         {explain.actions && explain.actions.length > 0 && onAction ? (
           <div className="pause-explain-actions">
             {explain.actions.map((a) => (
-              <button key={`${a.kind}:${a.wsId}`} type="button" className={`pause-btn pause-btn-${a.kind === 'resume' ? 'go' : 'primary'}`} data-pause-fix={a.kind} data-pause-for={a.wsId} onClick={() => onAction(a)}>
-                <PauseIcon kind={a.kind === 'resume' ? 'play' : 'pause'} size={11} />
+              <button key={`${a.kind}:${a.wsId}:${a.ids.join(',')}`} type="button" className="pause-btn pause-btn-go" data-pause-fix={a.kind} data-pause-for={a.wsId} data-pause-ids={a.ids.join(',')} onClick={() => onAction(a)}>
+                <PauseIcon kind="play" size={11} />
                 {a.label}
               </button>
             ))}

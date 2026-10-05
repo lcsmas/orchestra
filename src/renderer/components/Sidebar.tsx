@@ -46,7 +46,7 @@ import {
 } from './AccountBadge';
 import { dialog } from './Dialog';
 // #257 — fleet Pause UI (option A): the row parts + the floating panel; each renders nothing while the fleet is not under a pause.
-import { PauseAwareGlyph, PauseRowActions, PauseRowBadge, PauseRowBar, PauseRowNote } from './pause/PauseRow';
+import { PauseAwareGlyph, PauseRowActions, PauseRowBadge, PauseRowBar, PauseRowNote, PauseUnreadableStrip } from './pause/PauseRow';
 import { PauseMenuHost } from './pause/PauseMenu';
 import { pauseDimClass } from '../../shared/pause-ui-view';
 
@@ -2837,6 +2837,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       {/* Icon-only footer: four tertiary destinations behind tooltips + the
           version. Labels moved to title/aria-label so the row costs one slim
           line regardless of sidebar width. */}
+      <PauseUnreadableStrip />
       <div className="sidebar-footer">
         <button
           className={`sidebar-footer-link${page === 'resources' ? ' active' : ''}`}

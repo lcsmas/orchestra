@@ -32,12 +32,15 @@ try {
     runs.startRun(db, { id: idOf('legacy-sweep'), kind: 'mission', coordinator: idOf('legacy-sweep'), title: 'Balayage hors vague (switch pause OFF)' }, { ...sw, pause: false });
     // NO message: a pending `dispatch` would WAKE its recipient (bus-wake ON) and start a live session — the rig's members are idle
     console.log(JSON.stringify({ seeded: true, schema: db.pragma('user_version', { simple: true }) }));
+  } else if (cmd === 'hold') {
+    // the coordinator's liveness hold (`orchestra run hold`) through the SHIPPED setRunHold — so a Reprendre from the UI has a real hold to lift
+    console.log(JSON.stringify({ outcome: runs.setRunHold(db, rest[0], true, rest[0]) }));
   } else if (cmd === 'sql') {
     console.log(JSON.stringify(db.prepare(rest[0]).all(...rest.slice(1))));
   } else {
     const q = (s, ...a) => db.prepare(s).all(...a);
     console.log(JSON.stringify({
-      runs: q('SELECT id, paused_at, paused_by, pause_mode, pause_deadline_at, pause_escalated_at, pause_trap_at, resume_started_at FROM runs ORDER BY created_at, id'),
+      runs: q('SELECT id, held_at, paused_at, paused_by, pause_mode, pause_deadline_at, pause_escalated_at, pause_trap_at, resume_started_at FROM runs ORDER BY created_at, id'),
       roster: q('SELECT run_id, paused_at, ws_id, role, member_run, pause_confirmed_at, pause_confirm_via, released_at, released_by, reprise_confirmed_at FROM pause_members ORDER BY run_id, paused_at, rowid'),
       bilan: q("SELECT run_id, ws_id, paused_at, snapshot_ref, dirty, killed_json IS NOT NULL AS trapped FROM pause_records WHERE ws_id != '__pause_origin__' ORDER BY id"),
       messages: q("SELECT sequence, run_id, sender, recipient, kind, substr(body,1,80) AS body FROM messages ORDER BY sequence"),

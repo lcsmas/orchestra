@@ -6,6 +6,7 @@ import path from 'node:path';
 import * as bus from './bus.ts';
 import * as busRuns from './bus-runs.ts';
 import { getRunPause, setRunPause } from './bus-pause.ts';
+import { getRunHold, setRunHold } from './bus-runs.ts';
 import { appendBilanNote, insertBilan, readPauseOrigin } from './bus-pause-records.ts';
 import { confirmMember, enrollMember } from './pause-douce.ts';
 import { confirmReprise, readCarrierColumns, setLiveTreeSource } from './pause-reprise.ts';
@@ -163,7 +164,10 @@ test('REFUSAL — a WORKER row: the writer\'s own `refused` (nothing written), e
   assert.match(r.explain!.title, /worker-1 n'est pas coordinateur de wave-ops/);
   assert.match(r.explain!.why, /wave-ops/);
   assert.match(r.explain!.why, /fleet-lead/, 'the ancestor coordinator who may too');
-  assert.deepEqual(r.explain!.fix, ['Mettre wave-ops en pause', 'Mettre fleet-lead en pause']);
+  assert.equal(r.explain!.fix.length, 2);
+  assert.match(r.explain!.fix[0], /mettre en pause sa vague wave-ops/);
+  assert.match(r.explain!.fix[1], /suspend TOUTE sa vague/);
+  assert.equal(r.explain!.actions, undefined, 'a refusal NAMES the run, it does not offer to pause it (Q5)');
   assert.equal(getRunPause(db, 'O'), null, 'NOTHING was written');
   assert.deepEqual(r.overview.runs, []);
   db.close();
@@ -472,5 +476,135 @@ test('a pause on a run whose FROZEN switch is OFF is not a pause for the UI (a s
   assert.deepEqual(o.runs, []);
   assert.deepEqual(o.byWorkspace, {});
   assert.equal(o.controls.Z.phase, 'active', 'the control agrees: an unenforced column is not a paused run');
+  db.close();
+});
+
+test('toBilanLine carries what the snapshot did NOT capture (skippedLarge, submodules, snapshotNotes) — the facts `orchestra run status` prints', () => {
+  const line = toBilanLine({ id: 1, runId: 'L', wsId: 'x', pausedAt: 1, activity: { surface: 'sdk', skippedLarge: [{ path: 'a.bin', bytes: 100 }, { path: 'data/huge.bin', bytes: 3 * 1024 ** 3, reason: 'file-cap' }, { path: 'out/m.ckpt', bytes: 800 * 1048576, reason: 'total-cap', files: 4 }], skippedLargeCount: 9, snapshotNotes: ['captured anyway'], submodules: [{ path: 'vendor/lib', ref: null, dirty: true, error: 'git add failed' }, { path: 'vendor/ok', ref: 'refs/x', dirty: false }] }, snapshotRef: 'refs/orchestra/pause/L/x/1', dirty: true, killed: killReport([]), error: null, createdAt: 1 });
+  assert.deepEqual(line.notCaptured.map((f) => [f.path, f.bytes, f.files, f.reason]), [['data/huge.bin', 3 * 1024 ** 3, null, 'file-cap'], ['out/m.ckpt', 800 * 1048576, 4, 'total-cap'], ['a.bin', 100, null, null]], 'the LARGEST first');
+  assert.equal(line.notCapturedCount, 9, 'the total, even though the list keeps 6');
+  assert.deepEqual(line.snapshotNotes, ['captured anyway']);
+  assert.deepEqual(line.submodules, [{ path: 'vendor/lib', ref: null, dirty: true, error: 'git add failed' }, { path: 'vendor/ok', ref: 'refs/x', dirty: false, error: null }]);
+  const none = toBilanLine({ id: 2, runId: 'L', wsId: 'y', pausedAt: 1, activity: null, snapshotRef: null, dirty: null, killed: null, error: null, createdAt: 1 });
+  assert.deepEqual([none.notCaptured, none.notCapturedCount, none.snapshotNotes, none.submodules], [[], 0, [], []]);
+});
+
+test('toBilanLine strips control / invisible / bidi characters from EVERY recorded string (agent- and filesystem-chosen text), like `run status` and the Consigne', () => {
+  const evil = 'make test\u202E gnirts \u202C\x1b[2J\u2028forged line\u200b\u206a\u206f\u2065';
+  const line = toBilanLine({ id: 1, runId: 'L', wsId: 'x', pausedAt: 1, activity: { surface: 'sdk', branch: 'b\u202Ec', notes: [evil], snapshotWarnings: [evil], snapshotNotes: [evil], inFlightTools: [{ tool: 'Bash', toolUseId: 't', sinceMs: 1, input: evil }], bgTasks: [{ id: 'b', description: evil, status: 'running' }], skippedLarge: [{ path: evil, bytes: 5 }], submodules: [{ path: evil, ref: evil, dirty: false, error: evil }], observerKilled: [{ pid: 3, cmd: evil, cwd: evil, signal: 'SIGTERM', outcome: 'exited' }] }, snapshotRef: 'refs/x\u202E', dirty: true, killed: killReport([{ pid: 1, cmd: evil, cwd: evil, signal: 'SIGTERM', outcome: 'exited' }], { survivors: [{ pid: 2, cmd: evil, reason: evil }], refused: [{ pid: 3, cmd: evil, reason: evil }] }), error: evil, createdAt: 1 });
+  const bad = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff]/u; // U+206A-206F (deprecated format controls) + the unassigned U+2065 included
+  const all: string[] = [];
+  const walk = (v: unknown): void => { if (typeof v === 'string') all.push(v); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk); };
+  walk(line);
+  assert.ok(all.length > 20, `walked ${all.length} strings`);
+  assert.deepEqual(all.filter((x) => bad.test(x)), [], 'no control / bidi / invisible character survives in ANY field of the Bilan line');
+  assert.ok(line.killed[0].cmd.startsWith('make test'), 'the text itself is kept');
+});
+
+test('a PLAIN run-anchoring parent (#221: a non-orchestrator whose run the host created) gets a CONTROL (chooser + ▶), and its pause is the writer\'s own — not a worker refusal', () => {
+  const db = freshDb();
+  tree(db);
+  busRuns.startRun(db, { id: 'P', kind: 'mission', coordinator: 'P' }, ON); // the host's mission run for a plain parent
+  const P: WaveNode = { id: 'P', parentId: 'O' }; // UNDER an orchestrator's wave: the nearest orchestrator is O, but the row ANCHORS its own run P — the control acts on P
+  const pc: WaveNode = { id: 'pc', parentId: 'P' };
+  NODES.push(P, pc);
+  byId.set('P', P);
+  byId.set('pc', pc);
+  try {
+    const o = readPauseOverview(db, deps);
+    assert.ok(o.controls.P, 'a control exists for the row that anchors a run');
+    assert.equal(o.controls.P.runId, 'P');
+    assert.equal(o.controls.P.anchored, true);
+    assert.deepEqual(o.controls.P.can.pauseSoft, { ok: true });
+    assert.equal(o.controls.pc, undefined, 'its child is a worker: no control');
+    assert.equal(o.controls.plain, undefined, 'a plain workspace with NO run is still a worker row (no-run at click time)');
+    const r = uiPause(db, deps, { wsId: 'P', mode: 'soft' });
+    assert.equal(r.outcome, 'paused');
+    assert.equal(r.runId, 'P');
+    assert.equal(r.overview.controls.P.phase, 'pausing', 'and its row keeps its control while paused (▶ / ■ available)');
+    assert.equal(r.overview.byWorkspace.pc.ui, 'pausing');
+  } finally {
+    NODES.pop(); NODES.pop();
+    byId.delete('P'); byId.delete('pc');
+  }
+  db.close();
+});
+
+test('uiResume = `orchestra run resume`: the Reprise THEN the liveness hold lifted (same verb, same authority); a refused caller lifts nothing', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  trap(db);
+  setRunHold(db, 'L', true, 'L');
+  setRunHold(db, 'O', true, 'O');
+  assert.notEqual(getRunHold(db, 'L'), null, 'held before');
+  const worker = uiResume(db, deps, { wsId: 'o1' });
+  assert.equal(worker.outcome, 'refused');
+  assert.equal(worker.holdLifted, false);
+  assert.notEqual(getRunHold(db, 'O'), null, 'a refused resume (a worker row) lifts NOTHING — the hold of ITS run stays (the lift is the CALLER\'s authority, never the coordinator\'s)');
+  assert.notEqual(getRunHold(db, 'L'), null, 'nor the ancestor\'s hold');
+  const go = uiResume(db, deps, { wsId: 'L' });
+  assert.equal(go.outcome, 'resuming');
+  assert.equal(go.holdLifted, true);
+  assert.equal(getRunHold(db, 'L'), null, 'the hold is lifted with the Reprise, as the CLI verb does');
+  uiRelease(db, deps, { wsId: 'L', targets: 'all' });
+  uiRelease(db, deps, { wsId: 'O', targets: 'all' });
+  uiRelease(db, deps, { wsId: 'S', targets: 'all' });
+  assert.equal(readCarrierColumns(db, 'L')!.pausedAt, null, 'a COMPLETE Reprise leaves the run neither paused nor held');
+  assert.equal(getRunHold(db, 'L'), null);
+  db.close();
+});
+
+test('« Libérer tout » = `release --all`: the acting row\'s OWN run only; the workers of a nested wave come back `below` with a second explicit gesture (one click never dispatches another OPS\'s workers)', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  trap(db);
+  uiResume(db, deps, { wsId: 'L' });
+  const first = uiRelease(db, deps, { wsId: 'L', targets: 'all' });
+  assert.deepEqual(first.result!.released, ['l1'], 'only the lead\'s own worker');
+  assert.deepEqual(first.result!.below.slice().sort(), ['o1', 'o2', 's1'], 'O\'s and S\'s workers are left to their coordinators');
+  assert.equal(first.result!.finished, false);
+  const warn = first.explain.find((e) => e.tone === 'warn')!;
+  assert.equal(warn.actions?.length, 1);
+  assert.deepEqual(warn.actions![0], { kind: 'release', wsId: 'L', carrierRunId: 'L', ids: first.result!.below, label: warn.actions![0].label });
+  const stillBlocked = readPauseOverview(db, deps).runs[0].members.filter((m) => m.ui === 'blocked').map((m) => m.wsId).sort();
+  assert.deepEqual(stillBlocked, ['o1', 'o2', 's1'], 'nothing below was released by the first gesture');
+  // the SECOND, explicit gesture: the ids the explanation carried
+  const second = uiRelease(db, deps, { wsId: 'L', targets: warn.actions![0].ids, carrierRunId: 'L' });
+  assert.deepEqual(second.result!.released.slice().sort(), ['o1', 'o2', 's1']);
+  assert.equal(second.result!.finished, true);
+  db.close();
+});
+
+test('LABELS are sanitized like every other recorded string: a workspace name / branch with bidi + deprecated-format chars never reaches the overview raw (R1b-4)', () => {
+  const db = freshDb();
+  tree(db);
+  const hostile: PauseUiDeps = { ...deps, labelOf: (id) => (id === 'L' ? 'fleet\u202Elead\u206A\u2065x' : id === 'o1' ? 'wor\u200Bker\x1b[2J-1' : deps.labelOf(id)) };
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  trap(db);
+  const o = readPauseOverview(db, hostile);
+  const bad = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff]/u;
+  const all: string[] = [];
+  const walk = (v: unknown): void => { if (typeof v === 'string') all.push(v); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk); };
+  walk(o);
+  assert.deepEqual(all.filter((x) => bad.test(x)), [], 'no control / bidi / format character survives in ANY string of the overview (labels included)');
+  assert.equal(o.runs[0].carrierLabel, 'fleet lead  x', 'the label text itself is kept, each bad char becomes a space');
+  assert.equal(o.runs[0].pausedByLabel, 'fleet lead  x', 'pausedByLabel goes through the same labeler');
+  assert.ok(o.runs[0].members.some((m) => m.label === 'wor ker [2J-1'), 'a member label too');
+  db.close();
+});
+
+test('an UNKNOWN pause mode is refused (typed write-failed, nothing written) — never defaulted to the destructive Pause dure (R1b)', () => {
+  const db = freshDb();
+  tree(db);
+  for (const bogus of ['bogus', '', undefined, 'HARD']) {
+    const r = uiPause(db, deps, { wsId: 'L', mode: bogus as never });
+    assert.equal(r.outcome, 'write-failed', String(bogus));
+    assert.equal(r.explain?.tone, 'error');
+    assert.match(r.explain!.why, /unknown pause mode/);
+  }
+  assert.equal(getRunPause(db, 'L'), null, 'nothing was written by any of them');
+  assert.equal(uiPause(db, deps, { wsId: 'L', mode: 'soft' }).outcome, 'paused', 'a valid mode still works');
   db.close();
 });

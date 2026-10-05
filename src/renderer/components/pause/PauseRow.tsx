@@ -5,8 +5,8 @@
 
 import type { ReactNode } from 'react';
 import { useStore } from '../../store';
-import { controlOf, pauseStateOf, releasableIds, rowNoteText, runOfControl } from '../../../shared/pause-ui-view';
-import { PauseBadge, PauseBar, PauseGlyph, PauseIcon, useNowTick } from './PauseBlocks';
+import { controlOf, pauseStateOf, releaseLabel, releaseScope, rowNoteText, runOfControl } from '../../../shared/pause-ui-view';
+import { PauseBadge, PauseBar, PauseGlyph, PauseIcon, PauseUnreadable, useNowTick } from './PauseBlocks';
 import { runPause, runReleaseAll, runResume, selectPauseOverview, usePausePanel, type PauseAnchor } from './pause-actions';
 
 /** The agent's status glyph, or — while it is under a pause / Reprise — the state's own glyph. */
@@ -16,6 +16,12 @@ export function PauseAwareGlyph({ wsId, children }: { wsId: string; children: Re
 }
 
 /** The small pill on the name line ("en pause", "finit…", "bloqué", "libéré", "repris"). */
+/** Sidebar footer strip: shown ONLY when the overview could not be read (the rows then carry no badge — that must not read as "nothing is paused"). */
+export function PauseUnreadableStrip() {
+  const o = useStore(selectPauseOverview);
+  return o && !o.available ? <PauseUnreadable error={o.error} /> : null;
+}
+
 export function PauseRowBadge({ wsId }: { wsId: string }) {
   const st = pauseStateOf(useStore(selectPauseOverview), wsId);
   return st ? <PauseBadge wsId={wsId} ui={st.ui} /> : null;
@@ -74,8 +80,10 @@ export function PauseRowActions({ wsId, rect, onDone }: { wsId: string; rect: Pa
     } else if (ctl.phase === 'paused') {
       btns.push({ kind: 'resume', title: 'Reprendre la vague', tone: 'go', icon: 'play', onClick: () => void runResume(wsId, rect) });
     } else if (ctl.phase === 'resuming') {
-      const n = run ? releasableIds(run).length : 0;
-      if (run && n > 0) btns.push({ kind: 'release-all', title: `Libérer les ${n} bloqué${n > 1 ? 's' : ''}`, tone: 'go', icon: 'play', onClick: () => void runReleaseAll(wsId, run, rect) });
+      const sc = run ? releaseScope(run) : { own: [], below: [] };
+      if (run && sc.own.length + sc.below.length > 0) {
+        btns.push({ kind: 'release-all', title: releaseLabel(sc), tone: 'go', icon: 'play', onClick: () => void runReleaseAll(wsId, run, rect) });
+      }
       btns.push({ kind: 'repause', title: 'Re-mettre la vague en pause…', icon: 'pause', onClick: choose });
     } else if (ctl.coveredBy) {
       // paused through an ancestor: the click is the writer's own `not-paused`, explained ("fleet-lead tient déjà cette vague en pause")

@@ -7,7 +7,7 @@
 // untouched, and nothing is written). `uiActor` is the ONE place that decides it, so a different answer to the spec question is a one-function change.
 
 import type { BusDb } from './bus.ts';
-import { getRun, runHoldAuthority } from './bus-runs.ts';
+import { getRun, runHoldAuthority, setRunHold } from './bus-runs.ts';
 import { beginReprise, getRunPause, pausedCarrierForWorkspace, setRunPause, type RunPauseOutcome } from './bus-pause.ts';
 import { listBilan, recordPauseOrigin, type BilanRow } from './bus-pause-records.ts';
 import { pauseStatusView } from './pause-douce.ts';
@@ -15,7 +15,7 @@ import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resu
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { pausePhaseOf, pauseRosterSummary, type PauseMode, type PausePhase, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
-import { killedCommands } from '../shared/pause-consigne.ts';
+import { killedCommands, stripControl } from '../shared/pause-consigne.ts';
 import {
   availabilityFor,
   explainPauseOutcome,
@@ -51,9 +51,18 @@ const KILLED_CAP = 12;
 const NOTES_CAP = 8;
 
 const short = (id: string): string => (/^[0-9a-f]{8}-/i.test(id) ? id.slice(0, 8) : id);
-const labeler = (deps: PauseUiDeps) => (id: string): string => deps.labelOf(id) ?? short(id);
+// a workspace name / branch is user- or agent-chosen text too: the same control / bidi strip as every Bilan string (R1b-4)
+const labeler = (deps: PauseUiDeps) => (id: string): string => cl(deps.labelOf(id) ?? short(id), 160);
 
 type KillReportLike = { killed?: Array<{ cmd?: string; cwd?: string | null; pid?: number; outcome?: string }>; survivors?: Array<{ cmd?: string; pid?: number; reason?: string }>; refused?: Array<{ cmd?: string; pid?: number; reason?: string }>; skipped?: string };
+
+/** Every recorded string (argv, cwd, paths, branch, errors, notes) is agent / filesystem-chosen text: control, invisible and bidi characters are stripped exactly as `orchestra run status` (`c()`) and the Consigne do,
+ *  so a hostile command line cannot forge or reorder a line of the Bilan on the human's screen (review F8/F11, R1-6). */
+const cl = (v: unknown, max = 300): string => {
+  const t = stripControl(v);
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+const clOrNull = (v: unknown, max = 300): string | null => (v === null || v === undefined ? null : cl(v, max));
 
 /** One Bilan row → what a screen shows. Pure over the row; capped so the push payload stays small. `killed_json` is the trap's KillReport (`{killed, survivors, refused, spared…}`), `{skipped}` for a remote member, or NULL
  *  while the trap has not finished for this member — read exactly as `orchestra run status` and the Consigne de reprise read it (`killedCommands` is the Consigne's own merge). */
@@ -64,30 +73,36 @@ export function toBilanLine(b: BilanRow): PauseUiBilanLine {
   const rawKilled = [...(report?.killed ?? []), ...(a?.earlierKilled ?? []), ...(a?.observerKilled ?? [])];
   const outcomeByCmd = new Map(rawKilled.map((k) => [`${k.cwd ?? ''}\u0000${k.cmd}`, (k as { outcome?: string }).outcome ?? null]));
   const trap: PauseUiBilanLine['trap'] = b.killed === null || b.killed === undefined ? 'pending' : report?.skipped ? 'skipped' : 'done';
+  const skippedLarge = (a?.skippedLarge ?? []).slice().sort((x, y) => Number(y.bytes) - Number(x.bytes));
   return {
-    snapshotRef: b.snapshotRef,
-    branch: a?.branch ?? null,
-    head: a?.head ?? null,
+    snapshotRef: clOrNull(b.snapshotRef, 200),
+    branch: clOrNull(a?.branch, 200),
+    head: clOrNull(a?.head, 80),
     dirty: b.dirty,
     changed: a?.changed ?? null,
     snapshotIncomplete: a?.snapshotIncomplete ?? null,
     wasDoing: {
       turnRunning: a?.turnRunning === true,
-      inFlight: (a?.inFlightTools ?? []).map((t) => (t.input ?? t.tool ?? '?')).slice(0, 4),
-      bgTasks: (a?.bgTasks ?? []).map((t) => t.description).slice(0, 4),
-      lastTask: a?.lastTask ?? null,
+      inFlight: (a?.inFlightTools ?? []).map((t) => cl(t.input ?? t.tool ?? '?')).slice(0, 4),
+      bgTasks: (a?.bgTasks ?? []).map((t) => cl(t.description)).slice(0, 4),
+      lastTask: clOrNull(a?.lastTask, 200),
     },
-    interrupt: a?.interrupt ?? null,
+    interrupt: clOrNull(a?.interrupt, 40),
     exempt: a?.exempt === 'pauser' || a?.interrupt === 'exempt',
-    killed: merged.slice(-KILLED_CAP).map((k) => ({ cmd: k.cmd.slice(0, 300), cwd: k.cwd, outcome: outcomeByCmd.get(`${k.cwd ?? ''}\u0000${k.cmd}`) ?? null })),
+    killed: merged.slice(-KILLED_CAP).map((k) => ({ cmd: cl(k.cmd), cwd: clOrNull(k.cwd, 300), outcome: clOrNull(outcomeByCmd.get(`${k.cwd ?? ''}\u0000${k.cmd}`) ?? null, 20) })),
     killedCount: merged.length,
     trap,
-    skipped: report?.skipped ? String(report.skipped).slice(0, 200) : null,
-    survivors: (report?.survivors ?? []).slice(0, 6).map((x) => ({ cmd: String(x.cmd ?? '').slice(0, 200), pid: Number(x.pid ?? 0), reason: String(x.reason ?? '').slice(0, 200) })),
-    refused: (report?.refused ?? []).slice(0, 6).map((x) => ({ cmd: String(x.cmd ?? '').slice(0, 200), pid: Number(x.pid ?? 0), reason: String(x.reason ?? '').slice(0, 200) })),
-    warnings: (a?.snapshotWarnings ?? []).slice(0, NOTES_CAP),
-    notes: (a?.notes ?? []).slice(-NOTES_CAP),
-    error: b.error,
+    skipped: report?.skipped ? cl(report.skipped, 200) : null,
+    survivors: (report?.survivors ?? []).slice(0, 6).map((x) => ({ cmd: cl(x.cmd, 200), pid: Number(x.pid ?? 0), reason: cl(x.reason, 200) })),
+    refused: (report?.refused ?? []).slice(0, 6).map((x) => ({ cmd: cl(x.cmd, 200), pid: Number(x.pid ?? 0), reason: cl(x.reason, 200) })),
+    warnings: (a?.snapshotWarnings ?? []).slice(0, NOTES_CAP).map((w) => cl(w, 300)),
+    // what the snapshot did NOT capture (the same facts `orchestra run status` prints): that worktree is the ONLY copy of it
+    notCaptured: skippedLarge.slice(0, 6).map((f) => ({ path: cl(f.path, 300), bytes: Number(f.bytes) || 0, files: f.files === undefined ? null : Number(f.files), reason: f.reason === 'total-cap' ? 'total-cap' : f.reason === 'file-cap' ? 'file-cap' : null })),
+    notCapturedCount: a?.skippedLargeCount ?? skippedLarge.length,
+    snapshotNotes: (a?.snapshotNotes ?? []).slice(0, NOTES_CAP).map((n) => cl(n, 300)),
+    submodules: (a?.submodules ?? []).slice(0, 6).map((m) => ({ path: cl(m.path, 300), ref: clOrNull(m.ref, 200), dirty: m.dirty === true, error: clOrNull(m.error, 300) })),
+    notes: (a?.notes ?? []).slice(-NOTES_CAP).map((n) => cl(n, 300)),
+    error: clOrNull(b.error, 400),
   };
 }
 
@@ -242,9 +257,14 @@ export function readPauseOverview(db: BusDb | null, deps: PauseUiDeps): PauseUiO
     }
 
     const controls: Record<string, PauseUiControl> = {};
+    // runs whose coordinator IS their own id (the app's anchor rule): one read, not one per workspace
+    const anchoredRuns = new Set((db.prepare('SELECT id, coordinator FROM runs').all() as Array<{ id: string; coordinator: string }>).filter((r) => isCoordinatorHandle(r.coordinator, r.id)).map((r) => r.id));
     for (const ws of workspaces) {
-      if (!nodeOrchestrates(ws)) continue; // a worker row's control is explained by the writer's own `refused` at click time
-      const runId = nearestOrchestratorId(ws, deps.getWorkspace);
+      // a row gets a control when it ANCHORS a run: an orchestrator, or a plain workspace the host gave a mission run (#221: a parent that spawned children). A worker row's control is explained by
+      // the writer's own `refused` at click time (it has an orchestrator above and no run of its own).
+      const ownsRun = anchoredRuns.has(ws.id);
+      if (!nodeOrchestrates(ws) && !ownsRun) continue;
+      const runId = ownsRun ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace);
       const run = getRun(db, runId);
       const cols = db.prepare('SELECT paused_at, pause_mode, pause_deadline_at, pause_escalated_at, pause_trap_at, resume_started_at FROM runs WHERE id = ?').get(runId) as
         | { paused_at: number | null; pause_mode: string | null; pause_deadline_at: number | null; pause_escalated_at: number | null; pause_trap_at: number | null; resume_started_at: number | null }
@@ -298,22 +318,33 @@ function ctxFor(db: BusDb, deps: PauseUiDeps, runId: string, actor: string, cove
   return { label: labeler(deps), runLabel: labeler(deps)(runId), actorLabel: labeler(deps)(actor), mayBe: auth ? [auth.coordinator, ...auth.ancestors] : [], cover };
 }
 
-function targetOf(deps: PauseUiDeps, wsId: string): { ws: WaveNode; runId: string } | null {
+/** The run a workspace row's control acts on: the run it ANCHORS (its own id, when the bus has a run whose coordinator is that row — an orchestrator, or a plain run-anchoring parent #221), else its
+ *  nearest orchestrator's (a worker: where the writer REFUSES it by the hold rule). */
+function targetOf(db: BusDb | null, deps: PauseUiDeps, wsId: string): { ws: WaveNode; runId: string } | null {
   const ws = deps.getWorkspace(wsId);
   if (!ws) return null;
-  return { ws, runId: nearestOrchestratorId(ws, deps.getWorkspace) };
+  let own = false;
+  try {
+    const r = db ? getRun(db, ws.id) : null;
+    own = r !== null && isCoordinatorHandle(r.coordinator, ws.id);
+  } catch {
+    own = false;
+  }
+  return { ws, runId: own ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace) };
 }
 
 const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** `orchestra run pause [--hard]` from a workspace row (`mode` 'soft' = Pause douce, 'hard' = Pause dure; `hard` over a douce still waiting escalates it). */
 export function uiPause(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string; mode: PauseMode }): PauseUiWriteResult {
-  const t = targetOf(deps, req.wsId);
+  const t = targetOf(db, deps, req.wsId);
   if (!db || !t) {
     const outcome = !db ? 'bus-unavailable' : 'unknown-workspace';
     return { outcome, runId: t?.runId ?? null, actor: null, explain: explainPauseOutcome(outcome, ctxStub(deps, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   }
   const actor = uiActor(req.wsId);
+  // an unknown mode is REFUSED, never defaulted to the destructive one (a renderer bug must not become a Pause dure)
+  if (req.mode !== 'soft' && req.mode !== 'hard') return failed(db, deps, t.runId, actor, new Error(`unknown pause mode ${JSON.stringify(String(req.mode).slice(0, 20))} — nothing was written`));
   const at = Date.now();
   let outcome: RunPauseOutcome;
   try {
@@ -343,17 +374,20 @@ function failed(db: BusDb, deps: PauseUiDeps, runId: string, actor: string, e: u
   return { outcome: 'write-failed', runId, actor, explain, cover: null, overview: readPauseOverview(db, deps) };
 }
 
-/** `orchestra run resume` from a workspace row: starts the structured Reprise (`beginReprise` — coordinators first, workers released afterwards). Does NOT touch the liveness hold (spec question 4). */
+/** `orchestra run resume` from a workspace row, exactly: starts the structured Reprise (`beginReprise` — coordinators first, workers released afterwards) THEN lifts the run's liveness hold (`setRunHold(false)`), as the verb does. */
 export function uiResume(db: BusDb | null, deps: PauseUiDeps, req: { wsId: string }): PauseUiWriteResult {
-  const t = targetOf(deps, req.wsId);
+  const t = targetOf(db, deps, req.wsId);
   if (!db || !t) {
     const outcome = !db ? 'bus-unavailable' : 'unknown-workspace';
     return { outcome, runId: t?.runId ?? null, actor: null, explain: explainResumeOutcome(outcome, ctxStub(deps, req.wsId)), cover: null, overview: readPauseOverview(db, deps) };
   }
   const actor = uiActor(req.wsId);
   let outcome: RepriseOutcome;
+  let holdLifted = false;
   try {
     outcome = beginReprise(db, t.runId, actor, { reason: 'manual' });
+    // `orchestra run resume` is ONE verb for both: after the Reprise it lifts the run's liveness HOLD too (verbRunHold) — same writer, same authority rule (a refusal there writes nothing)
+    holdLifted = setRunHold(db, t.runId, false, actor) === 'resumed';
   } catch (e) {
     return failed(db, deps, t.runId, actor, e);
   }
@@ -363,7 +397,7 @@ export function uiResume(db: BusDb | null, deps: PauseUiDeps, req: { wsId: strin
     const c = pausedCarrierForWorkspace(db, t.ws, deps.getWorkspace, { includeReleased: true });
     if (c && c.runId !== t.runId) cover = { runId: c.runId, label: labeler(deps)(c.runId) };
   }
-  return { outcome, runId: t.runId, actor, explain: explainResumeOutcome(outcome, ctxFor(db, deps, t.runId, actor, cover)), cover, overview: readPauseOverview(db, deps) };
+  return { outcome, runId: t.runId, actor, explain: explainResumeOutcome(outcome, ctxFor(db, deps, t.runId, actor, cover)), cover, holdLifted, overview: readPauseOverview(db, deps) };
 }
 
 /**
@@ -376,7 +410,7 @@ export function uiRelease(
   deps: PauseUiDeps,
   req: { wsId: string; targets: readonly string[] | 'all'; carrierRunId?: string | null },
 ): PauseUiReleaseResult {
-  const t = targetOf(deps, req.wsId);
+  const t = targetOf(db, deps, req.wsId);
   if (!db || !t) {
     const outcome = !db ? 'bus-unavailable' : 'unknown-workspace';
     const ex = explainPauseOutcome(outcome, ctxStub(deps, req.wsId));
@@ -393,7 +427,7 @@ export function uiRelease(
     const f = failed(db, deps, t.runId, actor, e);
     return { result: null, runId: t.runId, carrierRunId: carrier, actor, explain: f.explain ? [f.explain] : [], overview: f.overview };
   }
-  return { result, runId: t.runId, carrierRunId: carrier, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, carrier ?? t.runId, actor, null), all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
+  return { result, runId: t.runId, carrierRunId: carrier, actor, explain: explainReleaseResult(result, { ...ctxFor(db, deps, carrier ?? t.runId, actor, null), actorId: actor, carrierRunId: carrier ?? t.runId, all: req.targets === 'all' }), overview: readPauseOverview(db, deps) };
 }
 
 function ctxStub(deps: PauseUiDeps, wsId: string): ExplainCtx {

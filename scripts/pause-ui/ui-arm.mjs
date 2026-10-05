@@ -113,8 +113,12 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await waitFor(() => run(I.lead).pause_trap_at !== null, 90000, 'the trap on the new epoch', 400);
     await waitFor(() => ev(`document.querySelector('[data-pause-section="${I.lead}"]')?.getAttribute('data-pause-phase') === 'paused' && document.querySelectorAll('[data-pause-bilan][data-pause-state="paused"]').length === 7`), 20000, 'the Bus section back in phase paused (7 rows)');
     clause(arm, 'G3/bus-repause-while-resuming-new-epoch', choice === 'soft,hard' && bus().roster.filter((r) => r.paused_at === run(I.lead).paused_at && r.released_at !== null).length === 0 && run(I.lead).pause_mode === 'hard', `the Re-pause offers douce / dure; dure → a new epoch (+${run(I.lead).paused_at - epoch0} ms), the Reprise is cancelled, the new roster has 0 released members, all 7 back to "en pause"`);
+    const heldOutcome = world.hold(I.lead).outcome; // an `orchestra run hold` on the lead's run: Reprendre must lift it, as `orchestra run resume` does
+    const heldBefore = run(I.lead).held_at;
     await press(`[data-pause-section="${I.lead}"] [data-pause-action="resume"]`, 'Reprendre (2nd)');
     await waitFor(() => run(I.lead).resume_started_at !== null, 20000, 'the 2nd Reprise', 300);
+    await waitFor(() => run(I.lead).held_at === null, 10000, 'the liveness hold to be lifted', 200);
+    clause(arm, 'G3/ui-reprendre-lifts-the-liveness-hold', heldOutcome === 'held' && heldBefore !== null && run(I.lead).held_at === null && run(I.lead).resume_started_at !== null, `hold seeded (${heldOutcome}, held_at ${heldBefore}) → after Reprendre held_at ${run(I.lead).held_at}, resume_started_at set: the UI's Reprendre = \`orchestra run resume\` (beginReprise + hold lift)`);
     await waitFor(() => ev(`document.querySelector('[data-pause-section="${I.lead}"]')?.getAttribute('data-pause-phase') === 'resuming'`), 15000, 'phase resuming again');
     await parkAndSettle();
     // one member by hand, then the rest
@@ -122,10 +126,19 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await waitFor(() => bus().roster.some((r) => r.ws_id === I.w1 && r.released_at !== null), 15000, 'worker-1 released in the bus', 300);
     await sleep(600);
     clause(arm, 'G3/bus-release-one-member', (await ev(`document.querySelector('[data-pause-bilan="${I.w1}"]')?.getAttribute('data-pause-state')`)) === 'released' && bus().roster.filter((r) => r.released_at !== null && r.released_by === I.lead).length === 1, `worker-1 → released (released_by fleet-lead = the carrier row); the other 4 workers still blocked`);
-    await press(`[data-pause-section="${I.lead}"] [data-pause-action="release-all"]`, 'Libérer les bloqués');
+    const busRelLabel = await ev(`document.querySelector('[data-pause-section="${I.lead}"] [data-pause-action="release-all"]')?.textContent.trim()`);
+    await press(`[data-pause-section="${I.lead}"] [data-pause-action="release-all"]`, 'Libérer 1 bloqué (+3 plus bas, à part)');
+    await waitFor(() => bus().roster.some((r) => r.ws_id === I.docs && r.released_at !== null), 15000, 'docs released by « tout libérer »', 300);
+    await waitFor(() => ev(`!!document.querySelector('[data-pause-section="${I.lead}"] [data-pause-fix="release"]')`), 10000, 'the « libérer aussi » follow-up', 200);
+    await sleep(500);
+    const relRoster = bus().roster.filter((r) => r.run_id === I.lead && r.paused_at === run(I.lead).paused_at);
+    const belowIds = (await ev(`document.querySelector('[data-pause-section="${I.lead}"] [data-pause-fix="release"]').getAttribute('data-pause-ids')`)).split(',').sort();
+    clause(arm, 'G3/bus-release-all-is-own-run-only', busRelLabel === 'Libérer 1 bloqué (+3 plus bas, à part)' && relRoster.find((r) => r.ws_id === I.docs).released_at !== null && [I.w2, I.w3, I.w4].every((id) => relRoster.find((r) => r.ws_id === id).released_at === null) && run(I.lead).paused_at !== null && J(belowIds) === J([I.w2, I.w3, I.w4].sort()), `label "${busRelLabel}"; « tout libérer » = \`release --all\`: docs (the lead's own) released, the 3 workers of wave-ops (${belowIds.map(nm).join(', ')}) left blocked and NAMED in the explanation; the Reprise is not finished (paused_at ${run(I.lead).paused_at})`);
+    await shot('3-bus-release-below', { x: 345, y: 48, width: vp.w - 345, height: Math.min(600, vp.h - 48) });
+    await press(`[data-pause-section="${I.lead}"] [data-pause-fix="release"]`, 'Libérer aussi ces 3');
     await waitFor(() => run(I.lead).paused_at === null, 20000, 'the Reprise to finish (pause columns cleared)', 300);
     await sleep(800);
-    clause(arm, 'G3/bus-release-all-explicit-ids-then-active', run(I.lead).paused_at === null && (await ev(`document.querySelectorAll('[data-pause-section="${I.lead}"][data-pause-phase="resuming"]').length`)) === 0, `all 4 remaining workers released by explicit ids (the nested wave's too); lead paused_at=${run(I.lead).paused_at}`);
+    clause(arm, 'G3/bus-second-gesture-releases-below-then-active', run(I.lead).paused_at === null && (await ev(`document.querySelectorAll('[data-pause-section="${I.lead}"][data-pause-phase="resuming"]').length`)) === 0, `the explicit second gesture released the 3 below (explicit ids, carrier authority); lead paused_at=${run(I.lead).paused_at}`);
 
     // back to the workspaces page
     const lr = await rowRect('fleet-lead'); // a row click leaves the Bus page (setActive → the workspaces page)
@@ -147,13 +160,11 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     const ex1 = await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the refusal for a worker');
     const ex1Text = await ev(`document.querySelector('[data-pause-panel="explain"]').textContent`);
     const ex1Code = await ev(`document.querySelector('[data-pause-explain-code]').getAttribute('data-pause-explain-code')`);
-    clause(arm, 'G3/refusal-worker-explained', ex1Code === 'refused' && /worker-1 n'est pas coordinateur de wave-ops/.test(ex1Text) && /fleet-lead/.test(ex1Text) && /Mettre wave-ops en pause/.test(ex1Text) && inView(ex1, vp.w, vp.h), `code=${ex1Code}; "${ex1Text.replace(/\s+/g, ' ').slice(0, 220)}"; rect inside viewport`);
-    const fixes = await ev(`[...document.querySelectorAll('[data-pause-panel="explain"] [data-pause-fix]')].map((e) => [e.getAttribute('data-pause-fix'), e.getAttribute('data-pause-for'), e.textContent.trim()])`);
-    clause(arm, 'G3/refusal-worker-remedies-are-buttons', J(fixes) === J([['pause', I.ops, 'Mettre wave-ops en pause…'], ['pause', I.lead, 'Mettre fleet-lead en pause…']]), `remedy buttons: ${J(fixes.map((f) => f[2]))}`);
+    clause(arm, 'G3/refusal-worker-explained', ex1Code === 'refused' && /worker-1 n'est pas coordinateur de wave-ops/.test(ex1Text) && /fleet-lead/.test(ex1Text) && /mettre en pause sa vague wave-ops/.test(ex1Text) && inView(ex1, vp.w, vp.h), `code=${ex1Code}; "${ex1Text.replace(/\s+/g, ' ').slice(0, 220)}"; rect inside viewport`);
+    const fixButtons = await ev(`document.querySelectorAll('[data-pause-panel="explain"] [data-pause-fix], [data-pause-panel="explain"] button').length`);
+    const fixItems = await ev(`[...document.querySelectorAll('[data-pause-panel="explain"] .pause-explain-fix li')].map((e) => e.textContent.trim())`);
+    clause(arm, 'G3/refusal-worker-remedy-is-text-never-a-button', fixButtons === 0 && fixItems.length === 2 && /wave-ops/.test(fixItems[0]) && /fleet-lead/.test(fixItems[1]) && /TOUTE sa vague/.test(fixItems[1]) && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before, `${fixButtons} buttons in the refusal; the remedy names the authority: ${J(fixItems.map((t) => t.slice(0, 90)))}; nothing written`);
     await shot('5-refusal-worker', { x: 0, y: 100, width: 700, height: 420 });
-    const fixBtn = await btnRect(`[data-pause-panel="explain"] [data-pause-fix="pause"][data-pause-for="${I.ops}"]`);
-    await cdp.click(fixBtn.x, fixBtn.y); await sleep(350);
-    clause(arm, 'G3/refusal-remedy-opens-the-menu-for-the-authority', (await ev(`document.querySelector('[data-pause-panel]')?.getAttribute('data-pause-panel')`)) === 'choose' && (await ev(`document.querySelector('[data-pause-panel]')?.getAttribute('data-pause-for')`)) === I.ops && /wave-ops · 5 agents/.test(await ev(`document.querySelector('.pause-panel-h')?.textContent`)) && J(bus().runs.map((r) => [r.id, r.paused_at, r.pause_mode])) === before, 'pressing "Mettre wave-ops en pause…" opens the douce / dure panel FOR wave-ops (5 agents); nothing is written until a choice is made');
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await sleep(300);
     clause(arm, 'G3/refusal-panel-closes-on-escape', (await ev(`document.querySelectorAll('[data-pause-panel]').length`)) === 0, 'Escape closes the panel');
@@ -180,7 +191,7 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await press(`.ws-row-actions-pop [data-pause-action="resume"][data-pause-for="${I.ops}"]`, '▶ on the covered OPS row');
     await waitFor(() => btnRect('[data-pause-panel="explain"] [data-pause-explain-code]'), 8000, 'the covered-run explanation');
     const ex3Text = await ev(`document.querySelector('[data-pause-panel="explain"]').textContent`);
-    clause(arm, 'G3/refusal-covered-remedy-resumes-the-ancestor', (await ev(`[...document.querySelectorAll('[data-pause-panel="explain"] [data-pause-fix="resume"]')].map((e) => e.getAttribute('data-pause-for'))`)).join() === I.lead, 'the one remedy button resumes fleet-lead (the run that holds it)');
+    clause(arm, 'G3/refusal-covered-remedy-names-the-ancestor-no-button', (await ev(`document.querySelectorAll('[data-pause-panel="explain"] button').length`)) === 0 && /Reprendre fleet-lead/.test(await ev(`document.querySelector('[data-pause-panel="explain"] .pause-explain-fix')?.textContent ?? ''`)), 'the remedy names fleet-lead (the run that holds the pause) as text: no button resumes a wider run');
     clause(arm, 'G3/refusal-covered-run-names-the-ancestor', /fleet-lead tient déjà wave-ops en pause/.test(ex3Text) && run(I.ops).paused_at === null && run(I.lead).resume_started_at === null, `"${ex3Text.replace(/\s+/g, ' ').slice(0, 200)}"; wave-ops has no pause of its own, the lead's Reprise did not start`);
     await shot('5-refusal-covered', { x: 0, y: 100, width: 700, height: 420 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -192,10 +203,13 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     await parkAndSettle();
     await hover('fleet-lead');
     const relBtn = await waitFor(() => btnRect(`.ws-row-actions-pop [data-pause-action="release-all"][data-pause-for="${I.lead}"]`), 10000, '▶ Libérer les bloqués in the pill');
-    clause(arm, 'G3/ui-row-pill-shows-release-count', /^Libérer les 5 bloqués$/.test(await ev(`document.querySelector('.ws-row-actions-pop [data-pause-action="release-all"]').getAttribute('title')`)), `tooltip "${await ev(`document.querySelector('.ws-row-actions-pop [data-pause-action="release-all"]').getAttribute('title')`)}"`);
+    clause(arm, 'G3/ui-row-pill-shows-release-count', /^Libérer 1 bloqué \(\+4 plus bas, à part\)$/.test(await ev(`document.querySelector('.ws-row-actions-pop [data-pause-action="release-all"]').getAttribute('title')`)), `tooltip "${await ev(`document.querySelector('.ws-row-actions-pop [data-pause-action="release-all"]').getAttribute('title')`)}"`);
     const resSide = await shot('6-reprise-sidebar', sideClip);
     clause(arm, 'G3/ui-reprise-sidebar', /^Reprise · \d+\/7 repris · 5 bloqués$/.test(await ev(`document.querySelector('[data-pause-note="${I.lead}"]')?.textContent`) ?? '') && (await badges()).filter((b) => b[1] === 'blocked').length === 5, `lead note "${await ev(`document.querySelector('[data-pause-note="${I.lead}"]')?.textContent`)}"; ${(await badges()).filter((b) => b[1] === 'blocked').length} workers badged "bloqué"`);
     await cdp.click(relBtn.x, relBtn.y);
+    const second = await waitFor(() => btnRect(`[data-pause-panel="explain"] [data-pause-fix="release"]`), 15000, 'the « libérer aussi » button in the floating panel');
+    clause(arm, 'G3/ui-row-release-all-leaves-below-to-a-second-gesture', bus().roster.filter((r) => r.run_id === I.lead && r.paused_at === run(I.lead).paused_at && r.released_at !== null && r.role === 'worker').map((r) => r.ws_id).join() === I.docs && run(I.lead).paused_at !== null && inView(second, vp.w, vp.h) && /^Libérer aussi ces 4/.test(await ev(`document.querySelector('[data-pause-panel="explain"] [data-pause-fix="release"]').textContent.trim()`)), `row ▶ released only docs (the lead's own); the panel offers "${await ev(`document.querySelector('[data-pause-panel="explain"] [data-pause-fix="release"]').textContent.trim()`)}" inside the viewport; the Reprise is not finished`);
+    await cdp.click(second.x, second.y);
     await waitFor(() => run(I.lead).paused_at === null, 20000, 'the Reprise to finish', 300);
     await parkAndSettle();
     clause(arm, 'G3/ui-back-to-ordinary', (await badges()).length === 0 && !bus().runs.some((r) => r.paused_at !== null), `badges ${(await badges()).length}; no run holds a pause`);
@@ -216,6 +230,13 @@ export async function armUi({ bootArm, rec, OUT, LABEL, RIG_WAYLAND }) {
     clause(arm, 'G3/ui-countdown-ticks', t1 !== t2 && /dure dans/.test(t2), `the note ticks while the douce waits: "${t1}" → "${t2}"`);
     const douceShot = await shot('7-douce-in-flight-sidebar', sideClip);
     clause(arm, 'G3/ui-douce-pixels', pixelsNear(douceShot, YELLOW, 30) > 150 && pixelsNear(douceShot, ACCENT) > 300, `amber px ${pixelsNear(douceShot, YELLOW, 30)} (the 2 "finit…" badges, the note, the bar's fill), blue px ${pixelsNear(douceShot, ACCENT)} (the 5 confirmed)`);
+    // ── 6. an UNREADABLE overview (state-injected: the bus read throwing cannot be provoked on the real path without breaking the rig's bus): said out loud, never "nothing is paused"
+    await ev(`window.__orchestraSetState({ pauseOverview: { available: false, error: 'pause overview failed: SQLITE_BUSY (G3 injected)', at: Date.now(), runs: [], controls: {}, byWorkspace: {} } })`);
+    await sleep(700); await parkAndSettle();
+    const strip = await ev(`(() => { const e = document.querySelector('.sidebar [data-pause-unreadable]'); if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, text: e.textContent, badges: document.querySelectorAll('[data-pause-badge]').length }; })()`);
+    clause(arm, 'G3/ui-unreadable-overview-says-so', !!strip && /état illisible/.test(strip.text) && /SQLITE_BUSY/.test(strip.text) && strip.badges === 0 && inView(strip, vp.w, vp.h), `sidebar strip "${(strip?.text ?? '').slice(0, 120)}" inside the viewport, ${strip?.badges} badges (the rows show none — and now the user is told why)`);
+    const stripShot = await shot('8-unreadable-sidebar', { x: 0, y: Math.max(0, Math.round(strip.top) - 90), width: 345, height: Math.min(vp.h - Math.max(0, Math.round(strip.top) - 90), 220) }); // the strip sits above the footer, outside the rows clip
+    clause(arm, 'G3/ui-unreadable-pixels', pixelsNear(stripShot, YELLOW, 30) > 40, `amber px ${pixelsNear(stripShot, YELLOW, 30)} (the strip's rule + icon)`);
     await cdp.mouse(5, 890);
   } catch (e) {
     clause(arm, 'G3/ui-arm-completed', false, `ARM ABORTED: ${e.stack || e}`);

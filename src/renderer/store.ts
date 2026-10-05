@@ -27,6 +27,7 @@ import type { InboxBlock } from '../shared/inbox-blocks';
 import type { HumanGateView } from '../shared/human-gates';
 import type { PauseMode } from '../shared/pause-lifecycle';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
+import { newerOverview } from '../shared/pause-ui-view';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -383,17 +384,17 @@ export const useStore = create<State>((set, get) => ({
 
   pausePause: async (wsId, mode) => {
     const res = await window.orchestra.pausePause(wsId, mode);
-    set({ pauseOverview: res.overview });
+    set((st) => ({ pauseOverview: newerOverview(st.pauseOverview, res.overview) }));
     return res;
   },
   pauseResume: async (wsId) => {
     const res = await window.orchestra.pauseResume(wsId);
-    set({ pauseOverview: res.overview });
+    set((st) => ({ pauseOverview: newerOverview(st.pauseOverview, res.overview) }));
     return res;
   },
   pauseRelease: async (wsId, targets, carrierRunId) => {
     const res = await window.orchestra.pauseRelease(wsId, targets, carrierRunId);
-    set({ pauseOverview: res.overview });
+    set((st) => ({ pauseOverview: newerOverview(st.pauseOverview, res.overview) }));
     return res;
   },
 
@@ -450,7 +451,8 @@ export const useStore = create<State>((set, get) => ({
       globalUsage: globalUsage ?? null,
       selfTuneRuns,
       humanGates: humanGatesRes?.gates ?? [],
-      pauseOverview,
+      // a push that landed while this read was in flight is NEWER than this reply: keep it (rev-stamped by the host)
+      pauseOverview: pauseOverview ? newerOverview(get().pauseOverview, pauseOverview) : pauseOverview,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -1030,7 +1032,7 @@ window.orchestra.onHumanGatesUpdate((gates) => {
 // The fleet Pause overview changed (#257) — a pause / confirm / escalation / Bilan row / release written by the CLI, the host sweep or this UI. Main rebuilds the whole overview
 // from the bus and pushes it; replace wholesale (never merge): the sidebar badges, the controls and the Bus page all read this one slice.
 window.orchestra.onPauseOverviewUpdate((overview) => {
-  useStore.setState({ pauseOverview: overview });
+  useStore.setState((st) => ({ pauseOverview: newerOverview(st.pauseOverview, overview) }));
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.

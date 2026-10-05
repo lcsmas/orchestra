@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentsUnder, agoText, bilanAttention, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseDimClass, pauseStateOf, PAUSE_STATE_WORD, releasableIds, rowNoteText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
+import { agentsUnder, agoText, bilanAttention, memberAttention, newerOverview, noBilanState, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseDimClass, pauseStateOf, PAUSE_STATE_WORD, releasableIds, releaseLabel, releaseScope, rowNoteText, sizeText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
 import type { PauseUiBilanLine, PauseUiControl, PauseUiMember, PauseUiOverview, PauseUiRun } from './pause-ui.ts';
 
 const mem = (wsId: string, role: 'coordinator' | 'worker', ui: PauseUiMember['ui'], memberRun: string | null, extra: Partial<PauseUiMember> = {}): PauseUiMember => ({
@@ -10,7 +10,7 @@ const run = (over: Partial<PauseUiRun>): PauseUiRun => ({
   carrierRunId: 'L', carrierLabel: 'fleet-lead', title: null, phase: 'paused', mode: 'hard', pausedAt: 1_000_000, pausedBy: 'L', pausedByLabel: 'fleet-lead', deadlineAt: null, escalatedAt: null, trapAt: null, resumeStartedAt: null, auto: false,
   progress: { kind: 'en-pause', done: 7, total: 7, missing: [] }, blocked: [], members: [], ...over,
 });
-const bilan = (over: Partial<PauseUiBilanLine>): PauseUiBilanLine => ({ snapshotRef: 'refs/orchestra/pause/L/w/1', branch: 'b', head: 'h', dirty: true, changed: { modified: 3, added: 1, deleted: 0 }, snapshotIncomplete: null, wasDoing: { turnRunning: true, inFlight: ['npx tsc --noEmit'], bgTasks: [], lastTask: null }, interrupt: 'interrupted', exempt: false, killed: [], killedCount: 2, trap: 'done', skipped: null, survivors: [], refused: [], warnings: [], notes: [], error: null, ...over });
+const bilan = (over: Partial<PauseUiBilanLine>): PauseUiBilanLine => ({ snapshotRef: 'refs/orchestra/pause/L/w/1', branch: 'b', head: 'h', dirty: true, changed: { modified: 3, added: 1, deleted: 0 }, snapshotIncomplete: null, wasDoing: { turnRunning: true, inFlight: ['npx tsc --noEmit'], bgTasks: [], lastTask: null }, interrupt: 'interrupted', exempt: false, killed: [], killedCount: 2, trap: 'done', skipped: null, survivors: [], refused: [], warnings: [], notCaptured: [], notCapturedCount: 0, snapshotNotes: [], submodules: [], notes: [], error: null, ...over });
 
 test('words and tones: the mockups\' vocabulary, blue for held (blocked included), green for back', () => {
   assert.deepEqual(PAUSE_STATE_WORD, { pausing: 'finit…', paused: 'en pause', blocked: 'bloqué', released: 'libéré', resumed: 'repris' });
@@ -122,4 +122,72 @@ test('pauseDimClass: held (pausing / paused / blocked) dims the name; released /
   assert.deepEqual(['pausing', 'paused', 'blocked', 'released', 'resumed'].map((u) => pauseDimClass(o(u as never), 'w')), [' pause-dim', ' pause-dim', ' pause-dim', '', '']);
   assert.equal(pauseDimClass(o('paused'), 'zz'), '');
   assert.equal(pauseDimClass(null, 'w'), '');
+});
+
+test('bilanAttention: what the snapshot did NOT capture is SHOWN (too large, submodule failed) — the worktree is the only copy of it', () => {
+  const rows = bilanAttention(bilan({
+    notCaptured: [{ path: 'data/huge.bin', bytes: 3 * 1024 * 1048576, files: null, reason: 'file-cap' }, { path: 'out/model.ckpt', bytes: 800 * 1048576, files: 4, reason: 'total-cap' }],
+    notCapturedCount: 9,
+    submodules: [{ path: 'vendor/lib', ref: null, dirty: true, error: 'git add failed' }, { path: 'vendor/ok', ref: 'refs/orchestra/pause/x', dirty: true, error: null }],
+    snapshotNotes: ['big.bin was captured (git < 2.25 cannot exclude it)'],
+  }));
+  assert.deepEqual(rows.map((r) => r.tone), ['warn', 'warn', 'info', 'info']);
+  assert.equal(rows[0].text, 'NON capturé dans le snapshot (trop volumineux, 9) : data/huge.bin (3,0 Go), out/model.ckpt (800 Mo, 4 fichiers, plafond total), +7 autres — son worktree en est la seule copie');
+  assert.equal(rows[1].text, 'submodule vendor/lib : snapshot échoué (git add failed) — absent de toute ref');
+  assert.match(rows[2].text, /submodule vendor\/ok : modifié, ref refs\/orchestra\/pause\/x/);
+  assert.match(rows[3].text, /capturé malgré le plafond : big\.bin/);
+});
+
+test('sizeText: French decimals, Mo under 1 Go', () => {
+  assert.deepEqual([4.2 * 1048576, 800 * 1048576, 3 * 1024 * 1048576, 10.4 * 1048576, 0.04 * 1048576].map(sizeText), ['4,2 Mo', '800 Mo', '3,0 Go', '10 Mo', '0,0 Mo']);
+});
+
+test('an EMPTY roster reads "en attente de l\'hôte" with an empty bar (never "0/0 en pause" beside a full one); Reprise too; a closed Reprise keeps its numbers', () => {
+  const fresh = run({ progress: { kind: 'en-pause', done: 0, total: 0, missing: [] }, members: [] });
+  const h = runHeadline(fresh, 2_000_000);
+  assert.deepEqual([h.count, h.fraction], ["en attente de l'hôte", 0]);
+  assert.equal(rowNoteText(fresh, 2_000_000).text, "Pause dure · en attente de l'hôte");
+  assert.equal(rowNoteText(fresh, 2_000_000).fraction, 0);
+  assert.equal(rowNoteText(run({ phase: 'pausing', mode: 'soft', deadlineAt: 5, progress: { kind: 'en-pause', done: 0, total: 0, missing: [] } }), 2_000_000).text, "Pause douce · en attente de l'hôte");
+  assert.equal(rowNoteText(run({ phase: 'resuming', progress: { kind: 'repris', done: 0, total: 0, missing: [] } }), 2_000_000).text, "Reprise · en attente de l'hôte");
+  assert.equal(runHeadline(run({ phase: 'active', progress: { kind: 'repris', done: 0, total: 0, missing: [] } }), 2_000_000).count, '0/0 repris');
+});
+
+test('releaseScope: « tout libérer » = the blocked members of the carrier\'s OWN run; a blocked worker of a run BELOW is left to its coordinator', () => {
+  const ms = [mem('L', 'coordinator', 'resumed', 'L'), mem('O', 'coordinator', 'resumed', 'O'), mem('d', 'worker', 'blocked', 'L'), mem('w1', 'worker', 'blocked', 'O'), mem('w2', 'worker', 'blocked', 'O'), mem('s1', 'worker', 'released', 'S'), mem('x', 'worker', 'blocked', null)];
+  assert.deepEqual(releaseScope(run({ members: ms })), { own: ['d', 'x'], below: ['w1', 'w2'] });
+  assert.deepEqual(releaseScope(run({ members: [] })), { own: [], below: [] });
+});
+
+test('releaseLabel: honest about its scope — never counts the workers « tout libérer » will NOT release', () => {
+  assert.equal(releaseLabel({ own: ['a'], below: [] }), 'Libérer 1 bloqué');
+  assert.equal(releaseLabel({ own: ['a', 'b'], below: [] }), 'Libérer 2 bloqués');
+  assert.equal(releaseLabel({ own: ['a'], below: ['x', 'y'] }), 'Libérer 1 bloqué (+2 plus bas, à part)');
+  assert.equal(releaseLabel({ own: [], below: ['x'] }), 'Libérer… (1 plus bas, à part)');
+});
+
+test('noBilanState / memberAttention: a member with no Bilan row is PENDING while the trap is owed, ABSENT (and said so) once it is done or the Reprise started', () => {
+  assert.equal(noBilanState({ phase: 'pausing', trapAt: null }), 'pending');
+  assert.equal(noBilanState({ phase: 'paused', trapAt: null }), 'pending', 'a dure whose trap is still taking members');
+  assert.equal(noBilanState({ phase: 'paused', trapAt: 5 }), 'absent', 'the trap is done: no Bilan is coming');
+  assert.equal(noBilanState({ phase: 'pausing', trapAt: 5 }), 'absent');
+  assert.equal(noBilanState({ phase: 'resuming', trapAt: null }), 'absent', 'a Reprise: nothing more will be recorded');
+  assert.equal(noBilanState({ phase: 'active', trapAt: null }), 'absent');
+  assert.deepEqual(memberAttention(null, { phase: 'paused', trapAt: null }), []);
+  const gone = memberAttention(null, { phase: 'resuming', trapAt: 5 });
+  assert.equal(gone.length, 1);
+  assert.equal(gone[0].tone, 'warn');
+  assert.match(gone[0].text, /aucun Bilan.*seule copie/);
+  assert.deepEqual(memberAttention(bilan({ error: 'boom', snapshotRef: null }), { phase: 'paused', trapAt: 5 }), bilanAttention(bilan({ error: 'boom', snapshotRef: null })), 'a member WITH a Bilan: its own attention, unchanged');
+});
+
+test('newerOverview: an OLDER host-stamped overview never replaces a newer one (a write reply racing a fresher push); unstamped ones always win', () => {
+  const o = (rev: number | undefined, at = 0): PauseUiOverview => ({ available: true, error: null, at, ...(rev === undefined ? {} : { rev }), runs: [], controls: {}, byWorkspace: {} });
+  const cur = o(5);
+  assert.equal(newerOverview(cur, o(4)), cur, 'older → dropped');
+  assert.equal(newerOverview(cur, o(5, 1)).at, 1, 'same rev → taken');
+  assert.equal(newerOverview(cur, o(6)).rev, 6);
+  assert.equal(newerOverview(null, o(1)).rev, 1, 'nothing held → taken');
+  assert.equal(newerOverview(cur, o(undefined)).rev, undefined, 'unstamped (pure layer / fixtures) → taken');
+  assert.equal(newerOverview(o(undefined), o(1)).rev, 1);
 });

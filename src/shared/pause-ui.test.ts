@@ -32,8 +32,8 @@ test('explainPauseOutcome: a success explains nothing; every refusal names what 
   assert.match(worker.why, /wave-ops\)/);
   assert.match(worker.why, /fleet-lead\)/);
   assert.match(worker.why, /Rien n'a été écrit/);
-  assert.deepEqual(worker.fix, ['Mettre wave-ops en pause', 'Mettre fleet-lead en pause']);
-  assert.deepEqual(worker.actions, [{ kind: 'pause', wsId: 'O', label: 'Mettre wave-ops en pause…' }, { kind: 'pause', wsId: 'L', label: 'Mettre fleet-lead en pause…' }], 'the same remedies, as buttons the UI can press');
+  assert.deepEqual(worker.fix, ['Pour worker : mettre en pause sa vague wave-ops (survol de la ligne wave-ops → ⏸)', 'Plus large : mettre fleet-lead en pause suspend TOUTE sa vague, wave-ops comprise']);
+  assert.equal(worker.actions, undefined, 'the run to pause is NAMED, never offered as a button (spec Q5: no shortcut — the wider run must be a deliberate click on ITS row)');
   assert.match(explainPauseOutcome('switch-off', ctx)!.why, /figé au démarrage de la vague/);
   assert.match(explainPauseOutcome('no-run', ctx)!.title, /Pas de run/);
   assert.equal(explainPauseOutcome('already-paused', ctx)!.tone, 'info');
@@ -50,9 +50,9 @@ test('explainResumeOutcome: refused names who may; not-paused on a COVERED run n
   const covered = explainResumeOutcome('not-paused', { ...ctx, cover: { runId: 'L', label: 'fleet-lead' } })!;
   assert.equal(covered.tone, 'info');
   assert.match(covered.title, /fleet-lead tient déjà wave-ops en pause/);
-  assert.deepEqual(covered.fix, ['Reprendre fleet-lead']);
-  assert.deepEqual(covered.actions, [{ kind: 'resume', wsId: 'L', label: 'Reprendre fleet-lead…' }], 'one button: resume the run that holds it');
-  assert.deepEqual(explainResumeOutcome('refused', ctx)!.actions, [{ kind: 'resume', wsId: 'O', label: 'Reprendre depuis wave-ops…' }, { kind: 'resume', wsId: 'L', label: 'Reprendre depuis fleet-lead…' }]);
+  assert.deepEqual(covered.fix, ['Reprendre fleet-lead (survol de sa ligne → ▶)']);
+  assert.equal(covered.actions, undefined, 'named, not a button');
+  assert.equal(explainResumeOutcome('refused', ctx)!.actions, undefined);
   assert.match(explainResumeOutcome('not-paused', ctx)!.title, /n'est pas en pause/);
   assert.equal(explainResumeOutcome('already-resuming', ctx)!.tone, 'info');
 });
@@ -64,7 +64,10 @@ test('explainReleaseResult: refused / below / unknown / not-resuming each get th
   const below = explainReleaseResult({ ...base, below: ['w'] }, c);
   assert.equal(below.length, 1);
   assert.equal(below[0].tone, 'warn');
-  assert.match(below[0].why, /sa propre vague/);
+  assert.match(below[0].why, /sa propre vague \(comme `orchestra run release --all`\)/);
+  assert.equal(below[0].actions, undefined, 'without the acting row / carrier ids there is no second gesture to offer');
+  const second = explainReleaseResult({ ...base, below: ['w', 'O'] }, { ...c, actorId: 'L', carrierRunId: 'L' })[0];
+  assert.deepEqual(second.actions, [{ kind: 'release', wsId: 'L', carrierRunId: 'L', ids: ['w', 'O'], label: 'Libérer aussi ces 2 : worker, wave-ops' }], 'the explicit SECOND gesture: the below ids, attributed to the carrier row');
   const refused = explainReleaseResult({ ...base, refused: [{ wsId: 'w', mayBe: ['O'] }] }, { ...c, all: false });
   assert.equal(refused[0].tone, 'error');
   assert.match(refused[0].why, /worker \(libérable par wave-ops\)/);
