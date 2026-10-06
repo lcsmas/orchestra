@@ -193,7 +193,8 @@ test('keeperSocketOf mirrors keeper-client.ts: <= 100 chars stays in the rig, lo
   const long = keeperSocketOf('/home/lmas/.cache/pause-canary/h-canary6c-douce-douce', id);
   assert.equal(long.hashed, true);
   assert.equal(long.len, 103 - 36 + id.length + 0, 'the measured 103-char rig path');
-  assert.equal(long.path, `/tmp/okeeper-${createHash('sha256').update(id).digest('hex').slice(0, 16)}.sock`);
+  // os.tmpdir(), not a literal /tmp: keeper-client.ts honours TMPDIR (the release gate sets it).
+  assert.equal(long.path, path.join(os.tmpdir(), `okeeper-${createHash('sha256').update(id).digest('hex').slice(0, 16)}.sock`));
 });
 
 test('pre-flight: a keeper socket ALREADY at a path this rig would use (another rig, same ws id) aborts the rig; absent sockets pass', () => {
