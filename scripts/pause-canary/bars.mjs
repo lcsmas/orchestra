@@ -39,6 +39,7 @@ export function forbiddenRequests(requests, forbidden) {
   for (const r of requests) {
     if (!(r.tools > 0)) continue;
     for (const w of forbidden) {
+      if (w.turnStartOnly && r.turnStart !== true) continue;   // the Bilan→confirmation gap: only a NEW turn is forbidden (a continuation already in flight may finish)
       if ((w.role === '*' || w.role === r.role) && r.t >= w.from && (w.until === null || w.until === undefined || r.t < w.until)) { out.push({ role: r.role, t: r.t, tool: r.tool ?? null, limitPrompt: r.limitPrompt === true, window: w.label ?? '' }); break; }
     }
   }
@@ -49,15 +50,19 @@ export function forbiddenRequests(requests, forbidden) {
  *  (concurrency 3), so a member done at +1.0 s whose CLI sends a request at +1.5 s is invisible when the last member (the stamp) completes at +2.3 s. A member the HOST took (`trap`) or found idle (`host-idle`) is paused from ITS OWN
  *  completion — `pause_members.pause_confirmed_at`: `trap` = stamped by `confirmByTrap` right after `trapMember` returned (interrupt + kill DONE; `pause_records.created_at` is written BEFORE the interrupt, so it would flag in-flight requests);
  *  `host-idle` = stamped by the douce SOFT sweep (`pause-douce.ts:323,334`), up to the 3-min deadline BEFORE the trap — a stricter window, so a quota member's `SCN:limit` request falls inside it and only the `limitPrompt` exemption keeps it green.
- *  A member that confirmed ITSELF (Pause douce `member`) still makes its final request after its accusé: its window stays the run stamp. `rows` = the pause epoch's roster; `members` = [{ role, wsId }]. The `*` window (run stamp) always stays. */
-export function holdWindows({ rows, tTrapDone, tR, members, legacy = false }) {
+ *  A member that confirmed ITSELF (Pause douce `member`) still makes its final request after its accusé: its window stays the run stamp. `rows` = the pause epoch's roster; `members` = [{ role, wsId }]. The `*` window (run stamp) always stays.
+ *  THE GAP (verifier n°2 F1, ledger #281 c/6005715266, re-measured on my own 10-worker rig: Bilan→confirmation 403–967 ms, w4's #282 `UserPromptSubmit` requests at 14–21 ms before the confirmation): from the member's Bilan (`bilans[wsId]` = MIN `pause_records.created_at` of the epoch)
+ *  to its confirmation only a NEW TURN (`turnStart`: the last message carries no `tool_result`) is forbidden — a continuation already in flight at the Bilan may finish. `mode`: 'member' (Bilan-opened, the harness default) · 'confirm' (from the confirmation: the previous design, the proof's blind arm) · 'legacy' (run stamp only). */
+export function holdWindows({ rows, bilans = {}, tTrapDone, tR, members, mode = 'member' }) {
   const out = [];
-  if (!legacy) {
+  if (mode !== 'legacy') {
     for (const m of members) {
       const row = rows.find((x) => x.ws_id === m.wsId);
       const done = row?.pause_confirmed_at;
       const own = (row?.pause_confirm_via === 'trap' || row?.pause_confirm_via === 'host-idle') && num(done);
       if (own && done < tTrapDone) out.push({ role: m.role, from: done, until: tR, label: 'hold-own' });
+      const bilan = bilans[m.wsId];
+      if (mode === 'member' && own && num(bilan) && bilan < done) out.push({ role: m.role, from: bilan, until: done, turnStartOnly: true, label: 'bilan-gap' });
     }
   }
   out.push({ role: '*', from: tTrapDone, until: tR, label: 'hold' });
@@ -66,7 +71,7 @@ export function holdWindows({ rows, tTrapDone, tR, members, legacy = false }) {
 
 /** Members whose PER-MEMBER window `holdWindows` cannot build — it then falls back SILENTLY to the run-level window (the H-1 blind spot; review R-M1: `confirmByTrap` failing is only a `log.warn` in the app, so a hard pause can leave unstamped rows and read GREEN).
  *  Gap = no roster row (unless `optional`), a confirm route that is not member|host-idle|trap, or a trap/host-idle row without a finite stamp. A `member` (self-confirmed douce) row waits for the run stamp BY DESIGN: no gap. Any gap must read RED. */
-export function holdWindowGaps({ rows, members }) {
+export function holdWindowGaps({ rows, members, bilans = {}, mode = 'member' }) {
   const gaps = [];
   for (const m of members) {
     const row = rows.find((x) => x.ws_id === m.wsId);
@@ -75,6 +80,7 @@ export function holdWindowGaps({ rows, members }) {
     if (via === 'member') continue;
     if (via !== 'trap' && via !== 'host-idle') { gaps.push(`${m.role}: confirm route ${JSON.stringify(via ?? null)} is not member|host-idle|trap`); continue; }
     if (!num(row.pause_confirmed_at)) gaps.push(`${m.role}: ${via} row without a finite pause_confirmed_at (${JSON.stringify(row.pause_confirmed_at ?? null)})`);
+    else if (mode === 'member' && via === 'trap' && !m.optional && !num(bilans[m.wsId])) gaps.push(`${m.role}: trap row without a Bilan record (no bilan-gap window: the Bilan→confirmation gap would be blind)`);
   }
   return gaps;
 }
@@ -97,6 +103,16 @@ export function isMemberTool(p, byPid, kindOf, memberOf) {
     q = parent;
   }
   return true;
+}
+
+/** Is this API request the START of a turn (a CLI-started or prompted one), as opposed to the continuation of a tool call already in flight? Only a start is forbidden in the Bilan→confirmation gap.
+ *  NOT "the last message has no tool_result": after a host interrupt the CLI MERGES the rejection tool_result ("The user doesn't want to proceed with this tool use"), the "[Request interrupted by user" text and the next prompt into ONE user message (measured on a member transcript:
+ *  tool_result, interrupt text, prompt, then a total_tokens reminder + `UserPromptSubmit` hook_success attachments), so the real #282 blip would read as a continuation. A genuine continuation carries a real tool_result and NEITHER marker.
+ *  `tailText` = the text of every message after the last assistant message. */
+export function isTurnStart({ tools, lastRole, lastToolResult, tailText }) {
+  if (!(tools > 0) || lastRole !== 'user') return false;
+  if (!lastToolResult) return true;
+  return /\[Request interrupted by user|The user doesn't want to proceed with this tool use/.test(tailText) || /UserPromptSubmit hook success/.test(tailText);
 }
 
 /** The runner's verdict for a MUST-FAIL proof arm: `reached` = the fleet got to mid-work; `premiseRed` = the arm's own PREMISE checks (`inject_*`: the injected thing landed / was observable) that read RED — then the arm proves nothing even if the named instrument is RED too

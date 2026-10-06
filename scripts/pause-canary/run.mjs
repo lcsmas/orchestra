@@ -47,6 +47,9 @@ const PROOF_ARMS = [
   { name: 'unfixed:legacy-toolprocs-app-git', exercise: 'dure', inject: 'app-git', toolprocs: 'legacy', redden: ['bar:no_self_restart'], expectDetail: /tool-procs-back=[1-9]/ },
   // verifier n°2 H-1: a member's request between ITS completion and the run's trap stamp must be seen (6 workers: the trap runs members in waves, so the first wave finishes seconds before the stamp)
   { name: 'control:inject-late-request', exercise: 'dure', inject: 'late-request', members: 6, redden: ['bar:no_self_restart'], expectDetail: /@-\d/ },
+  { name: 'control:inject-gap-request', exercise: 'dure', inject: 'gap-request', members: 6, redden: ['bar:no_self_restart'], expectDetail: /bilan-gap/ },   // verifier n°2 F1: a NEW turn between a member's Bilan and its confirmation MUST be seen
+  { name: 'unfixed:window-from-confirm-gap-request', exercise: 'dure', inject: 'gap-request', window: 'confirm', members: 6, expect: 'PASS' },   // the previous design (window from the confirmation): blind to that request
+  { name: 'unfixed:pre-282-bg-blip', exercise: 'dure', unfixed: '8b49b0a7', members: 4, cycles: 3, redden: ['bar:no_self_restart'], expectDetail: /bilan-gap/ },   // OPS (ledger #281): the REAL #282 class on the pre-fix app (master before stop_task): the CLI-started turn of the `bg` member falls in its Bilan→confirmation gap in ≥ 1 of 3 cycles and MUST be flagged there
   { name: 'unfixed:legacy-window-late-request', exercise: 'dure', inject: 'late-request', window: 'legacy', members: 6, expect: 'PASS' },
   { name: 'control:pause-switch-off', exercise: 'dure', pause: 'off', redden: ['pause_accepted'], expectDetail: /'pause' switch is OFF/ },
   { name: 'unfixed:pre-wave-E-douce', exercise: 'douce', unfixed: true, redden: ['pause_accepted'], expectDetail: /only the HARD pause/ },
@@ -209,15 +212,17 @@ const only = new Set((opt('only', '') || '').split(',').filter(Boolean));
 const sel = PROOF_ARMS.filter((a) => only.size === 0 || only.has(a.name) || only.has(a.name.replace(/^(mutant|control|unfixed):/, '')));
 const members = Number(opt('members', '3'));
 // the PRE-wave-E master (b34c8b58: hard Pause only — no Pause douce, no structured Reprise) as a packaged app + its source tree (the seed needs the matching schema); pinned, built once
-function ensureUnfixed() {
-  const given = opt('unfixed-app', process.env.PC_UNFIXED_APP ?? null);
+function ensureUnfixed(pinned = null) {
+  const given = pinned ? null : opt('unfixed-app', process.env.PC_UNFIXED_APP ?? null);   // an arm pinned to its own commit (`unfixed: '<sha>'`) never takes the global override
   if (given) return { app: path.resolve(given), tree: path.resolve(opt('unfixed-tree', process.env.PC_UNFIXED_TREE ?? '')) };
-  const sha = sh('git', ['rev-parse', `${process.env.PC_UNFIXED_SHA ?? 'b34c8b58'}^{commit}`]).stdout.trim();
-  if (!sha) { say('PAUSE-CANARY: VOID — the pre-wave-E commit b34c8b58 is not in this repo (set PC_UNFIXED_SHA)'); process.exit(3); }
+  const want = pinned ?? process.env.PC_UNFIXED_SHA ?? 'b34c8b58';
+  const sha = sh('git', ['rev-parse', `${want}^{commit}`]).stdout.trim();
+  if (!sha) { say(`PAUSE-CANARY: VOID — the unfixed commit ${want} is not in this repo (set PC_UNFIXED_SHA)`); process.exit(3); }
   const tree = path.join(BASE, 'wt', `unfixed-${sha.slice(0, 8)}`);
   const app = path.join(BASE, 'apps', `unfixed-${sha.slice(0, 8)}`, 'orchestra');
   if (fs.existsSync(app)) return { app, tree };
-  say(`unfixed: building the pre-wave-E master ${sha.slice(0, 8)} as a PACKAGED app …`);
+  say(`unfixed: building ${sha.slice(0, 8)} as a PACKAGED app …`);
+  ensureElectronAbi();   // a `pnpm run test` leaves node_modules at the node ABI; the packaged app needs the Electron one
   if (!fs.existsSync(tree)) {
     const w = sh('git', ['worktree', 'add', '--detach', tree, sha]);
     if (w.status !== 0) { say(`PAUSE-CANARY: VOID — cannot create the unfixed worktree: ${w.stderr.slice(-200)}`); process.exit(3); }
@@ -243,10 +248,10 @@ for (const arm of sel) {
   let appBin = baseApp, appTree = null, mutInfo = null;
   try {
     if (arm.mutant) { mutInfo = makeMutantApp(baseDir, arm.mutant, path.join(BASE, 'apps', `mut-${arm.mutant}`)); appBin = mutInfo.bin; say(`   mutant ${arm.mutant}: ${mutInfo.edits.map((e) => `${e.hits}×`).join(' ')} edit(s), copy ${mutInfo.copySha} vs base ${mutInfo.baseSha}`); }
-    if (arm.unfixed) { const u = ensureUnfixed(); appBin = u.app; appTree = u.tree; }
+    if (arm.unfixed) { const u = ensureUnfixed(typeof arm.unfixed === 'string' ? arm.unfixed : null); appBin = u.app; appTree = u.tree; }
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
-  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : [])] });
+  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : [])] });
   const hitsOf = (rr) => (arm.redden ?? []).filter((id) => rr.checks.some((c) => !c.ok && c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
   // a cycle CUT SHORT by the host guard before the named check could be evaluated proves nothing either way: it is a VOID, re-run it (a RED already measured by the named check is kept)
   const cutShortWithoutEvidence = (rr) => !!arm.redden && rr.checks.some((c) => c.id === 'cycle_incomplete' && /cut short by a VOID/.test(c.detail)) && hitsOf(rr).length === 0;

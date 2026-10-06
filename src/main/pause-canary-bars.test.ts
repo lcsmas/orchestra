@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, mustFailVerdict, renderTable } from '../../scripts/pause-canary/bars.mjs';
+import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, isTurnStart, mustFailVerdict, renderTable } from '../../scripts/pause-canary/bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
@@ -226,6 +226,7 @@ const CENSUS: P[] = [
   proc(500, 100, 'other', '/app/orchestra cli run confirm pause', '/h/rig/wt-w1'),         // an `orchestra cli` client of the app
   proc(501, 202, 'other', '/app/orchestra cli run confirm pause', '/h/rig/wt-w3'),         // …and one run by a member\'s OWN tool shell (its ancestry reaches the CLI: only the cmd exclusion keeps it out)
   proc(600, 200, 'tool-sleep', 'sleep 1', '/h/rig'),                                       // not in a member worktree
+  proc(310, 1, 'app', '/app/orchestra --type=fake-app-helper', '/h/rig/wt-w5'),            // an app-kind process whose cwd IS a member worktree (the app-git arm's helper) — only its kind keeps it out (verifier MA4)
 ];
 const byPid = new Map(CENSUS.map((x) => [x.pid, x]));
 const memberOf = (x: P) => /^\/h\/rig\/wt-([a-z0-9]+)/.exec(x.cwd)?.[1] ?? null;
@@ -245,7 +246,7 @@ test('isMemberTool: the APP\'s own git in a member worktree is NOT a member rest
 });
 
 test('isMemberTool: keeper, CLI, the app, an `orchestra cli` client and a process outside any member worktree are never tools', () => {
-  for (const pid of [100, 101, 200, 201, 500, 501, 600]) assert.equal(isTool(pid), false, `pid ${pid}`);
+  for (const pid of [100, 101, 200, 201, 500, 501, 600, 310]) assert.equal(isTool(pid), false, `pid ${pid}`);
 });
 
 // H-1 (verifier n°2): the hold window is PER MEMBER from ITS completion, so a member finished early cannot make a request unseen while the last members still run
@@ -256,7 +257,7 @@ test('holdWindows: a member the HOST took (trap / host-idle) is paused from ITS 
   const w = holdWindows({ rows, tTrapDone: 2300, tR: 9000, members: MEMBERS });
   assert.deepEqual(w.map((x: { role: string; from: number }) => [x.role, x.from]), [['w1', 1000], ['w2', 1100], ['*', 2300]]);
   assert.ok(w.every((x: { until: number }) => x.until === 9000));
-  const legacy = holdWindows({ rows, tTrapDone: 2300, tR: 9000, members: MEMBERS, legacy: true });
+  const legacy = holdWindows({ rows, tTrapDone: 2300, tR: 9000, members: MEMBERS, mode: 'legacy' });
   assert.deepEqual(legacy.map((x: { role: string; from: number }) => [x.role, x.from]), [['*', 2300]], 'the legacy (blind) window is the run stamp only');
   assert.equal(holdWindows({ rows: [row('A', 'trap', 2500)], tTrapDone: 2300, tR: 9000, members: MEMBERS }).length, 1, 'a completion AFTER the run stamp never makes a window LESS strict than the run window');
 });
@@ -266,7 +267,7 @@ test('H-1 end to end: a request 0.5 s after a member\'s completion and before th
   const reqs = [{ t: 1500, role: 'w1', tools: 1 }];
   const members = [{ role: 'w1', wsId: 'A' }, { role: 'w2', wsId: 'B' }];
   assert.equal(forbiddenRequests(reqs, holdWindows({ rows, tTrapDone: 2300, tR: 9000, members })).length, 1);
-  assert.equal(forbiddenRequests(reqs, holdWindows({ rows, tTrapDone: 2300, tR: 9000, members, legacy: true })).length, 0, 'the old window cannot see it — the verifier n°2 finding');
+  assert.equal(forbiddenRequests(reqs, holdWindows({ rows, tTrapDone: 2300, tR: 9000, members, mode: 'legacy' })).length, 0, 'the old window cannot see it — the verifier n°2 finding');
 });
 
 test('isTransientName: tmp / lock / swap names of a live config dir are ignored (liveSnapshot flapped on .claude.json.tmp), real entries are not', () => {
@@ -285,10 +286,10 @@ test('holdWindows: a trap / host-idle row whose stamp is missing, NaN, a string 
 
 test('holdWindowGaps: a missing row, an unknown/absent confirm route, or a trap/host-idle row without a finite stamp is a GAP (RED); self-confirmed and an optional absent coordinator are not', () => {
   const ok = [row('A', 'trap', 1000), row('B', 'host-idle', 1100), row('C', 'member', 900)];
-  assert.deepEqual(holdWindowGaps({ rows: ok, members: MEMBERS.slice(0, 3) }), []);
-  assert.equal(holdWindowGaps({ rows: ok, members: MEMBERS }).length, 1, 'D has no roster row');
-  assert.match(holdWindowGaps({ rows: ok, members: MEMBERS })[0], /w4: no roster row/);
-  assert.equal(holdWindowGaps({ rows: ok, members: [...MEMBERS.slice(0, 3), { role: 'ops', wsId: 'Z', optional: true }] }).length, 0, 'an optional coordinator row may be absent');
+  assert.deepEqual(holdWindowGaps({ rows: ok, members: MEMBERS.slice(0, 3), bilans: { A: 500 } }), []);
+  assert.equal(holdWindowGaps({ rows: ok, members: MEMBERS, bilans: { A: 500 } }).length, 1, 'D has no roster row');
+  assert.match(holdWindowGaps({ rows: ok, members: MEMBERS, bilans: { A: 500 } })[0], /w4: no roster row/);
+  assert.equal(holdWindowGaps({ rows: ok, members: [...MEMBERS.slice(0, 3), { role: 'ops', wsId: 'Z', optional: true }], bilans: { A: 500 } }).length, 0, 'an optional coordinator row may be absent');
   for (const at of [null, undefined, Number.NaN, '1000' as unknown as number]) assert.equal(holdWindowGaps({ rows: [row('A', 'trap', at as number)], members: [MEMBERS[0]] }).length, 1, `trap stamp ${String(at)}`);
   assert.equal(holdWindowGaps({ rows: [row('A', 'host-idle', null)], members: [MEMBERS[0]] }).length, 1, 'host-idle without a stamp');
   assert.equal(holdWindowGaps({ rows: [row('A', 'bogus', 1000)], members: [MEMBERS[0]] }).length, 1, 'an unknown confirm route (with a stamp) is still a gap');
@@ -335,4 +336,51 @@ test('mustFailVerdict: the named instrument RED counts only when the fleet reach
   assert.equal(mustFailVerdict({ reached: true, premiseRed: [{ id: 'inject_lands_in_the_blind_window' }], hit: ['bar:no_self_restart'] }), 'RIG-BROKE', 'premise RED + named RED: the arm proves nothing');
   assert.equal(mustFailVerdict({ reached: false, premiseRed: [], hit: ['bar:no_self_restart'] }), 'RIG-BROKE');
   assert.equal(mustFailVerdict({ reached: true, premiseRed: [], hit: [] }), 'MUTANT-SURVIVED');
+});
+
+// verifier n°2 F1: the Bilan→confirmation GAP (0.4–1.0 s per member) is where #282's task-notification turn starts — the window opens at the Bilan for NEW turns
+test('holdWindows (member mode): the window opens at the member\'s Bilan for NEW turns only, then all requests from its confirmation; a host-idle row (Bilan AFTER its early confirmation) and a missing Bilan add no gap window', () => {
+  const rows = [row('A', 'trap', 1600), row('B', 'host-idle', 100), row('C', 'member', 900), row('D', 'trap', 1700)];
+  const w = holdWindows({ rows, bilans: { A: 1000, B: 1200, C: 800 }, tTrapDone: 2300, tR: 9000, members: MEMBERS });
+  assert.deepEqual(w.map((x: { role: string; from: number; until: number; turnStartOnly?: boolean }) => [x.role, x.from, x.until, x.turnStartOnly === true]),
+    [['w1', 1600, 9000, false], ['w1', 1000, 1600, true], ['w2', 100, 9000, false], ['w4', 1700, 9000, false], ['*', 2300, 9000, false]]);
+  assert.equal(holdWindows({ rows, bilans: { A: 1000 }, tTrapDone: 2300, tR: 9000, members: MEMBERS, mode: 'confirm' }).some((x: { label: string }) => x.label === 'bilan-gap'), false, 'confirm mode = the previous design: no gap window');
+  assert.equal(holdWindows({ rows, bilans: { A: 1000 }, tTrapDone: 2300, tR: 9000, members: MEMBERS, mode: 'legacy' }).length, 1, 'legacy = run stamp only');
+});
+
+test('F1 end to end with the verifier\'s numbers (w4 Bilan +1012 ms, confirmed +1583 ms, the CLI-started request at +1577 ms = 6 ms before the confirmation): member mode flags it, the previous (confirm) design and the run window are blind; a continuation (tool_result) in the gap is legit', () => {
+  const rows = [row('A', 'trap', 1583), row('B', 'trap', 2300)];
+  const members = [{ role: 'w4', wsId: 'A' }, { role: 'w5', wsId: 'B' }];
+  const bilans = { A: 1012, B: 1900 };
+  const newTurn = [{ t: 1577, role: 'w4', tools: 1, turnStart: true }];
+  const cont = [{ t: 1300, role: 'w4', tools: 1, turnStart: false }];
+  const flagged = (reqs: unknown[], mode: string) => forbiddenRequests(reqs, holdWindows({ rows, bilans, tTrapDone: 2300, tR: 9000, members, mode })).length;
+  assert.equal(flagged(newTurn, 'member'), 1, 'seen');
+  assert.equal(forbiddenRequests(newTurn, holdWindows({ rows, bilans, tTrapDone: 2300, tR: 9000, members }))[0].window, 'bilan-gap');
+  assert.equal(flagged(newTurn, 'confirm'), 0, 'the previous design is blind to it (the verifier\'s false negative)');
+  assert.equal(flagged(newTurn, 'legacy'), 0);
+  assert.equal(flagged(cont, 'member'), 0, 'a continuation already in flight at the Bilan may finish');
+  assert.equal(forbiddenRequests([{ t: 1600, role: 'w4', tools: 1, turnStart: false }], holdWindows({ rows, bilans, tTrapDone: 2300, tR: 9000, members })).length, 1, 'from the confirmation on, EVERY tool-carrying request is flagged');
+});
+
+test('holdWindowGaps (member mode): a trap-taken worker with no Bilan record is a gap; confirm/legacy modes, optional coordinators and host-idle rows are not', () => {
+  const rows = [row('A', 'trap', 1600), row('B', 'host-idle', 100)];
+  const mk = (mode: string, bilans: Record<string, number>, members = MEMBERS.slice(0, 2)) => holdWindowGaps({ rows, members, bilans, mode });
+  assert.deepEqual(mk('member', { A: 1000 }), [], 'trap row with its Bilan: ok; host-idle needs none');
+  assert.match(mk('member', {})[0], /w1: trap row without a Bilan record/);
+  assert.deepEqual(mk('confirm', {}), []);
+  assert.deepEqual(mk('legacy', {}), []);
+  assert.deepEqual(mk('member', {}, [{ role: 'ops', wsId: 'A', optional: true } as never, MEMBERS[1]]), [], 'an optional coordinator needs no Bilan');
+});
+
+// the strings below are the REAL ones of a member transcript (`tool_result` rejection + "[Request interrupted by user for tool use]" + the prompt + hook_success attachments are MERGED into one user message by the CLI)
+test('isTurnStart: a genuine continuation is not a turn start; a request after a host interrupt (merged rejection tool_result + interrupt text + prompt), a CLI-started UserPromptSubmit turn and a plain prompt are', () => {
+  const t = (o: object) => isTurnStart({ tools: 1, lastRole: 'user', lastToolResult: false, tailText: '', ...o });
+  assert.equal(t({ lastToolResult: true, tailText: '(Bash completed with no output)\n<total_tokens>15000000 tokens left</total_tokens>' }), false, 'a real tool result + the token reminder = a continuation in flight');
+  assert.equal(t({ lastToolResult: true, tailText: "The user doesn't want to proceed with this tool use. The tool use was rejected\n[Request interrupted by user for tool use]\nSCN:late go\n<total_tokens>x</total_tokens>" }), true, 'after the interrupt the CLI merges it all into one message with a tool_result: still a NEW turn');
+  assert.equal(t({ lastToolResult: true, tailText: 'sleep done\nUserPromptSubmit hook success: [orchestra] 33 other agent(s) are running' }), true, 'the #282 blip: a CLI-started turn carries the UserPromptSubmit hook output');
+  assert.equal(t({ lastToolResult: true, tailText: "The user doesn't want to proceed with this tool use." }), true, 'the rejection alone marks a post-interrupt request');
+  assert.equal(t({ lastToolResult: false, tailText: 'SCN:late go' }), true, 'a plain user prompt');
+  assert.equal(isTurnStart({ tools: 0, lastRole: 'user', lastToolResult: false, tailText: 'SCN:late go' }), false, 'a side request (no tools) is never a turn');
+  assert.equal(isTurnStart({ tools: 1, lastRole: 'assistant', lastToolResult: false, tailText: '' }), false);
 });
