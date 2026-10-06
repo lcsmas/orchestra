@@ -10,7 +10,7 @@ import { MUTANTS, applyEdits } from '../../scripts/pause-canary/mutants.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { fleetSpec, KIND_ORDER } from '../../scripts/pause-canary/ids.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { keeperSocketOf, assertNoForeignKeeperSockets, isTransientName, liveSnapshot, kindOf as realKindOf } from '../../scripts/pause-canary/lib.mjs';
+import { keeperSocketOf, assertNoForeignKeeperSockets, isTransientName, liveSnapshot, kindOf as realKindOf, startApi } from '../../scripts/pause-canary/lib.mjs';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -383,4 +383,21 @@ test('isTurnStart: a genuine continuation is not a turn start; a request after a
   assert.equal(t({ lastToolResult: false, tailText: 'SCN:late go' }), true, 'a plain user prompt');
   assert.equal(isTurnStart({ tools: 0, lastRole: 'user', lastToolResult: false, tailText: 'SCN:late go' }), false, 'a side request (no tools) is never a turn');
   assert.equal(isTurnStart({ tools: 1, lastRole: 'assistant', lastToolResult: false, tailText: '' }), false);
+});
+
+// the fake API classifies REAL CLI request shapes: the CLI appends a trailing `system` message (token reminder) to every request, so the LAST message is never the one that says what the request is
+test('startApi.turnStart on the CLI\'s real shapes (trailing system message): a post-interrupt merged prompt, a CLI-started hook turn and a plain prompt are turn starts; a real tool result is a continuation', async () => {
+  const api = await startApi({ decide: async () => ({ text: 'ok' }), usageHeaders: {} });
+  const sys = { role: 'system', content: [{ type: 'text', text: '<total_tokens>15000000 tokens left</total_tokens>' }] };
+  const asst = { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'Bash', input: {} }] };
+  const post = (messages: unknown[]) => fetch(`${api.url}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'k' }, body: JSON.stringify({ model: 'm', tools: [{ name: 'Bash' }], messages }) }).then((r) => r.text());
+  try {
+    await post([{ role: 'user', content: [{ type: 'text', text: 'SCN:work c1' }, { type: 'text', text: 'SessionStart:startup hook success: [orchestra]' }] }, sys]);                                  // 0 first prompt
+    await post([asst, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'SETUP-OK' }, { type: 'text', text: '<total_tokens>1</total_tokens>' }] }, sys]);                   // 1 genuine continuation
+    await post([asst, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: "The user doesn't want to proceed with this tool use." }, { type: 'text', text: '[Request interrupted by user for tool use]' }, { type: 'text', text: 'SCN:late go' }] }, sys]);   // 2 after a host interrupt
+    await post([asst, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'slept' }, { type: 'text', text: 'UserPromptSubmit hook success: [orchestra] 33 other agent(s)' }] }, sys]);   // 3 CLI-started (#282 blip)
+    await post([{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }, { role: 'user', content: 'SCN:late go' }, sys]);                                                                    // 4 plain prompt to an idle member
+    assert.deepEqual(api.requests.map((r: { turnStart: boolean }) => r.turnStart), [true, false, true, true, true]);
+    assert.deepEqual(api.requests.map((r: { latePrompt: boolean }) => r.latePrompt), [false, false, true, false, true]);
+  } finally { await api.stop(); }
 });

@@ -66,6 +66,7 @@ const MUTANTS = [
   ['turnstart-interrupt-ignored', "/\\[Request interrupted by user|The user doesn't want to proceed with this tool use/.test(tailText) || ", ""],
   ['turnstart-hook-ignored', " || /UserPromptSubmit hook success/.test(tailText);", ";"],
   ['turnstart-toolresult-only', "if (!lastToolResult) return true;\n  return /", "if (!lastToolResult) return true;\n  return false && /"],
+  ['api-last-message-is-last', "[...messages].reverse().find((m) => m?.role !== 'system')", "messages[messages.length - 1]", 'lib.mjs'],
   ['kind-app-anywhere', "/^(\\S*\\/)?orchestra( |$)/.test(p.cmd)", "/orchestra( |$)/.test(p.cmd)", 'lib.mjs'],
   ['snapshot-transient-listed', ".filter((n) => !isTransientName(n))", "", 'lib.mjs'],
 ];

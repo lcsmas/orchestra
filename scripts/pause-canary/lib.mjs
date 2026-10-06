@@ -129,8 +129,9 @@ export async function startApi({ decide, usageHeaders = null }) {
       // the request answers the harness's own human `SCN:limit` prompt AND nothing else: a 429 leaves no assistant reply, so a LATER wake still carries that prompt in its tail — it is told apart by its own text
       const tailText = messages.slice(lastAsst + 1).map((m) => textOf(m.content)).join('\n');
       const limitPrompt = tools > 0 && /SCN:limit/.test(tailText) && !/lot pending|task-notification|PAUSE DOUCE|consigne de reprise/i.test(tailText);
-      const lastToolResult = Array.isArray(last?.content) && last.content.some((bl) => bl?.type === 'tool_result');
-      const turnStart = isTurnStart({ tools, lastRole: last?.role, lastToolResult, tailText });   // a NEW turn (CLI hook text, task-notification, wake, human prompt, also after an interrupt) — not the continuation of a tool call already in flight (verifier n°2 F1: the Bilan→confirmation gap)
+      const lastMsg = [...messages].reverse().find((m) => m?.role !== 'system');   // the CLI appends a trailing `system` message (the token reminder) to EVERY request: the last USER/assistant message is the one that says what the request is
+      const lastToolResult = Array.isArray(lastMsg?.content) && lastMsg.content.some((bl) => bl?.type === 'tool_result');
+      const turnStart = isTurnStart({ tools, lastRole: lastMsg?.role, lastToolResult, tailText });   // a NEW turn (CLI hook text, task-notification, wake, human prompt, also after an interrupt) — not the continuation of a tool call already in flight (verifier n°2 F1: the Bilan→confirmation gap)
       const latePrompt = tools > 0 && /SCN:late/.test(tailText);   // the request that answers the harness's `--inject late-request` human prompt (the tail, not the last block: the CLI appends reminder blocks after the prompt)
       const cred = String(req.headers['x-api-key'] ?? req.headers.authorization ?? '').replace(/^Bearer /, '');
       const sysText = textOf(b.system);
