@@ -109,6 +109,58 @@ against the pre-fix build (deps carry an old-build `kill` alias) — there A3/A4
 show an unrelated process actually SIGKILLed. `agent-sdk.ts` is untouched (the
 #124 D3 seam is T3's).
 
+## Memory guard — measured, decided, visible (#285, wave G ledger #295; epic #284)
+
+The host's available memory (`MemAvailable`) drives two thresholds (Settings, GB = GiB): **Admission** below 6 (held until
+back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts above the Admission threshold, 6 — not 7).
+**This track holds nothing**: it measures, decides, logs and exposes; #286 (Admission), #288 (fast Veille), #289 (alert), #290
+(memory Pause) consume the API. Glossary: `CONTEXT.md` (Veille, Admission); decision record: `docs/adr/0004-…`.
+
+- **Pure half — `src/shared/memory-guard.ts`** (+ `.test.ts`): `decideMemoryGuard(prev, availBytes, thresholds)` (`:141`) → next
+  state + the edges crossed (`admission_held` / `admission_reopened` / `pause_due` / `pause_liftable`, each carrying the memory
+  and the threshold that fired) + `pause: none|due|held|liftable` + `mayReleaseOneStart`. All comparisons STRICT (exactly at a
+  threshold is not below/above it); unreadable memory (`null`/NaN/negative) = state unchanged, nothing fires, nothing released.
+  `episode` increments only on a downward Admission crossing, so jitter inside the 6–7 GB band is ONE episode. Stateless level
+  predicates `memoryPauseDue/Liftable` (`:129/:132`) and `mayReleaseOneStart` (`:136`) exist so #290 can re-evaluate against the
+  PERSISTED run after an app restart (the in-memory state is gone then). `nextSampleDelayMs` (`:172`): 10 s strictly below the
+  Admission threshold (or unreadable), 60 s otherwise — the spec literally, so the 6–7 GB band samples at 60 s even while held.
+  `isAdmissionHolding(snapshot)` (`:202`) = `admissionEnabled && admission==='held'` is THE question #286/#288 ask — the global
+  toggle OFF still measures/decides/logs. Settings: `normalizeMemoryGuardSettings` (always valid; an invalid PAIR falls back to
+  6/3 as a pair), `validateMemoryGuardSettings` (critical < Admission, critical ≥ 0.5, Admission ≤ 256), `patchMemoryGuardSettings`.
+  `parseMemAvailableBytes`, `formatMemoryGuardLine` (the `bus-status` line).
+- **Sampler — `src/main/memory-guard.ts`**: `createMemoryGuard(deps)` (`:91`); `deps.readAvailableBytes` is THE injectable
+  MemAvailable source (default `readMemAvailableBytes()` in `src/main/mem-available.ts`: `/proc/meminfo`, **Linux only — other
+  platforms read null = unmeasured**, never `os.freemem()`), `deps.schedule/cancel` the timer seam. A light chained `setTimeout`
+  (re-armed after each sample because the delay changes; reads ONE small file, never the process table — it is NOT the 60 s
+  `sampleTick` above, which keeps its cadence). `getSettings()` is read at EVERY sample, so a threshold change is hot.
+  Every transition is logged WITH the memory (`[memory-guard] admission HELD (episode 1) — MemAvailable 5.50 GB < 6.00 GB`; WARN
+  for held/pause-due, INFO for the upward edges), steady samples log nothing, an outage logs ONE WARN. Process-wide facade
+  (frozen API): `getMemoryGuardSnapshot()`, `subscribeMemoryGuard(fn)`, `sampleMemoryGuardNow()` (`:270`, a FRESH read + decision =
+  the re-measure between two releases), `startMemoryGuard/stopMemoryGuard`, `setMemoryGuardSettingsReader`;
+  `__rebuildMemoryGuardForTests(deps, source)` is the rig seam. Started in `index.ts` right after `startResourceMonitor()`
+  (store loaded, reader = `store.getMemoryGuardSettings()`), stopped in `shutdownSubsystems`.
+- **Settings I/O — `src/main/memory-guard-settings.ts`**: `memoryGuardView(settings)` (settings + snapshot + a FRESH
+  `liveAvailBytes` + MemTotal) and `setMemoryGuardSettings(patch, store)` = validate → persist (`store.memoryGuard`,
+  `store.getMemoryGuardSettings()`) → `sampleMemoryGuardNow()` (applies at once). Invalid ⇒ nothing written, `{ok:false,error}`.
+  IPC `settings:memoryGuard` / `settings:setMemoryGuard` (`api-handlers.ts`, `preload/index.ts`, `OrchestraAPI.memoryGuard/setMemoryGuard`).
+  The Settings dialog (mockup A, D-pick1): `src/renderer/components/MemoryGuardSettings.tsx` — its own modal behind a RAM-chip header icon
+  in `Sidebar.tsx` (beside Model defaults), `.mg-*` block at the end of `styles.css`. Live reading + state chip + gauge (ticks at critical /
+  Admission / reopen, one label row each — 1 GB is ~14 px on a 32 GB scale), two GB inputs committed on blur/Enter (both fields travel
+  together: a pair is only valid as a pair), the toggle, an inline error row; polls `memoryGuard()` every 2 s while open. Pure view logic
+  (`guardChip`, `gaugeModel`, `planThresholdCommit`, `parseGbInput`): `src/shared/memory-guard-view.ts`.
+- **Visibility**: `/busStatus` (`hooks-server.ts:489`) returns `memoryGuard: <snapshot>`; `orchestra bus-status` prints one
+  `memory:` line (`cli/index.ts:2179`; absent from an older app → no line). Host-wide, not run-scoped.
+- **Gates**: `src/shared/memory-guard.test.ts` (boundary ± 1 byte per comparison, episodes, jump, the 2026-10-06 night in
+  miniature), `src/main/memory-guard.test.ts` (cadence on the injected scheduler AND on real `setTimeout` via `mock.timers`,
+  logging, hot thresholds, unreadable), `memory-guard-settings.test.ts`, `memory-guard-wiring.test.ts` (source guards + the
+  "no start path imports the guard yet" tripwire — #286/#288/#289/#290 add their importer there),
+  `scripts/e2e-memory-guard.mjs` (fake source → REAL sampler → REAL `/busStatus` in a headless scratch home → REAL built CLI;
+  `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (25 in-place mutants, byte-exact restore).
+  `scripts/e2e-memory-guard-ui.sh <built app dir>` drives the modal in a BUILT app under its own headless sway (heavy: token): real
+  /proc/meminfo, thresholds moved around the live reading through the real UI → HELD / memory Pause / inline error / toggle / restore,
+  each cross-read from the DOM, the real CLI `bus-status`, the scratch store.json and orchestra.log, + screenshots; red on a pre-fix build.
+  Unverified here: macOS (no signal), any consumer — nothing holds yet.
+
 ## Pure logic — shared/resources.ts
 Dependency-free so `node --test` covers it without Electron:
 - `parseProcStatLine` — one `/proc/<pid>/stat` line → `ProcSample`

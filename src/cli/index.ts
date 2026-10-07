@@ -45,6 +45,7 @@ import {
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
+import { formatMemoryGuardLine, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
@@ -2174,6 +2175,10 @@ async function main(argv: string[]): Promise<void> {
       // a row of zeros must be able to tell "nothing diverged" from "nothing
       // could be written" without going to the log (D1).
       process.stdout.write(`bus: ${res.busAvailable ? 'available' : 'UNAVAILABLE'}\n`);
+      // #285: the host's memory guard (admission / memory Pause / MemAvailable). Absent from an older app → no line, output unchanged.
+      if (res.memoryGuard && typeof res.memoryGuard === 'object') {
+        process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot)}\n`);
+      }
       // #134 — frozen (run row) vs live (store) flags, one row per mechanism.
       // No run row → the frozen column prints "—" (#206), never OFF. WIRE names
       // (`ask_gate`), never the camel key, to match the notice and the verbs.

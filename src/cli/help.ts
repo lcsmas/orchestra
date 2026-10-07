@@ -224,7 +224,9 @@ ${BUS_IDENTITY}`,
 
 Print the shadow mirror's divergence counters for the current run (missed /
 duplicate / lost-wake per mechanism), and whether the bus is reachable at
-all. Read-only.`,
+all. Also prints the host's memory guard on a \`memory:\` line: MemAvailable,
+Admission open/held (since when, episode) and whether a memory Pause is in
+effect. Read-only.`,
   },
   {
     name: 'run',

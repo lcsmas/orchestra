@@ -241,6 +241,7 @@ import {
   setBootWedgeRunResolver,
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
+import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -436,6 +437,11 @@ async function createMainWindow() {
   // ORCHESTRA_SOCK from the env set on the pty.spawn call, and that value is
   // read from getHookSocketPath() which only returns non-null after listen().
   await startHooksServer();
+  // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every transition,
+  // exposes the state to `bus-status` + Settings. Holds nothing yet. Started with the hooks server (store is loaded above) so the
+  // first `bus-status` already has a reading; thresholds are read from the store at every sample, so a Settings change is hot.
+  setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
+  startMemoryGuard();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
@@ -866,6 +872,7 @@ function shutdownSubsystems(): void {
   stopPauseUiWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
+  stopMemoryGuard();
   stopHibernationSweeper();
   closeAllSandboxConnections();
   disposeVoice();

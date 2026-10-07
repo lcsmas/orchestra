@@ -32,6 +32,7 @@ import { BusSwitchSettings } from './BusSwitchSettings';
 import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { ModelDefaultsSettings } from './ModelDefaultsSettings';
+import { MemoryGuardSettings } from './MemoryGuardSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
 import { UsageBars } from './UsageBars';
@@ -118,6 +119,15 @@ function ChipIcon() {
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <rect x="6" y="6" width="12" height="12" rx="2" />
       <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
+    </svg>
+  );
+}
+
+function MemoryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <rect x="2" y="6" width="20" height="11" rx="1.5" />
+      <path d="M6 17v3M10 17v3M14 17v3M18 17v3M6 10.5h3M11 10.5h3" />
     </svg>
   );
 }
@@ -905,6 +915,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [agentViewSettingsOpen, setAgentViewSettingsOpen] = useState(false);
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
+  const [memoryGuardOpen, setMemoryGuardOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   // #257 — read once: the row class below is a plain derivation (the row PARTS subscribe themselves).
@@ -1797,6 +1808,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <ChipIcon />
           </button>
+          {/* Memory guard (#285, mockup A): thresholds + live available memory + the Admission/fast-Veille toggle. LIVE, not frozen per run. */}
+          <button
+            className="header-icon-btn"
+            onClick={() => setMemoryGuardOpen(true)}
+            title="Memory guard — thresholds that hold fleet starts and pause fleets under low memory"
+            aria-label="Memory guard settings"
+          >
+            <MemoryIcon />
+          </button>
           {/* Fleet-bus mechanism switches (#118). The SETTINGS write lives here,
               never in the bus pane — the pane is read-only in v1. */}
           <button
@@ -2624,6 +2644,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             onClose={() => setModelDefaultsOpen(false)}
           />
         )}
+        {memoryGuardOpen && <MemoryGuardSettings onClose={() => setMemoryGuardOpen(false)} />}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}
         {accountsSettingsOpen && (
           <AccountsSettings onClose={() => setAccountsSettingsOpen(false)} />

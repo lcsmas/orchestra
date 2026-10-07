@@ -1,6 +1,7 @@
 import type { BusSnapshot, BusRunSummary } from './bus-view.ts';
 import type { BusSwitches } from './bus-switches.ts';
 import type { ModelDefaults } from './model-defaults.ts';
+import type { MemoryGuardSettings, MemoryGuardSetResult, MemoryGuardView } from './memory-guard.ts';
 import type { EffortDefaults } from './effort-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { PauseMode } from './pause-lifecycle.ts';
@@ -661,6 +662,11 @@ export interface OrchestraAPI {
   effortDefaults: () => Promise<EffortDefaults>;
   /** Patch the effort defaults; resolves with the normalized, persisted value. */
   setEffortDefaults: (next: Partial<EffortDefaults>) => Promise<EffortDefaults>;
+  /** The memory guard (#285): thresholds + toggle, the guard state, and a FRESH MemAvailable reading beside them. */
+  memoryGuard: () => Promise<MemoryGuardView>;
+  /** Patch the thresholds / toggle. Validated (critical < Admission): an invalid patch writes nothing and resolves `{ok:false,error}`.
+   *  A valid one applies HOT — the guard re-samples at once, no restart. */
+  setMemoryGuard: (next: Partial<MemoryGuardSettings>) => Promise<MemoryGuardSetResult>;
   /** Re-fetch every pinned ticket from Linear in ONE batched request and
    *  return the refreshed list. Throws if Linear is unreachable / unauthorized,
    *  so the caller can distinguish that from "nothing pinned". */
