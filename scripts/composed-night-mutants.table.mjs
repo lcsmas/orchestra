@@ -739,10 +739,10 @@ export const MUTANTS = [
   ]
  },
  {
-  "id": "290-lift-manual-selected",
+  "id": "290-lift-manual-all-layers",
   "from": "pause-memory/mutate-unit.mjs:lift-manual-selected",
   "ticket": "#290",
-  "clause": "a MANUAL Pause in effect during the episode is never lifted by the guard",
+  "clause": "a MANUAL Pause in effect during the episode is never lifted by the guard (selection AND both re-read guards removed)",
   "arm": "n7_reprise",
   "check": "a_manual_pause_is_not_lifted_by_the_recovery",
   "edits": [
@@ -760,6 +760,16 @@ export const MUTANTS = [
     "file": "src/main/pause-memory.ts",
     "find": "    const reason = parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt);",
     "to": "    const reason = parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt) ?? { reason: 'memory' as const, pauseCycle: 0, episode: 0, availBytes: 0, thresholdBytes: 0 };"
+   },
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "cur.resumeStartedAt !== null || parseMemoryPause(cur.pauseAuto, cur.pausedAt) === null) return {",
+    "to": "cur.resumeStartedAt !== null) return {"
+   },
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "again.resumeStartedAt !== null || parseMemoryPause(again.pauseAuto, again.pausedAt) === null) return 'changed-meanwhile';",
+    "to": "again.resumeStartedAt !== null) return 'changed-meanwhile';"
    }
   ]
  },
@@ -800,7 +810,7 @@ export const MUTANTS = [
  },
  {
   "id": "292-gone-aborts-the-step",
-  "from": "own (restartContainers, #292 AC4)",
+  "from": "own (restartOwedContainers, #292 AC4: a hand-removed container must not break the Reprise)",
   "ticket": "#292",
   "clause": "a container removed by hand does not break the Reprise (the others are still restarted)",
   "arm": "n7_reprise",
@@ -808,8 +818,8 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/pause-containers.ts",
-    "find": "        done = { id: e.id, outcome: await api.startContainer(e.id), atMs: now() };",
-    "to": "        done = { id: e.id, outcome: await api.startContainer(e.id), atMs: now() };\n        if (done.outcome === 'gone') return out;"
+    "find": "        for (const r of got) results.set(r.id, r);\n",
+    "to": "        for (const r of got) results.set(r.id, r);\n        if (got.some((r) => r.outcome === 'gone')) break;\n"
    }
   ]
  },
