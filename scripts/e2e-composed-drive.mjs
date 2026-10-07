@@ -289,7 +289,7 @@ try {
   const after = bystanders();
   // the host is SHARED (sibling agents run their own stacks and churn them): the invariant is PROVENANCE — everything ORCHESTRA stopped / started (the Bilan the host wrote) is a rig container — and the drive's own bystanders; the host-wide snapshot is reported, not asserted
   say(`DOCKER host-wide snapshot (informational, siblings churn their own stacks): ${BEFORE.length} before / ${after.length} after; changed-by-someone: -${BEFORE.filter((x) => !after.includes(x)).length} +${after.filter((x) => !BEFORE.includes(x)).length}`);
-  check('docker_everything_orchestra_touched_is_a_rig_container', touched.length > 0 && touched.every((n) => n.startsWith(PFX) && !/-human|-other/.test(n)), `${touched.length} container(s) in the Bilan: ${touched.map((n) => n.slice(-8)).join(',')}`);
+  check('docker_everything_orchestra_touched_is_a_rig_container', (!PHASES.includes('main') || touched.length > 0) && touched.every((n) => n.startsWith(PFX) && !/-human|-other/.test(n)), `${touched.length} container(s) in the Bilan: ${touched.map((n) => n.slice(-8)).join(',')}`);
   const liveAfter = liveSnapshot();
   check('live_claude_dirs_untouched', JSON.stringify(liveBefore) === JSON.stringify(liveAfter), `${Object.keys(liveBefore).length} live ~/.claude* dirs hashed before/after`);
   say('== shots (md5) ==');
