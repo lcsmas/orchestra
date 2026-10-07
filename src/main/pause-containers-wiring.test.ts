@@ -21,14 +21,14 @@ test('trapMember: the docker step runs AFTER the tool-tree kill and BEFORE the t
   const code = codeOf('src/main/pause-trap.ts');
   const fn = code.slice(at(code, 'export async function trapMember('));
   const kill = at(fn, 'await deps.killTrees(');
-  const docker = at(fn, 'stopAttributedContainers(deps.containers, m.wsId');
+  const docker = at(fn, 'stopAttributedContainers(dockerApi, m.wsId');
   const fresh = at(fn, 'const fresh = bilanForMember(');
   const stamp = at(fn, "return incomplete ? 'incomplete' : 'complete';");
   assert.ok(kill < docker && docker < fresh && fresh < stamp, 'order: killTrees → stopAttributedContainers → final write → complete');
-  assert.ok(fn.slice(docker - 200, docker).includes('if (deps.containers)'), 'no containers dep ⇒ Docker is never touched');
+  assert.ok(fn.slice(docker - 200, docker).includes('if (dockerApi)'), 'no Docker client ⇒ Docker is never touched');
   // must-FAIL control on the REAL source: re-order the real function body so the docker block comes first and the very same predicate no longer holds
   const moved = fn.replace('await deps.killTrees(', 'await deps.noop(') + '\nawait deps.killTrees(';
-  assert.ok(!(moved.indexOf('await deps.killTrees(') < moved.indexOf('stopAttributedContainers(deps.containers, m.wsId')), 'the order predicate must be able to fail');
+  assert.ok(!(moved.indexOf('await deps.killTrees(') < moved.indexOf('stopAttributedContainers(dockerApi, m.wsId')), 'the order predicate must be able to fail');
 });
 
 test('the sweep restarts owed containers BEFORE it sweeps (releases) the Reprise — and a begin parks the coordinators while any restart is owed', () => {
@@ -49,7 +49,8 @@ test('the sweep restarts owed containers BEFORE it sweeps (releases) the Reprise
 
 test('the host\'s TrapDeps carry the app\'s own Docker client (real socket) — and the Docker step is the ONLY thing that reads it', () => {
   const host = codeOf('src/main/pause-trap-host.ts');
-  assert.ok(host.includes('containers: createDockerApi(),'));
+  assert.ok(host.includes('containers: appDocker,') && host.includes('const appDocker = createDockerApi();'));
+  assert.ok(host.includes('containersFor: (wsId) => dockerApiForMember(keeperSocketPath(wsId), appDocker),'), 'each member is trapped on the daemon its relay stamps on (the keeper\'s published upstream)');
   assert.ok(host.includes("from './docker-api.ts'"));
   const mod = codeOf('src/main/pause-containers.ts');
   const used = new Set([...mod.matchAll(/\bapi\.(\w+)\(/g)].map((x) => x[1]));

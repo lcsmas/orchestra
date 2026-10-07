@@ -54,7 +54,7 @@ const busPause = await import(`${REPO}/src/main/bus-pause.ts`);
 const records = await import(`${REPO}/src/main/bus-pause-records.ts`);
 const trap = await import(`${REPO}/src/main/pause-trap.ts`);
 const reprise = await import(`${REPO}/src/main/pause-reprise.ts`);
-const { createDockerApi } = await import(`${REPO}/src/main/docker-api.ts`);
+const { createDockerApi, dockerApiForMember } = await import(`${REPO}/src/main/docker-api.ts`);
 const { realUpstreamDeps } = await import(`${REPO}/src/shared/docker-endpoint.ts`);
 const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
 /** absent on the PARENT tree (no container step): the must-FAIL run still loads, the arms go red on the clause, not on an import error */
@@ -82,6 +82,8 @@ const mkTrapDeps = (api) => ({
   settleMs: 0,
   originWaitMs: 0,
   ...(api ? { containers: api } : {}),
+  // the REAL path: each member's client is pinned to the daemon ITS keeper's relay stamps on (the published `<ws>.docker.upstream`), else the app's own
+  ...(api && dockerApiForMember ? { containersFor: (ws) => dockerApiForMember(path.join(HOME, 'keepers', `${ws}.sock`), api) } : {}),
 });
 const sweepDeps = { getBus: () => db, members: () => [], subtree: (d, id) => busPause.runSubtreeIds(d, id), storeReady: () => true };
 const repriseRows = () => db.prepare("SELECT recipient, sender FROM messages WHERE kind = 'reprise'").all();
@@ -100,6 +102,14 @@ async function setup({ extra = [] } = {}) {
     check(`the member created ${x.name}`, r.code === 0, r.err);
   }
   const l = labelsOf(`${PFX}-db`);
+  const published = (() => {
+    try {
+      return fs.readFileSync(path.join(HOME, 'keepers', `${WS}.docker.upstream`), 'utf8').trim();
+    } catch {
+      return null;
+    }
+  })();
+  check('the keeper PUBLISHED the daemon its relay forwards to (the Pause asks that one)', published === '/var/run/docker.sock', String(published));
   check('the DB container is attributed (orchestra.ws / orchestra.run stamped by the relay)', l && l['orchestra.ws'] === WS && l['orchestra.run'] === rig.RUN, JSON.stringify(l));
   const human = dk(['run', '-d', '--label', `${rig.rigLabel}=${PFX}`, '--name', `${PFX}-human`, IMG, 'sleep', '3600']);
   check('an UNATTRIBUTED container runs beside them (the human\'s own)', human.code === 0 && labelsOf(`${PFX}-human`)?.['orchestra.ws'] === undefined, human.err);

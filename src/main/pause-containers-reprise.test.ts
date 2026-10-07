@@ -223,3 +223,16 @@ test('a RE-PAUSE between the begin and the container step opens a new epoch — 
   assert.equal(d2.running('old'), true, 'orphaned by the epoch change in the old code: now restarted');
   x.db.close();
 });
+
+test('the Reprise restarts each container through the client of the member that OWNED it (apiFor), falling back to the app\'s client', async () => {
+  const { db } = rig({ o1: { stopped: [stop('db')] }, O: { stopped: [stop('cache')] } });
+  beginReprise(db, 'L', 'L');
+  const forO1 = new FakeDocker([{ id: 'db', name: 'db', running: false }]);
+  const dflt = new FakeDocker([{ id: 'cache', name: 'cache', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: dflt, apiFor: (ws) => (ws === 'o1' ? forO1 : null), now: () => 1 });
+  assert.equal(forO1.running('db'), true);
+  assert.deepEqual(forO1.calls, ['start db']);
+  assert.equal(dflt.running('cache'), true);
+  assert.deepEqual(dflt.calls, ['start cache']);
+  db.close();
+});

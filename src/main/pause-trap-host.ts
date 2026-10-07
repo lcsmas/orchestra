@@ -9,7 +9,7 @@ import { getBus } from './bus';
 import { pausedCarrierForWorkspace } from './bus-pause';
 import { setLiveTreeSource } from './pause-reprise';
 import { sdkAttachIfDetached, sdkHumanTurnInFlight, sdkInterruptForPause, sdkPauseActivity, sdkStopTaskForPause } from './agent-sdk';
-import { keeperPidState, probeKeeper, readTrackedKeeperPid } from './keeper-client';
+import { keeperPidState, keeperSocketPath, probeKeeper, readTrackedKeeperPid } from './keeper-client';
 import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
 import { snapshotWorktree } from './pause-snapshot';
@@ -21,7 +21,7 @@ import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActiv
 import { log } from './logger';
 import { mergeInFlight } from '../shared/open-tools';
 import type { Workspace } from '../shared/types';
-import { createDockerApi } from './docker-api.ts';
+import { createDockerApi, dockerApiForMember } from './docker-api.ts';
 
 /** Claude Code's interrupt key in the terminal UI. */
 const PTY_INTERRUPT = '\x1b';
@@ -74,13 +74,15 @@ export function pauseOrdersDir(): string {
 
 export function buildPauseTrapDeps(): TrapDeps {
   const kill = realKillDeps();
+  const appDocker = createDockerApi();
   // #255 (review M3): the Reprise's coordinators / member runs / release authority come from the SAME live workspace tree the gate and the trap walk — not the write-once `runs.parent_run_id`.
   setLiveTreeSource(() => ({ get: (id) => store.getWorkspace(id), ids: () => store.workspaces.filter((w) => !w.archived).map((w) => w.id) }));
   return {
     getBus,
     pauseOrders: pauseOrderFiles(pauseOrdersDir()),
     // #292: the APP's own Docker client — the REAL socket resolved like the relay's upstream, never a relay; a Pause dure stops each member's attributed containers, the Reprise restarts them
-    containers: createDockerApi(),
+    containers: appDocker,
+    containersFor: (wsId) => dockerApiForMember(keeperSocketPath(wsId), appDocker),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     settleMs: SETTLE_MS,

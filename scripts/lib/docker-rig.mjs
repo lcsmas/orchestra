@@ -62,7 +62,7 @@ export function createDockerRig({ repo, keeperJsEnv = process.env.KEEPER_JS, pre
   // keeper bundle (rebuilt from the subject tree when stale) → installed in the scratch HOME
   const KEEPER_SRC = keeperJsEnv ?? path.join(repo, 'dist-electron', 'keeper.js');
   if (!keeperJsEnv) {
-    const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts'].map((s) => path.join(repo, s)).filter((s) => fs.existsSync(s));
+    const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts'].map((s) => path.join(repo, s)).filter((s) => fs.existsSync(s));
     if (!fs.existsSync(KEEPER_SRC) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_SRC).mtimeMs)) {
       execFileSync(process.execPath, [path.join(repo, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: repo, stdio: 'ignore' });
     }

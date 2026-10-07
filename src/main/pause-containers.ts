@@ -140,6 +140,8 @@ export async function restartContainers(
 export interface RestartOwedDeps {
   getBus(): BusDb | null;
   api: PauseDockerApi | null;
+  /** The client for ONE member (the daemon its relay stamps on); falls back to `api`. */
+  apiFor?: (wsId: string) => PauseDockerApi | null;
   now(): number;
   warn?: (msg: string, err?: unknown) => void;
   /** Total time one carrier's container step may take before the rest is recorded failed (default {@link RESTART_STEP_MS}). */
@@ -175,14 +177,18 @@ export async function restartOwedContainers(deps: RestartOwedDeps): Promise<numb
     try {
       const owing = owedRows(db, c.id);
       if (owing.length === 0) continue;
-      const unique = new Map<string, ContainerStopEntry>();
-      for (const r of owing) for (const e of r.owed) if (!unique.has(e.id)) unique.set(e.id, e);
+      // one container id is started ONCE (even when two epochs owe it), through the client of the member that owned it
+      const unique = new Map<string, { entry: ContainerStopEntry; wsId: string }>();
+      for (const r of owing) for (const e of r.owed) if (!unique.has(e.id)) unique.set(e.id, { entry: e, wsId: r.wsId });
       const deadlineAt = deps.now() + (deps.stepMs ?? RESTART_STEP_MS);
       const results = new Map<string, ContainerRestartEntry>();
-      const list = [...unique.values()];
-      const got: ContainerRestartEntry[] = deps.api
-        ? await restartContainers(deps.api, list, deps.now, { deadlineAt, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
-        : list.map((e) => ({ id: e.id, outcome: 'failed' as const, error: 'Docker is not available to the host', atMs: deps.now() }));
+      const got: ContainerRestartEntry[] = [];
+      for (const { entry, wsId } of unique.values()) {
+        const api = deps.apiFor?.(wsId) ?? deps.api;
+        got.push(...(api
+          ? await restartContainers(api, [entry], deps.now, { deadlineAt, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
+          : [{ id: entry.id, outcome: 'failed' as const, error: 'Docker is not available to the host', atMs: deps.now() }]));
+      }
       for (const r of got) results.set(r.id, r);
       for (const row of owing) {
         const mine = row.owed.map((e) => results.get(e.id)).filter((x): x is ContainerRestartEntry => !!x);

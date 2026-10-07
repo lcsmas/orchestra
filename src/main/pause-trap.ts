@@ -109,6 +109,9 @@ export interface TrapDeps {
   /** #292: the app's own Docker client (REAL socket, never a relay — `docker-api.ts`). A Pause dure stops each member's attributed containers through it, the Reprise restarts them.
    *  Omitted/null ⇒ Docker is not touched at all (and a Reprise records its owed restarts as `failed: Docker is not available to the host`). */
   containers?: PauseDockerApi | null;
+  /** #292: the Docker client for ONE member — pinned to the daemon ITS relay stamps on (the keeper publishes it, `docker-api.ts` `dockerApiForMember`): the app's own resolution can have moved
+   *  since the keeper started (a `docker context use`, a relaunch with another env), and Pause must query the daemon the containers were stamped on. Omitted/null ⇒ `containers`. */
+  containersFor?: (wsId: string) => PauseDockerApi | null;
   /** Pause between the interrupt and the first kill scan (the CLI reaps its own tool child). */
   sleep(ms: number): Promise<void>;
   settleMs: number;
@@ -403,10 +406,11 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   // 5b. #292 — stop the member's ATTRIBUTED containers (label `orchestra.ws=<ws>`, whatever the relay switch) AFTER the tool-tree kill and BEFORE the trap is stamped
   // complete. `docker stop` only (never remove/kill/pause); a `--rm` container is skipped (a stop would delete it). Docker unavailable / an API error is RECORDED
   // (`activity.containers.error`) and never blocks the trap or keeps it incomplete. Each stop is persisted at once, and `stillPaused` is re-read before every container.
-  if (deps.containers) {
+  const dockerApi = deps.containersFor?.(m.wsId) ?? deps.containers ?? null;
+  if (dockerApi) {
     let liftedDuringStop = false;
     try {
-      const res = await stopAttributedContainers(deps.containers, m.wsId, {
+      const res = await stopAttributedContainers(dockerApi, m.wsId, {
         stillPaused: () => stillPaused(db, carrier),
         now: deps.now,
         ...(activity.containers ? { prior: activity.containers } : {}),
@@ -421,7 +425,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       liftedDuringStop = res.lifted || (res.stoppedNow.length > 0 && !stillPaused(db, carrier));
       if (liftedDuringStop && res.stoppedNow.length > 0) {
         const mine = res.containers.stopped.filter((e) => res.stoppedNow.includes(e.id));
-        const restarted = await restartContainers(deps.containers, mine, deps.now);
+        const restarted = await restartContainers(dockerApi, mine, deps.now);
         activity.containers = { ...res.containers, restarted: mergeRestarted(res.containers.restarted, restarted) };
         activity.notes = [...(activity.notes ?? []), `the Reprise began while containers were being stopped: ${mine.length} stopped by this attempt were restarted at once`];
       }
@@ -804,7 +808,7 @@ export async function sweepPauseTrap(deps: TrapDeps): Promise<TrapSummary[]> {
   }
   // #292: a Reprise's FIRST act — restart exactly the containers the Pause stopped, BEFORE the sweep below releases the coordinators (beginRepriseCore / sweepReprise hold them while any are owed).
   try {
-    await restartOwedContainers({ getBus: deps.getBus, api: deps.containers ?? null, now: deps.now, warn: (m, e) => log.warn(m, e) });
+    await restartOwedContainers({ getBus: deps.getBus, api: deps.containers ?? null, ...(deps.containersFor ? { apiFor: deps.containersFor } : {}), now: deps.now, warn: (m, e) => log.warn(m, e) });
   } catch (e) {
     log.warn('pause-trap: container restart step failed', e);
   }

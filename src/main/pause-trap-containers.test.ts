@@ -242,3 +242,21 @@ test('the SWEEP does the container step before it releases anyone: one sweepPaus
   assert.equal(rowsAtStart, 0, 'FI-1.7: it was started BEFORE any Consigne existed');
   assert.ok(repriseRows() >= 1, 'and the coordinator was released right after, in the SAME sweep');
 });
+
+test('containersFor: each member is trapped on the daemon ITS relay stamps on — the app\'s own default daemon is not touched (the keeper\'s published upstream beats the app\'s resolution)', async () => {
+  __resetPauseTrapForTests();
+  const mine = new FakeDocker([labelled('m1', 'db')]); // the daemon m1's relay stamped on
+  const appDefault = new FakeDocker([labelled('m1', 'db-elsewhere')]); // what the app's own resolution (a moved context) would see
+  const rig = newRig(appDefault);
+  rig.deps = { ...rig.deps, containersFor: (ws) => (ws === 'm1' ? mine : null) };
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  assert.equal(mine.running('db'), false, 'stopped on the member\'s own daemon');
+  assert.equal(appDefault.running('db-elsewhere'), true, 'the app\'s default daemon was never asked');
+  assert.deepEqual(appDefault.calls, []);
+  // a member with no published upstream falls back to the app's client
+  rig.roster = [member('m2')];
+  appDefault.containers.push({ id: 'x', name: 'x', image: 'alpine', labels: { 'orchestra.ws': 'm2' }, running: true, restarting: false, autoRemove: false });
+  await trapMember(rig.deps, rig.db, c, rig.roster[0]);
+  assert.equal(appDefault.running('x'), false);
+});
