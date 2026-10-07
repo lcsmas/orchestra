@@ -26,6 +26,7 @@ const ARMS = {
   removed_by_hand: { mustFailOnMaster: true }, // a container removed by hand during the Pause does not break the Reprise (gone, reported, skipped)
   docker_unavailable: { mustFailOnMaster: false }, // the app cannot reach Docker: the trap still completes, the error is recorded, nothing is touched
   autoremove_and_failed: { mustFailOnMaster: true }, // a --rm container is skipped (a stop would delete it); a stop that fails is recorded and does not block
+  app_resolution_moved: { mustFailOnMaster: true }, // the app's OWN docker resolution is dead/moved: Pause still stops, Reprise still restarts, on the daemon the member's relay stamped on (the keeper's published upstream)
 };
 if (!ARMS[ARM]) {
   console.error(`unknown arm: ${ARM} (one of ${Object.keys(ARMS).join(', ')})`);
@@ -69,6 +70,9 @@ reprise.setLiveTreeSource(() => ({ get: (id) => NODES.find((n) => n.id === id), 
 const MEMBER = { wsId: WS, runId: 'W', worktreePath: path.join(BASE, 'wt'), remote: false, status: null, lastTask: null };
 fs.mkdirSync(MEMBER.worktreePath, { recursive: true });
 
+/** the REAL per-member client: pinned to the daemon the member's keeper published, else the app's own */
+const memberApi = (api) => (ws) => (dockerApiForMember ? dockerApiForMember(path.join(HOME, 'keepers', `${ws}.sock`), api) : api);
+const restartDeps = (api) => ({ getBus: () => db, api, ...(dockerApiForMember ? { apiFor: memberApi(api) } : {}), now: () => Date.now() });
 const mkTrapDeps = (api) => ({
   getBus: () => db,
   now: () => Date.now(),
@@ -83,7 +87,7 @@ const mkTrapDeps = (api) => ({
   originWaitMs: 0,
   ...(api ? { containers: api } : {}),
   // the REAL path: each member's client is pinned to the daemon ITS keeper's relay stamps on (the published `<ws>.docker.upstream`), else the app's own
-  ...(api && dockerApiForMember ? { containersFor: (ws) => dockerApiForMember(path.join(HOME, 'keepers', `${ws}.sock`), api) } : {}),
+  ...(api && dockerApiForMember ? { containersFor: memberApi(api) } : {}),
 });
 const sweepDeps = { getBus: () => db, members: () => [], subtree: (d, id) => busPause.runSubtreeIds(d, id), storeReady: () => true };
 const repriseRows = () => db.prepare("SELECT recipient, sender FROM messages WHERE kind = 'reprise'").all();
@@ -154,7 +158,7 @@ const runArm = {
     check('the DB is still stopped until the host\'s container step runs', stateOf(`${PFX}-db`) === 'false');
     if (!restartOwed) check('the container step exists in this tree', false, 'no pause-containers.ts');
     else {
-      const started = await restartOwed({ getBus: () => db, api, now: () => Date.now() });
+      const started = await restartOwed(restartDeps(api));
       check('the host restarted exactly one container', started === 1, started);
     }
     check('the SAME container is running again', stateOf(`${PFX}-db`) === 'true', stateOf(`${PFX}-db`));
@@ -175,7 +179,7 @@ const runArm = {
     check('the human removes the cache container BY HAND during the Pause', rm.code === 0 && !existing(`${PFX}-cache`), rm.err);
     busPause.beginReprise(db, 'W', 'W');
     if (!restartOwed) check('the container step exists in this tree', false, 'no pause-containers.ts');
-    else await restartOwed({ getBus: () => db, api, now: () => Date.now() });
+    else await restartOwed(restartDeps(api));
     const out = new Map((bilanContainers(carrier)?.restarted ?? []).map((x) => [x.id, x.outcome]));
     const ids = new Map((bilanContainers(carrier)?.stopped ?? []).map((x) => [x.name, x.id]));
     check('the removed container is reported GONE (404), skipped', out.get(ids.get(`${PFX}-cache`)) === 'gone', JSON.stringify([...out]));
@@ -187,11 +191,30 @@ const runArm = {
 
   async docker_unavailable() {
     await setup();
+    // no published upstream (a keeper that never published, or died): the member falls back to the app's own client — which cannot reach Docker
+    fs.rmSync(path.join(HOME, 'keepers', `${WS}.docker.upstream`), { force: true });
     const dead = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: path.join(BASE, 'no-daemon.sock'), HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
     const { carrier, sum } = await pauseDure(dead);
     check('the trap COMPLETES although Docker is unreachable', sum.done === true, JSON.stringify(sum));
     check('the Bilan records the error, not a stopped container', /^list:/.test(bilanContainers(carrier)?.error ?? '') && (bilanContainers(carrier)?.stopped?.length ?? 0) === 0, JSON.stringify(bilanContainers(carrier)));
     check('nothing was stopped', stateOf(`${PFX}-db`) === 'true' && stateOf(`${PFX}-human`) === 'true');
+  },
+
+  async app_resolution_moved() {
+    await setup();
+    // the app's own resolution has MOVED (a `docker context use`, a relaunch with another env): it points where no daemon is — the member's keeper still publishes the daemon its relay stamped on
+    const moved = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: path.join(BASE, 'moved.sock'), HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
+    check('premise: the app\'s own client cannot reach any daemon', (await moved.available()) === false);
+    const { carrier, sum } = await pauseDure(moved);
+    check('the trap finished', sum.done === true, JSON.stringify(sum));
+    check('Pause asked the daemon the containers were STAMPED on: the DB container is stopped', stateOf(`${PFX}-db`) === 'false', stateOf(`${PFX}-db`));
+    check('the Bilan lists it with no error', bilanContainers(carrier)?.stopped?.length === 1 && bilanContainers(carrier)?.error === undefined, JSON.stringify(bilanContainers(carrier)));
+    check('the unattributed container is untouched', stateOf(`${PFX}-human`) === 'true');
+    busPause.beginReprise(db, 'W', 'W');
+    if (!restartOwed) check('the container step exists in this tree', false, 'no pause-containers.ts');
+    else await restartOwed(restartDeps(moved));
+    check('the Reprise restarted it on the same daemon (not a 404 gone on the app\'s)', stateOf(`${PFX}-db`) === 'true' && bilanContainers(carrier)?.restarted?.[0]?.outcome === 'started', JSON.stringify(bilanContainers(carrier)?.restarted));
+    check('its data is readable', dk(['exec', `${PFX}-db`, 'cat', '/data/state']).out === `secret-${PFX}`);
   },
 
   async autoremove_and_failed() {
@@ -204,7 +227,7 @@ const runArm = {
     check('the Bilan says skipped-autoremove', e?.outcome === 'skipped-autoremove', JSON.stringify(bilanContainers(carrier)));
     check('the DB container beside it was stopped normally', stateOf(`${PFX}-db`) === 'false');
     busPause.beginReprise(db, 'W', 'W');
-    if (restartOwed) await restartOwed({ getBus: () => db, api, now: () => Date.now() });
+    if (restartOwed) await restartOwed(restartDeps(api));
     check('the Reprise never starts/stops the --rm container (it is not in the owed list)', stateOf(`${PFX}-tmp`) === 'true' && (bilanContainers(carrier)?.restarted ?? []).every((x) => x.id !== e?.id), JSON.stringify(bilanContainers(carrier)?.restarted));
   },
 };

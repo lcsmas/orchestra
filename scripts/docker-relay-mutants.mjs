@@ -256,8 +256,8 @@ if (checkOnly) {
 
 
 // ── --rig: the same mutants against the REAL-dockerd rig (HEAVY: containers). The arm that must go red for each. ──────
-const G8_ARMS = new Set(['pause_and_reprise', 'removed_by_hand', 'docker_unavailable', 'autoremove_and_failed']); // arms of scripts/e2e-pause-containers.mjs (the rest: e2e-docker-relay.mjs)
-const RIG_ARM = { P1: 'pause_and_reprise', P4: 'autoremove_and_failed', P13: 'pause_and_reprise', Q1: 'pause_and_reprise', Q4: 'pause_and_reprise', Q7: 'pause_and_reprise', A9: 'api_real', M12: 'late_daemon', M2: 'user_labels', R1: 'run_labels', R3: 'streams', R4: 'run_labels', R6: 'kill_relay', K1: 'no_relay_fallback', K2: 'switch_off', K5: 'kill_relay', K7: 'run_labels', C1: 'app_switch', C2: 'sweep_relay_files' };
+const G8_ARMS = new Set(['pause_and_reprise', 'removed_by_hand', 'docker_unavailable', 'autoremove_and_failed', 'app_resolution_moved']); // arms of scripts/e2e-pause-containers.mjs (the rest: e2e-docker-relay.mjs)
+const RIG_ARM = { Q17: 'app_resolution_moved', Q18: 'app_resolution_moved', P1: 'pause_and_reprise', P4: 'autoremove_and_failed', P13: 'pause_and_reprise', Q1: 'pause_and_reprise', Q4: 'pause_and_reprise', Q7: 'pause_and_reprise', A9: 'api_real', M12: 'late_daemon', M2: 'user_labels', R1: 'run_labels', R3: 'streams', R4: 'run_labels', R6: 'kill_relay', K1: 'no_relay_fallback', K2: 'switch_off', K5: 'kill_relay', K7: 'run_labels', C1: 'app_switch', C2: 'sweep_relay_files' };
 if (args.includes('--rig')) {
   const rigIds = Object.keys(RIG_ARM).filter((id) => !only.length || only.includes(id));
   const rigRun = (arm) =>
