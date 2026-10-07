@@ -42,20 +42,41 @@ test('the Veille log tail comes from the shared formatter, fed the SAME snapshot
   assert.match(sweepFn, /const early = admissionHeld && !shouldHibernate\(ws, \{ \.\.\.signals, admissionHeld: false \}\);/);
 });
 
-test('the Admission-held edge triggers one sweep; subscribe FIRST, then reconcile from the current state (FI-2 item 5)', () => {
-  const sub = startFn.indexOf('subscribeMemoryGuard(');
+test('every guard SAMPLE while held triggers a sweep (a member idle after the edge sleeps within one sample); subscribe FIRST, then reconcile (FI-2 item 5)', () => {
+  const sub = startFn.indexOf('subscribeMemoryGuardSamples(');
   const reconcile = startFn.indexOf('isAdmissionHolding(getMemoryGuardSnapshot())');
   assert.ok(sub > 0 && reconcile > sub, 'subscribe, then the boot reconcile');
-  assert.match(startFn, /e\.transition\.kind === 'admission_held' && isAdmissionHolding\(e\.snapshot\)\) sweepNow\(\);/);
-  assert.doesNotMatch(startFn, /admission_reopened|pause_due|pause_liftable/, 'only the held edge sweeps');
+  assert.match(startFn, /subscribeMemoryGuardSamples\(\(snap\) => \{\s*if \(isAdmissionHolding\(snap\)\) sweepNow\(\);\s*\}\);/);
+  assert.doesNotMatch(startFn, /subscribeMemoryGuard\(|admission_held|admission_reopened|pause_due|pause_liftable/, 'a LEVEL trigger, not an edge one (an edge reaches only members idle at the edge)');
+  assert.doesNotMatch(startFn, /setInterval\([^)]*\)[\s\S]*setInterval\(/, 'no second timer: the guard sampler is the cadence');
 });
 
-test('the periodic tick and the held edge are the SAME un-queued sweep (overlap is safe: sdkStop sets `stopping` synchronously); the stop path unsubscribes', () => {
+test('the periodic tick and the held-sample trigger are the SAME un-queued sweep (overlap is safe: sdkStop sets `stopping` synchronously); the stop path unsubscribes', () => {
   assert.match(src, /const sweepNow = \(\): void => void sweepHibernation\(\)\.catch\(\(e\) => hlog\.swallow\('sweep', e\)\);/);
   assert.match(startFn, /timer = setInterval\(sweepNow, sweepMs\);/);
-  assert.match(startFn, /isAdmissionHolding\(e\.snapshot\)\) sweepNow\(\);/);
   assert.match(startFn, /isAdmissionHolding\(getMemoryGuardSnapshot\(\)\)\) sweepNow\(\);/);
-  assert.doesNotMatch(src, /coalescedRunner|requestSweep/, 'no queue / single-flight (a queued re-run would DELAY a held edge behind a slow pass)');
+  assert.doesNotMatch(src, /coalescedRunner|requestSweep/, 'no queue / single-flight (a queued re-run would DELAY a held trigger behind a slow pass)');
   assert.match(stopFn, /unsubscribeGuard\?\.\(\);\s*unsubscribeGuard = null;/);
-  assert.ok(startFn.indexOf('HIBERNATION_DISABLED') < startFn.indexOf('subscribeMemoryGuard('), 'the disabled kill switch returns BEFORE any subscription');
+  assert.ok(startFn.indexOf('HIBERNATION_DISABLED') < startFn.indexOf('subscribeMemoryGuardSamples('), 'the disabled kill switch returns BEFORE any subscription');
+});
+
+// Overlap safety (seat-1 MINOR on #288): two passes never double-stop a member ONLY because a stopping session reads as not live and sdkStop marks it
+// before its first await. agent-sdk.ts cannot be imported under `node --test`, so both clauses are pinned on source; scripts/e2e-fast-veille.mjs `overlap_probe`
+// drives the real thing.
+const agent = fs.readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8');
+test('overlap safety: sdkHasSession excludes a stopping session', () => {
+  const from = agent.indexOf('export function sdkHasSession(wsId: string): boolean {');
+  assert.ok(from > 0, 'control: found');
+  const body = agent.slice(from, agent.indexOf('\n}\n', from));
+  assert.match(body, /return !!s && !s\.stopping;/);
+});
+
+test('overlap safety: sdkStop marks `stopping` before its first await (past the no-session keeper branch)', () => {
+  const from = agent.indexOf('export async function sdkStop(wsId: string, opts?: { hibernate?: boolean }): Promise<void> {');
+  assert.ok(from > 0, 'control: found');
+  const upToMark = agent.slice(from, agent.indexOf('session.stopping = true;', from));
+  assert.ok(upToMark.length > 200 && /await killKeeper\(wsId\)/.test(upToMark), 'control: the slice spans the no-session branch, which DOES await');
+  const afterNoSession = upToMark.slice(upToMark.indexOf('\n  }\n') + 5); // past `if (!session) { …; return; }`
+  assert.doesNotMatch(afterNoSession, /\bawait\b/, 'nothing awaits between the no-session branch and the mark');
+  assert.equal(afterNoSession.trim(), '', 'the mark FOLLOWS the no-session branch directly — no statement of any kind can sit (or yield) in between');
 });

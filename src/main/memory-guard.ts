@@ -54,6 +54,9 @@ export interface MemoryGuardTransitionEvent {
   snapshot: MemoryGuardSnapshot;
 }
 export type MemoryGuardListener = (e: MemoryGuardTransitionEvent) => void;
+/** Called after EVERY sample (timer tick or `sampleNow`, measured or not) with the state as it stands then — after that sample's edges were delivered.
+ *  For consumers that must act on a LEVEL while it lasts (fast Veille, #288: members idle after the `admission_held` edge), not only on its edge. */
+export type MemoryGuardSampleListener = (snapshot: MemoryGuardSnapshot) => void;
 
 export interface MemoryGuard {
   start(): void;
@@ -61,6 +64,8 @@ export interface MemoryGuard {
   sampleNow(): MemoryGuardSnapshot;
   snapshot(): MemoryGuardSnapshot;
   subscribe(listener: MemoryGuardListener): () => void;
+  /** Like `subscribe`, per SAMPLE instead of per edge. No replay: subscribe first, then read `snapshot()` and reconcile (FI-2 item 5). */
+  onSample(listener: MemoryGuardSampleListener): () => void;
 }
 
 const glog = scoped('memory-guard');
@@ -114,6 +119,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
   let started = false;
   let handle: unknown = null;
   const listeners = new Set<MemoryGuardListener>();
+  const sampleListeners = new Set<MemoryGuardSampleListener>();
 
   function readSettings(): MemoryGuardSettings {
     try {
@@ -229,6 +235,14 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
       queue.push({ transition: tr, snapshot: snap });
     }
     drain();
+    // The freshest state, not `snap`: an edge listener may have re-measured (nested `sampleNow`) while the batch was delivered.
+    for (const l of [...sampleListeners]) {
+      try {
+        l(snapshot());
+      } catch (err) {
+        deps.warn('a sample listener threw (ignored)', err);
+      }
+    }
     return snap;
   }
 
@@ -281,6 +295,12 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
         listeners.delete(listener);
       };
     },
+    onSample(listener) {
+      sampleListeners.add(listener);
+      return () => {
+        sampleListeners.delete(listener);
+      };
+    },
   };
 }
 
@@ -289,6 +309,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
 let settingsReader: () => MemoryGuardSettings = () => DEFAULT_MEMORY_GUARD_SETTINGS;
 let sourceOverride: (() => number | null) | null = null;
 const listeners = new Set<MemoryGuardListener>();
+const sampleListeners = new Set<MemoryGuardSampleListener>();
 
 function buildSingleton(over: Partial<MemoryGuardDeps> = {}): MemoryGuard {
   const g = createMemoryGuard(
@@ -304,6 +325,15 @@ function buildSingleton(over: Partial<MemoryGuardDeps> = {}): MemoryGuard {
         l(e);
       } catch (err) {
         glog.warn('a transition listener threw (ignored)', err);
+      }
+    }
+  });
+  g.onSample((snap) => {
+    for (const l of [...sampleListeners]) {
+      try {
+        l(snap);
+      } catch (err) {
+        glog.warn('a sample listener threw (ignored)', err);
       }
     }
   });
@@ -331,6 +361,14 @@ export function subscribeMemoryGuard(listener: MemoryGuardListener): () => void 
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+/** Per-sample hook (FI-2 item 7, additive — #288 follow-up): survives a rebuild like `subscribeMemoryGuard`. No replay: subscribe FIRST, then reconcile. */
+export function subscribeMemoryGuardSamples(listener: MemoryGuardSampleListener): () => void {
+  sampleListeners.add(listener);
+  return () => {
+    sampleListeners.delete(listener);
   };
 }
 

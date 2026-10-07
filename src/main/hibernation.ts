@@ -44,7 +44,7 @@ import {
 } from './hibernation-activity.ts';
 import { idleClockOf } from './idle-clock.ts';
 // Fast Veille (#288): the hold question is `isAdmissionHolding(getMemoryGuardSnapshot())` and nothing else (ledger #295 FI-2).
-import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';
+import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-guard.ts';
 import { isAdmissionHolding } from '../shared/memory-guard.ts';
 import type { Workspace } from '../shared/types';
 
@@ -212,7 +212,7 @@ export async function sweepHibernation(): Promise<string[]> {
 }
 
 /** The periodic tick and the Admission-held trigger. Overlapping passes are safe: `sdkSessionLive` is false from the moment `sdkStop` sets
- *  `session.stopping` (synchronously), so a second pass skips a member already being stopped. */
+ *  `session.stopping` (synchronously), so a second pass skips a member already being stopped (pinned: rig `overlap_probe`, wiring test). */
 const sweepNow = (): void => void sweepHibernation().catch((e) => hlog.swallow('sweep', e));
 
 /** Start the periodic sweeper (called once from the main bootstrap). */
@@ -235,10 +235,11 @@ export function startHibernationSweeper(): void {
   timer = setInterval(sweepNow, sweepMs);
   // Never hold the event loop open for housekeeping.
   timer.unref?.();
-  // Fast Veille (#288): when Admission becomes held, sweep NOW instead of waiting out the periodic timer (up to 5 min of idle members' RAM
-  // under pressure). SUBSCRIBE FIRST, then reconcile from the guard's current state (FI-2 item 5): a boot while already held sweeps once.
-  unsubscribeGuard = subscribeMemoryGuard((e) => {
-    if (e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)) sweepNow();
+  // Fast Veille (#288): sweep on EVERY guard sample while Admission is held — the edge sample (not the periodic tick, up to 5 min of idle RAM under
+  // pressure) AND each later one, so a member that goes idle after the edge sleeps within one sample (10 s), not at the next tick. No new timer: the
+  // guard's own sampler is the cadence. SUBSCRIBE FIRST, then reconcile from the guard's current state (FI-2 item 5): booting while held sweeps once.
+  unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {
+    if (isAdmissionHolding(snap)) sweepNow();
   });
   if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();
 }

@@ -8,6 +8,7 @@ import {
   sampleMemoryGuardNow,
   setMemoryGuardSettingsReader,
   subscribeMemoryGuard,
+  subscribeMemoryGuardSamples,
   type MemoryGuardDeps,
   type MemoryGuardTransitionEvent,
 } from './memory-guard.ts';
@@ -268,6 +269,62 @@ test('subscribe: one event per edge with the post-sample snapshot; a throwing li
   assert.equal(seen.length, 2, 'unsubscribed');
 });
 
+test('onSample: one call per SAMPLE (timer tick, sampleNow, unreadable) with the post-sample state — not per edge; a throwing listener breaks nothing; unsubscribe stops it', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  const seen: Array<[string, boolean, number | null]> = [];
+  g.onSample(() => {
+    throw new Error('listener bug');
+  });
+  const off = g.onSample((s) => seen.push([s.admission, s.measured, s.availBytes === null ? null : s.availBytes / GIB]));
+  g.start();
+  w.mem = 4;
+  w.fire(); // the edge sample
+  w.fire(); // a steady sample while held: NO edge, still a sample
+  g.sampleNow(); // an on-demand sample counts too
+  w.mem = null;
+  w.fire(); // unreadable: state unchanged, still a sample
+  assert.deepEqual(seen, [['open', true, 12], ['held', true, 4], ['held', true, 4], ['held', true, 4], ['held', false, 4]]);
+  assert.ok(w.warns.some((l) => /sample listener threw/.test(l)));
+  off();
+  w.mem = 12;
+  w.fire();
+  assert.equal(seen.length, 5, 'unsubscribed');
+});
+
+test('onSample: a sample\'s listeners run AFTER its own edges, and the OUTER sample reports the freshest state when an edge listener re-measured', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  const order: string[] = [];
+  g.subscribe((e) => {
+    order.push(`edge:${e.transition.kind}`);
+    if (e.transition.kind === 'admission_held') {
+      w.mem = 9; // rebounds while the edge is delivered
+      g.sampleNow();
+    }
+  });
+  g.onSample((s) => order.push(`sample:${s.admission}`));
+  g.start();
+  order.length = 0;
+  w.mem = 4;
+  w.fire();
+  // The nested sampleNow (inside the held edge's listener) reports itself at once; its own edge waits in the FIFO behind the batch being delivered; the
+  // OUTER sample reports last and with the freshest state ('open'), never the stale 'held' it started from.
+  assert.deepEqual(order, ['edge:admission_held', 'sample:open', 'edge:admission_reopened', 'sample:open']);
+});
+
+test('onSample: no replay on subscribe — a late subscriber reads the level from the snapshot, then hears only later samples', () => {
+  const w = world(4);
+  const g = createMemoryGuard(w.deps);
+  g.start(); // already held before anyone subscribes
+  const seen: string[] = [];
+  g.onSample((s) => seen.push(s.admission));
+  assert.deepEqual(seen, [], 'nothing replayed');
+  assert.equal(g.snapshot().admission, 'held');
+  w.fire();
+  assert.deepEqual(seen, ['held']);
+});
+
 test('nested_sampleNow: a listener that re-measures gets its edges AFTER the batch being delivered — sample order, last edge = final state', () => {
   // A — a fall (held, pause_due) whose FIRST edge's listener re-measures after memory rebounded: the nested edges must queue BEHIND pause_due.
   {
@@ -465,6 +522,33 @@ test('facade: the singleton reads the injected source + the settings reader, and
   assert.deepEqual(seen, ['admission_held', 'admission_reopened']);
   off();
   g.stop();
+  __rebuildMemoryGuardForTests();
+  setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
+});
+
+test('facade: subscribeMemoryGuardSamples hears every sample of the singleton, survives a rebuild, a throwing listener is ignored, unsubscribe stops it', () => {
+  const w = world(12);
+  const seen: string[] = [];
+  subscribeMemoryGuardSamples(() => {
+    throw new Error('listener bug');
+  });
+  const off = subscribeMemoryGuardSamples((s) => seen.push(`${s.admission}/${s.availBytes === null ? 'null' : s.availBytes / GIB}`));
+  setMemoryGuardSettingsReader(() => w.settings);
+  const rebuilt = { now: w.deps.now, schedule: w.deps.schedule, cancel: w.deps.cancel, info: w.deps.info, warn: w.deps.warn };
+  const g = __rebuildMemoryGuardForTests(rebuilt, () => (w.mem === null ? null : gb(w.mem)));
+  g.start();
+  w.mem = 4;
+  w.fire();
+  w.fire();
+  assert.equal(sampleMemoryGuardNow().admission, 'held');
+  assert.deepEqual(seen, ['open/12', 'held/4', 'held/4', 'held/4'], 'tick, edge, steady tick, on-demand — one call each (the throwing subscriber broke none)');
+  const g2 = __rebuildMemoryGuardForTests(rebuilt, () => (w.mem === null ? null : gb(w.mem)));
+  g2.start();
+  assert.equal(seen.length, 5, 'a rebuilt guard keeps the subscriber');
+  off();
+  w.fire();
+  assert.equal(seen.length, 5, 'unsubscribed');
+  g2.stop();
   __rebuildMemoryGuardForTests();
   setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
 });

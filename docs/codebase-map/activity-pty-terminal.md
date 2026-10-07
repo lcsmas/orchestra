@@ -688,16 +688,19 @@ long-idle agents and lets the existing resume paths bring them back.
   active pane, sandbox host, archived, run-script PTY, background task, no live process) and after the `lastActivityAt === undefined` decline, and `-1`
   stays a kill switch (the sweeper never even subscribes). Admission open ⇒ byte-identical (same verdicts, same line, same timer). A Veille taken under the
   hold logs `… — Admission HELD, MemAvailable 4.00 GB, fast Veille (idle below the 5m threshold)` (`fastVeilleLogSuffix`; the last clause only when the hold is
-  what made it eligible). **Trigger**: `startHibernationSweeper` SUBSCRIBES to the guard FIRST (an `admission_held` edge with `isAdmissionHolding(e.snapshot)`
-  → `sweepNow()` — not the periodic tick, up to 5 min of idle RAM under pressure), THEN reconciles (booting while already held sweeps once). The tick and the
-  edge are the same un-queued sweep: overlapping passes are safe because `sdkHasSession` is false from the instant `sdkStop` sets `session.stopping`
-  (synchronously), and a queued re-run would DELAY a held edge behind a slow pass. No Veille on `admission_reopened`: held starts are #286's. **Residuals**:
-  re-enabling the Settings toggle while already held makes no edge (next periodic sweep); the recency stamp no longer covers a send that lands in the few ms
-  before `status` flips to `running` (the old 5-min clock did) — a stop there drops the delivery and the sender falls back to the inbox. Gates:
+  what made it eligible). **Trigger**: `startHibernationSweeper` SUBSCRIBES to the guard's per-sample hook FIRST (`subscribeMemoryGuardSamples`: every sample while
+  `isAdmissionHolding(snap)` → `sweepNow()` — the edge sample AND each later one, so a member that goes idle after the edge sleeps within one sample (10 s
+  held), not at the next 5-min tick; no new timer, the guard's sampler is the cadence — review F1), THEN reconciles (booting while already held sweeps once).
+  Samples with Admission open (or held with the toggle OFF) run no sweep: the tick stays the only trigger. The tick and the samples are the same un-queued
+  sweep: overlapping passes are safe because `sdkHasSession` is false from the instant `sdkStop` sets `session.stopping` (synchronously, before its first
+  await) — both clauses pinned (wiring test + rig `overlap_probe`, seat-1 MINOR) — and a queued re-run would DELAY a held trigger behind a slow pass; passes
+  started by successive samples during one slow teardown each take the next not-yet-stopping member. No Veille on `admission_reopened`: held starts are #286's.
+  **Residual**: the recency stamp no longer covers a send that lands in the few ms before `status` flips to `running` (the old 5-min clock did; wider on a
+  fresh spawn's FIRST send, `claimOwedOpeningTask` → `await dropPendingText`) — a stop there drops the delivery and the sender falls back to the inbox
+  (pending insurance re-persists). Gates:
   `shared/hibernation.test.ts` (pair + one test per other guard + the log tail), `main/hibernation-fast-veille-wiring.test.ts` (source guards — the sweeper
-  cannot be imported under `node --test`), the `memory-guard-wiring` importer tripwire (hibernation.ts joined it), `scripts/e2e-fast-veille.mjs` (16 arms,
-  real sweeper + real guard on a fake MemAvailable source + stub CLI; guard arms run a guarded A beside a clean control B; `RIG_REPO=<master>` = 13/16 red,
-  the 3 green are the "nothing happens" controls), `scripts/fast-veille-mutants.mjs`.
+  cannot be imported under `node --test`), the `memory-guard-wiring` importer tripwire (hibernation.ts joined it), `scripts/e2e-fast-veille.mjs` (19 arms,
+  real sweeper + real guard on a fake MemAvailable source + stub CLI; guard arms run a guarded A beside a clean control B; `RIG_REPO=<pre-#288 master>` = 13/16 red at the first nomination, the 3 green are the "nothing happens" controls; `late_idler` is the only arm red on the merged first tip), `scripts/fast-veille-mutants.mjs`.
 - **Driven rig — `scripts/e2e-hibernate-wake.{mjs,sh}`** (#198 D14): the REAL
   `sweepHibernation` + REAL `sweepBusWake`→`ensureSession` over a stub CLI, fake
   clock via `Date.now` skew, env override deleted so it measures the shipped

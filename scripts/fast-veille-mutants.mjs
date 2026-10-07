@@ -21,6 +21,8 @@ const noRig = args.includes('--no-rig');
 
 const SH = 'src/shared/hibernation.ts';
 const HB = 'src/main/hibernation.ts';
+const MG = 'src/main/memory-guard.ts';
+const AG = 'src/main/agent-sdk.ts';
 const FAST = '  if (admissionHeld && isFleetMember(ws)) return true;\n';
 const GUARD_ARMS = ['guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting'];
 // Move the fast clause to sit just BEFORE one guard line (so that guard — and every one after it — is bypassed).
@@ -56,18 +58,33 @@ const MUTANTS = [
   { id: 'S03_early_never', file: HB, find: 'const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false });', to: 'const early = false;', expect: ['log tail', 'rig:held_veille', 'rig:held_mixed'], arms: ['held_veille', 'held_mixed'] },
   { id: 'S04_early_always', file: HB, find: 'const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false });', to: 'const early = admissionHeld;', expect: ['log tail', 'rig:held_mixed'], arms: ['held_mixed'] },
   { id: 'S05_signal_not_passed', file: HB, find: '      admissionHeld,\n    };', to: '      admissionHeld: false,\n    };', expect: ['PER MEMBER', 'rig:held_veille'], arms: ['held_veille'] },
-  { id: 'S06_wrong_edge', file: HB, find: "e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)", to: "e.transition.kind === 'admission_reopened' && isAdmissionHolding(e.snapshot)", expect: ['Admission-held edge triggers', 'rig:edge_sweep'], arms: ['edge_sweep'] },
-  { id: 'S07_edge_sweeps_toggle_off', file: HB, find: " && isAdmissionHolding(e.snapshot)) sweepNow();", to: ') sweepNow();', expect: ['Admission-held edge triggers'], arms: [] },
-  { id: 'S08_no_boot_reconcile', file: HB, find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n', to: '', expect: ['Admission-held edge triggers', 'rig:boot_held'], arms: ['boot_held'] },
-  { id: 'S09_reconcile_before_subscribe', file: HB, edits: [{ find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n', to: '' }, { find: '  unsubscribeGuard = subscribeMemoryGuard((e) => {', to: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n  unsubscribeGuard = subscribeMemoryGuard((e) => {' }], expect: ['Admission-held edge triggers'], arms: [] },
+  { id: 'F01_sample_listener_dead', file: HB, find: 'if (isAdmissionHolding(snap)) sweepNow();', to: 'void snap;', expect: ['every guard SAMPLE', 'rig:late_idler', 'rig:edge_sweep'], arms: ['late_idler', 'edge_sweep'] },
+  { id: 'F02_sample_sweeps_when_open', file: HB, find: 'if (isAdmissionHolding(snap)) sweepNow();', to: 'sweepNow();', expect: ['every guard SAMPLE', 'rig:samples_quiet'], arms: ['samples_quiet'] },
+  { id: 'F03_edge_trigger_only', file: HB, edits: [{ find: "import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';" }, { find: '  unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {\n    if (isAdmissionHolding(snap)) sweepNow();\n  });', to: "  unsubscribeGuard = subscribeMemoryGuard((e) => {\n    if (e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)) sweepNow();\n  });" }], expect: ['every guard SAMPLE', 'rig:late_idler'], arms: ['late_idler'] },
+  { id: 'F04_second_timer', file: HB, find: '  unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {', to: '  setInterval(sweepNow, 10_000).unref?.();\n  unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {', expect: ['no second timer'], arms: [] },
+  { id: 'S08_no_boot_reconcile', file: HB, find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n', to: '', expect: ['every guard SAMPLE', 'rig:boot_held'], arms: ['boot_held'] },
+  { id: 'S09_reconcile_before_subscribe', file: HB, edits: [{ find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n', to: '' }, { find: '  unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {', to: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n  unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {' }], expect: ['every guard SAMPLE'], arms: [] },
   { id: 'S10_timer_never_ticks', file: HB, find: 'timer = setInterval(sweepNow, sweepMs);', to: 'timer = setInterval(() => {}, sweepMs);', expect: ['SAME un-queued sweep'], arms: [] },
   { id: 'S11_sweep_rejection_unhandled', file: HB, find: ".catch((e) => hlog.swallow('sweep', e));\n", to: ';\n', expect: ['SAME un-queued sweep'], arms: [] },
   { id: 'S12_no_unsubscribe', file: HB, find: '  unsubscribeGuard?.();\n  unsubscribeGuard = null;\n', to: '', expect: ['stop path unsubscribes'], arms: [] },
   { id: 'S13_snapshot_hoisted_out_of_the_loop', file: HB, edits: [{ find: '    const guardSnap = getMemoryGuardSnapshot();\n    const admissionHeld = isAdmissionHolding(guardSnap);\n\n    const signals = {', to: '    const signals = {' }, { find: '  for (const ws of store.workspaces) {\n    if (isBeingDeleted(ws.id)) continue;', to: '  const guardSnap = getMemoryGuardSnapshot();\n  const admissionHeld = isAdmissionHolding(guardSnap);\n  for (const ws of store.workspaces) {\n    if (isBeingDeleted(ws.id)) continue;' }], expect: ['PER MEMBER', 'rig:reopen_mid_pass'], arms: ['reopen_mid_pass'] },
-  { id: 'S14_sweep_samples_the_meter', file: HB, find: 'const guardSnap = getMemoryGuardSnapshot();', to: 'const guardSnap = sampleMemoryGuardNow();', expect: ['PER MEMBER'], arms: [], extra: [{ find: "import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';" }] },
+  { id: 'S14_sweep_samples_the_meter', file: HB, find: 'const guardSnap = getMemoryGuardSnapshot();', to: 'const guardSnap = sampleMemoryGuardNow();', expect: ['PER MEMBER'], arms: [], extra: [{ find: "import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, sampleMemoryGuardNow, subscribeMemoryGuardSamples } from './memory-guard.ts';" }] },
+  // ── per-sample guard hook (memory-guard.ts, FI-2 item 7) ──
+  { id: 'G01_samples_never_delivered', file: MG, find: '        l(snapshot());\n', to: '', expect: ['onSample: one call per SAMPLE', 'rig:late_idler', 'rig:edge_sweep'], arms: ['late_idler', 'edge_sweep'] },
+  { id: 'G02_stale_snapshot_delivered', file: MG, find: '        l(snapshot());', to: '        l(snap);', expect: ['OUTER sample reports the freshest'], arms: [] },
+  { id: 'G03_throwing_sample_listener_breaks_the_guard', file: MG, find: "deps.warn('a sample listener threw (ignored)', err);", to: 'throw err;', expect: ['onSample: one call per SAMPLE', 'facade: subscribeMemoryGuardSamples'], arms: [] },
+  { id: 'G04_samples_before_edges', file: MG, edits: [{ find: "    drain();\n    // The freshest state, not `snap`: an edge listener may have re-measured (nested `sampleNow`) while the batch was delivered.\n    for (const l of [...sampleListeners]) {\n      try {\n        l(snapshot());\n      } catch (err) {\n        deps.warn('a sample listener threw (ignored)', err);\n      }\n    }\n    return snap;", to: "    for (const l of [...sampleListeners]) {\n      try {\n        l(snapshot());\n      } catch (err) {\n        deps.warn('a sample listener threw (ignored)', err);\n      }\n    }\n    drain();\n    return snap;" }], expect: ['a sample\'s listeners run AFTER its own edges'], arms: [] },
+  { id: 'G05_sample_unsubscribe_noop', file: MG, find: '    onSample(listener) {\n      sampleListeners.add(listener);\n      return () => {\n        sampleListeners.delete(listener);', to: '    onSample(listener) {\n      sampleListeners.add(listener);\n      return () => {\n        void 0;', expect: ['onSample: one call per SAMPLE'], arms: [] },
+  { id: 'G06_facade_not_forwarded', file: MG, find: '  g.onSample((snap) => {\n    for (const l of [...sampleListeners]) {\n      try {\n        l(snap);', to: '  void ((snap: MemoryGuardSnapshot) => {\n    for (const l of [...sampleListeners]) {\n      try {\n        l(snap);', expect: ['facade: subscribeMemoryGuardSamples', 'rig:late_idler'], arms: ['late_idler'] },
+  { id: 'G07_rebuild_drops_sample_subscribers', file: MG, find: '  sourceOverride = source;\n  singleton = buildSingleton(over);', to: '  sourceOverride = source;\n  sampleListeners.clear();\n  singleton = buildSingleton(over);', expect: ['a rebuilt guard keeps the subscriber'], arms: [] },
+  { id: 'G08_sample_not_delivered_when_unreadable', file: MG, find: '    drain();\n    // The freshest state', to: '    drain();\n    if (!d.measured) return snap;\n    // The freshest state', expect: ['onSample: one call per SAMPLE'], arms: [] },
+  // ── overlap safety (agent-sdk.ts; seat-1 MINOR on #288) ──
+  { id: 'O01_stopping_session_reads_live', file: AG, find: 'export function sdkHasSession(wsId: string): boolean {\n  const s = sessions.get(wsId);\n  return !!s && !s.stopping;', to: 'export function sdkHasSession(wsId: string): boolean {\n  const s = sessions.get(wsId);\n  return !!s;', expect: ['sdkHasSession excludes a stopping session', 'rig:overlap_probe'], arms: ['overlap_probe'] },
+  { id: 'O02_await_before_the_stopping_mark', file: AG, find: '  session.stopping = true;\n  // Session-scoped (a successor is a new object)', to: '  await Promise.resolve();\n  session.stopping = true;\n  // Session-scoped (a successor is a new object)', expect: ['marks `stopping` before its first await'], arms: [] },
+  { id: 'O03_stopping_never_marked', file: AG, find: '  session.stopping = true;\n  // Session-scoped (a successor is a new object)', to: '  // Session-scoped (a successor is a new object)', expect: ['rig:overlap_probe'], arms: ['overlap_probe'] },
 ];
 
-const TESTS = ['src/shared/hibernation.test.ts', 'src/main/hibernation-fast-veille-wiring.test.ts', 'src/main/memory-guard-wiring.test.ts', 'src/main/hibernation-no-disk.test.ts'];
+const TESTS = ['src/shared/hibernation.test.ts', 'src/main/memory-guard.test.ts', 'src/main/hibernation-fast-veille-wiring.test.ts', 'src/main/memory-guard-wiring.test.ts', 'src/main/hibernation-no-disk.test.ts'];
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300_000, ...opts });
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }, ...(m.extra ?? [])];
@@ -110,7 +127,7 @@ const shaBefore = Object.fromEntries(files.map((f) => [f, sha(f)]));
 const base = unitRed();
 const baseRig = rigRed();
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 16)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 19)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;

@@ -22,8 +22,11 @@
 //   guard_pending_prompt ★ an undelivered prompt spares it         guard_loop ★ a /loop spares it           guard_bg_task ★ a live background task spares it
 //   guard_active_pane ★ the active pane spares it                  guard_run_pty ★ a live `<ws>:run` PTY spares it   guard_waiting ★ status `waiting` spares it
 //   no_coordinator   ★ a session without a coordinator is not affected (while its fleet sibling goes)
-//   edge_sweep       ★ must-FAIL on master  the real sweeper started (periodic cadence set to 1 h): the `admission_held` edge sweeps NOW, not at the next tick
+//   edge_sweep       ★ must-FAIL on master  the real sweeper started (periodic cadence set to 1 h): the guard sample that HOLDS Admission sweeps NOW, not at the next tick
 //   boot_held        ★ must-FAIL on master  the sweeper started while Admission is ALREADY held → one sweep at boot (subscribe first, then reconcile)
+//   late_idler       ★ must-FAIL on the merged tip (#288 review F1)  a member that goes idle AFTER the held edge sleeps at the NEXT guard sample, no tick, no edge
+//   samples_quiet    CONTROL  samples with Admission open — or held with the toggle OFF — never run a sweep (a member past its threshold waits for the tick)
+//   overlap_probe    ★ (#288 seat-1 MINOR)  a 2nd pass starting while pass 1 is mid-stop of X never re-takes X (rests on `sdkHasSession` excluding a stopping session)
 //   reopen_mid_pass  ★ the hold ENDS while a pass is still stopping its first member → the members after it are spared (the hold is read per member)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-fast-veille.mjs   (RIG_REPO=<tree> = the must-FAIL run on master)
@@ -38,7 +41,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass'];
+const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass', 'late_idler', 'samples_quiet', 'overlap_probe'];
 const GIB = 1024 ** 3;
 const MIN = 60_000;
 
@@ -156,7 +159,7 @@ sdk.__setQueryFactoryForTests(({ prompt, options }) => {
         if (call.inject.length) { yield call.inject.shift(); continue; }
         if (!queue.length) { await new Promise((r) => { poke = r; }); continue; }
         queue.shift();
-        if (call.hold) await new Promise(() => {});   // a turn that never ends
+        if (call.hold) await new Promise((r) => { call.releaseHold = r; });   // a turn that never ends — unless the arm calls releaseHold()
         appendTranscript(id, { type: 'assistant', call: call.n, content: `answer ${call.n}` });
         yield { type: 'result', subtype: 'success', session_id: sessId(id), is_error: false, num_turns: 1, duration_ms: 1, total_cost_usd: 0, result: `answer ${call.n}` };
       }
@@ -372,6 +375,59 @@ if (ARM === 'boot_held') {
   hib.startHibernationSweeper();
   const went = await until(() => !live('ws-a') && !!wsOf('ws-a')?.hibernatedAt, 8000);
   check('veille_at_boot_while_held', went, true);
+  verdict();
+}
+
+if (ARM === 'late_idler') {
+  const W = await mkMember('ws-w');
+  skew(1);
+  callsByWs.get(W)[0].hold = true;                                         // W is mid-turn when Admission becomes held
+  await delivery.sdkStartAndDeliver(W, 'long turn');
+  check('w_running', await until(() => wsOf(W).status === 'running', 3000), true);
+  hib.startHibernationSweeper();                                           // periodic tick = 1 h: only a guard-triggered sweep can act within this arm
+  setMem(4); check('admission_held', holding(), true);                     // the edge sample sweeps — W is running, so it is spared
+  await sleep(600);
+  check('spared_at_the_edge', { live: live(W), interrupted: interrupted(W) }, { live: true, interrupted: 0 });
+  callsByWs.get(W)[0].releaseHold();                                       // the turn ends: W is now an idle fleet member, Admission still held
+  check('w_idle', await until(() => wsOf(W).status === 'idle', 3000), true);
+  await sleep(600);
+  check('no_sweep_without_a_sample', live(W), true);                       // nothing but a guard sample can act (no tick, no edge)
+  const t0 = realNow();
+  setMem(4);                                                               // the NEXT guard sample while held (same level — NOT an edge)
+  const went = await until(() => !live(W) && !!wsOf(W)?.hibernatedAt, 8000);
+  out.msToVeille = realNow() - t0;
+  check('veille_at_the_next_sample', went, true);
+  verdict();
+}
+
+if (ARM === 'samples_quiet') {
+  const M = await mkMember('ws-m');
+  skew(6);                                                                 // idle 6 min: past its threshold, so ONLY the missing sweep spares it
+  check('control_eligible_by_threshold_alone', eligibleIfOld(M, { lastActivityAt: hn.getLastActivity(M) }), true);
+  hib.startHibernationSweeper();                                           // periodic tick = 1 h
+  await sleep(300);
+  check('start_sweeps_nothing_open', live(M), true);
+  for (let i = 0; i < 3; i++) { setMem(12); await sleep(100); }            // open samples
+  check('open_samples_run_no_sweep', live(M), true);
+  await store.setMemoryGuardSettings({ ...store.getMemoryGuardSettings(), admissionEnabled: false });
+  for (let i = 0; i < 3; i++) { const s = setMem(4); out.admission = s.admission; await sleep(100); }   // held STATE, toggle OFF: nothing holds
+  check('toggle_off_held_samples_run_no_sweep', { holding: holding(), live: live(M) }, { holding: false, live: true });
+  check('rig_can_sweep_this_member', (await sweep()).includes(M), true);   // the same member IS taken by an explicit sweep (instrument control)
+  verdict();
+}
+
+if (ARM === 'overlap_probe') {
+  const X = await mkMember('ws-x');
+  skew(1);
+  callsByWs.get(X)[0].interruptDelay = 1500;                               // X's graceful close is slow: pass 1 stays in flight for 1.5 s
+  setMem(4); check('admission_held', holding(), true);
+  const pass1 = hib.sweepHibernation();
+  check('x_stop_started', await until(() => interrupted(X) >= 1, 4000), true);
+  const pass2 = hib.sweepHibernation();                                    // the overlapping pass (a guard sample / the tick landing mid-pass)
+  const [t1, t2] = await Promise.all([pass1, pass2]);
+  check('x_taken_by_pass1_only', { t1, t2 }, { t1: [X], t2: [] });
+  check('x_stopped_once', interrupted(X), 1);
+  check('x_chip_and_not_live', { live: live(X), chip: !!wsOf(X).hibernatedAt }, { live: false, chip: true });
   verdict();
 }
 
