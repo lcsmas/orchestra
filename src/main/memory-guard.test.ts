@@ -227,12 +227,20 @@ test('nested_sampleNow: a listener that re-measures gets its edges AFTER the bat
     const w = world(12);
     const g = createMemoryGuard(w.deps);
     const seen: string[] = [];
+    let depth = 0;
+    let maxDepth = 0;
     g.start();
     const off = g.subscribe((e) => {
-      seen.push(e.transition.kind);
-      if (e.transition.kind === 'admission_held') {
-        w.mem = 8; // memory rebounds before the consumer finished reacting to the first edge
-        g.sampleNow();
+      depth += 1;
+      maxDepth = Math.max(maxDepth, depth);
+      try {
+        seen.push(e.transition.kind);
+        if (e.transition.kind === 'admission_held') {
+          w.mem = 8; // memory rebounds before the consumer finished reacting to the first edge
+          g.sampleNow();
+        }
+      } finally {
+        depth -= 1;
       }
     });
     w.mem = 2;
@@ -240,6 +248,7 @@ test('nested_sampleNow: a listener that re-measures gets its edges AFTER the bat
     assert.deepEqual(seen, ['admission_held', 'pause_due', 'pause_liftable', 'admission_reopened'], 'FIFO: the nested sample\'s edges come after the outer batch');
     const s = g.snapshot();
     assert.deepEqual([s.admission, s.pause], ['open', 'none'], 'the LAST delivered edge (admission_reopened) matches the final state — a consumer acting on the last edge ends right');
+    assert.equal(maxDepth, 1, 'a listener is NEVER re-entered: the nested sample\'s edges wait until the current listener returned');
     assert.ok(w.pending, 'exactly one timer armed after the nested sample');
     off();
   }
