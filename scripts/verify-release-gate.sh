@@ -7,9 +7,9 @@
 # stub build scripts): nothing real is tagged, pushed or published. Observable = rc, refusal text,
 # sandbox tags/commits and the ordered step log.
 #
-# Arms: clean (steps EXACTLY `tsc test session-budget abi build gh-release`); tsc_error, test_fail, test_skipped,
+# Arms: clean (steps EXACTLY `tsc test session-budget admission-hold admission-wake abi build gh-release`); tsc_error, test_fail, test_skipped,
 # test_todo, test_rc_only, test_zero, test_swallow_fail/hang, test_no_summary, test_no_skipped_line,
-# tree_dirtied, tree_moved, abi_fail, sb_fail, sb_void, sb_no_terminator, sb_weak_containment, sb_partial, sb_missing_script -> REFUSED naming
+# tree_dirtied, tree_moved, abi_fail, ah_*/aw_* (#286/#287 Admission rigs: red, no terminator, partial, wrong tree, missing script; rig_env: inherited RIG_ARMS/RIG_REPO never reach them), sb_fail, sb_void, sb_no_terminator, sb_weak_containment, sb_partial, sb_missing_script -> REFUSED naming
 # the check + nothing tagged/pushed (sb_* = the #208 session-budget step, stubbed here); bypass
 # (+notes-file, =form) -> proceeds with the reason in the notes; bypass_no_reason/blank/flag/ci_only
 # -> rc 2; dry_run -> plan only. Must-FAIL on old code: RG_SCRIPTS_DIR=<dir with the old release.sh>.
@@ -85,10 +85,14 @@ mk_fixture() {
   [ "$tv" = abifail ] && abicmd='exit 7'
   local sbscript='"test:session-budget": "bash scripts/sb-stub.sh", "smoke:session-budget-real": "bash scripts/smoke-stub.sh",'
   [ "$tv" = sbmissing ] && sbscript=''
+  local rigscript='"test:admission-hold": "bash scripts/ah-stub.sh", "test:admission-wake": "bash scripts/aw-stub.sh",'
+  [ "$tv" = ahmissing ] && rigscript='"test:admission-wake": "bash scripts/aw-stub.sh",'
+  [ "$tv" = awmissing ] && rigscript='"test:admission-hold": "bash scripts/ah-stub.sh",'
   cat > "$W/package.json" <<PKG
 { "name": "fx", "version": "0.5.270",
   "scripts": { "a":"a","b":"b","c":"c",
     $sbscript
+    $rigscript
     "test": "$testcmd",
     "build:bus-abi": "$abicmd",
     "build": "echo build >> \"\$RG_FX_LOG\" && mkdir -p release && : > release/Orchestra.AppImage",
@@ -107,6 +111,23 @@ PKG
       *) echo "echo '   requests before first reply: model=1 count_tokens=0 other=0'"; echo 'echo "SESSION-BUDGET: PASS"' ;;
     esac
   } > "$W/scripts/sb-stub.sh"
+  # The #286/#287 Admission rigs, stubbed (real: scripts/e2e-admission-{hold,wake}.mjs, ~17 s each): log themselves + the RIG_* env they saw, then behave per variant.
+  rig_stub() { # file step label arms variant-prefix
+    local f="$1" step="$2" label="$3" arms="$4" pfx="$5"
+    {
+      echo "echo $step >> \"\$RG_FX_LOG\""
+      echo "echo \"$step:[\${RIG_ARMS-}|\${RIG_REPO-}]\" >> \"\$RG_FX_LOG.env\""
+      case "$tv" in
+        "${pfx}red")     echo "echo 'FAIL human_passes — rig stub'"; echo "echo \"$label RED human_passes ($((arms - 1))/$arms) tree \$(pwd -P)\"; exit 1" ;;
+        "${pfx}noterm")  echo "echo 'PASS open_passes'"; echo 'exit 0' ;;
+        "${pfx}partial") echo "echo \"$label ALL PASS (2/$arms) tree \$(pwd -P)\"" ;;
+        "${pfx}tree")    echo "echo \"$label ALL PASS ($arms/$arms) tree /somewhere/else\"" ;;
+        *)               echo "echo \"$label ALL PASS ($arms/$arms) tree \$(pwd -P)\"" ;;
+      esac
+    } > "$f"
+  }
+  rig_stub "$W/scripts/ah-stub.sh" admission-hold 'ADMISSION RIG:' 17 ah
+  rig_stub "$W/scripts/aw-stub.sh" admission-wake 'ADMISSION-WAKE RIG:' 15 aw
   # The opt-in real-API smoke, stubbed (never a real call): logs `smoke`, passes unless RG_SMOKE_MODE=fail|noterm.
   {
     echo 'echo smoke >> "$RG_FX_LOG"'
@@ -179,9 +200,9 @@ refused() { # name check-name [extra-marker] [expected-steps]
 
 # ── clean ────────────────────────────────────────────────────────────────────
 mk_fixture clean ok pass; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admission-wake abi build gh-release" ]; then
   pass "clean proceeds, ordered, once" "rc=0 steps=[$(steps)]"
-else fail "clean proceeds, ordered, once" "rc=$RC steps=[$(steps)] want [tsc test session-budget abi build gh-release]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+else fail "clean proceeds, ordered, once" "rc=$RC steps=[$(steps)] want [tsc test session-budget admission-hold admission-wake abi build gh-release]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 [ "$(git -C "$W" log -1 --format=%s)" = "chore: bump version to 0.5.271" ] && pass "clean bump message unchanged" "chore: bump version to 0.5.271" || fail "clean bump message unchanged" "$(git -C "$W" log -1 --format=%s)"
 [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ] && pass "clean tag-pushed" "v0.5.271 on the sandbox origin" || fail "clean tag-pushed" "no v0.5.271 on origin"
 case "$OUT" in *"release-gate: PASS"*"session budget held (requests before first reply: model=1 count_tokens=0 other=0)"*) pass "clean pass-line" "$(printf '%s' "$OUT" | grep -F 'release-gate: PASS' | head -1)" ;; *) fail "clean pass-line" "no 'release-gate: PASS' line carrying the session-budget detail" ;; esac
@@ -219,17 +240,17 @@ mk_fixture test_zero ok zero; run_release 0.5.271
 refused test_zero test "0 tests ran" "tsc"; nothing_shipped test_zero
 
 mk_fixture tree_dirtied ok dirty; run_release 0.5.271
-refused tree_dirtied tree "" "tsc test session-budget"
+refused tree_dirtied tree "" "tsc test session-budget admission-hold admission-wake"
 [ "$(git -C "$W" rev-parse HEAD)" = "$HEAD0" ] && [ -z "$(git -C "$ORIGIN" tag -l v0.5.271)" ] \
   && pass "tree_dirtied nothing-shipped" "no bump, no tag" || fail "tree_dirtied nothing-shipped" "shipped"
 
 mk_fixture tree_moved ok moved; run_release 0.5.271
-refused tree_moved tree "" "tsc test session-budget"
+refused tree_moved tree "" "tsc test session-budget admission-hold admission-wake"
 [ -z "$(git -C "$ORIGIN" tag -l v0.5.271)" ] && [ "$(git -C "$ORIGIN" rev-parse master)" = "$ORIGIN0" ] \
   && pass "tree_moved nothing-pushed" "no tag, origin unmoved" || fail "tree_moved nothing-pushed" "pushed"
 
 mk_fixture abi_fail ok abifail; run_release 0.5.271
-refused abi_fail "build:bus-abi" "" "tsc test session-budget"; nothing_shipped abi_fail
+refused abi_fail "build:bus-abi" "" "tsc test session-budget admission-hold admission-wake"; nothing_shipped abi_fail
 
 # ── #208 session-budget step: a broken budget / a VOID run / a missing terminator / a missing script all refuse ─
 mk_fixture sb_fail ok sbfail; run_release 0.5.271
@@ -245,18 +266,44 @@ refused sb_partial session-budget "PARTIAL" "tsc test session-budget"; nothing_s
 mk_fixture sb_missing_script ok sbmissing; run_release 0.5.271
 refused sb_missing_script session-budget "Missing script: test:session-budget" "tsc test"; nothing_shipped sb_missing_script
 
+# ── #286/#287 Admission rigs (F2): red / no terminator / partial / wrong tree / missing script all refuse NAMING the rig; an inherited RIG_ARMS / RIG_REPO never reaches them ──
+mk_fixture ah_red ok ahred; run_release 0.5.271
+refused ah_red admission-hold "human_passes" "tsc test session-budget admission-hold"; nothing_shipped ah_red
+mk_fixture ah_no_terminator ok ahnoterm; run_release 0.5.271
+refused ah_no_terminator admission-hold "ADMISSION RIG: ALL PASS (N/N)' terminator" "tsc test session-budget admission-hold"; nothing_shipped ah_no_terminator
+mk_fixture ah_partial ok ahpartial; run_release 0.5.271
+refused ah_partial admission-hold "partial run (2/17)" "tsc test session-budget admission-hold"; nothing_shipped ah_partial
+mk_fixture ah_wrong_tree ok ahtree; run_release 0.5.271
+refused ah_wrong_tree admission-hold "not this tree" "tsc test session-budget admission-hold"; nothing_shipped ah_wrong_tree
+mk_fixture ah_missing_script ok ahmissing; run_release 0.5.271
+refused ah_missing_script admission-hold "Missing script: test:admission-hold" "tsc test session-budget"; nothing_shipped ah_missing_script
+mk_fixture aw_red ok awred; run_release 0.5.271
+refused aw_red admission-wake "human_passes" "tsc test session-budget admission-hold admission-wake"; nothing_shipped aw_red
+mk_fixture aw_no_terminator ok awnoterm; run_release 0.5.271
+refused aw_no_terminator admission-wake "ADMISSION-WAKE RIG: ALL PASS (N/N)' terminator" "tsc test session-budget admission-hold admission-wake"; nothing_shipped aw_no_terminator
+mk_fixture aw_partial ok awpartial; run_release 0.5.271
+refused aw_partial admission-wake "partial run (2/15)" "tsc test session-budget admission-hold admission-wake"; nothing_shipped aw_partial
+mk_fixture aw_wrong_tree ok awtree; run_release 0.5.271
+refused aw_wrong_tree admission-wake "not this tree" "tsc test session-budget admission-hold admission-wake"; nothing_shipped aw_wrong_tree
+mk_fixture aw_missing_script ok awmissing; run_release 0.5.271
+refused aw_missing_script admission-wake "Missing script: test:admission-wake" "tsc test session-budget admission-hold"; nothing_shipped aw_missing_script
+mk_fixture rig_env ok pass; RIG_ARMS=open_passes RIG_REPO=/elsewhere run_release 0.5.271
+if [ "$RC" = 0 ] && [ "$(tr '\n' ' ' < "$LOG.env")" = "admission-hold:[|] admission-wake:[|] " ]; then
+  pass "rig_env: RIG_ARMS/RIG_REPO are unset for the rigs" "rc=0, both stubs saw an empty RIG_* env"
+else fail "rig_env: RIG_ARMS/RIG_REPO are unset for the rigs" "rc=$RC env=[$(tr '\n' '|' < "$LOG.env" 2>/dev/null)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+
 # ── #208 opt-in real-API smoke (stubbed): off by default, runs after the budget step when named, refuses on failure ─
 mk_fixture smoke_off ok pass; run_release 0.5.271
 if [ "$RC" = 0 ] && ! grep -qx smoke "$LOG" && [[ "$OUT" != *"real-API smoke"* ]]; then pass "smoke_off: never runs unless asked" "rc=0 steps=[$(steps)]"
 else fail "smoke_off: never runs unless asked" "rc=$RC steps=[$(steps)]"; fi
 mk_fixture smoke_pass ok pass; RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget smoke abi build gh-release" ] && [[ "$OUT" == *"real-API smoke passed"* ]]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admission-wake smoke abi build gh-release" ] && [[ "$OUT" == *"real-API smoke passed"* ]]; then
   pass "smoke_pass: runs once, after the budget step" "rc=0 steps=[$(steps)]"
 else fail "smoke_pass: runs once, after the budget step" "rc=$RC steps=[$(steps)]; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 mk_fixture smoke_fail ok pass; RG_SMOKE_MODE=fail RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
-refused smoke_fail real-api-smoke "claude exited 1" "tsc test session-budget smoke"; nothing_shipped smoke_fail
+refused smoke_fail real-api-smoke "claude exited 1" "tsc test session-budget admission-hold admission-wake smoke"; nothing_shipped smoke_fail
 mk_fixture smoke_no_terminator ok pass; RG_SMOKE_MODE=noterm RELEASE_REAL_API_SMOKE_CONFIG_DIR="$D/acct" run_release 0.5.271
-refused smoke_no_terminator real-api-smoke "REAL-API-SMOKE: PASS" "tsc test session-budget smoke"; nothing_shipped smoke_no_terminator
+refused smoke_no_terminator real-api-smoke "REAL-API-SMOKE: PASS" "tsc test session-budget admission-hold admission-wake smoke"; nothing_shipped smoke_no_terminator
 
 mk_fixture test_no_fail_line ok nofail; run_release 0.5.271
 refused test_no_fail_line test "readable summary" "tsc"; nothing_shipped test_no_fail_line
@@ -270,28 +317,28 @@ refused test_mismatch test "!= pass" "tsc"; nothing_shipped test_mismatch
 mk_fixture untracked ok untracked; run_release 0.5.271
 refused untracked tree "untracked" "-"; nothing_shipped untracked
 mk_fixture untracked_by_test ok untrackedbytest; run_release 0.5.271
-refused untracked_by_test tree "untracked" "tsc test session-budget"; nothing_shipped untracked_by_test
+refused untracked_by_test tree "untracked" "tsc test session-budget admission-hold admission-wake"; nothing_shipped untracked_by_test
 
 mk_fixture mtime_touch ok touch; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then pass "mtime-only touch is not dirty" "rc=0, released"
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admission-wake abi build gh-release" ]; then pass "mtime-only touch is not dirty" "rc=0, released"
 else fail "mtime-only touch is not dirty" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 
 mk_fixture mtime_by_test ok touchbytest; run_release 0.5.271
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ]; then pass "mtime-only touch by a test is not dirty" "rc=0, released"
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admission-wake abi build gh-release" ]; then pass "mtime-only touch by a test is not dirty" "rc=0, released"
 else fail "mtime-only touch by a test is not dirty" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 
 # ── --ci-only / --to-master ordering (the gate is neither skipped nor late) ───
 mk_fixture ci_only_refused err pass; run_release 0.5.271 --ci-only
 refused ci_only_refused tsc "" "tsc"; nothing_shipped ci_only_refused
 mk_fixture ci_only_clean ok pass; run_release 0.5.271 --ci-only
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget" ] && [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ]; then
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admission-wake" ] && [ -n "$(git -C "$ORIGIN" tag -l v0.5.271)" ]; then
   pass "ci_only clean: gate runs, no local build" "rc=0 steps=[$(steps)] tag pushed"
 else fail "ci_only clean: gate runs, no local build" "rc=$RC steps=[$(steps)]"; fi
 
 FX_BRANCH=feat mk_fixture to_master_refused err pass; run_release 0.5.271 --to-master
 refused to_master_refused tsc "" "tsc"; nothing_shipped to_master_refused
 FX_BRANCH=feat mk_fixture to_master_clean ok pass; run_release 0.5.271 --to-master
-if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget abi build gh-release" ] \
+if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admission-wake abi build gh-release" ] \
    && [ "$(git -C "$ORIGIN" rev-parse master)" = "$(git -C "$W" rev-parse HEAD)" ]; then
   pass "to_master clean: master fast-forwarded" "rc=0 origin/master == bump commit"
 else fail "to_master clean: master fast-forwarded" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi

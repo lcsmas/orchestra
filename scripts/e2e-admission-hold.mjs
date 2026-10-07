@@ -33,35 +33,42 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { RIG_LOCK_PATH, RIG_LOCK_TIMEOUT_RC, RIG_LOCK_WAIT_S, armScratch, lockedArgv, newRigRunId, pruneOldRuns, rigRunId } from './rig-isolation.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
 const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'pause_keeps_slot', 'release_selfsample', 'pause_other_run', 'deleted_while_held', 'composer_drops_restart', 'composer_drops_spawn', 'archived_while_held', 'failed_release_reported', 'toggle_off', 'visible'];
 const GIB = 1024 ** 3;
+const RIG_BASE = path.resolve(process.env.ADMISSION_RIG_HOME ?? path.join(os.homedir(), '.cache', 'e2e-admission-hold'));
 
 if (!ARM) {
   const rows = [];
+  const runId = newRigRunId();   // this driver run's OWN scratch subtree (concurrent drivers never share an arm dir)
+  pruneOldRuns(RIG_BASE);
   const only = process.env.RIG_ARMS ? new Set(process.env.RIG_ARMS.split(',')) : null;   // the mutant harness runs only the arms a mutant names
   for (const arm of ARMS) {
     if (only && !only.has(arm)) continue;
-    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(path.join(HERE, '.r2-register.mjs')).href, fileURLToPath(import.meta.url), arm], { env: { ...process.env }, encoding: 'utf8', timeout: 150_000 });
+    // each ARM runs under ONE host-wide flock: arms of concurrent drivers (a sweep + a gate + a reviewer) never overlap their timing
+    const argv = lockedArgv(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(path.join(HERE, '.r2-register.mjs')).href, fileURLToPath(import.meta.url), arm]);
+    const r = spawnSync(argv[0], argv.slice(1), { env: { ...process.env, RIG_RUN_ID: runId }, encoding: 'utf8', timeout: 150_000 + RIG_LOCK_WAIT_S * 1000 });
     const lastJson = (r.stdout ?? '').split('\n').reverse().find((l) => l.startsWith('{') && l.includes('"arm"'));
     let v = null;
     try { v = lastJson ? JSON.parse(lastJson) : null; } catch { /* below */ }
-    rows.push({ arm, ok: v?.ok === true, detail: v ? (v.ok ? '' : v.why ?? v.abort ?? '') : `no verdict (exit ${r.status}) ${(r.stderr ?? '').split('\n').slice(-3).join(' ')}` });
+    rows.push({ arm, ok: v?.ok === true, detail: v ? (v.ok ? '' : v.why ?? v.abort ?? '') : r.status === RIG_LOCK_TIMEOUT_RC ? `rig lock ${RIG_LOCK_PATH} not acquired within ${RIG_LOCK_WAIT_S} s` : `no verdict (exit ${r.status}) ${(r.stderr ?? '').split('\n').slice(-3).join(' ')}` });
   }
   for (const r of rows) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.arm}${r.detail ? ` — ${r.detail}` : ''}`);
   const red = rows.filter((r) => !r.ok);
-  console.log(`ADMISSION RIG: ${red.length === 0 ? 'ALL PASS' : `RED ${red.map((r) => r.arm).join(',')}`} (${rows.length - red.length}/${rows.length}) tree ${REPO}`);
+  if (red.length === 0) fs.rmSync(path.join(RIG_BASE, runId), { recursive: true, force: true });   // a green run leaves nothing behind; a red one keeps its arm dirs for debugging
+  console.log(`ADMISSION RIG: ${red.length === 0 ? 'ALL PASS' : `RED ${red.map((r) => r.arm).join(',')}`} (${rows.length - red.length}/${rows.length})${only ? ' PARTIAL(RIG_ARMS)' : ''} tree ${REPO}`);   // a RIG_ARMS subset can never read as a full pass (the release gate's judge refuses it)
   process.exit(red.length === 0 ? 0 : 1);
 }
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 
 // ── SAFETY ──
 const REAL_HOME = os.homedir();
-const base = path.resolve(process.env.ADMISSION_RIG_HOME ?? path.join(REAL_HOME, '.cache', 'e2e-admission-hold'));
-const tmpHome = path.join(base, ARM);
+const base = RIG_BASE;
+const tmpHome = armScratch(base, rigRunId(), ARM);
 const live = [path.join(REAL_HOME, '.orchestra'), path.join(REAL_HOME, '.claude'), path.join(REAL_HOME, '.claude-mc'), path.join(REAL_HOME, '.config')];
 if (!(tmpHome + path.sep).startsWith(path.join(REAL_HOME, '.cache') + path.sep) || live.some((l) => (tmpHome + path.sep).startsWith(l + path.sep) || l.startsWith(tmpHome + path.sep))) {
   console.error(`SAFETY: refusing scratch path ${tmpHome}`); process.exit(2);
