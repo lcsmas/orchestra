@@ -52,7 +52,8 @@ const MUTANTS = [
   ['R6', 'src/keeper/docker-relay.ts', [['if (stopped || busy || relay.healthy() || Date.now() < nextTryAt) return;', 'if (true as boolean) return;']], [T.relay, T.keeper], 'nothing restarts a dead relay; rig: kill_relay'],
   ['R7', 'src/keeper/docker-relay.ts', [['process.umask(0o177)', 'process.umask(0o022)'], ['            fs.chmodSync(sockPath, 0o600);\n', '']], [T.relay], 'relay socket world-accessible (full docker access)'],
   ['R8', 'src/keeper/docker-relay.ts', [['        fs.unlinkSync(sockPath); // ours by construction: one keeper per workspace owns this name', '        void 0;']], [T.relay], 'a stale socket file blocks the bind'],
-  ['R9', 'src/keeper/docker-relay.ts', [["    up.on('error', (e) => badGateway(res, e));", '']], [T.relay], 'daemon down crashes / hangs the call instead of a 502'],
+  ['R9', 'src/keeper/docker-relay.ts', [["    up.on('error', (e) => badGateway(req, res, e));", '']], [T.relay], 'daemon down crashes / hangs the call instead of a 502'],
+  ['R17', 'src/keeper/docker-relay.ts', [["'content-length': Buffer.byteLength(body), connection: 'close' });", "'content-length': Buffer.byteLength(body) });"]], [T.relay], 'the 502 does not announce Connection: close'],
   ['K1', 'src/keeper/index.ts', [["      klog('docker relay disabled: could not start');\n      return env;", "      klog('docker relay disabled: could not start');\n      return { ...env, DOCKER_HOST: `unix://${relaySocketPath(sockPath)}` };"]], [T.keeper], 'DOCKER_HOST set although the relay cannot start; rig: no_relay_fallback'],
   ['K2', 'src/keeper/index.ts', [['} else if (f.dockerRelay) {', '} else if (f.dockerRelay !== null) {']], [T.keeper], 'relay started even when the switch is OFF (no dockerRelay); rig: switch_off'],
   ['K3', 'src/keeper/index.ts', [['      if (spawnInFlight) {\n        deferredFrames.push(f as KeeperClientFrame);\n        return;\n      }\n', '']], [T.keeper], 'stdin sent behind a relay spawn is dropped'],
@@ -151,20 +152,22 @@ const sha = (b) => createHash('sha256').update(b).digest('hex').slice(0, 12);
 let leaks = 0;
 let unverified = 0;
 let foreign = 0;
+let dockerMissing = false; // the docker BINARY is not installed (ENOENT): nothing can leak. Any OTHER failure is a failed instrument (UNVERIFIED), never "no docker"
 const dockerOut = (args) => {
   try {
     return execFileSync('docker', args, { encoding: 'utf8', timeout: 30000, env: { ...process.env, DOCKER_HOST: '' } }).trim();
-  } catch {
-    return null; // no docker / no permission: the guard degrades to a no-op (reported once)
+  } catch (e) {
+    if (e && e.code === 'ENOENT') dockerMissing = true; // only a missing BINARY means "no docker"; a failing/timed-out/denied `docker ps` is UNVERIFIED
+    return null;
   }
 };
 const containerIds = () => {
   const o = dockerOut(['ps', '-a', '-q', '--no-trunc']);
   return o === null ? null : new Set(o.split('\n').filter(Boolean));
 };
-const dockerAvailable = containerIds() !== null;
+containerIds(); // probe once so `dockerMissing` is known before the first run is bracketed
 function leakCheck(before) {
-  if (!dockerAvailable) return { leaked: 0, removed: 0 }; // no docker at all: nothing can leak (announced once at startup)
+  if (dockerMissing) return { leaked: 0, removed: 0 }; // no docker installed: nothing can leak (announced once at startup)
   const after = containerIds();
   if (!before || !after) {
     unverified++; // docker exists but could not be read around this run: UNVERIFIED, never "clean"
@@ -184,7 +187,7 @@ function leakCheck(before) {
   }
   return { leaked, removed };
 }
-if (containerIds() === null) console.log('LEAK GUARD: docker unavailable — containers cannot leak, guard is a no-op');
+if (dockerMissing) console.log('LEAK GUARD: the docker binary is not installed (ENOENT) — containers cannot leak, guard is a no-op');
 
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
