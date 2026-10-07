@@ -40,8 +40,8 @@ export function createMemoryBannerPublisher(deps: MemoryBannerDeps): MemoryBanne
     return memoryBannerOf(snap, { heldStarts: deps.heldStarts(), pausedRuns: deps.pausedRuns() }, last.rev);
   }
 
-  /** The tick lives as long as the GUARD holds (not as long as a banner shows): a banner that went `none` on one unreadable sample, or while the Admission toggle was OFF, must come back on the next good read
-   *  although no guard edge announces it. */
+  /** The tick lives as long as the GUARD holds (not as long as a banner shows): a banner that went `none` while the Admission toggle was OFF must come back with the toggle (an unreadable sample no longer
+   *  blanks it) although no guard edge announces it. */
   const watching = (snap: MemoryGuardSnapshot): boolean => last.kind !== 'none' || snap.admission === 'held' || snap.pause === 'held';
 
   function rearm(active: boolean): void {

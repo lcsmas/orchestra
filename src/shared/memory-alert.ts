@@ -44,8 +44,12 @@ export interface AlertFacts {
   unattributedContainers: number;
   /** The guard now. */
   nowAvailBytes: number | null;
+  /** The EFFECTIVE state, never the guard's raw flags: Admission is holding starts now (`isAdmissionHolding`: toggle ON and held). */
   nowAdmissionHeld: boolean;
+  /** At least one run IS under the memory Pause now (the bus says so) — not "the guard is below critical". */
   nowPause: boolean;
+  /** Runs the memory Pause could pause right now (`pause` switch ON, live local fleet, topmost) — 0 means a critical crossing will pause NOTHING. */
+  eligibleRuns: number;
   /** Admission's global toggle (`false`: the guard measures and decides, nothing is actually held). */
   admissionEnabled: boolean;
   admissionBytes: number;
@@ -65,13 +69,25 @@ export function memoryAlertBody(ep: AlertEpisode, f: AlertFacts): string {
   const reopen = f.admissionBytes + f.releaseMarginBytes;
   const held = f.admissionEnabled ? `${f.heldStarts} automatic fleet start(s) HELD (released coordinators first, one at a time, on a fresh reading, once MemAvailable is above ${formatGb(reopen, 2)})` : 'automatic starts NOT held (the Admission toggle is OFF — the guard only measures)';
   const paused = f.pausedRuns.length > 0 ? `memory Pause on run(s) ${f.pausedRuns.join(', ')} (lifted by the host above ${formatGb(f.admissionBytes, 2)})` : 'no run under the memory Pause';
-  const now = `MemAvailable ${f.nowAvailBytes === null ? 'unreadable' : formatGb(f.nowAvailBytes, 2)} · Admission ${f.nowAdmissionHeld ? 'HELD' : 'open'} · memory Pause ${f.nowPause ? 'IN EFFECT' : 'none'}`;
-  const next = ep.critical ? '' : ` If MemAvailable falls below the CRITICAL threshold (${formatGb(f.criticalBytes, 2)}) the host puts the eligible runs under the memory Pause WITHOUT another row for this episode — read the app banner / \`orchestra run status\`.`;
+  const now = `MemAvailable ${f.nowAvailBytes === null ? 'unreadable' : formatGb(f.nowAvailBytes, 2)} · Admission ${f.nowAdmissionHeld ? 'HELD' : !f.admissionEnabled ? 'OFF (toggle)' : 'open'} · memory Pause ${f.nowPause ? 'IN EFFECT' : 'none'}`;
+  const next =
+    ep.critical
+      ? ''
+      : f.eligibleRuns > 0
+        ? ` If MemAvailable falls below the CRITICAL threshold (${formatGb(f.criticalBytes, 2)}) the host puts the eligible runs under the memory Pause WITHOUT another row for this episode — read the app banner / \`orchestra run status\`.`
+        : ` NO run is eligible for the memory Pause (every \`pause\` switch is OFF or no live local fleet): if MemAvailable falls below the CRITICAL threshold (${formatGb(f.criticalBytes, 2)}) the host will pause NOTHING and write NO further row for this episode — watch \`orchestra run status\` and pause the fleet yourself (\`orchestra run pause --hard --run <id>\`).`;
+  const anyPaused = f.pausedRuns.length > 0;
+  const closing =
+    ep.critical && !anyPaused && ep.endedAt === null
+      ? 'ACT YOURSELF: the CRITICAL threshold was crossed and NO run is under the memory Pause now (none eligible — `pause` switch OFF, no live local fleet — a human / usage-limit pause already holds it, or its Reprise has begun): the host has NOT stopped the fleet itself. Check `orchestra run status`; if it is still running at critical memory, pause it (`orchestra run pause --hard --run <id>`).'
+      : ep.endedAt !== null
+        ? `${anyPaused ? 'You need not act: the host lifts its own memory Pause by itself. A run under the memory Pause reads this row after its Reprise (a paused coordinator is not woken).' : 'You need not act: the episode is over.'}`
+        : `${!f.admissionEnabled && !anyPaused ? 'Nothing for the host to release (the Admission toggle is OFF and no run is paused).' : `You need not act: the host ${[f.admissionEnabled ? 'releases the held starts' : null, anyPaused ? 'lifts its own memory Pause' : null].filter(Boolean).join(' and ')} by itself once memory recovers.`} A run under the memory Pause reads this row after its Reprise (a paused coordinator is not woken).${next}`;
   const over = ep.endedAt !== null ? ` The episode is already OVER (memory back above ${formatGb(reopen, 2)} at ${iso(ep.endedAt)}).` : '';
   return [
     `Memory guard — episode ${ep.episode} (since ${iso(ep.admission.at)}): ${crossed}.`,
     `Host actions so far: ${held} · ${f.veille} member(s) put in Veille since the crossing · ${paused} · ${f.unattributedContainers} unattributed container(s) (not measured yet — #293).`,
     `Now (${iso(f.at)}): ${now}.${over}`,
-    `You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers. A run under the memory Pause reads this row after its Reprise (a paused coordinator is not woken).${next}`,
+    closing,
   ].join('\n');
 }

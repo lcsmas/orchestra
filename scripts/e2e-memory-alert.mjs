@@ -178,6 +178,7 @@ try {
     await sleep(SETTLE_WAIT_MS);
     check('one_row', rows().length === 1, `${rows().length}`);
     const b = rows()[0]?.body ?? '';
+    check('effective_state_nothing_paused_says_so', /Admission HELD · memory Pause none\./.test(b) && /no run under the memory Pause/.test(b) && /ACT YOURSELF: the CRITICAL threshold was crossed and NO run is under the memory Pause now/.test(b) && !/You need not act/.test(b), b.split('\n').slice(1).join(' | ')); // no memory-Pause host runs in this rig: the guard says critical, the bus has no paused run (G6 review F1)
     check('names_both_thresholds', /below the Admission threshold \(6\.00 GB\) at 1\.20 GB and below the CRITICAL threshold \(3\.00 GB\) at 1\.20 GB/.test(b), b.split('\n')[0]);
     step(6.5); step(2.2); // Pause liftable (above Admission) with Admission STILL held (below the 7 GB reopen), then below critical again: a LATER Pause cycle inside the SAME episode
     const sn = guardMod.getMemoryGuardSnapshot();
@@ -217,6 +218,7 @@ try {
     check('two_starts_held_counted', /2 automatic fleet start\(s\) HELD/.test(b), b.split('\n')[1] ?? '');
     check('one_member_in_veille_since_the_crossing', /1 member\(s\) put in Veille since the crossing/.test(b), b.split('\n')[1] ?? '');
     check('the_paused_run_is_named', /memory Pause on run\(s\) ops/.test(b), b.split('\n')[1] ?? '');
+    check('a_paused_run_is_in_effect_and_need_not_act_is_true', /memory Pause IN EFFECT\./.test(b) && /You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers\./.test(b) && !/ACT YOURSELF/.test(b), b.split('\n').slice(2).join(' | ')); // G6 review F1
   } else if (ARM === 'reader_below_deaf_root') {
     // `lead` cannot read (delivery OFF): `ops` below it (delivery ON, with a fleet) is the LEAD the memory Pause actually pauses
     db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'lead'").run(JSON.stringify({ delivery: false }));

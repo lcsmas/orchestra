@@ -142,7 +142,7 @@ test('PUBLISH counts: the held-start count and the paused runs move WITHOUT a gu
   assert.equal(w.pushes[w.pushes.length - 1].kind, 'none');
 });
 
-test('PUBLISH unknown ≠ held: an unreadable meter publishes no banner; the toggle OFF holds nothing', () => {
+test('PUBLISH unknown ≠ held: a guard that never held and cannot read publishes no banner; the toggle OFF holds nothing', () => {
   const w = world();
   w.at(null);
   assert.equal(w.pushes.length, 0);
@@ -153,19 +153,30 @@ test('PUBLISH unknown ≠ held: an unreadable meter publishes no banner; the tog
   assert.equal(w.pushes.length, 0);
 });
 
-test('PUBLISH tick outlives the banner while the GUARD holds: a banner that went none on an unreadable sample, or while the Admission toggle was OFF, comes back on the next good read with no guard edge to announce it', () => {
+test('PUBLISH an unreadable sample never blanks a banner the guard still holds: no `none` push (the renderer would forget the dismissals), the figure turns unreadable and comes back with the next good read', () => {
   const w = world();
   w.at(12);
   w.at(5.5);
   assert.equal(w.pub.current().kind, 'held');
-  w.at(null); // one unreadable sample: unknown ≠ held — the banner goes, the guard still holds
+  const before = w.pushes.length;
+  w.at(null); // one unreadable sample: the guard keeps its state
   w.pub.refresh();
-  assert.equal(w.pub.current().kind, 'none', 'an unmeasured meter shows nothing');
-  assert.equal(w.timers.length, 1, 'but the tick is still armed: the guard is still held');
-  w.at(5.3); // no edge (still held): only the tick can bring the banner back
+  assert.equal(w.pub.current().kind, 'held', 'still held: an unreadable meter is not an open one');
+  assert.equal(w.pub.current().availBytes, null, 'the figure says unreadable, not the last good reading');
+  assert.ok(w.pushes.slice(before).every((p) => p.kind !== 'none'), `no none push in between: ${w.pushes.slice(before).map((p) => p.kind).join(',')}`);
+  w.at(5.3); // no edge (still held): the tick brings the figure back
   w.advance(BANNER_REFRESH_MS + 1);
-  assert.equal(w.pub.current().kind, 'held', 'back on the next good read');
-  assert.equal(w.pub.current().availBytes, 5.3 * GIB);
+  assert.equal(w.pub.current().kind, 'held');
+  assert.equal(w.pub.current().availBytes, 5.3 * GIB, 'back on the next good read');
+  assert.ok(w.pushes.every((p) => p.kind !== 'none'), 'never a none push while the guard holds');
+});
+
+test('PUBLISH tick outlives the banner while the GUARD holds: a banner that went none while the Admission toggle was OFF comes back with the toggle, with no guard edge to announce it; the refresh period is a light one', () => {
+  assert.ok(BANNER_REFRESH_MS >= 1_000 && BANNER_REFRESH_MS <= 10_000, `${BANNER_REFRESH_MS} ms: counts / paused runs move without a guard edge and an episode is minutes long`);
+  const w = world();
+  w.at(12);
+  w.at(5.5);
+  assert.equal(w.pub.current().kind, 'held');
   // the Admission toggle OFF while held: nothing is held (no banner); ON again: the banner returns without an edge
   w.settings = { ...DEFAULT_MEMORY_GUARD_SETTINGS, admissionEnabled: false };
   w.at(5.3);

@@ -18,9 +18,8 @@ const M = [
   // ── pure half
   { id: 'state-pause-from-guard-flag', file: POL, find: "const inPause = pausedRuns.length > 0;", rep: "const inPause = s.pause === 'held' || pausedRuns.length > 0;", tests: [T.pure, T.unit], expect: /STATE kind|PUBLISH Pause red/ },
   { id: 'state-pause-from-runs-dropped', file: POL, find: "const inPause = pausedRuns.length > 0;", rep: "const inPause = s.pause === 'held' && pausedRuns.length > 99;", tests: [T.pure, T.unit], expect: /STATE kind|PUBLISH walk/ },
-  { id: 'state-toggle-ignored', file: POL, find: "const holding = s.measured && isAdmissionHolding(s);", rep: "const holding = s.measured && s.admission === 'held';", tests: [T.pure, T.unit], expect: /STATE unknown|PUBLISH unknown/ },
-  { id: 'state-unmeasured-held', file: POL, find: "const holding = s.measured && isAdmissionHolding(s);", rep: "const holding = isAdmissionHolding(s);", tests: [T.pure, T.unit], expect: /STATE unknown|PUBLISH unknown/ },
-  { id: 'state-stale-reading-shown', file: POL, find: "    availBytes: s.measured ? s.availBytes : null,", rep: "    availBytes: s.availBytes,", tests: [T.pure], expect: /STATE unknown/ },
+  { id: 'state-toggle-ignored', file: POL, find: "const holding = isAdmissionHolding(s);", rep: "const holding = s.admission === 'held';", tests: [T.pure, T.unit], expect: /STATE unreadable|PUBLISH unknown|PUBLISH tick outlives/ },
+  { id: 'state-stale-reading-shown', file: POL, find: "    availBytes: s.measured ? s.availBytes : null,", rep: "    availBytes: s.availBytes,", tests: [T.pure], expect: /STATE unreadable/ },
   { id: 'state-none-not-normalised', file: POL, find: "  if (kind === 'none') return { ...NO_MEMORY_BANNER, rev }; // nothing to show: the figures of an idle guard are not a change worth pushing\n", rep: "", tests: [T.pure, T.unit], expect: /STATE unknown|PUBLISH unknown/ },
   { id: 'state-pause-wins-over-held', file: POL, find: "const kind: MemoryBannerKind = inPause ? 'pause' : holding ? 'held' : 'none';", rep: "const kind: MemoryBannerKind = holding ? 'held' : inPause ? 'pause' : 'none';", tests: [T.pure, T.unit], expect: /STATE kind|PUBLISH walk/ },
   { id: 'fingerprint-includes-rev', file: POL, find: "return JSON.stringify({ ...b, rev: 0 });", rep: "return JSON.stringify(b);", tests: [T.pure], expect: /PUSH/ },
@@ -31,8 +30,8 @@ const M = [
   { id: 'visible-none-shown', file: POL, find: "  if (!b || b.kind === 'none') return false;\n", rep: "  if (!b) return false;\n", tests: [T.pure], expect: /DISMISS/ },
   { id: 'visible-ignores-dismissal', file: POL, find: "  return !dismissedKeys.includes(bannerKey(b));", rep: "  return true;", tests: [T.pure], expect: /DISMISS/ },
   { id: 'visible-always-hidden-once-dismissed', file: POL, find: "  return !dismissedKeys.includes(bannerKey(b));", rep: "  return dismissedKeys.length === 0;", tests: [T.pure], expect: /DISMISS/ },
-  { id: 'dismissed-keys-replace-not-accumulate', file: POL, find: "return dismissedKeys.includes(k) ? dismissedKeys : [...dismissedKeys, k];", rep: "return [k];", tests: [T.pure], expect: /DISMISS/ },
-  { id: 'dismissed-with-ignores-banner', file: POL, find: "  const k = bannerKey(b);\n  return dismissedKeys.includes(k)", rep: "  const k = 'x';\n  return dismissedKeys.includes(k)", tests: [T.pure], expect: /DISMISS/ },
+  { id: 'dismissed-keys-replace-not-accumulate', file: POL, find: "return fresh.length === 0 ? dismissedKeys : [...dismissedKeys, ...fresh];", rep: "return fresh.length === 0 ? dismissedKeys : [...fresh];", tests: [T.pure], expect: /DISMISS/ },
+  { id: 'dismissed-with-ignores-banner', file: POL, find: "const add = [bannerKey(b),", rep: "const add = ['x',", tests: [T.pure], expect: /DISMISS/ },
   { id: 'go-comma-lost', file: POL, find: "toFixed(1).replace('.', ',')", rep: "toFixed(1)", tests: [T.pure, T.wiring], expect: /FRENCH go|COPY/ },
   { id: 'go-whole-with-decimal', file: POL, find: "`${Number.isInteger(v) ? String(v) : v.toFixed(1).replace('.', ',')} Go`", rep: "`${v.toFixed(1).replace('.', ',')} Go`", tests: [T.pure], expect: /FRENCH go|COPY/ },
   { id: 'copy-pause-tone', file: POL, find: "      tone: 'crit',\n      title: `Pause mémoire", rep: "      tone: 'warn',\n      title: `Pause mémoire", tests: [T.pure], expect: /COPY Pause/ },
@@ -42,7 +41,7 @@ const M = [
   { id: 'copy-held-zero-has-own-wording', file: POL, find: "const held = `${b.heldStarts} démarrage${b.heldStarts > 1 ? 's' : ''} retenu${b.heldStarts > 1 ? 's' : ''}`;", rep: "const held = b.heldStarts === 0 ? 'Aucun démarrage retenu pour l\\'instant' : `${b.heldStarts} démarrage${b.heldStarts > 1 ? 's' : ''} retenu${b.heldStarts > 1 ? 's' : ''}`;", tests: [T.pure], expect: /COPY held/ },
   { id: 'copy-paused-runs-uncut', file: POL, find: "const frList = (xs: readonly string[]): string => (xs.length <= 3 ? xs.join(', ') : `${xs.slice(0, 3).join(', ')} +${xs.length - 3}`);", rep: "const frList = (xs: readonly string[]): string => xs.join(', ');", tests: [T.pure], expect: /COPY Pause/ },
   { id: 'copy-pause-reprise-threshold', file: POL, find: "sub: `Reprise automatique dès ${frGo(b.admissionBytes)} ·", rep: "sub: `Reprise automatique dès ${frGo(b.criticalBytes)} ·", tests: [T.pure], expect: /COPY Pause/ },
-  { id: 'copy-unreadable-hidden', file: POL, find: "const mem = b.availBytes === null ? 'mémoire illisible' : `${frGo(b.availBytes)} disponibles`;", rep: "const mem = `${frGo(b.availBytes ?? 0)} disponibles`;", tests: [T.pure], expect: /COPY Pause/ },
+  { id: 'copy-unreadable-hidden', file: POL, find: "const mem = b.availBytes === null ? 'mesure illisible' : `${frGo(b.availBytes)} disponibles`;", rep: "const mem = `${frGo(b.availBytes ?? 0)} disponibles`;", tests: [T.pure], expect: /COPY Pause/ },
   // ── publisher
   { id: 'publish-every-refresh', file: CORE, find: "      if (bannerFingerprint(next) !== bannerFingerprint(last)) {", rep: "      if (true as boolean) {", tests: [T.unit], expect: /PUBLISH walk|PUBLISH counts/ },
   { id: 'publish-never-pushes-changes', file: CORE, find: "        deps.push(last);\n", rep: "", tests: [T.unit], expect: /PUBLISH/ },
@@ -84,6 +83,13 @@ const M = [
   { id: 'css-overlay-offset-with-toolbar-dropped', file: CSS, find: "top: calc(var(--toolbar-h) + var(--memory-banner-h, 0px));", rep: "top: var(--toolbar-h);", tests: [T.wiring], expect: /WIRING overlays/ },
   { id: 'component-height-not-published', file: COMP, find: "host.style.setProperty('--memory-banner-h',", rep: "host.style.setProperty('--memory-banner-x',", tests: [T.wiring], expect: /WIRING overlays/ },
   { id: 'component-height-not-removed', file: COMP, find: "      host.style.removeProperty('--memory-banner-h');\n", rep: "", tests: [T.wiring], expect: /WIRING overlays/ },
+  // ── G6 review (F2/F3/F4)
+  { id: 'dismiss-red-keeps-amber-visible', file: POL, find: "...(b.kind === 'pause' ? [bannerKey({ kind: 'held', episode: b.episode, pauseCycle: 0 })] : [])", rep: "...[]", tests: [T.pure], expect: /DISMISS red covers the episode/ },
+  { id: 'dismiss-red-hides-other-episodes-amber', file: POL, find: "bannerKey({ kind: 'held', episode: b.episode, pauseCycle: 0 })", rep: "bannerKey({ kind: 'held', episode: b.episode + 1, pauseCycle: 0 })", tests: [T.pure], expect: /DISMISS red covers the episode/ },
+  { id: 'unmeasured-blanks-banner', file: POL, find: "const holding = isAdmissionHolding(s);", rep: "const holding = s.measured && isAdmissionHolding(s);", tests: [T.pure, T.unit], expect: /STATE unreadable|PUBLISH an unreadable/ },
+  { id: 'frlist-boundary-4', file: POL, find: "xs.length <= 3 ?", rep: "xs.length <= 4 ?", tests: [T.pure], expect: /COPY Pause/ },
+  { id: 'frgo-floor', file: POL, find: "Math.round((bytes / GIB) * 10) / 10", rep: "Math.floor((bytes / GIB) * 10) / 10", tests: [T.pure], expect: /FRENCH go/ },
+  { id: 'refresh-ms-60s', file: CORE, find: "export const BANNER_REFRESH_MS = 5_000;", rep: "export const BANNER_REFRESH_MS = 60_000;", tests: [T.unit], expect: /PUBLISH tick outlives/ },
   { id: 'core-imports-electron', file: CORE, find: "import { NO_MEMORY_BANNER, bannerFingerprint, memoryBannerOf, type MemoryBannerState } from '../shared/memory-banner.ts';", rep: "import { NO_MEMORY_BANNER, bannerFingerprint, memoryBannerOf, type MemoryBannerState } from '../shared/memory-banner.ts';\nimport { store as _s } from './store.ts';", tests: [T.wiring], expect: /WIRING memory-banner\.ts is Electron-free/ },
 ];
 

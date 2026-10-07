@@ -7,9 +7,9 @@
 
 import { send, type BusDb } from './bus.ts';
 import { getRun } from './bus-runs.ts';
-import { liveFleetRuns, topmostRunIds, type MemoryPauseDeps } from './pause-memory.ts';
+import { liveFleetRuns, memoryPauseCandidates, topmostRunIds, type MemoryPauseDeps } from './pause-memory.ts';
 import { memoryPausedRuns } from './pause-memory.ts';
-import type { GuardTransition, MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { isAdmissionHolding, type GuardTransition, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 import { ALERT_SENDER, ALERT_SETTLE_MS, memoryAlertBody, type AlertEpisode } from '../shared/memory-alert.ts';
 
 export interface MemoryAlertDeps extends Pick<MemoryPauseDeps, 'getBus' | 'getWorkspace' | 'listWorkspaces' | 'storeReady' | 'now' | 'log'> {
@@ -93,14 +93,16 @@ export function createMemoryAlert(deps: MemoryAlertDeps): MemoryAlert {
         return;
       }
       const snap = deps.snapshot();
+      const pausedRuns = memoryPausedRuns(db).map((r) => r.runId);
       const body = memoryAlertBody(t.ep, {
         heldStarts: deps.heldStarts(),
         veille: deps.veilleSince(t.ep.admission.at),
-        pausedRuns: memoryPausedRuns(db).map((r) => r.runId),
+        pausedRuns,
         unattributedContainers: deps.unattributedContainers(),
         nowAvailBytes: snap.availBytes === null ? null : snap.measured ? snap.availBytes : null,
-        nowAdmissionHeld: snap.admission === 'held',
-        nowPause: snap.pause === 'held',
+        nowAdmissionHeld: isAdmissionHolding(snap), // the EFFECTIVE state (toggle ON and held), never the raw flag
+        nowPause: pausedRuns.length > 0, // runs ARE under the memory Pause — "the guard is below critical" is not that
+        eligibleRuns: memoryPauseCandidates(db, deps).length,
         admissionEnabled: snap.admissionEnabled,
         admissionBytes: snap.admissionBytes,
         criticalBytes: snap.criticalBytes,

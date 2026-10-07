@@ -168,8 +168,82 @@ test('EPISODE row: it is an `escalation` from the host to the LEAD of the ROOT r
   assert.match(b, /5 member\(s\) put in Veille/, 'Veille');
   assert.match(b, /memory Pause on run\(s\) L/, 'runs paused');
   assert.match(b, /2 unattributed container\(s\) \(not measured yet — #293\)/, 'the unattributed-container field is there from the start (the dep feeds it)');
-  assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable 5\.10 GB · Admission HELD · memory Pause none/, 'the facts are dated: a paused LEAD reads the row after its Reprise');
+  assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable 5\.10 GB · Admission HELD · memory Pause IN EFFECT\./, 'the facts are dated (a paused LEAD reads the row after its Reprise) and EFFECTIVE: the run IS paused, so the Pause is in effect');
+  assert.match(b, /You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers\./);
   assert.match(b, /released coordinators first, one at a time/);
+});
+
+/** Put run L under the memory Pause the way the host writes it (bus row). */
+function pauseL(w: World): void {
+  const at = w.clock.now;
+  w.db.prepare("UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_auto = ? WHERE id = 'L'").run(at, MEMORY_PAUSE_BY, encodeMemoryPause({ reason: 'memory', pauseCycle: 1, episode: 1, availBytes: 2 * GIB, thresholdBytes: 3 * GIB }, at));
+}
+const nowLine = (gb: string, adm: string, pause: string): RegExp => new RegExp(`Now \\(20[0-9-]+T[0-9:.]+Z\\): MemAvailable ${gb} GB · Admission ${adm} · memory Pause ${pause}\\.`);
+
+test('ROW now-line + closing are the EFFECTIVE state, not the guard flags (G6 review F1): critical with nothing paused says so and asks the LEAD to act; a paused run is IN EFFECT; toggle OFF is OFF, never HELD; an episode already over asks for nothing', () => {
+  // critical, no run paused (the guard says Pause; the bus has no paused run — `pause` switch OFF / no eligible fleet / a human got there first)
+  const a = world();
+  a.at(12);
+  a.at(2.2);
+  a.advance(ALERT_SETTLE_MS + 1);
+  const ba = a.rows()[0].body;
+  assert.match(ba, nowLine('2\\.20', 'HELD', 'none'), 'nothing is paused: NOT "IN EFFECT"');
+  assert.match(ba, /no run under the memory Pause/);
+  assert.match(ba, /ACT YOURSELF: the CRITICAL threshold was crossed and NO run is under the memory Pause now/);
+  assert.match(ba, /the host has NOT stopped the fleet itself\. Check `orchestra run status`; if it is still running at critical memory, pause it \(`orchestra run pause --hard --run <id>`\)\./);
+  assert.doesNotMatch(ba, /You need not act/, 'never "need not act" when critical and nothing is paused');
+  // critical WITH a paused run: in effect, and "need not act" is true
+  const p = world();
+  p.at(12);
+  p.at(2.2);
+  pauseL(p);
+  p.advance(ALERT_SETTLE_MS + 1);
+  const bp = p.rows()[0].body;
+  assert.match(bp, nowLine('2\\.20', 'HELD', 'IN EFFECT'));
+  assert.match(bp, /memory Pause on run\(s\) L/);
+  assert.match(bp, /You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers\./);
+  assert.doesNotMatch(bp, /ACT YOURSELF/);
+  // toggle OFF (below Admission, not critical): nothing is held — Admission is OFF, not HELD
+  const o = world();
+  o.settings = { ...DEFAULT_MEMORY_GUARD_SETTINGS, admissionEnabled: false };
+  o.at(12);
+  o.at(5);
+  o.advance(ALERT_SETTLE_MS + 1);
+  const bo = o.rows()[0].body;
+  assert.match(bo, nowLine('5\\.00', 'OFF \\(toggle\\)', 'none'));
+  assert.doesNotMatch(bo, /Admission HELD/, 'the toggle is OFF: nothing is held');
+  assert.match(bo, /Nothing for the host to release \(the Admission toggle is OFF and no run is paused\)\./);
+  assert.doesNotMatch(bo, /You need not act/);
+  // toggle OFF + critical + nothing paused: still asks for action (the fleet is running)
+  const oc = world();
+  oc.settings = { ...DEFAULT_MEMORY_GUARD_SETTINGS, admissionEnabled: false };
+  oc.at(12);
+  oc.at(2.2);
+  oc.advance(ALERT_SETTLE_MS + 1);
+  assert.match(oc.rows()[0].body, /ACT YOURSELF/);
+  // an episode already OVER asks for nothing even if it crossed critical and nothing was paused
+  const e = world();
+  e.at(12);
+  e.at(2.2);
+  e.at(8); // reopened before the settle window: told now
+  const be = e.rows()[0].body;
+  assert.match(be, /already OVER/);
+  assert.doesNotMatch(be, /ACT YOURSELF/);
+  assert.match(be, /You need not act: the episode is over\./, 'no "once memory recovers" and no later-crossing promise for an episode that is over');
+  assert.doesNotMatch(be, /WITHOUT another row|NO run is eligible/);
+  // eligibility is read from the real bus + live tree: with every `pause` switch OFF a later critical crossing would pause nothing, and the row says so
+  const n = world();
+  n.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id IN ('L','O','X','R')").run(JSON.stringify({ delivery: true, pause: false }));
+  n.at(12);
+  n.at(5);
+  n.advance(ALERT_SETTLE_MS + 1);
+  assert.match(n.rows()[0].body, /NO run is eligible for the memory Pause/);
+  assert.doesNotMatch(n.rows()[0].body, /puts the eligible runs under the memory Pause/);
+  const y = world();
+  y.at(12);
+  y.at(5);
+  y.advance(ALERT_SETTLE_MS + 1);
+  assert.match(y.rows()[0].body, /puts the eligible runs under the memory Pause WITHOUT another row/, 'control: L has its `pause` switch ON and a live fleet');
 });
 
 test('EPISODE critical: a jump straight below the CRITICAL threshold names BOTH thresholds in the ONE row; a critical crossing AFTER the row was written does not write another', () => {
@@ -206,6 +280,7 @@ test('EPISODE end before settle: an episode that is over before its settle windo
   w.at(8); // admission_reopened 20 s later: the settle window (20 s) has not been reached by the timer
   assert.equal(w.rows().length, 1, 'told at the end');
   assert.match(w.rows()[0].body, /already OVER \(memory back above 7\.00 GB at 20[0-9-]+T/);
+  assert.match(w.rows()[0].body, nowLine('8\\.00', 'open', 'none'), 'Now: the Admission state is the EFFECTIVE one — reopened, so open (not the HELD of the crossing)');
   w.advance(5 * 60_000);
   assert.equal(w.rows().length, 1, 'the settle timer does not write it again');
 });
@@ -315,6 +390,43 @@ test('RECONCILE (FI-2.5): a boot while Admission is ALREADY held tells the episo
   const unmeasured = world();
   unmeasured.alert.reconcile(unmeasured.g.snapshot()); // never sampled
   assert.deepEqual(unmeasured.alert.episodes(), []);
+});
+
+test('RECONCILE open branch: an episode already tracked but unsent whose reopen edge was missed is told NOW and says it is already over (not at the settle timer, not never)', () => {
+  const w = world();
+  w.at(12);
+  w.at(5.5); // tracked, unsent, settle timer armed
+  assert.equal(w.rows().length, 0);
+  w.alert.reconcile({ ...w.g.snapshot(), admission: 'open', measured: true, sampled: true, availBytes: 8 * GIB });
+  assert.equal(w.rows().length, 1, 'told at once');
+  assert.match(w.rows()[0].body, /already OVER/);
+  assert.equal(w.timers.length, 0, 'the settle timer is gone');
+  w.advance(10 * 60_000);
+  assert.equal(w.rows().length, 1, 'once');
+});
+
+test('EDGE pause_due for an episode the alert never saw (its admission_held edge was lost): opens it with the guard\'s own held-since stamp and the critical crossing, once', () => {
+  const w = world({ late: true });
+  const held = 1_700_000_000_000;
+  const snap = { ...w.g.snapshot(), heldSince: held, admissionBytes: 6 * GIB };
+  w.alert.onEdge({ transition: { kind: 'pause_due', episode: 7, pauseCycle: 1, availBytes: 2 * GIB, thresholdBytes: 3 * GIB }, snapshot: snap });
+  assert.deepEqual(w.alert.episodes(), [{ episode: 7, sent: false, critical: true, ended: false }]);
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(w.rows().length, 1);
+  assert.match(w.rows()[0].body, new RegExp(`episode 7 \\(since ${new Date(held).toISOString().replace(/\./g, '\\.')}\\)`), 'the Admission crossing is stamped with the guard\'s heldSince, not the time the edge arrived');
+  assert.match(w.rows()[0].body, /below the Admission threshold \(6\.00 GB\) at 2\.00 GB and below the CRITICAL threshold \(3\.00 GB\) at 2\.00 GB/);
+});
+
+test('RECONCILE stamps the episode with the guard\'s heldSince, not the boot time', () => {
+  const pre = world({ late: true });
+  pre.at(12);
+  pre.at(5);
+  const heldSince = pre.g.snapshot().heldSince!;
+  pre.advance(3 * 60_000); // the app boots 3 minutes into the episode
+  const fresh = createMemoryAlert(pre.deps);
+  fresh.reconcile(pre.g.snapshot());
+  pre.advance(ALERT_SETTLE_MS + 1);
+  assert.match(pre.rows()[0].body, new RegExp(`episode 1 \\(since ${new Date(heldSince).toISOString().replace(/\./g, '\\.')}\\)`));
 });
 
 test('RECONCILE unknown ≠ held: a snapshot whose meter is UNREADABLE (it keeps the last good reading) opens no episode', () => {
@@ -452,6 +564,29 @@ test('RETRY: a failure BEFORE anything was written (facts / recipients unreadabl
   for (let i = 0; i < 12; i++) p.advance(ALERT_SETTLE_MS + 1);
   assert.equal(p.rows().length, 0);
   assert.equal(p.timers.length, 0, 'bounded: no re-arm after MAX_TRIES');
+});
+
+test('RETRY is bounded at EXACTLY 6 attempts: bus not ready, and facts unreadable (no off-by-one either way)', () => {
+  const w = world();
+  w.busOverride.fail = 100;
+  w.at(12);
+  w.at(5);
+  for (let i = 0; i < 20; i++) w.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(100 - w.busOverride.fail, 6, 'six attempts to reach the bus, then the episode is given up on (one WARN)');
+  assert.equal(w.timers.length, 0);
+  assert.ok(w.logs.some((m) => /NOT told — the bus \/ store was not ready 6 times/.test(m)));
+  const p = world();
+  let calls = 0;
+  p.deps.heldStarts = () => {
+    calls++;
+    throw new Error('SQLITE_BUSY');
+  };
+  p.at(12);
+  p.at(5);
+  for (let i = 0; i < 20; i++) p.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(calls, 6, 'six attempts to read the facts, then given up');
+  assert.equal(p.timers.length, 0);
+  assert.equal(p.rows().length, 0);
 });
 
 test('STOP: a stopped alert fires no timer and writes nothing', () => {

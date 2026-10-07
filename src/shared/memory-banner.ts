@@ -3,7 +3,7 @@
 //
 // Two states, one banner: Admission HELD (amber — starts held, idle members to Veille) and the memory Pause IN EFFECT (red — at least one run IS under the host's memory Pause; the guard's own `pause` flag alone is not
 // that: nothing may be eligible to pause). It exists only while the guard HOLDS (`admissionEnabled` on) or a memory Pause is in effect; it vanishes by itself on recovery. « Masquer » hides it until the episode ends:
-// it REAPPEARS on an escalation (held → Pause), on every new Pause cycle and on the next episode — and stays hidden if a Pause lifts back to held (a de-escalation is not news).
+// it REAPPEARS on an escalation (held → Pause), on every new Pause cycle and on the next episode — and stays hidden if a Pause lifts back to held (a de-escalation is not news: hiding the red banner hides its episode's amber one too).
 
 import { RELEASE_MARGIN_GB, GIB, isAdmissionHolding, type MemoryGuardSnapshot } from './memory-guard.ts';
 
@@ -28,12 +28,13 @@ export interface MemoryBannerState {
 
 export const NO_MEMORY_BANNER: MemoryBannerState = { kind: 'none', episode: 0, pauseCycle: 0, availBytes: null, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: RELEASE_MARGIN_GB * GIB, heldStarts: 0, pausedRuns: [], rev: 0 };
 
-/** The banner's state from the guard's snapshot + what the host actions look like now. Unknown ≠ held: an unmeasured meter shows nothing (unless a memory Pause is still in effect — its runs ARE paused).
+/** The banner's state from the guard's snapshot + what the host actions look like now. An unreadable sample changes nothing about WHETHER the guard holds (it keeps its state until a good reading says otherwise): the banner
+ *  stays and says the reading is unreadable; a guard that never held shows nothing.
  *  RED means runs ARE under the memory Pause (the bus says so), never merely "the guard is below critical": with every `pause` switch OFF, no fleet or only manually paused runs there is no Pause to announce. */
 export function memoryBannerOf(s: MemoryGuardSnapshot, facts: { heldStarts: number; pausedRuns: readonly string[] }, rev = 0): MemoryBannerState {
   const pausedRuns = [...facts.pausedRuns];
   const inPause = pausedRuns.length > 0;
-  const holding = s.measured && isAdmissionHolding(s);
+  const holding = isAdmissionHolding(s); // unmeasured ≠ open: one unreadable sample must not blank the banner (and, with it, the dismissals) while the guard still holds
   const kind: MemoryBannerKind = inPause ? 'pause' : holding ? 'held' : 'none';
   if (kind === 'none') return { ...NO_MEMORY_BANNER, rev }; // nothing to show: the figures of an idle guard are not a change worth pushing
   return {
@@ -73,11 +74,13 @@ export function bannerVisible(b: MemoryBannerState | null, dismissedKeys: readon
   return !dismissedKeys.includes(bannerKey(b));
 }
 
-/** The dismissed keys after a click on « Masquer » while `b` is up (idempotent). */
+/** The dismissed keys after a click on « Masquer » while `b` is up (idempotent). Hiding the RED banner also hides the same episode's amber one: the Pause lifting back to held within the episode is a de-escalation, not news
+ *  (D-pick3: hidden until the episode ends). Hiding the amber one never hides a later red. */
 export function dismissedWith(dismissedKeys: readonly string[], b: MemoryBannerState | null): readonly string[] {
   if (!b || b.kind === 'none') return dismissedKeys;
-  const k = bannerKey(b);
-  return dismissedKeys.includes(k) ? dismissedKeys : [...dismissedKeys, k];
+  const add = [bannerKey(b), ...(b.kind === 'pause' ? [bannerKey({ kind: 'held', episode: b.episode, pauseCycle: 0 })] : [])];
+  const fresh = add.filter((k) => !dismissedKeys.includes(k));
+  return fresh.length === 0 ? dismissedKeys : [...dismissedKeys, ...fresh];
 }
 
 // ─── the words (French, like the Pause UI) ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -101,7 +104,7 @@ const frList = (xs: readonly string[]): string => (xs.length <= 3 ? xs.join(', '
 /** The two lines of a visible banner; null for `none`. */
 export function bannerCopy(b: MemoryBannerState): BannerCopy | null {
   if (b.kind === 'none') return null;
-  const mem = b.availBytes === null ? 'mémoire illisible' : `${frGo(b.availBytes)} disponibles`;
+  const mem = b.availBytes === null ? 'mesure illisible' : `${frGo(b.availBytes)} disponibles`;
   if (b.kind === 'pause') {
     const runs = `${b.pausedRuns.length} run${b.pausedRuns.length > 1 ? 's' : ''} en pause : ${frList(b.pausedRuns)}.`;
     return {

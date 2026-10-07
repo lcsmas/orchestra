@@ -19,8 +19,12 @@ test('STATE kind: Admission HELD ⇒ held; runs UNDER the memory Pause ⇒ pause
   assert.equal(memoryBannerOf({ ...SNAP, admission: 'open' }, { heldStarts: 0, pausedRuns: [] }).kind, 'none');
 });
 
-test('STATE unknown ≠ held, toggle OFF holds nothing: an unmeasured meter and the Admission toggle OFF show NO banner (nothing is actually held)', () => {
-  assert.equal(memoryBannerOf({ ...SNAP, measured: false }, { heldStarts: 0, pausedRuns: [] }).kind, 'none');
+test('STATE unreadable keeps what the guard holds, a guard that never held shows nothing, toggle OFF holds nothing', () => {
+  const unreadable = memoryBannerOf({ ...SNAP, measured: false }, { heldStarts: 2, pausedRuns: [] });
+  assert.equal(unreadable.kind, 'held', 'ONE unreadable sample must not blank the banner: the guard keeps its state (and the human keeps their dismissals) until a good reading says otherwise');
+  assert.equal(unreadable.availBytes, null, 'the figure is unreadable, never the last good one');
+  assert.equal(unreadable.episode, SNAP.episode);
+  assert.equal(memoryBannerOf({ ...SNAP, measured: false, admission: 'open' }, { heldStarts: 0, pausedRuns: [] }).kind, 'none', 'a guard that never held, with nothing readable, shows nothing');
   assert.equal(memoryBannerOf({ ...SNAP, admissionEnabled: false }, { heldStarts: 0, pausedRuns: [] }).kind, 'none');
   assert.equal(memoryBannerOf({ ...SNAP, admissionEnabled: false, pause: 'held' }, { heldStarts: 0, pausedRuns: ['lead'] }).kind, 'pause', 'the memory Pause is governed by the runs\' switches, not by the Admission toggle');
   assert.equal(memoryBannerOf({ ...SNAP, measured: false, pause: 'held' }, { heldStarts: 0, pausedRuns: ['lead'] }).availBytes, null, 'a dead meter\'s last good reading is never shown as current');
@@ -60,6 +64,20 @@ test('DISMISS keys: « Masquer » adds the key of the banner on screen once; not
   assert.deepEqual(dismissedWith(one, null), one);
 });
 
+test('DISMISS red covers the episode: « Masquer » on the RED banner alone also hides that episode\'s amber one (the Pause lifting back to held is a de-escalation); another episode and a later red are unaffected', () => {
+  const held = memoryBannerOf(SNAP, { heldStarts: 0, pausedRuns: [] });
+  const red = memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] });
+  const afterRed = dismissedWith([], red);
+  assert.deepEqual(afterRed, [bannerKey(red), bannerKey(held)], 'both keys of the episode');
+  assert.equal(bannerVisible(red, afterRed), false);
+  assert.equal(bannerVisible(held, afterRed), false, 'amber (not hidden first) → red → Masquer → Pause lifts at 6.5 GB, still held: the amber banner does NOT come back');
+  assert.equal(bannerVisible({ ...held, episode: SNAP.episode + 1 }, afterRed), true, 'the next episode shows again');
+  assert.equal(bannerVisible({ ...red, pauseCycle: 2 }, afterRed), true, 'a new Pause cycle shows again');
+  const afterAmber = dismissedWith([], held);
+  assert.equal(bannerVisible(red, afterAmber), true, 'hiding the amber one never hides a later red');
+  assert.deepEqual(dismissedWith(afterRed, red), afterRed, 'idempotent');
+});
+
 test('KEY: held keys on the episode only, the Pause on episode + cycle', () => {
   assert.equal(bannerKey({ kind: 'held', episode: 4, pauseCycle: 9 }), '4:held:0');
   assert.equal(bannerKey({ kind: 'pause', episode: 4, pauseCycle: 9 }), '4:pause:9');
@@ -80,6 +98,9 @@ test('FRENCH go: a comma, one decimal, whole figures without it', () => {
   assert.equal(frGo(2.34 * GIB), '2,3 Go');
   assert.equal(frGo(7 * GIB), '7 Go');
   assert.equal(frGo(0), '0 Go');
+  assert.equal(frGo(5.46 * GIB), '5,5 Go', 'ROUNDS, never floors');
+  assert.equal(frGo(5.44 * GIB), '5,4 Go');
+  assert.equal(frGo(2.96 * GIB), '3 Go', 'a figure that rounds to a whole number prints without a decimal');
 });
 
 test('COPY held (mockup B1, D5-approved): headline + detail, the held-start count and the reopen threshold with its margin', () => {
@@ -98,8 +119,11 @@ test('COPY Pause (mockup B2, D5-approved): the critical threshold, the paused ru
   assert.equal(c.title, 'Pause mémoire — 2,3 Go disponibles (seuil critique 3 Go). 2 runs en pause : lead, ops.');
   assert.equal(c.sub, "Reprise automatique dès 6 Go · une pause manuelle n'est jamais levée par la garde.");
   assert.match(bannerCopy({ ...b, pausedRuns: ['lead'] })!.title, /1 run en pause : lead\./, 'singular');
+  assert.match(bannerCopy({ ...b, pausedRuns: ['a', 'b', 'c'] })!.title, /3 runs en pause : a, b, c\./, 'three names are listed whole');
+  assert.match(bannerCopy({ ...b, pausedRuns: ['a', 'b', 'c', 'd'] })!.title, /4 runs en pause : a, b, c \+1\./, 'the 4th is counted, not listed');
   assert.match(bannerCopy({ ...b, pausedRuns: ['a', 'b', 'c', 'd', 'e'] })!.title, /5 runs en pause : a, b, c \+2\./, 'a long list is cut');
-  assert.match(bannerCopy({ ...b, availBytes: null })!.title, /mémoire illisible/);
+  assert.match(bannerCopy({ ...b, availBytes: null })!.title, /^Pause mémoire — mesure illisible \(seuil critique 3 Go\)\./);
+  assert.match(bannerCopy(memoryBannerOf({ ...SNAP, measured: false }, { heldStarts: 1, pausedRuns: [] }))!.title, /^Mémoire basse — mesure illisible \(seuil 6 Go\)\./, 'the held banner says the reading is unreadable while the guard still holds');
 });
 
 test('COPY none: nothing to say', () => {

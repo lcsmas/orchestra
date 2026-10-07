@@ -322,6 +322,21 @@ async function main() {
     } catch (e) {
       clause('B8/with-a-workspace-the-banner-sits-between-toolbar-and-pane', false, `could not drive a workspace: ${e.message}`);
     }
+    // ── B10 (G6 review F2): episode 2 is still HELD and its amber banner was NEVER hidden. Escalate to red, hide the RED one with « Masquer », let the Pause lift back to held: the amber banner must NOT come back (D-pick3: hidden until the episode ends) ──
+    {
+      const amber = await banner();
+      await openDialog(); await typeInto('[data-mg-critical]', String(C), 'blur'); await settled((d) => d.chipTone === 'crit', 'chip → crit (MEMORY PAUSE, episode 2)'); await closeDialog();
+      seedMemoryPause(true);
+      const red = await bannerSettled((b) => b.present && b.kind === 'pause', 'the PAUSE banner of episode 2');
+      clause('B10/red-after-a-never-hidden-amber', amber.present && amber.kind === 'held' && red.kind === 'pause', `banner kind ${amber.kind} (amber, never hidden) -> ${red.kind}`);
+      saveShot(`${LABEL}-b10-red-with-workspace-renderer.png`, await cdp.shot());
+      await cdp.click(red.dismiss.left + red.dismiss.width / 2, red.dismiss.top + red.dismiss.height / 2);
+      const hidden = await bannerSettled((b) => !b.present, 'the red banner to hide');
+      seedMemoryPause(false); // the Reprise finished: the Pause lifts while Admission is STILL held
+      await sleep(6500); // > one banner tick
+      const after = await banner();
+      clause('B10/masquer-on-red-survives-the-de-escalation', !hidden.present && !after.present && /admission HELD/.test(bus()), `banner present ${red.present} -> ${hidden.present} (Masquer on RED) -> ${after.present} after the Pause lifted back to held; ${bus()}`);
+    }
     await openDialog(); await typeInto('[data-mg-admission]', '6', 'blur'); await settled((d) => d.chipTone === 'ok' || d.error, 'back to the defaults'); await typeInto('[data-mg-critical]', '3', 'blur'); await settled((d) => d.chipTone === 'ok', 'chip → ok'); await closeDialog();
     const b7 = await banner();
     clause('B7/restored-no-banner', !b7.present && store()?.admissionGb === 6 && store()?.criticalGb === 3, `banner present=${b7.present}; store.json memoryGuard=${JSON.stringify(store())}`);
