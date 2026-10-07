@@ -880,7 +880,7 @@ test('W15 a lifted Pause leaves no stale "not a line" flag: after a pass the for
 test('W16 a wake site superseded by a held spawn leaves no stale registration: after the spawn releases, a LATER wake runs only its own retry', async () => {
   const w = world();
   const a = createAdmission(w.deps);
-  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.ran.push('OLD-SITE-RETRY'); } }));
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', retry: async () => { w.ran.push('OLD-SITE-RETRY'); } }));   // a DIFFERENT site key than the later wake's: same key would just overwrite it
   a.gate(args(w, 'm1', { kind: 'spawn' }));
   w.mem = 9;
   await a.kick();

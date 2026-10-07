@@ -258,9 +258,11 @@ if (ARM === 'wake_release' || ARM === 'permit_one_shot') {
 
 if (ARM === 'wake_order') {
   mem = 4; guard.sampleNow();
-  send('ws-m1', 'ORDER-A'); send('ws-m2', 'ORDER-B'); send('ws-sub', 'ORDER-SUB');
-  for (let i = 0; i < 3; i++) { await wake.sweepBusWake(); await sleep(15); }
-  check('all_held', calls.start.length, 0);
+  send('ws-m1', 'ORDER-A'); send('ws-m2', 'ORDER-B');
+  for (let i = 0; i < 2; i++) { await wake.sweepBusWake(); await sleep(15); }
+  send('ws-sub', 'ORDER-SUB');                                                                   // the coordinator ARRIVES LAST (the roster lists it first, so the sweep order alone would hide a dropped flag)
+  for (let i = 0; i < 2; i++) { await wake.sweepBusWake(); await sleep(15); }
+  check('all_held', [calls.start.length, admMod ? admMod.listHeldStarts().map((h) => h.wsId) : []], [0, ['ws-m1', 'ws-m2', 'ws-sub']]);
   mem = 9; guard.sampleNow();
   await until(() => orderStarts().length >= 3);
   check('coordinator_first_then_arrival', orderStarts().map((c) => c.wsId), ['ws-sub', 'ws-m1', 'ws-m2']);
@@ -334,6 +336,7 @@ if (ARM === 'flush_held') {
   // "Send now" (force) is a human click: it passes while held
   const forced = await pq.flushQueuedPrompts('ws-m2', { force: true });
   check('send_now_passes', [forced.ok, forced.delivered, startsFor('ws-m2').length], [true, 1, 1]);
+  check('send_now_supersedes_the_held_flush', admMod ? admMod.listHeldStarts().length : 0, 0);   // a person delivered the parked prompts: the member must not stay "held" for them
   // reset, hold again, release → delivered ONCE
   liveSet.delete('ws-m2');
   await store.upsertWorkspace({ ...wsRec('ws-m2'), queuedPrompts: [q('m2b')] });
