@@ -143,7 +143,11 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   `liveAvailBytes` + MemTotal) and `setMemoryGuardSettings(patch, store)` = validate → persist (`store.memoryGuard`,
   `store.getMemoryGuardSettings()`) → `sampleMemoryGuardNow()` (applies at once). Invalid ⇒ nothing written, `{ok:false,error}`.
   IPC `settings:memoryGuard` / `settings:setMemoryGuard` (`api-handlers.ts`, `preload/index.ts`, `OrchestraAPI.memoryGuard/setMemoryGuard`).
-  The Settings dialog itself: renderer, built from the mockup the human picked (D5) — see the ledger.
+  The Settings dialog (mockup A, D-pick1): `src/renderer/components/MemoryGuardSettings.tsx` — its own modal behind a RAM-chip header icon
+  in `Sidebar.tsx` (beside Model defaults), `.mg-*` block at the end of `styles.css`. Live reading + state chip + gauge (ticks at critical /
+  Admission / reopen, one label row each — 1 GB is ~14 px on a 32 GB scale), two GB inputs committed on blur/Enter (both fields travel
+  together: a pair is only valid as a pair), the toggle, an inline error row; polls `memoryGuard()` every 2 s while open. Pure view logic
+  (`guardChip`, `gaugeModel`, `planThresholdCommit`, `parseGbInput`): `src/shared/memory-guard-view.ts`.
 - **Visibility**: `/busStatus` (`hooks-server.ts:489`) returns `memoryGuard: <snapshot>`; `orchestra bus-status` prints one
   `memory:` line (`cli/index.ts:2179`; absent from an older app → no line). Host-wide, not run-scoped.
 - **Gates**: `src/shared/memory-guard.test.ts` (boundary ± 1 byte per comparison, episodes, jump, the 2026-10-06 night in
@@ -152,7 +156,10 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   "no start path imports the guard yet" tripwire — #286/#288/#289/#290 add their importer there),
   `scripts/e2e-memory-guard.mjs` (fake source → REAL sampler → REAL `/busStatus` in a headless scratch home → REAL built CLI;
   `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (25 in-place mutants, byte-exact restore).
-  Unverified here: macOS (no signal), the packaged app, any consumer — nothing holds yet.
+  `scripts/e2e-memory-guard-ui.sh <built app dir>` drives the modal in a BUILT app under its own headless sway (heavy: token): real
+  /proc/meminfo, thresholds moved around the live reading through the real UI → HELD / memory Pause / inline error / toggle / restore,
+  each cross-read from the DOM, the real CLI `bus-status`, the scratch store.json and orchestra.log, + screenshots; red on a pre-fix build.
+  Unverified here: macOS (no signal), any consumer — nothing holds yet.
 
 ## Pure logic — shared/resources.ts
 Dependency-free so `node --test` covers it without Electron:

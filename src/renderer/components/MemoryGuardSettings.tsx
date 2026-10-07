@@ -119,9 +119,10 @@ export function MemoryGuardSettings({ onClose }: Props) {
               <span className="mg-tick" style={{ left: pct(gauge.reopen) }} />
             </div>
             <div className="mg-ticks">
-              <span className="mg-tick-label" style={{ left: pct(gauge.critical) }}>{settings.criticalGb} crit</span>
-              <span className="mg-tick-label" style={{ left: pct(gauge.admission) }}>{settings.admissionGb} admission</span>
-              <span className="mg-tick-label row2" style={{ left: pct(gauge.reopen) }}>{settings.admissionGb + RELEASE_MARGIN_GB} reopen</span>
+              {/* one row per label: 1 GB is ~14 px on a 32 GB scale, so neighbouring labels (admission / reopen are always 1 GB apart) can never share a row */}
+              <span className="mg-tick-label row1" style={{ left: pct(gauge.critical) }}>{settings.criticalGb} crit</span>
+              <span className="mg-tick-label row2" style={{ left: pct(gauge.admission) }}>{settings.admissionGb} admission</span>
+              <span className="mg-tick-label row3" style={{ left: pct(gauge.reopen) }}>{settings.admissionGb + RELEASE_MARGIN_GB} reopen</span>
             </div>
           </div>
         )}

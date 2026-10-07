@@ -146,6 +146,8 @@ const dom = (cdp) => cdp.eval(`(() => {
     admission: q('[data-mg-admission]') ? q('[data-mg-admission]').value : null, critical: q('[data-mg-critical]') ? q('[data-mg-critical]').value : null,
     toggle: q('[data-mg-toggle]') ? q('[data-mg-toggle]').checked : null, error: q('[data-mg-error]') ? q('[data-mg-error]').textContent.trim() : null,
     fillClass: fill ? fill.className : null, fillW: fill ? fill.getBoundingClientRect().width : null, gaugeW: gauge ? gauge.getBoundingClientRect().width : null,
+    inputW: q('[data-mg-admission]') ? q('[data-mg-admission]').getBoundingClientRect().width : null, fieldTop: R(q('.memory-guard-settings .field')) ? R(q('.memory-guard-settings .field')).top : null,
+    liveTop: R(q('.mg-live-value')) ? R(q('.mg-live-value')).top : null, liveBottom: R(q('.mg-live-value')) ? R(q('.mg-live-value')).bottom : null,
     ticks: document.querySelectorAll('.mg-tick').length, labels };
 })()`);
 
@@ -218,6 +220,10 @@ async function main() {
     const lb = D.labels.map((l) => l.r), overl = (a, b) => !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top);
     const anyOverlap = lb.some((a, i) => lb.slice(i + 1).some((b) => overl(a, b)));
     clause('S0/gauge-ticks-and-labels', D.ticks === 3 && D.labels.length === 3 && !anyOverlap, `${D.ticks} ticks, labels ${D.labels.map((l) => l.text).join(' | ')}, any label overlap ${anyOverlap}, fill class "${D.fillClass}"`);
+    const lastLabelBottom = Math.max(...D.labels.map((l) => l.r.bottom));
+    clause('S0/labels-clear-of-the-next-field', lastLabelBottom <= D.fieldTop - 4, `last gauge label bottom ${Math.round(lastLabelBottom)}px vs first field top ${Math.round(D.fieldTop)}px (needs ≥ 4px clear)`);
+    clause('S0/chip-on-the-live-value-line', D.chipRect.top >= D.liveTop - 6 && D.chipRect.bottom <= D.liveBottom + 6, `chip ${Math.round(D.chipRect.top)}..${Math.round(D.chipRect.bottom)} vs live value ${Math.round(D.liveTop)}..${Math.round(D.liveBottom)} (same line)`);
+    clause('S0/threshold-inputs-compact', D.inputW > 40 && D.inputW <= 140, `admission input is ${Math.round(D.inputW)}px wide (mockup: a short numeric field, not full width)`);
     const fillFrac = D.fillW / D.gaugeW;
     clause('S0/gauge-fill-matches-reading', fillFrac > 0.02 && Math.abs(fillFrac - liveGb / Math.max(T, (6 + 1) * 1.25, liveGb)) < 0.03, `fill ${(fillFrac * 100).toFixed(1)}% of the gauge vs reading/scale ${(100 * liveGb / Math.max(T, 8.75, liveGb)).toFixed(1)}%`);
     clause('S0/bus-status-open', /admission open/.test(bus()) && /memory Pause none/.test(bus()), bus());
@@ -243,6 +249,7 @@ async function main() {
     await typeInto('[data-mg-critical]', String(C), 'blur');
     const s2 = await settled((d) => d.chipTone === 'crit', 'chip → crit (MEMORY PAUSE)');
     clause('S2/chip-memory-pause', /^MEMORY PAUSE since \d\d:\d\d — [\d.]+ GB$/.test(s2.chipText) && /crit/.test(s2.fillClass), `chip ${s2.chipTone} "${s2.chipText}", gauge fill class "${s2.fillClass}"`);
+    { const d2 = await dom(cdp); clause('S2/longest-chip-stays-on-the-live-line', d2.chipRect.top >= d2.liveTop - 6 && d2.chipRect.bottom <= d2.liveBottom + 6 && Math.max(...d2.labels.map((l) => l.r.bottom)) <= d2.fieldTop - 4, `chip "${d2.chipText}" ${Math.round(d2.chipRect.top)}..${Math.round(d2.chipRect.bottom)} vs live ${Math.round(d2.liveTop)}..${Math.round(d2.liveBottom)}; labels clear of the field: ${Math.max(...d2.labels.map((l) => l.r.bottom)) <= d2.fieldTop - 4}`); }
     clause('S2/bus-status-pause', /memory Pause IN EFFECT since \S+ \(lifts above/.test(bus()), bus());
     clause('S2/persisted-on-disk', store()?.criticalGb === C && store()?.admissionGb === A, `scratch store.json memoryGuard=${JSON.stringify(store())}`);
     clause('S2/logged', /\[memory-guard\] memory Pause DUE \(episode 1\) — MemAvailable [\d.]+ GB < critical [\d.]+ GB/.test(appLog()), (appLog().split('\n').find((l) => l.includes('Pause DUE')) ?? '(no line)').slice(0, 200));

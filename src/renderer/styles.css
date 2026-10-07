@@ -6189,26 +6189,29 @@ button.danger-primary:active {
 .bus-unavailable code { user-select: text; word-break: break-all; }
 
 /* Memory guard settings modal (#285, mockup A). Status colours only for problems: HELD = yellow, memory Pause = red. */
-.memory-guard-settings { width: 480px; }
+.memory-guard-settings { width: 520px; }
 .mg-live { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 8px; flex-wrap: wrap; }
+.mg-chip { white-space: nowrap; }
 .mg-live-label { font-size: 11px; color: var(--text); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
 .mg-live-value { font-size: 18px; font-variant-numeric: tabular-nums; }
 .mg-chip { margin-left: auto; font-size: 12px; color: var(--accent); }
 .mg-chip.warn { color: var(--yellow); }
 .mg-chip.crit { color: var(--red); }
 .mg-chip.unknown { color: var(--text-dim); }
-.mg-gauge-wrap { margin-bottom: 30px; }
+.mg-gauge-wrap { margin-bottom: 52px; }
 .mg-gauge { position: relative; height: 8px; border-radius: 4px; background: var(--bg-4); }
 .mg-gauge-fill { height: 100%; border-radius: 4px; background: var(--accent); transition: width 240ms var(--ease), background-color 240ms var(--ease); }
 .mg-gauge-fill.warn { background: var(--yellow); }
 .mg-gauge-fill.crit { background: var(--red); }
 .mg-tick { position: absolute; top: -3px; width: 1px; height: 14px; background: var(--text-dim); }
 .mg-ticks { position: relative; height: 0; }
-.mg-tick-label { position: absolute; top: 4px; transform: translateX(-50%); font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
+.mg-tick-label { position: absolute; transform: translateX(-50%); font-size: 10.5px; line-height: 12px; color: var(--text-dim); white-space: nowrap; }
+.mg-tick-label.row1 { top: 4px; }
 .mg-tick-label.row2 { top: 17px; }
+.mg-tick-label.row3 { top: 30px; }
 .mg-input-row { display: flex; align-items: center; gap: 8px; }
-.mg-input { width: 84px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font-variant-numeric: tabular-nums; }
-.mg-input:focus { outline: none; border-color: var(--accent); }
+.memory-guard-settings .mg-input { width: 96px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font-variant-numeric: tabular-nums; }
+.memory-guard-settings .mg-input:focus { outline: none; border-color: var(--accent); }
 .mg-unit { font-size: 12px; color: var(--text-dim); }
 .mg-toggle { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 8px; cursor: pointer; }
 .mg-toggle > input { margin-top: 3px; }
