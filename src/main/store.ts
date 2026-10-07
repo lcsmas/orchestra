@@ -13,6 +13,7 @@ import {
 import type { SelfTuneRun } from '../shared/self-tune';
 import { normalizeModelDefaults, type ModelDefaults } from '../shared/model-defaults';
 import { normalizeEffortDefaults, type EffortDefaults } from '../shared/effort-defaults';
+import { normalizeMemoryGuardSettings, type MemoryGuardSettings } from '../shared/memory-guard';
 import { scoped } from './logger';
 
 /** Store-scoped logger. Persistence failures are invisible at runtime — every
@@ -72,6 +73,9 @@ interface StoreShape {
   /** The two default reasoning efforts, raw — shared/effort-defaults.ts
    *  normalizes. Absent → both "model default" (no pin). */
   effortDefaults?: Partial<EffortDefaults>;
+  /** Memory guard thresholds (GB) + the global Admission/fast-Veille toggle (#285), raw — shared/memory-guard.ts normalizes.
+   *  LIVE values, read at every sample (never frozen per run). Absent → 6 / 3 GB, toggle ON. */
+  memoryGuard?: Partial<MemoryGuardSettings>;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -451,6 +455,16 @@ class Store {
 
   async setModelDefaults(next: ModelDefaults): Promise<void> {
     this.data.modelDefaults = next;
+    await this.save();
+  }
+
+  /** The memory guard settings, normalized (always valid). */
+  getMemoryGuardSettings(): MemoryGuardSettings {
+    return normalizeMemoryGuardSettings(this.data.memoryGuard);
+  }
+
+  async setMemoryGuardSettings(next: MemoryGuardSettings): Promise<void> {
+    this.data.memoryGuard = next;
     await this.save();
   }
 

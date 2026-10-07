@@ -241,6 +241,7 @@ import {
   setBootWedgeRunResolver,
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
+import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -491,6 +492,11 @@ async function createMainWindow() {
       // proof-of-deletion — never runs against an unloaded store; decideReap
       // additionally refuses unless `store.loadedFromDisk`.
       startResourceMonitor();
+      // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every
+      // transition, exposes the state to `bus-status` + Settings. Holds nothing yet. Thresholds are read from the store at every
+      // sample, so a Settings change applies hot — hence started AFTER store.load() like the monitor above.
+      setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
+      startMemoryGuard();
     });
   // Insights & Improvements: manual-only since 2026-09-30 (no auto-run) —
   // just sweep a run left `running` by a previous session.
@@ -866,6 +872,7 @@ function shutdownSubsystems(): void {
   stopPauseUiWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
+  stopMemoryGuard();
   stopHibernationSweeper();
   closeAllSandboxConnections();
   disposeVoice();

@@ -31,6 +31,7 @@ import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
+import { getMemoryGuardSnapshot } from './memory-guard.ts';
 import { store } from './store';
 import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
@@ -484,6 +485,8 @@ export async function startHooksServer(): Promise<void> {
               ...runFlagsExtra,
               badRecipientCount,
               badRecipients,
+              // #285: the host-wide memory guard state (not run-scoped) — the CLI prints it as the `memory:` line.
+              memoryGuard: getMemoryGuardSnapshot(),
             });
           } else if (route === '/runRefreeze') {
             // #156 — ADMIN re-freeze of a FLAT mission's frozen switch flags. A

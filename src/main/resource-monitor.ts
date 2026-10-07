@@ -15,6 +15,7 @@ import { scoped } from './logger';
 import { store } from './store';
 import { keeperPidFilePath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
 import { hostPageSize, onPageSizeFallback } from './host-page-size';
+import { parseMemAvailableBytes } from '../shared/memory-guard';
 import {
   computeCpuPcts,
   parseProcStatLine,
@@ -128,9 +129,9 @@ export function readMemUsedBytes(): number | null {
   try {
     const text = fs.readFileSync('/proc/meminfo', 'utf8');
     const total = /^MemTotal:\s+(\d+)\s+kB/m.exec(text);
-    const avail = /^MemAvailable:\s+(\d+)\s+kB/m.exec(text);
-    if (!total || !avail) return null;
-    return (Number(total[1]) - Number(avail[1])) * 1024;
+    const avail = parseMemAvailableBytes(text); // the same parser the memory guard reads (#285)
+    if (!total || avail === null) return null;
+    return Number(total[1]) * 1024 - avail;
   } catch {
     return null;
   }

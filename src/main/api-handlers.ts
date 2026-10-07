@@ -163,6 +163,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 // ERR_MODULE_NOT_FOUND — see commit 05adb90.
 import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
+import { memoryGuardView, setMemoryGuardSettings } from './memory-guard-settings.ts';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { scheduleOpeningBrief } from './opening-brief-pty.ts';
@@ -376,6 +377,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   setModelDefaults: 'settings:setModelDefaults',
   effortDefaults: 'settings:effortDefaults',
   setEffortDefaults: 'settings:setEffortDefaults',
+  memoryGuard: 'settings:memoryGuard',
+  setMemoryGuard: 'settings:setMemoryGuard',
   refreshTickets: 'tickets:refresh',
   removeTicket: 'tickets:remove',
   spawnFromTicket: 'tickets:spawn',
@@ -1359,6 +1362,11 @@ export const apiHandlers: ApiHandlerTable = {
     await store.setEffortDefaults(normalizeEffortDefaults({ ...store.getEffortDefaults(), ...next }));
     return store.getEffortDefaults();
   },
+
+  memoryGuard: async () => memoryGuardView(store.getMemoryGuardSettings()),
+
+  // Validated, persisted, then applied HOT (the guard re-samples at once) — see memory-guard-settings.ts.
+  setMemoryGuard: async (next) => setMemoryGuardSettings(next, store),
 
   refreshTickets: async () => refreshPinnedTickets(),
 
