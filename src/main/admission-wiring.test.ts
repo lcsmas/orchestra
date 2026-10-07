@@ -188,6 +188,7 @@ test('#287 admission-wake: "sleeping" = no PTY AND no live SDK session; a fleet 
   assert.match(aw, /return !isRunning\(id\) && !sdkSessionLive\(id\);/);
   assert.match(aw, /fleetMember: !!ws\.parentId,/);
   assert.match(aw, /sleeping: isSleeping\(id\),/);
+  assert.match(aw, /coordinator: canOrchestrate\(ws\),/, 'coordinators first holds for EVERY wake site (flush / resume / message / recovery all go through this wrapper), not only the sweep');
   assert.match(aw, /setAdmissionWakeSettle\(\(id\) => sdkAwaitFirstTurn\(id, ADMISSION_WAKE_SETTLE_MS\)\);/, 'a wake release waits for the started member\'s first turn (the next reading includes its memory)');
   assert.match(aw, /return !!w && !w\.archived && isSleeping\(id\);/);
 });
@@ -205,6 +206,9 @@ test('#287 prompt-queue: the TIMER flush holds BEFORE the queue is cleared (Send
   assert.ok(rh > resume.indexOf("if (action === 'wait') continue;") && rh < resume.indexOf('budget--;') && rh < resume.indexOf('await clearStopReason(ws.id).catch(() => {});\n    let woke'), 'wait → hold → budget → clear');
   assert.match(resume.slice(rh, rh + 200), /wakeHeldForMemory\(ws, \(\) => resumeUsageLimited\(Date\.now\(\), ws\.id\), \{\s*\n\s*site: 'resume',/, 'the release re-runs THIS member only (no 2nd per-tick budget)');
   assert.match(resume, /if \(only === undefined\) await evaluatePausedRuns\(\);/);
+  // the per-site "still wanted at release time" clauses (verifier seat 2: E61/E64): the flush needs PARKED PROMPTS, the resume needs the usage_limit MARKER, both need the member still asleep
+  assert.match(flush, /return !!w && !w\.archived && \(w\.queuedPrompts \?\? \[\]\)\.length > 0 && isSleeping\(id\);/);
+  assert.match(resume, /return !!w && !w\.archived && w\.lastStopReason === 'usage_limit' && isSleeping\(ws\.id\);/);
   assert.match(resume, /\(only === undefined \|\| ws\.id === only\)/);
 });
 

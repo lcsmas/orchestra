@@ -178,6 +178,16 @@ const MUTANTS = [
   { id: 'W59_keeper_seam_not_wired', file: IX, find: '  setWakeKeeperResident(keeperResident);', to: '  void setWakeKeeperResident;', expect: ['#287 F1'], arms: [] },
   { id: 'W60_release_sweep_never_sweeps', file: BW, find: '  await sweepBusWake();\n}', to: '}', expect: ['#287 bus-wake', 'rig:wake_release'], arms: ['wake_release'], rig: 'wake' },
   { id: 'W61_would_hold_always_false', file: AD, find: 'return isAdmissionHolding(deps.sample()) || [...queue.values()].some((e) => !e.paused);', to: 'return false;', expect: ['W19 wouldHold', 'rig:keeper_resident'], arms: ['keeper_resident'], rig: 'wake' },
+  // ── verifier seat 2 gaps (c/6044775531): wakeSites cleanup on every removal path, the stillOwed clauses, coordinator flag at every site, permit consumption ──
+  { id: 'W62_sites_kept_when_release_finds_none_owed', file: AD, find: "        wakeSites.delete(entry.wsId);\n        deps.info(`dropped held", to: "        deps.info(`dropped held", expect: ['W20 stale-site cleanup'], arms: [] },
+  { id: 'W63_sites_kept_on_read_time_prune', file: AD, find: "      wakeSites.delete(e.wsId);\n", to: '', expect: ['W21 stale-site cleanup'], arms: [] },
+  { id: 'W64_sites_kept_on_human_start', file: AD, find: "          wakeSites.delete(a.wsId);\n          deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it", to: "          deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it", expect: ['W24 stale-site cleanup'], arms: [] },
+  { id: 'W65_sites_kept_on_drop', file: AD, find: "    drop(wsId) {\n      wakeSites.delete(wsId);\n", to: "    drop(wsId) {\n", expect: ['W22 stale-site cleanup'], arms: [] },
+  { id: 'W66_sites_kept_on_stop', file: AD, find: "      queue.clear();\n      wakeSites.clear();\n", to: "      queue.clear();\n", expect: ['W23 stale-site cleanup'], arms: [] },
+  { id: 'W67_permit_not_single_use', file: AD, find: 'if (permits.delete(a.wsId)) return { held: false };', to: 'if (permits.has(a.wsId)) return { held: false };', expect: ['W25 the permit is consumed by the FIRST'], arms: [] },
+  { id: 'W68_flush_still_owed_ignores_parked_prompts', file: PQ, find: '!w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);', to: '!w.archived && isSleeping(id);', expect: ['#287 prompt-queue'], arms: [] },
+  { id: 'W69_resume_still_owed_ignores_marker', file: PQ, find: "!w.archived && w.lastStopReason === 'usage_limit' && isSleeping(ws.id);", to: '!w.archived && isSleeping(ws.id);', expect: ['#287 prompt-queue'], arms: [] },
+  { id: 'W70_wake_wrapper_coordinator_dropped', file: AW, find: 'coordinator: canOrchestrate(ws),', to: 'coordinator: false,', expect: ['#287 admission-wake'], arms: [] },
   { id: 'W53_roster_entry_seam_not_wired', file: IX, find: 'return w ? wakeRosterEntry(w) : null;', to: 'return null;', expect: ['#287 roster'], arms: [] },
 ];
 

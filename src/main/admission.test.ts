@@ -931,3 +931,50 @@ test('W19 wouldHold: true while the guard holds Admission or an earlier start is
   w.mem = 12;
   assert.equal(a.wouldHold(), true, 'memory is fine but A is still queued — a newcomer joins the line');
 });
+
+// ── #287 verifier seat 2 gaps (c/6044775531): every path that removes a held WAKE must remove its site registrations — a stale site would ride a LATER hold of the member ──
+
+/** Hold a wake through site 'flush' (OLD, owed per `owed()`), remove the entry through `remove`, then hold a NEW wake through site 'sweep' and release: ONLY the new retry may run. */
+async function staleSiteScenario(remove: (a: ReturnType<typeof createAdmission>, w: ReturnType<typeof world>, setOwed: (v: boolean) => void) => void | Promise<void>): Promise<string[]> {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let owed = true;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', stillOwed: () => owed, retry: async () => { w.ran.push('OLD'); } }));
+  await remove(a, w, (v) => { owed = v; });
+  owed = true;                                  // the OLD site would be owed again at the later release — only a stale registration can then run it
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'sweep', retry: async () => { w.ran.push('NEW'); } }));
+  w.mem = 9;
+  await a.kick();
+  return w.ran;
+}
+
+test('W20 stale-site cleanup: a release that finds NO site owed drops the entry AND its registrations', async () => {
+  assert.deepEqual(await staleSiteScenario(async (a, w, setOwed) => { setOwed(false); w.mem = 9; await a.kick(); }), ['NEW']);
+});
+
+test('W21 stale-site cleanup: the READ-time prune (peers / bus-status / liveness read) of an unowed entry removes its registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a, _w, setOwed) => { setOwed(false); assert.equal(a.heldFor('m1'), null); }), ['NEW']);
+});
+
+test('W22 stale-site cleanup: drop() (the workspace was deleted) removes the registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a) => { assert.equal(a.drop('m1'), true); }), ['NEW']);
+});
+
+test('W23 stale-site cleanup: stop() (shutdown) removes the registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a) => { a.stop(); }), ['NEW']);
+});
+
+test('W24 stale-site cleanup: a HUMAN starting the member supersedes the held wake and removes its registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a, w) => { assert.deepEqual(a.gate(args(w, 'm1', { origin: 'human' })), { held: false }); assert.equal(a.heldFor('m1'), null); }), ['NEW']);
+});
+
+test('W25 the permit is consumed by the FIRST holdWake of its retry: a 2nd call inside the same retry (another path for the same member) is held, not waved through', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const answers: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { answers.push(a.holdWake(wakeArgs(w, 'm1')).held); answers.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush' })).held); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(answers, [false, true], '1st = the retry\'s own call (permit consumed), 2nd = held');
+});
