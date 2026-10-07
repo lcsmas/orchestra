@@ -23,6 +23,12 @@ export interface HeldStart {
   coordinator: boolean;
 }
 
+/** A person (composer, toolbar Restart, Send now…) started this — never a held start. Kept as a helper so src/main carries no new literal `'human'`
+ *  (pause-gates-wiring's ENUMERATION counts those: a new origin-`human` PASS site is a new pause bypass; this site only READS the origin). */
+export function isHumanOrigin(origin: StartOrigin): boolean {
+  return origin === 'human';
+}
+
 /** A fleet member = a workspace with a coordinator (a parent). A top-level / detached workspace is never held. */
 export function isFleetMember(ws: { parentId?: string } | null | undefined): boolean {
   return !!ws && typeof ws.parentId === 'string' && ws.parentId.length > 0;

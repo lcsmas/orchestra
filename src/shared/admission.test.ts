@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHeldStartsLine, heldPhrase, isFleetMember, mustHoldStart, nextToRelease, planRelease, type HeldStart } from './admission.ts';
+import { formatHeldStartsLine, heldPhrase, isFleetMember, isHumanOrigin, mustHoldStart, nextToRelease, planRelease, type HeldStart } from './admission.ts';
 
 const H = (wsId: string, seq: number, coordinator = false, kind: HeldStart['kind'] = 'spawn'): HeldStart => ({ wsId, kind, seq, since: 1_000 + seq, coordinator });
 
@@ -15,6 +15,11 @@ test('fleet_member: a workspace with a coordinator (parentId) — never a top-le
   assert.equal(isFleetMember({ parentId: '' }), false);
   assert.equal(isFleetMember(undefined), false);
   assert.equal(isFleetMember(null), false);
+});
+
+test('human_origin: only the human origin reads as human', () => {
+  assert.equal(isHumanOrigin('human'), true);
+  assert.equal(isHumanOrigin('auto'), false);
 });
 
 test('human_passes: a human-initiated start is never held, whatever the memory or the queue', () => {

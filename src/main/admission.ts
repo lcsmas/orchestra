@@ -8,7 +8,7 @@
 import { scoped } from './logger.ts';
 import { sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';
 import { formatGb, isAdmissionHolding, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
-import { mustHoldStart, planRelease, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
+import { isHumanOrigin, mustHoldStart, planRelease, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
 
 const alog = scoped('admission');
 
@@ -214,7 +214,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       const holding = isAdmissionHolding(snap);
       if (!mustHoldStart({ ws: a.ws, origin: a.origin, holding, queued: queue.size > 0 })) {
         // A HUMAN started this member itself: its held entry (if any) is superseded — never leave peers / bus-status saying "held" for a running member.
-        if (a.origin === 'human' && queue.delete(a.wsId)) deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it — ${mem(snap)}; ${queue.size} still held`);
+        if (isHumanOrigin(a.origin) && queue.delete(a.wsId)) deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it — ${mem(snap)}; ${queue.size} still held`);
         return { held: false };
       }
       let entry = queue.get(a.wsId);
