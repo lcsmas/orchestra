@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { __rebuildAdmissionForTests, admissionGate, createAdmission, heldStartFor, listHeldStarts, startAdmission, stopAdmission, type AdmissionDeps, type GateArgs } from './admission.ts';
+import { ADMISSION_RETRY_MS, ADMISSION_RUN_TIMEOUT_MS, ADMISSION_SETTLE_MS, realAdmissionDeps, __rebuildAdmissionForTests, admissionGate, createAdmission, heldStartFor, listHeldStarts, startAdmission, stopAdmission, type AdmissionDeps, type GateArgs } from './admission.ts';
 import { __rebuildMemoryGuardForTests, setMemoryGuardSettingsReader } from './memory-guard.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 
@@ -287,6 +287,7 @@ test('repeat_auto_request_during_release_is_not_a_duplicate: a release is runnin
   const pass = a.kick();
   for (let i = 0; i < 5; i++) await Promise.resolve();
   assert.deepEqual(w.ran, ['x'], 'the release is running');
+  w.now += 5_000; // time passes: the in-flight answer must carry the ORIGINAL since, not a fresh one (seat 2 B16)
   const again = a.gate(args(w, 'x', { run: async () => { w.ran.push('x-again'); } }));
   assert.deepEqual(again, { held: true, since: 1_000_000, kind: 'spawn' });
   finish();
@@ -529,4 +530,62 @@ test('superseded_entry_is_pruned_at_read_time: a member a person started meanwhi
   assert.ok(w.infos.some((l) => /dropped held spawn of m1 \(no longer wanted\)/.test(l)));
   w.mem = 12;
   assert.deepEqual(a.gate(args(w, 'new')), { held: false }, 'and it no longer makes a newcomer join a line');
+});
+
+// ─── seat 2's gap list (c/6041378956): each clause that changed and no test pinned ──────────────────────────────────────────────────
+
+test('B03 in_flight_marker_is_cleared: after a release COMPLETES, a new automatic request for the same workspace is a NEW hold (new since, queued) — never the stale "in flight" answer', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'x'));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['x']);
+  w.mem = 4;
+  w.now += 60_000;
+  const again = a.gate(args(w, 'x'));
+  assert.deepEqual(again, { held: true, since: 1_060_000, kind: 'spawn' }, 'since is the NEW hold time');
+  assert.deepEqual(a.list().map((e) => e.wsId), ['x'], 'and it is really queued (a stale in-flight marker answered "held" without queueing)');
+});
+
+test('B05/B06/B07 the shipped timing constants: retry 10 s, settle 3 s, run bound 90 s — and the real deps use them', () => {
+  assert.equal(ADMISSION_RETRY_MS, 10_000);
+  assert.equal(ADMISSION_SETTLE_MS, 3_000);
+  assert.equal(ADMISSION_RUN_TIMEOUT_MS, 90_000);
+  const d = realAdmissionDeps();
+  assert.deepEqual([d.retryMs, d.settleMs, d.runTimeoutMs], [10_000, 3_000, 90_000]);
+});
+
+test('B08 stopAdmission clears the queue (and the timer) — nothing survives a shutdown', () => {
+  const w = world();
+  setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
+  __rebuildAdmissionForTests({ ...w.deps });
+  assert.equal(admissionGate(args(w, 'a')).held, true);
+  assert.equal(listHeldStarts().length, 1);
+  stopAdmission();
+  assert.deepEqual([listHeldStarts().length, heldStartFor('a')], [0, null]);
+  assert.equal(w.timers.length, 0);
+});
+
+test('B10 list() carries every field consumers read: wsId, kind, seq, since, coordinator', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'worker'));
+  w.now += 1_000;
+  a.gate(args(w, 'sub', { coordinator: true, kind: 'restart' }));
+  assert.deepEqual(a.list(), [
+    { wsId: 'worker', kind: 'spawn', seq: 1, since: 1_000_000, coordinator: false },
+    { wsId: 'sub', kind: 'restart', seq: 2, since: 1_001_000, coordinator: true },
+  ]);
+});
+
+test('B15 a repeat request refreshes stillOwed: the NEWEST closure decides whether the entry is still wanted', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'x', { stillOwed: () => true }));
+  a.gate(args(w, 'x', { stillOwed: () => false })); // the newer request says: not wanted any more
+  assert.equal(a.heldFor('x'), null, 'the refreshed closure is the one consulted');
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, []);
 });

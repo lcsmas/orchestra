@@ -20,6 +20,8 @@
 //   pause_other_run  ★ (review F2) a Pause-refused entry of run A never blocks run B's held start; A's goes out after the lift
 //   deleted_while_held ★ (review F4) deleting a held workspace drops it from the queue / peers
 //   composer_drops_restart ★ (review F4) a person starting the stopped member meanwhile makes its held restart redundant: gone from the queue, never run
+//   composer_drops_spawn ★ (seat 2 B18) a person starting a HELD-SPAWN child makes the held spawn redundant: gone from the queue, never started again
+//   archived_while_held ★ (seat 2 B17) archiving a member whose restart is held drops it (never restarted)
 //   failed_release_reported ★ (review F4) a released start that FAILS tells the coordinator (bus escalation), not a log line only
 //   toggle_off       ★ the global toggle OFF holds nothing
 //   visible          ★ the OPS sees the held member (since-when) in `peers` + `bus-status` (real hooks-server + built CLI); gone after the release
@@ -35,7 +37,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'pause_keeps_slot', 'release_selfsample', 'pause_other_run', 'deleted_while_held', 'composer_drops_restart', 'failed_release_reported', 'toggle_off', 'visible'];
+const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'pause_keeps_slot', 'release_selfsample', 'pause_other_run', 'deleted_while_held', 'composer_drops_restart', 'composer_drops_spawn', 'archived_while_held', 'failed_release_reported', 'toggle_off', 'visible'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -390,6 +392,37 @@ if (ARM === 'composer_drops_restart') {
   mem = 9; guard.sampleNow();
   await sleep(300);
   check('no_redundant_restart_at_recovery', [factoryCalls - before, calls.stop.length], [0, 0]);
+  verdict();
+}
+
+if (ARM === 'composer_drops_spawn') {
+  const live = new Set();
+  useFakeSeam({ hasSession: (id) => live.has(id) });
+  mem = 4; guard.sampleNow();
+  const r = await spawnMember('COMPOSER-SPAWN');
+  check('control_held', [!!r.held, hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : [r.id]], [true, [r.id]]);
+  live.add(r.id);                                             // a person opened the kept child and typed into it: a session is live now
+  const peers = await workspaces.dispatchPeersRequest({ from: 'ws-ops' });
+  check('peers_no_longer_says_held', peers.peers.find((p) => p.id === r.id)?.heldForMemory ?? null, null);
+  check('queue_no_longer_has_it', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
+  mem = 9; guard.sampleNow();
+  await sleep(300);
+  check('never_started_by_admission', startedFor(r.id), 0);
+  verdict();
+}
+
+if (ARM === 'archived_while_held') {
+  await store.upsertWorkspace({ ...wsRec('ws-m1'), sdkSessionId: 'sess-m1', hasInput: true });
+  useFakeSeam({ hasSession: (id) => id === 'ws-m1' });
+  mem = 4; guard.sampleNow();
+  const before = factoryCalls;
+  const r = await dispatchRestartRequest({ id: 'ws-m1', fresh: false, trigger: 'cli' });
+  check('control_held', [!!r.held, hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : ['ws-m1']], [true, ['ws-m1']]);
+  await store.upsertWorkspace({ ...wsRec('ws-m1'), archived: true });
+  check('queue_no_longer_has_it', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
+  mem = 9; guard.sampleNow();
+  await sleep(300);
+  check('never_restarted', [factoryCalls - before, calls.stop.length], [0, 0]);
   verdict();
 }
 

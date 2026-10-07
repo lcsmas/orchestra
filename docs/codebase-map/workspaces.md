@@ -299,7 +299,7 @@ memory, release order — …` line (absent when none), the spawn / restart repl
 (`sdkSend` stays ungated — bus-wake "held for memory" reason = #287), the watchdog recycle, fast Veille (#288). The queue is IN MEMORY: after an app restart a
 held child stays stopped with its brief owed and `orchestra restart <id>` retries it. Gates: `src/shared/admission.test.ts`, `src/main/admission.test.ts`,
 `src/main/admission-wiring.test.ts` (source guards + a tripwire on who imports the gate), `scripts/e2e-admission-hold.mjs` (real workspaces/restart/admission/guard,
-fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), `scripts/admission-mutants.mjs` (56 in-place mutants), `src/main/admission-liveness.test.ts` (real roster + sweep + queue).
+fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), `scripts/admission-mutants.mjs` (68 in-place mutants), `src/main/admission-liveness.test.ts` (real roster + sweep + queue).
 
 ### Archive / unarchive / delete
 - **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),

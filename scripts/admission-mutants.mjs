@@ -71,6 +71,19 @@ const MUTANTS = [
   { id: 'R16_spawn_gate_no_report', file: WS, find: '      report: (text) => reportAdmissionFailure(id, text),\n      stillOwed: () => {', to: '      stillOwed: () => {', expect: ['F4 report', 'rig:failed_release_reported'], arms: ['failed_release_reported'] },
   { id: 'R17_report_sent_as_status', file: WS, find: "kind: 'escalation', body: text });\n  log.info(`admission: told coordinator", to: "kind: 'status', body: text });\n  log.info(`admission: told coordinator", expect: ['F4 report', 'rig:failed_release_reported'], arms: ['failed_release_reported'] },
   { id: 'R18_report_body_changed', file: SHD, find: "It is not queued any more: retry it with", to: "retry it with", expect: ['release_failure_body', 'failed_release_is_reported_to_the_coordinator'], arms: ['failed_release_reported'] },
+  // ── seat 2's gap list (c/6041378956) ──
+  { id: 'B03_in_flight_never_cleared', file: AD, find: '        releasing.delete(entry.wsId);\n', to: '', expect: ['B03 in_flight_marker_is_cleared'], arms: [] },
+  { id: 'B05_retry_ms', file: AD, find: 'export const ADMISSION_RETRY_MS = 10_000;', to: 'export const ADMISSION_RETRY_MS = 30_000;', expect: ['B05/B06/B07'], arms: [] },
+  { id: 'B06_settle_ms', file: AD, find: 'export const ADMISSION_SETTLE_MS = 3_000;', to: 'export const ADMISSION_SETTLE_MS = 0;', expect: ['B05/B06/B07'], arms: [] },
+  { id: 'B07_run_timeout', file: AD, find: 'export const ADMISSION_RUN_TIMEOUT_MS = 90_000;', to: 'export const ADMISSION_RUN_TIMEOUT_MS = 900_000;', expect: ['B05/B06/B07'], arms: [] },
+  { id: 'B08_stop_keeps_queue', file: AD, find: '      disarm();\n      queue.clear();\n    },', to: '      disarm();\n    },', expect: ['B08 stopAdmission'], arms: [] },
+  { id: 'B10_list_drops_coordinator', file: AD, find: 'return [...queue.values()].map(({ wsId, kind, seq: s, since, coordinator }) => ({ wsId, kind, seq: s, since, coordinator }));', to: 'return [...queue.values()].map(({ wsId, kind, seq: s, since }) => ({ wsId, kind, seq: s, since, coordinator: false }));', expect: ['B10 list()'], arms: [] },
+  { id: 'B15_repeat_keeps_old_stillowed', file: AD, find: '        entry.stillOwed = a.stillOwed;\n', to: '', expect: ['B15 a repeat request'], arms: [] },
+  { id: 'B16_in_flight_new_since', file: AD, find: 'return { held: true, since: inFlight.since, kind: inFlight.kind };', to: 'return { held: true, since: deps.now(), kind: inFlight.kind };', expect: ['repeat_auto_request_during_release'], arms: [] },
+  { id: 'B17_restart_owed_always_true', file: RS, find: 'return !!w && !w.archived && (liveAtHold || !(isRunning(id) || sdkSessionLive(id)));', to: 'return true;', expect: ['rig:archived_while_held', 'rig:composer_drops_restart'], arms: ['archived_while_held', 'composer_drops_restart'] },
+  { id: 'B17b_restart_owed_ignores_archived', file: RS, find: 'return !!w && !w.archived && (liveAtHold ||', to: 'return !!w && (liveAtHold ||', expect: ['rig:archived_while_held'], arms: ['archived_while_held'] },
+  { id: 'B18_spawn_owed_ignores_live_session', file: WS, find: 'return !!w && !w.archived && owesOpeningTask(w) && !sdkSessionLive(id) && !isRunning(id);', to: 'return !!w && !w.archived && owesOpeningTask(w) && !isRunning(id);', expect: ['rig:composer_drops_spawn'], arms: ['composer_drops_spawn'] },
+  { id: 'B18b_spawn_owed_ignores_running_pty', file: WS, find: 'owesOpeningTask(w) && !sdkSessionLive(id) && !isRunning(id);', to: 'owesOpeningTask(w) && !sdkSessionLive(id);', expect: ['rig:composer_drops_spawn', 'rig:human_passes'], arms: [] },
   { id: 'C01_spawn_gate_off', file: WS, find: '  if (!admitted) {\n    const gate = admissionGate({', to: '  if (false) {\n    const gate = admissionGate({', expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C02_spawn_gate_human_origin', file: WS, find: "      origin: origin ?? 'auto',\n      kind: 'spawn',", to: "      origin: 'human',\n      kind: 'spawn',", expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C03_release_re_held', file: WS, find: "run: () => startWorkspaceAgentHeadless(id, 'auto', true),", to: "run: () => startWorkspaceAgentHeadless(id, 'auto'),", expect: ['spawn gate', 'rig:release_order'], arms: ['release_order', 'dip_stops'] },
@@ -130,7 +143,7 @@ buildCli();
 const base = unitRed();
 const baseRig = rigRed();
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 15)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 17)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;
