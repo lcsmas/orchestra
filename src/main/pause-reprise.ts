@@ -568,22 +568,7 @@ export function owedRows(db: BusDb, carrierRunId: string): OwedRow[] {
 /** Does an ANCESTOR run's Pause still stand (paused, not yet resuming, its frozen switch ON)? Then nothing under it may be restarted: a child waits for every ancestor (top-down), exactly like
  *  the auto Reprise (`ancestorStillPaused`, pause-auto.ts). The LIVE workspace chain is the gates' truth; the bus run tree only when the live chain is unknown or dangles. */
 export function ancestorPauseStands(db: BusDb, carrierRunId: string): boolean {
-  const ids: string[] = [];
-  let live = false;
-  const tree = liveTree();
-  if (tree && tree.get(carrierRunId)) {
-    const chain = liveChainInfo(tree, carrierRunId);
-    ids.push(...chain.ids.slice(1));
-    live = !chain.dangling;
-  }
-  if (!live) {
-    const seen = new Set<string>([carrierRunId, ...ids]);
-    for (let cur = getRun(db, carrierRunId)?.parent_run_id ?? null; cur && !seen.has(cur); cur = getRun(db, cur)?.parent_run_id ?? null) {
-      seen.add(cur);
-      ids.push(cur);
-    }
-  }
-  for (const id of ids) {
+  for (const id of ancestorRunIdsOf(db, carrierRunId)) {
     if (getRun(db, id)?.flags.pause !== true) continue; // a run with the switch OFF carries no pause (a stale column is inert)
     const c = readCarrierColumns(db, id);
     if (c && c.pausedAt !== null && c.resumeStartedAt === null) return true;
@@ -591,23 +576,41 @@ export function ancestorPauseStands(db: BusDb, carrierRunId: string): boolean {
   return false;
 }
 
+/** The run ids ABOVE `runId`, nearest first — THE one ancestor walk of the container deferral (`ancestorPauseStands`) AND of its collection (`liftedDescendantCarriers`), so the two can never
+ *  read different trees: the LIVE workspace chain first (the gates' truth: `runs.parent_run_id` is write-once, a re-parented OPS is no longer under its old parent), the bus run tree only
+ *  when the live chain is unknown or dangles. */
+function ancestorRunIdsOf(db: BusDb, runId: string): string[] {
+  const ids: string[] = [];
+  let live = false;
+  const tree = liveTree();
+  if (tree && tree.get(runId)) {
+    const chain = liveChainInfo(tree, runId);
+    ids.push(...chain.ids.slice(1));
+    live = !chain.dangling;
+  }
+  if (!live) {
+    const seen = new Set<string>([runId, ...ids]);
+    for (let cur = getRun(db, runId)?.parent_run_id ?? null; cur && !seen.has(cur); cur = getRun(db, cur)?.parent_run_id ?? null) {
+      seen.add(cur);
+      ids.push(cur);
+    }
+  }
+  return ids;
+}
+
 /** Descendant runs whose OWN pause is over (lifted) — their still-owed restarts belong to the Reprise of the ancestor that was covering them (a child resumed under a standing ancestor Pause
- *  had its restart deferred). A descendant still paused / resuming handles its own (its subtree too). */
+ *  had its restart deferred). A descendant still paused / resuming handles its own, and so does everything below it (a nearer carrier covers it). "Descendant" = the same live-first walk
+ *  as the deferral ({@link ancestorRunIdsOf}). */
 function liftedDescendantCarriers(db: BusDb, carrierRunId: string): string[] {
   const out: string[] = [];
-  const seen = new Set<string>([carrierRunId]);
-  const queue = [carrierRunId];
-  while (queue.length) {
-    const cur = queue.shift() as string;
-    const kids = db.prepare('SELECT id FROM runs WHERE parent_run_id = ?').all(cur) as Array<{ id: string }>;
-    for (const k of kids) {
-      if (seen.has(k.id)) continue;
-      seen.add(k.id);
-      const cols = readCarrierColumns(db, k.id);
-      if (cols && cols.pausedAt !== null) continue; // paused or resuming: its own step, its subtree is covered by it
-      out.push(k.id);
-      queue.push(k.id);
-    }
+  for (const { id } of db.prepare('SELECT id FROM runs ORDER BY created_at, id').all() as Array<{ id: string }>) {
+    if (id === carrierRunId) continue;
+    const chain = ancestorRunIdsOf(db, id);
+    const at = chain.indexOf(carrierRunId);
+    if (at < 0) continue; // not below this carrier
+    if (readCarrierColumns(db, id)?.pausedAt != null) continue; // paused or resuming: its own step
+    if (chain.slice(0, at).some((mid) => readCarrierColumns(db, mid)?.pausedAt != null)) continue; // a nearer carrier (paused / resuming) covers it
+    out.push(id);
   }
   return out;
 }

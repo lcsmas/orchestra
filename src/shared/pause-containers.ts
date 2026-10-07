@@ -71,7 +71,11 @@ export function mergeRestarted(prior: readonly ContainerRestartEntry[] | undefin
  */
 export function mergeContainers(base: BilanContainers | undefined, overlay: BilanContainers | undefined): BilanContainers | undefined {
   if (!base && !overlay) return undefined;
-  const stopped = mergeStopped(base?.stopped, overlay?.stopped ?? []);
+  // A write-ahead `stopping` marker the overlay no longer has was REMOVED by the call that is writing (the container turned out not to be ours: someone else stopped it first) — a merge-by-id
+  // cannot delete, so without this the stale marker stays on the persisted Bilan and the Reprise starts a container the Pause never stopped.
+  const overlayIds = overlay ? new Set(overlay.stopped.map((e) => e.id)) : null;
+  const baseStopped = overlayIds ? base?.stopped.filter((e) => e.outcome !== 'stopping' || overlayIds.has(e.id)) : base?.stopped;
+  const stopped = mergeStopped(baseStopped, overlay?.stopped ?? []);
   const restarted = mergeRestarted(base?.restarted, overlay?.restarted ?? []);
   const error = overlay ? overlay.error : base?.error;
   return { stopped, ...(restarted.length ? { restarted } : {}), ...(error ? { error } : {}) };
