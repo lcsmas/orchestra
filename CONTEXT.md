@@ -166,6 +166,14 @@ A container the host itself stamped, at creation, with the workspace and run
 that created it — the stamp on the container is the truth of who owns it.
 _Avoid_: tagged container, managed container
 
+**Plafond mémoire** (memory cap):
+The most memory one fleet member — its session and everything it starts, tools,
+tests and scripts included — may use, enforced by the kernel. Above the soft
+level the member is slowed down; above the hard level the kernel kills one of the
+processes the member started, never the session itself. A human's own sessions
+have no Plafond mémoire. Containers are outside it: they wait for Admission instead.
+_Avoid_: quota, limit, budget (the session budget suite is a different thing)
+
 ### Quality
 
 **Nomination**:
