@@ -10,6 +10,7 @@ import { DiffPane } from './components/DiffPane';
 import { StructuredView } from './components/StructuredView';
 import { SetupBanner } from './components/SetupBanner';
 import { PromptQueueBanner } from './components/PromptQueueBanner';
+import { MemoryBanner } from './components/MemoryBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
 import { InsightsView } from './components/Insights';
 import { JumpPalette } from './components/JumpPalette';
@@ -569,6 +570,8 @@ export function App() {
       />
       <main className="main">
         {!loaded && <div className="empty">Loading…</div>}
+        {/* #289: the memory banner also shows with no active workspace (the Welcome screen). */}
+        {loaded && !active && <MemoryBanner />}
         {loaded && !active && (
           <div className="empty">
             <h2>Welcome to Orchestra</h2>
@@ -798,6 +801,8 @@ export function App() {
                 visible, zero when null. The `setup-` key prefix avoids
                 colliding with sibling keys (RunTerminal also keys by
                 `active.id`). */}
+            {/* Memory banner (#289, D-pick3): GLOBAL — the same one on every workspace — above the pane row like the banners around it. */}
+            <MemoryBanner />
             <SetupBanner key={`setup-${active.id}`} workspace={active} />
             {/* Same above-the-row placement as SetupBanner, same reason: the
                 read-only ownership bar must not be eclipsed by the absolutely-

@@ -6,6 +6,7 @@ import type { EffortDefaults } from './effort-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { PauseMode } from './pause-lifecycle.ts';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from './pause-ui.ts';
+import type { MemoryBannerState } from './memory-banner.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
@@ -163,6 +164,10 @@ export interface OrchestraAPI {
   //      outcome, never a throw). Not pane channels (the Bus pane's registrar is read-only) — registered by src/main/pause-ui-host.ts. docs/codebase-map/pause-trap.md §UI.
   /** The pause state of the whole fleet: carriers + rosters + Bilan, per-orchestrator controls, per-workspace badges. NEVER rejects (`available:false` + the reason). */
   pauseOverview: () => Promise<PauseUiOverview>;
+  /** Memory banner (#289, D-pick3): the state for the initial paint (a pull is also a fresh read). NEVER rejects. */
+  memoryBanner: () => Promise<MemoryBannerState>;
+  /** Live push: the WHOLE banner state, only when it changed (revision-stamped: drop an older one). Returns an unsubscribe fn. */
+  onMemoryBanner: (cb: (state: MemoryBannerState) => void) => () => void;
   /** Live push: the whole overview, rebuilt from the bus whenever a Pause column / roster / Bilan row changes (CLI, host sweep and these writes alike). Returns an unsubscribe fn. */
   onPauseOverviewUpdate: (cb: (overview: PauseUiOverview) => void) => () => void;
   /** Pause douce (`soft`) or dure (`hard`; over a douce still waiting it escalates). Acts as workspace `wsId` — a worker row comes back `refused`, nothing written. */

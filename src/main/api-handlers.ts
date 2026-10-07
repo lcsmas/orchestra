@@ -227,6 +227,8 @@ type ServableApi = Omit<
   | 'pausePause'
   | 'pauseResume'
   | 'pauseRelease'
+  // #289 — the memory banner's pull (`memoryGuard:banner`) is registered by registerMemoryBannerIpc() (src/main/memory-banner-host.ts), next to its push; not from this generic table.
+  | 'memoryBanner'
 >;
 
 /** Served backend methods that are not part of the renderer-facing

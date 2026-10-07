@@ -4157,6 +4157,43 @@ button.danger-primary:active {
   font-size: 11.5px;
 }
 
+/* ---------- Memory banner (#289, D5 D-pick3 option B) ---------- */
+.memory-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.memory-banner.warn { background: rgba(255, 200, 87, 0.10); box-shadow: inset 3px 0 0 var(--yellow); }
+.memory-banner.crit { background: rgba(255, 107, 107, 0.12); box-shadow: inset 3px 0 0 var(--red); }
+.memory-banner-ico {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #10131a;
+}
+.memory-banner.warn .memory-banner-ico { background: var(--yellow); }
+.memory-banner.crit .memory-banner-ico { background: var(--red); }
+.memory-banner-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.memory-banner-title strong { font-weight: 600; color: var(--text); }
+.memory-banner-sub {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.memory-banner-dismiss { padding: 3px 10px; font-size: 12px; flex: 0 0 auto; }
+
 /* ---------- Setup banner ---------- */
 .setup-banner {
   flex: 0 0 auto;

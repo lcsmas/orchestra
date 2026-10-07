@@ -28,6 +28,7 @@ import type { HumanGateView } from '../shared/human-gates';
 import type { PauseMode } from '../shared/pause-lifecycle';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
 import { newerOverview } from '../shared/pause-ui-view';
+import { bannerKey, newerBanner, type MemoryBannerState } from '../shared/memory-banner';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -143,6 +144,11 @@ interface State {
    *  WHOLESALE on every `pause:update` push and by every write's own reply (a snapshot cannot drift). null = not loaded yet; `available:false` = the bus is down (say so — never
    *  paint it as "nothing is paused"). */
   pauseOverview: PauseUiOverview | null;
+  /** The memory banner's state (#289, D-pick3): pushed by main on change, replaced WHOLESALE (null = not loaded yet). The banner is visible while `kind !== 'none'` and not dismissed. */
+  memoryBanner: MemoryBannerState | null;
+  /** The key (episode + kind [+ Pause cycle]) of the banner « Masquer » hid; any other key shows again (escalation, new Pause cycle, next episode). */
+  memoryBannerDismissed: string | null;
+  dismissMemoryBanner: () => void;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -282,6 +288,9 @@ export const useStore = create<State>((set, get) => ({
   parkedInboxGen: {},
   humanGates: [],
   pauseOverview: null,
+  memoryBanner: null,
+  memoryBannerDismissed: null,
+  dismissMemoryBanner: () => set((st) => ({ memoryBannerDismissed: st.memoryBanner && st.memoryBanner.kind !== 'none' ? bannerKey(st.memoryBanner) : st.memoryBannerDismissed })),
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -409,7 +418,7 @@ export const useStore = create<State>((set, get) => ({
         slog.warn(`startup load: ${what} failed — rendering as empty`, e);
         return fallback;
       });
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -427,6 +436,8 @@ export const useStore = create<State>((set, get) => ({
         orEmpty('busHumanGates', window.orchestra.busHumanGates(), { gates: [] }),
         // Fleet Pause overview for the initial paint (#257); live updates then ride `pause:update`.
         orEmpty('pauseOverview', window.orchestra.pauseOverview(), null as PauseUiOverview | null),
+        // Memory banner for the initial paint (#289); live updates then ride `memoryGuard:bannerUpdate`.
+        orEmpty('memoryBanner', window.orchestra.memoryBanner(), null as MemoryBannerState | null),
       ]);
     slog.info(
       `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
@@ -453,6 +464,7 @@ export const useStore = create<State>((set, get) => ({
       humanGates: humanGatesRes?.gates ?? [],
       // a push that landed while this read was in flight is NEWER than this reply: keep it (rev-stamped by the host)
       pauseOverview: pauseOverview ? newerOverview(get().pauseOverview, pauseOverview) : pauseOverview,
+      memoryBanner: memoryBanner ? newerBanner(get().memoryBanner, memoryBanner) : get().memoryBanner,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -1033,6 +1045,11 @@ window.orchestra.onHumanGatesUpdate((gates) => {
 // from the bus and pushes it; replace wholesale (never merge): the sidebar badges, the controls and the Bus page all read this one slice.
 window.orchestra.onPauseOverviewUpdate((overview) => {
   useStore.setState((st) => ({ pauseOverview: newerOverview(st.pauseOverview, overview) }));
+});
+// The memory banner changed (#289): a guard edge, a held-start count, a run entering / leaving the memory Pause. Replace wholesale (a revision drops an older pull). When the banner is gone the
+// dismissal is forgotten: the NEXT episode shows again whatever its key.
+window.orchestra.onMemoryBanner((banner) => {
+  useStore.setState((st) => ({ memoryBanner: newerBanner(st.memoryBanner, banner), ...(banner.kind === 'none' ? { memoryBannerDismissed: null } : {}) }));
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.

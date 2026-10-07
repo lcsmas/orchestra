@@ -248,6 +248,7 @@ import { livenessSilencedByAdmission, startAdmission, stopAdmission } from './ad
 import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
 import { keeperResident } from './admission-wake';
 import { startMemoryAlert, stopMemoryAlert } from './memory-alert-host';
+import { registerMemoryBannerIpc, startMemoryBanner, stopMemoryBanner } from './memory-banner-host';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -596,6 +597,8 @@ async function createMainWindow() {
   startMemoryPause();
   // Memory alert (#289): ONE escalation row per memory episode to the LEAD (the coordinator of every root run with a live fleet). Subscribes to the guard FIRST, then reconciles (FI-2.5). After the memory Pause, with the store loaded.
   startMemoryAlert();
+  // Memory banner (#289, D5 D-pick3): the state the app's banner shows (Admission held / memory Pause in effect), pushed on change. After the memory Pause: its runs are written on the same guard edge.
+  startMemoryBanner();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
@@ -782,6 +785,7 @@ registerBusPaneIpc();
 registerStaleRunSource(listStaleRunWorkspaces);
 // #257 — the fleet Pause UI channels (`pause:*`): ONE read + the three shipped writers, each marked in PAUSE_UI_IPC_CHANNELS. NOT through registerBusPaneIpc() (read-only).
 registerPauseUiIpc();
+registerMemoryBannerIpc(); // #289 — the memory banner's pull channel (ONCE, module scope)
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
 // settings write cannot be smuggled in as a pane channel. It writes the store
@@ -894,6 +898,7 @@ function shutdownSubsystems(): void {
   stopSessionWatchdog();
   stopResourceMonitor();
   stopAdmission();
+  stopMemoryBanner();
   stopMemoryAlert();
   stopMemoryPause();
   stopMemoryGuard();
