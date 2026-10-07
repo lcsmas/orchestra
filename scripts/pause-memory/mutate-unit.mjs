@@ -127,10 +127,16 @@ const M = [
     { find: "  if (unsubscribe) return;\n  unsubscribe = subscribeMemoryGuard(", rep: "  if (unsubscribe) return;\n  reconcileMemoryPauseNow();\n  unsubscribe = subscribeMemoryGuard(" },
     { find: "  reconcileMemoryPauseNow();\n  timer = setInterval(", rep: "  timer = setInterval(" },
   ], tests: [T.wiring], expect: /WIRING host \(FI-2\.5\)/ },
-  { id: 'host-all-edges', file: HOST, find: "    if (transition.kind !== 'pause_due' && transition.kind !== 'pause_liftable') return;\n", rep: "", tests: [T.wiring], expect: /WIRING host \(FI-2\.5\)/ },
+  { id: 'host-all-edges', file: CORE, find: "  if (e.transition.kind !== 'pause_due' && e.transition.kind !== 'pause_liftable') return null;\n", rep: "", tests: [T.unit], expect: /GUARD LIFECYCLE/ },
+  { id: 'view-pausecycle-dropped', file: CORE, find: "pause: s.pause, pauseCycle: s.pauseCycle, episode: s.episode,", rep: "pause: s.pause, pauseCycle: 0, episode: s.episode,", tests: [T.unit], expect: /VIEW|GUARD LIFECYCLE/ },
+  { id: 'view-measured-forced', file: CORE, find: "return { measured: s.measured, availBytes: s.availBytes,", rep: "return { measured: true, availBytes: s.availBytes,", tests: [T.unit], expect: /VIEW|GUARD LIFECYCLE/ },
+  { id: 'view-pause-forced-held', file: CORE, find: "availBytes: s.availBytes, pause: s.pause, pauseCycle", rep: "availBytes: s.availBytes, pause: 'held' as const, pauseCycle", tests: [T.unit], expect: /VIEW|GUARD LIFECYCLE/ },
+  { id: 'view-thresholds-dropped', file: CORE, find: "admissionBytes: s.admissionBytes, criticalBytes: s.criticalBytes };", rep: "admissionBytes: 6 * 1024 ** 3, criticalBytes: 3 * 1024 ** 3 };", tests: [T.unit], expect: /VIEW/ },
+  { id: 'view-episode-dropped', file: CORE, find: "pauseCycle: s.pauseCycle, episode: s.episode,", rep: "pauseCycle: s.pauseCycle, episode: 0,", tests: [T.unit], expect: /VIEW/ },
+  { id: 'edge-liftable-treated-as-due', file: CORE, find: "e.transition.kind === 'pause_due' ? 'due' : 'liftable');", rep: "'due');", tests: [T.unit], expect: /GUARD LIFECYCLE/ },
+  { id: 'edge-throw-propagates', file: CORE, find: "    deps.log.warn(`memory-pause: handling ${e.transition.kind} failed — retried at the next tick`, err);\n    return null;", rep: "    throw err;", tests: [T.unit], expect: /GUARD LIFECYCLE/ },
   { id: 'host-no-tick', file: HOST, find: "  timer = setInterval(() => void reconcileMemoryPauseNow(), MEMORY_PAUSE_TICK_MS);\n  timer.unref?.();\n", rep: "", tests: [T.wiring], expect: /WIRING host \(FI-2\.5\)/ },
   { id: 'host-store-ready-dropped', file: HOST, find: "  storeReady: () => store.loadedFromDisk,\n", rep: "", tests: [T.wiring], expect: /WIRING host: the real store/ },
-  { id: 'host-thresholds-not-passed', file: HOST, find: "admissionBytes: s.admissionBytes, criticalBytes: s.criticalBytes }", rep: "admissionBytes: 6 * 1024 ** 3, criticalBytes: 3 * 1024 ** 3 }", tests: [T.wiring], expect: /WIRING host: the real store/ },
   { id: 'index-start-removed', file: IDX, find: "  startMemoryPause();\n", rep: "", tests: [T.wiring], expect: /WIRING index\.ts/ },
   // The memory Pause starts BEFORE `buildPauseTrapDeps()` registered the live workspace tree (review m3): a boot-time reconcile lifts on the bus run tree alone.
   { id: 'index-start-before-trap-deps', file: IDX, edits: [

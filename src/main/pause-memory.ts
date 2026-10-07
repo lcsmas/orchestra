@@ -24,7 +24,7 @@ import {
 } from './pause-auto.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
 import { HUMAN_GATE_RECIPIENT } from '../shared/human-gates.ts';
-import { formatGb } from '../shared/memory-guard.ts';
+import { formatGb, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 import { heldAddresseesKey, parseAutoHeld, parsePauseAuto, type AutoHeld } from '../shared/pause-auto.ts';
 import {
   MEMORY_PAUSE_BY,
@@ -53,6 +53,11 @@ export interface MemoryGuardView {
   episode: number;
   admissionBytes: number;
   criticalBytes: number;
+}
+
+/** The view the memory Pause keys on, from the guard's snapshot (FI-2): every field is load-bearing — `pauseCycle` keys the ledger, `measured` / `availBytes` gate every decision, `pause` is the level read's `impose`. */
+export function viewOfSnapshot(s: MemoryGuardSnapshot): MemoryGuardView {
+  return { measured: s.measured, availBytes: s.availBytes, pause: s.pause, pauseCycle: s.pauseCycle, episode: s.episode, admissionBytes: s.admissionBytes, criticalBytes: s.criticalBytes };
 }
 
 /** In-memory bookkeeping: runId → the `pauseCycle` this host already evaluated it for. A new cycle (every `pause_due` edge) evaluates every candidate; a re-read inside the same cycle skips a
@@ -322,4 +327,16 @@ export function applyMemoryPause(deps: MemoryPauseDeps, view: MemoryGuardView, l
   }
   if (want === 'lift') return { want, imposed: [], lifted: liftMemoryPause(deps, avail) };
   return { ...none, want };
+}
+
+/** What the host does with one guard EDGE (FI-2.4: key on `pause_due` / `pause_liftable` only — an Admission edge is nothing of the memory Pause's; the snapshot is the state AFTER the sample). A throw is logged,
+ *  never propagated into the guard's drain: the level read at the next tick retries. */
+export function handleMemoryGuardEdge(deps: MemoryPauseDeps, ledger: MemoryPauseLedger, e: { transition: { kind: string }; snapshot: MemoryGuardSnapshot }): MemoryPauseApplied | null {
+  if (e.transition.kind !== 'pause_due' && e.transition.kind !== 'pause_liftable') return null;
+  try {
+    return applyMemoryPause(deps, viewOfSnapshot(e.snapshot), ledger, e.transition.kind === 'pause_due' ? 'due' : 'liftable');
+  } catch (err) {
+    deps.log.warn(`memory-pause: handling ${e.transition.kind} failed — retried at the next tick`, err);
+    return null;
+  }
 }

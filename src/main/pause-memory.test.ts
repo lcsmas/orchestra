@@ -7,6 +7,8 @@ import * as bus from './bus.ts';
 import * as busRuns from './bus-runs.ts';
 import {
   applyMemoryPause,
+  handleMemoryGuardEdge,
+  viewOfSnapshot,
   imposeMemoryPause,
   liftMemoryPause,
   memoryPauseCandidates,
@@ -24,7 +26,8 @@ import { restartOwedContainers } from './pause-containers.ts';
 import { FakeDocker } from './fake-docker.ts';
 import type { ContainerStopEntry } from '../shared/pause-containers.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
-import { GIB } from '../shared/memory-guard.ts';
+import { GIB, DEFAULT_MEMORY_GUARD_SETTINGS, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { createMemoryGuard } from './memory-guard.ts';
 import { PAUSE_AUTO_BY, encodePauseAuto, parseAutoHeld, parsePauseAuto } from '../shared/pause-auto.ts';
 import { MEMORY_PAUSE_BY, encodeMemoryPause, parseMemoryPause } from '../shared/pause-memory.ts';
 import type { RepriseEntry } from '../shared/pause-lifecycle.ts';
@@ -718,4 +721,97 @@ test('G8-fu × memory: a `stopping` marker (the app died mid-stop) on a memory-p
   await restartOwedContainers({ getBus: () => r.db, api: d, now: () => r.clock.now });
   assert.equal(d.running('db'), true);
   assert.equal(containersOwed(r.db, 'L'), false);
+});
+
+// ─── the host's view of the guard + its edge handler (seat 1 final c/6044005110: V1–V3 survived) ─────────────────────────────────────────────
+
+const SNAP: MemoryGuardSnapshot = {
+  sampled: true, measured: true, availBytes: 2 * GIB, readAt: 1, admission: 'held', admissionEnabled: true, pause: 'held', episode: 4, pauseCycle: 7, mayReleaseOneStart: false, heldSince: 1, pauseSince: 1,
+  admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, sampleIntervalMs: 10_000,
+};
+
+test('VIEW: the memory Pause\'s view carries EVERY guard field it keys on (pauseCycle keys the ledger, measured/availBytes gate every decision, pause is the level read\'s impose, the thresholds in force)', () => {
+  assert.deepEqual(viewOfSnapshot(SNAP), { measured: true, availBytes: 2 * GIB, pause: 'held', pauseCycle: 7, episode: 4, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB });
+  assert.deepEqual(viewOfSnapshot({ ...SNAP, measured: false, availBytes: null, pause: 'none', pauseCycle: 0, episode: 0, admissionBytes: 8 * GIB, criticalBytes: 2 * GIB }), { measured: false, availBytes: null, pause: 'none', pauseCycle: 0, episode: 0, admissionBytes: 8 * GIB, criticalBytes: 2 * GIB });
+});
+
+test('VIEW: an UNMEASURED snapshot never lifts — the guard keeps the last GOOD reading while the meter is dead (8 GB, pause none), the view must still read "unknown", not "plenty"', () => {
+  const r = rig();
+  edge(r, view());
+  trapDone(r, 'L', ['L', 'O', 'w1']);
+  const dead = { ...SNAP, measured: false, availBytes: 8 * GIB, pause: 'none' as const };
+  assert.deepEqual(applyMemoryPause(r.deps, viewOfSnapshot(dead), r.ledger, 'level'), { want: 'none', imposed: [], lifted: [] });
+  assert.equal(readCarrierColumns(r.db, 'L')!.resumeStartedAt, null, 'still paused');
+  assert.equal(applyMemoryPause(r.deps, viewOfSnapshot({ ...dead, measured: true }), r.ledger, 'level').lifted[0].outcome, 'resuming', 'control: the same reading, once the meter is readable, lifts');
+});
+
+/** A REAL guard (createMemoryGuard) over a fake MemAvailable source, wired to the memory Pause exactly as the host wires it (subscribe → handleMemoryGuardEdge). */
+function guardWorld(r: Rig) {
+  const w = { gb: 12 as number | null, now: 2_000_000 };
+  const g = createMemoryGuard({
+    readAvailableBytes: () => (w.gb === null ? null : w.gb * GIB),
+    getSettings: () => DEFAULT_MEMORY_GUARD_SETTINGS,
+    now: () => w.now,
+    schedule: () => null,
+    cancel: () => {},
+    info: () => {},
+    warn: () => {},
+  });
+  g.subscribe((e) => void handleMemoryGuardEdge(r.deps, r.ledger, e));
+  const at = (gb: number | null) => { w.gb = gb; w.now += 20_000; r.clock.now += 20_000; return g.sampleNow(); };
+  return { g, at };
+}
+
+test('GUARD LIFECYCLE: through the REAL guard, episode after episode — a run is memory-paused at EVERY pause_due (the ledger keys on the guard\'s pauseCycle), lifted at EVERY pause_liftable, an Admission edge is nothing of the Pause\'s', () => {
+  const r = rig();
+  const { g, at } = guardWorld(r);
+  at(12);
+  at(4.5); // Admission held, NOT critical: admission_held fires — no Pause
+  assert.equal(runRow(r.db, 'L').paused_at, null, 'an admission_held edge is not a memory-Pause edge');
+  at(2); // pause_due, cycle 1
+  assert.equal(g.snapshot().pauseCycle, 1);
+  assert.equal(runRow(r.db, 'L').paused_by, MEMORY_PAUSE_BY);
+  assert.equal(parseMemoryPause(runRow(r.db, 'L').pause_auto as string, Number(runRow(r.db, 'L').paused_at))?.pauseCycle, 1);
+  trapDone(r, 'L', ['L', 'O', 'w1']);
+  at(8); // pause_liftable ⇒ the automatic Reprise
+  assert.notEqual(readCarrierColumns(r.db, 'L')!.resumeStartedAt, null, 'lifted by the liftable EDGE');
+  releaseMembers(r.db, 'L', 'human', 'all', r.clock.now, { human: true, ownRuns: ['L', 'O', 'X'] });
+  assert.equal(readCarrierColumns(r.db, 'L')!.pausedAt, null, 'ACTIVE again');
+  at(4.5);
+  at(2); // a SECOND memory Pause cycle: the guard\'s pauseCycle is 2 — a view that lost it (0) would find the run "already handled" and never pause it again
+  assert.equal(g.snapshot().pauseCycle, 2);
+  const l2 = runRow(r.db, 'L');
+  assert.equal(l2.paused_by, MEMORY_PAUSE_BY, 'paused AGAIN in the next cycle');
+  assert.equal(parseMemoryPause(l2.pause_auto as string, Number(l2.paused_at))?.pauseCycle, 2);
+});
+
+test('GUARD LIFECYCLE: after an app restart (fresh ledger, fresh guard) the LEVEL read lifts a persisted memory Pause above the Admission threshold; an unreadable meter never lifts, and a handler that throws never reaches the guard', () => {
+  const r = rig();
+  edge(r, view());
+  trapDone(r, 'L', ['L', 'O', 'w1']);
+  const fresh = { ...r, ledger: newMemoryPauseLedger() };
+  const { g, at } = guardWorld(fresh);
+  at(null); // the very first reading is unreadable
+  assert.deepEqual(applyMemoryPause(r.deps, viewOfSnapshot(g.snapshot()), fresh.ledger, 'level'), { want: 'none', imposed: [], lifted: [] }, 'unknown is not plenty');
+  at(8); // readable, above Admission, the guard\'s own state is "none" (it never saw the pause_due of before the restart)
+  assert.equal(g.snapshot().pause, 'none');
+  const applied = applyMemoryPause(r.deps, viewOfSnapshot(g.snapshot()), fresh.ledger, 'level');
+  assert.equal(applied.lifted[0].outcome, 'resuming', 'a view that read pause=held would impose instead and the persisted Pause would never lift');
+  // a throwing handler is logged, not propagated
+  const boom: MemoryPauseDeps = { ...r.deps, getBus: () => { throw new Error('bus gone'); } };
+  assert.equal(handleMemoryGuardEdge(boom, newMemoryPauseLedger(), { transition: { kind: 'pause_due' }, snapshot: SNAP }), null);
+  assert.ok(r.calls.logs.some((m) => /handling pause_due failed/.test(m)));
+});
+
+test('GUARD LIFECYCLE: an ADMISSION edge (admission_held / admission_reopened) is nothing of the memory Pause\'s — handled as null, a memory-paused run is not lifted by it, whatever the snapshot reads', () => {
+  const r = rig();
+  edge(r, view());
+  trapDone(r, 'L', ['L', 'O', 'w1']);
+  for (const kind of ['admission_held', 'admission_reopened']) {
+    assert.equal(handleMemoryGuardEdge(r.deps, r.ledger, { transition: { kind }, snapshot: { ...SNAP, availBytes: 8 * GIB, pause: 'none' } }), null, kind);
+  }
+  assert.equal(readCarrierColumns(r.db, 'L')!.resumeStartedAt, null, 'still paused');
+  assert.equal(r.calls.reprise.length, 0);
+  assert.notEqual(handleMemoryGuardEdge(r.deps, r.ledger, { transition: { kind: 'pause_liftable' }, snapshot: { ...SNAP, availBytes: 8 * GIB, pause: 'none' } }), null, 'control: the real liftable edge is handled');
+  assert.notEqual(readCarrierColumns(r.db, 'L')!.resumeStartedAt, null);
 });
