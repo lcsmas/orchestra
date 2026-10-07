@@ -11,7 +11,7 @@
 //   n0_control          12 GB   CONTROL: the instrument sees a start; nothing is held, nothing Veille'd, nothing paused, no alert
 //   n1_starts_held      5.5 GB  Admission HELD: an AUTO spawn is accepted + its brief owed + NO session; an AUTO restart waits BEFORE any stop; a HUMAN restart / top-level spawn / a turn to a running member PASS; the OPS sees it
 //   n2_fast_veille      held    idle fleet members go into Veille AT ONCE; a running turn / pending prompt / a /loop / a background task / a session with NO coordinator are spared
-//   n3_reveil_held      held    a bus message to a sleeping member waits: no start, no failure counted, the reason logged ONCE, the lot still pending, queued as a wake
+//   n3_reveil_held      held    a bus message to a sleeping member waits: no start, no failure counted, the reason logged ONCE, the lot still pending, queued as a wake; a running member's lot goes live; a session with NO coordinator is woken at once
 //   n4_alert_one_row    held    oscillation inside ONE episode → exactly ONE escalation row, to the LEAD only, naming threshold / MemAvailable / the EFFECTIVE actions (starts held, members in Veille)
 //   n5_memory_pause     2.5 GB  memory Pause: the pause-ON run is paused (motive memory, hard, trap complete), the pause-OFF run is byte-identical, a MANUAL pause is left as it is, held starts stay held, still ONE row
 //   n6_pause_containers critical the Pause STOPPED (never removed) the attributed containers of the paused members, recorded them in the Bilan; --rm skipped; bystander / other run / pause-OFF run untouched
@@ -83,6 +83,7 @@ async function arm(name, fn) {
   if (UPTO === name) stop = true;
 }
 let stop = false;
+let lastRed = 0;
 function report() {
   let red = 0;
   for (const r of results) {
@@ -95,6 +96,7 @@ function report() {
   const missing = ARM_NAMES.filter((n) => !results.some((r) => r.name === n));
   const partial = !!UPTO;
   console.log(`COMPOSED NIGHT: ${red === 0 && !partial && missing.length === 0 ? 'ALL PASS' : red === 0 ? (partial ? 'PARTIAL PASS' : 'INCOMPLETE') : `RED ${results.filter((r) => r.error || r.checks.some((c) => !c.ok)).map((r) => r.name).join(',')}`} (${results.length - red}/${results.length} arms${partial ? `, stopped after ${UPTO}` : ''}${missing.length && !partial ? `, NOT RUN: ${missing.join(',')}` : ''}) tree ${REPO}`);
+  lastRed = red;
   return red === 0 && !partial && missing.length === 0;
 }
 const hang = setTimeout(() => { console.log('FAIL deadline — the night hung (300 s)'); report(); process.exit(1); }, 300_000);
@@ -136,6 +138,7 @@ const { isWakeOrder } = await import(`${REPO}/src/shared/bus-wake.ts`);
 const guardMod = await tryImport('src/main/memory-guard.ts');
 const admMod = await tryImport('src/main/admission.ts');
 const memPauseHost = await tryImport('src/main/pause-memory-host.ts');
+const hibAct = await tryImport('src/main/hibernation-activity.ts');
 const alertHost = await tryImport('src/main/memory-alert-host.ts');
 // the daemon-faithful fake Docker lives in the RIG's tree (a test double): it needs docker-api.ts / pause-containers.ts of that tree
 const { FakeDocker } = await import(`${HERE}/../src/main/fake-docker.ts`);
@@ -201,6 +204,8 @@ const LEAD_SW = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, pause: tr
 const OFF_SW = { ...DEFAULT_BUS_SWITCHES, wake: true, liveness: true };
 busRuns.startRun(db, { id: 'ws-ops', kind: 'mission', coordinator: 'ws-ops' }, LEAD_SW);   // a run's id is its ANCHOR workspace id (the wave run id every member resolves to)
 busRuns.startRun(db, { id: 'ws-sub', kind: 'vague', coordinator: 'ws-sub', parentRunId: 'ws-ops' }, LEAD_SW);   // the sub-OPS anchors its OWN run (a Reprise addressee needs its frozen `wake` ON)
+busRuns.startRun(db, { id: 'ws-sub2', kind: 'vague', coordinator: 'ws-sub2', parentRunId: 'ws-ops' }, LEAD_SW);
+busRuns.startRun(db, { id: 'ws-xm2', kind: 'mission', coordinator: 'ws-xm2' }, OFF_SW);
 busRuns.startRun(db, { id: 'ws-off', kind: 'mission', coordinator: 'ws-off' }, OFF_SW);
 busRuns.startRun(db, { id: 'ws-man', kind: 'mission', coordinator: 'ws-man' }, { ...DEFAULT_BUS_SWITCHES, wake: true, pause: true, liveness: true });   // a run a HUMAN pauses by hand (pause switch ON, delivery OFF: no alert row)
 await store.upsertWorkspace(mk('ws-ops', { kind: 'orchestrator' }));
@@ -211,6 +216,7 @@ await store.upsertWorkspace(mk('ws-m3', { parentId: 'ws-ops', hibernatedAt: now0
 await store.upsertWorkspace(mk('ws-m4', { parentId: 'ws-ops', status: 'running' }));
 await store.upsertWorkspace(mk('ws-m6', { parentId: 'ws-ops', loopingSince: now0 - 60_000 }));   // a /loop is running inside its session
 await store.upsertWorkspace(mk('ws-m7', { parentId: 'ws-ops' }));
+await store.upsertWorkspace(mk('ws-m8', { parentId: 'ws-ops' }));   // the workspace the human has OPEN (the active pane): a Veille guard
 await store.upsertWorkspace(mk('ws-m5', { parentId: 'ws-ops', sdkPendingPrompts: [{ id: 'p1', text: 'PENDING-PROMPT', origin: 'human' }] }));
 await store.upsertWorkspace(mk('ws-s1', { parentId: 'ws-sub', hibernatedAt: now0 - 90_000 }));   // a worker of the SUB-OPS (asleep): makes the sub-OPS run a live fleet run of its own
 await store.upsertWorkspace(mk('ws-off', { kind: 'orchestrator' }));
@@ -218,7 +224,10 @@ await store.upsertWorkspace(mk('ws-off1', { parentId: 'ws-off' }));
 await store.upsertWorkspace(mk('ws-xm'));
 await store.upsertWorkspace(mk('ws-man', { kind: 'orchestrator' }));
 await store.upsertWorkspace(mk('ws-man1', { parentId: 'ws-man' }));
-for (const id of ['ws-ops', 'ws-m1', 'ws-m2', 'ws-m4', 'ws-m5', 'ws-m6', 'ws-m7', 'ws-off', 'ws-off1', 'ws-xm', 'ws-man', 'ws-man1']) liveSet.add(id);
+await store.upsertWorkspace(mk('ws-xm2', { hibernatedAt: now0 - 50_000 }));                                  // a top-level session (NO coordinator), asleep
+await store.upsertWorkspace(mk('ws-sub2', { kind: 'orchestrator', parentId: 'ws-ops', hibernatedAt: now0 - 100_000 }));   // a SECOND sub-OPS, asleep, last in the roster: its Consigne wake must still go out before the earlier arrivals
+for (const id of ['ws-ops', 'ws-m1', 'ws-m2', 'ws-m4', 'ws-m5', 'ws-m6', 'ws-m7', 'ws-off', 'ws-off1', 'ws-xm', 'ws-man', 'ws-man1', 'ws-m8']) liveSet.add(id);
+hibAct?.noteActiveWorkspace('ws-m8');
 const wsRec = (id) => store.getWorkspace(id);
 const repoDir = path.join(tmpHome, 'repo');
 {
@@ -272,7 +281,13 @@ trapDeps.killTrees = async () => ({ cliPid: 0, cli: { pid: 0, startTicks: 0 }, k
 trapDeps.settleMs = 0;
 trapDeps.originWaitMs = 0;
 trapMod.startPauseTrap(trapDeps);
-memPauseHost?.startMemoryPause();
+// the memory Pause's 15 s LEVEL tick is the production safety net: the night proves the EDGE path alone (impose at pause_due, lift at pause_liftable) — a mutant that kills an edge must not be rescued by the tick
+{
+  const realSetInterval = globalThis.setInterval, made = [];
+  globalThis.setInterval = (...a) => { const h = realSetInterval(...a); made.push(h); return h; };
+  try { memPauseHost?.startMemoryPause(); } finally { globalThis.setInterval = realSetInterval; }
+  for (const h of made) clearInterval(h);
+}
 alertHost?.startMemoryAlert();                                      // the real alert host: settle window = the real 20 s timer
 const escalationRows = () => db.prepare("SELECT run_id, sender, recipient, body, created_at FROM messages WHERE kind = 'escalation' ORDER BY sequence").all();
 const runRow = (id) => db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
@@ -354,6 +369,7 @@ await arm('n2_fast_veille', async () => {
   check('a_pending_prompt_is_spared', [swept.includes('ws-m5'), calls.stop.includes('ws-m5')], [false, false]);
   check('a_looping_member_is_spared', [swept.includes('ws-m6'), calls.stop.includes('ws-m6')], [false, false]);
   check('a_member_with_a_background_task_is_spared', [swept.includes('ws-m7'), calls.stop.includes('ws-m7')], [false, false]);
+  check('the_active_workspace_is_spared', [swept.includes('ws-m8'), calls.stop.includes('ws-m8')], [false, false]);
   check('a_session_with_no_coordinator_is_untouched', [swept.includes('ws-xm'), calls.stop.includes('ws-xm')], [false, false]);
   check('the_coordinators_roots_are_not_fleet_members', ['ws-ops', 'ws-off'].map((id) => swept.includes(id)), [false, false]);
   world.veilleCount = swept.filter((id) => !!wsRec(id)?.parentId).length;
@@ -374,6 +390,9 @@ await arm('n3_reveil_held', async () => {
   check('the_lot_is_still_pending', pendingWake('ws-m3'), true);
   check('queued_as_a_wake', admMod ? admMod.listHeldStarts().filter((h) => h.wsId === 'ws-m3').map((h) => h.kind) : [], ['wake']);
   world.failedBefore = c1.failed;
+  sendBus('ws-xm2', 'TOP-LEVEL-MSG', 'ws-xm2');                                                    // a session with NO coordinator: never a fleet member, never held
+  for (let i = 0; i < 3; i++) { await wake.sweepBusWake(); await sleep(15); }
+  check('a_session_with_no_coordinator_is_woken_at_once_while_held', [orderStarts().some((c) => c.wsId === 'ws-xm2'), admMod ? admMod.listHeldStarts().some((h) => h.wsId === 'ws-xm2') : false], [true, false]);
 });
 
 await arm('n4_alert_one_row', async () => {
@@ -437,8 +456,15 @@ await arm('n6_pause_containers', async () => {
   check('only_attributed_running_containers_got_a_stop_call', stopEvents.sort(), [...stoppedIds].sort());
   const bil = (ws) => records?.bilanForMember(db, 'ws-ops', ws, c.paused_at)?.activity?.containers?.stopped?.map((x) => [x.name, x.outcome]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ?? null;
   check('the_bilan_lists_each_members_stopped_containers', [bil('ws-m1'), bil('ws-m2'), bil('ws-sub')], [[['rig-m1-cache', 'stopped'], ['rig-m1-db', 'stopped'], ['rig-m1-rm', 'skipped-autoremove']], [['rig-m2-app', 'stopped'], ['rig-m2-gone', 'stopped']], [['rig-sub-q', 'stopped']]]);
-  check('the_bilan_never_names_the_bystander_or_another_run', JSON.stringify(['ws-m1', 'ws-m2', 'ws-sub', 'ws-m3', 'ws-m4', 'ws-m5'].map(bil)).includes('rig-human') || JSON.stringify(['ws-m1', 'ws-m2', 'ws-sub'].map(bil)).includes('rig-off'), false);
+  const allBilan = JSON.stringify(['ws-m1', 'ws-m2', 'ws-sub', 'ws-m3', 'ws-m4', 'ws-m5', 'ws-s1', 'ws-sub2'].map(bil));
+  check('the_bilan_never_names_the_bystander_the_other_member_or_another_run', [bil('ws-m1') !== null, /rig-human|rig-other|rig-off/.test(allBilan)], [true, false]);
   world.stoppedEvents = dockerEvents.filter((e) => e.startsWith('stop '));
+  // hysteresis: memory recovers a little (5.5 GB) but NOT above the Admission threshold — the Pause is not liftable yet
+  const startsBefore6 = dockerEvents.filter((e) => e.startsWith('start ')).length;
+  setMem(5.5);
+  await sleep(1500);
+  const lead6 = runRow('ws-ops');
+  check('the_pause_is_not_lifted_below_the_admission_threshold', [lead6.paused_at != null, lead6.resume_started_at ?? null, dockerEvents.filter((e) => e.startsWith('start ')).length - startsBefore6], [true, null, 0]);
 });
 
 await arm('n7_reprise', async () => {
@@ -453,7 +479,7 @@ await arm('n7_reprise', async () => {
   const starts = dockerEvents.filter((e) => e.startsWith('start ')).map((e) => e.slice(6));
   check('exactly_the_stopped_ones_restarted_each_once_and_in_REVERSE_stop_order', starts, [...stoppedIds].reverse());
   check('bystander_other_run_autoremove_never_restarted_or_stopped_again', ['c-human', 'c-other', 'c-off-db', 'c-m1-rm'].map((id) => dockerEvents.some((e) => e.endsWith(` ${id}`))), [false, false, false, false]);
-  check('the_removed_container_did_not_break_the_reprise', ok && docker.containers.length === containers.length - 1, true);
+  check('the_removed_container_did_not_break_the_reprise_the_others_came_back', [ok, docker.containers.some((c) => c.id === 'c-m2-gone')], [true, false]);
   const c = world.carrier;
   const rst = (ws) => records?.bilanForMember(db, 'ws-ops', ws, c.paused_at)?.activity?.containers?.restarted?.map((x) => [x.id, x.outcome]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ?? null;
   check('the_bilan_records_each_restart_and_the_gone_one', [rst('ws-m1'), rst('ws-m2'), rst('ws-sub')], [[['c-m1-cache', 'started'], ['c-m1-db', 'started']], [['c-m2-app', 'started'], ['c-m2-gone', 'gone']], [['c-sub-q', 'started']]]);
@@ -468,7 +494,7 @@ await arm('n7_reprise', async () => {
 await arm('n7b_coordinators_after_containers', async () => {
   const rows = db.prepare("SELECT recipient, sender, created_at FROM messages WHERE kind = 'reprise' ORDER BY sequence").all();
   const lastStart = Math.max(...Object.entries(dockerAt).filter(([k]) => k.startsWith('start ')).map(([, t]) => t));
-  check('the_host_sent_its_consigne_to_the_coordinators_only_workers_stay_blocked', rows.map((r) => [r.recipient, r.sender]).sort(), [['ws-ops', 'host'], ['ws-sub', 'host']]);
+  check('the_host_sent_its_consigne_to_the_coordinators_only_workers_stay_blocked', rows.map((r) => [r.recipient, r.sender]).sort(), [['ws-ops', 'host'], ['ws-sub', 'host'], ['ws-sub2', 'host']]);
   check('coordinators_are_released_only_after_the_containers_are_back', rows.every((r) => r.created_at >= lastStart), true);
   check('the_run_is_resuming_not_blind_started', [runRow('ws-ops').paused_at != null, runRow('ws-ops').resume_started_at != null], [true, true]);
   // the coordinators read their Consigne and release their workers (what `orchestra run release --all` does): the OPS its own, the sub-OPS its worker ws-s1
@@ -481,29 +507,35 @@ await arm('n8_release_order', async () => {
   for (let i = 0; i < 3; i++) { await wake.sweepBusWake(); await sleep(20); }               // the released members are wakeable again: their pending Consigne / réveil is queued (held) again
   const q0 = admMod ? admMod.listHeldStarts() : [];
   check('queue_before_the_release_arrival_order_with_the_coordinator_last_of_the_first_three', q0.slice(0, 3).map((h) => [h.wsId, h.kind]), [[world.heldSpawn, 'spawn'], ['ws-m2', 'restart'], ['ws-sub', 'restart']]);
-  check('the_consigne_wakes_of_the_sleepers_are_queued_behind_them', [q0.slice(3).every((h) => h.kind === 'wake'), q0.slice(3).map((h) => h.wsId).includes('ws-m3')], [true, true]);
+  const at = (id) => q0.findIndex((h) => h.wsId === id);
+  check('the_consigne_wakes_of_the_sleepers_are_queued_behind_them_the_second_sub_ops_after_the_earlier_wakes', [q0.slice(3).every((h) => h.kind === 'wake'), at('ws-m3') >= 3, at('ws-sub2') > at('ws-m1') && at('ws-sub2') > at('ws-m3')], [true, true, true]);
   const released = () => logText().split('\n').filter((l) => /\[admission\] RELEASED/.test(l)).map((l) => { const m = /RELEASED (\w+) of (\S+?)(?: \(coordinator\))?,/.exec(l); return m ? `${m[1]}:${m[2]}` : l; });
   const base = calls.start.length;
-  onStart = (n) => { if (n === base + 1) mem = 6.8; };                                    // the FIRST release eats the margin: memory dips below the 7 GB reopen margin again
+  let latePromise = null;
+  onStart = (n) => { if (n === base + 1) { mem = 6.8; latePromise = spawnMember('N8-LATE-BRIEF'); } };   // the FIRST release eats the margin (memory dips below the 7 GB reopen margin again) AND a NEWCOMER arrives mid-release
   setMem(8);                                                                              // Admission reopens (> 7 GB): the release begins
   check('admission_reopened', snap()?.admission ?? null, 'open');
   check('the_first_release_goes_out', await until(() => released().length >= 1, 8000), true);
+  const late = latePromise ? await latePromise : null;
+  check('a_newcomer_arriving_mid_release_joins_the_line_instead_of_jumping_it', [late?.ok === true, !!late?.held], [true, true]);
   await sleep(700);
   check('a_recovery_that_dips_again_stops_the_release_after_one', released().length, 1);
   onStart = null;
   setMem(9);                                                                              // memory is back: the retry finishes the release
-  check('the_release_finishes_once_memory_is_back', await until(() => (admMod ? admMod.listHeldStarts().length === 0 : true) && released().length >= q0.length, 15_000), true);
+  check('the_release_finishes_once_memory_is_back', await until(() => (admMod ? admMod.listHeldStarts().length === 0 : true) && released().length >= q0.length + 1, 15_000), true);
   const rel = released();
   world.released = rel;
-  check('coordinators_first_then_arrival_order', rel.slice(0, 4), ['restart:ws-sub', `spawn:${world.heldSpawn}`, 'restart:ws-m2', 'wake:ws-m1']);
-  check('every_held_start_went_out_exactly_once', [rel.length === new Set(rel).size || rel.filter((x) => x.startsWith('wake:ws-sub')).length <= 1, q0.every((h) => rel.includes(`${h.kind}:${h.wsId}`))], [true, true]);
-  check('a_woken_coordinator_goes_before_the_other_wakes_queued_with_it', (() => { const a = rel.indexOf('wake:ws-sub'), b = rel.indexOf('wake:ws-m3'); return a === -1 || b === -1 || a < b; })(), true);
+  check('coordinators_first_then_arrival_order', rel.slice(0, 5), ['restart:ws-sub', 'wake:ws-sub2', `spawn:${world.heldSpawn}`, 'restart:ws-m2', 'wake:ws-m1']);
+  check('a_coordinators_wake_that_arrived_last_goes_before_the_earlier_arrivals', [rel.indexOf('wake:ws-sub2'), rel.indexOf('wake:ws-sub2') < rel.indexOf(`spawn:${world.heldSpawn}`)], [1, true]);
+  check('the_newcomer_went_out_behind_everything_that_was_already_held', q0.every((h) => rel.indexOf(`${h.kind}:${h.wsId}`) !== -1 && rel.indexOf(`${h.kind}:${h.wsId}`) < rel.indexOf(`spawn:${late?.id}`)), true);
+  check('every_held_start_went_out_exactly_once', [rel.length === new Set(rel).size, q0.every((h) => rel.includes(`${h.kind}:${h.wsId}`))], [true, true]);
   check('the_coordinators_brief_was_delivered_by_its_release', startsFor('ws-sub').some((c) => c.text === 'SUB-BRIEF'), true);
   check('the_released_spawn_really_started_with_its_brief', [startsFor(world.heldSpawn).map((c) => c.text), liveSet.has(world.heldSpawn)], [['N1-HELD-BRIEF'], true]);
+  check('the_newcomer_really_started_with_its_brief', [startsFor(late?.id).map((c) => c.text), liveSet.has(late?.id)], [['N8-LATE-BRIEF'], true]);
   check('one_at_a_time', maxInFlight, 1);
   check('one_booting_at_a_time', maxBooting, 1);
   const rs = calls.start.slice(base).map((c) => c.readsAt);
-  check('a_fresh_reading_before_each_release', rs.every((x, i) => i === 0 || x > rs[i - 1]), true);
+  check('a_fresh_reading_before_each_release', rs.length > 1 && rs.every((x, i) => i === 0 || x > rs[i - 1]), true);
   check('queue_drained', admMod ? admMod.listHeldStarts().length : -1, 0);
   const bs = await cliOut(['bus-status']);
   check('bus_status_no_longer_lists_held_starts', /held starts:/.test(bs), false);
@@ -532,17 +564,24 @@ await arm('n9_reveil_delivered', async () => {
 
 await arm('n10_second_episode', async () => {
   const row1 = escalationRows()[0] ?? {};
-  setMem(5.5);                                                                            // a NEW downward crossing after recovery
-  check('a_new_episode_opened', [snap()?.episode ?? null, snap()?.admission ?? null], [2, 'held']);
-  setMem(8);                                                                              // …and it ends before its settle window: told when it ends
-  check('the_second_row_arrives', await until(() => escalationRows().length >= 2, 10_000, 100), true);
-  await sleep(800);
+  docker.absent = true;                                                                   // the Docker daemon is DOWN while the second Pause lands: it must not block the trap
+  setMem(2.5);                                                                            // a NEW crossing after recovery, straight below critical: episode 2 (held + critical in one sample)
+  check('a_new_episode_opened_critical_at_once', [snap()?.episode ?? null, snap()?.admission ?? null, snap()?.pause ?? null], [2, 'held', 'held']);
+  check('the_second_memory_pause_is_imposed_at_the_edge', await until(() => runRow('ws-ops')?.paused_at != null, 4000), true);
+  check('docker_unavailable_does_not_block_the_trap', await until(() => runRow('ws-ops')?.pause_trap_at != null, 20_000), true);
+  check('the_second_row_arrives_after_the_settle_window_while_the_pause_stands', await until(() => escalationRows().length >= 2, 40_000, 100), true);
   const rows = escalationRows();
+  const b2 = String(rows[1]?.body ?? '');
   check('exactly_two_rows_one_per_episode', rows.length, 2);
-  check('the_second_names_episode_2_and_says_it_is_over', [/Memory guard — episode 2 /.test(rows[1]?.body ?? ''), /already OVER/.test(rows[1]?.body ?? '')], [true, true]);
+  check('the_second_row_names_the_paused_run_and_both_thresholds', [/Memory guard — episode 2 /.test(b2), /memory Pause on run\(s\) ws-ops/.test(b2), /and below the CRITICAL threshold \(3\.00 GB\) at 2\.50 GB/.test(b2), /memory Pause IN EFFECT\./.test(b2), /You need not act: the host releases the held starts and lifts its own memory Pause/.test(b2)], [true, true, true, true, true]);
   check('the_first_row_is_untouched', rows[0]?.body, row1.body);
+  docker.absent = false;
+  setMem(8);                                                                              // recovery: the second Reprise (nothing owed: Docker was down), the episode ends
+  check('the_second_reprise_released_the_coordinators', await until(() => runRow('ws-ops')?.resume_started_at != null || runRow('ws-ops')?.paused_at == null, 6000), true);
+  await sleep(1200);
+  check('still_two_rows_the_episode_end_writes_none', escalationRows().length, 2);
 });
 
 const allOk = report();
-if (allOk) fs.rmSync(tmpHome, { recursive: true, force: true });   // a green night leaves nothing behind; a red one keeps its scratch for debugging
+if (lastRed === 0) fs.rmSync(tmpHome, { recursive: true, force: true });   // a green (or green-so-far) night leaves nothing behind; a red one keeps its scratch for debugging
 process.exit(allOk ? 0 : 1);

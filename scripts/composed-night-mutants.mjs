@@ -19,13 +19,15 @@ const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 const RIG = path.join(HERE, 'e2e-composed-night.mjs');
 const REGISTER = pathToFileURL(path.join(HERE, '.r2-register.mjs')).href;
-const ARMS = ['n0_control', 'n1_starts_held', 'n2_fast_veille', 'n3_reveil_held', 'n4_alert_one_row', 'n5_memory_pause', 'n6_pause_containers', 'n7_reprise', 'n7b_coordinators_after_containers', 'n8_release_order', 'n9_reveil_delivered', 'n10_second_episode'];
+const rigText = fs.readFileSync(RIG, 'utf8');
+const ARMS = [...(/const ARM_NAMES = \[([^\]]*)\]/.exec(rigText)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);   // the rig's own arm list (a new arm needs no edit here)
+if (ARMS.length === 0) { console.log('MUTATE-NIGHT: ABORT (cannot read ARM_NAMES from the rig)'); process.exit(2); }
 
 const read = (rel) => fs.readFileSync(path.join(REPO, rel), 'utf8');
 const count = (text, find) => text.split(find).length - 1;
 
 // ── anchors: every edit matches EXACTLY once, every arm / check named exists in the rig ──
-const rigSrc = fs.readFileSync(RIG, 'utf8');
+const rigSrc = rigText;
 function anchors() {
   const bad = [];
   for (const m of MUTANTS) {
@@ -95,7 +97,7 @@ const failedChecks = (why) => [...String(why ?? '').matchAll(/(?:^| \| )(\w+): g
 // ── control ──
 console.log(`control: the whole night on the clean tree …`);
 const c0 = night(null);
-if (!/^ALL PASS \(12\/12 arms\)/.test(c0.verdict ?? '')) {
+if (!new RegExp(`^ALL PASS \\(${ARMS.length}/${ARMS.length} arms\\)`).test(c0.verdict ?? '')) {
   console.log(`CONTROL NOT GREEN: ${c0.verdict ?? 'no verdict'} ${JSON.stringify(Object.entries(c0.arms).filter(([, v]) => !v.ok).map(([k, v]) => [k, v.why.slice(0, 200)]))}`);
   process.exit(2);
 }

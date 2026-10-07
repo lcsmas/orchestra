@@ -27,6 +27,8 @@ const MUTANTS = [
     file: 'src/keeper/index.ts', find: '    return { ...env, DOCKER_HOST: `unix://${relaySock}` };', to: '    return env;' },
   { id: '287-W59', from: 'admission-mutants.mjs:W59', ticket: '#287', clause: "setWakeKeeperResident is wired in the app: a keeper-resident member's wake only REATTACHES (seat-2 F1)", phases: 'resident', containers: 3, check: 'B3_the_resident_members_wake_was_a_reattach_not_held',
     file: 'src/main/index.ts', find: '  setWakeKeeperResident(keeperResident);', to: '  void setWakeKeeperResident;' },
+  { id: '289-banner-never-renders', from: 'memory-banner/mutate-unit.mjs (component clause, build level)', ticket: '#289', clause: 'the banner renders while Admission is held (the packaged app shows it)', phases: 'main', containers: 4, check: 'A2_the_amber_banner_shows_while_admission_is_held',
+    file: 'src/renderer/components/MemoryBanner.tsx', find: '  if (!banner || !bannerVisible(banner, dismissed)) return null;', to: '  return null;' },
 ];
 if (args.includes('--list')) { for (const m of MUTANTS) console.log(`${m.id.padEnd(9)} ${m.ticket} ${m.phases}/${m.check} — ${m.clause}`); process.exit(0); }
 
@@ -49,7 +51,7 @@ function build(dest) {
   return { ok: true };
 }
 function drive(app, m) {
-  const r = spawnSync('bash', [path.join(HERE, 'e2e-composed-drive.sh'), '--app', path.join(app, 'orchestra'), '--phases', m.phases, '--containers', String(m.containers), '--label', 'm'], { cwd: REPO, encoding: 'utf8', timeout: 900_000, maxBuffer: 64 << 20 });
+  const r = spawnSync('timeout', ['-k', '30', '900', 'bash', path.join(HERE, 'e2e-composed-drive.sh'), '--app', path.join(app, 'orchestra'), '--phases', m.phases, '--containers', String(m.containers), '--label', 'm'], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 << 20 });   // `timeout -k` signals the whole process group: no orphaned driver overlaps the next mutant's build
   const out = (r.stdout ?? '') + (r.stderr ?? '');
   return { red: [...out.matchAll(/^RED (\S+)/gm)].map((x) => x[1]), verdict: /^COMPOSED-DRIVE (\w+)/m.exec(out)?.[1] ?? null, out };
 }

@@ -11,8 +11,9 @@
 //   resident  #287 seat-2 F1 — `setWakeKeeperResident` exercised in the REAL app: the app is closed (the keepers survive), reopened, Admission is HELD, then a message to a keeper-resident member is delivered (a reattach —
 //             never held) while a message to a member whose keeper was killed is HELD for memory and goes out when memory recovers
 //
-// SAFETY (D4): scratch only (assertScratch), the live ~/.claude* dirs are hashed before/after, Docker: every container this drive touches carries the rig prefix / the rig label / an orchestra.ws of a rig workspace; every OTHER
-// container (the host's own stacks) is snapshotted before and asserted UNCHANGED after; cleanup removes by those three keys only. A hard kill leaks only prefixed containers (`docker rm -f $(docker ps -aq --filter label=g10rig)`).
+// SAFETY (D4): scratch only (assertScratch), the live ~/.claude* dirs are hashed before/after, Docker: every container this drive CREATES carries the rig prefix / the rig label / an orchestra.ws of a rig workspace and cleanup removes by
+// those three keys only. The host is SHARED (siblings churn their own stacks), so the invariant checked is PROVENANCE — everything the app stopped / started (the Bilan the host wrote) is a rig container, and the drive's own two bystanders
+// stay running; the host-wide container list is only REPORTED before/after. SIGINT/SIGTERM tear the rig down; a SIGKILL leaks only prefixed containers (`docker rm -f $(docker ps -aq --filter label=g10rig)`).
 // Output: `OK|RED <check> — detail` lines, `PC-MEASURE {json}`, final `COMPOSED-DRIVE PASS|FAIL|VOID`. Exit 0 PASS · 1 FAIL · 3 VOID.
 
 import fs from 'node:fs';
@@ -62,6 +63,8 @@ function cleanup() {
   for (const v of dk('volume', 'ls', '-q').out.split('\n').filter((x) => x.startsWith(PFX))) dk('volume', 'rm', '-f', v);
 }
 process.on('exit', () => { try { cleanup(); } catch { /* best effort */ } });
+let shuttingDown = false;
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, async () => { if (shuttingDown) return; shuttingDown = true; say(`${sig}: tearing the rig down (app, keepers, containers)`); try { if (rig) await teardown(rig, app); } catch { /* best effort */ } try { cleanup(); } catch { /* best effort */ } process.exit(130); });
 const inspect = (name) => { for (let i = 0; i < 3; i++) { const r = dk('inspect', name); try { const o = JSON.parse(r.out)[0]; if (o) return o; } catch { /* retry: a transient CLI failure must not read as "no such container / no labels" */ } if (/No such/i.test(r.err)) return null; spawnSync('sleep', ['0.3']); } return null; };
 const running = (name) => inspect(name)?.State?.Running === true;
 const exists = (name) => inspect(name) !== null;

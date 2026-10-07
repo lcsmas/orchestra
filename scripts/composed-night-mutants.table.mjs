@@ -812,5 +812,200 @@ export const MUTANTS = [
     "to": "        done = { id: e.id, outcome: await api.startContainer(e.id), atMs: now() };\n        if (done.outcome === 'gone') return out;"
    }
   ]
+ },
+ {
+  "id": "286-A03_newcomer_jumps_the_line",
+  "from": "admission-mutants.mjs:A03_newcomer_jumps_the_line",
+  "ticket": "#286",
+  "clause": "a newcomer arriving while the queue is non-empty joins the line (never jumps it)",
+  "arm": "n8_release_order",
+  "check": "a_newcomer_arriving_mid_release_joins_the_line_instead_of_jumping_it",
+  "edits": [
+   {
+    "file": "src/shared/admission.ts",
+    "find": "(args.holding || args.queued)",
+    "to": "args.holding"
+   }
+  ]
+ },
+ {
+  "id": "287-W12b_sweep_holds_non_fleet",
+  "from": "admission-mutants.mjs:W12b_sweep_holds_non_fleet",
+  "ticket": "#287",
+  "clause": "a session with NO coordinator is woken at once while held (the sweep holds fleet members only)",
+  "arm": "n3_reveil_held",
+  "check": "a_session_with_no_coordinator_is_woken_at_once_while_held",
+  "edits": [
+   {
+    "file": "src/main/bus-wake.ts",
+    "find": "if (action.kind === 'fire' && entry?.fleetMember === true) {",
+    "to": "if (action.kind === 'fire') {"
+   },
+   {
+    "file": "src/main/bus-wake.ts",
+    "find": "if (now.fleetMember === true && now.sleeping === true && !resident) {",
+    "to": "if (now.sleeping === true && !resident) {"
+   }
+  ]
+ },
+ {
+  "id": "287-W19b_roster_all_fleet",
+  "from": "admission-mutants.mjs:W19b_roster_all_fleet",
+  "ticket": "#287",
+  "clause": "the roster marks only members with a parent as fleet members",
+  "arm": "n3_reveil_held",
+  "check": "a_session_with_no_coordinator_is_woken_at_once_while_held",
+  "edits": [
+   {
+    "file": "src/main/wake-roster.ts",
+    "find": "fleetMember: !!ws.parentId,",
+    "to": "fleetMember: true,"
+   }
+  ]
+ },
+ {
+  "id": "287-W21_roster_coordinator_dropped",
+  "from": "admission-mutants.mjs:W21_roster_coordinator_dropped",
+  "ticket": "#287",
+  "clause": "a woken COORDINATOR goes before the earlier arrivals (roster coordinator flag)",
+  "arm": "n8_release_order",
+  "check": "a_coordinators_wake_that_arrived_last_goes_before_the_earlier_arrivals",
+  "edits": [
+   {
+    "file": "src/main/wake-roster.ts",
+    "find": "coordinator: canOrchestrate(ws),",
+    "to": "coordinator: false,"
+   }
+  ]
+ },
+ {
+  "id": "288-V08_before_active",
+  "from": "fast-veille-mutants.mjs:V08_before_active",
+  "ticket": "#288",
+  "clause": "the workspace the human has open (active pane) is still spared while held",
+  "arm": "n2_fast_veille",
+  "check": "the_active_workspace_is_spared",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (admissionHeld && isFleetMember(ws)) return true;\n",
+    "to": ""
+   },
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (isActive) return false;\n",
+    "to": "  if (admissionHeld && isFleetMember(ws)) return true;\n  if (isActive) return false;\n"
+   }
+  ]
+ },
+ {
+  "id": "289-sent-guard-removed",
+  "from": "memory-alert/mutate-unit.mjs:sent-guard-removed",
+  "ticket": "#289",
+  "clause": "ONE row per episode: an episode already told is never told again (episode end writes no second row)",
+  "arm": "n8_release_order",
+  "check": "still_one_escalation_row_the_episode_ended_with_it",
+  "edits": [
+   {
+    "file": "src/main/memory-alert.ts",
+    "find": "    if (t.sent) return;\n    try {",
+    "to": "    try {"
+   },
+   {
+    "file": "src/main/memory-alert.ts",
+    "find": "            if (!t.sent) settle(t); // the episode ended before its settle window: tell it now",
+    "to": "            settle(t);"
+   }
+  ]
+ },
+ {
+  "id": "289-facts-paused-runs-empty",
+  "from": "memory-alert/mutate-unit.mjs:facts-paused-runs-empty",
+  "ticket": "#289",
+  "clause": "the row names the runs under the memory Pause",
+  "arm": "n10_second_episode",
+  "check": "the_second_row_names_the_paused_run_and_both_thresholds",
+  "edits": [
+   {
+    "file": "src/main/memory-alert.ts",
+    "find": "        veille: deps.veilleSince(t.ep.admission.at),\n        pausedRuns,\n",
+    "to": "        veille: deps.veilleSince(t.ep.admission.at),\n        pausedRuns: [],\n"
+   }
+  ]
+ },
+ {
+  "id": "289-body-no-critical",
+  "from": "memory-alert/mutate-unit.mjs:body-no-critical",
+  "ticket": "#289",
+  "clause": "the row names the CRITICAL threshold crossed and the MemAvailable there",
+  "arm": "n10_second_episode",
+  "check": "the_second_row_names_the_paused_run_and_both_thresholds",
+  "edits": [
+   {
+    "file": "src/shared/memory-alert.ts",
+    "find": "    (ep.critical ? ` and below the CRITICAL threshold (${formatGb(ep.critical.thresholdBytes, 2)}) at ${formatGb(ep.critical.availBytes, 2)}` : '');",
+    "to": "    '';"
+   }
+  ]
+ },
+ {
+  "id": "286-release-not-awaited",
+  "from": "own (admission.ts release loop, #286 \"one at a time\")",
+  "ticket": "#286",
+  "clause": "held starts are released ONE AT A TIME (the loop awaits each start)",
+  "arm": "n8_release_order",
+  "check": "one_at_a_time",
+  "edits": [
+   {
+    "file": "src/main/admission.ts",
+    "find": "        outcome = await runBounded(entry);",
+    "to": "        outcome = (void runBounded(entry), undefined);"
+   }
+  ]
+ },
+ {
+  "id": "285-lift-below-admission",
+  "from": "own (memory-guard-mutants M04 family)",
+  "ticket": "#285",
+  "clause": "the Pause is liftable only ABOVE the Admission threshold (hysteresis: 5.5 GB keeps it)",
+  "arm": "n6_pause_containers",
+  "check": "the_pause_is_not_lifted_below_the_admission_threshold",
+  "edits": [
+   {
+    "file": "src/shared/memory-guard.ts",
+    "find": "  return availBytes > t.admissionBytes;\n",
+    "to": "  return availBytes > t.criticalBytes;\n"
+   }
+  ]
+ },
+ {
+  "id": "290-reprise-releases-workers",
+  "from": "own (pause-trap/mutants-reprise.mjs reprise-begin-releases-workers, re-anchored)",
+  "ticket": "#290",
+  "clause": "the automatic Reprise releases the COORDINATORS only: workers wait for their OPS",
+  "arm": "n7b_coordinators_after_containers",
+  "check": "the_host_sent_its_consigne_to_the_coordinators_only_workers_stay_blocked",
+  "edits": [
+   {
+    "file": "src/main/pause-reprise.ts",
+    "find": "  const coordRows = roster.filter((r) => r.role === 'coordinator');",
+    "to": "  const coordRows = roster;"
+   }
+  ]
+ },
+ {
+  "id": "292-docker-unavailable-blocks-the-trap",
+  "from": "own (pause-trap.ts container step, FI-1.5)",
+  "ticket": "#292",
+  "clause": "Docker unavailable is RECORDED and never blocks the trap or keeps it incomplete",
+  "arm": "n10_second_episode",
+  "check": "docker_unavailable_does_not_block_the_trap",
+  "edits": [
+   {
+    "file": "src/main/pause-trap.ts",
+    "find": "error: `stop: ${errMsg(e)}` };\n    }\n    if (liftedDuringStop) {",
+    "to": "error: `stop: ${errMsg(e)}` };\n      incomplete = true;\n    }\n    if (liftedDuringStop) {"
+   }
+  ]
  }
 ];

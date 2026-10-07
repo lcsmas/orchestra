@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # #294 — the PACKAGED-APP drive of the composed proof (banner + a labelled container stopped by the memory Pause and restarted at the Reprise + the many-container Reprise measurement + #287 keeper-resident wake),
-# in its OWN headless sway (scripts/e2e-contained-rig.sh), scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, the REAL Docker daemon (rig-prefixed + labelled containers only; the host's own are asserted unchanged).
+# in its OWN headless sway (scripts/e2e-contained-rig.sh), scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, the REAL Docker daemon (rig-prefixed + labelled containers only; provenance asserted: everything the app stopped/started is a rig container).
 # Driver: scripts/e2e-composed-drive.mjs. HEAVY (a packaged app + keepers + Docker under a compositor): needs the OPS' heavy-rig token and MemAvailable > 9 GB right before.
 #
 # Usage: scripts/e2e-composed-drive.sh --build                 build the PACKAGED app from THIS tree (in a scratch worktree) and print its path
