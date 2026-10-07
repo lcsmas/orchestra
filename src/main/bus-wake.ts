@@ -44,6 +44,7 @@ import {
 } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
+import { holdWake } from './admission.ts';
 import {
   decideWake,
   pruneWakeLedger,
@@ -273,6 +274,13 @@ function logWakeableTransition(reader: string, next: 'active' | SkipReason): voi
     if (prev !== undefined) {
       log.info(`bus-wake: ${reader} wakeable again (was ${prev}) — pending wake will be delivered`);
     }
+  } else if (next === 'held-for-memory') {
+    // Expected, not a defect: the réveil waits for memory (Admission logs the MemAvailable it was held at). Info, once per transition.
+    log.info(
+      `bus-wake: ${reader} is PENDING and its réveil is HELD for memory (Admission) — delivered when memory recovers; nothing is lost` +
+        (prev && prev !== 'active' ? ` (was '${prev}')` : '') +
+        ' (logged once per transition, not per sweep)',
+    );
   } else {
     log.warn(
       `bus-wake: ${reader} is PENDING but not being woken — skip reason '${next}'` +
@@ -582,6 +590,12 @@ export interface WakeableReader {
    *  carries its own frozen flags), and so is the reader's cursor — the same
    *  handle in two runs has two independent positions. */
   runId: string;
+  /** #287 Admission: the reader has a coordinator (a parent) — only a fleet member's réveil is ever held for memory. Absent = not a fleet member. */
+  fleetMember?: boolean;
+  /** #287: no live session / PTY — waking it would START a process (a wake of a live reader is a plain turn, never held). Absent = not sleeping. */
+  sleeping?: boolean;
+  /** #287: the reader itself coordinates — its held réveil is released before any worker's. */
+  coordinator?: boolean;
 }
 
 let readRoster: () => WakeableReader[] = () => [];
@@ -769,6 +783,24 @@ export async function sweepBusWake(): Promise<void> {
         if (action.why !== 'no-pending') logWakeableTransition(p.reader, action.why);
         continue;
       }
+      // #287 Admission: a due réveil of a SLEEPING FLEET member under low memory would START a process — it is HELD, not failed: the reader stays pending on the
+      // bus (nothing is lost), the sweep leaves the ledger and every counter alone (no mark, no failure, no retry storm), logs the reason ONCE per transition, and the
+      // Admission queue releases it (coordinators first, one at a time, a fresh reading each) by granting a one-shot permit and re-running the sweep.
+      if (action.kind === 'fire' && entry?.fleetMember === true && entry.sleeping === true) {
+        const reader = action.reader;
+        const held = holdWake({
+          wsId: reader,
+          fleetMember: true,
+          sleeping: true,
+          coordinator: entry.coordinator === true,
+          retry: () => sweepBusWakeNow(),
+          stillOwed: () => readRoster().some((r) => r.reader === reader && r.wakeable && r.sleeping === true),
+        });
+        if (held.held) {
+          logWakeableTransition(reader, 'held-for-memory');
+          continue;
+        }
+      }
       logWakeableTransition(action.reader, 'active');
       // #153: write the FIRE mark to the fire ledger and the COUNT mark to the count
       // ledger — NEVER cross them. A count writing the fire ledger is the exact bug:
@@ -856,6 +888,13 @@ export async function sweepBusWake(): Promise<void> {
   } finally {
     sweeping = false;
   }
+}
+
+/** One sweep that is GUARANTEED to run: waits (bounded, ~5 s) for an in-flight sweep to finish, then sweeps. The Admission release uses it — `sweepBusWake()` returns at
+ *  once when a sweep is already running, which would leave the release's permit unconsumed and the next release starting before this wake was delivered. */
+export async function sweepBusWakeNow(): Promise<void> {
+  for (let i = 0; sweeping && i < 200; i++) await new Promise((r) => setTimeout(r, 25));
+  await sweepBusWake();
 }
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────────

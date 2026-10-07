@@ -8,7 +8,7 @@
 import { scoped } from './logger.ts';
 import { sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';
 import { formatGb, isAdmissionHolding, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
-import { isHumanOrigin, mustHoldStart, planRelease, releaseFailureBody, releaseTimeoutBody, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
+import { isHumanOrigin, kindRank, mustHoldStart, planRelease, releaseFailureBody, releaseTimeoutBody, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
 
 const alog = scoped('admission');
 
@@ -58,7 +58,24 @@ export interface GateArgs {
 }
 export type GateResult = { held: false } | { held: true; since: number; kind: HeldStartKind };
 
+/** An AUTOMATIC start of a SLEEPING fleet member that is a wake (réveil, parked-prompt flush, usage-limit resume, peer message, recovery) — #287. */
+export interface WakeGateArgs {
+  wsId: string;
+  /** The member has a coordinator (a parent). A top-level / detached workspace is never held. */
+  fleetMember: boolean;
+  /** No live session / PTY: this wake would START a process. A wake of a LIVE member is a plain turn — never held. */
+  sleeping: boolean;
+  coordinator: boolean;
+  /** Run the site's NORMAL path again (it re-enters `holdWake`, which then consumes the permit and lets it through). Must resolve when the
+   *  wake has actually been delivered, so the release stays one at a time. */
+  retry: () => Promise<unknown>;
+  stillOwed: () => boolean;
+  report?: (text: string) => void;
+}
+
 export interface Admission {
+  /** The release of a held wake grants a ONE-SHOT permit for the member; the site's retry consumes it here. */
+  holdWake(args: WakeGateArgs): GateResult;
   gate(args: GateArgs): GateResult;
   heldFor(wsId: string): { kind: HeldStartKind; since: number } | null;
   list(): HeldStart[];
@@ -102,6 +119,8 @@ export function createAdmission(deps: AdmissionDeps): Admission {
   const queue = new Map<string, Entry>();
   /** Entries whose release is RUNNING now (already out of the queue): a repeat automatic request for the same workspace must not start a duplicate. */
   const releasing = new Map<string, { since: number; kind: HeldStartKind }>();
+  /** One-shot permits: "this member may be started NOW" — granted by a release, consumed by whichever wake site reaches `holdWake` first. */
+  const permits = new Set<string>();
   let seq = 0;
   let draining: Promise<void> | null = null;
   let rerun = false;
@@ -246,7 +265,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     return draining;
   }
 
-  return {
+  const api: Admission = {
     gate(a) {
       pruneUnowed(); // an entry a person already superseded must neither make a newcomer "join the line" nor swallow a repeat request
       // A release of this very workspace is running right now: report it as held (it IS starting) instead of starting it a second time.
@@ -260,7 +279,13 @@ export function createAdmission(deps: AdmissionDeps): Admission {
         return { held: false };
       }
       let entry = queue.get(a.wsId);
+      if (entry && kindRank(entry.kind) > kindRank(a.kind)) {
+        // A held SPAWN/RESTART already covers this member: a WAKE request is satisfied by that start (whatever the wake was for reaches the running member
+        // as a plain turn afterwards) — it must NOT replace the start's closure with a wake's.
+        return { held: true, since: entry.since, kind: entry.kind };
+      }
       if (entry) {
+        if (kindRank(a.kind) > kindRank(entry.kind)) entry.kind = a.kind; // a real start supersedes a held wake, keeping the slot
         entry.run = a.run; // the newest request wins; the original arrival (since, seq) is kept
         entry.stillOwed = a.stillOwed;
         entry.retryLater = a.retryLater;
@@ -273,6 +298,28 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       arm();
       if (!holding) void kick();
       return { held: true, since: entry.since, kind: entry.kind };
+    },
+    holdWake(a) {
+      if (!a.fleetMember || !a.sleeping) return { held: false }; // a turn to a running member, or a non-fleet workspace: never a held start
+      if (permits.delete(a.wsId)) return { held: false }; // its turn came: the release granted the permit, this call consumes it
+      return api.gate({
+        wsId: a.wsId,
+        ws: { parentId: 'fleet' },
+        origin: 'auto',
+        kind: 'wake',
+        coordinator: a.coordinator,
+        stillOwed: a.stillOwed,
+        report: a.report,
+        run: async () => {
+          permits.add(a.wsId);
+          try {
+            await a.retry();
+          } finally {
+            permits.delete(a.wsId); // never leave a stale permit that could bypass a LATER hold
+          }
+          return { ok: true };
+        },
+      });
     },
     heldFor(wsId) {
       pruneUnowed();
@@ -296,8 +343,10 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     stop() {
       disarm();
       queue.clear();
+      permits.clear();
     },
   };
+  return api;
 }
 
 // ─── The process-wide admission (index.ts wires the guard edge; workspaces / restart-workspace import the facade) ──────────────────────
@@ -316,6 +365,12 @@ export function heldStartFor(wsId: string): { kind: HeldStartKind; since: number
  *  is being released right now — is not "silent". */
 export function livenessSilencedByAdmission(wsId: string): boolean {
   return singleton.heldFor(wsId) !== null;
+}
+/** #287: hold an automatic wake of a SLEEPING fleet member. `{held:true}` = skip it — the site's durable pending state is untouched and the queue
+ *  re-runs `retry` when this member's turn comes (coordinators first, one at a time, a fresh reading each); `{held:false}` = go ahead (memory is
+ *  fine, or the release just granted this member's permit). */
+export function holdWake(args: WakeGateArgs): GateResult {
+  return singleton.holdWake(args);
 }
 /** Try to release the queue now (single-flight) — what a recovery edge, the retry timer and the release trigger of other start kinds call. */
 export function kickAdmission(): Promise<void> {

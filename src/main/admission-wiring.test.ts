@@ -136,12 +136,72 @@ test('startAdmission follows FI-2 item 5: SUBSCRIBE first, then reconcile (a boo
   assert.match(read('docs/codebase-map/resources.md'), /a late subscriber SUBSCRIBES FIRST, then reconciles/);
 });
 
-test('NOT in this track: no wake / prompt / recovery / Veille path consults Admission (réveil under low memory = #287)', () => {
-  const importers = fs
-    .readdirSync(path.join(root, 'src/main'))
-    .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-    .filter((f) => /from '\.\/admission(\.ts)?'/.test(read(`src/main/${f}`)))
-    .sort();
-  // Tripwire BY DESIGN: #287 (bus-wake) / #288 (Veille) add their importer HERE.
-  assert.deepEqual(importers, ['hooks-server.ts', 'index.ts', 'restart-workspace.ts', 'workspaces.ts']);
+test('who imports Admission: the #286 start gates + the #287 wake path; Veille (#288) and the alert (#289) are not here yet', () => {
+  const importers = (re: RegExp): string[] =>
+    fs
+      .readdirSync(path.join(root, 'src/main'))
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .filter((f) => re.test(read(`src/main/${f}`)))
+      .sort();
+  // Tripwires BY DESIGN: #288 (Veille) / #289 (alert) add their importer HERE.
+  assert.deepEqual(importers(/from '\.\/admission(\.ts)?'/), ['admission-wake.ts', 'bus-wake.ts', 'hooks-server.ts', 'index.ts', 'restart-workspace.ts', 'workspaces.ts']);
+  assert.deepEqual(importers(/from '\.\/admission-wake'/), ['api-handlers.ts', 'prompt-queue.ts', 'workspaces.ts']);
+});
+
+// ─── #287: the wake sites (each: the hold sits BEFORE anything is started or cleared, durable state untouched) ───────────────────────
+
+const wake = read('src/main/bus-wake.ts');
+const roster = read('src/main/wake-roster.ts');
+const pq = read('src/main/prompt-queue.ts');
+const api = read('src/main/api-handlers.ts');
+
+test('#287 bus-wake: the hold branch follows decideWake\'s skip handling, precedes the ledger mark and every counter; `continue`s on held; the release re-runs a GUARANTEED sweep', () => {
+  const body = fn(wake, 'export async function sweepBusWake(): Promise<void> {');
+  const skip = body.indexOf("if (action.kind === 'skip') {");
+  const hold = body.indexOf('const held = holdWake({');
+  const active = body.indexOf("logWakeableTransition(action.reader, 'active');");
+  const mark = body.indexOf('ledger.set(action.reader, ledgerEntry);');
+  assert.ok(skip > 0 && hold > skip && active > hold && mark > active, 'skip handling → hold → active transition → ledger mark');
+  const branch = body.slice(hold, active);
+  assert.match(body.slice(hold - 260, hold), /if \(action\.kind === 'fire' && entry\?\.fleetMember === true && entry\.sleeping === true\) \{/);
+  assert.match(branch, /retry: \(\) => sweepBusWakeNow\(\),/);
+  assert.match(branch, /logWakeableTransition\(reader, 'held-for-memory'\);\s*\n\s*continue;/);
+  assert.doesNotMatch(branch, /counters\.|ledger\./, 'a held réveil touches no counter and no ledger mark');
+  assert.match(wake, /export async function sweepBusWakeNow\(\): Promise<void> \{\s*\n\s*for \(let i = 0; sweeping && i < 200; i\+\+\)/);
+});
+
+test('#287 roster: fleetMember / sleeping / coordinator come from the real probes', () => {
+  assert.match(roster, /fleetMember: !!ws\.parentId,/);
+  assert.match(roster, /sleeping: !isRunning\(ws\.id\) && !sdkSessionLive\(ws\.id\),/);
+  assert.match(roster, /coordinator: canOrchestrate\(ws\),/);
+});
+
+test('#287 prompt-queue: the TIMER flush holds BEFORE the queue is cleared (Send now passes); the usage-limit nudge holds BEFORE the budget, the marker clear and the re-mark', () => {
+  const flush = fn(pq, 'export async function flushQueuedPrompts(');
+  const hold = flush.indexOf('wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {');
+  const clear = flush.indexOf('const cleared: Workspace = { ...ws, queuedPrompts: [] };');
+  const usage = flush.indexOf("'account still at its usage limit'");
+  assert.ok(usage > 0 && hold > usage && clear > hold, 'usage check → hold → clear');
+  assert.match(flush.slice(hold - 60, hold), /!opts\.force &&\s*\n\s*$/, 'the TIMER flush only: Send now (force) is a human click and passes');
+  const resume = fn(pq, 'async function resumeUsageLimited(now: number): Promise<void> {');
+  const rh = resume.indexOf("action === 'nudge' &&");
+  assert.ok(rh > resume.indexOf("if (action === 'wait') continue;") && rh < resume.indexOf('budget--;') && rh < resume.indexOf('await clearStopReason(ws.id).catch(() => {});\n    let woke'), 'wait → hold → budget → clear');
+  assert.match(resume.slice(rh, rh + 160), /wakeHeldForMemory\(ws, \(\) => resumeUsageLimited\(Date\.now\(\)\), \{/);
+});
+
+test('#287 peer message: a stopped fleet target is parked in the inbox (honest `inbox`) and woken by the queue; a failed park drops the hold', () => {
+  const from = ws.indexOf('export async function dispatchMessageRequest(');
+  const body = ws.slice(from, ws.indexOf('export interface BroadcastTargetResult', from));
+  const hold = body.indexOf('if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to))) {');
+  const wakeTry = body.indexOf('if (await wakeAgentWithPrompt(input.to, body)) {');
+  assert.ok(hold > 0 && wakeTry > hold, 'hold before the wake attempt');
+  assert.match(body.slice(hold, wakeTry), /if \(await queueInbox\(input\.to, body\)\) return \{ ok: true, delivery: 'inbox', branch: target\.branch \};\s*\n\s*dropHeldStart\(input\.to\);/);
+  assert.match(ws, /await new Promise\(\(r\) => setTimeout\(r, HELD_MESSAGE_DRAIN_GRACE_MS\)\);[^\n]*\n\s*await releaseAllInboxBlocks\(id, 'auto'\)/);
+});
+
+test('#287 recovery: the VIEW-OPEN recovery holds when it would resend pending prompts to a sleeping fleet member; the recycle/restart callers are NOT gated (they replace a running session — net 0)', () => {
+  assert.match(api, /if \(w && \(w\.sdkPendingPrompts \?\? \[\]\)\.length > 0 && wakeHeldForMemory\(w, recoverNow\)\) return;/);
+  const sdk = read('src/main/agent-sdk.ts');
+  assert.doesNotMatch(sdk, /admission/i, 'agent-sdk.ts (the B5 / D1.6 serialized seam) is untouched');
+  assert.doesNotMatch(read('src/main/session-watchdog.ts'), /admission/i);
 });

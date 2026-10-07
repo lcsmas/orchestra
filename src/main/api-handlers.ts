@@ -164,6 +164,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { memoryGuardView, setMemoryGuardSettings } from './memory-guard-settings.ts';
+import { wakeHeldForMemory } from './admission-wake';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { scheduleOpeningBrief } from './opening-brief-pty.ts';
@@ -1098,6 +1099,11 @@ export const apiHandlers: ApiHandlerTable = {
     // attach/replay events layer on top.
     void (async () => {
       await sdkAttachIfDetached(wsId);
+      // #287 Admission: a recovery that would RESEND pending prompts to a SLEEPING FLEET member STARTS its process — under low memory it WAITS (the pending prompts
+      // stay durable in `sdkPendingPrompts`; the queue re-runs the recovery when the member's turn comes). Attaching to a CLI that already runs is not a start.
+      const recoverNow = async (): Promise<void> => recoverPendingPrompts(wsId, await sdkHistory(wsId));
+      const w = store.getWorkspace(wsId);
+      if (w && (w.sdkPendingPrompts ?? []).length > 0 && wakeHeldForMemory(w, recoverNow)) return;
       await recoverPendingPrompts(wsId, events);
     })().catch((err) => log.warn(`agent:sdkHistory attach/recover failed for ${wsId}`, err));
     return events;

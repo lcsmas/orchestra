@@ -4,12 +4,19 @@
 //
 // An AUTOMATIC start of a FLEET MEMBER (a workspace with a coordinator) is held while the guard holds Admission; a human-initiated start
 // and a turn sent to an already-running member are never a held start. Held starts are released coordinators first, then in arrival
-// order, ONE at a time, each release preceded by a fresh reading (`mayReleaseOneStart`). Kinds held here: spawn (its brief stays owed)
-// and restart. A réveil (bus wake) is NOT held by this track — it stays pending with a "held for memory" reason in #287.
+// order, ONE at a time, each release preceded by a fresh reading (`mayReleaseOneStart`). Kinds held here: spawn (its brief stays owed),
+// restart, and (#287) WAKE — every automatic start of a SLEEPING fleet member (bus réveil, parked-prompt flush, usage-limit auto-resume,
+// a peer message to a stopped member, a view-open recovery): its durable pending state is untouched, the site skips it, the queue releases it.
 
 import type { MemoryGuardSnapshot } from './memory-guard.ts';
 
-export type HeldStartKind = 'spawn' | 'restart';
+export type HeldStartKind = 'spawn' | 'restart' | 'wake';
+
+/** A held SPAWN/RESTART is a real start and subsumes a held WAKE of the same member (the start brings the member up; whatever the wake was
+ *  for is then delivered to a RUNNING member as a plain turn): when two requests meet in one slot the higher rank wins. */
+export function kindRank(kind: HeldStartKind): number {
+  return kind === 'wake' ? 1 : 2;
+}
 export type StartOrigin = 'auto' | 'human';
 
 export interface HeldStart {
@@ -66,7 +73,8 @@ export function planRelease(held: readonly HeldStart[], snap: Pick<MemoryGuardSn
 
 /** What the OPS reads in `orchestra peers` / the spawn + restart reply: one phrase, with since-when. */
 export function heldPhrase(kind: HeldStartKind, sinceMs: number): string {
-  return `${kind} held for memory since ${new Date(sinceMs).toISOString()} — it starts when memory recovers (Admission)`;
+  const what = kind === 'wake' ? 'it is woken' : 'it starts';
+  return `${kind} held for memory since ${new Date(sinceMs).toISOString()} — ${what} when memory recovers (Admission)`;
 }
 
 /** What the COORDINATOR reads when a held start that was released then did not start: the "accepted, held" reply promised it would, so a failure

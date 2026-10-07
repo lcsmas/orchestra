@@ -22,6 +22,7 @@ import {
 } from '../shared/usage-resume.ts';
 import { clearStopReason, markStoppedOnUsageLimit } from './activity';
 import { pauseRefusal } from './pause-gate.ts';
+import { isSleeping, wakeHeldForMemory } from './admission-wake';
 
 // Prompt queue for usage-limited accounts. While a workspace's account is over
 // its 5h/7d limit, Claude answers every prompt with a "limit reached" error —
@@ -132,6 +133,20 @@ export async function flushQueuedPrompts(
     if (usage?.data && usageLimitedUntil(usage.data, now) !== null) {
       return { ok: false, delivered: 0, error: 'account still at its usage limit' };
     }
+  }
+
+  // #287 Admission: the TIMER flush of a SLEEPING FLEET member would START a process — under low memory it WAITS, BEFORE the queue is cleared: the parked prompts
+  // stay durable in the store exactly as they are, and the queue re-runs this flush when the member's turn comes. "Send now" (`force`, a human click) passes.
+  if (
+    !opts.force &&
+    wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {
+      stillOwed: () => {
+        const w = store.getWorkspace(id);
+        return !!w && !w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);
+      },
+    })
+  ) {
+    return { ok: false, delivered: 0, error: 'held for memory (Admission) — the parked prompts stay queued' };
   }
 
   // One turn, oldest-first. Joining beats submitting N separate turns: the
@@ -257,6 +272,19 @@ async function resumeUsageLimited(now: number): Promise<void> {
     });
 
     if (action === 'wait') continue;
+    // #287 Admission: a DUE nudge of a SLEEPING FLEET member would START a process — under low memory it WAITS, before the budget, the marker clear and the re-mark
+    // (the `usage_limit` marker stays put, no retry storm). The queue re-runs this tick when the member's turn comes; the permit lets this member through.
+    if (
+      action === 'nudge' &&
+      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now()), {
+        stillOwed: () => {
+          const w = store.getWorkspace(ws.id);
+          return !!w && !w.archived && w.lastStopReason === 'usage_limit' && isSleeping(ws.id);
+        },
+      })
+    ) {
+      continue;
+    }
     // Consumed only by a real resume — a `wait` costs nothing, or a fleet of
     // not-yet-due workspaces would exhaust the budget and starve the ones that
     // ARE due (the cap would then delay resumes instead of spreading them).
