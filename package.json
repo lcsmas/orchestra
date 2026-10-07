@@ -59,6 +59,8 @@
     "test:container-memory": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-container-memory.mjs",
     "test:container-memory-mutants": "node scripts/container-memory-mutants.mjs",
     "test:container-memory-shot": "bash scripts/e2e-contained-rig.sh node scripts/container-memory-screenshot.mjs",
+    "test:composed-night": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-composed-night.mjs",
+    "test:composed-night-mutants": "node scripts/composed-night-mutants.mjs",
     "canary:pause": "node scripts/pause-canary/run.mjs",
     "canary:pause-proof": "node scripts/pause-canary/run.mjs --proof",
     "canary:pause-bars-mutants": "node scripts/pause-canary/mutate-bars.mjs",

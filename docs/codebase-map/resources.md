@@ -207,6 +207,13 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   recipient written in its own try; bus/store not ready or facts unreadable ⇒ the timer re-arms, bounded); host `src/main/memory-alert-host.ts` (`startMemoryAlert` in `index.ts` right after the memory Pause: SUBSCRIBE FIRST, then reconcile — a boot while already held tells the
   episode once; Admission queue length via `listHeldStarts()`, Veille by `hibernatedAt`). A paused coordinator reads the row after its Reprise. Gates: `memory-alert.test.ts` (real bus + REAL guard), `memory-alert-wiring.test.ts`,
   `scripts/memory-alert/mutate-unit.mjs`, `scripts/e2e-memory-alert.mjs` (fake source → real guard → real alert host → the LEAD reads the row through the real built CLI; `RIG_REPO=<master tree>` = must-FAIL).
+- **Composed proof (#294, wave G ledger #295)**: the 2026-10-06 night replayed in miniature. `scripts/e2e-composed-night.mjs` (`pnpm run test:composed-night`, ~28 s, 12 named arms n0…n10) drives the REAL modules in ONE sequential scenario on a
+  falling FAKE MemAvailable source — real guard, Admission (spawn + restart chokepoints), bus-wake sweep, fast Veille, memory Pause host + Pause trap + Reprise, alert host, real hooks-server + the BUILT CLI — with agents stubbed at the SDK
+  delivery seam and Docker on the daemon-faithful `src/main/fake-docker.ts`; `RIG_UPTO=<arm>` stops after an arm, `RIG_REPO=<tree>` is the must-FAIL run (a2951db9: 11/12 arms red). `scripts/composed-night-mutants.mjs` (`pnpm run
+  test:composed-night-mutants`, heavy) = 43 in-place clause mutants of #285–#292 (anchors copied from the tracks' harnesses, `from` names the source row), each killed only by its NAMED arm + NAMED check. The packaged-app half:
+  `scripts/e2e-composed-drive.sh --build` then `--app <bin>` (`e2e-composed-drive.mjs`, 43 checks: banner, members' containers created THROUGH the keeper relay, memory Pause stops them, Reprise restarts them with data intact, the
+  many-container Reprise MEASURED, #287's `setWakeKeeperResident` in the real app) + `scripts/composed-drive-mutants.mjs` (build-level mutants: relay stamping, DOCKER_HOST, the keeper-resident wiring). Not in the night, by design: tool-tree
+  kill (the pause-trap rig's `memory-arm.mjs`), manual-Pause-in-effect, wake-OFF hold (G7's rig arms), #293 (arm added once it merges).
 - **Gates**: `src/shared/memory-guard.test.ts` (boundary ± 1 byte per comparison, episodes, jump, the 2026-10-06 night in
   miniature), `src/main/memory-guard.test.ts` (cadence on the injected scheduler AND on real `setTimeout` via `mock.timers`,
   logging, hot thresholds, unreadable), `memory-guard-settings.test.ts`, `memory-guard-wiring.test.ts` (source guards + the

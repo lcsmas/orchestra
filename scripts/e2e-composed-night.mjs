@@ -443,7 +443,9 @@ await arm('n7_reprise', async () => {
   const rst = (ws) => records?.bilanForMember(db, 'ws-ops', ws, c.paused_at)?.activity?.containers?.restarted?.map((x) => [x.id, x.outcome]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ?? null;
   check('the_bilan_records_each_restart_and_the_gone_one', [rst('ws-m1'), rst('ws-m2'), rst('ws-sub')], [[['c-m1-cache', 'started'], ['c-m1-db', 'started']], [['c-m2-app', 'started'], ['c-m2-gone', 'gone']], [['c-sub-q', 'started']]]);
   check('held_starts_stay_held_while_admission_is_held', [calls.start.length - startsBefore, admMod ? admMod.listHeldStarts().length >= 3 : false], [0, true]);
-  world.startMaxInFlight = startMaxInFlight;
+  check('the_reprise_restarts_one_container_at_a_time_back_to_back', startMaxInFlight, 1);   // G7 r2 note: sequential, NO MemAvailable / Admission check between starts (measured on the real daemon by the packaged drive)
+  const startAts = Object.entries(dockerAt).filter(([k]) => k.startsWith('start ')).map(([, t]) => t).sort((a, b) => a - b);
+  console.log(`NIGHT-MEASURE ${JSON.stringify({ containersRestarted: startAts.length, startGapsMs: startAts.slice(1).map((t, i) => t - startAts[i]), maxInFlight: startMaxInFlight })}`);
 });
 
 await arm('n7b_coordinators_after_containers', async () => {
