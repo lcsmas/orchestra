@@ -33,6 +33,8 @@ test('dockerContextHostViaCli: the CLI answer, trimmed; failure or silence → n
   assert.equal(await dockerContextHostViaCli({ PATH: `${bin}:${process.env.PATH}` }), 'unix:///fake/d.sock');
   fake('exit 3');
   assert.equal(await dockerContextHostViaCli({ PATH: `${bin}:${process.env.PATH}` }), null);
+  fake('echo unix:///must/not/be/believed.sock; exit 3'); // prints a host but FAILED: the answer of a failing CLI is not an answer
+  assert.equal(await dockerContextHostViaCli({ PATH: `${bin}:${process.env.PATH}` }), null);
   fake('true'); // exits 0 saying nothing
   assert.equal(await dockerContextHostViaCli({ PATH: `${bin}:${process.env.PATH}` }), null);
   fake('echo "h=$HOME dh=${DOCKER_HOST-unset}"');
