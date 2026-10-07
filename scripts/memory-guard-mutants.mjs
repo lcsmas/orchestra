@@ -27,6 +27,7 @@ const M = 'src/main/memory-guard.ts';
 const H = 'src/main/hooks-server.ts';
 const C = 'src/cli/index.ts';
 const ST = 'src/main/memory-guard-settings.ts';
+const V = 'src/shared/memory-guard-view.ts';
 // `expect` = a substring of the reddened unit test name or the rig arm that MUST be among the red ones.
 const MUTANTS = [
   { id: 'M01_held_lte', file: S, find: "if (admission === 'open' && availBytes < t.admissionBytes) {", to: "if (admission === 'open' && availBytes <= t.admissionBytes) {", expect: ['admission_held_boundary', 'b_held'] },
@@ -54,9 +55,16 @@ const MUTANTS = [
   { id: 'M23_format_held_lowercase', file: S, find: '`admission HELD since ', to: '`admission held since ', expect: ['formatMemoryGuardLine', 'walk'], cli: true },
   { id: 'M24_settings_no_validation', file: ST, find: 'if (!res.ok) return { ok: false, error: res.error, view: memoryGuardView(current) };', to: '', expect: ['invalid pair', 'invalid_refused'] },
   { id: 'M25_settings_no_resample', file: ST, find: '  sampleMemoryGuardNow();\n  return { ok: true', to: '  return { ok: true', expect: ['persisted AND applied at once', 'raised_applies_at_once'] },
+  // Settings dialog view logic (the React component itself is proven by the built-app drive, not here)
+  { id: 'V01_gauge_crit_lte', file: V, find: "availBytes < s.criticalGb * GIB ? 'crit'", to: "availBytes <= s.criticalGb * GIB ? 'crit'", expect: ['gauge: ticks'] },
+  { id: 'V02_gauge_warn_lte', file: V, find: "availBytes < s.admissionGb * GIB ? 'warn'", to: "availBytes <= s.admissionGb * GIB ? 'warn'", expect: ['gauge: ticks'] },
+  { id: 'V03_chip_pause_ignored', file: V, find: "if (s.pause === 'held') return", to: "if (false) return", expect: ['chip: HELD'] },
+  { id: 'V04_commit_always_patch', file: V, find: "  if (admissionGb === current.admissionGb && criticalGb === current.criticalGb) return { kind: 'unchanged' };\n", to: '', expect: ['commit: a valid changed pair'] },
+  { id: 'V05_commit_no_validation', file: V, find: "  if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };\n", to: '', expect: ['commit: invalid pairs'] },
+  { id: 'V06_comma_decimal', file: V, find: ".replace(',', '.')", to: '', expect: ['parseGbInput'] },
 ];
 
-const TESTS = ['src/shared/memory-guard.test.ts', 'src/main/memory-guard.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/memory-guard-wiring.test.ts'];
+const TESTS = ['src/shared/memory-guard.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/main/memory-guard.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/memory-guard-wiring.test.ts'];
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300_000, ...opts });
 

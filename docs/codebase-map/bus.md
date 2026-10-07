@@ -2516,6 +2516,12 @@ frozen-vs-live flag table (WIRE names). No write path. `runExists` (#206) tells 
 missing run row apart from a run frozen OFF (`runFlags` reads both as all-OFF): the
 CLI then prints "no such run (standalone …)" and `—` in the frozen column. `runStatusView` (`bus-runs.ts`) also returns `heldAt`/`heldBy` (#204): a HELD run prints `hold: HELD since <iso> by <holder>`; not held prints nothing.
 
+**`memory:` line (#285).** `/busStatus` also returns `memoryGuard` (the host-wide `MemoryGuardSnapshot`, `src/main/memory-guard.ts`) and the
+CLI prints one line from it after `bus:` — `memory: 12.3 GB available · admission open (holds below 6.0 GB) · memory Pause none (due below
+3.0 GB)`, or `admission HELD since <iso> (episode N; reopens above 7.0 GB)` / `memory Pause IN EFFECT since <iso>` / `toggle OFF`
+(`formatMemoryGuardLine`, shared). Not run-scoped; absent from an older app → no line. Held starts and unattributed containers join this
+line in #286 / #293. Map: [resources.md](resources.md) § Memory guard.
+
 ## D1a-bis BIDIRECTIONAL innermost-run wake routing (OQ2 ruling A, wake-side)
 
 The store-less CLI writes mail with the SENDER's run (unchanged; a socket
