@@ -18,6 +18,8 @@ import {
   nextSampleDelayMs,
   normalizeMemoryGuardSettings,
   parseMemAvailableBytes,
+  parseMemTotalBytes,
+  parseMemUsedBytes,
   patchMemoryGuardSettings,
   thresholdUnreachable,
   thresholdsFrom,
@@ -295,6 +297,18 @@ test('parseMemAvailableBytes reads MemAvailable (kB → bytes) and refuses every
   assert.equal(parseMemAvailableBytes(''), null);
   assert.equal(parseMemAvailableBytes('MemAvailable: lots kB\n'), null);
   assert.equal(parseMemAvailableBytes('XMemAvailable: 5 kB\n'), null, 'anchored at the line start');
+});
+
+test('mem_used: MemTotal − MemAvailable (resource monitor\'s "used"); null when EITHER line is missing — never total-minus-nothing', () => {
+  const text = 'MemTotal:       32768000 kB\nMemFree:         1000000 kB\nMemAvailable:    6291456 kB\n';
+  assert.equal(parseMemUsedBytes(text), (32768000 - 6291456) * 1024);
+  assert.equal(parseMemUsedBytes(text), gb(32768000 / 1048576) - gb(6), 'the difference, not the sum');
+  assert.ok((parseMemUsedBytes(text) as number) < (parseMemTotalBytes(text) as number), 'used < total');
+  assert.equal(parseMemUsedBytes('MemTotal: 32768000 kB\n'), null, 'no MemAvailable ⇒ null (not the whole total)');
+  assert.equal(parseMemUsedBytes('MemAvailable: 6291456 kB\n'), null, 'no MemTotal ⇒ null');
+  assert.equal(parseMemUsedBytes(''), null);
+  assert.equal(parseMemUsedBytes('MemTotal: 100 kB\nMemAvailable: 100 kB\n'), 0, 'a fully idle host reads 0 used, not null');
+  assert.equal(parseMemTotalBytes('MemTotal: lots kB\n'), null);
 });
 
 // ─── what a consumer asks ───────────────────────────────────────────────────────────────────────────────────────────

@@ -84,6 +84,9 @@ const MUTANTS = [
   { id: 'M49_commit_plans_against_stale_settings', file: UI, find: 'const basis = inflight.current.expected ?? settings;', to: 'const basis = settings;', expect: ['retype_during_flight'], ui: true },
   { id: 'M50_chip_dead_meter_shows_stale_figure', file: V, find: "s.measured ? ` — ${formatGb(s.availBytes)}` : ' — meter unreadable'", to: "` — ${formatGb(s.availBytes)}`", expect: ['chip_dead_meter'] },
   { id: 'M48_toggle_dropped_while_draft', file: UI, find: 'onChange={(e) => void apply({ admissionEnabled: e.target.checked })}', to: 'onChange={(e) => void (draft ? undefined : apply({ admissionEnabled: e.target.checked }))}', expect: ['slow_ipc'], ui: true },
+  { id: 'M51_used_is_sum', file: S, find: 'return total - avail;', to: 'return total + avail;', expect: ['mem_used'] },
+  { id: 'M52_used_without_avail_guard', file: S, find: 'if (total === null || avail === null) return null;', to: 'if (total === null) return null;', expect: ['mem_used'] },
+  { id: 'M53_monitor_ignores_parser', file: 'src/main/resource-monitor.ts', find: 'return parseMemUsedBytes(text); // the same parsers', to: 'return null; // the same parsers', expect: ['the resource monitor logs'] },
   // Settings dialog view logic (the React component itself is proven by the built-app drive, not here)
   { id: 'V01_gauge_crit_lte', file: V, find: "availBytes < s.criticalGb * GIB ? 'crit'", to: "availBytes <= s.criticalGb * GIB ? 'crit'", expect: ['gauge: ticks'] },
   { id: 'V02_gauge_warn_lte', file: V, find: "availBytes < s.admissionGb * GIB ? 'warn'", to: "availBytes <= s.admissionGb * GIB ? 'warn'", expect: ['gauge: ticks'] },

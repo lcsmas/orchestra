@@ -239,6 +239,22 @@ export function parseMemAvailableBytes(meminfo: string): number | null {
   return Number.isFinite(kb) ? kb * 1024 : null;
 }
 
+/** MemTotal in bytes from /proc/meminfo text; null when absent or not a number. */
+export function parseMemTotalBytes(meminfo: string): number | null {
+  const m = /^MemTotal:\s+(\d+)\s+kB/m.exec(meminfo);
+  if (!m) return null;
+  const kb = Number(m[1]);
+  return Number.isFinite(kb) ? kb * 1024 : null;
+}
+
+/** MemTotal − MemAvailable in bytes (what the resource monitor logs as "used"); null when EITHER line is missing — never total-minus-nothing. */
+export function parseMemUsedBytes(meminfo: string): number | null {
+  const total = parseMemTotalBytes(meminfo);
+  const avail = parseMemAvailableBytes(meminfo);
+  if (total === null || avail === null) return null;
+  return total - avail;
+}
+
 export function formatGb(bytes: number, digits = 1): string {
   return `${(bytes / GIB).toFixed(digits)} GB`;
 }

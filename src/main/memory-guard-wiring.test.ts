@@ -46,6 +46,15 @@ test('the settings handlers go through the validated hot write; channel names ma
   }
 });
 
+test('the resource monitor logs "used" through the shared parser the guard tests pin (readMemUsedBytes is un-importable under node --test)', () => {
+  const rm = read('src/main/resource-monitor.ts');
+  const body = rm.slice(rm.indexOf('export function readMemUsedBytes()'));
+  const fn = body.slice(0, body.indexOf('\n}\n'));
+  assert.match(fn, /return parseMemUsedBytes\(text\);/);
+  assert.doesNotMatch(fn, /MemAvailable|MemTotal/, 'no second hand-rolled parse of /proc/meminfo left behind');
+  assert.match(rm, /import \{ parseMemUsedBytes \} from '..\/shared\/memory-guard';/);
+});
+
 test('no start path imports the guard yet: this track decides and shows, it holds nothing (#286 does)', () => {
   const importers = fs
     .readdirSync(path.join(root, 'src/main'))

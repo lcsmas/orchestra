@@ -3,7 +3,7 @@
 // (the guard then holds nothing): os.freemem() is NOT an equivalent (macOS "free" excludes reclaimable cache and sits far below 3 GB).
 
 import fs from 'node:fs';
-import { parseMemAvailableBytes } from '../shared/memory-guard.ts';
+import { parseMemAvailableBytes, parseMemTotalBytes } from '../shared/memory-guard.ts';
 
 /** MemAvailable in bytes; null when unreadable or not Linux — never a fabricated figure. */
 export function readMemAvailableBytes(): number | null {
@@ -19,8 +19,7 @@ export function readMemAvailableBytes(): number | null {
 export function readMemTotalBytes(): number | null {
   if (process.platform !== 'linux') return null;
   try {
-    const m = /^MemTotal:\s+(\d+)\s+kB/m.exec(fs.readFileSync('/proc/meminfo', 'utf8'));
-    return m ? Number(m[1]) * 1024 : null;
+    return parseMemTotalBytes(fs.readFileSync('/proc/meminfo', 'utf8'));
   } catch {
     return null;
   }
