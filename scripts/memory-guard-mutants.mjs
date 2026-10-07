@@ -146,7 +146,7 @@ const base = unitRed();
 const baseRig = rigRed();
 const baseModal = modalRed();
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} | modal: ${baseModal.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 9) || baseModal.fails.length || (!noRig && baseModal.pass !== 9)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 9) || baseModal.fails.length || (!noRig && baseModal.pass !== 10)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;
