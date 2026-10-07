@@ -27,10 +27,12 @@ test('CONTROL: the slices are the real functions', () => {
   assert.match(stopFn, /clearInterval\(timer\)/);
 });
 
-test('the sweep asks the hold question ONCE per pass, through the guard facade snapshot — never its own meter read (FI-2)', () => {
+test('the sweep asks the hold question PER MEMBER, at the verdict, through the guard facade snapshot — never its own meter read (FI-2)', () => {
   assert.match(sweepFn, /const guardSnap = getMemoryGuardSnapshot\(\);\s*const admissionHeld = isAdmissionHolding\(guardSnap\);/);
-  assert.equal((sweepFn.match(/getMemoryGuardSnapshot\(\)/g) ?? []).length, 1, 'one reading per pass, before the loop');
-  assert.ok(sweepFn.indexOf('getMemoryGuardSnapshot()') < sweepFn.indexOf('for (const ws of store.workspaces)'));
+  assert.equal((sweepFn.match(/getMemoryGuardSnapshot\(\)/g) ?? []).length, 1);
+  const loop = sweepFn.indexOf('for (const ws of store.workspaces)');
+  const read = sweepFn.indexOf('getMemoryGuardSnapshot()');
+  assert.ok(loop > 0 && read > loop && read < sweepFn.indexOf('shouldHibernate(ws, signals)'), 'read INSIDE the loop, before the verdict: a hold that ended mid-pass stops acting on the members after it');
   assert.doesNotMatch(src, /sampleMemoryGuardNow|\/proc\/meminfo|readMemAvailableBytes/, 'the sweep reads the cached snapshot: no sampling, no /proc read');
   assert.match(sweepFn, /admissionHeld,\s*\n\s*\};/, 'passed to the pure rule as a signal');
 });
@@ -44,15 +46,16 @@ test('the Admission-held edge triggers one sweep; subscribe FIRST, then reconcil
   const sub = startFn.indexOf('subscribeMemoryGuard(');
   const reconcile = startFn.indexOf('isAdmissionHolding(getMemoryGuardSnapshot())');
   assert.ok(sub > 0 && reconcile > sub, 'subscribe, then the boot reconcile');
-  assert.match(startFn, /e\.transition\.kind === 'admission_held' && isAdmissionHolding\(e\.snapshot\)\) requestSweep\(\);/);
+  assert.match(startFn, /e\.transition\.kind === 'admission_held' && isAdmissionHolding\(e\.snapshot\)\) sweepNow\(\);/);
   assert.doesNotMatch(startFn, /admission_reopened|pause_due|pause_liftable/, 'only the held edge sweeps');
 });
 
-test('the timer and the trigger share ONE single-flight (two passes never stop the same session); the stop path unsubscribes', () => {
-  assert.match(src, /const sweeper = coalescedRunner\(sweepHibernation, /);
-  assert.match(src, /const requestSweep = \(\): void => sweeper\.request\(\);/);
-  assert.match(startFn, /timer = setInterval\(requestSweep, sweepMs\);/);
-  assert.doesNotMatch(startFn, /void sweepHibernation\(\)/, 'no direct, un-coalesced sweep from the timer');
+test('the periodic tick and the held edge are the SAME un-queued sweep (overlap is safe: sdkStop sets `stopping` synchronously); the stop path unsubscribes', () => {
+  assert.match(src, /const sweepNow = \(\): void => void sweepHibernation\(\)\.catch\(\(e\) => hlog\.swallow\('sweep', e\)\);/);
+  assert.match(startFn, /timer = setInterval\(sweepNow, sweepMs\);/);
+  assert.match(startFn, /isAdmissionHolding\(e\.snapshot\)\) sweepNow\(\);/);
+  assert.match(startFn, /isAdmissionHolding\(getMemoryGuardSnapshot\(\)\)\) sweepNow\(\);/);
+  assert.doesNotMatch(src, /coalescedRunner|requestSweep/, 'no queue / single-flight (a queued re-run would DELAY a held edge behind a slow pass)');
   assert.match(stopFn, /unsubscribeGuard\?\.\(\);\s*unsubscribeGuard = null;/);
   assert.ok(startFn.indexOf('HIBERNATION_DISABLED') < startFn.indexOf('subscribeMemoryGuard('), 'the disabled kill switch returns BEFORE any subscription');
 });

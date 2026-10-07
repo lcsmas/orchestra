@@ -24,7 +24,7 @@
 //   no_coordinator   ★ a session without a coordinator is not affected (while its fleet sibling goes)
 //   edge_sweep       ★ must-FAIL on master  the real sweeper started (periodic cadence set to 1 h): the `admission_held` edge sweeps NOW, not at the next tick
 //   boot_held        ★ must-FAIL on master  the sweeper started while Admission is ALREADY held → one sweep at boot (subscribe first, then reconcile)
-//   edge_no_overlap  ★ two held edges during one slow teardown never run two passes over the same session (one stop, one "hibernating" line)
+//   reopen_mid_pass  ★ the hold ENDS while a pass is still stopping its first member → the members after it are spared (the hold is read per member)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-fast-veille.mjs   (RIG_REPO=<tree> = the must-FAIL run on master)
 
@@ -38,7 +38,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'edge_no_overlap'];
+const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass'];
 const GIB = 1024 ** 3;
 const MIN = 60_000;
 
@@ -375,20 +375,17 @@ if (ARM === 'boot_held') {
   verdict();
 }
 
-if (ARM === 'edge_no_overlap') {
-  await mkMember('ws-a');
+if (ARM === 'reopen_mid_pass') {
+  const X = await mkMember('ws-x');
+  const Y = await mkMember('ws-y');
   skew(1);
-  callsByWs.get('ws-a')[0].interruptDelay = 1500;                          // a slow graceful close keeps the first pass in flight
-  hib.startHibernationSweeper();
-  await sleep(300);
-  setMem(4); check('held_1', holding(), true);                             // edge 1 → pass 1 starts, blocks in the stop
-  await until(() => interrupted('ws-a') >= 1, 4000);
-  setMem(12); check('reopened', holding(), false);
-  setMem(4); check('held_2', holding(), true);                             // edge 2 during pass 1 → must queue ONE re-run, never overlap
-  const went = await until(() => !live('ws-a') && !!wsOf('ws-a')?.hibernatedAt, 8000);
-  await sleep(1500);                                                       // let a (wrong) second pass or a queued re-run finish
-  check('veille_done', went, true);
-  check('one_stop_one_line', { interrupts: interrupted('ws-a'), lines: veilleLines('ws-a').length }, { interrupts: 1, lines: 1 });
+  callsByWs.get(X)[0].interruptDelay = 1500;                               // X's graceful close is slow: the pass stays in flight for 1.5 s
+  setMem(4); check('admission_held', holding(), true);
+  const pass = hib.sweepHibernation();                                     // X first (store order): the pass blocks in X's stop
+  check('x_stop_started', await until(() => interrupted(X) >= 1, 4000), true);
+  setMem(12); check('admission_reopened', holding(), false);               // the hold ends while the pass is still stopping X
+  const taken = await pass;
+  check('x_went_y_spared', { taken, yLive: live(Y), yChip: !!wsOf(Y).hibernatedAt }, { taken: [X], yLive: true, yChip: false });
   verdict();
 }
 

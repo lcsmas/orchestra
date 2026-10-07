@@ -46,7 +46,6 @@ import { idleClockOf } from './idle-clock.ts';
 // Fast Veille (#288): the hold question is `isAdmissionHolding(getMemoryGuardSnapshot())` and nothing else (ledger #295 FI-2).
 import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';
 import { isAdmissionHolding } from '../shared/memory-guard.ts';
-import { coalescedRunner } from '../shared/coalesced-runner.ts';
 import type { Workspace } from '../shared/types';
 
 const hlog = scoped('hibernate');
@@ -143,9 +142,6 @@ export async function sweepHibernation(): Promise<string[]> {
   if (thresholdMs === HIBERNATION_DISABLED) return [];
   const now = Date.now();
   const hibernated: string[] = [];
-  // ONE reading per pass (FI-2): every member sees the same hold decision. Held ⇒ an idle fleet member is past its threshold (#288).
-  const guardSnap = getMemoryGuardSnapshot();
-  const admissionHeld = isAdmissionHolding(guardSnap);
 
   for (const ws of store.workspaces) {
     if (isBeingDeleted(ws.id)) continue; // delete owns the teardown (#205)
@@ -154,6 +150,10 @@ export async function sweepHibernation(): Promise<string[]> {
     // Unseen workspaces idle from the app-start floor, bounded by createdAt —
     // otherwise a session quietly live since launch would never become eligible.
     const lastActivityAt = idleClockOf(ws);
+    // Fast Veille (#288): held ⇒ an idle fleet member is past its threshold. Read PER MEMBER (the cached snapshot, no I/O — FI-2): a pass can spend 5 s
+    // per stop, and a hold that ended mid-pass must stop acting on the members after it.
+    const guardSnap = getMemoryGuardSnapshot();
+    const admissionHeld = isAdmissionHolding(guardSnap);
 
     const signals = {
       now,
@@ -211,10 +211,9 @@ export async function sweepHibernation(): Promise<string[]> {
   return hibernated;
 }
 
-/** The periodic timer and the Admission-held trigger share ONE single-flight: two passes never overlap (both would stop the same session) and a
- *  request mid-pass folds into one re-run. `sweepHibernation` stays directly callable for the rigs. */
-const sweeper = coalescedRunner(sweepHibernation, (e) => hlog.swallow('sweep', e));
-const requestSweep = (): void => sweeper.request();
+/** The periodic tick and the Admission-held trigger. Overlapping passes are safe: `sdkSessionLive` is false from the moment `sdkStop` sets
+ *  `session.stopping` (synchronously), so a second pass skips a member already being stopped. */
+const sweepNow = (): void => void sweepHibernation().catch((e) => hlog.swallow('sweep', e));
 
 /** Start the periodic sweeper (called once from the main bootstrap). */
 export function startHibernationSweeper(): void {
@@ -233,15 +232,15 @@ export function startHibernationSweeper(): void {
     `session hibernation on — idle threshold ${formatIdleDuration(thresholdMs)} (${thresholdMs}ms), ` +
       `sweep every ${formatIdleDuration(sweepMs)} (${sweepMs}ms)`,
   );
-  timer = setInterval(requestSweep, sweepMs);
+  timer = setInterval(sweepNow, sweepMs);
   // Never hold the event loop open for housekeeping.
   timer.unref?.();
   // Fast Veille (#288): when Admission becomes held, sweep NOW instead of waiting out the periodic timer (up to 5 min of idle members' RAM
   // under pressure). SUBSCRIBE FIRST, then reconcile from the guard's current state (FI-2 item 5): a boot while already held sweeps once.
   unsubscribeGuard = subscribeMemoryGuard((e) => {
-    if (e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)) requestSweep();
+    if (e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)) sweepNow();
   });
-  if (isAdmissionHolding(getMemoryGuardSnapshot())) requestSweep();
+  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();
 }
 
 export function stopHibernationSweeper(): void {

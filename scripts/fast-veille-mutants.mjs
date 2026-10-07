@@ -21,7 +21,6 @@ const noRig = args.includes('--no-rig');
 
 const SH = 'src/shared/hibernation.ts';
 const HB = 'src/main/hibernation.ts';
-const CR = 'src/shared/coalesced-runner.ts';
 const FAST = '  if (admissionHeld && isFleetMember(ws)) return true;\n';
 const GUARD_ARMS = ['guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting'];
 // Move the fast clause to sit just BEFORE one guard line (so that guard — and every one after it — is bypassed).
@@ -52,29 +51,23 @@ const MUTANTS = [
   { id: 'L05_one_decimal', file: SH, find: 'formatGb(snap.availBytes, 2)', to: 'formatGb(snap.availBytes, 1)', expect: ['names MemAvailable (2 decimals)', 'rig:held_veille'], arms: ['held_veille'] },
   { id: 'L06_mem_not_named', file: SH, find: '` — Admission HELD, ${mem}${early', to: '` — Admission HELD${early', expect: ['names MemAvailable (2 decimals)', 'rig:held_veille'], arms: ['held_veille'] },
   // ── sweeper (main/hibernation.ts) ──
-  { id: 'S01_never_held', file: HB, find: 'const admissionHeld = isAdmissionHolding(guardSnap);', to: 'const admissionHeld = false;', expect: ['ONCE per pass', 'rig:held_veille', 'rig:edge_sweep', 'rig:boot_held'], arms: ['held_veille', 'edge_sweep', 'boot_held'] },
-  { id: 'S02_ignores_the_toggle', file: HB, find: 'const admissionHeld = isAdmissionHolding(guardSnap);', to: "const admissionHeld = guardSnap.admission === 'held';", expect: ['ONCE per pass', 'rig:toggle_off'], arms: ['toggle_off'] },
+  { id: 'S01_never_held', file: HB, find: 'const admissionHeld = isAdmissionHolding(guardSnap);', to: 'const admissionHeld = false;', expect: ['PER MEMBER', 'rig:held_veille', 'rig:edge_sweep', 'rig:boot_held'], arms: ['held_veille', 'edge_sweep', 'boot_held'] },
+  { id: 'S02_ignores_the_toggle', file: HB, find: 'const admissionHeld = isAdmissionHolding(guardSnap);', to: "const admissionHeld = guardSnap.admission === 'held';", expect: ['PER MEMBER', 'rig:toggle_off'], arms: ['toggle_off'] },
   { id: 'S03_early_never', file: HB, find: 'const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false });', to: 'const early = false;', expect: ['log tail', 'rig:held_veille', 'rig:held_mixed'], arms: ['held_veille', 'held_mixed'] },
   { id: 'S04_early_always', file: HB, find: 'const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false });', to: 'const early = admissionHeld;', expect: ['log tail', 'rig:held_mixed'], arms: ['held_mixed'] },
-  { id: 'S05_signal_not_passed', file: HB, find: '      admissionHeld,\n    };', to: '      admissionHeld: false,\n    };', expect: ['ONCE per pass', 'rig:held_veille'], arms: ['held_veille'] },
+  { id: 'S05_signal_not_passed', file: HB, find: '      admissionHeld,\n    };', to: '      admissionHeld: false,\n    };', expect: ['PER MEMBER', 'rig:held_veille'], arms: ['held_veille'] },
   { id: 'S06_wrong_edge', file: HB, find: "e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)", to: "e.transition.kind === 'admission_reopened' && isAdmissionHolding(e.snapshot)", expect: ['Admission-held edge triggers', 'rig:edge_sweep'], arms: ['edge_sweep'] },
-  { id: 'S07_edge_sweeps_toggle_off', file: HB, find: " && isAdmissionHolding(e.snapshot)) requestSweep();", to: ') requestSweep();', expect: ['Admission-held edge triggers'], arms: [] },
-  { id: 'S08_no_boot_reconcile', file: HB, find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) requestSweep();\n', to: '', expect: ['Admission-held edge triggers', 'rig:boot_held'], arms: ['boot_held'] },
-  { id: 'S09_reconcile_before_subscribe', file: HB, edits: [{ find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) requestSweep();\n', to: '' }, { find: '  unsubscribeGuard = subscribeMemoryGuard((e) => {', to: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) requestSweep();\n  unsubscribeGuard = subscribeMemoryGuard((e) => {' }], expect: ['Admission-held edge triggers'], arms: [] },
-  { id: 'S10_timer_uncoalesced', file: HB, find: 'timer = setInterval(requestSweep, sweepMs);', to: 'timer = setInterval(() => void sweepHibernation(), sweepMs);', expect: ['ONE single-flight'], arms: [] },
-  { id: 'S11_edge_uncoalesced', file: HB, find: 'const requestSweep = (): void => sweeper.request();', to: 'const requestSweep = (): void => void sweepHibernation();', expect: ['ONE single-flight', 'rig:edge_no_overlap'], arms: ['edge_no_overlap'] },
+  { id: 'S07_edge_sweeps_toggle_off', file: HB, find: " && isAdmissionHolding(e.snapshot)) sweepNow();", to: ') sweepNow();', expect: ['Admission-held edge triggers'], arms: [] },
+  { id: 'S08_no_boot_reconcile', file: HB, find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n', to: '', expect: ['Admission-held edge triggers', 'rig:boot_held'], arms: ['boot_held'] },
+  { id: 'S09_reconcile_before_subscribe', file: HB, edits: [{ find: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n', to: '' }, { find: '  unsubscribeGuard = subscribeMemoryGuard((e) => {', to: '  if (isAdmissionHolding(getMemoryGuardSnapshot())) sweepNow();\n  unsubscribeGuard = subscribeMemoryGuard((e) => {' }], expect: ['Admission-held edge triggers'], arms: [] },
+  { id: 'S10_timer_never_ticks', file: HB, find: 'timer = setInterval(sweepNow, sweepMs);', to: 'timer = setInterval(() => {}, sweepMs);', expect: ['SAME un-queued sweep'], arms: [] },
+  { id: 'S11_sweep_rejection_unhandled', file: HB, find: ".catch((e) => hlog.swallow('sweep', e));\n", to: ';\n', expect: ['SAME un-queued sweep'], arms: [] },
   { id: 'S12_no_unsubscribe', file: HB, find: '  unsubscribeGuard?.();\n  unsubscribeGuard = null;\n', to: '', expect: ['stop path unsubscribes'], arms: [] },
-  { id: 'S13_snapshot_per_member', file: HB, find: '  const guardSnap = getMemoryGuardSnapshot();\n  const admissionHeld = isAdmissionHolding(guardSnap);\n\n  for (const ws of store.workspaces) {\n', to: '  for (const ws of store.workspaces) {\n    const guardSnap = getMemoryGuardSnapshot();\n    const admissionHeld = isAdmissionHolding(guardSnap);\n', expect: ['ONCE per pass'], arms: [] },
-  { id: 'S14_sweep_samples_the_meter', file: HB, find: 'const guardSnap = getMemoryGuardSnapshot();', to: 'const guardSnap = sampleMemoryGuardNow();', expect: ['ONCE per pass'], arms: [], extra: [{ find: "import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';" }] },
-  // ── single-flight (shared/coalesced-runner.ts) ──
-  { id: 'C01_owed_rerun_dropped', file: CR, find: '        again = true;\n        return;\n', to: '        return;\n', expect: ['fold into exactly ONE re-run', 'not lost'], arms: [] },
-  { id: 'C02_no_rerun_loop', file: CR, find: '} while (again);', to: '} while (false);', expect: ['fold into exactly ONE re-run', 'not lost'], arms: [] },
-  { id: 'C03_overlap_allowed', file: CR, find: '      if (inFlight) {\n        again = true;\n        return;\n      }\n', to: '', expect: ['never overlap'], arms: [] },
-  { id: 'C04_error_swallowed', file: CR, find: '          } catch (e) {\n            onError(e);\n          }', to: '          } catch (e) {\n            void e;\n          }', expect: ['throwing job is reported'], arms: [] },
-  { id: 'C05_never_idle_again', file: CR, find: '.finally(() => {\n        inFlight = null;\n      })', to: '.finally(() => {\n        void 0;\n      })', expect: ['idle afterwards'], arms: [] },
+  { id: 'S13_snapshot_hoisted_out_of_the_loop', file: HB, edits: [{ find: '    const guardSnap = getMemoryGuardSnapshot();\n    const admissionHeld = isAdmissionHolding(guardSnap);\n\n    const signals = {', to: '    const signals = {' }, { find: '  for (const ws of store.workspaces) {\n    if (isBeingDeleted(ws.id)) continue;', to: '  const guardSnap = getMemoryGuardSnapshot();\n  const admissionHeld = isAdmissionHolding(guardSnap);\n  for (const ws of store.workspaces) {\n    if (isBeingDeleted(ws.id)) continue;' }], expect: ['PER MEMBER', 'rig:reopen_mid_pass'], arms: ['reopen_mid_pass'] },
+  { id: 'S14_sweep_samples_the_meter', file: HB, find: 'const guardSnap = getMemoryGuardSnapshot();', to: 'const guardSnap = sampleMemoryGuardNow();', expect: ['PER MEMBER'], arms: [], extra: [{ find: "import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';" }] },
 ];
 
-const TESTS = ['src/shared/hibernation.test.ts', 'src/shared/coalesced-runner.test.ts', 'src/main/hibernation-fast-veille-wiring.test.ts', 'src/main/memory-guard-wiring.test.ts', 'src/main/hibernation-no-disk.test.ts'];
+const TESTS = ['src/shared/hibernation.test.ts', 'src/main/hibernation-fast-veille-wiring.test.ts', 'src/main/memory-guard-wiring.test.ts', 'src/main/hibernation-no-disk.test.ts'];
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300_000, ...opts });
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }, ...(m.extra ?? [])];
