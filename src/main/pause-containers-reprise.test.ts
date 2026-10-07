@@ -410,3 +410,41 @@ test('#2-fu an UNRELATED lifted run (another tree) with a restart still owed is 
   assert.deepEqual(d.calls, [], 'another tree\'s containers are not L\'s to restart');
   db.close();
 });
+
+const setFlag = (db: bus.BusDb, run: string, key: string, v: boolean): void => {
+  const row = db.prepare('SELECT flags FROM run_flags WHERE run_id = ?').get(run) as { flags: string };
+  const f = JSON.parse(row.flags) as Record<string, boolean>;
+  f[key] = v;
+  db.prepare('UPDATE run_flags SET flags = ? WHERE run_id = ?').run(JSON.stringify(f), run);
+};
+
+test('#4-fu (seat 1 W4) an ancestor whose `pause` switch is OFF (a stale paused column) carries NO pause: the child\'s container restart is not deferred for it', async () => {
+  const { db } = nested();
+  setFlag(db, 'L', 'pause', false);
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), true, 'a switch-OFF ancestor is inert: nothing covers O, the container is owed NOW');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.equal(d.running('db'), true, 'restarted — it would stay down for ever (nobody Reprises a switch-OFF ancestor)');
+  db.close();
+});
+
+test('#4-fu (seat 1 W6) with NO live workspace tree the bus run tree decides: a standing ancestor Pause still defers the child', async () => {
+  const { db } = nested();
+  setLiveTreeSource(() => null);
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), false, 'bus tree: L (O\'s parent run) is paused and not resuming');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'nothing restarted under the outer Pause');
+  db.close();
+});
+
+test('#4-fu (seat 1 W5) a DANGLING live chain (the parent is missing from the live tree) falls back to the bus run tree', async () => {
+  const { db } = nested();
+  const dangling: WaveNode[] = [{ id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'o1', parentId: 'O' }];
+  setLiveTreeSource(() => ({ get: (id) => dangling.find((w) => w.id === id), ids: () => dangling.map((w) => w.id) }));
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), false, 'the live chain dangles at L: the bus tree still says L stands');
+  db.close();
+});

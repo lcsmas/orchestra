@@ -84,13 +84,14 @@ test('RETRY MERGES BY ID: a container an earlier attempt stopped is not touched 
   const d = mk();
   const prior = { stopped: [{ id: 'db', name: 'g-db', image: 'mysql:8', run: 'run-1', outcome: 'stopped', atMs: 1 }, { id: 'web', name: 'g-web', image: 'nginx', run: 'run-1', outcome: 'failed', error: 'earlier', atMs: 1 }] as ContainerStopEntry[] };
   d.containers.find((c) => c.id === 'db')!.running = true; // listed RUNNING again (someone started it): the earlier entry still wins — the same container is never handled twice
-  const seen: number[] = [];
-  const r = await stopAttributedContainers(d, WS, { ...base, prior, onProgress: (c) => seen.push(c.stopped.length) });
+  const seen: Array<Array<[string, string]>> = [];
+  const r = await stopAttributedContainers(d, WS, { ...base, prior, onProgress: (c) => seen.push(c.stopped.map((x) => [x.id, x.outcome])) });
   assert.ok(!d.calls.some((c) => c.startsWith('stop db')), 'never stopped twice');
   assert.ok(d.calls.includes('stop web t=10'), 'the failed one is tried again');
   assert.equal(r.containers.stopped.find((x) => x.id === 'web')!.outcome, 'stopped');
   assert.equal(r.containers.stopped.find((x) => x.id === 'db')!.atMs, 1, 'the earlier entry is kept as is');
-  assert.ok(seen.length >= 1 && seen.every((x, i) => i === 0 || x >= seen[i - 1]) && seen[seen.length - 1] > seen[0] - 1, `progress is persisted container by container (never shrinking, write-ahead + final per stop): ${seen}`);
+  assert.deepEqual(seen[0]?.find((x) => x[0] === 'web'), ['web', 'stopping'], 'the write-ahead entry is persisted BEFORE the stop call');
+  assert.deepEqual(seen[seen.length - 1], r.containers.stopped.map((x) => [x.id, x.outcome]), 'the LAST progress write is the final state: each stop is durable at once, not only at the end of the step');
 });
 
 test('a row whose label is not the member\'s is never acted on even if a daemon returned it (the stop is destructive: the label is re-asserted)', async () => {
