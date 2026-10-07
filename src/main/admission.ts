@@ -264,9 +264,11 @@ export function listHeldStarts(): HeldStart[] {
 /** Release trigger: the guard reopening Admission (memory back above threshold + margin) tries to release at once. */
 export function startAdmission(): void {
   if (unsubscribe) return;
+  // SUBSCRIBE FIRST, then reconcile from the guard's current state (FI-2 item 5 v1.1): an edge between a snapshot and a later subscribe is lost.
   unsubscribe = subscribeMemoryGuard((e) => {
     if (e.transition.kind === 'admission_reopened') void singleton.kick();
   });
+  void singleton.kick(); // the reconcile: whatever is already queued meets a FRESH reading now (it samples; a still-held guard just waits)
 }
 export function stopAdmission(): void {
   unsubscribe?.();

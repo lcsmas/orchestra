@@ -142,7 +142,7 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   Snapshot fields consumers lean on (review m5): `mayReleaseOneStart` = the LATEST decision (false while the meter is unreadable, even though
   `availBytes` still shows the last good reading; false before the first sample) and `pauseCycle` (+ on every edge) numbering memory Pauses —
   a 2nd Pause inside ONE Admission `episode` is the next cycle. **No replay**: `subscribeMemoryGuard` delivers only edges AFTER it returns;
-  a late subscriber reconciles from `getMemoryGuardSnapshot()` first. Edge delivery is one FIFO drain and a listener is never re-entered
+  a late subscriber SUBSCRIBES FIRST, then reconciles from `getMemoryGuardSnapshot()` (never snapshot-then-subscribe: an edge between the two is lost — FI-2 item 5 v1.1). Edge delivery is one FIFO drain and a listener is never re-entered
   (a listener may call `sampleMemoryGuardNow()`: its edges queue behind the batch being delivered). One WARN per (threshold, machine) when
   Admission + 1 GB can never be reached on this host (`thresholdUnreachable`; e.g. the default 6 GB on a 4 GB machine). Started in `index.ts` right after `startHooksServer()` (store already loaded — so the first `bus-status` has a reading; reader =
   `store.getMemoryGuardSettings()`), stopped in `shutdownSubsystems`.

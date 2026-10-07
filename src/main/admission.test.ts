@@ -333,6 +333,25 @@ test('throwing_still_owed_is_treated_as_owed: a store hiccup while checking neve
   assert.ok(w.warns.some((l) => /stillOwed of held spawn of a threw — treated as still owed/.test(l)));
 });
 
+test('subscribe_then_reconcile: an edge that landed BEFORE startAdmission subscribed is not lost — the boot reconcile releases what is already queued', async () => {
+  const w = world();
+  setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
+  let mem: number | null = 4;
+  const guard = __rebuildMemoryGuardForTests({ schedule: () => ({}), cancel: () => {}, info: () => {}, warn: () => {} }, () => (mem === null ? null : gb(mem)));
+  guard.start();
+  __rebuildAdmissionForTests({ ...w.deps, sample: () => guard.sampleNow() });
+  assert.equal(admissionGate(args(w, 'a')).held, true);
+  mem = 9;
+  guard.sampleNow(); // admission_reopened is emitted NOW — nobody subscribed yet, the edge is gone
+  assert.deepEqual(w.ran, []);
+  startAdmission();
+  for (let i = 0; i < 20 && w.ran.length < 1; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(w.ran, ['a'], 'the reconcile kick found memory back and released it');
+  stopAdmission();
+  guard.stop();
+  __rebuildMemoryGuardForTests();
+});
+
 test('facade: the process-wide gate + the guard edge that reopens Admission triggers the release', async () => {
   const w = world();
   setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);

@@ -89,6 +89,15 @@ test('lifecycle: admission starts right after the guard and stops before it', ()
   assert.ok(shutdown.indexOf('stopAdmission();') > 0 && shutdown.indexOf('stopAdmission();') < shutdown.indexOf('stopMemoryGuard();'), 'stopped inside shutdownSubsystems, before the guard');
 });
 
+test('startAdmission follows FI-2 item 5: SUBSCRIBE first, then reconcile (a boot kick) — and the no-replay wording says so', () => {
+  const adm = read('src/main/admission.ts');
+  const body = adm.slice(adm.indexOf('export function startAdmission(): void {'));
+  const fnBody = body.slice(0, body.indexOf('\n}\n'));
+  assert.ok(fnBody.indexOf('subscribeMemoryGuard(') > 0 && fnBody.indexOf('subscribeMemoryGuard(') < fnBody.indexOf('void singleton.kick(); // the reconcile'), 'subscribe, THEN the reconcile kick');
+  assert.match(read('src/main/memory-guard.ts'), /must SUBSCRIBE FIRST, then read `getMemoryGuardSnapshot\(\)` and reconcile — never\n\/\/ snapshot-then-subscribe/);
+  assert.match(read('docs/codebase-map/resources.md'), /a late subscriber SUBSCRIBES FIRST, then reconciles/);
+});
+
 test('NOT in this track: no wake / prompt / recovery / Veille path consults Admission (réveil under low memory = #287)', () => {
   const importers = fs
     .readdirSync(path.join(root, 'src/main'))
