@@ -32,7 +32,7 @@ function world() {
     },
   };
   w.deps = {
-    sample: () => { w.samples += 1; if (w.sampleThrows) { w.sampleThrows = false; throw new Error('guard hiccup'); } return w.snap(); },
+    sample: () => { w.samples += 1; if (w.samples > 400) throw new Error('runaway release loop (test guard: a mutant that re-picks a refused entry would spin forever)'); if (w.sampleThrows) { w.sampleThrows = false; throw new Error('guard hiccup'); } return w.snap(); },
     now: () => w.now,
     schedule: (fn, ms) => { const t = { fn, ms }; w.timers.push(t); return t; },
     cancel: (h) => { const i = w.timers.indexOf(h as { fn: () => void; ms: number }); if (i >= 0) w.timers.splice(i, 1); },
