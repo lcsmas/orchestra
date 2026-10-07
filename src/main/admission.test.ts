@@ -454,11 +454,15 @@ test('pause_refused_does_not_block_the_line: a Pause-refused entry at the head k
 test('pause_refused_coordinator_does_not_block_workers: even a refused COORDINATOR (released first) lets the workers behind it go', async () => {
   const w = world();
   const a = createAdmission(w.deps);
-  a.gate(args(w, 'ops-sub', { coordinator: true, run: async () => ({ ok: false, error: 'run en pause' }), retryLater: () => true }));
+  let tries = 0;
+  // (fail fast, never hang: a mutant that re-picks the refused coordinator inside the same pass would spin forever — after 6 tries the Pause "lifts")
+  let paused = true;
+  a.gate(args(w, 'ops-sub', { coordinator: true, run: async () => { tries++; if (tries > 6) paused = false; return paused ? { ok: false, error: 'run en pause' } : { ok: true }; }, retryLater: () => paused }));
   a.gate(args(w, 'worker'));
   w.mem = 12;
   await a.kick();
   assert.deepEqual(w.ran, ['worker']);
+  assert.ok(tries <= 2, `the refused coordinator is tried once per pass, not in a loop (tries: ${tries})`);
   assert.deepEqual(a.list().map((e) => e.wsId), ['ops-sub']);
 });
 
