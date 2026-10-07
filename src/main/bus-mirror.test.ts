@@ -243,6 +243,9 @@ async function runDispatch(fate: Fate, db: BusDb | null): Promise<RunResult> {
     log: { info: () => {}, warn: () => {}, error: () => {} },
     // #252: the fleet-pause gate in the shipped body — the stub answers "not paused" (the real gate is driven by pause-gates.test.ts).
     pauseRefusal: () => null,
+    // #287: the Admission wake hold in the shipped body — the stub answers "not held" (the real hold is driven by admission.test.ts + e2e-admission-wake).
+    wakeHeldForMemory: () => false,
+    dropHeldStart: () => {},
   };
 
   const fn = new Function(
