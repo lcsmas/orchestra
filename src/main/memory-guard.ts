@@ -8,6 +8,10 @@
 //   subscribeMemoryGuard(fn)  — fn({transition, snapshot}) on every edge; returns an unsubscribe
 //   sampleMemoryGuardNow()    — a FRESH reading + decision now (the re-measure between two releases)
 //   decideMemoryGuard / isAdmissionHolding / mayReleaseOneStart / memoryPauseDue / memoryPauseLiftable — shared/memory-guard.ts
+// NO REPLAY: `subscribeMemoryGuard` delivers only the edges that happen AFTER it returns. A late subscriber (a consumer that starts, or
+// restarts, while a guard episode is already running) must reconcile from `getMemoryGuardSnapshot()` first, then subscribe.
+// `snapshot.mayReleaseOneStart` is the latest decision's answer (false while the meter is unreadable); `snapshot.pauseCycle` numbers memory
+// Pauses so a 2nd Pause inside one Admission episode is distinguishable from the 1st.
 
 import { scoped } from './logger.ts';
 import { readMemAvailableBytes } from './mem-available.ts';
@@ -94,6 +98,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
   let readAt: number | null = null;
   let sampled = false;
   let measured = false;
+  let mayRelease = false;
   let heldSince: number | null = null;
   let pauseSince: number | null = null;
   let delayMs = SAMPLE_FAST_MS;
@@ -144,6 +149,8 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
       admissionEnabled: settings.admissionEnabled,
       pause: state.pause,
       episode: state.episode,
+      pauseCycle: state.pauseCycle,
+      mayReleaseOneStart: mayRelease,
       heldSince,
       pauseSince,
       admissionBytes: t.admissionBytes,
@@ -177,6 +184,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
       unreadableLogged = true;
     }
     state = d.state;
+    mayRelease = d.mayReleaseOneStart;
     for (const tr of d.transitions) {
       if (tr.kind === 'admission_held') heldSince = now;
       else if (tr.kind === 'admission_reopened') heldSince = null;

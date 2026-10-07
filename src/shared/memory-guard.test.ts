@@ -41,13 +41,13 @@ function run(readings: Array<number | null>, from: GuardState = INITIAL_GUARD_ST
   }
   return out;
 }
-const HELD: GuardState = { admission: 'held', pause: 'none', episode: 1 };
-const CRITICAL: GuardState = { admission: 'held', pause: 'held', episode: 1 };
+const HELD: GuardState = { admission: 'held', pause: 'none', episode: 1, pauseCycle: 0 };
+const CRITICAL: GuardState = { admission: 'held', pause: 'held', episode: 1, pauseCycle: 1 };
 
 // ─── positive control: if this baseline is not "all quiet", every negative arm below is vacuous ─────────────────────
 test('baseline: 10 GB from the initial state → open, no Pause, no transition, a start may go out', () => {
   const d = decideMemoryGuard(INITIAL_GUARD_STATE, gb(10), T);
-  assert.deepEqual(d.state, { admission: 'open', pause: 'none', episode: 0 });
+  assert.deepEqual(d.state, { admission: 'open', pause: 'none', episode: 0, pauseCycle: 0 });
   assert.deepEqual(d.transitions, []);
   assert.equal(d.pause, 'none');
   assert.equal(d.mayReleaseOneStart, true);
@@ -59,7 +59,7 @@ test('admission_held_below: 1 byte under 6 GB → held, episode 1, the edge carr
   const d = decideMemoryGuard(INITIAL_GUARD_STATE, gb(6) - 1, T);
   assert.equal(d.state.admission, 'held');
   assert.equal(d.state.episode, 1);
-  assert.deepEqual(d.transitions, [{ kind: 'admission_held', episode: 1, availBytes: gb(6) - 1, thresholdBytes: gb(6) }]);
+  assert.deepEqual(d.transitions, [{ kind: 'admission_held', episode: 1, pauseCycle: 0, availBytes: gb(6) - 1, thresholdBytes: gb(6) }]);
 });
 
 test('admission_held_boundary: exactly 6 GB is NOT below the threshold → stays open', () => {
@@ -73,7 +73,7 @@ test('admission_reopen_boundary: exactly 7 GB stays held; 1 byte above reopens',
   assert.equal(decideMemoryGuard(HELD, gb(7), T).state.admission, 'held');
   const d = decideMemoryGuard(HELD, gb(7) + 1, T);
   assert.equal(d.state.admission, 'open');
-  assert.deepEqual(d.transitions, [{ kind: 'admission_reopened', episode: 1, availBytes: gb(7) + 1, thresholdBytes: gb(7) }]);
+  assert.deepEqual(d.transitions, [{ kind: 'admission_reopened', episode: 1, pauseCycle: 0, availBytes: gb(7) + 1, thresholdBytes: gb(7) }]);
 });
 
 test('hysteresis_band: 6.0 < x ≤ 7.0 GB keeps a held Admission held (no flap at the threshold)', () => {
@@ -104,7 +104,7 @@ test('pause_due_boundary: 1 byte under 3 GB → due; exactly 3 GB → not due', 
   const below = decideMemoryGuard(HELD, gb(3) - 1, T);
   assert.equal(below.pause, 'due');
   assert.equal(below.state.pause, 'held');
-  assert.deepEqual(below.transitions, [{ kind: 'pause_due', episode: 1, availBytes: gb(3) - 1, thresholdBytes: gb(3) }]);
+  assert.deepEqual(below.transitions, [{ kind: 'pause_due', episode: 1, pauseCycle: 1, availBytes: gb(3) - 1, thresholdBytes: gb(3) }]);
   const at = decideMemoryGuard(HELD, gb(3), T);
   assert.equal(at.pause, 'none');
   assert.equal(at.state.pause, 'none');
@@ -117,13 +117,22 @@ test('pause_lift_boundary: exactly 6 GB keeps the Pause; 1 byte above 6 GB makes
   const above = decideMemoryGuard(CRITICAL, gb(6) + 1, T);
   assert.equal(above.pause, 'liftable');
   assert.equal(above.state.pause, 'none');
-  assert.deepEqual(above.transitions, [{ kind: 'pause_liftable', episode: 1, availBytes: gb(6) + 1, thresholdBytes: gb(6) }]);
+  assert.deepEqual(above.transitions, [{ kind: 'pause_liftable', episode: 1, pauseCycle: 1, availBytes: gb(6) + 1, thresholdBytes: gb(6) }]);
 });
 
 test('pause_one_per_crossing: 2.5 → 2.9 → 3.5 → 5.9 fires pause_due once; lifts at 6.5; falling again is a NEW due', () => {
   const ds = run([2.5, 2.9, 3.5, 5.9, 6.5, 2.5], HELD);
   assert.deepEqual(ds.map((d) => d.pause), ['due', 'held', 'held', 'held', 'liftable', 'due']);
   assert.equal(ds.flatMap(kinds).filter((k) => k === 'pause_due').length, 2);
+});
+
+test('pause_cycle: a 2nd memory Pause inside ONE Admission episode is cycle 2 with the SAME episode (what "one alert per episode" cannot tell apart)', () => {
+  const ds = run([2.5, 6.5, 2.5, 6.5, 2.5], HELD);
+  assert.deepEqual(ds.flatMap((d) => d.transitions.map((x) => `${x.kind}#${x.episode}/${x.pauseCycle}`)), [
+    'pause_due#1/1', 'pause_liftable#1/1', 'pause_due#1/2', 'pause_liftable#1/2', 'pause_due#1/3',
+  ]);
+  assert.deepEqual(ds.map((d) => d.state.pauseCycle), [1, 1, 2, 2, 3]);
+  assert.equal(ds[ds.length - 1].state.episode, 1, 'Admission never reopened: still ONE episode');
 });
 
 test('pause_lift_leaves_admission_held: at 6.5 GB the Pause lifts but Admission stays held until above 7 GB', () => {
@@ -136,13 +145,13 @@ test('pause_lift_leaves_admission_held: at 6.5 GB the Pause lifts but Admission 
 test('jump_recovery: 2 GB straight to 8 GB lifts the Pause BEFORE it reopens Admission (the Reprise precedes released starts)', () => {
   const d = decideMemoryGuard(CRITICAL, gb(8), T);
   assert.deepEqual(kinds(d), ['pause_liftable', 'admission_reopened']);
-  assert.deepEqual(d.state, { admission: 'open', pause: 'none', episode: 1 });
+  assert.deepEqual(d.state, { admission: 'open', pause: 'none', episode: 1, pauseCycle: 1 });
 });
 
 test('jump: 8 GB straight to 2 GB crosses both thresholds in ONE sample, in order', () => {
   const d = decideMemoryGuard(INITIAL_GUARD_STATE, gb(2), T);
   assert.deepEqual(kinds(d), ['admission_held', 'pause_due']);
-  assert.deepEqual(d.state, { admission: 'held', pause: 'held', episode: 1 });
+  assert.deepEqual(d.state, { admission: 'held', pause: 'held', episode: 1, pauseCycle: 1 });
 });
 
 test('the 2026-10-06 night in miniature: open → held → critical → recovering → open, edges in order', () => {
@@ -273,7 +282,7 @@ test('isAdmissionHolding: held AND the toggle ON, nothing else', () => {
 
 function snap(over: Partial<MemoryGuardSnapshot> = {}): MemoryGuardSnapshot {
   return {
-    sampled: true, measured: true, availBytes: gb(12.3), readAt: 1_000, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0,
+    sampled: true, measured: true, availBytes: gb(12.3), readAt: 1_000, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0, pauseCycle: 0, mayReleaseOneStart: true,
     heldSince: null, pauseSince: null, admissionBytes: gb(6), criticalBytes: gb(3), releaseMarginBytes: gb(1), sampleIntervalMs: 60_000, ...over,
   };
 }

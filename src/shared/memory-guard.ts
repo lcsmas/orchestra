@@ -95,9 +95,12 @@ export interface GuardState {
   pause: MemoryPauseState;
   /** Counts downward crossings of the Admission threshold; 0 = none yet. Constant while an episode lasts. */
   episode: number;
+  /** Counts memory Pauses (`pause_due` edges); 0 = none yet. A 2nd Pause inside ONE Admission episode has the same `episode` but the next
+   *  `pauseCycle`, so "one alert per episode" (#289) and the Pause/Reprise bookkeeping (#290) can tell the cycles apart. */
+  pauseCycle: number;
 }
 
-export const INITIAL_GUARD_STATE: GuardState = { admission: 'open', pause: 'none', episode: 0 };
+export const INITIAL_GUARD_STATE: GuardState = { admission: 'open', pause: 'none', episode: 0, pauseCycle: 0 };
 
 export type GuardTransitionKind = 'admission_held' | 'admission_reopened' | 'pause_due' | 'pause_liftable';
 
@@ -105,6 +108,8 @@ export interface GuardTransition {
   kind: GuardTransitionKind;
   /** The Admission episode this transition belongs to (for `admission_reopened`, the one that just ended). */
   episode: number;
+  /** The memory-Pause cycle at this edge (`pause_due` opens a new one; `pause_liftable` closes the cycle it names). */
+  pauseCycle: number;
   /** MemAvailable at the moment of the transition. */
   availBytes: number;
   /** The threshold whose comparison fired it: the Admission threshold, the critical one, or Admission + margin (reopened). */
@@ -147,32 +152,33 @@ export function decideMemoryGuard(prev: GuardState, availBytes: number | null | 
     return { measured: false, state: prev, transitions: [], pause: prev.pause === 'held' ? 'held' : 'none', mayReleaseOneStart: false };
   }
   const transitions: GuardTransition[] = [];
-  let { admission, pause, episode } = prev;
+  let { admission, pause, episode, pauseCycle } = prev;
 
   if (admission === 'open' && availBytes < t.admissionBytes) {
     admission = 'held';
     episode += 1;
-    transitions.push({ kind: 'admission_held', episode, availBytes, thresholdBytes: t.admissionBytes });
+    transitions.push({ kind: 'admission_held', episode, pauseCycle, availBytes, thresholdBytes: t.admissionBytes });
   } else if (admission === 'held' && availBytes > t.admissionBytes + t.releaseMarginBytes) {
     admission = 'open';
-    transitions.push({ kind: 'admission_reopened', episode, availBytes, thresholdBytes: t.admissionBytes + t.releaseMarginBytes });
+    transitions.push({ kind: 'admission_reopened', episode, pauseCycle, availBytes, thresholdBytes: t.admissionBytes + t.releaseMarginBytes });
   }
 
   let pauseAction: MemoryPauseAction = pause === 'held' ? 'held' : 'none';
   if (pause === 'none' && memoryPauseDue(availBytes, t)) {
     pause = 'held';
     pauseAction = 'due';
-    transitions.push({ kind: 'pause_due', episode, availBytes, thresholdBytes: t.criticalBytes });
+    pauseCycle += 1;
+    transitions.push({ kind: 'pause_due', episode, pauseCycle, availBytes, thresholdBytes: t.criticalBytes });
   } else if (pause === 'held' && memoryPauseLiftable(availBytes, t)) {
     pause = 'none';
     pauseAction = 'liftable';
-    transitions.push({ kind: 'pause_liftable', episode, availBytes, thresholdBytes: t.admissionBytes });
+    transitions.push({ kind: 'pause_liftable', episode, pauseCycle, availBytes, thresholdBytes: t.admissionBytes });
   }
 
   // A one-sample recovery lifts the Pause BEFORE it reopens Admission (the Reprise precedes the released starts); a fall holds, then pauses.
   if (transitions.length === 2 && transitions[0].kind === 'admission_reopened') transitions.reverse();
 
-  return { measured: true, state: { admission, pause, episode }, transitions, pause: pauseAction, mayReleaseOneStart: mayReleaseOneStart(availBytes, t) };
+  return { measured: true, state: { admission, pause, episode, pauseCycle }, transitions, pause: pauseAction, mayReleaseOneStart: mayReleaseOneStart(availBytes, t) };
 }
 
 /** Delay before the next sample: 10 s while MemAvailable is below the Admission threshold (or unreadable — retry soon), 60 s above. */
@@ -196,6 +202,11 @@ export interface MemoryGuardSnapshot {
   admissionEnabled: boolean;
   pause: MemoryPauseState;
   episode: number;
+  /** See {@link GuardState.pauseCycle}. */
+  pauseCycle: number;
+  /** One held start may go out now — the LATEST decision's answer: false while the meter is unreadable (even though `availBytes` still holds
+   *  the last GOOD reading, which must never release a start) and before the first sample. `sampleNow()` returns it fresh. */
+  mayReleaseOneStart: boolean;
   /** Epoch ms the CURRENT held Admission / memory Pause began; null when not in effect. */
   heldSince: number | null;
   pauseSince: number | null;

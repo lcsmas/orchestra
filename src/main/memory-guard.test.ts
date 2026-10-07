@@ -200,6 +200,53 @@ test('sampled: false until the first sample attempt (even an unreadable one), th
   assert.deepEqual([g.snapshot().sampled, g.snapshot().measured], [true, false]);
 });
 
+test('mayReleaseOneStart rides the snapshot: the LATEST decision, false while unreadable (even with a good old reading) and before the first sample', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  assert.equal(g.snapshot().mayReleaseOneStart, false, 'before the first sample');
+  g.start();
+  assert.equal(g.snapshot().mayReleaseOneStart, true, '12 GB: a held start may go out');
+  w.mem = 6.5;
+  w.fire();
+  assert.equal(g.snapshot().mayReleaseOneStart, false, '6.5 GB is under 7');
+  w.mem = 9;
+  assert.equal(g.sampleNow().mayReleaseOneStart, true, 'sampleNow() carries it fresh');
+  w.mem = null;
+  w.fire();
+  const s = g.snapshot();
+  assert.equal(s.availBytes, gb(9), 'the last GOOD reading is still shown…');
+  assert.equal(s.mayReleaseOneStart, false, '…but a dead meter releases nothing');
+});
+
+test('snapshot.pauseCycle numbers memory Pauses; the edges carry it', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  const seen: string[] = [];
+  g.subscribe((e) => seen.push(`${e.transition.kind}/${e.transition.pauseCycle}`));
+  g.start();
+  for (const m of [2, 6.5, 2.5]) {
+    w.mem = m;
+    w.fire();
+  }
+  assert.deepEqual(seen, ['admission_held/0', 'pause_due/1', 'pause_liftable/1', 'pause_due/2']);
+  assert.deepEqual([g.snapshot().episode, g.snapshot().pauseCycle], [1, 2]);
+});
+
+test('no_replay: a subscriber gets only the edges AFTER it subscribed; the snapshot is how it reconciles', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  g.start();
+  w.mem = 2;
+  w.fire(); // admission_held + pause_due happen BEFORE anyone subscribes
+  const seen: string[] = [];
+  g.subscribe((e) => seen.push(e.transition.kind));
+  assert.deepEqual(seen, [], 'nothing is replayed on subscribe');
+  assert.deepEqual([g.snapshot().admission, g.snapshot().pause], ['held', 'held'], 'the late subscriber reads the state from the snapshot');
+  w.mem = 8;
+  w.fire();
+  assert.deepEqual(seen, ['pause_liftable', 'admission_reopened']);
+});
+
 // ─── subscription ───────────────────────────────────────────────────────────────────────────────────────────────────
 test('subscribe: one event per edge with the post-sample snapshot; a throwing listener breaks nothing; unsubscribe stops it', () => {
   const w = world(12);

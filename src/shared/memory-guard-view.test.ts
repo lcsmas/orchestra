@@ -6,7 +6,7 @@ import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from './
 const D = DEFAULT_MEMORY_GUARD_SETTINGS;
 function snap(over: Partial<MemoryGuardSnapshot> = {}): MemoryGuardSnapshot {
   return {
-    sampled: true, measured: true, availBytes: 11.4 * GIB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0,
+    sampled: true, measured: true, availBytes: 11.4 * GIB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0, pauseCycle: 0, mayReleaseOneStart: true,
     heldSince: null, pauseSince: null, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, sampleIntervalMs: 60_000, ...over,
   };
 }
