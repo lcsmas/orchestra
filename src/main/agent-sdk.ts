@@ -56,11 +56,6 @@ import { forkBranchName } from '../shared/fork-session';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
 import { scopeSessionsToWorktree, type SessionCandidate } from '../shared/session-discovery';
 import {
-  normalizeLiveContextUsage,
-  type ContextUsage,
-  type LiveContextUsagePayload,
-} from '../shared/context-usage';
-import {
   isPluginReloadFailure,
   summarizeReload,
   type ReloadResult,
@@ -1517,11 +1512,8 @@ async function consume(session: Session): Promise<void> {
         // outside the driveStatus gate. See the third correction in
         // docs/research/issue-69-maxturns-findings.md.
         releaseTurnGate(session);
-        // Re-read the authoritative context figure now the turn has settled.
-        // Fire-and-forget: the turn is already complete and the gauge updating
-        // a beat later is fine, but blocking the consume loop on a control
-        // request would stall every subsequent message.
-        refreshContextUsage(session.wsId);
+        // #317: no getContextUsage() here — its count_tokens burst holds the NEXT prompt in the CLI
+        // (rig: scripts/session-budget/turn-boundary.mjs). The gauge reads per-call usage; `/context` gives the breakdown.
         // #124 D4: re-drive parked inbox mail at the turn boundary. A peer
         // delivery that timed out waiting for a running turn to START was
         // withdrawn and parked in the durable inbox; nothing starts a new turn
@@ -1531,7 +1523,7 @@ async function consume(session: Session): Promise<void> {
         // inbox holds blocks, release the FIRST through the exactly-once path
         // (`releaseInboxBlock`, the ONLY remover). One block per boundary: the
         // turn it starts produces its own `result`, which re-drives the next.
-        // Fire-and-forget for the same reason as refreshContextUsage — the gate
+        // Fire-and-forget: the gate
         // is already open (releaseTurnGate ran above), so releaseInboxBlock's
         // sendAwaitingStart can start the new turn; awaiting it here would block
         // the consume loop on a full delivery round-trip.
@@ -2143,7 +2135,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // Fire-and-forget the consume loop; it self-cleans on end/throw.
   void consume(session);
   // No context-gauge seed here (#176): a boot-time getContextUsage() makes the CLI
-  // burst ~90 API connections and wedged 5/7 metarepo first turns. The first read is at turn end.
+  // burst ~90 API connections and wedged 5/7 metarepo first turns. Nor at turn end (#317).
   return session;
 }
 
@@ -2599,61 +2591,6 @@ async function probeRuntimeModels(ws: Workspace, bin: string): Promise<AgentMode
   } finally {
     abort.abort();
   }
-}
-
-/** Read the workspace's context-window usage from the LIVE SDK session — the
- *  CLI's own accounting (`Query.getContextUsage()`), the same figure its
- *  `/context` view renders.
- *
- *  Returns `null` when there is no live session, when the control request fails
- *  or times out, or when the payload is unreadable — in every one of those
- *  cases the caller must fall back to the transcript recompute in
- *  `activity.ts`, which is why this reports absence rather than a zeroed
- *  reading (0 is the app's "context was reset" sentinel and would clear the
- *  badge).
- *
- *  Called only at turn end: calling it at session start wedged metarepo first turns
- *  (#176). Time-boxed exactly like {@link sdkListModels}: a wedged subprocess must
- *  not hang the caller. */
-export async function sdkGetContextUsage(wsId: string): Promise<ContextUsage | null> {
-  const session = sessions.get(wsId);
-  if (!session) return null;
-  try {
-    const payload = await Promise.race([
-      session.q.getContextUsage(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('getContextUsage timed out')), 3000),
-      ),
-    ]);
-    return normalizeLiveContextUsage(payload as LiveContextUsagePayload, Date.now());
-  } catch (err) {
-    // Expected whenever the subprocess is mid-restart or the installed CLI is
-    // too old for the control request — the transcript fallback covers it, so
-    // this is a warn, not an error.
-    log.warn(
-      `agent-sdk: getContextUsage failed for ${wsId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return null;
-  }
-}
-
-/** Take a live context reading and broadcast it if it beats what the renderer
- *  already has. Fire-and-forget: the one call site (turn end) wants the gauge
- *  refreshed but must not block on it.
- *
- *  The precedence check is what stops this from fighting the transcript
- *  recompute — both producers fire independently, and without it a posttool's
- *  inferred figure would clobber this exact one moments after it landed. */
-function refreshContextUsage(wsId: string): void {
-  void sdkGetContextUsage(wsId)
-    .then((usage) => {
-      const session = sessions.get(wsId);
-      // The session can end while the control request is in flight; emitting
-      // against a dead session would stamp a seq on a cursor nobody reads.
-      if (!usage || !session) return;
-      emit(wsId, stamp(session.ctx, { type: 'session/context', usage }));
-    })
-    .catch((e) => log.warn(`agent-sdk: refreshContextUsage failed for ${wsId}`, e));
 }
 
 /** Read a skill dir's SKILL.md and pull the first sentence of its frontmatter

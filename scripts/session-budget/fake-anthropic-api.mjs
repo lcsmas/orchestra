@@ -98,11 +98,12 @@ function summarizeModelBody(buf, markers = {}) {
 /**
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
- * @param {(req: object) => ({text?: string}|undefined)} [opts.reply]   per-model-request override
+ * @param {(req: object) => ({text?: string, inputTokens?: number}|undefined)} [opts.reply]   per-model-request override
  * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
  * @param {number} [opts.proxyPort]  fixed port for the egress proxy (default: any free port) — needed when a process must be
  *                                    started with HTTPS_PROXY already pointing at it (NODE_USE_ENV_PROXY is read at bootstrap)
  * @param {number} [opts.replyDelayMs]  delay before the first SSE byte of a /v1/messages reply
+ * @param {number|(() => number)} [opts.countTokensDelayMs]  delay before a /v1/messages/count_tokens reply (#317: a slow burst stands in for black-holed sockets)
  * @param {Record<string,string>} [opts.markers]  sentinel name -> substring to look for in request bodies
  * @param {(rec: object) => void} [opts.onRequest]  observer, called for every recorded request
  */
@@ -138,14 +139,16 @@ export async function startFakeApi(opts = {}) {
       if (opts.replyDelayMs) await new Promise((r) => setTimeout(r, opts.replyDelayMs));
       if (rec.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'request-id': `req_fake_${rec.seq}` });
-        res.end(streamedTextReply({ model: rec.model ?? 'claude-fake', text, id }));
+        res.end(streamedTextReply({ model: rec.model ?? 'claude-fake', text, id, inputTokens: override?.inputTokens }));
       } else {
         res.writeHead(200, { 'content-type': 'application/json', 'request-id': `req_fake_${rec.seq}` });
-        res.end(JSON.stringify(jsonTextReply({ model: rec.model ?? 'claude-fake', text, id })));
+        res.end(JSON.stringify(jsonTextReply({ model: rec.model ?? 'claude-fake', text, id, inputTokens: override?.inputTokens })));
       }
       return;
     }
     if (type === 'count_tokens') {
+      const ctDelay = typeof opts.countTokensDelayMs === 'function' ? opts.countTokensDelayMs() : opts.countTokensDelayMs;
+      if (ctDelay) await new Promise((r) => setTimeout(r, ctDelay));
       res.writeHead(200, { 'content-type': 'application/json', 'request-id': `req_fake_${rec.seq}` });
       res.end(JSON.stringify({ input_tokens: Math.max(1, Math.ceil(body.length / 4)) }));
       return;

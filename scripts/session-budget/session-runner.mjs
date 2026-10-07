@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
-const { REPO, root, arm, mutant = null, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000, pidns = false, containment = 'proxy-only', profile = {}, realApi = null } = cfg;
+const { REPO, root, arm, mutant = null, replyDelayMs = 500, settleMs = 2500, timeoutMs = 90_000, pidns = false, containment = 'proxy-only', profile = {}, realApi = null, secondTurn = null } = cfg;
 const HERE = path.join(REPO, 'scripts', 'session-budget');
 
 // D7: scratch HOME / config dir / ORCHESTRA_HOME only — refuse anything live BEFORE the app can boot.
@@ -38,7 +38,10 @@ const fx = generateHeavyFixture(path.join(root, 'repo'), profile);
 // Fixed ports: this process was started with HTTPS_PROXY/NODE_USE_ENV_PROXY already aimed at the proxy port (the harness
 // chose it) — Node reads NODE_USE_ENV_PROXY at bootstrap, so the proxy must come up on exactly that port.
 if (!cfg.apiPort || !cfg.proxyPort) throw new Error('session-runner: cfg.apiPort/proxyPort absent — the app-process egress proxy cannot be wired (fails closed)');
-const api = await startFakeApi({ replyDelayMs, markers: fx.markers, apiPort: cfg.apiPort, proxyPort: cfg.proxyPort })
+// #317 `secondTurn`: count_tokens turn SLOW only after the first turn-end — the boot reads stay fast, so only a turn-boundary burst can delay turn 2.
+let slowCountTokens = false;
+const api = await startFakeApi({ replyDelayMs, markers: fx.markers, apiPort: cfg.apiPort, proxyPort: cfg.proxyPort,
+  countTokensDelayMs: () => (slowCountTokens ? secondTurn?.countTokensDelayMs ?? 0 : 0) })
 if (api.proxyUrl !== process.env.HTTPS_PROXY || process.env.NODE_USE_ENV_PROXY !== '1') {
   throw new Error(`session-runner: this process is not routed through the recording proxy (HTTPS_PROXY=${process.env.HTTPS_PROXY} NODE_USE_ENV_PROXY=${process.env.NODE_USE_ENV_PROXY}, proxy=${api.proxyUrl}) — app-process egress would be invisible (fails closed)`);
 }
@@ -67,7 +70,7 @@ fs.copyFileSync(keeperSrc, path.join(orchHome, 'bin', 'keeper.js'));
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 const events = [];
-let tInit = null, tFirstReply = null, tTurnEnd = null, initEvent = null, errorEvent = null;
+let tInit = null, tFirstReply = null, tTurnEnd = null, tTurnEnd2 = null, turnEnds = 0, lastTurnEndGauge = null, initEvent = null, errorEvent = null;
 let censusAtFirstReply = null;
 let cliEnv = null;
 initPlatform({
@@ -90,7 +93,11 @@ initPlatform({
         } catch (e) { cliEnv = { cliPid: cliProc.pid, error: String(e?.message ?? e), trafficKnobsSet: null }; }
       }
     }
-    if (ev.type === 'turn-end' && tTurnEnd === null) tTurnEnd = t;
+    if (ev.type === 'turn-end') {
+      turnEnds++;
+      lastTurnEndGauge = { contextUsedTokens: ev.contextUsedTokens ?? null, contextWindow: ev.contextWindow ?? null };
+      if (tTurnEnd === null) { tTurnEnd = t; slowCountTokens = true; } else if (tTurnEnd2 === null) tTurnEnd2 = t;
+    }
   },
   broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false,
   notify: () => {}, openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {},
@@ -118,11 +125,19 @@ const done = new Promise((resolve) => {
   const iv = setInterval(() => { if (tTurnEnd !== null || errorEvent) { clearInterval(iv); resolve(); } }, 25);
   setTimeout(() => { clearInterval(iv); resolve(); }, timeoutMs).unref();
 });
-let tSend = null;
+let tSend = null, tSend2 = null;
 try {
   tSend = api.now(); // F5: the clock for time-to-first-reply starts HERE, not at fake-API start (runner setup is ~1.5 s)
   await sdk.sdkSend(WS_ID, 'Reply with the single word ok.');
   await done;
+  if (secondTurn && tTurnEnd !== null && !errorEvent) {
+    // #317: the user's next prompt, sent while any turn-boundary control request is still in flight.
+    await new Promise((r) => setTimeout(r, secondTurn.gapMs ?? 300));
+    tSend2 = api.now();
+    await sdk.sdkSend(WS_ID, 'Reply with the single word again.');
+    const deadline = Date.now() + (secondTurn.timeoutMs ?? timeoutMs);
+    while (tTurnEnd2 === null && !errorEvent && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  }
   await new Promise((r) => setTimeout(r, settleMs)); // let post-reply traffic (the turn-end gauge refresh) land
 } catch (e) {
   error = String(e?.stack ?? e);
@@ -176,6 +191,19 @@ const report = {
     toolsAtInit: initEvent?.tools?.length ?? 0,
   },
   timeline: { initMs: tInit === null ? null : Math.round(tInit), turnEndMs: tTurnEnd === null ? null : Math.round(tTurnEnd) },
+  ...(secondTurn ? { secondTurn: (() => {
+    const m2 = tSend2 === null ? undefined : api.requests.find((r) => r.type === 'model' && (r.tools ?? 0) > 0 && r.tStartMs >= tSend2);
+    return {
+      countTokensDelayMs: secondTurn.countTokensDelayMs ?? 0,
+      sent: tSend2 !== null,
+      sendToModelRequestMs: m2 && tSend2 !== null ? Math.round(m2.tStartMs - tSend2) : null,
+      sendToTurnEndMs: tTurnEnd2 !== null && tSend2 !== null ? Math.round(tTurnEnd2 - tSend2) : null,
+      // What the gauge resolves from once no live reading exists (#317): the turn-end tier.
+      lastTurnEndGauge,
+      liveContextEvents: events.filter((e) => e.type === 'session/context').length,
+      countTokensTurn1EndToTurn2: tTurnEnd === null ? null : api.requests.filter((r) => r.type === 'count_tokens' && r.tStartMs >= tTurnEnd && (!m2 || r.tStartMs < m2.tStartMs)).length,
+    };
+  })() } : {}),
   paths: [...new Set(api.requests.map((r) => `${r.method} ${r.path}`))],
   requestLog: api.requests.map((r) => ({ tMs: Math.round(r.tMs), type: r.type, path: r.path, model: r.model ?? null, tools: r.tools ?? null, ...((r.tools ?? 0) === 0 && r.type === 'model' ? { preview: r.preview } : {}) })),
   ...(error || errorEvent ? { error: error ?? `agent error event: ${errorEvent?.message}` } : {}),

@@ -149,7 +149,7 @@ async function runContained(o, script, label, extraCfg, resultPrefix) {
  *          settleMs?: number, timeoutMs?: number, keep?: boolean, containment?: {name:string,prefix:string[]}}} o
  */
 export function runSessionArm(o) {
-  return runContained(o, 'session-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, profile: o.profile ?? {} }, '{"report"');
+  return runContained(o, 'session-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, profile: o.profile ?? {}, secondTurn: o.secondTurn ?? null }, '{"report"');
 }
 
 /**

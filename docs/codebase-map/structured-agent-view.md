@@ -1996,16 +1996,14 @@ same number, so the value alone proves nothing. Readable three ways:
 the `data-context-source` DOM attribute (the RESOLVED source, incl. `turn-end`),
 or `resolveContextUsage()` directly in a unit test.
 
-- **Primary — live.** `sdkGetContextUsage` (`agent-sdk.ts:1315`) calls
-  `session.q.getContextUsage()`, raced against a 3s timeout exactly like
-  `sdkListModels` (a control request to a dying subprocess parks forever).
-  `refreshContextUsage` (`:1344`) normalizes and emits `session/context`.
-  Called **only after each turn** (at the `result` boundary). Never at session
-  bootstrap: a boot-time call made the CLI burst ~90 API connections and wedged
-  metarepo first turns (#176); a reopened pane shows the transcript fallback below
-  until the next turn.
-  Returns `null` — never a zeroed reading — on no-session/timeout/bad payload,
-  because `0` is the app's "context was reset" sentinel and would clear the badge.
+- **No automatic live read (#176, #317).** Orchestra never calls
+  `session.q.getContextUsage()`: the CLI answers it with a `count_tokens` burst
+  (~50-90 calls on a heavy repo) and holds the NEXT prompt until the burst ends.
+  At boot it wedged metarepo first turns (#176); at turn end it wedged the
+  following turn (#317, rig `scripts/session-budget/turn-boundary.mjs`, mutant
+  `turn-end-context-read`). A live session's gauge therefore resolves from the
+  turn-end tier (last API call's usage + `modelUsage` window); the breakdown
+  panel appears once the user runs `/context`.
 - **Bonus — `/context`.** `normalizeSdkMessage`'s `assistant` case lifts the
   top-level `context_usage` the CLI stamps on the synthetic `/context` message
   (`agent-events.ts:567`). Verified emitted at CLI 2.1.234; costs zero API calls.

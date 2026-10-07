@@ -208,8 +208,17 @@ test('mutant boot-context-read: its anchor matches the SHIPPED agent-sdk.ts exac
   assert.equal([...src.matchAll(m.find)].length, 1, 'anchor drifted: the mutant no longer describes the shipped code');
   const mutated = src.replace(m.find, m.replace);
   assert.equal(mutated.split('\n').length, src.split('\n').length + 1, 'exactly one line inserted');
-  assert.match(mutated, /  void consume\(session\);\n  refreshContextUsage\(wsId\);\n/);
-  assert.doesNotMatch(src, /  void consume\(session\);\n  refreshContextUsage\(wsId\);/, 'shipped code must not already read context at boot');
+  assert.match(mutated, /  void consume\(session\);\n  void session\.q\.getContextUsage\(\)\.catch\(\(\) => \{\}\);\n/);
+  assert.doesNotMatch(src, /\.getContextUsage\(/, 'shipped code must not read context at all (#176 boot, #317 turn end)');
+});
+
+test('mutant turn-end-context-read: anchors once on the shipped result branch and inserts only the turn-end call', () => {
+  const src = fs.readFileSync(`${REPO}/src/main/agent-sdk.ts`, 'utf8');
+  const m = mutants.MUTANTS['turn-end-context-read'];
+  assert.equal([...src.matchAll(m.find)].length, 1, 'anchor drifted: the mutant no longer describes the shipped code');
+  const mutated = src.replace(m.find, m.replace);
+  assert.equal(mutated.split('\n').length, src.split('\n').length + 1, 'exactly one line inserted');
+  assert.match(mutated, /        releaseTurnGate\(session\);\n        void session\.q\.getContextUsage\(\)\.catch\(\(\) => \{\}\);\n        \/\/ #317/);
 });
 
 test('mutant loader: PATTERN-GONE when the anchor is absent, unknown mutant rejected, inactive is a no-op', async () => {
@@ -221,7 +230,7 @@ test('mutant loader: PATTERN-GONE when the anchor is absent, unknown mutant reje
   await mutants.initialize({ mutant: 'boot-context-read' });
   await assert.rejects(() => mutants.load(url, {}, fake('nothing here')), /PATTERN-GONE.*matched 0×/);
   const ok = await mutants.load(url, {}, fake('  void consume(session);\n  // c\n  return session;\n'));
-  assert.match(String(ok.source), /void consume\(session\);\n  refreshContextUsage\(wsId\);\n  \/\/ c/);
+  assert.match(String(ok.source), /void consume\(session\);\n  void session\.q\.getContextUsage\(\)\.catch\(\(\) => \{\}\);\n  \/\/ c/);
   const other = await mutants.load('file:///x/src/main/other.ts', {}, fake('nothing here'));
   assert.equal(String(other.source), 'nothing here', 'only agent-sdk.ts is mutated');
   await assert.rejects(() => mutants.initialize({ mutant: 'no-such-mutant' }), /unknown mutant/);

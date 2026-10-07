@@ -21,12 +21,18 @@ export const MUTANTS = {
     find: /(  void consume\(session\);\n)(?=(?:  \/\/[^\n]*\n)*  return session;\n)/g,
     replace: "$1  void fetch('https://telemetry.example.invalid/boot').catch(() => {});\n",
   },
-  // #176 re-added: the pre-fix code called refreshContextUsage(wsId) right after consume() started
-  // (git show 89ae8b4b^:src/main/agent-sdk.ts) — a boot-time getContextUsage() before the first turn.
+  // #176 re-added: a boot-time getContextUsage() right after consume() starts, before the first turn
+  // (git show 89ae8b4b^:src/main/agent-sdk.ts). The control request itself, so it outlives helper renames.
   'boot-context-read': {
     file: '/src/main/agent-sdk.ts',
     find: /(  void consume\(session\);\n)(?=(?:  \/\/[^\n]*\n)*  return session;\n)/g,
-    replace: '$1  refreshContextUsage(wsId);\n',
+    replace: '$1  void session.q.getContextUsage().catch(() => {});\n',
+  },
+  // #317 re-added: the pre-fix turn-end getContextUsage() (git show 743f9ab0:src/main/agent-sdk.ts, consume() result branch).
+  'turn-end-context-read': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(        releaseTurnGate\(session\);\n)(?=        \/\/ #317)/g,
+    replace: '$1        void session.q.getContextUsage().catch(() => {});\n',
   },
 };
 

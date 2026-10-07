@@ -403,9 +403,8 @@ Also here (piggybacked on polls, cached by ref-SHA): `detectAndUpdateMergeState`
 throttled 60s), `detectAndUpdateReleaseState` `:273` (PR cadence, not the hot
 poll). Context tokens: `emitContext` `:590` / `computeContextTokens` `:523` reads
 the transcript tail and sums `input + cache_creation + cache_read` on the last
-non-sidechain assistant message. Since #15 this is the FALLBACK tier — a live
-SDK session sources the structured view's gauge from `Query.getContextUsage()`
-instead (`agent-sdk.ts sdkGetContextUsage`, see
+non-sidechain assistant message. A live SDK session's structured-view gauge
+reads the turn's own per-call usage instead (no `getContextUsage()` since #317, see
 `docs/codebase-map/structured-agent-view.md` § "Context gauge sourcing"); this
 recompute still drives the sidebar badge and remains the only source for
 detached/keeper/history/PTY sessions, which have no live Query to ask; a `compact_boundary` system entry newer than

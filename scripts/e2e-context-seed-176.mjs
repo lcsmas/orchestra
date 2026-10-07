@@ -8,9 +8,9 @@
 // Arms (one per process — module state is global):
 //   boot      — the fake CLI emits init and then nothing for 1.5 s: zero calls allowed.
 //               must-FAIL on the unfixed build (it calls at boot).
-//   turn-end  — init, then a `result` after the opening prompt: at least one call must
-//               follow the result. Passes on both builds: the positive control proving
-//               the counter can see a call, and that the turn-end refresh survives.
+//   turn-end  — init, then a `result` after the opening prompt: zero calls after it either
+//               (#317: the turn-end read held the next prompt). The positive control — a
+//               re-added call IS seen — is `pnpm run test:turn-boundary` (mutant arm).
 //
 // Prints one JSON line with `ok`.
 
@@ -121,7 +121,7 @@ try {
   const ok =
     factoryCalls >= 1 &&
     calls.beforeResult === 0 &&
-    (ARM === 'boot' ? true : calls.afterResult >= 1);
+    (ARM === 'boot' ? true : resultYielded && calls.afterResult === 0);
   out = { arm: ARM, factoryCalls, resultYielded, calls, ok };
 } catch (e) {
   out = { arm: ARM, ok: false, error: String(e?.stack ?? e) };
