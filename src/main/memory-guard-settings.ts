@@ -14,8 +14,8 @@ import {
 
 const slog = scoped('memory-guard');
 
-/** The Settings view. The snapshot is taken FRESH (a read + decision now) and the live figure is THAT snapshot's reading, so the figure
- *  and the state chip beside it can never disagree (a cached snapshot is up to 60 s old above the Admission threshold). */
+/** The Settings view. The snapshot is taken FRESH (a read + decision now) and the live figure is THAT snapshot's own reading (null when the
+ *  meter is dead), so the figure and the state chip beside it come from the same sample (a cached snapshot is up to 60 s old above 6 GB). */
 export function memoryGuardView(settings: MemoryGuardSettings, snapshot: MemoryGuardSnapshot = sampleMemoryGuardNow()): MemoryGuardView {
   return { settings, snapshot, liveAvailBytes: snapshot.measured ? snapshot.availBytes : null, totalBytes: readMemTotalBytes() };
 }
@@ -26,9 +26,13 @@ export interface MemoryGuardSettingsStore {
 }
 
 /** Validate → persist → re-sample at once (hot: the new thresholds decide NOW, not at the next 10/60 s tick). Invalid ⇒ nothing written. */
-export async function setMemoryGuardSettings(patch: Partial<MemoryGuardSettings>, store: MemoryGuardSettingsStore): Promise<MemoryGuardSetResult> {
+export async function setMemoryGuardSettings(
+  patch: Partial<MemoryGuardSettings>,
+  store: MemoryGuardSettingsStore,
+  totalBytes: number | null = readMemTotalBytes(),
+): Promise<MemoryGuardSetResult> {
   const current = store.getMemoryGuardSettings();
-  const res = patchMemoryGuardSettings(current, patch, readMemTotalBytes());
+  const res = patchMemoryGuardSettings(current, patch, totalBytes);
   if (!res.ok) return { ok: false, error: res.error, view: memoryGuardView(current) };
   let saveError: unknown = null;
   try {

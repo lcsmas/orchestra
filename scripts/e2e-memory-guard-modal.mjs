@@ -6,6 +6,8 @@
 //                the press lasts 90 ms): BOTH patches must reach the backend, pair first, then the toggle — the toggle click must not be swallowed
 //   fast_ipc   ★ the same gesture at 0 ms IPC / 20 ms press (the parent swallows it here too: the disable lands before the mouseup)
 //   draft_kept ★ text typed in the OTHER field while the first commit is still in flight must survive that commit's echo (and commit as its own pair)
+//   retype_during_flight ★ retyping the value that was in the box BEFORE an in-flight commit must still be sent (planned against what the backend
+//                will hold, not the stale rendered settings — it used to be dropped as "unchanged" and silently lost)
 // Usage: node scripts/e2e-memory-guard-modal.mjs   (RIG_REPO=<other tree> bundles THAT tree's component — the must-FAIL run on the parent)
 // SAFETY: scratch dir under ~/.cache, fresh Chromium profile, `--headless` (no window, no display), no network, nothing live touched.
 
@@ -137,6 +139,17 @@ try {
   await sleep(900);
   const end = await state();
   clause('draft_kept/second-pair-commits-as-its-own-patch', J(end.calls) === J([{ admissionGb: 8, criticalGb: 3 }, { admissionGb: 8, criticalGb: 2.5 }]) && end.crit === '2.5', `IPC calls ${J(end.calls)}; inputs ${end.adm}/${end.crit}`);
+
+  // ── retype_during_flight ★: commit 8/3 (in flight), then retype 6 — the value that was there before — and blur ──
+  await open('retype_during_flight', 300);
+  await typeInto(SEL.adm, '8');
+  await click(SEL.title, 20);                        // commit #1 (8/3), 300 ms in flight
+  await sleep(80);
+  await typeInto(SEL.adm, '6');
+  await click(SEL.title, 20);                        // plan vs what the backend WILL hold (8/3): a change → sent as #2 (6/3)
+  await sleep(1000);
+  const rt = await state();
+  clause('retype_during_flight/the-retyped-value-is-sent-and-wins', J(rt.calls) === J([{ admissionGb: 8, criticalGb: 3 }, { admissionGb: 6, criticalGb: 3 }]) && rt.adm === '6' && rt.crit === '3', `IPC calls ${J(rt.calls)}; inputs ${rt.adm}/${rt.crit}`);
 } catch (e) {
   clause('rig/completed', false, `ABORTED: ${e.stack || e}`);
 } finally {

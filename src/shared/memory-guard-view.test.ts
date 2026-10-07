@@ -25,6 +25,11 @@ test('chip: toggle OFF says nothing is held; unmeasured says so', () => {
   assert.match(guardChip(snap({ admission: 'held', heldSince: T0, admissionEnabled: false })).text, /^Below threshold \(toggle OFF\) since 14:02/);
   assert.deepEqual(guardChip(snap({ measured: false, availBytes: null })), { tone: 'unknown', text: 'Unmeasured' });
 });
+test('chip_dead_meter: a dead meter never presents the last good reading as current (state kept, "meter unreadable" instead of the figure)', () => {
+  assert.deepEqual(guardChip(snap({ measured: false, availBytes: 9 * GIB })), { tone: 'ok', text: 'Admission open — meter unreadable' });
+  assert.deepEqual(guardChip(snap({ measured: false, availBytes: 4 * GIB, admission: 'held', heldSince: T0 })), { tone: 'warn', text: 'HELD since 14:02 — meter unreadable' });
+  assert.deepEqual(guardChip(snap({ measured: false, availBytes: 2 * GIB, admission: 'held', pause: 'held', heldSince: T0, pauseSince: T1 })), { tone: 'crit', text: 'MEMORY PAUSE since 14:05 — meter unreadable' });
+});
 test('clock is local HH:MM, zero-padded', () => {
   assert.equal(clock(new Date(2026, 0, 1, 3, 4).getTime()), '03:04');
 });

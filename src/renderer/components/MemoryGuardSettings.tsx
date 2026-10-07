@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { formatGb, RELEASE_MARGIN_GB, type MemoryGuardView } from '../../shared/memory-guard';
+import { formatGb, RELEASE_MARGIN_GB, type MemoryGuardSettings, type MemoryGuardView } from '../../shared/memory-guard';
 import { gaugeModel, guardChip, planThresholdCommit } from '../../shared/memory-guard-view';
 
 interface Props {
@@ -27,6 +27,11 @@ export function MemoryGuardSettings({ onClose }: Props) {
   /** Applies run ONE AT A TIME in click order and are never dropped (a pending edit commits on blur, and the click that caused the blur
    *  must still reach the toggle — review m2: a `busy` flag disabling the toggle swallowed that click). */
   const queue = useRef<Promise<void>>(Promise.resolve());
+  /** What the backend will hold once every queued apply has landed (null = nothing in flight): a commit is planned against THAT, not the
+   *  stale rendered settings — retyping the value that was in the box before an in-flight commit must still be sent (pre-review of the
+   *  follow-up: it planned `unchanged` against the old settings and silently lost the last edit). */
+  const inflight = useRef<{ n: number; expected: MemoryGuardSettings | null }>({ n: 0, expected: null });
+  const settingsRef = useRef<MemoryGuardSettings | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     if (document.hidden) return;
@@ -44,12 +49,16 @@ export function MemoryGuardSettings({ onClose }: Props) {
   }, [refresh]);
 
   const settings = view?.settings;
+  settingsRef.current = settings;
   const typed = draft ?? (settings ? { admission: String(settings.admissionGb), critical: String(settings.criticalGb) } : { admission: '', critical: '' });
   const plan = settings && draft ? planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes) : null;
   const liveError = plan?.kind === 'invalid' ? plan.error : null;
 
   /** `committed` = the draft object this patch came from: the echo clears the inputs only if the user has not typed again since. */
   const apply = (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0], committed: Draft | null = null): Promise<void> => {
+    const base = inflight.current.expected ?? settingsRef.current;
+    inflight.current.n += 1;
+    if (base) inflight.current.expected = { ...base, ...patch };
     const run = queue.current.then(async () => {
       try {
         const res = await window.orchestra.setMemoryGuard(patch);
@@ -58,10 +67,15 @@ export function MemoryGuardSettings({ onClose }: Props) {
           setDraft((d) => (committed !== null && d === committed ? null : d));
           setError(null);
         } else {
+          inflight.current.expected = null; // the assumed outcome did not happen: plan against the echoed settings again
           setError(cap(res.error));
         }
       } catch (e) {
+        inflight.current.expected = null;
         setError(`Could not apply the change — ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        inflight.current.n -= 1;
+        if (inflight.current.n === 0) inflight.current.expected = null;
       }
     });
     queue.current = run;
@@ -69,8 +83,9 @@ export function MemoryGuardSettings({ onClose }: Props) {
   };
 
   const commit = () => {
-    if (!settings || !draft) return;
-    const p = planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes);
+    const basis = inflight.current.expected ?? settings;
+    if (!basis || !draft) return;
+    const p = planThresholdCommit(draft.admission, draft.critical, basis, view?.totalBytes);
     if (p.kind === 'unchanged') {
       setDraft(null);
       setError(null);

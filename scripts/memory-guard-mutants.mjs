@@ -28,6 +28,7 @@ const H = 'src/main/hooks-server.ts';
 const C = 'src/cli/index.ts';
 const ST = 'src/main/memory-guard-settings.ts';
 const V = 'src/shared/memory-guard-view.ts';
+const UI = 'src/renderer/components/MemoryGuardSettings.tsx';
 const MA = 'src/main/mem-available.ts';
 // `expect` = a substring of the reddened unit test name or the rig arm that MUST be among the red ones.
 const MUTANTS = [
@@ -55,12 +56,12 @@ const MUTANTS = [
   { id: 'M22_cli_no_line', file: C, find: 'process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot)}\\n`);', to: 'void 0;', expect: ['walk', 'b_held'], cli: true },
   { id: 'M23_format_held_lowercase', file: S, find: '`admission HELD since ', to: '`admission held since ', expect: ['formatMemoryGuardLine', 'walk'], cli: true },
   { id: 'M24_settings_no_validation', file: ST, find: 'if (!res.ok) return { ok: false, error: res.error, view: memoryGuardView(current) };', to: '', expect: ['invalid pair', 'invalid_refused'] },
-  { id: 'M25_settings_no_resample', file: ST, find: '  sampleMemoryGuardNow();\n  const view = memoryGuardView(store.getMemoryGuardSettings());', to: '  const view = memoryGuardView(store.getMemoryGuardSettings());', expect: ['persisted AND applied at once', 'raised_applies_at_once'] },
+  { id: 'M25_settings_no_resample', file: ST, edits: [{ find: "import { sampleMemoryGuardNow } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, sampleMemoryGuardNow } from './memory-guard.ts';" }, { find: 'const snap = sampleMemoryGuardNow();', to: 'const snap = getMemoryGuardSnapshot();' }], expect: ['persisted AND applied at once'] },
   // pre-review fixes (c364a283 review): real source, FIFO delivery, edge order, MemTotal bound, sampled flag
   { id: 'M26_real_source_platform', file: MA, find: "export function readMemAvailableBytes(): number | null {\n  if (process.platform !== 'linux') return null;", to: "export function readMemAvailableBytes(): number | null {\n  if (process.platform !== 'darwin') return null;", expect: ['mem-available', 'real_source'] },
   { id: 'M27_nested_delivery_sync', file: M, find: '    if (draining) return;\n', to: '', expect: ['nested_sampleNow'] },
   { id: 'M28_reopen_before_lift', file: S, find: "  if (transitions.length === 2 && transitions[0].kind === 'admission_reopened') transitions.reverse();\n", to: '', expect: ['jump_recovery'] },
-  { id: 'M29_total_bound_gt', file: S, find: 's.admissionGb * GIB >= totalBytes', to: 's.admissionGb * GIB > totalBytes', expect: ['validate_total'] },
+  { id: 'M29_total_bound_gt', file: S, find: '(admissionGb + RELEASE_MARGIN_GB) * GIB >= totalBytes', to: '(admissionGb + RELEASE_MARGIN_GB) * GIB > totalBytes', expect: ['validate_total'] },
   { id: 'M30_sampled_never_set', file: M, find: '    sampled = true;\n', to: '', expect: ['sampled: false until'] },
   { id: 'M31_save_error_swallowed', file: ST, find: '  if (saveError) {', to: '  if (false) {', expect: ['a save that FAILS'] },
   { id: 'M32_patch_null_throws', file: S, find: "  if (patch === null || typeof patch !== 'object') return { ok: false, error: 'invalid settings patch' };\n", to: '', expect: ['patch: a null', 'a patch that is null'] },
@@ -80,6 +81,8 @@ const MUTANTS = [
   { id: 'M45_settings_read_failure_defaults', file: M, find: '      return settings; // an unreadable store never changes the thresholds in force', to: '      return DEFAULT_MEMORY_GUARD_SETTINGS;', expect: ['settings_read_failure_keeps_thresholds'] },
   { id: 'M46_toggle_type_unchecked', file: S, find: "  if (typeof s.admissionEnabled !== 'boolean') return 'the toggle must be true or false';\n", to: '', expect: ['validate_toggle_type'] },
   { id: 'M47_echo_wipes_typed_draft', file: UI, find: 'setDraft((d) => (committed !== null && d === committed ? null : d));', to: 'setDraft(null);', expect: ['draft_kept'], ui: true },
+  { id: 'M49_commit_plans_against_stale_settings', file: UI, find: 'const basis = inflight.current.expected ?? settings;', to: 'const basis = settings;', expect: ['retype_during_flight'], ui: true },
+  { id: 'M50_chip_dead_meter_shows_stale_figure', file: V, find: "s.measured ? ` — ${formatGb(s.availBytes)}` : ' — meter unreadable'", to: "` — ${formatGb(s.availBytes)}`", expect: ['chip_dead_meter'] },
   { id: 'M48_toggle_dropped_while_draft', file: UI, find: 'onChange={(e) => void apply({ admissionEnabled: e.target.checked })}', to: 'onChange={(e) => void (draft ? undefined : apply({ admissionEnabled: e.target.checked }))}', expect: ['slow_ipc'], ui: true },
   // Settings dialog view logic (the React component itself is proven by the built-app drive, not here)
   { id: 'V01_gauge_crit_lte', file: V, find: "availBytes < s.criticalGb * GIB ? 'crit'", to: "availBytes <= s.criticalGb * GIB ? 'crit'", expect: ['gauge: ticks'] },
@@ -117,9 +120,20 @@ function modalRed() {
 }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 
+if (args.includes('--check-anchors')) { // dry check: does every mutant's find resolve exactly once on the CURRENT sources? (no mutation, no run)
+  let bad = 0;
+  for (const m of MUTANTS) {
+    let text = fs.readFileSync(path.join(REPO, m.file), 'utf8'); let why = null;
+    for (const e of m.edits ?? [{ find: m.find, to: m.to }]) { const c = text.split(e.find).length - 1; if (c !== 1) { why = `${c}× ${e.find.slice(0, 70)}`; break; } text = text.replace(e.find, () => e.to); }
+    if (why) { bad++; console.log(`ANCHOR-BAD ${m.id}: ${why}`); }
+  }
+  console.log(`ANCHORS: ${MUTANTS.length - bad}/${MUTANTS.length} resolve exactly once`);
+  process.exit(bad ? 1 : 0);
+}
+
 // ── guard: the tree must be committed (git diff is the independent restoration proof) ──
 const files = [...new Set(MUTANTS.map((m) => m.file))];
-const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/e2e-memory-guard.mjs']).status !== 0;
+const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/e2e-memory-guard.mjs', 'scripts/e2e-memory-guard-modal.mjs', 'scripts/memory-guard-mutants.mjs']).status !== 0;
 if (dirty) { console.error('REFUSING: the mutated files / suites / rig have uncommitted changes — commit first (the end-of-sweep `git diff` must prove restoration)'); process.exit(2); }
 const before = Object.fromEntries(files.map((f) => [f, sha(f)]));
 buildCli();

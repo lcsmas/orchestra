@@ -25,12 +25,13 @@ export function clock(ms: number): string {
 /** The chip beside the live figure. Status colours are reserved for problems: open = accent, HELD = warn, memory Pause = crit. */
 export function guardChip(s: MemoryGuardSnapshot): GuardChip {
   if (!s.measured && s.availBytes === null) return { tone: 'unknown', text: 'Unmeasured' };
-  const mem = s.availBytes === null ? '' : ` — ${formatGb(s.availBytes)}`;
+  // A dead meter keeps the last GOOD reading in the snapshot, but the chip must not present it as current: it says the meter is unreadable.
+  const mem = s.availBytes === null ? '' : s.measured ? ` — ${formatGb(s.availBytes)}` : ' — meter unreadable';
   if (s.pause === 'held') return { tone: 'crit', text: `MEMORY PAUSE${s.pauseSince === null ? '' : ` since ${clock(s.pauseSince)}`}${mem}` };
   if (s.admission === 'held') {
     return { tone: 'warn', text: `${s.admissionEnabled ? 'HELD' : 'Below threshold (toggle OFF)'}${s.heldSince === null ? '' : ` since ${clock(s.heldSince)}`}${mem}` };
   }
-  return { tone: 'ok', text: 'Admission open' };
+  return { tone: 'ok', text: `Admission open${s.measured ? '' : ' — meter unreadable'}` };
 }
 
 export interface GaugeModel {

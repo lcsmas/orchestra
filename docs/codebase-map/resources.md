@@ -116,27 +116,27 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
 **This track holds nothing**: it measures, decides, logs and exposes; #286 (Admission), #288 (fast Veille), #289 (alert), #290
 (memory Pause) consume the API. Glossary: `CONTEXT.md` (Veille, Admission); decision record: `docs/adr/0004-…`.
 
-- **Pure half — `src/shared/memory-guard.ts`** (+ `.test.ts`): `decideMemoryGuard(prev, availBytes, thresholds)` (`:141`) → next
+- **Pure half — `src/shared/memory-guard.ts`** (+ `.test.ts`): `decideMemoryGuard(prev, availBytes, thresholds)` (`:156`) → next
   state + the edges crossed (`admission_held` / `admission_reopened` / `pause_due` / `pause_liftable`, each carrying the memory
   and the threshold that fired) + `pause: none|due|held|liftable` + `mayReleaseOneStart`. All comparisons STRICT (exactly at a
   threshold is not below/above it); unreadable memory (`null`/NaN/negative) = state unchanged, nothing fires, nothing released.
   `episode` increments only on a downward Admission crossing, so jitter inside the 6–7 GB band is ONE episode. Stateless level
-  predicates `memoryPauseDue/Liftable` (`:129/:132`) and `mayReleaseOneStart` (`:136`) exist so #290 can re-evaluate against the
-  PERSISTED run after an app restart (the in-memory state is gone then). `nextSampleDelayMs` (`:172`): 10 s strictly below the
+  predicates `memoryPauseDue/Liftable` (`:144/:147`) and `mayReleaseOneStart` (`:151`) exist so #290 can re-evaluate against the
+  PERSISTED run after an app restart (the in-memory state is gone then). `nextSampleDelayMs` (`:191`): 10 s strictly below the
   Admission threshold (or unreadable), 60 s otherwise — the spec literally, so the 6–7 GB band samples at 60 s even while held.
-  `isAdmissionHolding(snapshot)` (`:202`) = `admissionEnabled && admission==='held'` is THE question #286/#288 ask — the global
+  `isAdmissionHolding(snapshot)` (`:228`) = `admissionEnabled && admission==='held'` is THE question #286/#288 ask — the global
   toggle OFF still measures/decides/logs. Settings: `normalizeMemoryGuardSettings` (always valid; an invalid PAIR falls back to
   6/3 as a pair), `validateMemoryGuardSettings` (critical < Admission, critical ≥ 0.5, Admission ≤ 256, and — when MemTotal is known and the PAIR is being
   changed — Admission + the 1 GB margin below MemTotal: Admission could otherwise never reopen), `patchMemoryGuardSettings`.
   `parseMemAvailableBytes`, `formatMemoryGuardLine` (the `bus-status` line).
-- **Sampler — `src/main/memory-guard.ts`**: `createMemoryGuard(deps)` (`:91`); `deps.readAvailableBytes` is THE injectable
+- **Sampler — `src/main/memory-guard.ts`**: `createMemoryGuard(deps)` (`:100`); `deps.readAvailableBytes` is THE injectable
   MemAvailable source (default `readMemAvailableBytes()` in `src/main/mem-available.ts`: `/proc/meminfo`, **Linux only — other
   platforms read null = unmeasured**, never `os.freemem()`), `deps.schedule/cancel` the timer seam. A light chained `setTimeout`
   (re-armed after each sample because the delay changes; reads ONE small file, never the process table — it is NOT the 60 s
   `sampleTick` above, which keeps its cadence). `getSettings()` is read at EVERY sample, so a threshold change is hot.
   Every transition is logged WITH the memory (`[memory-guard] admission HELD (episode 1) — MemAvailable 5.50 GB < 6.00 GB`; WARN
   for held/pause-due, INFO for the upward edges), steady samples log nothing, an outage logs ONE WARN. Process-wide facade
-  (frozen API): `getMemoryGuardSnapshot()`, `subscribeMemoryGuard(fn)`, `sampleMemoryGuardNow()` (`:270`, a FRESH read + decision =
+  (frozen API): `getMemoryGuardSnapshot()`, `subscribeMemoryGuard(fn)`, `sampleMemoryGuardNow()` (`:326`, a FRESH read + decision =
   the re-measure between two releases), `startMemoryGuard/stopMemoryGuard`, `setMemoryGuardSettingsReader`;
   `__rebuildMemoryGuardForTests(deps, source)` is the rig seam.
   Snapshot fields consumers lean on (review m5): `mayReleaseOneStart` = the LATEST decision (false while the meter is unreadable, even though
@@ -162,7 +162,7 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   logging, hot thresholds, unreadable), `memory-guard-settings.test.ts`, `memory-guard-wiring.test.ts` (source guards + the
   "no start path imports the guard yet" tripwire — #286/#288/#289/#290 add their importer there),
   `scripts/e2e-memory-guard.mjs` (fake source → REAL sampler → REAL `/busStatus` in a headless scratch home → REAL built CLI;
-  `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (25 in-place mutants, byte-exact restore).
+  `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (56 in-place mutants across the pure module, sampler, settings I/O, the Settings view logic and the modal, byte-exact restore; `--check-anchors` is the dry check that every anchor still resolves once).
   `scripts/e2e-memory-guard-modal.mjs` (headless Chromium, no window: the REAL modal bundled with a stub IPC whose latency is the variable —
   a toggle pressed right after a pending edit must reach the backend, text typed during an in-flight commit survives its echo; `RIG_REPO=<tree>`
   = the must-FAIL run), `scripts/e2e-memory-guard-ui.sh <built app dir>` drives the modal in a BUILT app under its own headless sway (heavy: token): real
