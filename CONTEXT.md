@@ -102,21 +102,26 @@ _Avoid_: ack (a bus `ack` closes a mail lot, a different thing)
 
 **Pause dure** (hard pause):
 A Pause the host imposes at once: it snapshots every worktree to a pause ref,
-records what was running, interrupts the turn and kills the tool process
-trees — never the session itself, which stays resumable.
+records what was running, interrupts the turn, kills the tool process
+trees and stops (never removes) the containers attributed to its members —
+never the session itself, which stays resumable. The Reprise restarts exactly
+the containers it stopped.
 _Avoid_: kill, sigkill, abort
 
 **Bilan de pause** (pause record):
 What the host recorded for each member when the Pause took effect: what it
-was doing, its snapshot ref, whether its tree was dirty, which commands it killed.
+was doing, its snapshot ref, whether its tree was dirty, which commands it
+killed, which containers it stopped.
 _Avoid_: pause report, state dump
 
 **Pause automatique** (auto Pause):
-A Pause dure the host imposes when a structured member stops on its account's
-usage limit (`runs.pause_auto` = who and which account); lifted by an automatic
-Reprise once the accounts those members are pinned to have quota again — at the
-reset, on a fresh usage reading, after an account switch or a re-login. A manual
-Pause is never lifted this way.
+A Pause dure the host imposes on its own, for one of two motives: a structured
+member stops on its account's usage limit (`runs.pause_auto` = who and which
+account), lifted by an automatic Reprise once the accounts those members are
+pinned to have quota again — at the reset, on a fresh usage reading, after an
+account switch or a re-login; or the host's available memory falls below the
+critical threshold, lifted once it is back above the Admission threshold.
+A manual Pause is never lifted this way.
 _Avoid_: auto-resume (that is the per-session usage-limit nudge, #74)
 
 **Reprise** (resume):
@@ -138,6 +143,28 @@ _Avoid_: unblock, wake (a release opens the gate; it does not start anything)
 **Reprise accusé** (resume acknowledgement):
 A member's confirmation (`orchestra run confirm reprise`) that it read its Consigne
 and is back on its feet. Tracking only — it gates nothing; `bus-status` shows "N/M repris".
+
+### Memory
+
+**Veille** (hibernation):
+The host stops one idle member's process to free memory; its conversation is
+kept and it comes back on its next input or réveil. Targets one member, is
+triggered by idleness, and blocks nothing — unlike a Pause.
+_Avoid_: pause, sleep, stop
+
+**Admission**:
+The host's decision to let a fleet member's process start (spawn, réveil from
+Veille, restart). Held while available memory is below the Admission threshold;
+held starts wait and go out coordinators first, one at a time, once memory is
+back. Applies to every fleet member whatever its run's switches; a human action
+(typing into a pane, a click) is never held, and a turn of an already-running
+member is not a start.
+_Avoid_: queue, throttle, quota
+
+**Conteneur attribué** (attributed container):
+A container the host itself stamped, at creation, with the workspace and run
+that created it — the stamp on the container is the truth of who owns it.
+_Avoid_: tagged container, managed container
 
 ### Quality
 
