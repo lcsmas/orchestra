@@ -33,7 +33,7 @@ test('STATE unreadable keeps what the guard holds, a guard that never held shows
 
 test('STATE fields: the guard\'s thresholds, episode, cycle and the host facts are carried', () => {
   const b = memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 3, episode: 5, availBytes: 2.3 * GIB }, { heldStarts: 4, pausedRuns: ['lead', 'ops'] }, 9);
-  assert.deepEqual(b, { kind: 'pause', episode: 5, pauseCycle: 3, availBytes: 2.3 * GIB, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, heldStarts: 4, pausedRuns: ['lead', 'ops'], rev: 9 });
+  assert.deepEqual(b, { kind: 'pause', episode: 5, pauseCycle: 3, episodeOver: false, availBytes: 2.3 * GIB, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, heldStarts: 4, pausedRuns: ['lead', 'ops'], rev: 9 });
 });
 
 test('DISMISS: « Masquer » hides exactly that banner — it REAPPEARS on an escalation (held → Pause), on a new Pause cycle and on the next episode; it never shows for kind none', () => {
@@ -78,7 +78,31 @@ test('DISMISS red covers the episode: « Masquer » on the RED banner alone also
   assert.deepEqual(dismissedWith(afterRed, red), afterRed, 'idempotent');
 });
 
-test('KEY: held keys on the episode only, the Pause on episode + cycle', () => {
+test('DISMISS lasts until the EPISODE ENDS (ruling #289 b): a Pause that outlives its episode (Admission reopened, Reprise held) shows again; hiding that one holds; the next episode and a new cycle show again', () => {
+  const live = memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] });
+  assert.equal(live.episodeOver, false, 'Admission still held: the episode is going');
+  const over = memoryBannerOf({ ...SNAP, admission: 'open', pause: 'none', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] });
+  assert.equal(over.kind, 'pause', 'the run is still paused after Admission reopened');
+  assert.equal(over.episodeOver, true, 'the episode that opened it is over');
+  assert.equal(over.episode, live.episode);
+  assert.equal(over.pauseCycle, live.pauseCycle);
+  const hidden = dismissedWith([], live);
+  assert.equal(bannerVisible(live, hidden), false, 'dismissed during the episode');
+  assert.equal(bannerVisible(over, hidden), true, 'the episode ended while the Pause stands: the dismissal is over, the red banner shows again');
+  const hiddenOver = dismissedWith(hidden, over);
+  assert.equal(bannerVisible(over, hiddenOver), false, 'hiding it again holds');
+  assert.equal(bannerVisible({ ...over, episode: over.episode + 1 }, hiddenOver), true, 'a later episode shows again');
+  assert.equal(bannerVisible({ ...over, pauseCycle: 2 }, hiddenOver), true, 'a new Pause cycle shows again');
+  assert.equal(bannerVisible(live, hiddenOver), false, 'and the live-phase dismissal is still in the set (held → over never re-shows the live phase)');
+  // an unreadable guard / toggle OFF keep the live phase (raw admission is still held)
+  assert.equal(memoryBannerOf({ ...SNAP, measured: false, pause: 'held', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] }).episodeOver, false);
+  assert.equal(memoryBannerOf({ ...SNAP, admissionEnabled: false, pause: 'held', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] }).episodeOver, false, 'toggle OFF: the guard is still held');
+});
+
+test('KEY: held keys on the episode only, the Pause on episode + cycle (+ whether its episode is over)', () => {
+  assert.equal(bannerKey({ kind: 'pause', episode: 4, pauseCycle: 9, episodeOver: true }), '4:pause:9:over');
+  assert.equal(bannerKey({ kind: 'pause', episode: 4, pauseCycle: 9, episodeOver: false }), '4:pause:9');
+  assert.equal(bannerKey({ kind: 'held', episode: 4, pauseCycle: 9, episodeOver: true }), '4:held:0', 'a held banner has no over phase');
   assert.equal(bannerKey({ kind: 'held', episode: 4, pauseCycle: 9 }), '4:held:0');
   assert.equal(bannerKey({ kind: 'pause', episode: 4, pauseCycle: 9 }), '4:pause:9');
 });

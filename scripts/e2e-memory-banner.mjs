@@ -336,6 +336,24 @@ async function main() {
       await sleep(6500); // > one banner tick
       const after = await banner();
       clause('B10/masquer-on-red-survives-the-de-escalation', !hidden.present && !after.present && /admission HELD/.test(bus()), `banner present ${red.present} -> ${hidden.present} (Masquer on RED) -> ${after.present} after the Pause lifted back to held; ${bus()}`);
+
+      // ── B11 (ruling #289 b, RENDERER half): « Masquer » lasts until the EPISODE ENDS. The Pause stands again (live phase: still hidden — the dismissal applies), then the SAME state arrives with `episodeOver` (Admission reopened while the Pause
+      //    stands, Reprise held) through the store's own test seam: the dismissal no longer applies and the red banner shows again. The MAIN half (guard + real bus → `episodeOver`, pushed) is pinned by memory-banner.test.ts; a seeded run cannot stand
+      //    through a real reopen here, because the host's own lift clears it (no fleet to hold a Reprise). ──
+      seedMemoryPause(true);
+      await sleep(6500); // > one banner tick: the live-phase Pause is back on the bus, under the SAME dismissed key
+      const standing = await banner();
+      const pulled = await cdp.eval(`window.orchestra.memoryBanner()`); // main's own current state, through the real preload pull
+      clause('B11/live-phase-pause-stays-hidden', !standing.present && pulled && pulled.kind === 'pause' && pulled.episodeOver === false && pulled.pausedRuns.length === 1, `banner present=${standing.present}; main state ${JSON.stringify(pulled && { kind: pulled.kind, episode: pulled.episode, pauseCycle: pulled.pauseCycle, episodeOver: pulled.episodeOver, pausedRuns: pulled.pausedRuns })}`);
+      await cdp.eval(`window.__orchestraSetState({ memoryBanner: ${JSON.stringify({ ...pulled, episodeOver: true })} })`);
+      const again = await bannerSettled((b) => b.present && b.kind === 'pause', 'the red banner of the ended episode');
+      clause('B11/episode-over-with-the-pause-standing-shows-again', !standing.present && again.present && again.tone === 'crit', `banner present ${standing.present} -> ${again.present} (kind ${again.kind}) once the episode is over and the Pause still stands`);
+      saveShot(`${LABEL}-b11-red-after-the-episode-ended-renderer.png`, await cdp.shot());
+      await cdp.click(again.dismiss.left + again.dismiss.width / 2, again.dismiss.top + again.dismiss.height / 2);
+      const hid2 = await bannerSettled((b) => !b.present, 'the over-phase red banner to hide');
+      clause('B11/masquer-on-the-over-phase-holds', !hid2.present, `banner present ${again.present} -> ${hid2.present} after « Masquer » on the over-phase banner`);
+      seedMemoryPause(false);
+      await sleep(6500); // main's real state (held, still episode 2) replaces the injected one; both banners of the episode are hidden
     }
     await openDialog(); await typeInto('[data-mg-admission]', '6', 'blur'); await settled((d) => d.chipTone === 'ok' || d.error, 'back to the defaults'); await typeInto('[data-mg-critical]', '3', 'blur'); await settled((d) => d.chipTone === 'ok', 'chip → ok'); await closeDialog();
     const b7 = await banner();

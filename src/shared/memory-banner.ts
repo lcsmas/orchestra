@@ -3,7 +3,8 @@
 //
 // Two states, one banner: Admission HELD (amber — starts held, idle members to Veille) and the memory Pause IN EFFECT (red — at least one run IS under the host's memory Pause; the guard's own `pause` flag alone is not
 // that: nothing may be eligible to pause). It exists only while the guard HOLDS (`admissionEnabled` on) or a memory Pause is in effect; it vanishes by itself on recovery. « Masquer » hides it until the episode ends:
-// it REAPPEARS on an escalation (held → Pause), on every new Pause cycle and on the next episode — and stays hidden if a Pause lifts back to held (a de-escalation is not news: hiding the red banner hides its episode's amber one too).
+// it REAPPEARS on an escalation (held → Pause), on every new Pause cycle, on the next episode, and when the episode ENDS while a Pause still stands (Admission reopened, Reprise held: that Pause now needs attention) — and
+// stays hidden if a Pause lifts back to held (a de-escalation is not news: hiding the red banner hides its episode's amber one too).
 
 import { RELEASE_MARGIN_GB, GIB, isAdmissionHolding, type MemoryGuardSnapshot } from './memory-guard.ts';
 
@@ -14,6 +15,8 @@ export interface MemoryBannerState {
   /** The guard's Admission episode / memory-Pause cycle (the dismiss key). */
   episode: number;
   pauseCycle: number;
+  /** The episode that opened this banner is OVER (Admission reopened) while a memory Pause still stands (its Reprise is held): a « Masquer » from the live episode no longer applies — that Pause now needs attention. */
+  episodeOver: boolean;
   availBytes: number | null;
   admissionBytes: number;
   criticalBytes: number;
@@ -26,7 +29,7 @@ export interface MemoryBannerState {
   rev: number;
 }
 
-export const NO_MEMORY_BANNER: MemoryBannerState = { kind: 'none', episode: 0, pauseCycle: 0, availBytes: null, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: RELEASE_MARGIN_GB * GIB, heldStarts: 0, pausedRuns: [], rev: 0 };
+export const NO_MEMORY_BANNER: MemoryBannerState = { kind: 'none', episode: 0, pauseCycle: 0, episodeOver: false, availBytes: null, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: RELEASE_MARGIN_GB * GIB, heldStarts: 0, pausedRuns: [], rev: 0 };
 
 /** The banner's state from the guard's snapshot + what the host actions look like now. An unreadable sample changes nothing about WHETHER the guard holds (it keeps its state until a good reading says otherwise): the banner
  *  stays and says the reading is unreadable; a guard that never held shows nothing.
@@ -41,6 +44,7 @@ export function memoryBannerOf(s: MemoryGuardSnapshot, facts: { heldStarts: numb
     kind,
     episode: s.episode,
     pauseCycle: s.pauseCycle,
+    episodeOver: s.admission !== 'held', // only a Pause that outlives its Admission episode reaches here with the episode over (a held banner needs `held`)
     availBytes: s.measured ? s.availBytes : null,
     admissionBytes: s.admissionBytes,
     criticalBytes: s.criticalBytes,
@@ -63,9 +67,10 @@ export function newerBanner(prev: MemoryBannerState | null, next: MemoryBannerSt
 
 // ─── « Masquer » ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The identity of what the human dismissed: one banner kind of one episode — and, for the Pause, one Pause CYCLE. A different key ⇒ it shows again. */
-export function bannerKey(b: Pick<MemoryBannerState, 'kind' | 'episode' | 'pauseCycle'>): string {
-  return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}`;
+/** The identity of what the human dismissed: one banner kind of one episode — and, for the Pause, one Pause CYCLE, and whether its episode is still going. A different key ⇒ it shows again: « Masquer » lasts until the
+ *  EPISODE ENDS (D-pick3), so a Pause that outlives it (Admission reopened, Reprise held) is a new, undismissed banner. */
+export function bannerKey(b: Pick<MemoryBannerState, 'kind' | 'episode' | 'pauseCycle'> & { episodeOver?: boolean }): string {
+  return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;
 }
 
 /** Visible = something to show AND not a banner the human dismissed. The renderer keeps EVERY key dismissed since the last recovery (a Pause that lifts back to held shows the held banner already dismissed). */

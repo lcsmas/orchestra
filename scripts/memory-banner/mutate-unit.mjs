@@ -24,9 +24,9 @@ const M = [
   { id: 'state-pause-wins-over-held', file: POL, find: "const kind: MemoryBannerKind = inPause ? 'pause' : holding ? 'held' : 'none';", rep: "const kind: MemoryBannerKind = holding ? 'held' : inPause ? 'pause' : 'none';", tests: [T.pure, T.unit], expect: /STATE kind|PUBLISH walk/ },
   { id: 'fingerprint-includes-rev', file: POL, find: "return JSON.stringify({ ...b, rev: 0 });", rep: "return JSON.stringify(b);", tests: [T.pure], expect: /PUSH/ },
   { id: 'newer-banner-inverted', file: POL, find: "return prev && prev.rev > next.rev ? prev : next;", rep: "return prev && prev.rev < next.rev ? prev : next;", tests: [T.pure], expect: /PUSH/ },
-  { id: 'key-pause-cycle-dropped', file: POL, find: "return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}`;", rep: "return `${b.episode}:${b.kind}:0`;", tests: [T.pure], expect: /DISMISS|KEY/ },
-  { id: 'key-episode-dropped', file: POL, find: "return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}`;", rep: "return `0:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}`;", tests: [T.pure], expect: /DISMISS|KEY/ },
-  { id: 'key-kind-dropped', file: POL, find: "return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}`;", rep: "return `${b.episode}:x:${b.kind === 'pause' ? b.pauseCycle : 0}`;", tests: [T.pure], expect: /DISMISS|KEY/ },
+  { id: 'key-pause-cycle-dropped', file: POL, find: "return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;", rep: "return `${b.episode}:${b.kind}:0${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;", tests: [T.pure], expect: /DISMISS|KEY/ },
+  { id: 'key-episode-dropped', file: POL, find: "return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;", rep: "return `0:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;", tests: [T.pure], expect: /DISMISS|KEY/ },
+  { id: 'key-kind-dropped', file: POL, find: "return `${b.episode}:${b.kind}:${b.kind === 'pause' ? b.pauseCycle : 0}${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;", rep: "return `${b.episode}:x:${b.kind === 'pause' ? b.pauseCycle : 0}${b.kind === 'pause' && b.episodeOver ? ':over' : ''}`;", tests: [T.pure], expect: /DISMISS|KEY/ },
   { id: 'visible-none-shown', file: POL, find: "  if (!b || b.kind === 'none') return false;\n", rep: "  if (!b) return false;\n", tests: [T.pure], expect: /DISMISS/ },
   { id: 'visible-ignores-dismissal', file: POL, find: "  return !dismissedKeys.includes(bannerKey(b));", rep: "  return true;", tests: [T.pure], expect: /DISMISS/ },
   { id: 'visible-always-hidden-once-dismissed', file: POL, find: "  return !dismissedKeys.includes(bannerKey(b));", rep: "  return dismissedKeys.length === 0;", tests: [T.pure], expect: /DISMISS/ },
@@ -90,6 +90,11 @@ const M = [
   { id: 'frlist-boundary-4', file: POL, find: "xs.length <= 3 ?", rep: "xs.length <= 4 ?", tests: [T.pure], expect: /COPY Pause/ },
   { id: 'frgo-floor', file: POL, find: "Math.round((bytes / GIB) * 10) / 10", rep: "Math.floor((bytes / GIB) * 10) / 10", tests: [T.pure], expect: /FRENCH go/ },
   { id: 'refresh-ms-60s', file: CORE, find: "export const BANNER_REFRESH_MS = 5_000;", rep: "export const BANNER_REFRESH_MS = 60_000;", tests: [T.unit], expect: /PUBLISH tick outlives/ },
+  // ── ruling #289 (b): « Masquer » lasts until the EPISODE ENDS
+  { id: 'episode-over-always-false', file: POL, find: "episodeOver: s.admission !== 'held',", rep: "episodeOver: false,", tests: [T.pure, T.unit], expect: /DISMISS lasts until the EPISODE ENDS|PUBLISH the episode ends/ },
+  { id: 'episode-over-inverted', file: POL, find: "episodeOver: s.admission !== 'held',", rep: "episodeOver: s.admission === 'held',", tests: [T.pure, T.unit], expect: /DISMISS lasts until the EPISODE ENDS|PUBLISH the episode ends|STATE fields/ },
+  { id: 'key-ignores-episode-over', file: POL, find: "${b.kind === 'pause' && b.episodeOver ? ':over' : ''}", rep: "", tests: [T.pure, T.unit], expect: /KEY: held keys|DISMISS lasts until the EPISODE ENDS|PUBLISH the episode ends/ },
+  { id: 'key-over-for-held-too', file: POL, find: "${b.kind === 'pause' && b.episodeOver ? ':over' : ''}", rep: "${b.episodeOver ? ':over' : ''}", tests: [T.pure], expect: /KEY: held keys/ },
   { id: 'core-imports-electron', file: CORE, find: "import { NO_MEMORY_BANNER, bannerFingerprint, memoryBannerOf, type MemoryBannerState } from '../shared/memory-banner.ts';", rep: "import { NO_MEMORY_BANNER, bannerFingerprint, memoryBannerOf, type MemoryBannerState } from '../shared/memory-banner.ts';\nimport { store as _s } from './store.ts';", tests: [T.wiring], expect: /WIRING memory-banner\.ts is Electron-free/ },
 ];
 

@@ -11,7 +11,7 @@ import { memoryPausedRuns } from './pause-memory.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSettings } from '../shared/memory-guard.ts';
 import { MEMORY_PAUSE_BY, encodeMemoryPause } from '../shared/pause-memory.ts';
-import type { MemoryBannerState } from '../shared/memory-banner.ts';
+import { bannerVisible, dismissedWith, type MemoryBannerState } from '../shared/memory-banner.ts';
 
 // #289 (D5 D-pick3) — the banner's STATE half over a REAL bus (the paused runs are read from the memory-Pause motive rows) and the REAL guard (createMemoryGuard) on a fake MemAvailable source with a hand-fired scheduler.
 // Named arms are what scripts/memory-banner/mutate-unit.mjs reddens.
@@ -191,6 +191,27 @@ test('PUBLISH tick outlives the banner while the GUARD holds: a banner that went
   w.at(8);
   assert.equal(w.pub.current().kind, 'none');
   assert.equal(w.timers.length, 0, 'guard open ⇒ no tick');
+});
+
+test('PUBLISH the episode ends while a Pause stands (Reprise held): the banner stays RED with `episodeOver` set — a push the renderer reads as a new, undismissed banner (ruling #289 b)', () => {
+  const w = world();
+  w.at(12);
+  w.at(2.3); // critical: the guard holds the Pause
+  w.pauseRun('L', true);
+  w.pub.refresh();
+  const live = w.pub.current();
+  assert.deepEqual([live.kind, live.episodeOver, live.pausedRuns], ['pause', false, ['run-L']]);
+  const hidden = dismissedWith([], live); // the human hid it during the episode
+  assert.equal(bannerVisible(live, hidden), false);
+  w.at(8); // memory recovers above the reopen margin: Admission reopened — but the run is STILL paused (its Reprise is held; nothing lifts it here)
+  const over = w.pub.current();
+  assert.deepEqual([over.kind, over.episodeOver, over.pausedRuns], ['pause', true, ['run-L']], 'still the memory Pause, and now its episode is over');
+  assert.equal(over.episode, live.episode, 'same guard episode number: only the phase differs');
+  assert.ok(w.pushes.some((p) => p.kind === 'pause' && p.episodeOver === true), 'the change was PUSHED');
+  assert.equal(bannerVisible(over, hidden), true, 'the dismissal of the live episode no longer applies: this Pause now needs attention');
+  w.pauseRun('L', false); // the human lifts it
+  w.pub.refresh();
+  assert.equal(w.pub.current().kind, 'none');
 });
 
 test('PUBLISH Pause red means RUNS paused: the guard below critical with no run under the memory Pause stays amber', () => {
