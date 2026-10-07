@@ -348,3 +348,13 @@ test('#1 …and a re-Pause mid-step never turns what was NOT attempted into a re
   assert.equal(containersOwed(db, 'L'), true);
   db.close();
 });
+
+test('F2-Z16 a later restart step MERGES into the row\'s earlier `restarted` results (never overwrites them): an earlier step\'s `started` survives the next one', async () => {
+  const { db, pausedAt } = rig({ o1: { stopped: [{ ...stop('c1'), atMs: 30 }, { ...stop('c2'), atMs: 20 }], restarted: [{ id: 'c1', outcome: 'started', atMs: 3 }] } });
+  beginReprise(db, 'L', 'L');
+  const d = new FakeDocker([{ id: 'c1', name: 'c1', running: true }, { id: 'c2', name: 'c2', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls.filter((c) => c.startsWith('start')), ['start c2'], 'c1 already has its result: not started again');
+  assert.deepEqual(containersOf(db, 'o1', pausedAt).restarted!.map((x) => [x.id, x.outcome]).sort(), [['c1', 'started'], ['c2', 'started']], 'both results are on the row');
+  db.close();
+});
