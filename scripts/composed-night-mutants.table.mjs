@@ -49,21 +49,6 @@ export const MUTANTS = [
   ]
  },
  {
-  "id": "286-A20_human_start_leaves_entry",
-  "from": "admission-mutants.mjs:A20_human_start_leaves_entry",
-  "ticket": "#286",
-  "clause": "a human start drops the held entry (no redundant start at recovery)",
-  "arm": "n1_starts_held",
-  "check": "no_stale_held_marker_on_the_member_a_human_started",
-  "edits": [
-   {
-    "file": "src/main/admission.ts",
-    "find": "if (isHumanOrigin(a.origin) && queue.delete(a.wsId))",
-    "to": "if (false && queue.delete(a.wsId))"
-   }
-  ]
- },
- {
   "id": "286-C09_peers_without_held",
   "from": "admission-mutants.mjs:C09_peers_without_held",
   "ticket": "#286",
