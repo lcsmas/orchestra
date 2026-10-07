@@ -82,10 +82,12 @@ async function makeCtx(env?: Record<string, string>): Promise<Ctx> {
     daemon: await startFakeDaemon(path.join(dir, 'd.sock')),
   };
   fs.writeFileSync(ctx.fakeCli, FAKE_CLI);
-  spawn(process.execPath, [KEEPER_JS, ctx.wsId, ctx.sock, ctx.pidFile, ctx.logFile], {
+  // KEEPER_NODE=<electron binary> re-runs this suite with the keeper on Electron-as-node, as a packaged build launches it
+  const keeperNode = process.env.KEEPER_NODE ?? process.execPath;
+  spawn(keeperNode, [KEEPER_JS, ctx.wsId, ctx.sock, ctx.pidFile, ctx.logFile], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, ORCHESTRA_KEEPER_RELAY_CHECK_MS: '100', ...env },
+    env: { ...process.env, ORCHESTRA_KEEPER_RELAY_CHECK_MS: '100', ...(process.env.KEEPER_NODE ? { ELECTRON_RUN_AS_NODE: '1' } : {}), ...env },
   }).unref();
   ctxs.push(ctx);
   return ctx;
