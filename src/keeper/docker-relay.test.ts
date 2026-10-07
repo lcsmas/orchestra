@@ -245,7 +245,7 @@ function rawUpgrade(r: DockerRelay, head: string, bodyAfterHead = ''): Promise<{
   });
 }
 
-test('hijacked attach: 101 comes back, then bytes flow BOTH ways until the client half-closes', async () => {
+test('hijacked attach: 101 comes back, then bytes flow BOTH ways until the client half-closes', { timeout: 8000 }, async () => {
   const r = await newRelay();
   const { sock, response } = await rawUpgrade(
     r,
@@ -263,7 +263,7 @@ test('hijacked attach: 101 comes back, then bytes flow BOTH ways until the clien
   assert.equal(lastSeen().url, '/v1.47/containers/abc/attach?stream=1&stdin=1');
 });
 
-test('hijacked exec start with a JSON body: the body reaches the daemon BEFORE it answers 101', async () => {
+test('hijacked exec start with a JSON body: the body reaches the daemon BEFORE it answers 101', { timeout: 8000 }, async () => {
   const r = await newRelay();
   const body = '{"Detach":false,"Tty":true}';
   const { sock, response } = await rawUpgrade(

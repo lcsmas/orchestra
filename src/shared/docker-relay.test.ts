@@ -74,6 +74,16 @@ test('stamp: strings holding braces/quotes/the word Labels do not confuse the sc
   assert.deepEqual(v.Env, ['A=}{']);
 });
 
+test('stamp: an escaped quote followed by a structural-looking brace stays inside its string (escape handling)', () => {
+  const body = '{"Cmd":["echo \\"}"],"Image":"x"}';
+  const out = stampContainerCreateBody(body, LABELS);
+  assert.notEqual(out, null);
+  const v = JSON.parse(out!) as { Cmd: string[]; Image: string; Labels: Record<string, string> };
+  assert.deepEqual(v.Cmd, ['echo "}']);
+  assert.equal(v.Image, 'x');
+  assert.deepEqual(v.Labels, LABELS);
+});
+
 test('stamp: integers above 2^53 survive byte-for-byte (a parse/stringify round trip would turn them into 2^63)', () => {
   const body = '{"HostConfig":{"Memory":9223372036854775807,"Ulimits":[{"Name":"memlock","Soft":-1,"Hard":18446744073709551615}]},"Image":"x"}';
   const out = stampContainerCreateBody(body, LABELS)!;

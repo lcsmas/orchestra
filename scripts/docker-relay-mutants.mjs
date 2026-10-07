@@ -4,6 +4,7 @@
 //
 //   node scripts/docker-relay-mutants.mjs            run everything (HEAVY: a mutation sweep — needs the heavy-rig token)
 //   node scripts/docker-relay-mutants.mjs --check    only verify every anchor matches exactly once (no tests run)
+//   node scripts/docker-relay-mutants.mjs --rig [ids]  the rig-marked mutants against the REAL-dockerd rig (HEAVY, containers)
 //   node scripts/docker-relay-mutants.mjs M5 R3      a subset by id
 //
 // The real-dockerd rig kills the mutants marked `rig:` too (scripts/e2e-docker-relay.sh); the ids are listed so the
@@ -12,7 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(process.env.SUBJECT_REPO ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
@@ -85,11 +86,29 @@ function apply(file, edits) {
   return { abs, orig, mutated: text };
 }
 
-function run(tests) {
-  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--test', ...tests], { cwd: REPO, encoding: 'utf8', timeout: 240000 });
-  const out = `${r.stdout}\n${r.stderr}`;
-  const num = (k) => Number((out.match(new RegExp(`^# ${k} (\\d+)`, 'm')) ?? [])[1] ?? NaN);
-  return { rc: r.status, pass: num('pass'), fail: num('fail'), skipped: num('skipped'), out };
+/** One `node --test` run in its OWN process group, SIGKILLed whole at the deadline: a mutant that makes a test HANG must read as
+ *  red (`timedOut`), not wedge the sweep on a grandchild that still holds the pipe (spawnSync only kills its direct child). */
+function run(tests, timeoutMs = 120000) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--experimental-strip-types', '--test', ...tests], { cwd: REPO, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let timedOut = false;
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* gone */
+      }
+    }, timeoutMs);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const num = (k) => Number((out.match(new RegExp(`^# ${k} (\\d+)`, 'm')) ?? [])[1] ?? NaN);
+      resolve({ rc: timedOut ? 124 : code, timedOut, pass: num('pass'), fail: num('fail'), skipped: num('skipped'), out });
+    });
+  });
 }
 
 if (checkOnly) {
@@ -108,8 +127,50 @@ if (checkOnly) {
   process.exit(bad ? 1 : 0);
 }
 
+
+// ── --rig: the same mutants against the REAL-dockerd rig (HEAVY: containers). The arm that must go red for each. ──────
+const RIG_ARM = { M2: 'user_labels', R1: 'run_labels', R3: 'streams', R4: 'run_labels', R6: 'kill_relay', K1: 'no_relay_fallback', K2: 'switch_off', K5: 'kill_relay', K7: 'run_labels', C1: 'app_switch', C2: 'sweep_relay_files' };
+if (args.includes('--rig')) {
+  const rigIds = Object.keys(RIG_ARM).filter((id) => !only.length || only.includes(id));
+  const rigRun = (arm) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--experimental-strip-types', '--import', './scripts/.r2-register.mjs', 'scripts/e2e-docker-relay.mjs', arm], { cwd: REPO, detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, SUBJECT_REPO: REPO } });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      const t = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }, 300000);
+      child.on('close', () => { clearTimeout(t); try { resolve(JSON.parse(out.trim().split('\n').pop())); } catch { resolve({ ok: false, checks: [], fatal: 'no JSON from rig' }); } });
+    });
+  const base = {};
+  for (const arm of new Set(rigIds.map((id) => RIG_ARM[id]))) {
+    base[arm] = await rigRun(arm);
+    console.log(`RIG POSITIVE CONTROL ${arm}: ok=${base[arm].ok} (${base[arm].checks.length} checks)`);
+    if (!base[arm].ok) { console.log('rig arm not green on the unmutated tree — refusing'); process.exit(2); }
+  }
+  let alive = 0;
+  for (const id of rigIds) {
+    const [, file, edits, , note] = MUTANTS.find((m) => m[0] === id);
+    const a = apply(file, edits);
+    if (a.err) { console.log(`${id}: ${a.err}`); alive++; continue; }
+    let r;
+    try {
+      fs.writeFileSync(a.abs, a.mutated);
+      r = await rigRun(RIG_ARM[id]);
+    } finally {
+      fs.writeFileSync(a.abs, a.orig);
+      if (!fs.readFileSync(a.abs).equals(a.orig)) throw new Error(`RESTORE MISMATCH for ${file}`);
+    }
+    const red = (r.checks ?? []).filter((c) => !c.ok && !/bystander|every rig container/.test(c.name)).map((c) => c.name.slice(0, 60));
+    const killed = r.ok === false && (red.length > 0 || r.fatal);
+    if (!killed) alive++;
+    console.log(`${id.padEnd(3)} ${killed ? 'KILLED  ' : 'SURVIVED'} rig:${RIG_ARM[id]}  red: ${red.slice(0, 2).join(' | ') || r.fatal || '-'}  — ${note}`);
+  }
+  execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
+  console.log(`rig mutants: ${rigIds.length - alive} killed / ${rigIds.length}`);
+  process.exit(alive ? 1 : 0);
+}
+
 const allTests = [...new Set(MUTANTS.flatMap((m) => m[3]))];
-const base = run(allTests);
+const base = await run(allTests, 240000);
 console.log(`POSITIVE CONTROL (unmutated): rc=${base.rc} pass=${base.pass} fail=${base.fail} skipped=${base.skipped}`);
 if (base.rc !== 0 || base.skipped !== 0) {
   console.log('base is not green — refusing to judge mutants');
@@ -131,9 +192,9 @@ for (const [id, file, edits, tests, note] of todo) {
       verdict = 'RIG-ONLY';
       detail = 'killed by the real-dockerd rig, not a unit test';
     } else {
-      const r = run(tests);
+      const r = await run(tests);
       verdict = r.rc !== 0 ? 'KILLED' : 'SURVIVED';
-      detail = `rc=${r.rc} pass=${r.pass} fail=${r.fail}`;
+      detail = `rc=${r.rc}${r.timedOut ? ' (HUNG→killed)' : ''} pass=${r.pass} fail=${r.fail}`;
     }
   } finally {
     fs.writeFileSync(a.abs, a.orig); // byte-exact restore …
@@ -147,6 +208,6 @@ for (const [id, file, edits, tests, note] of todo) {
 execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
 const survived = results.filter((r) => r.verdict === 'SURVIVED' || r.verdict === 'ANCHOR-ERROR');
 console.log(`\n${results.filter((r) => r.verdict === 'KILLED').length} killed · ${results.filter((r) => r.verdict === 'RIG-ONLY').length} rig-only · ${survived.length} survived/errored of ${results.length}`);
-const post = run(allTests);
+const post = await run(allTests, 240000);
 console.log(`POST-RESTORE (tree back to base): rc=${post.rc} pass=${post.pass} fail=${post.fail} skipped=${post.skipped}; git diff of mutated files must be empty`);
 process.exit(survived.length || post.rc !== 0 ? 1 : 0);
