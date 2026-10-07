@@ -174,6 +174,14 @@ processes the member started, never the session itself. A human's own sessions
 have no Plafond mémoire. Containers are outside it: they wait for Admission instead.
 _Avoid_: quota, limit, budget (the session budget suite is a different thing)
 
+**Reliquat** (leftover):
+A process a member launched that outlived its session or left its process tree
+(a detached rig browser, a background server, a double-forked daemon). It still
+belongs to that member: counted in its memory, stopped by a Pause dure (listed in
+the Bilan de pause), stopped when the member is stopped or deleted. A container is
+not a Reliquat.
+_Avoid_: orphan (the reaper's term), zombie, leak
+
 ### Quality
 
 **Nomination**:
