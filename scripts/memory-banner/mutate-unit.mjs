@@ -40,7 +40,7 @@ const M = [
   { id: 'copy-held-singular-lost', file: POL, find: "`${b.heldStarts} démarrage${b.heldStarts > 1 ? 's' : ''} retenu${b.heldStarts > 1 ? 's' : ''}`", rep: "`${b.heldStarts} démarrages retenus`", tests: [T.pure], expect: /COPY held/ },
   { id: 'copy-held-zero-has-own-wording', file: POL, find: "const held = `${b.heldStarts} démarrage${b.heldStarts > 1 ? 's' : ''} retenu${b.heldStarts > 1 ? 's' : ''}`;", rep: "const held = b.heldStarts === 0 ? 'Aucun démarrage retenu pour l\\'instant' : `${b.heldStarts} démarrage${b.heldStarts > 1 ? 's' : ''} retenu${b.heldStarts > 1 ? 's' : ''}`;", tests: [T.pure], expect: /COPY held/ },
   { id: 'copy-paused-runs-uncut', file: POL, find: "const frList = (xs: readonly string[]): string => (xs.length <= 3 ? xs.join(', ') : `${xs.slice(0, 3).join(', ')} +${xs.length - 3}`);", rep: "const frList = (xs: readonly string[]): string => xs.join(', ');", tests: [T.pure], expect: /COPY Pause/ },
-  { id: 'copy-pause-reprise-threshold', file: POL, find: "sub: `Reprise automatique dès ${frGo(b.admissionBytes)} ·", rep: "sub: `Reprise automatique dès ${frGo(b.criticalBytes)} ·", tests: [T.pure], expect: /COPY Pause/ },
+  { id: 'copy-pause-reprise-threshold', file: POL, find: ": `Reprise automatique dès ${frGo(b.admissionBytes)} ·", rep: ": `Reprise automatique dès ${frGo(b.criticalBytes)} ·", tests: [T.pure], expect: /COPY Pause/ },
   { id: 'copy-unreadable-hidden', file: POL, find: "const mem = b.availBytes === null ? 'mesure illisible' : `${frGo(b.availBytes)} disponibles`;", rep: "const mem = `${frGo(b.availBytes ?? 0)} disponibles`;", tests: [T.pure], expect: /COPY Pause/ },
   // ── publisher
   { id: 'publish-every-refresh', file: CORE, find: "      if (bannerFingerprint(next) !== bannerFingerprint(last)) {", rep: "      if (true as boolean) {", tests: [T.unit], expect: /PUBLISH walk|PUBLISH counts/ },
@@ -95,6 +95,8 @@ const M = [
   { id: 'episode-over-inverted', file: POL, find: "episodeOver: s.admission !== 'held',", rep: "episodeOver: s.admission === 'held',", tests: [T.pure, T.unit], expect: /DISMISS lasts until the EPISODE ENDS|PUBLISH the episode ends|STATE fields/ },
   { id: 'key-ignores-episode-over', file: POL, find: "${b.kind === 'pause' && b.episodeOver ? ':over' : ''}", rep: "", tests: [T.pure, T.unit], expect: /KEY: held keys|DISMISS lasts until the EPISODE ENDS|PUBLISH the episode ends/ },
   { id: 'key-over-for-held-too', file: POL, find: "${b.kind === 'pause' && b.episodeOver ? ':over' : ''}", rep: "${b.episodeOver ? ':over' : ''}", tests: [T.pure], expect: /KEY: held keys/ },
+  { id: 'copy-over-phase-promises-auto-reprise', file: POL, find: "sub: b.episodeOver ? \"Reprise retenue — mémoire revenue, mais la Reprise attend (voir l'alerte)\" : `", rep: "sub: false ? \"x\" : `", tests: [T.pure], expect: /COPY Pause over-phase/ },
+  { id: 'copy-live-phase-says-reprise-retenue', file: POL, find: "sub: b.episodeOver ? ", rep: "sub: true ? ", tests: [T.pure], expect: /COPY Pause over-phase|COPY Pause \(mockup B2/ },
   { id: 'core-imports-electron', file: CORE, find: "import { NO_MEMORY_BANNER, bannerFingerprint, memoryBannerOf, type MemoryBannerState } from '../shared/memory-banner.ts';", rep: "import { NO_MEMORY_BANNER, bannerFingerprint, memoryBannerOf, type MemoryBannerState } from '../shared/memory-banner.ts';\nimport { store as _s } from './store.ts';", tests: [T.wiring], expect: /WIRING memory-banner\.ts is Electron-free/ },
 ];
 

@@ -115,7 +115,8 @@ export function bannerCopy(b: MemoryBannerState): BannerCopy | null {
     return {
       tone: 'crit',
       title: `Pause mémoire — ${mem} (seuil critique ${frGo(b.criticalBytes)}). ${runs}`,
-      sub: `Reprise automatique dès ${frGo(b.admissionBytes)} · une pause manuelle n'est jamais levée par la garde.`,
+      // over-phase (Admission reopened, the Pause still stands = its Reprise is held): « Reprise automatique » would be false — the sub-line says what is true (ruling #289 copy)
+      sub: b.episodeOver ? "Reprise retenue — mémoire revenue, mais la Reprise attend (voir l'alerte)" : `Reprise automatique dès ${frGo(b.admissionBytes)} · une pause manuelle n'est jamais levée par la garde.`,
     };
   }
   const held = `${b.heldStarts} démarrage${b.heldStarts > 1 ? 's' : ''} retenu${b.heldStarts > 1 ? 's' : ''}`; // the drawn pattern, whatever N (0 included)

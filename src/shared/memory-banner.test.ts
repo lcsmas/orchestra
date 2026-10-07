@@ -150,6 +150,17 @@ test('COPY Pause (mockup B2, D5-approved): the critical threshold, the paused ru
   assert.match(bannerCopy(memoryBannerOf({ ...SNAP, measured: false }, { heldStarts: 1, pausedRuns: [] }))!.title, /^Mémoire basse — mesure illisible \(seuil 6 Go\)\./, 'the held banner says the reading is unreadable while the guard still holds');
 });
 
+test('COPY Pause over-phase (copy ruling #289): once Admission reopened with the Pause still standing the sub-line is TRUE — Reprise held, not « automatique »; the live phase keeps the promise', () => {
+  const state = (admission: 'held' | 'open') => memoryBannerOf({ ...SNAP, admission, pause: admission === 'held' ? 'held' : 'none', pauseCycle: 1, availBytes: 7.4 * GIB }, { heldStarts: 0, pausedRuns: ['lead'] });
+  const over = bannerCopy(state('open'))!;
+  assert.equal(over.sub, "Reprise retenue — mémoire revenue, mais la Reprise attend (voir l'alerte)");
+  assert.doesNotMatch(over.sub, /automatique/, 'no promise of an automatic Reprise while it is held');
+  assert.equal(over.tone, 'crit');
+  assert.match(over.title, /^Pause mémoire — 7,4 Go disponibles \(seuil critique 3 Go\)\. 1 run en pause : lead\.$/, 'the headline is unchanged');
+  const live = bannerCopy(state('held'))!;
+  assert.equal(live.sub, "Reprise automatique dès 6 Go · une pause manuelle n'est jamais levée par la garde.");
+});
+
 test('COPY none: nothing to say', () => {
   assert.equal(bannerCopy(NO_MEMORY_BANNER as MemoryBannerState), null);
 });
