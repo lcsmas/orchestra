@@ -41,7 +41,7 @@ export function MemoryGuardSettings({ onClose }: Props) {
 
   const settings = view?.settings;
   const typed = draft ?? (settings ? { admission: String(settings.admissionGb), critical: String(settings.criticalGb) } : { admission: '', critical: '' });
-  const plan = settings && draft ? planThresholdCommit(draft.admission, draft.critical, settings) : null;
+  const plan = settings && draft ? planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes) : null;
   const liveError = plan?.kind === 'invalid' ? plan.error : null;
 
   const apply = async (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0]) => {
@@ -64,7 +64,7 @@ export function MemoryGuardSettings({ onClose }: Props) {
 
   const commit = () => {
     if (!settings || !draft || busy) return;
-    const p = planThresholdCommit(draft.admission, draft.critical, settings);
+    const p = planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes);
     if (p.kind === 'unchanged') {
       setDraft(null);
       setError(null);

@@ -437,6 +437,11 @@ async function createMainWindow() {
   // ORCHESTRA_SOCK from the env set on the pty.spawn call, and that value is
   // read from getHookSocketPath() which only returns non-null after listen().
   await startHooksServer();
+  // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every transition,
+  // exposes the state to `bus-status` + Settings. Holds nothing yet. Started with the hooks server (store is loaded above) so the
+  // first `bus-status` already has a reading; thresholds are read from the store at every sample, so a Settings change is hot.
+  setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
+  startMemoryGuard();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
@@ -492,11 +497,6 @@ async function createMainWindow() {
       // proof-of-deletion — never runs against an unloaded store; decideReap
       // additionally refuses unless `store.loadedFromDisk`.
       startResourceMonitor();
-      // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every
-      // transition, exposes the state to `bus-status` + Settings. Holds nothing yet. Thresholds are read from the store at every
-      // sample, so a Settings change applies hot — hence started AFTER store.load() like the monitor above.
-      setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
-      startMemoryGuard();
     });
   // Insights & Improvements: manual-only since 2026-09-30 (no auto-run) —
   // just sweep a run left `running` by a previous session.

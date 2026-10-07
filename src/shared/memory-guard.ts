@@ -42,13 +42,17 @@ function isGb(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-/** Why `next` (already merged over the current settings) cannot be applied, or null when it can. */
-export function validateMemoryGuardSettings(s: MemoryGuardSettings): string | null {
+/** Why `next` (already merged over the current settings) cannot be applied, or null when it can. `totalBytes` (MemTotal, when
+ *  readable) bounds the Admission threshold: one at or above the machine's memory would hold forever and could never lift. */
+export function validateMemoryGuardSettings(s: MemoryGuardSettings, totalBytes?: number | null): string | null {
   if (!isGb(s.admissionGb) || !isGb(s.criticalGb)) return 'thresholds must be numbers';
   if (typeof s.admissionEnabled !== 'boolean') return 'the toggle must be true or false';
   if (s.criticalGb < MIN_CRITICAL_GB) return `the critical threshold must be at least ${MIN_CRITICAL_GB} GB`;
   if (s.admissionGb > MAX_ADMISSION_GB) return `the Admission threshold must be at most ${MAX_ADMISSION_GB} GB`;
   if (!(s.criticalGb < s.admissionGb)) return `the critical threshold (${s.criticalGb} GB) must be below the Admission threshold (${s.admissionGb} GB)`;
+  if (typeof totalBytes === 'number' && totalBytes > 0 && s.admissionGb * GIB >= totalBytes) {
+    return `the Admission threshold (${s.admissionGb} GB) must be below this machine's memory (${(totalBytes / GIB).toFixed(1)} GB)`;
+  }
   return null;
 }
 
@@ -165,6 +169,9 @@ export function decideMemoryGuard(prev: GuardState, availBytes: number | null | 
     transitions.push({ kind: 'pause_liftable', episode, availBytes, thresholdBytes: t.admissionBytes });
   }
 
+  // A one-sample recovery lifts the Pause BEFORE it reopens Admission (the Reprise precedes the released starts); a fall holds, then pauses.
+  if (transitions.length === 2 && transitions[0].kind === 'admission_reopened') transitions.reverse();
+
   return { measured: true, state: { admission, pause, episode }, transitions, pause: pauseAction, mayReleaseOneStart: mayReleaseOneStart(availBytes, t) };
 }
 
@@ -177,6 +184,8 @@ export function nextSampleDelayMs(availBytes: number | null | undefined, t: Guar
 // ─── The state a consumer / `bus-status` / Settings reads ──────────────────────────────────────────────────────────
 
 export interface MemoryGuardSnapshot {
+  /** False until the sampler has tried a first reading ("not sampled yet" — the guard is still starting). */
+  sampled: boolean;
   /** False until a first reading succeeded, and again while the latest read fails (the figures below are then the last GOOD ones). */
   measured: boolean;
   availBytes: number | null;
@@ -219,7 +228,8 @@ export function formatGb(bytes: number, digits = 1): string {
 
 /** The `memory:` line of `orchestra bus-status` — one line, the whole guard state. */
 export function formatMemoryGuardLine(s: MemoryGuardSnapshot): string {
-  if (!s.measured && s.availBytes === null) return 'memory: UNMEASURED — /proc/meminfo unreadable, the guard holds nothing';
+  if (!s.sampled) return 'memory: not sampled yet — the guard is starting';
+  if (!s.measured && s.availBytes === null) return 'memory: UNMEASURED — MemAvailable unreadable (a non-Linux host, or /proc/meminfo unreadable); the guard holds nothing';
   const at = (ms: number | null) => (ms === null ? '?' : new Date(ms).toISOString());
   const stale = s.measured ? '' : ' (last good reading — now unreadable)';
   const avail = `${formatGb(s.availBytes ?? 0)} available${stale}`;
@@ -252,13 +262,15 @@ export type MemoryGuardSetResult = { ok: true; view: MemoryGuardView } | { ok: f
 /** Apply a partial change over the current settings: the merged result when it is valid, else why not (nothing is written then). */
 export function patchMemoryGuardSettings(
   current: MemoryGuardSettings,
-  patch: Partial<MemoryGuardSettings>,
+  patch: Partial<MemoryGuardSettings> | null | undefined,
+  totalBytes?: number | null,
 ): { ok: true; settings: MemoryGuardSettings } | { ok: false; error: string } {
+  if (patch === null || typeof patch !== 'object') return { ok: false, error: 'invalid settings patch' };
   const merged: MemoryGuardSettings = {
     admissionGb: patch.admissionGb ?? current.admissionGb,
     criticalGb: patch.criticalGb ?? current.criticalGb,
     admissionEnabled: patch.admissionEnabled ?? current.admissionEnabled,
   };
-  const error = validateMemoryGuardSettings(merged);
+  const error = validateMemoryGuardSettings(merged, totalBytes);
   return error === null ? { ok: true, settings: merged } : { ok: false, error };
 }

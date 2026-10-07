@@ -17,6 +17,8 @@
 //   hot         a threshold change applies WITHOUT restart or timer (real setMemoryGuardSettings + real store); an invalid pair
 //               is refused and writes nothing; the toggle OFF is printed
 //   unreadable  an unreadable MemAvailable keeps the state and says so; never a fabricated figure
+//   real_source NO injected source: the shipped /proc/meminfo reader feeds the guard and `bus-status` prints a numeric reading that
+//               agrees with an independent read of /proc/meminfo (a broken platform check would read UNMEASURED here)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-memory-guard.mjs
 //   (RIG_REPO=<other tree> points the modules AND the built CLI at that tree — the must-FAIL run on master)
@@ -30,7 +32,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['walk', 'b_held', 'b_reopen', 'b_pause_due', 'b_pause_lift', 'episodes', 'hot', 'unreadable'];
+const ARMS = ['walk', 'b_held', 'b_reopen', 'b_pause_due', 'b_pause_lift', 'episodes', 'hot', 'unreadable', 'real_source'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -110,7 +112,7 @@ if (hasGuard) {
   guardMod.setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
   const g = guardMod.__rebuildMemoryGuardForTests(
     { now: () => now, schedule: (fn, ms) => { delays.push(ms); pending = { fn, ms }; return pending; }, cancel: (h) => { if (pending === h) pending = null; } },
-    () => mem,
+    ARM === 'real_source' ? null : () => mem,   // real_source: NO injected source — the shipped reader is what runs
   );
   g.start();
 }
@@ -233,6 +235,19 @@ if (ARM === 'hot') {
   check('toggle_off_printed', (await memory()).toggleOff, true);
   await settingsMod.setMemoryGuardSettings({ admissionEnabled: true }, store);
   check('toggle_on_printed', (await memory()).toggleOff, false);
+  finish();
+}
+
+if (ARM === 'real_source') {
+  if (!hasGuard) { fails.push('this tree has no memory guard'); finish(); }
+  guardMod.sampleMemoryGuardNow();
+  const m = await memory();
+  const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+  const indep = Number(/^MemAvailable:\s+(\d+)\s+kB/m.exec(meminfo)?.[1]) / 1048576;
+  check('not_unmeasured', [m.unmeasured, m.line === null], [false, false]);
+  check('numeric_reading', Number.isFinite(Number(m.avail)) && Number(m.avail) > 0, true);
+  check('agrees_with_proc_meminfo', Math.abs(Number(m.avail) - indep) < 2, true);
+  out.reading = m.avail; out.independent = indep.toFixed(1);
   finish();
 }
 

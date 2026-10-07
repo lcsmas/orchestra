@@ -21,11 +21,15 @@ test('CONTROL: the sources are the real files', () => {
   assert.match(handlers, /setModelDefaults: 'settings:setModelDefaults'/);
 });
 
-test('index.ts reads the thresholds from the store (hot) BEFORE starting the guard, and stops it at shutdown', () => {
+test('index.ts reads the thresholds from the store (hot), starts the guard right after the hooks server, and stops it at shutdown', () => {
+  const hooksUp = index.indexOf('await startHooksServer();');
   const reader = index.indexOf('setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings())');
   const start = index.indexOf('startMemoryGuard();');
-  assert.ok(reader > 0 && start > reader, 'reader wired, then start');
-  assert.match(index, /function shutdownSubsystems\(\): void \{[\s\S]*?stopMemoryGuard\(\);[\s\S]*?\n\}/);
+  assert.ok(hooksUp > 0 && reader > hooksUp && start > reader, 'hooks server, then the reader, then the start');
+  assert.ok(start < index.indexOf('startEventsSpool();'), 'before the rest of the boot chain, so a later throw cannot keep it from starting');
+  const body = index.slice(index.indexOf('function shutdownSubsystems(): void {'));
+  const shutdown = body.slice(0, body.indexOf('\n}\n'));
+  assert.match(shutdown, /stopMemoryGuard\(\);/, 'stopped INSIDE shutdownSubsystems');
 });
 
 test('/busStatus returns the guard snapshot and the CLI prints it through the shared formatter', () => {

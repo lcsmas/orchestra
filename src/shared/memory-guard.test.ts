@@ -18,6 +18,7 @@ import {
   nextSampleDelayMs,
   normalizeMemoryGuardSettings,
   parseMemAvailableBytes,
+  patchMemoryGuardSettings,
   thresholdsFrom,
   validateMemoryGuardSettings,
   type GuardState,
@@ -132,6 +133,12 @@ test('pause_lift_leaves_admission_held: at 6.5 GB the Pause lifts but Admission 
   assert.equal(d.mayReleaseOneStart, false);
 });
 
+test('jump_recovery: 2 GB straight to 8 GB lifts the Pause BEFORE it reopens Admission (the Reprise precedes released starts)', () => {
+  const d = decideMemoryGuard(CRITICAL, gb(8), T);
+  assert.deepEqual(kinds(d), ['pause_liftable', 'admission_reopened']);
+  assert.deepEqual(d.state, { admission: 'open', pause: 'none', episode: 1 });
+});
+
 test('jump: 8 GB straight to 2 GB crosses both thresholds in ONE sample, in order', () => {
   const d = decideMemoryGuard(INITIAL_GUARD_STATE, gb(2), T);
   assert.deepEqual(kinds(d), ['admission_held', 'pause_due']);
@@ -218,6 +225,23 @@ test('settings: garbage / an inverted pair falls back to the default PAIR, keepi
   assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 6, criticalGb: 6 }), DEFAULT_MEMORY_GUARD_SETTINGS);
 });
 
+test('validate_total: an Admission threshold at/above the machine\'s memory is refused (it would hold forever and never lift)', () => {
+  const s = { admissionGb: 40, criticalGb: 3, admissionEnabled: true };
+  assert.match(validateMemoryGuardSettings(s, gb(32)) ?? '', /must be below this machine's memory \(32\.0 GB\)/);
+  assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 32 }, gb(32)) ?? '', /machine's memory/, 'exactly the machine\'s memory is not below it');
+  assert.equal(validateMemoryGuardSettings({ ...s, admissionGb: 31.5 }, gb(32)), null);
+  assert.equal(validateMemoryGuardSettings(s, null), null, 'an unreadable MemTotal bounds nothing');
+  assert.equal(validateMemoryGuardSettings(s), null);
+});
+
+test('patch: a null / undefined / non-object patch is {ok:false}, never a throw; a valid patch merges', () => {
+  for (const bad of [null, undefined, 'x' as unknown as object, 5 as unknown as object]) {
+    assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, bad as never), { ok: false, error: 'invalid settings patch' });
+  }
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 8 }), { ok: true, settings: { admissionGb: 8, criticalGb: 3, admissionEnabled: true } });
+  assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 40 }, gb(32)).ok, false);
+});
+
 test('validate: refuses an inverted pair, a sub-minimum critical, an absurd Admission; accepts the defaults', () => {
   assert.equal(validateMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS), null);
   assert.match(validateMemoryGuardSettings({ admissionGb: 3, criticalGb: 6, admissionEnabled: true }) ?? '', /must be below/);
@@ -249,7 +273,7 @@ test('isAdmissionHolding: held AND the toggle ON, nothing else', () => {
 
 function snap(over: Partial<MemoryGuardSnapshot> = {}): MemoryGuardSnapshot {
   return {
-    measured: true, availBytes: gb(12.3), readAt: 1_000, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0,
+    sampled: true, measured: true, availBytes: gb(12.3), readAt: 1_000, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0,
     heldSince: null, pauseSince: null, admissionBytes: gb(6), criticalBytes: gb(3), releaseMarginBytes: gb(1), sampleIntervalMs: 60_000, ...over,
   };
 }
@@ -265,6 +289,7 @@ test('formatMemoryGuardLine: open / held / memory Pause / toggle OFF / unmeasure
     /memory Pause IN EFFECT since 2026-10-07T14:05:00\.000Z \(lifts above 6\.0 GB\)/,
   );
   assert.match(formatMemoryGuardLine(snap({ admissionEnabled: false })), /toggle OFF — nothing is held$/);
-  assert.match(formatMemoryGuardLine(snap({ measured: false, availBytes: null })), /^memory: UNMEASURED/);
+  assert.match(formatMemoryGuardLine(snap({ measured: false, availBytes: null })), /^memory: UNMEASURED — MemAvailable unreadable/);
+  assert.match(formatMemoryGuardLine(snap({ sampled: false, measured: false, availBytes: null })), /^memory: not sampled yet/);
   assert.match(formatMemoryGuardLine(snap({ measured: false })), /last good reading/);
 });

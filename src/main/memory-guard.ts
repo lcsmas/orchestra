@@ -92,6 +92,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
   let state: GuardState = INITIAL_GUARD_STATE;
   let availBytes: number | null = null;
   let readAt: number | null = null;
+  let sampled = false;
   let measured = false;
   let heldSince: number | null = null;
   let pauseSince: number | null = null;
@@ -110,9 +111,32 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
     }
   }
 
+  /** Edges are delivered through ONE FIFO drain: a listener that re-measures (`sampleNow`, the release loop) appends its edges AFTER the
+   *  batch being delivered, so every subscriber sees edges in sample order and the last one always matches the final state. */
+  const queue: MemoryGuardTransitionEvent[] = [];
+  let draining = false;
+  function drain(): void {
+    if (draining) return;
+    draining = true;
+    try {
+      for (let e = queue.shift(); e !== undefined; e = queue.shift()) {
+        for (const l of [...listeners]) {
+          try {
+            l(e);
+          } catch (err) {
+            deps.warn('a transition listener threw (ignored)', err);
+          }
+        }
+      }
+    } finally {
+      draining = false;
+    }
+  }
+
   function snapshot(): MemoryGuardSnapshot {
     const t = thresholdsFrom(settings);
     return {
+      sampled,
       measured,
       availBytes,
       readAt,
@@ -139,6 +163,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
       reading = null;
     }
     const now = deps.now();
+    sampled = true;
     const d = decideMemoryGuard(state, reading, t);
     if (d.measured) {
       if (unreadableLogged) deps.info(`MemAvailable readable again — ${formatGb(reading as number, 2)}`);
@@ -164,14 +189,9 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
       const line = `${describe(tr, settings.admissionEnabled)}`;
       if (tr.kind === 'admission_held' || tr.kind === 'pause_due') deps.warn(line);
       else deps.info(line);
-      for (const l of [...listeners]) {
-        try {
-          l({ transition: tr, snapshot: snap });
-        } catch (e) {
-          deps.warn('a transition listener threw (ignored)', e);
-        }
-      }
+      queue.push({ transition: tr, snapshot: snap });
     }
+    drain();
     return snap;
   }
 

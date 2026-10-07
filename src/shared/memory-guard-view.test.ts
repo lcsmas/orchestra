@@ -6,7 +6,7 @@ import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from './
 const D = DEFAULT_MEMORY_GUARD_SETTINGS;
 function snap(over: Partial<MemoryGuardSnapshot> = {}): MemoryGuardSnapshot {
   return {
-    measured: true, availBytes: 11.4 * GIB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0,
+    sampled: true, measured: true, availBytes: 11.4 * GIB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0,
     heldSince: null, pauseSince: null, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, sampleIntervalMs: 60_000, ...over,
   };
 }
@@ -74,6 +74,12 @@ test('commit: invalid pairs are refused with a sentence, never a patch', () => {
   assert.equal(planThresholdCommit('x', '3', D).kind, 'invalid');
   assert.equal(planThresholdCommit('6', '0.1', D).kind, 'invalid');
   assert.equal(planThresholdCommit('999', '3', D).kind, 'invalid');
+});
+test('commit: an Admission threshold at/above the machine\'s memory is refused when MemTotal is known', () => {
+  const r = planThresholdCommit('40', '3', D, 32 * GIB);
+  assert.equal(r.kind, 'invalid');
+  assert.match(r.kind === 'invalid' ? r.error : '', /machine's memory \(32\.0 GB\)/);
+  assert.equal(planThresholdCommit('40', '3', D, null).kind, 'patch');
 });
 test('commit: raising critical above the OLD Admission is valid as a pair (the reason both fields travel together)', () => {
   assert.deepEqual(planThresholdCommit('12', '8', D), { kind: 'patch', patch: { admissionGb: 12, criticalGb: 8 } });

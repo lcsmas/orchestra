@@ -75,11 +75,11 @@ export type ThresholdCommit =
 
 /** What committing the two typed fields does. BOTH fields travel together: raising critical above the old Admission, or lowering
  *  Admission under the old critical, is only valid as a pair. Nothing is written until the pair is valid. */
-export function planThresholdCommit(admissionText: string, criticalText: string, current: MemoryGuardSettings): ThresholdCommit {
+export function planThresholdCommit(admissionText: string, criticalText: string, current: MemoryGuardSettings, totalBytes?: number | null): ThresholdCommit {
   const admissionGb = parseGbInput(admissionText);
   const criticalGb = parseGbInput(criticalText);
   if (admissionGb === null || criticalGb === null) return { kind: 'invalid', error: 'Enter both thresholds as a number of GB.' };
-  const error = validateMemoryGuardSettings({ ...current, admissionGb, criticalGb });
+  const error = validateMemoryGuardSettings({ ...current, admissionGb, criticalGb }, totalBytes);
   if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };
   if (admissionGb === current.admissionGb && criticalGb === current.criticalGb) return { kind: 'unchanged' };
   return { kind: 'patch', patch: { admissionGb, criticalGb } };

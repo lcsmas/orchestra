@@ -192,6 +192,14 @@ test('sampleNow before start: evaluates but arms no timer', () => {
   assert.deepEqual(w.delays, []);
 });
 
+test('sampled: false until the first sample attempt (even an unreadable one), then true', () => {
+  const w = world(null);
+  const g = createMemoryGuard(w.deps);
+  assert.equal(g.snapshot().sampled, false);
+  g.start();
+  assert.deepEqual([g.snapshot().sampled, g.snapshot().measured], [true, false]);
+});
+
 // ─── subscription ───────────────────────────────────────────────────────────────────────────────────────────────────
 test('subscribe: one event per edge with the post-sample snapshot; a throwing listener breaks nothing; unsubscribe stops it', () => {
   const w = world(12);
@@ -211,6 +219,29 @@ test('subscribe: one event per edge with the post-sample snapshot; a throwing li
   w.mem = 9;
   w.fire();
   assert.equal(seen.length, 2, 'unsubscribed');
+});
+
+test('nested_sampleNow: a listener that re-measures gets its edges AFTER the batch being delivered — sample order, last edge = final state', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  const seen: string[] = [];
+  g.start();
+  w.mem = 2;
+  w.fire(); // held + pause due
+  assert.equal(g.snapshot().pause, 'held');
+  g.subscribe((e) => {
+    seen.push(e.transition.kind);
+    if (e.transition.kind === 'admission_reopened') {
+      w.mem = 2.5; // memory collapses again before the consumer finished reacting
+      g.sampleNow();
+    }
+  });
+  w.mem = 8;
+  w.fire(); // recovery sample: pause_liftable, admission_reopened — the listener re-measures inside the second
+  assert.deepEqual(seen, ['pause_liftable', 'admission_reopened', 'admission_held', 'pause_due'], 'FIFO: the nested sample\'s edges come after the outer batch');
+  const s = g.snapshot();
+  assert.deepEqual([s.admission, s.pause], ['held', 'held'], 'the LAST delivered edge (pause_due) matches the final state');
+  assert.ok(w.pending, 'exactly one timer armed after the nested sample');
 });
 
 // ─── thresholds apply HOT ───────────────────────────────────────────────────────────────────────────────────────────
