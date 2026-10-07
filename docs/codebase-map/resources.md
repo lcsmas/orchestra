@@ -126,7 +126,8 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   Admission threshold (or unreadable), 60 s otherwise — the spec literally, so the 6–7 GB band samples at 60 s even while held.
   `isAdmissionHolding(snapshot)` (`:202`) = `admissionEnabled && admission==='held'` is THE question #286/#288 ask — the global
   toggle OFF still measures/decides/logs. Settings: `normalizeMemoryGuardSettings` (always valid; an invalid PAIR falls back to
-  6/3 as a pair), `validateMemoryGuardSettings` (critical < Admission, critical ≥ 0.5, Admission ≤ 256), `patchMemoryGuardSettings`.
+  6/3 as a pair), `validateMemoryGuardSettings` (critical < Admission, critical ≥ 0.5, Admission ≤ 256, and — when MemTotal is known and the PAIR is being
+  changed — Admission + the 1 GB margin below MemTotal: Admission could otherwise never reopen), `patchMemoryGuardSettings`.
   `parseMemAvailableBytes`, `formatMemoryGuardLine` (the `bus-status` line).
 - **Sampler — `src/main/memory-guard.ts`**: `createMemoryGuard(deps)` (`:91`); `deps.readAvailableBytes` is THE injectable
   MemAvailable source (default `readMemAvailableBytes()` in `src/main/mem-available.ts`: `/proc/meminfo`, **Linux only — other
@@ -137,10 +138,16 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   for held/pause-due, INFO for the upward edges), steady samples log nothing, an outage logs ONE WARN. Process-wide facade
   (frozen API): `getMemoryGuardSnapshot()`, `subscribeMemoryGuard(fn)`, `sampleMemoryGuardNow()` (`:270`, a FRESH read + decision =
   the re-measure between two releases), `startMemoryGuard/stopMemoryGuard`, `setMemoryGuardSettingsReader`;
-  `__rebuildMemoryGuardForTests(deps, source)` is the rig seam. Started in `index.ts` right after `startResourceMonitor()`
-  (store loaded, reader = `store.getMemoryGuardSettings()`), stopped in `shutdownSubsystems`.
-- **Settings I/O — `src/main/memory-guard-settings.ts`**: `memoryGuardView(settings)` (settings + snapshot + a FRESH
-  `liveAvailBytes` + MemTotal) and `setMemoryGuardSettings(patch, store)` = validate → persist (`store.memoryGuard`,
+  `__rebuildMemoryGuardForTests(deps, source)` is the rig seam.
+  Snapshot fields consumers lean on (review m5): `mayReleaseOneStart` = the LATEST decision (false while the meter is unreadable, even though
+  `availBytes` still shows the last good reading; false before the first sample) and `pauseCycle` (+ on every edge) numbering memory Pauses —
+  a 2nd Pause inside ONE Admission `episode` is the next cycle. **No replay**: `subscribeMemoryGuard` delivers only edges AFTER it returns;
+  a late subscriber reconciles from `getMemoryGuardSnapshot()` first. Edge delivery is one FIFO drain and a listener is never re-entered
+  (a listener may call `sampleMemoryGuardNow()`: its edges queue behind the batch being delivered). One WARN per (threshold, machine) when
+  Admission + 1 GB can never be reached on this host (`thresholdUnreachable`; e.g. the default 6 GB on a 4 GB machine). Started in `index.ts` right after `startHooksServer()` (store already loaded — so the first `bus-status` has a reading; reader =
+  `store.getMemoryGuardSettings()`), stopped in `shutdownSubsystems`.
+- **Settings I/O — `src/main/memory-guard-settings.ts`**: `memoryGuardView(settings)` (settings + a FRESH snapshot — a read
+  + decision now, so the chip and the live figure can never disagree — whose own reading is `liveAvailBytes`, + MemTotal) and `setMemoryGuardSettings(patch, store)` = validate → persist (`store.memoryGuard`,
   `store.getMemoryGuardSettings()`) → `sampleMemoryGuardNow()` (applies at once). Invalid ⇒ nothing written, `{ok:false,error}`.
   IPC `settings:memoryGuard` / `settings:setMemoryGuard` (`api-handlers.ts`, `preload/index.ts`, `OrchestraAPI.memoryGuard/setMemoryGuard`).
   The Settings dialog (mockup A, D-pick1): `src/renderer/components/MemoryGuardSettings.tsx` — its own modal behind a RAM-chip header icon
@@ -156,7 +163,9 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   "no start path imports the guard yet" tripwire — #286/#288/#289/#290 add their importer there),
   `scripts/e2e-memory-guard.mjs` (fake source → REAL sampler → REAL `/busStatus` in a headless scratch home → REAL built CLI;
   `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (25 in-place mutants, byte-exact restore).
-  `scripts/e2e-memory-guard-ui.sh <built app dir>` drives the modal in a BUILT app under its own headless sway (heavy: token): real
+  `scripts/e2e-memory-guard-modal.mjs` (headless Chromium, no window: the REAL modal bundled with a stub IPC whose latency is the variable —
+  a toggle pressed right after a pending edit must reach the backend, text typed during an in-flight commit survives its echo; `RIG_REPO=<tree>`
+  = the must-FAIL run), `scripts/e2e-memory-guard-ui.sh <built app dir>` drives the modal in a BUILT app under its own headless sway (heavy: token): real
   /proc/meminfo, thresholds moved around the live reading through the real UI → HELD / memory Pause / inline error / toggle / restore,
   each cross-read from the DOM, the real CLI `bus-status`, the scratch store.json and orchestra.log, + screenshots; red on a pre-fix build.
   Unverified here: macOS (no signal), any consumer — nothing holds yet.

@@ -34,6 +34,11 @@ export const DEFAULT_MEMORY_GUARD_SETTINGS: MemoryGuardSettings = {
   admissionEnabled: true,
 };
 
+/** True when Admission, once held at this threshold, could never reopen on a machine with `totalBytes` of memory. */
+export function thresholdUnreachable(admissionGb: number, totalBytes: number): boolean {
+  return (admissionGb + RELEASE_MARGIN_GB) * GIB >= totalBytes;
+}
+
 /** Sanity bounds of a typed threshold: a 0 / 1000 GB typo is refused, not applied. */
 export const MIN_CRITICAL_GB = 0.5;
 export const MAX_ADMISSION_GB = 256;
@@ -42,16 +47,17 @@ function isGb(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-/** Why `next` (already merged over the current settings) cannot be applied, or null when it can. `totalBytes` (MemTotal, when
- *  readable) bounds the Admission threshold: one at or above the machine's memory would hold forever and could never lift. */
+/** Why `next` (already merged over the current settings) cannot be applied, or null when it can. `totalBytes` (MemTotal, when readable)
+ *  bounds the Admission threshold: Admission reopens only ABOVE threshold + margin and MemAvailable can never exceed MemTotal, so a
+ *  threshold whose reopen point is at or above the machine's memory would hold forever once held. */
 export function validateMemoryGuardSettings(s: MemoryGuardSettings, totalBytes?: number | null): string | null {
   if (!isGb(s.admissionGb) || !isGb(s.criticalGb)) return 'thresholds must be numbers';
   if (typeof s.admissionEnabled !== 'boolean') return 'the toggle must be true or false';
   if (s.criticalGb < MIN_CRITICAL_GB) return `the critical threshold must be at least ${MIN_CRITICAL_GB} GB`;
   if (s.admissionGb > MAX_ADMISSION_GB) return `the Admission threshold must be at most ${MAX_ADMISSION_GB} GB`;
   if (!(s.criticalGb < s.admissionGb)) return `the critical threshold (${s.criticalGb} GB) must be below the Admission threshold (${s.admissionGb} GB)`;
-  if (typeof totalBytes === 'number' && totalBytes > 0 && s.admissionGb * GIB >= totalBytes) {
-    return `the Admission threshold (${s.admissionGb} GB) must be below this machine's memory (${(totalBytes / GIB).toFixed(1)} GB)`;
+  if (typeof totalBytes === 'number' && totalBytes > 0 && thresholdUnreachable(s.admissionGb, totalBytes)) {
+    return `the Admission threshold (${s.admissionGb} GB) plus the ${RELEASE_MARGIN_GB} GB reopen margin must be below this machine's memory (${(totalBytes / GIB).toFixed(1)} GB)`;
   }
   return null;
 }
@@ -282,6 +288,9 @@ export function patchMemoryGuardSettings(
     criticalGb: patch.criticalGb ?? current.criticalGb,
     admissionEnabled: patch.admissionEnabled ?? current.admissionEnabled,
   };
-  const error = validateMemoryGuardSettings(merged, totalBytes);
+  // The MemTotal bound judges the pair being CHOSEN: a toggle-only patch never fails on a stored pair the host cannot satisfy (a small
+  // machine under the default 6/3) — the sampler warns about that case instead, and the user can still flip the toggle.
+  const pairChanged = merged.admissionGb !== current.admissionGb || merged.criticalGb !== current.criticalGb;
+  const error = validateMemoryGuardSettings(merged, pairChanged ? totalBytes : undefined);
   return error === null ? { ok: true, settings: merged } : { ok: false, error };
 }

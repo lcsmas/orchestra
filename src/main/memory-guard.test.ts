@@ -392,6 +392,40 @@ test('unreadable: a source that THROWS is the same as null', () => {
   assert.ok(w.pending, 'still sampling');
 });
 
+test('settings_read_failure_keeps_thresholds: a getSettings() that THROWS keeps the thresholds in force (never the defaults)', () => {
+  const w = world(8);
+  w.settings = { admissionGb: 10, criticalGb: 4, admissionEnabled: true };
+  let broken = false;
+  const g = createMemoryGuard({ ...w.deps, getSettings: () => { if (broken) throw new Error('store unreadable'); return w.settings; } });
+  g.start();
+  assert.equal(g.snapshot().admissionBytes, gb(10));
+  assert.equal(g.snapshot().admission, 'held', '8 GB is below the custom 10 GB');
+  broken = true;
+  w.mem = 9; // would be OPEN under the defaults (6/7), still HELD under the custom 10 GB
+  w.fire();
+  assert.equal(g.snapshot().admissionBytes, gb(10), 'the thresholds in force did not change');
+  assert.equal(g.snapshot().admission, 'held');
+});
+
+test('unreachable_warning: ONE warning per (threshold, machine) when Admission could never reopen on this host; silent once fixed; again if it returns', () => {
+  const w = world(12);
+  const g = createMemoryGuard({ ...w.deps, totalBytes: () => gb(4) });
+  g.start();
+  for (let i = 0; i < 5; i++) w.fire();
+  const warnings = () => w.warns.filter((l) => /exceed this machine's memory/.test(l));
+  assert.equal(warnings().length, 1, 'six samples, one warning');
+  assert.match(warnings()[0], /Admission 6 GB \+ 1 GB reopen margin >= MemTotal 4\.00 GB/);
+  w.settings = { admissionGb: 2, criticalGb: 1, admissionEnabled: true };
+  w.fire();
+  assert.equal(warnings().length, 1, 'a reachable pair does not warn');
+  w.settings = { admissionGb: 6, criticalGb: 3, admissionEnabled: true };
+  w.fire();
+  assert.equal(warnings().length, 2, 'the same problem coming back warns again');
+  const quiet = world(12);
+  createMemoryGuard({ ...quiet.deps, totalBytes: () => gb(32) }).start();
+  assert.equal(quiet.warns.length, 0, 'a normal host never warns');
+});
+
 test('unreadable at boot: never a fabricated figure', () => {
   const w = world(null);
   const g = createMemoryGuard(w.deps);

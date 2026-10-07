@@ -64,6 +64,23 @@ const MUTANTS = [
   { id: 'M30_sampled_never_set', file: M, find: '    sampled = true;\n', to: '', expect: ['sampled: false until'] },
   { id: 'M31_save_error_swallowed', file: ST, find: '  if (saveError) {', to: '  if (false) {', expect: ['a save that FAILS'] },
   { id: 'M32_patch_null_throws', file: S, find: "  if (patch === null || typeof patch !== 'object') return { ok: false, error: 'invalid settings patch' };\n", to: '', expect: ['patch: a null', 'a patch that is null'] },
+  // follow-up (review m2-m6): API fields, fresh view, MemTotal bound, non-default settings, modal click handling
+  { id: 'M33_mayrelease_last_good', file: M, find: 'mayRelease = d.mayReleaseOneStart;', to: 'mayRelease = availBytes !== null && availBytes > t.admissionBytes + t.releaseMarginBytes;', expect: ['mayReleaseOneStart rides the snapshot'] },
+  { id: 'M34_replay_on_subscribe', file: M, find: '    subscribe(listener) {\n      listeners.add(listener);', to: "    subscribe(listener) {\n      listeners.add(listener);\n      if (state.admission === 'held') listener({ transition: { kind: 'admission_held', episode: state.episode, pauseCycle: state.pauseCycle, availBytes: availBytes ?? 0, thresholdBytes: 0 }, snapshot: snapshot() });", expect: ['no_replay'] },
+  { id: 'M35_pause_cycle_not_counted', file: S, find: 'pauseCycle += 1;', to: 'pauseCycle += 0;', expect: ['pause_cycle', 'pauseCycle numbers'] },
+  { id: 'M36_view_stale_snapshot', file: ST, edits: [{ find: "import { sampleMemoryGuardNow } from './memory-guard.ts';", to: "import { getMemoryGuardSnapshot, sampleMemoryGuardNow } from './memory-guard.ts';" }, { find: 'snapshot: MemoryGuardSnapshot = sampleMemoryGuardNow()', to: 'snapshot: MemoryGuardSnapshot = getMemoryGuardSnapshot()' }], expect: ['memoryGuardView is FRESH'] },
+  { id: 'M37_view_live_null', file: ST, find: 'liveAvailBytes: snapshot.measured ? snapshot.availBytes : null,', to: 'liveAvailBytes: null,', expect: ['memoryGuardView is FRESH'] },
+  { id: 'M38_total_bound_without_margin', file: S, find: '(admissionGb + RELEASE_MARGIN_GB) * GIB >= totalBytes', to: 'admissionGb * GIB >= totalBytes', expect: ['validate_total'] },
+  { id: 'M39_toggle_only_hits_total_bound', file: S, find: 'pairChanged ? totalBytes : undefined', to: 'totalBytes', expect: ['toggle_only_small_host'] },
+  { id: 'M40_unreachable_warning_every_sample', file: M, find: '    if (unreachableWarned === key) return;\n', to: '', expect: ['unreachable_warning'] },
+  { id: 'M41_unreachable_never_warns', file: M, find: 'if (total === null || !thresholdUnreachable(settings.admissionGb, total)) {', to: 'if (true) {', expect: ['unreachable_warning'] },
+  { id: 'M42_toggle_resets_thresholds', file: ST, find: '  const current = store.getMemoryGuardSettings();\n  const res = patchMemoryGuardSettings(', to: '  const current = { admissionGb: 6, criticalGb: 3, admissionEnabled: true };\n  const res = patchMemoryGuardSettings(', expect: ['toggle_keeps_custom_thresholds'] },
+  { id: 'M43_patch_enabled_default_true', file: S, find: 'admissionEnabled: patch.admissionEnabled ?? current.admissionEnabled,', to: 'admissionEnabled: patch.admissionEnabled ?? true,', expect: ['patch_merge_keeps_stored_fields', 'toggle_keeps_custom_thresholds'] },
+  { id: 'M44_patch_critical_default', file: S, find: 'criticalGb: patch.criticalGb ?? current.criticalGb,', to: 'criticalGb: patch.criticalGb ?? DEFAULT_CRITICAL_GB,', expect: ['patch_merge_keeps_stored_fields', 'toggle_keeps_custom_thresholds'] },
+  { id: 'M45_settings_read_failure_defaults', file: M, find: '      return settings; // an unreadable store never changes the thresholds in force', to: '      return DEFAULT_MEMORY_GUARD_SETTINGS;', expect: ['settings_read_failure_keeps_thresholds'] },
+  { id: 'M46_toggle_type_unchecked', file: S, find: "  if (typeof s.admissionEnabled !== 'boolean') return 'the toggle must be true or false';\n", to: '', expect: ['validate_toggle_type'] },
+  { id: 'M47_echo_wipes_typed_draft', file: UI, find: 'setDraft((d) => (committed !== null && d === committed ? null : d));', to: 'setDraft(null);', expect: ['draft_kept'], ui: true },
+  { id: 'M48_toggle_dropped_while_draft', file: UI, find: 'onChange={(e) => void apply({ admissionEnabled: e.target.checked })}', to: 'onChange={(e) => void (draft ? undefined : apply({ admissionEnabled: e.target.checked }))}', expect: ['slow_ipc'], ui: true },
   // Settings dialog view logic (the React component itself is proven by the built-app drive, not here)
   { id: 'V01_gauge_crit_lte', file: V, find: "availBytes < s.criticalGb * GIB ? 'crit'", to: "availBytes <= s.criticalGb * GIB ? 'crit'", expect: ['gauge: ticks'] },
   { id: 'V02_gauge_warn_lte', file: V, find: "availBytes < s.admissionGb * GIB ? 'warn'", to: "availBytes <= s.admissionGb * GIB ? 'warn'", expect: ['gauge: ticks'] },
@@ -92,6 +109,12 @@ function rigRed() {
   const pass = (out.match(/^PASS \w+/gm) ?? []).length;
   return { arms, pass, line: (out.split('\n').filter((l) => l.startsWith('MEMORY-GUARD RIG')).pop() ?? `no summary (exit ${r.status})`) };
 }
+function modalRed() {
+  if (noRig) return { fails: [], pass: 0, line: '(modal rig skipped)' };
+  const r = sh(process.execPath, [path.join(HERE, 'e2e-memory-guard-modal.mjs')]);
+  const out = r.stdout ?? '';
+  return { fails: [...out.matchAll(/^\s+FAIL\s+(\S+)/gm)].map((m) => m[1]), pass: (out.match(/^\s+PASS\s/gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('MODAL RIG')).pop() ?? `no summary (exit ${r.status})`).slice(0, 120) };
+}
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 
 // ── guard: the tree must be committed (git diff is the independent restoration proof) ──
@@ -104,8 +127,9 @@ buildCli();
 // ── POSITIVE CONTROL: the unmutated tree must be all green, else every "killed" below is vacuous ──
 const base = unitRed();
 const baseRig = rigRed();
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 9)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+const baseModal = modalRed();
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} | modal: ${baseModal.line}`);
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 9) || baseModal.fails.length || (!noRig && baseModal.pass !== 9)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;
@@ -117,19 +141,22 @@ for (const m of MUTANTS) {
   if (only && !only.has(m.id)) continue;
   const abs = path.join(REPO, m.file);
   const original = fs.readFileSync(abs, 'utf8');
-  const count = original.split(m.find).length - 1;
-  if (count !== 1) { rows.push({ id: m.id, verdict: 'ANCHOR-BAD', detail: `find occurs ${count}× (need exactly 1)` }); continue; }
+  const edits = m.edits ?? [{ find: m.find, to: m.to }];
+  let mutated = original; let anchorBad = null;
+  for (const e of edits) { const c = mutated.split(e.find).length - 1; if (c !== 1) { anchorBad = `find occurs ${c}× (need exactly 1): ${e.find.slice(0, 60)}`; break; } mutated = mutated.replace(e.find, () => e.to); }
+  if (anchorBad) { rows.push({ id: m.id, verdict: 'ANCHOR-BAD', detail: anchorBad }); continue; }
   const backupFile = path.join(BACKUP, `${m.id}.orig`);
   fs.writeFileSync(backupFile, original);
   const onSig = () => { restore(m, backupFile); process.exit(130); };
   process.once('SIGINT', onSig); process.once('SIGTERM', onSig);
   try {
-    fs.writeFileSync(abs, original.replace(m.find, () => m.to));
+    fs.writeFileSync(abs, mutated);
     if (fs.readFileSync(abs, 'utf8') === original) { rows.push({ id: m.id, verdict: 'NO-OP', detail: 'the mutation changed nothing' }); continue; }
     if (m.cli) buildCli();
     const u = unitRed();
     const r = rigRed();
-    const red = [...u.names, ...r.arms.map((a) => `rig:${a}`)];
+    const mo = m.ui ? modalRed() : { fails: [] };
+    const red = [...u.names, ...r.arms.map((a) => `rig:${a}`), ...mo.fails.map((a) => `modal:${a}`)];
     const hit = m.expect.filter((e) => red.some((n) => n.includes(e)));
     rows.push({ id: m.id, verdict: hit.length > 0 ? 'KILLED' : red.length ? 'KILLED-BUT-NOT-BY-NAMED-ARM' : 'SURVIVED', detail: `named ${JSON.stringify(m.expect)} hit ${JSON.stringify(hit)}; red: ${red.slice(0, 4).join(' | ')}${red.length > 4 ? ` (+${red.length - 4})` : ''}` });
   } finally {
@@ -143,8 +170,9 @@ const sameSha = files.every((f) => before[f] === after[f]);
 const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
 const post = unitRed();
 const postRig = rigRed();
+const postModal = modalRed();
 for (const r of rows) console.log(`${r.verdict.padEnd(30)} ${r.id.padEnd(30)} ${r.detail}`);
 const killed = rows.filter((r) => r.verdict === 'KILLED').length;
-console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} rig ${postRig.line}`);
+console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} rig ${postRig.line} modal ${postModal.line}`);
 console.log(`MUTANTS: ${killed}/${rows.length} killed by their NAMED arm${rows.length === killed ? '' : ` — NOT ALL: ${rows.filter((r) => r.verdict !== 'KILLED').map((r) => `${r.id}=${r.verdict}`).join(', ')}`}`);
-process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 ? 0 : 1);
+process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && postModal.fails.length === 0 ? 0 : 1);

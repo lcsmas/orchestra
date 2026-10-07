@@ -1,20 +1,23 @@
 // Memory guard settings I/O (#285): the view the Settings dialog reads and the validated, HOT write. Store-free (the store is
 // passed in) so node --test drives the real functions; api-handlers.ts wires `store`.
 
-import { readMemAvailableBytes, readMemTotalBytes } from './mem-available.ts';
-import { getMemoryGuardSnapshot, sampleMemoryGuardNow } from './memory-guard.ts';
+import { readMemTotalBytes } from './mem-available.ts';
+import { sampleMemoryGuardNow } from './memory-guard.ts';
 import { scoped } from './logger.ts';
 import {
   patchMemoryGuardSettings,
   type MemoryGuardSettings,
   type MemoryGuardSetResult,
+  type MemoryGuardSnapshot,
   type MemoryGuardView,
 } from '../shared/memory-guard.ts';
 
 const slog = scoped('memory-guard');
 
-export function memoryGuardView(settings: MemoryGuardSettings): MemoryGuardView {
-  return { settings, snapshot: getMemoryGuardSnapshot(), liveAvailBytes: readMemAvailableBytes(), totalBytes: readMemTotalBytes() };
+/** The Settings view. The snapshot is taken FRESH (a read + decision now) and the live figure is THAT snapshot's reading, so the figure
+ *  and the state chip beside it can never disagree (a cached snapshot is up to 60 s old above the Admission threshold). */
+export function memoryGuardView(settings: MemoryGuardSettings, snapshot: MemoryGuardSnapshot = sampleMemoryGuardNow()): MemoryGuardView {
+  return { settings, snapshot, liveAvailBytes: snapshot.measured ? snapshot.availBytes : null, totalBytes: readMemTotalBytes() };
 }
 
 export interface MemoryGuardSettingsStore {
@@ -37,8 +40,8 @@ export async function setMemoryGuardSettings(patch: Partial<MemoryGuardSettings>
     `settings changed${saveError ? ' (NOT saved to disk)' : ''} — Admission ${current.admissionGb}→${res.settings.admissionGb} GB, critical ${current.criticalGb}→${res.settings.criticalGb} GB, ` +
       `Admission/fast-Veille toggle ${current.admissionEnabled ? 'ON' : 'OFF'}→${res.settings.admissionEnabled ? 'ON' : 'OFF'}`,
   );
-  sampleMemoryGuardNow();
-  const view = memoryGuardView(store.getMemoryGuardSettings());
+  const snap = sampleMemoryGuardNow();
+  const view = memoryGuardView(store.getMemoryGuardSettings(), snap);
   if (saveError) {
     return { ok: false, error: `applied now, but could not be saved (${saveError instanceof Error ? saveError.message : String(saveError)}) — it is lost at the next restart`, view };
   }

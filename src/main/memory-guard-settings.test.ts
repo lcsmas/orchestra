@@ -14,11 +14,11 @@ function rig(memGb: number) {
       cell.value = next;
     },
   };
-  let mem = memGb * GIB;
+  let mem: number | null = memGb * GIB;
   setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
   const g = __rebuildMemoryGuardForTests({ schedule: () => ({}), cancel: () => {}, info: () => {}, warn: () => {} }, () => mem);
   g.start();
-  return { cell, store, setMem: (n: number) => { mem = n * GIB; }, stop: () => { g.stop(); __rebuildMemoryGuardForTests(); setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS); } };
+  return { cell, store, setMem: (n: number) => { mem = n * GIB; }, setMemNull: () => { mem = null; }, stop: () => { g.stop(); __rebuildMemoryGuardForTests(); setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS); } };
 }
 
 test('a valid change is persisted AND applied at once (no restart, no timer)', async () => {
@@ -45,6 +45,50 @@ test('an invalid pair is refused, writes nothing and leaves the guard untouched'
     assert.equal(r.cell.writes, 0);
     assert.deepEqual(getMemoryGuardSnapshot().admissionBytes, 6 * GIB);
     assert.equal(getMemoryGuardSnapshot().admission, 'open');
+  } finally {
+    r.stop();
+  }
+});
+
+test('memoryGuardView is FRESH: after a fall 8→4 GB the view shows held and the SAME reading — never "4.0 GB" beside a green open chip', () => {
+  const r = rig(8);
+  try {
+    assert.equal(getMemoryGuardSnapshot().admission, 'open');
+    r.setMem(4); // no timer fired: the cached snapshot would still say open
+    assert.equal(getMemoryGuardSnapshot().admission, 'open', 'control: the cached snapshot IS stale at this point');
+    const v = memoryGuardView(DEFAULT_MEMORY_GUARD_SETTINGS);
+    assert.equal(v.snapshot.admission, 'held');
+    assert.equal(v.liveAvailBytes, 4 * GIB, 'the live figure is the snapshot\'s own reading (from the injected source)');
+    assert.equal(v.liveAvailBytes, v.snapshot.availBytes);
+  } finally {
+    r.stop();
+  }
+});
+
+test('memoryGuardView: an unreadable meter shows no live figure (null), never the last good one', () => {
+  const r = rig(8);
+  try {
+    r.setMemNull();
+    const v = memoryGuardView(DEFAULT_MEMORY_GUARD_SETTINGS);
+    assert.equal(v.snapshot.measured, false);
+    assert.equal(v.liveAvailBytes, null);
+  } finally {
+    r.stop();
+  }
+});
+
+test('toggle_keeps_custom_thresholds: flipping the toggle with NON-default stored thresholds leaves them alone', async () => {
+  const r = rig(12);
+  try {
+    r.cell.value = { admissionGb: 10, criticalGb: 4, admissionEnabled: true };
+    const res = await setMemoryGuardSettings({ admissionEnabled: false }, r.store);
+    assert.equal(res.ok, true);
+    assert.deepEqual(r.cell.value, { admissionGb: 10, criticalGb: 4, admissionEnabled: false });
+    assert.deepEqual([res.view.settings.admissionGb, res.view.settings.criticalGb], [10, 4]);
+    assert.equal(res.view.snapshot.admissionBytes, 10 * GIB);
+    const again = await setMemoryGuardSettings({ admissionGb: 12 }, r.store);
+    assert.equal(again.ok, true);
+    assert.deepEqual(r.cell.value, { admissionGb: 12, criticalGb: 4, admissionEnabled: false }, 'the OFF toggle and the custom critical survive a threshold edit');
   } finally {
     r.stop();
   }

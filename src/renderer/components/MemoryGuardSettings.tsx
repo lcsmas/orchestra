@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatGb, RELEASE_MARGIN_GB, type MemoryGuardView } from '../../shared/memory-guard';
 import { gaugeModel, guardChip, planThresholdCommit } from '../../shared/memory-guard-view';
@@ -17,12 +17,16 @@ const cap = (s: string) => `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
  * switches): a valid pair is written on blur / Enter and the sampler re-decides at once. The pure view logic (chip, gauge, commit
  * rule) is src/shared/memory-guard-view.ts; the write path is `setMemoryGuard` → memory-guard-settings.ts.
  */
+type Draft = { admission: string; critical: string };
+
 export function MemoryGuardSettings({ onClose }: Props) {
   const [view, setView] = useState<MemoryGuardView | null>(null);
   /** The two inputs while the user is typing; null = show the stored values. */
-  const [draft, setDraft] = useState<{ admission: string; critical: string } | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  /** Applies run ONE AT A TIME in click order and are never dropped (a pending edit commits on blur, and the click that caused the blur
+   *  must still reach the toggle — review m2: a `busy` flag disabling the toggle swallowed that click). */
+  const queue = useRef<Promise<void>>(Promise.resolve());
 
   const refresh = useCallback(async () => {
     if (document.hidden) return;
@@ -44,26 +48,28 @@ export function MemoryGuardSettings({ onClose }: Props) {
   const plan = settings && draft ? planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes) : null;
   const liveError = plan?.kind === 'invalid' ? plan.error : null;
 
-  const apply = async (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0]) => {
-    setBusy(true);
-    try {
-      const res = await window.orchestra.setMemoryGuard(patch);
-      setView(res.view); // the backend's echo wins over any optimistic state
-      if (res.ok) {
-        setDraft(null);
-        setError(null);
-      } else {
-        setError(cap(res.error));
+  /** `committed` = the draft object this patch came from: the echo clears the inputs only if the user has not typed again since. */
+  const apply = (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0], committed: Draft | null = null): Promise<void> => {
+    const run = queue.current.then(async () => {
+      try {
+        const res = await window.orchestra.setMemoryGuard(patch);
+        setView(res.view); // the backend's echo wins over any optimistic state
+        if (res.ok) {
+          setDraft((d) => (committed !== null && d === committed ? null : d));
+          setError(null);
+        } else {
+          setError(cap(res.error));
+        }
+      } catch (e) {
+        setError(`Could not apply the change — ${e instanceof Error ? e.message : String(e)}`);
       }
-    } catch (e) {
-      setError(`Could not apply the change — ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+    });
+    queue.current = run;
+    return run;
   };
 
   const commit = () => {
-    if (!settings || !draft || busy) return;
+    if (!settings || !draft) return;
     const p = planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes);
     if (p.kind === 'unchanged') {
       setDraft(null);
@@ -71,7 +77,7 @@ export function MemoryGuardSettings({ onClose }: Props) {
     } else if (p.kind === 'invalid') {
       setError(p.error);
     } else {
-      void apply(p.patch);
+      void apply(p.patch, draft);
     }
   };
 
@@ -178,7 +184,7 @@ export function MemoryGuardSettings({ onClose }: Props) {
             type="checkbox"
             data-mg-toggle
             checked={settings?.admissionEnabled ?? true}
-            disabled={!settings || busy}
+            disabled={!settings}
             onChange={(e) => void apply({ admissionEnabled: e.target.checked })}
           />
           <span>

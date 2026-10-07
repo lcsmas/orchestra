@@ -19,6 +19,7 @@ import {
   normalizeMemoryGuardSettings,
   parseMemAvailableBytes,
   patchMemoryGuardSettings,
+  thresholdUnreachable,
   thresholdsFrom,
   validateMemoryGuardSettings,
   type GuardState,
@@ -234,13 +235,37 @@ test('settings: garbage / an inverted pair falls back to the default PAIR, keepi
   assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 6, criticalGb: 6 }), DEFAULT_MEMORY_GUARD_SETTINGS);
 });
 
-test('validate_total: an Admission threshold at/above the machine\'s memory is refused (it would hold forever and never lift)', () => {
+test('validate_total: Admission + the 1 GB reopen margin must be BELOW the machine\'s memory (Admission could otherwise never reopen)', () => {
   const s = { admissionGb: 40, criticalGb: 3, admissionEnabled: true };
-  assert.match(validateMemoryGuardSettings(s, gb(32)) ?? '', /must be below this machine's memory \(32\.0 GB\)/);
-  assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 32 }, gb(32)) ?? '', /machine's memory/, 'exactly the machine\'s memory is not below it');
-  assert.equal(validateMemoryGuardSettings({ ...s, admissionGb: 31.5 }, gb(32)), null);
+  assert.match(validateMemoryGuardSettings(s, gb(32)) ?? '', /plus the 1 GB reopen margin must be below this machine's memory \(32\.0 GB\)/);
+  assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 31 }, gb(32)) ?? '', /reopen margin/, '31 + 1 = 32 is not below 32');
+  assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 31.5 }, gb(32)) ?? '', /reopen margin/, 'the old Admission-only bound accepted this: 31.5 + 1 > 32');
+  assert.equal(validateMemoryGuardSettings({ ...s, admissionGb: 30.99 }, gb(32)), null, '30.99 + 1 < 32: reachable');
   assert.equal(validateMemoryGuardSettings(s, null), null, 'an unreadable MemTotal bounds nothing');
   assert.equal(validateMemoryGuardSettings(s), null);
+  assert.equal(thresholdUnreachable(30.99, gb(32)), false);
+  assert.equal(thresholdUnreachable(31, gb(32)), true);
+});
+
+test('toggle_only_small_host: a toggle-only patch is never refused by the MemTotal bound (the default 6/3 exceeds a 4 GB host); changing the pair is', () => {
+  const small = gb(4);
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: false }, small), { ok: true, settings: { admissionGb: 6, criticalGb: 3, admissionEnabled: false } });
+  assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 3.5, criticalGb: 3 }, small).ok, false, '3.5 + 1 >= 4');
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 2, criticalGb: 1 }, small), { ok: true, settings: { admissionGb: 2, criticalGb: 1, admissionEnabled: true } });
+});
+
+test('patch_merge_keeps_stored_fields: a partial patch changes ONLY its fields (non-default stored settings survive)', () => {
+  const stored = { admissionGb: 10, criticalGb: 4, admissionEnabled: false };
+  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionGb: 12 }), { ok: true, settings: { admissionGb: 12, criticalGb: 4, admissionEnabled: false } });
+  assert.deepEqual(patchMemoryGuardSettings(stored, { criticalGb: 5 }), { ok: true, settings: { admissionGb: 10, criticalGb: 5, admissionEnabled: false } });
+  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionEnabled: true }), { ok: true, settings: { admissionGb: 10, criticalGb: 4, admissionEnabled: true } });
+  assert.deepEqual(patchMemoryGuardSettings(stored, {}), { ok: true, settings: stored });
+});
+
+test('validate_toggle_type: a non-boolean toggle is refused (validate, patch, and a string from IPC)', () => {
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 3, admissionEnabled: 'yes' as unknown as boolean }) ?? '', /toggle must be true or false/);
+  assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: 'false' as unknown as boolean }).ok, false);
+  assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: 0 as unknown as boolean }).ok, false);
 });
 
 test('patch: a null / undefined / non-object patch is {ok:false}, never a throw; a valid patch merges', () => {

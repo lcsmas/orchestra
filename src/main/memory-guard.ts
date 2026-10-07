@@ -14,15 +14,17 @@
 // Pauses so a 2nd Pause inside one Admission episode is distinguishable from the 1st.
 
 import { scoped } from './logger.ts';
-import { readMemAvailableBytes } from './mem-available.ts';
+import { readMemAvailableBytes, readMemTotalBytes } from './mem-available.ts';
 import {
   DEFAULT_MEMORY_GUARD_SETTINGS,
   INITIAL_GUARD_STATE,
+  RELEASE_MARGIN_GB,
   SAMPLE_FAST_MS,
   decideMemoryGuard,
   formatGb,
   nextSampleDelayMs,
   normalizeMemoryGuardSettings,
+  thresholdUnreachable,
   thresholdsFrom,
   type GuardState,
   type GuardTransition,
@@ -35,6 +37,8 @@ export interface MemoryGuardDeps {
   readAvailableBytes(): number | null;
   /** Read at EVERY sample, so a Settings change applies hot. */
   getSettings(): MemoryGuardSettings;
+  /** MemTotal (bytes) or null; optional — absent means "unknown", which never warns. */
+  totalBytes?(): number | null;
   now(): number;
   /** Arm one timer; the sampler re-arms after each sample because the delay changes (10 s / 60 s). */
   schedule(fn: () => void, ms: number): unknown;
@@ -64,6 +68,7 @@ export function realMemoryGuardDeps(over: Partial<MemoryGuardDeps> = {}): Memory
   return {
     readAvailableBytes: () => readMemAvailableBytes(),
     getSettings: () => DEFAULT_MEMORY_GUARD_SETTINGS,
+    totalBytes: () => readMemTotalBytes(),
     now: () => Date.now(),
     schedule: (fn, ms) => {
       const h = setTimeout(fn, ms);
@@ -104,6 +109,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
   let delayMs = SAMPLE_FAST_MS;
   let settings: MemoryGuardSettings = DEFAULT_MEMORY_GUARD_SETTINGS;
   let unreadableLogged = false;
+  let unreachableWarned: string | null = null;
   let started = false;
   let handle: unknown = null;
   const listeners = new Set<MemoryGuardListener>();
@@ -138,6 +144,27 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
     }
   }
 
+  /** ONE warning per (threshold, machine) pair when Admission could never reopen on this host (e.g. the default 6 GB on a 4 GB machine). */
+  function warnIfUnreachable(): void {
+    let total: number | null = null;
+    try {
+      total = deps.totalBytes?.() ?? null;
+    } catch {
+      total = null;
+    }
+    if (total === null || !thresholdUnreachable(settings.admissionGb, total)) {
+      unreachableWarned = null;
+      return;
+    }
+    const key = `${settings.admissionGb}|${total}`;
+    if (unreachableWarned === key) return;
+    unreachableWarned = key;
+    deps.warn(
+      `thresholds exceed this machine's memory (Admission ${settings.admissionGb} GB + ${RELEASE_MARGIN_GB} GB reopen margin >= MemTotal ${formatGb(total, 2)}): ` +
+        'Admission, once held, can never reopen — lower the Admission threshold in Settings',
+    );
+  }
+
   function snapshot(): MemoryGuardSnapshot {
     const t = thresholdsFrom(settings);
     return {
@@ -169,6 +196,7 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
     } catch {
       reading = null;
     }
+    warnIfUnreachable();
     const now = deps.now();
     sampled = true;
     const d = decideMemoryGuard(state, reading, t);

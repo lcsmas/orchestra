@@ -227,6 +227,11 @@ if (ARM === 'hot') {
   check('invalid_refused', [bad.ok, /must be below/.test(bad.error ?? '')], [false, true]);
   check('invalid_wrote_nothing', store.getMemoryGuardSettings(), { admissionGb: 10, criticalGb: 4, admissionEnabled: true });
   check('invalid_state_unchanged', state(await memory()), 'HELD/none');
+  // the toggle at NON-default thresholds keeps them (review m6: it was only ever flipped at 6/3) and the guard keeps deciding
+  await settingsMod.setMemoryGuardSettings({ admissionEnabled: false }, store);
+  check('toggle_keeps_custom_thresholds', store.getMemoryGuardSettings(), { admissionGb: 10, criticalGb: 4, admissionEnabled: false });
+  check('toggle_off_still_decides', state(await memory()), 'HELD/none');
+  await settingsMod.setMemoryGuardSettings({ admissionEnabled: true }, store);
   // restoring 6/3 applies at once too: 8 GB is above 6 + 1 GB, so Admission reopens with no timer fired
   await settingsMod.setMemoryGuardSettings({ admissionGb: 6, criticalGb: 3 }, store);
   check('restored_applies_at_once', state(await memory()), 'open/none');
