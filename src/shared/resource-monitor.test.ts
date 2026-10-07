@@ -274,6 +274,52 @@ test('buildResourceLogLine assembles totals, electron and per-session rows', () 
   assert.deepEqual(JSON.parse(JSON.stringify(line)), line);
 });
 
+// #293: container memory rides the line as SEPARATE fields — `rssBytes` stays the process tree's.
+import { accountingView, buildAccounting, emptyAccounting } from './container-accounting.ts';
+
+const lineWith = (containers?: ReturnType<typeof accountingView>) =>
+  buildResourceLogLine(
+    {
+      at: 1_700_000_000_000,
+      pageSize: 4096,
+      cpuCores: 8,
+      memTotalBytes: 1 << 30,
+      memUsedBytes: null,
+      table: keeperTree(400, 50),
+      cpuPcts: new Map(),
+      keeperRoots: [{ workspaceId: 'ws-b', keeperPid: 400 }],
+      liveWorkspaceIds: new Set(['ws-b']),
+      electron: [],
+      reapedWorkspaceIds: new Set<string>(),
+      containers,
+    },
+    () => 'running',
+  );
+
+test('R-C1 the line carries each keeper session\'s containerBytes and the host-wide containers block; rssBytes is NOT inflated; a workspace with containers but no keeper tree appears only in the block', () => {
+  const MB = 1024 * 1024;
+  const view = accountingView(buildAccounting([{ wsId: 'ws-b', bytes: 200 * MB }, { wsId: 'ws-orphan', bytes: 30 * MB }], [{ id: 'u1', name: 'web-1', created: 1 }], 9));
+  const line = lineWith(view);
+  assert.equal(line.sessions[0].rssBytes, 150, 'process RSS unchanged');
+  assert.equal(line.sessions[0].containerBytes, 200 * MB);
+  assert.deepEqual(line.containers?.attributed.map((a) => [a.wsId, a.bytes]), [['ws-b', 200 * MB], ['ws-orphan', 30 * MB]]);
+  assert.deepEqual(line.containers?.unattributed, { count: 1, ids: ['u1'], names: ['web-1'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(line)), line);
+});
+
+test('R-C2 no accounting passed → the line is byte-for-byte the pre-#293 shape (no containers key, no containerBytes); Docker unavailable → the block says so but sessions get NO containerBytes (not a measured 0)', () => {
+  const plain = lineWith(undefined);
+  assert.equal('containers' in plain, false);
+  assert.equal('containerBytes' in plain.sessions[0], false);
+  const down = lineWith(accountingView(emptyAccounting('unavailable', 5)));
+  assert.equal(down.containers?.docker, 'unavailable');
+  assert.equal('containerBytes' in down.sessions[0], false);
+  const none = lineWith(accountingView(buildAccounting([], [], 5)));
+  assert.equal(none.sessions[0].containerBytes, 0, 'docker answered and the workspace has no container: a measured 0');
+  const blind = lineWith(accountingView(buildAccounting([{ wsId: 'ws-b', bytes: null }], [], 5)));
+  assert.equal('containerBytes' in blind.sessions[0], false, 'the workspace\'s only container could not be measured: NO figure — "unmeasured, never 0"');
+});
+
 // ─── decideThresholdWarnings: advisory detector (b) ──────────────────────────
 
 const session = (over: Partial<Parameters<typeof decideThresholdWarnings>[0][number]> = {}) => ({

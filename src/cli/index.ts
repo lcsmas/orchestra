@@ -47,6 +47,7 @@ import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import { formatMemoryGuardLine, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { formatContainersLine, type ContainerAccountingView } from '../shared/container-accounting.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
@@ -2205,6 +2206,11 @@ async function main(argv: string[]): Promise<void> {
       // #285: the host's memory guard (admission / memory Pause / MemAvailable). Absent from an older app → no line, output unchanged.
       if (res.memoryGuard && typeof res.memoryGuard === 'object') {
         process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot)}\n`);
+      }
+      // #293: container memory per workspace + unattributed containers (host-wide). Absent from an older app → no line.
+      if (res.containers && typeof res.containers === 'object') {
+        const clabels = (res.containerLabels ?? {}) as Record<string, string>;
+        process.stdout.write(`${formatContainersLine(res.containers as ContainerAccountingView, (id) => clabels[id] ?? id)}\n`);
       }
       // #286: starts HELD for low memory (the OPS must not mistake them for a stall). No line when nothing is held — output unchanged.
       if (Array.isArray(res.heldStarts)) {

@@ -159,7 +159,7 @@ try {
     check('the_lead_reads_it_through_the_real_cli', esc.length === 1 && esc[0].sender === 'host', JSON.stringify({ n: esc.length, sender: esc[0]?.sender, lot: r1.lot }));
     const b = esc[0]?.body ?? '';
     check('names_the_threshold_and_the_memory', /below the Admission threshold \(6\.00 GB\) at 5\.50 GB/.test(b), b.split('\n')[0]);
-    check('names_the_actions', /automatic fleet start\(s\) HELD/.test(b) && /put in Veille since the crossing/.test(b) && /(memory Pause on run\(s\)|no run under the memory Pause)/.test(b) && /0 unattributed container\(s\)/.test(b), b.split('\n')[1] ?? '');
+    check('names_the_actions', /automatic fleet start\(s\) HELD/.test(b) && /put in Veille since the crossing/.test(b) && /(memory Pause on run\(s\)|no run under the memory Pause)/.test(b) && /(\d+ unattributed container\(s\)|unattributed containers not measured)/.test(b), b.split('\n')[1] ?? '');
     ackAll(r1);
     await sleep(SETTLE_WAIT_MS); // no later row for the same episode
     check('still_one_after_a_longer_wait', rows().length === 1, `${rows().length}`);

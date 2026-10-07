@@ -1,3 +1,4 @@
+import { viewBytesFor, type ContainerAccountingView } from './container-accounting.ts';
 import type { VolumeStat } from './disk-space.ts';
 
 // Pure logic for the Resources page: parsing the OS process table, walking
@@ -39,7 +40,7 @@ export interface ProcStat {
 /** What kind of PTY a session id denotes. Mirrors the id scheme in
  *  src/main/pty.ts: `<wsId>` = agent, `<wsId>:run`, `<wsId>:nvim`,
  *  `account-login:<accountId>`. */
-export type SessionKind = 'agent' | 'run' | 'nvim' | 'login';
+export type SessionKind = 'agent' | 'run' | 'nvim' | 'login' | 'sdk';
 
 /** Live resource figures for one PTY session's whole process tree. */
 export interface SessionResourceStat {
@@ -97,6 +98,9 @@ export interface ResourceSnapshot {
    *  and so are sampled fresh every tick rather than served from the 60s `du`
    *  cache. Empty array when statfs is unavailable — never silently "fine". */
   volumes: VolumeStat[];
+  /** #293: attributed container memory per workspace + the unattributed containers, from the LAST resource-monitor tick (the page never calls Docker).
+   *  The page folds `attributed[ws].bytes` into the owning workspace's EXISTING memory figure. Absent from an older main. */
+  containers?: ContainerAccountingView;
 }
 
 /** Classify a PTY id into its session kind + owning workspace. Login PTYs
@@ -107,6 +111,8 @@ export function classifyPtyId(
   if (id.startsWith('account-login:')) return { kind: 'login', workspaceId: null };
   if (id.endsWith(':run')) return { kind: 'run', workspaceId: id.slice(0, -4) };
   if (id.endsWith(':nvim')) return { kind: 'nvim', workspaceId: id.slice(0, -5) };
+  // #293 (D-pick4 option A): a keeper-HOSTED structured agent has no PTY; the page samples its keeper tree under the synthetic id `<wsId>:sdk`
+  if (id.endsWith(':sdk')) return { kind: 'sdk', workspaceId: id.slice(0, -4) };
   return { kind: 'agent', workspaceId: id };
 }
 
@@ -292,4 +298,88 @@ export function aggregateSession(
     procCount: tree.length,
     processes: processes.slice(0, maxProcesses),
   };
+}
+
+/**
+ * Keeper-HOSTED structured agents (D-pick4 A, #293): their CLI lives in a detached keeper, not under a PTY, so the PTY listing never saw them. One synthetic `<wsId>:sdk` session per
+ * LIVE keeper root, aggregated exactly like a PTY session over the page's own process table. The keeper is detached, so its tree is normally DISJOINT from every PTY tree — a workspace with BOTH a
+ * terminal agent and a structured session shows both (the keeper's CLI + MCP memory is real). Only a keeper that actually sits INSIDE a PTY root's tree (`ptyRootPids`) is skipped: that PTY
+ * row already counts it. A keeper whose tree is empty (its pid left the table between the listing and the scan) yields no row.
+ */
+export function aggregateKeeperSessions(
+  roots: ReadonlyArray<{ workspaceId: string; keeperPid: number }>,
+  ptyRootPids: readonly number[],
+  table: ProcSample[],
+  cpuPcts: Map<number, number>,
+): SessionResourceStat[] {
+  const claimed = new Set<number>();
+  for (const pid of ptyRootPids) for (const p of collectTree(pid, table)) claimed.add(p.pid);
+  const out: SessionResourceStat[] = [];
+  for (const r of roots) {
+    if (claimed.has(r.keeperPid)) continue;
+    const s = aggregateSession({ ptyId: `${r.workspaceId}:sdk`, remote: false, pid: r.keeperPid }, table, cpuPcts);
+    if (s.procCount > 0) out.push(s);
+  }
+  return out;
+}
+
+/** One per-workspace row of the Resources page's Agents table (the rows before the renderer attaches the workspace record). */
+export interface SessionGroup {
+  /** Workspace id (or the pty id of a session with no workspace). */
+  key: string;
+  sessions: SessionResourceStat[];
+  cpuPct: number;
+  /** Process memory of the workspace's sessions PLUS its attributed containers' (#293) — ONE figure, no new element. */
+  memBytes: number;
+  procCount: number;
+  remote: boolean;
+  /** #293 (D-pick4 A): the workspace's attributed containers — drives the 🐳 chip on the row. null = none. `unmeasured` of `count` have no figure in `bytes`. */
+  containers: { count: number; bytes: number; unmeasured: number } | null;
+  /** #293 (D-pick4 A): a workspace whose only footprint is a container (no session of any kind) — a row with just the chip; cpu / procs read « — ». */
+  containerOnly: boolean;
+}
+
+/**
+ * Group the sampled sessions (PTY sessions AND keeper-hosted structured agents, `<wsId>:sdk`) into per-workspace rows + the login PTYs apart — what the page renders. `containers` (the last
+ * monitor tick's accounting, #293) is folded into the OWNING row's memory figure and shown as its container chip; a workspace with attributed containers but no session at all gets a
+ * container-only row (D-pick4 option A).
+ */
+export function groupSessionsByWorkspace(
+  sessions: readonly SessionResourceStat[],
+  containers?: ContainerAccountingView | null,
+): { rows: SessionGroup[]; login: SessionResourceStat[] } {
+  const byWs = new Map<string, SessionResourceStat[]>();
+  const login: SessionResourceStat[] = [];
+  for (const s of sessions) {
+    if (s.kind === 'login') {
+      login.push(s);
+      continue;
+    }
+    const k = s.workspaceId ?? s.ptyId;
+    const list = byWs.get(k);
+    if (list) list.push(s);
+    else byWs.set(k, [s]);
+  }
+  const chipOf = (key: string): SessionGroup['containers'] => {
+    const a = containers?.docker === 'ok' ? containers.attributed.find((x) => x.wsId === key) : undefined;
+    return a && a.count > 0 ? { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured } : null;
+  };
+  const rows = Array.from(byWs, ([key, list]): SessionGroup => {
+    const remote = list.every((s) => s.remote);
+    return {
+      key,
+      sessions: list,
+      cpuPct: list.reduce((n, s) => n + s.cpuPct, 0),
+      memBytes: list.reduce((n, s) => n + s.memBytes, 0) + (remote ? 0 : viewBytesFor(containers, key)),
+      procCount: list.reduce((n, s) => n + s.procCount, 0),
+      remote,
+      containers: remote ? null : chipOf(key),
+      containerOnly: false,
+    };
+  });
+  for (const a of containers?.docker === 'ok' ? containers.attributed : []) {
+    if (a.count > 0 && !byWs.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true });
+  }
+  rows.sort((a, b) => b.cpuPct - a.cpuPct || b.memBytes - a.memBytes);
+  return { rows, login };
 }

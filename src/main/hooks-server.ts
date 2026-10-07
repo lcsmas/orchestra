@@ -33,6 +33,8 @@ import { busStatusRunView } from './bus-runs.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
 import { getMemoryGuardSnapshot } from './memory-guard.ts';
 import { listHeldStarts } from './admission.ts';
+import { getContainerAccounting } from './container-accounting.ts';
+import { accountingView } from '../shared/container-accounting.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
 import { repriseStatusView } from './pause-reprise.ts';
@@ -472,6 +474,7 @@ export async function startHooksServer(): Promise<void> {
             // Null bus → count 0 (nothing to report, D1). `badRecipientCount` is
             // the authoritative total; `badRecipients` is a capped sample so a
             // huge bus does not return an unbounded list.
+            const containersView = accountingView(getContainerAccounting()); // ONE read: the view and its labels must come from the same snapshot (a read across the stale limit would pair 'ok' with no labels)
             const badDb = getBus();
             const allBad = badDb ? busBadRecipientRows(badDb) : [];
             const badRecipientCount = allBad.length;
@@ -489,6 +492,9 @@ export async function startHooksServer(): Promise<void> {
               badRecipients,
               // #285: the host-wide memory guard state (not run-scoped) — the CLI prints it as the `memory:` line.
               memoryGuard: getMemoryGuardSnapshot(),
+              // #293: container memory per workspace + unattributed containers (the LAST monitor tick's accounting — never a Docker call here); the CLI prints the `containers:` line.
+              containers: containersView,
+              containerLabels: Object.fromEntries(containersView.attributed.map((a) => [a.wsId, heldStartLabel(store.getWorkspace(a.wsId), a.wsId)])),
               // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
               heldStarts: listHeldStarts().map((h) => {
                 const w = store.getWorkspace(h.wsId);

@@ -13,7 +13,12 @@ import { promisify } from 'node:util';
 import { orchestraHome, platform } from './platform';
 import { scoped } from './logger';
 import { store } from './store';
-import { keeperPidFilePath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
+import { keeperPidFilePath, keeperSocketPath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
+import { createDockerApi, readRelayUpstream, type DockerApi } from './docker-api';
+import { getBus } from './bus';
+import { earliestLiveFleetRunStart, runKnownIn, workspaceKnownIn, type ContainerWindowDeps } from './container-window';
+import { getContainerAccounting, realContainerAccountingDeps, refreshContainerAccounting } from './container-accounting';
+import { accountingView, type ContainerAccountingView } from '../shared/container-accounting';
 import { hostPageSize, onPageSizeFallback } from './host-page-size';
 import { parseMemUsedBytes } from '../shared/memory-guard';
 import {
@@ -117,6 +122,13 @@ export interface ResourceMonitorDeps {
   sleep(ms: number): Promise<void>;
   warn(message: string, meta?: unknown): void;
   info(message: string, meta?: unknown): void;
+  /** #293: refresh the container accounting (ONE stats pass, none without an attributed container). Optional: a deps object without it measures no containers
+   *  (every existing rig); the PRODUCTION timer installs it (`productionDeps`). */
+  refreshContainers?(): Promise<void>;
+  /** #293: the accounting to put on the line (the last refresh's). */
+  containerView?(): ContainerAccountingView | null;
+  /** #293: how long a tick waits for the container pass (default {@link CONTAINER_PASS_BUDGET_MS}); a rig shortens it to drive the overrun path. */
+  containerBudgetMs?: number;
 }
 
 /** total − MemAvailable from /proc/meminfo; null when unreadable — never a fabricated figure. */
@@ -389,6 +401,61 @@ export function realResourceMonitorDeps(): ResourceMonitorDeps {
   return { ...defaultDeps };
 }
 
+/** A hung daemon must not delay the tick (and its log line): the container pass gets this long, then the tick uses the last result. */
+export const CONTAINER_PASS_BUDGET_MS = 15_000;
+
+/** The bus + store the container-accounting predicates read (FI-3 v1.3: `container-window.ts`, the SAME "live fleet run" as the LEAD selection / memory Pause). */
+const windowDeps: ContainerWindowDeps = {
+  getBus,
+  getWorkspace: (id) => store.getWorkspace(id),
+  listWorkspaces: () => store.workspaces,
+  storeReady: () => store.loadedFromDisk,
+};
+export const earliestLiveRunStartMs = (): number | null => earliestLiveFleetRunStart(windowDeps);
+
+/** Daemons live members' relays are pinned to (their keepers publish the upstream they froze at spawn); clients are memoised per socket. */
+const memberApis = new Map<string, DockerApi>();
+function memberPinnedApis(): DockerApi[] {
+  const out: DockerApi[] = [];
+  for (const r of listKeeperRoots()) {
+    const up = readRelayUpstream(keeperSocketPath(r.workspaceId));
+    if (!up) continue;
+    let api = memberApis.get(up);
+    if (!api) memberApis.set(up, (api = createDockerApi({ socketPath: up })));
+    out.push(api);
+  }
+  return out;
+}
+
+/** The deps the PRODUCTION timer runs: the real defaults plus the container accounting (kept out of `defaultDeps` so a rig calling `sampleTick()` never hits the host's Docker). */
+export function productionDeps(): ResourceMonitorDeps {
+  const cad = {
+    ...realContainerAccountingDeps(earliestLiveRunStartMs),
+    extraApis: memberPinnedApis,
+    workspaceKnown: workspaceKnownIn(windowDeps),
+    runKnown: runKnownIn(windowDeps),
+  };
+  return {
+    ...defaultDeps,
+    refreshContainers: async () => {
+      await refreshContainerAccounting(cad);
+    },
+    containerView: () => accountingView(getContainerAccounting()),
+  };
+}
+
+async function withBudget(p: Promise<unknown>, ms: number): Promise<'done' | 'budget'> {
+  let timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<'budget'>((resolve) => {
+    timer = setTimeout(() => resolve('budget'), ms);
+  });
+  try {
+    return await Promise.race([p.then(() => 'done' as const), budget]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** One sample + detect + reap + log cycle (what the 60s timer runs). */
 export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<ResourceLogLine> {
   const now = d.now();
@@ -400,6 +467,18 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
   const keeperRoots = d.keeperRoots();
   const liveWorkspaceIds = d.liveWorkspaceIds();
   const reapedWorkspaceIds = await reapPass(d, table, keeperRoots, liveWorkspaceIds);
+
+  // #293: container memory — ONE Docker pass per tick (none when no attributed container exists), bounded so a hung daemon cannot delay this line.
+  if (d.refreshContainers) {
+    try {
+      const budgetMs = d.containerBudgetMs ?? CONTAINER_PASS_BUDGET_MS;
+      if ((await withBudget(d.refreshContainers(), budgetMs)) === 'budget') {
+        d.warn(`resources: container accounting pass exceeded ${budgetMs / 1000} s — this line carries the last result`);
+      }
+    } catch (e) {
+      d.warn('resources: container accounting pass failed', e);
+    }
+  }
 
   // Electron CPU from the monitor's own jiffy deltas: app.getAppMetrics() shares one
   // process-wide cursor with the Resources page, so its percent is garbage when both poll (F3).
@@ -417,6 +496,7 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
       liveWorkspaceIds,
       electron,
       reapedWorkspaceIds,
+      containers: d.containerView?.() ?? undefined,
     },
     d.statusFor,
   );
@@ -437,10 +517,13 @@ let timer: NodeJS.Timeout | null = null;
 export function startResourceMonitor(): void {
   if (timer) return;
   resetState();
+  const deps = productionDeps();
   timer = setInterval(() => {
-    void sampleTick().catch((e) => rlog.swallow('resource-monitor tick', e));
+    void sampleTick(deps).catch((e) => rlog.swallow('resource-monitor tick', e));
   }, TICK_MS);
   if (timer.unref) timer.unref();
+  // #293: the first container pass now, not one tick later — an alert in the first minute must not read "not sampled yet" (single-flight: it cannot overlap the first tick)
+  if (deps.refreshContainers) void withBudget(deps.refreshContainers(), CONTAINER_PASS_BUDGET_MS).catch((e) => rlog.swallow('resource-monitor first container pass', e));
   rlog.info('resource-monitor: started (issue #198 T8) — sampling /proc every 60s');
 }
 

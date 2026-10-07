@@ -27,7 +27,7 @@ const M = [
   { id: 'body-toggle-ignored', file: POL, find: "const held = f.admissionEnabled ? `", rep: "const held = true ? `", tests: [T.pure, T.unit], expect: /BODY states|toggle OFF/ },
   { id: 'body-no-veille', file: POL, find: " · ${f.veille} member(s) put in Veille since the crossing", rep: "", tests: [T.pure, T.unit], expect: /BODY|EPISODE row/ },
   { id: 'body-no-paused-runs', file: POL, find: "const paused = f.pausedRuns.length > 0 ? `memory Pause on run(s) ${f.pausedRuns.join(', ')} (lifted by the host above ${formatGb(f.admissionBytes, 2)})` : 'no run under the memory Pause';", rep: "const paused = 'no run under the memory Pause';", tests: [T.pure, T.unit], expect: /BODY critical|EPISODE row/ },
-  { id: 'body-no-unattributed-field', file: POL, find: " · ${f.unattributedContainers} unattributed container(s) (not measured yet — #293)", rep: "", tests: [T.pure, T.unit], expect: /BODY|EPISODE row/ },
+  { id: 'body-no-unattributed-field', file: POL, find: " · ${unattributedPhrase(f)}", rep: "", tests: [T.pure, T.unit], expect: /BODY|EPISODE row/ },
   { id: 'body-over-clause-removed', file: POL, find: "const over = ep.endedAt !== null ? ` The episode is already OVER (memory back above ${formatGb(reopen, 2)} at ${iso(ep.endedAt)}).` : '';", rep: "const over = '';", tests: [T.pure, T.unit], expect: /BODY states|EPISODE end before settle/ },
   { id: 'body-now-unmeasured-shown', file: POL, find: "MemAvailable ${f.nowAvailBytes === null ? 'unreadable' : formatGb(f.nowAvailBytes, 2)}", rep: "MemAvailable ${formatGb(f.nowAvailBytes ?? 0, 2)}", tests: [T.pure], expect: /BODY states/ },
   // ── bus half

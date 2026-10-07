@@ -6,6 +6,7 @@ import { getBus } from './bus.ts';
 import { log } from './logger.ts';
 import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';
 import { listHeldStarts } from './admission.ts';
+import { getContainerAccounting } from './container-accounting.ts';
 import { createMemoryAlert, type MemoryAlert, type MemoryAlertDeps } from './memory-alert.ts';
 
 const realDeps: MemoryAlertDeps = {
@@ -19,7 +20,9 @@ const realDeps: MemoryAlertDeps = {
   heldStarts: () => listHeldStarts().length,
   // fleet members (a workspace with a parent) put in Veille since the crossing: `hibernatedAt` is stamped by the Veille sweep
   veilleSince: (at) => store.workspaces.filter((w) => !w.archived && !!w.parentId && (w.hibernatedAt ?? 0) >= at).length,
-  unattributedContainers: () => 0, // #293 (the relay's unattributed count) is not landed: the field stays, the value is 0
+  unattributedContainers: () => getContainerAccounting().unattributed.count, // #293 (FI-3.4): the LAST monitor tick's accounting — never a Docker call from the alert
+  unattributedDaemonsDown: () => getContainerAccounting().daemonsDown,
+  unattributedDocker: () => getContainerAccounting().docker, // unreachable / failed / never sampled ≠ "0 unattributed" — the row names which
   schedule: (fn, ms) => {
     const h = setTimeout(fn, ms);
     h.unref?.();

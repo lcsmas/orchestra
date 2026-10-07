@@ -4,6 +4,7 @@
 
 import type { ProcSample } from './resources.ts';
 import { collectTree, parseProcIdentity } from './resources.ts';
+import { measuredContainerBytes, type ContainerAccountingView } from './container-accounting.ts';
 
 // ─── The JSONL line shape ────────────────────────────────────────────────────
 
@@ -34,6 +35,8 @@ export interface ResourceLogSessionTree {
   status: string | null;
   /** True when this tick SIGTERMed (reaped) this tree. */
   reaped: boolean;
+  /** #293: the workspace's ATTRIBUTED containers' memory (the last container-accounting pass), on top of `rssBytes`; absent = containers not measured this tick. */
+  containerBytes?: number;
 }
 
 /** One sample line appended to resources.jsonl. */
@@ -54,6 +57,8 @@ export interface ResourceLogLine {
   electron: ResourceLogElectronProc[];
   /** Every keeper-hosted session tree, keyed by workspace id. */
   sessions: ResourceLogSessionTree[];
+  /** #293: container memory per workspace + the unattributed containers (host-wide; a workspace with containers but no keeper tree appears only here). Absent = not measured. */
+  containers?: ContainerAccountingView;
 }
 
 // ─── Thresholds (detector b — advisory only) ─────────────────────────────────
@@ -123,6 +128,8 @@ export interface BuildLogLineInput {
   electron: ResourceLogElectronProc[];
   /** Workspace ids whose tree this tick signalled. */
   reapedWorkspaceIds: Set<string>;
+  /** #293: the container accounting the tick refreshed (omitted by callers that do not measure containers). */
+  containers?: ContainerAccountingView;
 }
 
 /** Roll one keeper root's process tree into a `ResourceLogSessionTree`. */
@@ -158,16 +165,20 @@ export function buildResourceLogLine(
   input: BuildLogLineInput,
   statusFor: (wsId: string) => string | null,
 ): ResourceLogLine {
-  const sessions = input.keeperRoots.map((root) =>
-    summarizeSessionTree(
+  const view = input.containers;
+  const sessions = input.keeperRoots.map((root) => {
+    const tree = summarizeSessionTree(
       root,
       input.table,
       input.cpuPcts,
       input.liveWorkspaceIds,
       statusFor(root.workspaceId),
       input.reapedWorkspaceIds.has(root.workspaceId),
-    ),
-  );
+    );
+    // #293: container bytes are a SEPARATE field — `rssBytes` stays the process tree's, so the per-session RSS advisory (decideThresholdWarnings) is not tripped by a container.
+    const containerBytes = measuredContainerBytes(view, root.workspaceId); // undefined = not measured (Docker down, or every container of the workspace unmeasured): never a fake 0
+    return containerBytes !== undefined ? { ...tree, containerBytes } : tree;
+  });
   return {
     t: new Date(input.at).toISOString(),
     at: input.at,
@@ -179,6 +190,7 @@ export function buildResourceLogLine(
     },
     electron: input.electron,
     sessions,
+    ...(view ? { containers: view } : {}),
   };
 }
 

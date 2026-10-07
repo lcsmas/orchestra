@@ -5370,6 +5370,16 @@ button.danger-primary:active {
 .res-chip.run { color: var(--green); border-color: rgba(91, 214, 139, 0.4); }
 .res-chip.nvim { color: var(--accent-2); border-color: rgba(139, 124, 255, 0.4); }
 .res-chip.login { color: var(--yellow); border-color: rgba(255, 200, 87, 0.4); }
+/* #293 (D-pick4 A): the container chip on a workspace row — count in the label, the measured figure in the title (it is already part of the row's memory figure). */
+.res-chip.docker { color: var(--accent); border-color: rgba(110, 168, 255, 0.4); text-transform: none; letter-spacing: 0; }
+/* The dim line under the Agents table: containers nobody owns (created during a live run without the stamp, or orphaned by a deleted workspace). Status colour only here — a genuine problem state. */
+.res-unattributed {
+  margin: 6px 12px 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--yellow);
+  opacity: 0.85;
+}
 .res-remote-note {
   /* Fill the trace/cpu/memory/procs tracks but stop before disk + ctx (which
      a remote workspace still shows) and the stop column. The narrowest

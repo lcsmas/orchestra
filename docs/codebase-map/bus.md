@@ -2540,7 +2540,7 @@ CLI then prints "no such run (standalone …)" and `—` in the frozen column. `
 CLI prints one line from it after `bus:` — `memory: 12.3 GB available · admission open (holds below 6.0 GB) · memory Pause none (due below
 3.0 GB)`, or `admission HELD since <iso> (episode N; reopens above 7.0 GB)` / `memory Pause IN EFFECT since <iso>` / `toggle OFF`
 (`formatMemoryGuardLine`, shared). Not run-scoped; absent from an older app → no line. Held starts (#286) get their own line right after it — `held starts: N held for memory, release order — <label> (spawn|restart[, coordinator], since <iso>) → …`
-(`formatHeldStartsLine`, shared; fed by `/busStatus` `heldStarts`; absent when nothing is held); unattributed containers join in #293. Map: [resources.md](resources.md) § Memory guard.
+(`formatHeldStartsLine`, shared; fed by `/busStatus` `heldStarts`; absent when nothing is held). **`containers:` line (#293):** `containers: 3 attributed (<label> ×N · <MB>, …) · M unmeasured · K unattributed (<names>) — never touched` (`formatContainersLine`, fed by `/busStatus` `containers` + `containerLabels` = the LAST resource-monitor tick's accounting; `not sampled yet` / `Docker unavailable — not measured` / `last Docker pass is too old` are honest states, `N Docker daemon(s) did not answer` marks a partial outage; absent from an older app). Map: [resources.md](resources.md) § Memory guard.
 
 ## D1a-bis BIDIRECTIONAL innermost-run wake routing (OQ2 ruling A, wake-side)
 

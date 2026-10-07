@@ -19,8 +19,12 @@ export interface MemoryAlertDeps extends Pick<MemoryPauseDeps, 'getBus' | 'getWo
   heldStarts(): number;
   /** Fleet members put in Veille since `at` (epoch ms). */
   veilleSince(at: number): number;
-  /** Containers no workspace owns — 0 until #293 lands (the field stays). */
+  /** Containers no workspace owns (#293, the last monitor tick's count). */
   unattributedContainers(): number;
+  /** additive (#293): the accounting's state ('ok' | 'unavailable' | 'error' | 'not-sampled'): anything but 'ok' makes the row say "not measured (why)" instead of "0". Absent = 'ok'. */
+  unattributedDocker?(): 'ok' | 'unavailable' | 'error' | 'not-sampled' | 'stale';
+  /** additive (#293): daemons that did not answer the last pass. */
+  unattributedDaemonsDown?(): number;
   schedule(fn: () => void, ms: number): unknown;
   cancel(handle: unknown): void;
 }
@@ -99,6 +103,8 @@ export function createMemoryAlert(deps: MemoryAlertDeps): MemoryAlert {
         veille: deps.veilleSince(t.ep.admission.at),
         pausedRuns,
         unattributedContainers: deps.unattributedContainers(),
+        unattributedDocker: deps.unattributedDocker ? deps.unattributedDocker() : undefined,
+        unattributedDaemonsDown: deps.unattributedDaemonsDown ? deps.unattributedDaemonsDown() : undefined,
         nowAvailBytes: snap.availBytes === null ? null : snap.measured ? snap.availBytes : null,
         nowAdmissionHeld: isAdmissionHolding(snap), // the EFFECTIVE state (toggle ON and held), never the raw flag
         nowPause: pausedRuns.length > 0, // runs ARE under the memory Pause — "the guard is below critical" is not that

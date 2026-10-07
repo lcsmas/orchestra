@@ -186,3 +186,78 @@ test('parseProcStatLine: RSS = stat pages × the PAGE SIZE it is given (a 16 KB 
   assert.equal(parseProcStatLine(stat, 16384)?.memBytes, 15000 * 16384);
   assert.equal(parseProcStatLine(stat, 4096)?.memBytes, 15000 * 4096);
 });
+
+// ─── #293: the page's per-workspace rows fold the attributed containers into the EXISTING memory figure ───
+
+import { groupSessionsByWorkspace, type SessionResourceStat } from './resources.ts';
+import { accountingView as cAccountingView, buildAccounting as cBuildAccounting, emptyAccounting as cEmptyAccounting } from './container-accounting.ts';
+
+const MBg = 1024 * 1024;
+const sess = (over: Partial<SessionResourceStat>): SessionResourceStat => ({ ptyId: 'ws-a', workspaceId: 'ws-a', kind: 'agent', remote: false, cpuPct: 1, memBytes: 100 * MBg, procCount: 3, processes: [], ...over });
+
+test('G1 groupSessionsByWorkspace: a workspace row\'s memory = its sessions\' process memory PLUS its attributed containers (ONE existing figure); other workspaces untouched; the process figure itself is not inflated', () => {
+  const view = cAccountingView(cBuildAccounting([{ wsId: 'ws-a', bytes: 700 * MBg }, { wsId: 'ws-elsewhere', bytes: 5 * MBg }], [], 1));
+  const { rows } = groupSessionsByWorkspace([sess({}), sess({ ptyId: 'ws-a:run', kind: 'run', memBytes: 20 * MBg }), sess({ ptyId: 'ws-b', workspaceId: 'ws-b', memBytes: 50 * MBg })], view);
+  const a = rows.find((r) => r.key === 'ws-a');
+  const b = rows.find((r) => r.key === 'ws-b');
+  assert.equal(a?.memBytes, 820 * MBg, '100 + 20 process + 700 containers');
+  assert.equal(b?.memBytes, 50 * MBg);
+  assert.equal(a?.sessions.reduce((n, s) => n + s.memBytes, 0), 120 * MBg, 'the sessions\' own figures are unchanged');
+});
+
+test('G2 groupSessionsByWorkspace: no accounting / Docker down / the workspace has no container → the pre-#293 figure; a REMOTE (sandbox) row never gets local container bytes; login PTYs are kept apart', () => {
+  const view = cAccountingView(cBuildAccounting([{ wsId: 'ws-a', bytes: 700 * MBg }], [], 1));
+  assert.equal(groupSessionsByWorkspace([sess({})], undefined).rows[0].memBytes, 100 * MBg);
+  assert.equal(groupSessionsByWorkspace([sess({})], null).rows[0].memBytes, 100 * MBg);
+  assert.equal(groupSessionsByWorkspace([sess({})], cAccountingView(cEmptyAccounting('unavailable', 3))).rows[0].memBytes, 100 * MBg);
+  assert.equal(groupSessionsByWorkspace([sess({ workspaceId: 'ws-z', ptyId: 'ws-z' })], view).rows[0].memBytes, 100 * MBg);
+  const remote = groupSessionsByWorkspace([sess({ remote: true, memBytes: 0 })], view).rows[0];
+  assert.equal(remote.memBytes, 0, 'a sandbox row has no local footprint — and no local containers either');
+  const g = groupSessionsByWorkspace([sess({}), sess({ ptyId: 'account-login:x', workspaceId: null, kind: 'login' })], view);
+  assert.deepEqual([g.rows.length, g.login.length], [1, 1]);
+});
+
+test('G3 (D-pick4 A) groupSessionsByWorkspace: the row carries its container CHIP data; a workspace whose only footprint is a container gets a container-only row (no sessions, cpu/procs 0, memory = its containers) — and only when Docker answered', () => {
+  const view = cAccountingView(cBuildAccounting([{ wsId: 'ws-a', bytes: 640 * MBg }, { wsId: 'ws-a', bytes: null }, { wsId: 'ws-infra', bytes: 90 * MBg }], [], 1));
+  const { rows } = groupSessionsByWorkspace([sess({})], view);
+  const a = rows.find((r) => r.key === 'ws-a');
+  assert.deepEqual([a?.containers, a?.containerOnly], [{ count: 2, bytes: 640 * MBg, unmeasured: 1 }, false]);
+  const infra = rows.find((r) => r.key === 'ws-infra');
+  assert.deepEqual([infra?.containerOnly, infra?.sessions.length, infra?.memBytes, infra?.cpuPct, infra?.procCount, infra?.containers], [true, 0, 90 * MBg, 0, 0, { count: 1, bytes: 90 * MBg, unmeasured: 0 }]);
+  const none = groupSessionsByWorkspace([sess({})], cAccountingView(cEmptyAccounting('unavailable', 3)));
+  assert.deepEqual([none.rows.length, none.rows[0].containers], [1, null], 'Docker down: no chip, no container-only row');
+  // the guard itself: a view that is NOT 'ok' is never read for figures, even carrying data (production views of those states are empty — only a hand-built one proves the guard)
+  for (const docker of ['unavailable', 'error', 'not-sampled', 'stale'] as const) {
+    const g = groupSessionsByWorkspace([sess({})], { ...view, docker });
+    assert.deepEqual([g.rows.length, g.rows[0].containers, g.rows[0].memBytes], [1, null, sess({}).memBytes], `${docker}: no chip, no container-only row, no container bytes in the figure`);
+  }
+  const blind = groupSessionsByWorkspace([], cAccountingView(cBuildAccounting([{ wsId: 'ws-x', bytes: null }], [], 1))).rows[0];
+  assert.deepEqual([blind.containerOnly, blind.memBytes, blind.containers?.unmeasured], [true, 0, 1], 'a container nobody could measure still gets its row (unmeasured, not hidden)');
+});
+
+test('G4 (D-pick4 A) a keeper-hosted structured agent is sampled as `<wsId>:sdk`: classifyPtyId maps it to kind sdk + its workspace and it GROUPS with the workspace\'s other sessions into ONE row', () => {
+  assert.deepEqual(classifyPtyId('ws-1:sdk'), { kind: 'sdk', workspaceId: 'ws-1' });
+  assert.deepEqual(classifyPtyId('ws-1'), { kind: 'agent', workspaceId: 'ws-1' }, 'the PTY agent id is unchanged');
+  const sdk = sess({ ptyId: 'ws-a:sdk', kind: 'sdk', memBytes: 1900 * MBg });
+  const { rows } = groupSessionsByWorkspace([sdk, sess({ ptyId: 'ws-a:run', kind: 'run', memBytes: 20 * MBg })], undefined);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].sessions.map((x) => x.kind).sort(), ['run', 'sdk']);
+  assert.equal(rows[0].memBytes, 1920 * MBg);
+});
+
+import { aggregateKeeperSessions } from './resources.ts';
+
+test('G5 (D-pick4 A) aggregateKeeperSessions: one `<wsId>:sdk` session per LIVE keeper tree (keeper + CLI + MCP children, memory summed); a keeper INSIDE a PTY root\'s tree is not counted twice, but a workspace with BOTH a terminal agent and a keeper shows both (disjoint trees); a keeper whose pid left the table yields no row', () => {
+  const proc = (pid: number, ppid: number, mem: number): ProcSample => ({ pid, ppid, comm: `p${pid}`, memBytes: mem, cpuPct: null, cpuTicks: 0, startTicks: 1 } as ProcSample);
+  const table = [proc(10, 1, 50 * MBg), proc(11, 10, 900 * MBg), proc(12, 11, 100 * MBg), proc(20, 1, 40 * MBg), proc(21, 20, 300 * MBg), proc(99, 1, 1 * MBg)];
+  const cpu = new Map([[10, 2], [11, 30], [12, 1]]);
+  const roots = [{ workspaceId: 'ws-sdk', keeperPid: 10 }, { workspaceId: 'ws-pty', keeperPid: 20 }, { workspaceId: 'ws-dead', keeperPid: 777 }];
+  // a PTY root (pid 20) whose tree CONTAINS the ws-pty keeper (pid 20 itself here): already counted by that row → skipped; ws-sdk's disjoint tree is sampled
+  const out = aggregateKeeperSessions(roots, [20], table, cpu);
+  assert.equal(out.length, 1);
+  assert.deepEqual([out[0].ptyId, out[0].kind, out[0].workspaceId, out[0].procCount, out[0].memBytes, out[0].cpuPct], ['ws-sdk:sdk', 'sdk', 'ws-sdk', 3, 1050 * MBg, 33]);
+  // pre-review #2: a workspace that has a PTY agent in a DISJOINT tree (pid 99) still shows its keeper's CLI + MCP memory — it is real, not the PTY's
+  const both = aggregateKeeperSessions([roots[1]], [99], table, cpu);
+  assert.deepEqual([both.length, both[0]?.ptyId, both[0]?.memBytes], [1, 'ws-pty:sdk', 340 * MBg]);
+  assert.equal(aggregateKeeperSessions([roots[1]], [], table, cpu).length, 1);
+});

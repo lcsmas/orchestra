@@ -55,3 +55,6 @@ build/ctx-panel-scroll-shots/
 # Renderer idle-CPU profiles produced by scripts/renderer-cpu-profile.mjs (#198 D11 / T9).
 # Gate evidence, regenerate with the rig; keep off the source tree.
 build/renderer-cpu/
+
+# #293 screenshot gate output (scripts/container-memory-screenshot.mjs) — evidence, not source
+build/container-memory-shots/

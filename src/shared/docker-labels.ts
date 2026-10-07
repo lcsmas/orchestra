@@ -6,3 +6,10 @@
 export const DOCKER_LABEL_WS = 'orchestra.ws';
 /** The member's own run id at create time. */
 export const DOCKER_LABEL_RUN = 'orchestra.run';
+
+/** The workspace id a container is attributed to: the `orchestra.ws` value when it is a non-empty string with NO surrounding whitespace (what the relay stamps is an exact id; a
+ *  hand-padded value is not one — Pause matches the label by exact equality, so accounting must not call it ws-b's while Pause would not stop it for ws-b). null = not attributed. */
+export function attributedWorkspaceId(labels: Record<string, string> | null | undefined): string | null {
+  const v = labels?.[DOCKER_LABEL_WS];
+  return typeof v === 'string' && v.length > 0 && v === v.trim() ? v : null;
+}

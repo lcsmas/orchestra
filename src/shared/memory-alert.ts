@@ -40,8 +40,12 @@ export interface AlertFacts {
   veille: number;
   /** Runs under the memory Pause right now (ids). */
   pausedRuns: readonly string[];
-  /** Containers no workspace owns (#293). 0 until that track lands — the field stays so the contract does not move. */
+  /** Containers no workspace owns (#293): created during a live run without the stamp, or stamped for a deleted workspace. The LAST resource-monitor tick's count. */
   unattributedContainers: number;
+  /** additive (#293, FI-3 v1.1): the container accounting's state — anything but 'ok' means the count was NOT measured and the row says why instead of printing "0". Absent = 'ok'. */
+  unattributedDocker?: 'ok' | 'unavailable' | 'error' | 'not-sampled' | 'stale';
+  /** additive (#293): daemons that did not answer the last pass — the count is then a lower bound. */
+  unattributedDaemonsDown?: number;
   /** The guard now. */
   nowAvailBytes: number | null;
   /** The EFFECTIVE state, never the guard's raw flags: Admission is holding starts now (`isAdmissionHolding`: toggle ON and held). */
@@ -60,6 +64,17 @@ export interface AlertFacts {
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
+
+/** The unattributed-container clause: the count only when Docker WAS measured; otherwise the reason it was not (never "0"). */
+function unattributedPhrase(f: Pick<AlertFacts, 'unattributedContainers' | 'unattributedDocker' | 'unattributedDaemonsDown'>): string {
+  switch (f.unattributedDocker ?? 'ok') {
+    case 'unavailable': return 'unattributed containers not measured (Docker unreachable)';
+    case 'error': return 'unattributed containers not measured (the Docker query failed)';
+    case 'not-sampled': return 'unattributed containers not measured yet (no monitor tick since the app started)';
+    case 'stale': return 'unattributed containers not measured (the last Docker pass is too old)';
+    default: return `${f.unattributedContainers} unattributed container(s)${(f.unattributedDaemonsDown ?? 0) > 0 ? ` (at least — ${f.unattributedDaemonsDown} Docker daemon(s) did not answer)` : ''}`;
+  }
+}
 
 /** The text of the ONE escalation row: which thresholds were crossed and at what MemAvailable, what the host did, where it stands now, what to expect. English like every host row. */
 export function memoryAlertBody(ep: AlertEpisode, f: AlertFacts): string {
@@ -86,7 +101,7 @@ export function memoryAlertBody(ep: AlertEpisode, f: AlertFacts): string {
   const over = ep.endedAt !== null ? ` The episode is already OVER (memory back above ${formatGb(reopen, 2)} at ${iso(ep.endedAt)}).` : '';
   return [
     `Memory guard — episode ${ep.episode} (since ${iso(ep.admission.at)}): ${crossed}.`,
-    `Host actions so far: ${held} · ${f.veille} member(s) put in Veille since the crossing · ${paused} · ${f.unattributedContainers} unattributed container(s) (not measured yet — #293).`,
+    `Host actions so far: ${held} · ${f.veille} member(s) put in Veille since the crossing · ${paused} · ${unattributedPhrase(f)}.`,
     `Now (${iso(f.at)}): ${now}.${over}`,
     closing,
   ].join('\n');

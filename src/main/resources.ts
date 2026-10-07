@@ -15,6 +15,7 @@ import { listPtySessions } from './pty';
 import { getEventsDir } from './events-spool';
 import { sampleVolumes } from './disk-space';
 import {
+  aggregateKeeperSessions,
   aggregateSession,
   computeCpuPcts,
   parseProcStatLine,
@@ -25,6 +26,9 @@ import {
 } from '../shared/resources';
 
 import { hostPageSize } from './host-page-size';
+import { getContainerAccounting } from './container-accounting';
+import { listKeeperRoots } from './keeper-client';
+import { accountingView } from '../shared/container-accounting';
 
 const execFileP = promisify(execFile);
 
@@ -133,9 +137,10 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
   prevTicks = new Map(table.filter((p) => p.cpuPct === null).map((p) => [p.pid, p.cpuTicks]));
   prevAt = now;
 
-  const sessions = listPtySessions().map((s) =>
-    aggregateSession({ ptyId: s.id, remote: s.remote, pid: s.pid }, table, cpuPcts),
-  );
+  const ptyList = listPtySessions();
+  const ptySessions = ptyList.map((s) => aggregateSession({ ptyId: s.id, remote: s.remote, pid: s.pid }, table, cpuPcts));
+  // D-pick4 A (#293): keeper-hosted structured agents join the table (their trees were invisible here — the PTY listing never sees a detached keeper)
+  const sessions = [...ptySessions, ...aggregateKeeperSessions(listKeeperRoots(), ptyList.flatMap((s) => (s.remote || s.pid === undefined ? [] : [s.pid])), table, cpuPcts)];
 
   // The backend's own processes (Electron's app metrics), measuring CPU since
   // the previous call, which matches the page's own tick cadence.
@@ -169,5 +174,7 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     app: metrics,
     disk: diskCache,
     volumes,
+    // #293: the last monitor tick's container accounting (the page polls every 2 s and must never call Docker itself).
+    containers: accountingView(getContainerAccounting()),
   };
 }

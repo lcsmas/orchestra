@@ -33,7 +33,10 @@ test('WIRING host: the real store / bus / guard snapshot, the Admission queue co
   assert.match(s, /snapshot: getMemoryGuardSnapshot,/);
   assert.match(s, /heldStarts: \(\) => listHeldStarts\(\)\.length,/);
   assert.match(s, /veilleSince: \(at\) => store\.workspaces\.filter\(\(w\) => !w\.archived && !!w\.parentId && \(w\.hibernatedAt \?\? 0\) >= at\)\.length,/);
-  assert.match(s, /unattributedContainers: \(\) => 0,/);
+  assert.match(s, /unattributedContainers: \(\) => getContainerAccounting\(\)\.unattributed\.count,/, '#293 FI-3.4: the number comes from the last monitor tick\'s accounting');
+  assert.match(s, /unattributedDaemonsDown: \(\) => getContainerAccounting\(\)\.daemonsDown,/, 'a partial Docker outage reaches the row (the count is then a lower bound)');
+  assert.match(s, /unattributedDocker: \(\) => getContainerAccounting\(\)\.docker,/, 'the row gets the accounting STATE: unreachable / failed / never sampled is NOT "0 unattributed", and each says its own reason');
+  assert.match(s, /import \{ getContainerAccounting \} from '\.\/container-accounting\.ts';/);
 });
 
 test('WIRING index.ts: the alert starts AFTER the memory Pause (store loaded, live tree registered) and stops BEFORE it at shutdown', () => {

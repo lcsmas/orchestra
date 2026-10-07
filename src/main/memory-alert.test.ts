@@ -167,10 +167,49 @@ test('EPISODE row: it is an `escalation` from the host to the LEAD of the ROOT r
   assert.match(b, /3 automatic fleet start\(s\) HELD/, 'starts held');
   assert.match(b, /5 member\(s\) put in Veille/, 'Veille');
   assert.match(b, /memory Pause on run\(s\) L/, 'runs paused');
-  assert.match(b, /2 unattributed container\(s\) \(not measured yet — #293\)/, 'the unattributed-container field is there from the start (the dep feeds it)');
+  assert.match(b, /2 unattributed container\(s\)\./, 'the unattributed-container count comes from the dep (#293)');
   assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable 5\.10 GB · Admission HELD · memory Pause IN EFFECT\./, 'the facts are dated (a paused LEAD reads the row after its Reprise) and EFFECTIVE: the run IS paused, so the Pause is in effect');
   assert.match(b, /You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers\./);
   assert.match(b, /released coordinators first, one at a time/);
+});
+
+test('EPISODE row (#293 unmeasured): when the container accounting could not measure the row says so AND why per state (unreachable / query failed / not sampled yet) — never "0 unattributed container(s)"', () => {
+  const expected = { unavailable: /not measured \(Docker unreachable\)\./, error: /not measured \(the Docker query failed\)\./, 'not-sampled': /not measured yet \(no monitor tick since the app started\)\./ } as const;
+  for (const st of ['unavailable', 'error', 'not-sampled'] as const) {
+    const w = world();
+    (w.deps as { unattributedDocker?: () => string }).unattributedDocker = () => st;
+    w.at(12);
+    w.at(5.42);
+    w.advance(ALERT_SETTLE_MS + 1);
+    const b = w.rows()[0].body;
+    assert.match(b, expected[st], st);
+    assert.doesNotMatch(b, /\d+ unattributed container\(s\)/, st);
+  }
+});
+
+test('EPISODE row (#293 partial outage): a daemon that did not answer makes the unattributed count a LOWER BOUND, said so in the row — never a complete-looking number', () => {
+  const w = world();
+  w.facts = { heldStarts: 0, veille: 0, unattributed: 2 };
+  (w.deps as { unattributedDaemonsDown?: () => number }).unattributedDaemonsDown = () => 1;
+  w.at(12);
+  w.at(5.42);
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.match(w.rows()[0].body, /2 unattributed container\(s\) \(at least — 1 Docker daemon\(s\) did not answer\)\./);
+});
+
+test('NOW line (A21, verifier seat 2 G6 F1): when the meter is UNREADABLE at the write, the row says "MemAvailable unreadable" — never the last good reading as if it were current', () => {
+  const w = world();
+  w.at(12);
+  w.at(5.42); // Admission HELD at 5.42 GB: a last good reading exists
+  w.mem.gb = null;
+  w.clock.now += 20_000;
+  w.g.sampleNow(); // the meter dies while held: availBytes keeps 5.42 GB, `measured` is false
+  assert.equal(w.g.snapshot().measured, false);
+  assert.ok(w.g.snapshot().availBytes !== null, 'control: the snapshot still carries the stale last good reading');
+  w.advance(ALERT_SETTLE_MS + 1);
+  const b = w.rows()[0].body;
+  assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable unreadable ·/);
+  assert.doesNotMatch(b, /Now \([^)]*\): MemAvailable 5\.42 GB/, 'the stale reading must not read as the current one');
 });
 
 /** Put run L under the memory Pause the way the host writes it (bus row). */

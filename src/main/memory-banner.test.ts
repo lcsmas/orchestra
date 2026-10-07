@@ -241,3 +241,77 @@ test('PUBLISH pull: `current()` is what a renderer\'s first pull gets; refresh()
   assert.doesNotThrow(() => boom.refresh());
   assert.ok(w.logs.some((m) => /memory-banner: refresh failed/.test(m)));
 });
+
+// ── verifier seat 2 (G6 final gate, c/6047274773) F2 / C05: the publisher's FAILURE path is pinned — a refresh that throws is logged AND re-armed, so the banner recovers on the next tick ──
+
+function flakyPublisher(w: World, opts: { failHeld: { on: boolean }; failSnapshot: { on: boolean } }) {
+  const timers: Array<{ id: number; at: number; fn: () => void }> = [];
+  const pushes: MemoryBannerState[] = [];
+  const logs: string[] = [];
+  let tid = 0;
+  const pub = createMemoryBannerPublisher({
+    snapshot: () => {
+      if (opts.failSnapshot.on) throw new Error('guard gone');
+      return w.g.snapshot();
+    },
+    heldStarts: () => {
+      if (opts.failHeld.on) throw new Error('queue gone');
+      return 0;
+    },
+    pausedRuns: () => [],
+    push: (s) => void pushes.push(s),
+    schedule: (fn, ms) => {
+      const t = { id: ++tid, at: w.clock.now + ms, fn };
+      timers.push(t);
+      return t.id;
+    },
+    cancel: (h) => {
+      const i = timers.findIndex((t) => t.id === h);
+      if (i >= 0) timers.splice(i, 1);
+    },
+    log: { warn: (m) => void logs.push(m) },
+  });
+  const fire = (): void => {
+    const t = timers.shift();
+    if (t) {
+      w.clock.now = Math.max(w.clock.now, t.at);
+      t.fn();
+    }
+  };
+  return { pub, timers, pushes, logs, fire };
+}
+
+test('PUBLISH failure path (C05): a refresh that throws while the guard HOLDS is logged and RE-ARMED — the next tick publishes the banner; without the re-arm a transient throw would leave it blank until the next guard edge', () => {
+  const w = world();
+  w.at(12);
+  w.at(5); // Admission HELD
+  const failHeld = { on: true };
+  const f = flakyPublisher(w, { failHeld, failSnapshot: { on: false } });
+  f.pub.refresh();
+  assert.ok(f.logs.some((m) => /memory-banner: refresh failed/.test(m)));
+  assert.equal(f.pushes.length, 0, 'nothing could be computed');
+  assert.equal(f.timers.length, 1, 'the guard holds, so the tick is re-armed after the failure');
+  failHeld.on = false;
+  f.fire();
+  assert.equal(f.pushes.length, 1);
+  assert.equal(f.pushes[0].kind, 'held');
+});
+
+test('PUBLISH failure path (C05): the SNAPSHOT itself throwing while a banner is up re-arms too (the banner is not forgotten, the tick retries); with no banner and no snapshot nothing is armed', () => {
+  const w = world();
+  w.at(12);
+  w.at(5);
+  const failSnapshot = { on: false };
+  const f = flakyPublisher(w, { failHeld: { on: false }, failSnapshot });
+  f.pub.refresh();
+  assert.equal(f.pub.current().kind, 'held');
+  assert.equal(f.timers.length, 1, 'control: the held banner keeps its tick armed');
+  failSnapshot.on = true;
+  f.fire(); // the tick runs, the snapshot throws → the failure path
+  assert.ok(f.logs.some((m) => /memory-banner: refresh failed/.test(m)));
+  assert.equal(f.timers.length, 1, 'a banner is up: the tick is RE-ARMED after the failed read');
+  assert.equal(f.pub.current().kind, 'held', 'the banner is not blanked by a failed read');
+  const none = flakyPublisher(w, { failHeld: { on: false }, failSnapshot: { on: true } });
+  none.pub.refresh();
+  assert.equal(none.timers.length, 0, 'no banner and no snapshot: nothing to keep alive');
+});

@@ -19,7 +19,17 @@ test('BODY: threshold crossed + MemAvailable at the crossing, the host actions, 
   assert.match(b, /2 automatic fleet start\(s\) HELD \(released coordinators first, one at a time, on a fresh reading, once MemAvailable is above 7\.00 GB\)/);
   assert.match(b, /4 member\(s\) put in Veille since the crossing/);
   assert.match(b, /no run under the memory Pause/);
-  assert.match(b, /0 unattributed container\(s\) \(not measured yet — #293\)/);
+  assert.match(b, /0 unattributed container\(s\)\./);
+  assert.doesNotMatch(b, /not measured yet — #293/, 'the #289 placeholder suffix is gone (#293 supplies the number)');
+  // each non-'ok' accounting state says WHY it was not measured — "unreachable" for a never-sampled meter would be a false cause
+  const down = memoryAlertBody(EP, { ...FACTS, unattributedDocker: 'unavailable' });
+  assert.match(down, /unattributed containers not measured \(Docker unreachable\)\./);
+  assert.match(memoryAlertBody(EP, { ...FACTS, unattributedDocker: 'error' }), /unattributed containers not measured \(the Docker query failed\)\./);
+  assert.match(memoryAlertBody(EP, { ...FACTS, unattributedDocker: 'not-sampled' }), /unattributed containers not measured yet \(no monitor tick since the app started\)\./);
+  for (const st of ['unavailable', 'error', 'not-sampled'] as const) assert.doesNotMatch(memoryAlertBody(EP, { ...FACTS, unattributedDocker: st }), /\d+ unattributed container\(s\)/, `${st}: never a count`);
+  assert.match(memoryAlertBody(EP, { ...FACTS, unattributedDocker: 'stale' }), /unattributed containers not measured \(the last Docker pass is too old\)\./);
+  assert.match(memoryAlertBody(EP, { ...FACTS, unattributedDocker: 'ok', unattributedContainers: 3 }), /3 unattributed container\(s\)\./);
+  assert.match(memoryAlertBody(EP, { ...FACTS, unattributedDocker: 'ok', unattributedContainers: 3, unattributedDaemonsDown: 1 }), /3 unattributed container\(s\) \(at least — 1 Docker daemon\(s\) did not answer\)\./, 'a partial outage makes the count a lower bound, said so');
   assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable 4\.90 GB · Admission HELD · memory Pause none\./);
   assert.doesNotMatch(b, /and below the CRITICAL threshold|already OVER/);
   assert.match(b, /You need not act/);

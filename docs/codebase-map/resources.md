@@ -109,6 +109,44 @@ against the pre-fix build (deps carry an old-build `kill` alias) — there A3/A4
 show an unrelated process actually SIGKILLed. `agent-sdk.ts` is untouched (the
 #124 D3 seam is T3's).
 
+## Container memory — attributed per workspace, unattributed reported (#293, wave G ledger #295; epic #284; contract FI-3 v1.3; ADR 0004)
+A member's Docker containers live outside its process tree (the daemon owns them), so the monitor never saw their memory. Since #291 the keeper's relay stamps every container a member
+creates with `orchestra.ws=<id>` (`DOCKER_LABEL_WS`, `src/shared/docker-labels.ts`; `attributedWorkspaceId` = the EXACT non-blank, unpadded value — Pause matches by equality too); #293 reads it.
+- **Pure half — `src/shared/container-accounting.ts`** (+ `.test.ts`, REAL stats captures in `fixtures/`): `classifyContainers(running, earliestLiveRunStartMs, workspaceKnown?(ws, run), runKnown?)` — **attributed** = a RUNNING
+  container stamped for a workspace that EXISTS; **unattributed** = a RUNNING container that is nobody's: (a) WITHOUT the label, created at/after the earliest LIVE fleet run start (whole seconds, `>=`; the
+  human's older stacks never count; no live run → none), or (b) an **orphan** — stamped for a workspace the store no longer has (deleting a workspace does not stop its containers), whatever its age, named
+  `<name> (orphan of <id>)`. **FI-3 v1.3 "live fleet run"** (`src/main/container-window.ts`, Electron-free, tested CW1–CW4 on a REAL scratch bus.sqlite): the window starts at the earliest `created_at` among `liveFleetRuns` — the SAME
+  definition as the memory alert's LEAD selection and the memory Pause (anchor workspace live, not archived, not sandbox-hosted, ≥ 1 live local workspace below it; NO keeper condition, so a hibernated LEAD still leads
+  its run). Nothing writes `runs.closed_at`. Residual (accepted by OPS): a long-lived run widens the window by DAYS (live bus: 22 / 1.2 / 0.5 d) — a human's container created in that span counts as unattributed.
+  `workspaceKnownIn` / `runKnownIn` are the production predicates: a loaded store is the authority on ids; an UNTRUSTED store (not parsed yet, or a fresh/corrupt store.json that never loads) trusts the container's
+  `orchestra.run` stamp alone; an orphan needs a run THIS bus has (a dev build's containers on the shared daemon are not ours). `containerMemoryBytes(stats)` = the docker CLI's `calculateMemUsageUnixNoCache`: cgroup v1 `total_inactive_file` first, then v2 `inactive_file`, each subtracted only
+  when below usage, else usage; a document without a usable usage is **unmeasured (null), never 0** (a real capture where page cache dominates: usage 106.6 MB → footprint 1.77 MB). `buildAccounting` (per-workspace
+  `unmeasuredByWorkspace`), `accountingView` (JSON-safe), `viewBytesFor`, `measuredContainerBytes` (undefined = not measured: Docker down/failed or ALL the workspace's containers unmeasured), `formatContainersLine`.
+- **Producer — `src/main/container-accounting.ts`**: `refreshContainerAccounting(deps)` once per resource-monitor tick, platform-free (the run-start clock, the member-pinned daemons and the store predicate are injected).
+  Asks the app's REAL-socket daemon (`docker-api.ts`, never a relay) AND any daemon a live member's relay is PINNED to (`extraApis`, deduped by resolved socket — the #291 F2 lesson: ask the daemon the container was
+  STAMPED on); each container is measured on the daemon it lives on. `listContainers({status:['running']})`, then **ONE stats pass — and NO stats call at all when no attributed container exists** (AC); ≤ 4 in flight
+  (`STATS_CONCURRENCY`), ≤ 64 measured per pass (the rest counted `unmeasured`); a failing stats call = that container `unmeasured` + WARN, a 404 = not counted. Single-flight; never throws. **No daemon answers =
+  `docker:'unavailable'` (NOTHING measured, previous figures dropped — not "0 containers", not stale bytes)**; one of several down = measured from the others (WARN once); an unexpected failure = `docker:'error'`
+  (nothing trusted); a partial outage is MARKED (`daemonsDown`: the figures are a lower bound — shown on the `bus-status` line, the Resources warning and the alert). `getContainerAccounting(now)` reports a good pass older than `ACCOUNTING_STALE_MS` (5 min) as `docker:'stale'`, never as current. Logged once per transition; an unattributed set change is a WARN once per distinct set (`… NEVER touched`). `getContainerAccounting()` (FI-3.2) is the synchronous read of the LAST tick.
+- **Monitor — `resource-monitor.ts`**: `sampleTick` runs the pass after the reap, bounded by `CONTAINER_PASS_BUDGET_MS` (15 s: a hung daemon never delays the line; the tick then carries the last result).
+  `ResourceMonitorDeps.refreshContainers/containerView/containerBudgetMs` are OPTIONAL and only `productionDeps()` (the timer) installs the first two — `defaultDeps` never touches the host's Docker; `startResourceMonitor` also runs the FIRST pass at start (an alert in the first minute must not read « not sampled »). The budget path is driven for real by `scripts/e2e-container-budget.mjs` (B1). The `resources.jsonl` line gets a host-wide
+  `containers` block and, per keeper session, `containerBytes` (SEPARATE from `rssBytes`, so the RSS advisory is not tripped by a container; ABSENT when not measured — never a fake 0).
+- **Resources page (D-pick4 = mockup A)**: `ResourceSnapshot.containers` (the last tick's view; the 2 s poll never calls Docker). **Keeper-hosted structured agents now have a row**: `sampleResources` adds
+  one synthetic `<wsId>:sdk` session (`SessionKind` `sdk`, shown as an « agent » chip, no stop button — the page stops PTYs only) per LIVE keeper tree via `aggregateKeeperSessions(listKeeperRoots(), ptyRootPids, …)`
+  (`shared/resources.ts`: the keeper is detached so its tree is disjoint from the PTY's — both show; only a keeper INSIDE a PTY root's tree is skipped; a keeper whose tree left the table yields no row). The « Live agents » tile counts `agent` and `sdk` rows. `groupSessionsByWorkspace(sessions, containers)` (pure, unit-tested G1–G5, also
+  what the rig drives) folds `viewBytesFor` into the owning row's EXISTING memory figure, gives the row its **🐳 N chip** (`SessionGroup.containers`; tooltip `containersChipTitle`: « 2 containers · 700 MB »), and adds a
+  **container-only row** for a workspace whose only footprint is a container (`containerOnly`: cpu / procs « — »); Docker down adds none of it. `AgentsTable` (exported, `ResourcesView.tsx`) renders the rows and the dim
+  yellow **unattributed line** under the table (`unattributedWarning`: « ⚠ 2 unattributed containers (web-1, g9-old (orphan of ws-x)) — not attributed to any workspace · never touched », only when Docker answered).
+  Remote rows get no local containers. Screenshot gate: `scripts/container-memory-screenshot.mjs` via `pnpm run test:container-memory-shot` (own marker-verified headless sway: real `AgentsTable` + real `styles.css`,
+  3 captures — seeded / Docker down / pre-feature — each asserted on text, attributes, layout and PNG density).
+- **`bus-status` `containers:` line** (`formatContainersLine`, from `/busStatus` `containers` + `containerLabels`): `containers: 3 attributed (feat-x ×1 · 612 MB, feat-y ×2 · 40 MB (+1 not measured)) · 1 unattributed (web-1,
+  g9-web (orphan of ws-x)) — never touched`; `not sampled yet` / `Docker unavailable — not measured` / `accounting failed — not measured` / `last Docker pass is too old — not measured` are honest states, `N Docker daemon(s) did not answer — figures incomplete` marks a partial outage. Absent from an older app → no line.
+- **Gates**: `src/shared/container-accounting.test.ts` (C1–C19), `src/main/container-accounting.test.ts` (K1–K15, fake daemons), `container-window.test.ts` (CW1–CW4, real bus), `container-budget.test.ts` (B1, real `sampleTick`), `container-accounting-wiring.test.ts` (W1–W8), `scripts/e2e-container-memory.mjs`
+  (**HEAVY — the heavy-rig token**; 4 arms on the host's REAL dockerd: a 200 MiB tmpfs container raises its workspace by ~205 MB and a 2nd SUMS to ~303 MB, through the real `sampleTick` AND the page's
+  `groupSessionsByWorkspace`; no stats call without an attributed container; a stray container created on the real socket during a run + an orphan are unattributed, named, never touched — not even a stop/start
+  attempt; Docker down ≠ zero; rig-unique prefix + `g9rig` label, removed by id, bystanders compared before/after; refuses below 9 GB; `pnpm run test:container-memory`),
+  `scripts/container-memory-mutants.mjs` (~100 in-place mutants, `--check-anchors`, private backup dir).
+
 ## Memory guard — measured, decided, visible (#285, wave G ledger #295; epic #284)
 
 The host's available memory (`MemAvailable`) drives two thresholds (Settings, GB = GiB): **Admission** below 6 (held until
@@ -162,7 +200,7 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   `memory:` line (`cli/index.ts:2179`; absent from an older app → no line). Host-wide, not run-scoped.
 - **Alert to the LEAD (#289, consumer of FI-2)**: ONE `escalation` bus row per memory EPISODE (the guard's `episode` = one downward crossing of the Admission threshold; oscillation inside the hysteresis band
   never opens another). Pure half `src/shared/memory-alert.ts` (`memoryAlertBody`: thresholds crossed + MemAvailable at the crossing, host actions — starts HELD, members put in Veille since the crossing, runs under the
-  memory Pause, unattributed containers (0 until #293, the field stays) — the state now, what to expect; `ALERT_SETTLE_MS` = 20 s: the row waits two fast samples so the actions are real numbers, an episode that ends first is
+  memory Pause, unattributed containers (#293: the count from the last monitor tick — `unattributedDocker` says WHY it was not measured: unreachable / query failed / not sampled yet / stale; `unattributedDaemonsDown` makes it « at least ») — the state now, what to expect; `ALERT_SETTLE_MS` = 20 s: the row waits two fast samples so the actions are real numbers, an episode that ends first is
   told when it ends); bus half `src/main/memory-alert.ts` (Electron-free: `createMemoryAlert` — `onEdge` / `reconcile` / `stop`; a critical crossing inside the episode is NOT a new alert, the row names every threshold crossed
   by the time it is written, and a critical crossing AFTER the row was sent writes NOTHING more — the row says so (ruling M2, ledger #295: spec-literal, one row per episode); the "Now" line and the closing are the EFFECTIVE state — `nowPause` = runs ARE under the memory Pause (bus), `nowAdmissionHeld` = `isAdmissionHolding(snap)`, "Admission OFF (toggle)" — and critical with nothing paused says ACT YOURSELF instead of "You need not act"; `alertRecipients` = the coordinator of the TOPMOST run, among the runs with a live
   local fleet, that CAN READ (frozen `delivery` ON, coordinator live) — readers are filtered BEFORE the topmost, so a deaf root does not silence the delivery-ON run below it; the episode is marked told BEFORE the writes, each
@@ -277,8 +315,8 @@ Dependency-free so `node --test` covers it without Electron:
 callable from any CDP-driven page, so an E2E rig gets the live PTY sessions **by kind**
 (`sessions[].{ptyId, kind, workspaceId, remote, procCount, processes[].pid}`) with NO extra
 exposure — this is how `scripts/e2e-agent-view-removal.mjs` (`ptys()` in `appApi`) counts
-agent/run/nvim/login PTYs. It lists `listPtySessions()` only: keeper-hosted SDK sessions are
-detached daemons, not PTYs, and never appear. `kind === 'agent'` means "id is a bare
+agent/run/nvim/login PTYs. It lists the PTY sessions plus those `:sdk` rows: keeper-hosted SDK sessions are
+detached daemons, not PTYs — they appear (since #293) only as synthetic `<wsId>:sdk` rows of kind `sdk`, never as `agent`. `kind === 'agent'` means "id is a bare
 workspace id" (`classifyPtyId`), so it is the legacy agent-PTY path by construction. Prove the
 instrument with a positive control (open Run → a `run`-kind PTY appears) before trusting an
 "absent" reading — see [activity-pty-terminal.md](activity-pty-terminal.md) § Removal rig.

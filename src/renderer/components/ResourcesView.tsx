@@ -5,7 +5,8 @@ import { dialog } from './Dialog';
 import { formatResetsIn, formatUpdatedAgo } from './UsageBars';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import { isActionableStopReason } from '../../shared/usage-resume';
-import type { ResourceSnapshot, SessionResourceStat } from '../../shared/resources';
+import { groupSessionsByWorkspace, type ResourceSnapshot, type SessionGroup, type SessionResourceStat } from '../../shared/resources';
+import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
@@ -145,26 +146,27 @@ function CpuCell({ pct }: { pct: number }) {
   );
 }
 
-interface AgentRow {
-  key: string;
+interface AgentRow extends SessionGroup {
   ws: Workspace | null;
   /** Display name when the workspace record is unknown (stale session). */
   fallbackName: string;
-  sessions: SessionResourceStat[];
-  cpuPct: number;
-  memBytes: number;
-  procCount: number;
-  remote: boolean;
 }
 
-function SessionChips({ sessions }: { sessions: SessionResourceStat[] }) {
+/** Session-kind chips; a keeper-hosted structured agent (`sdk`) reads « agent » — it IS the workspace's agent, just not under a PTY — and a workspace with attributed containers gets the 🐳 chip
+ *  (#293, D-pick4 A): count in the label, the measured figure in the tooltip (it is already part of the row's memory figure). */
+function SessionChips({ sessions, containers }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers'] }) {
   return (
     <span className="res-chips">
       {sessions.map((s) => (
-        <span key={s.ptyId} className={`res-chip ${s.kind}`}>
-          {s.kind}
+        <span key={s.ptyId} className={`res-chip ${s.kind === 'sdk' ? 'agent' : s.kind}`} title={s.kind === 'sdk' ? 'structured agent (its CLI runs in a detached keeper)' : undefined}>
+          {s.kind === 'sdk' ? 'agent' : s.kind}
         </span>
       ))}
+      {containers && (
+        <span className="res-chip docker" data-res-containers={containers.count} title={containersChipTitle(containers)}>
+          {'\u{1F433}'} {containers.count}
+        </span>
+      )}
     </span>
   );
 }
@@ -250,9 +252,16 @@ function AgentRowView({
             )}
           </span>
         </span>
-        <SessionChips sessions={row.sessions} />
+        <SessionChips sessions={row.sessions} containers={row.containers} />
         {row.remote ? (
           <span className="res-remote-note">runs in sandbox — no local footprint</span>
+        ) : row.containerOnly ? (
+          <>
+            <span className="res-col-trace" />
+            <span className="res-cell dim">—</span>
+            <span className="res-cell">{formatBytes(row.memBytes)}</span>
+            <span className="res-cell dim res-col-procs">—</span>
+          </>
         ) : (
           <>
             <span className="res-col-trace">
@@ -405,6 +414,93 @@ export function FreeSpaceSection({ volumes }: { volumes: VolumeStat[] }) {
   );
 }
 
+/** The Agents table: per-workspace rows (PTY sessions + keeper-hosted structured agents + container-only workspaces, D-pick4 A), the login PTYs, and the dim unattributed-containers line.
+ *  Exported so the screenshot gate renders the REAL markup against the REAL stylesheet. */
+export function AgentsTable({
+  rows,
+  loginSessions,
+  traceOf,
+  diskOf,
+  ctxOf,
+  accountLabelFor,
+  warning,
+}: {
+  rows: AgentRow[];
+  loginSessions: SessionResourceStat[];
+  traceOf: (row: AgentRow) => number[];
+  diskOf: (row: AgentRow) => number | undefined;
+  ctxOf: (row: AgentRow) => number | undefined;
+  accountLabelFor: (row: AgentRow) => string | null;
+  warning: string | null;
+}) {
+  return (
+    <>
+          {rows.length === 0 && (
+            <div className="res-empty">
+              No agent processes right now — open a workspace terminal and its
+              agent will appear here.
+            </div>
+          )}
+          {rows.length > 0 && (
+            <div className="res-table">
+              <div className="res-table-head">
+                <span />
+                <span>workspace</span>
+                <span>sessions</span>
+                <span className="res-col-trace">trace · 3m</span>
+                <span>cpu</span>
+                <span>memory</span>
+                <span className="res-col-procs">procs</span>
+                <span className="res-col-disk">disk</span>
+                <span className="res-col-ctx">ctx</span>
+                <span className="res-col-stop" />
+              </div>
+              {rows.map((row) => (
+                <AgentRowView
+                  key={row.key}
+                  row={row}
+                  trace={traceOf(row)}
+                  diskBytes={diskOf(row)}
+                  ctxTokens={ctxOf(row)}
+                  accountLabel={accountLabelFor(row)}
+                />
+              ))}
+              {loginSessions.map((s) => (
+                <div key={s.ptyId} className="res-agent-row static">
+                  {/* A login session is a live PTY by definition — it only
+                      appears in this list while the process exists — so the
+                      spinner is literal here, not decorative. */}
+                  <WorkspaceStatusGlyph
+                    status="running"
+                    hibernated={false}
+                    unread={false}
+                    title="Account login session is running"
+                  />
+                  <span className="res-agent-name">
+                    <span className="res-agent-branch">login</span>
+                    <span className="res-agent-sub">{s.ptyId.slice('account-login:'.length)}</span>
+                  </span>
+                  <SessionChips sessions={[s]} />
+                  <span className="res-col-trace" />
+                  <CpuCell pct={s.cpuPct} />
+                  <span className="res-cell">{formatBytes(s.memBytes)}</span>
+                  <span className="res-cell dim res-col-procs">{s.procCount}</span>
+                  <span className="res-cell dim res-col-disk">—</span>
+                  <span className="res-cell dim res-col-ctx">—</span>
+                  <span className="res-col-stop" />
+                </div>
+              ))}
+            </div>
+          )}
+          {warning && (
+            <div className="res-unattributed" role="note" data-res-unattributed="">
+              {warning}
+            </div>
+          )}
+    </>
+  );
+}
+
 export function ResourcesView() {
   const setPage = useStore((s) => s.setPage);
   const workspaces = useStore((s) => s.workspaces);
@@ -493,29 +589,10 @@ export function ResourcesView() {
   const live = workspaces.filter((w) => !w.archived);
   const wsById = new Map(live.map((w) => [w.id, w]));
 
-  // Group the sampled sessions into per-workspace rows + login PTYs.
-  const byWs = new Map<string, SessionResourceStat[]>();
-  const loginSessions: SessionResourceStat[] = [];
-  for (const s of snap?.sessions ?? []) {
-    if (s.kind === 'login') {
-      loginSessions.push(s);
-      continue;
-    }
-    const k = s.workspaceId ?? s.ptyId;
-    const list = byWs.get(k);
-    if (list) list.push(s);
-    else byWs.set(k, [s]);
-  }
-  const rows: AgentRow[] = Array.from(byWs, ([key, sessions]) => ({
-    key,
-    ws: wsById.get(key) ?? null,
-    fallbackName: key,
-    sessions,
-    cpuPct: sessions.reduce((n, s) => n + s.cpuPct, 0),
-    memBytes: sessions.reduce((n, s) => n + s.memBytes, 0),
-    procCount: sessions.reduce((n, s) => n + s.procCount, 0),
-    remote: sessions.every((s) => s.remote),
-  })).sort((a, b) => b.cpuPct - a.cpuPct || b.memBytes - a.memBytes);
+  // Group the sampled sessions into per-workspace rows + login PTYs. #293: each owning row's memory figure includes its attributed containers (ONE figure, no new element).
+  const grouped = groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers);
+  const loginSessions: SessionResourceStat[] = grouped.login;
+  const rows: AgentRow[] = grouped.rows.map((g) => ({ ...g, ws: wsById.get(g.key) ?? null, fallbackName: g.key }));
 
   const agentCpu = rows.filter((r) => !r.remote).reduce((n, r) => n + r.cpuPct, 0);
   const agentMem = rows.filter((r) => !r.remote).reduce((n, r) => n + r.memBytes, 0);
@@ -523,7 +600,7 @@ export function ResourcesView() {
   const appMem = (snap?.app ?? []).reduce((n, p) => n + p.memBytes, 0);
   const appCpu = (snap?.app ?? []).reduce((n, p) => n + p.cpuPct, 0);
   const worktreeBytes = live.reduce((n, w) => n + (sizes[w.id] ?? 0), 0);
-  const agentCount = rows.filter((r) => r.sessions.some((s) => s.kind === 'agent')).length;
+  const agentCount = rows.filter((r) => r.sessions.some((s) => s.kind === 'agent' || s.kind === 'sdk')).length; // a structured (keeper-hosted) agent is a live agent too — the tile agrees with the table
 
   const appTypeLabel = (t: string): string => {
     switch (t) {
@@ -681,63 +758,15 @@ export function ResourcesView() {
 
         <section className="res-section">
           <div className="res-section-title">Agents</div>
-          {rows.length === 0 && (
-            <div className="res-empty">
-              No agent processes right now — open a workspace terminal and its
-              agent will appear here.
-            </div>
-          )}
-          {rows.length > 0 && (
-            <div className="res-table">
-              <div className="res-table-head">
-                <span />
-                <span>workspace</span>
-                <span>sessions</span>
-                <span className="res-col-trace">trace · 3m</span>
-                <span>cpu</span>
-                <span>memory</span>
-                <span className="res-col-procs">procs</span>
-                <span className="res-col-disk">disk</span>
-                <span className="res-col-ctx">ctx</span>
-                <span className="res-col-stop" />
-              </div>
-              {rows.map((row) => (
-                <AgentRowView
-                  key={row.key}
-                  row={row}
-                  trace={histRef.current.get(row.key) ?? []}
-                  diskBytes={row.ws ? sizes[row.ws.id] : undefined}
-                  ctxTokens={row.ws ? contextTokens[row.ws.id] : undefined}
-                  accountLabel={accountLabelFor(row)}
-                />
-              ))}
-              {loginSessions.map((s) => (
-                <div key={s.ptyId} className="res-agent-row static">
-                  {/* A login session is a live PTY by definition — it only
-                      appears in this list while the process exists — so the
-                      spinner is literal here, not decorative. */}
-                  <WorkspaceStatusGlyph
-                    status="running"
-                    hibernated={false}
-                    unread={false}
-                    title="Account login session is running"
-                  />
-                  <span className="res-agent-name">
-                    <span className="res-agent-branch">login</span>
-                    <span className="res-agent-sub">{s.ptyId.slice('account-login:'.length)}</span>
-                  </span>
-                  <SessionChips sessions={[s]} />
-                  <span className="res-col-trace" />
-                  <CpuCell pct={s.cpuPct} />
-                  <span className="res-cell">{formatBytes(s.memBytes)}</span>
-                  <span className="res-cell dim res-col-procs">{s.procCount}</span>
-                  <span className="res-cell dim res-col-disk">—</span>
-                  <span className="res-cell dim res-col-ctx">—</span>
-                  <span className="res-col-stop" />
-                </div>
-              ))}
-            </div>
-          )}
+          <AgentsTable
+            rows={rows}
+            loginSessions={loginSessions}
+            traceOf={(row) => histRef.current.get(row.key) ?? []}
+            diskOf={(row) => (row.ws ? sizes[row.ws.id] : undefined)}
+            ctxOf={(row) => (row.ws ? contextTokens[row.ws.id] : undefined)}
+            accountLabelFor={accountLabelFor}
+            warning={unattributedWarning(snap?.containers)}
+          />
         </section>
 
         <section className="res-section">
