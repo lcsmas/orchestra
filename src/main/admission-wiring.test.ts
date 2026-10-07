@@ -248,3 +248,33 @@ test('#287 F2: the wake rigs are package.json scripts (the 5 site integrations a
   assert.match(pkg.scripts['test:admission-hold'] ?? '', /scripts\/\.r2-register\.mjs scripts\/e2e-admission-hold\.mjs/);
   assert.match(pkg.scripts['test:admission-mutants'] ?? '', /scripts\/admission-mutants\.mjs/);
 });
+
+test('#287 follow-up F2: the release gate runs BOTH Admission rigs, judged fail-closed (rc, terminator N==N>0, THIS tree), with RIG_ARMS / RIG_REPO unset; a RIG_ARMS subset can never print a full-pass terminator', () => {
+  const gate = read('scripts/release-gate.sh');
+  assert.match(gate, /gate 4\/5: pnpm run test:admission-hold/);
+  assert.match(gate, /gate 5\/5: pnpm run test:admission-wake/);
+  assert.match(gate, /env -u RIG_ARMS -u RIG_REPO pnpm run test:admission-hold/);
+  assert.match(gate, /env -u RIG_ARMS -u RIG_REPO pnpm run test:admission-wake/);
+  assert.match(gate, /rg_judge_admission_rig admission-hold 'ADMISSION RIG:'/);
+  assert.match(gate, /rg_judge_admission_rig admission-wake 'ADMISSION-WAKE RIG:'/);
+  assert.match(gate, /\[ "\$n" != "\$m" \] \|\| \[ "\$m" -le 0 \]/, 'N==M>0');
+  assert.match(gate, /\$\(cd "\$tree" 2>\/dev\/null && pwd -P\)" != "\$\(pwd -P\)/, 'the rig must have exercised THIS tree');
+  for (const f of ['scripts/e2e-admission-hold.mjs', 'scripts/e2e-admission-wake.mjs']) {
+    assert.match(read(f), /\$\{only \? ' PARTIAL\(RIG_ARMS\)' : ''\} tree \$\{REPO\}/, `${f}: a subset run is marked PARTIAL`);
+  }
+  assert.match(read('scripts/release.sh'), /pnpm run test:session-budget -> pnpm run test:admission-hold -> pnpm run test:admission-wake/, 'the dry-run plan names the rigs');
+});
+
+test('#287 follow-up F3: both rig drivers give every run its OWN scratch subtree and run each arm under the host-wide flock; the mutant sweep keeps its backups in a private dir', () => {
+  for (const f of ['scripts/e2e-admission-hold.mjs', 'scripts/e2e-admission-wake.mjs']) {
+    const rig = read(f);
+    assert.match(rig, /const runId = newRigRunId\(\);/, `${f}: a fresh run id per driver run`);
+    assert.match(rig, /const argv = lockedArgv\(process\.execPath,/, `${f}: arms are serialised across drivers`);
+    assert.match(rig, /RIG_RUN_ID: runId/, `${f}: the arm inherits the run id`);
+    assert.match(rig, /const tmpHome = armScratch\(base, rigRunId\(\), ARM\);/, `${f}: the arm dir is under the run id`);
+    assert.match(rig, /if \(red\.length === 0\) fs\.rmSync\(path\.join\(RIG_BASE, runId\)/, `${f}: a green run leaves nothing behind`);
+  }
+  const mut = read('scripts/admission-mutants.mjs');
+  assert.match(mut, /BACKUP = fs\.mkdtempSync\(path\.join\(os\.homedir\(\), '\.cache', 'admission-mutants-'\)\);/);
+  assert.doesNotMatch(mut, /g3-286', 'mutant-backup/, 'no shared backup dir between sweeps');
+});

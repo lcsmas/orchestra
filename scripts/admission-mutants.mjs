@@ -13,8 +13,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
-const BACKUP = path.join(os.homedir(), '.cache', 'g3-286', 'mutant-backup');
-fs.mkdirSync(BACKUP, { recursive: true });
+// ONE private backup dir per sweep (F3): two sweeps on different trees used to share `mutant-backup/<id>.orig`, so one's restore could copy the OTHER tree's original back. Created below, after --check-anchors.
+let BACKUP = '';
 const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 const noRig = args.includes('--no-rig');
@@ -229,6 +229,7 @@ const files = [...new Set(MUTANTS.map((m) => m.file))];
 const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/e2e-admission-hold.mjs', 'scripts/e2e-admission-wake.mjs', 'scripts/admission-mutants.mjs']).status !== 0;
 if (dirty) { console.error('REFUSING: the mutated files / suites / rig have uncommitted changes — commit first (the end-of-sweep `git diff` must prove restoration)'); process.exit(2); }
 const before = Object.fromEntries(files.map((f) => [f, sha(f)]));
+BACKUP = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'admission-mutants-'));
 buildCli();
 
 // ── POSITIVE CONTROL: the unmutated tree must be all green, else every "killed" below is vacuous ──
@@ -274,6 +275,7 @@ for (const m of MUTANTS) {
 const after = Object.fromEntries(files.map((f) => [f, sha(f)]));
 const sameSha = files.every((f) => before[f] === after[f]);
 const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
+if (sameSha && gitClean && !restoreBad) fs.rmSync(BACKUP, { recursive: true, force: true });   // restored byte-exact: the originals are no longer needed (kept otherwise, for a manual restore)
 const post = unitRed();
 const postRig = rigRed();
 const postWake = rigRed(null, 'wake');
