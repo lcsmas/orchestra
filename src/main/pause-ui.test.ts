@@ -14,6 +14,8 @@ import { pauseOverviewFingerprint, readPauseOverview, toBilanLine, uiPause, uiRe
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import { PAUSE_HUMAN_BY } from '../shared/pause-lifecycle.ts';
 import { PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
+import { MEMORY_PAUSE_BY, encodeMemoryPause } from '../shared/pause-memory.ts';
+import { runHeadline } from '../shared/pause-ui-view.ts';
 import type { WaveNode } from './wave-run-id.ts';
 
 // #257 — the UI's DATA LAYER over a REAL bus.sqlite (btrfs under the real home, never /tmp, never the live bus). Every write goes through the SHIPPED writers; the
@@ -771,6 +773,21 @@ test('a host auto-pause taken over by a COORDINATOR (CLI) keeps `paused_by = hos
   db.prepare('UPDATE runs SET paused_by = ?, pause_auto = NULL WHERE id = ?').run(PAUSE_AUTO_BY, 'L'); // what a host pause that a human re-asserted looks like
   const run = readPauseOverview(db, deps).runs[0];
   assert.equal(run.pausedByLabel, "l'hôte (limite d'usage)");
+  db.close();
+});
+
+test('#290: a Pause the memory guard wrote reads « l\'hôte (mémoire) » on the screen, not the raw handle and not the usage-limit label', () => {
+  const db = freshDb();
+  tree(db);
+  uiPause(db, deps, { wsId: 'L', mode: 'hard' });
+  const at = Number((db.prepare('SELECT paused_at FROM runs WHERE id = ?').get('L') as { paused_at: number }).paused_at);
+  // what the guard really writes: paused_by + the epoch-bound memory motive in pause_auto (an AUTO pause)
+  db.prepare('UPDATE runs SET paused_by = ?, pause_auto = ? WHERE id = ?').run(MEMORY_PAUSE_BY, encodeMemoryPause({ reason: 'memory', pauseCycle: 1, episode: 1, availBytes: 2e9, thresholdBytes: 3e9 }, at), 'L');
+  const run = readPauseOverview(db, deps).runs[0];
+  assert.equal(run.auto, true, 'an automatic Pause');
+  assert.equal(run.pausedByLabel, "l'hôte (mémoire)");
+  assert.match(runHeadline(run, at + 1000).sub, /posée par l'hôte \(mémoire\)/, 'the headline says MEMORY, never the usage limit');
+  assert.doesNotMatch(runHeadline(run, at + 1000).sub, /limite d'usage/);
   db.close();
 });
 

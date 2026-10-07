@@ -150,8 +150,8 @@ function importersOf(target: string, files = sourceFiles()): string[] {
 }
 
 const WRITERS = new Set(['setRunPause', 'setRunHold', 'beginReprise', 'beginRepriseCore', 'releaseMembers']);
-/** Object-literal arguments of a writer call may carry ONLY these properties (a spread / computed key / another name could relay an authority bypass): the CLI verbs pass `reason`; the host auto-Reprise `host` + `reason`; the UI layer its own. */
-const ALLOWED_PROPS: Record<string, string[]> = { 'src/main/pause-ui.ts': ['human', 'ownRuns', 'reason'], 'src/main/pause-auto.ts': ['host', 'reason'] };
+/** Object-literal arguments of a writer call may carry ONLY these properties (a spread / computed key / another name could relay an authority bypass): the CLI verbs pass `reason`; the host auto-Reprises (usage-limit #256, memory #290) `host` + `reason`; the UI layer its own. */
+const ALLOWED_PROPS: Record<string, string[]> = { 'src/main/pause-ui.ts': ['human', 'ownRuns', 'reason'], 'src/main/pause-auto.ts': ['host', 'reason'], 'src/main/pause-memory.ts': ['host', 'reason'] };
 
 const unwrapCallee = (e: ts.Expression): ts.Expression => {
   while (ts.isNonNullExpression(e) || ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
@@ -208,6 +208,7 @@ test('ENUMERATION (importers + call sites): the UI entry points uiPause / uiResu
     'src/cli/bus-verbs.ts': ['beginReprise/4:PropertyAccessExpression,Identifier,Identifier,ObjectLiteralExpression', 'releaseMembers/4:PropertyAccessExpression,Identifier,Identifier,Identifier', 'setRunHold/4:PropertyAccessExpression,Identifier,Identifier,Identifier', 'setRunPause/4:PropertyAccessExpression,Identifier,FalseKeyword,Identifier', 'setRunPause/5:PropertyAccessExpression,Identifier,TrueKeyword,Identifier,Identifier'],
     'src/main/bus-pause.ts': ['beginRepriseCore/5:Identifier,Identifier,Identifier,Identifier,CallExpression'], // the RepriseEntry wrapper `beginReprise` relays its (typed) opts to the core — the ONE place a relayed opts object legitimately flows
     'src/main/pause-auto.ts': ['beginReprise/4:Identifier,PropertyAccessExpression,StringLiteral,ObjectLiteralExpression'],
+    'src/main/pause-memory.ts': ['beginReprise/4:Identifier,PropertyAccessExpression,StringLiteral,ObjectLiteralExpression'], // #290: the memory guard's automatic Reprise — the second (and last) host caller
     'src/main/pause-ui.ts': ['beginReprise/4:Identifier,PropertyAccessExpression,Identifier,ObjectLiteralExpression', 'releaseMembers/6:Identifier,BinaryExpression,Identifier,PropertyAccessExpression,CallExpression,ObjectLiteralExpression', 'setRunHold/5:Identifier,PropertyAccessExpression,FalseKeyword,Identifier,ObjectLiteralExpression', 'setRunPause/6:Identifier,PropertyAccessExpression,TrueKeyword,Identifier,PropertyAccessExpression,ObjectLiteralExpression'],
   }, 'the CLI verbs (typed deps), the host auto-Reprise and the human\'s UI layer — no other file calls a writer');
   // the pin sees what it claims to see: planted evasions, each in a fresh file set
@@ -241,6 +242,8 @@ test('ENUMERATION (importers + call sites): the UI entry points uiPause / uiResu
   assert.equal(callsIn("beginReprise(db, c, a, { 'reason': x });").badObjects.length, 0, 'a string-literal key is fine');
   assert.equal(callsIn('beginReprise(db, c, a, { host: true, reason: x });').badObjects.length, 1, '`host` skips the coordinator rule too: only the host auto-Reprise may pass it');
   assert.equal(callsIn('beginReprise(db, c, a, { host: true, reason: x });', 'src/main/pause-auto.ts').badObjects.length, 0, '…and that file may');
+  assert.equal(callsIn('beginReprise(db, c, a, { host: true, reason: x });', 'src/main/pause-memory.ts').badObjects.length, 0, '…and the memory Pause\'s (#290)');
+  assert.equal(callsIn('beginReprise(db, c, a, { human: true });', 'src/main/pause-memory.ts').badObjects.length, 1, 'but the memory Pause never passes `human`');
   assert.equal(callsIn('beginReprise(db, c, a, { ["hu" + "man"]: true });').badObjects.length, 1, 'a computed key');
   assert.equal(callsIn('setRunHold(db, r, false, a, { human: true });').badObjects.length, 1, 'the human key outside pause-ui.ts');
   assert.equal(callsIn('setRunHold(db, r, false, a, { human: true });', 'src/main/pause-ui.ts').badObjects.length, 0, '…and inside it');

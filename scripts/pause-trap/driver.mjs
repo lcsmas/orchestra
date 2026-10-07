@@ -128,6 +128,9 @@ const ARMS = {
 };
 // #254 Pause douce arms (scripts/pause-trap/douce-arm.mjs): function scenarios + their own driver path.
 import { DOUCE_ARMS, douceScenarios, runDouce } from './douce-arm.mjs';
+// #290 memory Pause arms (scripts/pause-trap/memory-arm.mjs): the real guard over a fake MemAvailable source + the real memory-Pause host.
+import { MEMORY_ARMS, runMemory } from './memory-arm.mjs';
+for (const [k, v] of Object.entries(MEMORY_ARMS)) ARMS[k] = { ...v };
 Object.assign(SCENARIOS, douceScenarios(path.join(SRC, 'dist-electron', 'cli.js')));
 for (const [k, v] of Object.entries(DOUCE_ARMS)) ARMS[k] = { ...v, douce: true };
 const A = ARMS[arm];
@@ -178,6 +181,24 @@ if (A.douce) {
   const trackedStart = (phase, extra) => { const a = startApp(phase, extra); tracked.push(a); return a; };
   try {
     await runDouce({ A, arm, api, cfg, startApp: trackedStart, cli, cliWith, waitFor, sleep, check, result, allProcs, live, alive, gitOut, readProc, home, orchHome, REPO, SRC, root, importSrc: (rel) => import(path.join(SRC, rel)) });
+  } catch (e) {
+    check('rig_ran_to_completion', false, String(e?.stack ?? e).slice(0, 500));
+  }
+  result.appErr = tracked.map((a) => a.err.slice(-1500));
+  result.checks = checks;
+  result.ok = checks.length > 0 && checks.every((c) => c.ok);
+  result.requests = api.requests.length;
+  for (const a of tracked) { try { a.send({ cmd: 'quit' }); a.child.kill('SIGKILL'); } catch { /* */ } }
+  await api.stop().catch(() => {});
+  console.log(JSON.stringify(result));
+  process.exit(0);
+}
+if (A.memoryArm) {
+  // #290: the memory Pause arms have their own flow (memory-arm.mjs); the teardown + result line are the same as below.
+  const tracked = [];
+  const trackedStart = (phase, extra) => { const a = startApp(phase, extra); tracked.push(a); return a; };
+  try {
+    await runMemory({ A, arm, api, cfg, startApp: trackedStart, cli, cliWith, waitFor, sleep, check, result, allProcs, live, alive, gitOut, readProc, home, orchHome, REPO, SRC, root, importSrc: (rel) => import(path.join(SRC, rel)) });
   } catch (e) {
     check('rig_ran_to_completion', false, String(e?.stack ?? e).slice(0, 500));
   }

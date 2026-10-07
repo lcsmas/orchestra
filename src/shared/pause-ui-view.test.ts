@@ -40,6 +40,10 @@ test('runHeadline: douce waiting names the deadline; dure; escalated; resuming c
   const tracked = runHeadline(run({ phase: 'active', progress: { kind: 'repris', done: 0, total: 7, missing: ['a', 'b'] } }), 3_000_000);
   assert.match(tracked.sub, /2 accusés manquants/);
   assert.match(runHeadline(run({ auto: true, pausedByLabel: null }), 1_000_000).sub, /posée par l'hôte \(limite d'usage\)/);
+  // #290: an AUTO pause names the host's OWN label — the usage-limit text is byte-identical, the memory one is no longer worded as a usage limit
+  assert.match(runHeadline(run({ auto: true, pausedByLabel: "l'hôte (limite d'usage)" }), 1_000_000).sub, /posée par l'hôte \(limite d'usage\)/);
+  assert.match(runHeadline(run({ auto: true, pausedByLabel: "l'hôte (mémoire)" }), 1_000_000).sub, /posée par l'hôte \(mémoire\)/);
+  assert.doesNotMatch(runHeadline(run({ auto: true, pausedByLabel: "l'hôte (mémoire)" }), 1_000_000).sub, /limite d'usage/);
 });
 
 test('Bilan texts: tree / tools / what it was doing — never a guess for a missing Bilan', () => {

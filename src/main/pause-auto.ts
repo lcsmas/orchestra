@@ -72,6 +72,8 @@ export interface PauseAutoDeps {
   repriseCursor: { get: () => number; set: (seq: number) => void };
   /** First-time-only latch (true = first call for this key): the `no-wake` warn / escalation fire ONCE per carrier (+epoch). In-memory is enough: a restart repeats one line. */
   once: (key: string) => boolean;
+  /** The memory guard says the memory Pause is in effect (critical memory): an auto Reprise of a usage-limit pause WAITS — it would wake the coordinators into a host that is about to be (or is) re-paused (#290). Absent = never. */
+  memoryPauseHeld?: () => boolean;
   /** The workspace store is loaded from disk (the trap's rule: an unloaded store reads every trigger as "deleted"). Absent = always ready. */
   storeReady?: () => boolean;
   now: () => number;
@@ -80,7 +82,7 @@ export interface PauseAutoDeps {
 
 // ─── the live tree ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 /** `[ws, parent, …]` along the store's `parentId` chain (the gates' walk), bounded by a seen-set; `dangling` = the chain hit a missing parent. */
-function liveChain(deps: PauseAutoDeps, ws: AutoWorkspace): { ids: string[]; dangling: boolean } {
+export function liveChain(deps: Pick<PauseAutoDeps, 'getWorkspace'>, ws: AutoWorkspace): { ids: string[]; dangling: boolean } {
   const ids: string[] = [];
   const seen = new Set<string>();
   let cur: AutoWorkspace | undefined = ws;
@@ -118,14 +120,14 @@ function carrierRunFor(db: BusDb, deps: PauseAutoDeps, ws: AutoWorkspace): strin
   return null;
 }
 
-interface CarrierRow {
+export interface CarrierRow {
   pausedAt: number | null;
   trapAt: number | null;
   resumeStartedAt: number | null;
   pauseAuto: string | null;
 }
 
-function readCarrier(db: BusDb, runId: string): CarrierRow | null {
+export function readCarrier(db: BusDb, runId: string): CarrierRow | null {
   const r = db.prepare('SELECT paused_at, pause_trap_at, resume_started_at, pause_auto FROM runs WHERE id = ?').get(runId) as
     | Record<string, unknown>
     | undefined;
@@ -135,7 +137,7 @@ function readCarrier(db: BusDb, runId: string): CarrierRow | null {
 }
 
 /** A host-written pause has no `orchestra run pause` process to spare: record an EMPTY origin chain so the trap does not wait ≤3 s for one (nobody is spared). */
-function recordHostOrigin(db: BusDb, deps: PauseAutoDeps, carrier: string, pausedAt: number): void {
+export function recordHostOrigin(db: BusDb, deps: Pick<PauseAutoDeps, 'log'>, carrier: string, pausedAt: number): void {
   try {
     recordPauseOrigin(db, carrier, pausedAt, []);
   } catch (e) {
@@ -325,7 +327,18 @@ function verdictsFor(deps: PauseAutoDeps, run: AutoPausedRun, now: number): { ve
  *  would let its members start under a parent pause that still stands — a child waits for every ancestor (top-down). The LIVE workspace tree is the
  *  gates' truth (`runs.parent_run_id` is write-once: an OPS detached since creation is no longer under its old parent); the bus run tree only when the
  *  live chain is unknown or dangles. */
-function ancestorStillPaused(db: BusDb, deps: PauseAutoDeps, runId: string): boolean {
+export function ancestorStillPaused(db: BusDb, deps: Pick<PauseAutoDeps, 'getWorkspace'>, runId: string): boolean {
+  for (const id of ancestorRunIds(db, deps, runId)) {
+    const run = getRun(db, id);
+    if (run?.flags.pause !== true) continue; // a run with the switch OFF carries no pause (a stale column is inert)
+    const c = readCarrier(db, id);
+    if (c && c.pausedAt !== null && c.resumeStartedAt === null) return true;
+  }
+  return false;
+}
+
+/** The run ids ABOVE `runId`, nearest first: the LIVE workspace chain (the gates' truth), the bus run tree only when that chain is unknown or dangles. */
+export function ancestorRunIds(db: BusDb, deps: Pick<PauseAutoDeps, 'getWorkspace'>, runId: string): string[] {
   const ids: string[] = [];
   const anchor = deps.getWorkspace(runId);
   let live = false;
@@ -341,13 +354,7 @@ function ancestorStillPaused(db: BusDb, deps: PauseAutoDeps, runId: string): boo
       ids.push(cur);
     }
   }
-  for (const id of ids) {
-    const run = getRun(db, id);
-    if (run?.flags.pause !== true) continue; // a run with the switch OFF carries no pause (a stale column is inert)
-    const c = readCarrier(db, id);
-    if (c && c.pausedAt !== null && c.resumeStartedAt === null) return true;
-  }
-  return false;
+  return ids;
 }
 
 export async function evaluateAutoPaused(deps: PauseAutoDeps): Promise<AutoEvalEntry[]> {
@@ -370,7 +377,7 @@ export async function evaluateAutoPaused(deps: PauseAutoDeps): Promise<AutoEvalE
 
 /** Who must hear that the auto-Reprise is HELD: the carrier's own coordinator is a member of the paused run — it cannot read (its wake is refused by the very pause the row asks to
  *  lift). So: the NEAREST ancestor run whose coordinator is not itself paused and can be woken (frozen wake ON), the live tree first and the bus run tree after; none ⇒ the human. */
-function escalationTarget(db: BusDb, deps: PauseAutoDeps, carrier: string): { kind: 'coordinator'; runId: string; coordinator: string } | { kind: 'gate'; asker: string } {
+export function escalationTarget(db: BusDb, deps: Pick<PauseAutoDeps, 'getWorkspace'>, carrier: string): { kind: 'coordinator'; runId: string; coordinator: string } | { kind: 'gate'; asker: string } {
   const seen = new Set<string>([carrier.toLowerCase()]);
   const ancestors: string[] = [];
   const own = deps.getWorkspace(carrier);
@@ -423,6 +430,7 @@ function clearHeld(db: BusDb, run: AutoPausedRun, rawPauseAuto: string | null): 
 
 function evaluateOne(deps: PauseAutoDeps, db: BusDb, run: AutoPausedRun): AutoEvalEntry {
   const now = deps.now();
+  if (deps.memoryPauseHeld?.()) return { runId: run.runId, action: 'wait', why: 'memory-pause-held' };
   if (ancestorStillPaused(db, deps, run.runId)) return { runId: run.runId, action: 'wait', why: 'ancestor-paused' };
   const { verdicts, refresh, latestBlock } = verdictsFor(deps, run, now);
   const streak = deps.repriseStreak(run.runId, now);

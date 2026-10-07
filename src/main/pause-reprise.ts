@@ -37,6 +37,7 @@ import {
 import type { ConsigneDeReprise } from '../shared/pause-lifecycle.ts';
 import type { RepriseStatusView } from '../shared/pause-reprise-view.ts';
 import { owedRestarts, type BilanContainers, type ContainerStopEntry } from '../shared/pause-containers.ts';
+import { parseMemoryPause } from '../shared/pause-memory.ts';
 
 /** How long after the last release `bus-status` / `run status` keep naming members whose reprise accusé is still missing (tracking only — nothing is gated by it). */
 export const REPRISE_TRACKING_TTL_MS = 24 * 3600_000;
@@ -496,7 +497,7 @@ export function beginRepriseCore(
   db: BusDb,
   carrierRunId: string,
   actor: string | null,
-  opts: { host?: boolean; human?: boolean; reason?: 'manual' | 'usage_limit' } | undefined,
+  opts: { host?: boolean; human?: boolean; reason?: 'manual' | 'usage_limit' | 'memory' } | undefined,
   subtreeRunIds: readonly string[],
   now = Date.now(),
 ): RepriseOutcome {
@@ -518,6 +519,11 @@ export function beginRepriseCore(
       .prepare('UPDATE runs SET resume_started_at = ? WHERE id = ? AND paused_at = ? AND resume_started_at IS NULL')
       .run(now, carrierRunId, pausedAt);
     if (started.changes !== 1) return 'already-resuming';
+    // A MANUAL / human Reprise of a memory Pause (#290 review m2) takes it over: the memory motive must not survive it, or a later `pause_due` would re-pause a Reprise that is the human's.
+    // Only the host's own Reprise keeps the motive (it is the guard's, lifted by the guard).
+    if (opts?.host !== true && parseMemoryPause((db.prepare('SELECT pause_auto FROM runs WHERE id = ?').get(carrierRunId) as { pause_auto: string | null } | undefined)?.pause_auto, pausedAt)) {
+      db.prepare('UPDATE runs SET pause_auto = NULL WHERE id = ? AND paused_at = ?').run(carrierRunId, pausedAt);
+    }
     seedRoster(db, carrierRunId, pausedAt, subtreeRunIds);
     const by = opts?.human === true ? PAUSE_HUMAN_BY : HOST_SENDER;
     // #292 (FI-1.7): containers the Pause STOPPED are restarted BEFORE any member is told it may start — the host's container step (restartOwedContainers, async, so not here)

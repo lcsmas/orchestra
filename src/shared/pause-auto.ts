@@ -7,6 +7,7 @@
 
 import { usageLimitedUntil, type UsageWindows } from './accounts.ts';
 import type { PauseAutoReason } from './pause-lifecycle.ts';
+import { parseMemoryPause } from './pause-memory.ts';
 
 /** `runs.paused_by` of a pause the host wrote itself (display only — authority never keys on it). */
 export const PAUSE_AUTO_BY = 'host:usage_limit';
@@ -27,6 +28,8 @@ export interface AutoHeld {
   addressees: string[];
   /** who was told: the nearest unpaused ancestor coordinator's handle, or 'human' (a decision gate). */
   to: string;
+  /** Whose Pause is held: absent = the usage-limit motive (the original shape), 'memory' = the memory guard's (#290). */
+  motive?: 'memory';
 }
 
 /** No fresh reading can be had (endpoint down, 429…): the stored reset time is then the only evidence — act this long after it. */
@@ -51,12 +54,12 @@ export function encodePauseAuto(reason: PauseAutoReason, epoch: number, held: Au
 
 /** The hold of the auto pause that began at `pausedAt`, or null (none / malformed / another epoch). Never throws. */
 export function parseAutoHeld(json: string | null | undefined, pausedAt: number | null): AutoHeld | null {
-  if (!parsePauseAuto(json, pausedAt)) return null; // only a valid auto pause of THIS epoch carries a hold
+  if (!parsePauseAuto(json, pausedAt) && !parseMemoryPause(json, pausedAt)) return null; // only a valid auto pause (either motive) of THIS epoch carries a hold
   try {
     const h = (JSON.parse(json as string) as { held?: unknown }).held as Record<string, unknown> | undefined;
     if (!h || typeof h !== 'object') return null;
     if (typeof h.at !== 'number' || typeof h.to !== 'string' || !Array.isArray(h.addressees) || !h.addressees.every((x) => typeof x === 'string')) return null;
-    return { at: h.at, addressees: [...(h.addressees as string[])], to: h.to };
+    return { at: h.at, addressees: [...(h.addressees as string[])], to: h.to, ...(h.motive === 'memory' ? { motive: 'memory' as const } : {}) };
   } catch {
     return null;
   }

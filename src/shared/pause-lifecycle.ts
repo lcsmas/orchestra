@@ -130,7 +130,7 @@ export type RepriseEntry = (
   db: unknown,
   carrierRunId: string,
   actor: string | null,
-  opts?: { host?: boolean; human?: boolean; reason?: 'manual' | 'usage_limit' },
+  opts?: { host?: boolean; human?: boolean; reason?: 'manual' | 'usage_limit' | 'memory' },
 ) => RepriseOutcome;
 
 /** What a Consigne de reprise carries — derived ONLY from the member's Bilan de pause row (+ its pause_members row). */

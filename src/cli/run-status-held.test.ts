@@ -9,6 +9,7 @@ import * as bus from '../main/bus.ts';
 import * as busRuns from '../main/bus-runs.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { encodePauseAuto, PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
+import { encodeMemoryPause, MEMORY_PAUSE_BY } from '../shared/pause-memory.ts';
 
 // #256 R4-1 — `orchestra run status` shows a HELD auto-Reprise (pause_auto.held): the BUILT CLI over a scratch bus under the real home (never the live one), app down.
 
@@ -19,15 +20,16 @@ const ROOT = path.join(os.homedir(), '.cache', `pause-auto-status-${process.pid}
 const T0 = 1_800_000_000_000;
 let n = 0;
 
-function home(t: { after: (fn: () => void) => void }, held: boolean): string {
+function home(t: { after: (fn: () => void) => void }, held: boolean, motive: 'usage' | 'memory' = 'usage'): string {
   const h = path.join(ROOT, `h${n++}`);
   mkdirSync(h, { recursive: true });
   const db = bus.openBus(path.join(h, 'bus.sqlite'));
   try {
     busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, { ...DEFAULT_BUS_SWITCHES, pause: true, wake: true });
     busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O', parentRunId: 'L' }, { ...DEFAULT_BUS_SWITCHES, pause: true, wake: true });
-    const auto = encodePauseAuto({ reason: 'usage_limit', wsIds: ['w1'], accountIds: ['A'] }, T0, held ? { at: T0 + 5_000, addressees: ['Zc@Zc'], to: 'human' } : null);
-    db.prepare("UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_trap_at = ?, pause_auto = ? WHERE id = 'O'").run(T0, PAUSE_AUTO_BY, T0 + 1, auto);
+    const hold = held ? { at: T0 + 5_000, addressees: ['Zc@Zc'], to: 'human' } : null;
+    const auto = motive === 'memory' ? encodeMemoryPause({ reason: 'memory', pauseCycle: 1, episode: 1, availBytes: 2e9, thresholdBytes: 3e9 }, T0, hold) : encodePauseAuto({ reason: 'usage_limit', wsIds: ['w1'], accountIds: ['A'] }, T0, hold);
+    db.prepare("UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_trap_at = ?, pause_auto = ? WHERE id = 'O'").run(T0, motive === 'memory' ? MEMORY_PAUSE_BY : PAUSE_AUTO_BY, T0 + 1, auto);
   } finally {
     db.close();
   }
@@ -59,4 +61,14 @@ test('run status (built CLI): an auto pause that is NOT held prints no hold line
   const h = home(t, false);
   assert.ok(!/Auto-Reprise: HELD/.test(status(h, [])));
   assert.ok(!('autoHeld' in (JSON.parse(status(h, ['--json'])) as object)));
+});
+
+test('run status (built CLI): a HELD memory-Pause Reprise says MEMORY is back (not the usage quota), names who could not be woken, and shows the memory pauser', needsBuild, (t) => {
+  const h = home(t, true, 'memory');
+  const out = status(h, []);
+  assert.match(out, /PAUSED \(hard\) since .* by host:memory/);
+  assert.match(out, /Auto-Reprise: HELD since 2027-01-15T08:00:05\.000Z — memory is back, but the Reprise could not wake Zc@Zc /);
+  assert.doesNotMatch(out, /usage quota/);
+  const json = JSON.parse(status(h, ['--json'])) as { autoHeld?: { addressees: string[]; to: string; motive?: string } };
+  assert.deepEqual(json.autoHeld, { at: T0 + 5_000, addressees: ['Zc@Zc'], to: 'human', motive: 'memory' });
 });

@@ -234,6 +234,54 @@ export const MUTANTS = {
     replace: '    return await req;',
     mustRedden: 'trap_finished',
   },
+  // ── #290 memory Pause (each edits the shipped host code in memory; the named memory-arm check must go red) ──
+  // The frozen `pause` switch is not read: a pause-OFF run is paused by critical memory.
+  'memory-ignores-switch': {
+    file: '/src/main/pause-memory.ts',
+    find: /    \.filter\(\(r\) => parseSwitches\(r\.flags_json \?\? null\)\.pause === true\)\n/g,
+    replace: '',
+    mustRedden: 'off_run_untouched',
+  },
+  // The guard lifts ANY pause (a manual one, one a human took over): the motive is never read. FIVE layers cover each other (SQL filter, null-reason skip, reason parse, the pre-Reprise re-read, the in-transaction re-read): the mutant removes all.
+  'memory-lifts-manual': {
+    file: '/src/main/pause-memory.ts',
+    edits: [
+      { find: /WHERE r\.paused_at IS NOT NULL AND r\.pause_auto IS NOT NULL AND r\.resume_started_at IS NULL`/g, replace: 'WHERE r.paused_at IS NOT NULL AND r.resume_started_at IS NULL`' },
+      { find: /    if \(!reason\) continue;\n/g, replace: '' },
+      { find: /const reason = parseMemoryPause\(\(r\.pause_auto as string \| null\) \?\? null, pausedAt\);/g, replace: "const reason = parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt) ?? { reason: 'memory' as const, pauseCycle: 0, episode: 0, availBytes: 0, thresholdBytes: 0 };" },
+      { find: / \|\| parseMemoryPause\(cur\.pauseAuto, cur\.pausedAt\) === null\) return \{ runId: run\.runId, action: 'wait', why: 'changed-meanwhile' \};/g, replace: ") return { runId: run.runId, action: 'wait', why: 'changed-meanwhile' };" },
+      { find: / \|\| parseMemoryPause\(again\.pauseAuto, again\.pausedAt\) === null\) return 'changed-meanwhile';/g, replace: ") return 'changed-meanwhile';" },
+    ],
+    mustRedden: 'manual_pause_stays_after_recovery',
+  },
+  // A MANUAL pause is ledgered as handled for the cycle: when it ends under still-critical memory the run is never memory-paused again.
+  'memory-ledgers-manual': {
+    file: '/src/main/pause-memory.ts',
+    find: /      if \(outcome === 'paused' \|\| outcome === 'repaused' \|\| outcome === 'already'\) ledger\.imposed\.set\(runId, ctx\.pauseCycle\);/g,
+    replace: '      ledger.imposed.set(runId, ctx.pauseCycle);',
+    mustRedden: 'memory_pause_after_manual_ended',
+  },
+  // A wake-OFF addressee keeps the fleet from being paused (the usage-limit motive's rule, copied): ruling A says a frozen host is worse than a stalled Reprise.
+  'memory-wake-refusal': {
+    file: '/src/main/pause-memory.ts',
+    find: /  const res = db\n    \.prepare\(\n      `UPDATE runs SET paused_at = \?, paused_by = \?, pause_mode = 'hard'/g,
+    replace: "  if (wakeOffAddressees(db, deps, runId).length > 0) return 'other-pause';\n  const res = db\n    .prepare(\n      `UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard'",
+    mustRedden: 'memory_pause_written',
+  },
+  // The lift ignores the wake-OFF hold: the Reprise starts blind (its rows reach nobody).
+  'memory-no-hold': {
+    file: '/src/main/pause-memory.ts',
+    find: /  if \(off\.length > 0\) \{\n    const key = heldAddresseesKey\(off\);/g,
+    replace: '  if (false as boolean) {\n    const key = heldAddresseesKey(off);',
+    mustRedden: 'reprise_held_not_started_blind',
+  },
+  // Recovery never lifts: the fleet stays paused for ever.
+  'memory-no-lift': {
+    file: '/src/main/pause-memory.ts',
+    find: /if \(want === 'lift'\) return \{ want, imposed: \[\], lifted: liftMemoryPause\(deps, avail\) \};/g,
+    replace: "if (want === 'lift') return { want, imposed: [], lifted: [] };",
+    mustRedden: 'auto_reprise_after_recovery',
+  },
   // The turn-start observer is never registered (rows 29/30).
   'no-turn-observer': {
     file: '/src/main/pause-trap-host.ts',

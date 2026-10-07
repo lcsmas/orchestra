@@ -243,6 +243,7 @@ import {
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
 import { heldStartFor, startAdmission, stopAdmission } from './admission';
+import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -580,6 +581,10 @@ async function createMainWindow() {
     setTurnStartObserver(makeTurnStartObserver(pauseTrapDeps));
     startPauseTrap(pauseTrapDeps);
   }
+  // Memory Pause (#290): critical memory ⇒ a Pause dure (motive memory) on the `pause`-ON runs, an automatic Reprise above the Admission threshold. Subscribes to the guard FIRST, then reconciles
+  // from its snapshot (FI-2.5). AFTER the trap deps above: `buildPauseTrapDeps()` registers the live workspace tree the Reprise's addressee plan and the ancestor walks read — a boot-time reconcile
+  // before it would lift on the bus run tree alone and bypass the wake-OFF hold (review m3).
+  startMemoryPause();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
@@ -878,6 +883,7 @@ function shutdownSubsystems(): void {
   stopSessionWatchdog();
   stopResourceMonitor();
   stopAdmission();
+  stopMemoryPause();
   stopMemoryGuard();
   stopHibernationSweeper();
   closeAllSandboxConnections();

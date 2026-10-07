@@ -15,6 +15,7 @@ import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resu
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
+import { MEMORY_PAUSE_BY } from '../shared/pause-memory.ts';
 import { actorText, PAUSE_HUMAN_BY, pausePhaseOf, pauseRosterSummary, type PauseMode, type PausePhase, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
 import { killedCommands, stripControl } from '../shared/pause-consigne.ts';
 import {
@@ -152,7 +153,7 @@ function runView(db: BusDb, deps: PauseUiDeps, carrierId: string, auto: boolean,
     mode: pv.mode === 'soft' ? 'soft' : pv.mode === 'hard' ? 'hard' : null,
     pausedAt: pv.pausedAt,
     pausedBy: pv.pausedBy,
-    pausedByLabel: pv.pausedBy ? (pv.pausedBy === PAUSE_HUMAN_BY ? actorText(pv.pausedBy, 'fr') : pv.pausedBy === PAUSE_AUTO_BY ? "l'hôte (limite d'usage)" : label(pv.pausedBy)) : null,
+    pausedByLabel: pv.pausedBy ? (pv.pausedBy === PAUSE_HUMAN_BY ? actorText(pv.pausedBy, 'fr') : pv.pausedBy === PAUSE_AUTO_BY ? "l'hôte (limite d'usage)" : pv.pausedBy === MEMORY_PAUSE_BY ? "l'hôte (mémoire)" : label(pv.pausedBy)) : null,
     deadlineAt: pv.deadlineAt,
     escalatedAt: pv.escalatedAt,
     trapAt: pv.trapAt,

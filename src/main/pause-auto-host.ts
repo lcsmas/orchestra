@@ -5,6 +5,7 @@ import { store } from './store.ts';
 import { getBus } from './bus.ts';
 import { beginReprise } from './bus-pause.ts';
 import { log } from './logger.ts';
+import { getMemoryGuardSnapshot } from './memory-guard.ts';
 import { clearStopReason, setUsageLimitStopObserver } from './activity.ts';
 import { refreshAccountsNow } from './account-usage.ts';
 import { refreshUsageNow } from './usage.ts';
@@ -67,6 +68,7 @@ const realDeps: PauseAutoDeps = {
   clearLimitMarker: (wsId) => clearStopReason(wsId),
   repriseCursor: { get: () => repriseSeq, set: (seq) => void (repriseSeq = seq) },
   storeReady: () => store.loadedFromDisk,
+  memoryPauseHeld: () => getMemoryGuardSnapshot().pause === 'held', // #290: no usage-limit Reprise while the memory Pause is in effect
   now: () => Date.now(),
   log: { info: (m) => log.info(m), warn: (m, e) => log.warn(m, e) },
 };

@@ -151,7 +151,7 @@ export function renderRunStatus(st: RunStatus): string {
   );
   if (st.autoHeld) {
     out.push(
-      `Auto-Reprise: HELD since ${iso(st.autoHeld.at)} — the usage quota is back, but the Reprise could not wake ${st.autoHeld.addressees.map((a) => c(a)).join(', ')} (a run with its frozen \`wake\` switch OFF: nobody would receive its \`reprise\` row); ` +
+      `Auto-Reprise: HELD since ${iso(st.autoHeld.at)} — ${st.autoHeld.motive === 'memory' ? 'memory is back' : 'the usage quota is back'}, but the Reprise could not wake ${st.autoHeld.addressees.map((a) => c(a)).join(', ')} (a run with its frozen \`wake\` switch OFF: nobody would receive its \`reprise\` row); ` +
         `told ${st.autoHeld.to === 'human' ? 'the human (decision gate)' : c(st.autoHeld.to)}. Detach that run (the next tick Reprises) or lift by hand: orchestra run resume --run ${p.runId}`,
     );
   }

@@ -109,7 +109,7 @@ if (phase === 'first') {
   await mk('ops', { kind: 'orchestrator', parentId: 'lead' });
   for (const w of workers) await mk(w.id, { parentId: 'ops', lastTask: `rig task of ${w.id}` });
   const db = busMod.getBus();
-  const sw = { ...DEFAULT_BUS_SWITCHES, pause: pauseSwitch };
+  const sw = { ...DEFAULT_BUS_SWITCHES, pause: pauseSwitch, ...(cfg.wakeSwitch === true ? { wake: true } : {}) }; // #290: the memory arms freeze `wake` ON (a Reprise can wake its coordinators) — except the wake-OFF arm; every other arm keeps the default OFF
   runsMod.startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, sw);
   runsMod.startRun(db, { id: 'ops', kind: 'vague', coordinator: 'ops', parentRunId: 'lead' }, sw);
   // make sure store.json has the fleet on disk before anything can kill this process (the restart arm)
@@ -124,6 +124,20 @@ activity.setTurnStartObserver(host.makeTurnStartObserver(deps));
 if (!cfg.noTrap) trap.startPauseTrap(deps);
 // NO rig-side sweep: detection is ONLY the production path (startPauseTrap: boot drain + WAL dir watch + timer) — a second trigger here defeated the no-trap mutant
 out({ ev: 'trap-started', phase, noTrap: !!cfg.noTrap });
+
+// #290 memory Pause arms (Seam 1 of epic #284): the REAL guard (real sampler timers, real decision) over a FAKE MemAvailable source, and the REAL memory-Pause host (src/main/pause-memory-host.ts: subscribe → reconcile → tick).
+// The host module is ABSENT on MASTER (the unfixed arm): `host:false`, nothing ever pauses.
+if (cfg.memory) {
+  const GIB = 1024 ** 3;
+  app.avail = (cfg.memory.startGb ?? 12) * GIB;
+  app.mg = await import(`${SRC}/src/main/memory-guard.ts`);
+  app.mg.__rebuildMemoryGuardForTests({}, () => app.avail);
+  app.mg.startMemoryGuard();
+  const mp = await import(`${SRC}/src/main/pause-memory-host.ts`).catch(() => null);
+  if (mp) mp.startMemoryPause();
+  app.memoryHost = mp;
+  out({ ev: 'memory-started', host: !!mp });
+}
 
 if (phase === 'first' && scenario) {
   if (cfg.opsScenario) await sdk.sdkSend('ops', `SCN:${cfg.opsScenario}`); // the coordinator has its OWN live session + tool (pauser-exempt arm)
@@ -183,7 +197,13 @@ for await (const line of rl) {
     } else if (c.cmd === 'state') {
       const ws = store.getWorkspace(c.ws);
       out({ reply: 'state', ws: c.ws, status: ws?.status ?? null, hasSession: sdk.sdkHasSession(c.ws) });
+    } else if (c.cmd === 'memory') {
+      // the rig's only fake: MemAvailable. The sampler's own timers run too (10 s below the Admission threshold); `sampleMemoryGuardNow` is the consumers' own re-measure seam, used here for promptness.
+      app.avail = c.gb * 1024 ** 3;
+      const snap = app.mg.sampleMemoryGuardNow();
+      out({ reply: 'memory', snap: { pause: snap.pause, admission: snap.admission, availBytes: snap.availBytes, pauseCycle: snap.pauseCycle, episode: snap.episode, measured: snap.measured } });
     } else if (c.cmd === 'quit') {
+      app.memoryHost?.stopMemoryPause();
       trap.stopPauseTrap();
       out({ reply: 'quit' });
       process.exit(0);

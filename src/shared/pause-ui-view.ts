@@ -52,7 +52,8 @@ export function runHeadline(run: PauseUiRun, now: number): PauseHeadline {
   if (run.phase === 'active') {
     return { tone: 'resumed', title: 'Reprise : accusés en attente', count, sub: run.progress.missing.length ? `${run.progress.missing.length} accusé${run.progress.missing.length > 1 ? 's' : ''} manquant${run.progress.missing.length > 1 ? 's' : ''}` : 'tous les accusés sont reçus', fraction };
   }
-  const by = run.auto ? 'posée par l\'hôte (limite d\'usage)' : run.pausedByLabel ? `posée par ${run.pausedByLabel}` : 'posée';
+  // an AUTO pause says who wrote it (« l'hôte (limite d'usage) » / « l'hôte (mémoire) », the host's own label); the usage-limit wording is only the fallback when no label is known (#290: it used to be hard-coded for EVERY auto pause)
+  const by = run.auto ? (run.pausedByLabel ? `posée par ${run.pausedByLabel}` : 'posée par l\'hôte (limite d\'usage)') : run.pausedByLabel ? `posée par ${run.pausedByLabel}` : 'posée';
   const when = run.pausedAt !== null ? ` ${agoText(run.pausedAt, now)}` : '';
   if (run.phase === 'pausing') {
     const dl = run.deadlineAt !== null ? ` · Pause dure dans ${countdown(run.deadlineAt, now)} pour les retardataires` : '';

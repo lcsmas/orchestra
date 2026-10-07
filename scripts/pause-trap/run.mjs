@@ -20,6 +20,8 @@
 //   bg-notify         (#282) the hard pause lands on an IDLE member with a background task: the trap ends it THROUGH THE CLI (stop_task) → ZERO model requests from the paused member; the Bilan lists it
 //   bg-notify-running (#282) same with the member MID-TURN (blocked in a foreground command) + a background task + a daemonized job
 //   bg-notify-deleted (#282 R1) the task's `.output` file is unlinked before the pause (`(deleted)` link) · bg-notify-wedged (#282 R2) the member's CLI is SIGSTOPped: the stop_task request is bounded, the task ends by signal, 0 requests
+//   memory-pause (#290) the REAL memory guard over a FAKE MemAvailable source + the real memory-Pause host: critical → the `pause`-ON run is paused (motive memory), tool trees killed, sessions intact; recovery above the Admission threshold → the AUTOMATIC Reprise (coordinators first)
+//                     · memory-pause-off (the run's `pause` switch OFF: untouched) · memory-pause-manual (a manual Pause stays after recovery) · memory-pause-takeover (a human takeover makes it manual: stays after recovery) · memory-pause-manual-lifted (a manual Pause ends under still-critical memory: memory-paused at the next read) · memory-pause-wake-off (frozen `wake` OFF: still paused; the Reprise is HELD + escalated)
 //   bg-notify-restart (#282) same, the app dies first and the boot drain arms the idle keeper + stops the task
 // Must-FAIL mutants (load-time edits of the shipped source; the named check must go red):
 //   no-trap (the unfixed build) · kill-cli · kill-keeper · snapshot-touches-index · skip-kill · skip-snapshot · no-turn-observer · no-arm · no-pauser-exemption · exempt-by-handle · stamp-on-unknown · drop-queue-on-pause-interrupt
@@ -42,7 +44,7 @@ const KEEP = args.includes('--keep') || process.env.PT_KEEP === '1';
 const WANT = opt('arm', 'all');
 
 const DOUCE = ['douce-keeperstopped', 'douce-forged', 'douce-humanmark', 'douce-obey', 'douce-failcall', 'douce-subagent', 'douce-quota', 'douce-blocked', 'douce-silent', 'douce-mixed', 'douce-fleet', 'douce-restart', 'douce-off'];
-const NORMAL = [...DOUCE, 'blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'bg-notify', 'bg-notify-running', 'bg-notify-deleted', 'bg-notify-wedged', 'bg-notify-restart', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept'];
+const NORMAL = [...DOUCE, 'blocking', 'foreground', 'background', 'app-restart', 'app-restart-bg', 'app-restart-idle', 'turn-while-paused', 'bg-notify', 'bg-notify-running', 'bg-notify-deleted', 'bg-notify-wedged', 'bg-notify-restart', 'pauser-human', 'pauser-self', 'keeper-stopped', 'queue-kept', 'memory-pause', 'memory-pause-off', 'memory-pause-manual', 'memory-pause-takeover', 'memory-pause-wake-off', 'memory-pause-manual-lifted'];
 const MUTANT_ARMS = [
   // #254 Pause douce. G1: the UNFIXED build (master: `run pause` without --hard is refused, no douce at all) must FAIL the same rig.
   { name: 'unfixed:no-douce', arm: 'douce-obey', mutant: 'master', master: true },
@@ -62,6 +64,17 @@ const MUTANT_ARMS = [
   { name: 'mutant:subagent-takes-order', arm: 'douce-subagent', mutant: 'subagent-takes-order' },
   { name: 'mutant:no-trap-roster', arm: 'douce-blocked', mutant: 'no-trap-roster', deadlineSec: 25 },
   { name: 'mutant:sweep-ignores-switch', arm: 'douce-off', mutant: 'sweep-ignores-switch' },
+  // #290 G1: the UNFIXED build (master before the memory Pause: the guard measures and decides, nothing reacts) must FAIL the same rig — nothing is paused under the fake critical memory.
+  { name: 'unfixed:memory-pause', arm: 'memory-pause', mutant: 'master', master: true, masterPin: 'memory-pause', redden: 'memory_pause_written' },
+  // #290 G2: each load-time mutant must redden the named check of its arm.
+  { name: 'mutant:memory-ignores-switch', arm: 'memory-pause-off', mutant: 'memory-ignores-switch' },
+  { name: 'mutant:memory-lifts-manual', arm: 'memory-pause-manual', mutant: 'memory-lifts-manual' },
+  { name: 'mutant:memory-lifts-taken-over', arm: 'memory-pause-takeover', mutant: 'memory-lifts-manual', redden: 'takeover_stays_manual_after_recovery' },
+  { name: 'mutant:memory-no-lift', arm: 'memory-pause', mutant: 'memory-no-lift' },
+  { name: 'mutant:memory-ledgers-manual', arm: 'memory-pause-manual-lifted', mutant: 'memory-ledgers-manual' },
+  { name: 'mutant:memory-wake-refusal', arm: 'memory-pause-wake-off', mutant: 'memory-wake-refusal' },
+  { name: 'mutant:memory-no-hold', arm: 'memory-pause-wake-off', mutant: 'memory-no-hold' },
+  { name: 'mutant:memory-no-trap-kill', arm: 'memory-pause', mutant: 'skip-kill', redden: 'no_surviving_tool_procs' },
   // #282 G1: the UNFIXED build (master v0.5.306: the bg task is SIGTERMed, the CLI starts a task-notification turn by itself) must FAIL the same rig on the request count.
   { name: 'unfixed:bg-notify', arm: 'bg-notify', mutant: 'master', master: true, masterPin: 'bg-notify', redden: 'no_model_request_while_paused' },
   { name: 'unfixed:bg-notify-running', arm: 'bg-notify-running', mutant: 'master', master: true, masterPin: 'bg-notify', redden: 'no_model_request_while_paused' },
@@ -148,7 +161,9 @@ function masterTree(pin = { sha: 'b34c8b58', env: 'PT_UNFIXED_SHA', what: 'pre-d
 }
 /** The pins: `unfixed:no-douce` = master before wave E; `unfixed:bg-notify` = master v0.5.306, before #282 (stop_task through the CLI). */
 const PIN_BG_NOTIFY = { sha: '53e93c81', env: 'PT_BGNOTIFY_UNFIXED_SHA', what: 'pre-#282' };
-const pinOf = (sel) => (sel.masterPin === 'bg-notify' ? PIN_BG_NOTIFY : undefined);
+/** `unfixed:memory-pause` = master at the #292 merge, before the memory Pause (#290): the guard (#285) exists, its edges are consumed by nothing. */
+const PIN_MEMORY_PAUSE = { sha: '3f7325db', env: 'PT_MEMORY_UNFIXED_SHA', what: 'pre-#290' };
+const pinOf = (sel) => (sel.masterPin === 'bg-notify' ? PIN_BG_NOTIFY : sel.masterPin === 'memory-pause' ? PIN_MEMORY_PAUSE : undefined);
 
 // follow-up: BUILT mutants (`sel.built`): a detached worktree of HEAD (the committed tree), mutated at ONE anchor (exactly once, else VOID), then built; the arm drives it as SRC.
 const builtDirs = new Map();
