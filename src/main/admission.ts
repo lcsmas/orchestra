@@ -1,9 +1,9 @@
 // Admission — the QUEUE half (#286, wave G ledger #295, epic #284; contract = ledger FI-2). Pure half: src/shared/admission.ts.
-// Holds the AUTOMATIC starts (spawn / restart) of FLEET MEMBERS while the memory guard holds Admission, and releases them coordinators
-// first, then in arrival order, ONE at a time, each release preceded by a FRESH reading (`sampleMemoryGuardNow()` + `mayReleaseOneStart`).
+// Holds the AUTOMATIC starts (spawn / restart, and #287 WAKES of sleeping members) of FLEET MEMBERS while the memory guard holds Admission, and releases
+// them coordinators first, then in arrival order, ONE at a time, each release preceded by a FRESH reading (`sampleMemoryGuardNow()` + `mayReleaseOneStart`).
 // Platform-free (no store / workspaces import: callers pass closures) so node --test drives the real code. The held queue is IN MEMORY: after
 // an app restart a held child stays stopped with its brief owed and `orchestra restart <id>` retries it (persisting the queue = follow-up).
-// NOT here (#287): a réveil under low memory — the bus-wake sweep keeps it pending with a "held for memory" reason.
+// A WAKE (#287) is held per SITE (sweep / flush / resume / message / recovery): one retry per site per member, run under a one-shot permit.
 
 import { scoped } from './logger.ts';
 import { sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';
@@ -38,6 +38,8 @@ export interface AdmissionDeps {
   runTimeoutMs: number;
   info(message: string): void;
   warn(message: string, meta?: unknown): void;
+  /** #287: resolves once the member a wake release just started has settled its first turn (bounded by the run bound). Unset = no wait. */
+  settleWake?(wsId: string): Promise<unknown>;
 }
 
 export interface GateArgs {
@@ -66,11 +68,25 @@ export interface WakeGateArgs {
   /** No live session / PTY: this wake would START a process. A wake of a LIVE member is a plain turn — never held. */
   sleeping: boolean;
   coordinator: boolean;
+  /** Which wake site this is ('sweep' | 'flush' | 'resume' | 'message' | 'recovery'): ONE retry per site per member is kept, so two sites holding the same
+   *  member never overwrite each other (pre-review r1 M2). */
+  site: string;
   /** Run the site's NORMAL path again (it re-enters `holdWake`, which then consumes the permit and lets it through). Must resolve when the
    *  wake has actually been delivered, so the release stays one at a time. */
   retry: () => Promise<unknown>;
+  /** Still wanted at release time? The member stays queued while ANY of its sites is still owed. */
   stillOwed: () => boolean;
+  /** The retry re-enters `holdWake` and consumes the permit (default true). false = the retry starts the member directly (peer message, recovery): no permit is
+   *  granted, so no OTHER site can ride it during the retry. */
+  reenters?: boolean;
   report?: (text: string) => void;
+}
+
+/** One wake site's registration for a held member. */
+interface WakeSite {
+  retry: () => Promise<unknown>;
+  stillOwed: () => boolean;
+  reenters: boolean;
 }
 
 export interface Admission {
@@ -81,6 +97,9 @@ export interface Admission {
   list(): HeldStart[];
   /** Forget a held start (the workspace was deleted): it must not linger in `held starts:` nor keep the line "non-empty". */
   drop(wsId: string): boolean;
+  /** Withdraw ONE wake site (its durable state could not be parked): the member's entry goes only when it was a wake with no other site left — a held
+   *  SPAWN / RESTART is never dropped by a site's failure. */
+  dropSite(wsId: string, site: string): boolean;
   /** Try to release now (single-flight). Resolves when this pass is done. */
   kick(): Promise<void>;
   stop(): void;
@@ -89,7 +108,15 @@ export interface Admission {
 export const ADMISSION_RETRY_MS = 10_000;
 export const ADMISSION_SETTLE_MS = 3_000;
 export const ADMISSION_RUN_TIMEOUT_MS = 90_000;
+/** How long a wake release waits for the started member's first turn (the spawn / restart release waits 20 s for the same). */
+export const ADMISSION_WAKE_SETTLE_MS = 20_000;
 const TIMED_OUT = Symbol('timed-out');
+
+/** The first-turn wait of a wake release — registered by `admission-wake.ts` (it needs the SDK delivery seam, which this platform-free module must not import). */
+let wakeSettle: ((wsId: string) => Promise<unknown>) | null = null;
+export function setAdmissionWakeSettle(fn: ((wsId: string) => Promise<unknown>) | null): void {
+  wakeSettle = fn;
+}
 
 export function realAdmissionDeps(over: Partial<AdmissionDeps> = {}): AdmissionDeps {
   return {
@@ -107,6 +134,7 @@ export function realAdmissionDeps(over: Partial<AdmissionDeps> = {}): AdmissionD
     runTimeoutMs: ADMISSION_RUN_TIMEOUT_MS,
     info: (m) => alog.info(m),
     warn: (m, meta) => alog.warn(m, meta),
+    settleWake: (id) => wakeSettle?.(id) ?? Promise.resolve(),
     ...over,
   };
 }
@@ -121,6 +149,8 @@ export function createAdmission(deps: AdmissionDeps): Admission {
   const releasing = new Map<string, { since: number; kind: HeldStartKind }>();
   /** One-shot permits: "this member may be started NOW" — granted by a release, consumed by whichever wake site reaches `holdWake` first. */
   const permits = new Set<string>();
+  /** The wake sites a held WAKE entry carries (wsId → site → registration); a release snapshots + clears them, and they leave with the entry in every other path. */
+  const wakeSites = new Map<string, Map<string, WakeSite>>();
   let seq = 0;
   let draining: Promise<void> | null = null;
   let rerun = false;
@@ -151,6 +181,54 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     });
   }
 
+  function siteOwedSafe(id: string, site: WakeSite): boolean {
+    try {
+      return site.stillOwed();
+    } catch (e) {
+      deps.warn(`stillOwed of a held wake site of ${id} threw — treated as still owed`, e);
+      return true;
+    }
+  }
+  function anySiteOwed(id: string): boolean {
+    const sites = wakeSites.get(id);
+    if (!sites) return false;
+    for (const s of sites.values()) if (siteOwedSafe(id, s)) return true;
+    return false;
+  }
+  function unregisterSite(id: string, site: string): void {
+    const sites = wakeSites.get(id);
+    if (!sites) return;
+    sites.delete(site);
+    if (sites.size === 0) wakeSites.delete(id);
+  }
+  /** The run of a held WAKE: every registered site's retry, each under its own one-shot permit (a retry that re-enters `holdWake` consumes it; one that does not
+   *  gets none), then the first-turn settle so the next reading sees this member's memory. A site that threw makes the release a failure (logged + reported). */
+  async function runWakeSites(id: string): Promise<unknown> {
+    const sites = wakeSites.get(id);
+    wakeSites.delete(id); // snapshot: a retry that re-holds registers afresh
+    if (!sites) return { ok: true };
+    let failure: string | null = null;
+    // Owed-ness is judged ONCE, before the first retry: an earlier site's retry starts the member, which would make a later site's "still asleep" test false though
+    // its durable state (parked prompts…) still needs delivering — to the member that is now running.
+    const owed = [...sites.values()].filter((site) => siteOwedSafe(id, site));
+    for (const site of owed) {
+      if (site.reenters) permits.add(id);
+      try {
+        await site.retry();
+      } catch (e) {
+        failure ??= e instanceof Error ? e.message : String(e);
+      } finally {
+        permits.delete(id); // never leave a stale permit that could bypass a LATER hold
+      }
+    }
+    try {
+      await deps.settleWake?.(id); // the next release's fresh reading must include THIS member's memory, as a spawn / restart release does (it awaits the first turn)
+    } catch (e) {
+      deps.warn(`first-turn settle after the wake of ${id} threw`, e);
+    }
+    return failure === null ? { ok: true } : { ok: false, error: failure };
+  }
+
   function disarm(): void {
     if (retry !== null) deps.cancel(retry);
     retry = null;
@@ -169,6 +247,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     /** Entries a fleet Pause REFUSED during THIS pass: they keep their slot but never block the line — everything behind them (any run) still goes
      *  out; the next retry tries them again (review F2: a long manual / usage-limit / memory Pause on one run used to freeze every other run). */
     const deferred = new Set<string>();
+    for (const e of queue.values()) e.paused = false; // a lifted Pause must not leave a stale "not a line" flag (pre-review r1): this pass re-finds the refused ones
     for (;;) {
       const waiting = [...queue.values()].filter((e) => !deferred.has(e.wsId));
       if (waiting.length === 0) {
@@ -188,7 +267,9 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       waitLogged = null;
       const entry = queue.get(step.entry.wsId) as Entry;
       queue.delete(entry.wsId);
+      if (entry.kind !== 'wake') wakeSites.delete(entry.wsId); // a start covers any wake of the member: its sites are satisfied by the start (the next sweep / tick delivers)
       if (!stillOwedSafe(entry)) {
+        wakeSites.delete(entry.wsId);
         deps.info(`dropped held ${entry.kind} of ${entry.wsId} (no longer wanted) — ${mem(snap)}; ${queue.size} still held`);
         continue;
       }
@@ -227,6 +308,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     for (const e of [...queue.values()]) {
       if (stillOwedSafe(e)) continue;
       queue.delete(e.wsId);
+      wakeSites.delete(e.wsId);
       deps.info(`dropped held ${e.kind} of ${e.wsId} (no longer wanted) — ${queue.size} still held`);
     }
     if (queue.size === 0) disarm();
@@ -270,12 +352,16 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       pruneUnowed(); // an entry a person already superseded must neither make a newcomer "join the line" nor swallow a repeat request
       // A release of this very workspace is running right now: report it as held (it IS starting) instead of starting it a second time.
       const inFlight = releasing.get(a.wsId);
-      if (inFlight && a.origin === 'auto') return { held: true, since: inFlight.since, kind: inFlight.kind };
+      // (a WAKE release in flight covers another wake, not a restart / spawn: that one is queued behind it, never answered "held" and then lost)
+      if (inFlight && a.origin === 'auto' && kindRank(inFlight.kind) >= kindRank(a.kind)) return { held: true, since: inFlight.since, kind: inFlight.kind };
       const snap = deps.sample();
       const holding = isAdmissionHolding(snap);
       if (!mustHoldStart({ ws: a.ws, origin: a.origin, holding, queued: [...queue.values()].some((e) => !e.paused) })) {
         // A HUMAN started this member itself: its held entry (if any) is superseded — never leave peers / bus-status saying "held" for a running member.
-        if (isHumanOrigin(a.origin) && queue.delete(a.wsId)) deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it — ${mem(snap)}; ${queue.size} still held`);
+        if (isHumanOrigin(a.origin) && queue.delete(a.wsId)) {
+          wakeSites.delete(a.wsId);
+          deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it — ${mem(snap)}; ${queue.size} still held`);
+        }
         return { held: false };
       }
       let entry = queue.get(a.wsId);
@@ -302,24 +388,33 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     holdWake(a) {
       if (!a.fleetMember || !a.sleeping) return { held: false }; // a turn to a running member, or a non-fleet workspace: never a held start
       if (permits.delete(a.wsId)) return { held: false }; // its turn came: the release granted the permit, this call consumes it
-      return api.gate({
+      const site = a.site;
+      let sites = wakeSites.get(a.wsId);
+      if (!sites) wakeSites.set(a.wsId, (sites = new Map()));
+      sites.set(site, { retry: a.retry, stillOwed: a.stillOwed, reenters: a.reenters !== false });
+      const res = api.gate({
         wsId: a.wsId,
         ws: { parentId: 'fleet' },
         origin: 'auto',
         kind: 'wake',
         coordinator: a.coordinator,
-        stillOwed: a.stillOwed,
+        stillOwed: () => anySiteOwed(a.wsId),
         report: a.report,
-        run: async () => {
-          permits.add(a.wsId);
-          try {
-            await a.retry();
-          } finally {
-            permits.delete(a.wsId); // never leave a stale permit that could bypass a LATER hold
-          }
-          return { ok: true };
-        },
+        run: () => runWakeSites(a.wsId),
       });
+      // Only a WAKE entry that is really queued keeps the registration: a held spawn/restart covers this wake (its own start brings the member up), an in-flight
+      // release has already taken its snapshot, and `held:false` runs nothing.
+      if (!res.held || queue.get(a.wsId)?.kind !== 'wake') unregisterSite(a.wsId, site);
+      return res;
+    },
+    dropSite(wsId, site) {
+      unregisterSite(wsId, site);
+      const e = queue.get(wsId);
+      if (!e || e.kind !== 'wake' || wakeSites.has(wsId)) return false;
+      queue.delete(wsId);
+      deps.info(`dropped held wake of ${wsId} (its last site could not park its state) — ${queue.size} still held`);
+      if (queue.size === 0) disarm();
+      return true;
     },
     heldFor(wsId) {
       pruneUnowed();
@@ -330,6 +425,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       return releasing.get(wsId) ?? null;
     },
     drop(wsId) {
+      wakeSites.delete(wsId);
       const had = queue.delete(wsId);
       if (had) deps.info(`dropped held start of ${wsId} (workspace deleted) — ${queue.size} still held`);
       if (queue.size === 0) disarm();
@@ -343,6 +439,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     stop() {
       disarm();
       queue.clear();
+      wakeSites.clear();
     },
   };
   return api;
@@ -370,6 +467,11 @@ export function livenessSilencedByAdmission(wsId: string): boolean {
  *  fine, or the release just granted this member's permit). */
 export function holdWake(args: WakeGateArgs): GateResult {
   return singleton.holdWake(args);
+}
+/** #287: withdraw ONE wake site of a member (e.g. the peer message could not be parked in the inbox): drops the member's entry only when it was a wake with no
+ *  other site left — never a held spawn / restart. */
+export function dropWakeSite(wsId: string, site: string): boolean {
+  return singleton.dropSite(wsId, site);
 }
 /** Try to release the queue now (single-flight) — what a recovery edge, the retry timer and the release trigger of other start kinds call. */
 export function kickAdmission(): Promise<void> {

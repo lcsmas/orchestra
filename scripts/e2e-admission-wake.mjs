@@ -19,7 +19,8 @@
 //   wake_spawn_child   ★ a held-SPAWN child that receives a bus message: no start from the wake, the spawn's OWN start (brief) goes out first, the order after
 //   flush_held         ★ the timer flush of parked prompts for a sleeping fleet member waits BEFORE the queue is cleared; delivered once on release; Send now passes
 //   resume_held        ★ the usage-limit auto-resume nudge waits (marker untouched); nudged once on release
-//   message_held       ★ a peer message to a stopped fleet member is parked in the inbox (honest `inbox`), the member is woken on release and the block delivered once
+//   message_held       ★ a peer message to a stopped fleet member is parked in the inbox (honest `inbox`), the member is woken on release; the inbox HOOK (simulated at session start) drains the block once, nothing re-delivers it
+//   wake_two_sites     ★ one member held by TWO sites (bus réveil + parked-prompt flush): ONE slot, BOTH sites' retries run on release (a later site never overwrites the earlier)
 //   permit_one_shot    ★ after a released wake, a LATER réveil under low memory is held again (the permit is one-shot)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-admission-wake.mjs   (RIG_REPO=<tree> = the must-FAIL run on master;
@@ -34,7 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['wake_open_passes', 'wake_non_fleet_passes', 'wake_held', 'wake_release', 'wake_order', 'wake_live_passes', 'wake_human_drops', 'wake_spawn_child', 'flush_held', 'resume_held', 'message_held', 'permit_one_shot'];
+const ARMS = ['wake_open_passes', 'wake_non_fleet_passes', 'wake_held', 'wake_release', 'wake_order', 'wake_live_passes', 'wake_human_drops', 'wake_spawn_child', 'flush_held', 'resume_held', 'message_held', 'permit_one_shot', 'wake_two_sites'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -133,17 +134,25 @@ out.hasWakeHold = hasWakeHold;
 // ── fake delivery seam: RECORDS starts and turns; a start marks the member live (as a real one does) ──
 const liveSet = new Set();
 const calls = { start: [], turns: [], awaiting: [] };
-let inFlight = 0, maxInFlight = 0;
+let inFlight = 0, maxInFlight = 0, maxBooting = 0;
+const bootUntil = new Map();                       // a started member's first turn settles BOOT_MS after its start — the wake release waits for it (settle)
+const BOOT_MS = 80;
+const hookDrained = [];                            // what the inbox hook (SessionStart / UserPromptSubmit: print + clear the file) delivered at a start
 delivery.registerSdkDelivery({
   hasSession: (id) => liveSet.has(id), hasBackgroundTask: () => false,
+  awaitFirstTurn: async (wsId, ms) => { const wait = Math.min(ms, Math.max(0, (bootUntil.get(wsId) ?? 0) - Date.now())); if (wait > 0) await sleep(wait); return { state: 'ok' }; },
   send: async (wsId, text) => { calls.turns.push({ wsId, text, how: 'send' }); },
   sendAwaitingStart: async (wsId, text) => { calls.awaiting.push({ wsId, text }); return 'started'; },
   start: async (wsId, text, opts) => {
     if (liveSet.has(wsId)) { calls.turns.push({ wsId, text, how: 'start-on-live' }); return; }   // a wake of a LIVE session is a turn, not a start
     inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
     calls.start.push({ wsId, text, origin: opts?.origin, readsAt: reads });
+    maxBooting = Math.max(maxBooting, 1 + [...bootUntil.values()].filter((t) => t > Date.now()).length);   // members still booting when THIS one starts (itself included)
+    const inboxFile = tray.inboxFilePath(wsId);
+    if (fs.existsSync(inboxFile)) { hookDrained.push({ wsId, text: fs.readFileSync(inboxFile, 'utf8') }); fs.rmSync(inboxFile); }
     await sleep(25);
     liveSet.add(wsId);
+    bootUntil.set(wsId, Date.now() + BOOT_MS);
     inFlight -= 1;
   },
   stop: async (wsId) => { liveSet.delete(wsId); },
@@ -166,6 +175,7 @@ const wsRec = (id) => store.getWorkspace(id);
 wake.__resetBusWakeForTests();
 wake.__setBusReaderForTests(() => db);
 wake.setWakeRoster(() => store.workspaces.map((w) => rosterMod.wakeRosterEntry(w)));
+wake.setWakeRosterEntry?.((id) => { const w = store.getWorkspace(id); return w ? rosterMod.wakeRosterEntry(w) : null; });
 wake.setWakeDeliver((wsId, text) => delivery.sdkStartAndDeliver(wsId, text));
 wake.__freezeSwitchForTests(() => true);
 const send = (to, body, runId = 'ws-ops') => busMod.send(db, { runId, sender: 'ws-ops', kind: 'dispatch', body, recipient: to });
@@ -255,6 +265,7 @@ if (ARM === 'wake_order') {
   await until(() => orderStarts().length >= 3);
   check('coordinator_first_then_arrival', orderStarts().map((c) => c.wsId), ['ws-sub', 'ws-m1', 'ws-m2']);
   check('one_at_a_time', maxInFlight, 1);
+  check('one_booting_at_a_time', maxBooting, 1);                                                // the release waits for the started member's FIRST TURN before the next reading
   const rs = orderStarts().map((c) => c.readsAt);
   check('fresh_reading_before_each_release', rs.every((x, i) => i === 0 || x > rs[i - 1]), true);
   verdict();
@@ -351,6 +362,22 @@ if (ARM === 'resume_held') {
   verdict();
 }
 
+if (ARM === 'wake_two_sites') {
+  // ws-m1: a bus message AND parked prompts, both held at 4 GB — ONE slot, and BOTH sites' retries must run on release (the later site must not overwrite the earlier)
+  await store.upsertWorkspace({ ...wsRec('ws-m1'), queuedPrompts: [{ id: 'q-m1', text: 'PARKED-m1', queuedAt: Date.now() - 60_000 }] });
+  mem = 4; guard.sampleNow();
+  send('ws-m1', 'TWO-SITES-MSG');
+  await wake.sweepBusWake();
+  const fl = await pq.flushQueuedPrompts('ws-m1');
+  check('both_held', [calls.start.length, fl.ok, admMod ? admMod.listHeldStarts().map((h) => [h.wsId, h.kind]) : []], [0, false, [['ws-m1', 'wake']]]);
+  mem = 9; guard.sampleNow();
+  check('order_delivered_on_release', await until(() => orderStarts().length >= 1), true);
+  check('queued_prompts_delivered_on_release', await until(() => (wsRec('ws-m1').queuedPrompts ?? []).length === 0 && calls.turns.some((t) => t.wsId === 'ws-m1' && /PARKED-m1/.test(String(t.text))) || startsFor('ws-m1').some((c) => /PARKED-m1/.test(String(c.text)))), true);
+  await sleep(150);
+  check('each_once', [orderStarts().length, [...calls.turns, ...calls.start].filter((c) => c.wsId === 'ws-m1' && /PARKED-m1/.test(String(c.text))).length, admMod ? admMod.listHeldStarts().length : 0], [1, 1, 0]);
+  verdict();
+}
+
 if (ARM === 'message_held') {
   mem = 4; guard.sampleNow();
   const body = 'PEER-MSG-4d2e';
@@ -361,8 +388,9 @@ if (ARM === 'message_held') {
   check('no_process_started', calls.start.length, 0);                                            // ← master starts the member at once (delivery 'started')
   mem = 9; guard.sampleNow();
   check('woken_on_release', await until(() => startsFor('ws-m1').length >= 1), true);
-  await sleep(700);                                                                               // the drain grace + the confirmed re-release
+  await sleep(300);
   check('bring_up_prompt_not_the_message', /memory is back/.test(String(startsFor('ws-m1')[0]?.text ?? '')), true);
-  check('delivered_once_and_block_left_the_inbox', [calls.awaiting.filter((c) => c.text.includes(body)).length, tray.readInbox('ws-m1').length], [1, 0]);
+  check('hook_drained_the_block_once', hookDrained.filter((h) => h.wsId === 'ws-m1' && h.text.includes(body)).length, 1);
+  check('block_left_the_inbox_and_nothing_re_delivered_it', [tray.readInbox('ws-m1').length, calls.awaiting.filter((c) => c.text.includes(body)).length, calls.turns.filter((c) => c.text.includes(body)).length], [0, 0, 0]);
   verdict();
 }

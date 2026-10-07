@@ -180,6 +180,7 @@ import {
   startBusWake,
   stopBusWake,
   setWakeRoster,
+  setWakeRosterEntry,
   setWakeDeliver,
   setWakeSwitchReader,
   setAskGateSwitchReader,
@@ -521,6 +522,10 @@ async function createMainWindow() {
   // runner cannot resolve, and importing it there would make the whole wake
   // module untestable under `pnpm run test`.
   setWakeRoster(() => store.workspaces.map(wakeRosterEntry));
+  setWakeRosterEntry((id) => {
+    const w = store.getWorkspace(id);
+    return w ? wakeRosterEntry(w) : null;
+  });
   // #134 — wire the per-run switch readers the wake sweep consults. Until now
   // these stayed the shipped default `() => false`, so even a run frozen wake=ON
   // was COUNTED, never fired. Each reads the flag FROZEN ON THE RUN ROW (never

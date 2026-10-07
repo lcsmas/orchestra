@@ -140,6 +140,7 @@ export async function flushQueuedPrompts(
   if (
     !opts.force &&
     wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {
+      site: 'flush',
       stillOwed: () => {
         const w = store.getWorkspace(id);
         return !!w && !w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);
@@ -222,13 +223,13 @@ const lastNudge = new Map<string, number>();
  *  is to re-read its ledger and re-dispatch, so it must be up before the fleet
  *  starts asking it for work — which is exactly what did NOT happen in the
  *  field incident this ticket comes from. */
-async function resumeUsageLimited(now: number): Promise<void> {
+async function resumeUsageLimited(now: number, only?: string): Promise<void> {
   // #256 fleet PAUSE auto: a run the host paused on a usage limit is Reprised (beginReprise) once its triggering members' pinned accounts
   // have quota — a fresh reading beats the stored reset time. Runs FIRST: a member sent its `reprise` row (wake ON in its run) loses its #74 marker here, before
   // the nudge below could wake it a SECOND time; a member not sent one yet keeps its marker (#74 stays its safety net). Switch OFF / no auto-paused run ⇒ one SELECT, nothing else.
-  await evaluatePausedRuns();
+  if (only === undefined) await evaluatePausedRuns(); // `only` = an Admission release re-running THIS member's nudge: not a whole tick (no 2nd per-tick budget, no re-evaluation)
   const candidates = store.workspaces
-    .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit')
+    .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit' && (only === undefined || ws.id === only))
     // Coordinators first (see above). Stable within each group otherwise.
     .sort((a, b) => Number(isCoordinatorWorkspace(b)) - Number(isCoordinatorWorkspace(a)));
 
@@ -276,7 +277,8 @@ async function resumeUsageLimited(now: number): Promise<void> {
     // (the `usage_limit` marker stays put, no retry storm). The queue re-runs this tick when the member's turn comes; the permit lets this member through.
     if (
       action === 'nudge' &&
-      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now()), {
+      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now(), ws.id), {
+        site: 'resume',
         stillOwed: () => {
           const w = store.getWorkspace(ws.id);
           return !!w && !w.archived && w.lastStopReason === 'usage_limit' && isSleeping(ws.id);

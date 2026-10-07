@@ -605,6 +605,15 @@ export function setWakeRoster(fn: () => WakeableReader[]): void {
   readRoster = fn;
 }
 
+/** #287: ONE reader's roster entry, fresh (no whole-roster rebuild: Admission re-checks every held réveil on each `peers` / liveness read). Unset = fall back to the roster. */
+let readRosterEntry: ((reader: string) => WakeableReader | null) | null = null;
+export function setWakeRosterEntry(fn: ((reader: string) => WakeableReader | null) | null): void {
+  readRosterEntry = fn;
+}
+function rosterEntryOf(reader: string): WakeableReader | null {
+  return readRosterEntry ? readRosterEntry(reader) : (readRoster().find((r) => r.reader === reader) ?? null);
+}
+
 /** How a wake reaches the reader's session. Resolves TRUE only when the turn
  *  was actually started or queued for the session — never merely attempted.
  *
@@ -786,19 +795,27 @@ export async function sweepBusWake(): Promise<void> {
       // #287 Admission: a due réveil of a SLEEPING FLEET member under low memory would START a process — it is HELD, not failed: the reader stays pending on the
       // bus (nothing is lost), the sweep leaves the ledger and every counter alone (no mark, no failure, no retry storm), logs the reason ONCE per transition, and the
       // Admission queue releases it (coordinators first, one at a time, a fresh reading each) by granting a one-shot permit and re-running the sweep.
-      if (action.kind === 'fire' && entry?.fleetMember === true && entry.sleeping === true) {
+      if (action.kind === 'fire' && entry?.fleetMember === true) {
         const reader = action.reader;
-        const held = holdWake({
-          wsId: reader,
-          fleetMember: true,
-          sleeping: true,
-          coordinator: entry.coordinator === true,
-          retry: () => sweepBusWakeNow(),
-          stillOwed: () => readRoster().some((r) => r.reader === reader && r.wakeable && r.sleeping === true),
-        });
-        if (held.held) {
-          logWakeableTransition(reader, 'held-for-memory');
-          continue;
+        // Re-read THIS reader right before deciding: `entry` is the snapshot from the sweep's start, and a delivery awaited since may have put it to sleep (or woken it).
+        const now = rosterEntryOf(reader) ?? entry;
+        if (now.fleetMember === true && now.sleeping === true) {
+          const held = holdWake({
+            wsId: reader,
+            fleetMember: true,
+            sleeping: true,
+            coordinator: now.coordinator === true,
+            site: 'sweep',
+            retry: () => sweepBusWakeNow(),
+            stillOwed: () => {
+              const r = rosterEntryOf(reader);
+              return !!r && r.wakeable && r.sleeping === true;
+            },
+          });
+          if (held.held) {
+            logWakeableTransition(reader, 'held-for-memory');
+            continue;
+          }
         }
       }
       logWakeableTransition(action.reader, 'active');
@@ -1064,6 +1081,7 @@ export function __resetBusWakeForTests(): void {
   readAskGateSwitch = () => false;
   readBusDb = getBus;
   readRoster = () => [];
+  readRosterEntry = null;
   deliverWake = async () => false;
   nowMs = () => Date.now();
 }

@@ -69,9 +69,8 @@ import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
-import { admissionGate, dropHeldStart, heldStartFor } from './admission.ts';
+import { admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind } from './admission.ts';
 import { wakeHeldForMemory } from './admission-wake';
-import { releaseAllInboxBlocks } from './inbox-tray';
 import { decideAdmissionReport, heldPhrase } from '../shared/admission.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
@@ -3165,7 +3164,7 @@ export interface PeerInfo {
    * child. Absent when the peer never set one (or cleared it). */
   statusText?: string;
   /** #286 Admission: this member's automatic start is HELD for low memory (since-when) — a stall to NOT mistake for a hang. */
-  heldForMemory?: { kind: 'spawn' | 'restart'; since: number };
+  heldForMemory?: { kind: HeldStartKind; since: number };
   /** Committed diff vs the workspace's base (three-dot shortstat). Present
    * only when the caller asked for `stats`; `null` = couldn't be computed
    * (missing ref / non-git workspace), which is distinct from an all-zero
@@ -3203,7 +3202,7 @@ export async function dispatchPeersRequest(input: {
     running: isRunning(w.id),
     lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
     statusText: w.statusText,
-    ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: 'spawn' | 'restart'; since: number } } : {}),
+    ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: HeldStartKind; since: number } } : {}),
   }));
   if (input.stats) {
     await Promise.all(
@@ -3396,14 +3395,11 @@ export async function wakeAgentWithPrompt(
   return false;
 }
 
-/** #287: the bring-up prompt of a HELD peer-message wake — content-free; the parked message reaches the agent through its inbox hook (drained on this very prompt) or,
- *  if the hook missed it, through the confirmed re-release below (a block leaves the inbox only on a confirmed start — exactly once). */
+/** #287: the bring-up prompt of a HELD peer-message wake — content-free; the parked message reaches the agent through its inbox hook (SessionStart / UserPromptSubmit
+ *  drain the inbox file) exactly as every other inbox-parked message does. Nothing re-releases the block: a 2nd delivery would duplicate what the hook already drained. */
 const HELD_MESSAGE_WAKE_PROMPT = 'Orchestra: memory is back — you were woken to read the messages parked for you (they are printed above).';
-const HELD_MESSAGE_DRAIN_GRACE_MS = 400;
 async function wakeHeldMessageTarget(id: string): Promise<void> {
-  if (!(await wakeAgentWithPrompt(id, HELD_MESSAGE_WAKE_PROMPT))) return;
-  await new Promise((r) => setTimeout(r, HELD_MESSAGE_DRAIN_GRACE_MS)); // let the hook's drain win the race (a RACE-LOSER grace, as in the watchdog recycle)
-  await releaseAllInboxBlocks(id, 'auto').catch((e) => log.warn(`held message wake: parked re-release failed for ${id}`, e));
+  await wakeAgentWithPrompt(id, HELD_MESSAGE_WAKE_PROMPT);
 }
 
 /** Deliver a prompt from one agent to another. If the target's PTY is running
@@ -3601,9 +3597,9 @@ async function dispatchMessageRequestUnmirrored(
 
   // #287 Admission: a stopped FLEET member's wake would START a process — under low memory it WAITS. The message is parked durably in the inbox (the existing
   // fallback, reported honestly as 'inbox') and the queue wakes the member when its turn comes; its inbox hook drains the block on that very prompt.
-  if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to))) {
+  if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {
     if (await queueInbox(input.to, body)) return { ok: true, delivery: 'inbox', branch: target.branch };
-    dropHeldStart(input.to); // nothing parked → nothing to wake it for
+    dropWakeSite(input.to, 'message'); // nothing parked → nothing to wake it for (this site only: a held spawn / restart of the member stays queued)
     return { ok: false, error: 'inbox write failed' };
   }
   // Target stopped — wake it and deliver the message as its next turn.

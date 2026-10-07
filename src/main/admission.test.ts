@@ -674,7 +674,7 @@ test('facade livenessSilencedByAdmission: true while held AND while releasing, f
 
 import type { WakeGateArgs } from './admission.ts';
 function wakeArgs(w: ReturnType<typeof world>, wsId: string, over: Partial<WakeGateArgs> = {}): WakeGateArgs {
-  return { wsId, fleetMember: true, sleeping: true, coordinator: false, retry: async () => { w.ran.push(`wake:${wsId}`); }, stillOwed: () => true, ...over };
+  return { wsId, fleetMember: true, sleeping: true, coordinator: false, site: 'sweep', retry: async () => { w.ran.push(`wake:${wsId}`); }, stillOwed: () => true, ...over };
 }
 
 test('W1 baseline: a wake of a SLEEPING fleet member under 4 GB is HELD (queued as kind wake, nothing runs); at 12 GB with an empty queue it passes', () => {
@@ -781,4 +781,139 @@ test('W9 a wake whose retry throws is logged and the line moves on (nothing is l
   await a.kick();
   assert.deepEqual(w.ran, ['wake:ok1']);
   assert.ok(w.warns.some((l) => /released wake of bad FAILED: sweep blew up/.test(l)));
+});
+
+// ── #287 pre-review r1 (M1 settle, M2 per-site registry, M3 dropSite, in-flight rank, stale `paused`) ──
+
+test('W10 two wake SITES for one member never overwrite each other: both retries run, each under its own permit, in registration order; the member stays queued while ANY site is owed', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const seen: string[] = [];
+  let flushOwed = true;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'sweep', retry: async () => { seen.push(`sweep:${a.holdWake(wakeArgs(w, 'm1', { site: 'sweep' })).held ? 'held' : 'through'}`); } }));
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', stillOwed: () => flushOwed, retry: async () => { seen.push(`flush:${a.holdWake(wakeArgs(w, 'm1', { site: 'flush' })).held ? 'held' : 'through'}`); } }));
+  assert.deepEqual(a.list().map((e) => e.wsId), ['m1'], 'ONE slot for the member');
+  // the sweep site no longer owed (stillOwed is the replaced-by-newest one for 'sweep'): the flush site alone keeps the member queued
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(seen, ['sweep:through', 'flush:through']);
+  assert.deepEqual(a.list(), []);
+  // owed-ness is per site: with ONLY the flush site not owed and the sweep site owed, the entry is still wanted
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm2', { site: 'flush', stillOwed: () => false }));
+  a.holdWake(wakeArgs(w, 'm2', { site: 'sweep', stillOwed: () => true }));
+  assert.equal(a.heldFor('m2')?.kind, 'wake');
+  a.holdWake(wakeArgs(w, 'm3', { site: 'flush', stillOwed: () => false }));
+  assert.equal(a.heldFor('m3'), null, 'no site owed → pruned at read time');
+  void flushOwed;
+});
+
+test('W11 dropSite: a site that could not park its state is withdrawn; the entry goes ONLY when it was a wake with no other site left — a held spawn / restart is never dropped', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'w-only', { site: 'message' }));
+  assert.equal(a.dropSite('w-only', 'message'), true);
+  assert.deepEqual(a.list(), []);
+  a.holdWake(wakeArgs(w, 'w-two', { site: 'message' }));
+  a.holdWake(wakeArgs(w, 'w-two', { site: 'sweep' }));
+  assert.equal(a.dropSite('w-two', 'message'), false, 'another site still wants the wake');
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['w-two', 'wake']]);
+  a.gate(args(w, 'spawned', { kind: 'spawn' }));
+  a.holdWake(wakeArgs(w, 'spawned', { site: 'message' }));
+  assert.equal(a.dropSite('spawned', 'message'), false);
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['w-two', 'wake'], ['spawned', 'spawn']], 'the held SPAWN survives its message site failing');
+});
+
+test('W12 settle (M1): a wake release waits for the started member\'s first turn BEFORE the next fresh reading — the next release sees its memory; a throwing settle is logged and the line moves on; a spawn release is not settled here', async () => {
+  const w = world();
+  const events: string[] = [];
+  const a = createAdmission({ ...w.deps, settleWake: async (id) => { events.push(`settle:${id}`); if (id === 'bad') throw new Error('no session'); } });
+  const wk = (id: string) => wakeArgs(w, id, { retry: async () => { events.push(`retry:${id}`); } });
+  a.holdWake(wk('m1')); a.holdWake(wk('bad')); a.holdWake(wk('m2'));
+  a.gate(args(w, 'sp', { kind: 'spawn', run: async () => { events.push('retry:sp'); } }));
+  w.mem = 9;
+  const samplesBefore = w.samples;
+  await a.kick();
+  assert.deepEqual(events, ['retry:m1', 'settle:m1', 'retry:bad', 'settle:bad', 'retry:m2', 'settle:m2', 'retry:sp']);
+  assert.ok(w.warns.some((l) => /first-turn settle after the wake of bad threw/.test(l)));
+  assert.ok(w.samples - samplesBefore >= 4, 'a fresh reading per release');
+});
+
+test('W13 reenters:false (peer message, recovery): NO permit is granted for the retry, so no OTHER site can ride it', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const during: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { site: 'message', reenters: false, retry: async () => { during.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush' })).held); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(during, [true], 'another site\'s wake for the same member during the retry is held, not waved through');
+});
+
+test('W14 a WAKE release in flight covers another wake but NOT a restart: the restart is queued behind it (never answered "held" and then lost)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const seen: unknown[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.mem = 4; seen.push(a.gate(args(w, 'm1', { kind: 'restart' }))); seen.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush' }))); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.equal((seen[0] as { held: boolean; kind?: string }).held, true);
+  assert.equal((seen[0] as { kind?: string }).kind, 'restart', 'queued as the restart it is');
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['m1', 'restart']], 'the restart is in the line, the covered wake is not a 2nd entry');
+});
+
+test('W15 a lifted Pause leaves no stale "not a line" flag: after a pass the formerly Pause-refused entry counts as the line again', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  w.mem = 9;
+  a.gate(args(w, 'A', { retryLater: () => true, run: async () => ({ ok: false, error: 'run en pause' }) }));   // mem fine, empty line → passes straight (not queued)
+  w.mem = 4;
+  a.gate(args(w, 'A', { retryLater: () => true, run: async () => ({ ok: false, error: 'run en pause' }) }));   // held
+  w.mem = 9;
+  await a.kick();                                                                                                // refused (Pause) → keeps its slot, flagged
+  assert.equal(a.heldFor('A')?.kind, 'spawn');
+  assert.deepEqual(a.gate(args(w, 'B')), { held: false }, 'N1: a Pause-refused entry alone is not a line — a newcomer at plentiful memory goes straight out');
+  w.mem = 6.5;                                                                                                   // above the threshold but no release room (< 7)
+  await a.kick();                                                                                                // the pass resets the flag, then waits for memory
+  assert.deepEqual(a.gate(args(w, 'C')), { held: true, since: 1_000_000, kind: 'spawn' }, 'the entry is the line again: C joins it instead of starting ahead of it');
+});
+
+test('W16 a wake site superseded by a held spawn leaves no stale registration: after the spawn releases, a LATER wake runs only its own retry', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.ran.push('OLD-SITE-RETRY'); } }));
+  a.gate(args(w, 'm1', { kind: 'spawn' }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['m1']);
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.ran.push('NEW-SITE-RETRY'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['m1', 'NEW-SITE-RETRY']);
+});
+
+test('W17 a site that meets an in-flight wake release is answered "held" and is NOT left registered: a later wake runs only its own retries (no stale site)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const answers: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { reenters: false, retry: async () => { answers.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush', retry: async () => { w.ran.push('STALE-FLUSH'); } })).held); w.ran.push('wake:m1'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(answers, [true]);
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.ran.push('NEW'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['wake:m1', 'NEW']);
+});
+
+test('W18 per-site owed-ness is judged ONCE before the first retry: a site whose "still asleep" test an earlier site\'s retry made false still runs (its durable state is delivered to the now-running member)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let asleep = true;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'sweep', stillOwed: () => asleep, retry: async () => { asleep = false; w.ran.push('sweep'); } }));
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', stillOwed: () => asleep, retry: async () => { w.ran.push('flush'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['sweep', 'flush']);
 });

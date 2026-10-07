@@ -302,21 +302,28 @@ fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), 
 `src/main/admission-liveness.test.ts` (real roster + sweep + queue).
 
 #### Wakes (#287, wave G ledger #295) — every automatic START of a SLEEPING fleet member waits too
-Held kind `'wake'` (`HeldStartKind`, rank 1 < spawn/restart rank 2: a held spawn/restart COVERS a wake of the same member — the wake is answered "held" and what it was for
-reaches the running member as a plain turn on the next sweep, ≤ 60 s). **Sleeping** = no PTY and no live SDK session (`isSleeping`, `src/main/admission-wake.ts`); a turn to a
-running member, a top-level workspace and a human act are never held. A wake site calls `wakeHeldForMemory(ws, retry, {stillOwed?})` BEFORE it starts anything: `true` = skip it and
-leave the durable pending state EXACTLY as it is; the queue (coordinators first, one at a time, fresh `sampleMemoryGuardNow()` + `mayReleaseOneStart` before each release, same
-settle / retry / 90 s bound) then grants a **one-shot permit** (`holdWake`, admission.ts: `permits` Set) and runs the site's own `retry`, whose `holdWake` consumes it and goes
-through; the permit is revoked when the run ends (never a stale bypass of a LATER hold). Sites: **bus réveil** (`sweepBusWake`, bus-wake.ts: after `decideWake`'s skip handling,
-BEFORE the ledger mark and every counter — no `fired`/`failed`/`counted` change, no re-fire per sweep; skip reason `held-for-memory`, logged ONCE per transition at info;
-release = `sweepBusWakeNow()`, a sweep that is guaranteed to run; the reader keeps its pending lot → delivered after release, `orchestra check` returns it intact, `ack` clears it;
-the roster carries `fleetMember`/`sleeping`/`coordinator`, wake-roster.ts) · **parked-prompt flush** (`flushQueuedPrompts`, prompt-queue.ts: timer flush only — "Send now"/`force` passes —
-held BEFORE the queue is cleared) · **usage-limit auto-resume** (`resumeUsageLimited`: held before the budget, the marker clear and the re-mark) · **peer message to a stopped member**
-(`dispatchMessageRequest`: parked in the inbox, honest `delivery:'inbox'`, the queue wakes the member with a content-free prompt and re-releases the block after a drain grace) ·
-**view-open recovery** (`agentSdkHistory`, api-handlers.ts: pending prompts resent to a sleeping member). A held-SPAWN child is no longer started by a bus message (it used to bypass
-the hold). NOT gated: watchdog `recycleSession`, account-migrate resume, Reprise starts (replace a running session / human or Pause lift), `--detached` spawns. Gates:
-`scripts/e2e-admission-wake.mjs` (12 arms, `RIG_REPO=<master>` = must-FAIL; real bus + sweep + roster + prompt queue + message dispatch, fake memory source + recording seam),
-`admission.test.ts` W1–W9, `admission-wiring.test.ts` `#287 …` pins (the recovery site is wiring-pinned only), `admission-mutants.mjs` W-series (`rig: 'wake'`).
+Held kind `'wake'` (`HeldStartKind`, rank 1 < spawn/restart rank 2: a held spawn/restart COVERS a wake of the same member — the wake is answered "held", its site registration is
+dropped, and what it was for reaches the running member afterwards through the site's OWN trigger: the next sweep ≤ 60 s / the next bus write, the 20 s prompt-queue tick, the inbox
+hook at the start). **Sleeping** = no PTY and no live SDK session (`isSleeping`, `src/main/admission-wake.ts`); a turn to a running member, a top-level workspace and a human act are
+never held. A wake site calls `wakeHeldForMemory(ws, retry, {site, stillOwed?, reenters?})` BEFORE it starts anything: `true` = skip it and leave the durable pending state EXACTLY as it is.
+**One slot per member, one retry per SITE** (`'sweep' | 'flush' | 'resume' | 'message' | 'recovery'`; `wakeSites` in admission.ts): two sites holding the same member never overwrite each
+other; the entry stays queued while ANY site is owed (judged once, before the first retry). The queue (coordinators first, one at a time, fresh `sampleMemoryGuardNow()` +
+`mayReleaseOneStart` before each release, same settle / retry / 90 s bound) runs EVERY owed site's retry, each under its own **one-shot permit** (`permits` Set; a re-entering retry
+consumes it in its own `holdWake`; `reenters:false` sites — peer message, recovery — start the member directly and get none, so no other site can ride it); the permit is revoked when
+the retry ends. After the retries the release **waits for the started member's first turn** (`setAdmissionWakeSettle` → `sdkAwaitFirstTurn`, ≤ 20 s inside the 90 s bound) so the next fresh
+reading includes its memory — as a spawn / restart release does. A release whose retry throws is logged + reported to the coordinator like any failed release. A WAKE release in flight
+covers another wake but NOT a restart/spawn (that one is queued behind it). Sites: **bus réveil** (`sweepBusWake`, bus-wake.ts: after `decideWake`'s skip handling, BEFORE the ledger
+mark and every counter — no `fired`/`failed`/`counted` change, no re-fire per sweep; the reader is RE-READ via the per-reader roster seam `setWakeRosterEntry` right before the decision
+and `stillOwed` checks that one reader, never the whole roster; skip reason `held-for-memory`, logged ONCE per transition at info; release = `sweepBusWakeNow()`, a sweep that is guaranteed
+to run; the reader keeps its pending lot → delivered after release, `orchestra check` returns it intact, `ack` clears it; the roster carries `fleetMember`/`sleeping`/`coordinator`,
+wake-roster.ts) · **parked-prompt flush** (`flushQueuedPrompts`, prompt-queue.ts: timer flush only — "Send now"/`force` passes — held BEFORE the queue is cleared) · **usage-limit
+auto-resume** (`resumeUsageLimited(now, only?)`: held before the budget, the marker clear and the re-mark; the release re-runs THIS member only) · **peer message to a stopped member**
+(`dispatchMessageRequest`: parked in the inbox, honest `delivery:'inbox'`; the queue wakes the member with a content-free prompt and the inbox HOOK drains the block at session start —
+nothing re-releases it; a failed park withdraws only the `'message'` site, `dropWakeSite`) · **view-open recovery** (`agentSdkHistory`, api-handlers.ts: pending prompts resent to a
+sleeping member). A held-SPAWN child is no longer started by a bus message (it used to bypass the hold). NOT gated: watchdog `recycleSession`, account-migrate resume, Reprise starts
+(replace a running session / human or Pause lift), `--detached` spawns. Known: a member alive only in a detached keeper after an app restart counts as sleeping (its wake is held,
+nothing would have started). Gates: `scripts/e2e-admission-wake.mjs` (13 arms, `RIG_REPO=<master>` = must-FAIL; real bus + sweep + roster + prompt queue + message dispatch, fake memory source + recording seam with a boot window and a simulated inbox hook),
+`admission.test.ts` W1–W18, `admission-wiring.test.ts` `#287 …` pins (the recovery site is wiring-pinned only), `admission-mutants.mjs` W-series (`rig: 'wake'`).
 
 ### Archive / unarchive / delete
 - **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),

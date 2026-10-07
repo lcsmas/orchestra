@@ -47,7 +47,7 @@ test('spawn stillOwed: owed AND no live SDK session AND no running PTY AND not a
 
 test('spawn reply carries held; peers carry heldForMemory', () => {
   assert.match(ws, /\.\.\.\(started\.held \? \{ held: started\.held \} : \{\}\)/);
-  assert.match(ws, /heldForMemory\?: \{ kind: 'spawn' \| 'restart'; since: number \}/);
+  assert.match(ws, /heldForMemory\?: \{ kind: HeldStartKind; since: number \}/);
   assert.match(ws, /\.\.\.\(heldStartFor\(w\.id\) \? \{ heldForMemory:/);
 });
 
@@ -87,7 +87,7 @@ test('F3 liveness: index.ts silences a member with a held start (the same predic
 test('F4 delete: teardownWorkspace (single AND bulk delete) drops the held start FIRST', () => {
   const body = fn(ws, 'async function teardownWorkspace(ws: Workspace)');
   assert.ok(body.indexOf('dropHeldStart(id);') > 0 && body.indexOf('dropHeldStart(id);') < body.indexOf('await stopStructuredSession(id);'), 'dropped before anything slow runs');
-  assert.match(ws, /import \{ admissionGate, dropHeldStart, heldStartFor \} from '\.\/admission\.ts';/);
+  assert.match(ws, /import \{ admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind \} from '\.\/admission\.ts';/);
 });
 
 test('F4 report: a failed release tells the coordinator — a bus `escalation` from the member to its live parent, behind the `liveness` switch like the boot-wedge escalation; both gates pass `report`', () => {
@@ -163,8 +163,13 @@ test('#287 bus-wake: the hold branch follows decideWake\'s skip handling, preced
   const mark = body.indexOf('ledger.set(action.reader, ledgerEntry);');
   assert.ok(skip > 0 && hold > skip && active > hold && mark > active, 'skip handling → hold → active transition → ledger mark');
   const branch = body.slice(hold, active);
-  assert.match(body.slice(hold - 260, hold), /if \(action\.kind === 'fire' && entry\?\.fleetMember === true && entry\.sleeping === true\) \{/);
+  assert.match(body.slice(hold - 520, hold), /if \(action\.kind === 'fire' && entry\?\.fleetMember === true\) \{/);
+  assert.match(body.slice(hold - 320, hold), /const now = rosterEntryOf\(reader\) \?\? entry;/, 'the reader is RE-READ right before the decision (the snapshot is from the sweep start)');
+  assert.match(body.slice(hold - 120, hold), /if \(now\.fleetMember === true && now\.sleeping === true\) \{/);
+  assert.match(branch, /site: 'sweep',/);
   assert.match(branch, /retry: \(\) => sweepBusWakeNow\(\),/);
+  assert.match(branch, /const r = rosterEntryOf\(reader\);\s*\n\s*return !!r && r\.wakeable && r\.sleeping === true;/, 'stillOwed checks THIS reader only, never the whole roster');
+  assert.doesNotMatch(branch, /readRoster\(\)/);
   assert.match(branch, /logWakeableTransition\(reader, 'held-for-memory'\);\s*\n\s*continue;/);
   assert.doesNotMatch(branch, /counters\.|ledger\./, 'a held réveil touches no counter and no ledger mark');
   assert.match(wake, /export async function sweepBusWakeNow\(\): Promise<void> \{\s*\n\s*for \(let i = 0; sweeping && i < 200; i\+\+\)/);
@@ -174,6 +179,7 @@ test('#287 roster: fleetMember / sleeping / coordinator come from the real probe
   assert.match(roster, /fleetMember: !!ws\.parentId,/);
   assert.match(roster, /sleeping: !isRunning\(ws\.id\) && !sdkSessionLive\(ws\.id\),/);
   assert.match(roster, /coordinator: canOrchestrate\(ws\),/);
+  assert.match(index, /setWakeRosterEntry\(\(id\) => \{\s*\n\s*const w = store\.getWorkspace\(id\);\s*\n\s*return w \? wakeRosterEntry\(w\) : null;/, 'the per-reader roster seam is wired (Admission re-checks one reader, not the whole roster)');
 });
 
 test('#287 admission-wake: "sleeping" = no PTY AND no live SDK session; a fleet member = has a parent; the default stillOwed re-checks both at release time', () => {
@@ -181,6 +187,7 @@ test('#287 admission-wake: "sleeping" = no PTY AND no live SDK session; a fleet 
   assert.match(aw, /return !isRunning\(id\) && !sdkSessionLive\(id\);/);
   assert.match(aw, /fleetMember: !!ws\.parentId,/);
   assert.match(aw, /sleeping: isSleeping\(id\),/);
+  assert.match(aw, /setAdmissionWakeSettle\(\(id\) => sdkAwaitFirstTurn\(id, ADMISSION_WAKE_SETTLE_MS\)\);/, 'a wake release waits for the started member\'s first turn (the next reading includes its memory)');
   assert.match(aw, /return !!w && !w\.archived && isSleeping\(id\);/);
 });
 
@@ -191,24 +198,28 @@ test('#287 prompt-queue: the TIMER flush holds BEFORE the queue is cleared (Send
   const usage = flush.indexOf("'account still at its usage limit'");
   assert.ok(usage > 0 && hold > usage && clear > hold, 'usage check → hold → clear');
   assert.match(flush.slice(hold - 60, hold), /!opts\.force &&\s*\n\s*$/, 'the TIMER flush only: Send now (force) is a human click and passes');
-  const resume = fn(pq, 'async function resumeUsageLimited(now: number): Promise<void> {');
+  assert.match(flush.slice(hold, hold + 140), /site: 'flush',/);
+  const resume = fn(pq, 'async function resumeUsageLimited(now: number, only?: string): Promise<void> {');
   const rh = resume.indexOf("action === 'nudge' &&");
   assert.ok(rh > resume.indexOf("if (action === 'wait') continue;") && rh < resume.indexOf('budget--;') && rh < resume.indexOf('await clearStopReason(ws.id).catch(() => {});\n    let woke'), 'wait → hold → budget → clear');
-  assert.match(resume.slice(rh, rh + 160), /wakeHeldForMemory\(ws, \(\) => resumeUsageLimited\(Date\.now\(\)\), \{/);
+  assert.match(resume.slice(rh, rh + 200), /wakeHeldForMemory\(ws, \(\) => resumeUsageLimited\(Date\.now\(\), ws\.id\), \{\s*\n\s*site: 'resume',/, 'the release re-runs THIS member only (no 2nd per-tick budget)');
+  assert.match(resume, /if \(only === undefined\) await evaluatePausedRuns\(\);/);
+  assert.match(resume, /\(only === undefined \|\| ws\.id === only\)/);
 });
 
 test('#287 peer message: a stopped fleet target is parked in the inbox (honest `inbox`) and woken by the queue; a failed park drops the hold', () => {
   const from = ws.indexOf('export async function dispatchMessageRequest(');
   const body = ws.slice(from, ws.indexOf('export interface BroadcastTargetResult', from));
-  const hold = body.indexOf('if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to))) {');
+  const hold = body.indexOf("if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {");
   const wakeTry = body.indexOf('if (await wakeAgentWithPrompt(input.to, body)) {');
   assert.ok(hold > 0 && wakeTry > hold, 'hold before the wake attempt');
-  assert.match(body.slice(hold, wakeTry), /if \(await queueInbox\(input\.to, body\)\) return \{ ok: true, delivery: 'inbox', branch: target\.branch \};\s*\n\s*dropHeldStart\(input\.to\);/);
-  assert.match(ws, /await new Promise\(\(r\) => setTimeout\(r, HELD_MESSAGE_DRAIN_GRACE_MS\)\);[^\n]*\n\s*await releaseAllInboxBlocks\(id, 'auto'\)/);
+  assert.match(body.slice(hold, wakeTry), /if \(await queueInbox\(input\.to, body\)\) return \{ ok: true, delivery: 'inbox', branch: target\.branch \};\s*\n\s*dropWakeSite\(input\.to, 'message'\);/, 'a failed park withdraws THIS site only — never a held spawn / restart of the member');
+  assert.doesNotMatch(body.slice(hold, wakeTry), /dropHeldStart/);
+  assert.doesNotMatch(ws, /releaseAllInboxBlocks|HELD_MESSAGE_DRAIN_GRACE_MS/, 'no re-release of the parked block: the inbox hook drains it, a 2nd delivery would duplicate it');
 });
 
 test('#287 recovery: the VIEW-OPEN recovery holds when it would resend pending prompts to a sleeping fleet member; the recycle/restart callers are NOT gated (they replace a running session — net 0)', () => {
-  assert.match(api, /if \(w && \(w\.sdkPendingPrompts \?\? \[\]\)\.length > 0 && wakeHeldForMemory\(w, recoverNow\)\) return;/);
+  assert.match(api, /if \(w && \(w\.sdkPendingPrompts \?\? \[\]\)\.length > 0 && wakeHeldForMemory\(w, recoverNow, \{ site: 'recovery', reenters: false \}\)\) return;/);
   const sdk = read('src/main/agent-sdk.ts');
   assert.doesNotMatch(sdk, /admission/i, 'agent-sdk.ts (the B5 / D1.6 serialized seam) is untouched');
   assert.doesNotMatch(read('src/main/session-watchdog.ts'), /admission/i);
