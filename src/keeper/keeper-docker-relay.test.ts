@@ -51,7 +51,7 @@ setInterval(() => {}, 1000);
 `;
 
 before(() => {
-  const srcs = ['src/keeper/index.ts', 'src/keeper/docker-relay.ts', 'src/shared/keeper-protocol.ts', 'src/shared/docker-relay.ts'].map((s) => path.join(REPO, s));
+  const srcs = ['src/keeper/index.ts', 'src/keeper/docker-relay.ts', 'src/shared/keeper-protocol.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts'].map((s) => path.join(REPO, s));
   if (!fs.existsSync(KEEPER_JS) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_JS).mtimeMs)) {
     execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
   }
@@ -276,32 +276,44 @@ test('F1: the member\'s OWN unix DOCKER_HOST is the upstream, and the relay — 
   assert.deepEqual(lastBody(ctx).Labels, { 'orchestra.ws': ctx.wsId, 'orchestra.run': 'run-7' }); // reached THAT daemon, stamped
 });
 
-test('F1b: an inherited RELAY-shaped DOCKER_HOST (launched from another relay-ON member) is not the upstream', async () => {
+test('F1b: an inherited RELAY-shaped DOCKER_HOST (launched from another relay-ON member) is not the upstream — the context lookup answers instead (and never sees it)', async () => {
   const ctx = await makeCtx();
+  const bin = path.join(ctx.dir, 'bin');
+  fs.mkdirSync(bin);
+  // the docker CLI shim: names the real daemon, and records whether it was handed the inherited relay DOCKER_HOST
+  fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\necho "dh=\${DOCKER_HOST-unset}" > "${ctx.dir}/ctx-env"\necho unix://${ctx.daemon.sockPath}\n`, { mode: 0o755 });
   const other = path.join(ctx.dir, 'someone-else.docker.sock');
-  const c = await start(ctx, { PATH: process.env.PATH, DOCKER_HOST: `unix://${other}`, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath }, true);
+  const c = await start(ctx, { PATH: `${bin}:${process.env.PATH}`, DOCKER_HOST: `unix://${other}` }, true);
   c.send(line({ env: 1 }));
   const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
   assert.equal(env.DOCKER_HOST, `unix://${ctx.relaySock}`);
-  assert.doesNotMatch(fs.readFileSync(ctx.logFile, 'utf8'), /someone-else/);
+  assert.equal(fs.readFileSync(path.join(ctx.dir, 'ctx-env'), 'utf8').trim(), 'dh=unset', 'the inherited relay must be hidden from the context lookup');
+  c.send(line({ create: 1 }));
+  await c.waitLine((l) => l.created === 201);
+  assert.equal(lastBody(ctx).Labels?.['orchestra.ws'], ctx.wsId, 'forwarded to the daemon the CONTEXT named, not to the other relay');
 });
 
-test('relay cannot start (its socket path is blocked): DOCKER_HOST stays UNSET', async () => {
+test('review #3: the keeper PUBLISHES the daemon its relay forwards to beside the relay socket, and removes it when it exits', async () => {
   const ctx = await makeCtx();
-  fs.mkdirSync(path.join(ctx.relaySock, 'blocker'), { recursive: true });
   const c = await start(ctx, { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath }, true);
-  c.send(line({ env: 1 }));
-  const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
-  assert.equal(env.DOCKER_HOST, undefined);
-  assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /docker relay disabled/);
-});
-
-test('a member whose DOCKER_HOST is not a unix socket is never redirected to the local daemon', async () => {
-  const ctx = await makeCtx();
-  const c = await start(ctx, { PATH: process.env.PATH, DOCKER_HOST: 'tcp://10.1.2.3:2375' }, true);
-  c.send(line({ env: 1 }));
-  assert.equal(((await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>).DOCKER_HOST, 'tcp://10.1.2.3:2375');
-  assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /is not a unix socket/);
+  c.send(line({ echo: 1 }));
+  await c.waitLine((l) => l.echo === 1);
+  const file = path.join(ctx.dir, 'k.docker.upstream');
+  assert.equal(fs.readFileSync(file, 'utf8'), ctx.daemon.sockPath, 'the app\'s Pause asks THIS file which daemon holds the member\'s containers');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const pid = pidOf(ctx);
+  c.send({ t: 'kill', signal: 'SIGTERM' });
+  for (let i = 0; i < 100 && !c.frames.some((f) => f.t === 'exit'); i++) await sleep(30);
+  c.destroy();
+  for (let i = 0; i < 100; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      break;
+    }
+    await sleep(50);
+  }
+  assert.equal(fs.existsSync(file), false);
 });
 
 test('relay killed mid-session (SIGUSR2): the keeper restarts it and the next create is labelled', async () => {

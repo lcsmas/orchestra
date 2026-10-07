@@ -150,6 +150,12 @@ export function relaySocketPath(keeperSock: string): string {
 /** `daemonUp: false` = the path is where the member would reach its daemon but nothing listens there YET (dockerd not
  *  started, Docker Desktop closed): the relay still comes up and answers 502 until it appears (#291 F4) instead of
  *  leaving the member unattributed for the keeper's whole life. */
+/** The file the keeper PUBLISHES its resolved upstream in (`<ws>.docker.upstream`, beside the relay socket; never `.pid`): the app asks it which daemon this member's
+ *  containers were stamped on — the relay froze its upstream at spawn, the app's own resolution may have moved since (a `docker context use`, a relaunch with another env). */
+export function relayUpstreamFile(keeperSock: string): string {
+  return relaySocketPath(keeperSock).replace(/\.docker\.sock$/, '.docker.upstream');
+}
+
 export type UpstreamResolution = { ok: true; socketPath: string; via: string; daemonUp: boolean } | { ok: false; reason: string };
 
 export interface UpstreamDeps {
@@ -201,8 +207,13 @@ export async function resolveRelayUpstream(env: Record<string, string | undefine
     }
   }
   if (!socketPath.startsWith('/')) return { ok: false, reason: `upstream ${socketPath} is not an absolute path` };
+  // never forward to (or query) another keeper's relay, whichever input named it (an explicit override, a docker context endpoint, DOCKER_HOST is handled above)
+  if (isRelaySocketPath(socketPath)) return { ok: false, reason: `upstream ${socketPath} (${via}) is a keeper relay socket, not a daemon` };
   const kind = deps.pathKind(socketPath);
   if (kind === 'other') return { ok: false, reason: `upstream ${socketPath} (${via}) exists but is not a socket` };
+  // "not up YET" is believed only when the member (or a docker context the CLI really read) NAMED the path. The built-in default is a GUESS — reached when the
+  // context lookup failed (CLI timed out under load, missing, a podman shim): pinning DOCKER_HOST to a relay for a guessed path would break a member whose real endpoint is elsewhere.
+  if (kind === 'missing' && via === 'default') return { ok: false, reason: `upstream ${socketPath} is not there and no docker context named another endpoint` };
   return { ok: true, socketPath, via, daemonUp: kind === 'socket' };
 }
 

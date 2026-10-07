@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { createDockerApi, DockerApiError, resolveRealDockerSocket, type DockerTransport } from './docker-api.ts';
+import { createDockerApi, dockerApiForMember, DockerApiError, readRelayUpstream, resolveRealDockerSocket, type DockerTransport } from './docker-api.ts';
 
 let dir: string;
 let server: http.Server;
@@ -208,4 +208,88 @@ test('F2: a relay-shaped DOCKER_HOST inherited by the app is never used by the c
   const r = await resolveRealDockerSocket({ DOCKER_HOST: 'unix:///h/.orchestra/keepers/ws-1.docker.sock' }, depsFor({ sockets: ['/var/run/docker.sock', '/h/.orchestra/keepers/ws-1.docker.sock'] }));
   assert.equal(r, '/var/run/docker.sock');
   assert.equal(await resolveRealDockerSocket({ DOCKER_HOST: 'unix:///tmp/okeeper-0123456789abcdef.docker.sock' }, depsFor()), '/var/run/docker.sock');
+});
+
+// ── review #2/#8/#3: the per-use resolution is cached SHORT when it is a guess / no daemon yet, deduped, invalidated on a dead socket, and a keeper's published upstream wins ──
+
+import { relayUpstreamFile } from '../shared/docker-relay.ts';
+
+function counting(ctx: () => string | null, sockets: () => string[]): { deps: UpstreamDeps; calls: { ctx: number } } {
+  const calls = { ctx: 0 };
+  return {
+    calls,
+    deps: {
+      dockerContextHost: async () => {
+        calls.ctx++;
+        return ctx();
+      },
+      pathKind: (p) => (sockets().includes(p) ? 'socket' : 'missing'),
+    },
+  };
+}
+
+test('cache: a daemon that is UP on a path the context named is trusted for 60 s (one `docker context inspect`), then re-read', async () => {
+  let t = 1000;
+  const c = counting(() => 'unix:///d/docker.sock', () => ['/d/docker.sock']);
+  const api = createDockerApi({ env: {}, deps: c.deps, now: () => t });
+  assert.equal(await api.resolveSocket(), '/d/docker.sock');
+  t += 59_000;
+  assert.equal(await api.resolveSocket(), '/d/docker.sock');
+  assert.equal(c.calls.ctx, 1, 'within the TTL: no second lookup');
+  t += 2_000;
+  await api.resolveSocket();
+  assert.equal(c.calls.ctx, 2, 'past the TTL it is re-read (a docker context switch is noticed)');
+});
+
+test('cache: NOT-UP-YET and GUESSED resolutions are re-read after 2 s, never cached for a minute (a daemon that appears / a flaky context lookup recovers)', async () => {
+  let t = 1000;
+  let daemonUp = false;
+  const c = counting(() => 'unix:///d/docker.sock', () => (daemonUp ? ['/d/docker.sock'] : []));
+  const api = createDockerApi({ env: {}, deps: c.deps, now: () => t });
+  await api.resolveSocket(); // path named by the context, no daemon yet
+  t += 2_500;
+  daemonUp = true;
+  await api.resolveSocket();
+  assert.equal(c.calls.ctx, 2, 'a no-daemon-yet resolution is short-lived');
+  // a default GUESS (the context lookup failed) is short-lived too
+  let ctxOk = false;
+  const g = counting(() => (ctxOk ? 'unix:///real/docker.sock' : null), () => ['/var/run/docker.sock', '/real/docker.sock']);
+  const api2 = createDockerApi({ env: {}, deps: g.deps, now: () => t });
+  assert.equal(await api2.resolveSocket(), '/var/run/docker.sock');
+  ctxOk = true;
+  t += 2_500;
+  assert.equal(await api2.resolveSocket(), '/real/docker.sock', 'the flaky lookup recovered within seconds, not a minute');
+});
+
+test('cache: N concurrent cold callers share ONE lookup (the Pause fans out over every member)', async () => {
+  const c = counting(() => 'unix:///d/docker.sock', () => ['/d/docker.sock']);
+  const api = createDockerApi({ env: {}, deps: c.deps });
+  const all = await Promise.all(Array.from({ length: 10 }, () => api.resolveSocket()));
+  assert.ok(all.every((p) => p === '/d/docker.sock'));
+  assert.equal(c.calls.ctx, 1);
+});
+
+test('cache: a call that finds the resolved socket DEAD drops the resolution — the next call re-resolves (a context switch / a moved daemon)', async () => {
+  let ctx = 'unix:///old/docker.sock';
+  const c = counting(() => ctx, () => ['/old/docker.sock', '/new/docker.sock']);
+  const api = createDockerApi({ env: {}, deps: c.deps, now: () => 1000 });
+  assert.equal(await api.resolveSocket(), '/old/docker.sock');
+  await assert.rejects(api.listContainers(), (e: DockerApiError) => e.kind === 'unavailable'); // nothing really listens on /old/docker.sock
+  ctx = 'unix:///new/docker.sock';
+  assert.equal(await api.resolveSocket(), '/new/docker.sock', 'resolved afresh even though the TTL has not elapsed');
+});
+
+test('readRelayUpstream / dockerApiForMember: the daemon the keeper\'s relay STAMPS ON beats the app\'s own resolution; junk and relay-shaped content are ignored', () => {
+  const keeperSock = path.join(dir, 'kws.sock');
+  assert.equal(readRelayUpstream(keeperSock), null, 'no keeper published one');
+  const file = relayUpstreamFile(keeperSock);
+  fs.writeFileSync(file, '/stamped/on/docker.sock\n');
+  assert.equal(readRelayUpstream(keeperSock), '/stamped/on/docker.sock');
+  const fallback = createDockerApi({ socketPath: '/app/own.sock' });
+  assert.equal(dockerApiForMember(keeperSock, fallback).socketPath, '/stamped/on/docker.sock');
+  for (const junk of ['relative/path.sock', '', '   ', '/h/keepers/other.docker.sock']) {
+    fs.writeFileSync(file, junk);
+    assert.equal(readRelayUpstream(keeperSock), null, JSON.stringify(junk));
+    assert.equal(dockerApiForMember(keeperSock, fallback), fallback, 'falls back to the app\'s own client');
+  }
 });

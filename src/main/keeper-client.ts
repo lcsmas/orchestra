@@ -35,7 +35,7 @@ import {
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
-import { relaySocketPath, type DockerRelaySpec } from '../shared/docker-relay';
+import { relaySocketPath, relayUpstreamFile, type DockerRelaySpec } from '../shared/docker-relay';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
@@ -493,7 +493,10 @@ export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
   if (state === 'gone' || state === 'other') unlink(keeperPidPath(wsId));
   if (!sockLive) unlink(sockPath);
   // The relay socket (#291) is the keeper's: with no live keeper on the workspace nobody serves it any more.
-  if (!sockLive && (state === 'gone' || state === 'other')) unlink(keeperRelaySocketPath(wsId));
+  if (!sockLive && (state === 'gone' || state === 'other')) {
+    unlink(keeperRelaySocketPath(wsId));
+    unlink(relayUpstreamFile(keeperSocketPath(wsId)));
+  }
   sweepDeadClaims(wsId);
 }
 
@@ -603,7 +606,7 @@ export function listLiveKeepers(): string[] {
     } catch {
       /* unreadable → stale */
     }
-    for (const p of [path.join(keeperDir(), name), keeperSocketPath(wsId), keeperRelaySocketPath(wsId), keeperLogPath(wsId)]) {
+    for (const p of [path.join(keeperDir(), name), keeperSocketPath(wsId), keeperRelaySocketPath(wsId), relayUpstreamFile(keeperSocketPath(wsId)), keeperLogPath(wsId)]) {
       try {
         fs.unlinkSync(p);
       } catch {

@@ -6,6 +6,7 @@ import {
   isContainerCreate,
   isRelaySocketPath,
   maxSocketPathBytes,
+  relayUpstreamFile,
   relaySocketPath,
   resolveRelayUpstream,
   stampContainerCreateBody,
@@ -174,6 +175,33 @@ test('upstream (F4): a daemon socket that is NOT THERE YET still resolves — th
   assert.deepEqual(explicit, { ok: true, socketPath: '/run/late.sock', via: 'ORCHESTRA_DOCKER_SOCKET', daemonUp: false });
   // control: an existing NON-socket in the way is still refused
   assert.equal((await resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: '/run/x' }, deps({ other: ['/run/x'] }))).ok, false);
+});
+
+test('upstream (review #1): the built-in DEFAULT path is a guess — "not there" is believed only when the member or a REAL docker context named it', async () => {
+  // the context lookup FAILED (CLI timeout under fleet-start load / missing CLI / a podman shim) and nothing listens at the default path: NO relay (the member's own endpoint keeps working)
+  const guessed = await resolveRelayUpstream({}, deps({ dockerContextHost: () => null, sockets: [] }));
+  assert.equal(guessed.ok, false);
+  assert.match(guessed.ok ? '' : guessed.reason, /no docker context named another endpoint/);
+  // controls: the same missing path IS believed when a context the CLI really read named it, or the member's DOCKER_HOST / explicit override did
+  assert.equal((await resolveRelayUpstream({}, deps({ dockerContextHost: () => 'unix:///Users/u/.docker/run/docker.sock', sockets: [] }))).ok, true);
+  assert.equal((await resolveRelayUpstream({ DOCKER_HOST: 'unix:///run/user/1000/docker.sock' }, deps({ sockets: [] }))).ok, true);
+  assert.equal((await resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: '/run/late.sock' }, deps({ sockets: [] }))).ok, true);
+  // and a default that EXISTS with no context answer (CLI absent, daemon up) still gets its relay
+  assert.deepEqual(await resolveRelayUpstream({}, deps({ dockerContextHost: () => null, sockets: ['/var/run/docker.sock'] })), { ok: true, socketPath: '/var/run/docker.sock', via: 'default', daemonUp: true });
+});
+
+test('upstream (review #7): a relay socket is refused whichever input named it — ORCHESTRA_DOCKER_SOCKET and a docker-context endpoint too, not only DOCKER_HOST', async () => {
+  const relay = '/h/.orchestra/keepers/ws-A.docker.sock';
+  assert.equal((await resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: relay }, deps({ sockets: [relay] }))).ok, false);
+  assert.equal((await resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: `unix://${relay}` }, deps({ sockets: [relay] }))).ok, false);
+  const viaContext = await resolveRelayUpstream({}, deps({ dockerContextHost: () => `unix://${relay}`, sockets: [relay] }));
+  assert.equal(viaContext.ok, false);
+  assert.match(viaContext.ok ? '' : viaContext.reason, /keeper relay socket/);
+});
+
+test('relayUpstreamFile sits beside the relay socket, never a .pid / .sock name', () => {
+  assert.equal(relayUpstreamFile('/h/keepers/ws.sock'), '/h/keepers/ws.docker.upstream');
+  assert.equal(relayUpstreamFile('/tmp/okeeper-ab12.sock'), '/tmp/okeeper-ab12.docker.upstream');
 });
 
 test('upstream: an inherited RELAY DOCKER_HOST is not the real daemon — ignored, and hidden from the context lookup', async () => {

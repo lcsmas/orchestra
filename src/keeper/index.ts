@@ -39,7 +39,7 @@ import {
   type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol.ts';
-import { maxSocketPathBytes, relaySocketPath, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUpstream } from '../shared/docker-relay.ts';
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 
@@ -133,7 +133,14 @@ function unlinkOwnedFiles(): void {
 
 function cleanupAndExit(code: number): void {
   relaySupervisor?.stop();
-  relay?.stop();
+  if (relay) {
+    relay.stop();
+    try {
+      fs.unlinkSync(relayUpstreamFile(sockPath));
+    } catch {
+      /* none */
+    }
+  }
   unlinkOwnedFiles();
   klog(`exit code=${code}`);
   process.exit(code);
@@ -226,6 +233,18 @@ let relaySupervisor: RelaySupervisor | null = null;
 let spawnInFlight = false;
 const deferredFrames: KeeperClientFrame[] = [];
 
+/** Publish the resolved upstream beside the relay socket (tmp + rename): the app's Pause asks THIS file which daemon holds the member's attributed containers. Best effort. */
+function publishUpstream(upstream: string): void {
+  const file = relayUpstreamFile(sockPath);
+  try {
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, upstream, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    klog(`docker relay: could not publish the upstream (${(e as Error).message})`);
+  }
+}
+
 /** Start the relay and return the CLI env to use: the client's env + `DOCKER_HOST` at the relay — or the client's env
  *  UNTOUCHED when the relay cannot start (the member then uses the real socket; its containers count as unattributed). */
 async function withDockerRelay(runId: string, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
@@ -253,6 +272,7 @@ async function withDockerRelay(runId: string, env: Record<string, string | undef
     process.on('SIGUSR2', () => relay?.kill());
     klog(`docker relay listening ${relaySock} -> ${up.socketPath} (via ${up.via}) ws=${wsId} run=${runId}`);
     if (!up.daemonUp) klog(`docker relay: no daemon at ${up.socketPath} yet — calls answer 502 until it appears`);
+    publishUpstream(up.socketPath);
     return { ...env, DOCKER_HOST: `unix://${relaySock}` };
   } catch (e) {
     klog(`docker relay disabled: ${(e as Error).message}`);

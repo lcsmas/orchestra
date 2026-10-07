@@ -103,7 +103,7 @@ function cleanup() {
 // ── keeper bundle ───────────────────────────────────────────────────────────────────────────────────────────────
 const KEEPER_SRC = process.env.KEEPER_JS ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.KEEPER_JS) {
-  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts']
+  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts']
     .map((s) => path.join(REPO, s))
     .filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_SRC) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_SRC).mtimeMs)) {
@@ -480,7 +480,7 @@ const runArm = {
     const env = await m.c.envDump();
     check('daemon socket absent at spawn → the relay is STILL given to the member (DOCKER_HOST at the relay)', env.DOCKER_HOST === `unix://${m.relaySock}`, env.DOCKER_HOST);
     let r = await m.c.sh('docker ps -q');
-    check('no daemon yet → docker fails cleanly through the relay (non-zero, relay message)', r.code !== 0 && /relay|daemon/i.test(r.err), `${r.code} ${r.err}`);
+    check('no daemon yet → docker fails cleanly THROUGH THE RELAY (non-zero, the relay\'s own message — not docker\'s native "Cannot connect")', r.code !== 0 && /orchestra docker relay/.test(r.err), `${r.code} ${r.err}`);
     check('the keeper logged that it is waiting for the daemon', /no daemon at .*late\.sock yet/.test(fs.readFileSync(m.logFile, 'utf8')));
     fs.symlinkSync('/var/run/docker.sock', late); // "dockerd starts": the socket appears where the member's config says it lives
     r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-l ${IMG} sleep 300`);
