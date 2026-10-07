@@ -37,6 +37,8 @@ const ARMS = {
   switch_off: { mustFailOnMaster: false, creates: true }, // no dockerRelay in the frame → env byte-identical, no relay socket, unlabelled
   app_switch: { mustFailOnMaster: true, creates: true }, // real makeKeeperSpawn + real scratch bus: frozen ON gets the relay, OFF/default/sandbox never
   sweep_relay_files: { mustFailOnMaster: true, creates: false }, // a dead keeper's relay socket is swept; a live keeper's is spared
+  late_daemon: { mustFailOnMaster: true, creates: true }, // F4 (follow-up): dockerd socket absent at spawn → relay still up (502), stamps once the daemon appears
+  api_real: { mustFailOnMaster: true, creates: true }, // F2 (follow-up): the APP's docker-api lists/stops/starts what the relay stamped, on the real daemon
 };
 if (!ARMS[ARM]) {
   console.error(`unknown arm: ${ARM} (one of ${Object.keys(ARMS).join(', ')})`);
@@ -389,10 +391,6 @@ const runArm = {
     const l = labelsOf(`${PFX}-f`);
     check('a container made on the real socket is UNATTRIBUTED (no orchestra.* label)', r.code === 0 && l && l['orchestra.ws'] === undefined && l['orchestra.run'] === undefined, JSON.stringify(l));
     check('the keeper logged why', /docker relay disabled/.test(fs.readFileSync(m.logFile, 'utf8')));
-    // a second variant: the real socket path the member would use does not exist → also no relay, env untouched
-    const m2 = await member({ ws: `${PFX}b`, env: { ORCHESTRA_DOCKER_SOCKET: path.join(BASE, 'nonexistent.sock') } });
-    const env2 = await m2.c.envDump();
-    check('real docker socket missing → DOCKER_HOST unset', env2.DOCKER_HOST === undefined, env2.DOCKER_HOST);
   },
 
   async switch_off() {
@@ -465,6 +463,58 @@ const runArm = {
     const sbx = await viaFacade(`${PFX}-wsbx`, `${PFX}-on`, true);
     check('a sandbox-hosted member is NEVER given the relay even on an ON run', sbx.spec === undefined && sbx.env.DOCKER_HOST === undefined, JSON.stringify([sbx.spec, sbx.env.DOCKER_HOST]));
     for (const ws of [`${PFX}-won`, `${PFX}-woff`, `${PFX}-wdef`, `${PFX}-wsbx`]) await kc.killKeeper(ws, 'g2-rig');
+  },
+
+  async late_daemon() {
+    const late = path.join(BASE, 'late.sock');
+    const m = await member({ env: { ORCHESTRA_DOCKER_SOCKET: late } });
+    const env = await m.c.envDump();
+    check('daemon socket absent at spawn → the relay is STILL given to the member (DOCKER_HOST at the relay)', env.DOCKER_HOST === `unix://${m.relaySock}`, env.DOCKER_HOST);
+    let r = await m.c.sh('docker ps -q');
+    check('no daemon yet → docker fails cleanly through the relay (non-zero, relay message)', r.code !== 0 && /relay|daemon/i.test(r.err), `${r.code} ${r.err}`);
+    check('the keeper logged that it is waiting for the daemon', /no daemon at .*late\.sock yet/.test(fs.readFileSync(m.logFile, 'utf8')));
+    fs.symlinkSync('/var/run/docker.sock', late); // "dockerd starts": the socket appears where the member's config says it lives
+    r = await m.c.sh(`docker run -d --name ${PFX}-l ${IMG} sleep 300`);
+    check('once the daemon appears the SAME relay forwards (no keeper restart)', r.code === 0, r.err);
+    check('…and the container is stamped', stamped(`${PFX}-l`), JSON.stringify(labelsOf(`${PFX}-l`)));
+    r = await m.c.sh('docker ps -q >/dev/null');
+    check('docker ps works through the relay', r.code === 0, r.err);
+  },
+
+  async api_real() {
+    const m = await member();
+    // what the relay stamps …
+    let r = await m.c.sh(`docker run -d --name ${PFX}-api ${IMG} sleep 300 && docker run -d --rm --name ${PFX}-rm ${IMG} sleep 300`);
+    check('two containers created through the relay (one --rm)', r.code === 0, r.err);
+    // … and one made AROUND it, on the real socket
+    const direct = dk(['run', '-d', '--name', `${PFX}-direct`, IMG, 'sleep', '300']);
+    check('a container created on the real socket exists, unlabelled', direct.code === 0 && labelsOf(`${PFX}-direct`)?.['orchestra.ws'] === undefined, direct.err);
+    // … is what the APP's client sees. Resolve through ORCHESTRA_DOCKER_SOCKET aliasing the real socket (the relay honours it too).
+    const alias = path.join(BASE, 'alias.sock');
+    fs.symlinkSync('/var/run/docker.sock', alias);
+    const { createDockerApi } = await import(`${REPO}/src/main/docker-api.ts`);
+    const { realUpstreamDeps } = await import(`${REPO}/src/shared/docker-endpoint.ts`);
+    const api = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: alias, HOME: REAL_HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
+    check('the app client resolves the SAME socket the relay would (ORCHESTRA_DOCKER_SOCKET honoured)', (await api.resolveSocket()) === alias, await api.resolveSocket());
+    check('available() against real dockerd', (await api.available()) === true);
+    const attributed = await api.listContainers({ labels: [`orchestra.ws=${WS}`], status: ['running'] });
+    const names = attributed.map((c) => c.name).sort();
+    check('listing by label orchestra.ws=<ws> returns exactly the relay-stamped containers (not the direct one)', JSON.stringify(names) === JSON.stringify([`${PFX}-api`, `${PFX}-rm`]), JSON.stringify(names));
+    check('each row carries orchestra.run', attributed.every((c) => c.labels['orchestra.run'] === RUN), JSON.stringify(attributed.map((c) => c.labels)));
+    const api1 = attributed.find((c) => c.name === `${PFX}-api`);
+    const rm1 = attributed.find((c) => c.name === `${PFX}-rm`);
+    const insp = await api.inspectContainer(api1.id);
+    check('inspect: running, not AutoRemove', insp && insp.running === true && insp.autoRemove === false, JSON.stringify(insp));
+    check('inspect: the --rm container reports AutoRemove (it must NOT be stopped by a Pause)', (await api.inspectContainer(rm1.id))?.autoRemove === true);
+    const st = await api.containerStats(api1.id);
+    check('stats: a one-shot sample with a memory usage', typeof st?.memory_stats?.usage === 'number' && st.memory_stats.usage > 0, JSON.stringify(st?.memory_stats));
+    check('stop → stopped (and dockerd agrees)', (await api.stopContainer(api1.id, 3)) === 'stopped' && dk(['inspect', '-f', '{{.State.Running}}', `${PFX}-api`]).out === 'false');
+    check('stop again → already-stopped', (await api.stopContainer(api1.id, 3)) === 'already-stopped');
+    check('stopping did NOT remove it', labelsOf(`${PFX}-api`)?.['orchestra.ws'] === WS);
+    check('start → started (labels intact)', (await api.startContainer(api1.id)) === 'started' && dk(['inspect', '-f', '{{.State.Running}}', `${PFX}-api`]).out === 'true' && stamped(`${PFX}-api`));
+    check('start again → already-running', (await api.startContainer(api1.id)) === 'already-running');
+    check('unknown id → inspect null, stop/start gone', (await api.inspectContainer('0'.repeat(64))) === null && (await api.stopContainer('0'.repeat(64))) === 'gone' && (await api.startContainer('0'.repeat(64))) === 'gone');
+    check('the unattributed container was never touched', dk(['inspect', '-f', '{{.State.Running}}', `${PFX}-direct`]).out === 'true');
   },
 
   async sweep_relay_files() {

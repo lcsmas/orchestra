@@ -243,13 +243,46 @@ test('switch OFF keeps an inherited DOCKER_HOST untouched', async () => {
   assert.equal(((await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>).DOCKER_HOST, 'tcp://10.1.2.3:2375');
 });
 
-test('relay cannot start (real docker socket missing): DOCKER_HOST stays UNSET and the CLI still runs', async () => {
+test('F4: dockerd absent at spawn — the relay still comes up (502 until the daemon appears), then stamps like any other', async () => {
   const ctx = await makeCtx();
-  const c = await start(ctx, { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: path.join(ctx.dir, 'nonexistent.sock') }, true);
+  const late = path.join(ctx.dir, 'late.sock');
+  const c = await start(ctx, { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: late }, true);
   c.send(line({ env: 1 }));
   const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
-  assert.equal(env.DOCKER_HOST, undefined);
-  assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /docker relay disabled: upstream .* is not a socket/);
+  assert.equal(env.DOCKER_HOST, `unix://${ctx.relaySock}`, 'a not-yet-running daemon must not cost the member its attribution for the keeper\'s whole life');
+  assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /no daemon at .*late\.sock yet/);
+  c.send(line({ create: 1 }));
+  assert.equal((await c.waitLine((l) => l.n === 1)).created, 502, 'no daemon yet: a clean 502 through the relay');
+  const daemon = await startFakeDaemon(late); // the daemon "starts"
+  try {
+    c.send(line({ create: 2 }));
+    assert.equal((await c.waitLine((l) => l.n === 2)).created, 201);
+    const sent = JSON.parse(daemon.seen[daemon.seen.length - 1].body.toString()) as { Labels?: Record<string, string> };
+    assert.deepEqual(sent.Labels, { 'orchestra.ws': ctx.wsId, 'orchestra.run': 'run-7' });
+  } finally {
+    await daemon.close();
+  }
+});
+
+test('F1: the member\'s OWN unix DOCKER_HOST is the upstream, and the relay — not that DOCKER_HOST — is what the CLI gets', async () => {
+  const ctx = await makeCtx();
+  const c = await start(ctx, { PATH: process.env.PATH, DOCKER_HOST: `unix://${ctx.daemon.sockPath}` }, true);
+  c.send(line({ env: 1 }));
+  const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
+  assert.equal(env.DOCKER_HOST, `unix://${ctx.relaySock}`);
+  c.send(line({ create: 1 }));
+  await c.waitLine((l) => l.created === 201);
+  assert.deepEqual(lastBody(ctx).Labels, { 'orchestra.ws': ctx.wsId, 'orchestra.run': 'run-7' }); // reached THAT daemon, stamped
+});
+
+test('F1b: an inherited RELAY-shaped DOCKER_HOST (launched from another relay-ON member) is not the upstream', async () => {
+  const ctx = await makeCtx();
+  const other = path.join(ctx.dir, 'someone-else.docker.sock');
+  const c = await start(ctx, { PATH: process.env.PATH, DOCKER_HOST: `unix://${other}`, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath }, true);
+  c.send(line({ env: 1 }));
+  const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
+  assert.equal(env.DOCKER_HOST, `unix://${ctx.relaySock}`);
+  assert.doesNotMatch(fs.readFileSync(ctx.logFile, 'utf8'), /someone-else/);
 });
 
 test('relay cannot start (its socket path is blocked): DOCKER_HOST stays UNSET', async () => {

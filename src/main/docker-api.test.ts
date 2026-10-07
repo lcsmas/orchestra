@@ -149,14 +149,63 @@ test('injectable transport: no socket involved', async () => {
 
 // ── socket resolution: the REAL socket, never a relay ───────────────────────────────────────────────────────────
 
-test('resolveRealDockerSocket: own DOCKER_HOST (unix) wins; a RELAY DOCKER_HOST is ignored; default and rootless fall-backs', () => {
-  const only = (...ps: string[]) => (p: string) => ps.includes(p);
-  assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'unix:///custom/d.sock' }, only('/custom/d.sock', '/var/run/docker.sock')), '/custom/d.sock');
-  // inherited from a relay-ON member's shell: must NOT be used even though it exists
-  assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'unix:///h/.orchestra/keepers/ws.docker.sock' }, only('/h/.orchestra/keepers/ws.docker.sock', '/var/run/docker.sock')), '/var/run/docker.sock');
-  // …including the tmpdir-fallback relay name keeperSocketPath produces for long homes
-  assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'unix:///tmp/okeeper-0123456789abcdef.docker.sock' }, only('/tmp/okeeper-0123456789abcdef.docker.sock', '/var/run/docker.sock')), '/var/run/docker.sock');
-  assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'tcp://h:2375' }, only('/var/run/docker.sock')), '/var/run/docker.sock');
-  assert.equal(resolveRealDockerSocket({ XDG_RUNTIME_DIR: '/run/user/1000' }, only('/run/user/1000/docker.sock')), '/run/user/1000/docker.sock');
-  assert.equal(resolveRealDockerSocket({}, only()), null);
+// ── F2: the app resolves the daemon through the SAME function the relay forwards through ─────────────────────────
+
+import { resolveRelayUpstream, type UpstreamDeps } from '../shared/docker-relay.ts';
+
+const depsFor = (o: { sockets?: string[]; ctx?: string | null } = {}): UpstreamDeps => ({
+  dockerContextHost: () => (o.ctx === undefined ? 'unix:///var/run/docker.sock' : o.ctx),
+  pathKind: (p) => ((o.sockets ?? ['/var/run/docker.sock']).includes(p) ? 'socket' : 'missing'),
+});
+
+test('F2: ORCHESTRA_DOCKER_SOCKET (the relay honours it) is honoured by the app client too', async () => {
+  assert.equal(await resolveRealDockerSocket({ ORCHESTRA_DOCKER_SOCKET: '/x/alt.sock' }, depsFor({ sockets: ['/x/alt.sock', '/var/run/docker.sock'] })), '/x/alt.sock');
+});
+
+test('F2: a non-default docker context (Docker Desktop, colima…) is honoured; a non-unix endpoint resolves to null, never to the local daemon', async () => {
+  assert.equal(await resolveRealDockerSocket({}, depsFor({ ctx: 'unix:///Users/u/.docker/run/docker.sock', sockets: ['/Users/u/.docker/run/docker.sock', '/var/run/docker.sock'] })), '/Users/u/.docker/run/docker.sock');
+  assert.equal(await resolveRealDockerSocket({}, depsFor({ ctx: 'tcp://remote:2376' })), null);
+  assert.equal(await resolveRealDockerSocket({ DOCKER_HOST: 'ssh://me@box' }, depsFor()), null);
+});
+
+test('F2: the app and the relay can NEVER disagree — same inputs, same socket, across the whole resolution matrix', async () => {
+  const cases: Array<[string, Record<string, string>, UpstreamDeps]> = [
+    ['default', {}, depsFor()],
+    ['no docker CLI', {}, depsFor({ ctx: null })],
+    ['own unix DOCKER_HOST', { DOCKER_HOST: 'unix:///run/user/1000/docker.sock' }, depsFor({ sockets: ['/run/user/1000/docker.sock'] })],
+    ['relay-shaped DOCKER_HOST', { DOCKER_HOST: 'unix:///h/.orchestra/keepers/ws.docker.sock' }, depsFor({ sockets: ['/var/run/docker.sock', '/h/.orchestra/keepers/ws.docker.sock'] })],
+    ['explicit override', { ORCHESTRA_DOCKER_SOCKET: '/x/alt.sock', DOCKER_HOST: 'tcp://h:1' }, depsFor({ sockets: ['/x/alt.sock'] })],
+    ['desktop context', {}, depsFor({ ctx: 'unix:///d/docker.sock', sockets: ['/d/docker.sock'] })],
+    ['tcp context', {}, depsFor({ ctx: 'tcp://r:1' })],
+    ['daemon not up yet', {}, depsFor({ sockets: [] })],
+  ];
+  for (const [name, env, deps] of cases) {
+    const relay = await resolveRelayUpstream(env, deps);
+    const app = await resolveRealDockerSocket(env, deps);
+    assert.equal(app, relay.ok ? relay.socketPath : null, name);
+  }
+});
+
+test('F2: the default client resolves PER USE with the injected env/deps — a socket that appears later is used, no restart', async () => {
+  const late = path.join(dir, 'late-d.sock');
+  const api = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: late }, deps: depsFor({ sockets: [] }) });
+  assert.equal(api.socketPath, null, 'nothing pinned: it resolves per use');
+  assert.equal(await api.resolveSocket(), late);
+  assert.equal(await api.available(), false); // dockerd not started yet
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-length': 2 });
+    res.end('OK');
+  });
+  await new Promise<void>((r) => srv.listen(late, r));
+  try {
+    assert.equal(await api.available(), true);
+  } finally {
+    srv.close();
+  }
+});
+
+test('F2: a relay-shaped DOCKER_HOST inherited by the app is never used by the client', async () => {
+  const r = await resolveRealDockerSocket({ DOCKER_HOST: 'unix:///h/.orchestra/keepers/ws-1.docker.sock' }, depsFor({ sockets: ['/var/run/docker.sock', '/h/.orchestra/keepers/ws-1.docker.sock'] }));
+  assert.equal(r, '/var/run/docker.sock');
+  assert.equal(await resolveRealDockerSocket({ DOCKER_HOST: 'unix:///tmp/okeeper-0123456789abcdef.docker.sock' }, depsFor()), '/var/run/docker.sock');
 });
