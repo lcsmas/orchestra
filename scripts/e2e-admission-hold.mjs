@@ -299,6 +299,7 @@ if (ARM === 'restart_waits') {
   const spawnsBefore = factoryCalls;
   const r = await dispatchRestartRequest({ id: 'ws-m1', fresh: false, trigger: 'cli' });
   check('accepted_and_held', r.ok === true && typeof r.held?.since === 'number', true);
+  check('reply_carries_the_note', /^restart held for memory since .* — it starts when memory recovers \(Admission\)$/.test(r.note ?? ''), true);   // seat 2 F1
   check('nothing_was_stopped', [calls.stop.length, factoryCalls - spawnsBefore], [0, 0]);   // the held restart never touched the running session
   mem = 9; guard.sampleNow();
   check('runs_on_recovery', await until(() => (factoryCalls - spawnsBefore) >= 1 || calls.stop.length >= 1, 8000), true);

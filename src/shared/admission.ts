@@ -78,6 +78,35 @@ export function releaseFailureBody(kind: HeldStartKind, wsId: string, sinceMs: n
   );
 }
 
+/** What the COORDINATOR reads when a released start has not CONFIRMED within the bound: it may well still be starting (a slow first turn), so the text says
+ *  "check first" — never "did NOT start" (review r2 T1: a >90 s success used to be reported as a failure and the coordinator told to retry a live start). */
+export function releaseTimeoutBody(kind: HeldStartKind, wsId: string, sinceMs: number, seconds: number): string {
+  return (
+    `Admission: the ${kind} of ${wsId} that was HELD for memory since ${new Date(sinceMs).toISOString()} was released but is not CONFIRMED within ${seconds} s — ` +
+    `it may still be starting. Check \`orchestra peers\` first; only if ${wsId} is still stopped retry it with \`orchestra restart ${wsId}\`.`
+  );
+}
+
+/** What a failed release does with its report (pure so every branch has a test — seat 2 F2): tell the live coordinator over the bus, or say why not. */
+export type AdmissionReportDecision = { action: 'send' } | { action: 'skip'; why: 'no-coordinator' | 'no-bus' | 'switch-off' };
+export function decideAdmissionReport(a: { hasMember: boolean; coordinatorLive: boolean; hasBus: boolean; switchOn: boolean }): AdmissionReportDecision {
+  if (!a.hasMember || !a.coordinatorLive) return { action: 'skip', why: 'no-coordinator' };
+  if (!a.hasBus) return { action: 'skip', why: 'no-bus' };
+  if (!a.switchOn) return { action: 'skip', why: 'switch-off' };
+  return { action: 'send' };
+}
+
+/** The label a held start carries in `bus-status` (seat 2 F3): the workspace's name, else its branch, else its id (a deleted workspace). */
+export function heldStartLabel(w: { name?: string; branch?: string } | null | undefined, wsId: string): string {
+  return w ? (w.name ?? w.branch ?? wsId) : wsId;
+}
+
+/** The line `orchestra restart <id>` prints when the restart was ACCEPTED but HELD for low memory (seat 2 F1: without it a held restart printed the normal
+ *  "Restarted … conversation preserved" line). `note` is `heldPhrase('restart', since)` from the reply. */
+export function formatRestartHeldReply(target: string, note: string): string {
+  return `Restart of ${target} accepted — ${note}`;
+}
+
 /** A row of `/busStatus` `heldStarts`. */
 export interface HeldStartView {
   wsId: string;

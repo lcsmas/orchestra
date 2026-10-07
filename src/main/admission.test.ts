@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ADMISSION_RETRY_MS, ADMISSION_RUN_TIMEOUT_MS, ADMISSION_SETTLE_MS, realAdmissionDeps, __rebuildAdmissionForTests, admissionGate, createAdmission, heldStartFor, listHeldStarts, startAdmission, stopAdmission, type AdmissionDeps, type GateArgs } from './admission.ts';
+import { kickAdmission, livenessSilencedByAdmission, ADMISSION_RETRY_MS, ADMISSION_RUN_TIMEOUT_MS, ADMISSION_SETTLE_MS, realAdmissionDeps, __rebuildAdmissionForTests, admissionGate, createAdmission, heldStartFor, listHeldStarts, startAdmission, stopAdmission, type AdmissionDeps, type GateArgs } from './admission.ts';
 import { __rebuildMemoryGuardForTests, setMemoryGuardSettingsReader } from './memory-guard.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 
@@ -438,16 +438,15 @@ test('pause_refused_does_not_block_the_line: a Pause-refused entry at the head k
   assert.deepEqual(a.list().map((e) => e.wsId), ['X1'], 'X1 kept its slot');
   assert.deepEqual(xRuns, ['X1'], 'tried once in this pass (not in a tight loop)');
   assert.ok(w.timers.some((t) => t.ms === 10_000), 'a retry is armed for it');
-  // a brand-new automatic start at 12 GB while the refused one still sits in the queue: it joins the line AND goes out
-  assert.deepEqual(a.gate(args(w, 'Z1')).held, true);
-  for (let i = 0; i < 20 && !w.ran.includes('Z1'); i++) await new Promise((r) => setImmediate(r));
-  assert.deepEqual(w.ran, ['Y1', 'Z1']);
+  // a brand-new automatic start at 12 GB while ONLY the Pause-refused one sits in the queue: it is NOT a line a newcomer must join (review r2 N1) — it goes straight out
+  assert.deepEqual(a.gate(args(w, 'Z1')), { held: false });
+  assert.deepEqual(w.ran, ['Y1']);
   const triesWhilePaused = xRuns.length; // each pass tries the refused one ONCE (the retry + the newcomer's pass) — never a tight loop
   assert.ok(triesWhilePaused >= 1 && triesWhilePaused <= 3, `tries while paused: ${triesWhilePaused}`);
   xPaused = false;
   await a.kick();
   assert.equal(xRuns.length, triesWhilePaused + 1, 'after the Pause lifts it is released from its own slot, once');
-  assert.deepEqual(w.ran, ['Y1', 'Z1'], 'X1\'s run records in xRuns, not in ran');
+  assert.deepEqual(w.ran, ['Y1'], 'X1\'s run records in xRuns, not in ran');
   assert.deepEqual(a.list(), []);
 });
 
@@ -509,7 +508,8 @@ test('timed_out_release_is_reported: a hung start that never settles tells the c
   w.timers.find((t) => t.ms === 90_000)!.fn();
   await pass;
   assert.equal(told.length, 1);
-  assert.match(told[0], /did not settle within 90 s/);
+  assert.match(told[0], /was released but is not CONFIRMED within 90 s — it may still be starting\. Check `orchestra peers` first; only if hung is still stopped retry it with `orchestra restart hung`\./);
+  assert.doesNotMatch(told[0], /did NOT start/, 'a start that merely takes > 90 s is not reported as a failure (review r2 T1)');
 });
 
 test('drop_forgets_a_deleted_workspace: drop() removes it from the list, the marker and the "non-empty line" rule (F4)', () => {
@@ -617,4 +617,55 @@ test('B15 a repeat request refreshes stillOwed: the NEWEST closure decides wheth
   w.mem = 9;
   await a.kick();
   assert.deepEqual(w.ran, []);
+});
+
+// ─── #286 review r2 leftovers (N1 L1 T1) ────────────────────────────────────────────────────────────────────────────────────────────
+
+test('N1 paused_entry_is_not_a_line: with ONLY a Pause-refused entry queued a newcomer at plentiful memory goes straight out; with a NORMAL waiting entry too it still joins the line', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'X', { run: async () => ({ ok: false, error: 'run en pause' }), retryLater: () => true }));
+  w.mem = 12;
+  await a.kick(); // X is refused → paused, keeps its slot
+  assert.deepEqual(a.list().map((e) => e.wsId), ['X']);
+  assert.deepEqual(a.gate(args(w, 'new1')), { held: false }, 'a paused-only queue is not a line');
+  // a normal entry is queued while memory is low again: now there IS a line, and a newcomer joins it (arrival order)
+  w.mem = 4;
+  a.gate(args(w, 'W'));
+  w.mem = 6.5; // Admission open (hysteresis) but no room to release
+  assert.deepEqual(a.gate(args(w, 'new2')), { held: true, since: 1_000_000, kind: 'spawn' }, 'a normal waiting entry makes a line');
+});
+
+test('L1 releasing_window_keeps_the_marker: heldFor still answers while a release is RUNNING (the member is booting — the liveness shield must not drop when the release BEGINS); list() does not', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let finish: () => void = () => {};
+  a.gate(args(w, 'x', { run: () => new Promise<void>((r) => { finish = r; }) }));
+  w.mem = 9;
+  const pass = a.kick();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.deepEqual(a.list(), [], 'out of the queue: it is starting, not waiting');
+  assert.deepEqual(a.heldFor('x'), { kind: 'spawn', since: 1_000_000 }, 'but the marker (and the liveness shield) holds until the start returns');
+  assert.equal(livenessSilencedByAdmission('x'), false, 'control: the facade predicate reads the singleton, not this instance');
+  finish();
+  await pass;
+  assert.equal(a.heldFor('x'), null, 'after the start returned the marker is gone');
+});
+
+test('facade livenessSilencedByAdmission: true while held AND while releasing, false otherwise (the predicate index.ts wires)', async () => {
+  const w = world();
+  setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
+  __rebuildAdmissionForTests({ ...w.deps });
+  assert.equal(livenessSilencedByAdmission('q'), false);
+  let finish: () => void = () => {};
+  assert.equal(admissionGate(args(w, 'q', { run: () => new Promise<void>((r) => { finish = r; }) })).held, true);
+  assert.equal(livenessSilencedByAdmission('q'), true, 'held');
+  w.mem = 9;
+  const pass = kickAdmission();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(livenessSilencedByAdmission('q'), true, 'releasing');
+  finish();
+  await pass;
+  assert.equal(livenessSilencedByAdmission('q'), false, 'done');
+  stopAdmission();
 });

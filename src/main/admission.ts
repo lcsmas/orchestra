@@ -8,7 +8,7 @@
 import { scoped } from './logger.ts';
 import { sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';
 import { formatGb, isAdmissionHolding, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
-import { isHumanOrigin, mustHoldStart, planRelease, releaseFailureBody, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
+import { isHumanOrigin, mustHoldStart, planRelease, releaseFailureBody, releaseTimeoutBody, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
 
 const alog = scoped('admission');
 
@@ -16,6 +16,8 @@ const alog = scoped('admission');
 interface Entry extends HeldStart {
   run: () => Promise<unknown>;
   stillOwed: () => boolean;
+  /** The last release attempt was REFUSED by a fleet Pause: the entry keeps its slot but is NOT a line a newcomer must join (review r2 N1). */
+  paused?: boolean;
   retryLater?: (result: unknown) => boolean;
   /** Tell the coordinator (bus) that a released start did not start. Best-effort; never throws into the release loop. */
   report?: (text: string) => void;
@@ -182,18 +184,19 @@ export function createAdmission(deps: AdmissionDeps): Admission {
         releasing.delete(entry.wsId);
       }
       if (outcome === TIMED_OUT) {
-        const why = `did not settle within ${Math.round(deps.runTimeoutMs / 1000)} s`;
-        deps.warn(`released ${entry.kind} of ${entry.wsId} ${why} — the line moves on (it may still finish)`);
-        tell(entry, why);
+        const secs = Math.round(deps.runTimeoutMs / 1000);
+        deps.warn(`released ${entry.kind} of ${entry.wsId} did not settle within ${secs} s — the line moves on (it may still finish)`);
+        tell(entry, releaseTimeoutBody(entry.kind, entry.wsId, entry.since, secs));
       } else if (isFailure(outcome)) {
         if (entry.retryLater?.(outcome)) {
+          entry.paused = true;
           queue.set(entry.wsId, entry); // refused for now (a Pause is in force): the SAME slot, not a lost start — and NOT a wall for the others
           deferred.add(entry.wsId);
           deps.info(`released ${entry.kind} of ${entry.wsId} was refused for now (${failureText(outcome)}) — kept queued, the line goes on`);
           continue; // nothing started: no settle pause
         }
         deps.warn(`released ${entry.kind} of ${entry.wsId} FAILED: ${failureText(outcome)}`);
-        tell(entry, failureText(outcome));
+        tell(entry, releaseFailureBody(entry.kind, entry.wsId, entry.since, failureText(outcome)));
       }
       if (queue.size > 0) await deps.sleep(deps.settleMs);
     }
@@ -211,9 +214,9 @@ export function createAdmission(deps: AdmissionDeps): Admission {
   }
 
   /** Tell the coordinator a released start did not start. Never throws. */
-  function tell(entry: Entry, reason: string): void {
+  function tell(entry: Entry, body: string): void {
     try {
-      entry.report?.(releaseFailureBody(entry.kind, entry.wsId, entry.since, reason));
+      entry.report?.(body);
     } catch (e) {
       deps.warn(`could not report the failed release of ${entry.wsId} to its coordinator`, e);
     }
@@ -251,7 +254,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       if (inFlight && a.origin === 'auto') return { held: true, since: inFlight.since, kind: inFlight.kind };
       const snap = deps.sample();
       const holding = isAdmissionHolding(snap);
-      if (!mustHoldStart({ ws: a.ws, origin: a.origin, holding, queued: queue.size > 0 })) {
+      if (!mustHoldStart({ ws: a.ws, origin: a.origin, holding, queued: [...queue.values()].some((e) => !e.paused) })) {
         // A HUMAN started this member itself: its held entry (if any) is superseded — never leave peers / bus-status saying "held" for a running member.
         if (isHumanOrigin(a.origin) && queue.delete(a.wsId)) deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it — ${mem(snap)}; ${queue.size} still held`);
         return { held: false };
@@ -274,7 +277,10 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     heldFor(wsId) {
       pruneUnowed();
       const e = queue.get(wsId);
-      return e ? { kind: e.kind, since: e.since } : null;
+      if (e) return { kind: e.kind, since: e.since };
+      // A release in progress still counts: the member is booting (its first lifecycle event — the idle clock — lands only after `ensureSession`), so the
+      // liveness shield must not drop at the moment the release BEGINS (review r2 L1: a false "silent" escalation during the CLI boot).
+      return releasing.get(wsId) ?? null;
     },
     drop(wsId) {
       const had = queue.delete(wsId);
@@ -305,6 +311,15 @@ export function admissionGate(args: GateArgs): GateResult {
 }
 export function heldStartFor(wsId: string): { kind: HeldStartKind; since: number } | null {
   return singleton.heldFor(wsId);
+}
+/** The liveness roster's silence predicate for Admission (index.ts wires THIS function; admission-liveness.test.ts drives it): a member whose start is held — or
+ *  is being released right now — is not "silent". */
+export function livenessSilencedByAdmission(wsId: string): boolean {
+  return singleton.heldFor(wsId) !== null;
+}
+/** Try to release the queue now (single-flight) — what a recovery edge, the retry timer and the release trigger of other start kinds call. */
+export function kickAdmission(): Promise<void> {
+  return singleton.kick();
 }
 export function listHeldStarts(): HeldStart[] {
   return singleton.list();

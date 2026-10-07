@@ -46,7 +46,7 @@ import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import { formatMemoryGuardLine, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
-import { formatHeldStartsLine, type HeldStartView } from '../shared/admission.ts';
+import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
@@ -1415,7 +1415,7 @@ async function main(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? 'failed to restart workspace');
       if (res.held && typeof res.note === 'string') {
         // #286: accepted, but HELD for low memory — nothing was stopped; it runs when memory recovers.
-        process.stdout.write(`Restart of ${target} accepted — ${res.note}\n`);
+        process.stdout.write(`${formatRestartHeldReply(target, res.note)}\n`);
         return;
       }
       if (res.openingTask === true) {

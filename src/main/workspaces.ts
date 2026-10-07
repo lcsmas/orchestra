@@ -70,7 +70,7 @@ import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { admissionGate, dropHeldStart, heldStartFor } from './admission.ts';
-import { heldPhrase } from '../shared/admission.ts';
+import { decideAdmissionReport, heldPhrase } from '../shared/admission.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
   ACCOUNT_DEFAULT_MODEL,
@@ -914,28 +914,25 @@ function expireBusAsksForDeleted(id: string): void {
 export function reportAdmissionFailure(wsId: string, text: string): void {
   const ws = store.getWorkspace(wsId);
   const parent = ws?.parentId ? store.getWorkspace(ws.parentId) : undefined;
-  if (!ws || !parent || parent.archived) {
-    log.warn(`admission: ${text} (no live coordinator to tell)`);
-    return;
-  }
   const db = getBus();
-  if (!db) {
-    log.warn(`admission: ${text} (no bus — coordinator ${parent.id} not told)`);
-    return;
-  }
-  const runId = resolveWaveRunId(ws);
+  const runId = ws ? resolveWaveRunId(ws) : '';
   let on = false;
-  try {
-    on = busSwitch(db, runId, 'liveness');
-  } catch (e) {
-    log.warn(`admission: liveness switch read failed for ${wsId} — treating as OFF`, e);
+  if (db && ws && parent && !parent.archived) {
+    try {
+      on = busSwitch(db, runId, 'liveness');
+    } catch (e) {
+      log.warn(`admission: liveness switch read failed for ${wsId} — treating as OFF`, e);
+    }
   }
-  if (!on) {
-    log.info(`admission: would have told ${parent.id} (liveness switch OFF — counted, not fired): ${text}`);
+  const d = decideAdmissionReport({ hasMember: !!ws, coordinatorLive: !!parent && !parent.archived, hasBus: !!db, switchOn: on });
+  if (d.action === 'skip') {
+    if (d.why === 'no-coordinator') log.warn(`admission: ${text} (no live coordinator to tell)`);
+    else if (d.why === 'no-bus') log.warn(`admission: ${text} (no bus — coordinator ${parent?.id} not told)`);
+    else log.info(`admission: would have told ${parent?.id} (liveness switch OFF — counted, not fired): ${text}`);
     return;
   }
-  sendBus(db, { runId, sender: ws.id, recipient: parent.id, kind: 'escalation', body: text });
-  log.info(`admission: told coordinator ${parent.id} that ${wsId}'s released start did not start`);
+  sendBus(db as NonNullable<typeof db>, { runId, sender: wsId, recipient: (parent as Workspace).id, kind: 'escalation', body: text });
+  log.info(`admission: told coordinator ${(parent as Workspace).id} that ${wsId}'s released start did not start`);
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {

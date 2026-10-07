@@ -242,7 +242,7 @@ import {
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
-import { heldStartFor, startAdmission, stopAdmission } from './admission';
+import { livenessSilencedByAdmission, startAdmission, stopAdmission } from './admission';
 import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
@@ -556,7 +556,7 @@ async function createMainWindow() {
   // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
   // #252 row 15: the SAME live-tree pause decision the gates use silences a paused run's members.
   // #286: a member whose start is HELD for memory is not silent — it was told "accepted, held"; escalating it as a stall would be the false alarm the HELD marker prevents.
-  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null || heldStartFor(ws.id) !== null));
+  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null || livenessSilencedByAdmission(ws.id)));
   // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
   // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's

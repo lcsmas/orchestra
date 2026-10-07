@@ -33,6 +33,7 @@ import { busStatusRunView } from './bus-runs.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
 import { getMemoryGuardSnapshot } from './memory-guard.ts';
 import { listHeldStarts } from './admission.ts';
+import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
 import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
@@ -491,7 +492,7 @@ export async function startHooksServer(): Promise<void> {
               // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
               heldStarts: listHeldStarts().map((h) => {
                 const w = store.getWorkspace(h.wsId);
-                return { wsId: h.wsId, label: w ? (w.name ?? w.branch ?? h.wsId) : h.wsId, kind: h.kind, since: h.since, coordinator: h.coordinator, seq: h.seq };
+                return { wsId: h.wsId, label: heldStartLabel(w, h.wsId), kind: h.kind, since: h.since, coordinator: h.coordinator, seq: h.seq };
               }),
             });
           } else if (route === '/runRefreeze') {
