@@ -54,7 +54,7 @@ export const MUTANTS = [
   "ticket": "#286",
   "clause": "a human start drops the held entry (no redundant start at recovery)",
   "arm": "n1_starts_held",
-  "check": "queue_is_in_arrival_order",
+  "check": "no_stale_held_marker_on_the_member_a_human_started",
   "edits": [
    {
     "file": "src/main/admission.ts",
@@ -179,7 +179,7 @@ export const MUTANTS = [
   "ticket": "#286",
   "clause": "a released start is not re-held by its own gate",
   "arm": "n8_release_order",
-  "check": "the_release_finishes_once_memory_is_back",
+  "check": "the_released_spawn_really_started_with_its_brief",
   "edits": [
    {
     "file": "src/main/workspaces.ts",
@@ -454,21 +454,6 @@ export const MUTANTS = [
   ]
  },
  {
-  "id": "289-episode-reopen-on-every-edge",
-  "from": "memory-alert/mutate-unit.mjs:episode-reopen-on-every-edge",
-  "ticket": "#289",
-  "clause": "ONE row per episode (oscillation inside it opens none)",
-  "arm": "n4_alert_one_row",
-  "check": "exactly_one_escalation_for_the_oscillating_episode",
-  "edits": [
-   {
-    "file": "src/main/memory-alert.ts",
-    "find": "          if (!tracked.has(tr.episode)) open(tr.episode, { at: now, availBytes: tr.availBytes, thresholdBytes: tr.thresholdBytes });",
-    "to": "          open(tr.episode, { at: now, availBytes: tr.availBytes, thresholdBytes: tr.thresholdBytes });"
-   }
-  ]
- },
- {
   "id": "290-apply-due-ignored",
   "from": "pause-memory/mutate-unit.mjs:apply-due-ignored",
   "ticket": "#290",
@@ -574,10 +559,10 @@ export const MUTANTS = [
   ]
  },
  {
-  "id": "292-P1",
-  "from": "docker-relay-mutants.mjs:P1",
+  "id": "292-P1+P2",
+  "from": "docker-relay-mutants.mjs:P1+P2",
   "ticket": "#292",
-  "clause": "unattributed / other members' containers are never stopped",
+  "clause": "unattributed / other members' containers are never stopped (neither selected NOR re-asserted by label: both defences removed)",
   "arm": "n6_pause_containers",
   "check": "bystander_other_member_and_pause_off_run_are_untouched",
   "edits": [
@@ -585,6 +570,11 @@ export const MUTANTS = [
     "file": "src/main/pause-containers.ts",
     "find": "labels: [attributedLabelFilter(wsId)], status: STOPPABLE_STATES",
     "to": "status: STOPPABLE_STATES"
+   },
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "    if (row.labels[DOCKER_LABEL_WS] !== wsId) continue;\n",
+    "to": ""
    }
   ]
  },
@@ -592,9 +582,9 @@ export const MUTANTS = [
   "id": "292-Q4",
   "from": "docker-relay-mutants.mjs:Q4",
   "ticket": "#292",
-  "clause": "the Reprise knows containers are owed and restarts them",
-  "arm": "n7_reprise",
-  "check": "the_stopped_containers_are_started_again",
+  "clause": "the Reprise knows containers are owed: it parks the coordinators until they are back",
+  "arm": "n7b_coordinators_after_containers",
+  "check": "coordinators_are_released_only_after_the_containers_are_back",
   "edits": [
    {
     "file": "src/main/pause-reprise.ts",
@@ -664,27 +654,12 @@ export const MUTANTS = [
   ]
  },
  {
-  "id": "292-Q12",
-  "from": "docker-relay-mutants.mjs:Q12",
-  "ticket": "#292",
-  "clause": "the run goes ACTIVE only once the containers are back",
-  "arm": "n7b_coordinators_after_containers",
-  "check": "coordinators_are_released_only_after_the_containers_are_back",
-  "edits": [
-   {
-    "file": "src/main/pause-reprise.ts",
-    "find": "    if (containersOwed(db, carrierRunId)) return false;\n    const left = db",
-    "to": "    const left = db"
-   }
-  ]
- },
- {
   "id": "285-reopen-margin-dropped",
   "from": "own (memory-guard-mutants M02 family)",
   "ticket": "#285",
   "clause": "Admission reopens only above threshold + margin (6.5 GB is still HELD)",
   "arm": "n7_reprise",
-  "check": "pause_liftable_admission_still_held",
+  "check": "held_starts_stay_held_while_admission_is_held",
   "edits": [
    {
     "file": "src/shared/memory-guard.ts",

@@ -190,7 +190,7 @@ const startsFor = (id) => calls.start.filter((c) => c.wsId === id);
 const orderStarts = () => calls.start.filter((c) => isWakeOrder(String(c.text ?? '')));
 
 // ── the fleet ──
-//   RUN ws-ops (pause ON, delivery ON, wake ON):  ws-ops ⊃ ws-sub (a SUB-OPS coordinator, asleep) · ws-m1 ws-m2 (running, idle) · ws-m3 (asleep) · ws-m4 (a turn is RUNNING) · ws-m5 (a prompt is PENDING)
+//   RUN ws-ops (pause ON, delivery ON, wake ON):  ws-ops ⊃ ws-sub (a SUB-OPS coordinator, asleep, with its own run + worker ws-s1) · ws-m1 ws-m2 (running, idle) · ws-m3 (asleep) · ws-m4 (a turn is RUNNING) · ws-m5 (a prompt is PENDING)
 //   RUN ws-off (pause OFF, delivery OFF, wake ON): ws-off ⊃ ws-off1 (running, idle)
 //   ws-xm: a top-level session with NO coordinator
 const now0 = Date.now();
@@ -207,6 +207,7 @@ await store.upsertWorkspace(mk('ws-m2', { parentId: 'ws-ops' }));
 await store.upsertWorkspace(mk('ws-m3', { parentId: 'ws-ops', hibernatedAt: now0 - 60_000 }));
 await store.upsertWorkspace(mk('ws-m4', { parentId: 'ws-ops', status: 'running' }));
 await store.upsertWorkspace(mk('ws-m5', { parentId: 'ws-ops', sdkPendingPrompts: [{ id: 'p1', text: 'PENDING-PROMPT', origin: 'human' }] }));
+await store.upsertWorkspace(mk('ws-s1', { parentId: 'ws-sub', hibernatedAt: now0 - 90_000 }));   // a worker of the SUB-OPS (asleep): makes the sub-OPS run a live fleet run of its own
 await store.upsertWorkspace(mk('ws-off', { kind: 'orchestrator' }));
 await store.upsertWorkspace(mk('ws-off1', { parentId: 'ws-off' }));
 await store.upsertWorkspace(mk('ws-xm'));
@@ -255,7 +256,7 @@ const origStart = docker.startContainer.bind(docker);
 let startInFlight = 0, startMaxInFlight = 0;
 const dockerAt = {};                                                // `stop <id>` / `start <id>` → ms
 docker.stopContainer = async (id, t) => { dockerEvents.push(`stop ${id}`); dockerAt[`stop ${id}`] = Date.now(); return origStop(id, t); };
-docker.startContainer = async (id) => { dockerEvents.push(`start ${id}`); dockerAt[`start ${id}`] = Date.now(); startInFlight++; startMaxInFlight = Math.max(startMaxInFlight, startInFlight); await sleep(15); try { return await origStart(id); } finally { startInFlight--; } };
+docker.startContainer = async (id) => { dockerEvents.push(`start ${id}`); dockerAt[`start ${id}`] = Date.now(); startInFlight++; startMaxInFlight = Math.max(startMaxInFlight, startInFlight); await sleep(150); try { return await origStart(id); } finally { startInFlight--; } };
 const trapDeps = trapHost.buildPauseTrapDeps();
 trapDeps.containers = docker;
 trapDeps.containersFor = () => docker;
@@ -321,6 +322,8 @@ await arm('n1_starts_held', async () => {
   check('control_second_auto_spawn_is_held', !!sp2.held, true);
   const tb = await dispatchRestartRequest({ id: sp2.id, fresh: false, trigger: 'toolbar' });
   check('human_toolbar_restart_passes_while_held', [tb.ok === true, !tb.held, startsFor(sp2.id).map((c) => c.origin)], [true, true, ['human']]);
+  const peersAfter = await workspaces.dispatchPeersRequest({ from: 'ws-ops' });
+  check('no_stale_held_marker_on_the_member_a_human_started', [peersAfter.peers.find((p) => p.id === sp2.id)?.heldForMemory ?? null, admMod ? admMod.heldStartFor(sp2.id) : null], [null, null]);
   const top = await workspaces.dispatchSpawnRequest({ task: 'N1-TOP', repoPath: repoDir, agent: 'claude', defaultKind: 'workspace' });
   check('human_top_level_spawn_passes_while_held', [top.ok === true, !top.held, startsFor(top.id).length], [true, true, 1]);
   const msg = await workspaces.dispatchMessageRequest({ from: 'ws-xm', to: 'ws-m4', text: 'N1-TURN', emergency: true });
@@ -391,7 +394,7 @@ await arm('n5_memory_pause', async () => {
   const stopsBefore = calls.stop.length, startsBefore = calls.start.length;
   setMem(2.5);
   check('guard_decided_the_memory_pause_is_due', [snap()?.pause ?? null, snap()?.pauseCycle ?? null], ['held', 1]);
-  check('the_pause_on_run_is_paused', await until(() => runRow('ws-ops')?.paused_at != null, 15_000), true);
+  check('the_pause_on_run_is_paused', await until(() => runRow('ws-ops')?.paused_at != null, 4000), true);   // at the EDGE: the 15 s level tick is only the safety net
   const c = runRow('ws-ops');
   world.carrier = c;
   let reason = null; try { reason = JSON.parse(c?.pause_auto ?? 'null')?.reason ?? null; } catch { /* below */ }
@@ -430,7 +433,7 @@ await arm('n7_reprise', async () => {
   check('pause_liftable_admission_still_held', [snap()?.pause ?? null, snap()?.admission ?? null], ['none', 'held']);
   const stoppedIds = world.stoppedEvents.map((e) => e.slice(5));
   const back = ['c-m1-db', 'c-m1-cache', 'c-m2-app', 'c-sub-q'];
-  const ok = await until(() => back.every((id) => docker.running(id)), 30_000, 100);
+  const ok = await until(() => back.every((id) => docker.running(id)), 6000, 50);   // the lift acts at the EDGE (the 15 s level tick is only the safety net)
   check('the_stopped_containers_are_started_again', ok, true);
   const starts = dockerEvents.filter((e) => e.startsWith('start ')).map((e) => e.slice(6));
   check('exactly_the_stopped_ones_restarted_each_once_and_in_REVERSE_stop_order', starts, [...stoppedIds].reverse());
@@ -440,19 +443,19 @@ await arm('n7_reprise', async () => {
   const rst = (ws) => records?.bilanForMember(db, 'ws-ops', ws, c.paused_at)?.activity?.containers?.restarted?.map((x) => [x.id, x.outcome]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ?? null;
   check('the_bilan_records_each_restart_and_the_gone_one', [rst('ws-m1'), rst('ws-m2'), rst('ws-sub')], [[['c-m1-cache', 'started'], ['c-m1-db', 'started']], [['c-m2-app', 'started'], ['c-m2-gone', 'gone']], [['c-sub-q', 'started']]]);
   check('held_starts_stay_held_while_admission_is_held', [calls.start.length - startsBefore, admMod ? admMod.listHeldStarts().length >= 3 : false], [0, true]);
+  world.startMaxInFlight = startMaxInFlight;
 });
 
 await arm('n7b_coordinators_after_containers', async () => {
-  const rows = db.prepare("SELECT recipient, created_at FROM messages WHERE kind = 'reprise' ORDER BY sequence").all();
+  const rows = db.prepare("SELECT recipient, sender, created_at FROM messages WHERE kind = 'reprise' ORDER BY sequence").all();
   const lastStart = Math.max(...Object.entries(dockerAt).filter(([k]) => k.startsWith('start ')).map(([, t]) => t));
-  check('only_coordinators_got_a_consigne_workers_stay_blocked', rows.map((r) => r.recipient).sort(), ['ws-ops', 'ws-sub']);
+  check('the_host_sent_its_consigne_to_the_coordinators_only_workers_stay_blocked', rows.map((r) => [r.recipient, r.sender]).sort(), [['ws-ops', 'host'], ['ws-sub', 'host']]);
   check('coordinators_are_released_only_after_the_containers_are_back', rows.every((r) => r.created_at >= lastStart), true);
-  const c = runRow('ws-ops');
-  check('the_reprise_is_resuming_not_blind_started', [c.paused_at != null, c.resume_started_at != null], [true, true]);
-  // the OPS reads its Consigne and releases the workers (what `orchestra run release --all` does)
-  const rel = reprise.releaseMembers(db, 'ws-ops', 'ws-ops', 'all');
-  world.release = rel;
-  check('the_ops_releases_its_workers_and_the_run_is_active', [rel.error, rel.finished === true, runRow('ws-ops')?.paused_at ?? null], [null, true, null]);
+  check('the_run_is_resuming_not_blind_started', [runRow('ws-ops').paused_at != null, runRow('ws-ops').resume_started_at != null], [true, true]);
+  // the coordinators read their Consigne and release their workers (what `orchestra run release --all` does): the OPS its own, the sub-OPS its worker ws-s1
+  const rel1 = reprise.releaseMembers(db, 'ws-ops', 'ws-ops', 'all');
+  const rel2 = reprise.releaseMembers(db, 'ws-ops', 'ws-sub', 'all');
+  check('the_coordinators_release_their_workers_and_the_run_is_active', [rel1.error, rel2.error, rel1.finished === true || rel2.finished === true, runRow('ws-ops')?.paused_at ?? null], [null, null, true, null]);
 });
 
 await arm('n8_release_order', async () => {
@@ -477,6 +480,7 @@ await arm('n8_release_order', async () => {
   check('every_held_start_went_out_exactly_once', [rel.length === new Set(rel).size || rel.filter((x) => x.startsWith('wake:ws-sub')).length <= 1, q0.every((h) => rel.includes(`${h.kind}:${h.wsId}`))], [true, true]);
   check('a_woken_coordinator_goes_before_the_other_wakes_queued_with_it', (() => { const a = rel.indexOf('wake:ws-sub'), b = rel.indexOf('wake:ws-m3'); return a === -1 || b === -1 || a < b; })(), true);
   check('the_coordinators_brief_was_delivered_by_its_release', startsFor('ws-sub').some((c) => c.text === 'SUB-BRIEF'), true);
+  check('the_released_spawn_really_started_with_its_brief', [startsFor(world.heldSpawn).map((c) => c.text), liveSet.has(world.heldSpawn)], [['N1-HELD-BRIEF'], true]);
   check('one_at_a_time', maxInFlight, 1);
   check('one_booting_at_a_time', maxBooting, 1);
   const rs = calls.start.slice(base).map((c) => c.readsAt);
