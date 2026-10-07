@@ -667,5 +667,150 @@ export const MUTANTS = [
     "to": "return false;"
    }
   ]
+ },
+ {
+  "id": "286-W12_sweep_holds_live_member",
+  "from": "admission-mutants.mjs:W12_sweep_holds_live_member",
+  "ticket": "#286",
+  "clause": "a turn to an ALREADY-RUNNING member passes while held (the sweep holds only a SLEEPING member)",
+  "arm": "n3_reveil_held",
+  "check": "a_running_members_pending_lot_is_delivered_live_while_held",
+  "edits": [
+   {
+    "file": "src/main/bus-wake.ts",
+    "find": "if (now.fleetMember === true && now.sleeping === true && !resident) {",
+    "to": "if (now.fleetMember === true && !resident) {"
+   }
+  ]
+ },
+ {
+  "id": "286-W20_roster_ignores_sdk_session",
+  "from": "admission-mutants.mjs:W20_roster_ignores_sdk_session",
+  "ticket": "#286",
+  "clause": "a member with a live SDK session is not \"sleeping\" (its turn is never held)",
+  "arm": "n3_reveil_held",
+  "check": "a_running_members_pending_lot_is_delivered_live_while_held",
+  "edits": [
+   {
+    "file": "src/main/wake-roster.ts",
+    "find": "sleeping: !isRunning(ws.id) && !sdkSessionLive(ws.id),",
+    "to": "sleeping: !isRunning(ws.id),"
+   }
+  ]
+ },
+ {
+  "id": "288-V07_before_loop",
+  "from": "fast-veille-mutants.mjs:V07_before_loop",
+  "ticket": "#288",
+  "clause": "a member with a running /loop is still spared while held",
+  "arm": "n2_fast_veille",
+  "check": "a_looping_member_is_spared",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (admissionHeld && isFleetMember(ws)) return true;\n",
+    "to": ""
+   },
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (ws.loopingSince) return false;\n",
+    "to": "  if (admissionHeld && isFleetMember(ws)) return true;\n  if (ws.loopingSince) return false;\n"
+   }
+  ]
+ },
+ {
+  "id": "288-V12_before_bg_task",
+  "from": "fast-veille-mutants.mjs:V12_before_bg_task",
+  "ticket": "#288",
+  "clause": "a member with a running background task is still spared while held",
+  "arm": "n2_fast_veille",
+  "check": "a_member_with_a_background_task_is_spared",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (admissionHeld && isFleetMember(ws)) return true;\n",
+    "to": ""
+   },
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (hasLiveBackgroundTask) return false;\n",
+    "to": "  if (admissionHeld && isFleetMember(ws)) return true;\n  if (hasLiveBackgroundTask) return false;\n"
+   }
+  ]
+ },
+ {
+  "id": "290-lift-manual-selected",
+  "from": "pause-memory/mutate-unit.mjs:lift-manual-selected",
+  "ticket": "#290",
+  "clause": "a MANUAL Pause in effect during the episode is never lifted by the guard",
+  "arm": "n7_reprise",
+  "check": "a_manual_pause_is_not_lifted_by_the_recovery",
+  "edits": [
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "WHERE r.paused_at IS NOT NULL AND r.pause_auto IS NOT NULL AND r.resume_started_at IS NULL`",
+    "to": "WHERE r.paused_at IS NOT NULL AND r.resume_started_at IS NULL`"
+   },
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "    if (!reason) continue;\n",
+    "to": ""
+   },
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "    const reason = parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt);",
+    "to": "    const reason = parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt) ?? { reason: 'memory' as const, pauseCycle: 0, episode: 0, availBytes: 0, thresholdBytes: 0 };"
+   }
+  ]
+ },
+ {
+  "id": "290-impose-manual-overwritten",
+  "from": "pause-memory/mutate-unit.mjs:impose-manual-overwritten",
+  "ticket": "#290",
+  "clause": "a MANUAL Pause is never re-imposed / overwritten by the memory Pause",
+  "arm": "n5_memory_pause",
+  "check": "a_manual_pause_in_effect_is_left_as_is_never_re_imposed_by_the_guard",
+  "edits": [
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "  if (cur && cur.pausedAt !== null) {\n    const mine",
+    "to": "  if (false as boolean) {\n    const mine"
+   },
+   {
+    "file": "src/main/pause-memory.ts",
+    "find": "        WHERE id = ? AND paused_at IS NULL`,\n    )\n    .run(now, MEMORY_PAUSE_BY",
+    "to": "        WHERE id = ?`,\n    )\n    .run(now, MEMORY_PAUSE_BY"
+   }
+  ]
+ },
+ {
+  "id": "292-gone-reported-failed",
+  "from": "own (restartContainers, #292 AC4)",
+  "ticket": "#292",
+  "clause": "a container removed by hand during the Pause is reported `gone` (skipped), not a failure",
+  "arm": "n7_reprise",
+  "check": "the_bilan_records_each_restart_and_the_gone_one",
+  "edits": [
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "        done = { id: e.id, outcome: await api.startContainer(e.id), atMs: now() };",
+    "to": "        done = { id: e.id, outcome: await api.startContainer(e.id).then((o) => { if (o === 'gone') throw new Error('gone'); return o; }), atMs: now() };"
+   }
+  ]
+ },
+ {
+  "id": "292-gone-aborts-the-step",
+  "from": "own (restartContainers, #292 AC4)",
+  "ticket": "#292",
+  "clause": "a container removed by hand does not break the Reprise (the others are still restarted)",
+  "arm": "n7_reprise",
+  "check": "the_stopped_containers_are_started_again",
+  "edits": [
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "        done = { id: e.id, outcome: await api.startContainer(e.id), atMs: now() };",
+    "to": "        done = { id: e.id, outcome: await api.startContainer(e.id), atMs: now() };\n        if (done.outcome === 'gone') return out;"
+   }
+  ]
  }
 ];
