@@ -343,7 +343,6 @@ export function createAdmission(deps: AdmissionDeps): Admission {
     stop() {
       disarm();
       queue.clear();
-      permits.clear();
     },
   };
   return api;

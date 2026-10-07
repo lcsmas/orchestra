@@ -176,6 +176,14 @@ test('#287 roster: fleetMember / sleeping / coordinator come from the real probe
   assert.match(roster, /coordinator: canOrchestrate\(ws\),/);
 });
 
+test('#287 admission-wake: "sleeping" = no PTY AND no live SDK session; a fleet member = has a parent; the default stillOwed re-checks both at release time', () => {
+  const aw = read('src/main/admission-wake.ts');
+  assert.match(aw, /return !isRunning\(id\) && !sdkSessionLive\(id\);/);
+  assert.match(aw, /fleetMember: !!ws\.parentId,/);
+  assert.match(aw, /sleeping: isSleeping\(id\),/);
+  assert.match(aw, /return !!w && !w\.archived && isSleeping\(id\);/);
+});
+
 test('#287 prompt-queue: the TIMER flush holds BEFORE the queue is cleared (Send now passes); the usage-limit nudge holds BEFORE the budget, the marker clear and the re-mark', () => {
   const flush = fn(pq, 'export async function flushQueuedPrompts(');
   const hold = flush.indexOf('wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {');

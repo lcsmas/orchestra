@@ -10,6 +10,7 @@
 // Fleet: ws-ops (OPS) ⊃ ws-m1, ws-m2 (workers), ws-sub (a sub-OPS = coordinator, parent ws-ops, run ws-sub ⊂ ws-ops); ws-top (top-level, no coordinator).
 //
 //   wake_open_passes   CONTROL  12 GB: a bus message to a sleeping member starts it at once (the instrument can see a start + a fired wake)
+//   wake_non_fleet_passes  CONTROL  4 GB: a top-level (no coordinator) workspace is never held — a bus message starts it at once
 //   wake_held          ★ must-FAIL on master  4 GB: no start; the sweep logs the held reason ONCE across 5 sweeps; failed/fired counters unchanged; the lot is still pending
 //   wake_release       ★ recovery: the réveil is delivered once (the order), the member "answers" (real verbCheck/verbAck) — the lot carries the message intact, the ack clears it
 //   wake_order         ★ three held réveils: coordinator first, then arrival, one at a time, a fresh reading before each
@@ -33,7 +34,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['wake_open_passes', 'wake_held', 'wake_release', 'wake_order', 'wake_live_passes', 'wake_human_drops', 'wake_spawn_child', 'flush_held', 'resume_held', 'message_held', 'permit_one_shot'];
+const ARMS = ['wake_open_passes', 'wake_non_fleet_passes', 'wake_held', 'wake_release', 'wake_order', 'wake_live_passes', 'wake_human_drops', 'wake_spawn_child', 'flush_held', 'resume_held', 'message_held', 'permit_one_shot'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -179,6 +180,17 @@ if (ARM === 'wake_open_passes') {
   await wake.sweepBusWake();
   check('started_at_once_with_the_order', orderStarts().map((c) => c.wsId), ['ws-m1']);
   check('counters', [wake.busWakeCounters().fired, wake.busWakeCounters().failed], [1, 0]);
+  verdict();
+}
+
+if (ARM === 'wake_non_fleet_passes') {
+  mem = 4; guard.sampleNow();
+  busRuns.startRun(db, { id: 'ws-xm', kind: 'vague', coordinator: 'ws-xm' }, ON);                  // a top-level workspace anchors its OWN run
+  send('ws-xm', 'TOP-LEVEL-MSG', 'ws-xm');
+  await wake.sweepBusWake();
+  check('started_at_once', orderStarts().map((c) => c.wsId), ['ws-xm']);
+  check('counters', [wake.busWakeCounters().fired, wake.busWakeCounters().failed], [1, 0]);
+  check('not_queued', admMod ? admMod.listHeldStarts().length : 0, 0);
   verdict();
 }
 

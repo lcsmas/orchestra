@@ -295,11 +295,28 @@ is superseded once a person starts it — `liveAtHold`); `teardownWorkspace` (si
 with a held start as silenced (`index.ts`, the Pause's predicate slot) — it was told "accepted, held", so the 10-min escalation would be a false stall. Every hold /
 release / wait / drop is logged WITH MemAvailable (`[admission] HELD spawn of … — MemAvailable 4.00 GB, Admission held; 2 held start(s)`). **Visible**:
 `PeerInfo.heldForMemory`, `orchestra peers` (`idle · spawn HELD for memory since 13:20:11Z`), `/busStatus` `heldStarts` → the CLI's `held starts: N held for
-memory, release order — …` line (absent when none), the spawn / restart replies. **NOT here**: a réveil / prompt flush / recovery start under low memory
-(`sdkSend` stays ungated — bus-wake "held for memory" reason = #287), the watchdog recycle, fast Veille (#288). The queue is IN MEMORY: after an app restart a
-held child stays stopped with its brief owed and `orchestra restart <id>` retries it. Gates: `src/shared/admission.test.ts`, `src/main/admission.test.ts`,
+memory, release order — …` line (absent when none), the spawn / restart replies. The queue is IN MEMORY: after an app restart a held child stays stopped with
+its brief owed and `orchestra restart <id>` retries it. Gates: `src/shared/admission.test.ts`, `src/main/admission.test.ts`,
 `src/main/admission-wiring.test.ts` (source guards + a tripwire on who imports the gate), `scripts/e2e-admission-hold.mjs` (real workspaces/restart/admission/guard,
-fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), `scripts/admission-mutants.mjs` (68 in-place mutants), `src/main/admission-liveness.test.ts` (real roster + sweep + queue).
+fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), `scripts/admission-mutants.mjs` (in-place mutants, `--check-anchors`),
+`src/main/admission-liveness.test.ts` (real roster + sweep + queue).
+
+#### Wakes (#287, wave G ledger #295) — every automatic START of a SLEEPING fleet member waits too
+Held kind `'wake'` (`HeldStartKind`, rank 1 < spawn/restart rank 2: a held spawn/restart COVERS a wake of the same member — the wake is answered "held" and what it was for
+reaches the running member as a plain turn on the next sweep, ≤ 60 s). **Sleeping** = no PTY and no live SDK session (`isSleeping`, `src/main/admission-wake.ts`); a turn to a
+running member, a top-level workspace and a human act are never held. A wake site calls `wakeHeldForMemory(ws, retry, {stillOwed?})` BEFORE it starts anything: `true` = skip it and
+leave the durable pending state EXACTLY as it is; the queue (coordinators first, one at a time, fresh `sampleMemoryGuardNow()` + `mayReleaseOneStart` before each release, same
+settle / retry / 90 s bound) then grants a **one-shot permit** (`holdWake`, admission.ts: `permits` Set) and runs the site's own `retry`, whose `holdWake` consumes it and goes
+through; the permit is revoked when the run ends (never a stale bypass of a LATER hold). Sites: **bus réveil** (`sweepBusWake`, bus-wake.ts: after `decideWake`'s skip handling,
+BEFORE the ledger mark and every counter — no `fired`/`failed`/`counted` change, no re-fire per sweep; skip reason `held-for-memory`, logged ONCE per transition at info;
+release = `sweepBusWakeNow()`, a sweep that is guaranteed to run; the reader keeps its pending lot → delivered after release, `orchestra check` returns it intact, `ack` clears it;
+the roster carries `fleetMember`/`sleeping`/`coordinator`, wake-roster.ts) · **parked-prompt flush** (`flushQueuedPrompts`, prompt-queue.ts: timer flush only — "Send now"/`force` passes —
+held BEFORE the queue is cleared) · **usage-limit auto-resume** (`resumeUsageLimited`: held before the budget, the marker clear and the re-mark) · **peer message to a stopped member**
+(`dispatchMessageRequest`: parked in the inbox, honest `delivery:'inbox'`, the queue wakes the member with a content-free prompt and re-releases the block after a drain grace) ·
+**view-open recovery** (`agentSdkHistory`, api-handlers.ts: pending prompts resent to a sleeping member). A held-SPAWN child is no longer started by a bus message (it used to bypass
+the hold). NOT gated: watchdog `recycleSession`, account-migrate resume, Reprise starts (replace a running session / human or Pause lift), `--detached` spawns. Gates:
+`scripts/e2e-admission-wake.mjs` (12 arms, `RIG_REPO=<master>` = must-FAIL; real bus + sweep + roster + prompt queue + message dispatch, fake memory source + recording seam),
+`admission.test.ts` W1–W9, `admission-wiring.test.ts` `#287 …` pins (the recovery site is wiring-pinned only), `admission-mutants.mjs` W-series (`rig: 'wake'`).
 
 ### Archive / unarchive / delete
 - **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),

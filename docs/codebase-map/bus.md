@@ -746,6 +746,10 @@ of which inserts it saw. Three things drive it, and they are not equals:
 | 60s interval (`SWEEP_MS`) | `SWEEP_MS` const + `setInterval` in `startBusWake()` | The guarantee — every wake is produced by this alone |
 | `fs.watch` accelerator | `armBusWalWatcher()` | Latency only (spike #109 arm 4: p50 0.23ms) |
 
+**#287 — Admission holds a due réveil of a SLEEPING FLEET member under low memory** (`sweepBusWake`, `src/main/bus-wake.ts`, right after `decideWake`'s skip handling and BEFORE the
+ledger mark): the reader stays pending on the bus, the ledger and `counters` are untouched, the skip reason `held-for-memory` is logged once per transition (info), and the Admission
+queue re-runs the sweep (`sweepBusWakeNow()`, guaranteed to run) when the member's turn comes. See `docs/codebase-map/workspaces.md` § Admission → Wakes.
+
 **#149 — watch the DIRECTORY, filter by the `-wal` basename** (`armBusWalWatcher()`,
 `src/main/bus-wake.ts`). The accelerator targets `bus.sqlite-wal` (not
 `bus.sqlite`: in WAL mode the main file is barely touched and a watch on it misses

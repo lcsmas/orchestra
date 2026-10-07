@@ -1,5 +1,5 @@
-// #286 self-gate — IN-PLACE mutation sweep of Admission. Each mutant edits ONE clause of the real source, runs the unit suites + the named arms of the
-// end-to-end rig (scripts/e2e-admission-hold.mjs: real workspaces/restart/admission/guard modules, fake memory source + recording seam), and must turn the
+// #286 + #287 self-gate — IN-PLACE mutation sweep of Admission (starts + wakes). Each mutant edits ONE clause of the real source, runs the unit suites + the named arms of the
+// end-to-end rigs (scripts/e2e-admission-hold.mjs, and `rig: 'wake'` = scripts/e2e-admission-wake.mjs: real workspaces/restart/admission/guard modules, fake memory source + recording seam), and must turn the
 // NAMED arm red. Byte-exact backup + `cmp` restore after every mutant; `git diff` of the mutated files must be empty at the end (commit first). A CLI mutant
 // rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale). HEAVY by the wave rule (a mutation sweep): needs the heavy-rig token.
 // Run: node scripts/admission-mutants.mjs [--only A01,A02] [--no-rig] [--check-anchors]
@@ -27,6 +27,11 @@ const HK = 'src/main/hooks-server.ts';
 const CL = 'src/cli/index.ts';
 const IX = 'src/main/index.ts';
 const SHD = SH;
+const BW = 'src/main/bus-wake.ts';
+const WR = 'src/main/wake-roster.ts';
+const AW = 'src/main/admission-wake.ts';
+const PQ = 'src/main/prompt-queue.ts';
+const AH = 'src/main/api-handlers.ts';
 // `expect` = a substring of the reddened unit test name or `rig:<arm>` that MUST be among the red ones; `arms` = the rig arms to run for it.
 const MUTANTS = [
   { id: 'A01_human_held', file: SH, find: "return args.origin === 'auto' && isFleetMember(args.ws)", to: 'return isFleetMember(args.ws)', expect: ['human_passes', 'rig:human_passes'], arms: ['human_passes'] },
@@ -114,9 +119,42 @@ const MUTANTS = [
   { id: 'C14_spawn_pause_refusal_loses_slot', file: WS, find: "retryLater: () => pauseRefusal(store.getWorkspace(id), 'auto') !== null,", to: 'retryLater: () => false,', expect: ['a release refused by a fleet Pause keeps its slot'], arms: [] },
   { id: 'C15_restart_pause_refusal_loses_slot', file: RS, find: 'retryLater: () => pauseRefusal(store.getWorkspace(id) ?? null, restartOrigin) !== null,', to: 'retryLater: () => false,', expect: ['a release refused by a fleet Pause keeps its slot', 'rig:pause_keeps_slot'], arms: ['pause_keeps_slot'] },
   { id: 'C12_admission_never_started', file: IX, find: '  startAdmission();\n', to: '', expect: ['lifecycle'], arms: [] },
+  // ── #287 Admission for WAKES — `rig: 'wake'` runs scripts/e2e-admission-wake.mjs ──
+  { id: 'W01_wake_ranks_with_starts', file: SH, find: "return kind === 'wake' ? 1 : 2;", to: 'return 2;', expect: ['W6 a held SPAWN/RESTART covers a wake', 'W7 a real start supersedes'], arms: [] },
+  { id: 'W02_live_member_held', file: AD, find: 'if (!a.fleetMember || !a.sleeping) return { held: false };', to: 'if (!a.fleetMember) return { held: false };', expect: ['W2 never held'], arms: [] },
+  { id: 'W03_non_fleet_held', file: AD, find: 'if (!a.fleetMember || !a.sleeping) return { held: false };', to: 'if (!a.sleeping) return { held: false };', expect: ['W2 never held'], arms: [] },
+  { id: 'W04_permit_not_consumed', file: AD, find: 'if (permits.delete(a.wsId)) return { held: false };', to: 'if (false) return { held: false };', expect: ['W3 release'], arms: [] },
+  { id: 'W06_permit_not_revoked', file: AD, find: '            permits.delete(a.wsId); // never leave a stale permit that could bypass a LATER hold\n', to: '', expect: ['W4 an unconsumed permit is revoked'], arms: [] },
+  { id: 'W07_permit_not_granted', file: AD, find: '          permits.add(a.wsId);\n', to: '', expect: ['W3 release', 'rig:wake_release'], arms: ['wake_release'], rig: 'wake' },
+  { id: 'W09_wake_coordinator_flag_dropped', file: AD, find: "        coordinator: a.coordinator,\n        stillOwed: a.stillOwed,\n        report: a.report,\n        run: async () => {", to: "        coordinator: false,\n        stillOwed: a.stillOwed,\n        report: a.report,\n        run: async () => {", expect: ['W5 order'], arms: [] },
+  { id: 'W10_wake_not_a_fleet_member_in_gate', file: AD, find: "ws: { parentId: 'fleet' },", to: 'ws: {},', expect: ['W1 baseline'], arms: [] },
+  { id: 'W11_sweep_hold_removed', file: BW, find: "if (action.kind === 'fire' && entry?.fleetMember === true && entry.sleeping === true) {", to: 'if (false) {', expect: ['#287 bus-wake', 'rig:wake_held'], arms: ['wake_held', 'wake_release'], rig: 'wake' },
+  { id: 'W12_sweep_holds_live_member', file: BW, find: "if (action.kind === 'fire' && entry?.fleetMember === true && entry.sleeping === true) {", to: "if (action.kind === 'fire' && entry?.fleetMember === true) {", expect: ['rig:wake_live_passes'], arms: ['wake_live_passes'], rig: 'wake' },
+  { id: 'W12b_sweep_holds_non_fleet', file: BW, find: "if (action.kind === 'fire' && entry?.fleetMember === true && entry.sleeping === true) {", to: "if (action.kind === 'fire' && entry?.sleeping === true) {", expect: ['rig:wake_non_fleet_passes'], arms: ['wake_non_fleet_passes'], rig: 'wake' },
+  { id: 'W13_held_branch_falls_through', file: BW, find: "          logWakeableTransition(reader, 'held-for-memory');\n          continue;", to: "          logWakeableTransition(reader, 'held-for-memory');", expect: ['#287 bus-wake', 'rig:wake_held'], arms: ['wake_held'], rig: 'wake' },
+  { id: 'W14_release_sweep_not_guaranteed', file: BW, find: 'retry: () => sweepBusWakeNow(),', to: 'retry: () => sweepBusWake(),', expect: ['#287 bus-wake'], arms: [] },
+  { id: 'W15_sweep_still_owed_always', file: BW, find: 'stillOwed: () => readRoster().some((r) => r.reader === reader && r.wakeable && r.sleeping === true),', to: 'stillOwed: () => true,', expect: ['rig:wake_human_drops'], arms: ['wake_human_drops'], rig: 'wake' },
+  { id: 'W16_held_logged_every_sweep', file: BW, find: "          logWakeableTransition(reader, 'held-for-memory');\n", to: "          log.info(`bus-wake: ${reader} is PENDING and its réveil is HELD for memory (Admission) — again`);\n", expect: ['rig:wake_held'], arms: ['wake_held'], rig: 'wake' },
+  { id: 'W17_sweep_coordinator_flag_dropped', file: BW, find: 'coordinator: entry.coordinator === true,', to: 'coordinator: false,', expect: ['rig:wake_order'], arms: ['wake_order'], rig: 'wake' },
+  { id: 'W19_roster_not_fleet', file: WR, find: 'fleetMember: !!ws.parentId,', to: 'fleetMember: false,', expect: ['#287 roster', 'rig:wake_held'], arms: ['wake_held'], rig: 'wake' },
+  { id: 'W19b_roster_all_fleet', file: WR, find: 'fleetMember: !!ws.parentId,', to: 'fleetMember: true,', expect: ['#287 roster', 'rig:wake_non_fleet_passes'], arms: ['wake_non_fleet_passes'], rig: 'wake' },
+  { id: 'W20_roster_ignores_sdk_session', file: WR, find: 'sleeping: !isRunning(ws.id) && !sdkSessionLive(ws.id),', to: 'sleeping: !isRunning(ws.id),', expect: ['#287 roster', 'rig:wake_live_passes'], arms: ['wake_live_passes'], rig: 'wake' },
+  { id: 'W21_roster_coordinator_dropped', file: WR, find: 'coordinator: canOrchestrate(ws),', to: 'coordinator: false,', expect: ['#287 roster', 'rig:wake_order'], arms: ['wake_order'], rig: 'wake' },
+  { id: 'W22_sleeping_ignores_sdk_session', file: AW, find: 'return !isRunning(id) && !sdkSessionLive(id);', to: 'return !isRunning(id);', expect: ['#287 admission-wake'], arms: [] },
+  { id: 'W23_wake_wrapper_all_fleet', file: AW, find: 'fleetMember: !!ws.parentId,', to: 'fleetMember: true,', expect: ['#287 admission-wake'], arms: [] },
+  { id: 'W24_flush_hold_removed', file: PQ, find: '    !opts.force &&\n    wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {', to: '    false &&\n    wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {', expect: ['#287 prompt-queue', 'rig:flush_held'], arms: ['flush_held'], rig: 'wake' },
+  { id: 'W25_send_now_held_too', file: PQ, find: '    !opts.force &&\n    wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {', to: '    wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {', expect: ['#287 prompt-queue', 'rig:flush_held'], arms: ['flush_held'], rig: 'wake' },
+  { id: 'W26_flush_still_owed_always', file: PQ, find: 'return !!w && !w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);', to: 'return true;', expect: ['rig:flush_held'], arms: ['flush_held'], rig: 'wake' },
+  { id: 'W27_resume_hold_removed', file: PQ, find: "      action === 'nudge' &&\n      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now()), {", to: "      false &&\n      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now()), {", expect: ['#287 prompt-queue', 'rig:resume_held'], arms: ['resume_held'], rig: 'wake' },
+  { id: 'W28_resume_hold_before_wait', file: PQ, find: "      action === 'nudge' &&\n      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now()), {", to: "      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now()), {", expect: ['#287 prompt-queue'], arms: [] },
+  { id: 'W29_message_hold_removed', file: WS, find: 'if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to))) {', to: 'if (false && wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to))) {', expect: ['#287 peer message', 'rig:message_held'], arms: ['message_held'], rig: 'wake' },
+  { id: 'W30_failed_park_keeps_hold', file: WS, find: '    dropHeldStart(input.to); // nothing parked → nothing to wake it for', to: '    void dropHeldStart; // nothing parked → nothing to wake it for', expect: ['#287 peer message'], arms: [] },
+  { id: 'W31_message_reply_claims_started', file: WS, find: "if (await queueInbox(input.to, body)) return { ok: true, delivery: 'inbox', branch: target.branch };\n    dropHeldStart", to: "if (await queueInbox(input.to, body)) return { ok: true, delivery: 'started', branch: target.branch };\n    dropHeldStart", expect: ['rig:message_held'], arms: ['message_held'], rig: 'wake' },
+  { id: 'W32_message_block_never_released', file: WS, find: "  await releaseAllInboxBlocks(id, 'auto').catch((e) => log.warn(`held message wake: parked re-release failed for ${id}`, e));", to: '  void releaseAllInboxBlocks;', expect: ['rig:message_held'], arms: ['message_held'], rig: 'wake' },
+  { id: 'W35_recovery_hold_removed', file: AH, find: 'if (w && (w.sdkPendingPrompts ?? []).length > 0 && wakeHeldForMemory(w, recoverNow)) return;', to: 'if (false && w && (w.sdkPendingPrompts ?? []).length > 0 && wakeHeldForMemory(w, recoverNow)) return;', expect: ['#287 recovery'], arms: [] },
 ];
 
-const TESTS = ['src/shared/admission.test.ts', 'src/main/admission.test.ts', 'src/main/admission-wiring.test.ts', 'src/main/memory-guard-wiring.test.ts'];
+const TESTS = ['src/shared/admission.test.ts', 'src/main/admission.test.ts', 'src/main/admission-wiring.test.ts', 'src/main/memory-guard-wiring.test.ts', 'src/main/admission-liveness.test.ts'];
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300_000, ...opts });
 
@@ -127,12 +165,14 @@ function unitRed() {
   const skipped = Number(/^# skipped (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
   return { names, pass, skipped, status: r.status };
 }
-function rigRed(arms) {
+const RIGS = { hold: ['e2e-admission-hold.mjs', 'ADMISSION RIG'], wake: ['e2e-admission-wake.mjs', 'ADMISSION-WAKE RIG'] };
+function rigRed(arms, which = 'hold') {
   if (noRig) return { arms: [], pass: 0, line: '(rig skipped)' };
+  const [script, summary] = RIGS[which];
   const env = { ...process.env, ...(arms && arms.length ? { RIG_ARMS: arms.join(',') } : {}) };
-  const r = sh(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(path.join(HERE, '.r2-register.mjs')).href, path.join(HERE, 'e2e-admission-hold.mjs')], { env });
+  const r = sh(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(path.join(HERE, '.r2-register.mjs')).href, path.join(HERE, script)], { env });
   const out = r.stdout ?? '';
-  return { arms: [...out.matchAll(/^FAIL (\w+)/gm)].map((m) => m[1]), pass: (out.match(/^PASS \w+/gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('ADMISSION RIG')).pop() ?? `no summary (exit ${r.status})`) };
+  return { arms: [...out.matchAll(/^FAIL (\w+)/gm)].map((m) => m[1]), pass: (out.match(/^PASS \w+/gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith(summary)).pop() ?? `no summary (exit ${r.status})`) };
 }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 
@@ -149,7 +189,7 @@ if (args.includes('--check-anchors')) { // dry check: does every mutant's find r
 
 // ── guard: the tree must be committed (git diff is the independent restoration proof) ──
 const files = [...new Set(MUTANTS.map((m) => m.file))];
-const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/e2e-admission-hold.mjs', 'scripts/admission-mutants.mjs']).status !== 0;
+const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/e2e-admission-hold.mjs', 'scripts/e2e-admission-wake.mjs', 'scripts/admission-mutants.mjs']).status !== 0;
 if (dirty) { console.error('REFUSING: the mutated files / suites / rig have uncommitted changes — commit first (the end-of-sweep `git diff` must prove restoration)'); process.exit(2); }
 const before = Object.fromEntries(files.map((f) => [f, sha(f)]));
 buildCli();
@@ -157,8 +197,9 @@ buildCli();
 // ── POSITIVE CONTROL: the unmutated tree must be all green, else every "killed" below is vacuous ──
 const base = unitRed();
 const baseRig = rigRed();
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 17)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+const baseWake = rigRed(null, 'wake');
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} | wake rig: ${baseWake.line}`);
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || baseWake.arms.length || (!noRig && (baseRig.pass !== 17 || baseWake.pass !== 12))) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;
@@ -183,7 +224,7 @@ for (const m of MUTANTS) {
     if (fs.readFileSync(abs, 'utf8') === original) { rows.push({ id: m.id, verdict: 'NO-OP', detail: 'the mutation changed nothing' }); continue; }
     if (m.cli) buildCli();
     const u = unitRed();
-    const r = m.arms && m.arms.length === 0 ? { arms: [] } : rigRed(m.arms);
+    const r = m.arms && m.arms.length === 0 ? { arms: [] } : rigRed(m.arms, m.rig ?? 'hold');
     const red = [...u.names, ...r.arms.map((a) => `rig:${a}`)];
     const hit = m.expect.filter((e) => red.some((n) => n.includes(e)));
     rows.push({ id: m.id, verdict: hit.length > 0 ? 'KILLED' : red.length ? 'KILLED-BUT-NOT-BY-NAMED-ARM' : 'SURVIVED', detail: `named ${JSON.stringify(m.expect)} hit ${JSON.stringify(hit)}; red: ${red.slice(0, 4).join(' | ')}${red.length > 4 ? ` (+${red.length - 4})` : ''}` });
@@ -198,8 +239,9 @@ const sameSha = files.every((f) => before[f] === after[f]);
 const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
 const post = unitRed();
 const postRig = rigRed();
+const postWake = rigRed(null, 'wake');
 for (const r of rows) console.log(`${r.verdict.padEnd(30)} ${r.id.padEnd(30)} ${r.detail}`);
 const killed = rows.filter((r) => r.verdict === 'KILLED').length;
-console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} rig ${postRig.line}`);
+console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} rig ${postRig.line} · wake rig ${postWake.line}`);
 console.log(`MUTANTS: ${killed}/${rows.length} killed by their NAMED arm${rows.length === killed ? '' : ` — NOT ALL: ${rows.filter((r) => r.verdict !== 'KILLED').map((r) => `${r.id}=${r.verdict}`).join(', ')}`}`);
-process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && postRig.arms.length === 0 ? 0 : 1);
+process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && postRig.arms.length === 0 && postWake.arms.length === 0 ? 0 : 1);
