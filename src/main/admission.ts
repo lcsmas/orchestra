@@ -97,6 +97,9 @@ export interface Admission {
   list(): HeldStart[];
   /** Forget a held start (the workspace was deleted): it must not linger in `held starts:` nor keep the line "non-empty". */
   drop(wsId: string): boolean;
+  /** Would an automatic wake of a sleeping fleet member be held RIGHT NOW (fresh reading says hold, or an earlier start is still queued)? Lets a wake site probe a keeper
+   *  only when the answer matters (F1: a keeper-resident member's wake only REATTACHES — never held). */
+  wouldHold(): boolean;
   /** Withdraw ONE wake site (its durable state could not be parked): the member's entry goes only when it was a wake with no other site left — a held
    *  SPAWN / RESTART is never dropped by a site's failure. */
   dropSite(wsId: string, site: string): boolean;
@@ -407,6 +410,10 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       if (!res.held || queue.get(a.wsId)?.kind !== 'wake') unregisterSite(a.wsId, site);
       return res;
     },
+    wouldHold() {
+      pruneUnowed();
+      return isAdmissionHolding(deps.sample()) || [...queue.values()].some((e) => !e.paused);
+    },
     dropSite(wsId, site) {
       unregisterSite(wsId, site);
       const e = queue.get(wsId);
@@ -472,6 +479,10 @@ export function holdWake(args: WakeGateArgs): GateResult {
  *  other site left — never a held spawn / restart. */
 export function dropWakeSite(wsId: string, site: string): boolean {
   return singleton.dropSite(wsId, site);
+}
+/** #287 F1: would a wake of a sleeping fleet member be held now? (a site probes a keeper only when it would be) */
+export function wakeWouldBeHeld(): boolean {
+  return singleton.wouldHold();
 }
 /** Try to release the queue now (single-flight) — what a recovery edge, the retry timer and the release trigger of other start kinds call. */
 export function kickAdmission(): Promise<void> {

@@ -44,7 +44,7 @@ import {
 } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
-import { holdWake } from './admission.ts';
+import { holdWake, wakeWouldBeHeld } from './admission.ts';
 import {
   decideWake,
   pruneWakeLedger,
@@ -610,6 +610,12 @@ let readRosterEntry: ((reader: string) => WakeableReader | null) | null = null;
 export function setWakeRosterEntry(fn: ((reader: string) => WakeableReader | null) | null): void {
   readRosterEntry = fn;
 }
+/** #287 F1: is this reader's CLI alive in a detached keeper (an app relaunch leaves no in-memory session)? Its wake only REATTACHES — never held. Wired by index.ts
+ *  (keeper-client is not importable here); unset = never resident. */
+let readKeeperResident: (reader: string) => Promise<boolean> = async () => false;
+export function setWakeKeeperResident(fn: (reader: string) => Promise<boolean>): void {
+  readKeeperResident = fn;
+}
 function rosterEntryOf(reader: string): WakeableReader | null {
   return readRosterEntry ? readRosterEntry(reader) : (readRoster().find((r) => r.reader === reader) ?? null);
 }
@@ -799,7 +805,9 @@ export async function sweepBusWake(): Promise<void> {
         const reader = action.reader;
         // Re-read THIS reader right before deciding: `entry` is the snapshot from the sweep's start, and a delivery awaited since may have put it to sleep (or woken it).
         const now = rosterEntryOf(reader) ?? entry;
-        if (now.fleetMember === true && now.sleeping === true) {
+        // F1: a keeper-resident member's wake only REATTACHES its live CLI (no new process) — never held. Probed only when the wake WOULD be held.
+        const resident = now.fleetMember === true && now.sleeping === true && wakeWouldBeHeld() && (await readKeeperResident(reader).catch(() => false));
+        if (now.fleetMember === true && now.sleeping === true && !resident) {
           const held = holdWake({
             wsId: reader,
             fleetMember: true,
@@ -1082,6 +1090,7 @@ export function __resetBusWakeForTests(): void {
   readBusDb = getBus;
   readRoster = () => [];
   readRosterEntry = null;
+  readKeeperResident = async () => false;
   deliverWake = async () => false;
   nowMs = () => Date.now();
 }

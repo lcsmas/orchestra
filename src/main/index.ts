@@ -181,6 +181,7 @@ import {
   stopBusWake,
   setWakeRoster,
   setWakeRosterEntry,
+  setWakeKeeperResident,
   setWakeDeliver,
   setWakeSwitchReader,
   setAskGateSwitchReader,
@@ -245,6 +246,7 @@ import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './res
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
 import { livenessSilencedByAdmission, startAdmission, stopAdmission } from './admission';
 import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
+import { keeperResident } from './admission-wake';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -526,6 +528,7 @@ async function createMainWindow() {
     const w = store.getWorkspace(id);
     return w ? wakeRosterEntry(w) : null;
   });
+  setWakeKeeperResident(keeperResident); // #287 F1: a keeper-resident member's wake only reattaches — never held for memory
   // #134 — wire the per-run switch readers the wake sweep consults. Until now
   // these stayed the shipped default `() => false`, so even a run frozen wake=ON
   // was COUNTED, never fired. Each reads the flag FROZEN ON THE RUN ROW (never

@@ -1103,7 +1103,7 @@ export const apiHandlers: ApiHandlerTable = {
       // stay durable in `sdkPendingPrompts`; the queue re-runs the recovery when the member's turn comes). Attaching to a CLI that already runs is not a start.
       const recoverNow = async (): Promise<void> => recoverPendingPrompts(wsId, await sdkHistory(wsId));
       const w = store.getWorkspace(wsId);
-      if (w && (w.sdkPendingPrompts ?? []).length > 0 && wakeHeldForMemory(w, recoverNow, { site: 'recovery', reenters: false })) return;
+      if (w && (w.sdkPendingPrompts ?? []).length > 0 && (await wakeHeldForMemory(w, recoverNow, { site: 'recovery', reenters: false }))) return;
       await recoverPendingPrompts(wsId, events);
     })().catch((err) => log.warn(`agent:sdkHistory attach/recover failed for ${wsId}`, err));
     return events;

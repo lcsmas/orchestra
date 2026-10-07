@@ -21,6 +21,8 @@
 //   resume_held        ★ the usage-limit auto-resume nudge waits (marker untouched); nudged once on release
 //   message_held       ★ a peer message to a stopped fleet member is parked in the inbox (honest `inbox`), the member is woken on release; the inbox HOOK (simulated at session start) drains the block once, nothing re-delivers it
 //   wake_two_sites     ★ one member held by TWO sites (bus réveil + parked-prompt flush): ONE slot, BOTH sites' retries run on release (a later site never overwrites the earlier)
+//   two_sites_reverse  ★ sites registered [sweep, message]: the release starts the member with the order — the message site then sends NO extra bring-up turn to the running member (F3)
+//   keeper_resident    ★ a member whose CLI lives in a detached KEEPER (relaunch, no in-memory session) is never held — its wake only reattaches (sweep, flush, message sites); a never-started / shutting-down keeper IS held (F1)
 //   permit_one_shot    ★ after a released wake, a LATER réveil under low memory is held again (the permit is one-shot)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-admission-wake.mjs   (RIG_REPO=<tree> = the must-FAIL run on master;
@@ -35,7 +37,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['wake_open_passes', 'wake_non_fleet_passes', 'wake_held', 'wake_release', 'wake_order', 'wake_live_passes', 'wake_human_drops', 'wake_spawn_child', 'flush_held', 'resume_held', 'message_held', 'permit_one_shot', 'wake_two_sites'];
+const ARMS = ['wake_open_passes', 'wake_non_fleet_passes', 'wake_held', 'wake_release', 'wake_order', 'wake_live_passes', 'wake_human_drops', 'wake_spawn_child', 'flush_held', 'resume_held', 'message_held', 'permit_one_shot', 'wake_two_sites', 'two_sites_reverse', 'keeper_resident'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -176,6 +178,7 @@ wake.__resetBusWakeForTests();
 wake.__setBusReaderForTests(() => db);
 wake.setWakeRoster(() => store.workspaces.map((w) => rosterMod.wakeRosterEntry(w)));
 wake.setWakeRosterEntry?.((id) => { const w = store.getWorkspace(id); return w ? rosterMod.wakeRosterEntry(w) : null; });
+if (hasWakeHold) wake.setWakeKeeperResident?.((await import(`${REPO}/src/main/admission-wake.ts`)).keeperResident);   // index.ts wires the same seam
 wake.setWakeDeliver((wsId, text) => delivery.sdkStartAndDeliver(wsId, text));
 wake.__freezeSwitchForTests(() => true);
 const send = (to, body, runId = 'ws-ops') => busMod.send(db, { runId, sender: 'ws-ops', kind: 'dispatch', body, recipient: to });
@@ -378,6 +381,63 @@ if (ARM === 'wake_two_sites') {
   check('queued_prompts_delivered_on_release', await until(() => (wsRec('ws-m1').queuedPrompts ?? []).length === 0 && calls.turns.some((t) => t.wsId === 'ws-m1' && /PARKED-m1/.test(String(t.text))) || startsFor('ws-m1').some((c) => /PARKED-m1/.test(String(c.text)))), true);
   await sleep(150);
   check('each_once', [orderStarts().length, [...calls.turns, ...calls.start].filter((c) => c.wsId === 'ws-m1' && /PARKED-m1/.test(String(c.text))).length, admMod ? admMod.listHeldStarts().length : 0], [1, 1, 0]);
+  verdict();
+}
+
+if (ARM === 'two_sites_reverse') {
+  // ws-m1: a bus message (sweep site) is held FIRST, then a peer message (message site). The release starts the member with the order; the message site's retry
+  // must then NOT send its content-free bring-up prompt to the now-RUNNING member (an extra turn).
+  mem = 4; guard.sampleNow();
+  send('ws-m1', 'REV-MSG');
+  await wake.sweepBusWake();
+  await workspaces.dispatchMessageRequest({ from: 'ws-xm', to: 'ws-m1', text: 'REV-PEER', emergency: true });
+  check('one_slot', admMod ? admMod.listHeldStarts().map((h) => [h.wsId, h.kind]) : [], [['ws-m1', 'wake']]);
+  mem = 9; guard.sampleNow();
+  check('order_delivered_on_release', await until(() => orderStarts().length >= 1), true);
+  await sleep(500);
+  const bringUps = [...calls.turns, ...calls.start].filter((c) => c.wsId === 'ws-m1' && /memory is back/.test(String(c.text))).length;
+  check('no_extra_bring_up_turn_for_the_already_woken_member', bringUps, 0);
+  check('hook_drained_the_parked_message_once', hookDrained.filter((h) => h.wsId === 'ws-m1' && h.text.includes('REV-PEER')).length, 1);
+  verdict();
+}
+
+if (ARM === 'keeper_resident') {
+  // Members whose CLI is alive in a detached KEEPER after an app relaunch: the app has no in-memory session (reattach is lazy), so `sleeping` is true — but a wake only
+  // REATTACHES, it starts no process, so Admission must not hold it. Fake keepers answer the REAL `probeKeeper` over the real socket protocol. UNIQUE ws ids per run
+  // (equal ids across rigs share /tmp/okeeper-<hash>).
+  const net = await import('node:net');
+  const kc = await import(`${REPO}/src/main/keeper-client.ts`);
+  const proto = await import(`${REPO}/src/shared/keeper-protocol.ts`);
+  const P = process.pid;
+  const ids = { sweep: `ws-kres-sweep-${P}`, flush: `ws-kres-flush-${P}`, msg: `ws-kres-msg-${P}`, fresh: `ws-kres-new-${P}`, dying: `ws-kres-die-${P}` };
+  const servers = [];
+  const mkKeeper = async (id, reply) => {
+    const sock = kc.keeperSocketPath(id);
+    fs.mkdirSync(path.dirname(sock), { recursive: true }); fs.rmSync(sock, { force: true });
+    const srv = net.createServer((c) => { c.on('data', () => { c.write(proto.encodeKeeperFrame({ t: 'helloAck', running: true, pid: process.pid, turnInFlight: false, ...reply })); }); });
+    await new Promise((r) => srv.listen(sock, r));
+    servers.push({ srv, sock });
+  };
+  const cleanup = () => { for (const k of servers) { try { k.srv.close(); } catch { /* gone */ } fs.rmSync(k.sock, { force: true }); } };
+  process.on('exit', cleanup);
+  for (const id of Object.values(ids)) await store.upsertWorkspace(mk(id, { parentId: 'ws-ops', hibernatedAt: now0 - 60_000 }));
+  await mkKeeper(ids.sweep, { everStarted: true }); await mkKeeper(ids.flush, { everStarted: true }); await mkKeeper(ids.msg, { everStarted: true });
+  await mkKeeper(ids.fresh, { everStarted: false });                      // an init-wedged CLI is killed + respawned on attach — a real START
+  await mkKeeper(ids.dying, { everStarted: true, shuttingDown: true });   // a CLI being torn down: same
+  check('instrument_sees_the_keepers', [(await kc.probeKeeper(ids.sweep))?.running, (await kc.probeKeeper(ids.fresh))?.everStarted, (await kc.probeKeeper(ids.dying))?.shuttingDown], [true, false, true]);
+  mem = 4; guard.sampleNow();
+  for (const id of [ids.sweep, ids.fresh, ids.dying]) send(id, `KEEPER-MSG-${id}`);
+  for (let i = 0; i < 3; i++) { await wake.sweepBusWake(); await sleep(15); }
+  check('sweep_resident_member_passes_it_only_reattaches', orderStarts().filter((c) => c.wsId === ids.sweep).length, 1);
+  check('never_started_and_shutting_down_keepers_ARE_held', admMod ? admMod.listHeldStarts().map((h) => h.wsId).sort() : [], [ids.fresh, ids.dying].sort());
+  // flush site (resident member, parked prompts)
+  await store.upsertWorkspace({ ...wsRec(ids.flush), queuedPrompts: [{ id: 'q-kr', text: 'PARKED-KR', queuedAt: Date.now() - 60_000 }] });
+  const fl = await pq.flushQueuedPrompts(ids.flush);
+  check('flush_site_resident_member_passes', [fl.ok, fl.delivered, startsFor(ids.flush).some((c) => /PARKED-KR/.test(String(c.text)))], [true, 1, true]);
+  // message site (resident member)
+  const msg = await workspaces.dispatchMessageRequest({ from: 'ws-xm', to: ids.msg, text: 'KR-PEER', emergency: true });
+  check('message_site_resident_member_is_woken_not_parked', [msg.ok, msg.delivery, startsFor(ids.msg).some((c) => /KR-PEER/.test(String(c.text)))], [true, 'started', true]);
+  check('only_the_two_non_resident_keepers_are_queued', admMod ? admMod.listHeldStarts().map((h) => h.wsId).sort() : [], [ids.fresh, ids.dying].sort());
   verdict();
 }
 

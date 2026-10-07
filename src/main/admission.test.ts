@@ -917,3 +917,17 @@ test('W18 per-site owed-ness is judged ONCE before the first retry: a site whose
   await a.kick();
   assert.deepEqual(w.ran, ['sweep', 'flush']);
 });
+
+// ── #287 review fix round (F1: keeper-resident wake is never held — sites probe only when the wake WOULD be held) ──
+
+test('W19 wouldHold: true while the guard holds Admission or an earlier start is still queued; false with memory fine and an empty (or only Pause-refused) line', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  w.mem = 12;
+  assert.equal(a.wouldHold(), false, 'memory fine, empty line');
+  w.mem = 4;
+  assert.equal(a.wouldHold(), true, 'the guard holds');
+  a.gate(args(w, 'A', { retryLater: () => true, run: async () => ({ ok: false, error: 'run en pause' }) }));
+  w.mem = 12;
+  assert.equal(a.wouldHold(), true, 'memory is fine but A is still queued — a newcomer joins the line');
+});

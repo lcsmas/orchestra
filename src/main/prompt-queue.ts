@@ -139,13 +139,13 @@ export async function flushQueuedPrompts(
   // stay durable in the store exactly as they are, and the queue re-runs this flush when the member's turn comes. "Send now" (`force`, a human click) passes.
   if (
     !opts.force &&
-    wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {
+    (await wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {
       site: 'flush',
       stillOwed: () => {
         const w = store.getWorkspace(id);
         return !!w && !w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);
       },
-    })
+    }))
   ) {
     return { ok: false, delivered: 0, error: 'held for memory (Admission) — the parked prompts stay queued' };
   }
@@ -277,13 +277,13 @@ async function resumeUsageLimited(now: number, only?: string): Promise<void> {
     // (the `usage_limit` marker stays put, no retry storm). The queue re-runs this tick when the member's turn comes; the permit lets this member through.
     if (
       action === 'nudge' &&
-      wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now(), ws.id), {
+      (await wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now(), ws.id), {
         site: 'resume',
         stillOwed: () => {
           const w = store.getWorkspace(ws.id);
           return !!w && !w.archived && w.lastStopReason === 'usage_limit' && isSleeping(ws.id);
         },
-      })
+      }))
     ) {
       continue;
     }

@@ -10,8 +10,9 @@ import type { Workspace } from '../shared/types';
 import { canOrchestrate } from '../shared/types';
 import { isRunning } from './pty';
 import { sdkAwaitFirstTurn, sdkSessionLive } from './sdk-delivery';
+import { probeKeeper } from './keeper-client';
 import { store } from './store';
-import { ADMISSION_WAKE_SETTLE_MS, holdWake, setAdmissionWakeSettle } from './admission';
+import { ADMISSION_WAKE_SETTLE_MS, holdWake, setAdmissionWakeSettle, wakeWouldBeHeld } from './admission';
 
 // A wake release waits (bounded) for the started member's first turn so the next fresh reading includes its memory — wired HERE because admission.ts is platform-free.
 setAdmissionWakeSettle((id) => sdkAwaitFirstTurn(id, ADMISSION_WAKE_SETTLE_MS));
@@ -21,7 +22,14 @@ export function isSleeping(id: string): boolean {
   return !isRunning(id) && !sdkSessionLive(id);
 }
 
-export function wakeHeldForMemory(
+/** F1: the member's CLI is ALIVE in a detached keeper (an app relaunch leaves the in-memory session absent until its view opens): a wake only REATTACHES it — no new process,
+ *  so it is never held. A never-started (init-wedged) or shutting-down keeper is killed + respawned fresh by the attach path — that IS a start. */
+export async function keeperResident(id: string): Promise<boolean> {
+  const probe = await probeKeeper(id).catch(() => null);
+  return !!probe?.running && probe.everStarted !== false && probe.shuttingDown !== true;
+}
+
+export async function wakeHeldForMemory(
   ws: Workspace,
   retry: () => Promise<unknown>,
   opts: {
@@ -31,8 +39,10 @@ export function wakeHeldForMemory(
     /** The retry re-enters `wakeHeldForMemory` (consumes the permit): default true. false for a retry that starts the member directly. */
     reenters?: boolean;
   },
-): boolean {
+): Promise<boolean> {
   const id = ws.id;
+  if (!ws.parentId || !isSleeping(id)) return false; // a running member / non-fleet workspace: never a held start (same answer as holdWake, without the probe)
+  if (wakeWouldBeHeld() && (await keeperResident(id))) return false;
   return holdWake({
     wsId: id,
     fleetMember: !!ws.parentId,

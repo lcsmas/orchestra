@@ -145,7 +145,7 @@ test('who imports Admission: the #286 start gates + the #287 wake path; Veille (
       .sort();
   // Tripwires BY DESIGN: #288 (Veille) / #289 (alert) add their importer HERE.
   assert.deepEqual(importers(/from '\.\/admission(\.ts)?'/), ['admission-wake.ts', 'bus-wake.ts', 'hooks-server.ts', 'index.ts', 'restart-workspace.ts', 'workspaces.ts']);
-  assert.deepEqual(importers(/from '\.\/admission-wake'/), ['api-handlers.ts', 'prompt-queue.ts', 'workspaces.ts']);
+  assert.deepEqual(importers(/from '\.\/admission-wake'/), ['api-handlers.ts', 'index.ts', 'prompt-queue.ts', 'workspaces.ts']);
 });
 
 // ─── #287: the wake sites (each: the hold sits BEFORE anything is started or cleared, durable state untouched) ───────────────────────
@@ -163,16 +163,17 @@ test('#287 bus-wake: the hold branch follows decideWake\'s skip handling, preced
   const mark = body.indexOf('ledger.set(action.reader, ledgerEntry);');
   assert.ok(skip > 0 && hold > skip && active > hold && mark > active, 'skip handling → hold → active transition → ledger mark');
   const branch = body.slice(hold, active);
-  assert.match(body.slice(hold - 520, hold), /if \(action\.kind === 'fire' && entry\?\.fleetMember === true\) \{/);
-  assert.match(body.slice(hold - 320, hold), /const now = rosterEntryOf\(reader\) \?\? entry;/, 'the reader is RE-READ right before the decision (the snapshot is from the sweep start)');
-  assert.match(body.slice(hold - 120, hold), /if \(now\.fleetMember === true && now\.sleeping === true\) \{/);
+  assert.match(body.slice(hold - 1000, hold), /if \(action\.kind === 'fire' && entry\?\.fleetMember === true\) \{/);
+  assert.match(body.slice(hold - 700, hold), /const now = rosterEntryOf\(reader\) \?\? entry;/, 'the reader is RE-READ right before the decision (the snapshot is from the sweep start)');
+  assert.match(body.slice(hold - 140, hold), /if \(now\.fleetMember === true && now\.sleeping === true && !resident\) \{/);
+  assert.match(body.slice(hold - 520, hold), /const resident = now\.fleetMember === true && now\.sleeping === true && wakeWouldBeHeld\(\) && \(await readKeeperResident\(reader\)\.catch\(\(\) => false\)\);/, 'F1: a keeper-resident member is probed (only when the wake would be held) and never held');
   assert.match(branch, /site: 'sweep',/);
   assert.match(branch, /retry: \(\) => sweepBusWakeNow\(\),/);
   assert.match(branch, /const r = rosterEntryOf\(reader\);\s*\n\s*return !!r && r\.wakeable && r\.sleeping === true;/, 'stillOwed checks THIS reader only, never the whole roster');
   assert.doesNotMatch(branch, /readRoster\(\)/);
   assert.match(branch, /logWakeableTransition\(reader, 'held-for-memory'\);\s*\n\s*continue;/);
   assert.doesNotMatch(branch, /counters\.|ledger\./, 'a held réveil touches no counter and no ledger mark');
-  assert.match(wake, /export async function sweepBusWakeNow\(\): Promise<void> \{\s*\n\s*for \(let i = 0; sweeping && i < 200; i\+\+\)/);
+  assert.match(wake, /export async function sweepBusWakeNow\(\): Promise<void> \{\s*\n\s*for \(let i = 0; sweeping && i < 200; i\+\+\) await new Promise\(\(r\) => setTimeout\(r, 25\)\);\s*\n\s*await sweepBusWake\(\);\s*\n\}/, 'F2: the release sweep WAITS for an in-flight sweep, then sweeps (a no-op here leaves every held réveil undelivered)');
 });
 
 test('#287 roster: fleetMember / sleeping / coordinator come from the real probes', () => {
@@ -197,7 +198,7 @@ test('#287 prompt-queue: the TIMER flush holds BEFORE the queue is cleared (Send
   const clear = flush.indexOf('const cleared: Workspace = { ...ws, queuedPrompts: [] };');
   const usage = flush.indexOf("'account still at its usage limit'");
   assert.ok(usage > 0 && hold > usage && clear > hold, 'usage check → hold → clear');
-  assert.match(flush.slice(hold - 60, hold), /!opts\.force &&\s*\n\s*$/, 'the TIMER flush only: Send now (force) is a human click and passes');
+  assert.match(flush.slice(hold - 70, hold), /!opts\.force &&\s*\n\s*\(await $/, 'the TIMER flush only: Send now (force) is a human click and passes');
   assert.match(flush.slice(hold, hold + 140), /site: 'flush',/);
   const resume = fn(pq, 'async function resumeUsageLimited(now: number, only?: string): Promise<void> {');
   const rh = resume.indexOf("action === 'nudge' &&");
@@ -210,7 +211,7 @@ test('#287 prompt-queue: the TIMER flush holds BEFORE the queue is cleared (Send
 test('#287 peer message: a stopped fleet target is parked in the inbox (honest `inbox`) and woken by the queue; a failed park drops the hold', () => {
   const from = ws.indexOf('export async function dispatchMessageRequest(');
   const body = ws.slice(from, ws.indexOf('export interface BroadcastTargetResult', from));
-  const hold = body.indexOf("if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {");
+  const hold = body.indexOf("if (await wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {");
   const wakeTry = body.indexOf('if (await wakeAgentWithPrompt(input.to, body)) {');
   assert.ok(hold > 0 && wakeTry > hold, 'hold before the wake attempt');
   assert.match(body.slice(hold, wakeTry), /if \(await queueInbox\(input\.to, body\)\) return \{ ok: true, delivery: 'inbox', branch: target\.branch \};\s*\n\s*dropWakeSite\(input\.to, 'message'\);/, 'a failed park withdraws THIS site only — never a held spawn / restart of the member');
@@ -219,8 +220,27 @@ test('#287 peer message: a stopped fleet target is parked in the inbox (honest `
 });
 
 test('#287 recovery: the VIEW-OPEN recovery holds when it would resend pending prompts to a sleeping fleet member; the recycle/restart callers are NOT gated (they replace a running session — net 0)', () => {
-  assert.match(api, /if \(w && \(w\.sdkPendingPrompts \?\? \[\]\)\.length > 0 && wakeHeldForMemory\(w, recoverNow, \{ site: 'recovery', reenters: false \}\)\) return;/);
+  assert.match(api, /if \(w && \(w\.sdkPendingPrompts \?\? \[\]\)\.length > 0 && \(await wakeHeldForMemory\(w, recoverNow, \{ site: 'recovery', reenters: false \}\)\)\) return;/);
   const sdk = read('src/main/agent-sdk.ts');
   assert.doesNotMatch(sdk, /admission/i, 'agent-sdk.ts (the B5 / D1.6 serialized seam) is untouched');
   assert.doesNotMatch(read('src/main/session-watchdog.ts'), /admission/i);
+});
+
+test('#287 F2/F3: the peer-message bring-up wakes ONLY a still-sleeping member (an earlier site\'s release may have started it); both release bodies are pinned', () => {
+  const m = /async function wakeHeldMessageTarget\(id: string\): Promise<void> \{\s*\n\s*if \(!isSleeping\(id\)\) return;[^\n]*\n\s*await wakeAgentWithPrompt\(id, HELD_MESSAGE_WAKE_PROMPT\);\s*\n\}/;
+  assert.match(ws, m);
+});
+
+test('#287 F1: keeper-resident = the CLI is ALIVE in a detached keeper, has run a turn and is not shutting down (its wake only reattaches); probed only when the wake would be held; the sweep seam is wired', () => {
+  const aw = read('src/main/admission-wake.ts');
+  assert.match(aw, /return !!probe\?\.running && probe\.everStarted !== false && probe\.shuttingDown !== true;/);
+  assert.match(aw, /if \(wakeWouldBeHeld\(\) && \(await keeperResident\(id\)\)\) return false;/);
+  assert.match(index, /setWakeKeeperResident\(keeperResident\);/);
+});
+
+test('#287 F2: the wake rigs are package.json scripts (the 5 site integrations are not gated by regex pins alone)', () => {
+  const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+  assert.match(pkg.scripts['test:admission-wake'] ?? '', /scripts\/\.r2-register\.mjs scripts\/e2e-admission-wake\.mjs/);
+  assert.match(pkg.scripts['test:admission-hold'] ?? '', /scripts\/\.r2-register\.mjs scripts\/e2e-admission-hold\.mjs/);
+  assert.match(pkg.scripts['test:admission-mutants'] ?? '', /scripts\/admission-mutants\.mjs/);
 });

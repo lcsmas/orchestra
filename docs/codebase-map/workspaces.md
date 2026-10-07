@@ -321,8 +321,11 @@ auto-resume** (`resumeUsageLimited(now, only?)`: held before the budget, the mar
 (`dispatchMessageRequest`: parked in the inbox, honest `delivery:'inbox'`; the queue wakes the member with a content-free prompt and the inbox HOOK drains the block at session start —
 nothing re-releases it; a failed park withdraws only the `'message'` site, `dropWakeSite`) · **view-open recovery** (`agentSdkHistory`, api-handlers.ts: pending prompts resent to a
 sleeping member). A held-SPAWN child is no longer started by a bus message (it used to bypass the hold). NOT gated: watchdog `recycleSession`, account-migrate resume, Reprise starts
-(replace a running session / human or Pause lift), `--detached` spawns. Known: a member alive only in a detached keeper after an app restart counts as sleeping (its wake is held,
-nothing would have started). Gates: `scripts/e2e-admission-wake.mjs` (13 arms, `RIG_REPO=<master>` = must-FAIL; real bus + sweep + roster + prompt queue + message dispatch, fake memory source + recording seam with a boot window and a simulated inbox hook),
+(replace a running session / human or Pause lift), `--detached` spawns. **Keeper-resident members are never held** (review F1): after an app relaunch a member's CLI can live on in its
+detached keeper while the in-memory session is absent (reattach is lazy) — its wake only REATTACHES (no new process). `keeperResident` (admission-wake.ts: `probeKeeper` running AND
+`everStarted !== false` AND not `shuttingDown` — the never-started / dying cases are killed + respawned by the attach path, i.e. a real START, so they ARE held) is consulted only when the wake
+WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (async), the bus sweep uses the `setWakeKeeperResident` seam (index.ts). The peer-message bring-up
+(`wakeHeldMessageTarget`) wakes ONLY a still-sleeping member (an earlier site's release may already have started it — no extra content-free turn). Gates: `scripts/e2e-admission-wake.mjs` (15 arms incl. `keeper_resident` — fake keepers answering the REAL `probeKeeper`, unique ws ids per run — and `two_sites_reverse`; `RIG_REPO=<master>` = must-FAIL; `pnpm run test:admission-wake` / `test:admission-hold` / `test:admission-mutants`; real bus + sweep + roster + prompt queue + message dispatch, fake memory source + recording seam with a boot window and a simulated inbox hook),
 `admission.test.ts` W1–W18, `admission-wiring.test.ts` `#287 …` pins (the recovery site is wiring-pinned only), `admission-mutants.mjs` W-series (`rig: 'wake'`).
 
 ### Archive / unarchive / delete

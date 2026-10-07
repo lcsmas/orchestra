@@ -70,7 +70,7 @@ import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind } from './admission.ts';
-import { wakeHeldForMemory } from './admission-wake';
+import { isSleeping, wakeHeldForMemory } from './admission-wake';
 import { decideAdmissionReport, heldPhrase } from '../shared/admission.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
@@ -3399,6 +3399,7 @@ export async function wakeAgentWithPrompt(
  *  drain the inbox file) exactly as every other inbox-parked message does. Nothing re-releases the block: a 2nd delivery would duplicate what the hook already drained. */
 const HELD_MESSAGE_WAKE_PROMPT = 'Orchestra: memory is back — you were woken to read the messages parked for you (they are printed above).';
 async function wakeHeldMessageTarget(id: string): Promise<void> {
+  if (!isSleeping(id)) return; // an earlier site's release (e.g. the bus order) already brought the member up: a content-free bring-up turn would be an extra turn
   await wakeAgentWithPrompt(id, HELD_MESSAGE_WAKE_PROMPT);
 }
 
@@ -3597,7 +3598,7 @@ async function dispatchMessageRequestUnmirrored(
 
   // #287 Admission: a stopped FLEET member's wake would START a process — under low memory it WAITS. The message is parked durably in the inbox (the existing
   // fallback, reported honestly as 'inbox') and the queue wakes the member when its turn comes; its inbox hook drains the block on that very prompt.
-  if (wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {
+  if (await wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {
     if (await queueInbox(input.to, body)) return { ok: true, delivery: 'inbox', branch: target.branch };
     dropWakeSite(input.to, 'message'); // nothing parked → nothing to wake it for (this site only: a held spawn / restart of the member stays queued)
     return { ok: false, error: 'inbox write failed' };
