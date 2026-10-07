@@ -10,6 +10,7 @@ import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-dou
 import { actorText } from '../shared/pause-lifecycle.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
 import type { AutoHeld } from '../shared/pause-auto.ts';
+import { owedRestarts } from '../shared/pause-containers.ts';
 
 /** The bus reads this verb needs, injected (production passes the real modules — dynamic import in index.ts). */
 export interface RunStatusDeps {
@@ -154,13 +155,21 @@ export function renderRunStatus(st: RunStatus): string {
         `told ${st.autoHeld.to === 'human' ? 'the human (decision gate)' : c(st.autoHeld.to)}. Detach that run (the next tick Reprises) or lift by hand: orchestra run resume --run ${p.runId}`,
     );
   }
-  if (p.resumeStartedAt) out.push(`Reprise: RESUMING since ${iso(p.resumeStartedAt)} — coordinators are released; every other member stays BLOCKED until its coordinator runs \`orchestra run release\`.`);
+  if (p.resumeStartedAt) {
+    // #292: while the Pause's stopped containers are still owed a restart the coordinators are PARKED (the host restarts them first)
+    const owedN = st.bilan.reduce((n, r) => n + (r.activity?.containers ? owedRestarts(r.activity.containers).length : 0), 0);
+    out.push(
+      owedN > 0
+        ? `Reprise: RESUMING since ${iso(p.resumeStartedAt)} — the host is restarting ${owedN} container(s) the Pause stopped (it must be running); the coordinators are released right after, every other member stays BLOCKED until its coordinator runs \`orchestra run release\`.`
+        : `Reprise: RESUMING since ${iso(p.resumeStartedAt)} — coordinators are released; every other member stays BLOCKED until its coordinator runs \`orchestra run release\`.`,
+    );
+  }
   if (st.reprise) out.push(...renderRepriseStatus(st.reprise, { countShownAbove: pauseLineCoversReprise(st.reprise, st.roster) }));
   out.push(`Bilan de pause (${st.bilan.length} member${st.bilan.length === 1 ? '' : 's'}):`);
   renderRows(st.bilan, out);
   out.push(
     p.resumeStartedAt
-      ? 'Reprise in progress: killed commands are listed, never re-run automatically; each member receives its Consigne de reprise when its coordinator releases it.'
+      ? 'Reprise in progress: killed commands are listed, never re-run automatically; containers the Pause stopped are restarted by the host BEFORE the coordinators are released; each member receives its Consigne de reprise when its coordinator releases it.'
       : 'Reprise: `orchestra run resume` starts it — nothing restarts on its own: only the coordinators are released (each gets the Bilan of its wave); workers stay blocked until their coordinator runs `orchestra run release`, which sends each its Consigne de reprise. Killed commands are listed, never re-run automatically.',
   );
   return `${out.join('\n')}\n`;
@@ -214,6 +223,23 @@ function renderRows(rows: BilanRow[], out: string[]): void {
       out.push(`      orphan killed by the turn observer (via ${c(o.via)}): ${short(o.cmd, 70)} pid ${c(o.pid)} cwd ${c(o.cwd ?? '?')} — ${c(o.evidence ?? '')}`);
     }
     if (a?.earlierKilled?.length) out.push(`      killed by EARLIER incomplete attempt(s) of the trap: ${a.earlierKilled.slice(0, 6).map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)})`).join('; ')}${a.earlierKilled.length > 6 ? `; +${a.earlierKilled.length - 6} more` : ''}`);
+    if (a?.containers) {
+      // #292: the attributed containers the Pause dure stopped (never removed) and what the Reprise did with them
+      const ct = a.containers;
+      const rs = new Map((ct.restarted ?? []).map((x) => [x.id, x]));
+      const stopped = ct.stopped.filter((x) => x.outcome === 'stopped');
+      if (stopped.length) {
+        out.push(`      containers stopped by the Pause (${stopped.length}; stopped, never removed): ${stopped.slice(0, 8).map((x) => {
+          const y = rs.get(x.id);
+          return `${short(x.name || x.id, 40)} (${short(x.image, 40)}) → ${!y ? 'not restarted yet' : y.outcome === 'failed' ? `restart FAILED${y.error ? `: ${short(y.error, 60)}` : ''}` : y.outcome === 'gone' ? 'gone (removed meanwhile, skipped)' : y.outcome === 'already-running' ? 'already running' : 'restarted'}`;
+        }).join('; ')}${stopped.length > 8 ? `; +${stopped.length - 8} more` : ''}`);
+      }
+      const skipped = ct.stopped.filter((x) => x.outcome === 'skipped-autoremove');
+      if (skipped.length) out.push(`      containers NOT stopped (--rm: a stop would delete them): ${skipped.slice(0, 8).map((x) => short(x.name || x.id, 40)).join('; ')}`);
+      const failedStops = ct.stopped.filter((x) => x.outcome === 'failed');
+      if (failedStops.length) out.push(`      containers the Pause could NOT stop: ${failedStops.slice(0, 8).map((x) => `${short(x.name || x.id, 40)}${x.error ? ` (${short(x.error, 60)})` : ''}`).join('; ')}`);
+      if (ct.error) out.push(`      containers: ${c(ct.error)}`);
+    }
     for (const n of a?.notes ?? []) out.push(`      note: ${c(n)}`);
     if (r.error) out.push(`      error: ${c(r.error)}`);
   }

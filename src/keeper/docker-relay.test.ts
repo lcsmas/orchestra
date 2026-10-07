@@ -345,6 +345,35 @@ test('daemon unreachable → a clean 502 JSON error, relay stays up', async () =
   assert.equal(r.healthy(), true);
 });
 
+test('daemon absent: a client that writes a big BODY FIRST (docker-py / python http.client style) gets the 502 and a CLOSED connection promptly — never a hang to its own timeout', { timeout: 10000 }, async () => {
+  const r = await newRelay({ upstream: path.join(dir, 'still-not-there.sock') });
+  const t0 = Date.now();
+  const outcome = await new Promise<{ head: string; closedAfterMs: number | null }>((resolve) => {
+    const sock = net.connect(r.sockPath);
+    let head = '';
+    sock.on('data', (d: Buffer) => {
+      head += d.toString('latin1');
+    });
+    const done = (): void => resolve({ head, closedAfterMs: Date.now() - t0 });
+    sock.on('close', done);
+    sock.on('error', () => {}); // EPIPE / ECONNRESET while still writing is a FAST error, which is exactly the point
+    sock.once('connect', () => {
+      const body = Buffer.alloc(4 * 1024 * 1024, 0x61);
+      sock.write(`POST /v1.47/images/load HTTP/1.1\r\nHost: docker\r\nContent-Length: ${body.length}\r\n\r\n`);
+      sock.write(body);
+    });
+    setTimeout(() => {
+      sock.destroy();
+      resolve({ head, closedAfterMs: null });
+    }, 4000);
+  });
+  assert.notEqual(outcome.closedAfterMs, null, 'the relay left the connection open after the 502 — a body-first client hangs');
+  assert.ok((outcome.closedAfterMs as number) < 2500, `closed after ${outcome.closedAfterMs} ms`);
+  assert.match(outcome.head, /^HTTP\/1\.1 502 /);
+  assert.match(outcome.head, /connection: close/i);
+  assert.equal((await call(await newRelay(), 'GET', '/_ping')).status, 200, 'the relay keeps serving other connections');
+});
+
 test('the socket is owner-only (it is full docker access)', async () => {
   const r = await newRelay();
   assert.equal(fs.statSync(r.sockPath).mode & 0o777, 0o600);

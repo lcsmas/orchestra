@@ -9,6 +9,7 @@
 import type { BusDb } from './bus.ts';
 import { runSubtreeIds, type RunPauseInfo } from './bus-pause.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
+import type { BilanContainers } from '../shared/pause-containers.ts';
 
 /** What the member was doing when the Pause took effect + what the trap did (all optional but `surface`). */
 /** One process of the pausing call's ancestry (the CLI records it at pause time; the trap re-verifies pid + start-time against the live CLI). */
@@ -58,6 +59,8 @@ export interface BilanActivity {
   earlierKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>;
   /** Free-text trail: turn starts observed while paused, partial failures. */
   notes?: string[];
+  /** #292 (ledger #295 FI-1.6): the attributed containers a Pause dure stopped for this member and what the Reprise did with them — JSON in `activity`, no migration. */
+  containers?: BilanContainers;
   /** Processes the TURN OBSERVER (a CLI-started turn while paused) killed — kept apart from `killed_json`, which belongs to the pause-time trap
    *  (a non-NULL `killed_json` means "this member's trap is complete"). */
   observerKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>;
@@ -229,6 +232,24 @@ export function appendBilanNote(db: BusDb, carrierRunId: string, wsId: string, p
     }
     const a: BilanActivity = row.activity ?? { surface: 'none' };
     updateBilan(db, row.id, { activity: { ...a, notes: [...(a.notes ?? []), note].slice(-50) } });
+  });
+  tx.immediate();
+}
+
+/**
+ * Read-modify-write a member's `activity.containers` in ONE immediate transaction (the trap's final write, the turn observer's notes and the Reprise's
+ * restart results all touch the same row: none may overwrite another's). `fn` gets the current value (undefined when none) and returns the new one.
+ * A missing row is created minimal — the Reprise must be able to record a result for a member whose Bilan row the trap never wrote.
+ */
+export function updateBilanContainers(db: BusDb, carrierRunId: string, wsId: string, pausedAt: number, fn: (cur: BilanContainers | undefined) => BilanContainers): void {
+  const tx = db.transaction(() => {
+    const row = bilanForMember(db, carrierRunId, wsId, pausedAt);
+    if (!row) {
+      insertBilan(db, { runId: carrierRunId, wsId, pausedAt, activity: { surface: 'none', containers: fn(undefined) }, snapshotRef: null, dirty: null, killed: null, error: null });
+      return;
+    }
+    const a: BilanActivity = row.activity ?? { surface: 'none' };
+    updateBilan(db, row.id, { activity: { ...a, containers: fn(a.containers) } });
   });
   tx.immediate();
 }

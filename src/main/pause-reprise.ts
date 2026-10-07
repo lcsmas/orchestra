@@ -36,6 +36,7 @@ import {
 } from '../shared/pause-consigne.ts';
 import type { ConsigneDeReprise } from '../shared/pause-lifecycle.ts';
 import type { RepriseStatusView } from '../shared/pause-reprise-view.ts';
+import { owedRestarts, type BilanContainers, type ContainerStopEntry } from '../shared/pause-containers.ts';
 
 /** How long after the last release `bus-status` / `run status` keep naming members whose reprise accusé is still missing (tracking only — nothing is gated by it). */
 export const REPRISE_TRACKING_TTL_MS = 24 * 3600_000;
@@ -518,7 +519,11 @@ export function beginRepriseCore(
       .run(now, carrierRunId, pausedAt);
     if (started.changes !== 1) return 'already-resuming';
     seedRoster(db, carrierRunId, pausedAt, subtreeRunIds);
-    releaseCoordinators(db, carrierRunId, cols, subtreeRunIds, now, undefined, opts?.human === true ? PAUSE_HUMAN_BY : HOST_SENDER);
+    const by = opts?.human === true ? PAUSE_HUMAN_BY : HOST_SENDER;
+    // #292 (FI-1.7): containers the Pause STOPPED are restarted BEFORE any member is told it may start — the host's container step (restartOwedContainers, async, so not here)
+    // runs first and the coordinators are released right after it (`releasePendingCoordinators`, from the sweep). Nothing stopped ⇒ nothing deferred: exactly the pre-#292 behaviour.
+    if (containersOwed(db, carrierRunId)) deferCoordinatorRelease(db, carrierRunId, pausedAt, by);
+    else releaseCoordinators(db, carrierRunId, cols, subtreeRunIds, now, undefined, by);
     // Closed here ONLY when the host trap FINISHED (`pause_trap_at`): then every member that existed at the trap has a Bilan row, so the roster is complete for the paused fleet
     // (a workspace that joins the tree LATER — e.g. a worker a released OPS spawns during the Reprise — is seeded BLOCKED by the host sweep and released with `release --all`). Otherwise
     // this store-less caller cannot see a live member the Bilan never recorded — the HOST sweep completes the roster from the live tree first, then
@@ -527,6 +532,52 @@ export function beginRepriseCore(
     return 'resuming';
   });
   return tx.immediate();
+}
+
+// ─── #292: containers stopped by the Pause are restarted before the coordinators are released ──────────────────────────────
+
+/** Every bus row of ONE carrier (all pause epochs, oldest first) with its owed restarts. A re-Pause between a Reprise's begin and its container step opens a NEW epoch whose trap
+ *  lists only RUNNING containers — the earlier epoch's still-stopped ones are owed to the Reprise all the same, so the scan is carrier-wide, not epoch-wide. */
+export function owedRows(db: BusDb, carrierRunId: string): Array<{ wsId: string; pausedAt: number; owed: ContainerStopEntry[] }> {
+  const rows = db.prepare('SELECT ws_id, paused_at, activity FROM pause_records WHERE run_id = ? ORDER BY id').all(carrierRunId) as Array<{ ws_id: string; paused_at: number; activity: string | null }>;
+  const newest = new Map<string, { wsId: string; pausedAt: number; activity: string | null }>();
+  for (const r of rows) newest.set(`${r.ws_id}@${r.paused_at}`, { wsId: r.ws_id, pausedAt: Number(r.paused_at), activity: r.activity }); // the newest row per (member, epoch) — a retry's row wins
+  const out: Array<{ wsId: string; pausedAt: number; owed: ContainerStopEntry[] }> = [];
+  for (const r of newest.values()) {
+    if (r.wsId.startsWith('__')) continue; // reserved rows (the pause origin)
+    let a: { containers?: BilanContainers } | null = null;
+    try {
+      a = r.activity ? (JSON.parse(r.activity) as { containers?: BilanContainers }) : null;
+    } catch {
+      a = null;
+    }
+    const owed = owedRestarts(a?.containers);
+    if (owed.length) out.push({ wsId: r.wsId, pausedAt: r.pausedAt, owed });
+  }
+  return out;
+}
+
+/** Does this carrier still owe a container restart — a Bilan row of ANY of its pause epochs with an `outcome:'stopped'` entry that has no restart result? (Carrier-wide: a re-Pause during a
+ *  Reprise opens a new epoch whose trap lists only running containers; the earlier epoch's stopped ones are still owed.) */
+export function containersOwed(db: BusDb, carrierRunId: string): boolean {
+  return owedRows(db, carrierRunId).length > 0;
+}
+
+const PENDING_BY = 'pending:';
+
+/** The coordinators the begin would have released NOW are parked instead — `released_at` stays NULL (the gate stays closed), `released_by` carries `pending:<who>`
+ *  (who the release will be attributed to: `host` or the human). The set is the roster at the begin: nobody is released yet, so no later joiner can be in it. */
+function deferCoordinatorRelease(db: BusDb, carrierRunId: string, pausedAt: number, by: string): void {
+  db.prepare(`UPDATE pause_members SET released_by = ? WHERE run_id = ? AND paused_at = ? AND role = 'coordinator' AND released_at IS NULL`).run(`${PENDING_BY}${by}`, carrierRunId, pausedAt);
+}
+
+/** The parked coordinators of a deferred begin and who releases them; null when none is parked. */
+function parkedCoordinators(db: BusDb, carrierRunId: string, pausedAt: number): { wsIds: Set<string>; by: string } | null {
+  const rows = db
+    .prepare(`SELECT ws_id, released_by FROM pause_members WHERE run_id = ? AND paused_at = ? AND role = 'coordinator' AND released_at IS NULL AND released_by LIKE ?`)
+    .all(carrierRunId, pausedAt, `${PENDING_BY}%`) as Array<{ ws_id: string; released_by: string }>;
+  if (rows.length === 0) return null;
+  return { wsIds: new Set(rows.map((r) => r.ws_id.toLowerCase())), by: String(rows[0].released_by).slice(PENDING_BY.length) || HOST_SENDER };
 }
 
 /** The run a coordinator coordinates: live ⇒ its own workspace id (run id == anchor id); else the bus run whose coordinator it is. */
@@ -597,6 +648,8 @@ export function finishRepriseIfDone(db: BusDb, carrierRunId: string): boolean {
   const tx = db.transaction((): boolean => {
     const cols = readCarrierColumns(db, carrierRunId);
     if (!cols || cols.pausedAt === null || cols.resumeStartedAt === null) return false;
+    // #292: the run does not go ACTIVE while containers the Pause stopped are still owed a restart (members released early — the human, an outer coordinator — must not close it over them)
+    if (containersOwed(db, carrierRunId)) return false;
     const left = db
       .prepare('SELECT COUNT(*) AS c FROM pause_members WHERE run_id = ? AND paused_at = ? AND released_at IS NULL')
       .get(carrierRunId, cols.pausedAt) as { c: number };
@@ -934,10 +987,18 @@ export function sweepReprise(deps: RepriseSweepDeps): string[] {
           const cur = readCarrierColumns(db, c.id);
           if (cur && cur.pausedAt === Number(c.paused_at) && cur.resumeStartedAt !== null) {
             seedRoster(db, c.id, Number(c.paused_at), subtree, members);
+            // #292: a begin that PARKED its coordinators (containers owed) releases them once the container step is done; while any restart is still owed nothing parked is released
+            // (not even by the late pass below — a parked coordinator is Bilan'd, so the late pass would otherwise open the gate before its containers are back)
+            const owed = containersOwed(db, c.id);
+            const parked = parkedCoordinators(db, c.id, Number(c.paused_at));
+            if (!owed && parked) releaseCoordinators(db, c.id, cur, subtree, Date.now(), (r) => parked.wsIds.has(r.wsId.toLowerCase()), parked.by);
             // LATE coordinators: a Bilan'd member the live tree NOW says orchestrates, which the begin saw as a plain worker (an unreadable store at `run resume`) — nobody else would
             // host-release it. A coordinator with NO Bilan row joined during the Reprise (a sub-OPS a released OPS spawned): it stays BLOCKED until its own parent releases it.
-            const bilanned = new Set(readBilanRecs(db, c.id, Number(c.paused_at)).map((b) => b.wsId.toLowerCase()));
-            releaseCoordinators(db, c.id, cur, subtree, Date.now(), (r) => bilanned.has(r.wsId.toLowerCase()));
+            // not at all while a restart is owed: NOBODY is told they may start before their containers are back (a role that flipped worker→coordinator is not in the parked set either)
+            if (!owed) {
+              const bilanned = new Set(readBilanRecs(db, c.id, Number(c.paused_at)).map((b) => b.wsId.toLowerCase()));
+              releaseCoordinators(db, c.id, cur, subtree, Date.now(), (r) => bilanned.has(r.wsId.toLowerCase()));
+            }
           }
         }).immediate();
       }

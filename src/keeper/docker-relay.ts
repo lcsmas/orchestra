@@ -65,14 +65,16 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
   let stopped = false;
   const live = new Set<net.Socket>();
 
-  function badGateway(res: http.ServerResponse, e: Error): void {
+  /** 502 for a daemon that cannot be reached. `Connection: close` + dropping the request socket once the answer is out: a client that writes its (possibly huge) body FIRST
+   *  (docker-py, python http.client) would otherwise sit on a kept-alive connection the relay never reads again, until its own timeout. */
+  function badGateway(req: http.IncomingMessage, res: http.ServerResponse, e: Error): void {
     if (res.headersSent) {
       res.destroy();
       return;
     }
     const body = JSON.stringify({ message: `orchestra docker relay: cannot reach the Docker daemon (${e.message})` });
-    res.writeHead(502, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
-    res.end(body);
+    res.writeHead(502, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), connection: 'close' });
+    res.end(body, () => req.destroy()); // belt: `Connection: close` already makes node end the socket; this drops it even with an unread body (no mutant: equivalent)
   }
 
   /** One request through to the daemon; `body` is a fully buffered replacement body, else the client's is piped. */
@@ -88,7 +90,7 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
       ur.on('error', () => res.destroy());
       ur.pipe(res);
     });
-    up.on('error', (e) => badGateway(res, e));
+    up.on('error', (e) => badGateway(req, res, e));
     res.on('close', () => {
       if (!res.writableFinished) up.destroy();
     });

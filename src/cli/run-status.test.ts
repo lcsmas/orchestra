@@ -348,3 +348,40 @@ test('`run status` says a HUMAN paused it (D-pick Q1): `by a human (from the Orc
   assert.match(renderRunStatus(mk('lead', null)), /PAUSED \(hard\) since \S+ by lead/);
   assert.doesNotMatch(renderRunStatus(mk('humain', null)), /by humain/);
 });
+
+test('#292: `run status` lists the member\'s containers (stopped → restarted / gone / failed, --rm skipped) and says a Reprise is waiting on the container restart', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops', 'hard');
+  const pausedAt = busPause.getRunPause(db, 'W')!.pausedAt;
+  records.insertBilan(db, {
+    runId: 'W',
+    wsId: 'm1',
+    pausedAt,
+    activity: {
+      surface: 'sdk',
+      memberRun: 'W',
+      containers: {
+        stopped: [
+          { id: 'a', name: 'g-db', image: 'mysql:8', run: 'W', outcome: 'stopped', atMs: 1 },
+          { id: 'b', name: 'g-old', image: 'x', run: 'W', outcome: 'stopped', atMs: 1 },
+          { id: 'c', name: 'tmp', image: 'x', run: 'W', outcome: 'skipped-autoremove', atMs: 1 },
+          { id: 'd', name: 'stuck', image: 'x', run: 'W', outcome: 'failed', error: 'daemon exploded', atMs: 1 },
+        ],
+      },
+    },
+    snapshotRef: 'r',
+    dirty: false,
+    killed: { killed: [], survivors: [], refused: [], spared: [] },
+    error: null,
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /containers stopped by the Pause \(2; stopped, never removed\): g-db \(mysql:8\) → not restarted yet; g-old \(x\) → not restarted yet/);
+  assert.match(text, /containers NOT stopped \(--rm: a stop would delete them\): tmp/);
+  assert.match(text, /containers the Pause could NOT stop: stuck \(daemon exploded\)/);
+  db.prepare('UPDATE runs SET resume_started_at = ? WHERE id = ?').run(pausedAt + 5, 'W');
+  assert.match(renderRunStatus(gatherRunStatus(db, 'W', deps)), /RESUMING since .* the host is restarting 2 container\(s\) the Pause stopped/);
+  records.updateBilanContainers(db, 'W', 'm1', pausedAt, (cur) => ({ stopped: cur!.stopped, restarted: [{ id: 'a', outcome: 'started', atMs: 2 }, { id: 'b', outcome: 'gone', atMs: 2 }] }));
+  const after = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(after, /g-db \(mysql:8\) → restarted; g-old \(x\) → gone \(removed meanwhile, skipped\)/);
+  assert.doesNotMatch(after, /the host is restarting/);
+});

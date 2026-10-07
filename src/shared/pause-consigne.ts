@@ -4,6 +4,7 @@
 // recorded everything a member needs to know. Killed commands are LISTED, never re-run: the member decides.
 
 import { actorText, type ConsigneDeReprise, type PauseConfirmVia, type PauseMode } from './pause-lifecycle.ts';
+import { containerConsigneLines, type BilanContainers } from './pause-containers.ts';
 
 /** The structural subset of a Bilan row (`BilanRow` in src/main/bus-pause-records.ts) this module reads — kept structural so
  *  src/shared never imports from src/main. */
@@ -33,6 +34,8 @@ export interface BilanActivityLike {
   earlierKilled?: Array<{ pid: number; cmd: string; cwd?: string | null }>;
   observerKilled?: Array<{ pid: number; cmd: string; cwd?: string | null }>;
   notes?: string[];
+  /** #292: the attributed containers the Pause stopped for this member + the Reprise's restart results. */
+  containers?: BilanContainers;
 }
 
 interface KilledReportLike {
@@ -50,6 +53,8 @@ export interface ConsigneFacts {
   interrupt: string | null;
   /** The calls in flight, grouped by the epoch (and so the interrupt outcome) that recorded them: the CURRENT Pause first (`earlierAt` null), then each EARLIER Pause the member was never released from. */
   inFlightGroups: Array<{ interrupt: string | null; lines: string[]; earlierAt: number | null }>;
+  /** #292: the attributed containers the Pause stopped for this member + what the Reprise did with them (absent = the Pause touched none). */
+  containers?: BilanContainers;
 }
 export type ConsigneWithFacts = ConsigneDeReprise & Partial<ConsigneFacts>;
 
@@ -204,6 +209,7 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneWithFacts {
     bilanRecorded: b !== null,
     interrupt: a?.interrupt ?? null,
     inFlightGroups: groups,
+    ...(a?.containers ? { containers: a.containers } : {}),
   };
 }
 
@@ -218,7 +224,7 @@ export function renderConsigne(c: ConsigneWithFacts, opts?: { releasedBy?: strin
   out.push(`CONSIGNE DE REPRISE — workspace ${stripControl(c.wsId)}, run ${stripControl(c.runId)}`);
   out.push(
     `The fleet Pause (${c.mode}, since ${iso(c.pausedAt)}${c.pausedBy ? ` by ${trimTo(actorText(c.pausedBy) ?? c.pausedBy, 80)}` : ''}) is lifted for you` +
-      `${opts?.releasedBy ? `: ${trimTo(actorText(opts.releasedBy) ?? opts.releasedBy, 80)} released you` : ''}. Nothing was restarted for you — you decide what to resume.`,
+      `${opts?.releasedBy ? `: ${trimTo(actorText(opts.releasedBy) ?? opts.releasedBy, 80)} released you` : ''}. Nothing was restarted for you${c.containers?.restarted?.some((r) => r.outcome === 'started') ? ' except the containers listed below' : ''} — you decide what to resume.`,
   );
   // no Bilan row ⇒ nothing is known about the member: "idle" would be a guess (the Pause landed while a douce still waited, or the app was down)
   const doing: string[] = [c.bilanRecorded === false ? 'unknown (no Bilan de pause was recorded for you)' : c.wasDoing.turnRunning ? 'a turn was running' : 'idle (no turn running)'];
@@ -277,6 +283,7 @@ export function renderConsigne(c: ConsigneWithFacts, opts?: { releasedBy?: strin
     if (c.killed.length > KILLED_LISTED) out.push(`  - … +${c.killed.length - KILLED_LISTED} more (orchestra run status --run ${stripControl(c.runId)})`);
     if (unrecorded) out.push('Calls in flight at the interrupt: none recorded — but a turn was running, so an aborted call may be missing from this list.');
   }
+  for (const l of containerConsigneLines(c.containers, stripControl)) out.push(l);
   if (c.confirmedVia) out.push(`Your Pause was taken: ${c.confirmedVia === 'member' ? 'you confirmed it yourself' : c.confirmedVia === 'host-idle' ? 'you were idle, the host confirmed for you' : 'by the host trap'}.`);
   if (c.notes.length) {
     out.push('Notes:');
