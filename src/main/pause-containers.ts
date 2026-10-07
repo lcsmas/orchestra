@@ -6,10 +6,11 @@
 import { DockerApiError, type DockerApi } from './docker-api.ts';
 import type { BusDb } from './bus.ts';
 import { updateBilanContainers } from './bus-pause-records.ts';
-import { owedRows } from './pause-reprise.ts';
+import { ancestorPauseStands, owedRowsUnder, readCarrierColumns } from './pause-reprise.ts';
 import { DOCKER_LABEL_RUN, DOCKER_LABEL_WS } from '../shared/docker-labels.ts';
 import {
   attributedLabelFilter,
+  inRestartOrder,
   MAX_CONTAINER_ENTRIES,
   mergeRestarted,
   mergeStopped,
@@ -64,7 +65,8 @@ export async function stopAttributedContainers(
   for (const row of rows) {
     // belt and braces: the daemon filtered by label already, but a stop is destructive — re-assert the label on the row we act on
     if (row.labels[DOCKER_LABEL_WS] !== wsId) continue;
-    if (acc.stopped.some((s) => s.id === row.id && s.outcome !== 'failed')) continue; // already handled by an earlier attempt
+    // already handled by an earlier attempt — except a `failed` one (tried again) and a `stopping` one (the app died mid-stop: the daemon may or may not have finished, a stop is idempotent)
+    if (acc.stopped.some((s) => s.id === row.id && s.outcome !== 'failed' && s.outcome !== 'stopping')) continue;
     if (!o.stillPaused()) return { containers: acc, lifted: true, stoppedNow };
     // the Bilan keeps MAX_CONTAINER_ENTRIES per member: past it we stop ACTING (an unrecorded stop would never be restarted) and say so
     if (acc.stopped.length >= MAX_CONTAINER_ENTRIES) {
@@ -78,6 +80,10 @@ export async function stopAttributedContainers(
       if (insp === null) entry = null; // gone between the list and now: nothing of ours
       else if (insp.autoRemove) entry = { ...base, outcome: 'skipped-autoremove', atMs: o.now() }; // `docker run --rm`: a stop would DELETE it (FI-1.4)
       else {
+        // WRITE-AHEAD: a real daemon takes up to t seconds to answer; an app killed in that window leaves the daemon to finish the stop with nothing in the Bilan —
+        // the container would never be restarted nor reported. Record `stopping` first; the final outcome replaces it.
+        acc = { ...acc, stopped: mergeStopped(acc.stopped, [{ ...base, outcome: 'stopping', atMs: o.now() }]) };
+        o.onProgress?.(acc);
         const r = await api.stopContainer(row.id, STOP_TIMEOUT_SEC);
         // 'already-stopped' (someone else stopped it first) and 'gone' are NOT ours: never recorded as stopped, so the Reprise never restarts them
         entry = r === 'stopped' ? { ...base, outcome: 'stopped', atMs: o.now() } : null;
@@ -99,6 +105,10 @@ export async function stopAttributedContainers(
     if (entry) {
       acc = { ...acc, stopped: mergeStopped(acc.stopped, [entry]) };
       o.onProgress?.(acc); // durable at once: a Reprise reading the Bilan mid-trap must see what is already stopped
+    } else if (acc.stopped.some((s) => s.id === row.id && s.outcome === 'stopping')) {
+      // not ours after all (someone else stopped / removed it first): the write-ahead marker must not make the Reprise restart it
+      acc = { ...acc, stopped: acc.stopped.filter((s) => !(s.id === row.id && s.outcome === 'stopping')) };
+      o.onProgress?.(acc);
     }
   }
   return { containers: acc, lifted: false, stoppedNow };
@@ -111,11 +121,13 @@ export async function restartContainers(
   api: PauseDockerApi,
   entries: readonly ContainerStopEntry[],
   now: () => number,
-  o: { deadlineAt?: number; sleep?: (ms: number) => Promise<void> } = {},
+  o: { deadlineAt?: number; sleep?: (ms: number) => Promise<void>; stillResuming?: () => boolean } = {},
 ): Promise<ContainerRestartEntry[]> {
   const out: ContainerRestartEntry[] = [];
   const nap = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   for (const e of entries) {
+    // a re-Pause (a new epoch) that lands mid-step: nothing more is started under it — what is left stays OWED (no result recorded) for the next Reprise
+    if (o.stillResuming && !o.stillResuming()) break;
     if (o.deadlineAt !== undefined && now() >= o.deadlineAt) {
       out.push({ id: e.id, outcome: 'failed', error: 'restart deadline exceeded', atMs: now() });
       continue;
@@ -175,26 +187,36 @@ export async function restartOwedContainers(deps: RestartOwedDeps): Promise<numb
     if (restarting.has(c.id)) continue;
     restarting.add(c.id);
     try {
-      const owing = owedRows(db, c.id);
+      // an ancestor's Pause that still stands covers this carrier's members: nothing is restarted under it (the ancestor's Reprise does it)
+      if (ancestorPauseStands(db, c.id)) continue;
+      const owing = owedRowsUnder(db, c.id);
       if (owing.length === 0) continue;
       // one container id is started ONCE (even when two epochs owe it), through the client of the member that owned it
       const unique = new Map<string, { entry: ContainerStopEntry; wsId: string }>();
       for (const r of owing) for (const e of r.owed) if (!unique.has(e.id)) unique.set(e.id, { entry: e, wsId: r.wsId });
+      // dependents were stopped first: restart in the REVERSE of the stop order (what they need comes up before them)
+      const ordered = inRestartOrder([...unique.values()].map((u) => ({ ...u, atMs: u.entry.atMs })));
       const deadlineAt = deps.now() + (deps.stepMs ?? RESTART_STEP_MS);
+      // the epoch this step serves: a re-Pause (new epoch / no longer resuming) stops the step before the next container
+      const stillResuming = (): boolean => {
+        const cols = readCarrierColumns(db, c.id);
+        return !!cols && cols.pausedAt === Number(c.paused_at) && cols.resumeStartedAt !== null;
+      };
       const results = new Map<string, ContainerRestartEntry>();
-      const got: ContainerRestartEntry[] = [];
-      for (const { entry, wsId } of unique.values()) {
+      for (const { entry, wsId } of ordered) {
+        if (!stillResuming()) break; // the rest stays OWED, no result recorded
         const api = deps.apiFor?.(wsId) ?? deps.api;
-        got.push(...(api
-          ? await restartContainers(api, [entry], deps.now, { deadlineAt, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
-          : [{ id: entry.id, outcome: 'failed' as const, error: 'Docker is not available to the host', atMs: deps.now() }]));
+        const got = api
+          ? await restartContainers(api, [entry], deps.now, { deadlineAt, stillResuming, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
+          : [{ id: entry.id, outcome: 'failed' as const, error: 'Docker is not available to the host', atMs: deps.now() }];
+        for (const r of got) results.set(r.id, r);
       }
-      for (const r of got) results.set(r.id, r);
       for (const row of owing) {
         const mine = row.owed.map((e) => results.get(e.id)).filter((x): x is ContainerRestartEntry => !!x);
-        updateBilanContainers(db, c.id, row.wsId, row.pausedAt, (cur) => ({ stopped: cur?.stopped ?? [], restarted: mergeRestarted(cur?.restarted, mine), ...(cur?.error ? { error: cur.error } : {}) }));
+        if (mine.length === 0) continue;
+        updateBilanContainers(db, row.carrier, row.wsId, row.pausedAt, (cur) => ({ stopped: cur?.stopped ?? [], restarted: mergeRestarted(cur?.restarted, mine), ...(cur?.error ? { error: cur.error } : {}) }));
       }
-      n += got.length;
+      n += results.size;
     } catch (e) {
       deps.warn?.(`pause-containers: restart of carrier ${c.id} failed`, e);
     } finally {

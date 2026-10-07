@@ -4,7 +4,9 @@
 
 import { DOCKER_LABEL_WS } from './docker-labels.ts';
 
-export type ContainerStopOutcome = 'stopped' | 'skipped-autoremove' | 'failed';
+/** `stopping` is a WRITE-AHEAD marker, written before the stop call returns (a real daemon takes up to `t` seconds): if the app dies in that window the daemon finishes the stop and the
+ *  Bilan would otherwise say nothing — the Reprise treats a left-over `stopping` as owed a restart (a `start` on a container that never stopped is a harmless `already-running`). */
+export type ContainerStopOutcome = 'stopped' | 'skipped-autoremove' | 'failed' | 'stopping';
 /** A container the Pause LOOKED at because it carried the member's `orchestra.ws` label while running. Only `outcome:'stopped'` is ever restarted. */
 export interface ContainerStopEntry {
   id: string;
@@ -50,7 +52,7 @@ export function mergeStopped(prior: readonly ContainerStopEntry[] | undefined, f
   for (const e of prior ?? []) out.set(e.id, e);
   for (const e of fresh) {
     const had = out.get(e.id);
-    if (!had || had.outcome === 'failed') out.set(e.id, e);
+    if (!had || had.outcome === 'failed' || had.outcome === 'stopping') out.set(e.id, e);
   }
   return [...out.values()].slice(0, MAX_CONTAINER_ENTRIES);
 }
@@ -69,7 +71,11 @@ export function mergeRestarted(prior: readonly ContainerRestartEntry[] | undefin
  */
 export function mergeContainers(base: BilanContainers | undefined, overlay: BilanContainers | undefined): BilanContainers | undefined {
   if (!base && !overlay) return undefined;
-  const stopped = mergeStopped(base?.stopped, overlay?.stopped ?? []);
+  // A write-ahead `stopping` marker the overlay no longer has was REMOVED by the call that is writing (the container turned out not to be ours: someone else stopped it first) — a merge-by-id
+  // cannot delete, so without this the stale marker stays on the persisted Bilan and the Reprise starts a container the Pause never stopped.
+  const overlayIds = overlay ? new Set(overlay.stopped.map((e) => e.id)) : null;
+  const baseStopped = overlayIds ? base?.stopped.filter((e) => e.outcome !== 'stopping' || overlayIds.has(e.id)) : base?.stopped;
+  const stopped = mergeStopped(baseStopped, overlay?.stopped ?? []);
   const restarted = mergeRestarted(base?.restarted, overlay?.restarted ?? []);
   const error = overlay ? overlay.error : base?.error;
   return { stopped, ...(restarted.length ? { restarted } : {}), ...(error ? { error } : {}) };
@@ -84,7 +90,18 @@ export function hasContainerFacts(c: BilanContainers | undefined | null): c is B
 export function owedRestarts(c: BilanContainers | undefined | null): ContainerStopEntry[] {
   if (!c) return [];
   const done = new Set((c.restarted ?? []).map((r) => r.id));
-  return c.stopped.filter((s) => s.outcome === 'stopped' && !done.has(s.id));
+  return c.stopped.filter((s) => (s.outcome === 'stopped' || s.outcome === 'stopping') && !done.has(s.id));
+}
+
+/**
+ * The order the Reprise restarts in: the REVERSE of the stop order (newest stop first). The daemon lists newest-created first, so dependents (created after what they
+ * need) are stopped first — restarting in the same order would start `app` before its `db` and a fail-fast dependent would exit although recorded `started`.
+ */
+export function inRestartOrder<T extends { atMs: number }>(entries: readonly T[]): T[] {
+  return entries
+    .map((e, i) => [e, i] as const)
+    .sort((a, b) => b[0].atMs - a[0].atMs || b[1] - a[1])
+    .map(([e]) => e);
 }
 
 /** The Consigne lines for a member's containers; [] when the Pause touched none. Names/images are recorded text: callers strip control characters. */
@@ -92,7 +109,7 @@ export function containerConsigneLines(c: BilanContainers | undefined | null, st
   if (!c) return [];
   const out: string[] = [];
   const restarted = new Map((c.restarted ?? []).map((r) => [r.id, r]));
-  const stopped = c.stopped.filter((s) => s.outcome === 'stopped');
+  const stopped = c.stopped.filter((s) => s.outcome === 'stopped' || s.outcome === 'stopping');
   if (stopped.length) {
     out.push(`Containers the Pause STOPPED for you (${stopped.length}; stopped, never removed — their volumes are intact):`);
     for (const s of stopped.slice(0, 20)) {

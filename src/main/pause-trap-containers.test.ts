@@ -13,6 +13,7 @@ import { bilanForMember, updateBilanContainers } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { __resetPauseTrapForTests, runPauseTrap, sweepPauseTrap, trapMember, type TrapDeps, type TrapMember } from './pause-trap.ts';
 import { FakeDocker } from './fake-docker.ts';
+import { restartOwedContainers } from './pause-containers.ts';
 import type { KillReport } from './pause-kill.ts';
 
 const ROOT = path.join(os.homedir(), '.cache', `pause-trap-containers-${process.pid}`);
@@ -152,6 +153,22 @@ test('a trap RETRY (member incomplete: CLI unproven) merges BY ID — the first 
   assert.equal(rig.docker.calls.filter((x) => x.startsWith('stop ')).length, stopsBefore, 'not stopped again');
   const st = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.containers!.stopped;
   assert.deepEqual(st.map((x) => [x.id, x.outcome]), [['db', 'stopped']]);
+});
+
+test('#1-fu a container someone else stopped between the list and our stop leaves NO write-ahead marker on the PERSISTED Bilan row (not only in the progress callback): the Reprise starts only what the Pause stopped', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig(new FakeDocker([labelled('m1', 'mine'), labelled('m1', 'users-own')]));
+  const c = pause(rig);
+  rig.docker.beforeStop = (id) => {
+    if (id === 'users-own') rig.docker.containers.find((x) => x.id === 'users-own')!.running = false; // the human stops it first: 'already-stopped' → not ours
+  };
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  const row = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.containers!;
+  assert.deepEqual(row.stopped.map((x) => [x.id, x.outcome]), [['mine', 'stopped']], 'the DB row holds no stale `stopping` entry for the human\'s container');
+  assert.equal(beginReprise(rig.db, 'W', 'ops-w', { host: true }), 'resuming');
+  await restartOwedContainers({ getBus: () => rig.db, api: rig.docker, now: () => 1 });
+  assert.deepEqual(rig.docker.calls.filter((x) => x.startsWith('start ')), ['start mine'], 'exactly what the Pause stopped');
+  assert.equal(rig.docker.running('users-own'), false, 'the human\'s own container is never started by the Reprise');
 });
 
 test('LIFT MID-TRAP: a Reprise that begins while containers are being stopped touches no further container, and what THIS attempt stopped is restarted at once (the Reprise\'s own read may have missed it)', async () => {

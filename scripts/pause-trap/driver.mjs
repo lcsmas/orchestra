@@ -279,7 +279,7 @@ try {
     try { linkBefore = fs.readlinkSync(`/proc/${root.pid}/fd/1`); fs.unlinkSync(linkBefore); linkAfter = fs.readlinkSync(`/proc/${root.pid}/fd/1`); } catch (e) { linkAfter = `ERR ${String(e.message).slice(0, 100)}`; }
     check('output_file_unlinked_control', !!linkBefore && /\/tasks\/[A-Za-z0-9_-]+\.output$/.test(linkBefore) && /\.output \(deleted\)$/.test(linkAfter ?? ''), `the bg task's stdout link ${linkBefore} → ${linkAfter} after the unlink (the shape this arm is about)`);
   }
-  if (A.wedgedCli) { await sleep(1500); process.kill(cli0.pid, 'SIGSTOP'); check('cli_wedged_control', readProc(cli0.pid)?.state === 'T', `the member's CLI ${cli0.pid} is SIGSTOPped (state ${readProc(cli0.pid)?.state}); its keeper ${keeper.pid} still answers`); } // a CLI that answers nothing, keeper alive
+  if (A.wedgedCli) { await sleep(1500); process.kill(cli0.pid, 'SIGSTOP'); const stopped = await waitFor(() => readProc(cli0.pid)?.state === 'T', 5000, `the CLI ${cli0.pid} to reach state T`).then(() => true, () => false); check('cli_wedged_control', stopped, `the member's CLI ${cli0.pid} is SIGSTOPped (state ${readProc(cli0.pid)?.state}); its keeper ${keeper.pid} still answers`); } // SIGSTOP lands asynchronously: poll for T (a read right after the kill raced it, 2/300) before the pause is issued // a CLI that answers nothing, keeper alive
   // 4. THE PAUSE, through the real built CLI (store-less: writes the bus directly) — or, for pauser-self, by the coordinator's OWN tool
   const tPause = Date.now();
   result.tPause = tPause;

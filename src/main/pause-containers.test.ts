@@ -84,13 +84,14 @@ test('RETRY MERGES BY ID: a container an earlier attempt stopped is not touched 
   const d = mk();
   const prior = { stopped: [{ id: 'db', name: 'g-db', image: 'mysql:8', run: 'run-1', outcome: 'stopped', atMs: 1 }, { id: 'web', name: 'g-web', image: 'nginx', run: 'run-1', outcome: 'failed', error: 'earlier', atMs: 1 }] as ContainerStopEntry[] };
   d.containers.find((c) => c.id === 'db')!.running = true; // listed RUNNING again (someone started it): the earlier entry still wins — the same container is never handled twice
-  const seen: number[] = [];
-  const r = await stopAttributedContainers(d, WS, { ...base, prior, onProgress: (c) => seen.push(c.stopped.length) });
+  const seen: Array<Array<[string, string]>> = [];
+  const r = await stopAttributedContainers(d, WS, { ...base, prior, onProgress: (c) => seen.push(c.stopped.map((x) => [x.id, x.outcome])) });
   assert.ok(!d.calls.some((c) => c.startsWith('stop db')), 'never stopped twice');
   assert.ok(d.calls.includes('stop web t=10'), 'the failed one is tried again');
   assert.equal(r.containers.stopped.find((x) => x.id === 'web')!.outcome, 'stopped');
   assert.equal(r.containers.stopped.find((x) => x.id === 'db')!.atMs, 1, 'the earlier entry is kept as is');
-  assert.ok(seen.length >= 1 && seen.every((x, i) => i === 0 || x > seen[i - 1]), `progress is persisted container by container (growing): ${seen}`);
+  assert.deepEqual(seen[0]?.find((x) => x[0] === 'web'), ['web', 'stopping'], 'the write-ahead entry is persisted BEFORE the stop call');
+  assert.deepEqual(seen[seen.length - 1], r.containers.stopped.map((x) => [x.id, x.outcome]), 'the LAST progress write is the final state: each stop is durable at once, not only at the end of the step');
 });
 
 test('a row whose label is not the member\'s is never acted on even if a daemon returned it (the stop is destructive: the label is re-asserted)', async () => {
@@ -189,4 +190,40 @@ test('restart: a transient `unavailable` is retried ONCE; a permanent error is n
   assert.equal(webTries, 1);
   const late = await restartContainers(d, [entry('a'), entry('b')], () => 100, { deadlineAt: 50, sleep });
   assert.deepEqual(late.map((x) => [x.outcome, x.error]), [['failed', 'restart deadline exceeded'], ['failed', 'restart deadline exceeded']]);
+});
+
+test('#3 WRITE-AHEAD: a `stopping` entry is on the Bilan BEFORE the stop call returns (the app may die in that window); the final outcome replaces it; a container that turns out not to be ours leaves no marker', async () => {
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', labels: { 'orchestra.ws': WS } }, { id: 'web', name: 'g-web', labels: { 'orchestra.ws': WS } }]);
+  let lastProgress: ContainerStopEntry[] = [];
+  const atStop: Record<string, string | undefined> = {};
+  d.beforeStop = (id) => {
+    atStop[id] = lastProgress.find((x) => x.id === id)?.outcome; // what the Bilan says the instant the stop call is made
+    if (id === 'web') d.containers.find((c) => c.id === 'web')!.running = false; // someone else stops it first: 'already-stopped' → not ours
+  };
+  const r = await stopAttributedContainers(d, WS, { ...base, onProgress: (c) => (lastProgress = c.stopped) });
+  assert.equal(atStop.db, 'stopping');
+  assert.equal(atStop.web, 'stopping');
+  assert.deepEqual(r.containers.stopped.map((x) => [x.id, x.outcome]), [['db', 'stopped']], 'no stale marker for the container that was not ours');
+  assert.deepEqual(lastProgress.map((x) => [x.id, x.outcome]), [['db', 'stopped']], 'and the persisted view agrees');
+});
+
+test('#3 a retry that finds an earlier `stopping` marker for a container still RUNNING stops it again (the daemon never finished); a `stopped` one is still never touched twice', async () => {
+  const d = mk();
+  const prior = { stopped: [{ id: 'db', name: 'g-db', image: 'mysql:8', run: 'run-1', outcome: 'stopping', atMs: 1 }, { id: 'web', name: 'g-web', image: 'nginx', run: 'run-1', outcome: 'stopped', atMs: 1 }] as ContainerStopEntry[] };
+  const r = await stopAttributedContainers(d, WS, { ...base, prior });
+  assert.ok(d.calls.includes('stop db t=10'), 'the interrupted stop is redone');
+  assert.ok(!d.calls.some((c) => c.startsWith('stop web')), 'a recorded stop is never repeated');
+  assert.equal(r.containers.stopped.find((x) => x.id === 'db')!.outcome, 'stopped');
+});
+
+test('#1 restartContainers stops BEFORE the next container once the Reprise is no longer current — what was not started leaves no result (it stays owed)', async () => {
+  const d = new FakeDocker([{ id: 'a', name: 'a', running: false }, { id: 'b', name: 'b', running: false }, { id: 'c', name: 'c', running: false }]);
+  const entry = (id: string): ContainerStopEntry => ({ id, name: id, image: 'x', run: null, outcome: 'stopped', atMs: 1 });
+  let current = true;
+  d.beforeStart = (id) => {
+    if (id === 'b') current = false; // a re-Pause lands while b is being started
+  };
+  const out = await restartContainers(d, [entry('a'), entry('b'), entry('c')], () => 1, { stillResuming: () => current });
+  assert.deepEqual(out.map((x) => [x.id, x.outcome]), [['a', 'started'], ['b', 'started']], 'b was already in flight; c is not touched');
+  assert.equal(d.running('c'), false);
 });

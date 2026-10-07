@@ -536,13 +536,21 @@ export function beginRepriseCore(
 
 // ─── #292: containers stopped by the Pause are restarted before the coordinators are released ──────────────────────────────
 
+/** One Bilan row that still owes container restarts: which carrier's pause epoch recorded it, for which member. */
+export interface OwedRow {
+  carrier: string;
+  wsId: string;
+  pausedAt: number;
+  owed: ContainerStopEntry[];
+}
+
 /** Every bus row of ONE carrier (all pause epochs, oldest first) with its owed restarts. A re-Pause between a Reprise's begin and its container step opens a NEW epoch whose trap
  *  lists only RUNNING containers — the earlier epoch's still-stopped ones are owed to the Reprise all the same, so the scan is carrier-wide, not epoch-wide. */
-export function owedRows(db: BusDb, carrierRunId: string): Array<{ wsId: string; pausedAt: number; owed: ContainerStopEntry[] }> {
+export function owedRows(db: BusDb, carrierRunId: string): OwedRow[] {
   const rows = db.prepare('SELECT ws_id, paused_at, activity FROM pause_records WHERE run_id = ? ORDER BY id').all(carrierRunId) as Array<{ ws_id: string; paused_at: number; activity: string | null }>;
   const newest = new Map<string, { wsId: string; pausedAt: number; activity: string | null }>();
   for (const r of rows) newest.set(`${r.ws_id}@${r.paused_at}`, { wsId: r.ws_id, pausedAt: Number(r.paused_at), activity: r.activity }); // the newest row per (member, epoch) — a retry's row wins
-  const out: Array<{ wsId: string; pausedAt: number; owed: ContainerStopEntry[] }> = [];
+  const out: OwedRow[] = [];
   for (const r of newest.values()) {
     if (r.wsId.startsWith('__')) continue; // reserved rows (the pause origin)
     let a: { containers?: BilanContainers } | null = null;
@@ -552,15 +560,71 @@ export function owedRows(db: BusDb, carrierRunId: string): Array<{ wsId: string;
       a = null;
     }
     const owed = owedRestarts(a?.containers);
-    if (owed.length) out.push({ wsId: r.wsId, pausedAt: r.pausedAt, owed });
+    if (owed.length) out.push({ carrier: carrierRunId, wsId: r.wsId, pausedAt: r.pausedAt, owed });
   }
   return out;
 }
 
-/** Does this carrier still owe a container restart — a Bilan row of ANY of its pause epochs with an `outcome:'stopped'` entry that has no restart result? (Carrier-wide: a re-Pause during a
- *  Reprise opens a new epoch whose trap lists only running containers; the earlier epoch's stopped ones are still owed.) */
+/** Does an ANCESTOR run's Pause still stand (paused, not yet resuming, its frozen switch ON)? Then nothing under it may be restarted: a child waits for every ancestor (top-down), exactly like
+ *  the auto Reprise (`ancestorStillPaused`, pause-auto.ts). The LIVE workspace chain is the gates' truth; the bus run tree only when the live chain is unknown or dangles. */
+export function ancestorPauseStands(db: BusDb, carrierRunId: string): boolean {
+  for (const id of ancestorRunIdsOf(db, carrierRunId)) {
+    if (getRun(db, id)?.flags.pause !== true) continue; // a run with the switch OFF carries no pause (a stale column is inert)
+    const c = readCarrierColumns(db, id);
+    if (c && c.pausedAt !== null && c.resumeStartedAt === null) return true;
+  }
+  return false;
+}
+
+/** The run ids ABOVE `runId`, nearest first — THE one ancestor walk of the container deferral (`ancestorPauseStands`) AND of its collection (`liftedDescendantCarriers`), so the two can never
+ *  read different trees: the LIVE workspace chain first (the gates' truth: `runs.parent_run_id` is write-once, a re-parented OPS is no longer under its old parent), the bus run tree only
+ *  when the live chain is unknown or dangles. */
+function ancestorRunIdsOf(db: BusDb, runId: string): string[] {
+  const ids: string[] = [];
+  let live = false;
+  const tree = liveTree();
+  if (tree && tree.get(runId)) {
+    const chain = liveChainInfo(tree, runId);
+    ids.push(...chain.ids.slice(1));
+    live = !chain.dangling;
+  }
+  if (!live) {
+    const seen = new Set<string>([runId, ...ids]);
+    for (let cur = getRun(db, runId)?.parent_run_id ?? null; cur && !seen.has(cur); cur = getRun(db, cur)?.parent_run_id ?? null) {
+      seen.add(cur);
+      ids.push(cur);
+    }
+  }
+  return ids;
+}
+
+/** Descendant runs whose OWN pause is over (lifted) — their still-owed restarts belong to the Reprise of the ancestor that was covering them (a child resumed under a standing ancestor Pause
+ *  had its restart deferred). A descendant still paused / resuming handles its own, and so does everything below it (a nearer carrier covers it). "Descendant" = the same live-first walk
+ *  as the deferral ({@link ancestorRunIdsOf}). */
+function liftedDescendantCarriers(db: BusDb, carrierRunId: string): string[] {
+  const out: string[] = [];
+  for (const { id } of db.prepare('SELECT id FROM runs ORDER BY created_at, id').all() as Array<{ id: string }>) {
+    if (id === carrierRunId) continue;
+    const chain = ancestorRunIdsOf(db, id);
+    const at = chain.indexOf(carrierRunId);
+    if (at < 0) continue; // not below this carrier
+    if (readCarrierColumns(db, id)?.pausedAt != null) continue; // paused or resuming: its own step
+    if (chain.slice(0, at).some((mid) => readCarrierColumns(db, mid)?.pausedAt != null)) continue; // a nearer carrier (paused / resuming) covers it
+    out.push(id);
+  }
+  return out;
+}
+
+/** Owed restarts of this carrier's own epochs PLUS those a lifted descendant carrier deferred while this carrier's Pause covered it. */
+export function owedRowsUnder(db: BusDb, carrierRunId: string): OwedRow[] {
+  return [carrierRunId, ...liftedDescendantCarriers(db, carrierRunId)].flatMap((id) => owedRows(db, id));
+}
+
+/** Does this carrier still owe a container restart — a Bilan row of ANY of its pause epochs (or of a lifted descendant it covered) with an `outcome:'stopped'` entry that has no restart
+ *  result, AND nothing forbids restarting now? (Carrier-wide: a re-Pause during a Reprise opens a new epoch whose trap lists only running containers. While an ANCESTOR Pause stands nothing
+ *  is restartable, so nothing is "owed" yet: this Reprise must not park or hold for it — the ancestor's Reprise restarts them.) */
 export function containersOwed(db: BusDb, carrierRunId: string): boolean {
-  return owedRows(db, carrierRunId).length > 0;
+  return !ancestorPauseStands(db, carrierRunId) && owedRowsUnder(db, carrierRunId).length > 0;
 }
 
 const PENDING_BY = 'pending:';

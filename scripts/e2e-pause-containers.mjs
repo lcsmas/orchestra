@@ -24,6 +24,7 @@ const ARM = process.argv[2] ?? '';
 
 const ARMS = {
   pause_and_reprise: { mustFailOnMaster: true }, // Pause dure → DB container stopped, in the Bilan, volume intact, unattributed untouched; Reprise → restarted, data readable
+  restart_order: { mustFailOnMaster: true }, // G8-fu #4: the Reprise starts in the REVERSE of the stop order — the older container (what a newer one depends on) is running before the newer one starts
   removed_by_hand: { mustFailOnMaster: true }, // a container removed by hand during the Pause does not break the Reprise (gone, reported, skipped)
   docker_absent: { mustFailOnMaster: false }, // no Docker socket at all (not installed / not started): the trap completes, NOTHING is recorded, nothing is touched — no alarm on a Docker-less host
   docker_refused: { mustFailOnMaster: false }, // a socket exists but refuses connections: the trap still completes, the error IS recorded, nothing is touched
@@ -169,6 +170,24 @@ const runArm = {
     check('the unattributed container was never touched by the Reprise either', stateOf(`${PFX}-human`) === 'true' && stateOf(`${PFX}-other`) === 'true');
     reprise.sweepReprise(sweepDeps);
     check('only now are the coordinators released (their reprise rows exist)', repriseRows().length >= 1, JSON.stringify(repriseRows()));
+  },
+
+  async restart_order() {
+    await setup({ extra: [{ name: 'app', args: '' }] }); // db is created FIRST, app after: the daemon lists newest-first, so app is stopped first and db second
+    const api = createDockerApi();
+    const { carrier } = await pauseDure(api);
+    const at = (name, f) => dk(['inspect', '-f', `{{.State.${f}}}`, `${PFX}-${name}`]).out;
+    check('both attributed containers were stopped', stateOf(`${PFX}-db`) === 'false' && stateOf(`${PFX}-app`) === 'false', `${stateOf(`${PFX}-db`)}/${stateOf(`${PFX}-app`)}`);
+    const fin = { app: at('app', 'FinishedAt'), db: at('db', 'FinishedAt') };
+    check('control: the daemon stopped the newer container (app) BEFORE the older one (db)', fin.app < fin.db, JSON.stringify(fin));
+    const stopped = bilanContainers(carrier)?.stopped ?? [];
+    check('the Bilan stop times follow that order (app first)', stopped.find((x) => x.name === `${PFX}-app`)?.atMs <= stopped.find((x) => x.name === `${PFX}-db`)?.atMs, JSON.stringify(stopped.map((x) => [x.name, x.atMs])));
+    busPause.beginReprise(db, 'W', 'W');
+    if (!restartOwed) check('the container step exists in this tree', false, 'no pause-containers.ts');
+    else check('the host restarted both', (await restartOwed(restartDeps(api))) === 2);
+    check('both are running again', stateOf(`${PFX}-db`) === 'true' && stateOf(`${PFX}-app`) === 'true', `${stateOf(`${PFX}-db`)}/${stateOf(`${PFX}-app`)}`);
+    const st = { app: at('app', 'StartedAt'), db: at('db', 'StartedAt') };
+    check('REVERSE of the stop order: the older container (db) was STARTED before the newer one (app)', st.db < st.app, JSON.stringify(st));
   },
 
   async removed_by_hand() {

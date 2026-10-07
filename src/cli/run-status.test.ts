@@ -385,3 +385,22 @@ test('#292: `run status` lists the member\'s containers (stopped → restarted /
   assert.match(after, /g-db \(mysql:8\) → restarted; g-old \(x\) → gone \(removed meanwhile, skipped\)/);
   assert.doesNotMatch(after, /the host is restarting/);
 });
+
+test('#292 fu: a `stopping` leftover (the app died mid-stop) is listed as stopped-by-the-Pause and counted as a restart the Reprise owes', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops', 'hard');
+  const pausedAt = busPause.getRunPause(db, 'W')!.pausedAt;
+  records.insertBilan(db, {
+    runId: 'W',
+    wsId: 'm1',
+    pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', containers: { stopped: [{ id: 'a', name: 'g-db', image: 'mysql:8', run: 'W', outcome: 'stopping', atMs: 1 }] } },
+    snapshotRef: 'r',
+    dirty: false,
+    killed: { killed: [], survivors: [], refused: [], spared: [] },
+    error: null,
+  });
+  assert.match(renderRunStatus(gatherRunStatus(db, 'W', deps)), /containers stopped by the Pause \(1; stopped, never removed\): g-db \(mysql:8\) → not restarted yet/);
+  db.prepare('UPDATE runs SET resume_started_at = ? WHERE id = ?').run(pausedAt + 5, 'W');
+  assert.match(renderRunStatus(gatherRunStatus(db, 'W', deps)), /the host is restarting 1 container\(s\) the Pause stopped/);
+});

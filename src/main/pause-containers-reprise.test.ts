@@ -236,3 +236,215 @@ test('the Reprise restarts each container through the client of the member that 
   assert.deepEqual(dflt.calls, ['start cache']);
   db.close();
 });
+
+// ── G8 follow-up (review #1–#4) ─────────────────────────────────────────────────────────────────────────────────────────
+
+test('#4 the Reprise restarts in the REVERSE of the stop order — across members too (what the dependents need comes up first)', async () => {
+  const { db } = rig({
+    o1: { stopped: [{ ...stop('app'), atMs: 10 }, { ...stop('cache'), atMs: 15 }] },
+    O: { stopped: [{ ...stop('db'), atMs: 20 }] },
+  });
+  beginReprise(db, 'L', 'L');
+  const d = new FakeDocker([{ id: 'app', name: 'app', running: false }, { id: 'cache', name: 'cache', running: false }, { id: 'db', name: 'db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 99 });
+  assert.deepEqual(d.calls.filter((c) => c.startsWith('start')), ['start db', 'start cache', 'start app']);
+  db.close();
+});
+
+test('#1 a re-Pause that lands MID-STEP stops the step before the next container: later ones stay OWED (no result recorded) and nothing starts under the new Pause', async () => {
+  const { db, pausedAt } = rig({ o1: { stopped: [{ ...stop('c1'), atMs: 30 }, { ...stop('c2'), atMs: 20 }, { ...stop('c3'), atMs: 10 }] } });
+  beginReprise(db, 'L', 'L');
+  const d = new FakeDocker([{ id: 'c1', name: 'c1', running: false }, { id: 'c2', name: 'c2', running: false }, { id: 'c3', name: 'c3', running: false }]);
+  d.beforeStart = (id) => {
+    if (id === 'c2') assert.equal(setRunPause(db, 'L', true, 'L'), 'paused'); // the human re-Pauses while c2 is being started
+  };
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls.filter((c) => c.startsWith('start')), ['start c1', 'start c2']);
+  assert.equal(d.running('c3'), false, 'c3 stays down under the new Pause');
+  assert.deepEqual(containersOf(db, 'o1', pausedAt).restarted!.map((x) => x.id).sort(), ['c1', 'c2'], 'only what was started is recorded');
+  assert.equal(containersOwed(db, 'L'), true, 'c3 is still owed to the NEXT Reprise');
+  db.close();
+});
+
+const containersOfCarrier = (db: bus.BusDb, carrier: string, ws: string, pausedAt: number) => bilanForMember(db, carrier, ws, pausedAt)!.activity!.containers!;
+
+/** Carrier O (a child run) paused first with a stopped DB, then its parent L paused on top; each carrier has its own Bilan rows (what each trap wrote). */
+function nested(o: { divergent?: boolean } = {}): { db: bus.BusDb; oAt: number; lAt: number } {
+  fs.mkdirSync(ROOT, { recursive: true });
+  const db = bus.openBus(path.join(ROOT, `n${n++}.sqlite`));
+  busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
+  // `divergent`: O sits under L in the LIVE workspace tree but its write-once `runs.parent_run_id` is NULL (re-parented after the run started) — the two trees disagree
+  busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O', ...(o.divergent ? {} : { parentRunId: 'L' }) }, ON);
+  setLiveTreeSource(() => ({ get: (id) => byId.get(id), ids: () => NODES.map((w) => w.id) }));
+  const rows = (carrier: string, at: number, members: Array<[string, string]>, withDb: boolean): void => {
+    for (const [ws, run] of members) {
+      insertBilan(db, { runId: carrier, wsId: ws, pausedAt: at, activity: { surface: 'sdk', memberRun: run, ...(withDb && ws === 'o1' ? { containers: { stopped: [stop('db', 'stopped', 'g-db')] } } : {}) }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+    }
+    db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(at + 1, carrier);
+  };
+  assert.equal(setRunPause(db, 'O', true, 'O'), 'paused');
+  const oAt = getRunPause(db, 'O')!.pausedAt;
+  rows('O', oAt, [['O', 'O'], ['o1', 'O']], true); // O's trap stopped the DB
+  assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+  const lAt = getRunPause(db, 'L')!.pausedAt;
+  rows('L', lAt, [['L', 'L'], ['O', 'O'], ['o1', 'O']], false); // L's trap found it already down: nothing in L's Bilan
+  return { db, oAt, lAt };
+}
+
+test('#2 NESTED Pauses: the child\'s Reprise under a STANDING ancestor Pause restarts NOTHING (no container runs under the outer Pause) and does not park its coordinators; the ancestor\'s Reprise then restarts it', async () => {
+  const { db, oAt } = nested();
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), false, 'not restartable now ⇒ not owed: the child\'s Reprise is not held for it');
+  assert.ok(repriseRows(db).some((r) => r.recipient === 'O'), 'the child\'s coordinator was released by the begin (not parked)');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'a container restarted under the outer Pause dure would be the bug');
+  assert.equal(d.running('db'), false);
+  // the ancestor's Reprise begins: now nothing covers O any more
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 6 });
+  assert.equal(d.running('db'), true, 'restarted by the Reprise of the Pause that was covering it');
+  assert.equal(containersOfCarrier(db, 'O', 'o1', oAt).restarted![0].outcome, 'started', 'recorded on the row of the carrier that stopped it');
+  db.close();
+});
+
+test('#2 …and when the child already FINISHED its Reprise under the ancestor, the ANCESTOR\'s Reprise owns the deferred restart: its begin parks for it, its step starts it and records it on the child\'s row', async () => {
+  const { db, oAt } = nested();
+  beginReprise(db, 'O', 'O');
+  releaseMembers(db, 'O', 'O', 'all'); // the child's Reprise runs to the end: O is ACTIVE again (L's Pause still covers it)
+  assert.equal(readCarrierColumns(db, 'O')!.pausedAt, null, 'O finished its own Reprise');
+  const before = repriseRows(db).length;
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  assert.equal(containersOwed(db, 'L'), true, 'L covered O: the container O could not restart is owed by L\'s Reprise');
+  assert.equal(repriseRows(db).length, before, 'L\'s coordinators are parked until it is back');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.equal(d.running('db'), true);
+  assert.equal(containersOfCarrier(db, 'O', 'o1', oAt).restarted![0].outcome, 'started', 'the result lands on O\'s row');
+  sweepReprise(sweepDepsOf(db));
+  assert.ok(repriseRows(db).length > before, 'and then L\'s coordinators are released');
+  db.close();
+});
+
+test('#3 a left-over `stopping` marker (the app was killed mid-stop) makes the Reprise restart the container; one that never stopped is a harmless already-running', async () => {
+  const { db, pausedAt } = rig({ o1: { stopped: [{ ...stop('db'), outcome: 'stopping' }, { ...stop('web'), outcome: 'stopping' }] } });
+  assert.equal(containersOwed(db, 'L'), true);
+  beginReprise(db, 'L', 'L');
+  const d = new FakeDocker([{ id: 'db', name: 'db', running: false /* the daemon finished the stop */ }, { id: 'web', name: 'web', running: true /* it never did */ }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(containersOf(db, 'o1', pausedAt).restarted!.map((x) => [x.id, x.outcome]).sort(), [['db', 'started'], ['web', 'already-running']]);
+  assert.equal(containersOwed(db, 'L'), false);
+  db.close();
+});
+
+test('#1 …and a re-Pause mid-step never turns what was NOT attempted into a recorded `failed` (a member whose daemon client is unavailable would otherwise lose its restart for good)', async () => {
+  const { db, pausedAt } = rig({ o1: { stopped: [{ ...stop('c1'), atMs: 30 }] }, O: { stopped: [{ ...stop('x'), atMs: 20 }] } });
+  beginReprise(db, 'L', 'L');
+  const d = new FakeDocker([{ id: 'c1', name: 'c1', running: false }, { id: 'x', name: 'x', running: false }]);
+  d.beforeStart = (id) => {
+    if (id === 'c1') assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+  };
+  await restartOwedContainers({ getBus: () => db, api: null, apiFor: (ws) => (ws === 'o1' ? d : null), now: () => 5 });
+  assert.equal(bilanForMember(db, 'L', 'O', pausedAt)!.activity!.containers!.restarted, undefined, 'x was never attempted: no result (not a `failed`) on its row');
+  assert.equal(containersOwed(db, 'L'), true);
+  db.close();
+});
+
+test('F2-Z16 a later restart step MERGES into the row\'s earlier `restarted` results (never overwrites them): an earlier step\'s `started` survives the next one', async () => {
+  const { db, pausedAt } = rig({ o1: { stopped: [{ ...stop('c1'), atMs: 30 }, { ...stop('c2'), atMs: 20 }], restarted: [{ id: 'c1', outcome: 'started', atMs: 3 }] } });
+  beginReprise(db, 'L', 'L');
+  const d = new FakeDocker([{ id: 'c1', name: 'c1', running: true }, { id: 'c2', name: 'c2', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls.filter((c) => c.startsWith('start')), ['start c2'], 'c1 already has its result: not started again');
+  assert.deepEqual(containersOf(db, 'o1', pausedAt).restarted!.map((x) => [x.id, x.outcome]).sort(), [['c1', 'started'], ['c2', 'started']], 'both results are on the row');
+  db.close();
+});
+
+test('#2-fu DIVERGENT trees (O under L in the LIVE tree, `parent_run_id` NULL): the deferral and its collection read the SAME tree — O\'s Reprise under a standing L restarts nothing, and L\'s Reprise then restarts what O deferred', async () => {
+  const { db, oAt } = nested({ divergent: true });
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'the live tree says L\'s Pause stands: nothing runs under it (a bus-tree-only walk would restart it)');
+  releaseMembers(db, 'O', 'O', 'all'); // O\'s own Reprise runs to the end: it is ACTIVE again, L\'s Pause still covers it
+  assert.equal(readCarrierColumns(db, 'O')!.pausedAt, null);
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  assert.equal(containersOwed(db, 'L'), true, 'the lifted child is found through the LIVE tree, not only through parent_run_id');
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 6 });
+  assert.equal(d.running('db'), true, 'restarted by the Reprise of the Pause that was covering it (it would stay down for good)');
+  assert.equal(containersOfCarrier(db, 'O', 'o1', oAt).restarted![0].outcome, 'started');
+  db.close();
+});
+
+test('#2-fu L\'s Reprise never restarts the containers of a child run that is STILL under its OWN Pause (a paused / resuming child handles its own, with its subtree)', async () => {
+  const { db } = nested(); // O paused (db stopped), then L paused on top; O is NOT lifted
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  assert.equal(containersOwed(db, 'L'), false, 'O\'s stopped container is O\'s to restart, under O\'s own Pause');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'nothing started under O\'s own Pause');
+  assert.equal(d.running('db'), false);
+  db.close();
+});
+
+test('#2-fu a LIFTED grand-child run below a child that is still under its own Pause is covered by that nearer carrier: the ancestor\'s Reprise does not collect it', async () => {
+  const { db } = nested(); // O paused (own), L paused on top
+  busRuns.startRun(db, { id: 'G', kind: 'vague', coordinator: 'G', parentRunId: 'O' }, ON); // a run below O; not in the live tree: the bus run tree is the evidence
+  insertBilan(db, { runId: 'G', wsId: 'g1', pausedAt: 7, activity: { surface: 'sdk', memberRun: 'G', containers: { stopped: [stop('gdb', 'stopped', 'g-gdb')] } }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null }); // G was paused earlier and lifted (no pause columns now) with a restart still owed
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  assert.equal(containersOwed(db, 'L'), false, 'G is below O, which is still paused: O\'s step collects it, not L\'s');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }, { id: 'gdb', name: 'g-gdb', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'nothing started under O\'s own Pause');
+  db.close();
+});
+
+test('#2-fu an UNRELATED lifted run (another tree) with a restart still owed is never collected by this carrier\'s Reprise — only descendants are', async () => {
+  const { db } = nested();
+  busRuns.startRun(db, { id: 'X', kind: 'mission', coordinator: 'X' }, ON); // another root run, no relation to L
+  insertBilan(db, { runId: 'X', wsId: 'x1', pausedAt: 7, activity: { surface: 'sdk', memberRun: 'X', containers: { stopped: [stop('xdb', 'stopped', 'g-xdb')] } }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+  assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+  assert.equal(containersOwed(db, 'L'), false);
+  const d = new FakeDocker([{ id: 'xdb', name: 'g-xdb', running: false }, { id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'another tree\'s containers are not L\'s to restart');
+  db.close();
+});
+
+const setFlag = (db: bus.BusDb, run: string, key: string, v: boolean): void => {
+  const row = db.prepare('SELECT flags FROM run_flags WHERE run_id = ?').get(run) as { flags: string };
+  const f = JSON.parse(row.flags) as Record<string, boolean>;
+  f[key] = v;
+  db.prepare('UPDATE run_flags SET flags = ? WHERE run_id = ?').run(JSON.stringify(f), run);
+};
+
+test('#4-fu (seat 1 W4) an ancestor whose `pause` switch is OFF (a stale paused column) carries NO pause: the child\'s container restart is not deferred for it', async () => {
+  const { db } = nested();
+  setFlag(db, 'L', 'pause', false);
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), true, 'a switch-OFF ancestor is inert: nothing covers O, the container is owed NOW');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.equal(d.running('db'), true, 'restarted — it would stay down for ever (nobody Reprises a switch-OFF ancestor)');
+  db.close();
+});
+
+test('#4-fu (seat 1 W6) with NO live workspace tree the bus run tree decides: a standing ancestor Pause still defers the child', async () => {
+  const { db } = nested();
+  setLiveTreeSource(() => null);
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), false, 'bus tree: L (O\'s parent run) is paused and not resuming');
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }]);
+  await restartOwedContainers({ getBus: () => db, api: d, now: () => 5 });
+  assert.deepEqual(d.calls, [], 'nothing restarted under the outer Pause');
+  db.close();
+});
+
+test('#4-fu (seat 1 W5) a DANGLING live chain (the parent is missing from the live tree) falls back to the bus run tree', async () => {
+  const { db } = nested();
+  const dangling: WaveNode[] = [{ id: 'O', kind: 'orchestrator', parentId: 'L' }, { id: 'o1', parentId: 'O' }];
+  setLiveTreeSource(() => ({ get: (id) => dangling.find((w) => w.id === id), ids: () => dangling.map((w) => w.id) }));
+  assert.equal(beginReprise(db, 'O', 'O'), 'resuming');
+  assert.equal(containersOwed(db, 'O'), false, 'the live chain dangles at L: the bus tree still says L stands');
+  db.close();
+});
