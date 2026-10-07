@@ -19,7 +19,10 @@ import type { AutoWorkspace } from './pause-auto.ts';
 import { autoPauseOnLimit, autoPausedRuns, evaluateAutoPaused, type PauseAutoDeps } from './pause-auto.ts';
 import { readPauseOrigin, insertBilan } from './bus-pause-records.ts';
 import { beginReprise as realBeginReprise, setRunPause } from './bus-pause.ts';
-import { readCarrierColumns, releaseMembers, setLiveTreeSource } from './pause-reprise.ts';
+import { containersOwed, owedRows, readCarrierColumns, releaseMembers, setLiveTreeSource, sweepReprise } from './pause-reprise.ts';
+import { restartOwedContainers } from './pause-containers.ts';
+import { FakeDocker } from './fake-docker.ts';
+import type { ContainerStopEntry } from '../shared/pause-containers.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 import { GIB } from '../shared/memory-guard.ts';
 import { PAUSE_AUTO_BY, encodePauseAuto, parseAutoHeld, parsePauseAuto } from '../shared/pause-auto.ts';
@@ -660,4 +663,59 @@ test('USAGE Reprise defers while the memory Pause is in effect (review #2): the 
   assert.equal(r.calls.reprise.length, 0);
   held = false;
   assert.equal((await evaluateAutoPaused(deps))[0].action, 'reprise', 'without the guard\'s memory Pause the quota Reprise goes as before');
+});
+
+// ─── G8-fu × memory Pause (master f1d444c4): a re-Pause mid-Reprise is now a ROUTINE path ─────────────────────────────────────────────────
+
+const stopE = (id: string, atMs: number, outcome: ContainerStopEntry['outcome'] = 'stopped'): ContainerStopEntry => ({ id, name: `g-${id}`, image: 'mysql:8', run: 'L', outcome, atMs });
+/** The trap finished for `run` and w1's Bilan lists the containers the Pause stopped. */
+function trapDoneWithContainers(r: Rig, run: string, stopped: ContainerStopEntry[], at = T0 + 1_000): number {
+  const pausedAt = Number(runRow(r.db, run).paused_at);
+  for (const wsId of ['L', 'O', 'w1']) insertBilan(r.db, { runId: run, wsId, pausedAt, activity: { surface: 'sdk', memberRun: wsId === 'w1' ? 'O' : wsId, ...(wsId === 'w1' && stopped.length ? { containers: { stopped } } : {}) }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+  r.db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(at, run);
+  return pausedAt;
+}
+
+test('G8-fu × memory: memory falls AGAIN while the host\'s container step is restarting — the step stops before the next container (it stays owed), the run is re-paused in a new epoch, and the NEXT recovery restarts exactly the rest (carrier-wide), never twice', async () => {
+  const r = rig();
+  edge(r, view({ pauseCycle: 1 }));
+  const at1 = trapDoneWithContainers(r, 'L', [stopE('web', 10), stopE('db', 20)]); // db was stopped last ⇒ restarted first
+  assert.equal(lift(r, recovered()).lifted[0].outcome, 'resuming');
+  assert.equal(containersOwed(r.db, 'L'), true, 'the restarts are owed: the coordinators are PARKED (FI-1.7), nothing is told it may start');
+  assert.equal(r.db.prepare("SELECT COUNT(*) AS c FROM messages WHERE kind = 'reprise'").get()!.c as number, 0);
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false }, { id: 'web', name: 'g-web', running: false }]);
+  d.beforeStart = (id) => {
+    if (id === 'db') assert.deepEqual(imposeMemoryPause(r.deps, { availBytes: 2 * GIB, pauseCycle: 2, episode: 1, criticalBytes: CRITICAL }, r.ledger).map((e) => e.outcome), ['repaused']); // the guard falls again while db is being started
+  };
+  await restartOwedContainers({ getBus: () => r.db, api: d, now: () => r.clock.now });
+  assert.deepEqual(d.calls.filter((c) => c.startsWith('start')), ['start db'], 'nothing is started after the re-Pause: web stays down under the new Pause');
+  assert.equal(d.running('web'), false);
+  const l = runRow(r.db, 'L');
+  assert.equal(l.resume_started_at, null, 'PAUSED again');
+  assert.ok(Number(l.paused_at) > at1, 'a new epoch');
+  assert.deepEqual(owedRows(r.db, 'L').flatMap((x) => x.owed.map((e) => e.id)), ['web'], 'carrier-wide: web is still owed (db has its result)');
+  // epoch 2: the trap lists only RUNNING containers — web is already down, nothing new; then memory recovers again
+  trapDoneWithContainers(r, 'L', [], T0 + 2_000);
+  r.clock.now += 120_000;
+  assert.equal(lift(r, recovered()).lifted[0].outcome, 'resuming');
+  assert.equal(containersOwed(r.db, 'L'), true);
+  d.beforeStart = null;
+  await restartOwedContainers({ getBus: () => r.db, api: d, now: () => r.clock.now });
+  assert.deepEqual(d.calls.filter((c) => c.startsWith('start')), ['start db', 'start web'], 'exactly the rest, once: db is NOT started again');
+  assert.equal(d.running('web'), true);
+  assert.equal(containersOwed(r.db, 'L'), false);
+  sweepReprise({ getBus: () => r.db, members: () => [], subtree: (_d: bus.BusDb, id: string) => (id === 'L' ? ['L', 'O', 'X'] : [id]), storeReady: () => true });
+  assert.ok(repriseRows(r.db).some((x) => x.recipient === 'L'), 'only now are the coordinators told');
+});
+
+test('G8-fu × memory: a `stopping` marker (the app died mid-stop) on a memory-paused member is owed a restart like a stopped one', async () => {
+  const r = rig();
+  edge(r, view());
+  trapDoneWithContainers(r, 'L', [stopE('db', 10, 'stopping')]);
+  assert.equal(lift(r, recovered()).lifted[0].outcome, 'resuming');
+  assert.equal(containersOwed(r.db, 'L'), true);
+  const d = new FakeDocker([{ id: 'db', name: 'g-db', running: false /* the daemon finished the stop */ }]);
+  await restartOwedContainers({ getBus: () => r.db, api: d, now: () => r.clock.now });
+  assert.equal(d.running('db'), true);
+  assert.equal(containersOwed(r.db, 'L'), false);
 });
