@@ -1542,6 +1542,7 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
       kind: 'spawn',
       coordinator: canOrchestrate(ws),
       run: () => startWorkspaceAgentHeadless(id, 'auto', true),
+      retryLater: () => pauseRefusal(store.getWorkspace(id), 'auto') !== null,   // refused because a fleet Pause is in force: keep the slot
       stillOwed: () => {
         const w = store.getWorkspace(id);
         return !!w && !w.archived && owesOpeningTask(w) && !sdkSessionLive(id) && !isRunning(id);
@@ -2078,7 +2079,12 @@ async function reconcileRunAfterReparent(
       // (restart-workspace imports startAgentPty from here).
       const { dispatchRestartRequest } = await import('./restart-workspace.ts');
       const res = await dispatchRestartRequest({ id: ws.id, fresh: false, trigger: 'reparent' });
-      if (res.ok) {
+      if (res.ok && res.held) {
+        // #286: the restart was ACCEPTED but is HELD for low memory — the live session is still on the OLD run. Mark it stale now (the pane says
+        // 'stale', sends into the wrong run are refused); the released restart's own tail clears the marker when it succeeds.
+        await markWorkspaceStaleRun(ws, newAnchorId);
+        markedStale.push(ws.id);
+      } else if (res.ok) {
         // A prior --no-restart may have left this workspace stale; the restart
         // clears it. Idempotent when it was never stale.
         await clearBusRunStale(ws.id);

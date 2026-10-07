@@ -60,6 +60,20 @@ test('restart gate: after the Pause refusal, BEFORE the classifier / any stop; t
   assert.match(body, /const restartOrigin: PauseOrigin = trigger === 'toolbar' \? 'human' : 'auto';/);
 });
 
+test('reparent reconcile: a HELD restart (ok:true) is NOT "restarted" — the member is marked stale until the released restart clears it', () => {
+  const body = fn(ws, 'async function reconcileRunAfterReparent(');
+  const heldArm = body.indexOf('if (res.ok && res.held) {');
+  const okArm = body.indexOf('} else if (res.ok) {');
+  assert.ok(heldArm > 0 && okArm > heldArm, 'the held arm comes before the plain ok arm');
+  assert.match(body.slice(heldArm, okArm), /markWorkspaceStaleRun\(ws, newAnchorId\);\s*\n\s*markedStale\.push\(ws\.id\);/);
+  assert.doesNotMatch(body.slice(heldArm, okArm), /restarted\.push/);
+});
+
+test('a release refused by a fleet Pause keeps its slot: both gates pass retryLater (the Pause is still in force)', () => {
+  assert.match(ws, /retryLater: \(\) => pauseRefusal\(store\.getWorkspace\(id\), 'auto'\) !== null,/);
+  assert.match(restart, /retryLater: \(\) => pauseRefusal\(store\.getWorkspace\(id\) \?\? null, restartOrigin\) !== null,/);
+});
+
 test('/busStatus lists the held starts and the CLI prints them (no line when none); the CLI marks a held peer and a held restart', () => {
   assert.match(hooks, /heldStarts: listHeldStarts\(\)\.map\(/);
   assert.match(cli, /formatHeldStartsLine\(res\.heldStarts as HeldStartView\[\]\)/);

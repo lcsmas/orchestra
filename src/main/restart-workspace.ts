@@ -94,6 +94,7 @@ export async function dispatchRestartRequest(input: {
       kind: 'restart',
       coordinator: canOrchestrate(ws),
       run: () => dispatchRestartRequest({ id, fresh, trigger, admitted: true }),
+      retryLater: () => pauseRefusal(store.getWorkspace(id) ?? null, restartOrigin) !== null,   // a fleet Pause refused the release: keep the slot
       stillOwed: () => {
         const w = store.getWorkspace(id);
         return !!w && !w.archived;

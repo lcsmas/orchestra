@@ -11,6 +11,7 @@ function world() {
   const w = {
     mem: 4 as number | null,           // GB; null = unreadable
     enabled: true,
+    sampleThrows: false,
     samples: 0,
     now: 1_000_000,
     sleeps: [] as number[],
@@ -31,13 +32,14 @@ function world() {
     },
   };
   w.deps = {
-    sample: () => { w.samples += 1; return w.snap(); },
+    sample: () => { w.samples += 1; if (w.sampleThrows) { w.sampleThrows = false; throw new Error('guard hiccup'); } return w.snap(); },
     now: () => w.now,
     schedule: (fn, ms) => { const t = { fn, ms }; w.timers.push(t); return t; },
     cancel: (h) => { const i = w.timers.indexOf(h as { fn: () => void; ms: number }); if (i >= 0) w.timers.splice(i, 1); },
     sleep: async (ms) => { w.sleeps.push(ms); },
     retryMs: 10_000,
     settleMs: 3_000,
+    runTimeoutMs: 90_000,
     info: (m) => w.infos.push(m),
     warn: (m) => w.warns.push(m),
   };
@@ -210,7 +212,7 @@ test('a throwing release is logged and the line moves on', async () => {
   w.mem = 9;
   await a.kick();
   assert.deepEqual(w.ran, ['next']);
-  assert.ok(w.warns.some((l) => /released spawn of boom threw/.test(l)));
+  assert.ok(w.warns.some((l) => /released spawn of boom FAILED: start failed/.test(l)));
 });
 
 test('toggle_off_releases_the_queue_at_once (holds nothing) — even with no memory room', async () => {
@@ -229,6 +231,106 @@ test('stop clears the queue and the timer', () => {
   assert.ok(w.timers.length > 0);
   a.stop();
   assert.deepEqual([a.list().length, w.timers.length], [0, 0]);
+});
+
+test('run_failure_is_logged_not_silent: a release whose start FAILS says so (with its reason) — never "RELEASED" and nothing else', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'bad', { run: async () => ({ ok: false, error: 'the agent failed to start: no credentials' }) }));
+  w.mem = 9;
+  await a.kick();
+  assert.ok(w.warns.some((l) => /released spawn of bad FAILED: the agent failed to start: no credentials/.test(l)));
+  assert.deepEqual(a.list(), [], 'a plain start failure is not retried by the queue (the start path reports it on the workspace)');
+});
+
+test('refused_while_paused_keeps_its_slot: a release refused by a fleet Pause stays queued in the SAME slot and goes out once the Pause lifts', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let paused = true;
+  const attempts: string[] = [];
+  a.gate(args(w, 'm1', { run: async () => { attempts.push('m1'); return paused ? { ok: false, error: 'run en pause' } : { ok: true }; }, retryLater: () => paused }));
+  const before = a.list()[0];
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(attempts, ['m1'], 'tried once');
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.seq, e.since]), [[before.wsId, before.seq, before.since]], 'still queued, same slot');
+  assert.ok(w.infos.some((l) => /was refused for now \(run en pause\) — kept queued/.test(l)));
+  assert.ok(w.timers.length > 0, 'the retry is armed');
+  paused = false;
+  await a.kick();
+  assert.deepEqual(attempts, ['m1', 'm1']);
+  assert.deepEqual(a.list(), []);
+});
+
+test('hung_release_does_not_block_the_line: a start that never settles is abandoned after runTimeoutMs and the next goes out', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'hung', { run: () => new Promise<void>(() => {}) }));
+  a.gate(args(w, 'next'));
+  w.mem = 9;
+  const pass = a.kick();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  const timer = w.timers.find((t) => t.ms === 90_000);
+  assert.ok(timer, 'the bound is armed on the running release');
+  timer.fn();
+  await Promise.race([pass, new Promise((_, rej) => setTimeout(() => rej(new Error('the line is still blocked by the hung release')), 1500))]);
+  assert.deepEqual(w.ran, ['next']);
+  assert.ok(w.warns.some((l) => /released spawn of hung did not settle within 90 s — the line moves on/.test(l)));
+});
+
+test('repeat_auto_request_during_release_is_not_a_duplicate: a release is running for X → another automatic request for X is answered "held", never started twice', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let finish: () => void = () => {};
+  a.gate(args(w, 'x', { run: () => new Promise<void>((r) => { w.ran.push('x'); finish = r; }) }));
+  w.mem = 9;
+  const pass = a.kick();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.deepEqual(w.ran, ['x'], 'the release is running');
+  const again = a.gate(args(w, 'x', { run: async () => { w.ran.push('x-again'); } }));
+  assert.deepEqual(again, { held: true, since: 1_000_000, kind: 'spawn' });
+  finish();
+  await pass;
+  assert.deepEqual(w.ran, ['x'], 'no second start');
+  assert.deepEqual(a.list(), []);
+});
+
+test('human_start_drops_the_held_entry: a person starting the held member itself supersedes it — peers / bus-status must not keep saying held', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'm1'));
+  a.gate(args(w, 'm2'));
+  assert.deepEqual(a.gate(args(w, 'm1', { origin: 'human' })), { held: false });
+  assert.deepEqual(a.list().map((e) => e.wsId), ['m2']);
+  assert.equal(a.heldFor('m1'), null);
+  assert.ok(w.infos.some((l) => /dropped held spawn of m1: a human started it/.test(l)));
+});
+
+test('retry_rearms_after_a_throwing_pass: the spent retry handle is cleared when it fires, so a pass that throws (the guard read blows up) still re-arms — the queue is never stranded', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'a'));
+  w.mem = 9;
+  const t = w.timers[w.timers.length - 1];
+  assert.ok(t, 'armed by the hold');
+  w.sampleThrows = true; // the NEXT sample (inside the retry's pass) throws
+  t.fn();
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.ok(w.warns.some((l) => /release pass threw/.test(l)));
+  assert.ok(w.timers.length > 0, 'a new retry is armed — not stranded');
+  assert.deepEqual(a.list().map((e) => e.wsId), ['a'], 'the entry was not lost');
+  await a.kick();
+  assert.deepEqual(w.ran, ['a']);
+});
+
+test('throwing_still_owed_is_treated_as_owed: a store hiccup while checking never loses a held start', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'a', { stillOwed: () => { throw new Error('store hiccup'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['a']);
+  assert.ok(w.warns.some((l) => /stillOwed of held spawn of a threw — treated as still owed/.test(l)));
 });
 
 test('facade: the process-wide gate + the guard edge that reopens Admission triggers the release', async () => {

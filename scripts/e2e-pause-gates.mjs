@@ -70,6 +70,7 @@ initPlatform({
   isEncryptionAvailable: () => false, encryptString: (s) => s, decryptString: (s) => s,
 });
 const { store } = await import(`${REPO}/src/main/store.ts`);
+await (await import('./neutral-memory-guard.mjs')).neutralizeMemoryGuard(REPO);   // #286: never read the HOST's real MemAvailable (the guard would hold auto starts below 6 GB)
 await store.load?.();
 const busMod = await import(`${REPO}/src/main/bus.ts`);
 const busRuns = await import(`${REPO}/src/main/bus-runs.ts`);

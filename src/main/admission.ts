@@ -16,6 +16,7 @@ const alog = scoped('admission');
 interface Entry extends HeldStart {
   run: () => Promise<unknown>;
   stillOwed: () => boolean;
+  retryLater?: (result: unknown) => boolean;
 }
 
 export interface AdmissionDeps {
@@ -29,6 +30,8 @@ export interface AdmissionDeps {
   /** How soon a stalled release (memory not back yet) tries again — the guard's own cadence can be 60 s above the threshold. */
   retryMs: number;
   settleMs: number;
+  /** A release that has not settled after this long stops blocking the line (the hung one may still finish on its own). */
+  runTimeoutMs: number;
   info(message: string): void;
   warn(message: string, meta?: unknown): void;
 }
@@ -44,6 +47,8 @@ export interface GateArgs {
   stillOwed: () => boolean;
   /** The workspace itself coordinates (released before any worker). */
   coordinator: boolean;
+  /** Called with a FAILED release result: true = the failure is "not now" (a fleet Pause is in force) — keep the entry queued instead of losing it. */
+  retryLater?: (result: unknown) => boolean;
 }
 export type GateResult = { held: false } | { held: true; since: number; kind: HeldStartKind };
 
@@ -58,6 +63,8 @@ export interface Admission {
 
 export const ADMISSION_RETRY_MS = 10_000;
 export const ADMISSION_SETTLE_MS = 3_000;
+export const ADMISSION_RUN_TIMEOUT_MS = 90_000;
+const TIMED_OUT = Symbol('timed-out');
 
 export function realAdmissionDeps(over: Partial<AdmissionDeps> = {}): AdmissionDeps {
   return {
@@ -72,21 +79,50 @@ export function realAdmissionDeps(over: Partial<AdmissionDeps> = {}): AdmissionD
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     retryMs: ADMISSION_RETRY_MS,
     settleMs: ADMISSION_SETTLE_MS,
+    runTimeoutMs: ADMISSION_RUN_TIMEOUT_MS,
     info: (m) => alog.info(m),
     warn: (m, meta) => alog.warn(m, meta),
     ...over,
   };
 }
 
+const isFailure = (o: unknown): boolean => typeof o === 'object' && o !== null && (o as { ok?: unknown }).ok === false;
+const failureText = (o: unknown): string => String((o as { error?: unknown }).error ?? 'no reason given');
 const mem = (s: MemoryGuardSnapshot): string => (s.availBytes === null ? 'MemAvailable unknown' : `MemAvailable ${formatGb(s.availBytes, 2)}`);
 
 export function createAdmission(deps: AdmissionDeps): Admission {
   const queue = new Map<string, Entry>();
+  /** Entries whose release is RUNNING now (already out of the queue): a repeat automatic request for the same workspace must not start a duplicate. */
+  const releasing = new Map<string, { since: number; kind: HeldStartKind }>();
   let seq = 0;
   let draining: Promise<void> | null = null;
   let rerun = false;
   let retry: unknown = null;
   let waitLogged: string | null = null;
+
+  /** A throwing `stillOwed` (a store hiccup) is treated as "still owed": the start itself reports a vanished workspace; losing a held start is worse. */
+  function stillOwedSafe(entry: Entry): boolean {
+    try {
+      return entry.stillOwed();
+    } catch (e) {
+      deps.warn(`stillOwed of held ${entry.kind} of ${entry.wsId} threw — treated as still owed`, e);
+      return true;
+    }
+  }
+
+  function runBounded(entry: Entry): Promise<unknown> {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v: unknown): void => {
+        if (done) return;
+        done = true;
+        deps.cancel(timer);
+        resolve(v);
+      };
+      const timer = deps.schedule(() => finish(TIMED_OUT), deps.runTimeoutMs);
+      entry.run().then(finish, (e) => finish({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    });
+  }
 
   function disarm(): void {
     if (retry !== null) deps.cancel(retry);
@@ -94,7 +130,12 @@ export function createAdmission(deps: AdmissionDeps): Admission {
   }
   function arm(): void {
     disarm();
-    if (queue.size > 0) retry = deps.schedule(() => void kick(), deps.retryMs);
+    if (queue.size > 0) {
+      retry = deps.schedule(() => {
+        retry = null; // the handle is spent: a pass that throws below must be able to re-arm
+        void kick();
+      }, deps.retryMs);
+    }
   }
 
   async function pass(): Promise<void> {
@@ -115,15 +156,29 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       waitLogged = null;
       const entry = queue.get(step.entry.wsId) as Entry;
       queue.delete(entry.wsId);
-      if (!entry.stillOwed()) {
+      if (!stillOwedSafe(entry)) {
         deps.info(`dropped held ${entry.kind} of ${entry.wsId} (no longer wanted) — ${mem(snap)}; ${queue.size} still held`);
         continue;
       }
       deps.info(`RELEASED ${entry.kind} of ${entry.wsId}${entry.coordinator ? ' (coordinator)' : ''}, held since ${new Date(entry.since).toISOString()} — ${mem(snap)}; ${queue.size} still held`);
+      releasing.set(entry.wsId, { since: entry.since, kind: entry.kind });
+      let outcome: unknown;
       try {
-        await entry.run();
+        outcome = await runBounded(entry);
       } catch (e) {
         deps.warn(`released ${entry.kind} of ${entry.wsId} threw`, e);
+      } finally {
+        releasing.delete(entry.wsId);
+      }
+      if (outcome === TIMED_OUT) {
+        deps.warn(`released ${entry.kind} of ${entry.wsId} did not settle within ${Math.round(deps.runTimeoutMs / 1000)} s — the line moves on (it may still finish)`);
+      } else if (isFailure(outcome)) {
+        if (entry.retryLater?.(outcome)) {
+          queue.set(entry.wsId, entry); // refused for now (a Pause is in force): the SAME slot, not a lost start
+          deps.info(`released ${entry.kind} of ${entry.wsId} was refused for now (${failureText(outcome)}) — kept queued`);
+          return arm();
+        }
+        deps.warn(`released ${entry.kind} of ${entry.wsId} FAILED: ${failureText(outcome)}`);
       }
       if (queue.size > 0) await deps.sleep(deps.settleMs);
     }
@@ -152,15 +207,23 @@ export function createAdmission(deps: AdmissionDeps): Admission {
 
   return {
     gate(a) {
+      // A release of this very workspace is running right now: report it as held (it IS starting) instead of starting it a second time.
+      const inFlight = releasing.get(a.wsId);
+      if (inFlight && a.origin === 'auto') return { held: true, since: inFlight.since, kind: inFlight.kind };
       const snap = deps.sample();
       const holding = isAdmissionHolding(snap);
-      if (!mustHoldStart({ ws: a.ws, origin: a.origin, holding, queued: queue.size > 0 })) return { held: false };
+      if (!mustHoldStart({ ws: a.ws, origin: a.origin, holding, queued: queue.size > 0 })) {
+        // A HUMAN started this member itself: its held entry (if any) is superseded — never leave peers / bus-status saying "held" for a running member.
+        if (a.origin === 'human' && queue.delete(a.wsId)) deps.info(`dropped held ${a.kind} of ${a.wsId}: a human started it — ${mem(snap)}; ${queue.size} still held`);
+        return { held: false };
+      }
       let entry = queue.get(a.wsId);
       if (entry) {
         entry.run = a.run; // the newest request wins; the original arrival (since, seq) is kept
         entry.stillOwed = a.stillOwed;
+        entry.retryLater = a.retryLater;
       } else {
-        entry = { wsId: a.wsId, kind: a.kind, seq: ++seq, since: deps.now(), coordinator: a.coordinator, run: a.run, stillOwed: a.stillOwed };
+        entry = { wsId: a.wsId, kind: a.kind, seq: ++seq, since: deps.now(), coordinator: a.coordinator, run: a.run, stillOwed: a.stillOwed, retryLater: a.retryLater };
         queue.set(a.wsId, entry);
         deps.warn(`HELD ${a.kind} of ${a.wsId}${a.coordinator ? ' (coordinator)' : ''} — ${mem(snap)}, Admission ${holding ? 'held' : 'releasing in order'}; ${queue.size} held start(s)`);
       }

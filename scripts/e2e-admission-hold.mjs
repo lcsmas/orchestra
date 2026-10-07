@@ -15,6 +15,7 @@
 //   human_passes     ★ a human Restart / a top-level spawn passes while held
 //   running_turn_passes ★ a message to an ALREADY-RUNNING member is delivered live while held
 //   restart_waits    ★ an AUTO restart of a running member is held BEFORE any stop (nothing is stopped); it runs on recovery
+//   pause_keeps_slot ★ a release refused because a fleet PAUSE landed while held keeps its slot (not lost), and goes out after the lift
 //   toggle_off       ★ the global toggle OFF holds nothing
 //   visible          ★ the OPS sees the held member (since-when) in `peers` + `bus-status` (real hooks-server + built CLI); gone after the release
 //
@@ -29,7 +30,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'toggle_off', 'visible'];
+const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'pause_keeps_slot', 'toggle_off', 'visible'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -164,7 +165,7 @@ sdk.__setQueryFactoryForTests(({ prompt }) => {
 // ── fleet + a real repo for spawn ──
 const now0 = Date.now();
 const mk = (id, extra = {}) => ({ id, name: id, kind: 'scratch', repoPath: '', worktreePath: tmpHome, status: 'idle', createdAt: now0 - 40 * 60_000, ...extra });
-const ON = { ...DEFAULT_BUS_SWITCHES, wake: true, liveness: true };
+const ON = { ...DEFAULT_BUS_SWITCHES, wake: true, liveness: true, pause: true };
 async function seedFleet() {
   busRuns.startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops' }, ON);
   await store.upsertWorkspace(mk('ws-ops', { kind: 'orchestrator' }));
@@ -255,14 +256,18 @@ if (ARM === 'dip_stops') {
 if (ARM === 'human_passes') {
   mem = 4; guard.sampleNow();
   const held = await spawnMember('HUMAN-HELD');
-  check('control_auto_is_held', !!held.held, true);                                         // the instrument can see a hold
+  const held2 = await spawnMember('HUMAN-HELD-2');
+  check('control_auto_is_held', [!!held.held, !!held2.held], [true, true]);                  // the instrument can see a hold
   const before = calls.start.length;
-  const tb = await dispatchRestartRequest({ id: 'ws-sub', fresh: false, trigger: 'toolbar' });   // the toolbar Restart is a HUMAN act on a kept child that owes its brief
-  check('toolbar_restart_passes', tb.ok === true && !tb.held && tb.openingTask === true, true);
-  check('toolbar_start_ran', calls.start.slice(before).map((c) => [c.wsId, c.origin]), [['ws-sub', 'human']]);
+  // AC3 — a human-initiated start of the SAME held member passes (the toolbar Restart of a kept child that still owes its brief)
+  const tb = await dispatchRestartRequest({ id: held.id, fresh: false, trigger: 'toolbar' });
+  check('toolbar_restart_of_the_held_member_passes', tb.ok === true && !tb.held && tb.openingTask === true, true);
+  check('toolbar_start_ran', calls.start.slice(before).map((c) => [c.wsId, c.origin]), [[held.id, 'human']]);
+  const peers = await workspaces.dispatchPeersRequest({ from: 'ws-ops' });
+  check('no_stale_held_marker_on_it', [peers.peers.find((p) => p.id === held.id)?.heldForMemory ?? null, hasAdmission ? admMod.heldStartFor(held.id) : null], [null, null]);
   const top = await workspaces.dispatchSpawnRequest({ task: 'TOP-LEVEL', repoPath: repoDir, agent: 'claude', defaultKind: 'workspace' });   // a human click: no `from`, no coordinator
   check('top_level_spawn_passes', top.ok === true && !top.held && startedFor(top.id) === 1, true);
-  check('the_auto_one_is_still_held', hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : [held.id], [held.id]);
+  check('the_other_auto_one_is_still_held', hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : [held2.id], [held2.id]);
   verdict();
 }
 
@@ -291,6 +296,25 @@ if (ARM === 'restart_waits') {
   verdict();
 }
 
+if (ARM === 'pause_keeps_slot') {
+  const busPause = await import(`${REPO}/src/main/bus-pause.ts`);
+  useFakeSeam({ hasSession: (id) => id === 'ws-m1' });
+  await store.upsertWorkspace({ ...wsRec('ws-m1'), sdkSessionId: 'sess-m1', hasInput: true });
+  mem = 4; guard.sampleNow();
+  const before = factoryCalls;
+  const r = await dispatchRestartRequest({ id: 'ws-m1', fresh: false, trigger: 'cli' });
+  check('control_held', !!r.held, true);
+  check('pause_landed', busPause.setRunPause(db, 'ws-ops', true, 'ws-ops') !== 'switch-off', true);   // a manual hard Pause lands while the restart is held
+  mem = 9; guard.sampleNow();                                                                      // recovery: the release is attempted and REFUSED by the Pause
+  await sleep(300);                                                                                // several retry ticks (40 ms) — still refused
+  check('still_queued_in_its_slot', hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : ['ws-m1'], ['ws-m1']);
+  check('nothing_restarted_while_paused', [factoryCalls - before, calls.stop.length], [0, 0]);
+  busPause.setRunPause(db, 'ws-ops', false, 'ws-ops');                                             // lift
+  check('goes_out_after_the_lift', await until(() => factoryCalls - before >= 1 || calls.stop.length >= 1, 8000), true);
+  check('queue_drained', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
+  verdict();
+}
+
 if (ARM === 'toggle_off') {
   await store.setMemoryGuardSettings({ ...store.getMemoryGuardSettings(), admissionEnabled: false });
   mem = 4; guard.sampleNow();
@@ -313,6 +337,7 @@ if (ARM === 'visible') {
   const sock = hooks.getHookSocketPath();
   const CLI = path.join(REPO, 'dist-electron', 'cli.js');
   if (!fs.existsSync(CLI)) { fails.push(`${CLI} not built (pnpm run build:cli)`); verdict(); }
+  check('cli_bundle_is_fresh', fs.readFileSync(CLI, 'utf8').includes('held starts:') || !hasAdmission, true);   // a stale dist-electron/cli.js would read RED for the wrong reason
   const cli = (args) => new Promise((resolve) => {
     const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let so = ''; p.stdout.on('data', (c) => (so += c)); p.stderr.on('data', (c) => (so += c)); p.on('close', () => resolve(so));

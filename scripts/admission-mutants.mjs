@@ -39,10 +39,17 @@ const MUTANTS = [
   { id: 'A09_no_kick_on_newcomer', file: AD, find: '      if (!holding) void kick();\n', to: '', expect: ['newcomer_triggers_the_release'], arms: [] },
   { id: 'A10_kick_swallowed', file: AD, find: '      rerun = true;\n', to: '', expect: ['kick_during_wind_down'], arms: [] },
   { id: 'A11_no_settle_pause', file: AD, find: '      if (queue.size > 0) await deps.sleep(deps.settleMs);\n', to: '', expect: ['release_order'], arms: [] },
-  { id: 'A12_not_owed_still_run', file: AD, find: '      if (!entry.stillOwed()) {', to: '      if (false) {', expect: ['not_owed_anymore'], arms: [] },
+  { id: 'A12_not_owed_still_run', file: AD, find: '      if (!stillOwedSafe(entry)) {', to: '      if (false) {', expect: ['not_owed_anymore'], arms: [] },
   { id: 'A13_request_refresh_dropped', file: AD, find: '        entry.run = a.run; // the newest request wins; the original arrival (since, seq) is kept\n', to: '', expect: ['repeat_request_keeps_the_original_slot'], arms: [] },
   { id: 'A14_reopen_edge_ignored', file: AD, find: "if (e.transition.kind === 'admission_reopened') void singleton.kick();", to: '', expect: ['facade'], arms: [] },
   { id: 'A15_release_runs_without_fresh_sample', file: AD, find: '      const snap = deps.sample();\n      const step = planRelease(', to: '      const snap = lastSnap ?? deps.sample();\n      lastSnap = snap;\n      const step = planRelease(', expect: ['release_order', 'rig:release_order'], arms: ['release_order'], pre: [{ file: AD, find: '  let waitLogged: string | null = null;\n', to: '  let waitLogged: string | null = null;\n  let lastSnap: MemoryGuardSnapshot | null = null;\n' }] },
+  { id: 'A16_run_failure_silent', file: AD, find: '      } else if (isFailure(outcome)) {', to: '      } else if (false) {', expect: ['run_failure_is_logged_not_silent', 'refused_while_paused_keeps_its_slot'], arms: [] },
+  { id: 'A17_refused_release_lost', file: AD, find: '        if (entry.retryLater?.(outcome)) {', to: '        if (false) {', expect: ['refused_while_paused_keeps_its_slot', 'rig:pause_keeps_slot'], arms: ['pause_keeps_slot'] },
+  { id: 'A18_release_unbounded', file: AD, find: '      const timer = deps.schedule(() => finish(TIMED_OUT), deps.runTimeoutMs);', to: '      const timer = {};', expect: ['hung_release_does_not_block_the_line'], arms: [] },
+  { id: 'A19_duplicate_during_release', file: AD, find: "      if (inFlight && a.origin === 'auto') return {", to: "      if (false) return {", expect: ['repeat_auto_request_during_release'], arms: [] },
+  { id: 'A20_human_start_leaves_entry', file: AD, find: "if (a.origin === 'human' && queue.delete(a.wsId))", to: "if (false && queue.delete(a.wsId))", expect: ['human_start_drops_the_held_entry', 'rig:human_passes'], arms: ['human_passes'] },
+  { id: 'A21_retry_handle_never_spent', file: AD, find: '        retry = null; // the handle is spent: a pass that throws below must be able to re-arm\n', to: '', expect: ['retry_rearms_after_a_throwing_pass'], arms: [] },
+  { id: 'A22_throwing_owed_means_not_owed', file: AD, find: "treated as still owed`, e);\n      return true;", to: "treated as still owed`, e);\n      return false;", expect: ['throwing_still_owed_is_treated_as_owed'], arms: [] },
   { id: 'C01_spawn_gate_off', file: WS, find: '  if (!admitted) {\n    const gate = admissionGate({', to: '  if (false) {\n    const gate = admissionGate({', expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C02_spawn_gate_human_origin', file: WS, find: "      origin: origin ?? 'auto',\n      kind: 'spawn',", to: "      origin: 'human',\n      kind: 'spawn',", expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C03_release_re_held', file: WS, find: "run: () => startWorkspaceAgentHeadless(id, 'auto', true),", to: "run: () => startWorkspaceAgentHeadless(id, 'auto'),", expect: ['spawn gate', 'rig:release_order'], arms: ['release_order', 'dip_stops'] },
@@ -54,6 +61,9 @@ const MUTANTS = [
   { id: 'C09_peers_without_held', file: WS, find: '    ...(heldStartFor(w.id) ? { heldForMemory:', to: '    ...(false ? { heldForMemory:', expect: ['spawn reply carries held', 'rig:visible'], arms: ['visible'] },
   { id: 'C10_cli_no_held_line', file: CL, find: '        if (held) process.stdout.write(`${held}\\n`);', to: '        void held;', expect: ['/busStatus lists', 'rig:visible'], arms: ['visible'], cli: true },
   { id: 'C11_cli_peers_unmarked', file: CL, find: "status: p.heldForMemory ? `${p.status} · ${p.heldForMemory.kind} HELD for memory since", to: "status: false ? `${p.status} · ${p.heldForMemory.kind} HELD for memory since", expect: ['/busStatus lists', 'rig:visible'], arms: ['visible'], cli: true },
+  { id: 'C13_reparent_counts_held_as_restarted', file: WS, find: '      if (res.ok && res.held) {', to: '      if (false) {', expect: ['reparent reconcile'], arms: [] },
+  { id: 'C14_spawn_pause_refusal_loses_slot', file: WS, find: "retryLater: () => pauseRefusal(store.getWorkspace(id), 'auto') !== null,", to: 'retryLater: () => false,', expect: ['a release refused by a fleet Pause keeps its slot'], arms: [] },
+  { id: 'C15_restart_pause_refusal_loses_slot', file: RS, find: 'retryLater: () => pauseRefusal(store.getWorkspace(id) ?? null, restartOrigin) !== null,', to: 'retryLater: () => false,', expect: ['a release refused by a fleet Pause keeps its slot', 'rig:pause_keeps_slot'], arms: ['pause_keeps_slot'] },
   { id: 'C12_admission_never_started', file: IX, find: '  startAdmission();\n', to: '', expect: ['lifecycle'], arms: [] },
 ];
 
@@ -99,7 +109,7 @@ buildCli();
 const base = unitRed();
 const baseRig = rigRed();
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 9)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 10)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;
