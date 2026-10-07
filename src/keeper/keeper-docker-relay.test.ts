@@ -41,7 +41,8 @@ process.stdin.on('data', (d) => {
       const req = http.request({ socketPath: host.replace(/^unix:\\/\\//, ''), method: 'POST', path: '/v1.47/containers/create', agent: false,
         headers: { 'content-type': 'application/json' } }, (res) => { res.resume(); res.on('end', () => out({ created: res.statusCode, n: m.create })); });
       req.on('error', (e) => out({ created: 0, err: String(e.message), n: m.create }));
-      req.end(JSON.stringify({ Image: 'alpine' }));
+      // An image that cannot exist: if a MUTANT (or a bug) routes this create to the host's REAL dockerd it is refused (404), never a container.
+      req.end(JSON.stringify({ Image: 'orchestra-g2-test-no-such-image:0' }));
     }
   }
 });
@@ -204,7 +205,7 @@ test('control: a create that goes AROUND the relay (straight to the daemon) is u
   await c.waitLine((l) => l.env !== undefined);
   await new Promise<void>((resolve, reject) => {
     const req = net.connect(ctx.daemon.sockPath, () => {
-      const body = '{"Image":"alpine"}';
+      const body = '{"Image":"orchestra-g2-test-no-such-image:0"}';
       req.write(`POST /containers/create HTTP/1.1\r\nHost: d\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`);
     });
     req.on('data', () => {});

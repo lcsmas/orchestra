@@ -86,6 +86,35 @@ const MUTANTS = [
 ];
 
 const sha = (b) => createHash('sha256').update(b).digest('hex').slice(0, 12);
+
+// ── LEAK GUARD: a mutant that routes a relay to the host's REAL dockerd (K6, M5, M9…) can make a unit test CREATE real
+// containers. Every run is bracketed by a container-id snapshot; a new container is reported as a LEAK and, only when its
+// orchestra.ws label is one of OUR test/rig ids (ws-kdr-*, g2r*), removed BY ID. Anything else is reported, never touched.
+let leaks = 0;
+const dockerOut = (args) => {
+  try {
+    return execFileSync('docker', args, { encoding: 'utf8', timeout: 30000, env: { ...process.env, DOCKER_HOST: '' } }).trim();
+  } catch {
+    return null; // no docker / no permission: the guard degrades to a no-op (reported once)
+  }
+};
+const containerIds = () => {
+  const o = dockerOut(['ps', '-a', '-q', '--no-trunc']);
+  return o === null ? null : new Set(o.split('\n').filter(Boolean));
+};
+function leakCheck(before) {
+  const after = containerIds();
+  if (!before || !after) return { leaked: 0, removed: 0 };
+  const fresh = [...after].filter((id) => !before.has(id));
+  let removed = 0;
+  for (const id of fresh) {
+    const ws = dockerOut(['inspect', '-f', '{{index .Config.Labels "orchestra.ws"}}', id]) ?? '';
+    if (/^(ws-kdr-|g2r)/.test(ws) && dockerOut(['rm', '-f', id]) !== null) removed++;
+  }
+  return { leaked: fresh.length, removed };
+}
+if (containerIds() === null) console.log('LEAK GUARD: docker unavailable — containers cannot leak, guard is a no-op');
+
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const only = args.filter((a) => !a.startsWith('--'));
@@ -126,6 +155,17 @@ function run(tests, timeoutMs = 120000) {
       resolve({ rc: timedOut ? 124 : code, timedOut, pass: num('pass'), fail: num('fail'), skipped: num('skipped'), out });
     });
   });
+}
+
+// --leak-selftest: the guard's POSITIVE CONTROL — make one labelled throwaway container (never started), and require the guard to SEE and remove it.
+if (args.includes('--leak-selftest')) {
+  const before = containerIds();
+  const made = dockerOut(['create', '--label', 'orchestra.ws=g2r-leak-selftest', 'alpine:3', 'true']);
+  const lk = leakCheck(before);
+  const gone = containerIds();
+  const ok = before !== null && made !== null && lk.leaked === 1 && lk.removed === 1 && gone !== null && !gone.has(made);
+  console.log(`LEAK GUARD SELFTEST: created=${made?.slice(0, 12) ?? 'FAILED'} leaked=${lk.leaked} removed=${lk.removed} → ${ok ? 'PASS (guard sees and removes a leak)' : 'FAIL'}`);
+  process.exit(ok ? 0 : 1);
 }
 
 if (checkOnly) {
@@ -169,6 +209,7 @@ if (args.includes('--rig')) {
     const a = apply(file, edits);
     if (a.err) { console.log(`${id}: ${a.err}`); alive++; continue; }
     let r;
+    const snap = containerIds();
     try {
       fs.writeFileSync(a.abs, a.mutated);
       r = await rigRun(RIG_ARM[id]);
@@ -176,14 +217,16 @@ if (args.includes('--rig')) {
       fs.writeFileSync(a.abs, a.orig);
       if (!fs.readFileSync(a.abs).equals(a.orig)) throw new Error(`RESTORE MISMATCH for ${file}`);
     }
+    const lk = leakCheck(snap);
+    if (lk.leaked) { console.log(`    LEAK after ${id}: ${lk.leaked} container(s) left by the rig run (removed ${lk.removed} by id); the rig's label sweep missed them`); leaks += lk.leaked; }
     const red = (r.checks ?? []).filter((c) => !c.ok && !/bystander|every rig container/.test(c.name)).map((c) => c.name.slice(0, 60));
     const killed = r.ok === false && (red.length > 0 || r.fatal);
     if (!killed) alive++;
     console.log(`${id.padEnd(3)} ${killed ? 'KILLED  ' : 'SURVIVED'} rig:${RIG_ARM[id]}  red: ${red.slice(0, 2).join(' | ') || r.fatal || '-'}  — ${note}`);
   }
   execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
-  console.log(`rig mutants: ${rigIds.length - alive} killed / ${rigIds.length}`);
-  process.exit(alive ? 1 : 0);
+  console.log(`rig mutants: ${rigIds.length - alive} killed / ${rigIds.length}; leaked containers: ${leaks}`);
+  process.exit(alive || leaks ? 1 : 0);
 }
 
 const allTests = [...new Set(MUTANTS.flatMap((m) => m[3]))];
@@ -209,9 +252,12 @@ for (const [id, file, edits, tests, note] of todo) {
       verdict = 'RIG-ONLY';
       detail = 'killed by the real-dockerd rig, not a unit test';
     } else {
+      const snap = containerIds();
       const r = await run(tests);
+      const lk = leakCheck(snap);
       verdict = r.rc !== 0 ? 'KILLED' : 'SURVIVED';
-      detail = `rc=${r.rc}${r.timedOut ? ' (HUNG→killed)' : ''} pass=${r.pass} fail=${r.fail}`;
+      detail = `rc=${r.rc}${r.timedOut ? ' (HUNG→killed)' : ''} pass=${r.pass} fail=${r.fail}${lk.leaked ? ` LEAK:${lk.leaked}(removed ${lk.removed})` : ''}`;
+      if (lk.leaked) leaks += lk.leaked;
     }
   } finally {
     fs.writeFileSync(a.abs, a.orig); // byte-exact restore …
@@ -224,7 +270,8 @@ for (const [id, file, edits, tests, note] of todo) {
 // leave the keeper bundle built from the RESTORED sources
 execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
 const survived = results.filter((r) => r.verdict === 'SURVIVED' || r.verdict === 'ANCHOR-ERROR');
-console.log(`\n${results.filter((r) => r.verdict === 'KILLED').length} killed · ${results.filter((r) => r.verdict === 'RIG-ONLY').length} rig-only · ${survived.length} survived/errored of ${results.length}`);
+console.log(`\nLEAKED containers across the sweep: ${leaks} (must be 0)`);
+console.log(`${results.filter((r) => r.verdict === 'KILLED').length} killed · ${results.filter((r) => r.verdict === 'RIG-ONLY').length} rig-only · ${survived.length} survived/errored of ${results.length}`);
 const post = await run(allTests, 240000);
 console.log(`POST-RESTORE (tree back to base): rc=${post.rc} pass=${post.pass} fail=${post.fail} skipped=${post.skipped}; git diff of mutated files must be empty`);
-process.exit(survived.length || post.rc !== 0 ? 1 : 0);
+process.exit(survived.length || post.rc !== 0 || leaks ? 1 : 0);
