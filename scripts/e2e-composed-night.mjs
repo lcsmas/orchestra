@@ -564,18 +564,20 @@ await arm('n9_reveil_delivered', async () => {
 
 await arm('n10_second_episode', async () => {
   const row1 = escalationRows()[0] ?? {};
-  docker.absent = true;                                                                   // the Docker daemon is DOWN while the second Pause lands: it must not block the trap
+  docker.down = true;                                                                     // the Docker daemon exists but does NOT ANSWER while the second Pause lands: recorded in the Bilan, never blocks the trap
   setMem(2.5);                                                                            // a NEW crossing after recovery, straight below critical: episode 2 (held + critical in one sample)
   check('a_new_episode_opened_critical_at_once', [snap()?.episode ?? null, snap()?.admission ?? null, snap()?.pause ?? null], [2, 'held', 'held']);
   check('the_second_memory_pause_is_imposed_at_the_edge', await until(() => runRow('ws-ops')?.paused_at != null, 4000), true);
   check('docker_unavailable_does_not_block_the_trap', await until(() => runRow('ws-ops')?.pause_trap_at != null, 20_000), true);
+  const c10 = runRow('ws-ops');
+  check('docker_unavailable_is_recorded_in_the_bilan', /list:/.test(String(records?.bilanForMember(db, 'ws-ops', 'ws-m1', c10?.paused_at)?.activity?.containers?.error ?? '')), true);
   check('the_second_row_arrives_after_the_settle_window_while_the_pause_stands', await until(() => escalationRows().length >= 2, 40_000, 100), true);
   const rows = escalationRows();
   const b2 = String(rows[1]?.body ?? '');
   check('exactly_two_rows_one_per_episode', rows.length, 2);
   check('the_second_row_names_the_paused_run_and_both_thresholds', [/Memory guard — episode 2 /.test(b2), /memory Pause on run\(s\) ws-ops/.test(b2), /and below the CRITICAL threshold \(3\.00 GB\) at 2\.50 GB/.test(b2), /memory Pause IN EFFECT\./.test(b2), /You need not act: the host releases the held starts and lifts its own memory Pause/.test(b2)], [true, true, true, true, true]);
   check('the_first_row_is_untouched', rows[0]?.body, row1.body);
-  docker.absent = false;
+  docker.down = false;
   setMem(8);                                                                              // recovery: the second Reprise (nothing owed: Docker was down), the episode ends
   check('the_second_reprise_released_the_coordinators', await until(() => runRow('ws-ops')?.resume_started_at != null || runRow('ws-ops')?.paused_at == null, 6000), true);
   await sleep(1200);

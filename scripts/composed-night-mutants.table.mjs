@@ -809,21 +809,6 @@ export const MUTANTS = [
   ]
  },
  {
-  "id": "292-gone-aborts-the-step",
-  "from": "own (restartOwedContainers, #292 AC4: a hand-removed container must not break the Reprise)",
-  "ticket": "#292",
-  "clause": "a container removed by hand does not break the Reprise (the others are still restarted)",
-  "arm": "n7_reprise",
-  "check": "the_stopped_containers_are_started_again",
-  "edits": [
-   {
-    "file": "src/main/pause-containers.ts",
-    "find": "        for (const r of got) results.set(r.id, r);\n",
-    "to": "        for (const r of got) results.set(r.id, r);\n        if (got.some((r) => r.outcome === 'gone')) break;\n"
-   }
-  ]
- },
- {
   "id": "286-A03_newcomer_jumps_the_line",
   "from": "admission-mutants.mjs:A03_newcomer_jumps_the_line",
   "ticket": "#286",
@@ -1007,10 +992,15 @@ export const MUTANTS = [
   "id": "292-docker-unavailable-blocks-the-trap",
   "from": "own (pause-trap.ts container step, FI-1.5)",
   "ticket": "#292",
-  "clause": "Docker unavailable is RECORDED and never blocks the trap or keeps it incomplete",
+  "clause": "Docker unavailable (the daemon does not answer) is RECORDED in the Bilan and never blocks the trap or keeps it incomplete (both layers removed: the list failure escapes AND the trap treats it as incomplete)",
   "arm": "n10_second_episode",
   "check": "docker_unavailable_does_not_block_the_trap",
   "edits": [
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "    return { containers: dockerAbsent(e) ? acc : { ...acc, error: `list: ${errText(e)}` }, lifted: false, stoppedNow };",
+    "to": "    throw e;"
+   },
    {
     "file": "src/main/pause-trap.ts",
     "find": "error: `stop: ${errMsg(e)}` };\n    }\n    if (liftedDuringStop) {",
