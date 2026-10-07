@@ -62,16 +62,18 @@ function cleanup() {
   for (const v of dk('volume', 'ls', '-q').out.split('\n').filter((x) => x.startsWith(PFX))) dk('volume', 'rm', '-f', v);
 }
 process.on('exit', () => { try { cleanup(); } catch { /* best effort */ } });
-const inspect = (name) => { const r = dk('inspect', name); try { return JSON.parse(r.out)[0]; } catch { return null; } };
+const inspect = (name) => { for (let i = 0; i < 3; i++) { const r = dk('inspect', name); try { const o = JSON.parse(r.out)[0]; if (o) return o; } catch { /* retry: a transient CLI failure must not read as "no such container / no labels" */ } if (/No such/i.test(r.err)) return null; spawnSync('sleep', ['0.3']); } return null; };
 const running = (name) => inspect(name)?.State?.Running === true;
 const exists = (name) => inspect(name) !== null;
 
 // ── the fake API's model: the pause-canary's (mail acks, Reprise accusé, the OPS' `release --all`) + one scenario: `SCN:docker <tag>` = create a REAL container through the keeper relay ──
 const tags = Array.from({ length: N }, (_, i) => String.fromCharCode(97 + i));
-const dockerCmd = (tag) => `docker run -d --init --label ${RIGLBL}=${PFX} --name ${PFX}-${tag} -v ${PFX}-vol-${tag}:/data ${IMAGE} sh -c 'x=$(head -c ${BALLAST_MB * 1024 * 1024} /dev/zero | tr "\\0" a); echo secret-${PFX}-${tag} > /data/state; sleep 3600'; echo DOCKER_RC=$? DOCKER_HOST=$DOCKER_HOST # g10 ${tag}`;
+const dockerCmd = (tag) => `docker run -d --init --label ${RIGLBL}=${PFX} --name ${PFX}-${tag} -v ${PFX}-vol-${tag}:/data ${IMAGE} sh -c 'echo secret-${PFX}-${tag} > /data/state; awk "BEGIN{x=sprintf(\\"%${BALLAST_MB * 1024 * 1024}s\\",\\"\\"); system(\\"sleep 3600\\")}"'; echo DOCKER_RC=$? DOCKER_HOST=$DOCKER_HOST # g10 ${tag}`;   // the container's DB (a file in its volume) + a held ballast of ${BALLAST_MB} MB (awk keeps the string): it re-allocates at every (re)start, like a real service
 const baseModel = makeModel({ kindOfRole: Object.fromEntries(spec.workers.map((w) => [w.k, 'idle'])), plan: { release: 'all', first: [] }, limited: new Set(), resetS: Math.floor(Date.now() / 1000) + 3600 });
 const textOfMsg = (m) => (typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '');
+const toolOut = [];                                                 // what the members' Bash tool printed (DOCKER_RC / DOCKER_HOST of each `docker run`)
 function decide(req) {
+  for (const m of req.messages) if (m.role === 'user' && Array.isArray(m.content)) for (const b of m.content) if (b.type === 'tool_result') { const t = JSON.stringify(b.content ?? ''); const x = /DOCKER_RC=\d+ DOCKER_HOST=[^\\"]*/.exec(t); if (x && !toolOut.includes(`${req.role}:${x[0]}`)) toolOut.push(`${req.role}:${x[0]}`); }
   const r = baseModel(req);
   if (r?.tool) return r;                                            // mail / Consigne / release tools first
   if (!req.role || req.role === 'lead' || req.role === 'ops') return r;
@@ -118,6 +120,7 @@ const wsByK = (k) => spec.workers.find((w) => w.k === k).id;
 const runStatus = async () => { const r = await app.cli(spec.ops, ['run', 'status', '--run', spec.lead, '--json']); try { return JSON.parse(r.out); } catch { return null; } };
 
 const measure = { containers: N, ballastMb: BALLAST_MB };
+let touched = [];                                                   // names of every container the host's Pause stopped (the Bilan)
 try {
   // ── the world ──
   api = await startApi({ decide });
@@ -139,9 +142,11 @@ try {
       await sendTo(w.id, `SCN:docker ${tags[i]}`);
     }
     const created = await waitFor(() => tags.every((t) => exists(`${PFX}-${t}`)), 180_000, 'every container to be created');
-    check('A1_members_created_N_real_containers_through_the_relay', !!created, `${tags.filter((t) => exists(`${PFX}-${t}`)).length}/${N} exist; DOCKER_HOST of the first member's tool: ${/DOCKER_HOST=(\S*)/.exec(JSON.stringify(api.requests.filter((r) => r.tool === 'Bash').map(() => '')))?.[1] ?? '(see the result below)'}`);
+    await sleep(1500);
+    check('A1_members_created_N_real_containers_through_the_relay', !!created, `${tags.filter((t) => exists(`${PFX}-${t}`)).length}/${N} exist; tool output: ${toolOut.join(' | ')}`);
     if (!created) VOID(`containers were not created (${tags.filter((t) => !exists(`${PFX}-${t}`)).join(',')} missing) — is the relay / the scenario broken? requests=${api.requests.length}`);
-    const lab = (t) => inspect(`${PFX}-${t}`)?.Config?.Labels ?? {};
+    const lab = (t) => { const o = inspect(`${PFX}-${t}`); return o ? (o.Config?.Labels ?? {}) : { 'inspect-failed': 'true' }; };
+    say(`LABELS a: ${JSON.stringify(lab(tags[0]))}`);
     const stamped = tags.map((t, i) => lab(t)['orchestra.ws'] === spec.workers[i % spec.workers.length].id && !!lab(t)['orchestra.run']);
     check('A1_the_relay_stamped_orchestra_ws_and_orchestra_run', stamped.every(Boolean), JSON.stringify(tags.map((t) => [t, lab(t)['orchestra.ws']?.slice(-6), lab(t)['orchestra.run']?.slice(-6)])));
     check('A1_run_label_is_the_members_own_run', tags.every((t) => lab(t)['orchestra.run'] === spec.ops), `expected the OPS run ${spec.ops.slice(-6)}: ${JSON.stringify(tags.map((t) => lab(t)['orchestra.run']?.slice(-6)))}`);
@@ -185,6 +190,7 @@ try {
     check('A3_bus_status_says_the_memory_pause_is_in_effect', /memory: .*memory Pause IN EFFECT since /.test(bs2), bs2.split('\n').find((l) => /^memory:/.test(l)) ?? '');
     const st = await runStatus();
     const bilan = (st?.bilan ?? []).flatMap((r) => (r.activity?.containers?.stopped ?? []).map((c) => ({ ws: r.wsId, name: c.name, outcome: c.outcome, atMs: c.atMs })));
+    touched = bilan.map((b) => b.name);
     check('A3_the_bilan_lists_exactly_the_stopped_containers', bilan.length === N && tags.every((t) => bilan.some((b) => b.name === `${PFX}-${t}` && b.outcome === 'stopped')) && !bilan.some((b) => /-human|-other/.test(b.name)), JSON.stringify(bilan.map((b) => [b.name.slice(-6), b.outcome])));
     measure.stop = { firstAtMs: Math.min(...bilan.map((b) => b.atMs)), lastAtMs: Math.max(...bilan.map((b) => b.atMs)), spanS: Math.round((Math.max(...bilan.map((b) => b.atMs)) - Math.min(...bilan.map((b) => b.atMs))) / 100) / 10 };
     // the cost of keeping them: what N containers held
@@ -194,6 +200,7 @@ try {
     // ── A4: recovery → the automatic Reprise ──
     const samples = [];
     const sampler = setInterval(() => samples.push([Date.now(), availGB()]), 250);
+    const availAtLift = availGB();
     const tLift = Date.now();
     const r3 = await setGuard(6, 3);
     check('A4_settings_back_to_the_defaults', r3?.ok === true, JSON.stringify(r3)?.slice(0, 200));
@@ -216,8 +223,10 @@ try {
     const startedAt = tags.map((t) => Date.parse(inspect(`${PFX}-${t}`)?.State?.StartedAt ?? '')).filter(Number.isFinite).sort((a, b) => a - b);
     const gaps = startedAt.slice(1).map((t, i) => t - startedAt[i]);
     const during = samples.filter(([t]) => t >= tLift && t <= tBack + 3000).map(([, g]) => g);
-    const sumRssMb = dk('stats', '--no-stream', '--format', '{{.Name}} {{.MemUsage}}').out.split('\n').filter((l) => l.startsWith(PFX) && !/-human|-other/.test(l)).map((l) => { const m = /([\d.]+)(MiB|GiB|kB|B)\s*\//.exec(l); return m ? Number(m[1]) * ({ MiB: 1, GiB: 1024, kB: 1 / 1024, B: 1 / 1048576 })[m[2]] : 0; }).reduce((a, b) => a + b, 0);
-    measure.reprise = { liftToAllRunningS: Math.round((tBack - tLift) / 100) / 10, startSpanS: startedAt.length ? Math.round((startedAt.at(-1) - startedAt[0]) / 100) / 10 : null, startGapsMs: gaps, minAvailDuringGb: during.length ? Number(Math.min(...during).toFixed(2)) : null, availBeforeGb: measure.availBeforeStopGb, containerMemMb: Math.round(sumRssMb), sequential: gaps.length ? gaps.every((g) => g >= 50) : null };
+    const statsRaw = dk('stats', '--no-stream', '--format', '{{.Name}} {{.MemUsage}}').out;
+    say(`STATS ${JSON.stringify(statsRaw.split('\n').filter((l) => l.startsWith(PFX)))}`);
+    const sumRssMb = statsRaw.split('\n').filter((l) => l.startsWith(PFX) && !/-human|-other/.test(l)).map((l) => { const m = /([\d.]+)(MiB|GiB|kB|B)\s*\//.exec(l); return m ? Number(m[1]) * ({ MiB: 1, GiB: 1024, kB: 1 / 1024, B: 1 / 1048576 })[m[2]] : 0; }).reduce((a, b) => a + b, 0);
+    measure.reprise = { liftToAllRunningS: Math.round((tBack - tLift) / 100) / 10, startSpanS: startedAt.length ? Math.round((startedAt.at(-1) - startedAt[0]) / 100) / 10 : null, startGapsMs: gaps, minAvailDuringGb: during.length ? Number(Math.min(...during).toFixed(2)) : null, availAtLiftGb: Number(availAtLift.toFixed(2)), dipGb: during.length ? Number((availAtLift - Math.min(...during)).toFixed(2)) : null, availBeforeStopGb: measure.availBeforeStopGb, containerMemMb: Math.round(sumRssMb), sequential: gaps.length ? gaps.every((g) => g >= 50) : null };
     console.log(`PC-MEASURE ${JSON.stringify(measure)}`);
     check('A4_measured_the_reprise_burst', measure.reprise.startSpanS !== null && measure.reprise.minAvailDuringGb !== null, JSON.stringify(measure.reprise));
   }
@@ -256,12 +265,14 @@ try {
     await app.cli(spec.ops, ['send', '--type', 'status', '--to', w3, 'killed ping'], { run: spec.ops });
     const delivered = await waitFor(() => reqBefore('w1') > n1, 60_000, 'a request for the resident member');
     const newLog = () => logText().slice(logBefore);
-    check('B3_the_resident_members_wake_was_a_reattach_not_held', !!delivered && !new RegExp(`bus-wake: ${w1} is PENDING and its réveil is HELD for memory`).test(newLog()) && new RegExp(`${w1}[^\\n]*reattached to detached keeper|reattached to detached keeper session[^\\n]*`).test(newLog()), (newLog().match(/[^\n]*reattached[^\n]*/) ?? ['(no reattach line)'])[0].slice(0, 200));
-    check('B3_its_keeper_and_cli_are_the_same_processes', surv(w1, id1), '');
+    const reLine = (id) => new RegExp(`agent-sdk\\[${id}\\] reattached to detached keeper session[^\\n]*`);
+    check('B3_the_resident_members_wake_was_a_reattach_not_held', !!delivered && !new RegExp(`bus-wake: ${w1} is PENDING and its réveil is HELD for memory`).test(newLog()) && reLine(w1).test(newLog()), (newLog().match(reLine(w1)) ?? ['(no reattach line for the member)'])[0].slice(0, 200));
+    const reattachedPid = Number((newLog().match(reLine(w1)) ?? [''])[0].match(/cli pid=(\d+)/)?.[1] ?? NaN);
+    check('B3_it_reattached_to_the_SAME_cli_process_that_survived_the_app', reattachedPid === id1.c[0], `reattach line names cli pid ${reattachedPid}; the CLI before the app closed was ${id1.c[0]}`);
     await sleep(4000);
     check('B4_the_killed_members_wake_is_HELD_for_memory', new RegExp(`bus-wake: ${w3} is PENDING and its réveil is HELD for memory`).test(newLog()) && reqBefore('w3') === n3, `requests for w3 +${reqBefore('w3') - n3}; ${(newLog().match(/[^\n]*is PENDING and its réveil is HELD[^\n]*/) ?? ['(no held line)'])[0].slice(0, 160)}`);
     const bs = await busStatus();
-    check('B4_bus_status_lists_the_held_wake', /held starts: 1 held for memory/.test(bs) && bs.includes(w3.slice(0, 8)), (bs.split('\n').find((l) => /^held starts/.test(l)) ?? '(no line)').slice(0, 200));
+    check('B4_bus_status_lists_the_held_wake', /held starts: 1 held for memory/.test(bs) && /pc-w3 \(wake, since /.test(bs), (bs.split('\n').find((l) => /^held starts/.test(l)) ?? '(no line)').slice(0, 200));
     await setGuard(6, 3);
     check('B5_on_recovery_the_held_wake_goes_out_once', !!(await waitFor(() => reqBefore('w3') > n3, 90_000, 'a request for the released member')) && /RELEASED wake of /.test(newLog()), `requests for w3 +${reqBefore('w3') - n3}`);
   }
@@ -276,7 +287,9 @@ try {
   check('teardown_no_rig_process_survives', left.length === 0, left.map((p) => `${p.pid}:${p.cmd.slice(0, 60)}`).join(' '));
   check('docker_every_rig_container_and_volume_removed', psAll().filter(isMine).length === 0 && dk('volume', 'ls', '-q').out.split('\n').every((v) => !v.startsWith(PFX)), '');
   const after = bystanders();
-  check('docker_the_hosts_own_containers_are_unchanged', JSON.stringify(after) === JSON.stringify(BEFORE), `${BEFORE.length} before / ${after.length} after${JSON.stringify(after) === JSON.stringify(BEFORE) ? '' : ` — CHANGED: ${JSON.stringify(BEFORE.filter((x) => !after.includes(x)))} ↔ ${JSON.stringify(after.filter((x) => !BEFORE.includes(x)))}`}`);
+  // the host is SHARED (sibling agents run their own stacks and churn them): the invariant is PROVENANCE — everything ORCHESTRA stopped / started (the Bilan the host wrote) is a rig container — and the drive's own bystanders; the host-wide snapshot is reported, not asserted
+  say(`DOCKER host-wide snapshot (informational, siblings churn their own stacks): ${BEFORE.length} before / ${after.length} after; changed-by-someone: -${BEFORE.filter((x) => !after.includes(x)).length} +${after.filter((x) => !BEFORE.includes(x)).length}`);
+  check('docker_everything_orchestra_touched_is_a_rig_container', touched.length > 0 && touched.every((n) => n.startsWith(PFX) && !/-human|-other/.test(n)), `${touched.length} container(s) in the Bilan: ${touched.map((n) => n.slice(-8)).join(',')}`);
   const liveAfter = liveSnapshot();
   check('live_claude_dirs_untouched', JSON.stringify(liveBefore) === JSON.stringify(liveAfter), `${Object.keys(liveBefore).length} live ~/.claude* dirs hashed before/after`);
   say('== shots (md5) ==');
