@@ -407,6 +407,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   // complete. `docker stop` only (never remove/kill/pause); a `--rm` container is skipped (a stop would delete it). Docker unavailable / an API error is RECORDED
   // (`activity.containers.error`) and never blocks the trap or keeps it incomplete. Each stop is persisted at once, and `stillPaused` is re-read before every container.
   const dockerApi = deps.containersFor?.(m.wsId) ?? deps.containers ?? null;
+  let dockerStepRan = false; // the step completed this attempt (listed without throwing): a stale error / empty facts an earlier attempt left on the row are superseded
   if (dockerApi) {
     let liftedDuringStop = false;
     try {
@@ -419,6 +420,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
           updateBilanContainers(db, carrier.runId, m.wsId, carrier.pausedAt, (cur) => mergeContainers(cur, c) ?? c); // overlay = this call's view
         },
       });
+      dockerStepRan = true;
       activity.containers = hasContainerFacts(res.containers) ? res.containers : undefined; // a member with nothing attributed keeps its Bilan row byte-identical to before
       if (!activity.containers) delete activity.containers;
       // the Reprise began while (or right after) containers were stopped: its own read of the Bilan may have run before the last stop — restart what THIS call stopped (idempotent with the Reprise's restart)
@@ -448,7 +450,11 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     notes: [...new Set([...(fresh?.activity?.notes ?? []), ...(activity.notes ?? [])])].slice(-50), // bounded like appendBilanNote
     ...(fresh?.activity?.observerKilled ? { observerKilled: fresh.activity.observerKilled } : {}),
     // the container progress writes (`onProgress`) and anything a concurrent Reprise recorded survive this whole-activity write
-    ...(activity.containers || fresh?.activity?.containers ? { containers: mergeContainers(fresh?.activity?.containers, activity.containers) } : {}),
+    // overlay = THIS attempt's view; a step that ran clean supersedes an earlier attempt's error even when this attempt found nothing to stop
+    ...(() => {
+      const c = activity.containers || fresh?.activity?.containers ? mergeContainers(fresh?.activity?.containers, activity.containers ?? (dockerStepRan ? { stopped: [] } : undefined)) : undefined;
+      return hasContainerFacts(c) ? { containers: c } : {};
+    })(),
   };
   // An attempt that kills but stays INCOMPLETE (the CLI vanished, a failed interrupt…) leaves `killed_json` NULL — what it killed is kept, never dropped (D11 / round-3 F5).
   if (incomplete && attemptKills.length > 0) merged.earlierKilled = [...(activity.earlierKilled ?? []), ...attemptKills.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome, via: k.via, cwd: k.cwd, evidence: k.evidence }))].slice(-100); // bounded like observerKilled

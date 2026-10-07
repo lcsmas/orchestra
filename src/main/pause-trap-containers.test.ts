@@ -260,3 +260,29 @@ test('containersFor: each member is trapped on the daemon ITS relay stamps on â€
   await trapMember(rig.deps, rig.db, c, rig.roster[0]);
   assert.equal(appDefault.running('x'), false);
 });
+
+test('a LATER attempt that finds NOTHING to stop still clears an earlier attempt\'s "Docker down" (no stale alarm stays on the row)', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig(new FakeDocker([labelled('m1', 'db')]));
+  rig.cliResult = { error: 'keeper did not answer' };
+  rig.docker.down = true;
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'incomplete');
+  assert.match(bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.containers!.error ?? '', /^list:/);
+  rig.docker.down = false;
+  rig.docker.remove('db'); // nothing attributed is running any more
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  assert.equal(bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.containers, undefined, 'the stale error is gone and the row is as before #292');
+});
+
+test('whatever a concurrent writer recorded on the row DURING the stop step survives the trap\'s final whole-activity write', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig(new FakeDocker([labelled('m1', 'db')]));
+  const c = pause(rig);
+  rig.docker.beforeStop = () => updateBilanContainers(rig.db, 'W', 'm1', c.pausedAt, (cur) => ({ stopped: cur?.stopped ?? [], restarted: [{ id: 'concurrent', outcome: 'started', atMs: 9 }] }));
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  const cont = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.containers!;
+  assert.deepEqual(cont.restarted?.map((x) => x.id), ['concurrent']);
+  assert.deepEqual(cont.stopped.map((x) => x.id), ['db']);
+});
