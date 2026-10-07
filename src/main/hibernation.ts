@@ -25,6 +25,7 @@ import { sdkHasBackgroundTasks, sdkSessionLive, sdkStopIfLive } from './sdk-deli
 // `node --test --experimental-strip-types` suites do not resolve extensionless
 // relative specifiers (see commit 05adb90 — git.ts/ci-state.ts hit this).
 import {
+  fastVeilleLogSuffix,
   formatIdleDuration,
   resolveHibernateAfterMs,
   resolveHibernateSweepMs,
@@ -42,11 +43,16 @@ import {
   noteAppStart,
 } from './hibernation-activity.ts';
 import { idleClockOf } from './idle-clock.ts';
+// Fast Veille (#288): the hold question is `isAdmissionHolding(getMemoryGuardSnapshot())` and nothing else (ledger #295 FI-2).
+import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';
+import { isAdmissionHolding } from '../shared/memory-guard.ts';
+import { coalescedRunner } from '../shared/coalesced-runner.ts';
 import type { Workspace } from '../shared/types';
 
 const hlog = scoped('hibernate');
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let unsubscribeGuard: (() => void) | null = null;
 
 // Last-activity tracking lives in ./hibernation-activity.ts (imported above):
 // `applyAgentEvent` (activity.ts) is the ONE funnel every agent lifecycle event
@@ -137,6 +143,9 @@ export async function sweepHibernation(): Promise<string[]> {
   if (thresholdMs === HIBERNATION_DISABLED) return [];
   const now = Date.now();
   const hibernated: string[] = [];
+  // ONE reading per pass (FI-2): every member sees the same hold decision. Held ⇒ an idle fleet member is past its threshold (#288).
+  const guardSnap = getMemoryGuardSnapshot();
+  const admissionHeld = isAdmissionHolding(guardSnap);
 
   for (const ws of store.workspaces) {
     if (isBeingDeleted(ws.id)) continue; // delete owns the teardown (#205)
@@ -146,7 +155,7 @@ export async function sweepHibernation(): Promise<string[]> {
     // otherwise a session quietly live since launch would never become eligible.
     const lastActivityAt = idleClockOf(ws);
 
-    const eligible = shouldHibernate(ws, {
+    const signals = {
       now,
       lastActivityAt,
       isActive: getActiveWorkspaceId() === ws.id,
@@ -157,8 +166,12 @@ export async function sweepHibernation(): Promise<string[]> {
       hasLiveRunPty: isRunning(`${ws.id}:run`),
       hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
       thresholdMs,
-    });
+      admissionHeld,
+    };
+    const eligible = shouldHibernate(ws, signals);
     if (!eligible) continue;
+    // Only the hold made it eligible (it would still be waiting out its threshold with Admission open)?
+    const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false });
 
     const idleFor = formatIdleDuration(now - lastActivityAt);
     // Sample the pid BEFORE stopping — after `stopPty` the session is gone from
@@ -170,7 +183,9 @@ export async function sweepHibernation(): Promise<string[]> {
     hlog.info(
       `hibernating ${ws.name} (${ws.id}) — idle ${idleFor}` +
         `${hasLivePty ? ` pty${ptyPid !== undefined ? ` pid=${ptyPid}` : ' pid=unknown'}` : ''}` +
-        `${hasLiveSdk ? ' sdk' : ''}`,
+        `${hasLiveSdk ? ' sdk' : ''}` +
+        // Every Veille taken under the hold names the MemAvailable behind it (#288, for incident reconstruction).
+        fastVeilleLogSuffix(admissionHeld, guardSnap, early, thresholdMs),
     );
 
     const epochBefore = wakeEpoch.get(ws.id) ?? 0;
@@ -196,6 +211,11 @@ export async function sweepHibernation(): Promise<string[]> {
   return hibernated;
 }
 
+/** The periodic timer and the Admission-held trigger share ONE single-flight: two passes never overlap (both would stop the same session) and a
+ *  request mid-pass folds into one re-run. `sweepHibernation` stays directly callable for the rigs. */
+const sweeper = coalescedRunner(sweepHibernation, (e) => hlog.swallow('sweep', e));
+const requestSweep = (): void => sweeper.request();
+
 /** Start the periodic sweeper (called once from the main bootstrap). */
 export function startHibernationSweeper(): void {
   if (timer) return;
@@ -213,15 +233,21 @@ export function startHibernationSweeper(): void {
     `session hibernation on — idle threshold ${formatIdleDuration(thresholdMs)} (${thresholdMs}ms), ` +
       `sweep every ${formatIdleDuration(sweepMs)} (${sweepMs}ms)`,
   );
-  timer = setInterval(() => {
-    void sweepHibernation().catch((e) => hlog.swallow('sweep', e));
-  }, sweepMs);
+  timer = setInterval(requestSweep, sweepMs);
   // Never hold the event loop open for housekeeping.
   timer.unref?.();
+  // Fast Veille (#288): when Admission becomes held, sweep NOW instead of waiting out the periodic timer (up to 5 min of idle members' RAM
+  // under pressure). SUBSCRIBE FIRST, then reconcile from the guard's current state (FI-2 item 5): a boot while already held sweeps once.
+  unsubscribeGuard = subscribeMemoryGuard((e) => {
+    if (e.transition.kind === 'admission_held' && isAdmissionHolding(e.snapshot)) requestSweep();
+  });
+  if (isAdmissionHolding(getMemoryGuardSnapshot())) requestSweep();
 }
 
 export function stopHibernationSweeper(): void {
   if (!timer) return;
   clearInterval(timer);
   timer = null;
+  unsubscribeGuard?.();
+  unsubscribeGuard = null;
 }

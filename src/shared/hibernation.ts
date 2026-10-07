@@ -19,6 +19,8 @@
 // live signals.
 
 import type { Workspace } from './types.ts';
+import { isFleetMember } from './admission.ts';
+import { formatGb, type MemoryGuardSnapshot } from './memory-guard.ts';
 
 /** Default idle threshold before an agent is eligible: 5 minutes. A resource
  *  lever (issue #198 D14): many live session trees hold ~700 MB each and the
@@ -62,6 +64,10 @@ export interface HibernationSignals {
   hasLiveBackgroundTask: boolean;
   /** Resolved idle threshold in ms, or {@link HIBERNATION_DISABLED}. */
   thresholdMs: number;
+  /** True while the memory guard HOLDS Admission (`isAdmissionHolding(getMemoryGuardSnapshot())`, FI-2 — nothing else decides it). A fleet
+   *  member that passes every other guard then counts as past its idle threshold (fast Veille, #288). Required: a caller that forgets it
+   *  must fail tsc, not silently ignore the hold. */
+  admissionHeld: boolean;
 }
 
 /**
@@ -146,7 +152,9 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *  - **No live run-script PTY.** See {@link HibernationSignals.hasLiveRunPty}.
  *  - **No running background task.** See {@link HibernationSignals.hasLiveBackgroundTask}.
  *  - **Idle longer than the threshold**, measured from the last observed
- *    lifecycle event. When no activity has EVER been observed for this
+ *    lifecycle event — OR, while Admission is held ({@link HibernationSignals.admissionHeld}), any idle FLEET member (a coordinator
+ *    reads it over the bus, {@link isFleetMember}): fast Veille (#288) skips ONLY this clock, every guard above still applies, a
+ *    workspace without a coordinator is never affected, and the disabled sentinel stays a kill switch. When no activity has EVER been observed for this
  *    workspace this app run, the sweeper supplies the app-start time (see
  *    src/main/hibernation.ts) — so an unknown `lastActivityAt` here means the
  *    tracker has no opinion and we decline rather than guess, since treating
@@ -163,6 +171,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
     hasLiveRunPty,
     hasLiveBackgroundTask,
     thresholdMs,
+    admissionHeld,
   } = signals;
 
   if (thresholdMs === HIBERNATION_DISABLED) return false;
@@ -200,6 +209,8 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (hasLiveBackgroundTask) return false;
 
   if (lastActivityAt === undefined) return false;
+  // Fast Veille (#288): under a held Admission the idle clock is waived for a fleet member — its memory is reclaimed before anything waits.
+  if (admissionHeld && isFleetMember(ws)) return true;
   return now - lastActivityAt >= thresholdMs;
 }
 
@@ -230,4 +241,18 @@ export function idleClockStart(
   const seen = lastSeen !== undefined && Number.isFinite(lastSeen) ? lastSeen : appStartedAt;
   const born = createdAt !== undefined && Number.isFinite(createdAt) ? createdAt : 0;
   return Math.max(seen, born);
+}
+
+/** The tail of a Veille log line (#288): empty while Admission is open (the line stays byte-identical to what it always was); under the hold it
+ *  names the MemAvailable behind the Veille and — when only the hold made the member eligible — that it went early. */
+export function fastVeilleLogSuffix(
+  admissionHeld: boolean,
+  snap: Pick<MemoryGuardSnapshot, 'availBytes' | 'measured'>,
+  early: boolean,
+  thresholdMs: number,
+): string {
+  if (!admissionHeld) return '';
+  const mem =
+    snap.availBytes === null ? 'MemAvailable unknown' : `MemAvailable ${formatGb(snap.availBytes, 2)}${snap.measured ? '' : ' (last good reading)'}`;
+  return ` — Admission HELD, ${mem}${early ? `, fast Veille (idle below the ${formatIdleDuration(thresholdMs)} threshold)` : ''}`;
 }

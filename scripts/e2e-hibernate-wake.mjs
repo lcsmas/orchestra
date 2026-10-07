@@ -229,7 +229,7 @@ const wsNow = () => store.getWorkspace(WS);
 // (or the guard under test) stands between it and hibernation — else a 'not hibernated' is vacuous.
 const eligibleIfOld = (over = {}) => shouldHibernate(wsNow(), {
   now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), ...over,
+  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, ...over,
 });
 const live = () => delivery.sdkSessionLive(WS);
 const turnEnds = () => events.filter((e) => e.ev.type === 'turn-end').length;
@@ -326,7 +326,7 @@ if (ARM === 'window_4min' || ARM === 'window_6min') {
   // positive control: only the missing coordinator stands between it and hibernation
   const controlEligible = shouldHibernate({ ...wsNow(), parentId: 'coord-1' }, {
     now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined) });
+    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false });
   const hibernated = await hib.sweepHibernation();
   Object.assign(out, { controlEligible, hibernated, live: live(), autoUnread: !!wsNow().autoUnread });
   ok = controlEligible && hibernated.length === 0 && live() && wsNow().autoUnread === true;

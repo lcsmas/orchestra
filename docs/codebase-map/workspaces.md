@@ -296,7 +296,7 @@ with a held start as silenced (`index.ts`, the Pause's predicate slot) — it wa
 release / wait / drop is logged WITH MemAvailable (`[admission] HELD spawn of … — MemAvailable 4.00 GB, Admission held; 2 held start(s)`). **Visible**:
 `PeerInfo.heldForMemory`, `orchestra peers` (`idle · spawn HELD for memory since 13:20:11Z`), `/busStatus` `heldStarts` → the CLI's `held starts: N held for
 memory, release order — …` line (absent when none), the spawn / restart replies. **NOT here**: a réveil / prompt flush / recovery start under low memory
-(`sdkSend` stays ungated — bus-wake "held for memory" reason = #287), the watchdog recycle, fast Veille (#288). The queue is IN MEMORY: after an app restart a
+(`sdkSend` stays ungated — bus-wake "held for memory" reason = #287), the watchdog recycle, fast Veille (#288 — the Veille sweep side, `activity-pty-terminal.md` §Session hibernation). The queue is IN MEMORY: after an app restart a
 held child stays stopped with its brief owed and `orchestra restart <id>` retries it. Gates: `src/shared/admission.test.ts`, `src/main/admission.test.ts`,
 `src/main/admission-wiring.test.ts` (source guards + a tripwire on who imports the gate), `scripts/e2e-admission-hold.mjs` (real workspaces/restart/admission/guard,
 fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), `scripts/admission-mutants.mjs` (68 in-place mutants), `src/main/admission-liveness.test.ts` (real roster + sweep + queue).

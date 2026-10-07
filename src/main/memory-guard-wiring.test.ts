@@ -61,7 +61,7 @@ test('only the guard\'s known consumers import it (#286 Admission joined: admiss
     .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
     .filter((f) => /from '\.\/memory-guard(\.ts)?'/.test(read(`src/main/${f}`)))
     .sort();
-  // The only readers: index.ts (lifecycle), hooks-server.ts (bus-status). Not workspaces / agent-sdk / bus-wake / hibernation / restart.
+  // The only readers: index.ts (lifecycle), hooks-server.ts (bus-status). Not workspaces / agent-sdk / bus-wake / restart (hibernation.ts joined with #288).
   // Tripwire BY DESIGN: #286 (Admission), #288 (fast Veille), #289 (alert), #290 (memory Pause) each add their importer HERE.
-  assert.deepEqual(importers, ['admission.ts', 'hooks-server.ts', 'index.ts', 'memory-guard-settings.ts', 'pause-auto-host.ts', 'pause-memory-host.ts']); // #290 (memory Pause) added its importers: the host + the usage-limit host's `memoryPauseHeld`
+  assert.deepEqual(importers, ['admission.ts', 'hibernation.ts', 'hooks-server.ts', 'index.ts', 'memory-guard-settings.ts', 'pause-auto-host.ts', 'pause-memory-host.ts']); // #290 (memory Pause) added its importers: the host + the usage-limit host's `memoryPauseHeld`; #288 (fast Veille): hibernation.ts
 });

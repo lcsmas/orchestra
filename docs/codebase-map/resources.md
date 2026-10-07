@@ -160,7 +160,7 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
 - **Gates**: `src/shared/memory-guard.test.ts` (boundary ± 1 byte per comparison, episodes, jump, the 2026-10-06 night in
   miniature), `src/main/memory-guard.test.ts` (cadence on the injected scheduler AND on real `setTimeout` via `mock.timers`,
   logging, hot thresholds, unreadable), `memory-guard-settings.test.ts`, `memory-guard-wiring.test.ts` (source guards + the
-  "no start path imports the guard yet" tripwire — #286/#288/#289 add their importer there; #290 did: `pause-memory-host.ts`, see `pause-trap.md` §Memory Pause),
+  "no start path imports the guard yet" tripwire — #286/#288/#289 add their importer there; #288 did: `hibernation.ts` (fast Veille, `activity-pty-terminal.md` §Session hibernation); #290 did: `pause-memory-host.ts`, see `pause-trap.md` §Memory Pause),
   `scripts/e2e-memory-guard.mjs` (fake source → REAL sampler → REAL `/busStatus` in a headless scratch home → REAL built CLI;
   `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (56 in-place mutants across the pure module, sampler, settings I/O, the Settings view logic and the modal, byte-exact restore; `--check-anchors` is the dry check that every anchor still resolves once).
   `scripts/e2e-memory-guard-modal.mjs` (headless Chromium, no window: the REAL modal bundled with a stub IPC whose latency is the variable —

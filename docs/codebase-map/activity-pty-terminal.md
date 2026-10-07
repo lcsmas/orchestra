@@ -680,6 +680,21 @@ long-idle agents and lets the existing resume paths bring them back.
   during the stop). The sweep itself never resurrected a deleted row (its
   post-stop write re-reads); the store tombstone (workspaces.md §Persistence)
   is what blocks the stale writers.
+- **Fast Veille while Admission is held (#288, wave G ledger #295)** — the sweep reads `isAdmissionHolding(getMemoryGuardSnapshot())` ONCE per
+  pass (FI-2; the cached snapshot — never `sampleMemoryGuardNow`, never `/proc`, the sweep stays disk-free) and passes it as the REQUIRED
+  `HibernationSignals.admissionHeld`. In `shouldHibernate` it waives ONLY the idle clock: `admissionHeld && isFleetMember(ws)` (`shared/admission.ts` — a
+  workspace with a coordinator; `--detached` / top-level are never affected) is past its threshold at once; it sits AFTER every other guard (running /
+  waiting / error / stopped, pending prompt, loop, active pane, sandbox host, archived, run-script PTY, background task, no live process) and after the
+  `lastActivityAt === undefined` decline, and `-1` stays a kill switch (the sweeper never even subscribes). Admission open ⇒ byte-identical (same line, same
+  verdicts). A Veille taken under the hold logs `… — Admission HELD, MemAvailable 4.00 GB, fast Veille (idle below the 5m threshold)` (the last clause only
+  when the hold is what made it eligible). **Trigger**: `startHibernationSweeper` SUBSCRIBES to the guard FIRST (an `admission_held` edge with
+  `isAdmissionHolding(e.snapshot)` → `requestSweep()` — not the periodic tick, up to 5 min of idle RAM under pressure), THEN reconciles (booting while already
+  held sweeps once). `requestSweep` is a single-flight shared with the timer (a request during a pass folds into ONE re-run; two passes would stop the same
+  session) — `sweepHibernation` itself stays directly callable for the rigs. No Veille on `admission_reopened`: held starts are #286's. Gates:
+  `shared/hibernation.test.ts` (pair + one test per other guard), `main/hibernation-fast-veille-wiring.test.ts` (source guards — the sweeper cannot be
+  imported under `node --test`), the `memory-guard-wiring` importer tripwire (hibernation.ts joined it), `scripts/e2e-fast-veille.mjs` (15 arms, real
+  sweeper + real guard on a fake MemAvailable source + stub CLI; guard arms run a guarded A beside a clean control B; `RIG_REPO=<master>` = 12/15 red),
+  `scripts/fast-veille-mutants.mjs`.
 - **Driven rig — `scripts/e2e-hibernate-wake.{mjs,sh}`** (#198 D14): the REAL
   `sweepHibernation` + REAL `sweepBusWake`→`ensureSession` over a stub CLI, fake
   clock via `Date.now` skew, env override deleted so it measures the shipped

@@ -9,6 +9,7 @@ import {
   resolveHibernateSweepMs,
   shouldHibernate,
   idleClockStart,
+  fastVeilleLogSuffix,
   type HibernationSignals,
 } from './hibernation.ts';
 import type { Workspace, WorkspaceStatus } from './types.ts';
@@ -45,6 +46,7 @@ function signals(over: Partial<HibernationSignals> = {}): HibernationSignals {
     hasLiveRunPty: false,
     hasLiveBackgroundTask: false,
     thresholdMs: THRESHOLD,
+    admissionHeld: false,
     ...over,
   };
 }
@@ -323,4 +325,82 @@ test('idleClockStart: a non-finite createdAt or lastSeen is ignored (floors at a
   assert.equal(idleClockStart(NaN, appStart, undefined), appStart);
   assert.equal(idleClockStart(NaN, appStart, NOW - 50_000), NOW - 50_000);
   assert.equal(idleClockStart(NOW - 5000, appStart, NaN), NOW - 5000);
+});
+
+// --- fast Veille (#288): while Admission is held an idle FLEET member is past its threshold; every other guard still applies.
+const FLEET = { parentId: 'coord-1' } as const;
+const RECENT = { lastActivityAt: NOW - 60_000, hasLiveSdk: true, hasLivePty: false }; // idle 1 min, far under the 30-min threshold
+const HELD = { admissionHeld: true } as const;
+
+test('fast Veille: baseline pair — a fleet member idle 1 min waits with Admission open, goes with it held', () => {
+  assert.equal(shouldHibernate(ws(FLEET), signals({ ...RECENT })), false, 'control: open ⇒ still waiting out the threshold');
+  assert.equal(shouldHibernate(ws(FLEET), signals({ ...RECENT, ...HELD })), true);
+});
+
+test('fast Veille: a workspace without a coordinator is never affected by the hold', () => {
+  assert.equal(shouldHibernate(ws(), signals({ ...RECENT, ...HELD })), false);
+  assert.equal(shouldHibernate(ws({ parentId: '' }), signals({ ...RECENT, ...HELD })), false);
+});
+
+test('fast Veille: the hold changes nothing for an already-eligible workspace, fleet or not (open == held)', () => {
+  for (const w of [ws(), ws(FLEET)]) assert.equal(shouldHibernate(w, signals(HELD)), shouldHibernate(w, signals()));
+});
+
+test('fast Veille: a just-active fleet member (idle 0 ms) goes too — the idle clock is waived, not shortened', () => {
+  assert.equal(shouldHibernate(ws(FLEET), signals({ ...HELD, lastActivityAt: NOW, hasLiveSdk: true, hasLivePty: false })), true);
+});
+
+// One test per OTHER guard, each with the positive control that the hold alone makes the fleet member eligible.
+const GUARDS: Array<[string, Partial<Workspace>, Partial<HibernationSignals>]> = [
+  ['running turn (status running)', { status: 'running' }, {}],
+  ['waiting on the human', { status: 'waiting' }, {}],
+  ['error status', { status: 'error' }, {}],
+  ['stopped', { status: 'stopped' }, {}],
+  ['pending prompt (undelivered brief)', { sdkPendingPrompts: [{ id: 'p1', text: 'the brief', createdAt: NOW - 3_600_000 }] as never }, {}],
+  ['/loop', { loopingSince: 1 }, {}],
+  ['background task', {}, { hasLiveBackgroundTask: true }],
+  ['active pane', {}, { isActive: true }],
+  ['run-script PTY', {}, { hasLiveRunPty: true }],
+  ['sandbox-hosted', { host: { kind: 'sandbox', endpoint: 'ws://box:1234' } }, {}],
+  ['archived', { archived: true }, {}],
+  ['no live process', {}, { hasLivePty: false, hasLiveSdk: false }],
+  ['unknown activity (no opinion)', {}, { lastActivityAt: undefined }],
+];
+for (const [name, wsOver, sigOver] of GUARDS) {
+  test(`fast Veille: the ${name} guard still spares a fleet member while held`, () => {
+    assert.equal(shouldHibernate(ws(FLEET), signals({ ...RECENT, ...HELD })), true, 'control: nothing but the hold makes it eligible');
+    assert.equal(shouldHibernate(ws({ ...FLEET, ...wsOver }), signals({ ...RECENT, ...HELD, ...sigOver })), false);
+  });
+}
+
+test('fast Veille: the disabled sentinel stays a kill switch under the hold', () => {
+  assert.equal(shouldHibernate(ws(FLEET), signals({ ...RECENT, ...HELD, thresholdMs: HIBERNATION_DISABLED })), false);
+  assert.equal(shouldHibernate(ws(FLEET), signals({ ...RECENT, ...HELD, thresholdMs: 0 })), false);
+});
+
+test('fast Veille: an auto-unread fleet member goes under the hold (bell kept), an auto-unread top-level never', () => {
+  assert.equal(shouldHibernate(ws({ ...FLEET, autoUnread: true }), signals({ ...RECENT, ...HELD })), true);
+  assert.equal(shouldHibernate(ws({ autoUnread: true }), signals({ ...RECENT, ...HELD })), false);
+});
+
+test('fast Veille log tail: empty with Admission open (byte-identical line), whatever the snapshot says', () => {
+  assert.equal(fastVeilleLogSuffix(false, { availBytes: 4 * 1024 ** 3, measured: true }, true, THRESHOLD), '');
+  assert.equal(fastVeilleLogSuffix(false, { availBytes: null, measured: false }, false, THRESHOLD), '');
+});
+
+test('fast Veille log tail: under the hold it names MemAvailable (2 decimals) and marks an EARLY Veille only when the hold made the difference', () => {
+  const gb = (n: number) => Math.round(n * 1024 ** 3);
+  assert.equal(
+    fastVeilleLogSuffix(true, { availBytes: gb(4.123), measured: true }, true, 5 * 60 * 1000),
+    ' — Admission HELD, MemAvailable 4.12 GB, fast Veille (idle below the 5m threshold)',
+  );
+  assert.equal(fastVeilleLogSuffix(true, { availBytes: gb(4), measured: true }, false, 5 * 60 * 1000), ' — Admission HELD, MemAvailable 4.00 GB');
+});
+
+test('fast Veille log tail: an unreadable meter is said so — never a fabricated figure', () => {
+  assert.equal(fastVeilleLogSuffix(true, { availBytes: null, measured: false }, false, THRESHOLD), ' — Admission HELD, MemAvailable unknown');
+  assert.equal(
+    fastVeilleLogSuffix(true, { availBytes: 3 * 1024 ** 3, measured: false }, false, THRESHOLD),
+    ' — Admission HELD, MemAvailable 3.00 GB (last good reading)',
+  );
 });
