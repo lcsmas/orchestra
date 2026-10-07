@@ -132,7 +132,8 @@ export async function sdkDeliverConfirmed(
 }
 
 /** `error` = the start failure's own message; `note` = an ok-with-a-caveat line for the caller to print (#227 D6). */
-export type SdkStartResult = { ok: true; note?: string } | { ok: false; error: string };
+/** `held` (#286 Admission): ok, but the start was HELD for low memory — nothing started, the brief stays owed, it goes out when memory recovers. */
+export type SdkStartResult = { ok: true; note?: string; held?: { since: number } } | { ok: false; error: string };
 
 /** How a started session's FIRST TURN went (#227 D7 — init alone proves nothing: a bad `--model` / no auth inits, then errors):
  *  `ok` = the first non-error output arrived; `failed` = the turn errored (`cause` 'turn-error', `reason` = the CLI's text) or the

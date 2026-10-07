@@ -242,6 +242,7 @@ import {
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
+import { startAdmission, stopAdmission } from './admission';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -442,6 +443,9 @@ async function createMainWindow() {
   // first `bus-status` already has a reading; thresholds are read from the store at every sample, so a Settings change is hot.
   setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
   startMemoryGuard();
+  // Admission (#286): holds the AUTOMATIC starts (spawn / restart) of fleet members while the guard holds Admission and releases them in order when
+  // memory recovers (this subscribes to the guard's reopen edge; the queue itself retries every 10 s while it is non-empty).
+  startAdmission();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
@@ -872,6 +876,7 @@ function shutdownSubsystems(): void {
   stopPauseUiWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
+  stopAdmission();
   stopMemoryGuard();
   stopHibernationSweeper();
   closeAllSandboxConnections();

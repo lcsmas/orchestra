@@ -32,6 +32,7 @@ import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
 import { getMemoryGuardSnapshot } from './memory-guard.ts';
+import { listHeldStarts } from './admission.ts';
 import { store } from './store';
 import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
@@ -487,6 +488,11 @@ export async function startHooksServer(): Promise<void> {
               badRecipients,
               // #285: the host-wide memory guard state (not run-scoped) — the CLI prints it as the `memory:` line.
               memoryGuard: getMemoryGuardSnapshot(),
+              // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
+              heldStarts: listHeldStarts().map((h) => {
+                const w = store.getWorkspace(h.wsId);
+                return { wsId: h.wsId, label: w ? (w.name ?? w.branch ?? h.wsId) : h.wsId, kind: h.kind, since: h.since, coordinator: h.coordinator, seq: h.seq };
+              }),
             });
           } else if (route === '/runRefreeze') {
             // #156 — ADMIN re-freeze of a FLAT mission's frozen switch flags. A

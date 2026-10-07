@@ -68,6 +68,8 @@ import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
+import { admissionGate, heldStartFor } from './admission.ts';
+import { heldPhrase } from '../shared/admission.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
   ACCOUNT_DEFAULT_MODEL,
@@ -1512,15 +1514,15 @@ const openingTaskStarts = new Map<string, Promise<SdkStartResult>>();
 
 /** Start the workspace's SDK session with `lastTask` as its opening turn. NO PTY fallback (#227): on failure the child
  *  stays stopped with the task retained (`owesOpeningTask`) and the reason is an error row in its Agent view; Restart retries. */
-export function startWorkspaceAgentHeadless(id: string, origin?: PauseOrigin): Promise<SdkStartResult> {
+export function startWorkspaceAgentHeadless(id: string, origin?: PauseOrigin, admitted = false): Promise<SdkStartResult> {
   const inFlight = openingTaskStarts.get(id);
   if (inFlight) return inFlight;
-  const p = startWorkspaceAgentOnce(id, origin).finally(() => openingTaskStarts.delete(id));
+  const p = startWorkspaceAgentOnce(id, origin, admitted).finally(() => openingTaskStarts.delete(id));
   openingTaskStarts.set(id, p);
   return p;
 }
 
-async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin): Promise<SdkStartResult> {
+async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitted = false): Promise<SdkStartResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
   if (isRunning(id)) return { ok: true };
@@ -1529,6 +1531,24 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin): Promis
   if (paused) return { ok: false, error: paused };
   // Nothing owed = nothing to deliver — a repeated Restart delivers the brief once (#227).
   if (!ws.lastTask || !owesOpeningTask(ws)) return { ok: true };
+  // #286 Admission: under low memory an AUTOMATIC start of a fleet member is HELD, not failed — the workspace is KEPT, stopped, its brief still
+  // owed; nothing starts, the reply is ok + `held`. The release (`admitted`, so it never re-holds) runs this same start once memory is back.
+  // A human retry (toolbar Restart) and a top-level / detached workspace never hold. Ledger #295 FI-2.
+  if (!admitted) {
+    const gate = admissionGate({
+      wsId: id,
+      ws,
+      origin: origin ?? 'auto',
+      kind: 'spawn',
+      coordinator: canOrchestrate(ws),
+      run: () => startWorkspaceAgentHeadless(id, 'auto', true),
+      stillOwed: () => {
+        const w = store.getWorkspace(id);
+        return !!w && !w.archived && owesOpeningTask(w) && !sdkSessionLive(id) && !isRunning(id);
+      },
+    });
+    if (gate.held) return { ok: true, held: { since: gate.since }, note: heldPhrase('spawn', gate.since) };
+  }
   // #252: a HUMAN retry (toolbar Restart) carries its origin to the sdkSend gate; spawn / `orchestra restart` stay AUTO.
   const started = await sdkStartAndDeliverResult(id, ws.lastTask, { openingBrief: true, ...(origin ? { origin } : {}) });
   if (!started.ok) return started;
@@ -1674,6 +1694,8 @@ export interface SpawnResult {
   error?: string;
   /** Ok with a caveat (#227 D6/D7): the child's first turn was not confirmed within the wait bound. */
   note?: string;
+  /** #286: the spawn was ACCEPTED but its start is HELD for low memory (the workspace exists, its brief is owed, no session process runs). */
+  held?: { since: number };
 }
 
 /** The brief's model sentence, from the user's spawned-agent default model
@@ -1782,7 +1804,7 @@ export async function dispatchSpawnRequest(
           `with its task retained — fix the cause, then restart it (\`orchestra restart ${ws.id}\`).`,
       };
     }
-    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}) };
+    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'spawn failed' };
   }
@@ -3105,6 +3127,8 @@ export interface PeerInfo {
    * lets a coordinator scan swarm progress without `orchestra read`ing every
    * child. Absent when the peer never set one (or cleared it). */
   statusText?: string;
+  /** #286 Admission: this member's automatic start is HELD for low memory (since-when) — a stall to NOT mistake for a hang. */
+  heldForMemory?: { kind: 'spawn' | 'restart'; since: number };
   /** Committed diff vs the workspace's base (three-dot shortstat). Present
    * only when the caller asked for `stats`; `null` = couldn't be computed
    * (missing ref / non-git workspace), which is distinct from an all-zero
@@ -3142,6 +3166,7 @@ export async function dispatchPeersRequest(input: {
     running: isRunning(w.id),
     lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
     statusText: w.statusText,
+    ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: 'spawn' | 'restart'; since: number } } : {}),
   }));
   if (input.stats) {
     await Promise.all(

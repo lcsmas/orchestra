@@ -2528,8 +2528,8 @@ CLI then prints "no such run (standalone …)" and `—` in the frozen column. `
 **`memory:` line (#285).** `/busStatus` also returns `memoryGuard` (the host-wide `MemoryGuardSnapshot`, `src/main/memory-guard.ts`) and the
 CLI prints one line from it after `bus:` — `memory: 12.3 GB available · admission open (holds below 6.0 GB) · memory Pause none (due below
 3.0 GB)`, or `admission HELD since <iso> (episode N; reopens above 7.0 GB)` / `memory Pause IN EFFECT since <iso>` / `toggle OFF`
-(`formatMemoryGuardLine`, shared). Not run-scoped; absent from an older app → no line. Held starts and unattributed containers join this
-line in #286 / #293. Map: [resources.md](resources.md) § Memory guard.
+(`formatMemoryGuardLine`, shared). Not run-scoped; absent from an older app → no line. Held starts (#286) get their own line right after it — `held starts: N held for memory, release order — <label> (spawn|restart[, coordinator], since <iso>) → …`
+(`formatHeldStartsLine`, shared; fed by `/busStatus` `heldStarts`; absent when nothing is held); unattributed containers join in #293. Map: [resources.md](resources.md) § Memory guard.
 
 ## D1a-bis BIDIRECTIONAL innermost-run wake routing (OQ2 ruling A, wake-side)
 
