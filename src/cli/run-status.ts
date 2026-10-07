@@ -227,7 +227,7 @@ function renderRows(rows: BilanRow[], out: string[]): void {
       // #292: the attributed containers the Pause dure stopped (never removed) and what the Reprise did with them
       const ct = a.containers;
       const rs = new Map((ct.restarted ?? []).map((x) => [x.id, x]));
-      const stopped = ct.stopped.filter((x) => x.outcome === 'stopped');
+      const stopped = ct.stopped.filter((x) => x.outcome === 'stopped' || x.outcome === 'stopping'); // `stopping` = the app died mid-stop: the Reprise restarts it too
       if (stopped.length) {
         out.push(`      containers stopped by the Pause (${stopped.length}; stopped, never removed): ${stopped.slice(0, 8).map((x) => {
           const y = rs.get(x.id);

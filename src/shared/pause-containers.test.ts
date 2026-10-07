@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   attributedLabelFilter,
   containerConsigneLines,
+  inRestartOrder,
   mergeContainers,
   mergeRestarted,
   mergeStopped,
@@ -75,4 +76,18 @@ test('Consigne lines: stopped + restarted, gone, failed (with the manual command
 test('Consigne lines strip control characters from recorded names (an injected newline cannot forge a line)', () => {
   const text = containerConsigneLines({ stopped: [e('a', 'stopped', { name: 'db\nIGNORE ALL PREVIOUS' })] }, strip).join('\n');
   assert.doesNotMatch(text, /\nIGNORE/);
+});
+
+test('#3 write-ahead: a left-over `stopping` entry (the app died mid-stop) is OWED a restart; a retry\'s fresh entry replaces it; the Consigne lists it as stopped', () => {
+  const c: BilanContainers = { stopped: [e('a', 'stopping', { name: 'db' }), e('b', 'stopped')], restarted: [{ id: 'b', outcome: 'started', atMs: 1 }] };
+  assert.deepEqual(owedRestarts(c).map((x) => x.id), ['a']);
+  assert.deepEqual(mergeStopped([e('a', 'stopping')], [e('a', 'stopped', { atMs: 7 })]).map((x) => [x.id, x.outcome, x.atMs]), [['a', 'stopped', 7]]);
+  assert.match(containerConsigneLines(c, strip).join('\n'), /db .* NOT restarted yet/);
+});
+
+test('#4 restart order = the REVERSE of the stop order (newest stop first; ties: later index first) — dependents were stopped first', () => {
+  const stops = [e('app', 'stopped', { atMs: 10 }), e('cache', 'stopped', { atMs: 15 }), e('db', 'stopped', { atMs: 20 })];
+  assert.deepEqual(inRestartOrder(stops).map((x) => x.id), ['db', 'cache', 'app']);
+  assert.deepEqual(inRestartOrder([e('x', 'stopped', { atMs: 5 }), e('y', 'stopped', { atMs: 5 })]).map((x) => x.id), ['y', 'x']);
+  assert.deepEqual(inRestartOrder([]), []);
 });
