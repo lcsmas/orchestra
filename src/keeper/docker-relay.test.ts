@@ -166,6 +166,21 @@ test('a streaming response is flushed while the daemon holds it open (docker eve
   });
 });
 
+test('response HEADERS reach the client while the daemon has sent no body yet (docker wait / quiet events)', async () => {
+  const r = await newRelay();
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = http.request({ socketPath: r.sockPath, path: '/containers/x/wait', agent: false }, (res) => {
+      resolve(res.statusCode ?? 0); // fires on HEADERS — before releaseWait() below
+      res.resume();
+    });
+    req.on('error', reject);
+    req.end();
+    setTimeout(() => reject(new Error('headers were held back until the body started')), 3000);
+  });
+  assert.equal(status, 200);
+  daemon.releaseWait();
+});
+
 test('a 4 MB response arrives intact; a chunked 3 MB upload is reassembled by the daemon', async () => {
   const r = await newRelay();
   const big = await call(r, 'GET', '/containers/x/big');
@@ -347,6 +362,15 @@ test('start fails cleanly when the socket path is unusable (a directory in the w
   fs.rmSync(p, { recursive: true });
   assert.equal(await until(() => r.healthy(), 5000), true, 'never recovered after the obstacle was removed');
   sup.stop();
+});
+
+test('a stale socket file left by a SIGKILLed keeper is replaced, not an EADDRINUSE', async () => {
+  const p = path.join(dir, 'stale.sock');
+  fs.writeFileSync(p, ''); // what a killed keeper leaves behind
+  const r = createDockerRelay({ sockPath: p, upstream: daemon.sockPath, ws: 'ws-1', run: 'run-9', log: () => {} });
+  relays.push(r);
+  assert.equal(await r.start(), true);
+  assert.equal((await call(r, 'GET', '/_ping')).status, 200);
 });
 
 test('an over-long socket path fails to start (false), it does not throw', async () => {

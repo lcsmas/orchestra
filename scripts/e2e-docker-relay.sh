@@ -11,10 +11,12 @@ for arm in $ARMS; do
   line=$(timeout 600 node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-docker-relay.mjs "$arm" 2>/dev/null | tail -1)
   [ -n "$line" ] || line="{\"arm\":\"$arm\",\"ok\":false,\"error\":\"no output\"}"
   echo "$line"
+  # top-level ok / mustFailOnMaster only — the per-check objects inside the line also say "ok":true
+  verdict=$(printf '%s' "$line" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log((j.ok?"ok":"red")+" "+(j.mustFailOnMaster?"must":"may"))}catch{console.log("red may")}})')
   if [ "${MUST_FAIL:-0}" = 1 ]; then
-    case "$line" in *'"mustFailOnMaster":true'*) case "$line" in *'"ok":false'*) : ;; *) RC=1 ;; esac ;; esac
+    case "$verdict" in "ok must") RC=1 ;; esac   # a must-FAIL arm that PASSED on master = the rig cannot tell master from the fix
   else
-    case "$line" in *'"ok":true'*) : ;; *) RC=1 ;; esac
+    case "$verdict" in ok*) : ;; *) RC=1 ;; esac
   fi
 done
 exit $RC

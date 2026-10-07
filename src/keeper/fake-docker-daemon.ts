@@ -18,12 +18,15 @@ export interface FakeDaemon {
   readonly seen: SeenRequest[];
   /** Release the next chunk of the open `GET /events` stream. */
   releaseEvent(): void;
+  /** Finish the open `GET /wait` response (headers already sent, NO body yet — docker wait / events with nothing to say). */
+  releaseWait(): void;
   close(): Promise<void>;
 }
 
 export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
   const seen: SeenRequest[] = [];
   const eventGates: Array<() => void> = [];
+  const waitGates: Array<() => void> = [];
   const sockets = new Set<net.Socket>();
 
   const server = http.createServer((req, res) => {
@@ -48,6 +51,10 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
           res.write('{"n":2}\n');
           res.end();
         });
+      } else if (req.method === 'GET' && url.endsWith('/wait')) {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.flushHeaders();
+        waitGates.push(() => res.end('late'));
       } else if (req.method === 'POST' && url.endsWith('/build')) {
         // Reports how the body arrived; consumed it fully above, so a chunked upload is proven reassembled.
         const out = JSON.stringify({ bytes: body.length, te: req.headers['transfer-encoding'] ?? null, cl: req.headers['content-length'] ?? null });
@@ -106,6 +113,7 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
     sockPath,
     seen,
     releaseEvent: () => eventGates.shift()?.(),
+    releaseWait: () => waitGates.shift()?.(),
     close: () =>
       new Promise<void>((resolve) => {
         for (const s of sockets) s.destroy();

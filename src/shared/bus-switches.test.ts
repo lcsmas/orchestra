@@ -336,3 +336,16 @@ test('#182: countSwitchesOn derives the total from the mechanism list', () => {
   assert.deepEqual(countSwitchesOn(ALL_ON), { on: BUS_MECHANISMS.length, total: BUS_MECHANISMS.length });
   assert.deepEqual(countSwitchesOn(ALL_OFF), { on: 0, total: BUS_MECHANISMS.length });
 });
+
+// ── #291 docker_relay ────────────────────────────────────────────────────────────────────────────────────────────
+test('#291 dockerRelay: default OFF, wire name docker_relay round-trips, notice names it in BOTH states', () => {
+  assert.equal(DEFAULT_BUS_SWITCHES.dockerRelay, false);
+  assert.equal(mechanismFromWire('docker_relay'), 'dockerRelay');
+  assert.equal(mechanismToWire('dockerRelay'), 'docker_relay');
+  assert.equal(mechanismFromWire('dockerRelay'), null); // the camel key is NOT a wire name
+  const on = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES, dockerRelay: true }).find((l) => l.includes('docker_relay='));
+  const off = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES }).find((l) => l.includes('docker_relay='));
+  assert.match(on ?? '', /docker_relay=ON .*DOCKER_HOST/);
+  assert.match(off ?? '', /docker_relay=OFF .*not stamped/);
+  assert.ok(!/bus is AUTHORITATIVE/.test(on ?? ''), 'docker_relay is not a bus mechanism — the generic wording would be false');
+});

@@ -29,7 +29,7 @@ const ARM = process.argv[2] ?? '';
 
 const ARMS = {
   run_labels: { mustFailOnMaster: true, creates: true }, // docker run/create/start/exec/attach through the relay → labels on the container
-  compose_labels: { mustFailOnMaster: true, creates: true }, // docker compose up/ps/exec/down through the relay → labels on every service container
+  compose_labels: { mustFailOnMaster: true, creates: false }, // (its own `down -v` removes everything; the label inspects prove the containers existed) // docker compose up/ps/exec/down through the relay → labels on every service container
   user_labels: { mustFailOnMaster: true, creates: true }, // the member's own labels survive; a forged orchestra.* label does not
   streams: { mustFailOnMaster: true, creates: true }, // logs -f / events flushed live, 30 MB hijacked stdin, docker cp both ways, docker build (its `…is labelled` check is red on master)
   kill_relay: { mustFailOnMaster: true, creates: true }, // relay killed (SIGUSR2) and socket deleted → keeper restarts it, next call labelled
