@@ -35,8 +35,12 @@ session).
 
 ## Consequences
 
-- A container created around the relay (hard-coded socket path, a session with
-  no keeper) is unattributed: counted and reported, never stopped.
+- A container created around the relay (hard-coded socket path, a PTY session
+  with no keeper — out of scope, PTY agents are being retired) is unattributed:
+  counted and reported, never stopped.
+- A broken relay never breaks a rig: the keeper restarts a relay that dies; one
+  that cannot start leaves `DOCKER_HOST` unset, so the member uses the real
+  socket and its containers count as unattributed.
 - Every Pause dure — manual or automatic — stops (never removes) its members'
   attributed containers; the resource monitor adds their memory to the owning
   workspace.
