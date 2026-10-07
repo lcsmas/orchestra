@@ -239,7 +239,26 @@ test('an auto-unread workspace is never hibernated', () => {
 });
 
 test('clearing auto-unread makes it eligible again', () => {
+  assert.equal(shouldHibernate(ws({ autoUnread: true, parentId: undefined }), signals()), false);
   assert.equal(shouldHibernate(ws({ autoUnread: undefined }), signals()), true);
+});
+
+// A fleet member's bell never clears (its coordinator reads it over the bus), so
+// the auto-unread guard must not pin its process (2026-10-07: 27/29 idle members).
+test('an auto-unread FLEET MEMBER (parentId set) IS hibernated', () => {
+  assert.equal(shouldHibernate(ws({ autoUnread: true, parentId: 'coord-1' }), signals()), true);
+});
+
+test('the fleet exemption lifts only the bell: a fleet member is still spared by every other guard', () => {
+  const member = { autoUnread: true, parentId: 'coord-1' } as const;
+  assert.equal(shouldHibernate(ws({ ...member, status: 'running' }), signals()), false);
+  assert.equal(shouldHibernate(ws({ ...member, status: 'waiting' }), signals()), false);
+  assert.equal(shouldHibernate(ws({ ...member, loopingSince: 1 }), signals()), false);
+  const pending = [{ id: 'p1', text: 'the brief', createdAt: NOW - 3_600_000 }] as never;
+  assert.equal(shouldHibernate(ws({ ...member, sdkPendingPrompts: pending }), signals()), false);
+  assert.equal(shouldHibernate(ws(member), signals({ isActive: true })), false);
+  assert.equal(shouldHibernate(ws(member), signals({ hasLiveBackgroundTask: true })), false);
+  assert.equal(shouldHibernate(ws(member), signals({ lastActivityAt: NOW - 1000 })), false);
 });
 
 // A /loop's wakeups live inside the session process, so hibernating a looping

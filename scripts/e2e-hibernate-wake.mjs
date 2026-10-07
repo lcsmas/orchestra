@@ -38,6 +38,9 @@
 //   level_only       ★ (R1) a keeper REATTACH learns of a live bg task ONLY via the `background_tasks_changed`
 //                      level snapshot (no `started` edge; local_bash emits no task_progress) → NOT hibernated
 //   level_only_healed— control: the seeded entry is healed by a later empty snapshot → hibernates
+//   fleet_unread_wake ★ (2026-10-07) an auto-unread FLEET MEMBER (parentId) → hibernated, still in the
+//                      inbox, then the bus wake resumes it and it answers (same asserts as wake_after)
+//   toplevel_unread  ★ an auto-unread workspace WITHOUT a coordinator, 6 h idle → NOT hibernated
 //   level_after_done — control: a STALE snapshot after the task finished never resurrects it → hibernates
 //   bg_task_healed   — control: a lost bookend is healed by a `background_tasks_changed` replace → hibernated
 //   hibernate_exit1 ★ a hibernate stop whose CLI exits 1 during the graceful close emits NO error row
@@ -78,7 +81,7 @@ const ARMS = [
   'window_4min', 'window_6min', 'recent_activity', 'control_6h',
   'guard_run_pty', 'guard_turn', 'wake_after', 'teardown_chip', 'wake_during_teardown',
   'hibernate_exit1', 'fresh_record', 'bg_task', 'bg_task_done', 'bg_task_healed',
-  'level_only', 'level_only_healed', 'level_after_done',
+  'level_only', 'level_only_healed', 'level_after_done', 'fleet_unread_wake', 'toplevel_unread',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -317,10 +320,26 @@ if (ARM === 'window_4min' || ARM === 'window_6min') {
   const hibernated = await hib.sweepHibernation();
   Object.assign(out, { statusRunning: running, hibernated, live: live(), status: wsNow().status });
   ok = running && hibernated.length === 0 && live() && calls[0].interruptStartedAt === 0;
-} else if (ARM === 'wake_after') {
+} else if (ARM === 'toplevel_unread') {
+  await store.upsertWorkspace({ ...wsNow(), autoUnread: true, parentId: undefined });
+  skewMs = 6 * 60 * MIN;
+  // positive control: only the missing coordinator stands between it and hibernation
+  const controlEligible = shouldHibernate({ ...wsNow(), parentId: 'coord-1' }, {
+    now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
+    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined) });
+  const hibernated = await hib.sweepHibernation();
+  Object.assign(out, { controlEligible, hibernated, live: live(), autoUnread: !!wsNow().autoUnread });
+  ok = controlEligible && hibernated.length === 0 && live() && wsNow().autoUnread === true;
+} else if (ARM === 'wake_after' || ARM === 'fleet_unread_wake') {
+  const fleet = ARM === 'fleet_unread_wake';
+  if (fleet) await store.upsertWorkspace({ ...wsNow(), autoUnread: true, parentId: 'coord-1' });
   skewMs = 6 * MIN;
   const hibernated = await hib.sweepHibernation();
   const hibernatedOk = hibernated.length === 1 && !live() && !!wsNow().hibernatedAt;
+  // the bell must survive hibernation: the row stays in the inbox's needs-you group
+  const { computeAttention } = await import(`${REPO}/src/shared/attention.ts`);
+  const stillInInbox = computeAttention([wsNow()]).needsYou.some((w) => w.id === WS);
+  if (fleet) out.stillInInbox = stillInInbox;
   const transcriptAtHibernate = transcriptState();
   const endsBefore = turnEnds();
   insert(`${BODY} for the coordinator`);
@@ -373,7 +392,8 @@ if (ARM === 'window_4min' || ARM === 'window_6min') {
   ok = hibernatedOk && transcriptAtHibernate.sha === pre.transcript.sha &&
        calls.length === 2 && calls[1].resume === SESSION_ID && orderSeen && answered &&
        transcriptState().lines > pre.transcript.lines && prefixIntact &&
-       live() && !w.hibernatedAt && lot.count === 1 && out.lotCarriedBody && pending === false;
+       live() && !w.hibernatedAt && lot.count === 1 && out.lotCarriedBody && pending === false &&
+       (!fleet || stillInInbox);
 } else if (ARM === 'wake_during_teardown' || ARM === 'teardown_chip') {
   calls[0].interruptDelay = 600;                      // a slow graceful close widens the window
   skewMs = 6 * MIN;

@@ -372,7 +372,12 @@ cleared on interact — the "show until interact" model).
 - **Hibernation protection**: `shouldHibernate` (`shared/hibernation.ts`)
   refuses an `autoUnread` workspace. Those rows used to be `waiting` and were
   protected by the status gate; without this the sweeper would reap exactly the
-  workspaces whose output the user has not read.
+  workspaces whose output the user has not read. **Except a fleet member
+  (`parentId` set)**: its coordinator reads it over the bus, so its bell never
+  clears and pinned ~8 GB across 27 idle members (2026-10-07). It hibernates
+  with its bell kept — `computeAttention` ignores `hibernatedAt` — and the bus
+  wake resumes it (rig arms `fleet_unread_wake` / `toplevel_unread` in
+  `scripts/e2e-hibernate-wake.mjs`).
 - `reconcileExited` resolves a dead PTY to `idle` + bell, never `waiting` — a
   dead process cannot answer, so `waiting` would park an unanswerable row in the
   inbox forever.
@@ -643,8 +648,8 @@ long-idle agents and lets the existing resume paths bring them back.
   unit-tested (`hibernation.test.ts`, incl. a positive-control baseline so the
   negative assertions can't pass vacuously). ALL must hold: a process is live;
   `status === 'idle'` (never `running`/`waiting`/`error`/`stopped` — `waiting`
-  means the human is needed and the dot + inbox entry must survive); not the
-  active workspace; not sandbox-hosted (`ws.host` absent); not archived; no live
+  means the human is needed and the dot + inbox entry must survive); not
+  `autoUnread` unless a fleet member (`parentId`); not the active workspace; not sandbox-hosted (`ws.host` absent); not archived; no live
   `<id>:run` PTY; no RUNNING background task (#198 D14 F1 — structured path
   only: the Session folds its `task` events with the panel's `foldTaskEvent`,
   read via `sdkHasBackgroundTasks`; a quiet long task stamps no activity so idleness

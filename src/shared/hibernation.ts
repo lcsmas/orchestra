@@ -133,7 +133,9 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *    (already down).
  *  - **Not auto-unread.** A finished turn the user has never opened is `idle`
  *    but still owes them a look, so it is protected for the same reason
- *    `waiting` is. See {@link Workspace.autoUnread}.
+ *    `waiting` is. See {@link Workspace.autoUnread}. Except a fleet member
+ *    (`parentId` set): its coordinator reads it over the bus, so its bell is
+ *    permanent and would pin its process forever.
  *  - **Not the active workspace.** The pane the user is looking at keeps its
  *    process, even if they've been reading in silence past the threshold.
  *  - **Not sandbox-hosted** (`ws.host` absent). A remote session's process
@@ -176,7 +178,9 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   // auto-unread bell, so without this line the sweeper would hibernate the very
   // workspaces whose output the user has not read yet — and the "zZ" chip would
   // replace the bell on a row that still owes them a look.
-  if (ws.autoUnread) return false;
+  // Fleet members (parentId) are exempt: read over the bus, their bell never clears and
+  // pinned ~8 GB on 2026-10-07. The inbox entry survives (computeAttention ignores hibernatedAt).
+  if (ws.autoUnread && !ws.parentId) return false;
   // A prompt still waiting to be delivered (e.g. a spawn's brief) means a turn is
   // about to start — hibernating now strands it (2026-09-30: fresh spawns slept 1 s in).
   if (ws.sdkPendingPrompts?.length) return false;
