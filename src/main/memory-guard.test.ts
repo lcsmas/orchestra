@@ -222,26 +222,48 @@ test('subscribe: one event per edge with the post-sample snapshot; a throwing li
 });
 
 test('nested_sampleNow: a listener that re-measures gets its edges AFTER the batch being delivered — sample order, last edge = final state', () => {
-  const w = world(12);
-  const g = createMemoryGuard(w.deps);
-  const seen: string[] = [];
-  g.start();
-  w.mem = 2;
-  w.fire(); // held + pause due
-  assert.equal(g.snapshot().pause, 'held');
-  g.subscribe((e) => {
-    seen.push(e.transition.kind);
-    if (e.transition.kind === 'admission_reopened') {
-      w.mem = 2.5; // memory collapses again before the consumer finished reacting
-      g.sampleNow();
-    }
-  });
-  w.mem = 8;
-  w.fire(); // recovery sample: pause_liftable, admission_reopened — the listener re-measures inside the second
-  assert.deepEqual(seen, ['pause_liftable', 'admission_reopened', 'admission_held', 'pause_due'], 'FIFO: the nested sample\'s edges come after the outer batch');
-  const s = g.snapshot();
-  assert.deepEqual([s.admission, s.pause], ['held', 'held'], 'the LAST delivered edge (pause_due) matches the final state');
-  assert.ok(w.pending, 'exactly one timer armed after the nested sample');
+  // A — a fall (held, pause_due) whose FIRST edge's listener re-measures after memory rebounded: the nested edges must queue BEHIND pause_due.
+  {
+    const w = world(12);
+    const g = createMemoryGuard(w.deps);
+    const seen: string[] = [];
+    g.start();
+    const off = g.subscribe((e) => {
+      seen.push(e.transition.kind);
+      if (e.transition.kind === 'admission_held') {
+        w.mem = 8; // memory rebounds before the consumer finished reacting to the first edge
+        g.sampleNow();
+      }
+    });
+    w.mem = 2;
+    w.fire(); // fall: admission_held + pause_due — the listener re-measures inside the first
+    assert.deepEqual(seen, ['admission_held', 'pause_due', 'pause_liftable', 'admission_reopened'], 'FIFO: the nested sample\'s edges come after the outer batch');
+    const s = g.snapshot();
+    assert.deepEqual([s.admission, s.pause], ['open', 'none'], 'the LAST delivered edge (admission_reopened) matches the final state — a consumer acting on the last edge ends right');
+    assert.ok(w.pending, 'exactly one timer armed after the nested sample');
+    off();
+  }
+  // B — a recovery whose LAST edge's listener re-measures after memory collapsed again.
+  {
+    const w = world(12);
+    const g = createMemoryGuard(w.deps);
+    const seen: string[] = [];
+    g.start();
+    w.mem = 2;
+    w.fire();
+    g.subscribe((e) => {
+      seen.push(e.transition.kind);
+      if (e.transition.kind === 'admission_reopened') {
+        w.mem = 2.5;
+        g.sampleNow();
+      }
+    });
+    w.mem = 8;
+    w.fire();
+    assert.deepEqual(seen, ['pause_liftable', 'admission_reopened', 'admission_held', 'pause_due']);
+    const s = g.snapshot();
+    assert.deepEqual([s.admission, s.pause], ['held', 'held']);
+  }
 });
 
 // ─── thresholds apply HOT ───────────────────────────────────────────────────────────────────────────────────────────

@@ -55,7 +55,7 @@ const MUTANTS = [
   { id: 'M22_cli_no_line', file: C, find: 'process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot)}\\n`);', to: 'void 0;', expect: ['walk', 'b_held'], cli: true },
   { id: 'M23_format_held_lowercase', file: S, find: '`admission HELD since ', to: '`admission held since ', expect: ['formatMemoryGuardLine', 'walk'], cli: true },
   { id: 'M24_settings_no_validation', file: ST, find: 'if (!res.ok) return { ok: false, error: res.error, view: memoryGuardView(current) };', to: '', expect: ['invalid pair', 'invalid_refused'] },
-  { id: 'M25_settings_no_resample', file: ST, find: '  sampleMemoryGuardNow();\n  return { ok: true', to: '  return { ok: true', expect: ['persisted AND applied at once', 'raised_applies_at_once'] },
+  { id: 'M25_settings_no_resample', file: ST, find: '  sampleMemoryGuardNow();\n  const view = memoryGuardView(store.getMemoryGuardSettings());', to: '  const view = memoryGuardView(store.getMemoryGuardSettings());', expect: ['persisted AND applied at once', 'raised_applies_at_once'] },
   // pre-review fixes (c364a283 review): real source, FIFO delivery, edge order, MemTotal bound, sampled flag
   { id: 'M26_real_source_platform', file: MA, find: "export function readMemAvailableBytes(): number | null {\n  if (process.platform !== 'linux') return null;", to: "export function readMemAvailableBytes(): number | null {\n  if (process.platform !== 'darwin') return null;", expect: ['mem-available', 'real_source'] },
   { id: 'M27_nested_delivery_sync', file: M, find: '    if (draining) return;\n', to: '', expect: ['nested_sampleNow'] },
