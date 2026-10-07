@@ -34,14 +34,16 @@ const { generateHeavyFixture } = await import(`${HERE}/fixture.mjs`);
 const { census } = await import(`${HERE}/proc-census.mjs`);
 const { judgeSessionBudget, summarizeWindow, egressUpTo, TRAFFIC_KNOBS, STARTUP_CUT_MARGIN_MS } = await import(`${REPO}/src/shared/session-budget.ts`);
 
-const fx = generateHeavyFixture(path.join(root, 'repo'), profile);
+const mcpDelayFile = secondTurn ? path.join(root, 'mcp-init-delay-ms') : undefined; // #317: written after turn 1 → MCP re-inits turn slow
+const fx = generateHeavyFixture(path.join(root, 'repo'), { ...profile, ...(mcpDelayFile ? { mcpDelayFile } : {}) });
 // Fixed ports: this process was started with HTTPS_PROXY/NODE_USE_ENV_PROXY already aimed at the proxy port (the harness
 // chose it) — Node reads NODE_USE_ENV_PROXY at bootstrap, so the proxy must come up on exactly that port.
 if (!cfg.apiPort || !cfg.proxyPort) throw new Error('session-runner: cfg.apiPort/proxyPort absent — the app-process egress proxy cannot be wired (fails closed)');
-// #317 `secondTurn`: count_tokens turn SLOW only after the first turn-end — the boot reads stay fast, so only a turn-boundary burst can delay turn 2.
-let slowCountTokens = false;
+// #317 `secondTurn`: every network channel (API, egress, MCP re-init) turns SLOW only after the first turn-end — boot stays fast, so only turn-boundary work can delay turn 2.
+let slowWorld = false;
 const api = await startFakeApi({ replyDelayMs, markers: fx.markers, apiPort: cfg.apiPort, proxyPort: cfg.proxyPort,
-  countTokensDelayMs: () => (slowCountTokens ? secondTurn?.countTokensDelayMs ?? 0 : 0) })
+  countTokensDelayMs: () => (slowWorld ? secondTurn?.countTokensDelayMs ?? 0 : 0),
+  otherDelayMs: () => (slowWorld ? secondTurn?.countTokensDelayMs ?? 0 : 0) })
 if (api.proxyUrl !== process.env.HTTPS_PROXY || process.env.NODE_USE_ENV_PROXY !== '1') {
   throw new Error(`session-runner: this process is not routed through the recording proxy (HTTPS_PROXY=${process.env.HTTPS_PROXY} NODE_USE_ENV_PROXY=${process.env.NODE_USE_ENV_PROXY}, proxy=${api.proxyUrl}) — app-process egress would be invisible (fails closed)`);
 }
@@ -96,7 +98,7 @@ initPlatform({
     if (ev.type === 'turn-end') {
       turnEnds++;
       lastTurnEndGauge = { contextUsedTokens: ev.contextUsedTokens ?? null, contextWindow: ev.contextWindow ?? null };
-      if (tTurnEnd === null) { tTurnEnd = t; slowCountTokens = true; } else if (tTurnEnd2 === null) tTurnEnd2 = t;
+      if (tTurnEnd === null) { tTurnEnd = t; slowWorld = true; if (mcpDelayFile) fs.writeFileSync(mcpDelayFile, String(secondTurn.countTokensDelayMs ?? 0)); } else if (tTurnEnd2 === null) tTurnEnd2 = t;
     }
   },
   broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false,
@@ -201,6 +203,12 @@ const report = {
       // What the gauge resolves from once no live reading exists (#317): the turn-end tier.
       lastTurnEndGauge,
       liveContextEvents: events.filter((e) => e.type === 'session/context').length,
+      // Every channel the slow world can see after turn 1 (by request type, plus egress attempts) — what a control request touched.
+      afterTurn1: tTurnEnd === null ? null : {
+        ...Object.fromEntries(['count_tokens', 'models', 'bootstrap', 'other'].map((k) => [k, api.requests.filter((r) => r.type === k && r.tStartMs >= tTurnEnd && (!m2 || r.tStartMs < m2.tStartMs)).length])),
+        egress: api.egress.filter((e) => e.tMs >= tTurnEnd && (!m2 || e.tMs < m2.tStartMs)).length,
+      },
+      controlRequest: globalThis.__sbCtl ?? null, // set only by the #317 matrix mutants
       countTokensTurn1EndToTurn2: tTurnEnd === null ? null : api.requests.filter((r) => r.type === 'count_tokens' && r.tStartMs >= tTurnEnd && (!m2 || r.tStartMs < m2.tStartMs)).length,
     };
   })() } : {}),

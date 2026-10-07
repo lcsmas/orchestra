@@ -31,6 +31,20 @@ async function arm(label, mutant, wantPass) {
   const g = st.lastTurnEndGauge;
   if (!(g?.contextUsedTokens > 0 && g?.contextWindow > 0)) { bad++; console.log(`${label}: GAUGE-EMPTY turn-end carries ${JSON.stringify(g)}`); }
 }
+if (process.argv.includes('--matrix')) {
+  // #317 measurement, not a gate: which control requests hold the next prompt when the network is slow?
+  // HOLDS = turn 2 waited ≥ BOUND; INERT = the request itself was slow (≥ BOUND) and turn 2 did not wait;
+  // UNSLOWED = the request finished fast, so this world never tested it (no verdict).
+  for (const m of ['turn-end-context-read', 'turn-end-supported-models', 'turn-end-reload-plugins', 'turn-end-mcp-status', 'turn-end-mcp-reconnect', 'turn-end-mcp-toggle']) {
+    const r = await runSessionArm({ repo, arm: `matrix-${m}`, mutant: m, secondTurn, timeoutMs: 90_000 + DELAY * 3 });
+    const st = r.report?.secondTurn;
+    if (r.error || st?.sendToModelRequestMs == null) { bad++; console.log(`${m}: BROKEN ${r.error ?? JSON.stringify(st)}`); continue; }
+    const ctl = st.controlRequest;
+    const verdict = st.sendToModelRequestMs >= BOUND ? 'HOLDS' : ctl && (ctl.ms === null || ctl.ms >= BOUND) ? 'INERT' : 'UNSLOWED';
+    console.log(`${m}: ${verdict} turn2 ${st.sendToModelRequestMs} ms · request ${ctl?.ms ?? 'still running'} ms (${ctl?.result ?? '-'}) · touched ${JSON.stringify(st.afterTurn1)}`);
+  }
+  process.exit(bad ? 1 : 0);
+}
 for (let i = 0; i < runs; i++) {
   await arm(`turn-boundary-${i}`, null, true);
   if (proof) await arm(`turn-boundary-mutant-${i}`, 'turn-end-context-read', false);

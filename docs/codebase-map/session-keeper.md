@@ -71,6 +71,8 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   nothing else re-asserts it until the user opens the row. Probe ≠ attach: the
   probe frame never claims the client slot, so this restores the sidebar dot
   without violating no-mass-resume.
+- **A slow control request holds the next prompt** (#317): see `structured-agent-view.md` § "Control requests
+  hold the next prompt" — never send one automatically.
 - **A hung CLI never parks a teardown** (2026-09-23): control requests to a CLI
   that stopped reading stdin never resolve (SDK `interrupt()` measured pending
   >40 s). `sdkStop` bounds `interrupt()` (`STOP_INTERRUPT_TIMEOUT_MS`, 5 s) and

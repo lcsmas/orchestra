@@ -1972,6 +1972,32 @@ creeps back into the component is caught only by rendering it. It also
 pins the threshold styling, the >100% unclamped number vs the clamped bar, and
 `data-context-source` for every source.
 
+## Control requests hold the next prompt (#317)
+
+**Rule: a control request to a live CLI holds that session's NEXT prompt until it settles.** The CLI does
+not ingest a user message (no transcript line, no `/v1/messages`) while one is in flight, so a slow request
+looks like a dead workspace. The 3 s/5 s `Promise.race` timeouts on our side do not help: they stop
+Orchestra from waiting, not the CLI.
+
+Measured on the real session path, fake API, every network channel slowed 20 s after turn 1
+(`node scripts/session-budget/turn-boundary.mjs --matrix`, CLI 2.1.291):
+
+| Request at turn end | Turn 2 waited | Verdict |
+|---|---|---|
+| `getContextUsage()` | 39.9 s (57 `count_tokens`) | HOLDS — removed (#176 boot, #317 turn end) |
+| `reconnectMcpServer()` / `toggleMcpServer()` | 19.9 s (= the server's init) | HOLDS — user-initiated only (McpPopover) |
+| `supportedModels()` / `mcpServerStatus()` / `reloadPlugins()` | < 0.1 s | UNSLOWED: answered locally in 1-32 ms, so this world never tested them |
+
+Consequences:
+- **Never send one automatically** (turn end, boot, timer, watcher) unless it is proven local and fast.
+  `src/main/control-request-sites.test.ts` fails on any control-request call site whose enclosing function
+  is not on its allowlist; add one only with a matrix row.
+- A user-initiated one (MCP reconnect/toggle) still delays the prompt typed right after it — by design today,
+  but that is the cost.
+- The field symptom is a turn that ended normally followed by a prompt that never starts; the session debug
+  log shows the request's traffic (e.g. a `count_tokens` burst) and no `/v1/messages`. A restart within
+  `RESTART_STALL_MS` of that prompt is refused ("The agent is working").
+
 ## Context gauge sourcing (issue #15)
 
 The gauge has THREE possible sources, normalized to one shape by the pure

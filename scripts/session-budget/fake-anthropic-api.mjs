@@ -104,10 +104,12 @@ function summarizeModelBody(buf, markers = {}) {
  *                                    started with HTTPS_PROXY already pointing at it (NODE_USE_ENV_PROXY is read at bootstrap)
  * @param {number} [opts.replyDelayMs]  delay before the first SSE byte of a /v1/messages reply
  * @param {number|(() => number)} [opts.countTokensDelayMs]  delay before a /v1/messages/count_tokens reply (#317: a slow burst stands in for black-holed sockets)
+ * @param {number|(() => number)} [opts.otherDelayMs]  delay before any other non-model reply (/v1/models, 404s) and before an egress refusal (#317 matrix)
  * @param {Record<string,string>} [opts.markers]  sentinel name -> substring to look for in request bodies
  * @param {(rec: object) => void} [opts.onRequest]  observer, called for every recorded request
  */
 export async function startFakeApi(opts = {}) {
+  const pause = async (v) => { const ms = typeof v === 'function' ? v() : v; if (ms) await new Promise((r) => setTimeout(r, ms)); };
   const t0 = process.hrtime.bigint();
   const now = () => Number(process.hrtime.bigint() - t0) / 1e6;
   /** @type {any[]} */ const requests = [];
@@ -147,12 +149,12 @@ export async function startFakeApi(opts = {}) {
       return;
     }
     if (type === 'count_tokens') {
-      const ctDelay = typeof opts.countTokensDelayMs === 'function' ? opts.countTokensDelayMs() : opts.countTokensDelayMs;
-      if (ctDelay) await new Promise((r) => setTimeout(r, ctDelay));
+      await pause(opts.countTokensDelayMs);
       res.writeHead(200, { 'content-type': 'application/json', 'request-id': `req_fake_${rec.seq}` });
       res.end(JSON.stringify({ input_tokens: Math.max(1, Math.ceil(body.length / 4)) }));
       return;
     }
+    await pause(opts.otherDelayMs);
     if (type === 'models') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: [], has_more: false, first_id: null, last_id: null }));
@@ -166,17 +168,20 @@ export async function startFakeApi(opts = {}) {
   // Egress-recording proxy: a CONNECT (https) or absolute-URI (http) request is RECORDED and REFUSED.
   // Every egress attempt is answered 403 AT ONCE. (Holding the connection open instead was tried: it stalls the CLI's startup by
   // ~5 s, so it no longer resembles production. A refused call is RETRIED on a ~2 s backoff — see SESSION_BUDGETS.)
-  const proxy = http.createServer((req, res) => {
+  const proxy = http.createServer(async (req, res) => {
     // Plain-HTTP proxying sends an absolute URI: record it as host:port like a CONNECT target.
     let target = req.url;
     try { const u = new URL(req.url); target = `${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)}`; } catch { /* keep raw */ }
     egress.push({ tMs: now(), via: 'http', method: req.method, target });
+    await pause(opts.otherDelayMs);
     res.writeHead(403, { 'content-type': 'text/plain' });
     res.end('egress refused by session-budget suite');
   });
   proxy.on('connect', (req, sock) => {
     sock.on('error', () => {}); // a refused client may RST — never crash the fake on it
     egress.push({ tMs: now(), via: 'connect', target: req.url });
+    const d = typeof opts.otherDelayMs === 'function' ? opts.otherDelayMs() : opts.otherDelayMs;
+    if (d) return void setTimeout(() => sock.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'), d);
     sock.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
   });
   proxy.on('clientError', (_e, sock) => { try { sock.destroy(); } catch { /* ignore */ } });

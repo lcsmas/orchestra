@@ -74,7 +74,7 @@ export function generateHeavyFixture(dir, overrides = {}) {
   }
   const mcpServerNames = Array.from({ length: profile.mcpServers }, (_, i) => `fixsrv${i + 1}`);
   const mcpServers = {};
-  for (const [i, n] of mcpServerNames.entries()) mcpServers[n] = { command: process.execPath, args: [FAKE_MCP_SERVER, '--name', n, '--tools', String(profile.toolsPerServer), ...(i === 0 && profile.mcpInitDelayMs > 0 ? ['--init-delay-ms', String(profile.mcpInitDelayMs)] : [])] };
+  for (const [i, n] of mcpServerNames.entries()) mcpServers[n] = { command: process.execPath, args: [FAKE_MCP_SERVER, '--name', n, '--tools', String(profile.toolsPerServer), ...(i === 0 && profile.mcpInitDelayMs > 0 ? ['--init-delay-ms', String(profile.mcpInitDelayMs)] : []), ...(profile.mcpDelayFile ? ['--init-delay-file', profile.mcpDelayFile] : [])] };
   fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify({ mcpServers }, null, 2)}\n`);
   // Project-scoped .mcp.json servers only start once approved; approve them in the project settings.
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });

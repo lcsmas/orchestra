@@ -33,7 +33,7 @@ This is what made the field incidents so hard to call:
 | Probe | Reads | Because |
 |---|---|---|
 | `sdkSessionLive(wsId)` | **live** | `sessions.has(wsId)` is untouched |
-| control requests (reload-skills, interrupt, setModel) | **answer** | they use `session.q`, a *different channel* from the prompt generator |
+| control requests (reload-skills, interrupt, setModel) | **answer** | they use `session.q`, a *different channel* from the prompt generator (the reverse does NOT hold: a slow control request holds the next prompt — #317) |
 | `session.pump` | `null` | the generator is parked at the GATE, not the pump — so every later `sdkSend`'s `session.pump?.()` is a silent **no-op** |
 | delivery | `timeout` → withdrawn | `sdkSendAwaitingStart` waits `DELIVERY_START_TIMEOUT_MS`, the entry never reaches `yield`, `dequeueUnstartedTurn` withdraws it |
 | the message | parked in the inbox | `dispatchMessageRequest` → `requiresInboxFallback` → `queueInbox` |

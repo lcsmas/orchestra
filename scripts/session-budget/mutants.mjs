@@ -34,6 +34,19 @@ export const MUTANTS = {
     find: /(        releaseTurnGate\(session\);\n)(?=        \/\/ #317)/g,
     replace: '$1        void session.q.getContextUsage().catch(() => {});\n',
   },
+  // #317 matrix: every network-capable control request, fired at the same turn-end spot — which ones hold the next prompt?
+  ...Object.fromEntries([
+    ['turn-end-supported-models', 'supportedModels()'],
+    ['turn-end-reload-plugins', 'reloadPlugins()'],
+    ['turn-end-mcp-status', 'mcpServerStatus()'],
+    ['turn-end-mcp-reconnect', "reconnectMcpServer('fixsrv1')"],
+    ['turn-end-mcp-toggle', "toggleMcpServer('fixsrv1', false).then(() => session.q.toggleMcpServer('fixsrv1', true))"],
+  ].map(([name, call]) => [name, {
+    file: '/src/main/agent-sdk.ts',
+    find: /(        releaseTurnGate\(session\);\n)(?=        \/\/ #317)/g,
+    // First turn end only; times its own request (globalThis.__sbCtl, read by session-runner): a request the slow world did NOT slow proves nothing.
+    replace: `$1        if (!globalThis.__sbCtl) { const t0 = Date.now(); globalThis.__sbCtl = { ms: null }; void session.q.${call}.then(() => 'ok', (e) => String(e?.message ?? e)).then((r) => { globalThis.__sbCtl = { ms: Date.now() - t0, result: r }; }); }\n`,
+  }])),
 };
 
 let active = null;

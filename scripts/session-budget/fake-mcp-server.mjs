@@ -3,12 +3,15 @@
 // tools/call / ping and empty resources+prompts lists over newline-delimited JSON-RPC. It exists to
 // make the CLI (a) spawn a real child per server and (b) count N tools per server in its context
 // breakdown — nothing else. Usage: fake-mcp-server.mjs --name <n> --tools <count>
+import fs from 'node:fs';
 import readline from 'node:readline';
 
 const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
 const NAME = arg('name', 'fake');
 const TOOLS = Number(arg('tools', '10'));
 const INIT_DELAY_MS = Number(arg('init-delay-ms', '0')); // slow-but-healthy server: answers `initialize` late (startup-stall experiments)
+const INIT_DELAY_FILE = arg('init-delay-file', ''); // #317: when this file exists at `initialize`, its content (ms) delays the answer — slows RE-connects only
+const initDelay = () => { if (INIT_DELAY_FILE) { try { return Number(fs.readFileSync(INIT_DELAY_FILE, 'utf8')) || 0; } catch { /* absent */ } } return INIT_DELAY_MS; };
 
 const tools = Array.from({ length: TOOLS }, (_, i) => ({
   name: `${NAME}_tool_${String(i).padStart(2, '0')}`,
@@ -35,7 +38,7 @@ rl.on('line', (line) => {
   if (m.id === undefined) return; // notification
   switch (m.method) {
     case 'initialize':
-      if (INIT_DELAY_MS > 0) return void setTimeout(() => send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: NAME, version: '0.0.1' } } }), INIT_DELAY_MS);
+      if (initDelay() > 0) return void setTimeout(() => send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: NAME, version: '0.0.1' } } }), initDelay());
       return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: NAME, version: '0.0.1' } } });
     case 'tools/list': return send({ jsonrpc: '2.0', id: m.id, result: { tools } });
     case 'tools/call': return send({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: 'ok' }] } });
