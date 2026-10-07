@@ -97,7 +97,7 @@ test('T118.2 — flipping a switch MID-WAVE does not change the running run row'
   const { db, dir } = tmpDb();
   try {
     // Wave start: delivery ON, everything else OFF.
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     assert.equal(runFlags(db, 'run-1').delivery, true);
     assert.equal(runFlags(db, 'run-1').wake, false);
@@ -120,7 +120,7 @@ test('T118.2 — flipping a switch MID-WAVE does not change the running run row'
 test('T118.2 — a NEW run picks up the new switch values', () => {
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     live.wake = true;
     live.delivery = false;
@@ -147,7 +147,7 @@ test('MUTANT (C10) — reading flags LIVE instead of from the run row is detecta
   // here, T118.2's green would be decoration — it would pass on the mutant too.
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     live.wake = true;
     live.delivery = false;
@@ -158,8 +158,8 @@ test('MUTANT (C10) — reading flags LIVE instead of from the run row is detecta
       liveRead(),
       'if these agreed, T118.2 would pass on the mutant and prove nothing',
     );
-    assert.deepEqual(rowRead(), { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false });
-    assert.deepEqual(liveRead(), { delivery: false, wake: true, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false });
+    assert.deepEqual(rowRead(), { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false });
+    assert.deepEqual(liveRead(), { delivery: false, wake: true, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false });
   } finally {
     cleanup(db, dir);
   }
@@ -264,7 +264,7 @@ test('the freeze holds through the REAL write+read path, not just freezeSwitches
   // a freeze bypassed anywhere between the caller and the row.
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     live.delivery = false;
     live.wake = true;
@@ -323,7 +323,7 @@ test('normalizeSwitches accepts only literal true — a "true" STRING is OFF', (
   // A switch that turns itself on from a hand-edited store typo is exactly what
   // the freeze exists to prevent, so the coercion is === true, not truthiness.
   const s = normalizeSwitches({ delivery: 'true', wake: 1, askGate: true, liveness: {} });
-  assert.deepEqual(s, { delivery: false, wake: false, askGate: true, liveness: false, fencing: false, capability: false, receipts: false, pause: false });
+  assert.deepEqual(s, { delivery: false, wake: false, askGate: true, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false });
 });
 
 test('normalizeSwitches defaults each mechanism independently', () => {
@@ -336,7 +336,7 @@ test('normalizeSwitches defaults each mechanism independently', () => {
 });
 
 test('serialize → parse round-trips every mechanism', () => {
-  const mixed: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: true, capability: true, receipts: true, pause: true };
+  const mixed: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: true, capability: true, receipts: true, pause: true, dockerRelay: true };
   assert.deepEqual(parseSwitches(serializeSwitches(mixed)), mixed);
 });
 
@@ -448,7 +448,7 @@ test('the wave-A core verbs still work alongside run rows (no schema collision)'
 test('busSwitch(runId, wire) reads the FROZEN row, both directions', () => {
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: false, capability: false, receipts: false, pause: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: false, capability: false, receipts: false, pause: false, dockerRelay: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     // Mid-wave flip: every value inverted.
     live.delivery = false;

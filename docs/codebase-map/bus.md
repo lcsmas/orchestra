@@ -2104,6 +2104,15 @@ additive `capabilityRejections` field (read directly from `capability_rejections
 in `bus-pane.ts busSnapshot`, rendered under "Shadow divergence") — the pane
 listing that satisfies D1 without touching #116's frozen report.
 
+### The `dockerRelay` switch (#291, wave G)
+
+`dockerRelay` is the 9th `BusMechanism` (`src/shared/bus-switches.ts`; wire `docker_relay` — snake wire / camel key, like `ask_gate`). It gates ONE thing: whether
+the member's keeper hosts the Docker relay that stamps `orchestra.ws` / `orchestra.run` on every container it creates (`session-keeper.md` → Docker relay).
+Default OFF; frozen onto `run_flags.flags` at run creation; **no schema migration** (`flags` is the JSON object a later build reads back — additive, store-safe).
+Read at session start by `src/main/docker-relay-switch.ts` (`busSwitch(db, runId, 'docker_relay')` against the member's `$ORCHESTRA_RUN_ID`). Like `pause` it is not
+"the bus is authoritative", so `busSwitchNoticeLines` has its own wording (ON: your docker goes through a relay, don't override `DOCKER_HOST`; OFF: used directly).
+Auto-appears in `orchestra bus-status` flags and the Settings toggles (`BusSwitchSettings` description added). Mid-run flips never reach a running run (the freeze).
+
 ### Gates
 
 ```bash

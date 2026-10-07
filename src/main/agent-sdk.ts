@@ -48,6 +48,7 @@ import {
   maybeBumpCoordinatorOnReplacement,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
+import { dockerRelaySpecFor } from './docker-relay-switch.ts';
 import { notePauseHumanTurn, pauseRefusalById } from './pause-gate.ts';
 import { isPauseRefusal, type PauseOrigin } from '../shared/bus-pause.ts';
 import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
@@ -2081,7 +2082,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
                   notifyTurnStart(wsId);
                 }
               }
-            }) as never,
+            }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote)) as never,
           }),
       // The workspace's model (frozen at creation / picked in the dropdown);
       // undefined = account default. Same resolver as the pty path. `sdkSetModel`

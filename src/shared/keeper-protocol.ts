@@ -22,8 +22,17 @@ export type KeeperClientFrame =
    *  client slot — safe to send while another client is attached (used by
    *  probeKeeper/listLiveKeepers without kicking a live session). */
   | { t: 'probe'; wsId: string }
-  /** Spawn the CLI (only valid when `helloAck.running` was false). */
-  | { t: 'spawn'; command: string; args: string[]; cwd: string; env: Record<string, string | undefined> }
+  /** Spawn the CLI (only valid when `helloAck.running` was false). `dockerRelay` (#291, absent = today's frame, byte for
+   *  byte) asks this keeper to host the Docker relay stamping `orchestra.ws`/`orchestra.run` on every container the
+   *  member creates, and to point the CLI's `DOCKER_HOST` at it; a relay that cannot start leaves the env untouched. */
+  | {
+      t: 'spawn';
+      command: string;
+      args: string[];
+      cwd: string;
+      env: Record<string, string | undefined>;
+      dockerRelay?: { runId: string };
+    }
   /** Raw bytes for the CLI's stdin. */
   | { t: 'stdin'; b64: string }
   /** EOF the CLI's stdin — the graceful-shutdown trigger. The keeper then

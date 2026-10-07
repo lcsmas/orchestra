@@ -22,19 +22,25 @@
 //   clock, which is what lets the app-side bridge no-op its `kill()`.
 // - Shutdown policy (linger after turn end / wedge backstop) lives in the pure
 //   shared state machine; the daemon just feeds it events and polls it.
+// - Docker relay (#291, ADR 0004): a `spawn` frame carrying `dockerRelay` makes this keeper host a unix-socket
+//   Docker proxy that stamps `orchestra.ws`/`orchestra.run` on every container and point the CLI's DOCKER_HOST at
+//   it. Absent ⇒ none of that code runs and the CLI env is exactly what the client sent.
 
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import {
   createLineSplitter,
   encodeKeeperFrame,
   parseKeeperFrame,
   createKeeperState,
   DEFAULT_KEEPER_POLICY,
+  type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol.ts';
+import { MAX_SOCKET_PATH_BYTES, relaySocketPath, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -125,6 +131,8 @@ function unlinkOwnedFiles(): void {
 }
 
 function cleanupAndExit(code: number): void {
+  relaySupervisor?.stop();
+  relay?.stop();
   unlinkOwnedFiles();
   klog(`exit code=${code}`);
   process.exit(code);
@@ -208,6 +216,118 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
   });
 }
 
+// ── Docker relay (#291) ──────────────────────────────────────────────────────────────────────────────────────────
+
+let relay: DockerRelay | null = null;
+let relaySupervisor: RelaySupervisor | null = null;
+/** True from a relay-carrying `spawn` frame until the CLI is started: frames that arrive meanwhile (the client
+ *  buffers stdin right behind `spawn`) are held and replayed in order, never dropped. */
+let spawnInFlight = false;
+const deferredFrames: KeeperClientFrame[] = [];
+
+function dockerContextHost(env: Record<string, string | undefined>): string | null {
+  try {
+    const out = execFileSync('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {
+      env: env as NodeJS.ProcessEnv,
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out || null;
+  } catch {
+    return null; // no docker CLI / unreadable config: fall back to the default socket
+  }
+}
+
+function isSocketPath(p: string): boolean {
+  try {
+    return fs.statSync(p).isSocket();
+  } catch {
+    return false;
+  }
+}
+
+/** Start the relay and return the CLI env to use: the client's env + `DOCKER_HOST` at the relay — or the client's env
+ *  UNTOUCHED when the relay cannot start (the member then uses the real socket; its containers count as unattributed). */
+async function withDockerRelay(runId: string, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
+  try {
+    const up = resolveRelayUpstream(env, { dockerContextHost, isSocket: isSocketPath });
+    if (!up.ok) {
+      klog(`docker relay disabled: ${up.reason}`);
+      return env;
+    }
+    const relaySock = relaySocketPath(sockPath);
+    if (Buffer.byteLength(relaySock) > MAX_SOCKET_PATH_BYTES) {
+      klog(`docker relay disabled: socket path too long (${relaySock})`);
+      return env;
+    }
+    const r = createDockerRelay({ sockPath: relaySock, upstream: up.socketPath, ws: wsId, run: runId, log: klog });
+    if (!(await r.start())) {
+      r.stop();
+      klog('docker relay disabled: could not start');
+      return env;
+    }
+    relay = r;
+    relaySupervisor = superviseDockerRelay(r, { checkMs: intEnv('ORCHESTRA_KEEPER_RELAY_CHECK_MS', 1000), log: klog });
+    // SIGUSR2 = "the relay crashed" (operator/rig kill switch); registered only now, so a keeper with no relay keeps
+    // SIGUSR2's default action exactly as before.
+    process.on('SIGUSR2', () => relay?.kill());
+    klog(`docker relay listening ${relaySock} -> ${up.socketPath} (via ${up.via}) ws=${wsId} run=${runId}`);
+    return { ...env, DOCKER_HOST: `unix://${relaySock}` };
+  } catch (e) {
+    klog(`docker relay disabled: ${(e as Error).message}`);
+    return env;
+  }
+}
+
+/** The frames that need the claimed client slot. `spawn` is the only one that can be asynchronous. */
+function handleClientFrame(f: KeeperClientFrame): void {
+  switch (f.t) {
+    case 'spawn':
+      if (child && !childExited) {
+        send({ t: 'err', msg: 'already running' });
+      } else if (childExited) {
+        // Stale keeper (CLI already exited) — the client should kill us
+        // and launch a fresh keeper; never reuse a dead child slot.
+        send({ t: 'err', msg: 'stale keeper: child already exited' });
+      } else if (f.dockerRelay) {
+        spawnInFlight = true;
+        void withDockerRelay(f.dockerRelay.runId, f.env).then((env) => {
+          try {
+            startChild(f.command, f.args, f.cwd, env);
+          } finally {
+            spawnInFlight = false;
+            for (const d of deferredFrames.splice(0)) handleClientFrame(d);
+          }
+        });
+      } else {
+        startChild(f.command, f.args, f.cwd, f.env);
+      }
+      break;
+    case 'stdin':
+      if (child && !childExited && !shuttingDown) {
+        child.stdin?.write(Buffer.from(f.b64, 'base64'));
+      } else if (shuttingDown) {
+        // The CLI is dying; do NOT silently drop the frame (audit D1: a
+        // client that attached to a shutting-down keeper would think its
+        // wake prompt landed). Tell it so it can kill + respawn instead.
+        send({ t: 'err', msg: 'shutting down' });
+      }
+      break;
+    case 'stdinEnd':
+      beginShutdown('stdinEnd from client');
+      break;
+    case 'kill': {
+      const signal = f.signal ?? 'SIGTERM';
+      klog(`kill frame signal=${signal}`);
+      shuttingDown = true;
+      if (child && !childExited) escalateKill(ESCALATE_KILL_MS, signal);
+      else cleanupAndExit(0);
+      break;
+    }
+  }
+}
+
 const server = net.createServer((sock) => {
   // A connection is anonymous until it sends `hello` (claim) — a `probe` gets
   // its answer and goes away without disturbing the attached client.
@@ -260,40 +380,11 @@ const server = net.createServer((sock) => {
       }
       // Everything below requires the claimed client slot.
       if (sock !== client) return;
-      switch (f.t) {
-        case 'spawn':
-          if (child && !childExited) {
-            send({ t: 'err', msg: 'already running' });
-          } else if (childExited) {
-            // Stale keeper (CLI already exited) — the client should kill us
-            // and launch a fresh keeper; never reuse a dead child slot.
-            send({ t: 'err', msg: 'stale keeper: child already exited' });
-          } else {
-            startChild(f.command, f.args, f.cwd, f.env);
-          }
-          break;
-        case 'stdin':
-          if (child && !childExited && !shuttingDown) {
-            child.stdin?.write(Buffer.from(f.b64, 'base64'));
-          } else if (shuttingDown) {
-            // The CLI is dying; do NOT silently drop the frame (audit D1: a
-            // client that attached to a shutting-down keeper would think its
-            // wake prompt landed). Tell it so it can kill + respawn instead.
-            reply({ t: 'err', msg: 'shutting down' });
-          }
-          break;
-        case 'stdinEnd':
-          beginShutdown('stdinEnd from client');
-          break;
-        case 'kill': {
-          const signal = f.signal ?? 'SIGTERM';
-          klog(`kill frame signal=${signal}`);
-          shuttingDown = true;
-          if (child && !childExited) escalateKill(ESCALATE_KILL_MS, signal);
-          else cleanupAndExit(0);
-          break;
-        }
+      if (spawnInFlight) {
+        deferredFrames.push(f as KeeperClientFrame);
+        return;
       }
+      handleClientFrame(f as KeeperClientFrame);
     })
   );
   sock.on('close', () => {

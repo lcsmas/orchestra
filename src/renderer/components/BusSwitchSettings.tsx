@@ -32,6 +32,9 @@ const MECHANISM_DESC: Record<BusMechanism, string> = {
   // #252 — host-enforced fleet pause.
   pause:
     'A run can be paused with “orchestra run pause --hard”: the host refuses réveils, new turns and spawns into it and its descendant runs (a human prompt stays allowed). While OFF the verb is refused and nothing is ever gated.',
+  // #291 — the keeper's Docker relay.
+  dockerRelay:
+    'Each member’s keeper hosts a Docker relay (DOCKER_HOST) that stamps orchestra.ws / orchestra.run on every container the member creates, so a Pause can find them. While OFF DOCKER_HOST is never set and containers are not stamped.',
 };
 
 /**

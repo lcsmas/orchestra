@@ -45,7 +45,8 @@ export type BusMechanism =
   | 'fencing' // #128
   | 'capability' // #129
   | 'receipts' // #130
-  | 'pause'; // #252 fleet Pause (ADR 0003)
+  | 'pause' // #252 fleet Pause (ADR 0003)
+  | 'dockerRelay'; // #291 keeper Docker relay (ADR 0004)
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
@@ -57,6 +58,7 @@ export const BUS_MECHANISMS: readonly BusMechanism[] = [
   'capability', // #129
   'receipts', // #130
   'pause', // #252
+  'dockerRelay', // #291
 ];
 
 /** One boolean per mechanism. */
@@ -79,6 +81,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   capability: false, // #129
   receipts: false, // #130
   pause: false, // #252 — opt-in per run; OFF ⇒ `run pause` refused and no gate ever fires
+  dockerRelay: false, // #291 — opt-in per run; OFF ⇒ DOCKER_HOST is never set, containers are not stamped
 });
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -91,6 +94,7 @@ export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   capability: 'Capability tokens (dispatch)', // #129
   receipts: 'Mutation receipts (idempotence)', // #130
   pause: 'Pause (host-enforced fleet pause)', // #252
+  dockerRelay: 'Docker relay (containers stamped with their workspace + run)', // #291
 };
 
 /**
@@ -201,7 +205,8 @@ export type BusMechanismWire =
   // startup notice agree with everything else.
   | 'capability'
   | 'receipts' // #130 (wire == key)
-  | 'pause'; // #252 (wire == key)
+  | 'pause' // #252 (wire == key)
+  | 'docker_relay'; // #291 (snake wire, camel key — like ask_gate)
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   delivery: 'delivery',
@@ -215,6 +220,7 @@ const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   // literal anywhere else.
   receipts: 'receipts',
   pause: 'pause', // #252 (wire == key; same single-map rule)
+  docker_relay: 'dockerRelay', // #291
 };
 
 /** Wire name → internal key. Returns null for an unknown name (never a guess). */
@@ -265,6 +271,15 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
         on
           ? `- bus switch ${wire}=ON — a fleet Pause of this run is enforced by the host (a refused start says "run en pause"; lift with orchestra run resume).`
           : `- bus switch ${wire}=OFF — fleet Pause is not enforced in this run (orchestra run pause is refused).`,
+      );
+      continue;
+    }
+    // #291: `docker_relay` is not a bus mechanism either — say what it does, not "the bus is authoritative".
+    if (m === 'dockerRelay') {
+      lines.push(
+        on
+          ? `- bus switch ${wire}=ON — your docker calls go through a keeper relay ($DOCKER_HOST) that stamps orchestra.ws / orchestra.run on every container you create; do not override DOCKER_HOST or use another socket path.`
+          : `- bus switch ${wire}=OFF — docker is used directly; containers you create are not stamped.`,
       );
       continue;
     }

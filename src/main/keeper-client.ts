@@ -35,6 +35,7 @@ import {
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
+import { relaySocketPath, type DockerRelaySpec } from '../shared/docker-relay';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
@@ -89,6 +90,11 @@ export function keeperSocketPath(wsId: string): string {
   if (full.length <= 100) return full;
   const h = crypto.createHash('sha256').update(wsId).digest('hex').slice(0, 16);
   return path.join(os.tmpdir(), `okeeper-${h}.sock`);
+}
+
+/** The keeper's Docker relay socket (#291) — beside the keeper's own, derived from it. */
+export function keeperRelaySocketPath(wsId: string): string {
+  return relaySocketPath(keeperSocketPath(wsId));
 }
 
 function keeperPidPath(wsId: string): string {
@@ -486,6 +492,8 @@ export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
   };
   if (state === 'gone' || state === 'other') unlink(keeperPidPath(wsId));
   if (!sockLive) unlink(sockPath);
+  // The relay socket (#291) is the keeper's: with no live keeper on the workspace nobody serves it any more.
+  if (!sockLive && (state === 'gone' || state === 'other')) unlink(keeperRelaySocketPath(wsId));
   sweepDeadClaims(wsId);
 }
 
@@ -595,7 +603,7 @@ export function listLiveKeepers(): string[] {
     } catch {
       /* unreadable → stale */
     }
-    for (const p of [path.join(keeperDir(), name), keeperSocketPath(wsId), keeperLogPath(wsId)]) {
+    for (const p of [path.join(keeperDir(), name), keeperSocketPath(wsId), keeperRelaySocketPath(wsId), keeperLogPath(wsId)]) {
       try {
         fs.unlinkSync(p);
       } catch {
@@ -684,6 +692,8 @@ async function launchKeeperDaemon(wsId: string): Promise<net.Socket> {
 export function makeKeeperSpawn(
   wsId: string,
   onAttached?: (pid: number | undefined, turnInFlight: boolean) => void,
+  /** #291: ask the keeper to host the Docker relay for this member (absent = the spawn frame is today's, byte for byte). */
+  dockerRelay?: DockerRelaySpec,
 ): (opts: SdkSpawnOptions) => KeeperSpawnedProcess {
   return (opts: SdkSpawnOptions): KeeperSpawnedProcess => {
     const ev = new EventEmitter();
@@ -861,6 +871,7 @@ export function makeKeeperSpawn(
                 args: opts.args,
                 cwd: opts.cwd ?? process.cwd(),
                 env: opts.env,
+                ...(dockerRelay ? { dockerRelay } : {}),
               }),
             );
           }
