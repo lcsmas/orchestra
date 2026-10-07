@@ -180,6 +180,8 @@ import {
   startBusWake,
   stopBusWake,
   setWakeRoster,
+  setWakeRosterEntry,
+  setWakeKeeperResident,
   setWakeDeliver,
   setWakeSwitchReader,
   setAskGateSwitchReader,
@@ -242,8 +244,9 @@ import {
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
-import { heldStartFor, startAdmission, stopAdmission } from './admission';
+import { livenessSilencedByAdmission, startAdmission, stopAdmission } from './admission';
 import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
+import { keeperResident } from './admission-wake';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -521,6 +524,11 @@ async function createMainWindow() {
   // runner cannot resolve, and importing it there would make the whole wake
   // module untestable under `pnpm run test`.
   setWakeRoster(() => store.workspaces.map(wakeRosterEntry));
+  setWakeRosterEntry((id) => {
+    const w = store.getWorkspace(id);
+    return w ? wakeRosterEntry(w) : null;
+  });
+  setWakeKeeperResident(keeperResident); // #287 F1: a keeper-resident member's wake only reattaches — never held for memory
   // #134 — wire the per-run switch readers the wake sweep consults. Until now
   // these stayed the shipped default `() => false`, so even a run frozen wake=ON
   // was COUNTED, never fired. Each reads the flag FROZEN ON THE RUN ROW (never
@@ -556,7 +564,7 @@ async function createMainWindow() {
   // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
   // #252 row 15: the SAME live-tree pause decision the gates use silences a paused run's members.
   // #286: a member whose start is HELD for memory is not silent — it was told "accepted, held"; escalating it as a stall would be the false alarm the HELD marker prevents.
-  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null || heldStartFor(ws.id) !== null));
+  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null || livenessSilencedByAdmission(ws.id)));
   // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
   // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's

@@ -113,7 +113,7 @@ show an unrelated process actually SIGKILLed. `agent-sdk.ts` is untouched (the
 
 The host's available memory (`MemAvailable`) drives two thresholds (Settings, GB = GiB): **Admission** below 6 (held until
 back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts above the Admission threshold, 6 — not 7).
-**This track holds nothing**: it measures, decides, logs and exposes; #286 (Admission), #288 (fast Veille), #289 (alert), #290
+**This track holds nothing**: it measures, decides, logs and exposes; #286 (Admission: spawns/restarts) + #287 (Admission: wakes — `docs/codebase-map/workspaces.md` § Admission), #288 (fast Veille), #289 (alert), #290
 (memory Pause) consume the API. Glossary: `CONTEXT.md` (Veille, Admission); decision record: `docs/adr/0004-…`.
 
 - **Pure half — `src/shared/memory-guard.ts`** (+ `.test.ts`): `decideMemoryGuard(prev, availBytes, thresholds)` (`:156`) → next

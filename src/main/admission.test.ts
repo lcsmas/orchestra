@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ADMISSION_RETRY_MS, ADMISSION_RUN_TIMEOUT_MS, ADMISSION_SETTLE_MS, realAdmissionDeps, __rebuildAdmissionForTests, admissionGate, createAdmission, heldStartFor, listHeldStarts, startAdmission, stopAdmission, type AdmissionDeps, type GateArgs } from './admission.ts';
+import { kickAdmission, livenessSilencedByAdmission, ADMISSION_RETRY_MS, ADMISSION_RUN_TIMEOUT_MS, ADMISSION_SETTLE_MS, realAdmissionDeps, __rebuildAdmissionForTests, admissionGate, createAdmission, heldStartFor, listHeldStarts, startAdmission, stopAdmission, type AdmissionDeps, type GateArgs } from './admission.ts';
 import { __rebuildMemoryGuardForTests, setMemoryGuardSettingsReader } from './memory-guard.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 
@@ -438,16 +438,15 @@ test('pause_refused_does_not_block_the_line: a Pause-refused entry at the head k
   assert.deepEqual(a.list().map((e) => e.wsId), ['X1'], 'X1 kept its slot');
   assert.deepEqual(xRuns, ['X1'], 'tried once in this pass (not in a tight loop)');
   assert.ok(w.timers.some((t) => t.ms === 10_000), 'a retry is armed for it');
-  // a brand-new automatic start at 12 GB while the refused one still sits in the queue: it joins the line AND goes out
-  assert.deepEqual(a.gate(args(w, 'Z1')).held, true);
-  for (let i = 0; i < 20 && !w.ran.includes('Z1'); i++) await new Promise((r) => setImmediate(r));
-  assert.deepEqual(w.ran, ['Y1', 'Z1']);
+  // a brand-new automatic start at 12 GB while ONLY the Pause-refused one sits in the queue: it is NOT a line a newcomer must join (review r2 N1) — it goes straight out
+  assert.deepEqual(a.gate(args(w, 'Z1')), { held: false });
+  assert.deepEqual(w.ran, ['Y1']);
   const triesWhilePaused = xRuns.length; // each pass tries the refused one ONCE (the retry + the newcomer's pass) — never a tight loop
   assert.ok(triesWhilePaused >= 1 && triesWhilePaused <= 3, `tries while paused: ${triesWhilePaused}`);
   xPaused = false;
   await a.kick();
   assert.equal(xRuns.length, triesWhilePaused + 1, 'after the Pause lifts it is released from its own slot, once');
-  assert.deepEqual(w.ran, ['Y1', 'Z1'], 'X1\'s run records in xRuns, not in ran');
+  assert.deepEqual(w.ran, ['Y1'], 'X1\'s run records in xRuns, not in ran');
   assert.deepEqual(a.list(), []);
 });
 
@@ -509,7 +508,8 @@ test('timed_out_release_is_reported: a hung start that never settles tells the c
   w.timers.find((t) => t.ms === 90_000)!.fn();
   await pass;
   assert.equal(told.length, 1);
-  assert.match(told[0], /did not settle within 90 s/);
+  assert.match(told[0], /was released but is not CONFIRMED within 90 s — it may still be starting\. Check `orchestra peers` first; only if hung is still stopped retry it with `orchestra restart hung`\./);
+  assert.doesNotMatch(told[0], /did NOT start/, 'a start that merely takes > 90 s is not reported as a failure (review r2 T1)');
 });
 
 test('drop_forgets_a_deleted_workspace: drop() removes it from the list, the marker and the "non-empty line" rule (F4)', () => {
@@ -617,4 +617,364 @@ test('B15 a repeat request refreshes stillOwed: the NEWEST closure decides wheth
   w.mem = 9;
   await a.kick();
   assert.deepEqual(w.ran, []);
+});
+
+// ─── #286 review r2 leftovers (N1 L1 T1) ────────────────────────────────────────────────────────────────────────────────────────────
+
+test('N1 paused_entry_is_not_a_line: with ONLY a Pause-refused entry queued a newcomer at plentiful memory goes straight out; with a NORMAL waiting entry too it still joins the line', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'X', { run: async () => ({ ok: false, error: 'run en pause' }), retryLater: () => true }));
+  w.mem = 12;
+  await a.kick(); // X is refused → paused, keeps its slot
+  assert.deepEqual(a.list().map((e) => e.wsId), ['X']);
+  assert.deepEqual(a.gate(args(w, 'new1')), { held: false }, 'a paused-only queue is not a line');
+  // a normal entry is queued while memory is low again: now there IS a line, and a newcomer joins it (arrival order)
+  w.mem = 4;
+  a.gate(args(w, 'W'));
+  w.mem = 6.5; // Admission open (hysteresis) but no room to release
+  assert.deepEqual(a.gate(args(w, 'new2')), { held: true, since: 1_000_000, kind: 'spawn' }, 'a normal waiting entry makes a line');
+});
+
+test('L1 releasing_window_keeps_the_marker: heldFor still answers while a release is RUNNING (the member is booting — the liveness shield must not drop when the release BEGINS); list() does not', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let finish: () => void = () => {};
+  a.gate(args(w, 'x', { run: () => new Promise<void>((r) => { finish = r; }) }));
+  w.mem = 9;
+  const pass = a.kick();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.deepEqual(a.list(), [], 'out of the queue: it is starting, not waiting');
+  assert.deepEqual(a.heldFor('x'), { kind: 'spawn', since: 1_000_000 }, 'but the marker (and the liveness shield) holds until the start returns');
+  assert.equal(livenessSilencedByAdmission('x'), false, 'control: the facade predicate reads the singleton, not this instance');
+  finish();
+  await pass;
+  assert.equal(a.heldFor('x'), null, 'after the start returned the marker is gone');
+});
+
+test('facade livenessSilencedByAdmission: true while held AND while releasing, false otherwise (the predicate index.ts wires)', async () => {
+  const w = world();
+  setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
+  __rebuildAdmissionForTests({ ...w.deps });
+  assert.equal(livenessSilencedByAdmission('q'), false);
+  let finish: () => void = () => {};
+  assert.equal(admissionGate(args(w, 'q', { run: () => new Promise<void>((r) => { finish = r; }) })).held, true);
+  assert.equal(livenessSilencedByAdmission('q'), true, 'held');
+  w.mem = 9;
+  const pass = kickAdmission();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(livenessSilencedByAdmission('q'), true, 'releasing');
+  finish();
+  await pass;
+  assert.equal(livenessSilencedByAdmission('q'), false, 'done');
+  stopAdmission();
+});
+
+// ─── #287: the wake kind (holdWake) ──────────────────────────────────────────────────────────────────────────────────────────────
+
+import type { WakeGateArgs } from './admission.ts';
+function wakeArgs(w: ReturnType<typeof world>, wsId: string, over: Partial<WakeGateArgs> = {}): WakeGateArgs {
+  return { wsId, fleetMember: true, sleeping: true, coordinator: false, site: 'sweep', retry: async () => { w.ran.push(`wake:${wsId}`); }, stillOwed: () => true, ...over };
+}
+
+test('W1 baseline: a wake of a SLEEPING fleet member under 4 GB is HELD (queued as kind wake, nothing runs); at 12 GB with an empty queue it passes', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  assert.deepEqual(a.holdWake(wakeArgs(w, 'm1')), { held: true, since: 1_000_000, kind: 'wake' });
+  assert.deepEqual(w.ran, []);
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['m1', 'wake']]);
+  assert.deepEqual(a.heldFor('m1'), { kind: 'wake', since: 1_000_000 });
+  assert.match(w.warns[0], /HELD wake of m1 — MemAvailable 4\.00 GB, Admission held; 1 held start\(s\)/);
+  const b = createAdmission(world().deps);
+  const w2 = world(); w2.mem = 12;
+  assert.deepEqual(createAdmission(w2.deps).holdWake(wakeArgs(w2, 'm2')), { held: false });
+  void b;
+});
+
+test('W2 never held: a wake of a LIVE member (a plain turn), of a non-fleet workspace, or the memory being fine', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  assert.deepEqual(a.holdWake(wakeArgs(w, 'live', { sleeping: false })), { held: false });
+  assert.deepEqual(a.holdWake(wakeArgs(w, 'top', { fleetMember: false })), { held: false });
+  assert.deepEqual(a.list(), []);
+});
+
+test('W3 release: the queue grants a ONE-SHOT permit, runs the site\'s retry, the retry\'s own holdWake consumes it and goes through; the permit is gone afterwards', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const seen: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { const again = a.holdWake(wakeArgs(w, 'm1')); seen.push(again.held); w.ran.push('wake:m1'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(seen, [false], 'the retry re-entered holdWake and was let through (permit consumed)');
+  assert.deepEqual(w.ran, ['wake:m1']);
+  assert.deepEqual(a.list(), []);
+  w.mem = 4;
+  assert.equal(a.holdWake(wakeArgs(w, 'm1')).held, true, 'the permit was one-shot: a LATER wake is held again');
+});
+
+test('W4 an unconsumed permit is revoked: a retry that never re-enters holdWake (reader no longer pending) leaves no stale permit behind', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { /* the site found nothing to do */ } }));
+  w.mem = 9;
+  await a.kick();
+  w.mem = 4;
+  assert.equal(a.holdWake(wakeArgs(w, 'm1')).held, true, 'no stale permit let this one through');
+});
+
+test('W5 order: wakes follow the same discipline as starts — coordinators first, then arrival order, one at a time, a fresh reading each', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let inflight = 0, maxInflight = 0;
+  const slow = (id: string) => async () => { inflight++; maxInflight = Math.max(maxInflight, inflight); await Promise.resolve(); await Promise.resolve(); w.ran.push(id); inflight--; };
+  a.holdWake(wakeArgs(w, 'w-a', { retry: slow('w-a') }));
+  a.holdWake(wakeArgs(w, 'w-b', { retry: slow('w-b') }));
+  a.holdWake(wakeArgs(w, 'sub', { coordinator: true, retry: slow('sub') }));
+  w.mem = 9;
+  const before = w.samples;
+  await a.kick();
+  assert.deepEqual(w.ran, ['sub', 'w-a', 'w-b']);
+  assert.equal(maxInflight, 1);
+  assert.ok(w.samples - before >= 3, 'a fresh sample before each release');
+});
+
+test('W6 a held SPAWN/RESTART covers a wake of the same member: the wake is answered "held" with the start\'s own since/kind and does NOT replace the start\'s closure', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'm1', { kind: 'spawn' }));
+  w.now += 5_000;
+  assert.deepEqual(a.holdWake(wakeArgs(w, 'm1')), { held: true, since: 1_000_000, kind: 'spawn' });
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['m1', 'spawn']]);
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['m1'], 'the SPAWN\'s own start ran (brief), not the wake\'s retry');
+});
+
+test('W7 a real start supersedes a held wake of the same member: the slot is kept, the kind and the closure become the start\'s', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'm1'));
+  w.now += 5_000;
+  assert.deepEqual(a.gate(args(w, 'm1', { kind: 'restart' })), { held: true, since: 1_000_000, kind: 'restart' });
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind, e.seq]), [['m1', 'restart', 1]]);
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['m1'], 'the restart ran, the wake\'s retry did not');
+});
+
+test('W8 a member a PERSON started meanwhile drops its held wake (the next sweep delivers to the running member as a plain turn)', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let owed = true;
+  a.holdWake(wakeArgs(w, 'm1', { stillOwed: () => owed }));
+  owed = false;
+  assert.equal(a.heldFor('m1'), null);
+});
+
+test('W9 a wake whose retry throws is logged and the line moves on (nothing is lost: the site\'s durable state stays pending)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'bad', { retry: async () => { throw new Error('sweep blew up'); } }));
+  a.holdWake(wakeArgs(w, 'ok1'));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['wake:ok1']);
+  assert.ok(w.warns.some((l) => /released wake of bad FAILED: sweep blew up/.test(l)));
+});
+
+// ── #287 pre-review r1 (M1 settle, M2 per-site registry, M3 dropSite, in-flight rank, stale `paused`) ──
+
+test('W10 two wake SITES for one member never overwrite each other: both retries run, each under its own permit, in registration order; the member stays queued while ANY site is owed', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const seen: string[] = [];
+  let flushOwed = true;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'sweep', retry: async () => { seen.push(`sweep:${a.holdWake(wakeArgs(w, 'm1', { site: 'sweep' })).held ? 'held' : 'through'}`); } }));
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', stillOwed: () => flushOwed, retry: async () => { seen.push(`flush:${a.holdWake(wakeArgs(w, 'm1', { site: 'flush' })).held ? 'held' : 'through'}`); } }));
+  assert.deepEqual(a.list().map((e) => e.wsId), ['m1'], 'ONE slot for the member');
+  // the sweep site no longer owed (stillOwed is the replaced-by-newest one for 'sweep'): the flush site alone keeps the member queued
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(seen, ['sweep:through', 'flush:through']);
+  assert.deepEqual(a.list(), []);
+  // owed-ness is per site: with ONLY the flush site not owed and the sweep site owed, the entry is still wanted
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm2', { site: 'flush', stillOwed: () => false }));
+  a.holdWake(wakeArgs(w, 'm2', { site: 'sweep', stillOwed: () => true }));
+  assert.equal(a.heldFor('m2')?.kind, 'wake');
+  a.holdWake(wakeArgs(w, 'm3', { site: 'flush', stillOwed: () => false }));
+  assert.equal(a.heldFor('m3'), null, 'no site owed → pruned at read time');
+  void flushOwed;
+});
+
+test('W11 dropSite: a site that could not park its state is withdrawn; the entry goes ONLY when it was a wake with no other site left — a held spawn / restart is never dropped', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'w-only', { site: 'message' }));
+  assert.equal(a.dropSite('w-only', 'message'), true);
+  assert.deepEqual(a.list(), []);
+  a.holdWake(wakeArgs(w, 'w-two', { site: 'message' }));
+  a.holdWake(wakeArgs(w, 'w-two', { site: 'sweep' }));
+  assert.equal(a.dropSite('w-two', 'message'), false, 'another site still wants the wake');
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['w-two', 'wake']]);
+  a.gate(args(w, 'spawned', { kind: 'spawn' }));
+  a.holdWake(wakeArgs(w, 'spawned', { site: 'message' }));
+  assert.equal(a.dropSite('spawned', 'message'), false);
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['w-two', 'wake'], ['spawned', 'spawn']], 'the held SPAWN survives its message site failing');
+});
+
+test('W12 settle (M1): a wake release waits for the started member\'s first turn BEFORE the next fresh reading — the next release sees its memory; a throwing settle is logged and the line moves on; a spawn release is not settled here', async () => {
+  const w = world();
+  const events: string[] = [];
+  const a = createAdmission({ ...w.deps, settleWake: async (id) => { events.push(`settle:${id}`); if (id === 'bad') throw new Error('no session'); } });
+  const wk = (id: string) => wakeArgs(w, id, { retry: async () => { events.push(`retry:${id}`); } });
+  a.holdWake(wk('m1')); a.holdWake(wk('bad')); a.holdWake(wk('m2'));
+  a.gate(args(w, 'sp', { kind: 'spawn', run: async () => { events.push('retry:sp'); } }));
+  w.mem = 9;
+  const samplesBefore = w.samples;
+  await a.kick();
+  assert.deepEqual(events, ['retry:m1', 'settle:m1', 'retry:bad', 'settle:bad', 'retry:m2', 'settle:m2', 'retry:sp']);
+  assert.ok(w.warns.some((l) => /first-turn settle after the wake of bad threw/.test(l)));
+  assert.ok(w.samples - samplesBefore >= 4, 'a fresh reading per release');
+});
+
+test('W13 reenters:false (peer message, recovery): NO permit is granted for the retry, so no OTHER site can ride it', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const during: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { site: 'message', reenters: false, retry: async () => { during.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush' })).held); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(during, [true], 'another site\'s wake for the same member during the retry is held, not waved through');
+});
+
+test('W14 a WAKE release in flight covers another wake but NOT a restart: the restart is queued behind it (never answered "held" and then lost)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const seen: unknown[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.mem = 4; seen.push(a.gate(args(w, 'm1', { kind: 'restart' }))); seen.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush' }))); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.equal((seen[0] as { held: boolean; kind?: string }).held, true);
+  assert.equal((seen[0] as { kind?: string }).kind, 'restart', 'queued as the restart it is');
+  assert.deepEqual(a.list().map((e) => [e.wsId, e.kind]), [['m1', 'restart']], 'the restart is in the line, the covered wake is not a 2nd entry');
+});
+
+test('W15 a lifted Pause leaves no stale "not a line" flag: after a pass the formerly Pause-refused entry counts as the line again', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  w.mem = 9;
+  a.gate(args(w, 'A', { retryLater: () => true, run: async () => ({ ok: false, error: 'run en pause' }) }));   // mem fine, empty line → passes straight (not queued)
+  w.mem = 4;
+  a.gate(args(w, 'A', { retryLater: () => true, run: async () => ({ ok: false, error: 'run en pause' }) }));   // held
+  w.mem = 9;
+  await a.kick();                                                                                                // refused (Pause) → keeps its slot, flagged
+  assert.equal(a.heldFor('A')?.kind, 'spawn');
+  assert.deepEqual(a.gate(args(w, 'B')), { held: false }, 'N1: a Pause-refused entry alone is not a line — a newcomer at plentiful memory goes straight out');
+  w.mem = 6.5;                                                                                                   // above the threshold but no release room (< 7)
+  await a.kick();                                                                                                // the pass resets the flag, then waits for memory
+  assert.deepEqual(a.gate(args(w, 'C')), { held: true, since: 1_000_000, kind: 'spawn' }, 'the entry is the line again: C joins it instead of starting ahead of it');
+});
+
+test('W16 a wake site superseded by a held spawn leaves no stale registration: after the spawn releases, a LATER wake runs only its own retry', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', retry: async () => { w.ran.push('OLD-SITE-RETRY'); } }));   // a DIFFERENT site key than the later wake's: same key would just overwrite it
+  a.gate(args(w, 'm1', { kind: 'spawn' }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['m1']);
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.ran.push('NEW-SITE-RETRY'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['m1', 'NEW-SITE-RETRY']);
+});
+
+test('W17 a site that meets an in-flight wake release is answered "held" and is NOT left registered: a later wake runs only its own retries (no stale site)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const answers: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { reenters: false, retry: async () => { answers.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush', retry: async () => { w.ran.push('STALE-FLUSH'); } })).held); w.ran.push('wake:m1'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(answers, [true]);
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { w.ran.push('NEW'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['wake:m1', 'NEW']);
+});
+
+test('W18 per-site owed-ness is judged ONCE before the first retry: a site whose "still asleep" test an earlier site\'s retry made false still runs (its durable state is delivered to the now-running member)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let asleep = true;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'sweep', stillOwed: () => asleep, retry: async () => { asleep = false; w.ran.push('sweep'); } }));
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', stillOwed: () => asleep, retry: async () => { w.ran.push('flush'); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(w.ran, ['sweep', 'flush']);
+});
+
+// ── #287 review fix round (F1: keeper-resident wake is never held — sites probe only when the wake WOULD be held) ──
+
+test('W19 wouldHold: true while the guard holds Admission or an earlier start is still queued; false with memory fine and an empty (or only Pause-refused) line', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  w.mem = 12;
+  assert.equal(a.wouldHold(), false, 'memory fine, empty line');
+  w.mem = 4;
+  assert.equal(a.wouldHold(), true, 'the guard holds');
+  a.gate(args(w, 'A', { retryLater: () => true, run: async () => ({ ok: false, error: 'run en pause' }) }));
+  w.mem = 12;
+  assert.equal(a.wouldHold(), true, 'memory is fine but A is still queued — a newcomer joins the line');
+});
+
+// ── #287 verifier seat 2 gaps (c/6044775531): every path that removes a held WAKE must remove its site registrations — a stale site would ride a LATER hold of the member ──
+
+/** Hold a wake through site 'flush' (OLD, owed per `owed()`), remove the entry through `remove`, then hold a NEW wake through site 'sweep' and release: ONLY the new retry may run. */
+async function staleSiteScenario(remove: (a: ReturnType<typeof createAdmission>, w: ReturnType<typeof world>, setOwed: (v: boolean) => void) => void | Promise<void>): Promise<string[]> {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let owed = true;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'flush', stillOwed: () => owed, retry: async () => { w.ran.push('OLD'); } }));
+  await remove(a, w, (v) => { owed = v; });
+  owed = true;                                  // the OLD site would be owed again at the later release — only a stale registration can then run it
+  w.mem = 4;
+  a.holdWake(wakeArgs(w, 'm1', { site: 'sweep', retry: async () => { w.ran.push('NEW'); } }));
+  w.mem = 9;
+  await a.kick();
+  return w.ran;
+}
+
+test('W20 stale-site cleanup: a release that finds NO site owed drops the entry AND its registrations', async () => {
+  assert.deepEqual(await staleSiteScenario(async (a, w, setOwed) => { setOwed(false); w.mem = 9; await a.kick(); }), ['NEW']);
+});
+
+test('W21 stale-site cleanup: the READ-time prune (peers / bus-status / liveness read) of an unowed entry removes its registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a, _w, setOwed) => { setOwed(false); assert.equal(a.heldFor('m1'), null); }), ['NEW']);
+});
+
+test('W22 stale-site cleanup: drop() (the workspace was deleted) removes the registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a) => { assert.equal(a.drop('m1'), true); }), ['NEW']);
+});
+
+test('W23 stale-site cleanup: stop() (shutdown) removes the registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a) => { a.stop(); }), ['NEW']);
+});
+
+test('W24 stale-site cleanup: a HUMAN starting the member supersedes the held wake and removes its registrations', async () => {
+  assert.deepEqual(await staleSiteScenario((a, w) => { assert.deepEqual(a.gate(args(w, 'm1', { origin: 'human' })), { held: false }); assert.equal(a.heldFor('m1'), null); }), ['NEW']);
+});
+
+test('W25 the permit is consumed by the FIRST holdWake of its retry: a 2nd call inside the same retry (another path for the same member) is held, not waved through', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const answers: boolean[] = [];
+  a.holdWake(wakeArgs(w, 'm1', { retry: async () => { answers.push(a.holdWake(wakeArgs(w, 'm1')).held); answers.push(a.holdWake(wakeArgs(w, 'm1', { site: 'flush' })).held); } }));
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(answers, [false, true], '1st = the retry\'s own call (permit consumed), 2nd = held');
 });

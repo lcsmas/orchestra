@@ -20,7 +20,8 @@ test('WIRING activity.ts: a recorded limit stop notifies the observer — except
 
 test('WIRING prompt-queue.ts: the tick evaluates auto-paused runs FIRST, the compensator re-marks silently, the flusher registers/unregisters the observer, TICK_MS = 20 s', () => {
   const s = read('prompt-queue.ts');
-  assert.match(s, /async function resumeUsageLimited\(now: number\): Promise<void> \{[^}]*?await evaluatePausedRuns\(\);\s*const candidates = store\.workspaces/s);
+  // #287: `only` = an Admission release re-running ONE held member's nudge — it skips the whole-tick re-evaluation; the ordinary tick (`only` undefined) still evaluates auto-paused runs FIRST.
+  assert.match(s, /async function resumeUsageLimited\(now: number, only\?: string\): Promise<void> \{[^}]*?if \(only === undefined\) await evaluatePausedRuns\(\);[^\n]*\n\s*const candidates = store\.workspaces/s);
   assert.match(s, /markStoppedOnUsageLimit\(ws\.id, ws\.usageLimitResetsAt \?\? null, \{ remark: true \}\)/);
   assert.match(s, /export function startPromptQueueFlusher\(\): void \{\s*if \(timer\) return;\s*startPauseAuto\(\);/);
   assert.match(s, /export function stopPromptQueueFlusher\(\): void \{\s*stopPauseAuto\(\);/);

@@ -273,7 +273,8 @@ export type WakeAction =
   /** Nothing to do — no pending state, or already woken on BOTH axes' high-waters. */
   | { kind: 'skip'; reader: string; why: SkipReason };
 
-export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
+/** `held-for-memory` (#287) is never returned by `decideWake`: the SWEEP assigns it when a due réveil of a sleeping fleet member is held by Admission. */
+export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable' | 'held-for-memory';
 
 /**
  * Decide what to do about ONE reader on ONE sweep tick.

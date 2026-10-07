@@ -44,6 +44,7 @@ import {
 } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
+import { holdWake, wakeWouldBeHeld } from './admission.ts';
 import {
   decideWake,
   pruneWakeLedger,
@@ -273,6 +274,13 @@ function logWakeableTransition(reader: string, next: 'active' | SkipReason): voi
     if (prev !== undefined) {
       log.info(`bus-wake: ${reader} wakeable again (was ${prev}) — pending wake will be delivered`);
     }
+  } else if (next === 'held-for-memory') {
+    // Expected, not a defect: the réveil waits for memory (Admission logs the MemAvailable it was held at). Info, once per transition.
+    log.info(
+      `bus-wake: ${reader} is PENDING and its réveil is HELD for memory (Admission) — delivered when memory recovers; nothing is lost` +
+        (prev && prev !== 'active' ? ` (was '${prev}')` : '') +
+        ' (logged once per transition, not per sweep)',
+    );
   } else {
     log.warn(
       `bus-wake: ${reader} is PENDING but not being woken — skip reason '${next}'` +
@@ -582,6 +590,12 @@ export interface WakeableReader {
    *  carries its own frozen flags), and so is the reader's cursor — the same
    *  handle in two runs has two independent positions. */
   runId: string;
+  /** #287 Admission: the reader has a coordinator (a parent) — only a fleet member's réveil is ever held for memory. Absent = not a fleet member. */
+  fleetMember?: boolean;
+  /** #287: no live session / PTY — waking it would START a process (a wake of a live reader is a plain turn, never held). Absent = not sleeping. */
+  sleeping?: boolean;
+  /** #287: the reader itself coordinates — its held réveil is released before any worker's. */
+  coordinator?: boolean;
 }
 
 let readRoster: () => WakeableReader[] = () => [];
@@ -589,6 +603,21 @@ let readRoster: () => WakeableReader[] = () => [];
 /** Wired at boot (index.ts) with the real store, and by rigs with a fixture. */
 export function setWakeRoster(fn: () => WakeableReader[]): void {
   readRoster = fn;
+}
+
+/** #287: ONE reader's roster entry, fresh (no whole-roster rebuild: Admission re-checks every held réveil on each `peers` / liveness read). Unset = fall back to the roster. */
+let readRosterEntry: ((reader: string) => WakeableReader | null) | null = null;
+export function setWakeRosterEntry(fn: ((reader: string) => WakeableReader | null) | null): void {
+  readRosterEntry = fn;
+}
+/** #287 F1: is this reader's CLI alive in a detached keeper (an app relaunch leaves no in-memory session)? Its wake only REATTACHES — never held. Wired by index.ts
+ *  (keeper-client is not importable here); unset = never resident. */
+let readKeeperResident: (reader: string) => Promise<boolean> = async () => false;
+export function setWakeKeeperResident(fn: (reader: string) => Promise<boolean>): void {
+  readKeeperResident = fn;
+}
+function rosterEntryOf(reader: string): WakeableReader | null {
+  return readRosterEntry ? readRosterEntry(reader) : (readRoster().find((r) => r.reader === reader) ?? null);
 }
 
 /** How a wake reaches the reader's session. Resolves TRUE only when the turn
@@ -769,6 +798,34 @@ export async function sweepBusWake(): Promise<void> {
         if (action.why !== 'no-pending') logWakeableTransition(p.reader, action.why);
         continue;
       }
+      // #287 Admission: a due réveil of a SLEEPING FLEET member under low memory would START a process — it is HELD, not failed: the reader stays pending on the
+      // bus (nothing is lost), the sweep leaves the ledger and every counter alone (no mark, no failure, no retry storm), logs the reason ONCE per transition, and the
+      // Admission queue releases it (coordinators first, one at a time, a fresh reading each) by granting a one-shot permit and re-running the sweep.
+      if (action.kind === 'fire' && entry?.fleetMember === true) {
+        const reader = action.reader;
+        // Re-read THIS reader right before deciding: `entry` is the snapshot from the sweep's start, and a delivery awaited since may have put it to sleep (or woken it).
+        const now = rosterEntryOf(reader) ?? entry;
+        // F1: a keeper-resident member's wake only REATTACHES its live CLI (no new process) — never held. Probed only when the wake WOULD be held.
+        const resident = now.fleetMember === true && now.sleeping === true && wakeWouldBeHeld() && (await readKeeperResident(reader).catch(() => false));
+        if (now.fleetMember === true && now.sleeping === true && !resident) {
+          const held = holdWake({
+            wsId: reader,
+            fleetMember: true,
+            sleeping: true,
+            coordinator: now.coordinator === true,
+            site: 'sweep',
+            retry: () => sweepBusWakeNow(),
+            stillOwed: () => {
+              const r = rosterEntryOf(reader);
+              return !!r && r.wakeable && r.sleeping === true;
+            },
+          });
+          if (held.held) {
+            logWakeableTransition(reader, 'held-for-memory');
+            continue;
+          }
+        }
+      }
       logWakeableTransition(action.reader, 'active');
       // #153: write the FIRE mark to the fire ledger and the COUNT mark to the count
       // ledger — NEVER cross them. A count writing the fire ledger is the exact bug:
@@ -856,6 +913,13 @@ export async function sweepBusWake(): Promise<void> {
   } finally {
     sweeping = false;
   }
+}
+
+/** One sweep that is GUARANTEED to run: waits (bounded, ~5 s) for an in-flight sweep to finish, then sweeps. The Admission release uses it — `sweepBusWake()` returns at
+ *  once when a sweep is already running, which would leave the release's permit unconsumed and the next release starting before this wake was delivered. */
+export async function sweepBusWakeNow(): Promise<void> {
+  for (let i = 0; sweeping && i < 200; i++) await new Promise((r) => setTimeout(r, 25));
+  await sweepBusWake();
 }
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
@@ -1025,6 +1089,8 @@ export function __resetBusWakeForTests(): void {
   readAskGateSwitch = () => false;
   readBusDb = getBus;
   readRoster = () => [];
+  readRosterEntry = null;
+  readKeeperResident = async () => false;
   deliverWake = async () => false;
   nowMs = () => Date.now();
 }

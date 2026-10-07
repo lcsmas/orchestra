@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHeldStartsLine, heldPhrase, isFleetMember, isHumanOrigin, releaseFailureBody, mustHoldStart, nextToRelease, planRelease, type HeldStart } from './admission.ts';
+import { decideAdmissionReport, formatHeldStartsLine, formatRestartHeldReply, heldPhrase, heldStartLabel, isFleetMember, isHumanOrigin, releaseFailureBody, releaseTimeoutBody, mustHoldStart, nextToRelease, planRelease, type HeldStart } from './admission.ts';
 
 const H = (wsId: string, seq: number, coordinator = false, kind: HeldStart['kind'] = 'spawn'): HeldStart => ({ wsId, kind, seq, since: 1_000 + seq, coordinator });
 
@@ -73,4 +73,37 @@ test('release_failure_body: names the kind, the member, since-when, the reason a
     releaseFailureBody('restart', 'ws-m1', Date.UTC(2026, 9, 7, 14, 2, 11), 'the mid-turn guard refused'),
     'Admission: the restart of ws-m1 that was HELD for memory since 2026-10-07T14:02:11.000Z was released but did NOT start — the mid-turn guard refused. It is not queued any more: retry it with `orchestra restart ws-m1`.',
   );
+});
+
+// ─── #286 leftovers (review r2 T1, seat 2 F1 F2 F3) ─────────────────────────────────────────────────────────────────────────────────
+
+test('T1 release_timeout_body: "not CONFIRMED within N s — it may still be starting; check peers first", never "did NOT start"', () => {
+  const b = releaseTimeoutBody('spawn', 'ws-m1', Date.UTC(2026, 9, 7, 14, 2, 11), 90);
+  assert.equal(b, 'Admission: the spawn of ws-m1 that was HELD for memory since 2026-10-07T14:02:11.000Z was released but is not CONFIRMED within 90 s — it may still be starting. Check `orchestra peers` first; only if ws-m1 is still stopped retry it with `orchestra restart ws-m1`.');
+  assert.doesNotMatch(b, /did NOT start/);
+});
+
+test('F2 decide_admission_report: every branch — send, no coordinator (unknown member / archived-or-missing parent), no bus, switch OFF (counted, not fired)', () => {
+  const ok = { hasMember: true, coordinatorLive: true, hasBus: true, switchOn: true };
+  assert.deepEqual(decideAdmissionReport(ok), { action: 'send' });
+  assert.deepEqual(decideAdmissionReport({ ...ok, hasMember: false }), { action: 'skip', why: 'no-coordinator' });
+  assert.deepEqual(decideAdmissionReport({ ...ok, coordinatorLive: false }), { action: 'skip', why: 'no-coordinator' });
+  assert.deepEqual(decideAdmissionReport({ ...ok, hasBus: false }), { action: 'skip', why: 'no-bus' });
+  assert.deepEqual(decideAdmissionReport({ ...ok, switchOn: false }), { action: 'skip', why: 'switch-off' });
+  assert.deepEqual(decideAdmissionReport({ ...ok, coordinatorLive: false, hasBus: false, switchOn: false }), { action: 'skip', why: 'no-coordinator' }, 'no coordinator wins: nobody to tell');
+  assert.deepEqual(decideAdmissionReport({ ...ok, hasBus: false, switchOn: false }), { action: 'skip', why: 'no-bus' }, 'no bus wins over the switch');
+});
+
+test('F3 held_start_label: name, else branch, else the id (a deleted workspace)', () => {
+  assert.equal(heldStartLabel({ name: 'worker-a', branch: 'feat/a' }, 'id1'), 'worker-a');
+  assert.equal(heldStartLabel({ branch: 'feat/a' }, 'id1'), 'feat/a');
+  assert.equal(heldStartLabel({}, 'id1'), 'id1');
+  assert.equal(heldStartLabel(undefined, 'id1'), 'id1');
+  assert.equal(heldStartLabel(null, 'id1'), 'id1');
+});
+
+test('F1 restart_held_reply: the line `orchestra restart` prints for an accepted-but-held restart carries the note, never the normal "Restarted" line', () => {
+  const note = heldPhrase('restart', Date.UTC(2026, 9, 7, 14, 2, 11));
+  assert.equal(formatRestartHeldReply('ws-m1', note), 'Restart of ws-m1 accepted — restart held for memory since 2026-10-07T14:02:11.000Z — it starts when memory recovers (Admission)');
+  assert.doesNotMatch(formatRestartHeldReply('ws-m1', note), /Restarted/);
 });

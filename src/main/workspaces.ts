@@ -69,8 +69,9 @@ import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
-import { admissionGate, dropHeldStart, heldStartFor } from './admission.ts';
-import { heldPhrase } from '../shared/admission.ts';
+import { admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind } from './admission.ts';
+import { isSleeping, wakeHeldForMemory } from './admission-wake';
+import { decideAdmissionReport, heldPhrase } from '../shared/admission.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
   ACCOUNT_DEFAULT_MODEL,
@@ -914,28 +915,25 @@ function expireBusAsksForDeleted(id: string): void {
 export function reportAdmissionFailure(wsId: string, text: string): void {
   const ws = store.getWorkspace(wsId);
   const parent = ws?.parentId ? store.getWorkspace(ws.parentId) : undefined;
-  if (!ws || !parent || parent.archived) {
-    log.warn(`admission: ${text} (no live coordinator to tell)`);
-    return;
-  }
   const db = getBus();
-  if (!db) {
-    log.warn(`admission: ${text} (no bus — coordinator ${parent.id} not told)`);
-    return;
-  }
-  const runId = resolveWaveRunId(ws);
+  const runId = ws ? resolveWaveRunId(ws) : '';
   let on = false;
-  try {
-    on = busSwitch(db, runId, 'liveness');
-  } catch (e) {
-    log.warn(`admission: liveness switch read failed for ${wsId} — treating as OFF`, e);
+  if (db && ws && parent && !parent.archived) {
+    try {
+      on = busSwitch(db, runId, 'liveness');
+    } catch (e) {
+      log.warn(`admission: liveness switch read failed for ${wsId} — treating as OFF`, e);
+    }
   }
-  if (!on) {
-    log.info(`admission: would have told ${parent.id} (liveness switch OFF — counted, not fired): ${text}`);
+  const d = decideAdmissionReport({ hasMember: !!ws, coordinatorLive: !!parent && !parent.archived, hasBus: !!db, switchOn: on });
+  if (d.action === 'skip') {
+    if (d.why === 'no-coordinator') log.warn(`admission: ${text} (no live coordinator to tell)`);
+    else if (d.why === 'no-bus') log.warn(`admission: ${text} (no bus — coordinator ${parent?.id} not told)`);
+    else log.info(`admission: would have told ${parent?.id} (liveness switch OFF — counted, not fired): ${text}`);
     return;
   }
-  sendBus(db, { runId, sender: ws.id, recipient: parent.id, kind: 'escalation', body: text });
-  log.info(`admission: told coordinator ${parent.id} that ${wsId}'s released start did not start`);
+  sendBus(db as NonNullable<typeof db>, { runId, sender: wsId, recipient: (parent as Workspace).id, kind: 'escalation', body: text });
+  log.info(`admission: told coordinator ${(parent as Workspace).id} that ${wsId}'s released start did not start`);
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {
@@ -3166,7 +3164,7 @@ export interface PeerInfo {
    * child. Absent when the peer never set one (or cleared it). */
   statusText?: string;
   /** #286 Admission: this member's automatic start is HELD for low memory (since-when) — a stall to NOT mistake for a hang. */
-  heldForMemory?: { kind: 'spawn' | 'restart'; since: number };
+  heldForMemory?: { kind: HeldStartKind; since: number };
   /** Committed diff vs the workspace's base (three-dot shortstat). Present
    * only when the caller asked for `stats`; `null` = couldn't be computed
    * (missing ref / non-git workspace), which is distinct from an all-zero
@@ -3204,7 +3202,7 @@ export async function dispatchPeersRequest(input: {
     running: isRunning(w.id),
     lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
     statusText: w.statusText,
-    ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: 'spawn' | 'restart'; since: number } } : {}),
+    ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: HeldStartKind; since: number } } : {}),
   }));
   if (input.stats) {
     await Promise.all(
@@ -3395,6 +3393,14 @@ export async function wakeAgentWithPrompt(
   }
   // #227: no PTY fallback — false lets the callers fall back (inbox / re-queue / re-mark / error row already in the view).
   return false;
+}
+
+/** #287: the bring-up prompt of a HELD peer-message wake — content-free; the parked message reaches the agent through its inbox hook (SessionStart / UserPromptSubmit
+ *  drain the inbox file) exactly as every other inbox-parked message does. Nothing re-releases the block: a 2nd delivery would duplicate what the hook already drained. */
+const HELD_MESSAGE_WAKE_PROMPT = 'Orchestra: memory is back — you were woken to read the messages parked for you (they are printed above).';
+async function wakeHeldMessageTarget(id: string): Promise<void> {
+  if (!isSleeping(id)) return; // an earlier site's release (e.g. the bus order) already brought the member up: a content-free bring-up turn would be an extra turn
+  await wakeAgentWithPrompt(id, HELD_MESSAGE_WAKE_PROMPT);
 }
 
 /** Deliver a prompt from one agent to another. If the target's PTY is running
@@ -3590,6 +3596,13 @@ async function dispatchMessageRequestUnmirrored(
     return { ok: true, delivery: 'live', branch: target.branch };
   }
 
+  // #287 Admission: a stopped FLEET member's wake would START a process — under low memory it WAITS. The message is parked durably in the inbox (the existing
+  // fallback, reported honestly as 'inbox') and the queue wakes the member when its turn comes; its inbox hook drains the block on that very prompt.
+  if (await wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {
+    if (await queueInbox(input.to, body)) return { ok: true, delivery: 'inbox', branch: target.branch };
+    dropWakeSite(input.to, 'message'); // nothing parked → nothing to wake it for (this site only: a held spawn / restart of the member stays queued)
+    return { ok: false, error: 'inbox write failed' };
+  }
   // Target stopped — wake it and deliver the message as its next turn.
   try {
     if (await wakeAgentWithPrompt(input.to, body)) {

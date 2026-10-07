@@ -22,6 +22,7 @@ import {
 } from '../shared/usage-resume.ts';
 import { clearStopReason, markStoppedOnUsageLimit } from './activity';
 import { pauseRefusal } from './pause-gate.ts';
+import { isSleeping, wakeHeldForMemory } from './admission-wake';
 
 // Prompt queue for usage-limited accounts. While a workspace's account is over
 // its 5h/7d limit, Claude answers every prompt with a "limit reached" error —
@@ -134,6 +135,21 @@ export async function flushQueuedPrompts(
     }
   }
 
+  // #287 Admission: the TIMER flush of a SLEEPING FLEET member would START a process — under low memory it WAITS, BEFORE the queue is cleared: the parked prompts
+  // stay durable in the store exactly as they are, and the queue re-runs this flush when the member's turn comes. "Send now" (`force`, a human click) passes.
+  if (
+    !opts.force &&
+    (await wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {
+      site: 'flush',
+      stillOwed: () => {
+        const w = store.getWorkspace(id);
+        return !!w && !w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);
+      },
+    }))
+  ) {
+    return { ok: false, delivered: 0, error: 'held for memory (Admission) — the parked prompts stay queued' };
+  }
+
   // One turn, oldest-first. Joining beats submitting N separate turns: the
   // live-TUI path would race Claude's own input handling on the later sends,
   // and the wake path can only hand over a single opening prompt.
@@ -207,13 +223,13 @@ const lastNudge = new Map<string, number>();
  *  is to re-read its ledger and re-dispatch, so it must be up before the fleet
  *  starts asking it for work — which is exactly what did NOT happen in the
  *  field incident this ticket comes from. */
-async function resumeUsageLimited(now: number): Promise<void> {
+async function resumeUsageLimited(now: number, only?: string): Promise<void> {
   // #256 fleet PAUSE auto: a run the host paused on a usage limit is Reprised (beginReprise) once its triggering members' pinned accounts
   // have quota — a fresh reading beats the stored reset time. Runs FIRST: a member sent its `reprise` row (wake ON in its run) loses its #74 marker here, before
   // the nudge below could wake it a SECOND time; a member not sent one yet keeps its marker (#74 stays its safety net). Switch OFF / no auto-paused run ⇒ one SELECT, nothing else.
-  await evaluatePausedRuns();
+  if (only === undefined) await evaluatePausedRuns(); // `only` = an Admission release re-running THIS member's nudge: not a whole tick (no 2nd per-tick budget, no re-evaluation)
   const candidates = store.workspaces
-    .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit')
+    .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit' && (only === undefined || ws.id === only))
     // Coordinators first (see above). Stable within each group otherwise.
     .sort((a, b) => Number(isCoordinatorWorkspace(b)) - Number(isCoordinatorWorkspace(a)));
 
@@ -257,6 +273,20 @@ async function resumeUsageLimited(now: number): Promise<void> {
     });
 
     if (action === 'wait') continue;
+    // #287 Admission: a DUE nudge of a SLEEPING FLEET member would START a process — under low memory it WAITS, before the budget, the marker clear and the re-mark
+    // (the `usage_limit` marker stays put, no retry storm). The queue re-runs this tick when the member's turn comes; the permit lets this member through.
+    if (
+      action === 'nudge' &&
+      (await wakeHeldForMemory(ws, () => resumeUsageLimited(Date.now(), ws.id), {
+        site: 'resume',
+        stillOwed: () => {
+          const w = store.getWorkspace(ws.id);
+          return !!w && !w.archived && w.lastStopReason === 'usage_limit' && isSleeping(ws.id);
+        },
+      }))
+    ) {
+      continue;
+    }
     // Consumed only by a real resume — a `wait` costs nothing, or a fleet of
     // not-yet-due workspaces would exhaust the budget and starve the ones that
     // ARE due (the cap would then delay resumes instead of spreading them).
