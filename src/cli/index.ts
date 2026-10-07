@@ -46,6 +46,7 @@ import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import { formatMemoryGuardLine, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { formatHeldStartsLine, type HeldStartView } from '../shared/admission.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
@@ -93,6 +94,8 @@ interface PeerInfo {
   lastTask?: string;
   /** Agent-authored one-line status note (`orchestra status`), if any. */
   statusText?: string;
+  /** #286: this member's automatic start is HELD for low memory (since-when). */
+  heldForMemory?: { kind: string; since: number };
   /** Present only when `--stats` was requested; null = not computable. */
   diff?: { files: number; insertions: number; deletions: number } | null;
 }
@@ -1102,7 +1105,8 @@ async function main(argv: string[]): Promise<void> {
         id: p.id,
         branch: p.branch,
         repo: p.repo,
-        status: p.status,
+        // #286: a member whose automatic start is held for memory says so, with since-when — a stall to NOT mistake for a hang.
+        status: p.heldForMemory ? `${p.status} · ${p.heldForMemory.kind} HELD for memory since ${new Date(p.heldForMemory.since).toISOString().slice(11, 19)}Z` : p.status,
         // `--stats` columns: committed diff vs the peer's base. '?' = not
         // computable (non-git peer or missing ref) — distinct from real zeros.
         ...(stats
@@ -1409,6 +1413,11 @@ async function main(argv: string[]): Promise<void> {
       }
       const res = await request('/restart', { id: target, fresh });
       if (!res.ok) fail(res.error ?? 'failed to restart workspace');
+      if (res.held && typeof res.note === 'string') {
+        // #286: accepted, but HELD for low memory — nothing was stopped; it runs when memory recovers.
+        process.stdout.write(`Restart of ${target} accepted — ${res.note}\n`);
+        return;
+      }
       if (res.openingTask === true) {
         // #227 F8: a start whose first turn was not confirmed within the wait says so — never "delivered" for a start nothing confirmed.
         process.stdout.write(
@@ -2179,6 +2188,11 @@ async function main(argv: string[]): Promise<void> {
       // #285: the host's memory guard (admission / memory Pause / MemAvailable). Absent from an older app → no line, output unchanged.
       if (res.memoryGuard && typeof res.memoryGuard === 'object') {
         process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot)}\n`);
+      }
+      // #286: starts HELD for low memory (the OPS must not mistake them for a stall). No line when nothing is held — output unchanged.
+      if (Array.isArray(res.heldStarts)) {
+        const held = formatHeldStartsLine(res.heldStarts as HeldStartView[]);
+        if (held) process.stdout.write(`${held}\n`);
       }
       // #134 — frozen (run row) vs live (store) flags, one row per mechanism.
       // No run row → the frozen column prints "—" (#206), never OFF. WIRE names

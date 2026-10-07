@@ -9,7 +9,8 @@
 //   sampleMemoryGuardNow()    — a FRESH reading + decision now (the re-measure between two releases)
 //   decideMemoryGuard / isAdmissionHolding / mayReleaseOneStart / memoryPauseDue / memoryPauseLiftable — shared/memory-guard.ts
 // NO REPLAY: `subscribeMemoryGuard` delivers only the edges that happen AFTER it returns. A late subscriber (a consumer that starts, or
-// restarts, while a guard episode is already running) must reconcile from `getMemoryGuardSnapshot()` first, then subscribe.
+// restarts, while a guard episode is already running) must SUBSCRIBE FIRST, then read `getMemoryGuardSnapshot()` and reconcile — never
+// snapshot-then-subscribe: an edge landing between the two (a consumer that awaits there) is lost (ledger FI-2 item 5 v1.1, G1-fu review n2).
 // `snapshot.mayReleaseOneStart` is the latest decision's answer (false while the meter is unreadable); `snapshot.pauseCycle` numbers memory
 // Pauses so a 2nd Pause inside one Admission episode is distinguishable from the 1st.
 

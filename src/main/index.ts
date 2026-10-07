@@ -242,6 +242,7 @@ import {
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
+import { heldStartFor, startAdmission, stopAdmission } from './admission';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -442,6 +443,9 @@ async function createMainWindow() {
   // first `bus-status` already has a reading; thresholds are read from the store at every sample, so a Settings change is hot.
   setMemoryGuardSettingsReader(() => store.getMemoryGuardSettings());
   startMemoryGuard();
+  // Admission (#286): holds the AUTOMATIC starts (spawn / restart) of fleet members while the guard holds Admission and releases them in order when
+  // memory recovers (this subscribes to the guard's reopen edge; the queue itself retries every 10 s while it is non-empty).
+  startAdmission();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
@@ -550,7 +554,8 @@ async function createMainWindow() {
   // #120 subtracts that set, on top of the app-level `waiting` status. The
   // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
   // #252 row 15: the SAME live-tree pause decision the gates use silences a paused run's members.
-  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null));
+  // #286: a member whose start is HELD for memory is not silent — it was told "accepted, held"; escalating it as a stall would be the false alarm the HELD marker prevents.
+  setLivenessRoster(buildLivenessRoster(store, resolveWaveRunId, (ws) => pauseRefusal(ws, 'auto') !== null || heldStartFor(ws.id) !== null));
   // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
   // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
   // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's
@@ -872,6 +877,7 @@ function shutdownSubsystems(): void {
   stopPauseUiWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
+  stopAdmission();
   stopMemoryGuard();
   stopHibernationSweeper();
   closeAllSandboxConnections();

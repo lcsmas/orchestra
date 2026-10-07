@@ -160,6 +160,8 @@ export interface RestartResult {
   openingTask?: boolean;
   /** #227 F8: the start succeeded but its first turn was not confirmed within the wait ("started, not confirmed") — not "delivered". */
   note?: string;
+  /** #286 Admission: the restart was ACCEPTED but HELD for low memory — nothing was stopped; it runs when memory recovers. */
+  held?: { since: number };
   error?: string;
 }
 

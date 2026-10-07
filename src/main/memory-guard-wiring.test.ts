@@ -55,7 +55,7 @@ test('the resource monitor logs "used" through the shared parser the guard tests
   assert.match(rm, /import \{ parseMemUsedBytes \} from '..\/shared\/memory-guard';/);
 });
 
-test('no start path imports the guard yet: this track decides and shows, it holds nothing (#286 does)', () => {
+test('only the guard\'s known consumers import it (#286 Admission joined: admission.ts holds spawn/restart; no wake / Veille / pause consumer yet)', () => {
   const importers = fs
     .readdirSync(path.join(root, 'src/main'))
     .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
@@ -63,5 +63,5 @@ test('no start path imports the guard yet: this track decides and shows, it hold
     .sort();
   // The only readers: index.ts (lifecycle), hooks-server.ts (bus-status). Not workspaces / agent-sdk / bus-wake / hibernation / restart.
   // Tripwire BY DESIGN: #286 (Admission), #288 (fast Veille), #289 (alert), #290 (memory Pause) each add their importer HERE.
-  assert.deepEqual(importers, ['hooks-server.ts', 'index.ts', 'memory-guard-settings.ts']);
+  assert.deepEqual(importers, ['admission.ts', 'hooks-server.ts', 'index.ts', 'memory-guard-settings.ts']);
 });

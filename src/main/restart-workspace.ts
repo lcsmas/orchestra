@@ -39,6 +39,10 @@ import { sdkSessionLive, sdkFirstTurnFailed } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
+import { admissionGate } from './admission.ts';
+import { reportAdmissionFailure } from './workspaces';
+import { heldPhrase } from '../shared/admission.ts';
+import { canOrchestrate } from '../shared/types';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import { restartOwesOpeningTask } from '../shared/opening-task.ts';
 import type { RestartTrigger } from '../shared/types';
@@ -66,6 +70,8 @@ export async function dispatchRestartRequest(input: {
   /** Which producer asked (issue #148) — recorded on the restart marker so the
    *  neutral row's detail names it. Defaults to `cli` (the socket verb). */
   trigger?: RestartTrigger;
+  /** INTERNAL (#286): this restart is the RELEASE of a held one — it must not be held again. */
+  admitted?: boolean;
 }): Promise<RestartResult> {
   const id = input.id;
   const ws = id ? (store.getWorkspace(id) ?? null) : null;
@@ -79,13 +85,35 @@ export async function dispatchRestartRequest(input: {
   const restartOrigin: PauseOrigin = trigger === 'toolbar' ? 'human' : 'auto';
   const pausedRun = pauseRefusal(ws, restartOrigin);
   if (pausedRun) return { ok: false, error: pausedRun };
+  // #286 Admission: under low memory an AUTOMATIC restart of a fleet member WAITS — BEFORE the classifier and any stop, so a held restart never
+  // stops a running session. The toolbar Restart is a human act and passes. The release re-enters here with `admitted`.
+  if (!input.admitted && id && ws) {
+    const liveAtHold = isRunning(id) || sdkSessionLive(id);
+    const gate = admissionGate({
+      wsId: id,
+      ws,
+      origin: restartOrigin,
+      kind: 'restart',
+      coordinator: canOrchestrate(ws),
+      run: () => dispatchRestartRequest({ id, fresh, trigger, admitted: true }),
+      retryLater: () => pauseRefusal(store.getWorkspace(id) ?? null, restartOrigin) !== null,   // a fleet Pause refused the release: keep the slot
+      report: (text) => reportAdmissionFailure(id, text),
+      stillOwed: () => {
+        const w = store.getWorkspace(id);
+        // A member that was STOPPED when its restart was held and that a person has since started (the composer reaches `sdkSend` without
+        // passing the two gates) needs no restart any more — it would be a redundant stop/start at recovery (review F4).
+        return !!w && !w.archived && (liveAtHold || !(isRunning(id) || sdkSessionLive(id)));
+      },
+    });
+    if (gate.held) return { ok: true, held: { since: gate.since }, note: heldPhrase('restart', gate.since) };
+  }
   const live = { ptyLive: id ? isRunning(id) : false, sdkLive: id ? sdkSessionLive(id) : false, sdkFailed: id ? sdkFirstTurnFailed(id) : false };
   // #227: a kept child whose SDK start failed owes its task and nothing ever ran (the classifier would say 'unknown'):
   // Restart retries THAT start, delivering the task once.
   const owed = !!(id && ws && restartOwesOpeningTask(ws, live));
   // ONE result, so the res.ok-gated stale-clear below covers both routes.
   let res: RestartResult;
-  if (owed) res = await retryOpeningTask(id!, fresh, restartOrigin);
+  if (owed) res = await retryOpeningTask(id!, fresh, restartOrigin, input.admitted === true);
   else res = await resolveRestart({
     id,
     ws,
@@ -130,8 +158,9 @@ export async function dispatchRestartRequest(input: {
 }
 
 /** #227 — retry a kept child's SDK start (same operation as spawn); `fresh` is moot: nothing to keep or clear. */
-async function retryOpeningTask(id: string, fresh: boolean, origin: PauseOrigin): Promise<RestartResult> {
-  const started = await startWorkspaceAgentHeadless(id, origin);
+async function retryOpeningTask(id: string, fresh: boolean, origin: PauseOrigin, admitted = false): Promise<RestartResult> {
+  // #286: a RELEASED restart (`admitted`) must not be held a second time by the spawn gate inside this start.
+  const started = await startWorkspaceAgentHeadless(id, origin, admitted);
   if (started.ok) return { ok: true, mode: 'structured', fresh, openingTask: true, ...(started.note ? { note: started.note } : {}) };
   log.warn(`restart: opening-task retry failed for ${id}: ${started.error}`);
   return { ok: false, error: `restart failed: ${started.error}` };

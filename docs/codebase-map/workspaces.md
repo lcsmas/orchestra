@@ -271,6 +271,36 @@ endpoint}` = agent lives in an always-on container, see
   child survives an app restart (`lastTask`/`hasInput`/`sdkStartErrors` are in `store.json`).
   Rigs: `restart_delivers_task_once`, `brief_survives_other_start`, `spawn_init_wait`, `first_turn_error_reported`.
 
+### Admission — automatic starts held under low memory (#286, wave G ledger #295; epic #284)
+While the memory guard holds Admission (`isAdmissionHolding(sampleMemoryGuardNow())`, `docs/codebase-map/resources.md` § Memory guard) an
+**AUTOMATIC start of a FLEET MEMBER** (a workspace with a `parentId`) is HELD, not run and not failed. Two start entry points carry the gate — the
+same sites that already carry the Pause gate and the `origin`: **spawn** (`startWorkspaceAgentOnce`, workspaces.ts, after the "nothing owed" check and
+before `sdkStartAndDeliverResult`; also the owed-retry route) and **restart** (`dispatchRestartRequest`, restart-workspace.ts, after the Pause refusal and
+BEFORE the classifier / any stop, so a held restart never stops a running session). A held spawn is **accepted**: `SpawnResult.ok:true` + `held:{since}` +
+the note `spawn held for memory since <iso> — it starts when memory recovers (Admission)`, the workspace exists, `lastTask` is still owed, NO session starts.
+A human act (`origin 'human'`: toolbar Restart, composer, Send now), a top-level / detached workspace and a turn sent to an already-running member are
+never held. Pure rules: `src/shared/admission.ts` (`mustHoldStart`, `nextToRelease` coordinators-first then arrival `seq`, `planRelease`); the queue + release
+loop: `src/main/admission.ts` (`createAdmission`; process-wide `admissionGate` / `heldStartFor` / `listHeldStarts` / `startAdmission`). **Release**: a pass
+takes a FRESH `sampleMemoryGuardNow()` before EACH release and requires `mayReleaseOneStart` (false under a dead meter; the toggle OFF releases at once), runs the
+entry's start with `admitted` (so neither the spawn nor the owed-retry gate re-holds it), awaits it (one at a time), pauses `settleMs` (3 s), samples again — a dip
+stops the pass and the 10 s retry timer (armed while the queue is non-empty) or the guard's `admission_reopened` edge resumes it. `kick()` is single-flight and its body
+starts in a MICROTASK after `draining` is assigned (a pass's own fresh sample can emit the reopen edge synchronously → the subscriber's `kick()` must see the pass, not start
+a 2nd one: two releases off one reading); a kick landing while a pass winds down re-runs it. A newcomer arriving while the line is non-empty JOINS it (never jumps).
+A release the **fleet Pause refused** (`retryLater`) keeps its slot but is DEFERRED for the rest of the pass — it never blocks the entries behind it (any run) nor newcomers
+(a long manual / usage-limit / memory Pause on one run used to freeze every other run); the next retry tries it again. A release that **fails** or **times out** (90 s bound) is
+REPORTED to the member's coordinator (`reportAdmissionFailure`, workspaces.ts: a bus `escalation` from the member behind the `liveness` switch, with `orchestra restart <id>`
+as the way out) — never a log line only. A queued entry whose workspace is gone / archived / already started by a human is dropped at release **and at READ time**
+(`pruneUnowed` in `heldFor`/`list`/`gate`: `peers` / `bus-status` never keep saying "held" for a running member; a restart held for a member that was STOPPED at hold time
+is superseded once a person starts it — `liveAtHold`); `teardownWorkspace` (single + bulk delete) drops the held start (`dropHeldStart`). The liveness roster treats a member
+with a held start as silenced (`index.ts`, the Pause's predicate slot) — it was told "accepted, held", so the 10-min escalation would be a false stall. Every hold /
+release / wait / drop is logged WITH MemAvailable (`[admission] HELD spawn of … — MemAvailable 4.00 GB, Admission held; 2 held start(s)`). **Visible**:
+`PeerInfo.heldForMemory`, `orchestra peers` (`idle · spawn HELD for memory since 13:20:11Z`), `/busStatus` `heldStarts` → the CLI's `held starts: N held for
+memory, release order — …` line (absent when none), the spawn / restart replies. **NOT here**: a réveil / prompt flush / recovery start under low memory
+(`sdkSend` stays ungated — bus-wake "held for memory" reason = #287), the watchdog recycle, fast Veille (#288). The queue is IN MEMORY: after an app restart a
+held child stays stopped with its brief owed and `orchestra restart <id>` retries it. Gates: `src/shared/admission.test.ts`, `src/main/admission.test.ts`,
+`src/main/admission-wiring.test.ts` (source guards + a tripwire on who imports the gate), `scripts/e2e-admission-hold.mjs` (real workspaces/restart/admission/guard,
+fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), `scripts/admission-mutants.mjs` (68 in-place mutants), `src/main/admission-liveness.test.ts` (real roster + sweep + queue).
+
 ### Archive / unarchive / delete
 - **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),
   **`unarchiveWorkspace`** `:559`, **`deleteWorkspace`** `:450` (hard: runs the
