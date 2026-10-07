@@ -2509,6 +2509,13 @@ explicit operator path:
   live-child WIRING) — a structured no-PTY child reddens when the `sdkSessionLive`
   disjunct is dropped while the PTY arm stays green; `bus-run-anchor.test.ts` `#156`
   documents the flat-mission gap D1b leaves and that the refreeze closes it.
+- **One switch on a PAUSED run (`--only docker_relay`, 2026-10-07):** `refreezeOneSwitch`
+  (`bus-runs.ts`) moves ONE allow-listed key (`ONE_SWITCH_REFREEZABLE` = `dockerRelay`,
+  read only at keeper spawn) to its live value on a mission OR vague row, refused unless
+  `activePauseFor(run)` is set and no workspace of the run's tree (coordinator included)
+  is live mid-turn; every other key stays byte-identical, no late insert. Lets a vague
+  frozen before the relay existed adopt it at the next session start. Gates:
+  `bus-runs.test.ts` "one-switch:" arms (5 mutants red), `run-refreeze-args.test.ts`.
 
 ## The plumbing (`src/main/index.ts`, beside `startBusWake()`)
 

@@ -19,6 +19,7 @@ import type { BusDb } from './bus.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { PAUSE_HUMAN_BY } from '../shared/pause-lifecycle.ts';
 import {
+  type BusMechanism,
   type BusSwitches,
   freezeSwitches,
   mechanismEnabled,
@@ -240,6 +241,43 @@ export function refreezeMissionRun(
   // coexistence-safe direction: an unfrozen run reads all-OFF, not late-frozen.
   const changed = refreezeRun(db, runId, liveSwitches);
   return changed ? 'refrozen' : 'no-flags';
+}
+
+/** Switches a PAUSED run may re-freeze one at a time: each is read only when a member's session STARTS
+ *  (keeper spawn), so flipping it on a paused run changes no in-flight turn. Every other switch stays freeze-once. */
+export const ONE_SWITCH_REFREEZABLE: readonly BusMechanism[] = ['dockerRelay'];
+
+export type RefreezeOneSwitchOutcome =
+  | 'no-run'
+  | 'not-refreezable' // the switch is not one a session reads only at start — refused
+  | 'not-paused' // neither the run nor an ancestor carries an active Pause — refused
+  | 'live-child' // a member of the run is live mid-turn — refused
+  | 'no-flags' // the run has no run_flags row — never late-inserted
+  | 'refrozen-one'; // that ONE key now holds its live value; every other key byte-identical
+
+/**
+ * ONE-SWITCH RE-FREEZE of a PAUSED run, mission or vague (`orchestra run refreeze --only <switch>`).
+ * A vague frozen before a session-start switch existed (e.g. the Docker relay, ADR 0004) could never
+ * pick it up: `refreezeMissionRun` refuses vague rows. A Pause is the in-wave boundary where no member
+ * runs a turn, so ONE allow-listed key may take its live value there; the other keys are untouched.
+ */
+export function refreezeOneSwitch(
+  db: BusDb,
+  runId: string,
+  key: BusMechanism,
+  liveSwitches: BusSwitches,
+  opts: { paused: boolean; hasLiveChild: boolean },
+): RefreezeOneSwitchOutcome {
+  const row = getRun(db, runId);
+  if (!row) return 'no-run';
+  if (!ONE_SWITCH_REFREEZABLE.includes(key)) return 'not-refreezable';
+  if (!opts.paused) return 'not-paused';
+  if (opts.hasLiveChild) return 'live-child';
+  const raw = db.prepare('SELECT flags FROM run_flags WHERE run_id = ?').get(runId) as { flags: string } | undefined;
+  if (!raw) return 'no-flags';
+  const next = { ...parseSwitches(raw.flags), [key]: liveSwitches[key] === true };
+  db.prepare('UPDATE run_flags SET flags = ?, frozen_at = ? WHERE run_id = ?').run(serializeSwitches(next), Date.now(), runId);
+  return 'refrozen-one';
 }
 
 /** The typed outcome of `orchestra run hold|resume` (#204). `no-run` refuses an id

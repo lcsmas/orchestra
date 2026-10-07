@@ -508,6 +508,7 @@ export async function startHooksServer(): Promise<void> {
               200,
               dispatchRunRefreezeRequest({
                 runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+                only: typeof msg.only === 'string' ? msg.only : undefined,
               }),
             );
           } else if (route === '/whoami') {

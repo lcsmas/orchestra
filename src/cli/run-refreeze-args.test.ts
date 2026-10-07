@@ -25,6 +25,7 @@ const needsBuild = {
 
 interface Captured {
   runId?: string;
+  only?: string;
 }
 interface StubOutcome {
   code: number;
@@ -204,3 +205,32 @@ test('bad subcommand: `orchestra run bogus` fails with usage, no socket call', n
   assert.equal(r.seen.length, 0, 'must not POST for an unknown subcommand');
   assert.match(r.stderr, /usage: orchestra run refreeze/);
 });
+
+// One-switch re-freeze of a PAUSED run (--only): the flag rides the request, the
+// outcome prints the single switch, refusals name the reason.
+const REFROZEN_ONE = `return { ok: true, outcome: 'refrozen-one', runId: body.runId, frozenFlags: JSON.stringify({ delivery: true, dockerRelay: true }) };`;
+
+test('run refreeze --only docker_relay: POSTs only, prints the one switch ON, exits 0', needsBuild, () => {
+  const r = driveCli(['run', 'refreeze', '--run', 'wave6', '--only', 'docker_relay'], REFROZEN_ONE);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].runId, 'wave6');
+  assert.equal(r.seen[0].only, 'docker_relay', '--only is forwarded to the route');
+  assert.match(r.stdout, /Re-froze docker_relay on paused run wave6: ON/);
+});
+
+test('run refreeze without --only sends no only field (mission path unchanged)', needsBuild, () => {
+  const r = driveCli(['run', 'refreeze', '--run', 'mission-x'], REFROZEN);
+  assert.equal(r.seen[0].only, undefined);
+});
+
+for (const [outcome, re] of [
+  ['not-paused', /not paused — pause it first/],
+  ['not-refreezable', /frozen for the run's life/],
+] as const) {
+  test(`--only outcome ${outcome} → non-zero exit, names the reason, no stack`, needsBuild, () => {
+    const r = driveCli(['run', 'refreeze', '--run', 'w', '--only', 'docker_relay'], `return { ok: true, outcome: '${outcome}', runId: body.runId };`);
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, re);
+    assert.doesNotMatch(r.stderr, /\n\s+at /, 'no stack trace');
+  });
+}

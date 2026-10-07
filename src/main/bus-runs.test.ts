@@ -33,6 +33,7 @@ import {
   listRuns,
   refreezeRun,
   refreezeMissionRun,
+  refreezeOneSwitch,
 } from './bus-runs.ts';
 import {
   mechanismFromWire,
@@ -762,6 +763,90 @@ test('T156.4 — #134 F1 unchanged: refreeze NEVER late-inserts a row; it only U
       '#134 F1: NO run_flags row was inserted — the run reads all-OFF, never late-frozen',
     );
     assert.equal(runFlags(db, 'mission-bare').delivery, false, 'and it reads all-OFF (coexistence-safe)');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+
+// ═══ One-switch re-freeze of a PAUSED run (refreezeOneSwitch) ═══════════════════
+// A vague frozen before the Docker relay existed (bloc2 wave 6) could never turn it on:
+// refreezeMissionRun refuses vague rows. One allow-listed session-start switch may move
+// on a PAUSED run with nobody mid-turn; every other key must stay byte-identical.
+
+function seedVague(db: BusDb, id: string, flags: BusSwitches): void {
+  startRun(db, { id, kind: 'vague', coordinator: id }, flags);
+}
+const PAUSED_IDLE = { paused: true, hasLiveChild: false };
+
+test('one-switch: a paused vague frozen without the relay takes docker_relay ON; every other key unchanged', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const frozen: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, pause: false, dockerRelay: false };
+    seedVague(db, 'wave6', frozen);
+    const before = runFlags(db, 'wave6');
+    assert.equal(before.dockerRelay, false, 'pre-state: relay frozen OFF');
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: false, wake: false, pause: true, dockerRelay: true };
+    assert.equal(refreezeOneSwitch(db, 'wave6', 'dockerRelay', live, PAUSED_IDLE), 'refrozen-one');
+    const after = runFlags(db, 'wave6');
+    assert.equal(after.dockerRelay, true, 'the one key took its live value');
+    for (const m of BUS_MECHANISMS) {
+      if (m === 'dockerRelay') continue;
+      assert.equal(after[m], before[m], `${m} must stay as frozen (live differs for delivery/wake/pause)`);
+    }
+    assert.equal(busSwitch(db, 'wave6', 'docker_relay'), true, 'the switch read path sees it');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('one-switch: refused when the run is not paused — flags untouched', () => {
+  const { db, dir } = tmpDb();
+  try {
+    seedVague(db, 'w', { ...DEFAULT_BUS_SWITCHES });
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, dockerRelay: true };
+    assert.equal(refreezeOneSwitch(db, 'w', 'dockerRelay', live, { paused: false, hasLiveChild: false }), 'not-paused');
+    assert.equal(runFlags(db, 'w').dockerRelay, false);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('one-switch: refused while a member is live mid-turn — flags untouched', () => {
+  const { db, dir } = tmpDb();
+  try {
+    seedVague(db, 'w', { ...DEFAULT_BUS_SWITCHES });
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, dockerRelay: true };
+    assert.equal(refreezeOneSwitch(db, 'w', 'dockerRelay', live, { paused: true, hasLiveChild: true }), 'live-child');
+    assert.equal(runFlags(db, 'w').dockerRelay, false);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('one-switch: a switch read mid-wave (delivery, wake, pause…) is never re-frozen', () => {
+  const { db, dir } = tmpDb();
+  try {
+    seedVague(db, 'w', { ...DEFAULT_BUS_SWITCHES });
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, pause: true };
+    for (const key of ['delivery', 'wake', 'pause', 'liveness'] as const) {
+      assert.equal(refreezeOneSwitch(db, 'w', key, live, PAUSED_IDLE), 'not-refreezable', key);
+      assert.equal(runFlags(db, 'w')[key], false, `${key} untouched`);
+    }
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('one-switch: unknown run and missing flags row are refused, never late-inserted', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, dockerRelay: true };
+    assert.equal(refreezeOneSwitch(db, 'nope', 'dockerRelay', live, PAUSED_IDLE), 'no-run');
+    seedVague(db, 'w', { ...DEFAULT_BUS_SWITCHES });
+    db.prepare('DELETE FROM run_flags WHERE run_id = ?').run('w');
+    assert.equal(refreezeOneSwitch(db, 'w', 'dockerRelay', live, PAUSED_IDLE), 'no-flags');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id = ?').get('w').n, 0, 'no late insert');
   } finally {
     cleanup(db, dir);
   }

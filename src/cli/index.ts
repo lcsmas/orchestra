@@ -38,6 +38,7 @@ import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } f
 import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
   BUS_MECHANISMS,
+  mechanismFromWire,
   parseSwitches,
   mechanismToWire,
   switchStateWord,
@@ -2079,11 +2080,12 @@ async function main(argv: string[]): Promise<void> {
       if (sub !== 'refreeze') {
         fail('usage: orchestra run refreeze|hold|resume|pause [--hard]|release|confirm pause|confirm reprise|status [--run <id>]');
       }
-      const { value: runFlag } = takeFlag(args.slice(1), '--run');
+      const { value: runFlag, rest: afterRun } = takeFlag(args.slice(1), '--run');
+      const { value: onlyFlag } = takeFlag(afterRun, '--only');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
       // admin re-freezing a specific mission from outside its wave passes --run.
       const targetRun = runFlag?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
-      const res = await request('/runRefreeze', { runId: targetRun });
+      const res = await request('/runRefreeze', { runId: targetRun, ...(onlyFlag ? { only: onlyFlag } : {}) });
       if (!res.ok) fail(res.error ?? 'failed to refreeze run');
       const outcome = res.outcome as string | undefined;
       const echoed = (res.runId as string | undefined) ?? targetRun;
@@ -2102,6 +2104,21 @@ async function main(argv: string[]): Promise<void> {
           process.stdout.write(`${table(rows, ['mechanism', 'frozen'])}\n`);
           return;
         }
+        case 'refrozen-one': {
+          const frozen = parseSwitches(typeof res.frozenFlags === 'string' ? res.frozenFlags : null);
+          const key = mechanismFromWire(String(onlyFlag));
+          process.stdout.write(
+            `Re-froze ${onlyFlag} on paused run ${echoed}: ${key ? switchStateWord(frozen[key]) : '?'} ` +
+              '(every other switch unchanged; members pick it up at their next session start)\n',
+          );
+          return;
+        }
+        case 'not-refreezable':
+          fail(`orchestra run refreeze: '${onlyFlag}' is frozen for the run's life — only a switch read at session start may be re-frozen (docker_relay)`);
+        // eslint-disable-next-line no-fallthrough
+        case 'not-paused':
+          fail(`orchestra run refreeze --only: run ${echoed} is not paused — pause it first (orchestra run pause), then re-freeze, then resume`);
+        // eslint-disable-next-line no-fallthrough
         case 'no-run':
           fail(`orchestra run refreeze: no run row for ${echoed} — nothing to refreeze`);
         // eslint-disable-next-line no-fallthrough

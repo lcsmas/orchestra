@@ -46,7 +46,7 @@ import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
-import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, serializeSwitches } from '../shared/bus-switches.ts';
+import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
   getBus,
@@ -63,12 +63,15 @@ import {
   getRelatedRunIds,
   refreezeRun,
   refreezeMissionRun,
+  refreezeOneSwitch,
+  type RefreezeOneSwitchOutcome,
   type RefreezeMissionOutcome,
 } from './bus-runs.ts';
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
+import { activePauseFor } from './bus-pause.ts';
 import { admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind } from './admission.ts';
 import { isSleeping, wakeHeldForMemory } from './admission-wake';
 import { decideAdmissionReport, heldPhrase } from '../shared/admission.ts';
@@ -3219,8 +3222,8 @@ export async function dispatchPeersRequest(input: {
 
 export interface RunRefreezeResult {
   ok: boolean;
-  /** The typed outcome from `refreezeMissionRun` (only when `ok`). */
-  outcome?: RefreezeMissionOutcome;
+  /** The typed outcome from `refreezeMissionRun`, or `refreezeOneSwitch` with `only` (only when `ok`). */
+  outcome?: RefreezeMissionOutcome | RefreezeOneSwitchOutcome;
   /** The run id that was targeted (echoed so the CLI prints what it acted on). */
   runId?: string;
   /** The serialized flags now frozen on the mission row (only on `refrozen`). */
@@ -3243,7 +3246,7 @@ export interface RunRefreezeResult {
  * observable, then serializes the outcome for the socket. A null bus (D1) refuses
  * cleanly — there is no run row to refreeze without a bus.
  */
-export function dispatchRunRefreezeRequest(input: { runId?: string }): RunRefreezeResult {
+export function dispatchRunRefreezeRequest(input: { runId?: string; only?: string }): RunRefreezeResult {
   const runId = input.runId?.trim();
   if (!runId) return { ok: false, error: 'missing runId' };
   const db = getBus();
@@ -3259,6 +3262,17 @@ export function dispatchRunRefreezeRequest(input: { runId?: string }): RunRefree
   // in the platform-free `anyChildLive` (src/shared/refreeze-liveness.ts) so a test
   // can drive the REAL predicate; here we only wire the two real probes.
   const tree = collectWorkspaceTree(runId);
+  if (input.only !== undefined) {
+    // One switch on a PAUSED run (mission or vague): the coordinator counts too — nobody may be mid-turn.
+    const key = mechanismFromWire(input.only.trim());
+    if (!key) return { ok: false, error: `unknown switch '${input.only}'` };
+    const outcome = refreezeOneSwitch(db, runId, key, getLiveSwitches(), {
+      paused: activePauseFor(db, runId) !== null,
+      hasLiveChild: anyChildLive(tree.map((w) => w.id), isRunning, sdkSessionLive),
+    });
+    const frozen = outcome === 'refrozen-one' ? getRun(db, runId)?.flags : undefined;
+    return { ok: true, outcome, runId, ...(frozen !== undefined ? { frozenFlags: serializeSwitches(frozen) } : {}) };
+  }
   const children = tree.slice(1); // drop the coordinator root
   const hasLiveChild = anyChildLive(children.map((w) => w.id), isRunning, sdkSessionLive);
   const outcome = refreezeMissionRun(db, runId, getLiveSwitches(), { hasLiveChild });
