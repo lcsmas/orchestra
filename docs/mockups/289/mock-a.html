@@ -1,0 +1,30 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><link rel="stylesheet" href="file:///home/lmas/.orchestra/worktrees/orchestra-radiant-moth-44c35727/src/renderer/styles.css">
+<style>
+body { margin:0; background:#050607; color:var(--text); font-family: Inter, system-ui, sans-serif; padding:14px; width:1172px; }
+h2 { font-size:14px; margin:14px 0 6px; font-weight:600; color:#cfd6e2 }
+.cap { font-size:12px; color:var(--text-dim); margin:0 0 8px }
+.win { position:relative; width:1172px; height:236px; overflow:hidden; border:1px solid var(--border-strong); border-radius:8px; background:var(--bg); display:flex; flex-direction:column; margin-bottom:10px }
+.win .body { flex:1; min-height:0; display:grid; grid-template-columns: 300px 1fr }
+.sb { background:linear-gradient(180deg, rgba(21,25,31,.85), rgba(18,21,26,.92)); border-right:1px solid var(--border); padding:10px 12px; font-size:12.5px; display:flex; flex-direction:column; gap:7px; overflow:hidden }
+.sb .hdr { display:flex; align-items:center; gap:8px; font-weight:600 }
+.sb .row { color:var(--text-dim); padding:3px 6px; border-radius:5px } .sb .row.act { background:var(--bg-4); color:var(--text) }
+.main { display:flex; flex-direction:column; min-width:0; min-height:0 }
+.tb { height:44px; flex:0 0 auto; border-bottom:1px solid var(--border); display:flex; align-items:center; padding:0 14px; gap:10px; font-size:13px }
+.tb .chip { font-size:11.5px; color:var(--text-dim); border:1px solid var(--border); padding:2px 8px; border-radius:99px }
+.pane { flex:1; background:#0d0f12; padding:12px 14px; font-family:var(--font-mono); font-size:12px; color:#6f7a8a }
+/* ── the proposed banner (shared by the options) ── */
+.mb { flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:8px 14px; border-bottom:1px solid var(--border); font-size:12.5px }
+.mb.warn { background:rgba(255,200,87,.10); box-shadow: inset 3px 0 0 var(--yellow) }
+.mb.crit { background:rgba(255,107,107,.12); box-shadow: inset 3px 0 0 var(--red) }
+.mb .ico { width:16px; height:16px; border-radius:50%; flex:0 0 auto; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#10131a }
+.mb.warn .ico { background:var(--yellow) } .mb.crit .ico { background:var(--red) }
+.mb .txt { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px }
+.mb .txt strong { font-weight:600; color:var(--text) }
+.mb .sub { color:var(--text-dim); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.mb button { padding:3px 10px; font-size:12px }
+.mb.slim { padding:5px 14px; font-size:12.5px }
+.sbchip { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; padding:2px 8px; border-radius:99px; border:1px solid }
+.sbchip.warn { color:var(--yellow); border-color:rgba(255,200,87,.45); background:rgba(255,200,87,.08) }
+.sbchip.crit { color:var(--red); border-color:rgba(255,107,107,.5); background:rgba(255,107,107,.10) }
+.dot { width:7px; height:7px; border-radius:50%; background:currentColor }
+</style></head><body><h2 style="margin-top:0">A — Bandeau d'application : bande fine pleine largeur tout en haut de la fenêtre (au-dessus de la barre latérale ET du volet)</h2><p class="cap">Visible quel que soit l'agent sélectionné · une seule ligne · « Masquer » = jusqu'à la fin de l'épisode (réapparaît si on passe de « mémoire basse » à « Pause mémoire », ou à l'épisode suivant) · repliée quand la mémoire revient.</p><h2>A1 — Admission tenue (mémoire basse)</h2><div class="win"><div class="mb warn slim "><span class="ico">!</span><span class="txt"><span><strong>Mémoire basse</strong> — 5,4 Go disponibles (seuil 6 Go). Démarrages retenus, agents inactifs en Veille.</span></span><button>Masquer</button></div><div class="body"><div class="sb"><div class="hdr">Orchestra </div><div class="row act">● wave-ops</div><div class="row">◐ worker-1</div><div class="row">◐ worker-2</div><div class="row">○ worker-3 (Veille)</div></div><div class="main"><div class="tb"><strong>wave-ops</strong><span class="chip">master</span></div><div class="pane">$ claude — sessions intact, outils tués proprement à la Pause<br>▌</div></div></div></div><h2>A2 — Pause mémoire en effet</h2><div class="win"><div class="mb crit slim "><span class="ico">⏸</span><span class="txt"><span><strong>Pause mémoire</strong> — 2,3 Go disponibles (seuil critique 3 Go). 2 runs en pause : lead, ops. Reprise auto dès 6 Go.</span></span><button>Masquer</button></div><div class="body"><div class="sb"><div class="hdr">Orchestra </div><div class="row act">● wave-ops</div><div class="row">◐ worker-1</div><div class="row">◐ worker-2</div><div class="row">○ worker-3 (Veille)</div></div><div class="main"><div class="tb"><strong>wave-ops</strong><span class="chip">master</span></div><div class="pane">$ claude — sessions intact, outils tués proprement à la Pause<br>▌</div></div></div></div></body></html>
