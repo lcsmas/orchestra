@@ -767,6 +767,7 @@ async function openBusForVerb(): Promise<{
         releaseMembers: pauseReprise.releaseMembers,
         confirmReprise: pauseReprise.confirmReprise,
         resumingCarrier: (d, runId) => pauseReprise.resumingCarrierFor(d, runId, liveChainIds(runId)),
+        containersOwed: pauseReprise.containersOwed, // #292
       },
       file,
     };

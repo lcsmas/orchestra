@@ -1059,9 +1059,13 @@ export function verbRunHold(
           : `Run ${runId} pause LIFTED — réveils, turns and spawns are allowed again. Queued turns and pending bus mail resume now.\n`,
       );
     } else {
+      const owed = hold.pause?.containersOwed?.(ctx.db, runId) === true;
       ctx.out(
-        `Run ${runId}: ${lifted === 'resuming' ? 'REPRISE STARTED' : 'already RESUMING'} — the host released ONLY the coordinators of its subtree (top-down) and sent each ` +
-          `its Bilan de pause. Workers stay BLOCKED (no réveil, no turn, no spawn) until their coordinator runs ` +
+        `Run ${runId}: ${lifted === 'resuming' ? 'REPRISE STARTED' : 'already RESUMING'} — ` +
+          (owed
+            ? `the Pause stopped attributed Docker containers: the host restarts them FIRST (it must be running — a Reprise started with the app down waits for it), then releases ONLY the coordinators of its subtree (top-down) and sends each its Bilan de pause.`
+            : `the host released ONLY the coordinators of its subtree (top-down) and sent each its Bilan de pause.`) +
+          ` Workers stay BLOCKED (no réveil, no turn, no spawn) until their coordinator runs ` +
           `\`orchestra run release <workspace-id>|--all\` (each then gets its Consigne de reprise); the run is active again once every member is released. ` +
           `Nothing restarts on its own; killed commands are listed, never re-run.\n` +
           (view ? `${renderRepriseStatus(view).join('\n')}\n` : ''),
@@ -1155,6 +1159,8 @@ export interface RunPauseDeps {
   confirmReprise?: (db: BusDb, wsId: string) => ConfirmRepriseResult;
   /** The RESUMING carrier governing `runId` through the live tree (or its roster), regardless of who is already released. */
   resumingCarrier?: (db: BusDb, runId: string) => string | null;
+  /** #292 — does this carrier still owe a container restart (the Pause stopped attributed containers)? Then the host restarts them FIRST and releases the coordinators right after. */
+  containersOwed?: (db: BusDb, carrierRunId: string) => boolean;
 }
 
 /**

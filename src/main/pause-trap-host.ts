@@ -21,6 +21,7 @@ import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActiv
 import { log } from './logger';
 import { mergeInFlight } from '../shared/open-tools';
 import type { Workspace } from '../shared/types';
+import { createDockerApi } from './docker-api.ts';
 
 /** Claude Code's interrupt key in the terminal UI. */
 const PTY_INTERRUPT = '\x1b';
@@ -78,6 +79,8 @@ export function buildPauseTrapDeps(): TrapDeps {
   return {
     getBus,
     pauseOrders: pauseOrderFiles(pauseOrdersDir()),
+    // #292: the APP's own Docker client — the REAL socket resolved like the relay's upstream, never a relay; a Pause dure stops each member's attributed containers, the Reprise restarts them
+    containers: createDockerApi(),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     settleMs: SETTLE_MS,

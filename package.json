@@ -61,6 +61,7 @@
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",
     "test:docker-relay": "bash scripts/e2e-docker-relay.sh",
+    "test:pause-containers": "bash scripts/e2e-pause-containers.sh",
     "test:hook-cost": "bash scripts/e2e-hook-cost.sh",
     "test:agent-view-removal": "pnpm run build:bundles && bash scripts/e2e-agent-view-removal.sh \"$PWD\"",
     "test:network-visibility-shot": "node scripts/network-visibility-screenshot.mjs",

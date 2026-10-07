@@ -5,6 +5,7 @@
 //   2. write the Bilan de pause row (what it was doing, ref, dirty, commands killed, error)
 //   3. INTERRUPT the running turn (never stop the CLI session or the keeper)
 //   4. KILL the tool process trees only (identity re-read at signal time — pause-kill.ts)
+//   5. STOP the member's ATTRIBUTED Docker containers (label `orchestra.ws`; never remove; #292 — pause-containers.ts)
 // then stamps `runs.pause_trap_at`. Detected while the app is up by a bus-dir watcher + a slow
 // sweep; a pause that landed while the app was down is drained by the boot sweep. Rows 29/30:
 // `onTurnStart` interrupts a turn that starts on a paused member's session (CLI /loop, cron).
@@ -27,8 +28,11 @@ import {
   markTrapDone,
   readPauseOrigin,
   updateBilan,
+  updateBilanContainers,
   type BilanActivity,
 } from './bus-pause-records.ts';
+import { restartContainers, restartOwedContainers, stopAttributedContainers, type PauseDockerApi } from './pause-containers.ts';
+import { hasContainerFacts, mergeContainers, mergeRestarted } from '../shared/pause-containers.ts';
 import { carrierPhase, confirmByTrap, enrollRoster, sweepSoftPauses, __resetPauseDouceForTests, type PauseOrderDeps } from './pause-douce.ts';
 import type { KillReport, StopTaskResult } from './pause-kill.ts';
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
@@ -102,6 +106,9 @@ export interface TrapDeps {
   pauseOrders?: PauseOrderDeps;
   /** #254: how often a Pause douce still waiting re-checks its members' turns (ms, default {@link DOUCE_POLL_MS}); a turn ending is not a bus write. */
   douceCheckMs?: number;
+  /** #292: the app's own Docker client (REAL socket, never a relay — `docker-api.ts`). A Pause dure stops each member's attributed containers through it, the Reprise restarts them.
+   *  Omitted/null ⇒ Docker is not touched at all (and a Reprise records its owed restarts as `failed: Docker is not available to the host`). */
+  containers?: PauseDockerApi | null;
   /** Pause between the interrupt and the first kill scan (the CLI reaps its own tool child). */
   sleep(ms: number): Promise<void>;
   settleMs: number;
@@ -206,6 +213,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     if (prior.exempt) activity.exempt = prior.exempt;
     if (prior.pauserCli) activity.pauserCli = prior.pauserCli;
     if (prior.earlierKilled) activity.earlierKilled = prior.earlierKilled;
+    if (prior.containers) activity.containers = prior.containers; // #292: a retry merges BY ID — never stops a container twice
   }
 
   // 1. Snapshot (skipped if an earlier, interrupted trap already took one).
@@ -392,6 +400,42 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       incomplete = true;
     }
   }
+  // 5b. #292 — stop the member's ATTRIBUTED containers (label `orchestra.ws=<ws>`, whatever the relay switch) AFTER the tool-tree kill and BEFORE the trap is stamped
+  // complete. `docker stop` only (never remove/kill/pause); a `--rm` container is skipped (a stop would delete it). Docker unavailable / an API error is RECORDED
+  // (`activity.containers.error`) and never blocks the trap or keeps it incomplete. Each stop is persisted at once, and `stillPaused` is re-read before every container.
+  if (deps.containers) {
+    let liftedDuringStop = false;
+    try {
+      const res = await stopAttributedContainers(deps.containers, m.wsId, {
+        stillPaused: () => stillPaused(db, carrier),
+        now: deps.now,
+        ...(activity.containers ? { prior: activity.containers } : {}),
+        onProgress: (c) => {
+          activity.containers = c;
+          updateBilanContainers(db, carrier.runId, m.wsId, carrier.pausedAt, (cur) => mergeContainers(cur, c) ?? c); // overlay = this call's view
+        },
+      });
+      activity.containers = hasContainerFacts(res.containers) ? res.containers : undefined; // a member with nothing attributed keeps its Bilan row byte-identical to before
+      if (!activity.containers) delete activity.containers;
+      // the Reprise began while (or right after) containers were stopped: its own read of the Bilan may have run before the last stop — restart what THIS call stopped (idempotent with the Reprise's restart)
+      liftedDuringStop = res.lifted || (res.stoppedNow.length > 0 && !stillPaused(db, carrier));
+      if (liftedDuringStop && res.stoppedNow.length > 0) {
+        const mine = res.containers.stopped.filter((e) => res.stoppedNow.includes(e.id));
+        const restarted = await restartContainers(deps.containers, mine, deps.now);
+        activity.containers = { ...res.containers, restarted: mergeRestarted(res.containers.restarted, restarted) };
+        activity.notes = [...(activity.notes ?? []), `the Reprise began while containers were being stopped: ${mine.length} stopped by this attempt were restarted at once`];
+      }
+    } catch (e) {
+      activity.containers = { stopped: activity.containers?.stopped ?? [], ...(activity.containers?.restarted ? { restarted: activity.containers.restarted } : {}), error: `stop: ${errMsg(e)}` };
+    }
+    if (liftedDuringStop) {
+      // merge what a concurrent writer (the Reprise's container step) recorded meanwhile — never overwrite its `restarted` results
+      const rowNow = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt);
+      const merged = mergeContainers(rowNow?.activity?.containers, activity.containers);
+      updateBilan(db, rowId, { activity: { ...activity, ...(merged ? { containers: merged } : {}) }, killed: incomplete ? null : killed, error: errors.length ? errors.join('; ') : null });
+      return 'lifted';
+    }
+  }
   const fresh = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt);
   // notes appended by onTurnStart while we were busy must survive this final write
   const merged: BilanActivity = {
@@ -399,6 +443,8 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     // union, order kept: notes the turn observer appended meanwhile (fresh) AND the ones this attempt added (activity) — preferring `fresh` alone dropped the trap's own (round-3 F2 arm)
     notes: [...new Set([...(fresh?.activity?.notes ?? []), ...(activity.notes ?? [])])].slice(-50), // bounded like appendBilanNote
     ...(fresh?.activity?.observerKilled ? { observerKilled: fresh.activity.observerKilled } : {}),
+    // the container progress writes (`onProgress`) and anything a concurrent Reprise recorded survive this whole-activity write
+    ...(activity.containers || fresh?.activity?.containers ? { containers: mergeContainers(fresh?.activity?.containers, activity.containers) } : {}),
   };
   // An attempt that kills but stays INCOMPLETE (the CLI vanished, a failed interrupt…) leaves `killed_json` NULL — what it killed is kept, never dropped (D11 / round-3 F5).
   if (incomplete && attemptKills.length > 0) merged.earlierKilled = [...(activity.earlierKilled ?? []), ...attemptKills.map((k) => ({ pid: k.pid, cmd: k.cmd, signal: k.signal, outcome: k.outcome, via: k.via, cwd: k.cwd, evidence: k.evidence }))].slice(-100); // bounded like observerKilled
@@ -755,6 +801,12 @@ export async function sweepPauseTrap(deps: TrapDeps): Promise<TrapSummary[]> {
     armDouceTimer(deps, dueAt);
   } catch (e) {
     log.warn('pause-trap: pause-douce sweep failed', e);
+  }
+  // #292: a Reprise's FIRST act — restart exactly the containers the Pause stopped, BEFORE the sweep below releases the coordinators (beginRepriseCore / sweepReprise hold them while any are owed).
+  try {
+    await restartOwedContainers({ getBus: deps.getBus, api: deps.containers ?? null, now: deps.now, warn: (m, e) => log.warn(m, e) });
+  } catch (e) {
+    log.warn('pause-trap: container restart step failed', e);
   }
   // #255: complete the roster of every RESUMING carrier from the live tree and close a finished Reprise. Idempotent; a switch-OFF run is never resuming.
   try {
