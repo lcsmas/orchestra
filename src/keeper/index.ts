@@ -29,7 +29,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   createLineSplitter,
   encodeKeeperFrame,
@@ -39,7 +39,8 @@ import {
   type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol.ts';
-import { maxSocketPathBytes, relaySocketPath, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
@@ -132,7 +133,14 @@ function unlinkOwnedFiles(): void {
 
 function cleanupAndExit(code: number): void {
   relaySupervisor?.stop();
-  relay?.stop();
+  if (relay) {
+    relay.stop();
+    try {
+      fs.unlinkSync(relayUpstreamFile(sockPath));
+    } catch {
+      /* none */
+    }
+  }
   unlinkOwnedFiles();
   klog(`exit code=${code}`);
   process.exit(code);
@@ -225,23 +233,15 @@ let relaySupervisor: RelaySupervisor | null = null;
 let spawnInFlight = false;
 const deferredFrames: KeeperClientFrame[] = [];
 
-/** ASYNC on purpose: a sync exec would stop this keeper answering probes (the app's helloAck waits 3 s) while the CLI runs. */
-function dockerContextHost(env: Record<string, string | undefined>): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(
-      'docker',
-      ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'],
-      { env: env as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 3000 },
-      (err, stdout) => resolve(err ? null : String(stdout).trim() || null), // no docker CLI / unreadable config: default socket
-    );
-  });
-}
-
-function isSocketPath(p: string): boolean {
+/** Publish the resolved upstream beside the relay socket (tmp + rename): the app's Pause asks THIS file which daemon holds the member's attributed containers. Best effort. */
+function publishUpstream(upstream: string): void {
+  const file = relayUpstreamFile(sockPath);
   try {
-    return fs.statSync(p).isSocket();
-  } catch {
-    return false;
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, upstream, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    klog(`docker relay: could not publish the upstream (${(e as Error).message})`);
   }
 }
 
@@ -249,7 +249,7 @@ function isSocketPath(p: string): boolean {
  *  UNTOUCHED when the relay cannot start (the member then uses the real socket; its containers count as unattributed). */
 async function withDockerRelay(runId: string, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
   try {
-    const up = await resolveRelayUpstream(env, { dockerContextHost, isSocket: isSocketPath });
+    const up = await resolveRelayUpstream(env, realUpstreamDeps);
     if (!up.ok) {
       klog(`docker relay disabled: ${up.reason}`);
       return env;
@@ -271,6 +271,8 @@ async function withDockerRelay(runId: string, env: Record<string, string | undef
     // SIGUSR2's default action exactly as before.
     process.on('SIGUSR2', () => relay?.kill());
     klog(`docker relay listening ${relaySock} -> ${up.socketPath} (via ${up.via}) ws=${wsId} run=${runId}`);
+    if (!up.daemonUp) klog(`docker relay: no daemon at ${up.socketPath} yet — calls answer 502 until it appears`);
+    publishUpstream(up.socketPath);
     return { ...env, DOCKER_HOST: `unix://${relaySock}` };
   } catch (e) {
     klog(`docker relay disabled: ${(e as Error).message}`);

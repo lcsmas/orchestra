@@ -25,6 +25,7 @@ const T = {
   bus: 'src/shared/bus-switches.test.ts',
   bind: 'src/main/docker-relay-binding.test.ts',
   api: 'src/main/docker-api.test.ts',
+  endpoint: 'src/shared/docker-endpoint.test.ts',
 };
 
 // [id, file, [[find, replace]...], tests that must go red, note]
@@ -37,7 +38,7 @@ const MUTANTS = [
   ['M6', 'src/shared/docker-relay.ts', [['if (args.remote || args.platform', 'if (args.platform']], [T.shared], 'sandbox member gets the relay'],
   ['M7', 'src/shared/docker-relay.ts', [['|| !args.switchOn) return undefined', ') return undefined']], [T.shared, T.sw], 'switch OFF still offers the relay'],
   ['M8', 'src/shared/docker-relay.ts', [["`${keeperSock.slice(0, -'.sock'.length)}.docker.sock`", "`${keeperSock.slice(0, -'.sock'.length)}.docker.pid`"]], [T.shared, T.keeper], 'relay socket named *.pid (listLiveKeepers would read it as a workspace)'],
-  ['M9', 'src/shared/docker-relay.ts', [['if (!deps.isSocket(socketPath))', 'if (false as boolean)']], [T.shared, T.keeper], 'relay to a socket that does not exist'],
+  ['M9', 'src/shared/docker-relay.ts', [["if (kind === 'other') return", 'if (false as boolean) return']], [T.shared], 'something that is not a socket (a regular file) is accepted as the daemon'],
   ['R1', 'src/keeper/docker-relay.ts', [['if (stamped) body = stamped;', 'if (false as boolean) body = stamped as Buffer;']], [T.relay, T.keeper], 'creates are forwarded unstamped; rig: run_labels'],
   ['R2', 'src/keeper/docker-relay.ts', [["headers['content-length'] = String(body.length);", "headers['content-length'] = String(original.length);"]], [T.relay], 'content-length not recomputed for the stamped body'],
   ['R3', 'src/keeper/docker-relay.ts', [['      res.flushHeaders();\n', '']], [T.relay], 'response headers held until the first body byte'],
@@ -50,9 +51,9 @@ const MUTANTS = [
   ['K1', 'src/keeper/index.ts', [["      klog('docker relay disabled: could not start');\n      return env;", "      klog('docker relay disabled: could not start');\n      return { ...env, DOCKER_HOST: `unix://${relaySocketPath(sockPath)}` };"]], [T.keeper], 'DOCKER_HOST set although the relay cannot start; rig: no_relay_fallback'],
   ['K2', 'src/keeper/index.ts', [['} else if (f.dockerRelay) {', '} else if (f.dockerRelay !== null) {']], [T.keeper], 'relay started even when the switch is OFF (no dockerRelay); rig: switch_off'],
   ['K3', 'src/keeper/index.ts', [['      if (spawnInFlight) {\n        deferredFrames.push(f as KeeperClientFrame);\n        return;\n      }\n', '']], [T.keeper], 'stdin sent behind a relay spawn is dropped'],
-  ['K4', 'src/keeper/index.ts', [['  relay?.stop();\n', '']], [T.keeper], 'relay socket left behind when the keeper exits'],
+  ['K4', 'src/keeper/index.ts', [["  if (relay) {\n    relay.stop();\n", "  if (relay) {\n"]], [T.keeper], 'relay socket left behind when the keeper exits'],
   ['K5', 'src/keeper/index.ts', [["    process.on('SIGUSR2', () => relay?.kill());\n", '']], [T.keeper], 'SIGUSR2 default action kills the keeper; rig: kill_relay'],
-  ['K6', 'src/keeper/index.ts', [['resolveRelayUpstream(env, {', 'resolveRelayUpstream(process.env as Record<string, string | undefined>, {']], [T.keeper], 'upstream resolved from the keeper env, not the member env'],
+  ['K6', 'src/keeper/index.ts', [['resolveRelayUpstream(env, realUpstreamDeps)', 'resolveRelayUpstream(process.env as Record<string, string | undefined>, realUpstreamDeps)']], [T.keeper], 'upstream resolved from the keeper env, not the member env'],
   ['K7', 'src/keeper/index.ts', [["    return { ...env, DOCKER_HOST: `unix://${relaySock}` };", '    return env;']], [T.keeper], 'DOCKER_HOST never set; rig: run_labels'],
   ['R10', 'src/keeper/docker-relay.ts', [["    res.on('close', () => {\n      if (!res.writableFinished) up.destroy();\n    });\n", '']], [T.relay], 'an aborted client leaves its daemon-side connection open (leak)'],
   ['R11', 'src/keeper/docker-relay.ts', [["    client.on('error', end);\n", "    client.on('error', end);\n    client.on('end', end);\n"]], [T.relay], 'a client half-close (CloseWrite) kills the hijack'],
@@ -60,24 +61,84 @@ const MUTANTS = [
   ['R13', 'src/keeper/docker-relay.ts', [['    for (const s of live) s.destroy();\n', '']], [T.relay], 'a killed relay leaves in-flight streams half-alive'],
   ['R14', 'src/keeper/docker-relay.ts', [['http.createServer({ maxHeaderSize: 1 << 20 }, onRequest)', 'http.createServer(onRequest)']], [T.relay], 'node 16 KB header cap: big X-Registry-Config calls fail through the relay'],
   ['R15', 'src/keeper/docker-relay.ts', [["      ur.on('error', () => res.destroy());\n", '']], [T.relay], 'a daemon dying mid-response crashes/hangs instead of aborting the client call'],
-  ['K8', 'src/keeper/index.ts', [['function dockerContextHost(env: Record<string, string | undefined>): Promise<string | null> {\n  return new Promise((resolve) => {', 'function dockerContextHost(env: Record<string, string | undefined>): Promise<string | null> {\n  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);\n  return new Promise((resolve) => {']], [T.keeper], 'a blocking context lookup stops the keeper answering probes'],
-  ['M10', 'src/shared/docker-relay.ts', [['const relayShaped = !!inherited && isRelaySocketPath(inherited);', 'const relayShaped = false;']], [T.shared, T.keeper], 'another keeper relay is accepted as the real daemon (stacked relays, labels overwritten)'],
+  ['K8', 'src/shared/docker-endpoint.ts', [['export function dockerContextHostViaCli(env: Record<string, string | undefined>): Promise<string | null> {\n  return new Promise((resolve) => {', 'export function dockerContextHostViaCli(env: Record<string, string | undefined>): Promise<string | null> {\n  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);\n  return new Promise((resolve) => {']], [T.keeper], 'a blocking context lookup stops the keeper answering probes'],
+  ['M10', 'src/shared/docker-relay.ts', [['const relayShaped = !!inherited && isRelaySocketPath(inherited);', 'const relayShaped = false;']], [T.shared, T.keeper, T.api], 'another keeper relay is accepted as the real daemon (stacked relays, labels overwritten)'],
   ['M11', 'src/shared/docker-relay.ts', [["    const ctxEnv = { ...env };\n    delete ctxEnv.DOCKER_HOST;\n", "    const ctxEnv = { ...env };\n"]], [T.shared], 'the context lookup echoes the inherited relay back'],
+  ['K9', 'src/keeper/index.ts', [["    return { ...env, DOCKER_HOST: `unix://${relaySock}` };", "    return { DOCKER_HOST: `unix://${relaySock}`, ...env };"]], [T.keeper], 'F1: the member\'s own unix DOCKER_HOST beats the relay → silently unattributed; rig: run_labels is blind (clean env) — unit only'],
+  ['M12', 'src/shared/docker-relay.ts', [["if (kind === 'other') return", "if (kind !== 'socket') return"]], [T.shared, T.keeper], 'F4: a daemon that is not up YET refuses the relay for the keeper\'s whole life; rig: late_daemon'],
+  ['A6', 'src/main/docker-api.ts', [["const r = await resolveRelayUpstream(env, deps);", "const r = await resolveRelayUpstream({ ...env, ORCHESTRA_DOCKER_SOCKET: undefined }, deps);"]], [T.api], 'F2: the app ignores ORCHESTRA_DOCKER_SOCKET (relay stamps daemon A, Pause asks daemon B)'],
+  ['A7', 'src/main/docker-api.ts', [["const r = await resolveRelayUpstream(env, deps);", "const r = await resolveRelayUpstream(env, { ...deps, dockerContextHost: () => null });"]], [T.api], 'F2: the app ignores the docker context'],
+  ['A8', 'src/main/docker-api.ts', [["resolveRelayUpstream(opts.env ?? process.env, opts.deps ?? realUpstreamDeps)", "resolveRelayUpstream(process.env, opts.deps ?? realUpstreamDeps)"]], [T.api], 'F2: injected env ignored'],
+  ['A9', 'src/main/docker-api.ts', [["resolveRelayUpstream(opts.env ?? process.env, opts.deps ?? realUpstreamDeps)", "resolveRelayUpstream({ ...(opts.env ?? process.env), ORCHESTRA_DOCKER_SOCKET: undefined }, opts.deps ?? realUpstreamDeps)"]], [T.api], 'F2: the DEFAULT client ignores ORCHESTRA_DOCKER_SOCKET (relay stamps daemon A, Pause asks B); rig: api_real'],
+  ['E1', 'src/shared/docker-endpoint.ts', [["=== 'ENOENT' ? 'missing' : 'other'", "=== 'ENOENT' ? 'other' : 'other'"]], [T.endpoint], 'F4: a missing socket reads as "in the way"'],
+  ['E2', 'src/shared/docker-endpoint.ts', [["return fs.statSync(p).isSocket() ? 'socket' : 'other';", "return fs.statSync(p).isSocket() || true ? 'socket' : 'other';"]], [T.endpoint], 'a regular file is accepted as the daemon socket'],
+  ['E3', 'src/shared/docker-endpoint.ts', [["(err, stdout) => resolve(err ? null : String(stdout).trim() || null),", "(err, stdout) => resolve(String(stdout).trim() || null),"]], [T.endpoint], 'a failing docker CLI still answers'],
+  ['S1', 'src/keeper/index.ts', [["    publishUpstream(up.socketPath);\n", '']], [T.keeper], 'the keeper never publishes which daemon its relay stamps on (Pause could query another one)'],
+  ['S2', 'src/keeper/index.ts', [["  if (relay) {\n    relay.stop();\n    try {\n      fs.unlinkSync(relayUpstreamFile(sockPath));", "  if (relay) {\n    relay.stop();\n    try {\n      void relayUpstreamFile;"]], [T.keeper], 'the published upstream outlives its keeper'],
+  ['S3', 'src/main/docker-api.ts', [["return p.startsWith('/') && !isRelaySocketPath(p) ? p : null;", "return p.startsWith('/') ? p : null;"]], [T.api], 'a published upstream that is itself a relay is believed'],
+  ['S4', 'src/shared/docker-relay.ts', [["if (kind === 'missing' && via === 'default') return", "if (false as boolean && via === 'default') return"]], [T.shared], 'a guessed default path nobody listens on pins DOCKER_HOST to a relay that never answers'],
+  ['S5', 'src/shared/docker-relay.ts', [["  if (isRelaySocketPath(socketPath)) return { ok: false, reason: `upstream ${socketPath} (${via}) is a keeper relay socket, not a daemon` };\n", '']], [T.shared], 'an explicit override / docker context naming a relay is forwarded to (stacked relays)'],
+  ['S6', 'src/main/docker-api.ts', [["        if (e instanceof DockerApiError && e.kind === 'unavailable') cache = null;", "        if (e instanceof DockerApiError && e.kind === 'unavailable') void 0;"]], [T.api], 'a dead resolved socket is trusted for a minute (stale after a context switch)'],
+  ['S7', 'src/main/docker-api.ts', [["    inflight ??= resolveRelayUpstream(", "    inflight = resolveRelayUpstream("]], [T.api], 'N concurrent callers spawn N `docker context inspect`'],
+  ['S8', 'src/main/docker-api.ts', [["const stable = r.ok && r.daemonUp && r.via !== 'default';", "const stable = true;"]], [T.api], 'a no-daemon-yet / guessed resolution is cached for a minute'],
   ['C1', 'src/main/keeper-client.ts', [['                ...(dockerRelay ? { dockerRelay } : {}),\n', '']], [T.bind], 'facade drops the relay spec; rig: app_switch'],
-  ['C2', 'src/main/keeper-client.ts', [["if (!sockLive && (state === 'gone' || state === 'other')) unlink(keeperRelaySocketPath(wsId));", 'if (true as boolean) unlink(keeperRelaySocketPath(wsId));']], [], 'sweep removes a LIVE keeper relay socket; rig: sweep_relay_files'],
+  ['C2', 'src/main/keeper-client.ts', [["if (!sockLive && (state === 'gone' || state === 'other')) {\n    unlink(keeperRelaySocketPath(wsId));", "if (true as boolean) {\n    unlink(keeperRelaySocketPath(wsId));"]], [], 'sweep removes a LIVE keeper relay socket; rig: sweep_relay_files'],
   ['B1', 'src/shared/bus-switches.ts', [['dockerRelay: false, // #291', 'dockerRelay: true, // #291']], [T.sw, T.bus], 'default ON'],
   ['B2', 'src/shared/bus-switches.ts', [["  docker_relay: 'dockerRelay', // #291\n", '']], [T.sw, T.bus], 'wire name unknown → every read OFF'],
   ['D1', 'src/main/docker-relay-switch.ts', [['dockerRelayOffer({ remote, platform', 'dockerRelayOffer({ remote: false, platform']], [T.sw], 'sandbox member gets the relay (read side)'],
   ['D2', 'src/main/docker-relay-switch.ts', [["busSwitch(db, runId, 'docker_relay')", "busSwitch(db, runId, 'liveness')"]], [T.sw], 'reads the wrong mechanism'],
   ['W1', 'src/main/agent-sdk.ts', [['}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote)) as never,', '}, undefined) as never,']], [T.bind], 'the session never asks for the relay'],
   ['A1', 'src/main/docker-api.ts', [["path: `/containers/${enc(id)}/stop?t=${timeoutSec}`", "path: `/containers/${enc(id)}/kill?t=${timeoutSec}`"]], [T.api], 'stop becomes kill'],
-  ['A2', 'src/main/docker-api.ts', [['if (!isRelaySocketPath(p)) candidates.push(p);', 'candidates.push(p);']], [T.api], 'the app talks to a relay'],
   ['A3', 'src/main/docker-api.ts', [["if (res.status === 304) return 'already-stopped';", "if (res.status === 304) return 'stopped';"]], [T.api], '304 mislabelled'],
   ['A4', 'src/main/docker-api.ts', [['autoRemove: j.HostConfig?.AutoRemove === true,', 'autoRemove: false,']], [T.api], 'AutoRemove ignored (a --rm container would be stopped = deleted)'],
   ['A5', 'src/main/docker-api.ts', [["if (o.labels?.length) filters.label = o.labels;", '']], [T.api], 'label filter dropped (lists every container)'],
 ];
 
 const sha = (b) => createHash('sha256').update(b).digest('hex').slice(0, 12);
+
+// ── LEAK GUARD: a mutant that routes a relay to the host's REAL dockerd (K6, M5, M9…) can make a unit test CREATE real
+// containers. Every run is bracketed by a container-id snapshot. A new container is OURS when its `orchestra.ws` label is one of our test/rig ids
+// (ws-kdr-*, g2r*, g8r*) or it carries a rig label (g2rig / g8rig): counted as a LEAK and removed BY ID. A new container that is NOT ours (a sibling's rig on the
+// same dockerd) is reported as FOREIGN and never touched or counted. A guard that could not read Docker (a timed-out / failing `docker ps`) is UNVERIFIED and
+// fails the run — it never reads as "0 leaked".
+let leaks = 0;
+let unverified = 0;
+let foreign = 0;
+const dockerOut = (args) => {
+  try {
+    return execFileSync('docker', args, { encoding: 'utf8', timeout: 30000, env: { ...process.env, DOCKER_HOST: '' } }).trim();
+  } catch {
+    return null; // no docker / no permission: the guard degrades to a no-op (reported once)
+  }
+};
+const containerIds = () => {
+  const o = dockerOut(['ps', '-a', '-q', '--no-trunc']);
+  return o === null ? null : new Set(o.split('\n').filter(Boolean));
+};
+const dockerAvailable = containerIds() !== null;
+function leakCheck(before) {
+  if (!dockerAvailable) return { leaked: 0, removed: 0 }; // no docker at all: nothing can leak (announced once at startup)
+  const after = containerIds();
+  if (!before || !after) {
+    unverified++; // docker exists but could not be read around this run: UNVERIFIED, never "clean"
+    return { leaked: 0, removed: 0 };
+  }
+  let leaked = 0;
+  let removed = 0;
+  for (const id of [...after].filter((x) => !before.has(x))) {
+    const labels = dockerOut(['inspect', '-f', '{{index .Config.Labels "orchestra.ws"}}|{{index .Config.Labels "g2rig"}}|{{index .Config.Labels "g8rig"}}', id]);
+    const [ws = '', g2 = '', g8 = ''] = (labels ?? '').split('|');
+    if (/^(ws-kdr-|g2r|g8r)/.test(ws) || g2 || g8) {
+      leaked++;
+      if (dockerOut(['rm', '-f', id]) !== null) removed++;
+    } else {
+      foreign++;
+    }
+  }
+  return { leaked, removed };
+}
+if (containerIds() === null) console.log('LEAK GUARD: docker unavailable — containers cannot leak, guard is a no-op');
+
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const only = args.filter((a) => !a.startsWith('--'));
@@ -120,6 +181,17 @@ function run(tests, timeoutMs = 120000) {
   });
 }
 
+// --leak-selftest: the guard's POSITIVE CONTROL — make one labelled throwaway container (never started), and require the guard to SEE and remove it.
+if (args.includes('--leak-selftest')) {
+  const before = containerIds();
+  const made = dockerOut(['create', '--label', 'orchestra.ws=g2r-leak-selftest', 'alpine:3', 'true']);
+  const lk = leakCheck(before);
+  const gone = containerIds();
+  const ok = before !== null && made !== null && lk.leaked === 1 && lk.removed === 1 && gone !== null && !gone.has(made);
+  console.log(`LEAK GUARD SELFTEST: created=${made?.slice(0, 12) ?? 'FAILED'} leaked=${lk.leaked} removed=${lk.removed} → ${ok ? 'PASS (guard sees and removes a leak)' : 'FAIL'}`);
+  process.exit(ok ? 0 : 1);
+}
+
 if (checkOnly) {
   let bad = 0;
   for (const [id, file, edits] of todo) {
@@ -138,7 +210,7 @@ if (checkOnly) {
 
 
 // ── --rig: the same mutants against the REAL-dockerd rig (HEAVY: containers). The arm that must go red for each. ──────
-const RIG_ARM = { M2: 'user_labels', R1: 'run_labels', R3: 'streams', R4: 'run_labels', R6: 'kill_relay', K1: 'no_relay_fallback', K2: 'switch_off', K5: 'kill_relay', K7: 'run_labels', C1: 'app_switch', C2: 'sweep_relay_files' };
+const RIG_ARM = { A9: 'api_real', M12: 'late_daemon', M2: 'user_labels', R1: 'run_labels', R3: 'streams', R4: 'run_labels', R6: 'kill_relay', K1: 'no_relay_fallback', K2: 'switch_off', K5: 'kill_relay', K7: 'run_labels', C1: 'app_switch', C2: 'sweep_relay_files' };
 if (args.includes('--rig')) {
   const rigIds = Object.keys(RIG_ARM).filter((id) => !only.length || only.includes(id));
   const rigRun = (arm) =>
@@ -161,6 +233,7 @@ if (args.includes('--rig')) {
     const a = apply(file, edits);
     if (a.err) { console.log(`${id}: ${a.err}`); alive++; continue; }
     let r;
+    const snap = containerIds();
     try {
       fs.writeFileSync(a.abs, a.mutated);
       r = await rigRun(RIG_ARM[id]);
@@ -168,14 +241,16 @@ if (args.includes('--rig')) {
       fs.writeFileSync(a.abs, a.orig);
       if (!fs.readFileSync(a.abs).equals(a.orig)) throw new Error(`RESTORE MISMATCH for ${file}`);
     }
+    const lk = leakCheck(snap);
+    if (lk.leaked) { console.log(`    LEAK after ${id}: ${lk.leaked} container(s) left by the rig run (removed ${lk.removed} by id); the rig's label sweep missed them`); leaks += lk.leaked; }
     const red = (r.checks ?? []).filter((c) => !c.ok && !/bystander|every rig container/.test(c.name)).map((c) => c.name.slice(0, 60));
     const killed = r.ok === false && (red.length > 0 || r.fatal);
     if (!killed) alive++;
     console.log(`${id.padEnd(3)} ${killed ? 'KILLED  ' : 'SURVIVED'} rig:${RIG_ARM[id]}  red: ${red.slice(0, 2).join(' | ') || r.fatal || '-'}  — ${note}`);
   }
   execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
-  console.log(`rig mutants: ${rigIds.length - alive} killed / ${rigIds.length}`);
-  process.exit(alive ? 1 : 0);
+  console.log(`rig mutants: ${rigIds.length - alive} killed / ${rigIds.length}; leaked containers: ${leaks}; unverified guard reads: ${unverified}; foreign: ${foreign}`);
+  process.exit(alive || leaks || unverified ? 1 : 0);
 }
 
 const allTests = [...new Set(MUTANTS.flatMap((m) => m[3]))];
@@ -201,9 +276,12 @@ for (const [id, file, edits, tests, note] of todo) {
       verdict = 'RIG-ONLY';
       detail = 'killed by the real-dockerd rig, not a unit test';
     } else {
+      const snap = containerIds();
       const r = await run(tests);
+      const lk = leakCheck(snap);
       verdict = r.rc !== 0 ? 'KILLED' : 'SURVIVED';
-      detail = `rc=${r.rc}${r.timedOut ? ' (HUNG→killed)' : ''} pass=${r.pass} fail=${r.fail}`;
+      detail = `rc=${r.rc}${r.timedOut ? ' (HUNG→killed)' : ''} pass=${r.pass} fail=${r.fail}${lk.leaked ? ` LEAK:${lk.leaked}(removed ${lk.removed})` : ''}`;
+      if (lk.leaked) leaks += lk.leaked;
     }
   } finally {
     fs.writeFileSync(a.abs, a.orig); // byte-exact restore …
@@ -216,7 +294,8 @@ for (const [id, file, edits, tests, note] of todo) {
 // leave the keeper bundle built from the RESTORED sources
 execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
 const survived = results.filter((r) => r.verdict === 'SURVIVED' || r.verdict === 'ANCHOR-ERROR');
-console.log(`\n${results.filter((r) => r.verdict === 'KILLED').length} killed · ${results.filter((r) => r.verdict === 'RIG-ONLY').length} rig-only · ${survived.length} survived/errored of ${results.length}`);
+console.log(`\nLEAKED containers across the sweep: ${leaks} (must be 0) · UNVERIFIED guard reads: ${unverified} (must be 0) · foreign new containers (a sibling's, untouched): ${foreign}`);
+console.log(`${results.filter((r) => r.verdict === 'KILLED').length} killed · ${results.filter((r) => r.verdict === 'RIG-ONLY').length} rig-only · ${survived.length} survived/errored of ${results.length}`);
 const post = await run(allTests, 240000);
 console.log(`POST-RESTORE (tree back to base): rc=${post.rc} pass=${post.pass} fail=${post.fail} skipped=${post.skipped}; git diff of mutated files must be empty`);
-process.exit(survived.length || post.rc !== 0 ? 1 : 0);
+process.exit(survived.length || post.rc !== 0 || leaks || unverified ? 1 : 0);

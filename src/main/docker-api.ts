@@ -8,8 +8,8 @@
 
 import fs from 'node:fs';
 import http from 'node:http';
-import path from 'node:path';
-import { isRelaySocketPath } from '../shared/docker-relay.ts';
+import { isRelaySocketPath, relayUpstreamFile, resolveRelayUpstream, type UpstreamDeps } from '../shared/docker-relay.ts';
+import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 
 export interface DockerResponse {
   status: number;
@@ -67,8 +67,10 @@ export interface ListContainersOptions {
 }
 
 export interface DockerApi {
-  /** The socket in use, or null when the transport is injected / no socket was found. */
+  /** The socket PINNED at construction, or null when it is resolved per use (the default) or the transport is injected. */
   readonly socketPath: string | null;
+  /** The socket the next call would use (resolved like the relay does); null = none. */
+  resolveSocket(): Promise<string | null>;
   /** Does a daemon answer `/_ping`? Never throws. */
   available(): Promise<boolean>;
   listContainers(opts?: ListContainersOptions): Promise<DockerContainerSummary[]>;
@@ -85,29 +87,18 @@ export interface DockerApi {
 // ── socket resolution ───────────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * The REAL daemon socket this app talks to: its own `DOCKER_HOST` when that is a unix socket that is not a relay
- * (an Orchestra launched from a relay-ON member's shell inherits the relay's DOCKER_HOST — ignored), else
- * `/var/run/docker.sock`, else the rootless `$XDG_RUNTIME_DIR/docker.sock`. Null = none exists.
+ * The REAL daemon socket this app talks to — resolved by the SAME function the keeper's relay forwards through
+ * (`resolveRelayUpstream`: `ORCHESTRA_DOCKER_SOCKET` → own `DOCKER_HOST` (unix, not a relay: an Orchestra launched from a
+ * relay-ON member's shell inherits the relay's — ignored) → effective docker context → `/var/run/docker.sock`), so the
+ * daemon that stamps and the daemon Pause queries cannot differ (#291 follow-up F2). Null = unresolvable (tcp/ssh
+ * endpoint, nothing at the path). A path with no daemon YET still resolves — calls fail `unavailable` until it appears.
  */
-export function resolveRealDockerSocket(
+export async function resolveRealDockerSocket(
   env: Record<string, string | undefined> = process.env,
-  isSocket: (p: string) => boolean = (p) => {
-    try {
-      return fs.statSync(p).isSocket();
-    } catch {
-      return false;
-    }
-  },
-): string | null {
-  const candidates: string[] = [];
-  const dh = env.DOCKER_HOST?.trim();
-  if (dh?.startsWith('unix://')) {
-    const p = dh.slice('unix://'.length);
-    if (!isRelaySocketPath(p)) candidates.push(p);
-  }
-  candidates.push('/var/run/docker.sock');
-  if (env.XDG_RUNTIME_DIR) candidates.push(path.join(env.XDG_RUNTIME_DIR, 'docker.sock'));
-  return candidates.find((p) => isSocket(p)) ?? null;
+  deps: UpstreamDeps = realUpstreamDeps,
+): Promise<string | null> {
+  const r = await resolveRelayUpstream(env, deps);
+  return r.ok ? r.socketPath : null;
 }
 
 // ── transport ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -129,8 +120,6 @@ function socketTransport(socketPath: string): DockerTransport {
       r.end();
     });
 }
-
-const unavailable: DockerTransport = () => Promise.reject(new DockerApiError('no Docker socket found', 'unavailable'));
 
 // ── the client ──────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -154,16 +143,81 @@ function httpError(res: DockerResponse, what: string): DockerApiError {
   return new DockerApiError(`docker ${what}: HTTP ${res.status}${detail ? ` — ${detail}` : ''}`, 'http', res.status);
 }
 
+/** How long a resolution is trusted. A daemon that is UP on a path the member/context NAMED is stable for a minute; anything else (no daemon yet, a default guess, a refusal)
+ *  is re-read soon, so a daemon that appears — or a context that was flaky once — is picked up. */
+const RESOLVE_TTL_MS = 60_000;
+const RESOLVE_SOON_TTL_MS = 2_000;
+
+/**
+ * The daemon socket a MEMBER's relay forwards to, read from the sidecar its keeper published (`relayUpstreamFile`): the relay froze it at spawn, while the app's own
+ * resolution can have moved since (`docker context use`, a relaunch with another DOCKER_HOST) — Pause must query the daemon the containers were STAMPED on. Null when no
+ * keeper published one, or the content is not an absolute, non-relay path.
+ */
+export function readRelayUpstream(keeperSock: string): string | null {
+  try {
+    const p = fs.readFileSync(relayUpstreamFile(keeperSock), 'utf8').trim();
+    return p.startsWith('/') && !isRelaySocketPath(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The app's client for ONE member: pinned to the daemon its relay stamps on when its keeper published that, else the app's own resolution. */
+export function dockerApiForMember(keeperSock: string, fallback: DockerApi): DockerApi {
+  const up = readRelayUpstream(keeperSock);
+  return up ? createDockerApi({ socketPath: up }) : fallback;
+}
+
 export function createDockerApi(
-  opts: { socketPath?: string | null; transport?: DockerTransport; timeoutMs?: number; env?: Record<string, string | undefined> } = {},
+  opts: {
+    /** Pin one socket (tests / a scratch daemon); resolution is skipped. */
+    socketPath?: string | null;
+    transport?: DockerTransport;
+    timeoutMs?: number;
+    /** Resolution inputs (default: this process's env + the real docker CLI / fs probes). */
+    env?: Record<string, string | undefined>;
+    deps?: UpstreamDeps;
+    now?: () => number;
+  } = {},
 ): DockerApi {
-  const socketPath = opts.transport ? null : opts.socketPath !== undefined ? opts.socketPath : resolveRealDockerSocket(opts.env);
-  const transport = opts.transport ?? (socketPath ? socketTransport(socketPath) : unavailable);
+  const pinned = opts.transport ? null : opts.socketPath !== undefined ? opts.socketPath : undefined;
+  const clock = opts.now ?? Date.now;
+  let cache: { at: number; ttl: number; path: string | null } | null = null;
+  let inflight: Promise<string | null> | null = null;
+  const currentSocket = async (): Promise<string | null> => {
+    if (pinned !== undefined) return pinned;
+    if (cache && clock() - cache.at < cache.ttl) return cache.path;
+    // one `docker context inspect` for N concurrent callers (the Pause fans out over every member)
+    inflight ??= resolveRelayUpstream(opts.env ?? process.env, opts.deps ?? realUpstreamDeps)
+      .then((r) => {
+        const stable = r.ok && r.daemonUp && r.via !== 'default';
+        cache = { at: clock(), ttl: stable ? RESOLVE_TTL_MS : RESOLVE_SOON_TTL_MS, path: r.ok ? r.socketPath : null };
+        return cache.path;
+      })
+      .finally(() => {
+        inflight = null;
+      });
+    return inflight;
+  };
+  const socketPath = pinned ?? null;
+  const transport: DockerTransport =
+    opts.transport ??
+    (async (req) => {
+      const p = await currentSocket();
+      if (!p) throw new DockerApiError('no Docker socket found', 'unavailable');
+      try {
+        return await socketTransport(p)(req);
+      } catch (e) {
+        if (e instanceof DockerApiError && e.kind === 'unavailable') cache = null; // the resolved socket does not answer: re-resolve next time (a context switch, a daemon that moved)
+        throw e;
+      }
+    });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const enc = encodeURIComponent;
 
   return {
     socketPath,
+    resolveSocket: currentSocket,
     async available() {
       try {
         const res = await transport({ method: 'GET', path: '/_ping', timeoutMs });

@@ -11,7 +11,8 @@
 //   KEEPER_JS=<bundle>   use this keeper bundle (e.g. one built from master or a mutant)
 //
 // SAFETY (ledger #295 D4): scratch ORCHESTRA_HOME/HOME under ~/.cache/g2-rig; every container/network/volume/image the
-// rig creates carries the rig-unique name prefix `g2r<id>` and ONLY those are ever removed; the human's own containers
+// rig creates carries the rig-unique name prefix `g2r<id>` AND the label `g2rig=g2r<id>` (an unnamed `docker run --rm`, or a
+// container a MUTANT left unstamped, is still found: cleanup is by LABEL, never by name alone) and ONLY those are ever removed; the human's own containers
 // are snapshotted before/after (id+name+state) and asserted UNCHANGED. The rig never touches the live ~/.orchestra.
 
 import fs from 'node:fs';
@@ -37,6 +38,8 @@ const ARMS = {
   switch_off: { mustFailOnMaster: false, creates: true }, // no dockerRelay in the frame → env byte-identical, no relay socket, unlabelled
   app_switch: { mustFailOnMaster: true, creates: true }, // real makeKeeperSpawn + real scratch bus: frozen ON gets the relay, OFF/default/sandbox never
   sweep_relay_files: { mustFailOnMaster: true, creates: false }, // a dead keeper's relay socket is swept; a live keeper's is spared
+  late_daemon: { mustFailOnMaster: true, creates: true }, // F4 (follow-up): dockerd socket absent at spawn → relay still up (502), stamps once the daemon appears
+  api_real: { mustFailOnMaster: true, creates: true }, // F2 (follow-up): the APP's docker-api lists/stops/starts what the relay stamped, on the real daemon
 };
 if (!ARMS[ARM]) {
   console.error(`unknown arm: ${ARM} (one of ${Object.keys(ARMS).join(', ')})`);
@@ -68,19 +71,27 @@ const labelsOf = (name) => {
   if (r.code !== 0) return null;
   return JSON.parse(r.out) ?? {};
 };
-const mine = () => dk(['ps', '-a', '--filter', `name=^${PFX}`, '--format', '{{.Names}}']).out.split('\n').filter(Boolean);
+const LBL = `--label g2rig=${PFX}`; // on EVERY container the rig creates (see header)
+const idsBy = (filter) => dk(['ps', '-a', '-q', '--no-trunc', '--filter', filter]).out.split('\n').filter(Boolean);
+/** Every container this rig run owns: by name prefix, by the rig label, by the workspace label the relay stamps, by compose project. */
+const mineIds = () => [...new Set([`name=^${PFX}`, `label=g2rig=${PFX}`, `label=orchestra.ws=${PFX}`, `label=com.docker.compose.project=${PFX}p`].flatMap(idsBy))];
+const mine = () => {
+  const ids = mineIds();
+  return ids.length ? dk(['inspect', '-f', '{{.Name}}', ...ids]).out.split('\n').filter(Boolean).map((n) => n.replace(/^\//, '')) : [];
+};
 
-/** The human's/other fleets' containers: everything NOT carrying the rig prefix, id+name+state (Status embeds
- *  relative times that drift while the rig runs, so it is deliberately not compared). */
+/** The human's/other fleets' containers: everything NOT owned by this rig run, id+name+state+image (Status embeds relative
+ *  times that drift while the rig runs, so it is deliberately not compared). */
 function bystanders() {
-  const r = dk(['ps', '-a', '--format', '{{.ID}} {{.Names}} {{.State}} {{.Image}}']);
-  return r.out.split('\n').filter((l) => l && !l.split(' ')[1].startsWith(PFX)).sort();
+  const own = new Set(mineIds());
+  const r = dk(['ps', '-a', '--no-trunc', '--format', '{{.ID}} {{.Names}} {{.State}} {{.Image}}']);
+  return r.out.split('\n').filter((l) => l && !own.has(l.split(' ')[0])).sort();
 }
 const BEFORE = bystanders();
 
 function cleanup() {
-  const names = mine();
-  if (names.length) dk(['rm', '-f', '-v', ...names]);
+  const ids = mineIds();
+  if (ids.length) dk(['rm', '-f', '-v', ...ids]); // by ID: only what this rig owns
   for (const kind of ['network', 'volume']) {
     const ls = dk([kind, 'ls', '--filter', `name=^${PFX}`, '--format', '{{.Name}}']).out.split('\n').filter(Boolean);
     if (ls.length) dk([kind, 'rm', ...ls]);
@@ -92,7 +103,7 @@ function cleanup() {
 // ── keeper bundle ───────────────────────────────────────────────────────────────────────────────────────────────
 const KEEPER_SRC = process.env.KEEPER_JS ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.KEEPER_JS) {
-  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts']
+  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts']
     .map((s) => path.join(REPO, s))
     .filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_SRC) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_SRC).mtimeMs)) {
@@ -255,16 +266,16 @@ const runArm = {
     const m = await member();
     const env = await m.c.envDump();
     check('DOCKER_HOST points at the keeper relay', env.DOCKER_HOST === `unix://${m.relaySock}`, env.DOCKER_HOST);
-    let r = await m.c.sh(`docker run -d --name ${PFX}-a ${IMG} sleep 300`);
+    let r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-a ${IMG} sleep 300`);
     check('docker run -d succeeds through the relay', r.code === 0, r.err);
     check('docker run → container labelled orchestra.ws + orchestra.run', stamped(`${PFX}-a`), JSON.stringify(labelsOf(`${PFX}-a`)));
     r = await m.c.sh(`docker ps --filter name=^${PFX}-a --format '{{.Names}}'`);
     check('docker ps lists it through the relay', r.out === `${PFX}-a`, r.out + r.err);
     r = await m.c.sh(`docker exec ${PFX}-a echo hello-exec`);
     check('docker exec (hijacked) works', r.out === 'hello-exec', r.out + r.err);
-    r = await m.c.sh(`printf ping | docker run --rm -i ${IMG} cat`);
+    r = await m.c.sh(`printf ping | docker run ${LBL} --rm -i ${IMG} cat`);
     check('docker run -i (hijacked attach, stdin piped) round-trips', r.out === 'ping', r.out + r.err);
-    r = await m.c.sh(`docker create --name ${PFX}-c ${IMG} echo done && docker start -a ${PFX}-c`);
+    r = await m.c.sh(`docker create ${LBL} --name ${PFX}-c ${IMG} echo done && docker start -a ${PFX}-c`);
     check('docker create + start -a works', r.out.endsWith('done'), r.out + r.err);
     check('docker create → labelled', stamped(`${PFX}-c`), JSON.stringify(labelsOf(`${PFX}-c`)));
     r = await m.c.sh(`docker logs ${PFX}-c`);
@@ -280,7 +291,7 @@ const runArm = {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'compose.yaml'),
-      `services:\n  web:\n    image: ${IMG}\n    command: ["sleep","300"]\n    labels:\n      team: x\n  db:\n    image: ${IMG}\n    command: ["sleep","300"]\n    volumes:\n      - data:/data\nvolumes:\n  data: {}\n`,
+      `services:\n  web:\n    image: ${IMG}\n    command: ["sleep","300"]\n    labels:\n      team: x\n      g2rig: ${PFX}\n  db:\n    image: ${IMG}\n    command: ["sleep","300"]\n    labels:\n      g2rig: ${PFX}\n    volumes:\n      - data:/data\nvolumes:\n  data: {}\n`,
     );
     let r = await m.c.sh(`docker compose -p ${proj} up -d`, { cwd: dir });
     check('docker compose up -d succeeds through the relay', r.code === 0, r.err);
@@ -305,7 +316,7 @@ const runArm = {
 
   async user_labels() {
     const m = await member();
-    const r = await m.c.sh(`docker run -d --name ${PFX}-u --label team=x --label orchestra.ws=forged --label orchestra.run=forged ${IMG} sleep 300`);
+    const r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-u --label team=x --label orchestra.ws=forged --label orchestra.run=forged ${IMG} sleep 300`);
     check('docker run with forged labels succeeds', r.code === 0, r.err);
     const l = labelsOf(`${PFX}-u`) ?? {};
     check('the member’s own label is kept', l.team === 'x', JSON.stringify(l));
@@ -315,7 +326,7 @@ const runArm = {
   async streams() {
     const m = await member();
     // logs -f flushed while the container is still emitting
-    let r = await m.c.sh(`docker run -d --name ${PFX}-s ${IMG} sh -c 'i=0; while [ $i -lt 24 ]; do echo line$i; i=$((i+1)); sleep 0.25; done; sleep 120'`);
+    let r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-s ${IMG} sh -c 'i=0; while [ $i -lt 24 ]; do echo line$i; i=$((i+1)); sleep 0.25; done; sleep 120'`);
     check('streaming container started', r.code === 0, r.err);
     r = await m.c.sh(`timeout 8 docker logs -f ${PFX}-s`, { stream: true });
     const ts = r.chunks.map((c) => c[0]);
@@ -325,7 +336,7 @@ const runArm = {
     // events flushed live: the first event arrives while the stream is still open
     const ev = m.c.sh(`timeout 10 docker events --filter container=${PFX}-ev --filter event=create --format '{{.Action}}'`, { stream: true });
     await sleep(1500);
-    await m.c.sh(`docker create --name ${PFX}-ev ${IMG} true`);
+    await m.c.sh(`docker create ${LBL} --name ${PFX}-ev ${IMG} true`);
     const evr = await ev;
     check('docker events streams the create event live', evr.chunks.length >= 1 && evr.chunks[0][1].trim() === 'create' && evr.chunks[0][0] < 8000, JSON.stringify(evr.chunks));
     check('…and that container is labelled', stamped(`${PFX}-ev`), JSON.stringify(labelsOf(`${PFX}-ev`)));
@@ -333,7 +344,7 @@ const runArm = {
     const big = path.join(BASE, 'big.bin');
     fs.writeFileSync(big, randomBytes(30 * 1024 * 1024));
     const want = sha(fs.readFileSync(big));
-    r = await m.c.sh(`docker run --rm -i ${IMG} sha256sum < ${big}`, { timeout: 180000 });
+    r = await m.c.sh(`docker run ${LBL} --rm -i ${IMG} sha256sum < ${big}`, { timeout: 180000 });
     check('30 MB through a hijacked attach arrives intact (sha256)', r.out.startsWith(want), r.out + r.err);
     // docker cp both ways (large streamed tar bodies)
     r = await m.c.sh(`docker cp ${big} ${PFX}-s:/tmp/big && docker cp ${PFX}-s:/tmp/big ${BASE}/big.back`, { timeout: 180000 });
@@ -344,13 +355,13 @@ const runArm = {
     fs.writeFileSync(path.join(bdir, 'Dockerfile'), `FROM ${IMG}\nRUN echo built-through-relay > /built\n`);
     r = await m.c.sh(`docker build -q -t ${PFX}-img:1 ${bdir}`, { timeout: 240000 });
     check('docker build through the relay succeeds', r.code === 0, r.err);
-    r = await m.c.sh(`docker run --rm ${PFX}-img:1 cat /built`);
+    r = await m.c.sh(`docker run ${LBL} --rm ${PFX}-img:1 cat /built`);
     check('the built image runs and has the layer', r.out === 'built-through-relay', r.out + r.err);
   },
 
   async kill_relay() {
     const m = await member();
-    let r = await m.c.sh(`docker run -d --name ${PFX}-k1 ${IMG} sleep 300`);
+    let r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-k1 ${IMG} sleep 300`);
     check('baseline create labelled', r.code === 0 && stamped(`${PFX}-k1`), r.err);
     const ino0 = fs.statSync(m.relaySock).ino;
     process.kill(m.keeperPid(), 'SIGUSR2'); // the relay "crashes"
@@ -362,7 +373,7 @@ const runArm = {
     }
     check('docker works again within 5 s of the kill', ok, r.err);
     check('the relay is a NEW listener (socket inode changed)', fs.existsSync(m.relaySock) && fs.statSync(m.relaySock).ino !== ino0);
-    r = await m.c.sh(`docker run -d --name ${PFX}-k2 ${IMG} sleep 300`);
+    r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-k2 ${IMG} sleep 300`);
     check('a create AFTER the kill is labelled', r.code === 0 && stamped(`${PFX}-k2`), r.err);
     // the socket file removed under a live relay
     const ino1 = fs.statSync(m.relaySock).ino;
@@ -374,7 +385,7 @@ const runArm = {
       ok = r.code === 0;
     }
     check('a deleted relay socket is restored and docker works', ok && fs.existsSync(m.relaySock) && fs.statSync(m.relaySock).ino !== ino1, r.err);
-    r = await m.c.sh(`docker run -d --name ${PFX}-k3 ${IMG} sleep 300`);
+    r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-k3 ${IMG} sleep 300`);
     check('a create after the socket restore is labelled', r.code === 0 && stamped(`${PFX}-k3`), r.err);
     check('the keeper logged the restarts', /docker relay: restarted/.test(fs.readFileSync(m.logFile, 'utf8')));
   },
@@ -385,14 +396,10 @@ const runArm = {
     check('relay cannot start → DOCKER_HOST is UNSET in the member', env.DOCKER_HOST === undefined, env.DOCKER_HOST);
     let r = await m.c.sh('docker ps -q >/dev/null');
     check('docker ps still works on the real socket', r.code === 0, r.err);
-    r = await m.c.sh(`docker run -d --name ${PFX}-f ${IMG} sleep 300`);
+    r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-f ${IMG} sleep 300`);
     const l = labelsOf(`${PFX}-f`);
     check('a container made on the real socket is UNATTRIBUTED (no orchestra.* label)', r.code === 0 && l && l['orchestra.ws'] === undefined && l['orchestra.run'] === undefined, JSON.stringify(l));
     check('the keeper logged why', /docker relay disabled/.test(fs.readFileSync(m.logFile, 'utf8')));
-    // a second variant: the real socket path the member would use does not exist → also no relay, env untouched
-    const m2 = await member({ ws: `${PFX}b`, env: { ORCHESTRA_DOCKER_SOCKET: path.join(BASE, 'nonexistent.sock') } });
-    const env2 = await m2.c.envDump();
-    check('real docker socket missing → DOCKER_HOST unset', env2.DOCKER_HOST === undefined, env2.DOCKER_HOST);
   },
 
   async switch_off() {
@@ -402,7 +409,7 @@ const runArm = {
     check('switch OFF: the member env is EXACTLY the frame env (byte-identical to today)', JSON.stringify(env) === JSON.stringify(sent), JSON.stringify(env));
     check('DOCKER_HOST never set', env.DOCKER_HOST === undefined);
     check('no relay socket exists', !fs.existsSync(m.relaySock));
-    const r = await m.c.sh(`docker run -d --name ${PFX}-o ${IMG} sleep 300`);
+    const r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-o ${IMG} sleep 300`);
     const l = labelsOf(`${PFX}-o`);
     check('docker works and the container is NOT stamped', r.code === 0 && l && l['orchestra.ws'] === undefined, JSON.stringify(l));
     check('the keeper never mentions a relay', !/docker relay/.test(fs.readFileSync(m.logFile, 'utf8')));
@@ -455,7 +462,7 @@ const runArm = {
     kc.installKeeper?.();
     const on = await viaFacade(`${PFX}-won`, `${PFX}-on`, false);
     check('frozen ON → the facade sent the relay and the member has DOCKER_HOST at its relay', !!on.spec && on.env.DOCKER_HOST === `unix://${kc.keeperRelaySocketPath(`${PFX}-won`)}`, JSON.stringify([on.spec, on.env.DOCKER_HOST]));
-    const r = await on.ask({ id: 2, sh: `docker run -d --name ${PFX}-w ${IMG} sleep 300` });
+    const r = await on.ask({ id: 2, sh: `docker run ${LBL} -d --name ${PFX}-w ${IMG} sleep 300` });
     const l = labelsOf(`${PFX}-w`) ?? {};
     check('…and its container carries that run id', r.code === 0 && l['orchestra.run'] === `${PFX}-on` && l['orchestra.ws'] === `${PFX}-won`, JSON.stringify(l));
     const off = await viaFacade(`${PFX}-woff`, `${PFX}-off`, false);
@@ -465,6 +472,58 @@ const runArm = {
     const sbx = await viaFacade(`${PFX}-wsbx`, `${PFX}-on`, true);
     check('a sandbox-hosted member is NEVER given the relay even on an ON run', sbx.spec === undefined && sbx.env.DOCKER_HOST === undefined, JSON.stringify([sbx.spec, sbx.env.DOCKER_HOST]));
     for (const ws of [`${PFX}-won`, `${PFX}-woff`, `${PFX}-wdef`, `${PFX}-wsbx`]) await kc.killKeeper(ws, 'g2-rig');
+  },
+
+  async late_daemon() {
+    const late = path.join(BASE, 'late.sock');
+    const m = await member({ env: { ORCHESTRA_DOCKER_SOCKET: late } });
+    const env = await m.c.envDump();
+    check('daemon socket absent at spawn → the relay is STILL given to the member (DOCKER_HOST at the relay)', env.DOCKER_HOST === `unix://${m.relaySock}`, env.DOCKER_HOST);
+    let r = await m.c.sh('docker ps -q');
+    check('no daemon yet → docker fails cleanly THROUGH THE RELAY (non-zero, the relay\'s own message — not docker\'s native "Cannot connect")', r.code !== 0 && /orchestra docker relay/.test(r.err), `${r.code} ${r.err}`);
+    check('the keeper logged that it is waiting for the daemon', /no daemon at .*late\.sock yet/.test(fs.readFileSync(m.logFile, 'utf8')));
+    fs.symlinkSync('/var/run/docker.sock', late); // "dockerd starts": the socket appears where the member's config says it lives
+    r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-l ${IMG} sleep 300`);
+    check('once the daemon appears the SAME relay forwards (no keeper restart)', r.code === 0, r.err);
+    check('…and the container is stamped', stamped(`${PFX}-l`), JSON.stringify(labelsOf(`${PFX}-l`)));
+    r = await m.c.sh('docker ps -q >/dev/null');
+    check('docker ps works through the relay', r.code === 0, r.err);
+  },
+
+  async api_real() {
+    const m = await member();
+    // what the relay stamps …
+    let r = await m.c.sh(`docker run ${LBL} -d --name ${PFX}-api ${IMG} sleep 300 && docker run ${LBL} -d --rm --name ${PFX}-rm ${IMG} sleep 300`);
+    check('two containers created through the relay (one --rm)', r.code === 0, r.err);
+    // … and one made AROUND it, on the real socket
+    const direct = dk(['run', '-d', '--label', `g2rig=${PFX}`, '--name', `${PFX}-direct`, IMG, 'sleep', '300']);
+    check('a container created on the real socket exists, unlabelled', direct.code === 0 && labelsOf(`${PFX}-direct`)?.['orchestra.ws'] === undefined, direct.err);
+    // … is what the APP's client sees. Resolve through ORCHESTRA_DOCKER_SOCKET aliasing the real socket (the relay honours it too).
+    const alias = path.join(BASE, 'alias.sock');
+    fs.symlinkSync('/var/run/docker.sock', alias);
+    const { createDockerApi } = await import(`${REPO}/src/main/docker-api.ts`);
+    const { realUpstreamDeps } = await import(`${REPO}/src/shared/docker-endpoint.ts`);
+    const api = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: alias, HOME: REAL_HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
+    check('the app client resolves the SAME socket the relay would (ORCHESTRA_DOCKER_SOCKET honoured)', (await api.resolveSocket()) === alias, await api.resolveSocket());
+    check('available() against real dockerd', (await api.available()) === true);
+    const attributed = await api.listContainers({ labels: [`orchestra.ws=${WS}`], status: ['running'] });
+    const names = attributed.map((c) => c.name).sort();
+    check('listing by label orchestra.ws=<ws> returns exactly the relay-stamped containers (not the direct one)', JSON.stringify(names) === JSON.stringify([`${PFX}-api`, `${PFX}-rm`]), JSON.stringify(names));
+    check('each row carries orchestra.run', attributed.every((c) => c.labels['orchestra.run'] === RUN), JSON.stringify(attributed.map((c) => c.labels)));
+    const api1 = attributed.find((c) => c.name === `${PFX}-api`);
+    const rm1 = attributed.find((c) => c.name === `${PFX}-rm`);
+    const insp = await api.inspectContainer(api1.id);
+    check('inspect: running, not AutoRemove', insp && insp.running === true && insp.autoRemove === false, JSON.stringify(insp));
+    check('inspect: the --rm container reports AutoRemove (it must NOT be stopped by a Pause)', (await api.inspectContainer(rm1.id))?.autoRemove === true);
+    const st = await api.containerStats(api1.id);
+    check('stats: a one-shot sample with a memory usage', typeof st?.memory_stats?.usage === 'number' && st.memory_stats.usage > 0, JSON.stringify(st?.memory_stats));
+    check('stop → stopped (and dockerd agrees)', (await api.stopContainer(api1.id, 3)) === 'stopped' && dk(['inspect', '-f', '{{.State.Running}}', `${PFX}-api`]).out === 'false');
+    check('stop again → already-stopped', (await api.stopContainer(api1.id, 3)) === 'already-stopped');
+    check('stopping did NOT remove it', labelsOf(`${PFX}-api`)?.['orchestra.ws'] === WS);
+    check('start → started (labels intact)', (await api.startContainer(api1.id)) === 'started' && dk(['inspect', '-f', '{{.State.Running}}', `${PFX}-api`]).out === 'true' && stamped(`${PFX}-api`));
+    check('start again → already-running', (await api.startContainer(api1.id)) === 'already-running');
+    check('unknown id → inspect null, stop/start gone', (await api.inspectContainer('0'.repeat(64))) === null && (await api.stopContainer('0'.repeat(64))) === 'gone' && (await api.startContainer('0'.repeat(64))) === 'gone');
+    check('the unattributed container was never touched', dk(['inspect', '-f', '{{.State.Running}}', `${PFX}-direct`]).out === 'true');
   },
 
   async sweep_relay_files() {
