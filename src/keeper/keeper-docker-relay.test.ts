@@ -316,6 +316,24 @@ test('review #3: the keeper PUBLISHES the daemon its relay forwards to beside th
   assert.equal(fs.existsSync(file), false);
 });
 
+test('relay cannot start (its socket path is blocked): DOCKER_HOST stays UNSET', async () => {
+  const ctx = await makeCtx();
+  fs.mkdirSync(path.join(ctx.relaySock, 'blocker'), { recursive: true });
+  const c = await start(ctx, { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath }, true);
+  c.send(line({ env: 1 }));
+  const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
+  assert.equal(env.DOCKER_HOST, undefined);
+  assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /docker relay disabled/);
+});
+
+test('a member whose DOCKER_HOST is not a unix socket is never redirected to the local daemon', async () => {
+  const ctx = await makeCtx();
+  const c = await start(ctx, { PATH: process.env.PATH, DOCKER_HOST: 'tcp://10.1.2.3:2375' }, true);
+  c.send(line({ env: 1 }));
+  assert.equal(((await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>).DOCKER_HOST, 'tcp://10.1.2.3:2375');
+  assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /is not a unix socket/);
+});
+
 test('relay killed mid-session (SIGUSR2): the keeper restarts it and the next create is labelled', async () => {
   const ctx = await makeCtx();
   const c = await start(ctx, { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath }, true);
