@@ -157,10 +157,18 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   (`guardChip`, `gaugeModel`, `planThresholdCommit`, `parseGbInput`): `src/shared/memory-guard-view.ts`.
 - **Visibility**: `/busStatus` (`hooks-server.ts:489`) returns `memoryGuard: <snapshot>`; `orchestra bus-status` prints one
   `memory:` line (`cli/index.ts:2179`; absent from an older app → no line). Host-wide, not run-scoped.
+- **Alert to the LEAD (#289, consumer of FI-2)**: ONE `escalation` bus row per memory EPISODE (the guard's `episode` = one downward crossing of the Admission threshold; oscillation inside the hysteresis band
+  never opens another). Pure half `src/shared/memory-alert.ts` (`memoryAlertBody`: thresholds crossed + MemAvailable at the crossing, host actions — starts HELD, members put in Veille since the crossing, runs under the
+  memory Pause, unattributed containers (0 until #293, the field stays) — the state now, what to expect; `ALERT_SETTLE_MS` = 20 s: the row waits two fast samples so the actions are real numbers, an episode that ends first is
+  told when it ends); bus half `src/main/memory-alert.ts` (Electron-free: `createMemoryAlert` — `onEdge` / `reconcile` / `stop`; a critical crossing inside the episode is NOT a new alert, the row names every threshold crossed
+  by the time it is written; `alertRecipients` = the coordinator of every ROOT run carrying a live local fleet whose frozen `delivery` switch is ON, coordinator live; the episode is marked told BEFORE the writes; bus/store
+  not ready ⇒ the timer re-arms, bounded); host `src/main/memory-alert-host.ts` (`startMemoryAlert` in `index.ts` right after the memory Pause: SUBSCRIBE FIRST, then reconcile — a boot while already held tells the
+  episode once; Admission queue length via `listHeldStarts()`, Veille by `hibernatedAt`). A paused coordinator reads the row after its Reprise. Gates: `memory-alert.test.ts` (real bus + REAL guard), `memory-alert-wiring.test.ts`,
+  `scripts/memory-alert/mutate-unit.mjs`, `scripts/e2e-memory-alert.mjs` (fake source → real guard → real alert host → the LEAD reads the row through the real built CLI; `RIG_REPO=<master tree>` = must-FAIL).
 - **Gates**: `src/shared/memory-guard.test.ts` (boundary ± 1 byte per comparison, episodes, jump, the 2026-10-06 night in
   miniature), `src/main/memory-guard.test.ts` (cadence on the injected scheduler AND on real `setTimeout` via `mock.timers`,
   logging, hot thresholds, unreadable), `memory-guard-settings.test.ts`, `memory-guard-wiring.test.ts` (source guards + the
-  "no start path imports the guard yet" tripwire — #286/#288/#289 add their importer there; #288 did: `hibernation.ts` (fast Veille, `activity-pty-terminal.md` §Session hibernation); #290 did: `pause-memory-host.ts`, see `pause-trap.md` §Memory Pause),
+  "no start path imports the guard yet" tripwire — #286/#288/#289 add their importer there; #288 did: `hibernation.ts` (fast Veille, `activity-pty-terminal.md` §Session hibernation); #289 did: `memory-alert-host.ts`; #290 did: `pause-memory-host.ts`, see `pause-trap.md` §Memory Pause),
   `scripts/e2e-memory-guard.mjs` (fake source → REAL sampler → REAL `/busStatus` in a headless scratch home → REAL built CLI;
   `RIG_REPO=<master tree>` is the must-FAIL run) and `scripts/memory-guard-mutants.mjs` (56 in-place mutants across the pure module, sampler, settings I/O, the Settings view logic and the modal, byte-exact restore; `--check-anchors` is the dry check that every anchor still resolves once).
   `scripts/e2e-memory-guard-modal.mjs` (headless Chromium, no window: the REAL modal bundled with a stub IPC whose latency is the variable —
