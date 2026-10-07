@@ -168,6 +168,24 @@ async function main() {
     const out = sh(process.execPath, [path.join(APP_DIR, 'dist-electron', 'cli.js'), 'bus-status'], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_SOCK: sock } });
     return out.split('\n').find((l) => l.startsWith('memory:')) ?? `(no memory: line) ${out.slice(0, 200)}`;
   };
+  // A run UNDER THE MEMORY PAUSE, written to the app's own bus exactly as the host writes it (G7's rig covers the impose path; this world has no fleet to impose on). The banner is RED only while such a run exists.
+  const PAUSE_RUN = 'mg289-lead';
+  const seedMemoryPause = (on) => {
+    mustBeScratch('bus db home', world.ohome);
+    sh('python3', ['-I', '-c', [
+      'import sqlite3, sys, json, time',
+      'db = sqlite3.connect(sys.argv[1], timeout=20); db.execute("PRAGMA busy_timeout=20000")',
+      'now = int(time.time() * 1000); run = sys.argv[3]',
+      'if sys.argv[2] == "on":',
+      '    db.execute("INSERT OR IGNORE INTO runs (id, kind, coordinator, parent_run_id, title, created_at) VALUES (?,?,?,?,?,?)", (run, "mission", run, None, "banner drive", now))',
+      '    db.execute("INSERT OR IGNORE INTO run_flags (run_id, flags, frozen_at) VALUES (?,?,?)", (run, json.dumps({"delivery": True, "pause": True}), now))',
+      '    reason = {"reason": "memory", "pauseCycle": 1, "episode": 1, "availBytes": 2 * 1024 ** 3, "thresholdBytes": 3 * 1024 ** 3, "epoch": now}',
+      '    db.execute("UPDATE runs SET paused_at=?, paused_by=\'host:memory\', pause_mode=\'hard\', pause_auto=? WHERE id=?", (now, json.dumps(reason, separators=(",", ":")), run))',
+      'else:',
+      '    db.execute("UPDATE runs SET paused_at=NULL, paused_by=NULL, pause_mode=NULL, pause_auto=NULL WHERE id=?", (run,))',
+      'db.commit()',
+    ].join('\n'), path.join(world.ohome, 'bus.sqlite'), on ? 'on' : 'off', PAUSE_RUN]);
+  };
   const store = () => JSON.parse(fs.readFileSync(world.storeFile, 'utf8')).memoryGuard ?? null;
   const appLog = () => { try { return fs.readFileSync(path.join(world.ohome, 'logs', 'orchestra.log'), 'utf8'); } catch { return ''; } };
   /** type `text` into an input (trusted click → select all → insertText), then commit with Enter or blur (click the dialog title) */
@@ -231,31 +249,38 @@ async function main() {
 
     // ── B1: Admission threshold ABOVE the live reading → HELD → the amber banner ──
     await openDialog(); await typeInto('[data-mg-admission]', String(A), 'enter'); await settled((d) => d.chipTone === 'warn', 'chip → warn (HELD)'); await closeDialog();
-    const b1 = await bannerSettled((b) => b.present && b.kind === 'held', 'the HELD banner');
+    const b1 = await bannerSettled((b) => b.present && b.kind === 'held', 'the HELD banner').catch(() => banner()); // a build WITHOUT the banner reads absent here: the clauses below go RED (the must-FAIL), they do not abort
     clause('B1/state-changed', !b0.present && b1.present, `banner present ${b0.present} -> ${b1.present}; kind ${b0.kind} -> ${b1.kind}`);
     clause('B1/bus-status-held', /admission HELD since \S+ \(episode 1; reopens above/.test(bus()), bus());
     clause('B1/amber-copy-as-approved', b1.tone === 'warn' && b1.role === 'status' && b1.lead === 'Mémoire basse' && new RegExp(`^Mémoire basse — [\\d,]+ Go disponibles \\(seuil ${frGo(A).replace('.', '\\.')}\\)\\. Les démarrages automatiques d'agents sont retenus ; les agents inactifs passent en Veille\\.$`).test(b1.title) && /^(Aucun démarrage retenu pour l'instant|\d+ démarrages? retenus?) · relâchés dès [\d,]+ Go, coordinateurs d'abord, un par un\.$/.test(b1.sub), `lead "${b1.lead}" · title "${b1.title}" · sub "${b1.sub}"`);
-    clause('B1/two-lines-and-a-dismiss-button', b1.dismissText === 'Masquer' && b1.count === 1 && b1.rect.height > 36, `banner ${Math.round(b1.rect.height)}px high, ${b1.count} banner(s), button "${b1.dismissText}"`);
-    clause('B1/inside-viewport-and-main-column', inside(b1), `banner ${JSON.stringify({ l: Math.round(b1.rect.left), t: Math.round(b1.rect.top), r: Math.round(b1.rect.right), b: Math.round(b1.rect.bottom) })} within main ${JSON.stringify({ l: Math.round(b1.main.left), r: Math.round(b1.main.right) })} and the ${b1.vw}x${b1.vh} viewport`);
+    clause('B1/two-lines-and-a-dismiss-button', b1.dismissText === 'Masquer' && b1.count === 1 && (b1.rect?.height ?? 0) > 36, `banner ${Math.round(b1.rect?.height ?? 0)}px high, ${b1.count} banner(s), button "${b1.dismissText}"`);
+    clause('B1/inside-viewport-and-main-column', inside(b1), `banner ${JSON.stringify({ l: Math.round(b1.rect?.left ?? 0), t: Math.round(b1.rect?.top ?? 0), r: Math.round(b1.rect?.right ?? 0), b: Math.round(b1.rect?.bottom ?? 0) })} within main ${JSON.stringify({ l: Math.round(b1.main?.left ?? 0), r: Math.round(b1.main?.right ?? 0) })} and the ${b1.vw}x${b1.vh} viewport`);
     clause('B1/amber-paint', /^rgba\(255, 200, 87, /.test(b1.bg), `computed background ${b1.bg} (the --yellow tint)`);
     const f1 = saveShot(`${LABEL}-b1-held-renderer.png`, await cdp.shot());
     const grimFile = path.join(OUT, `${LABEL}-b1-held-compositor.png`);
     sh('grim', ['-o', 'HEADLESS-1', grimFile], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: RIG_WAYLAND } }); shots.push({ file: grimFile, md5: md5(fs.readFileSync(grimFile)) });
-    { const grim = decodePng(fs.readFileSync(grimFile)), rend = decodePng(await cdp.shot()); const cx = Math.floor(b1.rect.left), cy = Math.floor(b1.rect.top), cw = Math.floor(b1.rect.width), ch = Math.floor(b1.rect.height);
+    if (b1.present) { const grim = decodePng(fs.readFileSync(grimFile)), rend = decodePng(await cdp.shot()); const cx = Math.floor(b1.rect?.left), cy = Math.floor(b1.rect?.top), cw = Math.floor(b1.rect?.width), ch = Math.floor(b1.rect?.height);
       clause('ctl/compositor-frame-shows-the-banner', grim.w === rend.w && grim.h === rend.h && inkPx(crop(grim, cx, cy, cw, ch)) > 300, `grim ${grim.w}x${grim.h} vs renderer ${rend.w}x${rend.h}; banner crop ${cw}x${ch} has ${inkPx(crop(grim, cx, cy, cw, ch))} ink px`); }
 
+    if (!b1.present) throw new Error('no banner appeared while HELD — nothing further can be driven (the clauses above are the verdict)');
     // ── B2: « Masquer » hides exactly this banner (the guard is still HELD) ──
     await cdp.click(b1.dismiss.left + b1.dismiss.width / 2, b1.dismiss.top + b1.dismiss.height / 2);
     const b2 = await bannerSettled((b) => !b.present, 'the banner to hide');
     clause('B2/dismissed', !b2.present && /admission HELD/.test(bus()), `banner present ${b1.present} -> ${b2.present} after a trusted click on « Masquer »; the guard is still: ${bus()}`);
-    const f2 = saveShot(`${LABEL}-b2-dismissed-renderer.png`, await cdp.shot());
+    // the dismissed screen is VISUALLY the no-banner screen: a byte-identical frame to B0 is the paint evidence that the banner is really gone (so it is not saved as a capture of its own — the duplicate-capture control would flag it)
+    const shotB2 = await cdp.shot();
+    clause('B2/dismissed-frame-equals-the-no-banner-frame', md5(shotB2) === shots.find((x) => x.file.includes('-b0-none-'))?.md5, `md5(dismissed) ${md5(shotB2)} vs md5(B0 none) ${shots.find((x) => x.file.includes('-b0-none-'))?.md5}`);
 
     // ── B3: escalation: critical ABOVE the live reading → the memory Pause → the red banner shows AGAIN ──
     await openDialog(); await typeInto('[data-mg-critical]', String(C), 'blur'); await settled((d) => d.chipTone === 'crit', 'chip → crit (MEMORY PAUSE)'); await closeDialog();
+    await sleep(1500); // the edge's push has long reached the renderer: an absent banner below is the state, not a race
+    const b2b = await banner(); // the guard is below critical but NO run is under the memory Pause yet: nothing red to announce
+    clause('B3/no-red-banner-while-no-run-is-paused', !b2b.present && /memory Pause IN EFFECT/.test(bus()), `banner present=${b2b.present} kind=${b2b.kind} while ${bus()} (the guard says Pause, the bus has no paused run; the amber banner of this episode is dismissed)`);
+    seedMemoryPause(true);
     const b3 = await bannerSettled((b) => b.present && b.kind === 'pause', 'the PAUSE banner');
     clause('B3/escalation-shows-it-again', !b2.present && b3.present && b3.kind === 'pause', `banner present ${b2.present} -> ${b3.present}; kind ${b2.kind} -> ${b3.kind} (held → Pause is an escalation: the dismissal does not apply)`);
     clause('B3/bus-status-pause', /memory Pause IN EFFECT since \S+ \(lifts above/.test(bus()), bus());
-    clause('B3/red-copy-as-approved', b3.tone === 'crit' && b3.lead === 'Pause mémoire' && new RegExp(`^Pause mémoire — [\\d,]+ Go disponibles \\(seuil critique ${frGo(C).replace('.', '\\.')}\\)\\. (La pause se met en place\\.|\\d+ runs? en pause : .+\\.)$`).test(b3.title) && b3.sub === "Reprise automatique dès " + frGo(A) + " · une pause manuelle n'est jamais levée par la garde.", `lead "${b3.lead}" · title "${b3.title}" · sub "${b3.sub}"`);
+    clause('B3/red-copy-as-approved', b3.tone === 'crit' && b3.lead === 'Pause mémoire' && new RegExp(`^Pause mémoire — [\\d,]+ Go disponibles \\(seuil critique ${frGo(C).replace('.', '\\.')}\\)\\. 1 run en pause : ${PAUSE_RUN}\\.$`).test(b3.title) && b3.sub === "Reprise automatique dès " + frGo(A) + " · une pause manuelle n'est jamais levée par la garde.", `lead "${b3.lead}" · title "${b3.title}" · sub "${b3.sub}"`);
     clause('B3/inside-viewport-and-main-column', inside(b3) && /^rgba\(255, 107, 107, /.test(b3.bg), `banner inside main/viewport: ${inside(b3)}; computed background ${b3.bg} (the --red tint)`);
     const f3 = saveShot(`${LABEL}-b3-pause-renderer.png`, await cdp.shot());
 
@@ -263,6 +288,10 @@ async function main() {
     await cdp.click(b3.dismiss.left + b3.dismiss.width / 2, b3.dismiss.top + b3.dismiss.height / 2);
     const b4 = await bannerSettled((b) => !b.present, 'the Pause banner to hide');
     clause('B4/pause-banner-dismissed', !b4.present && /memory Pause IN EFFECT/.test(bus()), `banner present ${b3.present} -> ${b4.present}; ${bus()}`);
+    seedMemoryPause(false); // the Reprise finished: the Pause lifts while Admission is STILL held (memory has not recovered)
+    await sleep(6500); // > one banner tick
+    const b4b = await banner();
+    clause('B4/de-escalation-stays-dismissed', !b4b.present && /admission HELD/.test(bus()), `banner present=${b4b.present} after the Pause lifted back to held (episode 1: both banners were dismissed); ${bus()}`);
     await openDialog(); await typeInto('[data-mg-admission]', '6', 'blur'); await typeInto('[data-mg-critical]', '3', 'blur'); await settled((d) => d.chipTone === 'ok', 'chip → ok'); await closeDialog();
     const b5 = await banner();
     clause('B5/recovery-leaves-no-banner', !b5.present && /admission open/.test(bus()) && /memory Pause none/.test(bus()), `banner present=${b5.present}; ${bus()}`);
@@ -270,10 +299,33 @@ async function main() {
     const b6 = await bannerSettled((b) => b.present && b.kind === 'held', 'the banner of the NEXT episode');
     clause('B6/next-episode-shows-again', b6.present && b6.kind === 'held' && /episode 2/.test(bus()), `banner present ${b5.present} -> ${b6.present} (the dismissal of episode 1 is forgotten); ${bus()}`);
     const f6 = saveShot(`${LABEL}-b6-next-episode-renderer.png`, await cdp.shot());
+    // ── B8: with a WORKSPACE active (a Scratch session from the Welcome screen) the banner sits between the toolbar and the pane row — the approved placement (D-pick3) — and there is still exactly ONE ──
+    try {
+      const sc = await cdp.eval(`(() => { const b = [...document.querySelectorAll('.empty button')].find((x) => /Scratch session/.test(x.textContent)); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      if (!sc) throw new Error('no « Scratch session » button on the Welcome screen');
+      await cdp.click(sc.x, sc.y);
+      const place = () => cdp.eval(`(() => { const q = (s) => document.querySelector(s), R = (e) => { const b = e.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right }; }; const bn = q('.memory-banner'), tb = q('.toolbar'), pr = q('.pane-row'); if (!bn || !tb || !pr) return null; return { banner: R(bn), toolbar: R(tb), pane: R(pr), count: document.querySelectorAll('.memory-banner').length, welcome: !!q('.empty h2') }; })()`);
+      const b8 = await waitFor(place, 25000, 'a workspace pane with the banner');
+      clause('B8/with-a-workspace-the-banner-sits-between-toolbar-and-pane', b8.count === 1 && !b8.welcome && b8.banner.top >= b8.toolbar.bottom - 1 && b8.banner.bottom <= b8.pane.top + 1, `toolbar bottom ${Math.round(b8.toolbar.bottom)} ≤ banner ${Math.round(b8.banner.top)}..${Math.round(b8.banner.bottom)} ≤ pane top ${Math.round(b8.pane.top)}; ${b8.count} banner(s); Welcome screen ${b8.welcome}`);
+      saveShot(`${LABEL}-b8-with-workspace-renderer.png`, await cdp.shot());
+      // ── B9: a full-page overlay (Help) opens over the main column: it starts BELOW the banner, which stays visible and un-covered ──
+      const hb = await cdp.eval(`(() => { const b = document.querySelector('button[aria-label="Help — feature guide"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      if (!hb) throw new Error('no Help button in the sidebar header');
+      await cdp.click(hb.x, hb.y);
+      const overlay = () => cdp.eval(`(() => { const q = (s) => document.querySelector(s), bn = q('.memory-banner'), hv = q('.help-view'); if (!bn || !hv) return null; const b = bn.getBoundingClientRect(), h = hv.getBoundingClientRect(), tb = q('.toolbar'), top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return { bannerTop: b.top, bannerBottom: b.bottom, helpTop: h.top, toolbarBottom: tb ? tb.getBoundingClientRect().bottom : null, covered: !bn.contains(top), var: getComputedStyle(q('main.main')).getPropertyValue('--memory-banner-h').trim(), height: b.height }; })()`);
+      const h9 = await waitFor(overlay, 8000, 'the Help overlay with the banner');
+      clause('B9/help-overlay-starts-below-the-banner', h9.helpTop >= h9.bannerBottom - 1 && h9.covered === false && Math.abs(parseFloat(h9.var) - h9.height) < 1, `help-view top ${Math.round(h9.helpTop)} ≥ banner bottom ${Math.round(h9.bannerBottom)} (banner ${Math.round(h9.bannerTop)}..${Math.round(h9.bannerBottom)}, toolbar bottom ${Math.round(h9.toolbarBottom)}); the banner's centre is not covered: ${h9.covered === false}; --memory-banner-h ${h9.var} vs banner height ${h9.height}px`);
+      saveShot(`${LABEL}-b9-help-over-banner-renderer.png`, await cdp.shot());
+      const hc = await cdp.eval(`(() => { const b = document.querySelector('.help-close'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      await cdp.click(hc.x, hc.y);
+      await waitFor(async () => !(await cdp.eval(`!!document.querySelector('.help-view')`)), 5000, 'the Help overlay to close');
+    } catch (e) {
+      clause('B8/with-a-workspace-the-banner-sits-between-toolbar-and-pane', false, `could not drive a workspace: ${e.message}`);
+    }
     await openDialog(); await typeInto('[data-mg-admission]', '6', 'blur'); await settled((d) => d.chipTone === 'ok' || d.error, 'back to the defaults'); await typeInto('[data-mg-critical]', '3', 'blur'); await settled((d) => d.chipTone === 'ok', 'chip → ok'); await closeDialog();
     const b7 = await banner();
     clause('B7/restored-no-banner', !b7.present && store()?.admissionGb === 6 && store()?.criticalGb === 3, `banner present=${b7.present}; store.json memoryGuard=${JSON.stringify(store())}`);
-    console.log(`  shots: ${[f0, f1, f2, f3, f6].join(', ')}`);
+    console.log(`  shots: ${[f0, f1, f3, f6].join(', ')}`);
 
     const dup = shots.length - new Set(shots.map((s) => s.md5)).size;
     clause('ctl/no-duplicate-captures', dup === 0, `${shots.length} captures, ${dup} byte-identical duplicate(s): ${shots.map((s) => path.basename(s.file)).join(', ')}`);

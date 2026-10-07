@@ -69,8 +69,8 @@ test('WIRING renderer store: the initial pull and every push replace the banner 
   const s = read('src/renderer/store.ts');
   assert.match(s, /orEmpty\('memoryBanner', window\.orchestra\.memoryBanner\(\), null as MemoryBannerState \| null\),/);
   assert.match(s, /memoryBanner: memoryBanner \? newerBanner\(get\(\)\.memoryBanner, memoryBanner\) : get\(\)\.memoryBanner,/);
-  assert.match(s, /window\.orchestra\.onMemoryBanner\(\(banner\) => \{\s*useStore\.setState\(\(st\) => \(\{ memoryBanner: newerBanner\(st\.memoryBanner, banner\), \.\.\.\(banner\.kind === 'none' \? \{ memoryBannerDismissed: null \} : \{\}\) \}\)\);/);
-  assert.match(s, /dismissMemoryBanner: \(\) => set\(\(st\) => \(\{ memoryBannerDismissed: st\.memoryBanner && st\.memoryBanner\.kind !== 'none' \? bannerKey\(st\.memoryBanner\) : st\.memoryBannerDismissed \}\)\),/);
+  assert.match(s, /window\.orchestra\.onMemoryBanner\(\(banner\) => \{\s*useStore\.setState\(\(st\) => \(\{ memoryBanner: newerBanner\(st\.memoryBanner, banner\), \.\.\.\(banner\.kind === 'none' \? \{ memoryBannerDismissed: \[\] \} : \{\}\) \}\)\);/);
+  assert.match(s, /dismissMemoryBanner: \(\) => set\(\(st\) => \(\{ memoryBannerDismissed: dismissedWith\(st\.memoryBannerDismissed, st\.memoryBanner\) \}\)\),/);
 });
 
 test('WIRING component + mounts: the banner reads the store slice, hides on the pure visibility rule, offers « Masquer », and is mounted for EVERY screen — above the pane row with a workspace, on top of the Welcome screen without one', () => {
@@ -85,6 +85,17 @@ test('WIRING component + mounts: the banner reads the store slice, hides on the 
   assert.match(app, /\{loaded && !active && <MemoryBanner \/>\}/, 'without one: the same banner');
   assert.equal((app.match(/<MemoryBanner \/>/g) ?? []).length, 2);
   assert.match(app, /import \{ MemoryBanner \} from '\.\/components\/MemoryBanner';/);
+});
+
+test('WIRING overlays: the banner publishes its height as --memory-banner-h on main.main (and removes it with the banner); the full-page Bus / Insights / Help overlays start BELOW it, with and without a toolbar before them', () => {
+  const c = read('src/renderer/components/MemoryBanner.tsx');
+  assert.match(c, /el\?\.closest\('main\.main'\)/);
+  assert.match(c, /host\.style\.setProperty\('--memory-banner-h', `\$\{el\.offsetHeight\}px`\)/);
+  assert.match(c, /new ResizeObserver\(publish\)/);
+  assert.match(c, /host\.style\.removeProperty\('--memory-banner-h'\)/);
+  const css = read('src/renderer/styles.css');
+  assert.match(css, /\.main > \.bus-pane,\s*\.main > \.insights-view,\s*\.main > \.help-view \{ top: var\(--memory-banner-h, 0px\); \}/, 'no toolbar before the overlay (the Welcome screen)');
+  assert.match(css, /\.toolbar ~ \.bus-pane,\s*\.toolbar ~ \.insights-view,\s*\.toolbar ~ \.help-view \{ top: calc\(var\(--toolbar-h\) \+ var\(--memory-banner-h, 0px\)\); \}/, 'with a toolbar: below the toolbar AND the banner');
 });
 
 test('WIRING css: the two tones use the existing status tokens with the 3 px accent bar the mockup drew', () => {

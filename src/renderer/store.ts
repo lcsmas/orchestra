@@ -28,7 +28,7 @@ import type { HumanGateView } from '../shared/human-gates';
 import type { PauseMode } from '../shared/pause-lifecycle';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
 import { newerOverview } from '../shared/pause-ui-view';
-import { bannerKey, newerBanner, type MemoryBannerState } from '../shared/memory-banner';
+import { dismissedWith, newerBanner, type MemoryBannerState } from '../shared/memory-banner';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -146,8 +146,8 @@ interface State {
   pauseOverview: PauseUiOverview | null;
   /** The memory banner's state (#289, D-pick3): pushed by main on change, replaced WHOLESALE (null = not loaded yet). The banner is visible while `kind !== 'none'` and not dismissed. */
   memoryBanner: MemoryBannerState | null;
-  /** The key (episode + kind [+ Pause cycle]) of the banner « Masquer » hid; any other key shows again (escalation, new Pause cycle, next episode). */
-  memoryBannerDismissed: string | null;
+  /** The keys (episode + kind [+ Pause cycle]) of every banner « Masquer » hid since the last recovery; any other key shows again (escalation, new Pause cycle, next episode). */
+  memoryBannerDismissed: readonly string[];
   dismissMemoryBanner: () => void;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
@@ -289,8 +289,8 @@ export const useStore = create<State>((set, get) => ({
   humanGates: [],
   pauseOverview: null,
   memoryBanner: null,
-  memoryBannerDismissed: null,
-  dismissMemoryBanner: () => set((st) => ({ memoryBannerDismissed: st.memoryBanner && st.memoryBanner.kind !== 'none' ? bannerKey(st.memoryBanner) : st.memoryBannerDismissed })),
+  memoryBannerDismissed: [],
+  dismissMemoryBanner: () => set((st) => ({ memoryBannerDismissed: dismissedWith(st.memoryBannerDismissed, st.memoryBanner) })),
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -1049,7 +1049,7 @@ window.orchestra.onPauseOverviewUpdate((overview) => {
 // The memory banner changed (#289): a guard edge, a held-start count, a run entering / leaving the memory Pause. Replace wholesale (a revision drops an older pull). When the banner is gone the
 // dismissal is forgotten: the NEXT episode shows again whatever its key.
 window.orchestra.onMemoryBanner((banner) => {
-  useStore.setState((st) => ({ memoryBanner: newerBanner(st.memoryBanner, banner), ...(banner.kind === 'none' ? { memoryBannerDismissed: null } : {}) }));
+  useStore.setState((st) => ({ memoryBanner: newerBanner(st.memoryBanner, banner), ...(banner.kind === 'none' ? { memoryBannerDismissed: [] } : {}) }));
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.

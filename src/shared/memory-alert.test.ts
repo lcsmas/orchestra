@@ -20,9 +20,10 @@ test('BODY: threshold crossed + MemAvailable at the crossing, the host actions, 
   assert.match(b, /4 member\(s\) put in Veille since the crossing/);
   assert.match(b, /no run under the memory Pause/);
   assert.match(b, /0 unattributed container\(s\) \(not measured yet — #293\)/);
-  assert.match(b, /Now: MemAvailable 4\.90 GB · Admission HELD · memory Pause none\./);
-  assert.doesNotMatch(b, /CRITICAL|already OVER/);
+  assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable 4\.90 GB · Admission HELD · memory Pause none\./);
+  assert.doesNotMatch(b, /and below the CRITICAL threshold|already OVER/);
   assert.match(b, /You need not act/);
+  assert.match(b, /If MemAvailable falls below the CRITICAL threshold \(3\.00 GB\) the host puts the eligible runs under the memory Pause WITHOUT another row for this episode — read the app banner/, 'the row says what a later critical crossing will not do');
 });
 
 test('BODY critical: a critical crossing is named with its threshold and reading; paused runs are listed with the lift threshold', () => {
@@ -30,11 +31,12 @@ test('BODY critical: a critical crossing is named with its threshold and reading
   assert.match(b, /and below the CRITICAL threshold \(3\.00 GB\) at 2\.31 GB/);
   assert.match(b, /memory Pause on run\(s\) L, Q \(lifted by the host above 6\.00 GB\)/);
   assert.match(b, /memory Pause IN EFFECT/);
+  assert.doesNotMatch(b, /WITHOUT another row/, 'the critical crossing is already in the row: nothing to announce');
 });
 
 test('BODY states: toggle OFF says nothing is held; an unreadable meter says so; an ended episode says it is over', () => {
   assert.match(memoryAlertBody(EP, { ...FACTS, admissionEnabled: false }), /automatic starts NOT held \(the Admission toggle is OFF — the guard only measures\)/);
-  assert.match(memoryAlertBody(EP, { ...FACTS, nowAvailBytes: null }), /Now: MemAvailable unreadable/);
+  assert.match(memoryAlertBody(EP, { ...FACTS, nowAvailBytes: null }), /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable unreadable/);
   assert.match(memoryAlertBody({ ...EP, endedAt: Date.UTC(2027, 0, 15, 8, 5, 0) }, { ...FACTS, nowAdmissionHeld: false, nowAvailBytes: 8 * GIB }), /The episode is already OVER \(memory back above 7\.00 GB at 2027-01-15T08:05:00\.000Z\)\./);
 });
 

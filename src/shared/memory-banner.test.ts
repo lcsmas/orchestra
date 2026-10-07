@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GIB, type MemoryGuardSnapshot } from './memory-guard.ts';
-import { NO_MEMORY_BANNER, bannerCopy, bannerFingerprint, bannerKey, bannerVisible, frGo, memoryBannerOf, newerBanner, type MemoryBannerState } from './memory-banner.ts';
+import { NO_MEMORY_BANNER, bannerCopy, bannerFingerprint, bannerKey, bannerVisible, dismissedWith, frGo, memoryBannerOf, newerBanner, type MemoryBannerState } from './memory-banner.ts';
 
 // #289 (D5 D-pick3, option B) — the pure half of the memory banner: what it shows, in what words, when « Masquer » stops applying. Named arms are what scripts/memory-banner/mutate-unit.mjs reddens.
 
@@ -10,10 +10,11 @@ const SNAP: MemoryGuardSnapshot = {
   admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, sampleIntervalMs: 10_000,
 };
 
-test('STATE kind: Admission HELD ⇒ held; the memory Pause (guard) ⇒ pause; runs still under the memory Pause ⇒ pause even after the guard let go; open ⇒ none', () => {
+test('STATE kind: Admission HELD ⇒ held; runs UNDER the memory Pause ⇒ pause (even after the guard let go); the guard below critical with NO run paused ⇒ still held, never a red Pause that paused nothing; open ⇒ none', () => {
   assert.equal(memoryBannerOf(SNAP, { heldStarts: 2, pausedRuns: [] }).kind, 'held');
   assert.equal(memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1, availBytes: 2.3 * GIB }, { heldStarts: 0, pausedRuns: ['lead'] }).kind, 'pause');
-  assert.equal(memoryBannerOf({ ...SNAP, pause: 'held' }, { heldStarts: 0, pausedRuns: [] }).kind, 'pause', 'the guard says the Pause is in effect even before its runs are written');
+  assert.equal(memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1 }, { heldStarts: 2, pausedRuns: [] }).kind, 'held', 'the guard is below critical but every pause switch is OFF / no fleet / the runs are held by a manual pause: no Pause in effect, nothing red to announce');
+  assert.equal(memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1, admissionEnabled: false }, { heldStarts: 0, pausedRuns: [] }).kind, 'none', 'and with the Admission toggle OFF there is nothing at all');
   assert.equal(memoryBannerOf({ ...SNAP, pause: 'none', admission: 'open' }, { heldStarts: 0, pausedRuns: ['lead'] }).kind, 'pause', 'runs are still paused after the guard let go: the Pause IS still in effect');
   assert.equal(memoryBannerOf({ ...SNAP, admission: 'open' }, { heldStarts: 0, pausedRuns: [] }).kind, 'none');
 });
@@ -21,8 +22,8 @@ test('STATE kind: Admission HELD ⇒ held; the memory Pause (guard) ⇒ pause; r
 test('STATE unknown ≠ held, toggle OFF holds nothing: an unmeasured meter and the Admission toggle OFF show NO banner (nothing is actually held)', () => {
   assert.equal(memoryBannerOf({ ...SNAP, measured: false }, { heldStarts: 0, pausedRuns: [] }).kind, 'none');
   assert.equal(memoryBannerOf({ ...SNAP, admissionEnabled: false }, { heldStarts: 0, pausedRuns: [] }).kind, 'none');
-  assert.equal(memoryBannerOf({ ...SNAP, admissionEnabled: false, pause: 'held' }, { heldStarts: 0, pausedRuns: [] }).kind, 'pause', 'the memory Pause is governed by the runs\' switches, not by the Admission toggle');
-  assert.equal(memoryBannerOf({ ...SNAP, measured: false, pause: 'held' }, { heldStarts: 0, pausedRuns: [] }).availBytes, null, 'a dead meter\'s last good reading is never shown as current');
+  assert.equal(memoryBannerOf({ ...SNAP, admissionEnabled: false, pause: 'held' }, { heldStarts: 0, pausedRuns: ['lead'] }).kind, 'pause', 'the memory Pause is governed by the runs\' switches, not by the Admission toggle');
+  assert.equal(memoryBannerOf({ ...SNAP, measured: false, pause: 'held' }, { heldStarts: 0, pausedRuns: ['lead'] }).availBytes, null, 'a dead meter\'s last good reading is never shown as current');
   assert.deepEqual(memoryBannerOf({ ...SNAP, admission: 'open', episode: 9 }, { heldStarts: 3, pausedRuns: [] }, 4), { ...NO_MEMORY_BANNER, rev: 4 }, 'none is ALWAYS the same state: the figures of an idle guard never read as a change')
 });
 
@@ -34,17 +35,29 @@ test('STATE fields: the guard\'s thresholds, episode, cycle and the host facts a
 test('DISMISS: « Masquer » hides exactly that banner — it REAPPEARS on an escalation (held → Pause), on a new Pause cycle and on the next episode; it never shows for kind none', () => {
   const held = memoryBannerOf(SNAP, { heldStarts: 0, pausedRuns: [] });
   const key = bannerKey(held);
-  assert.equal(bannerVisible(held, null), true);
-  assert.equal(bannerVisible(held, key), false, 'dismissed');
-  assert.equal(bannerVisible({ ...held, heldStarts: 9, availBytes: 5.0 * GIB }, key), false, 'counts and readings moving do not bring it back');
+  assert.equal(bannerVisible(held, []), true);
+  assert.equal(bannerVisible(held, [key]), false, 'dismissed');
+  assert.equal(bannerVisible({ ...held, heldStarts: 9, availBytes: 5.0 * GIB }, [key]), false, 'counts and readings moving do not bring it back');
   const pause = memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] });
-  assert.equal(bannerVisible(pause, key), true, 'escalation: held → Pause shows again');
+  assert.equal(bannerVisible(pause, [key]), true, 'escalation: held → Pause shows again');
   const pk = bannerKey(pause);
-  assert.equal(bannerVisible(pause, pk), false);
-  assert.equal(bannerVisible({ ...pause, pauseCycle: 2 }, pk), true, 'a new Pause cycle shows again');
-  assert.equal(bannerVisible({ ...held, episode: 3 }, key), true, 'the next episode shows again');
-  assert.equal(bannerVisible(NO_MEMORY_BANNER, null), false);
-  assert.equal(bannerVisible(null, null), false);
+  assert.equal(bannerVisible(pause, [key, pk]), false);
+  assert.equal(bannerVisible({ ...pause, pauseCycle: 2 }, [key, pk]), true, 'a new Pause cycle shows again');
+  assert.equal(bannerVisible({ ...held, episode: 3 }, [key, pk]), true, 'the next episode shows again');
+  assert.equal(bannerVisible(held, [key, pk]), false, 'a Pause that lifts back to held does not undo the dismissal of the held banner (a de-escalation is not news)');
+  assert.equal(bannerVisible(NO_MEMORY_BANNER, []), false);
+  assert.equal(bannerVisible(null, []), false);
+});
+
+test('DISMISS keys: « Masquer » adds the key of the banner on screen once; nothing to hide for none / null', () => {
+  const held = memoryBannerOf(SNAP, { heldStarts: 0, pausedRuns: [] });
+  const pause = memoryBannerOf({ ...SNAP, pause: 'held', pauseCycle: 1 }, { heldStarts: 0, pausedRuns: ['lead'] });
+  const one = dismissedWith([], held);
+  assert.deepEqual(one, [bannerKey(held)]);
+  assert.deepEqual(dismissedWith(one, held), one, 'idempotent');
+  assert.deepEqual(dismissedWith(one, pause), [bannerKey(held), bannerKey(pause)], 'the keys accumulate until a recovery clears them');
+  assert.deepEqual(dismissedWith(one, NO_MEMORY_BANNER), one);
+  assert.deepEqual(dismissedWith(one, null), one);
 });
 
 test('KEY: held keys on the episode only, the Pause on episode + cycle', () => {
@@ -75,7 +88,7 @@ test('COPY held (mockup B1, D5-approved): headline + detail, the held-start coun
   assert.equal(c.title, "Mémoire basse — 5,4 Go disponibles (seuil 6 Go). Les démarrages automatiques d'agents sont retenus ; les agents inactifs passent en Veille.");
   assert.equal(c.sub, "2 démarrages retenus · relâchés dès 7 Go, coordinateurs d'abord, un par un.");
   assert.match(bannerCopy(memoryBannerOf(SNAP, { heldStarts: 1, pausedRuns: [] }))!.sub, /^1 démarrage retenu · /, 'singular');
-  assert.match(bannerCopy(memoryBannerOf(SNAP, { heldStarts: 0, pausedRuns: [] }))!.sub, /^Aucun démarrage retenu pour l'instant · /);
+  assert.match(bannerCopy(memoryBannerOf(SNAP, { heldStarts: 0, pausedRuns: [] }))!.sub, /^0 démarrage retenu · /, 'the drawn pattern with N = 0 (no wording outside the approved mockup)');
 });
 
 test('COPY Pause (mockup B2, D5-approved): the critical threshold, the paused runs, the automatic Reprise threshold and the manual-pause promise', () => {
@@ -85,7 +98,6 @@ test('COPY Pause (mockup B2, D5-approved): the critical threshold, the paused ru
   assert.equal(c.title, 'Pause mémoire — 2,3 Go disponibles (seuil critique 3 Go). 2 runs en pause : lead, ops.');
   assert.equal(c.sub, "Reprise automatique dès 6 Go · une pause manuelle n'est jamais levée par la garde.");
   assert.match(bannerCopy({ ...b, pausedRuns: ['lead'] })!.title, /1 run en pause : lead\./, 'singular');
-  assert.match(bannerCopy({ ...b, pausedRuns: [] })!.title, /La pause se met en place\./);
   assert.match(bannerCopy({ ...b, pausedRuns: ['a', 'b', 'c', 'd', 'e'] })!.title, /5 runs en pause : a, b, c \+2\./, 'a long list is cut');
   assert.match(bannerCopy({ ...b, availBytes: null })!.title, /mémoire illisible/);
 });

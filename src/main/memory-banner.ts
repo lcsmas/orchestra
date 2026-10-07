@@ -36,9 +36,13 @@ export function createMemoryBannerPublisher(deps: MemoryBannerDeps): MemoryBanne
   let rev = 0;
   let timer: unknown = null;
 
-  function compute(): MemoryBannerState {
-    return memoryBannerOf(deps.snapshot(), { heldStarts: deps.heldStarts(), pausedRuns: deps.pausedRuns() }, last.rev);
+  function compute(snap: MemoryGuardSnapshot): MemoryBannerState {
+    return memoryBannerOf(snap, { heldStarts: deps.heldStarts(), pausedRuns: deps.pausedRuns() }, last.rev);
   }
+
+  /** The tick lives as long as the GUARD holds (not as long as a banner shows): a banner that went `none` on one unreadable sample, or while the Admission toggle was OFF, must come back on the next good read
+   *  although no guard edge announces it. */
+  const watching = (snap: MemoryGuardSnapshot): boolean => last.kind !== 'none' || snap.admission === 'held' || snap.pause === 'held';
 
   function rearm(active: boolean): void {
     if (!active) {
@@ -54,16 +58,18 @@ export function createMemoryBannerPublisher(deps: MemoryBannerDeps): MemoryBanne
   }
 
   function refresh(): void {
+    let snap: MemoryGuardSnapshot | null = null;
     try {
-      const next = compute();
+      snap = deps.snapshot();
+      const next = compute(snap);
       if (bannerFingerprint(next) !== bannerFingerprint(last)) {
         last = { ...next, rev: ++rev };
         deps.push(last);
       }
-      rearm(last.kind !== 'none');
+      rearm(watching(snap));
     } catch (e) {
       deps.log.warn('memory-banner: refresh failed — retried at the next edge / tick', e);
-      rearm(last.kind !== 'none');
+      rearm(snap ? watching(snap) : last.kind !== 'none');
     }
   }
 

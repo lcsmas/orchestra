@@ -153,6 +153,46 @@ test('PUBLISH unknown ≠ held: an unreadable meter publishes no banner; the tog
   assert.equal(w.pushes.length, 0);
 });
 
+test('PUBLISH tick outlives the banner while the GUARD holds: a banner that went none on an unreadable sample, or while the Admission toggle was OFF, comes back on the next good read with no guard edge to announce it', () => {
+  const w = world();
+  w.at(12);
+  w.at(5.5);
+  assert.equal(w.pub.current().kind, 'held');
+  w.at(null); // one unreadable sample: unknown ≠ held — the banner goes, the guard still holds
+  w.pub.refresh();
+  assert.equal(w.pub.current().kind, 'none', 'an unmeasured meter shows nothing');
+  assert.equal(w.timers.length, 1, 'but the tick is still armed: the guard is still held');
+  w.at(5.3); // no edge (still held): only the tick can bring the banner back
+  w.advance(BANNER_REFRESH_MS + 1);
+  assert.equal(w.pub.current().kind, 'held', 'back on the next good read');
+  assert.equal(w.pub.current().availBytes, 5.3 * GIB);
+  // the Admission toggle OFF while held: nothing is held (no banner); ON again: the banner returns without an edge
+  w.settings = { ...DEFAULT_MEMORY_GUARD_SETTINGS, admissionEnabled: false };
+  w.at(5.3);
+  w.pub.refresh();
+  assert.equal(w.pub.current().kind, 'none');
+  assert.equal(w.timers.length, 1, 'tick still armed');
+  w.settings = { ...DEFAULT_MEMORY_GUARD_SETTINGS };
+  w.at(5.3);
+  w.advance(BANNER_REFRESH_MS + 1);
+  assert.equal(w.pub.current().kind, 'held', 'toggle back ON');
+  // a recovery (guard open, banner none) disarms it
+  w.at(8);
+  assert.equal(w.pub.current().kind, 'none');
+  assert.equal(w.timers.length, 0, 'guard open ⇒ no tick');
+});
+
+test('PUBLISH Pause red means RUNS paused: the guard below critical with no run under the memory Pause stays amber', () => {
+  const w = world();
+  w.at(12);
+  w.at(2.3); // critical, but no run is written under the memory Pause (every pause switch OFF / no fleet / a manual pause holds them)
+  assert.equal(w.pub.current().kind, 'held');
+  w.pauseRun('L', true);
+  w.pub.refresh();
+  assert.equal(w.pub.current().kind, 'pause');
+  assert.deepEqual(w.pub.current().pausedRuns, ['run-L']);
+});
+
 test('PUBLISH pull: `current()` is what a renderer\'s first pull gets; refresh() is also a fresh read; stop() cancels the timer; a throwing dep is logged, never thrown', () => {
   const w = world();
   w.at(12);

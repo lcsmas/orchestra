@@ -31,19 +31,18 @@ export interface MemoryAlertEdge {
   snapshot: MemoryGuardSnapshot;
 }
 
-/** The LEAD of an episode: the coordinator of every ROOT run carrying a live local fleet whose frozen `delivery` switch is ON, with its coordinator workspace live. */
+/** The LEAD of an episode: the coordinator of the TOPMOST run, among the runs carrying a live local fleet, that CAN READ a bus row (frozen `delivery` switch ON, coordinator workspace live). Readers are filtered BEFORE
+ *  the topmost is taken: a root that cannot read must not silence the delivery-ON run below it (the memory Pause pauses that one too). */
 export function alertRecipients(db: BusDb, deps: Pick<MemoryAlertDeps, 'getWorkspace' | 'listWorkspaces'>): Array<{ runId: string; coordinator: string }> {
-  const fleet = liveFleetRuns(db, deps);
-  const roots = topmostRunIds(db, deps, fleet.map((r) => r.id));
-  const out: Array<{ runId: string; coordinator: string }> = [];
-  for (const id of roots) {
-    const run = getRun(db, id);
-    if (!run || run.flags.delivery !== true) continue; // a run without the delivery mechanism has nobody who can read a bus row
-    const w = deps.getWorkspace(run.coordinator);
-    if (!w || w.archived) continue; // a gone coordinator reads nothing
-    out.push({ runId: id, coordinator: run.coordinator });
+  const readers = new Map<string, string>(); // runId → its live coordinator
+  for (const r of liveFleetRuns(db, deps)) {
+    if (r.flags.delivery !== true) continue; // a run without the delivery mechanism has nobody who can read a bus row
+    const run = getRun(db, r.id);
+    const w = run ? deps.getWorkspace(run.coordinator) : undefined;
+    if (!run || !w || w.archived) continue; // a gone coordinator reads nothing
+    readers.set(r.id, run.coordinator);
   }
-  return out;
+  return topmostRunIds(db, deps, [...readers.keys()]).map((runId) => ({ runId, coordinator: readers.get(runId)! }));
 }
 
 interface Tracked {
@@ -110,10 +109,19 @@ export function createMemoryAlert(deps: MemoryAlertDeps): MemoryAlert {
       });
       const to = alertRecipients(db, deps);
       t.sent = true; // BEFORE the writes: a throw half-way must not make the next edge write the same episode again
-      for (const r of to) send(db, { runId: r.runId, sender: ALERT_SENDER, recipient: r.coordinator, kind: 'escalation', body });
+      for (const r of to) {
+        try {
+          send(db, { runId: r.runId, sender: ALERT_SENDER, recipient: r.coordinator, kind: 'escalation', body });
+        } catch (e) {
+          deps.log.warn(`memory-alert: episode ${t.ep.episode} NOT written to ${r.coordinator} (run ${r.runId}) — the other lead(s) are still told`, e); // at-most-once per recipient
+        }
+      }
       deps.log.info(`memory-alert: episode ${t.ep.episode} told to ${to.length ? to.map((r) => `${r.coordinator} (run ${r.runId})`).join(', ') : 'NOBODY (no root run with a live fleet and delivery ON)'} — MemAvailable ${snap.availBytes === null ? 'unreadable' : (snap.availBytes / 1024 ** 3).toFixed(2) + ' GB'}`);
     } catch (e) {
-      deps.log.warn(`memory-alert: writing the escalation of episode ${t.ep.episode} failed`, e);
+      // nothing was written yet (`sent` is set only after the facts and recipients were read): retry on the bounded timer rather than telling the episode only when it ends, hours later
+      const retry = !t.sent && t.tries + 1 < MAX_TRIES;
+      deps.log.warn(`memory-alert: preparing the escalation of episode ${t.ep.episode} failed${retry ? ' — retried' : ''}`, e);
+      if (retry) (t.tries++, arm(t));
     }
   }
 

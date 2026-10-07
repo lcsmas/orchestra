@@ -162,12 +162,13 @@ test('EPISODE row: it is an `escalation` from the host to the LEAD of the ROOT r
   const b = rows[0].body;
   assert.match(b, /Memory guard — episode 1 \(since 20[0-9-]+T[0-9:.]+Z\)/);
   assert.match(b, /below the Admission threshold \(6\.00 GB\) at 5\.42 GB/, 'the threshold crossed and MemAvailable at the crossing');
-  assert.doesNotMatch(b, /CRITICAL/, 'critical was not crossed');
+  assert.doesNotMatch(b, /and below the CRITICAL threshold/, 'critical was not crossed');
+  assert.match(b, /If MemAvailable falls below the CRITICAL threshold \(3\.00 GB\) the host puts the eligible runs under the memory Pause WITHOUT another row for this episode/, 'one row per episode: the row says what a later critical crossing will NOT do');
   assert.match(b, /3 automatic fleet start\(s\) HELD/, 'starts held');
   assert.match(b, /5 member\(s\) put in Veille/, 'Veille');
   assert.match(b, /memory Pause on run\(s\) L/, 'runs paused');
   assert.match(b, /2 unattributed container\(s\) \(not measured yet — #293\)/, 'the unattributed-container field is there from the start (the dep feeds it)');
-  assert.match(b, /Now: MemAvailable 5\.10 GB · Admission HELD · memory Pause none/);
+  assert.match(b, /Now \(20[0-9-]+T[0-9:.]+Z\): MemAvailable 5\.10 GB · Admission HELD · memory Pause none/, 'the facts are dated: a paused LEAD reads the row after its Reprise');
   assert.match(b, /released coordinators first, one at a time/);
 });
 
@@ -185,7 +186,7 @@ test('EPISODE critical: a jump straight below the CRITICAL threshold names BOTH 
   first.at(6.5); // pause_liftable (Admission still held)
   first.at(2.0); // pause_due #2 — same episode
   first.advance(ALERT_SETTLE_MS + 1);
-  assert.match(first.rows()[0].body, /CRITICAL threshold \(3\.00 GB\) at 2\.50 GB/, 'the FIRST critical crossing is the one named');
+  assert.match(first.rows()[0].body, /and below the CRITICAL threshold \(3\.00 GB\) at 2\.50 GB/, 'the FIRST critical crossing is the one named');
   const v = world();
   v.at(12);
   v.at(5);
@@ -264,6 +265,21 @@ test('LEAD rule: a coordinator that is gone is not told even when the run\'s anc
   assert.ok(alertRecipients(w.db, w.deps).some((r) => r.runId === 'Z' && r.coordinator === 'zc'), 'control: a live coordinator is told');
 });
 
+test('LEAD rule: readers are filtered BEFORE the topmost — a root that cannot read (delivery OFF / coordinator gone) does not silence the delivery-ON run below it; two readers on one chain tell only the topmost', () => {
+  const w = world();
+  w.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'L'").run(JSON.stringify({ delivery: false, pause: true }));
+  assert.deepEqual(alertRecipients(w.db, w.deps), [{ runId: 'O', coordinator: 'O' }, { runId: 'X', coordinator: 'X' }], 'L cannot read: O and X (delivery ON, each with a fleet) are the LEADs the memory Pause actually pauses');
+  w.at(12);
+  w.at(5);
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.deepEqual(w.rows().map((r) => [r.run_id, r.recipient]), [['O', 'O'], ['X', 'X']], 'ONE row each, none for the reader-less root');
+  const gone = world();
+  gone.ws.get('L')!.archived = true;
+  assert.deepEqual(alertRecipients(gone.db, gone.deps).map((r) => r.runId), ['O', 'X'], 'control: a root whose workspace is gone is no root of a live fleet: its children are the LEADs');
+  const two = world();
+  assert.deepEqual(alertRecipients(two.db, two.deps).map((r) => r.runId), ['L'], 'control: both L and O/X can read — only the topmost is told');
+});
+
 test('LEAD rule: nobody to tell is not an error — the episode is marked told, the log says so, no row is written', () => {
   const w = world();
   for (const id of ['O', 'X', 'w1', 'x1']) w.ws.get(id)!.archived = true; // no live workspace below L: no fleet, nobody to tell
@@ -338,7 +354,7 @@ test('RECONCILE then the SAME episode\'s edge (the guard\'s FIFO drain delivers 
   fresh.onEdge({ transition: { kind: 'admission_held', episode: snap.episode, pauseCycle: snap.pauseCycle, availBytes: 2 * GIB, thresholdBytes: 6 * GIB }, snapshot: snap }); // the queued edge of the very episode the snapshot already shows
   w.advance(ALERT_SETTLE_MS + 1);
   assert.equal(w.rows().length, 1, 'ONE episode: the late edge does not reopen it');
-  assert.match(w.rows()[0].body, /CRITICAL threshold/, 'and the critical crossing the reconcile recorded is not lost');
+  assert.match(w.rows()[0].body, /and below the CRITICAL threshold \(3\.00 GB\)/, 'and the critical crossing the reconcile recorded is not lost');
 });
 
 test('EDGE failure: a handler that throws is logged, never propagated into the guard\'s drain (the next sample still runs)', () => {
@@ -361,7 +377,7 @@ test('RECONCILE: a boot while the memory Pause is already in effect names the CR
   fresh.reconcile(w.g.snapshot());
   w.advance(ALERT_SETTLE_MS + 1);
   const bodies = w.rows().map((r) => r.body);
-  assert.ok(bodies.some((b) => /CRITICAL threshold \(3\.00 GB\)/.test(b)));
+  assert.ok(bodies.some((b) => /and below the CRITICAL threshold \(3\.00 GB\)/.test(b)));
 });
 
 test('RETRY: an unavailable bus at the settle time re-arms the timer (bounded) and the row is written ONCE when it is back; a throw half-way never writes the episode twice', () => {
@@ -399,11 +415,43 @@ test('RETRY: an unavailable bus at the settle time re-arms the timer (bounded) a
   v.at(5);
   v.advance(ALERT_SETTLE_MS + 1);
   assert.equal(v.rows().length, 1, 'the first LEAD was told; the second send threw');
-  assert.ok(v.logs.some((m) => /WARN memory-alert: writing the escalation of episode 1 failed/.test(m)));
+  assert.ok(v.logs.some((m) => /WARN memory-alert: episode 1 NOT written to Q \(run Q\)/.test(m)), v.logs.join(' | '));
   v.at(4.8);
   v.at(8); // the episode ends: its reopen edge would write the episode again if it were not already marked told
   v.advance(10 * 60_000);
   assert.equal(v.rows().length, 1, 'never written again for the same episode');
+});
+
+test('RETRY: a failure BEFORE anything was written (facts / recipients unreadable) is retried on the bounded timer — the episode is not told only when it ends', () => {
+  const w = world();
+  let calls = 0;
+  const heldStarts = w.deps.heldStarts;
+  w.deps.heldStarts = () => {
+    if (++calls <= 2) throw new Error('SQLITE_BUSY');
+    return heldStarts();
+  };
+  w.at(12);
+  w.at(5);
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(w.rows().length, 0, 'the first attempt threw before any write');
+  assert.ok(w.logs.some((m) => /WARN memory-alert: preparing the escalation of episode 1 failed — retried/.test(m)), w.logs.join(' | '));
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(w.rows().length, 0, 'the second attempt threw too');
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(w.rows().length, 1, 'the third attempt wrote the row — while the episode is still going on');
+  assert.equal(w.alert.episodes()[0].ended, false);
+  w.advance(10 * 60_000);
+  assert.equal(w.rows().length, 1, 'once');
+  // the bound: a permanent failure stops retrying (no timer left behind)
+  const p = world();
+  p.deps.heldStarts = () => {
+    throw new Error('permanent');
+  };
+  p.at(12);
+  p.at(5);
+  for (let i = 0; i < 12; i++) p.advance(ALERT_SETTLE_MS + 1);
+  assert.equal(p.rows().length, 0);
+  assert.equal(p.timers.length, 0, 'bounded: no re-arm after MAX_TRIES');
 });
 
 test('STOP: a stopped alert fires no timer and writes nothing', () => {

@@ -499,10 +499,10 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   flush live in main (see
   [accounts-usage.md](accounts-usage.md) "Prompt queue").
 - **MemoryBanner.tsx** (#289, D5 D-pick3 = option B, mockups `docs/mockups/289/`) — GLOBAL banner above the pane row (before SetupBanner) and on top of the Welcome screen when no workspace is active: two French
-  lines, amber while the memory guard HOLDS Admission (`admissionEnabled` on) and red while a memory Pause is in effect; vanishes by itself on recovery. State = `memoryBanner` in the store (replaced WHOLESALE,
+  lines, amber while the memory guard HOLDS Admission (`admissionEnabled` on) and red only while runs ARE under the host's memory Pause (the bus says so — never merely "guard below critical"); vanishes by itself on recovery. State = `memoryBanner` in the store (replaced WHOLESALE,
   revision-stamped: initial pull `memoryGuard:banner` + push `memoryGuard:bannerUpdate`; registered by `registerMemoryBannerIpc()` in `memory-banner-host.ts`, NOT the generic served table). « Masquer » stores
-  `memoryBannerDismissed` = `bannerKey` (episode + kind [+ Pause cycle]): it comes back on an escalation (held → Pause), a new Pause cycle and the next episode; a `kind:'none'` push forgets it. Words, kinds and the
-  dismiss rule are pure (`src/shared/memory-banner.ts`); the publisher (`src/main/memory-banner.ts`, Electron-free) recomputes on every guard edge and every `BANNER_REFRESH_MS` (5 s) while a banner is up and pushes only on
+  `memoryBannerDismissed` = every `bannerKey` (episode + kind [+ Pause cycle]) hidden since the last recovery: it comes back on an escalation (held → Pause), a new Pause cycle and the next episode, not on a de-escalation; a `kind:'none'` push forgets them. The component publishes its height as `--memory-banner-h` on `main.main`; the full-page Bus / Insights / Help overlays (`inset: 0`) start below it (`styles.css`; the Resources page covers the whole column by design). Words, kinds and the
+  dismiss rule are pure (`src/shared/memory-banner.ts`); the publisher (`src/main/memory-banner.ts`, Electron-free) recomputes on every guard edge and every `BANNER_REFRESH_MS` (5 s) while a banner is up OR the guard still holds (an unreadable sample / the Admission toggle can blank it with no edge to bring it back) and pushes only on
   a real change. Gates: `memory-banner.test.ts` (real bus + REAL guard), `shared/memory-banner.test.ts`, `memory-banner-wiring.test.ts`, `scripts/memory-banner/mutate-unit.mjs`, and `scripts/e2e-memory-banner.sh <built app>`
   (a BUILT app in a headless sway: thresholds moved around the live MemAvailable through the #285 modal → banner DOM + position + paint + `bus-status` + screenshots; heavy: token).
 

@@ -53,8 +53,9 @@ test('WIRING memory-alert.ts is Electron-free (importable under node --test like
   for (const bad of ['./store', './platform', 'electron', './memory-guard', './logger', './admission']) {
     assert.ok(!new RegExp(`from '${bad.replace(/[./]/g, '\\$&')}(\\.ts)?'`).test(core), `memory-alert.ts must not import ${bad}`);
   }
-  assert.match(core, /for \(const r of to\) send\(db, \{ runId: r\.runId, sender: ALERT_SENDER, recipient: r\.coordinator, kind: 'escalation', body \}\);/);
-  assert.ok(core.indexOf('t.sent = true;') > 0 && core.indexOf('t.sent = true;') < core.indexOf("for (const r of to) send("), 'marked told BEFORE the writes: a throw half-way never writes the episode twice');
-  assert.match(core, /if \(!run \|\| run\.flags\.delivery !== true\) continue;/, 'a run without the delivery mechanism has nobody who can read a bus row');
+  assert.match(core, /for \(const r of to\) \{\s*try \{\s*send\(db, \{ runId: r\.runId, sender: ALERT_SENDER, recipient: r\.coordinator, kind: 'escalation', body \}\);/);
+  assert.ok(core.indexOf('t.sent = true;') > 0 && core.indexOf('t.sent = true;') < core.indexOf('send(db, {'), 'marked told BEFORE the writes: a throw half-way never writes the episode twice');
+  assert.match(core, /if \(r\.flags\.delivery !== true\) continue;/, 'a run without the delivery mechanism has nobody who can read a bus row');
+  assert.ok(core.indexOf('r.flags.delivery !== true') < core.indexOf('topmostRunIds(db, deps, [...readers.keys()])'), 'readers are filtered BEFORE the topmost is taken');
   assert.equal((core.match(/\bsend\(/g) ?? []).length, 1, 'the ONE send site');
 });

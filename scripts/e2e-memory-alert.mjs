@@ -10,6 +10,8 @@
 //   critical     one sample straight below the CRITICAL threshold names BOTH thresholds in the ONE row
 //   lead_rule    only the coordinator of a ROOT run with a live fleet and delivery ON is told (a delivery-OFF root, a child run and a root without a fleet are not)
 //   boot_held    the alert starts while the guard is ALREADY held: the episode is told once (subscribe first, then reconcile)
+//   actions      NON-ZERO actions through the real host bindings: 2 starts held by the real Admission queue, 1 member hibernated AFTER the crossing (one hibernated BEFORE is not counted), a run under the memory Pause
+//   reader_below_deaf_root  a delivery-OFF root does not silence the delivery-ON run below it (the readers are filtered BEFORE the topmost)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-memory-alert.mjs
 //   (RIG_REPO=<other tree> points the modules AND the built CLI at that tree — the must-FAIL run on master: no alert module ⇒ zero rows)
@@ -23,7 +25,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['oscillation', 'critical', 'lead_rule', 'boot_held'];
+const ARMS = ['oscillation', 'critical', 'lead_rule', 'boot_held', 'actions', 'reader_below_deaf_root'];
 const GIB = 1024 ** 3;
 const SETTLE_WAIT_MS = 23_000; // ALERT_SETTLE_MS (20 s) + margin
 
@@ -177,9 +179,14 @@ try {
     check('one_row', rows().length === 1, `${rows().length}`);
     const b = rows()[0]?.body ?? '';
     check('names_both_thresholds', /below the Admission threshold \(6\.00 GB\) at 1\.20 GB and below the CRITICAL threshold \(3\.00 GB\) at 1\.20 GB/.test(b), b.split('\n')[0]);
-    step(2.5); step(8); step(2.2); // a later Pause cycle inside the SAME episode never writes another
+    step(6.5); step(2.2); // Pause liftable (above Admission) with Admission STILL held (below the 7 GB reopen), then below critical again: a LATER Pause cycle inside the SAME episode
+    const sn = guardMod.getMemoryGuardSnapshot();
+    check('later_cycle_control', sn.episode === 1 && sn.pauseCycle === 2 && sn.pause === 'held', JSON.stringify({ episode: sn.episode, pauseCycle: sn.pauseCycle, pause: sn.pause }));
     await sleep(SETTLE_WAIT_MS);
-    check('later_pause_cycle_is_not_a_new_alert', rows().length === 1 || rows().length === 2 && /episode 2 /.test(rows()[1].body), `${rows().length} rows`);
+    check('later_pause_cycle_is_not_a_new_alert', rows().length === 1, `${rows().length} rows (episode ${sn.episode}, cycle ${sn.pauseCycle})`);
+    step(8); step(2.2); // recovery, then a NEW crossing straight below critical: episode 2 — the second row
+    await sleep(SETTLE_WAIT_MS);
+    check('a_new_episode_writes_a_second_row', rows().length === 2 && /episode 2 /.test(rows()[1]?.body ?? ''), `${rows().length} rows; ${(rows()[1]?.body ?? '').split('\n')[0]}`);
   } else if (ARM === 'lead_rule') {
     await startAlert();
     step(12);
@@ -187,6 +194,38 @@ try {
     await sleep(SETTLE_WAIT_MS);
     const who = rows().map((r) => `${r.recipient}@${r.run_id}`);
     check('only_the_root_coordinator_with_a_fleet_and_delivery_is_told', who.length === 1 && who[0] === 'lead@lead', JSON.stringify(who));
+  } else if (ARM === 'actions') {
+    // the real Admission queue (the guard is the rig's, so the gate sees the same held state), the real store's `hibernatedAt`, a run under the memory Pause written the way the host writes it
+    const adm = await import(`${REPO}/src/main/admission.ts`);
+    const { MEMORY_PAUSE_BY, encodeMemoryPause } = await import(`${REPO}/src/shared/pause-memory.ts`);
+    await startAlert();
+    step(12);
+    await mk('wold', { parentId: 'ops', hibernatedAt: Date.now() - 3_600_000 }); // hibernated an hour BEFORE the crossing: not an action of this episode
+    step(5.5);
+    await mk('wnew', { parentId: 'ops', hibernatedAt: Date.now() + 5_000 }); // hibernated AFTER the crossing
+    await mk('wq1', { parentId: 'ops' });
+    await mk('wq2', { parentId: 'ops' });
+    const gate = (id, kind) => adm.admissionGate({ wsId: id, ws: { parentId: 'ops' }, origin: 'auto', kind, run: async () => ({ ok: true }), stillOwed: () => true, coordinator: false });
+    const g1 = gate('wq1', 'spawn'), g2 = gate('wq2', 'restart');
+    check('held_control', g1.held === true && g2.held === true && adm.listHeldStarts().length === 2, JSON.stringify({ g1, g2, queued: adm.listHeldStarts().length }));
+    db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'ops'").run(JSON.stringify({ delivery: true, pause: true })); // a run is only a memory-Pause run with its frozen `pause` switch ON
+    const at = Date.now();
+    db.prepare("UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_auto = ? WHERE id = 'ops'").run(at, MEMORY_PAUSE_BY, encodeMemoryPause({ reason: 'memory', pauseCycle: 1, episode: 1, availBytes: 2 * GIB, thresholdBytes: 3 * GIB }, at));
+    await sleep(SETTLE_WAIT_MS);
+    check('one_row', rows().length === 1, `${rows().length}`);
+    const b = rows()[0]?.body ?? '';
+    check('two_starts_held_counted', /2 automatic fleet start\(s\) HELD/.test(b), b.split('\n')[1] ?? '');
+    check('one_member_in_veille_since_the_crossing', /1 member\(s\) put in Veille since the crossing/.test(b), b.split('\n')[1] ?? '');
+    check('the_paused_run_is_named', /memory Pause on run\(s\) ops/.test(b), b.split('\n')[1] ?? '');
+  } else if (ARM === 'reader_below_deaf_root') {
+    // `lead` cannot read (delivery OFF): `ops` below it (delivery ON, with a fleet) is the LEAD the memory Pause actually pauses
+    db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'lead'").run(JSON.stringify({ delivery: false }));
+    await startAlert();
+    step(12);
+    step(5);
+    await sleep(SETTLE_WAIT_MS);
+    const who = rows().map((r) => `${r.recipient}@${r.run_id}`);
+    check('the_reader_below_a_deaf_root_is_told', who.length === 1 && who[0] === 'ops@ops', JSON.stringify(who));
   } else if (ARM === 'boot_held') {
     step(12);
     step(5); // the guard is ALREADY held when the alert starts

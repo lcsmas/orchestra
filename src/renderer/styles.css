@@ -2912,6 +2912,13 @@ input:focus, textarea:focus, select:focus {
 .toolbar ~ .bus-pane,
 .toolbar ~ .insights-view,
 .toolbar ~ .help-view { top: var(--toolbar-h); }
+/* #289: the memory banner (in flow, after the toolbar) publishes --memory-banner-h on .main; the full-page overlays start below it instead of hiding it. */
+.main > .bus-pane,
+.main > .insights-view,
+.main > .help-view { top: var(--memory-banner-h, 0px); }
+.toolbar ~ .bus-pane,
+.toolbar ~ .insights-view,
+.toolbar ~ .help-view { top: calc(var(--toolbar-h) + var(--memory-banner-h, 0px)); }
 .toolbar {
   position: relative;
   z-index: 20;

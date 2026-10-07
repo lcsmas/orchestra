@@ -66,11 +66,12 @@ export function memoryAlertBody(ep: AlertEpisode, f: AlertFacts): string {
   const held = f.admissionEnabled ? `${f.heldStarts} automatic fleet start(s) HELD (released coordinators first, one at a time, on a fresh reading, once MemAvailable is above ${formatGb(reopen, 2)})` : 'automatic starts NOT held (the Admission toggle is OFF — the guard only measures)';
   const paused = f.pausedRuns.length > 0 ? `memory Pause on run(s) ${f.pausedRuns.join(', ')} (lifted by the host above ${formatGb(f.admissionBytes, 2)})` : 'no run under the memory Pause';
   const now = `MemAvailable ${f.nowAvailBytes === null ? 'unreadable' : formatGb(f.nowAvailBytes, 2)} · Admission ${f.nowAdmissionHeld ? 'HELD' : 'open'} · memory Pause ${f.nowPause ? 'IN EFFECT' : 'none'}`;
+  const next = ep.critical ? '' : ` If MemAvailable falls below the CRITICAL threshold (${formatGb(f.criticalBytes, 2)}) the host puts the eligible runs under the memory Pause WITHOUT another row for this episode — read the app banner / \`orchestra run status\`.`;
   const over = ep.endedAt !== null ? ` The episode is already OVER (memory back above ${formatGb(reopen, 2)} at ${iso(ep.endedAt)}).` : '';
   return [
     `Memory guard — episode ${ep.episode} (since ${iso(ep.admission.at)}): ${crossed}.`,
     `Host actions so far: ${held} · ${f.veille} member(s) put in Veille since the crossing · ${paused} · ${f.unattributedContainers} unattributed container(s) (not measured yet — #293).`,
-    `Now: ${now}.${over}`,
-    'You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers. A run under the memory Pause reads this row after its Reprise (a paused coordinator is not woken).',
+    `Now (${iso(f.at)}): ${now}.${over}`,
+    `You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers. A run under the memory Pause reads this row after its Reprise (a paused coordinator is not woken).${next}`,
   ].join('\n');
 }
