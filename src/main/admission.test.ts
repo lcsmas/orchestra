@@ -182,22 +182,25 @@ test('newcomer_triggers_the_release_when_memory_is_back: memory recovered but no
   assert.deepEqual(w.ran, ['old', 'new']);
 });
 
-test('kick_during_wind_down_is_not_swallowed: a kick that lands while a pass is finishing re-runs the pass (the guard reopen edge can arrive exactly then)', async () => {
+test('kick_during_wind_down_is_not_swallowed: a kick that lands AFTER the running pass sampled "wait" but BEFORE it finished re-runs the pass (the guard reopen edge can arrive exactly then; the next retry may be 10 s away)', async () => {
   const w = world();
   const a = createAdmission(w.deps);
   a.gate(args(w, 'a'));
-  const p1 = a.kick(); // pass #1 samples 4 GB → waits
-  w.mem = 9; // memory recovers while pass #1 is winding down
-  const p2 = a.kick(); // single-flight returns pass #1's promise — it must still re-run
+  const p1 = a.kick(); // the body is queued in a microtask (draining is set)
+  await Promise.resolve(); // …it has now run: the pass sampled 4 GB, said "wait", and is winding down (draining still set)
+  w.mem = 9; // memory recovers in that window
+  const p2 = a.kick(); // single-flight: must NOT be swallowed — it asks the running pass to go round again
   await Promise.all([p1, p2]);
   assert.deepEqual(w.ran, ['a']);
 });
 
-test('not_owed_anymore_is_dropped_not_run: a workspace deleted / started by a human while held', async () => {
+test('not_owed_anymore_is_dropped_not_run: a workspace deleted / started by a human AFTER it was queued is dropped at RELEASE time, never run', async () => {
   const w = world();
   const a = createAdmission(w.deps);
-  a.gate(args(w, 'gone', { stillOwed: () => false }));
-  a.gate(args(w, 'kept'));
+  let owed = true;
+  a.gate(args(w, 'gone', { stillOwed: () => owed }));
+  a.gate(args(w, 'kept')); // the gate's own prune ran while `gone` was still owed — only the release-time check can drop it now
+  owed = false;
   w.mem = 9;
   await a.kick();
   assert.deepEqual(w.ran, ['kept']);
@@ -363,6 +366,7 @@ test('facade: the process-wide gate + the guard edge that reopens Admission trig
   guard.start();
   __rebuildAdmissionForTests({ ...w.deps, sample: () => guard.sampleNow() });
   startAdmission();
+  for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r)); // the boot-reconcile kick finishes (nothing queued yet): from here the guard EDGE is the only thing that can release
   assert.equal(admissionGate(args(w, 'a')).held, true);
   assert.deepEqual(heldStartFor('a'), { kind: 'spawn', since: 1_000_000 });
   assert.equal(listHeldStarts().length, 1);
@@ -425,7 +429,8 @@ test('pause_refused_does_not_block_the_line: a Pause-refused entry at the head k
   const a = createAdmission(w.deps);
   let xPaused = true;
   const xRuns: string[] = [];
-  a.gate(args(w, 'X1', { kind: 'restart', run: async () => { xRuns.push('X1'); return xPaused ? { ok: false, error: 'run en pause' } : { ok: true }; }, retryLater: () => xPaused }));
+  // (a mutant that picks the refused entry again inside the same pass would spin forever: after 6 tries the Pause "lifts" so the test FAILS on the count instead of hanging)
+  a.gate(args(w, 'X1', { kind: 'restart', run: async () => { xRuns.push('X1'); if (xRuns.length > 6) xPaused = false; return xPaused ? { ok: false, error: 'run en pause' } : { ok: true }; }, retryLater: () => xPaused }));
   a.gate(args(w, 'Y1'));
   w.mem = 12;
   await a.kick();
@@ -516,6 +521,26 @@ test('drop_forgets_a_deleted_workspace: drop() removes it from the list, the mar
   assert.equal(w.timers.length, 0, 'an empty queue disarms the retry');
   w.mem = 12;
   assert.deepEqual(a.gate(args(w, 'new')), { held: false }, 'no phantom line: memory is fine and nobody is queued');
+});
+
+test('superseded_entry_is_pruned_by_list_alone: list() prunes on its own (no heldFor first)', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let owed = true;
+  a.gate(args(w, 'm1', { stillOwed: () => owed }));
+  owed = false;
+  assert.deepEqual(a.list(), []);
+});
+
+test('superseded_entry_is_pruned_by_gate_alone: the gate prunes on its own — a newcomer never joins a line made only of superseded entries', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let owed = true;
+  a.gate(args(w, 'm1', { stillOwed: () => owed }));
+  owed = false;
+  w.mem = 12;
+  assert.deepEqual(a.gate(args(w, 'new')), { held: false }, 'no heldFor / list call before it: the gate itself pruned');
+  assert.deepEqual(a.list(), []);
 });
 
 test('superseded_entry_is_pruned_at_read_time: a member a person started meanwhile stops showing as held (peers / bus-status) without waiting for a release pass (F4)', () => {

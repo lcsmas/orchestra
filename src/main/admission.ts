@@ -153,7 +153,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       if (waiting.length === 0) {
         waitLogged = null;
         if (queue.size === 0) return disarm();
-        return arm(); // only Pause-refused entries are left: try them again at the next retry
+        return; // only Pause-refused entries are left: kick()'s `finally` re-arms the retry (pinned by pause_refused_does_not_block_the_line)
       }
       const snap = deps.sample();
       const step = planRelease(waiting, snap);

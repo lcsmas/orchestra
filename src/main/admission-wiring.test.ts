@@ -40,6 +40,11 @@ test('spawn gate: inside startWorkspaceAgentOnce, AFTER the owed check and BEFOR
   assert.match(ws, /startWorkspaceAgentHeadless\(id: string, origin\?: PauseOrigin, admitted = false\)/);
 });
 
+test('spawn stillOwed: owed AND no live SDK session AND no running PTY AND not archived (the PTY half cannot be driven by the rig — it is pinned on text)', () => {
+  const body = fn(ws, 'async function startWorkspaceAgentOnce(');
+  assert.match(body, /return !!w && !w\.archived && owesOpeningTask\(w\) && !sdkSessionLive\(id\) && !isRunning\(id\);/);
+});
+
 test('spawn reply carries held; peers carry heldForMemory', () => {
   assert.match(ws, /\.\.\.\(started\.held \? \{ held: started\.held \} : \{\}\)/);
   assert.match(ws, /heldForMemory\?: \{ kind: 'spawn' \| 'restart'; since: number \}/);
