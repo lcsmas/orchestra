@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { createDockerApi, DockerApiError, isRelaySocketPath, resolveRealDockerSocket, type DockerTransport } from './docker-api.ts';
+import { createDockerApi, DockerApiError, resolveRealDockerSocket, type DockerTransport } from './docker-api.ts';
 
 let dir: string;
 let server: http.Server;
@@ -149,18 +149,13 @@ test('injectable transport: no socket involved', async () => {
 
 // ── socket resolution: the REAL socket, never a relay ───────────────────────────────────────────────────────────
 
-test('isRelaySocketPath: only <keepers>/<ws>.docker.sock', () => {
-  assert.equal(isRelaySocketPath('/home/u/.orchestra/keepers/ws-1.docker.sock'), true);
-  assert.equal(isRelaySocketPath('/home/u/.orchestra/keepers/ws-1.sock'), false);
-  assert.equal(isRelaySocketPath('/var/run/docker.sock'), false);
-  assert.equal(isRelaySocketPath('/run/user/1000/docker.sock'), false);
-});
-
 test('resolveRealDockerSocket: own DOCKER_HOST (unix) wins; a RELAY DOCKER_HOST is ignored; default and rootless fall-backs', () => {
   const only = (...ps: string[]) => (p: string) => ps.includes(p);
   assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'unix:///custom/d.sock' }, only('/custom/d.sock', '/var/run/docker.sock')), '/custom/d.sock');
   // inherited from a relay-ON member's shell: must NOT be used even though it exists
   assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'unix:///h/.orchestra/keepers/ws.docker.sock' }, only('/h/.orchestra/keepers/ws.docker.sock', '/var/run/docker.sock')), '/var/run/docker.sock');
+  // …including the tmpdir-fallback relay name keeperSocketPath produces for long homes
+  assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'unix:///tmp/okeeper-0123456789abcdef.docker.sock' }, only('/tmp/okeeper-0123456789abcdef.docker.sock', '/var/run/docker.sock')), '/var/run/docker.sock');
   assert.equal(resolveRealDockerSocket({ DOCKER_HOST: 'tcp://h:2375' }, only('/var/run/docker.sock')), '/var/run/docker.sock');
   assert.equal(resolveRealDockerSocket({ XDG_RUNTIME_DIR: '/run/user/1000' }, only('/run/user/1000/docker.sock')), '/run/user/1000/docker.sock');
   assert.equal(resolveRealDockerSocket({}, only()), null);

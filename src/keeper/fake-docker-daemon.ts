@@ -18,6 +18,8 @@ export interface FakeDaemon {
   readonly seen: SeenRequest[];
   /** Release the next chunk of the open `GET /events` stream. */
   releaseEvent(): void;
+  /** Connections currently open to this daemon (a leak shows up as a count that never comes back down). */
+  openConnections(): number;
   /** Finish the open `GET /wait` response (headers already sent, NO body yet — docker wait / events with nothing to say). */
   releaseWait(): void;
   close(): Promise<void>;
@@ -29,7 +31,8 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
   const waitGates: Array<() => void> = [];
   const sockets = new Set<net.Socket>();
 
-  const server = http.createServer((req, res) => {
+  // dockerd accepts ~1 MB of headers; node's default 16 KB would make the fake daemon the thing that refuses
+  const server = http.createServer({ maxHeaderSize: 1 << 20 }, (req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
@@ -51,6 +54,10 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
           res.write('{"n":2}\n');
           res.end();
         });
+      } else if (req.method === 'GET' && url.endsWith('/abort')) {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.write('part');
+        setTimeout(() => res.destroy(), 50); // the daemon dies mid-response
       } else if (req.method === 'GET' && url.endsWith('/wait')) {
         res.writeHead(200, { 'content-type': 'text/plain' });
         res.flushHeaders();
@@ -85,6 +92,12 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
     const go = (): void => {
       seen.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: body.subarray(0, want) });
       sock.write('HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n');
+      if ((req.url ?? '').includes('/eof/')) {
+        // answers ONLY after the client's EOF (a CloseWrite): proves a half-close does not kill the hijack
+        sock.on('data', () => {});
+        sock.on('end', () => sock.end('DONE'));
+        return;
+      }
       const rest = body.subarray(want);
       if (rest.length) sock.write(rest.toString('latin1').toUpperCase());
       sock.on('data', (d: Buffer) => sock.write(d.toString('latin1').toUpperCase()));
@@ -114,6 +127,7 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
     seen,
     releaseEvent: () => eventGates.shift()?.(),
     releaseWait: () => waitGates.shift()?.(),
+    openConnections: () => sockets.size,
     close: () =>
       new Promise<void>((resolve) => {
         for (const s of sockets) s.destroy();

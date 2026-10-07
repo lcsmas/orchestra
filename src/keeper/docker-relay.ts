@@ -13,7 +13,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
-import { isContainerCreate, stampCreateBodyBytes, MAX_CREATE_BODY_BYTES, MAX_SOCKET_PATH_BYTES } from '../shared/docker-relay.ts';
+import { isContainerCreate, stampCreateBodyBytes, MAX_CREATE_BODY_BYTES, maxSocketPathBytes } from '../shared/docker-relay.ts';
 import { DOCKER_LABEL_RUN, DOCKER_LABEL_WS } from '../shared/docker-labels.ts';
 
 export interface DockerRelayOptions {
@@ -166,7 +166,7 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
   function bind(): Promise<boolean> {
     return new Promise((resolve) => {
       // libuv silently TRUNCATES an over-long unix path and binds that: refuse here instead of listening elsewhere.
-      if (Buffer.byteLength(sockPath) > MAX_SOCKET_PATH_BYTES) {
+      if (Buffer.byteLength(sockPath) > maxSocketPathBytes()) {
         log(`docker relay: socket path too long (${Buffer.byteLength(sockPath)} bytes): ${sockPath}`);
         resolve(false);
         return;
@@ -180,9 +180,11 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
           return;
         }
       }
-      const srv = http.createServer(onRequest);
+      // node caps request line + headers at 16 KB; dockerd accepts ~1 MB (X-Registry-Config carries every ~/.docker/config.json
+      // auth, `filters=`/`buildargs=` queries grow too) — a lower cap here fails calls that work without the relay.
+      const srv = http.createServer({ maxHeaderSize: 1 << 20 }, onRequest);
       srv.requestTimeout = 0; // an image load / build context upload legitimately runs for minutes
-      srv.keepAliveTimeout = 60_000;
+      srv.keepAliveTimeout = 0; // never close an idle connection first: dockerd does not, and a client reusing one at the boundary would see ECONNRESET on a POST
       srv.on('upgrade', onUpgrade);
       srv.on('clientError', (_e, sock) => sock.destroy());
       srv.on('connection', (s) => {

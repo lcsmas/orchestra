@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { isRelaySocketPath } from '../shared/docker-relay.ts';
 
 export interface DockerResponse {
   status: number;
@@ -82,12 +83,6 @@ export interface DockerApi {
 }
 
 // ── socket resolution ───────────────────────────────────────────────────────────────────────────────────────────
-
-/** A keeper relay socket: `<keepers dir>/<ws>.docker.sock`. The app must never talk to one (it would be a client of
- *  a member's relay: stamped creates, and gone when that keeper exits). */
-export function isRelaySocketPath(p: string): boolean {
-  return p.endsWith('.docker.sock') && path.basename(path.dirname(p)) === 'keepers';
-}
 
 /**
  * The REAL daemon socket this app talks to: its own `DOCKER_HOST` when that is a unix socket that is not a relay

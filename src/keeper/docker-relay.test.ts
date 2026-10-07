@@ -181,6 +181,49 @@ test('response HEADERS reach the client while the daemon has sent no body yet (d
   daemon.releaseWait();
 });
 
+test('a 40 KB request header (X-Registry-Config on a legacy build) passes — node\'s 16 KB default cap must not apply', async () => {
+  const r = await newRelay();
+  const cfg = 'a'.repeat(40_000);
+  const res = await call(r, 'GET', '/_ping', undefined, { 'x-registry-config': cfg });
+  assert.equal(res.status, 200);
+  assert.equal(lastSeen().headers['x-registry-config'], cfg);
+});
+
+test('a client that aborts mid-stream does not leak the daemon-side connection', async () => {
+  const r = await newRelay();
+  const before = daemon.openConnections();
+  await new Promise<void>((resolve) => {
+    const req = http.request({ socketPath: r.sockPath, path: '/events', agent: false }, (res) => {
+      res.once('data', () => {
+        assert.ok(daemon.openConnections() > before, 'the stream must be open daemon-side while the client reads it');
+        req.destroy();
+        resolve();
+      });
+    });
+    req.on('error', () => {});
+    req.end();
+  });
+  assert.equal(await until(() => daemon.openConnections() <= before, 2000), true, 'the relay kept the daemon connection open after the client left');
+});
+
+test('a daemon that dies mid-response aborts the client call (no hang) and the relay keeps serving', async () => {
+  const r = await newRelay();
+  const outcome = await new Promise<string>((resolve) => {
+    const req = http.request({ socketPath: r.sockPath, path: '/containers/x/abort', agent: false }, (res) => {
+      res.on('data', () => {});
+      res.on('aborted', () => resolve('aborted'));
+      res.on('error', () => resolve('error'));
+      res.on('end', () => resolve('clean-end'));
+    });
+    req.on('error', () => resolve('error'));
+    req.end();
+    setTimeout(() => resolve('HUNG'), 3000);
+  });
+  assert.notEqual(outcome, 'HUNG');
+  assert.notEqual(outcome, 'clean-end', 'a truncated response must not look complete');
+  assert.equal((await call(r, 'GET', '/_ping')).status, 200);
+});
+
 test('a 4 MB response arrives intact; a chunked 3 MB upload is reassembled by the daemon', async () => {
   const r = await newRelay();
   const big = await call(r, 'GET', '/containers/x/big');
@@ -263,6 +306,17 @@ test('hijacked attach: 101 comes back, then bytes flow BOTH ways until the clien
   assert.equal(lastSeen().url, '/v1.47/containers/abc/attach?stream=1&stdin=1');
 });
 
+test('hijack half-close: the daemon answers only AFTER the client\'s EOF and the answer still reaches the client', { timeout: 8000 }, async () => {
+  const r = await newRelay();
+  const { sock, response } = await rawUpgrade(r, 'POST /exec/eof/start HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Length: 0\r\n\r\n');
+  await new Promise((res) => setTimeout(res, 100));
+  sock.write('input\n');
+  sock.end(); // CloseWrite
+  const text = await response;
+  assert.match(text, /^HTTP\/1\.1 101 UPGRADED/);
+  assert.ok(text.endsWith('DONE'), JSON.stringify(text));
+});
+
 test('hijacked exec start with a JSON body: the body reaches the daemon BEFORE it answers 101', { timeout: 8000 }, async () => {
   const r = await newRelay();
   const body = '{"Detach":false,"Tty":true}';
@@ -342,6 +396,31 @@ test('supervisor: a deleted socket file is restored', async () => {
   assert.equal(await until(() => r.healthy() && fs.existsSync(r.sockPath), 3000), true);
   assert.equal((await call(r, 'GET', '/_ping')).status, 200);
   sup.stop();
+});
+
+test('healthy() is false when the socket file was REPLACED by another file (same path, different inode)', async () => {
+  const r = await newRelay();
+  assert.equal(r.healthy(), true);
+  fs.unlinkSync(r.sockPath);
+  fs.writeFileSync(r.sockPath, '');
+  assert.equal(r.healthy(), false);
+});
+
+test('kill() drops connections already in flight (a crashed relay does not leave streams half-alive)', async () => {
+  const r = await newRelay();
+  const closed = await new Promise<boolean>((resolve) => {
+    const req = http.request({ socketPath: r.sockPath, path: '/events', agent: false }, (res) => {
+      res.once('data', () => {
+        r.kill();
+        res.on('close', () => resolve(true));
+        res.on('aborted', () => resolve(true));
+        setTimeout(() => resolve(false), 1500);
+      });
+    });
+    req.on('error', () => resolve(true));
+    req.end();
+  });
+  assert.equal(closed, true);
 });
 
 test('supervisor control: with NO supervisor a killed relay stays dead (the arm above can fail)', async () => {

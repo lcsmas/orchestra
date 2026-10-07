@@ -278,7 +278,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     if (m === 'dockerRelay') {
       lines.push(
         on
-          ? `- bus switch ${wire}=ON — your docker calls go through a keeper relay ($DOCKER_HOST) that stamps orchestra.ws / orchestra.run on every container you create; do not override DOCKER_HOST or use another socket path.`
+          ? `- bus switch ${wire}=ON — your keeper routes docker through a relay that stamps orchestra.ws / orchestra.run on every container you create — when $DOCKER_HOST points at a keepers/*.docker.sock, leave it alone and do not use another socket path.`
           : `- bus switch ${wire}=OFF — docker is used directly; containers you create are not stamped.`,
       );
       continue;

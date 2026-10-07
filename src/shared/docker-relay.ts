@@ -129,8 +129,17 @@ export function stampCreateBodyBytes(body: Buffer, labels: Record<string, string
 
 // ── socket path + upstream resolution ───────────────────────────────────────────────────────────────────────────
 
-/** A unix socket path must stay under sun_path (108 incl. NUL); the keeper's own path is already ≤ 100. */
-export const MAX_SOCKET_PATH_BYTES = 107;
+/** sun_path is 108 bytes on Linux, 104 on macOS (incl. the NUL); the keeper's own path is already ≤ 100. */
+export function maxSocketPathBytes(platform: string = process.platform): number {
+  return platform === 'darwin' ? 103 : 107;
+}
+
+/** A keeper relay socket — `<ws>.docker.sock` in the keepers dir, or `okeeper-<hash>.docker.sock` in the tmpdir fallback
+ *  (`keeperSocketPath`). NEVER a real daemon: neither the app nor another keeper's relay may forward to one (an inherited
+ *  relay `DOCKER_HOST` would stack two relays and let the outer one's labels overwrite the inner's). */
+export function isRelaySocketPath(p: string): boolean {
+  return /\.docker\.sock$/.test(p.split('/').pop() ?? '');
+}
 
 /** The relay's socket sits beside the keeper's: `<ws>.sock` → `<ws>.docker.sock`. NEVER a `.pid` name —
  *  `listLiveKeepers` reads every `*.pid` in the keepers dir as a workspace id. */
@@ -141,8 +150,9 @@ export function relaySocketPath(keeperSock: string): string {
 export type UpstreamResolution = { ok: true; socketPath: string; via: string } | { ok: false; reason: string };
 
 export interface UpstreamDeps {
-  /** `docker context inspect` endpoint host for the member's env; null when the CLI is missing or fails. */
-  dockerContextHost(env: Record<string, string | undefined>): string | null;
+  /** `docker context inspect` endpoint host for the member's env; null when the CLI is missing or fails. Async: the
+   *  keeper must keep answering probes while the CLI runs. */
+  dockerContextHost(env: Record<string, string | undefined>): Promise<string | null> | string | null;
   isSocket(p: string): boolean;
 }
 
@@ -156,20 +166,26 @@ function unixPath(host: string): string | null {
  * swapped for the local daemon: no relay, the member keeps its own endpoint and its containers stay unattributed).
  * Order: explicit `ORCHESTRA_DOCKER_SOCKET` → the member's `DOCKER_HOST` → its effective docker context → the default.
  */
-export function resolveRelayUpstream(env: Record<string, string | undefined>, deps: UpstreamDeps): UpstreamResolution {
+export async function resolveRelayUpstream(env: Record<string, string | undefined>, deps: UpstreamDeps): Promise<UpstreamResolution> {
   let socketPath: string;
   let via: string;
   const explicit = env.ORCHESTRA_DOCKER_SOCKET?.trim();
+  // A DOCKER_HOST that is itself a relay socket (this shell was launched from another relay-ON member) is NOT the real
+  // daemon: ignore it, and hide it from the context lookup (the default context would echo it back).
+  const inherited = env.DOCKER_HOST?.trim();
+  const relayShaped = !!inherited && isRelaySocketPath(inherited);
   if (explicit) {
     socketPath = unixPath(explicit) ?? explicit;
     via = 'ORCHESTRA_DOCKER_SOCKET';
-  } else if (env.DOCKER_HOST?.trim()) {
-    const p = unixPath(env.DOCKER_HOST.trim());
-    if (!p) return { ok: false, reason: `DOCKER_HOST=${env.DOCKER_HOST} is not a unix socket` };
+  } else if (inherited && !relayShaped) {
+    const p = unixPath(inherited);
+    if (!p) return { ok: false, reason: `DOCKER_HOST=${inherited} is not a unix socket` };
     socketPath = p;
     via = 'DOCKER_HOST';
   } else {
-    const host = deps.dockerContextHost(env);
+    const ctxEnv = { ...env };
+    delete ctxEnv.DOCKER_HOST;
+    const host = await deps.dockerContextHost(ctxEnv);
     if (host === null) {
       socketPath = '/var/run/docker.sock';
       via = 'default';

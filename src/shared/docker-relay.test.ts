@@ -4,6 +4,8 @@ import { DOCKER_LABEL_RUN, DOCKER_LABEL_WS } from './docker-labels.ts';
 import {
   dockerRelayOffer,
   isContainerCreate,
+  isRelaySocketPath,
+  maxSocketPathBytes,
   relaySocketPath,
   resolveRelayUpstream,
   stampContainerCreateBody,
@@ -126,40 +128,73 @@ const deps = (over: Partial<UpstreamDeps> & { sockets?: string[] } = {}): Upstre
   isSocket: over.isSocket ?? ((p) => (over.sockets ?? ['/var/run/docker.sock']).includes(p)),
 });
 
-test('upstream: default context → /var/run/docker.sock', () => {
-  assert.deepEqual(resolveRelayUpstream({}, deps()), { ok: true, socketPath: '/var/run/docker.sock', via: 'docker context' });
+test('upstream: default context → /var/run/docker.sock', async () => {
+  assert.deepEqual(await resolveRelayUpstream({}, deps()), { ok: true, socketPath: '/var/run/docker.sock', via: 'docker context' });
 });
 
-test('upstream: no docker CLI → the default socket', () => {
-  const r = resolveRelayUpstream({}, deps({ dockerContextHost: () => null }));
+test('upstream: no docker CLI → the default socket', async () => {
+  const r = await resolveRelayUpstream({}, deps({ dockerContextHost: () => null }));
   assert.deepEqual(r, { ok: true, socketPath: '/var/run/docker.sock', via: 'default' });
 });
 
-test('upstream: the member DOCKER_HOST (unix) is the real socket; tcp/ssh is NOT silently swapped for the local daemon', () => {
-  assert.deepEqual(resolveRelayUpstream({ DOCKER_HOST: 'unix:///run/user/1000/docker.sock' }, deps({ sockets: ['/run/user/1000/docker.sock'] })), {
+test('upstream: the member DOCKER_HOST (unix) is the real socket; tcp/ssh is NOT silently swapped for the local daemon', async () => {
+  assert.deepEqual(await resolveRelayUpstream({ DOCKER_HOST: 'unix:///run/user/1000/docker.sock' }, deps({ sockets: ['/run/user/1000/docker.sock'] })), {
     ok: true,
     socketPath: '/run/user/1000/docker.sock',
     via: 'DOCKER_HOST',
   });
-  const tcp = resolveRelayUpstream({ DOCKER_HOST: 'tcp://10.0.0.5:2375' }, deps());
+  const tcp = await resolveRelayUpstream({ DOCKER_HOST: 'tcp://10.0.0.5:2375' }, deps());
   assert.equal(tcp.ok, false);
-  const ssh = resolveRelayUpstream({ DOCKER_HOST: 'ssh://me@box' }, deps());
+  const ssh = await resolveRelayUpstream({ DOCKER_HOST: 'ssh://me@box' }, deps());
   assert.equal(ssh.ok, false);
 });
 
-test('upstream: a non-unix docker context is refused (its member keeps its own endpoint)', () => {
-  const r = resolveRelayUpstream({}, deps({ dockerContextHost: () => 'tcp://remote:2376' }));
+test('upstream: a non-unix docker context is refused (its member keeps its own endpoint)', async () => {
+  const r = await resolveRelayUpstream({}, deps({ dockerContextHost: () => 'tcp://remote:2376' }));
   assert.equal(r.ok, false);
 });
 
-test('upstream: ORCHESTRA_DOCKER_SOCKET wins; a missing socket is a refusal, not a relay to nowhere', () => {
-  assert.deepEqual(resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: '/tmp/x.sock', DOCKER_HOST: 'tcp://h:1' }, deps({ sockets: ['/tmp/x.sock'] })), {
+test('upstream: ORCHESTRA_DOCKER_SOCKET wins; a missing socket is a refusal, not a relay to nowhere', async () => {
+  assert.deepEqual(await resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: '/tmp/x.sock', DOCKER_HOST: 'tcp://h:1' }, deps({ sockets: ['/tmp/x.sock'] })), {
     ok: true,
     socketPath: '/tmp/x.sock',
     via: 'ORCHESTRA_DOCKER_SOCKET',
   });
-  assert.equal(resolveRelayUpstream({}, deps({ sockets: [] })).ok, false);
-  assert.equal(resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: 'relative.sock' }, deps({ sockets: ['relative.sock'] })).ok, false);
+  assert.equal((await resolveRelayUpstream({}, deps({ sockets: [] }))).ok, false);
+  assert.equal((await resolveRelayUpstream({ ORCHESTRA_DOCKER_SOCKET: 'relative.sock' }, deps({ sockets: ['relative.sock'] }))).ok, false);
+});
+
+test('upstream: an inherited RELAY DOCKER_HOST is not the real daemon — ignored, and hidden from the context lookup', async () => {
+  const seenEnvs: Array<Record<string, string | undefined>> = [];
+  const d = deps({
+    dockerContextHost: (e) => {
+      seenEnvs.push(e);
+      return 'unix:///var/run/docker.sock';
+    },
+    sockets: ['/h/.orchestra/keepers/ws-A.docker.sock', '/var/run/docker.sock'],
+  });
+  const r = await resolveRelayUpstream({ DOCKER_HOST: 'unix:///h/.orchestra/keepers/ws-A.docker.sock', HOME: '/h' }, d);
+  assert.deepEqual(r, { ok: true, socketPath: '/var/run/docker.sock', via: 'docker context' });
+  assert.equal(seenEnvs.length, 1);
+  assert.equal(seenEnvs[0].DOCKER_HOST, undefined, 'the context lookup must not see (and echo back) the other relay');
+  assert.equal(seenEnvs[0].HOME, '/h');
+  // the tmpdir-fallback relay name (keeperSocketPath hashes an over-long path into os.tmpdir())
+  const t = await resolveRelayUpstream({ DOCKER_HOST: 'unix:///tmp/okeeper-0123456789abcdef.docker.sock' }, d);
+  assert.equal(t.ok && t.via, 'docker context');
+});
+
+test('isRelaySocketPath: any <name>.docker.sock (keepers dir or tmpdir fallback); never a real daemon socket', () => {
+  assert.equal(isRelaySocketPath('/home/u/.orchestra/keepers/ws-1.docker.sock'), true);
+  assert.equal(isRelaySocketPath('/tmp/okeeper-0123456789abcdef.docker.sock'), true);
+  assert.equal(isRelaySocketPath('/home/u/.orchestra/keepers/ws-1.sock'), false);
+  assert.equal(isRelaySocketPath('/var/run/docker.sock'), false);
+  assert.equal(isRelaySocketPath('/run/user/1000/docker.sock'), false);
+  assert.equal(isRelaySocketPath('/Users/u/.docker/run/docker.sock'), false);
+});
+
+test('maxSocketPathBytes: sun_path is 108 on Linux and 104 on macOS (NUL included)', () => {
+  assert.equal(maxSocketPathBytes('linux'), 107);
+  assert.equal(maxSocketPathBytes('darwin'), 103);
 });
 
 // ── app-side offer ───────────────────────────────────────────────────────────────────────────────────────────────

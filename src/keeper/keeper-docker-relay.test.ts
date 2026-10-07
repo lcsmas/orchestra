@@ -288,6 +288,29 @@ test('relay killed mid-session (SIGUSR2): the keeper restarts it and the next cr
   assert.match(fs.readFileSync(ctx.logFile, 'utf8'), /docker relay: restarted/);
 });
 
+test('a SLOW `docker context inspect` does not stop the keeper answering probes, and the relay still comes up from its answer', async () => {
+  const ctx = await makeCtx();
+  const bin = path.join(ctx.dir, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nsleep 2\necho unix://${ctx.daemon.sockPath}\n`, { mode: 0o755 });
+  const c = await Client.dial(ctx.sock);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  c.send({ t: 'spawn', command: process.execPath, args: [ctx.fakeCli], cwd: ctx.dir, env: { PATH: `${bin}:${process.env.PATH}` }, dockerRelay: { runId: 'run-7' } });
+  await sleep(300); // the relay lookup is now mid-flight
+  const probe = await Client.dial(ctx.sock);
+  const t0 = Date.now();
+  probe.send({ t: 'probe', wsId: ctx.wsId });
+  while (!probe.frames.some((f) => f.t === 'helloAck') && Date.now() - t0 < 5000) await sleep(10);
+  const answeredMs = Date.now() - t0;
+  assert.ok(answeredMs < 800, `probe answered after ${answeredMs} ms — the keeper's event loop was blocked by the context lookup`);
+  c.send(line({ env: 1 }));
+  const env = (await c.waitLine((l) => l.env !== undefined)).env as Record<string, string>;
+  assert.equal(env.DOCKER_HOST, `unix://${ctx.relaySock}`);
+  c.send(line({ create: 1 }));
+  await c.waitLine((l) => l.created === 201);
+  assert.equal(lastBody(ctx).Labels?.['orchestra.ws'], ctx.wsId); // forwarded to the daemon the SHIM named
+});
+
 test('the relay socket is removed when the keeper exits', async () => {
   const ctx = await makeCtx();
   const c = await start(ctx, { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath }, true);

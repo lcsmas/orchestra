@@ -29,7 +29,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import {
   createLineSplitter,
   encodeKeeperFrame,
@@ -39,7 +39,7 @@ import {
   type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol.ts';
-import { MAX_SOCKET_PATH_BYTES, relaySocketPath, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { maxSocketPathBytes, relaySocketPath, resolveRelayUpstream } from '../shared/docker-relay.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
@@ -225,18 +225,16 @@ let relaySupervisor: RelaySupervisor | null = null;
 let spawnInFlight = false;
 const deferredFrames: KeeperClientFrame[] = [];
 
-function dockerContextHost(env: Record<string, string | undefined>): string | null {
-  try {
-    const out = execFileSync('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {
-      env: env as NodeJS.ProcessEnv,
-      encoding: 'utf8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return out || null;
-  } catch {
-    return null; // no docker CLI / unreadable config: fall back to the default socket
-  }
+/** ASYNC on purpose: a sync exec would stop this keeper answering probes (the app's helloAck waits 3 s) while the CLI runs. */
+function dockerContextHost(env: Record<string, string | undefined>): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'docker',
+      ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'],
+      { env: env as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 3000 },
+      (err, stdout) => resolve(err ? null : String(stdout).trim() || null), // no docker CLI / unreadable config: default socket
+    );
+  });
 }
 
 function isSocketPath(p: string): boolean {
@@ -251,13 +249,13 @@ function isSocketPath(p: string): boolean {
  *  UNTOUCHED when the relay cannot start (the member then uses the real socket; its containers count as unattributed). */
 async function withDockerRelay(runId: string, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
   try {
-    const up = resolveRelayUpstream(env, { dockerContextHost, isSocket: isSocketPath });
+    const up = await resolveRelayUpstream(env, { dockerContextHost, isSocket: isSocketPath });
     if (!up.ok) {
       klog(`docker relay disabled: ${up.reason}`);
       return env;
     }
     const relaySock = relaySocketPath(sockPath);
-    if (Buffer.byteLength(relaySock) > MAX_SOCKET_PATH_BYTES) {
+    if (Buffer.byteLength(relaySock) > maxSocketPathBytes()) {
       klog(`docker relay disabled: socket path too long (${relaySock})`);
       return env;
     }
