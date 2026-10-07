@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { OrchestraAPI } from '../shared/ipc';
 import type { HumanGateView } from '../shared/human-gates';
 import type { PauseUiOverview } from '../shared/pause-ui';
+import type { MemoryBannerState } from '../shared/memory-banner';
 
 const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
@@ -43,6 +44,13 @@ const api: OrchestraAPI = {
 
   // #257 — fleet Pause UI
   pauseOverview: () => ipcRenderer.invoke('pause:overview'),
+  // #289 — the memory banner (D5 D-pick3): the pull for the initial paint + the push on change
+  memoryBanner: () => ipcRenderer.invoke('memoryGuard:banner'),
+  onMemoryBanner: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload as MemoryBannerState);
+    ipcRenderer.on('memoryGuard:bannerUpdate', listener);
+    return () => ipcRenderer.off('memoryGuard:bannerUpdate', listener);
+  },
   onPauseOverviewUpdate: (cb) => {
     const listener = (_e: unknown, payload: unknown) => cb(payload as PauseUiOverview);
     ipcRenderer.on('pause:update', listener);

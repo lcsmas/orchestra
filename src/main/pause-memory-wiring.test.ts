@@ -23,18 +23,16 @@ test('WIRING host (FI-2.5): SUBSCRIBE to the guard FIRST, then reconcile from th
   const reconcile = body.indexOf('reconcileMemoryPauseNow();');
   const tick = body.indexOf('setInterval(');
   assert.ok(sub > 0 && reconcile > sub && tick > reconcile, 'subscribe, then reconcile, then the tick');
-  assert.match(body, /if \(transition\.kind !== 'pause_due' && transition\.kind !== 'pause_liftable'\) return;/, 'keys on pause_due / pause_liftable only (FI-2.4)');
-  assert.match(body, /transition\.kind === 'pause_due' \? 'due' : 'liftable'/);
+  assert.match(body, /unsubscribe = subscribeMemoryGuard\(\(e\) => void handleMemoryGuardEdge\(realDeps, ledger, e\)\);/, 'every edge goes through the Electron-free handler (pause_due / pause_liftable only — FI-2.4 — pinned by behaviour in pause-memory.test.ts)');
   assert.match(s, /applyMemoryPause\(realDeps, viewOfSnapshot\(getMemoryGuardSnapshot\(\)\), ledger, 'level'\)/);
   assert.match(s, /timer\.unref\?\.\(\);/, 'the tick never keeps the process alive');
 });
 
-test('WIRING host: the real store, bus, beginReprise and the clock; an unloaded store reads UNKNOWN (storeReady); the snapshot view carries the thresholds in force', () => {
+test('WIRING host: the real store, bus, beginReprise and the clock; an unloaded store reads UNKNOWN (storeReady)', () => {
   const s = read('pause-memory-host.ts');
   assert.match(s, /getWorkspace: \(id\) => store\.getWorkspace\(id\),/);
   assert.match(s, /storeReady: \(\) => store\.loadedFromDisk,/);
   assert.match(s, /beginReprise,/);
-  assert.match(s, /admissionBytes: s\.admissionBytes, criticalBytes: s\.criticalBytes/);
 });
 
 test('WIRING index.ts: the memory Pause starts AFTER the guard AND after `buildPauseTrapDeps()` registered the live workspace tree (review m3: a boot-time reconcile before it lifts on the bus run tree alone), and stops BEFORE the guard at shutdown', () => {

@@ -6,8 +6,7 @@ import { getBus } from './bus.ts';
 import { beginReprise } from './bus-pause.ts';
 import { log } from './logger.ts';
 import { getMemoryGuardSnapshot, subscribeMemoryGuard } from './memory-guard.ts';
-import { applyMemoryPause, newMemoryPauseLedger, type MemoryGuardView, type MemoryPauseApplied, type MemoryPauseDeps } from './pause-memory.ts';
-import type { MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { applyMemoryPause, handleMemoryGuardEdge, newMemoryPauseLedger, viewOfSnapshot, type MemoryPauseApplied, type MemoryPauseDeps } from './pause-memory.ts';
 
 /** The level read: re-checks the persisted pauses against the snapshot — a lift/impose that had to wait (trap pending, ancestor paused, a hold, a throw) is retried, and an app restart (the in-memory guard
  *  state is gone, the persisted Pause is not) is reconciled. The guard itself samples every 10 s below the Admission threshold, 60 s above. */
@@ -32,10 +31,6 @@ export function memoryPauseDeps(): MemoryPauseDeps {
   return realDeps;
 }
 
-export function viewOfSnapshot(s: MemoryGuardSnapshot): MemoryGuardView {
-  return { measured: s.measured, availBytes: s.availBytes, pause: s.pause, pauseCycle: s.pauseCycle, episode: s.episode, admissionBytes: s.admissionBytes, criticalBytes: s.criticalBytes };
-}
-
 /** One LEVEL read of the guard's snapshot (the tick, the boot reconcile, rigs). */
 export function reconcileMemoryPauseNow(): MemoryPauseApplied {
   try {
@@ -49,14 +44,7 @@ export function reconcileMemoryPauseNow(): MemoryPauseApplied {
 /** Start (idempotent): SUBSCRIBE to the guard's edges FIRST, then reconcile from the snapshot (an edge between a snapshot and a later subscribe would be lost — FI-2.5), then the level tick. */
 export function startMemoryPause(): void {
   if (unsubscribe) return;
-  unsubscribe = subscribeMemoryGuard(({ transition, snapshot }) => {
-    if (transition.kind !== 'pause_due' && transition.kind !== 'pause_liftable') return;
-    try {
-      applyMemoryPause(realDeps, viewOfSnapshot(snapshot), ledger, transition.kind === 'pause_due' ? 'due' : 'liftable');
-    } catch (e) {
-      log.warn(`memory-pause: handling ${transition.kind} failed — retried at the next tick`, e);
-    }
-  });
+  unsubscribe = subscribeMemoryGuard((e) => void handleMemoryGuardEdge(realDeps, ledger, e));
   reconcileMemoryPauseNow();
   timer = setInterval(() => void reconcileMemoryPauseNow(), MEMORY_PAUSE_TICK_MS);
   timer.unref?.();

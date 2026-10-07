@@ -22,9 +22,9 @@ import {
   type AutoWorkspace,
   type PauseAutoDeps,
 } from './pause-auto.ts';
-import { parseSwitches } from '../shared/bus-switches.ts';
+import { parseSwitches, type BusSwitches } from '../shared/bus-switches.ts';
 import { HUMAN_GATE_RECIPIENT } from '../shared/human-gates.ts';
-import { formatGb } from '../shared/memory-guard.ts';
+import { formatGb, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
 import { heldAddresseesKey, parseAutoHeld, parsePauseAuto, type AutoHeld } from '../shared/pause-auto.ts';
 import {
   MEMORY_PAUSE_BY,
@@ -55,6 +55,11 @@ export interface MemoryGuardView {
   criticalBytes: number;
 }
 
+/** The view the memory Pause keys on, from the guard's snapshot (FI-2): every field is load-bearing — `pauseCycle` keys the ledger, `measured` / `availBytes` gate every decision, `pause` is the level read's `impose`. */
+export function viewOfSnapshot(s: MemoryGuardSnapshot): MemoryGuardView {
+  return { measured: s.measured, availBytes: s.availBytes, pause: s.pause, pauseCycle: s.pauseCycle, episode: s.episode, admissionBytes: s.admissionBytes, criticalBytes: s.criticalBytes };
+}
+
 /** In-memory bookkeeping: runId → the `pauseCycle` this host already evaluated it for. A new cycle (every `pause_due` edge) evaluates every candidate; a re-read inside the same cycle skips a
  *  run it already handled, so a human who lifted the memory Pause by hand while memory stays critical is not fought every tick. A restart forgets it (the next read re-imposes). */
 export interface MemoryPauseLedger {
@@ -66,10 +71,8 @@ const mem = (bytes: number): string => `MemAvailable ${formatGb(bytes, 2)}`;
 
 // ─── which runs ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Runs whose FROZEN `pause` switch is ON that carry a live LOCAL fleet and have NO such run above them — the topmost run of each tree: its Pause covers every run below (a child waits for
- *  every ancestor). A fleet = the run's anchor workspace is live (exists, not archived, not sandbox-hosted) AND at least one live local workspace sits BELOW it (a lone idle coordinator frees
- *  nothing and would be woken for nothing at the Reprise). A `pause`-OFF run is never a candidate, whatever sits above or below it. */
-export function memoryPauseCandidates(db: BusDb, deps: Pick<MemoryPauseDeps, 'getWorkspace' | 'listWorkspaces'>): string[] {
+/** Every run that carries a live LOCAL FLEET, with its frozen switches: its anchor workspace is live (exists, not archived, not sandbox-hosted) AND at least one live local workspace sits BELOW it. */
+export function liveFleetRuns(db: BusDb, deps: Pick<MemoryPauseDeps, 'getWorkspace' | 'listWorkspaces'>): Array<{ id: string; flags: BusSwitches }> {
   const rows = db.prepare('SELECT r.id AS id, f.flags AS flags_json FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id ORDER BY r.created_at, r.id').all() as Array<{ id: string; flags_json: string | null }>;
   const local = (w: { archived?: boolean; host?: { kind: string } } | undefined): boolean => !!w && !w.archived && w.host?.kind !== 'sandbox';
   // every id that has at least one live local workspace below it (the live parent chain of each live local workspace, minus itself)
@@ -78,12 +81,19 @@ export function memoryPauseCandidates(db: BusDb, deps: Pick<MemoryPauseDeps, 'ge
     if (!local(w)) continue;
     for (const id of liveChain(deps, w).ids.slice(1)) hasMembers.add(id);
   }
-  const fleet = rows
-    .filter((r) => parseSwitches(r.flags_json ?? null).pause === true)
-    .map((r) => String(r.id))
-    .filter((id) => local(deps.getWorkspace(id)) && hasMembers.has(id));
-  const set = new Set(fleet);
-  return fleet.filter((id) => !ancestorRunIds(db, deps, id).some((a) => set.has(a)));
+  return rows.filter((r) => local(deps.getWorkspace(String(r.id))) && hasMembers.has(String(r.id))).map((r) => ({ id: String(r.id), flags: parseSwitches(r.flags_json ?? null) }));
+}
+
+/** The TOPMOST of `ids`: those with no run of `ids` above them (the live workspace chain first, the bus run tree only when it is unknown or dangles). */
+export function topmostRunIds(db: BusDb, deps: Pick<MemoryPauseDeps, 'getWorkspace'>, ids: readonly string[]): string[] {
+  const set = new Set(ids);
+  return ids.filter((id) => !ancestorRunIds(db, deps, id).some((a) => set.has(a)));
+}
+
+/** Runs whose FROZEN `pause` switch is ON that carry a FLEET ({@link liveFleetRuns}) and have NO such run above them — the topmost run of each tree: its Pause covers every run below (a child waits for
+ *  every ancestor). A lone idle coordinator frees nothing and would be woken for nothing at the Reprise. A `pause`-OFF run is never a candidate, whatever sits above or below it. */
+export function memoryPauseCandidates(db: BusDb, deps: Pick<MemoryPauseDeps, 'getWorkspace' | 'listWorkspaces'>): string[] {
+  return topmostRunIds(db, deps, liveFleetRuns(db, deps).filter((r) => r.flags.pause === true).map((r) => r.id));
 }
 
 // ─── impose ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -322,4 +332,16 @@ export function applyMemoryPause(deps: MemoryPauseDeps, view: MemoryGuardView, l
   }
   if (want === 'lift') return { want, imposed: [], lifted: liftMemoryPause(deps, avail) };
   return { ...none, want };
+}
+
+/** What the host does with one guard EDGE (FI-2.4: key on `pause_due` / `pause_liftable` only — an Admission edge is nothing of the memory Pause's; the snapshot is the state AFTER the sample). A throw is logged,
+ *  never propagated into the guard's drain: the level read at the next tick retries. */
+export function handleMemoryGuardEdge(deps: MemoryPauseDeps, ledger: MemoryPauseLedger, e: { transition: { kind: string }; snapshot: MemoryGuardSnapshot }): MemoryPauseApplied | null {
+  if (e.transition.kind !== 'pause_due' && e.transition.kind !== 'pause_liftable') return null;
+  try {
+    return applyMemoryPause(deps, viewOfSnapshot(e.snapshot), ledger, e.transition.kind === 'pause_due' ? 'due' : 'liftable');
+  } catch (err) {
+    deps.log.warn(`memory-pause: handling ${e.transition.kind} failed — retried at the next tick`, err);
+    return null;
+  }
 }
