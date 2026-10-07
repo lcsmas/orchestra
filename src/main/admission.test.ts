@@ -314,10 +314,12 @@ test('retry_rearms_after_a_throwing_pass: the spent retry handle is cleared when
   const t = w.timers[w.timers.length - 1];
   assert.ok(t, 'armed by the hold');
   w.sampleThrows = true; // the NEXT sample (inside the retry's pass) throws
+  w.timers.splice(w.timers.indexOf(t), 1); // a timer that FIRED is no longer pending (the fake never removed it: `timers.length > 0` was vacuously true — mutant A21 survived on it)
+  assert.equal(w.timers.length, 0, 'control: nothing pending while the retry fires');
   t.fn();
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.ok(w.warns.some((l) => /release pass threw/.test(l)));
-  assert.ok(w.timers.length > 0, 'a new retry is armed — not stranded');
+  assert.equal(w.timers.length, 1, 'exactly ONE new retry is armed — not stranded');
   assert.deepEqual(a.list().map((e) => e.wsId), ['a'], 'the entry was not lost');
   await a.kick();
   assert.deepEqual(w.ran, ['a']);
