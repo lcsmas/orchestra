@@ -14,6 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createDockerRig, sleep } from './lib/docker-rig.mjs';
 
@@ -24,7 +25,8 @@ const ARM = process.argv[2] ?? '';
 const ARMS = {
   pause_and_reprise: { mustFailOnMaster: true }, // Pause dure → DB container stopped, in the Bilan, volume intact, unattributed untouched; Reprise → restarted, data readable
   removed_by_hand: { mustFailOnMaster: true }, // a container removed by hand during the Pause does not break the Reprise (gone, reported, skipped)
-  docker_unavailable: { mustFailOnMaster: false }, // the app cannot reach Docker: the trap still completes, the error is recorded, nothing is touched
+  docker_absent: { mustFailOnMaster: false }, // no Docker socket at all (not installed / not started): the trap completes, NOTHING is recorded, nothing is touched — no alarm on a Docker-less host
+  docker_refused: { mustFailOnMaster: false }, // a socket exists but refuses connections: the trap still completes, the error IS recorded, nothing is touched
   autoremove_and_failed: { mustFailOnMaster: true }, // a --rm container is skipped (a stop would delete it); a stop that fails is recorded and does not block
   app_resolution_moved: { mustFailOnMaster: true }, // the app's OWN docker resolution is dead/moved: Pause still stops, Reprise still restarts, on the daemon the member's relay stamped on (the keeper's published upstream)
 };
@@ -189,13 +191,27 @@ const runArm = {
     check('the human\'s container is untouched', stateOf(`${PFX}-human`) === 'true');
   },
 
-  async docker_unavailable() {
+  async docker_absent() {
     await setup();
-    // no published upstream (a keeper that never published, or died): the member falls back to the app's own client — which cannot reach Docker
+    // no published upstream (a keeper that never published, or died): the member falls back to the app's own client — whose socket does not exist
     fs.rmSync(path.join(HOME, 'keepers', `${WS}.docker.upstream`), { force: true });
-    const dead = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: path.join(BASE, 'no-daemon.sock'), HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
-    const { carrier, sum } = await pauseDure(dead);
-    check('the trap COMPLETES although Docker is unreachable', sum.done === true, JSON.stringify(sum));
+    const none = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: path.join(BASE, 'no-daemon.sock'), HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
+    const { carrier, sum } = await pauseDure(none);
+    check('the trap COMPLETES although there is no Docker socket', sum.done === true, JSON.stringify(sum));
+    check('NOTHING is recorded for the member (no error, no containers key — no alarm on a Docker-less host)', bilanContainers(carrier) === undefined, JSON.stringify(bilanContainers(carrier)));
+    check('nothing was stopped', stateOf(`${PFX}-db`) === 'true' && stateOf(`${PFX}-human`) === 'true');
+  },
+
+  async docker_refused() {
+    await setup();
+    fs.rmSync(path.join(HOME, 'keepers', `${WS}.docker.upstream`), { force: true });
+    // a STALE socket file: it exists (so the endpoint is believed) but nobody listens — ECONNREFUSED
+    const stale = path.join(BASE, 'stale.sock');
+    spawnSync(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(stale)}, () => process.kill(process.pid, 'SIGKILL'))`], { timeout: 10000 });
+    check('premise: a stale socket file exists', fs.existsSync(stale));
+    const refused = createDockerApi({ env: { ORCHESTRA_DOCKER_SOCKET: stale, HOME, PATH: process.env.PATH }, deps: realUpstreamDeps });
+    const { carrier, sum } = await pauseDure(refused);
+    check('the trap COMPLETES although Docker refuses connections', sum.done === true, JSON.stringify(sum));
     check('the Bilan records the error, not a stopped container', /^list:/.test(bilanContainers(carrier)?.error ?? '') && (bilanContainers(carrier)?.stopped?.length ?? 0) === 0, JSON.stringify(bilanContainers(carrier)));
     check('nothing was stopped', stateOf(`${PFX}-db`) === 'true' && stateOf(`${PFX}-human`) === 'true');
   },

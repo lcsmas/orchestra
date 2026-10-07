@@ -5,7 +5,7 @@
 set -u
 cd "$(dirname "$0")/.."
 if ! awk '/MemAvailable/{exit !($2 > 6*1048576)}' /proc/meminfo; then echo "MemAvailable <= 6 GB: not starting the heavy rig" >&2; exit 3; fi
-ARMS=${ARMS:-"pause_and_reprise removed_by_hand docker_unavailable autoremove_and_failed app_resolution_moved"}
+ARMS=${ARMS:-"pause_and_reprise removed_by_hand docker_absent docker_refused autoremove_and_failed app_resolution_moved"}
 RC=0
 for arm in $ARMS; do
   line=$(timeout 600 node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-pause-containers.mjs "$arm" 2>/dev/null | tail -1)
