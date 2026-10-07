@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHeldStartsLine, heldPhrase, isFleetMember, isHumanOrigin, mustHoldStart, nextToRelease, planRelease, type HeldStart } from './admission.ts';
+import { formatHeldStartsLine, heldPhrase, isFleetMember, isHumanOrigin, releaseFailureBody, mustHoldStart, nextToRelease, planRelease, type HeldStart } from './admission.ts';
 
 const H = (wsId: string, seq: number, coordinator = false, kind: HeldStart['kind'] = 'spawn'): HeldStart => ({ wsId, kind, seq, since: 1_000 + seq, coordinator });
 
@@ -66,4 +66,11 @@ test('held_phrase / held_starts_line: since-when is in the OPS-facing text; the 
     { wsId: 'c', label: 'sub-ops', kind: 'restart', since: Date.UTC(2026, 9, 7, 14, 1, 0), coordinator: true, seq: 2 },
   ]) as string;
   assert.match(line, /^held starts: 2 held for memory, release order — sub-ops \(restart, coordinator, since 2026-10-07T14:01:00\.000Z\) → worker-a \(spawn, since 2026-10-07T14:00:00\.000Z\)$/);
+});
+
+test('release_failure_body: names the kind, the member, since-when, the reason and the way out', () => {
+  assert.equal(
+    releaseFailureBody('restart', 'ws-m1', Date.UTC(2026, 9, 7, 14, 2, 11), 'the mid-turn guard refused'),
+    'Admission: the restart of ws-m1 that was HELD for memory since 2026-10-07T14:02:11.000Z was released but did NOT start — the mid-turn guard refused. It is not queued any more: retry it with `orchestra restart ws-m1`.',
+  );
 });

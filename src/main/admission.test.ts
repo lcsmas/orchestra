@@ -375,3 +375,158 @@ test('facade: the process-wide gate + the guard edge that reopens Admission trig
   guard.stop();
   __rebuildMemoryGuardForTests();
 });
+
+// ─── G3 review fix round (F1 F2 F3 F4) ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The reviewer's scenario: recovery is seen FIRST by the release pass's OWN fresh sample (no explicit guard.sampleNow outside the pass). */
+async function ownSampleScenario(nEntries: number) {
+  const w = world();
+  setMemoryGuardSettingsReader(() => DEFAULT_MEMORY_GUARD_SETTINGS);
+  let mem = 4;
+  const guard = __rebuildMemoryGuardForTests({ schedule: () => ({}), cancel: () => {}, info: () => {}, warn: () => {} }, () => gb(mem));
+  guard.start();
+  __rebuildAdmissionForTests({ ...w.deps, sample: () => guard.sampleNow(), sleep: async () => {} });
+  startAdmission();
+  await new Promise((r) => setImmediate(r));
+  let inflight = 0, maxInflight = 0;
+  const started: string[] = [];
+  const resolvers: Array<() => void> = [];
+  for (let i = 1; i <= nEntries; i++) {
+    const id = `m${i}`;
+    const r = admissionGate(args(w, id, { run: () => { started.push(id); inflight++; maxInflight = Math.max(maxInflight, inflight); return new Promise((res) => resolvers.push(() => { inflight--; res({ ok: true }); })); } }));
+    assert.equal(r.held, true);
+  }
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(w.timers.length, 1, 'the retry is armed');
+  mem = 12; // recovered — but NO guard sample has run: whoever samples next is the first to see it
+  w.timers[0].fn(); // the 10 s retry fires: the pass's own sample emits admission_reopened → the subscriber's kick() re-enters
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  const snapshot = { started: [...started], maxInflight };
+  while (resolvers.length) { resolvers.shift()!(); for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); }
+  const finalStarted = [...started];
+  stopAdmission();
+  guard.stop();
+  __rebuildMemoryGuardForTests();
+  return { ...snapshot, finalStarted };
+}
+
+test('own_sample_recovery_releases_one_at_a_time: the pass\'s OWN sample is the first to see the recovery → ONE release per fresh reading, never two concurrent passes (F1)', async () => {
+  const one = await ownSampleScenario(1);
+  assert.deepEqual(one.started, ['m1'], 'control: a single entry is released once');
+  const r = await ownSampleScenario(3);
+  assert.deepEqual(r.started, ['m1'], 'only the FIRST is started until it settles (it was [m1, m2] with two concurrent passes)');
+  assert.equal(r.maxInflight, 1);
+  assert.deepEqual(r.finalStarted, ['m1', 'm2', 'm3'], 'and they all go out in order afterwards');
+});
+
+test('pause_refused_does_not_block_the_line: a Pause-refused entry at the head keeps its slot but the entries behind it (any run) and newcomers still start (F2)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let xPaused = true;
+  const xRuns: string[] = [];
+  a.gate(args(w, 'X1', { kind: 'restart', run: async () => { xRuns.push('X1'); return xPaused ? { ok: false, error: 'run en pause' } : { ok: true }; }, retryLater: () => xPaused }));
+  a.gate(args(w, 'Y1'));
+  w.mem = 12;
+  await a.kick();
+  assert.deepEqual(w.ran, ['Y1'], 'Y1 (another run) started although X1 is refused');
+  assert.deepEqual(a.list().map((e) => e.wsId), ['X1'], 'X1 kept its slot');
+  assert.deepEqual(xRuns, ['X1'], 'tried once in this pass (not in a tight loop)');
+  assert.ok(w.timers.some((t) => t.ms === 10_000), 'a retry is armed for it');
+  // a brand-new automatic start at 12 GB while the refused one still sits in the queue: it joins the line AND goes out
+  assert.deepEqual(a.gate(args(w, 'Z1')).held, true);
+  for (let i = 0; i < 20 && !w.ran.includes('Z1'); i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(w.ran, ['Y1', 'Z1']);
+  const triesWhilePaused = xRuns.length; // each pass tries the refused one ONCE (the retry + the newcomer's pass) — never a tight loop
+  assert.ok(triesWhilePaused >= 1 && triesWhilePaused <= 3, `tries while paused: ${triesWhilePaused}`);
+  xPaused = false;
+  await a.kick();
+  assert.equal(xRuns.length, triesWhilePaused + 1, 'after the Pause lifts it is released from its own slot, once');
+  assert.deepEqual(w.ran, ['Y1', 'Z1'], 'X1\'s run records in xRuns, not in ran');
+  assert.deepEqual(a.list(), []);
+});
+
+test('pause_refused_coordinator_does_not_block_workers: even a refused COORDINATOR (released first) lets the workers behind it go', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'ops-sub', { coordinator: true, run: async () => ({ ok: false, error: 'run en pause' }), retryLater: () => true }));
+  a.gate(args(w, 'worker'));
+  w.mem = 12;
+  await a.kick();
+  assert.deepEqual(w.ran, ['worker']);
+  assert.deepEqual(a.list().map((e) => e.wsId), ['ops-sub']);
+});
+
+test('failed_release_is_reported_to_the_coordinator: a release that FAILS (or times out) tells the coordinator through `report`, once, with the reason (F4)', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const told: string[] = [];
+  a.gate(args(w, 'bad', { run: async () => ({ ok: false, error: 'mid-turn refusal' }), report: (t) => told.push(t) }));
+  a.gate(args(w, 'ok1'));
+  w.mem = 9;
+  await a.kick();
+  assert.equal(told.length, 1);
+  assert.match(told[0], /the spawn of bad that was HELD for memory since .* was released but did NOT start — mid-turn refusal\. It is not queued any more: retry it with `orchestra restart bad`\./);
+  assert.deepEqual(w.ran, ['ok1'], 'the line moved on');
+  // a plain success / a Pause-refusal (kept queued) are NOT reported
+  const told2: string[] = [];
+  w.mem = 4; // held again (a gate at plentiful memory passes straight through — and the checks below would be vacuous)
+  a.gate(args(w, 'fine', { report: (t) => told2.push(t) }));
+  assert.equal(a.list().length, 1, 'control: `fine` is really queued');
+  a.gate(args(w, 'paused', { run: async () => ({ ok: false, error: 'run en pause' }), retryLater: () => true, report: (t) => told2.push(t) }));
+  assert.equal(a.list().length, 2, 'control: `paused` is really queued too');
+  w.mem = 9;
+  await a.kick();
+  assert.deepEqual(told2, []);
+  assert.deepEqual(a.list().map((e) => e.wsId), ['paused'], '`fine` ran, `paused` kept its slot');
+  // a report that throws never breaks the line
+  w.mem = 4;
+  a.gate(args(w, 'bad2', { run: async () => ({ ok: false, error: 'x' }), report: () => { throw new Error('bus down'); } }));
+  a.gate(args(w, 'after'));
+  w.mem = 9;
+  await a.kick();
+  assert.ok(w.ran.includes('after'));
+  assert.ok(w.warns.some((l) => /could not report the failed release of bad2/.test(l)));
+});
+
+test('timed_out_release_is_reported: a hung start that never settles tells the coordinator too', async () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  const told: string[] = [];
+  a.gate(args(w, 'hung', { run: () => new Promise<void>(() => {}), report: (t) => told.push(t) }));
+  w.mem = 9;
+  const pass = a.kick();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  w.timers.find((t) => t.ms === 90_000)!.fn();
+  await pass;
+  assert.equal(told.length, 1);
+  assert.match(told[0], /did not settle within 90 s/);
+});
+
+test('drop_forgets_a_deleted_workspace: drop() removes it from the list, the marker and the "non-empty line" rule (F4)', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  a.gate(args(w, 'gone'));
+  a.gate(args(w, 'stays'));
+  assert.equal(a.drop('gone'), true);
+  assert.equal(a.drop('gone'), false);
+  assert.deepEqual(a.list().map((e) => e.wsId), ['stays']);
+  assert.equal(a.heldFor('gone'), null);
+  a.drop('stays');
+  assert.equal(w.timers.length, 0, 'an empty queue disarms the retry');
+  w.mem = 12;
+  assert.deepEqual(a.gate(args(w, 'new')), { held: false }, 'no phantom line: memory is fine and nobody is queued');
+});
+
+test('superseded_entry_is_pruned_at_read_time: a member a person started meanwhile stops showing as held (peers / bus-status) without waiting for a release pass (F4)', () => {
+  const w = world();
+  const a = createAdmission(w.deps);
+  let owed = true;
+  a.gate(args(w, 'm1', { stillOwed: () => owed }));
+  assert.ok(a.heldFor('m1'));
+  owed = false; // a composer start (not through the two gates) made the restart redundant
+  assert.equal(a.heldFor('m1'), null);
+  assert.deepEqual(a.list(), []);
+  assert.ok(w.infos.some((l) => /dropped held spawn of m1 \(no longer wanted\)/.test(l)));
+  w.mem = 12;
+  assert.deepEqual(a.gate(args(w, 'new')), { held: false }, 'and it no longer makes a newcomer join a line');
+});

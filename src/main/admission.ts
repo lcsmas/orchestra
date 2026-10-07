@@ -8,7 +8,7 @@
 import { scoped } from './logger.ts';
 import { sampleMemoryGuardNow, subscribeMemoryGuard } from './memory-guard.ts';
 import { formatGb, isAdmissionHolding, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
-import { isHumanOrigin, mustHoldStart, planRelease, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
+import { isHumanOrigin, mustHoldStart, planRelease, releaseFailureBody, type HeldStart, type HeldStartKind, type StartOrigin } from '../shared/admission.ts';
 
 const alog = scoped('admission');
 
@@ -17,6 +17,8 @@ interface Entry extends HeldStart {
   run: () => Promise<unknown>;
   stillOwed: () => boolean;
   retryLater?: (result: unknown) => boolean;
+  /** Tell the coordinator (bus) that a released start did not start. Best-effort; never throws into the release loop. */
+  report?: (text: string) => void;
 }
 
 export interface AdmissionDeps {
@@ -49,6 +51,8 @@ export interface GateArgs {
   coordinator: boolean;
   /** Called with a FAILED release result: true = the failure is "not now" (a fleet Pause is in force) — keep the entry queued instead of losing it. */
   retryLater?: (result: unknown) => boolean;
+  /** Tell the coordinator (bus) that a released start did not start (review F4). Best-effort; the loop never lets it throw. */
+  report?: (text: string) => void;
 }
 export type GateResult = { held: false } | { held: true; since: number; kind: HeldStartKind };
 
@@ -56,6 +60,8 @@ export interface Admission {
   gate(args: GateArgs): GateResult;
   heldFor(wsId: string): { kind: HeldStartKind; since: number } | null;
   list(): HeldStart[];
+  /** Forget a held start (the workspace was deleted): it must not linger in `held starts:` nor keep the line "non-empty". */
+  drop(wsId: string): boolean;
   /** Try to release now (single-flight). Resolves when this pass is done. */
   kick(): Promise<void>;
   stop(): void;
@@ -139,13 +145,18 @@ export function createAdmission(deps: AdmissionDeps): Admission {
   }
 
   async function pass(): Promise<void> {
+    /** Entries a fleet Pause REFUSED during THIS pass: they keep their slot but never block the line — everything behind them (any run) still goes
+     *  out; the next retry tries them again (review F2: a long manual / usage-limit / memory Pause on one run used to freeze every other run). */
+    const deferred = new Set<string>();
     for (;;) {
-      if (queue.size === 0) {
+      const waiting = [...queue.values()].filter((e) => !deferred.has(e.wsId));
+      if (waiting.length === 0) {
         waitLogged = null;
-        return disarm();
+        if (queue.size === 0) return disarm();
+        return arm(); // only Pause-refused entries are left: try them again at the next retry
       }
       const snap = deps.sample();
-      const step = planRelease([...queue.values()], snap);
+      const step = planRelease(waiting, snap);
       if (step.action === 'wait') {
         if (waitLogged !== step.reason) {
           deps.info(`release waits (${step.reason}) — ${mem(snap)}; ${queue.size} held start(s) stay queued`);
@@ -171,16 +182,40 @@ export function createAdmission(deps: AdmissionDeps): Admission {
         releasing.delete(entry.wsId);
       }
       if (outcome === TIMED_OUT) {
-        deps.warn(`released ${entry.kind} of ${entry.wsId} did not settle within ${Math.round(deps.runTimeoutMs / 1000)} s — the line moves on (it may still finish)`);
+        const why = `did not settle within ${Math.round(deps.runTimeoutMs / 1000)} s`;
+        deps.warn(`released ${entry.kind} of ${entry.wsId} ${why} — the line moves on (it may still finish)`);
+        tell(entry, why);
       } else if (isFailure(outcome)) {
         if (entry.retryLater?.(outcome)) {
-          queue.set(entry.wsId, entry); // refused for now (a Pause is in force): the SAME slot, not a lost start
-          deps.info(`released ${entry.kind} of ${entry.wsId} was refused for now (${failureText(outcome)}) — kept queued`);
-          return arm();
+          queue.set(entry.wsId, entry); // refused for now (a Pause is in force): the SAME slot, not a lost start — and NOT a wall for the others
+          deferred.add(entry.wsId);
+          deps.info(`released ${entry.kind} of ${entry.wsId} was refused for now (${failureText(outcome)}) — kept queued, the line goes on`);
+          continue; // nothing started: no settle pause
         }
         deps.warn(`released ${entry.kind} of ${entry.wsId} FAILED: ${failureText(outcome)}`);
+        tell(entry, failureText(outcome));
       }
       if (queue.size > 0) await deps.sleep(deps.settleMs);
+    }
+  }
+
+  /** Forget held entries that are no longer wanted (the member was started by a person, archived…) at READ time, so `peers` / `bus-status` never keep
+   *  saying "held" for a member that is running — a release pass may be hours away (review F4). A running release is not in the queue, so untouched. */
+  function pruneUnowed(): void {
+    for (const e of [...queue.values()]) {
+      if (stillOwedSafe(e)) continue;
+      queue.delete(e.wsId);
+      deps.info(`dropped held ${e.kind} of ${e.wsId} (no longer wanted) — ${queue.size} still held`);
+    }
+    if (queue.size === 0) disarm();
+  }
+
+  /** Tell the coordinator a released start did not start. Never throws. */
+  function tell(entry: Entry, reason: string): void {
+    try {
+      entry.report?.(releaseFailureBody(entry.kind, entry.wsId, entry.since, reason));
+    } catch (e) {
+      deps.warn(`could not report the failed release of ${entry.wsId} to its coordinator`, e);
     }
   }
 
@@ -191,12 +226,15 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       rerun = true;
       return draining;
     }
-    draining = (async () => {
-      do {
-        rerun = false;
-        await pass();
-      } while (rerun);
-    })()
+    // The body starts in a MICROTASK, after `draining` is assigned: a pass's own fresh sample can emit the guard's reopen edge synchronously, whose
+    // subscriber calls `kick()` — with `draining` still null that started a 2nd concurrent pass (two releases off one reading, review F1).
+    draining = Promise.resolve()
+      .then(async () => {
+        do {
+          rerun = false;
+          await pass();
+        } while (rerun);
+      })
       .catch((e) => deps.warn('release pass threw', e))
       .finally(() => {
         draining = null;
@@ -207,6 +245,7 @@ export function createAdmission(deps: AdmissionDeps): Admission {
 
   return {
     gate(a) {
+      pruneUnowed(); // an entry a person already superseded must neither make a newcomer "join the line" nor swallow a repeat request
       // A release of this very workspace is running right now: report it as held (it IS starting) instead of starting it a second time.
       const inFlight = releasing.get(a.wsId);
       if (inFlight && a.origin === 'auto') return { held: true, since: inFlight.since, kind: inFlight.kind };
@@ -222,8 +261,9 @@ export function createAdmission(deps: AdmissionDeps): Admission {
         entry.run = a.run; // the newest request wins; the original arrival (since, seq) is kept
         entry.stillOwed = a.stillOwed;
         entry.retryLater = a.retryLater;
+        entry.report = a.report;
       } else {
-        entry = { wsId: a.wsId, kind: a.kind, seq: ++seq, since: deps.now(), coordinator: a.coordinator, run: a.run, stillOwed: a.stillOwed, retryLater: a.retryLater };
+        entry = { wsId: a.wsId, kind: a.kind, seq: ++seq, since: deps.now(), coordinator: a.coordinator, run: a.run, stillOwed: a.stillOwed, retryLater: a.retryLater, report: a.report };
         queue.set(a.wsId, entry);
         deps.warn(`HELD ${a.kind} of ${a.wsId}${a.coordinator ? ' (coordinator)' : ''} — ${mem(snap)}, Admission ${holding ? 'held' : 'releasing in order'}; ${queue.size} held start(s)`);
       }
@@ -232,10 +272,18 @@ export function createAdmission(deps: AdmissionDeps): Admission {
       return { held: true, since: entry.since, kind: entry.kind };
     },
     heldFor(wsId) {
+      pruneUnowed();
       const e = queue.get(wsId);
       return e ? { kind: e.kind, since: e.since } : null;
     },
+    drop(wsId) {
+      const had = queue.delete(wsId);
+      if (had) deps.info(`dropped held start of ${wsId} (workspace deleted) — ${queue.size} still held`);
+      if (queue.size === 0) disarm();
+      return had;
+    },
     list() {
+      pruneUnowed();
       return [...queue.values()].map(({ wsId, kind, seq: s, since, coordinator }) => ({ wsId, kind, seq: s, since, coordinator }));
     },
     kick,
@@ -260,6 +308,10 @@ export function heldStartFor(wsId: string): { kind: HeldStartKind; since: number
 }
 export function listHeldStarts(): HeldStart[] {
   return singleton.list();
+}
+/** The workspace was deleted: forget its held start (review F4). */
+export function dropHeldStart(wsId: string): boolean {
+  return singleton.drop(wsId);
 }
 /** Release trigger: the guard reopening Admission (memory back above threshold + margin) tries to release at once. */
 export function startAdmission(): void {

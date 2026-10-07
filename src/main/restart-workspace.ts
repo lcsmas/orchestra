@@ -40,6 +40,7 @@ import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { admissionGate } from './admission.ts';
+import { reportAdmissionFailure } from './workspaces';
 import { heldPhrase } from '../shared/admission.ts';
 import { canOrchestrate } from '../shared/types';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
@@ -87,6 +88,7 @@ export async function dispatchRestartRequest(input: {
   // #286 Admission: under low memory an AUTOMATIC restart of a fleet member WAITS — BEFORE the classifier and any stop, so a held restart never
   // stops a running session. The toolbar Restart is a human act and passes. The release re-enters here with `admitted`.
   if (!input.admitted && id && ws) {
+    const liveAtHold = isRunning(id) || sdkSessionLive(id);
     const gate = admissionGate({
       wsId: id,
       ws,
@@ -95,9 +97,12 @@ export async function dispatchRestartRequest(input: {
       coordinator: canOrchestrate(ws),
       run: () => dispatchRestartRequest({ id, fresh, trigger, admitted: true }),
       retryLater: () => pauseRefusal(store.getWorkspace(id) ?? null, restartOrigin) !== null,   // a fleet Pause refused the release: keep the slot
+      report: (text) => reportAdmissionFailure(id, text),
       stillOwed: () => {
         const w = store.getWorkspace(id);
-        return !!w && !w.archived;
+        // A member that was STOPPED when its restart was held and that a person has since started (the composer reaches `sdkSend` without
+        // passing the two gates) needs no restart any more — it would be a redundant stop/start at recovery (review F4).
+        return !!w && !w.archived && (liveAtHold || !(isRunning(id) || sdkSessionLive(id)));
       },
     });
     if (gate.held) return { ok: true, held: { since: gate.since }, note: heldPhrase('restart', gate.since) };

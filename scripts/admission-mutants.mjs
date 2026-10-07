@@ -26,6 +26,7 @@ const RS = 'src/main/restart-workspace.ts';
 const HK = 'src/main/hooks-server.ts';
 const CL = 'src/cli/index.ts';
 const IX = 'src/main/index.ts';
+const SHD = SH;
 // `expect` = a substring of the reddened unit test name or `rig:<arm>` that MUST be among the red ones; `arms` = the rig arms to run for it.
 const MUTANTS = [
   { id: 'A01_human_held', file: SH, find: "return args.origin === 'auto' && isFleetMember(args.ws)", to: 'return isFleetMember(args.ws)', expect: ['human_passes', 'rig:human_passes'], arms: ['human_passes'] },
@@ -51,6 +52,25 @@ const MUTANTS = [
   { id: 'A21_retry_handle_never_spent', file: AD, find: '        retry = null; // the handle is spent: a pass that throws below must be able to re-arm\n', to: '', expect: ['retry_rearms_after_a_throwing_pass'], arms: [] },
   { id: 'A22_throwing_owed_means_not_owed', file: AD, find: "treated as still owed`, e);\n      return true;", to: "treated as still owed`, e);\n      return false;", expect: ['throwing_still_owed_is_treated_as_owed'], arms: [] },
   { id: 'A23_no_boot_reconcile', file: AD, find: '  void singleton.kick(); // the reconcile: whatever is already queued meets a FRESH reading now (it samples; a still-held guard just waits)\n', to: '', expect: ['subscribe_then_reconcile'], arms: [] },
+  // ── G3 review fix round (F1–F4) ──
+  { id: 'R01_kick_body_sync', file: AD, find: '    draining = Promise.resolve()\n      .then(async () => {', to: '    draining = (async () => {', expect: ['own_sample_recovery_releases_one_at_a_time', 'rig:release_selfsample'], arms: ['release_selfsample'], extra: [{ file: AD, find: '          await pass();\n        } while (rerun);\n      })\n      .catch', to: '          await pass();\n        } while (rerun);\n      })()\n      .catch' }] },
+  { id: 'R02_refused_blocks_the_line', file: AD, find: '          deferred.add(entry.wsId);\n', to: '          return arm();\n', expect: ['pause_refused_does_not_block_the_line', 'pause_refused_coordinator', 'rig:pause_other_run'], arms: ['pause_other_run'] },
+  { id: 'R03_refused_entry_picked_again_same_pass', file: AD, find: '      const waiting = [...queue.values()].filter((e) => !deferred.has(e.wsId));', to: '      const waiting = [...queue.values()];', expect: ['pause_refused_does_not_block_the_line'], arms: [] },
+  { id: 'R04_only_refused_left_never_rearms', file: AD, find: '        return arm(); // only Pause-refused entries are left: try them again at the next retry', to: '        return;', expect: ['pause_refused_does_not_block_the_line'], arms: [] },
+  { id: 'R05_failure_not_told', file: AD, find: '        tell(entry, failureText(outcome));', to: '        void failureText;', expect: ['failed_release_is_reported_to_the_coordinator', 'rig:failed_release_reported'], arms: ['failed_release_reported'] },
+  { id: 'R06_timeout_not_told', file: AD, find: '        tell(entry, why);', to: '        void why;', expect: ['timed_out_release_is_reported'], arms: [] },
+  { id: 'R07_report_throw_breaks_the_line', file: AD, find: '      entry.report?.(releaseFailureBody(entry.kind, entry.wsId, entry.since, reason));\n    } catch (e) {\n      deps.warn(`could not report the failed release of ${entry.wsId} to its coordinator`, e);\n    }', to: '      entry.report?.(releaseFailureBody(entry.kind, entry.wsId, entry.since, reason));\n    } finally {\n      void 0;\n    }', expect: ['failed_release_is_reported_to_the_coordinator'], arms: [] },
+  { id: 'R08_drop_noop', file: AD, find: '      const had = queue.delete(wsId);', to: '      const had = false;', expect: ['drop_forgets_a_deleted_workspace', 'rig:deleted_while_held'], arms: ['deleted_while_held'] },
+  { id: 'R09_drop_keeps_timer', file: AD, find: '      if (queue.size === 0) disarm();\n      return had;', to: '      return had;', expect: ['drop_forgets_a_deleted_workspace'], arms: [] },
+  { id: 'R10_no_prune_on_read', file: AD, find: '    heldFor(wsId) {\n      pruneUnowed();', to: '    heldFor(wsId) {', expect: ['superseded_entry_is_pruned_at_read_time', 'rig:composer_drops_restart'], arms: ['composer_drops_restart'] },
+  { id: 'R11_no_prune_in_list', file: AD, find: '    list() {\n      pruneUnowed();', to: '    list() {', expect: ['superseded_entry_is_pruned_at_read_time', 'rig:composer_drops_restart'], arms: ['composer_drops_restart'] },
+  { id: 'R12_no_prune_in_gate', file: AD, find: '      pruneUnowed(); // an entry a person already superseded', to: '      void 0; // an entry a person already superseded', expect: ['superseded_entry_is_pruned_at_read_time'], arms: [] },
+  { id: 'R13_delete_does_not_drop', file: WS, find: '  dropHeldStart(id); // #286: a deleted workspace (single AND bulk delete)', to: '  void dropHeldStart; // #286: a deleted workspace (single AND bulk delete)', expect: ['F4 delete', 'rig:deleted_while_held'], arms: ['deleted_while_held'] },
+  { id: 'R14_restart_owed_ignores_live', file: RS, find: 'return !!w && !w.archived && (liveAtHold || !(isRunning(id) || sdkSessionLive(id)));', to: 'return !!w && !w.archived;', expect: ['F4 composer', 'rig:composer_drops_restart'], arms: ['composer_drops_restart'] },
+  { id: 'R15_roster_ignores_held', file: IX, find: " || heldStartFor(ws.id) !== null));", to: "));", expect: ['F3 liveness'], arms: [] },
+  { id: 'R16_spawn_gate_no_report', file: WS, find: '      report: (text) => reportAdmissionFailure(id, text),\n      stillOwed: () => {', to: '      stillOwed: () => {', expect: ['F4 report', 'rig:failed_release_reported'], arms: ['failed_release_reported'] },
+  { id: 'R17_report_sent_as_status', file: WS, find: "kind: 'escalation', body: text });\n  log.info(`admission: told coordinator", to: "kind: 'status', body: text });\n  log.info(`admission: told coordinator", expect: ['F4 report', 'rig:failed_release_reported'], arms: ['failed_release_reported'] },
+  { id: 'R18_report_body_changed', file: SHD, find: "It is not queued any more: retry it with", to: "retry it with", expect: ['release_failure_body', 'failed_release_is_reported_to_the_coordinator'], arms: ['failed_release_reported'] },
   { id: 'C01_spawn_gate_off', file: WS, find: '  if (!admitted) {\n    const gate = admissionGate({', to: '  if (false) {\n    const gate = admissionGate({', expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C02_spawn_gate_human_origin', file: WS, find: "      origin: origin ?? 'auto',\n      kind: 'spawn',", to: "      origin: 'human',\n      kind: 'spawn',", expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C03_release_re_held', file: WS, find: "run: () => startWorkspaceAgentHeadless(id, 'auto', true),", to: "run: () => startWorkspaceAgentHeadless(id, 'auto'),", expect: ['spawn gate', 'rig:release_order'], arms: ['release_order', 'dip_stops'] },
@@ -92,7 +112,7 @@ if (args.includes('--check-anchors')) { // dry check: does every mutant's find r
   let bad = 0;
   for (const m of MUTANTS) {
     let text = fs.readFileSync(path.join(REPO, m.file), 'utf8'); let why = null;
-    for (const e of m.edits ?? [...(m.pre ?? []), { find: m.find, to: m.to }]) { const c = text.split(e.find).length - 1; if (c !== 1) { why = `${c}× ${e.find.slice(0, 70)}`; break; } text = text.replace(e.find, () => e.to); }
+    for (const e of m.edits ?? [...(m.pre ?? []), { find: m.find, to: m.to }, ...(m.extra ?? [])]) { const c = text.split(e.find).length - 1; if (c !== 1) { why = `${c}× ${e.find.slice(0, 70)}`; break; } text = text.replace(e.find, () => e.to); }
     if (why) { bad++; console.log(`ANCHOR-BAD ${m.id}: ${why}`); }
   }
   console.log(`ANCHORS: ${MUTANTS.length - bad}/${MUTANTS.length} resolve exactly once`);
@@ -110,7 +130,7 @@ buildCli();
 const base = unitRed();
 const baseRig = rigRed();
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 10)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 15)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;
@@ -122,7 +142,7 @@ for (const m of MUTANTS) {
   if (only && !only.has(m.id)) continue;
   const abs = path.join(REPO, m.file);
   const original = fs.readFileSync(abs, 'utf8');
-  const edits = m.edits ?? [...(m.pre ?? []), { find: m.find, to: m.to }];
+  const edits = m.edits ?? [...(m.pre ?? []), { find: m.find, to: m.to }, ...(m.extra ?? [])];
   let mutated = original; let anchorBad = null;
   for (const e of edits) { const c = mutated.split(e.find).length - 1; if (c !== 1) { anchorBad = `find occurs ${c}× (need exactly 1): ${e.find.slice(0, 60)}`; break; } mutated = mutated.replace(e.find, () => e.to); }
   if (anchorBad) { rows.push({ id: m.id, verdict: 'ANCHOR-BAD', detail: anchorBad }); continue; }

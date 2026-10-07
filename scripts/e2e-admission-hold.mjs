@@ -16,6 +16,11 @@
 //   running_turn_passes ★ a message to an ALREADY-RUNNING member is delivered live while held
 //   restart_waits    ★ an AUTO restart of a running member is held BEFORE any stop (nothing is stopped); it runs on recovery
 //   pause_keeps_slot ★ a release refused because a fleet PAUSE landed while held keeps its slot (not lost), and goes out after the lift
+//   release_selfsample ★ (review F1) recovery seen FIRST by the release pass's OWN fresh sample (NO explicit guard.sampleNow): still ONE at a time, a fresh reading each
+//   pause_other_run  ★ (review F2) a Pause-refused entry of run A never blocks run B's held start; A's goes out after the lift
+//   deleted_while_held ★ (review F4) deleting a held workspace drops it from the queue / peers
+//   composer_drops_restart ★ (review F4) a person starting the stopped member meanwhile makes its held restart redundant: gone from the queue, never run
+//   failed_release_reported ★ (review F4) a released start that FAILS tells the coordinator (bus escalation), not a log line only
 //   toggle_off       ★ the global toggle OFF holds nothing
 //   visible          ★ the OPS sees the held member (since-when) in `peers` + `bus-status` (real hooks-server + built CLI); gone after the release
 //
@@ -30,7 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'pause_keeps_slot', 'toggle_off', 'visible'];
+const ARMS = ['open_passes', 'spawn_held', 'release_order', 'dip_stops', 'human_passes', 'running_turn_passes', 'restart_waits', 'pause_keeps_slot', 'release_selfsample', 'pause_other_run', 'deleted_while_held', 'composer_drops_restart', 'failed_release_reported', 'toggle_off', 'visible'];
 const GIB = 1024 ** 3;
 
 if (!ARM) {
@@ -128,12 +133,14 @@ out.hasAdmission = hasAdmission;
 const calls = { start: [], stop: [], send: [], awaiting: [] };
 let inFlight = 0, maxInFlight = 0;
 let onStart = null;
+const failStart = new Set();
 function useFakeSeam({ hasSession = () => false } = {}) {
   delivery.registerSdkDelivery({
     hasSession, hasBackgroundTask: () => false,
     send: async (wsId, text, peer, origin) => { calls.send.push({ wsId, text, origin }); },
     sendAwaitingStart: async (wsId, text, peer, ms, origin) => { calls.awaiting.push({ wsId, text, origin }); return 'started'; },
     start: async (wsId, text, opts) => {
+      if (failStart.has(wsId)) throw new Error('worktree gone (rig: forced start failure)');
       inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
       T(`seam.start ${wsId} inFlight=${inFlight}`);
       calls.start.push({ wsId, text, origin: opts?.origin, readsAt: reads });
@@ -312,6 +319,92 @@ if (ARM === 'pause_keeps_slot') {
   busPause.setRunPause(db, 'ws-ops', false, 'ws-ops');                                             // lift
   check('goes_out_after_the_lift', await until(() => factoryCalls - before >= 1 || calls.stop.length >= 1, 8000), true);
   check('queue_drained', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
+  verdict();
+}
+
+if (ARM === 'release_selfsample') {
+  mem = 4; guard.sampleNow();
+  const a = await spawnMember('SELF-A');
+  const b = await spawnMember('SELF-B');
+  const sub = await dispatchRestartRequest({ id: 'ws-sub', fresh: false, trigger: 'cli' });
+  check('all_held', [a.held ? 'h' : '-', b.held ? 'h' : '-', sub.held ? 'h' : '-'], ['h', 'h', 'h']);
+  mem = 9;                                                    // recovered — and NO guard.sampleNow(): the retry timer's pass is the first to read the new value
+  await until(() => calls.start.length >= 3);
+  check('coordinator_first_then_arrival', calls.start.map((c) => c.wsId), ['ws-sub', a.id, b.id]);
+  check('one_at_a_time', maxInFlight, 1);                     // two concurrent passes started two at once
+  const rs = calls.start.map((c) => c.readsAt);
+  check('fresh_reading_before_each_release', rs.every((x, i) => i === 0 || x > rs[i - 1]), true);
+  verdict();
+}
+
+if (ARM === 'pause_other_run') {
+  const busPause = await import(`${REPO}/src/main/bus-pause.ts`);
+  busRuns.startRun(db, { id: 'ws-ops2', kind: 'vague', coordinator: 'ws-ops2' }, ON);
+  await store.upsertWorkspace(mk('ws-ops2', { kind: 'orchestrator' }));
+  await store.upsertWorkspace({ ...mk('ws-m4', { parentId: 'ws-ops2' }), sdkSessionId: 'sess-m4', hasInput: true });
+  await store.upsertWorkspace({ ...wsRec('ws-m1'), sdkSessionId: 'sess-m1', hasInput: true });
+  useFakeSeam({ hasSession: (id) => id === 'ws-m1' || id === 'ws-m4' });
+  mem = 4; guard.sampleNow();
+  const before = factoryCalls;
+  const x = await dispatchRestartRequest({ id: 'ws-m1', fresh: false, trigger: 'cli' });     // run ws-ops — queued FIRST (head of the line)
+  const y = await dispatchRestartRequest({ id: 'ws-m4', fresh: false, trigger: 'cli' });     // run ws-ops2 — queued behind it
+  check('both_held', [!!x.held, !!y.held], [true, true]);
+  check('pause_landed', busPause.setRunPause(db, 'ws-ops', true, 'ws-ops') !== 'switch-off', true);   // ONLY run ws-ops is paused
+  mem = 9; guard.sampleNow();
+  check('other_run_goes_out_despite_the_refused_head', await until(() => factoryCalls - before >= 1, 8000), true);
+  await sleep(250);
+  check('the_paused_one_kept_its_slot_not_restarted', [hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : ['ws-m1'], factoryCalls - before], [['ws-m1'], 1]);
+  busPause.setRunPause(db, 'ws-ops', false, 'ws-ops');
+  check('goes_out_after_the_lift', await until(() => factoryCalls - before >= 2, 8000), true);
+  verdict();
+}
+
+if (ARM === 'deleted_while_held') {
+  mem = 4; guard.sampleNow();
+  const r = await spawnMember('DELETE-ME');
+  check('control_held', [!!r.held, hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : [r.id]], [true, [r.id]]);
+  await workspaces.deleteWorkspace(r.id);
+  check('gone_from_the_queue', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
+  const peers = await workspaces.dispatchPeersRequest({ from: 'ws-ops' });
+  check('gone_from_peers', peers.peers.some((p) => p.id === r.id), false);
+  mem = 12; guard.sampleNow();
+  await sleep(250);
+  check('nothing_started_for_it', startedFor(r.id), 0);
+  const fresh = await spawnMember('AFTER-DELETE');                                         // no phantom line: plentiful memory, nobody queued → passes
+  check('no_phantom_line', !fresh.held && startedFor(fresh.id) === 1, true);
+  verdict();
+}
+
+if (ARM === 'composer_drops_restart') {
+  await store.upsertWorkspace({ ...wsRec('ws-m2'), sdkSessionId: 'sess-m2', hasInput: true });   // STOPPED when the restart is held
+  let m2Live = false;
+  useFakeSeam({ hasSession: (id) => id === 'ws-m2' && m2Live });
+  mem = 4; guard.sampleNow();
+  const before = factoryCalls;
+  const r = await dispatchRestartRequest({ id: 'ws-m2', fresh: false, trigger: 'cli' });
+  check('control_held', [!!r.held, hasAdmission ? admMod.listHeldStarts().map((h) => h.wsId) : ['ws-m2']], [true, ['ws-m2']]);
+  m2Live = true;                                              // a person typed into the stopped member (the composer reaches sdkSend without passing the two gates)
+  const peers = await workspaces.dispatchPeersRequest({ from: 'ws-ops' });
+  check('peers_no_longer_says_held', peers.peers.find((p) => p.id === 'ws-m2')?.heldForMemory ?? null, null);
+  check('queue_no_longer_has_it', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
+  mem = 9; guard.sampleNow();
+  await sleep(300);
+  check('no_redundant_restart_at_recovery', [factoryCalls - before, calls.stop.length], [0, 0]);
+  verdict();
+}
+
+if (ARM === 'failed_release_reported') {
+  mem = 4; guard.sampleNow();
+  const r = await spawnMember('WILL-FAIL');
+  check('control_held', !!r.held, true);
+  failStart.add(r.id);                                        // the start will throw when released (e.g. the worktree vanished)
+  mem = 9; guard.sampleNow();
+  const rows = () => db.prepare("SELECT sender, recipient, kind, body FROM messages WHERE kind = 'escalation' AND sender = ?").all(r.id);
+  check('coordinator_was_told', await until(() => rows().length >= 1, 8000), true);
+  const m = rows()[0] ?? {};
+  check('to_the_coordinator_from_the_member', [m.recipient, m.sender === r.id], ['ws-ops', true]);
+  check('says_what_and_how_to_retry', [/HELD for memory since/.test(m.body ?? ''), /did NOT start/.test(m.body ?? ''), /orchestra restart /.test(m.body ?? '')], [true, true, true]);
+  check('not_queued_any_more', hasAdmission ? admMod.listHeldStarts().length : 0, 0);
   verdict();
 }
 

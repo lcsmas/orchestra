@@ -74,6 +74,31 @@ test('a release refused by a fleet Pause keeps its slot: both gates pass retryLa
   assert.match(restart, /retryLater: \(\) => pauseRefusal\(store\.getWorkspace\(id\) \?\? null, restartOrigin\) !== null,/);
 });
 
+test('F3 liveness: index.ts silences a member with a held start (the same predicate slot the Pause uses) — pinned beside the behaviour test admission-liveness.test.ts', () => {
+  assert.match(index, /setLivenessRoster\(buildLivenessRoster\(store, resolveWaveRunId, \(ws\) => pauseRefusal\(ws, 'auto'\) !== null \|\| heldStartFor\(ws\.id\) !== null\)\);/);
+  assert.match(index, /import \{ heldStartFor, startAdmission, stopAdmission \} from '\.\/admission';/);
+});
+
+test('F4 delete: teardownWorkspace (single AND bulk delete) drops the held start FIRST', () => {
+  const body = fn(ws, 'async function teardownWorkspace(ws: Workspace)');
+  assert.ok(body.indexOf('dropHeldStart(id);') > 0 && body.indexOf('dropHeldStart(id);') < body.indexOf('await stopStructuredSession(id);'), 'dropped before anything slow runs');
+  assert.match(ws, /import \{ admissionGate, dropHeldStart, heldStartFor \} from '\.\/admission\.ts';/);
+});
+
+test('F4 report: a failed release tells the coordinator — a bus `escalation` from the member to its live parent, behind the `liveness` switch like the boot-wedge escalation; both gates pass `report`', () => {
+  const body = fn(ws, 'export function reportAdmissionFailure(');
+  assert.match(body, /busSwitch\(db, runId, 'liveness'\)/);
+  assert.match(body, /sendBus\(db, \{ runId, sender: ws\.id, recipient: parent\.id, kind: 'escalation', body: text \}\);/);
+  assert.match(ws, /report: \(text\) => reportAdmissionFailure\(id, text\),/);
+  assert.match(restart, /report: \(text\) => reportAdmissionFailure\(id, text\),/);
+});
+
+test('F4 composer: the held restart is dropped when a member that was STOPPED at hold time has been started by a person (liveAtHold)', () => {
+  const body = fn(restart, 'export async function dispatchRestartRequest(');
+  assert.match(body, /const liveAtHold = isRunning\(id\) \|\| sdkSessionLive\(id\);/);
+  assert.match(body, /return !!w && !w\.archived && \(liveAtHold \|\| !\(isRunning\(id\) \|\| sdkSessionLive\(id\)\)\);/);
+});
+
 test('/busStatus lists the held starts and the CLI prints them (no line when none); the CLI marks a held peer and a held restart', () => {
   assert.match(hooks, /heldStarts: listHeldStarts\(\)\.map\(/);
   assert.match(cli, /formatHeldStartsLine\(res\.heldStarts as HeldStartView\[\]\)/);

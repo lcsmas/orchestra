@@ -50,6 +50,7 @@ import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, seriali
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
   getBus,
+  send as sendBus,
   coordinatorGeneration,
   bumpCoordinatorGeneration,
   expireOrphanedAsks,
@@ -68,7 +69,7 @@ import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
-import { admissionGate, heldStartFor } from './admission.ts';
+import { admissionGate, dropHeldStart, heldStartFor } from './admission.ts';
 import { heldPhrase } from '../shared/admission.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import {
@@ -830,6 +831,7 @@ async function stopStructuredSession(id: string): Promise<void> {
  *  serialized store.json rewrite and a renderer re-render per workspace. */
 async function teardownWorkspace(ws: Workspace): Promise<void> {
   const id = ws.id;
+  dropHeldStart(id); // #286: a deleted workspace (single AND bulk delete) must not linger in `held starts:` nor keep the held line "non-empty"
   forgetWorkspaceProbes(id);
   forgetHibernationActivity(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
@@ -905,6 +907,35 @@ function expireBusAsksForDeleted(id: string): void {
   } catch (e) {
     log.warn(`bus: failed to expire orphaned asks for deleted workspace ${id}`, e);
   }
+}
+
+/** #286 Admission: tell a member's COORDINATOR (bus `escalation`, the same channel and `liveness` switch the boot-wedge escalation uses) that a
+ *  start it was told was "accepted, held" did not start when released. No coordinator / no bus / switch OFF → a log line only (counted, not fired). */
+export function reportAdmissionFailure(wsId: string, text: string): void {
+  const ws = store.getWorkspace(wsId);
+  const parent = ws?.parentId ? store.getWorkspace(ws.parentId) : undefined;
+  if (!ws || !parent || parent.archived) {
+    log.warn(`admission: ${text} (no live coordinator to tell)`);
+    return;
+  }
+  const db = getBus();
+  if (!db) {
+    log.warn(`admission: ${text} (no bus — coordinator ${parent.id} not told)`);
+    return;
+  }
+  const runId = resolveWaveRunId(ws);
+  let on = false;
+  try {
+    on = busSwitch(db, runId, 'liveness');
+  } catch (e) {
+    log.warn(`admission: liveness switch read failed for ${wsId} — treating as OFF`, e);
+  }
+  if (!on) {
+    log.info(`admission: would have told ${parent.id} (liveness switch OFF — counted, not fired): ${text}`);
+    return;
+  }
+  sendBus(db, { runId, sender: ws.id, recipient: parent.id, kind: 'escalation', body: text });
+  log.info(`admission: told coordinator ${parent.id} that ${wsId}'s released start did not start`);
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {
@@ -1543,6 +1574,7 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
       coordinator: canOrchestrate(ws),
       run: () => startWorkspaceAgentHeadless(id, 'auto', true),
       retryLater: () => pauseRefusal(store.getWorkspace(id), 'auto') !== null,   // refused because a fleet Pause is in force: keep the slot
+      report: (text) => reportAdmissionFailure(id, text),
       stillOwed: () => {
         const w = store.getWorkspace(id);
         return !!w && !w.archived && owesOpeningTask(w) && !sdkSessionLive(id) && !isRunning(id);

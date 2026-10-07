@@ -69,6 +69,15 @@ export function heldPhrase(kind: HeldStartKind, sinceMs: number): string {
   return `${kind} held for memory since ${new Date(sinceMs).toISOString()} — it starts when memory recovers (Admission)`;
 }
 
+/** What the COORDINATOR reads when a held start that was released then did not start: the "accepted, held" reply promised it would, so a failure
+ *  must not stay a log line only (review F4). `reason` = the failed release's error, or the timeout. */
+export function releaseFailureBody(kind: HeldStartKind, wsId: string, sinceMs: number, reason: string): string {
+  return (
+    `Admission: the ${kind} of ${wsId} that was HELD for memory since ${new Date(sinceMs).toISOString()} was released but did NOT start — ${reason}. ` +
+    `It is not queued any more: retry it with \`orchestra restart ${wsId}\`.`
+  );
+}
+
 /** A row of `/busStatus` `heldStarts`. */
 export interface HeldStartView {
   wsId: string;
