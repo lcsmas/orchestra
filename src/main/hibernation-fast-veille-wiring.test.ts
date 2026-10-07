@@ -71,12 +71,25 @@ test('overlap safety: sdkHasSession excludes a stopping session', () => {
   assert.match(body, /return !!s && !s\.stopping;/);
 });
 
-test('overlap safety: sdkStop marks `stopping` before its first await (past the no-session keeper branch)', () => {
+test('overlap safety: nothing yields between sdkStop\'s start and its `stopping` mark, outside the no-session keeper branch', () => {
   const from = agent.indexOf('export async function sdkStop(wsId: string, opts?: { hibernate?: boolean }): Promise<void> {');
   assert.ok(from > 0, 'control: found');
-  const upToMark = agent.slice(from, agent.indexOf('session.stopping = true;', from));
-  assert.ok(upToMark.length > 200 && /await killKeeper\(wsId\)/.test(upToMark), 'control: the slice spans the no-session branch, which DOES await');
-  const afterNoSession = upToMark.slice(upToMark.indexOf('\n  }\n') + 5); // past `if (!session) { …; return; }`
-  assert.doesNotMatch(afterNoSession, /\bawait\b/, 'nothing awaits between the no-session branch and the mark');
-  assert.equal(afterNoSession.trim(), '', 'the mark FOLLOWS the no-session branch directly — no statement of any kind can sit (or yield) in between');
+  const head = agent.slice(from, agent.indexOf('session.stopping = true;', from));
+  const branch = head.indexOf('if (!session) {');
+  assert.ok(branch > 0 && /await killKeeper\(wsId\)/.test(head), 'control: the slice spans the no-session branch, which DOES await');
+  assert.doesNotMatch(head.slice(0, branch), /\bawait\b/, 'nothing awaits before the no-session check (a same-tick second pass would still see the session live)');
+  const afterBranch = head.slice(head.indexOf('\n  }\n', branch) + 5);
+  assert.doesNotMatch(afterBranch, /\bawait\b/, 'nothing awaits between the no-session branch and the mark');
+});
+
+test('overlap safety: nothing yields between the sweep\'s live check and the stop call it makes, nor inside sdkStopIfLive before `impl.stop`', () => {
+  const live = sweepFn.indexOf('const hasLiveSdk = sdkSessionLive(ws.id);');
+  const stop = sweepFn.indexOf('await sdkStopIfLive(');
+  assert.ok(live > 0 && stop > live, 'control: both found, in order');
+  assert.doesNotMatch(sweepFn.slice(live, stop), /\bawait\b/, 'a second pass started in the same tick must not interleave between the check and the stop');
+  const delivery = fs.readFileSync(path.join(here, 'sdk-delivery.ts'), 'utf8');
+  const sf = delivery.indexOf('export async function sdkStopIfLive(');
+  const call = delivery.indexOf('await impl.stop(wsId, opts);', sf);
+  assert.ok(sf > 0 && call > sf, 'control: found');
+  assert.doesNotMatch(delivery.slice(sf, call), /\bawait\b/, 'sdkStopIfLive reaches sdkStop synchronously');
 });

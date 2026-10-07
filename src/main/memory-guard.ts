@@ -54,8 +54,10 @@ export interface MemoryGuardTransitionEvent {
   snapshot: MemoryGuardSnapshot;
 }
 export type MemoryGuardListener = (e: MemoryGuardTransitionEvent) => void;
-/** Called after EVERY sample (timer tick or `sampleNow`, measured or not) with the state as it stands then — after that sample's edges were delivered.
- *  For consumers that must act on a LEVEL while it lasts (fast Veille, #288: members idle after the `admission_held` edge), not only on its edge. */
+/** Called after EVERY sample (timer tick or `sampleNow`, measured or not) with the state as it stands then, after that sample's own edges (a sample taken from
+ *  inside an EDGE listener reports itself first; its edges queue behind the batch being delivered). Delivery is one FIFO and a listener is never re-entered: a
+ *  listener may call `sampleNow()`, that sample queues behind the one being delivered. For consumers that must act on a LEVEL while it lasts (fast Veille,
+ *  #288: members idle after the `admission_held` edge), not only on its edge. */
 export type MemoryGuardSampleListener = (snapshot: MemoryGuardSnapshot) => void;
 
 export interface MemoryGuard {
@@ -151,6 +153,27 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
     }
   }
 
+  /** Sample events go through ONE FIFO too: a sample listener that re-measures (`sampleNow`) queues its sample behind the one being delivered — never a recursion. */
+  const sampleQueue: MemoryGuardSnapshot[] = [];
+  let drainingSamples = false;
+  function drainSamples(): void {
+    if (drainingSamples) return;
+    drainingSamples = true;
+    try {
+      for (let snap = sampleQueue.shift(); snap !== undefined; snap = sampleQueue.shift()) {
+        for (const l of [...sampleListeners]) {
+          try {
+            l(snap);
+          } catch (err) {
+            deps.warn('a sample listener threw (ignored)', err);
+          }
+        }
+      }
+    } finally {
+      drainingSamples = false;
+    }
+  }
+
   /** ONE warning per (threshold, machine) pair when Admission could never reopen on this host (e.g. the default 6 GB on a 4 GB machine). */
   function warnIfUnreachable(): void {
     let total: number | null = null;
@@ -236,13 +259,8 @@ export function createMemoryGuard(deps: MemoryGuardDeps): MemoryGuard {
     }
     drain();
     // The freshest state, not `snap`: an edge listener may have re-measured (nested `sampleNow`) while the batch was delivered.
-    for (const l of [...sampleListeners]) {
-      try {
-        l(snapshot());
-      } catch (err) {
-        deps.warn('a sample listener threw (ignored)', err);
-      }
-    }
+    sampleQueue.push(snapshot());
+    drainSamples();
     return snap;
   }
 

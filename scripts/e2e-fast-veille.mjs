@@ -27,6 +27,7 @@
 //   late_idler       ★ must-FAIL on the merged tip (#288 review F1)  a member that goes idle AFTER the held edge sleeps at the NEXT guard sample, no tick, no edge
 //   samples_quiet    CONTROL  samples with Admission open — or held with the toggle OFF — never run a sweep (a member past its threshold waits for the tick)
 //   overlap_probe    ★ (#288 seat-1 MINOR)  a 2nd pass starting while pass 1 is mid-stop of X never re-takes X (rests on `sdkHasSession` excluding a stopping session)
+//   overlap_same_tick ★ (#288 follow-up review m2)  two passes started in the SAME tick (a held sample + the tick) take a member once: nothing yields between the live check and the stopping mark
 //   reopen_mid_pass  ★ the hold ENDS while a pass is still stopping its first member → the members after it are spared (the hold is read per member)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-fast-veille.mjs   (RIG_REPO=<tree> = the must-FAIL run on master)
@@ -41,7 +42,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass', 'late_idler', 'samples_quiet', 'overlap_probe'];
+const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass', 'late_idler', 'samples_quiet', 'overlap_probe', 'overlap_same_tick'];
 const GIB = 1024 ** 3;
 const MIN = 60_000;
 
@@ -428,6 +429,19 @@ if (ARM === 'overlap_probe') {
   check('x_taken_by_pass1_only', { t1, t2 }, { t1: [X], t2: [] });
   check('x_stopped_once', interrupted(X), 1);
   check('x_chip_and_not_live', { live: live(X), chip: !!wsOf(X).hibernatedAt }, { live: false, chip: true });
+  verdict();
+}
+
+if (ARM === 'overlap_same_tick') {
+  const Y = await mkMember('ws-y');
+  skew(1);
+  callsByWs.get(Y)[0].interruptDelay = 300;
+  setMem(4); check('admission_held', holding(), true);
+  const [p1, p2] = [hib.sweepHibernation(), hib.sweepHibernation()];       // same tick: pass 2 runs while pass 1 is awaiting Y's stop
+  const [t1, t2] = await Promise.all([p1, p2]);
+  check('y_taken_by_exactly_one_pass', { n: t1.length + t2.length, both: [...t1, ...t2] }, { n: 1, both: [Y] });
+  check('y_stopped_once', interrupted(Y), 1);
+  check('y_chip_and_not_live', { live: live(Y), chip: !!wsOf(Y).hibernatedAt }, { live: false, chip: true });
   verdict();
 }
 

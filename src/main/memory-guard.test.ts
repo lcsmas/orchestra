@@ -313,6 +313,28 @@ test('onSample: a sample\'s listeners run AFTER its own edges, and the OUTER sam
   assert.deepEqual(order, ['edge:admission_held', 'sample:open', 'edge:admission_reopened', 'sample:open']);
 });
 
+test('onSample: a listener that re-measures (sampleNow) is never re-entered — its sample queues behind the one being delivered, in order', () => {
+  const w = world(12);
+  const g = createMemoryGuard(w.deps);
+  let depth = 0, maxDepth = 0, calls = 0;
+  const seen: number[] = [];
+  g.onSample((s) => {
+    depth += 1;
+    maxDepth = Math.max(maxDepth, depth);
+    calls += 1;
+    seen.push(s.availBytes === null ? -1 : s.availBytes / GIB);
+    if (calls < 4) {
+      w.mem = (w.mem ?? 0) - 1;
+      g.sampleNow();
+    }
+    depth -= 1;
+  });
+  g.start();
+  assert.equal(calls, 4, 'every nested sample is still delivered');
+  assert.equal(maxDepth, 1, 'never re-entered: no recursion');
+  assert.deepEqual(seen, [12, 11, 10, 9], 'FIFO: sample order');
+});
+
 test('onSample: no replay on subscribe — a late subscriber reads the level from the snapshot, then hears only later samples', () => {
   const w = world(4);
   const g = createMemoryGuard(w.deps);

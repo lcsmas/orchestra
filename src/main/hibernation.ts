@@ -236,7 +236,7 @@ export function startHibernationSweeper(): void {
   // Never hold the event loop open for housekeeping.
   timer.unref?.();
   // Fast Veille (#288): sweep on EVERY guard sample while Admission is held — the edge sample (not the periodic tick, up to 5 min of idle RAM under
-  // pressure) AND each later one, so a member that goes idle after the edge sleeps within one sample (10 s), not at the next tick. No new timer: the
+  // pressure) AND each later one, so a member that goes idle after the edge sleeps within one guard sample (10 s; 60 s in the 6–7 GB hold band), not at the next tick. No new timer: the
   // guard's own sampler is the cadence. SUBSCRIBE FIRST, then reconcile from the guard's current state (FI-2 item 5): booting while held sweeps once.
   unsubscribeGuard = subscribeMemoryGuardSamples((snap) => {
     if (isAdmissionHolding(snap)) sweepNow();
