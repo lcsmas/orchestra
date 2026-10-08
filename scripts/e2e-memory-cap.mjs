@@ -595,10 +595,11 @@ try {
     const f = factsOf(ws, st);
     const sinceSec = Math.floor(Date.now() / 1000) - 2;
     const ROUNDS = 6;
-    // One tool command per round: if the keeper's own allocation at the moment the cap is full makes the kernel take the DRIVER too (a second OOM episode — measured), only that round is lost.
+    // One tool command per round: if the keeper's own allocation at the moment the cap is full makes the kernel take the DRIVER too (a second OOM episode - measured), only that round is lost; rounds are
+    // repeated (at most 14 attempts) until ROUNDS have completed, so the race is always run ROUNDS times - the product asserts below are not relaxed by a spoiled round.
     const victimPids = [];
     let completed = 0;
-    for (let r = 0; r < ROUNDS; r++) {
+    for (let r = 0; r < 14 && completed < ROUNDS; r++) {
       const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/m2-race.py 1`, `t-m2-${r}`, 40_000);
       const mm = /m2: victims=([\d,]+)/.exec(t?.stdout ?? '');
       if (mm && /a_rc=0 c_rc=-9/.test(t?.stdout ?? '')) { victimPids.push(...mm[1].split(',')); completed += 1; }
