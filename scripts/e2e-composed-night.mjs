@@ -10,17 +10,18 @@
 //
 //   n0_control          12 GB   CONTROL: the instrument sees a start; nothing is held, nothing Veille'd, nothing paused, no alert; #293: the container accounting sums the attributed containers per workspace (measured bytes), the orphan is the only unattributed one
 //   n1_starts_held      5.5 GB  Admission HELD: an AUTO spawn is accepted + its brief owed + NO session; an AUTO restart waits BEFORE any stop; a HUMAN restart / top-level spawn / a turn to a running member PASS; the OPS sees it
-//   n2_fast_veille      held    idle fleet members go into Veille AT ONCE; a running turn / pending prompt / a /loop / a background task / a session with NO coordinator are spared
+//   n2_fast_veille      held    idle fleet members go into Veille AT ONCE; a running turn / pending prompt / a /loop / a background task / the active pane / a sandbox-hosted / an archived / a live run-script-PTY member / a member already in Veille / a session with NO coordinator are spared
 //   n3_reveil_held      held    a bus message to a sleeping member waits: no start, no failure counted, the reason logged ONCE, the lot still pending, queued as a wake; a running member's lot goes live; a session with NO coordinator is woken at once
 //   n4_alert_one_row    held    oscillation inside ONE episode → exactly ONE escalation row, to the LEAD only, naming threshold / MemAvailable / the EFFECTIVE actions (starts held, members in Veille) and the unattributed containers the last tick counted (#293)
 //   n5_memory_pause     2.5 GB  memory Pause: the pause-ON run is paused (motive memory, hard, trap complete), the pause-OFF run is byte-identical, a MANUAL pause is left as it is, held starts stay held, still ONE row
-//   n6_pause_containers critical the Pause STOPPED (never removed) the attributed containers of the paused members, recorded them in the Bilan; --rm skipped; bystander / other run / pause-OFF run untouched; #293: the freed memory leaves the accounting, strays are never touched, `bus-status` prints `containers:`
+//   n6_pause_containers critical the Pause STOPPED (never removed, `-t 10`) the attributed containers of the paused members — a crash-looping one too, NOT one someone else stopped first — recorded them in the Bilan; --rm skipped; bystander / other run / pause-OFF run untouched; #293: the freed memory leaves the accounting, strays are never touched, `bus-status` prints `containers:`
 //   n7_reprise          6.5 GB  Pause liftable, Admission still held: the AUTOMATIC Reprise restarts EXACTLY the stopped containers (a hand-removed one reported `gone`), THEN the coordinators are released; held starts stay held; #293: the restarted containers are counted again
 //   n8_release_order    8 GB    Admission reopened: held starts go out COORDINATORS FIRST then arrival order, ONE at a time, a FRESH reading before each; a dip stops the release; still ONE row
 //   n9_reveil_delivered release the held réveil is delivered once, the member answers, the lot carries the message intact, the ack clears it; no failure was ever counted
-//   n10_second_episode  5.5 GB  a NEW crossing after recovery → a SECOND row (episode 2), the first row untouched; #293: Docker down = "not measured" in the row and in bus-status, never "0"
+//   n9b_short_episode_told_at_its_end 5.5→8 GB  a NEW held-only crossing opens episode 2 and ENDS inside its settle window → told at its end (a row naming the crossing and that it is over); the first row untouched
+//   n10_third_episode   2.5 GB  a THIRD crossing, straight below critical, Docker down → episode 3 → a THIRD row, the earlier rows untouched; #293: Docker down = "not measured" in the row and in bus-status, never "0"
 //
-// Run: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-composed-night.mjs        (RIG_REPO=<tree> = the must-FAIL run on another tree; RIG_UPTO=<arm>)
+// Run: pnpm run test:composed-night (builds dist-electron/cli.js first — the rig execs it and reds n0 if it is older than src/cli + src/shared), or node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-composed-night.mjs        (RIG_REPO=<tree> = the must-FAIL run on another tree; RIG_UPTO=<arm>)
 // Last lines: per-arm `PASS|FAIL <arm> — why`, then `COMPOSED NIGHT: ALL PASS|RED …`; exit 0 only when every arm passed.
 
 import path from 'node:path';
@@ -33,7 +34,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const GIB = 1024 ** 3;
 const MB = 1024 ** 2;
-const ARM_NAMES = ['n0_control', 'n1_starts_held', 'n2_fast_veille', 'n3_reveil_held', 'n4_alert_one_row', 'n5_memory_pause', 'n6_pause_containers', 'n7_reprise', 'n7b_coordinators_after_containers', 'n8_release_order', 'n9_reveil_delivered', 'n10_second_episode'];
+const ARM_NAMES = ['n0_control', 'n1_starts_held', 'n2_fast_veille', 'n3_reveil_held', 'n4_alert_one_row', 'n5_memory_pause', 'n6_pause_containers', 'n7_reprise', 'n7b_coordinators_after_containers', 'n8_release_order', 'n9_reveil_delivered', 'n9b_short_episode_told_at_its_end', 'n10_third_episode'];
 const UPTO = process.env.RIG_UPTO ?? '';
 if (UPTO && !ARM_NAMES.includes(UPTO)) { console.error(`unknown RIG_UPTO=${UPTO} (expected one of: ${ARM_NAMES.join(', ')})`); process.exit(2); }
 
@@ -131,6 +132,7 @@ const wake = await import(`${REPO}/src/main/bus-wake.ts`);
 const rosterMod = await import(`${REPO}/src/main/wake-roster.ts`);
 const tray = await import(`${REPO}/src/main/inbox-tray.ts`);
 const hib = await import(`${REPO}/src/main/hibernation.ts`);
+const ptyMod = await import(`${REPO}/src/main/pty.ts`);              // the REAL PTY registry: a run-script PTY (`<ws>:run`) is a Veille guard
 const trapMod = await import(`${REPO}/src/main/pause-trap.ts`);
 const trapHost = await import(`${REPO}/src/main/pause-trap-host.ts`);
 const reprise = await import(`${REPO}/src/main/pause-reprise.ts`);
@@ -227,10 +229,17 @@ await store.upsertWorkspace(mk('ws-s1', { parentId: 'ws-sub', hibernatedAt: now0
 await store.upsertWorkspace(mk('ws-off', { kind: 'orchestrator' }));
 await store.upsertWorkspace(mk('ws-off1', { parentId: 'ws-off' }));
 await store.upsertWorkspace(mk('ws-xm'));
+// #288 AC2, one member per remaining Veille guard (idle fleet members of the pause-OFF run with a live session: ONE guard each is all that spares them)
+await store.upsertWorkspace(mk('ws-g-host', { parentId: 'ws-off', host: { kind: 'sandbox', endpoint: 'sandbox.invalid:1' } }));   // sandbox-hosted: its process lives elsewhere
+await store.upsertWorkspace(mk('ws-g-arch', { parentId: 'ws-off', archived: true }));
+await store.upsertWorkspace(mk('ws-g-pty', { parentId: 'ws-off' }));                                                               // a run-script PTY (`ws-g-pty:run`) is alive
 await store.upsertWorkspace(mk('ws-man', { kind: 'orchestrator' }));
 await store.upsertWorkspace(mk('ws-man1', { parentId: 'ws-man' }));
 await store.upsertWorkspace(mk('ws-xm2', { hibernatedAt: now0 - 50_000 }));                                  // a top-level session (NO coordinator), asleep
 await store.upsertWorkspace(mk('ws-sub2', { kind: 'orchestrator', parentId: 'ws-ops', hibernatedAt: now0 - 100_000 }));   // a SECOND sub-OPS, asleep, last in the roster: its Consigne wake must still go out before the earlier arrivals
+for (const id of ['ws-g-host', 'ws-g-arch', 'ws-g-pty']) liveSet.add(id);
+await ptyMod.startPty({ id: 'ws-g-pty:run', cwd: tmpHome, command: '/bin/sleep', args: ['120'], cols: 80, rows: 24 });
+process.on('exit', () => { try { ptyMod.stopPty('ws-g-pty:run'); } catch { /* gone */ } });
 for (const id of ['ws-ops', 'ws-m1', 'ws-m2', 'ws-m4', 'ws-m5', 'ws-m6', 'ws-m7', 'ws-off', 'ws-off1', 'ws-xm', 'ws-man', 'ws-man1', 'ws-m8']) liveSet.add(id);
 hibAct?.noteActiveWorkspace('ws-m8');
 const wsRec = (id) => store.getWorkspace(id);
@@ -263,8 +272,10 @@ const containers = [
   { id: 'c-m1-db', name: 'rig-m1-db', labels: { 'orchestra.ws': 'ws-m1', 'orchestra.run': 'ws-ops' } },
   { id: 'c-m1-cache', name: 'rig-m1-cache', labels: { 'orchestra.ws': 'ws-m1', 'orchestra.run': 'ws-ops' } },
   { id: 'c-m1-rm', name: 'rig-m1-rm', labels: { 'orchestra.ws': 'ws-m1', 'orchestra.run': 'ws-ops' }, autoRemove: true },
+  { id: 'c-m1-loop', name: 'rig-m1-loop', labels: { 'orchestra.ws': 'ws-m1', 'orchestra.run': 'ws-ops' }, restarting: true },   // a crash-looping container still holds memory: the Pause stops it too
   { id: 'c-m2-app', name: 'rig-m2-app', labels: { 'orchestra.ws': 'ws-m2', 'orchestra.run': 'ws-ops' } },
   { id: 'c-m2-gone', name: 'rig-m2-gone', labels: { 'orchestra.ws': 'ws-m2', 'orchestra.run': 'ws-ops' } },
+  { id: 'c-m2-race', name: 'rig-m2-race', labels: { 'orchestra.ws': 'ws-m2', 'orchestra.run': 'ws-ops' } },       // someone else stops it between the Pause's list and its stop (beforeStop): NOT ours, never restarted
   { id: 'c-sub-q', name: 'rig-sub-q', labels: { 'orchestra.ws': 'ws-sub', 'orchestra.run': 'ws-ops' } },
   { id: 'c-off-db', name: 'rig-off-db', labels: { 'orchestra.ws': 'ws-off1', 'orchestra.run': 'ws-off' } },
   { id: 'c-other', name: 'rig-other', labels: { 'orchestra.ws': 'ws-ghost', 'orchestra.run': 'ws-ops' } },
@@ -277,7 +288,8 @@ const origStop = docker.stopContainer.bind(docker);
 const origStart = docker.startContainer.bind(docker);
 let startInFlight = 0, startMaxInFlight = 0;
 const dockerAt = {};                                                // `stop <id>` / `start <id>` → ms
-docker.stopContainer = async (id, t) => { dockerEvents.push(`stop ${id}`); dockerAt[`stop ${id}`] = Date.now(); return origStop(id, t); };
+const stopTimeouts = [];
+docker.stopContainer = async (id, t) => { stopTimeouts.push(t); dockerEvents.push(`stop ${id}`); dockerAt[`stop ${id}`] = Date.now(); return origStop(id, t); };
 docker.startContainer = async (id) => { dockerEvents.push(`start ${id}`); dockerAt[`start ${id}`] = Date.now(); startInFlight++; startMaxInFlight = Math.max(startMaxInFlight, startInFlight); await sleep(150); try { return await origStart(id); } finally { startInFlight--; } };
 // ── #293 container accounting on the same fake daemon: the REAL producer + the production window predicates, ticked BY HAND (the 60 s monitor timer never runs in the rig; sampleTick also reaps keepers) ──
 //   every RUNNING container holds 100 MB (usage 120 MB − 20 MB inactive file, so the cache subtraction is in the figure); a stopped one answers no memory
@@ -323,6 +335,13 @@ const runRow = (id) => db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
 const hooks = await import(`${REPO}/src/main/hooks-server.ts`);
 await hooks.startHooksServer();
 const CLI = path.join(REPO, 'dist-electron', 'cli.js');
+/** newest mtime under src/cli + src/shared (the inputs of the bundle), tests excluded; the bundle must be at least as new (review F1: a stale bundle reds a bus-status check with nothing naming it) */
+const newestCliInput = () => {
+  let newest = 0;
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (!/\.test\.ts$/.test(e.name)) newest = Math.max(newest, fs.statSync(f).mtimeMs); } };
+  for (const dir of ['src/cli', 'src/shared']) walk(path.join(REPO, dir));
+  return newest;
+};
 const cliOut = (args) => new Promise((resolve) => {
   if (!fs.existsSync(CLI)) { resolve(`NO CLI BUNDLE at ${CLI} (pnpm run build:cli)`); return; }
   const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: hooks.getHookSocketPath(), ORCHESTRA_WS_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -345,11 +364,12 @@ await arm('n0_control', async () => {
   check('control_nothing_paused', db.prepare('SELECT COUNT(*) AS n FROM runs WHERE paused_at IS NOT NULL').get().n, 0);
   check('control_every_container_running', Object.values(dockerState()).every((s) => s === 'running'), true);
   check('control_no_alert', escalationRows().length, 0);
+  check('control_the_cli_bundle_is_present_and_not_older_than_src_cli_and_src_shared', fs.existsSync(CLI) && fs.statSync(CLI).mtimeMs >= newestCliInput(), true);   // rebuild: pnpm run build:cli (test:composed-night and the mutant harness do)
   world.n0member = r.id;
   // #293 (FI-3) control: the accounting SEES the attributed containers per workspace in measured bytes (usage − inactive file), the human's older stack is nobody's business, the deleted workspace's container is an ORPHAN
   const a0 = await monitorTick();
   check('control_container_accounting_present', !!a0, true);
-  check('control_attributed_containers_are_summed_per_workspace_in_measured_bytes', accRows(a0), [['ws-m1', 3, 300], ['ws-m2', 2, 200], ['ws-off1', 1, 100], ['ws-sub', 1, 100]]);
+  check('control_attributed_containers_are_summed_per_workspace_in_measured_bytes', accRows(a0), [['ws-m1', 3, 300], ['ws-m2', 3, 300], ['ws-off1', 1, 100], ['ws-sub', 1, 100]]);
   check('control_only_the_orphan_is_unattributed_not_the_humans_older_stack_nor_another_instances', [a0?.docker ?? null, a0?.unattributed.ids ?? null], ['ok', ['c-other']]);
 });
 
@@ -405,6 +425,10 @@ await arm('n2_fast_veille', async () => {
   check('the_active_workspace_is_spared', [swept.includes('ws-m8'), calls.stop.includes('ws-m8')], [false, false]);
   check('a_session_with_no_coordinator_is_untouched', [swept.includes('ws-xm'), calls.stop.includes('ws-xm')], [false, false]);
   check('the_coordinators_roots_are_not_fleet_members', ['ws-ops', 'ws-off'].map((id) => swept.includes(id)), [false, false]);
+  check('a_sandbox_hosted_member_is_spared', [swept.includes('ws-g-host'), calls.stop.includes('ws-g-host')], [false, false]);
+  check('an_archived_member_is_spared', [swept.includes('ws-g-arch'), calls.stop.includes('ws-g-arch')], [false, false]);
+  check('a_member_with_a_live_run_script_pty_is_spared', [ptyMod.isRunning('ws-g-pty:run'), swept.includes('ws-g-pty'), calls.stop.includes('ws-g-pty')], [true, false, false]);
+  check('a_member_already_in_veille_is_not_swept_again', ['ws-m3', 'ws-sub', 'ws-sub2', 'ws-s1'].map((id) => swept.includes(id)), [false, false, false, false]);
   world.veilleCount = swept.filter((id) => !!wsRec(id)?.parentId).length;
 });
 
@@ -462,6 +486,9 @@ await arm('n5_memory_pause', async () => {
   const queueBefore = heldNonWake();
   const failedBefore = wake.busWakeCounters().failed;
   const stopsBefore = calls.stop.length, startsBefore = calls.start.length;
+  // someone else stops c-m2-race between ws-m2's list and its stop calls: the daemon answers `already-stopped`, which is NOT ours
+  let raced = false;
+  docker.beforeStop = (id) => { if (!raced && ['c-m2-app', 'c-m2-gone'].includes(id)) { raced = true; docker.containers.find((c) => c.id === 'c-m2-race').running = false; } };   // fires inside ws-m2's own list→stop gap (its list already returned c-m2-race as running)
   setMem(2.5);
   check('guard_decided_the_memory_pause_is_due', [snap()?.pause ?? null, snap()?.pauseCycle ?? null], ['held', 1]);
   check('the_pause_on_run_is_paused', await until(() => runRow('ws-ops')?.paused_at != null, 4000), true);   // at the EDGE: the 15 s level tick is only the safety net
@@ -486,18 +513,21 @@ await arm('n5_memory_pause', async () => {
 await arm('n6_pause_containers', async () => {
   const st = dockerState();
   const c = runRow('ws-ops');
-  const stoppedIds = ['c-m1-db', 'c-m1-cache', 'c-m2-app', 'c-m2-gone', 'c-sub-q'];
+  docker.beforeStop = null;
+  const stoppedIds = ['c-m1-db', 'c-m1-cache', 'c-m1-loop', 'c-m2-app', 'c-m2-gone', 'c-sub-q'];
   check('attributed_containers_of_the_paused_members_are_stopped', stoppedIds.map((id) => st[id]), stoppedIds.map(() => 'stopped'));
   check('none_was_removed', docker.containers.length, containers.length);
   check('an_autoremove_container_is_skipped', st['c-m1-rm'], 'running');
   check('bystander_other_member_and_pause_off_run_are_untouched', ['c-human', 'c-other', 'c-off-db'].map((id) => st[id]), ['running', 'running', 'running']);
   const stopEvents = dockerEvents.filter((e) => e.startsWith('stop ')).map((e) => e.slice(5));
-  check('only_attributed_running_containers_got_a_stop_call', stopEvents.sort(), [...stoppedIds].sort());
+  check('only_attributed_running_containers_got_a_stop_call', stopEvents.sort(), [...stoppedIds, 'c-m2-race'].sort());
+  check('every_stop_asked_the_daemon_to_wait_10_seconds_before_the_kill', [...new Set(stopTimeouts)], [10]);
+  check('a_container_someone_else_stopped_first_stays_stopped_and_is_not_ours', [st['c-m2-race']], ['stopped']);
   const bil = (ws) => records?.bilanForMember(db, 'ws-ops', ws, c.paused_at)?.activity?.containers?.stopped?.map((x) => [x.name, x.outcome]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ?? null;
-  check('the_bilan_lists_each_members_stopped_containers', [bil('ws-m1'), bil('ws-m2'), bil('ws-sub')], [[['rig-m1-cache', 'stopped'], ['rig-m1-db', 'stopped'], ['rig-m1-rm', 'skipped-autoremove']], [['rig-m2-app', 'stopped'], ['rig-m2-gone', 'stopped']], [['rig-sub-q', 'stopped']]]);
+  check('the_bilan_lists_each_members_stopped_containers', [bil('ws-m1'), bil('ws-m2'), bil('ws-sub')], [[['rig-m1-cache', 'stopped'], ['rig-m1-db', 'stopped'], ['rig-m1-loop', 'stopped'], ['rig-m1-rm', 'skipped-autoremove']], [['rig-m2-app', 'stopped'], ['rig-m2-gone', 'stopped']], [['rig-sub-q', 'stopped']]]);
   const allBilan = JSON.stringify(['ws-m1', 'ws-m2', 'ws-sub', 'ws-m3', 'ws-m4', 'ws-m5', 'ws-s1', 'ws-sub2'].map(bil));
   check('the_bilan_never_names_the_bystander_the_other_member_or_another_run', [bil('ws-m1') !== null, /rig-human|rig-other|rig-off/.test(allBilan)], [true, false]);
-  world.stoppedEvents = dockerEvents.filter((e) => e.startsWith('stop '));
+  world.stoppedEvents = dockerEvents.filter((e) => e.startsWith('stop ') && e !== 'stop c-m2-race');   // the ones that took effect (the race stop answered `already-stopped`)
   // #293: the memory the Pause freed shows in the accounting (RUNNING containers only: the --rm one and the pause-OFF run's are all that is left); the strays are still counted and still RUNNING (never touched)
   const a6 = await monitorTick();
   check('the_memory_the_pause_freed_leaves_the_accounting_running_containers_only', accRows(a6), [['ws-m1', 1, 100], ['ws-off1', 1, 100]]);
@@ -518,7 +548,7 @@ await arm('n7_reprise', async () => {
   setMem(6.5);                                                      // above the Admission threshold: the Pause is liftable — Admission (reopens above 7 GB) is STILL held
   check('pause_liftable_admission_still_held', [snap()?.pause ?? null, snap()?.admission ?? null], ['none', 'held']);
   const stoppedIds = world.stoppedEvents.map((e) => e.slice(5));
-  const back = ['c-m1-db', 'c-m1-cache', 'c-m2-app', 'c-sub-q'];
+  const back = ['c-m1-db', 'c-m1-cache', 'c-m1-loop', 'c-m2-app', 'c-sub-q'];
   const ok = await until(() => back.every((id) => docker.running(id)), 6000, 50);   // the lift acts at the EDGE (the 15 s level tick is only the safety net)
   check('the_stopped_containers_are_started_again', ok, true);
   const starts = dockerEvents.filter((e) => e.startsWith('start ')).map((e) => e.slice(6));
@@ -527,12 +557,13 @@ await arm('n7_reprise', async () => {
   check('the_removed_container_did_not_break_the_reprise_the_others_came_back', [ok, docker.containers.some((c) => c.id === 'c-m2-gone')], [true, false]);
   const c = world.carrier;
   const rst = (ws) => records?.bilanForMember(db, 'ws-ops', ws, c.paused_at)?.activity?.containers?.restarted?.map((x) => [x.id, x.outcome]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ?? null;
-  check('the_bilan_records_each_restart_and_the_gone_one', [rst('ws-m1'), rst('ws-m2'), rst('ws-sub')], [[['c-m1-cache', 'started'], ['c-m1-db', 'started']], [['c-m2-app', 'started'], ['c-m2-gone', 'gone']], [['c-sub-q', 'started']]]);
+  check('the_bilan_records_each_restart_and_the_gone_one', [rst('ws-m1'), rst('ws-m2'), rst('ws-sub')], [[['c-m1-cache', 'started'], ['c-m1-db', 'started'], ['c-m1-loop', 'started']], [['c-m2-app', 'started'], ['c-m2-gone', 'gone']], [['c-sub-q', 'started']]]);
   const man7 = runRow('ws-man');
   check('a_manual_pause_is_not_lifted_by_the_recovery', [man7?.paused_at === world.manualPausedAt, man7?.resume_started_at ?? null, man7?.paused_by], [true, null, 'ws-man']);
   check('held_starts_stay_held_while_admission_is_held', [calls.start.length - startsBefore, admMod ? admMod.listHeldStarts().length >= 3 : false], [0, true]);
+  check('a_container_someone_else_stopped_is_never_restarted_by_the_reprise', [docker.running('c-m2-race'), dockerEvents.includes('start c-m2-race')], [false, false]);
   const a7 = await monitorTick();
-  check('the_restarted_containers_are_counted_again_the_removed_one_is_not', accRows(a7), [['ws-m1', 3, 300], ['ws-m2', 1, 100], ['ws-off1', 1, 100], ['ws-sub', 1, 100]]);
+  check('the_restarted_containers_are_counted_again_the_removed_one_is_not', accRows(a7), [['ws-m1', 4, 400], ['ws-m2', 1, 100], ['ws-off1', 1, 100], ['ws-sub', 1, 100]]);
   check('the_reprise_restarts_one_container_at_a_time_back_to_back', startMaxInFlight, 1);   // G7 r2 note: sequential, NO MemAvailable / Admission check between starts (measured on the real daemon by the packaged drive)
   const startAts = Object.entries(dockerAt).filter(([k]) => k.startsWith('start ')).map(([, t]) => t).sort((a, b) => a - b);
   console.log(`NIGHT-MEASURE ${JSON.stringify({ containersRestarted: startAts.length, startGapsMs: startAts.slice(1).map((t, i) => t - startAts[i]), maxInFlight: startMaxInFlight })}`);
@@ -609,32 +640,46 @@ await arm('n9_reveil_delivered', async () => {
   check('the_ack_clears_pending', pendingWake('ws-m3'), false);
 });
 
-await arm('n10_second_episode', async () => {
+await arm('n9b_short_episode_told_at_its_end', async () => {
   const row1 = escalationRows()[0] ?? {};
+  world.row1 = row1;
+  setMem(5.5);                                                                            // a NEW crossing after the recovery: held only (not critical) — episode 2 opens on the Admission edge
+  check('a_new_held_only_episode_opened_after_the_recovery', [snap()?.episode ?? null, snap()?.admission ?? null, snap()?.pause ?? null], [2, 'held', 'none']);
+  setMem(8);                                                                              // … and it ENDS inside its 20 s settle window
+  check('the_short_episode_ended_with_admission_reopened', snap()?.admission ?? null, 'open');
+  check('an_episode_that_ends_inside_its_settle_window_is_told_at_its_end_not_20_s_later', await until(() => escalationRows().length >= 2, 6000, 50), true);
+  const rows = escalationRows();
+  const b = String(rows[1]?.body ?? '');
+  world.row2 = rows[1];
+  check('the_short_episode_row_names_its_crossing_and_that_it_is_over', [/Memory guard — episode 2 /.test(b), /fell below the Admission threshold \(6\.00 GB\) at 5\.50 GB\./.test(b), /The episode is already OVER/.test(b), /no run under the memory Pause/.test(b)], [true, true, true, true]);
+  check('the_first_row_is_untouched_by_the_second_episode', rows[0]?.body, row1.body);
+});
+
+await arm('n10_third_episode', async () => {
   docker.down = true;                                                                     // the Docker daemon exists but does NOT ANSWER while the second Pause lands: recorded in the Bilan, never blocks the trap
   const a10 = await monitorTick();                                                        // #293: the tick that finds no daemon records `unavailable` — nothing measured, which is not "zero containers"
   check('docker_unreachable_is_recorded_as_not_measured_never_as_zero_containers', a10 ? [a10.docker, a10.byWorkspace.size, a10.sampledAt !== null] : null, ['unavailable', 0, true]);
-  setMem(2.5);                                                                            // a NEW crossing after recovery, straight below critical: episode 2 (held + critical in one sample)
-  check('a_new_episode_opened_critical_at_once', [snap()?.episode ?? null, snap()?.admission ?? null, snap()?.pause ?? null], [2, 'held', 'held']);
-  check('the_second_memory_pause_is_imposed_at_the_edge', await until(() => runRow('ws-ops')?.paused_at != null, 4000), true);
+  setMem(2.5);                                                                            // a THIRD crossing, straight below critical: episode 3 (held + critical in one sample)
+  check('a_new_episode_opened_critical_at_once', [snap()?.episode ?? null, snap()?.admission ?? null, snap()?.pause ?? null], [3, 'held', 'held']);
+  check('the_third_episodes_memory_pause_is_imposed_at_the_edge', await until(() => runRow('ws-ops')?.paused_at != null, 4000), true);
   check('docker_unavailable_does_not_block_the_trap', await until(() => runRow('ws-ops')?.pause_trap_at != null, 20_000), true);
   const c10 = runRow('ws-ops');
   check('docker_unavailable_is_recorded_in_the_bilan', /list:/.test(String(records?.bilanForMember(db, 'ws-ops', 'ws-m1', c10?.paused_at)?.activity?.containers?.error ?? '')), true);
-  check('the_second_row_arrives_after_the_settle_window_while_the_pause_stands', await until(() => escalationRows().length >= 2, 40_000, 100), true);
+  check('the_third_row_arrives_after_the_settle_window_while_the_pause_stands', await until(() => escalationRows().length >= 3, 40_000, 100), true);
   const rows = escalationRows();
-  const b2 = String(rows[1]?.body ?? '');
-  check('exactly_two_rows_one_per_episode', rows.length, 2);
-  check('the_second_row_names_the_paused_run_and_both_thresholds', [/Memory guard — episode 2 /.test(b2), /memory Pause on run\(s\) ws-ops/.test(b2), /and below the CRITICAL threshold \(3\.00 GB\) at 2\.50 GB/.test(b2), /memory Pause IN EFFECT\./.test(b2), /You need not act: the host releases the held starts and lifts its own memory Pause/.test(b2)], [true, true, true, true, true]);
-  check('the_first_row_is_untouched', rows[0]?.body, row1.body);
-  check('the_second_row_says_the_unattributed_count_was_not_measured_never_zero', [/unattributed containers not measured \(Docker unreachable\)/.test(b2), /\b0 unattributed container/.test(b2)], [true, false]);
+  const b2 = String(rows[2]?.body ?? '');
+  check('exactly_three_rows_one_per_episode', rows.length, 3);
+  check('the_third_row_names_the_paused_run_and_both_thresholds', [/Memory guard — episode 3 /.test(b2), /memory Pause on run\(s\) ws-ops/.test(b2), /and below the CRITICAL threshold \(3\.00 GB\) at 2\.50 GB/.test(b2), /memory Pause IN EFFECT\./.test(b2), /You need not act: the host releases the held starts and lifts its own memory Pause/.test(b2)], [true, true, true, true, true]);
+  check('the_earlier_rows_are_untouched', [rows[0]?.body, rows[1]?.body], [world.row1.body, world.row2.body]);
+  check('the_third_row_says_the_unattributed_count_was_not_measured_never_zero', [/unattributed containers not measured \(Docker unreachable\)/.test(b2), /\b0 unattributed container/.test(b2)], [true, false]);
   check('bus_status_says_docker_unavailable_not_measured', /^containers: Docker unavailable — not measured$/m.test(await cliOut(['bus-status'])), true);
   docker.down = false;
   const a10b = await monitorTick();
   check('docker_reachable_again_the_accounting_measures_again', [a10b?.docker ?? null, a10b ? a10b.unattributed.ids.length : null], ['ok', 2]);
   setMem(8);                                                                              // recovery: the second Reprise (nothing owed: Docker was down), the episode ends
-  check('the_second_reprise_released_the_coordinators', await until(() => runRow('ws-ops')?.resume_started_at != null || runRow('ws-ops')?.paused_at == null, 6000), true);
+  check('the_third_reprise_released_the_coordinators', await until(() => runRow('ws-ops')?.resume_started_at != null || runRow('ws-ops')?.paused_at == null, 6000), true);
   await sleep(1200);
-  check('still_two_rows_the_episode_end_writes_none', escalationRows().length, 2);
+  check('still_three_rows_the_episode_end_writes_none', escalationRows().length, 3);
 });
 
 const allOk = report();

@@ -918,8 +918,8 @@ export const MUTANTS = [
   "from": "memory-alert/mutate-unit.mjs:facts-paused-runs-empty",
   "ticket": "#289",
   "clause": "the row names the runs under the memory Pause",
-  "arm": "n10_second_episode",
-  "check": "the_second_row_names_the_paused_run_and_both_thresholds",
+  "arm": "n10_third_episode",
+  "check": "the_third_row_names_the_paused_run_and_both_thresholds",
   "edits": [
    {
     "file": "src/main/memory-alert.ts",
@@ -933,8 +933,8 @@ export const MUTANTS = [
   "from": "memory-alert/mutate-unit.mjs:body-no-critical",
   "ticket": "#289",
   "clause": "the row names the CRITICAL threshold crossed and the MemAvailable there",
-  "arm": "n10_second_episode",
-  "check": "the_second_row_names_the_paused_run_and_both_thresholds",
+  "arm": "n10_third_episode",
+  "check": "the_third_row_names_the_paused_run_and_both_thresholds",
   "edits": [
    {
     "file": "src/shared/memory-alert.ts",
@@ -993,7 +993,7 @@ export const MUTANTS = [
   "from": "own (pause-trap.ts container step, FI-1.5)",
   "ticket": "#292",
   "clause": "Docker unavailable (the daemon does not answer) is RECORDED in the Bilan and never blocks the trap or keeps it incomplete (both layers removed: the list failure escapes AND the trap treats it as incomplete)",
-  "arm": "n10_second_episode",
+  "arm": "n10_third_episode",
   "check": "docker_unavailable_does_not_block_the_trap",
   "edits": [
    {
@@ -1028,8 +1028,8 @@ export const MUTANTS = [
   "from": "container-memory-mutants.mjs:M81_docker_state_read_as_ok",
   "ticket": "#293",
   "clause": "an unreachable Docker makes the row say \"not measured\", never \"0 unattributed\"",
-  "arm": "n10_second_episode",
-  "check": "the_second_row_says_the_unattributed_count_was_not_measured_never_zero",
+  "arm": "n10_third_episode",
+  "check": "the_third_row_says_the_unattributed_count_was_not_measured_never_zero",
   "edits": [
    {
     "file": "src/main/memory-alert-host.ts",
@@ -1193,7 +1193,7 @@ export const MUTANTS = [
   "from": "container-memory-mutants.mjs:M18_unavailable_reads_as_zero",
   "ticket": "#293",
   "clause": "an unreachable Docker prints \"not measured\" in bus-status, never zeros",
-  "arm": "n10_second_episode",
+  "arm": "n10_third_episode",
   "check": "bus_status_says_docker_unavailable_not_measured",
   "edits": [
    {
@@ -1208,7 +1208,7 @@ export const MUTANTS = [
   "from": "container-memory-mutants.mjs:M38_unavailable_keeps_stale_bytes",
   "ticket": "#293",
   "clause": "an unreachable Docker drops the previous figures (nothing measured is not the old numbers)",
-  "arm": "n10_second_episode",
+  "arm": "n10_third_episode",
   "check": "docker_unreachable_is_recorded_as_not_measured_never_as_zero_containers",
   "edits": [
    {
@@ -1230,6 +1230,161 @@ export const MUTANTS = [
     "file": "src/main/container-window.ts",
     "find": "    if (run) min = min === null ? run.created_at : Math.min(min, run.created_at);",
     "to": "    void run;"
+   }
+  ]
+ },
+ {
+  "id": "288-host-guard-removed",
+  "from": "review G10 c/6049635249 R1",
+  "ticket": "#288",
+  "clause": "a sandbox-hosted member is never put in Veille (its process lives elsewhere)",
+  "arm": "n2_fast_veille",
+  "check": "a_sandbox_hosted_member_is_spared",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (ws.host) return false;",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "288-archived-guard-removed",
+  "from": "review G10 c/6049635249 R2",
+  "ticket": "#288",
+  "clause": "an archived member is never put in Veille",
+  "arm": "n2_fast_veille",
+  "check": "an_archived_member_is_spared",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (ws.archived) return false;",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "288-run-pty-guard-removed",
+  "from": "review G10 c/6049635249 R3",
+  "ticket": "#288",
+  "clause": "a member with a live run-script PTY is spared",
+  "arm": "n2_fast_veille",
+  "check": "a_member_with_a_live_run_script_pty_is_spared",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (hasLiveRunPty) return false;",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "288-no-live-session-guard-removed",
+  "from": "review G10 c/6049635249 R14",
+  "ticket": "#288",
+  "clause": "a member with no live session (already in Veille) is not swept again (it would inflate the alert's N in Veille)",
+  "arm": "n2_fast_veille",
+  "check": "a_member_already_in_veille_is_not_swept_again",
+  "edits": [
+   {
+    "file": "src/shared/hibernation.ts",
+    "find": "  if (!hasLivePty && !hasLiveSdk) return false;",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "292-restarting-not-stoppable",
+  "from": "review G10 c/6049635249 R5",
+  "ticket": "#292",
+  "clause": "a crash-looping (restarting) container is stopped by the Pause too",
+  "arm": "n6_pause_containers",
+  "check": "attributed_containers_of_the_paused_members_are_stopped",
+  "edits": [
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "export const STOPPABLE_STATES = ['running', 'restarting'];",
+    "to": "export const STOPPABLE_STATES = ['running'];"
+   }
+  ]
+ },
+ {
+  "id": "292-stop-result-blind",
+  "from": "review G10 c/6049635249 R6",
+  "ticket": "#292",
+  "clause": "a container someone else stopped first (already-stopped / gone) is not recorded as ours, so the Reprise never restarts it",
+  "arm": "n6_pause_containers",
+  "check": "the_bilan_lists_each_members_stopped_containers",
+  "edits": [
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "entry = r === 'stopped' ? { ...base, outcome: 'stopped', atMs: o.now() } : null;",
+    "to": "entry = { ...base, outcome: 'stopped', atMs: o.now() };"
+   }
+  ]
+ },
+ {
+  "id": "292-stop-timeout-zero",
+  "from": "review G10 c/6049635249 R9",
+  "ticket": "#292",
+  "clause": "docker stop waits 10 s before the kill (data intact)",
+  "arm": "n6_pause_containers",
+  "check": "every_stop_asked_the_daemon_to_wait_10_seconds_before_the_kill",
+  "edits": [
+   {
+    "file": "src/main/pause-containers.ts",
+    "find": "export const STOP_TIMEOUT_SEC = 10;",
+    "to": "export const STOP_TIMEOUT_SEC = 0;"
+   }
+  ]
+ },
+ {
+  "id": "289-second-episode-not-opened",
+  "from": "review G10 c/6049635249 R10",
+  "ticket": "#289",
+  "clause": "a NEW held-only crossing after recovery opens a new episode",
+  "arm": "n9b_short_episode_told_at_its_end",
+  "check": "an_episode_that_ends_inside_its_settle_window_is_told_at_its_end_not_20_s_later",
+  "edits": [
+   {
+    "file": "src/main/memory-alert.ts",
+    "find": "          if (!tracked.has(tr.episode)) open(tr.episode, { at: now, availBytes: tr.availBytes, thresholdBytes: tr.thresholdBytes });",
+    "to": "          if (tracked.size === 0) open(tr.episode, { at: now, availBytes: tr.availBytes, thresholdBytes: tr.thresholdBytes });"
+   }
+  ]
+ },
+ {
+  "id": "289-early-end-not-told",
+  "from": "review G10 c/6049635249 R13",
+  "ticket": "#289",
+  "clause": "an episode that ends inside its settle window is told at its end",
+  "arm": "n9b_short_episode_told_at_its_end",
+  "check": "an_episode_that_ends_inside_its_settle_window_is_told_at_its_end_not_20_s_later",
+  "edits": [
+   {
+    "file": "src/main/memory-alert.ts",
+    "find": "            if (!t.sent) settle(t); // the episode ended before its settle window: tell it now",
+    "to": "            // (mutant) not told at the end"
+   }
+  ]
+ },
+ {
+  "id": "286-fresh-reading-cached-per-pass",
+  "from": "review G10 c/6049635249 S1",
+  "ticket": "#286",
+  "clause": "a FRESH reading before EACH release (not one sample per pass)",
+  "arm": "n8_release_order",
+  "check": "a_fresh_reading_before_each_release",
+  "edits": [
+   {
+    "file": "src/main/admission.ts",
+    "find": "    for (;;) {\n      const waiting = [...queue.values()].filter((e) => !deferred.has(e.wsId));",
+    "to": "    const snap0 = deps.sample();\n    for (;;) {\n      const waiting = [...queue.values()].filter((e) => !deferred.has(e.wsId));"
+   },
+   {
+    "file": "src/main/admission.ts",
+    "find": "      const snap = deps.sample();\n      const step = planRelease(waiting, snap);",
+    "to": "      const snap = snap0;\n      const step = planRelease(waiting, snap);"
    }
   ]
  }

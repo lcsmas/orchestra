@@ -78,7 +78,13 @@ function restoreAll() {
 }
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { restoreAll(); process.exit(130); });
 
+/** The night execs `dist-electron/cli.js` (bus-status): a mutant of src/cli or src/shared is only visible through a bundle rebuilt AFTER the edit — and the restore must rebuild too (review F1). */
+function buildCli() {
+  const r = spawnSync('pnpm', ['run', 'build:cli'], { cwd: REPO, encoding: 'utf8', timeout: 120_000 });
+  return r.status === 0;
+}
 function night(upto) {
+  if (!buildCli()) return { arms: {}, verdict: 'CLI BUNDLE BUILD FAILED', status: 1 };
   const env = { ...process.env };
   delete env.RIG_REPO;
   if (upto) env.RIG_UPTO = upto; else delete env.RIG_UPTO;
