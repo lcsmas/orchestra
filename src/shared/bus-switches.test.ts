@@ -17,6 +17,8 @@ import {
   DEFAULT_BUS_SWITCHES,
   BUS_MECHANISM_LABEL,
   normalizeSwitches,
+  normalizeLiveSwitches,
+  LIVE_SWITCH_DEFAULTS,
   serializeSwitches,
   parseSwitches,
   freezeSwitches,
@@ -348,4 +350,28 @@ test('#291 dockerRelay: default OFF, wire name docker_relay round-trips, notice 
   assert.match(on ?? '', /docker_relay=ON .*DOCKER_HOST/);
   assert.match(off ?? '', /docker_relay=OFF .*not stamped/);
   assert.ok(!/bus is AUTHORITATIVE/.test(on ?? ''), 'docker_relay is not a bus mechanism — the generic wording would be false');
+});
+
+// ── #258 pause + dockerRelay ON by default for NEW runs (live settings only) ──────────────────────────────────────
+test('#258 live defaults: an unset pause/dockerRelay reads ON; every other mechanism and the safe fallback stay OFF', () => {
+  const fresh = normalizeLiveSwitches(undefined);
+  for (const m of BUS_MECHANISMS) assert.equal(fresh[m], m === 'pause' || m === 'dockerRelay', m);
+  assert.deepEqual(normalizeLiveSwitches({}), fresh);
+  assert.deepEqual(fresh, { ...LIVE_SWITCH_DEFAULTS });
+  for (const m of BUS_MECHANISMS) assert.equal(DEFAULT_BUS_SWITCHES[m], false, `fallback ${m} must stay OFF`);
+});
+
+test('#258 live defaults: a human choice wins, and a present non-true value is OFF (no typo turns a switch ON)', () => {
+  assert.equal(normalizeLiveSwitches({ pause: false }).pause, false);
+  assert.equal(normalizeLiveSwitches({ dockerRelay: false }).dockerRelay, false);
+  assert.equal(normalizeLiveSwitches({ pause: 'true' }).pause, false);
+  assert.equal(normalizeLiveSwitches({ pause: null }).pause, false);
+  assert.equal(normalizeLiveSwitches({ delivery: true }).delivery, true);
+  assert.equal(normalizeLiveSwitches({ delivery: true }).pause, true); // a store older than #252 never chose
+});
+
+test('#258 run rows keep the frozen semantics: a key missing on a row reads OFF, never the live default', () => {
+  const row = normalizeSwitches({ delivery: true });
+  assert.equal(row.pause, false);
+  assert.equal(row.dockerRelay, false);
 });

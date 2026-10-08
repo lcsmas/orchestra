@@ -84,6 +84,29 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   dockerRelay: false, // #291 — opt-in per run; OFF ⇒ DOCKER_HOST is never set, containers are not stamped
 });
 
+/**
+ * Default LIVE setting (what the next run freezes) for a mechanism the human never set.
+ * Only `pause` (#258, canaries passed) and `dockerRelay` are ON; DEFAULT_BUS_SWITCHES stays
+ * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down).
+ */
+export const LIVE_SWITCH_DEFAULTS: BusSwitches = Object.freeze({
+  ...DEFAULT_BUS_SWITCHES,
+  pause: true,
+  dockerRelay: true,
+});
+
+/** Like {@link normalizeSwitches}, for the LIVE settings only: an absent key (never set, or a
+ *  store older than the mechanism) takes LIVE_SWITCH_DEFAULTS; a present key still needs `=== true`.
+ *  Never use it on a run row — a frozen row missing a key was frozen OFF. */
+export function normalizeLiveSwitches(raw: unknown): BusSwitches {
+  const src = (raw ?? {}) as Partial<Record<BusMechanism, unknown>>;
+  const out = {} as BusSwitches;
+  for (const m of BUS_MECHANISMS) {
+    out[m] = src[m] === undefined ? LIVE_SWITCH_DEFAULTS[m] : src[m] === true;
+  }
+  return out;
+}
+
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
 export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   delivery: 'Delivery (Lot / Relève)',

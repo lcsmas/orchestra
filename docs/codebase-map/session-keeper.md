@@ -381,7 +381,7 @@ pid-file keeper (written only by the keeper that owns the socket). Not pinned by
 
 ## Docker relay (#291, epic #284, ADR 0004 on branch `memory-guard`)
 
-Behind the per-run **`docker_relay`** bus switch (frozen at run creation, default OFF — `bus.md`), a keeper hosts a unix-socket
+Behind the per-run **`docker_relay`** bus switch (frozen at run creation, live default ON since #258 — `bus.md`), a keeper hosts a unix-socket
 Docker proxy and the member's CLI gets `DOCKER_HOST=unix://<keepers>/<ws>.docker.sock`. The relay forwards every call to the REAL
 daemon socket and stamps `orchestra.ws` / `orchestra.run` (`src/shared/docker-labels.ts` — the frozen contract #292/#293 list
 containers by) on every `POST /containers/create`: `docker run`, `docker compose`, client libraries. Ownership lives on the container.

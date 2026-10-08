@@ -505,6 +505,12 @@ run?" goes through `runFlags()` (`:166`) or `busSwitch()` (`:184`), which read
 else**: the running run's row is untouched, and the next `startRun` picks the new
 value up. Two runs with contradictory flags coexist in one DB by design.
 
+**Live defaults (#258, 2026-10-08):** a live switch the human never set reads
+`LIVE_SWITCH_DEFAULTS` (`src/shared/bus-switches.ts`, via `normalizeLiveSwitches` in
+`getLiveSwitches`, `src/main/bus-settings.ts`) — `pause` and `dockerRelay` ON, the rest OFF.
+`DEFAULT_BUS_SWITCHES` stays all-OFF: it is the safe fallback (unreadable store, no run row),
+and run rows keep `normalizeSwitches` (a key missing on a row was frozen OFF).
+
 Three details that are load-bearing, each of which was a bug in an earlier draft:
 
 - **The freeze is ONE atomic decision, keyed on the `runs`-row existence**

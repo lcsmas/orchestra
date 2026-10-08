@@ -15,7 +15,7 @@
 import { store } from './store.ts';
 import {
   type BusSwitches,
-  normalizeSwitches,
+  normalizeLiveSwitches,
   DEFAULT_BUS_SWITCHES,
 } from '../shared/bus-switches.ts';
 
@@ -28,7 +28,7 @@ import {
  */
 export function getLiveSwitches(): BusSwitches {
   try {
-    return normalizeSwitches(store.getBusSwitches());
+    return normalizeLiveSwitches(store.getBusSwitches());
   } catch {
     // A store that cannot be read must not turn every mechanism ON. All-OFF is
     // the coexistence-safe direction: the old channels keep working.
@@ -45,7 +45,7 @@ export function getLiveSwitches(): BusSwitches {
  * flip to running runs, that is T118.2's disproof, not a feature.
  */
 export async function setLiveSwitches(next: Partial<BusSwitches>): Promise<BusSwitches> {
-  const merged = normalizeSwitches({ ...getLiveSwitches(), ...next });
+  const merged = normalizeLiveSwitches({ ...getLiveSwitches(), ...next });
   await store.setBusSwitches(merged);
   return merged;
 }
