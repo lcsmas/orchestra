@@ -455,7 +455,7 @@ function earlierEpochs(db: BusDb, carrierRunId: string, wsId: string, pausedAt: 
       killed: parseJson<unknown>(r.killed_json),
       error: r.error ?? null,
     };
-    out.push({ pausedAt: epoch, snapshotRef: like.snapshotRef, killed: killedCommands(like), inFlight: inFlightLines(like), interrupt: like.activity?.interrupt ?? null });
+    out.push({ pausedAt: epoch, snapshotRef: like.snapshotRef, killed: killedCommands(like), inFlight: inFlightLines(like), interrupt: like.activity?.interrupt ?? null, ...(like.activity?.reliquats?.killed.length ? { reliquats: like.activity.reliquats.killed } : {}) });
     if (out.length >= EARLIER_EPOCHS) break;
   }
   return out;

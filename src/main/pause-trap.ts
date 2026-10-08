@@ -29,12 +29,15 @@ import {
   readPauseOrigin,
   updateBilan,
   updateBilanContainers,
+  updateBilanReliquats,
   type BilanActivity,
 } from './bus-pause-records.ts';
 import { restartContainers, restartOwedContainers, stopAttributedContainers, type PauseDockerApi } from './pause-containers.ts';
 import { hasContainerFacts, mergeContainers, mergeRestarted } from '../shared/pause-containers.ts';
 import { carrierPhase, confirmByTrap, enrollRoster, sweepSoftPauses, __resetPauseDouceForTests, type PauseOrderDeps } from './pause-douce.ts';
 import type { KillReport, StopTaskResult } from './pause-kill.ts';
+import type { ReliquatKillOptions } from './pause-reliquats.ts';
+import { mergeReliquats, type ReliquatReport } from '../shared/pause-reliquats.ts';
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
 import type { RootRef } from '../shared/pause-procs.ts';
 import { log } from './logger.ts';
@@ -106,6 +109,10 @@ export interface TrapDeps {
   pauseOrders?: PauseOrderDeps;
   /** #254: how often a Pause douce still waiting re-checks its members' turns (ms, default {@link DOUCE_POLL_MS}); a turn ending is not a bus write. */
   douceCheckMs?: number;
+  /** #325 (wave H ledger #329, FI-1 v1 of the member scope #320): kill the member's RELIQUATS — processes of its kernel scope whose ppid chain reaches no live keeper (a detached rig browser, a double-forked `env -i` daemon),
+   *  which the tool-tree kill above cannot reach — AFTER the tool trees. Production: `killReliquats` of pause-reliquats.ts over `memberScopes` / `listScopeProcs`. Resolves null when the member has NO tracked scope (nothing was looked
+   *  at: the Bilan stays byte-identical to before). Omitted ⇒ no step. */
+  killReliquats?(m: TrapMember, opts: ReliquatKillOptions): Promise<ReliquatReport | null>;
   /** #292: the app's own Docker client (REAL socket, never a relay — `docker-api.ts`). A Pause dure stops each member's attributed containers through it, the Reprise restarts them.
    *  Omitted/null ⇒ Docker is not touched at all (and a Reprise records its owed restarts as `failed: Docker is not available to the host`). */
   containers?: PauseDockerApi | null;
@@ -217,6 +224,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     if (prior.pauserCli) activity.pauserCli = prior.pauserCli;
     if (prior.earlierKilled) activity.earlierKilled = prior.earlierKilled;
     if (prior.containers) activity.containers = prior.containers; // #292: a retry merges BY ID — never stops a container twice
+    if (prior.reliquats) activity.reliquats = prior.reliquats; // #325: what an earlier attempt killed stays listed; a retry merges BY IDENTITY
   }
 
   // 1. Snapshot (skipped if an earlier, interrupted trap already took one).
@@ -289,10 +297,14 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   // The PAUSER (review F5): the member whose CLI is a process ancestor of the `orchestra run pause` call — keyed on recorded process ancestry
   // (pid + start-time re-verified against the live CLI), NEVER on the `--as` handle a human also uses. Only the tool tree holding the call is spared.
   let spareRoot: number | undefined;
+  let pauseCallPids: number[] = []; // #325: the pausing call's whole process chain — never signalled, not even as a Reliquat
   if (target !== null && !('error' in target)) {
     const chain = await waitForOrigin(deps, db, carrier);
     const hit = chain?.find((p) => p.pid === target.cli.pid && p.startTicks === target.cli.startTicks);
-    if (chain && hit) spareRoot = chain.find((p) => p.ppid === hit.pid)?.pid;
+    if (chain && hit) {
+      spareRoot = chain.find((p) => p.ppid === hit.pid)?.pid;
+      pauseCallPids = chain.map((p) => p.pid);
+    }
   }
   const pauser = spareRoot !== undefined;
   // A pauser an EARLIER attempt already PROVED stays exempt while its CLI is unreadable (round-3 F2): a probe flake must not make a proven coordinator interruptible, bounded deferral or not.
@@ -319,6 +331,10 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   // during the trap (D9: a human prompt is allowed — never interrupted by the trap).
   // Bounded by "a human turn is in flight NOW" (round-3 F1c): a human turn that already ended shields nothing on a retry (no dep ⇒ unknown ⇒ shielded).
   const humanInFlightNow = (): boolean => (deps.humanTurnInFlight ? deps.humanTurnInFlight(m) : true);
+  // re-read at EVERY signal: a human turn may start (or end) while the kill rounds run (D9). A tool root started inside a human turn's window is spared even after the turn ENDED
+  // (round-3 F3i: a prompt that starts a background task and ends in seconds must not lose the task to a later round / retry); one started after the end is not.
+  // an OPEN window with no human turn in flight any more (session stopped / died / interrupted before the release fired) is clamped to NOW: a dead turn shields nothing later
+  const humanWindowsNow = (): Array<{ from: number; to?: number }> => humanWindowsSince(m.wsId, carrier.pausedAt).map((w) => (w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w));
   const humanAtInterrupt = lastHumanTurnStart(m.wsId);
   const humanDuringTrap = humanAtInterrupt !== undefined && humanAtInterrupt >= carrier.pausedAt && humanInFlightNow();
   const deferrals = prior?.interruptDeferrals ?? 0;
@@ -370,10 +386,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       const offerStop = !!deps.stopTask && target.keeperPid !== null && TURN_OVER.has(String(activity.interrupt));
       const rep = await deps.killTrees(target.cli, target.keeperPid, {
         stillPaused: () => stillPaused(db, carrier),
-        // re-read at EVERY signal: a human turn may start (or end) while the kill rounds run (D9). A tool root started inside a human turn's window is spared even after the turn ENDED
-        // (round-3 F3i: a prompt that starts a background task and ends in seconds must not lose the task to a later round / retry); one started after the end is not.
-        // an OPEN window with no human turn in flight any more (session stopped / died / interrupted before the release fired) is clamped to NOW: a dead turn shields nothing later
-        humanWindows: () => humanWindowsSince(m.wsId, carrier.pausedAt).map((w) => (w.to === undefined && !humanInFlightNow() ? { ...w, to: deps.now() } : w)),
+        humanWindows: humanWindowsNow,
         ...(spareRoot !== undefined ? { spareRoots: [spareRoot] } : {}),
         ...(offerStop ? { stopTask: (taskId: string) => deps.stopTask!(m, taskId) } : {}),
       });
@@ -400,6 +413,42 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     } catch (e) {
       killed = null;
       errors.push(`kill: ${errMsg(e)} — the trap stays open and is retried`);
+      incomplete = true;
+    }
+  }
+  // 5a. #325 — kill the member's RELIQUATS (ledger #329 FI-1 v1): the processes of its kernel scope whose ppid chain reaches no live keeper — a detached rig browser, a double-forked `env -i` daemon — that the tree walk above
+  // (ppid / session / CLAUDE_PID) cannot reach. Under a PROVEN session only (a member with no live CLI has no keeper either: every process of its scope is a Reliquat); an unproven CLI/keeper waits for the retry. The keeper, the CLI,
+  // the MCP servers and anything outside the member's scope are never signalled (`judgeReliquat`, re-read at signal time). An unreadable scope is UNKNOWN: the trap stays open and is retried. No tracked scope ⇒ null ⇒ nothing recorded.
+  if (deps.killReliquats && (target === null || !('error' in target))) {
+    const proven = target;
+    try {
+      const rep = await deps.killReliquats(m, {
+        keeperPid: proven ? proven.keeperPid : null,
+        cliPid: proven ? proven.cli.pid : null,
+        ...(pauseCallPids.length ? { protectPids: pauseCallPids } : {}),
+        stillPaused: () => stillPaused(db, carrier),
+        humanWindows: humanWindowsNow,
+        // write-ahead: a Reliquat that was just signalled is in the Bilan even if the app dies next (D11: every killed process is listed)
+        onProgress: (r) => {
+          activity.reliquats = mergeReliquats(prior?.reliquats, r);
+          updateBilanReliquats(db, carrier.runId, m.wsId, carrier.pausedAt, () => activity.reliquats as ReliquatReport);
+        },
+      });
+      if (rep) {
+        activity.reliquats = mergeReliquats(prior?.reliquats, rep);
+        if (rep.aborted === 'lifted') {
+          updateBilan(db, rowId, { activity, killed: killed ?? null, error: errors.length ? errors.join('; ') : null }); // what WAS killed is still recorded, never dropped
+          return 'lifted';
+        }
+        if (rep.unknown) {
+          errors.push(`reliquats: ${rep.unknown} — nothing is known about the leftover processes of this scope; the trap stays open and is retried`);
+          incomplete = true;
+        }
+        if (rep.error) errors.push(`reliquats: ${rep.error}`);
+        if (rep.survivors.length > 0) errors.push(`reliquats: ${rep.survivors.length} leftover process(es) still alive after the trap`);
+      }
+    } catch (e) {
+      errors.push(`reliquats: ${errMsg(e)} — the trap stays open and is retried`);
       incomplete = true;
     }
   }

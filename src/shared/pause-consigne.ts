@@ -5,6 +5,7 @@
 
 import { actorText, type ConsigneDeReprise, type PauseConfirmVia, type PauseMode } from './pause-lifecycle.ts';
 import { containerConsigneLines, type BilanContainers } from './pause-containers.ts';
+import { emptyReliquatReport, mergeReliquats, reliquatConsigneLines, type ReliquatKilled, type ReliquatReport } from './pause-reliquats.ts';
 
 /** The structural subset of a Bilan row (`BilanRow` in src/main/bus-pause-records.ts) this module reads — kept structural so
  *  src/shared never imports from src/main. */
@@ -36,6 +37,8 @@ export interface BilanActivityLike {
   notes?: string[];
   /** #292: the attributed containers the Pause stopped for this member + the Reprise's restart results. */
   containers?: BilanContainers;
+  /** #325: the Reliquats (processes of the member's scope outside its session's tree) the Pause killed. */
+  reliquats?: ReliquatReport;
 }
 
 interface KilledReportLike {
@@ -55,6 +58,8 @@ export interface ConsigneFacts {
   inFlightGroups: Array<{ interrupt: string | null; lines: string[]; earlierAt: number | null }>;
   /** #292: the attributed containers the Pause stopped for this member + what the Reprise did with them (absent = the Pause touched none). */
   containers?: BilanContainers;
+  /** #325: the Reliquats the Pause killed in this member's scope (this Pause + EARLIER ones it was never released from); absent = the member has no tracked scope. */
+  reliquats?: ReliquatReport;
 }
 export type ConsigneWithFacts = ConsigneDeReprise & Partial<ConsigneFacts>;
 
@@ -92,7 +97,7 @@ export interface ConsigneInput {
   bilan: BilanLike | null;
   /** EARLIER Pauses of the same carrier that took this member and from which it was NEVER released (a re-Pause during a Reprise opens a new epoch: the member
    *  was never told what the first one killed). Their killed commands join the list; their snapshot refs are named in the notes. */
-  earlier?: Array<{ pausedAt: number; snapshotRef: string | null; killed: Array<{ cmd: string; cwd: string | null }>; inFlight?: string[]; interrupt?: string | null }>;
+  earlier?: Array<{ pausedAt: number; snapshotRef: string | null; killed: Array<{ cmd: string; cwd: string | null }>; inFlight?: string[]; interrupt?: string | null; reliquats?: ReliquatKilled[] }>;
 }
 
 /** Code-point ranges stripped from any recorded string: C0/DEL/C1, soft hyphen, ALM, Mongolian vowel separator, zero-width + bidi marks/overrides/isolates,
@@ -186,6 +191,13 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneWithFacts {
         `${e.inFlight?.length ? (interruptKind(e.interrupt) === 'aborted' ? `; the interrupt aborted ${e.inFlight.length} in-flight call(s) — listed with the calls in flight` : `; ${e.inFlight.length} call(s) were in flight then (interrupt: ${e.interrupt ? stripControl(e.interrupt) : 'not recorded'}) — listed with the calls in flight`) : ''}`,
     );
   }
+  // #325: the Reliquats of EARLIER Pauses the member was never released from join this Pause's (merged BY IDENTITY, the current Pause's facts win)
+  let reliquats: ReliquatReport | undefined = a?.reliquats;
+  for (const e of i.earlier ?? []) {
+    if (!e.reliquats?.length) continue;
+    reliquats = mergeReliquats({ ...emptyReliquatReport(), killed: e.reliquats }, reliquats ?? emptyReliquatReport());
+    notes.push(`an EARLIER Pause (${iso(e.pausedAt)}) also killed ${e.reliquats.length} leftover process(es) (Reliquats) in your scope — merged into the list of Reliquats`);
+  }
   return {
     runId: i.runId,
     wsId: i.wsId,
@@ -210,6 +222,7 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneWithFacts {
     interrupt: a?.interrupt ?? null,
     inFlightGroups: groups,
     ...(a?.containers ? { containers: a.containers } : {}),
+    ...(reliquats ? { reliquats } : {}),
   };
 }
 
@@ -283,6 +296,7 @@ export function renderConsigne(c: ConsigneWithFacts, opts?: { releasedBy?: strin
     if (c.killed.length > KILLED_LISTED) out.push(`  - … +${c.killed.length - KILLED_LISTED} more (orchestra run status --run ${stripControl(c.runId)})`);
     if (unrecorded) out.push('Calls in flight at the interrupt: none recorded — but a turn was running, so an aborted call may be missing from this list.');
   }
+  for (const l of reliquatConsigneLines(c.reliquats, stripControl)) out.push(l);
   for (const l of containerConsigneLines(c.containers, stripControl)) out.push(l);
   if (c.confirmedVia) out.push(`Your Pause was taken: ${c.confirmedVia === 'member' ? 'you confirmed it yourself' : c.confirmedVia === 'host-idle' ? 'you were idle, the host confirmed for you' : 'by the host trap'}.`);
   if (c.notes.length) {
@@ -302,6 +316,7 @@ export function renderWaveLine(c: ConsigneWithFacts): string {
       : c.killed.length
         ? `${c.killed.length} killed: ${c.killed.slice(0, 3).map((k) => trimTo(k.cmd, 60)).join('; ')}${c.killed.length > 3 ? '; …' : ''}`
         : 'nothing killed';
+  const leftovers = c.reliquats?.killed.length ? `; ${c.reliquats.killedTotal ?? c.reliquats.killed.length} leftover process(es) (Reliquats) killed` : '';
   const n = c.wasDoing.inFlightTools.length;
   const what = `${c.wasDoing.inFlightTools.slice(0, 2).map((t) => trimTo(t, 60)).join('; ')}${n > 2 ? '; …' : ''}`;
   // the outcome of EVERY epoch that recorded a call (a re-Pause's idle member keeps the EARLIER epoch's calls): "aborted" only when it took effect for all of them
@@ -313,7 +328,7 @@ export function renderWaveLine(c: ConsigneWithFacts): string {
       : `; ${n} in flight at the Pause (interrupt: ${[...new Set(outcomes.map((o) => (o ? trimTo(o, 30) : 'not recorded')))].join(' / ')}): ${what}`;
   return (
     `  • ${stripControl(c.wsId)}${c.branch ? ` [${trimTo(c.branch, 60)}]` : ''} — dirty tree: ${c.dirty === null ? 'unknown' : c.dirty ? 'yes' : 'no'}; ` +
-    `snapshot ref: ${c.snapshotRef ? trimTo(c.snapshotRef, 160) : 'none'}; ${killed}${aborted}`
+    `snapshot ref: ${c.snapshotRef ? trimTo(c.snapshotRef, 160) : 'none'}; ${killed}${leftovers}${aborted}`
   );
 }
 
