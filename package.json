@@ -52,6 +52,7 @@
     "test:pause-trap": "node scripts/pause-trap/run.mjs",
     "test:pause-reliquats": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/pause-trap/reliquat-rig.mjs all",
     "test:browser-reliquats": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/browser-reliquats/rig.mjs all",
+    "test:browser-reliquats-mutants": "node scripts/pause-trap/mutate-unit.mjs --prefix br- && node scripts/browser-reliquats/mutate-rig.mjs",
     "test:pause-reliquats-mutants": "node scripts/pause-trap/mutate-unit.mjs --prefix rq- && node scripts/pause-trap/reliquat-mutate-rig.mjs",
     "test:pause-trap-recycle": "node scripts/pause-trap/recycle-rig.mjs",
     "test:pause-trap-mutants": "node scripts/pause-trap/mutate-unit.mjs",

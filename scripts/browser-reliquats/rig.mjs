@@ -272,12 +272,14 @@ async function teardown() {
 
 // ═══ the arms ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 let detail = '';
-const bridge = monitor.productionBrowserBridge; // absent on the UNFIXED tree
-/** The REAL tick with the production bridge (only the idle window / grace are shortened). On the unfixed tree: the plain tick — there is no bridge. */
+/** The REAL tick with the PRODUCTION deps (`productionDeps()`: what the 60 s timer runs — so the wiring that installs the bridge is exercised too). The Docker accounting is dropped (the host's daemon is not ours to ask);
+ *  only the idle window / grace are shortened. On the UNFIXED tree `productionDeps()` carries no bridge: the plain tick. */
 const tick = () => {
-  const base0 = monitor.realResourceMonitorDeps();
-  const b = bridge?.();
-  return monitor.sampleTick(b ? { ...base0, browser: { ...b, deps: { ...b.deps, idleWindowMs: WINDOW_MS, graceMs: 2000 } } } : base0);
+  const prod = { ...monitor.productionDeps() };
+  delete prod.refreshContainers;
+  delete prod.containerView;
+  if (prod.browser) prod.browser = { ...prod.browser, deps: { ...prod.browser.deps, idleWindowMs: WINDOW_MS, graceMs: 2000 } };
+  return monitor.sampleTick(prod);
 };
 const statusRows = (ws) => db.prepare("SELECT body, run_id FROM messages WHERE sender = 'host' AND kind = 'status' AND recipient = ? ORDER BY sequence").all(ws);
 const cli = (...args) => { const r = spawnSync(process.execPath, [CLI_JS, ...args], { env: { PATH: process.env.PATH, HOME: home, ORCHESTRA_HOME: home, LANG: 'C.UTF-8' }, encoding: 'utf8', timeout: 60_000 }); return { rc: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') }; };

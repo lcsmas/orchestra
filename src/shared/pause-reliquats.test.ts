@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { type FreshRead, type ProcIdent } from './pause-procs.ts';
 import {
+  combineReliquats,
   depthsOf,
   emptyReliquatReport,
   isOwnKeeperProc,
@@ -241,4 +242,17 @@ test('review F1/F3 wording: a live PARENT that left the scope reads « STILL ALI
   const planned = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(710), killed(711, { outcome: 'planned' }), killed(712, { outcome: 'planned' })] }, strip).join('\n');
   assert.match(planned, /the Pause killed for you \(1\)/, 'only the completed entry is « killed »');
   assert.match(planned, /about to kill when it was interrupted \(2\) — their outcome was not recorded.*pid 711.*pid 712/);
+});
+
+test('combineReliquats: the scope\'s report and the browsers\' of the SAME attempt become one — killed unioned by identity, every list concatenated (nothing of either side dropped), unknown/error joined', () => {
+  const scope = { ...emptyReliquatReport([SCOPE.unit]), killed: [killed(1), killed(2)], survivors: [{ pid: 9, startTicks: 1009, comm: 'x', cmd: 'x', reason: 's' }], rounds: 2, unknown: 'scope y unreadable' };
+  const browsers = { ...emptyReliquatReport(), killed: [killed(2, { scope: 'browser:pipe' }), killed(3, { scope: 'browser:port' })], spared: [{ pid: 7, startTicks: 1007, comm: 'chrome', cmd: 'chrome', reason: 'client' }], survivors: [{ pid: 8, startTicks: 1008, comm: 'c', cmd: 'c', reason: 'b' }], rounds: 1, error: 'proc table gone' };
+  const c = combineReliquats(scope, browsers);
+  assert.deepEqual(c.killed.map((k) => k.pid), [1, 2, 3]);
+  assert.equal(c.killed.find((k) => k.pid === 2)!.scope, 'browser:pipe', 'the later side wins for one identity');
+  assert.deepEqual(c.survivors.map((s) => s.pid).sort(), [8, 9], 'survivors of BOTH sides stay');
+  assert.deepEqual(c.spared.map((s) => s.pid), [7]);
+  assert.deepEqual([c.scopes, c.rounds, c.unknown, c.error], [[SCOPE.unit], 2, 'scope y unreadable', 'proc table gone']);
+  assert.equal(combineReliquats(undefined, browsers), browsers, 'nothing to combine with: the browsers\' report as it is');
+  assert.equal(combineReliquats(null, browsers), browsers);
 });
