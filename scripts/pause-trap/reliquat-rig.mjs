@@ -33,14 +33,15 @@ const SOFT_GB = 0.2;
 const UNFIXED_SHA = process.env.RQ_UNFIXED_SHA ?? '2eb13727'; // master after H1's #320 merged: the scope exists, the Pause dure does not kill what is in it
 
 /** `mustRedden`: on the UNFIXED tree exactly these checks go RED (every other check — premises, controls — stays green). */
+const REVIEW_UNFIXED_SHA = process.env.RQ_UNFIXED_REVIEW_SHA ?? 'a9bf9d93'; // the tip the first review (c/6065812384) judged: the three review-round arms are must-FAIL against IT (the pre-#325 tree fails them for a bigger reason)
 const ARMS = {
   reliquat_killed: { mustRedden: ['env_i_reliquat_killed', 'bilan_lists_the_killed_reliquat', 'bilan_attributes_to_the_reliquat_step', 'run_status_lists_it', 'consigne_shows_it', 'reprise_restarted_nothing'] },
   old_generation: { mustRedden: ['old_generation_reliquat_killed', 'new_generation_reliquat_killed', 'bilan_names_both_scopes'] },
   no_scope_unchanged: { mustRedden: [] },
   // review round 1 on @a9bf9d93 (ledger #329 c/6065812384)
-  parent_left_scope: { mustRedden: ['bilan_names_the_parent', 'run_status_names_the_parent', 'consigne_names_the_parent'] }, // F1
-  slice_unreadable: { mustRedden: ['trap_stays_open_on_unreadable_slice', 'bilan_records_why', 'retry_completes_and_kills_it'] }, // F2
-  write_ahead_planned: { mustRedden: ['bilan_has_the_planned_batch_before_the_first_signal'] }, // F3
+  parent_left_scope: { unfixedSha: REVIEW_UNFIXED_SHA, mustRedden: ['bilan_names_the_parent', 'run_status_names_the_parent', 'consigne_names_the_parent'] }, // F1
+  slice_unreadable: { unfixedSha: REVIEW_UNFIXED_SHA, mustRedden: ['trap_stays_open_on_unreadable_slice', 'bilan_records_why', 'retry_completes_and_kills_it'] }, // F2
+  write_ahead_planned: { unfixedSha: REVIEW_UNFIXED_SHA, mustRedden: ['bilan_has_the_planned_batch_before_the_first_signal'] }, // F3
 };
 
 const ARM = process.argv[2] ?? '';
@@ -81,19 +82,23 @@ if (process.env.RQ_CHILD !== '1') {
   if (spawnSync('systemd-run', ['--user', '--scope', '--collect', '--quiet', `--unit=${UNIT_PREFIX}probe-${RUN_TOKEN}.scope`, '--', 'true'], { encoding: 'utf8' }).status !== 0) { console.log('PAUSE-RELIQUATS: VOID — the systemd user manager is unreachable (systemd-run --user failed)'); process.exit(3); }
   // Rebuild what the run EXECS (a stale bundle reproduces perfectly in isolation).
   const build = (cwd) => { for (const s of ['build:cli', 'build:keeper']) { const r = spawnSync('pnpm', ['run', s], { cwd, encoding: 'utf8' }); if (r.status !== 0) { console.log(`PAUSE-RELIQUATS: VOID — ${s} failed in ${cwd}: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); } } };
-  let subject = SUBJECT;
-  let unfixedDir = null;
-  if (UNFIXED) {
-    const sha = spawnSync('git', ['rev-parse', `${UNFIXED_SHA}^{commit}`], { cwd: HERE_REPO, encoding: 'utf8' }).stdout.trim();
-    if (!sha) { console.log(`PAUSE-RELIQUATS: VOID — the unfixed commit ${UNFIXED_SHA} is not in this repo (set RQ_UNFIXED_SHA)`); process.exit(3); }
-    unfixedDir = path.join(REAL_HOME, '.cache', 'pause-reliquats', `unfixed-${sha.slice(0, 8)}-${RUN_TOKEN}`);
-    const w = spawnSync('git', ['worktree', 'add', '--detach', unfixedDir, sha], { cwd: HERE_REPO, encoding: 'utf8' });
+  const subjectOf = new Map(); // unfixed sha → built worktree (one per distinct baseline)
+  const unfixedDirs = [];
+  const ensureUnfixed = (shaRef) => {
+    const sha = spawnSync('git', ['rev-parse', `${shaRef}^{commit}`], { cwd: HERE_REPO, encoding: 'utf8' }).stdout.trim();
+    if (!sha) { console.log(`PAUSE-RELIQUATS: VOID — the unfixed commit ${shaRef} is not in this repo (set RQ_UNFIXED_SHA / RQ_UNFIXED_REVIEW_SHA)`); process.exit(3); }
+    if (subjectOf.has(sha)) return subjectOf.get(sha);
+    const dir = path.join(REAL_HOME, '.cache', 'pause-reliquats', `unfixed-${sha.slice(0, 8)}-${RUN_TOKEN}`);
+    const w = spawnSync('git', ['worktree', 'add', '--detach', dir, sha], { cwd: HERE_REPO, encoding: 'utf8' });
     if (w.status !== 0) { console.log(`PAUSE-RELIQUATS: VOID — cannot create the unfixed worktree: ${w.stderr.slice(-200)}`); process.exit(3); }
-    fs.symlinkSync(path.join(HERE_REPO, 'node_modules'), path.join(unfixedDir, 'node_modules'));
-    build(unfixedDir);
-    subject = unfixedDir;
-    console.log(`UNFIXED subject: ${sha.slice(0, 8)} (${unfixedDir})`);
-  } else build(HERE_REPO);
+    unfixedDirs.push(dir);
+    fs.symlinkSync(path.join(HERE_REPO, 'node_modules'), path.join(dir, 'node_modules'));
+    build(dir);
+    subjectOf.set(sha, dir);
+    console.log(`UNFIXED subject: ${sha.slice(0, 8)} (${dir})`);
+    return dir;
+  };
+  if (!UNFIXED) build(HERE_REPO);
   const results = [];
   fs.mkdirSync(RIG_ROOT, { recursive: true });
   for (const arm of names) {
@@ -102,7 +107,7 @@ if (process.env.RQ_CHILD !== '1') {
     const env = {
       PATH: process.env.PATH, HOME: path.join(base, 'home'), LANG: 'C.UTF-8', SHELL: process.env.SHELL ?? '/bin/bash',
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, // systemd-run --user needs the user manager
-      RQ_REAL_HOME: REAL_HOME, RQ_RUN_TOKEN: RUN_TOKEN, SUBJECT_REPO: subject, RQ_CHILD: '1',
+      RQ_REAL_HOME: REAL_HOME, RQ_RUN_TOKEN: RUN_TOKEN, SUBJECT_REPO: UNFIXED ? ensureUnfixed(ARMS[arm].unfixedSha ?? UNFIXED_SHA) : SUBJECT, RQ_CHILD: '1',
     };
     for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
     const mine = (u) => u.includes(RUN_TOKEN); // unit names carry the workspace ids, which carry THIS run's token: a concurrent run's scopes are never ours to stop
@@ -128,7 +133,7 @@ if (process.env.RQ_CHILD !== '1') {
     console.log(`SURVIVORS arm=${arm} procs=${leaked.procs} scopes=${leaked.units}${clean ? '' : '  ← LEAK (cleaned by the parent)'}`);
   }
   const bad = results.filter((r) => !r.ok);
-  if (unfixedDir) { spawnSync('git', ['worktree', 'remove', '--force', unfixedDir], { cwd: HERE_REPO }); fs.rmSync(unfixedDir, { recursive: true, force: true }); }
+  for (const dir of unfixedDirs) { spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: HERE_REPO }); fs.rmSync(dir, { recursive: true, force: true }); }
   fs.rmSync(RIG_ROOT, { recursive: true, force: true });
   console.log(`PAUSE-RELIQUATS RIG${UNFIXED ? ' [UNFIXED]' : ''}: ${results.length - bad.length}/${results.length} arms ${UNFIXED ? 'AS EXPECTED (must-FAIL)' : 'PASS'}${bad.length ? ` — FAILED: ${bad.map((r) => r.arm).join(', ')}` : ''}`);
   console.log(`LEFTOVER rig scopes now: ${unitsNow(`${UNIT_PREFIX}*`).length}`);
