@@ -43,10 +43,15 @@ import {
   launcherExecedKeeper,
   describeCapState,
   formatMemKillLine,
+  formatMemSoftLine,
+  isSoftRecord,
   wrapperPathUsable,
   type MemKillRecord,
+  type MemNoticeRecord,
+  type MemSoftRecord,
   type MemoryCapLaunch,
 } from '../shared/memory-scope';
+import { readMemNotices } from '../shared/mem-notice-file';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { createMemKillCursor, type MemKillCursor } from './memkill-cursor';
@@ -122,6 +127,11 @@ function keeperLogPath(wsId: string): string {
   return path.join(keeperDir(), `${wsId}.log`);
 }
 
+/** #322 m1: where the keeper appends every kill / warning-level record BEFORE it tells anyone (survives the keeper — `listLiveKeepers`' stale-file prune never touches it). */
+export function memNoticeFilePath(wsId: string): string {
+  return path.join(keeperDir(), `${wsId}.memnotices.jsonl`);
+}
+
 /** Where the copied-out keeper bundle lives (same orchestra-owned bin dir the
  *  agent CLI shim uses — see cli-shim.ts agentCliBinDir). */
 function installedKeeperPath(): string {
@@ -170,18 +180,120 @@ export function onMemoryKill(fn: MemoryKillListener): () => void {
   };
 }
 
-/** Deliver a record once per scope unit across app restarts (a push frame AND a later helloAck catch-up can carry the same one). At-least-once: the cursor is written after the handlers ran. */
-function deliverMemKill(wsId: string, rec: MemKillRecord): void {
-  if (rec.seq <= cursor().seen(rec.unit)) return;
-  log.warn(formatMemKillLine(wsId, rec));
-  for (const fn of [...memKillListeners]) {
+export type MemorySoftListener = (wsId: string, rec: MemSoftRecord) => void;
+const memSoftListeners: MemorySoftListener[] = [];
+/** Subscribe to warning-level crossings (#322, ledger D-Q2): the soft level is a keeper-watched threshold, never a kernel limit — nothing was killed or slowed. Returns the unsubscribe. */
+export function onMemorySoft(fn: MemorySoftListener): () => void {
+  memSoftListeners.push(fn);
+  return () => {
+    const i = memSoftListeners.indexOf(fn);
+    if (i >= 0) memSoftListeners.splice(i, 1);
+  };
+}
+
+/** A listener that throws leaves the record UNDELIVERED (cursor not marked) so the next drain retries it — at most this many attempts, then it is dropped with a log line. */
+const MAX_DELIVERY_ATTEMPTS = 3;
+const RETRY_DRAIN_MS = 30_000;
+const deliveryAttempts = new Map<string, number>();
+/** Units whose earliest undelivered record failed: later records wait for the in-order drain (the cursor is a HIGH-WATER mark — marking seq 5 would silently drop a failed seq 4). */
+const stalledUnits = new Set<string>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleMemDrain(wsId: string): void {
+  if (retryTimers.has(wsId)) return;
+  const t = setTimeout(() => {
+    retryTimers.delete(wsId);
+    drainMemNotices(wsId);
+  }, RETRY_DRAIN_MS);
+  t.unref?.();
+  retryTimers.set(wsId, t);
+}
+
+/** Deliver a record once per scope unit across app restarts (a push frame, a helloAck catch-up and the notice file can all carry the same one). At-least-once: the cursor is written after the listeners ran.
+ *  Returns false when the record is still owed (a listener failed, or an earlier record of its unit did). */
+function deliverMemRecord(wsId: string, rec: MemNoticeRecord, fromDrain = false): boolean {
+  if (rec.seq <= cursor().seen(rec.unit)) return true;
+  if (!fromDrain && stalledUnits.has(rec.unit)) return false;
+  const key = `${rec.unit}:${rec.seq}`;
+  const attempt = (deliveryAttempts.get(key) ?? 0) + 1;
+  let ok = true;
+  const guard = (fn: () => void): void => {
     try {
-      fn(wsId, rec);
+      fn();
     } catch (e) {
-      log.warn(`memory-cap[${wsId}]: kill listener failed`, e);
+      ok = false;
+      log.warn(`memory-cap[${wsId}]: ${isSoftRecord(rec) ? 'warning' : 'kill'} listener failed (attempt ${attempt}/${MAX_DELIVERY_ATTEMPTS})`, e);
+    }
+  };
+  if (isSoftRecord(rec)) {
+    if (attempt === 1) log.warn(formatMemSoftLine(wsId, rec));
+    for (const fn of [...memSoftListeners]) guard(() => fn(wsId, rec));
+  } else {
+    if (attempt === 1) log.warn(formatMemKillLine(wsId, rec));
+    for (const fn of [...memKillListeners]) guard(() => fn(wsId, rec));
+  }
+  if (!ok && attempt < MAX_DELIVERY_ATTEMPTS) {
+    deliveryAttempts.set(key, attempt);
+    stalledUnits.add(rec.unit);
+    scheduleMemDrain(wsId);
+    return false;
+  }
+  if (!ok) log.warn(`memory-cap[${wsId}]: giving up on ${key} after ${MAX_DELIVERY_ATTEMPTS} attempts`);
+  deliveryAttempts.delete(key);
+  cursor().mark(rec.unit, rec.seq);
+  return true;
+}
+
+/** #322 m1: deliver what the keeper recorded in its notice file and the app has not seen — whether the keeper is still alive, was reattached, or is gone. One report per record (the persisted cursor).
+ *  Called at app start, at every attach, when the keeper's connection ends, and by the retry timer. Prunes the file once everything in it is delivered and no live keeper owns it. */
+export function drainMemNotices(wsId: string): void {
+  const file = memNoticeFilePath(wsId);
+  const recs = readMemNotices(file);
+  if (recs.length === 0) return;
+  const byUnit = new Map<string, MemNoticeRecord[]>();
+  for (const r of recs) (byUnit.get(r.unit) ?? byUnit.set(r.unit, []).get(r.unit)!).push(r);
+  for (const [unit, list] of byUnit) {
+    stalledUnits.delete(unit);
+    list.sort((a, b) => a.seq - b.seq);
+    for (const r of list) if (!deliverMemRecord(wsId, r, true)) break;
+  }
+  if (recs.every((r) => r.seq <= cursor().seen(r.unit)) && readTrackedKeeperPid(wsId) === null) {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* already gone */
     }
   }
-  cursor().mark(rec.unit, rec.seq);
+}
+
+/** App start (after the store and the bus are up): drain every workspace's notice file — kills and warnings recorded while the app was closed. A file whose workspace no longer exists is dropped. */
+export function drainAllMemNotices(isKnownWorkspace: (wsId: string) => boolean): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(keeperDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const m = /^(.+)\.memnotices\.jsonl$/.exec(name);
+    if (!m) continue;
+    const wsId = m[1];
+    if (!isKnownWorkspace(wsId)) {
+      if (readTrackedKeeperPid(wsId) === null) {
+        try {
+          fs.unlinkSync(path.join(keeperDir(), name));
+        } catch {
+          /* fine */
+        }
+      }
+      continue;
+    }
+    try {
+      drainMemNotices(wsId);
+    } catch (e) {
+      log.warn(`memory-cap[${wsId}]: draining the notice file failed`, e);
+    }
+  }
 }
 
 /** A moment after a scoped keeper got its spawn frame, ask it what it really is and SAY it in the app log: a scope whose limit is not applied or whose tools are not wrapped is not the promised cap. */
@@ -767,6 +879,7 @@ function readSafeProc(pid: number, file: string): string {
 }
 
 async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<net.Socket> {
+  drainMemNotices(wsId); // #322 m1: deliver what the previous keeper recorded (and prune its file) before a new generation starts appending
   const sockPath = keeperSocketPath(wsId);
   const runtime = resolveKeeperRuntime();
   const script = installedKeeperPath();
@@ -907,7 +1020,7 @@ export function makeKeeperSpawn(
     // with no listener is lost, not buffered).
     type Ack = { running: boolean; pid?: number; everStarted?: boolean; turnInFlight?: boolean; shuttingDown?: boolean };
     const deliverKills = (kills: MemKillRecord[] | undefined): void => {
-      for (const rec of kills ?? []) deliverMemKill(wsId, rec);
+      for (const rec of kills ?? []) deliverMemRecord(wsId, rec);
     };
     let ackWaiter: { resolve: (a: Ack) => void; reject: (e: Error) => void } | null = null;
     const wireSocket = (s: net.Socket): void => {
@@ -917,7 +1030,8 @@ export function makeKeeperSpawn(
           const f = parseKeeperFrame(line);
           if (!f) return;
           if (f.t === 'helloAck') {
-            deliverKills(f.memKills); // #320: kills that happened while no app was attached
+            drainMemNotices(wsId); // #322 m1: the keeper's durable file first (kills AND warnings, in order) …
+            deliverKills(f.memKills); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)
             ackWaiter?.resolve({
               running: f.running,
               pid: f.pid,
@@ -927,10 +1041,13 @@ export function makeKeeperSpawn(
             });
             ackWaiter = null;
           } else if (f.t === 'memKill') {
-            deliverMemKill(wsId, f.rec);
+            deliverMemRecord(wsId, f.rec);
+          } else if (f.t === 'memSoft') {
+            deliverMemRecord(wsId, f.rec);
           } else if (f.t === 'stdout') {
             stdout.write(Buffer.from(f.b64, 'base64'));
           } else if (f.t === 'exit') {
+            drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now
             exited = true;
             handle.exitCode = f.code;
             stdout.end();
@@ -953,6 +1070,7 @@ export function makeKeeperSpawn(
       );
       s.on('close', () => {
         if (s !== sock) return; // superseded socket (stale-keeper path)
+        drainMemNotices(wsId); // #322 m1: the keeper's connection ended — anything it recorded is in its file
         // Keeper vanished under a live session (crash / external kill). The
         // CLI is orphaned-or-dead; end the stream so consume() closes the
         // ledger, and let resume-by-id recover the conversation.
@@ -1046,7 +1164,17 @@ export function makeKeeperSpawn(
                 cwd: opts.cwd ?? process.cwd(),
                 env: opts.env,
                 ...(dockerRelay ? { dockerRelay } : {}),
-                ...(cap?.limits ? { memoryCap: { unit: cap.unit, hardBytes: cap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),
+                ...(cap?.limits
+                  ? {
+                      memoryCap: {
+                        unit: cap.unit,
+                        hardBytes: cap.limits.hardBytes,
+                        wrapper: oomWrapperPath(),
+                        ...(cap.limits.softBytes !== null && cap.limits.softBytes < cap.limits.hardBytes ? { softBytes: cap.limits.softBytes } : {}),
+                        noticeFile: memNoticeFilePath(wsId),
+                      },
+                    }
+                  : {}),
               }),
             );
             if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});

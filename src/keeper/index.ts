@@ -46,7 +46,9 @@ import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUps
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 import { startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
-import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, parseProcCgroupV2, swapLimitApplied, wrapperPathUsable, type MemKillRecord } from '../shared/memory-scope.ts';
+import { readKernelOomKills } from './kernel-oom-log.ts';
+import { MAX_NOTICE_LINES, appendMemNotice } from '../shared/mem-notice-file.ts';
+import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -236,6 +238,9 @@ type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>
 let capInfo: CapInfo | null = null;
 let memWatch: MemoryWatch | null = null;
 const memKills: MemKillRecord[] = [];
+const memSofts: MemSoftRecord[] = [];
+/** Lines this keeper has appended to the host's notice file (#322 m1), bounded by MAX_NOTICE_LINES. */
+let noticeLines = 0;
 const CGROUP_ROOT = process.env.ORCHESTRA_CGROUP_ROOT || '/sys/fs/cgroup';
 /** The kernel rounds a limit to its page size (16 KiB on Asahi): "applied" means within one 64 KiB page of what was asked. */
 const LIMIT_SLACK_BYTES = 64 * 1024;
@@ -295,15 +300,36 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     }
   }
   capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
+  // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
+  const persist = (rec: MemKillRecord | MemSoftRecord): void => {
+    if (!cap.noticeFile) return;
+    if (noticeLines >= MAX_NOTICE_LINES) {
+      if (noticeLines === MAX_NOTICE_LINES) klog(`memory cap: notice file full (${MAX_NOTICE_LINES} records) — later records are only in the keeper log`);
+      noticeLines += 1;
+      return;
+    }
+    if (appendMemNotice(cap.noticeFile, rec)) noticeLines += 1;
+    else klog(`memory cap: could not append to ${cap.noticeFile} — this record reaches the host only through a live attach`);
+  };
   memWatch = startMemoryWatch({
     cgroupDir: dir,
     unit: cap.unit,
     log: klog,
+    softBytes: cap.softBytes && cap.softBytes < cap.hardBytes ? cap.softBytes : null,
+    kernelLog: readKernelOomKills,
     onKill: (rec) => {
+      persist(rec);
       memKills.push(rec);
       if (memKills.length > 20) memKills.shift();
       klog(formatMemKillLine(wsId, rec));
       send({ t: 'memKill', rec });
+    },
+    onSoft: (rec) => {
+      persist(rec);
+      memSofts.push(rec);
+      if (memSofts.length > 20) memSofts.shift();
+      klog(formatMemSoftLine(wsId, rec));
+      send({ t: 'memSoft', rec });
     },
   });
   klog(`memory cap: ${capInfo.state.toUpperCase()} unit=${cap.unit} memory.max=${limit} cgroup=${dir}`);
@@ -449,6 +475,7 @@ const server = net.createServer((sock) => {
       shuttingDown,
       ...(capInfo ? { cap: capInfo } : {}),
       ...(memKills.length ? { memKills: memKills.slice() } : {}),
+      ...(memSofts.length ? { memSofts: memSofts.slice() } : {}),
     };
   };
 

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { detectPageSize, startMemoryWatch } from './memory-watch.ts';
-import type { MemKillRecord } from '../shared/memory-scope.ts';
+import type { KernelOomKill, MemKillRecord, MemSoftRecord } from '../shared/memory-scope.ts';
 
 const DIR = '/vcg/scope';
 type Proc = { start: number; comm: string; cmdline: string; rssPages: number; adj: number };
@@ -301,5 +301,136 @@ test('re-gate MINOR: two `oom` events, the two kills in two SEPARATE looks ⇒ [
   await mw.check();
   assert.deepEqual(kills.map((k) => k.level), ['hard', 'hard'], 'a look must not throw away the credit it did not spend');
   assert.deepEqual(kills.map((k) => k.command), ['a', 'b']);
+  mw.stop();
+});
+
+// ─── #322: the warning level, and the kernel naming its victim ────────────────────────────────────────────────────────
+
+const MB = 1024 * 1024;
+function watchSoft(w: World, softs: MemSoftRecord[], kills: MemKillRecord[] = [], extra: Partial<Parameters<typeof startMemoryWatch>[0]> = {}) {
+  return startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: (r) => kills.push(r), onSoft: (r) => softs.push(r), softBytes: 200 * MB, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096, ...extra });
+}
+
+test('#322 D-Q2: the warning level fires ONCE per upward crossing of memory.current, re-arms below 90 % of the level, and nothing else (no kill, no throttle)', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, softs, kills);
+  await wait(40);
+  assert.equal(softs.length, 0, 'below the level: silent');
+  w.current = 210 * MB;
+  assert.ok(await until(() => softs.length === 1), 'crossing up ⇒ one record');
+  assert.deepEqual({ bytes: softs[0].bytes, soft: softs[0].softBytes, hard: softs[0].hardBytes, unit: softs[0].unit, kind: softs[0].kind }, { bytes: 210 * MB, soft: 200 * MB, hard: w.maxBytes, unit: 'u.scope', kind: 'soft' });
+  w.current = 230 * MB;
+  await wait(60);
+  assert.equal(softs.length, 1, 'staying above ⇒ no repeat');
+  w.current = 190 * MB; // below the level but above 90 % (180 MB): still disarmed — a scope hovering at the level must not report every sample
+  await wait(40);
+  w.current = 205 * MB;
+  await wait(60);
+  assert.equal(softs.length, 1, 'hovering around the level ⇒ no flapping');
+  w.current = 150 * MB; // below 90 % ⇒ re-armed
+  await wait(40);
+  w.current = 205 * MB;
+  assert.ok(await until(() => softs.length === 2), 'a NEW crossing ⇒ a new record');
+  assert.equal(softs[1].seq, softs[0].seq + 1);
+  assert.equal(kills.length, 0, 'a warning kills nothing');
+  mw.stop();
+});
+
+test('#322: no softBytes (or no onSoft) ⇒ no warning, however high the scope goes', async () => {
+  const w = new World();
+  w.current = 290 * MB;
+  const softs: MemSoftRecord[] = [];
+  const a = watchSoft(w, softs, [], { softBytes: null });
+  const b = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: () => {}, softBytes: 100 * MB, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096 });
+  await wait(60);
+  assert.equal(softs.length, 0);
+  a.stop();
+  b.stop();
+});
+
+test('#322: kills and warnings share ONE seq counter in EMISSION order (the host cursor is a high-water mark: a lower seq arriving later would be dropped)', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  w.add(12, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  const softs: MemSoftRecord[] = [];
+  const kills: MemKillRecord[] = [];
+  const order: number[] = [];
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', softBytes: 200 * MB, onSoft: (r) => (softs.push(r), order.push(r.seq)), onKill: (r) => (kills.push(r), order.push(r.seq)), log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096,
+    // the kernel log answers late: the warning below is emitted WHILE the kill waits for it
+    kernelLog: async () => { await wait(120); return [{ atMs: Date.now(), pid: 12, comm: 'hog', oomMemcg: '/s/u.scope', taskMemcg: '/s/u.scope' }]; } });
+  await wait(30);
+  w.oomKill(12);
+  await wait(20);
+  w.current = 250 * MB; // crosses while the kill is waiting for the log
+  assert.ok(await until(() => softs.length === 1 && kills.length === 1, 3000));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), `emission order ${order} is increasing`);
+  assert.equal(new Set(order).size, 2);
+  mw.stop();
+});
+
+const kline = (pid: number, comm: string, cg = '/user.slice/app.slice/u.scope'): KernelOomKill => ({ atMs: Date.now(), pid, comm, oomMemcg: cg, taskMemcg: cg });
+
+test('#322 m2: a LARGER command that exited normally in the same window is NOT named — the kernel log names the real (never snapshotted) victim', async () => {
+  const w = new World();
+  w.add(10, { comm: 'node', cmdline: 'node keeper.js', rssPages: 5000 });
+  w.add(12, { comm: 'bigbuild', cmdline: 'bigbuild --all', rssPages: 40_000, adj: 1000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { kernelLog: async () => [kline(99, 'python3')] });
+  await wait(50); // 12 is snapshotted, big
+  w.procs.delete(12); // exits NORMALLY …
+  w.add(99, { comm: 'python3', cmdline: 'python3 leak.py', adj: 1000 });
+  w.oomKill(99); // … and in the same window a small, never-snapshotted process is OOM-killed
+  assert.ok(await until(() => kills.length === 1, 3000));
+  assert.equal(kills[0].source, 'kernel');
+  assert.equal(kills[0].pid, 99);
+  assert.equal(kills[0].command, 'python3');
+  assert.deepEqual(kills[0].candidates, []);
+  mw.stop();
+});
+
+test('#322 m2 control: WITHOUT the kernel log the same window names the bigger command that exited normally (the m2 failure) — and says it is only inferred', async () => {
+  const w = new World();
+  w.add(12, { comm: 'bigbuild', cmdline: 'bigbuild --all', rssPages: 40_000, adj: 1000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { kernelLog: async () => null });
+  await wait(50);
+  w.procs.delete(12);
+  w.add(99, { comm: 'python3', adj: 1000 });
+  w.oomKill(99);
+  assert.ok(await until(() => kills.length === 1, 4000));
+  assert.equal(kills[0].source, 'inferred', 'an unreadable journal ⇒ the record says it is a guess');
+  assert.equal(kills[0].command, 'bigbuild --all');
+  mw.stop();
+});
+
+test('#322 m2: the journal line lands a moment AFTER the counter moves — the watch polls; another scope\'s line and an already-used line never name this kill', async () => {
+  const w = new World();
+  w.add(12, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  let calls = 0;
+  const kills: MemKillRecord[] = [];
+  const stranger = kline(555, 'neighbour', '/user.slice/app.slice/other.scope'); // a neighbour's kill: never ours
+  const line12 = kline(12, 'hog'); // a journal line has ONE timestamp for ever
+  const mw = watchSoft(w, [], kills, {
+    kernelLog: async () => {
+      calls += 1;
+      return calls < 3 ? [stranger] : [stranger, line12];
+    },
+  });
+  await wait(40);
+  w.oomKill(12);
+  assert.ok(await until(() => kills.length === 1, 4000));
+  assert.ok(calls >= 3, `polled until the line appeared (${calls} calls)`);
+  assert.equal(kills[0].pid, 12);
+  assert.equal(kills[0].source, 'kernel');
+  // a SECOND kill: the first kernel line is already attributed and must not be paired again
+  w.add(13, { comm: 'hog2', cmdline: 'hog2', adj: 1000, rssPages: 9000 });
+  await wait(40);
+  w.oomKill(13);
+  assert.ok(await until(() => kills.length === 2, 4000));
+  assert.notEqual(kills[1].source === 'kernel' && kills[1].pid, 12, 'the used line is not reused');
+  assert.equal(kills[1].source, 'inferred', 'no new line for this kill ⇒ the inference stands, labelled');
   mw.stop();
 });

@@ -172,7 +172,7 @@ import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
-import { initBus, closeBus, busPath, getBus, expireAllOrphanedAsks } from './bus';
+import { initBus, closeBus, busPath, getBus, send, expireAllOrphanedAsks } from './bus';
 import { registerBusPaneIpc, registerStaleRunSource } from './bus-pane';
 import { reconcilePauseUi, registerPauseUiIpc, startPauseUiWatcher, stopPauseUiWatcher } from './pause-ui-host';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
@@ -216,7 +216,12 @@ import {
   killKeeper,
   probeKeeper,
   setAppQuitting,
+  onMemoryKill,
+  onMemorySoft,
+  drainAllMemNotices,
 } from './keeper-client';
+import { startMemoryNotices } from './memory-notice';
+import { sdkEmitMemNotice, sdkPatchWorkspace } from './agent-sdk';
 import { restoreRunningFromKeeper, setTurnStartObserver } from './activity';
 import { startPauseTrap, stopPauseTrap } from './pause-trap';
 import { buildPauseTrapDeps, makeTurnStartObserver } from './pause-trap-host';
@@ -582,6 +587,24 @@ async function createMainWindow() {
   // roster — the durable bus signal is authoritative here).
   setLivenessReleased(readReleasedReaders);
   startBusLiveness();
+  // Plafond mémoire (#322): when the cap kills a member's command (or its memory crosses the warning level) the member gets a notice row and its coordinator ONE bus message; then deliver what the
+  // keepers recorded while the app was closed (m1) — AFTER the sink is subscribed, BEFORE any session starts. Tolerates `getBus() === null` (the record stays owed and is retried).
+  startMemoryNotices(
+    {
+      getWorkspace: (id) => store.getWorkspace(id),
+      patchWorkspace: sdkPatchWorkspace,
+      emitLive: sdkEmitMemNotice,
+      sendToCoordinator: (m) => {
+        const db = getBus();
+        if (!db) throw new Error('no bus');
+        send(db, m);
+      },
+      resolveRunId: resolveWaveRunId,
+      log,
+    },
+    { onMemoryKill, onMemorySoft },
+  );
+  drainAllMemNotices((id) => !!store.getWorkspace(id));
   // Fleet PAUSE host trap (#252 D1b, ADR 0003): when a run becomes hard-paused (the CLI writes the
   // bus directly) snapshot every member worktree to a pause ref, write the Bilan de pause, interrupt
   // the turn and kill the tool process trees — never the session or keeper. Drains a pause that

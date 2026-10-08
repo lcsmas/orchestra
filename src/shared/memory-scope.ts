@@ -284,6 +284,10 @@ export const snapKey = (pid: number, startTicks: number): string => `${pid}:${st
 
 /** One kill by the Plafond mémoire. `command` is a best match (the kernel does not name its victim): null when nothing vanished. */
 export interface MemKillRecord {
+  /** Absent on a record written before #322 (= `kill`). */
+  kind?: 'kill';
+  /** How the victim was named (#322 m2): `kernel` = the kernel's own OOM line (journal), pid + comm exact; `inferred` = ranked from the member snapshots (a larger command that exited in the same window can be mistaken for it); absent = an older keeper (= inferred). */
+  source?: 'kernel' | 'inferred';
   /** Monotonic per keeper (1, 2, …) — a reattaching app delivers only what it has not seen. */
   seq: number;
   at: number;
@@ -296,6 +300,110 @@ export interface MemKillRecord {
   candidates: string[];
   unit: string;
   hardBytes: number | null;
+}
+
+/** The scope's memory crossed the WARNING level upward (#322, ledger D-Q2) — never a kernel limit, nothing is slowed. One record per crossing; `seq` shares the kills' counter, so one per-unit cursor covers both. */
+export interface MemSoftRecord {
+  kind: 'soft';
+  seq: number;
+  at: number;
+  unit: string;
+  /** The reading that crossed (`memory.current`). */
+  bytes: number;
+  softBytes: number;
+  hardBytes: number | null;
+}
+/** What the keeper hands the host to tell the member and its coordinator about. */
+export type MemNoticeRecord = MemKillRecord | MemSoftRecord;
+export const isSoftRecord = (r: MemNoticeRecord): r is MemSoftRecord => r.kind === 'soft';
+
+/** Re-arm the warning once the scope falls below this fraction of the level (a scope hovering AT the level must not report every sample). */
+export const SOFT_REARM_FRACTION = 0.9;
+
+// ─── The kernel's own record of a memcg OOM kill (#322 m2) ─────────────────────────────────────────────────────────
+
+/** One `oom-kill:` line of the kernel log: which cgroup hit its limit and exactly which task died. */
+export interface KernelOomKill {
+  atMs: number;
+  pid: number;
+  comm: string;
+  /** The cgroup that hit its limit / the victim's cgroup (paths as the kernel prints them). */
+  oomMemcg: string;
+  taskMemcg: string;
+}
+
+/** Parse the MESSAGE of a kernel log line; null unless it is a memcg `oom-kill:` line. */
+export function parseKernelOomMessage(message: string, atMs: number): KernelOomKill | null {
+  if (!message.startsWith('oom-kill:') || !message.includes('CONSTRAINT_MEMCG')) return null;
+  const m = /oom_memcg=([^,]*),task_memcg=([^,]*),task=(.*),pid=(\d+),uid=\d+/.exec(message);
+  if (!m) return null;
+  const pid = Number(m[4]);
+  return Number.isInteger(pid) && pid > 0 ? { atMs, pid, comm: m[3], oomMemcg: m[1], taskMemcg: m[2] } : null;
+}
+
+/** The kernel kills that belong to THIS scope (its own cgroup hit its limit — basename = the unit), not older than `sinceMs`, oldest first. */
+export function kernelKillsForUnit(lines: readonly KernelOomKill[], unit: string, sinceMs: number): KernelOomKill[] {
+  const base = (p: string): string => p.slice(p.lastIndexOf('/') + 1);
+  return lines
+    .filter((l) => l.atMs >= sinceMs && (base(l.oomMemcg) === unit || base(l.taskMemcg) === unit))
+    .sort((a, b) => a.atMs - b.atMs || a.pid - b.pid);
+}
+
+/**
+ * Replace the inferred victim of each record with the kernel's: `kills` are the unit's kernel lines for this window, oldest first, paired with the
+ * records in order. A record with no line left keeps its inference (`source: 'inferred'`). `vanished` = the members seen before this look
+ * (the command line / rss of a pid we had snapshotted). Returns new records; the inputs are not mutated.
+ */
+export function applyKernelKills(records: readonly MemKillRecord[], kills: readonly KernelOomKill[], vanished: readonly Pick<VictimSnap, 'pid' | 'comm' | 'cmdline' | 'rssPages'>[], pageSize = 4096): MemKillRecord[] {
+  return records.map((r, i) => {
+    const k = kills[i];
+    if (!k) return { ...r, source: 'inferred' };
+    const seen = vanished.find((v) => v.pid === k.pid);
+    return {
+      ...r,
+      source: 'kernel',
+      command: seen ? describeCommand(seen.cmdline, seen.comm) : k.comm,
+      pid: k.pid,
+      rssBytes: seen ? seen.rssPages * pageSize : null,
+      candidates: [], // everything else that vanished in the window exited on its own: the kernel said who died
+    };
+  });
+}
+
+// ─── The words (the member's notice row, the coordinator's bus message, the app log) ───────────────────────────────
+
+const fmtGb = (bytes: number): string => {
+  const g = bytes / GIB;
+  return `${Number.isInteger(g) ? g : +g.toFixed(2)} GB`; // 6 GB, 3.1 GB, 0.25 GB (a rig cap) — never a rounded-off cap
+};
+
+/** The row the member sees. One text for the live row and the reopened one (the builder is the single source). */
+export function memNoticeText(rec: MemNoticeRecord): string {
+  if (isSoftRecord(rec)) {
+    return `Memory at ${fmtGb(rec.bytes)} — Plafond mémoire warning level (${fmtGb(rec.softBytes)}) crossed${rec.hardBytes !== null ? `; hard cap ${fmtGb(rec.hardBytes)}` : ''}`;
+  }
+  const reason = rec.level === 'hard'
+    ? `Plafond mémoire${rec.hardBytes !== null ? ` ${fmtGb(rec.hardBytes)}` : ''} reached`
+    : 'killed by the system under memory pressure (not by the Plafond mémoire)';
+  if (rec.command === null) return `A command was killed: ${reason} (it lived too briefly to be named)`;
+  const cmd = rec.command.length > 120 ? `${rec.command.slice(0, 119)}…` : rec.command;
+  const prefix = rec.source === 'kernel' ? `Command ${cmd}` : `A command (probably ${cmd})`;
+  return rec.level === 'hard' ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
+}
+
+/** The ONE message the coordinator gets: workspace, command, level. */
+export function memBusBody(wsLabel: string, rec: MemNoticeRecord): string {
+  if (isSoftRecord(rec)) {
+    return `Plafond mémoire — workspace ${wsLabel}: memory ${fmtGb(rec.bytes)} crossed the warning level (${fmtGb(rec.softBytes)})${rec.hardBytes !== null ? `, hard cap ${fmtGb(rec.hardBytes)}` : ''}. Nothing was killed or slowed. Scope ${rec.unit}.`;
+  }
+  const cmd = rec.command === null ? 'an unnamed command (it lived too briefly)' : `${rec.source === 'kernel' ? 'command' : 'probably the command'} \`${rec.command}\`${rec.pid !== null ? ` (pid ${rec.pid}${rec.rssBytes ? `, ~${Math.round(rec.rssBytes / (1024 * 1024))} MB` : ''})` : ''}`;
+  const lvl = rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${fmtGb(rec.hardBytes)})` : ''}` : 'an OOM kill from outside the scope limit';
+  return `Plafond mémoire — workspace ${wsLabel}: ${cmd} KILLED at the ${lvl}. The member's session survived. Scope ${rec.unit}.`;
+}
+
+/** The app-log line for one warning-level crossing. */
+export function formatMemSoftLine(wsLabel: string, rec: MemSoftRecord): string {
+  return `memory-cap[${wsLabel}] warning level crossed: ${(rec.bytes / GIB).toFixed(2)} GB >= ${(rec.softBytes / GIB).toFixed(2)} GB — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}`;
 }
 
 /** The kernel's own ranking (mm/oom_kill.c oom_badness): RSS pages + adj/1000 × the cgroup's page budget. */
@@ -342,6 +450,8 @@ export function inferKillRecords(a: InferKillsInput): MemKillRecord[] {
     const v = vanished[i];
     const others = vanished.filter((_, j) => j !== i && (a.delta.oomKill === 1 || j >= a.delta.oomKill)).slice(0, 5);
     out.push({
+      kind: 'kill',
+      source: 'inferred',
       seq: a.seqNext + i,
       at: a.nowMs,
       level: i < a.delta.hardCredit ? 'hard' : 'external',
@@ -361,7 +471,7 @@ export function formatMemKillLine(wsLabel: string, rec: MemKillRecord): string {
   const cmd = rec.command === null ? 'an unnamed process (it lived less than one snapshot)' : `"${rec.command}" (pid ${rec.pid}, ~${Math.round((rec.rssBytes ?? 0) / (1024 * 1024))} MB)`;
   const lvl = rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${(rec.hardBytes / GIB).toFixed(2)} GB)` : ''}` : 'an OOM kill from outside the scope limit';
   const amb = rec.candidates.length ? ` — also gone in the same window: ${rec.candidates.join(' | ')}` : '';
-  return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}${amb}`;
+  return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}${amb}${rec.source === 'kernel' ? ' — victim named by the kernel log' : ''}`;
 }
 
 /** What the app says about a freshly launched scoped keeper, from the state the keeper reports (`helloAck.cap.state`). `warn` states are ones where the promise «a runaway tool dies, the session survives» does NOT hold. */

@@ -33,6 +33,15 @@ import {
   type ScopeMember,
   type VictimSnap,
   launcherExecedKeeper,
+  parseKernelOomMessage,
+  kernelKillsForUnit,
+  applyKernelKills,
+  memNoticeText,
+  memBusBody,
+  isSoftRecord,
+  formatMemSoftLine,
+  type MemKillRecord,
+  type MemSoftRecord,
 } from './memory-scope.ts';
 
 const GIB = 1024 ** 3;
@@ -336,4 +345,70 @@ test('classifyScopeMembers (review F1): a member that EXITS between the snapshot
   assert.deepEqual([...new Set(asked)], [99], 'no member pid was re-read from the host');
   const orphan = classifyScopeMembers([mk(10, 1), mk(14, 1)], 10, null, () => null).find((m) => m.pid === 14);
   assert.equal(orphan?.role, 'reliquat', 'control: a member whose snapshot ppid is init is still a Reliquat');
+});
+
+// ─── #322: the kernel names its victim; the words of the notice and the bus message ─────────────────────────────────
+
+const REAL_OOM_LINE = 'oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=user.slice,mems_allowed=0,oom_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-rig-wh-h1-mcabcckill-muzvubbk.scope,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-rig-wh-h1-mcabcckill-muzvubbk.scope,task=python3,pid=2413311,uid=1000'; // captured from `journalctl -k` on this host
+
+test('#322 m2: a REAL kernel oom-kill line is parsed (cgroup, comm, pid); other kernel lines and global OOMs are not', () => {
+  const k = parseKernelOomMessage(REAL_OOM_LINE, 1000);
+  assert.deepEqual(k && { pid: k.pid, comm: k.comm, atMs: k.atMs }, { pid: 2413311, comm: 'python3', atMs: 1000 });
+  assert.match(k?.oomMemcg ?? '', /orchestra-rig-wh-h1-mcabcckill-muzvubbk\.scope$/);
+  assert.equal(parseKernelOomMessage('Memory cgroup out of memory: Killed process 5 (x) total-vm:1kB', 1), null, 'only the structured oom-kill: line');
+  assert.equal(parseKernelOomMessage(REAL_OOM_LINE.replace('CONSTRAINT_MEMCG', 'CONSTRAINT_NONE'), 1), null, 'a GLOBAL oom is not a scope kill');
+  assert.equal(parseKernelOomMessage('oom-kill:constraint=CONSTRAINT_MEMCG,garbage', 1), null);
+  const odd = parseKernelOomMessage(REAL_OOM_LINE.replace('task=python3', 'task=my,prog'), 1);
+  assert.equal(odd?.comm, 'my,prog', 'a comm with a comma survives');
+});
+
+test('#322 m2: only THIS scope\'s kills inside the window, oldest first — a neighbour scope\'s kill is never ours', () => {
+  const mine = parseKernelOomMessage(REAL_OOM_LINE, 5000)!;
+  const mine2 = { ...mine, pid: 7, atMs: 4000 };
+  const other = parseKernelOomMessage(REAL_OOM_LINE.replaceAll('mcabcckill-muzvubbk', 'someone-else-aaaa'), 5000)!;
+  const old = { ...mine, pid: 9, atMs: 10 };
+  const got = kernelKillsForUnit([mine, other, old, mine2], 'orchestra-rig-wh-h1-mcabcckill-muzvubbk.scope', 3000);
+  assert.deepEqual(got.map((g) => g.pid), [7, 2413311], 'mine, in window, oldest first');
+});
+
+const rec = (over: Partial<MemKillRecord> = {}): MemKillRecord => ({ kind: 'kill', source: 'inferred', seq: 1, at: 1, level: 'hard', command: 'bigbuild --all', pid: 100, rssBytes: 90 * 1024 * 1024, candidates: ['other'], unit: 'u.scope', hardBytes: 6 * 1024 ** 3, ...over });
+
+test('#322 m2: applyKernelKills — the kernel\'s pid/comm replace the inference; the larger command that exited normally stops being the answer', () => {
+  const snaps = [{ pid: 100, comm: 'bigbuild', cmdline: 'bigbuild --all', rssPages: 20000 }]; // exited NORMALLY, bigger than the victim
+  const victim = parseKernelOomMessage(REAL_OOM_LINE, 1)!; // pid 2413311 python3, never snapshotted
+  const [r] = applyKernelKills([rec()], [victim], snaps, 4096);
+  assert.equal(r.source, 'kernel');
+  assert.equal(r.pid, 2413311);
+  assert.equal(r.command, 'python3', 'unsnapshotted victim: the kernel\'s comm, not a made-up name');
+  assert.deepEqual(r.candidates, [], 'the others exited on their own');
+  const seen = applyKernelKills([rec()], [{ ...victim, pid: 100, comm: 'bigbuild' }], snaps, 4096)[0];
+  assert.equal(seen.command, 'bigbuild --all', 'a snapshotted victim keeps its full command line and rss');
+  assert.equal(seen.rssBytes, 20000 * 4096);
+  const none = applyKernelKills([rec(), rec({ seq: 2 })], [victim], snaps, 4096);
+  assert.deepEqual(none.map((x) => x.source), ['kernel', 'inferred'], 'a record with no kernel line keeps its inference, labelled so');
+  assert.equal(none[1].command, 'bigbuild --all');
+});
+
+test('#322: the member row, the coordinator message and the soft line say workspace / command / level — and say «probably» when only inferred', () => {
+  assert.equal(memNoticeText(rec({ source: 'kernel', command: 'python3 swarm.py 8' })), 'Command python3 swarm.py 8 killed: Plafond mémoire 6 GB reached');
+  assert.equal(memNoticeText(rec({ command: 'python3 swarm.py' })), 'A command (probably python3 swarm.py) killed: Plafond mémoire 6 GB reached');
+  assert.equal(memNoticeText(rec({ command: null })), 'A command was killed: Plafond mémoire 6 GB reached (it lived too briefly to be named)');
+  assert.match(memNoticeText(rec({ source: 'kernel', level: 'external', hardBytes: null })), /killed by the system under memory pressure \(not by the Plafond mémoire\)/);
+  assert.equal(memNoticeText(rec({ source: 'kernel', command: 'x'.repeat(300) })).includes('x'.repeat(200)), false, 'a huge command line is clipped');
+  const soft: MemSoftRecord = { kind: 'soft', seq: 3, at: 5, unit: 'u.scope', bytes: Math.round(3.1 * 1024 ** 3), softBytes: 3 * 1024 ** 3, hardBytes: 6 * 1024 ** 3 };
+  assert.ok(isSoftRecord(soft) && !isSoftRecord(rec()));
+  assert.equal(memNoticeText(soft), 'Memory at 3.1 GB — Plafond mémoire warning level (3 GB) crossed; hard cap 6 GB');
+  const body = memBusBody('feat-x', rec({ source: 'kernel', command: 'cargo build', pid: 42 }));
+  assert.match(body, /workspace feat-x/);
+  assert.match(body, /command `cargo build` \(pid 42, ~90 MB\)/);
+  assert.match(body, /hard level \(6 GB\)/);
+  assert.match(memBusBody('feat-x', soft), /Nothing was killed or slowed/);
+  assert.match(formatMemSoftLine('feat-x', soft), /^memory-cap\[feat-x\] warning level crossed: 3\.10 GB >= 3\.00 GB — scope u\.scope/);
+});
+
+test('#322: inferKillRecords labels what it makes `inferred` (the kill kind is explicit)', () => {
+  const before = new Map([['1:7', { pid: 1, startTicks: 7, comm: 'hog', cmdline: 'hog', rssPages: 10, adj: 1000 }]]);
+  const [r] = inferKillRecords({ before, aliveKeys: new Set(), delta: { oomKill: 1, hardCredit: 1 }, maxBytes: 1 << 28, unit: 'u.scope', seqNext: 1, nowMs: 1 });
+  assert.equal(r.kind, 'kill');
+  assert.equal(r.source, 'inferred');
 });

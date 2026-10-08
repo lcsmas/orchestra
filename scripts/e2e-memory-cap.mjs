@@ -40,6 +40,11 @@ const ARMS = {
   launcher_hangs_plain: { mustFailOnMaster: true },
   not_applied_reported: { mustFailOnMaster: true },
   slow_keeper_keeps_cap: { mustFailOnMaster: true },
+  // #322 (Plafond mémoire: tell the member and its coordinator) — the production sink (src/main/memory-notice.ts) over the REAL keeper, a REAL scope and a REAL scratch bus
+  notice_kill_reported: { mustFailOnMaster: true },
+  notice_names_victim: { mustFailOnMaster: true },
+  notice_soft_reported: { mustFailOnMaster: true },
+  notice_app_closed: { mustFailOnMaster: true },
   // needs a real Chromium (CHROMIUM or /usr/lib64/chromium-browser/chromium-browser): run by `pnpm run test:memory-cap-browser`, skipped by `all` unless MC_BROWSER=1
   browser_contained: { mustFailOnMaster: true, needsChromium: true },
 };
@@ -144,17 +149,19 @@ assertScratch('ORCHESTRA_HOME', home, base, live);
 // The daemon bundle the run EXECUTES: rebuild when missing or older than ANY of its sources (a stale bundle reproduces perfectly in isolation).
 const KEEPER_JS = process.env.MC_KEEPER_BUNDLE ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.MC_KEEPER_BUNDLE) {
-  const srcs = ['src/keeper/index.ts', 'src/keeper/memory-watch.ts', 'src/shared/keeper-protocol.ts', 'src/shared/memory-scope.ts'].map((s) => path.join(REPO, s)).filter((s) => fs.existsSync(s));
+  const srcs = ['src/keeper/index.ts', 'src/keeper/memory-watch.ts', 'src/keeper/kernel-oom-log.ts', 'src/shared/keeper-protocol.ts', 'src/shared/memory-scope.ts', 'src/shared/mem-notice-file.ts'].map((s) => path.join(REPO, s)).filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_JS) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_JS).mtimeMs)) {
     execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
   }
 }
 fs.copyFileSync(KEEPER_JS, path.join(home, 'bin', 'keeper.js'));
 
+/** Everything the app would broadcast to the renderer's `agent:event` channel (the member's event stream), in order. */
+const agentEvents = [];
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 initPlatform({
   kind: 'headless-memory-cap-rig',
-  broadcast: () => {}, broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false, notify: () => {},
+  broadcast: (ch, ...a) => { if (ch === 'agent:event') agentEvents.push({ wsId: a[0], ev: a[1] }); }, broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false, notify: () => {},
   openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {}, openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
   getUserDataDir: () => home, getLogsDir: () => `${home}/logs`, getAppVersion: () => '0.0.0-memory-cap-rig', getAppMetrics: () => [],
   isEncryptionAvailable: () => false, encryptString: (s) => s, decryptString: (s) => s,
@@ -167,12 +174,16 @@ const scopeMod = hasCap ? await import(`${REPO}/src/main/memory-scope.ts`) : nul
 
 // A REAL scratch bus with two runs: one that froze memory_cap ON, one OFF — and the REAL store for the Garde mémoire levels.
 let settings = { capSoftGb: SOFT_GB, capHardGb: HARD_GB };
+let busDb = null;
+let busSendFn = null;
 if (hasCap) {
-  const { initBus, getBus } = await import(`${REPO}/src/main/bus.ts`);
+  const { initBus, getBus, send: busSend } = await import(`${REPO}/src/main/bus.ts`);
   const { startRun } = await import(`${REPO}/src/main/bus-runs.ts`);
   const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
   initBus();
   const db = getBus();
+  busDb = db;
+  busSendFn = busSend;
   startRun(db, { id: 'run-on', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, memoryCap: true });
   startRun(db, { id: 'run-off', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES });
   const { store } = await import(`${REPO}/src/main/store.ts`);
@@ -240,6 +251,37 @@ const stopUnit = (u) => spawnSync('systemctl', ['--user', 'stop', u], { encoding
 
 const kills = [];
 kc.onMemoryKill?.((ws, rec) => kills.push({ ws, ...rec }));
+const softs = [];
+kc.onMemorySoft?.((ws, rec) => softs.push({ ws, ...rec }));
+
+// #322: the PRODUCTION sink (src/main/memory-notice.ts) wired the way index.ts wires it — real bus, real builder, a fake workspace map (the real store/agent-sdk need Electron).
+// `emitLive` mirrors sdkEmitMemNotice: the REAL makeMemNotice builder, broadcast on the `agent:event` seam. The deps wiring itself is pinned by memory-cap-binding.test.ts.
+const noticeSrc = path.join(REPO, 'src', 'main', 'memory-notice.ts');
+const hasNotice = fs.existsSync(noticeSrc) && typeof kc.onMemorySoft === 'function' && typeof kc.drainAllMemNotices === 'function';
+const fakeWs = new Map();
+let memNoticeMod = null;
+async function armSink(wsIds) {
+  if (!hasNotice) return false;
+  memNoticeMod = await import(noticeSrc);
+  const { makeMemNotice } = await import(`${REPO}/src/shared/mem-notice.ts`);
+  fakeWs.set('rig-coordinator', { id: 'rig-coordinator', name: 'rig-coordinator', branch: 'rig-coordinator' });
+  for (const id of wsIds) fakeWs.set(id, { id, name: `member-${id.slice(-4)}`, branch: `member-${id.slice(-4)}`, parentId: 'rig-coordinator' });
+  let seq = 1;
+  memNoticeMod.startMemoryNotices({
+    getWorkspace: (id) => fakeWs.get(id),
+    patchWorkspace: async (id, patch) => { fakeWs.set(id, { ...fakeWs.get(id), ...patch }); },
+    emitLive: (wsId, entry) => agentEvents.push({ wsId, ev: makeMemNotice({ seq: seq++ }, entry) }),
+    sendToCoordinator: (m) => { if (!busDb) throw new Error('no bus'); busSendFn(busDb, m); },
+    resolveRunId: () => 'run-on',
+    log: { info: () => {}, warn: (m) => console.error(`  sink: ${m}`) },
+  }, { onMemoryKill: kc.onMemoryKill, onMemorySoft: kc.onMemorySoft });
+  return true;
+}
+const busRows = (wsId) => (busDb ? busDb.prepare('SELECT sequence, kind, sender, recipient, body FROM messages WHERE sender = ? ORDER BY sequence').all(wsId) : []);
+const noticeEvents = (wsId) => agentEvents.filter((e) => e.wsId === wsId && e.ev?.type === 'notice');
+/** The kernel log must be readable for the m2 arms to mean anything (else the inference is all there is): a positive control, printed. */
+const journalReadable = () => spawnSync('journalctl', ['-k', '--no-pager', '-q', '-n', '1', '-o', 'cat'], { encoding: 'utf8' }).stdout.trim().length > 0;
+const notified = async (wsId) => { if (memNoticeMod) await memNoticeMod.__memNoticeIdle(wsId); };
 
 async function teardown(wsList) {
   for (const ws of wsList) {
@@ -487,6 +529,114 @@ try {
     const pr = await kc.probeKeeper(ws);
     check('the keeper reports cap.state = active', pr?.cap?.state === 'active', JSON.stringify(pr?.cap ?? null));
     detail = `up after ${tUp} ms`;
+  } else if (ARM === 'notice_kill_reported') {
+    // #322: the cap kills commands ⇒ the member's event stream gets ONE notice row per kill, the coordinator ONE bus row per kill, the app log its line — over a REAL keeper in a REAL scope.
+    check('the notice sink exists in this tree (memory-notice.ts + onMemorySoft + drainAllMemNotices)', await armSink([ws]), '');
+    const st = open(ws, decide(ws));
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    check('a scope exists: the keeper runs in a rig-prefixed .scope', f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
+    await runTool(st, `${python.join(' ')} ${RIG_DIR}/swarm.py 8 50 10 swarm-notice`, 't-swarm', 90_000);
+    let lastN = -1;
+    await waitFor(() => { const n = eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill ?? 0; const stable = n === lastN && n > 0; lastN = n; return stable; }, 30_000, 1500);
+    await sleep(2500); // the kernel-log lookup + delivery
+    await notified(ws);
+    const nKill = eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill ?? 0;
+    check('the cap killed commands', nKill >= 1, `oom_kill=${nKill}`);
+    check('one record per kill', kills.length === nKill, `records=${kills.length} oom_kill=${nKill}`);
+    const rows = noticeEvents(ws);
+    check('the member\'s event stream has ONE notice row per kill, worded «Command … killed: Plafond mémoire 0.25 GB reached»', rows.length === nKill && rows.every((r) => /^(Command .+|A command \(probably .+\)) killed: Plafond mémoire 0\.25 GB reached$/.test(r.ev.text)), `rows=${rows.length} ${rows[0]?.ev?.text?.slice(0, 90)}`);
+    const bus = busRows(ws);
+    check('the coordinator has ONE bus row per kill: an escalation from the member to its coordinator', bus.length === nKill && bus.every((b) => b.kind === 'escalation' && b.recipient === 'rig-coordinator'), `rows=${bus.length} kinds=${[...new Set(bus.map((b) => b.kind))]}`);
+    check('...naming the workspace, the command and the level', bus.length > 0 && bus.every((b) => b.body.includes(ws) && /python3/.test(b.body) && /hard level \(0\.25 GB\)/.test(b.body)), (bus[0]?.body ?? '').slice(0, 200));
+    const logged = (orchLog().match(new RegExp(`memory-cap\\[${ws}\\] killed`, 'g')) ?? []).length;
+    check('the app log line exists once per kill', logged === nKill, `lines=${logged} oom_kill=${nKill}`);
+    check('the rows are persisted for a reopened pane (one entry per kill)', (fakeWs.get(ws)?.sdkMemNotices?.length ?? 0) === nKill);
+    check('victims are named by the KERNEL log wherever the journal is readable', !journalReadable() || kills.every((k) => k.source === 'kernel'), JSON.stringify(kills.map((k) => k.source)));
+    detail = `kills=${nKill} rows=${rows.length} bus=${bus.length}`;
+  } else if (ARM === 'notice_names_victim') {
+    // #322 m2: a BIG command exits normally in the same window as a smaller one is OOM-killed unseen — the record must name the victim by PID, from the kernel's own line.
+    check('control: the kernel log is readable on this host (else the inference is all there is)', journalReadable(), '');
+    check('the notice sink exists in this tree', await armSink([ws]), '');
+    const st = open(ws, decide(ws), { rssMb: 0 });
+    await waitFor(() => initOf(st), 30_000);
+    const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/m2-race.py`, 't-m2', 60_000);
+    const m = /victim_pid=(\d+) victim_rc=(-?\d+) a_rc=(-?\d+)/.exec(t?.stdout ?? '');
+    check('the race ran: the small command was killed (-9), the big one exited normally (0)', !!m && m[2] === '-9' && m[3] === '0', t?.stdout?.trim());
+    await waitFor(() => kills.length >= 1, 10_000);
+    await sleep(2500);
+    await notified(ws);
+    check('exactly one kill record', kills.length === 1, `records=${kills.length}`);
+    const k = kills[0];
+    check('the record names the REAL victim by pid — not the larger command that exited normally in the same window', !!k && !!m && String(k.pid) === m[1], `record pid=${k?.pid} command=${k?.command?.slice(0, 60)} real victim=${m?.[1]}`);
+    check('...it did not blame the big command (its command line is not in the record)', !!k && !/sleep\(1\.3\)/.test(k.command ?? ''), k?.command?.slice(0, 80));
+    check('...and the record says the KERNEL named it', k?.source === 'kernel', `source=${k?.source}`);
+    check('the member\'s row and the coordinator\'s row agree (one each)', noticeEvents(ws).length === 1 && busRows(ws).length === 1, `rows=${noticeEvents(ws).length} bus=${busRows(ws).length}`);
+    detail = `victim=${m?.[1]} record=${k?.pid} source=${k?.source}`;
+  } else if (ARM === 'notice_soft_reported') {
+    // #322 D-Q2: the soft level is a keeper-watched WARNING on memory.current — one record per upward crossing, the same row + bus path as a kill, nothing killed or slowed.
+    settings = { ...settings, capSoftGb: 0.15, capHardGb: HARD_GB };
+    check('the notice sink exists in this tree', await armSink([ws]), '');
+    const st = open(ws, decide(ws), { rssMb: 0 });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const cur0 = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.current')));
+    check('precondition: the scope starts BELOW the warning level (else nothing is a crossing)', cur0 < 0.15 * 1024 ** 3 * 0.9, `memory.current=${cur0}`);
+    const t0 = Date.now();
+    const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/soft-cross.py 120 1.5 1.2 2 soft-notice`, 't-soft', 60_000);
+    const wall = Date.now() - t0;
+    await sleep(1500);
+    await notified(ws);
+    check('two crossings ⇒ TWO warning records (edge-triggered, not one per sample)', softs.length === 2, `softs=${softs.length}`);
+    check('each record carries the reading, the level and the hard cap', softs.every((r) => r.bytes >= r.softBytes && r.softBytes === Math.round(0.15 * 1024 ** 3) && r.hardBytes !== null), JSON.stringify(softs[0]));
+    check('NOTHING was killed', kills.length === 0 && (eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill ?? 0) === 0, `kills=${kills.length}`);
+    check('NOTHING was slowed: no MemoryHigh (memory.high = max) and the tool ran at full speed', readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.high'))?.trim() === 'max' && t?.code === 0 && wall < 12_000, `wall=${wall} ms code=${t?.code}`);
+    const rows = noticeEvents(ws);
+    check('the member\'s stream has one row per crossing', rows.length === 2 && rows.every((r) => /^Memory at .+ GB — Plafond mémoire warning level \(0\.15 GB\) crossed; hard cap 0\.25 GB$/.test(r.ev.text)), rows.map((r) => r.ev.text).join(' | ').slice(0, 200));
+    const bus = busRows(ws);
+    check('the coordinator gets one `status` row per crossing (not an escalation: nothing was lost)', bus.length === 2 && bus.every((b) => b.kind === 'status' && b.recipient === 'rig-coordinator'), `kinds=${bus.map((b) => b.kind)}`);
+    detail = `softs=${softs.length}`;
+  } else if (ARM === 'notice_app_closed') {
+    // #322 m1: the kernel kills while the app is CLOSED and the keeper is gone before any reattach — the kill must still be reported, once. The "app" is a separate process that dies mid-turn.
+    if (PHASE === 'app') {
+      const st = open(ws, decide(ws));
+      await waitFor(() => initOf(st), 30_000);
+      const f = factsOf(ws, st);
+      st.send({ tool: `${python.join(' ')} ${RIG_DIR}/swarm.py 8 50 10 swarm-app-closed`, id: 't-swarm' });
+      await waitFor(() => st.lines.some((l) => l.toolStart === 't-swarm'), 15_000);
+      fs.writeFileSync(path.join(base, 'app.json'), JSON.stringify({ keeperPid: f.keeperPid, keeperId: f.keeperId, cliPid: f.cliPid, cliId: f.cliId, cgroupDir: f.cgroupDir, unit: f.unit }));
+      process.kill(process.pid, 'SIGKILL'); // the app crashes now, mid-turn
+      await sleep(5000);
+    }
+    check('the notice sink exists in this tree', await armSink([ws]), '');
+    const app = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { env: { ...process.env, MC_PHASE: 'app' }, encoding: 'utf8', timeout: 120_000 });
+    check('the first "app" died by SIGKILL mid-turn', app.signal === 'SIGKILL', `signal=${app.signal} status=${app.status}`);
+    const info = JSON.parse(readSafe(path.join(base, 'app.json')) ?? '{}');
+    const killed = await waitFor(() => info.cgroupDir && (eventsOf(info.cgroupDir).oom_kill ?? 0) >= 1, 60_000, 200);
+    let lastN = -1;
+    await waitFor(() => { const n = eventsOf(info.cgroupDir).oom_kill ?? 0; const stable = n === lastN; lastN = n; return stable; }, 30_000, 2500);
+    check('the kernel killed while NO app was attached', killed, `events=${JSON.stringify(info.cgroupDir ? eventsOf(info.cgroupDir) : null)}`);
+    const nKill = eventsOf(info.cgroupDir).oom_kill ?? 0;
+    const file = path.join(home, 'keepers', `${ws}.memnotices.jsonl`);
+    check('the keeper had written every kill to its durable file BEFORE telling anyone', fs.existsSync(file) && (readSafe(file) ?? '').trim().split('\n').filter(Boolean).length === nKill, `file=${fs.existsSync(file)} lines=${(readSafe(file) ?? '').trim().split('\n').filter(Boolean).length} oom_kill=${nKill}`);
+    // the keeper goes away BEFORE any app reattaches (linger expiry / the CLI ended): nothing is left to ask
+    await kc.killKeeper(ws, 'memory-cap-rig-keeper-gone');
+    check('the keeper and its CLI are gone — only the file remains', await waitFor(() => !alive(info.keeperPid) && !alive(info.cliPid), 15_000) && fs.existsSync(file), `keeper=${alive(info.keeperPid)} cli=${alive(info.cliPid)}`);
+    // the app comes back: the boot scan (index.ts) delivers
+    kc.drainAllMemNotices?.((id) => fakeWs.has(id));
+    await sleep(1500);
+    await notified(ws);
+    check('every kill is reported ONCE after the app comes back', kills.length === nKill && kills.every((r) => r.level === 'hard'), `records=${kills.length} oom_kill=${nKill}`);
+    check('the member\'s stream has one row per kill', noticeEvents(ws).length === nKill, `rows=${noticeEvents(ws).length}`);
+    check('the coordinator has one bus row per kill', busRows(ws).length === nKill && busRows(ws).every((b) => b.kind === 'escalation'), `bus=${busRows(ws).length}`);
+    check('the app log has one line per kill', (orchLog().match(new RegExp(`memory-cap\\[${ws}\\] killed`, 'g')) ?? []).length === nKill);
+    kc.drainAllMemNotices?.((id) => fakeWs.has(id));
+    kc.drainAllMemNotices?.((id) => fakeWs.has(id));
+    await sleep(800);
+    await notified(ws);
+    check('scanning again (restart after restart) reports NOTHING new: no duplicate record, row or bus message', kills.length === nKill && noticeEvents(ws).length === nKill && busRows(ws).length === nKill, `records=${kills.length} rows=${noticeEvents(ws).length} bus=${busRows(ws).length}`);
+    check('the file is pruned once everything in it is delivered and no live keeper owns it', !fs.existsSync(file));
+    detail = `kills=${nKill} keeper-gone`;
   } else if (ARM === 'browser_contained') {
     // H2 review F1 (ledger Q5): a real headless Chromium started by a capped member's tool must STAY in the member's scope. Measured on this host: with DBUS_SESSION_BUS_ADDRESS in its env
     // Chromium moves its main process into its own transient scope (out of the cap); without it all 9 processes stay. The keeper removes the address from a capped member's CLI env.

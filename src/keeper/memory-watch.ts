@@ -8,11 +8,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  SOFT_REARM_FRACTION,
+  applyKernelKills,
   inferKillRecords,
+  kernelKillsForUnit,
   parseCgroupLimit,
   parseMemoryEvents,
   snapKey,
+  type KernelOomKill,
   type MemKillRecord,
+  type MemSoftRecord,
   type MemoryEvents,
   type VictimSnap,
 } from '../shared/memory-scope.ts';
@@ -22,6 +27,11 @@ export interface MemoryWatchOpts {
   cgroupDir: string;
   unit: string;
   onKill(rec: MemKillRecord): void;
+  /** #322 (D-Q2): the WARNING level — `memory.current` crossing `softBytes` upward fires `onSoft` once per crossing (re-armed below {@link SOFT_REARM_FRACTION} of the level). Nothing is throttled. Absent/null `softBytes` = no warning. */
+  softBytes?: number | null;
+  onSoft?(rec: MemSoftRecord): void;
+  /** #322 m2: the kernel's own OOM lines since a time (null = the log is unreadable → the inference stands). Default: `journalctl -k`; tests inject. Absent in `o` = no kernel lookup. */
+  kernelLog?: (sinceMs: number) => Promise<KernelOomKill[] | null>;
   log(msg: string): void;
   /** Snapshot cadence: `hotMs` while the scope uses > 50 % of its limit, `fastMs` above 25 %, `idleMs` otherwise (defaults 100 / 250 / 500 ms). */
   hotMs?: number;
@@ -89,6 +99,12 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
   const statics = new Map<number, { startTicks: number; comm: string; cmdline: string; adj: number }>();
   const recs: MemKillRecord[] = [];
   let seq = o.seqStart ?? 1;
+  /** Kernel lines already attributed to a record (a retry or a later look must not pair the same line twice). */
+  const usedKernel = new Set<string>();
+  /** Consecutive kills for which the kernel log showed nothing at all: the journal is probably invisible to us — stop waiting for it (one quick try per kill). */
+  let kernelMisses = 0;
+  let lastLookAt = (o.now ?? Date.now)();
+  let softArmed = true;
   let last: MemoryEvents | null = parseMemoryEvents(readSafe(eventsFile) ?? '');
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -163,18 +179,20 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
         const killsNow = cur.oomKill - last.oomKill;
         const hardCredit = Math.min(killsNow, oomCredits.length);
         oomCredits = oomCredits.slice(hardCredit); // the oldest credits are spent
-        const made = inferKillRecords({
+        const inferred = inferKillRecords({
           before,
           aliveKeys: alive,
           delta: { oomKill: killsNow, hardCredit },
           maxBytes: maxBytes(),
           unit: o.unit,
-          seqNext: seq,
+          seqNext: 0, // the real number is assigned at EMIT time: the delivery cursor is a high-water mark, so a soft record emitted during the kernel-log wait must not get a lower seq than a kill emitted after it
           nowMs: now(),
           pageSize: PAGE,
         });
-        seq += made.length;
-        for (const rec of made) {
+        const made = await refineWithKernel(inferred, before);
+        if (stopped) return;
+        for (const r of made) {
+          const rec = { ...r, seq: seq++ };
           recs.push(rec);
           if (recs.length > 50) recs.shift();
           try {
@@ -186,8 +204,52 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
       }
       for (const k of before.keys()) if (!alive.has(k)) snap.delete(k); // forgotten, named or not
       if (cur) last = cur;
+      lastLookAt = now();
     } finally {
       busy = false;
+    }
+  }
+
+  const kernelKey = (k: KernelOomKill): string => `${k.atMs}:${k.pid}`;
+  /** #322 m2: ask the kernel log who died. The line lands in the journal a few ms after the kill: poll (≤ ~1.4 s). No line ⇒ the records stay `inferred`. */
+  async function refineWithKernel(made: MemKillRecord[], before: ReadonlyMap<string, VictimSnap>): Promise<MemKillRecord[]> {
+    const lookup = o.kernelLog;
+    if (!lookup || made.length === 0) return made;
+    const since = lastLookAt - 3000;
+    const tries = kernelMisses >= 3 ? 1 : 8;
+    let mine: KernelOomKill[] = [];
+    for (let i = 0; i < tries && !stopped; i++) {
+      let lines: KernelOomKill[] | null = null;
+      try {
+        lines = await lookup(since);
+      } catch {
+        lines = null;
+      }
+      mine = lines ? kernelKillsForUnit(lines, o.unit, since).filter((l) => !usedKernel.has(kernelKey(l))) : [];
+      if (mine.length >= made.length) break;
+      if (i < tries - 1) await sleep(180);
+    }
+    const take = mine.slice(0, made.length);
+    for (const k of take) usedKernel.add(kernelKey(k));
+    kernelMisses = take.length === 0 ? kernelMisses + 1 : 0;
+    return applyKernelKills(made, take, [...before.values()], PAGE);
+  }
+
+  /** #322 (D-Q2): the warning level, edge-triggered on `memory.current` — one record per upward crossing, re-armed below SOFT_REARM_FRACTION of the level. */
+  function softCheck(currentBytes: number): void {
+    const soft = o.softBytes;
+    if (!o.onSoft || !soft || soft <= 0 || !Number.isFinite(currentBytes)) return;
+    if (!softArmed) {
+      if (currentBytes < soft * SOFT_REARM_FRACTION) softArmed = true;
+      return;
+    }
+    if (currentBytes < soft) return;
+    softArmed = false;
+    const rec: MemSoftRecord = { kind: 'soft', seq: seq++, at: now(), unit: o.unit, bytes: currentBytes, softBytes: soft, hardBytes: maxBytes() };
+    try {
+      o.onSoft(rec);
+    } catch (e) {
+      o.log(`memory watch: onSoft failed (${(e as Error).message})`);
     }
   }
 
@@ -195,6 +257,7 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     if (stopped) return;
     void look().catch((e) => o.log(`memory watch: look failed (${(e as Error).message})`));
     const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
+    softCheck(cur);
     const max = maxBytes();
     const frac = max !== null && Number.isFinite(cur) ? cur / max : 0;
     const base = frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 500);
