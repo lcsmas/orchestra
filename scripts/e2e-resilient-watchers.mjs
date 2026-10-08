@@ -78,6 +78,7 @@ const check = (name, ok, note) => { checks.push({ name, ok: !!ok, note: ok ? und
 const finish = async (extra = {}) => {
   const bad = checks.filter((c) => !c.ok);
   console.log(JSON.stringify({ arm: ARM, pass: bad.length === 0, ms: Date.now() - t0, checks, ...extra }));
+  if (process.env.RIG_KEEP !== '1') fs.rmSync(SCRATCH, { recursive: true, force: true }); // scratch only — SAFETY above refused any path outside ~/.cache
   process.exit(0);
 };
 setTimeout(() => { check('deadline', false, 'the arm hung (100 s)'); void finish(); }, 100_000).unref?.();
@@ -239,7 +240,15 @@ const paths = {
     seen: (i) => since(i, 'inbox:update').some((e) => e.args[0]?.workspaceId === 'ws-m1' && e.args[0]?.count > 0),
   },
 };
+// the events spool has a 1 s POLL fallback, so « seen at all » proves nothing: the live path is its LATENCY — six events written at scattered phases must ALL be applied within 250 ms (a 1 s poll manages that 0.02 % of the time)
+let spoolSeq = 0;
+paths.spool = {
+  write: () => { spoolSeq++; fs.mkdirSync(spool.getEventsDir(), { recursive: true }); fs.appendFileSync(path.join(spool.getEventsDir(), 'ws-m1.jsonl'), `${JSON.stringify({ seq: spoolSeq, event: spoolSeq % 2 === 1 ? 'submit' : 'stop' })}\n`); },
+  seen: (i) => since(i, 'workspace:update').some((e) => e.args[0]?.id === 'ws-m1' && e.args[0]?.status === (spoolSeq % 2 === 1 ? 'running' : 'idle')),
+};
 paths.wake.base = 0;
+/** six spool events at scattered phases → their latencies (ms, null = never applied) */
+async function spoolLatencies() { const lat = []; for (let k = 0; k < 6; k++) { await sleep(170 + ((k * 97) % 160)); lat.push(await live('spool', 1500)); } return lat; }
 /** write, then wait up to `ms` for the effect; returns elapsed ms or null (never seen) */
 async function live(name, ms) {
   const p = paths[name];
@@ -264,6 +273,10 @@ if (ARM === 'control') {
   for (const name of ['pause_ui', 'wake', 'human_gates', 'inbox']) {
     const ms = await live(name, 3000);
     check(`${name}_live_under_1s`, ms !== null && ms < LIVE_MS, `seen after ${ms} ms (bound ${LIVE_MS})`);
+  }
+  {
+    const lat = await spoolLatencies();
+    check('spool_events_applied_within_250ms_all_six', lat.every((v) => v !== null && v < 250), `latencies ms: ${JSON.stringify(lat)} (a poll-only spool cannot do this)`);
   }
   {
     const i0 = Date.now();
@@ -294,6 +307,8 @@ if (ARM === 'degraded') {
   const dead = {};
   for (const name of ['pause_ui', 'wake', 'human_gates', 'inbox']) dead[name] = await live(name, QUIET_MS);
   check('live_paths_dead_while_degraded', Object.values(dead).every((v) => v === null), `seen live while every watch is down: ${JSON.stringify(dead)}`);
+  const latD = await spoolLatencies();
+  check('spool_falls_back_to_the_poll', latD.some((v) => v === null || v >= 250) && latD.every((v) => v !== null), `latencies ms: ${JSON.stringify(latD)} — expected poll latency (applied, but not all < 250 ms)`);
   // the fallback each subsystem keeps (what the 60 s sweep / the pull does) still serves the writes
   const iPull = mark();
   pauseUi.reconcilePauseUi();
@@ -339,6 +354,8 @@ if (ARM === 'recovery') {
     const ms = await live(name, 3000);
     check(`${name}_live_again_under_1s`, ms !== null && ms < LIVE_MS, `seen after ${ms} ms (bound ${LIVE_MS})`);
   }
+  const latR = await spoolLatencies();
+  check('spool_fast_again_all_six', latR.every((v) => v !== null && v < 250), `latencies ms: ${JSON.stringify(latR)}`);
   // edge-triggered log: one WARN per degradation, one INFO per recovery
   const warns = countLog(/\[WARN\][^\n]*watcher\[[a-z-]+\]: DEGRADED/g);
   const infos = countLog(/\[INFO\][^\n]*watcher\[[a-z-]+\]: RECOVERED/g);
