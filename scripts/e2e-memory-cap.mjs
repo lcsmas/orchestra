@@ -717,13 +717,17 @@ try {
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     const sinceSec = Math.floor(Date.now() / 1000) - 2;
-    await runTool(st, `${python.join(' ')} ${RIG_DIR}/storm.py 24`, 't-storm', 90_000);
-    const nKill = () => eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill ?? 0;
+    // Eight loops of four 400 MB children = up to 32 kills with tool-tree candidates alive at every OOM episode (a single back-to-back chain of one command at a time is NOT survivable - measured on master #320 too:
+    // the next fork finds no tool candidate and the kernel takes the keeper; see session-keeper.md, residual risks).
+    await runTool(st, `bash ${RIG_DIR}/storm.sh 8 4`, 't-storm', 120_000);
+    let nKillSeen = 0;
+    const nKill = () => { const n = eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill; if (n !== undefined) nKillSeen = n; return nKillSeen; }; // the last reading while the scope exists
     await waitFor(() => kills.length >= nKill() && nKill() > 0, 30_000);
     await sleep(3000);
     await notified(ws);
     const oracle = new Set(kernelKilledPids(f.unit, sinceSec).map(String));
     const byKernel = kills.filter((k) => k.source === 'kernel');
+    check('the cap\'s promise under a storm: the SESSION (keeper + CLI) survives, only tool commands die', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId && alive(f.cliPid) && ident(f.cliPid) === f.cliId, `keeper=${alive(f.keeperPid)} cli=${alive(f.cliPid)} cgroupDir=${f.cgroupDir ? 'ok' : 'null'} oracle=${oracle.size} records=${kills.length} keeperLog=${JSON.stringify((readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '').trim().split('\\n').slice(-6).join(' | ').slice(-700))} stdinErrors=${st.errors.join('|').slice(0, 200)}`);
     check('the storm killed many commands (the precondition that makes a ratelimit possible)', nKill() >= 12, `oom_kill=${nKill()}`);
     check('every kill has a record', kills.length === nKill(), `records=${kills.length} oom_kill=${nKill()}`);
     check('NEVER a wrong certainty: every record that says KERNEL names a pid the kernel really killed', byKernel.every((k) => oracle.has(String(k.pid))), `wrong: ${byKernel.filter((k) => !oracle.has(String(k.pid))).map((k) => k.pid).join(',') || 'none'}`);
