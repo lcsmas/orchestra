@@ -76,4 +76,9 @@ export function readMemNotices(file: string): MemNoticeRecord[] {
   return out;
 }
 
+/** May the host delete a notice file? Only when EVERY record in it is delivered (its seq is at or below the per-unit cursor) — an undelivered record is the only copy a gone keeper leaves. */
+export function fullyDelivered(recs: readonly MemNoticeRecord[], seen: (unit: string) => number): boolean {
+  return recs.every((r) => r.seq <= seen(r.unit));
+}
+
 export { isSoftRecord };

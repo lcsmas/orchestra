@@ -15,6 +15,8 @@ const keeperClient = src('keeper-client.ts');
 const keeper = src('../keeper/index.ts');
 const hooks = src('hooks-server.ts');
 const cli = src('../cli/index.ts');
+const mainIndex = src('index.ts');
+const memNotice = src('memory-notice.ts');
 const live = (s: string, needle: string): boolean => s.split('\n').some((l) => l.includes(needle) && !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'));
 
 test('the ONE keeper-spawn site passes the memory-cap decision as the 4th argument, computed from the frozen run id, the workspace (fleet-member test), the sandbox flag and the store\'s levels', () => {
@@ -75,4 +77,28 @@ test('bus-status: the route sends the levels + the memory-paused runs (D1), the 
   assert.ok(hooks.includes('unsupportedReason: sup.reason'), 'and WHY it cannot'); 
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot, Array.isArray(res.memoryPausedRuns)'));
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryCapLine({ ...mc, switchOn: res.runExists === false ? null : frozenForCap.memoryCap })}\\n`);'));
+});
+
+test('#322: the sink is subscribed at boot with the REAL seams (store, agent-sdk emit + persist, the bus `send`), the boot scan runs after it, and sdkHistory rebuilds the rows', () => {
+  assert.ok(live(mainIndex, '  startMemoryNotices('), 'the sink is started');
+  assert.ok(live(mainIndex, '    { onMemoryKill, onMemorySoft },'), 'it listens to BOTH hooks (kills FI-1 v1.8 + the warning level)');
+  assert.ok(live(mainIndex, '      patchWorkspace: sdkPatchWorkspace,') && live(mainIndex, '      emitLive: sdkEmitMemNotice,'), 'rows are persisted and emitted into the live stream through agent-sdk');
+  assert.ok(live(mainIndex, '        send(db, m);') && live(mainIndex, "        if (!db) throw new Error('no bus');"), 'the coordinator message goes through the app\'s own `send`; no bus ⇒ it THROWS (the record stays owed)');
+  assert.ok(live(mainIndex, '      resolveRunId: resolveWaveRunId,'), 'the row lands in the run the coordinator reads');
+  const i = mainIndex.indexOf('  startMemoryNotices(');
+  assert.ok(i >= 0 && mainIndex.indexOf('  drainAllMemNotices((id) => !!store.getWorkspace(id));') > i, 'the boot scan runs AFTER the sink is subscribed (else the first records have nobody to tell)');
+  assert.ok(live(agentSdk, '  return interleaveMemNotices(interleaveStartErrors(events, ws.sdkStartErrors ?? [], ctx), ws.sdkMemNotices ?? [], ctx);') && live(agentSdk, '    return interleaveMemNotices(interleaveStartErrors([], ws.sdkStartErrors ?? [], ctx0), ws.sdkMemNotices ?? [], ctx0);'), 'both sdkHistory returns merge the persisted rows');
+  assert.ok(live(agentSdk, '  emit(wsId, makeMemNotice(session.ctx, entry));'), 'the live emit builds the row with the SAME builder as the backfill');
+  assert.ok(live(memNotice, "    kind: isSoftRecord(rec) ? 'status' : 'escalation',"), 'kill = escalation, warning = status');
+});
+
+test('#322: the keeper PERSISTS before it tells, reads the soft level from the spawn frame, and names victims from the kernel log', () => {
+  const k = keeper.indexOf('  memWatch = startMemoryWatch({');
+  assert.ok(k >= 0, 'the watch is started');
+  const block = keeper.slice(k, keeper.indexOf('  klog(`memory cap: ${capInfo.state.toUpperCase()}'));
+  assert.ok(/onKill: \(rec\) => \{\n      persist\(rec\);/.test(block), 'a kill is appended to the durable file FIRST');
+  assert.ok(/onSoft: \(rec\) => \{\n      persist\(rec\);/.test(block), 'so is a warning');
+  assert.ok(block.includes('kernelLog: readKernelOomKills,') && block.includes('softBytes: cap.softBytes && cap.softBytes < cap.hardBytes ? cap.softBytes : null,'));
+  assert.ok(live(keeper, "      send({ t: 'memSoft', rec });") && live(keeper, "      send({ t: 'memKill', rec });"));
+  assert.ok(live(keeper, '      ...(memSofts.length ? { memSofts: memSofts.slice() } : {}),'));
 });

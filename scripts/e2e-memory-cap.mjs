@@ -260,6 +260,8 @@ const noticeSrc = path.join(REPO, 'src', 'main', 'memory-notice.ts');
 const hasNotice = fs.existsSync(noticeSrc) && typeof kc.onMemorySoft === 'function' && typeof kc.drainAllMemNotices === 'function';
 const fakeWs = new Map();
 let memNoticeMod = null;
+/** A rig switch: while true the coordinator's bus is "down" (the sink throws, the delivery layer must keep the record owed). */
+let rigBusDown = false;
 async function armSink(wsIds) {
   if (!hasNotice) return false;
   memNoticeMod = await import(noticeSrc);
@@ -271,7 +273,7 @@ async function armSink(wsIds) {
     getWorkspace: (id) => fakeWs.get(id),
     patchWorkspace: async (id, patch) => { fakeWs.set(id, { ...fakeWs.get(id), ...patch }); },
     emitLive: (wsId, entry) => agentEvents.push({ wsId, ev: makeMemNotice({ seq: seq++ }, entry) }),
-    sendToCoordinator: (m) => { if (!busDb) throw new Error('no bus'); busSendFn(busDb, m); },
+    sendToCoordinator: (m) => { if (!busDb || rigBusDown) throw new Error('no bus'); busSendFn(busDb, m); },
     resolveRunId: () => 'run-on',
     log: { info: () => {}, warn: (m) => console.error(`  sink: ${m}`) },
   }, { onMemoryKill: kc.onMemoryKill, onMemorySoft: kc.onMemorySoft });
@@ -552,6 +554,10 @@ try {
     const logged = (orchLog().match(new RegExp(`memory-cap\\[${ws}\\] killed`, 'g')) ?? []).length;
     check('the app log line exists once per kill', logged === nKill, `lines=${logged} oom_kill=${nKill}`);
     check('the rows are persisted for a reopened pane (one entry per kill)', (fakeWs.get(ws)?.sdkMemNotices?.length ?? 0) === nKill);
+    const nfile = path.join(home, 'keepers', `${ws}.memnotices.jsonl`);
+    kc.drainAllMemNotices?.((id) => fakeWs.has(id)); // a boot-style scan while the keeper is ALIVE and everything is delivered
+    await sleep(500);
+    check('a boot-style scan finds nothing new, and a LIVE keeper\'s notice file is never pruned (it is still appending)', fs.existsSync(nfile) && kills.length === nKill && busRows(ws).length === nKill, `file=${fs.existsSync(nfile)} records=${kills.length} bus=${busRows(ws).length}`);
     check('victims are named by the KERNEL log wherever the journal is readable', !journalReadable() || kills.every((k) => k.source === 'kernel'), JSON.stringify(kills.map((k) => k.source)));
     detail = `kills=${nKill} rows=${rows.length} bus=${bus.length}`;
   } else if (ARM === 'notice_names_victim') {
@@ -632,7 +638,14 @@ try {
     // the keeper goes away BEFORE any app reattaches (linger expiry / the CLI ended): nothing is left to ask
     await kc.killKeeper(ws, 'memory-cap-rig-keeper-gone');
     check('the keeper and its CLI are gone — only the file remains', await waitFor(() => !alive(info.keeperPid) && !alive(info.cliPid), 15_000) && fs.existsSync(file), `keeper=${alive(info.keeperPid)} cli=${alive(info.cliPid)}`);
-    // the app comes back: the boot scan (index.ts) delivers
+    // the app comes back — with the bus DOWN: the delivery must stay owed (m1: not lost), the member's rows must not duplicate
+    rigBusDown = true;
+    kc.drainAllMemNotices?.((id) => fakeWs.has(id));
+    await sleep(800);
+    await notified(ws);
+    check('bus down at the first scan: no bus row yet, the file is KEPT (it is the only copy), the member\'s rows exist once', busRows(ws).length === 0 && fs.existsSync(file) && noticeEvents(ws).length === nKill, `bus=${busRows(ws).length} file=${fs.existsSync(file)} rows=${noticeEvents(ws).length}`);
+    // the bus is back: the next scan (the retry timer / the next attach) delivers
+    rigBusDown = false;
     kc.drainAllMemNotices?.((id) => fakeWs.has(id));
     await sleep(1500);
     await notified(ws);

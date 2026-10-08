@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MAX_NOTICE_LINES, appendMemNotice, parseMemNotice, readMemNotices } from './mem-notice-file.ts';
+import { MAX_NOTICE_LINES, appendMemNotice, fullyDelivered, parseMemNotice, readMemNotices } from './mem-notice-file.ts';
 import type { MemKillRecord, MemSoftRecord } from './memory-scope.ts';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memnotice-'));
@@ -43,4 +43,12 @@ test('#322 m1: parseMemNotice normalises a kill written before #322 (no kind/sou
 
 test('a keeper stops at MAX_NOTICE_LINES (exported so the keeper and the tests agree)', () => {
   assert.ok(MAX_NOTICE_LINES >= 100 && MAX_NOTICE_LINES <= 5000);
+});
+
+test('#322 m1: a file may be pruned only when EVERY record in it is at or below the per-unit cursor — an undelivered record is the only copy a gone keeper leaves', () => {
+  const seen = (m: Record<string, number>) => (u: string) => m[u] ?? 0;
+  assert.equal(fullyDelivered([], seen({})), true);
+  assert.equal(fullyDelivered([kill, soft], seen({ 'u.scope': 2 })), true);
+  assert.equal(fullyDelivered([kill, soft], seen({ 'u.scope': 1 })), false, 'seq 2 not yet delivered');
+  assert.equal(fullyDelivered([kill, { ...soft, unit: 'other.scope' }], seen({ 'u.scope': 9 })), false, 'a record of ANOTHER unit is judged by its own cursor');
 });

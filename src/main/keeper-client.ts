@@ -51,7 +51,7 @@ import {
   type MemSoftRecord,
   type MemoryCapLaunch,
 } from '../shared/memory-scope';
-import { readMemNotices } from '../shared/mem-notice-file';
+import { fullyDelivered, readMemNotices } from '../shared/mem-notice-file';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { createMemKillCursor, type MemKillCursor } from './memkill-cursor';
@@ -191,8 +191,9 @@ export function onMemorySoft(fn: MemorySoftListener): () => void {
   };
 }
 
-/** A listener that throws leaves the record UNDELIVERED (cursor not marked) so the next drain retries it — at most this many attempts, then it is dropped with a log line. */
-const MAX_DELIVERY_ATTEMPTS = 3;
+/** A listener that throws (the bus is down) leaves the record UNDELIVERED (cursor not marked) so the next drain retries it, every {@link RETRY_DRAIN_MS} — ~10 min of outage, then it is dropped with a log line
+ *  (a listener that ALWAYS throws is a bug, not an outage). */
+const MAX_DELIVERY_ATTEMPTS = 20;
 const RETRY_DRAIN_MS = 30_000;
 const deliveryAttempts = new Map<string, number>();
 /** Units whose earliest undelivered record failed: later records wait for the in-order drain (the cursor is a HIGH-WATER mark — marking seq 5 would silently drop a failed seq 4). */
@@ -257,7 +258,7 @@ export function drainMemNotices(wsId: string): void {
     list.sort((a, b) => a.seq - b.seq);
     for (const r of list) if (!deliverMemRecord(wsId, r, true)) break;
   }
-  if (recs.every((r) => r.seq <= cursor().seen(r.unit)) && readTrackedKeeperPid(wsId) === null) {
+  if (fullyDelivered(recs, (u) => cursor().seen(u)) && readTrackedKeeperPid(wsId) === null) {
     try {
       fs.unlinkSync(file);
     } catch {
