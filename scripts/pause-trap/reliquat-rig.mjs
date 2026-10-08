@@ -30,7 +30,7 @@ const MC_DIR = path.join(HERE_REPO, 'scripts', 'memory-cap');
 const UNIT_PREFIX = 'orchestra-rig-wh-h3-';
 const HARD_GB = 0.25; // 256 MiB — page-aligned, ≤ 300 MB (ledger D2)
 const SOFT_GB = 0.2;
-const UNFIXED_SHA = process.env.RQ_UNFIXED_SHA ?? '857ca2a6'; // the tip of H1's #320 checkpoint: the scope exists, the Pause dure does not kill what is in it
+const UNFIXED_SHA = process.env.RQ_UNFIXED_SHA ?? '6df97fea'; // the tip of H1's #320 work (rebase target): the scope exists, the Pause dure does not kill what is in it
 
 /** `mustRedden`: on the UNFIXED tree exactly these checks go RED (every other check — premises, controls — stays green). */
 const ARMS = {
@@ -239,7 +239,7 @@ const sessions = new Map();
 /** A facade (what the SDK's query() gets) over the stand-in CLI, hosted by the REAL keeper — launched exactly as agent-sdk.ts does (`makeKeeperSpawn(ws, onAttach, undefined, spec)`). */
 function open(k, { sidecar = true } = {}) {
   const ws = ID[k];
-  const spec = capSwitch.memoryCapSpecFor({ wsId: ws, runId: k === 'b' ? ID.other : ID.ops, hasCoordinator: true, remote: false, settings });
+  const spec = capSwitch.memoryCapSpecFor({ wsId: ws, runId: k === 'b' ? ID.other : ID.ops, ws: store.getWorkspace(ws), remote: false, settings }); // exactly agent-sdk.ts's call: the store's own workspace decides "fleet member" (parentId)
   const st = { ws, spec, lines: [], attached: false, exited: false, errors: [] };
   const h = kc.makeKeeperSpawn(ws, () => { st.attached = true; }, undefined, spec)({
     command: process.execPath, args: [path.join(RIG_DIR, 'reliquat-standin-cli.cjs')], cwd: WT[k],
