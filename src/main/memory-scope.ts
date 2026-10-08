@@ -19,6 +19,10 @@ import {
   type ScopeMemory,
 } from '../shared/memory-scope.ts';
 
+// FI-1 v1.3: consumers import everything scope-related from THIS module (re-exports of the pure half).
+export { classifyScopeMembers } from '../shared/memory-scope.ts';
+export type { ClassifiedMember, ScopeMember, ScopeMemory, ScopeRole } from '../shared/memory-scope.ts';
+
 export interface ScopeEnv {
   platform: string;
   uid: number | null;

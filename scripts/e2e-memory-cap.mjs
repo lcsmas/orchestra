@@ -234,6 +234,9 @@ async function teardown(wsList) {
   await sleep(300);
   for (const ws of wsList) for (const u of armUnits(ws)) stopUnit(u); // by NAME: they start with the rig prefix + this arm's ws id
   await sleep(300);
+  // Whatever still carries this arm's scratch dir (a tree with NO scope to stop — the pre-#320 world — leaves its Reliquats): killed by identity re-read at signal time.
+  for (const pid of survivorsOf(base)) { try { if (pid !== process.pid && (readSafe(`/proc/${pid}/environ`)?.includes(base) || readSafe(`/proc/${pid}/cmdline`)?.includes(base))) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  await sleep(200);
 }
 
 // ═══ the arms ═══════════════════════════════════════════════════════════════════════════════════════════════════════
