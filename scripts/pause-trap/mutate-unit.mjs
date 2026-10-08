@@ -3,7 +3,7 @@
 // runs the unit files that can reach the clause, requires ≥1 test to go RED (naming which), then restores the file from a
 // BYTE-EXACT backup and `cmp`s it — never a reverse sed. A clean control run (0 red) gates the whole harness, and every
 // mutant anchor must match EXACTLY ONCE (else PATTERN-GONE: a mutant that matched nothing would "survive" vacuously).
-//   node scripts/pause-trap/mutate-unit.mjs [--only <id>[,<id>…] | --prefix <id-prefix>]   →  last line: MUTATE-UNIT: PASS|FAIL (n/N caught)
+//   node scripts/pause-trap/mutate-unit.mjs [--only <id>[,<id>…] | --prefix <id-prefix>] [--list | --anchors-only]   →  last line: MUTATE-UNIT: PASS|FAIL (n/N caught)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -264,6 +264,9 @@ M.push(...(await import('./mutants-reliquats.mjs')).MUTANTS);
 const PREFIX = process.argv.includes('--prefix') ? process.argv[process.argv.indexOf('--prefix') + 1] : null; // every mutant whose id starts with this (a wave's own clause set, e.g. `rq-` = #325)
 const sel = ONLY ? M.filter((m) => ONLY_SET.has(m.id)) : PREFIX ? M.filter((m) => m.id.startsWith(PREFIX)) : M;
 if (sel.length === 0) { console.error(`unknown mutant ${ONLY}`); process.exit(2); }
+
+// --list: `<id> <file>` of the selected mutants, then exit (build a `--only` regression list for the files a change touched).
+if (process.argv.includes('--list')) { for (const m of sel) console.log(`${m.id} ${m.file}`); process.exit(0); }
 
 // --anchors-only: every anchor must match the CURRENT source exactly once (cheap; run after ANY edit of a mutated clause — a stale anchor is PATTERN-GONE, never a pass).
 if (process.argv.includes('--anchors-only')) {
