@@ -89,10 +89,14 @@ export interface ResilientWatcher {
 export const WATCH_BACKOFF_MS: readonly number[] = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000];
 /** How often a healthy watch is checked against its directory's inode. */
 export const WATCH_HEALTH_MS = 30_000;
+/** A re-armed watch must stay up this long before its backoff starts over: one that dies right after every arm keeps climbing the schedule instead of re-arming every second forever. */
+export const WATCH_STABLE_MS = 60_000;
 
 export function describeWatchError(e: unknown): WatchErrorInfo {
-  const code = typeof (e as { code?: unknown })?.code === 'string' ? ((e as { code: string }).code) : null;
-  const message = e instanceof Error ? e.message : String(e);
+  const o = e as { code?: unknown; message?: unknown } | null | undefined;
+  const code = typeof o?.code === 'string' ? o.code : null;
+  // an Error, or a plain `{code, message}` (the health check's own): read the message, never `String({})` (« [object Object] »)
+  const message = typeof o?.message === 'string' ? o.message : String(e);
   return { code, message };
 }
 
@@ -110,6 +114,8 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
   let since = deps.now();
   let lastError: WatchErrorInfo | null = null;
   let attempts = 0;
+  let failStreak = 0; // index into the backoff schedule; reset only after a watch has stayed up WATCH_STABLE_MS
+  let armedAt: number | null = null;
   let recoveries = 0;
   let handle: WatchHandle | null = null;
   let gen = 0; // a callback of an OLDER watch (closed, replaced) must never act
@@ -164,6 +170,8 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
     const info = describeWatchError(e);
     lastError = info;
     attempts++;
+    if (state === 'ok' && armedAt !== null && deps.now() - armedAt >= WATCH_STABLE_MS) failStreak = 0; // it had been healthy long enough: a new incident starts at the first step
+    failStreak++;
     if (state !== 'degraded') {
       state = 'degraded';
       since = deps.now();
@@ -171,7 +179,8 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
       deps.warn(`watcher[${spec.name}]: DEGRADED — ${plainWatchError(info)}; retrying with backoff, fallback keeps running: ${spec.fallback} (${spec.label})`, e);
       transition();
     }
-    const delay = WATCH_BACKOFF_MS[Math.min(attempts - 1, WATCH_BACKOFF_MS.length - 1)];
+    if (stopped) return; // a listener stopped us from inside the transition: no retry to schedule
+    const delay = WATCH_BACKOFF_MS[Math.min(failStreak - 1, WATCH_BACKOFF_MS.length - 1)];
     retryTimer = deps.setTimer(() => {
       retryTimer = null;
       arm();
@@ -183,6 +192,7 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
     const myGen = ++gen;
     try {
       if (spec.ensureDir) deps.mkdirp?.(spec.dir);
+      const ino0 = deps.inodeOf ? deps.inodeOf(spec.dir) : null; // sampled BEFORE the watch: a directory swapped in between fails safe (one spurious re-arm), never silently pinned to the old one
       const h = deps.watch(
         spec.dir,
         (event, filename) => {
@@ -205,7 +215,8 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
         return;
       }
       handle = h;
-      armedIno = deps.inodeOf ? deps.inodeOf(spec.dir) : null;
+      armedIno = ino0;
+      armedAt = deps.now();
     } catch (e) {
       degrade(e);
       return;
@@ -227,6 +238,7 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
     } catch (e) {
       deps.warn(`watcher[${spec.name}]: onArmed failed`, e);
     }
+    if (stopped) return; // stopped from inside onArmed: no catch-up for a watcher nobody owns any more
     if (recovered) {
       try {
         spec.onRecover?.(); // the catch-up pass: whatever was written while the watch was down

@@ -53,7 +53,7 @@ export function formatWatchersLines(s: WatchersStatus, now: number): string[] {
   for (const w of d) {
     const err = w.lastError ? plainWatchError(w.lastError) : 'unknown error';
     const detail = w.lastError && w.lastError.message && !err.includes(w.lastError.message) ? ` · ${w.lastError.message}` : '';
-    lines.push(`  ${w.name} DEGRADED since ${clock(w.since)} (${fmtDuration(now - w.since)}) — ${err}${detail} · ${w.attempts} attempt${w.attempts === 1 ? '' : 's'} · meanwhile: ${w.fallback}`);
+    lines.push(`  ${w.name} DEGRADED since ${clock(w.since)} (${fmtDuration(now - w.since)}) — ${err}${detail} · ${w.attempts} attempt${w.attempts === 1 ? '' : 's'} · ${w.dir} · meanwhile: ${w.fallback}`);
   }
   return lines;
 }

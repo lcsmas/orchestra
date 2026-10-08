@@ -8,16 +8,18 @@ Every directory watch of the main process goes through **`createWatcher()`** (`s
 ## Files
 | File | Role |
 |---|---|
-| `src/shared/resilient-watch.ts` | the PURE state machine: `createResilientWatcher(spec, deps)` (`:106`). Injected `watch` primitive, `setTimer`/`clearTimer`, `now`, `mkdirp`, `inodeOf`, `healthMs`, `warn`/`info`. `WATCH_BACKOFF_MS` (`:89`) = 1, 2, 5, 15, 30, 60 s then every 60 s; `WATCH_HEALTH_MS` (`:91`) = 30 s |
+| `src/shared/resilient-watch.ts` | the PURE state machine: `createResilientWatcher(spec, deps)` (`:110`). Injected `watch` primitive, `setTimer`/`clearTimer`, `now`, `mkdirp`, `inodeOf`, `healthMs`, `warn`/`info`. `WATCH_BACKOFF_MS` (`:89`) = 1, 2, 5, 15, 30, 60 s then every 60 s; `WATCH_HEALTH_MS` (`:91`) = 30 s; `WATCH_STABLE_MS` (`:93`) = 60 s |
 | `src/shared/watcher-status.ts` | what is SAID: `formatWatchersLines` (`:46`, the `bus-status` block), `watchersWarning` (`:36`, the app's words), `degradedKey` (`:14`, the edge identity of the degraded set) |
-| `src/main/watchers.ts` | production binding + the REGISTRY: `realWatch` (the one `fs.watch`), `watchersStatus` (`:81`), `onWatchersChange` (`:100`), `stopAllWatchers` (`:134`), `pushWatchersToRenderer` (`:139`), env fault injection (`faultFileFrom` `:24`), test seams `__setWatchPrimitiveForTests` / `__setWatchHealthMsForTests` |
+| `src/main/watchers.ts` | production binding + the REGISTRY: `realWatch` (the one `fs.watch`), `watchersStatus` (`:81`), `onWatchersChange` (`:100`), `stopAllWatchers` (`:137`), `pushWatchersToRenderer` (`:143`, idempotent), env fault injection (`faultFileFrom` `:24`), test seams `__setWatchPrimitiveForTests` / `__setWatchHealthMsForTests` |
 | `src/main/watchers-host.ts` | Electron-bound half: the PULL channel `watchers:status` (`registerWatchersIpc`, module scope in `index.ts`). Kept apart so `watchers.ts` imports no Electron and a rig can load it |
 
 ## State machine (what the unit file pins — `src/shared/resilient-watch.test.ts`)
 - `ok` ⇄ `degraded`. A failed arm (the primitive throws) or a runtime `error` event → `degraded`, the watch is CLOSED, a retry is scheduled (`attempts` counts up; the delay is `WATCH_BACKOFF_MS[min(attempts-1, last)]`, so the cap is 60 s and it never stops). A successful arm after a degradation → `ok`, `recoveries++`, `onRecover()` (the catch-up). The FIRST arm never runs `onRecover`.
 - Edge-triggered: ONE `warn` on entering `degraded` (it names « system watch limit reached (EMFILE|ENOSPC) » for those two codes, and the site's fallback), ONE `info` on recovery; failed retries are silent. `onTransition` fires only on ok→degraded, degraded→ok and `stop()`. `since` is the start of the degradation (stable across failed retries).
 - A callback of a CLOSED watch must never act (`gen` token): a late event or a late `error` of the replaced watch is ignored.
-- **Silent detach** (`inodeOf` + `healthMs`): an inotify watch on a directory that is deleted and recreated never says so. Every 30 s a healthy watch is compared with its directory's inode; a changed inode (`ESTALE`) or a missing directory (`ENOENT`) degrades it, and it re-arms on the new directory.
+- **Flap guard** (`failStreak`, `WATCH_STABLE_MS`): the backoff index is NOT reset by a successful re-arm — only after the watch stayed up 60 s. A watch that dies right after every arm climbs 1, 2, 5, 15 … s instead of re-arming (and logging, and running its catch-up) every second forever.
+- Re-entrancy: `stop()` from inside `onTransition` schedules no retry; `stop()` from inside `onArmed` runs no catch-up.
+- **Silent detach** (`inodeOf` + `healthMs`): an inotify watch on a directory that is deleted and recreated never says so. Every 30 s a healthy watch is compared with its directory's inode; a changed inode (`ESTALE`) or a missing directory (`ENOENT`) degrades it, and it re-arms on the new directory. The inode is sampled BEFORE the watch is armed (a swap in between fails safe: one spurious re-arm). LIMIT: a delete+recreate that reuses the same inode number (ext4 often does) is not detected by this check, and a swap inside the 30 s window is seen only at the next check.
 - `stop()` cancels every retry and the health timer and closes the watch; idempotent; `start()` after `stop()` is a no-op.
 
 ## The seven sites (each keeps its OWN fallback; the registry lists a watcher only from `start()` to `stop()`)
@@ -25,17 +27,17 @@ Every directory watch of the main process goes through **`createWatcher()`** (`s
 |---|---|---|---|---|
 | `bus-wake` | Réveils | `bus-wake.ts:1014` | 60 s sweep | `sweepBusWake()` |
 | `pause-ui` | Pause view | `pause-ui-host.ts:144` | the UI's own writes and pull | `reconcilePauseUi` (forced overview push) |
-| `pause-trap` | Pause trap | `pause-trap.ts:952` | 15 s sweep | `sweepPauseTrap(activeDeps)` |
+| `pause-trap` | Pause trap | `pause-trap.ts:985` | 15 s sweep | `sweepPauseTrap(activeDeps)` |
 | `human-gates` | Questions | `human-gates.ts:218` | resolve-time broadcast + mount-time read | `reconcileHumanGates` |
 | `inbox-tray` | Inbox | `inbox-tray.ts:315` | counts sent on each mutation and at mount | `broadcastInbox` for every live workspace |
 | `events-spool` | Agent activity | `events-spool.ts:396` | the 1 s poll | `drainAll` |
 | `login-watch` | Login detection | `account-usage.ts:140` | 1.5 s poll (`persistent:false`; registered only while a login is watched) | `check` |
 
-`ensureDir` (mkdir before every arm) only where the old block did it: pause-ui, human-gates, inbox-tray. The bus-wake / pause-trap watches never CREATE the bus directory — a missing one is `ENOENT` → degraded → recovers when the bus opens.
+`ensureDir` (mkdir before EVERY arm, retries included — a deleted directory is recreated and the watch heals) only where the old block did it at start: pause-ui, human-gates, inbox-tray. The bus-wake / pause-trap watches never CREATE the bus directory — a missing one is `ENOENT` → degraded → recovers when the bus opens.
 
 ## What is told, and to whom
 - **`orchestra bus-status`** — `/busStatus` carries `watchers: WatchersStatus` (`hooks-server.ts`, next to `members`); the CLI prints `formatWatchersLines` (`src/cli/index.ts`): `watchers: N ok` when healthy, `watchers: 4/6 ok · 2 DEGRADED — Réveils, Pause view (system watch limit reached); the app re-arms by itself` + one indented line per degraded watcher (since, age, error, attempts, `meanwhile: <fallback>`). `none armed` when nothing is registered. Absent from an older app → no line.
-- **Renderer push** — `watchers:update` (the WHOLE `WatchersStatus`) ONLY when the degraded set changes (`degradedKey`: `name@since`), plus the pull `watchers:status` for the initial paint. Preload: `watchersStatus` / `onWatchersUpdate` (typed in `src/shared/ipc.ts`, excluded from the generic served table in `api-handlers.ts`). `pushWatchersToRenderer()` is subscribed in `index.ts` BEFORE the first watch is armed (so a boot-time EMFILE is pushed). **The warning chip itself is renderer code and waits for the D4 pick** (mockups: `~/.orchestra/ops-wave-h/h2/mockups/watchers-chip-mockups.md`).
+- **Renderer push** — `watchers:update` (the WHOLE `WatchersStatus`) ONLY when the degraded set changes (`degradedKey`: `name@since`), plus the pull `watchers:status` for the initial paint. Preload: `watchersStatus` / `onWatchersUpdate` (typed in `src/shared/ipc.ts`, excluded from the generic served table in `api-handlers.ts`). `pushWatchersToRenderer()` is called in `index.ts` before the first watch is armed, but the renderer page is NOT loaded yet at boot: a boot-time EMFILE reaches the UI only by the PULL (`watchers:status`, read on mount); the push carries every LATER change. **The warning chip itself is renderer code and waits for the D4 pick** (mockups: `~/.orchestra/ops-wave-h/h2/mockups/watchers-chip-mockups.md`).
 - **Log** — see Edge-triggered above.
 - Shutdown: `stopAllWatchers()` first in `shutdownSubsystems()`; each subsystem's own stop then stops its watcher again (idempotent).
 

@@ -67,7 +67,7 @@ test('the sites that used to mkdir before watching still create their directory 
   }
 });
 
-test('the transient login watch stays non-persistent (it must never keep the process alive) and registers only while armed', () => {
+test('the transient login watch stays non-persistent (it must never keep the process alive)', () => {
   const code = codeOf('src/main/account-usage.ts');
   assert.ok(/persistent: false/.test(code.slice(at(code, "name: 'login-watch'"))), 'persistent:false is forwarded');
 });

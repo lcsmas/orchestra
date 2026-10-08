@@ -42,8 +42,8 @@ const SITE_STOP = (id, file, find, to, name) => ({ id, file, find, to, expect: [
 const MUTANTS = [
   // ── the state machine (src/shared/resilient-watch.ts) ──
   { id: 'R01_no_retry_scheduled', file: RW, find: '    retryTimer = deps.setTimer(() => {\n      retryTimer = null;\n      arm();\n    }, delay);', to: '    void delay;', expect: ['at arm → degraded', 'rig:recovery:bus_status_clean_within_backoff'], rig: ['recovery'] },
-  { id: 'R02_backoff_uncapped', file: RW, find: 'const delay = WATCH_BACKOFF_MS[Math.min(attempts - 1, WATCH_BACKOFF_MS.length - 1)];', to: 'const delay = 1_000 * 2 ** attempts;', expect: ['backoff is capped'] },
-  { id: 'R03_backoff_never_grows', file: RW, find: 'const delay = WATCH_BACKOFF_MS[Math.min(attempts - 1, WATCH_BACKOFF_MS.length - 1)];', to: 'const delay = WATCH_BACKOFF_MS[0];', expect: ['backoff is capped'] },
+  { id: 'R02_backoff_uncapped', file: RW, find: 'const delay = WATCH_BACKOFF_MS[Math.min(failStreak - 1, WATCH_BACKOFF_MS.length - 1)];', to: 'const delay = 1_000 * 2 ** attempts;', expect: ['backoff is capped'] },
+  { id: 'R03_backoff_never_grows', file: RW, find: 'const delay = WATCH_BACKOFF_MS[Math.min(failStreak - 1, WATCH_BACKOFF_MS.length - 1)];', to: 'const delay = WATCH_BACKOFF_MS[0];', expect: ['backoff is capped'] },
   { id: 'R04_first_retry_slow', file: RW, find: '[1_000, 2_000, 5_000, 15_000, 30_000, 60_000];', to: '[20_000, 30_000, 60_000];', expect: ['first retry lands within a few seconds', 'rig:recovery:bus_status_clean_within_backoff'], rig: ['recovery'] },
   { id: 'R05_stop_keeps_retrying', file: RW, edits: [{ find: '      stopped = true;\n      clearTimers();\n      closeHandle();', to: '      stopped = true;\n      closeHandle();' }, { find: 'function arm(): void {\n    if (stopped) return;\n', to: 'function arm(): void {\n' }], expect: ['stop() cancels pending retries', 'rig:shutdown:no_retry_after_shutdown'], rig: ['shutdown'] },
   { id: 'R05b_stop_leaves_timers', file: RW, find: '      stopped = true;\n      clearTimers();\n      closeHandle();', to: '      stopped = true;\n      closeHandle();', expect: ['stop() cancels pending retries'] },
@@ -54,7 +54,7 @@ const MUTANTS = [
   { id: 'R10_no_catchup', file: RW, find: '        spec.onRecover?.(); // the catch-up pass: whatever was written while the watch was down', to: '        void 0;', expect: ['at arm → degraded', 'mid-life error event', 'rig:recovery:catchup_wake_delivered', 'rig:recovery:catchup_pause_ui_push'], rig: ['recovery'] },
   { id: 'R11_catchup_on_first_arm', file: RW, find: '    if (recovered) {\n      try {\n        spec.onRecover?.();', to: '    if (true) {\n      try {\n        spec.onRecover?.();', expect: ['healthy arm: stays ok'] },
   { id: 'R12_since_reset_each_failure', file: RW, find: "    if (state !== 'degraded') {\n      state = 'degraded';\n      since = deps.now();", to: "    since = deps.now();\n    if (state !== 'degraded') {\n      state = 'degraded';" , expect: ['`since` is stable'] },
-  { id: 'R13_transition_every_failure', file: RW, find: '      transition();\n    }\n    const delay', to: '    }\n    transition();\n    const delay', expect: ['transitions: ok→degraded'] },
+  { id: 'R13_transition_every_failure', file: RW, find: '      transition();\n    }\n    if (stopped) return; // a listener', to: '    }\n    transition();\n    if (stopped) return; // a listener', expect: ['transitions: ok→degraded'] },
   { id: 'R14_lasterror_kept_after_recovery', file: RW, find: '      lastError = null;\n      attempts = 0;', to: '      attempts = 0;', expect: ['at arm → degraded'] },
   { id: 'R15_enospc_not_a_limit', file: RW, find: "if (info.code === 'EMFILE' || info.code === 'ENOSPC') return", to: "if (info.code === 'EMFILE') return", expect: ['describeWatchError / plainWatchError'] },
   { id: 'R16_ensuredir_dropped', file: RW, find: '      if (spec.ensureDir) deps.mkdirp?.(spec.dir);', to: '      void 0;', expect: ['ensureDir: the directory is created before EVERY arm'] },
@@ -67,6 +67,13 @@ const MUTANTS = [
   { id: 'R23_health_period_ignored', file: RW, find: '    }, deps.healthMs ?? WATCH_HEALTH_MS);', to: '    }, WATCH_HEALTH_MS);', expect: ['healthMs dep shortens'] },
   { id: 'R24_dead_watch_not_closed', file: RW, find: '    if (stopped) return;\n    closeHandle();\n    if (healthTimer', to: '    if (stopped) return;\n    if (healthTimer', expect: ['mid-life error event'] },
   { id: 'R25_start_not_idempotent', file: RW, find: '      if (started || stopped) return;', to: '      if (stopped) return;', expect: ['start() twice arms ONCE'] },
+  { id: 'R26_flap_backoff_never_restarts', file: RW, find: 'WATCH_STABLE_MS) failStreak = 0;', to: 'WATCH_STABLE_MS) void 0;', expect: ['flap guard'] },
+  { id: 'R27_flap_backoff_always_restarts', file: RW, find: 'if (state === \'ok\' && armedAt !== null && deps.now() - armedAt >= WATCH_STABLE_MS) failStreak = 0;', to: 'if (state === \'ok\') failStreak = 0;', expect: ['flap guard'] },
+  { id: 'R28_stop_in_transition_still_retries', file: RW, find: '    if (stopped) return; // a listener stopped us from inside the transition: no retry to schedule\n', to: '', expect: ['re-entrancy: stop() from inside onTransition'] },
+  { id: 'R29_stop_in_armed_still_catches_up', file: RW, find: '    if (stopped) return; // stopped from inside onArmed: no catch-up for a watcher nobody owns any more\n', to: '', expect: ['re-entrancy: stop() from inside onTransition'] },
+  { id: 'R30_inode_sampled_after_the_watch', file: RW, find: '      armedIno = ino0;', to: '      armedIno = deps.inodeOf ? deps.inodeOf(spec.dir) : null;', expect: ['the directory identity is sampled BEFORE'] },
+  { id: 'R31_object_error_message_lost', file: RW, find: "const message = typeof o?.message === 'string' ? o.message : String(e);", to: 'const message = e instanceof Error ? e.message : String(e);', expect: ['describeWatchError reads the message of a plain', 'a silent-detach degradation is WORDED'] },
+  { id: 'R32_stable_period_zero', file: RW, find: 'export const WATCH_STABLE_MS = 60_000;', to: 'export const WATCH_STABLE_MS = 0;', expect: ['flap guard'] },
   // ── what bus-status and the app say (src/shared/watcher-status.ts) ──
   { id: 'S01_summary_word_lowercase', file: WS, find: '· ${d.length} DEGRADED —', to: '· ${d.length} degraded —', expect: ['degraded: summary line names', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: true },
   { id: 'S02_limit_never_named', file: WS, find: "${limit ? ' (system watch limit reached)' : ''}; the app re-arms by itself", to: "${limit ? '' : ''}; the app re-arms by itself", expect: ['degraded: summary line names', 'a non-limit degradation', 'rig:degraded:bus_status_names_the_system_limit'], rig: ['degraded'], cli: true },
@@ -77,6 +84,7 @@ const MUTANTS = [
   { id: 'S07_none_armed_silent', file: WS, find: "if (total === 0) return ['watchers: none armed'];", to: 'if (total === 0) return [];', expect: ['all ok → ONE calm line'] },
   { id: 'S08_fallback_not_named', file: WS, find: ' · meanwhile: ${w.fallback}`', to: '`', expect: ['degraded: summary line names'] },
   { id: 'S09_since_is_now', file: WS, find: 'DEGRADED since ${clock(w.since)} (', to: 'DEGRADED since ${clock(now)} (', expect: ['degraded: summary line names'] },
+  { id: 'S11_dir_not_in_the_line', file: WS, find: ' · ${w.dir} · meanwhile:', to: ' · meanwhile:', expect: ['degraded: summary line names'] },
   { id: 'S10_warning_silent', file: WS, find: "  if (d.length === 0) return null;\n  return `${degradedLabels(s)", to: "  if (d.length === 0) return null;\n  return null;\n  return `${degradedLabels(s)", expect: ['watchersWarning'] },
   // ── the registry + production binding (src/main/watchers.ts) ──
   { id: 'W01_never_registered', file: WR, find: '      armed.add(handle);\n      inner.start();', to: '      inner.start();', expect: ['EMFILE at arm: bus-status data lists it degraded', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: false },
@@ -93,6 +101,8 @@ const MUTANTS = [
   { id: 'W12_error_event_not_wired', file: WR, find: '  w.on(\'error\', onError);\n', to: '', expect: ['rig:midlife:rearmed_and_caught_up', 'rig:midlife:error_event_has_a_listener'], rig: ['midlife'] },
   { id: 'W13_options_dropped_at_the_binding', file: WR, find: '(primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError, opts)', to: '(primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError)', expect: ['the primitive receives the site’s persistent option'] },
   // W14 (notifyIfChanged() at creation) was EQUIVALENT: a notify pushes only when the degraded-set key changed, and creating a watcher cannot change it — removed after the first sweep (ledger #329 c/…).
+  { id: 'W15_zombie_re_registered', file: WR, find: '      if (stopped) return; // the machine ignores a start after stop(): a zombie must not re-enter the registry\n', to: '', expect: ['start() after stop() does not put a zombie'] },
+  { id: 'W16_push_subscription_not_idempotent', file: WR, find: '  if (pushUnsub) return pushUnsub;\n', to: '', expect: ['pushWatchersToRenderer is idempotent'] },
   // ── the seven sites: the catch-up on recovery, the stop, the filter, ensureDir ──
   { id: 'T01_busWake_no_catchup', file: BW, find: '    onRecover: () => void sweepBusWake(),\n', to: '', expect: ['SITE bus-wake', 'rig:recovery:catchup_wake_delivered'], rig: ['recovery'] },
   { id: 'T02_pauseUi_no_catchup', file: PU, find: '    onRecover: reconcilePauseUi,\n', to: '', expect: ['SITE pause-ui', 'rig:recovery:catchup_pause_ui_push'], rig: ['recovery'] },

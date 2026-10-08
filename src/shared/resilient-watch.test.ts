@@ -6,6 +6,7 @@ import {
   plainWatchError,
   WATCH_BACKOFF_MS,
   WATCH_HEALTH_MS,
+  WATCH_STABLE_MS,
   type ResilientWatchDeps,
   type ResilientWatchSpec,
   type WatcherSnapshot,
@@ -416,4 +417,81 @@ test('start() twice arms ONCE (idempotent) — a second start never leaks a seco
   w.start();
   assert.equal(r.calls.armAttempts, 1);
   assert.equal(r.watches.length, 1);
+});
+
+test('describeWatchError reads the message of a plain {code, message} too (the health check’s own) — never « [object Object] »', () => {
+  assert.deepEqual(describeWatchError({ code: 'ESTALE', message: 'watched directory was replaced' }), { code: 'ESTALE', message: 'watched directory was replaced' });
+  assert.deepEqual(describeWatchError({ code: 'X' }), { code: 'X', message: '[object Object]' }, 'no message at all: the fallback is the string form, the code still rides');
+});
+
+test('a silent-detach degradation is WORDED: the log and the snapshot carry the inode text, not « [object Object] »', () => {
+  const inodes = new Map<string, number | null>([['/bus', 11]]);
+  const r = rig({ inodes });
+  const w = createResilientWatcher(r.spec(), r.deps);
+  w.start();
+  inodes.set('/bus', 22);
+  r.advance(WATCH_HEALTH_MS);
+  assert.doesNotMatch(r.logs[0].message, /\[object Object\]/);
+  assert.match(r.logs[0].message, /ESTALE/);
+  assert.match(w.snapshot().lastError!.message, /inode 11 → 22/);
+});
+
+test('flap guard: a watch that dies right after every arm climbs the schedule (1, 2, 5 s…) instead of re-arming every second; a watch that stayed up 60 s starts over at 1 s', () => {
+  const r = rig();
+  const w = createResilientWatcher(r.spec(), r.deps);
+  w.start();
+  const killLatest = () => r.watches[r.watches.length - 1].die(err('EMFILE'));
+  killLatest(); // flap 1 → retry in 1 s
+  r.advance(WATCH_BACKOFF_MS[0] - 1);
+  assert.equal(r.watches.length, 1);
+  r.advance(1);
+  assert.equal(r.watches.length, 2, 're-armed after 1 s');
+  killLatest(); // flap 2 → retry in 2 s (NOT 1 s)
+  r.advance(WATCH_BACKOFF_MS[0]);
+  assert.equal(r.watches.length, 2, 'the second flap waits longer than the first');
+  r.advance(WATCH_BACKOFF_MS[1] - WATCH_BACKOFF_MS[0]);
+  assert.equal(r.watches.length, 3);
+  killLatest(); // flap 3 → 5 s
+  r.advance(WATCH_BACKOFF_MS[1]);
+  assert.equal(r.watches.length, 3);
+  r.advance(WATCH_BACKOFF_MS[2] - WATCH_BACKOFF_MS[1]);
+  assert.equal(r.watches.length, 4);
+  // now it STAYS up for the stable period, then dies: a fresh incident, first step again
+  r.advance(WATCH_STABLE_MS);
+  killLatest();
+  r.advance(WATCH_BACKOFF_MS[0]);
+  assert.equal(r.watches.length, 5, 'a stable watch that dies is retried after the FIRST step');
+});
+
+test('re-entrancy: stop() from inside onTransition leaves no retry; stop() from inside onArmed runs no catch-up', () => {
+  const r = rig({ failArms: [err('EMFILE')] });
+  let w1: ReturnType<typeof createResilientWatcher>;
+  w1 = createResilientWatcher(r.spec({ onTransition: () => w1.stop() }), r.deps);
+  w1.start();
+  assert.equal(r.timers.size, 0, 'no retry scheduled for a watcher stopped inside its own transition');
+
+  const r2 = rig({ failArms: [err('EMFILE')] });
+  let w2: ReturnType<typeof createResilientWatcher>;
+  w2 = createResilientWatcher(r2.spec({ onArmed: () => w2.stop() }), r2.deps);
+  w2.start();
+  r2.advance(WATCH_BACKOFF_MS[0]);
+  assert.equal(r2.calls.recover, 0, 'stopped inside onArmed → the catch-up pass is not run');
+});
+
+test('the directory identity is sampled BEFORE the watch is armed (a swap in between fails safe)', () => {
+  const order: string[] = [];
+  const r = rig();
+  const deps: ResilientWatchDeps = {
+    ...r.deps,
+    inodeOf: () => {
+      order.push('ino');
+      return 1;
+    },
+    watch: (dir, onEvent, onError, opts) => {
+      order.push('watch');
+      return r.deps.watch(dir, onEvent, onError, opts);
+    },
+  };
+  createResilientWatcher(r.spec(), deps).start();
+  assert.deepEqual(order, ['ino', 'watch']);
 });

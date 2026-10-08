@@ -34,7 +34,7 @@ test('degraded: summary line names the labels and the system limit; one line per
   assert.equal(lines[0], 'watchers: 1/3 ok · 2 DEGRADED — Réveils, Pause view (system watch limit reached); the app re-arms by itself');
   assert.match(lines[1], /^ {2}bus-wake DEGRADED since 12:53:48Z \(3m12s\) — system watch limit reached \(EMFILE\)/);
   assert.match(lines[1], /EMFILE: too many open files, watch '\/d\/bus-wake'/);
-  assert.match(lines[1], /3 attempts · meanwhile: 60 s sweep$/);
+  assert.match(lines[1], /3 attempts · \/d\/bus-wake · meanwhile: 60 s sweep$/);
   assert.match(lines[2], /meanwhile: the UI's own writes and pull$/);
 });
 

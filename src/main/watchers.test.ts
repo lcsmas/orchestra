@@ -6,7 +6,8 @@ import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
 import { WATCH_BACKOFF_MS } from '../shared/resilient-watch.ts';
 import { degradedOf, type WatchersStatus } from '../shared/watcher-status.ts';
-import { __resetWatchersForTests, __setWatchPrimitiveForTests, createWatcher, faultFileFrom, onWatchersChange, stopAllWatchers, watchersStatus } from './watchers.ts';
+import { initPlatform } from './platform/index.ts';
+import { __resetWatchersForTests, __setWatchPrimitiveForTests, createWatcher, faultFileFrom, onWatchersChange, pushWatchersToRenderer, stopAllWatchers, watchersStatus } from './watchers.ts';
 
 // #330 — the REGISTRY and the production wiring, over the real timers and (for the fault-file arm) a real directory watch. The state machine's own arms (backoff, mid-life error, stop) are in
 // src/shared/resilient-watch.test.ts with a fake clock; here: what `bus-status` and the renderer push OBSERVE.
@@ -211,4 +212,31 @@ test('the primitive receives the site’s persistent option (the transient login
   createWatcher({ name: 'p', label: 'P', dir: '/p', fallback: 'poll', onChange: () => {}, persistent: false }).start();
   createWatcher({ name: 'q', label: 'Q', dir: '/q', fallback: 'poll', onChange: () => {} }).start();
   assert.deepEqual(seen, [{ persistent: false }, undefined]);
+});
+
+test('start() after stop() does not put a zombie back in the registry', () => {
+  __setWatchPrimitiveForTests(() => ({ close: () => {} }));
+  const w = createWatcher({ name: 'z', label: 'Z', dir: '/z', fallback: 'poll', onChange: () => {} });
+  w.start();
+  w.stop();
+  w.start();
+  assert.deepEqual(watchersStatus().watchers, []);
+});
+
+test('pushWatchersToRenderer is idempotent: a second call (darwin `activate` re-runs createMainWindow) never doubles the push', () => {
+  const sent: Array<{ channel: string; n: number }> = [];
+  initPlatform({
+    kind: 'headless-test', broadcast: (channel: string, ...args: unknown[]) => void sent.push({ channel, n: (args[0] as { watchers: unknown[] }).watchers.length }), broadcastPtyData: () => true, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => true, notify: () => {},
+    openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {}, openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
+    getUserDataDir: () => os.tmpdir(), getLogsDir: () => os.tmpdir(), getAppVersion: () => '0', getAppMetrics: () => [],
+    isEncryptionAvailable: () => false, encryptString: (s: string) => s, decryptString: (s: string) => s,
+  } as never);
+  __setWatchPrimitiveForTests(() => emfile());
+  const a = pushWatchersToRenderer();
+  const b = pushWatchersToRenderer();
+  assert.equal(a, b, 'the same subscription');
+  createWatcher({ name: 'x', label: 'X', dir: '/n', fallback: 'p', onChange: () => {} }).start();
+  assert.deepEqual(sent.filter((e) => e.channel === 'watchers:update'), [{ channel: 'watchers:update', n: 1 }], 'ONE push for one degradation');
+  a();
+  assert.notEqual(pushWatchersToRenderer(), a, 'after an unsubscribe a new subscription is possible');
 });

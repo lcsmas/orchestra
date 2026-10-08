@@ -115,12 +115,15 @@ export function createWatcher(spec: ResilientWatchSpec): ResilientWatcher {
     }
   } }, productionDeps());
   let handle: ResilientWatcher;
+  let stopped = false;
   handle = {
     start() {
+      if (stopped) return; // the machine ignores a start after stop(): a zombie must not re-enter the registry
       armed.add(handle);
       inner.start();
     },
     stop() {
+      stopped = true;
       armed.delete(handle); // first: the stop's own transition must already see the watcher gone
       inner.stop();
       notifyIfChanged();
@@ -135,21 +138,29 @@ export function stopAllWatchers(): void {
   for (const w of [...armed]) w.stop();
 }
 
-/** Boot: push each degraded-set change to the attached UI. Called once from index.ts; the returned fn unsubscribes. */
+let pushUnsub: (() => void) | null = null;
+/** Push each degraded-set change to the attached UI. IDEMPOTENT (createMainWindow runs again on darwin `activate`): a second call returns the same subscription, never a duplicate listener. */
 export function pushWatchersToRenderer(): () => void {
-  return onWatchersChange((s) => {
+  if (pushUnsub) return pushUnsub;
+  const off = onWatchersChange((s) => {
     try {
       platform.broadcast(WATCHERS_UPDATE_CHANNEL, s);
     } catch (e) {
       log.warn('watchers: push to the renderer failed', e);
     }
   });
+  pushUnsub = () => {
+    off();
+    pushUnsub = null;
+  };
+  return pushUnsub;
 }
 
 /** Test/rig seam: forget every armed watcher and listener (the watchers themselves are NOT stopped — call stopAllWatchers first). */
 export function __resetWatchersForTests(): void {
   armed.clear();
   listeners.clear();
+  pushUnsub = null;
   lastPushedKey = '';
   primitiveOverride = null;
   healthMsOverride = undefined;
