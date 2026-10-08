@@ -80,6 +80,7 @@ import {
   notifyTurnStart,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
+import { stopMemberScopeFor } from './scope-stop-host';
 import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { noteToolDetail } from './hibernation-activity';
 import { applyToolEvent, type OpenTool } from '../shared/open-tools.ts';
@@ -5624,7 +5625,11 @@ export async function sdkClear(wsId: string): Promise<void> {
   if (session) {
     session.cleared = true;
     await sdkStop(wsId);
+    // #327: /clear is an explicit stop. sdkStop leaves a keeper that answered its interrupt to wind down on its own clock — kill it, so the scope below is stoppable.
+    await killKeeper(wsId, 'clear').catch(() => {});
   }
+  // The detached jobs the old conversation left in its scope go with it (a live keeper makes this a refused no-op; restart/resume never reach here).
+  await stopMemberScopeFor(wsId, 'clear');
   await persistWorkspacePatch(wsId, { sdkSessionId: '' });
   emit(wsId, {
     type: 'session/clear',
