@@ -273,3 +273,33 @@ test('runPauseTrap over the roster: every member gets the step before the trap i
   assert.equal(sum2.done, true);
   assert.notEqual(getRunPause(rig.db, 'W')!.trapAt ?? null, null);
 });
+
+test('review F3: the PLANNED batch is persisted (outcome planned) before the first signal; an app death mid-batch leaves it in the Bilan, and the RETRY replaces it by identity — never a duplicate, never a stale « planned »', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = (o, call) => {
+    if (call === 1) {
+      o.onProgress?.({ ...emptyReliquatReport(['orchestra-rig-wh-m1-abc.scope']), killed: [killedOf(500, { outcome: 'planned' }), killedOf(501, { outcome: 'planned' })] }); // written before the first signal …
+      throw new Error('app died mid-batch'); // … and the app dies
+    }
+    return reportOf(500, 501); // the retry's census: both are gone now
+  };
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'incomplete');
+  const r1 = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!;
+  assert.deepEqual(r1.activity!.reliquats!.killed.map((k) => `${k.pid}:${k.startTicks}:${k.outcome}`), ['500:1500:planned', '501:1501:planned'], 'the batch the killer announced survives the crash (pid + start-time)');
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  const r2 = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!;
+  assert.deepEqual(r2.activity!.reliquats!.killed.map((k) => `${k.pid}:${k.outcome}`), ['500:exited', '501:exited'], 'replaced by identity');
+});
+
+test('review F1: a live parent that LEFT the scope is a survivor on the row (loud, listed) and does not keep the trap open', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = { ...reportOf(701, 702), survivors: [{ pid: 700, startTicks: 1700, comm: 'chrome', cmd: 'chrome --headless=new', reason: 'parent of 2 killed Reliquats (pid 701, 702); it LEFT the scope — NOT killed', kind: 'left-scope-parent' }] };
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  const row = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!;
+  assert.match(row.error ?? '', /reliquats: 1 leftover process\(es\) still alive/);
+  assert.equal(row.activity!.reliquats!.survivors[0].kind, 'left-scope-parent');
+});

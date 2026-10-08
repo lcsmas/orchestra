@@ -24,11 +24,19 @@ const M = [
     { find: "    const v = judgeReliquat(t.pid, t.startTicks, t.scope, scopeDeps.list(t.scope), protect, kill.read);\n    if (!v.ok) {", rep: "    const v = { ok: true as const, evidence: 'mutant', proc: undefined as never };\n    if (!v.ok) {" },
   ], arm: 'reliquat_killed', red: ['keeper SURVIVES (same pid + start-time)', 'CLI SURVIVES (same pid + start-time)'] },
   { id: 'rig-other-workspace-scope', file: MEMSCOPE, find: '  return p && p.wsId === wsId ? p.gen : null;', rep: '  return p ? p.gen : null;', arm: 'reliquat_killed', red: ['ANOTHER workspace (b, another run): keeper, CLI AND its Reliquat are untouched'] },
-  { id: 'rig-only-newest-generation', file: SCOPE, find: '    scopes: (): ScopeRef[] => memberScopes(wsId, e).map(', rep: '    scopes: (): ScopeRef[] => memberScopes(wsId, e).slice(-1).map(', arm: 'old_generation', red: ['old_generation_reliquat_killed'] },
+  { id: 'rig-only-newest-generation', file: SCOPE, find: '    scopes: (): ScopeRef[] => scopesOrThrow(wsId, e).map(', rep: '    scopes: (): ScopeRef[] => scopesOrThrow(wsId, e).slice(-1).map(', arm: 'old_generation', red: ['old_generation_reliquat_killed'] },
   { id: 'rig-no-scope-still-recorded', file: IO, find: '  if (scopes.length === 0) return null;\n', rep: '', arm: 'no_scope_unchanged', red: ['the Bilan row carries NO `reliquats` key at all (byte-identical to before #325)'] },
   { id: 'rig-status-section-dropped', file: STATUS, find: '    if (a?.reliquats) {\n', rep: '    if (false) {\n', arm: 'reliquat_killed', red: ['run_status_lists_it'] },
   { id: 'rig-consigne-section-dropped', file: CONS, find: '  for (const l of reliquatConsigneLines(c.reliquats, stripControl)) out.push(l);\n', rep: '', arm: 'reliquat_killed', red: ['consigne_shows_it'] },
   { id: 'rig-reliquat-not-in-the-bilan', file: TRAP, find: '        activity.reliquats = mergeReliquats(prior?.reliquats, rep);\n        if (rep.aborted', rep: '        delete activity.reliquats;\n        if (rep.aborted', arm: 'reliquat_killed', red: ['bilan_lists_the_killed_reliquat'] },
+  // review round 1 on @a9bf9d93 (c/6065812384): the three new real-path arms
+  { id: 'rig-parent-not-recorded', file: IO, find: "      if (t.ppid <= 1 || allListed.has(t.ppid)) continue;\n      const f = kill.read(t.ppid);", rep: "      continue;\n      const f = kill.read(t.ppid);", arm: 'parent_left_scope', red: ['bilan_names_the_parent', 'run_status_names_the_parent', 'consigne_names_the_parent'] },
+  { id: 'rig-parent-signalled', file: IO, find: "    const cg = scopeDeps.cgroupOf?.(p.pid) ?? null;", rep: "    kill.signal(p.pid, 'SIGKILL');\n    const cg = scopeDeps.cgroupOf?.(p.pid) ?? null;", arm: 'parent_left_scope', red: ['parent_left_scope_alive'] },
+  { id: 'rig-consigne-parent-line-dropped', file: PURE, find: "  for (const s of r.survivors.filter((x) => x.kind === 'left-scope-parent').slice(0, LISTED)) out.push(", rep: "  for (const s of [] as ReliquatLeft[]) out.push(", arm: 'parent_left_scope', red: ['consigne_names_the_parent'] },
+  { id: 'rig-status-parent-line-dropped', file: STATUS, find: "      if (outside.length) out.push(", rep: "      if (false) out.push(", arm: 'parent_left_scope', red: ['run_status_names_the_parent'] },
+  { id: 'rig-slice-error-swallowed', file: SCOPE, find: "        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') failed = err;", rep: "        /* mutant: every error is « no scope » */", arm: 'slice_unreadable', red: ['trap_stays_open_on_unreadable_slice', 'bilan_records_why', 'retry_completes_and_kills_it'] },
+  { id: 'rig-no-write-ahead', file: IO, find: "    opts.onProgress?.(snapshot());\n    const termed: Target[] = [];", rep: "    const termed: Target[] = [];", arm: 'write_ahead_planned', red: ['bilan_has_the_planned_batch_before_the_first_signal'] },
+  { id: 'rig-planned-never-settled', file: IO, find: "  for (const [k, v] of killed) v.outcome = stillThere.has(k) || alive(v) ? 'survived' : 'exited';", rep: "  for (const [k, v] of killed) if (v.outcome !== 'planned') v.outcome = stillThere.has(k) || alive(v) ? 'survived' : 'exited';", arm: 'write_ahead_planned', red: ['the final Bilan'] },
 ];
 
 function runRig(arm) {

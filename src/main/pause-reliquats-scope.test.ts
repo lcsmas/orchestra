@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { memberScopeDeps } from './pause-reliquats-scope.ts';
+import { killReliquats } from './pause-reliquats.ts';
 import { realScopeEnv, type ScopeEnv } from './memory-scope.ts';
 
 const UID = 4242;
@@ -134,4 +135,51 @@ test('the keeper is RE-RESOLVED at every listing: the pid file now names another
   assert.deepEqual(roles(), { 90: 'keeper', 95: 'reliquat', 96: 'reliquat' });
   tr.keeperPidFile('m1', 95); // the keeper was replaced
   assert.deepEqual(roles(), { 90: 'reliquat', 95: 'keeper', 96: 'session' });
+});
+
+// ── review round 1 on @a9bf9d93 (c/6065812384) F2: an app.slice that cannot be READ is UNKNOWN, never « no scope » ────────────────────────────────────────────────────────────────
+
+const eio = (code: string): Error => Object.assign(new Error(`${code}: simulated`), { code });
+
+test('F2: `readdir(app.slice)` failing with EMFILE / EACCES / EIO is UNKNOWN — scopes() throws and list() is `unreadable`; only ENOENT (no slice) means « nothing tracked »', (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m1', 'abc123');
+  tr.proc(500, 1, 'chrome', 5003, s.dir);
+  tr.members(s.dir, [500]);
+  const failing = (code: string | null): ScopeEnv => ({ ...tr.env, readdir: (p: string) => { if (code && p === tr.slice) throw eio(code); return tr.env.readdir(p); } });
+  // control: no error ⇒ the scope and its Reliquat
+  assert.equal(memberScopeDeps('m1', failing(null)).scopes().length, 1);
+  assert.ok(Array.isArray(memberScopeDeps('m1', failing(null)).list({ unit: s.unit, cgroupDir: s.dir })));
+  for (const code of ['EMFILE', 'EACCES', 'EIO']) {
+    const d = memberScopeDeps('m1', failing(code));
+    assert.throws(() => d.scopes(), (e: Error) => (e as NodeJS.ErrnoException).code === code, `${code}: UNKNOWN, not []`);
+    assert.equal(d.list({ unit: s.unit, cgroupDir: s.dir }), 'unreadable', `${code}: the scope is not known to be gone`);
+  }
+  // ENOENT = the slice does not exist: not tracked (unchanged), and the scope listing says gone
+  const d = memberScopeDeps('m1', failing('ENOENT'));
+  assert.deepEqual(d.scopes(), []);
+  assert.equal(d.list({ unit: s.unit, cgroupDir: s.dir }), 'gone');
+});
+
+test('F2: the killer treats the adapter\'s throw as UNKNOWN (a non-null report with `unknown`, nothing signalled) — the trap stays open and retries', async (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m1', 'abc123');
+  tr.proc(500, 1, 'chrome', 5003, s.dir);
+  tr.members(s.dir, [500]);
+  const env: ScopeEnv = { ...tr.env, readdir: (p: string) => { if (p === tr.slice) throw eio('EMFILE'); return tr.env.readdir(p); } };
+  const signals: number[] = [];
+  const kill = { supported: true, selfPid: 10, now: () => 0, sleep: async () => {}, readTable: () => [], read: () => 'gone' as const, readClaudePid: () => null, readCwd: () => null, startMs: (x: number) => x, signal: (pid: number) => { signals.push(pid); return true; } };
+  const rep = await killReliquats('m1', memberScopeDeps('m1', env), kill, { keeperPid: null, cliPid: null });
+  assert.ok(rep, 'NOT null (null = no tracked scope = trap complete)');
+  assert.match(rep!.unknown ?? '', /scope lookup failed: .*EMFILE/);
+  assert.deepEqual(signals, []);
+});
+
+test('review F1: the adapter names where a process went — cgroupOf reads /proc/<pid>/cgroup (null when unreadable)', (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m1', 'abc123');
+  tr.proc(700, 1, 'chrome', 5100, s.dir);
+  const d = memberScopeDeps('m1', tr.env);
+  assert.match(d.cgroupOf!(700) ?? '', /abc123\.scope$/);
+  assert.equal(d.cgroupOf!(99999), null);
 });

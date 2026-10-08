@@ -40,6 +40,8 @@ class FakeOs {
   starts = new Map<number, number>();
   /** pid → the scope unit it lives in (default: the main SCOPE) — each scope lists only ITS members. */
   unitOf = new Map<number, string>();
+  /** pid → the cgroup path it sits in (review F1: where a Reliquat's parent went). */
+  cgroups = new Map<number, string>();
 
   add(pid: number, ppid: number, argv: string[], role: ScopeRole = 'reliquat', startTicks = 1000 + pid): ProcIdent {
     const p: ProcIdent = { pid, ppid, sid: pid, startTicks, comm: argv[0].split('/').pop()!.slice(0, 15), state: 'S', argv };
@@ -63,6 +65,7 @@ class FakeOs {
         if (this.listing !== 'ok') return this.listing;
         return [...this.procs.values()].filter((p) => (this.unitOf.get(p.pid) ?? SCOPE.unit) === scope.unit).map((p): ScopeMember => ({ pid: p.pid, startTicks: p.startTicks, ppid: p.ppid, comm: p.comm, role: this.roles.get(p.pid) ?? 'reliquat' }));
       },
+      cgroupOf: (pid) => this.cgroups.get(pid) ?? null,
     };
   }
   deps(): KillDeps {
@@ -513,4 +516,135 @@ test('REAL: an orphan that still has a `claude`-named ANCESTOR (a mis-classified
   assert.equal(real.read(sleepKid as number) !== 'gone', true, 'the child of the claude-named process survives');
   assert.deepEqual(rep!.killed, []);
   assert.ok(rep!.spared.length >= 3, `spared and listed: ${JSON.stringify(rep!.spared.map((x) => x.pid))}`);
+});
+
+// ── review round 1 on @a9bf9d93 (ledger #329 c/6065812384): F1 parent left the scope · F3 write-ahead of the planned batch ──────────────────────────────────────────────────────────
+
+/** A browser main that moved ITSELF into its own transient scope (pid 700, ppid 1, in NO listed scope) and two helpers it left in the member's scope (701, 702). */
+function escapedBrowser(os: FakeOs): void {
+  os.add(700, 1, ['/opt/chromium/chrome', '--headless=new', '--user-data-dir=/p'], 'reliquat');
+  os.unitOf.set(700, 'app-org.chromium.Chromium-700.scope');
+  os.cgroups.set(700, '/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-700.scope');
+  os.add(701, 700, ['/opt/chromium/chrome', '--type=renderer'], 'reliquat');
+  os.add(702, 700, ['/opt/chromium/chrome', '--type=gpu-process'], 'reliquat');
+}
+
+test('F1: the live PARENT of killed Reliquats that LEFT the scope is a survivor — kind left-scope-parent, its children and its new cgroup named — and is never signalled', async () => {
+  const os = new FakeOs();
+  escapedBrowser(os);
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(os.signals.filter((s) => s.sig === 'SIGTERM').map((s) => s.pid).sort(), [701, 702], 'the helpers in the scope die');
+  assert.ok(!os.signals.some((s) => s.pid === 700), 'the parent is NOT in the member\'s scope: never signalled');
+  assert.ok(os.procs.has(700), 'and it is still alive');
+  assert.equal(rep!.survivors.length, 1);
+  const s = rep!.survivors[0];
+  assert.equal(s.pid, 700);
+  assert.equal(s.kind, 'left-scope-parent');
+  assert.match(s.reason, /parent of 2 killed Reliquats \(pid 701, 702\)/);
+  assert.match(s.reason, /LEFT the scope \(now in cgroup app-org\.chromium\.Chromium-700\.scope\)/);
+  assert.match(s.cmd, /chrome --headless=new/);
+  assert.equal(rep!.unknown, undefined);
+});
+
+test('F1 controls: a parent INSIDE a listed scope (judged there), a dead parent, init, and a parent that dies with its children are NOT reported; a parent unreadable at plan time refuses its children, one unreadable afterwards is reported (UNKNOWN is not NONE)', async () => {
+  // (a) the parent is another Reliquat of the same scope: killed itself, not « left »
+  let os = new FakeOs();
+  os.add(600, 1, ['daemon']);
+  os.add(601, 600, ['worker']);
+  let rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.survivors, []);
+  assert.deepEqual(os.signals.filter((s) => s.sig === 'SIGTERM').map((s) => s.pid).sort(), [600, 601]);
+  // (b) a parent that is already gone, (c) init — which EXISTS and is alive on a real host
+  os = new FakeOs();
+  os.add(1, 0, ['/sbin/init'], 'session', 1);
+  os.unitOf.set(1, 'init.scope');
+  os.add(610, 999, ['worker-orphaned-from-a-dead-parent']);
+  os.add(611, 1, ['worker-of-init']);
+  rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.survivors, []);
+  assert.ok(!os.signals.some((x) => x.pid === 1));
+  // (c2) a parent that is a ZOMBIE (exited, not yet reaped) is not alive; (c3) a parent whose pid was RECYCLED by an unrelated process before the final census is not « the parent »
+  os = new FakeOs();
+  escapedBrowser(os);
+  os.procs.get(700)!.state = 'Z';
+  rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.survivors, [], 'a zombie parent is gone for our purposes');
+  os = new FakeOs();
+  escapedBrowser(os);
+  os.onSignal = (pid) => { if (pid === 702) { os.die(700); os.add(700, 1, ['/usr/bin/unrelated'], 'reliquat', 99999); os.unitOf.set(700, 'app-other.scope'); } };
+  rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.survivors, [], 'the pid was recycled: the new process is not the parent we saw');
+  // (d) the parent exits when its children do (a supervisor of its own children)
+  os = new FakeOs();
+  escapedBrowser(os);
+  os.onSignal = (pid) => { if (pid === 702) os.die(700); };
+  rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.survivors, [], 'it died since: not claimed alive');
+  // (e) a parent UNREADABLE at plan time: the children's ancestry is unprovable ⇒ they are refused, nothing is signalled (fail closed — pre-existing)
+  os = new FakeOs();
+  escapedBrowser(os);
+  os.unreadable.add(700);
+  rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(os.signals, []);
+  assert.equal(rep!.refused.length, 2);
+  // (f) a parent that becomes unreadable AFTER the kill: still reported (UNKNOWN is not NONE), with the identity it had
+  os = new FakeOs();
+  escapedBrowser(os);
+  os.onSignal = (pid) => { if (pid === 702) os.unreadable.add(700); };
+  rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.equal(rep!.survivors.filter((x) => x.kind === 'left-scope-parent').length, 1);
+  assert.equal(rep!.survivors[0].startTicks, 1700);
+  assert.ok(!os.signals.some((x) => x.pid === 700));
+});
+
+test('F1: a parent in ANOTHER generation of the member\'s scope is judged THERE (killed as its own Reliquat) and is not reported as « left the scope »', async () => {
+  const os = new FakeOs();
+  const OLD: ScopeRef = { unit: 'orchestra-rig-wh-m1-old000.scope', cgroupDir: '/sys/fs/cgroup/x/orchestra-rig-wh-m1-old000.scope' };
+  os.scopeNames = [SCOPE, OLD];
+  os.add(620, 1, ['old-gen-daemon']);
+  os.unitOf.set(620, OLD.unit);
+  os.add(621, 620, ['new-gen-child']);
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.survivors, []);
+  assert.deepEqual(os.signals.filter((s) => s.sig === 'SIGTERM').map((s) => s.pid).sort(), [620, 621]);
+});
+
+test('F3: the PLANNED batch (pid + start-time, outcome planned) is persisted BEFORE the first signal — an app death mid-batch loses nothing', async () => {
+  const os = new FakeOs();
+  for (let i = 0; i < 5; i++) os.add(800 + i, 1, ['daemon', String(i)]);
+  const seen: Array<{ signals: number; killed: Array<[number, number, string]> }> = [];
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), { ...OPTS, onProgress: (r) => seen.push({ signals: os.signals.length, killed: r.killed.map((k) => [k.pid, k.startTicks, k.outcome]) }) });
+  assert.ok(seen.length >= 2);
+  assert.equal(seen[0].signals, 0, 'the first record is written before ANY signal');
+  assert.deepEqual(seen[0].killed.map((k) => k[2]), ['planned', 'planned', 'planned', 'planned', 'planned']);
+  assert.deepEqual(seen[0].killed.map((k) => `${k[0]}:${k[1]}`).sort(), [800, 801, 802, 803, 804].map((p) => `${p}:${1000 + p}`));
+  assert.ok(seen[seen.length - 1].signals > 0);
+  assert.deepEqual(rep!.killed.map((k) => k.outcome), ['exited', 'exited', 'exited', 'exited', 'exited'], 'the final census replaces planned with the real outcome');
+});
+
+test('F3: the app dies after the 2nd SIGTERM — the record written before the batch still names every planned process (pid + start-time); a planned target refused at signal time is NOT claimed as killed', async () => {
+  const os = new FakeOs();
+  for (let i = 0; i < 4; i++) os.add(810 + i, 1, ['daemon', String(i)]);
+  const records: string[][] = [];
+  const dep = os.deps();
+  let delivered = 0;
+  dep.signal = (pid, sig) => { if (++delivered === 3) throw new Error('app died'); return os.deps().signal(pid, sig); };
+  await assert.rejects(killReliquats('m1', os.scopeDeps(), dep, { ...OPTS, onProgress: (r) => records.push(r.killed.map((k) => `${k.pid}:${k.startTicks}:${k.outcome}`)) }), /app died/);
+  assert.deepEqual(records[0].sort(), [810, 811, 812, 813].map((p) => `${p}:${1000 + p}:planned`), 'all four were persisted before the first signal');
+  // a target recycled between plan and signal is refused at signal time and dropped from the killed list
+  const os2 = new FakeOs();
+  os2.add(820, 1, ['daemon-a']);
+  os2.add(821, 1, ['daemon-b']);
+  os2.onList = (n) => { if (n === 2) os2.add(821, 1, ['recycled'], 'reliquat', 9999); }; // 821 is replaced by another process after the plan
+  const rep = await killReliquats('m1', os2.scopeDeps(), os2.deps(), OPTS);
+  assert.ok(!rep!.killed.some((k) => k.pid === 821 && k.startTicks === 1821), 'the planned original was never signalled: not claimed as killed');
+  assert.ok(!rep!.killed.some((k) => k.outcome === 'planned'), 'no planned entry survives the final census');
+});
+
+test('F3: 250 Reliquats — the first record keeps the newest 200 and counts all 250', async () => {
+  const os = new FakeOs();
+  for (let i = 0; i < 250; i++) os.add(2000 + i, 1, ['daemon', String(i)]);
+  const first: Array<{ n: number; total: number | undefined }> = [];
+  await killReliquats('m1', os.scopeDeps(), os.deps(), { ...OPTS, onProgress: (r) => first.push({ n: r.killed.length, total: r.killedTotal }) });
+  assert.deepEqual(first[0], { n: 200, total: 250 });
 });

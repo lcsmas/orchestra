@@ -47,8 +47,8 @@ export interface ReliquatKilled {
   /** What the signal-time re-read proved for THIS process. */
   evidence: string;
   signal: 'SIGTERM' | 'SIGKILL';
-  /** exited = gone or zombie at the final census; survived = still the same live process. */
-  outcome: 'exited' | 'survived';
+  /** planned = written BEFORE the first signal of the batch (write-ahead, review F3: an app death mid-batch must not lose the batch); exited = gone or zombie at the final census; survived = still the same live process. */
+  outcome: 'planned' | 'exited' | 'survived';
 }
 
 export interface ReliquatLeft {
@@ -57,6 +57,8 @@ export interface ReliquatLeft {
   comm: string;
   cmd: string;
   reason: string;
+  /** `left-scope-parent` (review F1): the live PARENT of a killed Reliquat that is no longer in the member's scope — listed, never signalled (it is not ours to kill). */
+  kind?: 'left-scope-parent';
 }
 
 /** What the Pause did to a member's Reliquats — `BilanActivity.reliquats`. Absent on the Bilan = the member has no tracked scope (nothing was looked at). */
@@ -222,13 +224,18 @@ const LISTED = 20;
 export function reliquatConsigneLines(r: ReliquatReport | undefined | null, strip: (s: unknown) => string): string[] {
   if (!r) return [];
   const out: string[] = [];
-  if (r.killed.length > 0) {
-    const n = r.killedTotal ?? r.killed.length;
+  // `planned` = written before the first signal of a batch (review F3) and never completed by a census: the Pause was ABOUT to kill it — not claimed as killed
+  const done = r.killed.filter((k) => k.outcome !== 'planned');
+  const planned = r.killed.length - done.length;
+  if (done.length > 0) {
+    const n = (r.killedTotal ?? r.killed.length) - planned;
     out.push(`Leftover processes (Reliquats) the Pause killed in your scope (${n}) — processes you started that had left your session's process tree; LISTED, NOT re-run. Re-run one only if you still need it, after checking the tree:`);
-    for (const k of r.killed.slice(0, LISTED)) out.push(`  - ${trimTo(k.cmd, 300, strip)}   (pid ${k.pid}, started ${iso(k.startedAt)}${k.cwd ? `, cwd ${trimTo(k.cwd, 200, strip)}` : ''})`);
-    if (r.killed.length > LISTED) out.push(`  - … +${n - LISTED} more (orchestra run status)`);
+    for (const k of done.slice(0, LISTED)) out.push(`  - ${trimTo(k.cmd, 300, strip)}   (pid ${k.pid}, started ${iso(k.startedAt)}${k.cwd ? `, cwd ${trimTo(k.cwd, 200, strip)}` : ''})`);
+    if (done.length > LISTED) out.push(`  - … +${n - LISTED} more (orchestra run status)`);
   }
-  for (const s of r.survivors.slice(0, LISTED)) out.push(`STILL ALIVE after the Pause (Reliquat): ${trimTo(s.cmd, 200, strip)} (pid ${s.pid}: ${trimTo(s.reason, 80, strip)})`);
+  if (planned > 0) out.push(`Leftover processes the Pause was about to kill when it was interrupted (${planned}) — their outcome was not recorded; check them before re-running anything: ${r.killed.filter((k) => k.outcome === 'planned').slice(0, 3).map((k) => `${trimTo(k.cmd, 60, strip)} (pid ${k.pid})`).join('; ')}${planned > 3 ? '; …' : ''}`);
+  for (const s of r.survivors.filter((x) => x.kind !== 'left-scope-parent').slice(0, LISTED)) out.push(`STILL ALIVE after the Pause (Reliquat): ${trimTo(s.cmd, 200, strip)} (pid ${s.pid}: ${trimTo(s.reason, 80, strip)})`);
+  for (const s of r.survivors.filter((x) => x.kind === 'left-scope-parent').slice(0, LISTED)) out.push(`STILL ALIVE and OUTSIDE your scope (NOT killed — not in your scope): ${trimTo(s.cmd, 200, strip)} (pid ${s.pid}) — ${trimTo(s.reason, 200, strip)}`);
   for (const s of r.refused.slice(0, LISTED)) out.push(`Leftover process NOT killed (identity not provable, pid ${s.pid}): ${trimTo(s.reason, 120, strip)} — ${trimTo(s.cmd, 120, strip)}`);
   if (r.spared.length > 0) out.push(`Leftover processes left running on purpose (${r.spared.length}): ${r.spared.slice(0, 3).map((s) => `${trimTo(s.cmd, 60, strip)} (pid ${s.pid})`).join('; ')}${r.spared.length > 3 ? '; …' : ''}`);
   if (r.unknown) out.push(`Leftover processes: NOT checked for you — ${trimTo(r.unknown, 160, strip)}`);

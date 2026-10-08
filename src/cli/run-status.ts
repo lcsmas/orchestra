@@ -244,9 +244,11 @@ function renderRows(rows: BilanRow[], out: string[]): void {
       // #325: the Reliquats (processes of the member's kernel scope that had left its session's tree) the Pause dure killed — command, pid, start time; listed, never re-run
       const rq = a.reliquats;
       out.push(`      Reliquats (leftover processes of the member's scope ${rq.scopes.map((u) => c(u)).join(', ')}): ${rq.killed.length ? `${rq.killedTotal ?? rq.killed.length} killed` : 'none killed'}`);
-      for (const k of rq.killed.slice(0, 12)) out.push(`        reliquat killed: ${short(k.cmd, 120)} pid ${c(k.pid)} started ${iso(k.startedAt)} (start-time ${c(k.startTicks)}) cwd ${c(k.cwd ?? '?')} — ${c(k.signal)}${k.outcome === 'survived' ? ' — SURVIVED' : ''}`);
+      for (const k of rq.killed.slice(0, 12)) out.push(`        reliquat killed: ${short(k.cmd, 120)} pid ${c(k.pid)} started ${iso(k.startedAt)} (start-time ${c(k.startTicks)}) cwd ${c(k.cwd ?? '?')} — ${c(k.signal)}${k.outcome === 'survived' ? ' — SURVIVED' : k.outcome === 'planned' ? ' — PLANNED, outcome not recorded' : ''}`);
       if (rq.killed.length > 12) out.push(`        … +${rq.killed.length - 12} more reliquats killed`);
-      if (rq.survivors.length) out.push(`      Reliquats STILL ALIVE: ${rq.survivors.map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)}: ${c(x.reason)})`).join('; ')}`);
+      const outside = rq.survivors.filter((x) => x.kind === 'left-scope-parent');
+      if (outside.length) out.push(`      Processes OUTSIDE the scope, still alive, NOT killed (parent of a killed Reliquat): ${outside.map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)}: ${c(x.reason)})`).join('; ')}`);
+      if (rq.survivors.length > outside.length) out.push(`      Reliquats STILL ALIVE: ${rq.survivors.filter((x) => x.kind !== 'left-scope-parent').map((x) => `${short(x.cmd, 60)} (pid ${c(x.pid)}: ${c(x.reason)})`).join('; ')}`);
       if (rq.refused.length) out.push(`      Reliquats NOT killed (identity not provable): ${rq.refused.map((x) => `pid ${c(x.pid)}: ${c(x.reason)}`).join('; ')}`);
       if (rq.spared.length) out.push(`      Reliquats left running on purpose: ${rq.spared.map((x) => `${short(x.cmd, 50)} (pid ${c(x.pid)}: ${short(x.reason, 60)})`).join('; ')}`);
       if (rq.unknown) out.push(`      Reliquats UNKNOWN: ${c(rq.unknown)}`);

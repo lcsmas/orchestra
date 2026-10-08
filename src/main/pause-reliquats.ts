@@ -28,6 +28,8 @@ export interface ReliquatScopeDeps {
   scopes(wsId: string): ScopeRef[];
   /** FI-1 `listScopeProcs(scope)` + `classifyScopeMembers`, read NOW. 'gone' = the scope no longer exists; 'unreadable' = UNKNOWN. */
   list(scope: ScopeRef): ScopeListing;
+  /** The cgroup (v2 path) `pid` sits in NOW, null when unknown — only to NAME where a Reliquat's parent went when it left the scope (review F1). */
+  cgroupOf?(pid: number): string | null;
 }
 
 export interface ReliquatKillOptions {
@@ -94,6 +96,9 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
   const killed = new Map<string, ReliquatKilled>(); // pid:startTicks
   const refused = new Map<string, ReliquatLeft>();
   const spared = new Map<number, ReliquatLeft>();
+  const signalled = new Set<string>(); // pid:startTicks of the targets a signal was actually delivered to
+  /** The live PARENTS of targeted Reliquats that are in no listed scope (review F1): reported, never signalled. */
+  const parents = new Map<string, { pid: number; startTicks?: number; comm: string; cmd: string; children: number[] }>();
   const key = (t: { pid: number; startTicks: number }): string => `${t.pid}:${t.startTicks}`;
   const beforeMs = (): number | undefined => (typeof opts.startedBeforeMs === 'function' ? opts.startedBeforeMs() : opts.startedBeforeMs);
   const paused = (): boolean => {
@@ -142,6 +147,7 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
     const sc = currentScopes();
     if (sc === 'unknown') return { targets, unknown: 'scope lookup failed during the kill' };
     let unknown: string | undefined;
+    const allListed = new Set<number>(); // every pid of every readable listing: a parent in ANOTHER generation of the member's scope is judged there, not reported here
     for (const scope of sc) {
       const listing = scopeDeps.list(scope);
       if (listing === 'gone') continue;
@@ -149,6 +155,7 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
         unknown = `scope ${scope.unit}: cgroup.procs unreadable — its Reliquats could not be listed`;
         continue;
       }
+      for (const m of listing) allListed.add(m.pid);
       // FI-1 names the keeper only once its pid file is published: with THIS member's own keeper listed as a `reliquat` the roles of the whole scope are unreliable (its CLI and MCP servers read `reliquat` too) —
       // nothing in it is signalled this round (UNKNOWN is not NONE: the trap retries once the pid file exists). Another workspace's keeper.js (a nested rig app) does not block the scope.
       const ownKeeper = listing.find((m) => m.role === 'reliquat' && ((): boolean => { const f = kill.read(m.pid); return f !== 'gone' && f !== 'unreadable' && isOwnKeeperProc(f, wsId); })());
@@ -181,6 +188,17 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
         targets.push(t);
       }
     }
+    // review F1: a targeted Reliquat whose PARENT is alive, in no scope we looked at and not the session (a browser main that moved itself into its own transient scope) — the
+    // Pause kills the child and the parent lives on: say so (survivors), never signal it (it is not in the member's scope — whether to is the cap's call, not the Pause's)
+    for (const t of targets) {
+      if (t.ppid <= 1 || allListed.has(t.ppid)) continue;
+      const f = kill.read(t.ppid);
+      if (f === 'gone' || (f !== 'unreadable' && f.state === 'Z')) continue;
+      const pk = f === 'unreadable' ? `${t.ppid}:?` : `${f.pid}:${f.startTicks}`;
+      const cur = parents.get(pk) ?? (f === 'unreadable' ? { pid: t.ppid, comm: '?', cmd: `[pid ${t.ppid}, unreadable]`, children: [] } : { pid: f.pid, startTicks: f.startTicks, comm: f.comm, cmd: cmdOf(f.argv, f.comm), children: [] });
+      if (!cur.children.includes(t.pid)) cur.children.push(t.pid);
+      parents.set(pk, cur);
+    }
     return { targets, ...(unknown ? { unknown } : {}) };
   };
 
@@ -201,9 +219,12 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
       return false;
     }
     if (!kill.signal(t.pid, sig)) return false;
+    signalled.add(key(t));
     const prev = killed.get(key(t));
-    if (prev) prev.signal = sig;
-    else {
+    if (prev) {
+      prev.signal = sig;
+      prev.evidence = v.evidence; // a write-ahead `planned` entry now carries the signal-time proof
+    } else {
       killed.set(key(t), {
         pid: t.pid, startTicks: t.startTicks, comm: t.comm, cmd: t.cmd, cwd: t.cwd, startedAt: t.startedAt, scope: t.scope.unit,
         evidence: v.evidence, signal: sig, outcome: 'exited',
@@ -217,6 +238,12 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
     const plan = planNow();
     if (plan.targets.length === 0) break;
     report.rounds = round;
+    // review F3: WRITE-AHEAD — the planned batch (pid + start-time, `outcome: planned`) is persisted BEFORE the first signal: an app death mid-batch must not lose it (the retry census no longer sees a process that already died)
+    for (const t of plan.targets) {
+      if (killed.has(key(t))) continue;
+      killed.set(key(t), { pid: t.pid, startTicks: t.startTicks, comm: t.comm, cmd: t.cmd, cwd: t.cwd, startedAt: t.startedAt, scope: t.scope.unit, evidence: 'planned: identity and membership proven at plan time; re-read before each signal', signal: 'SIGTERM', outcome: 'planned' });
+    }
+    opts.onProgress?.(snapshot());
     const termed: Target[] = [];
     let n = 0;
     for (const t of reliquatKillOrder(plan.targets)) {
@@ -224,6 +251,8 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
       if (signalOne(t, 'SIGTERM')) termed.push(t);
       if (++n % YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r)); // each signal re-reads the scope synchronously: let the Electron main thread breathe between small batches
     }
+    // a planned target that was never signalled (refused / spared at signal time, a lift) is NOT claimed as killed
+    for (const t of plan.targets) if (!signalled.has(key(t))) killed.delete(key(t));
     if (termed.length > 0) opts.onProgress?.(snapshot());
     await waitUntilGone(termed, grace);
     for (const t of reliquatKillOrder(termed)) {
@@ -247,6 +276,12 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
   out.spared = out.spared.filter((r) => { const f = kill.read(r.pid); return f !== 'gone' && !(f !== 'unreadable' && f.state === 'Z'); });
   out.survivors = (last?.targets ?? []).map((t) => leftOf(t, 'still-alive-after-kill'));
   for (const [k, v] of killed) if (v.outcome === 'survived' && !stillThere.has(k)) out.survivors.push(leftOf(v, 'still-alive-after-kill'));
+  for (const p of parents.values()) {
+    const f = kill.read(p.pid);
+    if (f === 'gone' || (f !== 'unreadable' && (f.state === 'Z' || (p.startTicks !== undefined && f.startTicks !== p.startTicks)))) continue; // died since (or the pid was recycled)
+    const cg = scopeDeps.cgroupOf?.(p.pid) ?? null;
+    out.survivors.push({ ...leftOf(p, `parent of ${p.children.length} killed Reliquat${p.children.length === 1 ? '' : 's'} (pid ${p.children.slice(0, 3).join(', ')}${p.children.length > 3 ? ', …' : ''}); it LEFT the scope${cg ? ` (now in cgroup ${cg.split('/').pop()})` : ''} and is still alive — NOT killed`), kind: 'left-scope-parent' });
+  }
   if (last?.unknown) out.unknown = last.unknown;
   out.rounds = report.rounds;
   if (report.aborted) out.aborted = report.aborted;

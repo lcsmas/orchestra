@@ -37,6 +37,10 @@ const ARMS = {
   reliquat_killed: { mustRedden: ['env_i_reliquat_killed', 'bilan_lists_the_killed_reliquat', 'bilan_attributes_to_the_reliquat_step', 'run_status_lists_it', 'consigne_shows_it', 'reprise_restarted_nothing'] },
   old_generation: { mustRedden: ['old_generation_reliquat_killed', 'new_generation_reliquat_killed', 'bilan_names_both_scopes'] },
   no_scope_unchanged: { mustRedden: [] },
+  // review round 1 on @a9bf9d93 (ledger #329 c/6065812384)
+  parent_left_scope: { mustRedden: ['bilan_names_the_parent', 'run_status_names_the_parent', 'consigne_names_the_parent'] }, // F1
+  slice_unreadable: { mustRedden: ['trap_stays_open_on_unreadable_slice', 'bilan_records_why', 'retry_completes_and_kills_it'] }, // F2
+  write_ahead_planned: { mustRedden: ['bilan_has_the_planned_batch_before_the_first_signal'] }, // F3
 };
 
 const ARM = process.argv[2] ?? '';
@@ -228,6 +232,19 @@ function findByCmd(needle) {
   }
   return out;
 }
+/** Live `sh -c '<cmd>; : <marker>'` processes carrying `marker` as their last word (a shell that stays, so its identity is the pid). */
+function shellsWith(marker) {
+  const out = [];
+  for (const n of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(n) || Number(n) === process.pid) continue;
+    try {
+      const a = fs.readFileSync(`/proc/${n}/cmdline`, 'latin1').split('\0');
+      const s = readSafe(`/proc/${n}/stat`);
+      if (a[0] === 'sh' && a[1] === '-c' && (a[2] ?? '').endsWith(`: ${marker}`) && s && s.slice(s.lastIndexOf(')') + 2)[0] !== 'Z') out.push(Number(n));
+    } catch { /* gone */ }
+  }
+  return out;
+}
 const DAEMON = path.join(base, 'daemonize.py'); // double-fork + setsid, fds on /dev/null, then sleep (H1's helper, copied under the scratch dir: a short path keeps the marker visible in `run status`)
 fs.copyFileSync(path.join(MC_DIR, 'daemonize.py'), DAEMON);
 const PY = '/usr/bin/python3';
@@ -293,6 +310,7 @@ async function teardown() {
   for (const ws of sessions.keys()) { try { kc.forbidKeeperLaunch?.(ws); await kc.killKeeper(ws, 'pause-reliquats-rig'); } catch { /* best effort */ } }
   await sleep(300);
   for (const ws of sessions.keys()) for (const u of unitsNow(`${UNIT_PREFIX}${ws}-*`)) spawnSync('systemctl', ['--user', 'stop', u], { encoding: 'utf8' }); // by NAME: rig prefix + this arm's ws id
+  for (const u of unitsNow(`${UNIT_PREFIX}mv${T}-*`)) spawnSync('systemctl', ['--user', 'stop', u], { encoding: 'utf8' }); // the scope a Reliquat's parent moved itself into (parent_left_scope): rig prefix + this run's token
   await sleep(300);
   // whatever the rig launched and a scope stop did not reach (no scope in the control arm, a daemon of an UNFIXED subject that left it): by IDENTITY, re-read from /proc right before the signal —
   // its cmdline carries the rig marker, or its environment carries this arm's scratch HOME (the keeper's children: the stand-in CLI's sidecar)
@@ -423,6 +441,106 @@ try {
     const bil = bilanOf(ID.a);
     check('the Bilan row carries NO `reliquats` key at all (byte-identical to before #325)', bil && !('reliquats' in (bil.activity ?? {})), JSON.stringify(Object.keys(bil?.activity ?? {})));
     detail = 'no scope';
+  } else if (ARM === 'parent_left_scope') {
+    // F1: a detached main that moves ITSELF into its own transient scope (what Chromium does, Q5) after starting two helpers in the member scope. The Pause kills the helpers; the main stays — and the Bilan must SAY SO.
+    const a = open('a');
+    await waitFor(() => initOf(a), 40_000);
+    const fa = factsOf('a', a);
+    const ESC = `${UNIT_PREFIX}mv${T}-esc.scope`;
+    const MV = mark('esc'), H1 = mark('h1'), H2 = mark('h2');
+    await runTool(a, `( setsid sh -c "sh -c 'sleep 600; : ${H1}' & sh -c 'sleep 600; : ${H2}' & exec systemd-run --user --scope --collect --quiet --unit=${ESC} -p MemoryMax=100M -- sh -c 'sleep 600; : ${MV}'" >/dev/null 2>&1 & ) ; true`, 'ta-mv');
+    await waitFor(() => shellsWith(MV).length === 1 && shellsWith(H1).length === 1 && shellsWith(H2).length === 1, 20_000, 100);
+    const [m] = shellsWith(MV), [h1] = shellsWith(H1), [h2] = shellsWith(H2);
+    check('premise: the main MOVED ITSELF out of the member scope (own transient scope), both helpers stayed in a’s scope, their parent is the main', !!m && !!h1 && !!h2 && (cgOf(m) ?? '').endsWith(ESC) && cgOf(h1) === fa.cg && cgOf(h2) === fa.cg && ppidOf(h1) === m && ppidOf(h2) === m, `main=${cgOf(m)} h1=${cgOf(h1)} ppid=${ppidOf(h1)}`);
+    const scopeA = scopeMod.memberScopes(ID.a);
+    const roles = Object.fromEntries(scopeMod.listScopeProcs(scopeA[0], fa.cliPid).map((p) => [p.pid, p.role]));
+    check('premise: FI-1 classifies the helpers `reliquat` and does not list the main (it is in another cgroup)', roles[h1] === 'reliquat' && roles[h2] === 'reliquat' && !(m in roles), JSON.stringify(roles));
+    const ids = { m: ident(m), h1: ident(h1), h2: ident(h2) };
+    const before = { keeper: fa.keeperId, cli: fa.cliId, side: fa.sidecarId };
+    startTrap();
+    const p = cli('run', 'pause', '--hard', '--run', ID.ops, '--as', ID.lead);
+    check('the pause is written by the REAL built CLI (rc 0, hard)', p.rc === 0, p.out.trim().slice(0, 120));
+    check('trap_stamped: the host trap finished', await waitFor(() => trapAt() !== null, 90_000, 200), `trapAt=${trapAt()}`);
+    await sleep(500);
+    check('helpers_in_scope_killed: both helpers (and the sleeps under them) left in a’s scope are DEAD', !aliveId(ids.h1) && !aliveId(ids.h2), `${ids.h1} ${ids.h2}`);
+    const left = (readSafe(`/sys/fs/cgroup${fa.cg}/cgroup.procs`) ?? '').split('\n').filter(Boolean).map(Number).filter((q) => ![fa.keeperPid, fa.cliPid, fa.sidecarPid].includes(q));
+    check('the scope holds nothing but the session afterwards', left.length === 0, `left=${left.join(',')}`);
+    check('parent_left_scope_alive: the main — in ANOTHER scope, not ours to kill — is still alive, same identity', aliveId(ids.m), ids.m);
+    check('keeper, CLI, sidecar SURVIVE', aliveId(before.keeper) && aliveId(before.cli) && aliveId(before.side), JSON.stringify(before));
+    const rq = bilanOf(ID.a)?.activity?.reliquats;
+    const sv = (rq?.survivors ?? []).find((x) => x.pid === m);
+    check('bilan_names_the_parent: activity.reliquats.survivors lists the main — kind left-scope-parent, its cgroup, « NOT killed »', !!sv && sv.kind === 'left-scope-parent' && /LEFT the scope/.test(sv.reason) && sv.reason.includes(ESC) && /NOT killed/.test(sv.reason), JSON.stringify(sv ?? rq?.survivors ?? null).slice(0, 220));
+    const st = cli('run', 'status', '--run', ID.ops);
+    check('run_status_names_the_parent: `orchestra run status` (built CLI) prints it as OUTSIDE the scope, still alive, NOT killed', new RegExp(`OUTSIDE the scope, still alive, NOT killed.*pid ${m}`).test(st.out), st.out.split('\n').filter((l) => /OUTSIDE|Reliq/.test(l)).join(' | ').slice(0, 220));
+    cli('run', 'resume', '--run', ID.ops, '--as', ID.lead);
+    await waitFor(() => db.prepare("SELECT 1 FROM messages WHERE kind = 'reprise' AND recipient = ?").get(ID.ops), 40_000, 200);
+    cli('run', 'release', ID.a, '--run', ID.ops, '--as', ID.ops);
+    const body = db.prepare("SELECT body FROM messages WHERE kind = 'reprise' AND recipient = ? ORDER BY sequence DESC LIMIT 1").get(ID.a)?.body ?? '';
+    check('consigne_names_the_parent: the member’s Consigne says a process OUTSIDE its scope is still alive (pid), NOT killed', /STILL ALIVE and OUTSIDE your scope/.test(body) && body.includes(`pid ${m}`), body.split('\n').filter((l) => /OUTSIDE/.test(l)).join(' | ').slice(0, 200));
+    check('the main was never signalled: alive after the Reprise too', aliveId(ids.m), ids.m);
+    detail = `scope=${fa.unit} main=${m} moved-to=${ESC}`;
+  } else if (ARM === 'slice_unreadable') {
+    // F2: `readdir(app.slice)` fails (EMFILE) for the first attempts: UNKNOWN, not « no scope ». The trap stays open, records why, touches nothing — and the retry kills the Reliquat once the slice reads again.
+    const a = open('a');
+    await waitFor(() => initOf(a), 40_000);
+    const fa = factsOf('a', a);
+    await runTool(a, envIDaemon('su'), 'ta-su');
+    await sleep(800);
+    const [r] = findByCmd(mark('su'));
+    const id = ident(r);
+    check('premise: the env -i daemon is alive in a’s scope', !!r && cgOf(r) === fa.cg, `pid=${r} cg=${cgOf(r)}`);
+    const slice = scopeMod.appSliceDir();
+    const realReaddir = fs.readdirSync;
+    let failing = true, hits = 0;
+    fs.readdirSync = function (p, ...rest) { if (failing && String(p) === slice) { hits++; throw Object.assign(new Error(`EMFILE: too many open files, scandir '${p}'`), { code: 'EMFILE' }); } return realReaddir.call(this, p, ...rest); };
+    try {
+      startTrap();
+      cli('run', 'pause', '--hard', '--run', ID.ops, '--as', ID.lead);
+      await waitFor(() => bilanOf(ID.a)?.activity?.reliquats?.unknown || trapAt() !== null, 60_000, 200);
+      check('premise (instrument): the injected EMFILE was really hit by the trap', hits > 0, `hits=${hits}`);
+      const rq = bilanOf(ID.a)?.activity?.reliquats;
+      check('trap_stays_open_on_unreadable_slice: the trap is NOT stamped complete and the member’s kill result is still owed', trapAt() === null && bilanOf(ID.a)?.killed == null, `trapAt=${trapAt()} killed=${JSON.stringify(bilanOf(ID.a)?.killed ?? null).slice(0, 60)}`);
+      check('bilan_records_why: activity.reliquats.unknown names the failed scope lookup (EMFILE)', /scope lookup failed.*EMFILE/.test(rq?.unknown ?? ''), JSON.stringify(rq?.unknown ?? null));
+      check('while UNKNOWN nothing is signalled: the daemon is alive, the session untouched', aliveId(id) && aliveId(fa.keeperId) && aliveId(fa.cliId), `${id} ${fa.keeperId} ${fa.cliId}`);
+      failing = false;
+      check('retry_completes_and_kills_it: once the slice reads again the trap RETRIES, kills the Reliquat and stamps the trap', await waitFor(() => trapAt() !== null, 90_000, 250) && !aliveId(id), `trapAt=${trapAt()} alive=${aliveId(id)}`);
+    } finally {
+      fs.readdirSync = realReaddir;
+    }
+    detail = `scope=${fa.unit} reliquat=${r} hits=${hits}`;
+  } else if (ARM === 'write_ahead_planned') {
+    // F3: 12 detached Reliquats. At the instant of the FIRST real SIGTERM to one of them, the persisted Bilan must already hold the whole planned batch (pid + start-time, outcome planned).
+    const a = open('a');
+    await waitFor(() => initOf(a), 40_000);
+    const fa = factsOf('a', a);
+    const tags = 'abcdefghijkl'.split('').map((c) => `wa${c}`);
+    await runTool(a, `for t in ${tags.join(' ')}; do env -i ${PY} ${DAEMON} 600 ${mark('')}$t; done`, 'ta-wa');
+    await sleep(1200);
+    const pids = tags.map((t) => findByCmd(mark('') + t)[0]).filter(Boolean);
+    const idMap = new Map(pids.map((pid) => [pid, ident(pid)]));
+    check('premise: 12 detached Reliquats are alive in a’s scope', pids.length === 12 && pids.every((pid) => cgOf(pid) === fa.cg), `n=${pids.length}`);
+    let atFirstSignal = null;
+    const realKill = process.kill.bind(process);
+    process.kill = (pid, sig) => {
+      if (atFirstSignal === null && sig === 'SIGTERM' && idMap.has(pid)) atFirstSignal = { signals: 1, planned: (bilanOf(ID.a)?.activity?.reliquats?.killed ?? []).filter((k) => k.outcome === 'planned').map((k) => `${k.pid}:${k.startTicks}`).sort() };
+      return realKill(pid, sig);
+    };
+    try {
+      startTrap();
+      cli('run', 'pause', '--hard', '--run', ID.ops, '--as', ID.lead);
+      check('trap_stamped: the host trap finished', await waitFor(() => trapAt() !== null, 90_000, 200), `trapAt=${trapAt()}`);
+    } finally {
+      process.kill = realKill;
+    }
+    await sleep(500);
+    check('premise (instrument): the first SIGTERM to a Reliquat was observed', atFirstSignal !== null, JSON.stringify(atFirstSignal));
+    const want = [...idMap.values()].map((x) => x).sort();
+    check('bilan_has_the_planned_batch_before_the_first_signal: when the FIRST SIGTERM left, the persisted Bilan already named all 12 (pid + start-time, outcome planned)', !!atFirstSignal && JSON.stringify(atFirstSignal.planned) === JSON.stringify(want), JSON.stringify({ seen: atFirstSignal?.planned?.length ?? null, want: want.length }));
+    check('all 12 are dead afterwards', [...idMap.values()].every((x) => !aliveId(x)), '');
+    const kd = bilanOf(ID.a)?.activity?.reliquats?.killed ?? [];
+    check('the final Bilan: 12 killed, every outcome settled (none left `planned`)', kd.length === 12 && kd.every((k) => k.outcome === 'exited'), JSON.stringify(kd.map((k) => k.outcome)));
+    check('keeper + CLI survive', aliveId(fa.keeperId) && aliveId(fa.cliId), `${fa.keeperId} ${fa.cliId}`);
+    detail = `scope=${fa.unit} n=${pids.length}`;
   }
 } catch (e) {
   check('arm threw', false, String(e?.stack ?? e).slice(0, 400));

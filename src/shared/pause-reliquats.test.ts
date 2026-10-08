@@ -231,3 +231,14 @@ test('isOwnKeeperProc: the member\'s OWN keeper daemon (keeper.js followed by IT
   assert.equal(isOwnKeeperProc({ argv: ['node', 'ws-1', 'keeper.js'] }, 'ws-1'), false, 'the id must FOLLOW keeper.js');
   assert.equal(isOwnKeeperProc({ argv: null }, 'ws-1'), false);
 });
+
+test('review F1/F3 wording: a live PARENT that left the scope reads « STILL ALIVE and OUTSIDE your scope (NOT killed) » with its reason; a `planned` entry is never claimed as killed', () => {
+  const parent = { pid: 700, comm: 'chrome', cmd: '/opt/chromium/chrome --headless=new', reason: 'parent of 2 killed Reliquats (pid 701, 702); it LEFT the scope (now in cgroup app-org.chromium.Chromium-700.scope) and is still alive — NOT killed', kind: 'left-scope-parent' as const };
+  const text = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(701), killed(702)], survivors: [parent, { pid: 9, comm: 'c', cmd: 'daemon', reason: 'still-alive-after-kill' }] }, strip).join('\n');
+  assert.match(text, /STILL ALIVE and OUTSIDE your scope \(NOT killed — not in your scope\): \/opt\/chromium\/chrome --headless=new \(pid 700\) — parent of 2 killed Reliquats/);
+  assert.match(text, /STILL ALIVE after the Pause \(Reliquat\): daemon \(pid 9/, 'an ordinary survivor keeps its own wording');
+  assert.doesNotMatch(text.split('\n').filter((l) => /^STILL ALIVE after the Pause/.test(l)).join('\n'), /pid 700/, 'the parent is not listed as a Reliquat survivor');
+  const planned = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(710), killed(711, { outcome: 'planned' }), killed(712, { outcome: 'planned' })] }, strip).join('\n');
+  assert.match(planned, /the Pause killed in your scope \(1\)/, 'only the completed entry is « killed »');
+  assert.match(planned, /about to kill when it was interrupted \(2\) — their outcome was not recorded.*pid 711.*pid 712/);
+});

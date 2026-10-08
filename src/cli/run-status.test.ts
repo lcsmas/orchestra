@@ -429,3 +429,21 @@ test('#325: `run status` lists the Reliquats the Pause dure killed — command, 
   records.insertBilan(db2, { runId: 'W', wsId: 'm1', pausedAt: busPause.getRunPause(db2, 'W')!.pausedAt, activity: { surface: 'sdk', memberRun: 'W' }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
   assert.doesNotMatch(renderRunStatus(gatherRunStatus(db2, 'W', deps)), /Reliquats/);
 });
+
+test('#325 review F1/F3: `run status` names a live parent that left the scope (NOT killed) apart from the Reliquat survivors, and marks a planned-only kill as outcome not recorded', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops', 'hard');
+  const pausedAt = busPause.getRunPause(db, 'W')!.pausedAt;
+  const k = (pid: number) => ({ pid, startTicks: 1000 + pid, comm: 'chrome', cmd: `/usr/bin/chrome --n=${pid}`, cwd: '/w/rig', startedAt: Date.UTC(2026, 9, 8, 12, 51, 0), scope: 'orchestra-ws-m1-abc.scope', evidence: 'e', signal: 'SIGTERM' as const, outcome: 'exited' as const });
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'm1', pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', reliquats: { scopes: ['orchestra-ws-m1-abc.scope'], killed: [k(701), { ...k(702), outcome: 'planned' as const }], refused: [], spared: [], rounds: 1,
+      survivors: [{ pid: 700, comm: 'chrome', cmd: '/opt/chromium/chrome --headless=new', reason: 'parent of 1 killed Reliquat (pid 701); it LEFT the scope (now in cgroup app-org.chromium.Chromium-700.scope) and is still alive — NOT killed', kind: 'left-scope-parent' as const }, { pid: 9, comm: 'c', cmd: 'daemon --stuck', reason: 'still-alive-after-kill' }] } },
+    snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null,
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /Processes OUTSIDE the scope, still alive, NOT killed \(parent of a killed Reliquat\): \/opt\/chromium\/chrome --headless=new \(pid 700: parent of 1 killed Reliquat \(pid 701\); it LEFT the scope/);
+  assert.match(text, /Reliquats STILL ALIVE: daemon --stuck \(pid 9: still-alive-after-kill\)/);
+  assert.doesNotMatch(text.split('\n').filter((l) => /Reliquats STILL ALIVE/.test(l)).join('\n'), /pid 700/);
+  assert.match(text, /pid 702 started .* — SIGTERM — PLANNED, outcome not recorded/);
+});
