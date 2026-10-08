@@ -216,6 +216,10 @@ export interface ScopeMember {
 }
 
 export type ScopeRole = 'keeper' | 'cli' | 'session' | 'reliquat';
+
+/** A process of the keeper's process TREE that is NOT in the keeper's scope (FI-1 v1.9): it escaped — typically a browser's main process in its own systemd scope. It is the member's memory
+ *  all the same: the consumer that bills the member must add it. `cgroup` = its cgroup-v2 path. */
+export type TreeOutsideScope = ScopeMember & { cgroup: string };
 export type ClassifiedMember = ScopeMember & { role: ScopeRole };
 
 /**
@@ -224,14 +228,22 @@ export type ClassifiedMember = ScopeMember & { role: ScopeRole };
  * scope (reparented to init, or no keeper at all). The chain is walked inside the member set only: a parent outside the scope
  * that is not the keeper ends the walk.
  */
-export function classifyScopeMembers(members: readonly ScopeMember[], keeperPid: number | null, cliPid: number | null = null): ClassifiedMember[] {
+export function classifyScopeMembers(
+  members: readonly ScopeMember[],
+  keeperPid: number | null,
+  cliPid: number | null = null,
+  /** FI-1 v1.9: the parent of ANY pid on the host (null = unknown / init). Default = look inside the member set only. A browser's main process that moved itself into its OWN transient scope
+   *  (measured: app-org.chromium.Chromium-<pid>.scope) leaves its helpers' chain broken at the scope boundary: the helpers are still the session's, and the chain must be walked beyond the scope. */
+  parentOf?: (pid: number) => number | null,
+): ClassifiedMember[] {
   const byPid = new Map(members.map((m) => [m.pid, m]));
   const keeperIn = keeperPid !== null && byPid.has(keeperPid);
+  const parent = parentOf ?? ((pid: number): number | null => byPid.get(pid)?.ppid ?? null);
   const reaches = (m: ScopeMember): boolean => {
-    let cur: ScopeMember | undefined = m;
-    for (let hops = 0; cur && hops < 256; hops++) {
-      if (cur.pid === keeperPid) return true;
-      cur = byPid.get(cur.ppid);
+    let cur: number | null = m.pid;
+    for (let hops = 0; cur !== null && cur > 0 && hops < 256; hops++) {
+      if (cur === keeperPid) return true;
+      cur = parent(cur);
     }
     return false;
   };

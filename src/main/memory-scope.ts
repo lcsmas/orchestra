@@ -19,11 +19,12 @@ import {
   type ClassifiedMember,
   type ScopeMember,
   type ScopeMemory,
+  type TreeOutsideScope,
 } from '../shared/memory-scope.ts';
 
 // FI-1 v1.3: consumers import everything scope-related from THIS module (re-exports of the pure half).
 export { classifyScopeMembers } from '../shared/memory-scope.ts';
-export type { ClassifiedMember, ScopeMember, ScopeMemory, ScopeRole } from '../shared/memory-scope.ts';
+export type { ClassifiedMember, ScopeMember, ScopeMemory, ScopeRole, TreeOutsideScope } from '../shared/memory-scope.ts';
 
 export interface ScopeEnv {
   platform: string;
@@ -258,6 +259,81 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
 }
 
 /** FI-1 (c): the scope's processes with their role. Identity = (pid, startTicks); a process that vanishes mid-read is skipped. `cliPid` is the keeper's CLI child when the caller knows it (helloAck.pid). */
+/** The parent of any pid on the host, read from /proc (cached per call); null when unreadable / a kernel root. */
+function hostParentOf(e: ScopeEnv): (pid: number) => number | null {
+  const cache = new Map<number, number | null>();
+  return (pid) => {
+    if (cache.has(pid)) return cache.get(pid)!;
+    let v: number | null = null;
+    try {
+      const stat = e.readFile(`${e.procRoot}/${pid}/stat`);
+      const n = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+      v = Number.isInteger(n) && n > 0 ? n : null;
+    } catch {
+      v = null;
+    }
+    cache.set(pid, v);
+    return v;
+  };
+}
+
+/**
+ * FI-1 v1.9: the processes of the keeper's tree (ppid chain from `scope.keeperPid`, across the WHOLE host) that live OUTSIDE `scope` — they escaped it. Measured: Chromium moves its main process into its own
+ * transient scope `app-org.chromium.Chromium-<pid>.scope` through the session bus, leaving the member's cap. [] when the keeper is unknown. Identity = (pid, startTicks); nothing is signalled here.
+ */
+export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, e: ScopeEnv = realScopeEnv()): TreeOutsideScope[] {
+  if (scope.keeperPid === null) return [];
+  const scopeCg = '/' + path.relative(e.cgroupRoot, scope.cgroupDir);
+  const kids = new Map<number, number[]>();
+  let names: string[];
+  try {
+    names = e.readdir(e.procRoot);
+  } catch {
+    return [];
+  }
+  for (const n of names) {
+    if (!/^\d+$/.test(n)) continue;
+    const pid = Number(n);
+    try {
+      const stat = e.readFile(`${e.procRoot}/${pid}/stat`);
+      const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+      if (Number.isInteger(ppid) && ppid > 0) (kids.get(ppid) ?? kids.set(ppid, []).get(ppid)!).push(pid);
+    } catch {
+      /* gone */
+    }
+  }
+  const page = systemPageSize(e);
+  const out: TreeOutsideScope[] = [];
+  const seen = new Set<number>([scope.keeperPid]);
+  const queue = [scope.keeperPid];
+  while (queue.length && seen.size < 5000) {
+    const cur = queue.shift()!;
+    for (const kid of kids.get(cur) ?? []) {
+      if (seen.has(kid)) continue;
+      seen.add(kid);
+      queue.push(kid);
+      try {
+        const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${kid}/cgroup`));
+        if (cg === null || cg === scopeCg) continue;
+        const stat = e.readFile(`${e.procRoot}/${kid}/stat`);
+        const rp = stat.lastIndexOf(')');
+        const f = stat.slice(rp + 2).split(' ');
+        const statm = e.readFile(`${e.procRoot}/${kid}/statm`).split(' ');
+        let cmdline = '';
+        try {
+          cmdline = e.readFile(`${e.procRoot}/${kid}/cmdline`).replace(/\0/g, ' ').trim();
+        } catch {
+          /* gone */
+        }
+        out.push({ pid: kid, startTicks: Number(f[19]), ppid: Number(f[1]), comm: stat.slice(stat.indexOf('(') + 1, rp), cmdline, rssBytes: (Number(statm[1]) || 0) * page, cgroup: cg });
+      } catch {
+        /* vanished */
+      }
+    }
+  }
+  return out;
+}
+
 export function listScopeProcs(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, cliPid: number | null = null, e: ScopeEnv = realScopeEnv()): ClassifiedMember[] {
   let pids: number[];
   try {
@@ -290,5 +366,6 @@ export function listScopeProcs(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid
     const kids = members.filter((m) => m.ppid === scope.keeperPid);
     if (kids.length === 1) cli = kids[0].pid;
   }
-  return classifyScopeMembers(members, scope.keeperPid, cli);
+  // v1.9: the chain is walked across the WHOLE host (a helper whose parent left the scope is still the session's), not only inside the member set.
+  return classifyScopeMembers(members, scope.keeperPid, cli, hostParentOf(e));
 }

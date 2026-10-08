@@ -299,3 +299,12 @@ test('review m4 — swapLimitApplied: the swap escape is closed only by memory.s
   assert.equal(swapLimitApplied(null, 0), true, 'no swap at all ⇒ nothing to escape into');
   assert.equal(swapLimitApplied(null, null), false, 'unknown swap size is not "no swap"');
 });
+
+test('FI-1 v1.9 — classifyScopeMembers with a host-wide parentOf: a member whose parent LEFT the set is still the session\'s; without it (the 1981ec9e behaviour) it reads as a Reliquat', () => {
+  const members = [m(100, 1, 'node'), m(101, 100, 'claude'), m(104, 103, 'chromium-helper')]; // 103 (the browser main) is in another scope, parent 102 -> 101
+  const host = new Map<number, number>([[103, 102], [102, 101], [101, 100], [100, 1], [104, 103]]);
+  const roles = (parentOf?: (pid: number) => number | null) => Object.fromEntries(classifyScopeMembers(members, 100, 101, parentOf).map((c) => [c.pid, c.role]));
+  assert.deepEqual(roles((pid) => host.get(pid) ?? null), { 100: 'keeper', 101: 'cli', 104: 'session' });
+  assert.deepEqual(roles(), { 100: 'keeper', 101: 'cli', 104: 'reliquat' }, 'control: in-set-only chains cannot cross the boundary');
+  assert.deepEqual(Object.fromEntries(classifyScopeMembers([m(100, 1), m(300, 301)], 100, null, (pid) => (pid === 300 ? 301 : pid === 301 ? 300 : null)).map((c) => [c.pid, c.role])), { 100: 'keeper', 300: 'reliquat' }, 'a cycle in the host chain terminates');
+});

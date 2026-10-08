@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { appSliceDir, countMemberScopes, listScopeProcs, memberScopes, readScopeMemory, scopePrefix, scopeSupport, userManagerDir, type ScopeEnv } from './memory-scope.ts';
+import { appSliceDir, countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopePrefix, scopeSupport, userManagerDir, type ScopeEnv } from './memory-scope.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mscope-'));
 const cg = path.join(root, 'cgroup');
@@ -182,4 +182,23 @@ test('listScopeProcs: keeper / cli / session by ancestry, Reliquats by orphaning
   assert.equal(procs.find((p) => p.pid === 600)?.cmdline, 'chromium --headless');
   assert.ok(listScopeProcs({ cgroupDir: dir, keeperPid: null }, null, env()).every((p) => p.role === 'reliquat'), 'keeper dead ⇒ everything left is a Reliquat');
   assert.deepEqual(listScopeProcs({ cgroupDir: path.join(APP, 'gone.scope'), keeperPid: null }, null, env()), []);
+});
+
+test('FI-1 v1.9 — a browser main process that moved into its OWN scope: its helpers (still in the member scope) stay the session\'s, and the main process is listed OUTSIDE the scope with its cgroup and rss', () => {
+  const ws = 'ws-chromium';
+  const dir = mkScope(`orchestra-ws-${ws}-jjjjjj.scope`, { 'cgroup.procs': '1100\n1101\n1102\n1104\n' }); // 1103, the browser main, is NOT in this scope's cgroup.procs
+  const c = cgPathOf(dir);
+  const chromiumScope = '/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-1103.scope';
+  mkProc(1100, 1, 'node', c, 10, 'node keeper.js');
+  mkProc(1101, 1100, 'claude', c, 20, 'claude --x');
+  mkProc(1102, 1101, 'bash', c, 5, 'bash -c chromium');
+  mkProc(1103, 1102, 'chromium', chromiumScope, 5000, 'chromium --headless=new about:blank');
+  mkProc(1104, 1103, 'chromium', c, 3000, 'chromium --type=renderer'); // a helper: in the member scope, parent in the browser's own scope
+  mkProc(1200, 1, 'chromium', '/user.slice/user-1000.slice/user@1000.service/app.slice/app-someone-else.scope', 9000, 'chromium (the human\'s own browser)');
+  const scope = { cgroupDir: dir, keeperPid: 1100 };
+  const roles = Object.fromEntries(listScopeProcs(scope, 1101, env()).map((p) => [p.pid, p.role]));
+  assert.deepEqual(roles, { 1100: 'keeper', 1101: 'cli', 1102: 'session', 1104: 'session' }, 'the helper is the session\'s although its parent left the scope');
+  const out = listKeeperTreeOutsideScope(scope, env());
+  assert.deepEqual(out.map((p) => [p.pid, p.cgroup, p.rssBytes]), [[1103, chromiumScope, 5000 * 16384]], 'only the keeper\'s own escapee — not the human\'s browser, not the in-scope members');
+  assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: null }, env()), [], 'no known keeper ⇒ nothing is claimed');
 });
