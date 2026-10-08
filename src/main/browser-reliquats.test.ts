@@ -41,10 +41,10 @@ class World {
   idleWindowMs = W;
 
   /** A headless browser main process, orphaned (ppid 1) unless `ppid` says otherwise. */
-  browser(pid: number, o: { mode?: 'pipe' | 'port' | 'headless'; profile?: string; ppid?: number; comm?: string; extra?: string[]; start?: number } = {}): FProc {
+  browser(pid: number, o: { mode?: 'pipe' | 'port' | 'headless'; profile?: string; ppid?: number; comm?: string; extra?: string[]; start?: number; oneString?: boolean } = {}): FProc {
     const mode = o.mode ?? 'port';
     const argv = ['/opt/chrome-linux/chrome', '--headless=new', ...(mode === 'pipe' ? ['--remote-debugging-pipe'] : mode === 'port' ? ['--remote-debugging-port=9222'] : []), ...(o.profile === null ? [] : [`--user-data-dir=${o.profile ?? `${ROOT}/ws-1/tmp/p${pid}`}`]), ...(o.extra ?? [])];
-    const p: FProc = { pid, ppid: o.ppid ?? 1, comm: o.comm ?? 'chrome', startTicks: o.start ?? 1000 + pid, argv };
+    const p: FProc = { pid, ppid: o.ppid ?? 1, comm: o.comm ?? 'chrome', startTicks: o.start ?? 1000 + pid, argv: o.oneString ? [argv.join(' ')] : argv }; // oneString: Chromium's rewritten title (session env)
     this.procs.set(pid, p);
     return p;
   }
@@ -549,4 +549,29 @@ test('REAL sockets: a port-mode orphan with a REAL client connected to its REAL 
   assert.deepEqual(done.stopped.map((s) => s.pid), [b.pid]);
   assert.equal(aliveId(b), false);
   assert.equal(fs.existsSync(prof), true, 'the profile directory is left in place');
+});
+
+test('VERIFIER BLOCKER (#331): a Chromium MAIN whose /proc cmdline is ONE string (session env: DBUS_SESSION_BUS_ADDRESS — every uncapped member, the target of the bridge) is classified and stopped exactly like the multi-entry one: pipe at once, port after the window, profile attributed, group killed', async () => {
+  const w = new World();
+  w.browser(500, { mode: 'pipe', oneString: true });
+  w.child(501, 500, 'zygote');
+  w.browser(510, { mode: 'port', oneString: true });
+  assert.equal(w.procs.get(500)!.argv.length, 1, 'instrument control: the main\'s argv really is a single string');
+  const t = new BrowserTracker();
+  const r1 = await w.pass(t);
+  assert.deepEqual(r1.stopped.map((s) => [s.pid, s.mode, s.wsId]), [[500, 'pipe', 'ws-1']], 'pass 1: the pipe orphan only');
+  assert.ok(w.procs.has(510));
+  w.clock += W;
+  const r2 = await w.pass(t);
+  assert.deepEqual(r2.stopped.map((s) => [s.pid, s.mode]), [[510, 'port']], 'after the window: the port orphan (no client)');
+  assert.equal(w.procs.size, 0);
+});
+
+test('a browser whose rewritten single-string argv has a profile OUTSIDE agent-tmp, or no flag at all (the human\'s own window), is never touched', async () => {
+  const w = new World();
+  w.browser(500, { mode: 'pipe', oneString: true, profile: '/tmp/some-other-place/p' });
+  w.procs.set(520, { pid: 520, ppid: 1, comm: 'chrome', startTicks: 1520, argv: ['/opt/chrome-linux/chrome'] });
+  const r = await w.pass(new BrowserTracker());
+  assert.deepEqual(r.stopped, []);
+  assert.equal(w.procs.size, 2);
 });

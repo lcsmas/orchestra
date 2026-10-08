@@ -115,4 +115,10 @@ export const MUTANTS = [
     { find: '{browsers && (\n        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>\n          {\'\\u{1F310}\'} {browsers.count} {browsers.count === 1 ? \'arrêté\' : \'arrêtés\'}\n        </span>\n      )}\n', rep: '' },
     { find: '      {containers && (\n', rep: '      {browsers && (\n        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>\n          {\'\\u{1F310}\'} {browsers.count} {browsers.count === 1 ? \'arrêté\' : \'arrêtés\'}\n        </span>\n      )}\n      {containers && (\n' },
   ], tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
+  // ── the verifier's BLOCKER: a title-rewritten main (ONE argv string) must still be classified
+  { id: 'br-argv-not-normalized', file: PURE, find: '  const argv = normalizeArgv(rawArgv);', rep: '  const argv = [...rawArgv];', tests: [T.pure, T.io], expect: /normalizeArgv \/ parseBrowserArgv|VERIFIER BLOCKER/ },
+  { id: 'br-argv-split-on-every-space', file: PURE, find: "argv[0].split(/ (?=--)/)", rep: "argv[0].split(' ')", tests: [T.pure], expect: /normalizeArgv \/ parseBrowserArgv/ },
+  { id: 'br-argv-two-word-flag-not-folded', file: PURE, find: ".map((t) => t.replace(/^(--(?:remote-debugging-port|user-data-dir)) (.+)$/, '$1=$2'));", rep: ".map((t) => t);", tests: [T.pure], expect: /normalizeArgv \/ parseBrowserArgv/ },
+  { id: 'br-argv-trailing-url-not-peeled', file: PURE, find: "  for (let m = /^(.*\\S) ([a-z][a-z0-9+.-]*:\\S*)$/.exec(toks[toks.length - 1]); m; m =", rep: "  for (let m = null as RegExpExecArray | null; m; m =", tests: [T.pure, T.io], expect: /normalizeArgv \/ parseBrowserArgv|VERIFIER BLOCKER/ },
+  { id: 'br-argv-multi-entry-rewritten', file: PURE, find: "  if (argv.length !== 1 || !argv[0].includes(' --')) return [...argv];", rep: "  if (!argv[0].includes(' --')) return [...argv];", tests: [T.pure], expect: /normalizeArgv \/ parseBrowserArgv/ },
 ];

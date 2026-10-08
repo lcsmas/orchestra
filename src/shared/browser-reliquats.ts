@@ -34,10 +34,28 @@ export interface BrowserArgv {
 }
 
 /**
+ * A Chromium MAIN process started from an ordinary session environment (DBUS_SESSION_BUS_ADDRESS set — the environment of every uncapped member, the very target of this bridge) rewrites its own
+ * title: `/proc/<pid>/cmdline` is then ONE NUL-free string, `"/usr/bin/chromium-browser --headless=new --remote-debugging-port=0 --user-data-dir=/p about:blank"`. Recover the tokens by splitting on a
+ * space that begins a flag; a value that contains a space keeps it unless the next word starts with `--`; the two-word spelling `--flag value` is folded to `--flag=value` for the two flags we read.
+ */
+export function normalizeArgv(argv: readonly string[]): string[] {
+  if (argv.length !== 1 || !argv[0].includes(' --')) return [...argv];
+  const toks = argv[0].split(/ (?=--)/).map((t) => t.replace(/^(--(?:remote-debugging-port|user-data-dir)) (.+)$/, '$1=$2'));
+  // trailing positional URLs (`about:blank`, `https://…`) follow the last flag after a plain space: peel them off so they do not become part of its value
+  const tail: string[] = [];
+  for (let m = /^(.*\S) ([a-z][a-z0-9+.-]*:\S*)$/.exec(toks[toks.length - 1]); m; m = /^(.*\S) ([a-z][a-z0-9+.-]*:\S*)$/.exec(toks[toks.length - 1])) {
+    toks[toks.length - 1] = m[1];
+    tail.unshift(m[2]);
+  }
+  return [...toks, ...tail];
+}
+
+/**
  * Parse a browser's argv. null = NOT a browser main process we handle: another executable, a child (`--type=renderer|gpu|zygote|utility|crashpad-handler`…),
  * or a browser that is neither headless nor remote-controlled (the human's own window).
  */
-export function parseBrowserArgv(argv: readonly string[]): BrowserArgv | null {
+export function parseBrowserArgv(rawArgv: readonly string[]): BrowserArgv | null {
+  const argv = normalizeArgv(rawArgv);
   if (argv.length === 0) return null;
   const exe = path.posix.basename(argv[0]);
   if (!BROWSER_EXE.test(exe)) return null;

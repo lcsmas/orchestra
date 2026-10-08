@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BROWSER_IDLE_WINDOW_MS,
+  normalizeArgv,
   browserChipOf,
   clientConnected,
   commonProfilePrefix,
@@ -171,4 +172,18 @@ test('browserChipOf (D-Q4 A\'): the row\'s « 🌐 N arrêtés » chip — hidde
   assert.equal(browserChipOf(null, 'ws-a', t), null);
   assert.equal(browserChipOf({ total: 0, byWorkspace: {} }, 'ws-a', t), null);
   assert.match(browserChipOf(view, 'ws-a')!.title, /dernier à \d\d:\d\d,/, 'default time format: HH:MM');
+});
+
+test('normalizeArgv / parseBrowserArgv: a title-rewritten MAIN (ONE string, session env) parses like the multi-entry argv — modes, port, profile (spaces kept, trailing URL peeled, two-word flags folded); a multi-entry argv and a flagless browser are untouched', () => {
+  const one = `/usr/bin/chromium-browser --enable-plugins --headless=new --no-sandbox --remote-debugging-port=0 --user-data-dir=${ROOT}/ws-1/tmp/pw-profile-abc about:blank`;
+  assert.deepEqual(parseBrowserArgv([one]), { mode: 'port', port: 0, userDataDir: `${ROOT}/ws-1/tmp/pw-profile-abc` });
+  assert.deepEqual(parseBrowserArgv(['/usr/bin/chromium-browser --headless=new --remote-debugging-pipe --user-data-dir=/x/my profile/y https://example.com/a?b=c about:blank']), { mode: 'pipe', port: null, userDataDir: '/x/my profile/y' }, 'a space inside the profile path survives; every trailing URL is peeled');
+  assert.deepEqual(parseBrowserArgv(['chrome --remote-debugging-port 9222 --user-data-dir /p/q']), { mode: 'port', port: 9222, userDataDir: '/p/q' }, 'the two-word spelling');
+  assert.deepEqual(normalizeArgv(['/usr/bin/chromium-browser --headless --remote-debugging-pipe about:blank']), ['/usr/bin/chromium-browser', '--headless', '--remote-debugging-pipe', 'about:blank']);
+  assert.deepEqual(normalizeArgv(PW), PW, 'a multi-entry argv is returned as it is');
+  assert.deepEqual(normalizeArgv(['/odd --dir/chrome', '--headless=new']), ['/odd --dir/chrome', '--headless=new'], 'even when its first entry happens to contain " --": real NUL separators are trusted');
+  assert.deepEqual(normalizeArgv(['/usr/bin/chromium-browser']), ['/usr/bin/chromium-browser'], 'one entry without a flag: untouched');
+  assert.equal(parseBrowserArgv(['/usr/bin/chromium-browser']), null, 'the human\'s flagless browser is not ours');
+  assert.equal(parseBrowserArgv(['/usr/lib64/chromium-browser/chromium-browser --type=renderer --headless --remote-debugging-port=0']), null, 'a rewritten CHILD title is never the main');
+  assert.equal(parseBrowserArgv(['/usr/bin/some-editor --headless --remote-debugging-port=0']), null, 'another executable');
 });
