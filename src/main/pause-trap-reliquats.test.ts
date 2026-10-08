@@ -10,7 +10,7 @@ import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause, beginReprise } from './bus-pause.ts';
-import { bilanForMember, recordPauseOrigin } from './bus-pause-records.ts';
+import { appendBilanNote, bilanForMember, recordPauseOrigin } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { __resetPauseTrapForTests, runPauseTrap, trapMember, type TrapDeps, type TrapMember } from './pause-trap.ts';
 import type { KillReport } from './pause-kill.ts';
@@ -158,7 +158,15 @@ test('UNKNOWN is not NONE: an unreadable scope leaves killed_json NULL (trap owe
   assert.equal(r1.killed, null, 'owed');
   assert.match(r1.error ?? '', /reliquats: scope .*unreadable.*retried/);
   assert.deepEqual(r1.activity!.reliquats!.killed.map((k) => k.pid), [500], 'what was killed is kept, never dropped');
+  // the retry's PROVISIONAL Bilan write (before it touches any process) must not erase what attempt 1 recorded: an app that dies right there would lose the list
+  let atCliOf: number[] | null = null;
+  const realCliOf = rig.deps.cliOf;
+  rig.deps.cliOf = async (mm) => {
+    atCliOf = (bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity?.reliquats?.killed ?? []).map((k) => k.pid);
+    return realCliOf(mm);
+  };
   assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  assert.deepEqual(atCliOf, [500], 'attempt 1\'s Reliquats survive the retry\'s provisional write');
   const r2 = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!;
   assert.notEqual(r2.killed, null);
   assert.deepEqual(r2.activity!.reliquats!.killed.map((k) => k.pid).sort(), [500, 501], 'merged BY IDENTITY across attempts');
@@ -198,14 +206,20 @@ test('WRITE-AHEAD: a Reliquat the killer reports through onProgress is in the PE
   __resetPauseTrapForTests();
   const rig = newRig();
   let seenDuringCall: number[] = [];
+  let noteSurvived = false;
   rig.answer = (o) => {
+    const at = getRunPause(rig.db, 'W')!.pausedAt;
+    appendBilanNote(rig.db, 'W', 'm1', at, 'a note the turn observer appended meanwhile');
     o.onProgress?.(reportOf(500));
-    seenDuringCall = bilanForMember(rig.db, 'W', 'm1', getRunPause(rig.db, 'W')!.pausedAt)!.activity!.reliquats!.killed.map((k) => k.pid);
+    const row = bilanForMember(rig.db, 'W', 'm1', at)!;
+    seenDuringCall = row.activity!.reliquats!.killed.map((k) => k.pid);
+    noteSurvived = (row.activity!.notes ?? []).includes('a note the turn observer appended meanwhile');
     return reportOf(500, 501);
   };
   const c = pause(rig);
   await trapMember(rig.deps, rig.db, c, rig.roster[0]);
   assert.deepEqual(seenDuringCall, [500]);
+  assert.equal(noteSurvived, true, 'the progress write touches only activity.reliquats');
   assert.deepEqual(bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.reliquats!.killed.map((k) => k.pid), [500, 501]);
 });
 
