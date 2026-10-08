@@ -205,3 +205,79 @@ test('detectPageSize: derives the kernel page from our own /proc (16 KiB on Asah
   assert.equal(detectPageSize((p) => files[p] ?? ''), 4096);
   assert.equal(detectPageSize(() => { throw new Error('no /proc'); }), 4096);
 });
+
+// ─── F1 of the verifier's gate on 1981ec9e: the kernel counts `oom` BEFORE `oom_kill` ────────────────────────────────────────
+
+test('F1 (gate): a look BETWEEN the `oom` bump and the `oom_kill` bump must not turn a real hard-level kill into "external" — the credit carries to the look that sees the kill', async () => {
+  const w = new World();
+  w.add(12, { comm: 'hog', cmdline: 'python3 hog.py', adj: 1000, rssPages: 9000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watch(w, kills, { hotMs: 10_000, fastMs: 10_000, idleMs: 10_000 }); // only the explicit looks run
+  await mw.check(); // look 0: nothing yet
+  w.events.max += 5;
+  w.events.oom += 1; // look A sees the OOM event counted...
+  await mw.check();
+  assert.equal(kills.length, 0, 'no kill yet: nothing to report');
+  w.procs.delete(12);
+  w.events.oom_kill += 1; // ...look B sees the kill, with an `oom` delta of ZERO
+  await mw.check();
+  assert.equal(kills.length, 1);
+  assert.equal(kills[0].level, 'hard', 'oom=1 and oom_kill=1 in total: the kill IS the scope\'s own limit');
+  assert.equal(kills[0].command, 'python3 hog.py');
+  mw.stop();
+});
+
+test('the carried credit is SPENT by a kill: a later kill with no new `oom` event is external; and a credit that never produced a kill expires (it cannot hard-label an outside OOM minutes later)', async () => {
+  let clock = 1_000_000;
+  const w = new World();
+  w.add(12, { comm: 'a', cmdline: 'a', adj: 1000, rssPages: 9000 });
+  w.add(13, { comm: 'b', cmdline: 'b', adj: 1000, rssPages: 8000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watch(w, kills, { hotMs: 10_000, fastMs: 10_000, idleMs: 10_000, now: () => clock });
+  await mw.check();
+  w.events.oom += 1;
+  await mw.check(); // credit 1
+  w.procs.delete(12);
+  w.events.oom_kill += 1;
+  await mw.check(); // spends it
+  assert.deepEqual(kills.map((k) => k.level), ['hard']);
+  w.procs.delete(13);
+  w.events.oom_kill += 1; // a second kill, NO new oom event
+  await mw.check();
+  assert.deepEqual(kills.map((k) => k.level), ['hard', 'external'], 'one credit, one hard kill');
+  // expiry
+  w.add(14, { comm: 'c', cmdline: 'c', adj: 1000, rssPages: 7000 });
+  await mw.check();
+  w.events.oom += 1; // an OOM event that kills nothing...
+  await mw.check();
+  clock += 60_000; // ...and a minute later an outside kill
+  w.procs.delete(14);
+  w.events.oom_kill += 1;
+  await mw.check();
+  assert.equal(kills.at(-1)?.level, 'external', 'a stale credit does not make a later outside-OOM kill «hard»');
+  mw.stop();
+});
+
+test('two kills in one look with ONE unit of credit: [hard, external]; with two: [hard, hard]', async () => {
+  const w = new World();
+  w.add(12, { comm: 'a', cmdline: 'a', adj: 1000, rssPages: 9000 });
+  w.add(13, { comm: 'b', cmdline: 'b', adj: 1000, rssPages: 8000 });
+  w.add(14, { comm: 'c', cmdline: 'c', adj: 1000, rssPages: 7000 });
+  w.add(15, { comm: 'd', cmdline: 'd', adj: 1000, rssPages: 6000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watch(w, kills, { hotMs: 10_000, fastMs: 10_000, idleMs: 10_000 });
+  await mw.check();
+  w.events.oom += 1;
+  w.procs.delete(12);
+  w.procs.delete(13);
+  w.events.oom_kill += 2;
+  await mw.check();
+  assert.deepEqual(kills.map((k) => k.level), ['hard', 'external']);
+  w.events.oom += 2;
+  w.procs.delete(14);
+  w.procs.delete(15);
+  w.events.oom_kill += 2;
+  await mw.check();
+  assert.deepEqual(kills.slice(2).map((k) => k.level), ['hard', 'hard']);
+  mw.stop();
+});
