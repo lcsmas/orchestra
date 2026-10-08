@@ -5,14 +5,14 @@
 
 import type { ReactNode } from 'react';
 import { useStore } from '../../store';
-import { controlOf, pauseStateOf, releaseLabel, releaseScope, rowNoteText, runOfControl } from '../../../shared/pause-ui-view';
+import { controlOf, pauseHoldsGlyph, pauseStateOf, releaseLabel, releaseScope, rowNoteText, runOfControl } from '../../../shared/pause-ui-view';
 import { PauseBadge, PauseBar, PauseGlyph, PauseIcon, PauseUnreadable, useNowTick } from './PauseBlocks';
 import { runPause, runReleaseAll, runResume, selectPauseOverview, usePausePanel, type PauseAnchor } from './pause-actions';
 
-/** The agent's status glyph, or — while it is under a pause / Reprise — the state's own glyph. */
+/** The agent's status glyph, or — while the pause HOLDS it (en pause / bloqué) — the state's own glyph; a working agent (finit…, libéré, repris) keeps its activity glyph. */
 export function PauseAwareGlyph({ wsId, children }: { wsId: string; children: ReactNode }) {
   const st = pauseStateOf(useStore(selectPauseOverview), wsId);
-  return st ? <PauseGlyph wsId={wsId} ui={st.ui} /> : <>{children}</>;
+  return st && pauseHoldsGlyph(st.ui) ? <PauseGlyph wsId={wsId} ui={st.ui} /> : <>{children}</>;
 }
 
 /** The small pill on the name line ("en pause", "finit…", "bloqué", "libéré", "repris"). */

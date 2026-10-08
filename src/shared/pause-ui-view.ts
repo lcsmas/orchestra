@@ -19,6 +19,11 @@ export function stateTone(ui: PauseUiMemberState): PauseTone {
   return ui === 'pausing' ? 'pausing' : ui === 'paused' || ui === 'blocked' ? 'paused' : 'resumed';
 }
 
+/** Whether the pause glyph REPLACES the status glyph: only while the agent is held (no turn can run). finit… / libéré / repris keep the activity glyph; the badge carries the state. */
+export function pauseHoldsGlyph(ui: PauseUiMemberState): boolean {
+  return ui === 'paused' || ui === 'blocked';
+}
+
 /** `m:ss` left until `deadlineAt` (clamped at 0:00). */
 export function countdown(deadlineAt: number, now: number): string {
   const s = Math.max(0, Math.round((deadlineAt - now) / 1000));

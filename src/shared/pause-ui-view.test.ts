@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentsUnder, agoText, bilanAttention, memberAttention, newerOverview, noBilanState, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseDimClass, pauseStateOf, PAUSE_STATE_WORD, releasableIds, releaseLabel, releaseScope, rowNoteText, sizeText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
+import { agentsUnder, agoText, bilanAttention, memberAttention, newerOverview, noBilanState, controlOf, countdown, coveringRun, groupByMemberRun, killedText, pauseDimClass, pauseHoldsGlyph, pauseStateOf, PAUSE_STATE_WORD, releasableIds, releaseLabel, releaseScope, rowNoteText, sizeText, runHeadline, runOfControl, stateTone, treeText, wasDoingText } from './pause-ui-view.ts';
 import type { PauseUiBilanLine, PauseUiControl, PauseUiMember, PauseUiOverview, PauseUiRun } from './pause-ui.ts';
 
 const mem = (wsId: string, role: 'coordinator' | 'worker', ui: PauseUiMember['ui'], memberRun: string | null, extra: Partial<PauseUiMember> = {}): PauseUiMember => ({
@@ -15,6 +15,10 @@ const bilan = (over: Partial<PauseUiBilanLine>): PauseUiBilanLine => ({ snapshot
 test('words and tones: the mockups\' vocabulary, blue for held (blocked included), green for back', () => {
   assert.deepEqual(PAUSE_STATE_WORD, { pausing: 'finit…', paused: 'en pause', blocked: 'bloqué', released: 'libéré', resumed: 'repris' });
   assert.deepEqual(['pausing', 'paused', 'blocked', 'released', 'resumed'].map((s) => stateTone(s as never)), ['pausing', 'paused', 'paused', 'resumed', 'resumed']);
+});
+
+test('pauseHoldsGlyph: the pause glyph replaces the activity glyph only while the agent is held (a resumed / finishing agent must still show it is working)', () => {
+  assert.deepEqual(['pausing', 'paused', 'blocked', 'released', 'resumed'].map((s) => pauseHoldsGlyph(s as never)), [false, true, true, false, false]);
 });
 
 test('countdown / ago: m:ss clamped at 0:00; "<1 min" under a minute', () => {
