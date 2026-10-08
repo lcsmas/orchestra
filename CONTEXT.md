@@ -103,15 +103,16 @@ _Avoid_: ack (a bus `ack` closes a mail lot, a different thing)
 **Pause dure** (hard pause):
 A Pause the host imposes at once: it snapshots every worktree to a pause ref,
 records what was running, interrupts the turn, kills the tool process
-trees and stops (never removes) the containers attributed to its members —
-never the session itself, which stays resumable. The Reprise restarts exactly
+trees and every Reliquat of the member's scope, and stops (never removes) the
+containers attributed to its members — never the session itself, which stays
+resumable. The Reprise restarts exactly
 the containers it stopped.
 _Avoid_: kill, sigkill, abort
 
 **Bilan de pause** (pause record):
 What the host recorded for each member when the Pause took effect: what it
 was doing, its snapshot ref, whether its tree was dirty, which commands it
-killed, which containers it stopped.
+killed, which Reliquats it killed, which containers it stopped.
 _Avoid_: pause report, state dump
 
 **Pause automatique** (auto Pause):
