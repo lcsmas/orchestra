@@ -1,4 +1,4 @@
-// GENERATED once from the tracks' own mutant tables (admission-mutants.mjs, fast-veille-mutants.mjs, docker-relay-mutants.mjs, memory-alert/mutate-unit.mjs, pause-memory/mutate-unit.mjs) — the `from` field names the
+// GENERATED once from the tracks' own mutant tables (admission-mutants.mjs, fast-veille-mutants.mjs, docker-relay-mutants.mjs, memory-alert/mutate-unit.mjs, pause-memory/mutate-unit.mjs, container-memory-mutants.mjs) — the `from` field names the
 // source row — plus two own mutants on the #285 base. Every edit is an exact-once anchor in the CURRENT tree (the sweep refuses a stale one: PATTERN-GONE). `arm` + `check` = the named arm of
 // scripts/e2e-composed-night.mjs and the named check inside it that MUST be red (a mutant killed by a different check, or by a crash, is not a kill).
 // #291 (the relay stamping labels) is not here: the Seam-1 night hand-labels its fake containers; its clauses are the packaged-app drive's (scripts/e2e-composed-drive.mjs mutants).
@@ -1005,6 +1005,231 @@ export const MUTANTS = [
     "file": "src/main/pause-trap.ts",
     "find": "error: `stop: ${errMsg(e)}` };\n    }\n    if (liftedDuringStop) {",
     "to": "error: `stop: ${errMsg(e)}` };\n      incomplete = true;\n    }\n    if (liftedDuringStop) {"
+   }
+  ]
+ },
+ {
+  "id": "293-M80_alert_row_always_zero",
+  "from": "container-memory-mutants.mjs:M80_alert_row_always_zero",
+  "ticket": "#293",
+  "clause": "the LEAD alert row carries the count of unattributed containers the last tick measured",
+  "arm": "n4_alert_one_row",
+  "check": "the_row_counts_the_unattributed_containers_the_last_tick_measured",
+  "edits": [
+   {
+    "file": "src/main/memory-alert-host.ts",
+    "find": "unattributedContainers: () => getContainerAccounting().unattributed.count,",
+    "to": "unattributedContainers: () => 0,"
+   }
+  ]
+ },
+ {
+  "id": "293-M81_docker_state_read_as_ok",
+  "from": "container-memory-mutants.mjs:M81_docker_state_read_as_ok",
+  "ticket": "#293",
+  "clause": "an unreachable Docker makes the row say \"not measured\", never \"0 unattributed\"",
+  "arm": "n10_second_episode",
+  "check": "the_second_row_says_the_unattributed_count_was_not_measured_never_zero",
+  "edits": [
+   {
+    "file": "src/main/memory-alert-host.ts",
+    "find": "unattributedDocker: () => getContainerAccounting().docker,",
+    "to": "unattributedDocker: () => 'ok' as const,"
+   }
+  ]
+ },
+ {
+  "id": "293-M03_unattributed_ignores_run_start",
+  "from": "container-memory-mutants.mjs:M03_unattributed_ignores_run_start",
+  "ticket": "#293",
+  "clause": "the human's older stack is not unattributed: only unlabelled containers created during the live run are",
+  "arm": "n0_control",
+  "check": "control_only_the_orphan_is_unattributed_not_the_humans_older_stack_nor_another_instances",
+  "edits": [
+   {
+    "file": "src/shared/container-accounting.ts",
+    "find": "else if (since !== null && c.created >= since)",
+    "to": "else if (true)"
+   }
+  ]
+ },
+ {
+  "id": "293-M23_orphan_attributed_to_nobody",
+  "from": "container-memory-mutants.mjs:M23_orphan_attributed_to_nobody",
+  "ticket": "#293",
+  "clause": "a container stamped for a DELETED workspace is an orphan (unattributed), not attributed",
+  "arm": "n0_control",
+  "check": "control_only_the_orphan_is_unattributed_not_the_humans_older_stack_nor_another_instances",
+  "edits": [
+   {
+    "file": "src/shared/container-accounting.ts",
+    "find": "if (workspaceKnown && !workspaceKnown(ws, runLabel)) {",
+    "to": "if (false) {"
+   }
+  ]
+ },
+ {
+  "id": "293-M48_orphan_input_dropped",
+  "from": "container-memory-mutants.mjs:M48_orphan_input_dropped",
+  "ticket": "#293",
+  "clause": "the producer passes the store predicate to the classifier (orphans need it)",
+  "arm": "n0_control",
+  "check": "control_only_the_orphan_is_unattributed_not_the_humans_older_stack_nor_another_instances",
+  "edits": [
+   {
+    "file": "src/main/container-accounting.ts",
+    "find": "classifyContainers(running, d.earliestLiveRunStartMs(), d.workspaceKnown, d.runKnown)",
+    "to": "classifyContainers(running, d.earliestLiveRunStartMs(), undefined, d.runKnown)"
+   }
+  ]
+ },
+ {
+  "id": "293-M49_run_stamp_check_dropped",
+  "from": "container-memory-mutants.mjs:M49_run_stamp_check_dropped",
+  "ticket": "#293",
+  "clause": "another Orchestra instance's container on the same daemon (a run this bus does not know) is not reported",
+  "arm": "n0_control",
+  "check": "control_only_the_orphan_is_unattributed_not_the_humans_older_stack_nor_another_instances",
+  "edits": [
+   {
+    "file": "src/main/container-accounting.ts",
+    "find": "d.workspaceKnown, d.runKnown)",
+    "to": "d.workspaceKnown)"
+   }
+  ]
+ },
+ {
+  "id": "293-M24b_foreign_instance_container_reported",
+  "from": "container-memory-mutants.mjs:M24b_foreign_instance_container_reported",
+  "ticket": "#293",
+  "clause": "the run-stamp test of an orphan is applied in the classifier",
+  "arm": "n0_control",
+  "check": "control_only_the_orphan_is_unattributed_not_the_humans_older_stack_nor_another_instances",
+  "edits": [
+   {
+    "file": "src/shared/container-accounting.ts",
+    "find": "if (!runKnown || runKnown(runLabel)) unattributed.push(",
+    "to": "if (true) unattributed.push("
+   }
+  ]
+ },
+ {
+  "id": "293-M12_bytes_not_summed",
+  "from": "container-memory-mutants.mjs:M12_bytes_not_summed",
+  "ticket": "#293",
+  "clause": "a workspace's containers are SUMMED",
+  "arm": "n0_control",
+  "check": "control_attributed_containers_are_summed_per_workspace_in_measured_bytes",
+  "edits": [
+   {
+    "file": "src/shared/container-accounting.ts",
+    "find": "(out.byWorkspace.get(a.wsId) ?? 0) + a.bytes",
+    "to": "a.bytes"
+   }
+  ]
+ },
+ {
+  "id": "293-M07_v2_cache_not_subtracted",
+  "from": "container-memory-mutants.mjs:M07_v2_cache_not_subtracted",
+  "ticket": "#293",
+  "clause": "container memory is usage minus the inactive file cache, as the docker CLI computes it",
+  "arm": "n0_control",
+  "check": "control_attributed_containers_are_summed_per_workspace_in_measured_bytes",
+  "edits": [
+   {
+    "file": "src/shared/container-accounting.ts",
+    "find": "v2 < usage) return usage - v2;",
+    "to": "v2 < usage) return usage;"
+   }
+  ]
+ },
+ {
+  "id": "293-M32_lists_stopped_containers",
+  "from": "container-memory-mutants.mjs:M32_lists_stopped_containers",
+  "ticket": "#293",
+  "clause": "only RUNNING containers are counted: the memory the Pause freed leaves the accounting",
+  "arm": "n6_pause_containers",
+  "check": "the_memory_the_pause_freed_leaves_the_accounting_running_containers_only",
+  "edits": [
+   {
+    "file": "src/main/container-accounting.ts",
+    "find": "await api.listContainers({ status: ['running'] })",
+    "to": "await api.listContainers({})"
+   }
+  ]
+ },
+ {
+  "id": "293-M72_busstatus_without_containers",
+  "from": "container-memory-mutants.mjs:M72_busstatus_without_containers",
+  "ticket": "#293",
+  "clause": "/busStatus carries the container accounting",
+  "arm": "n6_pause_containers",
+  "check": "bus_status_prints_the_containers_line_attributed_and_unattributed",
+  "edits": [
+   {
+    "file": "src/main/hooks-server.ts",
+    "find": "              containers: containersView,\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "293-M73_cli_prints_no_line",
+  "from": "container-memory-mutants.mjs:M73_cli_prints_no_line",
+  "ticket": "#293",
+  "clause": "the CLI prints the `containers:` line of bus-status",
+  "arm": "n6_pause_containers",
+  "check": "bus_status_prints_the_containers_line_attributed_and_unattributed",
+  "edits": [
+   {
+    "file": "src/cli/index.ts",
+    "find": "process.stdout.write(`${formatContainersLine(res.containers as ContainerAccountingView, (id) => clabels[id] ?? id)}\\n`);",
+    "to": "void clabels;"
+   }
+  ]
+ },
+ {
+  "id": "293-M18_unavailable_reads_as_zero",
+  "from": "container-memory-mutants.mjs:M18_unavailable_reads_as_zero",
+  "ticket": "#293",
+  "clause": "an unreachable Docker prints \"not measured\" in bus-status, never zeros",
+  "arm": "n10_second_episode",
+  "check": "bus_status_says_docker_unavailable_not_measured",
+  "edits": [
+   {
+    "file": "src/shared/container-accounting.ts",
+    "find": "if (view.docker === 'unavailable') return 'containers: Docker unavailable — not measured';",
+    "to": "if (view.docker === 'unavailable') return 'containers: 0 attributed · 0 unattributed';"
+   }
+  ]
+ },
+ {
+  "id": "293-M38_unavailable_keeps_stale_bytes",
+  "from": "container-memory-mutants.mjs:M38_unavailable_keeps_stale_bytes",
+  "ticket": "#293",
+  "clause": "an unreachable Docker drops the previous figures (nothing measured is not the old numbers)",
+  "arm": "n10_second_episode",
+  "check": "docker_unreachable_is_recorded_as_not_measured_never_as_zero_containers",
+  "edits": [
+   {
+    "file": "src/main/container-accounting.ts",
+    "find": "current = emptyAccounting('unavailable', now);",
+    "to": "current = { ...current, docker: 'unavailable', sampledAt: now };"
+   }
+  ]
+ },
+ {
+  "id": "293-window-never-opens",
+  "from": "own (#294) on container-window.ts",
+  "ticket": "#293",
+  "clause": "the live-run window opens at the earliest live fleet run: an unlabelled container created during it is unattributed",
+  "arm": "n4_alert_one_row",
+  "check": "a_container_created_during_the_run_without_the_stamp_is_unattributed_with_the_orphan_never_the_humans_older_stack",
+  "edits": [
+   {
+    "file": "src/main/container-window.ts",
+    "find": "    if (run) min = min === null ? run.created_at : Math.min(min, run.created_at);",
+    "to": "    void run;"
    }
   ]
  }
