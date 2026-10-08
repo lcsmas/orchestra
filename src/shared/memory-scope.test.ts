@@ -320,3 +320,20 @@ test('launcherExecedKeeper (pre-review m6): systemd-run exec\'d INTO the keeper 
   assert.equal(launcherExecedKeeper('', script, ws), false, 'gone / unreadable');
   assert.equal(launcherExecedKeeper(raw('sleep', '300'), script, ws), false, 'the rig\'s hung stub');
 });
+
+test('classifyScopeMembers (review F1): a member that EXITS between the snapshot and the walk stays «session» — the host resolver is asked only about pids OUTSIDE the member set', () => {
+  const mk = (pid: number, ppid: number): ScopeMember => ({ pid, ppid, startTicks: pid * 10, comm: `p${pid}`, cmdline: `p${pid}`, rssBytes: 1000 });
+  const members = [mk(10, 1), mk(11, 10), mk(12, 11), mk(13, 99)]; // keeper, cli, a tool, a browser helper whose parent 99 (the browser main) lives in ANOTHER scope
+  const gone = new Set([10, 11, 12, 13]); // every member has exited by the time the walk reads /proc
+  const asked: number[] = [];
+  const parentOf = (pid: number): number | null => {
+    asked.push(pid);
+    if (gone.has(pid)) return null; // /proc/<pid>/stat is gone
+    return pid === 99 ? 12 : null; // the browser main's parent is the tool
+  };
+  const roles = Object.fromEntries(classifyScopeMembers(members, 10, 11, parentOf).map((m) => [m.pid, m.role]));
+  assert.deepEqual(roles, { 10: 'keeper', 11: 'cli', 12: 'session', 13: 'session' }, 'snapshot ppids carry the walk; only 99 (outside the set) goes to the resolver');
+  assert.deepEqual([...new Set(asked)], [99], 'no member pid was re-read from the host');
+  const orphan = classifyScopeMembers([mk(10, 1), mk(14, 1)], 10, null, () => null).find((m) => m.pid === 14);
+  assert.equal(orphan?.role, 'reliquat', 'control: a member whose snapshot ppid is init is still a Reliquat');
+});

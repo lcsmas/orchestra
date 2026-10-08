@@ -246,7 +246,11 @@ export function classifyScopeMembers(
 ): ClassifiedMember[] {
   const byPid = new Map(members.map((m) => [m.pid, m]));
   const keeperIn = keeperPid !== null && byPid.has(keeperPid);
-  const parent = parentOf ?? ((pid: number): number | null => byPid.get(pid)?.ppid ?? null);
+  // A pid in the member set is walked from the SNAPSHOT's ppid (a member that exits between the snapshot and the walk must not read as «orphaned»); only a pid OUTSIDE the set asks the host resolver.
+  const parent = (pid: number): number | null => {
+    const m = byPid.get(pid);
+    return m ? m.ppid : (parentOf?.(pid) ?? null);
+  };
   const reaches = (m: ScopeMember): boolean => {
     let cur: number | null = m.pid;
     for (let hops = 0; cur !== null && cur > 0 && hops < 256; hops++) {
