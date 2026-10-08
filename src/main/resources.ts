@@ -30,6 +30,7 @@ import { getContainerAccounting } from './container-accounting';
 import { listKeeperRoots } from './keeper-client';
 import { accountingView } from '../shared/container-accounting';
 import { currentMemberMemory } from './member-memory-host';
+import { getBrowserReliquatView } from './resource-monitor';
 
 const execFileP = promisify(execFile);
 
@@ -179,5 +180,7 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     containers: accountingView(getContainerAccounting()),
     // #328: per-member memory read from the member's kernel scope + live Reliquats (FI-1; [] scopes = untracked, the tree figure stays).
     members: currentMemberMemory(), // read AFTER the awaits above: the cache stamp is its own, not this sample's start
+    // #331: browsers the resource monitor / a Pause dure stopped, per workspace (data layer; the chip on the page is D4-gated)
+    browserReliquats: getBrowserReliquatView(),
   };
 }

@@ -87,7 +87,7 @@ test('W8 (D-pick4 A) the Resources page: keeper-hosted structured agents are SAM
   const view = read('src/renderer/components/ResourcesView.tsx');
   assert.match(view, /warning=\{unattributedWarning\(snap\?\.containers\)\}/);
   assert.match(view, /\{warning && \(\s*\n\s*<div className="res-unattributed" role="note" data-res-unattributed="">/);
-  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} \/>/);
+  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} \/>/); // + the #331 browsers chip (D-Q4 A')
   assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/, 'a workspace whose only footprint is a container (or, #328, only its Reliquats) gets its own row (cpu / procs « — »)');
   assert.match(view, /className="res-chip docker" data-res-containers=\{containers\.count\} title=\{containersChipTitle\(containers\)\}/);
   assert.match(view, /const agentCount = rows\.filter\(\(r\) => r\.sessions\.some\(\(s\) => s\.kind === 'agent' \|\| s\.kind === 'sdk'\)\)\.length;/, 'the Live agents tile counts structured agents too — it agrees with the table');

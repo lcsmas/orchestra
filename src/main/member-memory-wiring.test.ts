@@ -76,7 +76,7 @@ test('W8 the Resources page (D-Q3 option A): the call site hands the snapshot\'s
   assert.match(view, /const grouped = groupSnapshot\(snap\);/);
   assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members\);/);
   assert.match(view, /\{reliquats && reliquats\.count > 0 && \(\s*\n\s*<span className="res-chip reliquat" data-res-reliquats=\{reliquats\.count\} title=\{reliquatChipTitle\(reliquats\)\}>/);
-  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} \/>/);
+  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} \/>/);
   assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/);
   assert.match(view, /reliquatsLine=\{reliquatsNote\(snap\?\.members\)\}/);
   assert.match(view, /const nameById = new Map\(workspaces\.map\(\(w\) => \[w\.id, w\.branch\]\)\);/);

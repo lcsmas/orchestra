@@ -260,6 +260,8 @@ M.push(...(await import('./mutants-reprise.mjs')).MUTANTS);
 M.push(...(await import('./mutants-stoptask.mjs')).MUTANTS);
 // wave H (#325 the Pause dure kills the Reliquats of the member's scope): its clause mutants live in their own file too.
 M.push(...(await import('./mutants-reliquats.mjs')).MUTANTS);
+// wave H (#331 the browser-Reliquat bridge): its clause mutants live in their own file too.
+M.push(...(await import('./mutants-browser-reliquats.mjs')).MUTANTS);
 
 const PREFIX = process.argv.includes('--prefix') ? process.argv[process.argv.indexOf('--prefix') + 1] : null; // every mutant whose id starts with this (a wave's own clause set, e.g. `rq-` = #325)
 const sel = ONLY ? M.filter((m) => ONLY_SET.has(m.id)) : PREFIX ? M.filter((m) => m.id.startsWith(PREFIX)) : M;

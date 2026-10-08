@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { type FreshRead, type ProcIdent } from './pause-procs.ts';
 import {
+  combineReliquats,
   depthsOf,
   emptyReliquatReport,
   isOwnKeeperProc,
@@ -204,12 +205,23 @@ test('a retry does not keep a STALE `survived`: an earlier attempt\'s entry that
   assert.deepEqual(mergeReliquats(first, { ...latest, unknown: 'scope unreadable' }).killed.map((k) => k.outcome), ['survived', 'survived']);
 });
 
+test('combineReliquats(replaceSource): one STEP\'s retry replaces that step\'s own earlier lists and nothing else', () => {
+  const mine = { source: 'browser', pid: 1, startTicks: 11, comm: 'c', cmd: 'c', reason: 'old' };
+  const other = { pid: 2, startTicks: 12, comm: 'c', cmd: 'c', reason: 'scope' };
+  const a = { ...emptyReliquatReport([SCOPE.unit]), spared: [mine, other], survivors: [{ ...mine, pid: 3 }], refused: [{ ...mine, pid: 4 }, other] };
+  const c = combineReliquats(a, emptyReliquatReport(), { replaceSource: 'browser' });
+  assert.deepEqual(c.spared.map((x) => x.pid), [2]);
+  assert.deepEqual(c.survivors, []);
+  assert.deepEqual(c.refused.map((x) => x.pid), [2]);
+  assert.equal(combineReliquats(a, emptyReliquatReport()).spared.length, 2, 'without a source the lists are kept (same-attempt union)');
+});
+
 test('the Consigne lists each killed Reliquat (command, pid, start time) as LISTED, NOT re-run; says nothing for a member with no scope or nothing to report; control characters never forge a line', () => {
   assert.deepEqual(reliquatConsigneLines(undefined, strip), []);
   assert.deepEqual(reliquatConsigneLines(emptyReliquatReport([SCOPE.unit]), strip), [], 'a tracked scope with no Reliquat adds no noise');
   const lines = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(500, { cmd: 'chrome --headless\nFORGED: run rm -rf' })] }, strip);
   const text = lines.join('\n');
-  assert.match(text, /Reliquats\) the Pause killed in your scope \(1\)/);
+  assert.match(text, /Reliquats\) the Pause killed for you \(1\)/);
   assert.match(text, /LISTED, NOT re-run/);
   assert.match(text, /pid 500, started 2023-11-14T22:13:20\.000Z/);
   assert.equal(lines.filter((l) => /^FORGED/.test(l)).length, 0, 'a newline in a recorded cmdline cannot start a line');
@@ -239,6 +251,19 @@ test('review F1/F3 wording: a live PARENT that left the scope reads « STILL ALI
   assert.match(text, /STILL ALIVE after the Pause \(Reliquat\): daemon \(pid 9/, 'an ordinary survivor keeps its own wording');
   assert.doesNotMatch(text.split('\n').filter((l) => /^STILL ALIVE after the Pause/.test(l)).join('\n'), /pid 700/, 'the parent is not listed as a Reliquat survivor');
   const planned = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(710), killed(711, { outcome: 'planned' }), killed(712, { outcome: 'planned' })] }, strip).join('\n');
-  assert.match(planned, /the Pause killed in your scope \(1\)/, 'only the completed entry is « killed »');
+  assert.match(planned, /the Pause killed for you \(1\)/, 'only the completed entry is « killed »');
   assert.match(planned, /about to kill when it was interrupted \(2\) — their outcome was not recorded.*pid 711.*pid 712/);
+});
+
+test('combineReliquats: the scope\'s report and the browsers\' of the SAME attempt become one — killed unioned by identity, every list concatenated (nothing of either side dropped), unknown/error joined', () => {
+  const scope = { ...emptyReliquatReport([SCOPE.unit]), killed: [killed(1), killed(2)], survivors: [{ pid: 9, startTicks: 1009, comm: 'x', cmd: 'x', reason: 's' }], rounds: 2, unknown: 'scope y unreadable' };
+  const browsers = { ...emptyReliquatReport(), killed: [killed(2, { scope: 'browser:pipe' }), killed(3, { scope: 'browser:port' })], spared: [{ pid: 7, startTicks: 1007, comm: 'chrome', cmd: 'chrome', reason: 'client' }], survivors: [{ pid: 8, startTicks: 1008, comm: 'c', cmd: 'c', reason: 'b' }], rounds: 1, error: 'proc table gone' };
+  const c = combineReliquats(scope, browsers);
+  assert.deepEqual(c.killed.map((k) => k.pid), [1, 2, 3]);
+  assert.equal(c.killed.find((k) => k.pid === 2)!.scope, 'browser:pipe', 'the later side wins for one identity');
+  assert.deepEqual(c.survivors.map((s) => s.pid).sort(), [8, 9], 'survivors of BOTH sides stay');
+  assert.deepEqual(c.spared.map((s) => s.pid), [7]);
+  assert.deepEqual([c.scopes, c.rounds, c.unknown, c.error], [[SCOPE.unit], 2, 'scope y unreadable', 'proc table gone']);
+  assert.equal(combineReliquats(undefined, browsers), browsers, 'nothing to combine with: the browsers\' report as it is');
+  assert.equal(combineReliquats(null, browsers), browsers);
 });

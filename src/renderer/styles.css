@@ -5377,6 +5377,8 @@ button.danger-primary:active {
 .res-proc.reliquat .res-proc-comm { color: var(--yellow); }
 /* Not a problem state: « Reliquats not tracked » is information — dim, never yellow. */
 .res-reliquats-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
+/* #331 (D-Q4 A'): browsers Orchestra stopped for this workspace since the app started — a RESOLVED count, history tone (the default grey chip), no status colour. Hidden at 0. */
+.res-chip.browsers { text-transform: none; letter-spacing: 0; }
 /* The dim line under the Agents table: containers nobody owns (created during a live run without the stamp, or orphaned by a deleted workspace). Status colour only here — a genuine problem state. */
 .res-unattributed {
   margin: 6px 12px 2px;

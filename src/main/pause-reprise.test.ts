@@ -701,7 +701,7 @@ test('#325 the Consigne de reprise SHOWS the Reliquats the Pause killed (command
   const before = reprRows(db).length;
   releaseMembers(db, 'L', 'O', ['o1']);
   const o1 = reprRows(db)[before].body;
-  for (const needle of ['Leftover processes (Reliquats) the Pause killed in your scope (2)', '/usr/bin/chrome --headless --n=500', 'pid 500, started 2026-10-08T12:51:00.000Z', 'an EARLIER Pause (', 'also killed 2 leftover process(es) (Reliquats) in your scope', 'LISTED, NOT re-run']) assert.ok(o1.includes(needle), `o1 missing: ${needle}\n${o1}`);
+  for (const needle of ['Leftover processes (Reliquats) the Pause killed for you (2)', '/usr/bin/chrome --headless --n=500', 'pid 500, started 2026-10-08T12:51:00.000Z', 'an EARLIER Pause (', 'also killed 2 leftover process(es) (Reliquats) of yours', 'LISTED, NOT re-run']) assert.ok(o1.includes(needle), `o1 missing: ${needle}\n${o1}`);
   releaseMembers(db, 'L', 'O', ['o2']);
   assert.equal(reprRows(db).at(-1)!.body.includes('Reliquats'), false, 'a member with no Reliquat reads no Reliquat line');
   // and the plain case: the CURRENT epoch's Reliquats in a first Reprise
@@ -712,7 +712,7 @@ test('#325 the Consigne de reprise SHOWS the Reliquats the Pause killed (command
   beginReprise(db2, 'L', 'L');
   const b2 = reprRows(db2).length;
   releaseMembers(db2, 'L', 'O', ['o1']);
-  assert.match(reprRows(db2)[b2].body, /Reliquats\) the Pause killed in your scope \(1\)[\s\S]*node \/tmp\/rig\/server\.js --port 4001\s+\(pid 600, started /);
+  assert.match(reprRows(db2)[b2].body, /Reliquats\) the Pause killed for you \(1\)[\s\S]*node \/tmp\/rig\/server\.js --port 4001\s+\(pid 600, started /);
   db.close();
   db2.close();
 });
