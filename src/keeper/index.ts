@@ -47,7 +47,7 @@ import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
-import { MAX_NOTICE_LINES, MAX_SOFT_NOTICE_LINES, appendMemNotice } from '../shared/mem-notice-file.ts';
+import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
 import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
@@ -240,8 +240,7 @@ let memWatch: MemoryWatch | null = null;
 const memKills: MemKillRecord[] = [];
 const memSofts: MemSoftRecord[] = [];
 /** Lines this keeper has appended to the host's notice file (#322 m1): kills and warnings have SEPARATE budgets, so a pulsing scope can never use up the lines a later kill needs (review F5). */
-let noticeKillLines = 0;
-let noticeSoftLines = 0;
+const noticeBudget = createNoticeBudget();
 const CGROUP_ROOT = process.env.ORCHESTRA_CGROUP_ROOT || '/sys/fs/cgroup';
 /** The kernel rounds a limit to its page size (16 KiB on Asahi): "applied" means within one 64 KiB page of what was asked. */
 const LIMIT_SLACK_BYTES = 64 * 1024;
@@ -304,17 +303,14 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
   const persist = (rec: MemKillRecord | MemSoftRecord): void => {
     if (!cap.noticeFile) return;
-    const soft = rec.kind === 'soft';
-    const lines = soft ? noticeSoftLines : noticeKillLines;
-    const max = soft ? MAX_SOFT_NOTICE_LINES : MAX_NOTICE_LINES;
-    if (lines >= max) {
-      if (lines === max) klog(`memory cap: notice file budget for ${soft ? 'warnings' : 'kills'} full (${max} records) — later ones are only in the keeper log`);
-    } else if (!appendMemNotice(cap.noticeFile, rec)) {
-      klog(`memory cap: could not append to ${cap.noticeFile} — this record reaches the host only through a live attach`);
-      return;
+    const kind = rec.kind === 'soft' ? 'soft' : 'kill';
+    const slot = noticeBudget.take(kind);
+    if (slot.justFull) klog(`memory cap: notice file budget for ${kind === 'soft' ? 'warnings' : 'kills'} full - later ones are only in the keeper log`);
+    if (!slot.write) return;
+    if (!appendMemNotice(cap.noticeFile, rec)) {
+      noticeBudget.release(kind);
+      klog(`memory cap: could not append to ${cap.noticeFile} - this record reaches the host only through a live attach`);
     }
-    if (soft) noticeSoftLines += 1;
-    else noticeKillLines += 1;
   };
   memWatch = startMemoryWatch({
     cgroupDir: dir,

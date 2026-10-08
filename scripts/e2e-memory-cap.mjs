@@ -185,7 +185,8 @@ if (hasCap) {
   const db = getBus();
   busDb = db;
   busSendFn = busSend;
-  startRun(db, { id: 'run-on', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, memoryCap: true });
+  startRun(db, { id: 'run-on', kind: 'vague', coordinator: 'rig-coordinator' }, { ...DEFAULT_BUS_SWITCHES, memoryCap: true, liveness: true }); // liveness ON: the escalation mechanism the shipped gate follows (round 2 F6)
+  startRun(db, { id: 'run-quiet', kind: 'vague', coordinator: 'rig-coordinator' }, { ...DEFAULT_BUS_SWITCHES, memoryCap: true, liveness: false });
   startRun(db, { id: 'run-off', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES });
   const { store } = await import(`${REPO}/src/main/store.ts`);
   await store.load?.();
@@ -260,7 +261,9 @@ const distinct = (arr) => new Set(arr.map((r) => `${r.unit}:${r.seq}`)).size;
 // #322: the PRODUCTION sink (src/main/memory-notice.ts) wired the way index.ts wires it — real bus, real builder, a fake workspace map (the real store/agent-sdk need Electron).
 // `emitLive` mirrors sdkEmitMemNotice: the REAL makeMemNotice builder, broadcast on the `agent:event` seam. The deps wiring itself is pinned by memory-cap-binding.test.ts.
 const noticeSrc = path.join(REPO, 'src', 'main', 'memory-notice.ts');
-const hasNotice = fs.existsSync(noticeSrc) && typeof kc.onMemorySoft === 'function' && typeof kc.drainAllMemNotices === 'function';
+const hasNotice = fs.existsSync(noticeSrc) && fs.existsSync(path.join(REPO, 'src', 'main', 'memory-notice-bus.ts')) && typeof kc.onMemorySoft === 'function' && typeof kc.drainAllMemNotices === 'function';
+let sinkDeps = null;
+const sinkLogs = [];
 const fakeWs = new Map();
 let memNoticeMod = null;
 /** A rig switch: while true the coordinator's bus is "down" (the sink throws, the delivery layer must keep the record owed). */
@@ -268,18 +271,20 @@ let rigBusDown = false;
 async function armSink(wsIds) {
   if (!hasNotice) return false;
   memNoticeMod = await import(noticeSrc);
+  const { sendGated } = await import(`${REPO}/src/main/memory-notice-bus.ts`);
   const { makeMemNotice } = await import(`${REPO}/src/shared/mem-notice.ts`);
   fakeWs.set('rig-coordinator', { id: 'rig-coordinator', name: 'rig-coordinator', branch: 'rig-coordinator' });
   for (const id of wsIds) fakeWs.set(id, { id, name: `member-${id.slice(-4)}`, branch: `member-${id.slice(-4)}`, parentId: 'rig-coordinator' });
   let seq = 1;
-  memNoticeMod.startMemoryNotices({
+  sinkDeps = {
     getWorkspace: (id) => fakeWs.get(id),
     patchWorkspace: async (id, patch) => { fakeWs.set(id, { ...fakeWs.get(id), ...patch }); },
     emitLive: (wsId, entry) => agentEvents.push({ wsId, ev: makeMemNotice({ seq: seq++ }, entry) }),
-    sendToCoordinator: (m) => { if (!busDb || rigBusDown) throw new Error('no bus'); busSendFn(busDb, m); },
-    resolveRunId: () => 'run-on',
-    log: { info: () => {}, warn: (m) => console.error(`  sink: ${m}`) },
-  }, { onMemoryKill: kc.onMemoryKill, onMemorySoft: kc.onMemorySoft });
+    sendToCoordinator: (m) => { if (!busDb || rigBusDown) throw new Error('no bus'); return sendGated(busDb, m, { warn: (x) => console.error(`  sink: ${x}`) }); }, // the SHIPPED gate, on the scratch bus
+    resolveRunId: (w) => w.runId ?? 'run-on',
+    log: { info: (m) => sinkLogs.push(m), warn: (m) => console.error(`  sink: ${m}`) },
+  };
+  memNoticeMod.startMemoryNotices(sinkDeps, { onMemoryKill: kc.onMemoryKill, onMemorySoft: kc.onMemorySoft });
   return true;
 }
 const busRows = (wsId) => (busDb ? busDb.prepare('SELECT sequence, kind, sender, recipient, body FROM messages WHERE sender = ? ORDER BY sequence').all(wsId) : []);
@@ -569,6 +574,11 @@ try {
     const logged = (orchLog().match(new RegExp(`memory-cap\\[${ws}\\] killed`, 'g')) ?? []).length;
     check('the app log line exists once per kill', logged === nKill, `lines=${logged} oom_kill=${nKill}`);
     check('the rows are persisted for a reopened pane (one entry per record, kills and warnings)', (fakeWs.get(ws)?.sdkMemNotices?.length ?? 0) === nKill + softs.length && (fakeWs.get(ws)?.sdkMemNotices ?? []).filter((e) => e.level !== 'soft').length === nKill, `entries=${fakeWs.get(ws)?.sdkMemNotices?.length}`);
+    // round 2 F6, the shipped gate with the switch OFF: a member of a run whose `liveness` is OFF still gets its row, the coordinator's message is «counted, not fired» (nothing on the bus)
+    fakeWs.set('quiet-member', { id: 'quiet-member', name: 'quiet-member', branch: 'quiet-member', parentId: 'rig-coordinator', runId: 'run-quiet' });
+    memNoticeMod?.handleMemRecord(sinkDeps, 'quiet-member', { kind: 'kill', source: 'kernel', seq: 1, at: Date.now(), level: 'hard', command: 'synthetic', pid: 1, rssBytes: null, candidates: [], unit: 'u.scope', hardBytes: 1 << 28 });
+    await notified('quiet-member');
+    check('liveness OFF for the run: the row is still told, nothing is written to the bus ("counted, not fired")', noticeEvents('quiet-member').length === 1 && busRows('quiet-member').length === 0 && sinkLogs.some((l) => /quiet-member.*would have told rig-coordinator.*counted, not fired/.test(l)), `rows=${noticeEvents('quiet-member').length} bus=${busRows('quiet-member').length} logs=${sinkLogs.length}`);
     const nfile = path.join(home, 'keepers', `${ws}.memnotices.jsonl`);
     kc.drainAllMemNotices?.((id) => fakeWs.has(id)); // a boot-style scan while the keeper is ALIVE and everything is delivered
     await sleep(500);
@@ -599,19 +609,17 @@ try {
     await sleep(2500);
     await notified(ws);
     const oracle = new Set(kernelKilledPids(f.unit, sinceSec).map(String));
-    check('the race ran in at least 2 rounds (the big command exited normally (0), the small one was OOM-killed (-9)); a round the kernel spoiled by also taking the driver is not counted', completed >= 2, `completed=${completed}/${ROUNDS}`);
+    check('the race ran in at least 4 of 6 rounds (the big command exited normally (0), the small one was OOM-killed (-9)); a round the kernel spoiled by also taking the driver is not counted', completed >= 4, `completed=${completed}/${ROUNDS}`);
     check('the oracle (the kernel log read from OUTSIDE the scope) saw every real victim', victimPids.length > 0 && victimPids.every((p) => oracle.has(p)), `victims=${victimPids.join(',')} oracle=${[...oracle].join(',')}`);
     check('every kill has a record', kills.length === nKill() && kills.length >= completed, `records=${kills.length} oom_kill=${nKill()}`);
-    const byKernel = kills.filter((k) => k.source === 'kernel');
     const named = kills.filter((k) => oracle.has(String(k.pid)));
-    check('NEVER a wrong certainty: every record that says the KERNEL named it names a pid the kernel really killed (oracle)', byKernel.every((k) => oracle.has(String(k.pid))), `kernel-sourced ${byKernel.length}, wrong: ${byKernel.filter((k) => !oracle.has(String(k.pid))).map((k) => k.pid).join(',') || 'none'}`);
-    check('every other record is labelled `inferred` (the row says «probably») — a guess is never passed off as certain', kills.length > 0 && kills.every((k) => k.source === 'kernel' || k.source === 'inferred'), `sources=${kills.map((k) => k.source ?? 'none').join(',')}`);
-    check('...none blames the big command WITHOUT that label (its 60 MB / sleep(1.0) command line only ever appears on an `inferred` record)', kills.filter((k) => /sleep\(1\.0\)/.test(k.command ?? '')).every((k) => k.source === 'inferred'), kills.map((k) => `${k.source}:${k.command?.slice(0, 22)}`).join(' | '));
-    check('the kernel path really names the victims under the race: at least 60 % of the records (a double-OOM burst — the keeper\'s own allocation taking the driver too — is ambiguous by design and degrades to a labelled guess)', kills.length > 0 && byKernel.length >= Math.ceil(kills.length * 0.6), `kernel ${byKernel.length}/${kills.length}; oracle-confirmed ${named.length}/${kills.length}`);
-    check('...and every kernel-named victim of a completed round has its record', victimPids.filter((p) => byKernel.some((k) => String(k.pid) === p) || true).length === victimPids.length && victimPids.every((p) => oracle.has(p)), `victims=${victimPids.join(',')}`);
+    check('EVERY record names a pid the kernel REALLY killed (oracle) — never the larger command that exited normally in the same window', kills.length > 0 && named.length === kills.length, `real ${named.length}/${kills.length}: ${kills.map((k) => `${k.pid}:${k.source}:${(k.command ?? 'null').slice(0, 20)}`).join(' ')}`);
+    check('...and EVERY record says the KERNEL named it (no record degraded to a guess — two close kills must both be named)', kills.length > 0 && kills.every((k) => k.source === 'kernel'), `sources=${kills.map((k) => k.source ?? 'none').join(',')}`);
+    check('...and every real victim of a completed round has a record naming it, kernel-sourced', victimPids.every((p) => kills.some((k) => String(k.pid) === p && k.source === 'kernel')), `victims=${victimPids.join(',')} records=${kills.map((k) => k.pid).join(',')}`);
+    check('...none blames the big command (its 60 MB / sleep(1.0) command line is nowhere in the records)', kills.every((k) => !/sleep\(1\.0\)/.test(k.command ?? '')), kills.map((k) => k.command?.slice(0, 40)).join(' | '));
     check('the member\'s rows and the coordinator\'s escalations agree: one each per kill', killRows(ws).length === kills.length && busRows(ws).filter((b) => b.kind === 'escalation').length === kills.length, `rows=${killRows(ws).length} escalations=${busRows(ws).filter((b) => b.kind === 'escalation').length} records=${kills.length}`);
     const k = kills[0];
-    detail = `rounds=${completed}/${ROUNDS} kernel=${kills.filter((x) => x.source === 'kernel').length}/${kills.length} oracle-confirmed=${named.length}/${kills.length}`;
+    detail = `rounds=${completed}/${ROUNDS} kernel=${kills.filter((x) => x.source === 'kernel').length}/${kills.length} real=${named.length}/${kills.length}`;
   } else if (ARM === 'notice_soft_reported') {
     // #322 D-Q2: the soft level is a keeper-watched WARNING on memory.current — one record per upward crossing, the same row + bus path as a kill, nothing killed or slowed.
     settings = { ...settings, capSoftGb: 0.15, capHardGb: HARD_GB };

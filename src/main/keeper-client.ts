@@ -51,7 +51,7 @@ import {
   type MemSoftRecord,
   type MemoryCapLaunch,
 } from '../shared/memory-scope';
-import { mayPrune, readMemNoticesChecked } from '../shared/mem-notice-file';
+import { pruneVerdict, readMemNoticesChecked } from '../shared/mem-notice-file';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { createMemKillCursor, type MemKillCursor } from './memkill-cursor';
@@ -275,9 +275,15 @@ export function drainMemNotices(wsId: string): void {
   // The keeper is gone, so the file is FINAL now. Re-read it: a record the keeper appended between our first read and its exit (its exit flush) must not be unlinked unseen (review F4).
   const fresh = readMemNoticesChecked(file);
   if (fresh.ok && fresh.recs.length !== first.recs.length) deliver(fresh.recs);
-  if (mayPrune(fresh, (u) => cursor().seen(u)) && ![...owedRecords.values()].some((o) => o.wsId === wsId)) {
+  const verdict = pruneVerdict(fresh, (u) => cursor().seen(u));
+  if (verdict !== 'keep' && ![...owedRecords.values()].some((o) => o.wsId === wsId)) {
     try {
-      fs.unlinkSync(file);
+      if (verdict === 'prune') fs.unlinkSync(file);
+      else {
+        const aside = `${file}.unparsed.${Date.now()}`; // everything we understand is delivered, but a line was not (a crash-torn tail): keep the evidence, free the name
+        fs.renameSync(file, aside);
+        log.warn(`memory-cap[${wsId}]: ${file} held lines that are not records - moved to ${aside}`);
+      }
     } catch {
       /* already gone */
     }

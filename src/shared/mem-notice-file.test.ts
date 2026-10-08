@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MAX_NOTICE_LINES, MAX_SOFT_NOTICE_LINES, appendMemNotice, fullyDelivered, mayPrune, parseMemNotice, readMemNotices, readMemNoticesChecked } from './mem-notice-file.ts';
+import { MAX_NOTICE_LINES, MAX_SOFT_NOTICE_LINES, appendMemNotice, createNoticeBudget, fullyDelivered, mayPrune, parseMemNotice, pruneVerdict, readMemNotices, readMemNoticesChecked } from './mem-notice-file.ts';
 import type { MemKillRecord, MemSoftRecord } from './memory-scope.ts';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memnotice-'));
@@ -92,4 +92,39 @@ test('review F3: a SHORT write is looped to completion, and a torn tail is never
 
 test('review F5: warnings have their own, smaller file budget — they can never use up the lines a later kill needs', () => {
   assert.ok(MAX_SOFT_NOTICE_LINES > 0 && MAX_SOFT_NOTICE_LINES < MAX_NOTICE_LINES);
+});
+
+test("round 2 M1: a kill's `role` (the agent process / keeper was the victim) and a warning's `suppressed` count survive the trip through the file - the coordinator must read «session ended», not «survived»", () => {
+  const f = path.join(dir, 'role.jsonl');
+  const killCli: MemKillRecord = { ...kill, seq: 7, role: 'cli' };
+  const softSup: MemSoftRecord = { ...soft, seq: 8, suppressed: 3 };
+  appendMemNotice(f, killCli);
+  appendMemNotice(f, softSup);
+  assert.deepEqual(readMemNotices(f), [killCli, softSup], 'field for field, role and suppressed included');
+  assert.equal(parseMemNotice({ ...kill, role: 'martian' } as never) && (parseMemNotice({ ...kill, role: 'martian' } as never) as MemKillRecord).role, undefined, 'an unknown role is dropped, not trusted');
+});
+
+test('round 2 m2: a file whose understood records are all delivered but holds a crash-torn line is QUARANTINED (evidence kept, name freed) - never blocked for ever, never silently deleted', () => {
+  const f = path.join(dir, 'torn2.jsonl');
+  appendMemNotice(f, kill);
+  fs.appendFileSync(f, '{"kind":"kill","unit":"u.sc\n');
+  const r = readMemNoticesChecked(f);
+  assert.equal(pruneVerdict(r, () => 1_000_000), 'quarantine');
+  assert.equal(pruneVerdict(r, () => 0), 'keep', 'an undelivered record keeps the file');
+  assert.equal(pruneVerdict({ ok: false, error: 'EACCES' }, () => 1_000_000), 'keep');
+  assert.equal(pruneVerdict(readMemNoticesChecked(path.join(dir, 'clean.jsonl')), () => 1), 'prune');
+  assert.equal(mayPrune(r, () => 1_000_000), false, 'mayPrune stays the strict «prune» verdict');
+});
+
+test('round 2 m4: the keeper\'s notice budget counts kills and warnings APART - a thousand warnings never use up a kill\'s line; a failed append gives its reservation back', () => {
+  const b = createNoticeBudget(5, 3);
+  const softs = Array.from({ length: 1000 }, () => b.take('soft'));
+  assert.equal(softs.filter((s) => s.write).length, 3, 'warnings stop at THEIR budget');
+  assert.equal(softs.filter((s) => s.justFull).length, 1, 'and say so once');
+  for (let i = 0; i < 5; i++) assert.equal(b.take('kill').write, true, `kill ${i + 1} still has its line after 1000 warnings`);
+  assert.equal(b.take('kill').write, false, 'kills stop at THEIR budget');
+  const c = createNoticeBudget(1, 1);
+  assert.equal(c.take('kill').write, true);
+  c.release('kill');
+  assert.equal(c.take('kill').write, true, 'a released reservation is reusable');
 });

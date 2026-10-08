@@ -34,6 +34,7 @@ import {
   type VictimSnap,
   launcherExecedKeeper,
   parseKernelOomMessage,
+  planKernelPairing,
   parseMemoryStat,
   workingSetBytes,
   kernelKillsForUnit,
@@ -434,4 +435,45 @@ test('#322 review F7: when the CLI (or the keeper) is the victim the text says t
   assert.doesNotMatch(memNoticeText(k({})), /session ended/);
   const soft: MemSoftRecord = { kind: 'soft', seq: 3, at: 5, unit: 'u.scope', bytes: 3 * 1024 ** 3, softBytes: 3 * 1024 ** 3, hardBytes: null, suppressed: 4 };
   assert.match(memBusBody('w', soft), /4 further crossing\(s\) since the last warning were not repeated/);
+});
+
+// --- planKernelPairing: oldest-first from UNCLAIMED lines, with the debt of records that never got theirs ---
+
+test("planKernelPairing: lines pair oldest-first with the records; the SURPLUS (the next kill's line already in the journal) is left unclaimed for the next round", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const plan = planKernelPairing([L(12), L(13)], new Set(), 0, 1);
+  assert.deepEqual(plan.pair.map((l) => l.pid), [12]);
+  assert.deepEqual(plan.claim.map((l) => l.pid), [12], '13 is NOT claimed: it names the next kill');
+  assert.equal(plan.newDebts, 0);
+});
+
+test("planKernelPairing: records that never got their line OWE it - the oldest unclaimed lines are theirs and are set aside, never handed to the current kill", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const plan = planKernelPairing([L(12), L(13)], new Set(), 1, 1);
+  assert.deepEqual(plan.pair.map((l) => l.pid), [13], "the stale 12 is the earlier kill's");
+  assert.deepEqual(plan.claim.map((l) => l.pid), [12, 13]);
+  assert.equal(plan.debtsSettled, 1);
+  const stale = planKernelPairing([L(12)], new Set(), 1, 1);
+  assert.deepEqual(stale.pair, []);
+  assert.deepEqual(stale.claim.map((l) => l.pid), [12]);
+  assert.equal(stale.newDebts, 1);
+});
+
+test("planKernelPairing: a line naming a pid an earlier record already named is that record's (set aside, settling one debt); fewer lines than records pairs NOTHING and the missing ones are owed", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const named = planKernelPairing([L(12), L(13)], new Set([12]), 1, 1);
+  assert.deepEqual(named.pair.map((l) => l.pid), [13]);
+  assert.equal(named.debtsSettled, 1);
+  const short = planKernelPairing([L(12)], new Set(), 0, 2);
+  assert.deepEqual(short.pair, [], 'one line for two kills: which kill is it? - no certainty');
+  assert.deepEqual(short.claim.map((l) => l.pid), [12], 'but the line is accounted for');
+  assert.equal(short.newDebts, 1);
+  assert.deepEqual(planKernelPairing([], new Set(), 0, 1), { claim: [], pair: [], debtsSettled: 0, newDebts: 1 });
+});
+
+test("planKernelPairing: a LATE line (its debt already forgiven) naming a pid an earlier record guessed is recognised as that record's - the current kill is not handed it", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const plan = planKernelPairing([L(12), L(13)], new Set([12]), 0, 1); // debts 0: the 4 s are over; pid 12 was the (right) guess of an earlier record
+  assert.deepEqual(plan.pair.map((l) => l.pid), [13]);
+  assert.deepEqual(plan.claim.map((l) => l.pid), [12, 13]);
 });

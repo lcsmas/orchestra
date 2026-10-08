@@ -83,7 +83,7 @@ test('#322: the sink is subscribed at boot with the REAL seams (store, agent-sdk
   assert.ok(live(mainIndex, '  startMemoryNotices('), 'the sink is started');
   assert.ok(live(mainIndex, '    { onMemoryKill, onMemorySoft },'), 'it listens to BOTH hooks (kills FI-1 v1.8 + the warning level)');
   assert.ok(live(mainIndex, '      patchWorkspace: sdkPatchWorkspace,') && live(mainIndex, '      emitLive: sdkEmitMemNotice,'), 'rows are persisted and emitted into the live stream through agent-sdk');
-  assert.ok(live(mainIndex, '        send(db, m);') && live(mainIndex, "        if (!db) throw new Error('no bus');"), 'the coordinator message goes through the app\'s own `send`; no bus ⇒ it THROWS (the record stays owed)');
+  assert.ok(live(mainIndex, "        if (!db) throw new Error('no bus');"), 'no bus ⇒ it THROWS (the record stays owed); the write itself is the shared gated send (pinned below)');
   assert.ok(live(mainIndex, '      resolveRunId: resolveWaveRunId,'), 'the row lands in the run the coordinator reads');
   const i = mainIndex.indexOf('  startMemoryNotices(');
   assert.ok(i >= 0 && mainIndex.indexOf('  drainAllMemNotices((id) => !!store.getWorkspace(id));') > i, 'the boot scan runs AFTER the sink is subscribed (else the first records have nobody to tell)');
@@ -105,12 +105,14 @@ test('#322: the keeper PERSISTS before it tells, reads the soft level from the s
 });
 
 test('#322 review F6: the bus write follows the run\'s liveness switch («counted, not fired») and names unread mail', () => {
-  assert.ok(live(mainIndex, "          on = busSwitch(db, m.runId, 'liveness');") && live(mainIndex, "        if (!on) return 'counted';"), 'the escalation mechanism\'s switch gates the write, like boot-wedge #197 and the liveness sweep');
-  assert.ok(live(mainIndex, '        const coordinator = getRun(db, m.runId)?.coordinator ?? null;') && mainIndex.includes('this message may never be read'), 'a run whose coordinator is not the recipient is unread mail: said, not hidden');
+  assert.ok(live(mainIndex, '        return sendGated(db, m, log); // the run\'s `liveness` switch gates the write (review F6); see memory-notice-bus.ts'), 'index.ts writes through the shared gated send (the rig calls the same function)');
+  const gate = src('memory-notice-bus.ts');
+  assert.ok(live(gate, "    on = busSwitch(db, m.runId, 'liveness');") && live(gate, "  if (!on) return 'counted';"), 'the escalation mechanism\'s switch gates the write, like boot-wedge #197 and the liveness sweep');
+  assert.ok(live(gate, '  const coordinator = getRun(db, m.runId)?.coordinator ?? null;') && gate.includes('this message may never be read'), 'a run whose coordinator is not the recipient is unread mail: said, not hidden');
   assert.ok(live(memNotice, "  if (outcome === 'counted') deps.log.info("), 'and a counted record is logged as such');
 });
 
 test('#322 review F5: kills and warnings have SEPARATE notice-file budgets in the keeper, and the soft rate bound is read from the keeper\'s env', () => {
-  assert.ok(live(keeper, '    const max = soft ? MAX_SOFT_NOTICE_LINES : MAX_NOTICE_LINES;'), 'a pulsing scope can never use up the lines a later kill needs');
+  assert.ok(live(keeper, '    const slot = noticeBudget.take(kind);') && live(keeper, 'const noticeBudget = createNoticeBudget();'), 'the keeper writes through the two-budget helper (a pulsing scope can never use up the lines a later kill needs — proven in mem-notice-file.test.ts)');
   assert.ok(live(keeper, "    softMinIntervalMs: intEnv('ORCHESTRA_MEMCAP_SOFT_MIN_INTERVAL_MS', SOFT_MIN_INTERVAL_MS),"));
 });

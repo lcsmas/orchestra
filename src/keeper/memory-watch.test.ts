@@ -528,7 +528,7 @@ test('review F1: a STALE journal line of an earlier kill (whose lookup was skipp
   mw.stop();
 });
 
-test('review F1: a stale line whose pid was NOT named by the earlier (wrong) guess makes the pairing ambiguous — the record stays inferred instead of carrying the wrong pid with certainty', async () => {
+test('review F1: a stale line whose pid was NOT named by the earlier (wrong) guess is SET ASIDE as that earlier kill\'s (it owes a line), and the current kill is named by its OWN line', async () => {
   const w = new World();
   w.maxBytes = 300 * MB;
   w.current = 299 * MB;
@@ -551,7 +551,8 @@ test('review F1: a stale line whose pid was NOT named by the earlier (wrong) gue
   await wait(30);
   w.oomKill(13);
   assert.ok(await until(() => kills.length === 2, 4000));
-  assert.equal(kills[1].source, 'inferred', 'two eligible lines for one kill ⇒ ambiguous ⇒ no certainty');
+  assert.equal(kills[1].source, 'kernel', 'kill 1 owes a line: the OLDEST unclaimed line (L1) is its, kill 2 gets L2');
+  assert.equal(kills[1].pid, 13);
   mw.stop();
 });
 
@@ -606,14 +607,15 @@ test('review F5: the headroom check keys on the WORKING SET — a scope full of 
 
 // ─── #322 review round 2 (F2 storm: a stale line must not be re-offered; F4 final look on stop; F5 rate bound) ───
 
-test('review-2 F2: under a printk-ratelimited storm a line returned to an EARLIER lookup is never re-offered — the kill whose own line was dropped stays «inferred» (the reviewer\'s p2 scenario: victims the snapshots never saw)', async () => {
+test('review-2 F2: under a printk-ratelimited storm a line already accounted for is never re-offered, a kill whose own line was dropped stays «inferred», and the debt of a dropped line EXPIRES (our clock) so later kills are named again', async () => {
   const w = new World();
   w.add(10, { comm: 'node', cmdline: 'node keeper.js', rssPages: 5000 });
   const journal: KernelOomKill[] = [];
   const kills: MemKillRecord[] = [];
-  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => [...journal] });
+  let clock = 1_000_000;
+  const mw = watchSoft(w, [], kills, { softBytes: null, now: () => clock, kernelLog: async () => [...journal] });
   await wait(40);
-  // look 1: TWO kills of processes no snapshot ever saw, but the kernel logged ONE line (ratelimit) ⇒ count mismatch ⇒ both inferred, unnamed
+  // look 1: TWO kills of processes no snapshot ever saw, but the kernel logged ONE line (ratelimit) ⇒ not pairable ⇒ both inferred, unnamed; they owe 1 line
   journal.push(kline(501, 'hog'));
   w.events.oom += 2;
   w.events.oom_kill += 2;
@@ -624,15 +626,66 @@ test('review-2 F2: under a printk-ratelimited storm a line returned to an EARLIE
   w.events.oom += 1;
   w.events.oom_kill += 1;
   assert.ok(await until(() => kills.length === 3, 5000));
-  assert.equal(kills[2].source, 'inferred', 'the line look 1 already returned is not offered a second time');
+  assert.equal(kills[2].source, 'inferred', 'the line look 1 already accounted for is not offered a second time');
   assert.equal(kills[2].pid, null, 'and it is not carried as this kill\'s pid');
-  // control: a kill WITH its own fresh line, beside the old one, is named by the fresh line only if exactly one line is fresh
+  // the dropped lines are gone for good: after the debt TTL a fresh kill with its fresh line is named again
+  clock += 6000;
   journal.push(kline(504, 'hog'));
   w.events.oom += 1;
   w.events.oom_kill += 1;
   assert.ok(await until(() => kills.length === 4, 5000));
   assert.equal(kills[3].source, 'kernel');
-  assert.equal(kills[3].pid, 504, 'the fresh line names its own kill');
+  assert.equal(kills[3].pid, 504, 'the fresh line names its own kill once the dropped lines are forgiven');
+  mw.stop();
+});
+
+test('verifier repro 3: only kill 1\'s STALE line is in the journal when kill 2 is first looked up (its own lands one poll later) — never kernel-certain with the wrong pid; the poll resolves it to the RIGHT one', async () => {
+  const w = new World();
+  w.current = 299 * MB;
+  w.add(20, { comm: 'decoy', cmdline: 'decoy', adj: 1000, rssPages: 20000 });
+  w.add(12, { comm: 'victim1', cmdline: 'victim1', adj: 1000, rssPages: 5000 });
+  const kills: MemKillRecord[] = [];
+  let phase2 = false;
+  let call = 0;
+  let L1: KernelOomKill | null = null;
+  let L2: KernelOomKill | null = null;
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => { if (!phase2) return []; call += 1; return call === 1 ? [L1!] : [L1!, L2!]; } });
+  await wait(40);
+  w.procs.delete(20);
+  w.oomKill(12);
+  L1 = kline(12, 'victim1');
+  assert.ok(await until(() => kills.length === 1, 5000));
+  assert.equal(kills[0].source, 'inferred');
+  w.current = 100 * MB;
+  w.add(13, { comm: 'victim2', cmdline: 'victim2', adj: 1000, rssPages: 6000 });
+  await wait(30);
+  w.oomKill(13);
+  L2 = kline(13, 'victim2');
+  phase2 = true;
+  assert.ok(await until(() => kills.length === 2, 5000));
+  assert.ok(kills[1].source !== 'kernel' || kills[1].pid === 13, `WRONG CERTAINTY: kill 2 (pid 13) recorded as ${kills[1].source} pid ${kills[1].pid}`);
+  assert.equal(kills[1].pid, 13, 'and the poll found its own line');
+  mw.stop();
+});
+
+test('verifier repro 4 (the rig instability): two kills 33 ms apart, a look sees the counter between them while the journal already holds BOTH lines — BOTH are named by the kernel, oldest first', async () => {
+  const w = new World();
+  w.add(20, { comm: 'decoy', cmdline: 'decoy', adj: 1000, rssPages: 20000 }); // exits normally with the first kill (unseen victim ⇒ a wrong guess)
+  w.add(12, { comm: 'victim1', cmdline: 'victim1', adj: 1000, rssPages: 5000 });
+  w.add(13, { comm: 'victim2', cmdline: 'victim2', adj: 1000, rssPages: 6000 });
+  const kills: MemKillRecord[] = [];
+  let L12: KernelOomKill | null = null;
+  let L13: KernelOomKill | null = null;
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => (L12 && L13 ? [L12, L13] : []) });
+  await wait(40);
+  w.procs.delete(20);
+  w.oomKill(12);
+  L12 = kline(12, 'victim1');
+  L13 = kline(13, 'victim2'); // the journal already has victim2's line: the look below happens before its counter bump
+  assert.ok(await until(() => kills.length === 1, 5000));
+  w.oomKill(13);
+  assert.ok(await until(() => kills.length === 2, 5000));
+  assert.deepEqual(kills.map((k) => [k.source, k.pid]), [['kernel', 12], ['kernel', 13]], 'surplus waits unclaimed for the next round: no kill degrades');
   mw.stop();
 });
 
@@ -687,5 +740,44 @@ test('review-2 F5: warnings are rate-bounded — a scope pulsing around its leve
   assert.ok(await until(() => softs.length === 2));
   assert.equal(softs[1].suppressed, 2, 'the two swallowed crossings are told with the next warning');
   assert.equal(softs[0].suppressed, undefined);
+  mw.stop();
+});
+
+test('round 2 M3: a CLI killed (the cap\'s last resort) while an earlier tool kill waits for the kernel log, then stop() - BOTH victims are recorded once each, the tool is not named twice and the CLI is not lost', async () => {
+  const w = new World();
+  w.add(10, { comm: 'node', cmdline: 'node keeper.js', rssPages: 5000 });
+  w.add(12, { comm: 'hogA', cmdline: 'hogA', adj: 1000, rssPages: 9000 });
+  w.add(13, { comm: 'claude', cmdline: 'claude --output-format stream-json', adj: 0, rssPages: 30_000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => { await wait(500); return []; } });
+  await wait(40);
+  w.oomKill(12);
+  await wait(80); // the look has seen kill 1 and waits for the journal
+  w.oomKill(13); // the CLI dies too
+  mw.stop();
+  assert.deepEqual(kills.map((k) => k.pid).sort(), [12, 13], 'one record each - not [12, 12]');
+});
+
+test('round 2 m1: a crossing swallowed by the rate bound whose scope is STILL above the level is told once, deferred, when the interval is over - and not again every interval', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  let clock = 5_000_000;
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: () => {}, onSoft: (r) => softs.push(r), softBytes: 200 * MB, softMinIntervalMs: 30_000, now: () => clock, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096 });
+  w.current = 230 * MB;
+  assert.ok(await until(() => softs.length === 1));
+  w.current = 100 * MB;
+  await wait(40); // re-armed
+  clock += 5_000;
+  w.current = 280 * MB; // crosses again inside the interval: swallowed - and it STAYS high
+  await wait(60);
+  assert.equal(softs.length, 1, 'swallowed');
+  clock += 31_000; // the interval is over
+  assert.ok(await until(() => softs.length === 2), 'told once, deferred');
+  assert.equal(softs[1].suppressed, 1);
+  assert.equal(softs[1].bytes, 280 * MB, 'with the CURRENT reading');
+  clock += 120_000;
+  await wait(80);
+  assert.equal(softs.length, 2, 'and not repeated every interval while it stays high');
   mw.stop();
 });

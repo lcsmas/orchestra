@@ -369,6 +369,47 @@ export function kernelKillsForUnit(lines: readonly KernelOomKill[], unit: string
     .sort((a, b) => a.atMs - b.atMs || a.pid - b.pid);
 }
 
+/** The outcome of one kernel-log pairing round. */
+export interface KernelPairingPlan {
+  /** Lines that are now ACCOUNTED for (paired, or recognised as belonging to earlier records): never offered to a later round. */
+  claim: KernelOomKill[];
+  /** The lines that name this round's records, oldest first (`length === records`), or [] when the round could not pair them honestly. */
+  pair: KernelOomKill[];
+  /** How many lines earlier records were still owed that this round found and set aside. */
+  debtsSettled: number;
+  /** Records of this round that got NO line: they owe one (a late line may still arrive; a later round must not mistake it for its own). */
+  newDebts: number;
+}
+
+/**
+ * Pair this round's kills with the kernel's lines — oldest first, from lines nobody has claimed (review round 2 + the verifier's instability finding).
+ * `fresh` = the unit's unclaimed lines, oldest first; `namedPids` = pids already named by an emitted record; `debts` = records emitted earlier that never got their line (skipped lookup, a line dropped by
+ * the kernel's printk ratelimit, a line still in flight). The oldest `debts` lines are THEIRS (a line naming an already-named pid certainly is): they are set aside, never given to this round. What is left
+ * is paired with the records when there is enough of it — SURPLUS (the next kill's line already in the journal, two kills 33 ms apart) stays unclaimed for the next round — and otherwise the records stay
+ * unpaired and owe the missing lines. The error direction is always «a guess, labelled»: a wrong pid is never produced from a stale line.
+ */
+export function planKernelPairing(fresh: readonly KernelOomKill[], namedPids: ReadonlySet<number>, debts: number, records: number): KernelPairingPlan {
+  let owed = debts;
+  const claim: KernelOomKill[] = [];
+  const rest: KernelOomKill[] = [];
+  for (const l of fresh) {
+    if (namedPids.has(l.pid)) {
+      claim.push(l);
+      if (owed > 0) owed -= 1;
+    } else rest.push(l);
+  }
+  const stale = Math.min(owed, rest.length);
+  claim.push(...rest.slice(0, stale));
+  owed -= stale;
+  const usable = rest.slice(stale);
+  const debtsSettled = debts - owed;
+  if (usable.length >= records) {
+    const pair = usable.slice(0, records);
+    return { claim: [...claim, ...pair], pair, debtsSettled, newDebts: 0 };
+  }
+  return { claim: [...claim, ...usable], pair: [], debtsSettled, newDebts: records - usable.length };
+}
+
 /**
  * Replace the inferred victim of each record with the kernel's: `kills` are the unit's kernel lines for this window, oldest first, paired with the
  * records in order. A record with no line left keeps its inference (`source: 'inferred'`). `vanished` = the members seen before this look

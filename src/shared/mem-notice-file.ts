@@ -46,12 +46,13 @@ export function parseMemNotice(v: unknown): MemNoticeRecord | null {
   if (typeof r.unit !== 'string' || !r.unit || !isNum(r.seq) || !isNum(r.at)) return null;
   if (r.kind === 'soft') {
     if (!isNum(r.bytes) || !isNum(r.softBytes)) return null;
-    return { kind: 'soft', seq: r.seq, at: r.at, unit: r.unit, bytes: r.bytes, softBytes: r.softBytes, hardBytes: isNum(r.hardBytes) ? r.hardBytes : null } satisfies MemSoftRecord;
+    return { kind: 'soft', seq: r.seq, at: r.at, unit: r.unit, bytes: r.bytes, softBytes: r.softBytes, hardBytes: isNum(r.hardBytes) ? r.hardBytes : null, ...(isNum(r.suppressed) && r.suppressed > 0 ? { suppressed: r.suppressed } : {}) } satisfies MemSoftRecord;
   }
   if (r.level !== 'hard' && r.level !== 'external') return null;
   return {
     kind: 'kill',
     ...(r.source === 'kernel' || r.source === 'inferred' ? { source: r.source } : {}),
+    ...(r.role === 'cli' || r.role === 'keeper' ? { role: r.role } : {}), // the SESSION ended: it must survive the trip through the file (review round 2 M1)
     seq: r.seq,
     at: r.at,
     level: r.level,
@@ -100,9 +101,34 @@ export function fullyDelivered(recs: readonly MemNoticeRecord[], seen: (unit: st
   return recs.every((r) => r.seq <= seen(r.unit));
 }
 
-/** The prune verdict: the file may go only if it was READ, holds nothing we could not parse, and every record in it is delivered. An unreadable or half-understood file is never «delivered» (review F3). */
-export function mayPrune(read: NoticeRead, seen: (unit: string) => number): boolean {
-  return read.ok && read.unparsed === 0 && fullyDelivered(read.recs, seen);
+/** What to do with a notice file after a drain: `prune` only if it was READ, every line was understood and every record is delivered; `quarantine` (rename aside, keep the evidence) if everything we understood is delivered but
+ *  some line is not understood - a crash-torn tail must not block the file for ever (round 2 m2); `keep` otherwise - an unreadable or undelivered file is never «delivered» (review F3). */
+export function pruneVerdict(read: NoticeRead, seen: (unit: string) => number): 'prune' | 'quarantine' | 'keep' {
+  if (!read.ok || !fullyDelivered(read.recs, seen)) return 'keep';
+  return read.unparsed === 0 ? 'prune' : 'quarantine';
+}
+
+export const mayPrune = (read: NoticeRead, seen: (unit: string) => number): boolean => pruneVerdict(read, seen) === 'prune';
+
+/** The keeper's notice-file budget: kills and warnings are counted APART, so a scope pulsing around its level can never use up the lines a later KILL needs (review F5). */
+export function createNoticeBudget(maxKills = MAX_NOTICE_LINES, maxSofts = MAX_SOFT_NOTICE_LINES) {
+  let kills = 0;
+  let softs = 0;
+  return {
+    /** Reserve a line for a record of `kind`; `write:false` once its own budget is spent (`justFull` is true on the first refusal, for ONE log line). */
+    take(kind: 'kill' | 'soft'): { write: boolean; justFull: boolean } {
+      const n = kind === 'soft' ? softs : kills;
+      const max = kind === 'soft' ? maxSofts : maxKills;
+      if (kind === 'soft') softs += 1;
+      else kills += 1;
+      return { write: n < max, justFull: n === max };
+    },
+    /** The append failed: give the reservation back. */
+    release(kind: 'kill' | 'soft'): void {
+      if (kind === 'soft') softs -= 1;
+      else kills -= 1;
+    },
+  };
 }
 
 export { isSoftRecord };
