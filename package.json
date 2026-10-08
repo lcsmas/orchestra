@@ -71,7 +71,7 @@
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",
     "test:docker-relay": "bash scripts/e2e-docker-relay.sh",
     "test:memory-cap": "pnpm run build:keeper && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/e2e-memory-cap.mjs all",
-    "test:memory-cap-real-cli": "bash scripts/e2e-memory-cap-real-cli.sh",
+    "test:memory-cap-real-cli": "node scripts/memory-cap/real-cli-prefix.mjs all",
     "test:memory-cap-mutants": "node scripts/memory-cap-mutants.mjs",
     "test:pause-containers": "bash scripts/e2e-pause-containers.sh",
     "test:hook-cost": "bash scripts/e2e-hook-cost.sh",

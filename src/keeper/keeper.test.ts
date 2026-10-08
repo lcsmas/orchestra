@@ -50,7 +50,9 @@ before(() => {
   // Rebuild the bundle when missing or older than its sources.
   const srcs = [
     path.join(REPO, 'src', 'keeper', 'index.ts'),
+    path.join(REPO, 'src', 'keeper', 'memory-watch.ts'),
     path.join(REPO, 'src', 'shared', 'keeper-protocol.ts'),
+    path.join(REPO, 'src', 'shared', 'memory-scope.ts'),
   ];
   const stale =
     !fs.existsSync(KEEPER_JS) ||

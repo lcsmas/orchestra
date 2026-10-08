@@ -17,10 +17,11 @@ const live = (src: string, needle: string): boolean =>
 
 test('the ONE keeper-spawn site passes the run-switch decision (frozen switch → relay spec) as the facade\'s 3rd argument', () => {
   assert.equal(agentSdk.match(/makeKeeperSpawn\(/g)?.length, 1, 'exactly one call site (the import line has no paren)');
-  assert.ok(live(agentSdk, '}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote)) as never,'), 'makeKeeperSpawn must receive dockerRelaySpecFor(<the run id the CLI sees>, remote)');
+  // #320 appended a 4th argument (the memory cap) on the following lines: the relay decision is still the 3rd, and the call still ends `) as never,`.
+  assert.ok(live(agentSdk, '}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote),'), 'makeKeeperSpawn must receive dockerRelaySpecFor(<the run id the CLI sees>, remote)');
   assert.ok(live(agentSdk, "from './docker-relay-switch.ts'"));
   // must-FAIL arm: a body that merely imports it must not satisfy "wired"
-  assert.ok(!live("// }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote)) as never,", '}, dockerRelaySpecFor('));
+  assert.ok(!live("// }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote),", '}, dockerRelaySpecFor('));
 });
 
 test('the facade puts dockerRelay on the spawn frame ONLY when given one (absent ⇒ today\'s frame)', () => {

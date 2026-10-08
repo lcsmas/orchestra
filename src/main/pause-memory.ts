@@ -71,7 +71,8 @@ const mem = (bytes: number): string => `MemAvailable ${formatGb(bytes, 2)}`;
 
 // ─── which runs are REALLY under a memory Pause (read-only: `orchestra bus-status`, D1 of ledger #329) ────────────────────────────────────────────────────
 
-/** Every run that is paused RIGHT NOW with the stored memory motive (epoch-matched, so a later manual pause never reads as one). The guard's own `pause` field
+/** Every run that is paused RIGHT NOW with the stored memory motive (epoch-matched, so a later manual pause never reads as one). Unlike {@link memoryPausedRuns} (the runs the guard may LIFT) this
+ *  includes a run whose Reprise is under way — it is still paused until every member is back — and does not look at the frozen `pause` switch (only a switch-ON run can have been paused). The guard's own `pause` field
  *  means "due now" and says nothing about this — the bus row is the truth (it also survives an app restart). Pure read; a failed read is an empty list. */
 export function memoryPausedRunViews(db: BusDb | null, label?: (runId: string) => string | undefined): MemoryPausedRunView[] {
   if (!db) return [];

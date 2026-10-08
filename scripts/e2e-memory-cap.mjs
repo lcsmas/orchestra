@@ -208,7 +208,7 @@ async function runTool(st, cmd, id, ms = 60_000) { st.send({ tool: cmd, id }); a
 
 /** The decision exactly as agent-sdk.ts makes it (same function, same inputs; the call site is pinned by memory-cap-binding.test.ts). */
 const decide = (ws, { fleet = true, run = 'run-on' } = {}) =>
-  capSwitch ? capSwitch.memoryCapSpecFor({ wsId: ws, runId: run, hasCoordinator: fleet, remote: false, settings }) : undefined;
+  capSwitch ? capSwitch.memoryCapSpecFor({ wsId: ws, runId: run, ws: fleet ? { parentId: 'rig-coordinator' } : {}, remote: false, settings }) : undefined;
 
 /** Everything the arms assert on, as facts about the running pids. */
 function factsOf(ws, st) {
@@ -372,8 +372,12 @@ try {
     const scopes2 = scopeMod ? scopeMod.memberScopes(ws) : [];
     check('a restart while Reliquats keep the old scope starts a NEW generation in a NEW scope', f2.inRigScope && f2.unit !== f.unit && scopes2.length === 2, `old=${f.unit} new=${f2.unit} n=${scopes2.length}`);
     const newScope = scopes2.find((s) => s.unit === f2.unit);
+    const td2 = await runTool(st2, `${python.join(' ')} ${RIG_DIR}/daemonize.py 90 reliq-daemon-2`, 't-daemon2', 20_000);
+    await sleep(500);
     const procs2 = newScope ? scopeMod.listScopeProcs(newScope, f2.cliPid) : [];
-    check('in the new scope the session is classified keeper / cli / session — the old daemon is NOT counted there', procs2.some((p) => p.role === 'keeper') && procs2.some((p) => p.role === 'cli') && !procs2.some((p) => /daemonize\.py/.test(p.cmdline)), procs2.map((p) => `${p.role}:${p.comm}`).join(' '));
+    const roleOf = (re) => procs2.find((p) => re.test(p.cmdline))?.role ?? null;
+    check('in the NEW scope (live keeper): keeper / cli classified, the old generation\'s daemon is not counted here', procs2.some((p) => p.role === 'keeper') && procs2.some((p) => p.role === 'cli') && !procs2.some((p) => /reliq-daemon\b(?!-2)/.test(p.cmdline)), procs2.map((p) => `${p.role}:${p.comm}`).join(' '));
+    check('...and a daemon started BY the live session that left its tree is a Reliquat (not "session") while its keeper is alive', td2?.code === 0 && roleOf(/reliq-daemon-2/) === 'reliquat', `role=${roleOf(/reliq-daemon-2/)}`);
     detail = `generations=${scopes2.length}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.

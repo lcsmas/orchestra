@@ -196,8 +196,12 @@ back above 7 = threshold + 1 GB margin) and a **memory Pause** below 3 (lifts ab
   Admission / reopen, one label row each — 1 GB is ~14 px on a 32 GB scale), two GB inputs committed on blur/Enter (both fields travel
   together: a pair is only valid as a pair), the toggle, an inline error row; polls `memoryGuard()` every 2 s while open. Pure view logic
   (`guardChip`, `gaugeModel`, `planThresholdCommit`, `parseGbInput`): `src/shared/memory-guard-view.ts`.
-- **Visibility**: `/busStatus` (`hooks-server.ts:489`) returns `memoryGuard: <snapshot>`; `orchestra bus-status` prints one
-  `memory:` line (`cli/index.ts:2179`; absent from an older app → no line). Host-wide, not run-scoped.
+- **Visibility**: `/busStatus` (`hooks-server.ts`) returns `memoryGuard: <snapshot>`; `orchestra bus-status` prints one
+  `memory:` line (`cli/index.ts`; absent from an older app → no line). Host-wide, not run-scoped. **D1 (ledger #329):** the snapshot's `pause` only
+  means "due NOW" — it reads `none` once memory recovered above the critical level while the Pause stays in force until the Admission threshold, and after an app restart — so the line used to print
+  `memory Pause none` under a Pause in force. `/busStatus` now also returns `memoryPausedRuns` (`memoryPausedRunViews`, `pause-memory.ts`: the runs paused RIGHT NOW with the epoch-matched memory motive, Reprise-under-way included) and
+  `formatMemoryGuardLine(snapshot, paused)` prints `memory Pause IN EFFECT on N run(s) (…) since … (lifts above X GB)` from the BUS; with a list given but empty and the guard held it says `— but no run is paused`; no list (an older app) = the guard's word.
+- **Plafond mémoire levels (#320)**: `MemoryGuardSettings` gains `capSoftGb` / `capHardGb` (defaults 3 / 6 GB, hard > soft, hard ≥ 0.1 GB; normalized/validated as their OWN pair — a bad cap pair never resets the thresholds); read at each member's session start by `memory-cap-switch.ts`. No UI here (#323). `bus-status` prints the `memory cap:` line (`formatMemoryCapLine`).
 - **Alert to the LEAD (#289, consumer of FI-2)**: ONE `escalation` bus row per memory EPISODE (the guard's `episode` = one downward crossing of the Admission threshold; oscillation inside the hysteresis band
   never opens another). Pure half `src/shared/memory-alert.ts` (`memoryAlertBody`: thresholds crossed + MemAvailable at the crossing, host actions — starts HELD, members put in Veille since the crossing, runs under the
   memory Pause, unattributed containers (#293: the count from the last monitor tick — `unattributedDocker` says WHY it was not measured: unreachable / query failed / not sampled yet / stale; `unattributedDaemonsDown` makes it « at least ») — the state now, what to expect; `ALERT_SETTLE_MS` = 20 s: the row waits two fast samples so the actions are real numbers, an episode that ends first is

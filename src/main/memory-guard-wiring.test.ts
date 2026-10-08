@@ -34,7 +34,7 @@ test('index.ts reads the thresholds from the store (hot), starts the guard right
 
 test('/busStatus returns the guard snapshot and the CLI prints it through the shared formatter', () => {
   assert.match(hooks, /memoryGuard: getMemoryGuardSnapshot\(\)/);
-  assert.match(cli, /formatMemoryGuardLine\(res\.memoryGuard as MemoryGuardSnapshot\)/);
+  assert.match(cli, /formatMemoryGuardLine\(res\.memoryGuard as MemoryGuardSnapshot,/);
 });
 
 test('the settings handlers go through the validated hot write; channel names match the preload (lockstep)', () => {

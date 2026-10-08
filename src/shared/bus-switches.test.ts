@@ -349,3 +349,26 @@ test('#291 dockerRelay: default OFF, wire name docker_relay round-trips, notice 
   assert.match(off ?? '', /docker_relay=OFF .*not stamped/);
   assert.ok(!/bus is AUTHORITATIVE/.test(on ?? ''), 'docker_relay is not a bus mechanism — the generic wording would be false');
 });
+
+// ── #320 memory_cap ──────────────────────────────────────────────────────────────────────────────────────────────
+test('#320 memoryCap: default OFF, wire name memory_cap round-trips, notice names it in BOTH states and never claims a bus mechanism', () => {
+  assert.equal(DEFAULT_BUS_SWITCHES.memoryCap, false);
+  assert.equal(mechanismFromWire('memory_cap'), 'memoryCap');
+  assert.equal(mechanismToWire('memoryCap'), 'memory_cap');
+  assert.equal(mechanismFromWire('memoryCap'), null); // the camel key is NOT a wire name
+  assert.ok(BUS_MECHANISMS.includes('memoryCap'));
+  const on = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES, memoryCap: true }).find((l) => l.includes('memory_cap='));
+  const off = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES }).find((l) => l.includes('memory_cap='));
+  assert.match(on ?? '', /memory_cap=ON .*memory scope.*killed by the kernel/);
+  assert.match(on ?? '', /started before this was ON is not capped/);
+  assert.match(off ?? '', /memory_cap=OFF .*no per-member memory limit/);
+  assert.ok(!/bus is AUTHORITATIVE/.test(on ?? ''), 'memory_cap is not a bus mechanism — the generic wording would be false');
+  assert.ok(!/OLD channel/.test(off ?? ''));
+});
+
+test('#320 memoryCap is stored/normalized like every mechanism: an old run row without it reads OFF; "true" (a string) never reads ON', () => {
+  assert.equal(parseSwitches(JSON.stringify({ delivery: true })).memoryCap, false);
+  assert.equal(normalizeSwitches({ memoryCap: 'true' }).memoryCap, false);
+  assert.equal(normalizeSwitches({ memoryCap: true }).memoryCap, true);
+  assert.equal(JSON.parse(serializeSwitches({ ...DEFAULT_BUS_SWITCHES, memoryCap: true })).memoryCap, true);
+});

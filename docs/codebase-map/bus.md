@@ -2117,6 +2117,13 @@ Read at session start by `src/main/docker-relay-switch.ts` (`busSwitch(db, runId
 "the bus is authoritative", so `busSwitchNoticeLines` has its own wording (ON: your docker goes through a relay, don't override `DOCKER_HOST`; OFF: used directly).
 Auto-appears in `orchestra bus-status` flags and the Settings toggles (`BusSwitchSettings` description added). Mid-run flips never reach a running run (the freeze).
 
+### The `memoryCap` switch (#320, wave H)
+
+`memoryCap` is the 10th `BusMechanism` (wire `memory_cap` — snake wire / camel key). It gates ONE thing: whether a FLEET MEMBER's keeper is launched in its own kernel memory scope with a hard limit (the Plafond mémoire — `session-keeper.md` → Plafond mémoire).
+Default OFF; frozen onto `run_flags.flags` at run creation; no schema migration. Read at each session START by `src/main/memory-cap-switch.ts` (`busSwitch(db, runId, 'memory_cap')` against the member's `$ORCHESTRA_RUN_ID`); the LEVELS (`capSoftGb`/`capHardGb`)
+are NOT frozen — they come from the Garde mémoire settings at that moment. Not "the bus is authoritative": `busSwitchNoticeLines` has its own wording. `orchestra bus-status` shows the switch row (frozen / live) AND a `memory cap:` line with the levels
+and the live member-scope count. NOT in `ONE_SWITCH_REFREEZABLE` (follow-up if the canary needs to flip a running run).
+
 ### Gates
 
 ```bash
