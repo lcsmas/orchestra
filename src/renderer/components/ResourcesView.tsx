@@ -8,7 +8,7 @@ import { isActionableStopReason } from '../../shared/usage-resume';
 import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionResourceStat } from '../../shared/resources';
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
-import { browserChipOf, type BrowserChip } from '../../shared/browser-reliquats';
+import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-reliquats';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
@@ -146,6 +146,11 @@ function CpuCell({ pct }: { pct: number }) {
       <span className="res-cell">{formatCpu(pct)}</span>
     </span>
   );
+}
+
+/** #331 (D-Q4 A'): the row's « 🌐 N arrêtés » chip — a remote (sandbox) row has no local browsers. Exported: the screenshot gate asks the SAME function the page does. */
+export function browsersChipFor(view: BrowserReliquatView | undefined, row: { remote: boolean; key: string }): BrowserChip | null {
+  return row.remote ? null : browserChipOf(view, row.key);
 }
 
 interface AgentRow extends SessionGroup {
@@ -809,7 +814,7 @@ export function ResourcesView() {
             accountLabelFor={accountLabelFor}
             warning={unattributedWarning(snap?.containers)}
             reliquatsLine={reliquatsNote(snap?.members)}
-            browsersOf={(row) => (row.remote ? null : browserChipOf(snap?.browserReliquats, row.key))}
+            browsersOf={(row) => browsersChipFor(snap?.browserReliquats, row)}
           />
         </section>
 

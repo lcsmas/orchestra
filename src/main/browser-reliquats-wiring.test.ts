@@ -70,7 +70,8 @@ test('the Resources chip (D-Q4 A\'): « 🌐 N arrêtés » only on rows that EX
   const chips = view.slice(at(view, 'function SessionChips('), at(view, 'function AgentRowView('));
   assert.ok(at(chips, "{containers && (") < at(chips, '{browsers && ('), 'the 🌐 chip comes after the 🐳 chip');
   assert.ok(chips.includes('className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}') && chips.includes('{browsers.count} arrêtés'));
-  assert.ok(view.includes('browsersOf={(row) => (row.remote ? null : browserChipOf(snap?.browserReliquats, row.key))}'), 'the page asks per existing row; a remote row has no local browsers');
+  assert.ok(view.includes('browsersOf={(row) => browsersChipFor(snap?.browserReliquats, row)}'), 'the page asks per existing row');
+  assert.ok(view.includes('return row.remote ? null : browserChipOf(view, row.key);'), 'a remote row has no local browsers');
   assert.ok(view.includes('browsers={browsersOf ? browsersOf(row) : null}'));
   assert.ok(view.includes('const rows: AgentRow[] = grouped.rows.map('), 'rows come from the sessions/containers grouping ONLY');
   const grouping = codeOf('src/shared/resources.ts');

@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RIG = path.join(REPO, 'scripts', 'browser-reliquats', 'rig.mjs');
 const ONLY = process.argv.includes('--only') ? new Set(process.argv[process.argv.indexOf('--only') + 1].split(',')) : null;
-const PURE = 'src/shared/browser-reliquats.ts', IO = 'src/main/browser-reliquats.ts', MON = 'src/main/resource-monitor.ts', TRAP = 'src/main/pause-trap.ts';
+const PURE = 'src/shared/browser-reliquats.ts', IO = 'src/main/browser-reliquats.ts', MON = 'src/main/resource-monitor.ts', TRAP = 'src/main/pause-trap.ts', VIEW = 'src/renderer/components/ResourcesView.tsx', CSS = 'src/renderer/styles.css';
 
 const M = [
   { id: 'brig-bridge-not-installed', file: MON, find: '    browser: productionBrowserBridge(),\n  };\n}', rep: '  };\n}', arm: 'monitor', red: ['pipe_orphan_stopped_at_once', 'port_orphan_stopped_after_window'] },
@@ -24,10 +24,17 @@ const M = [
     edits: [{ find: '    if (!owner) continue; // the human\'s browser, a default profile, anything outside agent-tmp/: not ours — not even tracked\n', rep: '    const owner = ownerOrNull ?? { wsId: \'x\', prefix: \'/\' };\n' }, { find: '    const owner = profileOwner(parsed.userDataDir, root);', rep: '    const ownerOrNull = profileOwner(parsed.userDataDir, root);' }, { find: 'ownerKnown: d.workspaceKnown(owner.wsId)', rep: 'ownerKnown: true' }] },
   { id: 'brig-idle-window-ignored', file: PURE, find: '  if (idle >= windowMs) return { stop: true,', rep: '  if (true) return { stop: true,', arm: 'monitor', red: ['the port-mode orphan is NOT stopped before the idle window (survives pass 1)'] },
   { id: 'brig-only-the-main-process', file: IO, find: 'members: descendantsOf(table, p.pid) });', rep: 'members: [p] });', arm: 'monitor', red: ['pipe_group_dead'] },
+  // the D-Q4 A' chip, through the REAL page markup + stylesheet in an Electron window under the rig's own headless sway (scripts/browser-reliquats/chip-screenshot.mjs)
+  { id: 'brig-chip-never-asked', file: VIEW, find: 'browsers={browsersOf ? browsersOf(row) : null}', rep: 'browsers={null}', arm: 'chip', red: ['chip_on_owning_row', 'chip_tooltip', 'chip_after_docker', 'chip_on_screen', 'chip_singular'] },
+  { id: 'brig-chip-remote-shown', file: VIEW, find: 'return row.remote ? null : browserChipOf(view, row.key);', rep: 'return browserChipOf(view, row.key);', arm: 'chip', red: ['no_chip_on_remote_row'] },
+  { id: 'brig-chip-zero-shown', file: PURE, find: '  if (!c || !(c.stopped > 0)) return null;', rep: '  if (!c) return null;', arm: 'chip', red: ['no_chip_at_zero', 'zero_equals_pre_feature'] },
+  { id: 'brig-chip-status-colour', file: CSS, find: '.res-chip.browsers { text-transform: none; letter-spacing: 0; }', rep: '.res-chip.browsers { text-transform: none; letter-spacing: 0; color: var(--yellow); border-color: var(--yellow); }', arm: 'chip', red: ['chip_is_grey'] },
 ];
 
 function runRig(arm) {
-  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), RIG, arm], { cwd: REPO, encoding: 'utf8', timeout: 900_000 });
+  const r = arm === 'chip'
+    ? spawnSync('bash', [path.join(REPO, 'scripts', 'e2e-contained-rig.sh'), process.execPath, path.join(REPO, 'scripts', 'browser-reliquats', 'chip-screenshot.mjs')], { cwd: REPO, encoding: 'utf8', timeout: 900_000 })
+    : spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), RIG, arm], { cwd: REPO, encoding: 'utf8', timeout: 900_000 });
   const out = (r.stdout ?? '') + (r.stderr ?? '');
   const red = [...out.matchAll(/^ {2}FAIL (.+?)(?:  \[|$)/gm)].map((m) => m[1]);
   const surv = /SURVIVORS arm=\S+ procs=(\d+)/.exec(out);

@@ -108,7 +108,7 @@ export const MUTANTS = [
   { id: 'br-chip-any-workspace', file: PURE, find: '  const c = view?.byWorkspace?.[wsId];', rep: '  const c = Object.values(view?.byWorkspace ?? {})[0];', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
   { id: 'br-chip-count-is-total', file: PURE, find: '  return { count: n, title:', rep: '  return { count: view!.total, title:', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
   { id: 'br-chip-profile-dropped', file: PURE, find: ', profil ${c.lastPrefix} (laissé en place)`', rep: ' (laissé en place)`', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
-  { id: 'br-chip-remote-row-shown', file: VIEW, find: '(row) => (row.remote ? null : browserChipOf(snap?.browserReliquats, row.key))', rep: '(row) => browserChipOf(snap?.browserReliquats, row.key)', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
+  { id: 'br-chip-remote-row-shown', file: VIEW, find: 'return row.remote ? null : browserChipOf(view, row.key);', rep: 'return browserChipOf(view, row.key);', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-never-asked', file: VIEW, find: 'browsers={browsersOf ? browsersOf(row) : null}', rep: 'browsers={null}', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-status-colour', file: CSS, find: '.res-chip.browsers { text-transform: none; letter-spacing: 0; }', rep: '.res-chip.browsers { text-transform: none; letter-spacing: 0; color: var(--yellow); }', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-before-containers', file: VIEW, edits: [
