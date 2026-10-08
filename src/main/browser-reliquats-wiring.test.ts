@@ -44,6 +44,8 @@ test('the production bridge: agent-tmp under the home, a workspace the LOADED st
   assert.ok(pause.includes('productionBrowserBridge()') && pause.includes('onlyWs: wsId, ignoreWindow: true'), 'a Pause dure: one member, no idle window');
   const host = codeOf('src/main/pause-trap-host.ts');
   assert.ok(host.includes('killBrowserReliquats: (m, opts) => stopBrowserReliquatsOf(m.wsId, {'), 'the host binds the Pause dure to the monitor\'s bridge');
+  const bind = host.slice(at(host, 'killBrowserReliquats: (m, opts)'), at(host, 'stopTask: (m, taskId)'));
+  for (const fwd of ['opts.stillPaused ? { stillWanted: opts.stillPaused }', 'opts.onProgress ? { onProgress: opts.onProgress }', 'opts.humanWindows ? { humanWindows: opts.humanWindows }', 'opts.ignoreWindow === false ? { ignoreWindow: false }']) assert.ok(bind.includes(fwd), `the host forwards ${fwd.split(' ')[0]} to the pass (the PAUSER's kept idle window, D9 windows, the lift check, the write-ahead)`);
   const res = codeOf('src/main/resources.ts');
   assert.ok(res.includes('browserReliquats: getBrowserReliquatView(),'), 'the Resources snapshot carries the per-workspace counter');
 });

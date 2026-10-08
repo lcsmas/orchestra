@@ -387,6 +387,8 @@ test('realClientState over a fake /proc: LISTEN ports by socket inode, a client 
     fs.chmodSync(path.join(root, '4242', 'net', 'tcp6'), 0o644);
   }
   assert.equal(realClientState(9999, root), 'unknown', 'no fd directory (gone / not ours): UNKNOWN');
+  fs.writeFileSync(path.join(root, '4242', 'fd', '7'), 'not a symlink'); // readlink fails with EINVAL, not ENOENT: an fd we cannot read may be the debugging socket
+  assert.equal(realClientState(4242, root), 'unknown', 'an fd whose link cannot be READ (not a vanished fd) is UNKNOWN, never "no listening socket"');
 });
 
 test('REAL network namespace: a browser inside its OWN netns (unshare -n / bwrap) with a connected client reads `client: yes` — the tables are the browser\'s, not this process\'s', async () => {
