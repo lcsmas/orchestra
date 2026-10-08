@@ -6,14 +6,16 @@ import { emptyReliquatReport, type ReliquatReport, type ScopeListing, type Scope
 const mem = (pid: number, role: ScopeMember['role']): ScopeMember => ({ pid, startTicks: pid * 10, ppid: 1, comm: 'x', role });
 const scope = (unit: string): ScopeRef => ({ unit, cgroupDir: `/sys/fs/cgroup/x/${unit}` });
 
-function world(over: { scopes?: ScopeRef[] | Error; lists?: Record<string, ScopeListing[]>; rel?: Partial<ReliquatReport> | null | Error; own?: (u: string) => boolean; stopFails?: string[]; stayAfterStop?: string[]; keeperAlive?: boolean } = {}) {
+function world(over: { scopes?: ScopeRef[] | Error; lists?: Record<string, ScopeListing[]>; rel?: Partial<ReliquatReport> | null | Error; own?: (u: string) => boolean; stopFails?: string[]; stayAfterStop?: string[]; keeperAlive?: boolean; scopesSeq?: ScopeRef[][] } = {}) {
   const calls: string[] = [];
+  let lookups = 0;
   const stopped = new Set<string>();
   const lists = new Map(Object.entries(over.lists ?? {}).map(([k, v]) => [k, [...v]]));
   const deps: ScopeStopDeps = {
     scopes: () => {
       if (over.scopes instanceof Error) throw over.scopes;
-      return (over.scopes ?? [scope('orchestra-ws-aaa-g1.scope')]).filter((s) => !stopped.has(s.unit) || over.stayAfterStop?.includes(s.unit));
+      const now = over.scopesSeq ? over.scopesSeq[Math.min(lookups++, over.scopesSeq.length - 1)] : (over.scopes ?? [scope('orchestra-ws-aaa-g1.scope')]);
+      return now.filter((s) => !stopped.has(s.unit) || over.stayAfterStop?.includes(s.unit));
     },
     list: (s) => {
       if (stopped.has(s.unit) && !over.stayAfterStop?.includes(s.unit)) return 'gone';
@@ -104,6 +106,8 @@ test('#327: a failing `systemctl stop` and a unit that stays listed are reported
   const fails = world({ stopFails: ['orchestra-ws-aaa-g1.scope'] });
   const r1 = await stopMemberScope('aaa', 'delete', fails.deps);
   assert.match(r1?.kept[0]?.reason ?? '', /systemctl stop failed: Unit not loaded/);
+  assert.equal(r1?.kept.length, 1, 'reported ONCE, and not then waited on as if it had been stopped');
+  assert.deepEqual(r1?.stopped, []);
   const stays = world({ stayAfterStop: ['orchestra-ws-aaa-g1.scope'] });
   const r2 = await stopMemberScope('aaa', 'delete', stays.deps);
   assert.match(r2?.kept[0]?.reason ?? '', /still listed after systemctl stop/);
@@ -118,4 +122,17 @@ test("#327: while the member's keeper is still ALIVE nothing is killed or stoppe
   const r = await stopMemberScope('aaa', 'archive', w.deps);
   assert.deepEqual(w.calls, []);
   assert.match(r?.unknown ?? '', /keeper is still alive/);
+});
+
+test('#327: the units to stop come from a FRESH lookup AFTER the kill — one that appeared meanwhile is stopped, one that vanished is not asked for', async () => {
+  const g1 = scope('orchestra-ws-aaa-g1.scope');
+  const g2 = scope('orchestra-ws-aaa-g2.scope');
+  const appeared = world({ scopesSeq: [[g1], [g1, g2]] });
+  const r1 = await stopMemberScope('aaa', 'delete', appeared.deps);
+  assert.deepEqual(appeared.calls, ['kill', `stop ${g1.unit}`, `stop ${g2.unit}`]);
+  assert.deepEqual(r1?.scopes, [g1.unit, g2.unit]);
+  const vanished = world({ scopesSeq: [[g1, g2], [g1]] });
+  const r2 = await stopMemberScope('aaa', 'delete', vanished.deps);
+  assert.deepEqual(vanished.calls, ['kill', `stop ${g1.unit}`], 'a generation that is gone by the fresh lookup is not stopped');
+  assert.deepEqual(r2?.stopped, [g1.unit]);
 });

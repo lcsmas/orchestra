@@ -93,6 +93,9 @@ test('the host adapter stops ONLY units the member owns and uses systemctl --use
   const host = read('scope-stop-host.ts');
   assert.match(host, /\['--user', 'stop', '--', unit\]/);
   assert.match(host, /ownsUnit: \(unit\) => scopeGenForWorkspace\(scopePrefix\(e\), wsId, unit\) !== null/);
+  assert.match(host, /keeperAlive: \(\) => readTrackedKeeperPid\(wsId\) !== null,/, 'a running member is never stopped under: the keeper-alive precondition reads the tracked keeper');
+  assert.match(host, /killReliquats: \(\) => killReliquats\(wsId, scopeDeps, kill, \{ keeperPid: null, cliPid: null \}\),/, 'the Reliquat kill is #325\'s (identity re-read at signal time), over THIS workspace\'s scope deps');
+  assert.match(host, /catch \(e\) \{\s*log\.warn\(`scope-stop\[\$\{wsId\}\] \(\$\{reason\}\) failed`, e\);\s*return null;/, 'a failed scope stop never blocks the delete / archive / clear / migration that called it');
   assert.doesNotMatch(host, /kill-who|'--all'|reset-failed/);
   assert.equal((host.match(/execFile\(/g) ?? []).length, 1, 'one systemctl call, on a single unit name');
 });
