@@ -281,3 +281,25 @@ test('two kills in one look with ONE unit of credit: [hard, external]; with two:
   assert.deepEqual(kills.slice(2).map((k) => k.level), ['hard', 'hard']);
   mw.stop();
 });
+
+test('re-gate MINOR: two `oom` events, the two kills in two SEPARATE looks ⇒ [hard, hard] — the leftover credit of a look is carried to the NEXT kill', async () => {
+  const w = new World();
+  w.add(12, { comm: 'a', cmdline: 'a', adj: 1000, rssPages: 9000 });
+  w.add(13, { comm: 'b', cmdline: 'b', adj: 1000, rssPages: 8000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watch(w, kills, { hotMs: 10_000, fastMs: 10_000, idleMs: 10_000 });
+  await mw.check();
+  w.events.oom += 2; // the kernel has counted TWO memcg OOM events...
+  await mw.check();
+  assert.equal(kills.length, 0);
+  w.procs.delete(12);
+  w.events.oom_kill += 1; // ...look A sees the first kill
+  await mw.check();
+  assert.deepEqual(kills.map((k) => k.level), ['hard']);
+  w.procs.delete(13);
+  w.events.oom_kill += 1; // ...look B sees the second, with NO new oom event: it spends the credit look A left over
+  await mw.check();
+  assert.deepEqual(kills.map((k) => k.level), ['hard', 'hard'], 'a look must not throw away the credit it did not spend');
+  assert.deepEqual(kills.map((k) => k.command), ['a', 'b']);
+  mw.stop();
+});
