@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 const REAL_HOME = process.env.BR_REAL_HOME ?? os.homedir();
 const HERE_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SUBJECT = path.resolve(process.env.SUBJECT_REPO ?? HERE_REPO); // the tree whose src/ + built CLI the arm drives (--unfixed: the tree BEFORE #331)
-const UNFIXED_SHA = process.env.BR_UNFIXED_SHA ?? 'ecf30294'; // the #325 candidate tip: scope Reliquats exist, browsers are not handled
+const UNFIXED_SHA = process.env.BR_UNFIXED_SHA ?? 'a9bf9d93'; // the #325 tip (on master 2eb13727): scope Reliquats exist, browsers are not handled
 const CHROMIUM = process.env.BR_CHROMIUM ?? '/usr/bin/chromium-browser';
 const WINDOW_MS = 6_000; // N, shortened for the rig (production: 10 min)
 const FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-background-networking'];
