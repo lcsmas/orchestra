@@ -404,3 +404,46 @@ test('#292 fu: a `stopping` leftover (the app died mid-stop) is listed as stoppe
   db.prepare('UPDATE runs SET resume_started_at = ? WHERE id = ?').run(pausedAt + 5, 'W');
   assert.match(renderRunStatus(gatherRunStatus(db, 'W', deps)), /the host is restarting 1 container\(s\) the Pause stopped/);
 });
+
+test('#325: `run status` lists the Reliquats the Pause dure killed — command, pid, start time, start-time ticks — and the ones it could not (alive / refused / left running / unknown)', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops', 'hard');
+  const pausedAt = busPause.getRunPause(db, 'W')!.pausedAt;
+  const k = (pid: number) => ({ pid, startTicks: 1000 + pid, comm: 'chrome', cmd: `/usr/bin/chrome --headless --n=${pid}`, cwd: '/w/rig', startedAt: Date.UTC(2026, 9, 8, 12, 51, 0), scope: 'orchestra-ws-m1-abc.scope', evidence: 'e', signal: 'SIGTERM' as const, outcome: 'exited' as const });
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'm1', pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', reliquats: { scopes: ['orchestra-ws-m1-abc.scope'], killed: [k(500), { ...k(501), signal: 'SIGKILL', outcome: 'survived' }], refused: [{ pid: 7, comm: 'x', cmd: 'x', reason: 'ancestry-unreadable' }], spared: [{ pid: 8, comm: 'claude', cmd: 'claude --print', reason: 'supervisor' }], survivors: [{ pid: 501, comm: 'chrome', cmd: 'chrome --stuck', reason: 'still-alive-after-kill' }], rounds: 2, unknown: 'scope y: cgroup.procs unreadable' } },
+    snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null,
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /Reliquats \(leftover processes of the member's scope orchestra-ws-m1-abc\.scope\): 2 killed/);
+  assert.match(text, /reliquat killed: \/usr\/bin\/chrome --headless --n=500 pid 500 started 2026-10-08T12:51:00\.000Z \(start-time 1500\) cwd \/w\/rig — SIGTERM/);
+  assert.match(text, /pid 501 started .* — SIGKILL — SURVIVED/);
+  assert.match(text, /Reliquats STILL ALIVE: chrome --stuck \(pid 501: still-alive-after-kill\)/);
+  assert.match(text, /Reliquats NOT killed \(identity not provable\): pid 7: ancestry-unreadable/);
+  assert.match(text, /Reliquats left running on purpose: claude --print \(pid 8: supervisor\)/);
+  assert.match(text, /Reliquats UNKNOWN: scope y: cgroup\.procs unreadable/);
+  // a member with no tracked scope prints no Reliquat line
+  const db2 = rig(t);
+  busPause.setRunPause(db2, 'W', true, 'ops', 'hard');
+  records.insertBilan(db2, { runId: 'W', wsId: 'm1', pausedAt: busPause.getRunPause(db2, 'W')!.pausedAt, activity: { surface: 'sdk', memberRun: 'W' }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+  assert.doesNotMatch(renderRunStatus(gatherRunStatus(db2, 'W', deps)), /Reliquats/);
+});
+
+test('#325 review F1/F3: `run status` names a live parent that left the scope (NOT killed) apart from the Reliquat survivors, and marks a planned-only kill as outcome not recorded', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops', 'hard');
+  const pausedAt = busPause.getRunPause(db, 'W')!.pausedAt;
+  const k = (pid: number) => ({ pid, startTicks: 1000 + pid, comm: 'chrome', cmd: `/usr/bin/chrome --n=${pid}`, cwd: '/w/rig', startedAt: Date.UTC(2026, 9, 8, 12, 51, 0), scope: 'orchestra-ws-m1-abc.scope', evidence: 'e', signal: 'SIGTERM' as const, outcome: 'exited' as const });
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'm1', pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', reliquats: { scopes: ['orchestra-ws-m1-abc.scope'], killed: [k(701), { ...k(702), outcome: 'planned' as const }], refused: [], spared: [], rounds: 1,
+      survivors: [{ pid: 700, comm: 'chrome', cmd: '/opt/chromium/chrome --headless=new', reason: 'parent of 1 killed Reliquat (pid 701); it LEFT the scope (now in cgroup app-org.chromium.Chromium-700.scope) and is still alive — NOT killed', kind: 'left-scope-parent' as const }, { pid: 9, comm: 'c', cmd: 'daemon --stuck', reason: 'still-alive-after-kill' }] } },
+    snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null,
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /Processes OUTSIDE the scope, still alive, NOT killed \(parent of a killed Reliquat\): \/opt\/chromium\/chrome --headless=new \(pid 700: parent of 1 killed Reliquat \(pid 701\); it LEFT the scope/);
+  assert.match(text, /Reliquats STILL ALIVE: daemon --stuck \(pid 9: still-alive-after-kill\)/);
+  assert.doesNotMatch(text.split('\n').filter((l) => /Reliquats STILL ALIVE/.test(l)).join('\n'), /pid 700/);
+  assert.match(text, /pid 702 started .* — SIGTERM — PLANNED, outcome not recorded/);
+});

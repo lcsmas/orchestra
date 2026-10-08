@@ -17,6 +17,8 @@ import { pauseOrderFiles } from './pause-douce';
 import { keeperActivityUnknown } from '../shared/pause-douce';
 import { getEventsDir } from './events-spool';
 import { killToolTrees, realKillDeps, stopWithin } from './pause-kill';
+import { killReliquats } from './pause-reliquats';
+import { memberScopeDeps } from './pause-reliquats-scope';
 import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
 import { log } from './logger';
 import { mergeInFlight } from '../shared/open-tools';
@@ -179,6 +181,8 @@ export function buildPauseTrapDeps(): TrapDeps {
     humanTurnInFlight: (m) => sdkHumanTurnInFlight(m.wsId),
     snapshot: snapshotWorktree,
     killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),
+    // #325 (ledger #329 FI-1 v1): the member's Reliquats — processes of its kernel scope outside its session's tree — after the tool trees. null = no tracked scope (switch OFF, human, unsupported host): today's behaviour.
+    killReliquats: (m, opts) => killReliquats(m.wsId, memberScopeDeps(m.wsId), kill, opts),
     stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),
     storeReady: () => store.loadedFromDisk,
   };

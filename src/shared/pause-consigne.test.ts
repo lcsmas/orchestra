@@ -332,3 +332,28 @@ test('stripControl removes the Unicode TAG block (U+E0000-E007F, invisible text 
   assert.equal(stripControl('p\u202eq\u200br\u0007s'), 'p q r s', 'bidi override, zero-width space, BEL');
   assert.equal(stripControl('plain text'), 'plain text');
 });
+
+// #325 — the Reliquats the Pause dure killed in the member's scope: listed in the Consigne (command, pid, start time), never re-run; earlier Pauses' join.
+const RQ = (pid: number, cmd = `/usr/bin/chrome --headless --n=${pid}`) => ({ pid, startTicks: 1000 + pid, comm: 'chrome', cmd, cwd: '/w', startedAt: 1_700_000_000_000, scope: 'orchestra-ws-m1-abc.scope', evidence: 'e', signal: 'SIGTERM' as const, outcome: 'exited' as const });
+const RQ_BILAN: BilanLike = { ...BILAN, activity: { ...BILAN.activity!, reliquats: { scopes: ['orchestra-ws-m1-abc.scope'], killed: [RQ(500), RQ(501)], refused: [], spared: [], survivors: [], rounds: 1 } } };
+
+test('#325 CONSIGNE lists the killed Reliquats (command, pid, start time) as LISTED, NOT re-run — in their own section, apart from the tool commands', () => {
+  const text = renderConsigne(consigneFromBilan({ ...input, bilan: RQ_BILAN }));
+  assert.match(text, /Leftover processes \(Reliquats\) the Pause killed in your scope \(2\)/);
+  assert.match(text, /\/usr\/bin\/chrome --headless --n=500\s+\(pid 500, started 2023-11-14T22:13:20\.000Z/);
+  assert.match(text, /LISTED, NOT re-run/);
+  assert.match(text, /Commands killed by the Pause \(\d+\) — LISTED, NOT re-run/, 'the tool commands keep their own section');
+  assert.doesNotMatch(renderConsigne(consigneFromBilan(input)), /Reliquats/, 'a member with no scope sees no Reliquat line at all');
+});
+
+test('#325 EARLIER Pauses the member was never released from: their Reliquats join the list (merged by identity) and a note says so', () => {
+  const c = consigneFromBilan({ ...input, bilan: RQ_BILAN, earlier: [{ pausedAt: 1_789_000_000_000, snapshotRef: 'r0', killed: [], reliquats: [RQ(500), RQ(400, '/usr/bin/chrome --old')] }] });
+  assert.deepEqual(c.reliquats!.killed.map((k) => k.pid).sort(), [400, 500, 501]);
+  assert.ok(c.notes.some((n) => /EARLIER Pause .* also killed 2 leftover process\(es\) \(Reliquats\)/.test(n)));
+  assert.match(renderConsigne(c), /Reliquats\) the Pause killed in your scope \(3\)/);
+});
+
+test('#325 the coordinator\'s wave line counts the Reliquats a member lost (a member with none reads exactly as before)', () => {
+  assert.match(renderWaveLine(consigneFromBilan({ ...input, bilan: RQ_BILAN })), /2 leftover process\(es\) \(Reliquats\) killed/);
+  assert.doesNotMatch(renderWaveLine(consigneFromBilan(input)), /Reliquats/);
+});
