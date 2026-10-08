@@ -1153,7 +1153,7 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/container-accounting.ts",
-    "find": "await api.listContainers({ status: ['running'] })",
+    "find": "await api.listContainers({ status: ['running', 'paused'] })",
     "to": "await api.listContainers({})"
    }
   ]
