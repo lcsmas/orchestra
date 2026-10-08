@@ -162,6 +162,8 @@ const strays = () => {
 const scratchLeft = () => { try { return fs.readdirSync(path.join(os.homedir(), '.cache', 'e2e-rw')).length; } catch { return 0; } };
 
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
+// a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
+for (const m of MUTANTS) if (m.file.startsWith('src/shared/') || m.file.startsWith('src/cli/')) m.cli = true;
 if (args.includes('--check-anchors')) {
   let bad = 0;
   for (const m of MUTANTS) {
