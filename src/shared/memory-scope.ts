@@ -291,7 +291,8 @@ export interface InferKillsInput {
   /** Keys alive NOW. */
   aliveKeys: ReadonlySet<string>;
   /** Counter movement since the previous look. */
-  delta: { oomKill: number; oom: number };
+  /** `oomKill` = kills this look saw; `hardCredit` = how many of them the scope's OWN limit accounts for (the carried `oom` credit, see memory-watch.ts) — the first `hardCredit` records are `hard`, the rest `external`. */
+  delta: { oomKill: number; hardCredit: number };
   maxBytes: number | null;
   unit: string;
   seqNext: number;
@@ -312,7 +313,6 @@ export function inferKillRecords(a: InferKillsInput): MemKillRecord[] {
     .filter(([k]) => !a.aliveKeys.has(k))
     .map(([, s]) => s)
     .sort((x, y) => estimateOomBadness(y, totalPages) - estimateOomBadness(x, totalPages) || y.rssPages - x.rssPages);
-  const level: MemKillRecord['level'] = a.delta.oom > 0 ? 'hard' : 'external';
   const out: MemKillRecord[] = [];
   for (let i = 0; i < a.delta.oomKill; i++) {
     const v = vanished[i];
@@ -320,7 +320,7 @@ export function inferKillRecords(a: InferKillsInput): MemKillRecord[] {
     out.push({
       seq: a.seqNext + i,
       at: a.nowMs,
-      level,
+      level: i < a.delta.hardCredit ? 'hard' : 'external',
       command: v ? describeCommand(v.cmdline, v.comm) : null,
       pid: v ? v.pid : null,
       rssBytes: v ? v.rssPages * page : null,

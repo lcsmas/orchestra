@@ -40,7 +40,7 @@ if (process.env.MC_INSIDE !== '1') {
     // the pid namespace guarantees nothing outside survives; still print what is visible with the arm's marker
     let left = 0;
     for (const n of fs.readdirSync('/proc')) { if (!/^\d+$/.test(n)) continue; try { if (fs.readFileSync(`/proc/${n}/environ`, 'latin1').includes(root)) left++; } catch { /* gone */ } }
-    for (const l of (r.stderr ?? '').split('\n')) if (/^ {2}(ok  |FAIL) /.test(l)) console.log(l);
+    for (const l of (r.stderr ?? '').split('\n')) if (/^ {2}(ok  |FAIL|note:) ?/.test(l)) console.log(l);
     console.log(`${res.ok && left === 0 ? 'PASS' : 'FAIL'} ${a} — ${res.detail ?? res.error ?? ''}`);
     console.log(`SURVIVORS arm=${a} procs=${left}`);
     if (!(res.ok && left === 0)) failed++;
@@ -88,7 +88,13 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const env = { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: path.join(process.env.HOME, '.claude'), ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, ANTHROPIC_API_KEY: 'sk-ant-api03-memory-cap-fake', SHELL: process.env.SHELL, LANG: 'C.UTF-8', TERM: 'dumb' };
 if (arm === 'prefix_on') env.CLAUDE_CODE_SHELL_PREFIX = wrapper;
-const cli = spawn('claude', ['-p', 'run it', '--output-format', 'json', '--dangerously-skip-permissions', '--model', 'sonnet', '--max-turns', '4'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+// What ELSE the CLI starts besides Bash tool commands: a stdio MCP server (+ a grandchild it spawns) and a command hook. Each records its own oom_score_adj into ADJ_OUT.
+const adjOut = path.join(root, 'adj.log');
+env.ADJ_OUT = adjOut;
+fs.writeFileSync(path.join(process.env.HOME, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: `echo HOOK-ADJ=$(cat /proc/self/oom_score_adj) >> ${adjOut}` }] }] } }));
+const mcpConfig = path.join(root, 'mcp.json');
+fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { 'adj-probe': { command: process.execPath, args: [path.join(HERE_REPO, 'scripts', 'memory-cap', 'adj-mcp-server.cjs')], env: { ADJ_OUT: adjOut } } } }));
+const cli = spawn('claude', ['-p', 'run it', '--output-format', 'json', '--dangerously-skip-permissions', '--model', 'sonnet', '--max-turns', '4', '--mcp-config', mcpConfig, '--strict-mcp-config'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 let cliAdj = null;
 const adjTimer = setInterval(() => { try { cliAdj = Number(fs.readFileSync(`/proc/${cli.pid}/oom_score_adj`, 'utf8')); } catch { /* gone */ } }, 30);
 let so = '', se = ''; cli.stdout.on('data', (d) => (so += d)); cli.stderr.on('data', (d) => (se += d));
@@ -104,7 +110,14 @@ check(`the Bash tool command ran at oom_score_adj ${ARMS[arm].expectAdj}`, toolA
 check('the exit status passes through the wrapper (exit 3 reaches the model)', /Exit code 3/.test(second), '');
 check('stderr passes through the wrapper', second.includes('to-stderr'), '');
 check('the CLI itself stays at oom_score_adj 0 (only its tool commands are raised)', cliAdj === 0, `cli adj=${cliAdj}`);
+const adjLog = fs.existsSync(adjOut) ? fs.readFileSync(adjOut, 'utf8') : '';
+const seen = (k) => [...adjLog.matchAll(new RegExp(`${k}=(\\d+)`, 'g'))].map((m) => Number(m[1]));
+console.error(`  note: MEASURED adj of what else the CLI starts — ${JSON.stringify({ mcpServer: seen('MCP-ADJ'), mcpGrandchild: seen('MCP-CHILD-ADJ'), hook: seen('HOOK-ADJ') })}`);
+// MEASURED (claude 2.1.291): the CLI starts stdio MCP servers and command hooks through the same prefix, so they — and what they spawn — carry the raise too (not only Bash trees).
+check(`a stdio MCP server runs at oom_score_adj ${ARMS[arm].expectAdj}`, seen('MCP-ADJ').length >= 1 && seen('MCP-ADJ').every((v) => v === ARMS[arm].expectAdj), JSON.stringify(seen('MCP-ADJ')));
+check(`...and so does the process that MCP server spawns`, seen('MCP-CHILD-ADJ').length >= 1 && seen('MCP-CHILD-ADJ').every((v) => v === ARMS[arm].expectAdj), JSON.stringify(seen('MCP-CHILD-ADJ')));
+check(`a command hook runs at oom_score_adj ${ARMS[arm].expectAdj}`, seen('HOOK-ADJ').length >= 1 && seen('HOOK-ADJ').every((v) => v === ARMS[arm].expectAdj), JSON.stringify(seen('HOOK-ADJ')));
 check('claude exited cleanly', rc === 0, `rc=${rc} ${se.slice(-120)}`);
 for (const c of checks) console.error(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}${c.detail ? `  [${c.detail}]` : ''}`);
-console.log(JSON.stringify({ arm, ok: checks.every((c) => c.ok), detail: `tool adj=${toolAdj} cli adj=${cliAdj}`, failed: checks.filter((c) => !c.ok).map((c) => c.name) }));
+console.log(JSON.stringify({ arm, ok: checks.every((c) => c.ok), detail: `tool adj=${toolAdj} cli adj=${cliAdj} mcp=${seen('MCP-ADJ')} hook=${seen('HOOK-ADJ')}`, failed: checks.filter((c) => !c.ok).map((c) => c.name) }));
 process.exit(0);

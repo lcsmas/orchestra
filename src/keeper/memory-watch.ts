@@ -61,6 +61,9 @@ export function detectPageSize(read: (p: string) => string = (p) => fs.readFileS
 }
 /** The kernel bumps `oom_kill` just BEFORE the victim dies: when a look sees the counter move but fewer members gone than kills, it waits this long and looks once more. */
 const VICTIM_DEATH_GRACE_MS = 30;
+/** The kernel counts the memcg OOM event (`oom`) BEFORE it counts the kill (`oom_kill`): a look may fall between the two. The `oom` credit therefore CARRIES to the look that sees the kill; one that
+ *  never produces a kill (nothing to kill) expires after this long, so it cannot later turn an outside-OOM kill into a «hard» one. */
+const OOM_CREDIT_TTL_MS = 10_000;
 const MAX_MEMBERS = 400;
 
 export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
@@ -127,6 +130,8 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
 
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
   let busy = false;
+  /** Timestamps of `oom` events not yet attributed to a kill (the carried credit, see {@link OOM_CREDIT_TTL_MS}). */
+  let oomCredits: number[] = [];
 
   /**
    * ONE look. Order matters: the members are snapshotted FIRST and `memory.events` read AFTER — the kernel bumps `oom_kill` before the victim dies, so a death this
@@ -142,18 +147,26 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
       let cur = parseMemoryEvents(readSafe(eventsFile) ?? '');
       if (cur && last && cur.oomKill > last.oomKill) {
         const delta = cur.oomKill - last.oomKill;
-        let gone = [...before.keys()].filter((k) => !alive.has(k));
+        const gone = [...before.keys()].filter((k) => !alive.has(k));
         if (gone.length < delta) {
           await sleep(VICTIM_DEATH_GRACE_MS); // the counter moved just before the victim died
           if (stopped) return;
           alive = snapshot();
           cur = parseMemoryEvents(readSafe(eventsFile) ?? '') ?? cur;
-          gone = [...before.keys()].filter((k) => !alive.has(k));
         }
+      }
+      // Level credit (F1 of the gate): every `oom` event this look saw joins the carried credit; each kill spends one. A look that sees the `oom` bump but not yet the kill leaves the credit for the next.
+      const t = now();
+      if (cur && last) for (let i = 0; i < cur.oom - last.oom; i++) oomCredits.push(t);
+      oomCredits = oomCredits.filter((at) => t - at <= OOM_CREDIT_TTL_MS);
+      if (cur && last && cur.oomKill > last.oomKill) {
+        const killsNow = cur.oomKill - last.oomKill;
+        const hardCredit = Math.min(killsNow, oomCredits.length);
+        oomCredits = oomCredits.slice(hardCredit); // the oldest credits are spent
         const made = inferKillRecords({
           before,
           aliveKeys: alive,
-          delta: { oomKill: cur.oomKill - last.oomKill, oom: cur.oom - last.oom },
+          delta: { oomKill: killsNow, hardCredit },
           maxBytes: maxBytes(),
           unit: o.unit,
           seqNext: seq,

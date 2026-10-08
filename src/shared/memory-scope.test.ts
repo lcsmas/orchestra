@@ -175,7 +175,7 @@ test('inferKillRecords: names the vanished process the kernel would have chosen 
   const cli = snap(1, 'claude', 150, 0, 'claude --output-format stream-json');
   const hog = snap(2, 'python3', 400, OOM_ADJ_TOOLS, 'python3 -c big_alloc()');
   const done = snap(3, 'sleep', 0, OOM_ADJ_TOOLS, 'sleep 1');
-  const recs = inferKillRecords({ before: world(cli, hog, done), aliveKeys: keys(cli), delta: { oomKill: 1, oom: 1 }, maxBytes: 300 * MB, unit: 'u.scope', seqNext: 7, nowMs: 5 });
+  const recs = inferKillRecords({ before: world(cli, hog, done), aliveKeys: keys(cli), delta: { oomKill: 1, hardCredit: 1 }, maxBytes: 300 * MB, unit: 'u.scope', seqNext: 7, nowMs: 5 });
   assert.equal(recs.length, 1);
   assert.equal(recs[0].seq, 7);
   assert.equal(recs[0].command, 'python3 -c big_alloc()');
@@ -187,7 +187,7 @@ test('inferKillRecords: names the vanished process the kernel would have chosen 
 
 test('inferKillRecords: nothing vanished ⇒ the kill is still recorded, with command null (never a made-up name)', () => {
   const cli = snap(1, 'claude', 150, 0);
-  const recs = inferKillRecords({ before: world(cli), aliveKeys: keys(cli), delta: { oomKill: 1, oom: 1 }, maxBytes: 300 * MB, unit: 'u.scope', seqNext: 1, nowMs: 1 });
+  const recs = inferKillRecords({ before: world(cli), aliveKeys: keys(cli), delta: { oomKill: 1, hardCredit: 1 }, maxBytes: 300 * MB, unit: 'u.scope', seqNext: 1, nowMs: 1 });
   assert.equal(recs.length, 1);
   assert.equal(recs[0].command, null);
   assert.equal(recs[0].pid, null);
@@ -196,20 +196,21 @@ test('inferKillRecords: nothing vanished ⇒ the kill is still recorded, with co
 test('inferKillRecords: no counter movement ⇒ no record (a process that merely exited is not a kill); N kills ⇒ N records with consecutive seq', () => {
   const a = snap(2, 'a', 100, OOM_ADJ_TOOLS);
   const b = snap(3, 'b', 90, OOM_ADJ_TOOLS);
-  assert.deepEqual(inferKillRecords({ before: world(a), aliveKeys: keys(), delta: { oomKill: 0, oom: 0 }, maxBytes: 1, unit: 'u', seqNext: 1, nowMs: 1 }), []);
-  const two = inferKillRecords({ before: world(a, b), aliveKeys: keys(), delta: { oomKill: 2, oom: 1 }, maxBytes: 300 * MB, unit: 'u', seqNext: 4, nowMs: 1 });
+  assert.deepEqual(inferKillRecords({ before: world(a), aliveKeys: keys(), delta: { oomKill: 0, hardCredit: 0 }, maxBytes: 1, unit: 'u', seqNext: 1, nowMs: 1 }), []);
+  const two = inferKillRecords({ before: world(a, b), aliveKeys: keys(), delta: { oomKill: 2, hardCredit: 1 }, maxBytes: 300 * MB, unit: 'u', seqNext: 4, nowMs: 1 });
   assert.deepEqual(two.map((r) => [r.seq, r.command]), [[4, 'a'], [5, 'b']]);
+  assert.deepEqual(two.map((r) => r.level), ['hard', 'external'], 'two kills, one unit of hard credit: the credit is spent per kill, never smeared over all of them');
 });
 
 test('inferKillRecords: an OOM kill that did not come from the scope\'s own limit is labelled external, not hard', () => {
   const a = snap(2, 'a', 100, OOM_ADJ_TOOLS);
-  assert.equal(inferKillRecords({ before: world(a), aliveKeys: keys(), delta: { oomKill: 1, oom: 0 }, maxBytes: 300 * MB, unit: 'u', seqNext: 1, nowMs: 1 })[0].level, 'external');
+  assert.equal(inferKillRecords({ before: world(a), aliveKeys: keys(), delta: { oomKill: 1, hardCredit: 0 }, maxBytes: 300 * MB, unit: 'u', seqNext: 1, nowMs: 1 })[0].level, 'external');
 });
 
 test('a pid reused after the kill does not hide the victim (identity is pid + start time)', () => {
   const victim = snap(2, 'python3', 400, OOM_ADJ_TOOLS);
   const reused = { ...snap(2, 'bash', 1, 0), startTicks: 99999 };
-  const recs = inferKillRecords({ before: world(victim), aliveKeys: keys(reused), delta: { oomKill: 1, oom: 1 }, maxBytes: 300 * MB, unit: 'u', seqNext: 1, nowMs: 1 });
+  const recs = inferKillRecords({ before: world(victim), aliveKeys: keys(reused), delta: { oomKill: 1, hardCredit: 1 }, maxBytes: 300 * MB, unit: 'u', seqNext: 1, nowMs: 1 });
   assert.equal(recs[0].command, 'python3');
 });
 
