@@ -35,6 +35,7 @@ const ARMS = {
   monitor: { mustRedden: ['pipe_orphan_stopped_at_once', 'pipe_group_dead', 'port_orphan_stopped_after_window', 'port_group_dead', 'client_gone_then_stopped_after_window', 'owner_told_once_per_pass', 'counter_counts_each_stop', 'stopped_browsers_leave_no_crashpad_handler', 'pipe_group_signalled'] },
   pause_dure: { mustRedden: ['pause_stops_the_orphaned_browsers', 'pause_group_dead', 'bilan_lists_the_browsers', 'bilan_lists_the_spared_client', 'run_status_lists_them', 'consigne_shows_them', 'reprise_relaunches_nothing'] },
   // the verifier's blocker on @fb351c39: a Chromium main started from an ordinary SESSION env (DBUS_SESSION_BUS_ADDRESS) rewrites its title — /proc cmdline is ONE string
+  default_sandbox: { unfixedSha: VERIFIER_UNFIXED_SHA, mustRedden: [] }, // the reviewer's B1 hypothesis (no --no-sandbox ⇒ one-string cmdline) — MEASURED by this arm: expectation filled in from its first run
   session_env: { unfixedSha: VERIFIER_UNFIXED_SHA, mustRedden: ['session_env_pipe_orphan_stopped_at_once', 'session_env_pipe_group_signalled', 'session_env_port_orphan_stopped_after_window', 'session_env_owner_told_per_pass'] },
 };
 const ARM = process.argv[2] ?? '';
@@ -224,9 +225,9 @@ async function mainOf(prof) {
   return found;
 }
 /** An ORPHANED port-mode browser: started by a shell that exits at once, in its own session (the incident's shape). `extra` goes before the profile flag. */
-async function orphanPort(prof, { profileFlag = true, env = benv } = {}) {
+async function orphanPort(prof, { profileFlag = true, env = benv, flags = FLAGS } = {}) {
   fs.mkdirSync(prof, { recursive: true });
-  execFileSync('sh', ['-c', `setsid ${CHROMIUM} ${FLAGS.join(' ')} --remote-debugging-port=0 ${profileFlag ? `--user-data-dir=${q(prof)}` : ''} about:blank </dev/null >/dev/null 2>&1 &`], { env, encoding: 'utf8' });
+  execFileSync('sh', ['-c', `setsid ${CHROMIUM} ${flags.join(' ')} --remote-debugging-port=0 ${profileFlag ? `--user-data-dir=${q(prof)}` : ''} about:blank </dev/null >/dev/null 2>&1 &`], { env, encoding: 'utf8' });
   const main = profileFlag ? await mainOf(prof) : await (async () => { let f = null; await waitFor(() => { f = allProcs().find((p) => cmdOf(p.pid).some((x) => x.includes('--remote-debugging-port=0')) && cmdOf(p.pid).includes('--no-first-run') && !cmdOf(p.pid).some((x) => x.startsWith('--type=')) && p.ppid <= 1 && !launched.includes(idOf(p)) && (readSafe(`/proc/${p.pid}/environ`) ?? '').includes(`BROWSER_RIG=${MARK}`)) ?? null; return !!f; }, 20_000); if (!f) throw new Error('default-profile browser did not start'); launched.push(idOf(f)); return f; })();
   if (profileFlag) await waitFor(() => portOf(prof) !== null, 20_000);
   await sleep(1500); // let the children (zygote, gpu, renderer, network) appear
@@ -382,6 +383,20 @@ try {
     check('session_env_owner_told_per_pass: the owning member got ONE bus status per pass that stopped something (2: the pipe orphan, then the port orphan)', rows.length === 2 && rows.every((r) => /stopped 1 orphaned headless browser\(s\)/.test(r.body)), JSON.stringify(rows.map((r) => r.body.slice(0, 60))));
     check('the profile directories are left in place (stopped, never deleted)', profilesExist(pPipe, pPort));
     detail = '2 real Chromium started from the SESSION env (one-string cmdline); the pipe one stopped at once, the port one after N';
+  } else if (ARM === 'default_sandbox') {
+    // The REVIEWER's hypothesis on B1 (c/6068741994): a Chromium with the DEFAULT sandbox (no --no-sandbox — Puppeteer, chrome-devtools-mcp, a hand launch) is also read as ONE string. Launched with the MINIMAL env, so the
+    // DBUS cause (the verifier's measurement) is excluded: this arm measures the sandbox variable alone, and must stop the browser either way.
+    const pPort = profile(ID.a, 'dsandbox');
+    const dPort = await orphanPort(pPort, { flags: FLAGS.filter((f) => f !== '--no-sandbox') });
+    const id = idOf(dPort);
+    const entries = cmdOf(dPort.pid).length;
+    check('premise: a REAL headless Chromium with the DEFAULT sandbox (no --no-sandbox) is alive and orphaned', aliveId(id) && !cmdOf(dPort.pid).join(' ').includes('--no-sandbox') && (statOf(dPort.pid).ppid <= 1 || statOf(statOf(dPort.pid).ppid)?.comm === 'systemd'), `${id} entries=${entries}`);
+    await tick();
+    check('the port-mode orphan is NOT stopped before the idle window (survives pass 1)', aliveId(id), id);
+    await sleep(WINDOW_MS + 600);
+    await tick();
+    check('default_sandbox_port_orphan_stopped_after_window: the port-mode orphan of a default-sandbox Chromium is stopped once N has passed', !aliveId(id), id);
+    detail = `default sandbox, minimal env: main cmdline entries=${entries}`;
   } else if (ARM === 'pause_dure') {
     const pPipe = profile(ID.a, 'pipe'), pPort = profile(ID.a, 'port'), pClient = profile(ID.a, 'client'), pAlive = profile(ID.a, 'alive'), pOut = path.join(base, 'elsewhere', `${MARK}-out`), pB = profile(ID.b, 'b-pipe');
     const aPipe = await orphanPipe(pPipe);
