@@ -5372,6 +5372,11 @@ button.danger-primary:active {
 .res-chip.login { color: var(--yellow); border-color: rgba(255, 200, 87, 0.4); }
 /* #293 (D-pick4 A): the container chip on a workspace row — count in the label, the measured figure in the title (it is already part of the row's memory figure). */
 .res-chip.docker { color: var(--accent); border-color: rgba(110, 168, 255, 0.4); text-transform: none; letter-spacing: 0; }
+/* #328 (D-Q3 option A): the Reliquat chip — leftover processes of the workspace. Yellow: a genuine problem state (like low free space), hidden at 0. */
+.res-chip.reliquat { color: var(--yellow); border-color: rgba(255, 200, 87, 0.5); text-transform: none; letter-spacing: 0; }
+.res-proc.reliquat .res-proc-comm { color: var(--yellow); }
+/* Not a problem state: « Reliquats not tracked » is information — dim, never yellow. */
+.res-reliquats-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
 /* The dim line under the Agents table: containers nobody owns (created during a live run without the stamp, or orphaned by a deleted workspace). Status colour only here — a genuine problem state. */
 .res-unattributed {
   margin: 6px 12px 2px;

@@ -103,15 +103,15 @@ const MUTANTS = [
   { id: 'M71c_unmeasured_view_adds_bytes', file: SHD, find: "if (!view || !wsId || view.docker !== 'ok') return 0;", to: 'if (!view || !wsId) return 0;', expect: ['C9 viewBytesFor'], arms: [] },
   { id: 'M71_row_figure_without_containers', file: RS2, find: '(remote ? 0 : viewBytesFor(containers, key))', to: '0', expect: ['G1 groupSessionsByWorkspace'], arms: ['known_magnitude'] },
   { id: 'M71b_remote_row_gets_local_containers', file: RS2, find: '(remote ? 0 : viewBytesFor(containers, key))', to: 'viewBytesFor(containers, key)', expect: ['G2 groupSessionsByWorkspace'], arms: [] },
-  { id: 'M71c_page_ignores_the_accounting', file: VIEW, find: 'groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers);', to: 'groupSessionsByWorkspace(snap?.sessions ?? []);', expect: ['W5 the Resources page'], arms: [] },
+  { id: 'M71c_page_ignores_the_accounting', file: RS2, find: 'return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, snap?.members);', to: 'return groupSessionsByWorkspace(snap?.sessions ?? [], undefined, snap?.members);', expect: ['W5 the Resources page'], arms: [] },
   // ── option A (D-pick4): structured agents on the page, the chip, the container-only row, the unattributed line ──
   { id: 'M74_sdk_session_not_classified', file: RS2, find: "if (id.endsWith(':sdk')) return { kind: 'sdk', workspaceId: id.slice(0, -4) };", to: '', expect: ['G4 (D-pick4 A)'], arms: [] },
-  { id: 'M75_no_container_only_rows', file: RS2, find: "if (a.count > 0 && !byWs.has(a.wsId)) rows.push(", to: "if (false && !byWs.has(a.wsId)) rows.push(", expect: ['G3 (D-pick4 A)'], arms: [] },
+  { id: 'M75_no_container_only_rows', file: RS2, find: "if (a.count > 0 && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId)) rows.push(", to: "if (false && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId)) rows.push(", expect: ['G3 (D-pick4 A)'], arms: [] },
   { id: 'M76_chip_when_docker_down', file: RS2, find: "const a = containers?.docker === 'ok' ? containers.attributed.find((x) => x.wsId === key) : undefined;", to: 'const a = containers ? containers.attributed.find((x) => x.wsId === key) : undefined;', expect: ['G3 (D-pick4 A)'], arms: [] },
   { id: 'M78_dead_keeper_gets_a_row', file: RS2, find: 'if (s.procCount > 0) out.push(s);', to: 'out.push(s);', expect: ['G5 (D-pick4 A)'], arms: [] },
   { id: 'M80b_chip_title_drops_unmeasured', file: SHD, find: "if (c.unmeasured >= c.count) return `${n} · not measured`;", to: '', expect: ['C18 containersChipTitle'], arms: [] },
   { id: 'M82b_unattributed_line_not_rendered', file: VIEW, find: 'warning={unattributedWarning(snap?.containers)}', to: 'warning={null}', expect: ['W8 (D-pick4 A)'], arms: [] },
-  { id: 'M83b_container_chip_not_rendered', file: VIEW, find: '<SessionChips sessions={row.sessions} containers={row.containers} />', to: '<SessionChips sessions={row.sessions} />', expect: ['W8 (D-pick4 A)'], arms: [] },
+  { id: 'M83b_container_chip_not_rendered', file: VIEW, find: '<SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} />', to: '<SessionChips sessions={row.sessions} reliquats={row.reliquats} />', expect: ['W8 (D-pick4 A)'], arms: [] },
   { id: 'M72_busstatus_without_containers', file: HK, find: '              containers: containersView,\n', to: '', expect: ['W6 /busStatus'], arms: [] },
   // ── the LEAD's memory escalation (FI-3.4) + verifier seat 2's two #289 pins (A21, C05) ──
   { id: 'M80_alert_row_always_zero', file: AHOST, find: 'unattributedContainers: () => getContainerAccounting().unattributed.count,', to: 'unattributedContainers: () => 0,', expect: ['WIRING'], arms: ['escalation_counts_it'] },

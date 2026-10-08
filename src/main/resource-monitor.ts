@@ -19,6 +19,8 @@ import { getBus } from './bus';
 import { earliestLiveFleetRunStart, runKnownIn, workspaceKnownIn, type ContainerWindowDeps } from './container-window';
 import { getContainerAccounting, realContainerAccountingDeps, refreshContainerAccounting } from './container-accounting';
 import { accountingView, type ContainerAccountingView } from '../shared/container-accounting';
+import { currentMemberMemory } from './member-memory-host';
+import type { MemberMemoryReport } from '../shared/member-memory';
 import { hostPageSize, onPageSizeFallback } from './host-page-size';
 import { parseMemUsedBytes } from '../shared/memory-guard';
 import {
@@ -32,6 +34,7 @@ import {
   classifySurvivors,
   decideDuplicateReap,
   decideReap,
+  decideReliquatWarnings,
   decideThresholdWarnings,
   firstSampleAt,
   isKeeperCmdline,
@@ -129,6 +132,9 @@ export interface ResourceMonitorDeps {
   containerView?(): ContainerAccountingView | null;
   /** #293: how long a tick waits for the container pass (default {@link CONTAINER_PASS_BUDGET_MS}); a rig shortens it to drive the overrun path. */
   containerBudgetMs?: number;
+  /** #328: each member's memory read from its kernel scope + live Reliquats (FI-1). Optional like the container dep: a deps object without it writes no `members` block (every existing rig);
+   *  only `productionDeps()` installs it, so a rig calling `sampleTick()` never reads the host's cgroups. */
+  memberMemory?(): MemberMemoryReport | null;
 }
 
 /** total − MemAvailable from /proc/meminfo; null when unreadable — never a fabricated figure. */
@@ -441,6 +447,7 @@ export function productionDeps(): ResourceMonitorDeps {
       await refreshContainerAccounting(cad);
     },
     containerView: () => accountingView(getContainerAccounting()),
+    memberMemory: () => currentMemberMemory({ fresh: true }),
   };
 }
 
@@ -453,6 +460,17 @@ async function withBudget(p: Promise<unknown>, ms: number): Promise<'done' | 'bu
     return await Promise.race([p.then(() => 'done' as const), budget]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** #328: the scope reading for this line; a failing read leaves the line without it (and one WARN), never fails the tick. */
+function readMembers(d: ResourceMonitorDeps): MemberMemoryReport | undefined {
+  if (!d.memberMemory) return undefined;
+  try {
+    return d.memberMemory() ?? undefined;
+  } catch (e) {
+    d.warn('resources: member scope read failed — this line carries no member figures', e);
+    return undefined;
   }
 }
 
@@ -497,16 +515,18 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
       electron,
       reapedWorkspaceIds,
       containers: d.containerView?.() ?? undefined,
+      members: readMembers(d),
     },
     d.statusFor,
   );
   d.appendLine(line);
 
-  for (const w of decideThresholdWarnings(line.sessions, electron)) {
+  for (const w of [...decideThresholdWarnings(line.sessions, electron), ...decideReliquatWarnings(line.members)]) {
     const val = w.kind.endsWith('rss')
       ? `${(w.value / (1024 * 1024)).toFixed(0)} MB`
       : `${w.value.toFixed(0)}% cpu`;
-    d.warn(`resources: ${w.kind} over threshold — ${w.subject} (pid ${w.pid}) at ${val} (advisory, not killed)`);
+    if (w.kind === 'reliquat-rss') d.warn(`resources: reliquat-rss over threshold — workspace ${w.subject}: ${w.count} live Reliquat${w.count === 1 ? '' : 's'} hold ${val} RSS outside its process tree (advisory, not killed)`);
+    else d.warn(`resources: ${w.kind} over threshold — ${w.subject} (pid ${w.pid}) at ${val} (advisory, not killed)`);
   }
   return line;
 }

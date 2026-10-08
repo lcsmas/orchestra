@@ -189,7 +189,7 @@ test('parseProcStatLine: RSS = stat pages × the PAGE SIZE it is given (a 16 KB 
 
 // ─── #293: the page's per-workspace rows fold the attributed containers into the EXISTING memory figure ───
 
-import { groupSessionsByWorkspace, type SessionResourceStat } from './resources.ts';
+import { groupSessionsByWorkspace, groupSnapshot, type SessionResourceStat } from './resources.ts';
 import { accountingView as cAccountingView, buildAccounting as cBuildAccounting, emptyAccounting as cEmptyAccounting } from './container-accounting.ts';
 
 const MBg = 1024 * 1024;
@@ -260,4 +260,79 @@ test('G5 (D-pick4 A) aggregateKeeperSessions: one `<wsId>:sdk` session per LIVE 
   const both = aggregateKeeperSessions([roots[1]], [99], table, cpu);
   assert.deepEqual([both.length, both[0]?.ptyId, both[0]?.memBytes], [1, 'ws-pty:sdk', 340 * MBg]);
   assert.equal(aggregateKeeperSessions([roots[1]], [], table, cpu).length, 1);
+});
+
+// ─── #328: a scope-tracked member's row reads the SCOPE (sees a detached process); an untracked one keeps the tree figure ───
+
+import { buildMemberMemoryReport, memberViewFrom } from './member-memory.ts';
+
+const rd = (currentMb: number | null, procs: Array<{ pid: number; startTicks: number; rssBytes: number; role: string }> | null, keeperPid: number | null = 1) => ({ unit: 'u', gen: 'k', currentBytes: currentMb === null ? null : currentMb * MBg, procs, keeperPid });
+const rep = (...views: ReturnType<typeof memberViewFrom>[]) => buildMemberMemoryReport(1, views, [], null);
+
+test('G6 (#328) a tracked member\'s row memory = the scope meter (which holds the keeper tree AND a detached Reliquat) + the PTY sessions outside the scope; the `sdk` tree is not added twice; the Reliquat count rides on the row', () => {
+  const members = rep(memberViewFrom('ws-a', [rd(1100, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'cli' }, { pid: 9, startTicks: 9, rssBytes: 400 * MBg, role: 'reliquat', comm: 'chrome' }])]));
+  const sdk = sess({ ptyId: 'ws-a:sdk', kind: 'sdk', memBytes: 600 * MBg });
+  const run = sess({ ptyId: 'ws-a:run', kind: 'run', memBytes: 20 * MBg });
+  const withScope = groupSessionsByWorkspace([sdk, run], null, members).rows[0];
+  const master = groupSessionsByWorkspace([sdk, run], null).rows[0]; // the unfixed arm: no members → the tree walk
+  assert.equal(master.memBytes, 620 * MBg);
+  assert.equal(withScope.memBytes, 1120 * MBg);
+  assert.deepEqual(withScope.reliquats, { count: 1, bytes: 400 * MBg, partial: false, procs: [{ pid: 9, comm: 'chrome', rssBytes: 400 * MBg }] });
+  assert.equal(master.reliquats, null);
+});
+
+test('G7 (#328) the scope figure and the container fold compose (scope + containers); a member NOT in the report, a remote row and a meter-unreadable member keep the pre-#328 figure', () => {
+  const view = cAccountingView(cBuildAccounting([{ wsId: 'ws-a', bytes: 700 * MBg }], [], 1));
+  const members = rep(memberViewFrom('ws-a', [rd(1000, [])]), memberViewFrom('ws-u', [rd(null, null)]));
+  assert.equal(groupSessionsByWorkspace([sess({ kind: 'sdk', ptyId: 'ws-a:sdk' })], view, members).rows[0].memBytes, 1700 * MBg);
+  assert.equal(groupSessionsByWorkspace([sess({ workspaceId: 'ws-z', ptyId: 'ws-z' })], null, members).rows[0].memBytes, 100 * MBg);
+  assert.equal(groupSessionsByWorkspace([sess({ workspaceId: 'ws-u', ptyId: 'ws-u:sdk', kind: 'sdk' })], null, members).rows[0].memBytes, 100 * MBg);
+  const remote = groupSessionsByWorkspace([sess({ remote: true, memBytes: 0, kind: 'sdk', ptyId: 'ws-a:sdk' })], null, members).rows[0];
+  assert.deepEqual([remote.memBytes, remote.reliquats], [0, null]);
+});
+
+test('G8 (#328) a member whose SESSION is gone but whose scope still holds a Reliquat gets a scope-only row (scope memory + Reliquat count, no cpu/procs); its containers fold into the SAME row, never a second container-only row; an empty scope adds nothing', () => {
+  const view = cAccountingView(cBuildAccounting([{ wsId: 'ws-gone', bytes: 300 * MBg }], [], 1));
+  const members = rep(
+    memberViewFrom('ws-gone', [rd(1500, [{ pid: 9, startTicks: 9, rssBytes: 1400 * MBg, role: 'reliquat', comm: 'chrome' }])]),
+    memberViewFrom('ws-empty', [rd(0, [])]),
+  );
+  const { rows } = groupSessionsByWorkspace([sess({ workspaceId: 'ws-live', ptyId: 'ws-live:sdk', kind: 'sdk' })], view, members);
+  const gone = rows.filter((r) => r.key === 'ws-gone');
+  assert.equal(gone.length, 1, 'ONE row for the member (the container-only row is not added next to it)');
+  assert.deepEqual([gone[0].scopeOnly, gone[0].containerOnly, gone[0].sessions.length, gone[0].cpuPct, gone[0].procCount], [true, false, 0, 0, 0]);
+  assert.equal(gone[0].memBytes, 1800 * MBg); // scope 1500 + containers 300
+  assert.deepEqual(gone[0].reliquats, { count: 1, bytes: 1400 * MBg, partial: false, procs: [{ pid: 9, comm: 'chrome', rssBytes: 1400 * MBg }] });
+  assert.equal(gone[0].containers?.bytes, 300 * MBg); // the 🐳 chip data rides on the same row
+  assert.equal(rows.some((r) => r.key === 'ws-empty'), false);
+  assert.equal(rows.find((r) => r.key === 'ws-live')?.scopeOnly, false);
+  // without the report: master's rows (no scope-only row at all)
+  assert.equal(groupSessionsByWorkspace([sess({ workspaceId: 'ws-live', ptyId: 'ws-live:sdk', kind: 'sdk' })], view).rows.some((r) => r.scopeOnly), false);
+});
+
+test('G9 (#328) groupSnapshot: the page\'s ONE call over a snapshot reads sessions + containers + members (a snapshot without members = master\'s rows; null = no rows)', () => {
+  const members = rep(memberViewFrom('ws-a', [rd(1100, [{ pid: 9, startTicks: 9, rssBytes: 400 * MBg, role: 'reliquat', comm: 'chrome' }])]));
+  const containers = cAccountingView(cBuildAccounting([{ wsId: 'ws-a', bytes: 100 * MBg }], [], 1));
+  const snap = { sessions: [sess({ kind: 'sdk', ptyId: 'ws-a:sdk', memBytes: 600 * MBg })], containers, members };
+  assert.equal(groupSnapshot(snap).rows[0].memBytes, 1200 * MBg); // scope 1100 + containers 100
+  assert.equal(groupSnapshot(snap).rows[0].reliquats?.count, 1);
+  assert.equal(groupSnapshot({ ...snap, members: undefined }).rows[0].memBytes, 700 * MBg); // master: tree 600 + containers 100
+  assert.equal(groupSnapshot({ ...snap, containers: undefined }).rows[0].memBytes, 1100 * MBg);
+  assert.deepEqual(groupSnapshot(null), { rows: [], login: [] });
+});
+
+test('G10 (#328) a live keeper OUTSIDE every scope of the member (an older generation\'s leftovers): the row adds the tree and the stale scope — it never shows the stale scope alone', () => {
+  const members = rep(memberViewFrom('ws-a', [rd(50, [{ pid: 9, startTicks: 9, rssBytes: 40 * MBg, role: 'reliquat', comm: 'chrome' }], null)]));
+  const row = groupSessionsByWorkspace([sess({ kind: 'sdk', ptyId: 'ws-a:sdk', memBytes: 600 * MBg })], null, members).rows[0];
+  assert.equal(row.memBytes, 650 * MBg);
+  assert.equal(row.reliquats?.count, 1);
+});
+
+// ─── #328 review F2: no row without a Reliquat ───
+
+test('G12 (#328 F2, D-Q3) a scope WITHOUT a Reliquat never makes a row of its own (the keeper\'s boot window: in scope, pid file not yet written, no session row): only Reliquats keep a row; unlisted (null) neither', () => {
+  const members = rep(memberViewFrom('ws-boot', [rd(17, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'keeper' }])]), memberViewFrom('ws-blind', [rd(40, null)]), memberViewFrom('ws-left', [rd(300, [{ pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }])]));
+  const { rows } = groupSessionsByWorkspace([], null, members);
+  assert.deepEqual(rows.map((r) => r.key), ['ws-left']);
+  assert.equal(rows[0].scopeOnly, true);
 });

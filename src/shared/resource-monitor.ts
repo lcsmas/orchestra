@@ -5,6 +5,7 @@
 import type { ProcSample } from './resources.ts';
 import { collectTree, parseProcIdentity } from './resources.ts';
 import { measuredContainerBytes, type ContainerAccountingView } from './container-accounting.ts';
+import type { MemberMemoryReport } from './member-memory.ts';
 
 // ─── The JSONL line shape ────────────────────────────────────────────────────
 
@@ -59,6 +60,8 @@ export interface ResourceLogLine {
   sessions: ResourceLogSessionTree[];
   /** #293: container memory per workspace + the unattributed containers (host-wide; a workspace with containers but no keeper tree appears only here). Absent = not measured. */
   containers?: ContainerAccountingView;
+  /** #328: each member's memory read from ITS kernel scope + live Reliquats (sessions[].rssBytes stays the process-tree figure). Absent = not read (an older build, or a rig without the dep). */
+  members?: MemberMemoryReport;
 }
 
 // ─── Thresholds (detector b — advisory only) ─────────────────────────────────
@@ -130,6 +133,8 @@ export interface BuildLogLineInput {
   reapedWorkspaceIds: Set<string>;
   /** #293: the container accounting the tick refreshed (omitted by callers that do not measure containers). */
   containers?: ContainerAccountingView;
+  /** #328: the scope reading the tick took (omitted by callers that do not read scopes). */
+  members?: MemberMemoryReport;
 }
 
 /** Roll one keeper root's process tree into a `ResourceLogSessionTree`. */
@@ -191,6 +196,7 @@ export function buildResourceLogLine(
     electron: input.electron,
     sessions,
     ...(view ? { containers: view } : {}),
+    ...(input.members ? { members: input.members } : {}),
   };
 }
 
@@ -469,13 +475,29 @@ export function classifySurvivors(
 // ─── The threshold detector (detector b — advisory) ──────────────────────────
 
 export interface ThresholdWarning {
-  kind: 'session-rss' | 'session-cpu' | 'electron-rss' | 'electron-cpu';
+  kind: 'session-rss' | 'session-cpu' | 'electron-rss' | 'electron-cpu' | 'reliquat-rss';
   /** Workspace id for a session finding, Electron process type for an app one. */
   subject: string;
   pid: number;
   /** Measured value (bytes for rss, percent for cpu). */
   value: number;
   threshold: number;
+  /** `reliquat-rss` only: how many live Reliquats make up `value`. */
+  count?: number;
+}
+
+/**
+ * #328 advisory: a member whose live Reliquats alone hold more than the session threshold (same constant, same unit — Σ RSS). The tree-walk advisory above CANNOT see them (a detached Chromium is not in the tree),
+ * which is the leak this wave exists for. WARN only, never kills (stopping one is #325 / #327). A member whose Reliquats could not be listed (`reliquats === null`) says nothing.
+ */
+export function decideReliquatWarnings(members: MemberMemoryReport | undefined): ThresholdWarning[] {
+  const out: ThresholdWarning[] = [];
+  for (const m of members?.tracked ?? []) {
+    if (m.reliquats !== null && m.reliquats > 0 && (m.reliquatBytes ?? 0) > SESSION_RSS_WARN_BYTES) {
+      out.push({ kind: 'reliquat-rss', subject: m.wsId, pid: 0, value: m.reliquatBytes ?? 0, threshold: SESSION_RSS_WARN_BYTES, count: m.reliquats });
+    }
+  }
+  return out;
 }
 
 /** Advisory over-threshold findings; never kills. A reaped tree is skipped (its RSS is stale). */

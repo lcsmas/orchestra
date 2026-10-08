@@ -1,4 +1,5 @@
 import { viewBytesFor, type ContainerAccountingView } from './container-accounting.ts';
+import { rowProcessBytes, viewFor, type MemberMemoryReport } from './member-memory.ts';
 import type { VolumeStat } from './disk-space.ts';
 
 // Pure logic for the Resources page: parsing the OS process table, walking
@@ -101,6 +102,9 @@ export interface ResourceSnapshot {
   /** #293: attributed container memory per workspace + the unattributed containers, from the LAST resource-monitor tick (the page never calls Docker).
    *  The page folds `attributed[ws].bytes` into the owning workspace's EXISTING memory figure. Absent from an older main. */
   containers?: ContainerAccountingView;
+  /** #328: each member's memory read from its kernel scope + its live Reliquats (FI-1), from the shared short-cache read. A tracked member's row memory is the scope's meter (it sees a detached process
+   *  the tree walk cannot); an untracked one keeps the tree figure. Absent from an older main. */
+  members?: MemberMemoryReport;
 }
 
 /** Classify a PTY id into its session kind + owning workspace. Login PTYs
@@ -337,16 +341,21 @@ export interface SessionGroup {
   containers: { count: number; bytes: number; unmeasured: number } | null;
   /** #293 (D-pick4 A): a workspace whose only footprint is a container (no session of any kind) — a row with just the chip; cpu / procs read « — ». */
   containerOnly: boolean;
+  /** #328: the member's live Reliquats (null = the member is not scope-tracked, or its scope could not be listed). `partial` = a lower bound (a generation unlisted). */
+  reliquats: { count: number; bytes: number; partial: boolean; procs: Array<{ pid: number; comm: string; rssBytes: number }> } | null;
+  /** #328: a member with NO session left but live Reliquats in its scope (its keeper is gone, they are not) — a row with just its scope's memory + Reliquat count, like the container-only row; cpu / procs read « — ». Never a row without a Reliquat (D-Q3). */
+  scopeOnly: boolean;
 }
 
 /**
  * Group the sampled sessions (PTY sessions AND keeper-hosted structured agents, `<wsId>:sdk`) into per-workspace rows + the login PTYs apart — what the page renders. `containers` (the last
  * monitor tick's accounting, #293) is folded into the OWNING row's memory figure and shown as its container chip; a workspace with attributed containers but no session at all gets a
- * container-only row (D-pick4 option A).
+ * container-only row (D-pick4 option A). `members` (#328) replaces a scope-tracked member's process memory with its scope's meter (`rowProcessBytes`) and attaches its Reliquat count.
  */
 export function groupSessionsByWorkspace(
   sessions: readonly SessionResourceStat[],
   containers?: ContainerAccountingView | null,
+  members?: MemberMemoryReport | null,
 ): { rows: SessionGroup[]; login: SessionResourceStat[] } {
   const byWs = new Map<string, SessionResourceStat[]>();
   const login: SessionResourceStat[] = [];
@@ -366,20 +375,38 @@ export function groupSessionsByWorkspace(
   };
   const rows = Array.from(byWs, ([key, list]): SessionGroup => {
     const remote = list.every((s) => s.remote);
+    const view = remote ? undefined : viewFor(members, key); // a sandbox member's processes run in the container: never a local scope
     return {
       key,
       sessions: list,
       cpuPct: list.reduce((n, s) => n + s.cpuPct, 0),
-      memBytes: list.reduce((n, s) => n + s.memBytes, 0) + (remote ? 0 : viewBytesFor(containers, key)),
+      memBytes: (view ? rowProcessBytes(list, view) : list.reduce((n, s) => n + s.memBytes, 0)) + (remote ? 0 : viewBytesFor(containers, key)),
       procCount: list.reduce((n, s) => n + s.procCount, 0),
       remote,
       containers: remote ? null : chipOf(key),
       containerOnly: false,
+      reliquats: view && view.reliquats !== null ? { count: view.reliquats, bytes: view.reliquatBytes ?? 0, partial: view.unlisted > 0, procs: view.reliquatProcs } : null,
+      scopeOnly: false,
     };
   });
+  // #328: a member whose session is gone but whose scope still holds processes (the Reliquats) has no session row — give it one; its containers (if any) fold into the SAME row
+  const scopeOnly = new Map<string, SessionGroup>();
+  for (const m of members?.tracked ?? []) {
+    if (byWs.has(m.wsId) || (m.reliquats ?? 0) <= 0) continue; // D-Q3: the row is kept for a member that has only RELIQUATS left — a scope without one (the keeper's boot window, before its pid file) is not a row
+    scopeOnly.set(m.wsId, { key: m.wsId, sessions: [], cpuPct: 0, memBytes: (m.bytes ?? 0) + viewBytesFor(containers, m.wsId), procCount: 0, remote: false, containers: chipOf(m.wsId), containerOnly: false, reliquats: m.reliquats !== null ? { count: m.reliquats, bytes: m.reliquatBytes ?? 0, partial: m.unlisted > 0, procs: m.reliquatProcs } : null, scopeOnly: true });
+  }
+  rows.push(...scopeOnly.values());
   for (const a of containers?.docker === 'ok' ? containers.attributed : []) {
-    if (a.count > 0 && !byWs.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true });
+    if (a.count > 0 && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true, reliquats: null, scopeOnly: false });
   }
   rows.sort((a, b) => b.cpuPct - a.cpuPct || b.memBytes - a.memBytes);
   return { rows, login };
+}
+
+/**
+ * The page's ONE grouping call over a sampled snapshot: its sessions, the container accounting (#293) and the member scope report (#328). `ResourcesView` and the screenshot gate both go through it, so a call-site that
+ * forgets a source is visible to a rendered capture and not only to a source pin.
+ */
+export function groupSnapshot(snap: Pick<ResourceSnapshot, 'sessions' | 'containers' | 'members'> | null | undefined): { rows: SessionGroup[]; login: SessionResourceStat[] } {
+  return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, snap?.members);
 }

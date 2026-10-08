@@ -49,6 +49,7 @@ import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-dou
 import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunView } from '../shared/memory-guard.ts';
 import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
 import { formatContainersLine, type ContainerAccountingView } from '../shared/container-accounting.ts';
+import { formatReliquatsLine, type MemberMemoryReport } from '../shared/member-memory.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
@@ -2218,6 +2219,11 @@ async function main(argv: string[]): Promise<void> {
       if (res.containers && typeof res.containers === 'object') {
         const clabels = (res.containerLabels ?? {}) as Record<string, string>;
         process.stdout.write(`${formatContainersLine(res.containers as ContainerAccountingView, (id) => clabels[id] ?? id)}\n`);
+      }
+      // #328: each member's live Reliquats (leftover processes in its kernel scope); « Reliquats not tracked » when no scope exists. Absent from an older app → no line.
+      if (res.members && typeof res.members === 'object') {
+        const mlabels = (res.memberLabels ?? {}) as Record<string, string>;
+        process.stdout.write(`${formatReliquatsLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\n`);
       }
       // #286: starts HELD for low memory (the OPS must not mistake them for a stall). No line when nothing is held — output unchanged.
       if (Array.isArray(res.heldStarts)) {

@@ -56,7 +56,8 @@ test('W5 the Resources page snapshot carries the LAST tick\'s accounting (never 
   assert.match(res, /containers: accountingView\(getContainerAccounting\(\)\),/);
   assert.doesNotMatch(res, /refreshContainerAccounting|createDockerApi|docker-api/);
   const view = read('src/renderer/components/ResourcesView.tsx');
-  assert.match(view, /const grouped = groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers\);/, 'the page uses the SAME pure function the unit tests (G1/G2) and the rig drive');
+  assert.match(view, /const grouped = groupSnapshot\(snap\);/, 'the page uses the SAME pure function the unit tests (G1/G2/G9) and the rigs drive');
+  assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members\);/, 'groupSnapshot hands the container accounting to the grouping (#328 added the member report beside it)');
   assert.match(read('src/shared/resources.ts'), /\+ \(remote \? 0 : viewBytesFor\(containers, key\)\),/);
   assert.match(read('src/shared/resources.ts'), /containers\?: ContainerAccountingView;/);
 });
@@ -86,8 +87,8 @@ test('W8 (D-pick4 A) the Resources page: keeper-hosted structured agents are SAM
   const view = read('src/renderer/components/ResourcesView.tsx');
   assert.match(view, /warning=\{unattributedWarning\(snap\?\.containers\)\}/);
   assert.match(view, /\{warning && \(\s*\n\s*<div className="res-unattributed" role="note" data-res-unattributed="">/);
-  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} \/>/);
-  assert.match(view, /\) : row\.containerOnly \? \(/, 'a workspace whose only footprint is a container gets its own row (cpu / procs « — »)');
+  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} \/>/);
+  assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/, 'a workspace whose only footprint is a container (or, #328, only its Reliquats) gets its own row (cpu / procs « — »)');
   assert.match(view, /className="res-chip docker" data-res-containers=\{containers\.count\} title=\{containersChipTitle\(containers\)\}/);
   assert.match(view, /const agentCount = rows\.filter\(\(r\) => r\.sessions\.some\(\(s\) => s\.kind === 'agent' \|\| s\.kind === 'sdk'\)\)\.length;/, 'the Live agents tile counts structured agents too — it agrees with the table');
   assert.match(view, /const agentSession = row\.sessions\.find\(\(s\) => s\.kind === 'agent'\);/, 'the stop target is the PTY agent ONLY — an sdk / container-only row has none');

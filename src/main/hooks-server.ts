@@ -38,6 +38,7 @@ import { GIB } from '../shared/memory-guard.ts';
 import { listHeldStarts } from './admission.ts';
 import { getContainerAccounting } from './container-accounting.ts';
 import { accountingView } from '../shared/container-accounting.ts';
+import { currentMemberMemory } from './member-memory-host.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
 import { repriseStatusView } from './pause-reprise.ts';
@@ -480,6 +481,7 @@ export async function startHooksServer(): Promise<void> {
             // D1 (ledger #329): the runs REALLY under a memory Pause on the bus. A failed read is OMITTED (null) so the CLI falls back to the guard's word — never a fabricated "none".
             const memPausedRuns = memoryPausedRunViews(getBus(), (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? undefined) : undefined; });
             const containersView = accountingView(getContainerAccounting()); // ONE read: the view and its labels must come from the same snapshot (a read across the stale limit would pair 'ok' with no labels)
+            const membersView = currentMemberMemory();
             const badDb = getBus();
             const allBad = badDb ? busBadRecipientRows(badDb) : [];
             const badRecipientCount = allBad.length;
@@ -509,6 +511,9 @@ export async function startHooksServer(): Promise<void> {
               containers: containersView,
               containerLabels: Object.fromEntries(containersView.attributed.map((a) => [a.wsId, heldStartLabel(store.getWorkspace(a.wsId), a.wsId)])),
               // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
+              // #328: per-member scope memory + live Reliquats (a fresh short-cached read; sysfs only); the CLI prints the `reliquats:` line.
+              members: membersView,
+              memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
               heldStarts: listHeldStarts().map((h) => {
                 const w = store.getWorkspace(h.wsId);
                 return { wsId: h.wsId, label: heldStartLabel(w, h.wsId), kind: h.kind, since: h.since, coordinator: h.coordinator, seq: h.seq };
