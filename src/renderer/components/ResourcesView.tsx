@@ -182,7 +182,7 @@ function SessionChips({ sessions, containers, reliquats, browsers }: { sessions:
       )}
       {browsers && (
         <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>
-          {'\u{1F310}'} {browsers.count} arrêtés
+          {'\u{1F310}'} {browsers.count} {browsers.count === 1 ? 'arrêté' : 'arrêtés'}
         </span>
       )}
     </span>

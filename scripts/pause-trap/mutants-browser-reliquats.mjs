@@ -112,7 +112,7 @@ export const MUTANTS = [
   { id: 'br-chip-never-asked', file: VIEW, find: 'browsers={browsersOf ? browsersOf(row) : null}', rep: 'browsers={null}', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-status-colour', file: CSS, find: '.res-chip.browsers { text-transform: none; letter-spacing: 0; }', rep: '.res-chip.browsers { text-transform: none; letter-spacing: 0; color: var(--yellow); }', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-before-containers', file: VIEW, edits: [
-    { find: '{browsers && (\n        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>\n          {\'\\u{1F310}\'} {browsers.count} arrêtés\n        </span>\n      )}\n', rep: '' },
-    { find: '      {containers && (\n', rep: '      {browsers && (\n        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>\n          {\'\\u{1F310}\'} {browsers.count} arrêtés\n        </span>\n      )}\n      {containers && (\n' },
+    { find: '{browsers && (\n        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>\n          {\'\\u{1F310}\'} {browsers.count} {browsers.count === 1 ? \'arrêté\' : \'arrêtés\'}\n        </span>\n      )}\n', rep: '' },
+    { find: '      {containers && (\n', rep: '      {browsers && (\n        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>\n          {\'\\u{1F310}\'} {browsers.count} {browsers.count === 1 ? \'arrêté\' : \'arrêtés\'}\n        </span>\n      )}\n      {containers && (\n' },
   ], tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
 ];

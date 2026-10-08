@@ -67,7 +67,7 @@ const ZERO = { total: 0, byWorkspace: { 'ws-x': counter(0, 'ws-x'), 'ws-y': coun
 
 const state = new URLSearchParams(location.search).get('state');
 const browsers = state === 'seeded' ? SEEDED : state === 'zero' ? ZERO : undefined;
-const { rows, login } = groupSessionsByWorkspace(SESSIONS, state === 'none' ? undefined : ACC);
+const { rows, login } = groupSessionsByWorkspace(SESSIONS, ACC); // the SAME accounting in every state: 'none' differs from 'zero' ONLY by the missing browser view
 const trace = [2, 4, 3, 6, 8, 5, 7, 4, 3, 5];
 // a plain .res-chip next to the table: the GREY reference the browsers chip must match (history tone, no status colour)
 createRoot(document.getElementById('root')).render(
@@ -211,7 +211,7 @@ const dockerIdx = x?.chips.findIndex((c) => /docker/.test(c.cls)) ?? -1;
 const browserIdx = x?.chips.findIndex((c) => /\bbrowsers\b/.test(c.cls)) ?? -1;
 check('chip_after_docker: seeded: the 🌐 chip sits AFTER the 🐳 chip on the same row (both present)', dockerIdx >= 0 && browserIdx > dockerIdx, JSON.stringify(x?.chips.map((c) => c.cls)));
 check('chip_on_screen: seeded: the chip is on screen (non-zero rect, inside the window)', !!xc && xc.rect.width > 20 && xc.rect.height > 8 && xc.rect.x + xc.rect.width < seeded.width, JSON.stringify(xc?.rect));
-check('chip_singular: seeded: a PTY agent row gets its own count (1 → singular tooltip)', chipOf(rowOf(seeded, 'feat-pty'))?.browsers === '1' && /^1 navigateur headless orphelin arrêté /.test(chipOf(rowOf(seeded, 'feat-pty'))?.title ?? ''), JSON.stringify(chipOf(rowOf(seeded, 'feat-pty'))));
+check('chip_singular: seeded: a PTY agent row gets its own count (1 → « 1 arrêté », singular tooltip)', chipOf(rowOf(seeded, 'feat-pty'))?.browsers === '1' && /^\u{1F310}\s*1 arrêté$/u.test(chipOf(rowOf(seeded, 'feat-pty'))?.text ?? '') && /^1 navigateur headless orphelin arrêté /.test(chipOf(rowOf(seeded, 'feat-pty'))?.title ?? ''), JSON.stringify(chipOf(rowOf(seeded, 'feat-pty'))));
 check('no_chip_without_counter: seeded: a workspace with NO counter has no chip (feat-y)', !!rowOf(seeded, 'feat-y') && !chipOf(rowOf(seeded, 'feat-y')));
 check('no_chip_at_zero: seeded: a counter at 0 draws nothing (feat-z — POSITIVE CONTROL: the row exists, other rows have the chip)', !!rowOf(seeded, 'feat-z') && !chipOf(rowOf(seeded, 'feat-z')) && !!xc);
 check('no_chip_on_remote_row: seeded: a REMOTE (sandbox) row never shows a local browser counter, even with one recorded', !!rowOf(seeded, 'feat-remote') && !chipOf(rowOf(seeded, 'feat-remote')));
