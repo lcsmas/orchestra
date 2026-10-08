@@ -514,9 +514,9 @@ export async function startHooksServer(): Promise<void> {
               // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
               // #328: per-member scope memory + live Reliquats (a fresh short-cached read; sysfs only); the CLI prints the `reliquats:` line.
               members: membersView,
+              memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
               // #330: the directory watchers' health (every armed watcher; a degraded one has its since / last error / fallback) — the CLI prints the `watchers:` block.
               watchers: watchersStatus(),
-              memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
               heldStarts: listHeldStarts().map((h) => {
                 const w = store.getWorkspace(h.wsId);
                 return { wsId: h.wsId, label: heldStartLabel(w, h.wsId), kind: h.kind, since: h.since, coordinator: h.coordinator, seq: h.seq };
