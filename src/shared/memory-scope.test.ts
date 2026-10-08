@@ -26,6 +26,7 @@ import {
   parseProcCgroupV2,
   sanitizeScopePrefix,
   scopeGenForWorkspace,
+  swapLimitApplied,
   wrapperPathUsable,
   snapKey,
   type MemoryCapInput,
@@ -285,4 +286,13 @@ test('formatMemoryCapLine counts scopes that are NOT a cap (no limit applied)', 
   const v = { switchOn: true, softBytes: 3 * GIB, hardBytes: 6 * GIB, scopes: 4, unlimited: 1, supported: true };
   assert.match(formatMemoryCapLine(v), /4 member scope\(s\) live, 1 WITHOUT a limit applied$/);
   assert.match(formatMemoryCapLine({ ...v, unlimited: 0 }), /4 member scope\(s\) live$/);
+});
+
+test('review m4 — swapLimitApplied: the swap escape is closed only by memory.swap.max = 0; no file is acceptable ONLY on a host with no swap', () => {
+  assert.equal(swapLimitApplied('0\n', 8_000_000), true);
+  assert.equal(swapLimitApplied('max\n', 8_000_000), false, 'swap allowed ⇒ MemoryMax never kills (zram)');
+  assert.equal(swapLimitApplied('1048576\n', 8_000_000), false, 'a non-zero swap limit still lets a hog park');
+  assert.equal(swapLimitApplied(null, 8_000_000), false, 'no swap accounting + swap present ⇒ the hog parks and is never killed: NOT a cap');
+  assert.equal(swapLimitApplied(null, 0), true, 'no swap at all ⇒ nothing to escape into');
+  assert.equal(swapLimitApplied(null, null), false, 'unknown swap size is not "no swap"');
 });

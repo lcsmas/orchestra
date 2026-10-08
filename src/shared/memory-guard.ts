@@ -317,7 +317,10 @@ export function formatMemoryGuardLine(s: MemoryGuardSnapshot, paused?: readonly 
     const resuming = paused.some((r) => r.resuming) ? '; Reprise under way' : '';
     pause = `memory Pause IN EFFECT on ${paused.length} run(s) (${names.join(', ')}${more}) since ${at(Math.min(...paused.map((r) => r.since)))}${resuming} (lifts above ${formatGb(s.admissionBytes)})`;
   } else if (s.pause === 'held') {
-    pause = `memory Pause IN EFFECT since ${at(s.pauseSince)} (lifts above ${formatGb(s.admissionBytes)})${paused ? ' — but no run is paused (none carries the pause switch ON)' : ''}`;
+    // The guard WANTS a Pause. With the bus list known and empty nothing is paused — whatever the reason (the switch is OFF on the run, or a human already resumed): say the fact, never a guessed cause, never "IN EFFECT".
+    pause = paused
+      ? `memory Pause WANTED by the guard since ${at(s.pauseSince)} (lifts above ${formatGb(s.admissionBytes)}) — no run is paused on the bus`
+      : `memory Pause IN EFFECT since ${at(s.pauseSince)} (lifts above ${formatGb(s.admissionBytes)})`;
   } else {
     pause = `memory Pause none (due below ${formatGb(s.criticalBytes)})`;
   }

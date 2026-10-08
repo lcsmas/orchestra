@@ -788,7 +788,7 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
     fs.closeSync(logFd);
     child.once('error', (e) => (launcherFailed = e.message));
     child.once('exit', (code, signal) => {
-      if (code !== 0) launcherFailed = `exit ${code ?? signal}`; // the launcher exec'd into the keeper: any exit before the socket is up is a failure
+      if (code !== 0 && launcherFailed === null) launcherFailed = `exit ${code ?? signal}`; // the launcher exec'd into the keeper: any exit before the socket is up is a failure (the FIRST reason wins: a hung launcher we killed ourselves stays "hung")
     });
     child.unref();
     const r = await waitForSocket(() => launcherFailed !== null, 100); // 10 s, not 5: the user manager may be slow to create a scope under fleet load (a FAILED launcher aborts at once)
@@ -796,7 +796,22 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
       log.info(`memory-cap[${wsId}]: keeper launched in scope ${cap.unit}${cap.limits ? ` (hard ${cap.limits.hardBytes} B, swap ${cap.limits.swapMaxBytes})` : ' (no limits)'}`);
       return r;
     }
-    if (launcherFailed === null) throw new Error(`keeper failed to start for ${wsId}: ${String(r.err)}`);
+    if (launcherFailed === null) {
+      // The launcher is still running and no keeper answered in 10 s: systemd-run HUNG (a stuck user manager / D-Bus). Review m5: that must not fail the session start — kill OUR direct child
+      // and fall back to a plain keeper, unless the keeper turned up in the meantime (the launcher was merely slow).
+      launcherFailed = 'no keeper socket within 10 s (systemd-run hung?)';
+      try {
+        if (child.pid) process.kill(child.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      await new Promise((res) => setTimeout(res, 300));
+      try {
+        return await connectSock(sockPath, 500);
+      } catch {
+        /* no keeper: fall through to the plain launch */
+      }
+    }
     let why = '';
     try {
       why = ` — ${fs.readFileSync(keeperLogPath(wsId), 'utf8').trim().split('\n').slice(-2).join(' | ').slice(-300)}`;

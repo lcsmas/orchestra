@@ -37,6 +37,7 @@ const ARMS = {
   reliquat_outlives_keeper: { mustFailOnMaster: true },
   launcher_fails_plain: { mustFailOnMaster: true },
   wrapper_missing_no_scope: { mustFailOnMaster: true },
+  launcher_hangs_plain: { mustFailOnMaster: true },
 };
 
 const ARM = process.argv[2] ?? '';
@@ -427,6 +428,25 @@ try {
     check('...and WHY: the launcher\'s own stderr is in the line (not just "exit 1")', /launching it WITHOUT a scope/.test(orchLog()) && /rig stub/.test(orchLog().split('\n').find((l) => /launching it WITHOUT a scope/.test(l)) ?? ''), '');
     check('the app also reads the state back: the keeper is not in the scope ⇒ UNCAPPED, in the log', await waitFor(() => new RegExp(`memory-cap\\[${ws}\\]: the keeper is not in scope .* UNCAPPED`).test(orchLog()), 8000), '');
     check('tool commands are not wrapped (no cap, nothing to protect)', initOf(st)?.shellPrefix == null);
+  } else if (ARM === 'launcher_hangs_plain') {
+    // Review m5: systemd-run HANGS (never exits, never starts the keeper). The member must still start — plain, after ~10 s — and the app must say why. The hung launcher is killed (no stray process).
+    const stub = path.join(base, 'stubbin');
+    fs.mkdirSync(stub, { recursive: true });
+    fs.writeFileSync(path.join(stub, 'systemd-run'), '#!/bin/sh\nexec sleep 300\n', { mode: 0o755 });
+    const realPath = process.env.PATH;
+    process.env.PATH = `${stub}:${realPath}`;
+    scopeMod?.resetScopeSupportCache?.();
+    const spec = decide(ws);
+    check('the decision still says "scope" (systemd-run is on PATH)', hasCap ? !!spec : true, JSON.stringify(spec ?? null));
+    const t0 = Date.now();
+    const st = open(ws, spec);
+    const up = await waitFor(() => initOf(st), 40_000);
+    process.env.PATH = realPath;
+    const f = factsOf(ws, st);
+    check('the member STARTED anyway (plain), after the 10 s wait — not an error', up && alive(f.keeperPid) && alive(f.cliPid) && st.errors.length === 0, `after ${Date.now() - t0} ms errors=${st.errors.join('|')}`);
+    check('...in no rig scope', !f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
+    check('the app log says systemd-run hung and the member runs WITHOUT a scope', /systemd-run hung\?.*WITHOUT a scope/.test(orchLog()), '');
+    check('the hung launcher was killed (no `sleep 300` left under this arm)', survivorsOf(base).filter((p) => /sleep/.test(readSafe(`/proc/${p}/cmdline`) ?? '')).length === 0, '');
   } else if (ARM === 'wrapper_missing_no_scope') {
     // PRE-REVIEW MAJOR 4: with the limit applied and the tool wrapper unusable the kernel would kill the CLI first (the session). So: NO scope, said in the log, member still starts.
     if (WRAPPER) fs.rmSync(WRAPPER, { force: true });

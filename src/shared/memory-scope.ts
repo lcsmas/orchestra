@@ -7,7 +7,8 @@
 //  - systemd's default `OOMPolicy=stop` ENDS THE WHOLE SCOPE after one oom_kill — `OOMPolicy=continue` is what makes "never group-kill" true;
 //  - `MemoryHigh` below `MemoryMax` throttles a runaway to a crawl instead of ever reaching the kill (ledger D-Q2, option A): NEVER set. The soft
 //    level is a WARNING level (the member is told when it crosses it — #322), not a kernel throttle;
-//  - an unprivileged process can only RAISE its oom_score_adj, so tool processes are raised (+{@link OOM_ADJ_TOOLS}) and the keeper/CLI keep 0.
+//  - the keeper and the CLI sit at the default oom_score_adj (0) and an unprivileged process cannot go BELOW its floor (0), so they cannot be made less killable: the tool
+//    processes are RAISED above them (+{@link OOM_ADJ_TOOLS}) instead. Advisory, not a boundary — a process may lower itself back to its floor (measured); it protects against honest tools.
 
 import { GIB } from './memory-guard.ts';
 
@@ -137,7 +138,7 @@ export function wrapperPathUsable(p: string | undefined | null): p is string {
 /** `CLAUDE_CODE_SHELL_PREFIX` target (measured on CLI 2.1.291: it is invoked as `<prefix> <whole command string>` — ONE argument). */
 export const OOM_TOOL_WRAPPER_SCRIPT = `#!/bin/sh
 # Orchestra Plafond mémoire (#320) — installed by the app, set as CLAUDE_CODE_SHELL_PREFIX by a capped keeper.
-# An unprivileged process can only RAISE its oom_score_adj: raise this tool command (everything under it inherits it) so the
+# The keeper and the CLI sit at the default (0) and an unprivileged process cannot go below its floor, so protect them by RAISING this tool command (everything under it inherits it) so the
 # kernel's OOM killer picks a tool process, never the keeper or the CLI (both stay at 0).
 echo ${OOM_ADJ_TOOLS} > /proc/self/oom_score_adj 2>/dev/null
 [ "$#" -eq 1 ] || exec "$@"
@@ -182,6 +183,13 @@ export function parseProcCgroupV2(text: string): string | null {
     if (line.startsWith('0::')) return line.slice(3).trim() || null;
   }
   return null;
+}
+
+/** Review m4: is the swap escape CLOSED? `memory.swap.max` must read `0`. A kernel without swap accounting has no such file: that is fine ONLY on a host with no swap at all
+ *  (`SwapTotal: 0`); with swap present and no file the hog parks in zram and `MemoryMax` never kills — the scope is not a cap. */
+export function swapLimitApplied(swapMaxText: string | null, swapTotalKb: number | null): boolean {
+  if (swapMaxText !== null) return swapMaxText.trim() === '0';
+  return swapTotalKb === 0;
 }
 
 export interface ScopeMemory {
@@ -341,7 +349,7 @@ export function describeCapState(state: 'active' | 'unprotected' | 'not-applied'
     case 'unprotected':
       return { level: 'warn', text: `scope ${unit} has its hard limit (${hard}) but the tool wrapper is unusable — the kernel would kill the CLI (the biggest process) before a runaway tool command` };
     case 'not-applied':
-      return { level: 'warn', text: `scope ${unit} exists but the memory limit (${hard}) is NOT applied (memory controller not delegated?) — this member runs UNCAPPED` };
+      return { level: 'warn', text: `scope ${unit} exists but its memory limit (${hard}) or its swap limit (0) is NOT applied (memory controller not delegated? no swap accounting?) — this member runs UNCAPPED` };
     case 'no-scope':
       return { level: 'warn', text: `the keeper is not in scope ${unit} — this member runs UNCAPPED` };
     default:

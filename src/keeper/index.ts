@@ -46,7 +46,7 @@ import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUps
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 import { startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
-import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, parseProcCgroupV2, wrapperPathUsable, type MemKillRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, parseProcCgroupV2, swapLimitApplied, wrapperPathUsable, type MemKillRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -260,10 +260,25 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   } catch {
     /* unreadable */
   }
-  const applied = limit !== null && limit <= cap.hardBytes && limit >= cap.hardBytes - LIMIT_SLACK_BYTES;
-  if (!applied) {
+  // The swap escape must be closed too (FI-1 v1.1): without `memory.swap.max`=0 a hog parks in zram and the hard level never kills (review m4).
+  let swapMaxText: string | null = null;
+  try {
+    swapMaxText = fs.readFileSync(path.join(dir, 'memory.swap.max'), 'utf8');
+  } catch {
+    /* no swap accounting on this kernel */
+  }
+  let swapTotalKb: number | null = null;
+  try {
+    const m = /^SwapTotal:\s+(\d+)\s+kB/m.exec(fs.readFileSync('/proc/meminfo', 'utf8'));
+    swapTotalKb = m ? Number(m[1]) : null;
+  } catch {
+    /* no /proc/meminfo */
+  }
+  const limitOk = limit !== null && limit <= cap.hardBytes && limit >= cap.hardBytes - LIMIT_SLACK_BYTES;
+  const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);
+  if (!limitOk || !swapOk) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
-    klog(`memory cap: in scope ${cap.unit} but memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the limit is NOT applied (memory controller not delegated?); tools are not wrapped`);
+    klog(`memory cap: in scope ${cap.unit} but ${!limitOk ? `memory.max=${limit ?? 'max'} (asked ${cap.hardBytes})` : `memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB`} — the cap is NOT applied (memory controller not delegated? no swap accounting?); tools are not wrapped`);
     return env;
   }
   let wrapperOk = false;

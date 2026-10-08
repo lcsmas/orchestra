@@ -365,8 +365,12 @@ test('D1: several runs are counted and named (3 shown, the rest counted); a Repr
 test('D1: no run paused ⇒ unchanged ("none"); the guard saying held while NO run is paused says that instead of pretending', () => {
   assert.match(formatMemoryGuardLine(snap(), []), /memory Pause none \(due below 3\.0 GB\)$/);
   assert.equal(formatMemoryGuardLine(snap()), 'memory: 12.3 GB available · admission open (holds below 6.0 GB) · memory Pause none (due below 3.0 GB)', 'no second argument = the old line, byte for byte');
-  assert.match(formatMemoryGuardLine(snap({ pause: 'held', pauseSince: T0, availBytes: gb(2) }), []), /memory Pause IN EFFECT since 2026-10-08T12:51:00\.000Z \(lifts above 6\.0 GB\) — but no run is paused/);
-  assert.doesNotMatch(formatMemoryGuardLine(snap({ pause: 'held', pauseSince: T0, availBytes: gb(2) })), /but no run is paused/, 'an older app that sends no list keeps the guard\'s word');
+  const wanted = formatMemoryGuardLine(snap({ pause: 'held', pauseSince: T0, availBytes: gb(2) }), []);
+  assert.match(wanted, /memory Pause WANTED by the guard since 2026-10-08T12:51:00\.000Z \(lifts above 6\.0 GB\) — no run is paused on the bus/);
+  assert.doesNotMatch(wanted, /IN EFFECT/, 'review m3: held + a known-empty bus list is NOT "in effect" (the old line contradicted itself)');
+  assert.doesNotMatch(wanted, /switch|resume/, 'and it names no guessed cause');
+  const old = formatMemoryGuardLine(snap({ pause: 'held', pauseSince: T0, availBytes: gb(2) }));
+  assert.match(old, /memory Pause IN EFFECT since 2026-10-08T12:51:00\.000Z \(lifts above 6\.0 GB\)$/, 'an older app that sends no list keeps the guard\'s word');
 });
 
 // ─── #320: the Plafond mémoire levels ────────────────────────────────────────────────────────────────────────────────
