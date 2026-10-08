@@ -305,6 +305,57 @@ test('the per-workspace COUNTER counts every stop (monitor pass and Pause dure a
   assert.equal(t.view().byWorkspace['ws-1'].stopped, 3);
 });
 
+test('a browser WITHOUT a start-time anywhere (the non-Linux `ps` table AND the fresh read) is never signalled: no identity, no signal — whatever the kill-time re-read can still compare', async () => {
+  const w = new World();
+  w.browser(500, { mode: 'pipe' });
+  const blind = (p: ProcSample): ProcSample => ({ ...p, startTicks: undefined });
+  const d = { ...w.deps(), readProcStat: (pid: number) => { const p = w.deps().readProcStat(pid); return p ? blind(p) : null; } };
+  const r = await browserPass(d, new BrowserTracker(), w.table().map(blind));
+  assert.deepEqual([r.stopped, w.signals], [[], []]);
+});
+
+test('the idle clock starts when the browser is first seen ORPHANED, not when it was first seen: a browser with a live launcher for hours that loses its launcher is NOT stopped at once', async () => {
+  const w = new World();
+  const t = new BrowserTracker();
+  w.add(40, 1, 'node', ['node', 'launcher.js']);
+  w.browser(500, { mode: 'port', ppid: 40 });
+  await w.pass(t); // t0: launcher alive
+  w.clock += 3 * W; // three windows with a live launcher and no client
+  assert.deepEqual((await w.pass(t)).stopped, []);
+  assert.equal(t.tracks.size, 0, 'a launcher-alive browser is not even tracked');
+  w.procs.get(500)!.ppid = 1; // the launcher dies NOW
+  assert.deepEqual((await w.pass(t)).stopped, [], 'the clock starts at the orphaning');
+  w.clock += W - 1;
+  assert.deepEqual((await w.pass(t)).stopped, []);
+  w.clock += 1;
+  assert.deepEqual((await w.pass(t)).stopped.map((s) => s.pid), [500]);
+});
+
+test('realClientState over a fake /proc: LISTEN ports by socket inode, a client = ESTABLISHED to one of them; tcp6 absent is fine, but an UNREADABLE tcp6 / fd directory is `unknown` (never "no client")', () => {
+  const root = fs.mkdtempSync(path.join(SCRATCH, 'procroot-'));
+  const row = (sl: number, local: string, rem: string, st: string, inode: number): string => `  ${sl}: ${local} ${rem} ${st} 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 100 0 0 10 0`;
+  const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+  fs.mkdirSync(path.join(root, '4242', 'fd'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'net'), { recursive: true });
+  fs.symlinkSync('socket:[111]', path.join(root, '4242', 'fd', '5'));
+  fs.symlinkSync('/dev/null', path.join(root, '4242', 'fd', '6'));
+  fs.writeFileSync(path.join(root, 'net', 'tcp'), [header, row(0, '0100007F:2382', '00000000:0000', '0A', 111), row(1, '0100007F:2382', '0100007F:B1F4', '01', 222)].join('\n') + '\n');
+  assert.deepEqual(realClientState(4242, root), { ports: [0x2382], client: 'yes' }, 'tcp6 absent (IPv6 off) is an empty table, not an error');
+  fs.writeFileSync(path.join(root, 'net', 'tcp'), [header, row(0, '0100007F:2382', '00000000:0000', '0A', 111)].join('\n') + '\n');
+  assert.deepEqual(realClientState(4242, root), { ports: [0x2382], client: 'no' });
+  fs.rmSync(path.join(root, '4242', 'fd', '5'));
+  assert.deepEqual(realClientState(4242, root), { ports: [], client: 'no' }, 'no listening socket: nobody can connect');
+  fs.symlinkSync('socket:[111]', path.join(root, '4242', 'fd', '5'));
+  fs.writeFileSync(path.join(root, 'net', 'tcp6'), header + '\n');
+  assert.equal((realClientState(4242, root) as { client: string }).client, 'no', 'an empty tcp6 is fine');
+  if (process.getuid?.() !== 0) {
+    fs.chmodSync(path.join(root, 'net', 'tcp6'), 0o000);
+    assert.equal(realClientState(4242, root), 'unknown', 'tcp6 exists but cannot be read: UNKNOWN');
+    fs.chmodSync(path.join(root, 'net', 'tcp6'), 0o644);
+  }
+  assert.equal(realClientState(9999, root), 'unknown', 'no fd directory (gone / not ours): UNKNOWN');
+});
+
 test('a browser with no start-time (the non-Linux `ps` table) or whose cmdline cannot be read is never signalled', async () => {
   const w = new World();
   w.browser(500, { mode: 'pipe' });

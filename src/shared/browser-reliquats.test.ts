@@ -51,6 +51,10 @@ test('profileOwner: attribution is the profile\'s place under <agent-tmp>/<ws-id
   assert.deepEqual(profileOwner(`${ROOT}/ws-1/a/../b/`, ROOT)?.wsId, 'ws-1', 'normalised first');
   assert.equal(profileOwner('/home/u/.config/chromium', ROOT), null, 'a default profile');
   assert.equal(profileOwner('/home/u/.orchestra/agent-tmpx/ws-1/p', ROOT), null, 'a sibling dir that merely starts with the root\'s name');
+  // outside paths LONGER than the root (a short one slices to an empty id by luck, which hid a missing prefix check), a look-alike sibling with a longer suffix, and a RELATIVE root with a relative dir
+  assert.equal(profileOwner('/var/lib/some/other/place/that/is/longer/than/the/root/ws-9/p', ROOT), null, 'a long path outside the root');
+  assert.equal(profileOwner('/home/u/.orchestra/agent-tmp-old/ws-1/p', ROOT), null, 'a sibling dir whose name merely starts with the root\'s');
+  assert.equal(profileOwner('agent-tmp/ws-1/p', 'agent-tmp'), null, 'relative root + relative dir');
   assert.equal(profileOwner(ROOT, ROOT), null);
   assert.equal(profileOwner(`${ROOT}/`, ROOT), null);
   assert.equal(profileOwner('relative/ws-1/p', ROOT), null);
