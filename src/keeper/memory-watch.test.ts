@@ -466,3 +466,37 @@ test('#322 R5: memory.stat unreadable ⇒ the raw memory.current is the fallback
   assert.equal(softs[0].bytes, 220 * MB);
   mw.stop();
 });
+
+test('#322 m2: the kernel-log lookup (a fork INSIDE the scope) waits for headroom — it is not spawned while the scope is still at its limit, and it still runs after the bounded wait', async () => {
+  const w = new World();
+  w.maxBytes = 300 * MB;
+  w.current = 100 * MB;
+  w.add(12, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  const kills: MemKillRecord[] = [];
+  let calledAtCurrent: number[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => { calledAtCurrent.push(w.current); return [kline(12, 'hog')]; } });
+  await wait(40);
+  w.current = 299 * MB; // the scope is full when the victim dies …
+  w.oomKill(12);
+  await wait(250);
+  assert.equal(calledAtCurrent.length, 0, 'no fork while the scope is at its limit');
+  w.current = 150 * MB; // … and the victim\'s memory is released
+  assert.ok(await until(() => kills.length === 1, 3000));
+  assert.deepEqual(calledAtCurrent.map((c) => c < 0.92 * w.maxBytes), [true], 'the lookup ran only once there was headroom');
+  assert.equal(kills[0].source, 'kernel');
+  // a scope that NEVER frees (the wait is bounded): NO fork at all — the record arrives promptly, labelled `inferred`
+  const w2 = new World();
+  w2.maxBytes = 300 * MB;
+  w2.current = 299 * MB;
+  w2.add(13, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  const kills2: MemKillRecord[] = [];
+  let forks2 = 0;
+  const mw2 = watchSoft(w2, [], kills2, { softBytes: null, kernelLog: async () => { forks2 += 1; return [kline(13, 'hog')]; } });
+  await wait(40);
+  w2.oomKill(13);
+  assert.ok(await until(() => kills2.length === 1, 4000), 'bounded wait ⇒ the record still arrives');
+  assert.equal(forks2, 0, 'a scope that stays at its limit is never forked into');
+  assert.equal(kills2[0].source, 'inferred', 'and the record says it is a guess');
+  mw.stop();
+  mw2.stop();
+});

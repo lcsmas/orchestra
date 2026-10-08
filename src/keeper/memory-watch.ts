@@ -76,6 +76,10 @@ const VICTIM_DEATH_GRACE_MS = 30;
 /** The kernel counts the memcg OOM event (`oom`) BEFORE it counts the kill (`oom_kill`): a look may fall between the two. The `oom` credit therefore CARRIES to the look that sees the kill; one that
  *  never produces a kill (nothing to kill) expires after this long, so it cannot later turn an outside-OOM kill into a «hard» one. */
 const OOM_CREDIT_TTL_MS = 10_000;
+/** The kernel-log lookup forks `journalctl` INSIDE the scope: it waits for the scope to fall under this fraction of its limit (a victim's memory is freed as it exits), at most this long — then it does not fork at all. */
+const HEADROOM_FRACTION = 0.92;
+const HEADROOM_WAIT_MS = 1200;
+const HEADROOM_POLL_MS = 40;
 const MAX_MEMBERS = 400;
 
 export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
@@ -213,6 +217,18 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
   }
 
   const kernelKey = (k: KernelOomKill): string => `${k.atMs}:${k.pid}`;
+
+  /** Wait (bounded) until the scope is below {@link HEADROOM_FRACTION} of its limit again, so the lookup's fork cannot hit the limit. False = no headroom within {@link HEADROOM_WAIT_MS}: do NOT fork. */
+  async function waitForHeadroom(): Promise<boolean> {
+    const t0 = now();
+    for (;;) {
+      const max = maxBytes();
+      const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
+      if (max === null || !Number.isFinite(cur) || cur <= max * HEADROOM_FRACTION) return true;
+      if (stopped || now() - t0 >= HEADROOM_WAIT_MS) return false;
+      await sleep(HEADROOM_POLL_MS);
+    }
+  }
   /** #322 m2: ask the kernel log who died. The line lands in the journal a few ms after the kill: poll (≤ ~1.4 s). No line ⇒ the records stay `inferred`. */
   async function refineWithKernel(made: MemKillRecord[], before: ReadonlyMap<string, VictimSnap>): Promise<MemKillRecord[]> {
     const lookup = o.kernelLog;
@@ -221,6 +237,9 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     const tries = kernelMisses >= 3 ? 1 : 8;
     let mine: KernelOomKill[] = [];
     for (let i = 0; i < tries && !stopped; i++) {
+      // Forking journalctl in a scope that is STILL at its limit invites a second OOM episode — measured: the forked child itself was OOM-killed (a `node` at adj 0) and tool processes were taken as collateral.
+      // The victim's memory is freed only as it exits: wait (bounded) for headroom; none ⇒ NO fork, the inference stands (labelled `inferred`).
+      if (!(await waitForHeadroom())) return applyKernelKills(made, [], [...before.values()], PAGE);
       let lines: KernelOomKill[] | null = null;
       try {
         lines = await lookup(since);
