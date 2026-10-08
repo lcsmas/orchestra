@@ -594,6 +594,9 @@ try {
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     const sinceSec = Math.floor(Date.now() / 1000) - 2;
+    // Twelve tiny detached tool-tree processes (adj 1000, ~1 MB) keep the kernel's candidate set NEVER EMPTY during the race: without them a spoiled round (the driver taken as collateral) can leave an OOM episode with no
+    // tool candidate and the kernel takes the keeper (residual (d), measured on master #320 too) - which would end THIS arm for a reason that has nothing to do with naming. C (hundreds of MB) always outranks them.
+    await runTool(st, 'for i in $(seq 12); do (setsid sleep 3600 >/dev/null 2>&1 &); done', 't-sentinels', 20_000);
     const ROUNDS = 6;
     // One tool command per round: if the keeper's own allocation at the moment the cap is full makes the kernel take the DRIVER too (a second OOM episode - measured), only that round is lost; rounds are
     // repeated (at most 14 attempts) until ROUNDS have completed, so the race is always run ROUNDS times - the product asserts below are not relaxed by a spoiled round.
@@ -605,7 +608,8 @@ try {
       if (mm && /a_rc=0 c_rc=-9/.test(t?.stdout ?? '')) { victimPids.push(...mm[1].split(',')); completed += 1; }
       await sleep(1200); // the scope settles and the journal line lands
     }
-    const nKill = () => eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill ?? 0;
+    let nKillSeen = 0;
+    const nKill = () => { const n = eventsOf(f.cgroupDir ?? '/nonexistent').oom_kill; if (n !== undefined) nKillSeen = n; return nKillSeen; };
     await waitFor(() => kills.length >= nKill() && nKill() > 0, 20_000);
     await sleep(2500);
     await notified(ws);
