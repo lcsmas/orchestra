@@ -38,6 +38,7 @@ const ARMS = {
   launcher_fails_plain: { mustFailOnMaster: true },
   wrapper_missing_no_scope: { mustFailOnMaster: true },
   launcher_hangs_plain: { mustFailOnMaster: true },
+  not_applied_reported: { mustFailOnMaster: true },
 };
 
 const ARM = process.argv[2] ?? '';
@@ -447,6 +448,40 @@ try {
     check('...in no rig scope', !f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
     check('the app log says systemd-run hung and the member runs WITHOUT a scope', /systemd-run hung\?.*WITHOUT a scope/.test(orchLog()), '');
     check('the hung launcher was killed (no `sleep 300` left under this arm)', survivorsOf(base).filter((p) => /sleep/.test(readSafe(`/proc/${p}/cmdline`) ?? '')).length === 0, '');
+  } else if (ARM === 'not_applied_reported') {
+    // A scope that EXISTS but whose cap is not the asked one (the verifier's probe seeded it: a systemd-run shim that DROPS one property). The keeper must report `not-applied` (never `active`),
+    // the app must say «UNCAPPED» in its log, the tools must NOT be wrapped, and a scope with no memory.max is counted as «WITHOUT a limit» for bus-status.
+    const realSR = spawnSync('sh', ['-c', 'command -v systemd-run'], { encoding: 'utf8' }).stdout.trim();
+    const variants = [
+      { tag: 'nomax', drop: 'MemoryMax=*', what: 'MemoryMax dropped (memory.max = max)' },
+      { tag: 'noswap', drop: 'MemorySwapMax=*', what: 'MemorySwapMax=0 dropped (the swap escape is open)' },
+    ];
+    const realPath = process.env.PATH;
+    for (const v of variants) {
+      const wsv = wsName(`na${v.tag}`);
+      wsList.push(wsv);
+      const dir = path.join(base, `shim-${v.tag}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nprev=""\nfor a in "$@"; do\n  if [ "$prev" = "-p" ] && [[ "$a" == ${v.drop} ]]; then unset 'args[${'$'}{#args[@]}-1]'; prev=""; continue; fi\n  args+=("$a"); prev="$a"\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      process.env.PATH = `${dir}:${realPath}`;
+      scopeMod?.resetScopeSupportCache?.();
+      const stv = open(wsv, decide(wsv));
+      const up = await waitFor(() => initOf(stv), 30_000);
+      process.env.PATH = realPath;
+      const f = factsOf(wsv, stv);
+      check(`[${v.what}] the member started, IN its scope`, up && f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
+      const lim = f.cgroupDir ? readSafe(path.join(f.cgroupDir, v.tag === 'nomax' ? 'memory.max' : 'memory.swap.max'))?.trim() : null;
+      check(`[${v.what}] precondition: the seeded limit really is open`, lim === 'max', `limit file=${lim}`);
+      const pr = await kc.probeKeeper(wsv);
+      check(`[${v.what}] the keeper reports cap.state = not-applied (never active)`, pr?.cap?.state === 'not-applied', JSON.stringify(pr?.cap ?? null));
+      check(`[${v.what}] the tools are NOT wrapped (nothing to protect without a cap)`, initOf(stv)?.shellPrefix == null);
+      check(`[${v.what}] the app log says UNCAPPED`, await waitFor(() => new RegExp(`memory-cap\\[${wsv}\\]: scope .* NOT applied.* UNCAPPED`).test(orchLog()), 8000), '');
+      if (v.tag === 'nomax') {
+        const cnt = scopeMod?.countMemberScopes();
+        check('[no memory.max] bus-status would count it as a scope WITHOUT a limit', !!cnt && cnt.unlimited >= 1, JSON.stringify(cnt));
+      }
+    }
+    process.env.PATH = realPath;
   } else if (ARM === 'wrapper_missing_no_scope') {
     // PRE-REVIEW MAJOR 4: with the limit applied and the tool wrapper unusable the kernel would kill the CLI first (the session). So: NO scope, said in the log, member still starts.
     if (WRAPPER) fs.rmSync(WRAPPER, { force: true });

@@ -67,6 +67,8 @@ test('a kill reaches the app log and the listeners once (push frame AND helloAck
 test('bus-status: the route sends the levels + the memory-paused runs (D1), the CLI prints them', () => {
   assert.ok(live(hooks, '...(memPausedRuns ? { memoryPausedRuns: memPausedRuns } : {}),'), 'a failed read is OMITTED (unknown), never sent as an empty list');
   assert.ok(hooks.includes('memoryCap: (() => {') && hooks.includes('store.getMemoryGuardSettings()'));
+  assert.ok(hooks.includes('scopes: sup.ok ? (countMemberScopes()?.total ?? null) : null, unlimited: sup.ok ? (countMemberScopes()?.unlimited ?? 0) : 0, supported: sup.ok,'), 'the route sends the live scope count, how many have NO limit applied, and whether this host can scope at all');
+  assert.ok(hooks.includes('unsupportedReason: sup.reason'), 'and WHY it cannot'); 
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot, Array.isArray(res.memoryPausedRuns)'));
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryCapLine({ ...mc, switchOn: res.runExists === false ? null : frozenForCap.memoryCap })}\\n`);'));
 });

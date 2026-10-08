@@ -144,3 +144,10 @@ test('D1 must-FAIL on master: the guard says "due now: none" but the bus has a r
   const none = driveCli(['bus-status'], reply({ memoryCap: cap, memoryPausedRuns: [] }, ['memoryCap']), { runIdEnv: 'wave-h' });
   assert.match(none.stdout, /memory Pause none \(due below 3\.0 GB\)/, 'control: no run paused ⇒ none');
 });
+
+test('review m: scopes with NO limit applied and an unsupported host are shown — never a silent "ON … 2 live"', needsBuild, () => {
+  const r = driveCli(['bus-status'], reply({ memoryCap: { ...cap, scopes: 4, unlimited: 1 } }, ['memoryCap']), { runIdEnv: 'wave-h' });
+  assert.match(r.stdout, /4 member scope\(s\) live, 1 WITHOUT a limit applied$/m);
+  const un = driveCli(['bus-status'], reply({ memoryCap: { ...cap, scopes: null, supported: false, unsupportedReason: 'systemd-run not found on PATH' } }, ['memoryCap']), { runIdEnv: 'wave-h' });
+  assert.match(un.stdout, /NOT TRACKED on this host \(systemd-run not found on PATH\)/);
+});

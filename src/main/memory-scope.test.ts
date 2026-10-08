@@ -84,6 +84,21 @@ test('memberScopes: ONLY this workspace\'s scopes, with the rig prefix honoured;
   assert.deepEqual(memberScopes(WS, env({ env: { PATH: '' } })).map((s) => s.gen), ['dddddd'], 'the production prefix sees only its own');
 });
 
+test('FI-1 (c): the CLI is guessed ONLY when the keeper has exactly one direct child — two children (or none) stay `session`/unknown, never a guess', () => {
+  const ws = 'ws-twokids';
+  const dir = mkScope(`orchestra-ws-${ws}-iiiiii.scope`, { 'cgroup.procs': '800\n801\n802\n' });
+  const c = cgPathOf(dir);
+  mkProc(800, 1, 'node', c, 10, 'node keeper.js');
+  mkProc(801, 800, 'claude', c, 20, 'claude --x');
+  mkProc(802, 800, 'bash', c, 5, 'bash');
+  const two = listScopeProcs({ cgroupDir: dir, keeperPid: 800 }, null, env());
+  assert.deepEqual(Object.fromEntries(two.map((p) => [p.pid, p.role])), { 800: 'keeper', 801: 'session', 802: 'session' }, 'two direct children: nobody is called the CLI');
+  fs.writeFileSync(path.join(dir, 'cgroup.procs'), '800\n801\n');
+  assert.equal(listScopeProcs({ cgroupDir: dir, keeperPid: 800 }, null, env()).find((p) => p.pid === 801)?.role, 'cli', 'one direct child: it is the CLI');
+  fs.writeFileSync(path.join(dir, 'cgroup.procs'), '800\n');
+  assert.deepEqual(listScopeProcs({ cgroupDir: dir, keeperPid: 800 }, null, env()).map((p) => p.role), ['keeper'], 'no child: no CLI');
+});
+
 test('countMemberScopes: a scope whose limit is NOT applied (memory.max = max) is counted as unlimited — a scope that is not a cap', () => {
   const e = env({ env: { PATH: '', ORCHESTRA_MEMORY_SCOPE_PREFIX: 'orchestra-rig-wh-cnt-' } });
   mkScope('orchestra-rig-wh-cnt-wsa-aaaaaa.scope');

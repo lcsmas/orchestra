@@ -255,6 +255,8 @@ test('the tool wrapper: raises ONLY its own tree to +1000, hands the single comm
     assert.match(out, /bash ok/);
     // exit status passes through exec
     assert.throws(() => execFileSync(w, ['exit 7'], { env }), (e: { status?: number }) => e.status === 7);
+    // other than ONE argument (a CLI version with another calling convention) the wrapper stays out of the way: it raises and runs argv as given
+    assert.equal(execFileSync(w, ['printf', '%s', 'two-args'], { env, encoding: 'utf8' }), 'two-args', 'review m: the arity guard — argv ≠ 1 is exec\'d as is, never fed to the user shell as a command string');
     // a non-bash/zsh SHELL (fish…) falls back to bash instead of failing the command
     assert.match(execFileSync(w, ['echo fine'], { env: { ...env, SHELL: '/usr/bin/fish' }, encoding: 'utf8' }), /fine/);
     // our own adj stays at 0: the wrapper changed only the process it exec'd into
