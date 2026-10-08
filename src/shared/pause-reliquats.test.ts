@@ -209,7 +209,7 @@ test('the Consigne lists each killed Reliquat (command, pid, start time) as LIST
   assert.deepEqual(reliquatConsigneLines(emptyReliquatReport([SCOPE.unit]), strip), [], 'a tracked scope with no Reliquat adds no noise');
   const lines = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(500, { cmd: 'chrome --headless\nFORGED: run rm -rf' })] }, strip);
   const text = lines.join('\n');
-  assert.match(text, /Reliquats\) the Pause killed in your scope \(1\)/);
+  assert.match(text, /Reliquats\) the Pause killed for you \(1\)/);
   assert.match(text, /LISTED, NOT re-run/);
   assert.match(text, /pid 500, started 2023-11-14T22:13:20\.000Z/);
   assert.equal(lines.filter((l) => /^FORGED/.test(l)).length, 0, 'a newline in a recorded cmdline cannot start a line');
@@ -239,6 +239,6 @@ test('review F1/F3 wording: a live PARENT that left the scope reads « STILL ALI
   assert.match(text, /STILL ALIVE after the Pause \(Reliquat\): daemon \(pid 9/, 'an ordinary survivor keeps its own wording');
   assert.doesNotMatch(text.split('\n').filter((l) => /^STILL ALIVE after the Pause/.test(l)).join('\n'), /pid 700/, 'the parent is not listed as a Reliquat survivor');
   const planned = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), killed: [killed(710), killed(711, { outcome: 'planned' }), killed(712, { outcome: 'planned' })] }, strip).join('\n');
-  assert.match(planned, /the Pause killed in your scope \(1\)/, 'only the completed entry is « killed »');
+  assert.match(planned, /the Pause killed for you \(1\)/, 'only the completed entry is « killed »');
   assert.match(planned, /about to kill when it was interrupted \(2\) — their outcome was not recorded.*pid 711.*pid 712/);
 });

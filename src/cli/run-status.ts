@@ -243,7 +243,7 @@ function renderRows(rows: BilanRow[], out: string[]): void {
     if (a?.reliquats) {
       // #325: the Reliquats (processes of the member's kernel scope that had left its session's tree) the Pause dure killed — command, pid, start time; listed, never re-run
       const rq = a.reliquats;
-      out.push(`      Reliquats (leftover processes of the member's scope ${rq.scopes.map((u) => c(u)).join(', ')}): ${rq.killed.length ? `${rq.killedTotal ?? rq.killed.length} killed` : 'none killed'}`);
+      out.push(`      Reliquats (leftover processes ${rq.scopes.length ? `of the member's scope ${rq.scopes.map((u) => c(u)).join(', ')}` : 'the member left behind (no kernel scope)'}): ${rq.killed.length ? `${rq.killedTotal ?? rq.killed.length} killed` : 'none killed'}`);
       for (const k of rq.killed.slice(0, 12)) out.push(`        reliquat killed: ${short(k.cmd, 120)} pid ${c(k.pid)} started ${iso(k.startedAt)} (start-time ${c(k.startTicks)}) cwd ${c(k.cwd ?? '?')} — ${c(k.signal)}${k.outcome === 'survived' ? ' — SURVIVED' : k.outcome === 'planned' ? ' — PLANNED, outcome not recorded' : ''}`);
       if (rq.killed.length > 12) out.push(`        … +${rq.killed.length - 12} more reliquats killed`);
       const outside = rq.survivors.filter((x) => x.kind === 'left-scope-parent');

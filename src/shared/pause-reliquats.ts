@@ -211,6 +211,32 @@ export function mergeReliquats(prior: ReliquatReport | undefined | null, cur: Re
   };
 }
 
+/**
+ * Two reports of the SAME attempt (the scope's, then the browsers') in one: killed unioned BY IDENTITY, survivors / refused / spared / scopes concatenated (de-duplicated by identity),
+ * unknown / error joined, the larger round count. Unlike {@link mergeReliquats} (a RETRY: the latest census replaces the lists) nothing of either side is dropped.
+ */
+export function combineReliquats(a: ReliquatReport | undefined | null, b: ReliquatReport): ReliquatReport {
+  if (!a) return b;
+  const byId = <T extends { pid: number; startTicks?: number }>(xs: readonly T[]): T[] => { const m = new Map<string, T>(); for (const x of xs) m.set(`${x.pid}:${x.startTicks ?? ''}`, x); return [...m.values()]; };
+  const killed = byId([...a.killed, ...b.killed]);
+  const hidden = Math.max(0, (a.killedTotal ?? 0) - a.killed.length) + Math.max(0, (b.killedTotal ?? 0) - b.killed.length);
+  const kept = killed.slice(-MAX_RELIQUATS_RECORDED);
+  const unknown = [a.unknown, b.unknown].filter(Boolean).join('; ');
+  const error = [a.error, b.error].filter(Boolean).join('; ');
+  return {
+    scopes: [...new Set([...a.scopes, ...b.scopes])],
+    killed: kept,
+    ...(killed.length + hidden > kept.length ? { killedTotal: killed.length + hidden } : {}),
+    refused: byId([...a.refused, ...b.refused]),
+    spared: byId([...a.spared, ...b.spared]),
+    survivors: byId([...a.survivors, ...b.survivors]),
+    rounds: Math.max(a.rounds, b.rounds),
+    ...(a.aborted || b.aborted ? { aborted: (a.aborted ?? b.aborted) as 'lifted' } : {}),
+    ...(unknown ? { unknown } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 function trimTo(s: string, n: number, strip: (s: unknown) => string): string {
@@ -229,7 +255,7 @@ export function reliquatConsigneLines(r: ReliquatReport | undefined | null, stri
   const planned = r.killed.length - done.length;
   if (done.length > 0) {
     const n = (r.killedTotal ?? r.killed.length) - planned;
-    out.push(`Leftover processes (Reliquats) the Pause killed in your scope (${n}) — processes you started that had left your session's process tree; LISTED, NOT re-run. Re-run one only if you still need it, after checking the tree:`);
+    out.push(`Leftover processes (Reliquats) the Pause killed for you (${n}) — processes you started that had left your session's process tree (detached daemons, orphaned headless browsers); LISTED, NOT re-run. Re-run one only if you still need it, after checking the tree:`);
     for (const k of done.slice(0, LISTED)) out.push(`  - ${trimTo(k.cmd, 300, strip)}   (pid ${k.pid}, started ${iso(k.startedAt)}${k.cwd ? `, cwd ${trimTo(k.cwd, 200, strip)}` : ''})`);
     if (done.length > LISTED) out.push(`  - … +${n - LISTED} more (orchestra run status)`);
   }

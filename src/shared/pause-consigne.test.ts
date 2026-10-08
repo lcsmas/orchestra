@@ -339,7 +339,7 @@ const RQ_BILAN: BilanLike = { ...BILAN, activity: { ...BILAN.activity!, reliquat
 
 test('#325 CONSIGNE lists the killed Reliquats (command, pid, start time) as LISTED, NOT re-run — in their own section, apart from the tool commands', () => {
   const text = renderConsigne(consigneFromBilan({ ...input, bilan: RQ_BILAN }));
-  assert.match(text, /Leftover processes \(Reliquats\) the Pause killed in your scope \(2\)/);
+  assert.match(text, /Leftover processes \(Reliquats\) the Pause killed for you \(2\)/);
   assert.match(text, /\/usr\/bin\/chrome --headless --n=500\s+\(pid 500, started 2023-11-14T22:13:20\.000Z/);
   assert.match(text, /LISTED, NOT re-run/);
   assert.match(text, /Commands killed by the Pause \(\d+\) — LISTED, NOT re-run/, 'the tool commands keep their own section');
@@ -350,7 +350,7 @@ test('#325 EARLIER Pauses the member was never released from: their Reliquats jo
   const c = consigneFromBilan({ ...input, bilan: RQ_BILAN, earlier: [{ pausedAt: 1_789_000_000_000, snapshotRef: 'r0', killed: [], reliquats: [RQ(500), RQ(400, '/usr/bin/chrome --old')] }] });
   assert.deepEqual(c.reliquats!.killed.map((k) => k.pid).sort(), [400, 500, 501]);
   assert.ok(c.notes.some((n) => /EARLIER Pause .* also killed 2 leftover process\(es\) \(Reliquats\)/.test(n)));
-  assert.match(renderConsigne(c), /Reliquats\) the Pause killed in your scope \(3\)/);
+  assert.match(renderConsigne(c), /Reliquats\) the Pause killed for you \(3\)/);
 });
 
 test('#325 the coordinator\'s wave line counts the Reliquats a member lost (a member with none reads exactly as before)', () => {

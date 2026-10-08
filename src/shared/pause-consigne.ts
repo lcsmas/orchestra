@@ -196,7 +196,7 @@ export function consigneFromBilan(i: ConsigneInput): ConsigneWithFacts {
   for (const e of i.earlier ?? []) {
     if (!e.reliquats?.length) continue;
     reliquats = mergeReliquats({ ...emptyReliquatReport(), killed: e.reliquats }, reliquats ?? emptyReliquatReport());
-    notes.push(`an EARLIER Pause (${iso(e.pausedAt)}) also killed ${e.reliquats.length} leftover process(es) (Reliquats) in your scope — merged into the list of Reliquats`);
+    notes.push(`an EARLIER Pause (${iso(e.pausedAt)}) also killed ${e.reliquats.length} leftover process(es) (Reliquats) of yours — merged into the list of Reliquats`);
   }
   return {
     runId: i.runId,

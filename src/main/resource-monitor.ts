@@ -15,7 +15,13 @@ import { scoped } from './logger';
 import { store } from './store';
 import { keeperPidFilePath, keeperSocketPath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
 import { createDockerApi, readRelayUpstream, type DockerApi } from './docker-api';
-import { getBus } from './bus';
+import { getBus, send as busSend } from './bus';
+import { nearestOrchestratorId } from './wave-run-id';
+import { realKillDeps } from './pause-kill';
+import { BrowserTracker, browserPass, browserStatusText, realClientState, type BrowserPassDeps, type BrowserPassOpts } from './browser-reliquats';
+import { AGENT_TMP_REL } from '../shared/home-root-guard';
+import type { BrowserReliquatView } from '../shared/browser-reliquats';
+import type { ReliquatReport } from '../shared/pause-reliquats';
 import { earliestLiveFleetRunStart, runKnownIn, workspaceKnownIn, type ContainerWindowDeps } from './container-window';
 import { getContainerAccounting, realContainerAccountingDeps, refreshContainerAccounting } from './container-accounting';
 import { accountingView, type ContainerAccountingView } from '../shared/container-accounting';
@@ -135,6 +141,9 @@ export interface ResourceMonitorDeps {
   /** #328: each member's memory read from its kernel scope + live Reliquats (FI-1). Optional like the container dep: a deps object without it writes no `members` block (every existing rig);
    *  only `productionDeps()` installs it, so a rig calling `sampleTick()` never reads the host's cgroups. */
   memberMemory?(): MemberMemoryReport | null;
+  /** #331: the browser-Reliquat bridge (orphaned headless browsers attributable to a workspace). OPTIONAL like the containers: only `productionDeps()` installs it, so a rig calling
+   *  `sampleTick()` with `defaultDeps` never touches a browser; a browser rig installs its own deps (scratch agent-tmp, short window) and drives the REAL pass. */
+  browser?: { deps: BrowserPassDeps; tracker: BrowserTracker; notifyOwner(wsId: string, text: string): void };
 }
 
 /** total − MemAvailable from /proc/meminfo; null when unreadable — never a fabricated figure. */
@@ -448,7 +457,56 @@ export function productionDeps(): ResourceMonitorDeps {
     },
     containerView: () => accountingView(getContainerAccounting()),
     memberMemory: () => currentMemberMemory({ fresh: true }),
+    browser: productionBrowserBridge(),
   };
+}
+
+// ─── #331 browser Reliquats: the production bridge (the 60 s tick AND every Pause dure share ONE tracker, so the per-workspace counter counts both) ────────
+
+let bridge: { deps: BrowserPassDeps; tracker: BrowserTracker; notifyOwner(wsId: string, text: string): void } | null = null;
+
+/** The production browser-Reliquat deps: real /proc, the store's workspaces, `~/.orchestra/agent-tmp`, the bus for the owner's status. Created once. */
+export function productionBrowserBridge(): NonNullable<ResourceMonitorDeps['browser']> {
+  if (bridge) return bridge;
+  const kill = realKillDeps();
+  bridge = {
+    tracker: new BrowserTracker(),
+    deps: {
+      now: defaultDeps.now,
+      agentTmpRoot: () => path.join(os.homedir(), AGENT_TMP_REL),
+      workspaceKnown: (id) => store.loadedFromDisk && !!store.getWorkspace(id), // an unloaded store attributes nothing: absence-from-store is no proof (#187)
+      readProcStat: defaultDeps.readProcStat,
+      readCmdline: defaultDeps.readCmdline,
+      clientState: (pid) => realClientState(pid),
+      startMs: kill.startMs,
+      signal: defaultDeps.signal,
+      sleep: defaultDeps.sleep,
+      warn: defaultDeps.warn,
+      info: defaultDeps.info,
+    },
+    notifyOwner: (wsId, text) => {
+      const db = getBus();
+      const ws = store.getWorkspace(wsId);
+      if (!db || !ws) return;
+      busSend(db, { runId: nearestOrchestratorId(ws, (id) => store.getWorkspace(id)), sender: 'host', kind: 'status', recipient: wsId, body: text });
+    },
+  };
+  return bridge;
+}
+
+/** The Resources page's counter: browsers stopped per workspace since the app started (the monitor tick + the Pause dure). */
+export function getBrowserReliquatView(): BrowserReliquatView {
+  return productionBrowserBridge().tracker.view();
+}
+
+/**
+ * A Pause dure of ONE member: stop its browser Reliquats (the idle window does not apply — a frozen member drives nothing; a live client still protects), through a FRESH
+ * process table. Returns the Bilan-shaped report, or null when the member has none worth recording (its Bilan row then stays byte-identical).
+ */
+export async function stopBrowserReliquatsOf(wsId: string, opts: Pick<BrowserPassOpts, 'stillWanted' | 'onProgress'> = {}, b: NonNullable<ResourceMonitorDeps['browser']> = productionBrowserBridge(), table?: () => Promise<ProcSample[]>): Promise<ReliquatReport | null> {
+  const r = await browserPass(b.deps, b.tracker, await (table ? table() : sampleProcTable()), { onlyWs: wsId, ignoreWindow: true, ...opts });
+  for (const e of r.errors) b.deps.warn(`resources: browser pass (Pause dure of ${wsId}) — ${e}`);
+  return r.report;
 }
 
 async function withBudget(p: Promise<unknown>, ms: number): Promise<'done' | 'budget'> {
@@ -485,6 +543,25 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
   const keeperRoots = d.keeperRoots();
   const liveWorkspaceIds = d.liveWorkspaceIds();
   const reapedWorkspaceIds = await reapPass(d, table, keeperRoots, liveWorkspaceIds);
+
+  // #331: orphaned headless browsers attributable to a workspace (pipe: at once; port: after N min with no client) — a bridge until the member scope (#320) is ON.
+  if (d.browser) {
+    try {
+      const r = await browserPass(d.browser.deps, d.browser.tracker, table);
+      for (const e of r.errors) d.warn(`resources: browser pass — ${e}`);
+      const byWs = new Map<string, typeof r.stopped>();
+      for (const s of r.stopped) byWs.set(s.wsId, [...(byWs.get(s.wsId) ?? []), s]);
+      for (const [ws, list] of byWs) {
+        try {
+          d.browser.notifyOwner(ws, browserStatusText(list)); // ONE bus status per owning member per pass
+        } catch (e) {
+          d.warn(`resources: could not tell workspace ${ws} about its ${list.length} stopped browser(s)`, e);
+        }
+      }
+    } catch (e) {
+      d.warn('resources: browser pass failed', e);
+    }
+  }
 
   // #293: container memory — ONE Docker pass per tick (none when no attributed container exists), bounded so a hung daemon cannot delay this line.
   if (d.refreshContainers) {

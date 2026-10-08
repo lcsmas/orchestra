@@ -37,7 +37,7 @@ import { hasContainerFacts, mergeContainers, mergeRestarted } from '../shared/pa
 import { carrierPhase, confirmByTrap, enrollRoster, sweepSoftPauses, __resetPauseDouceForTests, type PauseOrderDeps } from './pause-douce.ts';
 import type { KillReport, StopTaskResult } from './pause-kill.ts';
 import type { ReliquatKillOptions } from './pause-reliquats.ts';
-import { mergeReliquats, type ReliquatReport } from '../shared/pause-reliquats.ts';
+import { combineReliquats, mergeReliquats, type ReliquatReport } from '../shared/pause-reliquats.ts';
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
 import type { RootRef } from '../shared/pause-procs.ts';
 import { log } from './logger.ts';
@@ -113,6 +113,9 @@ export interface TrapDeps {
    *  which the tool-tree kill above cannot reach — AFTER the tool trees. Production: `killReliquats` of pause-reliquats.ts over `memberScopes` / `listScopeProcs`. Resolves null when the member has NO tracked scope (nothing was looked
    *  at: the Bilan stays byte-identical to before). Omitted ⇒ no step. */
   killReliquats?(m: TrapMember, opts: ReliquatKillOptions): Promise<ReliquatReport | null>;
+  /** #331 (ledger #329 track H10): the BRIDGE until the member scope is ON — stop the member's orphaned headless browsers (launcher dead, profile under `agent-tmp/<its id>/`; pipe mode and port mode with no client) and report them in the Bilan's
+   *  Reliquats. Runs for every non-remote member, scope or not, after the scope step. Resolves null when the member has none worth recording (the Bilan row stays byte-identical). Omitted ⇒ no step. */
+  killBrowserReliquats?(m: TrapMember, opts: { stillPaused?: () => boolean; onProgress?: (r: ReliquatReport) => void }): Promise<ReliquatReport | null>;
   /** #292: the app's own Docker client (REAL socket, never a relay — `docker-api.ts`). A Pause dure stops each member's attributed containers through it, the Reprise restarts them.
    *  Omitted/null ⇒ Docker is not touched at all (and a Reprise records its owed restarts as `failed: Docker is not available to the host`). */
   containers?: PauseDockerApi | null;
@@ -456,6 +459,30 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       }
     } catch (e) {
       errors.push(`reliquats: ${errMsg(e)} — the trap stays open and is retried`);
+      incomplete = true;
+    }
+  }
+  // 5a'. #331 — the member's orphaned HEADLESS BROWSERS (the bridge until #320 + #325 are ON; defence in depth after). Not tied to the session proof: a browser is attributed by its profile directory under agent-tmp/<ws-id>/ and a dead
+  // launcher, and every signal re-reads its identity (src/main/browser-reliquats.ts). A failure here is recorded and retried like the scope step; it never touches a process the decision did not name.
+  if (deps.killBrowserReliquats) {
+    try {
+      const b = await deps.killBrowserReliquats(m, {
+        stillPaused: () => stillPaused(db, carrier),
+        onProgress: (r) => {
+          activity.reliquats = combineReliquats(activity.reliquats, r);
+          updateBilanReliquats(db, carrier.runId, m.wsId, carrier.pausedAt, () => activity.reliquats as ReliquatReport);
+        },
+      });
+      if (b) {
+        activity.reliquats = combineReliquats(activity.reliquats, b);
+        if (b.aborted === 'lifted') {
+          updateBilanReliquats(db, carrier.runId, m.wsId, carrier.pausedAt, () => activity.reliquats as ReliquatReport);
+          return 'lifted';
+        }
+        if (b.survivors.length > 0) errors.push(`reliquats: ${b.survivors.length} orphaned browser process(es) still alive after the trap`);
+      }
+    } catch (e) {
+      errors.push(`browser reliquats: ${errMsg(e)} — the trap stays open and is retried`);
       incomplete = true;
     }
   }

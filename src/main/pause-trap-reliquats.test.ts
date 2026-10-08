@@ -303,3 +303,111 @@ test('review F1: a live parent that LEFT the scope is a survivor on the row (lou
   assert.match(row.error ?? '', /reliquats: 1 leftover process\(es\) still alive/);
   assert.equal(row.activity!.reliquats!.survivors[0].kind, 'left-scope-parent');
 });
+
+// ── #331 — the browser-Reliquat bridge in the trap: orphaned headless browsers of the member, scope or not ─────────────────────────────────
+
+type BrowserOpts = { stillPaused?: () => boolean; onProgress?: (r: ReliquatReport) => void };
+function withBrowsers(rig: Rig, answer: ReliquatReport | null | ((o: BrowserOpts, call: number) => ReliquatReport | null | Promise<ReliquatReport | null>)): { opts: BrowserOpts[] } {
+  const seen: BrowserOpts[] = [];
+  rig.deps.killBrowserReliquats = async (_m, o) => {
+    rig.calls.push('killBrowserReliquats');
+    seen.push(o);
+    return typeof answer === 'function' ? answer(o, seen.length) : answer;
+  };
+  return { opts: seen };
+}
+const browserKilled = (pid: number, mode = 'pipe'): ReliquatKilled => killedOf(pid, { comm: 'chrome', cmd: `/opt/chrome --headless --user-data-dir=/h/.orchestra/agent-tmp/m1/tmp/p${pid}`, scope: `browser:${mode}`, cwd: `/h/.orchestra/agent-tmp/m1/tmp/p${pid}` });
+const browserReport = (...pids: number[]): ReliquatReport => ({ ...emptyReliquatReport(), killed: pids.map((p) => browserKilled(p)), rounds: 1 });
+
+test('#331 a member WITHOUT any kernel scope (switch OFF / unsupported) still loses its orphaned headless browsers: the Pause dure lists them in the Bilan (activity.reliquats, scopes [])', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = null; // no tracked scope
+  withBrowsers(rig, browserReport(900, 901));
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  assert.deepEqual(rig.calls.filter((x) => x === 'killTrees' || x === 'killReliquats' || x === 'killBrowserReliquats'), ['killTrees', 'killReliquats', 'killBrowserReliquats'], 'order: tool trees → scope Reliquats → browsers');
+  const rq = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.reliquats!;
+  assert.deepEqual(rq.scopes, []);
+  assert.deepEqual(rq.killed.map((k) => [k.pid, k.scope]), [[900, 'browser:pipe'], [901, 'browser:pipe']]);
+});
+
+test('#331 a member with a scope: the scope\'s kills and the browsers\' are ONE list (union by identity); a browser the scope step already killed is not listed twice', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = reportOf(500, 501);
+  withBrowsers(rig, { ...browserReport(900), killed: [browserKilled(900), killedOf(500)] });
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
+  const rq = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.reliquats!;
+  assert.deepEqual(rq.killed.map((k) => k.pid).sort((a, b) => a - b), [500, 501, 900]);
+  assert.deepEqual(rq.scopes, ['orchestra-rig-wh-m1-abc.scope']);
+});
+
+test('#331 NOTHING to report (null): the Bilan row is byte-identical to a trap without the browser step — a member with no browser Reliquat is not touched at all', async () => {
+  __resetPauseTrapForTests();
+  const a = newRig();
+  a.answer = null;
+  withBrowsers(a, null);
+  const ca = pause(a);
+  await trapMember(a.deps, a.db, ca, a.roster[0]);
+  const b = newRig();
+  b.answer = null;
+  const cb = pause(b);
+  await trapMember(b.deps, b.db, cb, b.roster[0]);
+  const ra = bilanForMember(a.db, 'W', 'm1', ca.pausedAt)!;
+  const rb = bilanForMember(b.db, 'W', 'm1', cb.pausedAt)!;
+  assert.equal('reliquats' in (ra.activity ?? {}), false);
+  assert.deepEqual([ra.activity, ra.killed, ra.error], [rb.activity, rb.killed, rb.error]);
+  assert.ok(a.calls.includes('killBrowserReliquats') && !b.calls.includes('killBrowserReliquats'));
+});
+
+test('#331 the browser step runs whatever the session proof (an unproven keeper does not hide an orphaned browser), never for a remote member, and is handed the lift check', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.cliResult = { error: 'keeper 90 is alive but did not answer the probe' };
+  const seen = withBrowsers(rig, browserReport(900));
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'incomplete');
+  assert.ok(!rig.calls.includes('killReliquats'), 'the scope step still waits for a proven session');
+  assert.ok(rig.calls.includes('killBrowserReliquats'), 'the browsers are attributed by profile + dead launcher, not by the session');
+  assert.equal(seen.opts[0].stillPaused?.(), true);
+  assert.equal(beginReprise(rig.db, 'W', 'ops-w'), 'resuming');
+  assert.equal(seen.opts[0].stillPaused?.(), false, 'the same lift check the killer re-reads before every signal round');
+  __resetPauseTrapForTests();
+  const r2 = newRig();
+  r2.roster = [member('m1', { remote: true })];
+  withBrowsers(r2, browserReport(900));
+  await trapMember(r2.deps, r2.db, pause(r2), r2.roster[0]);
+  assert.ok(!r2.calls.includes('killBrowserReliquats'));
+});
+
+test('#331 a LIFT during the browser kill returns `lifted` and keeps what was stopped in the Bilan; a throw is recorded and keeps the trap open; survivors are loud; write-ahead persists before the step returns', async () => {
+  __resetPauseTrapForTests();
+  const lifted = newRig();
+  lifted.answer = null;
+  withBrowsers(lifted, { ...browserReport(900), aborted: 'lifted' });
+  const cl = pause(lifted);
+  assert.equal(await trapMember(lifted.deps, lifted.db, cl, lifted.roster[0]), 'lifted');
+  assert.deepEqual(bilanForMember(lifted.db, 'W', 'm1', cl.pausedAt)!.activity!.reliquats!.killed.map((k) => k.pid), [900]);
+  __resetPauseTrapForTests();
+  const boom = newRig();
+  withBrowsers(boom, () => { throw new Error('procfs exploded'); });
+  const cb = pause(boom);
+  assert.equal(await trapMember(boom.deps, boom.db, cb, boom.roster[0]), 'incomplete');
+  assert.match(bilanForMember(boom.db, 'W', 'm1', cb.pausedAt)!.error ?? '', /browser reliquats: procfs exploded.*retried/);
+  __resetPauseTrapForTests();
+  const surv = newRig();
+  surv.answer = null;
+  withBrowsers(surv, { ...browserReport(900), survivors: [{ pid: 900, startTicks: 1900, comm: 'chrome', cmd: 'chrome', reason: 'still-alive-after-kill' }] });
+  const cs = pause(surv);
+  assert.equal(await trapMember(surv.deps, surv.db, cs, surv.roster[0]), 'complete');
+  assert.match(bilanForMember(surv.db, 'W', 'm1', cs.pausedAt)!.error ?? '', /1 orphaned browser process\(es\) still alive/);
+  __resetPauseTrapForTests();
+  const wa = newRig();
+  wa.answer = null;
+  let during: number[] = [];
+  withBrowsers(wa, (o) => { o.onProgress?.(browserReport(900)); during = bilanForMember(wa.db, 'W', 'm1', getRunPause(wa.db, 'W')!.pausedAt)!.activity!.reliquats!.killed.map((k) => k.pid); return browserReport(900, 901); });
+  await trapMember(wa.deps, wa.db, pause(wa), wa.roster[0]);
+  assert.deepEqual(during, [900], 'write-ahead: listed before the step returned');
+});

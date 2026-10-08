@@ -18,6 +18,7 @@ import { keeperActivityUnknown } from '../shared/pause-douce';
 import { getEventsDir } from './events-spool';
 import { killToolTrees, realKillDeps, stopWithin } from './pause-kill';
 import { killReliquats } from './pause-reliquats';
+import { stopBrowserReliquatsOf } from './resource-monitor';
 import { memberScopeDeps } from './pause-reliquats-scope';
 import { liveChainIncludes, onTurnStart, type InterruptOutcome, type MemberActivity, type TrapDeps, type TrapMember } from './pause-trap';
 import { log } from './logger';
@@ -183,6 +184,8 @@ export function buildPauseTrapDeps(): TrapDeps {
     killTrees: (cli, keeperPid, opts) => killToolTrees(cli, keeperPid, kill, opts),
     // #325 (ledger #329 FI-1 v1): the member's Reliquats — processes of its kernel scope outside its session's tree — after the tool trees. null = no tracked scope (switch OFF, human, unsupported host): today's behaviour.
     killReliquats: (m, opts) => killReliquats(m.wsId, memberScopeDeps(m.wsId), kill, opts),
+    // #331: the bridge — the member's orphaned headless browsers (scope or not), through the resource monitor's own bridge (one tracker: the Resources counter counts the Pause too)
+    killBrowserReliquats: (m, opts) => stopBrowserReliquatsOf(m.wsId, { ...(opts.stillPaused ? { stillWanted: opts.stillPaused } : {}), ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) }),
     stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),
     storeReady: () => store.loadedFromDisk,
   };
