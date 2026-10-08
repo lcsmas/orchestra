@@ -798,23 +798,16 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
     }
     if (launcherFailed === null) {
       // The launcher is still running and no keeper answered in 10 s: systemd-run HUNG (a stuck user manager / D-Bus). Review m5: that must not fail the session start — kill OUR direct child
-      // and fall back to a plain keeper, unless the keeper turned up in the meantime (the launcher was merely slow).
+      // and fall back to a plain keeper. (systemd-run --scope execs INTO the keeper under the same pid: a launcher merely slower than 10 s loses its cap here, by design — the keeper it
+      // would have become is the process killed. `child.kill` refuses an already-reaped child, so a recycled pid is never signalled.)
       launcherFailed = 'no keeper socket within 10 s (systemd-run hung?)';
-      try {
-        if (child.pid) process.kill(child.pid, 'SIGKILL');
-      } catch {
-        /* already gone */
-      }
+      child.kill('SIGKILL');
       await new Promise((res) => setTimeout(res, 300));
-      try {
-        return await connectSock(sockPath, 500);
-      } catch {
-        /* no keeper: fall through to the plain launch */
-      }
     }
     let why = '';
     try {
-      why = ` — ${fs.readFileSync(keeperLogPath(wsId), 'utf8').trim().split('\n').slice(-2).join(' | ').slice(-300)}`;
+      const tail = fs.readFileSync(keeperLogPath(wsId), 'utf8').trim().split('\n').slice(-2).join(' | ').slice(-300);
+      if (tail) why = ` — ${tail}`; // no dangling dash when the launcher said nothing
     } catch {
       /* no log */
     }

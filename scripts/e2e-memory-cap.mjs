@@ -417,10 +417,14 @@ try {
     scopeMod?.resetScopeSupportCache?.();
     const spec = decide(ws);
     check('the decision still says "scope" (support looked fine)', hasCap ? !!spec : true, JSON.stringify(spec ?? null));
+    const tFail0 = Date.now();
     const st = open(ws, spec);
     const up = await waitFor(() => initOf(st), 30_000);
+    const tFail = Date.now() - tFail0;
     process.env.PATH = realPath;
     const f = factsOf(ws, st);
+    const failLine = orchLog().split('\n').find((l) => new RegExp(`memory-cap\\[${ws}\\].*launching it WITHOUT a scope`).test(l)) ?? '';
+    check('a launcher that FAILS is handled at once (reason «exit 1», well under the 10 s hung-launcher wait)', hasCap ? /\(exit 1\b/.test(failLine) && !/hung/.test(failLine) && tFail < 8000 : true, `after ${tFail} ms: ${failLine.slice(-170)}`);
     check('the member STARTED anyway (an uncapped session beats none)', up && alive(f.keeperPid) && alive(f.cliPid), `errors=${st.errors.join('|')}`);
     check('...in no rig scope', !f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
     const pr = await kc.probeKeeper(ws);

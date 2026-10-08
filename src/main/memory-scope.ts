@@ -15,6 +15,7 @@ import {
   sanitizeScopePrefix,
   scopeGenForWorkspace,
   parseMemoryScopeUnit,
+  swapLimitApplied,
   type ClassifiedMember,
   type ScopeMember,
   type ScopeMemory,
@@ -192,8 +193,26 @@ export function countMemberScopes(e: ScopeEnv = realScopeEnv()): { total: number
   const prefix = scopePrefix(e);
   try {
     const mine = e.readdir(slice).filter((u) => parseMemoryScopeUnit(prefix, u) !== null);
+    let swapTotalKb: number | null = null;
+    try {
+      const m = /^SwapTotal:\s+(\d+)\s+kB/m.exec(e.readFile(`${e.procRoot}/meminfo`));
+      swapTotalKb = m ? Number(m[1]) : null;
+    } catch {
+      /* unknown */
+    }
+    // «Not a cap» = no memory.max, OR the swap escape open (review m4 / re-gate): the keeper reports such a scope `not-applied`, so bus-status must not count it as healthy.
     let unlimited = 0;
-    for (const u of mine) if (readScopeMemory({ cgroupDir: path.join(slice, u) }, e)?.maxBytes === null) unlimited++;
+    for (const u of mine) {
+      const dir = path.join(slice, u);
+      const mem = readScopeMemory({ cgroupDir: dir }, e);
+      let swapText: string | null = null;
+      try {
+        swapText = e.readFile(path.join(dir, 'memory.swap.max'));
+      } catch {
+        /* no swap accounting */
+      }
+      if (mem?.maxBytes === null || !swapLimitApplied(swapText, swapTotalKb)) unlimited++;
+    }
     return { total: mine.length, unlimited };
   } catch {
     return null;

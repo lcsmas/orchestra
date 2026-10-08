@@ -99,11 +99,20 @@ test('FI-1 (c): the CLI is guessed ONLY when the keeper has exactly one direct c
   assert.deepEqual(listScopeProcs({ cgroupDir: dir, keeperPid: 800 }, null, env()).map((p) => p.role), ['keeper'], 'no child: no CLI');
 });
 
-test('countMemberScopes: a scope whose limit is NOT applied (memory.max = max) is counted as unlimited — a scope that is not a cap', () => {
+test('countMemberScopes: a scope that is NOT a cap — no memory.max, OR the swap escape open — is counted as unlimited', () => {
   const e = env({ env: { PATH: '', ORCHESTRA_MEMORY_SCOPE_PREFIX: 'orchestra-rig-wh-cnt-' } });
+  fs.mkdirSync(procRoot, { recursive: true });
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'MemTotal: 1000 kB\nSwapTotal: 8000000 kB\n');
   mkScope('orchestra-rig-wh-cnt-wsa-aaaaaa.scope');
+  assert.deepEqual(countMemberScopes(e), { total: 1, unlimited: 0 }, 'max set + swap 0 = a cap');
   mkScope('orchestra-rig-wh-cnt-wsb-bbbbbb.scope', { 'memory.max': 'max\n' });
-  assert.deepEqual(countMemberScopes(e), { total: 2, unlimited: 1 });
+  assert.deepEqual(countMemberScopes(e), { total: 2, unlimited: 1 }, 'no memory.max');
+  mkScope('orchestra-rig-wh-cnt-wsc-cccccc.scope', { 'memory.swap.max': 'max\n' });
+  assert.deepEqual(countMemberScopes(e), { total: 3, unlimited: 2 }, 'swap escape open (host HAS swap) — the keeper says not-applied, so does bus-status');
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'MemTotal: 1000 kB\nSwapTotal: 0 kB\n');
+  assert.deepEqual(countMemberScopes(e), { total: 3, unlimited: 2 }, 'we always ASK for swap 0: a file reading max is not what was asked, whatever the host');
+  fs.rmSync(path.join(APP, 'orchestra-rig-wh-cnt-wsc-cccccc.scope', 'memory.swap.max'));
+  assert.deepEqual(countMemberScopes(e), { total: 3, unlimited: 1 }, 'no swap accounting AND no swap on the host: nothing to escape into, still a cap');
 });
 
 test('memberScopes: no app.slice / unsupported platform ⇒ [] ("not tracked"), never a throw', () => {
