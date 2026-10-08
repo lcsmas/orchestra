@@ -112,6 +112,9 @@ const workspaces = await import(`${REPO}/src/main/workspaces.ts`);
 const activity = await import(`${REPO}/src/main/activity.ts`);
 const acctUsage = await import(`${REPO}/src/main/account-usage.ts`);
 const pq = await import(`${REPO}/src/main/prompt-queue.ts`);
+// the host's MemAvailable must not decide a wake here (Admission #287 has its own rig): toggle off, else a busy machine (< 6 GB) holds #74's wake
+const memGuard = await import(`${REPO}/src/main/memory-guard.ts`).catch(() => null);
+memGuard?.setMemoryGuardSettingsReader(() => ({ admissionGb: 6, criticalGb: 3, admissionEnabled: false }));
 const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
 
 // the booted app registers the LIVE workspace tree for #255 (pause-trap-host.ts) — the Reprise's coordinators and #256's wake guard read it
