@@ -677,6 +677,46 @@ test('CARRY-FORWARD: a re-Pause during RESUMING must not hide what the FIRST Pau
   db.close();
 });
 
+const RQ = (pid: number, cmd: string) => ({ pid, startTicks: 1000 + pid, comm: 'chrome', cmd, cwd: '/w/o1', startedAt: Date.UTC(2026, 9, 8, 12, 51, 0), scope: 'orchestra-ws-o1-abc.scope', evidence: 'e', signal: 'SIGTERM', outcome: 'exited' });
+/** #325: epoch `pausedAt`'s trap also killed these Reliquats for `ws` (written on the Bilan row's activity exactly as the trap does). */
+function withReliquats(db: bus.BusDb, ws: string, pausedAt: number, killed: ReturnType<typeof RQ>[]): void {
+  const row = db.prepare("SELECT id, activity FROM pause_records WHERE run_id = 'L' AND ws_id = ? AND paused_at = ?").get(ws, pausedAt) as { id: number; activity: string };
+  const a = JSON.parse(row.activity);
+  a.reliquats = { scopes: ['orchestra-ws-o1-abc.scope'], killed, refused: [], spared: [], survivors: [], rounds: 1 };
+  db.prepare('UPDATE pause_records SET activity = ? WHERE id = ?').run(JSON.stringify(a), row.id);
+}
+
+test('#325 the Consigne de reprise SHOWS the Reliquats the Pause killed (command, pid, start time; listed, never re-run) — and a re-Pause carries the FIRST epoch\'s Reliquats to a member never released from it', () => {
+  const { db } = freshDb();
+  tree(db);
+  const p1 = pauseAndTrap(db);
+  withReliquats(db, 'o1', p1, [RQ(500, '/usr/bin/chrome --headless --n=500'), RQ(501, '/usr/bin/chrome --headless --n=501')]);
+  beginReprise(db, 'L', 'L');
+  releaseMembers(db, 'L', 'O', ['o2']); // o2 (no Reliquat) is released and told in epoch 1; o1 is NOT
+  const end = Date.now() + 3;
+  while (Date.now() < end);
+  const p2 = pauseAndTrap(db, false); // epoch 2 (re-Pause): killed nothing, no Reliquat this time
+  assert.ok(p2 > p1);
+  beginReprise(db, 'L', 'L');
+  const before = reprRows(db).length;
+  releaseMembers(db, 'L', 'O', ['o1']);
+  const o1 = reprRows(db)[before].body;
+  for (const needle of ['Leftover processes (Reliquats) the Pause killed in your scope (2)', '/usr/bin/chrome --headless --n=500', 'pid 500, started 2026-10-08T12:51:00.000Z', 'an EARLIER Pause (', 'also killed 2 leftover process(es) (Reliquats) in your scope', 'LISTED, NOT re-run']) assert.ok(o1.includes(needle), `o1 missing: ${needle}\n${o1}`);
+  releaseMembers(db, 'L', 'O', ['o2']);
+  assert.equal(reprRows(db).at(-1)!.body.includes('Reliquats'), false, 'a member with no Reliquat reads no Reliquat line');
+  // and the plain case: the CURRENT epoch's Reliquats in a first Reprise
+  const { db: db2 } = freshDb();
+  tree(db2);
+  const q1 = pauseAndTrap(db2);
+  withReliquats(db2, 'o1', q1, [RQ(600, 'node /tmp/rig/server.js --port 4001')]);
+  beginReprise(db2, 'L', 'L');
+  const b2 = reprRows(db2).length;
+  releaseMembers(db2, 'L', 'O', ['o1']);
+  assert.match(reprRows(db2)[b2].body, /Reliquats\) the Pause killed in your scope \(1\)[\s\S]*node \/tmp\/rig\/server\.js --port 4001\s+\(pid 600, started /);
+  db.close();
+  db2.close();
+});
+
 test('CARRY-FORWARD keeps each epoch\'s INTERRUPT OUTCOME: a call epoch 1\'s interrupt ABORTED is still "ABORTED" after a re-Pause that found the member idle (never "no turn was interrupted")', () => {
   const { db } = freshDb();
   tree(db);

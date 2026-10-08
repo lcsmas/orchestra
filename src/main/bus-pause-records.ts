@@ -10,6 +10,7 @@ import type { BusDb } from './bus.ts';
 import { runSubtreeIds, type RunPauseInfo } from './bus-pause.ts';
 import { parseSwitches } from '../shared/bus-switches.ts';
 import type { BilanContainers } from '../shared/pause-containers.ts';
+import type { ReliquatReport } from '../shared/pause-reliquats.ts';
 
 /** What the member was doing when the Pause took effect + what the trap did (all optional but `surface`). */
 /** One process of the pausing call's ancestry (the CLI records it at pause time; the trap re-verifies pid + start-time against the live CLI). */
@@ -61,6 +62,8 @@ export interface BilanActivity {
   notes?: string[];
   /** #292 (ledger #295 FI-1.6): the attributed containers a Pause dure stopped for this member and what the Reprise did with them — JSON in `activity`, no migration. */
   containers?: BilanContainers;
+  /** #325 (ledger #329 FI-1 v1.4): the Reliquats — processes of the member's kernel scope that left its session's tree — a Pause dure killed for this member. Absent = the member has no tracked scope (nothing was looked at). JSON in `activity`, no migration. */
+  reliquats?: ReliquatReport;
   /** Processes the TURN OBSERVER (a CLI-started turn while paused) killed — kept apart from `killed_json`, which belongs to the pause-time trap
    *  (a non-NULL `killed_json` means "this member's trap is complete"). */
   observerKilled?: Array<{ pid: number; cmd: string; signal: string; outcome: string; via?: string; cwd?: string | null; evidence?: string }>;
@@ -250,6 +253,17 @@ export function updateBilanContainers(db: BusDb, carrierRunId: string, wsId: str
     }
     const a: BilanActivity = row.activity ?? { surface: 'none' };
     updateBilan(db, row.id, { activity: { ...a, containers: fn(a.containers) } });
+  });
+  tx.immediate();
+}
+
+/** #325: persist the Reliquat kill progress (write-ahead of the final whole-activity write) touching ONLY `activity.reliquats`, in one immediate transaction — a concurrent writer's notes / observer kills are never overwritten. */
+export function updateBilanReliquats(db: BusDb, carrierRunId: string, wsId: string, pausedAt: number, fn: (cur: ReliquatReport | undefined) => ReliquatReport): void {
+  const tx = db.transaction(() => {
+    const row = bilanForMember(db, carrierRunId, wsId, pausedAt);
+    if (!row) return; // the trap inserts the provisional row before any process is touched; nothing to attach to otherwise
+    const a: BilanActivity = row.activity ?? { surface: 'none' };
+    updateBilan(db, row.id, { activity: { ...a, reliquats: fn(a.reliquats) } });
   });
   tx.immediate();
 }
