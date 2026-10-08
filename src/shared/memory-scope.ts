@@ -286,6 +286,8 @@ export const snapKey = (pid: number, startTicks: number): string => `${pid}:${st
 export interface MemKillRecord {
   /** Absent on a record written before #322 (= `kill`). */
   kind?: 'kill';
+  /** #322 F7: the victim was the member's own AGENT process (`cli`) or its keeper — the last resort of the cap: the SESSION ended. Absent = a tool command (the session survived). */
+  role?: 'cli' | 'keeper';
   /** How the victim was named (#322 m2): `kernel` = the kernel's own OOM line (journal), pid + comm exact; `inferred` = ranked from the member snapshots (a larger command that exited in the same window can be mistaken for it); absent = an older keeper (= inferred). */
   source?: 'kernel' | 'inferred';
   /** Monotonic per keeper (1, 2, …) — a reattaching app delivers only what it has not seen. */
@@ -312,6 +314,8 @@ export interface MemSoftRecord {
   bytes: number;
   softBytes: number;
   hardBytes: number | null;
+  /** Upward crossings swallowed by the rate bound since the previous warning (absent = none). */
+  suppressed?: number;
 }
 /** What the keeper hands the host to tell the member and its coordinator about. */
 export type MemNoticeRecord = MemKillRecord | MemSoftRecord;
@@ -396,7 +400,7 @@ const fmtGb = (bytes: number): string => {
 /** The row the member sees. One text for the live row and the reopened one (the builder is the single source). */
 export function memNoticeText(rec: MemNoticeRecord): string {
   if (isSoftRecord(rec)) {
-    return `Memory at ${fmtGb(rec.bytes)} — Plafond mémoire warning level (${fmtGb(rec.softBytes)}) crossed${rec.hardBytes !== null ? `; hard cap ${fmtGb(rec.hardBytes)}` : ''}`;
+    return `Working set ${fmtGb(rec.bytes)} (reclaimable cache excluded) — Plafond mémoire warning level (${fmtGb(rec.softBytes)}) crossed${rec.hardBytes !== null ? `; hard cap ${fmtGb(rec.hardBytes)}` : ''}`;
   }
   const reason = rec.level === 'hard'
     ? `Plafond mémoire${rec.hardBytes !== null ? ` ${fmtGb(rec.hardBytes)}` : ''} reached`
@@ -404,22 +408,24 @@ export function memNoticeText(rec: MemNoticeRecord): string {
   if (rec.command === null) return `A command was killed: ${reason} (it lived too briefly to be named)`;
   const cmd = rec.command.length > 120 ? `${rec.command.slice(0, 119)}…` : rec.command;
   const prefix = rec.source === 'kernel' ? `Command ${cmd}` : `A command (probably ${cmd})`;
-  return rec.level === 'hard' ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
+  const main = rec.level === 'hard' ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
+  return rec.role ? `${main} — this was the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : main;
 }
 
 /** The ONE message the coordinator gets: workspace, command, level. */
 export function memBusBody(wsLabel: string, rec: MemNoticeRecord): string {
   if (isSoftRecord(rec)) {
-    return `Plafond mémoire — workspace ${wsLabel}: memory ${fmtGb(rec.bytes)} crossed the warning level (${fmtGb(rec.softBytes)})${rec.hardBytes !== null ? `, hard cap ${fmtGb(rec.hardBytes)}` : ''}. Nothing was killed or slowed. Scope ${rec.unit}.`;
+    return `Plafond mémoire — workspace ${wsLabel}: working set ${fmtGb(rec.bytes)} crossed the warning level (${fmtGb(rec.softBytes)})${rec.hardBytes !== null ? `, hard cap ${fmtGb(rec.hardBytes)}` : ''}${rec.suppressed ? ` (${rec.suppressed} further crossing(s) since the last warning were not repeated)` : ''}. Nothing was killed or slowed. Scope ${rec.unit}.`;
   }
   const cmd = rec.command === null ? 'an unnamed command (it lived too briefly)' : `${rec.source === 'kernel' ? 'command' : 'probably the command'} \`${rec.command}\`${rec.pid !== null ? ` (pid ${rec.pid}${rec.rssBytes ? `, ~${Math.round(rec.rssBytes / (1024 * 1024))} MB` : ''})` : ''}`;
   const lvl = rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${fmtGb(rec.hardBytes)})` : ''}` : 'an OOM kill from outside the scope limit';
-  return `Plafond mémoire — workspace ${wsLabel}: ${cmd} KILLED at the ${lvl}. The member's session survived. Scope ${rec.unit}.`;
+  const after = rec.role ? `This was the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: its SESSION ENDED (the cap's last resort).` : "The member's session survived.";
+  return `Plafond mémoire — workspace ${wsLabel}: ${cmd} KILLED at the ${lvl}. ${after} Scope ${rec.unit}.`;
 }
 
 /** The app-log line for one warning-level crossing. */
 export function formatMemSoftLine(wsLabel: string, rec: MemSoftRecord): string {
-  return `memory-cap[${wsLabel}] warning level crossed: ${(rec.bytes / GIB).toFixed(2)} GB >= ${(rec.softBytes / GIB).toFixed(2)} GB — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}`;
+  return `memory-cap[${wsLabel}] warning level crossed: working set ${(rec.bytes / GIB).toFixed(2)} GB >= ${(rec.softBytes / GIB).toFixed(2)} GB — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}`;
 }
 
 /** The kernel's own ranking (mm/oom_kill.c oom_badness): RSS pages + adj/1000 × the cgroup's page budget. */

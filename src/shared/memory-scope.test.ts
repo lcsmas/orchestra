@@ -399,13 +399,13 @@ test('#322: the member row, the coordinator message and the soft line say worksp
   assert.equal(memNoticeText(rec({ source: 'kernel', command: 'x'.repeat(300) })).includes('x'.repeat(200)), false, 'a huge command line is clipped');
   const soft: MemSoftRecord = { kind: 'soft', seq: 3, at: 5, unit: 'u.scope', bytes: Math.round(3.1 * 1024 ** 3), softBytes: 3 * 1024 ** 3, hardBytes: 6 * 1024 ** 3 };
   assert.ok(isSoftRecord(soft) && !isSoftRecord(rec()));
-  assert.equal(memNoticeText(soft), 'Memory at 3.1 GB — Plafond mémoire warning level (3 GB) crossed; hard cap 6 GB');
+  assert.equal(memNoticeText(soft), 'Working set 3.1 GB (reclaimable cache excluded) — Plafond mémoire warning level (3 GB) crossed; hard cap 6 GB');
   const body = memBusBody('feat-x', rec({ source: 'kernel', command: 'cargo build', pid: 42 }));
   assert.match(body, /workspace feat-x/);
   assert.match(body, /command `cargo build` \(pid 42, ~90 MB\)/);
   assert.match(body, /hard level \(6 GB\)/);
   assert.match(memBusBody('feat-x', soft), /Nothing was killed or slowed/);
-  assert.match(formatMemSoftLine('feat-x', soft), /^memory-cap\[feat-x\] warning level crossed: 3\.10 GB >= 3\.00 GB — scope u\.scope/);
+  assert.match(formatMemSoftLine('feat-x', soft), /^memory-cap\[feat-x\] warning level crossed: working set 3\.10 GB >= 3\.00 GB — scope u\.scope/);
 });
 
 test('#322: inferKillRecords labels what it makes `inferred` (the kill kind is explicit)', () => {
@@ -421,4 +421,17 @@ test('#322 R5: the working set = memory.current − inactive_file (never negativ
   assert.equal(workingSetBytes(10_000, stat), 7000);
   assert.equal(workingSetBytes(2_000, stat), 0, 'a stale stat larger than the reading ⇒ 0, not negative');
   assert.equal(workingSetBytes(10_000, {}), 10_000);
+});
+
+test('#322 review F7: when the CLI (or the keeper) is the victim the text says the SESSION ENDED — never «the member\'s session survived»', () => {
+  const k = (over: Partial<MemKillRecord>): MemKillRecord => ({ kind: 'kill', source: 'kernel', seq: 1, at: 1, level: 'hard', command: 'claude --output-format stream-json', pid: 7, rssBytes: 1, candidates: [], unit: 'u.scope', hardBytes: 6 * 1024 ** 3, ...over });
+  assert.match(memBusBody('w', k({})), /The member's session survived\./);
+  const cli = memBusBody('w', k({ role: 'cli' }));
+  assert.doesNotMatch(cli, /session survived/);
+  assert.match(cli, /agent process: its SESSION ENDED/);
+  assert.match(memBusBody('w', k({ role: 'keeper' })), /keeper: its SESSION ENDED/);
+  assert.match(memNoticeText(k({ role: 'cli' })), /the member's own agent process: the session ended$/);
+  assert.doesNotMatch(memNoticeText(k({})), /session ended/);
+  const soft: MemSoftRecord = { kind: 'soft', seq: 3, at: 5, unit: 'u.scope', bytes: 3 * 1024 ** 3, softBytes: 3 * 1024 ** 3, hardBytes: null, suppressed: 4 };
+  assert.match(memBusBody('w', soft), /4 further crossing\(s\) since the last warning were not repeated/);
 });

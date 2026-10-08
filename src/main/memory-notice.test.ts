@@ -9,7 +9,7 @@ const GIB = 1024 ** 3;
 const kill = (over: Partial<MemKillRecord> = {}): MemKillRecord => ({ kind: 'kill', source: 'kernel', seq: 1, at: 100, level: 'hard', command: 'cargo build', pid: 7, rssBytes: 50 * 1024 * 1024, candidates: [], unit: 'u.scope', hardBytes: 6 * GIB, ...over });
 const soft = (over: Partial<MemSoftRecord> = {}): MemSoftRecord => ({ kind: 'soft', seq: 2, at: 200, unit: 'u.scope', bytes: 3.2 * GIB, softBytes: 3 * GIB, hardBytes: 6 * GIB, ...over });
 
-function world(opts: { parent?: Partial<Workspace> | null; busFails?: boolean } = {}) {
+function world(opts: { parent?: Partial<Workspace> | null; busFails?: boolean; switchOff?: boolean; logs?: string[] } = {}) {
   const wss = new Map<string, Workspace>();
   wss.set('member', { id: 'member', name: 'feat-x', branch: 'feat-x', parentId: 'coord' } as unknown as Workspace);
   if (opts.parent !== null) wss.set('coord', { id: 'coord', name: 'ops', branch: 'ops', ...(opts.parent ?? {}) } as unknown as Workspace);
@@ -24,10 +24,12 @@ function world(opts: { parent?: Partial<Workspace> | null; busFails?: boolean } 
     emitLive: (wsId, entry) => emitted.push({ wsId, entry }),
     sendToCoordinator: (m) => {
       if (opts.busFails) throw new Error('no bus');
+      if (opts.switchOff) return 'counted';
       sent.push(m);
+      return 'sent';
     },
     resolveRunId: () => 'run-1',
-    log: { info: () => {}, warn: () => {} },
+    log: { info: (m) => opts.logs?.push(m), warn: () => {} },
   };
   return { wss, sent, emitted, deps };
 }
@@ -51,7 +53,7 @@ test('#322 D-Q2: the warning level takes the SAME path — a row, and a `status`
   handleMemRecord(w.deps, 'member', soft());
   await __memNoticeIdle('member');
   assert.equal(w.emitted[0].entry.level, 'soft');
-  assert.match(w.emitted[0].entry.text, /^Memory at 3\.2 GB — Plafond mémoire warning level \(3 GB\) crossed; hard cap 6 GB$/);
+  assert.match(w.emitted[0].entry.text, /^Working set 3\.2 GB \(reclaimable cache excluded\) — Plafond mémoire warning level \(3 GB\) crossed; hard cap 6 GB$/);
   assert.equal(w.sent.length, 1);
   assert.equal(w.sent[0].kind, 'status');
   assert.match(w.sent[0].body, /Nothing was killed or slowed/);
@@ -131,4 +133,14 @@ test('review F8: startMemoryNotices is idempotent — a second call (macOS `acti
   const off3 = startMemoryNotices(w.deps, hooks as never);
   assert.deepEqual(subs, ['kill', 'soft', 'off-kill', 'off-soft', 'kill', 'soft'], 'after an unsubscribe a new start subscribes again');
   off3();
+});
+
+test('review F6: the run\'s liveness switch OFF ⇒ «counted, not fired»: the member\'s row still appears, nothing is written to the bus, and the record counts as handled (no retry loop)', async () => {
+  const logs: string[] = [];
+  const w = world({ switchOff: true, logs });
+  assert.doesNotThrow(() => handleMemRecord(w.deps, 'member', kill()));
+  await __memNoticeIdle('member');
+  assert.equal(w.sent.length, 0);
+  assert.equal(w.emitted.length, 1, 'the member is still told');
+  assert.ok(logs.some((l) => /would have told coord .*counted, not fired/.test(l)), logs.join(' | '));
 });

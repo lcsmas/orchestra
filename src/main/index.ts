@@ -187,7 +187,7 @@ import {
   setAskGateSwitchReader,
   readWaitingReaders,
 } from './bus-wake';
-import { busSwitch } from './bus-runs';
+import { busSwitch, getRun } from './bus-runs';
 import {
   startBusLiveness,
   stopBusLiveness,
@@ -597,7 +597,19 @@ async function createMainWindow() {
       sendToCoordinator: (m) => {
         const db = getBus();
         if (!db) throw new Error('no bus');
+        // Review F6 — the escalation mechanism's switch (`liveness`, #118) gates the write like the precedents (boot-wedge #197, the liveness sweep): OFF ⇒ «counted, not fired», the coexistence-safe default.
+        let on = false;
+        try {
+          on = busSwitch(db, m.runId, 'liveness');
+        } catch (e) {
+          log.warn(`memory-notice: liveness switch read failed for run ${m.runId} — treating as OFF`, e);
+        }
+        if (!on) return 'counted';
+        // …and the honest line when nobody is likely to read it: the coordinator's `check` is own-run only, so a run whose coordinator is not the recipient (a parent that is not an orchestrator) is unread mail.
+        const coordinator = getRun(db, m.runId)?.coordinator ?? null;
+        if (coordinator !== m.recipient) log.warn(`memory-notice: run ${m.runId} has coordinator ${coordinator ?? '(no run row)'}, not ${m.recipient} — this message may never be read`);
         send(db, m);
+        return 'sent';
       },
       resolveRunId: resolveWaveRunId,
       log,

@@ -36,7 +36,7 @@ test('#322: live == backfill — the same entry builds the same row (text, kind,
 test('#322: backfill interleave — rows land between the events they happened between; others keep their order; late rows go last', () => {
   const events = [ev(1, 500), ev(2, 1_500), ev(3, 3_000)];
   const out = interleaveMemNotices(events, [memNoticeEntryOf(soft), memNoticeEntryOf(kill)], { seq: 900 });
-  assert.deepEqual(out.map((o) => (o as { text?: string }).text?.slice(0, 7)), ['e1', 'Command', 'e2', 'Memory ', 'e3']);
+  assert.deepEqual(out.map((o) => (o as { text?: string }).text?.slice(0, 7)), ['e1', 'Command', 'e2', 'Working', 'e3']);
   assert.deepEqual(events.map((e) => e.seq), [1, 2, 3], 'the input is not mutated');
   const tail = interleaveMemNotices([ev(1, 10)], [memNoticeEntryOf(kill)], { seq: 900 });
   assert.equal((tail[1] as { text?: string }).text?.startsWith('Command'), true, 'after the last event');

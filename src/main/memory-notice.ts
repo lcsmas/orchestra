@@ -21,8 +21,8 @@ export interface MemNoticeDeps {
   patchWorkspace(id: string, patch: Partial<Workspace>): Promise<void>;
   /** Emit the row into the workspace's live event stream (a no-op when no session is live — the persisted entry shows in the backfill). */
   emitLive(wsId: string, entry: MemNoticeEntry): void;
-  /** Write ONE message row. THROWS when the bus is unavailable — the record stays undelivered and is retried (keeper-client). */
-  sendToCoordinator(m: BusSendInput): void;
+  /** Write ONE message row. THROWS when the bus is unavailable — the record stays undelivered and is retried (keeper-client). Returns `counted` when the run's `liveness` switch is OFF (counted, not fired — the precedents of boot-wedge #197 and the liveness sweep). */
+  sendToCoordinator(m: BusSendInput): 'sent' | 'counted' | void;
   /** The workspace's wave run (`$ORCHESTRA_RUN_ID`) — the run the coordinator's `orchestra check` reads. */
   resolveRunId(ws: Workspace): string;
   log: { info(m: string): void; warn(m: string, e?: unknown): void };
@@ -61,13 +61,15 @@ export function handleMemRecord(deps: MemNoticeDeps, wsId: string, rec: MemKillR
     deps.log.info(`memory-notice[${wsId}]: no live coordinator — the member's row only`);
     return;
   }
-  deps.sendToCoordinator({
+  const kind = isSoftRecord(rec) ? 'status' : 'escalation';
+  const outcome = deps.sendToCoordinator({
     runId: deps.resolveRunId(ws),
     sender: wsId,
     recipient: coordinator,
-    kind: isSoftRecord(rec) ? 'status' : 'escalation',
+    kind,
     body: memBusBody(`${ws.name || ws.branch || wsId} (${wsId})`, rec),
   });
+  if (outcome === 'counted') deps.log.info(`memory-notice[${wsId}]: would have told ${coordinator} (${kind}; the run's liveness switch is OFF — counted, not fired)`);
 }
 
 let active: (() => void) | null = null;

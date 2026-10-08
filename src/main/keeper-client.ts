@@ -51,7 +51,7 @@ import {
   type MemSoftRecord,
   type MemoryCapLaunch,
 } from '../shared/memory-scope';
-import { fullyDelivered, readMemNotices } from '../shared/mem-notice-file';
+import { mayPrune, readMemNoticesChecked } from '../shared/mem-notice-file';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { createMemKillCursor, type MemKillCursor } from './memkill-cursor';
@@ -265,16 +265,17 @@ export function drainMemNotices(wsId: string): void {
       for (const r of list) if (!deliverMemRecord(wsId, r, true)) break;
     }
   };
-  const first = readMemNotices(file);
+  const first = readMemNoticesChecked(file);
+  if (!first.ok) log.warn(`memory-cap[${wsId}]: cannot read ${file} (${first.error}) — left in place, nothing is deleted on an unknown`);
   const owed = [...owedRecords.values()].filter((o) => o.wsId === wsId).map((o) => o.rec);
   const merged = new Map<string, MemNoticeRecord>();
-  for (const r of [...first, ...owed]) merged.set(`${r.unit}:${r.seq}`, r);
+  for (const r of [...(first.ok ? first.recs : []), ...owed]) merged.set(`${r.unit}:${r.seq}`, r);
   deliver([...merged.values()]);
-  if (!fs.existsSync(file) || readTrackedKeeperPid(wsId) !== null) return; // a live keeper still appends: its file is never pruned
+  if (!first.ok || !fs.existsSync(file) || readTrackedKeeperPid(wsId) !== null) return; // unreadable = unknown; a live keeper still appends: its file is never pruned
   // The keeper is gone, so the file is FINAL now. Re-read it: a record the keeper appended between our first read and its exit (its exit flush) must not be unlinked unseen (review F4).
-  const fresh = readMemNotices(file);
-  if (fresh.length !== first.length) deliver(fresh);
-  if (fullyDelivered(fresh, (u) => cursor().seen(u)) && ![...owedRecords.values()].some((o) => o.wsId === wsId)) {
+  const fresh = readMemNoticesChecked(file);
+  if (fresh.ok && fresh.recs.length !== first.recs.length) deliver(fresh.recs);
+  if (mayPrune(fresh, (u) => cursor().seen(u)) && ![...owedRecords.values()].some((o) => o.wsId === wsId)) {
     try {
       fs.unlinkSync(file);
     } catch {

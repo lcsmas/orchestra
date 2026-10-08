@@ -319,7 +319,7 @@ test('#322 D-Q2: the warning level fires ONCE per upward crossing of the working
   w.current = 100 * MB;
   const softs: MemSoftRecord[] = [];
   const kills: MemKillRecord[] = [];
-  const mw = watchSoft(w, softs, kills);
+  const mw = watchSoft(w, softs, kills, { softMinIntervalMs: 0 }); // the rate bound has its own test below
   await wait(40);
   assert.equal(softs.length, 0, 'below the level: silent');
   w.current = 210 * MB;
@@ -601,5 +601,91 @@ test('review F5: the headroom check keys on the WORKING SET — a scope full of 
   assert.ok(await until(() => kills.length === 1, 3000));
   assert.equal(called >= 1, true, 'the lookup ran although memory.current was at the limit');
   assert.equal(kills[0].source, 'kernel');
+  mw.stop();
+});
+
+// ─── #322 review round 2 (F2 storm: a stale line must not be re-offered; F4 final look on stop; F5 rate bound) ───
+
+test('review-2 F2: under a printk-ratelimited storm a line returned to an EARLIER lookup is never re-offered — the kill whose own line was dropped stays «inferred» (the reviewer\'s p2 scenario: victims the snapshots never saw)', async () => {
+  const w = new World();
+  w.add(10, { comm: 'node', cmdline: 'node keeper.js', rssPages: 5000 });
+  const journal: KernelOomKill[] = [];
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => [...journal] });
+  await wait(40);
+  // look 1: TWO kills of processes no snapshot ever saw, but the kernel logged ONE line (ratelimit) ⇒ count mismatch ⇒ both inferred, unnamed
+  journal.push(kline(501, 'hog'));
+  w.events.oom += 2;
+  w.events.oom_kill += 2;
+  assert.ok(await until(() => kills.length === 2, 5000));
+  assert.deepEqual(kills.map((k) => [k.source, k.pid]), [['inferred', null], ['inferred', null]]);
+  // look 2, 0.4 s later: ONE more kill (503) whose line the kernel DROPPED — the only line in the journal is look 1's, still there
+  await wait(400);
+  w.events.oom += 1;
+  w.events.oom_kill += 1;
+  assert.ok(await until(() => kills.length === 3, 5000));
+  assert.equal(kills[2].source, 'inferred', 'the line look 1 already returned is not offered a second time');
+  assert.equal(kills[2].pid, null, 'and it is not carried as this kill\'s pid');
+  // control: a kill WITH its own fresh line, beside the old one, is named by the fresh line only if exactly one line is fresh
+  journal.push(kline(504, 'hog'));
+  w.events.oom += 1;
+  w.events.oom_kill += 1;
+  assert.ok(await until(() => kills.length === 4, 5000));
+  assert.equal(kills[3].source, 'kernel');
+  assert.equal(kills[3].pid, 504, 'the fresh line names its own kill');
+  mw.stop();
+});
+
+test('review-2 F4: stop() runs a LAST look — a kill the counter shows but no look has processed yet (the CLI is the victim, the keeper exits at once) still leaves exactly one record', async () => {
+  const w = new World();
+  w.add(10, { comm: 'node', cmdline: 'node keeper.js', rssPages: 5000 });
+  w.add(11, { comm: 'claude', cmdline: 'claude --output-format stream-json', rssPages: 30_000 });
+  const kills: MemKillRecord[] = [];
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: (r) => kills.push(r), log: () => {}, readFile: w.read, hotMs: 60_000, fastMs: 60_000, idleMs: 60_000, pageSize: 4096 }); // no tick before stop()
+  // inotify is not available on the virtual file; the first tick already ran at start()
+  w.oomKill(11);
+  assert.equal(kills.length, 0, 'precondition: nothing processed it yet');
+  mw.stop();
+  assert.equal(kills.length, 1, 'the final look recorded it');
+  assert.equal(kills[0].pid, 11);
+  await wait(30);
+  mw.stop();
+  assert.equal(kills.length, 1, 'and a second stop() adds nothing');
+});
+
+test('review-2 F4: the final look never double-counts a delta a look already accounted (the kernel-log wait)', async () => {
+  const w = new World();
+  w.add(12, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => { await wait(500); return [kline(12, 'hog')]; } });
+  await wait(40);
+  w.oomKill(12);
+  await wait(80);
+  mw.stop();
+  await wait(700);
+  assert.equal(kills.length, 1, 'one kill, one record');
+});
+
+test('review-2 F5: warnings are rate-bounded — a scope pulsing around its level yields ONE warning per interval; the swallowed crossings are counted and told with the next one', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  let clock = 1_000_000;
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: () => {}, onSoft: (r) => softs.push(r), softBytes: 200 * MB, softMinIntervalMs: 30_000, now: () => clock, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096 });
+  const pulse = async (): Promise<void> => {
+    w.current = 230 * MB;
+    await wait(40);
+    w.current = 100 * MB; // below 90 % ⇒ re-armed
+    await wait(40);
+  };
+  await pulse(); // t = 0: warns
+  await pulse(); // swallowed
+  await pulse(); // swallowed
+  assert.equal(softs.length, 1, 'three crossings, one warning');
+  clock += 31_000;
+  w.current = 230 * MB;
+  assert.ok(await until(() => softs.length === 2));
+  assert.equal(softs[1].suppressed, 2, 'the two swallowed crossings are told with the next warning');
+  assert.equal(softs[0].suppressed, undefined);
   mw.stop();
 });

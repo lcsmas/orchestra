@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MAX_NOTICE_LINES, appendMemNotice, fullyDelivered, parseMemNotice, readMemNotices } from './mem-notice-file.ts';
+import { MAX_NOTICE_LINES, MAX_SOFT_NOTICE_LINES, appendMemNotice, fullyDelivered, mayPrune, parseMemNotice, readMemNotices, readMemNoticesChecked } from './mem-notice-file.ts';
 import type { MemKillRecord, MemSoftRecord } from './memory-scope.ts';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memnotice-'));
@@ -51,4 +51,45 @@ test('#322 m1: a file may be pruned only when EVERY record in it is at or below 
   assert.equal(fullyDelivered([kill, soft], seen({ 'u.scope': 2 })), true);
   assert.equal(fullyDelivered([kill, soft], seen({ 'u.scope': 1 })), false, 'seq 2 not yet delivered');
   assert.equal(fullyDelivered([kill, { ...soft, unit: 'other.scope' }], seen({ 'u.scope': 9 })), false, 'a record of ANOTHER unit is judged by its own cursor');
+});
+
+test('review F3: an UNREADABLE notice file is unknown, never «delivered» — readMemNoticesChecked says so and mayPrune refuses (the only copy of a gone keeper\'s kills)', () => {
+  const seenAll = () => 1_000_000;
+  const asDir = path.join(dir, 'actually-a-directory.jsonl');
+  fs.mkdirSync(asDir);
+  const bad = readMemNoticesChecked(asDir);
+  assert.equal(bad.ok, false, 'EISDIR (like EACCES / EMFILE / EIO) is a read ERROR');
+  assert.equal(mayPrune(bad, seenAll), false);
+  assert.deepEqual(readMemNotices(asDir), [], 'the lenient reader still returns [] (use the checked one when it matters)');
+  const absent = readMemNoticesChecked(path.join(dir, 'never-existed.jsonl'));
+  assert.deepEqual(absent, { ok: true, recs: [], unparsed: 0 }, 'ENOENT is a clean «nothing»');
+  assert.equal(mayPrune(absent, seenAll), true);
+});
+
+test('review F3: a file holding lines we could not parse is not pruned either (version skew / corruption must not eat records)', () => {
+  const f = path.join(dir, 'skew.jsonl');
+  appendMemNotice(f, kill);
+  fs.appendFileSync(f, '{"kind":"kill","unit":"u.scope","seq":9,"at":1,"level":"hard","extra":"from a newer keeper"\n');
+  const r = readMemNoticesChecked(f);
+  assert.equal(r.ok && r.unparsed, 1);
+  assert.equal(mayPrune(r, () => 1_000_000), false, 'fully delivered but one line is not understood ⇒ keep');
+  const clean = path.join(dir, 'clean.jsonl');
+  appendMemNotice(clean, kill);
+  assert.equal(mayPrune(readMemNoticesChecked(clean), () => 1), true, 'control: understood + delivered ⇒ prunable');
+  assert.equal(mayPrune(readMemNoticesChecked(clean), () => 0), false, 'control: undelivered ⇒ kept');
+});
+
+test('review F3: a SHORT write is looped to completion, and a torn tail is never glued to the next record', () => {
+  const f = path.join(dir, 'short.jsonl');
+  assert.equal(appendMemNotice(f, kill, (fd, buf, off) => fs.writeSync(fd, buf, off, Math.min(7, buf.length - off))), true);
+  assert.deepEqual(readMemNotices(f), [kill], 'seven bytes at a time still lands the whole record');
+  assert.equal(appendMemNotice(path.join(dir, 'zero.jsonl'), kill, () => 0), false, 'a write that makes no progress is a failure, not a hang');
+  const torn = path.join(dir, 'torn.jsonl');
+  fs.writeFileSync(torn, '{"kind":"kill","unit":"u.sco'); // a crash mid-write left a tail with no newline
+  assert.equal(appendMemNotice(torn, soft), true);
+  assert.deepEqual(readMemNotices(torn), [soft], 'the new record is on its OWN line: readable, not glued to the torn tail');
+});
+
+test('review F5: warnings have their own, smaller file budget — they can never use up the lines a later kill needs', () => {
+  assert.ok(MAX_SOFT_NOTICE_LINES > 0 && MAX_SOFT_NOTICE_LINES < MAX_NOTICE_LINES);
 });

@@ -89,16 +89,28 @@ test('#322: the sink is subscribed at boot with the REAL seams (store, agent-sdk
   assert.ok(i >= 0 && mainIndex.indexOf('  drainAllMemNotices((id) => !!store.getWorkspace(id));') > i, 'the boot scan runs AFTER the sink is subscribed (else the first records have nobody to tell)');
   assert.ok(live(agentSdk, '  return interleaveMemNotices(interleaveStartErrors(events, ws.sdkStartErrors ?? [], ctx), ws.sdkMemNotices ?? [], ctx);') && live(agentSdk, '    return interleaveMemNotices(interleaveStartErrors([], ws.sdkStartErrors ?? [], ctx0), ws.sdkMemNotices ?? [], ctx0);'), 'both sdkHistory returns merge the persisted rows');
   assert.ok(live(agentSdk, '  emit(wsId, makeMemNotice(session.ctx, entry));'), 'the live emit builds the row with the SAME builder as the backfill');
-  assert.ok(live(memNotice, "    kind: isSoftRecord(rec) ? 'status' : 'escalation',"), 'kill = escalation, warning = status');
+  assert.ok(live(memNotice, "  const kind = isSoftRecord(rec) ? 'status' : 'escalation';"), 'kill = escalation, warning = status');
 });
 
 test('#322: the keeper PERSISTS before it tells, reads the soft level from the spawn frame, and names victims from the kernel log', () => {
   const k = keeper.indexOf('  memWatch = startMemoryWatch({');
   assert.ok(k >= 0, 'the watch is started');
   const block = keeper.slice(k, keeper.indexOf('  klog(`memory cap: ${capInfo.state.toUpperCase()}'));
-  assert.ok(/onKill: \(rec\) => \{\n      persist\(rec\);/.test(block), 'a kill is appended to the durable file FIRST');
+  assert.ok(/onKill: \(found\) => \{[\s\S]*?\n      persist\(rec\);/.test(block), 'a kill is appended to the durable file FIRST (after its role is known)');
+  assert.ok(block.includes("found.pid === child?.pid ? { ...found, role: 'cli' }"), 'review F7: the victim being the agent process / the keeper is recorded');
   assert.ok(/onSoft: \(rec\) => \{\n      persist\(rec\);/.test(block), 'so is a warning');
   assert.ok(block.includes('kernelLog: readKernelOomKills,') && block.includes('softBytes: cap.softBytes && cap.softBytes < cap.hardBytes ? cap.softBytes : null,'));
   assert.ok(live(keeper, "      send({ t: 'memSoft', rec });") && live(keeper, "      send({ t: 'memKill', rec });"));
   assert.ok(live(keeper, '      ...(memSofts.length ? { memSofts: memSofts.slice() } : {}),'));
+});
+
+test('#322 review F6: the bus write follows the run\'s liveness switch («counted, not fired») and names unread mail', () => {
+  assert.ok(live(mainIndex, "          on = busSwitch(db, m.runId, 'liveness');") && live(mainIndex, "        if (!on) return 'counted';"), 'the escalation mechanism\'s switch gates the write, like boot-wedge #197 and the liveness sweep');
+  assert.ok(live(mainIndex, '        const coordinator = getRun(db, m.runId)?.coordinator ?? null;') && mainIndex.includes('this message may never be read'), 'a run whose coordinator is not the recipient is unread mail: said, not hidden');
+  assert.ok(live(memNotice, "  if (outcome === 'counted') deps.log.info("), 'and a counted record is logged as such');
+});
+
+test('#322 review F5: kills and warnings have SEPARATE notice-file budgets in the keeper, and the soft rate bound is read from the keeper\'s env', () => {
+  assert.ok(live(keeper, '    const max = soft ? MAX_SOFT_NOTICE_LINES : MAX_NOTICE_LINES;'), 'a pulsing scope can never use up the lines a later kill needs');
+  assert.ok(live(keeper, "    softMinIntervalMs: intEnv('ORCHESTRA_MEMCAP_SOFT_MIN_INTERVAL_MS', SOFT_MIN_INTERVAL_MS),"));
 });
