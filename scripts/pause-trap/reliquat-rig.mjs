@@ -30,7 +30,7 @@ const MC_DIR = path.join(HERE_REPO, 'scripts', 'memory-cap');
 const UNIT_PREFIX = 'orchestra-rig-wh-h3-';
 const HARD_GB = 0.25; // 256 MiB — page-aligned, ≤ 300 MB (ledger D2)
 const SOFT_GB = 0.2;
-const UNFIXED_SHA = process.env.RQ_UNFIXED_SHA ?? '6df97fea'; // the tip of H1's #320 work (rebase target): the scope exists, the Pause dure does not kill what is in it
+const UNFIXED_SHA = process.env.RQ_UNFIXED_SHA ?? 'bb32147d'; // the tip of H1's #320 work (rebase target): the scope exists, the Pause dure does not kill what is in it
 
 /** `mustRedden`: on the UNFIXED tree exactly these checks go RED (every other check — premises, controls — stays green). */
 const ARMS = {
