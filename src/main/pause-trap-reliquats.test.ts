@@ -114,6 +114,7 @@ test('an UNPROVEN CLI/keeper (alive but unresponsive) ⇒ no Reliquat is touched
   const c = pause(rig);
   assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'incomplete');
   assert.ok(!rig.calls.includes('killReliquats'), 'fail closed: nothing signalled under an unprovable session');
+  assert.doesNotMatch(bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.error ?? '', /reliquats/, 'the step is not even ATTEMPTED under an unprovable session (a crash caught inside it would look like a refusal and hide a missing guard)');
   __resetPauseTrapForTests();
   const rig2 = newRig();
   rig2.cliResult = null;

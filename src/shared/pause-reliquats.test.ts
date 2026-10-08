@@ -119,6 +119,10 @@ test('the SCOPE decides membership at signal time: a pid the fresh listing no lo
 });
 
 test('IDENTITY (pid + start-time) at signal time: a recycled pid (planned start-time differs, in the listing OR in /proc) is refused, a zombie/gone/unreadable process too', () => {
+  // a GENUINE recycle: the scope's listing AND /proc both show the NEW owner of the pid — only the planned identity (1500) can tell it from the planned process
+  const recycledEverywhere = judgeReliquat(500, 1500, SCOPE, listingOf({ ...member(500, 1, 'reliquat'), startTicks: 9999 }), PROTECT, readOver([{ ...chrome, startTicks: 9999 }]));
+  assert.equal(recycledEverywhere.ok, false, 'listing and /proc agree on 9999, the plan said 1500');
+  if (!recycledEverywhere.ok) assert.equal(recycledEverywhere.reason, 'reused (start-time changed)');
   // planned identity 1500, the listing now holds the pid with ANOTHER start-time (recycled)
   const recycledInListing = judgeReliquat(500, 1500, SCOPE, listingOf({ ...member(500, 1, 'reliquat'), startTicks: 9999 }), PROTECT, readOver([chrome]));
   assert.equal(recycledInListing.ok, false);

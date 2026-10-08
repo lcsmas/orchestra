@@ -36,6 +36,8 @@ class FakeOs {
   unreadable = new Set<number>();
   supported = true;
   starts = new Map<number, number>();
+  /** pid → the scope unit it lives in (default: the main SCOPE) — each scope lists only ITS members. */
+  unitOf = new Map<number, string>();
 
   add(pid: number, ppid: number, argv: string[], role: ScopeRole = 'reliquat', startTicks = 1000 + pid): ProcIdent {
     const p: ProcIdent = { pid, ppid, sid: pid, startTicks, comm: argv[0].split('/').pop()!.slice(0, 15), state: 'S', argv };
@@ -53,11 +55,11 @@ class FakeOs {
         if (this.scopesThrow) throw new Error('boom');
         return this.scopeNames;
       },
-      list: (): ScopeListing => {
+      list: (scope): ScopeListing => {
         this.listCalls++;
         this.onList?.(this.listCalls);
         if (this.listing !== 'ok') return this.listing;
-        return [...this.procs.values()].map((p): ScopeMember => ({ pid: p.pid, startTicks: p.startTicks, ppid: p.ppid, comm: p.comm, role: this.roles.get(p.pid) ?? 'reliquat' }));
+        return [...this.procs.values()].filter((p) => (this.unitOf.get(p.pid) ?? SCOPE.unit) === scope.unit).map((p): ScopeMember => ({ pid: p.pid, startTicks: p.startTicks, ppid: p.ppid, comm: p.comm, role: this.roles.get(p.pid) ?? 'reliquat' }));
       },
     };
   }
@@ -331,6 +333,36 @@ test('the keeper\'s pid file is NOT published yet (FI-1 reads keeperPid null): t
   const r2 = await killReliquats('m1', o2.scopeDeps(), o2.deps(), OPTS);
   assert.deepEqual(r2!.killed.map((k) => k.pid), [500]);
   assert.ok(o2.procs.has(600));
+});
+
+test('a scope generation that APPEARS while killing (a restart during the trap) is walked by the next round — the scopes are re-resolved every round, not once', async () => {
+  const os = new FakeOs();
+  const NEW: ScopeRef = { unit: 'orchestra-rig-wh-m1-zzz999.scope', cgroupDir: '/x/new' };
+  os.add(500, 1, ['/usr/bin/chrome']);
+  os.onSignal = () => {
+    if (os.scopeNames.length > 1) return;
+    os.scopeNames = [SCOPE, NEW];
+    os.add(700, 1, ['/usr/bin/chrome', '--late-scope']);
+    os.unitOf.set(700, NEW.unit);
+  };
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
+  assert.deepEqual(rep!.killed.map((k) => k.pid).sort((a, b) => a - b), [500, 700]);
+  assert.ok(rep!.scopes.includes(NEW.unit), 'the report names the scope it found late');
+  assert.equal(os.procs.has(700), false);
+});
+
+test('a refusal or sparing recorded in an early round says nothing about a process that has DIED since — the final report lists only what is still there', async () => {
+  const os = new FakeOs();
+  os.add(500, 1, ['/usr/bin/chrome']);
+  os.ignoresTerm.add(500); // keeps the killer waiting so time passes
+  os.add(800, 801, ['sleep', '600']); // parent 801 is unreadable at plan time ⇒ refused (ancestry)
+  os.add(801, 1, ['sh', '-c', 'x']);
+  os.unreadable.add(801);
+  os.add(810, 1, ['claude', '--print'], 'reliquat'); // a supervisor listed as reliquat ⇒ spared
+  os.onSleep = () => { os.die(800); os.die(801); os.die(810); os.unreadable.delete(801); };
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), { ...OPTS, maxRounds: 1 });
+  assert.deepEqual(rep!.refused.map((r) => r.pid), [], 'pids 800 + 801 died: no longer refused');
+  assert.deepEqual(rep!.spared.map((r) => r.pid), [], 'pid 810 died: no longer spared');
 });
 
 // ── (2) REAL processes ──────────────────────────────────────────────────────
