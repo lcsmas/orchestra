@@ -174,6 +174,8 @@ import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { initBus, closeBus, busPath, getBus, expireAllOrphanedAsks } from './bus';
 import { registerBusPaneIpc, registerStaleRunSource } from './bus-pane';
+import { pushWatchersToRenderer, stopAllWatchers } from './watchers';
+import { registerWatchersIpc } from './watchers-host';
 import { reconcilePauseUi, registerPauseUiIpc, startPauseUiWatcher, stopPauseUiWatcher } from './pause-ui-host';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import {
@@ -452,6 +454,8 @@ async function createMainWindow() {
   // Admission (#286): holds the AUTOMATIC starts (spawn / restart) of fleet members while the guard holds Admission and releases them in order when
   // memory recovers (this subscribes to the guard's reopen edge; the queue itself retries every 10 s while it is non-empty).
   startAdmission();
+  // #330: push watcher degradations / recoveries to the renderer — subscribed BEFORE the first watch is armed (the events spool below is the first), so a boot-time EMFILE is pushed too.
+  pushWatchersToRenderer();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
@@ -786,6 +790,7 @@ registerStaleRunSource(listStaleRunWorkspaces);
 // #257 — the fleet Pause UI channels (`pause:*`): ONE read + the three shipped writers, each marked in PAUSE_UI_IPC_CHANNELS. NOT through registerBusPaneIpc() (read-only).
 registerPauseUiIpc();
 registerMemoryBannerIpc(); // #289 — the memory banner's pull channel (ONCE, module scope)
+registerWatchersIpc(); // #330 — the directory-watcher health pull channel (ONCE, module scope)
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
 // settings write cannot be smuggled in as a pane channel. It writes the store
@@ -886,6 +891,7 @@ async function reconcileKeepersAtStartup(): Promise<void> {
 
 function shutdownSubsystems(): void {
   stopAll();
+  stopAllWatchers(); // #330: cancels every pending watcher retry (each subsystem's own stop below is then a no-op for its watch)
   stopLoopScan();
   stopEventsSpool();
   stopHooksServer();

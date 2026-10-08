@@ -39,6 +39,7 @@ import { listHeldStarts } from './admission.ts';
 import { getContainerAccounting } from './container-accounting.ts';
 import { accountingView } from '../shared/container-accounting.ts';
 import { currentMemberMemory } from './member-memory-host.ts';
+import { watchersStatus } from './watchers.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
 import { repriseStatusView } from './pause-reprise.ts';
@@ -513,6 +514,8 @@ export async function startHooksServer(): Promise<void> {
               // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
               // #328: per-member scope memory + live Reliquats (a fresh short-cached read; sysfs only); the CLI prints the `reliquats:` line.
               members: membersView,
+              // #330: the directory watchers' health (every armed watcher; a degraded one has its since / last error / fallback) — the CLI prints the `watchers:` block.
+              watchers: watchersStatus(),
               memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
               heldStarts: listHeldStarts().map((h) => {
                 const w = store.getWorkspace(h.wsId);

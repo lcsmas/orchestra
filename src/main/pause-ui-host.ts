@@ -4,7 +4,6 @@
 // THE ENUMERATION (like BUS_PANE_IPC_CHANNELS, bus-pane.ts): the Pause WRITES are NOT pane channels — the pane's registrar refuses `writes: true`, so a write cannot be
 // smuggled in as a read. They live here, on their own `pause:*` channels, each marked `writes: true`; the one READ is `pause:overview`.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { ipcMain } from 'electron';
 import { store } from './store';
@@ -12,6 +11,8 @@ import { platform } from './platform';
 import { log } from './logger';
 import { busPath, getBus } from './bus';
 import { createCoalescer } from './pause-ui-coalesce';
+import { createWatcher } from './watchers';
+import type { ResilientWatcher } from '../shared/resilient-watch';
 import { pauseOverviewFingerprint, readPauseOverview, uiPause, uiRelease, uiResume, type PauseUiDeps } from './pause-ui';
 import type { PauseMode } from '../shared/pause-lifecycle';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
@@ -116,7 +117,7 @@ export function registerPauseUiIpc(): void {
 // Every Pause column is written by the CLI / the host sweep / this module straight into the bus DB, so the push rides the SAME directory watch the human-gates push
 // and the bus-wake accelerator use (the `-wal` inode is recycled — watching the directory survives it).
 
-let watcher: fs.FSWatcher | null = null;
+let watcher: ResilientWatcher | null = null;
 const WATCH_DEBOUNCE_MS = 150;
 /** A push at least this often however busy the bus is (a plain trailing debounce starved under ≥ 7 writes/s — R1-5). */
 const WATCH_MAX_WAIT_MS = 1000;
@@ -138,20 +139,23 @@ export function startPauseUiWatcher(): void {
   const bus = busPath();
   const dir = path.dirname(bus);
   const base = path.basename(bus);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    watcher = fs.watch(dir, (_event, filename) => {
-      if (filename && filename !== `${base}-wal` && filename !== base) return; // a null filename is a match: a spurious idempotent recompute beats a missed pause
-      coalescer.poke();
-    });
-  } catch (e) {
-    log.warn('pause-ui: could not watch the bus directory (the overview then refreshes on the UI\'s own writes and on pull)', e);
-  }
+  // #330: resilient — a failed arm / a later error is retried with backoff (meanwhile the overview refreshes on the UI's own writes and on pull) and ONE forced overview push runs on recovery.
+  watcher = createWatcher({
+    name: 'pause-ui',
+    label: 'Pause view',
+    dir,
+    fallback: "the UI's own writes and pull",
+    ensureDir: true,
+    filter: (filename) => !filename || filename === `${base}-wal` || filename === base, // a null filename is a match: a spurious idempotent recompute beats a missed pause
+    onChange: () => coalescer.poke(),
+    onRecover: reconcilePauseUi,
+  });
+  watcher.start();
 }
 
 export function stopPauseUiWatcher(): void {
   coalescer.cancel();
-  watcher?.close();
+  watcher?.stop();
   watcher = null;
 }
 

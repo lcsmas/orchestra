@@ -7,6 +7,7 @@ import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { PauseMode } from './pause-lifecycle.ts';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from './pause-ui.ts';
 import type { MemoryBannerState } from './memory-banner.ts';
+import type { WatchersStatus } from './watcher-status.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
@@ -168,6 +169,10 @@ export interface OrchestraAPI {
   memoryBanner: () => Promise<MemoryBannerState>;
   /** Live push: the WHOLE banner state, only when it changed (revision-stamped: drop an older one). Returns an unsubscribe fn. */
   onMemoryBanner: (cb: (state: MemoryBannerState) => void) => () => void;
+  /** Directory-watcher health (#330): every ARMED watcher's state, for the initial paint / a reload. NEVER rejects. */
+  watchersStatus: () => Promise<WatchersStatus>;
+  /** Live push: the whole watcher status, ONLY when the degraded set changes (a watcher degraded, recovered, or was stopped while degraded). Returns an unsubscribe fn. */
+  onWatchersUpdate: (cb: (status: WatchersStatus) => void) => () => void;
   /** Live push: the whole overview, rebuilt from the bus whenever a Pause column / roster / Bilan row changes (CLI, host sweep and these writes alike). Returns an unsubscribe fn. */
   onPauseOverviewUpdate: (cb: (overview: PauseUiOverview) => void) => () => void;
   /** Pause douce (`soft`) or dure (`hard`; over a douce still waiting it escalates). Acts as workspace `wsId` — a worker row comes back `refused`, nothing written. */
