@@ -105,12 +105,14 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
   const statics = new Map<number, { startTicks: number; comm: string; cmdline: string; adj: number }>();
   const recs: MemKillRecord[] = [];
   let seq = o.seqStart ?? 1;
-  /** Kernel lines already attributed to a record (a retry or a later look must not pair the same line twice). */
-  const usedKernel = new Set<string>();
   /** Consecutive kills for which the kernel log showed nothing at all: the journal is probably invisible to us — stop waiting for it (one quick try per kill). */
   let kernelMisses = 0;
   let lastLookAt = (o.now ?? Date.now)();
   let softArmed = true;
+  /** The records of a kill whose kernel-log lookup is in flight: if the watch is stopped meanwhile (the keeper exits), they are emitted as `inferred` by stop() — a kill must never die with the wait (review F2). */
+  let pendingKills: MemKillRecord[] | null = null;
+  /** Pids already named by an emitted record (kernel or inferred): a kernel line naming one of them is a STALE line of an earlier kill, never this one (review F1). Bounded. */
+  const namedPids = new Set<number>();
   let last: MemoryEvents | null = parseMemoryEvents(readSafe(eventsFile) ?? '');
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -195,18 +197,11 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
           nowMs: now(),
           pageSize: PAGE,
         });
+        pendingKills = inferred;
         const made = await refineWithKernel(inferred, before);
-        if (stopped) return;
-        for (const r of made) {
-          const rec = { ...r, seq: seq++ };
-          recs.push(rec);
-          if (recs.length > 50) recs.shift();
-          try {
-            o.onKill(rec);
-          } catch (e) {
-            o.log(`memory watch: onKill failed (${(e as Error).message})`);
-          }
-        }
+        if (pendingKills === null) return; // stop() ran during the wait and already emitted the inferred records
+        pendingKills = null;
+        emitKills(made);
       }
       for (const k of before.keys()) if (!alive.has(k)) snap.delete(k); // forgotten, named or not
       if (cur) last = cur;
@@ -216,7 +211,24 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     }
   }
 
-  const kernelKey = (k: KernelOomKill): string => `${k.atMs}:${k.pid}`;
+  /** Number and emit kill records NOW (the seq is assigned here, at emit time — see look()). */
+  function emitKills(list: MemKillRecord[]): void {
+    for (const r of list) {
+      const rec = { ...r, seq: seq++ };
+      recs.push(rec);
+      if (recs.length > 50) recs.shift();
+      if (rec.pid !== null) {
+        if (namedPids.size >= 256) namedPids.clear();
+        namedPids.add(rec.pid);
+      }
+      try {
+        o.onKill(rec);
+      } catch (e) {
+        o.log(`memory watch: onKill failed (${(e as Error).message})`);
+      }
+    }
+  }
+
 
   /** Wait (bounded) until the scope is below {@link HEADROOM_FRACTION} of its limit again, so the lookup's fork cannot hit the limit. False = no headroom within {@link HEADROOM_WAIT_MS}: do NOT fork. */
   async function waitForHeadroom(): Promise<boolean> {
@@ -224,36 +236,41 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     for (;;) {
       const max = maxBytes();
       const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
-      if (max === null || !Number.isFinite(cur) || cur <= max * HEADROOM_FRACTION) return true;
+      // the working set, not memory.current: reclaimable page cache is freed by the kernel before it charges a fork to the limit (review F5)
+      const used = workingSetBytes(cur, parseMemoryStat(readSafe(path.join(o.cgroupDir, 'memory.stat')) ?? ''));
+      if (max === null || !Number.isFinite(cur) || used <= max * HEADROOM_FRACTION) return true;
       if (stopped || now() - t0 >= HEADROOM_WAIT_MS) return false;
       await sleep(HEADROOM_POLL_MS);
     }
   }
-  /** #322 m2: ask the kernel log who died. The line lands in the journal a few ms after the kill: poll (≤ ~1.4 s). No line ⇒ the records stay `inferred`. */
+  /** #322 m2: ask the kernel log who died. The line lands in the journal a few ms after the kill: poll (≤ ~1.4 s). Lines are paired ONLY when their number equals the number of records — a stale line (a kill whose lookup
+   *  was skipped, or whose line arrived late) or a missing one makes the pairing ambiguous, and then the records stay `inferred` («probably»): never a wrong pid labelled certain (review F1). */
   async function refineWithKernel(made: MemKillRecord[], before: ReadonlyMap<string, VictimSnap>): Promise<MemKillRecord[]> {
     const lookup = o.kernelLog;
     if (!lookup || made.length === 0) return made;
     const since = lastLookAt - 3000;
     const tries = kernelMisses >= 3 ? 1 : 8;
-    let mine: KernelOomKill[] = [];
+    let eligible: KernelOomKill[] = [];
     for (let i = 0; i < tries && !stopped; i++) {
       // Forking journalctl in a scope that is STILL at its limit invites a second OOM episode — measured: the forked child itself was OOM-killed (a `node` at adj 0) and tool processes were taken as collateral.
       // The victim's memory is freed only as it exits: wait (bounded) for headroom; none ⇒ NO fork, the inference stands (labelled `inferred`).
-      if (!(await waitForHeadroom())) return applyKernelKills(made, [], [...before.values()], PAGE);
+      if (!(await waitForHeadroom())) return made;
       let lines: KernelOomKill[] | null = null;
       try {
         lines = await lookup(since);
       } catch {
         lines = null;
       }
-      mine = lines ? kernelKillsForUnit(lines, o.unit, since).filter((l) => !usedKernel.has(kernelKey(l))) : [];
-      if (mine.length >= made.length) break;
+      eligible = lines ? kernelKillsForUnit(lines, o.unit, since).filter((l) => !namedPids.has(l.pid)) : [];
+      if (eligible.length >= made.length) break; // exact, or a surplus (ambiguous): no point polling longer
       if (i < tries - 1) await sleep(180);
     }
-    const take = mine.slice(0, made.length);
-    for (const k of take) usedKernel.add(kernelKey(k));
-    kernelMisses = take.length === 0 ? kernelMisses + 1 : 0;
-    return applyKernelKills(made, take, [...before.values()], PAGE);
+    if (eligible.length !== made.length) {
+      kernelMisses = eligible.length === 0 ? kernelMisses + 1 : 0; // a miss = the journal showed NOTHING; an ambiguous surplus is not the journal's fault
+      return made;
+    }
+    kernelMisses = 0;
+    return applyKernelKills(made, eligible, [...before.values()], PAGE);
   }
 
   /** #322 (D-Q2): the warning level, edge-triggered on `memory.current` — one record per upward crossing, re-armed below SOFT_REARM_FRACTION of the level. */
@@ -299,6 +316,11 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
 
   return {
     stop() {
+      if (pendingKills) {
+        const p = pendingKills;
+        pendingKills = null;
+        emitKills(p); // review F2: the keeper is exiting while a kill waits for the kernel log — say it now, labelled `inferred`, before the process is gone
+      }
       stopped = true;
       if (timer) clearTimeout(timer);
       try {

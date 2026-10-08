@@ -61,13 +61,13 @@ test('the keeper verifies its own scope, starts the kill watch, wraps the tools 
 });
 
 test('a kill reaches the app log and the listeners once (push frame AND helloAck catch-up), keyed by scope unit + seq', () => {
-  assert.ok(live(keeperClient, 'deliverKills(f.memKills); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)'));
+  assert.ok(live(keeperClient, 'deliverCatchUp(f.memKills, f.memSofts); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)'), 'the catch-up carries kills AND warnings, in seq order');
   assert.ok(live(keeperClient, "} else if (f.t === 'memKill') {") && live(keeperClient, "} else if (f.t === 'memSoft') {"));
   assert.ok(live(keeperClient, 'if (attempt === 1) log.warn(formatMemKillLine(wsId, rec));'), 'the app-log line exists once per kill, whatever the retries');
   assert.ok(live(keeperClient, 'if (rec.seq <= cursor().seen(rec.unit)) return true;'), 'the dedupe key is the PERSISTED cursor (an app restart must not replay)');
   assert.ok(live(keeperClient, 'cursor().mark(rec.unit, rec.seq);'));
   assert.ok(live(keeperClient, 'drainMemNotices(wsId); // #322 m1: the keeper\'s durable file first (kills AND warnings, in order) …'), 'every attach reads the keeper\'s durable file');
-  assert.ok(live(keeperClient, "drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now") && live(keeperClient, 'drainMemNotices(wsId); // #322 m1: the keeper\'s connection ended — anything it recorded is in its file'), 'and so does the end of the connection');
+  assert.ok(live(keeperClient, 'drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now (the keeper\'s stop() flushes a pending kill before it exits — review F2)') && live(keeperClient, 'drainMemNotices(wsId); // #322 m1: the keeper\'s connection ended — anything it recorded is in its file'), 'and so does the end of the connection');
 });
 
 test('bus-status: the route sends the levels + the memory-paused runs (D1), the CLI prints them', () => {

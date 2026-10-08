@@ -70,17 +70,22 @@ export function handleMemRecord(deps: MemNoticeDeps, wsId: string, rec: MemKillR
   });
 }
 
-/** Subscribe both hooks; returns the unsubscribe. */
+let active: (() => void) | null = null;
+
+/** Subscribe both hooks; returns the unsubscribe. Idempotent: `createMainWindow` runs again on a macOS `activate`, and a second subscription would send every record's bus message twice (review F8). */
 export function startMemoryNotices(
   deps: MemNoticeDeps,
   hooks: { onMemoryKill(fn: (wsId: string, rec: MemKillRecord) => void): () => void; onMemorySoft(fn: (wsId: string, rec: MemSoftRecord) => void): () => void },
 ): () => void {
+  if (active) return active;
   const offKill = hooks.onMemoryKill((wsId, rec) => handleMemRecord(deps, wsId, rec));
   const offSoft = hooks.onMemorySoft((wsId, rec) => handleMemRecord(deps, wsId, rec));
-  return () => {
+  active = () => {
     offKill();
     offSoft();
+    active = null;
   };
+  return active;
 }
 
 /** Test seam: wait for the pending store/emit writes of a workspace. */

@@ -199,6 +199,8 @@ const deliveryAttempts = new Map<string, number>();
 /** Units whose earliest undelivered record failed: later records wait for the in-order drain (the cursor is a HIGH-WATER mark — marking seq 5 would silently drop a failed seq 4). */
 const stalledUnits = new Set<string>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Records whose delivery failed and that may exist ONLY in memory (the keeper could not write its notice file): the next drain retries them too (review F3). Keyed `${unit}:${seq}`. */
+const owedRecords = new Map<string, { wsId: string; rec: MemNoticeRecord }>();
 
 function scheduleMemDrain(wsId: string): void {
   if (retryTimers.has(wsId)) return;
@@ -235,11 +237,16 @@ function deliverMemRecord(wsId: string, rec: MemNoticeRecord, fromDrain = false)
   }
   if (!ok && attempt < MAX_DELIVERY_ATTEMPTS) {
     deliveryAttempts.set(key, attempt);
+    owedRecords.set(key, { wsId, rec });
     stalledUnits.add(rec.unit);
     scheduleMemDrain(wsId);
     return false;
   }
-  if (!ok) log.warn(`memory-cap[${wsId}]: giving up on ${key} after ${MAX_DELIVERY_ATTEMPTS} attempts`);
+  if (!ok) {
+    log.warn(`memory-cap[${wsId}]: giving up on ${key} after ${MAX_DELIVERY_ATTEMPTS} attempts`);
+    stalledUnits.delete(rec.unit); // a record we gave up on must not hold its unit's later records for ever
+  }
+  owedRecords.delete(key);
   deliveryAttempts.delete(key);
   cursor().mark(rec.unit, rec.seq);
   return true;
@@ -249,16 +256,25 @@ function deliverMemRecord(wsId: string, rec: MemNoticeRecord, fromDrain = false)
  *  Called at app start, at every attach, when the keeper's connection ends, and by the retry timer. Prunes the file once everything in it is delivered and no live keeper owns it. */
 export function drainMemNotices(wsId: string): void {
   const file = memNoticeFilePath(wsId);
-  const recs = readMemNotices(file);
-  if (recs.length === 0) return;
-  const byUnit = new Map<string, MemNoticeRecord[]>();
-  for (const r of recs) (byUnit.get(r.unit) ?? byUnit.set(r.unit, []).get(r.unit)!).push(r);
-  for (const [unit, list] of byUnit) {
-    stalledUnits.delete(unit);
-    list.sort((a, b) => a.seq - b.seq);
-    for (const r of list) if (!deliverMemRecord(wsId, r, true)) break;
-  }
-  if (fullyDelivered(recs, (u) => cursor().seen(u)) && readTrackedKeeperPid(wsId) === null) {
+  const deliver = (recs: MemNoticeRecord[]): void => {
+    const byUnit = new Map<string, MemNoticeRecord[]>();
+    for (const r of recs) (byUnit.get(r.unit) ?? byUnit.set(r.unit, []).get(r.unit)!).push(r);
+    for (const [unit, list] of byUnit) {
+      stalledUnits.delete(unit);
+      list.sort((a, b) => a.seq - b.seq);
+      for (const r of list) if (!deliverMemRecord(wsId, r, true)) break;
+    }
+  };
+  const first = readMemNotices(file);
+  const owed = [...owedRecords.values()].filter((o) => o.wsId === wsId).map((o) => o.rec);
+  const merged = new Map<string, MemNoticeRecord>();
+  for (const r of [...first, ...owed]) merged.set(`${r.unit}:${r.seq}`, r);
+  deliver([...merged.values()]);
+  if (!fs.existsSync(file) || readTrackedKeeperPid(wsId) !== null) return; // a live keeper still appends: its file is never pruned
+  // The keeper is gone, so the file is FINAL now. Re-read it: a record the keeper appended between our first read and its exit (its exit flush) must not be unlinked unseen (review F4).
+  const fresh = readMemNotices(file);
+  if (fresh.length !== first.length) deliver(fresh);
+  if (fullyDelivered(fresh, (u) => cursor().seen(u)) && ![...owedRecords.values()].some((o) => o.wsId === wsId)) {
     try {
       fs.unlinkSync(file);
     } catch {
@@ -1020,8 +1036,9 @@ export function makeKeeperSpawn(
     // and a listener gap would silently drop those frames (flowing-mode data
     // with no listener is lost, not buffered).
     type Ack = { running: boolean; pid?: number; everStarted?: boolean; turnInFlight?: boolean; shuttingDown?: boolean };
-    const deliverKills = (kills: MemKillRecord[] | undefined): void => {
-      for (const rec of kills ?? []) deliverMemRecord(wsId, rec);
+    const deliverCatchUp = (kills: MemKillRecord[] | undefined, softs: MemSoftRecord[] | undefined): void => {
+      // kills AND warnings share one seq counter: deliver them in seq order (the cursor is a high-water mark) — the host used to read only the kills (review F3)
+      for (const rec of [...(kills ?? []), ...(softs ?? [])].sort((a, b) => a.seq - b.seq)) deliverMemRecord(wsId, rec);
     };
     let ackWaiter: { resolve: (a: Ack) => void; reject: (e: Error) => void } | null = null;
     const wireSocket = (s: net.Socket): void => {
@@ -1032,7 +1049,7 @@ export function makeKeeperSpawn(
           if (!f) return;
           if (f.t === 'helloAck') {
             drainMemNotices(wsId); // #322 m1: the keeper's durable file first (kills AND warnings, in order) …
-            deliverKills(f.memKills); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)
+            deliverCatchUp(f.memKills, f.memSofts); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)
             ackWaiter?.resolve({
               running: f.running,
               pid: f.pid,
@@ -1048,7 +1065,7 @@ export function makeKeeperSpawn(
           } else if (f.t === 'stdout') {
             stdout.write(Buffer.from(f.b64, 'base64'));
           } else if (f.t === 'exit') {
-            drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now
+            drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now (the keeper's stop() flushes a pending kill before it exits — review F2)
             exited = true;
             handle.exitCode = f.code;
             stdout.end();

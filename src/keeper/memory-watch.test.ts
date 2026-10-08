@@ -500,3 +500,106 @@ test('#322 m2: the kernel-log lookup (a fork INSIDE the scope) waits for headroo
   mw.stop();
   mw2.stop();
 });
+
+// ─── #322 pre-review fixes (F1 stale/ambiguous kernel lines, F2 stop during the wait, F5 headroom on the working set) ───
+
+test('review F1: a STALE journal line of an earlier kill (whose lookup was skipped) never names the next kill — the pid already named is dropped, an ambiguous surplus stays «inferred»', async () => {
+  const w = new World();
+  w.maxBytes = 300 * MB;
+  w.current = 299 * MB; // the scope is saturated: kill 1's lookup is skipped (no fork)
+  w.add(12, { comm: 'workerA', cmdline: 'workerA', adj: 1000, rssPages: 9000 });
+  w.add(13, { comm: 'workerB', cmdline: 'workerB', adj: 1000, rssPages: 8000 });
+  const kills: MemKillRecord[] = [];
+  const L1 = kline(12, 'workerA');
+  const L2 = kline(13, 'workerB');
+  let lines: KernelOomKill[] = [L1];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => lines });
+  await wait(40);
+  w.oomKill(12);
+  assert.ok(await until(() => kills.length === 1, 4000));
+  assert.equal(kills[0].source, 'inferred', 'saturated ⇒ no lookup ⇒ a guess, labelled');
+  assert.equal(kills[0].pid, 12);
+  w.current = 100 * MB; // headroom is back; the journal now holds the STALE line of kill 1 and the line of kill 2
+  lines = [L1, L2];
+  w.oomKill(13);
+  assert.ok(await until(() => kills.length === 2, 4000));
+  assert.equal(kills[1].pid, 13, 'kill 2 is workerB — not workerA a second time');
+  assert.equal(kills[1].source, 'kernel');
+  mw.stop();
+});
+
+test('review F1: a stale line whose pid was NOT named by the earlier (wrong) guess makes the pairing ambiguous — the record stays inferred instead of carrying the wrong pid with certainty', async () => {
+  const w = new World();
+  w.maxBytes = 300 * MB;
+  w.current = 299 * MB;
+  w.add(20, { comm: 'decoy', cmdline: 'decoy', adj: 1000, rssPages: 20000 }); // exits NORMALLY, bigger than the victim: the guess for kill 1
+  w.add(12, { comm: 'victim1', cmdline: 'victim1', adj: 1000, rssPages: 5000 });
+  const kills: MemKillRecord[] = [];
+  const L1 = kline(12, 'victim1'); // kill 1's REAL line, never consumed (the lookup was skipped)
+  const L2 = kline(13, 'victim2');
+  let lines: KernelOomKill[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => lines });
+  await wait(40);
+  w.procs.delete(20);
+  w.oomKill(12);
+  assert.ok(await until(() => kills.length === 1, 4000));
+  assert.equal(kills[0].pid, 20, 'the guess is the decoy (the m2 failure, honestly labelled)');
+  assert.equal(kills[0].source, 'inferred');
+  w.current = 100 * MB;
+  lines = [L1, L2];
+  w.add(13, { comm: 'victim2', cmdline: 'victim2', adj: 1000, rssPages: 6000 });
+  await wait(30);
+  w.oomKill(13);
+  assert.ok(await until(() => kills.length === 2, 4000));
+  assert.equal(kills[1].source, 'inferred', 'two eligible lines for one kill ⇒ ambiguous ⇒ no certainty');
+  mw.stop();
+});
+
+test('review F1: ONE journal line for TWO kills in one look ⇒ both stay inferred and name two DIFFERENT processes (the second never repeats the first)', async () => {
+  const w = new World();
+  w.add(12, { comm: 'w1', cmdline: 'w1', adj: 1000, rssPages: 9000 });
+  w.add(13, { comm: 'w2', cmdline: 'w2', adj: 1000, rssPages: 8000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => [kline(12, 'w1')] });
+  await wait(40);
+  w.oomKill(12);
+  w.oomKill(13);
+  assert.ok(await until(() => kills.length === 2, 4000));
+  assert.deepEqual(kills.map((k) => k.source), ['inferred', 'inferred']);
+  assert.equal(new Set(kills.map((k) => k.pid)).size, 2, 'two kills, two different pids');
+  mw.stop();
+});
+
+test('review F2: stop() while a kill waits for the kernel log emits it NOW, labelled inferred, exactly once — the keeper exiting must not eat the report', async () => {
+  const w = new World();
+  w.add(12, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => { await wait(600); return [kline(12, 'hog')]; } });
+  await wait(40);
+  w.oomKill(12);
+  await wait(60); // the look has seen the kill and is now waiting for the journal
+  assert.equal(kills.length, 0, 'precondition: the record is still pending');
+  mw.stop();
+  assert.equal(kills.length, 1, 'stop() flushed the pending kill synchronously');
+  assert.equal(kills[0].source, 'inferred');
+  assert.equal(kills[0].pid, 12);
+  await wait(800);
+  assert.equal(kills.length, 1, 'and the resumed look does not emit it a second time');
+});
+
+test('review F5: the headroom check keys on the WORKING SET — a scope full of reclaimable page cache still gets its kernel-log lookup', async () => {
+  const w = new World();
+  w.maxBytes = 300 * MB;
+  w.current = 299 * MB;
+  w.inactiveFile = 250 * MB; // working set 49 MB: the kernel would reclaim the cache before charging a fork
+  w.add(12, { comm: 'hog', cmdline: 'hog', adj: 1000, rssPages: 9000 });
+  const kills: MemKillRecord[] = [];
+  let called = 0;
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => { called += 1; return [kline(12, 'hog')]; } });
+  await wait(40);
+  w.oomKill(12);
+  assert.ok(await until(() => kills.length === 1, 3000));
+  assert.equal(called >= 1, true, 'the lookup ran although memory.current was at the limit');
+  assert.equal(kills[0].source, 'kernel');
+  mw.stop();
+});

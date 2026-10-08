@@ -111,3 +111,24 @@ test('#322: a deleted workspace is told nothing; startMemoryNotices subscribes B
   off();
   assert.deepEqual(subs, ['kill', 'soft', 'off-kill', 'off-soft']);
 });
+
+test('review F8: startMemoryNotices is idempotent — a second call (macOS `activate` re-runs createMainWindow) does not subscribe twice, so a record sends ONE bus message', async () => {
+  const w = world();
+  const subs: string[] = [];
+  const fns: Array<(id: string, r: never) => void> = [];
+  const hooks = {
+    onMemoryKill: (fn: (id: string, r: never) => void) => (fns.push(fn), subs.push('kill'), () => subs.push('off-kill')),
+    onMemorySoft: (fn: (id: string, r: never) => void) => (fns.push(fn), subs.push('soft'), () => subs.push('off-soft')),
+  };
+  const off1 = startMemoryNotices(w.deps, hooks as never);
+  const off2 = startMemoryNotices(w.deps, hooks as never);
+  assert.equal(off2, off1, 'the same subscription is returned');
+  assert.deepEqual(subs, ['kill', 'soft'], 'subscribed once');
+  fns[0]('member', kill() as never);
+  await __memNoticeIdle('member');
+  assert.equal(w.sent.length, 1);
+  off1();
+  const off3 = startMemoryNotices(w.deps, hooks as never);
+  assert.deepEqual(subs, ['kill', 'soft', 'off-kill', 'off-soft', 'kill', 'soft'], 'after an unsubscribe a new start subscribes again');
+  off3();
+});
