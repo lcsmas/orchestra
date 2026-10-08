@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { __resetMemberMemoryForTests, realMemberMemoryDeps, sampleMemberMemory, type MemberMemoryDeps } from './member-memory.ts';
+import { ESCAPED_TTL_MS, __resetMemberMemoryForTests, memoizeEscaped, realMemberMemoryDeps, sampleMemberMemory, type MemberMemoryDeps } from './member-memory.ts';
 import { countMemberScopes, listScopeProcs, memberScopes, readScopeMemory, realScopeEnv, scopeSupport } from './memory-scope.ts';
 import { formatReliquatsLine } from '../shared/member-memory.ts';
 import { groupSessionsByWorkspace, type SessionResourceStat } from '../shared/resources.ts';
@@ -179,4 +179,48 @@ test('P10 a live member whose keeper runs OUTSIDE every scope it has (an older g
   const live = scope('ws-a', 'k1'); // keeperPid 100
   const ok = sampleMemberMemory(host({ liveMemberIds: () => ['ws-a'] }, { scopes: { 'ws-a': [live] }, mem: { [live.unit]: 50 * MB }, procs: { [live.unit]: [] } }).deps);
   assert.deepEqual([ok.tracked[0].keeperInScope, ok.untracked], [true, []]);
+});
+
+test('P12 (#328 F1) the keeper tree OUTSIDE the scope is billed per member through FI-1 v1.9: only for a keeper that is IN a scope, with that scope; null / a throw bills nothing; no walk wired = the bill alone', () => {
+  __resetMemberMemoryForTests();
+  const a = scope('ws-a'); // keeperPid 100
+  const b = { ...scope('ws-b'), keeperPid: null }; // keeper not in its scope: nothing to walk
+  const calls: string[] = [];
+  const mk = (escaped: MemberMemoryDeps['escaped']) =>
+    host({ escaped }, { scopes: { 'ws-a': [a], 'ws-b': [b] }, mem: { [a.unit]: 300 * MB, [b.unit]: 20 * MB }, procs: { [a.unit]: [], [b.unit]: [] } }).deps;
+  const r = sampleMemberMemory(mk((s) => (calls.push(s?.unit ?? 'NO-SCOPE'), [{ pid: 7, comm: 'chrome', rssBytes: 83 * MB }])));
+  assert.deepEqual(calls, [a.unit], 'ws-b has no keeper in its scope: no walk, and the walk gets the scope that HOLDS the keeper');
+  const va = r.tracked.find((m) => m.wsId === 'ws-a')!;
+  assert.deepEqual([va.outsideBytes, va.outsideCount], [83 * MB, 1]);
+  assert.equal(r.tracked.find((m) => m.wsId === 'ws-b')!.outsideBytes, 0);
+  // two generations: the walk is asked about the generation that holds the keeper, never the stale one
+  const stale = { ...scope('ws-a', 'j0'), keeperPid: null };
+  const seen: string[] = [];
+  sampleMemberMemory(host({ escaped: (s) => (seen.push(s.unit), []) }, { scopes: { 'ws-a': [stale, a] }, mem: { [a.unit]: 1, [stale.unit]: 1 }, procs: { [a.unit]: [], [stale.unit]: [] } }).deps);
+  assert.deepEqual(seen, [a.unit]);
+  assert.equal(sampleMemberMemory(mk(() => null)).tracked.find((m) => m.wsId === 'ws-a')!.outsideBytes, 0);
+  assert.equal(sampleMemberMemory(mk(() => { throw new Error('EACCES'); })).tracked.find((m) => m.wsId === 'ws-a')!.outsideBytes, 0);
+  assert.equal(sampleMemberMemory(host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 300 * MB }, procs: { [a.unit]: [] } }).deps).tracked[0].outsideBytes, 0, 'no walk wired = the bill alone');
+});
+
+test('P14 (#328 F1) the keeper-tree walk costs one stat read per HOST pid (H1): it is memoized per (scope unit, keeper) for ESCAPED_TTL_MS for the pollers, a FRESH read (the monitor\'s record) always walks, a new keeper pid is a new key, and the memo expires', () => {
+  __resetMemberMemoryForTests();
+  let t = 1_000_000;
+  const calls: string[] = [];
+  const base: NonNullable<MemberMemoryDeps['escaped']> = (s) => (calls.push(`${s.unit}:${s.keeperPid}`), [{ pid: calls.length, comm: 'chrome', rssBytes: calls.length * MB }]);
+  const poll = memoizeEscaped(base, { now: () => t });
+  const a = scope('ws-a'); // keeper 100
+  assert.equal(poll(a)![0].pid, 1);
+  t += 2_000;
+  assert.equal(poll(a)![0].pid, 1, 'the page polls every 2 s: served from the memo');
+  assert.equal(calls.length, 1);
+  assert.equal(poll({ ...a, keeperPid: 101 })![0].pid, 2, 'a new keeper pid is a NEW key (a restart is never served the old tree)');
+  t += ESCAPED_TTL_MS;
+  assert.equal(poll(a)![0].pid, 3, 'expired');
+  const fresh = memoizeEscaped(base, { fresh: true, now: () => t });
+  assert.equal(fresh(a)![0].pid, 4, 'fresh always walks (the monitor line is a record)');
+  assert.equal(fresh(a)![0].pid, 5);
+  t += 1;
+  assert.equal(poll(a)![0].pid, 5, 'and what a fresh read walked is what the pollers then share');
+  assert.equal(memoizeEscaped(() => null, { now: () => t })(scope('ws-z')), null, 'a failed walk (null) is memoized too: a broken host is not hammered every 2 s');
 });

@@ -327,3 +327,12 @@ test('G10 (#328) a live keeper OUTSIDE every scope of the member (an older gener
   assert.equal(row.memBytes, 650 * MBg);
   assert.equal(row.reliquats?.count, 1);
 });
+
+// ─── #328 review F2: no row without a Reliquat ───
+
+test('G12 (#328 F2, D-Q3) a scope WITHOUT a Reliquat never makes a row of its own (the keeper\'s boot window: in scope, pid file not yet written, no session row): only Reliquats keep a row; unlisted (null) neither', () => {
+  const members = rep(memberViewFrom('ws-boot', [rd(17, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'keeper' }])]), memberViewFrom('ws-blind', [rd(40, null)]), memberViewFrom('ws-left', [rd(300, [{ pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }])]));
+  const { rows } = groupSessionsByWorkspace([], null, members);
+  assert.deepEqual(rows.map((r) => r.key), ['ws-left']);
+  assert.equal(rows[0].scopeOnly, true);
+});

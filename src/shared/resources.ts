@@ -343,7 +343,7 @@ export interface SessionGroup {
   containerOnly: boolean;
   /** #328: the member's live Reliquats (null = the member is not scope-tracked, or its scope could not be listed). `partial` = a lower bound (a generation unlisted). */
   reliquats: { count: number; bytes: number; partial: boolean; procs: Array<{ pid: number; comm: string; rssBytes: number }> } | null;
-  /** #328: a member with NO session left but a live scope (its keeper is gone, its Reliquats are not) — a row with just its scope's memory + Reliquat count, like the container-only row; cpu / procs read « — ». */
+  /** #328: a member with NO session left but live Reliquats in its scope (its keeper is gone, they are not) — a row with just its scope's memory + Reliquat count, like the container-only row; cpu / procs read « — ». Never a row without a Reliquat (D-Q3). */
   scopeOnly: boolean;
 }
 
@@ -392,7 +392,7 @@ export function groupSessionsByWorkspace(
   // #328: a member whose session is gone but whose scope still holds processes (the Reliquats) has no session row — give it one; its containers (if any) fold into the SAME row
   const scopeOnly = new Map<string, SessionGroup>();
   for (const m of members?.tracked ?? []) {
-    if (byWs.has(m.wsId) || ((m.bytes ?? 0) <= 0 && (m.reliquats ?? 0) <= 0)) continue;
+    if (byWs.has(m.wsId) || (m.reliquats ?? 0) <= 0) continue; // D-Q3: the row is kept for a member that has only RELIQUATS left — a scope without one (the keeper's boot window, before its pid file) is not a row
     scopeOnly.set(m.wsId, { key: m.wsId, sessions: [], cpuPct: 0, memBytes: (m.bytes ?? 0) + viewBytesFor(containers, m.wsId), procCount: 0, remote: false, containers: chipOf(m.wsId), containerOnly: false, reliquats: m.reliquats !== null ? { count: m.reliquats, bytes: m.reliquatBytes ?? 0, partial: m.unlisted > 0, procs: m.reliquatProcs } : null, scopeOnly: true });
   }
   rows.push(...scopeOnly.values());

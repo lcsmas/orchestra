@@ -2,7 +2,7 @@
 // Consumers resolve a scope ONLY through FI-1's `memberScopes` / `readScopeMemory` / `listScopeProcs` (src/main/memory-scope.ts) — never a hard-coded slice path (FI-1.3); `[]` = not tracked,
 // and the member keeps today's process-tree figure. Read-only: it never signals, moves or stops anything (the Pause/stop tracks own that, FI-1.4). Electron-free: ids and the clock are injected.
 
-import { countMemberScopes, listScopeProcs, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope } from './memory-scope.ts';
+import { countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope } from './memory-scope.ts';
 import { scoped } from './logger.ts';
 import { buildMemberMemoryReport, memberViewFrom, type MemberMemoryReport, type MemberMemoryView, type ScopeReading } from '../shared/member-memory.ts';
 
@@ -29,6 +29,8 @@ export interface MemberMemoryDeps {
   readMemory(scope: MemberScope): { currentBytes: number } | null;
   /** FI-1 `listScopeProcs`: null / throw = unlisted. */
   listProcs(scope: MemberScope): ScopeReading['procs'];
+  /** FI-1 v1.9 `listKeeperTreeOutsideScope`: the processes of the keeper's tree (host-wide ppid chain) that left THIS scope — a browser main that moved itself into its own systemd scope (#328 review F1). Called with the scope that holds the keeper; null / throw = not measured (nothing is billed). Optional: a host without it bills the scope alone. */
+  escaped?(scope: MemberScope): Array<{ pid: number; comm: string; rssBytes: number }> | null;
   /** FI-1 `scopeSupportCached` (`scopeSupport` is ~6 stat calls — too many for a 2 s poll). */
   support(): { ok: true } | { ok: false; reason: string };
   /** H1's `countMemberScopes().total`: every member scope on the host (any workspace) — null = not countable. The surplus over the scopes we READ is reported, never read. */
@@ -46,6 +48,25 @@ export function realMemberMemoryDeps(ids: { workspaceIds(): string[]; liveMember
     listProcs: (s) => listScopeProcs(s),
     support: () => scopeSupportCached(), // 30 s cache (H1): the page polls every 2 s
     countScopes: () => countMemberScopes()?.total ?? null,
+    escaped: (s) => listKeeperTreeOutsideScope(s),
+  };
+}
+
+/** FI-1 v1.9's walk costs one stat read per HOST pid per call (H1): the page polls every 2 s. Memoize it per (scope unit, keeper pid) for this long; the monitor's once-a-minute LINE is a record, not a poll, and bypasses it. */
+export const ESCAPED_TTL_MS = 10_000;
+const escapedMemo = new Map<string, { at: number; value: Array<{ pid: number; comm: string; rssBytes: number }> | null }>();
+
+export function memoizeEscaped(base: NonNullable<MemberMemoryDeps['escaped']>, opts: { fresh?: boolean; now?: () => number } = {}): NonNullable<MemberMemoryDeps['escaped']> {
+  const now = opts.now ?? Date.now;
+  return (s) => {
+    const t = now();
+    const key = `${s.unit}:${s.keeperPid}`;
+    const hit = escapedMemo.get(key);
+    if (!opts.fresh && hit && t - hit.at >= 0 && t - hit.at < ESCAPED_TTL_MS) return hit.value;
+    const value = base(s);
+    escapedMemo.set(key, { at: t, value });
+    if (escapedMemo.size > 256) for (const [k, v] of escapedMemo) if (t - v.at > 5 * ESCAPED_TTL_MS) escapedMemo.delete(k);
+    return value;
   };
 }
 
@@ -87,8 +108,18 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
       // `s.keeperPid` is FI-1's own identity read (pid file, or — while the keeper has not written it yet — the scope's keeper.js process by argv); null = this member's keeper is NOT in this scope
       return { unit: s.unit, gen: s.gen, currentBytes, procs, keeperPid: s.keeperPid };
     });
+    // What the keeper's tree holds OUTSIDE its scope (a browser main in its own systemd scope): in nobody's bill. Only a keeper that is IN one of the scopes has a tree to walk; one read of /proc per sample, lazily.
+    const keeperAt = readings.findIndex((r) => r.keeperPid !== null);
+    let outside: Array<{ pid: number; comm: string; rssBytes: number }> = [];
+    if (keeperAt >= 0 && d.escaped) {
+      try {
+        outside = d.escaped(scopes[keeperAt]) ?? [];
+      } catch (e) {
+        warnOnce(`listKeeperTreeOutsideScope(${wsId})`, e);
+      }
+    }
     trackedIds.add(wsId);
-    tracked.push(memberViewFrom(wsId, readings));
+    tracked.push(memberViewFrom(wsId, readings, outside));
   }
   let live: string[] = [];
   try {
@@ -118,4 +149,5 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
 export const __resetMemberMemoryForTests = (): void => {
   warnedSupport = null;
   warned.clear();
+  escapedMemo.clear();
 };

@@ -17,7 +17,7 @@ test('W1 FI-1.3: the consumer resolves a scope ONLY through memberScopes/readSco
     assert.doesNotMatch(src, /\/sys\/fs\/cgroup|user\.slice|app\.slice|user@|readFileSync|readdirSync/, `${name} must not know where a scope lives (FI-1.3)`);
   }
   assert.match(producer, /support: \(\) => scopeSupportCached\(\)/, 'the 2 s page poll must use H1\'s 30 s support cache');
-  assert.match(producer, /import \{ countMemberScopes, listScopeProcs, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope \} from '\.\/memory-scope\.ts';/);
+  assert.match(producer, /import \{ countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope \} from '\.\/memory-scope\.ts';/);
 });
 
 test('W2 FI-1.4: the consumer only READS — no signal, no systemctl, no child process, no process move', () => {
@@ -91,4 +91,20 @@ test('W9 the keeper-outside-its-scopes rule: a live member whose keeper is in no
   assert.match(producer, /const untracked = \[\.\.\.new Set\(live\)\]\.filter\(\(id\) => !trackedIds\.has\(id\) \|\| keeperless\.has\(id\)\);/);
   assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid \};/);
   assert.match(producer, /countScopes: \(\) => countMemberScopes\(\)\?\.total \?\? null,/);
+});
+
+test('W10 (#328 review F1) the escaped keeper tree comes from FI-1 v1.9 `listKeeperTreeOutsideScope` (never a /proc walk of this consumer), asked for the scope that HOLDS the keeper, and only then', () => {
+  assert.match(producer, /import \{ countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs,/);
+  assert.match(producer, /const keeperAt = readings\.findIndex\(\(r\) => r\.keeperPid !== null\);/);
+  assert.match(producer, /if \(keeperAt >= 0 && d\.escaped\) \{/);
+  assert.match(producer, /outside = d\.escaped\(scopes\[keeperAt\]\) \?\? \[\];/);
+  assert.match(producer, /escaped: \(s\) => listKeeperTreeOutsideScope\(s\),/);
+  assert.equal(fs.existsSync(path.join(root, 'src/main/member-tree.ts')), false, 'the consumer must not carry a second /proc walk next to FI-1\'s');
+});
+
+test('W11 the page and bus-status share the walk through a 10 s memo, the monitor line bypasses it (fresh)', () => {
+  const hostSrc = read('src/main/member-memory-host.ts');
+  assert.match(hostSrc, /if \(deps\.escaped\) deps\.escaped = memoizeEscaped\(deps\.escaped, \{ fresh: opts\.fresh, now: \(\) => now \}\);/);
+  assert.match(producer, /export const ESCAPED_TTL_MS = 10_000;/);
+  assert.match(producer, /if \(!opts\.fresh && hit && t - hit\.at >= 0 && t - hit\.at < ESCAPED_TTL_MS\) return hit\.value;/);
 });

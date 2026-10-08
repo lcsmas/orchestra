@@ -177,3 +177,20 @@ test('M16 keeperInScope + rowProcessBytes: when NO scope of the member holds its
   // one generation holds the keeper, an older one does not: the keeper IS in a scope
   assert.equal(memberViewFrom('ws-a', [reading('a', 700, [proc(1, 'keeper')], 1), reading('b', 50, [proc(9, 'reliquat')], null)]).keeperInScope, true);
 });
+
+test('M18 billing what escaped the scope: the row ADDS the keeper tree\'s RSS that is in none of the member\'s scopes (a browser main in its own systemd scope — #328 review F1); a partial read never goes below the whole tree', () => {
+  const sessions = [{ kind: 'sdk', memBytes: 600 * MB }];
+  const v = memberViewFrom('ws-a', [reading('a', 300, [proc(1, 'keeper')], 1)], [{ rssBytes: 83 * MB }, { rssBytes: 7 * MB }]);
+  assert.deepEqual([v.outsideBytes, v.outsideCount], [90 * MB, 2]);
+  assert.equal(rowProcessBytes(sessions, v), 390 * MB); // bill 300 + escaped 90
+  assert.equal(rowProcessBytes(sessions, memberViewFrom('ws-a', [reading('a', 300, [proc(1, 'keeper')], 1)])), 300 * MB); // nothing escaped = master of FI-1: the bill alone
+  const partial = memberViewFrom('ws-a', [reading('a', 100, [proc(1, 'keeper')], 1), reading('b', null, null, null)], [{ rssBytes: 50 * MB }]);
+  assert.equal(rowProcessBytes(sessions, partial), 600 * MB, 'bill 100 + escaped 50 < the keeper tree 600: never below it');
+  const partialBig = memberViewFrom('ws-a', [reading('a', 100, [proc(1, 'keeper')], 1), reading('b', null, null, null)], [{ rssBytes: 550 * MB }]);
+  assert.equal(rowProcessBytes(sessions, partialBig), 650 * MB, 'a lower bound that already exceeds the tree keeps the escaped bytes');
+  // a keeper OUTSIDE every scope: the whole tree is in `all`, the escaped figure must not be added again
+  const keeperless = memberViewFrom('ws-a', [reading('a', 50, [proc(9, 'reliquat', 40)], null)], [{ rssBytes: 500 * MB }]);
+  assert.equal(rowProcessBytes(sessions, keeperless), 650 * MB);
+  // junk RSS is dropped, not summed
+  assert.equal(memberViewFrom('ws-a', [reading('a', 1, [], 1)], [{ rssBytes: Number.NaN }, { rssBytes: 5 * MB }]).outsideBytes, 5 * MB);
+});

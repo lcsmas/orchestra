@@ -31,6 +31,9 @@ export interface MemberMemoryView {
   reliquatProcs: Array<{ pid: number; comm: string; rssBytes: number }>;
   /** Some scope of this member holds its keeper. false = the member's keeper (if any runs) is OUTSIDE every scope it has — the scopes are an older generation's leftovers, so the keeper tree and the scope bill are DISJOINT. */
   keeperInScope: boolean;
+  /** Σ RSS of the keeper's process tree that is NOT in any scope of this member (a browser main that moved itself into its own systemd scope; #328 review F1): it is in nobody's kernel bill, so the row ADDS it. RSS, not bill. 0 = none / not measured. */
+  outsideBytes: number;
+  outsideCount: number;
 }
 
 /** How many Reliquats a member's view carries for display (the IPC payload stays small; the count is exact regardless). */
@@ -53,7 +56,7 @@ const sum = (xs: number[]): number => xs.reduce((n, x) => n + x, 0);
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 
 /** Fold a member's scope generations into one view. Never 0 for what could not be read. */
-export function memberViewFrom(wsId: string, readings: readonly ScopeReading[]): MemberMemoryView {
+export function memberViewFrom(wsId: string, readings: readonly ScopeReading[], outside: ReadonlyArray<{ rssBytes: number }> = []): MemberMemoryView {
   const meters = readings.map((r) => r.currentBytes).filter(finite);
   const listed = readings.filter((r) => r.procs !== null);
   const reliquats = listed.flatMap((r) => (r.procs ?? []).filter((p) => p.role === 'reliquat'));
@@ -70,6 +73,8 @@ export function memberViewFrom(wsId: string, readings: readonly ScopeReading[]):
       .sort((a, b) => b.rssBytes - a.rssBytes || a.pid - b.pid)
       .slice(0, MAX_RELIQUAT_PROCS),
     keeperInScope: readings.some((r) => r.keeperPid !== null && r.keeperPid !== undefined),
+    outsideBytes: sum(outside.map((o) => (finite(o.rssBytes) ? o.rssBytes : 0))),
+    outsideCount: outside.length,
   };
 }
 
@@ -107,7 +112,7 @@ export function reliquatTotals(r: MemberMemoryReport): { count: number; bytes: n
  * What the Resources row shows as the member's process memory (before containers). A scope-tracked member = the scope's meter (it holds the keeper's whole tree AND every Reliquat) PLUS the PTY sessions
  * (the Electron-hosted terminals are outside the scope); the `<wsId>:sdk` keeper tree is INSIDE it, so it is NOT added a second time. Untracked / meter unreadable → the plain tree sum (master's figure).
  * A partial read (one generation unreadable) is a lower bound: never below the keeper tree it replaces. When NO scope holds the keeper (`keeperInScope` false: the live keeper runs unscoped next to an older generation's leftovers)
- * the two are disjoint and ADD — never the stale scope in place of the live tree.
+ * the two are disjoint and ADD — never the stale scope in place of the live tree. The keeper tree's processes that ESCAPED the scope (`outsideBytes`) are added too: the bill cannot see them.
  */
 export function rowProcessBytes(sessions: ReadonlyArray<{ kind: string; memBytes: number }>, view: MemberMemoryView | undefined): number {
   const all = sum(sessions.map((s) => s.memBytes));
@@ -115,7 +120,8 @@ export function rowProcessBytes(sessions: ReadonlyArray<{ kind: string; memBytes
   if (!view.keeperInScope) return all + view.bytes;
   const sdk = sum(sessions.filter((s) => s.kind === 'sdk').map((s) => s.memBytes));
   const outside = all - sdk;
-  return outside + (view.unreadable > 0 ? Math.max(view.bytes, sdk) : view.bytes);
+  const covered = view.bytes + view.outsideBytes; // the scope's bill + what the keeper's tree holds OUTSIDE it (RSS)
+  return outside + (view.unreadable > 0 ? Math.max(covered, sdk) : covered);
 }
 
 function fmtBytes(n: number): string {

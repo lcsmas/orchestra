@@ -3,7 +3,7 @@
 
 import { store } from './store';
 import { listKeeperRoots } from './keeper-client';
-import { realMemberMemoryDeps, sampleMemberMemory } from './member-memory.ts';
+import { memoizeEscaped, realMemberMemoryDeps, sampleMemberMemory } from './member-memory.ts';
 import type { MemberMemoryReport } from '../shared/member-memory.ts';
 
 /** Reads younger than this are shared (the page polls every 2 s; bus-status and the page can land in the same second). */
@@ -16,7 +16,9 @@ export function currentMemberMemory(opts: { now?: number; fresh?: boolean } = {}
   const now = opts.now ?? Date.now();
   if (!opts.fresh && cache && now - cache.at >= 0 && now - cache.at < MEMBER_MEMORY_TTL_MS) return cache.report;
   const live = listKeeperRoots().map((r) => r.workspaceId);
-  const report = sampleMemberMemory(realMemberMemoryDeps({ workspaceIds: () => [...store.workspaces.map((w) => w.id), ...live], liveMemberIds: () => live }));
+  const deps = realMemberMemoryDeps({ workspaceIds: () => [...store.workspaces.map((w) => w.id), ...live], liveMemberIds: () => live });
+  if (deps.escaped) deps.escaped = memoizeEscaped(deps.escaped, { fresh: opts.fresh, now: () => now }); // FI-1 v1.9's walk is one stat read per host pid: 10 s for the pollers, fresh for the monitor's record
+  const report = sampleMemberMemory(deps);
   cache = { at: now, report };
   return report;
 }

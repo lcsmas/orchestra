@@ -47,7 +47,7 @@ const MUTANTS = [
   // ── the row's figure ──
   { id: 'M10_sdk_tree_added_twice', file: S, find: 'const outside = all - sdk;', to: 'const outside = all;', expect: ['M5 rowProcessBytes', 'G6'] },
   { id: 'M11_unreadable_meter_trusted', file: S, find: 'if (!view || view.bytes === null) return all;', to: 'if (!view) return all;', expect: ['M6 rowProcessBytes', 'G7'] },
-  { id: 'M12_partial_not_lower_bound', file: S, find: 'view.unreadable > 0 ? Math.max(view.bytes, sdk) : view.bytes', to: 'view.bytes', expect: ['M7 rowProcessBytes'] },
+  { id: 'M12_partial_not_lower_bound', file: S, find: 'view.unreadable > 0 ? Math.max(covered, sdk) : covered', to: 'covered', expect: ['M7 rowProcessBytes'] },
   { id: 'M13_pty_sessions_dropped', file: S, find: 'const outside = all - sdk;', to: 'const outside = 0;', expect: ['M5 rowProcessBytes', 'G6'] },
   // ── the line ──
   { id: 'M14_not_tracked_text', file: S, find: '`reliquats: Reliquats not tracked — ${untrackedWhy(r)}${stray > 0', to: '`reliquats: untracked — ${untrackedWhy(r)}${stray > 0', expect: ['M8 formatReliquatsLine', 'rig:untracked_fallback', 'rig:bus_status_line'], rig: ['untracked_fallback', 'bus_status_line'], cli: true },
@@ -107,7 +107,6 @@ const MUTANTS = [
   { id: 'M65_note_for_a_healthy_page', file: S, find: 'if (r.untracked.length > 0 || stray > 0) bits.push(`Reliquats not tracked — ${untrackedWhy(r)}`);', to: 'bits.push(`Reliquats not tracked — ${untrackedWhy(r)}`);', expect: ['M14 reliquatsNote'] },
   { id: 'M66_chip_title_without_rss', file: S, find: '${fmtBytes(c.bytes)} RSS — processes this workspace', to: '${fmtBytes(c.bytes)} — processes this workspace', expect: ['M15 reliquatChipTitle', 'shot:seeded: feat-x carries'], shot: true },
   { id: 'M67_container_only_row_added_next_to_scope_only', file: SR, find: '!byWs.has(a.wsId) && !scopeOnly.has(a.wsId))', to: '!byWs.has(a.wsId))', expect: ['G8'] },
-  { id: 'M68_empty_scope_gets_a_row', file: SR, find: "if (byWs.has(m.wsId) || ((m.bytes ?? 0) <= 0 && (m.reliquats ?? 0) <= 0)) continue;", to: 'if (byWs.has(m.wsId)) continue;', expect: ['G8'] },
   // ── delta review (renderer round): real FI-1 binding, keeper outside its scopes, keeper without its pid file, archived names ──
   { id: 'M69_count_scopes_stubbed', file: P, find: 'countScopes: () => countMemberScopes()?.total ?? null,', to: 'countScopes: () => null,', expect: ['P7 the REAL FI-1 binding', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
   { id: 'M70_read_memory_stubbed', file: P, find: 'readMemory: (s) => readScopeMemory(s),', to: 'readMemory: (_s) => null,', expect: ['P7 the REAL FI-1 binding'] },
@@ -117,6 +116,18 @@ const MUTANTS = [
   { id: 'M76_keeper_always_in_scope', file: S, find: 'keeperInScope: readings.some((r) => r.keeperPid !== null && r.keeperPid !== undefined),', to: 'keeperInScope: true,', expect: ['M16 keeperInScope', 'G10', 'P10 a live member whose keeper runs OUTSIDE'] },
   { id: 'M78_archived_row_shows_raw_id', file: V, find: 'fallbackName: nameById.get(g.key) ?? g.key }));', to: 'fallbackName: g.key }));', expect: ['W8 the Resources page'] },
   { id: 'M79_reliquat_lines_not_labelled_rss', file: V, find: '{formatBytes(p.rssBytes)} RSS</span>', to: '{formatBytes(p.rssBytes)}</span>', expect: ['shot:expanded: the opened feat-x row lists'], shot: true },
+  // ── review F1 (round 2): what escaped the scope is billed; F2: no Reliquat-less row ──
+  { id: 'M90_walk_asked_for_the_wrong_scope', file: P, find: 'outside = d.escaped(scopes[keeperAt]) ?? [];', to: 'outside = d.escaped(scopes[0]) ?? [];', expect: ['P12 (#328 F1)'] },
+  { id: 'M91_walk_even_without_a_keeper_in_scope', file: P, find: 'if (keeperAt >= 0 && d.escaped) {', to: 'if (scopes.length > 0 && d.escaped) {', expect: ['P12 (#328 F1)'] },
+  { id: 'M83_row_drops_escaped_bytes', file: S, find: 'const covered = view.bytes + view.outsideBytes;', to: 'const covered = view.bytes;', expect: ['M18 billing', 'rig:browser_escapes_scope'], rig: ['browser_escapes_scope'] },
+  { id: 'M84_partial_lower_bound_ignores_escaped', file: S, find: 'Math.max(covered, sdk)', to: 'Math.max(view.bytes, sdk)', expect: ['M18 billing'] },
+  { id: 'M86_escaped_walk_not_wired', file: P, find: 'escaped: (s) => listKeeperTreeOutsideScope(s),', to: 'escaped: () => [],', expect: ['W10 (#328 review F1)', 'rig:browser_escapes_scope'], rig: ['browser_escapes_scope'] },
+  { id: 'M89_row_for_a_reliquat_less_scope', file: SR, find: 'if (byWs.has(m.wsId) || (m.reliquats ?? 0) <= 0) continue;', to: 'if (byWs.has(m.wsId) || (m.bytes ?? 0) <= 0) continue;', expect: ['G12 (#328 F2'] },
+  // ── H1's follow-up: the walk is one stat read per host pid → memoized for the pollers ──
+  { id: 'M92_walk_memo_never_expires', file: P, find: 't - hit.at < ESCAPED_TTL_MS) return hit.value;', to: 'true) return hit.value;', expect: ['P14 (#328 F1)', 'W11 the page and bus-status'] },
+  { id: 'M93_fresh_read_served_from_memo', file: P, find: 'if (!opts.fresh && hit && t - hit.at >= 0', to: 'if (hit && t - hit.at >= 0', expect: ['P14 (#328 F1)', 'W11 the page and bus-status'] },
+  { id: 'M94_memo_ignores_keeper_pid', file: P, find: 'const key = `${s.unit}:${s.keeperPid}`;', to: 'const key = `${s.unit}`;', expect: ['P14 (#328 F1)'] },
+  { id: 'M95_host_walk_not_memoized', file: HOST, find: 'if (deps.escaped) deps.escaped = memoizeEscaped(deps.escaped, { fresh: opts.fresh, now: () => now });', to: 'void 0;', expect: ['W11 the page and bus-status'] },
   { id: 'M43_cli_no_reliquats_line', file: CLI, find: 'process.stdout.write(`${formatReliquatsLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\\n`);', to: 'void 0;', expect: ['W6 /busStatus', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
 ];
 
@@ -125,7 +136,7 @@ const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8
 
 function unitRed() {
   const r = sh(process.execPath, ['--test', '--experimental-strip-types', ...TESTS]);
-  const names = [...(r.stdout ?? '').matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1]);
+  const names = [...(r.stdout ?? '').matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1].replace(/\\([#])/g, '$1')); // node's reporter prints `#` as `\#` in a test title: an `expect` naming « (#328 …) » must still match
   const pass = Number(/^# pass (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
   const skipped = Number(/^# skipped (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
   return { names, pass, skipped, status: r.status };
@@ -165,7 +176,7 @@ buildCli();
 
 // ── POSITIVE CONTROL: the unmutated tree must be all green, else every "killed" below is vacuous ──
 const base = unitRed();
-const ALL_ARMS = ['known_magnitude', 'keeper_gone_reliquat_stays', 'two_generations', 'untracked_fallback', 'bus_status_line', 'production_launch', 'page_snapshot'];
+const ALL_ARMS = ['known_magnitude', 'keeper_gone_reliquat_stays', 'two_generations', 'untracked_fallback', 'bus_status_line', 'production_launch', 'page_snapshot', 'browser_escapes_scope'];
 const baseRig = rigRed(ALL_ARMS);
 const baseShot = shotRed();
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (pass ${baseRig.pass}, survivors ${baseRig.survivors}) | shot: ${baseShot.line} (ok ${baseShot.pass})`);

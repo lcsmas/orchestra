@@ -13,6 +13,7 @@
 //   untracked_fallback           a member started WITHOUT a scope keeps the process-tree figure and reads « Reliquats not tracked »
 //   bus_status_line            ★ the REAL built CLI `bus-status` prints the `reliquats:` line with the member's Reliquat count (labelled RSS); « Reliquats not tracked » for an unscoped member; a STRAY scope (no store entry, no live keeper) is counted through H1's real `countMemberScopes`, never read
 //   page_snapshot              ★ the REAL Resources-page sampler (`sampleResources()`, only pty/events/statfs/platform stubbed): the IPC snapshot carries the member report and the page's own grouping reads the member's row from the SCOPE
+//   browser_escapes_scope      ★ (review F1) keeper ← CLI ← browser ← helpers where the browser MAIN moves itself into its own systemd scope (real Chromium does): the main is in nobody's kernel bill — the row must ADD it
 //   production_launch          ★ the PRODUCTION path: `memoryCapSpecFor` over a REAL scratch bus (run frozen memory_cap ON vs OFF) → `makeKeeperSpawn` launches the keeper in its scope (ON) or not (OFF, D-Q1): ON → the detached process is counted;
 //                                OFF → « Reliquats not tracked », the tree figure stays
 //
@@ -30,7 +31,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HERE_REPO = path.resolve(HERE, '..'); // the rig's OWN tree: unit naming + the production launch argv are rig infrastructure, not the subject
 const REPO = path.resolve(process.env.RIG_REPO ?? HERE_REPO);
 const ARM = process.argv[2] ?? '';
-const ARMS = ['known_magnitude', 'keeper_gone_reliquat_stays', 'two_generations', 'untracked_fallback', 'bus_status_line', 'production_launch', 'page_snapshot'];
+const ARMS = ['known_magnitude', 'keeper_gone_reliquat_stays', 'two_generations', 'untracked_fallback', 'bus_status_line', 'production_launch', 'page_snapshot', 'browser_escapes_scope'];
 const MB = 1024 * 1024;
 const REAL_HOME = os.homedir();
 const RIG_BASE = path.resolve(process.env.RELIQUATS_RIG_HOME ?? path.join(REAL_HOME, '.cache', 'e2e-rlq'));
@@ -194,7 +195,8 @@ process.stdin.on('data', (d) => {
     let m; try { m = JSON.parse(line); } catch { continue; }
     if (m.detach !== undefined) cp.spawn('/bin/sh', ['-c', '"' + process.execPath + '" "' + alloc + '" ' + Number(m.detach) + ' </dev/null >/dev/null 2>&1 &'], { stdio: 'ignore' });
     if (m.child !== undefined) cp.spawn(process.execPath, [alloc, String(Number(m.child))], { stdio: 'ignore' });
-    process.stdout.write(JSON.stringify({ type: 'assistant', echo: m.echo ?? m.detach ?? m.child, pid: process.pid }) + '\\n');
+    if (m.browser !== undefined) cp.spawn('/bin/bash', [path.join(__dirname, 'browser.sh'), String(m.browser.unit), String(m.browser.helperMb), String(m.browser.mainMb), process.execPath], { stdio: 'ignore' });
+    process.stdout.write(JSON.stringify({ type: 'assistant', echo: m.echo ?? m.detach ?? m.child ?? (m.browser ? 'browser' : undefined), pid: process.pid }) + '\\n');
   }
 });
 setInterval(() => {}, 1000);
@@ -202,6 +204,14 @@ setInterval(() => {}, 1000);
 const fakeCli = path.join(base, 'fake-cli.cjs');
 fs.writeFileSync(fakeCli, FAKE_CLI);
 fs.writeFileSync(path.join(base, 'alloc.cjs'), ALLOC);
+// a stand-in for a Chromium: forks its helpers (they stay in the member's scope), THEN the main moves itself into its OWN transient systemd scope — exactly what real Chromium does (review F1, p4-browser.sh)
+fs.writeFileSync(path.join(base, 'browser.sh'), `#!/bin/bash
+unit="$1"; hmb="$2"; mmb="$3"; node_="$4"; dir="$(dirname "$0")"
+"$node_" "$dir/alloc.cjs" "$hmb" &
+"$node_" "$dir/alloc.cjs" "$hmb" &
+sleep 1
+exec systemd-run --user --scope --collect --quiet --unit="$unit" -p MemoryMax=300M -- "$node_" "$dir/alloc.cjs" "$mmb"
+`);
 
 const alive = (pid) => { try { process.kill(pid, 0); } catch { return false; } try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /, '')[0] !== 'Z'; } catch { return false; } };
 async function waitFor(pred, ms, step = 100) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await sleep(step); } return !!(await pred()); }
@@ -246,7 +256,7 @@ async function startKeeper(ws, { scoped, gen, seed = true }) {
   });
   s.write(JSON.stringify({ t: 'hello', wsId: ws }) + '\n');
   await sleep(150);
-  s.write(JSON.stringify({ t: 'spawn', command: process.execPath, args: [fakeCli, ws], cwd: base, env: { PATH: process.env.PATH } }) + '\n');
+  s.write(JSON.stringify({ t: 'spawn', command: process.execPath, args: [fakeCli, ws], cwd: base, env: { PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '', DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '' } }) + '\n'); // the member's env carries the session bus, as a real member's does: that is how a browser reaches systemd to move itself into its own scope
   const k0 = { ws, keeperPid, keeperTicks: startTicksOf(keeperPid), unit, sock: s, acks };
   const send = (obj) => s.write(JSON.stringify({ t: 'stdin', b64: Buffer.from(`${JSON.stringify(obj)}\n`).toString('base64') }) + '\n');
   k0.send = send;
@@ -283,6 +293,7 @@ async function until(ws, pred, ms = 15_000) {
 }
 
 const N = 100; // MB — the known magnitude
+const PAGE = Number(execFileSync('getconf', ['PAGESIZE']).toString().trim()); // the rig's own truth reads /proc/<pid>/statm in pages
 /** Workspace ids carry the RUN id: two concurrent runs (mine, a verifier's) never share a unit, so `memberScopes` never sums the other run's scopes. */
 const WS = (name) => `${name}-${runId}`;
 try {
@@ -405,6 +416,38 @@ try {
       check('row_above_baseline_by_about_N', !!page.row && page.row.memBytes - (m0.scope ?? m0.member) >= 0.85 * N * MB, { risenMb: mb((page.row?.memBytes ?? 0) - (m0.scope ?? m0.member ?? 0)) });
     }
     void m1;
+  }
+  // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  if (ARM === 'browser_escapes_scope') {
+    const ws = WS('esc');
+    const k = await startKeeper(ws, { scoped: true, gen: scopeMod.newScopeGen(Date.now()) });
+    await until(ws, (m) => m.tree !== null && (!hasMemberMemory || m.scope !== null));
+    // the browser main's own unit: NOT a member-shaped name (no `-<gen>` tail), so `memberScopes` / `countMemberScopes` never take it for a member scope
+    const escUnit = `${UNIT_PREFIX}esc_${runId}.scope`;
+    noteUnit(escUnit);
+    const HELPER = 30, MAIN = 80;
+    k.send({ browser: { unit: escUnit, helperMb: HELPER, mainMb: MAIN } });
+    await waitFor(() => fs.existsSync(path.join(unitDir(escUnit), 'cgroup.procs')), 15_000, 200);
+    await sleep(2500); // the helpers and the main fault their pages in
+    const line = await tick();
+    const m = mem(line, ws);
+    const view = line.members?.tracked?.find((x) => x.wsId === ws) ?? null;
+    // independent truth, read by the rig itself: the keeper's whole tree by the GLOBAL ppid chain, split by cgroup
+    const table = [];
+    for (const n of fs.readdirSync('/proc')) { if (!/^\d+$/.test(n)) continue; try { const st = fs.readFileSync(`/proc/${n}/stat`, 'utf8'); const f = st.slice(st.lastIndexOf(')') + 2).split(' '); const rss = Number(fs.readFileSync(`/proc/${n}/statm`, 'utf8').split(' ')[1]) * PAGE; table.push({ pid: Number(n), ppid: Number(f[1]), rss }); } catch { /* gone */ } }
+    const desc = new Set([k.keeperPid]); for (let grew = true; grew;) { grew = false; for (const p of table) if (!desc.has(p.pid) && desc.has(p.ppid)) { desc.add(p.pid); grew = true; } }
+    const cgOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/cgroup`, 'utf8').split('\n').find((l) => l.startsWith('0::'))?.slice(3) ?? null; } catch { return null; } };
+    const inEsc = [...desc].filter((p) => cgOf(p)?.endsWith(escUnit)).map((p) => table.find((t) => t.pid === p)?.rss ?? 0);
+    const escTruth = inEsc.reduce((a, b) => a + b, 0);
+    out.escUnitProcs = inEsc.length; out.escTruthMb = mb(escTruth); out.billMb = mb(view?.bytes); out.outsideMb = mb(view?.outsideBytes); out.reliquats = view?.reliquats ?? null;
+    check('the_main_really_left_the_scope', inEsc.length >= 1 && escTruth >= 0.85 * MAIN * MB, { n: inEsc.length, mb: mb(escTruth) });
+    check('helpers_are_not_reliquats', view?.reliquats === 0, { reliquats: view?.reliquats, procs: view?.reliquatProcs?.map((p) => `${p.comm}:${p.pid}`) }); // FI-1 v1.9: a helper whose parent left the scope still reaches the keeper by the GLOBAL ppid chain — a healthy member has 0 Reliquats
+    check('escaped_main_is_billed', !!view && view.outsideBytes >= 0.85 * MAIN * MB && Math.abs(view.outsideBytes - escTruth) <= 25 * MB, { outsideMb: mb(view?.outsideBytes), truthMb: mb(escTruth) });
+    if (memberShared) {
+      const sdk = { ptyId: `${ws}:sdk`, workspaceId: ws, kind: 'sdk', remote: false, cpuPct: 0, memBytes: line.sessions.find((s) => s.workspaceId === ws)?.rssBytes ?? 0, procCount: 1, processes: [] };
+      const row = resourcesShared.groupSessionsByWorkspace([sdk], null, line.members).rows[0];
+      check('row_covers_the_escaped_main', !!view && row.memBytes >= (view.bytes ?? 0) + 0.85 * MAIN * MB, { rowMb: mb(row.memBytes), billMb: mb(view?.bytes), truthMb: mb(escTruth) });
+    } else check('row_covers_the_escaped_main', false, 'no member-memory module in this tree');
   }
   // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   if (ARM === 'production_launch') {
