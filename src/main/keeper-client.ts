@@ -36,6 +36,14 @@ import {
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
 import { relaySocketPath, relayUpstreamFile, type DockerRelaySpec } from '../shared/docker-relay';
+import {
+  OOM_TOOL_WRAPPER_FILE,
+  OOM_TOOL_WRAPPER_SCRIPT,
+  buildScopeLaunchArgv,
+  formatMemKillLine,
+  type MemKillRecord,
+  type MemoryCapLaunch,
+} from '../shared/memory-scope';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { APPIMAGE_PATH } from './app-image';
@@ -116,6 +124,62 @@ function installedKeeperPath(): string {
   return path.join(orchestraHome(), 'bin', 'keeper.js');
 }
 
+/** Where the Plafond mémoire tool wrapper lives (#320) — beside keeper.js, so a live keeper never depends on the install dir either. */
+export function oomWrapperPath(): string {
+  return path.join(orchestraHome(), 'bin', OOM_TOOL_WRAPPER_FILE);
+}
+
+/** Install the CLAUDE_CODE_SHELL_PREFIX target (idempotent, content-compared). Best-effort: without it a capped keeper still caps,
+ *  but its tool commands are not the kernel's preferred victims (the keeper reports `unprotected`). */
+function installOomWrapper(): void {
+  try {
+    const dst = oomWrapperPath();
+    try {
+      if (fs.readFileSync(dst, 'utf8') === OOM_TOOL_WRAPPER_SCRIPT && (fs.statSync(dst).mode & 0o111) !== 0) return;
+    } catch {
+      /* absent → write */
+    }
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    const tmp = `${dst}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, OOM_TOOL_WRAPPER_SCRIPT, { mode: 0o755 });
+    fs.renameSync(tmp, dst); // atomic: a CLI exec'ing the wrapper never sees a torn file
+  } catch (e) {
+    log.warn('failed to install the memory-cap tool wrapper', e);
+  }
+}
+
+// ── Plafond mémoire kills (#320) ─────────────────────────────────────────────────────────────────────────────────
+
+export type MemoryKillListener = (wsId: string, rec: MemKillRecord) => void;
+const memKillListeners: MemoryKillListener[] = [];
+/** Last `seq` delivered per scope unit (a new keeper = a new unit = seq restarts at 1). */
+const memKillSeen = new Map<string, number>();
+
+/** Subscribe to kills by the Plafond mémoire (#322 builds the member notice + the coordinator's bus message on this). The app-log line is written
+ *  here, once per record, whatever the listeners do. Returns the unsubscribe. */
+export function onMemoryKill(fn: MemoryKillListener): () => void {
+  memKillListeners.push(fn);
+  return () => {
+    const i = memKillListeners.indexOf(fn);
+    if (i >= 0) memKillListeners.splice(i, 1);
+  };
+}
+
+/** Deliver a record at most once (a push frame AND a later helloAck catch-up can carry the same one). */
+function deliverMemKill(wsId: string, rec: MemKillRecord): void {
+  const seen = memKillSeen.get(rec.unit) ?? 0;
+  if (rec.seq <= seen) return;
+  memKillSeen.set(rec.unit, rec.seq);
+  log.warn(formatMemKillLine(wsId, rec));
+  for (const fn of [...memKillListeners]) {
+    try {
+      fn(wsId, rec);
+    } catch (e) {
+      log.warn(`memory-cap[${wsId}]: kill listener failed`, e);
+    }
+  }
+}
+
 /**
  * Copy dist-electron/keeper.js out of the install dir. Idempotent + self-
  * updating (content compare). Best-effort: a failure only disables detach
@@ -123,6 +187,7 @@ function installedKeeperPath(): string {
  * file at startup, so overwriting doesn't touch live processes.
  */
 export function installKeeper(): void {
+  installOomWrapper();
   try {
     const src = path.join(__dirname, 'keeper.js');
     if (!fs.existsSync(src)) {
@@ -258,6 +323,10 @@ export interface KeeperProbe {
    *  must NOT attach to it (audit D1) — kill + spawn fresh. `undefined` =
    *  pre-field keeper daemon (legacy: treat as not shutting down). */
   shuttingDown?: boolean;
+  /** #320: this keeper's Plafond mémoire state (see the protocol); undefined = launched without one. */
+  cap?: { unit: string; state: 'active' | 'unprotected' | 'not-applied' | 'no-scope'; hardBytes: number };
+  /** #320: the kills it has recorded (last ≤ 20). */
+  memKills?: MemKillRecord[];
 }
 
 export async function probeKeeper(wsId: string): Promise<KeeperProbe | null> {
@@ -270,6 +339,8 @@ export async function probeKeeper(wsId: string): Promise<KeeperProbe | null> {
         everStarted: reply.everStarted,
         turnInFlight: reply.turnInFlight,
         shuttingDown: reply.shuttingDown,
+        ...(reply.cap ? { cap: reply.cap } : {}),
+        ...(reply.memKills ? { memKills: reply.memKills } : {}),
       };
     }
     return null;
@@ -657,28 +728,55 @@ function isAlive(pid: number): boolean {
 // The SpawnedProcess bridge
 // ---------------------------------------------------------------------------
 
-async function launchKeeperDaemon(wsId: string): Promise<net.Socket> {
+async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<net.Socket> {
   const sockPath = keeperSocketPath(wsId);
   const runtime = resolveKeeperRuntime();
   const script = installedKeeperPath();
   const target = fs.existsSync(script) ? script : path.join(__dirname, 'keeper.js');
   fs.mkdirSync(keeperDir(), { recursive: true });
-  const child = spawn(runtime.cmd, [target, wsId, sockPath, keeperPidPath(wsId), keeperLogPath(wsId)], {
+  const keeperArgs = [target, wsId, sockPath, keeperPidPath(wsId), keeperLogPath(wsId)];
+  const waitForSocket = async (aborted: () => boolean): Promise<net.Socket | { err: unknown }> => {
+    let lastErr: unknown = null;
+    for (let i = 0; i < 50; i++) {
+      if (aborted()) return { err: lastErr ?? new Error('launcher exited') };
+      try {
+        return await connectSock(sockPath, 500);
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    return { err: lastErr };
+  };
+  if (cap) {
+    // Plafond mémoire (#320): `systemd-run --scope` makes the keeper the MAIN process of a NEW user scope (never moves an existing
+    // process). If the launcher itself fails (no systemd-run, no user manager) the keeper never ran: launch it plain — an uncapped
+    // session is better than none — and the keeper's `cap.state` will say `no-scope`.
+    const launch = buildScopeLaunchArgv({ unit: cap.unit, limits: cap.limits, description: `Orchestra member ${wsId} (keeper + session)`, cmd: runtime.cmd, args: keeperArgs });
+    let launcherFailed: string | null = null;
+    const child = spawn(launch.cmd, launch.args, { detached: true, stdio: 'ignore', env: runtime.env });
+    child.once('error', (e) => (launcherFailed = e.message));
+    child.once('exit', (code, signal) => {
+      if (code !== 0) launcherFailed = `exit ${code ?? signal}`; // the launcher exec'd into the keeper: any exit before the socket is up is a failure
+    });
+    child.unref();
+    const r = await waitForSocket(() => launcherFailed !== null);
+    if (r instanceof net.Socket) {
+      log.info(`memory-cap[${wsId}]: keeper launched in scope ${cap.unit}${cap.limits ? ` (hard ${cap.limits.hardBytes} B, swap ${cap.limits.swapMaxBytes})` : ' (no limits)'}`);
+      return r;
+    }
+    if (launcherFailed === null) throw new Error(`keeper failed to start for ${wsId}: ${String(r.err)}`);
+    log.warn(`memory-cap[${wsId}]: could not start the keeper in scope ${cap.unit} (${launcherFailed}) — launching it WITHOUT a scope`);
+  }
+  const child = spawn(runtime.cmd, keeperArgs, {
     detached: true,
     stdio: 'ignore',
     env: runtime.env,
   });
   child.unref();
-  let lastErr: unknown = null;
-  for (let i = 0; i < 50; i++) {
-    try {
-      return await connectSock(sockPath, 500);
-    } catch (e) {
-      lastErr = e;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error(`keeper failed to start for ${wsId}: ${String(lastErr)}`);
+  const r = await waitForSocket(() => false);
+  if (r instanceof net.Socket) return r;
+  throw new Error(`keeper failed to start for ${wsId}: ${String(r.err)}`);
 }
 
 /**
@@ -697,6 +795,8 @@ export function makeKeeperSpawn(
   onAttached?: (pid: number | undefined, turnInFlight: boolean) => void,
   /** #291: ask the keeper to host the Docker relay for this member (absent = the spawn frame is today's, byte for byte). */
   dockerRelay?: DockerRelaySpec,
+  /** #320: launch the keeper (when this start has to launch one) in its own scope with these limits. Absent = today's launch, byte for byte. */
+  memoryCap?: MemoryCapLaunch,
 ): (opts: SdkSpawnOptions) => KeeperSpawnedProcess {
   return (opts: SdkSpawnOptions): KeeperSpawnedProcess => {
     const ev = new EventEmitter();
@@ -747,6 +847,9 @@ export function makeKeeperSpawn(
     // and a listener gap would silently drop those frames (flowing-mode data
     // with no listener is lost, not buffered).
     type Ack = { running: boolean; pid?: number; everStarted?: boolean; turnInFlight?: boolean; shuttingDown?: boolean };
+    const deliverKills = (kills: MemKillRecord[] | undefined): void => {
+      for (const rec of kills ?? []) deliverMemKill(wsId, rec);
+    };
     let ackWaiter: { resolve: (a: Ack) => void; reject: (e: Error) => void } | null = null;
     const wireSocket = (s: net.Socket): void => {
       s.on(
@@ -755,6 +858,7 @@ export function makeKeeperSpawn(
           const f = parseKeeperFrame(line);
           if (!f) return;
           if (f.t === 'helloAck') {
+            deliverKills(f.memKills); // #320: kills that happened while no app was attached
             ackWaiter?.resolve({
               running: f.running,
               pid: f.pid,
@@ -763,6 +867,8 @@ export function makeKeeperSpawn(
               shuttingDown: f.shuttingDown,
             });
             ackWaiter = null;
+          } else if (f.t === 'memKill') {
+            deliverMemKill(wsId, f.rec);
           } else if (f.t === 'stdout') {
             stdout.write(Buffer.from(f.b64, 'base64'));
           } else if (f.t === 'exit') {
@@ -864,7 +970,7 @@ export function makeKeeperSpawn(
             }
           }
           if (!sock) {
-            sock = await launchKeeperDaemon(wsId);
+            sock = await launchKeeperDaemon(wsId, memoryCap);
             wireSocket(sock);
             await helloOn(sock);
             sock.write(
@@ -875,6 +981,7 @@ export function makeKeeperSpawn(
                 cwd: opts.cwd ?? process.cwd(),
                 env: opts.env,
                 ...(dockerRelay ? { dockerRelay } : {}),
+                ...(memoryCap?.limits ? { memoryCap: { unit: memoryCap.unit, hardBytes: memoryCap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),
               }),
             );
           }

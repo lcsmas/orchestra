@@ -46,7 +46,8 @@ import {
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
-import { formatMemoryGuardLine, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunView } from '../shared/memory-guard.ts';
+import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
 import { formatContainersLine, type ContainerAccountingView } from '../shared/container-accounting.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
 import type { BusDb } from '../main/bus.ts';
@@ -2205,7 +2206,13 @@ async function main(argv: string[]): Promise<void> {
       process.stdout.write(`bus: ${res.busAvailable ? 'available' : 'UNAVAILABLE'}\n`);
       // #285: the host's memory guard (admission / memory Pause / MemAvailable). Absent from an older app → no line, output unchanged.
       if (res.memoryGuard && typeof res.memoryGuard === 'object') {
-        process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot)}\n`);
+        process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot, Array.isArray(res.memoryPausedRuns) ? (res.memoryPausedRuns as MemoryPausedRunView[]) : undefined)}\n`);
+      }
+      // #320: the Plafond mémoire — on/off for THIS run (frozen) + the levels. Absent from an older app → no line, output unchanged.
+      if (res.memoryCap && typeof res.memoryCap === 'object') {
+        const mc = res.memoryCap as Omit<MemoryCapStatusView, 'switchOn'>;
+        const frozenForCap = parseSwitches(typeof res.frozenFlags === 'string' ? res.frozenFlags : null);
+        process.stdout.write(`${formatMemoryCapLine({ ...mc, switchOn: res.runExists === false ? null : frozenForCap.memoryCap })}\n`);
       }
       // #293: container memory per workspace + unattributed containers (host-wide). Absent from an older app → no line.
       if (res.containers && typeof res.containers === 'object') {

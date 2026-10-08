@@ -22,6 +22,9 @@
 //   clock, which is what lets the app-side bridge no-op its `kill()`.
 // - Shutdown policy (linger after turn end / wedge backstop) lives in the pure
 //   shared state machine; the daemon just feeds it events and polls it.
+// - Plafond mémoire (#320, ADR 0005): a keeper the app launched inside its own systemd scope (`spawn` carries `memoryCap`) checks that the
+//   scope's limit is really applied, watches `memory.events` to NAME each kill (memory-watch.ts), reports it (`memKill` frame, `helloAck`), and
+//   points the CLI's CLAUDE_CODE_SHELL_PREFIX at the oom wrapper so tool commands — not the keeper or the CLI — are the kernel's preferred victims.
 // - Docker relay (#291, ADR 0004): a `spawn` frame carrying `dockerRelay` makes this keeper host a unix-socket
 //   Docker proxy that stamps `orchestra.ws`/`orchestra.run` on every container and point the CLI's DOCKER_HOST at
 //   it. Absent ⇒ none of that code runs and the CLI env is exactly what the client sent.
@@ -42,6 +45,8 @@ import {
 import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUpstream } from '../shared/docker-relay.ts';
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
+import { startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
+import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, parseProcCgroupV2, type MemKillRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -132,6 +137,7 @@ function unlinkOwnedFiles(): void {
 }
 
 function cleanupAndExit(code: number): void {
+  memWatch?.stop();
   relaySupervisor?.stop();
   if (relay) {
     relay.stop();
@@ -224,6 +230,71 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
   });
 }
 
+// ── Plafond mémoire (#320) ───────────────────────────────────────────────────────────────────────────────────────────
+
+type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>;
+let capInfo: CapInfo | null = null;
+let memWatch: MemoryWatch | null = null;
+const memKills: MemKillRecord[] = [];
+const CGROUP_ROOT = process.env.ORCHESTRA_CGROUP_ROOT || '/sys/fs/cgroup';
+/** The kernel rounds a limit to its page size (16 KiB on Asahi): "applied" means within one 64 KiB page of what was asked. */
+const LIMIT_SLACK_BYTES = 64 * 1024;
+
+/** Verify the scope the launcher put us in, start the kill watch, and return the CLI env (with the tool wrapper when the limit is real). */
+function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn' }>['memoryCap']>, env: Record<string, string | undefined>): Record<string, string | undefined> {
+  let cgPath: string | null = null;
+  try {
+    cgPath = parseProcCgroupV2(fs.readFileSync('/proc/self/cgroup', 'utf8'));
+  } catch {
+    /* no /proc */
+  }
+  if (!cgPath || path.basename(cgPath) !== cap.unit) {
+    capInfo = { unit: cap.unit, state: 'no-scope', hardBytes: cap.hardBytes };
+    klog(`memory cap: NOT in scope ${cap.unit} (cgroup ${cgPath ?? 'unreadable'}) — the keeper was launched plain; no cap, no watch`);
+    return env;
+  }
+  const dir = path.join(CGROUP_ROOT, cgPath);
+  let limit: number | null = null;
+  try {
+    limit = parseCgroupLimit(fs.readFileSync(path.join(dir, 'memory.max'), 'utf8'));
+  } catch {
+    /* unreadable */
+  }
+  const applied = limit !== null && limit <= cap.hardBytes && limit >= cap.hardBytes - LIMIT_SLACK_BYTES;
+  if (!applied) {
+    capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
+    klog(`memory cap: in scope ${cap.unit} but memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the limit is NOT applied (memory controller not delegated?); tools are not wrapped`);
+    return env;
+  }
+  let wrapperOk = false;
+  if (cap.wrapper) {
+    try {
+      fs.accessSync(cap.wrapper, fs.constants.X_OK);
+      wrapperOk = true;
+    } catch {
+      klog(`memory cap: tool wrapper ${cap.wrapper} is missing or not executable — tool commands keep oom_score_adj 0`);
+    }
+  }
+  capInfo = { unit: cap.unit, state: wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
+  memWatch = startMemoryWatch({
+    cgroupDir: dir,
+    unit: cap.unit,
+    log: klog,
+    onKill: (rec) => {
+      memKills.push(rec);
+      if (memKills.length > 20) memKills.shift();
+      klog(formatMemKillLine(wsId, rec));
+      send({ t: 'memKill', rec });
+    },
+  });
+  klog(`memory cap: ${capInfo.state.toUpperCase()} unit=${cap.unit} memory.max=${limit} cgroup=${dir}`);
+  if (!wrapperOk || !cap.wrapper) return env;
+  const out: Record<string, string | undefined> = { ...env, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
+  // The user's own prefix keeps working: our wrapper chains it exactly as the CLI would have called it.
+  if (env.CLAUDE_CODE_SHELL_PREFIX && env.CLAUDE_CODE_SHELL_PREFIX !== cap.wrapper) out[INNER_SHELL_PREFIX_ENV] = env.CLAUDE_CODE_SHELL_PREFIX;
+  return out;
+}
+
 // ── Docker relay (#291) ──────────────────────────────────────────────────────────────────────────────────────────
 
 let relay: DockerRelay | null = null;
@@ -292,7 +363,8 @@ function handleClientFrame(f: KeeperClientFrame): void {
         send({ t: 'err', msg: 'stale keeper: child already exited' });
       } else if (f.dockerRelay) {
         spawnInFlight = true;
-        void withDockerRelay(f.dockerRelay.runId, f.env).then((env) => {
+        const capEnv = f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env;
+        void withDockerRelay(f.dockerRelay.runId, capEnv).then((env) => {
           try {
             startChild(f.command, f.args, f.cwd, env);
           } finally {
@@ -301,7 +373,7 @@ function handleClientFrame(f: KeeperClientFrame): void {
           }
         });
       } else {
-        startChild(f.command, f.args, f.cwd, f.env);
+        startChild(f.command, f.args, f.cwd, f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env);
       }
       break;
     case 'stdin':
@@ -348,6 +420,8 @@ const server = net.createServer((sock) => {
       // attaching client refuses it (audit D1); else it writes into a dropped
       // `stdin` frame and the CLI exits 0 with the prompt lost.
       shuttingDown,
+      ...(capInfo ? { cap: capInfo } : {}),
+      ...(memKills.length ? { memKills: memKills.slice() } : {}),
     };
   };
 

@@ -49,6 +49,8 @@ import {
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
 import { dockerRelaySpecFor } from './docker-relay-switch.ts';
+import { memoryCapSpecFor } from './memory-cap-switch.ts';
+import { isFleetMember } from '../shared/admission.ts';
 import { notePauseHumanTurn, pauseRefusalById } from './pause-gate.ts';
 import { isPauseRefusal, type PauseOrigin } from '../shared/bus-pause.ts';
 import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
@@ -2074,7 +2076,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
                   notifyTurnStart(wsId);
                 }
               }
-            }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote)) as never,
+            }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote),
+            // #320: a FLEET MEMBER's keeper starts in its own memory scope when its run froze `memory_cap` ON. Read at THIS session start; a keeper
+            // that is already running is attached to as it is (the facade only launches a keeper when none lives) — running sessions are never migrated.
+            memoryCapSpecFor({ wsId, runId: sdkEnv.ORCHESTRA_RUN_ID, hasCoordinator: isFleetMember(ws), remote, settings: store.getMemoryGuardSettings() })) as never,
           }),
       // The workspace's model (frozen at creation / picked in the dropdown);
       // undefined = account default. Same resolver as the pty path. `sdkSetModel`

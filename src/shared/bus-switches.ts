@@ -46,7 +46,8 @@ export type BusMechanism =
   | 'capability' // #129
   | 'receipts' // #130
   | 'pause' // #252 fleet Pause (ADR 0003)
-  | 'dockerRelay'; // #291 keeper Docker relay (ADR 0004)
+  | 'dockerRelay' // #291 keeper Docker relay (ADR 0004)
+  | 'memoryCap'; // #320 per-member kernel memory scope (ADR 0005)
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
@@ -59,6 +60,7 @@ export const BUS_MECHANISMS: readonly BusMechanism[] = [
   'receipts', // #130
   'pause', // #252
   'dockerRelay', // #291
+  'memoryCap', // #320
 ];
 
 /** One boolean per mechanism. */
@@ -82,6 +84,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   receipts: false, // #130
   pause: false, // #252 — opt-in per run; OFF ⇒ `run pause` refused and no gate ever fires
   dockerRelay: false, // #291 — opt-in per run; OFF ⇒ DOCKER_HOST is never set, containers are not stamped
+  memoryCap: false, // #320 — opt-in per run; OFF ⇒ a member's keeper is launched in no scope of its own (no Plafond mémoire)
 });
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -95,6 +98,7 @@ export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   receipts: 'Mutation receipts (idempotence)', // #130
   pause: 'Pause (host-enforced fleet pause)', // #252
   dockerRelay: 'Docker relay (containers stamped with their workspace + run)', // #291
+  memoryCap: 'Memory cap (each member session in its own kernel memory scope)', // #320
 };
 
 /**
@@ -206,7 +210,8 @@ export type BusMechanismWire =
   | 'capability'
   | 'receipts' // #130 (wire == key)
   | 'pause' // #252 (wire == key)
-  | 'docker_relay'; // #291 (snake wire, camel key — like ask_gate)
+  | 'docker_relay' // #291 (snake wire, camel key — like ask_gate)
+  | 'memory_cap'; // #320 (snake wire, camel key)
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   delivery: 'delivery',
@@ -221,6 +226,7 @@ const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   receipts: 'receipts',
   pause: 'pause', // #252 (wire == key; same single-map rule)
   docker_relay: 'dockerRelay', // #291
+  memory_cap: 'memoryCap', // #320
 };
 
 /** Wire name → internal key. Returns null for an unknown name (never a guess). */
@@ -280,6 +286,15 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
         on
           ? `- bus switch ${wire}=ON — your keeper routes docker through a relay that stamps orchestra.ws / orchestra.run on every container you create — when $DOCKER_HOST points at a keepers/*.docker.sock, leave it alone and do not use another socket path.`
           : `- bus switch ${wire}=OFF — docker is used directly; containers you create are not stamped.`,
+      );
+      continue;
+    }
+    // #320: `memory_cap` is not a bus mechanism either. Applies at each session START — a running session keeps what it started with.
+    if (m === 'memoryCap') {
+      lines.push(
+        on
+          ? `- bus switch ${wire}=ON — each of your session starts (spawn, restart, wake) runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel (it is named in your app log), never your session. Keep tests and rigs light; a session that started before this was ON is not capped.`
+          : `- bus switch ${wire}=OFF — your session runs in no memory scope of its own; no per-member memory limit applies.`,
       );
       continue;
     }

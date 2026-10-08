@@ -6,6 +6,7 @@ import {
   GIB,
   INITIAL_GUARD_STATE,
   MAX_ADMISSION_GB,
+  MIN_CAP_HARD_GB,
   MIN_CRITICAL_GB,
   SAMPLE_FAST_MS,
   SAMPLE_SLOW_MS,
@@ -27,6 +28,7 @@ import {
   type GuardState,
   type GuardTransitionKind,
   type MemoryGuardSnapshot,
+  type MemoryPausedRunView,
 } from './memory-guard.ts';
 
 const T = DEFAULT_THRESHOLDS; // 6 GB Admission, 3 GB critical, 1 GB margin
@@ -223,22 +225,22 @@ test('thresholds are the SETTINGS: 10/4 GB decides at 10/4, not 6/3', () => {
 
 // ─── settings ───────────────────────────────────────────────────────────────────────────────────────────────────────
 test('settings default to 6 / 3 GB with the toggle ON', () => {
-  assert.deepEqual(normalizeMemoryGuardSettings(undefined), { admissionGb: 6, criticalGb: 3, admissionEnabled: true });
-  assert.deepEqual(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 6, criticalGb: 3, admissionEnabled: true });
+  assert.deepEqual(normalizeMemoryGuardSettings(undefined), { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
+  assert.deepEqual(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
 });
 
 test('settings: a valid stored value is kept (decimals, toggle OFF)', () => {
-  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false }), { admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false }), { admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 });
 });
 
 test('settings: garbage / an inverted pair falls back to the default PAIR, keeping the toggle', () => {
-  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, admissionEnabled: false }), { admissionGb: 6, criticalGb: 3, admissionEnabled: false });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, admissionEnabled: false }), { admissionGb: 6, criticalGb: 3, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 });
   assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 'x' as unknown as number, criticalGb: NaN }), DEFAULT_MEMORY_GUARD_SETTINGS);
   assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 6, criticalGb: 6 }), DEFAULT_MEMORY_GUARD_SETTINGS);
 });
 
 test('validate_total: Admission + the 1 GB reopen margin must be BELOW the machine\'s memory (Admission could otherwise never reopen)', () => {
-  const s = { admissionGb: 40, criticalGb: 3, admissionEnabled: true };
+  const s = { admissionGb: 40, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 };
   assert.match(validateMemoryGuardSettings(s, gb(32)) ?? '', /plus the 1 GB reopen margin must be below this machine's memory \(32\.0 GB\)/);
   assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 31 }, gb(32)) ?? '', /reopen margin/, '31 + 1 = 32 is not below 32');
   assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 31.5 }, gb(32)) ?? '', /reopen margin/, 'the old Admission-only bound accepted this: 31.5 + 1 > 32');
@@ -251,21 +253,21 @@ test('validate_total: Admission + the 1 GB reopen margin must be BELOW the machi
 
 test('toggle_only_small_host: a toggle-only patch is never refused by the MemTotal bound (the default 6/3 exceeds a 4 GB host); changing the pair is', () => {
   const small = gb(4);
-  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: false }, small), { ok: true, settings: { admissionGb: 6, criticalGb: 3, admissionEnabled: false } });
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: false }, small), { ok: true, settings: { admissionGb: 6, criticalGb: 3, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 } });
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 3.5, criticalGb: 3 }, small).ok, false, '3.5 + 1 >= 4');
-  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 2, criticalGb: 1 }, small), { ok: true, settings: { admissionGb: 2, criticalGb: 1, admissionEnabled: true } });
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 2, criticalGb: 1 }, small), { ok: true, settings: { admissionGb: 2, criticalGb: 1, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 } });
 });
 
 test('patch_merge_keeps_stored_fields: a partial patch changes ONLY its fields (non-default stored settings survive)', () => {
-  const stored = { admissionGb: 10, criticalGb: 4, admissionEnabled: false };
-  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionGb: 12 }), { ok: true, settings: { admissionGb: 12, criticalGb: 4, admissionEnabled: false } });
-  assert.deepEqual(patchMemoryGuardSettings(stored, { criticalGb: 5 }), { ok: true, settings: { admissionGb: 10, criticalGb: 5, admissionEnabled: false } });
-  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionEnabled: true }), { ok: true, settings: { admissionGb: 10, criticalGb: 4, admissionEnabled: true } });
+  const stored = { admissionGb: 10, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 };
+  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionGb: 12 }), { ok: true, settings: { ...stored, admissionGb: 12 } });
+  assert.deepEqual(patchMemoryGuardSettings(stored, { criticalGb: 5 }), { ok: true, settings: { ...stored, criticalGb: 5 } });
+  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionEnabled: true }), { ok: true, settings: { ...stored, admissionEnabled: true } });
   assert.deepEqual(patchMemoryGuardSettings(stored, {}), { ok: true, settings: stored });
 });
 
 test('validate_toggle_type: a non-boolean toggle is refused (validate, patch, and a string from IPC)', () => {
-  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 3, admissionEnabled: 'yes' as unknown as boolean }) ?? '', /toggle must be true or false/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 3, admissionEnabled: 'yes' as unknown as boolean, capSoftGb: 3, capHardGb: 6 }) ?? '', /toggle must be true or false/);
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: 'false' as unknown as boolean }).ok, false);
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: 0 as unknown as boolean }).ok, false);
 });
@@ -274,18 +276,18 @@ test('patch: a null / undefined / non-object patch is {ok:false}, never a throw;
   for (const bad of [null, undefined, 'x' as unknown as object, 5 as unknown as object]) {
     assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, bad as never), { ok: false, error: 'invalid settings patch' });
   }
-  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 8 }), { ok: true, settings: { admissionGb: 8, criticalGb: 3, admissionEnabled: true } });
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 8 }), { ok: true, settings: { ...DEFAULT_MEMORY_GUARD_SETTINGS, admissionGb: 8 } });
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 40 }, gb(32)).ok, false);
 });
 
 test('validate: refuses an inverted pair, a sub-minimum critical, an absurd Admission; accepts the defaults', () => {
   assert.equal(validateMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS), null);
-  assert.match(validateMemoryGuardSettings({ admissionGb: 3, criticalGb: 6, admissionEnabled: true }) ?? '', /must be below/);
-  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 6, admissionEnabled: true }) ?? '', /must be below/);
-  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB - 0.1, admissionEnabled: true }) ?? '', /at least/);
-  assert.equal(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB, admissionEnabled: true }), null);
-  assert.match(validateMemoryGuardSettings({ admissionGb: MAX_ADMISSION_GB + 1, criticalGb: 3, admissionEnabled: true }) ?? '', /at most/);
-  assert.match(validateMemoryGuardSettings({ admissionGb: NaN, criticalGb: 3, admissionEnabled: true }) ?? '', /numbers/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 3, criticalGb: 6, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /must be below/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 6, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /must be below/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB - 0.1, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /at least/);
+  assert.equal(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }), null);
+  assert.match(validateMemoryGuardSettings({ admissionGb: MAX_ADMISSION_GB + 1, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /at most/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: NaN, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /numbers/);
 });
 
 // ─── /proc/meminfo ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -340,4 +342,54 @@ test('formatMemoryGuardLine: open / held / memory Pause / toggle OFF / unmeasure
   assert.match(formatMemoryGuardLine(snap({ measured: false, availBytes: null })), /^memory: UNMEASURED — MemAvailable unreadable/);
   assert.match(formatMemoryGuardLine(snap({ sampled: false, measured: false, availBytes: null })), /^memory: not sampled yet/);
   assert.match(formatMemoryGuardLine(snap({ measured: false })), /last good reading/);
+});
+
+// ─── D1 (ledger #329): the memory: line must say a memory Pause is IN FORCE when runs are really under one ───────────
+
+const T0 = Date.UTC(2026, 9, 8, 12, 51, 0);
+const paused = (over: Partial<MemoryPausedRunView> = {}): MemoryPausedRunView => ({ runId: '36773f53-0000-4000-8000-000000000000', label: 'bloc2-ops', since: T0, resuming: false, ...over });
+
+test('D1 must-FAIL on master: guard.pause "none" (not due NOW) but a run IS under a memory Pause ⇒ the line says IN EFFECT, never "Pause none"', () => {
+  // availBytes is back above the critical level, so the guard's own `pause` reads none while the Pause lifts only above the Admission threshold.
+  const line = formatMemoryGuardLine(snap({ availBytes: gb(4.2), admission: 'held', pause: 'none', episode: 1, heldSince: 1 }), [paused()]);
+  assert.match(line, /memory Pause IN EFFECT on 1 run\(s\) \(bloc2-ops\) since 2026-10-08T12:51:00\.000Z \(lifts above 6\.0 GB\)/);
+  assert.doesNotMatch(line, /memory Pause none/);
+});
+
+test('D1: several runs are counted and named (3 shown, the rest counted); a Reprise under way is said so', () => {
+  const many = [paused({ label: 'a' }), paused({ runId: 'b'.repeat(36), label: undefined, since: T0 + 5 }), paused({ runId: 'c'.repeat(36), label: 'c' }), paused({ runId: 'd'.repeat(36), label: 'd', resuming: true })];
+  const line = formatMemoryGuardLine(snap(), many);
+  assert.match(line, /IN EFFECT on 4 run\(s\) \(a, bbbbbbbb, c \+1\) since 2026-10-08T12:51:00\.000Z; Reprise under way \(lifts above 6\.0 GB\)/);
+});
+
+test('D1: no run paused ⇒ unchanged ("none"); the guard saying held while NO run is paused says that instead of pretending', () => {
+  assert.match(formatMemoryGuardLine(snap(), []), /memory Pause none \(due below 3\.0 GB\)$/);
+  assert.equal(formatMemoryGuardLine(snap()), 'memory: 12.3 GB available · admission open (holds below 6.0 GB) · memory Pause none (due below 3.0 GB)', 'no second argument = the old line, byte for byte');
+  assert.match(formatMemoryGuardLine(snap({ pause: 'held', pauseSince: T0, availBytes: gb(2) }), []), /memory Pause IN EFFECT since 2026-10-08T12:51:00\.000Z \(lifts above 6\.0 GB\) — but no run is paused/);
+  assert.doesNotMatch(formatMemoryGuardLine(snap({ pause: 'held', pauseSince: T0, availBytes: gb(2) })), /but no run is paused/, 'an older app that sends no list keeps the guard\'s word');
+});
+
+// ─── #320: the Plafond mémoire levels ────────────────────────────────────────────────────────────────────────────────
+
+test('cap levels: defaults 3/6; normalized as their own pair (a bad cap pair never resets the thresholds, nor the reverse)', () => {
+  assert.equal(DEFAULT_MEMORY_GUARD_SETTINGS.capSoftGb, 3);
+  assert.equal(DEFAULT_MEMORY_GUARD_SETTINGS.capHardGb, 6);
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8, criticalGb: 2, capSoftGb: 7, capHardGb: 4 }), { admissionGb: 8, criticalGb: 2, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, capSoftGb: 1, capHardGb: 2 }), { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 1, capHardGb: 2 });
+  assert.deepEqual(normalizeMemoryGuardSettings({ capSoftGb: 0.2, capHardGb: 0.25 }), { ...DEFAULT_MEMORY_GUARD_SETTINGS, capSoftGb: 0.2, capHardGb: 0.25 }, 'a rig-sized cap is a valid setting');
+});
+
+test('cap levels: validation — hard above soft, hard at least MIN_CAP_HARD_GB, numbers only', () => {
+  const s = DEFAULT_MEMORY_GUARD_SETTINGS;
+  assert.equal(validateMemoryGuardSettings(s), null);
+  assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 6, capHardGb: 6 }) ?? '', /soft level \(6 GB\) must be above 0 and below the hard level/);
+  assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 1, capHardGb: MIN_CAP_HARD_GB / 2 }) ?? '', /hard level must be at least/);
+  assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 0 }) ?? '', /above 0/);
+  assert.match(validateMemoryGuardSettings({ ...s, capHardGb: Number.NaN }) ?? '', /must be numbers/);
+});
+
+test('cap levels: a patch changes only what it names; an invalid pair writes nothing', () => {
+  const ok = patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { capHardGb: 8 });
+  assert.deepEqual(ok, { ok: true, settings: { ...DEFAULT_MEMORY_GUARD_SETTINGS, capHardGb: 8 } });
+  assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { capSoftGb: 7 }).ok, false, 'soft 7 is not below the current hard 6');
 });

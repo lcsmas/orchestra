@@ -10,6 +10,9 @@
 export const GIB = 1024 ** 3;
 export const DEFAULT_ADMISSION_GB = 6;
 export const DEFAULT_CRITICAL_GB = 3;
+/** Plafond mémoire levels (#320, ADR 0005): the soft level slows a member, the hard level is what the kernel kills at. Values from 48 k monitor samples (running member p99 3.1 GB, max 6.3 GB). */
+export const DEFAULT_CAP_SOFT_GB = 3;
+export const DEFAULT_CAP_HARD_GB = 6;
 /** Admission reopens, and a held start may go out, only ABOVE admission threshold + this margin (epic #284 "Pure decision module"). */
 export const RELEASE_MARGIN_GB = 1;
 /** Sampling cadence: fast while MemAvailable is below the Admission threshold, slow otherwise (epic #284 "Memory signal"). */
@@ -26,12 +29,18 @@ export interface MemoryGuardSettings {
   /** Global toggle of the Admission hold (#286) and the fast Veille (#288). Default ON. The guard measures, decides, logs and shows
    *  either way; the Pause is governed by each run's `pause` switch, not by this toggle. */
   admissionEnabled: boolean;
+  /** Plafond mémoire soft level (GB) — read at each fleet member's session start (#320; the UI is #323). Must be below `capHardGb`. */
+  capSoftGb: number;
+  /** Plafond mémoire hard level (GB): the scope's `MemoryMax`. */
+  capHardGb: number;
 }
 
 export const DEFAULT_MEMORY_GUARD_SETTINGS: MemoryGuardSettings = {
   admissionGb: DEFAULT_ADMISSION_GB,
   criticalGb: DEFAULT_CRITICAL_GB,
   admissionEnabled: true,
+  capSoftGb: DEFAULT_CAP_SOFT_GB,
+  capHardGb: DEFAULT_CAP_HARD_GB,
 };
 
 /** True when Admission, once held at this threshold, could never reopen on a machine with `totalBytes` of memory. */
@@ -42,6 +51,8 @@ export function thresholdUnreachable(admissionGb: number, totalBytes: number): b
 /** Sanity bounds of a typed threshold: a 0 / 1000 GB typo is refused, not applied. */
 export const MIN_CRITICAL_GB = 0.5;
 export const MAX_ADMISSION_GB = 256;
+/** A Plafond mémoire hard level below this is refused (a rig may go down to ~0.25 GB; a typo of 0 would kill every member's tool). */
+export const MIN_CAP_HARD_GB = 0.1;
 
 function isGb(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
@@ -56,6 +67,10 @@ export function validateMemoryGuardSettings(s: MemoryGuardSettings, totalBytes?:
   if (s.criticalGb < MIN_CRITICAL_GB) return `the critical threshold must be at least ${MIN_CRITICAL_GB} GB`;
   if (s.admissionGb > MAX_ADMISSION_GB) return `the Admission threshold must be at most ${MAX_ADMISSION_GB} GB`;
   if (!(s.criticalGb < s.admissionGb)) return `the critical threshold (${s.criticalGb} GB) must be below the Admission threshold (${s.admissionGb} GB)`;
+  if (!isGb(s.capSoftGb) || !isGb(s.capHardGb)) return 'the memory cap levels must be numbers';
+  if (s.capHardGb < MIN_CAP_HARD_GB) return `the memory cap hard level must be at least ${MIN_CAP_HARD_GB} GB`;
+  if (s.capHardGb > MAX_ADMISSION_GB) return `the memory cap hard level must be at most ${MAX_ADMISSION_GB} GB`;
+  if (!(s.capSoftGb > 0 && s.capSoftGb < s.capHardGb)) return `the memory cap soft level (${s.capSoftGb} GB) must be above 0 and below the hard level (${s.capHardGb} GB)`;
   if (typeof totalBytes === 'number' && totalBytes > 0 && thresholdUnreachable(s.admissionGb, totalBytes)) {
     return `the Admission threshold (${s.admissionGb} GB) plus the ${RELEASE_MARGIN_GB} GB reopen margin must be below this machine's memory (${(totalBytes / GIB).toFixed(1)} GB)`;
   }
@@ -69,9 +84,20 @@ export function normalizeMemoryGuardSettings(raw: Partial<MemoryGuardSettings> |
     admissionGb: isGb(raw?.admissionGb) ? raw.admissionGb : DEFAULT_ADMISSION_GB,
     criticalGb: isGb(raw?.criticalGb) ? raw.criticalGb : DEFAULT_CRITICAL_GB,
     admissionEnabled: typeof raw?.admissionEnabled === 'boolean' ? raw.admissionEnabled : true,
+    capSoftGb: isGb(raw?.capSoftGb) ? raw.capSoftGb : DEFAULT_CAP_SOFT_GB,
+    capHardGb: isGb(raw?.capHardGb) ? raw.capHardGb : DEFAULT_CAP_HARD_GB,
   };
   if (validateMemoryGuardSettings(candidate) === null) return candidate;
-  return { ...DEFAULT_MEMORY_GUARD_SETTINGS, admissionEnabled: candidate.admissionEnabled };
+  // Each PAIR falls back as a pair: a bad cap pair must not reset the thresholds, nor the reverse.
+  const thresholdsOk = validateMemoryGuardSettings({ ...candidate, capSoftGb: DEFAULT_CAP_SOFT_GB, capHardGb: DEFAULT_CAP_HARD_GB }) === null;
+  const capOk = validateMemoryGuardSettings({ ...candidate, admissionGb: DEFAULT_ADMISSION_GB, criticalGb: DEFAULT_CRITICAL_GB }) === null;
+  return {
+    admissionGb: thresholdsOk ? candidate.admissionGb : DEFAULT_ADMISSION_GB,
+    criticalGb: thresholdsOk ? candidate.criticalGb : DEFAULT_CRITICAL_GB,
+    admissionEnabled: candidate.admissionEnabled,
+    capSoftGb: capOk ? candidate.capSoftGb : DEFAULT_CAP_SOFT_GB,
+    capHardGb: capOk ? candidate.capHardGb : DEFAULT_CAP_HARD_GB,
+  };
 }
 
 // ─── Thresholds ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -259,8 +285,22 @@ export function formatGb(bytes: number, digits = 1): string {
   return `${(bytes / GIB).toFixed(digits)} GB`;
 }
 
-/** The `memory:` line of `orchestra bus-status` — one line, the whole guard state. */
-export function formatMemoryGuardLine(s: MemoryGuardSnapshot): string {
+/** A run that is REALLY under a memory Pause on the bus (a pause whose stored motive is `memory`, #290) — what the guard's own `pause` field cannot say (D1, ledger #329). */
+export interface MemoryPausedRunView {
+  runId: string;
+  /** The coordinator's name, when known. */
+  label?: string;
+  /** Epoch ms the Pause began. */
+  since: number;
+  /** A Reprise is under way (the Pause is still in force until every member is back). */
+  resuming: boolean;
+}
+
+/** The `memory:` line of `orchestra bus-status` — one line, the whole guard state.
+ *  `paused` = the runs actually under a memory Pause on the bus. The guard's own `pause` only means "due NOW" (it reads `none` once memory
+ *  recovered above the critical level while the Pause is still in force until the Admission threshold, and after an app restart): on its own it
+ *  printed "memory Pause none" under a Pause in force (D1). When `paused` is given it is the truth for "in force"; absent (an older app) ⇒ the guard's word. */
+export function formatMemoryGuardLine(s: MemoryGuardSnapshot, paused?: readonly MemoryPausedRunView[]): string {
   if (!s.sampled) return 'memory: not sampled yet — the guard is starting';
   if (!s.measured && s.availBytes === null) return 'memory: UNMEASURED — MemAvailable unreadable (a non-Linux host, or /proc/meminfo unreadable); the guard holds nothing';
   const at = (ms: number | null) => (ms === null ? '?' : new Date(ms).toISOString());
@@ -270,10 +310,17 @@ export function formatMemoryGuardLine(s: MemoryGuardSnapshot): string {
     s.admission === 'held'
       ? `admission HELD since ${at(s.heldSince)} (episode ${s.episode}; reopens above ${formatGb(s.admissionBytes + s.releaseMarginBytes)})`
       : `admission open (holds below ${formatGb(s.admissionBytes)})`;
-  const pause =
-    s.pause === 'held'
-      ? `memory Pause IN EFFECT since ${at(s.pauseSince)} (lifts above ${formatGb(s.admissionBytes)})`
-      : `memory Pause none (due below ${formatGb(s.criticalBytes)})`;
+  let pause: string;
+  if (paused && paused.length > 0) {
+    const names = paused.slice(0, 3).map((r) => r.label ?? r.runId.slice(0, 8));
+    const more = paused.length > 3 ? ` +${paused.length - 3}` : '';
+    const resuming = paused.some((r) => r.resuming) ? '; Reprise under way' : '';
+    pause = `memory Pause IN EFFECT on ${paused.length} run(s) (${names.join(', ')}${more}) since ${at(Math.min(...paused.map((r) => r.since)))}${resuming} (lifts above ${formatGb(s.admissionBytes)})`;
+  } else if (s.pause === 'held') {
+    pause = `memory Pause IN EFFECT since ${at(s.pauseSince)} (lifts above ${formatGb(s.admissionBytes)})${paused ? ' — but no run is paused (none carries the pause switch ON)' : ''}`;
+  } else {
+    pause = `memory Pause none (due below ${formatGb(s.criticalBytes)})`;
+  }
   const toggle = s.admissionEnabled ? '' : ' · Admission/fast-Veille toggle OFF — nothing is held';
   return `memory: ${avail} · ${admission} · ${pause}${toggle}`;
 }
@@ -303,6 +350,8 @@ export function patchMemoryGuardSettings(
     admissionGb: patch.admissionGb ?? current.admissionGb,
     criticalGb: patch.criticalGb ?? current.criticalGb,
     admissionEnabled: patch.admissionEnabled ?? current.admissionEnabled,
+    capSoftGb: patch.capSoftGb ?? current.capSoftGb,
+    capHardGb: patch.capHardGb ?? current.capHardGb,
   };
   // The MemTotal bound judges the pair being CHOSEN: a toggle-only patch never fails on a stored pair the host cannot satisfy (a small
   // machine under the default 6/3) — the sampler warns about that case instead, and the user can still flip the toggle.

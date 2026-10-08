@@ -12,6 +12,8 @@
 // newline framing keeps the keeper free of any decoder state beyond a line
 // buffer. Binary chunks ride as base64.
 
+import type { MemKillRecord } from './memory-scope.ts';
+
 /** Client → keeper frames. */
 export type KeeperClientFrame =
   /** Identify + CLAIM the client slot (preempts any previous client — last
@@ -32,6 +34,10 @@ export type KeeperClientFrame =
       cwd: string;
       env: Record<string, string | undefined>;
       dockerRelay?: { runId: string };
+      /** #320 (absent = today's frame, byte for byte): this keeper was launched in the scope `unit` with `MemoryMax=hardBytes`.
+       *  It verifies that against its own cgroup, starts the kill watch, and — only when the limit is really applied — points
+       *  the CLI's `CLAUDE_CODE_SHELL_PREFIX` at `wrapper` so tool commands (not the keeper/CLI) are the kernel's preferred victims. */
+      memoryCap?: { unit: string; hardBytes: number; wrapper?: string };
     }
   /** Raw bytes for the CLI's stdin. */
   | { t: 'stdin'; b64: string }
@@ -71,7 +77,16 @@ export type KeeperDaemonFrame =
        *  launch fresh, never attach. `undefined` = pre-field keeper daemon
        *  (legacy: absence means "not shutting down"). */
       shuttingDown?: boolean;
+      /** #320: the Plafond mémoire as THIS keeper sees it — absent = launched without one (switch OFF, human session, pre-#320 keeper).
+       *  `active` = in its scope with the limit applied and tools protected; `unprotected` = limit applied but the wrapper is missing;
+       *  `not-applied` = in the scope, limit NOT applied (controller not delegated); `no-scope` = launched plain (systemd-run unavailable). */
+      cap?: { unit: string; state: 'active' | 'unprotected' | 'not-applied' | 'no-scope'; hardBytes: number };
+      /** #320: the kills this keeper has recorded (last ≤ 20, `seq` monotonic) — a reattaching app delivers what it has not seen. */
+      memKills?: MemKillRecord[];
     }
+  /** #320: one kill by the Plafond mémoire, pushed the moment the keeper sees it (delivered to an attached client only; the record is
+   *  also in `helloAck.memKills` for a later attach). */
+  | { t: 'memKill'; rec: MemKillRecord }
   /** Raw bytes from the CLI's stdout. */
   | { t: 'stdout'; b64: string }
   /** CLI exited (delivered only to an attached client; a detached keeper just

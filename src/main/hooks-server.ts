@@ -32,6 +32,9 @@ import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
 import { getMemoryGuardSnapshot } from './memory-guard.ts';
+import { memoryPausedRunViews } from './pause-memory.ts';
+import { countMemberScopes, scopeSupportCached } from './memory-scope.ts';
+import { GIB } from '../shared/memory-guard.ts';
 import { listHeldStarts } from './admission.ts';
 import { getContainerAccounting } from './container-accounting.ts';
 import { accountingView } from '../shared/container-accounting.ts';
@@ -492,6 +495,14 @@ export async function startHooksServer(): Promise<void> {
               badRecipients,
               // #285: the host-wide memory guard state (not run-scoped) — the CLI prints it as the `memory:` line.
               memoryGuard: getMemoryGuardSnapshot(),
+              // D1 (ledger #329): the runs REALLY under a memory Pause on the bus — the guard's own `pause` only means "due now".
+              memoryPausedRuns: memoryPausedRunViews(badDb, (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? undefined) : undefined; }),
+              // #320: the Plafond mémoire as configured NOW (levels from Garde mémoire, applied at each member's next session start) + what exists on this host.
+              memoryCap: (() => {
+                const st = store.getMemoryGuardSettings();
+                const sup = scopeSupportCached();
+                return { softBytes: Math.round(st.capSoftGb * GIB), hardBytes: Math.round(st.capHardGb * GIB), scopes: sup.ok ? countMemberScopes() : null, supported: sup.ok, ...(sup.ok ? {} : { unsupportedReason: sup.reason }) };
+              })(),
               // #293: container memory per workspace + unattributed containers (the LAST monitor tick's accounting — never a Docker call here); the CLI prints the `containers:` line.
               containers: containersView,
               containerLabels: Object.fromEntries(containersView.attributed.map((a) => [a.wsId, heldStartLabel(store.getWorkspace(a.wsId), a.wsId)])),

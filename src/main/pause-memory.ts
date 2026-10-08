@@ -24,7 +24,7 @@ import {
 } from './pause-auto.ts';
 import { parseSwitches, type BusSwitches } from '../shared/bus-switches.ts';
 import { HUMAN_GATE_RECIPIENT } from '../shared/human-gates.ts';
-import { formatGb, type MemoryGuardSnapshot } from '../shared/memory-guard.ts';
+import { formatGb, type MemoryGuardSnapshot, type MemoryPausedRunView } from '../shared/memory-guard.ts';
 import { heldAddresseesKey, parseAutoHeld, parsePauseAuto, type AutoHeld } from '../shared/pause-auto.ts';
 import {
   MEMORY_PAUSE_BY,
@@ -68,6 +68,28 @@ export interface MemoryPauseLedger {
 export const newMemoryPauseLedger = (): MemoryPauseLedger => ({ imposed: new Map() });
 
 const mem = (bytes: number): string => `MemAvailable ${formatGb(bytes, 2)}`;
+
+// ─── which runs are REALLY under a memory Pause (read-only: `orchestra bus-status`, D1 of ledger #329) ────────────────────────────────────────────────────
+
+/** Every run that is paused RIGHT NOW with the stored memory motive (epoch-matched, so a later manual pause never reads as one). The guard's own `pause` field
+ *  means "due now" and says nothing about this — the bus row is the truth (it also survives an app restart). Pure read; a failed read is an empty list. */
+export function memoryPausedRunViews(db: BusDb | null, label?: (runId: string) => string | undefined): MemoryPausedRunView[] {
+  if (!db) return [];
+  try {
+    const rows = db.prepare('SELECT id, paused_at, pause_auto, resume_started_at FROM runs WHERE paused_at IS NOT NULL AND pause_auto IS NOT NULL ORDER BY paused_at, id').all() as Array<Record<string, unknown>>;
+    const out: MemoryPausedRunView[] = [];
+    for (const r of rows) {
+      const pausedAt = Number(r.paused_at);
+      if (parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt) === null) continue;
+      const runId = String(r.id);
+      const name = label?.(runId);
+      out.push({ runId, ...(name ? { label: name } : {}), since: pausedAt, resuming: r.resume_started_at !== null && r.resume_started_at !== undefined });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
 
 // ─── which runs ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 

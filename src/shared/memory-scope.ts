@@ -66,6 +66,12 @@ export interface MemoryCapLimits {
 /** Ledger Q2 default while unanswered: NO `MemoryHigh` — a soft throttle below the hard level crawls a runaway forever instead of killing it. */
 export const APPLY_SOFT_LEVEL = false;
 
+/** What `ensureSession` asks of a keeper LAUNCH: its own scope (`unit`), with these limits (null = a scope with no limits — ledger Q1 variant). */
+export interface MemoryCapLaunch {
+  unit: string;
+  limits: MemoryCapLimits | null;
+}
+
 export type MemoryCapReason = 'ok' | 'switch-off' | 'human' | 'remote' | 'platform' | 'unsupported' | 'bad-levels';
 
 export interface MemoryCapDecision {
