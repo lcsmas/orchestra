@@ -303,7 +303,11 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     const hit = chain?.find((p) => p.pid === target.cli.pid && p.startTicks === target.cli.startTicks);
     if (chain && hit) {
       spareRoot = chain.find((p) => p.ppid === hit.pid)?.pid;
-      pauseCallPids = chain.map((p) => p.pid);
+      // the pausing call's process tree BELOW the verified CLI only (never the CLI's own ancestors: they end at the user manager, the subreaper every orphan reparents to)
+      const below = new Set<number>([hit.pid]);
+      for (let grew = true; grew; ) { grew = false; for (const p of chain) if (!below.has(p.pid) && below.has(p.ppid)) { below.add(p.pid); grew = true; } }
+      below.delete(hit.pid);
+      pauseCallPids = [...below];
     }
   }
   const pauser = spareRoot !== undefined;
@@ -437,7 +441,10 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       if (rep) {
         activity.reliquats = mergeReliquats(prior?.reliquats, rep);
         if (rep.aborted === 'lifted') {
-          updateBilan(db, rowId, { activity, killed: killed ?? null, error: errors.length ? errors.join('; ') : null }); // what WAS killed is still recorded, never dropped
+          const rowNow = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt)?.activity; // a concurrent writer (the observer's notes/kills, the Reprise's container step) must survive this write
+          const mergedC = mergeContainers(rowNow?.containers, activity.containers);
+          const notesC = [...new Set([...(rowNow?.notes ?? []), ...(activity.notes ?? [])])].slice(-50);
+          updateBilan(db, rowId, { activity: { ...activity, ...(notesC.length ? { notes: notesC } : {}), ...(rowNow?.observerKilled ? { observerKilled: rowNow.observerKilled } : {}), ...(mergedC ? { containers: mergedC } : {}) }, killed: killed ?? null, error: errors.length ? errors.join('; ') : null }); // what WAS killed is still recorded, never dropped
           return 'lifted';
         }
         if (rep.unknown) {

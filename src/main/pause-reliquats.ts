@@ -51,6 +51,7 @@ export interface ReliquatKillOptions {
 const DEFAULT_TERM_GRACE_MS = 2_000;
 const DEFAULT_ROUNDS = 3;
 const POLL_MS = 50;
+const YIELD_EVERY = 16;
 
 interface Target {
   pid: number;
@@ -60,6 +61,8 @@ interface Target {
   cmd: string;
   cwd: string | null;
   startedAt: number;
+  /** The earliest start along the ppid chain of listed members (itself included): what the human-turn cutoff compares. */
+  originStartedAt: number;
   scope: ScopeRef;
   depth: number;
 }
@@ -101,10 +104,12 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
     return true;
   };
   // a HUMAN turn that began during the trap is allowed to run (D9): what it started is its own
+  // compared on the ORIGIN start — the earliest along the ppid chain inside the scope — like the tool-tree kill (round-3 F1a): a worker a pre-pause daemon forks during a human turn belongs to the daemon and dies with it
   const tooNew = (t: Target): boolean => {
+    const at = t.originStartedAt;
     const b = beforeMs();
-    if (b !== undefined && t.startedAt >= b) return true;
-    return (opts.humanWindows?.() ?? []).some((w) => t.startedAt >= w.from && (w.to === undefined || t.startedAt <= w.to));
+    if (b !== undefined && at >= b) return true;
+    return (opts.humanWindows?.() ?? []).some((w) => at >= w.from && (w.to === undefined || at <= w.to));
   };
   /** The command line for a record (read NOW; falls back to the comm the scope listing carries). */
   const cmdFor = (pid: number, comm: string): string => {
@@ -152,6 +157,13 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
         continue;
       }
       const depth = depthsOf(listing);
+      const byPid = new Map(listing.map((x) => [x.pid, x]));
+      const originOf = (m: (typeof listing)[number]): number => {
+        let at = kill.startMs(m.startTicks);
+        const seen = new Set<number>([m.pid]);
+        for (let q = byPid.get(m.ppid); q && !seen.has(q.pid) && seen.size < 64; q = byPid.get(q.ppid)) { seen.add(q.pid); at = Math.min(at, kill.startMs(q.startTicks)); }
+        return at;
+      };
       for (const m of listing) {
         if (m.role !== 'reliquat') continue;
         const v = judgeReliquat(m.pid, null, scope, listing, protect, kill.read);
@@ -161,7 +173,7 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
           continue;
         }
         const p = v.proc;
-        const t: Target = { pid: p.pid, startTicks: p.startTicks, ppid: p.ppid, comm: p.comm, cmd: cmdOf(p.argv, p.comm), cwd: kill.readCwd(p.pid), startedAt: kill.startMs(p.startTicks), scope, depth: depth.get(p.pid) ?? 0 };
+        const t: Target = { pid: p.pid, startTicks: p.startTicks, ppid: p.ppid, comm: p.comm, cmd: cmdOf(p.argv, p.comm), cwd: kill.readCwd(p.pid), startedAt: kill.startMs(p.startTicks), originStartedAt: originOf(m), scope, depth: depth.get(p.pid) ?? 0 };
         if (tooNew(t)) {
           spared.set(t.pid, leftOf(t, 'started during a HUMAN turn that began while the trap ran — the human prompt is allowed (D9)'));
           continue;
@@ -206,14 +218,17 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
     if (plan.targets.length === 0) break;
     report.rounds = round;
     const termed: Target[] = [];
+    let n = 0;
     for (const t of reliquatKillOrder(plan.targets)) {
       if (!paused()) break;
       if (signalOne(t, 'SIGTERM')) termed.push(t);
+      if (++n % YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r)); // each signal re-reads the scope synchronously: let the Electron main thread breathe between small batches
     }
     if (termed.length > 0) opts.onProgress?.(snapshot());
     await waitUntilGone(termed, grace);
     for (const t of reliquatKillOrder(termed)) {
       if (!alive(t)) continue;
+      if (++n % YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r));
       if (!paused()) break;
       // SIGTERM was ignored/slow: escalate — after a SECOND fresh scope listing + identity re-read of this pid.
       signalOne(t, 'SIGKILL');

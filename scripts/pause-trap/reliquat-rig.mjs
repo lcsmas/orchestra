@@ -101,6 +101,7 @@ if (process.env.RQ_CHILD !== '1') {
       RQ_REAL_HOME: REAL_HOME, RQ_RUN_TOKEN: RUN_TOKEN, SUBJECT_REPO: subject, RQ_CHILD: '1',
     };
     for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
+    const mine = (u) => u.includes(RUN_TOKEN); // unit names carry the workspace ids, which carry THIS run's token: a concurrent run's scopes are never ours to stop
     const unitsBefore = new Set(unitsNow(`${UNIT_PREFIX}*`));
     const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(HERE_REPO, 'scripts', '.r2-register.mjs'), fileURLToPath(import.meta.url), arm], { env, encoding: 'utf8', timeout: 300_000, cwd: HERE_REPO });
     const line = (r.stdout ?? '').split('\n').reverse().find((l) => l.startsWith('{"arm"'));
@@ -108,7 +109,7 @@ if (process.env.RQ_CHILD !== '1') {
     try { res = line ? JSON.parse(line) : { ok: false, failed: [], error: `no result line (rc=${r.status}${r.signal ? ' ' + r.signal : ''}): ${(r.stderr ?? '').trim().slice(-300)}` }; } catch (e) { res = { ok: false, failed: [], error: `unparsable result: ${e}` }; }
     // G5: after EVERY run, the survivors of THIS arm — printed BEFORE any cleanup, then cleaned by identity / unit NAME.
     const procs = survivorsOf(base);
-    const newUnits = unitsNow(`${UNIT_PREFIX}*`).filter((u) => !unitsBefore.has(u));
+    const newUnits = unitsNow(`${UNIT_PREFIX}*`).filter((u) => !unitsBefore.has(u) && mine(u));
     const leaked = { procs: procs.length, units: newUnits.length };
     for (const u of newUnits) spawnSync('systemctl', ['--user', 'stop', u], { encoding: 'utf8' }); // by NAME: it starts with OUR prefix and did not exist before this arm
     for (const pid of procs) { try { const c = fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1'); if (c.includes(base) || c.includes(`rqrig${RUN_TOKEN}`) || fs.readFileSync(`/proc/${pid}/environ`, 'latin1').includes(base)) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }

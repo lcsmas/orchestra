@@ -93,6 +93,20 @@ test('a process under the trap\'s PROVEN CLI / keeper (even when the scope says 
   assert.equal(judgeReliquat(512, null, SCOPE, listingOf(member(512, 1, 'reliquat')), PROTECT, readOver([orphan])).ok, true);
 });
 
+test('the PAUSING CALL\'s chain is protected from the signal but is NOT a session ancestor: an orphan reparented to the user manager (a subreaper that sits in that chain) is still a Reliquat', () => {
+  const manager = proc(2000, 1, ['/usr/lib/systemd/systemd', '--user']); // the subreaper: ancestor of the keeper, hence in the recorded pause-call chain
+  const orphan = proc(500, 2000, ['/usr/bin/chrome', '--headless']);
+  const withChain: ReliquatProtect = { ...PROTECT, extraPids: [301, 300, 2000] };
+  const v = judgeReliquat(500, null, SCOPE, listingOf(member(500, 2000, 'reliquat')), withChain, readOver([orphan, manager]));
+  assert.equal(v.ok, true, 'reparented to the manager: killed, not spared as "under the session"');
+  // ...while the pause call itself (and the manager, were it listed) are never signalled
+  assert.equal(judgeReliquat(301, null, SCOPE, listingOf(member(301, 300, 'reliquat')), withChain, readOver([proc(301, 300, ['node', 'cli.js', 'run', 'pause'])])).ok, false);
+  assert.equal(judgeReliquat(2000, null, SCOPE, listingOf(member(2000, 1, 'reliquat')), withChain, readOver([manager])).ok, false);
+  // the keeper / CLI / app ARE session ancestors
+  const underCli = proc(510, CLI, ['sleep', '9']);
+  assert.equal(judgeReliquat(510, null, SCOPE, listingOf(member(510, CLI, 'reliquat')), PROTECT, readOver([underCli, proc(CLI, KEEPER, ['node', 'x'])])).ok, false);
+});
+
 test('fail closed on an unreadable ancestor: UNKNOWN is not NONE — refused, never signalled', () => {
   const child = proc(520, 521, ['sleep', '600']);
   const parent = proc(521, 1, ['sh', '-c', 'x']);
@@ -182,6 +196,14 @@ test('a RETRY merges BY IDENTITY: what an earlier attempt killed stays listed, a
 
 const strip = (s: unknown): string => String(s ?? '').replace(/[\u0000-\u001f]/g, ' ');
 
+test('a retry does not keep a STALE `survived`: an earlier attempt\'s entry that the latest census no longer finds alive reads `exited`; still alive stays `survived`; an UNKNOWN census changes nothing', () => {
+  const first = { ...emptyReliquatReport([SCOPE.unit]), killed: [killed(1, { outcome: 'survived' }), killed(2, { outcome: 'survived' })] };
+  const latest = { ...emptyReliquatReport([SCOPE.unit]), survivors: [{ pid: 2, startTicks: 1002, comm: 'c', cmd: 'c', reason: 'still-alive-after-kill' }] };
+  const m = mergeReliquats(first, latest);
+  assert.deepEqual(m.killed.map((k) => [k.pid, k.outcome]), [[1, 'exited'], [2, 'survived']]);
+  assert.deepEqual(mergeReliquats(first, { ...latest, unknown: 'scope unreadable' }).killed.map((k) => k.outcome), ['survived', 'survived']);
+});
+
 test('the Consigne lists each killed Reliquat (command, pid, start time) as LISTED, NOT re-run; says nothing for a member with no scope or nothing to report; control characters never forge a line', () => {
   assert.deepEqual(reliquatConsigneLines(undefined, strip), []);
   assert.deepEqual(reliquatConsigneLines(emptyReliquatReport([SCOPE.unit]), strip), [], 'a tracked scope with no Reliquat adds no noise');
@@ -193,6 +215,8 @@ test('the Consigne lists each killed Reliquat (command, pid, start time) as LIST
   assert.equal(lines.filter((l) => /^FORGED/.test(l)).length, 0, 'a newline in a recorded cmdline cannot start a line');
   const more = reliquatConsigneLines({ ...emptyReliquatReport(), killed: Array.from({ length: 25 }, (_, i) => killed(600 + i)) }, strip);
   assert.ok(more.some((l) => /\+5 more/.test(l)));
+  const many = reliquatConsigneLines({ ...emptyReliquatReport(), survivors: Array.from({ length: 40 }, (_, i) => ({ pid: i, comm: 'c', cmd: 'c', reason: 'r' })), refused: Array.from({ length: 40 }, (_, i) => ({ pid: i, comm: 'c', cmd: 'c', reason: 'r' })) }, strip);
+  assert.equal(many.length, 40, 'survivors and refused are capped at 20 each in the member\'s prompt');
   const alarms = reliquatConsigneLines({ ...emptyReliquatReport([SCOPE.unit]), survivors: [{ pid: 9, comm: 'c', cmd: 'chrome', reason: 'still-alive-after-kill' }], refused: [{ pid: 8, comm: 'c', cmd: 'x', reason: 'ancestry-unreadable' }], spared: [{ pid: 7, comm: 'c', cmd: 'claude' , reason: 'supervisor' }], unknown: 'scope unreadable' }, strip).join('\n');
   assert.match(alarms, /STILL ALIVE after the Pause \(Reliquat\)/);
   assert.match(alarms, /NOT killed \(identity not provable, pid 8\)/);

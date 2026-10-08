@@ -10,7 +10,7 @@ import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
 import { setRunPause, getRunPause, beginReprise } from './bus-pause.ts';
-import { appendBilanNote, bilanForMember, recordPauseOrigin } from './bus-pause-records.ts';
+import { appendBilanNote, appendObserverKills, bilanForMember, recordPauseOrigin } from './bus-pause-records.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { __resetPauseTrapForTests, runPauseTrap, trapMember, type TrapDeps, type TrapMember } from './pause-trap.ts';
 import type { KillReport } from './pause-kill.ts';
@@ -203,6 +203,23 @@ test('the pause LIFTED while the Reliquats are being killed: the trap returns `l
   assert.deepEqual(bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.reliquats!.killed.map((k) => k.pid), [500]);
 });
 
+test('the pause LIFTED mid-kill does not overwrite what a concurrent writer recorded meanwhile (the observer\'s notes and kills, the Reprise\'s container results)', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = () => {
+    const at = getRunPause(rig.db, 'W')!.pausedAt;
+    appendBilanNote(rig.db, 'W', 'm1', at, 'a note the turn observer appended meanwhile');
+    appendObserverKills(rig.db, 'W', 'm1', at, [{ pid: 44, comm: 'sleep', cmd: 'sleep 9', startTicks: 4, cwd: '/w', evidence: 'e', signal: 'SIGTERM', via: 'env', outcome: 'exited' }]);
+    return { ...reportOf(500), aborted: 'lifted' as const };
+  };
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'lifted');
+  const a = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!;
+  assert.deepEqual(a.reliquats!.killed.map((k) => k.pid), [500]);
+  assert.ok((a.notes ?? []).includes('a note the turn observer appended meanwhile'), 'the concurrent note survives the lifted write');
+  assert.deepEqual((a.observerKilled ?? []).map((k) => k.pid), [44], 'so do the observer\'s kills');
+});
+
 test('WRITE-AHEAD: a Reliquat the killer reports through onProgress is in the PERSISTED Bilan before the killer returns (an app that dies mid-kill still lists it)', async () => {
   __resetPauseTrapForTests();
   const rig = newRig();
@@ -229,9 +246,10 @@ test('the PAUSER\'s whole process chain is handed to the killer as protected (it
   const rig = newRig();
   const c = pause(rig);
   // the CLI recorded the pausing call's chain: CLI(100) → bash tool(300) → node cli(301)
-  recordPauseOrigin(rig.db, 'W', c.pausedAt, [{ pid: 301, ppid: 300, startTicks: 3, comm: 'node' }, { pid: 300, ppid: 100, startTicks: 2, comm: 'bash' }, { pid: 100, ppid: 90, startTicks: 1000, comm: 'claude' }]);
+  recordPauseOrigin(rig.db, 'W', c.pausedAt, [{ pid: 301, ppid: 300, startTicks: 3, comm: 'node' }, { pid: 300, ppid: 100, startTicks: 2, comm: 'bash' }, { pid: 100, ppid: 90, startTicks: 1000, comm: 'claude' }, { pid: 90, ppid: 2000, startTicks: 900, comm: 'node' }, { pid: 2000, ppid: 1, startTicks: 5, comm: 'systemd' }]);
   await trapMember(rig.deps, rig.db, c, rig.roster[0]);
-  assert.deepEqual([...(rig.opts[0].protectPids ?? [])].sort((a, b) => a - b), [100, 300, 301]);
+  // only the pausing call's tree BELOW the verified CLI: its ancestors (the keeper, the user manager every orphan reparents to) are not "the call"
+  assert.deepEqual([...(rig.opts[0].protectPids ?? [])].sort((a, b) => a - b), [300, 301]);
   // a non-pauser trap passes none
   __resetPauseTrapForTests();
   const plain = newRig();

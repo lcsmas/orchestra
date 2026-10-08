@@ -2,13 +2,15 @@
 //  (1) a FAKE OS drives `killReliquats` through the races the destructive-act rules name (pid recycled between plan and signal, a process that leaves the scope,
 //      SIGTERM ignored, a Reliquat born mid-kill, an unreadable scope, a lift mid-kill, a human turn's window);
 //  (2) REAL processes: detached Reliquats of a fake scope (the scope MEMBERSHIP is a registry, every /proc read and every signal is real), a stand-in keeper/CLI/MCP that must
-//      survive, and a bystander OUTSIDE the scope that must survive. The real-keeper-in-a-real-scope proof is the rig (scripts/pause-trap/reliquat-arm.mjs).
+//      survive, and a bystander OUTSIDE the scope that must survive. The real-keeper-in-a-real-scope proof is the rig (scripts/pause-trap/reliquat-rig.mjs).
 // Each arm names the clause it protects (in-place mutants: scripts/pause-trap/mutants-reliquats.mjs).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { killReliquats, type ReliquatScopeDeps } from './pause-reliquats.ts';
 import { realKillDeps, type KillDeps } from './pause-kill.ts';
 import type { FreshRead, ProcIdent } from '../shared/pause-procs.ts';
@@ -282,6 +284,26 @@ test('D9 — a Reliquat that started inside a HUMAN turn\'s window (or after `st
   assert.deepEqual(rep2!.killed.map((k) => k.pid), [500]);
 });
 
+test('D9 on the ORIGIN start: a worker a PRE-pause daemon forks during a human turn dies with it (it is the daemon\'s), instead of being spared and left orphaned', async () => {
+  const os = new FakeOs();
+  os.add(500, 1, ['/usr/bin/chrome', '--daemon'], 'reliquat', 1500); // started before the human turn
+  os.add(501, 500, ['/usr/bin/chrome', '--worker'], 'reliquat', 5501); // forked by it INSIDE the human turn's window
+  os.starts.set(1500, 1_000);
+  os.starts.set(5501, 5_500);
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), { ...OPTS, humanWindows: () => [{ from: 5_000, to: 6_000 }] });
+  assert.deepEqual(rep!.killed.map((k) => k.pid).sort((a, b) => a - b), [500, 501]);
+  assert.deepEqual(rep!.spared, []);
+  // control: the same worker whose whole chain started inside the window is the human turn\'s and stays
+  const o2 = new FakeOs();
+  o2.add(600, 1, ['/usr/bin/chrome'], 'reliquat', 5600);
+  o2.add(601, 600, ['/usr/bin/chrome', '--worker'], 'reliquat', 5601);
+  o2.starts.set(5600, 5_400);
+  o2.starts.set(5601, 5_500);
+  const r2 = await killReliquats('m1', o2.scopeDeps(), o2.deps(), { ...OPTS, humanWindows: () => [{ from: 5_000, to: 6_000 }] });
+  assert.deepEqual(r2!.killed, []);
+  assert.ok(o2.procs.has(600) && o2.procs.has(601));
+});
+
 test('the pausing call\'s own process chain (the pauser) is never signalled', async () => {
   const os = new FakeOs();
   os.add(500, 1, ['chrome']);
@@ -398,6 +420,8 @@ test.after(() => {
   // teardown BY IDENTITY: only what this file launched, only while it is still the same process
   let left = 0;
   for (const r of spawned) if (alive(r)) { try { process.kill(r.pid, 'SIGKILL'); } catch { /* gone */ } }
+  const until = Date.now() + 1000; // a SIGKILLed process is a zombie / still dying for a moment: count after it settled
+  while (Date.now() < until && spawned.some(alive)) { const t = Date.now() + 20; while (Date.now() < t); }
   for (const r of spawned) if (alive(r)) left++;
   console.log(`# pause-reliquats.test: ${spawned.length} real processes launched, ${left} left after teardown`);
 });
@@ -434,6 +458,7 @@ test('REAL processes: detached orphans of the scope are killed; the stand-in kee
   assert.notEqual(orphanParent.ppid, process.pid, 'reparented away from this test');
   const kids = childrenOf(reliquat2.pid);
   assert.ok(kids.length >= 1, 'the shell Reliquat has a live child');
+  for (const k of kids) idOf(k); // tracked: a killer that fails must not leave its sleeper behind
   const registry = new Map<number, ScopeRole>([[keeper.pid, 'keeper'], [cli.pid, 'cli'], [mcp.pid, 'session'], [reliquat1.pid, 'reliquat'], [reliquat2.pid, 'reliquat']]);
   for (const k of kids) registry.set(k, 'reliquat'); // the cgroup holds every descendant
   const rep = await killReliquats('m1', realScope(registry), real, { keeperPid: keeper.pid, cliPid: cli.pid, termGraceMs: 1500 });
@@ -454,9 +479,13 @@ test('REAL processes: detached orphans of the scope are killed; the stand-in kee
 });
 
 test('REAL: a SIGTERM-ignoring orphan is escalated to SIGKILL and dies; a start-time that changed since the plan is NOT the planned process (refused, survives)', async () => {
-  const stubborn = launchOrphan(['node', '-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1e6)"]);
+  const ready = path.join(os.tmpdir(), `pr-ready-${process.pid}-${Date.now()}`);
+  const stubborn = launchOrphan(['node', '-e', `process.on('SIGTERM',()=>{});require('fs').writeFileSync(process.argv[1],'1');setInterval(()=>{},1e6)`, ready]);
   const innocent = launchOrphan(['sleep', String(TAG + 6)]);
-  await settle(500);
+  for (let i = 0; i < 100 && !fs.existsSync(ready); i++) await settle(50); // the SIGTERM handler is installed (a premise, not a timing guess)
+  const handlerUp = fs.existsSync(ready);
+  fs.rmSync(ready, { force: true });
+  assert.equal(handlerUp, true, 'premise: the stubborn orphan has its SIGTERM handler installed');
   assert.equal(alive(stubborn), true, 'premise: alive before');
   assert.equal(alive(innocent), true, 'premise: alive before');
   const rep = await killReliquats('m1', realScope(new Map<number, ScopeRole>([[stubborn.pid, 'reliquat']])), real, { keeperPid: null, cliPid: null, termGraceMs: 300 });
@@ -475,6 +504,7 @@ test('REAL: an orphan that still has a `claude`-named ANCESTOR (a mis-classified
   await settle(300);
   const sleepKid = childrenOf(claudeLike.pid).flatMap((p) => childrenOf(p).concat(p)).find((p) => (real.read(p) as ProcIdent).argv?.[0] === 'sleep');
   assert.ok(sleepKid, 'premise: a sleep under a claude-named process');
+  idOf(sleepKid as number);
   const keeperLike = launch(['node', '-e', 'setInterval(()=>{},1e6)', 'keeper.js', 'other-ws']);
   const registry = new Map<number, ScopeRole>([[claudeLike.pid, 'reliquat'], [sleepKid as number, 'reliquat'], [keeperLike.pid, 'reliquat']]);
   const rep = await killReliquats('m1', realScope(registry), real, { keeperPid: null, cliPid: null, termGraceMs: 100 });

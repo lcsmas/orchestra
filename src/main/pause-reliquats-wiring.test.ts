@@ -1,5 +1,5 @@
 // #325 — the production WIRING of the Reliquat kill, pinned structurally (the host imports Electron-coupled modules; the behaviour is proven by pause-reliquats.test.ts, pause-trap-reliquats.test.ts
-// and the rig scripts/pause-trap/reliquat-arm.mjs over a real keeper in a real scope). Each assertion is a STRUCTURAL relationship over comment-stripped source.
+// and the rig scripts/pause-trap/reliquat-rig.mjs over a real keeper in a real scope). Each assertion is a STRUCTURAL relationship over comment-stripped source.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

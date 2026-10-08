@@ -133,9 +133,12 @@ export function judgeReliquat(
   protect: ReliquatProtect,
   read: (pid: number) => FreshRead,
 ): ReliquatVerdict {
-  const protectedPids = new Set<number>([protect.selfPid, ...(protect.extraPids ?? [])]);
-  if (protect.keeperPid !== null) protectedPids.add(protect.keeperPid);
-  if (protect.cliPid !== null) protectedPids.add(protect.cliPid);
+  // the live session = the app, the member's keeper and CLI: a process UNDER one of them is the session's. The pausing call's chain (`extraPids`) is protected from the signal but is NOT a session ancestor:
+  // it runs up to the user manager (`systemd --user`, the subreaper orphans reparent to) — treating it as one would spare every detached Reliquat of the pauser's scope.
+  const sessionPids = new Set<number>([protect.selfPid]);
+  if (protect.keeperPid !== null) sessionPids.add(protect.keeperPid);
+  if (protect.cliPid !== null) sessionPids.add(protect.cliPid);
+  const protectedPids = new Set<number>([...sessionPids, ...(protect.extraPids ?? [])]);
   if (pid <= 1 || protectedPids.has(pid)) return { ok: false, kind: 'refused', reason: 'protected-pid (init / the app / the member\'s keeper or CLI / the pausing call)' };
   if (listing === 'gone') return { ok: false, kind: 'gone', reason: 'scope-gone' };
   if (listing === 'unreadable') return { ok: false, kind: 'refused', reason: 'scope-unreadable' };
@@ -149,7 +152,7 @@ export function judgeReliquat(
   if (p.startTicks !== entry.startTicks) return { ok: false, kind: 'refused', reason: 'reused (start-time changed)' };
   if (p.state === 'Z') return { ok: false, kind: 'gone', reason: 'zombie' };
   if (isSupervisorProc(p)) return { ok: false, kind: 'spared', reason: 'supervisor (keeper / claude CLI / Orchestra app): never touched, even outside its session\'s tree' };
-  const anc = sessionAncestorOf(p.ppid, read, new Set([...protectedPids]));
+  const anc = sessionAncestorOf(p.ppid, read, sessionPids);
   if (anc === 'yes') return { ok: false, kind: 'spared', reason: 'under the live session or a supervisor (its ppid chain reaches the keeper / CLI / a claude CLI)' };
   if (anc === 'unknown') return { ok: false, kind: 'refused', reason: 'ancestry-unreadable' };
   return {
@@ -183,7 +186,9 @@ export function depthsOf(members: readonly ScopeMember[]): Map<number, number> {
 /** A retry merges BY IDENTITY: what an earlier attempt killed stays listed (D11: every killed process is in the Bilan), the latest attempt's facts replace the rest. */
 export function mergeReliquats(prior: ReliquatReport | undefined | null, cur: ReliquatReport): ReliquatReport {
   const killed = new Map<string, ReliquatKilled>();
-  for (const k of prior?.killed ?? []) killed.set(`${k.pid}:${k.startTicks}`, k);
+  // an earlier attempt's entry that THIS attempt did not signal again is judged by the latest census: still alive ⇒ survived, else exited (never a stale 'survived' after it died)
+  const stillAlive = new Set(cur.survivors.map((x) => `${x.pid}:${x.startTicks}`));
+  for (const k of prior?.killed ?? []) killed.set(`${k.pid}:${k.startTicks}`, { ...k, outcome: cur.unknown ? k.outcome : stillAlive.has(`${k.pid}:${k.startTicks}`) ? 'survived' : 'exited' });
   for (const k of cur.killed) killed.set(`${k.pid}:${k.startTicks}`, k);
   const all = [...killed.values()];
   // entries an earlier truncation already dropped stay counted
@@ -223,8 +228,8 @@ export function reliquatConsigneLines(r: ReliquatReport | undefined | null, stri
     for (const k of r.killed.slice(0, LISTED)) out.push(`  - ${trimTo(k.cmd, 300, strip)}   (pid ${k.pid}, started ${iso(k.startedAt)}${k.cwd ? `, cwd ${trimTo(k.cwd, 200, strip)}` : ''})`);
     if (r.killed.length > LISTED) out.push(`  - … +${n - LISTED} more (orchestra run status)`);
   }
-  for (const s of r.survivors) out.push(`STILL ALIVE after the Pause (Reliquat): ${trimTo(s.cmd, 200, strip)} (pid ${s.pid}: ${trimTo(s.reason, 80, strip)})`);
-  for (const s of r.refused) out.push(`Leftover process NOT killed (identity not provable, pid ${s.pid}): ${trimTo(s.reason, 120, strip)} — ${trimTo(s.cmd, 120, strip)}`);
+  for (const s of r.survivors.slice(0, LISTED)) out.push(`STILL ALIVE after the Pause (Reliquat): ${trimTo(s.cmd, 200, strip)} (pid ${s.pid}: ${trimTo(s.reason, 80, strip)})`);
+  for (const s of r.refused.slice(0, LISTED)) out.push(`Leftover process NOT killed (identity not provable, pid ${s.pid}): ${trimTo(s.reason, 120, strip)} — ${trimTo(s.cmd, 120, strip)}`);
   if (r.spared.length > 0) out.push(`Leftover processes left running on purpose (${r.spared.length}): ${r.spared.slice(0, 3).map((s) => `${trimTo(s.cmd, 60, strip)} (pid ${s.pid})`).join('; ')}${r.spared.length > 3 ? '; …' : ''}`);
   if (r.unknown) out.push(`Leftover processes: NOT checked for you — ${trimTo(r.unknown, 160, strip)}`);
   return out;
