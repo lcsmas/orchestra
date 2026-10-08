@@ -282,7 +282,7 @@ test('review F3: the PLANNED batch is persisted (outcome planned) before the fir
       o.onProgress?.({ ...emptyReliquatReport(['orchestra-rig-wh-m1-abc.scope']), killed: [killedOf(500, { outcome: 'planned' }), killedOf(501, { outcome: 'planned' })] }); // written before the first signal …
       throw new Error('app died mid-batch'); // … and the app dies
     }
-    return reportOf(500, 501); // the retry's census: both are gone now
+    return reportOf(500); // the retry's census: 500 was still alive and is killed now; 501 died with the crash (not re-listed)
   };
   const c = pause(rig);
   assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'incomplete');
@@ -290,7 +290,7 @@ test('review F3: the PLANNED batch is persisted (outcome planned) before the fir
   assert.deepEqual(r1.activity!.reliquats!.killed.map((k) => `${k.pid}:${k.startTicks}:${k.outcome}`), ['500:1500:planned', '501:1501:planned'], 'the batch the killer announced survives the crash (pid + start-time)');
   assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'complete');
   const r2 = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!;
-  assert.deepEqual(r2.activity!.reliquats!.killed.map((k) => `${k.pid}:${k.outcome}`), ['500:exited', '501:exited'], 'replaced by identity');
+  assert.deepEqual(r2.activity!.reliquats!.killed.map((k) => `${k.pid}:${k.outcome}`).sort(), ['500:exited', '501:exited'], 'replaced by identity; the planned entry the retry did not re-list stays, settled by the census (D11: every process the Pause was about to kill is listed)');
 });
 
 test('review F1: a live parent that LEFT the scope is a survivor on the row (loud, listed) and does not keep the trap open', async () => {

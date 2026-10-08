@@ -24,6 +24,8 @@ class FakeOs {
   procs = new Map<number, ProcIdent>();
   roles = new Map<number, ScopeRole>();
   ignoresTerm = new Set<number>();
+  /** signals are delivered but the process never dies (a stuck process): it is still there at the final census. */
+  immortal = new Set<number>();
   signals: Array<{ pid: number; sig: string }> = [];
   clock = 0;
   listCalls = 0;
@@ -90,6 +92,7 @@ class FakeOs {
         this.signals.push({ pid, sig });
         if (!this.procs.has(pid)) return false;
         if (sig === 'SIGTERM' && this.ignoresTerm.has(pid)) return true;
+        if (this.immortal.has(pid)) return true;
         this.die(pid);
         this.onSignal?.(pid, sig);
         return true;
@@ -604,9 +607,11 @@ test('F1: a parent in ANOTHER generation of the member\'s scope is judged THERE 
   os.add(620, 1, ['old-gen-daemon']);
   os.unitOf.set(620, OLD.unit);
   os.add(621, 620, ['new-gen-child']);
+  os.immortal.add(620); // the old generation's daemon is stuck: it is STILL ALIVE at the final census — as its own survivor, not as a parent that « left the scope »
   const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
-  assert.deepEqual(rep!.survivors, []);
-  assert.deepEqual(os.signals.filter((s) => s.sig === 'SIGTERM').map((s) => s.pid).sort(), [620, 621]);
+  assert.deepEqual(rep!.survivors.filter((x) => x.kind === 'left-scope-parent'), [], 'judged in its own scope, not reported as a parent that left');
+  assert.deepEqual(rep!.survivors.map((x) => [x.pid, x.kind]), [[620, undefined]], 'one plain survivor: the stuck daemon itself');
+  assert.deepEqual([...new Set(os.signals.filter((s) => s.sig === 'SIGTERM').map((s) => s.pid))].sort(), [620, 621]);
 });
 
 test('F3: the PLANNED batch (pid + start-time, outcome planned) is persisted BEFORE the first signal — an app death mid-batch loses nothing', async () => {
