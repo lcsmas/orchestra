@@ -272,7 +272,7 @@ effect. Read-only.`,
             with 'status'. The pauser's own turn is left running.
             Durable in the bus (survives an app relaunch, works while the app is down),
             idempotent. Same authority + fencing as hold. REFUSED unless the run's
-            'pause' bus switch was ON when its wave started (frozen; default OFF).
+            'pause' bus switch was ON when its wave started (frozen; default ON).
             A prompt a HUMAN types in a member's composer stays allowed and does NOT lift
             the pause (nor does restarting it from the toolbar); every automatic start is
             refused. A human lifts/pauses with --as <the run's coordinator>.
