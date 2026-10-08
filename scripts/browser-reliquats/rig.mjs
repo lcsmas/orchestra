@@ -31,7 +31,7 @@ const FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-ru
 
 /** `mustRedden`: on the UNFIXED tree exactly these checks go RED (premises and the "must survive" controls stay green). */
 const ARMS = {
-  monitor: { mustRedden: ['pipe_orphan_stopped_at_once', 'pipe_group_dead', 'port_orphan_stopped_after_window', 'port_group_dead', 'client_gone_then_stopped_after_window', 'owner_told_once_per_pass', 'counter_counts_each_stop', 'stopped_browsers_leave_no_crashpad_handler'] },
+  monitor: { mustRedden: ['pipe_orphan_stopped_at_once', 'pipe_group_dead', 'port_orphan_stopped_after_window', 'port_group_dead', 'client_gone_then_stopped_after_window', 'owner_told_once_per_pass', 'counter_counts_each_stop', 'stopped_browsers_leave_no_crashpad_handler', 'pipe_group_signalled'] },
   pause_dure: { mustRedden: ['pause_stops_the_orphaned_browsers', 'pause_group_dead', 'bilan_lists_the_browsers', 'bilan_lists_the_spared_client', 'run_status_lists_them', 'consigne_shows_them', 'reprise_relaunches_nothing'] },
 };
 const ARM = process.argv[2] ?? '';
@@ -309,7 +309,13 @@ try {
     check('premise: a REAL client is connected to c\'s debugging port; nobody is connected to b\'s', establishedTo(portOf(pClient)) >= 1 && establishedTo(portOf(pIdle)) === 0, `c=${establishedTo(portOf(pClient))} b=${establishedTo(portOf(pIdle))}`);
     check('premise: the pipe browsers are in pipe mode, the others in port mode; the default-profile one has NO --user-data-dir', cmdOf(aPipe.pid).includes('--remote-debugging-pipe') && cmdOf(bIdle.pid).includes('--remote-debugging-port=0') && !cmdOf(gDefault.pid).some((x) => x.startsWith('--user-data-dir')));
     // ── TICK 1 (t0): the pipe orphan goes at once; nothing else yet ──
-    await tick();
+    // who gets a signal FROM THE PASS: Chromium's children exit by themselves when their browser dies, so "the group is dead" cannot tell a group kill from a main-only kill — the signals can
+    const signalled = new Set();
+    const aliveBeforeTick1 = groups.aPipe.filter(aliveId).map((g) => Number(g.split(':')[0]));
+    const realKill = process.kill.bind(process);
+    process.kill = (pid, sig) => { if (typeof pid === 'number' && (sig === 'SIGTERM' || sig === 'SIGKILL')) signalled.add(pid); return realKill(pid, sig); };
+    try { await tick(); } finally { process.kill = realKill; }
+    check('pipe_group_signalled: the pass signalled EVERY member of the pipe orphan\'s group (not just the main process — the rest exiting by itself is Chromium\'s doing)', aliveBeforeTick1.length > 1 && aliveBeforeTick1.filter((p) => signalled.has(p)).length >= Math.ceil(aliveBeforeTick1.length * 0.9), `${aliveBeforeTick1.filter((p) => signalled.has(p)).length}/${aliveBeforeTick1.length} signalled`);
     check('pipe_orphan_stopped_at_once: the pipe-mode orphan of a member is stopped on the FIRST pass', !aliveId(ids.aPipe), ids.aPipe);
     check('pipe_group_dead: ...its whole process group with it (zygote, gpu, renderers, network)', groups.aPipe.every((g) => !aliveId(g)), `${groups.aPipe.filter(aliveId).length} left of ${groups.aPipe.length}`);
     check('the port-mode orphan is NOT stopped before the idle window (survives pass 1)', aliveId(ids.bIdle), ids.bIdle);
