@@ -54,10 +54,11 @@ export function normalizeArgv(argv: readonly string[]): string[] {
  * Parse a browser's argv. null = NOT a browser main process we handle: another executable, a child (`--type=renderer|gpu|zygote|utility|crashpad-handler`…),
  * or a browser that is neither headless nor remote-controlled (the human's own window).
  */
-export function parseBrowserArgv(rawArgv: readonly string[]): BrowserArgv | null {
+export function parseBrowserArgv(rawArgv: readonly string[], procExe?: string | null): BrowserArgv | null {
   const argv = normalizeArgv(rawArgv);
   if (argv.length === 0) return null;
-  const exe = path.posix.basename(argv[0]);
+  // the executable is what /proc/<pid>/exe says when it can be read (a title-rewritten or `exec -a` argv[0] is not evidence); otherwise argv[0]
+  const exe = path.posix.basename(procExe ? procExe.replace(/ \(deleted\)$/, '') : argv[0]);
   if (!BROWSER_EXE.test(exe)) return null;
   let headless = false;
   let pipe = false;

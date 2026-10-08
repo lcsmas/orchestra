@@ -41,6 +41,8 @@ export interface BrowserPassDeps {
   readProcStat(pid: number): ProcSample | null;
   /** /proc/<pid>/cmdline argv; null = gone / unreadable. */
   readCmdline(pid: number): string[] | null;
+  /** The executable `/proc/<pid>/exe` points at (the truth about WHAT runs, whatever argv[0] says); null = unreadable. Optional: absent ⇒ argv[0]. */
+  readExe?(pid: number): string | null;
   /** The ports `pid` LISTENS on and whether a client is connected to one; 'unknown' when /proc cannot say (then the browser is never stopped). */
   clientState(pid: number): { ports: number[]; client: ClientState } | 'unknown';
   /** Epoch ms a process with this /proc start-time began. */
@@ -102,6 +104,8 @@ export interface BrowserPassResult {
 }
 
 interface Target {
+  /** `/proc/<pid>/exe` as read at plan time (re-read before the signal: it must not change). */
+  exe: string | null;
   main: ProcSample;
   argv: string[];
   parsed: BrowserArgv;
@@ -138,7 +142,8 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
       continue;
     }
     if (!argv) continue;
-    const parsed = parseBrowserArgv(argv);
+    const exe = d.readExe?.(p.pid) ?? null;
+    const parsed = parseBrowserArgv(argv, exe);
     if (!parsed) continue;
     const owner = profileOwner(parsed.userDataDir, root);
     if (!owner) continue; // the human's browser, a default profile, anything outside agent-tmp/: not ours — not even tracked
@@ -165,7 +170,7 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
       if (verdict.why === 'client-connected' || verdict.why === 'client-unknown') spared.push({ source: 'browser', pid: p.pid, startTicks: p.startTicks, comm: p.comm, cmd: trunc(argv.join(' ')), reason: `browser Reliquat kept: ${verdict.why === 'client-connected' ? 'a client is connected to its debugging port' : 'its debugging-port clients could not be read'}` });
       continue;
     }
-    targets.push({ main: p, argv, parsed, wsId: owner.wsId, prefix: owner.prefix, why: verdict.why, members: descendantsOf(table, p.pid) });
+    targets.push({ main: p, exe, argv, parsed, wsId: owner.wsId, prefix: owner.prefix, why: verdict.why, members: descendantsOf(table, p.pid) });
   }
   if (opts.onlyWs === undefined) for (const k of [...tracker.tracks.keys()]) if (!seenKeys.has(k)) tracker.tracks.delete(k); // gone, or no longer an orphan
 
@@ -188,6 +193,7 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
     const fresh = d.readProcStat(t.main.pid);
     if (!fresh || fresh.startTicks !== t.main.startTicks) { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — identity changed or gone`); continue; }
     if (!sameArgv(d.readCmdline(t.main.pid), t.argv)) { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — argv changed`); continue; }
+    if ((d.readExe?.(t.main.pid) ?? null) !== t.exe) { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — its executable changed`); continue; }
     const parent = d.readProcStat(fresh.ppid);
     if (!launcherDead(fresh.ppid, parent ? { comm: parent.comm, ppid: parent.ppid } : null)) { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — it has a live launcher now (ppid ${fresh.ppid})`); continue; }
     if (t.parsed.mode !== 'pipe') {

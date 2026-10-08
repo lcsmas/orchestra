@@ -477,6 +477,7 @@ export function productionBrowserBridge(): NonNullable<ResourceMonitorDeps['brow
       workspaceKnown: (id) => store.loadedFromDisk && !!store.getWorkspace(id), // an unloaded store attributes nothing: absence-from-store is no proof (#187)
       readProcStat: defaultDeps.readProcStat,
       readCmdline: defaultDeps.readCmdline,
+      readExe: (pid) => { try { return fs.readlinkSync(`/proc/${pid}/exe`); } catch { return null; } },
       clientState: (pid) => realClientState(pid),
       startMs: kill.startMs,
       signal: defaultDeps.signal,

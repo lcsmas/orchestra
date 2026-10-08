@@ -96,7 +96,8 @@ test('the browser module only READS the profile and /proc: no way to remove, rew
   }
   const code = codeOf('src/main/browser-reliquats.ts');
   const term = at(code, "d.signal(m.pid, 'SIGTERM')");
-  assert.ok(at(code, 'const fresh = d.readProcStat(t.main.pid);') < term && at(code, 'sameArgv(d.readCmdline(t.main.pid), t.argv)') < term, 'identity + argv re-read before the first signal');
+  assert.ok(at(code, 'const fresh = d.readProcStat(t.main.pid);') < term && at(code, 'sameArgv(d.readCmdline(t.main.pid), t.argv)') < term && at(code, '(d.readExe?.(t.main.pid) ?? null) !== t.exe') < term, 'identity + argv + executable re-read before the first signal');
+  assert.ok(codeOf('src/main/resource-monitor.ts').includes('readExe: (pid) => { try { return fs.readlinkSync(`/proc/${pid}/exe`); }'), 'the production deps read the executable from /proc/<pid>/exe');
   assert.ok(at(code, 'if (!f || f.startTicks !== m.startTicks) continue;') < at(code, "d.signal(m.pid, 'SIGKILL')"), 'SIGKILL only for a same-identity survivor');
   assert.equal((code.match(/d\.signal\(/g) ?? []).length, 2, 'exactly the SIGTERM and the SIGKILL call sites');
 });

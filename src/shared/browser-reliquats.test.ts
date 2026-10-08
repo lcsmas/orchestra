@@ -186,4 +186,7 @@ test('normalizeArgv / parseBrowserArgv: a title-rewritten MAIN (ONE string, sess
   assert.equal(parseBrowserArgv(['/usr/bin/chromium-browser']), null, 'the human\'s flagless browser is not ours');
   assert.equal(parseBrowserArgv(['/usr/lib64/chromium-browser/chromium-browser --type=renderer --headless --remote-debugging-port=0']), null, 'a rewritten CHILD title is never the main');
   assert.equal(parseBrowserArgv(['/usr/bin/some-editor --headless --remote-debugging-port=0']), null, 'another executable');
+  assert.deepEqual(parseBrowserArgv(['renamed --headless=new --remote-debugging-pipe'], '/usr/lib64/chromium-browser/chromium-browser'), { mode: 'pipe', port: null, userDataDir: null }, '/proc/<pid>/exe decides WHAT runs');
+  assert.equal(parseBrowserArgv(['/usr/bin/chromium-browser --headless=new --remote-debugging-pipe'], '/usr/bin/sleep'), null, 'argv[0] saying chromium-browser is no evidence when exe says sleep');
+  assert.ok(parseBrowserArgv(['x --headless=new'], '/opt/chrome-linux/chrome (deleted)'), 'a replaced binary (deleted) is still the same program');
 });

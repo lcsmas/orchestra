@@ -124,4 +124,9 @@ export const MUTANTS = [
   // ── review m2 (c/6068741994): a SIGKILL survivor is not « stopped »
   { id: 'br-io-survivor-counted-as-stopped', file: IO, find: "      if (gone.has(`${s.pid}:${s.startTicks}`)) continue;\n      stopped.splice(stopped.indexOf(s), 1);", rep: "      continue;\n      stopped.splice(stopped.indexOf(s), 1);", tests: [T.io], expect: /review m2/ },
   { id: 'br-io-survivor-untracked', file: IO, find: "    for (const s of stopped) {\n      const c = tracker.counters.get(s.wsId) ?? { stopped: 0, lastAt: 0, lastPrefix: s.prefix };", rep: "    for (const s of [...stopped, ...armed.filter((a) => a.entry.outcome === 'survived').map((a) => ({ wsId: a.t.wsId, pid: a.entry.pid, startTicks: a.entry.startTicks, prefix: a.t.prefix }))]) {\n      const c = tracker.counters.get(s.wsId) ?? { stopped: 0, lastAt: 0, lastPrefix: s.prefix };", tests: [T.io], expect: /review m2/ },
+  // ── OPS (B1): the executable from /proc/<pid>/exe
+  { id: 'br-exe-ignored', file: IO, find: '    const exe = d.readExe?.(p.pid) ?? null;', rep: '    const exe = null as string | null;', tests: [T.io], expect: /OPS \(B1\)/ },
+  { id: 'br-exe-argv0-wins', file: PURE, find: "  const exe = path.posix.basename(procExe ? procExe.replace(/ \\(deleted\\)$/, '') : argv[0]);", rep: "  const exe = path.posix.basename(argv[0]);", tests: [T.pure, T.io], expect: /normalizeArgv \/ parseBrowserArgv|OPS \(B1\)/ },
+  { id: 'br-exe-deleted-not-stripped', file: PURE, find: "procExe.replace(/ \\(deleted\\)$/, '')", rep: "procExe", tests: [T.pure, T.io], expect: /normalizeArgv \/ parseBrowserArgv|OPS \(B1\)/ },
+  { id: 'br-exe-not-reverified', file: IO, find: "    if ((d.readExe?.(t.main.pid) ?? null) !== t.exe) { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — its executable changed`); continue; }\n", rep: '', tests: [T.io, T.wiring], expect: /OPS \(B1\)|every signal is preceded/ },
 ];

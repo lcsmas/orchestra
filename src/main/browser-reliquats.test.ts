@@ -34,6 +34,8 @@ class World {
   ignoresTerm = new Set<number>();
   /** signals are delivered but the process never dies (state D, say). */
   immortal = new Set<number>();
+  /** pid → what /proc/<pid>/exe says (unset ⇒ unreadable ⇒ argv[0] decides). */
+  exes = new Map<number, string>();
   clients = new Map<number, { ports: number[]; client: ClientState } | 'unknown'>();
   known = new Set<string>(['ws-1', 'ws-2']);
   unreadableCmd = new Set<number>();
@@ -70,6 +72,7 @@ class World {
       workspaceKnown: (id) => this.known.has(id),
       readProcStat: (pid) => { const h = this.beforeKill; this.beforeKill = null; h?.(); const p = this.procs.get(pid); return p ? { pid: p.pid, ppid: p.ppid, comm: p.comm, cpuTicks: 0, memBytes: 0, cpuPct: null, startTicks: p.startTicks } : null; },
       readCmdline: (pid) => (this.unreadableCmd.has(pid) ? null : (this.procs.get(pid)?.argv ?? null)),
+      readExe: (pid) => this.exes.get(pid) ?? null,
       clientState: (pid) => this.clients.get(pid) ?? { ports: [9222], client: 'no' },
       startMs: (t) => t * 10,
       signal: (pid, sig) => {
@@ -597,4 +600,28 @@ test('review m2: a browser that SURVIVES even SIGKILL is not « stopped » — n
   const r3 = await w.pass(t);
   assert.deepEqual(r3.stopped.map((s) => s.pid), [700]);
   assert.equal(t.view().total, 1, 'counted exactly once');
+});
+
+test('OPS (B1): the executable comes from /proc/<pid>/exe when readable — `exec -a` / a wrapper argv[0] still classifies a real browser; a process that merely SAYS chromium-browser in argv[0] (exe = sleep) is NEVER one; `(deleted)` is stripped; an exe that CHANGES before the signal withholds it', async () => {
+  const w = new World();
+  const real = w.browser(500, { mode: 'pipe' });
+  real.argv[0] = 'my-launcher-name'; // argv[0] is no evidence
+  w.exes.set(500, '/usr/lib64/chromium-browser/chromium-browser');
+  const spoof = w.browser(510, { mode: 'pipe' });
+  spoof.argv[0] = '/usr/bin/chromium-browser'; // says browser…
+  w.exes.set(510, '/usr/bin/sleep'); // …is not
+  const del = w.browser(520, { mode: 'pipe' });
+  del.argv[0] = 'x';
+  w.exes.set(520, '/opt/chrome-linux/chrome (deleted)');
+  const r = await w.pass(new BrowserTracker());
+  assert.deepEqual(r.stopped.map((s) => s.pid).sort(), [500, 520], 'real browsers by exe, whatever argv[0] says');
+  assert.ok(w.procs.has(510), 'the spoof is untouched');
+  // exe changes between the plan and the signal (an exec): withheld
+  const w2 = new World();
+  w2.browser(600, { mode: 'pipe' });
+  w2.exes.set(600, '/usr/lib64/chromium-browser/chromium-browser');
+  w2.beforeKill = () => w2.exes.set(600, '/usr/bin/sleep');
+  const r2 = await w2.pass(new BrowserTracker());
+  assert.deepEqual(r2.stopped, []);
+  assert.ok(w2.warns.some((x) => /pid 600 withheld — its executable changed/.test(x)));
 });
