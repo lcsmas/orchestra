@@ -34,6 +34,8 @@ import {
   type VictimSnap,
   launcherExecedKeeper,
   parseKernelOomMessage,
+  parseMemoryStat,
+  workingSetBytes,
   kernelKillsForUnit,
   applyKernelKills,
   memNoticeText,
@@ -411,4 +413,12 @@ test('#322: inferKillRecords labels what it makes `inferred` (the kill kind is e
   const [r] = inferKillRecords({ before, aliveKeys: new Set(), delta: { oomKill: 1, hardCredit: 1 }, maxBytes: 1 << 28, unit: 'u.scope', seqNext: 1, nowMs: 1 });
   assert.equal(r.kind, 'kill');
   assert.equal(r.source, 'inferred');
+});
+
+test('#322 R5: the working set = memory.current − inactive_file (never negative; the raw figure when memory.stat has no inactive_file)', () => {
+  const stat = parseMemoryStat('anon 1000\nfile 5000\ninactive_file 3000\nactive_file 2000\nsomething_else 12\nbad line\nx 1.5\n');
+  assert.deepEqual({ a: stat.anon, f: stat.inactive_file, x: stat.x }, { a: 1000, f: 3000, x: undefined });
+  assert.equal(workingSetBytes(10_000, stat), 7000);
+  assert.equal(workingSetBytes(2_000, stat), 0, 'a stale stat larger than the reading ⇒ 0, not negative');
+  assert.equal(workingSetBytes(10_000, {}), 10_000);
 });

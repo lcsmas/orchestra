@@ -14,6 +14,8 @@ class World {
   events = { high: 0, max: 0, oom: 0, oom_kill: 0, oom_group_kill: 0 };
   maxBytes = 300 * 1024 * 1024;
   current = 100 * 1024 * 1024;
+  /** Reclaimable page cache inside `current` (memory.stat inactive_file). */
+  inactiveFile = 0;
   add(pid: number, p: Partial<Proc> & { comm: string }): void {
     this.procs.set(pid, { start: pid * 7, cmdline: p.comm, rssPages: 100, adj: 0, ...p });
   }
@@ -28,6 +30,7 @@ class World {
     if (p === `${DIR}/cgroup.procs`) return [...this.procs.keys()].join('\n') + '\n';
     if (p === `${DIR}/memory.max`) return `${this.maxBytes}\n`;
     if (p === `${DIR}/memory.current`) return `${this.current}\n`;
+    if (p === `${DIR}/memory.stat`) return `anon ${Math.max(0, this.current - this.inactiveFile)}\ninactive_file ${this.inactiveFile}\nactive_file 0\n`;
     const m = /^\/proc\/(\d+)\/(stat|statm|cmdline|oom_score_adj)$/.exec(p);
     if (m) {
       const proc = this.procs.get(Number(m[1]));
@@ -311,7 +314,7 @@ function watchSoft(w: World, softs: MemSoftRecord[], kills: MemKillRecord[] = []
   return startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: (r) => kills.push(r), onSoft: (r) => softs.push(r), softBytes: 200 * MB, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096, ...extra });
 }
 
-test('#322 D-Q2: the warning level fires ONCE per upward crossing of memory.current, re-arms below 90 % of the level, and nothing else (no kill, no throttle)', async () => {
+test('#322 D-Q2: the warning level fires ONCE per upward crossing of the working set, re-arms below 90 % of the level, and nothing else (no kill, no throttle)', async () => {
   const w = new World();
   w.current = 100 * MB;
   const softs: MemSoftRecord[] = [];
@@ -432,5 +435,34 @@ test('#322 m2: the journal line lands a moment AFTER the counter moves — the w
   assert.ok(await until(() => kills.length === 2, 4000));
   assert.notEqual(kills[1].source === 'kernel' && kills[1].pid, 12, 'the used line is not reused');
   assert.equal(kills[1].source, 'inferred', 'no new line for this kill ⇒ the inference stands, labelled');
+  mw.stop();
+});
+
+test('#322 R5: the warning keys on the WORKING SET — a scope full of reclaimable page cache (a pnpm install) does NOT warn; the same total in anon memory does', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  const mw = watchSoft(w, softs);
+  await wait(40);
+  w.current = 260 * MB; // far above the 200 MB level …
+  w.inactiveFile = 220 * MB; // … but 220 MB of it is inactive file cache: working set 40 MB
+  await wait(80);
+  assert.equal(softs.length, 0, 'cache alone is not a warning (the kernel reclaims it before any kill)');
+  w.inactiveFile = 20 * MB; // the same total, now mostly anon: working set 240 MB
+  assert.ok(await until(() => softs.length === 1), 'the working set crossing the level warns');
+  assert.equal(softs[0].bytes, 240 * MB, 'the record carries the working set, not memory.current');
+  mw.stop();
+});
+
+test('#322 R5: memory.stat unreadable ⇒ the raw memory.current is the fallback (noisier, never silent)', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  const read = (p: string): string => { if (p.endsWith('/memory.stat')) throw new Error('ENOENT'); return w.read(p); };
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: () => {}, onSoft: (r) => softs.push(r), softBytes: 200 * MB, log: () => {}, readFile: read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096 });
+  await wait(30);
+  w.current = 220 * MB;
+  assert.ok(await until(() => softs.length === 1));
+  assert.equal(softs[0].bytes, 220 * MB);
   mw.stop();
 });

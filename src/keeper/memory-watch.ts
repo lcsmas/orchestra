@@ -14,7 +14,9 @@ import {
   kernelKillsForUnit,
   parseCgroupLimit,
   parseMemoryEvents,
+  parseMemoryStat,
   snapKey,
+  workingSetBytes,
   type KernelOomKill,
   type MemKillRecord,
   type MemSoftRecord,
@@ -27,7 +29,7 @@ export interface MemoryWatchOpts {
   cgroupDir: string;
   unit: string;
   onKill(rec: MemKillRecord): void;
-  /** #322 (D-Q2): the WARNING level — `memory.current` crossing `softBytes` upward fires `onSoft` once per crossing (re-armed below {@link SOFT_REARM_FRACTION} of the level). Nothing is throttled. Absent/null `softBytes` = no warning. */
+  /** #322 (D-Q2, R5): the WARNING level — the scope's WORKING SET (`memory.current` − `inactive_file`) crossing `softBytes` upward fires `onSoft` once per crossing (re-armed below {@link SOFT_REARM_FRACTION} of the level). Nothing is throttled. Absent/null `softBytes` = no warning. */
   softBytes?: number | null;
   onSoft?(rec: MemSoftRecord): void;
   /** #322 m2: the kernel's own OOM lines since a time (null = the log is unreadable → the inference stands). Default: `journalctl -k`; tests inject. Absent in `o` = no kernel lookup. */
@@ -257,7 +259,7 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     if (stopped) return;
     void look().catch((e) => o.log(`memory watch: look failed (${(e as Error).message})`));
     const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
-    softCheck(cur);
+    if (o.onSoft && o.softBytes) softCheck(workingSetBytes(cur, parseMemoryStat(readSafe(path.join(o.cgroupDir, 'memory.stat')) ?? ''))); // R5: the working set, not the page cache
     const max = maxBytes();
     const frac = max !== null && Number.isFinite(cur) ? cur / max : 0;
     const base = frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 500);

@@ -308,7 +308,7 @@ export interface MemSoftRecord {
   seq: number;
   at: number;
   unit: string;
-  /** The reading that crossed (`memory.current`). */
+  /** The reading that crossed: the scope's working set (`memory.current` − `inactive_file`, ledger R5). */
   bytes: number;
   softBytes: number;
   hardBytes: number | null;
@@ -316,6 +316,22 @@ export interface MemSoftRecord {
 /** What the keeper hands the host to tell the member and its coordinator about. */
 export type MemNoticeRecord = MemKillRecord | MemSoftRecord;
 export const isSoftRecord = (r: MemNoticeRecord): r is MemSoftRecord => r.kind === 'soft';
+
+/** `memory.stat` → name → bytes/count (only the lines of the form `name <integer>`). */
+export function parseMemoryStat(text: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const line of text.split('\n')) {
+    const m = /^(\w+)\s+(\d+)\s*$/.exec(line);
+    if (m) out[m[1]] = Number(m[2]);
+  }
+  return out;
+}
+
+/** The scope's WORKING SET (ledger R5): `memory.current` minus the inactive page cache. The raw figure counts every file page the member's commands touched (a `pnpm install`, a `git` pack) —
+ *  the kernel reclaims that cache before it kills anything, so warning on it would cry wolf; what can actually cost a kill is what stays. Without `inactive_file` it is the raw figure. */
+export function workingSetBytes(currentBytes: number, stat: Record<string, number>): number {
+  return Math.max(0, currentBytes - (stat.inactive_file ?? 0));
+}
 
 /** Re-arm the warning once the scope falls below this fraction of the level (a scope hovering AT the level must not report every sample). */
 export const SOFT_REARM_FRACTION = 0.9;

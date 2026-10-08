@@ -582,6 +582,16 @@ try {
     const f = factsOf(ws, st);
     const cur0 = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.current')));
     check('precondition: the scope starts BELOW the warning level (else nothing is a crossing)', cur0 < 0.15 * 1024 ** 3 * 0.9, `memory.current=${cur0}`);
+    // R5 control FIRST: 130 MB of reclaimable PAGE CACHE pushes memory.current over the level, but it is not a working set — the kernel reclaims it before any kill — so it must NOT warn.
+    const cacheFile = path.join(base, 'cache-fill.bin');
+    st.send({ tool: `${python.join(' ')} ${RIG_DIR}/cache-fill.py ${cacheFile} 130 2.5`, id: 't-cache' });
+    await sleep(1600);
+    const curCache = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.current')));
+    const inactive = Number((/^inactive_file (\d+)/m.exec(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.stat')) ?? '') ?? [])[1] ?? 0);
+    await waitFor(() => resultOf(st, 't-cache') || st.exited, 30_000, 100);
+    await sleep(800);
+    check('positive control: the page cache DID push raw memory.current over the warning level (the false alarm this guards against was real)', curCache > 0.15 * 1024 ** 3, `memory.current=${(curCache / 1048576).toFixed(0)} MB inactive_file=${(inactive / 1048576).toFixed(0)} MB level=${(0.15 * 1024).toFixed(0)} MB`);
+    check('R5: …yet NO warning — the level keys on the working set (memory.current − inactive_file), not on page cache', softs.length === 0, `softs=${softs.length}`);
     const t0 = Date.now();
     const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/soft-cross.py 120 1.5 1.2 2 soft-notice`, 't-soft', 60_000);
     const wall = Date.now() - t0;
