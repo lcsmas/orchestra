@@ -184,7 +184,9 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
     const max = maxBytes();
     const frac = max !== null && Number.isFinite(cur) ? cur / max : 0;
-    timer = setTimeout(tick, frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 1500));
+    const base = frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 1500);
+    // A scope with hundreds of members (a Chromium swarm) costs ~3 /proc reads each per look: stretch the cadence so the watch stays cheap (≈2 ms per member, ≤ 800 ms at the 400-member cap).
+    timer = setTimeout(tick, Math.max(base, Math.min(800, snap.size * 2)));
     timer.unref();
   }
 

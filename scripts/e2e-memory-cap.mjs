@@ -255,7 +255,7 @@ try {
     const want = Math.round(HARD_GB * 1024 ** 3);
     check('levels: memory.max = the Garde mémoire HARD level (±1 page)', Math.abs(maxB - want) <= 65536, `memory.max=${maxB} want=${want}`);
     check('no swap escape: memory.swap.max = 0', readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.swap.max'))?.trim() === '0');
-    check('no soft throttle while Q2 is open: memory.high = max', readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.high'))?.trim() === 'max');
+    check('no soft throttle, ever (D-Q2): memory.high = max', readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.high'))?.trim() === 'max');
     const pol = f.unit ? spawnSync('systemctl', ['--user', 'show', '-p', 'OOMPolicy', '--value', f.unit], { encoding: 'utf8' }).stdout.trim() : '';
     check('never group-kill: OOMPolicy=continue', pol === 'continue', `OOMPolicy=${pol}`);
     check('victim protection (CLI side): the CLI keeps adj 0 and the keeper adj 0', f.init?.adj === 0 && Number(readSafe(`/proc/${f.keeperPid}/oom_score_adj`)) === 0, `cli=${f.init?.adj}`);

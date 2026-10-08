@@ -47,6 +47,7 @@ test('the keeper verifies its own scope, starts the kill watch, wraps the tools 
   assert.ok(live(keeper, 'const capEnv = f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env;'), 'relay path');
   assert.ok(live(keeper, 'startChild(f.command, f.args, f.cwd, f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env);'), 'plain path');
   assert.ok(live(keeper, "const out: Record<string, string | undefined> = { ...env, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };"));
+  assert.ok(live(keeper, 'if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {'), 'a wrapper path the CLI would split at a space is never set as the prefix');
   assert.ok(live(keeper, '...(capInfo ? { cap: capInfo } : {}),') && live(keeper, '...(memKills.length ? { memKills: memKills.slice() } : {}),'), 'helloAck/probe carry the state and the catch-up');
   assert.ok(live(keeper, 'send({ t: \'memKill\', rec });'), 'a kill is pushed to the attached client');
   assert.ok(live(keeper, 'memWatch?.stop();'), 'the watch ends with the keeper');

@@ -5,8 +5,8 @@
 // What a Plafond mémoire IS on this host (measured 2026-10-08, docs/codebase-map/session-keeper.md § Plafond mémoire):
 //  - `MemoryMax` alone kills only with `MemorySwapMax=0` (zram swap would absorb the overflow otherwise);
 //  - systemd's default `OOMPolicy=stop` ENDS THE WHOLE SCOPE after one oom_kill — `OOMPolicy=continue` is what makes "never group-kill" true;
-//  - `MemoryHigh` below `MemoryMax` throttles a runaway to a crawl instead of ever reaching the kill (ledger Q2): the soft level is
-//    stored and carried, but only APPLIED when {@link APPLY_SOFT_LEVEL} is true;
+//  - `MemoryHigh` below `MemoryMax` throttles a runaway to a crawl instead of ever reaching the kill (ledger D-Q2, option A): NEVER set. The soft
+//    level is a WARNING level (the member is told when it crosses it — #322), not a kernel throttle;
 //  - an unprivileged process can only RAISE its oom_score_adj, so tool processes are raised (+{@link OOM_ADJ_TOOLS}) and the keeper/CLI keep 0.
 
 import { GIB } from './memory-guard.ts';
@@ -55,16 +55,13 @@ export function scopeGenForWorkspace(prefix: string, wsId: string, unit: string)
 
 // ─── The decision: create the scope / set the limits — TWO separate clauses (ledger Q1 may change the first) ──────
 
-/** What the host asks of a keeper's scope. `softBytes` is carried for the day Q2 is ruled; only {@link APPLY_SOFT_LEVEL} applies it. */
+/** What the host asks of a keeper's scope. `softBytes` is the WARNING level (#322 tells the member when it crosses it) — it is never a kernel limit (ledger D-Q2). */
 export interface MemoryCapLimits {
   hardBytes: number;
   softBytes: number | null;
   /** Always 0: with swap on, `MemoryMax` is not a cap (the overflow parks in zram). */
   swapMaxBytes: 0;
 }
-
-/** Ledger Q2 default while unanswered: NO `MemoryHigh` — a soft throttle below the hard level crawls a runaway forever instead of killing it. */
-export const APPLY_SOFT_LEVEL = false;
 
 /** What `ensureSession` asks of a keeper LAUNCH: its own scope (`unit`), with these limits (null = a scope with no limits — ledger Q1 variant). */
 export interface MemoryCapLaunch {
@@ -117,7 +114,6 @@ export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits 
   const props: string[] = ['OOMPolicy=continue']; // systemd's default `stop` ends the WHOLE scope after one oom_kill
   if (a.limits) {
     props.push(`MemoryMax=${a.limits.hardBytes}`, `MemorySwapMax=${a.limits.swapMaxBytes}`);
-    if (APPLY_SOFT_LEVEL && a.limits.softBytes !== null) props.push(`MemoryHigh=${a.limits.softBytes}`);
   }
   return {
     cmd: 'systemd-run',
@@ -131,6 +127,12 @@ export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits 
 export const OOM_ADJ_TOOLS = 1000;
 export const OOM_TOOL_WRAPPER_FILE = 'oom-tool-wrapper.sh';
 export const INNER_SHELL_PREFIX_ENV = 'ORCHESTRA_INNER_SHELL_PREFIX';
+
+/** The CLI splits CLAUDE_CODE_SHELL_PREFIX into executable + args at whitespace, so a wrapper path with a space (a home dir with a space in it) would silently run a different command:
+ *  such a path is NOT used — the keeper reports `unprotected` instead of wrapping tools wrongly. Must be absolute. */
+export function wrapperPathUsable(p: string | undefined | null): p is string {
+  return typeof p === 'string' && p.startsWith('/') && !/\s/.test(p);
+}
 
 /** `CLAUDE_CODE_SHELL_PREFIX` target (measured on CLI 2.1.291: it is invoked as `<prefix> <whole command string>` — ONE argument). */
 export const OOM_TOOL_WRAPPER_SCRIPT = `#!/bin/sh
@@ -345,7 +347,7 @@ export interface MemoryCapStatusView {
 
 /** The `memory cap:` line of `orchestra bus-status`. */
 export function formatMemoryCapLine(v: MemoryCapStatusView): string {
-  const levels = `hard ${(v.hardBytes / GIB).toFixed(1)} GB (kernel kill, no swap)${APPLY_SOFT_LEVEL ? ` · soft ${(v.softBytes / GIB).toFixed(1)} GB` : ` · soft ${(v.softBytes / GIB).toFixed(1)} GB stored, not applied`}`;
+  const levels = `hard ${(v.hardBytes / GIB).toFixed(1)} GB (kernel kill, no swap) · soft ${(v.softBytes / GIB).toFixed(1)} GB (warning level, no kernel throttle)`;
   if (v.switchOn === null) return `memory cap: no run — nothing frozen (levels when a run freezes it ON: ${levels})`;
   if (!v.switchOn) return `memory cap: OFF for this run (frozen) — no member scope; levels if it were ON: ${levels}`;
   const scopes = v.scopes === null ? '' : ` · ${v.scopes} member scope(s) live`;

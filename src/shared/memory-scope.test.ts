@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  APPLY_SOFT_LEVEL,
   INNER_SHELL_PREFIX_ENV,
   MEMORY_SCOPE_UNIT_PREFIX,
   OOM_ADJ_TOOLS,
@@ -26,6 +25,7 @@ import {
   parseProcCgroupV2,
   sanitizeScopePrefix,
   scopeGenForWorkspace,
+  wrapperPathUsable,
   snapKey,
   type MemoryCapInput,
   type ScopeMember,
@@ -105,14 +105,13 @@ test('decideMemoryCap: a soft level that is not below the hard one is dropped, n
 
 // ── the launch argv (the production flags) ───────────────────────────────────────────────────────────────────────
 
-test('buildScopeLaunchArgv: new scope, OOMPolicy=continue, MemoryMax=hard, MemorySwapMax=0 — and NO MemoryHigh while Q2 is open', () => {
+test('buildScopeLaunchArgv: new scope, OOMPolicy=continue, MemoryMax=hard, MemorySwapMax=0 — and and NEVER a MemoryHigh (ledger D-Q2)', () => {
   const unit = 'orchestra-ws-ws1-abcdef.scope';
   const { cmd, args } = buildScopeLaunchArgv({ unit, limits: { hardBytes: 6 * GIB, softBytes: 3 * GIB, swapMaxBytes: 0 }, cmd: '/usr/bin/node', args: ['keeper.js', 'ws1'] });
   assert.equal(cmd, 'systemd-run');
-  assert.equal(APPLY_SOFT_LEVEL, false);
   const props = args.flatMap((a, i) => (args[i - 1] === '-p' ? [a] : []));
   assert.deepEqual(props, ['OOMPolicy=continue', `MemoryMax=${6 * GIB}`, 'MemorySwapMax=0']);
-  assert.ok(!args.some((a) => a.includes('MemoryHigh')), 'the soft level is not applied as MemoryHigh');
+  assert.ok(!args.some((a) => a.includes('MemoryHigh')), 'the soft level is a warning level: never a kernel MemoryHigh (it would crawl a runaway forever instead of killing it)');
   assert.deepEqual(args.slice(0, 5), ['--user', '--scope', '--collect', '--quiet', `--unit=${unit}`]);
   assert.deepEqual(args.slice(args.indexOf('--')), ['--', '/usr/bin/node', 'keeper.js', 'ws1'], 'the command follows `--`: it is the scope\'s main process, never an existing one');
 });
@@ -228,7 +227,7 @@ test('formatMemKillLine: workspace, killed command, level', () => {
 
 test('formatMemoryCapLine: ON shows the levels and that it applies at the next session start; OFF and no-run say so', () => {
   const v = { switchOn: true, softBytes: 3 * GIB, hardBytes: 6 * GIB, scopes: 2, supported: true };
-  assert.match(formatMemoryCapLine(v), /^memory cap: ON for this run \(frozen\) — hard 6\.0 GB \(kernel kill, no swap\) · soft 3\.0 GB stored, not applied; read at each member's next session start.* · 2 member scope\(s\) live$/);
+  assert.match(formatMemoryCapLine(v), /^memory cap: ON for this run \(frozen\) — hard 6\.0 GB \(kernel kill, no swap\) · soft 3\.0 GB \(warning level, no kernel throttle\); read at each member's next session start.* · 2 member scope\(s\) live$/);
   assert.match(formatMemoryCapLine({ ...v, switchOn: false }), /^memory cap: OFF for this run \(frozen\) — no member scope/);
   assert.match(formatMemoryCapLine({ ...v, switchOn: null }), /^memory cap: no run — nothing frozen/);
   assert.match(formatMemoryCapLine({ ...v, supported: false, unsupportedReason: 'no systemd-run' }), /NOT TRACKED on this host \(no systemd-run\)/);
@@ -259,4 +258,9 @@ test('the tool wrapper: raises ONLY its own tree to +1000, hands the single comm
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('wrapperPathUsable: only an absolute path without whitespace can be CLAUDE_CODE_SHELL_PREFIX (the CLI splits it at spaces)', () => {
+  assert.equal(wrapperPathUsable('/home/lmas/.orchestra/bin/oom-tool-wrapper.sh'), true);
+  for (const bad of ['/home/my user/.orchestra/bin/w.sh', 'bin/w.sh', '', undefined, null, '/tmp/a\tb']) assert.equal(wrapperPathUsable(bad as string | undefined), false, String(bad));
 });

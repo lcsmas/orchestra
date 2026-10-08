@@ -735,9 +735,9 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
   const target = fs.existsSync(script) ? script : path.join(__dirname, 'keeper.js');
   fs.mkdirSync(keeperDir(), { recursive: true });
   const keeperArgs = [target, wsId, sockPath, keeperPidPath(wsId), keeperLogPath(wsId)];
-  const waitForSocket = async (aborted: () => boolean): Promise<net.Socket | { err: unknown }> => {
+  const waitForSocket = async (aborted: () => boolean, tries = 50): Promise<net.Socket | { err: unknown }> => {
     let lastErr: unknown = null;
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < tries; i++) {
       if (aborted()) return { err: lastErr ?? new Error('launcher exited') };
       try {
         return await connectSock(sockPath, 500);
@@ -760,7 +760,7 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
       if (code !== 0) launcherFailed = `exit ${code ?? signal}`; // the launcher exec'd into the keeper: any exit before the socket is up is a failure
     });
     child.unref();
-    const r = await waitForSocket(() => launcherFailed !== null);
+    const r = await waitForSocket(() => launcherFailed !== null, 100); // 10 s, not 5: the user manager may be slow to create a scope under fleet load (a FAILED launcher aborts at once)
     if (r instanceof net.Socket) {
       log.info(`memory-cap[${wsId}]: keeper launched in scope ${cap.unit}${cap.limits ? ` (hard ${cap.limits.hardBytes} B, swap ${cap.limits.swapMaxBytes})` : ' (no limits)'}`);
       return r;

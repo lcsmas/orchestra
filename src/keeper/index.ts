@@ -46,7 +46,7 @@ import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUps
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 import { startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
-import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, parseProcCgroupV2, type MemKillRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, parseProcCgroupV2, wrapperPathUsable, type MemKillRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -267,7 +267,9 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     return env;
   }
   let wrapperOk = false;
-  if (cap.wrapper) {
+  if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {
+    klog(`memory cap: tool wrapper path ${JSON.stringify(cap.wrapper)} is not usable as CLAUDE_CODE_SHELL_PREFIX (relative or contains whitespace) — tool commands keep oom_score_adj 0`);
+  } else if (cap.wrapper) {
     try {
       fs.accessSync(cap.wrapper, fs.constants.X_OK);
       wrapperOk = true;
