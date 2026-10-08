@@ -305,8 +305,16 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     },
   });
   klog(`memory cap: ${capInfo.state.toUpperCase()} unit=${cap.unit} memory.max=${limit} cgroup=${dir}`);
-  if (!wrapperOk || !cap.wrapper) return env;
-  const out: Record<string, string | undefined> = { ...env, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
+  // A browser started from this session moves its main process into ITS OWN systemd scope through the session bus (measured: app-org.chromium.Chromium-<pid>.scope) — out of the cap, with the
+  // 56-Chromium incident that motivated the cap in plain view. Without DBUS_SESSION_BUS_ADDRESS Chromium stays where it was started (measured 9/9 inside; the user-manager tools, `systemd-run --user`,
+  // gh and git keep working). Capped members only; the human's sessions and a switch-OFF run keep the address.
+  const base: Record<string, string | undefined> = { ...env };
+  if (base.DBUS_SESSION_BUS_ADDRESS !== undefined) {
+    delete base.DBUS_SESSION_BUS_ADDRESS;
+    klog('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)');
+  }
+  if (!wrapperOk || !cap.wrapper) return base;
+  const out: Record<string, string | undefined> = { ...base, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
   // The user's own prefix keeps working: our wrapper chains it exactly as the CLI would have called it.
   if (env.CLAUDE_CODE_SHELL_PREFIX && env.CLAUDE_CODE_SHELL_PREFIX !== cap.wrapper) out[INNER_SHELL_PREFIX_ENV] = env.CLAUDE_CODE_SHELL_PREFIX;
   return out;

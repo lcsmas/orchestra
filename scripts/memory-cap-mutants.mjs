@@ -81,6 +81,7 @@ const MUTANTS = [
   { id: 'chain-in-scope-only', clause: 'FI-1 v1.9: the ppid chain is walked across the whole host (a helper whose parent left the scope is the session\'s)', file: 'src/main/memory-scope.ts', find: 'return classifyScopeMembers(members, scope.keeperPid, cli, hostParentOf(e));', replace: 'return classifyScopeMembers(members, scope.keeperPid, cli);', target: { unit: ['src/main/memory-scope.test.ts'] } },
   { id: 'outside-lists-in-scope', clause: 'FI-1 v1.9: only processes OUTSIDE the scope are listed as escaped', file: 'src/main/memory-scope.ts', find: 'if (cg === null || cg === scopeCg) continue;', replace: 'if (cg === null) continue;', target: { unit: ['src/main/memory-scope.test.ts'] } },
   { id: 'outside-lists-whole-host', clause: 'FI-1 v1.9: only the keeper\'s OWN tree is billed (not the human\'s browser)', file: 'src/main/memory-scope.ts', find: 'const seen = new Set<number>([scope.keeperPid]);\n  const queue = [scope.keeperPid];', replace: 'const seen = new Set<number>([scope.keeperPid]);\n  const queue = [scope.keeperPid, 1];', target: { unit: ['src/main/memory-scope.test.ts'] } },
+  { id: 'dbus-address-kept', clause: 'H2 review F1: a capped member\'s CLI env has no session-bus address — a browser cannot leave the scope', file: 'src/keeper/index.ts', find: '    delete base.DBUS_SESSION_BUS_ADDRESS;', replace: '    void 0;', rebuild: true, target: { rig: ['browser_contained'], unit: ['src/main/memory-cap-binding.test.ts'] } },
   // ── D1 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
   { id: 'd1-guard-word-only', clause: 'D1: a memory Pause IN FORCE on the bus is shown as such', file: 'src/shared/memory-guard.ts', find: 'if (paused && paused.length > 0) {', replace: 'if (false) {', target: { unit: ['src/shared/memory-guard.test.ts', 'src/main/pause-memory-views.test.ts'] } },
   { id: 'd1-views-ignore-epoch', clause: 'D1: only an epoch-matched memory motive counts as a memory Pause', file: 'src/main/pause-memory.ts', find: "if (parseMemoryPause((r.pause_auto as string | null) ?? null, pausedAt) === null) continue;", replace: '', target: { unit: ['src/main/pause-memory-views.test.ts'] } },
@@ -113,7 +114,7 @@ const armFail = (out, arm) => new RegExp(`^FAIL ${arm}\\b`, 'm').test(out);
 function runTarget(t, tag) {
   const outcomes = []; // { what, red }
   for (const arm of t.rig ?? []) {
-    const r = sh(process.execPath, [...RIG, arm, '--contained'], { MC_MUTANT_TAG: tag });
+    const r = sh(process.execPath, [...RIG, arm, '--contained'], { MC_MUTANT_TAG: tag, MC_BROWSER: '1' });
     const out = r.stdout + r.stderr;
     outcomes.push({ what: `rig:${arm}`, red: armFail(out, arm), void: !armPass(out, arm) && !armFail(out, arm) });
   }
@@ -136,7 +137,7 @@ if (check()) { console.log('refusing to run with broken anchors'); process.exit(
 const armsNeeded = [...new Set(list.flatMap((m) => m.target.rig ?? []))];
 const realNeeded = [...new Set(list.flatMap((m) => m.target.realcli ?? []))];
 rebuildKeeper();
-const base = sh(process.execPath, [...RIG, 'all'], {});
+const base = sh(process.execPath, [...RIG, 'all'], { MC_BROWSER: '1' });
 const baseOut = base.stdout + base.stderr;
 let baseBad = 0;
 for (const arm of armsNeeded) { const ok = armPass(baseOut, arm); console.log(`baseline ${ok ? 'GREEN' : 'RED  '} rig:${arm}`); if (!ok) baseBad++; }

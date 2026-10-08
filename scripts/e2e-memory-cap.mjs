@@ -39,6 +39,8 @@ const ARMS = {
   wrapper_missing_no_scope: { mustFailOnMaster: true },
   launcher_hangs_plain: { mustFailOnMaster: true },
   not_applied_reported: { mustFailOnMaster: true },
+  // needs a real Chromium (CHROMIUM or /usr/lib64/chromium-browser/chromium-browser): run by `pnpm run test:memory-cap-browser`, skipped by `all` unless MC_BROWSER=1
+  browser_contained: { mustFailOnMaster: true, needsChromium: true },
 };
 
 const ARM = process.argv[2] ?? '';
@@ -74,7 +76,8 @@ function survivorsOf(base) {
 }
 
 if (ARM === 'all' || process.argv.includes('--contained')) {
-  const names = ARM === 'all' ? Object.keys(ARMS) : [ARM];
+  const names = ARM === 'all' ? Object.keys(ARMS).filter((a) => !ARMS[a].needsChromium || process.env.MC_BROWSER === '1') : [ARM];
+  if (ARM === 'all' && process.env.MC_BROWSER !== '1') console.log('NOTE: browser_contained (needs a real Chromium) is not part of `all` — run `pnpm run test:memory-cap-browser`');
   const results = [];
   fs.mkdirSync(RIG_ROOT, { recursive: true });
   for (const arm of names) {
@@ -84,7 +87,7 @@ if (ARM === 'all' || process.argv.includes('--contained')) {
       PATH: process.env.PATH, HOME: path.join(base, 'home'), LANG: 'C.UTF-8', SHELL: process.env.SHELL ?? '/bin/bash',
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, // systemd-run --user needs the user manager
       MC_REAL_HOME: REAL_HOME, MC_RUN_TOKEN: RUN_TOKEN, SUBJECT_REPO: process.env.SUBJECT_REPO, MC_MUTANT_TAG: process.env.MC_MUTANT_TAG,
-      MC_KEEPER_BUNDLE: process.env.MC_KEEPER_BUNDLE,
+      MC_KEEPER_BUNDLE: process.env.MC_KEEPER_BUNDLE, MC_BROWSER: process.env.MC_BROWSER, CHROMIUM: process.env.CHROMIUM,
     };
     for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
     const RUN_UNIT_GLOB = `${UNIT_PREFIX}mc${RUN_TOKEN}*`; // only THIS run's units: a concurrent rig run keeps its own
@@ -452,6 +455,45 @@ try {
     check('...in no rig scope', !f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
     check('the app log says systemd-run hung and the member runs WITHOUT a scope', /systemd-run hung\?.*WITHOUT a scope/.test(orchLog()), '');
     check('the hung launcher was killed (no `sleep 300` left under this arm)', survivorsOf(base).filter((p) => /sleep/.test(readSafe(`/proc/${p}/cmdline`) ?? '')).length === 0, '');
+  } else if (ARM === 'browser_contained') {
+    // H2 review F1 (ledger Q5): a real headless Chromium started by a capped member's tool must STAY in the member's scope. Measured on this host: with DBUS_SESSION_BUS_ADDRESS in its env
+    // Chromium moves its main process into its own transient scope (out of the cap); without it all 9 processes stay. The keeper removes the address from a capped member's CLI env.
+    const chromium = process.env.CHROMIUM ?? '/usr/lib64/chromium-browser/chromium-browser';
+    if (!fs.existsSync(chromium)) throw new Error(`VOID: no Chromium at ${chromium} (set CHROMIUM)`);
+    const addr = process.env.DBUS_SESSION_BUS_ADDRESS;
+    check('precondition: the driver has a session-bus address to hand the member (else nothing here proves anything)', !!addr, String(addr));
+    // A browser tree needs ~190 MB: this one arm uses the largest cap the rig rules allow (≤ 300 MB: 0.29 GiB = 297 MiB) and a CLI stand-in that holds no extra RSS.
+    settings = { ...settings, capHardGb: 0.29, capSoftGb: 0.2 };
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: addr ?? '', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '' } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const memberCg = cgOf(f.keeperPid);
+    check('the member is in its scope', f.inRigScope || !hasCap, `unit=${f.unit}`);
+    const t0 = await runTool(st, 'printf "%s" "${DBUS_SESSION_BUS_ADDRESS-unset}"', 't-env');
+    check('the member\'s tool env has NO session-bus address (the keeper removed it)', t0?.stdout.trim() === 'unset', `saw=${t0?.stdout.trim().slice(0, 60)}`);
+    const browserScript = (prof, extra) => `${extra}${chromium} --headless=new --no-sandbox --disable-gpu --no-first-run --disable-extensions --user-data-dir=${prof} --remote-debugging-port=0 about:blank >/dev/null 2>&1 &
+sleep 5
+for p in $(pgrep -f -- "[c]hromium-browser.*--user-data-dir=${prof}"); do echo "CG $p $(cut -d: -f3 /proc/$p/cgroup)"; done
+for p in $(pgrep -f -- "[c]hromium-browser.*--user-data-dir=${prof}"); do kill -9 $p 2>/dev/null; done
+echo DONE`;
+    const parse = (r) => (r?.stdout ?? '').split('\n').filter((l) => l.startsWith('CG ')).map((l) => l.split(' ')).map(([, pid, cg]) => ({ pid: Number(pid), cg }));
+    const prof1 = path.join(base, 'prof-contained'); fs.mkdirSync(prof1, { recursive: true });
+    const r1 = await runTool(st, browserScript(prof1, ''), 't-browser', 90_000);
+    const rows1 = parse(r1);
+    check('a real headless Chromium ran (browser processes seen)', rows1.length >= 3, `n=${rows1.length}`);
+    check('...and EVERY browser process is in the member\'s scope (the main process did not leave it)', rows1.length >= 3 && rows1.every((x) => x.cg === memberCg), JSON.stringify(rows1.filter((x) => x.cg !== memberCg)).slice(0, 200));
+    // positive control (the instrument CAN see an escape): a FRESH member (an earlier browser's residue must not decide this), same cap, the address put back by hand
+    const wsc = wsName('brc');
+    wsList.push(wsc);
+    const stc = open(wsc, decide(wsc), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: addr ?? '', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '' } });
+    await waitFor(() => initOf(stc), 30_000);
+    const fc = factsOf(wsc, stc);
+    const prof2 = path.join(base, 'prof-control'); fs.mkdirSync(prof2, { recursive: true });
+    const r2 = await runTool(stc, browserScript(prof2, `export DBUS_SESSION_BUS_ADDRESS='${addr}'\n`), 't-browser2', 90_000);
+    const rows2 = parse(r2);
+    const memberCgC = cgOf(fc.keeperPid);
+    check('control: with the address put back by hand the main process DOES leave the scope (the probe can see an escape)', rows2.length >= 1 && rows2.some((x) => x.cg !== memberCgC), JSON.stringify(rows2.map((x) => x.cg.split('/').pop())).slice(0, 200) + ` n=${rows2.length} tool=${JSON.stringify(r2 ? { code: r2.code, signal: r2.signal, out: r2.stdout.slice(-120) } : null)}`);
+    detail = `inside=${rows1.filter((x) => x.cg === memberCg).length}/${rows1.length}`;
   } else if (ARM === 'not_applied_reported') {
     // A scope that EXISTS but whose cap is not the asked one (the verifier's probe seeded it: a systemd-run shim that DROPS one property). The keeper must report `not-applied` (never `active`),
     // the app must say «UNCAPPED» in its log, the tools must NOT be wrapped, and a scope with no memory.max is counted as «WITHOUT a limit» for bus-status.

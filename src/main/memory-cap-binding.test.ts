@@ -48,10 +48,11 @@ test('the spawn frame carries memoryCap ONLY when there are limits to verify (ab
 test('the keeper verifies its own scope, starts the kill watch, wraps the tools — and does all of it BEFORE the CLI exists, on both spawn paths', () => {
   assert.ok(live(keeper, 'const capEnv = f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env;'), 'relay path');
   assert.ok(live(keeper, 'startChild(f.command, f.args, f.cwd, f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env);'), 'plain path');
-  assert.ok(live(keeper, "const out: Record<string, string | undefined> = { ...env, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };"));
+  assert.ok(live(keeper, "const out: Record<string, string | undefined> = { ...base, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };"));
   assert.ok(live(keeper, 'if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {'), 'a wrapper path the CLI would split at a space is never set as the prefix');
   assert.ok(live(keeper, '...(capInfo ? { cap: capInfo } : {}),') && live(keeper, '...(memKills.length ? { memKills: memKills.slice() } : {}),'), 'helloAck/probe carry the state and the catch-up');
   assert.ok(live(keeper, 'send({ t: \'memKill\', rec });'), 'a kill is pushed to the attached client');
+  assert.ok(live(keeper, '    delete base.DBUS_SESSION_BUS_ADDRESS;') && live(keeper, 'if (!wrapperOk || !cap.wrapper) return base;'), 'H2 review F1: a capped member\'s CLI env has no session-bus address (both exits), so a browser cannot leave the scope');
   assert.ok(live(keeper, 'const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);') && live(keeper, 'if (!limitOk || !swapOk) {'), 'review m4: "applied" means memory.max AND the swap escape closed (memory.swap.max = 0)');
   assert.ok(live(keeper, 'memWatch?.stop();'), 'the watch ends with the keeper');
 });
