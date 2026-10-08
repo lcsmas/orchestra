@@ -32,6 +32,8 @@ class World {
   signals: Array<{ pid: number; sig: string; occupant: string }> = [];
   warns: string[] = [];
   ignoresTerm = new Set<number>();
+  /** signals are delivered but the process never dies (state D, say). */
+  immortal = new Set<number>();
   clients = new Map<number, { ports: number[]; client: ClientState } | 'unknown'>();
   known = new Set<string>(['ws-1', 'ws-2']);
   unreadableCmd = new Set<number>();
@@ -75,6 +77,7 @@ class World {
         this.signals.push({ pid, sig, occupant: p ? `${p.comm}:${p.startTicks}` : 'none' });
         if (!p) return false;
         if (sig === 'SIGTERM' && this.ignoresTerm.has(pid)) return true;
+        if (this.immortal.has(pid)) return true;
         this.procs.delete(pid);
         return true;
       },
@@ -574,4 +577,24 @@ test('a browser whose rewritten single-string argv has a profile OUTSIDE agent-t
   const r = await w.pass(new BrowserTracker());
   assert.deepEqual(r.stopped, []);
   assert.equal(w.procs.size, 2);
+});
+
+test('review m2: a browser that SURVIVES even SIGKILL is not « stopped » — not counted, not announced (no `stopped` entry), still tracked and retried; it is counted ONCE, when it finally dies', async () => {
+  const w = new World();
+  const t = new BrowserTracker();
+  w.browser(700, { mode: 'pipe' });
+  w.immortal.add(700);
+  const r1 = await w.pass(t);
+  assert.deepEqual(r1.stopped, [], 'nothing was stopped: no bus status, no counter');
+  assert.equal(t.view().total, 0);
+  assert.deepEqual(r1.report!.survivors.map((s) => s.pid), [700], 'but the survivor is LISTED');
+  assert.ok(t.tracks.has('700:1700'), 'it stays tracked: the next pass tries again');
+  assert.ok(w.warns.some((x) => /pid 700 .* still alive after SIGKILL — not counted as stopped/.test(x)));
+  const r2 = await w.pass(t);
+  assert.deepEqual(r2.stopped, [], 'the next pass: still nothing announced (no status per minute)');
+  assert.equal(t.view().total, 0);
+  w.immortal.delete(700); // it finally dies
+  const r3 = await w.pass(t);
+  assert.deepEqual(r3.stopped.map((s) => s.pid), [700]);
+  assert.equal(t.view().total, 1, 'counted exactly once');
 });

@@ -243,6 +243,13 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
       entry.outcome = stillThere(entry) ? 'survived' : 'exited';
       if (entry.outcome === 'survived') survivors.push({ source: 'browser', pid: entry.pid, startTicks: entry.startTicks, comm: entry.comm, cmd: entry.cmd, reason: 'still-alive-after-kill' });
     }
+    // review m2: a browser even SIGKILL did not remove is NOT « stopped » — not counted, not announced (it is already in `survivors`, and it stays tracked: the next pass tries again)
+    const gone = new Set(armed.filter((a) => a.entry.outcome === 'exited').map((a) => `${a.entry.pid}:${a.entry.startTicks}`));
+    for (const s of [...stopped]) {
+      if (gone.has(`${s.pid}:${s.startTicks}`)) continue;
+      stopped.splice(stopped.indexOf(s), 1);
+      d.warn(`resources: browser Reliquat pid ${s.pid} (workspace ${s.wsId}) is still alive after SIGKILL — not counted as stopped, retried on the next pass`);
+    }
     for (const s of stopped) {
       const c = tracker.counters.get(s.wsId) ?? { stopped: 0, lastAt: 0, lastPrefix: s.prefix };
       tracker.counters.set(s.wsId, { stopped: c.stopped + 1, lastAt: now, lastPrefix: s.prefix });
