@@ -50,6 +50,7 @@
     "test:pause-ui-mutants": "node scripts/pause-ui/mutate-unit.mjs",
     "test:pause-ui-g3": "bash scripts/pause-ui/e2e-pause-ui.sh",
     "test:pause-trap": "node scripts/pause-trap/run.mjs",
+    "test:pause-reliquats": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/pause-trap/reliquat-rig.mjs all",
     "test:pause-trap-recycle": "node scripts/pause-trap/recycle-rig.mjs",
     "test:pause-trap-mutants": "node scripts/pause-trap/mutate-unit.mjs",
     "test:pause-reprise": "node scripts/pause-trap/reprise-run.mjs",
