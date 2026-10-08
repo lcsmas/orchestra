@@ -17,7 +17,7 @@ const PURE = 'src/shared/browser-reliquats.ts', IO = 'src/main/browser-reliquats
 const M = [
   { id: 'brig-bridge-not-installed', file: MON, find: '    browser: productionBrowserBridge(),\n  };\n}', rep: '  };\n}', arm: 'monitor', red: ['pipe_orphan_stopped_at_once', 'port_orphan_stopped_after_window'] },
   { id: 'brig-pause-skips-browsers', file: TRAP, find: '  if (deps.killBrowserReliquats) {', rep: '  if (false && deps.killBrowserReliquats) {', arm: 'pause_dure', red: ['pause_stops_the_orphaned_browsers', 'bilan_lists_the_browsers'] },
-  { id: 'brig-live-client-stopped', file: PURE, find: "  if (f.client === 'yes') return { stop: false, why: 'client-connected' };\n", rep: '', arm: 'monitor', red: [], redWide: true,
+  { id: 'brig-live-client-stopped', file: PURE, find: "  if (f.client === 'yes') return { stop: false, why: 'client-connected' };\n", rep: '', arm: 'monitor', red: ['the port-mode orphan with a LIVE CLIENT survives the window (the main process and its group — Chromium retires an idle renderer or two by itself)'],
     edits: [{ find: "  if (f.client === 'yes') return { stop: false, why: 'client-connected' };\n", rep: '' }, { find: "      if (cs === 'unknown' || cs.client !== 'no') { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — a client appeared / could not be read`); continue; }", rep: '', file: IO }] },
   { id: 'brig-launcher-alive-stopped', file: PURE, find: '  if (ppid <= 1) return true;\n  return parent !== null && parent.comm === \'systemd\' && parent.ppid <= 1;', rep: '  return true;', arm: 'monitor', red: ['must survive (pass 1)'] },
   { id: 'brig-outside-agent-tmp-stopped', file: IO, red: ['must survive (pass 1)'], arm: 'monitor',
@@ -72,10 +72,10 @@ for (const m of M) {
     activeRestore = null;
   }
   const restored = [...backups].every(([f, b]) => spawnSync('cmp', [path.join(REPO, f), b]).status === 0);
-  const want = m.redWide ? (res.red.length > 0 ? [] : ['(any)']) : (m.red ?? []).filter((r) => !res.red.some((x) => x === r || idOf(x) === r));
+  const want = (m.red ?? []).filter((r) => !res.red.some((x) => x === r || idOf(x) === r));
   const ok = restored && want.length === 0 && res.survivors === 0;
   if (ok) caught++;
-  console.log(`${ok ? '✓' : '✗'} ${m.id} [${m.arm}]: ${res.red.length} red${want.length ? ` — NOT RED: ${want.join(' | ')}` : ' — named checks RED'}${res.survivors === 0 ? '' : ` — SURVIVORS=${res.survivors}`}${restored ? '' : ' — RESTORE FAILED'}${m.redWide ? ` (${res.red.map(idOf).join(', ')})` : ''}`);
+  console.log(`${ok ? '✓' : '✗'} ${m.id} [${m.arm}]: ${res.red.length} red${want.length ? ` — NOT RED: ${want.join(' | ')}` : ' — named checks RED'}${res.survivors === 0 ? '' : ` — SURVIVORS=${res.survivors}`}${restored ? '' : ' — RESTORE FAILED'}`);
 }
 fs.rmSync(bak, { recursive: true, force: true });
 const post = runRig(arms[0]);

@@ -95,7 +95,7 @@ if (process.env.BR_CHILD !== '1') {
   } else build(HERE_REPO);
   const results = [];
   fs.mkdirSync(RIG_ROOT, { recursive: true });
-  const bail = () => { killTagged(); process.exit(130); };
+  const bail = () => { killTagged(); if (unfixedDir) { spawnSync('git', ['worktree', 'remove', '--force', unfixedDir], { cwd: HERE_REPO }); fs.rmSync(unfixedDir, { recursive: true, force: true }); } process.exit(130); };
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, bail);
   for (const arm of names) {
     if (!ARMS[arm]) { console.error(`unknown arm: ${arm}`); process.exit(2); }
@@ -305,7 +305,7 @@ try {
     const crash = { aPipe: crashpadOf(aPipe.pid), bIdle: crashpadOf(bIdle.pid), cClient: crashpadOf(cClient.pid) };
     check('premise: seven REAL headless Chromium are alive, each with its own process group (>1 process)', Object.values(ids).every(aliveId) && Object.values(groups).every((g) => g.length > 1), JSON.stringify(Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, v.length]))));
     check('premise: every browser has a crashpad handler outside its ppid tree (the thing whose fate we measure)', Object.values(crash).every((c) => c && aliveId(c)), JSON.stringify(crash));
-    check('premise: the orphans really are orphans (ppid init) and the launcher-alive browser is a child of this process', [aPipe, bIdle, cClient, eOut, fGhost, gDefault].every((p) => statOf(p.pid).ppid <= 1) && statOf(dAlive.main.pid).ppid === process.pid, [aPipe, bIdle, dAlive.main].map((p) => statOf(p.pid).ppid).join(','));
+    check('premise: the orphans really are orphans (ppid init) and the launcher-alive browser is a child of this process', [aPipe, bIdle, cClient, eOut, fGhost, gDefault].every((p) => { const pp = statOf(p.pid).ppid; return pp <= 1 || statOf(pp)?.comm === 'systemd'; }) && statOf(dAlive.main.pid).ppid === process.pid, [aPipe, bIdle, dAlive.main].map((p) => statOf(p.pid).ppid).join(',')); // orphans reparent to init or to the user manager (a subreaper), like the production decision
     check('premise: a REAL client is connected to c\'s debugging port; nobody is connected to b\'s', establishedTo(portOf(pClient)) >= 1 && establishedTo(portOf(pIdle)) === 0, `c=${establishedTo(portOf(pClient))} b=${establishedTo(portOf(pIdle))}`);
     check('premise: the pipe browsers are in pipe mode, the others in port mode; the default-profile one has NO --user-data-dir', cmdOf(aPipe.pid).includes('--remote-debugging-pipe') && cmdOf(bIdle.pid).includes('--remote-debugging-port=0') && !cmdOf(gDefault.pid).some((x) => x.startsWith('--user-data-dir')));
     // ── TICK 1 (t0): the pipe orphan goes at once; nothing else yet ──

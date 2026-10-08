@@ -205,6 +205,17 @@ test('a retry does not keep a STALE `survived`: an earlier attempt\'s entry that
   assert.deepEqual(mergeReliquats(first, { ...latest, unknown: 'scope unreadable' }).killed.map((k) => k.outcome), ['survived', 'survived']);
 });
 
+test('combineReliquats(replaceSource): one STEP\'s retry replaces that step\'s own earlier lists and nothing else', () => {
+  const mine = { source: 'browser', pid: 1, startTicks: 11, comm: 'c', cmd: 'c', reason: 'old' };
+  const other = { pid: 2, startTicks: 12, comm: 'c', cmd: 'c', reason: 'scope' };
+  const a = { ...emptyReliquatReport([SCOPE.unit]), spared: [mine, other], survivors: [{ ...mine, pid: 3 }], refused: [{ ...mine, pid: 4 }, other] };
+  const c = combineReliquats(a, emptyReliquatReport(), { replaceSource: 'browser' });
+  assert.deepEqual(c.spared.map((x) => x.pid), [2]);
+  assert.deepEqual(c.survivors, []);
+  assert.deepEqual(c.refused.map((x) => x.pid), [2]);
+  assert.equal(combineReliquats(a, emptyReliquatReport()).spared.length, 2, 'without a source the lists are kept (same-attempt union)');
+});
+
 test('the Consigne lists each killed Reliquat (command, pid, start time) as LISTED, NOT re-run; says nothing for a member with no scope or nothing to report; control characters never forge a line', () => {
   assert.deepEqual(reliquatConsigneLines(undefined, strip), []);
   assert.deepEqual(reliquatConsigneLines(emptyReliquatReport([SCOPE.unit]), strip), [], 'a tracked scope with no Reliquat adds no noise');

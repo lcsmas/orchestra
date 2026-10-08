@@ -66,7 +66,8 @@ export function parseBrowserArgv(argv: readonly string[]): BrowserArgv | null {
     }
   }
   if (!headless && !pipe && port === null) return null;
-  return { mode: pipe ? 'pipe' : port !== null ? 'port' : 'headless', port, userDataDir };
+  // a browser with BOTH flags can still be driven through its port: it is a port-mode browser (a live client protects it) — pipe mode means "nobody can ever drive it again"
+  return { mode: port !== null ? 'port' : pipe ? 'pipe' : 'headless', port, userDataDir };
 }
 
 const WS_ID_RE = /^[A-Za-z0-9_.-]{1,80}$/;
@@ -112,9 +113,9 @@ export interface BrowserTrack {
   lastClientAt: number | null;
 }
 
-/** Roll the per-browser track forward one observation. */
+/** Roll the per-browser track forward one observation. A client we could not read counts as a sighting: time spent UNKNOWN is not time without a client (UNKNOWN is not NONE). */
 export function nextTrack(prev: BrowserTrack | undefined, now: number, client: ClientState): BrowserTrack {
-  return { firstOrphanAt: prev?.firstOrphanAt ?? now, lastClientAt: client === 'yes' ? now : (prev?.lastClientAt ?? null) };
+  return { firstOrphanAt: prev?.firstOrphanAt ?? now, lastClientAt: client !== 'no' ? now : (prev?.lastClientAt ?? null) };
 }
 
 export interface BrowserFacts {

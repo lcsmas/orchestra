@@ -28,7 +28,7 @@ test('parseBrowserArgv: a Playwright-style MAIN browser is pipe mode with its pr
   assert.deepEqual(parseBrowserArgv(['/usr/bin/chromium-browser', '--headless', '--remote-debugging-port=9222', '--user-data-dir', '/x/p']), { mode: 'port', port: 9222, userDataDir: '/x/p' });
   assert.deepEqual(parseBrowserArgv(['chrome', '--remote-debugging-port', '0']), { mode: 'port', port: 0, userDataDir: null });
   assert.deepEqual(parseBrowserArgv(['/opt/headless_shell', '--headless', '--user-data-dir=/x/p']), { mode: 'headless', port: null, userDataDir: '/x/p' });
-  assert.equal(parseBrowserArgv(['chrome', '--headless', '--remote-debugging-pipe', '--remote-debugging-port=9222'])?.mode, 'pipe', 'a pipe is the stronger fact');
+  assert.equal(parseBrowserArgv(['chrome', '--headless', '--remote-debugging-pipe', '--remote-debugging-port=9222'])?.mode, 'port', 'a browser with BOTH can still be driven through its port: a live client must protect it');
 });
 
 test('parseBrowserArgv: NOT a browser we handle — a child process (any --type=), the human\'s window (no headless / remote-debugging flag), another executable, a malformed port', () => {
@@ -119,7 +119,7 @@ test('nextTrack: first sight starts the clock, a client stamps lastClientAt, no 
   const b = nextTrack(a, 200, 'yes');
   assert.deepEqual(b, { firstOrphanAt: 100, lastClientAt: 200 });
   assert.deepEqual(nextTrack(b, 300, 'no'), { firstOrphanAt: 100, lastClientAt: 200 });
-  assert.deepEqual(nextTrack(b, 300, 'unknown'), { firstOrphanAt: 100, lastClientAt: 200 }, 'unknown is not a client sighting');
+  assert.deepEqual(nextTrack(b, 300, 'unknown'), { firstOrphanAt: 100, lastClientAt: 300 }, 'time spent UNKNOWN is not time without a client: it restarts the window');
 });
 
 const TCP = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode

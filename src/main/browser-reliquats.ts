@@ -26,6 +26,7 @@ import {
   type ClientState,
 } from '../shared/browser-reliquats.ts';
 import { emptyReliquatReport, type ReliquatKilled, type ReliquatLeft, type ReliquatReport } from '../shared/pause-reliquats.ts';
+import { stripControl } from '../shared/pause-consigne.ts';
 
 export const BROWSER_GRACE_MS = 3_000;
 const CMD_CHARS = 400;
@@ -86,6 +87,8 @@ export interface BrowserPassOpts {
   stillWanted?: () => boolean;
   /** Called with the report so far after the SIGTERM batch (the trap persists it: a stopped browser must be in the Bilan even if the app dies next). */
   onProgress?: (report: ReliquatReport) => void;
+  /** HUMAN-turn windows (D9): a browser that STARTED inside one belongs to that turn and is spared (listed), exactly like a Reliquat of the scope step. */
+  humanWindows?: () => Array<{ from: number; to?: number }>;
 }
 
 export interface BrowserPassResult {
@@ -159,7 +162,7 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
     seenKeys.add(key);
     const verdict = decideBrowserReliquat({ parsed, owner, ownerKnown: d.workspaceKnown(owner.wsId), launcherDead: dead, client }, track, now, windowMs, opts.ignoreWindow === true);
     if (!verdict.stop) {
-      if (verdict.why === 'client-connected' || verdict.why === 'client-unknown') spared.push({ pid: p.pid, startTicks: p.startTicks, comm: p.comm, cmd: trunc(argv.join(' ')), reason: `browser Reliquat kept: ${verdict.why === 'client-connected' ? 'a client is connected to its debugging port' : 'its debugging-port clients could not be read'}` });
+      if (verdict.why === 'client-connected' || verdict.why === 'client-unknown') spared.push({ source: 'browser', pid: p.pid, startTicks: p.startTicks, comm: p.comm, cmd: trunc(argv.join(' ')), reason: `browser Reliquat kept: ${verdict.why === 'client-connected' ? 'a client is connected to its debugging port' : 'its debugging-port clients could not be read'}` });
       continue;
     }
     targets.push({ main: p, argv, parsed, wsId: owner.wsId, prefix: owner.prefix, why: verdict.why, members: descendantsOf(table, p.pid) });
@@ -176,6 +179,11 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
   const armed: Array<{ t: Target; sent: ProcSample[]; entry: ReliquatKilled }> = [];
   for (const t of targets) {
     if (!wanted()) break;
+    const startedAt = d.startMs(t.main.startTicks as number);
+    if ((opts.humanWindows?.() ?? []).some((w) => startedAt >= w.from && (w.to === undefined || startedAt <= w.to))) {
+      spared.push({ source: 'browser', pid: t.main.pid, startTicks: t.main.startTicks, comm: t.main.comm, cmd: trunc(t.argv.join(' ')), reason: 'browser Reliquat kept: it started during a HUMAN turn that began while the trap ran — the human prompt is allowed (D9)' });
+      continue;
+    }
     // ── identity + state RE-READ right before the signal: same pid + start-time, same argv, launcher still dead, no client since ──
     const fresh = d.readProcStat(t.main.pid);
     if (!fresh || fresh.startTicks !== t.main.startTicks) { d.warn(`resources: browser reliquat pid ${t.main.pid} withheld — identity changed or gone`); continue; }
@@ -211,9 +219,10 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
     armed.push({ t, sent, entry });
     stopped.push({ wsId: t.wsId, pid: t.main.pid, startTicks: t.main.startTicks as number, mode: t.parsed.mode, prefix: t.prefix, profile: t.parsed.userDataDir ?? '', groupSize: order.length });
   }
+  const survivors: ReliquatLeft[] = [];
   const recordOf = (): ReliquatReport | null => {
     if (killed.length === 0 && spared.length === 0) return null;
-    return { ...emptyReliquatReport(), killed: [...killed], spared: [...spared], rounds: armed.length > 0 ? 1 : 0, ...(aborted ? { aborted } : {}) };
+    return { ...emptyReliquatReport(), killed: [...killed], spared: [...spared], survivors: [...survivors], rounds: armed.length > 0 ? 1 : 0, ...(aborted ? { aborted } : {}) };
   };
   if (armed.length > 0) {
     opts.onProgress?.(recordOf() as ReliquatReport);
@@ -225,8 +234,14 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
         if (!wanted()) break;
         if (d.signal(m.pid, 'SIGKILL') && m.pid === entry.pid) entry.signal = 'SIGKILL';
       }
-      const f = d.readProcStat(entry.pid);
-      entry.outcome = f && f.startTicks === entry.startTicks ? 'survived' : 'exited';
+    }
+    // a SIGKILLed process is gone a moment later: judge the outcome after a bounded wait, never from the instant of the signal
+    const stillThere = (e: ReliquatKilled): boolean => { const f = d.readProcStat(e.pid); return !!f && f.startTicks === e.startTicks; };
+    const until = d.now() + 1000;
+    while (d.now() < until && armed.some((a) => stillThere(a.entry))) await d.sleep(50);
+    for (const { entry } of armed) {
+      entry.outcome = stillThere(entry) ? 'survived' : 'exited';
+      if (entry.outcome === 'survived') survivors.push({ source: 'browser', pid: entry.pid, startTicks: entry.startTicks, comm: entry.comm, cmd: entry.cmd, reason: 'still-alive-after-kill' });
     }
     for (const s of stopped) {
       const c = tracker.counters.get(s.wsId) ?? { stopped: 0, lastAt: 0, lastPrefix: s.prefix };
@@ -241,7 +256,8 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
 export function browserStatusText(stopped: readonly BrowserStopped[]): string {
   const prefix = commonProfilePrefix(stopped.map((s) => s.profile), stopped[0].prefix);
   const pipe = stopped.filter((s) => s.mode === 'pipe').length;
-  return `Orchestra stopped ${stopped.length} orphaned headless browser(s) you left behind (launcher dead${pipe ? `, ${pipe} in pipe mode` : ''}); profile prefix ${prefix} — profiles were left in place. Re-launch a browser yourself if you still need it.`;
+  // the prefix comes from a browser's argv (any member may name any directory): control / bidi characters must never forge a line in the member's prompt
+  return `Orchestra stopped ${stopped.length} orphaned headless browser(s) you left behind (launcher dead${pipe ? `, ${pipe} in pipe mode` : ''}); profile prefix ${stripControl(prefix).slice(0, 300)} — profiles were left in place. Re-launch a browser yourself if you still need it.`;
 }
 
 
@@ -257,11 +273,14 @@ export function realClientState(pid: number, procRoot = '/proc'): { ports: numbe
       try {
         const m = /^socket:\[(\d+)\]$/.exec(fs.readlinkSync(`${procRoot}/${pid}/fd/${fd}`));
         if (m) inodes.add(Number(m[1]));
-      } catch { /* closed meanwhile */ }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'unknown'; // closed meanwhile is fine; an fd we cannot read may be the debugging socket
+      }
     }
-    const rows = parseProcNetTcp(fs.readFileSync(`${procRoot}/net/tcp`, 'utf8'));
+    // the tables of the BROWSER's network namespace (`/proc/<pid>/net`), not ours: a browser under `unshare -n` / bwrap is invisible in /proc/net/tcp
+    const rows = parseProcNetTcp(fs.readFileSync(`${procRoot}/${pid}/net/tcp`, 'utf8'));
     try {
-      rows.push(...parseProcNetTcp(fs.readFileSync(`${procRoot}/net/tcp6`, 'utf8')));
+      rows.push(...parseProcNetTcp(fs.readFileSync(`${procRoot}/${pid}/net/tcp6`, 'utf8')));
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'unknown';
     }

@@ -382,6 +382,57 @@ test('#331 the browser step runs whatever the session proof (an unproven keeper 
   assert.ok(!r2.calls.includes('killBrowserReliquats'));
 });
 
+test('#331 a LIFT during the browser step persists the WHOLE row like the scope step\'s lift: the tool kill of this attempt (`killed`) is not lost, a concurrent note survives', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = null;
+  withBrowsers(rig, () => {
+    appendBilanNote(rig.db, 'W', 'm1', getRunPause(rig.db, 'W')!.pausedAt, 'a note appended meanwhile');
+    return { ...browserReport(900), aborted: 'lifted' as const };
+  });
+  const c = pause(rig);
+  assert.equal(await trapMember(rig.deps, rig.db, c, rig.roster[0]), 'lifted');
+  const row = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!;
+  assert.notEqual(row.killed, null, 'the tool-tree kill of this attempt is in the row');
+  assert.ok((row.activity!.notes ?? []).includes('a note appended meanwhile'));
+  assert.deepEqual(row.activity!.reliquats!.killed.map((k) => k.pid), [900]);
+});
+
+test('#331 the browser step is handed the HUMAN windows (D9) and the idle window is IGNORED for a frozen member but KEPT for the exempt pauser (its turn is still running)', async () => {
+  __resetPauseTrapForTests();
+  const plain = newRig();
+  const seenPlain = withBrowsers(plain, null);
+  await trapMember(plain.deps, plain.db, pause(plain), plain.roster[0]);
+  assert.equal(typeof seenPlain.opts[0].humanWindows, 'function');
+  assert.equal(seenPlain.opts[0].ignoreWindow, true, 'a frozen member drives nothing');
+  __resetPauseTrapForTests();
+  const pauser = newRig();
+  const cp = pause(pauser);
+  recordPauseOrigin(pauser.db, 'W', cp.pausedAt, [{ pid: 301, ppid: 300, startTicks: 3, comm: 'node' }, { pid: 300, ppid: 100, startTicks: 2, comm: 'bash' }, { pid: 100, ppid: 90, startTicks: 1000, comm: 'claude' }]);
+  const seenPauser = withBrowsers(pauser, null);
+  await trapMember(pauser.deps, pauser.db, cp, pauser.roster[0]);
+  assert.equal(seenPauser.opts[0].ignoreWindow, false, 'the pauser keeps its turn: its idle browsers keep the window');
+});
+
+test('#331 a RETRY replaces the browser step\'s own earlier spared / survivors (no browser listed as both kept and killed); the scope\'s lists are untouched', async () => {
+  __resetPauseTrapForTests();
+  const rig = newRig();
+  rig.answer = null;
+  const left = { source: 'browser', pid: 900, startTicks: 1900, comm: 'chrome', cmd: 'chrome', reason: 'browser Reliquat kept: a client is connected to its debugging port' };
+  let call = 0;
+  withBrowsers(rig, () => (++call === 1 ? { ...emptyReliquatReport(), spared: [left], rounds: 0 } : { ...browserReport(900), rounds: 1 }));
+  const c = pause(rig);
+  rig.deps.cliOf = async () => (call === 0 ? { error: 'keeper unanswered' } : rig.cliResult); // attempt 1 stays incomplete so the sweep retries
+  await trapMember(rig.deps, rig.db, c, rig.roster[0]);
+  assert.deepEqual(bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.reliquats!.spared.map((s) => s.pid), [900], 'attempt 1: kept for its client');
+  rig.cliResult = { cli: { pid: 100, startTicks: 1000 }, keeperPid: 90 };
+  rig.deps.cliOf = async () => rig.cliResult;
+  await trapMember(rig.deps, rig.db, c, rig.roster[0]);
+  const rq = bilanForMember(rig.db, 'W', 'm1', c.pausedAt)!.activity!.reliquats!;
+  assert.deepEqual(rq.killed.map((k) => k.pid), [900]);
+  assert.deepEqual(rq.spared, [], 'no longer listed as kept once it was stopped');
+});
+
 test('#331 a LIFT during the browser kill returns `lifted` and keeps what was stopped in the Bilan; a throw is recorded and keeps the trap open; survivors are loud; write-ahead persists before the step returns', async () => {
   __resetPauseTrapForTests();
   const lifted = newRig();

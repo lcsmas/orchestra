@@ -115,7 +115,7 @@ export interface TrapDeps {
   killReliquats?(m: TrapMember, opts: ReliquatKillOptions): Promise<ReliquatReport | null>;
   /** #331 (ledger #329 track H10): the BRIDGE until the member scope is ON — stop the member's orphaned headless browsers (launcher dead, profile under `agent-tmp/<its id>/`; pipe mode and port mode with no client) and report them in the Bilan's
    *  Reliquats. Runs for every non-remote member, scope or not, after the scope step. Resolves null when the member has none worth recording (the Bilan row stays byte-identical). Omitted ⇒ no step. */
-  killBrowserReliquats?(m: TrapMember, opts: { stillPaused?: () => boolean; onProgress?: (r: ReliquatReport) => void }): Promise<ReliquatReport | null>;
+  killBrowserReliquats?(m: TrapMember, opts: { stillPaused?: () => boolean; onProgress?: (r: ReliquatReport) => void; humanWindows?: () => Array<{ from: number; to?: number }>; ignoreWindow?: boolean }): Promise<ReliquatReport | null>;
   /** #292: the app's own Docker client (REAL socket, never a relay — `docker-api.ts`). A Pause dure stops each member's attributed containers through it, the Reprise restarts them.
    *  Omitted/null ⇒ Docker is not touched at all (and a Reprise records its owed restarts as `failed: Docker is not available to the host`). */
   containers?: PauseDockerApi | null;
@@ -423,6 +423,13 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       incomplete = true;
     }
   }
+  // a lift mid-step: what WAS killed is still recorded, never dropped — and what a concurrent writer recorded meanwhile (the observer's notes/kills, the Reprise's container results) survives this write
+  const persistLifted = (): void => {
+    const rowNow = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt)?.activity;
+    const mergedC = mergeContainers(rowNow?.containers, activity.containers);
+    const notesC = [...new Set([...(rowNow?.notes ?? []), ...(activity.notes ?? [])])].slice(-50);
+    updateBilan(db, rowId, { activity: { ...activity, ...(notesC.length ? { notes: notesC } : {}), ...(rowNow?.observerKilled ? { observerKilled: rowNow.observerKilled } : {}), ...(mergedC ? { containers: mergedC } : {}) }, killed: killed ?? null, error: errors.length ? errors.join('; ') : null });
+  };
   // 5a. #325 — kill the member's RELIQUATS (ledger #329 FI-1 v1): the processes of its kernel scope whose ppid chain reaches no live keeper — a detached rig browser, a double-forked `env -i` daemon — that the tree walk above
   // (ppid / session / CLAUDE_PID) cannot reach. Under a PROVEN session only (a member with no live CLI has no keeper either: every process of its scope is a Reliquat); an unproven CLI/keeper waits for the retry. The keeper, the CLI,
   // the MCP servers and anything outside the member's scope are never signalled (`judgeReliquat`, re-read at signal time). An unreadable scope is UNKNOWN: the trap stays open and is retried. No tracked scope ⇒ null ⇒ nothing recorded.
@@ -444,10 +451,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
       if (rep) {
         activity.reliquats = mergeReliquats(prior?.reliquats, rep);
         if (rep.aborted === 'lifted') {
-          const rowNow = bilanForMember(db, carrier.runId, m.wsId, carrier.pausedAt)?.activity; // a concurrent writer (the observer's notes/kills, the Reprise's container step) must survive this write
-          const mergedC = mergeContainers(rowNow?.containers, activity.containers);
-          const notesC = [...new Set([...(rowNow?.notes ?? []), ...(activity.notes ?? [])])].slice(-50);
-          updateBilan(db, rowId, { activity: { ...activity, ...(notesC.length ? { notes: notesC } : {}), ...(rowNow?.observerKilled ? { observerKilled: rowNow.observerKilled } : {}), ...(mergedC ? { containers: mergedC } : {}) }, killed: killed ?? null, error: errors.length ? errors.join('; ') : null }); // what WAS killed is still recorded, never dropped
+          persistLifted();
           return 'lifted';
         }
         if (rep.unknown) {
@@ -468,15 +472,17 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
     try {
       const b = await deps.killBrowserReliquats(m, {
         stillPaused: () => stillPaused(db, carrier),
+        humanWindows: humanWindowsNow, // D9: a browser a HUMAN turn started during the trap is that turn's
+        ignoreWindow: !(pauser || carriedPauser), // a frozen member drives nothing — the exempt pauser's turn is still running: it keeps the idle window
         onProgress: (r) => {
-          activity.reliquats = combineReliquats(activity.reliquats, r);
+          activity.reliquats = combineReliquats(activity.reliquats, r, { replaceSource: 'browser' });
           updateBilanReliquats(db, carrier.runId, m.wsId, carrier.pausedAt, () => activity.reliquats as ReliquatReport);
         },
       });
       if (b) {
-        activity.reliquats = combineReliquats(activity.reliquats, b);
+        activity.reliquats = combineReliquats(activity.reliquats, b, { replaceSource: 'browser' });
         if (b.aborted === 'lifted') {
-          updateBilanReliquats(db, carrier.runId, m.wsId, carrier.pausedAt, () => activity.reliquats as ReliquatReport);
+          persistLifted();
           return 'lifted';
         }
         if (b.survivors.length > 0) errors.push(`reliquats: ${b.survivors.length} orphaned browser process(es) still alive after the trap`);

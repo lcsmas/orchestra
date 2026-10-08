@@ -503,7 +503,7 @@ export function getBrowserReliquatView(): BrowserReliquatView {
  * A Pause dure of ONE member: stop its browser Reliquats (the idle window does not apply — a frozen member drives nothing; a live client still protects), through a FRESH
  * process table. Returns the Bilan-shaped report, or null when the member has none worth recording (its Bilan row then stays byte-identical).
  */
-export async function stopBrowserReliquatsOf(wsId: string, opts: Pick<BrowserPassOpts, 'stillWanted' | 'onProgress'> = {}, b: NonNullable<ResourceMonitorDeps['browser']> = productionBrowserBridge(), table?: () => Promise<ProcSample[]>): Promise<ReliquatReport | null> {
+export async function stopBrowserReliquatsOf(wsId: string, opts: Pick<BrowserPassOpts, 'stillWanted' | 'onProgress' | 'humanWindows' | 'ignoreWindow'> = {}, b: NonNullable<ResourceMonitorDeps['browser']> = productionBrowserBridge(), table?: () => Promise<ProcSample[]>): Promise<ReliquatReport | null> {
   const r = await browserPass(b.deps, b.tracker, await (table ? table() : sampleProcTable()), { onlyWs: wsId, ignoreWindow: true, ...opts });
   for (const e of r.errors) b.deps.warn(`resources: browser pass (Pause dure of ${wsId}) — ${e}`);
   return r.report;

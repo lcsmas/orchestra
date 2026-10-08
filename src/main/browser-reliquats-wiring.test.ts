@@ -57,7 +57,9 @@ test('trapMember: the browser step runs after the scope step and before the cont
   assert.ok(scope < step && step < docker, 'scope Reliquats → browsers → containers');
   const stepSrc = body.slice(step, docker);
   assert.ok(!/\berror\b' in target|target === null/.test(stepSrc), 'not gated on the session proof');
-  assert.ok(stepSrc.includes('stillPaused: () => stillPaused(db, carrier),') && stepSrc.includes('combineReliquats(activity.reliquats, b)'));
+  assert.ok(stepSrc.includes('stillPaused: () => stillPaused(db, carrier),') && stepSrc.includes("combineReliquats(activity.reliquats, b, { replaceSource: 'browser' })"));
+  assert.ok(stepSrc.includes('humanWindows: humanWindowsNow,') && stepSrc.includes('ignoreWindow: !(pauser || carriedPauser),'), 'D9 windows + the pauser keeps its idle window');
+  assert.ok(stepSrc.includes('persistLifted();'), 'a lift persists the whole row');
   assert.ok(at(body, 'if (m.remote) {') < step, 'the remote member returned long before');
 });
 

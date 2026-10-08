@@ -185,7 +185,7 @@ export function buildPauseTrapDeps(): TrapDeps {
     // #325 (ledger #329 FI-1 v1): the member's Reliquats — processes of its kernel scope outside its session's tree — after the tool trees. null = no tracked scope (switch OFF, human, unsupported host): today's behaviour.
     killReliquats: (m, opts) => killReliquats(m.wsId, memberScopeDeps(m.wsId), kill, opts),
     // #331: the bridge — the member's orphaned headless browsers (scope or not), through the resource monitor's own bridge (one tracker: the Resources counter counts the Pause too)
-    killBrowserReliquats: (m, opts) => stopBrowserReliquatsOf(m.wsId, { ...(opts.stillPaused ? { stillWanted: opts.stillPaused } : {}), ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) }),
+    killBrowserReliquats: (m, opts) => stopBrowserReliquatsOf(m.wsId, { ...(opts.stillPaused ? { stillWanted: opts.stillPaused } : {}), ...(opts.onProgress ? { onProgress: opts.onProgress } : {}), ...(opts.humanWindows ? { humanWindows: opts.humanWindows } : {}), ...(opts.ignoreWindow === false ? { ignoreWindow: false } : {}) }),
     stopTask: (m, taskId) => stopWithin(STOP_TASK_TIMEOUT_MS, sdkStopTaskForPause(m.wsId, taskId)),
     storeReady: () => store.loadedFromDisk,
   };

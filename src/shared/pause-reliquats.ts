@@ -52,6 +52,8 @@ export interface ReliquatKilled {
 }
 
 export interface ReliquatLeft {
+  /** Which step listed it (`browser` = the browser-Reliquat bridge): a RETRY of that step replaces its own earlier entries instead of stacking them. */
+  source?: string;
   pid: number;
   startTicks?: number;
   comm: string;
@@ -215,7 +217,12 @@ export function mergeReliquats(prior: ReliquatReport | undefined | null, cur: Re
  * Two reports of the SAME attempt (the scope's, then the browsers') in one: killed unioned BY IDENTITY, survivors / refused / spared / scopes concatenated (de-duplicated by identity),
  * unknown / error joined, the larger round count. Unlike {@link mergeReliquats} (a RETRY: the latest census replaces the lists) nothing of either side is dropped.
  */
-export function combineReliquats(a: ReliquatReport | undefined | null, b: ReliquatReport): ReliquatReport {
+export function combineReliquats(a: ReliquatReport | undefined | null, b: ReliquatReport, opts: { replaceSource?: string } = {}): ReliquatReport {
+  if (opts.replaceSource) {
+    // a retry of ONE step: that step's earlier spared / survivors / refused are history (the latest census replaces them); everything else of `a` stays
+    const drop = <T extends { source?: string }>(xs: readonly T[]): T[] => xs.filter((x) => x.source !== opts.replaceSource);
+    if (a) a = { ...a, spared: drop(a.spared), survivors: drop(a.survivors), refused: drop(a.refused) };
+  }
   if (!a) return b;
   const byId = <T extends { pid: number; startTicks?: number }>(xs: readonly T[]): T[] => { const m = new Map<string, T>(); for (const x of xs) m.set(`${x.pid}:${x.startTicks ?? ''}`, x); return [...m.values()]; };
   const killed = byId([...a.killed, ...b.killed]);
