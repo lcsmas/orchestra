@@ -245,7 +245,7 @@ function shellsWith(marker) {
     try {
       const a = fs.readFileSync(`/proc/${n}/cmdline`, 'latin1').split('\0');
       const s = readSafe(`/proc/${n}/stat`);
-      if (a[0] === 'sh' && a[1] === '-c' && (a[2] ?? '').endsWith(`: ${marker}`) && s && s.slice(s.lastIndexOf(')') + 2)[0] !== 'Z') out.push(Number(n));
+      if ((a[0] === 'sh' || a[0].endsWith('/sh')) && a[1] === '-c' && (a[2] ?? '').endsWith(`: ${marker}`) && s && s.slice(s.lastIndexOf(')') + 2)[0] !== 'Z') out.push(Number(n));
     } catch { /* gone */ }
   }
   return out;
@@ -453,7 +453,10 @@ try {
     const fa = factsOf('a', a);
     const ESC = `${UNIT_PREFIX}mv${T}-esc.scope`;
     const MV = mark('esc'), H1 = mark('h1'), H2 = mark('h2');
-    await runTool(a, `( setsid sh -c "sh -c 'sleep 600; : ${H1}' & sh -c 'sleep 600; : ${H2}' & exec systemd-run --user --scope --collect --quiet --unit=${ESC} -p MemoryMax=100M -- sh -c 'sleep 600; : ${MV}'" >/dev/null 2>&1 & ) ; true`, 'ta-mv');
+    // the tool's env is the keeper's allowlist (no user-manager variables): hand the main the bus variables a real Chromium would have (Q5), so `systemd-run --user` can reach the manager
+    // `env -i`: no CLAUDE_PID either — the legacy env proof would otherwise kill the whole group in the TREE step, long before the Reliquat step (the same reason the daemons of the other arms are `env -i`)
+    const bus = ['PATH', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'].filter((k) => /^[\w:=/.,-]+$/.test(process.env[k] ?? '')).map((k) => `${k}=${process.env[k]}`).join(' ');
+    await runTool(a, `( env -i ${bus} setsid sh -c "sh -c 'sleep 600; : ${H1}' & sh -c 'sleep 600; : ${H2}' & exec systemd-run --user --scope --collect --quiet --unit=${ESC} -p MemoryMax=100M -- sh -c 'sleep 600; : ${MV}'" >/dev/null 2>&1 & ) ; true`, 'ta-mv');
     await waitFor(() => shellsWith(MV).length === 1 && shellsWith(H1).length === 1 && shellsWith(H2).length === 1, 20_000, 100);
     const [m] = shellsWith(MV), [h1] = shellsWith(H1), [h2] = shellsWith(H2);
     check('premise: the main MOVED ITSELF out of the member scope (own transient scope), both helpers stayed in a’s scope, their parent is the main', !!m && !!h1 && !!h2 && (cgOf(m) ?? '').endsWith(ESC) && cgOf(h1) === fa.cg && cgOf(h2) === fa.cg && ppidOf(h1) === m && ppidOf(h2) === m, `main=${cgOf(m)} h1=${cgOf(h1)} ppid=${ppidOf(h1)}`);
