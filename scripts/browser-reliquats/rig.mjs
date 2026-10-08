@@ -31,7 +31,7 @@ const FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-ru
 
 /** `mustRedden`: on the UNFIXED tree exactly these checks go RED (premises and the "must survive" controls stay green). */
 const ARMS = {
-  monitor: { mustRedden: ['pipe_orphan_stopped_at_once', 'pipe_group_dead', 'port_orphan_stopped_after_window', 'port_group_dead', 'client_gone_then_stopped_after_window', 'owner_told_once_per_pass', 'counter_counts_each_stop'] },
+  monitor: { mustRedden: ['pipe_orphan_stopped_at_once', 'pipe_group_dead', 'port_orphan_stopped_after_window', 'port_group_dead', 'client_gone_then_stopped_after_window', 'owner_told_once_per_pass', 'counter_counts_each_stop', 'stopped_browsers_leave_no_crashpad_handler'] },
   pause_dure: { mustRedden: ['pause_stops_the_orphaned_browsers', 'pause_group_dead', 'bilan_lists_the_browsers', 'bilan_lists_the_spared_client', 'run_status_lists_them', 'consigne_shows_them', 'reprise_relaunches_nothing'] },
 };
 const ARM = process.argv[2] ?? '';
@@ -196,6 +196,8 @@ const aliveId = (id) => { const [pid, st] = id.split(':'); const s = statOf(+pid
 const cmdOf = (pid) => (readSafe(`/proc/${pid}/cmdline`) ?? '').split('\0').filter(Boolean);
 /** The identities of the browser's whole process group at this instant (the main process leads it: setsid). */
 const groupIds = (mainPid) => { const m = statOf(mainPid); return m ? allProcs().filter((p) => p.pgrp === m.pgrp && p.state !== 'Z').map(idOf) : []; };
+/** The crashpad handler a browser spawned (named in its children's argv, `--crashpad-handler-pid=N`): it is NOT in the ppid tree, so whether stopping the browser leaves it behind is a MEASUREMENT. */
+const crashpadOf = (mainPid) => { const m = statOf(mainPid); if (!m) return null; for (const p of allProcs().filter((x) => x.pgrp === m.pgrp)) { const a = cmdOf(p.pid).find((x) => x.startsWith('--crashpad-handler-pid=')); if (a) { const c = statOf(Number(a.split('=')[1])); if (c) return idOf(c); } } return null; };
 const portOf = (profile) => { const f = readSafe(path.join(profile, 'DevToolsActivePort')); return f ? Number(f.split('\n')[0]) : null; };
 /** ESTABLISHED sockets whose local port is `port` — read independently of the code under test. */
 const establishedTo = (port) => ['tcp', 'tcp6'].reduce((n, f) => n + (readSafe(`/proc/net/${f}`) ?? '').split('\n').slice(1).filter((l) => { const c = l.trim().split(/\s+/); return c.length > 9 && c[3] === '01' && parseInt(c[1].split(':')[1], 16) === port; }).length, 0);
@@ -300,7 +302,9 @@ try {
     await sleep(500);
     const ids = { aPipe: idOf(aPipe), bIdle: idOf(bIdle), cClient: idOf(cClient), dAlive: idOf(dAlive.main), eOut: idOf(eOut), fGhost: idOf(fGhost), gDefault: idOf(gDefault) };
     const groups = { aPipe: groupIds(aPipe.pid), bIdle: groupIds(bIdle.pid), cClient: groupIds(cClient.pid) };
+    const crash = { aPipe: crashpadOf(aPipe.pid), bIdle: crashpadOf(bIdle.pid), cClient: crashpadOf(cClient.pid) };
     check('premise: seven REAL headless Chromium are alive, each with its own process group (>1 process)', Object.values(ids).every(aliveId) && Object.values(groups).every((g) => g.length > 1), JSON.stringify(Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, v.length]))));
+    check('premise: every browser has a crashpad handler outside its ppid tree (the thing whose fate we measure)', Object.values(crash).every((c) => c && aliveId(c)), JSON.stringify(crash));
     check('premise: the orphans really are orphans (ppid init) and the launcher-alive browser is a child of this process', [aPipe, bIdle, cClient, eOut, fGhost, gDefault].every((p) => statOf(p.pid).ppid <= 1) && statOf(dAlive.main.pid).ppid === process.pid, [aPipe, bIdle, dAlive.main].map((p) => statOf(p.pid).ppid).join(','));
     check('premise: a REAL client is connected to c\'s debugging port; nobody is connected to b\'s', establishedTo(portOf(pClient)) >= 1 && establishedTo(portOf(pIdle)) === 0, `c=${establishedTo(portOf(pClient))} b=${establishedTo(portOf(pIdle))}`);
     check('premise: the pipe browsers are in pipe mode, the others in port mode; the default-profile one has NO --user-data-dir', cmdOf(aPipe.pid).includes('--remote-debugging-pipe') && cmdOf(bIdle.pid).includes('--remote-debugging-port=0') && !cmdOf(gDefault.pid).some((x) => x.startsWith('--user-data-dir')));
@@ -328,6 +332,8 @@ try {
     await sleep(WINDOW_MS + 600);
     await tick();
     check('client_gone_then_stopped_after_window: ...and stopped one window after the client left', !aliveId(ids.cClient) && groups.cClient.every((g) => !aliveId(g)), ids.cClient);
+    await sleep(1500);
+    check('stopped_browsers_leave_no_crashpad_handler: no crashpad handler of a stopped browser is left behind (it is outside the ppid tree)', Object.values(crash).every((c) => !aliveId(c)), JSON.stringify(Object.entries(crash).map(([k, c]) => [k, c, aliveId(c)])));
     // ── what the member and the page are told ──
     const rows = statusRows(ID.a);
     check('owner_told_once_per_pass: the owning member got ONE bus status per pass that stopped something (3), naming how many and the profile prefix; nobody else got any', rows.length === 3 && rows.every((r) => /stopped 1 orphaned headless browser\(s\)/.test(r.body) && r.body.includes(path.join(AGENT, ID.a) + '/')) && statusRows(ID.b).length === 0 && statusRows(ID.lead).length === 0, `${rows.length} rows: ${rows.map((r) => r.body.slice(0, 60)).join(' | ')}`);
