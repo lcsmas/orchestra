@@ -12,6 +12,7 @@ import {
   MAX_RELIQUATS_RECORDED,
   depthsOf,
   emptyReliquatReport,
+  isOwnKeeperProc,
   judgeReliquat,
   reliquatKillOrder,
   type ReliquatKilled,
@@ -141,6 +142,13 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
       if (listing === 'gone') continue;
       if (listing === 'unreadable') {
         unknown = `scope ${scope.unit}: cgroup.procs unreadable — its Reliquats could not be listed`;
+        continue;
+      }
+      // FI-1 names the keeper only once its pid file is published: with THIS member's own keeper listed as a `reliquat` the roles of the whole scope are unreliable (its CLI and MCP servers read `reliquat` too) —
+      // nothing in it is signalled this round (UNKNOWN is not NONE: the trap retries once the pid file exists). Another workspace's keeper.js (a nested rig app) does not block the scope.
+      const ownKeeper = listing.find((m) => m.role === 'reliquat' && ((): boolean => { const f = kill.read(m.pid); return f !== 'gone' && f !== 'unreadable' && isOwnKeeperProc(f, wsId); })());
+      if (ownKeeper) {
+        unknown = `scope ${scope.unit}: this member's own keeper (pid ${ownKeeper.pid}) is listed as a Reliquat — its pid file is not published yet, so the roles of the scope are unreliable`;
         continue;
       }
       const depth = depthsOf(listing);

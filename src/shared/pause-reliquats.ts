@@ -105,6 +105,16 @@ export function sessionAncestorOf(ppid: number, read: (pid: number) => FreshRead
   return 'unknown';
 }
 
+/**
+ * Is `p` THIS member's own keeper daemon — `node …/keeper.js <wsId> <sock> <pid> <log>` (keeper-client's argv)? A keeper of ANOTHER workspace (a nested rig app's) is not.
+ * FI-1 labels the member's keeper `keeper` only once its pid file is published (the keeper writes it after it listens): until then it, its CLI and its MCP servers all read `reliquat`.
+ */
+export function isOwnKeeperProc(p: Pick<ProcIdent, 'argv'>, wsId: string): boolean {
+  const argv = p.argv ?? [];
+  const i = argv.findIndex((a) => (a.split('/').pop() ?? a) === 'keeper.js');
+  return i >= 0 && argv[i + 1] === wsId;
+}
+
 export type ReliquatVerdict =
   | { ok: true; evidence: string; proc: ProcIdent }
   | { ok: false; kind: 'gone' | 'spared' | 'refused'; reason: string };

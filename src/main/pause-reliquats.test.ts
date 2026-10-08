@@ -132,7 +132,7 @@ test('CHILDREN FIRST: a Reliquat\'s children are signalled before it (the parent
 
 test('the keeper / CLI the trap PROVED are untouched even when the scope\'s classification calls them Reliquats (stale pid file), and so is a keeper.js / claude by name and anything under it', async () => {
   const os = new FakeOs();
-  os.add(90, 1, ['node', '/x/keeper.js', 'm1'], 'reliquat'); // wrongly classified
+  os.add(90, 1, ['node', '/x/keeper.js', 'mX'], 'reliquat'); // wrongly classified (and a keeper id that is not m1's: the own-keeper window is the next arm)
   os.add(100, 90, ['claude'], 'reliquat');
   os.add(101, 100, ['node', 'mcp-server.js'], 'reliquat');
   os.add(600, 1, ['node', '/other/keeper.js', 'm9'], 'reliquat'); // a supervisor that is not the proven one
@@ -307,6 +307,30 @@ test('a second scope generation (a restart while Reliquats kept the old scope al
   const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), OPTS);
   assert.deepEqual(rep!.scopes.sort(), [OLD.unit, SCOPE.unit].sort());
   assert.ok(rep!.killed.length >= 1);
+});
+
+test('the keeper\'s pid file is NOT published yet (FI-1 reads keeperPid null): this member\'s own keeper, CLI and MCP server all read `reliquat` — NOTHING in the scope is signalled, the scope is UNKNOWN (the trap retries); another workspace\'s keeper.js does not block it', async () => {
+  const os = new FakeOs();
+  os.add(90, 1, ['node', '/x/keeper.js', 'm1', '/s.sock', '/s.pid', '/s.log'], 'reliquat'); // wrongly classified: the window between listen and the pid file
+  os.add(100, 90, ['claude'], 'reliquat');
+  os.add(101, 100, ['node', 'mcp-server.js'], 'reliquat');
+  os.add(500, 1, ['/usr/bin/chrome', '--headless']); // a genuine Reliquat of the same scope
+  const rep = await killReliquats('m1', os.scopeDeps(), os.deps(), { keeperPid: null, cliPid: null, termGraceMs: 100 });
+  assert.deepEqual(os.signals, [], 'not even the genuine Reliquat: the roles of this scope cannot be trusted this round');
+  assert.match(rep!.unknown ?? '', /own keeper \(pid 90\) is listed as a Reliquat — its pid file is not published yet/);
+  assert.deepEqual(rep!.killed, []);
+  // the keeper is published: the very same scope is now killable
+  os.roles.set(90, 'keeper'); os.roles.set(100, 'cli'); os.roles.set(101, 'session');
+  const ok = await killReliquats('m1', os.scopeDeps(), os.deps(), { keeperPid: null, cliPid: null, termGraceMs: 100 });
+  assert.deepEqual(ok!.killed.map((k) => k.pid), [500]);
+  assert.equal(ok!.unknown, undefined);
+  // a keeper.js of ANOTHER workspace listed as a Reliquat (a nested rig app) is spared on its own but does not block the scope
+  const o2 = new FakeOs();
+  o2.add(600, 1, ['node', '/other/keeper.js', 'm9'], 'reliquat');
+  o2.add(500, 1, ['/usr/bin/chrome']);
+  const r2 = await killReliquats('m1', o2.scopeDeps(), o2.deps(), OPTS);
+  assert.deepEqual(r2!.killed.map((k) => k.pid), [500]);
+  assert.ok(o2.procs.has(600));
 });
 
 // ── (2) REAL processes ──────────────────────────────────────────────────────

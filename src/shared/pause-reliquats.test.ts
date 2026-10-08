@@ -7,6 +7,7 @@ import { type FreshRead, type ProcIdent } from './pause-procs.ts';
 import {
   depthsOf,
   emptyReliquatReport,
+  isOwnKeeperProc,
   judgeReliquat,
   mergeReliquats,
   reliquatConsigneLines,
@@ -193,4 +194,12 @@ test('the Consigne lists each killed Reliquat (command, pid, start time) as LIST
   assert.match(alarms, /NOT killed \(identity not provable, pid 8\)/);
   assert.match(alarms, /left running on purpose \(1\)/);
   assert.match(alarms, /NOT checked for you/);
+});
+
+test('isOwnKeeperProc: the member\'s OWN keeper daemon (keeper.js followed by ITS workspace id) — not another workspace\'s, not a process that merely mentions keeper.js', () => {
+  assert.equal(isOwnKeeperProc({ argv: ['/usr/bin/node-22', '/home/u/.orchestra/bin/keeper.js', 'ws-1', '/s.sock', '/s.pid', '/s.log'] }, 'ws-1'), true);
+  assert.equal(isOwnKeeperProc({ argv: ['node', 'keeper.js', 'ws-2', '/s.sock'] }, 'ws-1'), false, 'a nested rig app\'s keeper belongs to another workspace');
+  assert.equal(isOwnKeeperProc({ argv: ['tail', '-f', 'keeper.js.log', 'ws-1'] }, 'ws-1'), false);
+  assert.equal(isOwnKeeperProc({ argv: ['node', 'ws-1', 'keeper.js'] }, 'ws-1'), false, 'the id must FOLLOW keeper.js');
+  assert.equal(isOwnKeeperProc({ argv: null }, 'ws-1'), false);
 });
