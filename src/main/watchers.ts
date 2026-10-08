@@ -47,6 +47,12 @@ const inodeOf = (dir: string): number | null => {
   }
 };
 
+let healthMsOverride: number | undefined;
+/** Rig seam: shorten the silent-detach health check (production: 30 s) so a built-app / composition drive does not wait half a minute. undefined restores it. */
+export function __setWatchHealthMsForTests(ms: number | undefined): void {
+  healthMsOverride = ms;
+}
+
 const productionDeps = (): ResilientWatchDeps => ({
   watch: (dir, onEvent, onError, opts) => (primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError, opts),
   setTimer: (fn, ms) => {
@@ -58,6 +64,9 @@ const productionDeps = (): ResilientWatchDeps => ({
   now: () => Date.now(),
   mkdirp: (d) => void fs.mkdirSync(d, { recursive: true }),
   inodeOf,
+  get healthMs() {
+    return healthMsOverride;
+  },
   warn: (message, err) => log.warn(message, err),
   info: (message) => log.info(message),
 });
@@ -143,4 +152,5 @@ export function __resetWatchersForTests(): void {
   listeners.clear();
   lastPushedKey = '';
   primitiveOverride = null;
+  healthMsOverride = undefined;
 }

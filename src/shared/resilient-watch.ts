@@ -53,6 +53,8 @@ export interface ResilientWatchDeps {
   mkdirp?(dir: string): void;
   /** Directory inode (null = missing): the health check that catches a SILENT detach (a deleted and recreated directory; an inotify watch does not follow it and never emits `error`). */
   inodeOf?(dir: string): number | null;
+  /** Health-check period (default {@link WATCH_HEALTH_MS}); a rig shortens it. */
+  healthMs?: number;
   warn(message: string, err?: unknown): void;
   info(message: string): void;
 }
@@ -149,7 +151,7 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
       if (ino === null) degrade({ code: 'ENOENT', message: `watched directory vanished: ${spec.dir}` });
       else if (armedIno !== null && ino !== armedIno) degrade({ code: 'ESTALE', message: `watched directory was replaced (inode ${armedIno} → ${ino}): ${spec.dir}` });
       else scheduleHealth();
-    }, WATCH_HEALTH_MS);
+    }, deps.healthMs ?? WATCH_HEALTH_MS);
   };
 
   function degrade(e: unknown): void {

@@ -395,3 +395,16 @@ test('the persistent option is forwarded to the primitive only when the site set
   createResilientWatcher(r.spec({ name: 'login', persistent: false }), deps).start();
   assert.deepEqual(seen, [undefined, { persistent: false }]);
 });
+
+test('healthMs dep shortens the silent-detach check (the rig seam); the default stays 30 s', () => {
+  const inodes = new Map<string, number | null>([['/bus', 1]]);
+  const r = rig({ inodes });
+  const w = createResilientWatcher(r.spec(), { ...r.deps, healthMs: 500 });
+  w.start();
+  inodes.set('/bus', 2);
+  r.advance(499);
+  assert.equal(w.snapshot().state, 'ok');
+  r.advance(1);
+  assert.equal(w.snapshot().state, 'degraded');
+  assert.equal(WATCH_HEALTH_MS, 30_000, 'production default');
+});
