@@ -268,7 +268,7 @@ endpoint}` = agent lives in an always-on container, see
   fresh error row; cause removed → the task is delivered as the opening turn and `hasInput`
   flips, so the next Restart is an ordinary one; the reply carries `openingTask:true` and the CLI
   prints "Started <id> — its opening task was delivered" (not "conversation preserved"). The kept
-  child survives an app restart (`lastTask`/`hasInput`/`sdkStartErrors` are in `store.json`).
+  child survives an app restart (`lastTask`/`hasInput`/`sdkStartErrors` are in `store.json`). `sdkMemNotices` (#322: the Plafond mémoire's kill / warning rows, capped 50, identity (unit, seq)) is persisted the same way and merged into `sdkHistory` by `at`.
   Rigs: `restart_delivers_task_once`, `brief_survives_other_start`, `spawn_init_wait`, `first_turn_error_reported`.
 
 ### Admission — automatic starts held under low memory (#286, wave G ledger #295; epic #284)
