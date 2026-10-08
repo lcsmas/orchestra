@@ -1,4 +1,4 @@
-# Verified-fanout audits (2026-09-30 → 2026-10-07)
+# Verified-fanout audits (2026-09-30 → 2026-10-08)
 
 Chronological audits of fleet runs (where wall-clock goes, which rules were applied, what failed), from
 several sessions. Each section is self-contained and dated; later sections measure the effect of the
@@ -191,3 +191,19 @@ NOT VERIFIED: cause of the SIGBUS storm and of the btrfs fault (host load suspec
 - Critical path now: #289 waits on a human mockup pick (D5, 18:26Z) and blocks #293 → #294.
 - Incident: v0.5.312's memory Pause + MEMWATCH would conflict (a coordinator re-pause clears `pause_auto` → no auto Reprise); timer disabled 18:4xZ.
 - Admission + memory Pause shipped in v0.5.312 before the composed proof #294.
+## 2026-10-08 07:50Z — Night of 10-07→08: bloc2 wave 6 resumed alone + wave G closing (memory guard live)
+- Host: no reboot; min MemAvailable 11.1 GB (04:09Z), median 15.7; 0 samples below 6 GB, so Admission and the memory Pause never fired.
+- Wave 6 (resumed 21:36Z, v2 rules: wave 6 only, no agent cap, stacks rebuilt through the relay, ≤ 2 heavy rigs):
+  8 WP PRs merged in ~10 h (#1764 #1755 #1758 #1773 #1757 #1760 #1756 #1762) against 1 in 15 h the night before. Loaded sessions max 13 (median 3), running max 6 (median 2).
+- Docker relay: 10 container creations overnight, 10/10 stamped `orchestra.ws=49c8d373` / `orchestra.run=866b89aa`, 0 unlabelled.
+- Usage limit 00:31Z (one account shared by both fleets): automatic Pause dure on both missions, automatic Reprise at 00:50Z (19 min). 4 wave-6 members had commands killed; all resumed.
+- Churn: NMC-1904 took 7 nominations (v1–v7), mostly rebases as the stack under it moved; 51 "no session activity" escalations to the wave-6 OPS.
+- Wave G closed 02:56Z: 10/10 tickets incl. the composed proof #294; v0.5.315 released 03:01Z.
+
+## 2026-10-08 12:51Z — Memory Pause from leaked rig browsers, then a degraded app boot
+- 56 orphaned headless Chromium (~15 GB of PSS + swap) from bloc2 `verifier-w6`'s throwaway rig `arms/cdp.py` (`--remote-debugging-port`, profiles `agent-tmp/49c8d373…/tmp/chrome-<name>-*`), accumulated since 00:12Z, 24 of them in hour 07; another group from `verifier-w6b` (`agent-tmp/vw6b/tmp/chrome-rp-tech`).
+  Not the WordPress test `mc_dashboard_browser.mjs` (its profiles are `mcd-chrome-*`).
+- 12:51:54Z: memory Pause (`host:memory`) on both missions. The Pause dure killed 0 processes of `verifier-w6`: reparented to init, its browsers were outside the session tree. Automatic Reprise at 12:56:03Z; browsers killed by hand at ~13:00Z (5.3 → 18.8 GB available). The rig was fixed at 13:10Z (process group kill, atexit/signals, `PR_SET_PDEATHSIG`).
+- The app was relaunched at 12:53:48Z during the crunch: 6 directory watchers failed with EMFILE (inotify instances, 128/user, probably held by the orphans) and never retried. The sidebar showed « en pause 33/33 » after the Reprise, and Réveils fell back to the 60 s sweep until restart.
+  `bus-status` « memory Pause none » meant "not due now", not "not in force".
+- Follow-ups: #330 (watchers self-recover + show degraded), #331 (bridge: monitor + Pause dure stop orphaned headless browsers by profile path), wave H #329 (#320 scope + cap, #325, #328).
