@@ -404,3 +404,28 @@ test('#292 fu: a `stopping` leftover (the app died mid-stop) is listed as stoppe
   db.prepare('UPDATE runs SET resume_started_at = ? WHERE id = ?').run(pausedAt + 5, 'W');
   assert.match(renderRunStatus(gatherRunStatus(db, 'W', deps)), /the host is restarting 1 container\(s\) the Pause stopped/);
 });
+
+test('#325: `run status` lists the Reliquats the Pause dure killed — command, pid, start time, start-time ticks — and the ones it could not (alive / refused / left running / unknown)', (t) => {
+  const db = rig(t);
+  busPause.setRunPause(db, 'W', true, 'ops', 'hard');
+  const pausedAt = busPause.getRunPause(db, 'W')!.pausedAt;
+  const k = (pid: number) => ({ pid, startTicks: 1000 + pid, comm: 'chrome', cmd: `/usr/bin/chrome --headless --n=${pid}`, cwd: '/w/rig', startedAt: Date.UTC(2026, 9, 8, 12, 51, 0), scope: 'orchestra-ws-m1-abc.scope', evidence: 'e', signal: 'SIGTERM' as const, outcome: 'exited' as const });
+  records.insertBilan(db, {
+    runId: 'W', wsId: 'm1', pausedAt,
+    activity: { surface: 'sdk', memberRun: 'W', reliquats: { scopes: ['orchestra-ws-m1-abc.scope'], killed: [k(500), { ...k(501), signal: 'SIGKILL', outcome: 'survived' }], refused: [{ pid: 7, comm: 'x', cmd: 'x', reason: 'ancestry-unreadable' }], spared: [{ pid: 8, comm: 'claude', cmd: 'claude --print', reason: 'supervisor' }], survivors: [{ pid: 501, comm: 'chrome', cmd: 'chrome --stuck', reason: 'still-alive-after-kill' }], rounds: 2, unknown: 'scope y: cgroup.procs unreadable' } },
+    snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null,
+  });
+  const text = renderRunStatus(gatherRunStatus(db, 'W', deps));
+  assert.match(text, /Reliquats \(leftover processes of the member's scope orchestra-ws-m1-abc\.scope\): 2 killed/);
+  assert.match(text, /reliquat killed: \/usr\/bin\/chrome --headless --n=500 pid 500 started 2026-10-08T12:51:00\.000Z \(start-time 1500\) cwd \/w\/rig — SIGTERM/);
+  assert.match(text, /pid 501 started .* — SIGKILL — SURVIVED/);
+  assert.match(text, /Reliquats STILL ALIVE: chrome --stuck \(pid 501: still-alive-after-kill\)/);
+  assert.match(text, /Reliquats NOT killed \(identity not provable\): pid 7: ancestry-unreadable/);
+  assert.match(text, /Reliquats left running on purpose: claude --print \(pid 8: supervisor\)/);
+  assert.match(text, /Reliquats UNKNOWN: scope y: cgroup\.procs unreadable/);
+  // a member with no tracked scope prints no Reliquat line
+  const db2 = rig(t);
+  busPause.setRunPause(db2, 'W', true, 'ops', 'hard');
+  records.insertBilan(db2, { runId: 'W', wsId: 'm1', pausedAt: busPause.getRunPause(db2, 'W')!.pausedAt, activity: { surface: 'sdk', memberRun: 'W' }, snapshotRef: 'r', dirty: false, killed: { killed: [], survivors: [], refused: [], spared: [] }, error: null });
+  assert.doesNotMatch(renderRunStatus(gatherRunStatus(db2, 'W', deps)), /Reliquats/);
+});

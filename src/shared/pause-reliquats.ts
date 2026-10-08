@@ -7,9 +7,10 @@
 // scope membership AND its role were re-read at signal time AND nothing proves it is the live session (keeper, CLI, MCP server).
 
 import { isSupervisorProc, type FreshRead, type ProcIdent } from './pause-procs.ts';
+import type { ClassifiedMember, ScopeRole } from './memory-scope.ts';
 
-/** FI-1 (c): the role `classifyScopeMembers` gives a member of a scope. */
-export type ScopeRole = 'keeper' | 'cli' | 'session' | 'reliquat';
+/** FI-1 (c): ONE definition of the role and the classified member — H1's `src/shared/memory-scope.ts` (v1.3: never a second copy). */
+export type { ScopeRole };
 
 /** The structural subset of an FI-1 `memberScopes(wsId)` element this module reads. */
 export interface ScopeRef {
@@ -17,14 +18,8 @@ export interface ScopeRef {
   cgroupDir: string;
 }
 
-/** The structural subset of an FI-1 `listScopeProcs(scope)` element this module reads. */
-export interface ScopeMember {
-  pid: number;
-  startTicks: number;
-  ppid: number;
-  comm: string;
-  role: ScopeRole;
-}
+/** The subset of an FI-1 `listScopeProcs(scope)` element (`ClassifiedMember`) this module reads. */
+export type ScopeMember = Pick<ClassifiedMember, 'pid' | 'startTicks' | 'ppid' | 'comm' | 'role'>;
 
 /** A FRESH listing of one scope: 'gone' = the scope no longer exists (every member died); 'unreadable' = UNKNOWN, never "empty". */
 export type ScopeListing = ScopeMember[] | 'gone' | 'unreadable';
