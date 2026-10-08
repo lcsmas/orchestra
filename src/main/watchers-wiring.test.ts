@@ -108,3 +108,9 @@ test('the fault-injection env is the ONLY way to force a failed arm in a built a
   assert.ok(/ORCHESTRA_WATCH_FAULT_FILE/.test(w) && /code: 'EMFILE'/.test(w));
   assert.ok(!/ORCHESTRA_WATCH_FAULT_FILE/.test(codeOf('src/main/index.ts')), 'read at each arm inside the primitive, never cached at boot');
 });
+
+test('the production retry timer is unref’d: a pending retry never keeps the process (or a quitting app) alive', () => {
+  const w = codeOf('src/main/watchers.ts');
+  const i = at(w, 'setTimer: (fn, ms) => {');
+  assert.ok(/t\.unref\?\.\(\)/.test(w.slice(i, i + 200)), 'setTimeout(...).unref()');
+});

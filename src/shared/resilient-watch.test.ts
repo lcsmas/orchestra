@@ -408,3 +408,12 @@ test('healthMs dep shortens the silent-detach check (the rig seam); the default 
   assert.equal(w.snapshot().state, 'degraded');
   assert.equal(WATCH_HEALTH_MS, 30_000, 'production default');
 });
+
+test('start() twice arms ONCE (idempotent) — a second start never leaks a second watch', () => {
+  const r = rig();
+  const w = createResilientWatcher(r.spec(), r.deps);
+  w.start();
+  w.start();
+  assert.equal(r.calls.armAttempts, 1);
+  assert.equal(r.watches.length, 1);
+});

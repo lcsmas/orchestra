@@ -201,3 +201,14 @@ test('a missing directory without ensureDir is DEGRADED (ENOENT), not a throw â€
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('the primitive receives the siteâ€™s persistent option (the transient login watch must never keep the process alive)', () => {
+  const seen: Array<{ persistent?: boolean } | undefined> = [];
+  __setWatchPrimitiveForTests((_dir, _onEvent, _onError, opts) => {
+    seen.push(opts);
+    return { close: () => {} };
+  });
+  createWatcher({ name: 'p', label: 'P', dir: '/p', fallback: 'poll', onChange: () => {}, persistent: false }).start();
+  createWatcher({ name: 'q', label: 'Q', dir: '/q', fallback: 'poll', onChange: () => {} }).start();
+  assert.deepEqual(seen, [{ persistent: false }, undefined]);
+});
