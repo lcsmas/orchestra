@@ -1,7 +1,7 @@
 import { viewBytesFor, type ContainerAccountingView } from './container-accounting.ts';
 import { rowProcessBytes, viewFor, type MemberMemoryReport } from './member-memory.ts';
 import type { VolumeStat } from './disk-space.ts';
-import type { BrowserReliquatView } from './browser-reliquats.ts';
+import type { BrowserReliquatView } from './browser-chip.ts';
 
 // Pure logic for the Resources page: parsing the OS process table, walking
 // process trees, and turning raw jiffy counters into per-session CPU/memory

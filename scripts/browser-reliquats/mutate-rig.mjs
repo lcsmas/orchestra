@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RIG = path.join(REPO, 'scripts', 'browser-reliquats', 'rig.mjs');
 const ONLY = process.argv.includes('--only') ? new Set(process.argv[process.argv.indexOf('--only') + 1].split(',')) : null;
-const PURE = 'src/shared/browser-reliquats.ts', IO = 'src/main/browser-reliquats.ts', MON = 'src/main/resource-monitor.ts', TRAP = 'src/main/pause-trap.ts', VIEW = 'src/renderer/components/ResourcesView.tsx', CSS = 'src/renderer/styles.css';
+const PURE = 'src/shared/browser-reliquats.ts', IO = 'src/main/browser-reliquats.ts', MON = 'src/main/resource-monitor.ts', TRAP = 'src/main/pause-trap.ts', VIEW = 'src/renderer/components/ResourcesView.tsx', CSS = 'src/renderer/styles.css', CHIP = 'src/shared/browser-chip.ts';
 
 const M = [
   { id: 'brig-bridge-not-installed', file: MON, find: '    browser: productionBrowserBridge(),\n  };\n}', rep: '  };\n}', arm: 'monitor', red: ['pipe_orphan_stopped_at_once', 'port_orphan_stopped_after_window'] },
@@ -27,7 +27,7 @@ const M = [
   // the D-Q4 A' chip, through the REAL page markup + stylesheet in an Electron window under the rig's own headless sway (scripts/browser-reliquats/chip-screenshot.mjs)
   { id: 'brig-chip-never-asked', file: VIEW, find: 'browsers={browsersOf ? browsersOf(row) : null}', rep: 'browsers={null}', arm: 'chip', red: ['chip_on_owning_row', 'chip_tooltip', 'chip_after_docker', 'chip_on_screen', 'chip_singular'] },
   { id: 'brig-chip-remote-shown', file: VIEW, find: 'return row.remote ? null : browserChipOf(view, row.key);', rep: 'return browserChipOf(view, row.key);', arm: 'chip', red: ['no_chip_on_remote_row'] },
-  { id: 'brig-chip-zero-shown', file: PURE, find: '  if (!c || !(c.stopped > 0)) return null;', rep: '  if (!c) return null;', arm: 'chip', red: ['no_chip_at_zero', 'zero_equals_pre_feature'] },
+  { id: 'brig-chip-zero-shown', file: CHIP, find: '  if (!c || !(c.stopped > 0)) return null;', rep: '  if (!c) return null;', arm: 'chip', red: ['no_chip_at_zero', 'zero_equals_pre_feature'] },
   { id: 'brig-chip-status-colour', file: CSS, find: '.res-chip.browsers { text-transform: none; letter-spacing: 0; }', rep: '.res-chip.browsers { text-transform: none; letter-spacing: 0; color: var(--yellow); border-color: var(--yellow); }', arm: 'chip', red: ['chip_is_grey'] },
 ];
 

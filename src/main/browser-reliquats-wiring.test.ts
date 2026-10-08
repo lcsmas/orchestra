@@ -80,6 +80,15 @@ test('the Resources chip (D-Q4 A\'): « 🌐 N arrêtés » only on rows that EX
   assert.ok(/\.res-chip\.browsers \{ text-transform: none; letter-spacing: 0; \}/.test(css) && !/\.res-chip\.browsers[^}]*(color|border-color)/.test(css), 'the default grey chip: history tone, no status colour');
 });
 
+test('the renderer imports the chip/counter from a module with NO imports (the capture gate caught `node:path` leaking into the renderer bundle through browser-reliquats.ts)', () => {
+  const view = codeOf('src/renderer/components/ResourcesView.tsx');
+  assert.ok(view.includes("from '../../shared/browser-chip';") && !view.includes("shared/browser-reliquats'"), 'the page imports shared/browser-chip, never shared/browser-reliquats');
+  const chip = fs.readFileSync(path.join(ROOT, 'src/shared/browser-chip.ts'), 'utf8');
+  assert.ok(!/^\s*(import|export\s.*\sfrom)\s/m.test(chip) && !/\brequire\(/.test(chip) && !/node:/.test(chip), 'browser-chip.ts has no import / re-export / node: reference of any kind');
+  const res = fs.readFileSync(path.join(ROOT, 'src/shared/resources.ts'), 'utf8');
+  assert.ok(res.includes("import type { BrowserReliquatView } from './browser-chip.ts';"), 'the snapshot type comes from the same node-free module');
+});
+
 test('the browser module only READS the profile and /proc: no way to remove, rewrite or rename a file; every signal is preceded by a fresh identity read', () => {
   for (const rel of ['src/main/browser-reliquats.ts', 'src/shared/browser-reliquats.ts']) {
     const code = codeOf(rel);

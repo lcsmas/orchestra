@@ -1,7 +1,7 @@
 // In-place unit mutants of every clause of the browser-Reliquat bridge (#331, wave H ledger #329 track H10). Loaded by mutate-unit.mjs (same harness: byte-exact backup + `cmp`, a clean control
 // gates the run, every anchor must match EXACTLY ONCE, `expect` must name a RED test title). Ids start with `br-` (`--prefix br-`).
 const PURE = 'src/shared/browser-reliquats.ts', IO = 'src/main/browser-reliquats.ts', MON = 'src/main/resource-monitor.ts', TRAP = 'src/main/pause-trap.ts', HOST = 'src/main/pause-trap-host.ts', RES = 'src/main/resources.ts';
-const RELQ = 'src/shared/pause-reliquats.ts', VIEW = 'src/renderer/components/ResourcesView.tsx', CSS = 'src/renderer/styles.css';
+const RELQ = 'src/shared/pause-reliquats.ts', VIEW = 'src/renderer/components/ResourcesView.tsx', CSS = 'src/renderer/styles.css', CHIP = 'src/shared/browser-chip.ts';
 const T = { pure: 'src/shared/browser-reliquats.test.ts', io: 'src/main/browser-reliquats.test.ts', mon: 'src/main/browser-reliquats-monitor.test.ts', wiring: 'src/main/browser-reliquats-wiring.test.ts', trap: 'src/main/pause-trap-reliquats.test.ts', relq: 'src/shared/pause-reliquats.test.ts' };
 
 export const MUTANTS = [
@@ -104,10 +104,10 @@ export const MUTANTS = [
   { id: 'br-combine-drops-scope-kills', file: RELQ, find: '  const killed = byId([...a.killed, ...b.killed]);', rep: '  const killed = byId([...b.killed]);', tests: [T.trap, T.relq], expect: /a member with a scope: the scope.s kills and the browsers. are ONE list|combineReliquats/ },
   { id: 'br-combine-replaces-lists', file: RELQ, find: '    spared: byId([...a.spared, ...b.spared]),\n    survivors: byId([...a.survivors, ...b.survivors]),', rep: '    spared: byId([...b.spared]),\n    survivors: byId([...b.survivors]),', tests: [T.relq], expect: /combineReliquats/ },
   // ── the Resources chip (D-Q4 A')
-  { id: 'br-chip-shown-at-zero', file: PURE, find: '  if (!c || !(c.stopped > 0)) return null;', rep: '  if (!c) return null;', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
-  { id: 'br-chip-any-workspace', file: PURE, find: '  const c = view?.byWorkspace?.[wsId];', rep: '  const c = Object.values(view?.byWorkspace ?? {})[0];', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
-  { id: 'br-chip-count-is-total', file: PURE, find: '  return { count: n, title:', rep: '  return { count: view!.total, title:', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
-  { id: 'br-chip-profile-dropped', file: PURE, find: ', profil ${c.lastPrefix} (laissé en place)`', rep: ' (laissé en place)`', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
+  { id: 'br-chip-shown-at-zero', file: CHIP, find: '  if (!c || !(c.stopped > 0)) return null;', rep: '  if (!c) return null;', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
+  { id: 'br-chip-any-workspace', file: CHIP, find: '  const c = view?.byWorkspace?.[wsId];', rep: '  const c = Object.values(view?.byWorkspace ?? {})[0];', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
+  { id: 'br-chip-count-is-total', file: CHIP, find: '  return { count: n, title:', rep: '  return { count: view!.total, title:', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
+  { id: 'br-chip-profile-dropped', file: CHIP, find: ', profil ${c.lastPrefix} (laissé en place)`', rep: ' (laissé en place)`', tests: [T.pure], expect: /browserChipOf \(D-Q4/ },
   { id: 'br-chip-remote-row-shown', file: VIEW, find: 'return row.remote ? null : browserChipOf(view, row.key);', rep: 'return browserChipOf(view, row.key);', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-never-asked', file: VIEW, find: 'browsers={browsersOf ? browsersOf(row) : null}', rep: 'browsers={null}', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },
   { id: 'br-chip-status-colour', file: CSS, find: '.res-chip.browsers { text-transform: none; letter-spacing: 0; }', rep: '.res-chip.browsers { text-transform: none; letter-spacing: 0; color: var(--yellow); }', tests: [T.wiring], expect: /the Resources chip \(D-Q4/ },

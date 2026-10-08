@@ -8,7 +8,7 @@ import { isActionableStopReason } from '../../shared/usage-resume';
 import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionResourceStat } from '../../shared/resources';
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
-import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-reliquats';
+import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-chip';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
