@@ -23,6 +23,9 @@ interface Tree {
   keeperPidFile(ws: string, pid: number | null): void;
 }
 
+// FI-1 v1.3 labels the keeper's sole direct child `cli`, earlier listings `session`: for the kill both mean "live session" — only `reliquat` is ever signalled.
+const live = (role: string): string => (role === 'cli' ? 'session' : role);
+
 function tree(t: { after: (f: () => void) => void }): Tree {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-scope-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -88,7 +91,7 @@ test('the listing carries identity (pid + start-time) and the FI-1 roles: the pi
   const d = memberScopeDeps('m1', tr.env);
   const l = d.list(d.scopes()[0]);
   assert.ok(Array.isArray(l));
-  const byPid = Object.fromEntries((l as Array<{ pid: number; role: string; startTicks: number }>).map((m) => [m.pid, [m.role, m.startTicks]]));
+  const byPid = Object.fromEntries((l as Array<{ pid: number; role: string; startTicks: number }>).map((m) => [m.pid, [live(m.role), m.startTicks]]));
   assert.deepEqual(byPid, { 90: ['keeper', 5000], 100: ['session', 5001], 101: ['session', 5002], 500: ['reliquat', 5003] });
 });
 
@@ -127,7 +130,7 @@ test('the keeper is RE-RESOLVED at every listing: the pid file now names another
   tr.keeperPidFile('m1', 90);
   const d = memberScopeDeps('m1', tr.env);
   const ref = d.scopes()[0];
-  const roles = (): Record<number, string> => Object.fromEntries((d.list(ref) as Array<{ pid: number; role: string }>).map((m) => [m.pid, m.role]));
+  const roles = (): Record<number, string> => Object.fromEntries((d.list(ref) as Array<{ pid: number; role: string }>).map((m) => [m.pid, live(m.role)]));
   assert.deepEqual(roles(), { 90: 'keeper', 95: 'reliquat', 96: 'reliquat' });
   tr.keeperPidFile('m1', 95); // the keeper was replaced
   assert.deepEqual(roles(), { 90: 'reliquat', 95: 'keeper', 96: 'session' });
