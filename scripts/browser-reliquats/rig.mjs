@@ -25,6 +25,7 @@ const REAL_HOME = process.env.BR_REAL_HOME ?? os.homedir();
 const HERE_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SUBJECT = path.resolve(process.env.SUBJECT_REPO ?? HERE_REPO); // the tree whose src/ + built CLI the arm drives (--unfixed: the tree BEFORE #331)
 const UNFIXED_SHA = process.env.BR_UNFIXED_SHA ?? '07dd2bfc'; // master with #325 merged, before #331: scope Reliquats exist, browsers are not handled
+const VERIFIER_UNFIXED_SHA = process.env.BR_UNFIXED_VERIFIER_SHA ?? 'fb351c39'; // the tip the verifier BLOCKED (single-string argv): the session_env arm is must-FAIL against IT
 const CHROMIUM = process.env.BR_CHROMIUM ?? '/usr/bin/chromium-browser';
 const WINDOW_MS = 6_000; // N, shortened for the rig (production: 10 min)
 const FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-background-networking'];
@@ -33,6 +34,8 @@ const FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-ru
 const ARMS = {
   monitor: { mustRedden: ['pipe_orphan_stopped_at_once', 'pipe_group_dead', 'port_orphan_stopped_after_window', 'port_group_dead', 'client_gone_then_stopped_after_window', 'owner_told_once_per_pass', 'counter_counts_each_stop', 'stopped_browsers_leave_no_crashpad_handler', 'pipe_group_signalled'] },
   pause_dure: { mustRedden: ['pause_stops_the_orphaned_browsers', 'pause_group_dead', 'bilan_lists_the_browsers', 'bilan_lists_the_spared_client', 'run_status_lists_them', 'consigne_shows_them', 'reprise_relaunches_nothing'] },
+  // the verifier's blocker on @fb351c39: a Chromium main started from an ordinary SESSION env (DBUS_SESSION_BUS_ADDRESS) rewrites its title — /proc cmdline is ONE string
+  session_env: { unfixedSha: VERIFIER_UNFIXED_SHA, mustRedden: ['session_env_pipe_orphan_stopped_at_once', 'session_env_pipe_group_signalled', 'session_env_port_orphan_stopped_after_window', 'session_env_owner_told_per_pass'] },
 };
 const ARM = process.argv[2] ?? '';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -80,27 +83,31 @@ if (process.env.BR_CHILD !== '1') {
   if (process.env.BR_IGNORE_LOAD !== '1' && avail < 6) { console.log(`BROWSER-RELIQUATS: VOID — MemAvailable ${avail.toFixed(1)} GB < 6 (ledger D2); nothing was measured`); process.exit(3); }
   if (!fs.existsSync(CHROMIUM)) { console.log(`BROWSER-RELIQUATS: VOID — ${CHROMIUM} not found`); process.exit(3); }
   const build = (cwd) => { const r = spawnSync('pnpm', ['run', 'build:cli'], { cwd, encoding: 'utf8' }); if (r.status !== 0) { console.log(`BROWSER-RELIQUATS: VOID — build:cli failed in ${cwd}: ${(r.stdout + r.stderr).slice(-300)}`); process.exit(3); } };
-  let subject = SUBJECT;
-  let unfixedDir = null;
-  if (UNFIXED) {
-    const sha = spawnSync('git', ['rev-parse', `${UNFIXED_SHA}^{commit}`], { cwd: HERE_REPO, encoding: 'utf8' }).stdout.trim();
-    if (!sha) { console.log(`BROWSER-RELIQUATS: VOID — the unfixed commit ${UNFIXED_SHA} is not in this repo (set BR_UNFIXED_SHA)`); process.exit(3); }
-    unfixedDir = path.join(REAL_HOME, '.cache', 'browser-reliquats-rig', `unfixed-${sha.slice(0, 8)}-${RUN_TOKEN}`);
-    const w = spawnSync('git', ['worktree', 'add', '--detach', unfixedDir, sha], { cwd: HERE_REPO, encoding: 'utf8' });
+  const subjectOf = new Map(); // unfixed sha → built worktree (one per distinct baseline)
+  const unfixedDirs = [];
+  const ensureUnfixed = (shaRef) => {
+    const sha = spawnSync('git', ['rev-parse', `${shaRef}^{commit}`], { cwd: HERE_REPO, encoding: 'utf8' }).stdout.trim();
+    if (!sha) { console.log(`BROWSER-RELIQUATS: VOID — the unfixed commit ${shaRef} is not in this repo (set BR_UNFIXED_SHA / BR_UNFIXED_VERIFIER_SHA)`); process.exit(3); }
+    if (subjectOf.has(sha)) return subjectOf.get(sha);
+    const dir = path.join(REAL_HOME, '.cache', 'browser-reliquats-rig', `unfixed-${sha.slice(0, 8)}-${RUN_TOKEN}`);
+    const w = spawnSync('git', ['worktree', 'add', '--detach', dir, sha], { cwd: HERE_REPO, encoding: 'utf8' });
     if (w.status !== 0) { console.log(`BROWSER-RELIQUATS: VOID — cannot create the unfixed worktree: ${w.stderr.slice(-200)}`); process.exit(3); }
-    fs.symlinkSync(path.join(HERE_REPO, 'node_modules'), path.join(unfixedDir, 'node_modules'));
-    build(unfixedDir);
-    subject = unfixedDir;
-    console.log(`UNFIXED subject: ${sha.slice(0, 8)} (${unfixedDir})`);
-  } else build(HERE_REPO);
+    unfixedDirs.push(dir);
+    fs.symlinkSync(path.join(HERE_REPO, 'node_modules'), path.join(dir, 'node_modules'));
+    build(dir);
+    subjectOf.set(sha, dir);
+    console.log(`UNFIXED subject: ${sha.slice(0, 8)} (${dir})`);
+    return dir;
+  };
+  if (!UNFIXED) build(HERE_REPO);
   const results = [];
   fs.mkdirSync(RIG_ROOT, { recursive: true });
-  const bail = () => { killTagged(); if (unfixedDir) { spawnSync('git', ['worktree', 'remove', '--force', unfixedDir], { cwd: HERE_REPO }); fs.rmSync(unfixedDir, { recursive: true, force: true }); } process.exit(130); };
+  const bail = () => { killTagged(); for (const dir of unfixedDirs) { spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: HERE_REPO }); fs.rmSync(dir, { recursive: true, force: true }); } process.exit(130); };
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, bail);
   for (const arm of names) {
     if (!ARMS[arm]) { console.error(`unknown arm: ${arm}`); process.exit(2); }
     const base = armBase(arm);
-    const env = { PATH: process.env.PATH, HOME: path.join(base, 'home'), LANG: 'C.UTF-8', BR_REAL_HOME: REAL_HOME, BR_RUN_TOKEN: RUN_TOKEN, BR_CHILD: '1', SUBJECT_REPO: subject, BROWSER_RIG: MARK };
+    const env = { PATH: process.env.PATH, HOME: path.join(base, 'home'), LANG: 'C.UTF-8', BR_REAL_HOME: REAL_HOME, BR_RUN_TOKEN: RUN_TOKEN, BR_CHILD: '1', SUBJECT_REPO: UNFIXED ? ensureUnfixed(ARMS[arm].unfixedSha ?? UNFIXED_SHA) : SUBJECT, BROWSER_RIG: MARK, ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}), ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}) };
     const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(HERE_REPO, 'scripts', '.r2-register.mjs'), fileURLToPath(import.meta.url), arm], { env, encoding: 'utf8', timeout: 300_000, cwd: HERE_REPO });
     const line = (r.stdout ?? '').split('\n').reverse().find((l) => l.startsWith('{"arm"'));
     let res;
@@ -120,7 +127,7 @@ if (process.env.BR_CHILD !== '1') {
     console.log(`SURVIVORS arm=${arm} procs=${left}${left ? `  ← LEAK (stopped by identity: ${reaped}; left after: ${after})` : ''}`);
   }
   const bad = results.filter((r) => !r.ok);
-  if (unfixedDir) { spawnSync('git', ['worktree', 'remove', '--force', unfixedDir], { cwd: HERE_REPO }); fs.rmSync(unfixedDir, { recursive: true, force: true }); }
+  for (const dir of unfixedDirs) { spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: HERE_REPO }); fs.rmSync(dir, { recursive: true, force: true }); }
   fs.rmSync(RIG_ROOT, { recursive: true, force: true });
   console.log(`BROWSER-RELIQUATS RIG${UNFIXED ? ' [UNFIXED]' : ''}: ${results.length - bad.length}/${results.length} arms ${UNFIXED ? 'AS EXPECTED (must-FAIL)' : 'PASS'}${bad.length ? ` — FAILED: ${bad.map((r) => r.arm).join(', ')}` : ''}`);
   console.log(`TAGGED processes now: ${tagged().length}`);
@@ -211,29 +218,29 @@ const launched = []; // identity of every browser MAIN this arm started (teardow
 /** Find the main process of the browser started with this profile (no --type=). */
 async function mainOf(prof) {
   let found = null;
-  await waitFor(() => { found = allProcs().find((p) => { const a = cmdOf(p.pid); return a.some((x) => x === `--user-data-dir=${prof}`) && !a.some((x) => x.startsWith('--type=')); }) ?? null; return !!found; }, 20_000);
+  await waitFor(() => { found = allProcs().find((p) => { const j = cmdOf(p.pid).join(' '); return (` ${j} `).includes(` --user-data-dir=${prof} `) || j.endsWith(` --user-data-dir=${prof}`) ? !/(^| )--type=/.test(j) : false; }) ?? null; return !!found; }, 20_000);
   if (!found) throw new Error(`browser with profile ${prof} did not start`);
   launched.push(idOf(found));
   return found;
 }
 /** An ORPHANED port-mode browser: started by a shell that exits at once, in its own session (the incident's shape). `extra` goes before the profile flag. */
-async function orphanPort(prof, { profileFlag = true } = {}) {
+async function orphanPort(prof, { profileFlag = true, env = benv } = {}) {
   fs.mkdirSync(prof, { recursive: true });
-  execFileSync('sh', ['-c', `setsid ${CHROMIUM} ${FLAGS.join(' ')} --remote-debugging-port=0 ${profileFlag ? `--user-data-dir=${q(prof)}` : ''} about:blank </dev/null >/dev/null 2>&1 &`], { env: benv, encoding: 'utf8' });
+  execFileSync('sh', ['-c', `setsid ${CHROMIUM} ${FLAGS.join(' ')} --remote-debugging-port=0 ${profileFlag ? `--user-data-dir=${q(prof)}` : ''} about:blank </dev/null >/dev/null 2>&1 &`], { env, encoding: 'utf8' });
   const main = profileFlag ? await mainOf(prof) : await (async () => { let f = null; await waitFor(() => { f = allProcs().find((p) => cmdOf(p.pid).some((x) => x.includes('--remote-debugging-port=0')) && cmdOf(p.pid).includes('--no-first-run') && !cmdOf(p.pid).some((x) => x.startsWith('--type=')) && p.ppid <= 1 && !launched.includes(idOf(p)) && (readSafe(`/proc/${p.pid}/environ`) ?? '').includes(`BROWSER_RIG=${MARK}`)) ?? null; return !!f; }, 20_000); if (!f) throw new Error('default-profile browser did not start'); launched.push(idOf(f)); return f; })();
   if (profileFlag) await waitFor(() => portOf(prof) !== null, 20_000);
   await sleep(1500); // let the children (zygote, gpu, renderer, network) appear
   return main;
 }
 /** An ORPHANED pipe-mode browser whose pipe is NOT closed: a helper process (the leaked grandchild a real incident leaves) keeps the launcher's pipe ends open, so Chromium does not exit on EOF. */
-async function orphanPipe(prof) {
+async function orphanPipe(prof, env = benv) {
   fs.mkdirSync(prof, { recursive: true });
   const launcher = `
     const { spawn } = require('child_process');
     const c = spawn(${JSON.stringify(CHROMIUM)}, ${JSON.stringify([...FLAGS, '--remote-debugging-pipe', `--user-data-dir=${prof}`, 'about:blank'])}, { detached: true, stdio: ['ignore','ignore','ignore','pipe','pipe'], env: process.env });
     const h = spawn('sleep', ['3600'], { detached: true, stdio: ['ignore','ignore','ignore', c.stdio[3], c.stdio[4]], env: process.env });
     c.unref(); h.unref(); setTimeout(() => process.exit(0), 800);`;
-  spawn(process.execPath, ['-e', launcher], { env: benv, stdio: 'ignore' });
+  spawn(process.execPath, ['-e', launcher], { env, stdio: 'ignore' });
   const main = await mainOf(prof);
   await sleep(2500);
   return main;
@@ -348,6 +355,33 @@ try {
     check('the profile directories are left in place (stopped, never deleted)', profilesExist(pPipe, pIdle, pClient, pAlive, pOut, pGhost));
     detail = '7 real Chromium; stopped 3 (pipe now, idle port + ex-client port after N), kept 4';
     void fGhost; void gDefault;
+  } else if (ARM === 'session_env') {
+    // The verifier's BLOCKER on @fb351c39: a Chromium MAIN started from an ordinary SESSION env (DBUS_SESSION_BUS_ADDRESS — what every uncapped member's tool shell carries, the target of this bridge) rewrites its title,
+    // so /proc/<pid>/cmdline is ONE string and the classifier read it as « not a browser ». The other arms launch with a minimal env (`env -i`-like) and could not see it: this one launches with the session's bus.
+    const senv = { ...benv, ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}), ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}) };
+    const pPipe = profile(ID.a, 'spipe'), pPort = profile(ID.a, 'sport');
+    const sPipe = await orphanPipe(pPipe, senv);
+    const sPort = await orphanPort(pPort, { env: senv });
+    const ids = { sPipe: idOf(sPipe), sPort: idOf(sPort) };
+    const gPipe = groupIds(sPipe.pid);
+    check('premise: the browsers were launched with the SESSION bus in their environment', !!senv.DBUS_SESSION_BUS_ADDRESS, senv.DBUS_SESSION_BUS_ADDRESS ?? 'no DBUS_SESSION_BUS_ADDRESS in this rig\'s env — the arm cannot reproduce the blocker here');
+    check('premise (instrument): each main process\'s /proc cmdline is ONE entry — the shape the verifier measured on pid 2279976', cmdOf(sPipe.pid).length === 1 && cmdOf(sPort.pid).length === 1, JSON.stringify([cmdOf(sPipe.pid).length, cmdOf(sPort.pid).length]));
+    check('premise: two REAL headless Chromium are alive, orphaned, the pipe one with a group of >1 process', Object.values(ids).every(aliveId) && gPipe.length > 1 && [sPipe, sPort].every((p) => { const pp = statOf(p.pid).ppid; return pp <= 1 || statOf(pp)?.comm === 'systemd'; }), JSON.stringify({ ids, group: gPipe.length }));
+    const signalled = new Set();
+    const aliveBeforeTick1 = gPipe.filter(aliveId).map((g) => Number(g.split(':')[0]));
+    const realKill = process.kill.bind(process);
+    process.kill = (pid, sig) => { if (typeof pid === 'number' && (sig === 'SIGTERM' || sig === 'SIGKILL')) signalled.add(pid); return realKill(pid, sig); };
+    try { await tick(); } finally { process.kill = realKill; }
+    check('session_env_pipe_orphan_stopped_at_once: the pipe-mode orphan started from the session env is stopped on the FIRST pass', !aliveId(ids.sPipe), ids.sPipe);
+    check('session_env_pipe_group_signalled: ...every member of its group got a signal from the pass', aliveBeforeTick1.length > 1 && aliveBeforeTick1.filter((p) => signalled.has(p)).length >= Math.ceil(aliveBeforeTick1.length * 0.9), `${aliveBeforeTick1.filter((p) => signalled.has(p)).length}/${aliveBeforeTick1.length} signalled`);
+    check('the port-mode orphan is NOT stopped before the idle window (survives pass 1)', aliveId(ids.sPort), ids.sPort);
+    await sleep(WINDOW_MS + 600);
+    await tick();
+    check('session_env_port_orphan_stopped_after_window: the port-mode orphan started from the session env is stopped once N has passed', !aliveId(ids.sPort), ids.sPort);
+    const rows = statusRows(ID.a);
+    check('session_env_owner_told_per_pass: the owning member got ONE bus status per pass that stopped something (2: the pipe orphan, then the port orphan)', rows.length === 2 && rows.every((r) => /stopped 1 orphaned headless browser\(s\)/.test(r.body)), JSON.stringify(rows.map((r) => r.body.slice(0, 60))));
+    check('the profile directories are left in place (stopped, never deleted)', profilesExist(pPipe, pPort));
+    detail = '2 real Chromium started from the SESSION env (one-string cmdline); the pipe one stopped at once, the port one after N';
   } else if (ARM === 'pause_dure') {
     const pPipe = profile(ID.a, 'pipe'), pPort = profile(ID.a, 'port'), pClient = profile(ID.a, 'client'), pAlive = profile(ID.a, 'alive'), pOut = path.join(base, 'elsewhere', `${MARK}-out`), pB = profile(ID.b, 'b-pipe');
     const aPipe = await orphanPipe(pPipe);
