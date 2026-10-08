@@ -8,6 +8,7 @@
 //
 //   known_magnitude        ★ a labelled container holding ~200 MB (tmpfs) raises its workspace's measured memory by about that amount (baseline 0 → ~200 MB; a 2nd container SUMS)
 //                            — through the real monitor tick (`containerBytes` on the workspace's session, `rssBytes` untouched) and the Resources-page fold
+//   paused_container_counted  ★ (review m1) a `docker pause`d labelled container still holds its memory: the figure survives the pause (same ~100 MB), and it is not silently dropped from the count
 //   no_stats_without_attributed  ★ with only unlabelled / older containers (the host's bystander stacks included) the daemon is LISTED but NEVER asked for stats; control: an attributed
 //                            container → exactly one stats call for it
 //   unattributed_visible   ★ an unlabelled container created on the real socket AFTER the live run start, and a container stamped for a DELETED workspace (orphan), show as unattributed (counted, listed, the `containers:` line names them),
@@ -29,7 +30,7 @@ import { RIG_LOCK_PATH, RIG_LOCK_TIMEOUT_RC, RIG_LOCK_WAIT_S, armScratch, locked
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['known_magnitude', 'no_stats_without_attributed', 'unattributed_visible', 'docker_down_is_not_zero', 'escalation_counts_it'];
+const ARMS = ['known_magnitude', 'paused_container_counted', 'no_stats_without_attributed', 'unattributed_visible', 'docker_down_is_not_zero', 'escalation_counts_it'];
 const MB = 1024 * 1024;
 const RIG_BASE = path.resolve(process.env.CONTAINER_MEMORY_RIG_HOME ?? path.join(os.homedir(), '.cache', 'e2e-container-memory'));
 
@@ -238,6 +239,32 @@ if (ARM === 'known_magnitude') {
   check('page_row_without_the_accounting_is_the_process_figure', resources.groupSessionsByWorkspace([pageSession], null).rows[0].memBytes, 50 * MB);
   // gone → back to zero (the figure follows the container, it does not accumulate)
   dk(['rm', '-f', '-v', `${PFX}-known`, `${PFX}-second`]);
+  const t3 = await tick(spy);
+  check('after_removal_the_workspace_returns_to_zero', t3.sessions[0].containerBytes, 0);
+  verdict();
+}
+
+if (ARM === 'paused_container_counted') {
+  const spy = spyApi(realApi);
+  const t0 = await tick(spy);
+  const baseline = t0.containers.attributed.find((a) => a.wsId === WS)?.bytes ?? 0;
+  const c1 = run('frozen', [`orchestra.ws=${WS}`, `orchestra.run=${PFX}-run`], 100);
+  check('control_container_started', c1.code, 0);
+  check('control_container_ready', await ready('frozen'), true);
+  const t1 = await tick(spy);
+  const running = t1.sessions[0].containerBytes - baseline;
+  within('running_container_is_about_100MB', running, 90 * MB, 130 * MB);
+  const p = dk(['pause', `${PFX}-frozen`]);
+  check('container_paused', p.code, 0);
+  check('the_daemon_reports_it_paused', dk(['inspect', '-f', '{{.State.Status}}', `${PFX}-frozen`]).out.trim(), 'paused');
+  const t2 = await tick(spy);
+  const frozen = t2.sessions[0].containerBytes - baseline;
+  out.bytes_running = running;
+  out.bytes_paused = frozen;
+  within('the_paused_container_STILL_counts_about_100MB', frozen, 90 * MB, 130 * MB);
+  check('the_paused_container_is_in_the_count', t2.containers.attributed.find((a) => a.wsId === WS)?.count, 1);
+  dk(['unpause', `${PFX}-frozen`]);
+  dk(['rm', '-f', '-v', `${PFX}-frozen`]);
   const t3 = await tick(spy);
   check('after_removal_the_workspace_returns_to_zero', t3.sessions[0].containerBytes, 0);
   verdict();

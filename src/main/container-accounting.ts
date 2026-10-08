@@ -124,7 +124,8 @@ export function refreshContainerAccounting(d: ContainerAccountingDeps): Promise<
     let firstError: unknown = null;
     for (const api of apis) {
       try {
-        for (const c of await api.listContainers({ status: ['running'] })) if (!running.some((r) => r.id === c.id)) running.push({ ...c, api });
+        // running + PAUSED: a frozen container still holds its memory (`docker pause` / compose pause by a human; Orchestra never pauses — FI-1.4) — review m1
+        for (const c of await api.listContainers({ status: ['running', 'paused'] })) if (!running.some((r) => r.id === c.id)) running.push({ ...c, api });
         answered += 1;
       } catch (e) {
         firstError ??= e;

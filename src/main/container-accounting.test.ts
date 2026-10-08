@@ -35,7 +35,8 @@ function world() {
       w.listCalls += 1;
       w.listArgs.push(o);
       if (w.listThrows) throw w.listThrows;
-      return w.running;
+      const want = (o as { status?: string[] } | undefined)?.status;
+      return want?.length ? w.running.filter((c) => want.includes(c.state)) : w.running; // the daemon's `status` filter, as dockerd applies it
     },
     containerStats: async (id: string) => {
       w.statsCalls.push(id);
@@ -188,10 +189,42 @@ test('K9 before any refresh the read is "not-sampled" (sampledAt null) — a con
   assert.ok(w.warns.some((l) => /refresh failed/.test(l)));
 });
 
-test('K10 the daemon is asked for RUNNING containers only (a stopped container holds no memory and must never be attributed or counted unattributed)', async () => {
+test('K10 the daemon is asked for RUNNING and PAUSED containers only (a stopped / created / restarting one holds no memory and must never be attributed or counted unattributed)', async () => {
   const { w, deps } = fresh();
   await refreshContainerAccounting(deps);
-  assert.deepEqual(w.listArgs, [{ status: ['running'] }]);
+  assert.deepEqual(w.listArgs, [{ status: ['running', 'paused'] }]);
+});
+
+test('K16 (review m1) a PAUSED container still holds its memory: attributed ones are measured, an unlabelled one created in the window is unattributed; exited / restarting ones stay out', async () => {
+  const { w, deps } = fresh();
+  const st = (c: DockerContainerSummary, state: string): DockerContainerSummary => ({ ...c, state });
+  w.running = [
+    ctr('up', 1, { 'orchestra.ws': 'ws-up' }),
+    st(ctr('frozen', 1, { 'orchestra.ws': 'ws-frozen' }), 'paused'),
+    st(ctr('dead', 1, { 'orchestra.ws': 'ws-dead' }), 'exited'),
+    st(ctr('loop', 1, { 'orchestra.ws': 'ws-loop' }), 'restarting'),
+    st(ctr('stray-frozen', 2_000_000), 'paused'), // created after the run start (1_000_000 s), no label
+    st(ctr('stray-dead', 2_000_000), 'exited'),
+  ];
+  await refreshContainerAccounting(deps);
+  const acc = getContainerAccounting(NOW);
+  assert.deepEqual([...acc.byWorkspace.keys()].sort(), ['ws-frozen', 'ws-up'], 'a paused container is in the figures (it is NOT silently dropped); exited / restarting are not');
+  assert.equal(acc.byWorkspace.get('ws-frozen'), 10 * MB, 'stats answers on a paused container (measured on a real dockerd by the reviewer)');
+  assert.deepEqual(acc.unattributed.ids, ['stray-frozen']);
+  assert.deepEqual(w.statsCalls.sort(), ['frozen', 'up']);
+});
+
+test('K17 (review m3a) the SAME daemon reached through two socket spellings (/var/run/docker.sock vs /run/docker.sock) is queried twice but every container is counted ONCE — one stats call, one figure, one unattributed entry', async () => {
+  const { w, deps } = fresh();
+  const shared = [ctr('c1', 1, { 'orchestra.ws': 'ws-a' }), ctr('stray', 2_000_000)];
+  w.running = shared;
+  const twin = secondDaemon('/var/run/docker.sock', shared); // not the app's '/run/docker.sock' string: the socket dedupe cannot see it is the same daemon
+  (deps as { extraApis?: () => DockerApi[] }).extraApis = () => [twin.api];
+  await refreshContainerAccounting(deps);
+  const acc = getContainerAccounting(NOW);
+  assert.equal(twin.calls.list, 1, 'the second spelling WAS queried (the socket dedupe is by string)');
+  assert.deepEqual([acc.byWorkspace.get('ws-a'), acc.countByWorkspace.get('ws-a'), acc.unattributed.count], [10 * MB, 1, 1], 'counted once, not twice');
+  assert.deepEqual([w.statsCalls, twin.calls.stats], [['c1'], []], 'ONE stats call for the container (on the daemon that listed it first)');
 });
 
 /** A second fake daemon on ANOTHER socket (a member whose relay is pinned elsewhere). */

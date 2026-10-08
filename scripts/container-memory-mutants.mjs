@@ -31,6 +31,7 @@ const AHOST = 'src/main/memory-alert-host.ts';
 const ALERT = 'src/main/memory-alert.ts';
 const SALERT = 'src/shared/memory-alert.ts';
 const BANNER = 'src/main/memory-banner.ts';
+const KC = 'src/main/keeper-client.ts';
 // `expect` = a substring of the reddened unit test name or `rig:<arm>` that MUST be among the red ones; `arms` = the rig arms to run for it ([] = units only).
 const MUTANTS = [
   // ── pure half ──
@@ -59,7 +60,7 @@ const MUTANTS = [
   // ── producer ──
   { id: 'M30_stats_for_unattributed_too', file: CA, find: 'await measure(attributed.map((a) => ({ ...a, api: apiOf.get(a.id) as DockerApi })), d);', to: 'await measure([...attributed, ...unattributed.map((u) => ({ id: u.id, name: u.name, wsId: u.id }))].map((a) => ({ ...a, api: apiOf.get(a.id) as DockerApi })), d);', expect: ['K3 AC'], arms: ['unattributed_visible'] },
   { id: 'M31_stats_even_with_no_attributed', file: CA, find: 'const measured = attributed.length === 0 ? [] : await measure(attributed.map((a) => ({ ...a, api: apiOf.get(a.id) as DockerApi })), d);', to: 'const measured = await measure(running.map((r) => ({ id: r.id, name: r.name, wsId: r.id, api: r.api })), d);', expect: ['K1 AC'], arms: ['no_stats_without_attributed'] },
-  { id: 'M32_lists_stopped_containers', file: CA, find: "await api.listContainers({ status: ['running'] })", to: 'await api.listContainers({})', expect: ['K10 the daemon is asked'], arms: [] },
+  { id: 'M32_lists_stopped_containers', file: CA, find: "await api.listContainers({ status: ['running', 'paused'] })", to: 'await api.listContainers({})', expect: ['K10 the daemon is asked'], arms: [] },
   { id: 'M33_stats_unbounded_concurrency', file: CA, find: 'Math.min(STATS_CONCURRENCY, attributed.length)', to: 'attributed.length', expect: ['K7 the pass is bounded'], arms: [] },
   { id: 'M34_no_pass_cap', file: CA, find: 'if (i >= MAX_STATS_PER_PASS) {', to: 'if (false) {', expect: ['K7 the pass is bounded'], arms: [] },
   { id: 'M35_one_stats_failure_aborts_the_pass', file: CA, find: "        d.warn(`container-accounting: stats of ${a.id.slice(0, 12)} (workspace ${a.wsId}) failed — counted unmeasured`, e);\n        out[i] = { wsId: a.wsId, bytes: null };", to: "        throw e;", expect: ['K6 a stats failure'], arms: [] },
@@ -90,6 +91,15 @@ const MUTANTS = [
   { id: 'M70_snapshot_without_containers', file: RES, find: '    containers: accountingView(getContainerAccounting()),\n', to: '', expect: ['W5 the Resources page'], arms: [] },
   { id: 'M72b_busstatus_reads_twice', file: HK, find: 'containerLabels: Object.fromEntries(containersView.attributed.map(', to: 'containerLabels: Object.fromEntries(accountingView(getContainerAccounting()).attributed.map(', expect: ['W6 /busStatus'], arms: [] },
   { id: 'M24c_run_stamp_not_passed_to_workspace_known', file: SHD, find: 'workspaceKnown(ws, runLabel)', to: "workspaceKnown(ws, '')", expect: ['C16 classify'], arms: [] },
+  // ── follow-up g9-293-fu (review c/6049275929: m1 paused containers, m3 unpinned dedupe + memberPinnedApis) ──
+  { id: 'M95_paused_container_not_listed', file: CA, find: "status: ['running', 'paused']", to: "status: ['running']", expect: ['K16 (review m1)', 'rig:paused_container_counted'], arms: ['paused_container_counted'] },
+  { id: 'M96_cross_daemon_dedupe_removed', file: CA, find: 'if (!running.some((r) => r.id === c.id)) running.push({ ...c, api });', to: 'running.push({ ...c, api });', expect: ['K17 (review m3a)'], arms: [] },
+  { id: 'M97_pinned_missing_upstream_not_skipped', file: MO, find: '    if (!up) continue;\n', to: '', expect: ['B2 memberPinnedApis'], arms: [] },
+  { id: 'M98_pinned_every_member_skipped', file: MO, find: '    if (!up) continue;\n', to: '    continue;\n', expect: ['B2 memberPinnedApis'], arms: [] },
+  { id: 'M99_pinned_wrong_sidecar_path', file: MO, find: 'readRelayUpstream(keeperSocketPath(r.workspaceId))', to: "readRelayUpstream(keeperSocketPath(r.workspaceId) + 'x')", expect: ['B2 memberPinnedApis'], arms: [] },
+  { id: 'M100_pinned_client_not_memoised', file: MO, find: 'if (!api) memberApis.set(up, (api = createDockerApi({ socketPath: up })));', to: 'api = createDockerApi({ socketPath: up });', expect: ['B2 memberPinnedApis'], arms: [] },
+  { id: 'M101_pinned_clients_not_returned', file: MO, find: '    out.push(api);\n', to: '', expect: ['B2 memberPinnedApis'], arms: [] },
+  { id: 'M102_dead_keeper_pinned', file: KC, find: 'if (meta.pid && isAlive(meta.pid)) out.push({ workspaceId: wsId, keeperPid: meta.pid });', to: 'if (meta.pid) out.push({ workspaceId: wsId, keeperPid: meta.pid });', expect: ['B2 memberPinnedApis'], arms: [] },
   { id: 'M71c_unmeasured_view_adds_bytes', file: SHD, find: "if (!view || !wsId || view.docker !== 'ok') return 0;", to: 'if (!view || !wsId) return 0;', expect: ['C9 viewBytesFor'], arms: [] },
   { id: 'M71_row_figure_without_containers', file: RS2, find: '(remote ? 0 : viewBytesFor(containers, key))', to: '0', expect: ['G1 groupSessionsByWorkspace'], arms: ['known_magnitude'] },
   { id: 'M71b_remote_row_gets_local_containers', file: RS2, find: '(remote ? 0 : viewBytesFor(containers, key))', to: 'viewBytesFor(containers, key)', expect: ['G2 groupSessionsByWorkspace'], arms: [] },
@@ -185,9 +195,10 @@ const BACKUP = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'container-memor
 // ── POSITIVE CONTROL: the unmutated tree must be all green, else every "killed" below is vacuous ──
 const needsRig = !noRig && MUTANTS.some((m) => (!only || only.has(m.id)) && m.arms.length > 0);
 const base = unitRed();
-const baseRig = needsRig ? rigRed() : { arms: [], pass: 5, line: '(rig not needed for the selected mutants)' };
+const RIG_ARMS_N = 6; // e2e-container-memory.mjs ARMS (known_magnitude, paused_container_counted, no_stats_without_attributed, unattributed_visible, docker_down_is_not_zero, escalation_counts_it)
+const baseRig = needsRig ? rigRed() : { arms: [], pass: RIG_ARMS_N, line: '(rig not needed for the selected mutants)' };
 console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (needsRig && baseRig.pass !== 5)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (needsRig && baseRig.pass !== RIG_ARMS_N)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;

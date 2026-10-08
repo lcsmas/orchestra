@@ -415,7 +415,7 @@ export const earliestLiveRunStartMs = (): number | null => earliestLiveFleetRunS
 
 /** Daemons live members' relays are pinned to (their keepers publish the upstream they froze at spawn); clients are memoised per socket. */
 const memberApis = new Map<string, DockerApi>();
-function memberPinnedApis(): DockerApi[] {
+export function memberPinnedApis(): DockerApi[] {
   const out: DockerApi[] = [];
   for (const r of listKeeperRoots()) {
     const up = readRelayUpstream(keeperSocketPath(r.workspaceId));
