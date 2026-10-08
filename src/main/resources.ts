@@ -29,6 +29,7 @@ import { hostPageSize } from './host-page-size';
 import { getContainerAccounting } from './container-accounting';
 import { listKeeperRoots } from './keeper-client';
 import { accountingView } from '../shared/container-accounting';
+import { currentMemberMemory } from './member-memory-host';
 
 const execFileP = promisify(execFile);
 
@@ -176,5 +177,7 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     volumes,
     // #293: the last monitor tick's container accounting (the page polls every 2 s and must never call Docker itself).
     containers: accountingView(getContainerAccounting()),
+    // #328: per-member memory read from the member's kernel scope + live Reliquats (FI-1; [] scopes = untracked, the tree figure stays).
+    members: currentMemberMemory(), // read AFTER the awaits above: the cache stamp is its own, not this sample's start
   };
 }

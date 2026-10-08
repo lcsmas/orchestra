@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { ProcSample } from './resources.ts';
 import {
   buildResourceLogLine,
+  decideReliquatWarnings,
   classifySurvivors,
   bootFallbackKills,
   decideDuplicateReap,
@@ -505,4 +506,35 @@ test('isSameLiveProcess: unreadable (null) and malformed stat text are refused',
   assert.equal(isSameLiveProcess(777, null), false);
   assert.equal(isSameLiveProcess(777, 'garbage'), false);
   assert.equal(isSameLiveProcess(777, ''), false);
+});
+
+test('buildResourceLogLine (#328): the scope reading rides on the line as `members`; sessions[].rssBytes stays the process-tree figure; absent input → no key', () => {
+  const base = {
+    at: 1_700_000_000_000,
+    pageSize: 4096,
+    cpuCores: 4,
+    memTotalBytes: 1,
+    memUsedBytes: 1,
+    table: keeperTree(400, 50),
+    cpuPcts: new Map<number, number>(),
+    keeperRoots: [{ workspaceId: 'ws-b', keeperPid: 400 }],
+    liveWorkspaceIds: new Set(['ws-b']),
+    electron: [],
+    reapedWorkspaceIds: new Set<string>(),
+  };
+  const members = { at: 1, tracked: [{ wsId: 'ws-b', scopes: 1, bytes: 900, unreadable: 0, reliquats: 2, reliquatBytes: 500, unlisted: 0 }], untracked: [], unsupported: null };
+  const withMembers = buildResourceLogLine({ ...base, members }, () => 'running');
+  assert.deepEqual(withMembers.members, members);
+  assert.equal(withMembers.sessions[0].rssBytes, 150); // the tree walk, untouched
+  assert.equal('members' in buildResourceLogLine(base, () => 'running'), false);
+});
+
+test('decideReliquatWarnings (#328): a member whose live Reliquats alone exceed the session threshold warns (WARN only); below it / none / unlisted say nothing — the tree advisory cannot see a detached process', () => {
+  const GB = 1024 ** 3;
+  const v = (wsId: string, reliquats: number | null, reliquatBytes: number | null) => ({ wsId, scopes: 1, bytes: 1, unreadable: 0, reliquats, reliquatBytes, unlisted: reliquats === null ? 1 : 0 });
+  const members = { at: 1, tracked: [v('big', 56, 15 * GB), v('edge', 1, SESSION_RSS_WARN_BYTES), v('small', 2, GB), v('none', 0, 0), v('blind', null, null)], untracked: [], unsupported: null, strayScopes: 0 };
+  const w = decideReliquatWarnings(members);
+  assert.deepEqual(w.map((x) => [x.kind, x.subject, x.count, x.value]), [['reliquat-rss', 'big', 56, 15 * GB]]);
+  assert.equal(w[0].threshold, SESSION_RSS_WARN_BYTES);
+  assert.deepEqual(decideReliquatWarnings(undefined), []);
 });

@@ -5,8 +5,9 @@ import { dialog } from './Dialog';
 import { formatResetsIn, formatUpdatedAgo } from './UsageBars';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import { isActionableStopReason } from '../../shared/usage-resume';
-import { groupSessionsByWorkspace, type ResourceSnapshot, type SessionGroup, type SessionResourceStat } from '../../shared/resources';
+import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionResourceStat } from '../../shared/resources';
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
+import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
@@ -154,7 +155,7 @@ interface AgentRow extends SessionGroup {
 
 /** Session-kind chips; a keeper-hosted structured agent (`sdk`) reads « agent » — it IS the workspace's agent, just not under a PTY — and a workspace with attributed containers gets the 🐳 chip
  *  (#293, D-pick4 A): count in the label, the measured figure in the tooltip (it is already part of the row's memory figure). */
-function SessionChips({ sessions, containers }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers'] }) {
+function SessionChips({ sessions, containers, reliquats }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats'] }) {
   return (
     <span className="res-chips">
       {sessions.map((s) => (
@@ -165,6 +166,12 @@ function SessionChips({ sessions, containers }: { sessions: SessionResourceStat[
       {containers && (
         <span className="res-chip docker" data-res-containers={containers.count} title={containersChipTitle(containers)}>
           {'\u{1F433}'} {containers.count}
+        </span>
+      )}
+      {/* #328 (D-Q3 option A): leftover processes this workspace launched that outlived its session — hidden at 0 and for a member whose scope is not tracked; yellow because it IS a problem state */}
+      {reliquats && reliquats.count > 0 && (
+        <span className="res-chip reliquat" data-res-reliquats={reliquats.count} title={reliquatChipTitle(reliquats)}>
+          {'\u26A0'} {reliquatWord(reliquats.count)}
         </span>
       )}
     </span>
@@ -186,6 +193,7 @@ function AgentRowView({
 }) {
   const [open, setOpen] = useState(false);
   const procs = row.sessions.flatMap((s) => s.processes).sort((a, b) => b.memBytes - a.memBytes);
+  const reliquatProcs = row.reliquats?.procs ?? []; // #328: the member's heaviest Reliquats (outside its process tree), shown after the tree's processes
   const name = row.ws ? row.ws.branch : row.fallbackName;
   const repo = row.ws?.repoPath ? row.ws.repoPath.split('/').pop() : row.ws ? 'scratch' : '';
   // The stop target is the agent PTY (its id IS the workspace id) — run/nvim
@@ -252,10 +260,10 @@ function AgentRowView({
             )}
           </span>
         </span>
-        <SessionChips sessions={row.sessions} containers={row.containers} />
+        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} />
         {row.remote ? (
           <span className="res-remote-note">runs in sandbox — no local footprint</span>
-        ) : row.containerOnly ? (
+        ) : row.containerOnly || row.scopeOnly ? (
           <>
             <span className="res-col-trace" />
             <span className="res-cell dim">—</span>
@@ -291,7 +299,7 @@ function AgentRowView({
       </div>
       {open && !row.remote && (
         <div className="res-procs">
-          {procs.length === 0 && <div className="res-procs-empty">No live processes.</div>}
+          {procs.length === 0 && reliquatProcs.length === 0 && <div className="res-procs-empty">No live processes.</div>}
           {procs.map((p) => (
             <div key={p.pid} className="res-proc">
               <span className="res-proc-comm">{p.comm}</span>
@@ -303,6 +311,19 @@ function AgentRowView({
           {row.procCount > procs.length && (
             <div className="res-procs-empty">
               +{row.procCount - procs.length} more (smallest not shown)
+            </div>
+          )}
+          {reliquatProcs.map((p) => (
+            <div key={`r${p.pid}`} className="res-proc reliquat" data-res-reliquat-pid={p.pid} title="Reliquat — outlived its session or left its process tree; counted in this workspace's memory">
+              <span className="res-proc-comm">{'\u26A0'} {p.comm}</span>
+              <span className="res-cell dim">{p.pid}</span>
+              <span className="res-cell dim">—</span>
+              <span className="res-cell" title="RSS of the process (resident set) — not the kernel bill the row's memory shows">{formatBytes(p.rssBytes)} RSS</span>
+            </div>
+          ))}
+          {row.reliquats && row.reliquats.count > reliquatProcs.length && (
+            <div className="res-procs-empty">
+              +{row.reliquats.count - reliquatProcs.length} more {row.reliquats.count - reliquatProcs.length === 1 ? 'Reliquat' : 'Reliquats'} (smallest not shown)
             </div>
           )}
         </div>
@@ -424,6 +445,7 @@ export function AgentsTable({
   ctxOf,
   accountLabelFor,
   warning,
+  reliquatsLine = null,
 }: {
   rows: AgentRow[];
   loginSessions: SessionResourceStat[];
@@ -432,6 +454,8 @@ export function AgentsTable({
   ctxOf: (row: AgentRow) => number | undefined;
   accountLabelFor: (row: AgentRow) => string | null;
   warning: string | null;
+  /** #328: the dim « Reliquats not tracked … » line (null = nothing to say). Optional so older callers keep compiling. */
+  reliquatsLine?: string | null;
 }) {
   return (
     <>
@@ -495,6 +519,11 @@ export function AgentsTable({
           {warning && (
             <div className="res-unattributed" role="note" data-res-unattributed="">
               {warning}
+            </div>
+          )}
+          {reliquatsLine && (
+            <div className="res-reliquats-note" role="note" data-res-reliquats-note="">
+              {reliquatsLine}
             </div>
           )}
     </>
@@ -588,11 +617,12 @@ export function ResourcesView() {
 
   const live = workspaces.filter((w) => !w.archived);
   const wsById = new Map(live.map((w) => [w.id, w]));
+  const nameById = new Map(workspaces.map((w) => [w.id, w.branch])); // archived ones too: a Reliquat-only row of an archived workspace reads its branch, not a raw id
 
   // Group the sampled sessions into per-workspace rows + login PTYs. #293: each owning row's memory figure includes its attributed containers (ONE figure, no new element).
-  const grouped = groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers);
+  const grouped = groupSnapshot(snap); // sessions + container accounting (#293) + member scope report (#328: a tracked member's row reads its scope, + its Reliquat chip / scope-only row)
   const loginSessions: SessionResourceStat[] = grouped.login;
-  const rows: AgentRow[] = grouped.rows.map((g) => ({ ...g, ws: wsById.get(g.key) ?? null, fallbackName: g.key }));
+  const rows: AgentRow[] = grouped.rows.map((g) => ({ ...g, ws: wsById.get(g.key) ?? null, fallbackName: nameById.get(g.key) ?? g.key }));
 
   const agentCpu = rows.filter((r) => !r.remote).reduce((n, r) => n + r.cpuPct, 0);
   const agentMem = rows.filter((r) => !r.remote).reduce((n, r) => n + r.memBytes, 0);
@@ -766,6 +796,7 @@ export function ResourcesView() {
             ctxOf={(row) => (row.ws ? contextTokens[row.ws.id] : undefined)}
             accountLabelFor={accountLabelFor}
             warning={unattributedWarning(snap?.containers)}
+            reliquatsLine={reliquatsNote(snap?.members)}
           />
         </section>
 
