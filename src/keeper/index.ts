@@ -276,11 +276,13 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   }
   const limitOk = limit !== null && limit <= cap.hardBytes && limit >= cap.hardBytes - LIMIT_SLACK_BYTES;
   const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);
-  if (!limitOk || !swapOk) {
+  if (!limitOk) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
-    klog(`memory cap: in scope ${cap.unit} but ${!limitOk ? `memory.max=${limit ?? 'max'} (asked ${cap.hardBytes})` : `memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB`} — the cap is NOT applied (memory controller not delegated? no swap accounting?); tools are not wrapped`);
+    klog(`memory cap: in scope ${cap.unit} but memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the cap is NOT applied (memory controller not delegated?); tools are not wrapped, no kill watch`);
     return env;
   }
+  // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
+  if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
   let wrapperOk = false;
   if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {
     klog(`memory cap: tool wrapper path ${JSON.stringify(cap.wrapper)} is not usable as CLAUDE_CODE_SHELL_PREFIX (relative or contains whitespace) — tool commands keep oom_score_adj 0`);
@@ -292,7 +294,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
       klog(`memory cap: tool wrapper ${cap.wrapper} is missing or not executable — tool commands keep oom_score_adj 0`);
     }
   }
-  capInfo = { unit: cap.unit, state: wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
+  capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
   memWatch = startMemoryWatch({
     cgroupDir: dir,
     unit: cap.unit,

@@ -203,6 +203,7 @@ export function countMemberScopes(e: ScopeEnv = realScopeEnv()): { total: number
     }
     // «Not a cap» = no memory.max, OR the swap escape open (review m4 / re-gate): the keeper reports such a scope `not-applied`, so bus-status must not count it as healthy.
     let unlimited = 0;
+    let total = 0;
     for (const u of mine) {
       const dir = path.join(slice, u);
       const mem = readScopeMemory({ cgroupDir: dir }, e);
@@ -212,9 +213,11 @@ export function countMemberScopes(e: ScopeEnv = realScopeEnv()): { total: number
       } catch {
         /* no swap accounting */
       }
-      if (mem?.maxBytes === null || !swapLimitApplied(swapText, swapTotalKb)) unlimited++;
+      if (!e.exists(dir)) continue; // listed, then gone before/while its files were read (the member exited): neither a scope nor a leak
+      total++;
+      if (mem === null || mem.maxBytes === null || !swapLimitApplied(swapText, swapTotalKb)) unlimited++; // mem null on a scope that still exists = no memory controller there: not a cap either
     }
-    return { total: mine.length, unlimited };
+    return { total, unlimited };
   } catch {
     return null;
   }
@@ -258,7 +261,6 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
   };
 }
 
-/** FI-1 (c): the scope's processes with their role. Identity = (pid, startTicks); a process that vanishes mid-read is skipped. `cliPid` is the keeper's CLI child when the caller knows it (helloAck.pid). */
 /** The parent of any pid on the host, read from /proc (cached per call); null when unreadable / a kernel root. */
 function hostParentOf(e: ScopeEnv): (pid: number) => number | null {
   const cache = new Map<number, number | null>();
@@ -279,11 +281,17 @@ function hostParentOf(e: ScopeEnv): (pid: number) => number | null {
 
 /**
  * FI-1 v1.9: the processes of the keeper's tree (ppid chain from `scope.keeperPid`, across the WHOLE host) that live OUTSIDE `scope` — they escaped it. Measured: Chromium moves its main process into its own
- * transient scope `app-org.chromium.Chromium-<pid>.scope` through the session bus, leaving the member's cap. [] when the keeper is unknown. Identity = (pid, startTicks); nothing is signalled here.
+ * transient scope `app-org.chromium.Chromium-<pid>.scope` through the session bus, leaving the member's cap. [] when the keeper is unknown OR is no longer a member of `scope` (a stale/recycled pid never
+ * bills another process's tree). Identity = (pid, startTicks); nothing is signalled here. Cost: one `stat` read per host pid per call — sample it on a slow cadence, not per member per tick.
  */
 export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, e: ScopeEnv = realScopeEnv()): TreeOutsideScope[] {
   if (scope.keeperPid === null) return [];
   const scopeCg = '/' + path.relative(e.cgroupRoot, scope.cgroupDir);
+  try {
+    if (parseProcCgroupV2(e.readFile(`${e.procRoot}/${scope.keeperPid}/cgroup`)) !== scopeCg) return [];
+  } catch {
+    return []; // the keeper is gone
+  }
   const kids = new Map<number, number[]>();
   let names: string[];
   try {
@@ -311,13 +319,14 @@ export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' 
     for (const kid of kids.get(cur) ?? []) {
       if (seen.has(kid)) continue;
       seen.add(kid);
-      queue.push(kid);
       try {
-        const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${kid}/cgroup`));
-        if (cg === null || cg === scopeCg) continue;
         const stat = e.readFile(`${e.procRoot}/${kid}/stat`);
         const rp = stat.lastIndexOf(')');
         const f = stat.slice(rp + 2).split(' ');
+        if (Number(f[1]) !== cur) continue; // the pid was recycled since the ppid snapshot: not a child of the node we walked from
+        queue.push(kid);
+        const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${kid}/cgroup`));
+        if (cg === null || cg === scopeCg) continue;
         const statm = e.readFile(`${e.procRoot}/${kid}/statm`).split(' ');
         let cmdline = '';
         try {
@@ -334,6 +343,7 @@ export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' 
   return out;
 }
 
+/** FI-1 (c): the scope's processes with their role. Identity = (pid, startTicks); a process that vanishes mid-read is skipped. `cliPid` is the keeper's CLI child when the caller knows it (helloAck.pid). */
 export function listScopeProcs(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, cliPid: number | null = null, e: ScopeEnv = realScopeEnv()): ClassifiedMember[] {
   let pids: number[];
   try {

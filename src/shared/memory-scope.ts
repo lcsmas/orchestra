@@ -185,6 +185,14 @@ export function parseProcCgroupV2(text: string): string | null {
   return null;
 }
 
+/** True when a raw `/proc/<pid>/cmdline` is the keeper for `wsId` — `systemd-run --scope` exec'd INTO it: `<runtime> …/keeper.js <wsId> …`. A hung launcher (still `systemd-run`) is not. */
+export function launcherExecedKeeper(cmdlineRaw: string, keeperScript: string, wsId: string): boolean {
+  const argv = cmdlineRaw.split('\0').filter((a) => a.length > 0);
+  if (argv.length === 0 || /(^|\/)systemd-run$/.test(argv[0])) return false; // the launcher's own argv CONTAINS the keeper command after `--`
+  const i = argv.indexOf(keeperScript);
+  return i >= 0 && argv[i + 1] === wsId;
+}
+
 /** Review m4: is the swap escape CLOSED? `memory.swap.max` must read `0`. A kernel without swap accounting has no such file: that is fine ONLY on a host with no swap at all
  *  (`SwapTotal: 0`); with swap present and no file the hog parks in zram and `MemoryMax` never kills — the scope is not a cap. */
 export function swapLimitApplied(swapMaxText: string | null, swapTotalKb: number | null): boolean {
@@ -225,8 +233,8 @@ export type ClassifiedMember = ScopeMember & { role: ScopeRole };
 /**
  * `keeper` = the keeper pid (when it is a member); `cli` = `cliPid`; `session` = any other member whose ppid chain reaches the
  * keeper (MCP servers, hooks, a running tool command); `reliquat` = every member whose chain does NOT reach a live keeper of this
- * scope (reparented to init, or no keeper at all). The chain is walked inside the member set only: a parent outside the scope
- * that is not the keeper ends the walk.
+ * scope (reparented to init, or no keeper at all). The chain is walked with `parentOf` (default: inside the member set only, a parent outside
+ * the scope ends the walk; the app passes the host-wide resolver so a helper whose parent left the scope is still traced to the keeper).
  */
 export function classifyScopeMembers(
   members: readonly ScopeMember[],

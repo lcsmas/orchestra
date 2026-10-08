@@ -53,7 +53,7 @@ test('the keeper verifies its own scope, starts the kill watch, wraps the tools 
   assert.ok(live(keeper, '...(capInfo ? { cap: capInfo } : {}),') && live(keeper, '...(memKills.length ? { memKills: memKills.slice() } : {}),'), 'helloAck/probe carry the state and the catch-up');
   assert.ok(live(keeper, 'send({ t: \'memKill\', rec });'), 'a kill is pushed to the attached client');
   assert.ok(live(keeper, '    delete base.DBUS_SESSION_BUS_ADDRESS;') && live(keeper, 'if (!wrapperOk || !cap.wrapper) return base;'), 'H2 review F1: a capped member\'s CLI env has no session-bus address (both exits), so a browser cannot leave the scope');
-  assert.ok(live(keeper, 'const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);') && live(keeper, 'if (!limitOk || !swapOk) {'), 'review m4: "applied" means memory.max AND the swap escape closed (memory.swap.max = 0)');
+  assert.ok(live(keeper, 'const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);') && live(keeper, 'if (!limitOk) {') && live(keeper, "state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected'"), 'review m4: «active» means memory.max AND the swap escape closed (memory.swap.max = 0); a leaking swap says not-applied but keeps wrapper + watch');
   assert.ok(live(keeper, 'memWatch?.stop();'), 'the watch ends with the keeper');
 });
 

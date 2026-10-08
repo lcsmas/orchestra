@@ -32,6 +32,7 @@ import {
   type MemoryCapInput,
   type ScopeMember,
   type VictimSnap,
+  launcherExecedKeeper,
 } from './memory-scope.ts';
 
 const GIB = 1024 ** 3;
@@ -307,4 +308,15 @@ test('FI-1 v1.9 — classifyScopeMembers with a host-wide parentOf: a member who
   assert.deepEqual(roles((pid) => host.get(pid) ?? null), { 100: 'keeper', 101: 'cli', 104: 'session' });
   assert.deepEqual(roles(), { 100: 'keeper', 101: 'cli', 104: 'reliquat' }, 'control: in-set-only chains cannot cross the boundary');
   assert.deepEqual(Object.fromEntries(classifyScopeMembers([m(100, 1), m(300, 301)], 100, null, (pid) => (pid === 300 ? 301 : pid === 301 ? 300 : null)).map((c) => [c.pid, c.role])), { 100: 'keeper', 300: 'reliquat' }, 'a cycle in the host chain terminates');
+});
+
+test('launcherExecedKeeper (pre-review m6): systemd-run exec\'d INTO the keeper is a slow keeper, a launcher still being systemd-run is hung', () => {
+  const script = '/home/u/.orchestra/bin/keeper.js';
+  const ws = '198c38e4-5529-4d47-b9cd-738dfb4eb971';
+  const raw = (...a: string[]) => a.join('\0') + '\0';
+  assert.equal(launcherExecedKeeper(raw('/usr/bin/node', script, ws, '/run/s.sock', '/run/s.pid', '/run/s.log'), script, ws), true, 'the exec happened: the process IS the keeper');
+  assert.equal(launcherExecedKeeper(raw('systemd-run', '--user', '--scope', '--unit=u', '--', '/usr/bin/node', script, ws), script, ws), false, 'still the launcher (its argv merely CONTAINS the keeper command, after `--`): hung, killable');
+  assert.equal(launcherExecedKeeper(raw('/usr/bin/node', script, 'another-ws'), script, ws), false, 'another workspace\'s keeper is not ours');
+  assert.equal(launcherExecedKeeper('', script, ws), false, 'gone / unreadable');
+  assert.equal(launcherExecedKeeper(raw('sleep', '300'), script, ws), false, 'the rig\'s hung stub');
 });

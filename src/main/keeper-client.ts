@@ -40,6 +40,7 @@ import {
   OOM_TOOL_WRAPPER_FILE,
   OOM_TOOL_WRAPPER_SCRIPT,
   buildScopeLaunchArgv,
+  launcherExecedKeeper,
   describeCapState,
   formatMemKillLine,
   wrapperPathUsable,
@@ -756,6 +757,15 @@ function isAlive(pid: number): boolean {
 // The SpawnedProcess bridge
 // ---------------------------------------------------------------------------
 
+/** `/proc/<pid>/<file>` or '' (gone / unreadable) — the caller passes only a pid it owns (an un-reaped direct child). */
+function readSafeProc(pid: number, file: string): string {
+  try {
+    return fs.readFileSync(`/proc/${pid}/${file}`, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<net.Socket> {
   const sockPath = keeperSocketPath(wsId);
   const runtime = resolveKeeperRuntime();
@@ -791,7 +801,11 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
       if (code !== 0 && launcherFailed === null) launcherFailed = `exit ${code ?? signal}`; // the launcher exec'd into the keeper: any exit before the socket is up is a failure (the FIRST reason wins: a hung launcher we killed ourselves stays "hung")
     });
     child.unref();
-    const r = await waitForSocket(() => launcherFailed !== null, 100); // 10 s, not 5: the user manager may be slow to create a scope under fleet load (a FAILED launcher aborts at once)
+    let r = await waitForSocket(() => launcherFailed !== null, 100); // 10 s, not 5: the user manager may be slow to create a scope under fleet load (a FAILED launcher aborts at once)
+    if (!(r instanceof net.Socket) && launcherFailed === null && child.pid !== undefined && launcherExecedKeeper(readSafeProc(child.pid, 'cmdline'), target, wsId)) {
+      // systemd-run already exec'd INTO the keeper (same pid, our own un-reaped child): it is slow to listen under fleet load, not hung — wait longer rather than kill a healthy capped keeper (pre-review m6).
+      r = await waitForSocket(() => launcherFailed !== null, 200);
+    }
     if (r instanceof net.Socket) {
       log.info(`memory-cap[${wsId}]: keeper launched in scope ${cap.unit}${cap.limits ? ` (hard ${cap.limits.hardBytes} B, swap ${cap.limits.swapMaxBytes})` : ' (no limits)'}`);
       return r;

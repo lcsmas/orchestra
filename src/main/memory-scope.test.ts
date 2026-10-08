@@ -115,6 +115,20 @@ test('countMemberScopes: a scope that is NOT a cap — no memory.max, OR the swa
   assert.deepEqual(countMemberScopes(e), { total: 3, unlimited: 1 }, 'no swap accounting AND no swap on the host: nothing to escape into, still a cap');
 });
 
+test('countMemberScopes (pre-review m3): a scope listed but GONE is not counted; a scope that EXISTS without the memory controller IS a leak, whatever the host swap', () => {
+  const e = env({ env: { PATH: '', ORCHESTRA_MEMORY_SCOPE_PREFIX: 'orchestra-rig-wh-cnt2-' } });
+  fs.mkdirSync(procRoot, { recursive: true });
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'MemTotal: 1000 kB\nSwapTotal: 8000000 kB\n');
+  const real = APP;
+  mkScope('orchestra-rig-wh-cnt2-wsa-aaaaaa.scope');
+  const ghost = env({ env: e.env, readdir: (p) => (p === real ? [...fs.readdirSync(p), 'orchestra-rig-wh-cnt2-wsg-gggggg.scope'] : fs.readdirSync(p)) });
+  assert.deepEqual(countMemberScopes(ghost), { total: 1, unlimited: 0 }, 'the ghost (listed, not on disk) is neither a scope nor an unlimited one — base 2eb13727 said {2, 0}, the first -fu said {2, 1}');
+  const nc = path.join(APP, 'orchestra-rig-wh-cnt2-wsn-nnnnnn.scope');
+  fs.mkdirSync(nc, { recursive: true }); // exists, no memory.* files at all
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'MemTotal: 1000 kB\nSwapTotal: 0 kB\n');
+  assert.deepEqual(countMemberScopes(ghost), { total: 2, unlimited: 1 }, 'a scope without the memory controller is not a cap even on a swapless host');
+});
+
 test('memberScopes: no app.slice / unsupported platform ⇒ [] ("not tracked"), never a throw', () => {
   assert.deepEqual(memberScopes(WS, env({ cgroupRoot: path.join(root, 'nope') })), []);
   assert.deepEqual(memberScopes(WS, env({ uid: null })), []);
@@ -201,4 +215,30 @@ test('FI-1 v1.9 — a browser main process that moved into its OWN scope: its he
   const out = listKeeperTreeOutsideScope(scope, env());
   assert.deepEqual(out.map((p) => [p.pid, p.cgroup, p.rssBytes]), [[1103, chromiumScope, 5000 * 16384]], 'only the keeper\'s own escapee — not the human\'s browser, not the in-scope members');
   assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: null }, env()), [], 'no known keeper ⇒ nothing is claimed');
+});
+
+test('FI-1 v1.9 (pre-review m1/m2): a stale keeper pid claims nothing; a pid recycled between the ppid snapshot and its read is not billed', () => {
+  const ws = 'ws-stale';
+  const dir = mkScope(`orchestra-ws-${ws}-kkkkkk.scope`, { 'cgroup.procs': '1300\n' });
+  const c = cgPathOf(dir);
+  const other = '/user.slice/user-1000.slice/user@1000.service/app.slice/session-2.scope';
+  mkProc(1300, 1, 'node', c, 10, 'node keeper.js');
+  mkProc(1301, 1300, 'chromium', other, 4000, 'chromium --headless'); // really escaped
+  // a keeper pid that is NOT in the scope any more (recycled by an unrelated process): its whole tree must not be listed
+  mkProc(1400, 1, 'firefox', other, 7000, 'firefox');
+  mkProc(1401, 1400, 'firefox', other, 7000, 'firefox --type=content');
+  assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: 1400 }, env()), [], 'stale/recycled keeper pid ⇒ []');
+  assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: 99999 }, env()), [], 'gone keeper ⇒ []');
+  assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: 1300 }, env()).map((p) => p.pid), [1301], 'control: the real keeper still lists its escapee');
+  // 1302 is a child of the keeper in the snapshot, but by the time its own files are read the pid belongs to an unrelated process (ppid 1)
+  mkProc(1302, 1300, 'stranger', other, 100, 'stranger');
+  const stat1302 = path.join(procRoot, '1302', 'stat');
+  let reads = 0;
+  const flip = env({ readFile: (p) => {
+    if (p === stat1302 && ++reads === 2) return `1302 (stranger) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 13020 1000000 100\n`;
+    return fs.readFileSync(p, 'utf8');
+  } });
+  const listed = listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: 1300 }, flip).map((p) => p.pid);
+  assert.equal(reads >= 2, true, 'the probe really intercepted the second read');
+  assert.deepEqual(listed, [1301], 'the recycled pid is dropped, the genuine escapee stays');
 });

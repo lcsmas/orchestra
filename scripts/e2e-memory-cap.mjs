@@ -39,6 +39,7 @@ const ARMS = {
   wrapper_missing_no_scope: { mustFailOnMaster: true },
   launcher_hangs_plain: { mustFailOnMaster: true },
   not_applied_reported: { mustFailOnMaster: true },
+  slow_keeper_keeps_cap: { mustFailOnMaster: true },
   // needs a real Chromium (CHROMIUM or /usr/lib64/chromium-browser/chromium-browser): run by `pnpm run test:memory-cap-browser`, skipped by `all` unless MC_BROWSER=1
   browser_contained: { mustFailOnMaster: true, needsChromium: true },
 };
@@ -254,12 +255,14 @@ async function teardown(wsList) {
 
 // ═══ the arms ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 const ws = wsName(ARM.slice(0, 4));
+/** A fake session-bus address handed to the member: the arms that assert on the CLI env need no real bus (the browser arm uses the real one). */
+const FAKE_BUS = 'unix:path=/nonexistent/orchestra-rig-bus';
 const wsList = [ws];
 let detail = '';
 try {
   if (ARM === 'kill_at_hard') {
     const spec = decide(ws);
-    const st = open(ws, spec);
+    const st = open(ws, spec, { extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     check('a scope exists: the keeper runs in a rig-prefixed .scope', f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
@@ -274,6 +277,8 @@ try {
     check('victim protection (CLI side): the CLI keeps adj 0 and the keeper adj 0', f.init?.adj === 0 && Number(readSafe(`/proc/${f.keeperPid}/oom_score_adj`)) === 0, `cli=${f.init?.adj}`);
     const t1 = await runTool(st, 'cat /proc/self/oom_score_adj', 't-adj');
     check('victim protection (tool side): a Bash tool command runs at oom_score_adj 1000', t1?.stdout.trim() === '1000', `tool adj=${t1?.stdout.trim()} prefix=${f.init?.shellPrefix}`);
+    const tb = await runTool(st, 'printf "%s" "${DBUS_SESSION_BUS_ADDRESS-unset}"', 't-bus');
+    check('H2 F1 counter: a capped member\'s tool env has NO session-bus address (a browser would leave the scope through it) — the driver handed it one', tb?.stdout.trim() === 'unset', `saw=${tb?.stdout.trim().slice(0, 60)}`);
     const events0 = f.cgroupDir ? eventsOf(f.cgroupDir) : {};
     const t2 = await runTool(st, `${python.join(' ')} ${RIG_DIR}/swarm.py 8 50 10 swarm-kill-at-hard`, 't-swarm', 90_000);
     await sleep(1200);
@@ -308,7 +313,7 @@ try {
     const human = ARM === 'human_no_scope';
     const spec = decide(ws, human ? { fleet: false, run: 'run-on' } : { fleet: true, run: 'run-off' });
     check(`the decision is "no scope" (${human ? 'human session, switch ON' : 'fleet member, switch OFF'})`, spec === undefined, JSON.stringify(spec ?? null));
-    const st = open(ws, spec);
+    const st = open(ws, spec, { extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     check('the keeper is NOT in a rig scope', !f.inRigScope && !(f.unit ?? '').startsWith('orchestra-ws-'), `cgroup=${cgOf(f.keeperPid)}`);
@@ -316,6 +321,8 @@ try {
     check('the tool wrapper is not installed in the CLI env (tool commands keep adj 0)', f.init?.shellPrefix == null);
     const pr = await kc.probeKeeper(ws);
     check('the keeper reports no cap', pr && pr.cap === undefined, JSON.stringify(pr?.cap ?? null));
+    const tb = await runTool(st, 'printf "%s" "${DBUS_SESSION_BUS_ADDRESS-unset}"', 't-bus');
+    check('control for the capped-only env change: an UNCAPPED session keeps its session-bus address', tb?.stdout.trim() === FAKE_BUS, `saw=${tb?.stdout.trim().slice(0, 60)}`);
     const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/swarm.py 4 40 4 swarm-uncapped`, 't-swarm', 60_000);
     check('uncapped: nothing killed (the same swarm a capped member loses processes to)', /killed=0/.test(t?.stdout ?? ''), (t?.stdout ?? '').trim().slice(-60));
     detail = `cgroup=${cgOf(f.keeperPid)}`;
@@ -455,6 +462,31 @@ try {
     check('...in no rig scope', !f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
     check('the app log says systemd-run hung and the member runs WITHOUT a scope', /systemd-run hung\?.*WITHOUT a scope/.test(orchLog()), '');
     check('the hung launcher was killed (no `sleep 300` left under this arm)', survivorsOf(base).filter((p) => /sleep/.test(readSafe(`/proc/${p}/cmdline`) ?? '')).length === 0, '');
+  } else if (ARM === 'slow_keeper_keeps_cap') {
+    // Pre-review m6: systemd-run exec'd INTO the keeper and the keeper is merely SLOW to listen (12 s > the 10 s launcher wait: fleet load). A healthy capped keeper must not be killed and replaced by an uncapped one.
+    const real = spawnSync('sh', ['-c', 'command -v systemd-run'], { encoding: 'utf8' }).stdout.trim();
+    const stub = path.join(base, 'slowbin');
+    fs.mkdirSync(stub, { recursive: true });
+    const delay = path.join(stub, 'delay.cjs');
+    fs.writeFileSync(delay, 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 12000);\n');
+    fs.writeFileSync(path.join(stub, 'systemd-run'), `#!/bin/sh\nNODE_OPTIONS="--require ${delay}" exec ${real} "$@"\n`, { mode: 0o755 });
+    const realPath = process.env.PATH;
+    process.env.PATH = `${stub}:${realPath}`;
+    scopeMod?.resetScopeSupportCache?.();
+    const spec = decide(ws);
+    check('the decision says "scope" (the shim is a real systemd-run behind a delayed keeper)', hasCap ? !!spec : true, JSON.stringify(spec ?? null));
+    const t0 = Date.now();
+    const st = open(ws, spec);
+    const up = await waitFor(() => initOf(st), 60_000);
+    const tUp = Date.now() - t0;
+    process.env.PATH = realPath;
+    const f = factsOf(ws, st);
+    check('control: the keeper really was slower than the 10 s launcher wait (else the next checks prove nothing)', tUp > 10_500, `up after ${tUp} ms`);
+    check('the member STARTED, IN its rig scope — not replaced by a plain keeper', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `after ${tUp} ms cgroup=${cgOf(f.keeperPid)} errors=${st.errors.join('|')}`);
+    check('the app log does NOT say the member runs WITHOUT a scope', !new RegExp(`memory-cap\\[${ws}\\].*WITHOUT a scope`).test(orchLog()), '');
+    const pr = await kc.probeKeeper(ws);
+    check('the keeper reports cap.state = active', pr?.cap?.state === 'active', JSON.stringify(pr?.cap ?? null));
+    detail = `up after ${tUp} ms`;
   } else if (ARM === 'browser_contained') {
     // H2 review F1 (ledger Q5): a real headless Chromium started by a capped member's tool must STAY in the member's scope. Measured on this host: with DBUS_SESSION_BUS_ADDRESS in its env
     // Chromium moves its main process into its own transient scope (out of the cap); without it all 9 processes stay. The keeper removes the address from a capped member's CLI env.
@@ -520,7 +552,14 @@ echo DONE`;
       check(`[${v.what}] precondition: the seeded limit really is open`, lim === 'max', `limit file=${lim}`);
       const pr = await kc.probeKeeper(wsv);
       check(`[${v.what}] the keeper reports cap.state = not-applied (never active)`, pr?.cap?.state === 'not-applied', JSON.stringify(pr?.cap ?? null));
-      check(`[${v.what}] the tools are NOT wrapped (nothing to protect without a cap)`, initOf(stv)?.shellPrefix == null);
+      const klog = readSafe(path.join(home, 'keepers', `${wsv}.log`)) ?? '';
+      if (v.tag === 'noswap') {
+        // pre-review m4: memory.max IS enforced — the tools stay the first victims and the kills stay named; only the STATE says the cap leaks.
+        check(`[${v.what}] the tools ARE still wrapped (memory.max is enforced: the kernel must pick a tool, not the CLI)`, !!initOf(stv)?.shellPrefix, `prefix=${initOf(stv)?.shellPrefix}`);
+        check(`[${v.what}] the kill watch is on (the keeper logs its full-path line)`, /memory cap: NOT-APPLIED unit=/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-200));
+      } else {
+        check(`[${v.what}] the tools are NOT wrapped and no watch runs (nothing to protect without a cap)`, initOf(stv)?.shellPrefix == null && !/memory cap: NOT-APPLIED unit=/.test(klog), `prefix=${initOf(stv)?.shellPrefix}`);
+      }
       check(`[${v.what}] the app log says UNCAPPED`, await waitFor(() => new RegExp(`memory-cap\\[${wsv}\\]: scope .* NOT applied.* UNCAPPED`).test(orchLog()), 8000), '');
       if (v.tag === 'nomax') {
         const cnt = scopeMod?.countMemberScopes();
