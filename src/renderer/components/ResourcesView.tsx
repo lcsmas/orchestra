@@ -8,6 +8,7 @@ import { isActionableStopReason } from '../../shared/usage-resume';
 import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionResourceStat } from '../../shared/resources';
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
+import { browserChipOf, type BrowserChip } from '../../shared/browser-reliquats';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
@@ -155,7 +156,7 @@ interface AgentRow extends SessionGroup {
 
 /** Session-kind chips; a keeper-hosted structured agent (`sdk`) reads « agent » — it IS the workspace's agent, just not under a PTY — and a workspace with attributed containers gets the 🐳 chip
  *  (#293, D-pick4 A): count in the label, the measured figure in the tooltip (it is already part of the row's memory figure). */
-function SessionChips({ sessions, containers, reliquats }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats'] }) {
+function SessionChips({ sessions, containers, reliquats, browsers }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats']; browsers?: BrowserChip | null }) {
   return (
     <span className="res-chips">
       {sessions.map((s) => (
@@ -174,6 +175,11 @@ function SessionChips({ sessions, containers, reliquats }: { sessions: SessionRe
           {'\u26A0'} {reliquatWord(reliquats.count)}
         </span>
       )}
+      {browsers && (
+        <span className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}>
+          {'\u{1F310}'} {browsers.count} arrêtés
+        </span>
+      )}
     </span>
   );
 }
@@ -184,12 +190,14 @@ function AgentRowView({
   diskBytes,
   ctxTokens,
   accountLabel,
+  browsers,
 }: {
   row: AgentRow;
   trace: number[];
   diskBytes: number | undefined;
   ctxTokens: number | undefined;
   accountLabel: string | null;
+  browsers: BrowserChip | null;
 }) {
   const [open, setOpen] = useState(false);
   const procs = row.sessions.flatMap((s) => s.processes).sort((a, b) => b.memBytes - a.memBytes);
@@ -260,7 +268,7 @@ function AgentRowView({
             )}
           </span>
         </span>
-        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} />
+        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} />
         {row.remote ? (
           <span className="res-remote-note">runs in sandbox — no local footprint</span>
         ) : row.containerOnly || row.scopeOnly ? (
@@ -446,6 +454,7 @@ export function AgentsTable({
   accountLabelFor,
   warning,
   reliquatsLine = null,
+  browsersOf,
 }: {
   rows: AgentRow[];
   loginSessions: SessionResourceStat[];
@@ -456,6 +465,8 @@ export function AgentsTable({
   warning: string | null;
   /** #328: the dim « Reliquats not tracked … » line (null = nothing to say). Optional so older callers keep compiling. */
   reliquatsLine?: string | null;
+  /** #331 (D-Q4 A'): the row's « 🌐 N arrêtés » chip — asked of rows that EXIST only, never creates one. */
+  browsersOf?: (row: AgentRow) => BrowserChip | null;
 }) {
   return (
     <>
@@ -487,6 +498,7 @@ export function AgentsTable({
                   diskBytes={diskOf(row)}
                   ctxTokens={ctxOf(row)}
                   accountLabel={accountLabelFor(row)}
+                  browsers={browsersOf ? browsersOf(row) : null}
                 />
               ))}
               {loginSessions.map((s) => (
@@ -797,6 +809,7 @@ export function ResourcesView() {
             accountLabelFor={accountLabelFor}
             warning={unattributedWarning(snap?.containers)}
             reliquatsLine={reliquatsNote(snap?.members)}
+            browsersOf={(row) => (row.remote ? null : browserChipOf(snap?.browserReliquats, row.key))}
           />
         </section>
 

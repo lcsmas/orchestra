@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BROWSER_IDLE_WINDOW_MS,
+  browserChipOf,
   clientConnected,
   commonProfilePrefix,
   decideBrowserReliquat,
@@ -156,4 +157,18 @@ test('commonProfilePrefix: the deepest shared directory of the stopped profiles,
   assert.equal(commonProfilePrefix([`${ROOT}/ws-1/tmp/a`, `${ROOT}/ws-1/rig/b`], fb), fb);
   assert.equal(commonProfilePrefix([`${ROOT}/ws-1/tmp/a`], fb), `${ROOT}/ws-1/tmp/a/`);
   assert.equal(commonProfilePrefix([], fb), fb);
+});
+
+test('browserChipOf (D-Q4 A\'): the row\'s « 🌐 N arrêtés » chip — hidden at 0 / unknown workspace / no view, the count and the profile prefix of THIS workspace only, plural in the title', () => {
+  const view = { total: 6, byWorkspace: { 'ws-a': { stopped: 5, lastAt: 1000, lastPrefix: `${ROOT}/ws-a/` }, 'ws-b': { stopped: 1, lastAt: 2000, lastPrefix: `${ROOT}/ws-b/tmp/` }, 'ws-z': { stopped: 0, lastAt: 3000, lastPrefix: `${ROOT}/ws-z/` } } };
+  const t = (ms: number): string => `T${ms}`;
+  assert.deepEqual(browserChipOf(view, 'ws-a', t), { count: 5, title: `5 navigateurs headless orphelins arrêtés depuis le démarrage — dernier à T1000, profil ${ROOT}/ws-a/ (laissé en place)` });
+  assert.deepEqual(browserChipOf(view, 'ws-b', t), { count: 1, title: `1 navigateur headless orphelin arrêté depuis le démarrage — dernier à T2000, profil ${ROOT}/ws-b/tmp/ (laissé en place)` });
+  assert.equal(browserChipOf(view, 'ws-z', t), null, 'a counter at 0 draws nothing');
+  assert.equal(browserChipOf(view, 'ws-other', t), null, 'another workspace\'s counter is never shown on this row');
+  assert.equal(browserChipOf(view, 'ws', t), null, 'exact key, not a prefix');
+  assert.equal(browserChipOf(undefined, 'ws-a', t), null);
+  assert.equal(browserChipOf(null, 'ws-a', t), null);
+  assert.equal(browserChipOf({ total: 0, byWorkspace: {} }, 'ws-a', t), null);
+  assert.match(browserChipOf(view, 'ws-a')!.title, /dernier à \d\d:\d\d,/, 'default time format: HH:MM');
 });

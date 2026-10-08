@@ -65,6 +65,20 @@ test('trapMember: the browser step runs after the scope step and before the cont
   assert.ok(at(body, 'if (m.remote) {') < step, 'the remote member returned long before');
 });
 
+test('the Resources chip (D-Q4 A\'): « 🌐 N arrêtés » only on rows that EXIST (never a row for a counter), never on a remote row, after the container chip, hidden at 0, the grey default chip', () => {
+  const view = codeOf('src/renderer/components/ResourcesView.tsx');
+  const chips = view.slice(at(view, 'function SessionChips('), at(view, 'function AgentRowView('));
+  assert.ok(at(chips, "{containers && (") < at(chips, '{browsers && ('), 'the 🌐 chip comes after the 🐳 chip');
+  assert.ok(chips.includes('className="res-chip browsers" data-res-browsers={browsers.count} title={browsers.title}') && chips.includes('{browsers.count} arrêtés'));
+  assert.ok(view.includes('browsersOf={(row) => (row.remote ? null : browserChipOf(snap?.browserReliquats, row.key))}'), 'the page asks per existing row; a remote row has no local browsers');
+  assert.ok(view.includes('browsers={browsersOf ? browsersOf(row) : null}'));
+  assert.ok(view.includes('const rows: AgentRow[] = grouped.rows.map('), 'rows come from the sessions/containers grouping ONLY');
+  const grouping = codeOf('src/shared/resources.ts');
+  assert.ok(!/browser/i.test(grouping.slice(at(grouping, 'export function groupSessionsByWorkspace('))), 'the grouping never creates or keeps a row for a browser counter');
+  const css = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+  assert.ok(/\.res-chip\.browsers \{ text-transform: none; letter-spacing: 0; \}/.test(css) && !/\.res-chip\.browsers[^}]*(color|border-color)/.test(css), 'the default grey chip: history tone, no status colour');
+});
+
 test('the browser module only READS the profile and /proc: no way to remove, rewrite or rename a file; every signal is preceded by a fresh identity read', () => {
   for (const rel of ['src/main/browser-reliquats.ts', 'src/shared/browser-reliquats.ts']) {
     const code = codeOf(rel);

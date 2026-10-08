@@ -106,6 +106,24 @@ export interface BrowserReliquatView {
   byWorkspace: Record<string, BrowserCounter>;
 }
 
+/** D-Q4 A' (the Resources chip): the grey « 🌐 N arrêtés » of ONE workspace row. null at 0 — nothing is drawn, and a row is never created for a counter (the caller only asks for rows that exist). */
+export interface BrowserChip {
+  count: number;
+  title: string;
+}
+
+const hhmm = (ms: number): string => {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+export function browserChipOf(view: BrowserReliquatView | null | undefined, wsId: string, fmtTime: (ms: number) => string = hhmm): BrowserChip | null {
+  const c = view?.byWorkspace?.[wsId];
+  if (!c || !(c.stopped > 0)) return null;
+  const n = c.stopped;
+  return { count: n, title: `${n} navigateur${n === 1 ? '' : 's'} headless orphelin${n === 1 ? '' : 's'} arrêté${n === 1 ? '' : 's'} depuis le démarrage — dernier à ${fmtTime(c.lastAt)}, profil ${c.lastPrefix} (laissé en place)` };
+}
+
 export interface BrowserTrack {
   /** When this monitor first saw the browser as an orphan. */
   firstOrphanAt: number;
