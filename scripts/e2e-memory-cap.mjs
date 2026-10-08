@@ -36,6 +36,7 @@ const ARMS = {
   kill_while_detached: { mustFailOnMaster: true },
   reliquat_outlives_keeper: { mustFailOnMaster: true },
   launcher_fails_plain: { mustFailOnMaster: true },
+  wrapper_missing_no_scope: { mustFailOnMaster: true },
 };
 
 const ARM = process.argv[2] ?? '';
@@ -84,14 +85,15 @@ if (ARM === 'all' || process.argv.includes('--contained')) {
       MC_KEEPER_BUNDLE: process.env.MC_KEEPER_BUNDLE,
     };
     for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
-    const unitsBefore = new Set(unitsNow(`${UNIT_PREFIX}*`));
+    const RUN_UNIT_GLOB = `${UNIT_PREFIX}mc${RUN_TOKEN}*`; // only THIS run's units: a concurrent rig run keeps its own
+    const unitsBefore = new Set(unitsNow(RUN_UNIT_GLOB));
     const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(HERE_REPO, 'scripts', '.r2-register.mjs'), fileURLToPath(import.meta.url), arm], { env, encoding: 'utf8', timeout: 240_000, cwd: HERE_REPO });
     const line = (r.stdout ?? '').split('\n').reverse().find((l) => l.startsWith('{"arm"'));
     let res;
     try { res = line ? JSON.parse(line) : { ok: false, error: `no result line (rc=${r.status}${r.signal ? ' ' + r.signal : ''}): ${(r.stderr ?? '').trim().slice(-300)}` }; } catch (e) { res = { ok: false, error: `unparsable result: ${e}` }; }
     // G5: after EVERY run, the survivors of THIS arm — printed, not assumed.
     const procs = survivorsOf(base);
-    const newUnits = unitsNow(`${UNIT_PREFIX}*`).filter((u) => !unitsBefore.has(u));
+    const newUnits = unitsNow(RUN_UNIT_GLOB).filter((u) => !unitsBefore.has(u));
     const leaked = { procs: procs.length, units: newUnits.length };
     for (const u of newUnits) spawnSync('systemctl', ['--user', 'stop', u], { encoding: 'utf8' }); // named: it starts with OUR prefix and did not exist before this arm
     for (const pid of procs) { try { if (fs.readFileSync(`/proc/${pid}/environ`, 'latin1').includes(base) || fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').includes(base)) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
@@ -112,10 +114,16 @@ if (ARM === 'all' || process.argv.includes('--contained')) {
 // ARM MODE
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 if (!ARMS[ARM]) { console.error(`unknown arm: ${ARM} (one of ${Object.keys(ARMS).join(', ')}, all)`); process.exit(2); }
+// A rig run from a capped member's Bash tool inherits oom_score_adj 1000 — and so would the keeper and the stand-in CLI it spawns, making "keeper/CLI at 0" and the victim ranking
+// meaningless. An unprivileged process may lower itself back to 0 (its floor): do it first, loudly if it cannot.
+try { fs.writeFileSync('/proc/self/oom_score_adj', '0'); } catch { /* not Linux / floor above 0 */ }
+if (readSafe0('/proc/self/oom_score_adj') !== '0') { console.error('VOID: this process cannot lower its oom_score_adj to 0 — the keeper/CLI baseline would be wrong'); process.exit(3); }
+function readSafe0(p) { try { return fs.readFileSync(p, 'utf8').trim(); } catch { return null; } }
 const PHASE = process.env.MC_PHASE ?? '1';
+const CHILD_PHASE = PHASE === 'app' || PHASE === 'app2'; // helper processes of kill_while_detached: they must not wipe or tear down the arm's world
 const base = armBase(ARM);
 if (!base.startsWith(path.join(REAL_HOME, '.cache', 'memory-cap-rig') + path.sep)) throw new Error(`refusing rig dir outside the rig cache root: ${base}`);
-if (PHASE !== 'app') fs.rmSync(base, { recursive: true, force: true });
+if (!CHILD_PHASE) fs.rmSync(base, { recursive: true, force: true });
 const home = path.join(base, 'home');
 fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
 process.env.ORCHESTRA_HOME = home;
@@ -276,6 +284,7 @@ try {
     check('every kernel kill is reported: one record per oom_kill, all at the hard level', nKilled > 0 && kills.length === nKilled && kills.every((r) => r.level === 'hard'), `records=${kills.length} oom_kill delta=${nKilled}`);
     check('...and the record NAMES the killed command (a process that lived < one snapshot may stay unnamed, never the others)', !!named, JSON.stringify(kills.map((r) => r.command?.slice(0, 40) ?? null)));
     const rec = named;
+    check('the app says the cap is ACTIVE (state read back from the keeper)', await waitFor(() => new RegExp(`memory-cap\\[${ws}\\]: ACTIVE — scope ${f.unit}`).test(orchLog()), 8000), '');
     check('the app log has the line (workspace, killed command, level)', new RegExp(`memory-cap\\[${ws}\\] killed ".*swarm\\.py.*" .* at the hard level`).test(orchLog()), '');
     detail = `scope=${f.unit} memory.max=${maxB} oom_kill=${ev.oom_kill} record=${rec?.command?.slice(0, 40)}`;
   } else if (ARM === 'below_cap_untouched') {
@@ -325,6 +334,14 @@ try {
     detail = `keeper=${f1.keeperId}`;
   } else if (ARM === 'kill_while_detached') {
     // The "app" is a SEPARATE process (MC_PHASE=app) that starts the member and the swarm and is then SIGKILLed mid-turn; this process is the app that comes back.
+    if (PHASE === 'app2') {
+      // a THIRD process: the app restarted AGAIN after the kills were delivered and logged — it must not be told about them a second time
+      const st2 = open(ws, decide(ws));
+      await waitFor(() => st2.attached, 20_000);
+      await sleep(2000);
+      fs.writeFileSync(path.join(base, 'app2.json'), JSON.stringify({ attached: st2.attached, kills: kills.length }));
+      process.exit(0);
+    }
     if (PHASE === 'app') {
       const st = open(ws, decide(ws));
       await waitFor(() => initOf(st), 30_000);
@@ -352,6 +369,12 @@ try {
     check('the reattached app is told about EVERY kill that happened while it was away (one record per oom_kill, hard level)', kills.length === (evAfter.oom_kill ?? -1) && kills.every((r) => r.level === 'hard'), `records=${kills.length} oom_kill=${evAfter.oom_kill}`);
     check('...naming the killed command', kills.some((r) => /swarm\.py/.test(r.command ?? '')), JSON.stringify(kills.map((r) => r.command?.slice(0, 30) ?? null)));
     check('the app log has the line after reattach', new RegExp(`memory-cap\\[${ws}\\] killed`).test(orchLog()));
+    const logCount = () => (orchLog().match(new RegExp(`memory-cap\\[${ws}\\] killed`, 'g')) ?? []).length;
+    const logged = logCount();
+    check('every record was logged exactly once (log lines = oom_kill)', logged === (evAfter.oom_kill ?? -1), `lines=${logged} oom_kill=${evAfter.oom_kill}`);
+    const app2 = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { env: { ...process.env, MC_PHASE: 'app2' }, encoding: 'utf8', timeout: 120_000 });
+    const out2 = JSON.parse(readSafe(path.join(base, 'app2.json')) ?? '{}');
+    check('PRE-REVIEW MAJOR 2: a SECOND app restart re-attaches and replays NOTHING (0 records delivered, no new log line)', out2.attached === true && out2.kills === 0 && logCount() === logged, `attached=${out2.attached} delivered=${out2.kills} lines ${logged}->${logCount()} ${String(app2.stderr).slice(-120)}`);
     detail = `kills=${kills.length}`;
   } else if (ARM === 'reliquat_outlives_keeper') {
     const st = open(ws, decide(ws));
@@ -401,12 +424,26 @@ try {
     const pr = await kc.probeKeeper(ws);
     check('the keeper says why: cap.state = no-scope', pr?.cap?.state === 'no-scope', JSON.stringify(pr?.cap ?? null));
     check('the app log says the member runs WITHOUT a scope', /launching it WITHOUT a scope/.test(orchLog()), '');
+    check('...and WHY: the launcher\'s own stderr is in the line (not just "exit 1")', /launching it WITHOUT a scope/.test(orchLog()) && /rig stub/.test(orchLog().split('\n').find((l) => /launching it WITHOUT a scope/.test(l)) ?? ''), '');
+    check('the app also reads the state back: the keeper is not in the scope ⇒ UNCAPPED, in the log', await waitFor(() => new RegExp(`memory-cap\\[${ws}\\]: the keeper is not in scope .* UNCAPPED`).test(orchLog()), 8000), '');
     check('tool commands are not wrapped (no cap, nothing to protect)', initOf(st)?.shellPrefix == null);
+  } else if (ARM === 'wrapper_missing_no_scope') {
+    // PRE-REVIEW MAJOR 4: with the limit applied and the tool wrapper unusable the kernel would kill the CLI first (the session). So: NO scope, said in the log, member still starts.
+    if (WRAPPER) fs.rmSync(WRAPPER, { force: true });
+    const spec = decide(ws);
+    check('control: the decision itself still says "scope" (the switch is ON, the member is a fleet member)', hasCap ? !!spec : true, JSON.stringify(spec ?? null));
+    const st = open(ws, spec);
+    const up = await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    check('the member STARTED', up && alive(f.keeperPid) && alive(f.cliPid));
+    check('...in NO rig scope (an unprotected cap would kill the CLI, i.e. the session)', !f.inRigScope && armUnits(ws).length === 0, `cgroup=${cgOf(f.keeperPid)} units=${armUnits(ws)}`);
+    check('the app log says why', /NOT creating the scope/.test(orchLog()), '');
+    detail = `wrapper=${WRAPPER}`;
   }
 } catch (e) {
   check(`arm threw`, false, String(e?.stack ?? e).slice(0, 400));
 } finally {
-  if (PHASE !== 'app') await teardown(wsList);
+  if (!CHILD_PHASE) await teardown(wsList);
 }
 
 const ok = checks.length > 0 && checks.every((c) => c.ok);

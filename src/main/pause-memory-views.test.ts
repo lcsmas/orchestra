@@ -24,7 +24,7 @@ const reason = { reason: 'memory' as const, pauseCycle: 1, episode: 1, availByte
 const pause = (id: string, auto: string | null, o: { at?: number; resume?: number | null } = {}) =>
   db.prepare("UPDATE runs SET paused_at = ?, paused_by = 'host:memory', pause_mode = 'hard', pause_auto = ?, resume_started_at = ? WHERE id = ?").run(o.at ?? T, auto, o.resume ?? null, id);
 
-test('no pause on the bus ⇒ no view', () => assert.deepEqual(memoryPausedRunViews(db), []));
+test('no pause on the bus ⇒ an EMPTY list (known: nothing paused)', () => assert.deepEqual(memoryPausedRunViews(db), []));
 
 test('a memory Pause (epoch-matched motive) is a view; a Reprise under way is flagged; manual / usage-limit / stale-epoch pauses are NOT memory pauses', () => {
   pause('mem', encodeMemoryPause(reason, T), { at: T });
@@ -33,7 +33,7 @@ test('a memory Pause (epoch-matched motive) is a view; a Reprise under way is fl
   pause('usage', encodePauseAuto({ reason: 'usage_limit', wsIds: ['w'], accountIds: ['a'] } as never, T));
   pause('stale', encodeMemoryPause(reason, T - 1_000), { at: T });
   const names: Record<string, string> = { mem: 'bloc2-ops' };
-  const v = memoryPausedRunViews(db, (id) => names[id]);
+  const v = memoryPausedRunViews(db, (id) => names[id])!;
   assert.deepEqual(v.map((x) => x.runId), ['mem', 'resuming']);
   assert.deepEqual(v[0], { runId: 'mem', label: 'bloc2-ops', since: T, resuming: false });
   assert.equal(v[1].resuming, true);
@@ -45,14 +45,14 @@ test('D1 end to end: the guard says "due now: none" (memory recovered above crit
     sampled: true, measured: true, availBytes: 4.2 * GIB, readAt: 1, admission: 'held', admissionEnabled: true, pause: 'none', episode: 1, pauseCycle: 1, mayReleaseOneStart: false,
     heldSince: 1, pauseSince: null, admissionBytes: 6 * GIB, criticalBytes: 3 * GIB, releaseMarginBytes: GIB, sampleIntervalMs: 10_000,
   };
-  const line = formatMemoryGuardLine(snap, memoryPausedRunViews(db));
+  const line = formatMemoryGuardLine(snap, memoryPausedRunViews(db) ?? undefined);
   assert.match(line, /memory Pause IN EFFECT on 2 run\(s\)/);
   assert.doesNotMatch(line, /memory Pause none/);
 });
 
-test('an unreadable bus is an empty list, never a throw (a pause read never breaks bus-status)', () => {
-  assert.deepEqual(memoryPausedRunViews(null), []);
+test('an unreadable bus is UNKNOWN (null), never an empty list: bus-status must not print "memory Pause none" on an error', () => {
+  assert.equal(memoryPausedRunViews(null), null);
   const closed = bus.openBus(path.join(ROOT, 'c.sqlite'));
   closed.close();
-  assert.deepEqual(memoryPausedRunViews(closed), []);
+  assert.equal(memoryPausedRunViews(closed), null);
 });

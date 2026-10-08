@@ -293,7 +293,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     if (m === 'memoryCap') {
       lines.push(
         on
-          ? `- bus switch ${wire}=ON — each of your session starts (spawn, restart, wake) runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel (it is named in your app log), never your session. Keep tests and rigs light; a session that started before this was ON is not capped.`
+          ? `- bus switch ${wire}=ON — each of your session starts (spawn, restart, wake) runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and your session survives. Keep tests and rigs light; a session that started before this was ON is not capped.`
           : `- bus switch ${wire}=OFF — your session runs in no memory scope of its own; no per-member memory limit applies.`,
       );
       continue;

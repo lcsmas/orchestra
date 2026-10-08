@@ -40,12 +40,15 @@ import {
   OOM_TOOL_WRAPPER_FILE,
   OOM_TOOL_WRAPPER_SCRIPT,
   buildScopeLaunchArgv,
+  describeCapState,
   formatMemKillLine,
+  wrapperPathUsable,
   type MemKillRecord,
   type MemoryCapLaunch,
 } from '../shared/memory-scope';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
+import { createMemKillCursor, type MemKillCursor } from './memkill-cursor';
 import { APPIMAGE_PATH } from './app-image';
 import { log } from './logger';
 
@@ -152,8 +155,9 @@ function installOomWrapper(): void {
 
 export type MemoryKillListener = (wsId: string, rec: MemKillRecord) => void;
 const memKillListeners: MemoryKillListener[] = [];
-/** Last `seq` delivered per scope unit (a new keeper = a new unit = seq restarts at 1). */
-const memKillSeen = new Map<string, number>();
+/** Which kills this app already delivered, per scope unit — PERSISTED (keepers/memkill-cursor.json): an app restart must not replay the keeper's last 20 records as new. */
+let memKillCursor: MemKillCursor | null = null;
+const cursor = (): MemKillCursor => (memKillCursor ??= createMemKillCursor(path.join(keeperDir(), 'memkill-cursor.json'), (m) => log.warn(m)));
 
 /** Subscribe to kills by the Plafond mémoire (#322 builds the member notice + the coordinator's bus message on this). The app-log line is written
  *  here, once per record, whatever the listeners do. Returns the unsubscribe. */
@@ -165,11 +169,9 @@ export function onMemoryKill(fn: MemoryKillListener): () => void {
   };
 }
 
-/** Deliver a record at most once (a push frame AND a later helloAck catch-up can carry the same one). */
+/** Deliver a record once per scope unit across app restarts (a push frame AND a later helloAck catch-up can carry the same one). At-least-once: the cursor is written after the handlers ran. */
 function deliverMemKill(wsId: string, rec: MemKillRecord): void {
-  const seen = memKillSeen.get(rec.unit) ?? 0;
-  if (rec.seq <= seen) return;
-  memKillSeen.set(rec.unit, rec.seq);
+  if (rec.seq <= cursor().seen(rec.unit)) return;
   log.warn(formatMemKillLine(wsId, rec));
   for (const fn of [...memKillListeners]) {
     try {
@@ -177,6 +179,32 @@ function deliverMemKill(wsId: string, rec: MemKillRecord): void {
     } catch (e) {
       log.warn(`memory-cap[${wsId}]: kill listener failed`, e);
     }
+  }
+  cursor().mark(rec.unit, rec.seq);
+}
+
+/** A moment after a scoped keeper got its spawn frame, ask it what it really is and SAY it in the app log: a scope whose limit is not applied or whose tools are not wrapped is not the promised cap. */
+async function reportCapState(wsId: string, cap: MemoryCapLaunch): Promise<void> {
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 400 : 800));
+    const pr = await probeKeeper(wsId);
+    if (!pr) continue;
+    if (pr.cap === undefined && i < 3) continue; // the spawn frame may not have been processed yet
+    const d = describeCapState(pr.cap?.state, cap.unit, cap.limits?.hardBytes ?? 0);
+    (d.level === 'info' ? log.info : log.warn)(`memory-cap[${wsId}]: ${d.text}`);
+    return;
+  }
+}
+
+/** The wrapper a capped keeper needs to protect itself: an absolute, whitespace-free, executable path. Without it the scope would kill the CLI first — so no scope. */
+function oomWrapperReady(): boolean {
+  const p = oomWrapperPath();
+  if (!wrapperPathUsable(p)) return false;
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -754,7 +782,10 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
     // session is better than none — and the keeper's `cap.state` will say `no-scope`.
     const launch = buildScopeLaunchArgv({ unit: cap.unit, limits: cap.limits, description: `Orchestra member ${wsId} (keeper + session)`, cmd: runtime.cmd, args: keeperArgs });
     let launcherFailed: string | null = null;
-    const child = spawn(launch.cmd, launch.args, { detached: true, stdio: 'ignore', env: runtime.env });
+    // systemd-run's own stderr goes to the keeper's log (append) so a failure carries its REASON; the exec'd keeper inherits the same fd (its klog appends to the file too).
+    const logFd = fs.openSync(keeperLogPath(wsId), 'a');
+    const child = spawn(launch.cmd, launch.args, { detached: true, stdio: ['ignore', 'ignore', logFd], env: runtime.env });
+    fs.closeSync(logFd);
     child.once('error', (e) => (launcherFailed = e.message));
     child.once('exit', (code, signal) => {
       if (code !== 0) launcherFailed = `exit ${code ?? signal}`; // the launcher exec'd into the keeper: any exit before the socket is up is a failure
@@ -766,7 +797,13 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
       return r;
     }
     if (launcherFailed === null) throw new Error(`keeper failed to start for ${wsId}: ${String(r.err)}`);
-    log.warn(`memory-cap[${wsId}]: could not start the keeper in scope ${cap.unit} (${launcherFailed}) — launching it WITHOUT a scope`);
+    let why = '';
+    try {
+      why = ` — ${fs.readFileSync(keeperLogPath(wsId), 'utf8').trim().split('\n').slice(-2).join(' | ').slice(-300)}`;
+    } catch {
+      /* no log */
+    }
+    log.warn(`memory-cap[${wsId}]: could not start the keeper in scope ${cap.unit} (${launcherFailed}${why}) — launching it WITHOUT a scope`);
   }
   const child = spawn(runtime.cmd, keeperArgs, {
     detached: true,
@@ -970,7 +1007,13 @@ export function makeKeeperSpawn(
             }
           }
           if (!sock) {
-            sock = await launchKeeperDaemon(wsId, memoryCap);
+            // #320: no usable tool wrapper ⇒ NO scope. With the limit applied and the tools at adj 0 the kernel kills the biggest process — the CLI, i.e. the session.
+            let cap = memoryCap;
+            if (cap && !oomWrapperReady()) {
+              log.warn(`memory-cap[${wsId}]: the tool wrapper ${oomWrapperPath()} is missing or unusable — NOT creating the scope (without it the kernel would kill the CLI first); this member runs uncapped`);
+              cap = undefined;
+            }
+            sock = await launchKeeperDaemon(wsId, cap);
             wireSocket(sock);
             await helloOn(sock);
             sock.write(
@@ -981,9 +1024,10 @@ export function makeKeeperSpawn(
                 cwd: opts.cwd ?? process.cwd(),
                 env: opts.env,
                 ...(dockerRelay ? { dockerRelay } : {}),
-                ...(memoryCap?.limits ? { memoryCap: { unit: memoryCap.unit, hardBytes: memoryCap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),
+                ...(cap?.limits ? { memoryCap: { unit: cap.unit, hardBytes: cap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),
               }),
             );
+            if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});
           }
           ready = true;
           for (const line of buffered) sock.write(line);

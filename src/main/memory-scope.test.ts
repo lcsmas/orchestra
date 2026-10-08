@@ -80,8 +80,15 @@ test('memberScopes: ONLY this workspace\'s scopes, with the rig prefix honoured;
   assert.ok(found.every((s) => s.cgroupDir.startsWith(APP) && s.keeperPid === null));
   assert.equal(scopePrefix(e), 'orchestra-rig-wh-h1-');
   assert.deepEqual(memberScopes('nobody', e), []);
-  assert.equal(countMemberScopes(e), 3, 'every scope of the rig prefix, any workspace (the production-prefixed one is not ours)');
+  assert.deepEqual(countMemberScopes(e), { total: 3, unlimited: 0 }, 'every scope of the rig prefix, any workspace (the production-prefixed one is not ours); all three have memory.max set');
   assert.deepEqual(memberScopes(WS, env({ env: { PATH: '' } })).map((s) => s.gen), ['dddddd'], 'the production prefix sees only its own');
+});
+
+test('countMemberScopes: a scope whose limit is NOT applied (memory.max = max) is counted as unlimited — a scope that is not a cap', () => {
+  const e = env({ env: { PATH: '', ORCHESTRA_MEMORY_SCOPE_PREFIX: 'orchestra-rig-wh-cnt-' } });
+  mkScope('orchestra-rig-wh-cnt-wsa-aaaaaa.scope');
+  mkScope('orchestra-rig-wh-cnt-wsb-bbbbbb.scope', { 'memory.max': 'max\n' });
+  assert.deepEqual(countMemberScopes(e), { total: 2, unlimited: 1 });
 });
 
 test('memberScopes: no app.slice / unsupported platform ⇒ [] ("not tracked"), never a throw', () => {
@@ -104,6 +111,25 @@ test('keeperPid is the pid-file keeper ONLY when /proc says it is a member of TH
   assert.equal(memberScopes(ws, e)[0].keeperPid, null, 'an unreadable pid file is unknown, not a crash');
 });
 
+test('keeperPid before the keeper wrote its pid file (it listens first): the scope member whose argv is `keeper.js <wsId>` is the keeper — its CLI is not misread as a Reliquat', () => {
+  const ws = 'ws-nopidfile';
+  const unit = `orchestra-ws-${ws}-hhhhhh.scope`;
+  const dir = mkScope(unit, { 'cgroup.procs': '700\n701\n' });
+  const c = cgPathOf(dir);
+  mkProc(700, 1, 'node', c, 10, `node /h/bin/keeper.js ${ws} /h/k.sock ${path.join(keepers, `${ws}.pid`)} /h/k.log`);
+  mkProc(701, 700, 'claude', c, 20, 'claude --x');
+  assert.ok(!fs.existsSync(path.join(keepers, `${ws}.pid`)), 'precondition: no pid file yet');
+  const scope = memberScopes(ws, env())[0];
+  assert.equal(scope.keeperPid, 700);
+  const roles = Object.fromEntries(listScopeProcs(scope, 701, env()).map((p) => [p.pid, p.role]));
+  assert.deepEqual(roles, { 700: 'keeper', 701: 'cli' });
+  // a keeper of ANOTHER workspace, or of another HOME (pid-file argument differs), is not this one
+  mkProc(702, 701, 'node', c, 5, `node /h/bin/keeper.js some-other-ws /x ${path.join(keepers, 'some-other-ws.pid')} /l`);
+  mkProc(703, 701, 'node', c, 5, `node /other-home/bin/keeper.js ${ws} /o/k.sock /other-home/keepers/${ws}.pid /o/k.log`); // a DEV-home keeper of the same ws id
+  fs.writeFileSync(path.join(dir, 'cgroup.procs'), '702\n703\n701\n');
+  assert.equal(memberScopes(ws, env())[0].keeperPid, null, 'no member is this workspace\'s keeper ⇒ unknown stays unknown');
+});
+
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
@@ -124,6 +150,8 @@ test('listScopeProcs: keeper / cli / session by ancestry, Reliquats by orphaning
   mkProc(600, 1, 'chromium', c, 300, 'chromium --headless'); // orphaned: a Reliquat
   mkProc(601, 600, 'chromium', c, 200, 'chromium --type=gpu');
   // 999 listed in cgroup.procs but already gone from /proc
+  // FI-1 (c): without the caller naming it, the CLI is the keeper's ONLY direct child (here 501; 600 is orphaned to init)
+  assert.equal(listScopeProcs({ cgroupDir: dir, keeperPid: 500 }, null, env()).find((p) => p.pid === 501)?.role, 'cli');
   const procs = listScopeProcs({ cgroupDir: dir, keeperPid: 500 }, 501, env());
   assert.deepEqual(Object.fromEntries(procs.map((p) => [p.pid, p.role])), { 500: 'keeper', 501: 'cli', 502: 'session', 600: 'reliquat', 601: 'reliquat' });
   assert.equal(procs.find((p) => p.pid === 600)?.rssBytes, 300 * 16384);

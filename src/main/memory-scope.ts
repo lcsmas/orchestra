@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { orchestraHome } from './platform/index.ts';
+import { parseKeeperArgv } from '../shared/resource-monitor.ts';
 import {
   MEMORY_SCOPE_PREFIX_ENV,
   classifyScopeMembers,
@@ -133,14 +134,34 @@ export interface MemberScope {
 }
 
 function keeperPidIn(wsId: string, cgroupDir: string, e: ScopeEnv): number | null {
+  // 1. The pid file's keeper, iff /proc says it lives in THIS scope (a recycled pid in another cgroup is UNKNOWN, not the keeper).
   try {
     const pid = (JSON.parse(e.readFile(e.keeperPidFile(wsId))) as { pid?: unknown }).pid;
-    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
-    const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${pid}/cgroup`));
-    return cg !== null && path.join(e.cgroupRoot, cg) === cgroupDir ? pid : null;
+    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) {
+      const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${pid}/cgroup`));
+      if (cg !== null && path.join(e.cgroupRoot, cg) === cgroupDir) return pid;
+    }
   } catch {
-    return null; // gone / not ours / unreadable = UNKNOWN, never "the keeper"
+    /* no / unreadable pid file, or the pid is gone — fall through */
   }
+  // 2. The keeper writes its pid file only AFTER it listens: until then the pid file is absent and a naive resolver would call the keeper AND its CLI Reliquats
+  //    (H2's pre-review hazard). The scope's main process IS the keeper (systemd-run exec'd into it), so a member whose argv is `…/keeper.js <wsId> …` is it.
+  try {
+    for (const raw of e.readFile(path.join(cgroupDir, 'cgroup.procs')).split('\n')) {
+      const pid = Number(raw);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      let argv: string[];
+      try {
+        argv = e.readFile(`${e.procRoot}/${pid}/cmdline`).split('\0').filter(Boolean);
+      } catch {
+        continue; // vanished between the list and the read
+      }
+      if (parseKeeperArgv(argv, e.keeperPidFile) === wsId) return pid; // anchored on THIS home's pid-file argument: a dev/other-home keeper never matches
+    }
+  } catch {
+    /* unreadable scope */
+  }
+  return null; // unknown stays unknown: a consumer that kills must fail closed on it
 }
 
 /** FI-1 (a): every scope of `wsId` that still exists — `[]` = "not tracked". Several generations can coexist (an old one kept alive by Reliquats). */
@@ -164,13 +185,16 @@ export function memberScopes(wsId: string, e: ScopeEnv = realScopeEnv()): Member
   return out.sort((a, b) => a.gen.localeCompare(b.gen));
 }
 
-/** How many member scopes exist right now (any workspace) — the `bus-status` count. */
-export function countMemberScopes(e: ScopeEnv = realScopeEnv()): number | null {
+/** How many member scopes exist on this HOST right now (any workspace, any run — scopes carry no run), and how many of them have NO memory limit applied (not a cap) — the `bus-status` figures. */
+export function countMemberScopes(e: ScopeEnv = realScopeEnv()): { total: number; unlimited: number } | null {
   const slice = appSliceDir(e);
   if (!slice) return null;
   const prefix = scopePrefix(e);
   try {
-    return e.readdir(slice).filter((u) => parseMemoryScopeUnit(prefix, u) !== null).length;
+    const mine = e.readdir(slice).filter((u) => parseMemoryScopeUnit(prefix, u) !== null);
+    let unlimited = 0;
+    for (const u of mine) if (readScopeMemory({ cgroupDir: path.join(slice, u) }, e)?.maxBytes === null) unlimited++;
+    return { total: mine.length, unlimited };
   } catch {
     return null;
   }
@@ -241,5 +265,11 @@ export function listScopeProcs(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid
       /* vanished between the list and the read */
     }
   }
-  return classifyScopeMembers(members, scope.keeperPid, cliPid);
+  // FI-1 (c): the CLI is the keeper's direct child. The caller may know it (helloAck.pid); otherwise it is the keeper's ONLY direct child in this scope (two or none ⇒ unknown, never a guess).
+  let cli = cliPid;
+  if (cli === null && scope.keeperPid !== null) {
+    const kids = members.filter((m) => m.ppid === scope.keeperPid);
+    if (kids.length === 1) cli = kids[0].pid;
+  }
+  return classifyScopeMembers(members, scope.keeperPid, cli);
 }

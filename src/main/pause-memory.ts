@@ -73,9 +73,9 @@ const mem = (bytes: number): string => `MemAvailable ${formatGb(bytes, 2)}`;
 
 /** Every run that is paused RIGHT NOW with the stored memory motive (epoch-matched, so a later manual pause never reads as one). Unlike {@link memoryPausedRuns} (the runs the guard may LIFT) this
  *  includes a run whose Reprise is under way — it is still paused until every member is back — and does not look at the frozen `pause` switch (only a switch-ON run can have been paused). The guard's own `pause` field
- *  means "due now" and says nothing about this — the bus row is the truth (it also survives an app restart). Pure read; a failed read is an empty list. */
-export function memoryPausedRunViews(db: BusDb | null, label?: (runId: string) => string | undefined): MemoryPausedRunView[] {
-  if (!db) return [];
+ *  means "due now" and says nothing about this — the bus row is the truth (it also survives an app restart). Pure read; a failed read (or no bus) is `null` = UNKNOWN, never an empty list. */
+export function memoryPausedRunViews(db: BusDb | null, label?: (runId: string) => string | undefined): MemoryPausedRunView[] | null {
+  if (!db) return null;
   try {
     const rows = db.prepare('SELECT id, paused_at, pause_auto, resume_started_at FROM runs WHERE paused_at IS NOT NULL AND pause_auto IS NOT NULL ORDER BY paused_at, id').all() as Array<Record<string, unknown>>;
     const out: MemoryPausedRunView[] = [];
@@ -88,7 +88,7 @@ export function memoryPausedRunViews(db: BusDb | null, label?: (runId: string) =
     }
     return out;
   } catch {
-    return [];
+    return null; // UNKNOWN is not NONE: the caller omits it and the CLI keeps the guard's word instead of printing "memory Pause none" on an error
   }
 }
 

@@ -477,6 +477,8 @@ export async function startHooksServer(): Promise<void> {
             // Null bus → count 0 (nothing to report, D1). `badRecipientCount` is
             // the authoritative total; `badRecipients` is a capped sample so a
             // huge bus does not return an unbounded list.
+            // D1 (ledger #329): the runs REALLY under a memory Pause on the bus. A failed read is OMITTED (null) so the CLI falls back to the guard's word — never a fabricated "none".
+            const memPausedRuns = memoryPausedRunViews(getBus(), (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? undefined) : undefined; });
             const containersView = accountingView(getContainerAccounting()); // ONE read: the view and its labels must come from the same snapshot (a read across the stale limit would pair 'ok' with no labels)
             const badDb = getBus();
             const allBad = badDb ? busBadRecipientRows(badDb) : [];
@@ -496,12 +498,12 @@ export async function startHooksServer(): Promise<void> {
               // #285: the host-wide memory guard state (not run-scoped) — the CLI prints it as the `memory:` line.
               memoryGuard: getMemoryGuardSnapshot(),
               // D1 (ledger #329): the runs REALLY under a memory Pause on the bus — the guard's own `pause` only means "due now".
-              memoryPausedRuns: memoryPausedRunViews(badDb, (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? undefined) : undefined; }),
+              ...(memPausedRuns ? { memoryPausedRuns: memPausedRuns } : {}),
               // #320: the Plafond mémoire as configured NOW (levels from Garde mémoire, applied at each member's next session start) + what exists on this host.
               memoryCap: (() => {
                 const st = store.getMemoryGuardSettings();
                 const sup = scopeSupportCached();
-                return { softBytes: Math.round(st.capSoftGb * GIB), hardBytes: Math.round(st.capHardGb * GIB), scopes: sup.ok ? countMemberScopes() : null, supported: sup.ok, ...(sup.ok ? {} : { unsupportedReason: sup.reason }) };
+                return { softBytes: Math.round(st.capSoftGb * GIB), hardBytes: Math.round(st.capHardGb * GIB), scopes: sup.ok ? (countMemberScopes()?.total ?? null) : null, unlimited: sup.ok ? (countMemberScopes()?.unlimited ?? 0) : 0, supported: sup.ok, ...(sup.ok ? {} : { unsupportedReason: sup.reason }) };
               })(),
               // #293: container memory per workspace + unattributed containers (the LAST monitor tick's accounting — never a Docker call here); the CLI prints the `containers:` line.
               containers: containersView,

@@ -329,7 +329,24 @@ export function formatMemKillLine(wsLabel: string, rec: MemKillRecord): string {
   const cmd = rec.command === null ? 'an unnamed process (it lived less than one snapshot)' : `"${rec.command}" (pid ${rec.pid}, ~${Math.round((rec.rssBytes ?? 0) / (1024 * 1024))} MB)`;
   const lvl = rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${(rec.hardBytes / GIB).toFixed(2)} GB)` : ''}` : 'an OOM kill from outside the scope limit';
   const amb = rec.candidates.length ? ` — also gone in the same window: ${rec.candidates.join(' | ')}` : '';
-  return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit}${amb}`;
+  return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}${amb}`;
+}
+
+/** What the app says about a freshly launched scoped keeper, from the state the keeper reports (`helloAck.cap.state`). `warn` states are ones where the promise «a runaway tool dies, the session survives» does NOT hold. */
+export function describeCapState(state: 'active' | 'unprotected' | 'not-applied' | 'no-scope' | undefined, unit: string, hardBytes: number): { level: 'info' | 'warn'; text: string } {
+  const hard = `${(hardBytes / GIB).toFixed(2)} GB`;
+  switch (state) {
+    case 'active':
+      return { level: 'info', text: `ACTIVE — scope ${unit}, hard ${hard}, tool commands run at oom_score_adj ${OOM_ADJ_TOOLS}` };
+    case 'unprotected':
+      return { level: 'warn', text: `scope ${unit} has its hard limit (${hard}) but the tool wrapper is unusable — the kernel would kill the CLI (the biggest process) before a runaway tool command` };
+    case 'not-applied':
+      return { level: 'warn', text: `scope ${unit} exists but the memory limit (${hard}) is NOT applied (memory controller not delegated?) — this member runs UNCAPPED` };
+    case 'no-scope':
+      return { level: 'warn', text: `the keeper is not in scope ${unit} — this member runs UNCAPPED` };
+    default:
+      return { level: 'warn', text: `the keeper did not report a cap state for scope ${unit} (an older keeper?) — this member's cap is UNVERIFIED` };
+  }
 }
 
 // ─── bus-status ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -339,8 +356,10 @@ export interface MemoryCapStatusView {
   switchOn: boolean | null;
   softBytes: number;
   hardBytes: number;
-  /** Live scopes of this run's members (the app's count at the last look); null = unsupported / not counted. */
+  /** Member scopes live on this HOST right now (any run — scopes are not tagged with a run); null = unsupported / not counted. */
   scopes: number | null;
+  /** Of those, how many have NO memory limit applied (`memory.max` = max): a scope that is not a cap. */
+  unlimited?: number;
   supported: boolean;
   unsupportedReason?: string;
 }
@@ -350,7 +369,7 @@ export function formatMemoryCapLine(v: MemoryCapStatusView): string {
   const levels = `hard ${(v.hardBytes / GIB).toFixed(1)} GB (kernel kill, no swap) · soft ${(v.softBytes / GIB).toFixed(1)} GB (warning level, no kernel throttle)`;
   if (v.switchOn === null) return `memory cap: no run — nothing frozen (levels when a run freezes it ON: ${levels})`;
   if (!v.switchOn) return `memory cap: OFF for this run (frozen) — no member scope; levels if it were ON: ${levels}`;
-  const scopes = v.scopes === null ? '' : ` · ${v.scopes} member scope(s) live`;
+  const scopes = v.scopes === null ? '' : ` · ${v.scopes} member scope(s) live${v.unlimited ? `, ${v.unlimited} WITHOUT a limit applied` : ''}`;
   const sup = v.supported ? '' : ` · NOT TRACKED on this host (${v.unsupportedReason ?? 'unsupported'})`;
   return `memory cap: ON for this run (frozen) — ${levels}; read at each member's next session start, running sessions keep what they started with${scopes}${sup}`;
 }

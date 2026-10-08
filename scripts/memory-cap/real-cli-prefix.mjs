@@ -51,6 +51,7 @@ if (process.env.MC_INSIDE !== '1') {
 }
 
 // INSIDE the namespaces
+try { fs.writeFileSync('/proc/self/oom_score_adj', '0'); } catch { /* floor above 0 */ } // a rig run from a capped member's tool starts at 1000 and so would claude: baseline 0 first
 const root = process.env.MC_ROOT;
 if (!root || !root.startsWith(path.join(REAL_HOME, '.cache', 'memory-cap-rig') + path.sep)) throw new Error(`refusing root ${root}`);
 const { assertScratch } = await import(`${HERE_REPO}/scripts/session-budget/scratch-guard.mjs`);

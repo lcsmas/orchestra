@@ -23,7 +23,7 @@ export interface MemoryWatchOpts {
   unit: string;
   onKill(rec: MemKillRecord): void;
   log(msg: string): void;
-  /** Snapshot cadence: `hotMs` while the scope uses > 50 % of its limit, `fastMs` above 25 %, `idleMs` otherwise (defaults 100 / 250 / 1500 ms). */
+  /** Snapshot cadence: `hotMs` while the scope uses > 50 % of its limit, `fastMs` above 25 %, `idleMs` otherwise (defaults 100 / 250 / 500 ms). */
   hotMs?: number;
   fastMs?: number;
   idleMs?: number;
@@ -38,8 +38,8 @@ export interface MemoryWatchOpts {
 
 export interface MemoryWatch {
   stop(): void;
-  /** Look now (the inotify callback and the tick both land here). */
-  check(): void;
+  /** Look now (the inotify callback and the tick both land here). Resolves when the look — including its grace wait — is done. */
+  check(): Promise<void>;
   records(): MemKillRecord[];
 }
 
@@ -59,8 +59,8 @@ export function detectPageSize(read: (p: string) => string = (p) => fs.readFileS
   }
   return 4096;
 }
-/** A vanished member stays in the snapshot this long: the kill's inotify may land one tick AFTER the tick that noticed the death. */
-const FORGET_VANISHED_MS = 3_000;
+/** The kernel bumps `oom_kill` just BEFORE the victim dies: when a look sees the counter move but fewer members gone than kills, it waits this long and looks once more. */
+const VICTIM_DEATH_GRACE_MS = 30;
 const MAX_MEMBERS = 400;
 
 export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
@@ -82,7 +82,6 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
   };
 
   const snap = new Map<string, VictimSnap>();
-  const vanishedAt = new Map<string, number>();
   /** Per-pid static facts (cmdline, adj) keyed by pid, valid while the start time matches. */
   const statics = new Map<number, { startTicks: number; comm: string; cmdline: string; adj: number }>();
   const recs: MemKillRecord[] = [];
@@ -92,9 +91,10 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
   let timer: NodeJS.Timeout | null = null;
   let watcher: fs.FSWatcher | null = null;
 
-  /** Refresh the snapshot from cgroup.procs; returns the keys alive now. */
+  /** Refresh the snapshot from cgroup.procs (adds/updates the live members, removes nothing); returns the keys alive now. */
   function snapshot(): Set<string> {
     const alive = new Set<string>();
+    const alivePids = new Set<number>();
     const text = readSafe(procsFile);
     if (text === null) return alive;
     const pids = text.split('\n').filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, MAX_MEMBERS);
@@ -119,72 +119,72 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
       const key = snapKey(pid, startTicks);
       snap.set(key, { pid, startTicks, comm: st.comm, cmdline: st.cmdline, rssPages, adj: st.adj });
       alive.add(key);
-      vanishedAt.delete(key);
+      alivePids.add(pid);
     }
-    const t = now();
-    for (const key of snap.keys()) {
-      if (alive.has(key)) continue;
-      const since = vanishedAt.get(key) ?? t;
-      vanishedAt.set(key, since);
-      if (t - since > FORGET_VANISHED_MS) {
-        snap.delete(key);
-        vanishedAt.delete(key);
-      }
-    }
-    for (const [pid, st] of statics) if (!snap.has(snapKey(pid, st.startTicks)) && !alive.has(snapKey(pid, st.startTicks))) statics.delete(pid);
+    for (const pid of statics.keys()) if (!alivePids.has(pid)) statics.delete(pid);
     return alive;
   }
 
-  function check(): void {
-    if (stopped) return;
-    const cur = parseMemoryEvents(readSafe(eventsFile) ?? '');
-    if (!cur) return;
-    if (last && cur.oomKill > last.oomKill) {
-      const before = new Map(snap); // what we saw BEFORE this look refreshes it
-      const alive = snapshot();
-      const made = inferKillRecords({
-        before,
-        aliveKeys: alive,
-        delta: { oomKill: cur.oomKill - last.oomKill, oom: cur.oom - last.oom },
-        maxBytes: maxBytes(),
-        unit: o.unit,
-        seqNext: seq,
-        nowMs: now(),
-        pageSize: PAGE,
-      });
-      seq += made.length;
-      // The vanished members are consumed by this look: they must not be named again by a later kill.
-      for (const k of before.keys()) {
-        if (!alive.has(k)) {
-          snap.delete(k);
-          vanishedAt.delete(k);
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  let busy = false;
+
+  /**
+   * ONE look. Order matters: the members are snapshotted FIRST and `memory.events` read AFTER — the kernel bumps `oom_kill` before the victim dies, so a death this
+   * snapshot saw is already counted in this read. A member that left since the previous look is a candidate for THIS look's kills only (then forgotten): a command that
+   * exited normally minutes ago can never be named as a victim later. A look that arrives while another is waiting is dropped — the counter delta accumulates to the next.
+   */
+  async function look(): Promise<void> {
+    if (stopped || busy) return;
+    busy = true;
+    try {
+      const before = new Map(snap); // the live members as of the PREVIOUS look
+      let alive = snapshot();
+      let cur = parseMemoryEvents(readSafe(eventsFile) ?? '');
+      if (cur && last && cur.oomKill > last.oomKill) {
+        const delta = cur.oomKill - last.oomKill;
+        let gone = [...before.keys()].filter((k) => !alive.has(k));
+        if (gone.length < delta) {
+          await sleep(VICTIM_DEATH_GRACE_MS); // the counter moved just before the victim died
+          if (stopped) return;
+          alive = snapshot();
+          cur = parseMemoryEvents(readSafe(eventsFile) ?? '') ?? cur;
+          gone = [...before.keys()].filter((k) => !alive.has(k));
+        }
+        const made = inferKillRecords({
+          before,
+          aliveKeys: alive,
+          delta: { oomKill: cur.oomKill - last.oomKill, oom: cur.oom - last.oom },
+          maxBytes: maxBytes(),
+          unit: o.unit,
+          seqNext: seq,
+          nowMs: now(),
+          pageSize: PAGE,
+        });
+        seq += made.length;
+        for (const rec of made) {
+          recs.push(rec);
+          if (recs.length > 50) recs.shift();
+          try {
+            o.onKill(rec);
+          } catch (e) {
+            o.log(`memory watch: onKill failed (${(e as Error).message})`);
+          }
         }
       }
-      for (const rec of made) {
-        recs.push(rec);
-        if (recs.length > 50) recs.shift();
-        try {
-          o.onKill(rec);
-        } catch (e) {
-          o.log(`memory watch: onKill failed (${(e as Error).message})`);
-        }
-      }
+      for (const k of before.keys()) if (!alive.has(k)) snap.delete(k); // forgotten, named or not
+      if (cur) last = cur;
+    } finally {
+      busy = false;
     }
-    last = cur;
   }
 
   function tick(): void {
     if (stopped) return;
-    try {
-      snapshot();
-      check();
-    } catch (e) {
-      o.log(`memory watch: tick failed (${(e as Error).message})`);
-    }
+    void look().catch((e) => o.log(`memory watch: look failed (${(e as Error).message})`));
     const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
     const max = maxBytes();
     const frac = max !== null && Number.isFinite(cur) ? cur / max : 0;
-    const base = frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 1500);
+    const base = frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 500);
     // A scope with hundreds of members (a Chromium swarm) costs ~3 /proc reads each per look: stretch the cadence so the watch stays cheap (≈2 ms per member, ≤ 800 ms at the 400-member cap).
     timer = setTimeout(tick, Math.max(base, Math.min(800, snap.size * 2)));
     timer.unref();
@@ -192,7 +192,7 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
 
   try {
     // inotify on a cgroupfs file fires within milliseconds of the counter moving (measured); the tick is the safety net.
-    watcher = fs.watch(eventsFile, () => check());
+    watcher = fs.watch(eventsFile, () => void look().catch(() => {}));
     watcher.on('error', () => {});
     watcher.unref?.();
   } catch (e) {
@@ -210,7 +210,7 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
         /* closed */
       }
     },
-    check,
+    check: look,
     records: () => recs.slice(),
   };
 }

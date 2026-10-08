@@ -37,7 +37,7 @@ const MECHANISM_DESC: Record<BusMechanism, string> = {
     'Each member’s keeper hosts a Docker relay (DOCKER_HOST) that stamps orchestra.ws / orchestra.run on every container the member creates, so a Pause can find them. While OFF DOCKER_HOST is never set and containers are not stamped.',
   // #320 — the Plafond mémoire.
   memoryCap:
-    'Each member’s session starts in its own kernel memory scope with a hard limit (Settings → Memory guard): a tool command that overflows it is killed by the kernel, never the session. Applies at the member’s next session start. While OFF no scope is created.',
+    'Each member’s session starts in its own kernel memory scope with a hard limit: a tool command that overflows it is killed by the kernel, never the session. Applies at the member’s next session start. While OFF no scope is created.',
 };
 
 /**

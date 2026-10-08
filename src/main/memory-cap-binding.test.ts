@@ -31,15 +31,17 @@ test('the ONE keeper-spawn site passes the memory-cap decision as the 4th argume
 
 test('the facade launches the keeper through systemd-run ONLY when given a spec, falls back to a plain launch if the LAUNCHER failed, and never moves an existing process', () => {
   assert.ok(live(keeperClient, 'memoryCap?: MemoryCapLaunch,'), 'makeKeeperSpawn accepts the optional spec');
-  assert.ok(live(keeperClient, 'sock = await launchKeeperDaemon(wsId, memoryCap);'));
+  assert.ok(live(keeperClient, 'sock = await launchKeeperDaemon(wsId, cap);'));
   assert.ok(live(keeperClient, 'const launch = buildScopeLaunchArgv({'), 'the launch argv comes from the ONE pure builder');
-  assert.ok(live(keeperClient, 'launching it WITHOUT a scope') || keeperClient.includes('launching it WITHOUT a scope'), 'the fallback says so in the app log');
-  assert.ok(!/systemctl[^\n]*(attach|move|--property=PIDs)/i.test(keeperClient), 'no code path moves an existing process into a scope');
-  assert.ok(!/\bkillMode|KillMode=control-group|oom_group/.test(keeperClient + keeper), 'never a group kill');
+  assert.ok(keeperClient.includes('launching it WITHOUT a scope'), 'the fallback says so in the app log');
+  assert.ok(!/systemctl/.test(keeperClient + keeper), 'the keeper and its client never call systemctl (no attach, no move, no stop of a unit)');
+  assert.ok(!/KillMode=|memory\.oom\.group|cgroup\.kill/.test(keeperClient + keeper + src('../shared/memory-scope.ts')), 'never a group kill');
+  assert.ok(live(keeperClient, 'if (cap && !oomWrapperReady()) {'), 'no usable tool wrapper ⇒ no scope (an unprotected cap would kill the CLI)');
+  assert.ok(live(keeperClient, 'if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});'), 'the app reads the cap state back and says it');
 });
 
 test('the spawn frame carries memoryCap ONLY when there are limits to verify (absent ⇒ today\'s frame, byte for byte)', () => {
-  assert.ok(live(keeperClient, '...(memoryCap?.limits ? { memoryCap: { unit: memoryCap.unit, hardBytes: memoryCap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),'));
+  assert.ok(live(keeperClient, '...(cap?.limits ? { memoryCap: { unit: cap.unit, hardBytes: cap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),'));
   assert.ok(live(keeperClient, 'installOomWrapper();'), 'installKeeper lays the tool wrapper down on every start');
 });
 
@@ -57,11 +59,12 @@ test('a kill reaches the app log and the listeners once (push frame AND helloAck
   assert.ok(live(keeperClient, 'deliverKills(f.memKills); // #320: kills that happened while no app was attached'));
   assert.ok(live(keeperClient, 'deliverMemKill(wsId, f.rec);'));
   assert.ok(live(keeperClient, 'log.warn(formatMemKillLine(wsId, rec));'));
-  assert.ok(live(keeperClient, 'if (rec.seq <= seen) return;'));
+  assert.ok(live(keeperClient, 'if (rec.seq <= cursor().seen(rec.unit)) return;'), 'the dedupe key is the PERSISTED cursor (an app restart must not replay)');
+  assert.ok(live(keeperClient, 'cursor().mark(rec.unit, rec.seq);'));
 });
 
 test('bus-status: the route sends the levels + the memory-paused runs (D1), the CLI prints them', () => {
-  assert.ok(live(hooks, 'memoryPausedRuns: memoryPausedRunViews(badDb,'));
+  assert.ok(live(hooks, '...(memPausedRuns ? { memoryPausedRuns: memPausedRuns } : {}),'), 'a failed read is OMITTED (unknown), never sent as an empty list');
   assert.ok(hooks.includes('memoryCap: (() => {') && hooks.includes('store.getMemoryGuardSettings()'));
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot, Array.isArray(res.memoryPausedRuns)'));
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryCapLine({ ...mc, switchOn: res.runExists === false ? null : frozenForCap.memoryCap })}\\n`);'));

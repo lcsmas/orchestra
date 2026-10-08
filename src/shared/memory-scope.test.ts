@@ -12,6 +12,7 @@ import {
   buildScopeLaunchArgv,
   classifyScopeMembers,
   decideMemoryCap,
+  describeCapState,
   describeCommand,
   estimateOomBadness,
   formatMemKillLine,
@@ -219,7 +220,7 @@ test('describeCommand truncates and collapses whitespace; falls back to comm', (
 
 test('formatMemKillLine: workspace, killed command, level', () => {
   const line = formatMemKillLine('ws-1', { seq: 1, at: 1, level: 'hard', command: 'python3 hog.py', pid: 42, rssBytes: 300 * MB, candidates: [], unit: 'orchestra-ws-ws-1-abcdef.scope', hardBytes: 6 * GIB });
-  assert.match(line, /^memory-cap\[ws-1\] killed "python3 hog\.py" \(pid 42, ~300 MB\) at the hard level \(6\.00 GB\) — scope orchestra-ws-ws-1-abcdef\.scope$/);
+  assert.match(line, /^memory-cap\[ws-1\] killed "python3 hog\.py" \(pid 42, ~300 MB\) at the hard level \(6\.00 GB\) — scope orchestra-ws-ws-1-abcdef\.scope — at 1970-01-01T00:00:00\.001Z$/);
   assert.match(formatMemKillLine('w', { seq: 1, at: 1, level: 'external', command: null, pid: null, rssBytes: null, candidates: [], unit: 'u', hardBytes: null }), /unnamed process.*outside the scope limit/);
 });
 
@@ -237,10 +238,15 @@ test('formatMemoryCapLine: ON shows the levels and that it applies at the next s
 
 test('the tool wrapper: raises ONLY its own tree to +1000, hands the single command string to the user shell, keeps exit status and stdout', { skip: process.platform !== 'linux' }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memcap-wrap-'));
+  const callerAdjForRestore = fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim();
   try {
     const w = path.join(dir, 'w.sh');
     fs.writeFileSync(w, OOM_TOOL_WRAPPER_SCRIPT, { mode: 0o755 });
     execFileSync('sh', ['-n', w]); // syntax
+    // This test must not depend on WHO runs it: a Bash tool command of a capped member is itself at +1000 (and children inherit it). An unprivileged process may lower
+    // itself back to 0 (its floor), so the baseline is made 0 here and restored after — otherwise "the tool runs at 1000" would pass vacuously inside a capped member.
+    try { fs.writeFileSync('/proc/self/oom_score_adj', '0'); } catch { /* floor above 0 (a privileged parent set it): the assertions below then use the real baseline */ }
+    const baseline = fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim();
     const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', SHELL: '/bin/bash' };
     const out = execFileSync(w, ['cat /proc/self/oom_score_adj; echo "$0 ok"'], { env, encoding: 'utf8' });
     assert.equal(out.split('\n')[0], String(OOM_ADJ_TOOLS), 'the command (and everything under it) runs at +1000');
@@ -250,12 +256,14 @@ test('the tool wrapper: raises ONLY its own tree to +1000, hands the single comm
     // a non-bash/zsh SHELL (fish…) falls back to bash instead of failing the command
     assert.match(execFileSync(w, ['echo fine'], { env: { ...env, SHELL: '/usr/bin/fish' }, encoding: 'utf8' }), /fine/);
     // our own adj stays at 0: the wrapper changed only the process it exec'd into
-    assert.notEqual(fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim(), String(OOM_ADJ_TOOLS));
+    assert.equal(fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim(), baseline, 'the wrapper raised only the process it exec\'d into, not its caller');
+    assert.notEqual(baseline, String(OOM_ADJ_TOOLS), 'precondition: the baseline is not already 1000, else the raise proves nothing');
     // the user's own prefix is chained exactly as the CLI would have called it
     const inner = path.join(dir, 'inner.sh');
     fs.writeFileSync(inner, '#!/bin/sh\necho "inner got: $1"\n', { mode: 0o755 });
     assert.match(execFileSync(w, ['echo hi'], { env: { ...env, [INNER_SHELL_PREFIX_ENV]: inner }, encoding: 'utf8' }), /inner got: echo hi/);
   } finally {
+    try { fs.writeFileSync('/proc/self/oom_score_adj', callerAdjForRestore); } catch { /* cannot raise back: harmless for a test process */ }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -263,4 +271,18 @@ test('the tool wrapper: raises ONLY its own tree to +1000, hands the single comm
 test('wrapperPathUsable: only an absolute path without whitespace can be CLAUDE_CODE_SHELL_PREFIX (the CLI splits it at spaces)', () => {
   assert.equal(wrapperPathUsable('/home/lmas/.orchestra/bin/oom-tool-wrapper.sh'), true);
   for (const bad of ['/home/my user/.orchestra/bin/w.sh', 'bin/w.sh', '', undefined, null, '/tmp/a\tb']) assert.equal(wrapperPathUsable(bad as string | undefined), false, String(bad));
+});
+
+test('describeCapState: only `active` is info; unprotected / not-applied / no-scope / unknown say what the member is left with', () => {
+  assert.equal(describeCapState('active', 'u.scope', 6 * GIB).level, 'info');
+  for (const st of ['unprotected', 'not-applied', 'no-scope', undefined] as const) assert.equal(describeCapState(st, 'u.scope', 6 * GIB).level, 'warn', String(st));
+  assert.match(describeCapState('unprotected', 'u.scope', 6 * GIB).text, /kill the CLI/);
+  assert.match(describeCapState('not-applied', 'u.scope', 6 * GIB).text, /UNCAPPED/);
+  assert.match(describeCapState(undefined, 'u.scope', 6 * GIB).text, /UNVERIFIED/);
+});
+
+test('formatMemoryCapLine counts scopes that are NOT a cap (no limit applied)', () => {
+  const v = { switchOn: true, softBytes: 3 * GIB, hardBytes: 6 * GIB, scopes: 4, unlimited: 1, supported: true };
+  assert.match(formatMemoryCapLine(v), /4 member scope\(s\) live, 1 WITHOUT a limit applied$/);
+  assert.match(formatMemoryCapLine({ ...v, unlimited: 0 }), /4 member scope\(s\) live$/);
 });

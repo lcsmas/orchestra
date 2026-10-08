@@ -82,8 +82,7 @@ test('the same kill is reported ONCE (the inotify callback and the tick both loo
   await wait(30);
   w.oomKill(12);
   await until(() => kills.length === 1);
-  mw.check();
-  mw.check();
+  await Promise.all([mw.check(), mw.check()]);
   await wait(60);
   assert.equal(kills.length, 1);
   assert.deepEqual(mw.records().map((r) => r.seq), [1]);
@@ -103,7 +102,7 @@ test('a process that exited normally is not a kill: no counter movement ⇒ no r
   w.oomKill(13);
   await until(() => kills.length === 1);
   assert.equal(kills[0].command, 'hog 2');
-  assert.ok(!kills[0].candidates.includes('sleep 1') || kills[0].candidates.length <= 1);
+  assert.deepEqual(kills[0].candidates, [], 'sleep 1 exited normally in an EARLIER look: it is not even a candidate for a later kill');
   // A second, later kill must not re-name the first victim.
   w.add(14, { comm: 'hog', cmdline: 'hog 3', rssPages: 9000, adj: 1000 });
   await wait(40);
@@ -121,7 +120,7 @@ test('a process that lived less than one snapshot is counted but NOT named (comm
   const mw = watch(w, kills, { hotMs: 10_000, fastMs: 10_000, idleMs: 10_000 }); // the tick will not run again: only the inotify/check path
   w.add(99, { comm: 'flash', cmdline: 'flash', adj: 1000 });
   w.oomKill(99); // born and killed between two snapshots
-  mw.check();
+  await mw.check();
   assert.equal(kills.length, 1);
   assert.equal(kills[0].command, null);
   assert.equal(kills[0].pid, null);
@@ -149,7 +148,7 @@ test('a pid reused after the kill (same pid, new start time) does not hide the v
   // one snapshot has happened (the start tick); now the victim dies and a NEW process takes pid 12 before the next look
   w.oomKill(12);
   w.add(12, { comm: 'bash', cmdline: 'bash', start: 987_654, rssPages: 10 });
-  mw.check();
+  await mw.check();
   assert.equal(kills[0]?.command, 'hog');
   mw.stop();
 });
@@ -162,9 +161,41 @@ test('stop() ends the watch: no record after it, no timer left running', async (
   await wait(20);
   mw.stop();
   w.oomKill(12);
-  mw.check();
+  await mw.check();
   await wait(60);
   assert.equal(kills.length, 0);
+});
+
+test('PRE-REVIEW MAJOR 1: a big command that exited NORMALLY just before a smaller hog is killed is not named as the victim', async () => {
+  const w = new World();
+  w.add(10, { comm: 'node', cmdline: 'node keeper.js', rssPages: 15_000 });
+  w.add(20, { comm: 'runner', cmdline: 'pnpm-test-runner', rssPages: 50_000, adj: 1000 }); // 200 MB at 4 KiB pages, finishes cleanly
+  w.add(21, { comm: 'python3', cmdline: 'python3 hog.py', rssPages: 10_000, adj: 1000 }); // 40 MB, the real victim
+  const kills: MemKillRecord[] = [];
+  const mw = watch(w, kills);
+  await wait(40);
+  w.procs.delete(20); // exits normally; no counter movement
+  await wait(60); // several looks go by: it is forgotten
+  w.oomKill(21);
+  await until(() => kills.length === 1);
+  assert.equal(kills[0].command, 'python3 hog.py', 'the victim, not the earlier exiter');
+  assert.deepEqual(kills[0].candidates, []);
+  mw.stop();
+});
+
+test('the counter moves just BEFORE the victim dies: a look that sees the bump first waits a moment and still names the victim', async () => {
+  const w = new World();
+  w.add(12, { comm: 'hog', cmdline: 'hog --big', adj: 1000, rssPages: 9000 });
+  const kills: MemKillRecord[] = [];
+  const mw = watch(w, kills, { hotMs: 10_000, fastMs: 10_000, idleMs: 10_000 }); // only the explicit looks run
+  w.events.oom_kill += 1;
+  w.events.oom += 1; // the kernel has counted the kill...
+  const looking = mw.check(); // ...the look sees the bump with the victim still alive
+  setTimeout(() => w.procs.delete(12), 10); // ...and the victim dies a few ms later
+  await looking;
+  assert.equal(kills.length, 1);
+  assert.equal(kills[0].command, 'hog --big');
+  mw.stop();
 });
 
 test('detectPageSize: derives the kernel page from our own /proc (16 KiB on Asahi), 4096 when unreadable', () => {
