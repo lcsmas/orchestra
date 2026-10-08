@@ -92,7 +92,7 @@ const MUTANTS = [
   { id: 'W11_mkdirp_dep_missing', file: WR, find: '  mkdirp: (d) => void fs.mkdirSync(d, { recursive: true }),\n', to: '', expect: ['ensureDir creates a missing directory'] },
   { id: 'W12_error_event_not_wired', file: WR, find: '  w.on(\'error\', onError);\n', to: '', expect: ['rig:midlife:rearmed_and_caught_up', 'rig:midlife:error_event_has_a_listener'], rig: ['midlife'] },
   { id: 'W13_options_dropped_at_the_binding', file: WR, find: '(primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError, opts)', to: '(primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError)', expect: ['the primitive receives the site’s persistent option'] },
-  { id: 'W14_unregistered_start_notifies', file: WR, find: '    snapshot: () => inner.snapshot(),\n  };\n  return handle;', to: '    snapshot: () => inner.snapshot(),\n  };\n  notifyIfChanged();\n  return handle;', expect: ['healthy watcher: listed as ok, no push'], skipIfEquivalent: true },
+  // W14 (notifyIfChanged() at creation) was EQUIVALENT: a notify pushes only when the degraded-set key changed, and creating a watcher cannot change it — removed after the first sweep (ledger #329 c/…).
   // ── the seven sites: the catch-up on recovery, the stop, the filter, ensureDir ──
   { id: 'T01_busWake_no_catchup', file: BW, find: '    onRecover: () => void sweepBusWake(),\n', to: '', expect: ['SITE bus-wake', 'rig:recovery:catchup_wake_delivered'], rig: ['recovery'] },
   { id: 'T02_pauseUi_no_catchup', file: PU, find: '    onRecover: reconcilePauseUi,\n', to: '', expect: ['SITE pause-ui', 'rig:recovery:catchup_pause_ui_push'], rig: ['recovery'] },

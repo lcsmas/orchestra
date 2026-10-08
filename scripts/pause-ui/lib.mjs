@@ -163,15 +163,16 @@ export function listProcsByHome(home) { // identity = /proc/<pid>/environ carryi
 }
 
 /** Launch the BUILT app: `appDir` = a built checkout (dist/ + dist-electron/ → `electron <dir>`), or `packaged` = the unpacked `orchestra` binary. */
-export async function launchApp({ appDir, packaged, world, guard, rigWayland, size, tag }) {
+export async function launchApp({ appDir, packaged, world, guard, rigWayland, size, tag, extraEnv = {} }) {
   const port = await freePort();
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', `${size[0]}x${size[1]}`]);
   sh('swaymsg', ['default_border', 'none']);
   const env = { PATH: `${world.bin}:/usr/local/bin:/usr/bin:/bin`, HOME: world.home, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.home, '.config'), XDG_CACHE_HOME: path.join(world.home, '.cache'),
     WAYLAND_DISPLAY: rigWayland, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8' };
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ...extraEnv };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) guard.mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== rigWayland) refuse('child env would reach the human display');
+  for (const [k, v] of Object.entries(extraEnv)) if (/^(HOME|XDG_|ORCHESTRA_HOME|CLAUDE_CONFIG_DIR|DISPLAY|WAYLAND_DISPLAY|SWAYSOCK)/.test(k)) refuse(`extraEnv may not override ${k}`); else if (/(FILE|DIR|PATH)$/.test(k)) guard.mustBeScratch(`extraEnv.${k}`, v);
   const logFile = path.join(path.dirname(world.ohome), `app-${tag}.log`);
   const fd = fs.openSync(logFile, 'w');
   const cmd = packaged ?? path.join(appDir, 'node_modules/electron/dist/electron');
