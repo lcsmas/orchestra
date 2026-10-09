@@ -64,6 +64,7 @@ const row = (key, capView) => ({ key, sessions: [sess(key)], cpuPct: 5, memBytes
 const table = (rows, extra = {}) => html(h(AgentsTable, { rows, loginSessions: [], traceOf: () => [], diskOf: () => undefined, ctxOf: () => undefined, accountLabelFor: () => null, warning: null, ...extra }));
 const t1 = table([row('feat-x', cap(2.1, 1.6)), row('big-job', cap(5.6, 4)), row('human-ws', null)], { capLevels: LV, capLine: '2 capped members · closest: big-job 93 % of 6.0 GB' });
 check('a capped member\'s MEM cell carries the bar (3 rows, 2 bars); the uncapped member\'s cell is today\'s plain figure', (t1.match(/data-res-cap="/g) ?? []).length === 2 && (t1.match(/res-cell res-mem/g) ?? []).length === 2, t1.slice(0, 200));
+check('with the levels given, every capped row\'s bar carries the soft tick (the table hands the levels down to its rows)', (t1.match(/res-capbar-soft/g) ?? []).length === 2, t1.slice(0, 200));
 check('the bar sits INSIDE the memory cell, after the figure', /<span class="res-cell res-mem">[^<]*GB<span class="res-capbar/.test(t1), t1.slice(t1.indexOf('res-mem') - 20, t1.indexOf('res-mem') + 260));
 check('the dim summary line under the table (information, role=note)', t1.includes('data-res-cap-note=""') && t1.includes('2 capped members · closest: big-job 93 % of 6.0 GB') && /role="note"[^>]*data-res-cap-note/.test(t1), t1.slice(-300));
 const t0 = table([row('feat-y', null), row('human-ws', null)], { capLevels: LV, capLine: null });

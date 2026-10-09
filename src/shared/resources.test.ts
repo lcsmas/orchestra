@@ -348,4 +348,8 @@ test('G13 (#323) the row carries the cap the member\'s CURRENT session runs unde
   assert.equal(by['ws-r'].cap, null, 'a sandbox row never reads a local scope');
   assert.equal(by['ws-left'].scopeOnly, true);
   assert.equal(by['ws-left'].cap, null, 'a leftover scope (no live session) has no cap to show even though the kernel limit exists');
+  // even when the view of a session-less row DOES have a cap (its keeper is alive in the scope, the boot window before its session row), the scope-only row is only the Reliquats' row: no bar
+  const boot = memberViewFrom('ws-boot', [{ ...rd(300, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'keeper' }, { pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }]), maxBytes: 6144 * MBg, workingSetBytes: 250 * MBg }]);
+  assert.ok(boot.cap !== null, 'precondition: this view has a cap');
+  assert.equal(groupSessionsByWorkspace([], null, rep(boot)).rows[0].cap, null, 'a scope-only row never carries a cap');
 });

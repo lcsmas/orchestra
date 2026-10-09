@@ -103,6 +103,10 @@ test('cap commit (#323): hard ≤ soft is REFUSED with the backend\'s own senten
   const inverted = planCapCommit('7', '6', D);
   assert.equal(inverted.kind, 'invalid');
   assert.match(inverted.kind === 'invalid' ? inverted.error : '', /^The memory cap soft level \(7 GB\) must be above 0 and below the hard level \(6 GB\)\.$/);
+  for (const [a, b] of [['', '6'], ['3', '']] as const) {
+    const r = planCapCommit(a, b, D);
+    assert.equal(r.kind === 'invalid' ? r.error : null, 'Enter both levels as a number of GB.', `a half-empty pair (${a} / ${b}) is refused with THE sentence, not a validator side effect`);
+  }
   for (const [a, b] of [['', '6'], ['3', ''], ['x', '6'], ['3', 'Infinity'], ['0', '6'], ['-1', '6'], ['3', '0.05'], ['3', '999']] as const) assert.equal(planCapCommit(a, b, D).kind, 'invalid', `${a} / ${b}`);
 });
 
