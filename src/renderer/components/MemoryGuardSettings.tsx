@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatGb, RELEASE_MARGIN_GB, type MemoryGuardSettings, type MemoryGuardView } from '../../shared/memory-guard';
-import { gaugeModel, guardChip, planCapCommit, planThresholdCommit } from '../../shared/memory-guard-view';
+import { gaugeModel, guardChip, planCapCommit, planReliquatWaitCommit, planThresholdCommit } from '../../shared/memory-guard-view';
 import { capSwitchSummary, type CapSwitchSummary } from '../../shared/memory-cap-view';
 
 interface Props {
@@ -30,6 +30,8 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<CapDraft | null>(null);
+  /** #326: the Reliquat wait (minutes) while the user is typing; null = show the stored value. */
+  const [waitDraft, setWaitDraft] = useState<string | null>(null);
   /** #323: the frozen per-run `memory_cap` switch, READ-ONLY here (D-Q1: it is not a setting): the live default for new runs + how many open runs froze it ON. */
   const [capSwitch, setCapSwitch] = useState<CapSwitchSummary | null>(initial?.capSwitch ?? null);
   /** Applies run ONE AT A TIME in click order and are never dropped (a pending edit commits on blur, and the click that caused the blur
@@ -70,9 +72,12 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
   const typedCap = capDraft ?? (settings ? { soft: String(settings.capSoftGb), hard: String(settings.capHardGb) } : { soft: '', hard: '' });
   const capPlan = settings && capDraft ? planCapCommit(capDraft.soft, capDraft.hard, settings, view?.totalBytes) : null;
   const liveCapError = capPlan?.kind === 'invalid' ? capPlan.error : null;
+  const typedWait = waitDraft ?? (settings ? String(settings.reliquatWaitMin) : '');
+  const waitPlan = settings && waitDraft !== null ? planReliquatWaitCommit(waitDraft, settings, view?.totalBytes) : null;
+  const liveWaitError = waitPlan?.kind === 'invalid' ? waitPlan.error : null;
 
   /** `committed` = the draft object this patch came from: the echo clears the inputs only if the user has not typed again since. */
-  const apply = (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0], committed: Draft | null = null, committedCap: CapDraft | null = null): Promise<void> => {
+  const apply = (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0], committed: Draft | null = null, committedCap: CapDraft | null = null, committedWait: string | null = null): Promise<void> => {
     const base = inflight.current.expected ?? settingsRef.current;
     inflight.current.n += 1;
     if (base) inflight.current.expected = { ...base, ...patch };
@@ -83,6 +88,7 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
         if (res.ok) {
           setDraft((d) => (committed !== null && d === committed ? null : d));
           setCapDraft((d) => (committedCap !== null && d === committedCap ? null : d));
+          setWaitDraft((d) => (committedWait !== null && d === committedWait ? null : d));
           setError(null);
         } else {
           inflight.current.expected = null; // the assumed outcome did not happen: plan against the echoed settings again
@@ -128,6 +134,20 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
       void apply(p.patch, null, capDraft);
     }
   };
+  /** #326: commit the Reliquat wait — a lone field, planned by the shared pure planner; invalid ⇒ the inline error and nothing sent. */
+  const commitWait = () => {
+    const basis = inflight.current.expected ?? settings;
+    if (!basis || waitDraft === null) return;
+    const p = planReliquatWaitCommit(waitDraft, basis, view?.totalBytes);
+    if (p.kind === 'unchanged') {
+      setWaitDraft(null);
+      setError(null);
+    } else if (p.kind === 'invalid') {
+      setError(p.error);
+    } else {
+      void apply(p.patch, null, null, waitDraft);
+    }
+  };
   const capField = (which: 'soft' | 'hard') => (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     setCapDraft({ ...typedCap, [which]: e.target.value });
@@ -135,7 +155,7 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
 
   const chip = view ? guardChip(view.snapshot) : null;
   const gauge = view && settings ? gaugeModel(view.liveAvailBytes, view.totalBytes, settings) : null;
-  const shownError = error ?? liveError ?? liveCapError;
+  const shownError = error ?? liveError ?? liveCapError ?? liveWaitError;
   const field = (which: 'admission' | 'critical') => (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     setDraft({ ...typed, [which]: e.target.value });
@@ -295,6 +315,31 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
                 }}
               />
               <span className="mg-unit">GB</span>
+            </div>
+          </div>
+          <div className="field">
+            <div className="field-head">
+              <span className="field-label">Reliquat wait</span>
+              <span className="field-hint">How long an idle member with live Reliquats waits before the Veille stops them and lists them (default 30). Applied hot.</span>
+            </div>
+            <div className="mg-input-row">
+              <input
+                className="mg-input"
+                inputMode="decimal"
+                aria-label="Reliquat wait (minutes)"
+                data-mg-reliquat-wait
+                value={typedWait}
+                disabled={!settings}
+                onChange={(e) => {
+                  setError(null);
+                  setWaitDraft(e.target.value);
+                }}
+                onBlur={commitWait}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitWait();
+                }}
+              />
+              <span className="mg-unit">min</span>
             </div>
           </div>
           <div className="field-hint" data-mg-cap-applies>Applies to members started from now on; running sessions keep what they started with.</div>

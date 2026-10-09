@@ -72,7 +72,7 @@ check('CONTROL — a fleet with no capped member: no bar, no summary line, byte-
 check('a capped member of an older main (no levels): the bar is still drawn from what the kernel holds', table([row('feat-x', cap(2.1, 1.6))]).includes('data-res-cap="35"'));
 
 console.log('\nMemory guard window — Plafond mémoire section (D-Q10 A):');
-const settings = { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 };
+const settings = { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
 const snapshot = { sampled: true, measured: true, availBytes: 11.4 * GB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0, pauseCycle: 0, mayReleaseOneStart: true, heldSince: null, pauseSince: null, admissionBytes: 6 * GB, criticalBytes: 3 * GB, releaseMarginBytes: GB, sampleIntervalMs: 60000 };
 const view = { settings, snapshot, liveAvailBytes: 11.4 * GB, totalBytes: 32 * GB };
 const sw = (liveOn, runsOn, runsOpen) => ({ liveOn, runsOn, runsOpen, text: `Cap is ${liveOn ? 'ON' : 'OFF'} for new runs · ON on ${runsOn} of ${runsOpen} open runs` });
@@ -82,10 +82,11 @@ check('soft and hard inputs hold the stored levels (3 / 6 GB), labelled for assi
 check('the activation is SHOWN read-only (D-Q1): the live default + the open runs that froze it ON — and there is no control for it', w.includes('Cap is OFF for new runs · ON on 0 of 3 open runs') && w.includes('data-mg-cap-switch="off"') && (w.match(/type="checkbox"/g) ?? []).length === 1, `${(w.match(/type="checkbox"/g) ?? []).length} checkbox(es)`);
 check('it says where the switch IS set, and that levels apply to members started from now on', w.includes('set it on the Bus page, not here') && w.includes('Applies to members started from now on; running sessions keep what they started with.'));
 check('what each level does is stated (soft: warns the member and its coordinator, no slowdown; hard: the kernel kills the heaviest tool process)', w.includes('Warns the member and its coordinator when its working set crosses it. No slowdown.') && w.includes('beyond it the heaviest tool process of the member is killed'));
+check('the Reliquat wait (#326) is a third field of the section: 30 min, minutes unit, labelled, applied hot', /aria-label="Reliquat wait \(minutes\)"[^>]*data-mg-reliquat-wait[^>]*value="30"/.test(w) && w.includes('>min</span>') && w.includes('Applied hot.') && w.indexOf('data-mg-cap-hard') < w.indexOf('data-mg-reliquat-wait') && w.indexOf('data-mg-reliquat-wait') < w.indexOf('data-mg-cap-applies'), w.slice(w.indexOf('data-mg-reliquat-wait') - 120, w.indexOf('data-mg-reliquat-wait') + 140));
 check('the ON state reads ON', html(h(MemoryGuardSettings, { onClose: () => {}, initial: { view, capSwitch: sw(true, 2, 2) } })).includes('data-mg-cap-switch="on"'));
 check('nothing is refused at rest: no error line', !w.includes('data-mg-error'));
 const loading = html(h(MemoryGuardSettings, { onClose: () => {} }));
-check('before the first read the cap inputs are DISABLED and empty (never a number the backend did not give); the switch line is a placeholder', /data-mg-cap-soft[^>]*disabled/.test(loading) && /data-mg-cap-hard[^>]*disabled/.test(loading) && loading.includes('data-mg-cap-switch=""'), loading.slice(loading.indexOf('data-mg-cap-section'), loading.indexOf('data-mg-cap-section') + 300));
+check('before the first read the cap inputs are DISABLED and empty (never a number the backend did not give); the switch line is a placeholder', /data-mg-cap-soft[^>]*disabled/.test(loading) && /data-mg-cap-hard[^>]*disabled/.test(loading) && /data-mg-reliquat-wait[^>]*disabled/.test(loading) && loading.includes('data-mg-cap-switch=""'), loading.slice(loading.indexOf('data-mg-cap-section'), loading.indexOf('data-mg-cap-section') + 300));
 check('the existing threshold fields are untouched (admission 6, critical 3)', /data-mg-admission[^>]*value="6"/.test(w) && /data-mg-critical[^>]*value="3"/.test(w));
 
 console.log(`\nmemcap-settings-render-smoke: ${failures === 0 ? 'all checks passed' : failures + ' FAILURE(S)'}`);

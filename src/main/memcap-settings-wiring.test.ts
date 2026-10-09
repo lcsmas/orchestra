@@ -20,7 +20,7 @@ test('WINDOW: the Plafond section commits the PAIR through the shared planner on
   assert.ok(/void apply\(p\.patch, null, capDraft\);/.test(w), 'valid ⇒ one apply of the planner\'s patch');
   assert.equal((w.match(/onBlur=\{commitCap\}/g) ?? []).length, 2, 'both inputs commit on blur');
   assert.equal((w.match(/if \(e\.key === 'Enter'\) commitCap\(\);/g) ?? []).length, 2, 'both inputs commit on Enter');
-  assert.ok(/const shownError = error \?\? liveError \?\? liveCapError;/.test(w), 'the live refusal while typing shares the one error line');
+  assert.ok(/const shownError = error \?\? liveError \?\? liveCapError \?\? liveWaitError;/.test(w), 'the live refusal while typing shares the one error line');
   assert.ok(/data-mg-cap-soft/.test(w) && /data-mg-cap-hard/.test(w) && /data-mg-cap-section/.test(w) && /data-mg-cap-switch/.test(w), 'the hooks the drive reads');
 });
 
@@ -46,4 +46,14 @@ test('RESOURCES: the snapshot carries the levels NOW; the table gets them and th
 test('the settings-changed log line names the cap levels too (a change of the Plafond is an auditable event)', () => {
   const m = codeOf('src/main/memory-guard-settings.ts');
   assert.ok(/memory cap soft \$\{current\.capSoftGb\}→\$\{res\.settings\.capSoftGb\} GB, hard \$\{current\.capHardGb\}→\$\{res\.settings\.capHardGb\} GB/.test(m));
+});
+
+test('WINDOW (#326): the Reliquat wait is committed alone through the shared planner on blur AND Enter; an invalid value is refused inline (nothing sent); only that key travels', () => {
+  const w = codeOf('src/renderer/components/MemoryGuardSettings.tsx');
+  assert.ok(/planReliquatWaitCommit\(waitDraft, basis, view\?\.totalBytes\)/.test(w));
+  assert.ok(/p\.kind === 'invalid'\) \{\s*setError\(p\.error\);/.test(w.slice(w.indexOf('const commitWait'))), 'invalid ⇒ the inline error, no apply');
+  assert.ok(/void apply\(p\.patch, null, null, waitDraft\);/.test(w));
+  assert.ok(/onBlur=\{commitWait\}/.test(w) && /if \(e\.key === 'Enter'\) commitWait\(\);/.test(w));
+  assert.ok(/const shownError = error \?\? liveError \?\? liveCapError \?\? liveWaitError;/.test(w));
+  assert.ok(/data-mg-reliquat-wait/.test(w));
 });
