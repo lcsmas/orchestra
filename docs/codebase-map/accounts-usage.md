@@ -180,8 +180,9 @@ reads them transiently to query usage.
   not stamped (needs a fake HOME whose `~/.claude` symlinks the live one).
 - **Login flow:** interactive `claude /login` in a dedicated PTY
   (`account-login:<accountId>`); `armLoginWatch` (`account-usage.ts:284`) +
-  `watchForLogin` `:101` watch `.credentials.json` for a new token via `fs.watch`
-  + 1.5s poll, then fire `onLoggedIn` → refresh. UI: `AccountLoginModal.tsx`
+  `watchForLogin` `:101` watch `.credentials.json` for a new token via the shared
+  resilient watcher (#330, `watchers.md`: name `login-watch`, registered only while
+  the login is watched) + 1.5s poll, then fire `onLoggedIn` → refresh. UI: `AccountLoginModal.tsx`
   hosts the xterm; on PTY exit it calls `refreshAccounts()`.
 - **Per-account OAuth browser** (`src/main/login-browser.ts`): the browser half
   of `/login` must NOT land in the system browser — its one claude.ai cookie

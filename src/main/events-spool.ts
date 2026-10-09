@@ -5,6 +5,8 @@ import { platform } from './platform';
 import { applyAgentEvent } from './activity';
 import { listLiveKeepers } from './keeper-client';
 import { log, scoped } from './logger';
+import { createWatcher } from './watchers';
+import type { ResilientWatcher } from '../shared/resilient-watch';
 
 /** Spool-scoped logger. The spool is the sole source of agent status, so every
  *  silent drop here (unreadable file, corrupt line, deduped seq) shows up to the
@@ -84,7 +86,7 @@ interface Cursor {
 }
 
 let started = false;
-let watcher: fs.FSWatcher | null = null;
+let watcher: ResilientWatcher | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 const cursors = new Map<string, Cursor>();
 
@@ -389,25 +391,23 @@ export function startEventsSpool(): void {
         : ''),
   );
 
-  try {
-    watcher = fs.watch(EVENTS_DIR, (_event, filename) => {
+  // #330: resilient — a failed arm / a later error is retried with backoff (the 1 s poll below stays the fallback: status is up to 1s late meanwhile, which reads as "the dot is laggy") and ONE full drain runs on recovery.
+  watcher = createWatcher({
+    name: 'events-spool',
+    label: 'Agent activity',
+    dir: EVENTS_DIR,
+    fallback: `${POLL_MS / 1000} s poll`,
+    onChange: (filename) => {
       if (!filename) {
         drainAll();
         return;
       }
       const id = idFromFilename(filename.toString());
       if (id) drain(id);
-    });
-    watcher.on('error', (e) => {
-      // Keep the poll going as the fallback even if the watcher dies — but a
-      // dead watcher means status now updates on the 1s poll instead of
-      // instantly, which reads as "the dot is laggy".
-      slog.warn('fs.watch died; falling back to poll-only (status will be up to 1s late)', e);
-    });
-  } catch (e) {
-    slog.warn('fs.watch unavailable; poll-only spool draining', e);
-    watcher = null; // platform without fs.watch — poll-only still works
-  }
+    },
+    onRecover: drainAll,
+  });
+  watcher.start();
 
   poll = setInterval(drainAll, POLL_MS);
   if (typeof poll.unref === 'function') poll.unref();
@@ -415,11 +415,7 @@ export function startEventsSpool(): void {
 
 export function stopEventsSpool(): void {
   if (watcher) {
-    try {
-      watcher.close();
-    } catch {
-      /* ignore */
-    }
+    watcher.stop();
     watcher = null;
   }
   if (poll) {

@@ -788,6 +788,12 @@ end-to-end on btrfs — the recycle arm reddens if reverted to an inode watch;
 latency rig (`scripts/verify-149-wake-latency.mjs`, measuring send→watcher-trigger
 latency p95=274ms; the DELIVERED wake is ≈ +150ms debounce + deliver, still ≪2s).
 
+**#330 — the watch is resilient.** `armBusWalWatcher()` now arms through the shared
+`createWatcher({ name: 'bus-wake', … })` (`docs/codebase-map/watchers.md`): an `EMFILE` at
+boot or a later death no longer leaves the engine on the 60 s sweep for the app's whole
+life — it retries with backoff and runs ONE `sweepBusWake()` on recovery; `bus-status`
+lists it under `watchers:` while degraded.
+
 **An edge-triggered design (watch fires → wake) reads identically in every happy
 path and loses every wake that lands while the app is closed.** The failure is
 invisible precisely because the mechanism that would report it is the one that
@@ -1319,7 +1325,9 @@ it today; the human answers in the app UI (surfaces A+B — see
   `startHumanGatesWatcher()` (`src/main/human-gates.ts`) watches the bus DB
   directory (the #149 `-wal`-basename idiom, immune to WAL inode recycle),
   debounces, and broadcasts `human-gates:update` (diffed — a `check` touches the
-  WAL too) plus mirrors a per-workspace `openHumanGateCount` (#88 pattern). A UI
+  WAL too) plus mirrors a per-workspace `openHumanGateCount` (#88 pattern). The
+  watch is the shared resilient watcher (#330, `watchers.md`: retried after EMFILE,
+  one forced `reconcileHumanGates` on recovery). A UI
   resolve broadcasts immediately. Startup `reconcileHumanGates()` repairs a gate
   opened/resolved via the CLI while the app was closed.
 

@@ -25,9 +25,10 @@
 // changed. A RESOLVE performed here broadcasts immediately (no watch latency for
 // the user's own action). Startup reconciles once.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './logger';
+import { createWatcher } from './watchers';
+import type { ResilientWatcher } from '../shared/resilient-watch';
 import { platform } from './platform';
 import { store } from './store';
 import {
@@ -195,7 +196,7 @@ export function resolveHumanGate(gateId: number, resolution: string): HumanGateR
 // the parent directory's inode is stable. A gate open (CLI) or resolve (agent)
 // both write the WAL, so this catches both.
 
-let watcher: fs.FSWatcher | null = null;
+let watcher: ResilientWatcher | null = null;
 let debounce: ReturnType<typeof setTimeout> | null = null;
 const WATCH_DEBOUNCE_MS = 150;
 
@@ -212,23 +213,25 @@ export function startHumanGatesWatcher(): void {
     debounce = setTimeout(() => broadcastHumanGates(), WATCH_DEBOUNCE_MS);
     debounce.unref?.();
   };
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    watcher = fs.watch(dir, (_event, filename) => {
-      // A null filename (platform-dependent) is treated as a match — a spurious
-      // idempotent recompute is cheaper than a missed gate.
-      if (filename && filename !== walName && filename !== path.basename(bus)) return;
-      fire();
-    });
-  } catch (e) {
-    log.warn('human-gates: could not watch the bus directory', e);
-  }
+  // #330: resilient — a failed arm / a later error is retried with backoff (meanwhile the resolve-time broadcast + the renderer's mount-time read carry the gates) and ONE forced broadcast runs on recovery.
+  watcher = createWatcher({
+    name: 'human-gates',
+    label: 'Questions',
+    dir,
+    fallback: 'the resolve-time broadcast and the mount-time read',
+    ensureDir: true,
+    // A null filename (platform-dependent) is treated as a match — a spurious idempotent recompute is cheaper than a missed gate.
+    filter: (filename) => !filename || filename === walName || filename === path.basename(bus),
+    onChange: fire,
+    onRecover: reconcileHumanGates,
+  });
+  watcher.start();
 }
 
 export function stopHumanGatesWatcher(): void {
   if (debounce) clearTimeout(debounce);
   debounce = null;
-  watcher?.close();
+  watcher?.stop();
   watcher = null;
 }
 

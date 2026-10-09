@@ -3,6 +3,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 import type { HumanGateView } from '../shared/human-gates';
 import type { PauseUiOverview } from '../shared/pause-ui';
 import type { MemoryBannerState } from '../shared/memory-banner';
+import type { WatchersStatus } from '../shared/watcher-status';
 
 const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
@@ -50,6 +51,13 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, payload: unknown) => cb(payload as MemoryBannerState);
     ipcRenderer.on('memoryGuard:bannerUpdate', listener);
     return () => ipcRenderer.off('memoryGuard:bannerUpdate', listener);
+  },
+  // #330 — directory-watcher health: the pull for the initial paint + the push (edge-triggered, only when the degraded set changes)
+  watchersStatus: () => ipcRenderer.invoke('watchers:status'),
+  onWatchersUpdate: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload as WatchersStatus);
+    ipcRenderer.on('watchers:update', listener);
+    return () => ipcRenderer.off('watchers:update', listener);
   },
   onPauseOverviewUpdate: (cb) => {
     const listener = (_e: unknown, payload: unknown) => cb(payload as PauseUiOverview);

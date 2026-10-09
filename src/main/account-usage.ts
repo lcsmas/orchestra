@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { platform } from './platform';
 import { log } from './logger';
+import { createWatcher } from './watchers';
+import type { ResilientWatcher } from '../shared/resilient-watch';
 import { store } from './store';
 import {
   classifyHttpError,
@@ -106,7 +108,7 @@ function tokenInDir(dir: string): string {
  *  rotates) is detected too, and a stale pre-existing token doesn't false-fire. */
 function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => void): () => void {
   let done = false;
-  let fsWatcher: fs.FSWatcher | null = null;
+  let fsWatcher: ResilientWatcher | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   const check = () => {
@@ -121,7 +123,7 @@ function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => voi
 
   const stop = () => {
     if (fsWatcher) {
-      fsWatcher.close();
+      fsWatcher.stop();
       fsWatcher = null;
     }
     if (pollTimer) {
@@ -130,16 +132,21 @@ function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => voi
     }
   };
 
-  try {
-    // Watch the directory (not the file): the file may not exist yet, and
-    // Claude Code writes it via a temp-file + rename, which fires events on the
-    // directory entry rather than a watched file path.
-    fsWatcher = fs.watch(dir, { persistent: false }, (_evt, name) => {
-      if (!name || name === '.credentials.json' || String(name).startsWith('.credentials')) check();
-    });
-  } catch {
-    // dir missing or fs.watch unsupported — the poll below covers it.
-  }
+  // Watch the directory (not the file): the file may not exist yet, and
+  // Claude Code writes it via a temp-file + rename, which fires events on the
+  // directory entry rather than a watched file path.
+  // #330: resilient + registered only while this login is being watched. A dir that is missing / a failed arm is retried (the poll below covers it meanwhile) and ONE check runs on recovery.
+  fsWatcher = createWatcher({
+    name: 'login-watch',
+    label: 'Login detection',
+    dir,
+    fallback: '1.5 s poll',
+    persistent: false,
+    filter: (name) => !name || name === '.credentials.json' || String(name).startsWith('.credentials'),
+    onChange: check,
+    onRecover: check,
+  });
+  fsWatcher.start();
   // Poll fallback: cheap (read one small file every 1.5s) and bounded by the
   // disposer, which the modal calls on close / on the PTY exit.
   pollTimer = setInterval(check, 1500);

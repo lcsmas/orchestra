@@ -31,7 +31,6 @@
 // sweep re-reads durable state, so a bus that comes back is not a bus that
 // dropped anything.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   getBus,
@@ -44,6 +43,8 @@ import {
 } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
+import { createWatcher } from './watchers.ts';
+import type { ResilientWatcher } from '../shared/resilient-watch.ts';
 import { holdWake, wakeWouldBeHeld } from './admission.ts';
 import {
   decideWake,
@@ -925,7 +926,7 @@ export async function sweepBusWakeNow(): Promise<void> {
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
 let timer: ReturnType<typeof setInterval> | null = null;
-let watcher: fs.FSWatcher | null = null;
+let watcher: ResilientWatcher | null = null;
 let debounce: ReturnType<typeof setTimeout> | null = null;
 
 /** Rig seam (#149 acceptance): the must-FAIL arm disables the accelerator so the
@@ -1008,22 +1009,21 @@ export function armBusWalWatcher(): void {
     debounce = setTimeout(() => void sweepBusWake(), WATCH_DEBOUNCE_MS);
     debounce.unref?.();
   };
-  try {
-    watcher = fs.watch(dir, (_event, filename) => {
-      // Filter to the WAL file. A null filename (platform-dependent) is treated
-      // as a match rather than dropped — a spurious idempotent sweep is cheaper
-      // than a missed wake, which is the whole defect (#149).
-      if (filename === null || filename === walName) fire();
-    });
-    watcher.on('error', (e) => {
-      // A directory-watch error is rare but must never be silent: log it and let
-      // the 60s sweep carry every wake, just later.
-      log.warn(`bus-wake: WAL directory watch errored — falling back to the ${SWEEP_MS}ms sweep`, e);
-    });
-    log.info(`bus-wake: WAL accelerator armed on directory ${dir} (filter ${walName})`);
-  } catch (e) {
-    log.warn(`bus-wake: could not watch directory ${dir} — falling back to the ${SWEEP_MS}ms sweep`, e);
-  }
+  // #330: the shared resilient watcher — a failed arm / a later error is RETRIED with backoff (the 60s sweep carries every wake meanwhile, just later) and ONE sweep runs on recovery.
+  watcher = createWatcher({
+    name: 'bus-wake',
+    label: 'Réveils',
+    dir,
+    fallback: `${SWEEP_MS / 1000} s sweep`,
+    // Filter to the WAL file. A null filename (platform-dependent) is treated as a match rather than dropped — a spurious idempotent sweep is cheaper than a missed wake, which is the whole defect (#149).
+    filter: (filename) => filename === null || filename === walName,
+    onChange: fire,
+    onArmed: ({ recovered }) => {
+      if (!recovered) log.info(`bus-wake: WAL accelerator armed on directory ${dir} (filter ${walName})`);
+    },
+    onRecover: () => void sweepBusWake(),
+  });
+  watcher.start();
 }
 
 /** Start the wake subsystem (idempotent). Does NOT bind the switch value: the
@@ -1067,7 +1067,7 @@ export function stopBusWake(): void {
     clearTimeout(debounce);
     debounce = null;
   }
-  watcher?.close();
+  watcher?.stop();
   watcher = null;
   started = false;
 }

@@ -129,9 +129,11 @@ test('the bus-directory watch feeds the push through the max-wait coalescer (a p
   const host = codeOf('src/main/pause-ui-host.ts');
   assert.ok(host.includes('createCoalescer('), 'the coalescer is built');
   assert.ok(/WATCH_MAX_WAIT_MS = 1000/.test(host) && host.includes('maxWaitMs: WATCH_MAX_WAIT_MS'), 'with a 1 s max-wait');
-  const watch = host.slice(at(host, 'watcher = fs.watch(dir'));
-  assert.ok(watch.slice(0, 400).includes('coalescer.poke();'), 'every bus write pokes it');
-  assert.ok(!watch.slice(0, 400).includes('setTimeout('), 'no second, private debounce in the watch callback');
+  const watch = host.slice(at(host, "name: 'pause-ui'"));
+  assert.ok(watch.slice(0, 700).includes('onChange: () => coalescer.poke()'), 'every bus write pokes it');
+  assert.ok(!watch.slice(0, 700).includes('setTimeout('), 'no second, private debounce in the watch callback');
+  assert.ok(watch.slice(0, 700).includes('onRecover: reconcilePauseUi'), '#330: one forced overview push on recovery');
+  assert.ok(!host.includes('fs.watch('), '#330: no hand-rolled directory watch — the shared resilient watcher');
   assert.ok(host.includes('coalescer.cancel();'), 'cancelled at quit');
 });
 

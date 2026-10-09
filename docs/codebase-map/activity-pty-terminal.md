@@ -102,8 +102,8 @@ silently and the human was the detector.
   nobody looking at the frozen agent is why it stays frozen.
 - **The composer tray RE-DERIVES `store.parkedInbox` from the FILE, never from a
   cached parse (issue #91).** The `inbox:update` retract (main's directory
-  watcher → `count:0` → store clears) is the fast path, but `fs.watch` is
-  best-effort and drops events; a missed drain used to leave the chip reading
+  watcher → `count:0` → store clears) is the fast path, but the directory watch is
+  best-effort (since #330 it also RE-ARMS itself after EMFILE/death — `watchers.md`) and drops events; a missed drain used to leave the chip reading
   "N held" with LIVE Release ▶ / Refuse ✕ buttons for a message the hook already
   delivered. So `Composer` in `StructuredView.tsx` calls `refreshInbox`
   (`window.orchestra.listInbox` → **authoritatively REPLACES** the cache,

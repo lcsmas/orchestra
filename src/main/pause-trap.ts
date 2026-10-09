@@ -13,7 +13,6 @@
 // Dependency-injected (TrapDeps) so the whole flow runs over a real bus + real git + fakes for the
 // session/process layer under `node --test`; production wiring is src/main/pause-trap-host.ts.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import type { BusDb } from './bus.ts';
 import { busPath } from './bus.ts';
@@ -41,6 +40,8 @@ import { combineReliquats, mergeReliquats, type ReliquatReport } from '../shared
 import type { SnapshotInput, SnapshotResult } from './pause-snapshot.ts';
 import type { RootRef } from '../shared/pause-procs.ts';
 import { log } from './logger.ts';
+import { createWatcher } from './watchers.ts';
+import type { ResilientWatcher } from '../shared/resilient-watch.ts';
 
 export interface TrapMember {
   wsId: string;
@@ -875,7 +876,7 @@ export const MAX_INTERRUPT_DEFERRALS = 3;
 const trapKilledAt = new Map<string, number>();
 const TASK_NOTIFICATION_WINDOW_MS = 15_000;
 let timer: ReturnType<typeof setInterval> | null = null;
-let watcher: fs.FSWatcher | null = null;
+let watcher: ResilientWatcher | null = null;
 let debounce: ReturnType<typeof setTimeout> | null = null;
 let activeDeps: TrapDeps | null = null;
 
@@ -978,20 +979,26 @@ export function startPauseTrap(deps: TrapDeps): void {
   const bus = busPath();
   const dir = path.dirname(bus);
   const walName = `${path.basename(bus)}-wal`;
-  try {
-    // The directory, not the -wal inode: SQLite recycles -wal (see bus-wake.ts armBusWalWatcher).
-    watcher = fs.watch(dir, (_e, filename) => {
-      if (filename !== null && filename !== walName && filename !== path.basename(bus)) return;
+  // The directory, not the -wal inode: SQLite recycles -wal (see bus-wake.ts armBusWalWatcher).
+  // #330: resilient — a failed arm / a later error is retried with backoff (meanwhile the slow sweep carries detection) and ONE trap sweep runs on recovery.
+  watcher = createWatcher({
+    name: 'pause-trap',
+    label: 'Pause trap',
+    dir,
+    fallback: `${PAUSE_SWEEP_MS / 1000} s sweep`,
+    filter: (filename) => filename === null || filename === walName || filename === path.basename(bus),
+    onChange: () => {
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(() => {
         if (activeDeps) void sweepPauseTrap(activeDeps);
       }, PAUSE_WATCH_DEBOUNCE_MS);
       debounce.unref?.();
-    });
-    watcher.on('error', (e) => log.warn(`pause-trap: bus directory watch errored — sweep-only (${PAUSE_SWEEP_MS} ms)`, e));
-  } catch (e) {
-    log.warn('pause-trap: could not watch the bus directory — sweep-only', e);
-  }
+    },
+    onRecover: () => {
+      if (activeDeps) void sweepPauseTrap(activeDeps);
+    },
+  });
+  watcher.start();
   log.info(`pause-trap: started (watch ${dir}, sweep ${PAUSE_SWEEP_MS} ms)`);
 }
 
@@ -1003,7 +1010,7 @@ export function stopPauseTrap(): void {
   douceStopped = true;
   if (debounce) clearTimeout(debounce);
   debounce = null;
-  watcher?.close();
+  watcher?.stop();
   watcher = null;
   activeDeps = null;
 }
