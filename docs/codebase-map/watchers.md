@@ -9,7 +9,7 @@ Every directory watch of the main process goes through **`createWatcher()`** (`s
 | File | Role |
 |---|---|
 | `src/shared/resilient-watch.ts` | the PURE state machine: `createResilientWatcher(spec, deps)` (`:110`). Injected `watch` primitive, `setTimer`/`clearTimer`, `now`, `mkdirp`, `inodeOf`, `healthMs`, `warn`/`info`. `WATCH_BACKOFF_MS` (`:89`) = 1, 2, 5, 15, 30, 60 s then every 60 s; `WATCH_HEALTH_MS` (`:91`) = 30 s; `WATCH_STABLE_MS` (`:93`) = 60 s |
-| `src/shared/watcher-status.ts` | what is SAID: `formatWatchersLines` (`:46`, the `bus-status` block), `watchersWarning` (`:36`, the app's words), `degradedKey` (`:14`, the edge identity of the degraded set) |
+| `src/shared/watcher-status.ts` | what is SAID: `formatWatchersLines` (`:46`, the `bus-status` block), `watchersStripCopy` (the sidebar strip's French words) + `newerWatchers` (the renderer keeps the later of the boot pull and a push), `degradedKey` (`:14`, the edge identity of the degraded set) |
 | `src/main/watchers.ts` | production binding + the REGISTRY: `realWatch` (the one `fs.watch`), `watchersStatus` (`:81`), `onWatchersChange` (`:100`), `stopAllWatchers` (`:137`), `pushWatchersToRenderer` (`:143`, idempotent), env fault injection (`faultFileFrom` `:24`), test seams `__setWatchPrimitiveForTests` / `__setWatchHealthMsForTests` |
 | `src/main/watchers-host.ts` | Electron-bound half: the PULL channel `watchers:status` (`registerWatchersIpc`, module scope in `index.ts`). Kept apart so `watchers.ts` imports no Electron and a rig can load it |
 
@@ -26,18 +26,18 @@ Every directory watch of the main process goes through **`createWatcher()`** (`s
 | name | label (the human's word) | file | fallback while degraded | catch-up on recovery |
 |---|---|---|---|---|
 | `bus-wake` | Réveils | `bus-wake.ts:1014` | 60 s sweep | `sweepBusWake()` |
-| `pause-ui` | Pause view | `pause-ui-host.ts:144` | the UI's own writes and pull | `reconcilePauseUi` (forced overview push) |
-| `pause-trap` | Pause trap | `pause-trap.ts:985` | 15 s sweep | `sweepPauseTrap(activeDeps)` |
+| `pause-ui` | Vue Pause | `pause-ui-host.ts:144` | the UI's own writes and pull | `reconcilePauseUi` (forced overview push) |
+| `pause-trap` | Pause dure | `pause-trap.ts:985` | 15 s sweep | `sweepPauseTrap(activeDeps)` |
 | `human-gates` | Questions | `human-gates.ts:218` | resolve-time broadcast + mount-time read | `reconcileHumanGates` |
 | `inbox-tray` | Inbox | `inbox-tray.ts:315` | counts sent on each mutation and at mount | `broadcastInbox` for every live workspace |
-| `events-spool` | Agent activity | `events-spool.ts:396` | the 1 s poll | `drainAll` |
-| `login-watch` | Login detection | `account-usage.ts:140` | 1.5 s poll (`persistent:false`; registered only while a login is watched) | `check` |
+| `events-spool` | Activité des agents | `events-spool.ts:396` | the 1 s poll | `drainAll` |
+| `login-watch` | Détection de connexion | `account-usage.ts:140` | 1.5 s poll (`persistent:false`; registered only while a login is watched) | `check` |
 
 `ensureDir` (mkdir before EVERY arm, retries included — a deleted directory is recreated and the watch heals) only where the old block did it at start: pause-ui, human-gates, inbox-tray. The bus-wake / pause-trap watches never CREATE the bus directory — a missing one is `ENOENT` → degraded → recovers when the bus opens.
 
 ## What is told, and to whom
 - **`orchestra bus-status`** — `/busStatus` carries `watchers: WatchersStatus` (`hooks-server.ts`, next to `members`); the CLI prints `formatWatchersLines` (`src/cli/index.ts`): `watchers: N ok` when healthy, `watchers: 4/6 ok · 2 DEGRADED — Réveils, Pause view (system watch limit reached); the app re-arms by itself` + one indented line per degraded watcher (since, age, error, attempts, `meanwhile: <fallback>`). `none armed` when nothing is registered. Absent from an older app → no line.
-- **Renderer push** — `watchers:update` (the WHOLE `WatchersStatus`) ONLY when the degraded set changes (`degradedKey`: `name@since`), plus the pull `watchers:status` for the initial paint. Preload: `watchersStatus` / `onWatchersUpdate` (typed in `src/shared/ipc.ts`, excluded from the generic served table in `api-handlers.ts`). `pushWatchersToRenderer()` is called in `index.ts` before the first watch is armed, but the renderer page is NOT loaded yet at boot: a boot-time EMFILE reaches the UI only by the PULL (`watchers:status`, read on mount); the push carries every LATER change. **The warning chip itself is renderer code and waits for the D4 pick** (mockups: `~/.orchestra/ops-wave-h/h2/mockups/watchers-chip-mockups.md`).
+- **Renderer push** — `watchers:update` (the WHOLE `WatchersStatus`) ONLY when the degraded set changes (`degradedKey`: `name@since`), plus the pull `watchers:status` for the initial paint. Preload: `watchersStatus` / `onWatchersUpdate` (typed in `src/shared/ipc.ts`, excluded from the generic served table in `api-handlers.ts`). `pushWatchersToRenderer()` is called in `index.ts` before the first watch is armed, but the renderer page is NOT loaded yet at boot: a boot-time EMFILE reaches the UI only by the PULL (`watchers:status`, read on mount); the push carries every LATER change. **The warning (D-Q8 = A)**: `src/renderer/components/WatchersStrip.tsx`, a strip in the sidebar footer slot RIGHT AFTER `PauseUnreadableStrip` (same `.pause-unreadable` look, `role="status"`, hook `data-watchers-chip`, tooltip = one line per degraded watcher), French copy « Mises à jour en retard — Réveils, Vue Pause — limite de surveillance de fichiers atteinte. Nouvel essai automatique. » from `watchersStripCopy`. It renders NOTHING while every watcher is ok (no chrome on a healthy app) and has no button — it goes away by itself when the last watcher is back. State = the store slice `watchers` (`src/renderer/store.ts`): the boot PULL `watchersStatus()` in `load()` + `onWatchersUpdate`, both through `newerWatchers` (the later registry clock wins, so a late-answered pull never rolls a push back). Proof: `scripts/watchers-strip-render-smoke.mjs` (SSR, in `pnpm run test:render`) + the built-app drive `scripts/watchers-app/e2e-watchers-app.sh` (chip clauses G4).
 - **Log** — see Edge-triggered above.
 - Shutdown: `stopAllWatchers()` first in `shutdownSubsystems()`; each subsystem's own stop then stops its watcher again (idempotent).
 

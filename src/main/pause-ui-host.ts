@@ -142,7 +142,7 @@ export function startPauseUiWatcher(): void {
   // #330: resilient — a failed arm / a later error is retried with backoff (meanwhile the overview refreshes on the UI's own writes and on pull) and ONE forced overview push runs on recovery.
   watcher = createWatcher({
     name: 'pause-ui',
-    label: 'Pause view',
+    label: 'Vue Pause',
     dir,
     fallback: "the UI's own writes and pull",
     ensureDir: true,

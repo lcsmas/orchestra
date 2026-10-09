@@ -93,7 +93,7 @@ async function armHeal() {
     clause(arm, 'G3/log-one-warn-per-degradation-naming-the-limit', (log2().match(/\[WARN\][^\n]*watcher\[[a-z-]+\]: DEGRADED/g) ?? []).length === 6 && /system watch limit reached \(EMFILE\)/.test(log2()), `WARN×${(log2().match(/\[WARN\][^\n]*watcher\[[a-z-]+\]: DEGRADED/g) ?? []).length} (want 6), names the system limit: ${/system watch limit reached \(EMFILE\)/.test(log2())}`);
     if (!NO_CHIP) {
       const chip = await waitFor(async () => { const c = await chipState(cdp); return c?.visible ? c : null; }, 15000, 'the warning', 300).catch(() => null);
-      clause(arm, 'G4/warning-visible-while-degraded', !!chip && /Réveils/.test(`${chip.text} ${chip.title}`) && /Vue Pause|Pause view/i.test(`${chip.text} ${chip.title}`), `warning: ${J(chip)}`);
+      clause(arm, 'G4/warning-visible-while-degraded', !!chip && /Réveils/.test(`${chip.text} ${chip.title}`) && /Vue Pause/.test(`${chip.text} ${chip.title}`), `warning: ${J(chip)}`);
     }
     await cdp.eval(`window.__pe = []; window.__wu = []; window.orchestra.onPauseOverviewUpdate((o) => window.__pe.push(o.runs.map((r) => [r.carrierRunId, r.phase]))); window.orchestra.onWatchersUpdate((s) => window.__wu.push(s.watchers.filter((w) => w.state === 'degraded').length)); true`);
     await cdp.mouse(5, 890); await sleep(500); await cdp.eval('document.fonts.ready.then(() => true)');

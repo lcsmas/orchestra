@@ -538,7 +538,7 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   refuses writes), plus the `human-gates:update` push (`platform.broadcast`, from
   `src/main/human-gates.ts`'s bus-directory watcher + every resolve). Since #330 the
   app also pushes `watchers:update` (the degraded-watcher set, edge-triggered; pull
-  `watchers:status`) — see `watchers.md`; the warning chip is renderer code gated on D4. The bus DB
+  `watchers:status`) — see `watchers.md`; the warning is the sidebar-footer `WatchersStrip` (D-Q8 A, `watchers.md`). The bus DB
   row is the source of truth (durable + backfill==live); per-workspace
   `Workspace.openHumanGateCount` is mirrored for the sidebar (#88 pattern). Pure
   helpers + wire shape in `src/shared/human-gates.ts`. Backend

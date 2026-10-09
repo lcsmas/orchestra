@@ -3,6 +3,7 @@
 // the end (commit first). A CLI-affecting mutant rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale); the clean build is restored at the end.
 // NOT heavy by the wave rule: no browser / app / keeper / scope / Docker — unit suites + the rig (one node process per arm + the built CLI). Survivors printed: stray rig processes + leftover scratch dirs.
 // Run: node scripts/resilient-watchers-mutants.mjs [--only R01,R02] [--check-anchors] [--no-rig]
+// `smoke: true` also runs the SSR render smoke (scripts/watchers-strip-render-smoke.mjs): its failing checks become `smoke:<label>`.
 // `expect` = a substring of a reddened unit test title, or `rig:<arm>:<check>` (a failing rig check), or `rig:<arm>` (any check of that arm) — at least one MUST be red.
 
 import fs from 'node:fs';
@@ -35,6 +36,9 @@ const IDX = 'src/main/index.ts';
 const HS = 'src/main/hooks-server.ts';
 const CLI = 'src/cli/index.ts';
 const PRE = 'src/preload/index.ts';
+const STRIP = 'src/renderer/components/WatchersStrip.tsx';
+const STORE = 'src/renderer/store.ts';
+const SIDEBAR = 'src/renderer/components/Sidebar.tsx';
 const TESTS = ['src/shared/resilient-watch.test.ts', 'src/shared/watcher-status.test.ts', 'src/main/watchers.test.ts', 'src/main/watchers-wiring.test.ts', 'src/main/pause-ui-wiring.test.ts', 'src/main/bus-wake-watcher.test.ts'];
 const SITES = ['bus-wake', 'pause-ui', 'human-gates', 'inbox-tray', 'pause-trap', 'events-spool', 'login-watch'];
 const ALL_ARMS = ['control', 'degraded', 'recovery', ...SITES.map((x) => `catchup_${x}`), 'midlife', 'silent_detach', 'silent_detach_event', 'shutdown'];
@@ -81,10 +85,26 @@ const MUTANTS = [
   { id: 'R36_root_dir_matches_the_empty_name', file: RW, find: "if (event === 'rename' && filename !== null && dirName !== '' && filename === dirName) {", to: "if (event === 'rename' && filename !== null && filename === dirName) {", expect: ['m1: what is NOT the directory itself does not degrade'] },
   { id: 'R37_dir_self_rename_after_the_filter', file: RW, edits: [{ find: "          if (event === 'rename' && filename !== null && dirName !== '' && filename === dirName) {\n            degrade({ code: 'ESTALE', message: `watched directory was removed or renamed: ${spec.dir}` });\n            return;\n          }\n          if (spec.filter && !spec.filter(filename)) return;", to: "          if (spec.filter && !spec.filter(filename)) return;\n          if (event === 'rename' && filename !== null && dirName !== '' && filename === dirName) {\n            degrade({ code: 'ESTALE', message: `watched directory was removed or renamed: ${spec.dir}` });\n            return;\n          }" }], expect: ['m1 (#330 review): the directory ITSELF', 'rig:silent_detach_event:rearmed_by_the_directory_rename_within_the_first_backoff'], rig: ['silent_detach_event'] },
   { id: 'R38_trailing_slash_not_stripped', file: RW, find: ".replace(/\\/+$/, '').split('/').pop()", to: ".split('/').pop()", expect: ['m1: what is NOT the directory itself does not degrade'] },
+  // ── the sidebar strip (D-Q8 A): renderer + store ──
+  { id: 'C01_strip_not_a_status', file: STRIP, find: 'role="status" aria-live="polite"', to: 'role="alert"', expect: ['smoke:two degraded ⇒ the strip', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C02_strip_hook_dropped', file: STRIP, find: ' data-watchers-chip=""', to: '', expect: ['smoke:two degraded ⇒ the strip', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C03_strip_tooltip_dropped', file: STRIP, find: ' title={copy.lines.join(\'\\n\')}', to: '', expect: ['smoke:the tooltip carries one line per degraded watcher'], smoke: true },
+  { id: 'C04_strip_loses_the_pause_style', file: STRIP, find: 'className="pause-unreadable watchers-strip"', to: 'className="watchers-strip"', expect: ['smoke:two degraded ⇒ the strip', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C05_strip_shown_when_healthy', file: STRIP, find: '  if (!copy) return null;\n  return (', to: '  if (!copy && !status) return null;\n  if (!copy) return <div data-watchers-chip="">ok</div>;\n  return (', expect: ['smoke:every watcher ok ⇒ NOTHING', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C06_strip_has_a_dismiss_button', file: STRIP, find: '    </div>\n  );\n}', to: '    <button onClick={() => {}}>×</button></div>\n  );\n}', expect: ['smoke:NO button, link or dismissal', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C07_store_no_push_subscription', file: STORE, find: 'window.orchestra.onWatchersUpdate((status) => {\n  useStore.setState((st) => ({ watchers: newerWatchers(st.watchers, status) }));\n});\n', to: '', expect: ['smoke:the store subscribed to `watchers:update` at import', 'RENDERER store'], smoke: true },
+  { id: 'C08_store_no_boot_pull', file: STORE, find: '      watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,\n', to: '', expect: ['smoke:the boot PULL fills the slice', 'RENDERER store'], smoke: true },
+  { id: 'C09_store_push_unordered', file: STORE, find: 'watchers: newerWatchers(st.watchers, status) }));', to: 'watchers: status }));', expect: ['smoke:an OLDER push (or a late-answered pull) never rolls it back', 'RENDERER store'], smoke: true },
+  { id: 'C10_store_pull_overwrites_a_newer_push', file: STORE, find: 'watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,', to: 'watchers: watchers ?? get().watchers,', expect: ['RENDERER store'] },
+  { id: 'C11_sidebar_without_the_strip', file: SIDEBAR, find: '      <WatchersStrip />\n', to: '', expect: ['RENDERER (D-Q8 A)'] },
+  { id: 'C12_sidebar_strip_below_the_footer', file: SIDEBAR, edits: [{ find: '      <WatchersStrip />\n      <div className="sidebar-footer">', to: '      <div className="sidebar-footer">' }, { find: '      <RowActionsPopover', to: '      <WatchersStrip />\n      <RowActionsPopover' }], expect: ['RENDERER (D-Q8 A)'] },
   // ── what bus-status and the app say (src/shared/watcher-status.ts) ──
   { id: 'S01_summary_word_lowercase', file: WS, find: '· ${d.length} DEGRADED —', to: '· ${d.length} degraded —', expect: ['degraded: summary line names', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: true },
   { id: 'S02_limit_never_named', file: WS, find: "${limit ? ' (system watch limit reached)' : ''}; the app re-arms by itself", to: "${limit ? '' : ''}; the app re-arms by itself", expect: ['degraded: summary line names', 'a non-limit degradation', 'rig:degraded:bus_status_names_the_system_limit'], rig: ['degraded'], cli: true },
-  { id: 'S03_every_error_is_the_limit', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');", to: 'const limit = true;', expect: ['a non-limit degradation'] },
+  { id: 'S03_every_error_is_the_limit', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  const lines = [", to: 'const limit = true;\n  const lines = [', expect: ['a non-limit degradation'] },
+  { id: 'S12_strip_claims_the_limit_for_any_cause', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {", to: 'const limit = true;\n  return {', expect: ['strip copy (D-Q8 A)'] },
+  { id: 'S13_strip_pull_not_ordered', file: WS, find: '(!prev || next.at >= prev.at ? next : prev)', to: '(next)', expect: ['newerWatchers'] },
+  { id: 'S14_strip_older_wins', file: WS, find: '(!prev || next.at >= prev.at ? next : prev)', to: '(!prev || next.at <= prev.at ? next : prev)', expect: ['newerWatchers'] },
   { id: 'S04_edge_key_counts_attempts', file: WS, find: '.map((w) => `${w.name}@${w.since}`)', to: '.map((w) => `${w.name}@${w.since}@${w.attempts}`)', expect: ['degradedOf / degradedLabels / degradedKey'] },
   { id: 'S05_labels_not_deduplicated', file: WS, find: '[...new Set(degradedOf(s).map((w) => w.label))]', to: 'degradedOf(s).map((w) => w.label)', expect: ['degradedOf / degradedLabels / degradedKey'] },
   { id: 'S06_healthy_prints_nothing', file: WS, find: 'if (d.length === 0) return [`watchers: ${total} ok`];', to: 'if (d.length === 0) return [];', expect: ['all ok → ONE calm line', 'rig:control:bus_status_all_ok'], rig: ['control'], cli: true },
@@ -92,7 +112,7 @@ const MUTANTS = [
   { id: 'S08_fallback_not_named', file: WS, find: ' · meanwhile: ${w.fallback}`', to: '`', expect: ['degraded: summary line names'] },
   { id: 'S09_since_is_now', file: WS, find: 'DEGRADED since ${clock(w.since)} (', to: 'DEGRADED since ${clock(now)} (', expect: ['degraded: summary line names'] },
   { id: 'S11_dir_not_in_the_line', file: WS, find: ' · ${w.dir} · meanwhile:', to: ' · meanwhile:', expect: ['degraded: summary line names'] },
-  { id: 'S10_warning_silent', file: WS, find: "  if (d.length === 0) return null;\n  return `${degradedLabels(s)", to: "  if (d.length === 0) return null;\n  return null;\n  return `${degradedLabels(s)", expect: ['watchersWarning'] },
+  { id: 'S10_strip_never_shown', file: WS, find: "  if (d.length === 0) return null;\n  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {\n    title:", to: "  if (d.length === 0) return null;\n  return null;\n  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {\n    title:", expect: ['strip copy (D-Q8 A)'] },
   // ── the registry + production binding (src/main/watchers.ts) ──
   { id: 'W01_never_registered', file: WR, find: '      armed.add(handle);\n      inner.start();', to: '      inner.start();', expect: ['EMFILE at arm: bus-status data lists it degraded', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: false },
   { id: 'W02_stop_keeps_registered', file: WR, find: '      armed.delete(handle); // first:', to: '      void 0; // first:', expect: ['stop() of a DEGRADED watcher clears', 'healthy watcher: listed as ok', 'rig:shutdown:registry_empty_after_shutdown'], rig: ['shutdown'] },
@@ -154,6 +174,13 @@ function unitRed() {
   const skipped = Number(/^# skipped (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
   return { names, pass, skipped, status: r.status };
 }
+function smokeRed() {
+  const r = sh(process.execPath, [path.join(HERE, 'watchers-strip-render-smoke.mjs')]);
+  const out = r.stdout ?? '';
+  const fails = [...out.matchAll(/^\s+FAIL (.*?)(?: — .*)?$/gm)].map((m) => `smoke:${m[1]}`);
+  if (r.status !== 0 && fails.length === 0) fails.push(`smoke:(crashed, exit ${r.status})`);
+  return { fails, pass: (out.match(/^\s+ok /gm) ?? []).length, status: r.status };
+}
 /** the rig's parent prints `FAIL <arm> (…) — name: note | name: note`; the failing checks become `rig:<arm>:<name>`, plus `rig:<arm>` for the arm */
 function rigRed(arms) {
   if (noRig || !arms || arms.length === 0) return { red: [], pass: 0, line: '(rig not run)' };
@@ -201,8 +228,9 @@ buildCli();
 // ── POSITIVE CONTROL: the unmutated tree must be all green (and the CLI fresh), else every "killed" below is vacuous ──
 const base = unitRed();
 const baseRig = rigRed(ALL_ARMS);
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (pass ${baseRig.pass}, red ${JSON.stringify(baseRig.red)}) | strays ${strays()} scratch ${scratchLeft()}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || (!noRig && (baseRig.red.length || baseRig.pass !== ALL_ARMS.length))) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(2); }
+const baseSmoke = smokeRed();
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (pass ${baseRig.pass}, red ${JSON.stringify(baseRig.red)}) | smoke ok ${baseSmoke.pass} fail ${baseSmoke.fails.length} | strays ${strays()} scratch ${scratchLeft()}`);
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || (!noRig && (baseRig.red.length || baseRig.pass !== ALL_ARMS.length)) || baseSmoke.fails.length || baseSmoke.status !== 0) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(2); }
 
 const rows = [];
 let restoreBad = false;
@@ -227,7 +255,8 @@ for (const m of MUTANTS) {
     if (m.cli) buildCli();
     const u = unitRed();
     const r = rigRed(m.rig);
-    const red = [...u.names, ...r.red];
+    const sm = m.smoke ? smokeRed() : { fails: [] };
+    const red = [...u.names, ...r.red, ...sm.fails];
     const hit = m.expect.filter((e) => red.some((n) => n.includes(e)));
     rows.push({ id: m.id, verdict: hit.length > 0 ? 'KILLED' : red.length ? 'KILLED-BUT-NOT-BY-NAMED-ARM' : 'SURVIVED', detail: `named ${JSON.stringify(m.expect)} hit ${JSON.stringify(hit)}; red: ${red.slice(0, 4).join(' | ')}${red.length > 4 ? ` (+${red.length - 4})` : ''}` });
   } finally {

@@ -29,6 +29,7 @@ import type { PauseMode } from '../shared/pause-lifecycle';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '../shared/pause-ui';
 import { newerOverview } from '../shared/pause-ui-view';
 import { dismissedWith, newerBanner, type MemoryBannerState } from '../shared/memory-banner';
+import { newerWatchers, type WatchersStatus } from '../shared/watcher-status';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -146,6 +147,8 @@ interface State {
   pauseOverview: PauseUiOverview | null;
   /** The memory banner's state (#289, D-pick3): pushed by main on change, replaced WHOLESALE (null = not loaded yet). The banner is visible while `kind !== 'none'` and not dismissed. */
   memoryBanner: MemoryBannerState | null;
+  /** Directory-watcher health (#330, D-Q8 A): every armed watcher's state, replaced WHOLESALE by the boot pull and by each `watchers:update` push (the later reading wins). The sidebar strip shows while any is degraded. null = not loaded yet. */
+  watchers: WatchersStatus | null;
   /** The keys (episode + kind [+ Pause cycle]) of every banner « Masquer » hid since the last recovery; any other key shows again (escalation, new Pause cycle, next episode). */
   memoryBannerDismissed: readonly string[];
   dismissMemoryBanner: () => void;
@@ -289,6 +292,7 @@ export const useStore = create<State>((set, get) => ({
   humanGates: [],
   pauseOverview: null,
   memoryBanner: null,
+  watchers: null,
   memoryBannerDismissed: [],
   dismissMemoryBanner: () => set((st) => ({ memoryBannerDismissed: dismissedWith(st.memoryBannerDismissed, st.memoryBanner) })),
   repoSync: {},
@@ -416,7 +420,7 @@ export const useStore = create<State>((set, get) => ({
         slog.warn(`startup load: ${what} failed — rendering as empty`, e);
         return fallback;
       });
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner, watchers] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -436,6 +440,8 @@ export const useStore = create<State>((set, get) => ({
         orEmpty('pauseOverview', window.orchestra.pauseOverview(), null as PauseUiOverview | null),
         // Memory banner for the initial paint (#289); live updates then ride `memoryGuard:bannerUpdate`.
         orEmpty('memoryBanner', window.orchestra.memoryBanner(), null as MemoryBannerState | null),
+        // Directory-watcher health for the initial paint (#330): the page loads AFTER the main process armed its watchers, so a boot-time degradation is only ever seen through this pull; later changes ride `watchers:update`.
+        orEmpty('watchersStatus', window.orchestra.watchersStatus(), null as WatchersStatus | null),
       ]);
     slog.info(
       `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
@@ -463,6 +469,7 @@ export const useStore = create<State>((set, get) => ({
       // a push that landed while this read was in flight is NEWER than this reply: keep it (rev-stamped by the host)
       pauseOverview: pauseOverview ? newerOverview(get().pauseOverview, pauseOverview) : pauseOverview,
       memoryBanner: memoryBanner ? newerBanner(get().memoryBanner, memoryBanner) : get().memoryBanner,
+      watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -1048,6 +1055,10 @@ window.orchestra.onPauseOverviewUpdate((overview) => {
 // dismissal is forgotten: the NEXT episode shows again whatever its key.
 window.orchestra.onMemoryBanner((banner) => {
   useStore.setState((st) => ({ memoryBanner: newerBanner(st.memoryBanner, banner), ...(banner.kind === 'none' ? { memoryBannerDismissed: [] } : {}) }));
+});
+// The directory watchers' health changed (#330): one went down, came back, or was stopped while down. Main pushes the whole status only when the DEGRADED set changes; keep the later of it and the boot pull.
+window.orchestra.onWatchersUpdate((status) => {
+  useStore.setState((st) => ({ watchers: newerWatchers(st.watchers, status) }));
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.
