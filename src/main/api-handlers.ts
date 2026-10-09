@@ -227,6 +227,8 @@ type ServableApi = Omit<
   | 'pausePause'
   | 'pauseResume'
   | 'pauseRelease'
+  // #330 — the directory-watcher health pull (`watchers:status`) is registered by registerWatchersIpc() (src/main/watchers-host.ts), next to its push; not from this generic table.
+  | 'watchersStatus'
   // #289 — the memory banner's pull (`memoryGuard:banner`) is registered by registerMemoryBannerIpc() (src/main/memory-banner-host.ts), next to its push; not from this generic table.
   | 'memoryBanner'
 >;

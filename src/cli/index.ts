@@ -50,6 +50,7 @@ import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunVi
 import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
 import { formatContainersLine, type ContainerAccountingView } from '../shared/container-accounting.ts';
 import { formatReliquatsLine, type MemberMemoryReport } from '../shared/member-memory.ts';
+import { formatWatchersLines, type WatchersStatus } from '../shared/watcher-status.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
@@ -2224,6 +2225,10 @@ async function main(argv: string[]): Promise<void> {
       if (res.members && typeof res.members === 'object') {
         const mlabels = (res.memberLabels ?? {}) as Record<string, string>;
         process.stdout.write(`${formatReliquatsLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\n`);
+      }
+      // #330: the app's directory watchers (one summary line + one line per DEGRADED watcher: since when, last error, what keeps working meanwhile). Absent from an older app → no line.
+      if (res.watchers && typeof res.watchers === 'object' && Array.isArray((res.watchers as WatchersStatus).watchers)) {
+        process.stdout.write(`${formatWatchersLines(res.watchers as WatchersStatus, Date.now()).join('\n')}\n`);
       }
       // #286: starts HELD for low memory (the OPS must not mistake them for a stall). No line when nothing is held — output unchanged.
       if (Array.isArray(res.heldStarts)) {

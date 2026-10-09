@@ -43,6 +43,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { log } from './logger';
+import { createWatcher } from './watchers';
+import type { ResilientWatcher } from '../shared/resilient-watch';
 import { platform } from './platform';
 import { store } from './store';
 import type { Workspace } from '../shared/types.ts';
@@ -301,30 +303,38 @@ export async function releaseAllInboxBlocks(
 // (not each file: files are created and deleted, and a watch on a deleted path
 // dies with it) and broadcast the affected workspace's fresh count.
 
-let watcher: fs.FSWatcher | null = null;
+let watcher: ResilientWatcher | null = null;
 
 /** Start broadcasting `inbox:update` whenever a workspace's inbox file changes.
  *  Idempotent. Best-effort: a platform without usable fs watching simply falls
  *  back to the counts sent on each mutation and at renderer mount. */
 export function startInboxWatcher(): void {
   if (watcher) return;
-  try {
-    fs.mkdirSync(INBOX_ROOT, { recursive: true });
-    watcher = fs.watch(INBOX_ROOT, (_event, filename) => {
-      if (!filename || !filename.endsWith('.txt')) return;
-      const workspaceId = filename.slice(0, -'.txt'.length);
+  // #330: resilient — a failed arm / a later error is retried with backoff (meanwhile the counts sent on each mutation and at renderer mount carry the tray) and ONE count broadcast per live workspace runs on recovery.
+  watcher = createWatcher({
+    name: 'inbox-tray',
+    label: 'Inbox',
+    dir: INBOX_ROOT,
+    fallback: 'the counts sent on each mutation and at mount',
+    ensureDir: true,
+    filter: (filename) => !!filename && filename.endsWith('.txt'),
+    onChange: (filename) => {
+      const workspaceId = String(filename).slice(0, -'.txt'.length);
       // Only broadcast for workspaces we actually know: the directory is keyed
       // by id, and a stale file from a deleted workspace should not produce
       // events for a workspace the renderer has no row for.
       if (!store.getWorkspace(workspaceId)) return;
       broadcastInbox(workspaceId);
-    });
-  } catch (e) {
-    log.warn('inbox-tray: could not watch the inbox directory', e);
-  }
+    },
+    onRecover: () => {
+      // a drain by the shell hook while the watch was down never retracted its chip: re-broadcast every live workspace's count
+      for (const ws of store.workspaces) if (!ws.archived) broadcastInbox(ws.id);
+    },
+  });
+  watcher.start();
 }
 
 export function stopInboxWatcher(): void {
-  watcher?.close();
+  watcher?.stop();
   watcher = null;
 }
