@@ -162,7 +162,7 @@ function rigRed(arms) {
   const red = [];
   for (const m of out.matchAll(/^FAIL ([\w-]+) \([^)]*\)(?: — (.*))?$/gm)) {
     red.push(`rig:${m[1]}`);
-    for (const part of (m[2] ?? '').split(' | ')) { const name = /^([a-z0-9_]+):/.exec(part)?.[1]; if (name) red.push(`rig:${m[1]}:${name}`); }
+    for (const part of (m[2] ?? '').split(' | ')) { const name = /^([\w-]+):/.exec(part)?.[1]; if (name) red.push(`rig:${m[1]}:${name}`); }
     if (!m[2]) red.push(`rig:${m[1]}:(no verdict)`);
   }
   return { red, pass: (out.match(/^PASS [\w-]+ /gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('RESILIENT WATCHERS')).pop() ?? `no summary (exit ${r.status})`) };
