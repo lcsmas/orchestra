@@ -28,8 +28,8 @@ const flag = (k) => args.includes(`--${k}`);
 if (/^(memhog|chain)(,(memhog|chain))*$/.test(opt('exercise', ''))) await import('./memhog-run.mjs');
 const BASE = path.resolve(opt('base', path.join(REAL_HOME, '.cache', 'pause-canary')));
 const OUT = path.resolve(opt('out', path.join(BASE, 'reports', new Date().toISOString().replace(/[:.]/g, '-'))));
-// Q11 (ledger #329, D-Q11): the cap-ON `memhog-app` run starts only with MemAvailable > 9 GB and adds no footprint on top (6 scopes of 1 GiB are the design); every other drill keeps the 6 GB bar + footprint
-const MH_ON = String(opt('exercise', '')).split(',').includes('memhog-app') && opt('memhog-switch', 'on') === 'on';
+// Q11 (ledger #329, D-Q11): a `memhog-app` run starts only with MemAvailable > 9 GB and adds no footprint on top (6 scopes of 1 GiB are the design); every other drill keeps the 6 GB bar + footprint
+const MH_ON = args.some((a) => /memhog-app/.test(a));   // the `memhog-app` exercise or its proof arms, either switch (the cap-OFF control's hogs are unbounded: same 9 GB start)
 const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON ? 9 : 0);
 initBase(BASE);   // the scratch guard also runs HERE: the runner creates dirs and rm -rf's apps/mut-* under --base before any drive starts
 const HOST_NOTE = `bar ${MIN_AVAIL_GB} GB / load 20${process.env.PC_IGNORE_HOST === '1' ? ' — HOST GUARD IGNORED (PC_IGNORE_HOST=1)' : ''}${MIN_AVAIL_GB !== 6 ? ' — NON-DEFAULT --min-avail-gb' : ''}`;
@@ -64,6 +64,12 @@ const PROOF_ARMS = [
   { name: 'control:memhog-app-cap-off', exercise: 'memhog-app', memhogSwitch: 'off', optIn: true, redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'] },
 ];
 if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(36)} ${a.exercise}${a.redden ? ` → RED ${a.redden.join(' | ')}` : ' → PASS'}${a.mutant ? ` — ${MUTANTS[a.mutant].desc}` : ''}`); process.exit(0); }
+// #324 review 2, finding 9: the packaged memory-hog path is a HEAVY rig (real claude × N, real kernel kills): it runs only under the heavy-rig token, like the stand-in path
+const HEAVY = opt('heavy-token', process.env.MEMHOG_HEAVY_TOKEN ?? '');
+if (MH_ON && !HEAVY) { say('PAUSE-CANARY: VOID — the packaged memhog-app run is a HEAVY rig: run it only under the heavy-rig token (ask the OPS), then pass --heavy-token <ref> (or MEMHOG_HEAVY_TOKEN). Nothing was run.'); process.exit(3); }
+if (MH_ON && HEAVY.startsWith('--')) { say(`PAUSE-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
+const EX0 = String(opt('exercise', '')).split(',').filter(Boolean);
+if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memhog-app runs ALONE (its own store settings, its own report shape)'); process.exit(2); }   // before ensureApp: a bad invocation must not cost a build
 
 // ── host guards (the OPS bar) ──
 function hostNow() {
@@ -80,6 +86,7 @@ function foreignRigs() {
     if (!/^\d+$/.test(d)) continue;
     try {
       const argv = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0');
+      if (argv.some((a) => /pause-canary\/memhog\.mjs$/.test(a))) { out.push(Number(d)); continue; }   // the stand-in memory-hog drill (memhog-run.mjs) is never ours: the « one heavy rig at a time » rule goes both ways (review 2, finding 11)
       if (!argv.some((a) => /pause-canary\/drive\.mjs$/.test(a))) continue;
       const base = argv[argv.indexOf('--base') + 1];
       if (base && path.resolve(base) !== BASE) out.push(Number(d));
@@ -192,7 +199,7 @@ if (!flag('proof')) {
     const w0 = await waitForHost(members);
     if (!w0.ok) { parts.push({ rc: 3, label: label0, logFile: '', exercises: [{ exercise: ex, result: 'VOID', cycles: 0, wanted: cycles, reason: 'host below the bar' }], cycles: [], checks: [], host: null, verdict: 'VOID' }); continue; }
     let p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : [] });
-    for (let n = 1; p.verdict === 'VOID' && n <= Number(opt('void-retries', '2')); n++) {
+    for (let n = 1; p.verdict === 'VOID' && n <= (ex === 'memhog-app' ? 0 : Number(opt('void-retries', '2'))); n++) {   // Q11: the memhog-app run is ONE run — a host-VOID is reported, never re-driven
       voidLogs.push(p.logFile);
       const w = await waitForHost(members);
       say(`   ${ex}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
@@ -202,15 +209,16 @@ if (!flag('proof')) {
     parts.push(p);
   }
   const r = { rc: parts.every((x) => x.rc === 0) ? 0 : 1, label: label0, logFile: parts.map((x) => x.logFile).filter(Boolean).join(' + '), exercises: parts.flatMap((x) => x.exercises), cycles: parts.flatMap((x) => x.cycles), checks: parts.flatMap((x) => x.checks), host: parts.map((x) => x.host).filter(Boolean).reduce((a, h) => (a ? { minAvailGB: Math.min(a.minAvailGB, h.minAvailGB), maxLoad: Math.max(a.maxLoad, h.maxLoad), samples: a.samples + h.samples } : h), null), verdict: parts.every((x) => x.verdict === 'PASS') ? 'PASS' : parts.some((x) => x.verdict === 'FAIL' || x.verdict === 'NO-RESULT') ? 'FAIL' : 'VOID' };
-  const table = exercise === 'memhog-app' ? renderMemhogTable(r.cycles) : renderTable(r.cycles);
+  const MH_REPORT = wantedEx.length === 1 && wantedEx[0] === 'memhog-app';   // its own report shape: the memory-hog table, the memory-hog bars
+  const table = MH_REPORT ? renderMemhogTable(r.cycles) : renderTable(r.cycles);
+  const full = MH_REPORT ? cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === 1 : KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === wantedEx.length;   // memhog-app is its own shape: ≥ 3 cycles, PASS
   const gi = gitInfo();
   const reds = r.checks.filter((c) => !c.ok);
-  const md = [`# Pause canary 1 — dummy fleet (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !(KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3) ? ' (PARTIAL: not 4 exercises × ≥ 3 cycles)' : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
+  const md = [`# ${MH_REPORT ? 'Pause canary 1b — memory-hog on the PACKAGED app' : 'Pause canary 1 — dummy fleet'} (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, MH_REPORT ? '`bars (never lowered): the overflowing process killed · keeper + CLI survive · the member AND only its coordinator told (#322, read by its own relève) · cap scope applied and still active · memory guard NEUTRALISED (Admission OFF, critical 0.5 GB) so only the cap is under test`' : `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !full ? (MH_REPORT ? ' (PARTIAL: fewer than 3 cycles)' : ' (PARTIAL: not 4 exercises × ≥ 3 cycles)') : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
   writeReport('report', md);
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ git: gi, claude: claudeVersion, app: appBin, drive: r }, null, 1));
   say(`\n${table}\n`);
   // the contract shape is 4 exercises × ≥ 3 cycles: a green run of less is PARTIAL, never PASS (`--exercise dures` / `--cycles 0` can no longer print a PASS over an empty table)
-  const full = KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === wantedEx.length;
   const word = r.verdict === 'PASS' && !full ? 'PARTIAL' : r.verdict;
   say(`PAUSE-CANARY: ${word}${members < 10 ? ` (${members} workers — labelled, not the 10 of the ticket)` : ''}`);
   process.exit(word === 'PASS' ? 0 : word === 'PARTIAL' ? 4 : r.verdict === 'VOID' ? 3 : 1);   // 4 = green but not the contract shape (4 exercises × ≥ 3 cycles): never an exit-0 PASS

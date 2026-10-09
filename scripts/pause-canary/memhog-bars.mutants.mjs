@@ -45,7 +45,7 @@ export const MEMHOG_MUTANTS = [
   ['survivors-units-ignored', 's.procs === 0 && s.units === 0', 's.procs === 0'],
   ['survivors-procs-ignored', 's.procs === 0 && s.units === 0', 's.units === 0'],
   ['live-compare-ignored', 'JSON.stringify(before) === JSON.stringify(after)', 'true'],
-  ['chain-premise-vacuous', 'r.inScope === true && ((num(r.killsTotal) && r.killsTotal >= planned) || lost)', 'true'],
+  ['chain-premise-vacuous', 'r.inScope === true && cliSeen && ((num(r.killsTotal) && r.killsTotal >= planned) || lostByCap)', 'true'],
   ['chain-lost-ignored', "add('q9:session_survives_chain', !lost && ", "add('q9:session_survives_chain', "],
   ['chain-done-ignored', ' && r.done === r.planned,', ','],
   ['chain-answer-ignored', '!lost && alive && r.answered === true && r.done === r.planned,', '!lost && alive && r.done === r.planned,'],
@@ -57,8 +57,8 @@ export const MEMHOG_MUTANTS = [
   ['marker-prefix-match', "split(/\\s+/).includes(marker)", "some((a) => a.startsWith(marker))"],
   ['drill-required-ignored', 'absent.length === 0 && s.barsRed.length === 0', 's.barsRed.length === 0'],
   ['drill-required-list-shrunk', "['workers_up', 'bar:cap_scope_applied', 'bar:hog_killed',", "['workers_up', 'bar:cap_scope_applied',"],
-  ['chain-scope-ignored', "r.inScope === true && ((num(r.killsTotal)", "((num(r.killsTotal)"],
-  ['chain-first-kill-premise', "&& r.killsTotal >= planned) || lost)", "&& r.killsTotal >= planned))"],
+  ['chain-scope-ignored', "r.inScope === true && cliSeen && ((num(r.killsTotal)", "cliSeen && ((num(r.killsTotal)"],
+  ['chain-first-kill-premise', "&& r.killsTotal >= planned) || lostByCap)", "&& r.killsTotal >= planned))"],
   ['chain-alive-ignored', "!lost && alive && r.answered === true", "!lost && r.answered === true"],
   ['chain-loss-detail-regex', "num(at(r).lostAfter) ? `after ${at(r).lostAfter} kill(s)` : at(r).alive === true ? 'alive but unresponsive' : 'cut short'", "'cut short'"],
   ['marker-not-per-cycle', 'export const hogMarker = (k, cycle) => `memhog-${k}-c${cycle}`;', 'export const hogMarker = (k, cycle) => `memhog-${k}`;'],
@@ -67,6 +67,11 @@ export const MEMHOG_MUTANTS = [
   ['read-upper-bound-exclusive', 'q <= d.to_seq', 'q < d.to_seq'],
   ['read-ack-ignored', 'd.acked_at !== null && d.acked_at !== undefined && ', ''],
   ['arm-overred-ignored', "v === 'AS-EXPECTED (RED)' && overRed.length > 0", 'false'],
+  ['chain-cli-seen-ignored', 'r.inScope === true && cliSeen && ', 'r.inScope === true && '],
+  ['chain-lost-by-cap-any-loss', "const lostByCap = lost && ((num(r.lostAfter) && r.lostAfter >= 1) || r.keeperAlive === false);", 'const lostByCap = lost;'],
+  ['chain-lost-by-cap-zero-kills', 'num(r.lostAfter) && r.lostAfter >= 1', 'num(r.lostAfter) && r.lostAfter >= 0'],
+  ['chain-lost-by-cap-keeper-ignored', ' || r.keeperAlive === false);', ');'],
+  ['table-aborted-cycle-unguarded', 'if (!k) return `| ${c.exercise} | ${c.cycle} | n/a', 'if (false) return `| ${c.exercise} | ${c.cycle} | n/a'],
 ].map(([name, find, replace]) => [name, find, replace, F]);
 
 // packaged-path fact shaping (memhog-app-facts.mjs), killed by pause-canary-memhog-app.test.ts (facts built with the REAL src/shared writers)
@@ -80,7 +85,13 @@ export const MEMHOG_FACTS_MUTANTS = [
   ['facts-answered-always', 'answered: f.probeAfter === true', 'answered: true'],
   ['facts-cli-same-always', 'cliSame: !!idPre.claude && idPre.claude === idPost.claude', 'cliSame: true'],
   ['facts-keeper-same-always', 'keeperSame: !!idPre.keeper && idPre.keeper === idPost.keeper', 'keeperSame: true'],
-  ['facts-capstate-any-line', 'memory-cap\\\\[${w.id}\\\\]: ACTIVE', 'memory-cap'],
+  ['facts-capstate-always-active', 'capState: capStateFromKeeperLog(f.keeperLog),', "capState: 'active',"],
+  ['facts-capstate-first-wins', 'state = m[1].toLowerCase();', 'state ??= m[1].toLowerCase();'],
+  ['facts-capstate-state-ignored', 'state = m[1].toLowerCase();', "state = 'active';"],
+  ['facts-capstate-no-unit-anchor', String.raw`([A-Z]+(?:-[A-Z]+)*) unit=\S+ memory\.max=/g`, String.raw`([A-Z]+(?:-[A-Z]+)*)/g`],
+  ['facts-guard-seed-admission-on', 'admissionEnabled: false', 'admissionEnabled: true'],
+  ['facts-guard-seed-critical-default', 'criticalGb: 0.5', 'criticalGb: 3'],
+  ['facts-guard-seed-admission-default', 'admissionGb: 1.5', 'admissionGb: 6'],
   ['facts-member-time-zero', 'firstRowMs: rows.length ? Math.min(...rows.map((e) => e.at)) - t0 : null', 'firstRowMs: rows.length ? 0 : null'],
   ['facts-coord-time-zero', 'firstEscMs: esc.length ? Math.min(...esc.map((x) => x.created_at)) - t0 : null', 'firstEscMs: esc.length ? 0 : null'],
   ['facts-up-always', 'up: f.up === true', 'up: true'],
@@ -88,3 +99,27 @@ export const MEMHOG_FACTS_MUTANTS = [
   ['facts-no-member-rows', 'memberKillRows: rows.map((e) => e.text)', 'memberKillRows: []'],
   ['facts-delta-defaults', "oomKillDelta: typeof f.oomKillDelta === 'number' ? f.oomKillDelta : null", 'oomKillDelta: f.oomKillDelta ?? 1'],
 ].map(([name, find, replace]) => [name, find, replace, FF]);
+
+// the OS helpers (memhog-os.mjs): process selection and identity-checked teardown, killed by pause-canary-memhog-os.test.ts (a REAL process tree, a REAL stand-in CLI)
+const FO = 'memhog-os.mjs';
+export const MEMHOG_OS_MUTANTS = [
+  ['os-select-by-argv', "if (env && env.split('\\0').includes(want)) out.push({ pid, ticks: ticks(pid) });", "if ((env && env.split('\\0').includes(want)) || (readSafe(`/proc/${pid}/cmdline`) ?? '').includes(home)) out.push({ pid, ticks: ticks(pid) });"],
+  ['os-select-substring', "if (env && env.split('\\0').includes(want)) out.push", 'if (env && env.includes(want)) out.push'],
+  ['os-ancestors-not-skipped', 'const skip = new Set([...ancestorsOf(), ...except]);', 'const skip = new Set([...except]);'],
+  ['os-self-not-skipped', 'const skip = new Set([...ancestorsOf(), ...except]);', 'const skip = new Set([...[...ancestorsOf()].filter((p) => p !== process.pid), ...except]);'],
+  ['os-parent-not-skipped', 'const skip = new Set([...ancestorsOf(), ...except]);', 'const skip = new Set([...[...ancestorsOf()].filter((p) => p === process.pid), ...except]);'],
+  ['os-except-ignored', 'const skip = new Set([...ancestorsOf(), ...except]);', 'const skip = new Set([...ancestorsOf()]);'],
+  ['os-kill-no-identity', 'if (ticks(pid) !== t || ', 'if (false || '],
+  ['os-kill-no-marker', "|| !(readSafe(`/proc/${pid}/environ`) ?? '').split('\\0').includes(want)) continue;", ') continue;'],
+  ['os-cli-env-no-marker', 'HOME: home, ORCHESTRA_HOME: home, SHELL:', 'HOME: home, SHELL:'],
+].map(([name, find, replace]) => [name, find, replace, FO]);
+
+// the proof arms (memhog-arms.mjs): a regex that no longer matches the text of its bar reads UNEXPECTED on every run — killed by pause-canary-memhog-arms.test.ts
+const FA = 'memhog-arms.mjs';
+export const MEMHOG_ARMS_MUTANTS = [
+  ['arms-chain-regex-old', String.raw`expectDetail: /^NO capped scope; 0 kernel kill/ }`, String.raw`expectDetail: /^0 kernel kill/ }`],
+  ['arms-coord-regex-old', String.raw`expectDetail: /0 escalation\(s\) to the coordinator for [1-9]/`, String.raw`expectDetail: /0 escalation\(s\) for [1-9]/`],
+  ['arms-hog-small-regex-broken', String.raw`expectDetail: /hog NOT killed: killed=0 survived=1|no kill to tell/`, String.raw`expectDetail: /hog was NOT killed: killed=0 survived=1|no kill to tell/`],
+  ['arms-leak-regex-broken', String.raw`expectDetail: /[1-9]\d* process\(es\) carrying the rig dir/`, String.raw`expectDetail: /[1-9]\d* process\(es\) carrying the rig home/`],
+  ['arms-regex-dropped', String.raw`expectDetail: /w1: session never came up/, `, ''],
+].map(([name, find, replace]) => [name, find, replace, FA]);

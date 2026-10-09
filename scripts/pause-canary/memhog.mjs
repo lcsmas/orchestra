@@ -13,7 +13,7 @@ import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fleetSpec } from './ids.mjs';
-import { readSafe, ticks, ident, alive, cgOf, cgDir, eventsOf, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity } from './memhog-os.mjs';
+import { readSafe, ticks, ident, alive, cgOf, cgDir, eventsOf, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
 import { MEMHOG_BARS, evaluateMemhogCycle, summarizeMemhogCycle, evaluateChainRun, chainVerdict, drillVerdict, memberToldWhy, coordinatorToldWhy, hogMarker, parseSwarm } from './memhog-bars.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -132,7 +132,7 @@ function open(ws, launch, { rssMb = 80 } = {}) {
   const st = { ws, lines: [], attached: false, exited: false, errors: [] };
   const h = kc.makeKeeperSpawn(ws, () => { st.attached = true; }, undefined, launch)({
     command: process.execPath, args: [path.join(RIG_DIR, 'standin-cli.cjs')], cwd: BASE,
-    env: { PATH: process.env.PATH, HOME: home, SHELL: process.env.SHELL ?? '/bin/bash', STANDIN_CLI_RSS_MB: String(rssMb) }, signal: new AbortController().signal,
+    env: standinCliEnv(home, rssMb), signal: new AbortController().signal,
   });
   let buf = '';
   h.stdout.on('data', (d) => {
@@ -347,7 +347,7 @@ try {
       const keeperAlive = alive(kp); const cliAlive = alive(cliPid);
       let probe = null;   // three tries: ONE flaky answer must not read as a lost session (a fixed Q9 would then never reach KNOWN-RED-GONE)
       for (let k = 0; k < 3 && keeperAlive && cliAlive && !(probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive')); k++) probe = await runTool(st, 'echo chain-alive', `t-chain-probe${k}`, 20_000);
-      const r = { cycle, planned: CHAIN_N, done, killsTotal: inScope ? lastKills : 0, lostAfter, keeperAlive, cliAlive, answered: probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive'), inScope };
+      const r = { cycle, planned: CHAIN_N, done, killsTotal: inScope ? lastKills : 0, lostAfter, keeperAlive, cliAlive, answered: probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive'), inScope, cliSeen: cliPid !== null };
       const checks = evaluateChainRun(r);
       runs.push(checks);
       emit('PC-CHAIN', r);

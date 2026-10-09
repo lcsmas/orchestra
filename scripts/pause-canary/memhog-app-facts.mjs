@@ -7,11 +7,25 @@ export function parseNoticeFile(text) {
   return String(text ?? '').split('\n').filter((l) => l.trim()).map((l) => { try { const j = JSON.parse(l); return j && typeof j === 'object' ? j : null; } catch { return null; } }).filter(Boolean);
 }
 
+/** The memory-guard settings the PACKAGED rig seeds (#324 review 2): the app under test runs its own guard on the REAL host reading, and under the defaults (Admission 6 GB, memory Pause 3 GB) the hogs of 6 members could hold the OPS's wake
+ *  (bar:coordinator_told RED on a correct product) or Pause the run. Admission OFF + a critical level at the floor (0.5 GB) leave the CAP as the only memory mechanism under test; the report says so. */
+export function appMemoryGuardSeed(capSoftGb, capHardGb) {
+  return { capSoftGb, capHardGb, admissionGb: 1.5, criticalGb: 0.5, admissionEnabled: false };
+}
+
+/** The keeper's own summary line `memory cap: <STATE> unit=… memory.max=… cgroup=…` (`klog`, src/keeper/index.ts) → the `cap.state` vocabulary of its status probe (active | unprotected | not-applied | no-scope); the LAST one wins, none → null.
+ *  (#324 review 2: the packaged app's own log has no such line, and the keeper log is the only place the state is written.) */
+export function capStateFromKeeperLog(text) {
+  let state = null;
+  for (const m of String(text ?? '').matchAll(/memory cap: ([A-Z]+(?:-[A-Z]+)*) unit=\S+ memory\.max=/g)) state = m[1].toLowerCase();
+  return state;
+}
+
 /**
  * One worker's metric for one cycle.
  *  w {k,id} · cycle · t0 (ms epoch the hogs were started) · opsId
  *  f: { up, scope, swarmText, oomKillDelta, noticeText, storeNotices (Workspace.sdkMemNotices), msgs (bus rows this worker SENT: sequence, kind, recipient, body, created_at), lots (the OPS's deliveries),
- *       idPre {claude, keeper, pid}, idPost {claude, keeper}, keeperAlive, cliAlive, probeAfter (the post-kill probe file exists), scopeActive, appLog }
+ *       idPre {claude, keeper, pid}, idPost {claude, keeper}, keeperAlive, cliAlive, probeAfter (the post-kill probe file exists), scopeActive, keeperLog (the worker's keepers/<ws>.log text) }
  */
 export function workerFromAppFacts(w, cycle, t0, opsId, f) {
   const msgs = f.msgs ?? [];
@@ -32,7 +46,7 @@ export function workerFromAppFacts(w, cycle, t0, opsId, f) {
       cliSame: !!idPre.claude && idPre.claude === idPost.claude,
       answered: f.probeAfter === true,
       scopeActive: f.scopeActive === true,
-      capState: new RegExp(`memory-cap\\[${w.id}\\]: ACTIVE`).test(f.appLog ?? '') ? 'active' : null,
+      capState: capStateFromKeeperLog(f.keeperLog),
     },
     memberKillRows: rows.map((e) => e.text),
     coordMsgs: msgs.map((x) => ({ kind: x.kind, recipient: x.recipient, body: x.body })),

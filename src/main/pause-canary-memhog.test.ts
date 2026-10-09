@@ -174,7 +174,7 @@ test('survivors and live config: any leftover process or scope, an unmeasured co
   assert.equal(evaluateLiveUntouched(null, snap).ok, false);
 });
 
-const chainRun = (o: W = {}) => ({ planned: MEMHOG_BARS.chainPlanned, done: MEMHOG_BARS.chainPlanned, killsTotal: MEMHOG_BARS.chainPlanned, inScope: true, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, ...o });
+const chainRun = (o: W = {}) => ({ planned: MEMHOG_BARS.chainPlanned, done: MEMHOG_BARS.chainPlanned, killsTotal: MEMHOG_BARS.chainPlanned, inScope: true, cliSeen: true, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, ...o });
 
 test('Q9 chain: a session lost after 7 kills reads RED on the KNOWN-RED instrument and green on the premise; a full survived chain is green; a chain that killed nothing is a VOID premise', () => {
   const lost = evaluateChainRun(chainRun({ done: 8, killsTotal: 7, lostAfter: 7, keeperAlive: false, cliAlive: false, answered: false }));
@@ -189,6 +189,24 @@ test('Q9 chain: a session lost after 7 kills reads RED on the KNOWN-RED instrume
   assert.deepEqual(red(evaluateChainRun(chainRun({ done: 29 }))), ['q9:session_survives_chain'], 'a chain cut short is not a survival');
   assert.deepEqual(red(evaluateChainRun(chainRun({ answered: false }))), ['q9:session_survives_chain']);
   assert.deepEqual(red(evaluateChainRun(chainRun({ keeperAlive: undefined }))), ['q9:session_survives_chain']);
+});
+
+test('Q9 chain (review 2, finding 6): a CLI that never initialised, or a CLI lost with NO kernel kill while the keeper lives, is a VOID premise — never a KNOWN-RED « session lost »', () => {
+  const never = evaluateChainRun(chainRun({ cliSeen: false, killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: true, cliAlive: false, answered: false }));
+  assert.ok(red(never).includes('premise_chain_killed_tools'));
+  assert.match(never.find((c: Check) => c.id === 'premise_chain_killed_tools').detail, /the CLI never initialised/);
+  assert.equal(chainVerdict([never]).verdict, 'VOID');
+  const neverKeeperGone = evaluateChainRun(chainRun({ cliSeen: false, killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: false, cliAlive: false, answered: false }));
+  assert.ok(red(neverKeeperGone).includes('premise_chain_killed_tools'), 'the keeper is gone but the CLI never came up: a start failure, not the cap');
+  assert.equal(chainVerdict([neverKeeperGone]).verdict, 'VOID');
+  const noKill = evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 2, keeperAlive: true, cliAlive: false, answered: false }));
+  assert.ok(red(noKill).includes('premise_chain_killed_tools'), 'the CLI vanished with nothing killed and the keeper alive: not the cap');
+  assert.equal(chainVerdict([noKill]).verdict, 'VOID');
+  const afterKill = evaluateChainRun(chainRun({ killsTotal: 2, lostAfter: 2, done: 3, keeperAlive: true, cliAlive: false, answered: false }));
+  assert.deepEqual(red(afterKill), ['q9:session_survives_chain'], 'the CLI vanished AFTER a kernel kill: the cap reached it');
+  assert.equal(chainVerdict([afterKill]).verdict, 'KNOWN-RED');
+  const keeperGone = evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: false, cliAlive: false, answered: false }));
+  assert.deepEqual(red(keeperGone), ['q9:session_survives_chain'], 'the keeper went with the scope at the first kill (the counter died with it)');
 });
 
 test('Q9 chain: a recorded loss is a loss even if the liveness flags were read after a respawn', () => {
@@ -255,4 +273,11 @@ test('fmtCap words the cap exactly as the product does (integers bare, else <= 2
   const one = { ...good(), capGb: 1, workers: [1, 2, 3].map((i) => worker(i, { scope: { inRig: true, unit: 'u.scope', memoryMax: 1024 ** 3, swapMax: '0', high: 'max', policy: 'continue' }, memberKillRows: ['Command "x" killed: Plafond mémoire 1 GB reached'], coordMsgs: [{ kind: 'escalation', recipient: OPS, body: `w${i} (${worker(i).id}) killed at the hard level (1 GB)` }] })) };
   assert.deepEqual(red(evaluateMemhogCycle(one)), [], 'a 1 GiB cap with the product\'s wording is green');
   assert.deepEqual(red(evaluateMemhogCycle({ ...one, workers: one.workers.map((w: W) => ({ ...w, memberKillRows: ['Command "x" killed: Plafond mémoire 1.00 GB reached'] })) })), ['bar:member_told'], 'and « 1.00 GB » is not what the product says');
+});
+
+test('renderMemhogTable: an ABORTED cycle (no summary) is a row, not a TypeError that loses the report (review 2, finding 8)', () => {
+  const m = good();
+  const table = renderMemhogTable([{ exercise: 'memhog-app', cycle: 1, expectWorkers: 3, summary: summarizeMemhogCycle(m), checks: evaluateMemhogCycle(m), tMemberToldS: 1, tCoordToldS: 1 }, { exercise: 'memhog-app', cycle: 2, expectWorkers: 3, checks: [] }]);
+  assert.match(table, /\| memhog-app \| 1 \| 3\/3 .* PASS \|/);
+  assert.match(table, /\| memhog-app \| 2 \| n\/a .* ABORTED/);
 });

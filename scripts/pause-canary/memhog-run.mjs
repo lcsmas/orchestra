@@ -18,6 +18,7 @@ import { randomPrefix } from './ids.mjs';
 import { liveSnapshot } from './lib.mjs';
 import { MEMHOG_BARS, KNOWN_RED, REQUIRED_CYCLE_CHECKS, renderMemhogTable, drillVerdict, missingChecks, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict } from './memhog-bars.mjs';
 import { rigProcesses, killByIdentity } from './memhog-os.mjs';
+import { PROOF_ARMS } from './memhog-arms.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
@@ -35,22 +36,6 @@ const RUN_DIR = path.join(ROOT, TOKEN_RUN);
 const OUT = path.resolve(opt('out', path.join(ROOT, 'reports', new Date().toISOString().replace(/[:.]/g, '-'))));
 const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
 
-// ── proof arms: each must-FAIL arm names the instrument(s) it must turn RED with a MEASURED reason, and the ones that must stay GREEN (precision); the clean control runs the SAME shape and must PASS ──
-const PROOF_ARMS = [
-  { name: 'control:clean', exercise: 'memhog', expect: 'PASS' },
-  { name: 'control:cap-off', exercise: 'memhog', switch: 'off', redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:cap_holds_after_kill', 'bar:member_told', 'bar:coordinator_told'], stayGreen: ['bar:session_survives'] },   // the ticket's must-FAIL: the same drill with the frozen `memory_cap` switch OFF
-  { name: 'control:hog-small', exercise: 'memhog', sabotage: 'hog-small', redden: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'], stayGreen: ['bar:cap_scope_applied', 'bar:session_survives'], expectDetail: /hog NOT killed: killed=0 survived=1|no kill to tell/ },   // the scope is there, the hog stays below the cap
-  { name: 'control:sabotage-session', exercise: 'memhog', sabotage: 'session', redden: ['bar:session_survives'], stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'], expectDetail: /w1: CLI (GONE|REPLACED)/ },   // a worker's CLI is SIGTERMed after the kill
-  { name: 'control:sabotage-member-sink', exercise: 'memhog', sabotage: 'member-sink', redden: ['bar:member_told'], reddenAny: ['published:time_to_member_told_s'], stayGreen: ['bar:coordinator_told', 'bar:hog_killed', 'bar:session_survives'], expectDetail: /0 notice row\(s\) for [1-9]/ },
-  { name: 'control:sabotage-coord-sink', exercise: 'memhog', sabotage: 'coord-sink', redden: ['bar:coordinator_told'], reddenAny: ['published:time_to_coordinator_told_s'], stayGreen: ['bar:member_told', 'bar:hog_killed', 'bar:session_survives'], expectDetail: /0 escalation\(s\) for [1-9]/ },
-  { name: 'control:sabotage-stray-lead', exercise: 'memhog', sabotage: 'stray-lead', redden: ['bar:only_coordinator_told'], stayGreen: ['bar:member_told', 'bar:coordinator_told', 'bar:hog_killed'], expectDetail: /the LEAD saw [1-9]/ },   // every escalation is copied to the coordinator's coordinator
-  { name: 'control:sabotage-leak', exercise: 'memhog', sabotage: 'leak', redden: ['bar:no_survivors'], stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told', 'bar:session_survives'], expectDetail: /[1-9]\d* process\(es\) carrying the rig dir/ },   // the drill leaves a process behind on purpose: the parent's survivors count must see it
-  { name: 'control:sabotage-leak-unit', exercise: 'memhog', sabotage: 'leak-unit', redden: ['bar:no_survivors'], stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told', 'bar:session_survives'], expectDetail: /[1-9]\d* scope\(s\) with the rig prefix/ },   // the SCOPES leg of the survivors count: a ≤ 64 MB unit the drill leaves behind
-  { name: 'control:sabotage-no-worker', exercise: 'memhog', sabotage: 'no-worker', redden: ['workers_up'], stayGreen: [], expectDetail: /w1: session never came up/, workersUpExpectedRed: true },   // the first worker is never started: the « fleet is up » instrument must say so (the others stay measured)
-  { name: 'control:live-config', internal: 'live-config' },   // the live-config instrument on a SCRATCH home (no drive): unchanged ⇒ green, an added entry ⇒ RED with the change in the detail
-  { name: 'control:chain-cap-off', exercise: 'chain', switch: 'off', cycles: 1, expectVerdict: 'VOID', redden: ['premise_chain_killed_tools'], expectDetail: /^0 kernel kill/ },   // the Q9 instrument with nothing to measure: VOID, never a green
-  { name: 'known-red:q9-chain', exercise: 'chain', cycles: 3, expectVerdict: 'KNOWN-RED' },   // Q9 / residual (d): must stay RED until Q9 is fixed (then KNOWN-RED-GONE: promote it to a bar)
-];
 if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(32)} ${a.internal ? `internal: ${a.internal} (scratch home, no drive)` : a.exercise}${a.expect ? ' → PASS' : a.expectVerdict ? ` → verdict ${a.expectVerdict}` : ''}${a.redden ? ` → RED ${a.redden.join(' | ')}` : ''}${a.reddenAny ? ` + RED (any reason) ${a.reddenAny.join(' | ')}` : ''}${a.stayGreen?.length ? ` (stay GREEN ${a.stayGreen.join(' | ')})` : ''}`); process.exit(0); }
 
 if (opt('cli', 'stand-in') !== 'stand-in') { say('MEMHOG-CANARY: VOID — `--cli claude` needs the LEAD\'s waiver of ledger D2 (test scopes ≤ 300 MB; the real claude is ~330 MB). Not run.'); process.exit(3); }
@@ -148,12 +133,15 @@ if (!flag('proof')) {
     const w = await waitForHost(ex === 'chain' ? 1 : members);
     if (!w.ok) { parts.push({ exercise: ex, verdict: 'VOID', exercises: [{ exercise: ex, result: 'VOID', reason: 'host below the bar' }], cycles: [], checks: [], chains: [], host: null, survivors: { procs: 0, units: 0 } }); continue; }
     let p = await drive({ exercise: ex, members: ex === 'chain' ? 1 : members, cycles, label: `${opt('label', 'mh')}-${ex.slice(0, 3)}` });
+    const keptRed = [];   // a RED measured BEFORE a host-VOID cut is evidence, not noise: the re-drive completes the measurement, it never re-rolls a red (#324 review 2, finding 10)
     for (let n = 1; p.rc === 3 && n <= Number(opt('void-retries', '2')); n++) {   // a drill the host guard cut short is no verdict: wait for the host, run THAT exercise again (the bar is never relaxed)
+      if (ex === 'memhog') keptRed.push(...splitChecks(p.checks ?? []).barsRed.map((c) => ({ ...c, detail: `[measured before a host-VOID re-drive] ${c.detail}` })));
       const w2 = await waitForHost(ex === 'chain' ? 1 : members);
       say(`   ${ex}: VOID (host guard) — retry ${n} after waiting ${w2.waitedS} s`);
       if (!w2.ok) break;
       p = await drive({ exercise: ex, members: ex === 'chain' ? 1 : members, cycles, label: `${opt('label', 'mh')}-${ex.slice(0, 3)}-r${n}` });
     }
+    if (keptRed.length) p = { ...p, checks: [...keptRed, ...(p.checks ?? [])] };
     parts.push({ ...p, exercise: ex });
   }
   const live1 = liveSnapshot(REAL_HOME);

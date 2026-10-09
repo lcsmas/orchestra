@@ -15,7 +15,7 @@ import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
 import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors } from './memhog-bars.mjs';
-import { workerFromAppFacts } from './memhog-app-facts.mjs';
+import { workerFromAppFacts, appMemoryGuardSeed } from './memhog-app-facts.mjs';
 import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
@@ -32,8 +32,8 @@ const MH_APP = argv.includes('memhog-app');   // --exercise memhog-app (it runs 
 const MH_ON_APP = MH_APP && opt('memhog-switch', 'on') === 'on';
 // Q11 (ledger #329, D-Q11): the cap-ON packaged run is granted for #324 ONLY — hard 1 GiB / soft 768 MiB, 6 members at most, ONE run under the token, MemAvailable > 9 GB BEFORE it starts. 6 scopes of 1 GiB are the design (the hogs are bounded by them), so
 // the 6 GB bar is a START bar (9 GB here) and the run keeps a lower FLOOR that only protects the host; the rig-grew-too-much « blowup » rule is off for it (the hogs live in the rig).
-const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP ? 9 : 0);
-const RUN_FLOOR_GB = MH_ON_APP ? 2 : MIN_AVAIL_GB;
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_APP ? 9 : 0);   // both switches: the cap-OFF control's hogs are UNBOUNDED by a scope, it starts from the same 9 GB
+const RUN_FLOOR_GB = MH_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
 const CYCLE_RESULTS_FILE = opt('out', null);
@@ -56,6 +56,7 @@ const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
 if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
 if (!['on', 'off'].includes(MH_SWITCH)) { console.error('--memhog-switch on|off'); process.exit(2); }
+if (MH_APP && (MEMBERS > 6 || CAP_GB > 1 || HOG_MB > 1200)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app (either switch) is bounded by the Q11 envelope: --members ≤ 6, --cap-gb ≤ 1, --hog-mb ≤ 1200 (got ${MEMBERS}, ${CAP_GB}, ${HOG_MB}). Not run.`); process.exit(3); }
 if (MH_ON_APP && (!/Q11/.test(WAIVER ?? '') || CAP_GB < 0.6 || CAP_GB > 1 || SOFT_GB > 0.75 || MEMBERS > 6)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app with the cap ON runs only inside the LEAD's Q11 envelope (ledger #329 D-Q11, for #324 ONLY): --waiver naming Q11, --cap-gb 0.6..1, --soft-gb ≤ 0.75, --members ≤ 6, one run under the token (got waiver=${WAIVER ?? 'none'}, cap=${CAP_GB}, soft=${SOFT_GB}, members=${MEMBERS}). Nothing was run.`); process.exit(3); }
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
 if (INJECT && (!['orphan-tool', 'app-git', 'late-request', 'gap-request'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git|late-request|gap-request applies to `--exercise dure` only'); process.exit(2); }
@@ -85,8 +86,9 @@ async function runExercise(name) {
   const usageHeaders = (cred) => { usageProbeHits.push({ t: Date.now(), cred }); const rs = Math.floor(Date.now() / 1000); return { 'anthropic-ratelimit-unified-5h-utilization': '0.10', 'anthropic-ratelimit-unified-5h-reset': String(rs + 3 * 3600), 'anthropic-ratelimit-unified-7d-utilization': '0.20', 'anthropic-ratelimit-unified-7d-reset': String(rs + 5 * 86400) }; };
   const resetS = Math.floor(Date.now() / 1000) + 3600;
   const api = await startApi({ decide: makeModel({ kindOfRole, plan, limited, resetS }), usageHeaders });
-  const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE, storeExtra: name === 'memhog-app' ? { memoryGuard: { capSoftGb: SOFT_GB, capHardGb: CAP_GB } } : {} });
+  const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE, storeExtra: name === 'memhog-app' ? { memoryGuard: appMemoryGuardSeed(SOFT_GB, CAP_GB) } : {} });
   curRig = rig; curBaselineMB = null;
+  if (name === 'memhog-app') say(`[${name}] app memory guard NEUTRALISED for this rig (Admission OFF, critical 0.5 GB) so only the CAP is under test: ${JSON.stringify(appMemoryGuardSeed(SOFT_GB, CAP_GB))}`);
   say(`[${name}] RIG H=${rig.H} workers=${spec.workers.map((w) => `${w.k}:${w.kind}`).join(' ')}`);
   say(`[${name}] SEED-RUNS ${JSON.stringify(seedRuns(rig, APP_TREE, PAUSE_SWITCH === 'off' ? 'pause-off' : name === 'memhog-app' && MH_SWITCH === 'off' ? 'cap-off' : 'none'))}`);
   const busr = startBusReader(rig, REPO);
@@ -241,7 +243,7 @@ async function runExercise(name) {
       await Promise.all(wk.map((w) => sendTo(w.id, `SCN:probe c${c}b`)));
       await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}b.txt`)), 120000, 500);
       const idPost = identities();
-      const appLog = (() => { try { return fs.readFileSync(`${rig.H}/app.log`, 'utf8'); } catch { return ''; } })();
+      const keeperLogOf = (id) => ['.log.old', '.log'].map((x) => { try { return fs.readFileSync(`${rig.H}/keepers/${id}${x}`, 'utf8'); } catch { return ''; } }).join('\n');   // the keeper's own `memory cap: <STATE>` line (the app log has none)
       const lots = await lotsOps();
       const workers = [];
       for (const w of wk) {
@@ -252,7 +254,7 @@ async function runExercise(name) {
           noticeText: (() => { try { return fs.readFileSync(`${rig.H}/keepers/${w.id}.memnotices.jsonl`, 'utf8'); } catch { return ''; } })(),
           storeNotices: storeWs(w.id)?.sdkMemNotices ?? [], msgs: await msgsOf(w), lots,
           idPre: { claude: idPre[w.k]?.claude, keeper: idPre[w.k]?.keeper }, idPost: { claude: idPost[w.k]?.claude, keeper: idPost[w.k]?.keeper },
-          keeperAlive: alive(kpid(w.k)), cliAlive: alive(idPre[w.k]?.pid), probeAfter: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scope.unit), appLog,
+          keeperAlive: alive(kpid(w.k)), cliAlive: alive(idPre[w.k]?.pid), probeAfter: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scope.unit), keeperLog: keeperLogOf(w.id),
         }));
       }
       const leadSeen = (await Q('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?', spec.lead, seq0))?.[0]?.n ?? null;

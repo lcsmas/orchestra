@@ -148,7 +148,7 @@ export function evaluateLiveUntouched(before, after) {
   return { id: 'bar:live_config_untouched', ok, detail: before && after ? (ok ? '~/.claude* entry counts, links and inherit manifests unchanged' : `CHANGED: ${JSON.stringify(before)} → ${JSON.stringify(after)}`) : 'NOT MEASURED' };
 }
 
-/** One Q9 chain run (`r`: planned, done, killsTotal, inScope (the keeper really ran in a capped scope), lostAfter (kernel kills counted when keeper or CLI vanished, else null), keeperAlive, cliAlive, answered).
+/** One Q9 chain run (`r`: planned, done, killsTotal, inScope (the keeper really ran in a capped scope), cliSeen (the CLI answered its init), lostAfter (kernel kills counted when keeper or CLI vanished, else null), keeperAlive, cliAlive, answered).
  *  A session lost at the VERY FIRST kill reads killsTotal 0 (the counter dies with the scope): a loss in a capped scope IS the cap having killed something. */
 export function evaluateChainRun(r) {
   const checks = [];
@@ -156,7 +156,10 @@ export function evaluateChainRun(r) {
   const lost = r.lostAfter !== null && r.lostAfter !== undefined;
   const planned = r.planned ?? MEMHOG_BARS.chainPlanned;
   // premise: the cap really killed the chain's tools (a chain that killed nothing — cap OFF, scope missing — proves nothing either way)
-  add('premise_chain_killed_tools', r.inScope === true && ((num(r.killsTotal) && r.killsTotal >= planned) || lost), `${r.inScope === true ? 'capped scope' : 'NO capped scope'}; ${r.killsTotal ?? 'NOT MEASURED'} kernel kill(s) over ${r.done ?? '?'} of ${planned} tools${lost ? ' (session lost)' : ''}`);
+  // a lost session counts as « the cap killed the chain » only if the CLI was seen up AND the loss followed a kernel kill or took the keeper (the scope's counter dies with it); a CLI that never initialised proves nothing (review 2, finding 6)
+  const cliSeen = r.cliSeen === true;
+  const lostByCap = lost && ((num(r.lostAfter) && r.lostAfter >= 1) || r.keeperAlive === false);
+  add('premise_chain_killed_tools', r.inScope === true && cliSeen && ((num(r.killsTotal) && r.killsTotal >= planned) || lostByCap), `${r.inScope === true ? 'capped scope' : 'NO capped scope'}; ${r.killsTotal ?? 'NOT MEASURED'} kernel kill(s) over ${r.done ?? '?'} of ${planned} tools${lost ? ' (session lost)' : ''}${cliSeen ? '' : '; the CLI never initialised'}${lost && !lostByCap ? '; lost with no kernel kill and the keeper alive' : ''}`);
   const alive = r.keeperAlive === true && r.cliAlive === true;
   add('q9:session_survives_chain', !lost && alive && r.answered === true && r.done === r.planned,
     lost ? `session LOST after ${r.lostAfter} kernel kill(s): keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}`
@@ -210,6 +213,7 @@ export function renderMemhogTable(cycles) {
   const s = (v) => (num(v) ? v.toFixed(1) : 'n/a');
   const rows = cycles.map((c) => {
     const k = c.summary;
+    if (!k) return `| ${c.exercise} | ${c.cycle} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ABORTED (no summary: the cycle did not finish measuring) |`;   // review 2, finding 8: an aborted cycle has no summary and must not lose the report
     const verdict = drillVerdict(c.checks) === 'PASS' ? 'PASS' : `FAIL (${splitChecks(c.checks).barsRed.map((x) => x.id.replace(/^bar:/, '')).join(', ')})`;
     return `| ${c.exercise} | ${c.cycle} | ${k.workers}/${c.expectWorkers} | ${k.killed}/${k.workers} | ${k.sessions}/${k.workers} | ${k.memberTold}/${k.workers} | ${k.coordTold}/${k.workers} | ${k.kills} | ${s(c.tMemberToldS)} | ${s(c.tCoordToldS)} | ${verdict} |`;
   });

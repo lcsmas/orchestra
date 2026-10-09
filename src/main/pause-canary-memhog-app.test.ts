@@ -6,10 +6,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { workerFromAppFacts, parseNoticeFile } from '../../scripts/pause-canary/memhog-app-facts.mjs';
+import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed } from '../../scripts/pause-canary/memhog-app-facts.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { evaluateMemhogCycle } from '../../scripts/pause-canary/memhog-bars.mjs';
 import { appendMemNotice } from '../shared/mem-notice-file.ts';
+import { normalizeMemoryGuardSettings, decideMemoryGuard, INITIAL_GUARD_STATE, thresholdsFrom, isAdmissionHolding, GIB as G } from '../shared/memory-guard.ts';
 import { memNoticeEntryOf } from '../shared/mem-notice.ts';
 import { memBusBody, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
@@ -22,6 +23,9 @@ test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 const wsOf = (i: number) => ({ k: `w${i}`, id: `aaaaaaaa-0000-4000-8000-0000000000${10 + i}` });
 const kill = (w: { k: string }, over: Partial<MemKillRecord> = {}): MemKillRecord => ({ kind: 'kill', source: 'kernel', seq: 2, at: T0 + 4200, level: 'hard', command: `python3 /repo/scripts/memory-cap/swarm.py 1 1174 5 memhog-${w.k}-c1`, pid: 4242, rssBytes: null, candidates: [], unit: `orchestra-rig-wh-h3-x-${w.k}.scope`, hardBytes: GIB, ...over });
 const soft = (w: { k: string }): MemSoftRecord => ({ kind: 'soft', seq: 1, at: T0 + 2000, unit: `orchestra-rig-wh-h3-x-${w.k}.scope`, bytes: 800 * 1024 ** 2, softBytes: 768 * 1024 ** 2, hardBytes: GIB });
+
+/** The keeper's summary line, built from the producer's own template (pinned against src/keeper/index.ts below). */
+const keeperCapLine = (state: string, unit: string) => `2026-10-09T10:00:00.000Z [keeper] memory cap: ${state} unit=${unit} memory.max=${GIB} cgroup=/sys/fs/cgroup/user.slice/${unit}\n`;
 
 /** A clean cycle's facts for worker i, built with the real writers. */
 function facts(i: number, over: Record<string, unknown> = {}) {
@@ -48,7 +52,7 @@ function facts(i: number, over: Record<string, unknown> = {}) {
       lots: [{ from_seq: 0, to_seq: 100, acked_at: T0 + 9000 }],
       idPre: { claude: `${100 + i}@5`, keeper: `${90 + i}@4` }, idPost: { claude: `${100 + i}@5`, keeper: `${90 + i}@4` },
       keeperAlive: true, cliAlive: true, probeAfter: true, scopeActive: true,
-      appLog: `... memory-cap[${w.id}]: ACTIVE — scope orchestra-rig-wh-h3-x-${w.k}.scope ...`,
+      keeperLog: keeperCapLine('ACTIVE', `orchestra-rig-wh-h3-x-${w.k}.scope`),
       ...over,
     },
   };
@@ -88,8 +92,11 @@ test('every degradation of the real-path facts reads RED on the bar that owns it
   assert.deepEqual(red(withOver({ idPre: { claude: undefined, keeper: undefined }, idPost: { claude: undefined, keeper: undefined } })), ['bar:session_survives'], 'identities that could not be read are not « the same »');
   assert.ok(red(withOver({ oomKillDelta: undefined })).includes('bar:hog_killed'), 'no kernel reading is NOT MEASURED, never a default');
   assert.deepEqual(red(withOver({ probeAfter: false })), ['bar:session_survives'], 'the CLI no longer works');
-  assert.deepEqual(red(withOver({ appLog: 'nothing' })), ['bar:cap_holds_after_kill'], 'the app never said the cap was ACTIVE for this workspace');
-  assert.deepEqual(red(withOver({ appLog: `memory-cap[${wsOf(3).id}]: ACTIVE — scope x` })), ['bar:cap_holds_after_kill'], 'ANOTHER workspace\'s ACTIVE line is not this one\'s');
+  assert.deepEqual(red(withOver({ keeperLog: 'nothing' })), ['bar:cap_holds_after_kill'], 'the keeper never said the cap was ACTIVE');
+  assert.deepEqual(red(withOver({ keeperLog: '' })), ['bar:cap_holds_after_kill'], 'no keeper log read');
+  assert.deepEqual(red(withOver({ keeperLog: keeperCapLine('NOT-APPLIED', 'x.scope') })), ['bar:cap_holds_after_kill'], 'in a scope but memory.max not applied');
+  assert.deepEqual(red(withOver({ keeperLog: keeperCapLine('UNPROTECTED', 'x.scope') })), ['bar:cap_holds_after_kill'], 'no tool wrapper');
+  assert.deepEqual(red(withOver({ keeperLog: keeperCapLine('ACTIVE', 'x.scope') + keeperCapLine('NOT-APPLIED', 'x.scope') })), ['bar:cap_holds_after_kill'], 'the LAST line wins (a restart re-logs)');
   assert.deepEqual(red(withOver({ scopeActive: false })), ['bar:cap_holds_after_kill']);
   assert.ok(red(withOver({ up: false })).includes('workers_up'));
   assert.ok(red(withOver({ msgs: [facts(2).f.msgs[0], { sequence: 99, kind: 'escalation', recipient: 'the-lead', body: facts(2).f.msgs[1].body, created_at: T0 + 4300 }] })).includes('bar:only_coordinator_told'));
@@ -117,4 +124,36 @@ test('records and rows from BEFORE the cycle (an earlier cycle\'s kill) are not 
   const m = workerFromAppFacts(wsOf(1), 1, T0, OPS, old);
   assert.deepEqual(m.memberKillRows, []);
   assert.deepEqual(m.records, []);
+});
+
+test('capStateFromKeeperLog reads the keeper\'s REAL summary line: the template is pinned against src/keeper/index.ts, every state maps to the probe\'s vocabulary', () => {
+  const src = fs.readFileSync(new URL('../keeper/index.ts', import.meta.url), 'utf8');
+  assert.ok(src.includes('klog(`memory cap: ${capInfo.state.toUpperCase()} unit=${cap.unit} memory.max=${limit} cgroup=${dir}`)'), 'the keeper\'s summary line changed: capStateFromKeeperLog and keeperCapLine must follow');
+  for (const st of ['active', 'unprotected', 'not-applied', 'no-scope']) assert.equal(capStateFromKeeperLog(keeperCapLine(st.toUpperCase(), 'u.scope')), st);
+  assert.equal(capStateFromKeeperLog(''), null);
+  assert.equal(capStateFromKeeperLog(undefined), null);
+  assert.equal(capStateFromKeeperLog('memory cap: ACTIVE-ISH nothing'), null, 'a line that is not the summary line');
+  assert.equal(capStateFromKeeperLog('memory-cap[ws]: keeper launched in scope u.scope (hard 1073741824 B, swap 0 B)'), null, 'the app\'s launch line says nothing about the keeper\'s cap state');
+});
+
+test('the seeded guard settings survive the app\'s own normalisation, and under them the real decision never holds Admission nor pauses at the readings the six hogs leave (start 9 GB − ~6 GB)', () => {
+  const seed = appMemoryGuardSeed(0.75, 1);
+  const n = normalizeMemoryGuardSettings(seed);
+  for (const k of Object.keys(seed) as Array<keyof typeof seed>) assert.equal(n[k], seed[k], `${k} was normalised away: the app would run its default and the rig would hold/pause`);
+  const t = thresholdsFrom(n);
+  for (const availGb of [9, 6, 4, 3.1, 2]) {
+    const d = decideMemoryGuard(INITIAL_GUARD_STATE, availGb * G, t);
+    assert.equal(d.state.admission, 'open', `the guard\'s Admission state is held at ${availGb} GB: the #289 alert would escalate to the LEAD and bar:only_coordinator_told would read RED on a correct product`);
+    assert.equal(isAdmissionHolding({ admission: d.state.admission, admissionEnabled: n.admissionEnabled }), false, `Admission holds at ${availGb} GB`);
+    assert.equal(d.state.pause, 'none', `a memory Pause is due at ${availGb} GB`);
+  }
+  // the toggle is the second line: at 1 GB (below the seeded 1.5 GB level) the guard WOULD hold, the OFF toggle keeps the start gates open
+  const low = decideMemoryGuard(INITIAL_GUARD_STATE, 1 * G, t);
+  assert.equal(low.state.admission, 'held');
+  assert.equal(isAdmissionHolding({ admission: low.state.admission, admissionEnabled: n.admissionEnabled }), false, 'the toggle is OFF');
+  assert.equal(low.state.pause, 'none', 'critical is 0.5 GB');
+  // positive control: the DEFAULTS do hold / pause at those readings (the instrument can say yes)
+  const dflt = thresholdsFrom(normalizeMemoryGuardSettings({}));
+  assert.equal(decideMemoryGuard(INITIAL_GUARD_STATE, 4 * G, dflt).state.admission, 'held');
+  assert.equal(decideMemoryGuard(INITIAL_GUARD_STATE, 2 * G, dflt).state.pause, 'held');
 });
