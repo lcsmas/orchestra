@@ -171,10 +171,20 @@ test('keeperPid before the keeper wrote its pid file (it listens first): the sco
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
-  assert.deepEqual(m, { currentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
+  assert.deepEqual(m, { currentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
   assert.equal(readScopeMemory({ cgroupDir: path.join(APP, 'gone.scope') }, env()), null);
   fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.maxBytes, null, 'no limit reads as null — "tracked, uncapped"');
+});
+
+test('readScopeMemory (FI-1 v1.11, #323): workingSetBytes = memory.current − inactive_file (R5); unreadable memory.stat is null, never the raw figure; never negative', () => {
+  const dir = mkScope('orchestra-ws-wsws-aaaaaa.scope', { 'memory.current': '5000000\n', 'memory.stat': 'anon 3000000\nfile 2500000\ninactive_file 1800000\nactive_file 700000\n' });
+  assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.workingSetBytes, 3200000, 'bill 5 MB, 1.8 MB of it reclaimable cache');
+  assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.currentBytes, 5000000, 'the bill (what the hard level compares) is untouched');
+  fs.writeFileSync(path.join(dir, 'memory.stat'), 'inactive_file 9000000\n');
+  assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.workingSetBytes, 0, 'clamped at 0');
+  fs.rmSync(path.join(dir, 'memory.stat'));
+  assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.workingSetBytes, null, 'no memory.stat ⇒ unknown');
 });
 
 test('listScopeProcs: keeper / cli / session by ancestry, Reliquats by orphaning; rss in pages × the kernel page size; a vanished pid is skipped', () => {

@@ -194,3 +194,22 @@ test('M18 billing what escaped the scope: the row ADDS the keeper tree\'s RSS th
   // junk RSS is dropped, not summed
   assert.equal(memberViewFrom('ws-a', [reading('a', 1, [], 1)], [{ rssBytes: Number.NaN }, { rssBytes: 5 * MB }]).outsideBytes, 5 * MB);
 });
+
+test('C1 (#323) memberViewFrom.cap: the limit, bill, working set and peak of the scope that HOLDS THE KEEPER — what the kernel really enforces on the live session', () => {
+  const live = { ...reading('k2', 2100, [], 7), maxBytes: 6144 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB };
+  const v = memberViewFrom('ws-a', [live]);
+  assert.deepEqual(v.cap, { unit: live.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB });
+});
+
+test('C2 (#323) cap is the keeper\'s scope, never an older generation kept alive by Reliquats; a keeper in no scope has no cap; no limit / junk / unreadable meter ⇒ null, never 0', () => {
+  const old = { ...reading('k1', 4000, [], null), maxBytes: 6144 * MB, workingSetBytes: 3000 * MB, peakBytes: 5000 * MB };
+  const live = { ...reading('k2', 900, [], 9), maxBytes: 3072 * MB, workingSetBytes: 700 * MB, peakBytes: 900 * MB };
+  assert.equal(memberViewFrom('ws-a', [old, live]).cap?.hardBytes, 3072 * MB, 'the live session\'s limit, not the leftover generation\'s');
+  assert.equal(memberViewFrom('ws-a', [old]).cap, null, 'only an older generation: the keeper is outside every scope');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, maxBytes: null }]).cap, null, 'no limit applied ⇒ nothing to compare against');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, maxBytes: 0 }]).cap, null, 'a 0 limit is not a cap');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, maxBytes: Number.NaN }]).cap, null);
+  assert.equal(memberViewFrom('ws-a', [{ ...live, currentBytes: null }]).cap, null, 'unreadable meter ⇒ unmeasured, not 0 of 3 GB');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, workingSetBytes: null }]).cap?.workingSetBytes, null, 'an unreadable working set stays null (the bar then shows the bill only)');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, peakBytes: undefined }]).cap?.peakBytes, null);
+});

@@ -1,5 +1,5 @@
 import { viewBytesFor, type ContainerAccountingView } from './container-accounting.ts';
-import { rowProcessBytes, viewFor, type MemberMemoryReport } from './member-memory.ts';
+import { rowProcessBytes, viewFor, type MemberCapView, type MemberMemoryReport } from './member-memory.ts';
 import type { VolumeStat } from './disk-space.ts';
 import type { BrowserReliquatView } from './browser-chip.ts';
 
@@ -348,6 +348,8 @@ export interface SessionGroup {
   reliquats: { count: number; bytes: number; partial: boolean; procs: Array<{ pid: number; comm: string; rssBytes: number }> } | null;
   /** #328: a member with NO session left but live Reliquats in its scope (its keeper is gone, they are not) — a row with just its scope's memory + Reliquat count, like the container-only row; cpu / procs read « — ». Never a row without a Reliquat (D-Q3). */
   scopeOnly: boolean;
+  /** #323: usage against the cap this member's CURRENT session runs under (the limit the kernel holds on its keeper's scope); null = no cap applied / not scope-tracked / no live session. */
+  cap: MemberCapView | null;
 }
 
 /**
@@ -390,17 +392,18 @@ export function groupSessionsByWorkspace(
       containerOnly: false,
       reliquats: view && view.reliquats !== null ? { count: view.reliquats, bytes: view.reliquatBytes ?? 0, partial: view.unlisted > 0, procs: view.reliquatProcs } : null,
       scopeOnly: false,
+      cap: view?.cap ?? null,
     };
   });
   // #328: a member whose session is gone but whose scope still holds processes (the Reliquats) has no session row — give it one; its containers (if any) fold into the SAME row
   const scopeOnly = new Map<string, SessionGroup>();
   for (const m of members?.tracked ?? []) {
     if (byWs.has(m.wsId) || (m.reliquats ?? 0) <= 0) continue; // D-Q3: the row is kept for a member that has only RELIQUATS left — a scope without one (the keeper's boot window, before its pid file) is not a row
-    scopeOnly.set(m.wsId, { key: m.wsId, sessions: [], cpuPct: 0, memBytes: (m.bytes ?? 0) + viewBytesFor(containers, m.wsId), procCount: 0, remote: false, containers: chipOf(m.wsId), containerOnly: false, reliquats: m.reliquats !== null ? { count: m.reliquats, bytes: m.reliquatBytes ?? 0, partial: m.unlisted > 0, procs: m.reliquatProcs } : null, scopeOnly: true });
+    scopeOnly.set(m.wsId, { key: m.wsId, sessions: [], cpuPct: 0, memBytes: (m.bytes ?? 0) + viewBytesFor(containers, m.wsId), procCount: 0, remote: false, containers: chipOf(m.wsId), containerOnly: false, reliquats: m.reliquats !== null ? { count: m.reliquats, bytes: m.reliquatBytes ?? 0, partial: m.unlisted > 0, procs: m.reliquatProcs } : null, scopeOnly: true, cap: null });
   }
   rows.push(...scopeOnly.values());
   for (const a of containers?.docker === 'ok' ? containers.attributed : []) {
-    if (a.count > 0 && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true, reliquats: null, scopeOnly: false });
+    if (a.count > 0 && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true, reliquats: null, scopeOnly: false, cap: null });
   }
   rows.sort((a, b) => b.cpuPct - a.cpuPct || b.memBytes - a.memBytes);
   return { rows, login };

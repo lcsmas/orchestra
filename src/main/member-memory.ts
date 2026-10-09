@@ -26,7 +26,7 @@ export interface MemberMemoryDeps {
   /** FI-1 `memberScopes`: [] = not tracked. */
   scopes(wsId: string): MemberScope[];
   /** FI-1 `readScopeMemory`: null / throw = unmeasured. */
-  readMemory(scope: MemberScope): { currentBytes: number } | null;
+  readMemory(scope: MemberScope): { currentBytes: number; maxBytes?: number | null; workingSetBytes?: number | null; peakBytes?: number | null } | null;
   /** FI-1 `listScopeProcs`: null / throw = unlisted. */
   listProcs(scope: MemberScope): ScopeReading['procs'];
   /** FI-1 v1.9 `listKeeperTreeOutsideScope`: the processes of the keeper's tree (host-wide ppid chain) that left THIS scope — a browser main that moved itself into its own systemd scope (#328 review F1). Called with the scope that holds the keeper; null / throw = not measured (nothing is billed). Optional: a host without it bills the scope alone. */
@@ -93,8 +93,10 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
     if (scopes.length === 0) continue;
     const readings: ScopeReading[] = scopes.map((s) => {
       let currentBytes: number | null = null;
+      let mem: ReturnType<MemberMemoryDeps['readMemory']> = null;
       try {
-        currentBytes = d.readMemory(s)?.currentBytes ?? null;
+        mem = d.readMemory(s);
+        currentBytes = mem?.currentBytes ?? null;
       } catch (e) {
         warnOnce(`readScopeMemory(${s.unit})`, e);
       }
@@ -106,7 +108,7 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
         warnOnce(`listScopeProcs(${s.unit})`, e);
       }
       // `s.keeperPid` is FI-1's own identity read (pid file, or — while the keeper has not written it yet — the scope's keeper.js process by argv); null = this member's keeper is NOT in this scope
-      return { unit: s.unit, gen: s.gen, currentBytes, procs, keeperPid: s.keeperPid };
+      return { unit: s.unit, gen: s.gen, currentBytes, procs, keeperPid: s.keeperPid, maxBytes: mem?.maxBytes ?? null, workingSetBytes: mem?.workingSetBytes ?? null, peakBytes: mem?.peakBytes ?? null };
     });
     // What the keeper's tree holds OUTSIDE its scope (a browser main in its own systemd scope): in nobody's bill. Only a keeper that is IN one of the scopes has a tree to walk; one read of /proc per sample, lazily.
     const keeperAt = readings.findIndex((r) => r.keeperPid !== null);
