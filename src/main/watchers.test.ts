@@ -240,3 +240,23 @@ test('pushWatchersToRenderer is idempotent: a second call (darwin `activate` re-
   a();
   assert.notEqual(pushWatchersToRenderer(), a, 'after an unsubscribe a new subscription is possible');
 });
+
+test('m1 on a REAL directory with the production 30 s health period: deleting the watched directory and recreating it is noticed at once by the kernel\'s own rename event — re-armed in the first backoff step, events flow again (the inode check alone would take 30 s, and never fires where the inode number is reused)', async () => {
+  const base = mkHomeScratch('watchers-m1-');
+  const dir = path.join(base, 'watched');
+  fs.mkdirSync(dir);
+  const got: Array<string | null> = [];
+  let recovered = 0;
+  const w = createWatcher({ name: 'm1', label: 'M1', dir, fallback: 'poll', onChange: (f) => void got.push(f), onRecover: () => void recovered++ });
+  w.start();
+  try {
+    fs.rmSync(dir, { recursive: true });
+    fs.mkdirSync(dir);
+    await until(() => recovered === 1 && degradedOf(watchersStatus()).length === 0, WATCH_BACKOFF_MS[0] + 1500, 're-armed after the directory was swapped');
+    fs.writeFileSync(path.join(dir, 'after.txt'), 'x');
+    await until(() => got.includes('after.txt'), 2000, 'an event through the re-armed watch');
+  } finally {
+    w.stop();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

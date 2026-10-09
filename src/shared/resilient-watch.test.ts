@@ -495,3 +495,36 @@ test('the directory identity is sampled BEFORE the watch is armed (a swap in bet
   createResilientWatcher(r.spec(), deps).start();
   assert.deepEqual(order, ['ino', 'watch']);
 });
+
+test('m1 (#330 review): the directory ITSELF removed/renamed (a `rename` named like the directory) degrades at once — before the site filter, with no inode check — and re-arms with a catch-up', () => {
+  const r = rig();
+  const w = createResilientWatcher(r.spec({ filter: () => false }), r.deps); // a filter that drops everything: the dir-self event must not depend on it
+  w.start();
+  r.watches[0].emit('rename', 'bus');
+  assert.equal(w.snapshot().state, 'degraded');
+  assert.equal(w.snapshot().lastError?.code, 'ESTALE');
+  assert.match(w.snapshot().lastError!.message, /removed or renamed: \/bus/);
+  assert.equal(r.watches[0].closed, true);
+  r.watches[0].emit('rename', 'bus'); // the kernel sends it twice: the second belongs to the closed watch
+  assert.equal(r.calls.armAttempts, 1);
+  r.advance(WATCH_BACKOFF_MS[0]);
+  assert.equal(w.snapshot().state, 'ok');
+  assert.equal(r.calls.recover, 1);
+});
+
+test('m1: what is NOT the directory itself does not degrade — another entry renamed, a `change` named like the directory, a null filename, a trailing-slash dir, the root', () => {
+  const r = rig();
+  const w = createResilientWatcher(r.spec({ dir: '/data/bus/' }), r.deps);
+  w.start();
+  r.watches[0].emit('rename', 'bus.sqlite-wal');
+  r.watches[0].emit('change', 'bus');
+  r.watches[0].emit('rename', null);
+  assert.equal(w.snapshot().state, 'ok');
+  r.watches[0].emit('rename', 'bus'); // trailing slash stripped: the name is « bus »
+  assert.equal(w.snapshot().state, 'degraded');
+  const root = rig();
+  const wr = createResilientWatcher(root.spec({ dir: '/' }), root.deps);
+  wr.start();
+  root.watches[0].emit('rename', '');
+  assert.equal(wr.snapshot().state, 'ok', 'a root watch has no name to match');
+});
