@@ -36,9 +36,17 @@ process.stdin.on('data', (d) => {
       let so = '';
       c.stdout.on('data', (b) => (so += b));
       c.stderr.on('data', (b) => (so += b));
-      c.on('close', (code, signal) => { out({ type: 'user', tool_result: { id: m.id, code, signal, stdout: so.slice(-4000) } }); out({ type: 'result', subtype: 'success' }); });
+      c.on('close', (code, signal) => {
+        // Q9 RESEARCH ONLY: a CLI that PROCESSES the tool result the instant it arrives (allocates and touches memory), i.e. an adj-0 allocator inside the post-kill window
+        const mb = Number(process.env.STANDIN_CLI_RESULT_ALLOC_MB || 0);
+        if (mb > 0) { const junk = Buffer.alloc(mb * 1024 * 1024, 0xa5); setTimeout(() => { junk.fill(0); }, 40); }
+        out({ type: 'user', tool_result: { id: m.id, code, signal, stdout: so.slice(-4000) } }); out({ type: 'result', subtype: 'success' });
+      });
     }
   }
 });
 process.stdin.on('end', () => { out({ type: 'result', subtype: 'eof' }); process.exit(0); });
+// Q9 RESEARCH ONLY: a BUSY CLI — a periodic timer that allocates and reads like a real CLI's event loop (stream parsing, GC, hooks) even while a tool runs
+const tickMs = Number(process.env.STANDIN_CLI_TICK_MS || 0);
+if (tickMs > 0) { let keep = []; setInterval(() => { read('/proc/self/status'); keep.push(Buffer.alloc(512 * 1024, 1)); if (keep.length > 6) keep = keep.slice(-3); }, tickMs); }
 setInterval(() => {}, 1000);

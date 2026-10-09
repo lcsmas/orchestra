@@ -266,7 +266,7 @@ try {
     if (P('Q9_VARIANT', '') === 'noklog') process.env.ORCHESTRA_Q9_NO_KLOG = '1';
     if (P('Q9_VARIANT', '') === 'nowatch') process.env.ORCHESTRA_Q9_NO_WATCH = '1';
     if (layout !== 'single') { process.env.ORCHESTRA_Q9_LAYOUT = layout; process.env.ORCHESTRA_Q9_WRAP = path.join(HERE_REPO, 'scripts', 'q9', 'layout-wrap.sh'); }
-    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS, STANDIN_CLI_RESULT_ALLOC_MB: P('Q9_CLI_ALLOC', '0'), STANDIN_CLI_TICK_MS: P('Q9_CLI_TICK', '0') } });
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     const sDir = layout !== 'single' && f.cgroupDir ? path.dirname(f.cgroupDir) : f.cgroupDir; // the scope
