@@ -113,6 +113,12 @@ export function decideMemoryCap(i: MemoryCapInput): MemoryCapDecision {
 /** `systemd-run` argv that starts `cmd args…` as the main process of a NEW user scope (never moves an existing process). */
 export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits | null; description?: string; cmd: string; args: string[] }): { cmd: string; args: string[] } {
   const props: string[] = ['OOMPolicy=continue']; // systemd's default `stop` ends the WHOLE scope after one oom_kill
+  // Q9 RESEARCH ONLY (never shipped): a leaf layout = delegated scope, no unit-level MemoryMax (the cap lives on a leaf), launched through a wrapper that builds the leaves
+  const q9 = process.env.ORCHESTRA_Q9_LAYOUT && process.env.ORCHESTRA_Q9_WRAP && a.limits ? { layout: process.env.ORCHESTRA_Q9_LAYOUT, wrap: process.env.ORCHESTRA_Q9_WRAP, hard: a.limits.hardBytes } : null;
+  if (q9 && a.limits) {
+    props.push('Delegate=yes', `MemorySwapMax=${a.limits.swapMaxBytes}`);
+    return { cmd: 'systemd-run', args: ['--user', '--scope', '--collect', '--quiet', `--unit=${a.unit}`, ...props.flatMap((p) => ['-p', p]), '--', q9.wrap, q9.layout, String(q9.hard), a.cmd, ...a.args] };
+  }
   if (a.limits) {
     props.push(`MemoryMax=${a.limits.hardBytes}`, `MemorySwapMax=${a.limits.swapMaxBytes}`);
   }
@@ -141,6 +147,7 @@ export const OOM_TOOL_WRAPPER_SCRIPT = `#!/bin/sh
 # The keeper and the CLI sit at the default (0) and an unprivileged process cannot go below its floor, so protect them by RAISING this tool command (everything under it inherits it) so the
 # kernel's OOM killer picks a tool process, never the keeper or the CLI (both stay at 0).
 echo ${OOM_ADJ_TOOLS} > /proc/self/oom_score_adj 2>/dev/null
+[ "\${ORCHESTRA_Q9_LAYOUT:-}" = toolsleaf ] && [ -n "\${ORCHESTRA_Q9_W:-}" ] && echo $$ > "\${ORCHESTRA_Q9_W}/cgroup.procs" 2>/dev/null
 [ "$#" -eq 1 ] || exec "$@"
 if [ -n "\${${INNER_SHELL_PREFIX_ENV}:-}" ]; then
   # the user's own prefix, chained exactly as the CLI would have called it

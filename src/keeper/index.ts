@@ -193,6 +193,11 @@ function beginShutdown(reason: string): void {
 
 function startChild(command: string, args: string[], cwd: string, env: Record<string, string | undefined>): void {
   klog(`spawn ${command} cwd=${cwd}`);
+  // Q9 RESEARCH ONLY: twoleaf = the CLI starts INSIDE the limited leaf (a fresh sh moves ITSELF into it, then execs the CLI)
+  if (env.ORCHESTRA_Q9_LAYOUT === 'twoleaf' && env.ORCHESTRA_Q9_W) {
+    args = ['-c', 'echo $$ > "$ORCHESTRA_Q9_W/cgroup.procs" && exec "$@"', 'q9-mover', command, ...args];
+    command = '/bin/sh';
+  }
   child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   state.onSpawn(Date.now());
 
@@ -253,12 +258,14 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   } catch {
     /* no /proc */
   }
+  const q9 = process.env.ORCHESTRA_Q9_LAYOUT && process.env.ORCHESTRA_Q9_W ? { layout: process.env.ORCHESTRA_Q9_LAYOUT, w: process.env.ORCHESTRA_Q9_W } : null; // Q9 RESEARCH ONLY
+  if (q9 && cgPath) cgPath = path.dirname(cgPath); // we sit in the keeper leaf k of the scope
   if (!cgPath || path.basename(cgPath) !== cap.unit) {
     capInfo = { unit: cap.unit, state: 'no-scope', hardBytes: cap.hardBytes };
     klog(`memory cap: NOT in scope ${cap.unit} (cgroup ${cgPath ?? 'unreadable'}) — the keeper was launched plain; no cap, no watch`);
     return env;
   }
-  const dir = path.join(CGROUP_ROOT, cgPath);
+  const dir = q9 ? q9.w : path.join(CGROUP_ROOT, cgPath);
   let limit: number | null = null;
   try {
     limit = parseCgroupLimit(fs.readFileSync(path.join(dir, 'memory.max'), 'utf8'));
@@ -312,13 +319,14 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
       klog(`memory cap: could not append to ${cap.noticeFile} - this record reaches the host only through a live attach`);
     }
   };
+  if (process.env.ORCHESTRA_Q9_NO_WATCH) { klog('Q9 research: kill watch DISABLED'); capInfo = { unit: cap.unit, state: 'active', hardBytes: cap.hardBytes }; } else // Q9 RESEARCH ONLY (A/B: the watch's own activity)
   memWatch = startMemoryWatch({
     cgroupDir: dir,
     unit: cap.unit,
     log: klog,
     softBytes: cap.softBytes && cap.softBytes < cap.hardBytes ? cap.softBytes : null,
     softMinIntervalMs: intEnv('ORCHESTRA_MEMCAP_SOFT_MIN_INTERVAL_MS', SOFT_MIN_INTERVAL_MS),
-    kernelLog: readKernelOomKills,
+    kernelLog: process.env.ORCHESTRA_Q9_NO_KLOG ? undefined : readKernelOomKills, // Q9 RESEARCH ONLY (A/B: the kernel-log lookup forks journalctl)
     onKill: (found) => {
       // review F7: the cap's last resort — the victim is the member's own agent process or this keeper: the SESSION ended
       const rec: MemKillRecord = found.pid === null ? found : found.pid === child?.pid ? { ...found, role: 'cli' } : found.pid === process.pid ? { ...found, role: 'keeper' } : found;
@@ -340,7 +348,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   // A browser started from this session moves its main process into ITS OWN systemd scope through the session bus (measured: app-org.chromium.Chromium-<pid>.scope) — out of the cap, with the
   // 56-Chromium incident that motivated the cap in plain view. Without DBUS_SESSION_BUS_ADDRESS Chromium stays where it was started (measured 9/9 inside; the user-manager tools, `systemd-run --user`,
   // gh and git keep working). Capped members only; the human's sessions and a switch-OFF run keep the address.
-  const base: Record<string, string | undefined> = { ...env };
+  const base: Record<string, string | undefined> = { ...env, ...(q9 ? { ORCHESTRA_Q9_LAYOUT: q9.layout, ORCHESTRA_Q9_W: q9.w } : {}) };
   if (base.DBUS_SESSION_BUS_ADDRESS !== undefined) {
     delete base.DBUS_SESSION_BUS_ADDRESS;
     klog('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)');
