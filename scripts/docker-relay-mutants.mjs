@@ -164,7 +164,7 @@ const MUTANTS = [
   ['B2', 'src/shared/bus-switches.ts', [["  docker_relay: 'dockerRelay', // #291\n", '']], [T.sw, T.bus], 'wire name unknown → every read OFF'],
   ['D1', 'src/main/docker-relay-switch.ts', [['dockerRelayOffer({ remote, platform', 'dockerRelayOffer({ remote: false, platform']], [T.sw], 'sandbox member gets the relay (read side)'],
   ['D2', 'src/main/docker-relay-switch.ts', [["busSwitch(db, runId, 'docker_relay')", "busSwitch(db, runId, 'liveness')"]], [T.sw], 'reads the wrong mechanism'],
-  ['W1', 'src/main/agent-sdk.ts', [['}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote),', '}, undefined,']], [T.bind], 'the session never asks for the relay'],
+  ['W1', 'src/main/agent-sdk.ts', [['}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote, ws),', '}, undefined,']], [T.bind], 'the session never asks for the relay'],
   ['A1', 'src/main/docker-api.ts', [["path: `/containers/${enc(id)}/stop?t=${timeoutSec}`", "path: `/containers/${enc(id)}/kill?t=${timeoutSec}`"]], [T.api], 'stop becomes kill'],
   ['A3', 'src/main/docker-api.ts', [["if (res.status === 304) return 'already-stopped';", "if (res.status === 304) return 'stopped';"]], [T.api], '304 mislabelled'],
   ['A4', 'src/main/docker-api.ts', [['autoRemove: j.HostConfig?.AutoRemove === true,', 'autoRemove: false,']], [T.api], 'AutoRemove ignored (a --rm container would be stopped = deleted)'],

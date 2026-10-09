@@ -51,7 +51,7 @@ setInterval(() => {}, 1000);
 `;
 
 before(() => {
-  const srcs = ['src/keeper/index.ts', 'src/keeper/docker-relay.ts', 'src/shared/keeper-protocol.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts', 'src/keeper/docker-hold.ts', 'src/shared/docker-hold.ts', 'src/shared/memory-guard.ts'].map((s) => path.join(REPO, s));
+  const srcs = ['src/keeper/index.ts', 'src/keeper/docker-relay.ts', 'src/shared/keeper-protocol.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts', 'src/keeper/docker-hold.ts', 'src/keeper/release-lease.ts', 'src/shared/docker-hold.ts', 'src/shared/memory-guard.ts'].map((s) => path.join(REPO, s));
   if (!fs.existsSync(KEEPER_JS) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_JS).mtimeMs)) {
     execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
   }
@@ -407,7 +407,7 @@ const admission = (held: boolean, over: Record<string, unknown> = {}): string =>
 const HOLD_ENV = { ORCHESTRA_KEEPER_HOLD_POLL_MS: '40', ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '20' };
 const createsSeen = (ctx: Ctx): number => ctx.daemon.seen.filter((s) => s.method === 'POST' && /containers\/create/.test(s.url)).length;
 
-async function startHold(ctx: Ctx, holdState: string | undefined): Promise<Client> {
+async function startHold(ctx: Ctx, holdState: string | undefined, daemonSock: string = ctx.daemon.sockPath): Promise<Client> {
   const c = await Client.dial(ctx.sock);
   c.send({ t: 'hello', wsId: ctx.wsId });
   c.send({
@@ -415,7 +415,7 @@ async function startHold(ctx: Ctx, holdState: string | undefined): Promise<Clien
     command: process.execPath,
     args: [ctx.fakeCli],
     cwd: ctx.dir,
-    env: { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: ctx.daemon.sockPath },
+    env: { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: daemonSock },
     dockerRelay: { runId: 'run-7', ...(holdState ? { holdState } : {}) },
   });
   return c;
@@ -459,7 +459,7 @@ test('#321 hold: NOT held ⇒ a create goes straight out (no delay, no hold file
 });
 
 test('#321 hold: fail-open — no state file, a STALE one, another version, garbage: the create is never held', async () => {
-  for (const [name, content] of [['absent', null], ['stale', admission(true, { ts: Date.now() - 10 * 60_000 })], ['other version', admission(true, { v: 2 })], ['garbage', 'not json']] as const) {
+  for (const [name, content, logged] of [['absent', null, /no Admission state file/], ['stale', admission(true, { ts: Date.now() - 10 * 60_000 }), /Admission state is stale/], ['other version', admission(true, { v: 2 }), /unreadable or of another version/], ['garbage', 'not json', /unreadable or of another version/]] as const) {
     const ctx = await makeCtx(HOLD_ENV);
     const state = path.join(ctx.dir, 'admission.state');
     if (content !== null) fs.writeFileSync(state, content);
@@ -468,6 +468,8 @@ test('#321 hold: fail-open — no state file, a STALE one, another version, garb
     await c.waitLine((l) => l.created === 201, 4000).catch((e) => {
       throw new Error(`${name}: the create was held — ${(e as Error).message}`);
     });
+    // review m2: the switch to fail-open is LOGGED (once), even with no line waiting
+    assert.match(fs.readFileSync(ctx.logFile, 'utf8'), logged, `${name}: the keeper log says why nothing was held`);
   }
 });
 
@@ -539,4 +541,26 @@ test('#321 hold: the Admission TOGGLE turned OFF releases a waiting create at on
   fs.writeFileSync(state, admission(false, { enabled: false, admissionBytes: 4096 * 1024 * 1024 * 1024 }));
   await c.waitLine((l) => l.created === 201, 4000);
   assert.equal(createsSeen(ctx), 1);
+});
+
+test('#321 review M1 (built keepers): TWO keepers share ONE release slot — one create each, the state reopens ⇒ the creates reach the daemon spaced by the settle (a lease file beside the state file, taken across real processes)', async () => {
+  const env = { ...HOLD_ENV, ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '700' };
+  const a = await makeCtx(env);
+  const b = await makeCtx(env);
+  const state = path.join(a.dir, 'admission.state');
+  fs.writeFileSync(state, admission(true));
+  const ca = await startHold(a, state);
+  const cb = await startHold(b, state, a.daemon.sockPath); // BOTH forward to ONE daemon: its clock orders their creates
+  ca.send(line({ create: 1 }));
+  cb.send(line({ create: 2 }));
+  for (let i = 0; i < 200 && !(fs.existsSync(path.join(a.dir, 'k.docker.hold')) && fs.existsSync(path.join(b.dir, 'k.docker.hold'))); i++) await sleep(30);
+  assert.ok(fs.existsSync(path.join(a.dir, 'k.docker.hold')) && fs.existsSync(path.join(b.dir, 'k.docker.hold')), 'both keepers hold a call');
+  fs.writeFileSync(state, admission(false));
+  await ca.waitLine((l) => l.created === 201, 8000);
+  await cb.waitLine((l) => l.created === 201, 8000);
+  const at = a.daemon.seen.filter((s) => s.method === 'POST' && /containers\/create/.test(s.url)).map((s) => s.at);
+  assert.equal(at.length, 2);
+  assert.ok(Math.abs(at[1] - at[0]) >= 600, `the fleet releases ONE at a time: ${Math.abs(at[1] - at[0])} ms apart (settle 700)`);
+  for (let i = 0; i < 100 && fs.existsSync(path.join(a.dir, 'admission.lease')); i++) await sleep(30); // the last release's settle is spent HOLDING the slot
+  assert.equal(fs.existsSync(path.join(a.dir, 'admission.lease')), false, 'the slot is given back once the line is empty and the settle spent');
 });

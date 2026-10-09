@@ -11,6 +11,8 @@ export interface SeenRequest {
   url: string;
   headers: http.IncomingHttpHeaders;
   body: Buffer;
+  /** Epoch ms the daemon saw the request (the hold tests space releases by it). */
+  at: number;
 }
 
 export interface FakeDaemon {
@@ -47,7 +49,7 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
     req.on('end', () => {
       const body = Buffer.concat(chunks);
       const url = req.url ?? '';
-      seen.push({ method: req.method ?? '', url, headers: req.headers, body });
+      seen.push({ method: req.method ?? '', url, headers: req.headers, body, at: Date.now() });
       if (req.method === 'GET' && url.endsWith('/_ping')) {
         res.writeHead(200, { 'content-type': 'text/plain', 'content-length': 2, 'api-version': '1.47' });
         res.end('OK');
@@ -116,7 +118,7 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
     const want = Number(req.headers['content-length'] ?? 0);
     let body = Buffer.from(head);
     const go = (): void => {
-      seen.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: body.subarray(0, want) });
+      seen.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: body.subarray(0, want), at: Date.now() });
       sock.write('HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n');
       if ((req.url ?? '').includes('/eof/')) {
         // answers ONLY after the client's EOF (a CloseWrite): proves a half-close does not kill the hijack

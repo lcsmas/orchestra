@@ -8,6 +8,7 @@
 // While anything waits the gate publishes `<ws>.docker.hold` (count / oldest since / reason; refreshed ≥ every 5 s) for the app's `bus-status` and the member's coordinator, and removes it when the line is empty.
 // Electron-free; every clock / file / meter is injected so node --test drives the real code.
 
+import type { FleetLine, HoldLease } from './release-lease.ts';
 import {
   ADMISSION_STATE_TTL_MS,
   holdReason,
@@ -49,6 +50,10 @@ export interface HoldGateOptions {
   /** Pause between two releases (default 1.5 s). */
   settleMs: number;
   ttlMs?: number;
+  /** The FLEET-wide release slot (review M1): releases are ONE AT A TIME across every keeper's relay, not per keeper. Absent = per-keeper only (unit tests; never production). */
+  lease?: HoldLease;
+  /** The OTHER keepers' lines: oldest call first across the fleet, and a newcomer queues behind a line in motion (Admission's `mustHoldStart`: a newcomer never jumps the line). Absent = this keeper alone. */
+  fleet?: FleetLine;
   log(msg: string): void;
 }
 
@@ -82,27 +87,28 @@ export function createHoldGate(o: HoldGateOptions): HoldGate {
   let lastWriteAt = 0;
   let wroteOnce = false;
   let warnedWrite = false;
-  let authorityNote: 'fresh' | 'none' | null = null;
-  let unreadableLogged = false;
+  let authorityNote: 'fresh' | 'absent' | 'unreadable' | 'stale' | null = null;
 
   function readState(): AdmissionState | null {
     const text = o.readText(o.stateFile);
     const s = text === null ? null : parseAdmissionState(text);
     lastState = s;
-    // a file that is THERE but cannot be read (torn, garbage, another version): fail open AND say so — once until it reads again (the app writes it atomically, so this is not expected)
-    if (text !== null && s === null) {
-      if (!unreadableLogged) o.log(`docker hold: Admission state file ${o.stateFile} unreadable or of another version — treated as no hold (fail open)`);
-      unreadableLogged = true;
-    } else {
-      unreadableLogged = false;
-    }
-    // one log line per change of authority (a keeper log, not a flood)
-    const now: 'fresh' | 'none' = s !== null && stateIsFresh(s, o.now(), ttl) ? 'fresh' : 'none';
-    if (now !== authorityNote) {
-      authorityNote = now;
-      if (now === 'none' && queue.length > 0) o.log(`docker hold: no authoritative Admission state (${text === null ? 'file absent' : s === null ? 'unreadable or another version' : 'stale'}) — releasing the line`);
+    // ONE log line at every change of authority INTO a fail-open state — with or without a line waiting (review m2: a guard wedged for > 5 min under swap switches the function off; that must not be silent).
+    // Back to a fresh state and into a fail-open one again logs again; a state that stays absent / stale logs once.
+    const a: 'fresh' | 'absent' | 'unreadable' | 'stale' = text === null ? 'absent' : s === null ? 'unreadable' : stateIsFresh(s, o.now(), ttl) ? 'fresh' : 'stale';
+    if (a !== authorityNote) {
+      authorityNote = a;
+      if (a !== 'fresh') {
+        const what = a === 'absent' ? `no Admission state file (${o.stateFile})` : a === 'unreadable' ? `Admission state file ${o.stateFile} unreadable or of another version` : 'Admission state is stale (the app is gone or wedged)';
+        o.log(`docker hold: ${what} — fail open: nothing is held${queue.length > 0 ? ', the waiting line is released' : ''}`);
+      }
     }
     return s;
+  }
+
+  /** A fresh state with the Admission toggle ON: the only kind that gives the fleet's line a meaning. */
+  function authoritativeNow(st: AdmissionState | null, t: number): boolean {
+    return st !== null && stateIsFresh(st, t, ttl) && st.enabled;
   }
 
   function publish(force = false): void {
@@ -158,16 +164,38 @@ export function createHoldGate(o: HoldGateOptions): HoldGate {
         }
         // no authority (state gone / stale / foreign) or the toggle OFF ⇒ flush the whole line at once, like Admission's planRelease; otherwise ONE release per FRESH reading
         const flush = st === null || !stateIsFresh(st, t, ttl) || !st.enabled;
-        if (!flush && !mayReleaseOne(st, o.readMem())) {
-          // the guard says open but a FRESH reading says memory is not back far enough: stay in line (Admission's re-measure between releases)
+        if (flush) {
+          releaseHead(true);
+          publish();
+          continue;
+        }
+        // OLDEST CALL FIRST across the fleet: a keeper draining a long line must not starve an older call on another keeper (it would re-take the slot before anyone else's poll lands)
+        if (o.fleet?.olderWaiter(queue[0].since)) {
           publish();
           await o.sleep(o.pollMs);
           continue;
         }
-        releaseHead(flush);
+        // ONE release at a time FOR THE WHOLE FLEET (review M1): take the single release slot. Another keeper holding it ⇒ wait and look again.
+        if (o.lease && !o.lease.tryAcquire()) {
+          publish();
+          await o.sleep(o.pollMs);
+          continue;
+        }
+        if (!mayReleaseOne(st, o.readMem())) {
+          // the guard says open but a FRESH reading (taken UNDER the slot) says memory is not back far enough: stay in line (Admission's re-measure between releases)
+          o.lease?.release();
+          publish();
+          await o.sleep(o.pollMs);
+          continue;
+        }
+        releaseHead(false);
         publish();
-        // with authority each release is followed by a settle (the start must show in the next reading)
-        if (queue.length > 0 && !flush) await o.sleep(o.settleMs);
+        // the settle is spent HOLDING the slot, even when this keeper's line is now empty: the container just started must show in the next reading — whichever keeper takes the slot
+        try {
+          await o.sleep(o.settleMs);
+        } finally {
+          o.lease?.release();
+        }
       }
     } finally {
       running = false;
@@ -180,7 +208,8 @@ export function createHoldGate(o: HoldGateOptions): HoldGate {
       if (stopped || signal.aborted) return Promise.resolve(null);
       const st = readState();
       const t = o.now();
-      if (queue.length === 0 && !holdsNow(st, t, ttl)) return Promise.resolve({ waitedMs: 0, reason: null });
+      // a newcomer passes only when nothing is held, nothing waits HERE and — with authority — no other keeper's line is in motion (Admission: a newcomer joins the line, it never jumps it)
+      if (queue.length === 0 && !holdsNow(st, t, ttl) && !(authoritativeNow(st, t) && (o.fleet?.busy() ?? false))) return Promise.resolve({ waitedMs: 0, reason: null });
       if (st !== null && stateIsFresh(st, t, ttl) && st.held) lastReason = holdReason(st);
       return new Promise<HoldAdmitted | null>((resolve) => {
         const entry: Entry = {
@@ -203,9 +232,15 @@ export function createHoldGate(o: HoldGateOptions): HoldGate {
       });
     },
     waiting: () => queue.length,
-    holding: () => !stopped && (queue.length > 0 || holdsNow(readState(), o.now(), ttl)),
+    holding: () => {
+      if (stopped) return false;
+      const st = readState();
+      const t = o.now();
+      return queue.length > 0 || holdsNow(st, t, ttl) || (authoritativeNow(st, t) && (o.fleet?.busy() ?? false));
+    },
     stop(): void {
       stopped = true;
+      o.lease?.release();
       for (const e of queue.splice(0)) {
         e.detach();
         e.resolve(null);

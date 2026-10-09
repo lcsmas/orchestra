@@ -133,5 +133,6 @@ test('the lines: `docker holds:` says who waits, since when and why; empty when 
   assert.match(n, /nothing is refused and nothing needs retrying/);
   assert.match(n, /never held/);
   assert.match(n, /orchestra bus-status/);
+  assert.match(n, /docker-py .*times out after 60 s by default — give it a longer timeout/, 'review m1: a 60 s client gives up first and must retry');
   assert.match(n, /abandoned, never replayed/);
 });

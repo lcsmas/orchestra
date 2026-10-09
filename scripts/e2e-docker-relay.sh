@@ -5,7 +5,7 @@
 set -u
 cd "$(dirname "$0")/.."
 if ! awk '/MemAvailable/{exit !($2 > 6*1048576)}' /proc/meminfo; then echo "MemAvailable <= 6 GB: not starting the heavy rig" >&2; exit 3; fi
-ARMS=${ARMS:-"run_labels compose_labels user_labels streams kill_relay no_relay_fallback switch_off app_switch sweep_relay_files late_daemon api_real hold_create hold_start hold_unattributed hold_fresh_reading hold_fail_open hold_client_leaves hold_one_at_a_time hold_guard_chain hold_long_wait"}
+ARMS=${ARMS:-"run_labels compose_labels user_labels streams kill_relay no_relay_fallback switch_off app_switch sweep_relay_files late_daemon api_real hold_create hold_start hold_unattributed hold_fresh_reading hold_fail_open hold_client_leaves hold_one_at_a_time hold_guard_chain hold_two_keepers hold_fleet_only hold_long_wait"}
 RC=0
 for arm in $ARMS; do
   line=$(timeout 600 node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-docker-relay.mjs "$arm" 2>/dev/null | tail -1)

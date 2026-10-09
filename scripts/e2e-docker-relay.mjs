@@ -50,6 +50,8 @@ const ARMS = {
   hold_client_leaves: { mustFailOnMaster: true, creates: true }, // #321: a client that gives up while held never has its create sent; the line goes on without it
   hold_one_at_a_time: { mustFailOnMaster: true, creates: true }, // #321: the line is released FIFO, ONE at a time with a settle between (not a thundering herd)
   hold_long_wait: { mustFailOnMaster: true, creates: true }, // #321 (OPS b): a multi-minute hold against the docker CLI, compose, a 200 KB create body, node http and curl — reports the first client that cuts (`measured`)
+  hold_two_keepers: { mustFailOnMaster: true, creates: true }, // #321 review M1: two keepers share ONE release slot (the fleet\'s line is one line)
+  hold_fleet_only: { mustFailOnMaster: true, creates: true }, // #321 review M2: a top-level / LEAD session is never held, a fleet member is (the real `dockerRelaySpecFor` with the workspace)
   hold_guard_chain: { mustFailOnMaster: true, creates: true }, // #321: the REAL guard (fake meter) → real publisher → real keeper → real dockerd: low ⇒ waits, hysteresis reopen ⇒ passes
   api_real: { mustFailOnMaster: true, creates: true }, // F2 (follow-up): the APP's docker-api lists/stops/starts what the relay stamped, on the real daemon
 };
@@ -115,7 +117,7 @@ function cleanup() {
 // ── keeper bundle ───────────────────────────────────────────────────────────────────────────────────────────────
 const KEEPER_SRC = process.env.KEEPER_JS ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.KEEPER_JS) {
-  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts', 'src/keeper/docker-hold.ts', 'src/shared/docker-hold.ts', 'src/shared/memory-guard.ts']
+  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts', 'src/keeper/docker-hold.ts', 'src/keeper/release-lease.ts', 'src/shared/docker-hold.ts', 'src/shared/memory-guard.ts']
     .map((s) => path.join(REPO, s))
     .filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_SRC) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_SRC).mtimeMs)) {
@@ -783,6 +785,65 @@ const runArm = {
     measured.longWait = { holdMs: HOLD_MS, clients: rs.map(({ name, r }) => ({ name, outcome: cuts[name] ? `CUT after ${Math.round(cuts[name].atMs / 1000)} s` : r && r.code === 0 ? 'survived' : `failed: ${JSON.stringify(r)?.slice(0, 120)}` })) };
   },
 
+  async hold_two_keepers() {
+    // review M1: « une à la fois » is for the WHOLE FLEET — two members (two keepers, two relays), one call each, share ONE release slot (a lease file beside the state file)
+    await publish(HELD());
+    const keeperEnv = { ORCHESTRA_KEEPER_HOLD_POLL_MS: '100', ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '800' };
+    const m1 = await member({ holdState: STATE, keeperEnv });
+    const m2 = await member({ ws: `${PFX}b`, run: `${PFX}-runb`, holdState: STATE, keeperEnv });
+    // arrival order: A1, B1 (500 ms later), A2, A3 — the fleet\'s line is OLDEST FIRST, so B1 goes between A1 and A2 (a keeper draining its line must not starve an older call on another keeper)
+    const cs = [];
+    for (const [m, n] of [[m1, 'ta1'], [m2, 'tb1'], [m1, 'ta2'], [m1, 'ta3']]) {
+      cs.push(bg(m, `docker create ${LBL} --name ${PFX}-${n} ${IMG} sleep 300`));
+      await sleep(500);
+    }
+    await sleep(1500);
+    check('four calls wait behind the hold, each keeper counting its own (A: 3, B: 1)', cs.every((c) => c.done() === null) && readHold()?.create === 3 && readHold(`${PFX}b`)?.create === 1, JSON.stringify([readHold(), readHold(`${PFX}b`)]));
+    await publish(OPEN());
+    const rs = await Promise.all(cs.map((c) => c.wait(60000)));
+    check('memory back: all four complete by themselves', rs.every((r) => r && r.code === 0), JSON.stringify(rs));
+    const ts = ['ta1', 'tb1', 'ta2', 'ta3'].map((n) => created(`${PFX}-${n}`));
+    check('OLDEST FIRST across the fleet: created in arrival order A1, B1, A2, A3', ts[0] < ts[1] && ts[1] < ts[2] && ts[2] < ts[3], JSON.stringify(ts));
+    check('ONE at a time FOR THE FLEET: ≥ 0.6 s between any two consecutive creates, whichever keeper (the settle is spent holding the shared slot) — not the same instant', ts.slice(1).every((x, i) => x - ts[i] >= 600), JSON.stringify(ts.slice(1).map((x, i) => x - ts[i])));
+    for (let i = 0; i < 100 && fs.existsSync(path.join(HOME, 'admission.lease')); i++) await sleep(100);
+    check('the shared slot is given back once both lines are empty and the last settle is spent', !fs.existsSync(path.join(HOME, 'admission.lease')));
+  },
+
+  async hold_fleet_only() {
+    // review M2: the hold is for a FLEET MEMBER only (Admission exempts a top-level / detached session). The REAL decision (`dockerRelaySpecFor` with the workspace), the real keepers.
+    process.env.ORCHESTRA_HOME = HOME;
+    process.env.HOME = HOME;
+    const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
+    initPlatform({
+      kind: 'headless-docker-relay-g2',
+      broadcast: () => {}, broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false, notify: () => {},
+      openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {}, openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
+      getUserDataDir: () => HOME, getLogsDir: () => path.join(HOME, 'logs'), getAppVersion: () => '0.0.0-g2', getAppMetrics: () => [],
+      isEncryptionAvailable: () => false, encryptString: (s) => s, decryptString: (s) => s,
+    });
+    (await import(`${REPO}/src/main/logger.ts`)).initLogger();
+    const { dockerRelaySpecFor } = await import(`${REPO}/src/main/docker-relay-switch.ts`);
+    const { initBus, getBus } = await import(`${REPO}/src/main/bus.ts`);
+    const { startRun } = await import(`${REPO}/src/main/bus-runs.ts`);
+    const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
+    initBus();
+    startRun(getBus(), { id: RUN, kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: true });
+    const fleetSpec = dockerRelaySpecFor(RUN, false, { parentId: 'coord' });
+    const topSpec = dockerRelaySpecFor(RUN, false, {});
+    check('the real decision: a fleet member\'s spec names the state file, a top-level session\'s does NOT (it still gets the stamping relay)', fleetSpec?.holdState === STATE && topSpec !== undefined && topSpec.holdState === undefined, JSON.stringify([fleetSpec, topSpec]));
+    await publish(HELD());
+    const fleet = await member({ holdState: fleetSpec?.holdState });
+    const top = await member({ ws: `${PFX}t`, run: RUN, holdState: topSpec?.holdState });
+    const t0 = Date.now();
+    const rt = await bg(top, `docker run ${LBL} -d --name ${PFX}-top ${IMG} sleep 300`).wait(8000);
+    check('held fleet, but the TOP-LEVEL session\'s `docker run` is NEVER held (answered in < 8 s), still stamped', rt && rt.code === 0 && Date.now() - t0 < 8000 && labelsOf(`${PFX}-top`)?.['orchestra.ws'] === `${PFX}t`, JSON.stringify(rt));
+    const cf = bg(fleet, `docker run ${LBL} -d --name ${PFX}-fl ${IMG} sleep 300`);
+    check('positive control: the FLEET member\'s `docker run` IS held (3 s)', (await cf.wait(3000)) === null && !exists(`${PFX}-fl`), JSON.stringify(cf.done()));
+    await publish(OPEN());
+    const rf = await cf.wait(20000);
+    check('…and goes through once memory is back', rf && rf.code === 0 && stamped(`${PFX}-fl`), JSON.stringify(rf));
+  },
+
   async hold_guard_chain() {
     // The REAL guard fed a fake meter → the REAL publisher (docker-hold-host) → the keeper → dockerd. Thresholds are scaled so the keeper's fresh REAL reading passes on reopen.
     process.env.ORCHESTRA_HOME = HOME;
@@ -804,7 +865,7 @@ const runArm = {
     const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
     initBus();
     startRun(getBus(), { id: RUN, kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: true });
-    const spec = dockerRelaySpecFor(RUN, false);
+    const spec = dockerRelaySpecFor(RUN, false, { parentId: 'coord' });
     check("the app's spec for an ON run names the Admission state file under ORCHESTRA_HOME", spec?.holdState === STATE, JSON.stringify(spec));
     let mem = 3 * GIB;
     g.__rebuildMemoryGuardForTests({}, () => mem);

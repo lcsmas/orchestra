@@ -2076,7 +2076,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
                   notifyTurnStart(wsId);
                 }
               }
-            }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote),
+            }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote, ws),
             // #320: a FLEET MEMBER's keeper starts in its own memory scope when its run froze `memory_cap` ON. Read at THIS session start; a keeper
             // that is already running is attached to as it is (the facade only launches a keeper when none lives) — running sessions are never migrated.
             memoryCapSpecFor({ wsId, runId: sdkEnv.ORCHESTRA_RUN_ID, ws, remote, settings: store.getMemoryGuardSettings() })) as never,

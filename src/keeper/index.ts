@@ -49,6 +49,8 @@ import { parseMemAvailableBytes } from '../shared/memory-guard.ts';
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 import { createHoldGate, type HoldGate } from './docker-hold.ts';
+import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lease.ts';
+import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
@@ -381,6 +383,57 @@ function publishUpstream(upstream: string): void {
   }
 }
 
+/** The filesystem effects of the release slot and the fleet's line (one definition, two consumers). */
+function leaseIo(): LeaseIo {
+  return {
+    now: Date.now,
+    createExclusive: (f, text) => {
+      try {
+        fs.writeFileSync(f, text, { flag: 'wx', mode: 0o600 });
+        return true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw e;
+      }
+    },
+    readText: (f) => {
+      try {
+        return fs.readFileSync(f, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    ageMs: (f) => {
+      try {
+        return Date.now() - fs.statSync(f).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
+    rename: (a, b) => fs.renameSync(a, b),
+    remove: (f) => fs.rmSync(f, { force: true }),
+    pidAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (e) {
+        return (e as NodeJS.ErrnoException).code === 'EPERM'; // alive, another user's: not ours to take over
+      }
+    },
+    listDir: (d) => fs.readdirSync(d),
+  };
+}
+
+/** The fleet-wide release slot (#321 review M1): a lease file beside the app's state file, shared by every keeper's relay. */
+function createKeeperLease(holdState: string) {
+  return createReleaseLease({ file: admissionLeaseFile(holdState), owner: wsId, pid: process.pid, log: klog, io: leaseIo() });
+}
+
+/** The other keepers' lines (oldest call first; a newcomer queues behind a line in motion): their `<ws>.docker.hold` files sit beside this keeper's. */
+function createKeeperFleetLine(holdState: string) {
+  return createFleetLine({ ownHoldFile: relayHoldFile(sockPath), ownWs: wsId, pid: process.pid, leaseFile: admissionLeaseFile(holdState), io: leaseIo() });
+}
+
 /** The hold gate (#321) for `holdState`: real clocks / files, the live MemAvailable. Tunables are for the rig (a 1 s poll and 1.5 s settle are the product values). */
 function createKeeperHoldGate(holdState: string): HoldGate {
   return createHoldGate({
@@ -408,6 +461,8 @@ function createKeeperHoldGate(holdState: string): HoldGate {
     },
     removeFile: (f) => fs.rmSync(f, { force: true }),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    lease: createKeeperLease(holdState),
+    fleet: createKeeperFleetLine(holdState),
     pollMs: intEnv('ORCHESTRA_KEEPER_HOLD_POLL_MS', 1000),
     settleMs: intEnv('ORCHESTRA_KEEPER_HOLD_SETTLE_MS', 1500),
     log: klog,

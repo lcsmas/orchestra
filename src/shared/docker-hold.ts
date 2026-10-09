@@ -138,6 +138,47 @@ export function startIsHoldable(inspect: { labels?: Record<string, string> | nul
   return inspect.labels?.[wsLabel] === ws;
 }
 
+// ─── The fleet-wide release slot (review M1) ───────────────────────────────────────────────────────────────────────────
+
+/** Admission is ONE line for the whole fleet (`planRelease`): held starts leave one at a time. The relays are one per keeper, so they share ONE release slot — a lease file beside the state file,
+ *  taken with an exclusive create. Whoever holds it does the fresh MemAvailable reading, releases ONE call and spends the settle before giving it back. */
+export function admissionLeaseFile(stateFile: string): string {
+  return /\.state$/.test(stateFile) ? stateFile.replace(/\.state$/, '.lease') : `${stateFile}.lease`;
+}
+
+/** A holder that neither released nor renewed within this long is presumed stuck (the settle is ~1.5 s; a dead holder is told apart by its pid, not by waiting this out). */
+export const RELEASE_LEASE_TTL_MS = 20_000;
+
+export interface ReleaseLease {
+  v: 1;
+  /** The keeper's workspace id — who holds the slot, for a human reading the file. */
+  owner: string;
+  pid: number;
+  /** Epoch ms it was taken. */
+  ts: number;
+}
+
+export function parseLease(text: string | null): ReleaseLease | null {
+  if (text === null) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof v !== 'object' || v === null) return null;
+  const o = v as Record<string, unknown>;
+  if (o.v !== 1 || typeof o.owner !== 'string' || !isNum(o.pid) || !isNum(o.ts)) return null;
+  return { v: 1, owner: o.owner, pid: o.pid, ts: o.ts };
+}
+
+/** May this lease be taken over? Its holder is DEAD (a SIGKILLed keeper must never wedge the fleet's line), or it has been held past the TTL. A lease that cannot be parsed is judged by the file's
+ *  age (`ageMs`): a writer may be between its create and its write. */
+export function leaseIsStale(l: ReleaseLease | null, ageMs: number, now: number, pidAlive: (pid: number) => boolean, ttlMs = RELEASE_LEASE_TTL_MS): boolean {
+  if (l === null) return ageMs > ttlMs;
+  return !pidAlive(l.pid) || now - l.ts > ttlMs || l.ts - now > ttlMs;
+}
+
 // ─── What the keeper publishes (the member and the app read it) ─────────────────────────────────────────────────────
 
 export interface HoldFile {
@@ -153,7 +194,8 @@ export interface HoldFile {
   reason: string;
 }
 
-export function parseHoldFile(text: string): HoldFile | null {
+export function parseHoldFile(text: string | null): HoldFile | null {
+  if (text === null) return null;
   let v: unknown;
   try {
     v = JSON.parse(text);
@@ -182,7 +224,7 @@ export function describeHold(label: string, h: HoldFile, now: number): string {
 /** The one bus status a member gets per hold episode. Plain text for an agent: nothing to do, it proceeds by itself. */
 export function holdNoticeText(h: HoldFile, now: number): string {
   const n = h.create + h.start;
-  return `Orchestra is holding ${n} of your docker call(s) (container create/start through your keeper's relay) for ${fmtWait(now - h.since)}: ${h.reason}. They proceed BY THEMSELVES when memory is back — nothing is refused and nothing needs retrying; do not kill the waiting command (if you must, its create is simply abandoned, never replayed). While one waits, \`orchestra bus-status\` prints a \`docker holds:\` line with the reason and since when. Containers you create outside the relay are never held.`;
+  return `Orchestra is holding ${n} of your docker call(s) (container create/start through your keeper's relay) for ${fmtWait(now - h.since)}: ${h.reason}. They proceed BY THEMSELVES when memory is back — nothing is refused and nothing needs retrying; do not kill the waiting command (if you must, its create is simply abandoned, never replayed). A client with its OWN short timeout gives up first and its call must be retried: docker-py (the python \`docker\` SDK, compose v1) times out after 60 s by default — give it a longer timeout. While one waits, \`orchestra bus-status\` prints a \`docker holds:\` line with the reason and since when. Containers you create outside the relay are never held.`;
 }
 
 /** One workspace's hold as `bus-status` carries it. */

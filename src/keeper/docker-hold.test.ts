@@ -179,7 +179,7 @@ test('STALE state (older than the TTL: the app that decides is gone) ⇒ not hel
   }
   assert.equal(rs.length, 3);
   assert.ok(r.clock - clockBefore < ADMISSION_STATE_TTL_MS + 5_000, 'no 5 s settle between the three releases');
-  assert.ok(r.logs.some((l) => /no authoritative Admission state .*stale/.test(l)), r.logs.join('|'));
+  assert.ok(r.logs.some((l) => /Admission state is stale/.test(l)), r.logs.join('|'));
   // and a NEW call under that stale state goes straight out
   assert.deepEqual(await r.gate.admit('create', live()), { waitedMs: 0, reason: null });
 });
@@ -283,7 +283,7 @@ test('a state file that is THERE but unreadable (truncated / another version) le
   assert.deepEqual(await r.gate.admit('create', live()), { waitedMs: 0, reason: null });
   assert.deepEqual(await r.gate.admit('create', live()), { waitedMs: 0, reason: null });
   assert.equal(r.logs.filter((l) => /unreadable/.test(l)).length, 1, 'one line, not one per call');
-  assert.match(r.logs[0], /treated as no hold \(fail open\)/);
+  assert.match(r.logs.find((l) => /unreadable/.test(l)) ?? '', /unreadable or of another version — fail open: nothing is held/);
   r.setState(valid);
   await r.gate.admit('create', live());
   r.setState(JSON.stringify({ ...state(), v: 2 }));
@@ -291,7 +291,7 @@ test('a state file that is THERE but unreadable (truncated / another version) le
   assert.equal(r.logs.filter((l) => /unreadable/.test(l)).length, 2, 'a new failure after a good read is logged again');
   r.setState(null);
   await r.gate.admit('create', live());
-  assert.equal(r.logs.filter((l) => /unreadable/.test(l)).length, 2, 'absent after a failure: still nothing new');
+  assert.equal(r.logs.filter((l) => /unreadable/.test(l)).length, 2, 'absent after a failure: not an « unreadable » line');
 });
 
 test('the Admission TOGGLE OFF releases a waiting line AT ONCE (like Admission\'s planRelease) even when a fresh reading is still low — and says it was flushed, not that memory came back', async () => {
@@ -344,4 +344,40 @@ test('holding(): false without a fresh held state; true while held OR while a li
   r.setState(state());
   r.gate.stop();
   assert.equal(r.gate.holding(), false, 'stopped');
+});
+
+test('review m2: the switch to fail-open is logged ONCE per change of authority, with or without a line — absent, then stale, then absent again after a fresh state; a state that stays absent logs once', async () => {
+  const r = new Rig();
+  r.setState(null);
+  await r.gate.admit('create', live());
+  await r.gate.admit('create', live());
+  await r.gate.admit('start', live());
+  assert.equal(r.logs.filter((l) => /no Admission state file/.test(l)).length, 1, 'absent, repeated: one line');
+  assert.match(r.logs[0], /fail open: nothing is held$/, 'no line was waiting: nothing is « released »');
+  r.setState(state({ held: false }, r.clock - ADMISSION_STATE_TTL_MS - 1)); // the app wedged: the file is there, nobody refreshes it
+  await r.gate.admit('create', live());
+  await r.gate.admit('create', live());
+  assert.equal(r.logs.filter((l) => /Admission state is stale/.test(l)).length, 1);
+  r.setState(state({ held: false }, r.clock)); // a fresh state: no line logged for the recovery
+  await r.gate.admit('create', live());
+  const before = r.logs.length;
+  r.setState(null);
+  await r.gate.admit('create', live());
+  assert.equal(r.logs.length, before + 1, 'fresh → absent again: logged again');
+  assert.equal(r.hold(), null, 'and still no hold file: nothing waited');
+});
+
+test('review m2: with a line waiting, the log says the line is released', async () => {
+  const r = new Rig();
+  r.setState(state());
+  const p = r.gate.admit('create', live());
+  await tick();
+  r.clock += ADMISSION_STATE_TTL_MS + 1;
+  try {
+    await Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('a stale state still holds the line')), 2_000))]);
+  } catch (e) {
+    r.gate.stop(); // a gate that never flushes would spin on setImmediate sleeps for ever
+    throw e;
+  }
+  assert.ok(r.logs.some((l) => /Admission state is stale/.test(l) && /the waiting line is released/.test(l)), r.logs.join('|'));
 });
