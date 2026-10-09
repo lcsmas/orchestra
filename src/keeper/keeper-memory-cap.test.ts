@@ -35,9 +35,40 @@ before(() => {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const dirs: string[] = [];
 const pids: number[] = [];
-after(() => {
-  for (const p of pids) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
+
+// TEARDOWN BY IDENTITY (D2): the keeper is spawned detached, so SIGKILL of its pid ALONE leaves its fake CLI orphaned (ppid 1, `setInterval` forever) whenever the keeper did not get to stop it first — measured at
+// ~2 orphans per full-suite run (wave H). The whole process group goes first, then anything still carrying a test dir is killed with its identity (pid + /proc start time) re-read at signal time.
+const readSafe = (p: string): string | null => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+const startTicks = (pid: number): string | null => { const t = readSafe(`/proc/${pid}/stat`); return t ? t.slice(t.lastIndexOf(')') + 2).split(' ')[19] ?? null : null; };
+/** The processes whose argv or environment carries `dir` (every test process embeds its own scratch dir), with the identity to re-check before a signal. */
+function carrying(dir: string): Array<{ pid: number; ticks: string }> {
+  const out: Array<{ pid: number; ticks: string }> = [];
+  for (const name of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+    const cmd = readSafe(`/proc/${name}/cmdline`);
+    const env = cmd?.includes(dir) ? '' : readSafe(`/proc/${name}/environ`);
+    if ((cmd?.includes(dir) || env?.includes(dir)) && startTicks(Number(name)) !== null) out.push({ pid: Number(name), ticks: startTicks(Number(name))! });
+  }
+  return out;
+}
+/** Kill everything the suite started; returns the survivors (must be []). Idempotent. */
+async function teardownAll(): Promise<Array<{ pid: number; ticks: string }>> {
+  for (const p of pids) {
+    try { process.kill(-p, 'SIGKILL'); } catch { /* group gone */ }
+    try { process.kill(p, 'SIGKILL'); } catch { /* gone */ }
+  }
+  for (let round = 0; round < 20; round++) {
+    const left = dirs.flatMap(carrying);
+    if (left.length === 0) break;
+    for (const s of left) if (startTicks(s.pid) === s.ticks) { try { process.kill(s.pid, 'SIGKILL'); } catch { /* gone */ } }
+    await sleep(100);
+  }
+  return dirs.flatMap(carrying);
+}
+after(async () => {
+  const left = await teardownAll();
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  assert.equal(left.length, 0, `the suite left ${left.length} process(es) behind: ${left.map((x) => x.pid).join(' ')}`);
 });
 
 interface Peer { frames: KeeperDaemonFrame[]; send(f: KeeperClientFrame): void; wait<T extends KeeperDaemonFrame>(pred: (f: KeeperDaemonFrame) => f is T, ms?: number): Promise<T>; close(): void }
@@ -108,4 +139,27 @@ test('a spawn frame WITHOUT memoryCap ⇒ helloAck has no cap and no memKills (b
   assert.ok(!('cap' in ack) && !('memKills' in ack), JSON.stringify(ack));
   peer.send({ t: 'kill', signal: 'SIGKILL' });
   peer.close();
+});
+
+test('teardown (D2): a keeper killed WITHOUT the chance to stop its CLI leaves no orphan — positive control: the old keeper-pid-only SIGKILL DOES leave one; then 0 survivors, printed', async () => {
+  const { peer, dir, cli } = await startKeeper();
+  peer.send({ t: 'spawn', command: process.execPath, args: [cli], cwd: dir, env: { PATH: process.env.PATH } });
+  await sleep(400);
+  const keeperPid = pids[pids.length - 1];
+  process.kill(keeperPid, 'SIGKILL'); // what the OLD `after` hook did: the keeper pid alone
+  await sleep(300);
+  const orphans = carrying(dir).filter((p) => p.pid !== keeperPid && startTicks(p.pid) !== null);
+  assert.ok(orphans.length >= 1, 'the instrument sees the orphaned fake CLI that the old teardown left behind');
+  const orphan = orphans[0];
+  peer.close();
+  const left = await teardownAll();
+  assert.equal(startTicks(orphan.pid) === orphan.ticks, false, 'the orphan is gone');
+  console.log(`# kmc teardown: orphans before=${orphans.length} survivors after=${left.length}`);
+  assert.equal(left.length, 0);
+});
+
+test('the suite leaves 0 survivors: no process carries any scratch dir of this file (printed)', async () => {
+  const left = await teardownAll();
+  console.log(`# kmc SURVIVORS procs=${left.length} dirs=${dirs.length}`);
+  assert.equal(left.length, 0);
 });
