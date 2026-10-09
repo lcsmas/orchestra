@@ -28,7 +28,9 @@ const flag = (k) => args.includes(`--${k}`);
 if (/^(memhog|chain)(,(memhog|chain))*$/.test(opt('exercise', ''))) await import('./memhog-run.mjs');
 const BASE = path.resolve(opt('base', path.join(REAL_HOME, '.cache', 'pause-canary')));
 const OUT = path.resolve(opt('out', path.join(BASE, 'reports', new Date().toISOString().replace(/[:.]/g, '-'))));
-const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
+// Q11 (ledger #329, D-Q11): the cap-ON `memhog-app` run starts only with MemAvailable > 9 GB and adds no footprint on top (6 scopes of 1 GiB are the design); every other drill keeps the 6 GB bar + footprint
+const MH_ON = String(opt('exercise', '')).split(',').includes('memhog-app') && opt('memhog-switch', 'on') === 'on';
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON ? 9 : 0);
 initBase(BASE);   // the scratch guard also runs HERE: the runner creates dirs and rm -rf's apps/mut-* under --base before any drive starts
 const HOST_NOTE = `bar ${MIN_AVAIL_GB} GB / load 20${process.env.PC_IGNORE_HOST === '1' ? ' — HOST GUARD IGNORED (PC_IGNORE_HOST=1)' : ''}${MIN_AVAIL_GB !== 6 ? ' — NON-DEFAULT --min-avail-gb' : ''}`;
 const say = (s = '') => console.log(s);
@@ -69,7 +71,7 @@ function hostNow() {
   return { availGB: Number(/MemAvailable:\s+(\d+) kB/.exec(mem)[1]) / 1048576, load1: Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]) };
 }
 /** What a rig of `members` workers costs in MemAvailable (measured 2026-10-05: 3 workers Δ ≈ 0.7 GB, 10 workers Δ ≈ 3.0 GB incl. page cache + the app's helpers → ≈ 0.33 GB/worker: 6 → start ≥ 8.0 GB, 10 → ≥ 9.3 GB): a run must START with the bar PLUS this, or it dips under the bar at once. */
-const rigFootprintGB = (members) => 0.33 * members;
+const rigFootprintGB = (members) => (MH_ON ? 0 : 0.33 * members);
 /** Patience, not a lower bar: wait (up to --wait-host-min, default 20) until MemAvailable ≥ bar + the rig's footprint and load ≤ 20; the bar itself is never relaxed. */
 /** Another agent's pause-canary rig on this host (a `drive.mjs` whose --base is not ours): two heavy rigs void each other on the 6 GB bar, so a run waits for the other to finish ("one heavy rig at a time"). */
 function foreignRigs() {

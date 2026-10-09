@@ -27,14 +27,19 @@ const CYCLES = Number(opt('cycles', '3'));
 const MEMBERS = Number(opt('members', '10'));
 const DWELL_S = Number(opt('dwell-s', '40'));
 const PAUSE_SWITCH = opt('pause', 'on');
-const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
+const MH_APP = argv.includes('memhog-app');   // --exercise memhog-app (it runs ALONE)
+const MH_ON_APP = MH_APP && opt('memhog-switch', 'on') === 'on';
+// Q11 (ledger #329, D-Q11): the cap-ON packaged run is granted for #324 ONLY — hard 1 GiB / soft 768 MiB, 6 members at most, ONE run under the token, MemAvailable > 9 GB BEFORE it starts. 6 scopes of 1 GiB are the design (the hogs are bounded by them), so
+// the 6 GB bar is a START bar (9 GB here) and the run keeps a lower FLOOR that only protects the host; the rig-grew-too-much « blowup » rule is off for it (the hogs live in the rig).
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP ? 9 : 0);
+const RUN_FLOOR_GB = MH_ON_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
 const CYCLE_RESULTS_FILE = opt('out', null);
 // #324 `memhog-app` — the memory-hog exercise on the PACKAGED app (real keepers + real `claude` + the app's own #322 sink). With the cap ON a real `claude` (~330 MB) does not fit a test scope ≤ 300 MB (ledger D2): that arm needs the LEAD's waiver (`--waiver <ref>`, `--cap-gb` ≥ 0.6).
 const MH_SWITCH = opt('memhog-switch', 'on');   // 'off' = the must-FAIL control: the frozen `memory_cap` switch OFF
 const CAP_GB = Number(opt('cap-gb', '0.25'));
-const SOFT_GB = Number(opt('soft-gb', String(Math.round(CAP_GB * 0.8 * 100) / 100)));
+const SOFT_GB = Number(opt('soft-gb', String(Math.round(CAP_GB * 0.75 * 100) / 100)));
 const WAIVER = opt('waiver', null);
 const HOG_MB = Number(opt('hog-mb', String(Math.ceil(CAP_GB * 1024) + 150)));   // far over the cap, whatever the cap is
 const MH_UNIT_PREFIX = 'orchestra-rig-wh-h3-';
@@ -50,7 +55,7 @@ const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
 if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
 if (!['on', 'off'].includes(MH_SWITCH)) { console.error('--memhog-switch on|off'); process.exit(2); }
-if (EXERCISES.includes('memhog-app') && MH_SWITCH === 'on' && (!WAIVER || CAP_GB < 0.6)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app with the cap ON needs the LEAD's waiver of ledger D2 (a real claude is ~330 MB, a test scope ≤ 300 MB): pass --waiver <ledger ref> and --cap-gb ≥ 0.6 (got waiver=${WAIVER ?? 'none'}, cap=${CAP_GB}). Nothing was run.`); process.exit(3); }
+if (MH_ON_APP && (!/Q11/.test(WAIVER ?? '') || CAP_GB < 0.6 || CAP_GB > 1 || SOFT_GB > 0.75 || MEMBERS > 6)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app with the cap ON runs only inside the LEAD's Q11 envelope (ledger #329 D-Q11, for #324 ONLY): --waiver naming Q11, --cap-gb 0.6..1, --soft-gb ≤ 0.75, --members ≤ 6, one run under the token (got waiver=${WAIVER ?? 'none'}, cap=${CAP_GB}, soft=${SOFT_GB}, members=${MEMBERS}). Nothing was run.`); process.exit(3); }
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
 if (INJECT && (!['orphan-tool', 'app-git', 'late-request', 'gap-request'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git|late-request|gap-request applies to `--exercise dure` only'); process.exit(2); }
 if (!['member', 'confirm', 'legacy'].includes(WINDOW)) { console.error('--window member|confirm|legacy'); process.exit(2); }
@@ -602,11 +607,11 @@ async function runExercise(name) {
 const sampler = setInterval(() => {
   const h = hostNow();
   host.samples++; host.minAvailGB = Math.min(host.minAvailGB, h.availGB); host.maxLoad = Math.max(host.maxLoad, h.load1);
-  host.lowStreak = (h.availGB < MIN_AVAIL_GB || h.load1 > MAX_LOAD) ? host.lowStreak + 1 : 0;
+  host.lowStreak = (h.availGB < RUN_FLOOR_GB || h.load1 > MAX_LOAD) ? host.lowStreak + 1 : 0;
   if (host.lowStreak >= 3 && !voidReason) {
     let rigMB = null;
     try { rigMB = curRig ? rigMemory(curRig).totalMB : null; } catch { /* the rig is going away */ }
-    const blowup = rigMB !== null && curBaselineMB !== null && rigMB > curBaselineMB * 1.5 + 300;
+    const blowup = !MH_APP && rigMB !== null && curBaselineMB !== null && rigMB > curBaselineMB * 1.5 + 300;
     voidKind = blowup ? 'blowup' : 'host';
     voidReason = `${blowup ? `the RIG grew to ${rigMB.toFixed(0)} MB (mid-work baseline ${curBaselineMB.toFixed(0)} MB) while ` : ''}host below the bar for 3 samples: MemAvailable ${h.availGB.toFixed(2)} GB (< ${MIN_AVAIL_GB}) or load ${h.load1.toFixed(1)} (> ${MAX_LOAD})${rigMB !== null ? `; rig PSS ${rigMB.toFixed(0)} MB` : ''}`;
   }
