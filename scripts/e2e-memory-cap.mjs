@@ -48,6 +48,12 @@ const ARMS = {
   app_restart_keeps_scopes: {},
   clear_then_fresh_start: { mustFailOnMaster: true },
   unit_stop_takes_spared: { mustFailOnMaster: true },
+  // review round 1 (OPS m1-m4): a member WITHOUT a scope is stopped as before; a scoped /clear leaves a successor whole and holds off a wake; the pid file is not the only live-keeper signal
+  no_scope_changes_nothing: {},
+  scoped_extra_runs_first: { mustFailOnMaster: true },
+  successor_untouched: { mustFailOnMaster: true },
+  pidfile_absent_untouched: {},
+  clear_wake_waits: { mustFailOnMaster: true },
   // #322 (Plafond mémoire: tell the member and its coordinator) — the production sink (src/main/memory-notice.ts) over the REAL keeper, a REAL scope and a REAL scratch bus
   notice_kill_reported: { mustFailOnMaster: true },
   notice_names_victim: { mustFailOnMaster: true },
@@ -327,6 +333,9 @@ async function teardown(wsList) {
 // #327: the app's explicit-stop sequence (no new keeper, keeper + CLI killed AWAITED, THEN the scope stop). On a tree without src/main/scope-stop-host.ts the last step is a no-op: master's behaviour.
 const stopMod = fs.existsSync(path.join(REPO, 'src', 'main', 'scope-stop-host.ts')) ? await import(`${REPO}/src/main/scope-stop-host.ts`) : null;
 const stopFor = async (w, reason) => (stopMod ? stopMod.stopMemberScopeFor(w, reason) : null);
+/** The scope-gated entries the call sites use. On a tree without #327 they are master's behaviour: the "extra" stops never run, a clear only announces. */
+const stopIfAny = stopMod?.stopMemberScopeIfAny ?? (async () => null);
+const clearScoped = stopMod?.clearScopedMember ?? (async (_w, _k, announce) => { await announce(); return null; });
 async function explicitStop(w, reason, { forbid = true } = {}) {
   if (forbid) kc.forbidKeeperLaunch?.(w);
   await kc.killKeeper(w, reason);
@@ -583,7 +592,7 @@ try {
     check('keeper and CLI are ALIVE, same identities', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId && alive(f.cliPid) && ident(f.cliPid) === f.cliId);
     check('the running member\'s detached process is ALIVE (not a Reliquat while its keeper lives)', !!dpid && alive(dpid) && ident(dpid) === dId, `daemon=${dpid}`);
     check('the scope is still there and active', !!f.unit && spawnSync('systemctl', ['--user', 'is-active', f.unit], { encoding: 'utf8' }).stdout.trim() === 'active');
-    check('the stop reports UNKNOWN (keeper alive), not "nothing to do"', stopMod ? /keeper is still alive/.test(rep?.unknown ?? '') && rep.stopped.length === 0 && rep.killed === 0 : true, JSON.stringify(rep));
+    check('the stop touched nothing and says why: the scope holds a live session of the member', stopMod ? !!rep && rep.stopped.length === 0 && rep.killed === 0 && rep.kept.some((k) => /live session/.test(k.reason)) : true, JSON.stringify(rep));
     detail = `unit=${f.unit}`;
   } else if (ARM === 'app_restart_keeps_scopes') {
     // AC: restarting the app leaves every scope and its Reliquats intact. The "app" is a separate process (MC_PHASE=app) that starts the member + a detached process and is SIGKILLed; this process is the app that comes back.
@@ -649,6 +658,104 @@ try {
     check('the SPARED orphan is gone too — only the unit stop can have taken it', !alive(opid), `orphan=${opid}`);
     check('the unit is REMOVED and reported stopped', armUnits(ws).length === 0 && !!rep && rep.stopped.includes(f.unit) && rep.kept.length === 0, JSON.stringify(rep));
     detail = `killed=${rep?.killed} stopped=${rep?.stopped?.length}`;
+  } else if (ARM === 'no_scope_changes_nothing') {
+    // D-Q1 (memory_cap OFF is inert): a member WITHOUT a kernel scope — switch OFF, plain keeper — is stopped by an archive / migration / clear EXACTLY as before #327: the scope-gated entry runs nothing (no extra stop, no lock, no log).
+    const st = open(ws, decide(ws, { fleet: true, run: 'run-off' }), { extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    check('setup: the member runs in NO rig scope (a plain keeper)', !f.inRigScope && armUnits(ws).length === 0 && (stopMod ? !stopMod.memberHasScope(ws) : true), `cgroup=${cgOf(f.keeperPid)}`);
+    let extraRan = 0;
+    const rep = await stopIfAny(ws, 'workspace-archived', async () => { extraRan += 1; await kc.killKeeper(ws, 'must-not-run'); });
+    await sleep(800);
+    check('the scope-gated entry returns null and the "extra" stops (a descendant\'s session + keeper at archive, the keeper at a migration) did NOT run', rep === null && extraRan === 0, `rep=${JSON.stringify(rep)} extra=${extraRan}`);
+    check('keeper and CLI are ALIVE, same identities', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId && alive(f.cliPid) && ident(f.cliPid) === f.cliId);
+    check('nothing was logged about a scope stop', !/scope-stop\[/.test(orchLog()), orchLog().split('\n').filter((l) => /scope-stop\[/.test(l)).slice(0, 2).join(' | '));
+    detail = `cgroup=${cgOf(f.keeperPid)}`;
+  } else if (ARM === 'scoped_extra_runs_first') {
+    // The other half: a member WITH a scope — the "extra" (session + keeper stop) runs ONCE, BEFORE the scope stop, then the Reliquats and the unit go.
+    const st = open(ws, decide(ws));
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    await runTool(st, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-daemon`, 't-daemon', 20_000);
+    await sleep(500);
+    const dpid = procsMarked(`${ws}-daemon`)[0];
+    const keeperBefore = kc.readTrackedKeeperPid?.(ws) ?? null;
+    check('setup: a scoped member with a detached process in its scope', f.inRigScope && !!dpid && cgOf(dpid) === cgOf(f.keeperPid) && keeperBefore === f.keeperPid, `unit=${f.unit} daemon=${dpid}`);
+    const order = [];
+    const rep = await stopIfAny(ws, 'workspace-archived', async () => { order.push('extra'); await kc.killKeeperIf(ws, keeperBefore, 'workspace-archived'); order.push('extra-done'); });
+    await waitFor(() => !alive(dpid) && !armUnits(ws).length, 15_000);
+    check('the "extra" ran exactly once, and finished before the report', order.join(',') === 'extra,extra-done', order.join(','));
+    check('keeper, CLI and the detached process are GONE', !alive(f.keeperPid) && !alive(f.cliPid) && !alive(dpid));
+    check('the scope is REMOVED and reported stopped', armUnits(ws).length === 0 && !!rep && rep.stopped.includes(f.unit) && rep.killed >= 1, JSON.stringify(rep));
+    detail = `unit=${f.unit} killed=${rep?.killed}`;
+  } else if (ARM === 'successor_untouched') {
+    // m3: a wake started a NEW generation while a /clear was tearing the old one down. The old generation's keeper (the pid read BEFORE) is killed and ITS scope cleaned; the successor — keeper, CLI, its detached job, its unit — is untouched.
+    const st1 = open(ws, decide(ws));
+    await waitFor(() => initOf(st1), 30_000);
+    const f1 = factsOf(ws, st1);
+    await runTool(st1, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-old`, 't-old', 20_000);
+    await sleep(500);
+    const keeperBefore = kc.readTrackedKeeperPid?.(ws) ?? null;
+    await kc.killKeeper(ws, 'memory-cap-rig-sdkstop'); // the clear's own sdkStop took the old session
+    await waitFor(() => !alive(f1.keeperPid) && !alive(f1.cliPid), 15_000);
+    const st2 = open(ws, decide(ws)); // the wake
+    await waitFor(() => initOf(st2), 30_000);
+    const f2 = factsOf(ws, st2);
+    await runTool(st2, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-new`, 't-new', 20_000);
+    await sleep(500);
+    const dOld = procsMarked(`${ws}-old`)[0];
+    const dNew = procsMarked(`${ws}-new`)[0];
+    check('setup: two generations — the old scope holds only its detached job, the successor runs beside it', f2.inRigScope && f2.unit !== f1.unit && !!dOld && !!dNew && keeperBefore === f1.keeperPid && f2.keeperPid !== keeperBefore, `old=${f1.unit} new=${f2.unit}`);
+    const order = [];
+    const rep = await clearScoped(ws, keeperBefore, async () => { order.push('announce'); });
+    await waitFor(() => !alive(dOld) && !armUnits(ws).includes(f1.unit), 15_000);
+    check('the clear was announced once', order.join(',') === 'announce', order.join(','));
+    check('the OLD generation is cleaned: its detached job is gone and its unit removed', !alive(dOld) && !armUnits(ws).includes(f1.unit), JSON.stringify(rep));
+    const act = f2.unit ? spawnSync('systemctl', ['--user', 'is-active', f2.unit], { encoding: 'utf8' }).stdout.trim() : '';
+    check('the SUCCESSOR is whole: keeper, CLI, its detached job and its unit — same identities', alive(f2.keeperPid) && ident(f2.keeperPid) === f2.keeperId && alive(f2.cliPid) && ident(f2.cliPid) === f2.cliId && alive(dNew) && act === 'active', `new daemon alive=${alive(dNew)} unit=${act}`);
+    check('the report keeps the successor\'s unit, saying why', !!rep && rep.kept.some((k) => k.unit === f2.unit && /live session/.test(k.reason)) && rep.stopped.includes(f1.unit), JSON.stringify(rep));
+    detail = `old=${f1.unit} new=${f2.unit}`;
+  } else if (ARM === 'pidfile_absent_untouched') {
+    // m1: the keeper is ALIVE in its scope but its pid file is absent (an untracked keeper): the listing's own keeper/CLI roles still mark the scope live — a detached job of a RUNNING member is never killed.
+    const st = open(ws, decide(ws));
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    await runTool(st, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-daemon`, 't-daemon', 20_000);
+    await sleep(500);
+    const dpid = procsMarked(`${ws}-daemon`)[0];
+    const dId = ident(dpid);
+    fs.rmSync(path.join(home, 'keepers', `${ws}.pid`), { force: true });
+    check('setup: pid file gone, keeper still alive in its scope', !fs.existsSync(path.join(home, 'keepers', `${ws}.pid`)) && alive(f.keeperPid) && f.inRigScope && !!dpid, `keeper=${f.keeperPid}`);
+    const rep = await stopFor(ws, 'workspace-archived');
+    await sleep(1500);
+    check('the running member\'s detached process is ALIVE', alive(dpid) && ident(dpid) === dId);
+    check('keeper and CLI ALIVE, same identities', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId && alive(f.cliPid) && ident(f.cliPid) === f.cliId);
+    check('the scope is still there and active', !!f.unit && spawnSync('systemctl', ['--user', 'is-active', f.unit], { encoding: 'utf8' }).stdout.trim() === 'active');
+    check('the stop touched nothing and says why', stopMod ? !!rep && rep.killed === 0 && rep.stopped.length === 0 && rep.kept.some((k) => /live session/.test(k.reason)) : true, JSON.stringify(rep));
+    detail = `unit=${f.unit}`;
+  } else if (ARM === 'clear_wake_waits') {
+    // m3: a wake that tries to launch a keeper WHILE a scoped /clear tears down must WAIT for the keeper lock: it starts a fresh generation after the teardown, and is not killed by it. (announce is slowed to make the window wide.)
+    const st1 = open(ws, decide(ws));
+    await waitFor(() => initOf(st1), 30_000);
+    const f1 = factsOf(ws, st1);
+    await runTool(st1, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-old`, 't-old', 20_000);
+    await sleep(500);
+    const dOld = procsMarked(`${ws}-old`)[0];
+    const keeperBefore = kc.readTrackedKeeperPid?.(ws) ?? null;
+    check('setup: a scoped member with a detached job, keeper known', f1.inRigScope && !!dOld && keeperBefore === f1.keeperPid, `unit=${f1.unit}`);
+    const order = [];
+    const clearing = clearScoped(ws, keeperBefore, async () => { order.push('announce-start'); await sleep(1500); order.push('announce-end'); });
+    await sleep(100);
+    const st2 = open(ws, decide(ws)); // the wake, mid-clear
+    const rep = await clearing;
+    const upDuringClear = !!initOf(st2);
+    check('the wake\'s keeper was NOT up while the clear was still tearing down (it waited for the lock)', !upDuringClear, `order=${order.join(',')}`);
+    const up = await waitFor(() => initOf(st2), 30_000);
+    const f2 = factsOf(ws, st2);
+    await waitFor(() => !alive(dOld), 15_000);
+    check('the wake then starts a FRESH generation (another keeper, another unit) that the teardown did not kill', up && f2.inRigScope && f2.keeperPid !== f1.keeperPid && f2.unit !== f1.unit && alive(f2.keeperPid) && alive(f2.cliPid), `old=${f1.unit} new=${f2.unit}`);
+    check('the old conversation\'s keeper and detached job are gone, its unit removed', !alive(f1.keeperPid) && !alive(dOld) && !armUnits(ws).includes(f1.unit), JSON.stringify(rep));
+    detail = `old=${f1.unit} new=${f2.unit}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
     const stub = path.join(base, 'stubbin');

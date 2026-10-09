@@ -755,6 +755,17 @@ export function killKeeper(wsId: string, reason = 'explicit-stop'): Promise<void
   return serializeKeeperOp(wsId, () => killKeeperUnlocked(wsId, reason));
 }
 
+/** #327: kill the keeper ONLY if it is still THE one (`expectedPid`, read before the stop began) — a successor a wake launched meanwhile has another pid and is left alone. Call it with the keeper lock HELD ({@link withKeeperLock}). */
+export async function killKeeperIfHeld(wsId: string, expectedPid: number | null, reason = 'explicit-stop'): Promise<void> {
+  if (expectedPid === null || readTrackedKeeperPid(wsId) !== expectedPid) return;
+  await killKeeperUnlocked(wsId, reason);
+}
+
+/** {@link killKeeperIfHeld} under its own hold of the keeper lock (the check and the kill cannot be split by a launch). */
+export function killKeeperIf(wsId: string, expectedPid: number | null, reason = 'explicit-stop'): Promise<void> {
+  return serializeKeeperOp(wsId, () => killKeeperIfHeld(wsId, expectedPid, reason));
+}
+
 /** A HEALTHY kill (restart / clear / MCP refresh) never touches the agent's background jobs: the keeper's descendants
  *  are only swept when the keeper had to be SIGKILLed (wedged) — a delete sweeps its own snapshot (see workspaces.ts). */
 async function killKeeperUnlocked(wsId: string, reason: string): Promise<void> {
