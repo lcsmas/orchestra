@@ -20,7 +20,7 @@ const snap = (name: string, label: string, over: Partial<WatcherSnapshot> = {}):
 });
 const down = (name: string, label: string, code = 'EMFILE', over: Partial<WatcherSnapshot> = {}): WatcherSnapshot =>
   snap(name, label, { state: 'degraded', lastError: { code, message: `${code}: too many open files, watch '/d/${name}'` }, attempts: 3, ...over });
-const status = (watchers: WatcherSnapshot[], at = T0 + 192_000): WatchersStatus => ({ at, watchers });
+const status = (watchers: WatcherSnapshot[], at = T0 + 192_000, rev = 0): WatchersStatus => ({ at, rev, watchers });
 
 test('all ok → ONE calm line; nothing registered → says so (never silent)', () => {
   assert.deepEqual(formatWatchersLines(status([snap('a', 'A'), snap('b', 'B')]), T0), ['watchers: 2 ok']);
@@ -55,6 +55,7 @@ test('degradedOf / degradedLabels / degradedKey', () => {
   assert.equal(degradedKey(null), '');
   // the edge key changes on degrade, on recovery, and when a SECOND degradation starts, not on an unchanged re-read
   const k1 = degradedKey(status([down('b', 'B', 'EMFILE', { since: 10 })]));
+  assert.notEqual(k1, degradedKey(status([down('b', 'B', 'ESTALE', { since: 10 })])), 'a change of CAUSE within one degradation changes the strip\'s words, so it is a transition (review m3)');
   assert.equal(k1, degradedKey(status([down('b', 'B', 'EMFILE', { since: 10, attempts: 9 })])), 'attempts counting up is not a transition');
   assert.notEqual(k1, degradedKey(status([down('b', 'B', 'EMFILE', { since: 99 })])), 'a new degradation of the same watcher is');
   assert.notEqual(k1, '');
@@ -67,21 +68,28 @@ test('strip copy (D-Q8 A): null when healthy; otherwise the plain labels of what
   assert.equal(c.title, 'Mises à jour en retard');
   assert.equal(c.body, 'Réveils, Vue Pause — limite de surveillance de fichiers atteinte. Nouvel essai automatique.');
   assert.equal(c.lines.length, 2, 'only the degraded ones');
-  assert.match(c.lines[0], /^Réveils · depuis 12:53:48Z \(3m12s\) · system watch limit reached \(EMFILE\) · en attendant : 60 s sweep$/);
+  const local = [new Date(T0).getHours(), new Date(T0).getMinutes(), new Date(T0).getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+  assert.equal(c.lines[0], `Réveils · depuis ${local} (3m12s) · system watch limit reached (EMFILE) · en attendant : 60 s sweep`, 'a person reads LOCAL time; bus-status keeps UTC');
+  assert.doesNotMatch(c.lines[0], /Z /);
   const other = watchersStripCopy(status([down('inbox-tray', 'Inbox', 'ENOENT')]), T0)!;
   assert.match(other.body, /surveillance de fichiers interrompue/, 'a non-limit cause does not claim the system limit');
   assert.doesNotMatch(other.body, /limite/);
 });
 
-test('newerWatchers: the boot PULL answered after a later push does not roll the strip back; an equal or later reading wins', () => {
-  const older = { at: 100, watchers: [] as WatcherSnapshot[] };
-  const newer = { at: 200, watchers: [down('a', 'A')] };
+test('newerWatchers: ordered by the registry\'s rev, NEVER by the wall clock — a clock stepped back between two readings must not freeze the strip (#330 review M1)', () => {
+  const older = status([], 100, 1);
+  const newer = status([down('a', 'A')], 200, 2);
   assert.equal(newerWatchers(newer, older), newer, 'a late-answered older pull is dropped');
   assert.equal(newerWatchers(older, newer), newer);
   assert.equal(newerWatchers(null, older), older);
   assert.equal(newerWatchers(undefined, older), older);
-  const same = { at: 200, watchers: [] as WatcherSnapshot[] };
-  assert.equal(newerWatchers(newer, same), same, 'same instant: the incoming one (a stop-while-degraded all-clear carries the same registry clock)');
+  const same = status([], 200, 2);
+  assert.equal(newerWatchers(newer, same), same, 'same rev: the incoming one');
+  // the clock stepped back two hours between the degradation (rev 5) and the all-clear (rev 6): the all-clear must still win
+  const degraded = status([down('a', 'A')], 1_000_000, 5);
+  const allClear = status([], 1_000_000 - 2 * 3600_000, 6);
+  assert.equal(newerWatchers(degraded, allClear), allClear, 'a later rev wins whatever `at` says');
+  assert.equal(newerWatchers(allClear, degraded), allClear, 'and an earlier rev loses whatever `at` says');
 });
 
 test('fmtDuration', () => {

@@ -47,6 +47,16 @@ const inodeOf = (dir: string): number | null => {
   }
 };
 
+/** Birth time of a directory (ms), null when missing or when the filesystem records none (libuv then reports 0): the machine treats « unknown » as « cannot prove it is the same directory ». */
+const birthOf = (dir: string): number | null => {
+  try {
+    const b = fs.statSync(dir).birthtimeMs;
+    return Number.isFinite(b) && b > 0 ? b : null;
+  } catch {
+    return null;
+  }
+};
+
 let healthMsOverride: number | undefined;
 /** Rig seam: shorten the silent-detach health check (production: 30 s) so a built-app / composition drive does not wait half a minute. undefined restores it. */
 export function __setWatchHealthMsForTests(ms: number | undefined): void {
@@ -64,6 +74,7 @@ const productionDeps = (): ResilientWatchDeps => ({
   now: () => Date.now(),
   mkdirp: (d) => void fs.mkdirSync(d, { recursive: true }),
   inodeOf,
+  birthOf,
   get healthMs() {
     return healthMsOverride;
   },
@@ -76,17 +87,19 @@ const productionDeps = (): ResilientWatchDeps => ({
 const armed = new Set<ResilientWatcher>();
 const listeners = new Set<(s: WatchersStatus) => void>();
 let lastPushedKey = '';
+let rev = 0; // host-stamped order of the pushed changes: the renderer compares THIS, never the wall clock (a clock step back froze the strip, #330 review M1)
 
-/** Every ARMED watcher's state, sorted by name. A stopped watcher is not listed (a transient watch registers only while it runs). */
+/** Every ARMED watcher's state, sorted by name. A stopped watcher is not listed (a transient watch registers only while it runs). `rev` = how many changes of the degraded set have been pushed so far. */
 export function watchersStatus(now: number = Date.now()): WatchersStatus {
-  return { at: now, watchers: [...armed].map((w) => w.snapshot()).sort((a, b) => a.name.localeCompare(b.name) || a.dir.localeCompare(b.dir)) };
+  return { at: now, rev, watchers: [...armed].map((w) => w.snapshot()).sort((a, b) => a.name.localeCompare(b.name) || a.dir.localeCompare(b.dir)) };
 }
 
 function notifyIfChanged(): void {
-  const s = watchersStatus();
-  const key = degradedKey(s);
+  const key = degradedKey(watchersStatus());
   if (key === lastPushedKey) return; // edge-triggered: a re-read of the same degraded set is not a transition
   lastPushedKey = key;
+  rev++;
+  const s = watchersStatus(); // stamped with the NEW rev
   for (const fn of [...listeners]) {
     try {
       fn(s);
@@ -162,6 +175,7 @@ export function __resetWatchersForTests(): void {
   listeners.clear();
   pushUnsub = null;
   lastPushedKey = '';
+  rev = 0;
   primitiveOverride = null;
   healthMsOverride = undefined;
 }

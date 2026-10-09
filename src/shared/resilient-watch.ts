@@ -53,6 +53,8 @@ export interface ResilientWatchDeps {
   mkdirp?(dir: string): void;
   /** Directory inode (null = missing): the health check that catches a SILENT detach (a deleted and recreated directory; an inotify watch does not follow it and never emits `error`). */
   inodeOf?(dir: string): number | null;
+  /** Directory BIRTH time in ms (null = missing or the filesystem does not record one). With the inode it proves « still the very directory I armed on » when the directory's own `rename` event arrives (a chmod/touch of it sends the same event). */
+  birthOf?(dir: string): number | null;
   /** Health-check period (default {@link WATCH_HEALTH_MS}); a rig shortens it. */
   healthMs?: number;
   warn(message: string, err?: unknown): void;
@@ -120,10 +122,12 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
   let handle: WatchHandle | null = null;
   let gen = 0; // a callback of an OLDER watch (closed, replaced) must never act
   let armedIno: number | null = null;
+  let armedBirth: number | null = null;
   let retryTimer: unknown = null;
   let healthTimer: unknown = null;
 
   const dirName = spec.dir.replace(/\/+$/, '').split('/').pop() ?? ''; // basename of the watched directory (events about the directory itself carry this name); '' = nothing to match
+  const selfNames = dirName === '' ? [] : [dirName, spec.dir.split('/').pop() ?? '']; // libuv names a self event after the path AS GIVEN: a trailing '/' makes it '' (#330 review m2)
   const snapshot = (): WatcherSnapshot => ({ name: spec.name, label: spec.label, dir: spec.dir, state, since, lastError: lastError ? { ...lastError } : null, attempts, recoveries, fallback: spec.fallback });
   const transition = (): void => {
     try {
@@ -147,6 +151,14 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
     if (healthTimer !== null) deps.clearTimer(healthTimer);
     retryTimer = null;
     healthTimer = null;
+  };
+
+  /** True only when the directory is PROVABLY the one we armed on (same inode AND a recorded, equal birth time): a chmod/touch of it is then not a removal. Anything unproven counts as replaced — a missed removal is silent staleness. */
+  const stillTheSameDir = (): boolean => {
+    if (!deps.inodeOf || !deps.birthOf || armedIno === null || armedBirth === null) return false;
+    const ino = deps.inodeOf(spec.dir);
+    const birth = deps.birthOf(spec.dir);
+    return ino === armedIno && birth !== null && birth === armedBirth;
   };
 
   const scheduleHealth = (): void => {
@@ -194,13 +206,14 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
     try {
       if (spec.ensureDir) deps.mkdirp?.(spec.dir);
       const ino0 = deps.inodeOf ? deps.inodeOf(spec.dir) : null; // sampled BEFORE the watch: a directory swapped in between fails safe (one spurious re-arm), never silently pinned to the old one
+      const birth0 = deps.birthOf ? deps.birthOf(spec.dir) : null;
       const h = deps.watch(
         spec.dir,
         (event, filename) => {
           if (stopped || myGen !== gen) return;
           // The directory ITSELF was removed or renamed: the kernel says so with a `rename` named like the directory (measured on btrfs and tmpfs) and the inotify watch is dead from then on — no `error`, no more events. Do not wait for the
-          // 30 s inode check (which a filesystem that reuses the inode number never trips): re-arm now. Before the site's filter, which would drop this event. (#330 review m1; a child entry sharing the directory's name costs one spurious re-arm.)
-          if (event === 'rename' && filename !== null && dirName !== '' && filename === dirName) {
+          // 30 s inode check (which a filesystem that reuses the inode number never trips): re-arm now. Before the site's filter, which would drop this event. (#330 review m1; the same inode + birth time proves a chmod/touch/same-named child of a LIVE directory, which then flows on as a normal event.)
+          if (event === 'rename' && filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {
             degrade({ code: 'ESTALE', message: `watched directory was removed or renamed: ${spec.dir}` });
             return;
           }
@@ -223,6 +236,7 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
       }
       handle = h;
       armedIno = ino0;
+      armedBirth = birth0;
       armedAt = deps.now();
     } catch (e) {
       degrade(e);

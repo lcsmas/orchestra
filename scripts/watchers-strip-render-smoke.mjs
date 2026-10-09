@@ -45,35 +45,42 @@ const down = (name, label, code = 'EMFILE') => snap(name, label, { state: 'degra
 console.log('\nWatchersStrip (D-Q8 A):');
 setWatchers(null);
 check('before the first reading (null) the strip renders NOTHING', html(h(WatchersStrip)) === '');
-setWatchers({ at: 1, watchers: [snap('bus-wake', 'Réveils'), snap('pause-ui', 'Vue Pause')] });
+setWatchers({ at: 1, rev: 1, watchers: [snap('bus-wake', 'Réveils'), snap('pause-ui', 'Vue Pause')] });
 check('every watcher ok ⇒ NOTHING (a healthy app shows no chrome)', html(h(WatchersStrip)) === '');
-setWatchers({ at: 2, watchers: [] });
+setWatchers({ at: 2, rev: 2, watchers: [] });
 check('no watcher armed ⇒ NOTHING', html(h(WatchersStrip)) === '');
-setWatchers({ at: 3, watchers: [down('bus-wake', 'Réveils'), down('pause-ui', 'Vue Pause'), snap('inbox-tray', 'Inbox')] });
+setWatchers({ at: 3, rev: 3, watchers: [down('bus-wake', 'Réveils'), down('pause-ui', 'Vue Pause'), snap('inbox-tray', 'Inbox')] });
 const on = html(h(WatchersStrip));
 check('two degraded ⇒ the strip: hook, status role (non-blocking), Pause-unreadable class (same slot/style)', on.includes('data-watchers-chip=""') && on.includes('role="status"') && on.includes('aria-live="polite"') && on.includes('pause-unreadable'), on.slice(0, 260));
 check('it names what lags in plain words — only the degraded ones — and that it retries by itself', on.includes('Mises à jour en retard') && on.includes('Réveils, Vue Pause') && !on.includes('Inbox') && on.includes('Nouvel essai automatique'), on);
 check('EMFILE ⇒ « limite de surveillance de fichiers atteinte »', on.includes('limite de surveillance de fichiers atteinte'));
 check('the tooltip carries one line per degraded watcher with the cause and the fallback', /title="Réveils · depuis [^"]*system watch limit reached \(EMFILE\)[^"]*en attendant : 60 s sweep\nVue Pause · depuis/.test(on), on.slice(0, 500));
 check('NO button, link or dismissal (it goes away by itself, D-Q8)', !/<button|<a |onclick/i.test(on));
-setWatchers({ at: 4, watchers: [down('inbox-tray', 'Inbox', 'ENOENT')] });
+setWatchers({ at: 4, rev: 4, watchers: [down('inbox-tray', 'Inbox', 'ENOENT')] });
 check('a non-limit cause does not claim the system limit', !html(h(WatchersStrip)).includes('limite de surveillance') && html(h(WatchersStrip)).includes('surveillance de fichiers interrompue'));
-setWatchers({ at: 5, watchers: [snap('inbox-tray', 'Inbox'), snap('bus-wake', 'Réveils')] });
+setWatchers({ at: 5, rev: 5, watchers: [snap('inbox-tray', 'Inbox'), snap('bus-wake', 'Réveils')] });
 check('the last watcher back ⇒ the strip is GONE (disappears on its own)', html(h(WatchersStrip)) === '');
 
 console.log('\nStore wiring (boot pull + push):');
 check('the store subscribed to `watchers:update` at import', pushes.length === 1, `${pushes.length} subscription(s)`);
 useStore.setState({ watchers: null });
-pushes[0]({ at: 10, watchers: [down('bus-wake', 'Réveils')] });
-check('a push replaces the slice', useStore.getState().watchers?.watchers[0].state === 'degraded' && useStore.getState().watchers.at === 10);
-pushes[0]({ at: 5, watchers: [] });
-check('an OLDER push (or a late-answered pull) never rolls it back', useStore.getState().watchers.at === 10);
-pushes[0]({ at: 11, watchers: [snap('bus-wake', 'Réveils')] });
+pushes[0]({ at: 10, rev: 10, watchers: [down('bus-wake', 'Réveils')] });
+check('a push replaces the slice', useStore.getState().watchers?.watchers[0].state === 'degraded' && useStore.getState().watchers.rev === 10);
+pushes[0]({ at: 5, rev: 5, watchers: [] });
+check('an OLDER push (or a late-answered pull) never rolls it back', useStore.getState().watchers.rev === 10);
+pushes[0]({ at: 1, rev: 11, watchers: [snap('bus-wake', 'Réveils')] });
+check('a CLOCK STEPPED BACK (at 1 < 10) with a later rev still wins — the order is the registry\'s rev, never the wall clock (review M1)', useStore.getState().watchers.rev === 11 && useStore.getState().watchers.at === 1);
 check('the all-clear push empties the degraded set', useStore.getState().watchers.watchers.every((w) => w.state === 'ok'));
-pulled = { at: 20, watchers: [down('pause-ui', 'Vue Pause')] };
+pulled = { at: 20, rev: 20, watchers: [down('pause-ui', 'Vue Pause')] };
 useStore.setState({ watchers: null, loaded: false });
 await useStore.getState().load();
-check('the boot PULL fills the slice (a boot-time degradation is only ever seen through it — the page loads after main armed its watchers)', useStore.getState().watchers?.at === 20 && useStore.getState().watchers.watchers[0].name === 'pause-ui', JSON.stringify(useStore.getState().watchers));
+check('the boot PULL fills the slice (a boot-time degradation is only ever seen through it — the page loads after main armed its watchers)', useStore.getState().watchers?.rev === 20 && useStore.getState().watchers.watchers[0].name === 'pause-ui', JSON.stringify(useStore.getState().watchers));
+
+pulled = { at: 30, rev: 30, watchers: [snap('pause-ui', 'Vue Pause')] };
+api.watchersStatus = async () => { pushes[0]({ at: 31, rev: 31, watchers: [down('pause-ui', 'Vue Pause')] }); return pulled; }; // the page asked at rev 30; a degradation (rev 31) is pushed before the answer lands
+useStore.setState({ watchers: null, loaded: false });
+await useStore.getState().load();
+check('a push that lands WHILE the boot pull is in flight is kept (the late-answered older pull does not roll the strip back to all-clear)', useStore.getState().watchers?.rev === 31 && useStore.getState().watchers.watchers[0].state === 'degraded', JSON.stringify(useStore.getState().watchers));
 
 console.log(`\nwatchers-strip-render-smoke: ${failures === 0 ? 'all checks passed' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);
