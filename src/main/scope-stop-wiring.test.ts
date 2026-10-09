@@ -11,7 +11,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (f: string): string => fs.readFileSync(path.join(here, f), 'utf8');
 const ws = read('workspaces.ts');
 const sdk = read('agent-sdk.ts');
-const host = read('scope-stop-host.ts');
+const host = read('scope-stop-host-core.ts'); // the injectable logic (behaviour: scope-stop-host.test.ts)
+const facade = read('scope-stop-host.ts'); // the app-bound defaults
 const keeperClient = read('keeper-client.ts');
 const slice = (src: string, head: string): string => {
   const from = src.indexOf(head);
@@ -25,11 +26,11 @@ test('CONTROL: the slices are the real functions', () => {
   assert.match(slice(ws, 'export async function archiveWorkspace('), /collectWorkspaceTree|upsert/);
   assert.match(slice(sdk, 'export async function sdkClear('), /session\/clear/);
   assert.match(slice(sdk, 'export async function sdkRestart('), /sdkStop|ensureSession|restart/i);
-  assert.match(slice(host, 'async function boundedLocked('), /Promise\.race/);
+  assert.match(slice(host, 'async function within<T>('), /Promise\.race/);
 });
 
 test('the ONLY users of the scope-stop entries in the app are the four explicit stops (and the host itself)', () => {
-  const files = fs.readdirSync(here).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'scope-stop-host.ts');
+  const files = fs.readdirSync(here).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'scope-stop-host.ts' && f !== 'scope-stop-host-core.ts');
   assert.deepEqual(files.filter((f) => ENTRY.test(read(f))).sort(), ['agent-sdk.ts', 'workspaces.ts']);
   assert.equal((ws.match(/stopMemberScopeIfAny\(/g) ?? []).length, 3, 'workspaces.ts: delete/prune, archive, account migration');
   assert.equal((sdk.match(/clearScopedMember\(/g) ?? []).length, 1, 'agent-sdk.ts: clear');
@@ -55,7 +56,7 @@ test('delete / prune: after the session, the keeper and its tree are gone — th
 
 test('archive: for a member WITH a scope the session AND the keeper (the one read BEFORE) are stopped, then the scope — a member without one stops nothing here; all before the workspace is marked archived', () => {
   const fn = slice(ws, 'export async function archiveWorkspace(');
-  assert.match(fn, /\n    const keeperBefore = readTrackedKeeperPid\(ws\.id\);\n    await stopMemberScopeIfAny\(ws\.id, 'workspace-archived', async \(\) => \{\n      await sdkStopIfLive\(ws\.id\);\n      await killKeeperIf\(ws\.id, keeperBefore, 'workspace-archived'\);\n    \}\);\n/);
+  assert.match(fn, /\n    const keeperBefore = readTrackedKeeperPid\(ws\.id\);\n    await stopMemberScopeIfAny\(ws\.id, 'workspace-archived', async \(\) => \{\n      await sdkStopIfLive\(ws\.id\)\.catch\([^\n]*\n      await killKeeperIf\(ws\.id, keeperBefore, 'workspace-archived'\)\.catch\([^\n]*\n    \}\);\n/, 'each step has its OWN catch: a failed session stop does not skip the keeper kill');
   assert.ok(fn.indexOf("stopMemberScopeIfAny(ws.id, 'workspace-archived'") < fn.indexOf('archived: true'));
   assert.equal((fn.match(/sdkStopIfLive\(/g) ?? []).length, 1, 'no session stop outside the scope-gated extra: master stopped only the root (the caller)');
   assert.doesNotMatch(fn, /\bkillKeeper\(/, 'no unconditional keeper kill outside the scope-gated extra');
@@ -96,24 +97,21 @@ test('a RESUME keeps its Reliquats: sdkRestart\'s own text (the `fresh` option r
 });
 
 test('host: no scope ⇒ null and nothing runs; the entries are bounded + locked; the Reliquat kill is restricted to the DEAD scopes; the live keeper is placed by its own cgroup', () => {
-  assert.match(slice(host, 'export async function stopMemberScopeIfAny('), /\n  if \(!memberHasScope\(wsId\)\) return null;\n/, '`extra` is not even evaluated for a member without a scope');
-  assert.match(host, /return memberScopeDeps\(wsId, e\)\.scopes\(wsId\)\.length > 0;\n  \} catch \{\n    return false;/, 'an unreadable lookup reads as NO scope: behaves exactly as before');
-  assert.match(host, /const run = withKeeperLock\(wsId, op\);/, 'under the member\'s keeper lock: a launch cannot interleave with the kill');
-  assert.match(host, /Promise\.race\(\[run, late\]\)/, 'bounded: a wedged systemd cannot park a delete');
+  assert.match(slice(host, 'export async function stopMemberScopeIfAny('), /\n  if \(!d\.hasScope\(wsId\)\) return null;\n/, '`extra` is not even evaluated for a member without a scope');
+  assert.match(host, /return memberScopeDeps\(wsId, e\)\.scopes\(wsId\)\.length > 0;\n  \} catch \(err\) \{\n    logger\.warn\([^\n]*\n    return false;/, 'an unreadable lookup reads as NO scope (said once): behaves exactly as before');
+  assert.match(facade, /lock: withKeeperLock,/, 'the production lock IS the keeper client\'s per-workspace queue');
+  assert.match(facade, /stop: \(wsId, reason\) => stopMemberScope\(wsId, reason, core\.realScopeStopDeps\(wsId, io\)\),/);
+  assert.match(facade, /hasScope: \(wsId\) => core\.memberHasScope\(wsId, realScopeEnv\(\), log\),/);
+  assert.match(facade, /killKeeperIfHeld,\n  log,\n\};/);
+  assert.match(facade, /const io: core\.HostIo = \{ log, pidOf: readTrackedKeeperPid \};/, 'the tracked keeper is the keeper client\'s own pid read');
   assert.match(host, /killReliquats: \(only\) => killReliquats\(wsId, \{ \.\.\.scopeDeps, scopes: \(\) => scopeDeps\.scopes\(wsId\)\.filter\(\(s\) => only\.some\(\(o\) => o\.unit === s\.unit\)\) \}, kill, \{ keeperPid: null, cliPid: null \}\),/, 'the identity-checked kill of #325, over THIS member\'s DEAD scopes only');
-  assert.match(host, /liveKeeperUnit: \(\) => trackedKeeperUnit\(wsId, e\),/);
+  assert.match(host, /liveKeeperUnit: \(\) => trackedKeeperUnit\(wsId, e, io\.pidOf\),/);
   assert.match(host, /parseProcCgroupV2\(e\.readFile\(`\$\{e\.procRoot\}\/\$\{pid\}\/cgroup`\)\)/, 'the tracked keeper is placed by ITS OWN /proc cgroup');
   assert.match(host, /ownsUnit: \(unit\) => scopeGenForWorkspace\(scopePrefix\(e\), wsId, unit\) !== null,/);
   assert.match(host, /\['--user', 'stop', '--', unit\]/);
   assert.doesNotMatch(host, /kill-who|'--all'|reset-failed/);
   assert.equal((host.match(/execFile\(/g) ?? []).length, 1, 'one systemctl call, on a single unit name');
-  assert.match(host, /catch \(e\) \{\n    log\.warn\(`scope-stop\[\$\{wsId\}\] \(\$\{reason\}\) failed`, e\);\n    return null;/, 'a failed scope stop never blocks the delete / archive / clear / migration that called it');
-  const clear = slice(host, 'export async function clearScopedMember(');
-  const a = clear.indexOf('await announce()');
-  const k = clear.indexOf('await killKeeperIfHeld(wsId, oldKeeperPid');
-  const s = clear.indexOf("stopMemberScope(wsId, 'clear'");
-  assert.ok(a > 0 && k > a && s > k, `announce < old-keeper kill < scope stop (${a},${k},${s})`);
-  assert.match(clear, /if \(announceFailed\) throw/, 'a failed clear is surfaced, as without a scope');
+  assert.match(host, /catch \(e\) \{\n    d\.log\.warn\(`scope-stop\[\$\{wsId\}\] \(\$\{reason\}\) failed`, e\);\n    return null;/, 'a failed scope stop never blocks the delete / archive / clear / migration that called it');
 });
 
 test('keeper-client: the conditional kill only kills THE keeper read before the stop (a successor has another pid)', () => {

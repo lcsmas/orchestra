@@ -794,8 +794,8 @@ export async function archiveWorkspace(id: string): Promise<void> {
     // A member without a scope: exactly as before (nothing is stopped here).
     const keeperBefore = readTrackedKeeperPid(ws.id);
     await stopMemberScopeIfAny(ws.id, 'workspace-archived', async () => {
-      await sdkStopIfLive(ws.id);
-      await killKeeperIf(ws.id, keeperBefore, 'workspace-archived');
+      await sdkStopIfLive(ws.id).catch((e) => log.warn(`archive: session stop failed for ${ws.id}`, e));
+      await killKeeperIf(ws.id, keeperBefore, 'workspace-archived').catch((e) => log.warn(`archive: keeper kill failed for ${ws.id}`, e));
     });
     const updated: Workspace = {
       ...ws,
