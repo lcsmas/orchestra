@@ -156,6 +156,11 @@ export function relayUpstreamFile(keeperSock: string): string {
   return relaySocketPath(keeperSock).replace(/\.docker\.sock$/, '.docker.upstream');
 }
 
+/** The file the keeper PUBLISHES what its relay holds in (`<ws>.docker.hold`, #321; never `.pid`): the app's `bus-status` and the Admission notice read it. */
+export function relayHoldFile(keeperSock: string): string {
+  return relaySocketPath(keeperSock).replace(/\.docker\.sock$/, '.docker.hold');
+}
+
 export type UpstreamResolution = { ok: true; socketPath: string; via: string; daemonUp: boolean } | { ok: false; reason: string };
 
 export interface UpstreamDeps {
@@ -222,6 +227,8 @@ export async function resolveRelayUpstream(env: Record<string, string | undefine
 /** What the app hands the keeper's `spawn` frame; absent = no relay (the frame is then byte-identical to today). */
 export interface DockerRelaySpec {
   runId: string;
+  /** #321 — the file the APP publishes the Admission hold state in (`<ORCHESTRA_HOME>/admission.state`); absent ⇒ the relay never holds (today's behaviour). */
+  holdState?: string;
 }
 
 /**
@@ -233,8 +240,9 @@ export function dockerRelayOffer(args: {
   platform: string;
   runId: string | null | undefined;
   switchOn: boolean;
+  holdState?: string;
 }): DockerRelaySpec | undefined {
   if (args.remote || args.platform === 'win32' || !args.switchOn) return undefined;
   const runId = args.runId?.trim();
-  return runId ? { runId } : undefined;
+  return runId ? { runId, ...(args.holdState ? { holdState: args.holdState } : {}) } : undefined;
 }

@@ -52,6 +52,7 @@ import { formatContainersLine, type ContainerAccountingView } from '../shared/co
 import { formatReliquatsLine, type MemberMemoryReport } from '../shared/member-memory.ts';
 import { formatWatchersLines, type WatchersStatus } from '../shared/watcher-status.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
+import { formatDockerHoldsLine, type DockerHoldView } from '../shared/docker-hold.ts';
 import type { BusDb } from '../main/bus.ts';
 import type { RunPauseInfo } from '../main/bus-pause.ts';
 import {
@@ -2234,6 +2235,11 @@ async function main(argv: string[]): Promise<void> {
       if (Array.isArray(res.heldStarts)) {
         const held = formatHeldStartsLine(res.heldStarts as HeldStartView[]);
         if (held) process.stdout.write(`${held}\n`);
+      }
+      // #321: container create/start HELD at a member's Docker relay for low memory (the member sees its docker command WAIT; this says which, why, since when). No line when none — output unchanged.
+      if (Array.isArray(res.dockerHolds)) {
+        const dh = formatDockerHoldsLine(res.dockerHolds as DockerHoldView[], Date.now());
+        if (dh) process.stdout.write(`${dh}\n`);
       }
       // #134 — frozen (run row) vs live (store) flags, one row per mechanism.
       // No run row → the frozen column prints "—" (#206), never OFF. WIRE names

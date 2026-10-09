@@ -253,6 +253,7 @@ import {
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
 import { livenessSilencedByAdmission, startAdmission, stopAdmission } from './admission';
+import { startDockerHold, stopDockerHold } from './docker-hold-host';
 import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
 import { keeperResident } from './admission-wake';
 import { startMemoryAlert, stopMemoryAlert } from './memory-alert-host';
@@ -462,6 +463,8 @@ async function createMainWindow() {
   startAdmission();
   // #330: push watcher degradations / recoveries to the renderer — subscribed BEFORE the first watch is armed (the events spool below is the first), so a boot-time EMFILE is pushed too.
   pushWatchersToRenderer();
+  // Docker relay hold (#321): publish the guard's EFFECTIVE Admission hold for the keepers' relays (a member's container create/start waits while it says held) and tell a waiting member once per episode.
+  startDockerHold();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
@@ -928,6 +931,7 @@ function shutdownSubsystems(): void {
   stopSessionWatchdog();
   stopResourceMonitor();
   stopAdmission();
+  stopDockerHold();
   stopMemoryBanner();
   stopMemoryAlert();
   stopMemoryPause();

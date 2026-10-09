@@ -130,7 +130,7 @@ test('non-create calls are forwarded byte-for-byte: path, query, headers, body, 
 test('a POST with no body keeps an explicit empty framing (docker start / stop)', async () => {
   const r = await newRelay();
   const res = await call(r, 'POST', '/containers/abc/start');
-  assert.equal(res.status, 200);
+  assert.equal(res.status, 204); // dockerd answers a start with 204 (the fake daemon too, since #321)
   assert.equal(lastSeen().headers['content-length'], '0');
 });
 

@@ -28,7 +28,7 @@ test('frozen ON → spec; frozen OFF / unknown run / sandbox / no run id → non
   const db = getBus()!;
   startRun(db, { id: 'run-on', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: true });
   startRun(db, { id: 'run-off', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES });
-  assert.deepEqual(dockerRelaySpecFor('run-on', false), { runId: 'run-on' });
+  assert.deepEqual(dockerRelaySpecFor('run-on', false), { runId: 'run-on', holdState: path.join(home, 'admission.state') }, '#321: the spec also names the file the app publishes the Admission hold in');
   assert.equal(dockerRelaySpecFor('run-off', false), undefined);
   assert.equal(dockerRelaySpecFor('run-nope', false), undefined);
   assert.equal(dockerRelaySpecFor('run-on', true), undefined, 'a sandbox-hosted member never gets the relay');
@@ -40,7 +40,7 @@ test('the freeze: a later live flip never changes a started run (ON stays ON, OF
   const db = getBus()!;
   startRun(db, { id: 'run-on', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: false }); // re-start: ignored
   startRun(db, { id: 'run-off', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: true });
-  assert.deepEqual(dockerRelaySpecFor('run-on', false), { runId: 'run-on' });
+  assert.deepEqual(dockerRelaySpecFor('run-on', false), { runId: 'run-on', holdState: path.join(home, 'admission.state') }, '#321: the spec also names the file the app publishes the Admission hold in');
   assert.equal(dockerRelaySpecFor('run-off', false), undefined);
   closeBus();
   fs.rmSync(home, { recursive: true, force: true });

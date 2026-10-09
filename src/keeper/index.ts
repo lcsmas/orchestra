@@ -28,6 +28,8 @@
 // - Docker relay (#291, ADR 0004): a `spawn` frame carrying `dockerRelay` makes this keeper host a unix-socket
 //   Docker proxy that stamps `orchestra.ws`/`orchestra.run` on every container and point the CLI's DOCKER_HOST at
 //   it. Absent ⇒ none of that code runs and the CLI env is exactly what the client sent.
+// - Docker hold (#321): `dockerRelay.holdState` also makes the relay WAIT a container create/start while the app's published Admission state says held
+//   (docker-hold.ts), and publish what waits in `<ws>.docker.hold`. No `holdState` ⇒ the relay never holds.
 
 import net from 'node:net';
 import fs from 'node:fs';
@@ -42,9 +44,11 @@ import {
   type KeeperClientFrame,
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol.ts';
-import { maxSocketPathBytes, relaySocketPath, relayUpstreamFile, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { maxSocketPathBytes, relayHoldFile, relaySocketPath, relayUpstreamFile, resolveRelayUpstream } from '../shared/docker-relay.ts';
+import { parseMemAvailableBytes } from '../shared/memory-guard.ts';
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
+import { createHoldGate, type HoldGate } from './docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
@@ -142,11 +146,14 @@ function cleanupAndExit(code: number): void {
   memWatch?.stop();
   relaySupervisor?.stop();
   if (relay) {
+    holdGate?.stop();
     relay.stop();
-    try {
-      fs.unlinkSync(relayUpstreamFile(sockPath));
-    } catch {
-      /* none */
+    for (const f of [relayUpstreamFile(sockPath), relayHoldFile(sockPath)]) {
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        /* none */
+      }
     }
   }
   unlinkOwnedFiles();
@@ -356,6 +363,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
 
 let relay: DockerRelay | null = null;
 let relaySupervisor: RelaySupervisor | null = null;
+let holdGate: HoldGate | null = null;
 /** True from a relay-carrying `spawn` frame until the CLI is started: frames that arrive meanwhile (the client
  *  buffers stdin right behind `spawn`) are held and replayed in order, never dropped. */
 let spawnInFlight = false;
@@ -373,9 +381,42 @@ function publishUpstream(upstream: string): void {
   }
 }
 
+/** The hold gate (#321) for `holdState`: real clocks / files, the live MemAvailable. Tunables are for the rig (a 1 s poll and 1.5 s settle are the product values). */
+function createKeeperHoldGate(holdState: string): HoldGate {
+  return createHoldGate({
+    stateFile: holdState,
+    holdFile: relayHoldFile(sockPath),
+    now: Date.now,
+    readMem: () => {
+      try {
+        return parseMemAvailableBytes(fs.readFileSync('/proc/meminfo', 'utf8'));
+      } catch {
+        return null;
+      }
+    },
+    readText: (f) => {
+      try {
+        return fs.readFileSync(f, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    writeFile: (f, text) => {
+      const tmp = `${f}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, text, { mode: 0o600 });
+      fs.renameSync(tmp, f);
+    },
+    removeFile: (f) => fs.rmSync(f, { force: true }),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    pollMs: intEnv('ORCHESTRA_KEEPER_HOLD_POLL_MS', 1000),
+    settleMs: intEnv('ORCHESTRA_KEEPER_HOLD_SETTLE_MS', 1500),
+    log: klog,
+  });
+}
+
 /** Start the relay and return the CLI env to use: the client's env + `DOCKER_HOST` at the relay — or the client's env
  *  UNTOUCHED when the relay cannot start (the member then uses the real socket; its containers count as unattributed). */
-async function withDockerRelay(runId: string, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
+async function withDockerRelay(runId: string, env: Record<string, string | undefined>, holdState?: string): Promise<Record<string, string | undefined>> {
   try {
     const up = await resolveRelayUpstream(env, realUpstreamDeps);
     if (!up.ok) {
@@ -387,18 +428,21 @@ async function withDockerRelay(runId: string, env: Record<string, string | undef
       klog(`docker relay disabled: socket path too long (${relaySock})`);
       return env;
     }
-    const r = createDockerRelay({ sockPath: relaySock, upstream: up.socketPath, ws: wsId, run: runId, log: klog });
+    const gate = holdState ? createKeeperHoldGate(holdState) : null;
+    const r = createDockerRelay({ sockPath: relaySock, upstream: up.socketPath, ws: wsId, run: runId, log: klog, ...(gate ? { hold: gate } : {}) });
     if (!(await r.start())) {
       r.stop();
+      gate?.stop();
       klog('docker relay disabled: could not start');
       return env;
     }
     relay = r;
+    holdGate = gate;
     relaySupervisor = superviseDockerRelay(r, { checkMs: intEnv('ORCHESTRA_KEEPER_RELAY_CHECK_MS', 1000), log: klog });
     // SIGUSR2 = "the relay crashed" (operator/rig kill switch); registered only now, so a keeper with no relay keeps
     // SIGUSR2's default action exactly as before.
     process.on('SIGUSR2', () => relay?.kill());
-    klog(`docker relay listening ${relaySock} -> ${up.socketPath} (via ${up.via}) ws=${wsId} run=${runId}`);
+    klog(`docker relay listening ${relaySock} -> ${up.socketPath} (via ${up.via}) ws=${wsId} run=${runId}${gate ? ` hold=${holdState}` : ''}`);
     if (!up.daemonUp) klog(`docker relay: no daemon at ${up.socketPath} yet — calls answer 502 until it appears`);
     publishUpstream(up.socketPath);
     return { ...env, DOCKER_HOST: `unix://${relaySock}` };
@@ -421,7 +465,7 @@ function handleClientFrame(f: KeeperClientFrame): void {
       } else if (f.dockerRelay) {
         spawnInFlight = true;
         const capEnv = f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env;
-        void withDockerRelay(f.dockerRelay.runId, capEnv).then((env) => {
+        void withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState).then((env) => {
           try {
             startChild(f.command, f.args, f.cwd, env);
           } finally {

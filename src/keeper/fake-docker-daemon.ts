@@ -16,6 +16,12 @@ export interface SeenRequest {
 export interface FakeDaemon {
   readonly sockPath: string;
   readonly seen: SeenRequest[];
+  /** Scripted containers for `GET …/containers/<id>/json` (the labels + running flag the relay inspects before it holds a START); an unknown id answers 404 like dockerd. */
+  setContainer(id: string, c: { labels?: Record<string, string> | null; running?: boolean }): void;
+  /** Delay every inspect answer by this long (a daemon under swap thrash). */
+  setInspectDelay(ms: number): void;
+  /** The NEXT create answers with this instead of 201 + `{Id, Warnings}` (a 4xx after a long wait, a gzip / non-JSON body). One-shot. */
+  nextCreate(r: { status: number; headers?: Record<string, string>; body: string | Buffer }): void;
   /** Release the next chunk of the open `GET /events` stream. */
   releaseEvent(): void;
   /** Connections currently open to this daemon (a leak shows up as a count that never comes back down). */
@@ -30,6 +36,9 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
   const eventGates: Array<() => void> = [];
   const waitGates: Array<() => void> = [];
   const sockets = new Set<net.Socket>();
+  const containers = new Map<string, { labels?: Record<string, string> | null; running?: boolean }>();
+  let inspectDelayMs = 0;
+  let createOverride: { status: number; headers?: Record<string, string>; body: string | Buffer } | null = null;
 
   // dockerd accepts ~1 MB of headers; node's default 16 KB would make the fake daemon the thing that refuses
   const server = http.createServer({ maxHeaderSize: 1 << 20 }, (req, res) => {
@@ -42,10 +51,27 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
       if (req.method === 'GET' && url.endsWith('/_ping')) {
         res.writeHead(200, { 'content-type': 'text/plain', 'content-length': 2, 'api-version': '1.47' });
         res.end('OK');
+      } else if (req.method === 'POST' && /\/containers\/create/.test(url) && createOverride) {
+        const o = createOverride;
+        createOverride = null;
+        const buf = typeof o.body === 'string' ? Buffer.from(o.body) : o.body;
+        res.writeHead(o.status, { 'content-length': buf.length, ...(o.headers ?? {}) });
+        res.end(buf);
       } else if (req.method === 'POST' && /\/containers\/create/.test(url)) {
         const out = JSON.stringify({ Id: 'fake0123456789', Warnings: [] });
         res.writeHead(201, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(out) });
         res.end(out);
+      } else if (req.method === 'GET' && /\/containers\/[^/]+\/json(\?|$)/.test(url)) {
+        const id = decodeURIComponent(/\/containers\/([^/]+)\/json/.exec(url)![1]);
+        const c = containers.get(id);
+        const out = JSON.stringify(c ? { Id: id, Config: { Labels: c.labels ?? null }, State: { Running: c.running === true } } : { message: `No such container: ${id}` });
+        setTimeout(() => {
+          res.writeHead(c ? 200 : 404, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(out) });
+          res.end(out);
+        }, inspectDelayMs);
+      } else if (req.method === 'POST' && /\/containers\/[^/]+\/start(\?|$)/.test(url)) {
+        res.writeHead(204);
+        res.end();
       } else if (req.method === 'GET' && url.endsWith('/events')) {
         // Chunked stream: first chunk now, the next only when the test releases it — a proxy that buffers fails.
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -125,6 +151,9 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
   return {
     sockPath,
     seen,
+    setContainer: (id, c) => void containers.set(id, c),
+    setInspectDelay: (ms) => void (inspectDelayMs = ms),
+    nextCreate: (r) => void (createOverride = r),
     releaseEvent: () => eventGates.shift()?.(),
     releaseWait: () => waitGates.shift()?.(),
     openConnections: () => sockets.size,
