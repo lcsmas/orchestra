@@ -42,7 +42,7 @@ import {
   noteActivity,
   noteAppStart,
 } from './hibernation-activity.ts';
-import { idleClockOf } from './idle-clock.ts';
+import { idleClockOf, monotonicIdleOf } from './idle-clock.ts';
 // Fast Veille (#288): the hold question is `isAdmissionHolding(getMemoryGuardSnapshot())` and nothing else (ledger #295 FI-2).
 import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-guard.ts';
 import { isAdmissionHolding } from '../shared/memory-guard.ts';
@@ -181,6 +181,7 @@ export async function sweepHibernation(): Promise<string[]> {
       hasLiveRunPty: isRunning(`${ws.id}:run`),
       hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
       thresholdMs,
+      monotonicIdleMs: monotonicIdleOf(ws.id),
       admissionHeld,
       reliquatDelayMs,
     };
@@ -188,12 +189,33 @@ export async function sweepHibernation(): Promise<string[]> {
     // A wake can land while the Reliquat stop is awaited, as well as during the session teardown below: snapshot BEFORE either.
     const epochBefore = wakeEpoch.get(ws.id) ?? 0;
     veilleBusy.add(ws.id);
+    // The member judged again on FRESH state (the sweep awaits: a census probes the keeper, a stop waits a TERM grace): the same guards, every signal re-read, `liveReliquats` Reliquats still to wait for.
+    const judgedFresh = (liveReliquats: number): boolean => {
+      const fresh = store.getWorkspace(ws.id);
+      return (
+        !!fresh &&
+        shouldHibernate(fresh, {
+          ...signals,
+          now: Date.now(),
+          lastActivityAt: idleClockOf(fresh),
+          monotonicIdleMs: monotonicIdleOf(ws.id),
+          isActive: getActiveWorkspaceId() === ws.id,
+          hasLivePty: isRunning(ws.id),
+          hasLiveSdk: sdkSessionLive(ws.id),
+          hasLiveRunPty: isRunning(`${ws.id}:run`),
+          hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
+          admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),
+          liveReliquats,
+        })
+      );
+    };
     let verdict: Awaited<ReturnType<typeof judgeVeille>>;
     try {
       verdict = await judgeVeille(ws, signals, {
         port: veillePort,
         strip: stripControl,
         stillWanted: () => (wakeEpoch.get(ws.id) ?? 0) === epochBefore && !isBeingDeleted(ws.id),
+        stillEligible: judgedFresh,
         info: (m) => hlog.info(m),
         warn: (m, e) => hlog.warn(m, e),
       });
@@ -214,20 +236,7 @@ export async function sweepHibernation(): Promise<string[]> {
     {
       // …and decided again on FRESH state, WHATEVER the verdict awaited (a census probes the keeper, a stop waits a TERM grace): a prompt handed to an already-live session bumps no wake epoch and leaves
       // the status `idle` until its turn event — only `sdkPendingPrompts` / the activity stamp say so. The same guards, no Reliquat left to wait for.
-      const fresh = store.getWorkspace(ws.id);
-      if (!fresh) continue;
-      const again = shouldHibernate(fresh, {
-        ...signals,
-        now: Date.now(),
-        lastActivityAt: idleClockOf(fresh),
-        isActive: getActiveWorkspaceId() === ws.id,
-        hasLivePty: isRunning(ws.id),
-        hasLiveSdk: sdkSessionLive(ws.id),
-        hasLiveRunPty: isRunning(`${ws.id}:run`),
-        hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
-        admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),
-        liveReliquats: 0,
-      });
+      const again = judgedFresh(0);
       if (!again) {
         hlog.info(`${ws.name} (${ws.id}) is no longer eligible after its Veille verdict (a prompt, a status change) — not hibernating`);
         continue;

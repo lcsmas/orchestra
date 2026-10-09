@@ -64,6 +64,10 @@ export interface HibernationSignals {
   hasLiveBackgroundTask: boolean;
   /** Resolved idle threshold in ms, or {@link HIBERNATION_DISABLED}. */
   thresholdMs: number;
+  /** Idle time on the MONOTONIC clock (ms since this member's last activity, CLOCK_MONOTONIC — immune to NTP steps / a resume's wall-clock jump). Used ONLY by the Reliquat wait (#326-fu m2): that wait guards an
+   *  IRREVERSIBLE stop, so a wall-clock jump forward must not shorten it — the member must have been idle on BOTH clocks. Required, not optional: a caller that forgets it must fail tsc, not silently kill on the wall clock.
+   *  NaN reads as "unknown": the Reliquat wait is then never over (fail closed). */
+  monotonicIdleMs: number;
   /** True while the memory guard HOLDS Admission (`isAdmissionHolding(getMemoryGuardSnapshot())`, FI-2 — nothing else decides it). A fleet
    *  member that passes every other guard then counts as past its idle threshold (fast Veille, #288). Required: a caller that forgets it
    *  must fail tsc, not silently ignore the hold. */
@@ -166,8 +170,8 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *  - **Idle longer than the threshold**, measured from the last observed
  *    lifecycle event — OR, while Admission is held ({@link HibernationSignals.admissionHeld}), any idle FLEET member (a coordinator
  *    reads it over the bus, {@link isFleetMember}): fast Veille (#288) skips ONLY this clock, every guard above still applies, a
- *    workspace without a coordinator is never affected, and the disabled sentinel stays a kill switch. A member with LIVE Reliquats (#326) must have been idle for the
- *    longer Reliquat delay instead ({@link effectiveVeilleWaitMs}); fast Veille is not delayed. When no activity has EVER been observed for this
+ *    workspace without a coordinator is never affected, and the disabled sentinel stays a kill switch. A FLEET member with LIVE Reliquats (#326) must have been idle for the
+ *    longer Reliquat delay instead ({@link effectiveVeilleWaitMs}), on the wall AND the monotonic clock; fast Veille is not delayed, a member without a coordinator never waits. When no activity has EVER been observed for this
  *    workspace this app run, the sweeper supplies the app-start time (see
  *    src/main/hibernation.ts) — so an unknown `lastActivityAt` here means the
  *    tracker has no opinion and we decline rather than guess, since treating
@@ -184,6 +188,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
     hasLiveRunPty,
     hasLiveBackgroundTask,
     thresholdMs,
+    monotonicIdleMs,
     admissionHeld,
     liveReliquats,
     reliquatDelayMs,
@@ -226,8 +231,10 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (lastActivityAt === undefined) return false;
   // Fast Veille (#288): under a held Admission the idle clock is waived for a fleet member — its memory is reclaimed before anything waits.
   if (admissionHeld && isFleetMember(ws)) return true;
-  // #326: a member with LIVE Reliquats waits the Reliquat delay (≥ the threshold); fast Veille above is NOT delayed (under pressure the Reliquats are what must be freed).
-  return now - lastActivityAt >= effectiveVeilleWaitMs(thresholdMs, liveReliquats, reliquatDelayMs);
+  // #326: a FLEET member with LIVE Reliquats waits the Reliquat delay (≥ the threshold); fast Veille above is NOT delayed (under pressure the Reliquats are what must be freed). A member without a coordinator is
+  // never delayed (OPS ruling R11, #326-fu m4): its Veille is today's, Reliquats or not. The wait guards an irreversible stop, so it is measured on BOTH clocks (m2): the smaller idle time decides.
+  if (!isFleetMember(ws) || !(liveReliquats > 0)) return now - lastActivityAt >= thresholdMs;
+  return Math.min(now - lastActivityAt, monotonicIdleMs) >= effectiveVeilleWaitMs(thresholdMs, liveReliquats, reliquatDelayMs);
 }
 
 /** Human-readable idle duration for the log line and the row tooltip

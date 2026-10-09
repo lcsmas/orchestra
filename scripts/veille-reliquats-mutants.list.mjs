@@ -10,6 +10,7 @@ export const VT = {
   fastw: 'src/main/hibernation-fast-veille-wiring.test.ts',
   settings: 'src/shared/memory-guard.test.ts',
   browser: 'src/main/browser-reliquats.test.ts',
+  idle: 'src/main/idle-clock-monotonic.test.ts',
 };
 
 /** mutant id → the rig arm (scripts/e2e-hibernate-wake.mjs) that must go red on it too. */
@@ -17,6 +18,7 @@ export const VT_RIG_ARM = {
   V1: 'reliquat_10min', V2: 'reliquat_none_5min', V5: 'reliquat_fast',
   J4: 'reliquat_10min', J5: 'reliquat_fast', J7: 'reliquat_31min', J3: 'reliquat_unknown',
   P2: 'reliquat_unknown', S1: 'reliquat_delay_hot',
+  F1: 'reliquat_msg_at_census', F2: 'reliquat_msg_at_stop', F3: 'reliquat_msg_at_stop', F4: 'reliquat_msg_at_stop', M2a: 'reliquat_clock_jump', M2b: 'reliquat_clock_jump', R11b: 'reliquat_nonfleet', R11c: 'reliquat_unknown',
   S2: 'reliquat_overlap', S3: 'reliquat_woken_after_stop', S4: 'reliquat_again_false', S8: 'reliquat_census_race', R1: 'reliquat_scopeless', R3: 'reliquat_woken_during_stop', S7: 'reliquat_woken_during_stop',
 };
 
@@ -29,14 +31,14 @@ export function veilleMutants(T = VT) {
   const SET = 'src/shared/memory-guard.ts';
   return [
     // ── the pure rule ───────────────────────────────────────────────────────────────────────────────────────────────────
-    ['V1', RULE, [['return now - lastActivityAt >= effectiveVeilleWaitMs(thresholdMs, liveReliquats, reliquatDelayMs);', 'return now - lastActivityAt >= thresholdMs;']], [T.rule], 'a member with live Reliquats is not made to wait (the delay is ignored); rig: reliquat_10min'],
+    ['V1', RULE, [['return Math.min(now - lastActivityAt, monotonicIdleMs) >= effectiveVeilleWaitMs(thresholdMs, liveReliquats, reliquatDelayMs);', 'return Math.min(now - lastActivityAt, monotonicIdleMs) >= thresholdMs;']], [T.rule], 'a member with live Reliquats is not made to wait (the delay is ignored); rig: reliquat_10min'],
     ['V2', RULE, [['if (liveReliquats > 0 && Number.isFinite(reliquatDelayMs) && reliquatDelayMs > thresholdMs) return reliquatDelayMs;', 'if (liveReliquats >= 0 && Number.isFinite(reliquatDelayMs) && reliquatDelayMs > thresholdMs) return reliquatDelayMs;']], [T.rule], 'EVERY member waits the Reliquat delay, with or without Reliquats; rig: reliquat_none_5min'],
     ['V3', RULE, [['liveReliquats > 0 && Number.isFinite(reliquatDelayMs) && ', 'liveReliquats > 0 && ']], [T.rule], 'a garbage (Infinity) delay waits for ever'],
     ['V4', RULE, [['reliquatDelayMs > thresholdMs) return reliquatDelayMs;', 'reliquatDelayMs > 0) return reliquatDelayMs;']], [T.rule], 'a delay SHORTER than the threshold shortens the wait (unit-only: the rig runs a 30-min delay)'],
     ['V5', RULE, [['if (admissionHeld && isFleetMember(ws)) return true;', 'if (admissionHeld && isFleetMember(ws) && liveReliquats === 0) return true;']], [T.rule], 'fast Veille is delayed by Reliquats (R10: it must NOT be); rig: reliquat_fast'],
     // ── the verdict ─────────────────────────────────────────────────────────────────────────────────────────────────────
     ['J1', JUDGE, [["if (!shouldHibernate(ws, { ...signals, liveReliquats: 0 })) return { hibernate: false, why: 'not-eligible' };", '']], [T.judge], 'a census is paid for every member, eligible or not'],
-    ['J2', JUDGE, [["if (!deps.port) return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };", "if (!deps.port) return { hibernate: false, why: 'not-eligible' };"]], [T.judge], 'no port registered ⇒ no Veille at all (today\'s behaviour lost)'],
+    ['J2', JUDGE, [["if (!deps.port || !isFleetMember(ws)) return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };", "if (!deps.port || !isFleetMember(ws)) return { hibernate: false, why: 'not-eligible' };"]], [T.judge], 'no port registered ⇒ no Veille at all (today\'s behaviour lost)'],
     ['J3', JUDGE, [["if (live === 'unknown') {", "if ((live as unknown) === 'never') {"]], [T.judge], 'an UNKNOWN census is read as a count (waits / kills on a guess); rig: reliquat_unknown'],
     ['J4', JUDGE, [['if (!shouldHibernate(ws, { ...signals, liveReliquats: live })) {', 'if (false as boolean) {']], [T.judge], 'the Reliquat delay is skipped: Reliquats are stopped as soon as the normal threshold passes; rig: reliquat_10min'],
     ['J5', JUDGE, [['const fast = signals.admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false, liveReliquats: live });', 'const fast = false;']], [T.judge], 'a fast Veille is worded as plain idleness; rig: reliquat_fast'],
@@ -44,6 +46,19 @@ export function veilleMutants(T = VT) {
     ['J7', JUDGE, [['const told = veilleHasNews(report) ? await tellOnce(', 'const told = false ? await tellOnce(']], [T.judge], 'the member is never told what was stopped; rig: reliquat_31min'],
     ['J8', JUDGE, [["return { hibernate: false, why: 'reliquat-stop-incomplete', liveReliquats: live, detail: e instanceof Error ? e.message : String(e) };", "return { hibernate: true, liveReliquats: live, stopped: true, report: null, told: false, fast };"]], [T.judge], 'a stop that THROWS lets the Veille go on'],
     ['J9', JUDGE, [['if (!ok) deps.warn(', 'if (false as boolean) deps.warn(']], [T.judge], 'a notice that could not be queued is lost silently'],
+    // ── #326-fu: m1 (the member is judged again before and during the stop), m2 (both clocks), m3 (UNKNOWN defers), m4 (fleet members only) ─────────────────────────────────────────────────────────────────────
+    ['F1', JUDGE, [['  if (!wanted()) {', '  if (false as boolean) {']], [T.judge], 'the member is not judged again before the FIRST signal (a prompt delivered while the census awaited costs it its Reliquats); rig: reliquat_msg_at_census'],
+    ['F2', JUDGE, [['(deps.stillWanted?.() ?? true) && (deps.stillEligible?.(live) ?? true);', '(deps.stillWanted?.() ?? true);']], [T.judge], 'the signal rounds ignore fresh eligibility (a message delivered to a LIVE session mid-stop is not seen); rig: reliquat_msg_at_stop'],
+    ['F3', SWEEP, [['        stillEligible: judgedFresh,\n', '']], [T.wiring], 'the sweep never hands the stop its fresh judgement; rig: reliquat_msg_at_stop'],
+    ['F4', SWEEP, [['          lastActivityAt: idleClockOf(fresh),\n          monotonicIdleMs: monotonicIdleOf(ws.id),', '          lastActivityAt: signals.lastActivityAt,\n          monotonicIdleMs: monotonicIdleOf(ws.id),']], [T.wiring], 'the fresh judgement reads the STALE activity stamp (fresh activity is invisible to it); rig: reliquat_msg_at_stop'],
+    ['M2a', RULE, [['return Math.min(now - lastActivityAt, monotonicIdleMs) >=', 'return (now - lastActivityAt) >=']], [T.rule, T.judge], 'the Reliquat wait is judged on the wall clock alone (a clock jump shortens it); rig: reliquat_clock_jump'],
+    ['M2b', SWEEP, [['      monotonicIdleMs: monotonicIdleOf(ws.id),\n      admissionHeld,', '      monotonicIdleMs: Number.MAX_SAFE_INTEGER,\n      admissionHeld,']], [T.wiring], 'the sweep tells the rule the member was idle for ever on the monotonic clock; rig: reliquat_clock_jump'],
+    ['M2c', JUDGE, [['Math.min(signals.now - (signals.lastActivityAt ?? signals.now), signals.monotonicIdleMs)', 'signals.now - (signals.lastActivityAt ?? signals.now)']], [T.judge], 'the notice states a jumped wall-clock idle time'],
+    ['M2d', 'src/main/idle-clock.ts', [['return monotonicNow() - (getLastActivityMono(wsId) ?? getAppStartedMono());', 'return monotonicNow() - (getLastActivityMono(wsId) ?? 0);']], [T.idle], 'a never-seen member is idle since the clock\'s zero, not since the app start'],
+    ['M2e', 'src/main/hibernation-activity.ts', [['  lastActivityMono.set(wsId, monoSource());\n', '']], [T.idle], 'activity does not reset the monotonic idle time'],
+    ['R11a', RULE, [['if (!isFleetMember(ws) || !(liveReliquats > 0)) return', 'if (!(liveReliquats > 0)) return']], [T.rule], 'a member without a coordinator waits the Reliquat delay (unit-only: the judge already returns before the census for it)'],
+    ['R11b', JUDGE, [['if (!deps.port || !isFleetMember(ws)) return', 'if (!deps.port) return']], [T.judge], 'a member without a coordinator is counted and its Reliquats stopped; rig: reliquat_nonfleet'],
+    ['R11c', JUDGE, [["return { hibernate: false, why: 'reliquat-census-unknown' };", "return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };"]], [T.judge], 'an UNKNOWN census still lets the member go to Veille (R11 m3: it is deferred); rig: reliquat_unknown'],
     // ── the notice ──────────────────────────────────────────────────────────────────────────────────────────────────────
     ['N1', NOTICE, [["r.killed.some((k) => k.outcome !== 'planned')", 'r.killed.length > 0']], [T.notice], 'a `planned` kill that never completed is announced as a stop'],
     ['N2', NOTICE, [["const why = ctx.fast ? 'early, to free memory (Admission is held)' : `because you had been idle for", "const why = false ? 'early' : `because you had been idle for"]], [T.notice], 'fast Veille worded as idleness'],
@@ -76,7 +91,7 @@ export function veilleMutants(T = VT) {
     ['R1', PORT, [['      if (scopes.length === 0) return stopBrowsers(wsId, ctx);\n', '']], [T.port, T.wiring], 'a scope-less member\'s stop asks the keeper / CLI identity (an unresponsive keeper keeps it awake for ever); rig: reliquat_scopeless'],
     ['R2', PORT, [['{ keeperPid, cliPid, startedBeforeMs, ...(ctx?.stillWanted', '{ keeperPid, cliPid, ...(ctx?.stillWanted']], [T.port, T.wiring], 'what the member started after the stop began (it woke) is killed too'],
     ['R3', PORT, [['...(ctx?.stillWanted ? { stillPaused: ctx.stillWanted } : {}) });', '});']], [T.port, T.wiring], 'a wake / delete during the stop does not end the signal rounds; rig: reliquat_woken_during_stop'],
-    ['R4', JUDGE, [['report = await deps.port.stop(ws.id, { stillWanted: deps.stillWanted ?? (() => true) });', 'report = await deps.port.stop(ws.id);']], [T.judge], 'the sweep\'s « still wanted » check never reaches the stop'],
+    ['R4', JUDGE, [['report = await deps.port.stop(ws.id, { stillWanted: wanted });', 'report = await deps.port.stop(ws.id);']], [T.judge], 'the sweep\'s « still wanted » check never reaches the stop'],
     ['R5', JUDGE, [['if (report && (report.unknown || report.error || report.aborted)) {', 'if (report && (report.unknown || report.error)) {']], [T.judge], 'a stop aborted by a wake lets the Veille go on'],
     ['S7', SWEEP, [['        stillWanted: () => (wakeEpoch.get(ws.id) ?? 0) === epochBefore && !isBeingDeleted(ws.id),\n', '']], [T.wiring], 'the sweep never tells the stop that the member woke; rig: reliquat_woken_during_stop'],
     ['S8', SWEEP, [['    {\n      // …and decided again on FRESH state, WHATEVER the verdict awaited', '    if (verdict.stopped) {\n      // …and decided again on FRESH state, WHATEVER the verdict awaited']], [T.wiring], 'the fresh re-check only follows a STOP (a census awaits too: a prompt delivered meanwhile is missed); rig: reliquat_census_race'],

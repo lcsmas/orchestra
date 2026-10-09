@@ -88,7 +88,13 @@ test('the sweep marks a member BUSY before its verdict and drops the mark in a f
   assert.ok(sweep.indexOf('veilleBusy.add(ws.id);') > sweep.indexOf('if (veilleBusy.has(ws.id)) continue;') && sweep.indexOf('veilleBusy.add(ws.id);') < sweep.indexOf('judgeVeille(ws, signals,'), 'checked, marked, THEN judged');
   assert.match(sweep, /if \(\(wakeEpoch\.get\(ws\.id\) \?\? 0\) !== epochBefore \|\| isBeingDeleted\(ws\.id\)\) \{/);
   assert.ok(sweep.indexOf('const epochBefore = wakeEpoch.get(ws.id) ?? 0;') < sweep.indexOf('judgeVeille(ws, signals,'), 'the wake epoch is snapshotted BEFORE the verdict awaits');
-  assert.match(sweep, /decided again on FRESH state, WHATEVER the verdict awaited[^]*?const again = shouldHibernate\(fresh, \{[^]*?liveReliquats: 0,[^]*?if \(!again\) \{/);
+  assert.match(sweep, /decided again on FRESH state, WHATEVER the verdict awaited[^]*?const again = judgedFresh\(0\);[^]*?if \(!again\) \{/);
+  // #326-fu m1: ONE fresh judgement serves the post-verdict re-check AND the stop itself (before the first signal and before every signal round, through `stillEligible`)
+  const fresh = sweep.slice(sweep.indexOf('const judgedFresh = (liveReliquats: number): boolean => {'), sweep.indexOf('let verdict: Awaited<ReturnType<typeof judgeVeille>>;'));
+  assert.ok(fresh.length > 100, 'judgedFresh is defined before the verdict is awaited');
+  for (const re of [/store\.getWorkspace\(ws\.id\)/, /lastActivityAt: idleClockOf\(fresh\),/, /monotonicIdleMs: monotonicIdleOf\(ws\.id\),/, /isActive: getActiveWorkspaceId\(\) === ws\.id,/, /hasLiveSdk: sdkSessionLive\(ws\.id\),/, /admissionHeld: isAdmissionHolding\(getMemoryGuardSnapshot\(\)\),/, /^\s*liveReliquats,$/m]) assert.match(fresh, re, String(re));
+  assert.match(sweep, /stillEligible: judgedFresh,/, 'the stop is handed the fresh judgement');
+  assert.match(sweep, /thresholdMs,\s*\n\s*monotonicIdleMs: monotonicIdleOf\(ws\.id\),\s*\n\s*admissionHeld,/, 'the monotonic idle time is a signal of every member\'s verdict (#326-fu m2)');
   assert.doesNotMatch(sweep, /if \(verdict\.stopped\) \{/, 'the re-check is not conditional on a stop: a census awaits too');
   assert.match(sweep, /stillWanted: \(\) => \(wakeEpoch\.get\(ws\.id\) \?\? 0\) === epochBefore && !isBeingDeleted\(ws\.id\),/, 'the stop is told when the member woke / is being deleted');
   assert.match(sweep, /const liveSdkNow = sdkSessionLive\(ws\.id\);\s*const livePtyNow = isRunning\(ws\.id\);\s*if \(!liveSdkNow && !livePtyNow\) continue;/, 'liveness read AGAIN after the verdict');

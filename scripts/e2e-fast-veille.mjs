@@ -42,7 +42,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass', 'late_idler', 'samples_quiet', 'overlap_probe', 'overlap_same_tick'];
+const ARMS = ['open_waits', 'held_veille', 'held_mixed', 'reopen_waits', 'toggle_off', 'guard_turn', 'guard_pending_prompt', 'guard_loop', 'guard_bg_task', 'guard_active_pane', 'guard_run_pty', 'guard_waiting', 'no_coordinator', 'edge_sweep', 'boot_held', 'reopen_mid_pass', 'late_idler', 'samples_quiet', 'overlap_probe', 'overlap_same_tick', 'toggle_off_census', 'reopen_census', 'overlap_post_verdict'];
 const GIB = 1024 ** 3;
 const MIN = 60_000;
 
@@ -456,6 +456,61 @@ if (ARM === 'reopen_mid_pass') {
   setMem(12); check('admission_reopened', holding(), false);               // the hold ends while the pass is still stopping X
   const taken = await pass;
   check('x_went_y_spared', { taken, yLive: live(Y), yChip: !!wsOf(Y).hibernatedAt }, { taken: [X], yLive: true, yChip: false });
+  verdict();
+}
+
+
+// ── #326-fu m5: the three arms that keep the #288 mutants S02 / S13 / O04-O06 killable at the RIG level. #326's defence in depth (the fresh re-check after the verdict, `veilleBusy`, the second pass re-reading liveness after ITS own
+// awaits) hides their OUTCOME; what they still change is WHO IS ASKED (a Reliquat census for a member that is not eligible) and WHEN a second pass can slip in (a real yield between the live check and the stop). ──
+const censusSpy = () => { const asked = []; hib.setVeilleReliquatPort({ census: async (w) => { asked.push(w); return 0; }, stop: async () => null, tell: async () => true }); return asked; };
+
+if (ARM === 'toggle_off_census') {
+  await store.setMemoryGuardSettings({ ...store.getMemoryGuardSettings(), admissionEnabled: false });
+  await mkMember('ws-a');
+  skew(1);
+  const asked = censusSpy();
+  const s = setMem(4);
+  check('guard_state_held_but_nothing_holds', { admission: s.admission, holding: holding() }, { admission: 'held', holding: false });
+  check('control_eligible_if_old', eligibleIfOld('ws-a'), true);
+  check('sweep', await sweep(), []);
+  check('no_census_paid_for_a_member_that_is_not_eligible', asked, []);
+  check('still_live', live('ws-a'), true);
+  verdict();
+}
+
+if (ARM === 'reopen_census') {
+  const X = await mkMember('ws-x');
+  const Y = await mkMember('ws-y');
+  skew(1);
+  const asked = censusSpy();
+  callsByWs.get(X)[0].interruptDelay = 1500;                               // X's graceful close is slow: the pass stays in flight for 1.5 s
+  setMem(4); check('admission_held', holding(), true);
+  const pass = hib.sweepHibernation();
+  check('x_stop_started', await until(() => interrupted(X) >= 1, 4000), true);
+  setMem(12); check('admission_reopened', holding(), false);               // the hold ends while the pass is still stopping X
+  const taken = await pass;
+  check('x_went_y_spared', { taken, yLive: live(Y), yChip: !!wsOf(Y).hibernatedAt }, { taken: [X], yLive: true, yChip: false });
+  check('y_never_asked_after_the_hold_ended', asked, [X]);                 // a snapshot hoisted out of the loop would census Y on the STALE hold
+  verdict();
+}
+
+if (ARM === 'overlap_post_verdict') {
+  const Y = await mkMember('ws-y');
+  skew(1);
+  callsByWs.get(Y)[0].interruptDelay = 300;
+  setMem(4); check('admission_held', holding(), true);
+  // a SECOND pass starts the instant the first one yields after its verdict (the microtask is queued when the first re-reads Y on fresh state): any await between the live check and the stop lets it take Y again
+  const orig = store.getWorkspace.bind(store);
+  let second = null;
+  let armed = true;
+  store.getWorkspace = (id) => { if (armed && id === Y) { armed = false; queueMicrotask(() => { second = hib.sweepHibernation(); }); } return orig(id); };
+  const t1 = await hib.sweepHibernation();
+  const t2 = second ? await second : null;
+  store.getWorkspace = orig;
+  check('second_pass_started_inside_the_first', second !== null, true);
+  check('y_taken_by_exactly_one_pass', { n: t1.length + (t2?.length ?? 0), both: [...t1, ...(t2 ?? [])] }, { n: 1, both: [Y] });
+  check('y_stopped_once', interrupted(Y), 1);
+  check('y_chip_and_not_live', { live: live(Y), chip: !!wsOf(Y).hibernatedAt }, { live: false, chip: true });
   verdict();
 }
 

@@ -6,11 +6,16 @@
 // pin in bus-liveness-roster.test.ts fails if a second reader of the raw floor appears.
 
 import { idleClockStart } from '../shared/hibernation.ts';
-import { getAppStartedAt, getLastActivity } from './hibernation-activity.ts';
+import { getAppStartedAt, getAppStartedMono, getLastActivity, getLastActivityMono, monotonicNow } from './hibernation-activity.ts';
 
 export function idleClockOf(ws: { id: string; createdAt?: number }): number {
   // A createdAt in the FUTURE (wall clock stepped back after creation) is no birth time:
   // ignore it → app-start floor as before #236. Clamping to now would read "now" every sweep.
   const born = ws.createdAt !== undefined && ws.createdAt <= Date.now() ? ws.createdAt : undefined;
   return idleClockStart(getLastActivity(ws.id), getAppStartedAt(), born);
+}
+
+/** Idle time on the MONOTONIC clock (#326-fu m2): since the last activity seen this run, else the app start. Not bounded by `createdAt` — the wall figure is, and the Reliquat wait takes the smaller of the two. */
+export function monotonicIdleOf(wsId: string): number {
+  return monotonicNow() - (getLastActivityMono(wsId) ?? getAppStartedMono());
 }

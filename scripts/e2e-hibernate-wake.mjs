@@ -88,6 +88,7 @@ const ARMS = [
   'level_only', 'level_only_healed', 'level_after_done', 'fleet_unread_wake', 'toplevel_unread',
   'reliquat_10min', 'reliquat_31min', 'reliquat_none_5min', 'reliquat_fast', 'reliquat_delay_hot', 'reliquat_unknown',
   'reliquat_woken_during_stop', 'reliquat_woken_after_stop', 'reliquat_again_false', 'reliquat_overlap', 'reliquat_scopeless', 'reliquat_census_race',
+  'reliquat_msg_at_stop', 'reliquat_msg_at_census', 'reliquat_clock_jump', 'reliquat_nonfleet',   // #326-fu m1, m1, m2, m4
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -107,6 +108,11 @@ process.env.HOME = tmpHome;
 const realNow = Date.now.bind(Date);
 let skewMs = 0;
 Date.now = () => realNow() + skewMs;
+// the MONOTONIC idle clock (#326-fu m2) follows the same skew — unless an arm sets `monoSkewOverride` (a wall-clock JUMP: Date.now moves, CLOCK_MONOTONIC does not)
+const realPerf = performance.now.bind(performance);
+let monoSkewOverride = null;
+const hnActMono = await import(`${REPO}/src/main/hibernation-activity.ts`);
+if (hnActMono.__setMonotonicClockForTests) hnActMono.__setMonotonicClockForTests(() => realPerf() + (monoSkewOverride ?? skewMs));
 const MIN = 60_000;
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
@@ -235,7 +241,7 @@ const wsNow = () => store.getWorkspace(WS);
 // (or the guard under test) stands between it and hibernation — else a 'not hibernated' is vacuous.
 const eligibleIfOld = (over = {}) => shouldHibernate(wsNow(), {
   now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN, ...over,
+  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), monotonicIdleMs: Number.MAX_SAFE_INTEGER, admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN, ...over,
 });
 const live = () => delivery.sdkSessionLive(WS);
 const turnEnds = () => events.filter((e) => e.ev.type === 'turn-end').length;
@@ -332,7 +338,7 @@ if (ARM === 'window_4min' || ARM === 'window_6min') {
   // positive control: only the missing coordinator stands between it and hibernation
   const controlEligible = shouldHibernate({ ...wsNow(), parentId: 'coord-1' }, {
     now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN });
+    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), monotonicIdleMs: Number.MAX_SAFE_INTEGER, admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN });
   const hibernated = await hib.sweepHibernation();
   Object.assign(out, { controlEligible, hibernated, live: live(), autoUnread: !!wsNow().autoUnread });
   ok = controlEligible && hibernated.length === 0 && live() && wsNow().autoUnread === true;
@@ -583,6 +589,9 @@ if (ARM.startsWith('reliquat_')) {
     const script = vm.runInNewContext('`' + m[1] + '`');
     return execFileSync('bash', ['-c', script], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_WS_ID: WS }, encoding: 'utf8' });
   };
+  // R11 (#326-fu m4): the Reliquat machinery is for FLEET members — every arm but `reliquat_nonfleet` runs a member with a coordinator
+  if (ARM !== 'reliquat_nonfleet') await store.upsertWorkspace({ ...wsNow(), parentId: 'coord-1' });
+  const hnActR = await import(`${REPO}/src/main/hibernation-activity.ts`);
   const bystander = orphan('3601'); // OUTSIDE the scope: must survive everything
   const mine = ARM === 'reliquat_none_5min' || ARM === 'reliquat_census_race' ? [] : [orphan('3600')];
   members(mine);
@@ -636,14 +645,54 @@ if (ARM.startsWith('reliquat_')) {
     Object.assign(out, base, { first, aliveAfterFirst, second, live: live(), reliquatAlive: mine.every(alive), delayNow: store.getMemoryGuardSettings().reliquatWaitMin });
     ok = readyPremise && censusNow === 1 && first.length === 0 && aliveAfterFirst && live() === false && second.length === 1 && !mine.some(alive);
   } else if (ARM === 'reliquat_unknown') {
-    // the scope cannot be READ (cgroup.procs is a directory ⇒ EISDIR): UNKNOWN is not a reason to wait nor to kill — today's Veille at the normal threshold, the Reliquat untouched
+    // the scope cannot be READ (cgroup.procs is a directory ⇒ EISDIR): UNKNOWN is not NONE (R11, #326-fu m3) — NO Veille this pass, the Reliquat untouched; the deferral is ONE sweep, not a ban (the scope readable again, no Reliquat ⇒ the next pass puts it in Veille)
     fs.rmSync(path.join(scopeDir, 'cgroup.procs'));
     fs.mkdirSync(path.join(scopeDir, 'cgroup.procs'));
     const census2 = port ? await port.census(WS) : 'no-port';
     skewMs = 6 * MIN;
     const hibernated = await hib.sweepHibernation();
-    Object.assign(out, base, { census2, hibernated, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length });
-    ok = (port === null || census2 === 'unknown') && hibernated.length === 1 && !live() && mine.every(alive) && inboxBlocks().length === 0;
+    const aliveAfterFirst = mine.every(alive);
+    fs.rmSync(path.join(scopeDir, 'cgroup.procs'), { recursive: true });
+    members([]);
+    const second = await hib.sweepHibernation();
+    Object.assign(out, base, { census2, hibernated, aliveAfterFirst, second, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length });
+    ok = (port === null || census2 === 'unknown') && hibernated.length === 0 && aliveAfterFirst && second.length === 1 && !live() && mine.every(alive) && inboxBlocks().length === 0;
+  } else if (ARM === 'reliquat_msg_at_stop') {
+    // #326-fu m1: a message is delivered to the (LIVE) session at the START of the stop — it stamps activity but bumps NO wake epoch. The fresh judgement ends the signal rounds BEFORE any signal: the Reliquat lives, the member is not hibernated, nothing to tell
+    wrapPort({ stop: async (w, c) => { hnActR.noteActivity(WS); return port.stop(w, c); } });
+    skewMs = 40 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length });
+    ok = readyPremise && port !== null && hibernated.length === 0 && live() && mine.every(alive) && inboxBlocks().length === 0 && !wsNow().hibernatedAt;
+  } else if (ARM === 'reliquat_msg_at_census') {
+    // #326-fu m1: the same message lands while the CENSUS awaits: the member is judged AGAIN before the first signal round — the stop is never even asked
+    let stops = 0;
+    wrapPort({ census: async (w) => { const c = await port.census(w); hnActR.noteActivity(WS); return c; }, stop: async (w, c) => { stops++; return port.stop(w, c); } });
+    skewMs = 40 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, stops, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length });
+    ok = readyPremise && port !== null && stops === 0 && hibernated.length === 0 && live() && mine.every(alive) && inboxBlocks().length === 0;
+  } else if (ARM === 'reliquat_clock_jump') {
+    // #326-fu m2: the WALL clock jumps +3 h (NTP step / resume) over a member that was active a moment ago: the monotonic clock says so — the Reliquat wait is NOT over, nothing is stopped.
+    // Control, same process: once the monotonic clock has seen the same 3 h, the very next pass stops and tells.
+    monoSkewOverride = 0;
+    skewMs = 3 * 60 * MIN;
+    const jumped = await hib.sweepHibernation();
+    const aliveAfterJump = mine.every(alive);
+    const inboxAfterJump = inboxBlocks().length;
+    monoSkewOverride = null;   // the monotonic clock now agrees (skew follows `skewMs`)
+    const agreed = await hib.sweepHibernation();
+    const blocks = inboxBlocks();
+    Object.assign(out, base, { jumped, aliveAfterJump, inboxAfterJump, agreed, live: live(), reliquatAlive: mine.every(alive), blocks: blocks.length });
+    ok = readyPremise && censusNow === 1 && base.controlEligible && jumped.length === 0 && aliveAfterJump && inboxAfterJump === 0 && agreed.length === 1 && !live() && !mine.some(alive) && blocks.length === 1 && alive(bystander);
+  } else if (ARM === 'reliquat_nonfleet') {
+    // R11 (#326-fu m4): a member WITHOUT a coordinator is never counted, waited for or stopped — idle 10 min with a live Reliquat ⇒ today's Veille, the Reliquat left alone, the port not even consulted
+    let censuses = 0;
+    wrapPort({ census: async (w) => { censuses++; return port.census(w); } });
+    skewMs = 10 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, censuses, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length, parentId: wsNow().parentId ?? null });
+    ok = readyPremise && port !== null && !wsNow().parentId && hibernated.length === 1 && censuses === 0 && !live() && mine.every(alive) && inboxBlocks().length === 0;
   } else if (ARM === 'reliquat_woken_during_stop') {
     // a wake lands at the START of the stop: the « still wanted » check ends the signal rounds BEFORE any signal — the Reliquat lives, the member is not hibernated, nothing to tell
     wrapPort({ stop: async (w, c) => { hib.clearHibernated(WS); return port.stop(w, c); } });
