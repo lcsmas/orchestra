@@ -221,6 +221,9 @@ export interface Workspace {
   /** #227 — start failures (the Agent view's `Couldn't start the agent` / exit-before-init `error` rows), persisted so a
    *  reload or app restart re-renders them (`sdkHistory`). Capped, newest last. */
   sdkStartErrors?: Array<{ at: number; message: string }>;
+  /** #322 — what the Plafond mémoire did to this member (a command killed / the warning level crossed), persisted so a reopened pane or an app restart still shows the row (`sdkHistory`
+   *  interleaves them by `at`). Identity = (unit, seq); capped, newest last. */
+  sdkMemNotices?: Array<{ unit: string; seq: number; at: number; level: 'hard' | 'external' | 'soft'; text: string }>;
   repoPath: string;
   /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
    * 'orchestrator'`). Purely a sidebar-grouping preference: it files the

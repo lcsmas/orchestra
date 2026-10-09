@@ -88,6 +88,7 @@ import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
 import { interleaveStartErrors } from '../shared/start-errors.ts';
+import { interleaveMemNotices, makeMemNotice, type MemNoticeEntry } from '../shared/mem-notice.ts';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { clearHibernated } from './hibernation.ts';
 import { buildBrowserToolServer } from './agent-browser-tools';
@@ -2324,7 +2325,10 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
       }
     }
   }
-  if (!file) return interleaveStartErrors([], ws.sdkStartErrors ?? [], { seq: HISTORY_SEQ_BASE });
+  if (!file) {
+    const ctx0: NormalizeContext = { seq: HISTORY_SEQ_BASE };
+    return interleaveMemNotices(interleaveStartErrors([], ws.sdkStartErrors ?? [], ctx0), ws.sdkMemNotices ?? [], ctx0);
+  }
   let text: string;
   let truncated = false;
   try {
@@ -2382,7 +2386,8 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   // block triplets and push the reload-stamped truncation banner to the end.
   const restarts = restartRecordsForBackfill(ws, file);
   events.push(...interleaveRestartRows(transcriptEvents, restarts, ctx));
-  return interleaveStartErrors(events, ws.sdkStartErrors ?? [], ctx);
+  // #322: what the Plafond mémoire did to this member (a command killed / the warning level crossed) — the same shared builder as the live emit, so the reopened row == the live row.
+  return interleaveMemNotices(interleaveStartErrors(events, ws.sdkStartErrors ?? [], ctx), ws.sdkMemNotices ?? [], ctx);
 }
 
 /** Merge intentional-restart rows (#148) into a backfilled transcript's events
@@ -5199,6 +5204,19 @@ export async function sdkMarkAutoRestart(wsId: string, trigger: RestartTrigger):
     live.interruptRequested = false;
   }
   await recordRestart(wsId, trigger);
+}
+
+/** #322: emit one Plafond mémoire notice row into the workspace's LIVE event stream (src/main/memory-notice.ts). No live session ⇒ nothing to emit into: the persisted entry
+ *  (`Workspace.sdkMemNotices`) is what the next backfill shows. */
+export function sdkEmitMemNotice(wsId: string, entry: MemNoticeEntry): void {
+  const session = sessions.get(wsId);
+  if (!session) return;
+  emit(wsId, makeMemNotice(session.ctx, entry));
+}
+
+/** #322: persist a patch on the workspace record (the memory-notice sink's store seam). */
+export function sdkPatchWorkspace(wsId: string, patch: Partial<Workspace>): Promise<void> {
+  return persistWorkspacePatch(wsId, patch);
 }
 
 /** Max intentional-restart records kept on a workspace (oldest dropped). A pane

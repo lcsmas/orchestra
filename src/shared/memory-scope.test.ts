@@ -33,6 +33,18 @@ import {
   type ScopeMember,
   type VictimSnap,
   launcherExecedKeeper,
+  parseKernelOomMessage,
+  planKernelPairing,
+  parseMemoryStat,
+  workingSetBytes,
+  kernelKillsForUnit,
+  applyKernelKills,
+  memNoticeText,
+  memBusBody,
+  isSoftRecord,
+  formatMemSoftLine,
+  type MemKillRecord,
+  type MemSoftRecord,
 } from './memory-scope.ts';
 
 const GIB = 1024 ** 3;
@@ -336,4 +348,132 @@ test('classifyScopeMembers (review F1): a member that EXITS between the snapshot
   assert.deepEqual([...new Set(asked)], [99], 'no member pid was re-read from the host');
   const orphan = classifyScopeMembers([mk(10, 1), mk(14, 1)], 10, null, () => null).find((m) => m.pid === 14);
   assert.equal(orphan?.role, 'reliquat', 'control: a member whose snapshot ppid is init is still a Reliquat');
+});
+
+// ─── #322: the kernel names its victim; the words of the notice and the bus message ─────────────────────────────────
+
+const REAL_OOM_LINE = 'oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=user.slice,mems_allowed=0,oom_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-rig-wh-h1-mcabcckill-muzvubbk.scope,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-rig-wh-h1-mcabcckill-muzvubbk.scope,task=python3,pid=2413311,uid=1000'; // captured from `journalctl -k` on this host
+
+test('#322 m2: a REAL kernel oom-kill line is parsed (cgroup, comm, pid); other kernel lines and global OOMs are not', () => {
+  const k = parseKernelOomMessage(REAL_OOM_LINE, 1000);
+  assert.deepEqual(k && { pid: k.pid, comm: k.comm, atMs: k.atMs }, { pid: 2413311, comm: 'python3', atMs: 1000 });
+  assert.match(k?.oomMemcg ?? '', /orchestra-rig-wh-h1-mcabcckill-muzvubbk\.scope$/);
+  assert.equal(parseKernelOomMessage('Memory cgroup out of memory: Killed process 5 (x) total-vm:1kB', 1), null, 'only the structured oom-kill: line');
+  assert.equal(parseKernelOomMessage(REAL_OOM_LINE.replace('CONSTRAINT_MEMCG', 'CONSTRAINT_NONE'), 1), null, 'a GLOBAL oom is not a scope kill');
+  assert.equal(parseKernelOomMessage('oom-kill:constraint=CONSTRAINT_MEMCG,garbage', 1), null);
+  const odd = parseKernelOomMessage(REAL_OOM_LINE.replace('task=python3', 'task=my,prog'), 1);
+  assert.equal(odd?.comm, 'my,prog', 'a comm with a comma survives');
+});
+
+test('#322 m2: only THIS scope\'s kills inside the window, oldest first — a neighbour scope\'s kill is never ours', () => {
+  const mine = parseKernelOomMessage(REAL_OOM_LINE, 5000)!;
+  const mine2 = { ...mine, pid: 7, atMs: 4000 };
+  const other = parseKernelOomMessage(REAL_OOM_LINE.replaceAll('mcabcckill-muzvubbk', 'someone-else-aaaa'), 5000)!;
+  const old = { ...mine, pid: 9, atMs: 10 };
+  const got = kernelKillsForUnit([mine, other, old, mine2], 'orchestra-rig-wh-h1-mcabcckill-muzvubbk.scope', 3000);
+  assert.deepEqual(got.map((g) => g.pid), [7, 2413311], 'mine, in window, oldest first');
+});
+
+const rec = (over: Partial<MemKillRecord> = {}): MemKillRecord => ({ kind: 'kill', source: 'inferred', seq: 1, at: 1, level: 'hard', command: 'bigbuild --all', pid: 100, rssBytes: 90 * 1024 * 1024, candidates: ['other'], unit: 'u.scope', hardBytes: 6 * 1024 ** 3, ...over });
+
+test('#322 m2: applyKernelKills — the kernel\'s pid/comm replace the inference; the larger command that exited normally stops being the answer', () => {
+  const snaps = [{ pid: 100, comm: 'bigbuild', cmdline: 'bigbuild --all', rssPages: 20000 }]; // exited NORMALLY, bigger than the victim
+  const victim = parseKernelOomMessage(REAL_OOM_LINE, 1)!; // pid 2413311 python3, never snapshotted
+  const [r] = applyKernelKills([rec()], [victim], snaps, 4096);
+  assert.equal(r.source, 'kernel');
+  assert.equal(r.pid, 2413311);
+  assert.equal(r.command, 'python3', 'unsnapshotted victim: the kernel\'s comm, not a made-up name');
+  assert.deepEqual(r.candidates, [], 'the others exited on their own');
+  const seen = applyKernelKills([rec()], [{ ...victim, pid: 100, comm: 'bigbuild' }], snaps, 4096)[0];
+  assert.equal(seen.command, 'bigbuild --all', 'a snapshotted victim keeps its full command line and rss');
+  assert.equal(seen.rssBytes, 20000 * 4096);
+  const none = applyKernelKills([rec(), rec({ seq: 2 })], [victim], snaps, 4096);
+  assert.deepEqual(none.map((x) => x.source), ['kernel', 'inferred'], 'a record with no kernel line keeps its inference, labelled so');
+  assert.equal(none[1].command, 'bigbuild --all');
+});
+
+test('#322: the member row, the coordinator message and the soft line say workspace / command / level — and say «probably» when only inferred', () => {
+  assert.equal(memNoticeText(rec({ source: 'kernel', command: 'python3 swarm.py 8' })), 'Command python3 swarm.py 8 killed: Plafond mémoire 6 GB reached');
+  assert.equal(memNoticeText(rec({ command: 'python3 swarm.py' })), 'A command (probably python3 swarm.py) killed: Plafond mémoire 6 GB reached');
+  assert.equal(memNoticeText(rec({ command: null })), 'A command was killed: Plafond mémoire 6 GB reached (it lived too briefly to be named)');
+  assert.match(memNoticeText(rec({ source: 'kernel', level: 'external', hardBytes: null })), /killed by the system under memory pressure \(not by the Plafond mémoire\)/);
+  assert.equal(memNoticeText(rec({ source: 'kernel', command: 'x'.repeat(300) })).includes('x'.repeat(200)), false, 'a huge command line is clipped');
+  const soft: MemSoftRecord = { kind: 'soft', seq: 3, at: 5, unit: 'u.scope', bytes: Math.round(3.1 * 1024 ** 3), softBytes: 3 * 1024 ** 3, hardBytes: 6 * 1024 ** 3 };
+  assert.ok(isSoftRecord(soft) && !isSoftRecord(rec()));
+  assert.equal(memNoticeText(soft), 'Working set 3.1 GB (reclaimable cache excluded) — Plafond mémoire warning level (3 GB) crossed; hard cap 6 GB');
+  const body = memBusBody('feat-x', rec({ source: 'kernel', command: 'cargo build', pid: 42 }));
+  assert.match(body, /workspace feat-x/);
+  assert.match(body, /command `cargo build` \(pid 42, ~90 MB\)/);
+  assert.match(body, /hard level \(6 GB\)/);
+  assert.match(memBusBody('feat-x', soft), /Nothing was killed or slowed/);
+  assert.match(formatMemSoftLine('feat-x', soft), /^memory-cap\[feat-x\] warning level crossed: working set 3\.10 GB >= 3\.00 GB — scope u\.scope/);
+});
+
+test('#322: inferKillRecords labels what it makes `inferred` (the kill kind is explicit)', () => {
+  const before = new Map([['1:7', { pid: 1, startTicks: 7, comm: 'hog', cmdline: 'hog', rssPages: 10, adj: 1000 }]]);
+  const [r] = inferKillRecords({ before, aliveKeys: new Set(), delta: { oomKill: 1, hardCredit: 1 }, maxBytes: 1 << 28, unit: 'u.scope', seqNext: 1, nowMs: 1 });
+  assert.equal(r.kind, 'kill');
+  assert.equal(r.source, 'inferred');
+});
+
+test('#322 R5: the working set = memory.current − inactive_file (never negative; the raw figure when memory.stat has no inactive_file)', () => {
+  const stat = parseMemoryStat('anon 1000\nfile 5000\ninactive_file 3000\nactive_file 2000\nsomething_else 12\nbad line\nx 1.5\n');
+  assert.deepEqual({ a: stat.anon, f: stat.inactive_file, x: stat.x }, { a: 1000, f: 3000, x: undefined });
+  assert.equal(workingSetBytes(10_000, stat), 7000);
+  assert.equal(workingSetBytes(2_000, stat), 0, 'a stale stat larger than the reading ⇒ 0, not negative');
+  assert.equal(workingSetBytes(10_000, {}), 10_000);
+});
+
+test('#322 review F7: when the CLI (or the keeper) is the victim the text says the SESSION ENDED — never «the member\'s session survived»', () => {
+  const k = (over: Partial<MemKillRecord>): MemKillRecord => ({ kind: 'kill', source: 'kernel', seq: 1, at: 1, level: 'hard', command: 'claude --output-format stream-json', pid: 7, rssBytes: 1, candidates: [], unit: 'u.scope', hardBytes: 6 * 1024 ** 3, ...over });
+  assert.match(memBusBody('w', k({})), /The member's session survived\./);
+  const cli = memBusBody('w', k({ role: 'cli' }));
+  assert.doesNotMatch(cli, /session survived/);
+  assert.match(cli, /agent process: its SESSION ENDED/);
+  assert.match(memBusBody('w', k({ role: 'keeper' })), /keeper: its SESSION ENDED/);
+  assert.match(memNoticeText(k({ role: 'cli' })), /the member's own agent process: the session ended$/);
+  assert.doesNotMatch(memNoticeText(k({})), /session ended/);
+  const soft: MemSoftRecord = { kind: 'soft', seq: 3, at: 5, unit: 'u.scope', bytes: 3 * 1024 ** 3, softBytes: 3 * 1024 ** 3, hardBytes: null, suppressed: 4 };
+  assert.match(memBusBody('w', soft), /4 further crossing\(s\) since the last warning were not repeated/);
+});
+
+// --- planKernelPairing: oldest-first from UNCLAIMED lines, with the debt of records that never got theirs ---
+
+test("planKernelPairing: lines pair oldest-first with the records; the SURPLUS (the next kill's line already in the journal) is left unclaimed for the next round", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const plan = planKernelPairing([L(12), L(13)], new Set(), 0, 1);
+  assert.deepEqual(plan.pair.map((l) => l.pid), [12]);
+  assert.deepEqual(plan.claim.map((l) => l.pid), [12], '13 is NOT claimed: it names the next kill');
+  assert.equal(plan.newDebts, 0);
+});
+
+test("planKernelPairing: records that never got their line OWE it - the oldest unclaimed lines are theirs and are set aside, never handed to the current kill", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const plan = planKernelPairing([L(12), L(13)], new Set(), 1, 1);
+  assert.deepEqual(plan.pair.map((l) => l.pid), [13], "the stale 12 is the earlier kill's");
+  assert.deepEqual(plan.claim.map((l) => l.pid), [12, 13]);
+  assert.equal(plan.debtsSettled, 1);
+  const stale = planKernelPairing([L(12)], new Set(), 1, 1);
+  assert.deepEqual(stale.pair, []);
+  assert.deepEqual(stale.claim.map((l) => l.pid), [12]);
+  assert.equal(stale.newDebts, 1);
+});
+
+test("planKernelPairing: a line naming a pid an earlier record already named is that record's (set aside, settling one debt); fewer lines than records pairs NOTHING and the missing ones are owed", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const named = planKernelPairing([L(12), L(13)], new Set([12]), 1, 1);
+  assert.deepEqual(named.pair.map((l) => l.pid), [13]);
+  assert.equal(named.debtsSettled, 1);
+  const short = planKernelPairing([L(12)], new Set(), 0, 2);
+  assert.deepEqual(short.pair, [], 'one line for two kills: which kill is it? - no certainty');
+  assert.deepEqual(short.claim.map((l) => l.pid), [12], 'but the line is accounted for');
+  assert.equal(short.newDebts, 1);
+  assert.deepEqual(planKernelPairing([], new Set(), 0, 1), { claim: [], pair: [], debtsSettled: 0, newDebts: 1 });
+});
+
+test("planKernelPairing: a LATE line (its debt already forgiven) naming a pid an earlier record guessed is recognised as that record's - the current kill is not handed it", () => {
+  const L = (pid: number) => parseKernelOomMessage(REAL_OOM_LINE.replace('pid=2413311', `pid=${pid}`), pid)!;
+  const plan = planKernelPairing([L(12), L(13)], new Set([12]), 0, 1); // debts 0: the 4 s are over; pid 12 was the (right) guess of an earlier record
+  assert.deepEqual(plan.pair.map((l) => l.pid), [13]);
+  assert.deepEqual(plan.claim.map((l) => l.pid), [12, 13]);
 });

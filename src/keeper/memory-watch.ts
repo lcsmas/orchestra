@@ -8,11 +8,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  SOFT_REARM_FRACTION,
+  applyKernelKills,
   inferKillRecords,
+  kernelKillsForUnit,
+  planKernelPairing,
   parseCgroupLimit,
   parseMemoryEvents,
+  parseMemoryStat,
   snapKey,
+  workingSetBytes,
+  type KernelOomKill,
   type MemKillRecord,
+  type MemSoftRecord,
   type MemoryEvents,
   type VictimSnap,
 } from '../shared/memory-scope.ts';
@@ -22,6 +30,13 @@ export interface MemoryWatchOpts {
   cgroupDir: string;
   unit: string;
   onKill(rec: MemKillRecord): void;
+  /** #322 (D-Q2, R5): the WARNING level — the scope's WORKING SET (`memory.current` − `inactive_file`) crossing `softBytes` upward fires `onSoft` once per crossing (re-armed below {@link SOFT_REARM_FRACTION} of the level). Nothing is throttled. Absent/null `softBytes` = no warning. */
+  softBytes?: number | null;
+  onSoft?(rec: MemSoftRecord): void;
+  /** Rate bound on warnings (review F5): at most one per this many ms; crossings in between are counted (`suppressed`) and told with the next one. Default 30 s. */
+  softMinIntervalMs?: number;
+  /** #322 m2: the kernel's own OOM lines since a time (null = the log is unreadable → the inference stands). Default: `journalctl -k`; tests inject. Absent in `o` = no kernel lookup. */
+  kernelLog?: (sinceMs: number) => Promise<KernelOomKill[] | null>;
   log(msg: string): void;
   /** Snapshot cadence: `hotMs` while the scope uses > 50 % of its limit, `fastMs` above 25 %, `idleMs` otherwise (defaults 100 / 250 / 500 ms). */
   hotMs?: number;
@@ -64,6 +79,16 @@ const VICTIM_DEATH_GRACE_MS = 30;
 /** The kernel counts the memcg OOM event (`oom`) BEFORE it counts the kill (`oom_kill`): a look may fall between the two. The `oom` credit therefore CARRIES to the look that sees the kill; one that
  *  never produces a kill (nothing to kill) expires after this long, so it cannot later turn an outside-OOM kill into a «hard» one. */
 const OOM_CREDIT_TTL_MS = 10_000;
+/** The kernel-log lookup forks `journalctl` INSIDE the scope: it waits for the scope to fall under this fraction of its limit (a victim's memory is freed as it exits), at most this long — then it does not fork at all. */
+const HEADROOM_FRACTION = 0.92;
+const HEADROOM_WAIT_MS = 1200;
+const HEADROOM_POLL_MS = 40;
+/** At most one warning per scope per this long (review F5): a scope pulsing around its level must not wake the coordinator every second. */
+export const SOFT_MIN_INTERVAL_MS = 30_000;
+/** Kernel lines remembered as «already accounted for» (review F2). */
+const CLAIMED_LINES_CAP = 512;
+/** A record's missing kernel line is waited for this long (OUR clock, no journal timestamp involved); then the debt is forgiven — the kernel rate-limited that line away. */
+const DEBT_TTL_MS = 4000;
 const MAX_MEMBERS = 400;
 
 export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
@@ -89,6 +114,22 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
   const statics = new Map<number, { startTicks: number; comm: string; cmdline: string; adj: number }>();
   const recs: MemKillRecord[] = [];
   let seq = o.seqStart ?? 1;
+  /** Consecutive kills for which the kernel log showed nothing at all: the journal is probably invisible to us — stop waiting for it (one quick try per kill). */
+  let kernelMisses = 0;
+  let lastLookAt = (o.now ?? Date.now)();
+  let softArmed = true;
+  let lastSoftAt = Number.NEGATIVE_INFINITY;
+  let softSuppressed = 0;
+  /** A crossing swallowed by the rate bound whose scope is STILL above the level: told once, deferred, when the interval is over (round 2 m1) — never repeated every interval. */
+  let softPending = false;
+  /** Kernel lines already ACCOUNTED for (paired with a record, or set aside as an earlier record's): never offered to a later round (review F2). */
+  const claimedLines = new Set<string>();
+  /** Local timestamps of emitted records that never got their kernel line (skipped lookup, ratelimit, in flight): the oldest unclaimed lines are THEIRS, for {@link DEBT_TTL_MS}. */
+  let lineDebts: number[] = [];
+  /** The records of a kill whose kernel-log lookup is in flight: if the watch is stopped meanwhile (the keeper exits), they are emitted as `inferred` by stop() — a kill must never die with the wait (review F2). */
+  let pendingKills: MemKillRecord[] | null = null;
+  /** Pids already named by an emitted record (kernel or inferred): a kernel line naming one of them is a STALE line of an earlier kill, never this one (review F1). Bounded. */
+  const namedPids = new Set<number>();
   let last: MemoryEvents | null = parseMemoryEvents(readSafe(eventsFile) ?? '');
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -155,39 +196,172 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
           cur = parseMemoryEvents(readSafe(eventsFile) ?? '') ?? cur;
         }
       }
-      // Level credit (F1 of the gate): every `oom` event this look saw joins the carried credit; each kill spends one. A look that sees the `oom` bump but not yet the kill leaves the credit for the next.
-      const t = now();
-      if (cur && last) for (let i = 0; i < cur.oom - last.oom; i++) oomCredits.push(t);
-      oomCredits = oomCredits.filter((at) => t - at <= OOM_CREDIT_TTL_MS);
-      if (cur && last && cur.oomKill > last.oomKill) {
-        const killsNow = cur.oomKill - last.oomKill;
-        const hardCredit = Math.min(killsNow, oomCredits.length);
-        oomCredits = oomCredits.slice(hardCredit); // the oldest credits are spent
-        const made = inferKillRecords({
-          before,
-          aliveKeys: alive,
-          delta: { oomKill: killsNow, hardCredit },
-          maxBytes: maxBytes(),
-          unit: o.unit,
-          seqNext: seq,
-          nowMs: now(),
-          pageSize: PAGE,
-        });
-        seq += made.length;
-        for (const rec of made) {
-          recs.push(rec);
-          if (recs.length > 50) recs.shift();
-          try {
-            o.onKill(rec);
-          } catch (e) {
-            o.log(`memory watch: onKill failed (${(e as Error).message})`);
-          }
-        }
+      const inferred = inferFor(before, alive, cur);
+      if (cur) last = cur; // accounted NOW: a stop() during the kernel-log wait must not count this delta again in its final look
+      for (const k of before.keys()) if (!alive.has(k)) snap.delete(k); // …and its victims leave the snapshot NOW: a final look must not rank (and name) them a second time (round 2 M3)
+      if (inferred.length > 0) {
+        pendingKills = inferred;
+        const made = await refineWithKernel(inferred, before);
+        if (pendingKills === null) return; // stop() ran during the wait and already emitted the inferred records
+        pendingKills = null;
+        emitKills(made);
       }
       for (const k of before.keys()) if (!alive.has(k)) snap.delete(k); // forgotten, named or not
       if (cur) last = cur;
+      lastLookAt = now();
     } finally {
       busy = false;
+    }
+  }
+
+  /** The level credit (F1 of the gate) and the inferred records for the kills this read of `memory.events` shows: every `oom` event joins the carried credit, each kill spends one. A look that sees the `oom` bump but
+   *  not yet the kill leaves the credit for the next. Does NOT touch `last` (the caller does, once the delta is accounted). */
+  function inferFor(before: ReadonlyMap<string, VictimSnap>, alive: ReadonlySet<string>, cur: MemoryEvents | null): MemKillRecord[] {
+    const t = now();
+    if (cur && last) for (let i = 0; i < cur.oom - last.oom; i++) oomCredits.push(t);
+    oomCredits = oomCredits.filter((at) => t - at <= OOM_CREDIT_TTL_MS);
+    if (!(cur && last && cur.oomKill > last.oomKill)) return [];
+    const killsNow = cur.oomKill - last.oomKill;
+    const hardCredit = Math.min(killsNow, oomCredits.length);
+    oomCredits = oomCredits.slice(hardCredit); // the oldest credits are spent
+    return inferKillRecords({
+      before,
+      aliveKeys: alive,
+      delta: { oomKill: killsNow, hardCredit },
+      maxBytes: maxBytes(),
+      unit: o.unit,
+      seqNext: 0, // the real number is assigned at EMIT time: the delivery cursor is a high-water mark, so a soft record emitted during the kernel-log wait must not get a lower seq than a kill emitted after it
+      nowMs: now(),
+      pageSize: PAGE,
+    });
+  }
+
+  /** stop() runs one LAST look, synchronously and without the kernel-log wait: the CLI itself may be the victim and the keeper exits at once (CLI gone, no client) — a counter that moved must still leave a record (review F4). */
+  function finalLook(): void {
+    try {
+      const before = new Map(snap);
+      const alive = snapshot();
+      const cur = parseMemoryEvents(readSafe(eventsFile) ?? '');
+      const inferred = inferFor(before, alive, cur);
+      if (cur) last = cur;
+      if (inferred.length > 0) emitKills(inferred);
+    } catch (e) {
+      o.log(`memory watch: final look failed (${(e as Error).message})`);
+    }
+  }
+
+  /** Number and emit kill records NOW (the seq is assigned here, at emit time — see look()). */
+  function emitKills(list: MemKillRecord[]): void {
+    for (const r of list) {
+      const rec = { ...r, seq: seq++ };
+      recs.push(rec);
+      if (recs.length > 50) recs.shift();
+      if (rec.pid !== null) {
+        if (namedPids.size >= 256) namedPids.clear();
+        namedPids.add(rec.pid);
+      }
+      try {
+        o.onKill(rec);
+      } catch (e) {
+        o.log(`memory watch: onKill failed (${(e as Error).message})`);
+      }
+    }
+  }
+
+
+  /** Wait (bounded) until the scope is below {@link HEADROOM_FRACTION} of its limit again, so the lookup's fork cannot hit the limit. False = no headroom within {@link HEADROOM_WAIT_MS}: do NOT fork. */
+  async function waitForHeadroom(): Promise<boolean> {
+    const t0 = now();
+    for (;;) {
+      const max = maxBytes();
+      const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
+      // the working set, not memory.current: reclaimable page cache is freed by the kernel before it charges a fork to the limit (review F5)
+      const used = workingSetBytes(cur, parseMemoryStat(readSafe(path.join(o.cgroupDir, 'memory.stat')) ?? ''));
+      if (max === null || !Number.isFinite(cur) || used <= max * HEADROOM_FRACTION) return true;
+      if (stopped || now() - t0 >= HEADROOM_WAIT_MS) return false;
+      await sleep(HEADROOM_POLL_MS);
+    }
+  }
+  /** #322 m2: ask the kernel log who died. The line lands in the journal a few ms after the kill: poll (≤ ~1.4 s). Lines are paired oldest-first from the ones nobody has claimed (see {@link planKernelPairing}); a kill that
+   *  cannot be paired honestly stays `inferred` («probably») and OWES its line, so a stale or late line is never handed to a later kill. */
+  async function refineWithKernel(made: MemKillRecord[], before: ReadonlyMap<string, VictimSnap>): Promise<MemKillRecord[]> {
+    const lookup = o.kernelLog;
+    if (!lookup || made.length === 0) return made;
+    const t0 = now();
+    lineDebts = lineDebts.filter((t) => t0 - t <= DEBT_TTL_MS);
+    const since = Math.min(lastLookAt, lineDebts[0] ?? Infinity) - 3000;
+    const tries = kernelMisses >= 3 ? 1 : 8;
+    const claim = (lines: readonly KernelOomKill[]): void => {
+      for (const l of lines) claimedLines.add(`${l.atMs}:${l.pid}`);
+      while (claimedLines.size > CLAIMED_LINES_CAP) claimedLines.delete(claimedLines.values().next().value as string);
+    };
+    let plan = planKernelPairing([], namedPids, lineDebts.length, made.length);
+    let sawNothing = true;
+    let journalReadable = false;
+    for (let i = 0; i < tries && !stopped; i++) {
+      // Forking journalctl in a scope that is STILL at its limit invites a second OOM episode — measured: the forked child itself was OOM-killed (a `node` at adj 0) and tool processes were taken as collateral.
+      // The victim's memory is freed only as it exits: wait (bounded) for headroom; none ⇒ NO fork, the inference stands (labelled `inferred`) and these kills owe their lines.
+      if (!(await waitForHeadroom())) {
+        for (let k = 0; k < made.length; k++) lineDebts.push(now());
+        return made;
+      }
+      let lines: KernelOomKill[] | null = null;
+      try {
+        lines = await lookup(since);
+      } catch {
+        lines = null;
+      }
+      if (lines) journalReadable = true;
+      const fresh = (lines ? kernelKillsForUnit(lines, o.unit, since) : []).filter((l) => !claimedLines.has(`${l.atMs}:${l.pid}`));
+      if (fresh.length > 0) sawNothing = false;
+      plan = planKernelPairing(fresh, namedPids, lineDebts.length, made.length);
+      if (plan.pair.length === made.length) break; // enough fresh lines (a surplus waits, unclaimed, for the next round)
+      if (i < tries - 1) await sleep(180);
+    }
+    claim(plan.claim);
+    lineDebts = lineDebts.slice(plan.debtsSettled);
+    kernelMisses = sawNothing ? kernelMisses + 1 : 0; // a miss = the journal showed NOTHING new
+    if (plan.pair.length !== made.length) {
+      if (journalReadable) for (let k = 0; k < plan.newDebts; k++) lineDebts.push(now()); // an unreadable journal owes nothing: no line will ever come
+      return made;
+    }
+    return applyKernelKills(made, plan.pair, [...before.values()], PAGE);
+  }
+
+  /** #322 (D-Q2): the warning level, edge-triggered on `memory.current` — one record per upward crossing, re-armed below SOFT_REARM_FRACTION of the level. */
+  function softCheck(currentBytes: number): void {
+    const soft = o.softBytes;
+    if (!o.onSoft || !soft || soft <= 0 || !Number.isFinite(currentBytes)) return;
+    const interval = o.softMinIntervalMs ?? SOFT_MIN_INTERVAL_MS;
+    if (!softArmed) {
+      if (currentBytes < soft * SOFT_REARM_FRACTION) {
+        softArmed = true;
+        softPending = false; // the excursion is over; its count stays, to be told with the next warning
+      } else if (softPending && currentBytes >= soft && now() - lastSoftAt >= interval) {
+        softPending = false;
+        emitSoft(currentBytes); // a crossing the bound swallowed, still high: told now (once)
+      }
+      return;
+    }
+    if (currentBytes < soft) return;
+    softArmed = false;
+    if (now() - lastSoftAt < interval) {
+      softSuppressed += 1; // review F5: counted, told with the next warning
+      softPending = true;
+      return;
+    }
+    emitSoft(currentBytes);
+  }
+
+  function emitSoft(currentBytes: number): void {
+    const soft = o.softBytes as number;
+    lastSoftAt = now();
+    const rec: MemSoftRecord = { kind: 'soft', seq: seq++, at: now(), unit: o.unit, bytes: currentBytes, softBytes: soft, hardBytes: maxBytes(), ...(softSuppressed > 0 ? { suppressed: softSuppressed } : {}) };
+    softSuppressed = 0;
+    try {
+      o.onSoft?.(rec);
+    } catch (e) {
+      o.log(`memory watch: onSoft failed (${(e as Error).message})`);
     }
   }
 
@@ -195,6 +369,7 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
     if (stopped) return;
     void look().catch((e) => o.log(`memory watch: look failed (${(e as Error).message})`));
     const cur = Number((readSafe(path.join(o.cgroupDir, 'memory.current')) ?? '0').trim());
+    if (o.onSoft && o.softBytes) softCheck(workingSetBytes(cur, parseMemoryStat(readSafe(path.join(o.cgroupDir, 'memory.stat')) ?? ''))); // R5: the working set, not the page cache
     const max = maxBytes();
     const frac = max !== null && Number.isFinite(cur) ? cur / max : 0;
     const base = frac > 0.5 ? (o.hotMs ?? 100) : frac > 0.25 ? (o.fastMs ?? 250) : (o.idleMs ?? 500);
@@ -215,6 +390,12 @@ export function startMemoryWatch(o: MemoryWatchOpts): MemoryWatch {
 
   return {
     stop() {
+      if (pendingKills) {
+        const p = pendingKills;
+        pendingKills = null;
+        emitKills(p); // review F2: the keeper is exiting while a kill waits for the kernel log — say it now, labelled `inferred`, before the process is gone
+      }
+      finalLook(); // review F4 — before `stopped`, so snapshot()/reads still work
       stopped = true;
       if (timer) clearTimeout(timer);
       try {

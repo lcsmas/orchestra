@@ -78,14 +78,21 @@ export function shouldRequestHistory(s: HistoryBackfillState): boolean {
  * the store (a session that folded a few live messages must not show them
  * twice once the same lines are read back off disk).
  */
-/** Start-failure rows (#227) are emitted live AND persisted for the backfill, under different ids: drop a history `error` row the
- *  live fold already holds (same `at` + text) so one failure never renders twice in the run that produced it. */
-export function dropLiveErrorEchoes<T extends { role: string; at?: number; text?: string }>(
-  history: readonly T[],
-  live: readonly { role: string; at?: number; text?: string }[],
-): T[] {
-  const seen = new Set(live.filter((m) => m.role === 'error').map((m) => `${m.at}|${m.text}`));
-  return history.filter((m) => !(m.role === 'error' && seen.has(`${m.at}|${m.text}`)));
+/** Rows that are emitted live AND persisted for the backfill, under different ids: start-failure `error` rows (#227) and the Plafond mémoire notice rows (#322). A history row of that kind the live fold already
+ *  holds (same role, notice kind, `at` and text) is the SAME row — drop it, so one event never renders twice in the pane that saw it live AND reads it back off the store. */
+type EchoRow = { role: string; at?: number; text?: string; noticeKind?: string };
+const echoKey = (m: EchoRow): string => `${m.role}|${m.noticeKind ?? ''}|${m.at}|${m.text}`;
+const isEchoable = (m: EchoRow): boolean => m.role === 'error' || (m.role === 'system' && !!m.noticeKind);
+
+export function dropLiveEchoes<T extends EchoRow>(history: readonly T[], live: readonly EchoRow[]): T[] {
+  const seen = new Set(live.filter(isEchoable).map(echoKey));
+  return history.filter((m) => !(isEchoable(m) && seen.has(echoKey(m))));
+}
+
+/** The store's merge of a disk backfill into a session that already folded live messages: history is OLDER, so it is prepended; a row the live fold already holds — by id, or as an echo — is not repeated. */
+export function mergeHistoryIntoLive<T extends EchoRow & { id: string }, L extends EchoRow & { id: string }>(history: readonly T[], live: readonly L[]): Array<T | L> {
+  const liveIds = new Set(live.map((m) => m.id));
+  return [...dropLiveEchoes(history.filter((m) => !liveIds.has(m.id)), live), ...live];
 }
 
 export function dedupeHistoryAgainstLive(opts: {

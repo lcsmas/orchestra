@@ -15,6 +15,8 @@ const keeperClient = src('keeper-client.ts');
 const keeper = src('../keeper/index.ts');
 const hooks = src('hooks-server.ts');
 const cli = src('../cli/index.ts');
+const mainIndex = src('index.ts');
+const memNotice = src('memory-notice.ts');
 const live = (s: string, needle: string): boolean => s.split('\n').some((l) => l.includes(needle) && !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'));
 
 test('the ONE keeper-spawn site passes the memory-cap decision as the 4th argument, computed from the frozen run id, the workspace (fleet-member test), the sandbox flag and the store\'s levels', () => {
@@ -41,7 +43,8 @@ test('the facade launches the keeper through systemd-run ONLY when given a spec,
 });
 
 test('the spawn frame carries memoryCap ONLY when there are limits to verify (absent ⇒ today\'s frame, byte for byte)', () => {
-  assert.ok(live(keeperClient, '...(cap?.limits ? { memoryCap: { unit: cap.unit, hardBytes: cap.limits.hardBytes, wrapper: oomWrapperPath() } } : {}),'));
+  assert.ok(live(keeperClient, '...(cap?.limits') && live(keeperClient, 'hardBytes: cap.limits.hardBytes,') && live(keeperClient, 'wrapper: oomWrapperPath(),'));
+  assert.ok(live(keeperClient, 'noticeFile: memNoticeFilePath(wsId),') && live(keeperClient, '...(cap.limits.softBytes !== null && cap.limits.softBytes < cap.limits.hardBytes ? { softBytes: cap.limits.softBytes } : {}),'), '#322: the keeper is told where to persist and, when it is a real warning level, what it is');
   assert.ok(live(keeperClient, 'installOomWrapper();'), 'installKeeper lays the tool wrapper down on every start');
 });
 
@@ -58,11 +61,13 @@ test('the keeper verifies its own scope, starts the kill watch, wraps the tools 
 });
 
 test('a kill reaches the app log and the listeners once (push frame AND helloAck catch-up), keyed by scope unit + seq', () => {
-  assert.ok(live(keeperClient, 'deliverKills(f.memKills); // #320: kills that happened while no app was attached'));
-  assert.ok(live(keeperClient, 'deliverMemKill(wsId, f.rec);'));
-  assert.ok(live(keeperClient, 'log.warn(formatMemKillLine(wsId, rec));'));
-  assert.ok(live(keeperClient, 'if (rec.seq <= cursor().seen(rec.unit)) return;'), 'the dedupe key is the PERSISTED cursor (an app restart must not replay)');
+  assert.ok(live(keeperClient, 'deliverCatchUp(f.memKills, f.memSofts); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)'), 'the catch-up carries kills AND warnings, in seq order');
+  assert.ok(live(keeperClient, "} else if (f.t === 'memKill') {") && live(keeperClient, "} else if (f.t === 'memSoft') {"));
+  assert.ok(live(keeperClient, 'if (attempt === 1) log.warn(formatMemKillLine(wsId, rec));'), 'the app-log line exists once per kill, whatever the retries');
+  assert.ok(live(keeperClient, 'if (rec.seq <= cursor().seen(rec.unit)) return true;'), 'the dedupe key is the PERSISTED cursor (an app restart must not replay)');
   assert.ok(live(keeperClient, 'cursor().mark(rec.unit, rec.seq);'));
+  assert.ok(live(keeperClient, 'drainMemNotices(wsId); // #322 m1: the keeper\'s durable file first (kills AND warnings, in order) …'), 'every attach reads the keeper\'s durable file');
+  assert.ok(live(keeperClient, 'drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now (the keeper\'s stop() flushes a pending kill before it exits — review F2)') && live(keeperClient, 'drainMemNotices(wsId); // #322 m1: the keeper\'s connection ended — anything it recorded is in its file'), 'and so does the end of the connection');
 });
 
 test('bus-status: the route sends the levels + the memory-paused runs (D1), the CLI prints them', () => {
@@ -72,4 +77,42 @@ test('bus-status: the route sends the levels + the memory-paused runs (D1), the 
   assert.ok(hooks.includes('unsupportedReason: sup.reason'), 'and WHY it cannot'); 
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryGuardLine(res.memoryGuard as MemoryGuardSnapshot, Array.isArray(res.memoryPausedRuns)'));
   assert.ok(live(cli, 'process.stdout.write(`${formatMemoryCapLine({ ...mc, switchOn: res.runExists === false ? null : frozenForCap.memoryCap })}\\n`);'));
+});
+
+test('#322: the sink is subscribed at boot with the REAL seams (store, agent-sdk emit + persist, the bus `send`), the boot scan runs after it, and sdkHistory rebuilds the rows', () => {
+  assert.ok(live(mainIndex, '  startMemoryNotices('), 'the sink is started');
+  assert.ok(live(mainIndex, '    { onMemoryKill, onMemorySoft },'), 'it listens to BOTH hooks (kills FI-1 v1.8 + the warning level)');
+  assert.ok(live(mainIndex, '      patchWorkspace: sdkPatchWorkspace,') && live(mainIndex, '      emitLive: sdkEmitMemNotice,'), 'rows are persisted and emitted into the live stream through agent-sdk');
+  assert.ok(live(mainIndex, "        if (!db) throw new Error('no bus');"), 'no bus ⇒ it THROWS (the record stays owed); the write itself is the shared gated send (pinned below)');
+  assert.ok(live(mainIndex, '      resolveRunId: resolveWaveRunId,'), 'the row lands in the run the coordinator reads');
+  const i = mainIndex.indexOf('  startMemoryNotices(');
+  assert.ok(i >= 0 && mainIndex.indexOf('  drainAllMemNotices((id) => !!store.getWorkspace(id));') > i, 'the boot scan runs AFTER the sink is subscribed (else the first records have nobody to tell)');
+  assert.ok(live(agentSdk, '  return interleaveMemNotices(interleaveStartErrors(events, ws.sdkStartErrors ?? [], ctx), ws.sdkMemNotices ?? [], ctx);') && live(agentSdk, '    return interleaveMemNotices(interleaveStartErrors([], ws.sdkStartErrors ?? [], ctx0), ws.sdkMemNotices ?? [], ctx0);'), 'both sdkHistory returns merge the persisted rows');
+  assert.ok(live(agentSdk, '  emit(wsId, makeMemNotice(session.ctx, entry));'), 'the live emit builds the row with the SAME builder as the backfill');
+  assert.ok(live(memNotice, "  const kind = isSoftRecord(rec) ? 'status' : 'escalation';"), 'kill = escalation, warning = status');
+});
+
+test('#322: the keeper PERSISTS before it tells, reads the soft level from the spawn frame, and names victims from the kernel log', () => {
+  const k = keeper.indexOf('  memWatch = startMemoryWatch({');
+  assert.ok(k >= 0, 'the watch is started');
+  const block = keeper.slice(k, keeper.indexOf('  klog(`memory cap: ${capInfo.state.toUpperCase()}'));
+  assert.ok(/onKill: \(found\) => \{[\s\S]*?\n      persist\(rec\);/.test(block), 'a kill is appended to the durable file FIRST (after its role is known)');
+  assert.ok(block.includes("found.pid === child?.pid ? { ...found, role: 'cli' }"), 'review F7: the victim being the agent process / the keeper is recorded');
+  assert.ok(/onSoft: \(rec\) => \{\n      persist\(rec\);/.test(block), 'so is a warning');
+  assert.ok(block.includes('kernelLog: readKernelOomKills,') && block.includes('softBytes: cap.softBytes && cap.softBytes < cap.hardBytes ? cap.softBytes : null,'));
+  assert.ok(live(keeper, "      send({ t: 'memSoft', rec });") && live(keeper, "      send({ t: 'memKill', rec });"));
+  assert.ok(live(keeper, '      ...(memSofts.length ? { memSofts: memSofts.slice() } : {}),'));
+});
+
+test('#322 review F6: the bus write follows the run\'s liveness switch («counted, not fired») and names unread mail', () => {
+  assert.ok(live(mainIndex, '        return sendGated(db, m, log); // the run\'s `liveness` switch gates the write (review F6); see memory-notice-bus.ts'), 'index.ts writes through the shared gated send (the rig calls the same function)');
+  const gate = src('memory-notice-bus.ts');
+  assert.ok(live(gate, "    on = busSwitch(db, m.runId, 'liveness');") && live(gate, "  if (!on) return 'counted';"), 'the escalation mechanism\'s switch gates the write, like boot-wedge #197 and the liveness sweep');
+  assert.ok(live(gate, '  const coordinator = getRun(db, m.runId)?.coordinator ?? null;') && gate.includes('this message may never be read'), 'a run whose coordinator is not the recipient is unread mail: said, not hidden');
+  assert.ok(live(memNotice, "  if (outcome === 'counted') deps.log.info("), 'and a counted record is logged as such');
+});
+
+test('#322 review F5: kills and warnings have SEPARATE notice-file budgets in the keeper, and the soft rate bound is read from the keeper\'s env', () => {
+  assert.ok(live(keeper, '    const slot = noticeBudget.take(kind);') && live(keeper, 'const noticeBudget = createNoticeBudget();'), 'the keeper writes through the two-budget helper (a pulsing scope can never use up the lines a later kill needs — proven in mem-notice-file.test.ts)');
+  assert.ok(live(keeper, "    softMinIntervalMs: intEnv('ORCHESTRA_MEMCAP_SOFT_MIN_INTERVAL_MS', SOFT_MIN_INTERVAL_MS),"));
 });
