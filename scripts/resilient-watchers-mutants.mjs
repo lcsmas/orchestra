@@ -160,12 +160,12 @@ function rigRed(arms) {
   const r = sh(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(path.join(HERE, '.r2-register.mjs')).href, path.join(HERE, 'e2e-resilient-watchers.mjs')], { env: { ...process.env, RIG_ARMS: arms.join(',') } });
   const out = r.stdout ?? '';
   const red = [];
-  for (const m of out.matchAll(/^FAIL (\w+) \([^)]*\)(?: — (.*))?$/gm)) {
+  for (const m of out.matchAll(/^FAIL ([\w-]+) \([^)]*\)(?: — (.*))?$/gm)) {
     red.push(`rig:${m[1]}`);
     for (const part of (m[2] ?? '').split(' | ')) { const name = /^([a-z0-9_]+):/.exec(part)?.[1]; if (name) red.push(`rig:${m[1]}:${name}`); }
     if (!m[2]) red.push(`rig:${m[1]}:(no verdict)`);
   }
-  return { red, pass: (out.match(/^PASS \w+/gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('RESILIENT WATCHERS')).pop() ?? `no summary (exit ${r.status})`) };
+  return { red, pass: (out.match(/^PASS [\w-]+ /gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('RESILIENT WATCHERS')).pop() ?? `no summary (exit ${r.status})`) };
 }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 const strays = () => {
