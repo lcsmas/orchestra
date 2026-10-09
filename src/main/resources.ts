@@ -6,6 +6,7 @@
 // process metrics (Electron's app metrics via the platform seam), and a cached
 // `du` pass over Orchestra's data dirs.
 import { platform } from './platform';
+import { store } from './store';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -180,6 +181,11 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     containers: accountingView(getContainerAccounting()),
     // #328: per-member memory read from the member's kernel scope + live Reliquats (FI-1; [] scopes = untracked, the tree figure stays).
     members: currentMemberMemory(), // read AFTER the awaits above: the cache stamp is its own, not this sample's start
+    // #323: the cap levels the Garde mémoire window holds NOW (read hot): the page marks the soft level and flags members started under others.
+    capLevels: (() => {
+      const s = store.getMemoryGuardSettings();
+      return { softGb: s.capSoftGb, hardGb: s.capHardGb };
+    })(),
     // #331: browsers the resource monitor / a Pause dure stopped, per workspace (data layer; the chip on the page is D4-gated)
     browserReliquats: getBrowserReliquatView(),
   };

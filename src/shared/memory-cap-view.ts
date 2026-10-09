@@ -40,11 +40,15 @@ const gbExact = (b: number): string => `${Math.round((b / GIB) * 100) / 100} GB`
  * The row's tooltip. Both figures are named with what each is compared to. The hard level is the one the KERNEL holds for this very scope (read from `memory.max`); the soft level is the Garde mémoire setting NOW —
  * a member keeps what it started with, so when the settings moved since its start the line says so instead of letting the bar pretend.
  */
-export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardGb: number }): string {
+export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardGb: number } | null): string {
   const parts = [`${gb(cap.billBytes)} kernel bill (what the hard level compares)`];
   if (cap.workingSetBytes !== null) parts.push(`${gb(cap.workingSetBytes)} working set (what the soft level compares)`);
   if (cap.peakBytes !== null) parts.push(`peak ${gb(cap.peakBytes)}`);
   const applied = `hard ${gbExact(cap.hardBytes)} (held by the kernel for this session)`;
+  if (settings === null) {
+    parts.push(applied); // an older main that does not send the levels: only what the kernel holds
+    return parts.join(' · ');
+  }
   const hardNow = Math.abs(cap.hardBytes - settings.hardGb * GIB) > 0.01 * GIB;
   parts.push(`soft ${settings.softGb} GB (settings now), ${applied}`);
   if (hardNow) parts.push(`settings now say hard ${settings.hardGb} GB — they apply to sessions started from now on`);

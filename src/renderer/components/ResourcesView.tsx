@@ -9,6 +9,8 @@ import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionRe
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
 import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-chip';
+import { capSummaryLine } from '../../shared/memory-cap-view';
+import { CapBar } from './CapBar';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
@@ -196,6 +198,7 @@ function AgentRowView({
   ctxTokens,
   accountLabel,
   browsers,
+  capLevels,
 }: {
   row: AgentRow;
   trace: number[];
@@ -203,6 +206,7 @@ function AgentRowView({
   ctxTokens: number | undefined;
   accountLabel: string | null;
   browsers: BrowserChip | null;
+  capLevels: { softGb: number; hardGb: number } | null;
 }) {
   const [open, setOpen] = useState(false);
   const procs = row.sessions.flatMap((s) => s.processes).sort((a, b) => b.memBytes - a.memBytes);
@@ -289,7 +293,14 @@ function AgentRowView({
               <Spark values={trace} />
             </span>
             <CpuCell pct={row.cpuPct} />
-            <span className="res-cell">{formatBytes(row.memBytes)}</span>
+            {row.cap ? (
+              <span className="res-cell res-mem">
+                {formatBytes(row.memBytes)}
+                <CapBar cap={row.cap} levels={capLevels} />
+              </span>
+            ) : (
+              <span className="res-cell">{formatBytes(row.memBytes)}</span>
+            )}
             <span className="res-cell dim res-col-procs">{row.procCount}</span>
           </>
         )}
@@ -459,7 +470,9 @@ export function AgentsTable({
   accountLabelFor,
   warning,
   reliquatsLine = null,
+  capLine = null,
   browsersOf,
+  capLevels = null,
 }: {
   rows: AgentRow[];
   loginSessions: SessionResourceStat[];
@@ -470,8 +483,12 @@ export function AgentsTable({
   warning: string | null;
   /** #328: the dim « Reliquats not tracked … » line (null = nothing to say). Optional so older callers keep compiling. */
   reliquatsLine?: string | null;
+  /** #323: the dim « N capped members · closest: … » line (null = no member runs under a cap). */
+  capLine?: string | null;
   /** #331 (D-Q4 A'): the row's « 🌐 N arrêtés » chip — asked of rows that EXIST only, never creates one. */
   browsersOf?: (row: AgentRow) => BrowserChip | null;
+  /** #323: the Garde mémoire cap levels NOW (null = an older main): the bar marks the soft level and the tooltip says when a member started under others. */
+  capLevels?: { softGb: number; hardGb: number } | null;
 }) {
   return (
     <>
@@ -504,6 +521,7 @@ export function AgentsTable({
                   ctxTokens={ctxOf(row)}
                   accountLabel={accountLabelFor(row)}
                   browsers={browsersOf ? browsersOf(row) : null}
+                  capLevels={capLevels}
                 />
               ))}
               {loginSessions.map((s) => (
@@ -541,6 +559,11 @@ export function AgentsTable({
           {reliquatsLine && (
             <div className="res-reliquats-note" role="note" data-res-reliquats-note="">
               {reliquatsLine}
+            </div>
+          )}
+          {capLine && (
+            <div className="res-cap-note" role="note" data-res-cap-note="">
+              {capLine}
             </div>
           )}
     </>
@@ -814,6 +837,8 @@ export function ResourcesView() {
             accountLabelFor={accountLabelFor}
             warning={unattributedWarning(snap?.containers)}
             reliquatsLine={reliquatsNote(snap?.members)}
+            capLine={capSummaryLine(rows.map((r) => ({ key: r.key, name: r.ws ? r.ws.branch : r.fallbackName, cap: r.cap })))}
+            capLevels={snap?.capLevels ?? null}
             browsersOf={(row) => browsersChipFor(snap?.browserReliquats, row)}
           />
         </section>
