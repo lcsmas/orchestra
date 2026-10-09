@@ -198,7 +198,7 @@ test('M18 billing what escaped the scope: the row ADDS the keeper tree\'s RSS th
 test('C1 (#323) memberViewFrom.cap: the limit, bill, working set and peak of the scope that HOLDS THE KEEPER — what the kernel really enforces on the live session', () => {
   const live = { ...reading('k2', 2100, [], 7), maxBytes: 6144 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB };
   const v = memberViewFrom('ws-a', [live]);
-  assert.deepEqual(v.cap, { unit: live.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB });
+  assert.deepEqual(v.cap, { unit: live.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB, scopes: 1 });
 });
 
 test('C2 (#323) cap is the keeper\'s scope, never an older generation kept alive by Reliquats; a keeper in no scope has no cap; no limit / junk / unreadable meter ⇒ null, never 0', () => {

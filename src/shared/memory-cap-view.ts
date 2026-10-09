@@ -30,9 +30,11 @@ export function capUsage(cap: MemberCapView, softBytes: number | null): CapUsage
   const workingFrac = cap.workingSetBytes === null ? null : cap.workingSetBytes / cap.hardBytes;
   const softOk = softBytes !== null && softBytes > 0 && softBytes < cap.hardBytes;
   const tone: CapTone = billFrac >= CAP_NEAR_FRACTION ? 'crit' : softOk && cap.workingSetBytes !== null && cap.workingSetBytes >= (softBytes as number) ? 'warn' : 'ok';
-  return { billFrac, workingFrac, softFrac: softOk ? (softBytes as number) / cap.hardBytes : null, tone, billPct: Math.round(billFrac * 100) };
+  return { billFrac, workingFrac, softFrac: softOk ? (softBytes as number) / cap.hardBytes : null, tone, billPct: pctFloor(billFrac) };
 }
 
+/** Whole percent, FLOORED: « 90 % » on the page always means at/over the red threshold (89.6 % must not read as 90 while the bar is still green). */
+const pctFloor = (frac: number): number => Math.floor(frac * 100 + 1e-9);
 const gb = (b: number): string => `${(b / GIB).toFixed(b >= 10 * GIB ? 0 : 1)} GB`;
 const gbExact = (b: number): string => `${Math.round((b / GIB) * 100) / 100} GB`;
 
@@ -51,6 +53,7 @@ export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardG
   }
   const hardNow = Math.abs(cap.hardBytes - settings.hardGb * GIB) > 0.01 * GIB;
   parts.push(`soft ${settings.softGb} GB (settings now), ${applied}`);
+  if ((cap.scopes ?? 1) > 1) parts.push(`the bar is the session's scope only — the member has ${cap.scopes} scopes and the figure beside adds them`);
   if (hardNow) parts.push(`settings now say hard ${settings.hardGb} GB — they apply to sessions started from now on`);
   return parts.join(' · ');
 }
@@ -66,8 +69,8 @@ export function capSummaryLine(rows: readonly CapRowLike[]): string | null {
   const capped = rows.filter((r): r is CapRowLike & { cap: MemberCapView } => r.cap !== null);
   if (capped.length === 0) return null;
   const worst = capped.reduce((a, b) => (b.cap.billBytes / b.cap.hardBytes > a.cap.billBytes / a.cap.hardBytes ? b : a));
-  const pct = Math.round((worst.cap.billBytes / worst.cap.hardBytes) * 100);
-  return `${capped.length} capped member${capped.length === 1 ? '' : 's'} · closest: ${worst.name} ${pct} % of ${gb(worst.cap.hardBytes)}`;
+  const pct = pctFloor(worst.cap.billBytes / worst.cap.hardBytes);
+  return `${capped.length} capped member${capped.length === 1 ? '' : 's'} · closest: ${worst.name} ${pct} % of ${gbExact(worst.cap.hardBytes)}`;
 }
 
 // ─── The activation, as the Garde mémoire window may SAY it ────────────────────────────────────────────────────────
@@ -75,16 +78,27 @@ export function capSummaryLine(rows: readonly CapRowLike[]): string | null {
 export interface CapSwitchSummary {
   /** The LIVE default the next run will freeze (Settings/Bus page edit it). */
   liveOn: boolean;
-  /** Open (not closed) runs whose FROZEN copy has the switch ON / the open runs counted. */
-  runsOn: number;
-  runsOpen: number;
+  /** Open (not closed) runs whose FROZEN copy has the switch ON / the open runs counted. null = the fleet bus is not open: UNKNOWN, never counted as zero. */
+  runsOn: number | null;
+  runsOpen: number | null;
+  /** false = this host cannot hold a scope limit (the switch may read ON and nothing be capped); null = not asked. */
+  hostOk: boolean | null;
   text: string;
 }
 
 /** Read-only: « Cap is OFF for new runs · ON on 0 of 3 open runs ». The window never offers a control for it — the switch is frozen per run at wave start (D-Q1). */
-export function capSwitchSummary(live: Pick<BusSwitches, 'memoryCap'>, runs: ReadonlyArray<{ closedAt: number | null; flags: Pick<BusSwitches, 'memoryCap'> }>): CapSwitchSummary {
+export function capSwitchSummary(
+  live: Pick<BusSwitches, 'memoryCap'>,
+  runs: ReadonlyArray<{ closedAt: number | null; flags: Pick<BusSwitches, 'memoryCap'> }> | null,
+  host: { ok: true } | { ok: false; reason: string } | null = null,
+): CapSwitchSummary {
+  const liveOn = live.memoryCap === true;
+  const head = `Cap is ${liveOn ? 'ON' : 'OFF'} for new runs`;
+  const hostNote = host !== null && !host.ok ? ` · no effect on this host: ${host.reason}` : '';
+  const hostOk = host === null ? null : host.ok;
+  if (runs === null) return { liveOn, runsOn: null, runsOpen: null, hostOk, text: `${head} · open runs unknown (the fleet bus is not open)${hostNote}` };
   const open = runs.filter((r) => r.closedAt === null);
   const runsOn = open.filter((r) => r.flags.memoryCap === true).length;
   const runsOpen = open.length;
-  return { liveOn: live.memoryCap === true, runsOn, runsOpen, text: `Cap is ${live.memoryCap === true ? 'ON' : 'OFF'} for new runs · ON on ${runsOn} of ${runsOpen} open run${runsOpen === 1 ? '' : 's'}` };
+  return { liveOn, runsOn, runsOpen, hostOk, text: `${head} · ON on ${runsOn} of ${runsOpen} open run${runsOpen === 1 ? '' : 's'}${hostNote}` };
 }

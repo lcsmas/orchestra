@@ -24,9 +24,10 @@ test('WINDOW: the Plafond section commits the PAIR through the shared planner on
   assert.ok(/data-mg-cap-soft/.test(w) && /data-mg-cap-hard/.test(w) && /data-mg-cap-section/.test(w) && /data-mg-cap-switch/.test(w), 'the hooks the drive reads');
 });
 
-test('WINDOW (D-Q1): the activation is only SHOWN — the window reads the switch (busSwitches + busListRuns) and never writes one', () => {
+test('WINDOW (D-Q1): the activation is only SHOWN — the window reads ONE light summary (busCapSummary) and never writes a switch', () => {
   const w = codeOf('src/renderer/components/MemoryGuardSettings.tsx');
-  assert.ok(/window\.orchestra\.busSwitches\(\), window\.orchestra\.busListRuns\(\)/.test(w) && /capSwitchSummary\(live, runs\)/.test(w));
+  assert.ok(/setCapSwitch\(await window\.orchestra\.busCapSummary\(\)\)/.test(w), 'the window asks the dedicated light read, not the whole pane snapshot every 2 s');
+  assert.ok(!/busListRuns|busSnapshot/.test(w), 'no pane-projection read from a 2 s poll (review MAJOR 2)');
   assert.ok(!/setBusSwitches/.test(w), 'no write path to the frozen switch from this window');
   assert.equal((w.match(/type="checkbox"/g) ?? []).length, 1, 'the only checkbox is the Admission / fast-Veille toggle');
 });

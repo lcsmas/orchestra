@@ -28,6 +28,8 @@ export interface MemberCapView {
   /** `memory.current − inactive_file` — the figure the soft level compares (R5); null = unreadable. */
   workingSetBytes: number | null;
   peakBytes: number | null;
+  /** How many scope generations the member has (the MEM figure beside the bar adds them all; the bar is the session's scope only). Absent = 1. */
+  scopes?: number;
 }
 
 /** One tracked member: the SUM over its scope generations (a restart while Reliquats keep the old scope alive leaves two). */
@@ -101,7 +103,7 @@ export function memberViewFrom(wsId: string, readings: readonly ScopeReading[], 
 function capOf(readings: readonly ScopeReading[]): MemberCapView | null {
   const r = readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);
   if (!r || !finite(r.currentBytes) || !finite(r.maxBytes) || (r.maxBytes as number) <= 0) return null;
-  return { unit: r.unit, hardBytes: r.maxBytes as number, billBytes: r.currentBytes, workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null, peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null };
+  return { unit: r.unit, hardBytes: r.maxBytes as number, billBytes: r.currentBytes, workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null, peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: readings.length };
 }
 
 export function buildMemberMemoryReport(at: number, tracked: readonly MemberMemoryView[], untracked: readonly string[], unsupported: string | null, strayScopes: number | null = null): MemberMemoryReport {

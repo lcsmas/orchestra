@@ -214,6 +214,7 @@ type ServableApi = Omit<
   | 'busSnapshot'
   | 'busListRuns'
   | 'busSwitches'
+  | 'busCapSummary'
   | 'setBusSwitches'
   // #161 — the human-gate READ (bus:humanGates) is registered by
   // registerBusPaneIpc() alongside the other pane reads; the RESOLVE

@@ -2,6 +2,7 @@ import type { BusSnapshot, BusRunSummary } from './bus-view.ts';
 import type { BusSwitches } from './bus-switches.ts';
 import type { ModelDefaults } from './model-defaults.ts';
 import type { MemoryGuardSettings, MemoryGuardSetResult, MemoryGuardView } from './memory-guard.ts';
+import type { CapSwitchSummary } from './memory-cap-view.ts';
 import type { EffortDefaults } from './effort-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { PauseMode } from './pause-lifecycle.ts';
@@ -133,6 +134,8 @@ export interface OrchestraAPI {
   busListRuns: () => Promise<BusRunSummary[]>;
   /** The LIVE switch values (what Settings edits) - distinct from a run's frozen copy. */
   busSwitches: () => Promise<BusSwitches>;
+  /** #323 — the memory-cap activation as the Garde mémoire window shows it (read-only): live default, open runs that froze it ON, host support. Never rejects. */
+  busCapSummary: () => Promise<CapSwitchSummary>;
   /** Flip one or more live switches. NOT a pane channel: the pane is read-only
    *  in v1 and its registrar refuses write handlers, so this write is
    *  registered separately (src/main/index.ts). Returns the normalized set.

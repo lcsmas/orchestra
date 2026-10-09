@@ -230,7 +230,7 @@ test('P15 (#323) the producer carries the scope\'s own limit, working set and pe
   const a = scope('ws-a'); // keeperPid 100 ⇒ the live generation
   const { deps } = host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 2100 * MB }, procs: { [a.unit]: [] }, cap: { [a.unit]: { maxBytes: 6144 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB } } });
   const v = sampleMemberMemory(deps).tracked[0];
-  assert.deepEqual(v.cap, { unit: a.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB });
+  assert.deepEqual(v.cap, { unit: a.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB, scopes: 1 });
   const { deps: d2 } = host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 2100 * MB }, procs: { [a.unit]: [] } });
   assert.equal(sampleMemberMemory(d2).tracked[0].cap, null, 'a reader that gives no limit (FI-1 v1.10 host) ⇒ no cap, the row stays as today');
 });
@@ -266,7 +266,7 @@ test('P16 (#323) the cap view THROUGH H1\'s real FI-1 functions over a fake cgro
     const v = sampleMemberMemory(deps).tracked[0];
     assert.equal(v.scopes, 2);
     assert.equal(v.keeperInScope, true);
-    assert.deepEqual(v.cap, { unit: `orchestra-ws-${ws}-live01.scope`, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB }, 'the LIVE generation\'s limit through H1\'s code — not the leftover\'s 3 GB, not a stub');
+    assert.deepEqual(v.cap, { unit: `orchestra-ws-${ws}-live01.scope`, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB, scopes: 2 }, 'the LIVE generation\'s limit through H1\'s code — not the leftover\'s 3 GB, not a stub');
     assert.ok(leftover.length > 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

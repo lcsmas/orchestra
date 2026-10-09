@@ -243,6 +243,7 @@ test('N1 — bus IPC is registered OUTSIDE createMainWindow (no double-register 
 
 interface PaneStubModule {
   busSnapshot: (runId?: string | null) => BusSnapshot;
+  busCapSummary: () => { liveOn: boolean; runsOn: number | null; runsOpen: number | null; hostOk: boolean | null; text: string };
   registerBusPaneIpc: () => void;
   BUS_PANE_IPC_CHANNELS: { channel: string; writes: boolean; what: string }[];
   getBus: () => unknown;
@@ -278,7 +279,7 @@ function loadPaneWithStub(tmp: string): { m: PaneStubModule; ipcMain: StubIpcMai
   const entry = path.join(tmp, 'entry.ts');
   writeFileSync(
     entry,
-    `export { busSnapshot, registerBusPaneIpc, BUS_PANE_IPC_CHANNELS } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-pane.ts'))};\n` +
+    `export { busSnapshot, busCapSummary, registerBusPaneIpc, BUS_PANE_IPC_CHANNELS } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-pane.ts'))};\n` +
       `export { getBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};\n` +
       `export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};\n`,
   );
@@ -381,3 +382,27 @@ test('T118.4 (F3) — registerBusPaneIpc() EXECUTES: registers the reads and REF
     if (bundle) rmSync(bundle, { force: true });
   }
 });
+
+test('#323 (review MAJOR 2) — busCapSummary() EXECUTES with the bus down: open runs are UNKNOWN (null), never « ON on 0 of 0 open runs »; the live default and the host support are still said', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'bus-pane-capsum-'));
+  let bundle = '';
+  try {
+    const loaded = loadPaneWithStub(tmp);
+    bundle = loaded.bundle;
+    assert.equal(loaded.m.getBus(), null, 'precondition: the bus is not open in this rig');
+    const s = loaded.m.busCapSummary();
+    assert.equal(s.runsOn, null);
+    assert.equal(s.runsOpen, null);
+    assert.match(s.text, /^Cap is (ON|OFF) for new runs · open runs unknown \(the fleet bus is not open\)/);
+    assert.doesNotMatch(s.text, /0 of 0/);
+    assert.equal(typeof s.hostOk, 'boolean', 'the host support was asked');
+    assert.ok(loaded.ipcMain._handled.length === 0, 'calling the reader registers nothing');
+    loaded.m.registerBusPaneIpc();
+    assert.ok(loaded.ipcMain._handled.includes('bus:capSummary'), 'the light read is registered by the read-only registrar');
+    assert.ok(loaded.m.BUS_PANE_IPC_CHANNELS.some((c) => c.channel === 'bus:capSummary' && c.writes === false), 'and enumerated as a READ');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    if (bundle) rmSync(bundle, { force: true });
+  }
+});
+

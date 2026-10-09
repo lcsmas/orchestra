@@ -30,6 +30,7 @@ const api: OrchestraAPI = {
   busSnapshot: (runId) => ipcRenderer.invoke('bus:snapshot', runId ?? null),
   busListRuns: () => ipcRenderer.invoke('bus:listRuns'),
   busSwitches: () => ipcRenderer.invoke('bus:switches'),
+  busCapSummary: () => ipcRenderer.invoke('bus:capSummary'),
   setBusSwitches: (next) => ipcRenderer.invoke('bus:setSwitches', next),
   busHumanGates: () => ipcRenderer.invoke('bus:humanGates'),
   resolveHumanGate: (gateId, resolution) =>
