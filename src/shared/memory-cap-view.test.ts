@@ -30,6 +30,8 @@ test('V3 an unreadable working set never raises the soft tone (we cannot tell) b
   assert.equal(capUsage(cap(3.5, 3.4), null).tone, 'ok');
   assert.equal(capUsage(cap(3.5, 3.4), null).softFrac, null);
   assert.equal(capUsage(cap(3.5, 3.4), 7 * GB).softFrac, null, 'a soft level at/above the hard level marks nothing');
+  assert.equal(capUsage(cap(3.5, 3.4), 6 * GB).softFrac, null, 'a soft level EQUAL to the hard level marks nothing either (the tick would sit on the end of the track)');
+  assert.equal(capUsage(cap(3.5, 3.4), 6 * GB).tone, 'ok');
   assert.equal(capUsage(cap(3.5, 3.4), 7 * GB).tone, 'ok');
 });
 

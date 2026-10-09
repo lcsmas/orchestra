@@ -212,4 +212,7 @@ test('C2 (#323) cap is the keeper\'s scope, never an older generation kept alive
   assert.equal(memberViewFrom('ws-a', [{ ...live, currentBytes: null }]).cap, null, 'unreadable meter ⇒ unmeasured, not 0 of 3 GB');
   assert.equal(memberViewFrom('ws-a', [{ ...live, workingSetBytes: null }]).cap?.workingSetBytes, null, 'an unreadable working set stays null (the bar then shows the bill only)');
   assert.equal(memberViewFrom('ws-a', [{ ...live, peakBytes: undefined }]).cap?.peakBytes, null);
+  assert.equal(memberViewFrom('ws-a', [{ ...live, workingSetBytes: Number.NaN }]).cap?.workingSetBytes, null, 'a junk working set is unknown, never NaN');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, workingSetBytes: -5 }]).cap?.workingSetBytes, null, 'a negative one too');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, peakBytes: Number.POSITIVE_INFINITY }]).cap?.peakBytes, null);
 });

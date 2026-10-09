@@ -9,7 +9,8 @@ const pct = (f: number): string => `${(Math.min(1, Math.max(0, f)) * 100).toFixe
  * (`memory.current − inactive_file`, what the soft warning compares); the tick = the soft level. Amber once the working set is at/over the soft level, red once the bill is within 90 % of the hard level
  * (`capUsage` decides — pure, src/shared/memory-cap-view.ts). Rendered only for a member whose scope has a limit applied; the tooltip names both figures with what each is compared to.
  */
-export function CapBar({ cap, levels }: { cap: MemberCapView; levels: { softGb: number; hardGb: number } | null }) {
+export function CapBar({ cap, levels: given }: { cap: MemberCapView; levels: { softGb: number; hardGb: number } | null }) {
+  const levels = given ?? null; // a caller that forgets them degrades to « what the kernel holds », never a crash
   const u = capUsage(cap, levels ? levels.softGb * GIB : null);
   const tip = capTooltip(cap, levels);
   return (
