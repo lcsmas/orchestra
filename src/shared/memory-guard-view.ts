@@ -102,3 +102,18 @@ export function planCapCommit(softText: string, hardText: string, current: Memor
   if (capSoftGb === current.capSoftGb && capHardGb === current.capHardGb) return { kind: 'unchanged' };
   return { kind: 'patch', patch: { capSoftGb, capHardGb } };
 }
+
+export type WaitCommit =
+  | { kind: 'unchanged' }
+  | { kind: 'invalid'; error: string }
+  | { kind: 'patch'; patch: { reliquatWaitMin: number } };
+
+/** #323 / #326: what committing the typed Reliquat wait (minutes) does — validated by the SAME backend rule (1 … 1440 min), nothing written until it is valid. The field travels alone: it is not part of any other pair. */
+export function planReliquatWaitCommit(text: string, current: MemoryGuardSettings, totalBytes?: number | null): WaitCommit {
+  const reliquatWaitMin = parseGbInput(text); // a plain number parser ("30", "7,5"); the unit is minutes, not GB
+  if (reliquatWaitMin === null) return { kind: 'invalid', error: 'Enter the Reliquat wait as a number of minutes.' };
+  const error = validateMemoryGuardSettings({ ...current, reliquatWaitMin }, totalBytes);
+  if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };
+  if (reliquatWaitMin === current.reliquatWaitMin) return { kind: 'unchanged' };
+  return { kind: 'patch', patch: { reliquatWaitMin } };
+}

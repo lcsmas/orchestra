@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clock, gaugeModel, guardChip, parseGbInput, planCapCommit, planThresholdCommit } from './memory-guard-view.ts';
+import { clock, gaugeModel, guardChip, parseGbInput, planCapCommit, planReliquatWaitCommit, planThresholdCommit } from './memory-guard-view.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from './memory-guard.ts';
 
 const D = DEFAULT_MEMORY_GUARD_SETTINGS;
@@ -120,4 +120,24 @@ test('cap commit (#323): the thresholds are untouched by a cap commit (the patch
   const r = planCapCommit('4', '8', { ...D, admissionGb: 10, criticalGb: 4 });
   assert.deepEqual(r, { kind: 'patch', patch: { capSoftGb: 4, capHardGb: 8 } });
   assert.deepEqual(Object.keys((r as { patch: object }).patch).sort(), ['capHardGb', 'capSoftGb']);
+});
+
+test('Reliquat wait commit (#323/#326): a valid changed value → a patch with ONLY that key; the same value (any spelling) → unchanged', () => {
+  assert.deepEqual(planReliquatWaitCommit('45', D), { kind: 'patch', patch: { reliquatWaitMin: 45 } });
+  assert.deepEqual(planReliquatWaitCommit('30', D), { kind: 'unchanged' });
+  assert.deepEqual(planReliquatWaitCommit('30.0', D), { kind: 'unchanged' });
+  assert.deepEqual(planReliquatWaitCommit('1', D), { kind: 'patch', patch: { reliquatWaitMin: 1 } }, 'the lower bound is allowed');
+  assert.deepEqual(planReliquatWaitCommit('1440', D), { kind: 'patch', patch: { reliquatWaitMin: 1440 } }, 'the upper bound is allowed');
+});
+
+test('Reliquat wait commit: out-of-range or non-numeric input is REFUSED with a sentence, never a patch (nothing is written)', () => {
+  for (const t of ['0', '-5', '1441', '99999', '0.5']) {
+    const r = planReliquatWaitCommit(t, D);
+    assert.equal(r.kind, 'invalid', t);
+    assert.match(r.kind === 'invalid' ? r.error : '', /^The Reliquat wait must be between 1 and 1440 minutes\.$/);
+  }
+  for (const t of ['', '  ', 'abc', 'Infinity']) {
+    const r = planReliquatWaitCommit(t, D);
+    assert.equal(r.kind === 'invalid' ? r.error : null, 'Enter the Reliquat wait as a number of minutes.', JSON.stringify(t));
+  }
 });

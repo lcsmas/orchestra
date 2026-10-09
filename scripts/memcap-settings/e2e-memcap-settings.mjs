@@ -71,7 +71,7 @@ const typeInto = async (cdp, sel, text, how) => {
 };
 const dom = (cdp) => cdp.eval(`(() => {
   const q = (s) => document.querySelector(s);
-  return { open: !!q('[aria-label="Memory guard"]'), soft: q('[data-mg-cap-soft]')?.value ?? null, hard: q('[data-mg-cap-hard]')?.value ?? null, admission: q('[data-mg-admission]')?.value ?? null, critical: q('[data-mg-critical]')?.value ?? null,
+  return { open: !!q('[aria-label="Memory guard"]'), soft: q('[data-mg-cap-soft]')?.value ?? null, hard: q('[data-mg-cap-hard]')?.value ?? null, wait: q('[data-mg-reliquat-wait]')?.value ?? null, admission: q('[data-mg-admission]')?.value ?? null, critical: q('[data-mg-critical]')?.value ?? null,
     error: q('[data-mg-error]')?.textContent.trim() ?? null, sw: q('[data-mg-cap-switch]')?.textContent.trim() ?? null, swAttr: q('[data-mg-cap-switch]')?.getAttribute('data-mg-cap-switch') ?? null, section: !!q('[data-mg-cap-section]'),
     toggles: document.querySelectorAll('[aria-label="Memory guard"] input[type=checkbox]').length, applies: q('[data-mg-cap-applies]')?.textContent.trim() ?? null };
 })()`);
@@ -104,7 +104,7 @@ async function armCap() {
     const btn = await cdp.eval(`(() => { const e = document.querySelector('[aria-label="Memory guard settings"]'); if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
     await cdp.click(btn.x, btn.y);
     const d0 = await waitFor(async () => { const d = await dom(cdp); return d.open && d.soft !== null && d.soft !== '' ? d : null; }, 20000, 'the Memory guard window with its values');
-    clause(arm, 'G1/window-has-the-plafond-section-with-the-stored-levels', d0.section && d0.soft === '3' && d0.hard === '6' && d0.admission === '6' && d0.critical === '3', J(d0));
+    clause(arm, 'G1/window-has-the-plafond-section-with-the-stored-levels', d0.section && d0.soft === '3' && d0.hard === '6' && d0.wait === '30' && d0.admission === '6' && d0.critical === '3', J(d0));
     clause(arm, 'G1/activation-is-shown-read-only-from-the-frozen-run-switches', /^Cap is (ON|OFF) for new runs · ON on \d+ of \d+ open runs/.test(d0.sw ?? '') && /ON on [1-9]/.test(d0.sw ?? '') && d0.toggles === 1, `"${d0.sw}" (the seeded runs froze memory_cap ON); checkboxes in the window: ${d0.toggles} (the Admission toggle only — no control for the switch)`);
     clause(arm, 'G1/window-says-levels-apply-to-members-started-from-now-on', /started from now on/.test(d0.applies ?? ''), `"${d0.applies}"`);
     await cdp.mouse(5, 890); await sleep(300); await cdp.eval('document.fonts.ready.then(() => true)');
@@ -135,6 +135,18 @@ async function armCap() {
     await typeInto(cdp, '[data-mg-cap-soft]', '0.1', 'enter'); // back to the committed value: the refusal clears
     await waitFor(async () => (await dom(cdp)).error === null, 8000, 'the refusal to clear');
     const shotOk = await cdp.shot(winClipBad); saveShot(`${LABEL}-3-window-levels-set.png`, shotOk);
+
+    // the Reliquat wait (#326): committed alone; an out-of-range value is refused inline and nothing is written
+    await typeInto(cdp, '[data-mg-reliquat-wait]', '45', 'enter');
+    await waitFor(async () => readStore(world)?.reliquatWaitMin === 45, 10000, 'the Reliquat wait 45 committed');
+    clause(arm, 'G2/reliquat-wait-commits-through-the-ui-and-is-persisted', readStore(world)?.reliquatWaitMin === 45 && readStore(world)?.capSoftGb === 0.1 && readStore(world)?.capHardGb === 0.25, J(readStore(world)));
+    const storeW = J(readStore(world));
+    await typeInto(cdp, '[data-mg-reliquat-wait]', '0', 'blur');
+    await sleep(800);
+    const dW = await dom(cdp);
+    clause(arm, 'G3/reliquat-wait-out-of-range-refused-inline-and-nothing-written', /Reliquat wait must be between 1 and 1440 minutes/.test(dW.error ?? '') && J(readStore(world)) === storeW, `error "${dW.error}"; store before ${storeW} after ${J(readStore(world))}`);
+    await typeInto(cdp, '[data-mg-reliquat-wait]', '45', 'enter');
+    await waitFor(async () => (await dom(cdp)).error === null, 8000, 'the refusal to clear');
 
     // close the window (Done) and start the first member
     await cdp.eval(`[...document.querySelectorAll('[aria-label="Memory guard"] button')].find((b) => /Done/.test(b.textContent))?.click(); true`);
