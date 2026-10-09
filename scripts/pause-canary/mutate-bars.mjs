@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Pause canary (#258): in-place-style mutants of bars.mjs against src/main/pause-canary-bars.test.ts — the unit layer's own proof (each instrument's bar can say FAIL).
 // Runs in a SCRATCH COPY (never the working tree), clean control before AND after, anchors must match exactly once, the copy of bars.mjs is restored byte-exact (cmp).
-//   node scripts/pause-canary/mutate-bars.mjs        exit 0 = every mutant killed, 1 = a mutant survived / the control is not clean
+//   node scripts/pause-canary/mutate-bars.mjs            exit 0 = every mutant killed, 1 = a mutant survived / the control is not clean
+//   node scripts/pause-canary/mutate-bars.mjs --memhog   the same for memhog-bars.mjs against src/main/pause-canary-memhog.test.ts (#324)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,17 +10,19 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const MEMHOG = process.argv.includes('--memhog');
+const TEST = MEMHOG ? 'pause-canary-memhog.test.ts' : 'pause-canary-bars.test.ts';
 const base = path.join(os.homedir(), '.cache', 'pause-canary');
 const tmp = fs.mkdtempSync(path.join(base, 'mutbars-'));
 fs.mkdirSync(path.join(tmp, 'src', 'main'), { recursive: true });
 fs.mkdirSync(path.join(tmp, 'scripts', 'pause-canary'), { recursive: true });
 for (const f of fs.readdirSync(path.join(REPO, 'scripts', 'pause-canary'))) if (f.endsWith('.mjs')) fs.copyFileSync(path.join(REPO, 'scripts', 'pause-canary', f), path.join(tmp, 'scripts', 'pause-canary', f));
-fs.copyFileSync(path.join(REPO, 'src', 'main', 'pause-canary-bars.test.ts'), path.join(tmp, 'src', 'main', 'pause-canary-bars.test.ts'));
+fs.copyFileSync(path.join(REPO, 'src', 'main', TEST), path.join(tmp, 'src', 'main', TEST));
 const targetOf = (f) => path.join(tmp, 'scripts', 'pause-canary', f);
-const origOf = Object.fromEntries(['bars.mjs', 'lib.mjs'].map((f) => [f, fs.readFileSync(targetOf(f), 'utf8')]));
-const run = () => { const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', 'src/main/pause-canary-bars.test.ts'], { cwd: tmp, encoding: 'utf8' }); return { pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1) }; };
+const origOf = Object.fromEntries(['bars.mjs', 'lib.mjs', 'memhog-bars.mjs'].map((f) => [f, fs.readFileSync(targetOf(f), 'utf8')]));
+const run = () => { const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', `src/main/${TEST}`], { cwd: tmp, encoding: 'utf8' }); return { pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1) }; };
 
-const MUTANTS = [
+const PAUSE_MUTANTS = [
   ['hard-bar-le', 'm.tAllPausedS < BARS.hardAllPausedS', 'm.tAllPausedS <= BARS.hardAllPausedS'],
   ['hard-bar-null-ok', 'num(m.tAllPausedS) && m.tAllPausedS < BARS.hardAllPausedS', '(!num(m.tAllPausedS) || m.tAllPausedS < BARS.hardAllPausedS)'],
   ['lost-ge1', 'lw.lostCount === BARS.lostWork', 'lw.lostCount <= 1'],
@@ -70,6 +73,8 @@ const MUTANTS = [
   ['kind-app-anywhere', "/^(\\S*\\/)?orchestra( |$)/.test(p.cmd)", "/orchestra( |$)/.test(p.cmd)", 'lib.mjs'],
   ['snapshot-transient-listed', ".filter((n) => !isTransientName(n))", "", 'lib.mjs'],
 ];
+import { MEMHOG_MUTANTS } from './memhog-bars.mutants.mjs';
+const MUTANTS = MEMHOG ? MEMHOG_MUTANTS : PAUSE_MUTANTS;
 const clean = run();
 let bad = 0;
 console.log(`CLEAN control: pass ${clean.pass} fail ${clean.fail}`);

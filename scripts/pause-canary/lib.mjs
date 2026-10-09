@@ -187,7 +187,7 @@ export function assertNoForeignKeeperSockets(H, spec) {
   return { hashed: socks.filter((s) => s.hashed).length, total: socks.length, maxLen: Math.max(...socks.map((s) => s.len)) };
 }
 
-export async function makeRig({ label, spec, apiUrl, appBin, claudeBin }) {
+export async function makeRig({ label, spec, apiUrl, appBin, claudeBin, storeExtra = {} }) {
   if (!appBin || !fs.existsSync(path.join(path.dirname(appBin), 'resources', 'app.asar'))) throw new Error(`ABORT: appBin ${appBin} is not a PACKAGED build (no resources/app.asar beside it) — the session \`orchestra\` shim only works packaged`);
   if (!/^[A-Za-z0-9._-]+$/.test(label) || label.includes('..')) throw new Error(`ABORT: rig label ${JSON.stringify(label)} must be [A-Za-z0-9._-]+ (it names a directory that is rm -rf'd)`);
   const H = path.join(BASE, `h-${label}`);
@@ -221,7 +221,7 @@ export async function makeRig({ label, spec, apiUrl, appBin, claudeBin }) {
     mk('ops', spec.ops, { canOrchestrate: true, kind: 'orchestrator', parentId: spec.lead }),
     ...spec.workers.map((w) => mk(w.k, w.id, { parentId: spec.ops, lastTask: `pc task ${w.k}` })),
   ];
-  fs.writeFileSync(path.join(H, 'userData/orchestra/store.json'), JSON.stringify({ repos: [], workspaces: wsList, accounts: [acct, acctB], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(path.join(H, 'userData/orchestra/store.json'), JSON.stringify({ repos: [], workspaces: wsList, accounts: [acct, acctB], selfTuneRuns: [], ...storeExtra }, null, 2));
   return { H, cfg, cfgB, repo, remote, wt, acct, acctB, wsList, spec, names: namesOf(spec), appBin, bus: null, sockInfo };
 }
 

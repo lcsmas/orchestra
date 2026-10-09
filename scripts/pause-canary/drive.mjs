@@ -14,6 +14,8 @@ import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
+import { evaluateMemhogCycle, summarizeMemhogCycle, hogMarker, parseSwarm, readByCoordinator, evaluateSurvivors } from './memhog-bars.mjs';
+import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -29,6 +31,13 @@ const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
 const CYCLE_RESULTS_FILE = opt('out', null);
+// #324 `memhog-app` — the memory-hog exercise on the PACKAGED app (real keepers + real `claude` + the app's own #322 sink). With the cap ON a real `claude` (~330 MB) does not fit a test scope ≤ 300 MB (ledger D2): that arm needs the LEAD's waiver (`--waiver <ref>`, `--cap-gb` ≥ 0.6).
+const MH_SWITCH = opt('memhog-switch', 'on');   // 'off' = the must-FAIL control: the frozen `memory_cap` switch OFF
+const CAP_GB = Number(opt('cap-gb', '0.25'));
+const SOFT_GB = Number(opt('soft-gb', String(Math.round(CAP_GB * 0.8 * 100) / 100)));
+const WAIVER = opt('waiver', null);
+const HOG_MB = Number(opt('hog-mb', String(Math.ceil(CAP_GB * 1024) + 150)));   // far over the cap, whatever the cap is
+const MH_UNIT_PREFIX = 'orchestra-rig-wh-h3-';
 // harness-level INSTRUMENT controls (proof arms only): after the pause, sabotage one member's evidence — the matching instrument must read RED
 const SABOTAGE = opt('sabotage', null);   // 'branch' (rewind a branch to master) | 'ref' (delete a pause ref) | 'session' (SIGTERM a member's CLI)
 // proof-only process INJECTION during the hold window (dure only): 'orphan-tool' = a REAL command that came back in a member worktree (an orphan: must stay detected);
@@ -37,8 +46,11 @@ const INJECT = opt('inject', null);
 const WINDOW = opt('window', 'member');   // 'member' = per-member, opened at the member's Bilan for new turns (default) · 'confirm' = per-member from its confirmation (the previous design: the proof's Bilan-gap blind arm) · 'legacy' = the run-level hold window only (the H-1 blind arm)
 const TOOLPROCS = opt('toolprocs', 'fixed');   // 'legacy' = the pre-fix definition (any non-keeper/CLI/app process in a member worktree): the proof's must-FAIL arm for the app-git injection
 if (!BASE || !REPO || !APP || !CLAUDE) { console.error('usage: drive.mjs --base --repo --app --claude …'); process.exit(2); }
-const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
+const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
+if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
+if (!['on', 'off'].includes(MH_SWITCH)) { console.error('--memhog-switch on|off'); process.exit(2); }
+if (EXERCISES.includes('memhog-app') && MH_SWITCH === 'on' && (!WAIVER || CAP_GB < 0.6)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app with the cap ON needs the LEAD's waiver of ledger D2 (a real claude is ~330 MB, a test scope ≤ 300 MB): pass --waiver <ledger ref> and --cap-gb ≥ 0.6 (got waiver=${WAIVER ?? 'none'}, cap=${CAP_GB}). Nothing was run.`); process.exit(3); }
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
 if (INJECT && (!['orphan-tool', 'app-git', 'late-request', 'gap-request'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git|late-request|gap-request applies to `--exercise dure` only'); process.exit(2); }
 if (!['member', 'confirm', 'legacy'].includes(WINDOW)) { console.error('--window member|confirm|legacy'); process.exit(2); }
@@ -58,18 +70,19 @@ const emit = (tag, obj) => say(`${tag} ${JSON.stringify(obj)}`);
 
 async function runExercise(name) {
   const spec = fleetSpec(MEMBERS);
+  if (name === 'memhog-app') for (const w of spec.workers) w.kind = 'hog';   // every worker overflows its scope on request
   const kindOfRole = Object.fromEntries(spec.workers.map((w) => [w.k, w.kind]));
   const quotaWorkers = spec.workers.filter((w) => w.kind === 'quota');
   const limited = new Set();
-  const plan = { release: name === 'reprise' ? 'manual' : 'all', first: [] };
+  const plan = { release: name === 'reprise' ? 'manual' : 'all', first: [], hog: { script: path.join(REPO, 'scripts', 'memory-cap', 'swarm.py'), mb: HOG_MB, hold: 5 } };
   const usageProbeHits = [];
   const usageHeaders = (cred) => { usageProbeHits.push({ t: Date.now(), cred }); const rs = Math.floor(Date.now() / 1000); return { 'anthropic-ratelimit-unified-5h-utilization': '0.10', 'anthropic-ratelimit-unified-5h-reset': String(rs + 3 * 3600), 'anthropic-ratelimit-unified-7d-utilization': '0.20', 'anthropic-ratelimit-unified-7d-reset': String(rs + 5 * 86400) }; };
   const resetS = Math.floor(Date.now() / 1000) + 3600;
   const api = await startApi({ decide: makeModel({ kindOfRole, plan, limited, resetS }), usageHeaders });
-  const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE });
+  const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE, storeExtra: name === 'memhog-app' ? { memoryGuard: { capSoftGb: SOFT_GB, capHardGb: CAP_GB } } : {} });
   curRig = rig; curBaselineMB = null;
   say(`[${name}] RIG H=${rig.H} workers=${spec.workers.map((w) => `${w.k}:${w.kind}`).join(' ')}`);
-  say(`[${name}] SEED-RUNS ${JSON.stringify(seedRuns(rig, APP_TREE, PAUSE_SWITCH === 'off' ? 'pause-off' : 'none'))}`);
+  say(`[${name}] SEED-RUNS ${JSON.stringify(seedRuns(rig, APP_TREE, PAUSE_SWITCH === 'off' ? 'pause-off' : name === 'memhog-app' && MH_SWITCH === 'off' ? 'cap-off' : 'none'))}`);
   const busr = startBusReader(rig, REPO);
   const Q = (sql, ...a) => busr.q(sql, ...a);
   const nm = rig.names;
@@ -127,7 +140,7 @@ async function runExercise(name) {
   let app, result = 'ABORT';
   const abort = (cyc, msg) => Object.assign(new Error(msg), { cyc });
   try {
-    app = await launchApp(rig);
+    app = await launchApp(rig, { extraEnv: name === 'memhog-app' ? { ORCHESTRA_MEMORY_SCOPE_PREFIX: MH_UNIT_PREFIX } : {} });
     await sleep(3000);
     const who = await app.cli(spec.lead, ['whoami'], { run: spec.lead });
     check(null, 'cli_speaks_control', who.out.length > 0, `whoami rc=${who.code}`);
@@ -141,6 +154,7 @@ async function runExercise(name) {
       const cyc = { exercise: name, cycle: c, workers: spec.workers.length, mode: name === 'douce' ? 'soft' : 'hard', rosterMin: spec.workers.length + (name === 'auto' ? 1 : 2), checks: [] };
       curCyc = cyc;
       say(`── [${name}] cycle ${c}/${CYCLES} ──`);
+      if (name === 'memhog-app') { await doMemhogApp(cyc, c); cycles.push(cyc); emit('PC-CYCLE', cyc); await sleep(2000); continue; }
       const carrier = name === 'auto' ? spec.ops : spec.lead;
       // 0. the run must be ACTIVE (the previous cycle's Reprise really lifted the gate)
       const r0 = await runRow(carrier);
@@ -185,6 +199,73 @@ async function runExercise(name) {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────────────
+    /** #324 `memhog-app` — one cycle of the memory-hog exercise on the PACKAGED app. The bars are the stand-in drill's (memhog-bars.mjs); the FACTS come from the real path: /proc + cgroupfs for the keeper/CLI/scope/oom_kill, the swarm line the hog tool wrote
+     *  in the worktree, the keeper's durable notice file for the records, the app's persisted `sdkMemNotices` for the member's rows, the bus (+ the scripted OPS's own acked relève) for the coordinator. NOT RUN with the cap ON before the LEAD's waiver (D2). */
+    async function doMemhogApp(cyc, c) {
+      const wk = spec.workers;
+      cyc.expectWorkers = wk.length;
+      // 1. every worker's session is up and WORKS (a probe tool runs in its worktree) — sessions start lazily, on the first prompt
+      await Promise.all(wk.map((w) => sendTo(w.id, `SCN:probe c${c}a`)));
+      const upOk = await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}a.txt`)), 240000, 500);
+      check(cyc, 'workers_mid_work', !!upOk, `${wk.length} worker(s) up and running tools (probe files)`);
+      if (!upOk) throw abort(cyc, 'memhog-app: the fleet never came up');
+      const idPre = identities();
+      check(cyc, 'identity_instrument_armed', wk.every((w) => idPre[w.k]?.claude && idPre[w.k]?.keeper), `keeper+CLI identity read for ${wk.filter((w) => idPre[w.k]?.claude && idPre[w.k]?.keeper).length}/${wk.length} workers`);
+      const kpid = (k) => Number(String(idPre[k]?.keeper ?? '').split('@')[0]) || null;
+      const seq0 = await maxSeq();
+      const oom0 = Object.fromEntries(wk.map((w) => [w.k, oomKillOf(kpid(w.k))]));
+      const last = { ...oom0 };
+      // 2. every worker overflows its scope at once
+      const t0 = Date.now();
+      await Promise.all(wk.map((w) => sendTo(w.id, `SCN:hog c${c}`)));
+      await waitFor(() => wk.every((w) => /swarm:/.test(readWt(w.k, `memhog-out-${w.k}-c${c}.txt`) ?? '')), 240000, 500);   // the swarm line = the hog tool is over, killed or not
+      let prev = '';
+      await waitFor(() => { const cur = wk.map((w) => { const v = oomKillOf(kpid(w.k)); if (v !== null) last[w.k] = v; return last[w.k]; }).join(','); const stable = cur === prev; prev = cur; return stable; }, 40000, 1500);   // the kernel counts stop moving
+      await sleep(2500);
+      const delta = (w) => (typeof last[w.k] === 'number' && typeof oom0[w.k] === 'number' ? last[w.k] - oom0[w.k] : null);
+      const rowsOf = (w) => (storeWs(w.id)?.sdkMemNotices ?? []).filter((e) => e.level !== 'soft' && e.at >= t0 - 1000);
+      const msgsOf = async (w) => (await Q('SELECT sequence, kind, recipient, body, created_at FROM messages WHERE sender = ? AND sequence > ? ORDER BY sequence', w.id, seq0)) ?? [];
+      // the member's row and the coordinator's escalation reach the kill count (the keeper's kernel-log lookup + delivery take a moment)
+      await waitFor(async () => { for (const w of wk) { const d = delta(w); if (d && (rowsOf(w).length < d || (await msgsOf(w)).filter((x) => x.kind === 'escalation').length < d)) return false; } return true; }, 45000, 1000);
+      // the coordinator READS: the scripted OPS is woken by the escalation, runs `orchestra check` and acks (the REAL relève) — wait for every escalation to lie in an acked lot
+      const escSeqs = async () => (await Q("SELECT sequence FROM messages WHERE kind = 'escalation' AND recipient = ? AND sequence > ?", spec.ops, seq0))?.map((x) => x.sequence) ?? [];
+      const lotsOps = async () => (await Q('SELECT from_seq, to_seq, acked_at FROM deliveries WHERE reader = ?', spec.ops)) ?? [];
+      await waitFor(async () => { const e = await escSeqs(); return e.length > 0 && readByCoordinator(e, await lotsOps()) === e.length; }, 90000, 1000);
+      // 3. the session still works AFTER the kill: a second probe tool runs
+      await Promise.all(wk.map((w) => sendTo(w.id, `SCN:probe c${c}b`)));
+      await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}b.txt`)), 120000, 500);
+      const idPost = identities();
+      const appLog = (() => { try { return fs.readFileSync(`${rig.H}/app.log`, 'utf8'); } catch { return ''; } })();
+      const notices = (w) => { try { return fs.readFileSync(`${rig.H}/keepers/${w.id}.memnotices.jsonl`, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+      const lots = await lotsOps();
+      const workers = [];
+      for (const w of wk) {
+        const msgs = await msgsOf(w);
+        const esc = msgs.filter((x) => x.kind === 'escalation' && x.recipient === spec.ops);
+        const rows = rowsOf(w);
+        const [kPre, kPost] = [idPre[w.k]?.keeper, idPost[w.k]?.keeper];
+        const cliPid = idPre[w.k]?.pid;
+        workers.push({
+          k: w.k, id: w.id, up: true, marker: hogMarker(w.k, c),
+          scope: scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX),
+          swarm: parseSwarm(readWt(w.k, `memhog-out-${w.k}-c${c}.txt`)),
+          oomKillDelta: delta(w),
+          records: notices(w).filter((r) => r.kind !== 'soft' && r.at >= t0 - 1000).map((r) => ({ level: r.level, command: r.command ?? null, pid: r.pid, source: r.source })),
+          session: { keeperAlive: alive(kpid(w.k)), cliAlive: alive(cliPid), keeperSame: !!kPre && kPre === kPost, cliSame: !!idPre[w.k]?.claude && idPre[w.k]?.claude === idPost[w.k]?.claude, answered: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX).unit), capState: new RegExp(`memory-cap\\[${w.id}\\]: ACTIVE`).test(appLog) ? 'active' : null },
+          memberKillRows: rows.map((e) => e.text),
+          coordMsgs: msgs.map((x) => ({ kind: x.kind, recipient: x.recipient, body: x.body })),
+          coordRead: readByCoordinator(esc.map((x) => x.sequence), lots),
+          firstRowMs: rows.length ? Math.min(...rows.map((e) => e.at)) - t0 : null,
+          firstEscMs: esc.length ? Math.min(...esc.map((x) => x.created_at)) - t0 : null,
+        });
+      }
+      const leadSeen = (await Q('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?', spec.lead, seq0))?.[0]?.n ?? null;
+      const maxMs = (key) => (workers.every((x) => typeof x[key] === 'number') ? Math.max(...workers.map((x) => x[key])) / 1000 : null);
+      const m = { exercise: 'memhog-app', cycle: c, expectWorkers: wk.length, capGb: CAP_GB, opsId: spec.ops, leadSeen, workers, tMemberToldS: maxMs('firstRowMs'), tCoordToldS: maxMs('firstEscMs') };
+      cyc.summary = summarizeMemhogCycle(m);
+      cyc.tMemberToldS = m.tMemberToldS; cyc.tCoordToldS = m.tCoordToldS;
+      for (const k of evaluateMemhogCycle(m)) check(cyc, k.id, k.ok, k.detail);
+    }
     async function snapshotFacts(cyc, c, pre, tP) {
       // lost work: each marker must be in the member's branch tip, its pushed branch OR the pause ref; each branch (workers AND coordinators) must still contain its pre-pause head
       const facts = [];
@@ -502,6 +583,13 @@ async function runExercise(name) {
     busr.close();
     const left = await teardown(rig, app);
     say(`[${name}] TEARDOWN leftover=${left.length}`);
+    if (name === 'memhog-app') {   // the scopes of THIS rig (rig prefix + its random id prefix), stopped by NAME, counted before and printed
+      const units = unitsNow(`${MH_UNIT_PREFIX}${spec.prefix}*`);
+      for (const u of units) { try { execFileSync('systemctl', ['--user', 'stop', u], { stdio: 'ignore' }); } catch { /* gone */ } }
+      const sv = evaluateSurvivors({ procs: left.length, units: units.length });
+      check(null, sv.id, sv.ok, sv.detail);
+      if (!sv.ok && result === 'PASS') result = 'FAIL';
+    }
     await api.stop();
     curRig = null; curBaselineMB = null;
     emit('PC-EXERCISE', { exercise: name, result, cycles: cycles.length, wanted: CYCLES, leftover: left.length, red: allChecks().filter((k) => !k.ok).map((k) => `${k.cycle ? `c${k.cycle} ` : ''}${k.id}`) });

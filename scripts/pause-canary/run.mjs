@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Pause canary 1 — dummy-fleet drills (#258, wave F ledger #281 D3):   pnpm run canary:pause [-- options]
 //   node scripts/pause-canary/run.mjs [--exercise douce,dure,reprise,auto] [--cycles 3] [--members 10] [--app <dir>/orchestra] [--base <scratch>] [--out <dir>] [--dwell-s 40]
+//   node scripts/pause-canary/run.mjs --exercise memhog[,chain] …   the MEMORY-HOG exercise (#324): see memhog-run.mjs — heavy-rig token required
 //   node scripts/pause-canary/run.mjs --proof [--only <arm,…>]      the HARNESS proof (G3 F2): clean controls must PASS, every must-FAIL arm (build-level mutants of the PACKAGED app, the
 //                                                                    pre-wave-E master, the switch OFF) must turn its named instrument RED — see mutants.mjs / --list
 // REAL path, zero tokens: the PACKAGED app (a session's `orchestra` shim needs it) in a headless sway (scripts/e2e-contained-rig.sh), scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR,
@@ -14,6 +15,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { makeMutantApp, MUTANTS } from './mutants.mjs';
 import { renderTable, BARS, mustFailVerdict } from './bars.mjs';
+import { renderMemhogTable } from './memhog-bars.mjs';
 import { initBase } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +24,8 @@ const REAL_HOME = os.userInfo().homedir;
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const flag = (k) => args.includes(`--${k}`);
+// #324: the MEMORY-HOG exercise (real keepers in real 256 MiB scopes + the H1 stand-in CLI: no packaged app, no sway) has its own runner — `canary:pause -- --exercise memhog[,chain]` hands over to it (it exits by itself)
+if (/^(memhog|chain)(,(memhog|chain))*$/.test(opt('exercise', ''))) await import('./memhog-run.mjs');
 const BASE = path.resolve(opt('base', path.join(REAL_HOME, '.cache', 'pause-canary')));
 const OUT = path.resolve(opt('out', path.join(BASE, 'reports', new Date().toISOString().replace(/[:.]/g, '-'))));
 const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
@@ -54,6 +58,8 @@ const PROOF_ARMS = [
   { name: 'control:pause-switch-off', exercise: 'dure', pause: 'off', redden: ['pause_accepted'], expectDetail: /'pause' switch is OFF/ },
   { name: 'unfixed:pre-wave-E-douce', exercise: 'douce', unfixed: true, redden: ['pause_accepted'], expectDetail: /only the HARD pause/ },
   { name: 'unfixed:pre-wave-E-reprise', exercise: 'dure', unfixed: true, redden: ['coordinators_woken', 'bar:every_member_reprise_accused'] },
+  // #324 the memory-hog exercise on the PACKAGED app (real `claude`): the must-FAIL control runs without a waiver (no scope is created); the cap-ON arm needs the LEAD's waiver of D2 (`--waiver`, `--cap-gb` ≥ 0.6) and is NOT part of the default proof
+  { name: 'control:memhog-app-cap-off', exercise: 'memhog-app', memhogSwitch: 'off', redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'] },
 ];
 if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(36)} ${a.exercise}${a.redden ? ` → RED ${a.redden.join(' | ')}` : ' → PASS'}${a.mutant ? ` — ${MUTANTS[a.mutant].desc}` : ''}`); process.exit(0); }
 
@@ -161,6 +167,8 @@ async function drive({ appBin, appTree, exercise, cycles, members, label, pause,
 
 const gitInfo = () => ({ head: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD'), originMaster: sh('git', ['ls-remote', 'origin', 'refs/heads/master']).stdout.slice(0, 40) });
 
+/** the `memhog-app` options handed to the drive (the waiver and the cap travel with the exercise) */
+const memhogExtra = (arm = {}) => ['--memhog-switch', arm.memhogSwitch ?? opt('memhog-switch', 'on'), ...['cap-gb', 'soft-gb', 'hog-mb', 'waiver'].flatMap((k) => (opt(k, null) !== null ? [`--${k}`, opt(k)] : []))];
 function writeReport(kind, body) { fs.mkdirSync(OUT, { recursive: true }); fs.writeFileSync(path.join(OUT, `${kind}.md`), body); say(`\nreport: ${path.join(OUT, `${kind}.md`)}`); }
 
 const claudeVersion = sh(claudeBin, ['--version']).stdout.trim();
@@ -171,8 +179,9 @@ if (!flag('proof')) {
   const exercise = opt('exercise', 'douce,dure,reprise,auto');
   const cycles = Number(opt('cycles', '3')), members = Number(opt('members', '10'));
   const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
+  const OPTIONAL = ['memhog-app'];   // #324: only on request (it needs a waiver with the cap ON), never part of the 4-exercise contract shape
   const wantedEx = exercise.split(',').filter(Boolean);
-  if (wantedEx.length === 0 || wantedEx.some((e) => !KNOWN.includes(e)) || !Number.isInteger(cycles) || cycles < 1 || !Number.isInteger(members) || members < 1 || members > 10) { say(`usage: --exercise ⊂ ${KNOWN} (got ${JSON.stringify(exercise)}), --cycles ≥ 1, --members 1..10`); process.exit(2); }
+  if (wantedEx.length === 0 || wantedEx.some((e) => !KNOWN.includes(e) && !OPTIONAL.includes(e)) || !Number.isInteger(cycles) || cycles < 1 || !Number.isInteger(members) || members < 1 || members > 10) { say(`usage: --exercise ⊂ ${[...KNOWN, ...OPTIONAL]} (got ${JSON.stringify(exercise)}), --cycles ≥ 1, --members 1..10`); process.exit(2); }
   say(`pause canary: claude ${claudeVersion} · app ${appBin} · exercises ${exercise} × ${cycles} cycles · ${members} workers + OPS + LEAD · MemAvailable ${h0.availGB.toFixed(2)} GB load ${h0.load1.toFixed(1)}`);
   // one drive per exercise: a VOID exercise (the host dipped below the bar mid-run) is no verdict — wait for the host and run THAT exercise again (the bar is never relaxed)
   const label0 = opt('label', `canary-${Date.now().toString(36).slice(-4)}`);
@@ -180,18 +189,18 @@ if (!flag('proof')) {
   for (const ex of exercise.split(',').filter(Boolean)) {
     const w0 = await waitForHost(members);
     if (!w0.ok) { parts.push({ rc: 3, label: label0, logFile: '', exercises: [{ exercise: ex, result: 'VOID', cycles: 0, wanted: cycles, reason: 'host below the bar' }], cycles: [], checks: [], host: null, verdict: 'VOID' }); continue; }
-    let p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null) });
+    let p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : [] });
     for (let n = 1; p.verdict === 'VOID' && n <= Number(opt('void-retries', '2')); n++) {
       voidLogs.push(p.logFile);
       const w = await waitForHost(members);
       say(`   ${ex}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
       if (!w.ok) break;
-      p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}-r${n}`, pause: opt('pause', null), dwell: opt('dwell-s', null) });
+      p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}-r${n}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : [] });
     }
     parts.push(p);
   }
   const r = { rc: parts.every((x) => x.rc === 0) ? 0 : 1, label: label0, logFile: parts.map((x) => x.logFile).filter(Boolean).join(' + '), exercises: parts.flatMap((x) => x.exercises), cycles: parts.flatMap((x) => x.cycles), checks: parts.flatMap((x) => x.checks), host: parts.map((x) => x.host).filter(Boolean).reduce((a, h) => (a ? { minAvailGB: Math.min(a.minAvailGB, h.minAvailGB), maxLoad: Math.max(a.maxLoad, h.maxLoad), samples: a.samples + h.samples } : h), null), verdict: parts.every((x) => x.verdict === 'PASS') ? 'PASS' : parts.some((x) => x.verdict === 'FAIL' || x.verdict === 'NO-RESULT') ? 'FAIL' : 'VOID' };
-  const table = renderTable(r.cycles);
+  const table = exercise === 'memhog-app' ? renderMemhogTable(r.cycles) : renderTable(r.cycles);
   const gi = gitInfo();
   const reds = r.checks.filter((c) => !c.ok);
   const md = [`# Pause canary 1 — dummy fleet (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !(KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3) ? ' (PARTIAL: not 4 exercises × ≥ 3 cycles)' : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
@@ -251,7 +260,7 @@ for (const arm of sel) {
     if (arm.unfixed) { const u = ensureUnfixed(typeof arm.unfixed === 'string' ? arm.unfixed : null); appBin = u.app; appTree = u.tree; }
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
-  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : [])] });
+  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : []), ...(arm.exercise === 'memhog-app' ? memhogExtra(arm) : [])] });
   const hitsOf = (rr) => (arm.redden ?? []).filter((id) => rr.checks.some((c) => !c.ok && c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
   // a cycle CUT SHORT by the host guard before the named check could be evaluated proves nothing either way: it is a VOID, re-run it (a RED already measured by the named check is kept)
   const cutShortWithoutEvidence = (rr) => !!arm.redden && rr.checks.some((c) => c.id === 'cycle_incomplete' && /cut short by a VOID/.test(c.detail)) && hitsOf(rr).length === 0;
