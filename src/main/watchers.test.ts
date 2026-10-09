@@ -65,9 +65,13 @@ test('EMFILE at arm: bus-status data lists it degraded at once; ONE push; after 
   assert.equal(d[0].lastError?.code, 'EMFILE');
   assert.equal(pushes.length, 1, 'one push on degrade');
   assert.equal(degradedOf(pushes[0]).length, 1);
+  assert.equal(pushes[0].rev, 1, 'the first pushed change is rev 1 (the host-stamped order the renderer compares, review M1)');
+  assert.equal(watchersStatus().rev, 1, 'a PULL carries the same counter as the last push');
   await until(() => degradedOf(watchersStatus()).length === 0, WATCH_BACKOFF_MS[0] + 1500, 'recovery after the first backoff');
   assert.equal(pushes.length, 2, 'one push on recovery');
   assert.equal(degradedOf(pushes[1]).length, 0);
+  assert.equal(pushes[1].rev, 2, 'rev counts pushed changes: the recovery is 2');
+  assert.equal(watchersStatus().rev, 2);
   assert.equal(recovered, 1, 'catch-up ran once');
   assert.equal(watchersStatus().watchers[0].state, 'ok');
 });
@@ -253,6 +257,40 @@ test('m1 on a REAL directory with the production 30 s health period: deleting th
     fs.rmSync(dir, { recursive: true });
     fs.mkdirSync(dir);
     await until(() => recovered === 1 && degradedOf(watchersStatus()).length === 0, WATCH_BACKOFF_MS[0] + 1500, 're-armed after the directory was swapped');
+    fs.writeFileSync(path.join(dir, 'after.txt'), 'x');
+    await until(() => got.includes('after.txt'), 2000, 'an event through the re-armed watch');
+  } finally {
+    w.stop();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('m1 on a REAL directory: a chmod / touch of the watched directory (the kernel sends the same `rename <dirname>`) is NOT a removal where the filesystem records a birth time — no degradation, no re-arm, events keep flowing; where it does not, the conservative path degrades and recovers (never a silent miss)', async () => {
+  const base = mkHomeScratch('watchers-m1b-');
+  const dir = path.join(base, 'watched');
+  fs.mkdirSync(dir);
+  const born = fs.statSync(dir).birthtimeMs > 0;
+  const got: Array<string | null> = [];
+  const w = createWatcher({ name: 'm1b', label: 'M1b', dir, fallback: 'poll', onChange: (f) => void got.push(f) });
+  w.start();
+  try {
+    fs.chmodSync(dir, 0o750);
+    fs.utimesSync(dir, new Date(), new Date());
+    await sleep(700);
+    const snap = watchersStatus().watchers[0];
+    if (born) {
+      assert.equal(snap.state, 'ok', 'a chmod/touch of a live directory must not read as its removal');
+      assert.equal(snap.attempts, 0, 'no degradation was ever recorded');
+      fs.writeFileSync(path.join(dir, 'still.txt'), 'x');
+      await until(() => got.includes('still.txt'), 2000, 'an event through the SAME watch');
+    } else {
+      await until(() => watchersStatus().watchers[0].recoveries === 1, WATCH_BACKOFF_MS[0] + 1500, 'no birth time on this filesystem: degraded then re-armed (conservative)');
+    }
+    // and a REAL swap is still caught at once (positive control, same watcher)
+    const before = watchersStatus().watchers[0].recoveries;
+    fs.rmSync(dir, { recursive: true });
+    fs.mkdirSync(dir);
+    await until(() => watchersStatus().watchers[0].recoveries === before + 1, WATCH_BACKOFF_MS[0] + 1500, 're-armed after the directory was swapped');
     fs.writeFileSync(path.join(dir, 'after.txt'), 'x');
     await until(() => got.includes('after.txt'), 2000, 'an event through the re-armed watch');
   } finally {

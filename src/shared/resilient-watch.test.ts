@@ -24,7 +24,7 @@ interface FakeWatch {
   die(e: unknown): void;
 }
 
-function rig(opts: { inodes?: Map<string, number | null>; failArms?: Array<NodeJS.ErrnoException | null> } = {}) {
+function rig(opts: { inodes?: Map<string, number | null>; births?: Map<string, number | null>; failArms?: Array<NodeJS.ErrnoException | null> } = {}) {
   let clock = 1_000_000;
   let nextId = 1;
   const timers = new Map<number, { at: number; fn: () => void }>();
@@ -57,6 +57,7 @@ function rig(opts: { inodes?: Map<string, number | null>; failArms?: Array<NodeJ
     now: () => clock,
     mkdirp: (d) => void calls.mkdirp.push(d),
     inodeOf: opts.inodes ? (d) => (opts.inodes!.has(d) ? opts.inodes!.get(d)! : null) : undefined,
+    birthOf: opts.births ? (d) => (opts.births!.has(d) ? opts.births!.get(d)! : null) : undefined,
     warn: (message) => void logs.push({ level: 'warn', message }),
     info: (message) => void logs.push({ level: 'info', message }),
   };
@@ -527,4 +528,48 @@ test('m1: what is NOT the directory itself does not degrade — another entry re
   wr.start();
   root.watches[0].emit('rename', '');
   assert.equal(wr.snapshot().state, 'ok', 'a root watch has no name to match');
+});
+
+test('m2 (#330 review): libuv names the self event after the path AS GIVEN — a watch path ending in « / » gets the EMPTY name — and that degrades too; the root still has no name', () => {
+  const r = rig();
+  const w = createResilientWatcher(r.spec({ dir: '/data/bus/' }), r.deps);
+  w.start();
+  r.watches[0].emit('rename', '');
+  assert.equal(w.snapshot().state, 'degraded', 'rename "" on a trailing-slash path is the directory itself');
+  assert.equal(w.snapshot().lastError?.code, 'ESTALE');
+  const plain = rig();
+  const wp = createResilientWatcher(plain.spec({ dir: '/data/bus' }), plain.deps);
+  wp.start();
+  plain.watches[0].emit('rename', '');
+  assert.equal(wp.snapshot().state, 'ok', 'without a trailing slash an empty name is not a self event');
+});
+
+test('m1 (#330 review, second pass): a self `rename` of a LIVE directory — same inode AND the same recorded birth time (a chmod/touch/xattr of it) — is not a removal and flows on as a normal event', () => {
+  const r = rig({ inodes: new Map([['/bus', 7]]), births: new Map([['/bus', 1_234_000]]) });
+  const w = createResilientWatcher(r.spec(), r.deps);
+  w.start();
+  r.watches[0].emit('rename', 'bus');
+  assert.equal(w.snapshot().state, 'ok', 'still the very directory we armed on');
+  assert.equal(r.watches[0].closed, false);
+  assert.deepEqual(r.calls.changes, ['bus'], 'the event reaches the site, as before the dir-self reaction existed');
+  assert.equal(r.calls.armAttempts, 1);
+});
+
+test('m1: anything that does not PROVE the same directory degrades — removed, a new inode, the inode REUSED with a new birth time, a filesystem that records no birth time, no identity deps at all', () => {
+  const cases: Array<[string, () => ReturnType<typeof rig>, (r: ReturnType<typeof rig>) => void]> = [
+    ['removed', () => rig({ inodes: new Map([['/bus', 7]]), births: new Map([['/bus', 1000]]) }), (r) => { r.deps.inodeOf = () => null; r.deps.birthOf = () => null; }],
+    ['new inode', () => rig({ inodes: new Map([['/bus', 7]]), births: new Map([['/bus', 1000]]) }), (r) => { r.deps.inodeOf = () => 8; }],
+    ['inode reused, new birth', () => rig({ inodes: new Map([['/bus', 7]]), births: new Map([['/bus', 1000]]) }), (r) => { r.deps.birthOf = () => 2000; }],
+    ['no birth time recorded', () => rig({ inodes: new Map([['/bus', 7]]), births: new Map([['/bus', null]]) }), () => {}],
+    ['no identity deps', () => rig(), () => {}],
+  ];
+  for (const [label, mk, after] of cases) {
+    const r = mk();
+    const w = createResilientWatcher(r.spec(), r.deps);
+    w.start();
+    after(r);
+    r.watches[0].emit('rename', 'bus');
+    assert.equal(w.snapshot().state, 'degraded', label);
+    assert.equal(w.snapshot().lastError?.code, 'ESTALE', label);
+  }
 });

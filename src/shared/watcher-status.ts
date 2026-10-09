@@ -4,7 +4,10 @@ import { plainWatchError, type WatcherSnapshot } from './resilient-watch.ts';
 
 /** The registry's reading: every ARMED watcher (a stopped one is gone). JSON-safe — it rides `/busStatus` and the `watchers:update` push. */
 export interface WatchersStatus {
+  /** Wall clock of the reading — for display only: it can step BACK (RTC fix, NTP), so it never orders two readings. */
   at: number;
+  /** Host-stamped count of the degraded-set changes pushed so far (the registry's own counter): THE order of two readings. */
+  rev: number;
   watchers: WatcherSnapshot[];
 }
 
@@ -13,7 +16,7 @@ export const degradedOf = (s: WatchersStatus | null | undefined): WatcherSnapsho
 /** Edge identity of the degraded set: the push fires when THIS changes, never on an unchanged re-read. */
 export const degradedKey = (s: WatchersStatus | null | undefined): string =>
   degradedOf(s)
-    .map((w) => `${w.name}@${w.since}`)
+    .map((w) => `${w.name}@${w.since}:${w.lastError?.code ?? ''}`) // the CAUSE is part of the identity: a code change within one degradation (ESTALE → EMFILE) changes the words of the strip, so it is pushed
     .sort()
     .join('|');
 
@@ -26,14 +29,19 @@ export function fmtDuration(ms: number): string {
 }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 19) + 'Z';
+/** The strip is read by a person in their own time zone: local HH:MM:SS (the `bus-status` lines keep UTC with a Z for an operator comparing logs). */
+const localClock = (at: number): string => {
+  const d = new Date(at);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+};
 
-/** The plain words of what is affected, deduplicated, in registry order: « Réveils, Pause view ». */
+/** The plain words of what is affected, deduplicated, in registry order: « Réveils, Vue Pause ». */
 export function degradedLabels(s: WatchersStatus | null | undefined): string[] {
   return [...new Set(degradedOf(s).map((w) => w.label))];
 }
 
-/** The renderer keeps the NEWER of two readings (the boot PULL can be answered after a push that already carried a later state): by the registry's own clock. */
-export const newerWatchers = (prev: WatchersStatus | null | undefined, next: WatchersStatus): WatchersStatus => (!prev || next.at >= prev.at ? next : prev);
+/** The renderer keeps the NEWER of two readings (the boot PULL can be answered after a push that already carried a later state): by the registry's own `rev` counter, never by the wall clock, which can step back. */
+export const newerWatchers = (prev: WatchersStatus | null | undefined, next: WatchersStatus): WatchersStatus => (!prev || next.rev >= prev.rev ? next : prev);
 
 export interface WatchersStripCopy {
   title: string;
@@ -54,7 +62,7 @@ export function watchersStripCopy(s: WatchersStatus | null | undefined, now: num
   return {
     title: 'Mises à jour en retard',
     body: `${degradedLabels(s).join(', ')} — ${limit ? 'limite de surveillance de fichiers atteinte' : 'surveillance de fichiers interrompue'}. Nouvel essai automatique.`,
-    lines: d.map((w) => `${w.label} · depuis ${clock(w.since)} (${fmtDuration(now - w.since)}) · ${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant : ${w.fallback}`),
+    lines: d.map((w) => `${w.label} · depuis ${localClock(w.since)} (${fmtDuration(now - w.since)}) · ${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant : ${w.fallback}`),
   };
 }
 
