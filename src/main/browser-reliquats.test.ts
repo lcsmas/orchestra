@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserTracker, browserPass, browserStatusText, realClientState, type BrowserPassDeps } from './browser-reliquats.ts';
+import { BrowserTracker, browserOrphansOf, browserPass, browserStatusText, realClientState, type BrowserPassDeps } from './browser-reliquats.ts';
 import { BROWSER_IDLE_WINDOW_MS } from '../shared/browser-reliquats.ts';
 import { realKillDeps } from './pause-kill.ts';
 import { hostPageSize } from './host-page-size.ts';
@@ -427,6 +427,41 @@ test('the bus status names HOW MANY and the profile prefix, once per member (the
   assert.match(text, /1 in pipe mode/);
   assert.ok(text.includes(`${ROOT}/ws-1/tmp/`));
   assert.match(text, /profiles were left in place/);
+});
+
+// ── #326: the Veille census — the SAME selection as the pass, read-only ─────────────────────────────────────────
+
+test('#326 census: browserOrphansOf lists exactly the orphans a pass would act on (stop OR spare), of ONE workspace — the human\'s browser, a live launcher, another workspace\'s, a non-browser, an unknown workspace are not Reliquats', async () => {
+  const w = new World();
+  w.browser(500, { mode: 'pipe' }); // stopped at once
+  w.browser(501, { mode: 'port' }); // kept (idle window) — still LIVE
+  w.browser(502, { mode: 'port' });
+  w.clients.set(502, { ports: [9222], client: 'yes' }); // spared (a client) — still live
+  w.browser(503, { mode: 'port', profile: `${ROOT}/ws-2/tmp/p` }); // another workspace's
+  w.browser(504, { mode: 'pipe', ppid: 900 }); // launcher alive
+  w.add(900, 1, 'bash');
+  w.browser(505, { mode: 'pipe', profile: '/home/u/.config/chromium-rig' }); // outside agent-tmp
+  w.browser(506, { mode: 'pipe', profile: `${ROOT}/ws-unknown/tmp/p` }); // a workspace the store does not know
+  w.add(507, 1, 'sleep', ['sleep', '600']);
+  const orphans = browserOrphansOf(w.deps(), w.table(), 'ws-1');
+  assert.deepEqual(orphans.map((o) => o.pid).sort((a, b) => a - b), [500, 501, 502], 'every attributable orphan is seen…');
+  assert.deepEqual(orphans.filter((o) => o.client !== 'no').map((o) => o.pid), [502], '…and the one a client is connected to says so (the pass SPARES it, so the Veille must not wait for it)');
+  const live = orphans.filter((o) => o.client === 'no').map((o) => o.pid).sort((a, b) => a - b);
+  // the pass (idle window ignored, like the Veille's stop) acts on / spares exactly that set of ws-1's orphans: the census and the stop can never disagree on what a Reliquat is
+  const r = await w.pass(new BrowserTracker(), { onlyWs: 'ws-1', ignoreWindow: true });
+  assert.deepEqual(r.stopped.map((x) => x.pid).sort((a, b) => a - b), live, 'the census counts exactly what the pass STOPS');
+  assert.deepEqual(r.spared.map((x) => x.pid), [502]);
+});
+
+test('#326 census: read-only — no signal, no track rolled, no client asked of a non-orphan; the pass that follows is unaffected', async () => {
+  const w = new World();
+  w.browser(500, { mode: 'port' });
+  const tracker = new BrowserTracker();
+  browserOrphansOf(w.deps(), w.table(), 'ws-1');
+  assert.deepEqual(w.signals, []);
+  assert.equal(tracker.tracks.size, 0);
+  const r = await w.pass(tracker, { ignoreWindow: true });
+  assert.deepEqual(r.stopped.map((s) => s.pid), [500]);
 });
 
 // ── (2) REAL processes ──────────────────────────────────────────────────────

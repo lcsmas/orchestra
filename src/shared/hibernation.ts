@@ -68,6 +68,18 @@ export interface HibernationSignals {
    *  member that passes every other guard then counts as past its idle threshold (fast Veille, #288). Required: a caller that forgets it
    *  must fail tsc, not silently ignore the hold. */
   admissionHeld: boolean;
+  /** Reliquats of this member alive NOW (#326: FI-1 role `reliquat` of its kernel scope; with no tracked scope, #331's orphaned headless browsers). 0 = none, or not looked at / not knowable (the sweeper
+   *  then keeps today's Veille). Required: a caller that forgets it must fail tsc, not silently skip the wait. */
+  liveReliquats: number;
+  /** The Reliquat delay in ms (Garde mémoire setting, read hot) — how long an idle member with live Reliquats waits before its Veille. Required for the same reason. */
+  reliquatDelayMs: number;
+}
+
+/** How long a member must have been idle before its Veille: the normal threshold — or, while it still has LIVE Reliquats (#326), the longer of that threshold and the Reliquat delay.
+ *  A non-finite / non-positive delay adds no wait (the setting is normalised upstream; this is the belt for a caller that passes garbage). */
+export function effectiveVeilleWaitMs(thresholdMs: number, liveReliquats: number, reliquatDelayMs: number): number {
+  if (liveReliquats > 0 && Number.isFinite(reliquatDelayMs) && reliquatDelayMs > thresholdMs) return reliquatDelayMs;
+  return thresholdMs;
 }
 
 /**
@@ -154,7 +166,8 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *  - **Idle longer than the threshold**, measured from the last observed
  *    lifecycle event — OR, while Admission is held ({@link HibernationSignals.admissionHeld}), any idle FLEET member (a coordinator
  *    reads it over the bus, {@link isFleetMember}): fast Veille (#288) skips ONLY this clock, every guard above still applies, a
- *    workspace without a coordinator is never affected, and the disabled sentinel stays a kill switch. When no activity has EVER been observed for this
+ *    workspace without a coordinator is never affected, and the disabled sentinel stays a kill switch. A member with LIVE Reliquats (#326) must have been idle for the
+ *    longer Reliquat delay instead ({@link effectiveVeilleWaitMs}); fast Veille is not delayed. When no activity has EVER been observed for this
  *    workspace this app run, the sweeper supplies the app-start time (see
  *    src/main/hibernation.ts) — so an unknown `lastActivityAt` here means the
  *    tracker has no opinion and we decline rather than guess, since treating
@@ -172,6 +185,8 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
     hasLiveBackgroundTask,
     thresholdMs,
     admissionHeld,
+    liveReliquats,
+    reliquatDelayMs,
   } = signals;
 
   if (thresholdMs === HIBERNATION_DISABLED) return false;
@@ -211,7 +226,8 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (lastActivityAt === undefined) return false;
   // Fast Veille (#288): under a held Admission the idle clock is waived for a fleet member — its memory is reclaimed before anything waits.
   if (admissionHeld && isFleetMember(ws)) return true;
-  return now - lastActivityAt >= thresholdMs;
+  // #326: a member with LIVE Reliquats waits the Reliquat delay (≥ the threshold); fast Veille above is NOT delayed (under pressure the Reliquats are what must be freed).
+  return now - lastActivityAt >= effectiveVeilleWaitMs(thresholdMs, liveReliquats, reliquatDelayMs);
 }
 
 /** Human-readable idle duration for the log line and the row tooltip

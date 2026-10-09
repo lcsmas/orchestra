@@ -253,6 +253,14 @@ function trimTo(s: string, n: number, strip: (s: unknown) => string): string {
 
 const LISTED = 20;
 
+/** One list line per killed Reliquat (cmd, pid, start, cwd) + the « +N more » tail — the ONE rendering shared by the Pause's Consigne and the Veille notice (#326). `total` = how many were killed in all (≥ `done.length`). */
+export function reliquatKilledItemLines(done: readonly ReliquatKilled[], total: number, strip: (s: unknown) => string, moreHint = 'orchestra run status'): string[] {
+  const out: string[] = [];
+  for (const k of done.slice(0, LISTED)) out.push(`  - ${trimTo(k.cmd, 300, strip)}   (pid ${k.pid}, started ${iso(k.startedAt)}${k.cwd ? `, cwd ${trimTo(k.cwd, 200, strip)}` : ''})`);
+  if (done.length > LISTED) out.push(`  - … +${total - LISTED} more (${moreHint})`);
+  return out;
+}
+
 /** The Consigne de reprise's Reliquat lines (LISTED, never re-run). Nothing is said for a member with no scope or no Reliquat to report. `strip` = the Consigne's control-character strip. */
 export function reliquatConsigneLines(r: ReliquatReport | undefined | null, strip: (s: unknown) => string): string[] {
   if (!r) return [];
@@ -263,8 +271,7 @@ export function reliquatConsigneLines(r: ReliquatReport | undefined | null, stri
   if (done.length > 0) {
     const n = (r.killedTotal ?? r.killed.length) - planned;
     out.push(`Leftover processes (Reliquats) the Pause killed for you (${n}) — processes you started that had left your session's process tree (detached daemons, orphaned headless browsers); LISTED, NOT re-run. Re-run one only if you still need it, after checking the tree:`);
-    for (const k of done.slice(0, LISTED)) out.push(`  - ${trimTo(k.cmd, 300, strip)}   (pid ${k.pid}, started ${iso(k.startedAt)}${k.cwd ? `, cwd ${trimTo(k.cwd, 200, strip)}` : ''})`);
-    if (done.length > LISTED) out.push(`  - … +${n - LISTED} more (orchestra run status)`);
+    out.push(...reliquatKilledItemLines(done, n, strip));
   }
   if (planned > 0) out.push(`Leftover processes the Pause was about to kill when it was interrupted (${planned}) — their outcome was not recorded; check them before re-running anything: ${r.killed.filter((k) => k.outcome === 'planned').slice(0, 3).map((k) => `${trimTo(k.cmd, 60, strip)} (pid ${k.pid})`).join('; ')}${planned > 3 ? '; …' : ''}`);
   for (const s of r.survivors.filter((x) => x.kind !== 'left-scope-parent').slice(0, LISTED)) out.push(`STILL ALIVE after the Pause (Reliquat): ${trimTo(s.cmd, 200, strip)} (pid ${s.pid}: ${trimTo(s.reason, 80, strip)})`);

@@ -22,24 +22,25 @@ const stopFn = (() => {
 })();
 
 test('CONTROL: the slices are the real functions', () => {
-  assert.match(sweepFn, /shouldHibernate\(ws, signals\)/);
+  assert.match(sweepFn, /judgeVeille\(ws, signals,/);
   assert.match(startFn, /setInterval\(/);
   assert.match(stopFn, /clearInterval\(timer\)/);
 });
 
 test('the sweep asks the hold question PER MEMBER, at the verdict, through the guard facade snapshot — never its own meter read (FI-2)', () => {
   assert.match(sweepFn, /const guardSnap = getMemoryGuardSnapshot\(\);\s*const admissionHeld = isAdmissionHolding\(guardSnap\);/);
-  assert.equal((sweepFn.match(/getMemoryGuardSnapshot\(\)/g) ?? []).length, 1);
+  // two reads, both the cached snapshot: the verdict's (loop top) and the re-check of a member whose Reliquat stop awaited (#326) — a hold that ended meanwhile counts
+  assert.equal((sweepFn.match(/getMemoryGuardSnapshot\(\)/g) ?? []).length, 2);
   const loop = sweepFn.indexOf('for (const ws of store.workspaces)');
   const read = sweepFn.indexOf('getMemoryGuardSnapshot()');
-  assert.ok(loop > 0 && read > loop && read < sweepFn.indexOf('shouldHibernate(ws, signals)'), 'read INSIDE the loop, before the verdict: a hold that ended mid-pass stops acting on the members after it');
+  assert.ok(loop > 0 && read > loop && read < sweepFn.indexOf('judgeVeille(ws, signals,'), 'read INSIDE the loop, before the verdict: a hold that ended mid-pass stops acting on the members after it');
   assert.doesNotMatch(src, /sampleMemoryGuardNow|\/proc\/meminfo|readMemAvailableBytes/, 'the sweep reads the cached snapshot: no sampling, no /proc read');
-  assert.match(sweepFn, /admissionHeld,\s*\n\s*\};/, 'passed to the pure rule as a signal');
+  assert.match(sweepFn, /admissionHeld,\s*\n\s*reliquatDelayMs,\s*\n\s*\};/, 'passed to the pure rule as a signal (with the Reliquat delay, #326)');
 });
 
 test('the Veille log tail comes from the shared formatter, fed the SAME snapshot as the verdict (tested in shared/hibernation.test.ts)', () => {
   assert.match(sweepFn, /fastVeilleLogSuffix\(admissionHeld, guardSnap, early, thresholdMs\)/);
-  assert.match(sweepFn, /const early = admissionHeld && !shouldHibernate\(ws, \{ \.\.\.signals, admissionHeld: false \}\);/);
+  assert.match(sweepFn, /const early = admissionHeld && !shouldHibernate\(ws, \{ \.\.\.signals, admissionHeld: false, liveReliquats: verdict\.liveReliquats \}\);/);
 });
 
 test('every guard SAMPLE while held triggers a sweep (a member idle after the edge sleeps within one sample); subscribe FIRST, then reconcile (FI-2 item 5)', () => {
@@ -83,10 +84,13 @@ test('overlap safety: nothing yields between sdkStop\'s start and its `stopping`
 });
 
 test('overlap safety: nothing yields between the sweep\'s live check and the stop call it makes, nor inside sdkStopIfLive before `impl.stop`', () => {
-  const live = sweepFn.indexOf('const hasLiveSdk = sdkSessionLive(ws.id);');
+  // #326: the verdict now AWAITS (a Reliquat census / stop), so the liveness is read again AFTER it, and a member whose verdict is in flight is skipped by an overlapping pass
+  const live = sweepFn.indexOf('const liveSdkNow = sdkSessionLive(ws.id);');
   const stop = sweepFn.indexOf('await sdkStopIfLive(');
   assert.ok(live > 0 && stop > live, 'control: both found, in order');
   assert.doesNotMatch(sweepFn.slice(live, stop), /\bawait\b/, 'a second pass started in the same tick must not interleave between the check and the stop');
+  assert.ok(sweepFn.indexOf('veilleBusy.has(ws.id)') > 0 && sweepFn.indexOf('veilleBusy.has(ws.id)') < sweepFn.indexOf('judgeVeille(ws, signals,'), 'an overlapping pass skips a member whose verdict is in flight');
+  assert.match(sweepFn, /try \{\s*verdict = await judgeVeille\([^]*?\} finally \{\s*veilleBusy\.delete\(ws\.id\);\s*\}/, 'the busy mark is released on every path');
   const delivery = fs.readFileSync(path.join(here, 'sdk-delivery.ts'), 'utf8');
   const sf = delivery.indexOf('export async function sdkStopIfLive(');
   const call = delivery.indexOf('await impl.stop(wsId, opts);', sf);

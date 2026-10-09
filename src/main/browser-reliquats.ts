@@ -118,6 +118,62 @@ interface Target {
 const sameArgv = (a: readonly string[] | null, b: readonly string[]): boolean => a !== null && a.length === b.length && a.every((x, i) => x === b[i]);
 const trunc = (s: string): string => (s.length > CMD_CHARS ? `${s.slice(0, CMD_CHARS)}…` : s);
 
+interface OrphanScan {
+  argv: string[];
+  exe: string | null;
+  parsed: BrowserArgv;
+  owner: { wsId: string; prefix: string };
+}
+
+/** The ONE selection of « an attributable orphaned headless browser main » — a Chromium-family main with an agent-tmp profile of a workspace, its launcher dead. `browserPass` (monitor / Pause) and
+ *  the Veille census (#326) both go through it, so they can never disagree on what a browser Reliquat is. Null = not one (or unreadable: errors collected). */
+function scanOrphan(d: BrowserPassDeps, p: ProcSample, byPid: ReadonlyMap<number, ProcSample>, root: string, errors: string[]): OrphanScan | null {
+  if (p.startTicks === undefined || !isBrowserComm(p.comm)) return null; // no start-time ⇒ no identity ⇒ never signalled (non-Linux `ps` path)
+  let argv: string[] | null;
+  try {
+    argv = d.readCmdline(p.pid);
+  } catch (e) {
+    errors.push(`cmdline ${p.pid}: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+  if (!argv) return null;
+  const exe = d.readExe?.(p.pid) ?? null;
+  const parsed = parseBrowserArgv(argv, exe);
+  if (!parsed) return null;
+  const owner = profileOwner(parsed.userDataDir, root);
+  if (!owner) return null; // the human's browser, a default profile, anything outside agent-tmp/: not ours — not even tracked
+  const parent = byPid.get(p.ppid);
+  if (!launcherDead(p.ppid, parent ? { comm: parent.comm, ppid: parent.ppid } : null)) return null; // launcher alive: it owns this browser
+  return { argv, exe, parsed, owner };
+}
+
+/**
+ * The orphaned headless browsers of ONE workspace alive right now (#326 Veille census): read-only — no track is rolled, nothing is signalled, no client is asked. The idle window and a connected
+ * client decide whether a pass would STOP one; for the census a live orphan is a live Reliquat either way.
+ */
+export function browserOrphansOf(d: BrowserPassDeps, table: readonly ProcSample[], wsId: string): Array<{ pid: number; startTicks: number; mode: string; client: ClientState }> {
+  const root = d.agentTmpRoot();
+  const byPid = new Map(table.map((p) => [p.pid, p]));
+  const errors: string[] = [];
+  const out: Array<{ pid: number; startTicks: number; mode: string; client: ClientState }> = [];
+  for (const p of table) {
+    const s = scanOrphan(d, p, byPid, root, errors);
+    if (!s || s.owner.wsId !== wsId || !d.workspaceKnown(wsId)) continue;
+    // the debugging-port client, asked exactly as the pass asks it (a pipe browser has none): a browser a client is connected to — or whose clients cannot be read — is SPARED by the pass
+    let client: ClientState = 'no';
+    if (s.parsed.mode !== 'pipe') {
+      try {
+        const cs = d.clientState(p.pid);
+        client = cs === 'unknown' ? 'unknown' : cs.client;
+      } catch {
+        client = 'unknown';
+      }
+    }
+    out.push({ pid: p.pid, startTicks: p.startTicks as number, mode: s.parsed.mode, client });
+  }
+  return out;
+}
+
 /**
  * One pass over a FRESH process table: classify every browser main process, roll the per-browser tracks forward, stop the ones the decision says stop.
  * Never throws for a process that vanished mid-pass; a dependency that throws is recorded in `errors` and nothing is signalled for that browser.
@@ -133,25 +189,12 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
   const seenKeys = new Set<string>();
 
   for (const p of table) {
-    if (p.startTicks === undefined || !isBrowserComm(p.comm)) continue; // no start-time ⇒ no identity ⇒ never signalled (non-Linux `ps` path)
-    let argv: string[] | null;
-    try {
-      argv = d.readCmdline(p.pid);
-    } catch (e) {
-      errors.push(`cmdline ${p.pid}: ${e instanceof Error ? e.message : String(e)}`);
-      continue;
-    }
-    if (!argv) continue;
-    const exe = d.readExe?.(p.pid) ?? null;
-    const parsed = parseBrowserArgv(argv, exe);
-    if (!parsed) continue;
-    const owner = profileOwner(parsed.userDataDir, root);
-    if (!owner) continue; // the human's browser, a default profile, anything outside agent-tmp/: not ours — not even tracked
+    const scan = scanOrphan(d, p, byPid, root, errors);
+    if (!scan) continue;
+    const { argv, exe, parsed, owner } = scan;
     if (opts.onlyWs !== undefined && owner.wsId !== opts.onlyWs) continue;
-    const parent = byPid.get(p.ppid);
-    const dead = launcherDead(p.ppid, parent ? { comm: parent.comm, ppid: parent.ppid } : null);
+    const dead = true; // scanOrphan only returns orphans (launcher dead)
     const key = `${p.pid}:${p.startTicks}`;
-    if (!dead) continue; // launcher alive: it owns this browser
     let client: ClientState = 'no';
     if (parsed.mode !== 'pipe') {
       try {
