@@ -15,7 +15,8 @@ const slice = (src: string, head: string): string => {
   assert.ok(from >= 0, `anchor not found: ${head}`);
   return src.slice(from, src.indexOf('\n}\n', from));
 };
-const CALL = /stopMemberScopeFor\(/g;
+const CALL = /stopMemberScopeFor\(/; // NOT global: a /g regex's .test() carries lastIndex across files and would skip the next file's first match
+const CALLS = /stopMemberScopeFor\(/g;
 
 test('CONTROL: the slices are the real functions', () => {
   assert.match(slice(ws, 'async function stopStructuredSession('), /killKeeperTree\(/);
@@ -26,11 +27,10 @@ test('CONTROL: the slices are the real functions', () => {
 
 test('the ONLY callers of stopMemberScopeFor in the app are the four explicit stops', () => {
   const dir = fs.readdirSync(here).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'scope-stop-host.ts');
-  const callers = dir.filter((f) => CALL.test(read(f)) || (CALL.lastIndex = 0, false));
-  CALL.lastIndex = 0;
+  const callers = dir.filter((f) => CALL.test(read(f)));
   assert.deepEqual(callers.sort(), ['agent-sdk.ts', 'workspaces.ts']);
-  assert.equal((ws.match(CALL) ?? []).length, 3, 'workspaces.ts: delete/prune, archive, account migration');
-  assert.equal((sdk.match(CALL) ?? []).length, 1, 'agent-sdk.ts: clear');
+  assert.equal((ws.match(CALLS) ?? []).length, 3, 'workspaces.ts: delete/prune, archive, account migration');
+  assert.equal((sdk.match(CALLS) ?? []).length, 1, 'agent-sdk.ts: clear');
   for (const other of fs.readdirSync(path.join(here, '..')).filter((d) => d !== 'main')) {
     const p = path.join(here, '..', other);
     if (!fs.statSync(p).isDirectory()) continue;
@@ -45,6 +45,7 @@ test('delete / prune: after the session, the keeper and its tree are gone — th
   const k = fn.indexOf('killKeeperTree(');
   const s = fn.indexOf("stopMemberScopeFor(id, 'workspace-deleted')");
   assert.ok(k > 0 && s > k, 'the scope stop comes AFTER the keeper tree is killed (a live keeper makes it a refused no-op)');
+  assert.match(fn, /\n  await stopMemberScopeFor\(id, 'workspace-deleted'\);/, 'a top-level AWAITED statement: not void, not conditional (the delete rm\'s the worktree right after)');
   assert.ok(fn.indexOf('sdkStopIfLive(') < k);
 });
 
@@ -55,6 +56,7 @@ test('archive: the session AND the keeper are stopped (awaited) before the scope
   const c = fn.indexOf("await stopMemberScopeFor(ws.id, 'workspace-archived')");
   const d = fn.indexOf('archived: true');
   assert.ok(a > 0 && b > a && c > b && d > c, `order sdkStopIfLive < killKeeper < stopMemberScopeFor < archived (${a},${b},${c},${d})`);
+  assert.match(fn, /\n    await sdkStopIfLive\(ws\.id\)\.catch\([^\n]*\n    await killKeeper\(ws\.id, 'workspace-archived'\)\.catch\([^\n]*\n    await stopMemberScopeFor\(ws\.id, 'workspace-archived'\);\n/, 'three adjacent awaited top-level statements of the loop body (no `if (false)`, no `void`)');
 });
 
 test('account migration: only for a member that had a session — session, keeper, then scope', () => {
@@ -64,18 +66,22 @@ test('account migration: only for a member that had a session — session, keepe
   const b = fn.indexOf("await killKeeper(id, 'account-migration')", gate);
   const c = fn.indexOf("await stopMemberScopeFor(id, 'account-migration')", gate);
   assert.ok(gate > 0 && a > gate && b > a && c > b, `order gate < sdkStopIfLive < killKeeper < stopMemberScopeFor (${gate},${a},${b},${c})`);
+  assert.match(fn, /\n    if \(hadSdkSession\) \{\n      await sdkStopIfLive\(id\);\n[^\n]*\n      await killKeeper\(id, 'account-migration'\)[^\n]*\n      await stopMemberScopeFor\(id, 'account-migration'\);\n    \}\n/, 'all three INSIDE the had-a-session gate, awaited');
 });
 
-test('clear: sdkStop, then the keeper is killed, then the scope — and the resume id is dropped after', () => {
+test('clear: sdkStop, the resume id dropped BEFORE the slow teardown, then the keeper (unless a successor registered), then the scope, then the clear is announced', () => {
   const fn = slice(sdk, 'export async function sdkClear(');
   const a = fn.indexOf('await sdkStop(wsId)');
+  const p = fn.indexOf("sdkSessionId: ''");
   const b = fn.indexOf("await killKeeper(wsId, 'clear')");
   const c = fn.indexOf("await stopMemberScopeFor(wsId, 'clear')");
-  const d = fn.indexOf("sdkSessionId: ''");
-  assert.ok(a > 0 && b > a && c > b && d > c, `order sdkStop < killKeeper < stopMemberScopeFor < persist (${a},${b},${c},${d})`);
+  const e = fn.indexOf("type: 'session/clear'");
+  assert.ok(a > 0 && p > a && b > p && c > b && e > c, `order sdkStop < persist('') < killKeeper < stopMemberScopeFor < session/clear (${a},${p},${b},${c},${e})`);
+  assert.match(fn, /\n  if \(!sessions\.has\(wsId\)\) await killKeeper\(wsId, 'clear'\)\.catch\(\(\) => \{\}\);\n  await stopMemberScopeFor\(wsId, 'clear'\);\n/, 'the keeper is not killed under a successor session; the scope stop is a top-level awaited statement for every /clear (session or not)');
+  assert.match(fn, /\n  if \(session\) \{\n    session\.cleared = true;\n    await sdkStop\(wsId\);\n  \}\n/, 'the original in-memory-session branch is unchanged');
 });
 
-test('a RESTART keeps its Reliquats: sdkRestart, the MCP refresh, the rewind, the Veille sweep, the watchdog and the boot never stop a scope', () => {
+test('a RESUME keeps its Reliquats: sdkRestart\'s own text (the `fresh` option reaches sdkClear = /clear, which DOES stop the scope), the MCP refresh, the rewind, sdkStop, the Veille sweep, the watchdog and the boot never stop a scope', () => {
   for (const [name, body] of [
     ['sdkRestart', slice(sdk, 'export async function sdkRestart(')],
     ['sdkMcpRefresh', slice(sdk, 'export async function sdkMcpRefresh(')],
@@ -93,6 +99,8 @@ test('the host adapter stops ONLY units the member owns and uses systemctl --use
   const host = read('scope-stop-host.ts');
   assert.match(host, /\['--user', 'stop', '--', unit\]/);
   assert.match(host, /ownsUnit: \(unit\) => scopeGenForWorkspace\(scopePrefix\(e\), wsId, unit\) !== null/);
+  assert.match(host, /withKeeperLock\(wsId, \(\) => stopMemberScope\(wsId, reason, realScopeStopDeps\(wsId\)\)\)/, 'under the member keeper lock: a launch cannot interleave with the kill');
+  assert.match(host, /Promise\.race\(\[stop, late\]\)/, 'bounded: a wedged systemd cannot park a delete');
   assert.match(host, /keeperAlive: \(\) => readTrackedKeeperPid\(wsId\) !== null,/, 'a running member is never stopped under: the keeper-alive precondition reads the tracked keeper');
   assert.match(host, /killReliquats: \(\) => killReliquats\(wsId, scopeDeps, kill, \{ keeperPid: null, cliPid: null \}\),/, 'the Reliquat kill is #325\'s (identity re-read at signal time), over THIS workspace\'s scope deps');
   assert.match(host, /catch \(e\) \{\s*log\.warn\(`scope-stop\[\$\{wsId\}\] \(\$\{reason\}\) failed`, e\);\s*return null;/, 'a failed scope stop never blocks the delete / archive / clear / migration that called it');

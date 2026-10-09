@@ -6,15 +6,17 @@ import { emptyReliquatReport, type ReliquatReport, type ScopeListing, type Scope
 const mem = (pid: number, role: ScopeMember['role']): ScopeMember => ({ pid, startTicks: pid * 10, ppid: 1, comm: 'x', role });
 const scope = (unit: string): ScopeRef => ({ unit, cgroupDir: `/sys/fs/cgroup/x/${unit}` });
 
-function world(over: { scopes?: ScopeRef[] | Error; lists?: Record<string, ScopeListing[]>; rel?: Partial<ReliquatReport> | null | Error; own?: (u: string) => boolean; stopFails?: string[]; stayAfterStop?: string[]; keeperAlive?: boolean; scopesSeq?: ScopeRef[][] } = {}) {
+function world(over: { scopes?: ScopeRef[] | Error; lists?: Record<string, ScopeListing[]>; rel?: Partial<ReliquatReport> | null | Error; own?: (u: string) => boolean; stopFails?: string[]; stayAfterStop?: string[]; keeperAlive?: boolean | boolean[]; scopesSeq?: Array<ScopeRef[] | Error> } = {}) {
   const calls: string[] = [];
   let lookups = 0;
+  let aliveCalls = 0;
   const stopped = new Set<string>();
   const lists = new Map(Object.entries(over.lists ?? {}).map(([k, v]) => [k, [...v]]));
   const deps: ScopeStopDeps = {
     scopes: () => {
       if (over.scopes instanceof Error) throw over.scopes;
       const now = over.scopesSeq ? over.scopesSeq[Math.min(lookups++, over.scopesSeq.length - 1)] : (over.scopes ?? [scope('orchestra-ws-aaa-g1.scope')]);
+      if (now instanceof Error) throw now;
       return now.filter((s) => !stopped.has(s.unit) || over.stayAfterStop?.includes(s.unit));
     },
     list: (s) => {
@@ -34,7 +36,7 @@ function world(over: { scopes?: ScopeRef[] | Error; lists?: Record<string, Scope
       stopped.add(u);
     },
     ownsUnit: over.own ?? ((u) => u.startsWith('orchestra-ws-aaa-')),
-    keeperAlive: () => over.keeperAlive === true,
+    keeperAlive: () => (Array.isArray(over.keeperAlive) ? over.keeperAlive[Math.min(aliveCalls++, over.keeperAlive.length - 1)] : over.keeperAlive === true),
     sleep: async () => {},
     log: { info: () => {}, warn: () => {} },
   };
@@ -64,6 +66,8 @@ test('#327 fail closed: an UNKNOWN from the Reliquat kill (unreadable scope, fai
     assert.ok(r?.unknown, 'and it is said');
     assert.deepEqual(r?.stopped, []);
   }
+  const thrown = await stopMemberScope('aaa', 'delete', world({ rel: new Error('boom') }).deps);
+  assert.match(thrown?.unknown ?? '', /Reliquat kill failed: boom/, 'a THROWN kill says why (not just "no report")');
   const w2 = world({ scopes: new Error('EMFILE') });
   const r2 = await stopMemberScope('aaa', 'delete', w2.deps);
   assert.deepEqual(w2.calls, [], 'a failed scope lookup kills and stops nothing');
@@ -133,6 +137,41 @@ test('#327: the units to stop come from a FRESH lookup AFTER the kill — one th
   assert.deepEqual(r1?.scopes, [g1.unit, g2.unit]);
   const vanished = world({ scopesSeq: [[g1, g2], [g1]] });
   const r2 = await stopMemberScope('aaa', 'delete', vanished.deps);
-  assert.deepEqual(vanished.calls, ['kill', `stop ${g1.unit}`], 'a generation that is gone by the fresh lookup is not stopped');
-  assert.deepEqual(r2?.stopped, [g1.unit]);
+  assert.deepEqual(vanished.calls, ['kill', `stop ${g1.unit}`], 'a generation that is gone by the fresh lookup is not asked to stop');
+  assert.deepEqual([...(r2?.stopped ?? [])].sort(), [g1.unit, g2.unit], '...but it IS counted stopped (it is gone)');
+});
+
+test('#327: the Reliquat kill EMPTIED the scope and systemd removed the unit before the fresh lookup ⇒ it counts as stopped, never "stopped 0/1"', async () => {
+  const g1 = scope('orchestra-ws-aaa-g1.scope');
+  const w = world({ scopesSeq: [[g1], []], rel: { killed: [{ pid: 9 } as never] } });
+  const r = await stopMemberScope('aaa', 'delete', w.deps);
+  assert.deepEqual(w.calls, ['kill'], 'nothing left to stop');
+  assert.deepEqual(r?.stopped, [g1.unit]);
+  assert.deepEqual(r?.kept, []);
+  assert.equal(r?.killed, 1);
+  const foreign = world({ scopesSeq: [[g1], []], own: () => false });
+  assert.deepEqual((await stopMemberScope('aaa', 'delete', foreign.deps))?.stopped, [], 'a unit the workspace does not own is never claimed');
+});
+
+test('#327 fail closed: no Reliquat report at all is UNKNOWN (not "nothing to kill") — no unit is stopped', async () => {
+  const w = world({ rel: null });
+  const r = await stopMemberScope('aaa', 'delete', w.deps);
+  assert.deepEqual(w.calls, ['kill']);
+  assert.match(r?.unknown ?? '', /returned no report/);
+});
+
+test('#327 fail closed: a scope lookup that fails AFTER the kill stops nothing and says so', async () => {
+  const w = world({ scopesSeq: [[scope('orchestra-ws-aaa-g1.scope')], new Error('EIO')] });
+  const r = await stopMemberScope('aaa', 'delete', w.deps);
+  assert.deepEqual(w.calls, ['kill']);
+  assert.match(r?.unknown ?? '', /scope lookup failed after the kill: EIO/);
+  assert.deepEqual(r?.stopped, []);
+});
+
+test('#327: a keeper that comes up DURING the Reliquat kill (a launch slipped in) keeps its unit — the keeper check is repeated right before each stop', async () => {
+  const w = world({ keeperAlive: [false, true] });
+  const r = await stopMemberScope('aaa', 'delete', w.deps);
+  assert.deepEqual(w.calls, ['kill'], 'no systemctl stop');
+  assert.match(r?.kept[0]?.reason ?? '', /keeper of this member came up meanwhile/);
+  assert.deepEqual(r?.stopped, []);
 });

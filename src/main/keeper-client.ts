@@ -392,6 +392,11 @@ export function forbidKeeperLaunch(wsId: string): void {
   deletedWorkspaces.add(wsId);
 }
 
+/** Run `op` in the workspace's keeper queue (launches, kills and — #327 — the scope stop never interleave). `op` must not itself call killKeeper or start a keeper: it would wait on itself. */
+export function withKeeperLock<T>(wsId: string, op: () => Promise<T>): Promise<T> {
+  return serializeKeeperOp(wsId, op);
+}
+
 function serializeKeeperOp<T>(wsId: string, op: () => Promise<T>): Promise<T> {
   const prev = keeperOps.get(wsId) ?? Promise.resolve();
   const run = prev.then(op);

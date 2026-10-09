@@ -5625,12 +5625,13 @@ export async function sdkClear(wsId: string): Promise<void> {
   if (session) {
     session.cleared = true;
     await sdkStop(wsId);
-    // #327: /clear is an explicit stop. sdkStop leaves a keeper that answered its interrupt to wind down on its own clock — kill it, so the scope below is stoppable.
-    await killKeeper(wsId, 'clear').catch(() => {});
   }
-  // The detached jobs the old conversation left in its scope go with it (a live keeper makes this a refused no-op; restart/resume never reach here).
-  await stopMemberScopeFor(wsId, 'clear');
+  // The resume id is dropped BEFORE the slow teardown below: a bus wake or peer message that starts a session in that window must not resume the conversation being cleared.
   await persistWorkspacePatch(wsId, { sdkSessionId: '' });
+  // #327: /clear is an explicit stop. sdkStop leaves a keeper that answered its interrupt to wind down on its own clock, and a detached keeper with no in-memory session was never stopped:
+  // kill it (unless a successor session already registered), so the scope below is stoppable, then the detached jobs of the old conversation go with it (a live keeper makes the stop a refused no-op).
+  if (!sessions.has(wsId)) await killKeeper(wsId, 'clear').catch(() => {});
+  await stopMemberScopeFor(wsId, 'clear');
   emit(wsId, {
     type: 'session/clear',
     seq: cursorFor(wsId).seq++,

@@ -70,6 +70,8 @@ export async function stopMemberScope(wsId: string, reason: string, deps: ScopeS
     report.killed = rel.killed.length;
     if (rel.unknown) report.unknown = rel.unknown;
     else if (rel.error) report.unknown = rel.error;
+  } else if (!report.unknown) {
+    report.unknown = 'Reliquat kill returned no report'; // no report is UNKNOWN, not "nothing to kill"
   }
   const refused = rel?.refused.length ?? 0;
   if (report.unknown) {
@@ -87,6 +89,9 @@ export async function stopMemberScope(wsId: string, reason: string, deps: ScopeS
     return report;
   }
   for (const scope of fresh) if (!report.scopes.includes(scope.unit)) report.scopes.push(scope.unit);
+  // A unit systemd already removed (the kill emptied it; `--collect`) is gone — counted stopped, never left in neither list.
+  const stillThere = new Set(fresh.map((s) => s.unit));
+  for (const unit of report.scopes) if (!stillThere.has(unit) && deps.ownsUnit(unit)) report.stopped.push(unit);
   for (const scope of fresh) {
     if (!deps.ownsUnit(scope.unit)) {
       report.kept.push({ unit: scope.unit, reason: 'not a scope of this workspace — never touched' });
@@ -107,6 +112,10 @@ export async function stopMemberScope(wsId: string, reason: string, deps: ScopeS
     }
     if (listing.some((m) => m.role === 'keeper' || m.role === 'cli' || m.role === 'session')) {
       report.kept.push({ unit: scope.unit, reason: 'a live session of this member runs in it (a restart started a new generation) — not ours to stop' });
+      continue;
+    }
+    if (deps.keeperAlive()) {
+      report.kept.push({ unit: scope.unit, reason: 'a keeper of this member came up meanwhile — not ours to stop' });
       continue;
     }
     try {

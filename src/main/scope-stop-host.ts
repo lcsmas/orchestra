@@ -8,7 +8,7 @@ import { realKillDeps } from './pause-kill.ts';
 import { realScopeEnv, scopePrefix, type ScopeEnv } from './memory-scope.ts';
 import { scopeGenForWorkspace } from '../shared/memory-scope.ts';
 import { stopMemberScope, type ScopeStopDeps, type ScopeStopReport } from './scope-stop.ts';
-import { readTrackedKeeperPid } from './keeper-client';
+import { readTrackedKeeperPid, withKeeperLock } from './keeper-client';
 import { log } from './logger';
 
 /** `systemctl --user stop <unit>` through execFile (no shell). Only reached for a unit `ownsUnit` accepted. */
@@ -35,12 +35,26 @@ export function realScopeStopDeps(wsId: string, over: Partial<ScopeStopDeps> = {
   };
 }
 
-/** Best effort and never throws: a failed scope stop must not block the delete / archive / clear / migration that called it. */
-export async function stopMemberScopeFor(wsId: string, reason: string): Promise<ScopeStopReport | null> {
+/** Upper bound the caller waits (the kill rounds, one `systemctl` per generation and the gone-wait add up): a wedged systemd must not park a delete. The stop itself is not cancelled. */
+export const SCOPE_STOP_DEADLINE_MS = 45_000;
+
+/** Best effort and never throws: a failed scope stop must not block the delete / archive / clear / migration that called it. Runs under the member's keeper lock — a keeper launch cannot interleave with the kill. */
+export async function stopMemberScopeFor(wsId: string, reason: string, deadlineMs = SCOPE_STOP_DEADLINE_MS): Promise<ScopeStopReport | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await stopMemberScope(wsId, reason, realScopeStopDeps(wsId));
+    const stop = withKeeperLock(wsId, () => stopMemberScope(wsId, reason, realScopeStopDeps(wsId)));
+    const late = new Promise<null>((resolve) => {
+      timer = setTimeout(() => {
+        log.warn(`scope-stop[${wsId}] (${reason}): still running after ${deadlineMs / 1000}s — not waiting any longer`);
+        resolve(null);
+      }, deadlineMs);
+    });
+    stop.catch(() => {}); // a stop that outlives the deadline must not become an unhandled rejection
+    return await Promise.race([stop, late]);
   } catch (e) {
     log.warn(`scope-stop[${wsId}] (${reason}) failed`, e);
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
