@@ -17,6 +17,8 @@ least likely OOM victims so the kernel kills the runaway tool process, not the s
 under dockerd, outside the scope, so the keeper's Docker relay (ADR 0004) holds their creation under the
 Admission threshold instead. Decided with the user on 2026-10-07 (grilling session).
 
+**Amended 2026-10-09 (wave H Q9, ticket #332).** The scope is still ONE per member, but shaped as a delegated parent cgroup with two leaves: the keeper in `k` (no limit of its own), the CLI and its tools in `w`, which carries the hard level. A flat scope loses the SESSION to back-to-back tool kills: the keeper's reaction to a kill allocates at the limit while the killed tool's pages are still charged, and with no tool left to kill the kernel takes the keeper, then the CLI (measured: 10/10 lost; 0/10 with the layout, ledger #329 c/6078715647). The scope itself keeps a backstop limit above the hard level (`hard + 128 MiB`) so `w` always trips first.
+
 ## Considered options
 
 - **`orchestra rig` — a voluntary lock heavy scripts take** — rejected: only scripts that call it are
@@ -28,6 +30,7 @@ Admission threshold instead. Decided with the user on 2026-10-07 (grilling sessi
   the CLI included, and the hard level never fires. The soft level is a warning to the member and its
   coordinator instead.
 - **Soft only** — rejected: a throttle alone leaves a stuck member nobody is told about.
+- **One flat scope for keeper + CLI + tools** — rejected 2026-10-09 (Q9): the keeper shares the cgroup that reaches its limit, so its own reaction to a kill can open the episode that kills it. A sacrificial adj-1000 sentinel only postpones that (consumed at ≈0.12 per kill).
 
 ## Consequences
 

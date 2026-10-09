@@ -280,8 +280,12 @@ test('#332 leaves: the scope\'s members are the union of its two leaves (its own
 
 test('#332 leaves: a leaf that EXISTS but cannot be read is an error (no quiet undercount that would hide the keeper); a scope without leaves reads as before', () => {
   const { scopeDir } = mkLeafScope('orchestra-ws-leafy2-1bbbbb.scope', 7011, 7012, 7013);
+  mkProc(7011, 1, 'node-22', cgPathOf(path.join(scopeDir, 'k')));
+  mkProc(7012, 7011, 'node-22', cgPathOf(path.join(scopeDir, 'w')));
+  mkProc(7013, 1, 'python3', cgPathOf(path.join(scopeDir, 'w')));
   const e = env({ readFile: (p) => { if (p === path.join(scopeDir, 'k', 'cgroup.procs')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return fs.readFileSync(p, 'utf8'); } });
   assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, e), [], 'unreadable ⇒ [] as for any unreadable scope (the Reliquat killer reads the file first and calls it UNKNOWN)');
+  assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, env()).map((p) => p.pid).sort(), [7011, 7012, 7013], 'control: readable, the same scope lists all three');
   const flat = mkScope('orchestra-ws-flat-1ccccc.scope', { 'cgroup.procs': '7021\n' });
   mkProc(7021, 1, 'python3', cgPathOf(flat));
   assert.deepEqual(listScopeProcs({ cgroupDir: flat, keeperPid: null }, null, env()).map((p) => p.pid), [7021]);
@@ -297,4 +301,14 @@ test('#332 leaves: readScopeMemory — the cap (max, swap, events) is the WORK l
   assert.equal(m!.events.oomKill, 3, 'the kernel kills happen on the work leaf');
   const flat = readScopeMemory({ cgroupDir: mkScope('orchestra-ws-flat2-1eeeee.scope') }, env());
   assert.equal(flat!.maxBytes, 268435456, 'a scope without leaves: its own limit, as before');
+});
+
+test('#332 leaves: the keeper in leaf k is resolved by the pid file alone (its own cgroup `<scope>/k` maps to the scope) — no keeper argv to fall back on', () => {
+  const { kDir, wDir } = mkLeafScope('orchestra-ws-leafy4-1fffff.scope', 7041, 7042, 7043);
+  mkProc(7041, 1, 'node-22', cgPathOf(kDir), 100, 'node something-else');
+  mkProc(7042, 7041, 'node-22', cgPathOf(wDir));
+  mkProc(7043, 1, 'python3', cgPathOf(wDir));
+  assert.equal(memberScopes('leafy4', env())[0].keeperPid, null, 'no pid file yet, and the argv is not a keeper\'s');
+  fs.writeFileSync(path.join(keepers, 'leafy4.pid'), JSON.stringify({ pid: 7041 }));
+  assert.equal(memberScopes('leafy4', env())[0].keeperPid, 7041);
 });
