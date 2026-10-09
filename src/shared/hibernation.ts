@@ -72,8 +72,8 @@ export interface HibernationSignals {
    *  member that passes every other guard then counts as past its idle threshold (fast Veille, #288). Required: a caller that forgets it
    *  must fail tsc, not silently ignore the hold. */
   admissionHeld: boolean;
-  /** Reliquats of this member alive NOW (#326: FI-1 role `reliquat` of its kernel scope; with no tracked scope, #331's orphaned headless browsers). 0 = none, or not looked at / not knowable (the sweeper
-   *  then keeps today's Veille). Required: a caller that forgets it must fail tsc, not silently skip the wait. */
+  /** Reliquats of this member alive NOW (#326: FI-1 role `reliquat` of its kernel scope; with no tracked scope, #331's orphaned headless browsers). 0 = none, or not looked at (a member without a coordinator, a port-less rig); an UNKNOWN census
+   *  never reaches the rule — the sweeper defers the Veille (R11). Required: a caller that forgets it must fail tsc, not silently skip the wait. */
   liveReliquats: number;
   /** The Reliquat delay in ms (Garde mémoire setting, read hot) — how long an idle member with live Reliquats waits before its Veille. Required for the same reason. */
   reliquatDelayMs: number;

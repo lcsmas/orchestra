@@ -191,6 +191,18 @@ test('an unreadable app.slice (EACCES) is `unknown`, not « no scope » (which w
   assert.equal(await port.census('m1'), 'unknown');
 });
 
+test('a scope lookup that FAILS inside stop() is reported `unknown` (never `null` = « nothing to stop »): the Veille then waits for the next sweep (verifier Q09)', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root ignores directory modes');
+  const tr = tree(t);
+  tr.scope('m1', 'aaaaaa', []);
+  fs.chmodSync(tr.slice, 0o000);
+  const port = makeVeilleReliquatPort({ scopeEnv: tr.env, cliOf: noSession, countBrowsers: async () => 5, stopBrowsers: async () => { throw new Error('the browser pass must not be asked'); } });
+  const rep = await port.stop('m1');
+  assert.ok(rep !== null, 'a lookup failure is not « nothing to stop »');
+  assert.match(String(rep?.unknown), /^scope lookup failed: /);
+  assert.equal(rep?.killed.length, 0);
+});
+
 test('a scope-less member\'s stop never asks for the keeper / CLI identity: an UNRESPONSIVE keeper must not keep it awake for ever (review 1)', async (t) => {
   const tr = tree(t);
   const calls: string[] = [];

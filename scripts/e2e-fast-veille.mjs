@@ -190,7 +190,7 @@ const veilleLines = (id) => logText().split('\n').filter((l) => l.includes(`hibe
 // Would the member be eligible if it had been idle forever, with Admission OPEN? True ⇒ only recency (or the guard under test) stands between it and Veille.
 const eligibleIfOld = (id, over = {}) => shouldHibernate(wsOf(id), {
   now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true, hasLiveRunPty: false,
-  hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, ...over,
+  hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), monotonicIdleMs: Number.MAX_SAFE_INTEGER, admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN, ...over,
 });
 
 // ── fleet: a member = a workspace with a coordinator (`parentId`), started through the real path and answered once ──

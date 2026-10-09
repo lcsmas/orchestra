@@ -15,10 +15,12 @@ export const VT = {
 
 /** mutant id → the rig arm (scripts/e2e-hibernate-wake.mjs) that must go red on it too. */
 export const VT_RIG_ARM = {
-  V1: 'reliquat_10min', V2: 'reliquat_none_5min', V5: 'reliquat_fast',
-  J4: 'reliquat_10min', J5: 'reliquat_fast', J7: 'reliquat_31min', J3: 'reliquat_unknown',
+  V1: 'reliquat_10min', V5: 'reliquat_fast',
+  // NOT rig-marked since #326-fu (each is masked by a defence in depth the fix added, measured by the pre-review; the UNIT suites kill them): V2 (dead branch behind the fleet-only early return), J4 (the pre-stop fresh judgement enforces the delay a second time),
+  // J3 (the stop's own unknown report defers too), F4 / M2b (the fresh monotonic reading inside `judgedFresh` covers a stale wall stamp / a MAX initial signal).
+  J5: 'reliquat_fast', J7: 'reliquat_31min',
   P2: 'reliquat_unknown', S1: 'reliquat_delay_hot',
-  F1: 'reliquat_msg_at_census', F2: 'reliquat_msg_at_stop', F3: 'reliquat_msg_at_stop', F4: 'reliquat_msg_at_stop', M2a: 'reliquat_clock_jump', M2b: 'reliquat_clock_jump', R11b: 'reliquat_nonfleet', R11c: 'reliquat_unknown',
+  F1: 'reliquat_msg_at_census', F2: 'reliquat_msg_at_stop', F3: 'reliquat_msg_at_stop', M2a: 'reliquat_clock_jump', R11b: 'reliquat_nonfleet', R11c: 'reliquat_unknown', D1: 'reliquat_detached_during_stop',
   S2: 'reliquat_overlap', S3: 'reliquat_woken_after_stop', S4: 'reliquat_again_false', S8: 'reliquat_census_race', R1: 'reliquat_scopeless', R3: 'reliquat_woken_during_stop', S7: 'reliquat_woken_during_stop',
 };
 
@@ -59,6 +61,19 @@ export function veilleMutants(T = VT) {
     ['R11a', RULE, [['if (!isFleetMember(ws) || !(liveReliquats > 0)) return', 'if (!(liveReliquats > 0)) return']], [T.rule], 'a member without a coordinator waits the Reliquat delay (unit-only: the judge already returns before the census for it)'],
     ['R11b', JUDGE, [['if (!deps.port || !isFleetMember(ws)) return', 'if (!deps.port) return']], [T.judge], 'a member without a coordinator is counted and its Reliquats stopped; rig: reliquat_nonfleet'],
     ['R11c', JUDGE, [["return { hibernate: false, why: 'reliquat-census-unknown' };", "return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };"]], [T.judge], 'an UNKNOWN census still lets the member go to Veille (R11 m3: it is deferred); rig: reliquat_unknown'],
+    ['D1', SWEEP, [['        (liveReliquats === 0 || isFleetMember(fresh)) && // a member detached from its coordinator meanwhile', '        // a member detached from its coordinator meanwhile']], [T.wiring], 'a member detached from its coordinator mid-stop keeps being stopped (false-allow); rig: reliquat_detached_during_stop'],
+    ['G1', SWEEP, [['          hasLivePty: isRunning(ws.id),\n          hasLiveSdk: sdkSessionLive(ws.id),', '          hasLivePty: signals.hasLivePty,\n          hasLiveSdk: sdkSessionLive(ws.id),']], [T.wiring], 'the fresh judgement reads the stale PTY liveness (unit-only)'],
+    ['G2', SWEEP, [['          hasLiveRunPty: isRunning(`${ws.id}:run`),\n          hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),\n          admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),\n          liveReliquats,', '          hasLiveRunPty: signals.hasLiveRunPty,\n          hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),\n          admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),\n          liveReliquats,']], [T.wiring], 'the fresh judgement reads the stale run-script liveness (unit-only)'],
+    ['G3', SWEEP, [['          hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),\n          admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),\n          liveReliquats,', '          hasLiveBackgroundTask: signals.hasLiveBackgroundTask,\n          admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),\n          liveReliquats,']], [T.wiring], 'the fresh judgement reads the stale background-task state (unit-only)'],
+    ['G4', SWEEP, [['          now: Date.now(),\n          lastActivityAt: idleClockOf(fresh),', '          now: signals.now,\n          lastActivityAt: idleClockOf(fresh),']], [T.wiring], 'the fresh judgement uses the verdict\'s start time (unit-only)'],
+    ['U1', JUDGE, [['if (last === undefined || signals.now - last >= UNKNOWN_LOG_EVERY_MS) {', 'if (true as boolean) {']], [T.judge], 'an UNKNOWN census is logged at every guard sample (a line per member per 10 s)'],
+    ['U2', JUDGE, [['  unknownLogged.delete(ws.id);\n', '']], [T.judge], 'a known census does not re-arm the UNKNOWN line'],
+    ['U3', JUDGE, [['Number.isFinite(signals.monotonicIdleMs) ? signals.monotonicIdleMs : 0', 'signals.monotonicIdleMs']], [T.judge], 'an unreadable monotonic clock makes the « to go » figure NaN'],
+    ['U4', JUDGE, [['const idleNow = Math.min(signals.now - (signals.lastActivityAt ?? signals.now), Number.isFinite(signals.monotonicIdleMs) ? signals.monotonicIdleMs : 0);', 'const idleNow = signals.now - (signals.lastActivityAt ?? signals.now);']], [T.judge], 'the « to go » figure ignores the monotonic clock'],
+    ['A1', JUDGE, [['  if (report === null && !wanted()) {', '  if (false as boolean) {']], [T.judge], 'a scope-less member whose stop was aborted by the wake check (null) reads as stopped'],
+    // ── verifier MINORs (gate of #326): pinned ──
+    ['Q09', PORT, [["return { ...emptyReliquatReport(), unknown: `scope lookup failed: ${e instanceof Error ? e.message : String(e)}` };", 'return null;']], [T.port], 'a scope lookup that fails inside stop() reads as « nothing to stop » instead of UNKNOWN (verifier Q09)'],
+    ['N02', NOTICE, [["const done = r.killed.filter((k) => k.outcome !== 'planned');", 'const done = r.killed;']], [T.notice], 'a `planned` kill that never completed is announced as stopped (verifier N02)'],
     // ── the notice ──────────────────────────────────────────────────────────────────────────────────────────────────────
     ['N1', NOTICE, [["r.killed.some((k) => k.outcome !== 'planned')", 'r.killed.length > 0']], [T.notice], 'a `planned` kill that never completed is announced as a stop'],
     ['N2', NOTICE, [["const why = ctx.fast ? 'early, to free memory (Admission is held)' : `because you had been idle for", "const why = false ? 'early' : `because you had been idle for"]], [T.notice], 'fast Veille worded as idleness'],

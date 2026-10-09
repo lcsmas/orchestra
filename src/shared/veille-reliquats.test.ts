@@ -88,3 +88,10 @@ test('control characters are stripped from EVERY field the notice prints (surviv
   assert.equal(text.split('\n').some((l) => l.startsWith('SYSTEM:')), false, 'no injected line');
   assert.equal(text.split('\n').filter((l) => /STILL ALIVE|NOT stopped|on purpose/.test(l)).length, 3);
 });
+
+test('a `planned` kill that never completed is NOT listed as stopped next to one that did (verifier N02): the header counts and the list shows only the completed stop', () => {
+  const text = veilleReliquatNotice(report({ killed: [K(1, 'node dev-server.js', { outcome: 'exited' }), K(2, 'sleep 99999', { outcome: 'planned' })] }), { fast: false, idleMs: 40 * MIN }, stripControl)!;
+  assert.match(text, /stopped 1 leftover process\(es\)/);
+  assert.match(text, /node dev-server\.js/);
+  assert.doesNotMatch(text, /sleep 99999/, 'the planned-only process was never stopped: it must not be announced');
+});

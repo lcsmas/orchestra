@@ -67,7 +67,7 @@
 //
 //   reliquat_*       (#326 Veille and Reliquats) a REAL orphan listed in a FAKE scope: 10min ★ NOT hibernated (live Reliquat, short of the 30-min delay) · 31min ★ hibernated, the Reliquat STOPPED,
 //                      the notice queued in the inbox and printed by the shipped inbox hook · none_5min — no Reliquat ⇒ the normal 5-min Veille · fast ★ fast Veille (Admission held) skips the delay,
-//                      stops + lists · delay_hot ★ the Garde mémoire setting read hot · unknown — an unreadable scope ⇒ today's Veille, nothing killed
+//                      stops + lists · delay_hot ★ the Garde mémoire setting read hot · unknown — an unreadable scope ⇒ the Veille is DEFERRED (R11), nothing killed
 //
 // Run: node --experimental-strip-types --import ./scripts/.r2-register.mjs \
 //        scripts/e2e-hibernate-wake.mjs <arm>
@@ -88,7 +88,7 @@ const ARMS = [
   'level_only', 'level_only_healed', 'level_after_done', 'fleet_unread_wake', 'toplevel_unread',
   'reliquat_10min', 'reliquat_31min', 'reliquat_none_5min', 'reliquat_fast', 'reliquat_delay_hot', 'reliquat_unknown',
   'reliquat_woken_during_stop', 'reliquat_woken_after_stop', 'reliquat_again_false', 'reliquat_overlap', 'reliquat_scopeless', 'reliquat_census_race',
-  'reliquat_msg_at_stop', 'reliquat_msg_at_census', 'reliquat_clock_jump', 'reliquat_nonfleet',   // #326-fu m1, m1, m2, m4
+  'reliquat_msg_at_stop', 'reliquat_msg_at_census', 'reliquat_clock_jump', 'reliquat_nonfleet', 'reliquat_detached_during_stop',   // #326-fu m1, m1, m2, m4, review
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -693,6 +693,13 @@ if (ARM.startsWith('reliquat_')) {
     const hibernated = await hib.sweepHibernation();
     Object.assign(out, base, { hibernated, censuses, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length, parentId: wsNow().parentId ?? null });
     ok = readyPremise && port !== null && !wsNow().parentId && hibernated.length === 1 && censuses === 0 && !live() && mine.every(alive) && inboxBlocks().length === 0;
+  } else if (ARM === 'reliquat_detached_during_stop') {
+    // #326-fu pre-review: the member is DETACHED from its coordinator while its Reliquats are being counted / stopped — it is no longer a fleet member (R11), so the stop is not ours to finish: the signal rounds end before any signal
+    wrapPort({ stop: async (w, c) => { await store.upsertWorkspace({ ...wsNow(), parentId: undefined }); return port.stop(w, c); } });
+    skewMs = 40 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length, parentId: wsNow().parentId ?? null });
+    ok = readyPremise && port !== null && !wsNow().parentId && hibernated.length === 0 && live() && mine.every(alive) && inboxBlocks().length === 0;
   } else if (ARM === 'reliquat_woken_during_stop') {
     // a wake lands at the START of the stop: the « still wanted » check ends the signal rounds BEFORE any signal — the Reliquat lives, the member is not hibernated, nothing to tell
     wrapPort({ stop: async (w, c) => { hib.clearHibernated(WS); return port.stop(w, c); } });

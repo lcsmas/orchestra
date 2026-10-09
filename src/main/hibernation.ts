@@ -46,6 +46,7 @@ import { idleClockOf, monotonicIdleOf } from './idle-clock.ts';
 // Fast Veille (#288): the hold question is `isAdmissionHolding(getMemoryGuardSnapshot())` and nothing else (ledger #295 FI-2).
 import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-guard.ts';
 import { isAdmissionHolding } from '../shared/memory-guard.ts';
+import { isFleetMember } from '../shared/admission.ts';
 import type { Workspace } from '../shared/types';
 // #326: Veille and Reliquats — the per-member verdict (live Reliquats delay the Veille, which then stops + lists them). The port is registered by index.ts (veille-reliquats-host.ts):
 // none registered = today's Veille, byte for byte.
@@ -194,6 +195,7 @@ export async function sweepHibernation(): Promise<string[]> {
       const fresh = store.getWorkspace(ws.id);
       return (
         !!fresh &&
+        (liveReliquats === 0 || isFleetMember(fresh)) && // a member detached from its coordinator meanwhile is no longer a fleet member (R11): its Reliquats are not ours to stop
         shouldHibernate(fresh, {
           ...signals,
           now: Date.now(),

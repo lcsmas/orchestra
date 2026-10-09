@@ -24,6 +24,13 @@ export interface VeilleReliquatPort {
   tell(wsId: string, text: string): Promise<boolean>;
 }
 
+/** Members whose census was UNKNOWN: when it was last said in the log (a stuck keeper under a held Admission is re-judged on EVERY guard sample, ~10 s: one line per member per 5 min, not one per sample). */
+const unknownLogged = new Map<string, number>();
+const UNKNOWN_LOG_EVERY_MS = 5 * 60_000;
+export function __resetVeilleLogGate(): void {
+  unknownLogged.clear();
+}
+
 export interface JudgeDeps {
   port: VeilleReliquatPort | null;
   /** The Consigne's control-character strip: a command line comes from any process of the member and must never forge a line in its prompt. */
@@ -59,18 +66,25 @@ export async function judgeVeille(ws: Workspace, signals: Base, deps: JudgeDeps)
   try {
     live = await deps.port.census(ws.id);
   } catch (e) {
-    deps.warn(`veille: Reliquat census of ${ws.name} (${ws.id}) threw — keeping today's Veille`, e);
+    deps.warn(`veille: Reliquat census of ${ws.name} (${ws.id}) threw — read as UNKNOWN: the Veille is deferred`, e);
     live = 'unknown';
   }
   if (live === 'unknown') {
-    deps.info(`veille: ${ws.name} (${ws.id}) — Reliquats could not be counted; Veille deferred to the next sweep (UNKNOWN is not NONE; nothing is stopped on a guess)`);
+    const last = unknownLogged.get(ws.id);
+    if (last === undefined || signals.now - last >= UNKNOWN_LOG_EVERY_MS) {
+      unknownLogged.set(ws.id, signals.now);
+      deps.info(`veille: ${ws.name} (${ws.id}) — Reliquats could not be counted; Veille deferred to the next sweep (UNKNOWN is not NONE; nothing is stopped on a guess; said again after 5 min)`);
+    }
     return { hibernate: false, why: 'reliquat-census-unknown' };
   }
+  unknownLogged.delete(ws.id);
   if (live === 0) return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };
 
   // 3. live Reliquats: the delay applies (not to fast Veille)
   if (!shouldHibernate(ws, { ...signals, liveReliquats: live })) {
-    const waitMs = Math.max(0, (signals.reliquatDelayMs || 0) - (signals.now - (signals.lastActivityAt ?? signals.now)));
+    // the wait the rule is applying: the delay minus the SMALLER of the two idle times (a wall-clock jump must not read « <1m to go »)
+    const idleNow = Math.min(signals.now - (signals.lastActivityAt ?? signals.now), Number.isFinite(signals.monotonicIdleMs) ? signals.monotonicIdleMs : 0);
+    const waitMs = Math.max(0, (signals.reliquatDelayMs || 0) - idleNow);
     return { hibernate: false, why: 'reliquat-delay', liveReliquats: live, waitMs };
   }
   const fast = signals.admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false, liveReliquats: live });
@@ -89,6 +103,11 @@ export async function judgeVeille(ws: Workspace, signals: Base, deps: JudgeDeps)
   } catch (e) {
     deps.warn(`veille: stopping the Reliquats of ${ws.name} (${ws.id}) threw`, e);
     return { hibernate: false, why: 'reliquat-stop-incomplete', liveReliquats: live, detail: e instanceof Error ? e.message : String(e) };
+  }
+  // A scope-less member's browser pass answers `null` both for « nothing to stop » and for « stopped by the wake check before it began »: a member no longer wanted is NOT « stopped » — the Veille waits.
+  if (report === null && !wanted()) {
+    deps.info(`veille: ${ws.name} (${ws.id}) is no longer eligible after its Reliquat stop returned nothing — the Veille is deferred`);
+    return { hibernate: false, why: 'not-eligible' };
   }
   if (report && (report.unknown || report.error || report.aborted)) {
     // UNKNOWN is not NONE: the scope could not be read / the identity could not be proven / the member woke mid-stop — the Veille waits for the next sweep. What WAS stopped (if anything) is still told.

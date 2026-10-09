@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { judgeVeille, type JudgeDeps, type VeilleReliquatPort } from './veille-reliquats.ts';
+import { judgeVeille, __resetVeilleLogGate, type JudgeDeps, type VeilleReliquatPort } from './veille-reliquats.ts';
 import { emptyReliquatReport, type ReliquatKilled, type ReliquatReport } from '../shared/pause-reliquats.ts';
 import { stripControl } from '../shared/pause-consigne.ts';
 import type { HibernationSignals } from '../shared/hibernation.ts';
@@ -74,6 +74,7 @@ test('no live Reliquat ⇒ Veille at the NORMAL threshold, nothing stopped, nobo
 
 test('the census CANNOT say (unknown, or it throws) ⇒ NO Veille this pass (R11, #326-fu m3: UNKNOWN is not NONE), nothing stopped on a guess — and it is logged', async () => {
   for (const live of ['unknown', new Error('boom')] as const) {
+    __resetVeilleLogGate();
     const p = new FakePort();
     p.live = live;
     const log: string[] = [];
@@ -270,4 +271,51 @@ test('the stop is handed the sweep\'s « still wanted » check (a wake / delete 
   assert.equal((v as { why: string }).why, 'reliquat-stop-incomplete');
   assert.match((v as { detail: string }).detail, /aborted \(lifted\)/);
   assert.deepEqual(p.calls, ['census:w1', 'stop:w1', 'tell:w1']);
+});
+
+test('an UNKNOWN census is SAID once per member per 5 min (a stuck keeper under a held Admission is re-judged every guard sample), again after 5 min, and a known census re-arms it', async () => {
+  __resetVeilleLogGate();
+  const p = new FakePort();
+  p.live = 'unknown';
+  const log: string[] = [];
+  const said = () => log.filter((l) => /could not be counted/.test(l)).length;
+  for (let i = 0; i < 6; i++) await judgeVeille(ws(), sig(10 * MIN, { now: NOW + i * 10_000 }), deps(p, log));   // 6 guard samples, 10 s apart
+  assert.equal(said(), 1, 'six deferrals, one line');
+  await judgeVeille(ws(), sig(10 * MIN, { now: NOW + 5 * MIN }), deps(p, log));
+  assert.equal(said(), 2, 'said again after 5 min');
+  p.live = 0;
+  assert.equal((await judgeVeille(ws(), sig(10 * MIN, { now: NOW + 6 * MIN }), deps(p, log))).hibernate, true);
+  p.live = 'unknown';
+  await judgeVeille(ws(), sig(10 * MIN, { now: NOW + 6 * MIN + 1000 }), deps(p, log));
+  assert.equal(said(), 3, 'a known census in between re-armed the line');
+  __resetVeilleLogGate();
+});
+
+test('the « to go » figure is the delay minus the SMALLER idle time — a wall-clock jump does not read « nothing left to wait »', async () => {
+  const p = new FakePort();
+  p.live = 2;
+  const v = await judgeVeille(ws(), sig(3 * 60 * MIN, { monotonicIdleMs: 20_000 }), deps(p));
+  assert.deepEqual(v, { hibernate: false, why: 'reliquat-delay', liveReliquats: 2, waitMs: 30 * MIN - 20_000 });
+  const nan = await judgeVeille(ws(), sig(40 * MIN, { monotonicIdleMs: NaN }), deps(p));
+  assert.equal(nan.hibernate, false, 'an unreadable monotonic clock fails closed');
+  assert.equal((nan as { why: string }).why, 'reliquat-delay');
+  assert.equal((nan as { waitMs: number }).waitMs, 30 * MIN, 'and the figure stays a number: the whole delay still to go');
+});
+
+test('a stop that returned NOTHING (a scope-less member\'s browser pass answers null for « none » AND for « stopped by the wake check ») is not « stopped » when the member is no longer wanted — the Veille waits', async () => {
+  const p = new FakePort();
+  p.live = 1;
+  p.report = null;
+  let eligible = true;
+  const park = p.stop.bind(p);
+  p.stop = async (w, c) => { const r = await park(w, c); eligible = false; return r; };   // the member woke DURING the stop
+  const log: string[] = [];
+  const v = await judgeVeille(ws(), sig(40 * MIN), { ...deps(p, log), stillEligible: () => eligible });
+  assert.deepEqual(v, { hibernate: false, why: 'not-eligible' });
+  assert.ok(log.some((l) => /no longer eligible after its Reliquat stop returned nothing/.test(l)), log.join('|'));
+  // control: the same null with the member still wanted is today's « nothing to stop » ⇒ Veille
+  const p2 = new FakePort();
+  p2.live = 1;
+  p2.report = null;
+  assert.equal((await judgeVeille(ws(), sig(40 * MIN), { ...deps(p2), stillEligible: () => true })).hibernate, true);
 });
