@@ -447,7 +447,7 @@ export function memNoticeText(rec: MemNoticeRecord): string {
     ? `Plafond mémoire${rec.hardBytes !== null ? ` ${fmtGb(rec.hardBytes)}` : ''} reached`
     : 'killed by the system under memory pressure (not by the Plafond mémoire)';
   if (rec.command === null) return `A command was killed: ${reason} (it lived too briefly to be named)`;
-  const cmd = rec.command.length > 120 ? `${rec.command.slice(0, 119)}…` : rec.command;
+  const cmd = cutChars(rec.command, 120);
   const prefix = rec.source === 'kernel' ? `Command ${cmd}` : `A command (probably ${cmd})`;
   const main = rec.level === 'hard' ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
   return rec.role ? `${main} — this was the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : main;
@@ -477,7 +477,14 @@ export function estimateOomBadness(s: Pick<VictimSnap, 'rssPages' | 'adj'>, tota
 
 export function describeCommand(cmdline: string, comm: string, max = 200): string {
   const c = (cmdline || comm || '').replace(/\s+/g, ' ').trim();
-  return c.length > max ? `${c.slice(0, max - 1)}…` : c;
+  return cutChars(c, max);
+}
+
+/** At most `max` characters (CODE POINTS, so an emoji is never cut in half into a lone surrogate), the last one `…` when cut. */
+export function cutChars(s: string, max: number): string {
+  if (s.length <= max) return s; // UTF-16 length ≥ code points: short enough either way
+  const chars = Array.from(s);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : s;
 }
 
 export interface InferKillsInput {

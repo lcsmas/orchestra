@@ -78,7 +78,7 @@ test('R4 (#322 B) the warning level: amber, working set + level + hard cap, no c
   assert.ok(!r.segments.some((x) => x.kind === 'chip'));
 });
 
-test('R5 (#322 B) a long command is cut for the chip (the full text stays in the tooltip text); a short one is untouched', () => {
+test('R5 (#322 B) a long command is cut for the chip (the tooltip sentence carries up to 120 characters, the bus message the whole command); a short one is untouched', () => {
   const long = 'x'.repeat(MAX_CHIP_CHARS + 30);
   const chip = memCapRowOf({ ...kill, command: long }).segments.find((x) => x.kind === 'chip')!;
   assert.equal(chip.text.length, MAX_CHIP_CHARS);
@@ -86,12 +86,53 @@ test('R5 (#322 B) a long command is cut for the chip (the full text stays in the
   assert.equal(memCapRowOf(kill).segments.find((x) => x.kind === 'chip')!.text, 'cargo build');
 });
 
+test('R5b the chip boundary is EXACTLY 80 characters, in literal numbers (not the constant): 79 and 80 untouched, 81 cut to 79 + « … »', () => {
+  const chipOf = (n: number) => memCapRowOf({ ...kill, command: 'y'.repeat(n) }).segments.find((x) => x.kind === 'chip')!.text;
+  assert.equal(MAX_CHIP_CHARS, 80);
+  assert.equal(chipOf(79), 'y'.repeat(79));
+  assert.equal(chipOf(80), 'y'.repeat(80), 'exactly the limit is NOT cut');
+  assert.equal(chipOf(81), `${'y'.repeat(79)}…`);
+});
+
+test('R5c the cut never splits an emoji into a lone surrogate (chip AND the 120-character tooltip sentence); blank commands are no name at all (never an empty pill)', () => {
+  const emoji = `${'a'.repeat(78)}😀bbb`; // the 80-char cut falls right after the 79th code point
+  const chip = memCapRowOf({ ...kill, command: emoji }).segments.find((x) => x.kind === 'chip')!.text;
+  assert.ok(chip.isWellFormed(), JSON.stringify(chip));
+  assert.equal(Array.from(chip).length, 80);
+  assert.equal(chip, `${'a'.repeat(78)}😀…`);
+  const sentence = memNoticeEntryOf({ ...kill, command: `${'c'.repeat(118)}😀dddd` }).text;
+  assert.ok(sentence.isWellFormed(), 'the tooltip sentence is cut on code points too');
+  assert.match(sentence, /^Command c{118}😀… killed/);
+  for (const blank of ['', '   ', '\t\n']) {
+    const r = memCapRowOf({ ...kill, command: blank });
+    assert.ok(!r.segments.some((x) => x.kind === 'chip'), JSON.stringify(blank));
+    assert.equal(txt(r), 'A command was killed — 6 GB reached (it lived too briefly to be named)');
+  }
+});
+
+test('R5d every wording branch, exact: level (hard / external) × victim (named / inferred / unnamed) × the session-ended clause; the dash only follows a hard level; the cap-less hard reason', () => {
+  const E = " — the member's own agent process: the session ended";
+  const rec = (over: Partial<MemKillRecord>) => memCapRowOf({ ...kill, ...over });
+  assert.equal(txt(rec({ role: 'cli' })), `Command [cargo build] killed — 6 GB reached${E}`);
+  assert.equal(txt(rec({ role: 'cli', source: 'inferred' })), `A command was killed — 6 GB reached · probably [cargo build]${E}`, 'the clause follows the chip: « probably » never dangles');
+  assert.equal(txt(rec({ role: 'cli', command: null })), `A command was killed — 6 GB reached (it lived too briefly to be named)${E}`);
+  assert.equal(txt(rec({ level: 'external', hardBytes: null })), 'Command [cargo build] killed by the system under memory pressure (not by the Plafond mémoire)');
+  assert.equal(txt(rec({ level: 'external', hardBytes: null, source: 'inferred' })), 'A command was killed by the system under memory pressure (not by the Plafond mémoire) · probably [cargo build]');
+  assert.equal(txt(rec({ level: 'external', hardBytes: null, command: null })), 'A command was killed by the system under memory pressure (not by the Plafond mémoire) (it lived too briefly to be named)');
+  assert.equal(txt(rec({ hardBytes: null })), 'Command [cargo build] killed — Plafond mémoire reached', 'a hard kill whose level is unknown still says so');
+  assert.equal(txt(rec({ hardBytes: null, source: 'inferred' })), 'A command was killed — Plafond mémoire reached · probably [cargo build]');
+  assert.equal(txt(rec({ hardBytes: null, command: null })), 'A command was killed — Plafond mémoire reached (it lived too briefly to be named)');
+  assert.equal(txt(rec({ role: 'keeper', source: 'inferred' })), "A command was killed — 6 GB reached · probably [cargo build] — the member's own keeper: the session ended");
+});
+
 test('R6 (#322 B) the notice is the dedicated kind, carries the structured row, and live == backfill (same kind, row, text, at)', () => {
   const e = memNoticeEntryOf(kill);
   const live = makeMemNotice({ seq: 10 }, e);
   const back = interleaveMemNotices([], [e], { seq: 1_000_000 })[0] as typeof live;
   assert.equal(live.kind, 'memory-cap', 'no longer the generic Warning row');
-  assert.deepEqual(live.memCap, memCapRowOf(kill));
+  const expected = { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }, { kind: 'chip', text: 'cargo build' }, { kind: 'text', text: 'killed — 6 GB reached' }] };
+  assert.deepEqual(live.memCap, expected, 'an INDEPENDENT literal, not a second call to the builder');
+  assert.deepEqual(back.memCap, expected);
   assert.deepEqual({ kind: back.kind, memCap: back.memCap, text: back.text, at: back.at }, { kind: live.kind, memCap: live.memCap, text: live.text, at: live.at });
 });
 
@@ -103,7 +144,8 @@ test('R7 (#322 B) an entry persisted BEFORE the dedicated row (no `row`) still r
   assert.equal(makeMemNotice({ seq: 1 }, legacy).kind, 'memory-cap');
 });
 
-test('R8 (#322 B) the row is JSON-safe (it is persisted in the store with the entry)', () => {
+test('R8 (#322 B) the row is JSON-safe (it is persisted in the store with the entry): the stored JSON is exactly this', () => {
   const e = memNoticeEntryOf({ ...kill, source: 'inferred' });
   assert.deepEqual(JSON.parse(JSON.stringify(e)), e);
+  assert.equal(JSON.stringify(e.row), '{"tone":"hard","segments":[{"kind":"text","text":"A command was killed — 6 GB reached · probably"},{"kind":"chip","text":"cargo build"}]}');
 });

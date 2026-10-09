@@ -39,6 +39,7 @@ const check = (label, cond, detail = '') => { if (cond) console.log(`  ok   ${la
 const html = (el) => renderToString(el).replace(/<!-- -->/g, '');
 const h = React.createElement;
 const GB = 1024 ** 3;
+const fmtTime = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const kill = { kind: 'kill', source: 'kernel', seq: 4, at: Date.parse('2026-10-09T14:02:00'), level: 'hard', command: 'python3 swarm.py 8 50 10', pid: 9, rssBytes: 1, candidates: [], unit: 'u.scope', hardBytes: 6 * GB };
 const soft = { kind: 'soft', seq: 5, at: Date.parse('2026-10-09T13:58:00'), unit: 'u.scope', bytes: 3.1 * GB, softBytes: 3 * GB, hardBytes: 6 * GB };
 // the REAL path: record → entry → the notice event the live emit / the backfill builds → the real fold → the real renderer
@@ -52,7 +53,8 @@ const rowFor = (rec) => {
 console.log('\nThe dedicated row (D-Q7 B), through fold + MessageBubble:');
 const hard = rowFor(kill);
 check('a kill becomes the memory-cap notice row — NOT the generic Warning row it replaces', hard.msg.noticeKind === 'memory-cap' && hard.out.includes('data-notice="memory-cap"') && !hard.out.includes('data-notice="warning"') && !hard.out.includes('av-notice-warning'), hard.out);
-check('one line: label « Plafond mémoire », a status note, red (is-hard), the time at the right', hard.out.includes('Plafond mémoire</span>') && hard.out.includes('role="note"') && hard.out.includes('is-hard') && hard.out.includes('data-memcap-tone="hard"') && /av-notice-tag">\d\d:\d\d/.test(hard.out), hard.out);
+check('one line: label « Plafond mémoire », a status note, red (is-hard), the time at the right', hard.out.includes('Plafond mémoire</span>') && hard.out.includes('role="note"') && hard.out.includes('is-hard') && hard.out.includes('data-memcap-tone="hard"') && hard.out.includes(`av-notice-tag">${fmtTime(kill.at)}</span>`), hard.out);
+check('the time is the KILL\'s own instant (14:02 vs 13:58 for the warning), not the render time — a reopened pane shows when it happened', fmtTime(kill.at) !== fmtTime(soft.at) && html(h(NoticeRow, { message: { id: 'a', role: 'system', noticeKind: 'memory-cap', text: 't', noticeMemCap: { tone: 'soft', segments: [{ kind: 'text', text: 'x' }] }, at: soft.at, done: true } })).includes(`av-notice-tag">${fmtTime(soft.at)}</span>`));
 check('the command is in a CHIP; the sentence around it: « Command [cmd] killed — 6 GB reached »', /Command <code class="av-notice-chip" data-memcap-chip="">python3 swarm\.py 8 50 10<\/code> killed — 6 GB reached/.test(hard.out), hard.out);
 check('the full plain sentence rides as the tooltip (a11y + the hard cap detail)', hard.out.includes('title="Command python3 swarm.py 8 50 10 killed: Plafond mémoire 6 GB reached"'), hard.out);
 const inferred = rowFor({ ...kill, source: 'inferred', command: 'python3 swarm.py' });
