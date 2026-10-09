@@ -79,7 +79,8 @@ const legacy = html(h(MessageBubble, { message: foldEvents(emptySession('ws'), [
 check('an entry persisted BEFORE the dedicated row (text only) still renders as the Plafond row, red, one text segment', legacy.includes('data-notice="memory-cap"') && legacy.includes('is-hard') && legacy.includes('Command cargo build killed: Plafond mémoire 6 GB reached') && !legacy.includes('data-memcap-chip'), legacy);
 const plainWarning = html(h(NoticeRow, { message: { id: 'n', role: 'system', noticeKind: 'warning', text: 'API retry', at: 1, done: true } }));
 check('CONTROL — an ordinary Warning notice is untouched (still the generic Warning row)', plainWarning.includes('data-notice="warning"') && plainWarning.includes('av-notice-warning') && !plainWarning.includes('memory-cap'), plainWarning);
-const bare = html(h(NoticeRow, { message: { id: 'n2', role: 'system', noticeKind: 'memory-cap', text: 'x', done: true } }));
+let bare;
+try { bare = html(h(NoticeRow, { message: { id: 'n2', role: 'system', noticeKind: 'memory-cap', text: 'x', done: true } })); } catch (e) { bare = `THREW ${e.message}`; }
 check('a memory-cap message with no structured row and no time never throws: one red text row, no time tag', bare.includes('data-notice="memory-cap"') && !bare.includes('av-notice-tag'), bare);
 
 console.log(`\nmemory-cap-row-render-smoke: ${failures === 0 ? 'all checks passed' : failures + ' FAILURE(S)'}`);
