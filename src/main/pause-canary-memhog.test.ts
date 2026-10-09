@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
+import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, fmtCap, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { mustFailVerdict } from '../../scripts/pause-canary/bars.mjs';
 
@@ -243,4 +243,16 @@ test('measurement helpers: the hog marker is unique per worker and cycle; the sw
   assert.equal(readByCoordinator([10, 11, 20, 21, 30], lots), 2, '11 and 20 are in the acked lot (10,20]; 10 is its excluded lower bound; 21 and 30 are in a lot never acked');
   assert.equal(readByCoordinator([15], []), 0);
   assert.equal(readByCoordinator([15], [{ from_seq: 10, to_seq: 20 }]), 0, 'no acked_at at all is not an ack');
+});
+
+test('fmtCap words the cap exactly as the product does (integers bare, else <= 2 decimals): the 1 GiB cap of the LEAD\'s Q11 run is « 1 GB », not « 1.00 GB »', () => {
+  assert.equal(fmtCap(0.25), '0.25 GB');
+  assert.equal(fmtCap(0.29), '0.29 GB');
+  assert.equal(fmtCap(0.75), '0.75 GB');
+  assert.equal(fmtCap(1), '1 GB');
+  assert.equal(fmtCap(1.5), '1.5 GB');
+  assert.equal(fmtCap(6), '6 GB');
+  const one = { ...good(), capGb: 1, workers: [1, 2, 3].map((i) => worker(i, { scope: { inRig: true, unit: 'u.scope', memoryMax: 1024 ** 3, swapMax: '0', high: 'max', policy: 'continue' }, memberKillRows: ['Command "x" killed: Plafond mémoire 1 GB reached'], coordMsgs: [{ kind: 'escalation', recipient: OPS, body: `w${i} (${worker(i).id}) killed at the hard level (1 GB)` }] })) };
+  assert.deepEqual(red(evaluateMemhogCycle(one)), [], 'a 1 GiB cap with the product\'s wording is green');
+  assert.deepEqual(red(evaluateMemhogCycle({ ...one, workers: one.workers.map((w: W) => ({ ...w, memberKillRows: ['Command "x" killed: Plafond mémoire 1.00 GB reached'] })) })), ['bar:member_told'], 'and « 1.00 GB » is not what the product says');
 });

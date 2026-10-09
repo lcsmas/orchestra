@@ -14,7 +14,8 @@ import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
-import { evaluateMemhogCycle, summarizeMemhogCycle, hogMarker, parseSwarm, readByCoordinator, evaluateSurvivors } from './memhog-bars.mjs';
+import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors } from './memhog-bars.mjs';
+import { workerFromAppFacts } from './memhog-app-facts.mjs';
 import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
@@ -228,7 +229,7 @@ async function runExercise(name) {
       await waitFor(() => { const cur = wk.map((w) => { const v = oomKillOf(kpid(w.k)); if (v !== null) last[w.k] = v; return last[w.k]; }).join(','); const stable = cur === prev; prev = cur; return stable; }, 40000, 1500);   // the kernel counts stop moving
       await sleep(2500);
       const delta = (w) => (typeof last[w.k] === 'number' && typeof oom0[w.k] === 'number' ? last[w.k] - oom0[w.k] : null);
-      const rowsOf = (w) => (storeWs(w.id)?.sdkMemNotices ?? []).filter((e) => e.level !== 'soft' && e.at >= t0 - 1000);
+      const rowsOf = (w) => (storeWs(w.id)?.sdkMemNotices ?? []).filter((e) => e.level !== 'soft' && e.at >= t0 - 1000);   // the settle wait below
       const msgsOf = async (w) => (await Q('SELECT sequence, kind, recipient, body, created_at FROM messages WHERE sender = ? AND sequence > ? ORDER BY sequence', w.id, seq0)) ?? [];
       // the member's row and the coordinator's escalation reach the kill count (the keeper's kernel-log lookup + delivery take a moment)
       await waitFor(async () => { for (const w of wk) { const d = delta(w); if (d && (rowsOf(w).length < d || (await msgsOf(w)).filter((x) => x.kind === 'escalation').length < d)) return false; } return true; }, 45000, 1000);
@@ -241,28 +242,18 @@ async function runExercise(name) {
       await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}b.txt`)), 120000, 500);
       const idPost = identities();
       const appLog = (() => { try { return fs.readFileSync(`${rig.H}/app.log`, 'utf8'); } catch { return ''; } })();
-      const notices = (w) => { try { return fs.readFileSync(`${rig.H}/keepers/${w.id}.memnotices.jsonl`, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
       const lots = await lotsOps();
       const workers = [];
       for (const w of wk) {
-        const msgs = await msgsOf(w);
-        const esc = msgs.filter((x) => x.kind === 'escalation' && x.recipient === spec.ops);
-        const rows = rowsOf(w);
-        const [kPre, kPost] = [idPre[w.k]?.keeper, idPost[w.k]?.keeper];
-        const cliPid = idPre[w.k]?.pid;
-        workers.push({
-          k: w.k, id: w.id, up: !!idPre[w.k]?.claude && !!readWt(w.k, `probe-${w.k}-c${c}a.txt`), marker: hogMarker(w.k, c),
-          scope: scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX),
-          swarm: parseSwarm(readWt(w.k, `memhog-out-${w.k}-c${c}.txt`)),
-          oomKillDelta: delta(w),
-          records: notices(w).filter((r) => r.kind !== 'soft' && r.at >= t0 - 1000).map((r) => ({ level: r.level, command: r.command ?? null, pid: r.pid, source: r.source })),
-          session: { keeperAlive: alive(kpid(w.k)), cliAlive: alive(cliPid), keeperSame: !!kPre && kPre === kPost, cliSame: !!idPre[w.k]?.claude && idPre[w.k]?.claude === idPost[w.k]?.claude, answered: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX).unit), capState: new RegExp(`memory-cap\\[${w.id}\\]: ACTIVE`).test(appLog) ? 'active' : null },
-          memberKillRows: rows.map((e) => e.text),
-          coordMsgs: msgs.map((x) => ({ kind: x.kind, recipient: x.recipient, body: x.body })),
-          coordRead: readByCoordinator(esc.map((x) => x.sequence), lots),
-          firstRowMs: rows.length ? Math.min(...rows.map((e) => e.at)) - t0 : null,
-          firstEscMs: esc.length ? Math.min(...esc.map((x) => x.created_at)) - t0 : null,
-        });
+        const scope = scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX);
+        workers.push(workerFromAppFacts(w, c, t0, spec.ops, {
+          up: !!idPre[w.k]?.claude && !!readWt(w.k, `probe-${w.k}-c${c}a.txt`),
+          scope, swarmText: readWt(w.k, `memhog-out-${w.k}-c${c}.txt`), oomKillDelta: delta(w),
+          noticeText: (() => { try { return fs.readFileSync(`${rig.H}/keepers/${w.id}.memnotices.jsonl`, 'utf8'); } catch { return ''; } })(),
+          storeNotices: storeWs(w.id)?.sdkMemNotices ?? [], msgs: await msgsOf(w), lots,
+          idPre: { claude: idPre[w.k]?.claude, keeper: idPre[w.k]?.keeper }, idPost: { claude: idPost[w.k]?.claude, keeper: idPost[w.k]?.keeper },
+          keeperAlive: alive(kpid(w.k)), cliAlive: alive(idPre[w.k]?.pid), probeAfter: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scope.unit), appLog,
+        }));
       }
       const leadSeen = (await Q('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?', spec.lead, seq0))?.[0]?.n ?? null;
       const maxMs = (key) => (workers.every((x) => typeof x[key] === 'number') ? Math.max(...workers.map((x) => x[key])) / 1000 : null);

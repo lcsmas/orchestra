@@ -53,6 +53,8 @@ export const MEMHOG_MUTANTS = [
   ['chain-verdict-swapped', "lost.length > 0 ? 'KNOWN-RED' : 'KNOWN-RED-GONE'", "lost.length > 0 ? 'KNOWN-RED-GONE' : 'KNOWN-RED'"],
   ['known-red-counts-as-bar', 'const bars = checks.filter((c) => !Object.hasOwn(KNOWN_RED, c.id));', 'const bars = checks;'],
   ['drill-published-ignored', 's.barsRed.length === 0 && publishedMissing.length === 0', 's.barsRed.length === 0'],
+  ['cap-format-fixed2', "return `${Number.isInteger(g) ? g : +g.toFixed(2)} GB`; };", "return `${g.toFixed(2)} GB`; };"],
+  ['cap-format-no-round', 'const g = Math.round(capGb * 1024 ** 3) / 1024 ** 3;', 'const g = capGb;'],
   ['marker-prefix-match', "split(/\\s+/).includes(marker)", "some((a) => a.startsWith(marker))"],
   ['drill-required-ignored', 'absent.length === 0 && s.barsRed.length === 0', 's.barsRed.length === 0'],
   ['drill-required-list-shrunk', "['workers_up', 'bar:cap_scope_applied', 'bar:hog_killed',", "['workers_up', 'bar:cap_scope_applied',"],

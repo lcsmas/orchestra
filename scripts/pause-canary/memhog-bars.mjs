@@ -19,7 +19,8 @@ export const KNOWN_RED = Object.freeze({
 
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const fmt = (v) => (num(v) ? `${v.toFixed(1)} s` : 'NOT MEASURED');
-const gb = (v) => Number(v).toFixed(2);
+/** The cap as the PRODUCT words it (src/shared/memory-scope.ts `fmtGb`): `1 GB`, `1.5 GB`, `0.25 GB` — integers bare, else at most two decimals. A `toFixed(2)` here would have read the 1 GiB cap's `1 GB` as a missing notice. */
+export const fmtCap = (capGb) => { const g = Math.round(capGb * 1024 ** 3) / 1024 ** 3; return `${Number.isInteger(g) ? g : +g.toFixed(2)} GB`; };
 const clip = (s, n = 60) => String(s ?? '').replace(/\s+/g, ' ').slice(0, n);
 
 /** The marker a worker's hog carries in its command line (the kill record must NAME it): unique per worker and cycle. */
@@ -84,7 +85,7 @@ export function memberToldWhy(w, m) {
   if (!Array.isArray(rows) || !num(w.oomKillDelta)) return 'NOT MEASURED (no stream / no kernel count)';
   if (w.oomKillDelta < 1) return `no kill to tell (oom_kill +${w.oomKillDelta})`;
   if (rows.length !== w.oomKillDelta) return `${rows.length} notice row(s) for ${w.oomKillDelta} kill(s)`;
-  const re = new RegExp(`^(Command .+|A command \\(probably .+\\)) killed: Plafond mémoire ${gb(m.capGb).replace('.', '\\.')} GB reached$`);
+  const re = new RegExp(`^(Command .+|A command \\(probably .+\\)) killed: Plafond mémoire ${fmtCap(m.capGb).replace('.', '\\.')} reached$`);
   const odd = rows.find((t) => !re.test(t));
   return odd === undefined ? null : `row not worded as the #322 notice: "${clip(odd, 90)}"`;
 }
@@ -95,7 +96,7 @@ export function coordinatorToldWhy(w, m) {
   const all = w.coordMsgs.filter((x) => x.kind === 'escalation');
   const msgs = all.filter((x) => x.recipient === m.opsId);   // a copy that went ELSEWHERE is bar:only_coordinator_told's business, not this one's
   if (msgs.length !== w.oomKillDelta) return `${msgs.length} escalation(s) to the coordinator for ${w.oomKillDelta} kill(s)${all.length !== msgs.length ? ` (${all.length - msgs.length} went to someone else)` : ''}`;
-  const wrong = msgs.find((x) => !String(x.body).includes(w.id) || !String(x.body).includes(`hard level (${gb(m.capGb)} GB)`));
+  const wrong = msgs.find((x) => !String(x.body).includes(w.id) || !String(x.body).includes(`hard level (${fmtCap(m.capGb)})`));
   if (wrong) return `escalation not naming the workspace and the level: "${clip(wrong.body, 90)}"`;
   if (w.coordRead !== msgs.length) return `the coordinator's own relève returned ${w.coordRead ?? 'NOT MEASURED'} of ${msgs.length} escalation(s)`;
   return null;
