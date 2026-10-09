@@ -117,6 +117,7 @@ test('trackedKeeperUnit: the unit is the basename of the keeper pid\'s OWN cgrou
   const env = (read: (p: string) => string): ScopeEnv => ({ readFile: read, procRoot: '/proc' }) as never;
   assert.equal(trackedKeeperUnit('w', env(() => ''), () => null), null);
   assert.equal(trackedKeeperUnit('w', env((p) => { assert.equal(p, '/proc/99/cgroup'); return '0::/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-ws-w-abc.scope\n'; }), () => 99), 'orchestra-ws-w-abc.scope');
+  assert.equal(trackedKeeperUnit('w', env(() => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-ws-w-abc.scope/k\n'), () => 99), 'orchestra-ws-w-abc.scope', '#332: the keeper sits in leaf k of its scope — its unit is the scope\'s');
   for (const code of ['ENOENT', 'ESRCH']) assert.equal(trackedKeeperUnit('w', env(() => { throw Object.assign(new Error('x'), { code }); }), () => 99), null, code);
   assert.equal(trackedKeeperUnit('w', env(() => { throw Object.assign(new Error('x'), { code: 'EACCES' }); }), () => 99), 'unknown');
   assert.equal(trackedKeeperUnit('w', env(() => 'garbled\n'), () => 99), 'unknown');

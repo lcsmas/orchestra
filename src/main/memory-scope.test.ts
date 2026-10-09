@@ -312,3 +312,16 @@ test('#332 leaves: the keeper in leaf k is resolved by the pid file alone (its o
   fs.writeFileSync(path.join(keepers, 'leafy4.pid'), JSON.stringify({ pid: 7041 }));
   assert.equal(memberScopes('leafy4', env())[0].keeperPid, 7041);
 });
+
+test('#332 leaves — FI-1 v1.9 keeps working: the keeper in leaf k and its tools in leaf w are INSIDE the scope; only a process in some OTHER cgroup is an escapee (this returned [] before the fix)', () => {
+  const { scopeDir, kDir, wDir } = mkLeafScope('orchestra-ws-leafy5-1ggggg.scope', 7051, 7052, 7054);
+  const chromiumScope = '/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-7053.scope';
+  mkProc(7051, 1, 'node-22', cgPathOf(kDir), 10, 'node keeper.js');
+  mkProc(7052, 7051, 'claude', cgPathOf(wDir), 20, 'claude --x');
+  mkProc(7053, 7052, 'chromium', chromiumScope, 5000, 'chromium --headless=new about:blank'); // a browser main that left the member's cgroup through the session bus
+  mkProc(7054, 7053, 'chromium', cgPathOf(wDir), 3000, 'chromium --type=renderer'); // a helper that stayed in w
+  const scope = { cgroupDir: scopeDir, keeperPid: 7051 };
+  const out = listKeeperTreeOutsideScope(scope, env());
+  assert.deepEqual(out.map((p) => [p.pid, p.cgroup]), [[7053, chromiumScope]], 'the CLI (w) and the helper (w) are inside; the keeper (k) is the walk\'s root; only the escapee is listed');
+  assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: scopeDir, keeperPid: 7099 }, env()), [], 'a stale keeper pid still claims nothing');
+});

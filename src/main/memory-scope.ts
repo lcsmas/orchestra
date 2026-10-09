@@ -317,7 +317,8 @@ export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' 
   if (scope.keeperPid === null) return [];
   const scopeCg = '/' + path.relative(e.cgroupRoot, scope.cgroupDir);
   try {
-    if (parseProcCgroupV2(e.readFile(`${e.procRoot}/${scope.keeperPid}/cgroup`)) !== scopeCg) return [];
+    const keeperCg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${scope.keeperPid}/cgroup`));
+    if (keeperCg === null || scopePathOfCgroup(keeperCg) !== scopeCg) return []; // the keeper sits in the scope or (#332) in its keeper leaf
   } catch {
     return []; // the keeper is gone
   }
@@ -355,7 +356,7 @@ export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' 
         if (Number(f[1]) !== cur) continue; // the pid was recycled since the ppid snapshot: not a child of the node we walked from
         queue.push(kid);
         const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${kid}/cgroup`));
-        if (cg === null || cg === scopeCg) continue;
+        if (cg === null || scopePathOfCgroup(cg) === scopeCg) continue; // inside = the scope or one of its two leaves (#332)
         const statm = e.readFile(`${e.procRoot}/${kid}/statm`).split(' ');
         let cmdline = '';
         try {
