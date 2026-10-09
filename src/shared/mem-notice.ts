@@ -3,7 +3,7 @@
 
 import type { AgentEvent, AgentNoticeEvent, MemCapRow } from './types.ts';
 import { stamp, type NormalizeContext } from './agent-events.ts';
-import { fmtGb, isSoftRecord, memNoticeText, type MemNoticeRecord } from './memory-scope.ts';
+import { cutChars, fmtGb, isSoftRecord, memNoticeText, type MemNoticeRecord } from './memory-scope.ts';
 
 /** One persisted row (`Workspace.sdkMemNotices`): enough to rebuild the row after an app restart. `(unit, seq)` is the identity — a record delivered twice stores once. */
 export interface MemNoticeEntry {
@@ -25,9 +25,9 @@ export function memNoticeEntryOf(rec: MemNoticeRecord): MemNoticeEntry {
   return { unit: rec.unit, seq: rec.seq, at: rec.at, level: isSoftRecord(rec) ? 'soft' : rec.level, text: memNoticeText(rec), row: memCapRowOf(rec) };
 }
 
-/** The longest command shown in a chip (the full text stays in `text`, the tooltip and the bus message). */
+/** The longest command shown in a chip, in code points (the tooltip sentence carries up to 120 of them; the bus message to the coordinator carries the whole command). */
 export const MAX_CHIP_CHARS = 80;
-const chipOf = (command: string): { kind: 'chip'; text: string } => ({ kind: 'chip', text: command.length > MAX_CHIP_CHARS ? `${command.slice(0, MAX_CHIP_CHARS - 1)}…` : command });
+const chipOf = (command: string): { kind: 'chip'; text: string } => ({ kind: 'chip', text: cutChars(command, MAX_CHIP_CHARS) });
 
 /**
  * The dedicated row of D-Q7 option B, as data: ONE line, red = a command was killed (`hard`), amber = the warning level crossed (`soft`), the command in a chip.
@@ -44,9 +44,11 @@ export function memCapRowOf(rec: MemNoticeRecord): MemCapRow {
   }
   const reason = rec.level === 'hard' ? `${rec.hardBytes !== null ? `${fmtGb(rec.hardBytes)} reached` : 'Plafond mémoire reached'}` : 'by the system under memory pressure (not by the Plafond mémoire)';
   const ended = rec.role ? ` — the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : '';
-  if (rec.command === null) return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${rec.level === 'hard' ? '— ' : ''}${reason} (it lived too briefly to be named)${ended}` }] };
-  if (rec.source === 'kernel') return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }, chipOf(rec.command), { kind: 'text', text: `killed ${rec.level === 'hard' ? '— ' : ''}${reason}${ended}` }] };
-  return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${rec.level === 'hard' ? '— ' : ''}${reason}${ended} · probably` }, chipOf(rec.command)] };
+  const dash = rec.level === 'hard' ? '— ' : '';
+  if (rec.command === null || rec.command.trim() === '') return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} (it lived too briefly to be named)${ended}` }] }; // a blank command is no name either: never an empty pill
+  if (rec.source === 'kernel') return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }, chipOf(rec.command), { kind: 'text', text: `killed ${dash}${reason}${ended}` }] };
+  // inferred: « … probably [cmd] » closes the sentence, the session-ended clause follows the chip (never a dangling « probably »)
+  return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} · probably` }, chipOf(rec.command), ...(ended ? [{ kind: 'text' as const, text: ended.trimStart() }] : [])] };
 }
 
 /** The row to render for an entry: the stored one, or — for an entry persisted before the dedicated row — a plain one-text row from its own `text`, tone by level. */

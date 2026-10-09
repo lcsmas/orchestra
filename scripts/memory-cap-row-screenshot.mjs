@@ -60,6 +60,7 @@ const control = foldEvents(emptySession('ws'), [{ type: 'notice', kind: 'warning
 createRoot(document.getElementById('root')).render(
   React.createElement('div', { className: 'av-view active', 'data-agent-theme': theme === 'light' ? 'light' : undefined, style: { padding: '10px 24px', maxWidth: 980, display: 'block' } },
     ...RECS.map((r, i) => React.createElement('div', { key: i, 'data-case': r.label }, React.createElement('div', { style: { fontSize: 10, opacity: 0.55, margin: '8px 0 0', letterSpacing: '.06em', textTransform: 'uppercase' } }, r.label), React.createElement(MessageBubble, { message: msgs[i] }))),
+    React.createElement('i', { 'data-tok': 'error', style: { color: 'var(--av-error)' } }), React.createElement('i', { 'data-tok': 'warn', style: { color: 'var(--av-warn)' } }),
     React.createElement('div', { 'data-case': 'control' }, React.createElement('div', { style: { fontSize: 10, opacity: 0.55, margin: '8px 0 0', letterSpacing: '.06em', textTransform: 'uppercase' } }, 'control — the generic Warning row'), React.createElement(MessageBubble, { message: control }))),
 );
 document.title = 'mcrow-' + theme;
@@ -105,7 +106,8 @@ async function shoot(win, theme, file) {
         dot: dot ? getComputedStyle(dot).backgroundColor : null, labelColor: label ? getComputedStyle(label).color : null, labelText: label ? label.innerText : null, bg: cs.backgroundColor, border: cs.borderTopColor,
         chip: chip ? { text: chip.innerText, font: getComputedStyle(chip).fontFamily, bg: getComputedStyle(chip).backgroundColor, rect: rect(chip) } : null, tag: tag ? { text: tag.innerText, rect: rect(tag) } : null, title: n.getAttribute('title'), viewW: document.documentElement.clientWidth };
     });
-    return { rows, viewW: document.documentElement.clientWidth, viewH: document.documentElement.clientHeight };
+    const tokOf = (n) => { const e = document.querySelector('[data-tok=' + n + ']'); return e ? getComputedStyle(e).color : null; };
+    return { rows, tok: { error: tokOf('error'), warn: tokOf('warn') }, viewW: document.documentElement.clientWidth, viewH: document.documentElement.clientHeight };
   })()\`);
   const size = img.getSize();
   results.push({ theme, file, ...probe, width: size.width, height: size.height });
@@ -136,28 +138,29 @@ if (!fs.existsSync(probeOut)) { console.log(`  FAIL the capture produced no outp
 const shots = JSON.parse(fs.readFileSync(probeOut, 'utf8'));
 if (shots[0]?.error) { console.log(`  FAIL capture threw: ${shots[0].error}`); process.exit(1); }
 check('two captures (dark, light)', shots.length === 2, `got ${shots.length}`);
-const RED_DARK = 'rgb(255, 107, 107)', AMBER_DARK = 'rgb(255, 200, 87)', RED_LIGHT = 'rgb(201, 55, 55)';
+const nums = (c) => (String(c).match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+const lum = (c) => { const [r, g, b] = nums(c).map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
 for (const s of shots) {
   const file = path.join(outDir, s.file);
   const png = fs.existsSync(file) ? decodePng(fs.readFileSync(file)) : null;
   check(`${s.theme}: PNG written, real dimensions, many colours (not a blank frame)`, !!png && s.width > 800 && s.height > 600 && distinctColours(png) > 40, `${s.width}x${s.height}, ${png ? distinctColours(png) : 0} colours`);
   const by = (needle) => s.rows.find((r) => r.label.startsWith(needle));
   const hard = by('kill, hard level'), inferred = by('kill, victim only'), unnamed = by('kill, too brief'), ended = by("kill of the member's"), ext = by('kill from OUTSIDE'), soft = by('warning level'), long = by('a long command'), control = by('control');
-  const red = s.theme === 'dark' ? RED_DARK : RED_LIGHT;
+  const red = s.tok.error, warn = s.tok.warn; // the page's OWN --av-error / --av-warn, resolved by the browser for this theme
   check(`${s.theme}: all 7 Plafond rows and the control are on screen (nothing missing — the Q7 mockups were blank)`, s.rows.length === 8 && s.rows.every((r) => !r.missing) && s.rows.slice(0, 7).every((r) => r.kind === 'memory-cap'), JSON.stringify(s.rows.map((r) => [r.label, r.kind, r.missing])));
-  check(`${s.theme}: each is ONE line (height of a single notice row), inside the viewport`, [hard, inferred, unnamed, ended, ext, soft, long].every((r) => r.height < 44 && r.rect.x >= 0 && r.rect.x + r.rect.width <= s.viewW), JSON.stringify([hard, soft, long].map((r) => [r.height, r.rect])));
-  check(`${s.theme}: a killed command is RED — dot and label in the error token, tone hard`, [hard, inferred, unnamed, ended, ext].every((r) => r.tone === 'hard' && r.dot === red && r.labelColor === red), JSON.stringify([hard.dot, hard.labelColor, hard.tone]));
-  check(`${s.theme}: the warning level is AMBER — dot and label in the warn token, tone soft, and NOT the red of a kill`, soft.tone === 'soft' && soft.dot === (s.theme === 'dark' ? AMBER_DARK : soft.dot) && soft.dot !== hard.dot && soft.labelColor === soft.dot, JSON.stringify([soft.dot, soft.labelColor, soft.tone]));
+  check(`${s.theme}: each is ONE line (height of a single notice row), inside the viewport`, [hard, inferred, unnamed, ended, ext, soft, long].every((r) => r.height < 36 && r.rect.x >= 0 && r.rect.x + r.rect.width <= s.viewW), JSON.stringify([hard, soft, long].map((r) => [r.height, r.rect])));
+  check(`${s.theme}: a killed command is RED — dot and label in the error token, tone hard`, !!red && [hard, inferred, unnamed, ended, ext].every((r) => r.tone === 'hard' && r.dot === red && (s.theme === 'dark' ? r.labelColor === red : lum(r.labelColor) < lum(red))), JSON.stringify([hard.dot, hard.labelColor, hard.tone]));
+  check(`${s.theme}: the warning level is AMBER — dot and label in the warn token, tone soft, and NOT the red of a kill`, soft.tone === 'soft' && !!warn && soft.dot === warn && soft.dot !== hard.dot && (s.theme === 'dark' ? soft.labelColor === warn : lum(soft.labelColor) < lum(warn)), JSON.stringify([soft.dot, soft.labelColor, soft.tone]));
   check(`${s.theme}: the label reads « Plafond mémoire » (uppercase by style) and the sentence is the builder's`, hard.labelText === 'Plafond mémoire' && /Command python3 swarm\.py 8 50 10 killed — 6 GB reached/.test(hard.text) && /A command was killed — 6 GB reached · probably python3 swarm\.py/.test(inferred.text) && /it lived too briefly to be named/.test(unnamed.text) && /the session ended/.test(ended.text) && /not by the Plafond mémoire/.test(ext.text) && /Working set 3\.1 GB — warning level 3 GB crossed \(hard cap 6 GB\)/.test(soft.text), JSON.stringify([hard.text, soft.text]));
   check(`${s.theme}: the command is in a monospace CHIP (code-chip surface) on the named, inferred and long rows; none on the unnamed and warning rows`, !!hard.chip && /mono|Menlo|SF Mono|Consolas|Liberation Mono/i.test(hard.chip.font) && hard.chip.bg !== 'rgba(0, 0, 0, 0)' && !!inferred.chip && !!long.chip && !unnamed.chip && !soft.chip, JSON.stringify([hard.chip, soft.chip]));
-  check(`${s.theme}: the long command is CUT inside the chip (≤ 80 chars) and the row stays one line`, !!long.chip && long.chip.text.length <= 80 && long.chip.text.endsWith('…') && long.height < 44, JSON.stringify([long.chip?.text.length, long.height]));
+  check(`${s.theme}: the long command is CUT inside the chip (≤ 80 chars) and the row stays one line`, !!long.chip && long.chip.text.length <= 80 && long.chip.text.endsWith('…') && long.height < 36, JSON.stringify([long.chip?.text.length, long.height]));
   check(`${s.theme}: the time sits at the RIGHT edge of the row`, !!hard.tag && /\d\d:\d\d/.test(hard.tag.text) && hard.tag.rect.x > hard.rect.x + hard.rect.width * 0.8, JSON.stringify(hard.tag));
   check(`${s.theme}: the red row has a red-tinted surface, the amber row an amber-tinted one, and the control Warning row is the generic amber Warning`, hard.bg !== soft.bg && !!control && control.kind === 'warning' && control.labelText === 'Warning', JSON.stringify([hard.bg, soft.bg, control?.kind]));
   // decoded pixels: the tinted surfaces and the dots really painted
   if (png) {
     const rowImg = (r) => crop(png, r.rect.x, r.rect.y, r.rect.width, r.rect.height);
-    const dotRed = s.theme === 'dark' ? [255, 107, 107] : [201, 55, 55];
-    check(`${s.theme}: the red row's pixels carry the error colour (dot + label); the amber row's carry the warn colour`, pixelsNear(rowImg(hard), dotRed, 30) > 10 && pixelsNear(rowImg(soft), s.theme === 'dark' ? [255, 200, 87] : [168, 117, 0], 60) > 10, `red row ${pixelsNear(rowImg(hard), dotRed, 30)} px; amber row ${pixelsNear(rowImg(soft), [255, 200, 87], 60)} px`);
+    const dotRed = nums(red);
+    check(`${s.theme}: the red row's pixels carry the error colour (dot + label); the amber row's carry the warn colour`, pixelsNear(rowImg(hard), dotRed, 30) > 10 && pixelsNear(rowImg(soft), nums(warn), 60) > 10, `red row ${pixelsNear(rowImg(hard), dotRed, 30)} px; amber row ${pixelsNear(rowImg(soft), [255, 200, 87], 60)} px`);
   }
 }
 console.log(`\nScreenshots: ${shots.map((s) => path.join(outDir, s.file)).join('\n             ')}`);

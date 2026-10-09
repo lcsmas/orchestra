@@ -1,7 +1,7 @@
 // #322 self-gate — IN-PLACE mutation sweep of the dedicated Plafond mémoire notice row (D-Q7 = B): the pure row builder (red kill / amber warning, command chip, inferred « probably », session ended, external OOM, legacy fallback),
 // the fold, the renderer and its markup. Each mutant edits ONE clause of the real source, runs the unit + wiring suites AND the SSR render smoke (scripts/memory-cap-row-render-smoke.mjs), and must turn red at least one NAMED
 // test / smoke check. Restored by byte-exact backup + `cmp`; `git diff` of the mutated files must be empty at the end (commit first). NOT heavy (unit + SSR only).
-// Run: node scripts/memory-cap-row-mutants.mjs [--only R01,R02] [--check-anchors]
+// Run: node scripts/memory-cap-row-mutants.mjs [--only R01,R02] [--check | --check-anchors]
 // `expect` = a substring of a reddened unit test title, or `smoke:<check label>` for a failing smoke check — at least one MUST be red. `smoke: true` also runs the smoke.
 
 import fs from 'node:fs';
@@ -14,14 +14,22 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const BACKUP = path.join(os.homedir(), '.cache', 'h2-322', 'mutant-backup');
-fs.mkdirSync(BACKUP, { recursive: true });
 const args = process.argv.slice(2);
+const KNOWN_FLAGS = new Set(['--only', '--check-anchors', '--check']);
+const unknownFlags = args.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must never fall through to the full sweep
+  console.error(`REFUSING: unknown option(s) ${unknownFlags.join(' ')} — NOTHING was run. Known: --only ID,ID | --check (alias --check-anchors: dry anchor check, no build / scratch)`);
+  process.exit(2);
+}
+const dryCheck = args.includes('--check-anchors') || args.includes('--check');
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 const noRig = true;
 
 const MN = 'src/shared/mem-notice.ts';
 const AE = 'src/shared/agent-events.ts';
 const NR = 'src/renderer/components/agent/NoticeRow.tsx';
+const CSS = 'src/renderer/agent-view-theme.css';
+const MS = 'src/shared/memory-scope.ts';
 const TESTS = ['src/shared/mem-notice.test.ts', 'src/renderer/history-backfill.test.ts', 'src/main/memory-notice.test.ts', 'src/main/memory-cap-row-wiring.test.ts'];
 
 const MUTANTS = [
@@ -31,10 +39,10 @@ const MUTANTS = [
   { id: 'R03_warning_level_is_red', file: MN, find: "return { tone: 'soft', segments: [{ kind: 'text', text: `Working set", to: "return { tone: 'hard', segments: [{ kind: 'text', text: `Working set", expect: ['R4 (#322 B)', 'smoke:the warning level is AMBER'], smoke: true },
   { id: 'R04_killed_command_is_amber', file: MN, find: "return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }", to: "return { tone: 'soft', segments: [{ kind: 'text', text: 'Command' }", expect: ['R1 (#322 B)', 'smoke:one line: label'], smoke: true },
   { id: 'R05_inferred_victim_shown_as_certain', file: MN, find: "if (rec.source === 'kernel') return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }", to: "if (true) return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }", expect: ['R2 (#322 B)', 'smoke:an INFERRED victim reads'], smoke: true },
-  { id: 'R06_chip_never_cut', file: MN, find: "text: command.length > MAX_CHIP_CHARS ? `${command.slice(0, MAX_CHIP_CHARS - 1)}…` : command", to: "text: command", expect: ['R5 (#322 B)', 'smoke:a long command is cut inside the chip'], smoke: true },
+  { id: 'R06_chip_never_cut', file: MN, find: "text: cutChars(command, MAX_CHIP_CHARS)", to: "text: command", expect: ['R5 (#322 B)', 'smoke:a long command is cut inside the chip'], smoke: true },
   { id: 'R07_session_ended_not_said', file: MN, find: "const ended = rec.role ? ` — the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : '';", to: "const ended = '';", expect: ['R3 (#322 B)', 'smoke:the member\'s own agent process killed'], smoke: true },
   { id: 'R08_external_oom_blamed_on_the_plafond', file: MN, find: "'by the system under memory pressure (not by the Plafond mémoire)'", to: "'Plafond mémoire reached'", expect: ['R3 (#322 B)', 'smoke:an OOM from outside the scope limit'], smoke: true },
-  { id: 'R09_unnamed_command_gets_a_chip', file: MN, find: "if (rec.command === null) return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed", to: "if (rec.command === null) return { tone: 'hard', segments: [{ kind: 'chip', text: `A command was killed", expect: ['R2 (#322 B)', 'smoke:a command too brief to be named'], smoke: true },
+  { id: 'R09_unnamed_command_gets_a_chip', file: MN, find: "if (rec.command === null || rec.command.trim() === '') return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed", to: "if (rec.command === null || rec.command.trim() === '') return { tone: 'hard', segments: [{ kind: 'chip', text: `A command was killed", expect: ['R2 (#322 B)', 'smoke:a command too brief to be named'], smoke: true },
   { id: 'R10_legacy_entry_always_red', file: MN, find: "{ tone: e.level === 'soft' ? 'soft' : 'hard', segments: [{ kind: 'text', text: e.text }] }", to: "{ tone: 'hard', segments: [{ kind: 'text', text: e.text }] }", expect: ['R7 (#322 B)'] },
   { id: 'R11_notice_without_the_row', file: MN, find: ", text: e.text, memCap: rowOfEntry(e) })", to: ", text: e.text })", expect: ['R6 (#322 B)', 'ROW: the builder emits the DEDICATED kind', 'smoke:the command is in a CHIP'], smoke: true },
   { id: 'R12_soft_row_hides_the_hard_cap', file: MN, find: "${rec.hardBytes !== null ? ` (hard cap ${fmtGb(rec.hardBytes)})` : ''}` }] };", to: "` }] };", expect: ['R4 (#322 B)', 'smoke:the warning level is AMBER'], smoke: true },
@@ -51,6 +59,24 @@ const MUTANTS = [
   { id: 'R21_row_throws_without_the_structured_row', file: NR, find: "const row = message.noticeMemCap ?? { tone: 'hard' as const, segments: [{ kind: 'text' as const, text: message.text ?? '' }] };", to: "const row = message.noticeMemCap!;", expect: ['smoke:a memory-cap message with no structured row'], smoke: true },
   { id: 'R22_memo_ignores_the_row', file: NR, find: " && a.message.noticeMemCap === b.message.noticeMemCap,", to: ",", expect: ['ROW: the builder emits the DEDICATED kind'] },
   { id: 'R23_segments_glued_without_space', file: NR, find: "{i > 0 ? ' ' : ''}", to: "", expect: ['smoke:the command is in a CHIP'], smoke: true },
+  // ── pre-review round: exact wording, boundary, code points, CSS, time ──
+  { id: 'R24_chip_boundary_off_by_one', file: MN, find: "export const MAX_CHIP_CHARS = 80;", to: "export const MAX_CHIP_CHARS = 79;", expect: ['R5b'] },
+  { id: 'R25_chip_cut_splits_code_points', file: MS, find: "  const chars = Array.from(s);\n  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : s;", to: "  return s.length > max ? `${s.slice(0, max - 1)}…` : s;", expect: ['R5c'] },
+  { id: 'R26_blank_command_gets_an_empty_pill', file: MN, find: "if (rec.command === null || rec.command.trim() === '') return", to: "if (rec.command === null) return", expect: ['R5c'] },
+  { id: 'R27_inferred_session_ended_before_the_chip', file: MN, find: "text: `A command was killed ${dash}${reason} · probably` }, chipOf(rec.command), ...(ended ? [{ kind: 'text' as const, text: ended.trimStart() }] : [])]", to: "text: `A command was killed ${dash}${reason}${ended} · probably` }, chipOf(rec.command)]", expect: ['R5d'] },
+  { id: 'R28_unnamed_session_ended_dropped', file: MN, find: "(it lived too briefly to be named)${ended}` }] };", to: "(it lived too briefly to be named)` }] };", expect: ['R5d'] },
+  { id: 'R29_dash_after_an_external_kill', file: MN, find: "const dash = rec.level === 'hard' ? '— ' : '';", to: "const dash = '— ';", expect: ['R5d', 'R3 (#322 B)'] },
+  { id: 'R30_dash_never', file: MN, find: "const dash = rec.level === 'hard' ? '— ' : '';", to: "const dash = '';", expect: ['R5d', 'R1 (#322 B)'] },
+  { id: 'R31_hard_without_a_cap_figure_says_nothing', file: MN, find: "${rec.hardBytes !== null ? `${fmtGb(rec.hardBytes)} reached` : 'Plafond mémoire reached'}", to: "${fmtGb(rec.hardBytes ?? 0)} reached", expect: ['R5d'] },
+  { id: 'R32_tooltip_sentence_cut_on_code_units', file: MS, find: "const cmd = cutChars(rec.command, 120);", to: "const cmd = rec.command.length > 120 ? `${rec.command.slice(0, 119)}…` : rec.command;", expect: ['R5c'] },
+  { id: 'R33_time_is_the_render_instant', file: NR, find: "new Date(message.at).toLocaleTimeString(", to: "new Date().toLocaleTimeString(", expect: ['smoke:the time is the KILL'], smoke: true },
+  { id: 'R34_hard_label_loses_its_colour', file: CSS, find: ".av-notice-memory-cap.is-hard .av-notice-label { color: var(--av-error); }", to: "", expect: ['ROW: the one-line markup'] },
+  { id: 'R35_soft_label_loses_its_colour', file: CSS, find: ".av-notice-memory-cap.is-soft .av-notice-label { color: var(--av-warn); }", to: "", expect: ['ROW: the one-line markup'] },
+  { id: 'R36_time_not_at_the_right', file: CSS, find: ".av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; }", to: ".av-notice-tag { flex: none; font-size: 9.5px; }", expect: ['ROW: the one-line markup'] },
+  { id: 'R37_time_dimmed_below_contrast', file: CSS, find: ".av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; }", to: ".av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; opacity: 0.6; }", expect: ['ROW: the one-line markup'] },
+  { id: 'R38_command_not_monospace', file: CSS, find: "font-family: var(--av-mono); font-size: 11px; padding: 0 5px;", to: "font-size: 11px; padding: 0 5px;", expect: ['ROW: the one-line markup'] },
+  { id: 'R39_light_hard_label_back_to_the_raw_token', file: CSS, find: "{ color: color-mix(in srgb, var(--av-error) 82%, #000); }", to: "{ color: var(--av-error); }", expect: ['ROW: the one-line markup'] },
+  { id: 'R40_light_soft_label_back_to_the_raw_token', file: CSS, find: "{ color: color-mix(in srgb, var(--av-warn) 78%, #000); }", to: "{ color: var(--av-warn); }", expect: ['ROW: the one-line markup'] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
@@ -86,7 +112,7 @@ const scratchLeft = () => 0;
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
 // a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
 for (const m of MUTANTS) if (m.file.startsWith('src/shared/') || m.file.startsWith('src/cli/')) m.cli = true;
-if (args.includes('--check-anchors')) {
+if (dryCheck) {
   let bad = 0;
   for (const m of MUTANTS) {
     let text = fs.readFileSync(path.join(REPO, m.file), 'utf8'); let why = null;
@@ -96,6 +122,7 @@ if (args.includes('--check-anchors')) {
   console.log(`ANCHORS: ${MUTANTS.length - bad}/${MUTANTS.length} resolve exactly once`);
   process.exit(bad ? 1 : 0);
 }
+fs.mkdirSync(BACKUP, { recursive: true }); // scratch exists only for a real sweep, never for the dry check
 
 const files = [...new Set(MUTANTS.map((m) => m.file))];
 const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/memory-cap-row-mutants.mjs', 'scripts/memory-cap-row-render-smoke.mjs']).status !== 0;

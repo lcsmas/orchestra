@@ -38,6 +38,11 @@ test('ROW: the one-line markup — red / amber by tone, the command in a chip, t
   assert.ok(/\.av-notice-memory-cap\.is-soft \{[^}]*var\(--av-warn\) 34%[^}]*var\(--av-warn\) 7%/.test(block), 'soft = the warn tokens');
   assert.ok(/\.av-notice-memory-cap\.is-hard \.av-notice-dot \{ background: var\(--av-error\); \}/.test(block) && /\.av-notice-memory-cap\.is-soft \.av-notice-dot \{ background: var\(--av-warn\); \}/.test(block));
   assert.ok(/\.av-notice-chip \{[^}]*var\(--av-code-bg\)[^}]*var\(--av-code-border\)/.test(css), 'the chip is the code-chip tokens');
+  assert.ok(/\.av-notice-chip \{[^}]*font-family: var\(--av-mono\)/.test(css), 'the command is MONOSPACE');
+  assert.ok(/\.av-notice-memory-cap\.is-hard \.av-notice-label \{ color: var\(--av-error\); \}/.test(css) && /\.av-notice-memory-cap\.is-soft \.av-notice-label \{ color: var\(--av-warn\); \}/.test(css), 'the label wears the tone colour');
+  assert.ok(/\.av-notice-tag \{[^}]*margin-left: auto/.test(css), 'the time sits at the RIGHT edge');
+  assert.ok(!/\.av-notice-tag \{[^}]*opacity/.test(css), 'the time keeps the full dim-text token (opacity .6 measured 2.5:1)');
+  assert.ok(/\[data-agent-theme="light"\] \.av-notice-memory-cap\.is-hard \.av-notice-label[^{]*\{ color: color-mix\(in srgb, var\(--av-error\) 82%, #000\)/.test(css.replace(/\n/g, ' ')) && /\[data-agent-theme="light"\] \.av-notice-memory-cap\.is-soft \.av-notice-label[^{]*\{ color: color-mix\(in srgb, var\(--av-warn\) 78%, #000\)/.test(css.replace(/\n/g, ' ')), 'light theme: darker small labels (4.5:1)');
 });
 
 test('ROW: the bus message to the coordinator and the app-log lines are NOT touched by the row change (memBusBody / formatMemSoftLine keep their words)', () => {

@@ -2512,7 +2512,13 @@ h6.av-md-h {
   font-family: var(--av-mono); font-size: 11px; padding: 0 5px; border-radius: 4px;
   background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
 }
-.av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; opacity: 0.6; }
+/* the time keeps the full dim-text token: with the old 0.6 opacity it measured 2.5:1 (review) */
+.av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; }
+/* light theme: the small (9.5px) labels need 4.5:1 — the raw tokens measured 4.4 (error) and 3.9 (warn) over the tinted surface, so they go a step darker */
+.av-view[data-agent-theme="light"] .av-notice-memory-cap.is-hard .av-notice-label,
+[data-agent-theme="light"] .av-view .av-notice-memory-cap.is-hard .av-notice-label { color: color-mix(in srgb, var(--av-error) 82%, #000); }
+.av-view[data-agent-theme="light"] .av-notice-memory-cap.is-soft .av-notice-label,
+[data-agent-theme="light"] .av-view .av-notice-memory-cap.is-soft .av-notice-label { color: color-mix(in srgb, var(--av-warn) 78%, #000); }
 .av-notice-command-output { background: var(--av-surface-sunken); }
 /* Interrupt marker — a quiet centered divider, not a boxed row: it marks a
    break in the conversation's flow ("you stopped the turn here") rather than
