@@ -10,7 +10,7 @@
 //   --expect-red  the must-FAIL arm: against a build WITHOUT the feature (master) every G-clause must be RED and every ctl/* clause GREEN.
 import fs from 'node:fs';
 import path from 'node:path';
-import { IDS, NAME_OF, REPO, FLEET, buildWorld, crop, decodePng, diffPx, distinctColours, launchApp, liveBusOpenedBy, liveCanary, makeGuard, makeRecorder, sh, sleep, waitFor } from '../pause-ui/lib.mjs';
+import { IDS, NAME_OF, REPO, FLEET, buildWorld, crop, decodePng, diffPx, distinctColours, launchApp, liveBusOpenedBy, liveCanary, makeGuard, makeRecorder, pixelsNear, sh, sleep, waitFor } from '../pause-ui/lib.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -30,6 +30,8 @@ const J = JSON.stringify;
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const SIX = ['bus-wake', 'events-spool', 'human-gates', 'inbox-tray', 'pause-trap', 'pause-ui'];
 const SIDE = { x: 0, y: 100, width: 345, height: 470 };
+const FOOT = { x: 0, y: 700, width: 345, height: 200 }; // the sidebar's foot: the strip sits just above the footer links
+const YELLOW = [255, 200, 87];
 const TRAP_DEADLINE_MS = 120_000;
 const HEAL_BOUND_MS = 75_000; // the backoff cap is 60 s, plus a probe + margin
 const arm = 'heal';
@@ -52,7 +54,7 @@ async function boot(world, phase, extraEnv = {}) {
 
 const evalSafe = async (cdp, expr) => { try { return { ok: true, v: await cdp.eval(`(async () => JSON.parse(JSON.stringify(await (${expr}))))()`) }; } catch (e) { return { ok: false, err: String(e.message ?? e).slice(0, 160) }; } };
 const sideState = (cdp, leadId) => cdp.eval(`(() => ({ badges: [...document.querySelectorAll('[data-pause-badge]')].map((e) => [e.getAttribute('data-pause-badge'), e.getAttribute('data-pause-state'), e.textContent.trim()]), note: document.querySelector('[data-pause-note="${leadId}"]')?.textContent ?? null }))()`);
-const chipState = (cdp) => cdp.eval(`(() => { const e = document.querySelector('[data-watchers-chip]'); if (!e) return null; const b = e.getBoundingClientRect(); return { visible: b.width > 0 && b.height > 0, text: e.textContent.trim(), title: e.getAttribute('title') || '' }; })()`);
+const chipState = (cdp) => cdp.eval(`(() => { const e = document.querySelector('[data-watchers-chip]'); if (!e) return null; const b = e.getBoundingClientRect(); const f = document.querySelector('.sidebar-footer')?.getBoundingClientRect(); return { visible: b.width > 0 && b.height > 0, text: e.textContent.trim(), title: e.getAttribute('title') || '', role: e.getAttribute('role'), rect: { left: b.left, right: b.right, top: b.top, bottom: b.bottom }, footerTop: f ? f.top : null, buttons: e.querySelectorAll('button,a').length, color: getComputedStyle(e).borderLeftColor }; })()`);
 
 async function armHeal() {
   const armDir = path.join(RIG_DIR, `arm-${LABEL}-${arm}`);
@@ -93,11 +95,16 @@ async function armHeal() {
     clause(arm, 'G3/log-one-warn-per-degradation-naming-the-limit', (log2().match(/\[WARN\][^\n]*watcher\[[a-z-]+\]: DEGRADED/g) ?? []).length === 6 && /system watch limit reached \(EMFILE\)/.test(log2()), `WARN×${(log2().match(/\[WARN\][^\n]*watcher\[[a-z-]+\]: DEGRADED/g) ?? []).length} (want 6), names the system limit: ${/system watch limit reached \(EMFILE\)/.test(log2())}`);
     if (!NO_CHIP) {
       const chip = await waitFor(async () => { const c = await chipState(cdp); return c?.visible ? c : null; }, 15000, 'the warning', 300).catch(() => null);
-      clause(arm, 'G4/warning-visible-while-degraded', !!chip && /Réveils/.test(`${chip.text} ${chip.title}`) && /Vue Pause/.test(`${chip.text} ${chip.title}`), `warning: ${J(chip)}`);
+      clause(arm, 'G4/warning-visible-while-degraded', !!chip && /Réveils/.test(`${chip.text} ${chip.title}`) && /Vue Pause/.test(`${chip.text} ${chip.title}`) && /Mises à jour en retard/.test(chip.text) && /Nouvel essai automatique/.test(chip.text), `warning: ${J(chip)}`);
+      clause(arm, 'G4/warning-is-in-the-sidebar-foot-above-the-footer-and-non-blocking', !!chip && chip.rect.left >= 0 && chip.rect.right <= 345 && chip.rect.bottom <= chip.footerTop + 1 && chip.rect.top > 400 && chip.role === 'status' && chip.buttons === 0, `rect ${J(chip?.rect)} footer top ${chip?.footerTop} role ${chip?.role} controls ${chip?.buttons}`);
+      clause(arm, 'G4/warning-uses-the-pause-strip-amber', !!chip && chip.color === 'rgb(255, 200, 87)', `left border ${chip?.color}`);
     }
     await cdp.eval(`window.__pe = []; window.__wu = []; window.orchestra.onPauseOverviewUpdate((o) => window.__pe.push(o.runs.map((r) => [r.carrierRunId, r.phase]))); window.orchestra.onWatchersUpdate((s) => window.__wu.push(s.watchers.filter((w) => w.state === 'degraded').length)); true`);
     await cdp.mouse(5, 890); await sleep(500); await cdp.eval('document.fonts.ready.then(() => true)');
     const shotStale0 = await cdp.shot(SIDE); saveShot(`${LABEL}-1-degraded-before-reprise.png`, shotStale0);
+    const footDeg = await cdp.shot(FOOT); saveShot(`${LABEL}-1b-degraded-footer.png`, footDeg);
+    const footDegPng = decodePng(footDeg);
+    if (!NO_CHIP) clause(arm, 'G4/warning-pixels-amber-in-the-foot', distinctColours(footDegPng) > 25 && pixelsNear(footDegPng, YELLOW, 30) > 120, `${distinctColours(footDegPng)} colours; ${pixelsNear(footDegPng, YELLOW, 30)} amber px in the foot clip (the strip's rule + icon)`);
 
     // the Reprise is written ON THE BUS by another process; the app is not told
     const tReprise = Date.now();
@@ -128,6 +135,10 @@ async function armHeal() {
     if (!NO_CHIP) {
       const gone = await waitFor(async () => (await chipState(cdp)) === null || !(await chipState(cdp)).visible, 10000, 'the warning to disappear', 300).then(() => true).catch(() => false);
       clause(arm, 'G4/warning-gone-on-its-own', gone, `warning after recovery: ${J(await chipState(cdp))}`);
+      await cdp.mouse(5, 890); await sleep(500);
+      const footOk = await cdp.shot(FOOT); saveShot(`${LABEL}-3b-healed-footer.png`, footOk);
+      const footOkPng = decodePng(footOk);
+      clause(arm, 'G4/warning-pixels-gone-from-the-foot', pixelsNear(footOkPng, YELLOW, 30) < 20 && diffPx(footDegPng, footOkPng, 12) > 300, `${pixelsNear(footOkPng, YELLOW, 30)} amber px left; ${diffPx(footDegPng, footOkPng, 12)} px differ from the degraded foot`);
     }
     const wu = await cdp.eval('window.__wu');
     clause(arm, 'G8/renderer-told-the-all-clear-once-per-change', wu.length >= 1 && wu[wu.length - 1] === 0, `watchers:update pushes (degraded count after each): ${J(wu)}`);
