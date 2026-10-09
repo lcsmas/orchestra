@@ -15,6 +15,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { HOLD_T, HOLD_RIG_ARM, holdMutants } from './docker-hold-mutants.list.mjs';
 
 const REPO = path.resolve(process.env.SUBJECT_REPO ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const T = {
@@ -58,7 +59,7 @@ const MUTANTS = [
   ['K1', 'src/keeper/index.ts', [["      klog('docker relay disabled: could not start');\n      return env;", "      klog('docker relay disabled: could not start');\n      return { ...env, DOCKER_HOST: `unix://${relaySocketPath(sockPath)}` };"]], [T.keeper], 'DOCKER_HOST set although the relay cannot start; rig: no_relay_fallback'],
   ['K2', 'src/keeper/index.ts', [['} else if (f.dockerRelay) {', '} else if (f.dockerRelay !== null) {']], [T.keeper], 'relay started even when the switch is OFF (no dockerRelay); rig: switch_off'],
   ['K3', 'src/keeper/index.ts', [['      if (spawnInFlight) {\n        deferredFrames.push(f as KeeperClientFrame);\n        return;\n      }\n', '']], [T.keeper], 'stdin sent behind a relay spawn is dropped'],
-  ['K4', 'src/keeper/index.ts', [["  if (relay) {\n    relay.stop();\n", "  if (relay) {\n"]], [T.keeper], 'relay socket left behind when the keeper exits'],
+  ['K4', 'src/keeper/index.ts', [["  if (relay) {\n    holdGate?.stop();\n    relay.stop();\n", "  if (relay) {\n    holdGate?.stop();\n"]], [T.keeper], 'relay socket left behind when the keeper exits'],
   ['K5', 'src/keeper/index.ts', [["    process.on('SIGUSR2', () => relay?.kill());\n", '']], [T.keeper], 'SIGUSR2 default action kills the keeper; rig: kill_relay'],
   ['K6', 'src/keeper/index.ts', [['resolveRelayUpstream(env, realUpstreamDeps)', 'resolveRelayUpstream(process.env as Record<string, string | undefined>, realUpstreamDeps)']], [T.keeper], 'upstream resolved from the keeper env, not the member env'],
   ['K7', 'src/keeper/index.ts', [["    return { ...env, DOCKER_HOST: `unix://${relaySock}` };", '    return env;']], [T.keeper], 'DOCKER_HOST never set; rig: run_labels'],
@@ -67,7 +68,7 @@ const MUTANTS = [
   ['R12', 'src/keeper/docker-relay.ts', [['return boundIno !== null && fs.statSync(sockPath).ino === boundIno;', 'return fs.existsSync(sockPath);']], [T.relay], 'healthy() ignores a replaced socket file'],
   ['R13', 'src/keeper/docker-relay.ts', [['    for (const s of live) s.destroy();\n', '']], [T.relay], 'a killed relay leaves in-flight streams half-alive'],
   ['R14', 'src/keeper/docker-relay.ts', [['http.createServer({ maxHeaderSize: 1 << 20 }, onRequest)', 'http.createServer(onRequest)']], [T.relay], 'node 16 KB header cap: big X-Registry-Config calls fail through the relay'],
-  ['R15', 'src/keeper/docker-relay.ts', [["      ur.on('error', () => res.destroy());\n", '']], [T.relay], 'a daemon dying mid-response crashes/hangs instead of aborting the client call'],
+  ['R15', 'src/keeper/docker-relay.ts', [["      res.flushHeaders();\n      ur.on('error', () => res.destroy());\n", "      res.flushHeaders();\n"]], [T.relay], 'a daemon dying mid-response crashes/hangs instead of aborting the client call'],
   ['K8', 'src/shared/docker-endpoint.ts', [['export function dockerContextHostViaCli(env: Record<string, string | undefined>): Promise<string | null> {\n  return new Promise((resolve) => {', 'export function dockerContextHostViaCli(env: Record<string, string | undefined>): Promise<string | null> {\n  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);\n  return new Promise((resolve) => {']], [T.keeper], 'a blocking context lookup stops the keeper answering probes'],
   ['M10', 'src/shared/docker-relay.ts', [['const relayShaped = !!inherited && isRelaySocketPath(inherited);', 'const relayShaped = false;']], [T.shared, T.keeper, T.api], 'another keeper relay is accepted as the real daemon (stacked relays, labels overwritten)'],
   ['M11', 'src/shared/docker-relay.ts', [["    const ctxEnv = { ...env };\n    delete ctxEnv.DOCKER_HOST;\n", "    const ctxEnv = { ...env };\n"]], [T.shared], 'the context lookup echoes the inherited relay back'],
@@ -81,7 +82,7 @@ const MUTANTS = [
   ['E2', 'src/shared/docker-endpoint.ts', [["return fs.statSync(p).isSocket() ? 'socket' : 'other';", "return fs.statSync(p).isSocket() || true ? 'socket' : 'other';"]], [T.endpoint], 'a regular file is accepted as the daemon socket'],
   ['E3', 'src/shared/docker-endpoint.ts', [["(err, stdout) => resolve(err ? null : String(stdout).trim() || null),", "(err, stdout) => resolve(String(stdout).trim() || null),"]], [T.endpoint], 'a failing docker CLI still answers'],
   ['S1', 'src/keeper/index.ts', [["    publishUpstream(up.socketPath);\n", '']], [T.keeper], 'the keeper never publishes which daemon its relay stamps on (Pause could query another one)'],
-  ['S2', 'src/keeper/index.ts', [["  if (relay) {\n    relay.stop();\n    try {\n      fs.unlinkSync(relayUpstreamFile(sockPath));", "  if (relay) {\n    relay.stop();\n    try {\n      void relayUpstreamFile;"]], [T.keeper], 'the published upstream outlives its keeper'],
+  ['S2', 'src/keeper/index.ts', [["    for (const f of [relayUpstreamFile(sockPath), relayHoldFile(sockPath)]) {", "    for (const f of [relayHoldFile(sockPath)]) {"]], [T.keeper], 'the published upstream outlives its keeper'],
   ['S3', 'src/main/docker-api.ts', [["return p.startsWith('/') && !isRelaySocketPath(p) ? p : null;", "return p.startsWith('/') ? p : null;"]], [T.api], 'a published upstream that is itself a relay is believed'],
   ['S4', 'src/shared/docker-relay.ts', [["if (kind === 'missing' && via === 'default') return", "if (false as boolean && via === 'default') return"]], [T.shared], 'a guessed default path nobody listens on pins DOCKER_HOST to a relay that never answers'],
   ['S5', 'src/shared/docker-relay.ts', [["  if (isRelaySocketPath(socketPath)) return { ok: false, reason: `upstream ${socketPath} (${via}) is a keeper relay socket, not a daemon` };\n", '']], [T.shared], 'an explicit override / docker context naming a relay is forwarded to (stacked relays)'],
@@ -163,12 +164,15 @@ const MUTANTS = [
   ['B2', 'src/shared/bus-switches.ts', [["  docker_relay: 'dockerRelay', // #291\n", '']], [T.sw, T.bus], 'wire name unknown → every read OFF'],
   ['D1', 'src/main/docker-relay-switch.ts', [['dockerRelayOffer({ remote, platform', 'dockerRelayOffer({ remote: false, platform']], [T.sw], 'sandbox member gets the relay (read side)'],
   ['D2', 'src/main/docker-relay-switch.ts', [["busSwitch(db, runId, 'docker_relay')", "busSwitch(db, runId, 'liveness')"]], [T.sw], 'reads the wrong mechanism'],
-  ['W1', 'src/main/agent-sdk.ts', [['}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote)) as never,', '}, undefined) as never,']], [T.bind], 'the session never asks for the relay'],
+  ['W1', 'src/main/agent-sdk.ts', [['}, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote, ws),', '}, undefined,']], [T.bind], 'the session never asks for the relay'],
   ['A1', 'src/main/docker-api.ts', [["path: `/containers/${enc(id)}/stop?t=${timeoutSec}`", "path: `/containers/${enc(id)}/kill?t=${timeoutSec}`"]], [T.api], 'stop becomes kill'],
   ['A3', 'src/main/docker-api.ts', [["if (res.status === 304) return 'already-stopped';", "if (res.status === 304) return 'stopped';"]], [T.api], '304 mislabelled'],
   ['A4', 'src/main/docker-api.ts', [['autoRemove: j.HostConfig?.AutoRemove === true,', 'autoRemove: false,']], [T.api], 'AutoRemove ignored (a --rm container would be stopped = deleted)'],
   ['A5', 'src/main/docker-api.ts', [["if (o.labels?.length) filters.label = o.labels;", '']], [T.api], 'label filter dropped (lists every container)'],
 ];
+
+// #321: the Docker HOLD mutants (scripts/docker-hold-mutants.list.mjs), one per clause; their rig arms are merged into RIG_ARM below.
+MUTANTS.push(...holdMutants(HOLD_T));
 
 const sha = (b) => createHash('sha256').update(b).digest('hex').slice(0, 12);
 
@@ -291,6 +295,7 @@ if (checkOnly) {
 const G8_ARMS = new Set(['pause_and_reprise', 'restart_order', 'removed_by_hand', 'docker_absent', 'docker_refused', 'autoremove_and_failed', 'app_resolution_moved']); // arms of scripts/e2e-pause-containers.mjs (the rest: e2e-docker-relay.mjs)
 // NEVER map a mutant that WIDENS the selection of what Pause stops (P1/P2/P3) onto the rig: on a shared dockerd it would stop OTHER fleets' containers (D4) — those are unit-only.
 const RIG_ARM = { P15: 'docker_absent', Q17: 'app_resolution_moved', Q18: 'app_resolution_moved', Q30: 'restart_order', P4: 'autoremove_and_failed', P13: 'pause_and_reprise', Q1: 'pause_and_reprise', Q4: 'pause_and_reprise', Q7: 'pause_and_reprise', A9: 'api_real', M12: 'late_daemon', M2: 'user_labels', R1: 'run_labels', R3: 'streams', R4: 'run_labels', R6: 'kill_relay', K1: 'no_relay_fallback', K2: 'switch_off', K5: 'kill_relay', K7: 'run_labels', C1: 'app_switch', C2: 'sweep_relay_files' };
+Object.assign(RIG_ARM, HOLD_RIG_ARM);
 if (args.includes('--rig')) {
   const rigIds = Object.keys(RIG_ARM).filter((id) => !only.length || only.includes(id));
   const rigRun = (arm) =>
