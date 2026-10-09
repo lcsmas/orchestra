@@ -2494,6 +2494,25 @@ h6.av-md-h {
 .av-notice-refusal .av-notice-dot,
 .av-notice-permission-denied .av-notice-dot { background: var(--av-error); }
 .av-notice-compact-boundary .av-notice-dot { background: var(--av-assistant); }
+/* #322 (D-Q7 B): the Plafond mémoire's dedicated row — red when a command was killed, amber when the warning level was crossed, the command in a chip, the time at the right. */
+.av-notice-memory-cap { color: var(--av-text); }
+.av-notice-memory-cap.is-hard {
+  border-color: color-mix(in srgb, var(--av-error) 30%, transparent);
+  background: color-mix(in srgb, var(--av-error) 6%, var(--av-surface-raised));
+}
+.av-notice-memory-cap.is-soft {
+  border-color: color-mix(in srgb, var(--av-warn) 34%, transparent);
+  background: color-mix(in srgb, var(--av-warn) 7%, var(--av-surface-raised));
+}
+.av-notice-memory-cap.is-hard .av-notice-dot { background: var(--av-error); }
+.av-notice-memory-cap.is-soft .av-notice-dot { background: var(--av-warn); }
+.av-notice-memory-cap.is-hard .av-notice-label { color: var(--av-error); }
+.av-notice-memory-cap.is-soft .av-notice-label { color: var(--av-warn); }
+.av-notice-chip {
+  font-family: var(--av-mono); font-size: 11px; padding: 0 5px; border-radius: 4px;
+  background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
+}
+.av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; opacity: 0.6; }
 .av-notice-command-output { background: var(--av-surface-sunken); }
 /* Interrupt marker — a quiet centered divider, not a boxed row: it marks a
    break in the conversation's flow ("you stopped the turn here") rather than

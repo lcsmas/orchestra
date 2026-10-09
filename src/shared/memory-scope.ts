@@ -433,7 +433,7 @@ export function applyKernelKills(records: readonly MemKillRecord[], kills: reado
 
 // ─── The words (the member's notice row, the coordinator's bus message, the app log) ───────────────────────────────
 
-const fmtGb = (bytes: number): string => {
+export const fmtGb = (bytes: number): string => {
   const g = bytes / GIB;
   return `${Number.isInteger(g) ? g : +g.toFixed(2)} GB`; // 6 GB, 3.1 GB, 0.25 GB (a rig cap) — never a rounded-off cap
 };

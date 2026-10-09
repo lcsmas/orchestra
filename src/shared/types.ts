@@ -1232,7 +1232,15 @@ export type AgentNoticeKind =
   | 'interrupted' // the user interrupted the turn (stream marker / manager notice)
   | 'restarted' // an INTENTIONAL restart preserved the conversation (issue #148)
   | 'mcp' // an MCP server connected / was enabled (green-dot hairline)
-  | 'mcp-error'; // an MCP server failed / needs auth / was disabled (red-dot hairline)
+  | 'mcp-error' // an MCP server failed / needs auth / was disabled (red-dot hairline)
+  | 'memory-cap'; // the Plafond mémoire killed a command (red) or its warning level was crossed (amber) — the dedicated row (#322, D-Q7 B)
+
+/** #322 (D-Q7 = B): the structured content of the dedicated « Plafond mémoire » notice row — severity + the one-line sentence cut into plain text and COMMAND CHIPS. Built once (shared/mem-notice.ts `memCapRowOf`),
+ *  persisted with the notice and carried live, so the live row and the reopened-pane row are identical. `hard` = a command was killed (red), `soft` = the warning level was crossed (amber). */
+export interface MemCapRow {
+  tone: 'hard' | 'soft';
+  segments: Array<{ kind: 'text' | 'chip'; text: string }>;
+}
 
 /** A user-relevant system notice the SDK surfaced outside the assistant text
  *  stream. Before this event existed, `normalizeSdkMessage` silently dropped
@@ -1264,6 +1272,8 @@ export interface AgentNoticeEvent extends AgentEventBase {
    *  restart — rendered in the row's expandable detail. Absent on every other
    *  kind. See {@link RestartTrigger}. */
   restartTrigger?: RestartTrigger;
+  /** For a `memory-cap` notice (#322): the structured row (tone + text/command-chip segments). */
+  memCap?: MemCapRow;
 }
 
 /** Payload of {@link AgentUsageWarningEvent} while a warning is ACTIVE. */
@@ -2011,6 +2021,8 @@ export interface RenderMessage {
   /** For a `restarted` notice row (issue #148): which producer triggered the
    *  intentional restart — shown in the row's expandable detail. */
   restartTrigger?: RestartTrigger;
+  /** For a `memory-cap` notice row (#322): the structured row (tone + text/command-chip segments). */
+  noticeMemCap?: MemCapRow;
   /** For a `user` message: where an externally-originated turn came from
    *  (Remote Control, peer delivery) — rendered as a badge. */
   origin?: string;

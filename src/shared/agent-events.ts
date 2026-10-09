@@ -1901,6 +1901,8 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         // #148: the intentional-restart row carries its trigger for the
         // expandable detail. Present only on `kind: 'restarted'`.
         ...(event.restartTrigger !== undefined ? { restartTrigger: event.restartTrigger } : {}),
+        // #322 (D-Q7 B): the dedicated Plafond mémoire row carries its structured content (tone + command chips). Present only on `kind: 'memory-cap'`.
+        ...(event.memCap !== undefined ? { noticeMemCap: event.memCap } : {}),
         done: true,
       });
       return { ...next, messages };
