@@ -19,7 +19,7 @@ export interface VeilleReliquatPort {
   census(wsId: string): Promise<number | 'unknown'>;
   /** Stop them. Null = nothing to report (no tracked scope / nothing found). A report with `unknown` / `error` / `aborted` = the stop could not be completed safely.
    *  `ctx.stillWanted()` is re-checked before every signal round: false (the member woke / is being deleted meanwhile) ⇒ the remaining signals are NOT sent. Processes born after the stop BEGAN are the member's new work and are spared. */
-  stop(wsId: string, ctx?: { stillWanted(): boolean }): Promise<ReliquatReport | null>;
+  stop(wsId: string, ctx?: { stillWanted(): boolean; stillWantedAfterSignal?(): boolean }): Promise<ReliquatReport | null>;
   /** Queue `text` for the member's next turn WITHOUT waking it (its inbox). False = it could not be queued. */
   tell(wsId: string, text: string): Promise<boolean>;
 }
@@ -40,6 +40,8 @@ export interface JudgeDeps {
   /** The member judged AGAIN on FRESH state (status, pending prompts, the activity stamp, the pane, the hold…) with `liveReliquats` Reliquats still to wait for — true = it would still be put in Veille NOW (#326-fu m1). Asked before the first
    *  signal and before every signal round: a prompt handed to an already-live session bumps no wake epoch but stamps activity, and must keep the Reliquats alive. Absent = always. */
   stillEligible?: (liveReliquats: number) => boolean;
+  /** Same question once the FIRST signal went out (#326-fu F2, R10): the Admission hold falling because the TERM freed the RAM must not cancel the SIGKILL escalation or the rest of the list — the hold stays what it was when the stop began; a wake / delete / fresh activity still ends it. Absent = `stillEligible`. */
+  stillEligibleAfterSignal?: (liveReliquats: number) => boolean;
   info(msg: string): void;
   warn(msg: string, err?: unknown): void;
 }
@@ -93,13 +95,14 @@ export async function judgeVeille(ws: Workspace, signals: Base, deps: JudgeDeps)
   // 4. stop them (identity re-read at signal time, fail closed — inside the port), then tell the member. The member is judged AGAIN on fresh state first (m1: the census awaited, and a prompt delivered to a live session
   //    bumps no wake epoch), and the same question is asked before every signal round: a member that was woken meanwhile keeps its Reliquats.
   const wanted = (): boolean => (deps.stillWanted?.() ?? true) && (deps.stillEligible?.(live) ?? true);
+  const wantedAfterSignal = (): boolean => (deps.stillWanted?.() ?? true) && (deps.stillEligibleAfterSignal ?? deps.stillEligible)?.(live) !== false;
   if (!wanted()) {
     deps.info(`veille: ${ws.name} (${ws.id}) is no longer eligible (woken, a prompt, a status change) — its Reliquats are NOT stopped`);
     return { hibernate: false, why: 'not-eligible' };
   }
   let report: ReliquatReport | null;
   try {
-    report = await deps.port.stop(ws.id, { stillWanted: wanted });
+    report = await deps.port.stop(ws.id, { stillWanted: wanted, stillWantedAfterSignal: wantedAfterSignal });
   } catch (e) {
     deps.warn(`veille: stopping the Reliquats of ${ws.name} (${ws.id}) threw`, e);
     return { hibernate: false, why: 'reliquat-stop-incomplete', liveReliquats: live, detail: e instanceof Error ? e.message : String(e) };

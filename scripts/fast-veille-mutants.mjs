@@ -134,10 +134,12 @@ if (dirty) { console.error('REFUSING: the mutated files / suites / rig have unco
 const shaBefore = Object.fromEntries(files.map((f) => [f, sha(f)]));
 
 // ── POSITIVE CONTROL: the unmutated tree must be all green, else every "killed" below is vacuous ──
+// the baseline rig must pass EVERY arm the rig declares (derived from its own ARMS list: a hard-coded count went stale the day the rig gained arms and aborted the whole gate — #326-fu review F1)
+const RIG_ARM_COUNT = (/const ARMS = \[([^\]]*)\]/.exec(fs.readFileSync(path.join(HERE, 'e2e-fast-veille.mjs'), 'utf8'))?.[1].match(/'[^']+'/g) ?? []).length;
 const base = unitRed();
 const baseRig = rigRed();
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && baseRig.pass !== 20)) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (declared arms: ${RIG_ARM_COUNT})`);
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseRig.arms.length || (!noRig && (RIG_ARM_COUNT === 0 || baseRig.pass !== RIG_ARM_COUNT || baseRig.total !== RIG_ARM_COUNT))) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(3); }
 
 const rows = [];
 let restoreBad = false;

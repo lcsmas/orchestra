@@ -41,7 +41,7 @@ test('the stop and the census reuse the Pause\'s pieces: killReliquats / judgeRe
   assert.ok(live(port, "import { killReliquats } from './pause-reliquats.ts';"));
   assert.ok(live(port, "import { memberScopeDeps } from './pause-reliquats-scope.ts';"));
   assert.match(port, /judgeReliquat\(m\.pid, m\.startTicks, scope, listing, protect, kill\.read\)\.ok/);
-  assert.match(port, /await killReliquats\(wsId, deps, kill, \{ keeperPid, cliPid, startedBeforeMs, \.\.\.\(ctx\?\.stillWanted \? \{ stillPaused: ctx\.stillWanted \} : \{\}\) \}\)/);
+  assert.match(port, /await killReliquats\(wsId, deps, kill, \{ keeperPid, cliPid, startedBeforeMs, \.\.\.\(ctx\?\.stillWanted \? \{ stillPaused: ctx\.stillWanted \} : \{\}\), \.\.\.\(ctx\?\.stillWantedAfterSignal \? \{ stillPausedAfterSignal: ctx\.stillWantedAfterSignal \} : \{\}\) \}\)/);
   assert.doesNotMatch(port, /process\.kill\(|\/sys\/fs\/cgroup|\.signal\(/, 'the port never signals anything itself');
   assert.match(port, /if \(scopes\.length === 0\) return countBrowsers\(wsId\);/, 'browsers only for a member with NO tracked scope (R10)');
   assert.match(port, /if \(scopes\.length === 0\) return stopBrowsers\(wsId, ctx\);/, 'and the scope-less stop never needs the keeper / CLI identity');
@@ -53,7 +53,7 @@ test('the production host: the notice goes to the member\'s INBOX (never a bus r
   assert.ok(live(host, "import { appendInboxBlock } from './inbox-write.ts';"));
   assert.ok(live(host, "import { cliOfMember } from './pause-trap-host.ts';"));
   assert.doesNotMatch(host, /from '\.\/bus(\.ts|')|busSend|\bsend\(/, 'no bus import: a status row wakes its recipient');
-  assert.match(host, /stopBrowsers: \(wsId, ctx\) => stopBrowserReliquatsOf\(wsId, \{ ignoreWindow: true, \.\.\.\(ctx\?\.stillWanted \? \{ stillWanted: ctx\.stillWanted \} : \{\}\) \}\)/);
+  assert.match(host, /stopBrowsers: \(wsId, ctx\) => stopBrowserReliquatsOf\(wsId, \{ ignoreWindow: true, \.\.\.\(ctx\?\.stillWanted \? \{ stillWanted: ctx\.stillWanted \} : \{\}\), \.\.\.\(ctx\?\.stillWantedAfterSignal \? \{ stillWantedAfterSignal: ctx\.stillWantedAfterSignal \} : \{\}\) \}\)/);
   assert.match(host, /cliOf: cliOfMember,/);
   const th = read('pause-trap-host.ts');
   assert.match(th, /export async function cliOfMember\(m: \{ wsId: string \}\)/);
@@ -90,12 +90,24 @@ test('the sweep marks a member BUSY before its verdict and drops the mark in a f
   assert.ok(sweep.indexOf('const epochBefore = wakeEpoch.get(ws.id) ?? 0;') < sweep.indexOf('judgeVeille(ws, signals,'), 'the wake epoch is snapshotted BEFORE the verdict awaits');
   assert.match(sweep, /decided again on FRESH state, WHATEVER the verdict awaited[^]*?const again = judgedFresh\(0\);[^]*?if \(!again\) \{/);
   // #326-fu m1: ONE fresh judgement serves the post-verdict re-check AND the stop itself (before the first signal and before every signal round, through `stillEligible`)
-  const fresh = sweep.slice(sweep.indexOf('const judgedFresh = (liveReliquats: number): boolean => {'), sweep.indexOf('let verdict: Awaited<ReturnType<typeof judgeVeille>>;'));
+  const fresh = sweep.slice(sweep.indexOf('const judgedFresh = (liveReliquats: number, heldNow: boolean = isAdmissionHolding(getMemoryGuardSnapshot())): boolean => {'), sweep.indexOf('let verdict: Awaited<ReturnType<typeof judgeVeille>>;'));
   assert.ok(fresh.length > 100, 'judgedFresh is defined before the verdict is awaited');
-  for (const re of [/\(liveReliquats === 0 \|\| isFleetMember\(fresh\)\) &&/, /hasLivePty: isRunning\(ws\.id\),/, /hasLiveRunPty: isRunning\(`\$\{ws\.id\}:run`\),/, /hasLiveBackgroundTask: sdkHasBackgroundTasks\(ws\.id\),/, /now: Date\.now\(\),/, /store\.getWorkspace\(ws\.id\)/, /lastActivityAt: idleClockOf\(fresh\),/, /monotonicIdleMs: monotonicIdleOf\(ws\.id\),/, /isActive: getActiveWorkspaceId\(\) === ws\.id,/, /hasLiveSdk: sdkSessionLive\(ws\.id\),/, /admissionHeld: isAdmissionHolding\(getMemoryGuardSnapshot\(\)\),/, /^\s*liveReliquats,$/m]) assert.match(fresh, re, String(re));
-  assert.match(sweep, /stillEligible: judgedFresh,/, 'the stop is handed the fresh judgement');
+  for (const re of [/\(liveReliquats === 0 \|\| isFleetMember\(fresh\)\) &&/, /hasLivePty: isRunning\(ws\.id\),/, /hasLiveRunPty: isRunning\(`\$\{ws\.id\}:run`\),/, /hasLiveBackgroundTask: sdkHasBackgroundTasks\(ws\.id\),/, /now: Date\.now\(\),/, /store\.getWorkspace\(ws\.id\)/, /lastActivityAt: idleClockOf\(fresh\),/, /monotonicIdleMs: monotonicIdleOf\(ws\.id\),/, /isActive: getActiveWorkspaceId\(\) === ws\.id,/, /hasLiveSdk: sdkSessionLive\(ws\.id\),/, /heldNow: boolean = isAdmissionHolding\(getMemoryGuardSnapshot\(\)\)/, /admissionHeld: heldNow,/, /^\s*liveReliquats,$/m]) assert.match(fresh, re, String(re));
+  assert.match(sweep, /stillEligible: \(n\) => judgedFresh\(n\),/, 'the stop is handed the fresh judgement');
+  assert.match(sweep, /stillEligibleAfterSignal: \(n\) => judgedFresh\(n, signals\.admissionHeld\),/, 'once a signal is out the hold is what it was when the verdict began (F2, R10)');
   assert.match(sweep, /thresholdMs,\s*\n\s*monotonicIdleMs: monotonicIdleOf\(ws\.id\),\s*\n\s*admissionHeld,/, 'the monotonic idle time is a signal of every member\'s verdict (#326-fu m2)');
   assert.doesNotMatch(sweep, /if \(verdict\.stopped\) \{/, 'the re-check is not conditional on a stop: a census awaits too');
   assert.match(sweep, /stillWanted: \(\) => \(wakeEpoch\.get\(ws\.id\) \?\? 0\) === epochBefore && !isBeingDeleted\(ws\.id\),/, 'the stop is told when the member woke / is being deleted');
   assert.match(sweep, /const liveSdkNow = sdkSessionLive\(ws\.id\);\s*const livePtyNow = isRunning\(ws\.id\);\s*if \(!liveSdkNow && !livePtyNow\) continue;/, 'liveness read AGAIN after the verdict');
+});
+
+test('the #288 mutant gate derives its baseline rig-arm count from the rig\'s own ARMS — a hard-coded number aborted the whole gate the day the rig gained arms (#326-fu review F1)', () => {
+  const scripts = path.join(here, '..', '..', 'scripts');
+  const gate = fs.readFileSync(path.join(scripts, 'fast-veille-mutants.mjs'), 'utf8');
+  const rig = fs.readFileSync(path.join(scripts, 'e2e-fast-veille.mjs'), 'utf8');
+  assert.doesNotMatch(gate, /baseRig\.pass !== \d+/, 'no literal arm count');
+  assert.ok(gate.includes("const RIG_ARM_COUNT = (/const ARMS = \\[([^\\]]*)\\]/.exec(fs.readFileSync(path.join(HERE, 'e2e-fast-veille.mjs'), 'utf8'))?.[1].match(/'[^']+'/g) ?? []).length;"), 'derived from the rig');
+  assert.ok(gate.includes('baseRig.pass !== RIG_ARM_COUNT || baseRig.total !== RIG_ARM_COUNT'), 'every declared arm must pass AND be counted');
+  const declared = (/const ARMS = \[([^\]]*)\]/.exec(rig)?.[1].match(/'[^']+'/g) ?? []).length;
+  assert.ok(declared >= 23, `the rig declares its arms in one literal (${declared} found; the three #326-fu arms included)`);
 });

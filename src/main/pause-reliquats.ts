@@ -40,6 +40,8 @@ export interface ReliquatKillOptions {
   protectPids?: readonly number[];
   /** Re-checked before EVERY round and signal: false ⇒ stop at once (a lift must not cost the released turn anything — review F8). */
   stillPaused?: () => boolean;
+  /** Veille (#326-fu F2): consulted INSTEAD of `stillPaused` once a signal has been delivered — a stop that began must finish what it began (the TERM already sent gets its SIGKILL escalation, the rest of the list is stopped) unless the member WOKE or was deleted; absent ⇒ `stillPaused` all the way (the Pause's lift cancels everything). */
+  stillPausedAfterSignal?: () => boolean;
   /** Only processes that started BEFORE this epoch-ms are targets (a HUMAN turn that began during the trap is allowed to run — D9). */
   startedBeforeMs?: number | (() => number | undefined);
   /** Processes whose own start falls inside one of these HUMAN-turn windows are spared (D9). */
@@ -102,7 +104,8 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
   const key = (t: { pid: number; startTicks: number }): string => `${t.pid}:${t.startTicks}`;
   const beforeMs = (): number | undefined => (typeof opts.startedBeforeMs === 'function' ? opts.startedBeforeMs() : opts.startedBeforeMs);
   const paused = (): boolean => {
-    if (opts.stillPaused && !opts.stillPaused()) {
+    const check = signalled.size > 0 && opts.stillPausedAfterSignal ? opts.stillPausedAfterSignal : opts.stillPaused;
+    if (check && !check()) {
       report.aborted = 'lifted';
       return false;
     }

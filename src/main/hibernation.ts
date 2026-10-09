@@ -191,7 +191,7 @@ export async function sweepHibernation(): Promise<string[]> {
     const epochBefore = wakeEpoch.get(ws.id) ?? 0;
     veilleBusy.add(ws.id);
     // The member judged again on FRESH state (the sweep awaits: a census probes the keeper, a stop waits a TERM grace): the same guards, every signal re-read, `liveReliquats` Reliquats still to wait for.
-    const judgedFresh = (liveReliquats: number): boolean => {
+    const judgedFresh = (liveReliquats: number, heldNow: boolean = isAdmissionHolding(getMemoryGuardSnapshot())): boolean => {
       const fresh = store.getWorkspace(ws.id);
       return (
         !!fresh &&
@@ -206,7 +206,7 @@ export async function sweepHibernation(): Promise<string[]> {
           hasLiveSdk: sdkSessionLive(ws.id),
           hasLiveRunPty: isRunning(`${ws.id}:run`),
           hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
-          admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),
+          admissionHeld: heldNow,
           liveReliquats,
         })
       );
@@ -217,7 +217,9 @@ export async function sweepHibernation(): Promise<string[]> {
         port: veillePort,
         strip: stripControl,
         stillWanted: () => (wakeEpoch.get(ws.id) ?? 0) === epochBefore && !isBeingDeleted(ws.id),
-        stillEligible: judgedFresh,
+        stillEligible: (n) => judgedFresh(n),
+        // once the first signal is out the hold stays what it was when the verdict began (R10: a TERM that freed the RAM must not cancel the SIGKILL escalation or the rest of the list); a wake / delete / activity still ends it
+        stillEligibleAfterSignal: (n) => judgedFresh(n, signals.admissionHeld),
         info: (m) => hlog.info(m),
         warn: (m, e) => hlog.warn(m, e),
       });

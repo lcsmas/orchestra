@@ -33,8 +33,8 @@ class FakePort implements VeilleReliquatPort {
     if (this.live instanceof Error) throw this.live;
     return this.live;
   }
-  stopCtx: { stillWanted(): boolean } | undefined;
-  async stop(wsId: string, ctx?: { stillWanted(): boolean }): Promise<ReliquatReport | null> {
+  stopCtx: { stillWanted(): boolean; stillWantedAfterSignal?(): boolean } | undefined;
+  async stop(wsId: string, ctx?: { stillWanted(): boolean; stillWantedAfterSignal?(): boolean }): Promise<ReliquatReport | null> {
     this.stopCtx = ctx;
     this.calls.push(`stop:${wsId}`);
     if (this.report instanceof Error) throw this.report;
@@ -155,6 +155,35 @@ test('#326-fu m1: the same fresh question guards EVERY signal round — the stop
   assert.equal(p.stopCtx?.stillWanted(), false, 'a wake or delete mid-stop does too');
   epochOk = true;
   assert.equal(p.stopCtx?.stillWanted(), true, 'control: both hold');
+});
+
+test('#326-fu F2: the stop is also handed an AFTER-SIGNAL predicate = (the sweep\'s epoch check) AND (the after-signal freshness) — the hold falling does not end a stop that began, a wake does', async () => {
+  const p = new FakePort();
+  p.live = 2;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  let epochOk = true;
+  let fresh = true;      // eligibility BEFORE the first signal
+  let afterSignal = true;
+  const asked: string[] = [];
+  await judgeVeille(ws(), sig(40 * MIN), { ...deps(p), stillWanted: () => epochOk, stillEligible: (n) => { asked.push(`fresh:${n}`); return fresh; }, stillEligibleAfterSignal: (n) => { asked.push(`after:${n}`); return afterSignal; } });
+  asked.length = 0;
+  fresh = false;         // the hold lapsed: the pre-signal question now says no …
+  assert.equal(p.stopCtx?.stillWanted(), false);
+  assert.equal(p.stopCtx?.stillWantedAfterSignal?.(), true, '… the after-signal one does not');
+  assert.deepEqual(asked, ['fresh:2', 'after:2']);
+  epochOk = false;       // the member woke
+  assert.equal(p.stopCtx?.stillWantedAfterSignal?.(), false);
+  epochOk = true;
+  afterSignal = false;   // fresh activity / a status change
+  assert.equal(p.stopCtx?.stillWantedAfterSignal?.(), false);
+  // no dedicated after-signal dependency ⇒ it falls back to `stillEligible` (the previous behaviour)
+  const p2 = new FakePort();
+  p2.live = 1;
+  p2.report = { ...emptyReliquatReport(['s']), killed: [K(502)] };
+  let f2 = true;
+  await judgeVeille(ws(), sig(40 * MIN), { ...deps(p2), stillEligible: () => f2 });
+  f2 = false;
+  assert.equal(p2.stopCtx?.stillWantedAfterSignal?.(), false);
 });
 
 test('#326-fu m1: no fresh-eligibility dependency (a rig that does not wire it) ⇒ the previous behaviour, unchanged', async () => {

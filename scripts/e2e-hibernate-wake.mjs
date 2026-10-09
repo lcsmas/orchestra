@@ -88,7 +88,7 @@ const ARMS = [
   'level_only', 'level_only_healed', 'level_after_done', 'fleet_unread_wake', 'toplevel_unread',
   'reliquat_10min', 'reliquat_31min', 'reliquat_none_5min', 'reliquat_fast', 'reliquat_delay_hot', 'reliquat_unknown',
   'reliquat_woken_during_stop', 'reliquat_woken_after_stop', 'reliquat_again_false', 'reliquat_overlap', 'reliquat_scopeless', 'reliquat_census_race',
-  'reliquat_msg_at_stop', 'reliquat_msg_at_census', 'reliquat_clock_jump', 'reliquat_nonfleet', 'reliquat_detached_during_stop',   // #326-fu m1, m1, m2, m4, review
+  'reliquat_msg_at_stop', 'reliquat_msg_at_census', 'reliquat_clock_jump', 'reliquat_nonfleet', 'reliquat_detached_during_stop', 'reliquat_hold_lifts_after_term',   // #326-fu m1, m1, m2, m4, review, review F2
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -557,8 +557,9 @@ if (ARM.startsWith('reliquat_')) {
   const scopeEnv = { ...realScopeEnv(), platform: 'linux', uid: UID, cgroupRoot: cg, procRoot: '/proc', env: { ORCHESTRA_MEMORY_SCOPE_PREFIX: PREFIX }, keeperPidFile: (ws) => path.join(tmpHome, `${ws}.pid`) };
   const startTicks = (pid) => { try { return Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]); } catch { return null; } };
   const orphans = [];
-  const orphan = (tag) => {
-    const pid = Number(execFileSync('sh', ['-c', `setsid sleep ${tag} </dev/null >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' }).trim());
+  const orphan = (tag, stubborn = false) => {
+    const cmd = stubborn ? `sh -c 'trap "" TERM; exec sleep ${tag}'` : `sleep ${tag}`;   // `stubborn`: ignores SIGTERM — only the SIGKILL escalation stops it
+    const pid = Number(execFileSync('sh', ['-c', `setsid ${cmd} </dev/null >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' }).trim());
     const o = { pid, start: startTicks(pid), tag };
     orphans.push(o);
     return o;
@@ -593,7 +594,7 @@ if (ARM.startsWith('reliquat_')) {
   if (ARM !== 'reliquat_nonfleet') await store.upsertWorkspace({ ...wsNow(), parentId: 'coord-1' });
   const hnActR = await import(`${REPO}/src/main/hibernation-activity.ts`);
   const bystander = orphan('3601'); // OUTSIDE the scope: must survive everything
-  const mine = ARM === 'reliquat_none_5min' || ARM === 'reliquat_census_race' ? [] : [orphan('3600')];
+  const mine = ARM === 'reliquat_none_5min' || ARM === 'reliquat_census_race' ? [] : [orphan('3600', ARM === 'reliquat_hold_lifts_after_term')];
   members(mine);
   const readyPremise = mine.every(alive) && alive(bystander);
   const censusNow = port ? await port.census(WS) : 'no-port';
@@ -693,6 +694,23 @@ if (ARM.startsWith('reliquat_')) {
     const hibernated = await hib.sweepHibernation();
     Object.assign(out, base, { hibernated, censuses, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length, parentId: wsNow().parentId ?? null });
     ok = readyPremise && port !== null && !wsNow().parentId && hibernated.length === 1 && censuses === 0 && !live() && mine.every(alive) && inboxBlocks().length === 0;
+  } else if (ARM === 'reliquat_hold_lifts_after_term') {
+    // #326-fu review F2 (R10): FAST Veille under a held Admission; the Reliquat ignores SIGTERM; the hold FALLS 0.5 s into the stop (the TERM freed the RAM). The SIGKILL escalation must still go out — the hold stays what it was when the stop
+    // BEGAN — and the member is told exactly what was stopped (R10: « stop + list the same way »). The Veille itself is then dropped by the fresh re-check (no hold, idle 1 min): the member stays live, told. Before the fix the escalation was
+    // cancelled: the Reliquat alive, the notice « STILL ALIVE after the Veille », no Veille either.
+    const g = await import(`${REPO}/src/main/memory-guard.ts`);
+    let mem = 1 * 1024 ** 3;
+    g.__rebuildMemoryGuardForTests({}, () => mem);
+    const snap = g.sampleMemoryGuardNow();
+    wrapPort({ stop: async (w, c) => { setTimeout(() => { mem = 12 * 1024 ** 3; g.sampleMemoryGuardNow(); }, 500); return port.stop(w, c); } });
+    skewMs = 1 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    const heldAfter = g.getMemoryGuardSnapshot().admission;
+    const blocks = inboxBlocks();
+    g.stopMemoryGuard();
+    Object.assign(out, base, { admission: snap.admission, heldAfter, hibernated, live: live(), reliquatAlive: mine.every(alive), blocks: blocks.length, text: (blocks[0] ?? '').slice(0, 160) });
+    ok = readyPremise && snap.admission === 'held' && heldAfter !== 'held' && !mine.some(alive) && alive(bystander) && blocks.length === 1 &&
+      /Orchestra stopped 1 leftover process\(es\) of yours \(Reliquats\) early, to free memory \(Admission is held\)/.test(blocks[0]) && /sleep 3600/.test(blocks[0]) && !/STILL ALIVE/.test(blocks[0]) && live() && hibernated.length === 0;
   } else if (ARM === 'reliquat_detached_during_stop') {
     // #326-fu pre-review: the member is DETACHED from its coordinator while its Reliquats are being counted / stopped — it is no longer a fleet member (R11), so the stop is not ours to finish: the signal rounds end before any signal
     wrapPort({ stop: async (w, c) => { await store.upsertWorkspace({ ...wsNow(), parentId: undefined }); return port.stop(w, c); } });

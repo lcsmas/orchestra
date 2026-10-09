@@ -23,7 +23,7 @@ export interface VeilleReliquatPortDeps {
   /** #331's orphaned headless browsers of a member with NO tracked scope: how many are alive (`'unknown'` = could not look)… */
   countBrowsers: (wsId: string) => Promise<number | 'unknown'>;
   /** …and the pass that stops them (the idle window ignored; a connected client still protects). */
-  stopBrowsers: (wsId: string, ctx?: { stillWanted(): boolean }) => Promise<ReliquatReport | null>;
+  stopBrowsers: (wsId: string, ctx?: { stillWanted(): boolean; stillWantedAfterSignal?(): boolean }) => Promise<ReliquatReport | null>;
   /** Queue text in the member's inbox; false = could not. */
   tell: (wsId: string, text: string) => Promise<boolean>;
   /** The cgroup tree (a rig points it at a scratch dir; production = the real one). */
@@ -81,7 +81,7 @@ export function makeVeilleReliquatPort(o: VeilleReliquatPortDeps): VeilleReliqua
       const cliPid = who && 'cli' in who ? who.cli.pid : null;
       // what the member started AFTER this stop began is its new work (it woke): spared, listed; and a wake / delete mid-stop ends the signal rounds
       const startedBeforeMs = kill.now() + START_CLOCK_SLACK_MS;
-      const scoped = await killReliquats(wsId, deps, kill, { keeperPid, cliPid, startedBeforeMs, ...(ctx?.stillWanted ? { stillPaused: ctx.stillWanted } : {}) });
+      const scoped = await killReliquats(wsId, deps, kill, { keeperPid, cliPid, startedBeforeMs, ...(ctx?.stillWanted ? { stillPaused: ctx.stillWanted } : {}), ...(ctx?.stillWantedAfterSignal ? { stillPausedAfterSignal: ctx.stillWantedAfterSignal } : {}) });
       return scoped ?? stopBrowsers(wsId, ctx);
     },
 

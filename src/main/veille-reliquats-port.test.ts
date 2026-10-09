@@ -203,6 +203,32 @@ test('a scope lookup that FAILS inside stop() is reported `unknown` (never `null
   assert.equal(rep?.killed.length, 0);
 });
 
+test('Veille (#326-fu F2, R10): once the TERM is out, the SIGKILL escalation is NOT cancelled by a condition that only held when the stop began (the Admission hold fell because the TERM freed the RAM) — unless the after-signal predicate says the member woke', async (t) => {
+  const tr = tree(t);
+  const stubborn = orphan(['sh', '-c', 'trap "" TERM; exec sleep 603']);   // ignores SIGTERM: only the escalation can stop it
+  const stubborn2 = orphan(['sh', '-c', 'trap "" TERM; exec sleep 604']);
+  tr.scope('m1', 'aaaaaa', [stubborn.pid]);
+  tr.scope('m2', 'bbbbbb', [stubborn2.pid]);
+  const port = makeVeilleReliquatPort({ scopeEnv: tr.env, cliOf: noSession });
+  const t0 = Date.now();
+  const startOnly = () => Date.now() - t0 < 1500;   // true while the stop is beginning (ms), false by the time the grace wait is over (seconds)
+  // the wake/delete predicate says « still wanted » all along; only the first one (start-time condition) lapses
+  const rep = await port.stop('m1', { stillWanted: startOnly, stillWantedAfterSignal: () => true });
+  assert.equal(rep?.aborted, undefined, 'not lifted');
+  assert.equal(rep?.killed.some((k) => k.pid === stubborn.pid && k.signal === 'SIGKILL'), true, 'the escalation went out');
+  assert.equal(await gone(stubborn), true, 'and the process is really gone');
+  // control: without the after-signal predicate the lapsed condition cancels the escalation (the previous behaviour)
+  const t1 = Date.now();
+  const rep2 = await port.stop('m2', { stillWanted: () => Date.now() - t1 < 1500 });
+  assert.equal(rep2?.aborted, 'lifted');
+  assert.equal(alive(stubborn2), true, 'the TERM-ignoring process survived the cancelled escalation');
+  // and a member that WOKE during the grace wait still ends it, signalled or not
+  const t2 = Date.now();
+  const rep3 = await port.stop('m2', { stillWanted: () => Date.now() - t2 < 1500, stillWantedAfterSignal: () => false });
+  assert.equal(rep3?.aborted, 'lifted');
+  assert.equal(alive(stubborn2), true);
+});
+
 test('a scope-less member\'s stop never asks for the keeper / CLI identity: an UNRESPONSIVE keeper must not keep it awake for ever (review 1)', async (t) => {
   const tr = tree(t);
   const calls: string[] = [];
