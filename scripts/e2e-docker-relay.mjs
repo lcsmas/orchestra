@@ -10,6 +10,9 @@
 //                        marked mustFailOnMaster; a master tree has no relay so its keeper ignores `dockerRelay`)
 //   KEEPER_JS=<bundle>   use this keeper bundle (e.g. one built from master or a mutant)
 //
+// #321 (wave H): the hold_* arms drive the Docker HOLD — a container create/start through the relay WAITS while the app-published Admission state says held, and goes out by itself when memory is back.
+// "Low memory" is SIMULATED by what the app publishes (the real `createDockerHold().publish` of a guard snapshot, or — hold_guard_chain — the REAL guard fed a fake meter): this host's memory is never pressured.
+//
 // SAFETY (ledger #295 D4): scratch ORCHESTRA_HOME/HOME under ~/.cache/g2-rig; every container/network/volume/image the
 // rig creates carries the rig-unique name prefix `g2r<id>` AND the label `g2rig=g2r<id>` (an unnamed `docker run --rm`, or a
 // container a MUTANT left unstamped, is still found: cleanup is by LABEL, never by name alone) and ONLY those are ever removed; the human's own containers
@@ -39,6 +42,17 @@ const ARMS = {
   app_switch: { mustFailOnMaster: true, creates: true }, // real makeKeeperSpawn + real scratch bus: frozen ON gets the relay, OFF/default/sandbox never
   sweep_relay_files: { mustFailOnMaster: true, creates: false }, // a dead keeper's relay socket is swept; a live keeper's is spared
   late_daemon: { mustFailOnMaster: true, creates: true }, // F4 (follow-up): dockerd socket absent at spawn → relay still up (502), stamps once the daemon appears
+  hold_create: { mustFailOnMaster: true, creates: true }, // #321: held ⇒ `docker run` WAITS (dockerd sees nothing), visible (hold file, bus-status line, one notice, create Warning); memory back ⇒ it passes by itself
+  hold_start: { mustFailOnMaster: true, creates: true }, // #321: `docker start` of a container THIS relay stamped waits too, and passes when memory is back
+  hold_unattributed: { mustFailOnMaster: true, creates: true }, // #321: a container made around the relay / another workspace's / already running is NEVER held (+ positive control: the stamped one is)
+  hold_fresh_reading: { mustFailOnMaster: true, creates: true }, // #321: the guard says OPEN but a FRESH MemAvailable reading is still below threshold+margin ⇒ stays in line
+  hold_fail_open: { mustFailOnMaster: true, creates: true }, // #321: no / stale / garbage / foreign-version state ⇒ never held; a line already waiting is flushed when the state goes; no holdState in the frame ⇒ no hold (its positive control is red on master)
+  hold_client_leaves: { mustFailOnMaster: true, creates: true }, // #321: a client that gives up while held never has its create sent; the line goes on without it
+  hold_one_at_a_time: { mustFailOnMaster: true, creates: true }, // #321: the line is released FIFO, ONE at a time with a settle between (not a thundering herd)
+  hold_long_wait: { mustFailOnMaster: true, creates: true }, // #321 (OPS b): a multi-minute hold against the docker CLI, compose, a 200 KB create body, node http and curl — reports the first client that cuts (`measured`)
+  hold_two_keepers: { mustFailOnMaster: true, creates: true }, // #321 review M1: two keepers share ONE release slot (the fleet\'s line is one line)
+  hold_fleet_only: { mustFailOnMaster: true, creates: true }, // #321 review M2: a top-level / LEAD session is never held, a fleet member is (the real `dockerRelaySpecFor` with the workspace)
+  hold_guard_chain: { mustFailOnMaster: true, creates: true }, // #321: the REAL guard (fake meter) → real publisher → real keeper → real dockerd: low ⇒ waits, hysteresis reopen ⇒ passes
   api_real: { mustFailOnMaster: true, creates: true }, // F2 (follow-up): the APP's docker-api lists/stops/starts what the relay stamped, on the real daemon
 };
 if (!ARMS[ARM]) {
@@ -103,7 +117,7 @@ function cleanup() {
 // ── keeper bundle ───────────────────────────────────────────────────────────────────────────────────────────────
 const KEEPER_SRC = process.env.KEEPER_JS ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.KEEPER_JS) {
-  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts']
+  const srcs = ['src/keeper/index.ts', 'src/shared/keeper-protocol.ts', 'src/keeper/docker-relay.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts', 'src/keeper/docker-hold.ts', 'src/keeper/release-lease.ts', 'src/shared/docker-hold.ts', 'src/shared/memory-guard.ts']
     .map((s) => path.join(REPO, s))
     .filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_SRC) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_SRC).mtimeMs)) {
@@ -217,7 +231,7 @@ class Client {
 }
 const keepers = [];
 /** Launch a keeper for `ws`, claim it, spawn the member CLI. `relay` = send `dockerRelay`; `env` = member env extras. */
-async function member({ ws = WS, run = RUN, relay = true, env = {}, keeperEnv = {}, blockRelaySock = false } = {}) {
+async function member({ ws = WS, run = RUN, relay = true, env = {}, keeperEnv = {}, blockRelaySock = false, holdState } = {}) {
   const sock = path.join(HOME, 'keepers', `${ws}.sock`);
   const pidFile = path.join(HOME, 'keepers', `${ws}.pid`);
   const logFile = path.join(HOME, 'keepers', `${ws}.log`);
@@ -225,14 +239,14 @@ async function member({ ws = WS, run = RUN, relay = true, env = {}, keeperEnv = 
   const k = spawn(process.execPath, [KEEPER_JS, ws, sock, pidFile, logFile], {
     detached: true,
     stdio: 'ignore',
-    env: { ...REAL_ENV, HOME, ORCHESTRA_HOME: HOME, ORCHESTRA_KEEPER_RELAY_CHECK_MS: '200', ...keeperEnv },
+    env: { ...REAL_ENV, HOME, ORCHESTRA_HOME: HOME, ORCHESTRA_KEEPER_RELAY_CHECK_MS: '200', ORCHESTRA_KEEPER_HOLD_POLL_MS: '100', ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '300', ...keeperEnv },
   });
   k.unref();
   const c = await Client.dial(sock);
   c.sock.write(frame({ t: 'hello', wsId: ws }));
   const frameEnv = { PATH: process.env.PATH, HOME, ...env };
   c.frameEnv = frameEnv;
-  c.sock.write(frame({ t: 'spawn', command: process.execPath, args: [CLI], cwd: BASE, env: frameEnv, ...(relay ? { dockerRelay: { runId: run } } : {}) }));
+  c.sock.write(frame({ t: 'spawn', command: process.execPath, args: [CLI], cwd: BASE, env: frameEnv, ...(relay ? { dockerRelay: { runId: run, ...(holdState ? { holdState } : {}) } } : {}) }));
   const m = { c, ws, sock, pidFile, logFile, relaySock: path.join(HOME, 'keepers', `${ws}.docker.sock`), keeperPid: () => JSON.parse(fs.readFileSync(pidFile, 'utf8')).pid };
   keepers.push(m);
   // wait for the CLI to be alive
@@ -253,6 +267,7 @@ function stopKeepers() {
 
 // ── assertions ──────────────────────────────────────────────────────────────────────────────────────────────────
 const checks = [];
+const measured = {};
 const check = (name, ok, detail) => checks.push({ name, ok: !!ok, ...(ok ? {} : { detail: String(detail ?? '').slice(0, 600) }) });
 const stamped = (name) => {
   const l = labelsOf(name);
@@ -261,6 +276,68 @@ const stamped = (name) => {
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 
 // ── arms ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+// ── #321 hold helpers ───────────────────────────────────────────────────────────────────────────────────────────
+const GIB = 1024 ** 3;
+const MIB = 1024 * 1024;
+const STATE = path.join(HOME, 'admission.state');
+const HOLD_FILE = (ws = WS) => path.join(HOME, 'keepers', `${ws}.docker.hold`);
+const atomicWrite = (f, text) => {
+  const tmp = `${f}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, f);
+};
+/** The REAL app-side core (src/main/docker-hold.ts) on real files: `publish` is exactly what the app does at every guard sample. */
+async function appCore({ holdFiles = () => [], notify = () => {}, noticeAfterMs = 0, stateFile = STATE } = {}) {
+  const { createDockerHold } = await import(`${REPO}/src/main/docker-hold.ts`);
+  return createDockerHold({
+    stateFile,
+    holdFiles,
+    now: Date.now,
+    readText: (f) => {
+      try {
+        return fs.readFileSync(f, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    writeFile: atomicWrite,
+    removeFile: (f) => fs.rmSync(f, { force: true }),
+    notify,
+    noticeAfterMs,
+    warn: () => {},
+  });
+}
+/** Guard snapshots: HELD = Admission held (the relays wait); OPEN thresholds are TINY so the keeper's FRESH real MemAvailable passes; LOW_OPEN = the guard says open but any real reading is below threshold+margin. */
+const HELD = (o = {}) => ({ admission: 'held', admissionEnabled: true, heldSince: Date.now() - 2000, episode: 7, availBytes: 4 * GIB, admissionBytes: 6 * GIB, releaseMarginBytes: GIB, ...o });
+const OPEN = (o = {}) => ({ admission: 'open', admissionEnabled: true, heldSince: null, episode: 7, availBytes: 12 * GIB, admissionBytes: 64 * MIB, releaseMarginBytes: 0, ...o });
+const LOW_OPEN = () => OPEN({ admissionBytes: 4096 * GIB });
+let publisher = null;
+const publish = async (snap) => void (publisher ??= await appCore()).publish(snap);
+/** Start a member command WITHOUT waiting for it: {done(): result|null, wait(ms)}. */
+function bg(m, cmd, opts) {
+  const o = { res: null };
+  const p = m.c.sh(cmd, opts).then((r) => (o.res = r));
+  return {
+    p,
+    done: () => o.res,
+    wait: async (ms) => {
+      await Promise.race([p, sleep(ms)]);
+      return o.res;
+    },
+  };
+}
+const exists = (name) => labelsOf(name) !== null;
+const running = (name) => dk(['inspect', '-f', '{{.State.Running}}', name]).out === 'true';
+const created = (name) => Date.parse(dk(['inspect', '-f', '{{.Created}}', name]).out);
+const readHold = (ws = WS) => {
+  try {
+    return JSON.parse(fs.readFileSync(HOLD_FILE(ws), 'utf8'));
+  } catch {
+    return null;
+  }
+};
+
 const runArm = {
   async run_labels() {
     const m = await member();
@@ -490,6 +567,339 @@ const runArm = {
     check('docker ps works through the relay', r.code === 0, r.err);
   },
 
+  async hold_create() {
+    await publish(HELD());
+    const m = await member({ holdState: STATE });
+    const t0 = Date.now();
+    const cmd = bg(m, `docker run ${LBL} -d --name ${PFX}-h1 ${IMG} sleep 300`);
+    check("held: the member's `docker run` is still WAITING after 3 s (not refused, not failed)", (await cmd.wait(3000)) === null, JSON.stringify(cmd.done()));
+    check('held: dockerd has NO such container (the create never reached it)', !exists(`${PFX}-h1`));
+    const hf = readHold();
+    check('visible: the keeper publishes the wait — 1 create, oldest since ~start, the reason names the reading and the threshold', hf && hf.create === 1 && hf.start === 0 && hf.since >= t0 - 1000 && hf.since <= Date.now() && /^Admission hold: MemAvailable 4\.00 GB < 6\.00 GB/.test(hf.reason), JSON.stringify(hf));
+    const notices = [];
+    const app = await appCore({ holdFiles: () => [{ wsId: WS, file: HOLD_FILE() }], notify: (ws, text) => notices.push({ ws, text }) });
+    const { formatDockerHoldsLine } = await import(`${REPO}/src/shared/docker-hold.ts`);
+    const line = formatDockerHoldsLine(app.holds().map((h) => ({ wsId: h.wsId, label: 'rig-member', hold: h.hold })), Date.now());
+    check("bus-status line (real app core on the keeper's file): who waits, what, for how long, since when, and why", /^docker holds: rig-member: 1 docker call\(s\) waiting \(1 create\) for \d+ s \(since \d\d:\d\d:\d\dZ\) — Admission hold: MemAvailable 4\.00 GB < 6\.00 GB/.test(line), line);
+    app.tick();
+    app.tick();
+    check('the member is told ONCE (bus status): its call waits, why, and that nothing needs retrying', notices.length === 1 && notices[0].ws === WS && /BY THEMSELVES/.test(notices[0].text) && /nothing is refused/.test(notices[0].text), JSON.stringify(notices));
+    await publish(OPEN()); // memory is back
+    const r = await cmd.wait(20000);
+    check('memory back: the SAME `docker run` completes BY ITSELF (exit 0) — nothing to retry', r && r.code === 0, JSON.stringify(r));
+    check('…its container exists, stamped with the workspace + run, and RUNS (the start was admitted too)', stamped(`${PFX}-h1`) && running(`${PFX}-h1`), JSON.stringify(labelsOf(`${PFX}-h1`)));
+    check('…and the member was told it waited: docker prints the create Warning with the wait and the reason', !!r && /WARNING: orchestra: this container call waited \d+ s under the Admission hold \(Admission hold: MemAvailable 4\.00 GB/.test(r.err), r?.err);
+    check("it really waited (≥ 3 s from the member's command to the container)", Date.now() - t0 >= 3000);
+    for (let i = 0; i < 50 && readHold(); i++) await sleep(100);
+    check('nothing waits any more ⇒ the hold file is gone', readHold() === null);
+  },
+
+  async hold_start() {
+    await publish(OPEN());
+    const m = await member({ holdState: STATE });
+    let r = await m.c.sh(`docker create ${LBL} --name ${PFX}-s1 ${IMG} sleep 300`);
+    check('baseline (not held): `docker create` is stamped and does not wait', r.code === 0 && stamped(`${PFX}-s1`) && !running(`${PFX}-s1`), r.err);
+    await publish(HELD());
+    const cmd = bg(m, `docker start ${PFX}-s1`);
+    check('held: `docker start` of the container this relay stamped WAITS (3 s)', (await cmd.wait(3000)) === null, JSON.stringify(cmd.done()));
+    check('…dockerd has not started it', !running(`${PFX}-s1`));
+    const hf = readHold();
+    check('visible: the hold file counts it as a START', hf && hf.start === 1 && hf.create === 0, JSON.stringify(hf));
+    await publish(OPEN());
+    r = await cmd.wait(20000);
+    check('memory back: the `docker start` completes by itself and the container runs', r && r.code === 0 && running(`${PFX}-s1`), JSON.stringify(r));
+  },
+
+  async hold_unattributed() {
+    await publish(OPEN());
+    const m = await member({ holdState: STATE });
+    const r = await m.c.sh(`docker create ${LBL} --name ${PFX}-s1 ${IMG} sleep 300 && docker run ${LBL} -d --name ${PFX}-r1 ${IMG} sleep 300`);
+    check('setup (not held): a stamped STOPPED container and a stamped RUNNING one', r.code === 0 && stamped(`${PFX}-s1`) && !running(`${PFX}-s1`) && running(`${PFX}-r1`), r.err);
+    const mk = (name, extra = []) => dk(['create', '--label', `g2rig=${PFX}`, ...extra, '--name', name, IMG, 'sleep', '300']);
+    check("setup: an UNATTRIBUTED stopped container and another WORKSPACE's stopped container, made on the real socket", mk(`${PFX}-u1`).code === 0 && mk(`${PFX}-o1`, ['--label', `orchestra.ws=${PFX}-other`]).code === 0);
+    await publish(HELD());
+    const fast = async (what, cmd, ok) => {
+      const t = Date.now();
+      const res = await bg(m, cmd).wait(6000);
+      check(`held, but ${what} is NEVER held (answered in < 6 s)`, res && res.code === 0 && Date.now() - t < 6000 && (!ok || ok()), JSON.stringify(res));
+    };
+    await fast('`docker start` of an unattributed container (made around the relay)', `docker start ${PFX}-u1`, () => running(`${PFX}-u1`));
+    await fast("`docker start` of ANOTHER workspace's container", `docker start ${PFX}-o1`, () => running(`${PFX}-o1`));
+    await fast('`docker start` of an already-running stamped container', `docker start ${PFX}-r1`);
+    await fast('`docker ps`', 'docker ps -q');
+    await fast('`docker exec` in a running container', `docker exec ${PFX}-r1 true`);
+    await fast('`docker stop` of a running one', `docker stop -t 1 ${PFX}-r1`, () => !running(`${PFX}-r1`));
+    const t = Date.now();
+    const direct = dk(['run', '-d', '--label', `g2rig=${PFX}`, '--name', `${PFX}-d1`, IMG, 'sleep', '300']);
+    check('held, but a container the human makes straight on the real socket (no relay) is not held and stays unattributed', direct.code === 0 && Date.now() - t < 15000 && labelsOf(`${PFX}-d1`)?.['orchestra.ws'] === undefined, direct.err);
+    // POSITIVE CONTROL in the same arm: the stamped, stopped container IS held — so everything above passed because it was exempt, not because nothing is ever held
+    const cmd = bg(m, `docker start ${PFX}-s1`);
+    check("positive control: the stamped STOPPED container's `docker start` IS held (3 s)", (await cmd.wait(3000)) === null && !running(`${PFX}-s1`), JSON.stringify(cmd.done()));
+    await publish(OPEN());
+    const r2 = await cmd.wait(20000);
+    check('…and goes through once memory is back', r2 && r2.code === 0 && running(`${PFX}-s1`), JSON.stringify(r2));
+  },
+
+  async hold_fresh_reading() {
+    await publish(HELD());
+    const m = await member({ holdState: STATE });
+    const cmd = bg(m, `docker run ${LBL} -d --name ${PFX}-f1 ${IMG} sleep 300`);
+    check('held: the `docker run` waits', (await cmd.wait(2000)) === null);
+    await publish(LOW_OPEN()); // the guard says OPEN, but the keeper's FRESH reading of the real MemAvailable is below threshold + margin
+    check('the guard says open but a FRESH MemAvailable reading is still too low ⇒ it STAYS in line (3 s)', (await cmd.wait(3000)) === null && !exists(`${PFX}-f1`), JSON.stringify(cmd.done()));
+    await publish(OPEN());
+    const r = await cmd.wait(20000);
+    check('a fresh reading above threshold + margin ⇒ it goes', r && r.code === 0 && stamped(`${PFX}-f1`), JSON.stringify(r));
+    // the Admission TOGGLE turned OFF releases a waiting line at once, even when a fresh reading is still too low
+    await publish(HELD());
+    const cmd2 = bg(m, `docker run ${LBL} -d --name ${PFX}-f2 ${IMG} sleep 300`);
+    check('held again: the second `docker run` waits', (await cmd2.wait(2000)) === null);
+    await publish({ ...LOW_OPEN(), admissionEnabled: false });
+    const r2 = await cmd2.wait(15000);
+    check('toggle OFF (published `enabled:false`) ⇒ the waiting call goes AT ONCE although the fresh reading is below threshold + margin', r2 && r2.code === 0 && stamped(`${PFX}-f2`), JSON.stringify(r2));
+  },
+
+  async hold_fail_open() {
+    // positive control first: a FRESH held state does hold
+    await publish(HELD());
+    const m = await member({ holdState: STATE });
+    const ctl = bg(m, `docker run ${LBL} -d --name ${PFX}-c1 ${IMG} sleep 300`);
+    check('positive control: a FRESH held state holds (2 s)', (await ctl.wait(2000)) === null);
+    // authority lost while a call waits ⇒ the line is flushed at once (the app that decides is gone)
+    fs.rmSync(STATE, { force: true });
+    const r0 = await ctl.wait(15000);
+    check('the state file DISAPPEARS (app gone) ⇒ the waiting call is released, not stranded', r0 && r0.code === 0 && stamped(`${PFX}-c1`), JSON.stringify(r0));
+    const { admissionStateOf } = await import(`${REPO}/src/shared/docker-hold.ts`);
+    // authority lost by STALENESS (the app wedged: the file is still there but nobody refreshes it) ⇒ a waiting line is flushed too
+    await publish(HELD());
+    const ctl2 = bg(m, `docker run ${LBL} -d --name ${PFX}-sf ${IMG} sleep 300`);
+    check('held again for the stale-flush case (2 s)', (await ctl2.wait(2000)) === null);
+    atomicWrite(STATE, JSON.stringify(admissionStateOf(HELD(), Date.now() - 10 * 60_000)));
+    const rsf = await ctl2.wait(15000);
+    check('the state goes STALE (10 min old) ⇒ the waiting call is released, not stranded', rsf && rsf.code === 0 && stamped(`${PFX}-sf`), JSON.stringify(rsf));
+    const cases = [
+      ['absent state file', () => fs.rmSync(STATE, { force: true })],
+      ['a STALE held state (10 min old: the app is wedged)', () => atomicWrite(STATE, JSON.stringify(admissionStateOf(HELD(), Date.now() - 10 * 60_000)))],
+      ['a held state of ANOTHER version', () => atomicWrite(STATE, JSON.stringify({ ...admissionStateOf(HELD(), Date.now()), v: 2 }))],
+      ['a garbage state file', () => atomicWrite(STATE, '{"held": tru')],
+      ['a TRUNCATED valid state file (half of what the app wrote)', () => fs.writeFileSync(STATE, JSON.stringify(admissionStateOf(HELD(), Date.now())).slice(0, 60))],
+    ];
+    let i = 0;
+    for (const [what, arrange] of cases) {
+      arrange();
+      const r = await bg(m, `docker run ${LBL} -d --name ${PFX}-fo${i++} ${IMG} sleep 300`).wait(8000);
+      check(`fail-open: ${what} ⇒ the create is NOT held`, r && r.code === 0, JSON.stringify(r));
+    }
+    check('the keeper LOGGED that it could not read the state (and let the call through)', /docker hold: .*state file .*unreadable|docker hold: .*unreadable/i.test(fs.readFileSync(m.logFile, 'utf8')), fs.readFileSync(m.logFile, 'utf8').slice(-400));
+    // a member whose spawn frame carries no holdState never holds, whatever the file says
+    await publish(HELD());
+    const m2 = await member({ ws: `${PFX}b`, run: `${PFX}-runb` });
+    const r2 = await bg(m2, `docker run ${LBL} -d --name ${PFX}-nb ${IMG} sleep 300`).wait(8000);
+    check("no holdState in the frame ⇒ never held (the frame is #291's, byte for byte)", r2 && r2.code === 0 && labelsOf(`${PFX}-nb`)?.['orchestra.ws'] === `${PFX}b`, JSON.stringify(r2));
+  },
+
+  async hold_client_leaves() {
+    await publish(HELD());
+    const m = await member({ holdState: STATE });
+    const stays = bg(m, `docker run ${LBL} -d --name ${PFX}-stays ${IMG} sleep 300`);
+    await sleep(500);
+    const leaver = bg(m, `timeout 3 docker run ${LBL} -d --name ${PFX}-leaver ${IMG} sleep 300`);
+    const lr = await leaver.wait(10000);
+    check('the docker client is killed while its create waits (exit 124)', lr && lr.code === 124, JSON.stringify(lr));
+    const lint = await bg(m, `timeout -s INT 3 docker run ${LBL} -d --name ${PFX}-leaver-int ${IMG} sleep 300`).wait(10000);
+    const lkill = await bg(m, `timeout -s KILL 3 docker run ${LBL} -d --name ${PFX}-leaver-kill ${IMG} sleep 300`).wait(10000);
+    const bigf = path.join(BASE, 'leaver.labels');
+    fs.writeFileSync(bigf, Array.from({ length: 250 }, (_, i) => `l${i}=${'x'.repeat(1000)}`).join('\n') + '\n');
+    const lbig = await bg(m, `timeout 3 docker create ${LBL} --label-file ${bigf} --name ${PFX}-leaver-big ${IMG} true`).wait(10000);
+    check('a client holding a 200 KB create body also ends (exit 124)', lbig && lbig.code === 124, JSON.stringify(lbig));
+    check('Ctrl-C (SIGINT) and a hard kill (SIGKILL: what a Pause dure does to a tool) both end the waiting client', lint && lkill && lint.code !== 0 && lkill.code !== 0, JSON.stringify([lint, lkill]));
+    await sleep(500);
+    const hf = readHold();
+    check('the leavers are out of the line: the hold file counts only the patient one', hf && hf.create === 1, JSON.stringify(hf));
+    await publish(OPEN());
+    const sr = await stays.wait(20000);
+    check('the patient create goes through when memory is back (the line goes on without the leaver)', sr && sr.code === 0 && stamped(`${PFX}-stays`), JSON.stringify(sr));
+    await sleep(3000);
+    check("no leaver's create was EVER sent: no container, even long after the release (SIGTERM, SIGINT, SIGKILL)", !exists(`${PFX}-leaver`) && !exists(`${PFX}-leaver-int`) && !exists(`${PFX}-leaver-kill`) && !exists(`${PFX}-leaver-big`));
+  },
+
+  async hold_one_at_a_time() {
+    await publish(HELD());
+    const m = await member({ holdState: STATE, keeperEnv: { ORCHESTRA_KEEPER_HOLD_POLL_MS: '100', ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '800' } });
+    const names = ['a', 'b', 'c'].map((x) => `${PFX}-q${x}`);
+    const cmds = [];
+    for (const n of names) {
+      cmds.push(bg(m, `docker create ${LBL} --name ${n} ${IMG} sleep 300`));
+      await sleep(500);
+    }
+    check('three creates queue up behind the hold', cmds.every((c) => c.done() === null) && readHold()?.create === 3, JSON.stringify(readHold()));
+    await publish(OPEN());
+    const rs = await Promise.all(cmds.map((c) => c.wait(40000)));
+    check('all three are released and complete', rs.every((r) => r && r.code === 0), JSON.stringify(rs));
+    const t = names.map(created);
+    check('FIFO: created in arrival order', t[0] < t[1] && t[1] < t[2], JSON.stringify(t));
+    check('ONE at a time: ≥ 0.6 s between two releases (the settle), not a thundering herd', t[1] - t[0] >= 600 && t[2] - t[1] >= 600, JSON.stringify([t[1] - t[0], t[2] - t[1]]));
+  },
+
+  async hold_long_wait() {
+    // OPS (b): how long can a client WAIT? A multi-minute hold (> Node's 300 s default request timeout, > docker-py/compose-v1's 60 s) against the clients a member really uses; report the first that cuts.
+    const HOLD_MS = Number(process.env.HOLD_LONG_MS ?? 390_000);
+    await publish(HELD());
+    const m = await member({ holdState: STATE });
+    const sock = m.relaySock;
+    const big = path.join(BASE, 'big.labels');
+    fs.writeFileSync(big, Array.from({ length: 250 }, (_, i) => `l${i}=${'x'.repeat(1000)}`).join('\n') + '\n'); // a create body well past every stream buffer: the relay does not read it until the line releases it
+    const dir = path.join(BASE, 'compose-long');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'compose.yaml'), `services:\n  web:\n    image: ${IMG}\n    command: ["sleep","300"]\n    labels:\n      g2rig: ${PFX}\n`);
+    const node = `const http=require('http');const t0=Date.now();const r=http.request({socketPath:'${sock}',method:'POST',path:'/v1.47/containers/create?name=${PFX}-lib',headers:{'content-type':'application/json'},agent:false},(res)=>{let b='';res.on('data',(c)=>b+=c);res.on('end',()=>console.log(JSON.stringify({status:res.statusCode,ms:Date.now()-t0})));});r.on('error',(e)=>{console.log(JSON.stringify({error:e.message,ms:Date.now()-t0}));process.exit(1)});r.end(JSON.stringify({Image:'${IMG}',Labels:{g2rig:'${PFX}'}}));`;
+    const nodeFile = path.join(BASE, 'lib-client.cjs');
+    fs.writeFileSync(nodeFile, node);
+    const clients = {
+      'docker CLI (docker run -d)': `docker run ${LBL} -d --name ${PFX}-w1 ${IMG} sleep 300`,
+      'docker CLI (docker create, 200 KB body)': `docker create ${LBL} --label-file ${big} --name ${PFX}-w2 ${IMG} true`,
+      'docker compose up -d': `cd ${dir} && docker compose -p ${PFX}p up -d`,
+      'node http.request (a client library, no timeout set)': `node ${nodeFile}`,
+      'curl (libcurl, no --max-time)': `curl -sS --unix-socket ${sock} -X POST -H 'content-type: application/json' -d '{"Image":"${IMG}","Labels":{"g2rig":"${PFX}"}}' 'http://d/v1.47/containers/create?name=${PFX}-curl' -w '\\n%{http_code}'`,
+    };
+    const t0 = Date.now();
+    const running = Object.entries(clients).map(([name, cmd]) => ({ name, cmd: bg(m, cmd, { timeout: HOLD_MS + 180_000 }), t0: Date.now() }));
+    // a REAL guard re-publishes at every sample (≤ 60 s): keep the state fresh (the 5-minute TTL is a different clause, proven in hold_fail_open)
+    const cuts = {};
+    while (Date.now() - t0 < HOLD_MS) {
+      await publish(HELD());
+      for (const c of running) if (c.cmd.done() && cuts[c.name] === undefined) cuts[c.name] = { atMs: Date.now() - t0, res: c.cmd.done() };
+      if (running.every((c) => c.cmd.done())) break; // every client already ended (a master keeper holds nothing): no point waiting out the clock
+      await sleep(10_000);
+    }
+    check(`held for ${Math.round((Date.now() - t0) / 1000)} s: dockerd has seen NOTHING from any client`, !exists(`${PFX}-w1`) && !exists(`${PFX}-w2`) && !exists(`${PFX}-lib`) && !exists(`${PFX}-curl`) && !exists(`${PFX}p-web-1`));
+    const hf = readHold();
+    check('the hold file still counts every waiting client after the long wait', hf && hf.create >= 5, JSON.stringify(hf));
+    for (const [name, c] of Object.entries(cuts)) check(`the client did NOT cut before memory came back: ${name}`, false, `ended after ${Math.round(c.atMs / 1000)} s — ${JSON.stringify(c.res).slice(0, 300)}`);
+    await publish(OPEN());
+    const rs = await Promise.all(running.map(async (c) => ({ name: c.name, r: await c.cmd.wait(120_000) })));
+    for (const { name, r } of rs) {
+      if (cuts[name] === undefined) check(`memory back after ${Math.round(HOLD_MS / 1000)} s: ${name} completes by itself`, r && r.code === 0, JSON.stringify(r)?.slice(0, 300));
+    }
+    check('…and every container exists, stamped', ['w1', 'w2'].every((x) => stamped(`${PFX}-${x}`)) && stamped(`${PFX}p-web-1`) && exists(`${PFX}-lib`) && exists(`${PFX}-curl`));
+    measured.longWait = { holdMs: HOLD_MS, clients: rs.map(({ name, r }) => ({ name, outcome: cuts[name] ? `CUT after ${Math.round(cuts[name].atMs / 1000)} s` : r && r.code === 0 ? 'survived' : `failed: ${JSON.stringify(r)?.slice(0, 120)}` })) };
+  },
+
+  async hold_two_keepers() {
+    // review M1: « une à la fois » is for the WHOLE FLEET — two members (two keepers, two relays), one call each, share ONE release slot (a lease file beside the state file)
+    await publish(HELD());
+    const keeperEnv = { ORCHESTRA_KEEPER_HOLD_POLL_MS: '100', ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '800' };
+    const m1 = await member({ holdState: STATE, keeperEnv });
+    const m2 = await member({ ws: `${PFX}b`, run: `${PFX}-runb`, holdState: STATE, keeperEnv });
+    // arrival order: A1, B1 (500 ms later), A2, A3 — the fleet\'s line is OLDEST FIRST, so B1 goes between A1 and A2 (a keeper draining its line must not starve an older call on another keeper)
+    const cs = [];
+    for (const [m, n] of [[m1, 'ta1'], [m2, 'tb1'], [m1, 'ta2'], [m1, 'ta3']]) {
+      cs.push(bg(m, `docker create ${LBL} --name ${PFX}-${n} ${IMG} sleep 300`));
+      await sleep(500);
+    }
+    await sleep(1500);
+    check('four calls wait behind the hold, each keeper counting its own (A: 3, B: 1)', cs.every((c) => c.done() === null) && readHold()?.create === 3 && readHold(`${PFX}b`)?.create === 1, JSON.stringify([readHold(), readHold(`${PFX}b`)]));
+    await publish(OPEN());
+    const rs = await Promise.all(cs.map((c) => c.wait(60000)));
+    check('memory back: all four complete by themselves', rs.every((r) => r && r.code === 0), JSON.stringify(rs));
+    const ts = ['ta1', 'tb1', 'ta2', 'ta3'].map((n) => created(`${PFX}-${n}`));
+    check('OLDEST FIRST across the fleet: created in arrival order A1, B1, A2, A3', ts[0] < ts[1] && ts[1] < ts[2] && ts[2] < ts[3], JSON.stringify(ts));
+    check('ONE at a time FOR THE FLEET: ≥ 0.6 s between any two consecutive creates, whichever keeper (the settle is spent holding the shared slot) — not the same instant', ts.slice(1).every((x, i) => x - ts[i] >= 600), JSON.stringify(ts.slice(1).map((x, i) => x - ts[i])));
+    for (let i = 0; i < 100 && fs.existsSync(path.join(HOME, 'admission.lease')); i++) await sleep(100);
+    check('the shared slot is given back once both lines are empty and the last settle is spent', !fs.existsSync(path.join(HOME, 'admission.lease')));
+  },
+
+  async hold_fleet_only() {
+    // review M2: the hold is for a FLEET MEMBER only (Admission exempts a top-level / detached session). The REAL decision (`dockerRelaySpecFor` with the workspace), the real keepers.
+    process.env.ORCHESTRA_HOME = HOME;
+    process.env.HOME = HOME;
+    const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
+    initPlatform({
+      kind: 'headless-docker-relay-g2',
+      broadcast: () => {}, broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false, notify: () => {},
+      openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {}, openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
+      getUserDataDir: () => HOME, getLogsDir: () => path.join(HOME, 'logs'), getAppVersion: () => '0.0.0-g2', getAppMetrics: () => [],
+      isEncryptionAvailable: () => false, encryptString: (s) => s, decryptString: (s) => s,
+    });
+    (await import(`${REPO}/src/main/logger.ts`)).initLogger();
+    const { dockerRelaySpecFor } = await import(`${REPO}/src/main/docker-relay-switch.ts`);
+    const { initBus, getBus } = await import(`${REPO}/src/main/bus.ts`);
+    const { startRun } = await import(`${REPO}/src/main/bus-runs.ts`);
+    const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
+    initBus();
+    startRun(getBus(), { id: RUN, kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: true });
+    const fleetSpec = dockerRelaySpecFor(RUN, false, { parentId: 'coord' });
+    const topSpec = dockerRelaySpecFor(RUN, false, {});
+    check('the real decision: a fleet member\'s spec names the state file, a top-level session\'s does NOT (it still gets the stamping relay)', fleetSpec?.holdState === STATE && topSpec !== undefined && topSpec.holdState === undefined, JSON.stringify([fleetSpec, topSpec]));
+    await publish(HELD());
+    const fleet = await member({ holdState: fleetSpec?.holdState });
+    const top = await member({ ws: `${PFX}t`, run: RUN, holdState: topSpec?.holdState });
+    const t0 = Date.now();
+    const rt = await bg(top, `docker run ${LBL} -d --name ${PFX}-top ${IMG} sleep 300`).wait(8000);
+    check('held fleet, but the TOP-LEVEL session\'s `docker run` is NEVER held (answered in < 8 s), still stamped', rt && rt.code === 0 && Date.now() - t0 < 8000 && labelsOf(`${PFX}-top`)?.['orchestra.ws'] === `${PFX}t`, JSON.stringify(rt));
+    const cf = bg(fleet, `docker run ${LBL} -d --name ${PFX}-fl ${IMG} sleep 300`);
+    check('positive control: the FLEET member\'s `docker run` IS held (3 s)', (await cf.wait(3000)) === null && !exists(`${PFX}-fl`), JSON.stringify(cf.done()));
+    await publish(OPEN());
+    const rf = await cf.wait(20000);
+    check('…and goes through once memory is back', rf && rf.code === 0 && stamped(`${PFX}-fl`), JSON.stringify(rf));
+  },
+
+  async hold_guard_chain() {
+    // The REAL guard fed a fake meter → the REAL publisher (docker-hold-host) → the keeper → dockerd. Thresholds are scaled so the keeper's fresh REAL reading passes on reopen.
+    process.env.ORCHESTRA_HOME = HOME;
+    process.env.HOME = HOME;
+    const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
+    initPlatform({
+      kind: 'headless-docker-relay-g2',
+      broadcast: () => {}, broadcastPtyData: () => {}, canBroadcast: () => true, isFocused: () => false, hasAttachedUi: () => false, notify: () => {},
+      openExternal: () => {}, showItemInFolder: () => {}, openPath: () => {}, openAccountLoginUrl: () => {}, closeAccountLogin: () => {},
+      getUserDataDir: () => HOME, getLogsDir: () => path.join(HOME, 'logs'), getAppVersion: () => '0.0.0-g2', getAppMetrics: () => [],
+      isEncryptionAvailable: () => false, encryptString: (s) => s, decryptString: (s) => s,
+    });
+    (await import(`${REPO}/src/main/logger.ts`)).initLogger();
+    const g = await import(`${REPO}/src/main/memory-guard.ts`);
+    const host = await import(`${REPO}/src/main/docker-hold-host.ts`);
+    const { dockerRelaySpecFor } = await import(`${REPO}/src/main/docker-relay-switch.ts`);
+    const { initBus, getBus } = await import(`${REPO}/src/main/bus.ts`);
+    const { startRun } = await import(`${REPO}/src/main/bus-runs.ts`);
+    const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
+    initBus();
+    startRun(getBus(), { id: RUN, kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: true });
+    const spec = dockerRelaySpecFor(RUN, false, { parentId: 'coord' });
+    check("the app's spec for an ON run names the Admission state file under ORCHESTRA_HOME", spec?.holdState === STATE, JSON.stringify(spec));
+    let mem = 3 * GIB;
+    g.__rebuildMemoryGuardForTests({}, () => mem);
+    g.setMemoryGuardSettingsReader(() => ({ admissionGb: 1, criticalGb: 0.5, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }));
+    host.startDockerHold();
+    mem = 0.3 * GIB; // LOW (simulated): below the 1 GB Admission threshold (and the 0.5 GB critical level — nothing here runs the memory Pause)
+    const snap = g.sampleMemoryGuardNow();
+    check('the real guard holds Admission at the simulated low reading', snap.admission === 'held', JSON.stringify(snap));
+    const m = await member({ holdState: spec?.holdState });
+    const cmd = bg(m, `docker run ${LBL} -d --name ${PFX}-g1 ${IMG} sleep 300`);
+    check("low memory: the member's `docker run` WAITS (3 s) and dockerd has no container", (await cmd.wait(3000)) === null && !exists(`${PFX}-g1`), JSON.stringify(cmd.done()));
+    mem = 1.5 * GIB; // above the 1 GB threshold but inside the 1 GB hysteresis margin: the guard stays held
+    g.sampleMemoryGuardNow();
+    check('inside the hysteresis band the guard stays held ⇒ the call keeps waiting (2 s)', (await cmd.wait(2000)) === null && !exists(`${PFX}-g1`));
+    mem = 3 * GIB; // above threshold + margin (2 GB): reopen
+    const reopened = g.sampleMemoryGuardNow();
+    check('above threshold + margin the real guard reopens', reopened.admission === 'open', JSON.stringify(reopened));
+    const r = await cmd.wait(20000);
+    check('memory back: the SAME `docker run` completes by itself, its container stamped', r && r.code === 0 && stamped(`${PFX}-g1`), JSON.stringify(r));
+    mem = 0.3 * GIB; // low again: a new episode
+    g.sampleMemoryGuardNow();
+    const cmd2 = bg(m, `docker run ${LBL} -d --name ${PFX}-g2 ${IMG} sleep 300`);
+    check('a second low episode holds again (3 s)', (await cmd2.wait(3000)) === null && !exists(`${PFX}-g2`), JSON.stringify(cmd2.done()));
+    g.setMemoryGuardSettingsReader(() => ({ admissionGb: 1, criticalGb: 0.5, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 }));
+    const off = g.sampleMemoryGuardNow(); // the operator turned the toggle OFF: the guard still MEASURES low
+    const r2 = await cmd2.wait(20000);
+    check('the Admission TOGGLE turned OFF releases the waiting call AT ONCE (the guard still reads low: the EFFECTIVE hold is what is published)', off.admission === 'held' && r2 && r2.code === 0 && stamped(`${PFX}-g2`), JSON.stringify([off.admission, r2]));
+    const r3 = await bg(m, `docker run ${LBL} -d --name ${PFX}-g3 ${IMG} sleep 300`).wait(8000);
+    check('…and a NEW call under the toggle OFF is not held either', r3 && r3.code === 0, JSON.stringify(r3));
+    host.stopDockerHold();
+    check('the app stopping removes the state file (a hold never outlives the thing that decides it)', !fs.existsSync(STATE));
+    g.stopMemoryGuard();
+  },
+
   async api_real() {
     const m = await member();
     // what the relay stamps …
@@ -567,6 +977,20 @@ try {
   check('arm completed without throwing', false, e?.stack ?? e);
 }
 stopKeepers();
+/** Rig processes still alive, selected by object + identity: a cmdline naming THIS run's unique scratch dir (never a host-wide name grep). */
+function survivors() {
+  const out = [];
+  for (const d of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(d) || Number(d) === process.pid) continue;
+    try {
+      if (fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(BASE)) out.push(Number(d));
+    } catch {
+      /* gone */
+    }
+  }
+  return out;
+}
+for (let i = 0; i < 40 && survivors().length; i++) await sleep(100);
 const mineBefore = mine();
 cleanup();
 const leftover = mine();
@@ -574,8 +998,10 @@ const AFTER = bystanders();
 const unchanged = JSON.stringify(BEFORE) === JSON.stringify(AFTER);
 if (ARMS[ARM].creates) check('positive control: the cleanup filter SEES the rig containers (so "none left" means something)', mineBefore.length > 0, 'mine() saw none');
 check('every rig container removed', leftover.length === 0, leftover.join(','));
+const procLeft = survivors();
+check('0 rig processes survive (keepers + member CLIs, selected by the run\'s unique scratch path)', procLeft.length === 0, procLeft.join(','));
 check(`bystander containers UNCHANGED (${BEFORE.length} before / ${AFTER.length} after)`, unchanged, unchanged ? '' : `before=${JSON.stringify(BEFORE)} after=${JSON.stringify(AFTER)}`);
 fs.rmSync(BASE, { recursive: true, force: true });
 const ok = checks.every((c) => c.ok);
-console.log(JSON.stringify({ arm: ARM, ok, mustFailOnMaster: ARMS[ARM].mustFailOnMaster, id: ID, ms: Date.now() - t0, rigContainers: mineBefore.length, checks, fatal: fatal ? String(fatal.message ?? fatal) : undefined }));
+console.log(JSON.stringify({ arm: ARM, ok, mustFailOnMaster: ARMS[ARM].mustFailOnMaster, id: ID, ms: Date.now() - t0, rigContainers: mineBefore.length, ...(Object.keys(measured).length ? { measured } : {}), checks, fatal: fatal ? String(fatal.message ?? fatal) : undefined }));
 process.exit(ok ? 0 : 1);

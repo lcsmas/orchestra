@@ -51,7 +51,7 @@ setInterval(() => {}, 1000);
 `;
 
 before(() => {
-  const srcs = ['src/keeper/index.ts', 'src/keeper/docker-relay.ts', 'src/shared/keeper-protocol.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts'].map((s) => path.join(REPO, s));
+  const srcs = ['src/keeper/index.ts', 'src/keeper/docker-relay.ts', 'src/shared/keeper-protocol.ts', 'src/shared/docker-relay.ts', 'src/shared/docker-endpoint.ts', 'src/shared/docker-labels.ts', 'src/keeper/docker-hold.ts', 'src/keeper/release-lease.ts', 'src/shared/docker-hold.ts', 'src/shared/memory-guard.ts'].map((s) => path.join(REPO, s));
   if (!fs.existsSync(KEEPER_JS) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_JS).mtimeMs)) {
     execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
   }
@@ -396,4 +396,171 @@ test('the relay socket is removed when the keeper exits', async () => {
     await sleep(50);
   }
   assert.equal(fs.existsSync(ctx.relaySock), false);
+});
+
+// ── #321 — the hold: a create waits while the app's published Admission state says held ─────────────────────────────
+
+const MB = 1024 * 1024;
+/** thresholds tiny (the keeper's REAL /proc/meminfo reading is far above them); `held` + `ts` are what each case varies. */
+const admission = (held: boolean, over: Record<string, unknown> = {}): string =>
+  JSON.stringify({ v: 1, ts: Date.now(), held, enabled: true, heldSince: held ? Date.now() - 1000 : null, episode: 3, availBytes: 5 * 1024 * MB, admissionBytes: MB, releaseMarginBytes: 0, ...over });
+const HOLD_ENV = { ORCHESTRA_KEEPER_HOLD_POLL_MS: '40', ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '20' };
+const createsSeen = (ctx: Ctx): number => ctx.daemon.seen.filter((s) => s.method === 'POST' && /containers\/create/.test(s.url)).length;
+
+async function startHold(ctx: Ctx, holdState: string | undefined, daemonSock: string = ctx.daemon.sockPath): Promise<Client> {
+  const c = await Client.dial(ctx.sock);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  c.send({
+    t: 'spawn',
+    command: process.execPath,
+    args: [ctx.fakeCli],
+    cwd: ctx.dir,
+    env: { PATH: process.env.PATH, ORCHESTRA_DOCKER_SOCKET: daemonSock },
+    dockerRelay: { runId: 'run-7', ...(holdState ? { holdState } : {}) },
+  });
+  return c;
+}
+
+test('#321 hold: a create waits while the state says held (the daemon sees nothing, the keeper publishes the hold), then goes out BY ITSELF when it reopens — and the hold file is gone', async () => {
+  const ctx = await makeCtx(HOLD_ENV);
+  const state = path.join(ctx.dir, 'admission.state');
+  fs.writeFileSync(state, admission(true));
+  const c = await startHold(ctx, state);
+  c.send(line({ echo: 1 }));
+  await c.waitLine((l) => l.echo === 1);
+  c.send(line({ create: 1 }));
+  const holdFile = path.join(ctx.dir, 'k.docker.hold');
+  for (let i = 0; i < 100 && !fs.existsSync(holdFile); i++) await sleep(30);
+  const h = JSON.parse(fs.readFileSync(holdFile, 'utf8')) as { create: number; start: number; since: number; episode: number; reason: string };
+  assert.equal(h.create, 1);
+  assert.equal(h.episode, 3);
+  assert.match(h.reason, /^Admission hold: MemAvailable 5\.00 GB < /);
+  await sleep(400);
+  assert.equal(createsSeen(ctx), 0, 'held: the daemon has seen no create');
+  assert.equal(c.lines().some((l) => l.created !== undefined), false, 'and the member\'s command is still waiting, not refused');
+  fs.writeFileSync(state, admission(false));
+  await c.waitLine((l) => l.created === 201);
+  assert.equal(createsSeen(ctx), 1);
+  assert.deepEqual(lastBody(ctx).Labels, { 'orchestra.ws': ctx.wsId, 'orchestra.run': 'run-7' }, 'stamped like any other');
+  for (let i = 0; i < 100 && fs.existsSync(holdFile); i++) await sleep(30);
+  assert.equal(fs.existsSync(holdFile), false, 'nothing waits any more: no hold published');
+});
+
+test('#321 hold: NOT held ⇒ a create goes straight out (no delay, no hold file)', async () => {
+  const ctx = await makeCtx(HOLD_ENV);
+  const state = path.join(ctx.dir, 'admission.state');
+  fs.writeFileSync(state, admission(false));
+  const c = await startHold(ctx, state);
+  const sent = Date.now();
+  c.send(line({ create: 1 }));
+  await c.waitLine((l) => l.created === 201, 3000);
+  assert.ok(Date.now() - sent < 3000, 'no delay');
+  assert.equal(fs.existsSync(path.join(ctx.dir, 'k.docker.hold')), false);
+});
+
+test('#321 hold: fail-open — no state file, a STALE one, another version, garbage: the create is never held', async () => {
+  for (const [name, content, logged] of [['absent', null, /no Admission state file/], ['stale', admission(true, { ts: Date.now() - 10 * 60_000 }), /Admission state is stale/], ['other version', admission(true, { v: 2 }), /unreadable or of another version/], ['garbage', 'not json', /unreadable or of another version/]] as const) {
+    const ctx = await makeCtx(HOLD_ENV);
+    const state = path.join(ctx.dir, 'admission.state');
+    if (content !== null) fs.writeFileSync(state, content);
+    const c = await startHold(ctx, state);
+    c.send(line({ create: 1 }));
+    await c.waitLine((l) => l.created === 201, 4000).catch((e) => {
+      throw new Error(`${name}: the create was held — ${(e as Error).message}`);
+    });
+    // review m2: the switch to fail-open is LOGGED (once), even with no line waiting
+    assert.match(fs.readFileSync(ctx.logFile, 'utf8'), logged, `${name}: the keeper log says why nothing was held`);
+  }
+});
+
+test('#321 hold: the frame without holdState NEVER holds, whatever the state file says (the frame is byte-identical to #291\'s)', async () => {
+  const ctx = await makeCtx(HOLD_ENV);
+  fs.writeFileSync(path.join(ctx.dir, 'admission.state'), admission(true));
+  const c = await startHold(ctx, undefined);
+  c.send(line({ create: 1 }));
+  await c.waitLine((l) => l.created === 201, 4000);
+  assert.equal(fs.existsSync(path.join(ctx.dir, 'k.docker.hold')), false);
+});
+
+test('#321 hold: the keeper exits while a create waits ⇒ the hold file goes with it and the daemon never sees the create', async () => {
+  const ctx = await makeCtx(HOLD_ENV);
+  const state = path.join(ctx.dir, 'admission.state');
+  fs.writeFileSync(state, admission(true));
+  const c = await startHold(ctx, state);
+  c.send(line({ echo: 1 }));
+  await c.waitLine((l) => l.echo === 1);
+  c.send(line({ create: 1 }));
+  const holdFile = path.join(ctx.dir, 'k.docker.hold');
+  for (let i = 0; i < 100 && !fs.existsSync(holdFile); i++) await sleep(30);
+  assert.equal(fs.existsSync(holdFile), true);
+  const pid = pidOf(ctx);
+  c.send({ t: 'kill', signal: 'SIGKILL' });
+  for (let i = 0; i < 100 && !c.frames.some((f) => f.t === 'exit'); i++) await sleep(30);
+  c.destroy();
+  for (let i = 0; i < 100; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      break;
+    }
+    await sleep(50);
+  }
+  assert.equal(fs.existsSync(holdFile), false);
+  assert.equal(createsSeen(ctx), 0);
+});
+
+test('#321 hold: the guard says OPEN but the keeper\'s FRESH /proc/meminfo reading is below threshold + margin ⇒ the create STAYS in line; a reachable threshold lets it go', async () => {
+  const ctx = await makeCtx(HOLD_ENV);
+  const state = path.join(ctx.dir, 'admission.state');
+  fs.writeFileSync(state, admission(true));
+  const c = await startHold(ctx, state);
+  c.send(line({ echo: 1 }));
+  await c.waitLine((l) => l.echo === 1);
+  c.send(line({ create: 1 }));
+  const holdFile = path.join(ctx.dir, 'k.docker.hold');
+  for (let i = 0; i < 100 && !fs.existsSync(holdFile); i++) await sleep(30);
+  fs.writeFileSync(state, admission(false, { admissionBytes: 4096 * 1024 * 1024 * 1024 })); // 4 TB: no host's real MemAvailable is above it
+  await sleep(600);
+  assert.equal(createsSeen(ctx), 0, 'open by the guard, still too low by a fresh reading: not sent');
+  assert.equal(c.lines().some((l) => l.created !== undefined), false);
+  fs.writeFileSync(state, admission(false));
+  await c.waitLine((l) => l.created === 201);
+  assert.equal(createsSeen(ctx), 1);
+});
+
+test('#321 hold: the Admission TOGGLE turned OFF releases a waiting create at once, even with a threshold no fresh reading can clear', async () => {
+  const ctx = await makeCtx(HOLD_ENV);
+  const state = path.join(ctx.dir, 'admission.state');
+  fs.writeFileSync(state, admission(true));
+  const c = await startHold(ctx, state);
+  c.send(line({ echo: 1 }));
+  await c.waitLine((l) => l.echo === 1);
+  c.send(line({ create: 1 }));
+  const holdFile = path.join(ctx.dir, 'k.docker.hold');
+  for (let i = 0; i < 100 && !fs.existsSync(holdFile); i++) await sleep(30);
+  fs.writeFileSync(state, admission(false, { enabled: false, admissionBytes: 4096 * 1024 * 1024 * 1024 }));
+  await c.waitLine((l) => l.created === 201, 4000);
+  assert.equal(createsSeen(ctx), 1);
+});
+
+test('#321 review M1 (built keepers): TWO keepers share ONE release slot — one create each, the state reopens ⇒ the creates reach the daemon spaced by the settle (a lease file beside the state file, taken across real processes)', async () => {
+  const env = { ...HOLD_ENV, ORCHESTRA_KEEPER_HOLD_SETTLE_MS: '700' };
+  const a = await makeCtx(env);
+  const b = await makeCtx(env);
+  const state = path.join(a.dir, 'admission.state');
+  fs.writeFileSync(state, admission(true));
+  const ca = await startHold(a, state);
+  const cb = await startHold(b, state, a.daemon.sockPath); // BOTH forward to ONE daemon: its clock orders their creates
+  ca.send(line({ create: 1 }));
+  cb.send(line({ create: 2 }));
+  for (let i = 0; i < 200 && !(fs.existsSync(path.join(a.dir, 'k.docker.hold')) && fs.existsSync(path.join(b.dir, 'k.docker.hold'))); i++) await sleep(30);
+  assert.ok(fs.existsSync(path.join(a.dir, 'k.docker.hold')) && fs.existsSync(path.join(b.dir, 'k.docker.hold')), 'both keepers hold a call');
+  fs.writeFileSync(state, admission(false));
+  await ca.waitLine((l) => l.created === 201, 8000);
+  await cb.waitLine((l) => l.created === 201, 8000);
+  const at = a.daemon.seen.filter((s) => s.method === 'POST' && /containers\/create/.test(s.url)).map((s) => s.at);
+  assert.equal(at.length, 2);
+  assert.ok(Math.abs(at[1] - at[0]) >= 600, `the fleet releases ONE at a time: ${Math.abs(at[1] - at[0])} ms apart (settle 700)`);
+  for (let i = 0; i < 100 && fs.existsSync(path.join(a.dir, 'admission.lease')); i++) await sleep(30); // the last release's settle is spent HOLDING the slot
+  assert.equal(fs.existsSync(path.join(a.dir, 'admission.lease')), false, 'the slot is given back once the line is empty and the settle spent');
 });

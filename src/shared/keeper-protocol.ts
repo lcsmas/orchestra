@@ -33,7 +33,7 @@ export type KeeperClientFrame =
       args: string[];
       cwd: string;
       env: Record<string, string | undefined>;
-      dockerRelay?: { runId: string };
+      dockerRelay?: { runId: string; /** #321: where the app publishes the Admission hold state; the relay holds container create/start while it says held. Absent = never holds. */ holdState?: string };
       /** #320 (absent = today's frame, byte for byte): this keeper was launched in the scope `unit` with `MemoryMax=hardBytes`.
        *  It verifies that against its own cgroup, starts the kill watch, and — only when the limit is really applied — points
        *  the CLI's `CLAUDE_CODE_SHELL_PREFIX` at `wrapper` so tool commands (not the keeper/CLI) are the kernel's preferred victims. */
