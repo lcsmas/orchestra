@@ -18,6 +18,8 @@ import { getBus, busPath, capabilityRejectCount, type BusDb } from './bus.ts';
 import { listRuns } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { readHumanGates } from './human-gates.ts';
+import { capSwitchSummary, type CapSwitchSummary } from '../shared/memory-cap-view.ts';
+import { scopeSupportCached } from './memory-scope.ts';
 import {
   type BusSnapshot,
   type BusDivergenceReportView,
@@ -51,6 +53,7 @@ export const BUS_PANE_IPC_CHANNELS: ReadonlyArray<{
   { channel: 'bus:snapshot', writes: false, what: 'read the whole pane projection for a run' },
   { channel: 'bus:listRuns', writes: false, what: 'read the mission → wave tree' },
   { channel: 'bus:switches', writes: false, what: 'read the LIVE switch values' },
+  { channel: 'bus:capSummary', writes: false, what: 'read the memory-cap activation: live default, open runs that froze it ON, host support (#323)' },
   // #161 — the OPEN human-directed gates, fleet-wide. A READ (writes:false): the
   // gate RESOLVE from the UI is a write and lives on its own channel in index.ts,
   // outside this read-only registrar, exactly like bus:setSwitches.
@@ -244,6 +247,23 @@ function readStaleRunWorkspaces(): BusStaleRunView[] {
 }
 
 /**
+ * #323 — what the Garde mémoire window may SAY about the frozen `memory_cap` switch: the live default, the open runs that froze it ON, whether this host can hold a scope limit. A light read (`listRuns` only — not the
+ * whole pane projection) that NEVER THROWS; a bus that is not open yields « open runs unknown », never a count of zero.
+ */
+export function busCapSummary(): CapSwitchSummary {
+  const live = getLiveSwitches();
+  const host = scopeSupportCached();
+  const d = db();
+  if (!d) return capSwitchSummary(live, null, host);
+  try {
+    return capSwitchSummary(live, listRuns(d).map((r) => ({ closedAt: r.closed_at, flags: r.flags })), host);
+  } catch (e) {
+    log.warn('bus-pane: cap summary could not read the runs', e);
+    return capSwitchSummary(live, null, host);
+  }
+}
+
+/**
  * Assemble the pane snapshot. NEVER THROWS — a failure becomes an
  * `available: false` snapshot carrying the reason.
  */
@@ -350,6 +370,7 @@ export function registerBusPaneIpc(): void {
   ipcMain.handle('bus:snapshot', (_e, runId?: string | null) => busSnapshot(runId ?? null));
   ipcMain.handle('bus:listRuns', () => busSnapshot(null).runs);
   ipcMain.handle('bus:switches', () => getLiveSwitches());
+  ipcMain.handle('bus:capSummary', () => busCapSummary());
   // #161 — read the open human gates for the initial paint; live updates ride the
   // `human-gates:update` broadcast (human-gates.ts). Lazy read at invoke time, so
   // top-level registration is safe (same shape as the other pane reads).

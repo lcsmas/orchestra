@@ -148,6 +148,15 @@ async function armCap() {
     await typeInto(cdp, '[data-mg-reliquat-wait]', '45', 'enter');
     await waitFor(async () => (await dom(cdp)).error === null, 8000, 'the refusal to clear');
 
+    // the draft is RELEASED after a commit and after an unchanged blur: the field follows the store again (review: the window's draft logic was proven by no gate)
+    await cdp.eval(`window.orchestra.setMemoryGuard({ reliquatWaitMin: 50 }).then(() => true)`);
+    const dFollow = await waitFor(async () => { const d = await dom(cdp); return d.wait === '50' ? d : null; }, 10000, 'the committed field to follow an external change');
+    clause(arm, 'G2/a-committed-field-follows-the-store-again', dFollow.wait === '50' && readStore(world)?.reliquatWaitMin === 50, `window ${dFollow.wait}; store ${J(readStore(world))}`);
+    await typeInto(cdp, '[data-mg-reliquat-wait]', '50', 'blur'); // the same value: « unchanged » — nothing sent, and the draft is released
+    await cdp.eval(`window.orchestra.setMemoryGuard({ reliquatWaitMin: 45 }).then(() => true)`);
+    const dFollow2 = await waitFor(async () => { const d = await dom(cdp); return d.wait === '45' ? d : null; }, 10000, 'an unchanged field to follow an external change');
+    clause(arm, 'G2/an-unchanged-blur-releases-the-draft-too', dFollow2.wait === '45' && dFollow2.error === null, `window ${dFollow2.wait}; error ${dFollow2.error}`);
+
     // close the window (Done) and start the first member
     await cdp.eval(`[...document.querySelectorAll('[aria-label="Memory guard"] button')].find((b) => /Done/.test(b.textContent))?.click(); true`);
 

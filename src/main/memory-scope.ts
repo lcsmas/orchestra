@@ -261,7 +261,8 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
     swapCurrentBytes: num(e, path.join(d, 'memory.swap.current')),
     workingSetBytes: (() => {
       try {
-        return workingSetBytes(current, parseMemoryStat(e.readFile(path.join(d, 'memory.stat'))));
+        const stat = parseMemoryStat(e.readFile(path.join(d, 'memory.stat')));
+        return Number.isFinite(stat.inactive_file) ? workingSetBytes(current, stat) : null; // a readable stat WITHOUT inactive_file is not a reading (empty/partial file): unknown, never the raw bill (review)
       } catch {
         return null; // unreadable ⇒ unknown, not « the raw figure »
       }

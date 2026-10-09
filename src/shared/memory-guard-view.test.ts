@@ -64,6 +64,12 @@ test('parseGbInput: decimals, comma decimals, blanks, junk', () => {
   assert.equal(parseGbInput('  '), null);
   assert.equal(parseGbInput('abc'), null);
   assert.equal(parseGbInput('Infinity'), null);
+  assert.equal(parseGbInput('0x10'), null, 'hex is not a number the user means');
+  assert.equal(parseGbInput('1e3'), null, 'nor an exponent');
+  assert.equal(parseGbInput('1,000'), null, '« 1,000 » is a thousands group — refused, never misread as 1');
+  assert.equal(parseGbInput('6.'), 6);
+  assert.equal(parseGbInput('.5'), 0.5);
+  assert.equal(parseGbInput('-5'), -5, 'a sign is kept so the range sentence can name it');
 });
 
 test('commit: a valid changed pair → patch with BOTH fields; the same pair → unchanged', () => {
@@ -140,4 +146,15 @@ test('Reliquat wait commit: out-of-range or non-numeric input is REFUSED with a 
     const r = planReliquatWaitCommit(t, D);
     assert.equal(r.kind === 'invalid' ? r.error : null, 'Enter the Reliquat wait as a number of minutes.', JSON.stringify(t));
   }
+});
+
+test('cap + Reliquat wait commits (#323 review MAJOR 1): judged by the WRITE PATH\'s own rule — the MemTotal bound applies only to a CHANGED Admission pair, so a small host under the stored 6/3 can still commit its cap levels and its Reliquat wait', () => {
+  const small = 7 * GIB; // 6 GB Admission + the 1 GB reopen margin is not below 7 GB: the stored pair is unreachable, and not what the user is editing
+  assert.deepEqual(planCapCommit('2', '5', D, small), { kind: 'patch', patch: { capSoftGb: 2, capHardGb: 5 } });
+  assert.deepEqual(planReliquatWaitCommit('45', D, small), { kind: 'patch', patch: { reliquatWaitMin: 45 } });
+  assert.deepEqual(planCapCommit('3', '6', D, small), { kind: 'unchanged' });
+  // positive control: the SAME host still refuses a threshold commit that keeps the unreachable pair (the bound is live, not dropped)
+  const t = planThresholdCommit('6', '3', D, small);
+  assert.equal(t.kind, 'invalid');
+  assert.match(t.kind === 'invalid' ? t.error : '', /must be below this machine's memory/);
 });

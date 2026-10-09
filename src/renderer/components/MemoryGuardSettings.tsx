@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatGb, RELEASE_MARGIN_GB, type MemoryGuardSettings, type MemoryGuardView } from '../../shared/memory-guard';
 import { gaugeModel, guardChip, planCapCommit, planReliquatWaitCommit, planThresholdCommit } from '../../shared/memory-guard-view';
-import { capSwitchSummary, type CapSwitchSummary } from '../../shared/memory-cap-view';
+import type { CapSwitchSummary } from '../../shared/memory-cap-view';
 
 interface Props {
   onClose: () => void;
@@ -51,8 +51,7 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
       /* the last good view stays; never render a number the backend did not give */
     }
     try {
-      const [live, runs] = await Promise.all([window.orchestra.busSwitches(), window.orchestra.busListRuns()]);
-      setCapSwitch(capSwitchSummary(live, runs));
+      setCapSwitch(await window.orchestra.busCapSummary());
     } catch {
       /* the switch line stays as it was (or absent): never a guessed state */
     }
@@ -320,7 +319,7 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
           <div className="field">
             <div className="field-head">
               <span className="field-label">Reliquat wait</span>
-              <span className="field-hint">How long an idle member with live Reliquats waits before the Veille stops them and lists them (default 30). Applied hot.</span>
+              <span className="field-hint">How long an idle member with live Reliquats waits before the Veille stops them and lists them (default 30). Counts only above the normal Veille delay; a fast Veille under memory pressure never waits. Applied hot.</span>
             </div>
             <div className="mg-input-row">
               <input

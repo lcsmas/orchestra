@@ -72,7 +72,7 @@ if (view === 'table') {
 } else {
   const settings = { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
   const snapshot = { sampled: true, measured: true, availBytes: 11.4 * GB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0, pauseCycle: 0, mayReleaseOneStart: true, heldSince: null, pauseSince: null, admissionBytes: 6 * GB, criticalBytes: 3 * GB, releaseMarginBytes: GB, sampleIntervalMs: 60000 };
-  root.render(React.createElement(MemoryGuardSettings, { onClose: () => {}, initial: { view: { settings, snapshot, liveAvailBytes: 11.4 * GB, totalBytes: 32 * GB }, capSwitch: { liveOn: false, runsOn: 1, runsOpen: 3, text: 'Cap is OFF for new runs · ON on 1 of 3 open runs' } } }));
+  root.render(React.createElement(MemoryGuardSettings, { onClose: () => {}, initial: { view: { settings, snapshot, liveAvailBytes: 11.4 * GB, totalBytes: 32 * GB }, capSwitch: { liveOn: false, runsOn: 1, runsOpen: 3, hostOk: true, text: 'Cap is OFF for new runs · ON on 1 of 3 open runs' } } }));
 }
 document.title = 'memcap-' + view;
 `);

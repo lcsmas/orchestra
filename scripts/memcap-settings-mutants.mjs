@@ -1,7 +1,7 @@
 // #323 self-gate — IN-PLACE mutation sweep of the Plafond mémoire UI + its data layer (D-Q10 A + A): the applied cap per member (FI-1 v1.11), the usage-vs-cap view logic, the Resources bar, the Memory guard window section.
 // Each mutant edits ONE clause of the real source, runs the unit + wiring suites AND the SSR render smoke (scripts/memcap-settings-render-smoke.mjs), and must turn red at least one NAMED test / smoke check.
 // Restored by byte-exact backup + `cmp` after every mutant; `git diff` of the mutated files must be empty at the end (commit first). NOT heavy (unit + SSR only; no app, browser, keeper or scope).
-// Run: node scripts/memcap-settings-mutants.mjs [--only M01,M02] [--check-anchors]
+// Run: node scripts/memcap-settings-mutants.mjs [--only M01,M02] [--check | --check-anchors]
 // `expect` = a substring of a reddened unit test title, or `smoke:<check label>` for a failing smoke check — at least one MUST be red. `smoke: true` also runs the smoke.
 
 import fs from 'node:fs';
@@ -14,8 +14,14 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const BACKUP = path.join(os.homedir(), '.cache', 'h2-323', 'mutant-backup');
-fs.mkdirSync(BACKUP, { recursive: true });
 const args = process.argv.slice(2);
+const KNOWN_FLAGS = new Set(['--only', '--check-anchors', '--check', '--no-rig']);
+const unknownFlags = args.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must never fall through to the full (heavy) sweep (OPS, 2026-10-09: `--check` once did)
+  console.error(`REFUSING: unknown option(s) ${unknownFlags.join(' ')} — NOTHING was run. Known: --only ID,ID | --check (alias --check-anchors: dry anchor check, no build / keeper / scope / scratch) | --no-rig`);
+  process.exit(2);
+}
+const dryCheck = args.includes('--check-anchors') || args.includes('--check');
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 const noRig = true;
 
@@ -30,7 +36,8 @@ const GS = 'src/main/memory-guard-settings.ts';
 const BAR = 'src/renderer/components/CapBar.tsx';
 const RV = 'src/renderer/components/ResourcesView.tsx';
 const WIN = 'src/renderer/components/MemoryGuardSettings.tsx';
-const TESTS = ['src/shared/memory-cap-view.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/shared/member-memory.test.ts', 'src/main/member-memory.test.ts', 'src/main/memory-scope.test.ts', 'src/shared/resources.test.ts', 'src/main/memcap-settings-wiring.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/member-memory-wiring.test.ts'];
+const BP = 'src/main/bus-pane.ts';
+const TESTS = ['src/shared/memory-cap-view.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/shared/member-memory.test.ts', 'src/main/member-memory.test.ts', 'src/main/memory-scope.test.ts', 'src/shared/resources.test.ts', 'src/main/memcap-settings-wiring.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/member-memory-wiring.test.ts', 'src/main/bus-pane.test.ts'];
 
 const MUTANTS = [
   // ── the applied cap per member (FI-1 v1.11 → member view → row) ──
@@ -56,9 +63,9 @@ const MUTANTS = [
   { id: 'V10_summary_picks_the_least_loaded', file: SC, find: "b.cap.billBytes / b.cap.hardBytes > a.cap.billBytes / a.cap.hardBytes ? b : a", to: "b.cap.billBytes / b.cap.hardBytes < a.cap.billBytes / a.cap.hardBytes ? b : a", expect: ['V6 summary line'] },
   { id: 'V11_summary_for_nobody', file: SC, find: "  if (capped.length === 0) return null;", to: "  if (capped.length === 0) return '0 capped members';", expect: ['V6 summary line'] },
   { id: 'V12_closed_runs_counted', file: SC, find: "const open = runs.filter((r) => r.closedAt === null);", to: "const open = runs;", expect: ['V7 the activation'] },
-  { id: 'V13_live_default_read_as_on', file: SC, find: "liveOn: live.memoryCap === true,", to: "liveOn: true,", expect: ['V7 the activation'] },
+  { id: 'V13_live_default_read_as_on', file: SC, find: "const liveOn = live.memoryCap === true;", to: "const liveOn = true;", expect: ['V7 the activation'] },
   // ── the window's commit rule ──
-  { id: 'W01_cap_pair_not_validated', file: SG, find: "  const error = validateMemoryGuardSettings({ ...current, capSoftGb, capHardGb }, totalBytes);\n  if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };\n  if (capSoftGb", to: "  const error = null as string | null;\n  if (error !== null) return { kind: 'invalid', error: `${error}.` };\n  if (capSoftGb", expect: ['cap commit (#323): hard ≤ soft is REFUSED'] },
+  { id: 'W01_cap_pair_not_validated', file: SG, find: "  const res = patchMemoryGuardSettings(current, { capSoftGb, capHardGb }, totalBytes);\n  if (!res.ok) return", to: "  const res = patchMemoryGuardSettings(current, { capSoftGb, capHardGb }, totalBytes);\n  if (false as boolean) return", expect: ['cap commit (#323): hard ≤ soft is REFUSED'] },
   { id: 'W02_cap_unchanged_always_patches', file: SG, find: "  if (capSoftGb === current.capSoftGb && capHardGb === current.capHardGb) return { kind: 'unchanged' };\n  return { kind: 'patch', patch: { capSoftGb, capHardGb } };", to: "  return { kind: 'patch', patch: { capSoftGb, capHardGb } };", expect: ['cap commit (#323): a valid changed pair'] },
   { id: 'W03_cap_patch_carries_thresholds_too', file: SG, find: "return { kind: 'patch', patch: { capSoftGb, capHardGb } };", to: "return { kind: 'patch', patch: { capSoftGb, capHardGb, admissionGb: current.admissionGb } as { capSoftGb: number; capHardGb: number } };", expect: ['cap commit (#323): the thresholds are untouched'] },
   { id: 'W04_cap_only_half_parsed', file: SG, find: "  if (capSoftGb === null || capHardGb === null) return { kind: 'invalid', error: 'Enter both levels as a number of GB.' };", to: "  if (capSoftGb === null && capHardGb === null) return { kind: 'invalid', error: 'Enter both levels as a number of GB.' };", expect: ['cap commit (#323): hard ≤ soft is REFUSED'] },
@@ -80,13 +87,13 @@ const MUTANTS = [
   { id: 'U13_window_cap_commit_on_blur_missing', file: WIN, find: "                onChange={capField('hard')}\n                onBlur={commitCap}", to: "                onChange={capField('hard')}", expect: ['WINDOW: the Plafond section commits the PAIR'] },
   { id: 'U14_window_invalid_pair_written', file: WIN, find: "    } else if (p.kind === 'invalid') {\n      setError(p.error);\n    } else {\n      void apply(p.patch, null, capDraft);", to: "    } else {\n      void apply((p as { patch: Parameters<typeof apply>[0] }).patch, null, capDraft);", expect: ['WINDOW: the Plafond section commits the PAIR'] },
   { id: 'U15_window_live_refusal_dropped', file: WIN, find: "const shownError = error ?? liveError ?? liveCapError ?? liveWaitError;", to: "const shownError = error ?? liveError ?? liveWaitError;", expect: ['WINDOW: the Plafond section commits the PAIR'] },
-  { id: 'U16_window_writes_the_switch', file: WIN, find: "      setCapSwitch(capSwitchSummary(live, runs));", to: "      setCapSwitch(capSwitchSummary(live, runs));\n      void window.orchestra.setBusSwitches({ memoryCap: true });", expect: ['WINDOW (D-Q1)'] },
+  { id: 'U16_window_writes_the_switch', file: WIN, find: "      setCapSwitch(await window.orchestra.busCapSummary());", to: "      setCapSwitch(await window.orchestra.busCapSummary());\n      void window.orchestra.setBusSwitches({ memoryCap: true });", expect: ['WINDOW (D-Q1)'] },
   { id: 'U17_window_switch_is_a_checkbox', file: WIN, find: "<div className=\"mg-cap-switch field-hint\"", to: "<input type=\"checkbox\" data-mg-cap-toggle /><div className=\"mg-cap-switch field-hint\"", expect: ['WINDOW (D-Q1)', 'smoke:the activation is SHOWN read-only'], smoke: true },
   { id: 'U18_window_switch_line_dropped', file: WIN, find: "{capSwitch ? capSwitch.text : '…'}", to: "…", expect: ['smoke:the activation is SHOWN read-only'], smoke: true },
   { id: 'U19_window_inputs_enabled_before_load', file: WIN, find: "                data-mg-cap-soft\n                value={typedCap.soft}\n                disabled={!settings}", to: "                data-mg-cap-soft\n                value={typedCap.soft}", expect: ['smoke:before the first read the cap inputs are DISABLED'], smoke: true },
   { id: 'U20_window_applies_note_dropped', file: WIN, find: "Applies to members started from now on; running sessions keep what they started with.", to: "", expect: ['smoke:it says where the switch IS set'], smoke: true },
   // ── the Reliquat wait (#326) in the same section ──
-  { id: 'X01_wait_not_validated', file: SG, find: "  const error = validateMemoryGuardSettings({ ...current, reliquatWaitMin }, totalBytes);\n  if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };\n  if (reliquatWaitMin === current.reliquatWaitMin)", to: "  const error = null as string | null;\n  if (error !== null) return { kind: 'invalid', error: `${error}.` };\n  if (reliquatWaitMin === current.reliquatWaitMin)", expect: ['Reliquat wait commit: out-of-range or non-numeric input is REFUSED'] },
+  { id: 'X01_wait_not_validated', file: SG, find: "  const res = patchMemoryGuardSettings(current, { reliquatWaitMin }, totalBytes); // same write-path validator (see planCapCommit)\n  if (!res.ok) return", to: "  const res = patchMemoryGuardSettings(current, { reliquatWaitMin }, totalBytes); // same write-path validator (see planCapCommit)\n  if (false as boolean) return", expect: ['Reliquat wait commit: out-of-range or non-numeric input is REFUSED'] },
   { id: 'X02_wait_unchanged_always_patches', file: SG, find: "  if (reliquatWaitMin === current.reliquatWaitMin) return { kind: 'unchanged' };\n", to: "", expect: ['Reliquat wait commit (#323/#326): a valid changed value'] },
   { id: 'X03_wait_patch_carries_more', file: SG, find: "return { kind: 'patch', patch: { reliquatWaitMin } };", to: "return { kind: 'patch', patch: { reliquatWaitMin, capHardGb: current.capHardGb } as { reliquatWaitMin: number } };", expect: ['Reliquat wait commit (#323/#326): a valid changed value'] },
   { id: 'X04_wait_text_not_parsed', file: SG, find: "  if (reliquatWaitMin === null) return { kind: 'invalid', error: 'Enter the Reliquat wait as a number of minutes.' };", to: "  if (reliquatWaitMin === null) return { kind: 'unchanged' };", expect: ['Reliquat wait commit: out-of-range or non-numeric input is REFUSED'] },
@@ -94,6 +101,27 @@ const MUTANTS = [
   { id: 'X06_window_wait_refusal_not_shown', file: WIN, find: "const shownError = error ?? liveError ?? liveCapError ?? liveWaitError;", to: "const shownError = error ?? liveError ?? liveCapError;", expect: ['WINDOW (#326)', 'WINDOW: the Plafond section commits the PAIR'] },
   { id: 'X07_window_wait_field_dropped', file: WIN, find: '<span className="mg-unit">min</span>', to: '', expect: ['smoke:the Reliquat wait (#326) is a third field'], smoke: true },
   { id: 'X08_window_wait_enabled_before_load', file: WIN, find: "                data-mg-reliquat-wait\n                value={typedWait}\n                disabled={!settings}", to: "                data-mg-reliquat-wait\n                value={typedWait}", expect: ['smoke:before the first read the cap inputs are DISABLED'], smoke: true },
+  // ── pre-review round (MAJOR 1/2 + minors) ──
+  { id: 'Y03_cap_plan_judges_the_stored_admission_pair', file: SG, find: "const res = patchMemoryGuardSettings(current, { capSoftGb, capHardGb }, totalBytes);", to: "const res = validateMemoryGuardSettings({ ...current, capSoftGb, capHardGb }, totalBytes) === null ? ({ ok: true } as const) : ({ ok: false, error: validateMemoryGuardSettings({ ...current, capSoftGb, capHardGb }, totalBytes) as string } as const);", expect: ['cap + Reliquat wait commits (#323 review MAJOR 1)'] },
+  { id: 'Y04_wait_plan_judges_the_stored_admission_pair', file: SG, find: "const res = patchMemoryGuardSettings(current, { reliquatWaitMin }, totalBytes);", to: "const res = validateMemoryGuardSettings({ ...current, reliquatWaitMin }, totalBytes) === null ? ({ ok: true } as const) : ({ ok: false, error: validateMemoryGuardSettings({ ...current, reliquatWaitMin }, totalBytes) as string } as const);", expect: ['cap + Reliquat wait commits (#323 review MAJOR 1)'] },
+  { id: 'Y05_parser_accepts_hex_and_exponent', file: SG, find: "  if (!/^-?(\\d+\\.?\\d*|\\.\\d+)$/.test(t)) return null;", to: "  if (false) return null;", expect: ['parseGbInput'] },
+  { id: 'Y06_parser_reads_a_thousands_group_as_a_decimal', file: SG, find: "  if (/^\\d{1,3}(,\\d{3})+$/.test(text.trim())) return null;", to: "  if (false) return null;", expect: ['parseGbInput'] },
+  { id: 'Y07_working_set_without_inactive_file_is_the_raw_bill', file: MS, find: "return Number.isFinite(stat.inactive_file) ? workingSetBytes(current, stat) : null;", to: "return workingSetBytes(current, stat);", expect: ['readScopeMemory (FI-1 v1.11, #323)'] },
+  { id: 'Y08_percent_rounded_not_floored', file: SC, find: "Math.floor(frac * 100 + 1e-9)", to: "Math.round(frac * 100)", expect: ['V4b'] },
+  { id: 'Y09_summary_cap_rounded_to_one_decimal', file: SC, find: "${pct} % of ${gbExact(worst.cap.hardBytes)}", to: "${pct} % of ${gb(worst.cap.hardBytes)}", expect: ['V6b', 'V6 summary line'] },
+  { id: 'Y10_closest_ranked_by_working_set', file: SC, find: "b.cap.billBytes / b.cap.hardBytes > a.cap.billBytes / a.cap.hardBytes ? b : a", to: "(b.cap.workingSetBytes ?? 0) / b.cap.hardBytes > (a.cap.workingSetBytes ?? 0) / a.cap.hardBytes ? b : a", expect: ['V6b'] },
+  { id: 'Y11_settings_note_only_when_raised', file: SC, find: "Math.abs(cap.hardBytes - settings.hardGb * GIB) > 0.01 * GIB", to: "settings.hardGb * GIB - cap.hardBytes > 0.01 * GIB", expect: ['V5c'] },
+  { id: 'Y12_settings_note_tolerance_one_gb', file: SC, find: "Math.abs(cap.hardBytes - settings.hardGb * GIB) > 0.01 * GIB", to: "Math.abs(cap.hardBytes - settings.hardGb * GIB) > 1 * GIB", expect: ['V5c'] },
+  { id: 'Y13_scopes_note_dropped', file: SC, find: "  if ((cap.scopes ?? 1) > 1) parts.push(", to: "  if (false) parts.push(", expect: ['V5c'] },
+  { id: 'Y14_scopes_not_counted', file: SM, find: "peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: readings.length };", to: "peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: 1 };", expect: ['C1 (#323) memberViewFrom.cap', 'P16'] },
+  { id: 'Y15_summary_bus_down_counts_zero', file: BP, find: "  if (!d) return capSwitchSummary(live, null, host);", to: "  if (!d) return capSwitchSummary(live, [], host);", expect: ['#323 (review MAJOR 2)'] },
+  { id: 'Y16_summary_unknown_branch_dropped', file: SC, find: "  if (runs === null) return {", to: "  if (false as boolean) return {", expect: ['V7b'] },
+  { id: 'Y17_host_note_dropped', file: SC, find: "const hostNote = host !== null && !host.ok ?", to: "const hostNote = false ?", expect: ['V7b'] },
+  { id: 'Y18_window_polls_the_whole_pane_snapshot', file: WIN, find: "setCapSwitch(await window.orchestra.busCapSummary());", to: "setCapSwitch(capSwitchSummary(await window.orchestra.busSwitches(), (await window.orchestra.busSnapshot(null)).runs));", expect: ['WINDOW (D-Q1)'] },
+  { id: 'Y19_cap_summary_not_a_read_channel', file: BP, find: "{ channel: 'bus:capSummary', writes: false,", to: "{ channel: 'bus:capSummary', writes: true,", expect: ['#323 (review MAJOR 2)'] },
+  { id: 'Y20_reliquat_hint_drops_the_veille_caveat', file: WIN, find: "Counts only above the normal Veille delay; a fast Veille under memory pressure never waits. ", to: "", expect: ['smoke:the Reliquat wait (#326) is a third field'], smoke: true },
+  { id: 'Y21_unknown_runs_text_dropped', file: WIN, find: "{capSwitch ? capSwitch.text : '…'}", to: "{capSwitch ? `Cap is ${capSwitch.liveOn ? 'ON' : 'OFF'} for new runs · ON on ${capSwitch.runsOn} of ${capSwitch.runsOpen} open runs` : '…'}", expect: ['smoke:a bus that is not open reads'], smoke: true },
+  { id: 'Y22_existing_threshold_hook_renamed_ordering_check_vacuous', file: WIN, find: "data-mg-critical", to: "data-mg-criticalx", expect: ['smoke:the section is there', 'smoke:the existing threshold fields are untouched'], smoke: true },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
@@ -129,7 +157,7 @@ const scratchLeft = () => 0;
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
 // a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
 for (const m of MUTANTS) if (m.file.startsWith('src/shared/') || m.file.startsWith('src/cli/')) m.cli = true;
-if (args.includes('--check-anchors')) {
+if (dryCheck) {
   let bad = 0;
   for (const m of MUTANTS) {
     let text = fs.readFileSync(path.join(REPO, m.file), 'utf8'); let why = null;
@@ -139,6 +167,7 @@ if (args.includes('--check-anchors')) {
   console.log(`ANCHORS: ${MUTANTS.length - bad}/${MUTANTS.length} resolve exactly once`);
   process.exit(bad ? 1 : 0);
 }
+fs.mkdirSync(BACKUP, { recursive: true }); // scratch exists only for a real sweep, never for the dry check
 
 const files = [...new Set(MUTANTS.map((m) => m.file))];
 const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/memcap-settings-mutants.mjs', 'scripts/memcap-settings-render-smoke.mjs']).status !== 0;

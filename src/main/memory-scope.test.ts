@@ -185,6 +185,10 @@ test('readScopeMemory (FI-1 v1.11, #323): workingSetBytes = memory.current − i
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.workingSetBytes, 0, 'clamped at 0');
   fs.rmSync(path.join(dir, 'memory.stat'));
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.workingSetBytes, null, 'no memory.stat ⇒ unknown');
+  for (const text of ['', 'anon 3000000\nfile 2500000\n']) {
+    fs.writeFileSync(path.join(dir, 'memory.stat'), text);
+    assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.workingSetBytes, null, `a readable memory.stat without inactive_file (${JSON.stringify(text.slice(0, 12))}) is unknown too — the raw bill would paint the bar amber`);
+  }
 });
 
 test('listScopeProcs: keeper / cli / session by ancestry, Reliquats by orphaning; rss in pages × the kernel page size; a vanished pid is skipped', () => {
