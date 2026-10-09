@@ -30,7 +30,7 @@ test('a valid change is persisted AND applied at once (no restart, no timer)', a
     assert.equal(getMemoryGuardSnapshot().admission, 'open');
     const res = await setMemoryGuardSettings({ admissionGb: 10, criticalGb: 4 }, r.store, ROOMY);
     assert.equal(res.ok, true);
-    assert.deepEqual(r.cell.value, { admissionGb: 10, criticalGb: 4, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
+    assert.deepEqual(r.cell.value, { admissionGb: 10, criticalGb: 4, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
     assert.equal(getMemoryGuardSnapshot().admission, 'held', 'the new threshold decided at once');
     assert.equal(res.view.snapshot.admissionBytes, 10 * GIB);
     assert.equal(res.view.settings.admissionGb, 10);
@@ -83,15 +83,15 @@ test('memoryGuardView: an unreadable meter shows no live figure (null), never th
 test('toggle_keeps_custom_thresholds: flipping the toggle with NON-default stored thresholds leaves them alone', async () => {
   const r = rig(12);
   try {
-    r.cell.value = { admissionGb: 10, criticalGb: 4, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 };
+    r.cell.value = { admissionGb: 10, criticalGb: 4, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
     const res = await setMemoryGuardSettings({ admissionEnabled: false }, r.store, ROOMY);
     assert.equal(res.ok, true);
-    assert.deepEqual(r.cell.value, { admissionGb: 10, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 });
+    assert.deepEqual(r.cell.value, { admissionGb: 10, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
     assert.deepEqual([res.view.settings.admissionGb, res.view.settings.criticalGb], [10, 4]);
     assert.equal(res.view.snapshot.admissionBytes, 10 * GIB);
     const again = await setMemoryGuardSettings({ admissionGb: 12 }, r.store, ROOMY);
     assert.equal(again.ok, true);
-    assert.deepEqual(r.cell.value, { admissionGb: 12, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 }, 'the OFF toggle and the custom critical survive a threshold edit');
+    assert.deepEqual(r.cell.value, { admissionGb: 12, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }, 'the OFF toggle and the custom critical survive a threshold edit');
   } finally {
     r.stop();
   }

@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_RELIQUAT_WAIT_MIN,
+  MAX_RELIQUAT_WAIT_MIN,
+  MIN_RELIQUAT_WAIT_MIN,
   DEFAULT_MEMORY_GUARD_SETTINGS,
   DEFAULT_THRESHOLDS,
   GIB,
@@ -225,22 +228,22 @@ test('thresholds are the SETTINGS: 10/4 GB decides at 10/4, not 6/3', () => {
 
 // ─── settings ───────────────────────────────────────────────────────────────────────────────────────────────────────
 test('settings default to 6 / 3 GB with the toggle ON', () => {
-  assert.deepEqual(normalizeMemoryGuardSettings(undefined), { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
-  assert.deepEqual(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
+  assert.deepEqual(normalizeMemoryGuardSettings(undefined), { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
+  assert.deepEqual(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
 });
 
 test('settings: a valid stored value is kept (decimals, toggle OFF)', () => {
-  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false }), { admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false }), { admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
 });
 
 test('settings: garbage / an inverted pair falls back to the default PAIR, keeping the toggle', () => {
-  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, admissionEnabled: false }), { admissionGb: 6, criticalGb: 3, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, admissionEnabled: false }), { admissionGb: 6, criticalGb: 3, admissionEnabled: false, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
   assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 'x' as unknown as number, criticalGb: NaN }), DEFAULT_MEMORY_GUARD_SETTINGS);
   assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 6, criticalGb: 6 }), DEFAULT_MEMORY_GUARD_SETTINGS);
 });
 
 test('validate_total: Admission + the 1 GB reopen margin must be BELOW the machine\'s memory (Admission could otherwise never reopen)', () => {
-  const s = { admissionGb: 40, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 };
+  const s = { admissionGb: 40, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
   assert.match(validateMemoryGuardSettings(s, gb(32)) ?? '', /plus the 1 GB reopen margin must be below this machine's memory \(32\.0 GB\)/);
   assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 31 }, gb(32)) ?? '', /reopen margin/, '31 + 1 = 32 is not below 32');
   assert.match(validateMemoryGuardSettings({ ...s, admissionGb: 31.5 }, gb(32)) ?? '', /reopen margin/, 'the old Admission-only bound accepted this: 31.5 + 1 > 32');
@@ -253,13 +256,13 @@ test('validate_total: Admission + the 1 GB reopen margin must be BELOW the machi
 
 test('toggle_only_small_host: a toggle-only patch is never refused by the MemTotal bound (the default 6/3 exceeds a 4 GB host); changing the pair is', () => {
   const small = gb(4);
-  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: false }, small), { ok: true, settings: { admissionGb: 6, criticalGb: 3, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 } });
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: false }, small), { ok: true, settings: { admissionGb: 6, criticalGb: 3, admissionEnabled: false, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 } });
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 3.5, criticalGb: 3 }, small).ok, false, '3.5 + 1 >= 4');
-  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 2, criticalGb: 1 }, small), { ok: true, settings: { admissionGb: 2, criticalGb: 1, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 } });
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionGb: 2, criticalGb: 1 }, small), { ok: true, settings: { admissionGb: 2, criticalGb: 1, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 } });
 });
 
 test('patch_merge_keeps_stored_fields: a partial patch changes ONLY its fields (non-default stored settings survive)', () => {
-  const stored = { admissionGb: 10, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6 };
+  const stored = { admissionGb: 10, criticalGb: 4, admissionEnabled: false, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
   assert.deepEqual(patchMemoryGuardSettings(stored, { admissionGb: 12 }), { ok: true, settings: { ...stored, admissionGb: 12 } });
   assert.deepEqual(patchMemoryGuardSettings(stored, { criticalGb: 5 }), { ok: true, settings: { ...stored, criticalGb: 5 } });
   assert.deepEqual(patchMemoryGuardSettings(stored, { admissionEnabled: true }), { ok: true, settings: { ...stored, admissionEnabled: true } });
@@ -267,7 +270,7 @@ test('patch_merge_keeps_stored_fields: a partial patch changes ONLY its fields (
 });
 
 test('validate_toggle_type: a non-boolean toggle is refused (validate, patch, and a string from IPC)', () => {
-  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 3, admissionEnabled: 'yes' as unknown as boolean, capSoftGb: 3, capHardGb: 6 }) ?? '', /toggle must be true or false/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 3, admissionEnabled: 'yes' as unknown as boolean, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /toggle must be true or false/);
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: 'false' as unknown as boolean }).ok, false);
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { admissionEnabled: 0 as unknown as boolean }).ok, false);
 });
@@ -282,12 +285,12 @@ test('patch: a null / undefined / non-object patch is {ok:false}, never a throw;
 
 test('validate: refuses an inverted pair, a sub-minimum critical, an absurd Admission; accepts the defaults', () => {
   assert.equal(validateMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS), null);
-  assert.match(validateMemoryGuardSettings({ admissionGb: 3, criticalGb: 6, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /must be below/);
-  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 6, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /must be below/);
-  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB - 0.1, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /at least/);
-  assert.equal(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }), null);
-  assert.match(validateMemoryGuardSettings({ admissionGb: MAX_ADMISSION_GB + 1, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /at most/);
-  assert.match(validateMemoryGuardSettings({ admissionGb: NaN, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 }) ?? '', /numbers/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 3, criticalGb: 6, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /must be below/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: 6, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /must be below/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB - 0.1, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /at least/);
+  assert.equal(validateMemoryGuardSettings({ admissionGb: 6, criticalGb: MIN_CRITICAL_GB, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }), null);
+  assert.match(validateMemoryGuardSettings({ admissionGb: MAX_ADMISSION_GB + 1, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /at most/);
+  assert.match(validateMemoryGuardSettings({ admissionGb: NaN, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /numbers/);
 });
 
 // ─── /proc/meminfo ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -378,15 +381,15 @@ test('D1: no run paused ⇒ unchanged ("none"); the guard saying held while NO r
 test('cap levels: defaults 3/6; normalized as their own pair (a bad cap pair never resets the thresholds, nor the reverse)', () => {
   assert.equal(DEFAULT_MEMORY_GUARD_SETTINGS.capSoftGb, 3);
   assert.equal(DEFAULT_MEMORY_GUARD_SETTINGS.capHardGb, 6);
-  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8, criticalGb: 2, capSoftGb: 7, capHardGb: 4 }), { admissionGb: 8, criticalGb: 2, admissionEnabled: true, capSoftGb: 3, capHardGb: 6 });
-  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, capSoftGb: 1, capHardGb: 2 }), { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 1, capHardGb: 2 });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 8, criticalGb: 2, capSoftGb: 7, capHardGb: 4 }), { admissionGb: 8, criticalGb: 2, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 });
+  assert.deepEqual(normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, capSoftGb: 1, capHardGb: 2 }), { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 1, capHardGb: 2, reliquatWaitMin: 30 });
   assert.deepEqual(normalizeMemoryGuardSettings({ capSoftGb: 0.2, capHardGb: 0.25 }), { ...DEFAULT_MEMORY_GUARD_SETTINGS, capSoftGb: 0.2, capHardGb: 0.25 }, 'a rig-sized cap is a valid setting');
 });
 
 test('cap levels: validation — hard above soft, hard at least MIN_CAP_HARD_GB, numbers only', () => {
   const s = DEFAULT_MEMORY_GUARD_SETTINGS;
   assert.equal(validateMemoryGuardSettings(s), null);
-  assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 6, capHardGb: 6 }) ?? '', /soft level \(6 GB\) must be above 0 and below the hard level/);
+  assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 6, capHardGb: 6, reliquatWaitMin: 30 }) ?? '', /soft level \(6 GB\) must be above 0 and below the hard level/);
   assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 1, capHardGb: MIN_CAP_HARD_GB / 2 }) ?? '', /hard level must be at least/);
   assert.match(validateMemoryGuardSettings({ ...s, capSoftGb: 0 }) ?? '', /above 0/);
   assert.match(validateMemoryGuardSettings({ ...s, capHardGb: Number.NaN }) ?? '', /must be numbers/);
@@ -396,4 +399,37 @@ test('cap levels: a patch changes only what it names; an invalid pair writes not
   const ok = patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { capHardGb: 8 });
   assert.deepEqual(ok, { ok: true, settings: { ...DEFAULT_MEMORY_GUARD_SETTINGS, capHardGb: 8 } });
   assert.equal(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { capSoftGb: 7 }).ok, false, 'soft 7 is not below the current hard 6');
+});
+
+// ── #326: the Reliquat delay (minutes) — its own scalar ────────────────────────────────────────────────────────
+test('Reliquat delay: default 30 min; a valid stored value is kept', () => {
+  assert.equal(DEFAULT_MEMORY_GUARD_SETTINGS.reliquatWaitMin, 30);
+  assert.equal(DEFAULT_RELIQUAT_WAIT_MIN, 30);
+  assert.equal(normalizeMemoryGuardSettings(undefined).reliquatWaitMin, 30);
+  assert.equal(normalizeMemoryGuardSettings({ reliquatWaitMin: 45 }).reliquatWaitMin, 45);
+  assert.equal(normalizeMemoryGuardSettings({ reliquatWaitMin: MIN_RELIQUAT_WAIT_MIN }).reliquatWaitMin, MIN_RELIQUAT_WAIT_MIN);
+  assert.equal(normalizeMemoryGuardSettings({ reliquatWaitMin: MAX_RELIQUAT_WAIT_MIN }).reliquatWaitMin, MAX_RELIQUAT_WAIT_MIN);
+});
+
+test('Reliquat delay: garbage / out of range falls back to the default — ALONE: it never resets another setting (and no other bad setting resets it)', () => {
+  for (const bad of [0, -3, 0.5, MAX_RELIQUAT_WAIT_MIN + 1, NaN, Infinity, '45', null]) {
+    const n = normalizeMemoryGuardSettings({ admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false, capSoftGb: 1, capHardGb: 2, reliquatWaitMin: bad as unknown as number });
+    assert.deepEqual(n, { admissionGb: 8.5, criticalGb: 2.5, admissionEnabled: false, capSoftGb: 1, capHardGb: 2, reliquatWaitMin: 30 }, `delay ${String(bad)}`);
+  }
+  // an invalid thresholds pair and a bad cap pair reset THEIR pair, and leave a valid delay alone
+  const n = normalizeMemoryGuardSettings({ admissionGb: 2, criticalGb: 5, capSoftGb: 7, capHardGb: 4, reliquatWaitMin: 90 });
+  assert.equal(n.reliquatWaitMin, 90);
+  assert.equal(n.admissionGb, 6);
+  assert.equal(n.capHardGb, 6);
+});
+
+test('Reliquat delay: validation names the range; a patch changes ONLY it and is refused when out of range (nothing applied)', () => {
+  assert.match(validateMemoryGuardSettings({ ...DEFAULT_MEMORY_GUARD_SETTINGS, reliquatWaitMin: 0 }) ?? '', /Reliquat wait must be between 1 and 1440 minutes/);
+  assert.match(validateMemoryGuardSettings({ ...DEFAULT_MEMORY_GUARD_SETTINGS, reliquatWaitMin: NaN }) ?? '', /Reliquat wait/);
+  assert.equal(validateMemoryGuardSettings({ ...DEFAULT_MEMORY_GUARD_SETTINGS, reliquatWaitMin: 60 }), null);
+  assert.deepEqual(patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { reliquatWaitMin: 60 }), { ok: true, settings: { ...DEFAULT_MEMORY_GUARD_SETTINGS, reliquatWaitMin: 60 } });
+  const stored = { admissionGb: 10, criticalGb: 4, admissionEnabled: false, capSoftGb: 2, capHardGb: 5, reliquatWaitMin: 45 };
+  assert.deepEqual(patchMemoryGuardSettings(stored, { admissionEnabled: true }), { ok: true, settings: { ...stored, admissionEnabled: true } }, 'a toggle patch keeps the stored delay');
+  const refused = patchMemoryGuardSettings(DEFAULT_MEMORY_GUARD_SETTINGS, { reliquatWaitMin: 5000 });
+  assert.equal(refused.ok, false);
 });

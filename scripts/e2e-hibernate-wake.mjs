@@ -65,6 +65,10 @@
 //                      within 3 s (~9%). consume()'s catch only stays quiet for
 //                      cleared/interrupted/restartRequested, and hibernate sets none.
 //
+//   reliquat_*       (#326 Veille and Reliquats) a REAL orphan listed in a FAKE scope: 10min ★ NOT hibernated (live Reliquat, short of the 30-min delay) · 31min ★ hibernated, the Reliquat STOPPED,
+//                      the notice queued in the inbox and printed by the shipped inbox hook · none_5min — no Reliquat ⇒ the normal 5-min Veille · fast ★ fast Veille (Admission held) skips the delay,
+//                      stops + lists · delay_hot ★ the Garde mémoire setting read hot · unknown — an unreadable scope ⇒ today's Veille, nothing killed
+//
 // Run: node --experimental-strip-types --import ./scripts/.r2-register.mjs \
 //        scripts/e2e-hibernate-wake.mjs <arm>
 
@@ -82,6 +86,8 @@ const ARMS = [
   'guard_run_pty', 'guard_turn', 'wake_after', 'teardown_chip', 'wake_during_teardown',
   'hibernate_exit1', 'fresh_record', 'bg_task', 'bg_task_done', 'bg_task_healed',
   'level_only', 'level_only_healed', 'level_after_done', 'fleet_unread_wake', 'toplevel_unread',
+  'reliquat_10min', 'reliquat_31min', 'reliquat_none_5min', 'reliquat_fast', 'reliquat_delay_hot', 'reliquat_unknown',
+  'reliquat_woken_during_stop', 'reliquat_woken_after_stop', 'reliquat_again_false', 'reliquat_overlap', 'reliquat_scopeless', 'reliquat_census_race',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
@@ -229,7 +235,7 @@ const wsNow = () => store.getWorkspace(WS);
 // (or the guard under test) stands between it and hibernation — else a 'not hibernated' is vacuous.
 const eligibleIfOld = (over = {}) => shouldHibernate(wsNow(), {
   now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, ...over,
+  hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN, ...over,
 });
 const live = () => delivery.sdkSessionLive(WS);
 const turnEnds = () => events.filter((e) => e.ev.type === 'turn-end').length;
@@ -326,7 +332,7 @@ if (ARM === 'window_4min' || ARM === 'window_6min') {
   // positive control: only the missing coordinator stands between it and hibernation
   const controlEligible = shouldHibernate({ ...wsNow(), parentId: 'coord-1' }, {
     now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true,
-    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false });
+    hasLiveRunPty: false, hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN });
   const hibernated = await hib.sweepHibernation();
   Object.assign(out, { controlEligible, hibernated, live: live(), autoUnread: !!wsNow().autoUnread });
   ok = controlEligible && hibernated.length === 0 && live() && wsNow().autoUnread === true;
@@ -524,6 +530,183 @@ if (ARM === 'hibernate_exit1') {
   const rowsForCrash = errorRows() - rowsAfterHibernate;
   Object.assign(out, { hibernated, rowsAfterHibernate, rowsForCrash });
   ok = hibernated.length === 1 && rowsForCrash === 1 && rowsAfterHibernate === 0;
+}
+
+// ── #326 Veille and Reliquats ───────────────────────────────────────────────────────────────────────────────────────
+// A REAL orphan (`setsid sleep` started by a shell that exits at once) listed in a FAKE scope's cgroup.procs (a scratch cgroup tree: no systemd scope is created, so this rig is not heavy); the port is
+// the production one (productionVeilleReliquatPort: memberScopeDeps / judgeReliquat / killReliquats, identity re-read at signal time, the notice queued in the member's inbox under the scratch HOME).
+// The clock is skewed like every arm here. NOT VERIFIED here: the CLI firing its SessionStart hook on the wake — the hook script itself is run (extracted from the shipped source) over the real inbox file.
+if (ARM.startsWith('reliquat_')) {
+  const vm = await import('node:vm');
+  const { execFileSync } = await import('node:child_process');
+  const { realScopeEnv } = await import(`${REPO}/src/main/memory-scope.ts`);
+  const { parseInboxBlocks } = await import(`${REPO}/src/shared/inbox-blocks.ts`);
+  const UID = 4244;
+  const PREFIX = 'orchestra-rig-wh-v-';
+  const cg = path.join(tmpHome, 'cg');
+  const slice = path.join(cg, 'user.slice', `user-${UID}.slice`, `user@${UID}.service`, 'app.slice');
+  fs.mkdirSync(slice, { recursive: true });
+  const scopeDir = path.join(slice, `${PREFIX}${WS}-aaaaaa.scope`);
+  fs.mkdirSync(scopeDir, { recursive: true });
+  const scopeEnv = { ...realScopeEnv(), platform: 'linux', uid: UID, cgroupRoot: cg, procRoot: '/proc', env: { ORCHESTRA_MEMORY_SCOPE_PREFIX: PREFIX }, keeperPidFile: (ws) => path.join(tmpHome, `${ws}.pid`) };
+  const startTicks = (pid) => { try { return Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]); } catch { return null; } };
+  const orphans = [];
+  const orphan = (tag) => {
+    const pid = Number(execFileSync('sh', ['-c', `setsid sleep ${tag} </dev/null >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' }).trim());
+    const o = { pid, start: startTicks(pid), tag };
+    orphans.push(o);
+    return o;
+  };
+  const alive = (o) => { const st = startTicks(o.pid); if (st !== o.start) return false; try { return !/^Z/.test(fs.readFileSync(`/proc/${o.pid}/stat`, 'utf8').split(') ')[1]); } catch { return false; } };
+  const members = (os_) => fs.writeFileSync(path.join(scopeDir, 'cgroup.procs'), os_.map((o) => o.pid).join('\n') + '\n');
+  // On a tree WITHOUT #326 (the must-FAIL run against origin/master) there is no port to register: the arms then observe master's own Veille — the instrument is the same, the subject is not.
+  let port = null;
+  try {
+    const { productionVeilleReliquatPort } = await import(`${REPO}/src/main/veille-reliquats-host.ts`);
+    port = productionVeilleReliquatPort({ scopeEnv, cliOf: async () => null, countBrowsers: async () => 0, stopBrowsers: async () => null });
+    hib.setVeilleReliquatPort(port);
+  } catch (e) {
+    out.noPort = String(e?.message ?? e).slice(0, 120);
+  }
+  /** The production port with some steps replaced (a rig-only seam: it lets an arm land a wake / a prompt / a second pass at an exact point of the verdict). */
+  const wrapPort = (over) => {
+    if (!port) return null;
+    const p2 = { census: (w) => port.census(w), stop: (w, c) => port.stop(w, c), tell: (w, t) => port.tell(w, t), ...over };
+    hib.setVeilleReliquatPort(p2);
+    return p2;
+  };
+  const inboxFile = path.join(tmpHome, '.orchestra', 'inbox', `${WS}.txt`);
+  const inboxBlocks = () => { try { return parseInboxBlocks(fs.readFileSync(inboxFile, 'utf8')).map((b) => b.text); } catch { return []; } };
+  const hookOutput = () => {
+    const src = fs.readFileSync(`${REPO}/src/main/workspaces.ts`, 'utf8');
+    const m = /const INBOX_INSTRUCTION_SCRIPT = `([^]*?)`;/.exec(src);
+    const script = vm.runInNewContext('`' + m[1] + '`');
+    return execFileSync('bash', ['-c', script], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_WS_ID: WS }, encoding: 'utf8' });
+  };
+  const bystander = orphan('3601'); // OUTSIDE the scope: must survive everything
+  const mine = ARM === 'reliquat_none_5min' || ARM === 'reliquat_census_race' ? [] : [orphan('3600')];
+  members(mine);
+  const readyPremise = mine.every(alive) && alive(bystander);
+  const censusNow = port ? await port.census(WS) : 'no-port';
+  const base = { readyPremise, census: censusNow, controlEligible: eligibleIfOld() };
+
+  if (ARM === 'reliquat_10min') {
+    skewMs = 10 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length, interruptCalled: calls[0].interruptStartedAt > 0 });
+    ok = readyPremise && (port === null || censusNow === 1) && base.controlEligible && hibernated.length === 0 && live() && mine.every(alive) && inboxBlocks().length === 0 && calls[0].interruptStartedAt === 0;
+  } else if (ARM === 'reliquat_31min') {
+    skewMs = 31 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    const blocks = inboxBlocks();
+    const printed = hookOutput();
+    Object.assign(out, base, { hibernated, live: live(), reliquatAlive: mine.every(alive), bystanderAlive: alive(bystander), blocks, hookOutput: printed, inboxAfterHook: fs.existsSync(inboxFile) });
+    ok = readyPremise && censusNow === 1 && hibernated.length === 1 && hibernated[0] === WS && !live() && !!wsNow().hibernatedAt && wsNow().sdkSessionId === SESSION_ID &&
+      !mine.some(alive) && alive(bystander) && blocks.length === 1 && /Orchestra stopped 1 leftover process\(es\) of yours \(Reliquats\) because you had been idle for 31m/.test(blocks[0]) && /sleep 3600/.test(blocks[0]) &&
+      /You have message\(s\) from other agents/.test(printed) && /sleep 3600/.test(printed) && !fs.existsSync(inboxFile);
+  } else if (ARM === 'reliquat_none_5min') {
+    skewMs = 6 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, live: live(), inbox: inboxBlocks().length });
+    ok = (port === null || censusNow === 0) && hibernated.length === 1 && !live() && inboxBlocks().length === 0 && alive(bystander);
+  } else if (ARM === 'reliquat_fast') {
+    // fast Veille (#288): Admission held ⇒ a fleet member is past its threshold at once — the Reliquat delay does NOT apply; its Reliquats are stopped + listed, worded as memory pressure
+    await store.upsertWorkspace({ ...wsNow(), parentId: 'coord-1' });
+    const g = await import(`${REPO}/src/main/memory-guard.ts`);
+    let mem = 1 * 1024 ** 3;
+    g.__rebuildMemoryGuardForTests({}, () => mem);
+    const snap = g.sampleMemoryGuardNow();
+    skewMs = 1 * MIN;
+    const hnAct = await import(`${REPO}/src/main/hibernation-activity.ts`);
+    const idleMin = (Date.now() - (hnAct.getLastActivity(WS) ?? 0)) / MIN;
+    const hibernated = await hib.sweepHibernation();
+    const blocks = inboxBlocks();
+    g.stopMemoryGuard();
+    Object.assign(out, base, { admission: snap.admission, idleMin: Math.round(idleMin * 10) / 10, hibernated, live: live(), reliquatAlive: mine.every(alive), blocks });
+    ok = readyPremise && snap.admission === 'held' && idleMin < 5 && hibernated.length === 1 && !live() && !mine.some(alive) && alive(bystander) &&
+      blocks.length === 1 && /Reliquats\) early, to free memory \(Admission is held\)/.test(blocks[0]) && /sleep 3600/.test(blocks[0]);
+  } else if (ARM === 'reliquat_delay_hot') {
+    // the delay is a Garde mémoire setting read at EVERY pass: 8 min ⇒ idle 7 min waits; the same process, the setting changed to 6 min ⇒ the next pass puts it in Veille
+    await store.setMemoryGuardSettings({ ...store.getMemoryGuardSettings(), reliquatWaitMin: 8 });
+    skewMs = 7 * MIN;
+    const first = await hib.sweepHibernation();
+    const aliveAfterFirst = mine.every(alive);
+    await store.setMemoryGuardSettings({ ...store.getMemoryGuardSettings(), reliquatWaitMin: 6 });
+    const second = await hib.sweepHibernation();
+    Object.assign(out, base, { first, aliveAfterFirst, second, live: live(), reliquatAlive: mine.every(alive), delayNow: store.getMemoryGuardSettings().reliquatWaitMin });
+    ok = readyPremise && censusNow === 1 && first.length === 0 && aliveAfterFirst && live() === false && second.length === 1 && !mine.some(alive);
+  } else if (ARM === 'reliquat_unknown') {
+    // the scope cannot be READ (cgroup.procs is a directory ⇒ EISDIR): UNKNOWN is not a reason to wait nor to kill — today's Veille at the normal threshold, the Reliquat untouched
+    fs.rmSync(path.join(scopeDir, 'cgroup.procs'));
+    fs.mkdirSync(path.join(scopeDir, 'cgroup.procs'));
+    const census2 = port ? await port.census(WS) : 'no-port';
+    skewMs = 6 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { census2, hibernated, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length });
+    ok = (port === null || census2 === 'unknown') && hibernated.length === 1 && !live() && mine.every(alive) && inboxBlocks().length === 0;
+  } else if (ARM === 'reliquat_woken_during_stop') {
+    // a wake lands at the START of the stop: the « still wanted » check ends the signal rounds BEFORE any signal — the Reliquat lives, the member is not hibernated, nothing to tell
+    wrapPort({ stop: async (w, c) => { hib.clearHibernated(WS); return port.stop(w, c); } });
+    skewMs = 40 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, live: live(), reliquatAlive: mine.every(alive), inbox: inboxBlocks().length });
+    ok = readyPremise && port !== null && hibernated.length === 0 && live() && mine.every(alive) && inboxBlocks().length === 0;
+  } else if (ARM === 'reliquat_woken_after_stop') {
+    // a wake lands AFTER the stop completed: the Reliquat is gone and the member IS told (the wording stays true), but it is not hibernated — it is awake
+    wrapPort({ stop: async (w, c) => { const r = await port.stop(w, c); hib.clearHibernated(WS); return r; } });
+    skewMs = 40 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    const blocks = inboxBlocks();
+    Object.assign(out, base, { hibernated, live: live(), reliquatAlive: mine.every(alive), blocks: blocks.length });
+    ok = readyPremise && port !== null && hibernated.length === 0 && live() && !mine.some(alive) && blocks.length === 1 && !/put you in Veille/.test(blocks[0]) && !wsNow().hibernatedAt;
+  } else if (ARM === 'reliquat_again_false') {
+    // a prompt starts a turn while the Reliquats are being stopped: the Veille is re-judged on FRESH state and dropped; the stop stays done and told
+    wrapPort({ stop: async (w, c) => { const r = await port.stop(w, c); await store.upsertWorkspace({ ...wsNow(), status: 'running' }); return r; } });
+    skewMs = 40 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    const blocks = inboxBlocks();
+    Object.assign(out, base, { hibernated, live: live(), status: wsNow().status, reliquatAlive: mine.every(alive), blocks: blocks.length });
+    ok = readyPremise && port !== null && hibernated.length === 0 && live() && wsNow().status === 'running' && !mine.some(alive) && blocks.length === 1 && !calls[0].interruptStartedAt;
+  } else if (ARM === 'reliquat_census_race') {
+    // NOTHING is stopped (no Reliquat), but the CENSUS awaits (it probes the keeper): a prompt lands meanwhile — a turn starts. The verdict said « Veille »; the fresh re-check (whatever the verdict awaited) drops it
+    wrapPort({ census: async (w) => { const c = await port.census(w); await store.upsertWorkspace({ ...wsNow(), status: 'running' }); return c; } });
+    skewMs = 6 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    Object.assign(out, base, { hibernated, live: live(), status: wsNow().status, interruptCalled: calls[0].interruptStartedAt > 0 });
+    ok = port !== null && censusNow === 0 && hibernated.length === 0 && live() && wsNow().status === 'running' && !calls[0].interruptStartedAt;
+  } else if (ARM === 'reliquat_overlap') {
+    // two passes overlap (the guard-sample trigger + the tick) while a slow stop is in flight: ONE stop, ONE notice, ONE Veille
+    let stops = 0;
+    wrapPort({ stop: async (w, c) => { stops++; await sleep(500); return port.stop(w, c); } });
+    skewMs = 40 * MIN;
+    const [a, b] = await Promise.all([hib.sweepHibernation(), hib.sweepHibernation()]);
+    const blocks = inboxBlocks();
+    Object.assign(out, base, { a, b, stops, live: live(), reliquatAlive: mine.every(alive), blocks: blocks.length });
+    ok = readyPremise && port !== null && stops === 1 && a.length + b.length === 1 && !live() && !mine.some(alive) && blocks.length === 1;
+  } else if (ARM === 'reliquat_scopeless') {
+    // memory_cap OFF (no tracked scope): #331's browsers answer; the keeper is UNRESPONSIVE (cliOf errors) yet the member is still put in Veille after the wait and its browser stopped
+    fs.rmSync(scopeDir, { recursive: true, force: true });
+    const seenCalls = [];
+    const killedBrowser = { scopes: ['browser:port'], killed: [{ pid: 4242, startTicks: 1, comm: 'chrome', cmd: 'chrome --headless --remote-debugging-port=9222', cwd: '/x/agent-tmp/ws/p', startedAt: Date.now(), scope: 'browser:port', evidence: 'e', signal: 'SIGTERM', outcome: 'exited' }], refused: [], spared: [], survivors: [], rounds: 1 };
+    let sp = null;
+    try {
+      const { productionVeilleReliquatPort } = await import(`${REPO}/src/main/veille-reliquats-host.ts`);
+      sp = productionVeilleReliquatPort({ scopeEnv, cliOf: async () => { seenCalls.push('cliOf'); return { error: 'keeper 1 is alive but did not answer the probe' }; }, countBrowsers: async () => { seenCalls.push('count'); return 1; }, stopBrowsers: async () => { seenCalls.push('stop'); return killedBrowser; } });
+      hib.setVeilleReliquatPort(sp);
+    } catch { /* a tree without #326 */ }
+    skewMs = 10 * MIN;
+    const early = await hib.sweepHibernation();
+    skewMs = 31 * MIN;
+    const hibernated = await hib.sweepHibernation();
+    const blocks = inboxBlocks();
+    Object.assign(out, base, { seenCalls, early, hibernated, live: live(), blocks: blocks.length });
+    ok = sp !== null && early.length === 0 && hibernated.length === 1 && !live() && !seenCalls.includes('cliOf') && seenCalls.includes('stop') && blocks.length === 1 && /chrome --headless/.test(blocks[0]);
+  }
+  // teardown BY IDENTITY: only what this arm launched, only while it is still the same process
+  for (const o of orphans) if (alive(o)) { try { process.kill(o.pid, 'SIGKILL'); } catch { /* gone */ } }
+  await sleep(100);
+  out.survivors = orphans.filter(alive).length;
+  ok = ok && out.survivors === 0;
 }
 
 clearInterval(tap); clearInterval(keepalive);

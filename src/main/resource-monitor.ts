@@ -18,7 +18,7 @@ import { createDockerApi, readRelayUpstream, type DockerApi } from './docker-api
 import { getBus, send as busSend } from './bus';
 import { nearestOrchestratorId } from './wave-run-id';
 import { realKillDeps } from './pause-kill';
-import { BrowserTracker, browserPass, browserStatusText, realClientState, type BrowserPassDeps, type BrowserPassOpts } from './browser-reliquats';
+import { BrowserTracker, browserOrphansOf, browserPass, browserStatusText, realClientState, type BrowserPassDeps, type BrowserPassOpts } from './browser-reliquats';
 import { AGENT_TMP_REL } from '../shared/home-root-guard';
 import type { BrowserReliquatView } from '../shared/browser-reliquats';
 import type { ReliquatReport } from '../shared/pause-reliquats';
@@ -508,6 +508,28 @@ export async function stopBrowserReliquatsOf(wsId: string, opts: Pick<BrowserPas
   const r = await browserPass(b.deps, b.tracker, await (table ? table() : sampleProcTable()), { onlyWs: wsId, ignoreWindow: true, ...opts });
   for (const e of r.errors) b.deps.warn(`resources: browser pass (Pause dure of ${wsId}) — ${e}`);
   return r.report;
+}
+
+/** One /proc scan serves every member censused in the same Veille pass (a census is read-only; the STOP re-reads its own table). */
+let censusTable: { at: number; rows: Promise<ProcSample[]> } | null = null;
+function censusProcTable(ttlMs = 3_000): Promise<ProcSample[]> {
+  const now = Date.now();
+  if (!censusTable || now - censusTable.at > ttlMs) censusTable = { at: now, rows: sampleProcTable() };
+  return censusTable.rows;
+}
+
+/**
+ * The orphaned headless browsers of ONE member alive right now (#326: the Veille census of a member with no tracked scope) — read-only, through the SAME selection as the pass
+ * (`browserOrphansOf`), a FRESH process table. `'unknown'` = the table could not be read. A browser a pass would only SPARE (a client is connected) still counts: it is live.
+ */
+export async function countBrowserReliquatsOf(wsId: string, b: NonNullable<ResourceMonitorDeps['browser']> = productionBrowserBridge(), table?: () => Promise<ProcSample[]>): Promise<number | 'unknown'> {
+  try {
+    // only what a pass with the idle window ignored would STOP: a browser a client is connected to (or whose clients cannot be read) is spared by it, so it must not delay a Veille for nothing
+    return browserOrphansOf(b.deps, await (table ? table() : censusProcTable()), wsId).filter((o) => o.client === 'no').length;
+  } catch (e) {
+    b.deps.warn(`resources: browser Reliquat census of ${wsId} failed — ${e instanceof Error ? e.message : String(e)}`);
+    return 'unknown';
+  }
 }
 
 async function withBudget(p: Promise<unknown>, ms: number): Promise<'done' | 'budget'> {

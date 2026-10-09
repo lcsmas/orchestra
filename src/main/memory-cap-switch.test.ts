@@ -15,7 +15,7 @@ const { DEFAULT_BUS_SWITCHES } = await import('../shared/bus-switches.ts');
 const { parseMemoryScopeUnit } = await import('../shared/memory-scope.ts');
 
 const GIB = 1024 ** 3;
-const levels = { capSoftGb: 3, capHardGb: 6 };
+const levels = { capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
 let supported = true;
 let busOn = new Set<string>();
 const deps = (platform = 'linux') => ({

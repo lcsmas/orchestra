@@ -47,8 +47,21 @@ import { idleClockOf } from './idle-clock.ts';
 import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-guard.ts';
 import { isAdmissionHolding } from '../shared/memory-guard.ts';
 import type { Workspace } from '../shared/types';
+// #326: Veille and Reliquats — the per-member verdict (live Reliquats delay the Veille, which then stops + lists them). The port is registered by index.ts (veille-reliquats-host.ts):
+// none registered = today's Veille, byte for byte.
+import { judgeVeille, type VeilleReliquatPort } from './veille-reliquats.ts';
+import { stripControl } from '../shared/pause-consigne.ts';
 
 const hlog = scoped('hibernate');
+
+let veillePort: VeilleReliquatPort | null = null;
+/** Members whose Veille verdict is in flight (the Reliquat stop awaits seconds): an overlapping pass (the guard-sample trigger) must not census / stop / tell the same member twice. */
+const veilleBusy = new Set<string>();
+
+/** Register (or clear) the Reliquat port the sweep consults (#326). */
+export function setVeilleReliquatPort(p: VeilleReliquatPort | null): void {
+  veillePort = p;
+}
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let unsubscribeGuard: (() => void) | null = null;
@@ -142,6 +155,8 @@ export async function sweepHibernation(): Promise<string[]> {
   if (thresholdMs === HIBERNATION_DISABLED) return [];
   const now = Date.now();
   const hibernated: string[] = [];
+  // #326: the Reliquat delay is a Garde mémoire setting (store, normalised), read HOT at every pass.
+  const reliquatDelayMs = store.getMemoryGuardSettings().reliquatWaitMin * 60_000;
 
   for (const ws of store.workspaces) {
     if (isBeingDeleted(ws.id)) continue; // delete owns the teardown (#205)
@@ -167,35 +182,88 @@ export async function sweepHibernation(): Promise<string[]> {
       hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
       thresholdMs,
       admissionHeld,
+      reliquatDelayMs,
     };
-    const eligible = shouldHibernate(ws, signals);
-    if (!eligible) continue;
+    if (veilleBusy.has(ws.id)) continue; // an overlapping pass is already judging / stopping this member's Reliquats
+    // A wake can land while the Reliquat stop is awaited, as well as during the session teardown below: snapshot BEFORE either.
+    const epochBefore = wakeEpoch.get(ws.id) ?? 0;
+    veilleBusy.add(ws.id);
+    let verdict: Awaited<ReturnType<typeof judgeVeille>>;
+    try {
+      verdict = await judgeVeille(ws, signals, {
+        port: veillePort,
+        strip: stripControl,
+        stillWanted: () => (wakeEpoch.get(ws.id) ?? 0) === epochBefore && !isBeingDeleted(ws.id),
+        info: (m) => hlog.info(m),
+        warn: (m, e) => hlog.warn(m, e),
+      });
+    } finally {
+      veilleBusy.delete(ws.id);
+    }
+    if (!verdict.hibernate) {
+      if (verdict.why === 'reliquat-delay') {
+        hlog.debug(`${ws.name} (${ws.id}) — ${verdict.liveReliquats} live Reliquat(s): Veille waits the Reliquat delay (${formatIdleDuration(reliquatDelayMs)}), ${formatIdleDuration(verdict.waitMs)} to go`);
+      }
+      continue;
+    }
+    // The verdict awaited (a census; for a member with Reliquats a TERM grace): a wake or a delete may have landed. What was stopped stays stopped (and told); the Veille itself is dropped.
+    if ((wakeEpoch.get(ws.id) ?? 0) !== epochBefore || isBeingDeleted(ws.id)) {
+      hlog.info(`${ws.name} (${ws.id}) woken or removed while its Veille verdict was awaited — not hibernating`);
+      continue;
+    }
+    {
+      // …and decided again on FRESH state, WHATEVER the verdict awaited (a census probes the keeper, a stop waits a TERM grace): a prompt handed to an already-live session bumps no wake epoch and leaves
+      // the status `idle` until its turn event — only `sdkPendingPrompts` / the activity stamp say so. The same guards, no Reliquat left to wait for.
+      const fresh = store.getWorkspace(ws.id);
+      if (!fresh) continue;
+      const again = shouldHibernate(fresh, {
+        ...signals,
+        now: Date.now(),
+        lastActivityAt: idleClockOf(fresh),
+        isActive: getActiveWorkspaceId() === ws.id,
+        hasLivePty: isRunning(ws.id),
+        hasLiveSdk: sdkSessionLive(ws.id),
+        hasLiveRunPty: isRunning(`${ws.id}:run`),
+        hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
+        admissionHeld: isAdmissionHolding(getMemoryGuardSnapshot()),
+        liveReliquats: 0,
+      });
+      if (!again) {
+        hlog.info(`${ws.name} (${ws.id}) is no longer eligible after its Veille verdict (a prompt, a status change) — not hibernating`);
+        continue;
+      }
+    }
     // Only the hold made it eligible (it would still be waiting out its threshold with Admission open)?
-    const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false });
+    const early = admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false, liveReliquats: verdict.liveReliquats });
 
+    // Liveness is read AGAIN here, after the verdict awaited, and NOTHING awaits between this read and the stop calls below: a second pass in the same tick cannot interleave
+    // between the check and the stop (pinned by hibernation-fast-veille-wiring.test.ts); a session stopped meanwhile (user stop, crash) is not "hibernated".
+    const liveSdkNow = sdkSessionLive(ws.id);
+    const livePtyNow = isRunning(ws.id);
+    if (!liveSdkNow && !livePtyNow) continue;
     const idleFor = formatIdleDuration(now - lastActivityAt);
     // Sample the pid BEFORE stopping — after `stopPty` the session is gone from
     // the registry and the pid is unrecoverable. Naming it in the log is what
     // makes process death assertable by `ps -p <pid>`: UI text or an absent
     // registry entry proves the app's bookkeeping changed, not that the OS
     // process actually exited.
-    const ptyPid = hasLivePty ? getPtyPid(ws.id) : undefined;
+    const ptyPid = livePtyNow ? getPtyPid(ws.id) : undefined;
     hlog.info(
       `hibernating ${ws.name} (${ws.id}) — idle ${idleFor}` +
-        `${hasLivePty ? ` pty${ptyPid !== undefined ? ` pid=${ptyPid}` : ' pid=unknown'}` : ''}` +
-        `${hasLiveSdk ? ' sdk' : ''}` +
+        `${livePtyNow ? ` pty${ptyPid !== undefined ? ` pid=${ptyPid}` : ' pid=unknown'}` : ''}` +
+        `${liveSdkNow ? ' sdk' : ''}` +
+        (verdict.stopped ? ` — stopped ${verdict.report?.killed.filter((k) => k.outcome !== 'planned').length ?? 0} Reliquat(s) first${verdict.told ? ', member told' : ''}${verdict.fast ? ' (fast Veille)' : ''}` : '') +
         // Every Veille taken under the hold names the MemAvailable behind it (#288, for incident reconstruction).
         fastVeilleLogSuffix(admissionHeld, guardSnap, early, thresholdMs),
     );
 
-    const epochBefore = wakeEpoch.get(ws.id) ?? 0;
-    if (hasLiveSdk) {
+    if (liveSdkNow) {
       // Stop the structured session first: it is the path that persists
       // `sdkSessionId`, and stopping it is async. A failure here must not
       // prevent the PTY stop below or abort the whole sweep.
       await sdkStopIfLive(ws.id, { hibernate: true }).catch((e) => hlog.swallow(`sdk stop for ${ws.id}`, e));
     }
-    if (hasLivePty) stopPty(ws.id);
+    if (livePtyNow) stopPty(ws.id);
 
     // A wake can land mid-teardown (the stop is async): don't stamp a chip on a woken workspace.
     if ((wakeEpoch.get(ws.id) ?? 0) !== epochBefore) {
