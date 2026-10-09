@@ -123,4 +123,10 @@ test('H03: a history row the live fold already holds BY ID is not repeated — w
   const history = [{ id: 'z', role: 'user', at: 1, text: 'old' }, { id: 'a', role: 'assistant', at: 2, text: 't1' }, { id: 'b', role: 'user', at: 3, text: 't2' }];
   assert.deepEqual(mergeHistoryIntoLive(history, live).map((m) => m.id), ['z', 'a', 'b'], 'no id twice');
   assert.deepEqual(mergeHistoryIntoLive(history, []).map((m) => m.id), ['z', 'a', 'b'], 'control: with no live rows nothing is dropped');
+  // the LIVE copy wins (it is the fresher one), and the key is the ID — not the content
+  const stale = [{ id: 'a', role: 'assistant', at: 2, text: 'stale history copy' }];
+  const fresh = [{ id: 'a', role: 'assistant', at: 2, text: 'fresh live copy' }];
+  assert.deepEqual(mergeHistoryIntoLive(stale, fresh).map((m) => m.text), ['fresh live copy'], 'same id: the live row stays, the history copy goes');
+  const sameText = mergeHistoryIntoLive([{ id: 'h2', role: 'assistant', at: 2, text: 't1' }], [{ id: 'a', role: 'assistant', at: 2, text: 't1' }]);
+  assert.deepEqual(sameText.map((m) => m.id), ['h2', 'a'], 'a different id with identical content is a different row (only notices/errors echo by content)');
 });

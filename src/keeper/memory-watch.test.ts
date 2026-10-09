@@ -795,9 +795,9 @@ test('M1 (verifier pin, `lineDebts = lineDebts.slice(plan.debtsSettled)`): kill 
   await wait(40);
   w.procs.delete(20);
   w.oomKill(12);
-  journal.push(kline(12, 'v1'));
   assert.ok(await until(() => kills.length === 1, 8000));
   assert.equal(kills[0].source, 'inferred');
+  journal.push(kline(12, 'v1')); // the line lands AFTER the first look (which, at the headroom limit, never reads the journal) — a stalled loop must not age it out of the look's 3 s window
   w.current = 100 * MB;
   w.add(13, { comm: 'v2', cmdline: 'v2', adj: 1000, rssPages: 6000 });
   await wait(30);
@@ -844,4 +844,96 @@ test('M2 (`softSuppressed = 0`): the «N further crossing(s)» of a told warning
   assert.ok(await until(() => softs.length === 3, 8000));
   assert.equal(softs[2].suppressed, 1, 'only the one swallowed since the previous told warning (3 would re-count the two already told)');
   mw.stop();
+});
+
+/** A manual clock + an empty-then-filled journal: kills whose lookup finds NO line owe it (debts), deterministically — no headroom wait, no debt TTL running on the wall clock. */
+function debtWorld() {
+  const w = new World();
+  w.current = 100 * MB;
+  const kills: MemKillRecord[] = [];
+  const journal: KernelOomKill[] = [];
+  const clock = 5_000_000;
+  const mw = watchSoft(w, [], kills, { softBytes: null, now: () => clock, kernelLog: async () => [...journal] });
+  /** A victim + a bigger decoy that exits at the same moment: the inference names the DECOY, the kernel line names the victim. */
+  const kill = async (victim: number, decoy: number): Promise<void> => {
+    w.add(decoy, { comm: `d${decoy}`, cmdline: `d${decoy}`, adj: 1000, rssPages: 20000 });
+    w.add(victim, { comm: `v${victim}`, cmdline: `v${victim}`, adj: 1000, rssPages: 5000 });
+    await wait(30);
+    w.procs.delete(decoy);
+    w.oomKill(victim);
+  };
+  return { w, kills, journal, mw, kill };
+}
+
+test('M1b (over/under-settling, `lineDebts = lineDebts.slice(plan.debtsSettled)`): two kills owe their lines; one round finds both and pairs the third kill; the FOURTH kill, inside the debt TTL, is named by its OWN line', async () => {
+  const { kills, journal, mw, kill } = debtWorld();
+  await wait(40);
+  await kill(12, 20); // journal empty: the lookup polls, finds nothing, the kill stays inferred and OWES its line
+  assert.ok(await until(() => kills.length === 1, 8000));
+  await kill(13, 21);
+  assert.ok(await until(() => kills.length === 2, 8000));
+  assert.deepEqual(kills.map((k) => k.source), ['inferred', 'inferred']);
+  journal.push(kline(12, 'v12'), kline(13, 'v13')); // the two late lines
+  await kill(14, 22);
+  journal.push(kline(14, 'v14'));
+  assert.ok(await until(() => kills.length === 3, 8000));
+  assert.equal(kills[2].source, 'kernel');
+  assert.equal(kills[2].pid, 14, 'the third kill is paired with ITS line, the two late ones set aside');
+  await kill(15, 23);
+  journal.push(kline(15, 'v15'));
+  assert.ok(await until(() => kills.length === 4, 8000));
+  mw.stop();
+  assert.equal(kills[3].pid, 15, `the fourth kill is named by its own line, not eaten by debts the third round already settled: got ${kills[3].source} pid=${kills[3].pid}`);
+  assert.equal(kills[3].source, 'kernel');
+});
+
+test('M1c (settle exactly what was found, also when the round cannot pair): two debts, a round that finds only ONE of the late lines settles ONE (and owes its own); the later lines then go to the debts, and the next kill is named by its own line', async () => {
+  const { kills, journal, mw, kill } = debtWorld();
+  await wait(40);
+  await kill(12, 20);
+  assert.ok(await until(() => kills.length === 1, 8000));
+  await kill(13, 21);
+  assert.ok(await until(() => kills.length === 2, 8000));
+  journal.push(kline(12, 'v12')); // only the FIRST late line is in the journal when kill 3 looks
+  await kill(14, 22);
+  assert.ok(await until(() => kills.length === 3, 8000));
+  assert.equal(kills[2].source, 'inferred', 'nothing honest to pair: it stays a guess and owes its line');
+  journal.push(kline(13, 'v13'), kline(14, 'v14')); // the rest arrive late
+  await kill(15, 23);
+  journal.push(kline(15, 'v15'));
+  assert.ok(await until(() => kills.length === 4, 8000));
+  mw.stop();
+  assert.equal(kills[3].pid, 15, `exactly the debts still owed (2) are set aside, the fourth kill keeps its own line: got ${kills[3].source} pid=${kills[3].pid}`);
+  assert.equal(kills[3].source, 'kernel');
+});
+
+test('M2b (the reset also covers the DEFERRED warning): a crossing swallowed by the rate bound and told later (deferred) counts once; the next told warning counts only what was swallowed since', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  let clock = 5_000_000;
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: () => {}, onSoft: (r) => softs.push(r), softBytes: 200 * MB, softMinIntervalMs: 30_000, now: () => clock, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096 });
+  w.current = 230 * MB;
+  assert.ok(await until(() => softs.length === 1, 8000));
+  w.current = 100 * MB;
+  await wait(40);
+  clock += 5_000;
+  w.current = 280 * MB; // swallowed (1) — and it STAYS high
+  await wait(60);
+  assert.equal(softs.length, 1);
+  clock += 31_000; // bound over, still high: the DEFERRED warning, with the one swallowed crossing
+  assert.ok(await until(() => softs.length === 2, 8000));
+  assert.equal(softs[1].suppressed, 1);
+  w.current = 100 * MB;
+  await wait(40); // re-armed
+  clock += 5_000;
+  w.current = 250 * MB; // swallowed again (1 since the deferred one)
+  await wait(60);
+  w.current = 100 * MB;
+  await wait(40);
+  clock += 31_000;
+  w.current = 250 * MB;
+  assert.ok(await until(() => softs.length === 3, 8000));
+  mw.stop();
+  assert.equal(softs[2].suppressed, 1, 'only the crossing swallowed since the deferred warning (2 would re-count the one it already told)');
 });

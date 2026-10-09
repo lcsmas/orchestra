@@ -40,7 +40,8 @@ test('B03: a liveness switch that CANNOT be read is OFF — «counted», nothing
   const warns: string[] = [];
   const log = { warn: (m: string) => warns.push(m) };
   const before = rows('run-on').length;
-  const broken = new Proxy(db, { get: (t, k) => (k === 'prepare' ? () => { throw new Error('SQLITE_BUSY: database is locked'); } : (t as never)[k as never]) });
+  let prepares = 0; // only the FIRST read fails (the switch read): any later statement works, so a gate that fails open would really WRITE and the row count would move
+  const broken = new Proxy(db, { get: (t, k) => (k === 'prepare' ? (...a: unknown[]) => { if (prepares++ === 0) throw new Error('SQLITE_BUSY: database is locked'); return (t as never as { prepare: (...x: unknown[]) => unknown }).prepare(...a); } : (t as never)[k as never]) });
   assert.equal(sendGated(broken, msg('run-on'), log), 'counted');
   assert.equal(rows('run-on').length, before, 'nothing written for a run whose switch is ON when the read failed');
   assert.equal(warns.length, 1);
