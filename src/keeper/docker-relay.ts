@@ -136,6 +136,10 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
     res.on('close', () => {
       if (!res.writableFinished) up.destroy();
     });
+    // keep-alive upstream: node no longer destroys `up` when the answer ends before the request does (an early 4xx, the client gone): once the answer is fully relayed, drop the daemon connection
+    res.on('finish', () => {
+      if (!up.writableFinished) up.destroy();
+    });
     if (body) up.end(body);
     else req.pipe(up);
   }

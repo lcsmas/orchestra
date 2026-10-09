@@ -162,7 +162,7 @@ test('R13: every upstream request asks for keep-alive — the daemon has no reas
   for (const s of daemon.seen.slice(-5)) created.push([`${s.method} ${s.url}`, String(s.headers.connection)]);
   assert.equal(created.length, 5);
   for (const [what, conn] of created) assert.equal(conn, 'keep-alive', `${what} reached the daemon with Connection: ${conn}`);
-  await until(() => daemon.openConnections() === 0, 2000); // let the relay close what it opened: the next case counts connections
+  assert.equal(await until(() => daemon.openConnections() === 0, 2000), true, `${daemon.openConnections()} daemon connection(s) of this case still open — the next case counts connections`);   // asserted: an unasserted drain absorbed a leak (review m2)
 });
 
 test('R13: keep-alive upstream leaks nothing — the relay closes the daemon connection after each response (agent:false)', async () => {
@@ -173,6 +173,23 @@ test('R13: keep-alive upstream leaks nothing — the relay closes the daemon con
     await call(r, 'GET', '/_ping');
   }
   assert.equal(await until(() => daemon.openConnections() <= before, 2000), true, `${daemon.openConnections()} daemon connections still open after 24 calls (before: ${before})`);
+});
+
+test('R13 review m1: an answer that ends BEFORE the request (an early 400, the client then abandons its chunked body) does not leave the daemon connection behind', async () => {
+  const r = await newRelay();
+  assert.equal(await until(() => daemon.openConnections() === 0, 2000), true, 'earlier cases have drained');
+  await new Promise<void>((resolve, reject) => {
+    const req = http.request({ socketPath: r.sockPath, method: 'POST', path: '/v1.41/early-400', headers: { 'transfer-encoding': 'chunked' }, agent: false }, (res) => {
+      assert.equal(res.statusCode, 400);
+      res.resume();
+      res.on('end', () => { req.destroy(); resolve(); });   // the answer is in, the body is NOT finished: the client walks away
+    });
+    req.on('error', () => {});
+    req.on('close', () => resolve());
+    req.write('{"partial":');
+    setTimeout(() => reject(new Error('no answer')), 5000).unref();
+  });
+  assert.equal(await until(() => daemon.openConnections() === 0, 2000), true, `${daemon.openConnections()} daemon connection(s) left open after an early answer + an abandoned body`);
 });
 
 // ── streams ──────────────────────────────────────────────────────────────────────────────────────────────────────
