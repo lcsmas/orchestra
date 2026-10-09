@@ -35,3 +35,14 @@ test('round 2 F6: a run whose coordinator is NOT the recipient (a parent that is
   assert.ok(warns.some((w) => /has coordinator coord, not someone-else .* may never be read/.test(w)), warns.join(' | '));
   assert.equal(sendGated(db, msg('no-such-run'), log), 'counted', 'no run row ⇒ no frozen switch ⇒ OFF');
 });
+
+test('B03: a liveness switch that CANNOT be read is OFF — «counted», nothing written, and said once (a failed read never fails open into a bus write)', () => {
+  const warns: string[] = [];
+  const log = { warn: (m: string) => warns.push(m) };
+  const before = rows('run-on').length;
+  const broken = new Proxy(db, { get: (t, k) => (k === 'prepare' ? () => { throw new Error('SQLITE_BUSY: database is locked'); } : (t as never)[k as never]) });
+  assert.equal(sendGated(broken, msg('run-on'), log), 'counted');
+  assert.equal(rows('run-on').length, before, 'nothing written for a run whose switch is ON when the read failed');
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /liveness switch read failed for run run-on - treating as OFF/);
+});

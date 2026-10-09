@@ -781,3 +781,67 @@ test('round 2 m1: a crossing swallowed by the rate bound whose scope is STILL ab
   assert.equal(softs.length, 2, 'and not repeated every interval while it stays high');
   mw.stop();
 });
+
+// ─── follow-up pins for the verifier's #322 MINORs (M1, M2) — tests only ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+test('M1 (verifier pin, `lineDebts = lineDebts.slice(plan.debtsSettled)`): kill 1 skipped its lookup (owes L1); kill 2 finds [L1, L2] → L1 set aside, the debt is SETTLED; kill 3 inside the debt TTL is named by its OWN line L3', async () => {
+  const w = new World();
+  w.current = 299 * MB;
+  w.add(20, { comm: 'decoy', cmdline: 'decoy', adj: 1000, rssPages: 20000 });
+  w.add(12, { comm: 'v1', cmdline: 'v1', adj: 1000, rssPages: 5000 });
+  const kills: MemKillRecord[] = [];
+  const journal: KernelOomKill[] = [];
+  const mw = watchSoft(w, [], kills, { softBytes: null, kernelLog: async () => [...journal] });
+  await wait(40);
+  w.procs.delete(20);
+  w.oomKill(12);
+  journal.push(kline(12, 'v1'));
+  assert.ok(await until(() => kills.length === 1, 8000));
+  assert.equal(kills[0].source, 'inferred');
+  w.current = 100 * MB;
+  w.add(13, { comm: 'v2', cmdline: 'v2', adj: 1000, rssPages: 6000 });
+  await wait(30);
+  w.oomKill(13);
+  journal.push(kline(13, 'v2'));
+  assert.ok(await until(() => kills.length === 2, 8000));
+  assert.equal(kills[1].source, 'kernel');
+  assert.equal(kills[1].pid, 13);
+  w.add(14, { comm: 'v3', cmdline: 'v3', adj: 1000, rssPages: 7000 });
+  await wait(30);
+  w.oomKill(14);
+  journal.push(kline(14, 'v3'));
+  assert.ok(await until(() => kills.length === 3, 8000));
+  mw.stop();
+  assert.equal(kills[2].source, 'kernel', `kill 3 (pid 14) is named by its own line, not eaten by the settled debt: got ${kills[2].source} pid=${kills[2].pid}`);
+  assert.equal(kills[2].pid, 14);
+});
+
+test('M2 (`softSuppressed = 0`): the «N further crossing(s)» of a told warning counts only the crossings swallowed SINCE the previous told warning — never the ones it already told', async () => {
+  const w = new World();
+  w.current = 100 * MB;
+  const softs: MemSoftRecord[] = [];
+  let clock = 5_000_000;
+  const mw = startMemoryWatch({ cgroupDir: DIR, unit: 'u.scope', onKill: () => {}, onSoft: (r) => softs.push(r), softBytes: 200 * MB, softMinIntervalMs: 30_000, now: () => clock, log: () => {}, readFile: w.read, hotMs: 5, fastMs: 5, idleMs: 5, pageSize: 4096 });
+  const cross = async (advance: number): Promise<void> => {
+    w.current = 100 * MB;
+    await wait(40); // re-armed
+    clock += advance;
+    w.current = 250 * MB;
+  };
+  w.current = 230 * MB;
+  assert.ok(await until(() => softs.length === 1, 8000));
+  await cross(5_000); // inside the 30 s bound: swallowed (1)
+  await wait(40);
+  await cross(5_000); // swallowed (2)
+  await wait(40);
+  assert.equal(softs.length, 1, 'both swallowed');
+  await cross(31_000); // the bound is over: told, with the two it swallowed
+  assert.ok(await until(() => softs.length === 2, 8000));
+  assert.equal(softs[1].suppressed, 2);
+  await cross(5_000); // swallowed (1 since the last told one)
+  await wait(40);
+  await cross(31_000);
+  assert.ok(await until(() => softs.length === 3, 8000));
+  assert.equal(softs[2].suppressed, 1, 'only the one swallowed since the previous told warning (3 would re-count the two already told)');
+  mw.stop();
+});
