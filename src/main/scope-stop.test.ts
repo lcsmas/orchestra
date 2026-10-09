@@ -17,6 +17,8 @@ interface WorldOpts {
   rel?: Partial<ReliquatReport> | null | Error;
   own?: (u: string) => boolean;
   stopFails?: string[];
+  /** `systemctl stop` errors («not loaded») because systemd already removed the emptied unit */
+  stopFailsButGone?: string[];
   stayAfterStop?: string[];
   liveUnit?: string | null | 'unknown' | Error;
 }
@@ -49,6 +51,10 @@ function world(over: WorldOpts = {}) {
     stopUnit: async (u) => {
       calls.push(`stop ${u}`);
       if (over.stopFails?.includes(u)) throw new Error('Unit not loaded');
+      if (over.stopFailsButGone?.includes(u)) {
+        stopped.add(u);
+        throw new Error(`Unit ${u} not loaded.`);
+      }
       stopped.add(u);
     },
     ownsUnit: over.own ?? ((u) => u.startsWith('orchestra-ws-aaa-')),
@@ -196,4 +202,12 @@ test('#327: a live member that appears in a dead scope DURING the kill keeps its
   assert.deepEqual(w.calls, [`kill ${G1}`], 'no systemctl stop');
   assert.match(r?.kept[0]?.reason ?? '', /came up meanwhile/);
   assert.deepEqual(r?.stopped, []);
+});
+
+test('#327 (rig finding): `systemctl stop` that fails with «not loaded» because systemd removed the emptied unit in the meantime — the unit is GONE, so it is stopped (never «kept» with an error)', async () => {
+  const w = world({ stopFailsButGone: [G1] });
+  const r = await stopMemberScope('aaa', 'archive', w.deps);
+  assert.deepEqual(w.calls, [`kill ${G1}`, `stop ${G1}`]);
+  assert.deepEqual(r?.stopped, [G1]);
+  assert.deepEqual(r?.kept, []);
 });

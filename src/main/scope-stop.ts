@@ -165,6 +165,11 @@ export async function stopMemberScope(wsId: string, reason: string, deps: ScopeS
     try {
       await deps.stopUnit(scope.unit);
     } catch (e) {
+      // The last process may have exited after the re-judge above and systemd removed the emptied unit before `stop` ran («Unit … not loaded»): a unit that is GONE is stopped, whatever the command said.
+      if (deps.list(scope) === 'gone') {
+        report.stopped.push(scope.unit);
+        continue;
+      }
       report.kept.push({ unit: scope.unit, reason: `systemctl stop failed: ${e instanceof Error ? e.message : String(e)}` });
       continue;
     }
