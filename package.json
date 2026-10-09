@@ -48,6 +48,7 @@
     "test:session-budget": "bash scripts/e2e-session-budget.sh",
     "test:pause-ui-render": "node scripts/pause-ui-render-smoke.mjs",
     "test:memory-cap-row-render": "node scripts/memory-cap-row-render-smoke.mjs",
+    "test:memory-cap-row-shot": "bash scripts/e2e-contained-rig.sh node scripts/memory-cap-row-screenshot.mjs",
     "test:pause-ui-mutants": "node scripts/pause-ui/mutate-unit.mjs",
     "test:pause-ui-g3": "bash scripts/pause-ui/e2e-pause-ui.sh",
     "test:pause-trap": "node scripts/pause-trap/run.mjs",
