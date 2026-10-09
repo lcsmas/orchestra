@@ -72,7 +72,7 @@ const MUTANTS = [
   { id: 'U06_bar_ignores_the_levels', file: BAR, find: "const u = capUsage(cap, levels ? levels.softGb * GIB : null);", to: "const u = capUsage(cap, null);", expect: ['smoke:fill = bill / hard (35 %)', 'smoke:working set at/over the soft level'], smoke: true },
   { id: 'U07_working_set_wider_than_bill', file: BAR, find: "Math.min(u.workingFrac, u.billFrac)", to: "u.workingFrac + 0.4", expect: ['smoke:fill = bill / hard (35 %)'], smoke: true },
   { id: 'U08_table_bar_on_every_row', file: RV, find: "{row.cap ? (\n              <span className=\"res-cell res-mem\">", to: "{true ? (\n              <span className=\"res-cell res-mem\">", expect: ['smoke:CONTROL — a fleet with no capped member', 'RESOURCES'], smoke: true },
-  { id: 'U09_table_levels_not_passed_down', file: RV, find: "                  capLevels={capLevels}\n", to: "", expect: ["smoke:a capped member's MEM cell carries the bar"], smoke: true },
+  { id: 'U09_table_levels_not_passed_down', file: RV, find: "                  capLevels={capLevels}\n", to: "", expect: ["smoke:with the levels given, every capped row's bar carries the soft tick"], smoke: true },
   { id: 'U10_page_levels_not_read', file: RV, find: "capLevels={snap?.capLevels ?? null}", to: "capLevels={null}", expect: ['RESOURCES'] },
   { id: 'U11_summary_not_passed', file: RV, find: "            capLine={capSummaryLine(", to: "            capLine={null && capSummaryLine(", expect: ['RESOURCES'] },
   { id: 'U12_snapshot_swaps_the_levels', file: RS, find: "return { softGb: s.capSoftGb, hardGb: s.capHardGb };", to: "return { softGb: s.capHardGb, hardGb: s.capSoftGb };", expect: ['RESOURCES'] },
