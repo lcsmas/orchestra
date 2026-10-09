@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clock, gaugeModel, guardChip, parseGbInput, planThresholdCommit } from './memory-guard-view.ts';
+import { clock, gaugeModel, guardChip, parseGbInput, planCapCommit, planThresholdCommit } from './memory-guard-view.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from './memory-guard.ts';
 
 const D = DEFAULT_MEMORY_GUARD_SETTINGS;
@@ -88,4 +88,32 @@ test('commit: an Admission threshold at/above the machine\'s memory is refused w
 });
 test('commit: raising critical above the OLD Admission is valid as a pair (the reason both fields travel together)', () => {
   assert.deepEqual(planThresholdCommit('12', '8', D), { kind: 'patch', patch: { admissionGb: 12, criticalGb: 8 } });
+});
+
+test('cap commit (#323): a valid changed pair → patch with BOTH fields; the same pair (any spelling) → unchanged', () => {
+  assert.deepEqual(planCapCommit('4', '8', D), { kind: 'patch', patch: { capSoftGb: 4, capHardGb: 8 } });
+  assert.deepEqual(planCapCommit('3', '6', D), { kind: 'unchanged' });
+  assert.deepEqual(planCapCommit('3.0', '6,0', D), { kind: 'unchanged' });
+  assert.deepEqual(planCapCommit('2,5', '6', D), { kind: 'patch', patch: { capSoftGb: 2.5, capHardGb: 6 } });
+});
+
+test('cap commit (#323): hard ≤ soft is REFUSED with the backend\'s own sentence, never a patch (nothing is written)', () => {
+  const eq = planCapCommit('6', '6', D);
+  assert.equal(eq.kind, 'invalid', 'equal levels: hard must be strictly above soft');
+  const inverted = planCapCommit('7', '6', D);
+  assert.equal(inverted.kind, 'invalid');
+  assert.match(inverted.kind === 'invalid' ? inverted.error : '', /^The memory cap soft level \(7 GB\) must be above 0 and below the hard level \(6 GB\)\.$/);
+  for (const [a, b] of [['', '6'], ['3', ''], ['x', '6'], ['3', 'Infinity'], ['0', '6'], ['-1', '6'], ['3', '0.05'], ['3', '999']] as const) assert.equal(planCapCommit(a, b, D).kind, 'invalid', `${a} / ${b}`);
+});
+
+test('cap commit (#323): the pair travels together — raising soft above the OLD hard is valid with a higher hard; lowering hard under the OLD soft is valid with a lower soft', () => {
+  assert.deepEqual(planCapCommit('8', '12', D), { kind: 'patch', patch: { capSoftGb: 8, capHardGb: 12 } });
+  assert.deepEqual(planCapCommit('1', '2', D), { kind: 'patch', patch: { capSoftGb: 1, capHardGb: 2 } });
+  assert.equal(planCapCommit('8', '6', D).kind, 'invalid', 'the half-edit that would leave soft above the old hard');
+});
+
+test('cap commit (#323): the thresholds are untouched by a cap commit (the patch carries the cap pair only) and a cap commit validates over the CURRENT thresholds', () => {
+  const r = planCapCommit('4', '8', { ...D, admissionGb: 10, criticalGb: 4 });
+  assert.deepEqual(r, { kind: 'patch', patch: { capSoftGb: 4, capHardGb: 8 } });
+  assert.deepEqual(Object.keys((r as { patch: object }).patch).sort(), ['capHardGb', 'capSoftGb']);
 });

@@ -85,3 +85,20 @@ export function planThresholdCommit(admissionText: string, criticalText: string,
   if (admissionGb === current.admissionGb && criticalGb === current.criticalGb) return { kind: 'unchanged' };
   return { kind: 'patch', patch: { admissionGb, criticalGb } };
 }
+
+export type CapCommit =
+  | { kind: 'unchanged' }
+  | { kind: 'invalid'; error: string }
+  | { kind: 'patch'; patch: { capSoftGb: number; capHardGb: number } };
+
+/** #323: what committing the two typed Plafond mémoire fields does. Like the thresholds, the PAIR travels together — raising the soft level above the old hard level (or lowering the hard level under the old soft one) is only valid as a pair —
+ *  and nothing is written until the pair is valid (hard > soft; the same validator the backend runs, so the inline refusal and the write path can never disagree). */
+export function planCapCommit(softText: string, hardText: string, current: MemoryGuardSettings, totalBytes?: number | null): CapCommit {
+  const capSoftGb = parseGbInput(softText);
+  const capHardGb = parseGbInput(hardText);
+  if (capSoftGb === null || capHardGb === null) return { kind: 'invalid', error: 'Enter both levels as a number of GB.' };
+  const error = validateMemoryGuardSettings({ ...current, capSoftGb, capHardGb }, totalBytes);
+  if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };
+  if (capSoftGb === current.capSoftGb && capHardGb === current.capHardGb) return { kind: 'unchanged' };
+  return { kind: 'patch', patch: { capSoftGb, capHardGb } };
+}

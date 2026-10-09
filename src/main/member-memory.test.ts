@@ -13,7 +13,7 @@ const MB = 1024 * 1024;
 const scope = (ws: string, gen = 'k1'): MemberScope => ({ unit: `orchestra-ws-${ws}-${gen}.scope`, gen, cgroupDir: `/fake/${ws}-${gen}`, keeperPid: gen === 'k1' ? 100 : null });
 
 /** A fake host: which scopes exist per workspace, what each reads, who is a live member. Every call recorded. */
-function host(over: Partial<MemberMemoryDeps> = {}, world: { scopes?: Record<string, MemberScope[]>; mem?: Record<string, number | null | Error>; procs?: Record<string, Array<{ pid: number; startTicks: number; rssBytes: number; role: string; comm?: string }> | null | Error> } = {}) {
+function host(over: Partial<MemberMemoryDeps> = {}, world: { scopes?: Record<string, MemberScope[]>; mem?: Record<string, number | null | Error>; procs?: Record<string, Array<{ pid: number; startTicks: number; rssBytes: number; role: string; comm?: string }> | null | Error>; cap?: Record<string, { maxBytes: number | null; workingSetBytes: number | null; peakBytes: number | null }> } = {}) {
   const calls = { scopes: [] as string[], mem: [] as string[], procs: [] as string[] };
   const deps: MemberMemoryDeps = {
     now: () => 42,
@@ -24,7 +24,7 @@ function host(over: Partial<MemberMemoryDeps> = {}, world: { scopes?: Record<str
       calls.mem.push(s.unit);
       const v = world.mem?.[s.unit];
       if (v instanceof Error) throw v;
-      return v == null ? null : { currentBytes: v };
+      return v == null ? null : { currentBytes: v, ...(world.cap?.[s.unit] ?? {}) };
     },
     listProcs: (s) => {
       calls.procs.push(s.unit);
@@ -223,4 +223,52 @@ test('P14 (#328 F1) the keeper-tree walk costs one stat read per HOST pid (H1): 
   t += 1;
   assert.equal(poll(a)![0].pid, 5, 'and what a fresh read walked is what the pollers then share');
   assert.equal(memoizeEscaped(() => null, { now: () => t })(scope('ws-z')), null, 'a failed walk (null) is memoized too: a broken host is not hammered every 2 s');
+});
+
+test('P15 (#323) the producer carries the scope\'s own limit, working set and peak into the member view (the keeper\'s scope only)', () => {
+  __resetMemberMemoryForTests();
+  const a = scope('ws-a'); // keeperPid 100 ⇒ the live generation
+  const { deps } = host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 2100 * MB }, procs: { [a.unit]: [] }, cap: { [a.unit]: { maxBytes: 6144 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB } } });
+  const v = sampleMemberMemory(deps).tracked[0];
+  assert.deepEqual(v.cap, { unit: a.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB });
+  const { deps: d2 } = host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 2100 * MB }, procs: { [a.unit]: [] } });
+  assert.equal(sampleMemberMemory(d2).tracked[0].cap, null, 'a reader that gives no limit (FI-1 v1.10 host) ⇒ no cap, the row stays as today');
+});
+
+test('P16 (#323) the cap view THROUGH H1\'s real FI-1 functions over a fake cgroup + /proc tree: the keeper\'s scope gives its memory.max, bill and working set; a scope without a keeper (leftover generation) gives none', () => {
+  __resetMemberMemoryForTests();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'h2-p16-'));
+  try {
+    const uid = 1000, ws = 'wscap';
+    const app = path.join(root, 'cg', 'user.slice', `user-${uid}.slice`, `user@${uid}.service`, 'app.slice');
+    const proc = path.join(root, 'proc');
+    const kdir = path.join(root, 'keepers');
+    fs.mkdirSync(kdir, { recursive: true });
+    const mk = (gen: string, files: Record<string, string>) => {
+      const d = path.join(app, `orchestra-ws-${ws}-${gen}.scope`);
+      fs.mkdirSync(d, { recursive: true });
+      for (const [f, v] of Object.entries({ 'memory.events': 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n', 'memory.swap.max': '0\n', ...files })) fs.writeFileSync(path.join(d, f), v);
+      return d;
+    };
+    const live = mk('live01', { 'memory.current': `${2100 * MB}\n`, 'memory.max': `${6144 * MB}\n`, 'memory.peak': `${2400 * MB}\n`, 'memory.stat': `inactive_file ${500 * MB}\n`, 'cgroup.procs': '700\n' });
+    const leftover = mk('old001', { 'memory.current': `${400 * MB}\n`, 'memory.max': `${3072 * MB}\n`, 'memory.stat': '', 'cgroup.procs': '' });
+    fs.mkdirSync(path.join(proc, '700'), { recursive: true });
+    fs.writeFileSync(path.join(proc, '700', 'stat'), `700 (node) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7000 1000000 100\n`);
+    fs.writeFileSync(path.join(proc, '700', 'cmdline'), ['node', 'keeper.js', ws].join('\0') + '\0');
+    fs.writeFileSync(path.join(proc, '700', 'cgroup'), `0::${live.slice(path.join(root, 'cg').length)}\n`);
+    fs.writeFileSync(path.join(kdir, `${ws}.pid`), JSON.stringify({ pid: 700 }));
+    const env = { platform: 'linux', uid, cgroupRoot: path.join(root, 'cg'), procRoot: proc, pageSize: 4096, env: { ORCHESTRA_MEMORY_SCOPE_PREFIX: 'orchestra-ws-' }, readFile: (p: string) => fs.readFileSync(p, 'utf8'), readdir: (p: string) => fs.readdirSync(p), exists: (p: string) => fs.existsSync(p), keeperPidFile: (w: string) => path.join(kdir, `${w}.pid`) };
+    const deps: MemberMemoryDeps = {
+      now: () => 1, workspaceIds: () => [ws], liveMemberIds: () => [ws],
+      scopes: (w) => memberScopes(w, env), readMemory: (s) => readScopeMemory(s, env), listProcs: (s) => listScopeProcs(s, null, env),
+      support: () => ({ ok: true }), countScopes: () => 2,
+    };
+    const v = sampleMemberMemory(deps).tracked[0];
+    assert.equal(v.scopes, 2);
+    assert.equal(v.keeperInScope, true);
+    assert.deepEqual(v.cap, { unit: `orchestra-ws-${ws}-live01.scope`, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB }, 'the LIVE generation\'s limit through H1\'s code — not the leftover\'s 3 GB, not a stub');
+    assert.ok(leftover.length > 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

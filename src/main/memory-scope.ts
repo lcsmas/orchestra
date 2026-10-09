@@ -11,11 +11,13 @@ import {
   classifyScopeMembers,
   parseCgroupLimit,
   parseMemoryEvents,
+  parseMemoryStat,
   parseProcCgroupV2,
   sanitizeScopePrefix,
   scopeGenForWorkspace,
   parseMemoryScopeUnit,
   swapLimitApplied,
+  workingSetBytes,
   type ClassifiedMember,
   type ScopeMember,
   type ScopeMemory,
@@ -257,6 +259,13 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
     highBytes: lim('memory.high'),
     swapMaxBytes: lim('memory.swap.max'),
     swapCurrentBytes: num(e, path.join(d, 'memory.swap.current')),
+    workingSetBytes: (() => {
+      try {
+        return workingSetBytes(current, parseMemoryStat(e.readFile(path.join(d, 'memory.stat'))));
+      } catch {
+        return null; // unreadable ⇒ unknown, not « the raw figure »
+      }
+    })(),
     events: events ?? { high: 0, max: 0, oom: 0, oomKill: 0, oomGroupKill: 0 },
   };
 }
