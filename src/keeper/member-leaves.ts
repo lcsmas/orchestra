@@ -1,4 +1,4 @@
-// #332 (Q9): the keeper builds the member scope's two leaves — `k` (the keeper itself, no limit of its own) and `w` (the CLI and everything it starts, carrying the member's HARD level) — inside the
+// #332 (Q9): the keeper builds the member scope's two leaves — `k` (the keeper itself and, by inheritance, its CLI: no limit of their own) and `w` (the TOOL COMMANDS, which move themselves in through the tool wrapper; it carries the member's HARD level) — inside the
 // DELEGATED scope it was launched into (`systemd-run --scope -p Delegate=yes`). The keeper moves ITSELF (the scope's own main process, started for exactly this) into `k`; nothing that existed before is moved.
 // Why the keeper must not sit in the limited cgroup: see src/shared/memory-scope.ts (leaves). Electron-free; every cgroupfs operation is injected so the order and the failure handling are unit-tested.
 
@@ -57,9 +57,4 @@ export function buildMemberLeaves(a: { scopeDir: string; hardBytes: number; pid:
     return { ok: false, step: 'read the work leaf\'s limit back', error: `memory.max is ${limit ?? 'max'}, asked ${a.hardBytes}` };
   }
   return { ok: true, keeperDir, workDir };
-}
-
-/** argv that starts `command args…` as the work leaf's first process: a fresh `sh` moves ITSELF into the leaf, then execs (same pid). `&&`: a leaf that cannot be entered fails the START loudly, never runs the CLI uncapped. */
-export function inWorkLeafArgv(workDir: string, command: string, args: readonly string[]): { command: string; args: string[] } {
-  return { command: '/bin/sh', args: ['-c', 'echo $$ > "$1/cgroup.procs" && shift && exec "$@"', 'orchestra-work-leaf', workDir, command, ...args] };
 }

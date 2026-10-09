@@ -40,6 +40,7 @@ import {
   OOM_TOOL_WRAPPER_FILE,
   OOM_TOOL_WRAPPER_SCRIPT,
   buildScopeLaunchArgv,
+  reserveBytesFromEnv,
   launcherExecedKeeper,
   describeCapState,
   formatMemKillLine,
@@ -944,7 +945,7 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
     // Plafond mémoire (#320): `systemd-run --scope` makes the keeper the MAIN process of a NEW user scope (never moves an existing
     // process). If the launcher itself fails (no systemd-run, no user manager) the keeper never ran: launch it plain — an uncapped
     // session is better than none — and the keeper's `cap.state` will say `no-scope`.
-    const launch = buildScopeLaunchArgv({ unit: cap.unit, limits: cap.limits, description: `Orchestra member ${wsId} (keeper + session)`, cmd: runtime.cmd, args: keeperArgs });
+    const launch = buildScopeLaunchArgv({ unit: cap.unit, limits: cap.limits, reserveBytes: reserveBytesFromEnv(process.env), description: `Orchestra member ${wsId} (keeper + session)`, cmd: runtime.cmd, args: keeperArgs });
     let launcherFailed: string | null = null;
     // systemd-run's own stderr goes to the keeper's log (append) so a failure carries its REASON; the exec'd keeper inherits the same fd (its klog appends to the file too).
     const logFd = fs.openSync(keeperLogPath(wsId), 'a');

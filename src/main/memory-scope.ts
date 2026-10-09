@@ -210,7 +210,7 @@ export function countMemberScopes(e: ScopeEnv = realScopeEnv()): { total: number
       const mem = readScopeMemory({ cgroupDir: dir }, e);
       let swapText: string | null = null;
       try {
-        swapText = e.readFile(path.join(dir, 'memory.swap.max'));
+        swapText = e.readFile(path.join(e.exists(path.join(dir, SCOPE_LEAF_WORK, 'memory.max')) ? path.join(dir, SCOPE_LEAF_WORK) : dir, 'memory.swap.max')); // #332: the swap escape that matters is the work leaf's
       } catch {
         /* no swap accounting */
       }

@@ -325,3 +325,21 @@ test('#332 leaves — FI-1 v1.9 keeps working: the keeper in leaf k and its tool
   assert.deepEqual(out.map((p) => [p.pid, p.cgroup]), [[7053, chromiumScope]], 'the CLI (w) and the helper (w) are inside; the keeper (k) is the walk\'s root; only the escapee is listed');
   assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: scopeDir, keeperPid: 7099 }, env()), [], 'a stale keeper pid still claims nothing');
 });
+
+test('#332 leaves: countMemberScopes — a leafed scope is a CAP when its WORK leaf has a limit and a closed swap escape, whatever the scope itself says; without the leaf limit it counts as unlimited again', () => {
+  fs.mkdirSync(procRoot, { recursive: true });
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'SwapTotal:       8388604 kB\n');
+  const base = countMemberScopes(env());
+  assert.ok(base);
+  const capped = mkLeafScope('orchestra-ws-leafy6-1hhhhh.scope', 7061, 7062, 7063);
+  fs.writeFileSync(path.join(capped.scopeDir, 'memory.swap.max'), 'max\n'); // the scope's OWN swap limit open (a dropped property): the keeper closed the work leaf's
+  fs.writeFileSync(path.join(capped.scopeDir, 'memory.max'), 'max\n'); // and no scope-level limit (rig reserve 0)
+  const withCapped = countMemberScopes(env());
+  assert.equal(withCapped!.total, base!.total + 1);
+  assert.equal(withCapped!.unlimited, base!.unlimited, 'capped by the work leaf (limit + swap 0): NOT counted as a leak although the scope itself says max / max');
+  fs.writeFileSync(path.join(capped.wDir, 'memory.swap.max'), 'max\n');
+  assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'the work leaf\'s swap escape open ⇒ counted');
+  fs.writeFileSync(path.join(capped.wDir, 'memory.swap.max'), '0\n');
+  fs.rmSync(path.join(capped.wDir, 'memory.max'));
+  assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'no limit file on the work leaf ⇒ the scope\'s own (max) is read ⇒ unlimited');
+});

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMemberLeaves, inWorkLeafArgv, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, type LeafFs } from './member-leaves.ts';
 
 const S = '/sys/fs/cgroup/user.slice/app.slice/orchestra-ws-w-abc.scope';
 const HARD = 256 * 1024 * 1024;
@@ -50,12 +50,4 @@ test('#332 fail closed: a limit that reads back different from the one asked (no
 test('#332: the swap escape of the work leaf is closed best-effort (a kernel without swap accounting has no such file)', () => {
   const f = fakeFs({ failOn: 'memory.swap.max' });
   assert.ok(buildMemberLeaves({ scopeDir: S, hardBytes: HARD, pid: 1, fs: f.fs }).ok);
-});
-
-test('#332: the CLI starts INSIDE the work leaf — a fresh sh moves itself in, then execs; a leaf that cannot be entered stops the start (&&) instead of running the CLI uncapped', () => {
-  const a = inWorkLeafArgv(`${S}/w`, '/usr/bin/node', ['standin-cli.cjs', '--x']);
-  assert.equal(a.command, '/bin/sh');
-  assert.deepEqual(a.args.slice(0, 2), ['-c', 'echo $$ > "$1/cgroup.procs" && shift && exec "$@"']);
-  assert.deepEqual(a.args.slice(3), [`${S}/w`, '/usr/bin/node', 'standin-cli.cjs', '--x']);
-  assert.match(a.args[1], /&& shift && exec "\$@"/);
 });

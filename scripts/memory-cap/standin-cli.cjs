@@ -46,4 +46,7 @@ process.stdin.on('data', (d) => {
   }
 });
 process.stdin.on('end', () => { out({ type: 'result', subtype: 'eof' }); process.exit(0); });
+// #332: a BUSY CLI — a periodic timer that allocates and reads like a real CLI's event loop (stream parsing, GC, hooks) even while a tool runs (a busy CLI inside the limited cgroup lost the session 5/6)
+const tickMs = Number(process.env.STANDIN_CLI_TICK_MS || 0);
+if (tickMs > 0) { let keep = []; setInterval(() => { read('/proc/self/status'); keep.push(Buffer.alloc(512 * 1024, 1)); if (keep.length > 6) keep = keep.slice(-3); }, tickMs); }
 setInterval(() => {}, 1000);

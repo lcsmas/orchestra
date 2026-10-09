@@ -51,6 +51,9 @@ const unitsNow = (glob) => {
   return (r.stdout ?? '').split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean);
 };
 const readSafe = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+// #332: a member scope has two leaves — `k` (keeper + CLI) and `w` (tool commands, so every Reliquat); `scopeOfCg` maps a leaf cgroup path to its scope, `scopePids` lists a scope's members from BOTH leaves
+const scopeOfCg = (c) => (c && ['k', 'w'].includes(path.basename(c)) ? path.dirname(c) : c);
+const scopePids = (cg) => ['', '/k', '/w'].flatMap((leaf) => (readSafe(`/sys/fs/cgroup${cg}${leaf}/cgroup.procs`) ?? '').split('\n').filter(Boolean).map(Number));
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 // PARENT MODE
@@ -284,7 +287,7 @@ function factsOf(k, st) {
   const ws = ID[k];
   const kp = pidFilePid(ws);
   const init = initOf(st);
-  const dir = kp ? cgOf(kp) : null;
+  const dir = kp ? scopeOfCg(cgOf(kp)) : null;
   const unit = dir && dir.endsWith('.scope') ? path.basename(dir) : null;
   return { keeperPid: kp, keeperId: ident(kp), cliPid: init?.pid ?? null, cliId: ident(init?.pid), sidecarPid: init?.sidecar ?? null, sidecarId: ident(init?.sidecar), cg: dir, unit, inRigScope: !!unit && unit.startsWith(UNIT_PREFIX) };
 }
@@ -338,7 +341,7 @@ try {
     const fa = factsOf('a', a);
     const fb = factsOf('b', b);
     check('premise: a’s keeper runs in a rig-prefixed scope', fa.inRigScope, `cgroup=${fa.cg}`);
-    check('premise: a’s CLI and its MCP-like sidecar are in the SAME scope', fa.cliPid && fa.sidecarPid && cgOf(fa.cliPid) === fa.cg && cgOf(fa.sidecarPid) === fa.cg, `cli=${cgOf(fa.cliPid)} sidecar=${cgOf(fa.sidecarPid)}`);
+    check('premise: a’s CLI and its MCP-like sidecar are in the SAME scope', fa.cliPid && fa.sidecarPid && scopeOfCg(cgOf(fa.cliPid)) === fa.cg && scopeOfCg(cgOf(fa.sidecarPid)) === fa.cg, `cli=${cgOf(fa.cliPid)} sidecar=${cgOf(fa.sidecarPid)}`);
     check('premise: b (another run) has its OWN scope', fb.inRigScope && fb.unit !== fa.unit, `b=${fb.unit}`);
     // the SESSION starts the processes (as tools, the way the real CLI runs Bash)
     await runTool(a, envIDaemon('a-envi'), 'ta-envi');
@@ -351,10 +354,10 @@ try {
     const [lA] = findByCmd(mark('a-legacy'));
     const [rB] = findByCmd(mark('b-envi'));
     const [oS] = findByCmd(mark('outside'));
-    check('premise: the env -i daemon is ALIVE, in a’s scope, NOT a child of the CLI', rA && cgOf(rA) === fa.cg && ppidOf(rA) !== fa.cliPid, `pid=${rA} cg=${cgOf(rA)} ppid=${ppidOf(rA)}`);
+    check('premise: the env -i daemon is ALIVE, in a’s scope, NOT a child of the CLI', rA && scopeOfCg(cgOf(rA)) === fa.cg && ppidOf(rA) !== fa.cliPid, `pid=${rA} cg=${cgOf(rA)} ppid=${ppidOf(rA)}`);
     check('premise: it carries NO environment at all (CLAUDE_PID stripped: invisible to the legacy env proof)', rA && (readSafe(`/proc/${rA}/environ`) ?? 'x') === '', `environ=${JSON.stringify((readSafe(`/proc/${rA}/environ`) ?? '').slice(0, 40))}`);
-    check('premise: the control daemon (kept its env) is alive in a’s scope and carries CLAUDE_PID', lA && cgOf(lA) === fa.cg && /CLAUDE_PID=/.test(readSafe(`/proc/${lA}/environ`) ?? ''), `pid=${lA}`);
-    check('premise: b’s daemon is alive in b’s scope; the human’s process is alive in NO member scope', rB && cgOf(rB) === fb.cg && oS && !(cgOf(oS) ?? '').includes(UNIT_PREFIX), `b=${cgOf(rB)} outside=${cgOf(oS)}`);
+    check('premise: the control daemon (kept its env) is alive in a’s scope and carries CLAUDE_PID', lA && scopeOfCg(cgOf(lA)) === fa.cg && /CLAUDE_PID=/.test(readSafe(`/proc/${lA}/environ`) ?? ''), `pid=${lA}`);
+    check('premise: b’s daemon is alive in b’s scope; the human’s process is alive in NO member scope', rB && scopeOfCg(cgOf(rB)) === fb.cg && oS && !(cgOf(oS) ?? '').includes(UNIT_PREFIX), `b=${cgOf(rB)} outside=${cgOf(oS)}`);
     const scopeA = scopeMod.memberScopes(ID.a);
     const roles = Object.fromEntries(scopeMod.listScopeProcs(scopeA[0], fa.cliPid).map((p) => [p.pid, p.role]));
     check('premise: FI-1 classifies the daemon `reliquat`, the keeper `keeper`, the CLI `cli`, the sidecar `session`', roles[rA] === 'reliquat' && roles[fa.keeperPid] === 'keeper' && roles[fa.cliPid] === 'cli' && roles[fa.sidecarPid] === 'session', JSON.stringify(roles));
@@ -411,7 +414,7 @@ try {
     const [r2] = findByCmd(mark('gen2'));
     const id2 = ident(r2);
     check('premise: a restart while Reliquats keep the old scope starts a NEW generation in a NEW scope (two scopes, both resolvable)', f2.inRigScope && f2.unit !== f1.unit && scopeMod.memberScopes(ID.a).length === 2, `old=${f1.unit} new=${f2.unit}`);
-    check('premise: both daemons are alive, each in ITS scope', aliveId(id1) && aliveId(id2) && cgOf(r1)?.endsWith(f1.unit) && cgOf(r2)?.endsWith(f2.unit), `${cgOf(r1)} ${cgOf(r2)}`);
+    check('premise: both daemons are alive, each in ITS scope', aliveId(id1) && aliveId(id2) && scopeOfCg(cgOf(r1))?.endsWith(f1.unit) && scopeOfCg(cgOf(r2))?.endsWith(f2.unit), `${cgOf(r1)} ${cgOf(r2)}`);
     const keep = { keeper: f2.keeperId, cli: f2.cliId, side: f2.sidecarId };
     startTrap();
     cli('run', 'pause', '--hard', '--run', ID.ops, '--as', ID.lead);
@@ -459,7 +462,7 @@ try {
     await runTool(a, `( env -i ${bus} setsid sh -c "sh -c 'sleep 600; : ${H1}' & sh -c 'sleep 600; : ${H2}' & exec systemd-run --user --scope --collect --quiet --unit=${ESC} -p MemoryMax=100M -- sh -c 'sleep 600; : ${MV}'" >/dev/null 2>&1 & ) ; true`, 'ta-mv');
     await waitFor(() => shellsWith(MV).length === 1 && shellsWith(H1).length === 1 && shellsWith(H2).length === 1, 20_000, 100);
     const [m] = shellsWith(MV), [h1] = shellsWith(H1), [h2] = shellsWith(H2);
-    check('premise: the main MOVED ITSELF out of the member scope (own transient scope), both helpers stayed in a’s scope, their parent is the main', !!m && !!h1 && !!h2 && (cgOf(m) ?? '').endsWith(ESC) && cgOf(h1) === fa.cg && cgOf(h2) === fa.cg && ppidOf(h1) === m && ppidOf(h2) === m, `main=${cgOf(m)} h1=${cgOf(h1)} ppid=${ppidOf(h1)}`);
+    check('premise: the main MOVED ITSELF out of the member scope (own transient scope), both helpers stayed in a’s scope, their parent is the main', !!m && !!h1 && !!h2 && (cgOf(m) ?? '').endsWith(ESC) && scopeOfCg(cgOf(h1)) === fa.cg && scopeOfCg(cgOf(h2)) === fa.cg && ppidOf(h1) === m && ppidOf(h2) === m, `main=${cgOf(m)} h1=${cgOf(h1)} ppid=${ppidOf(h1)}`);
     const scopeA = scopeMod.memberScopes(ID.a);
     const roles = Object.fromEntries(scopeMod.listScopeProcs(scopeA[0], fa.cliPid).map((p) => [p.pid, p.role]));
     check('premise: FI-1 classifies the helpers `reliquat` and does not list the main (it is in another cgroup)', roles[h1] === 'reliquat' && roles[h2] === 'reliquat' && !(m in roles), JSON.stringify(roles));
@@ -471,7 +474,7 @@ try {
     check('trap_stamped: the host trap finished', await waitFor(() => trapAt() !== null, 90_000, 200), `trapAt=${trapAt()}`);
     await sleep(500);
     check('helpers_in_scope_killed: both helpers (and the sleeps under them) left in a’s scope are DEAD', !aliveId(ids.h1) && !aliveId(ids.h2), `${ids.h1} ${ids.h2}`);
-    const left = (readSafe(`/sys/fs/cgroup${fa.cg}/cgroup.procs`) ?? '').split('\n').filter(Boolean).map(Number).filter((q) => ![fa.keeperPid, fa.cliPid, fa.sidecarPid].includes(q));
+    const left = scopePids(fa.cg).filter((q) => ![fa.keeperPid, fa.cliPid, fa.sidecarPid].includes(q));
     check('the scope holds nothing but the session afterwards', left.length === 0, `left=${left.join(',')}`);
     check('parent_left_scope_alive: the main — in ANOTHER scope, not ours to kill — is still alive, same identity', aliveId(ids.m), ids.m);
     check('keeper, CLI, sidecar SURVIVE', aliveId(before.keeper) && aliveId(before.cli) && aliveId(before.side), JSON.stringify(before));
@@ -496,7 +499,7 @@ try {
     await sleep(800);
     const [r] = findByCmd(mark('su'));
     const id = ident(r);
-    check('premise: the env -i daemon is alive in a’s scope', !!r && cgOf(r) === fa.cg, `pid=${r} cg=${cgOf(r)}`);
+    check('premise: the env -i daemon is alive in a’s scope', !!r && scopeOfCg(cgOf(r)) === fa.cg, `pid=${r} cg=${cgOf(r)}`);
     const slice = scopeMod.appSliceDir();
     const realReaddir = fs.readdirSync;
     let failing = true, hits = 0;
@@ -526,7 +529,7 @@ try {
     await sleep(1200);
     const pids = tags.map((t) => findByCmd(mark('') + t)[0]).filter(Boolean);
     const idMap = new Map(pids.map((pid) => [pid, ident(pid)]));
-    check('premise: 12 detached Reliquats are alive in a’s scope', pids.length === 12 && pids.every((pid) => cgOf(pid) === fa.cg), `n=${pids.length}`);
+    check('premise: 12 detached Reliquats are alive in a’s scope', pids.length === 12 && pids.every((pid) => scopeOfCg(cgOf(pid)) === fa.cg), `n=${pids.length}`);
     let atFirstSignal = null;
     const realKill = process.kill.bind(process);
     process.kill = (pid, sig) => {

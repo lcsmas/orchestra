@@ -24,23 +24,26 @@ test('the scope\'s leaves are built by THIS keeper, from its own pid, after the 
   assert.ok(checkAt > 0 && checkAt < setup.indexOf('buildMemberLeaves('), 'the scope is verified to be OURS before anything is created or moved');
 });
 
-test('fail closed: leaves that could not be built ⇒ state not-applied, said in the log, no wrapper, no watch (return before both)', () => {
-  const failed = setup.slice(setup.indexOf('if (!leaves.ok) {'), setup.indexOf('workLeafDir = leaves.workDir;'));
+test('leaves that could not be built ⇒ state not-applied, said in the log, NO watch (return before it) — but the tools stay wrapped (adj 1000: a backstop episode takes a tool, not the session)', () => {
+  const failed = setup.slice(setup.indexOf('if (!leaves.ok) {'), setup.indexOf('const dir = leaves.workDir;'));
   assert.match(failed, /state: 'not-applied'/);
   assert.match(failed, /klog\(`memory cap: scope \$\{cap\.unit\} is not delegated or its leaves could not be built/);
-  assert.match(failed, /return env;/);
+  assert.match(failed, /return cliEnv\(null\);/);
+  assert.match(failed, /tools are still wrapped/);
   assert.ok(setup.indexOf('if (!leaves.ok) {') < setup.indexOf('startMemoryWatch({'));
 });
 
 test('the cap, its read-back checks and the kill watch are on the WORK leaf (`dir`), never on the scope or the keeper leaf', () => {
-  assert.match(setup, /workLeafDir = leaves\.workDir;\n  const dir = leaves\.workDir;/);
+  assert.match(setup, /const dir = leaves\.workDir;/);
   assert.match(setup, /parseCgroupLimit\(fs\.readFileSync\(path\.join\(dir, 'memory\.max'\), 'utf8'\)\)/);
   assert.match(setup, /memWatch = startMemoryWatch\(\{\n    cgroupDir: dir,/);
 });
 
-test('the CLI starts INSIDE the work leaf (the keeper does not), through the self-moving sh; an uncapped keeper never does', () => {
-  assert.match(startChild, /if \(workLeafDir\) \{[\s\S]*inWorkLeafArgv\(workLeafDir, command, args\)[\s\S]*command = w\.command;[\s\S]*args = w\.args;/);
-  assert.ok(startChild.indexOf('inWorkLeafArgv(') < startChild.indexOf('spawn(command, args,'), 'the argv is rewritten BEFORE the spawn');
-  assert.equal((keeper.match(/workLeafDir = /g) ?? []).length, 1, 'declared null; assigned in ONE place — once the leaves exist');
-  assert.match(keeper, /let workLeafDir: string \| null = null;/);
+test('the CLI is NOT moved: it starts where the keeper is (leaf k); the work leaf reaches the TOOL wrapper through the CLI\'s environment, and the CLI is spawned as the client asked', () => {
+  assert.match(setup, /const base: Record<string, string \| undefined> = \{ \.\.\.env, \.\.\.\(workLeaf \? \{ \[WORK_LEAF_ENV\]: workLeaf \} : \{\}\) \};/);
+  assert.match(setup, /\n  return cliEnv\(dir\);$/, 'the success path hands the work leaf to the wrapper');
+  assert.equal((setup.match(/cliEnv\(null\)/g) ?? []).length, 2, 'both failure branches (leaves not built, limit not applied) wrap the tools but name NO work leaf');
+  assert.match(startChild, /child = spawn\(command, args, \{ cwd, env, stdio: \['pipe', 'pipe', 'pipe'\] \}\);/);
+  assert.doesNotMatch(startChild, /cgroup\.procs|work leaf|workLeaf/, 'no rewrite of the CLI argv: a busy CLI inside the limited leaf lost the session 4/8 (Q9 addendum)');
+  assert.doesNotMatch(keeper, /inWorkLeafArgv|workLeafDir/);
 });

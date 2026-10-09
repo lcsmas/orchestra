@@ -53,9 +53,9 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
-import { buildMemberLeaves, inWorkLeafArgv, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, type LeafFs } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
-import { INNER_SHELL_PREFIX_ENV, SCOPE_LEAF_KEEPER, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -203,12 +203,6 @@ function beginShutdown(reason: string): void {
 
 function startChild(command: string, args: string[], cwd: string, env: Record<string, string | undefined>): void {
   klog(`spawn ${command} cwd=${cwd}`);
-  if (workLeafDir) {
-    // #332: a capped member's CLI starts INSIDE the work leaf (the keeper stays out of it)
-    const w = inWorkLeafArgv(workLeafDir, command, args);
-    command = w.command;
-    args = w.args;
-  }
   child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   state.onSpawn(Date.now());
 
@@ -252,8 +246,6 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
 
 type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>;
 let capInfo: CapInfo | null = null;
-/** #332: the member's work leaf (`<scope>/w`) once the cap is applied — the CLI starts inside it. */
-let workLeafDir: string | null = null;
 const realLeafFs: LeafFs = {
   mkdir: (p) => {
     try {
@@ -290,14 +282,41 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     klog(`memory cap: NOT in scope ${cap.unit} (cgroup ${cgPath ?? 'unreadable'}) — the keeper was launched plain; no cap, no watch`);
     return env;
   }
-  // #332 (Q9): two leaves inside the delegated scope — this keeper in `k` (no limit), the CLI and its tools in `w` (the member's hard level). The kill watch, the limit checks and the CLI start use `w`.
+  let wrapperOk = false;
+  if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {
+    klog(`memory cap: tool wrapper path ${JSON.stringify(cap.wrapper)} is not usable as CLAUDE_CODE_SHELL_PREFIX (relative or contains whitespace) — tool commands keep oom_score_adj 0`);
+  } else if (cap.wrapper) {
+    try {
+      fs.accessSync(cap.wrapper, fs.constants.X_OK);
+      wrapperOk = true;
+    } catch {
+      klog(`memory cap: tool wrapper ${cap.wrapper} is missing or not executable — tool commands keep oom_score_adj 0`);
+    }
+  }
+  /** The CLI's environment for a capped member: DBUS removed, the tool wrapper as the shell prefix (when usable) and — when the work leaf exists — the variable the wrapper moves its shell by. */
+  const cliEnv = (workLeaf: string | null): Record<string, string | undefined> => {
+    // A browser started from this session moves its main process into ITS OWN systemd scope through the session bus (measured: app-org.chromium.Chromium-<pid>.scope) — out of the cap, with the
+    // 56-Chromium incident that motivated the cap in plain view. Without DBUS_SESSION_BUS_ADDRESS Chromium stays where it was started (measured 9/9 inside; the user-manager tools, `systemd-run --user`,
+    // gh and git keep working). Capped members only; the human's sessions and a switch-OFF run keep the address.
+    // #332: the CLI inherits THIS leaf (k); its tool commands move themselves into the work leaf through the wrapper, which reads this variable
+    const base: Record<string, string | undefined> = { ...env, ...(workLeaf ? { [WORK_LEAF_ENV]: workLeaf } : {}) };
+    if (base.DBUS_SESSION_BUS_ADDRESS !== undefined) {
+      delete base.DBUS_SESSION_BUS_ADDRESS;
+      klog('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)');
+    }
+    if (!wrapperOk || !cap.wrapper) return base;
+    const out: Record<string, string | undefined> = { ...base, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
+    // The user's own prefix keeps working: our wrapper chains it exactly as the CLI would have called it.
+    if (env.CLAUDE_CODE_SHELL_PREFIX && env.CLAUDE_CODE_SHELL_PREFIX !== cap.wrapper) out[INNER_SHELL_PREFIX_ENV] = env.CLAUDE_CODE_SHELL_PREFIX;
+    return out;
+  };
+  // #332 (Q9): two leaves inside the delegated scope — this keeper (and, by inheritance, the CLI) in `k` (no limit), the TOOL COMMANDS in `w` (the member's hard level; each tool shell moves itself in through the wrapper). The kill watch and the limit checks use `w`.
   const leaves = buildMemberLeaves({ scopeDir: path.join(CGROUP_ROOT, scopePath), hardBytes: cap.hardBytes, pid: process.pid, fs: realLeafFs, alreadyInKeeperLeaf: inKeeperLeaf });
   if (!leaves.ok) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
-    klog(`memory cap: scope ${cap.unit} is not delegated or its leaves could not be built (${leaves.step}: ${leaves.error}) — the cap is NOT applied (only the scope's backstop limit holds); tools are not wrapped, no kill watch`);
-    return env;
+    klog(`memory cap: scope ${cap.unit} is not delegated or its leaves could not be built (${leaves.step}: ${leaves.error}) — the cap is NOT applied (only the scope's backstop limit holds, if any); tools are still wrapped (adj 1000: a backstop episode takes a tool first), no kill watch`);
+    return cliEnv(null);
   }
-  workLeafDir = leaves.workDir;
   const dir = leaves.workDir;
   let limit: number | null = null;
   try {
@@ -323,22 +342,11 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);
   if (!limitOk) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
-    klog(`memory cap: in scope ${cap.unit} but memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the cap is NOT applied (memory controller not delegated?); tools are not wrapped, no kill watch`);
-    return env;
+    klog(`memory cap: in scope ${cap.unit} but the work leaf's memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the cap is NOT applied (memory controller not delegated?); tools are still wrapped (adj 1000), no kill watch`);
+    return cliEnv(null);
   }
   // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
   if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
-  let wrapperOk = false;
-  if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {
-    klog(`memory cap: tool wrapper path ${JSON.stringify(cap.wrapper)} is not usable as CLAUDE_CODE_SHELL_PREFIX (relative or contains whitespace) — tool commands keep oom_score_adj 0`);
-  } else if (cap.wrapper) {
-    try {
-      fs.accessSync(cap.wrapper, fs.constants.X_OK);
-      wrapperOk = true;
-    } catch {
-      klog(`memory cap: tool wrapper ${cap.wrapper} is missing or not executable — tool commands keep oom_score_adj 0`);
-    }
-  }
   capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
   // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
   const persist = (rec: MemKillRecord | MemSoftRecord): void => {
@@ -377,19 +385,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     },
   });
   klog(`memory cap: ${capInfo.state.toUpperCase()} unit=${cap.unit} memory.max=${limit} cgroup=${dir}`);
-  // A browser started from this session moves its main process into ITS OWN systemd scope through the session bus (measured: app-org.chromium.Chromium-<pid>.scope) — out of the cap, with the
-  // 56-Chromium incident that motivated the cap in plain view. Without DBUS_SESSION_BUS_ADDRESS Chromium stays where it was started (measured 9/9 inside; the user-manager tools, `systemd-run --user`,
-  // gh and git keep working). Capped members only; the human's sessions and a switch-OFF run keep the address.
-  const base: Record<string, string | undefined> = { ...env };
-  if (base.DBUS_SESSION_BUS_ADDRESS !== undefined) {
-    delete base.DBUS_SESSION_BUS_ADDRESS;
-    klog('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)');
-  }
-  if (!wrapperOk || !cap.wrapper) return base;
-  const out: Record<string, string | undefined> = { ...base, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
-  // The user's own prefix keeps working: our wrapper chains it exactly as the CLI would have called it.
-  if (env.CLAUDE_CODE_SHELL_PREFIX && env.CLAUDE_CODE_SHELL_PREFIX !== cap.wrapper) out[INNER_SHELL_PREFIX_ENV] = env.CLAUDE_CODE_SHELL_PREFIX;
-  return out;
+  return cliEnv(dir);
 }
 
 // ── Docker relay (#291) ──────────────────────────────────────────────────────────────────────────────────────────

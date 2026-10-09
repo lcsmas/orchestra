@@ -111,16 +111,28 @@ export function decideMemoryCap(i: MemoryCapInput): MemoryCapDecision {
 }
 
 // ─── The scope's two leaves (#332, Q9) ─────────────────────────────────────────────────────────────────────────────
-// ONE scope per member (ADR 0005), shaped as a parent cgroup with two LEAVES: `k` holds the keeper (no limit of its own), `w` holds the CLI and everything it starts and carries the member's HARD level.
-// Why: the kernel's second OOM episode of a back-to-back kill chain opens a few ms after the first (the killed tool's pages are still charged, its mm already detached) and is started by an adj-0
-// task that allocates at the limit — in practice the keeper REACTING to the kill. With the keeper outside the limited cgroup it can neither open that episode nor be its victim (Q9, ledger #329).
+// ONE scope per member (ADR 0005), shaped as a parent cgroup with two LEAVES: `k` holds the keeper AND the CLI (no limit of their own), `w` holds the TOOL COMMANDS (each Bash command's shell moves itself into
+// it, through the CLAUDE_CODE_SHELL_PREFIX wrapper) and carries the member's HARD level. Why: after a tool is OOM-killed its pages stay charged for a few ms while its mm is already detached, so the kernel's next
+// episode — opened by an adj-0 task that allocates at the limit: the keeper REACTING to the kill, or a busy CLI — has no tool left to kill and takes the keeper, then the CLI (Q9, ledger #329: session lost 10/10;
+// with the CLI inside the limited leaf a busy CLI still lost it 4/8; keeper + CLI outside it 8/8 alive). Only the tool commands are capped; the scope itself keeps a backstop limit above the hard level.
 
 export const SCOPE_LEAF_KEEPER = 'k';
 export const SCOPE_LEAF_WORK = 'w';
 export const SCOPE_LEAVES: readonly string[] = [SCOPE_LEAF_KEEPER, SCOPE_LEAF_WORK];
-/** The scope's own `MemoryMax` is the hard level PLUS this: the work leaf must always hit its limit first, the scope's limit is only a backstop for a runaway keeper (or a layout that could not be built). */
-export const KEEPER_LEAF_RESERVE_BYTES = 128 * 1024 * 1024;
-export const scopeMemoryMaxBytes = (hardBytes: number): number => hardBytes + KEEPER_LEAF_RESERVE_BYTES;
+/** Env var the keeper puts in the CLI's environment: the work leaf's directory, which the tool wrapper moves its shell into. */
+export const WORK_LEAF_ENV = 'ORCHESTRA_MEMCAP_WORK_LEAF';
+/** The scope's own `MemoryMax` is the hard level PLUS this room for the keeper, the CLI (≈330 MB real), its MCP servers and hooks: the work leaf must always hit its limit first; the scope's limit is only a backstop. */
+export const KEEPER_LEAF_RESERVE_BYTES = 1024 * 1024 * 1024;
+/** Rigs (disposable scopes ≤ 300 MB) override the reserve; `0` = NO scope-level limit (the work leaf still carries the cap). A non-integer / negative value is ignored. */
+export const MEMCAP_RESERVE_ENV = 'ORCHESTRA_MEMCAP_RESERVE_BYTES';
+export function reserveBytesFromEnv(env: Record<string, string | undefined>): number {
+  const raw = env[MEMCAP_RESERVE_ENV];
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return KEEPER_LEAF_RESERVE_BYTES;
+  const n = Number(raw.trim());
+  return Number.isSafeInteger(n) ? n : KEEPER_LEAF_RESERVE_BYTES;
+}
+/** The scope's backstop `MemoryMax`, or null (no scope-level limit) when the reserve is 0. */
+export const scopeMemoryMaxBytes = (hardBytes: number, reserveBytes: number = KEEPER_LEAF_RESERVE_BYTES): number | null => (reserveBytes > 0 ? hardBytes + reserveBytes : null);
 
 /** `.../<unit>.scope` or `.../<unit>.scope/<leaf>` (a cgroup v2 path) → the scope's own path. */
 export function scopePathOfCgroup(cgPath: string): string {
@@ -129,10 +141,11 @@ export function scopePathOfCgroup(cgPath: string): string {
 }
 
 /** `systemd-run` argv that starts `cmd args…` as the main process of a NEW user scope (never moves an existing process). The scope is DELEGATED (`Delegate=yes`): the keeper builds its two leaves inside it. */
-export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits | null; description?: string; cmd: string; args: string[] }): { cmd: string; args: string[] } {
+export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits | null; description?: string; cmd: string; args: string[]; reserveBytes?: number }): { cmd: string; args: string[] } {
   const props: string[] = ['OOMPolicy=continue']; // systemd's default `stop` ends the WHOLE scope after one oom_kill
   if (a.limits) {
-    props.push('Delegate=yes', `MemoryMax=${scopeMemoryMaxBytes(a.limits.hardBytes)}`, `MemorySwapMax=${a.limits.swapMaxBytes}`);
+    const backstop = scopeMemoryMaxBytes(a.limits.hardBytes, a.reserveBytes);
+    props.push('Delegate=yes', ...(backstop === null ? [] : [`MemoryMax=${backstop}`]), `MemorySwapMax=${a.limits.swapMaxBytes}`);
   }
   return {
     cmd: 'systemd-run',
@@ -159,6 +172,8 @@ export const OOM_TOOL_WRAPPER_SCRIPT = `#!/bin/sh
 # The keeper and the CLI sit at the default (0) and an unprivileged process cannot go below its floor, so protect them by RAISING this tool command (everything under it inherits it) so the
 # kernel's OOM killer picks a tool process, never the keeper or the CLI (both stay at 0).
 echo ${OOM_ADJ_TOOLS} > /proc/self/oom_score_adj 2>/dev/null
+# #332: a capped member's tool command moves ITSELF into the work leaf — the one cgroup that carries the hard level (the keeper and the CLI stay outside it); a leaf that cannot be entered leaves the tool where it is (adj 1000, the scope backstop)
+[ -n "\${${WORK_LEAF_ENV}:-}" ] && echo $$ > "\$${WORK_LEAF_ENV}/cgroup.procs" 2>/dev/null
 [ "$#" -eq 1 ] || exec "$@"
 if [ -n "\${${INNER_SHELL_PREFIX_ENV}:-}" ]; then
   # the user's own prefix, chained exactly as the CLI would have called it
@@ -381,9 +396,13 @@ export function parseKernelOomMessage(message: string, atMs: number): KernelOomK
 
 /** The kernel kills that belong to THIS scope (its own cgroup hit its limit — basename = the unit), not older than `sinceMs`, oldest first. */
 export function kernelKillsForUnit(lines: readonly KernelOomKill[], unit: string, sinceMs: number): KernelOomKill[] {
-  const base = (p: string): string => scopePathOfCgroup(p).slice(scopePathOfCgroup(p).lastIndexOf('/') + 1); // a kill inside a leaf (`<unit>/w`) belongs to the unit
+  // A kill belongs to the unit when its VICTIM lived in the scope itself (a flat scope) or in its WORK leaf `<unit>/w` — the cgroup the watch counts. A victim in the keeper leaf `<unit>/k` died to a scope-level
+  // backstop episode: it is NOT in the work leaf's `oom_kill` counter, so pairing its line with the next real kill would name the wrong victim (#332 pre-review).
+  const base = (p: string): string => p.slice(p.lastIndexOf('/') + 1);
+  const parentBase = (p: string): string => base(p.slice(0, Math.max(0, p.lastIndexOf('/'))));
+  const inWork = (p: string): boolean => base(p) === unit || (base(p) === SCOPE_LEAF_WORK && parentBase(p) === unit);
   return lines
-    .filter((l) => l.atMs >= sinceMs && (base(l.oomMemcg) === unit || base(l.taskMemcg) === unit))
+    .filter((l) => l.atMs >= sinceMs && (l.taskMemcg ? inWork(l.taskMemcg) : inWork(l.oomMemcg)))
     .sort((a, b) => a.atMs - b.atMs || a.pid - b.pid);
 }
 
