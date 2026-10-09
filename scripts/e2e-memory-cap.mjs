@@ -48,6 +48,8 @@ const ARMS = {
   app_restart_keeps_scopes: {},
   clear_then_fresh_start: { mustFailOnMaster: true },
   unit_stop_takes_spared: { mustFailOnMaster: true },
+  // #332 (Q9): the SESSION survives back-to-back cap kills — keeper in leaf k (no limit), CLI + tools in leaf w (the hard level)
+  session_survives_chain: { mustFailOnMaster: true },
   // review round 1 (OPS m1-m4): a member WITHOUT a scope is stopped as before; a scoped /clear leaves a successor whole and holds off a wake; the pid file is not the only live-keeper signal
   no_scope_changes_nothing: {},
   scoped_extra_runs_first: { mustFailOnMaster: true },
@@ -217,6 +219,9 @@ const ident = (pid) => (pid ? `${pid}:${ticks(pid)}` : null);
 const alive = (pid) => { if (!pid) return false; const s = readSafe(`/proc/${pid}/stat`); return !!s && s.slice(s.lastIndexOf(')') + 2)[0] !== 'Z'; };
 const cgOf = (pid) => { const t = readSafe(`/proc/${pid}/cgroup`); const l = t?.split('\n').find((x) => x.startsWith('0::')); return l ? l.slice(3) : null; };
 const cgDir = (pid) => { const c = cgOf(pid); return c ? path.join('/sys/fs/cgroup', c) : null; };
+// #332: a scope has two leaves — `k` (the keeper) and `w` (the CLI + tools, carrying the hard level). `scopeOfCg` maps a cgroup path to its scope; `sameScope` compares two pids by scope.
+const scopeOfCg = (c) => (c && ['k', 'w'].includes(path.basename(c)) ? path.dirname(c) : c);
+const sameScope = (pidA, pidB) => { const a = scopeOfCg(cgOf(pidA)); return !!a && a === scopeOfCg(cgOf(pidB)); };
 const eventsOf = (dir) => Object.fromEntries((readSafe(path.join(dir, 'memory.events')) ?? '').trim().split('\n').filter(Boolean).map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)]));
 const pidFilePid = (ws) => { try { return JSON.parse(fs.readFileSync(path.join(home, 'keepers', `${ws}.pid`), 'utf8')).pid; } catch { return null; } };
 async function waitFor(pred, ms, step = 50) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await sleep(step); } return !!(await pred()); }
@@ -255,9 +260,12 @@ const decide = (ws, { fleet = true, run = 'run-on' } = {}) =>
 function factsOf(ws, st) {
   const kp = pidFilePid(ws);
   const init = st ? initOf(st) : null;
-  const dir = kp ? cgDir(kp) : null;
-  const unit = dir && dir.endsWith('.scope') ? path.basename(dir) : null;
-  return { keeperPid: kp, keeperId: ident(kp), cliPid: init?.pid ?? null, cliId: ident(init?.pid), cgroupDir: dir, unit, inRigScope: !!unit && unit.startsWith(UNIT_PREFIX), init };
+  const rawDir = kp ? cgDir(kp) : null;
+  const scopeDir = rawDir && ['k', 'w'].includes(path.basename(rawDir)) ? path.dirname(rawDir) : rawDir;
+  // `cgroupDir` = the dir that CARRIES THE CAP (memory.max / events / high): the work leaf when the scope has its leaves, else the scope itself
+  const dir = scopeDir && fs.existsSync(path.join(scopeDir, 'w', 'memory.max')) ? path.join(scopeDir, 'w') : scopeDir;
+  const unit = scopeDir && scopeDir.endsWith('.scope') ? path.basename(scopeDir) : null;
+  return { keeperPid: kp, keeperId: ident(kp), cliPid: init?.pid ?? null, cliId: ident(init?.pid), cgroupDir: dir, scopeDir, unit, inRigScope: !!unit && unit.startsWith(UNIT_PREFIX), init };
 }
 const wsName = (tag) => `mc${RUN_TOKEN}${tag}`;
 const checks = [];
@@ -357,7 +365,9 @@ try {
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     check('a scope exists: the keeper runs in a rig-prefixed .scope', f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
-    check('the CLI is in the SAME scope as the keeper', f.cliPid && cgOf(f.cliPid) === cgOf(f.keeperPid), `cli=${cgOf(f.cliPid)}`);
+    check('the CLI is in the SAME scope as the keeper (#332: keeper leaf k, CLI + tools leaf w)', f.cliPid && sameScope(f.cliPid, f.keeperPid), `cli=${cgOf(f.cliPid)} keeper=${cgOf(f.keeperPid)}`);
+    const kMax = readSafe(path.join(f.scopeDir ?? '/nonexistent', 'k', 'memory.max'))?.trim();
+    check('#332 leaves: the keeper is in `k` (NO limit of its own), the CLI in `w` — where the cap (memory.max) lives', path.basename(cgOf(f.keeperPid) ?? '') === 'k' && path.basename(cgOf(f.cliPid) ?? '') === 'w' && (kMax === undefined || kMax === 'max'), `keeper=${cgOf(f.keeperPid)} cli=${cgOf(f.cliPid)} k/memory.max=${kMax}`);
     const maxB = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.max')));
     const want = Math.round(HARD_GB * 1024 ** 3);
     check('levels: memory.max = the Garde mémoire HARD level (±1 page)', Math.abs(maxB - want) <= 65536, `memory.max=${maxB} want=${want}`);
@@ -517,12 +527,12 @@ try {
     await sleep(500);
     const dpid = procsMarked(`${ws}-daemon`)[0];
     const dId = ident(dpid);
-    check('setup: the member runs in its rig scope and left a DETACHED process in it', f.inRigScope && td?.code === 0 && !!dpid && cgOf(dpid) === cgOf(f.keeperPid), `unit=${f.unit} daemon=${dpid} cg=${cgOf(dpid)}`);
+    check('setup: the member runs in its rig scope and left a DETACHED process in it', f.inRigScope && td?.code === 0 && !!dpid && sameScope(dpid, f.keeperPid), `unit=${f.unit} daemon=${dpid} cg=${cgOf(dpid)}`);
     const rep = await explicitStop(ws, 'workspace-deleted');
     await waitFor(() => !alive(dpid) && !armUnits(ws).length, 15_000);
     check('the detached process is GONE (pid+start identity)', !alive(dpid) || ident(dpid) !== dId, `daemon ${dpid} alive=${alive(dpid)}`);
     check('keeper and CLI are gone', !alive(f.keeperPid) && !alive(f.cliPid));
-    check('the scope is REMOVED: no unit, no memberScopes entry, no cgroup directory', armUnits(ws).length === 0 && (scopeMod ? scopeMod.memberScopes(ws).length === 0 : true) && !fs.existsSync(f.cgroupDir ?? '/nonexistent-unit'), `units=${armUnits(ws)} dir=${f.cgroupDir && fs.existsSync(f.cgroupDir)}`);
+    check('the scope is REMOVED: no unit, no memberScopes entry, no cgroup directory', armUnits(ws).length === 0 && (scopeMod ? scopeMod.memberScopes(ws).length === 0 : true) && !fs.existsSync(f.scopeDir ?? f.cgroupDir ?? '/nonexistent-unit'), `units=${armUnits(ws)} dir=${f.cgroupDir && fs.existsSync(f.cgroupDir)}`);
     check('the report says what it did: Reliquats killed, THAT unit stopped', !!rep && rep.killed >= 1 && rep.stopped.includes(f.unit) && rep.kept.length === 0, JSON.stringify(rep));
     check('the app log has the stop line (workspace, reason) — the instrument can say yes', new RegExp(`scope-stop\\[${ws}\\] \\(workspace-deleted\\): killed [1-9]`).test(orchLog()));
     detail = `unit=${f.unit} killed=${rep?.killed}`;
@@ -629,7 +639,7 @@ try {
     await runTool(st, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-old`, 't-old', 20_000);
     await sleep(500);
     const dOld = procsMarked(`${ws}-old`)[0];
-    check('setup: a detached process of the OLD conversation lives in the scope', !!dOld && cgOf(dOld) === cgOf(f.keeperPid), `old=${dOld}`);
+    check('setup: a detached process of the OLD conversation lives in the scope', !!dOld && sameScope(dOld, f.keeperPid), `old=${dOld}`);
     const rep = await explicitStop(ws, 'clear', { forbid: false });
     await waitFor(() => !alive(dOld) && !armUnits(ws).length, 15_000);
     check('the old conversation\'s detached process is GONE and its scope removed', !alive(dOld) && armUnits(ws).length === 0, JSON.stringify(rep));
@@ -651,7 +661,7 @@ try {
     await sleep(500);
     const opid = procsMarked(orphan)[0];
     const dpid = procsMarked(`${ws}-daemon`)[0];
-    check('setup: a detached `claude`-named orphan AND a plain daemon live in the member\'s scope', tc?.code === 0 && !!opid && !!dpid && readSafe(`/proc/${opid}/comm`)?.trim() === 'claude' && cgOf(opid) === cgOf(f.keeperPid) && cgOf(dpid) === cgOf(f.keeperPid), `orphan=${opid} daemon=${dpid}`);
+    check('setup: a detached `claude`-named orphan AND a plain daemon live in the member\'s scope', tc?.code === 0 && !!opid && !!dpid && readSafe(`/proc/${opid}/comm`)?.trim() === 'claude' && sameScope(opid, f.keeperPid) && sameScope(dpid, f.keeperPid), `orphan=${opid} daemon=${dpid}`);
     const rep = await explicitStop(ws, 'workspace-deleted');
     await waitFor(() => !alive(opid) && !alive(dpid) && !armUnits(ws).length, 15_000);
     check('the plain daemon is gone (killed by identity: report.killed counts it)', !alive(dpid) && !!rep && rep.killed >= 1, JSON.stringify(rep));
@@ -680,7 +690,7 @@ try {
     await sleep(500);
     const dpid = procsMarked(`${ws}-daemon`)[0];
     const keeperBefore = kc.readTrackedKeeperPid?.(ws) ?? null;
-    check('setup: a scoped member with a detached process in its scope', f.inRigScope && !!dpid && cgOf(dpid) === cgOf(f.keeperPid) && keeperBefore === f.keeperPid, `unit=${f.unit} daemon=${dpid}`);
+    check('setup: a scoped member with a detached process in its scope', f.inRigScope && !!dpid && sameScope(dpid, f.keeperPid) && keeperBefore === f.keeperPid, `unit=${f.unit} daemon=${dpid}`);
     const order = [];
     const rep = await stopIfAny(ws, 'workspace-archived', async () => { order.push('extra'); await kc.killKeeperIf(ws, keeperBefore, 'workspace-archived'); order.push('extra-done'); });
     await waitFor(() => !alive(dpid) && !armUnits(ws).length, 15_000);
@@ -756,6 +766,30 @@ try {
     check('the wake then starts a FRESH generation (another keeper, another unit) that the teardown did not kill', up && f2.inRigScope && f2.keeperPid !== f1.keeperPid && f2.unit !== f1.unit && alive(f2.keeperPid) && alive(f2.cliPid), `old=${f1.unit} new=${f2.unit}`);
     check('the old conversation\'s keeper and detached job are gone, its unit removed', !alive(f1.keeperPid) && !alive(dOld) && !armUnits(ws).includes(f1.unit), JSON.stringify(rep));
     detail = `old=${f1.unit} new=${f2.unit}`;
+  } else if (ARM === 'session_survives_chain') {
+    // The chain that lost keeper AND CLI 10/10 on master (residual (d) of #320): one hog tool after the other, each OOM-killed by the cap, the CLI processing every result at once (16 MB touched right after the kill).
+    const N = Number(process.env.MC_CHAIN_TOOLS ?? 30), MB = Number(process.env.MC_CLI_ALLOC_MB ?? 16);
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS, STANDIN_CLI_RESULT_ALLOC_MB: String(MB) } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    check('setup: the member runs in its rig scope with the keeper in leaf k and the CLI in leaf w', f.inRigScope && path.basename(cgOf(f.keeperPid) ?? '') === 'k' && path.basename(cgOf(f.cliPid) ?? '') === 'w', `keeper=${cgOf(f.keeperPid)} cli=${cgOf(f.cliPid)}`);
+    const e0 = f.cgroupDir ? eventsOf(f.cgroupDir) : {};
+    let lostAt = null;
+    for (let i = 0; i < N; i++) {
+      await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (400 * 1024 * 1024)'`, `t${i}`, 60_000);
+      await sleep(80);
+      if (!alive(f.keeperPid) || !alive(f.cliPid) || st.exited) { lostAt = i + 1; break; }
+      await sleep(300);
+    }
+    await sleep(500);
+    const ev = f.cgroupDir ? eventsOf(f.cgroupDir) : {};
+    const killed = (ev.oom_kill ?? 0) - (e0.oom_kill ?? 0);
+    check(`the session survived ${N} back-to-back cap kills (lost at: ${lostAt ?? 'never'})`, lostAt === null, `lostAt=${lostAt} keeper=${alive(f.keeperPid)} cli=${alive(f.cliPid)}`);
+    check('keeper ALIVE (same pid+start)', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId);
+    check('CLI ALIVE (same pid+start)', alive(f.cliPid) && ident(f.cliPid) === f.cliId);
+    check('the cap still bites: one kernel kill per hog (oom_kill on the work leaf ≥ the number of tools)', killed >= N, `oom_kill delta=${killed} tools=${N}`);
+    check('the scope is still active (never group-killed)', !!f.unit && spawnSync('systemctl', ['--user', 'is-active', f.unit], { encoding: 'utf8' }).stdout.trim() === 'active');
+    detail = `tools=${N} cliAlloc=${MB}MB oom_kill=${killed} lostAt=${lostAt}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
     const stub = path.join(base, 'stubbin');
@@ -1028,7 +1062,7 @@ try {
     const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: addr ?? '', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '' } });
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
-    const memberCg = cgOf(f.keeperPid);
+    const memberCg = cgOf(f.cliPid); // #332: the browser lives with the CLI + tools (leaf w)
     check('the member is in its scope', f.inRigScope || !hasCap, `unit=${f.unit}`);
     const t0 = await runTool(st, 'printf "%s" "${DBUS_SESSION_BUS_ADDRESS-unset}"', 't-env');
     check('the member\'s tool env has NO session-bus address (the keeper removed it)', t0?.stdout.trim() === 'unset', `saw=${t0?.stdout.trim().slice(0, 60)}`);
@@ -1052,7 +1086,7 @@ echo DONE`;
     const prof2 = path.join(base, 'prof-control'); fs.mkdirSync(prof2, { recursive: true });
     const r2 = await runTool(stc, browserScript(prof2, `export DBUS_SESSION_BUS_ADDRESS='${addr}'\n`), 't-browser2', 90_000);
     const rows2 = parse(r2);
-    const memberCgC = cgOf(fc.keeperPid);
+    const memberCgC = cgOf(fc.cliPid);
     check('control: with the address put back by hand the main process DOES leave the scope (the probe can see an escape)', rows2.length >= 1 && rows2.some((x) => x.cg !== memberCgC), JSON.stringify(rows2.map((x) => x.cg.split('/').pop())).slice(0, 200) + ` n=${rows2.length} tool=${JSON.stringify(r2 ? { code: r2.code, signal: r2.signal, out: r2.stdout.slice(-120) } : null)}`);
     detail = `inside=${rows1.filter((x) => x.cg === memberCg).length}/${rows1.length}`;
   } else if (ARM === 'not_applied_reported') {

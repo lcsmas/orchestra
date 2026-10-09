@@ -36,7 +36,12 @@ process.stdin.on('data', (d) => {
       let so = '';
       c.stdout.on('data', (b) => (so += b));
       c.stderr.on('data', (b) => (so += b));
-      c.on('close', (code, signal) => { out({ type: 'user', tool_result: { id: m.id, code, signal, stdout: so.slice(-4000) } }); out({ type: 'result', subtype: 'success' }); });
+      c.on('close', (code, signal) => {
+        // #332: a CLI PROCESSES the tool result the instant it arrives (it allocates and touches memory) — an adj-0 allocator right after a kill, inside the window where the killed tool's pages are still charged
+        const mb = Number(process.env.STANDIN_CLI_RESULT_ALLOC_MB || 0);
+        if (mb > 0) { const junk = Buffer.alloc(mb * 1024 * 1024, 0xa5); setTimeout(() => { junk.fill(0); }, 40); }
+        out({ type: 'user', tool_result: { id: m.id, code, signal, stdout: so.slice(-4000) } }); out({ type: 'result', subtype: 'success' });
+      });
     }
   }
 });

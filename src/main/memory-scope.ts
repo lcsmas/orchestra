@@ -8,12 +8,15 @@ import { orchestraHome } from './platform/index.ts';
 import { parseKeeperArgv } from '../shared/resource-monitor.ts';
 import {
   MEMORY_SCOPE_PREFIX_ENV,
+  SCOPE_LEAF_WORK,
+  SCOPE_LEAVES,
   classifyScopeMembers,
   parseCgroupLimit,
   parseMemoryEvents,
   parseProcCgroupV2,
   sanitizeScopePrefix,
   scopeGenForWorkspace,
+  scopePathOfCgroup,
   parseMemoryScopeUnit,
   swapLimitApplied,
   type ClassifiedMember,
@@ -141,7 +144,7 @@ function keeperPidIn(wsId: string, cgroupDir: string, e: ScopeEnv): number | nul
     const pid = (JSON.parse(e.readFile(e.keeperPidFile(wsId))) as { pid?: unknown }).pid;
     if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) {
       const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${pid}/cgroup`));
-      if (cg !== null && path.join(e.cgroupRoot, cg) === cgroupDir) return pid;
+      if (cg !== null && path.join(e.cgroupRoot, scopePathOfCgroup(cg)) === cgroupDir) return pid; // the keeper sits in the scope or (#332) in its keeper leaf
     }
   } catch {
     /* no / unreadable pid file, or the pid is gone — fall through */
@@ -149,9 +152,7 @@ function keeperPidIn(wsId: string, cgroupDir: string, e: ScopeEnv): number | nul
   // 2. The keeper writes its pid file only AFTER it listens: until then the pid file is absent and a naive resolver would call the keeper AND its CLI Reliquats
   //    (H2's pre-review hazard). The scope's main process IS the keeper (systemd-run exec'd into it), so a member whose argv is `…/keeper.js <wsId> …` is it.
   try {
-    for (const raw of e.readFile(path.join(cgroupDir, 'cgroup.procs')).split('\n')) {
-      const pid = Number(raw);
-      if (!Number.isInteger(pid) || pid <= 0) continue;
+    for (const pid of readScopePids(e, cgroupDir)) {
       let argv: string[];
       try {
         argv = e.readFile(`${e.procRoot}/${pid}/cmdline`).split('\0').filter(Boolean);
@@ -232,6 +233,24 @@ function num(e: ScopeEnv, p: string): number | null {
   }
 }
 
+/**
+ * #332: the pids of a scope. A scope with its two leaves (`k` keeper, `w` CLI + tools) has an EMPTY own `cgroup.procs` — the processes live in the leaves, so the scope's members are the union. The scope's own
+ * file must be readable (a throw = unreadable, as before); a leaf that does not exist (a scope without the layout) is simply absent, but a leaf that EXISTS and cannot be read is an error, never a quiet undercount.
+ */
+export function readScopePids(e: ScopeEnv, cgroupDir: string): number[] {
+  const parse = (text: string): number[] => text.split('\n').filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  const out = parse(e.readFile(path.join(cgroupDir, 'cgroup.procs')));
+  for (const leaf of SCOPE_LEAVES) {
+    try {
+      out.push(...parse(e.readFile(path.join(cgroupDir, leaf, 'cgroup.procs'))));
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw err;
+    }
+  }
+  return [...new Set(out)];
+}
+
 /** FI-1 (b): the scope's memory, read straight from sysfs. `currentBytes` includes page cache (the kernel's own limit decisions use it too). Null = the scope is gone / unreadable. */
 export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeEnv = realScopeEnv()): ScopeMemory | null {
   const d = scope.cgroupDir;
@@ -243,9 +262,19 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
   } catch {
     /* unreadable */
   }
+  // #332: with the leaves, the member's hard level and its kill counters live on the WORK leaf; `current`/`peak` stay the scope's (the whole bill: keeper leaf included)
+  const workDir = path.join(d, SCOPE_LEAF_WORK);
+  const capDir = e.exists(path.join(workDir, 'memory.max')) ? workDir : d;
+  if (capDir !== d) {
+    try {
+      events = parseMemoryEvents(e.readFile(path.join(capDir, 'memory.events')));
+    } catch {
+      /* unreadable: keep the scope's (hierarchical) counters */
+    }
+  }
   const lim = (f: string): number | null => {
     try {
-      return parseCgroupLimit(e.readFile(path.join(d, f)));
+      return parseCgroupLimit(e.readFile(path.join(capDir, f)));
     } catch {
       return null;
     }
@@ -347,7 +376,7 @@ export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' 
 export function listScopeProcs(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, cliPid: number | null = null, e: ScopeEnv = realScopeEnv()): ClassifiedMember[] {
   let pids: number[];
   try {
-    pids = e.readFile(path.join(scope.cgroupDir, 'cgroup.procs')).split('\n').filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    pids = readScopePids(e, scope.cgroupDir);
   } catch {
     return [];
   }

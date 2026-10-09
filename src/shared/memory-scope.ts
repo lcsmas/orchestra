@@ -110,11 +110,29 @@ export function decideMemoryCap(i: MemoryCapInput): MemoryCapDecision {
   return { createScope, limits, reason: createScope ? 'ok' : 'switch-off' };
 }
 
-/** `systemd-run` argv that starts `cmd args…` as the main process of a NEW user scope (never moves an existing process). */
+// ─── The scope's two leaves (#332, Q9) ─────────────────────────────────────────────────────────────────────────────
+// ONE scope per member (ADR 0005), shaped as a parent cgroup with two LEAVES: `k` holds the keeper (no limit of its own), `w` holds the CLI and everything it starts and carries the member's HARD level.
+// Why: the kernel's second OOM episode of a back-to-back kill chain opens a few ms after the first (the killed tool's pages are still charged, its mm already detached) and is started by an adj-0
+// task that allocates at the limit — in practice the keeper REACTING to the kill. With the keeper outside the limited cgroup it can neither open that episode nor be its victim (Q9, ledger #329).
+
+export const SCOPE_LEAF_KEEPER = 'k';
+export const SCOPE_LEAF_WORK = 'w';
+export const SCOPE_LEAVES: readonly string[] = [SCOPE_LEAF_KEEPER, SCOPE_LEAF_WORK];
+/** The scope's own `MemoryMax` is the hard level PLUS this: the work leaf must always hit its limit first, the scope's limit is only a backstop for a runaway keeper (or a layout that could not be built). */
+export const KEEPER_LEAF_RESERVE_BYTES = 128 * 1024 * 1024;
+export const scopeMemoryMaxBytes = (hardBytes: number): number => hardBytes + KEEPER_LEAF_RESERVE_BYTES;
+
+/** `.../<unit>.scope` or `.../<unit>.scope/<leaf>` (a cgroup v2 path) → the scope's own path. */
+export function scopePathOfCgroup(cgPath: string): string {
+  const slash = cgPath.lastIndexOf('/');
+  return slash > 0 && SCOPE_LEAVES.includes(cgPath.slice(slash + 1)) ? cgPath.slice(0, slash) : cgPath;
+}
+
+/** `systemd-run` argv that starts `cmd args…` as the main process of a NEW user scope (never moves an existing process). The scope is DELEGATED (`Delegate=yes`): the keeper builds its two leaves inside it. */
 export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits | null; description?: string; cmd: string; args: string[] }): { cmd: string; args: string[] } {
   const props: string[] = ['OOMPolicy=continue']; // systemd's default `stop` ends the WHOLE scope after one oom_kill
   if (a.limits) {
-    props.push(`MemoryMax=${a.limits.hardBytes}`, `MemorySwapMax=${a.limits.swapMaxBytes}`);
+    props.push('Delegate=yes', `MemoryMax=${scopeMemoryMaxBytes(a.limits.hardBytes)}`, `MemorySwapMax=${a.limits.swapMaxBytes}`);
   }
   return {
     cmd: 'systemd-run',
@@ -363,7 +381,7 @@ export function parseKernelOomMessage(message: string, atMs: number): KernelOomK
 
 /** The kernel kills that belong to THIS scope (its own cgroup hit its limit — basename = the unit), not older than `sinceMs`, oldest first. */
 export function kernelKillsForUnit(lines: readonly KernelOomKill[], unit: string, sinceMs: number): KernelOomKill[] {
-  const base = (p: string): string => p.slice(p.lastIndexOf('/') + 1);
+  const base = (p: string): string => scopePathOfCgroup(p).slice(scopePathOfCgroup(p).lastIndexOf('/') + 1); // a kill inside a leaf (`<unit>/w`) belongs to the unit
   return lines
     .filter((l) => l.atMs >= sinceMs && (base(l.oomMemcg) === unit || base(l.taskMemcg) === unit))
     .sort((a, b) => a.atMs - b.atMs || a.pid - b.pid);

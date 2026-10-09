@@ -53,8 +53,9 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
+import { buildMemberLeaves, inWorkLeafArgv, type LeafFs } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
-import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, SCOPE_LEAF_KEEPER, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -202,6 +203,12 @@ function beginShutdown(reason: string): void {
 
 function startChild(command: string, args: string[], cwd: string, env: Record<string, string | undefined>): void {
   klog(`spawn ${command} cwd=${cwd}`);
+  if (workLeafDir) {
+    // #332: a capped member's CLI starts INSIDE the work leaf (the keeper stays out of it)
+    const w = inWorkLeafArgv(workLeafDir, command, args);
+    command = w.command;
+    args = w.args;
+  }
   child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   state.onSpawn(Date.now());
 
@@ -245,6 +252,19 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
 
 type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>;
 let capInfo: CapInfo | null = null;
+/** #332: the member's work leaf (`<scope>/w`) once the cap is applied — the CLI starts inside it. */
+let workLeafDir: string | null = null;
+const realLeafFs: LeafFs = {
+  mkdir: (p) => {
+    try {
+      fs.mkdirSync(p);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+  },
+  write: (p, t) => fs.writeFileSync(p, t),
+  read: (p) => fs.readFileSync(p, 'utf8'),
+};
 let memWatch: MemoryWatch | null = null;
 const memKills: MemKillRecord[] = [];
 const memSofts: MemSoftRecord[] = [];
@@ -262,12 +282,23 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   } catch {
     /* no /proc */
   }
-  if (!cgPath || path.basename(cgPath) !== cap.unit) {
+  // #332: the keeper's own cgroup is the scope (first call) or its keeper leaf `k` (a repeat call): both map to the scope
+  const inKeeperLeaf = !!cgPath && path.basename(cgPath) === SCOPE_LEAF_KEEPER;
+  const scopePath = cgPath ? scopePathOfCgroup(cgPath) : null;
+  if (!cgPath || !scopePath || path.basename(scopePath) !== cap.unit) {
     capInfo = { unit: cap.unit, state: 'no-scope', hardBytes: cap.hardBytes };
     klog(`memory cap: NOT in scope ${cap.unit} (cgroup ${cgPath ?? 'unreadable'}) — the keeper was launched plain; no cap, no watch`);
     return env;
   }
-  const dir = path.join(CGROUP_ROOT, cgPath);
+  // #332 (Q9): two leaves inside the delegated scope — this keeper in `k` (no limit), the CLI and its tools in `w` (the member's hard level). The kill watch, the limit checks and the CLI start use `w`.
+  const leaves = buildMemberLeaves({ scopeDir: path.join(CGROUP_ROOT, scopePath), hardBytes: cap.hardBytes, pid: process.pid, fs: realLeafFs, alreadyInKeeperLeaf: inKeeperLeaf });
+  if (!leaves.ok) {
+    capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
+    klog(`memory cap: scope ${cap.unit} is not delegated or its leaves could not be built (${leaves.step}: ${leaves.error}) — the cap is NOT applied (only the scope's backstop limit holds); tools are not wrapped, no kill watch`);
+    return env;
+  }
+  workLeafDir = leaves.workDir;
+  const dir = leaves.workDir;
   let limit: number | null = null;
   try {
     limit = parseCgroupLimit(fs.readFileSync(path.join(dir, 'memory.max'), 'utf8'));

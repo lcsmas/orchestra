@@ -10,6 +10,11 @@ import {
   OOM_ADJ_TOOLS,
   OOM_TOOL_WRAPPER_SCRIPT,
   buildScopeLaunchArgv,
+  KEEPER_LEAF_RESERVE_BYTES,
+  SCOPE_LEAF_KEEPER,
+  SCOPE_LEAF_WORK,
+  scopeMemoryMaxBytes,
+  scopePathOfCgroup,
   classifyScopeMembers,
   decideMemoryCap,
   describeCapState,
@@ -120,15 +125,33 @@ test('decideMemoryCap: a soft level that is not below the hard one is dropped, n
 
 // ── the launch argv (the production flags) ───────────────────────────────────────────────────────────────────────
 
-test('buildScopeLaunchArgv: new scope, OOMPolicy=continue, MemoryMax=hard, MemorySwapMax=0 — and and NEVER a MemoryHigh (ledger D-Q2)', () => {
+test('buildScopeLaunchArgv: new DELEGATED scope, OOMPolicy=continue, MemoryMax=hard+keeper-leaf reserve (the work leaf carries the hard level), MemorySwapMax=0 — and NEVER a MemoryHigh (ledger D-Q2)', () => {
   const unit = 'orchestra-ws-ws1-abcdef.scope';
   const { cmd, args } = buildScopeLaunchArgv({ unit, limits: { hardBytes: 6 * GIB, softBytes: 3 * GIB, swapMaxBytes: 0 }, cmd: '/usr/bin/node', args: ['keeper.js', 'ws1'] });
   assert.equal(cmd, 'systemd-run');
   const props = args.flatMap((a, i) => (args[i - 1] === '-p' ? [a] : []));
-  assert.deepEqual(props, ['OOMPolicy=continue', `MemoryMax=${6 * GIB}`, 'MemorySwapMax=0']);
+  assert.deepEqual(props, ['OOMPolicy=continue', 'Delegate=yes', `MemoryMax=${6 * GIB + KEEPER_LEAF_RESERVE_BYTES}`, 'MemorySwapMax=0']);
   assert.ok(!args.some((a) => a.includes('MemoryHigh')), 'the soft level is a warning level: never a kernel MemoryHigh (it would crawl a runaway forever instead of killing it)');
   assert.deepEqual(args.slice(0, 5), ['--user', '--scope', '--collect', '--quiet', `--unit=${unit}`]);
   assert.deepEqual(args.slice(args.indexOf('--')), ['--', '/usr/bin/node', 'keeper.js', 'ws1'], 'the command follows `--`: it is the scope\'s main process, never an existing one');
+});
+
+test('#332 leaves: the scope\'s limit is the hard level + a reserve (the work leaf must trip first); a leaf path maps back to its scope; only the two leaf names are leaves', () => {
+  assert.equal(scopeMemoryMaxBytes(6 * GIB), 6 * GIB + KEEPER_LEAF_RESERVE_BYTES);
+  assert.ok(KEEPER_LEAF_RESERVE_BYTES > 0);
+  const scope = '/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-ws-w1-abc.scope';
+  assert.equal(scopePathOfCgroup(scope), scope);
+  assert.equal(scopePathOfCgroup(`${scope}/${SCOPE_LEAF_KEEPER}`), scope);
+  assert.equal(scopePathOfCgroup(`${scope}/${SCOPE_LEAF_WORK}`), scope);
+  assert.equal(scopePathOfCgroup(`${scope}/other`), `${scope}/other`, 'a directory that is not one of our leaves is not mapped');
+  assert.equal(scopePathOfCgroup('/'), '/');
+});
+
+test('#332 kernelKillsForUnit: a kill inside the work leaf (`<unit>/w`) belongs to the unit; another unit\'s leaf does not', () => {
+  const mk = (memcg: string, pid: number) => ({ atMs: 1000, pid, comm: 'python3', oomMemcg: memcg, taskMemcg: memcg });
+  const u = 'orchestra-ws-w1-abc.scope';
+  const lines = [mk(`/a/b/${u}/w`, 1), mk(`/a/b/${u}`, 2), mk('/a/b/orchestra-ws-w2-abc.scope/w', 3), mk(`/a/b/${u}/k`, 4), mk(`/a/b/x${u}/w`, 5)];
+  assert.deepEqual(kernelKillsForUnit(lines, u, 0).map((l) => l.pid), [1, 2, 4]);
 });
 
 test('buildScopeLaunchArgv: clause 1 without clause 2 = a scope with no limits (only OOMPolicy)', () => {

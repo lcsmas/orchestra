@@ -242,3 +242,59 @@ test('FI-1 v1.9 (pre-review m1/m2): a stale keeper pid claims nothing; a pid rec
   assert.equal(reads >= 2, true, 'the probe really intercepted the second read');
   assert.deepEqual(listed, [1301], 'the recycled pid is dropped, the genuine escapee stays');
 });
+
+// ─── #332: a scope with its two leaves (`k` keeper, `w` CLI + tools) ─────────────────────────────────────────────────
+
+function mkLeafScope(unit: string, keeperPid: number, cliPid: number, daemonPid: number): { scopeDir: string; kDir: string; wDir: string } {
+  const scopeDir = mkScope(unit, { 'memory.max': `${268435456 + 134217728}\n`, 'memory.current': '90000000\n', 'cgroup.procs': '' });
+  const kDir = path.join(scopeDir, 'k');
+  const wDir = path.join(scopeDir, 'w');
+  fs.mkdirSync(kDir);
+  fs.mkdirSync(wDir);
+  fs.writeFileSync(path.join(kDir, 'cgroup.procs'), `${keeperPid}\n`);
+  fs.writeFileSync(path.join(wDir, 'cgroup.procs'), `${cliPid}\n${daemonPid}\n`);
+  fs.writeFileSync(path.join(wDir, 'memory.max'), '268435456\n');
+  fs.writeFileSync(path.join(wDir, 'memory.swap.max'), '0\n');
+  fs.writeFileSync(path.join(wDir, 'memory.high'), 'max\n');
+  fs.writeFileSync(path.join(wDir, 'memory.events'), 'low 0\nhigh 0\nmax 12\noom 3\noom_kill 3\noom_group_kill 0\n');
+  fs.writeFileSync(path.join(scopeDir, 'memory.events'), 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n');
+  return { scopeDir, kDir, wDir };
+}
+
+test('#332 leaves: the scope\'s members are the union of its two leaves (its own cgroup.procs is empty); the keeper is found in k, the CLI and a detached job in w', () => {
+  const unit = 'orchestra-ws-leafy-1aaaaa.scope';
+  const { scopeDir, kDir, wDir } = mkLeafScope(unit, 7001, 7002, 7003);
+  mkProc(7001, 1, 'node-22', cgPathOf(kDir), 100, `node /x/keeper.js leafy /s ${keepers}/leafy.pid /l`);
+  mkProc(7002, 7001, 'node-22', cgPathOf(wDir));
+  mkProc(7003, 1, 'python3', cgPathOf(wDir));
+  const e = env();
+  const [scope] = memberScopes('leafy', e);
+  assert.equal(scope.unit, unit);
+  assert.equal(scope.cgroupDir, scopeDir);
+  assert.equal(scope.keeperPid, 7001, 'found by argv in the keeper leaf (no pid file yet)');
+  fs.writeFileSync(path.join(keepers, 'leafy.pid'), JSON.stringify({ pid: 7001 }));
+  assert.equal(memberScopes('leafy', e)[0].keeperPid, 7001, 'and by the pid file + the pid\'s own cgroup (k maps to its scope)');
+  const procs = listScopeProcs(memberScopes('leafy', e)[0], 7002, e);
+  assert.deepEqual(procs.map((p) => [p.pid, p.role]).sort(), [[7001, 'keeper'], [7002, 'cli'], [7003, 'reliquat']]);
+});
+
+test('#332 leaves: a leaf that EXISTS but cannot be read is an error (no quiet undercount that would hide the keeper); a scope without leaves reads as before', () => {
+  const { scopeDir } = mkLeafScope('orchestra-ws-leafy2-1bbbbb.scope', 7011, 7012, 7013);
+  const e = env({ readFile: (p) => { if (p === path.join(scopeDir, 'k', 'cgroup.procs')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return fs.readFileSync(p, 'utf8'); } });
+  assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, e), [], 'unreadable ⇒ [] as for any unreadable scope (the Reliquat killer reads the file first and calls it UNKNOWN)');
+  const flat = mkScope('orchestra-ws-flat-1ccccc.scope', { 'cgroup.procs': '7021\n' });
+  mkProc(7021, 1, 'python3', cgPathOf(flat));
+  assert.deepEqual(listScopeProcs({ cgroupDir: flat, keeperPid: null }, null, env()).map((p) => p.pid), [7021]);
+});
+
+test('#332 leaves: readScopeMemory — the cap (max, swap, events) is the WORK leaf\'s, the bill (current) is the scope\'s', () => {
+  const { scopeDir } = mkLeafScope('orchestra-ws-leafy3-1ddddd.scope', 7031, 7032, 7033);
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env());
+  assert.ok(m);
+  assert.equal(m!.currentBytes, 90000000);
+  assert.equal(m!.maxBytes, 268435456, 'the hard level, not the scope\'s backstop (hard + keeper reserve)');
+  assert.equal(m!.swapMaxBytes, 0);
+  assert.equal(m!.events.oomKill, 3, 'the kernel kills happen on the work leaf');
+  const flat = readScopeMemory({ cgroupDir: mkScope('orchestra-ws-flat2-1eeeee.scope') }, env());
+  assert.equal(flat!.maxBytes, 268435456, 'a scope without leaves: its own limit, as before');
+});
