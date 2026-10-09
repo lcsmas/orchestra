@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, hogMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, memhogArmVerdict, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
+import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { mustFailVerdict } from '../../scripts/pause-canary/bars.mjs';
 
@@ -86,6 +86,16 @@ test('hog killed: a survivor, a kernel count of 0, a tool that printed nothing, 
   assert.deepEqual(redOf({}, { marker: '' }).includes('bar:hog_killed'), true, 'an empty marker would match every command');
 });
 
+test('the hog marker is a WHOLE argument: a record naming `…-c11` does not satisfy `…-c1`', () => {
+  assert.equal(hasMarker('python3 swarm.py 1 400 5 memhog-w1-c1', 'memhog-w1-c1'), true);
+  assert.equal(hasMarker('python3 swarm.py 1 400 5 memhog-w1-c11', 'memhog-w1-c1'), false);
+  assert.equal(hasMarker('python3 swarm.py 1 400 5 xmemhog-w1-c1', 'memhog-w1-c1'), false);
+  assert.equal(hasMarker(null, 'memhog-w1-c1'), false);
+  assert.equal(hasMarker('anything', ''), false);
+  assert.equal(hasMarker('', ''), false, 'an empty marker matches nothing — not even an empty command');
+  assert.deepEqual(redOf({}, (i) => (i === 1 ? { marker: 'memhog-w1-c1', records: [{ level: 'hard', command: 'python3 swarm.py 1 400 5 memhog-w1-c11' }] } : {})), ['bar:hog_killed'], 'cycle 11\'s kill is not cycle 1\'s');
+});
+
 test('session survives: a replaced or vanished keeper, a replaced or vanished CLI, a CLI that stopped answering, or no facts are each RED; the other worker\'s intact session does not hide it', () => {
   const ses = (o: W) => ({ keeperSame: true, cliSame: true, keeperAlive: true, cliAlive: true, answered: true, scopeActive: true, capState: 'active', ...o });
   for (const bad of [{ keeperSame: false, keeperAlive: false }, { keeperSame: false, keeperAlive: true }, { cliSame: false, cliAlive: false }, { cliSame: false, cliAlive: true }, { answered: false }, { answered: undefined }]) {
@@ -164,12 +174,15 @@ test('survivors and live config: any leftover process or scope, an unmeasured co
   assert.equal(evaluateLiveUntouched(null, snap).ok, false);
 });
 
-const chainRun = (o: W = {}) => ({ planned: MEMHOG_BARS.chainPlanned, done: MEMHOG_BARS.chainPlanned, killsTotal: MEMHOG_BARS.chainPlanned, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, ...o });
+const chainRun = (o: W = {}) => ({ planned: MEMHOG_BARS.chainPlanned, done: MEMHOG_BARS.chainPlanned, killsTotal: MEMHOG_BARS.chainPlanned, inScope: true, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, ...o });
 
 test('Q9 chain: a session lost after 7 kills reads RED on the KNOWN-RED instrument and green on the premise; a full survived chain is green; a chain that killed nothing is a VOID premise', () => {
   const lost = evaluateChainRun(chainRun({ done: 8, killsTotal: 7, lostAfter: 7, keeperAlive: false, cliAlive: false, answered: false }));
   assert.deepEqual(red(lost), ['q9:session_survives_chain']);
   assert.match(lost.find((c: Check) => c.id === 'q9:session_survives_chain').detail, /LOST after 7 .*keeper GONE, CLI GONE/);
+  assert.deepEqual(red(evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: false, cliAlive: false, answered: false }))), ['q9:session_survives_chain'], 'a session lost at the VERY FIRST kill (the counter dies with the scope: 0 read) is a loss, not an unexercised chain');
+  assert.deepEqual(red(evaluateChainRun(chainRun({ inScope: false }))), ['premise_chain_killed_tools'], 'no capped scope: nothing was measured');
+  assert.match(evaluateChainRun(chainRun({ answered: false })).find((c: Check) => c.id === 'q9:session_survives_chain').detail, /ALIVE BUT DID NOT ANSWER/, 'a session that is alive but silent says so — not « lost after N kills »');
   assert.deepEqual(red(evaluateChainRun(chainRun())), []);
   assert.deepEqual(red(evaluateChainRun(chainRun({ killsTotal: 0 }))).includes('premise_chain_killed_tools'), true, 'cap OFF: nothing was killed');
   assert.deepEqual(red(evaluateChainRun(chainRun({ killsTotal: 12 }))).includes('premise_chain_killed_tools'), true, 'a "survived" chain that killed 12 of 30 tools did not exercise the cap');
@@ -191,7 +204,8 @@ test('Q9 verdict: KNOWN-RED while any run loses the session, KNOWN-RED-GONE only
   assert.equal(chainVerdict([ok, ok, ok]).verdict, 'KNOWN-RED-GONE');
   assert.equal(chainVerdict([none, lost]).verdict, 'VOID');
   assert.equal(chainVerdict([]).verdict, 'VOID');
-  assert.match(chainVerdict([lost, lost]).detail, /2\/2 run\(s\) lost the session \(7, 7 kill/);
+  assert.match(chainVerdict([lost, lost]).detail, /2\/2 run\(s\) lost the session \(after 7 kill\(s\), after 7 kill\(s\)\)/);
+  assert.match(chainVerdict([evaluateChainRun(chainRun({ answered: false }))]).detail, /alive but unresponsive/);
   assert.ok(Object.hasOwn(KNOWN_RED, 'q9:session_survives_chain'));
   const s = splitChecks([...lost, ...evaluateMemhogCycle(good())]);
   assert.deepEqual(s.knownRed.map((c: Check) => c.id), ['q9:session_survives_chain']);
@@ -200,6 +214,13 @@ test('Q9 verdict: KNOWN-RED while any run loses the session, KNOWN-RED-GONE only
   assert.equal(splitChecks([...ok]).knownGreen.length, 1, 'a GREEN known-red is reported so the runner can nag');
   assert.equal(drillVerdict([...evaluateMemhogCycle(good({ tMemberToldS: null }))]), 'FAIL', 'a missing published metric fails the drill');
   assert.equal(drillVerdict([{ id: 'bar:no_survivors', ok: false, detail: 'LEAK' }]), 'FAIL');
+  assert.equal(drillVerdict([]), 'FAIL', 'an empty list is NOT a pass');
+  assert.equal(drillVerdict([{ id: 'bar:no_survivors', ok: true, detail: '' }]), 'FAIL', 'a drive that died before measuring leaves only the runner\'s check: NOT a pass');
+  const cyc = evaluateMemhogCycle(good());
+  assert.equal(drillVerdict(cyc), 'PASS', 'control: a complete green list is');
+  for (const id of REQUIRED_CYCLE_CHECKS) assert.equal(drillVerdict(cyc.filter((c: Check) => c.id !== id)), 'FAIL', `${id} absent`);
+  assert.deepEqual(missingChecks(cyc.filter((c: Check) => c.id !== 'bar:hog_killed')), ['bar:hog_killed']);
+  assert.equal(drillVerdict(cyc, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors']), 'FAIL', 'the runner can demand its own checks too');
 });
 
 test('arm verdict: the named instrument RED + precision. Unreached rig, a RED premise, a stayed-green instrument and an over-red sabotage are each NOT "AS-EXPECTED"', () => {
@@ -214,7 +235,7 @@ test('arm verdict: the named instrument RED + precision. Unreached rig, a RED pr
 
 test('measurement helpers: the hog marker is unique per worker and cycle; the swarm line parses or is null; "read" means a lot taken AND acked that covers the sequence', () => {
   assert.equal(hogMarker('w1', 2), 'memhog-w1-c2');
-  assert.notEqual(hogMarker('w1', 1), hogMarker('w1', 11), 'c1 must not be a prefix-match of c11 in a naive includes');
+  assert.notEqual(hogMarker('w1', 1), hogMarker('w1', 11), 'distinct per cycle (`hasMarker` matches whole arguments, c1 is a prefix of c11)');
   assert.deepEqual(parseSwarm('x\nswarm: children=1 survived=0 killed=1\n'), { children: 1, survived: 0, killed: 1 });
   assert.equal(parseSwarm('hog: touched 40 MB'), null);
   assert.equal(parseSwarm(undefined), null);

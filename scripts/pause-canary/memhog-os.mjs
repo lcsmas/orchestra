@@ -29,3 +29,42 @@ export function scopeFactsOf(keeperPid, unitPrefix) {
 }
 /** `oom_kill` of the keeper's cgroup (hierarchical memory.events), or null when unreadable. */
 export const oomKillOf = (keeperPid) => { const d = keeperPid && alive(keeperPid) ? cgDir(keeperPid) : null; return d ? eventsOf(d).oom_kill ?? null : null; };
+
+/** The pid chain from `pid` up to init (the processes that LAUNCHED us — a wrapper carrying the scratch path in its argv is one of them and is never ours to signal). */
+export function ancestorsOf(pid = process.pid) {
+  const out = new Set();
+  for (let p = pid, hops = 0; p > 1 && hops < 64; hops++) {
+    out.add(p);
+    const s = readSafe(`/proc/${p}/stat`);
+    if (!s) break;
+    p = Number(s.slice(s.lastIndexOf(')') + 2).split(' ')[1]);
+  }
+  return out;
+}
+
+/** The rig's own processes: those whose ENVIRONMENT carries exactly `ORCHESTRA_HOME=<home>` — the marker every process the drill starts (keeper, CLI, tools, their children) inherits. NOT a substring match on argv/environ: a wrapper
+ *  (`timeout`, `bash -c`, `pnpm`) or a sibling rig whose directory merely CONTAINS this path must never be signalled. Returns [{pid, ticks}] (identity: pid + /proc start time); our own pid, our ancestors and `except` are left out. */
+export function rigProcesses(home, except = new Set()) {
+  const skip = new Set([...ancestorsOf(), ...except]);
+  const want = `ORCHESTRA_HOME=${home}`;
+  const out = [];
+  for (const name of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    if (skip.has(pid)) continue;
+    const env = readSafe(`/proc/${pid}/environ`);
+    if (env && env.split('\0').includes(want)) out.push({ pid, ticks: ticks(pid) });
+  }
+  return out;
+}
+
+/** SIGKILL each listed process whose identity (pid + start time) AND marker are still the same right now. Returns the pids signalled. */
+export function killByIdentity(list, home) {
+  const want = `ORCHESTRA_HOME=${home}`;
+  const done = [];
+  for (const { pid, ticks: t } of list) {
+    if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').split('\0').includes(want)) continue;
+    try { process.kill(pid, 'SIGKILL'); done.push(pid); } catch { /* gone */ }
+  }
+  return done;
+}

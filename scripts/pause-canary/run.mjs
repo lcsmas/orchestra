@@ -59,7 +59,7 @@ const PROOF_ARMS = [
   { name: 'unfixed:pre-wave-E-douce', exercise: 'douce', unfixed: true, redden: ['pause_accepted'], expectDetail: /only the HARD pause/ },
   { name: 'unfixed:pre-wave-E-reprise', exercise: 'dure', unfixed: true, redden: ['coordinators_woken', 'bar:every_member_reprise_accused'] },
   // #324 the memory-hog exercise on the PACKAGED app (real `claude`): the must-FAIL control runs without a waiver (no scope is created); the cap-ON arm needs the LEAD's waiver of D2 (`--waiver`, `--cap-gb` ≥ 0.6) and is NOT part of the default proof
-  { name: 'control:memhog-app-cap-off', exercise: 'memhog-app', memhogSwitch: 'off', redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'] },
+  { name: 'control:memhog-app-cap-off', exercise: 'memhog-app', memhogSwitch: 'off', optIn: true, redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'] },
 ];
 if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(36)} ${a.exercise}${a.redden ? ` → RED ${a.redden.join(' | ')}` : ' → PASS'}${a.mutant ? ` — ${MUTANTS[a.mutant].desc}` : ''}`); process.exit(0); }
 
@@ -218,7 +218,7 @@ if (!flag('proof')) {
 const baseApp = ensureApp();
 const baseDir = path.dirname(baseApp);
 const only = new Set((opt('only', '') || '').split(',').filter(Boolean));
-const sel = PROOF_ARMS.filter((a) => only.size === 0 || only.has(a.name) || only.has(a.name.replace(/^(mutant|control|unfixed):/, '')));
+const sel = PROOF_ARMS.filter((a) => (only.size === 0 ? !a.optIn : only.has(a.name) || only.has(a.name.replace(/^(mutant|control|unfixed):/, ''))));   // `optIn` arms (the memhog-app cap-OFF control: a real `claude` + an UNBOUNDED 400 MB hog per worker) run only when named
 const members = Number(opt('members', '3'));
 // the PRE-wave-E master (b34c8b58: hard Pause only — no Pause douce, no structured Reprise) as a packaged app + its source tree (the seed needs the matching schema); pinned, built once
 function ensureUnfixed(pinned = null) {

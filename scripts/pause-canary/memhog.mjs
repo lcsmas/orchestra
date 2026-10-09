@@ -13,7 +13,7 @@ import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fleetSpec } from './ids.mjs';
-import { readSafe, ident, alive, cgOf, cgDir, eventsOf, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf } from './memhog-os.mjs';
+import { readSafe, ticks, ident, alive, cgOf, cgDir, eventsOf, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity } from './memhog-os.mjs';
 import { MEMHOG_BARS, evaluateMemhogCycle, summarizeMemhogCycle, evaluateChainRun, chainVerdict, drillVerdict, memberToldWhy, coordinatorToldWhy, hogMarker, parseSwarm } from './memhog-bars.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +35,7 @@ const HOG_HOLD_S = Number(opt('hog-hold-s', '5'));
 const CHAIN_N = Number(opt('chain-n', String(MEMHOG_BARS.chainPlanned)));
 const CHAIN_GAP_MS = Number(opt('chain-gap-ms', String(MEMHOG_BARS.chainGapMs)));
 const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
-const SABOTAGES = ['session', 'member-sink', 'coord-sink', 'stray-lead', 'hog-small', 'leak'];
+const SABOTAGES = ['session', 'member-sink', 'coord-sink', 'stray-lead', 'hog-small', 'leak', 'leak-unit', 'no-worker'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const emit = (tag, o) => console.log(`${tag} ${JSON.stringify(o)}`);
 const say = (s) => console.log(s);
@@ -43,6 +43,7 @@ const die = (code, msg) => { console.log(msg); process.exit(code); };
 
 if (opt('cli', 'stand-in') !== 'stand-in') die(3, 'MEMHOG-DRIVE VOID — `--cli claude` needs the LEAD\'s waiver of ledger D2 (test scopes ≤ 300 MB; the real claude is ~330 MB): not run');
 if (!['memhog', 'chain'].includes(EXERCISE)) die(2, `usage: --exercise memhog|chain (got ${EXERCISE})`);
+if (CAP_GB > 0.3) die(3, `MEMHOG-DRIVE VOID — a test scope above 300 MB (--cap-gb ${CAP_GB}) needs the LEAD's waiver of ledger D2: not run`);
 if (SABOTAGE && !SABOTAGES.includes(SABOTAGE)) die(2, `usage: --sabotage ⊂ ${SABOTAGES} (got ${SABOTAGE})`);
 if (!Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10 || !Number.isInteger(CYCLES) || CYCLES < 1 || (EXERCISE === 'chain' && CYCLES > 10)) die(2, 'usage: --members 1..10, --cycles ≥ 1 (chain: ≤ 10, one fresh worker per cycle)');
 const PREFIX = opt('prefix', null);
@@ -55,7 +56,12 @@ if (!BASE.startsWith(path.join(REAL_HOME, '.cache') + path.sep)) die(3, `MEMHOG-
 try { fs.writeFileSync('/proc/self/oom_score_adj', '0'); } catch { /* not Linux / floor above 0 */ }
 if (readSafe('/proc/self/oom_score_adj')?.trim() !== '0') die(3, 'MEMHOG-DRIVE VOID — this process cannot lower its oom_score_adj to 0 (the keeper/CLI baseline would be wrong)');
 
+// the wipe below is `rm -rf`: only a directory this tooling created (the runner leaves the sentinel) or one that does not exist yet
+const SENTINEL = path.join(BASE, '.memhog-scratch');
+if (fs.existsSync(BASE) && !fs.existsSync(SENTINEL)) die(3, `MEMHOG-DRIVE VOID — refusing to wipe ${BASE}: no .memhog-scratch sentinel (not a directory this harness made)`);
 fs.rmSync(BASE, { recursive: true, force: true });
+fs.mkdirSync(BASE, { recursive: true });
+fs.writeFileSync(SENTINEL, `${process.pid}\n`);
 const home = path.join(BASE, 'home');
 fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
 process.env.ORCHESTRA_HOME = home;
@@ -120,14 +126,6 @@ try { kc.installKeeper(); } catch { /* the driver copies the bundle itself; inst
 const pidFilePid = (ws) => { try { return JSON.parse(fs.readFileSync(path.join(home, 'keepers', `${ws}.pid`), 'utf8')).pid; } catch { return null; } };
 async function waitFor(pred, ms, step = 50) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await sleep(step); } return !!(await pred()); }
 const armUnits = (ws) => unitsNow(`${UNIT_PREFIX}${ws}-*`);
-const survivorsOf = (marker, except = new Set()) => {
-  const out = [];
-  for (const name of fs.readdirSync('/proc')) {
-    if (!/^\d+$/.test(name) || Number(name) === process.pid || except.has(Number(name))) continue;
-    try { if ((readSafe(`/proc/${name}/cmdline`) ?? '').includes(marker) || (readSafe(`/proc/${name}/environ`) ?? '').includes(marker)) out.push(Number(name)); } catch { /* gone */ }
-  }
-  return out;
-};
 
 /** A facade (what the SDK's query() gets) over the stand-in CLI — the H1 rig's, unchanged. */
 function open(ws, launch, { rssMb = 80 } = {}) {
@@ -184,6 +182,7 @@ if (EXERCISE === 'memhog') memNoticeMod.startMemoryNotices(sinkDeps, { onMemoryK
 const isSoftText = (t) => /warning level \(/.test(t ?? '');
 const notified = async (wsId) => { await memNoticeMod.__memNoticeIdle(wsId); };
 
+let leak = null;   // { pid, ticks } of the control's deliberate leftover process — left alone by teardown so the PARENT's survivors report must see it
 let leakPid = null;
 const sessions = new Map();   // ws → st
 async function teardown() {
@@ -192,8 +191,9 @@ async function teardown() {
   await sleep(300);
   for (const ws of ids) for (const u of armUnits(ws)) spawnSync('systemctl', ['--user', 'stop', u], { encoding: 'utf8' });   // by NAME: rig prefix + this rig's ws id
   await sleep(300);
-  // whatever still carries this drill's scratch dir (identity re-read at signal time) — except the control's deliberate leak, which the PARENT's survivors report must catch
-  for (const pid of survivorsOf(BASE, new Set(leakPid ? [leakPid] : []))) { try { if ((readSafe(`/proc/${pid}/environ`) ?? '').includes(BASE) || (readSafe(`/proc/${pid}/cmdline`) ?? '').includes(BASE)) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  // whatever still carries this drill's marker (exact `ORCHESTRA_HOME=<home>` in its environment; never an ancestor, never a wrapper whose argv merely names the path), identity re-read at signal time —
+  // except the control's deliberate leak, which the PARENT's survivors report must catch
+  killByIdentity(rigProcesses(home).filter((p) => !(leak && p.pid === leak.pid && p.ticks === leak.ticks)), home);
   await sleep(200);
 }
 
@@ -229,13 +229,21 @@ try {
   } else if (EXERCISE === 'memhog') {
     // ── open the fleet: every worker's keeper in its own scope (or NOT, with the switch OFF) ───────────────────────────
     const decisions = spec.workers.map((w) => decide(w.id));
-    for (const w of spec.workers) sessions.set(w.id, open(w.id, decisions[spec.workers.indexOf(w)]));
-    const up = await Promise.all(spec.workers.map((w) => waitFor(() => initOf(sessions.get(w.id)), 45_000).then((ok) => [w.id, ok])));
+    const never = SABOTAGE === 'no-worker' ? spec.workers[0].id : null;   // control: the first worker's session is never started — the « fleet is up » instrument must say so
+    for (const w of spec.workers) sessions.set(w.id, w.id === never ? { ws: w.id, lines: [], attached: false, exited: true, errors: ['sabotage no-worker: never started'], send: () => {}, h: null } : open(w.id, decisions[spec.workers.indexOf(w)]));
+    const up = await Promise.all(spec.workers.map((w) => (w.id === never ? Promise.resolve([w.id, false]) : waitFor(() => initOf(sessions.get(w.id)), 45_000).then((ok) => [w.id, ok]))));
     const upMap = new Map(up);
     say(`fleet: ${spec.workers.length} worker(s) up=${up.filter(([, ok]) => ok).length} · switch ${SWITCH_ON ? 'ON' : 'OFF'} · scope decision ${decisions[0] ? 'scope' : 'none'} · cap ${CAP_GB} GB · hog ${HOG_MB} MB${SABOTAGE ? ` · SABOTAGE ${SABOTAGE}` : ''}`);
     const idsOf = new Map();
     for (const w of spec.workers) { const st = sessions.get(w.id); const kp = pidFilePid(w.id); idsOf.set(w.id, { keeperPid: kp, keeperId: ident(kp), cliPid: initOf(st)?.pid ?? null, cliId: ident(initOf(st)?.pid) }); }
-    if (SABOTAGE === 'leak') { const c = spawn('setsid', ['sleep', '3000'], { detached: true, stdio: 'ignore', env: process.env }); c.unref(); leakPid = c.pid; await sleep(200); }
+    if (SABOTAGE === 'leak') {   // `sleep` itself (detached = its own session): the pid we hold IS the leftover process, and it inherits the marker
+      const c = spawn('sleep', ['3000'], { detached: true, stdio: 'ignore', env: process.env }); c.unref(); leakPid = c.pid; await sleep(200);
+      leak = { pid: c.pid, ticks: ticks(c.pid) };
+    }
+    if (SABOTAGE === 'leak-unit') {   // a ≤ 64 MB transient unit carrying the rig prefix + this rig's id prefix, never stopped by the drill: the PARENT's scope count must see it
+      const r = spawnSync('systemd-run', ['--user', '--collect', `--unit=${UNIT_PREFIX}${PREFIX}-leak`, '-p', 'MemoryMax=64M', 'sleep', '3000'], { encoding: 'utf8' });
+      say(`leak-unit: systemd-run rc=${r.status} ${String(r.stderr).trim().slice(0, 120)}`);
+    }
 
     for (let cycle = 1; cycle <= CYCLES; cycle++) {
       if (hostBelow()) { emit('PC-EXERCISE', { exercise: 'memhog', result: 'VOID', cycles: cycle - 1, wanted: CYCLES, reason: `host below the ${MIN_AVAIL_GB} GB bar (MemAvailable ${hostAvailGB().toFixed(2)} GB)` }); verdict = 'VOID'; hostVoid = true; break; }
@@ -253,7 +261,19 @@ try {
       // settle: the kernel counts stop moving (two readings 1.5 s apart), then the kernel-log lookup + delivery
       let prev = '';
       await waitFor(() => { const cur = spec.workers.map((w) => { const v = oomAt(w); if (v !== null) lastOom.set(w.id, v); return lastOom.get(w.id); }).join(','); const stable = cur === prev; prev = cur; return stable; }, 40_000, 1500);
-      await sleep(2500);
+      // the notices are DUE for every kill the kernel counted: wait for them (the keeper's kernel-log lookup + delivery take a moment — a fixed sleep would read a late one as a bug), then a beat so a surplus (a duplicate) can show
+      const killRowsOf = (w) => agentEvents.slice(ev0).filter((e) => e.wsId === w.id && e.ev?.type === 'notice' && !isSoftText(e.ev.text)).length;
+      const dueOf = (w) => { const a = lastOom.get(w.id), b = oom0.get(w.id); return typeof a === 'number' && typeof b === 'number' ? Math.max(0, a - b) : 0; };
+      await waitFor(async () => {
+        for (const w of spec.workers) {
+          const d = dueOf(w);
+          if (d === 0) continue;
+          await notified(w.id);
+          if (killRowsOf(w) < d || kills.filter((k) => k.ws === w.id).length - rec0.get(w.id) < d || coordSent.filter((x) => x.wsId === w.id && x.kind === 'escalation' && x.at >= t0).length < d) return false;
+        }
+        return true;
+      }, 30_000, 500);
+      await sleep(1500);
       for (const w of spec.workers) await notified(w.id);
       if (SABOTAGE === 'session' && cycle === 1) {   // control: the first worker's CLI is SIGTERMed after the kill — the session instrument must see a REPLACED/GONE CLI (identity re-read at signal time)
         const w1 = spec.workers[0]; const ids = idsOf.get(w1.id);
@@ -325,7 +345,8 @@ try {
         if (!alive(kp) || !alive(cliPid)) { lostAfter = lastKills; break; }
       }
       const keeperAlive = alive(kp); const cliAlive = alive(cliPid);
-      const probe = keeperAlive && cliAlive ? await runTool(st, 'echo chain-alive', 't-chain-probe', 20_000) : null;
+      let probe = null;   // three tries: ONE flaky answer must not read as a lost session (a fixed Q9 would then never reach KNOWN-RED-GONE)
+      for (let k = 0; k < 3 && keeperAlive && cliAlive && !(probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive')); k++) probe = await runTool(st, 'echo chain-alive', `t-chain-probe${k}`, 20_000);
       const r = { cycle, planned: CHAIN_N, done, killsTotal: inScope ? lastKills : 0, lostAfter, keeperAlive, cliAlive, answered: probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive'), inScope };
       const checks = evaluateChainRun(r);
       runs.push(checks);
@@ -346,4 +367,4 @@ try {
 }
 emit('PC-HOST', { minAvailGB: Math.min(...hostSamples), samples: hostSamples.length, sabotage: SABOTAGE, leakPid });
 console.log(`MEMHOG-DRIVE ${verdict}${leakPid ? ` leakPid=${leakPid}` : ''} (${((Date.now() - startedAt) / 1000).toFixed(0)} s)`);
-process.exit(hostVoid ? 3 : verdict === 'ERROR' ? 1 : 0);
+process.exit(hostVoid ? 3 : verdict === 'ERROR' || verdict === 'DRY-RED' ? 1 : 0);

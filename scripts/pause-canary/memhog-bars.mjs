@@ -24,6 +24,8 @@ const clip = (s, n = 60) => String(s ?? '').replace(/\s+/g, ' ').slice(0, n);
 
 /** The marker a worker's hog carries in its command line (the kill record must NAME it): unique per worker and cycle. */
 export const hogMarker = (k, cycle) => `memhog-${k}-c${cycle}`;
+/** Is `marker` a WHOLE argument of the command line (not a prefix: `memhog-w1-c1` must not be satisfied by `memhog-w1-c11`)? */
+export const hasMarker = (command, marker) => typeof marker === 'string' && marker !== '' && String(command ?? '').split(/\s+/).includes(marker);
 /** `swarm.py` (scripts/memory-cap) prints one line when its children are reaped; null when the tool printed none. */
 export function parseSwarm(text) {
   const m = /swarm: children=(\d+) survived=(\d+) killed=(\d+)/.exec(String(text ?? ''));
@@ -54,7 +56,7 @@ export function hogKilledWhy(w) {
   if (!num(w.oomKillDelta)) return 'NOT MEASURED (no memory.events reading)';
   if (sw.killed < 1 || sw.survived !== 0) return `hog NOT killed: killed=${sw.killed} survived=${sw.survived}, oom_kill +${w.oomKillDelta}`;
   if (w.oomKillDelta < 1) return `the tool says killed=${sw.killed} but the kernel counted oom_kill +${w.oomKillDelta}`;
-  const named = (w.records ?? []).some((r) => r.level === 'hard' && typeof w.marker === 'string' && w.marker !== '' && String(r.command ?? '').includes(w.marker));
+  const named = (w.records ?? []).some((r) => r.level === 'hard' && typeof w.marker === 'string' && w.marker !== '' && hasMarker(r.command, w.marker));
   return named ? null : `killed (oom_kill +${w.oomKillDelta}) but no record names this worker's hog "${w.marker}": ${clip((w.records ?? []).map((r) => r.command ?? 'null').join(' | '))}`;
 }
 
@@ -145,15 +147,20 @@ export function evaluateLiveUntouched(before, after) {
   return { id: 'bar:live_config_untouched', ok, detail: before && after ? (ok ? '~/.claude* entry counts, links and inherit manifests unchanged' : `CHANGED: ${JSON.stringify(before)} → ${JSON.stringify(after)}`) : 'NOT MEASURED' };
 }
 
-/** One Q9 chain run (`r`: planned, done, killsTotal, lostAfter (kill index at which keeper or CLI vanished, else null), keeperAlive, cliAlive, answered). */
+/** One Q9 chain run (`r`: planned, done, killsTotal, inScope (the keeper really ran in a capped scope), lostAfter (kernel kills counted when keeper or CLI vanished, else null), keeperAlive, cliAlive, answered).
+ *  A session lost at the VERY FIRST kill reads killsTotal 0 (the counter dies with the scope): a loss in a capped scope IS the cap having killed something. */
 export function evaluateChainRun(r) {
   const checks = [];
-  const add = (id, ok, detail) => checks.push({ id, ok: ok === true, detail });
+  const add = (id, ok, detail, extra = {}) => checks.push({ id, ok: ok === true, detail, ...extra });
   const lost = r.lostAfter !== null && r.lostAfter !== undefined;
+  const planned = r.planned ?? MEMHOG_BARS.chainPlanned;
   // premise: the cap really killed the chain's tools (a chain that killed nothing — cap OFF, scope missing — proves nothing either way)
-  add('premise_chain_killed_tools', num(r.killsTotal) && r.killsTotal >= 1 && (lost || r.killsTotal >= (r.planned ?? MEMHOG_BARS.chainPlanned)), `${r.killsTotal ?? 'NOT MEASURED'} kernel kill(s) over ${r.done ?? '?'} of ${r.planned ?? '?'} tools`);
-  add('q9:session_survives_chain', !lost && r.keeperAlive === true && r.cliAlive === true && r.answered === true && r.done === r.planned,
-    lost ? `session LOST after ${r.lostAfter} kernel kill(s): keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}` : `${r.done}/${r.planned} tools killed, keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}, answers ${r.answered === true}`);
+  add('premise_chain_killed_tools', r.inScope === true && ((num(r.killsTotal) && r.killsTotal >= planned) || lost), `${r.inScope === true ? 'capped scope' : 'NO capped scope'}; ${r.killsTotal ?? 'NOT MEASURED'} kernel kill(s) over ${r.done ?? '?'} of ${planned} tools${lost ? ' (session lost)' : ''}`);
+  const alive = r.keeperAlive === true && r.cliAlive === true;
+  add('q9:session_survives_chain', !lost && alive && r.answered === true && r.done === r.planned,
+    lost ? `session LOST after ${r.lostAfter} kernel kill(s): keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}`
+      : `${r.done}/${r.planned} tools killed, keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}, ${r.answered === true ? 'answers' : alive ? 'ALIVE BUT DID NOT ANSWER a tool (3 tries)' : 'no answer'}`,
+    { lostAfter: lost ? r.lostAfter : null, alive });
   return checks;
 }
 
@@ -163,7 +170,8 @@ export function chainVerdict(runs) {
   const premiseRed = runs.filter((r) => r.some((c) => c.id === 'premise_chain_killed_tools' && !c.ok));
   if (premiseRed.length) return { verdict: 'VOID', detail: `${premiseRed.length}/${runs.length} run(s) killed no tool chain (premise RED) — nothing measured` };
   const lost = runs.filter((r) => r.some((c) => c.id === 'q9:session_survives_chain' && !c.ok));
-  const detail = `${lost.length}/${runs.length} run(s) lost the session${lost.length ? ` (${lost.map((r) => r.find((c) => c.id === 'q9:session_survives_chain').detail.replace(/^session LOST after (\d+) .*/, '$1')).join(', ')} kill(s) in)` : ''}`;
+  const at = (r) => r.find((c) => c.id === 'q9:session_survives_chain');
+  const detail = `${lost.length}/${runs.length} run(s) lost the session${lost.length ? ` (${lost.map((r) => (num(at(r).lostAfter) ? `after ${at(r).lostAfter} kill(s)` : at(r).alive === true ? 'alive but unresponsive' : 'cut short')).join(', ')})` : ''}`;
   return { verdict: lost.length > 0 ? 'KNOWN-RED' : 'KNOWN-RED-GONE', detail };
 }
 
@@ -174,12 +182,20 @@ export function splitChecks(checks) {
   return { bars, known, barsRed: bars.filter((c) => !c.ok && !c.id.startsWith('published:')), knownGreen: known.filter((c) => c.ok), knownRed: known.filter((c) => !c.ok) };
 }
 
-/** A drill's verdict from its cycles' checks (+ the runner's). PASS iff no bar is RED and published metrics exist. */
-export function drillVerdict(checks) {
+/** The checks a drill that really ran always has — a list missing any of them (a drive that died before measuring, an empty list) is NOT a PASS. */
+export const REQUIRED_CYCLE_CHECKS = Object.freeze(['workers_up', 'bar:cap_scope_applied', 'bar:hog_killed', 'bar:session_survives', 'bar:cap_holds_after_kill', 'bar:member_told', 'bar:coordinator_told', 'bar:only_coordinator_told']);
+/** What the RUNNER adds (measured from outside the drive). */
+export const REQUIRED_RUNNER_CHECKS = Object.freeze(['bar:no_survivors']);
+
+/** A drill's verdict from its checks. PASS iff every required check is present, no bar is RED and the published metrics exist. */
+export function drillVerdict(checks, required = REQUIRED_CYCLE_CHECKS) {
   const s = splitChecks(checks);
   const publishedMissing = s.bars.filter((c) => !c.ok && c.id.startsWith('published:'));
-  return s.barsRed.length === 0 && publishedMissing.length === 0 ? 'PASS' : 'FAIL';
+  const absent = required.filter((id) => !checks.some((c) => c.id === id));
+  return absent.length === 0 && s.barsRed.length === 0 && publishedMissing.length === 0 ? 'PASS' : 'FAIL';
 }
+/** The required ids a list is missing (for the report). */
+export const missingChecks = (checks, required = REQUIRED_CYCLE_CHECKS) => required.filter((id) => !checks.some((c) => c.id === id));
 
 /** The runner's verdict for a must-FAIL / sabotage proof arm: `mustFailVerdict` (rig reached the fleet, premise intact, the named instrument RED with a measured reason) + PRECISION: the instruments
  *  that must stay GREEN did (a sabotage that reddens everything proves nothing about which instrument saw it). */

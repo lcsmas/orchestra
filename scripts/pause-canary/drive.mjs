@@ -246,7 +246,7 @@ async function runExercise(name) {
         const [kPre, kPost] = [idPre[w.k]?.keeper, idPost[w.k]?.keeper];
         const cliPid = idPre[w.k]?.pid;
         workers.push({
-          k: w.k, id: w.id, up: true, marker: hogMarker(w.k, c),
+          k: w.k, id: w.id, up: !!idPre[w.k]?.claude && !!readWt(w.k, `probe-${w.k}-c${c}a.txt`), marker: hogMarker(w.k, c),
           scope: scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX),
           swarm: parseSwarm(readWt(w.k, `memhog-out-${w.k}-c${c}.txt`)),
           oomKillDelta: delta(w),

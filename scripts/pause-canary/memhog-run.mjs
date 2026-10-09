@@ -16,7 +16,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { randomPrefix } from './ids.mjs';
 import { liveSnapshot } from './lib.mjs';
-import { MEMHOG_BARS, KNOWN_RED, renderMemhogTable, drillVerdict, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict } from './memhog-bars.mjs';
+import { MEMHOG_BARS, KNOWN_RED, REQUIRED_CYCLE_CHECKS, renderMemhogTable, drillVerdict, missingChecks, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict } from './memhog-bars.mjs';
+import { rigProcesses, killByIdentity } from './memhog-os.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
@@ -37,21 +38,28 @@ const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
 // ── proof arms: each must-FAIL arm names the instrument(s) it must turn RED with a MEASURED reason, and the ones that must stay GREEN (precision); the clean control runs the SAME shape and must PASS ──
 const PROOF_ARMS = [
   { name: 'control:clean', exercise: 'memhog', expect: 'PASS' },
-  { name: 'control:cap-off', exercise: 'memhog', switch: 'off', redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'], stayGreen: ['bar:session_survives'] },   // the ticket's must-FAIL: the same drill with the frozen `memory_cap` switch OFF
+  { name: 'control:cap-off', exercise: 'memhog', switch: 'off', redden: ['bar:cap_scope_applied', 'bar:hog_killed', 'bar:cap_holds_after_kill', 'bar:member_told', 'bar:coordinator_told'], stayGreen: ['bar:session_survives'] },   // the ticket's must-FAIL: the same drill with the frozen `memory_cap` switch OFF
   { name: 'control:hog-small', exercise: 'memhog', sabotage: 'hog-small', redden: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'], stayGreen: ['bar:cap_scope_applied', 'bar:session_survives'], expectDetail: /hog NOT killed: killed=0 survived=1|no kill to tell/ },   // the scope is there, the hog stays below the cap
   { name: 'control:sabotage-session', exercise: 'memhog', sabotage: 'session', redden: ['bar:session_survives'], stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'], expectDetail: /w1: CLI (GONE|REPLACED)/ },   // a worker's CLI is SIGTERMed after the kill
-  { name: 'control:sabotage-member-sink', exercise: 'memhog', sabotage: 'member-sink', redden: ['bar:member_told'], stayGreen: ['bar:coordinator_told', 'bar:hog_killed', 'bar:session_survives'], expectDetail: /0 notice row\(s\) for [1-9]/ },
-  { name: 'control:sabotage-coord-sink', exercise: 'memhog', sabotage: 'coord-sink', redden: ['bar:coordinator_told'], stayGreen: ['bar:member_told', 'bar:hog_killed', 'bar:session_survives'], expectDetail: /0 escalation\(s\) for [1-9]/ },
+  { name: 'control:sabotage-member-sink', exercise: 'memhog', sabotage: 'member-sink', redden: ['bar:member_told'], reddenAny: ['published:time_to_member_told_s'], stayGreen: ['bar:coordinator_told', 'bar:hog_killed', 'bar:session_survives'], expectDetail: /0 notice row\(s\) for [1-9]/ },
+  { name: 'control:sabotage-coord-sink', exercise: 'memhog', sabotage: 'coord-sink', redden: ['bar:coordinator_told'], reddenAny: ['published:time_to_coordinator_told_s'], stayGreen: ['bar:member_told', 'bar:hog_killed', 'bar:session_survives'], expectDetail: /0 escalation\(s\) for [1-9]/ },
   { name: 'control:sabotage-stray-lead', exercise: 'memhog', sabotage: 'stray-lead', redden: ['bar:only_coordinator_told'], stayGreen: ['bar:member_told', 'bar:coordinator_told', 'bar:hog_killed'], expectDetail: /the LEAD saw [1-9]/ },   // every escalation is copied to the coordinator's coordinator
   { name: 'control:sabotage-leak', exercise: 'memhog', sabotage: 'leak', redden: ['bar:no_survivors'], stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told', 'bar:session_survives'], expectDetail: /[1-9]\d* process\(es\) carrying the rig dir/ },   // the drill leaves a process behind on purpose: the parent's survivors count must see it
+  { name: 'control:sabotage-leak-unit', exercise: 'memhog', sabotage: 'leak-unit', redden: ['bar:no_survivors'], stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told', 'bar:session_survives'], expectDetail: /[1-9]\d* scope\(s\) with the rig prefix/ },   // the SCOPES leg of the survivors count: a ≤ 64 MB unit the drill leaves behind
+  { name: 'control:sabotage-no-worker', exercise: 'memhog', sabotage: 'no-worker', redden: ['workers_up'], stayGreen: [], expectDetail: /w1: session never came up/, workersUpExpectedRed: true },   // the first worker is never started: the « fleet is up » instrument must say so (the others stay measured)
+  { name: 'control:live-config', internal: 'live-config' },   // the live-config instrument on a SCRATCH home (no drive): unchanged ⇒ green, an added entry ⇒ RED with the change in the detail
   { name: 'control:chain-cap-off', exercise: 'chain', switch: 'off', cycles: 1, expectVerdict: 'VOID', redden: ['premise_chain_killed_tools'], expectDetail: /^0 kernel kill/ },   // the Q9 instrument with nothing to measure: VOID, never a green
   { name: 'known-red:q9-chain', exercise: 'chain', cycles: 3, expectVerdict: 'KNOWN-RED' },   // Q9 / residual (d): must stay RED until Q9 is fixed (then KNOWN-RED-GONE: promote it to a bar)
 ];
-if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(32)} ${a.exercise}${a.expect ? ' → PASS' : a.expectVerdict ? ` → verdict ${a.expectVerdict}` : ''}${a.redden ? ` → RED ${a.redden.join(' | ')}` : ''}${a.stayGreen ? ` (stay GREEN ${a.stayGreen.join(' | ')})` : ''}`); process.exit(0); }
+if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(32)} ${a.internal ? `internal: ${a.internal} (scratch home, no drive)` : a.exercise}${a.expect ? ' → PASS' : a.expectVerdict ? ` → verdict ${a.expectVerdict}` : ''}${a.redden ? ` → RED ${a.redden.join(' | ')}` : ''}${a.reddenAny ? ` + RED (any reason) ${a.reddenAny.join(' | ')}` : ''}${a.stayGreen?.length ? ` (stay GREEN ${a.stayGreen.join(' | ')})` : ''}`); process.exit(0); }
 
 if (opt('cli', 'stand-in') !== 'stand-in') { say('MEMHOG-CANARY: VOID — `--cli claude` needs the LEAD\'s waiver of ledger D2 (test scopes ≤ 300 MB; the real claude is ~330 MB). Not run.'); process.exit(3); }
 const HEAVY = opt('heavy-token', process.env.MEMHOG_HEAVY_TOKEN ?? '');
-if (!HEAVY) { say('MEMHOG-CANARY: VOID — real scopes + kernel OOM kills = a HEAVY rig: run it only under the heavy-rig token (ask the OPS), then pass --heavy-token <ref> (or MEMHOG_HEAVY_TOKEN). Nothing was run.'); process.exit(3); }
+if (HEAVY.startsWith('--')) { say(`MEMHOG-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
+// the live-config control runs on a scratch home with no drive, no scope, no docker: it needs no token
+const onlyNames = (opt('only', '') || '').split(',').filter(Boolean);
+const internalOnly = flag('proof') && onlyNames.length > 0 && onlyNames.every((n) => PROOF_ARMS.some((a) => a.internal && (a.name === n || a.name.replace(/^(control|known-red):/, '') === n)));
+if (!HEAVY && !internalOnly) { say('MEMHOG-CANARY: VOID — real scopes + kernel OOM kills = a HEAVY rig: run it only under the heavy-rig token (ask the OPS), then pass --heavy-token <ref> (or MEMHOG_HEAVY_TOKEN). Nothing was run.'); process.exit(3); }
 
 // ── host guards ──
 const hostNow = () => ({ availGB: Number(/MemAvailable:\s+(\d+) kB/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))[1]) / 1048576, load1: Number(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]) });
@@ -78,22 +86,13 @@ async function waitForHost(members, off = false) {
   }
 }
 const unitsNow = (glob) => (spawnSync('systemctl', ['--user', 'list-units', '--all', '--no-legend', '--plain', glob], { encoding: 'utf8' }).stdout ?? '').split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean);
-const readSafe = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
-/** Processes carrying the drill's scratch dir in their env / argv / cwd — the rig's own marker; identity (pid + /proc start time) is re-read at signal time. */
-function survivorsOf(base) {
-  const out = [];
-  for (const name of fs.readdirSync('/proc')) {
-    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
-    try { if (readSafe(`/proc/${name}/cmdline`).includes(base) || readSafe(`/proc/${name}/environ`).includes(base) || fs.readlinkSync(`/proc/${name}/cwd`).startsWith(base)) out.push(Number(name)); } catch { /* gone / not ours */ }
-  }
-  return out;
-}
-const startTicks = (pid) => { const s = readSafe(`/proc/${pid}/stat`); return s ? s.slice(s.lastIndexOf(')') + 2).split(' ')[19] : null; };
 
 // ── one drill = one child process (singletons) under an allowlisted env ──
 async function drive({ exercise, members, cycles, off = false, sabotage = null, label }) {
   fs.mkdirSync(OUT, { recursive: true });
   const base = path.join(RUN_DIR, label);
+  fs.mkdirSync(base, { recursive: true });
+  fs.writeFileSync(path.join(base, '.memhog-scratch'), `${process.pid}\n`);   // the sentinel the driver's `rm -rf` of its own scratch dir requires
   const prefix = randomPrefix();
   const logFile = path.join(OUT, `${label}.log`);
   const driveArgs = ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(HERE, 'memhog.mjs'),
@@ -110,13 +109,14 @@ async function drive({ exercise, members, cycles, off = false, sabotage = null, 
   const rc = await new Promise((r) => child.on('close', (c, s) => r(c ?? s)));
   clearTimeout(timeout);
   log.end();
-  // G5: the survivors of THIS drill, printed and measured from OUTSIDE — then cleaned by identity (pid + start time re-read) / by NAME (our prefix + this rig's id prefix, absent before).
-  const procs = survivorsOf(base);
-  const ident = new Map(procs.map((p) => [p, startTicks(p)]));
+  // G5: the survivors of THIS drill, measured from OUTSIDE — exactly the processes carrying `ORCHESTRA_HOME=<base>/home` in their environment (never a substring of an argv) and the units carrying our prefix + this rig's id
+  // prefix (absent before) — printed, then cleaned by identity (pid + start time re-read at signal time) / by NAME.
+  const home = path.join(base, 'home');
+  const procs = rigProcesses(home);
   const newUnits = unitsNow(`${UNIT_PREFIX}${prefix}*`).filter((u) => !unitsBefore.has(u));
-  const survivors = { procs: procs.length, units: newUnits.length };
+  const survivors = { procs: procs.length, units: newUnits.length, pids: procs.map((p) => p.pid) };
   for (const u of newUnits) spawnSync('systemctl', ['--user', 'stop', u], { encoding: 'utf8' });
-  for (const [pid, st] of ident) { try { if (startTicks(pid) === st && (readSafe(`/proc/${pid}/environ`).includes(base) || readSafe(`/proc/${pid}/cmdline`).includes(base))) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  killByIdentity(procs, home);
   say(`SURVIVORS drill=${label} procs=${survivors.procs} scopes=${survivors.units}${survivors.procs || survivors.units ? '  ← LEAK (cleaned by identity)' : ''}`);
   fs.rmSync(base, { recursive: true, force: true });
   const pc = (tag) => lines.filter((l) => l.startsWith(`${tag} `)).map((l) => { try { return JSON.parse(l.slice(tag.length + 1)); } catch { return null; } }).filter(Boolean);
@@ -124,7 +124,8 @@ async function drive({ exercise, members, cycles, off = false, sabotage = null, 
   const surv = evaluateSurvivors(survivors);
   const checks = [...pc('PC-CHECK'), { exercise, cycle: 0, ...surv }];
   say(`${surv.ok ? 'ok ' : 'RED'} ${exercise} ${surv.id} — ${surv.detail}`);
-  return { rc, label, logFile, exercises: pc('PC-EXERCISE'), cycles: pc('PC-CYCLE'), chains: pc('PC-CHAIN'), checks, host: pc('PC-HOST')[0] ?? null, survivors, verdict: verdictLine ? verdictLine.split(' ')[1] : 'NO-RESULT', exercise: pc('PC-EXERCISE')[0] ?? null };
+  const plantedLeak = Number(/leakPid=(\d+)/.exec(verdictLine ?? '')?.[1] ?? 0) || null;
+  return { rc, label, logFile, plantedLeak, exercises: pc('PC-EXERCISE'), cycles: pc('PC-CYCLE'), chains: pc('PC-CHAIN'), checks, host: pc('PC-HOST')[0] ?? null, survivors, verdict: verdictLine ? verdictLine.split(' ')[1] : 'NO-RESULT', exercise: pc('PC-EXERCISE')[0] ?? null };
 }
 
 /** A drive that did not measure every wanted cycle has NO verdict: an empty check list must never read PASS. */
@@ -162,11 +163,14 @@ if (!flag('proof')) {
   const ch = parts.find((p) => p.exercise === 'chain');
   const chainSurv = ch ? ch.checks.filter((c) => c.id === 'bar:no_survivors').map((c) => ({ ...c, exercise: 'chain' })) : [];
   const mhChecks = mh ? [...mh.checks, ...chainSurv, { exercise: 'memhog', cycle: 0, ...liveCheck }] : [];
-  const mhVerdict = !mh ? null : mh.rc === 3 || mh.verdict === 'VOID' ? 'VOID' : !complete(mh, cycles) ? 'FAIL' : drillVerdict(mhChecks);
-  const chV = ch ? (ch.exercises[0]?.result ?? ch.verdict) : null;
+  const mhVerdict = !mh ? null : mh.rc === 3 || mh.verdict === 'VOID' ? 'VOID' : !complete(mh, cycles) ? 'FAIL' : drillVerdict(mhChecks, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors', 'bar:live_config_untouched']);
+  // the Q9 chain's state: a result is only believed when EVERY wanted run reported (a chain cut short is neither KNOWN-RED nor GONE)
+  const chRaw = ch ? (ch.exercises[0]?.result ?? ch.verdict) : null;
+  const chV = !ch ? null : ['KNOWN-RED', 'KNOWN-RED-GONE'].includes(chRaw) ? (ch.chains.length === cycles ? chRaw : 'INCOMPLETE') : chRaw === 'VOID' || ch.rc === 3 ? 'VOID' : 'ERROR';
+  const chainSurvBad = !!ch && ch.checks.some((c) => c.id === 'bar:no_survivors' && !c.ok);
   const table = mh ? renderMemhogTable(mh.cycles.map((c) => ({ ...c, checks: c.checks }))) : '(memhog not run)';
   const reds = mhChecks.filter((c) => !c.ok);
-  const full = exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3;
+  const full = exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3 && (chV === 'KNOWN-RED' || chV === 'KNOWN-RED-GONE');
   const md = [`# Pause canary 1b — memory-hog exercise (${members} workers + OPS + LEAD, ${cycles} cycles)`, '',
     `tree ${gitHead} (${gitBranch}) · stand-in CLI (a real claude does not fit D2's ≤ 300 MB scopes: NOT run) · cap ${0.25} GB (256 MiB), warning 0.2 GB · heavy token ${HEAVY}`,
     `host: bar ${MIN_AVAIL_GB} GB / load 20 · min MemAvailable ${mh?.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · \`memory_cap\` default NOT flipped (Q9 blocks it; the LEAD decides)`, '', table, '',
@@ -179,10 +183,14 @@ if (!flag('proof')) {
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ tree: gitHead, members, cycles, token: HEAVY, memhog: mh && { verdict: mhVerdict, cycles: mh.cycles, checks: mhChecks }, chain: ch && { verdict: chV, runs: ch.chains, detail: ch.exercises[0]?.detail } }, null, 1));
   say(`\n${table}\n`);
   fs.rmSync(RUN_DIR, { recursive: true, force: true });
-  const word = mhVerdict === 'PASS' && !full ? 'PARTIAL' : mhVerdict ?? 'NOT-RUN';
   const gone = chV === 'KNOWN-RED-GONE';
-  say(`MEMHOG-CANARY: ${word}${members < 6 ? ` (${members} workers — labelled, not the 6 of the ticket)` : ''}${ch ? ` · Q9 chain ${chV}` : ''}${gone ? ' — THE KNOWN-RED INSTRUMENT WENT GREEN: Q9 fixed or the chain stopped reproducing; look, then promote it to a bar' : ''}`);
-  process.exit(word === 'PASS' ? (gone ? 5 : 0) : word === 'PARTIAL' ? (gone ? 5 : 4) : word === 'VOID' || word === 'NOT-RUN' ? 3 : 1);
+  const chainMeasured = chV === 'KNOWN-RED' || gone;
+  // the verdict word: memhog's (PARTIAL when green but not the contract shape), else — chain alone — the chain's own state. A chain that was ASKED FOR and never measured is no PASS; a leak or a changed live config fails whatever ran.
+  let word = mh ? (mhVerdict === 'PASS' && !full ? 'PARTIAL' : mhVerdict) : ch ? (chV === 'KNOWN-RED' ? 'KNOWN-RED' : gone ? 'KNOWN-RED-GONE' : chV === 'VOID' ? 'VOID' : 'FAIL') : 'NOT-RUN';
+  if (mh && ch && !chainMeasured && (word === 'PASS' || word === 'PARTIAL')) word = chV === 'VOID' ? 'VOID' : 'FAIL';
+  if (!mh && (chainSurvBad || !liveCheck.ok)) word = 'FAIL';
+  say(`MEMHOG-CANARY: ${word}${members < 6 && mh ? ` (${members} workers — labelled, not the 6 of the ticket)` : ''}${ch ? ` · Q9 chain ${chV}` : ''}${gone ? ' — THE KNOWN-RED INSTRUMENT WENT GREEN: Q9 fixed or the chain stopped reproducing; look, then promote it to a bar' : ''}`);
+  process.exit(gone && ['PASS', 'PARTIAL', 'KNOWN-RED-GONE'].includes(word) ? 5 : word === 'PASS' || word === 'KNOWN-RED' ? 0 : word === 'PARTIAL' ? 4 : word === 'VOID' || word === 'NOT-RUN' ? 3 : 1);
 }
 
 // ── the HARNESS proof ──
@@ -192,7 +200,29 @@ if (sel.length === 0) { say(`MEMHOG-CANARY PROOF: no arm matches --only ${JSON.s
 const members = Number(opt('members', '3'));
 say(`harness proof: ${sel.length} arm(s) at ${members} workers × ${opt('cycles', '1')} cycle(s) · token ${HEAVY} · MemAvailable ${h0.availGB.toFixed(2)} GB`);
 const rows = [];
+/** The live-config instrument on a SCRATCH home (no drive, nothing heavy): unchanged ⇒ green; an added entry ⇒ RED with the change in the detail. */
+function liveConfigControl() {
+  const fake = path.join(RUN_DIR, 'fakehome');
+  fs.mkdirSync(path.join(fake, '.claude'), { recursive: true });
+  for (const f of ['a.json', 'b.json']) fs.writeFileSync(path.join(fake, '.claude', f), '{}');
+  const before = liveSnapshot(fake);
+  const same = evaluateLiveUntouched(before, liveSnapshot(fake));
+  fs.writeFileSync(path.join(fake, '.claude', 'c.json'), '{}');
+  const changed = evaluateLiveUntouched(before, liveSnapshot(fake));
+  fs.symlinkSync(path.join(fake, '.claude', 'a.json'), path.join(fake, '.claude', 'link'));
+  const linked = evaluateLiveUntouched(before, liveSnapshot(fake));
+  fs.rmSync(fake, { recursive: true, force: true });
+  const ok = same.ok === true && changed.ok === false && /CHANGED/.test(changed.detail) && linked.ok === false;
+  return { verdict: ok ? 'AS-EXPECTED (RED seen)' : 'MUTANT-SURVIVED', why: `unchanged → ${same.ok ? 'green' : 'RED'}; an added entry → ${changed.ok ? 'GREEN (!)' : 'RED'}; a new symlink → ${linked.ok ? 'GREEN (!)' : 'RED'}` };
+}
+
 for (const arm of sel) {
+  if (arm.internal === 'live-config') {
+    const c = liveConfigControl();
+    rows.push({ arm: arm.name, ...c });
+    say(`\n=== ${arm.name}: ${c.verdict} — ${c.why}`);
+    continue;
+  }
   const m = arm.exercise === 'chain' ? 1 : members;
   const hw = await waitForHost(m, arm.switch === 'off');
   if (!hw.ok) { rows.push({ arm: arm.name, verdict: 'VOID', why: `host below the bar+rig (${hw.need.toFixed(1)} GB) for ${hw.waitedS} s (MemAvailable ${hw.availGB.toFixed(2)} GB, load ${hw.load1.toFixed(1)})` }); continue; }
@@ -210,15 +240,26 @@ for (const arm of sel) {
     const measured = (arm.redden ?? []).filter((id) => red.some((c) => c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
     verdict = got === arm.expectVerdict && (arm.redden ? measured.length === arm.redden.length : true) ? 'AS-EXPECTED' : got === 'KNOWN-RED-GONE' ? 'STALE (KNOWN-RED-GONE: Q9 fixed or the chain stopped reproducing — look, then promote it to a bar)' : `UNEXPECTED (${got})`;
     why = `${got}: ${ex?.detail ?? ''}${arm.redden ? ` · RED with a measured reason: ${measured.join(', ') || 'none'}` : ''}`;
-  } else if (arm.expect) { verdict = drillVerdict(r.checks) === 'PASS' ? 'AS-EXPECTED (PASS)' : 'UNEXPECTED-RED'; why = verdict.startsWith('AS') ? `${r.checks.length} checks green` : `RED: ${red.map((c) => `c${c.cycle} ${c.id} (${c.detail.slice(0, 100)})`).slice(0, 6).join(' · ')}`; }
+  } else if (arm.expect) {
+    // a drive that died, was cut short, or measured only the runner's own check is NOT a pass: it needs every required check present and green, a complete set of cycles and a clean exit
+    const miss = missingChecks(r.checks, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors']);
+    const green = r.rc === 0 && complete(r, cyc) && drillVerdict(r.checks, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors']) === 'PASS';
+    verdict = green ? 'AS-EXPECTED (PASS)' : 'UNEXPECTED-RED';
+    why = green ? `${r.checks.length} checks green` : `${miss.length ? `MISSING checks: ${miss.join(', ')}; ` : ''}rc=${r.rc}; RED: ${red.map((c) => `c${c.cycle} ${c.id} (${c.detail.slice(0, 100)})`).slice(0, 6).join(' · ') || 'none'}`;
+  }
   else {
     // the named instrument must be RED with a MEASURED reason (a check red only because its metric is absent proves nothing), and the instruments that must stay GREEN did
     const hit = arm.redden.filter((id) => red.some((c) => c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
     const overRed = (arm.stayGreen ?? []).filter((id) => red.some((c) => c.id === id));
     const premiseRed = red.filter((c) => /^premise_/.test(c.id));
-    const reached = r.checks.some((c) => c.id === 'workers_up' && c.ok) && complete(r, cyc);   // the rig itself must have got the fleet up and measured: a drive that never did proves nothing
-    verdict = memhogArmVerdict({ reached, premiseRed, hit: hit.length === arm.redden.length ? hit : [], overRed });
-    why = `${premiseRed.length ? `PREMISE RED (${premiseRed.map((c) => c.id).join(', ')}); ` : ''}RED with a measured reason: ${hit.join(', ') || 'none'}${overRed.length ? `; OVER-RED (must stay green): ${overRed.join(', ')}` : ''}; all RED: ${red.map((c) => `c${c.cycle} ${c.id}`).slice(0, 8).join(' · ') || 'none'}`;
+    // instruments that must read RED for ANY reason (a metric that cannot exist once the thing under sabotage is gone — « NOT MEASURED » is the honest red of a published timing)
+    const anyMissing = (arm.reddenAny ?? []).filter((id) => !red.some((c) => c.id === id));
+    // the rig itself must have got the fleet up and measured: a drive that never did proves nothing (the no-worker control EXPECTS workers_up red — the cycle must still have been evaluated)
+    const reached = (arm.workersUpExpectedRed ? r.checks.some((c) => c.id === 'bar:hog_killed') : r.checks.some((c) => c.id === 'workers_up' && c.ok)) && complete(r, cyc);
+    // the leak control: the PLANTED process (its own pid, announced by the drill) must be among the survivors the parent measured — any other leftover would not prove the instrument sees THIS one
+    const plantedMissing = arm.sabotage === 'leak' && !(r.plantedLeak && r.survivors.pids.includes(r.plantedLeak));
+    verdict = memhogArmVerdict({ reached, premiseRed, hit: hit.length === arm.redden.length && anyMissing.length === 0 && !plantedMissing ? hit : [], overRed });
+    why = `${premiseRed.length ? `PREMISE RED (${premiseRed.map((c) => c.id).join(', ')}); ` : ''}RED with a measured reason: ${hit.join(', ') || 'none'}${anyMissing.length ? `; NOT red (must be): ${anyMissing.join(', ')}` : ''}${plantedMissing ? '; the planted leak pid is not among the survivors the parent measured' : ''}${overRed.length ? `; OVER-RED (must stay green): ${overRed.join(', ')}` : ''}; all RED: ${red.map((c) => `c${c.cycle} ${c.id}`).slice(0, 8).join(' · ') || 'none'}`;
   }
   rows.push({ arm: arm.name, verdict, why, log: r.logFile });
   say(`=== ${arm.name}: ${verdict} — ${why}`);
