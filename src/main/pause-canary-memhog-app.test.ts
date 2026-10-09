@@ -82,9 +82,14 @@ test('every degradation of the real-path facts reads RED on the bar that owns it
   assert.ok(red(withOver({ lots: [{ from_seq: 0, to_seq: 100, acked_at: null }] })).includes('bar:coordinator_told'), 'the escalation sits in a lot the OPS took but never acked: not read');
   assert.ok(red(withOver({ lots: [] })).includes('bar:coordinator_told'));
   assert.ok(red(withOver({ storeNotices: [] })).includes('bar:member_told'), 'no persisted row');
-  assert.deepEqual(red(withOver({ idPost: { claude: '999@7', keeper: '91@4' } })), ['bar:session_survives'], 'the CLI was replaced');
+  const w2 = facts(2).f;
+  assert.deepEqual(red(withOver({ idPost: { claude: '999@7', keeper: w2.idPre.keeper } })), ['bar:session_survives'], 'only the CLI was replaced (same keeper)');
+  assert.deepEqual(red(withOver({ idPost: { claude: w2.idPre.claude, keeper: '999@7' } })), ['bar:session_survives'], 'only the keeper was replaced (same CLI)');
+  assert.deepEqual(red(withOver({ idPre: { claude: undefined, keeper: undefined }, idPost: { claude: undefined, keeper: undefined } })), ['bar:session_survives'], 'identities that could not be read are not « the same »');
+  assert.ok(red(withOver({ oomKillDelta: undefined })).includes('bar:hog_killed'), 'no kernel reading is NOT MEASURED, never a default');
   assert.deepEqual(red(withOver({ probeAfter: false })), ['bar:session_survives'], 'the CLI no longer works');
   assert.deepEqual(red(withOver({ appLog: 'nothing' })), ['bar:cap_holds_after_kill'], 'the app never said the cap was ACTIVE for this workspace');
+  assert.deepEqual(red(withOver({ appLog: `memory-cap[${wsOf(3).id}]: ACTIVE — scope x` })), ['bar:cap_holds_after_kill'], 'ANOTHER workspace\'s ACTIVE line is not this one\'s');
   assert.deepEqual(red(withOver({ scopeActive: false })), ['bar:cap_holds_after_kill']);
   assert.ok(red(withOver({ up: false })).includes('workers_up'));
   assert.ok(red(withOver({ msgs: [facts(2).f.msgs[0], { sequence: 99, kind: 'escalation', recipient: 'the-lead', body: facts(2).f.msgs[1].body, created_at: T0 + 4300 }] })).includes('bar:only_coordinator_told'));

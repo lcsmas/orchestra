@@ -23,14 +23,14 @@ export const MEMHOG_MUTANTS = [
   ['member-zero-kill-ok', "(no stream / no kernel count)';\n  if (w.oomKillDelta < 1) return", "(no stream / no kernel count)';\n  if (false) return"],
   ['member-extra-row-ok', 'if (rows.length !== w.oomKillDelta)', 'if (rows.length < w.oomKillDelta)'],
   ['member-wording-ignored', 'const odd = rows.find((t) => !re.test(t));', 'const odd = undefined;'],
-  ['member-dot-wildcard', "gb(m.capGb).replace('.', '\\\\.')", 'gb(m.capGb)'],
+  ['member-dot-wildcard', "fmtCap(m.capGb).replace('.', '\\\\.')", 'fmtCap(m.capGb)'],
   ['coord-zero-kill-ok', "(no bus reading)';\n  if (w.oomKillDelta < 1) return", "(no bus reading)';\n  if (false) return"],
   ['coord-status-counts', ".filter((x) => x.kind === 'escalation')", '.filter(() => true)'],
   ['coord-duplicate-ok', 'if (msgs.length !== w.oomKillDelta)', 'if (msgs.length < w.oomKillDelta)'],
   ['coord-recipient-filter-dropped', 'const msgs = all.filter((x) => x.recipient === m.opsId);', 'const msgs = all;'],
   ['coord-recipient-not-ops', 'const msgs = all.filter((x) => x.recipient === m.opsId);', 'const msgs = all.filter((x) => x.recipient !== undefined);'],
   ['coord-ws-name-ignored', '!String(x.body).includes(w.id) || ', ''],
-  ['coord-level-ignored', '|| !String(x.body).includes(`hard level (${gb(m.capGb)} GB)`));', '|| false);'],
+  ['coord-level-ignored', '|| !String(x.body).includes(`hard level (${fmtCap(m.capGb)})`));', '|| false);'],
   ['coord-relève-ignored', 'if (w.coordRead !== msgs.length)', 'if (false)'],
   ['each-vacuous-ok', 'ws.length > 0 && !short && bad.length === 0', '!short && bad.length === 0'],
   ['each-short-ok', 'ws.length > 0 && !short && bad.length === 0', 'ws.length > 0 && bad.length === 0'],
@@ -54,7 +54,6 @@ export const MEMHOG_MUTANTS = [
   ['known-red-counts-as-bar', 'const bars = checks.filter((c) => !Object.hasOwn(KNOWN_RED, c.id));', 'const bars = checks;'],
   ['drill-published-ignored', 's.barsRed.length === 0 && publishedMissing.length === 0', 's.barsRed.length === 0'],
   ['cap-format-fixed2', "return `${Number.isInteger(g) ? g : +g.toFixed(2)} GB`; };", "return `${g.toFixed(2)} GB`; };"],
-  ['cap-format-no-round', 'const g = Math.round(capGb * 1024 ** 3) / 1024 ** 3;', 'const g = capGb;'],
   ['marker-prefix-match', "split(/\\s+/).includes(marker)", "some((a) => a.startsWith(marker))"],
   ['drill-required-ignored', 'absent.length === 0 && s.barsRed.length === 0', 's.barsRed.length === 0'],
   ['drill-required-list-shrunk', "['workers_up', 'bar:cap_scope_applied', 'bar:hog_killed',", "['workers_up', 'bar:cap_scope_applied',"],
@@ -69,3 +68,23 @@ export const MEMHOG_MUTANTS = [
   ['read-ack-ignored', 'd.acked_at !== null && d.acked_at !== undefined && ', ''],
   ['arm-overred-ignored', "v === 'AS-EXPECTED (RED)' && overRed.length > 0", 'false'],
 ].map(([name, find, replace]) => [name, find, replace, F]);
+
+// packaged-path fact shaping (memhog-app-facts.mjs), killed by pause-canary-memhog-app.test.ts (facts built with the REAL src/shared writers)
+const FF = 'memhog-app-facts.mjs';
+export const MEMHOG_FACTS_MUTANTS = [
+  ['facts-soft-row-counts', "e.level !== 'soft' && e.at >= t0 - 1000", 'e.at >= t0 - 1000'],
+  ['facts-old-row-counts', "e.level !== 'soft' && e.at >= t0 - 1000", "e.level !== 'soft'"],
+  ['facts-soft-record-counts', "r.kind !== 'soft' && r.at >= t0 - 1000", 'r.at >= t0 - 1000'],
+  ['facts-old-record-counts', "r.kind !== 'soft' && r.at >= t0 - 1000", "r.kind !== 'soft'"],
+  ['facts-escalation-to-anyone', "x.kind === 'escalation' && x.recipient === opsId", "x.kind === 'escalation'"],
+  ['facts-answered-always', 'answered: f.probeAfter === true', 'answered: true'],
+  ['facts-cli-same-always', 'cliSame: !!idPre.claude && idPre.claude === idPost.claude', 'cliSame: true'],
+  ['facts-keeper-same-always', 'keeperSame: !!idPre.keeper && idPre.keeper === idPost.keeper', 'keeperSame: true'],
+  ['facts-capstate-any-line', 'memory-cap\\\\[${w.id}\\\\]: ACTIVE', 'memory-cap'],
+  ['facts-member-time-zero', 'firstRowMs: rows.length ? Math.min(...rows.map((e) => e.at)) - t0 : null', 'firstRowMs: rows.length ? 0 : null'],
+  ['facts-coord-time-zero', 'firstEscMs: esc.length ? Math.min(...esc.map((x) => x.created_at)) - t0 : null', 'firstEscMs: esc.length ? 0 : null'],
+  ['facts-up-always', 'up: f.up === true', 'up: true'],
+  ['facts-read-is-written', 'coordRead: readByCoordinator(esc.map((x) => x.sequence), f.lots ?? [])', 'coordRead: esc.length'],
+  ['facts-no-member-rows', 'memberKillRows: rows.map((e) => e.text)', 'memberKillRows: []'],
+  ['facts-delta-defaults', "oomKillDelta: typeof f.oomKillDelta === 'number' ? f.oomKillDelta : null", 'oomKillDelta: f.oomKillDelta ?? 1'],
+].map(([name, find, replace]) => [name, find, replace, FF]);

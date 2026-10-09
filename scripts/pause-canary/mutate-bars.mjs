@@ -11,16 +11,17 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MEMHOG = process.argv.includes('--memhog');
-const TEST = MEMHOG ? 'pause-canary-memhog.test.ts' : 'pause-canary-bars.test.ts';
+const TESTS = MEMHOG ? ['pause-canary-memhog.test.ts', 'pause-canary-memhog-app.test.ts', 'pause-canary-memhog-os.test.ts'] : ['pause-canary-bars.test.ts'];   // the app test builds its facts with the REAL src/shared writers: copied below
 const base = path.join(os.homedir(), '.cache', 'pause-canary');
 const tmp = fs.mkdtempSync(path.join(base, 'mutbars-'));
 fs.mkdirSync(path.join(tmp, 'src', 'main'), { recursive: true });
 fs.mkdirSync(path.join(tmp, 'scripts', 'pause-canary'), { recursive: true });
 for (const f of fs.readdirSync(path.join(REPO, 'scripts', 'pause-canary'))) if (f.endsWith('.mjs')) fs.copyFileSync(path.join(REPO, 'scripts', 'pause-canary', f), path.join(tmp, 'scripts', 'pause-canary', f));
-fs.copyFileSync(path.join(REPO, 'src', 'main', TEST), path.join(tmp, 'src', 'main', TEST));
+for (const t of TESTS) fs.copyFileSync(path.join(REPO, 'src', 'main', t), path.join(tmp, 'src', 'main', t));
+if (MEMHOG) fs.cpSync(path.join(REPO, 'src', 'shared'), path.join(tmp, 'src', 'shared'), { recursive: true });
 const targetOf = (f) => path.join(tmp, 'scripts', 'pause-canary', f);
-const origOf = Object.fromEntries(['bars.mjs', 'lib.mjs', 'memhog-bars.mjs'].map((f) => [f, fs.readFileSync(targetOf(f), 'utf8')]));
-const run = () => { const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', `src/main/${TEST}`], { cwd: tmp, encoding: 'utf8' }); return { pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1) }; };
+const origOf = Object.fromEntries(['bars.mjs', 'lib.mjs', 'memhog-bars.mjs', 'memhog-app-facts.mjs'].map((f) => [f, fs.readFileSync(targetOf(f), 'utf8')]));
+const run = () => { const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS.map((t) => `src/main/${t}`)], { cwd: tmp, encoding: 'utf8' }); return { pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1) }; };
 
 const PAUSE_MUTANTS = [
   ['hard-bar-le', 'm.tAllPausedS < BARS.hardAllPausedS', 'm.tAllPausedS <= BARS.hardAllPausedS'],
@@ -73,8 +74,8 @@ const PAUSE_MUTANTS = [
   ['kind-app-anywhere', "/^(\\S*\\/)?orchestra( |$)/.test(p.cmd)", "/orchestra( |$)/.test(p.cmd)", 'lib.mjs'],
   ['snapshot-transient-listed', ".filter((n) => !isTransientName(n))", "", 'lib.mjs'],
 ];
-import { MEMHOG_MUTANTS } from './memhog-bars.mutants.mjs';
-const MUTANTS = MEMHOG ? MEMHOG_MUTANTS : PAUSE_MUTANTS;
+import { MEMHOG_MUTANTS, MEMHOG_FACTS_MUTANTS } from './memhog-bars.mutants.mjs';
+const MUTANTS = MEMHOG ? [...MEMHOG_MUTANTS, ...MEMHOG_FACTS_MUTANTS] : PAUSE_MUTANTS;
 const clean = run();
 let bad = 0;
 console.log(`CLEAN control: pass ${clean.pass} fail ${clean.fail}`);
