@@ -95,7 +95,8 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
   function forward(req: http.IncomingMessage, res: http.ServerResponse, headers: http.OutgoingHttpHeaders, body?: Buffer, held?: HeldInfo): void {
     const hasFraming = headers['content-length'] !== undefined || headers['transfer-encoding'] !== undefined;
     if (!hasFraming && !['GET', 'HEAD', 'DELETE', 'OPTIONS'].includes(req.method ?? 'GET')) headers['content-length'] = '0';
-    const up = http.request({ socketPath: upstream, method: req.method, path: req.url, headers, agent: false });
+    // keep-alive upstream: with agent:false's default `close` dockerd replies and closes the instant the body is complete, node's trailing empty write then fails EPIPE -> a false 502 for a call dockerd RAN (R13, ledger #329).
+    const up = http.request({ socketPath: upstream, method: req.method, path: req.url, headers: { ...headers, connection: 'keep-alive' }, agent: false });
     up.on('response', (ur) => {
       const code = ur.statusCode ?? 502;
       const extra = held ? ['x-orchestra-hold', `waited=${Math.round(held.waitedMs / 1000)}s; ${held.reason.replace(/[^\x20-\x7e]/g, ' ').slice(0, 300)}`] : [];
@@ -134,6 +135,10 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
     up.on('error', (e) => badGateway(req, res, e));
     res.on('close', () => {
       if (!res.writableFinished) up.destroy();
+    });
+    // keep-alive upstream: node no longer destroys `up` when the answer ends before the request does (an early 4xx, the client gone): once the answer is fully relayed, drop the daemon connection
+    res.on('finish', () => {
+      if (!up.writableFinished) up.destroy();
     });
     if (body) up.end(body);
     else req.pipe(up);

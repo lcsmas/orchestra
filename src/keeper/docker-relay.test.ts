@@ -141,6 +141,57 @@ test('daemon errors pass through with their status and body', async () => {
   assert.match(res.body.toString(), /No such container/);
 });
 
+// ── R13 (ledger #329): the daemon is never the FIRST to close ───────────────────────────────────────────────────────────────────────
+// Measured on the host's real dockerd 29.5.3 (probe + raw sockets): a request sent with `Connection: close` (node's agent:false default) is answered AND the connection closed as soon as the body is complete; the empty write node
+// queues behind a slow flush then fails with EPIPE and the relay answered 502 for a call dockerd had RUN (a volume that exists, a container that was created): 74 of 960 with `close`, 0 of 960 with `keep-alive`.
+
+test('R13: every upstream request asks for keep-alive — the daemon has no reason to close before the relay\'s last write (GET, body POST, buffered create, chunked create)', async () => {
+  const r = await newRelay();
+  const created: Array<[string, string]> = [];
+  await call(r, 'GET', '/_ping');
+  await call(r, 'POST', '/v1.41/volumes/create', '{"Name":"v"}', { 'content-type': 'application/json' });
+  await call(r, 'POST', '/containers/abc/start');
+  await call(r, 'POST', '/containers/create', '{"Image":"x"}', { 'content-type': 'application/json' });
+  const chunked = http.request({ socketPath: r.sockPath, method: 'POST', path: '/containers/create', headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' }, agent: false });
+  await new Promise<void>((resolve, reject) => {
+    chunked.on('response', (res) => { res.resume(); res.on('end', () => resolve()); });
+    chunked.on('error', reject);
+    chunked.write('{"Image":');
+    chunked.end('"y"}');
+  });
+  for (const s of daemon.seen.slice(-5)) created.push([`${s.method} ${s.url}`, String(s.headers.connection)]);
+  assert.equal(created.length, 5);
+  for (const [what, conn] of created) assert.equal(conn, 'keep-alive', `${what} reached the daemon with Connection: ${conn}`);
+  assert.equal(await until(() => daemon.openConnections() === 0, 2000), true, `${daemon.openConnections()} daemon connection(s) of this case still open — the next case counts connections`);   // asserted: an unasserted drain absorbed a leak (review m2)
+});
+
+test('R13: keep-alive upstream leaks nothing — the relay closes the daemon connection after each response (agent:false)', async () => {
+  const r = await newRelay();
+  const before = daemon.openConnections();
+  for (let i = 0; i < 12; i++) {
+    await call(r, 'POST', '/v1.41/volumes/create', `{"Name":"v${i}"}`, { 'content-type': 'application/json' });
+    await call(r, 'GET', '/_ping');
+  }
+  assert.equal(await until(() => daemon.openConnections() <= before, 2000), true, `${daemon.openConnections()} daemon connections still open after 24 calls (before: ${before})`);
+});
+
+test('R13 review m1: an answer that ends BEFORE the request (an early 400, the client then abandons its chunked body) does not leave the daemon connection behind', async () => {
+  const r = await newRelay();
+  assert.equal(await until(() => daemon.openConnections() === 0, 2000), true, 'earlier cases have drained');
+  await new Promise<void>((resolve, reject) => {
+    const req = http.request({ socketPath: r.sockPath, method: 'POST', path: '/v1.41/early-400', headers: { 'transfer-encoding': 'chunked' }, agent: false }, (res) => {
+      assert.equal(res.statusCode, 400);
+      res.resume();
+      res.on('end', () => { req.destroy(); resolve(); });   // the answer is in, the body is NOT finished: the client walks away
+    });
+    req.on('error', () => {});
+    req.on('close', () => resolve());
+    req.write('{"partial":');
+    setTimeout(() => reject(new Error('no answer')), 5000).unref();
+  });
+  assert.equal(await until(() => daemon.openConnections() === 0, 2000), true, `${daemon.openConnections()} daemon connection(s) left open after an early answer + an abandoned body`);
+});
+
 // ── streams ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 test('a streaming response is flushed while the daemon holds it open (docker events / logs -f)', async () => {
@@ -191,6 +242,7 @@ test('a 40 KB request header (X-Registry-Config on a legacy build) passes — no
 
 test('a client that aborts mid-stream does not leak the daemon-side connection', async () => {
   const r = await newRelay();
+  await until(() => daemon.openConnections() === 0, 1000); // keep-alive upstream (R13): the relay closes the PREVIOUS call's daemon connection ~1 ms after the client got its response
   const before = daemon.openConnections();
   await new Promise<void>((resolve) => {
     const req = http.request({ socketPath: r.sockPath, path: '/events', agent: false }, (res) => {

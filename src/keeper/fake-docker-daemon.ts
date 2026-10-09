@@ -44,6 +44,13 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
 
   // dockerd accepts ~1 MB of headers; node's default 16 KB would make the fake daemon the thing that refuses
   const server = http.createServer({ maxHeaderSize: 1 << 20 }, (req, res) => {
+    // answers a 400 the instant the HEADERS arrive and keeps the connection open (a daemon rejecting a call before its body is in): the relay must not leave its upstream connection behind when the client abandons the body
+    if (req.method === 'POST' && (req.url ?? '').endsWith('/early-400')) {
+      res.writeHead(400, { 'content-length': 2 });
+      res.end('no');
+      req.resume();
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
