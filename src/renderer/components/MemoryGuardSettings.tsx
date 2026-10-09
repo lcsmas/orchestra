@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatGb, RELEASE_MARGIN_GB, type MemoryGuardSettings, type MemoryGuardView } from '../../shared/memory-guard';
-import { gaugeModel, guardChip, planThresholdCommit } from '../../shared/memory-guard-view';
+import { gaugeModel, guardChip, planCapCommit, planThresholdCommit } from '../../shared/memory-guard-view';
+import { capSwitchSummary, type CapSwitchSummary } from '../../shared/memory-cap-view';
 
 interface Props {
   onClose: () => void;
+  /** Render-smoke seam ONLY (scripts/memcap-settings-render-smoke.mjs): the state a server render shows, since effects do not run there. Never passed by the app. */
+  initial?: { view: MemoryGuardView; capSwitch?: CapSwitchSummary | null };
 }
 
 const POLL_MS = 2000;
@@ -18,12 +21,17 @@ const cap = (s: string) => `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
  * rule) is src/shared/memory-guard-view.ts; the write path is `setMemoryGuard` → memory-guard-settings.ts.
  */
 type Draft = { admission: string; critical: string };
+/** #323: the two Plafond mémoire inputs while the user is typing (soft / hard level, GB). */
+type CapDraft = { soft: string; hard: string };
 
-export function MemoryGuardSettings({ onClose }: Props) {
-  const [view, setView] = useState<MemoryGuardView | null>(null);
+export function MemoryGuardSettings({ onClose, initial }: Props) {
+  const [view, setView] = useState<MemoryGuardView | null>(initial?.view ?? null);
   /** The two inputs while the user is typing; null = show the stored values. */
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [capDraft, setCapDraft] = useState<CapDraft | null>(null);
+  /** #323: the frozen per-run `memory_cap` switch, READ-ONLY here (D-Q1: it is not a setting): the live default for new runs + how many open runs froze it ON. */
+  const [capSwitch, setCapSwitch] = useState<CapSwitchSummary | null>(initial?.capSwitch ?? null);
   /** Applies run ONE AT A TIME in click order and are never dropped (a pending edit commits on blur, and the click that caused the blur
    *  must still reach the toggle — review m2: a `busy` flag disabling the toggle swallowed that click). */
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -40,6 +48,12 @@ export function MemoryGuardSettings({ onClose }: Props) {
     } catch {
       /* the last good view stays; never render a number the backend did not give */
     }
+    try {
+      const [live, runs] = await Promise.all([window.orchestra.busSwitches(), window.orchestra.busListRuns()]);
+      setCapSwitch(capSwitchSummary(live, runs));
+    } catch {
+      /* the switch line stays as it was (or absent): never a guessed state */
+    }
   }, []);
 
   useEffect(() => {
@@ -53,9 +67,12 @@ export function MemoryGuardSettings({ onClose }: Props) {
   const typed = draft ?? (settings ? { admission: String(settings.admissionGb), critical: String(settings.criticalGb) } : { admission: '', critical: '' });
   const plan = settings && draft ? planThresholdCommit(draft.admission, draft.critical, settings, view?.totalBytes) : null;
   const liveError = plan?.kind === 'invalid' ? plan.error : null;
+  const typedCap = capDraft ?? (settings ? { soft: String(settings.capSoftGb), hard: String(settings.capHardGb) } : { soft: '', hard: '' });
+  const capPlan = settings && capDraft ? planCapCommit(capDraft.soft, capDraft.hard, settings, view?.totalBytes) : null;
+  const liveCapError = capPlan?.kind === 'invalid' ? capPlan.error : null;
 
   /** `committed` = the draft object this patch came from: the echo clears the inputs only if the user has not typed again since. */
-  const apply = (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0], committed: Draft | null = null): Promise<void> => {
+  const apply = (patch: Parameters<typeof window.orchestra.setMemoryGuard>[0], committed: Draft | null = null, committedCap: CapDraft | null = null): Promise<void> => {
     const base = inflight.current.expected ?? settingsRef.current;
     inflight.current.n += 1;
     if (base) inflight.current.expected = { ...base, ...patch };
@@ -65,6 +82,7 @@ export function MemoryGuardSettings({ onClose }: Props) {
         setView(res.view); // the backend's echo wins over any optimistic state
         if (res.ok) {
           setDraft((d) => (committed !== null && d === committed ? null : d));
+          setCapDraft((d) => (committedCap !== null && d === committedCap ? null : d));
           setError(null);
         } else {
           inflight.current.expected = null; // the assumed outcome did not happen: plan against the echoed settings again
@@ -96,9 +114,28 @@ export function MemoryGuardSettings({ onClose }: Props) {
     }
   };
 
+  /** #323: commit the Plafond pair — BOTH levels travel together (hard must stay above soft); an invalid pair is refused inline and NOTHING is written. */
+  const commitCap = () => {
+    const basis = inflight.current.expected ?? settings;
+    if (!basis || !capDraft) return;
+    const p = planCapCommit(capDraft.soft, capDraft.hard, basis, view?.totalBytes);
+    if (p.kind === 'unchanged') {
+      setCapDraft(null);
+      setError(null);
+    } else if (p.kind === 'invalid') {
+      setError(p.error);
+    } else {
+      void apply(p.patch, null, capDraft);
+    }
+  };
+  const capField = (which: 'soft' | 'hard') => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setError(null);
+    setCapDraft({ ...typedCap, [which]: e.target.value });
+  };
+
   const chip = view ? guardChip(view.snapshot) : null;
   const gauge = view && settings ? gaugeModel(view.liveAvailBytes, view.totalBytes, settings) : null;
-  const shownError = error ?? liveError;
+  const shownError = error ?? liveError ?? liveCapError;
   const field = (which: 'admission' | 'critical') => (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     setDraft({ ...typed, [which]: e.target.value });
@@ -209,6 +246,59 @@ export function MemoryGuardSettings({ onClose }: Props) {
             </span>
           </span>
         </label>
+
+        {/* #323 (D-Q10 A): the Plafond mémoire — one section under the thresholds, same hot apply (blur / Enter), same inline refusal. The on/off is NOT a setting (D-Q1): the frozen per-run switch is only SHOWN. */}
+        <div className="mg-section" data-mg-cap-section>
+          <div className="mg-section-title">Plafond mémoire <span className="mg-section-sub">(per fleet member)</span></div>
+          <div className="mg-cap-switch field-hint" data-mg-cap-switch={capSwitch ? (capSwitch.liveOn ? 'on' : 'off') : ''}>
+            {capSwitch ? capSwitch.text : '…'} — a per-run switch, frozen when the run starts; set it on the Bus page, not here.
+          </div>
+          <div className="field">
+            <div className="field-head">
+              <span className="field-label">Soft level</span>
+              <span className="field-hint">Warns the member and its coordinator when its working set crosses it. No slowdown.</span>
+            </div>
+            <div className="mg-input-row">
+              <input
+                className="mg-input"
+                inputMode="decimal"
+                aria-label="Memory cap soft level (GB)"
+                data-mg-cap-soft
+                value={typedCap.soft}
+                disabled={!settings}
+                onChange={capField('soft')}
+                onBlur={commitCap}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitCap();
+                }}
+              />
+              <span className="mg-unit">GB</span>
+            </div>
+          </div>
+          <div className="field">
+            <div className="field-head">
+              <span className="field-label">Hard level</span>
+              <span className="field-hint">The kernel's limit: beyond it the heaviest tool process of the member is killed.</span>
+            </div>
+            <div className="mg-input-row">
+              <input
+                className="mg-input"
+                inputMode="decimal"
+                aria-label="Memory cap hard level (GB)"
+                data-mg-cap-hard
+                value={typedCap.hard}
+                disabled={!settings}
+                onChange={capField('hard')}
+                onBlur={commitCap}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitCap();
+                }}
+              />
+              <span className="mg-unit">GB</span>
+            </div>
+          </div>
+          <div className="field-hint" data-mg-cap-applies>Applies to members started from now on; running sessions keep what they started with.</div>
+        </div>
 
         {shownError && (
           <div className="mg-error" role="alert" data-mg-error>

@@ -5377,6 +5377,19 @@ button.danger-primary:active {
 .res-proc.reliquat .res-proc-comm { color: var(--yellow); }
 /* Not a problem state: « Reliquats not tracked » is information — dim, never yellow. */
 .res-reliquats-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
+/* #323 (D-Q10 A): a capped member's MEM cell carries a thin usage bar under the figure — fill = kernel bill / hard level, darker inner part = working set, tick = soft level; amber at/over the soft level (working set), red within 90 % of the hard level (bill). */
+.res-cell.res-mem { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
+.res-capbar { position: relative; display: block; height: 4px; border-radius: 2px; background: var(--border); }
+.res-capbar > i { position: absolute; top: 0; bottom: 0; left: 0; display: block; border-radius: 2px; }
+.res-capbar-fill { background: var(--accent); opacity: 0.45; }
+.res-capbar-ws { background: var(--accent); }
+.res-capbar.tone-warn .res-capbar-fill { background: var(--yellow); }
+.res-capbar.tone-warn .res-capbar-ws { background: var(--yellow); }
+.res-capbar.tone-crit .res-capbar-fill { background: var(--red); }
+.res-capbar.tone-crit .res-capbar-ws { background: var(--red); }
+.res-capbar > .res-capbar-soft { top: -2px; bottom: -2px; width: 1px; border-radius: 0; background: var(--text-dim); }
+/* Not a problem state: how many members run under a cap and which one is closest — information, dim. */
+.res-cap-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
 /* #331 (D-Q4 A'): browsers Orchestra stopped for this workspace since the app started — a RESOLVED count, history tone (the default grey chip), no status colour. Hidden at 0. */
 .res-chip.browsers { text-transform: none; letter-spacing: 0; }
 /* The dim line under the Agents table: containers nobody owns (created during a live run without the stamp, or orphaned by a deleted workspace). Status colour only here — a genuine problem state. */
@@ -6278,3 +6291,8 @@ button.danger-primary:active {
 .mg-toggle > input { margin-top: 3px; }
 .mg-toggle > span { display: flex; flex-direction: column; gap: 2px; }
 .mg-error { margin-top: 6px; font-size: 12px; color: var(--red); }
+/* #323 (D-Q10 A): the Plafond mémoire section under the thresholds. */
+.mg-section { margin: 12px 0 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+.mg-section-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.mg-section-sub { font-weight: 400; color: var(--text-dim); }
+.mg-cap-switch { margin-bottom: 8px; }

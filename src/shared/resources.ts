@@ -106,6 +106,8 @@ export interface ResourceSnapshot {
   /** #328: each member's memory read from its kernel scope + its live Reliquats (FI-1), from the shared short-cache read. A tracked member's row memory is the scope's meter (it sees a detached process
    *  the tree walk cannot); an untracked one keeps the tree figure. Absent from an older main. */
   members?: MemberMemoryReport;
+  /** #323: the Plafond mémoire levels in the Garde mémoire settings NOW (GB) — the Resources bar marks the soft level and says when a member started under others. Absent from an older main. */
+  capLevels?: { softGb: number; hardGb: number };
   /** #331: browser Reliquats (orphaned headless browsers) the resource monitor / a Pause dure stopped, per workspace, since the app started. Absent from an older main. */
   browserReliquats?: BrowserReliquatView;
 }

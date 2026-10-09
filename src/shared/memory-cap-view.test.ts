@@ -72,3 +72,10 @@ test('V7 the activation as the window may say it — read-only: live default + f
   assert.equal(capSwitchSummary({ memoryCap: true }, []).text, 'Cap is ON for new runs · ON on 0 of 0 open runs');
   assert.equal(capSwitchSummary({ memoryCap: false }, [{ closedAt: null, flags: { memoryCap: true } }]).text, 'Cap is OFF for new runs · ON on 1 of 1 open run');
 });
+
+test('V5b tooltip with no known levels (an older main): only what the kernel holds — never a guessed soft level or a « settings now » claim', () => {
+  const t = capTooltip(cap(2.1, 1.6, 6, 2.4), null);
+  assert.match(t, /hard 6 GB \(held by the kernel for this session\)/);
+  assert.doesNotMatch(t, /soft [0-9]|settings now/);
+  assert.match(t, /2\.1 GB kernel bill/);
+});
