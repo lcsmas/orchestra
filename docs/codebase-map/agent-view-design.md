@@ -586,6 +586,7 @@ first drive.
 MCP transcript notices reuse the interrupt marker's centered-divider treatment:
 `.av-notice-mcp` (green `--av-add` dot) / `.av-notice-mcp-error` (red
 `--av-error` dot) — hairline rules both sides, text carries the story, no label.
+The Plafond mémoire notice (#322, D-Q7 B) is the one DEDICATED boxed notice row: `.av-notice-memory-cap` (`NoticeRow.tsx` `MemoryCapRow`) — label « Plafond mémoire », `.is-hard` (error tokens: a command was killed) / `.is-soft` (warn tokens: the warning level was crossed), the command in `.av-notice-chip` (the code-chip tokens), the time in `.av-notice-tag` at the right; the full plain sentence is its tooltip. Hooks: `data-notice="memory-cap"`, `data-memcap-tone`, `data-memcap-chip`.
 
 Turn footer (`TurnFooter.tsx`): `.av-turn-footer` (+`-running`/`-error`) >
 `.av-turn-stat` (`.av-turn-stat-value` + `.av-turn-stat-label`). The **running**
