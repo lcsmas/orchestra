@@ -394,7 +394,7 @@ export function startEventsSpool(): void {
   // #330: resilient — a failed arm / a later error is retried with backoff (the 1 s poll below stays the fallback: status is up to 1s late meanwhile, which reads as "the dot is laggy") and ONE full drain runs on recovery.
   watcher = createWatcher({
     name: 'events-spool',
-    label: 'Agent activity',
+    label: 'Activité des agents',
     dir: EVENTS_DIR,
     fallback: `${POLL_MS / 1000} s poll`,
     onChange: (filename) => {

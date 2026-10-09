@@ -983,7 +983,7 @@ export function startPauseTrap(deps: TrapDeps): void {
   // #330: resilient — a failed arm / a later error is retried with backoff (meanwhile the slow sweep carries detection) and ONE trap sweep runs on recovery.
   watcher = createWatcher({
     name: 'pause-trap',
-    label: 'Pause trap',
+    label: 'Pause dure',
     dir,
     fallback: `${PAUSE_SWEEP_MS / 1000} s sweep`,
     filter: (filename) => filename === null || filename === walName || filename === path.basename(bus),

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { WatcherSnapshot } from './resilient-watch.ts';
-import { degradedKey, degradedLabels, degradedOf, fmtDuration, formatWatchersLines, watchersWarning, type WatchersStatus } from './watcher-status.ts';
+import { degradedKey, degradedLabels, degradedOf, fmtDuration, formatWatchersLines, newerWatchers, watchersStripCopy, type WatchersStatus } from './watcher-status.ts';
 
 // #330 — what bus-status and the app say about the watchers. Asserts the WORDS an operator reads: which watcher, since when, which error, what keeps working; and that a healthy app prints one calm line.
 
@@ -60,13 +60,28 @@ test('degradedOf / degradedLabels / degradedKey', () => {
   assert.notEqual(k1, '');
 });
 
-test('watchersWarning: null when healthy; names what lags and promises the retry', () => {
-  assert.equal(watchersWarning(status([snap('a', 'A')])), null);
-  assert.equal(watchersWarning(null), null);
-  const w = watchersWarning(status([down('bus-wake', 'Réveils'), down('pause-ui', 'Pause view')]));
-  assert.match(w!, /^Réveils, Pause view may lag/);
-  assert.match(w!, /system watch limit reached/);
-  assert.match(w!, /retrying automatically/);
+test('strip copy (D-Q8 A): null when healthy; otherwise the plain labels of what lags, the cause (the system limit named), the promise to retry, and one tooltip line per watcher', () => {
+  assert.equal(watchersStripCopy(status([snap('a', 'A')]), T0), null);
+  assert.equal(watchersStripCopy(null, T0), null);
+  const c = watchersStripCopy(status([down('bus-wake', 'Réveils'), down('pause-ui', 'Vue Pause'), snap('inbox-tray', 'Inbox')]), T0 + 192_000)!;
+  assert.equal(c.title, 'Mises à jour en retard');
+  assert.equal(c.body, 'Réveils, Vue Pause — limite de surveillance de fichiers atteinte. Nouvel essai automatique.');
+  assert.equal(c.lines.length, 2, 'only the degraded ones');
+  assert.match(c.lines[0], /^Réveils · depuis 12:53:48Z \(3m12s\) · system watch limit reached \(EMFILE\) · en attendant : 60 s sweep$/);
+  const other = watchersStripCopy(status([down('inbox-tray', 'Inbox', 'ENOENT')]), T0)!;
+  assert.match(other.body, /surveillance de fichiers interrompue/, 'a non-limit cause does not claim the system limit');
+  assert.doesNotMatch(other.body, /limite/);
+});
+
+test('newerWatchers: the boot PULL answered after a later push does not roll the strip back; an equal or later reading wins', () => {
+  const older = { at: 100, watchers: [] as WatcherSnapshot[] };
+  const newer = { at: 200, watchers: [down('a', 'A')] };
+  assert.equal(newerWatchers(newer, older), newer, 'a late-answered older pull is dropped');
+  assert.equal(newerWatchers(older, newer), newer);
+  assert.equal(newerWatchers(null, older), older);
+  assert.equal(newerWatchers(undefined, older), older);
+  const same = { at: 200, watchers: [] as WatcherSnapshot[] };
+  assert.equal(newerWatchers(newer, same), same, 'same instant: the incoming one (a stop-while-degraded all-clear carries the same registry clock)');
 });
 
 test('fmtDuration', () => {

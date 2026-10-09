@@ -32,11 +32,30 @@ export function degradedLabels(s: WatchersStatus | null | undefined): string[] {
   return [...new Set(degradedOf(s).map((w) => w.label))];
 }
 
-/** One short sentence for the warning: names what is degraded and says the app will recover on its own. null = nothing degraded. */
-export function watchersWarning(s: WatchersStatus | null | undefined): string | null {
+/** The renderer keeps the NEWER of two readings (the boot PULL can be answered after a push that already carried a later state): by the registry's own clock. */
+export const newerWatchers = (prev: WatchersStatus | null | undefined, next: WatchersStatus): WatchersStatus => (!prev || next.at >= prev.at ? next : prev);
+
+export interface WatchersStripCopy {
+  title: string;
+  /** What lags (the plain labels) and the cause, in one sentence + the promise that it retries by itself. */
+  body: string;
+  /** The tooltip: one line per degraded watcher (what, since when, why, what keeps working meanwhile). */
+  lines: string[];
+}
+
+/**
+ * The sidebar strip's words (D-Q8 = A, French like the Pause rows): names what may lag in plain words and says the app retries by itself. null = nothing degraded ⇒ the strip is not rendered at all and
+ * disappears on its own the moment the last watcher is back.
+ */
+export function watchersStripCopy(s: WatchersStatus | null | undefined, now: number): WatchersStripCopy | null {
   const d = degradedOf(s);
   if (d.length === 0) return null;
-  return `${degradedLabels(s).join(', ')} may lag — a file watch could not be armed${d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC') ? ' (system watch limit reached)' : ''}; retrying automatically`;
+  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');
+  return {
+    title: 'Mises à jour en retard',
+    body: `${degradedLabels(s).join(', ')} — ${limit ? 'limite de surveillance de fichiers atteinte' : 'surveillance de fichiers interrompue'}. Nouvel essai automatique.`,
+    lines: d.map((w) => `${w.label} · depuis ${clock(w.since)} (${fmtDuration(now - w.since)}) · ${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant : ${w.fallback}`),
+  };
 }
 
 /**

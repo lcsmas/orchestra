@@ -138,7 +138,7 @@ function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => voi
   // #330: resilient + registered only while this login is being watched. A dir that is missing / a failed arm is retried (the poll below covers it meanwhile) and ONE check runs on recovery.
   fsWatcher = createWatcher({
     name: 'login-watch',
-    label: 'Login detection',
+    label: 'Détection de connexion',
     dir,
     fallback: '1.5 s poll',
     persistent: false,
