@@ -9,7 +9,10 @@
 //   recovery       ★ EMFILE at boot, writes made WHILE degraded, EMFILE lifted → within the backoff every watcher is back, `bus-status` clean, the all-clear pushed, the writes made while degraded are caught up
 //                    WITHOUT a new write (Pause UI push, wake, gate push, inbox push, trap stamp), then each live path works again < 1 s; log: one WARN per degradation, one INFO per recovery
 //   midlife        ★ healthy boot, then the bus-directory watches DIE (closed + `error`): the next writes are not seen at first (control), then the watchers re-arm by themselves and everything is back
-//   silent_detach  ★ the inbox directory is deleted and recreated under a live watch (no `error`, no event): the watch is re-armed by the health check and the inbox file written meanwhile is pushed
+//   catchup_<site> ★ ONE site alone (bus-wake | pause-ui | human-gates | inbox-tray | pause-trap | events-spool | login-watch), EMFILE at boot, a write made while degraded, fault lifted: the write is served on recovery WITHOUT a new write and with no other
+//                    watcher able to cascade it (the all-sites `recovery` arm lets one site's bus write wake another's watch, so removing one `onRecover` left it green — verifier M1). The events-spool and login-watch arms CLEAR their own fallback poll (the interval is captured at start and cleared), so only the watch + its catch-up can serve the write
+//   silent_detach  ★ a watched directory's PARENT is renamed away and a new directory created at the path (no `error`, no event about the directory): the inode health check re-arms it (period shortened by the seam)
+//   silent_detach_event ★ the inbox directory is deleted and recreated under a live watch at the PRODUCTION 30 s health period: the kernel's own `rename` of the directory re-arms it in the first backoff step (#330 review m1)
 //   shutdown       ★ with watchers degraded, the production shutdown path leaves NO pending retry: no `fs.watch` call after it
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-resilient-watchers.mjs     (RIG_REPO=<tree> = the must-FAIL run on master; RIG_ARMS=a,b subset)
@@ -24,7 +27,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.RIG_REPO ?? path.join(HERE, '..'));
 const ARM = process.argv[2] ?? '';
-const ARMS = ['control', 'degraded', 'recovery', 'midlife', 'silent_detach', 'shutdown'];
+const SITES = ['bus-wake', 'pause-ui', 'human-gates', 'inbox-tray', 'pause-trap', 'events-spool', 'login-watch'];
+const ARMS = ['control', 'degraded', 'recovery', ...SITES.map((x) => `catchup_${x}`), 'midlife', 'silent_detach', 'silent_detach_event', 'shutdown'];
 const REAL_HOME = os.homedir();
 const RIG_BASE = path.resolve(process.env.WATCHERS_RIG_HOME ?? path.join(REAL_HOME, '.cache', 'e2e-rw'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -148,6 +152,7 @@ const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.t
 const { HUMAN_GATE_RECIPIENT } = await import(`${REPO}/src/shared/human-gates.ts`);
 const W = await import(`${REPO}/src/main/watchers.ts`).catch(() => null); // absent on master: the arms then read RED on the clause, never on an import error
 const WH = await import(`${REPO}/src/main/watchers-host.ts`).catch(() => null);
+const degradedOf = (st) => st.watchers.filter((w) => w.state === 'degraded');
 
 busMod.initBus();
 const db = busMod.getBus();
@@ -199,13 +204,7 @@ const watchersBlock = async () => {
 
 // ── start the subsystems in index.ts order (the push subscription FIRST, as index.ts does) ──
 const cliDb = () => busMod.open ? busMod.open(busMod.busPath()) : null; // a SEPARATE connection: the CLI's shape
-function startAll() {
-  W?.pushWatchersToRenderer?.();
-  spool.startEventsSpool();
-  tray.startInboxWatcher();
-  gates.startHumanGatesWatcher();
-  pauseUi.startPauseUiWatcher();
-  wake.startBusWake();
+function startTrap() {
   const trapDeps = trapHost.buildPauseTrapDeps();
   trapDeps.containers = docker; trapDeps.containersFor = () => docker; // never the machine's real dockerd
   trapDeps.snapshot = async (i) => ({ ref: `refs/orchestra/pause/${i.runId}/${i.wsId}/1`, commit: 'c', tree: 't', head: 'h', branch: 'rig', dirty: false, changed: { modified: 0, added: 0, deleted: 0 }, skippedLarge: [], skippedLargeCount: 0, notes: [], warning: null });
@@ -213,8 +212,33 @@ function startAll() {
   trapDeps.settleMs = 0; trapDeps.originWaitMs = 0;
   trapMod.startPauseTrap(trapDeps);
 }
+/** run `start`, capture the setIntervals it creates and CLEAR them: the site's poll fallback is gone, so only its watch (and its catch-up) can serve a write */
+function startWithoutPoll(start) {
+  const realSI = globalThis.setInterval; const made = [];
+  globalThis.setInterval = (...a) => { const h = realSI(...a); made.push(h); return h; };
+  try { start(); } finally { globalThis.setInterval = realSI; }
+  for (const h of made) clearInterval(h);
+  return made.length;
+}
+const loginAcct = { id: 'acct-rig', label: 'rig', configDir: path.join(SCRATCH, 'acct-cfg') };
+let loggedIn = 0;
+const accMod = ARM === 'catchup_login-watch' ? await import(`${REPO}/src/main/account-usage.ts`) : null;
+const STARTERS = {
+  'events-spool': () => { startWithoutPoll(() => spool.startEventsSpool()); },
+  'login-watch': () => { fs.mkdirSync(loginAcct.configDir, { recursive: true }); startWithoutPoll(() => accMod.armLoginWatch(loginAcct, () => void loggedIn++)); },
+  'bus-wake': () => wake.startBusWake(), 'pause-ui': () => pauseUi.startPauseUiWatcher(), 'human-gates': () => gates.startHumanGatesWatcher(), 'inbox-tray': () => tray.startInboxWatcher(), 'pause-trap': startTrap };
+function startAll() {
+  W?.pushWatchersToRenderer?.();
+  spool.startEventsSpool();
+  tray.startInboxWatcher();
+  gates.startHumanGatesWatcher();
+  pauseUi.startPauseUiWatcher();
+  wake.startBusWake();
+  startTrap();
+}
 function stopAll() {
   W?.stopAllWatchers?.();
+  try { accMod?.cancelLoginWatch?.(loginAcct.id); } catch { /* not armed */ }
   spool.stopEventsSpool(); tray.stopInboxWatcher(); gates.stopHumanGatesWatcher(); pauseUi.stopPauseUiWatcher(); wake.stopBusWake(); trapMod.stopPauseTrap();
 }
 
@@ -391,21 +415,73 @@ if (ARM === 'midlife') {
   await finish();
 }
 
+if (ARM.startsWith('catchup_')) {
+  const site = ARM.slice('catchup_'.length);
+  // ONLY this site's subsystem runs: no other watcher exists to turn a bus write of ours into the effect the catch-up is supposed to produce
+  const writes = {
+    'bus-wake': { write: () => { const c = cliDb(); try { busMod.send(c, { runId: 'ws-ops', sender: 'ws-ops', kind: 'dispatch', body: 'sent while degraded', recipient: 'ws-m1' }); } finally { c.close(); } }, base: () => wakes.length, served: (b) => wakes.length > b },
+    'pause-ui': { write: () => { const c = cliDb(); try { busPause.setRunPause(c, 'ws-ops', true, null, 'soft', { human: true }); } finally { c.close(); } }, base: () => mark(), served: (b) => since(b, 'pause:update').length > 0 },
+    'human-gates': { write: () => { const c = cliDb(); try { busMod.openGate(c, 'ws-ops', 'ws-m1', 'asked while degraded?', HUMAN_GATE_RECIPIENT); } finally { c.close(); } }, base: () => mark(), served: (b) => since(b, 'human-gates:update').length > 0 },
+    'inbox-tray': { write: () => { fs.mkdirSync(INBOX_DIR, { recursive: true }); fs.writeFileSync(tray.inboxFilePath('ws-m1'), serializeInboxBlocks(['parked while degraded']), 'utf8'); }, base: () => mark(), served: (b) => since(b, 'inbox:update').some((e) => e.args[0]?.workspaceId === 'ws-m1' && e.args[0]?.count > 0) },
+    'pause-trap': { write: () => { const c = cliDb(); try { busPause.setRunPause(c, 'ws-ops', true, null, 'hard', { human: true }); } finally { c.close(); } }, base: () => 0, served: () => trapStamped() },
+    'events-spool': { write: () => { const f = path.join(spool.getEventsDir(), 'ws-m1.jsonl'); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, `${JSON.stringify({ seq: 1, event: 'submit' })}\n`); }, base: () => mark(), served: (b) => since(b, 'workspace:update').some((e) => e.args[0]?.id === 'ws-m1' && e.args[0]?.status === 'running') },
+    'login-watch': { write: () => fs.writeFileSync(path.join(loginAcct.configDir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok-new', expiresAt: Date.now() + 3_600_000 } })), base: () => loggedIn, served: (b) => loggedIn > b },
+  }[site];
+  if (!writes) { check('known_site', false, site); await finish(); }
+  fault = true;
+  STARTERS[site]();
+  await sleep(200);
+  check('the_site_is_degraded', watchCalls.some((c) => c.failed), 'the injection did not take');
+  if (W) check('registry_lists_only_this_site_degraded', degradedOf(W.watchersStatus()).length === 1 && W.watchersStatus().watchers.length === 1, `registry: ${JSON.stringify(W.watchersStatus().watchers.map((w) => [w.name, w.state]))}`);
+  const b = writes.base();
+  writes.write();
+  await sleep(QUIET_MS);
+  check('not_served_live_while_degraded', !writes.served(b), 'served while the only watch of this site is down — the arm would be vacuous');
+  fault = false;
+  const tLift = Date.now();
+  const caught = await until(() => writes.served(b), 5000);
+  check(`${site}_caught_up_on_recovery_without_a_new_write`, caught !== null, `not served within 5 s of the crunch lifting (${Math.round((Date.now() - tLift) / 100) / 10}s)`);
+  if (W) check('the_site_is_back', degradedOf(W.watchersStatus()).length === 0, `still degraded: ${JSON.stringify(W.watchersStatus().watchers.map((w) => [w.name, w.state]))}`);
+  stopAll();
+  await finish();
+}
+
 if (ARM === 'silent_detach') {
+  // the watched directory's PARENT is renamed away and a new directory takes the path: the inotify watch follows the OLD inode, no event is sent about the directory itself — only the inode health check can see it
   W?.__setWatchHealthMsForTests?.(500);
+  const root = path.join(SCRATCH, 'detach'); const dir = path.join(root, 'w');
+  fs.mkdirSync(dir, { recursive: true });
+  const seen = []; let recovered = 0;
+  const w = W?.createWatcher?.({ name: 'rig-detach', label: 'Rig', dir, fallback: 'none', onChange: (f) => void seen.push(f), onRecover: () => void recovered++ });
+  check('registry_present', !!w, 'src/main/watchers.ts is absent');
+  if (!w) await finish();
+  w.start();
+  fs.writeFileSync(path.join(dir, 'before.txt'), 'x');
+  check('healthy_before_detach', (await until(() => seen.includes('before.txt'), 2000)) !== null, 'a healthy watch saw nothing');
+  fs.renameSync(root, `${root}.old`); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'after.txt'), 'x');
+  await sleep(300);
+  check('detach_is_real_nothing_seen_at_first', !seen.includes('after.txt') && recovered === 0, `the swapped directory still delivered events: ${JSON.stringify(seen)}`);
+  const back = await until(() => recovered === 1, 6000);
+  check('rearmed_by_the_inode_check', back !== null, 'not re-armed within 6 s');
+  fs.writeFileSync(path.join(dir, 'later.txt'), 'x');
+  check('events_flow_again', (await until(() => seen.includes('later.txt'), 2000)) !== null, 'the re-armed watch delivered nothing');
+  w.stop();
+  await finish();
+}
+
+if (ARM === 'silent_detach_event') {
+  // the PRODUCTION health period (30 s) is left alone: only the kernel's own `rename` of the directory can re-arm the inbox watch inside the window
   startAll();
   await sleep(300);
   const base = await live('inbox', 3000);
   check('healthy_before_detach', base !== null && base < LIVE_MS, `inbox ${base} ms`);
-  // delete + recreate the watched directory: the inotify watch is gone and says nothing
   fs.rmSync(INBOX_DIR, { recursive: true, force: true }); fs.mkdirSync(INBOX_DIR, { recursive: true });
   await sleep(150);
   const i = mark();
   fs.writeFileSync(tray.inboxFilePath('ws-m1'), serializeInboxBlocks([`after the swap ${Date.now()}`]), 'utf8');
-  await sleep(300);
-  check('detach_is_real_nothing_seen_at_first', since(i, 'inbox:update').length === 0, `the swapped directory still delivered ${since(i, 'inbox:update').length} events — the arm would be vacuous`);
-  const back = await until(() => since(i, 'inbox:update').some((e) => e.args[0]?.workspaceId === 'ws-m1' && e.args[0]?.count > 0), 6000);
-  check('rearmed_and_pushed', back !== null, 'no inbox push within 6 s of the directory swap');
+  const back = await until(() => since(i, 'inbox:update').some((e) => e.args[0]?.workspaceId === 'ws-m1' && e.args[0]?.count > 0), 4000);
+  check('rearmed_by_the_directory_rename_within_the_first_backoff', back !== null, 'no inbox push within 4 s of the swap (the 30 s inode check is the only thing left)');
   const ms = await live('inbox', 3000);
   check('live_again_under_1s', ms !== null && ms < LIVE_MS, `inbox ${ms} ms`);
   stopAll();

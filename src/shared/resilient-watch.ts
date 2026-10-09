@@ -123,6 +123,7 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
   let retryTimer: unknown = null;
   let healthTimer: unknown = null;
 
+  const dirName = spec.dir.replace(/\/+$/, '').split('/').pop() ?? ''; // basename of the watched directory (events about the directory itself carry this name); '' = nothing to match
   const snapshot = (): WatcherSnapshot => ({ name: spec.name, label: spec.label, dir: spec.dir, state, since, lastError: lastError ? { ...lastError } : null, attempts, recoveries, fallback: spec.fallback });
   const transition = (): void => {
     try {
@@ -197,6 +198,12 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
         spec.dir,
         (event, filename) => {
           if (stopped || myGen !== gen) return;
+          // The directory ITSELF was removed or renamed: the kernel says so with a `rename` named like the directory (measured on btrfs and tmpfs) and the inotify watch is dead from then on — no `error`, no more events. Do not wait for the
+          // 30 s inode check (which a filesystem that reuses the inode number never trips): re-arm now. Before the site's filter, which would drop this event. (#330 review m1; a child entry sharing the directory's name costs one spurious re-arm.)
+          if (event === 'rename' && filename !== null && dirName !== '' && filename === dirName) {
+            degrade({ code: 'ESTALE', message: `watched directory was removed or renamed: ${spec.dir}` });
+            return;
+          }
           if (spec.filter && !spec.filter(filename)) return;
           spec.onChange(filename, event);
         },
