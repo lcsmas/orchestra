@@ -89,7 +89,7 @@ test('W8 the Resources page (D-Q3 option A): the call site hands the snapshot\'s
 
 test('W9 the keeper-outside-its-scopes rule: a live member whose keeper is in none of its scopes is listed untracked for its live session, the scope reading carries FI-1\'s own keeper identity (never its own guess)', () => {
   assert.match(producer, /const untracked = \[\.\.\.new Set\(live\)\]\.filter\(\(id\) => !trackedIds\.has\(id\) \|\| keeperless\.has\(id\)\);/);
-  assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid \};/);
+  assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid, maxBytes: mem\?\.maxBytes \?\? null, workingSetBytes: mem\?\.workingSetBytes \?\? null, peakBytes: mem\?\.peakBytes \?\? null \};/); // #323 adds the applied cap to the same reading
   assert.match(producer, /countScopes: \(\) => countMemberScopes\(\)\?\.total \?\? null,/);
 });
 
