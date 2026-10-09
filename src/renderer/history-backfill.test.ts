@@ -117,3 +117,16 @@ test('review F1 controls: an EARLIER notice the live fold never saw stays; the s
   assert.equal(dropLiveEchoes([{ id: 'h', role: 'system', noticeKind: 'info', at: 5, text: 'x' }], [{ role: 'system', noticeKind: 'warning', at: 5, text: 'x' }]).length, 1, 'a different notice KIND is a different row');
   assert.equal(dropLiveEchoes([{ id: 'h', role: 'user', at: 5, text: 'x' }], [{ role: 'user', at: 5, text: 'x' }]).length, 1, 'user/assistant rows are never this helper\'s business');
 });
+
+test('H03: a history row the live fold already holds BY ID is not repeated — whatever its kind (the id filter is the first guard, the echo drop the second); older rows are prepended in order', () => {
+  const live = [{ id: 'a', role: 'assistant', at: 2, text: 't1' }, { id: 'b', role: 'user', at: 3, text: 't2' }];
+  const history = [{ id: 'z', role: 'user', at: 1, text: 'old' }, { id: 'a', role: 'assistant', at: 2, text: 't1' }, { id: 'b', role: 'user', at: 3, text: 't2' }];
+  assert.deepEqual(mergeHistoryIntoLive(history, live).map((m) => m.id), ['z', 'a', 'b'], 'no id twice');
+  assert.deepEqual(mergeHistoryIntoLive(history, []).map((m) => m.id), ['z', 'a', 'b'], 'control: with no live rows nothing is dropped');
+  // the LIVE copy wins (it is the fresher one), and the key is the ID — not the content
+  const stale = [{ id: 'a', role: 'assistant', at: 2, text: 'stale history copy' }];
+  const fresh = [{ id: 'a', role: 'assistant', at: 2, text: 'fresh live copy' }];
+  assert.deepEqual(mergeHistoryIntoLive(stale, fresh).map((m) => m.text), ['fresh live copy'], 'same id: the live row stays, the history copy goes');
+  const sameText = mergeHistoryIntoLive([{ id: 'h2', role: 'assistant', at: 2, text: 't1' }], [{ id: 'a', role: 'assistant', at: 2, text: 't1' }]);
+  assert.deepEqual(sameText.map((m) => m.id), ['h2', 'a'], 'a different id with identical content is a different row (only notices/errors echo by content)');
+});

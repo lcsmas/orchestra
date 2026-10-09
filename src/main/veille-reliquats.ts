@@ -1,0 +1,102 @@
+// Veille and Reliquats — the per-member verdict (#326, wave H ledger #329; OPS ruling R10; FI-1 v1.3/v1.4). Electron-free and port-injected: node --test drives the real logic over a fake port.
+// The sweeper (hibernation.ts) asks `judgeVeille` once per member that is otherwise past the NORMAL Veille threshold:
+//   - no port registered (a rig / a test that does not wire Reliquats)  → today's Veille, byte for byte;
+//   - the census cannot say (`unknown`)                                  → today's Veille (UNKNOWN is not a reason to wait, and nothing is killed on a guess);
+//   - no live Reliquat                                                   → today's Veille at the normal threshold;
+//   - live Reliquats, idle shorter than the Reliquat delay               → NO Veille this pass (fast Veille is not delayed: shouldHibernate);
+//   - live Reliquats and the delay is over                               → STOP them (`port.stop`: killReliquats / #331 browsers, identity re-read at signal time, fail closed),
+//                                                                          tell the member at its next turn (`port.tell`), then Veille. A stop that could not look (`unknown`) defers the Veille.
+
+import { shouldHibernate, type HibernationSignals } from '../shared/hibernation.ts';
+import { veilleHasNews, veilleReliquatNotice } from '../shared/veille-reliquats.ts';
+import type { ReliquatReport } from '../shared/pause-reliquats.ts';
+import type { Workspace } from '../shared/types.ts';
+
+export interface VeilleReliquatPort {
+  /** Live Reliquats of the member NOW (its scope's `reliquat` roles; with no tracked scope, #331's orphaned headless browsers). `'unknown'` = it could not look. */
+  census(wsId: string): Promise<number | 'unknown'>;
+  /** Stop them. Null = nothing to report (no tracked scope / nothing found). A report with `unknown` / `error` / `aborted` = the stop could not be completed safely.
+   *  `ctx.stillWanted()` is re-checked before every signal round: false (the member woke / is being deleted meanwhile) ⇒ the remaining signals are NOT sent. Processes born after the stop BEGAN are the member's new work and are spared. */
+  stop(wsId: string, ctx?: { stillWanted(): boolean }): Promise<ReliquatReport | null>;
+  /** Queue `text` for the member's next turn WITHOUT waking it (its inbox). False = it could not be queued. */
+  tell(wsId: string, text: string): Promise<boolean>;
+}
+
+export interface JudgeDeps {
+  port: VeilleReliquatPort | null;
+  /** The Consigne's control-character strip: a command line comes from any process of the member and must never forge a line in its prompt. */
+  strip: (s: unknown) => string;
+  /** The sweep's « this member is still the one we are putting in Veille » (no wake / delete since the verdict began). Absent = always. */
+  stillWanted?: () => boolean;
+  info(msg: string): void;
+  warn(msg: string, err?: unknown): void;
+}
+
+export type VeilleVerdict =
+  | { hibernate: false; why: 'not-eligible' }
+  /** Live Reliquats and the Reliquat delay is not over. */
+  | { hibernate: false; why: 'reliquat-delay'; liveReliquats: number; waitMs: number }
+  /** The stop could not look / complete: retried at the next sweep. */
+  | { hibernate: false; why: 'reliquat-stop-incomplete'; liveReliquats: number; detail: string }
+  | { hibernate: true; liveReliquats: number; stopped: boolean; report: ReliquatReport | null; told: boolean; fast: boolean };
+
+type Base = Omit<HibernationSignals, 'liveReliquats'>;
+
+export async function judgeVeille(ws: Workspace, signals: Base, deps: JudgeDeps): Promise<VeilleVerdict> {
+  // 1. past the NORMAL threshold with every other guard satisfied? (liveReliquats 0 = today's rule) — only those members cost a census
+  if (!shouldHibernate(ws, { ...signals, liveReliquats: 0 })) return { hibernate: false, why: 'not-eligible' };
+  if (!deps.port) return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };
+
+  // 2. the census
+  let live: number | 'unknown';
+  try {
+    live = await deps.port.census(ws.id);
+  } catch (e) {
+    deps.warn(`veille: Reliquat census of ${ws.name} (${ws.id}) threw — keeping today's Veille`, e);
+    live = 'unknown';
+  }
+  if (live === 'unknown') {
+    deps.info(`veille: ${ws.name} (${ws.id}) — Reliquats could not be counted; Veille unchanged (nothing is stopped on a guess)`);
+    return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };
+  }
+  if (live === 0) return { hibernate: true, liveReliquats: 0, stopped: false, report: null, told: false, fast: false };
+
+  // 3. live Reliquats: the delay applies (not to fast Veille)
+  if (!shouldHibernate(ws, { ...signals, liveReliquats: live })) {
+    const waitMs = Math.max(0, (signals.reliquatDelayMs || 0) - (signals.now - (signals.lastActivityAt ?? signals.now)));
+    return { hibernate: false, why: 'reliquat-delay', liveReliquats: live, waitMs };
+  }
+  const fast = signals.admissionHeld && !shouldHibernate(ws, { ...signals, admissionHeld: false, liveReliquats: live });
+
+  // 4. stop them (identity re-read at signal time, fail closed — inside the port), then tell the member
+  let report: ReliquatReport | null;
+  try {
+    report = await deps.port.stop(ws.id, { stillWanted: deps.stillWanted ?? (() => true) });
+  } catch (e) {
+    deps.warn(`veille: stopping the Reliquats of ${ws.name} (${ws.id}) threw`, e);
+    return { hibernate: false, why: 'reliquat-stop-incomplete', liveReliquats: live, detail: e instanceof Error ? e.message : String(e) };
+  }
+  if (report && (report.unknown || report.error || report.aborted)) {
+    // UNKNOWN is not NONE: the scope could not be read / the identity could not be proven / the member woke mid-stop — the Veille waits for the next sweep. What WAS stopped (if anything) is still told.
+    const detail = String(report.unknown ?? report.error ?? `stop aborted (${report.aborted})`);
+    let told = false;
+    if (veilleHasNews(report)) told = await tellOnce(ws, report, { fast, idleMs: signals.now - (signals.lastActivityAt ?? signals.now) }, deps);
+    deps.info(`veille: ${ws.name} (${ws.id}) — Reliquat stop incomplete (${detail}); Veille retried at the next sweep${told ? ' (the member was told what WAS stopped)' : ''}`);
+    return { hibernate: false, why: 'reliquat-stop-incomplete', liveReliquats: live, detail };
+  }
+  const told = veilleHasNews(report) ? await tellOnce(ws, report, { fast, idleMs: signals.now - (signals.lastActivityAt ?? signals.now) }, deps) : false;
+  return { hibernate: true, liveReliquats: live, stopped: true, report, told, fast };
+}
+
+async function tellOnce(ws: Workspace, report: ReliquatReport, ctx: { fast: boolean; idleMs: number }, deps: JudgeDeps): Promise<boolean> {
+  const text = veilleReliquatNotice(report, ctx, deps.strip);
+  if (!text || !deps.port) return false;
+  try {
+    const ok = await deps.port.tell(ws.id, text);
+    if (!ok) deps.warn(`veille: the Reliquat notice of ${ws.name} (${ws.id}) could not be queued — the member is not told`);
+    return ok;
+  } catch (e) {
+    deps.warn(`veille: the Reliquat notice of ${ws.name} (${ws.id}) threw`, e);
+    return false;
+  }
+}

@@ -342,7 +342,9 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   id `isBeingDeleted` so the hibernation sweep skips it (delete/hibernate
   serialization, #205); then **#201:** `stopStructuredSession(id)` —
   awaited `sdkStopIfLive` (drops the in-memory session) + `killKeeper(id,
-  'workspace-deleted')` (kills a surviving keeper/CLI, sweeps its pid/sock) —
+  'workspace-deleted')` (kills a surviving keeper/CLI, sweeps its pid/sock) +
+  `stopMemberScopeIfAny(id, 'workspace-deleted')` (#327: only a member WITH a kernel scope — kills its Reliquats
+  by identity, then stops ITS scope units — `session-keeper.md`) —
   also run by `pruneOrphanedWorkspaces` (boot). It sits in the workspaces.ts
   chokepoint, not api-handlers' fire-and-forget `sdkStopMany` (which skips a
   session-less survivor and is bypassed by the CLI socket route

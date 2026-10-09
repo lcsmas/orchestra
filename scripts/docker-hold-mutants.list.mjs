@@ -129,14 +129,14 @@ export function holdMutants(T = HOLD_T) {
     ['HA15', 'src/main/keeper-client.ts', [['    unlink(relayHoldFile(keeperSocketPath(wsId)));\n', '']], [T.appHold], 'a dead keeper\'s hold file is not swept (sweepStaleKeeperFiles)'],
     ['HA16', 'src/main/keeper-client.ts', [['relayHoldFile(keeperSocketPath(wsId)), keeperLogPath(wsId)]', 'keeperLogPath(wsId)]']], [T.appHold], 'listLiveKeepers does not sweep the hold file'],
     // ── R13 (verifier K01/K02): the keeper's production wiring of the release slot and the fleet's line — either piece alone spaces two creates, so only these source pins (and the rig `hold_two_keepers`) see an unwired one ──
-    ['W1', KIDX, [['    lease: createKeeperLease(holdState),\n', '']], [T.wire], 'the gate is not handed the fleet-wide release slot (verifier K01)'],
-    ['W2', KIDX, [['    fleet: createKeeperFleetLine(holdState),\n', '']], [T.wire], 'the gate is not handed the fleet\'s line (verifier K02)'],
-    ['W3', KIDX, [['owner: wsId, pid: process.pid, log: klog', "owner: 'x', pid: process.pid, log: klog"]], [T.wire], 'the slot is owned by no workspace'],
-    ['W4', KIDX, [['ownWs: wsId, pid: process.pid, leaseFile', "ownWs: '', pid: process.pid, leaseFile"]], [T.wire], 'the line does not know which workspace is its own'],
-    ['W5', KIDX, [['leaseFile: admissionLeaseFile(holdState), io: leaseIo() })', 'leaseFile: holdState, io: leaseIo() })']], [T.wire], 'the line queues behind a slot that is not the shared one'],
-    ['W6', KIDX, [['...(gate ? { hold: gate } : {}) })', '})']], [T.wire], 'the relay is created without its gate'],
-    ['W7', KIDX, [['withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState)', 'withDockerRelay(f.dockerRelay.runId, capEnv, undefined)']], [T.wire], 'the spawn frame\'s holdState never reaches the relay'],
-    ['W8', KIDX, [['file: admissionLeaseFile(holdState), owner: wsId', 'file: holdState, owner: wsId']], [T.wire], 'the slot is the state file itself (it would be overwritten)'],
-    ['W9', KIDX, [['holdFile: relayHoldFile(sockPath),\n    now: Date.now,', 'holdFile: sockPath,\n    now: Date.now,']], [T.wire], 'what this keeper holds is published where the others do not look'],
+    ['WK1', KIDX, [['    lease: createKeeperLease(holdState),\n', '']], [T.wire], 'the gate is not handed the fleet-wide release slot (verifier K01)'],
+    ['WK2', KIDX, [['    fleet: createKeeperFleetLine(holdState),\n', '']], [T.wire], 'the gate is not handed the fleet\'s line (verifier K02)'],
+    ['WK3', KIDX, [['owner: wsId, pid: process.pid, log: klog', "owner: 'x', pid: process.pid, log: klog"]], [T.wire], 'the slot is owned by no workspace'],
+    ['WK4', KIDX, [['ownWs: wsId, pid: process.pid, leaseFile', "ownWs: '', pid: process.pid, leaseFile"]], [T.wire], 'the line does not know which workspace is its own'],
+    ['WK5', KIDX, [['leaseFile: admissionLeaseFile(holdState), io: leaseIo() })', 'leaseFile: holdState, io: leaseIo() })']], [T.wire], 'the line queues behind a slot that is not the shared one'],
+    ['WK6', KIDX, [['...(gate ? { hold: gate } : {}) })', '})']], [T.wire], 'the relay is created without its gate'],
+    ['WK7', KIDX, [['withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState)', 'withDockerRelay(f.dockerRelay.runId, capEnv, undefined)']], [T.wire], 'the spawn frame\'s holdState never reaches the relay'],
+    ['WK8', KIDX, [['file: admissionLeaseFile(holdState), owner: wsId', 'file: holdState, owner: wsId']], [T.wire], 'the slot is the state file itself (it would be overwritten)'],
+    ['WK9', KIDX, [['holdFile: relayHoldFile(sockPath),\n    now: Date.now,', 'holdFile: sockPath,\n    now: Date.now,']], [T.wire], 'what this keeper holds is published where the others do not look'],
   ];
 }

@@ -229,7 +229,8 @@ import { restoreRunningFromKeeper, setTurnStartObserver } from './activity';
 import { startPauseTrap, stopPauseTrap } from './pause-trap';
 import { buildPauseTrapDeps, makeTurnStartObserver } from './pause-trap-host';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
-import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
+import { setVeilleReliquatPort, startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
+import { productionVeilleReliquatPort } from './veille-reliquats-host.ts';
 import { startLoopScan, stopLoopScan } from './loop-scan';
 import { startUsagePolling, stopUsagePolling } from './usage';
 import { startAccountUsagePolling, stopAccountUsagePolling } from './account-usage';
@@ -633,6 +634,8 @@ async function createMainWindow() {
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
+  // Veille and Reliquats (#326): an idle member with live Reliquats waits the Reliquat delay (Garde mémoire setting), then its Veille stops + lists them. Registered BEFORE the first sweep.
+  setVeilleReliquatPort(productionVeilleReliquatPort());
   startHibernationSweeper();
   // One-shot migration to agent-reported PR/Linear links. The Linear badge no
   // longer reads the branch name, so without this every pre-existing workspace

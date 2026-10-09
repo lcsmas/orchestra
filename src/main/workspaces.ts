@@ -7,7 +7,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
-import { forbidKeeperLaunch, killKeeper, killKeeperTree, snapshotKeeperTree } from './keeper-client';
+import { forbidKeeperLaunch, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
+import { stopMemberScopeIfAny } from './scope-stop-host';
 import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import {
   sdkDeliver,
@@ -789,6 +790,13 @@ export async function archiveWorkspace(id: string): Promise<void> {
     // component ever mounted (agent-browser-tools.ts calls showPanel directly),
     // and in that case nothing on the renderer side ever tears it down.
     destroyBrowserPanel(ws.id);
+    // #327: an archive of a member WITH a kernel scope also stops its session + keeper (a descendant's too — the caller only stops the root's) and then everything it left in the scope.
+    // A member without a scope: exactly as before (nothing is stopped here).
+    const keeperBefore = readTrackedKeeperPid(ws.id);
+    await stopMemberScopeIfAny(ws.id, 'workspace-archived', async () => {
+      await sdkStopIfLive(ws.id).catch((e) => log.warn(`archive: session stop failed for ${ws.id}`, e));
+      await killKeeperIf(ws.id, keeperBefore, 'workspace-archived').catch((e) => log.warn(`archive: keeper kill failed for ${ws.id}`, e));
+    });
     const updated: Workspace = {
       ...ws,
       archived: true,
@@ -826,6 +834,7 @@ async function stopStructuredSession(id: string): Promise<void> {
   await sdkStopIfLive(id).catch((e) => log.warn(`delete: session stop failed for ${id}`, e));
   await killKeeper(id, 'workspace-deleted').catch((e) => log.warn(`delete: killKeeper failed for ${id}`, e));
   await killKeeperTree(id, tree, 'workspace-deleted').catch((e) => log.warn(`delete: descendant sweep failed for ${id}`, e));
+  await stopMemberScopeIfAny(id, 'workspace-deleted'); // #327: only a member WITH a kernel scope: its Reliquats killed by identity, then ITS units stopped (never another member's)
 }
 
 /** Tear down everything a delete owns EXCEPT the store record and the renderer
@@ -3000,7 +3009,12 @@ export async function dispatchMigrateAccountRequest(input: {
     // reopened by the renderer on demand, so there is no main-side auto-resume to
     // mirror the PTY one below.
     const hadSdkSession = sdkSessionLive(id);
-    if (hadSdkSession) await sdkStopIfLive(id);
+    if (hadSdkSession) {
+      const keeperBefore = readTrackedKeeperPid(id);
+      await sdkStopIfLive(id);
+      // #327: an account migration of a member WITH a kernel scope kills the old keeper and stops what the old-account session left in its scope (the next start opens a NEW scope generation).
+      await stopMemberScopeIfAny(id, 'account-migration', () => killKeeperIf(id, keeperBefore, 'account-migration'));
+    }
     // Capture the live winsize before the stop: the resume below happens
     // main-side (no renderer round-trip), and an already-visible terminal
     // won't re-assert its size, so respawning at the old size is what keeps

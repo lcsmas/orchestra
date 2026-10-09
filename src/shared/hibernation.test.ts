@@ -10,6 +10,7 @@ import {
   shouldHibernate,
   idleClockStart,
   fastVeilleLogSuffix,
+  effectiveVeilleWaitMs,
   type HibernationSignals,
 } from './hibernation.ts';
 import type { Workspace, WorkspaceStatus } from './types.ts';
@@ -33,6 +34,8 @@ function ws(over: Partial<Workspace> = {}): Workspace {
 
 const NOW = 1_000_000_000;
 const THRESHOLD = 30 * 60 * 1000;
+/** #326: the Reliquat delay of these tests — LONGER than the threshold (the default setting is 30 min against a 5 min threshold). */
+const RELIQUAT_DELAY = 45 * 60 * 1000;
 
 /** Baseline: every condition satisfied, so each test below flips exactly ONE
  *  field and any `false` it observes is attributable to that field alone. */
@@ -47,6 +50,8 @@ function signals(over: Partial<HibernationSignals> = {}): HibernationSignals {
     hasLiveBackgroundTask: false,
     thresholdMs: THRESHOLD,
     admissionHeld: false,
+    liveReliquats: 0,
+    reliquatDelayMs: RELIQUAT_DELAY,
     ...over,
   };
 }
@@ -403,4 +408,64 @@ test('fast Veille log tail: an unreadable meter is said so — never a fabricate
     fastVeilleLogSuffix(true, { availBytes: 3 * 1024 ** 3, measured: false }, false, THRESHOLD),
     ' — Admission HELD, MemAvailable 3.00 GB (last good reading)',
   );
+});
+
+// ── #326 Veille and Reliquats: a member with LIVE Reliquats waits the Reliquat delay (≥ the threshold); every other guard and fast Veille are unchanged ────────────
+const BETWEEN = THRESHOLD + 5 * 60 * 1000; // idle past the threshold, short of the Reliquat delay
+const PAST_DELAY = RELIQUAT_DELAY + 1000;
+
+test('#326 positive control: past the threshold and short of the delay, a member WITHOUT Reliquats is eligible (so the sparing below is the Reliquats\' doing)', () => {
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - BETWEEN, liveReliquats: 0 })), true);
+});
+
+test('#326 live Reliquats: idle past the threshold but short of the delay → NOT eligible', () => {
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - BETWEEN, liveReliquats: 1 })), false);
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - BETWEEN, liveReliquats: 7 })), false);
+});
+
+test('#326 live Reliquats: idle past the delay → eligible; the boundary is the delay itself', () => {
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - PAST_DELAY, liveReliquats: 1 })), true);
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - RELIQUAT_DELAY, liveReliquats: 1 })), true, 'exactly the delay');
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - RELIQUAT_DELAY + 1, liveReliquats: 1 })), false, '1 ms short');
+});
+
+test('#326 the delay never SHORTENS the wait: below the threshold it is the threshold that governs', () => {
+  const short = 2 * 60 * 1000;
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - THRESHOLD + 1000, liveReliquats: 1, reliquatDelayMs: short })), false);
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - THRESHOLD - 1000, liveReliquats: 1, reliquatDelayMs: short })), true);
+});
+
+test('#326 a garbage delay (NaN / 0 / negative / Infinity) adds NO wait: the normal threshold applies', () => {
+  for (const bad of [NaN, 0, -5, Infinity]) {
+    assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - BETWEEN, liveReliquats: 1, reliquatDelayMs: bad })), true, `delay ${bad}`);
+  }
+});
+
+test('#326 effectiveVeilleWaitMs: the longer of threshold and delay while Reliquats live, the threshold otherwise', () => {
+  assert.equal(effectiveVeilleWaitMs(THRESHOLD, 0, RELIQUAT_DELAY), THRESHOLD);
+  assert.equal(effectiveVeilleWaitMs(THRESHOLD, 1, RELIQUAT_DELAY), RELIQUAT_DELAY);
+  assert.equal(effectiveVeilleWaitMs(THRESHOLD, 3, 1000), THRESHOLD);
+  assert.equal(effectiveVeilleWaitMs(THRESHOLD, 1, NaN), THRESHOLD);
+});
+
+test('#326 fast Veille (Admission held, fleet member) is NOT delayed by Reliquats — under pressure they are what must be freed', () => {
+  const member = ws({ parentId: 'coord' });
+  // idle for only a minute, Reliquats live: today's fast Veille verdict is untouched
+  assert.equal(shouldHibernate(member, signals({ lastActivityAt: NOW - 60_000, liveReliquats: 2, admissionHeld: true })), true);
+  assert.equal(shouldHibernate(member, signals({ lastActivityAt: NOW - 60_000, liveReliquats: 2, admissionHeld: false })), false, 'control: Admission open, the same member waits');
+  // a top-level workspace (no coordinator) is never fast-Veilled, Reliquats or not: it waits the delay
+  assert.equal(shouldHibernate(ws(), signals({ lastActivityAt: NOW - BETWEEN, liveReliquats: 2, admissionHeld: true })), false);
+});
+
+test('#326 every OTHER guard still applies to a member with Reliquats past the delay', () => {
+  const past = { lastActivityAt: NOW - PAST_DELAY, liveReliquats: 2 };
+  assert.equal(shouldHibernate(ws(), signals(past)), true, 'control');
+  assert.equal(shouldHibernate(ws({ status: 'running' }), signals(past)), false);
+  assert.equal(shouldHibernate(ws({ status: 'waiting' }), signals(past)), false);
+  assert.equal(shouldHibernate(ws(), signals({ ...past, isActive: true })), false);
+  assert.equal(shouldHibernate(ws(), signals({ ...past, hasLiveRunPty: true })), false);
+  assert.equal(shouldHibernate(ws(), signals({ ...past, hasLiveBackgroundTask: true })), false);
+  assert.equal(shouldHibernate(ws({ loopingSince: 1 } as Partial<Workspace>), signals(past)), false);
+  assert.equal(shouldHibernate(ws(), signals({ ...past, thresholdMs: HIBERNATION_DISABLED })), false, 'the kill switch stays one');
+  assert.equal(shouldHibernate(ws(), signals({ ...past, hasLivePty: false, hasLiveSdk: false })), false);
 });

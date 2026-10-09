@@ -528,6 +528,11 @@ export function forbidKeeperLaunch(wsId: string): void {
   deletedWorkspaces.add(wsId);
 }
 
+/** Run `op` in the workspace's keeper queue (launches, kills and — #327 — the scope stop never interleave). `op` must not itself call killKeeper or start a keeper: it would wait on itself. */
+export function withKeeperLock<T>(wsId: string, op: () => Promise<T>): Promise<T> {
+  return serializeKeeperOp(wsId, op);
+}
+
 function serializeKeeperOp<T>(wsId: string, op: () => Promise<T>): Promise<T> {
   const prev = keeperOps.get(wsId) ?? Promise.resolve();
   const run = prev.then(op);
@@ -749,6 +754,17 @@ export async function sweepStaleKeeperFiles(wsId: string): Promise<void> {
  */
 export function killKeeper(wsId: string, reason = 'explicit-stop'): Promise<void> {
   return serializeKeeperOp(wsId, () => killKeeperUnlocked(wsId, reason));
+}
+
+/** #327: kill the keeper ONLY if it is still THE one (`expectedPid`, read before the stop began) — a successor a wake launched meanwhile has another pid and is left alone. Call it with the keeper lock HELD ({@link withKeeperLock}). */
+export async function killKeeperIfHeld(wsId: string, expectedPid: number | null, reason = 'explicit-stop'): Promise<void> {
+  if (expectedPid === null || readTrackedKeeperPid(wsId) !== expectedPid) return;
+  await killKeeperUnlocked(wsId, reason);
+}
+
+/** {@link killKeeperIfHeld} under its own hold of the keeper lock (the check and the kill cannot be split by a launch). */
+export function killKeeperIf(wsId: string, expectedPid: number | null, reason = 'explicit-stop'): Promise<void> {
+  return serializeKeeperOp(wsId, () => killKeeperIfHeld(wsId, expectedPid, reason));
 }
 
 /** A HEALTHY kill (restart / clear / MCP refresh) never touches the agent's background jobs: the keeper's descendants

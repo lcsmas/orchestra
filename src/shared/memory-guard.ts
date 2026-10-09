@@ -33,7 +33,15 @@ export interface MemoryGuardSettings {
   capSoftGb: number;
   /** Plafond mémoire hard level (GB): the scope's `MemoryMax`. */
   capHardGb: number;
+  /** Veille and Reliquats (#326): how long (minutes) an idle member with LIVE Reliquats waits before its Veille, which then stops and lists them. Never shorter than the normal
+   *  Veille threshold; fast Veille (#288, Admission held) ignores it. Its own scalar: a bad value falls back to the default without resetting any other setting. UI: #323. */
+  reliquatWaitMin: number;
 }
+
+export const DEFAULT_RELIQUAT_WAIT_MIN = 30;
+/** A typed Reliquat delay outside this range is refused (0 would make the wait vanish; a day is already « never »). */
+export const MIN_RELIQUAT_WAIT_MIN = 1;
+export const MAX_RELIQUAT_WAIT_MIN = 24 * 60;
 
 export const DEFAULT_MEMORY_GUARD_SETTINGS: MemoryGuardSettings = {
   admissionGb: DEFAULT_ADMISSION_GB,
@@ -41,6 +49,7 @@ export const DEFAULT_MEMORY_GUARD_SETTINGS: MemoryGuardSettings = {
   admissionEnabled: true,
   capSoftGb: DEFAULT_CAP_SOFT_GB,
   capHardGb: DEFAULT_CAP_HARD_GB,
+  reliquatWaitMin: DEFAULT_RELIQUAT_WAIT_MIN,
 };
 
 /** True when Admission, once held at this threshold, could never reopen on a machine with `totalBytes` of memory. */
@@ -71,6 +80,7 @@ export function validateMemoryGuardSettings(s: MemoryGuardSettings, totalBytes?:
   if (s.capHardGb < MIN_CAP_HARD_GB) return `the memory cap hard level must be at least ${MIN_CAP_HARD_GB} GB`;
   if (s.capHardGb > MAX_ADMISSION_GB) return `the memory cap hard level must be at most ${MAX_ADMISSION_GB} GB`;
   if (!(s.capSoftGb > 0 && s.capSoftGb < s.capHardGb)) return `the memory cap soft level (${s.capSoftGb} GB) must be above 0 and below the hard level (${s.capHardGb} GB)`;
+  if (!isGb(s.reliquatWaitMin) || s.reliquatWaitMin < MIN_RELIQUAT_WAIT_MIN || s.reliquatWaitMin > MAX_RELIQUAT_WAIT_MIN) return `the Reliquat wait must be between ${MIN_RELIQUAT_WAIT_MIN} and ${MAX_RELIQUAT_WAIT_MIN} minutes`;
   if (typeof totalBytes === 'number' && totalBytes > 0 && thresholdUnreachable(s.admissionGb, totalBytes)) {
     return `the Admission threshold (${s.admissionGb} GB) plus the ${RELEASE_MARGIN_GB} GB reopen margin must be below this machine's memory (${(totalBytes / GIB).toFixed(1)} GB)`;
   }
@@ -86,6 +96,8 @@ export function normalizeMemoryGuardSettings(raw: Partial<MemoryGuardSettings> |
     admissionEnabled: typeof raw?.admissionEnabled === 'boolean' ? raw.admissionEnabled : true,
     capSoftGb: isGb(raw?.capSoftGb) ? raw.capSoftGb : DEFAULT_CAP_SOFT_GB,
     capHardGb: isGb(raw?.capHardGb) ? raw.capHardGb : DEFAULT_CAP_HARD_GB,
+    // its own scalar: out of range / not a number ⇒ the default, and never the reason another setting is reset
+    reliquatWaitMin: isGb(raw?.reliquatWaitMin) && raw.reliquatWaitMin >= MIN_RELIQUAT_WAIT_MIN && raw.reliquatWaitMin <= MAX_RELIQUAT_WAIT_MIN ? raw.reliquatWaitMin : DEFAULT_RELIQUAT_WAIT_MIN,
   };
   if (validateMemoryGuardSettings(candidate) === null) return candidate;
   // Each PAIR falls back as a pair: a bad cap pair must not reset the thresholds, nor the reverse.
@@ -97,6 +109,7 @@ export function normalizeMemoryGuardSettings(raw: Partial<MemoryGuardSettings> |
     admissionEnabled: candidate.admissionEnabled,
     capSoftGb: capOk ? candidate.capSoftGb : DEFAULT_CAP_SOFT_GB,
     capHardGb: capOk ? candidate.capHardGb : DEFAULT_CAP_HARD_GB,
+    reliquatWaitMin: candidate.reliquatWaitMin,
   };
 }
 
@@ -355,6 +368,7 @@ export function patchMemoryGuardSettings(
     admissionEnabled: patch.admissionEnabled ?? current.admissionEnabled,
     capSoftGb: patch.capSoftGb ?? current.capSoftGb,
     capHardGb: patch.capHardGb ?? current.capHardGb,
+    reliquatWaitMin: patch.reliquatWaitMin ?? current.reliquatWaitMin,
   };
   // The MemTotal bound judges the pair being CHOSEN: a toggle-only patch never fails on a stored pair the host cannot satisfy (a small
   // machine under the default 6/3) — the sampler warns about that case instead, and the user can still flip the toggle.

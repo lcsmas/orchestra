@@ -80,6 +80,7 @@ import {
   notifyTurnStart,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
+import { clearScopedMember, memberHasScope } from './scope-stop-host';
 import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { noteToolDetail } from './hibernation-activity';
 import { applyToolEvent, type OpenTool } from '../shared/open-tools.ts';
@@ -5639,16 +5640,24 @@ export async function sdkClear(wsId: string): Promise<void> {
   const paused = sandboxPausedMessage(store.getWorkspace(wsId));
   if (paused) throw new Error(paused);
   const session = sessions.get(wsId);
+  // #327: a member WITH a kernel scope also loses what the old conversation left in it (the old keeper, its detached jobs, the unit); a member without one is cleared exactly as before.
+  const scoped = memberHasScope(wsId);
+  const keeperBefore = scoped ? readTrackedKeeperPid(wsId) : null;
   if (session) {
     session.cleared = true;
     await sdkStop(wsId);
   }
-  await persistWorkspacePatch(wsId, { sdkSessionId: '' });
-  emit(wsId, {
-    type: 'session/clear',
-    seq: cursorFor(wsId).seq++,
-    at: Date.now(),
-  });
+  const announce = async (): Promise<void> => {
+    await persistWorkspacePatch(wsId, { sdkSessionId: '' });
+    emit(wsId, {
+      type: 'session/clear',
+      seq: cursorFor(wsId).seq++,
+      at: Date.now(),
+    });
+  };
+  if (!scoped) return announce();
+  // The announce runs FIRST inside the keeper lock (no wake can launch a keeper meanwhile, and `session/clear` can never erase a successor's lines), then the old keeper and the scope go.
+  await clearScopedMember(wsId, keeperBefore, announce);
 }
 
 /** `rewindFiles` is a CLI control request: a wedged CLI never answers, and an

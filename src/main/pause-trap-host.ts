@@ -75,6 +75,36 @@ export function pauseOrdersDir(): string {
   return path.join(path.dirname(getEventsDir()), 'pause-orders');
 }
 
+/** The member's proven keeper → CLI (structured) or its PTY child (terminal): `{error}` = UNKNOWN (never read as « none »), null = no live process. The Pause trap's `cliOf` AND the Veille's Reliquat stop (#326) resolve the session through it. */
+export async function cliOfMember(m: { wsId: string }) {
+  const kill = realKillDeps();
+  // Structured: keeper → CLI. The keeper's identity is argv-verified; the CLI must be ITS child.
+  const probe = await probeKeeper(m.wsId).catch(() => null);
+  if (!probe) {
+    // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer (busy/stopped) must not read as "no keeper".
+    const kp = readTrackedKeeperPid(m.wsId);
+    const ks = kp === null ? 'gone' : keeperPidState(kp, m.wsId);
+    // 'unknown' (alive, argv unreadable) is UNKNOWN, not "no keeper": never skip the kill on it (pre-review M8)
+    if (kp !== null && (ks === 'keeper' || ks === 'unknown')) return { error: `keeper ${kp} is alive (${ks}) but did not answer the probe (busy/unresponsive)` };
+  }
+  if (probe?.running && probe.pid) {
+    const keeperPid = readTrackedKeeperPid(m.wsId);
+    if (keeperPid === null || keeperPidState(keeperPid, m.wsId) !== 'keeper') return { error: 'keeper identity unverifiable (pid file / argv)' };
+    const cli = kill.read(probe.pid);
+    if (cli === 'gone' || cli === 'unreadable') return { error: `cli ${probe.pid} ${cli}` };
+    if (cli.ppid !== keeperPid) return { error: `cli ${probe.pid} is not a child of keeper ${keeperPid}` };
+    return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid };
+  }
+  // Agent PTY: the pty child IS the CLI.
+  const ptyPid = isPtyRunning(m.wsId) ? getPtyPid(m.wsId) : undefined;
+  if (ptyPid) {
+    const cli = kill.read(ptyPid);
+    if (cli === 'gone' || cli === 'unreadable') return { error: `pty ${ptyPid} ${cli}` };
+    return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid: null };
+  }
+  return null;
+}
+
 export function buildPauseTrapDeps(): TrapDeps {
   const kill = realKillDeps();
   const appDocker = createDockerApi();
@@ -138,33 +168,7 @@ export function buildPauseTrapDeps(): TrapDeps {
       }
       return sdk;
     },
-    cliOf: async (m) => {
-      // Structured: keeper → CLI. The keeper's identity is argv-verified; the CLI must be ITS child.
-      const probe = await probeKeeper(m.wsId).catch(() => null);
-      if (!probe) {
-        // UNKNOWN is not NONE (review F4): a tracked keeper that is alive but did not answer (busy/stopped) must not read as "no keeper".
-        const kp = readTrackedKeeperPid(m.wsId);
-        const ks = kp === null ? 'gone' : keeperPidState(kp, m.wsId);
-        // 'unknown' (alive, argv unreadable) is UNKNOWN, not "no keeper": never skip the kill on it (pre-review M8)
-        if (kp !== null && (ks === 'keeper' || ks === 'unknown')) return { error: `keeper ${kp} is alive (${ks}) but did not answer the probe (busy/unresponsive)` };
-      }
-      if (probe?.running && probe.pid) {
-        const keeperPid = readTrackedKeeperPid(m.wsId);
-        if (keeperPid === null || keeperPidState(keeperPid, m.wsId) !== 'keeper') return { error: 'keeper identity unverifiable (pid file / argv)' };
-        const cli = kill.read(probe.pid);
-        if (cli === 'gone' || cli === 'unreadable') return { error: `cli ${probe.pid} ${cli}` };
-        if (cli.ppid !== keeperPid) return { error: `cli ${probe.pid} is not a child of keeper ${keeperPid}` };
-        return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid };
-      }
-      // Agent PTY: the pty child IS the CLI.
-      const ptyPid = isPtyRunning(m.wsId) ? getPtyPid(m.wsId) : undefined;
-      if (ptyPid) {
-        const cli = kill.read(ptyPid);
-        if (cli === 'gone' || cli === 'unreadable') return { error: `pty ${ptyPid} ${cli}` };
-        return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid: null };
-      }
-      return null;
-    },
+    cliOf: (m) => cliOfMember(m),
     // The gate's own decision (live workspace tree, frozen switch on the carrier) — the observer and the gate cannot disagree.
     carrierFor: (m) => {
       const db = getBus();
