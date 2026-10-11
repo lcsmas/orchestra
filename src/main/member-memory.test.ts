@@ -168,6 +168,15 @@ test('P9 a scope of a workspace we never asked about is counted as STRAY (never 
   assert.equal(sampleMemberMemory(host({ countScopes: () => { throw new Error('EACCES'); } }, base).deps).strayScopes, null);
 });
 
+test('P9b (#332 fu, review m1) a scope whose meter reads but whose leaf cannot be LISTED keeps procs UNKNOWN (null) — not « no Reliquats »', () => {
+  __resetMemberMemoryForTests();
+  const a = scope('ws-a');
+  const r = sampleMemberMemory(host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 300 * MB }, procs: { [a.unit]: Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } }).deps);
+  const m = r.tracked.find((t) => t.wsId === 'ws-a')!;
+  assert.ok(m, 'the member is still tracked (its meter reads)');
+  assert.equal(m.reliquats, null, 'unknown, never zero');
+});
+
 test('P10 a live member whose keeper runs OUTSIDE every scope it has (an older generation\'s leftovers): tracked for those leftovers AND listed untracked for its live session', () => {
   __resetMemberMemoryForTests();
   const stale = { ...scope('ws-a', 'j0'), keeperPid: null };

@@ -389,12 +389,19 @@ export function listKeeperTreeOutsideScope(scope: Pick<MemberScope, 'cgroupDir' 
 
 /** FI-1 (c): the scope's processes with their role. Identity = (pid, startTicks); a process that vanishes mid-read is skipped. `cliPid` is the keeper's CLI child when the caller knows it (helloAck.pid). */
 export function listScopeProcs(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, cliPid: number | null = null, e: ScopeEnv = realScopeEnv()): ClassifiedMember[] {
-  let pids: number[];
   try {
-    pids = readScopePids(e, scope.cgroupDir);
+    return listScopeProcsOrThrow(scope, cliPid, e);
   } catch {
-    return [];
+    return []; // unreadable ⇒ [] (legacy contract) — a caller that must tell «nobody there» from «cannot look» uses {@link listScopeProcsOrThrow}
   }
+}
+
+/**
+ * Like {@link listScopeProcs}, but an UNREADABLE scope — its own `cgroup.procs` OR (#332) one of its two leaves — THROWS the fs error instead of answering `[]`: with the leaves the scope's own file is empty and
+ * always readable, so a swallowed leaf error would read as «no member» (a Reliquat alive and unlisted: the #325 F2 class). Destructive callers (the Reliquat kill, the scope stop, the member-memory producer) use this one.
+ */
+export function listScopeProcsOrThrow(scope: Pick<MemberScope, 'cgroupDir' | 'keeperPid'>, cliPid: number | null = null, e: ScopeEnv = realScopeEnv()): ClassifiedMember[] {
+  const pids = readScopePids(e, scope.cgroupDir);
   const page = systemPageSize(e);
   const members: ScopeMember[] = [];
   for (const pid of pids) {

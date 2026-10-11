@@ -51,6 +51,9 @@ const ARMS = {
   // #332 (Q9): the SESSION survives back-to-back cap kills — keeper in leaf k (no limit), CLI + tools in leaf w (the hard level)
   session_survives_chain: { mustFailOnMaster: true },
   backstop_scope_limit: { mustFailOnMaster: true },
+  // #332 fu (review m2): a probe that fails keeps the prefix; a CLI whose tools never reach the work leaf is caught by the tripwire
+  probe_fails_prefix_kept: { mustFailOnMaster: true },
+  tripwire_tools_not_landing: { mustFailOnMaster: true },
   // review round 1 (OPS m1-m4): a member WITHOUT a scope is stopped as before; a scoped /clear leaves a successor whole and holds off a wake; the pid file is not the only live-keeper signal
   no_scope_changes_nothing: {},
   scoped_extra_runs_first: { mustFailOnMaster: true },
@@ -401,6 +404,10 @@ try {
     const rec = named;
     check('the app says the cap is ACTIVE (state read back from the keeper)', await waitFor(() => new RegExp(`memory-cap\\[${ws}\\]: ACTIVE — scope ${f.unit}`).test(orchLog()), 8000), '');
     check('the app log has the line (workspace, killed command, level)', new RegExp(`memory-cap\\[${ws}\\] killed ".*swarm\\.py.*" .* at the hard level`).test(orchLog()), '');
+    for (let i = 0; i < 4; i++) await runTool(st, 'true', `t-extra${i}`, 20_000); // past the default threshold (5 Bash results): the tripwire has CHECKED and the leaf had faulted
+    await sleep(300);
+    const prAfter = await kc.probeKeeper(ws);
+    check('#332 fu control: after many tool results the state is STILL active and no tripwire fired (tools do land in the work leaf)', prAfter?.cap?.state === 'active' && !/TRIPWIRE — /.test(readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? ''), JSON.stringify(prAfter?.cap ?? null));
     detail = `scope=${f.unit} memory.max=${maxB} oom_kill=${ev.oom_kill} record=${rec?.command?.slice(0, 40)}`;
   } else if (ARM === 'below_cap_untouched') {
     const st = open(ws, decide(ws));
@@ -832,6 +839,44 @@ try {
     // `max` counts reclaim at the scope's own limit (page cache of the keeper leaf — the keeper bundle, node modules — is charged to the scope and is reclaimed, no kill): informational. What must hold is NO KILL at the scope level.
     check('...and the SCOPE-level limit killed NOTHING (the backstop is not what takes a hog: its own oom_kill counter stayed 0; reclaim events `max` are informational)', (localEv.oom_kill ?? 0) === 0 && (localEv.oom_group_kill ?? 0) === 0, JSON.stringify(localEv));
     detail = `scope.max=${sMax} leaf.max=${wMax} chain lost=${lost}`;
+  } else if (ARM === 'probe_fails_prefix_kept') {
+    // A wrapper that raises adj but does NOT move into the work leaf (stale / broken): the start-time probe fails TWICE. The member keeps the PREFIX (tools stay at adj 1000), the state says unprotected, the log says why — and the session lives.
+    fs.writeFileSync(WRAPPER, '#!/bin/sh\necho 1000 > /proc/self/oom_score_adj 2>/dev/null\n[ "$#" -eq 1 ] || exec "$@"\ncase "${SHELL:-}" in */bash|*/zsh) sh_=$SHELL ;; *) sh_=/bin/bash ;; esac\nexec "$sh_" -c "$1"\n', { mode: 0o755 });
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    const up = await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const klog = readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '';
+    const pr = await kc.probeKeeper(ws);
+    check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
+    check('the keeper reports cap.state = unprotected (never active)', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
+    check('the log says why: the probe failed TWICE and nothing is capped at the hard level', /did NOT place a probe command in the work leaf, twice/.test(klog) && /NOTHING is capped at the hard level/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-240));
+    check('the PREFIX is still set: the CLI got CLAUDE_CODE_SHELL_PREFIX (tools stay protected by adj 1000)', !!initOf(st)?.shellPrefix, `prefix=${initOf(st)?.shellPrefix}`);
+    const t = await runTool(st, 'cat /proc/self/oom_score_adj; cat /proc/self/cgroup', 't-adj', 20_000);
+    const lines = (t?.stdout ?? '').trim().split('\n');
+    check('a tool command runs at oom_score_adj 1000 although it did not move (the old behaviour dropped the prefix: adj 0)', lines[0] === '1000', `adj=${lines[0]}`);
+    check('...in the KEEPER leaf (nothing capped at the hard level — said so)', (lines[1] ?? '').trim().endsWith('/k'), lines[1]);
+    check('the app log says UNCAPPED-ish for the unprotected state (describeCapState)', await waitFor(() => /NOTHING is capped at the hard level/.test(orchLog()), 8000), '');
+    detail = `state=${pr?.cap?.state} adj=${lines[0]}`;
+  } else if (ARM === 'tripwire_tools_not_landing') {
+    // The probe passes (it injects the leaf into the wrapper's env itself), but the CLI does NOT forward ORCHESTRA_MEMCAP_WORK_LEAF to its tools: no tool ever lands in the work leaf. After 3 tool results the tripwire fires, once.
+    process.env.ORCHESTRA_MEMCAP_TRIPWIRE_AFTER = '3'; // the keeper inherits it: the default is 5 Bash results
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS, STANDIN_CLI_DROP_ENV: 'ORCHESTRA_MEMCAP_WORK_LEAF' } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const pr0 = await kc.probeKeeper(ws);
+    check('setup: the probe PASSED (state active at start — the start-time check cannot see this fault)', pr0?.cap?.state === 'active', JSON.stringify(pr0?.cap ?? null));
+    for (let i = 0; i < 4; i++) await runTool(st, `echo tool${i}; cat /proc/self/cgroup`, `t${i}`, 20_000);
+    const klogPath = path.join(home, 'keepers', `${ws}.log`);
+    const tripped = await waitFor(() => /TRIPWIRE — /.test(readSafe(klogPath) ?? ''), 8000);
+    const klog = readSafe(klogPath) ?? '';
+    const pr = await kc.probeKeeper(ws);
+    check('the TRIPWIRE fired: «N tool results came back but the work leaf never faulted a page»', tripped, klog.split('\n').slice(-2).join(' | ').slice(-240));
+    check('...exactly ONCE', (klog.match(/TRIPWIRE — /g) ?? []).length === 1, `n=${(klog.match(/TRIPWIRE — /g) ?? []).length}`);
+    check('...and the state is now unprotected (read back from the keeper)', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
+    const t = await runTool(st, 'cat /proc/self/cgroup', 't-where', 20_000);
+    check('control: the tools really were in the keeper leaf (the fault the tripwire names is real)', (t?.stdout ?? '').trim().endsWith('/k'), (t?.stdout ?? '').trim());
+    check('the session is alive (a tripwire reports, it kills nothing)', alive(f.keeperPid) && alive(f.cliPid));
+    detail = `state=${pr?.cap?.state}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
     const stub = path.join(base, 'stubbin');

@@ -78,3 +78,76 @@ export function probeToolPlacement(a: { wrapper: string; workDir: string; cgroup
   const where = path.join(a.cgroupRoot, cg);
   return { ok: where === a.workDir, saw: where };
 }
+
+/** The page-fault counter of the work leaf (`pgfault` in its memory.stat): it only ever grows, and every process that runs in the leaf — however short — faults dozens of pages. null = unreadable. */
+export function readLeafFaults(readStat: () => string | null): number | null {
+  const text = readStat();
+  if (text === null) return null;
+  const m = /^pgfault (\d+)$/m.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+export interface PlacementTripwire {
+  /** One line of the CLI's stdout (stream-json). */
+  onLine(line: string): void;
+  tripped(): boolean;
+}
+
+/** The Bash tool_use ids announced by an assistant line, and the number of Bash tool RESULTS a user line carries. Only Bash goes through the shell prefix: Read / Edit / Grep / MCP-tool results say nothing about the work leaf. */
+function bashEvents(line: string, bashIds: Set<string>): number {
+  let n = 0;
+  let o: unknown;
+  try {
+    o = JSON.parse(line);
+  } catch {
+    return 0;
+  }
+  const obj = o as { type?: string; message?: { content?: unknown }; tool_result?: unknown };
+  if (obj.tool_result && typeof obj.tool_result === 'object') return 1; // the stand-in CLI's shape: every tool it runs is a shell command
+  const content = Array.isArray(obj.message?.content) ? (obj.message?.content as Array<{ type?: string; id?: string; name?: string; tool_use_id?: string }>) : [];
+  for (const b of content) {
+    if (b?.type === 'tool_use' && b.name === 'Bash' && typeof b.id === 'string') {
+      bashIds.add(b.id);
+      if (bashIds.size > 400) bashIds.delete(bashIds.values().next().value as string);
+    } else if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string' && bashIds.has(b.tool_use_id)) {
+      bashIds.delete(b.tool_use_id);
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/**
+ * Runtime tripwire for what the start-time probe cannot prove (it injects the leaf into the wrapper's env itself): after `after` BASH tool results have come back from the CLI, the work leaf's page-fault counter must have
+ * moved past its post-probe baseline — if not, NO shell command ever ran in the work leaf (a CLI that drops the env, a version that no longer calls the prefix, a read-only cgroup.procs...) and the cap is nothing while the
+ * state reads `active`. Only Bash results count (a session that has only Read / Edit / Grep'd so far has run nothing through the prefix). Default `after` = 5: a few permission-denied commands run nothing. Fires `onTrip` ONCE.
+ * An unreadable counter never trips (unknown is not a verdict); it re-checks at later results, up to `giveUpAfter`.
+ */
+export function createPlacementTripwire(a: { baseline: number; readFaults: () => number | null; onTrip: (toolResults: number) => void; after?: number; giveUpAfter?: number }): PlacementTripwire {
+  const after = a.after ?? 5;
+  const giveUp = a.giveUpAfter ?? 40;
+  const bashIds = new Set<string>();
+  let results = 0;
+  let done = false;
+  let tripped = false;
+  return {
+    onLine(line) {
+      if (done || !(line.includes('"tool_use"') || line.includes('"tool_result"'))) return;
+      const n = bashEvents(line, bashIds);
+      if (n === 0) return;
+      results += n;
+      if (results < after) return;
+      const now = a.readFaults();
+      if (now === null) {
+        if (results >= giveUp) done = true;
+        return;
+      }
+      done = true;
+      if (now <= a.baseline) {
+        tripped = true;
+        a.onTrip(results);
+      }
+    },
+    tripped: () => tripped,
+  };
+}

@@ -50,11 +50,29 @@ test('the CLI is NOT moved: it starts where the keeper is (leaf k); the work lea
 
 test('the wrapper is PROBED at runtime before `active` is claimed: a probe that does not land in the work leaf downgrades the state to unprotected and says so', () => {
   const probeAt = setup.indexOf('probeToolPlacement({');
-  const stateAt = setup.indexOf("capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected'");
+  const stateAt = setup.indexOf("capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : !wrapperOk || !placed ? 'unprotected' : 'active'");
   assert.ok(probeAt > 0 && stateAt > probeAt, 'the probe runs BEFORE the state is decided');
   const block = setup.slice(probeAt, stateAt);
-  assert.match(block, /wrapper: cap\.wrapper,\n\s+workDir: dir,\n\s+cgroupRoot: CGROUP_ROOT,/);
-  assert.match(block, /if \(!probe\.ok\) \{\n\s+wrapperOk = false;/);
+  assert.match(block, /wrapper: cap\.wrapper as string,\n\s+workDir: dir,\n\s+cgroupRoot: CGROUP_ROOT,/);
+  assert.match(block, /if \(!probe\.ok\) \{\n      placed = false;/);
   assert.match(block, /NOTHING is capped at the hard level/);
-  assert.match(setup, /if \(wrapperOk && cap\.wrapper\) \{\n    const probe = /, 'only when a wrapper is in play');
+  assert.match(setup, /if \(wrapperOk && cap\.wrapper\) \{\n    const tryProbe = /, 'only when a wrapper is in play');
+});
+
+test('review m2 (#332 fu): a probe that still fails after ONE retry does NOT remove the prefix — the tools keep adj 1000 — only the STATE says unprotected, loudly', () => {
+  assert.match(setup, /let probe = tryProbe\(\);\n    if \(!probe\.ok\) probe = tryProbe\(\);/, 'one retry');
+  assert.match(setup, /if \(!probe\.ok\) \{\n      placed = false;/);
+  assert.doesNotMatch(setup.slice(setup.indexOf('let placed = true;'), setup.indexOf('placementTripwire = null;')), /wrapperOk = false/, 'the probe verdict never touches wrapperOk (the env builder keeps the prefix)');
+  assert.match(setup, /state: !swapOk \? 'not-applied' : !wrapperOk \|\| !placed \? 'unprotected' : 'active'/);
+  assert.match(setup, /they keep oom_score_adj \$\{OOM_ADJ_TOOLS\} through the prefix/);
+});
+
+test('review m2c (#332 fu): the placement TRIPWIRE is armed only for an `active` state, from the post-probe fault baseline, fed every stdout line of the CLI; tripping flips the state to unprotected and logs once', () => {
+  assert.match(setup, /if \(capInfo\.state === 'active'\) \{\n    const base = readLeafFaults\(/);
+  assert.match(setup, /placementTripwire = createPlacementTripwire\(\{\n\s+baseline: base,/);
+  assert.match(setup, /if \(capInfo\) capInfo = \{ \.\.\.capInfo, state: 'unprotected' \};/);
+  assert.match(setup, /TRIPWIRE — \$\{n\} Bash tool results came back/);
+  assert.match(setup, /after: intEnv\('ORCHESTRA_MEMCAP_TRIPWIRE_AFTER', 5\),/);
+  assert.match(startChild, /placementTripwire\?\.onLine\(line\);/);
+  assert.ok(setup.indexOf('tryProbe()') < setup.indexOf('createPlacementTripwire('), 'armed after the probe');
 });

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { appSliceDir, countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopePrefix, scopeSupport, userManagerDir, type ScopeEnv } from './memory-scope.ts';
+import { appSliceDir, countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, listScopeProcsOrThrow, memberScopes, readScopeMemory, scopePrefix, scopeSupport, userManagerDir, type ScopeEnv } from './memory-scope.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mscope-'));
 const cg = path.join(root, 'cgroup');
@@ -298,7 +298,9 @@ test('#332 leaves: a leaf that EXISTS but cannot be read is an error (no quiet u
   mkProc(7012, 7011, 'node-22', cgPathOf(path.join(scopeDir, 'w')));
   mkProc(7013, 1, 'python3', cgPathOf(path.join(scopeDir, 'w')));
   const e = env({ readFile: (p) => { if (p === path.join(scopeDir, 'k', 'cgroup.procs')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return fs.readFileSync(p, 'utf8'); } });
-  assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, e), [], 'unreadable ⇒ [] as for any unreadable scope (the Reliquat killer reads the file first and calls it UNKNOWN)');
+  assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, e), [], 'legacy contract: unreadable ⇒ [] — so a caller that must tell «nobody there» from «cannot look» uses listScopeProcsOrThrow');
+  assert.throws(() => listScopeProcsOrThrow({ cgroupDir: scopeDir, keeperPid: null }, null, e), (err: NodeJS.ErrnoException) => err.code === 'EACCES', 'review #332 m1: the same read THROWS the fs error (a swallowed leaf error read as «no member»: a Reliquat alive and unlisted)');
+  assert.deepEqual(listScopeProcsOrThrow({ cgroupDir: scopeDir, keeperPid: null }, null, env()).map((p) => p.pid).sort(), [7011, 7012, 7013], 'control: readable, identical to listScopeProcs');
   assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, env()).map((p) => p.pid).sort(), [7011, 7012, 7013], 'control: readable, the same scope lists all three');
   const flat = mkScope('orchestra-ws-flat-1ccccc.scope', { 'cgroup.procs': '7021\n' });
   mkProc(7021, 1, 'python3', cgPathOf(flat));

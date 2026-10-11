@@ -2,7 +2,7 @@
 // Consumers resolve a scope ONLY through FI-1's `memberScopes` / `readScopeMemory` / `listScopeProcs` (src/main/memory-scope.ts) — never a hard-coded slice path (FI-1.3); `[]` = not tracked,
 // and the member keeps today's process-tree figure. Read-only: it never signals, moves or stops anything (the Pause/stop tracks own that, FI-1.4). Electron-free: ids and the clock are injected.
 
-import { countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope } from './memory-scope.ts';
+import { countMemberScopes, listKeeperTreeOutsideScope, listScopeProcsOrThrow, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope } from './memory-scope.ts';
 import { scoped } from './logger.ts';
 import { buildMemberMemoryReport, memberViewFrom, type MemberMemoryReport, type MemberMemoryView, type ScopeReading } from '../shared/member-memory.ts';
 
@@ -45,7 +45,7 @@ export function realMemberMemoryDeps(ids: { workspaceIds(): string[]; liveMember
     liveMemberIds: ids.liveMemberIds,
     scopes: (wsId) => memberScopes(wsId),
     readMemory: (s) => readScopeMemory(s),
-    listProcs: (s) => listScopeProcs(s),
+    listProcs: (s) => listScopeProcsOrThrow(s), // throws on an unreadable scope or leaf ⇒ the reading's procs are null (unknown), never «no Reliquats»
     support: () => scopeSupportCached(), // 30 s cache (H1): the page polls every 2 s
     countScopes: () => countMemberScopes()?.total ?? null,
     escaped: (s) => listKeeperTreeOutsideScope(s),
@@ -102,10 +102,10 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
       }
       let procs: ScopeReading['procs'] = null;
       try {
-        // FI-1 `listScopeProcs` answers [] for a scope that vanished (and for one whose cgroup.procs it could not read): with the meter ALSO unreadable that is « gone », not « zero Reliquats » — unlisted
+        // `listScopeProcsOrThrow` THROWS on a scope or leaf it cannot read (⇒ procs null = unknown, never « zero Reliquats »); an unreadable meter (currentBytes null) is « gone » — unlisted
         procs = currentBytes === null ? null : d.listProcs(s);
       } catch (e) {
-        warnOnce(`listScopeProcs(${s.unit})`, e);
+        warnOnce(`listScopeProcsOrThrow(${s.unit})`, e);
       }
       // `s.keeperPid` is FI-1's own identity read (pid file, or — while the keeper has not written it yet — the scope's keeper.js process by argv); null = this member's keeper is NOT in this scope
       return { unit: s.unit, gen: s.gen, currentBytes, procs, keeperPid: s.keeperPid, maxBytes: mem?.maxBytes ?? null, capCurrentBytes: mem?.capCurrentBytes ?? null, workingSetBytes: mem?.workingSetBytes ?? null, peakBytes: mem?.peakBytes ?? null };

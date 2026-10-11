@@ -141,7 +141,7 @@ test('buildScopeLaunchArgv: new DELEGATED scope, OOMPolicy=continue, MemoryMax=h
 
 test('#332 leaves: the scope\'s limit is the hard level + a reserve (the work leaf must trip first); a leaf path maps back to its scope; only the two leaf names are leaves', () => {
   assert.equal(scopeMemoryMaxBytes(6 * GIB), 6 * GIB + KEEPER_LEAF_RESERVE_BYTES);
-  assert.ok(KEEPER_LEAF_RESERVE_BYTES >= 512 * 1024 * 1024, 'room for the keeper + the real CLI (≈330 MB) + its MCP servers: a smaller backstop would trip BEFORE the work leaf and take the session');
+  assert.ok(KEEPER_LEAF_RESERVE_BYTES >= 512 * 1024 * 1024, 'room for the keeper + the real CLI process (≈330 MB) + what starts without the prefix: a smaller backstop would trip BEFORE the work leaf and take the session');
   assert.equal(scopeMemoryMaxBytes(6 * GIB, 0), null, 'reserve 0 = no scope-level limit (rigs ≤ 300 MB)');
   assert.equal(scopeMemoryMaxBytes(6 * GIB, 100), 6 * GIB + 100);
   const env = (v?: string) => ({ [MEMCAP_RESERVE_ENV]: v });
