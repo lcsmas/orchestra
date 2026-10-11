@@ -588,7 +588,7 @@ test('the SIGTERM-ignoring fixture dies WITH its keeper — no teardown involved
 });
 
 test('teardown identity guard: a record whose start time no longer matches is NEVER signalled (a recycled pid is a stranger); a matching one is', async () => {
-  const idle = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+  const idle = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 30000)'], { detached: true, stdio: 'ignore' }); // 30 s cap: a dead runner leaves no decoy
   const stranger = idle();
   const target = idle();
   stranger.unref();
@@ -608,10 +608,63 @@ test('teardown identity guard: a record whose start time no longer matches is NE
   }
 });
 
+test('identity is a REAL start time (Z14): statOf().ticks is field 22 of /proc/<pid>/stat — non-zero, later for a later process, and a record carrying ANOTHER process\'s start time (a simulated pid reuse) is never signalled', async () => {
+  const idle = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 30000)'], { detached: true, stdio: 'ignore' });
+  const a = idle();
+  a.unref();
+  await sleep(120);
+  const b = idle();
+  b.unref();
+  await sleep(150);
+  const ia = identOf(a.pid as number) as Ident;
+  const ib = identOf(b.pid as number) as Ident;
+  try {
+    const raw = fs.readFileSync(`/proc/${a.pid}/stat`, 'utf8').split(') ').pop() as string; // everything after the comm
+    assert.equal(raw.split(' ')[18], '0', 'field 21 (itrealvalue) is 0 — the field a wrong index would read');
+    assert.notEqual(ia.ticks, '0', 'the identity is not the constant field 21');
+    assert.equal(ia.ticks, raw.split(' ')[19], 'it is field 22 (starttime)');
+    assert.ok(Number(ib.ticks) > Number(ia.ticks), 'the process started later has the later start time');
+    assert.equal(killIdent({ pid: ia.pid, ticks: ib.ticks }), false, 'a pid reused by a stranger (another start time) is never signalled');
+    assert.equal(identOf(ia.pid)?.ticks, ia.ticks, 'A is untouched');
+    assert.equal(killIdent(ia), true, 'the true identity is signalled');
+    await waitUntil(() => identOf(ia.pid)?.ticks !== ia.ticks, 3000, 'A is gone');
+  } finally {
+    killIdent(ia);
+    killIdent(ib);
+  }
+});
+
+test('statOf parses a comm that holds « ) » and spaces — from the LAST « ) » (Z10)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeper-test-comm-'));
+  const link = path.join(dir, 'x) S 9 9 )y'); // the kernel's comm is the basename the binary was exec'd under
+  fs.symlinkSync(process.execPath, link);
+  const p = spawn(link, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 30000)'], { detached: true, stdio: 'ignore' });
+  p.unref();
+  const id = await (async () => { for (let i = 0; i < 40; i++) { const x = identOf(p.pid as number); if (x) return x; await sleep(50); } return null; })();
+  try {
+    assert.ok(fs.readFileSync(`/proc/${p.pid}/stat`, 'utf8').includes('(x) S 9 9 )y)'), 'precondition: the comm really holds « ) » and spaces');
+    const s = statOf(p.pid as number);
+    assert.ok(s, 'parsed');
+    assert.match(s.state, /^[RSD]$/, 'the state is not a piece of the comm');
+    assert.equal(s.ppid, process.pid, 'ppid is this runner');
+    assert.match(s.ticks, /^[1-9]\d*$/, 'the start time is a number');
+  } finally {
+    if (id) killIdent(id);
+    await sleep(100);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('carrying refuses a short or empty dir (Z01) — it would match unrelated processes — through reap too; a real scratch-dir length is accepted', async () => {
+  for (const d of ['', '/', '/tmp', '/tmp/keeper']) assert.throws(() => carrying(d), /refusing to sweep/, JSON.stringify(d));
+  await assert.rejects(reap([], ['']), /refusing to sweep/);
+  assert.doesNotThrow(() => carrying('/tmp/keeper-test-does-not-exist-xyz'));
+});
+
 test('teardown reports what it could NOT kill: a respawner keeps carrying the dir ⇒ survivors > 0; once the respawner is gone ⇒ 0 (the survivor count is measured, not assumed)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeper-test-respawn-'));
   // the respawner does NOT carry `dir` in its argv; every child it forks does (`sh -c 'sleep 1; :' <dir>/x`: $0 stays in the argv — a bare `sleep 1` would be exec'd over it) — `reap` kills a child, a new one is there next round
-  const respawner = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process');setInterval(()=>{spawn('sh',['-c','sleep 1; :',process.env.RESPAWN_DIR+'/x'],{stdio:'ignore'}).unref()},50)`], { detached: true, stdio: 'ignore', env: { ...process.env, RESPAWN_DIR: dir } }); // the dir is in its ENVIRONMENT only: carrying(dir) reads argv, so the respawner itself is not swept
+  const respawner = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process');setInterval(()=>{spawn('sh',['-c','sleep 1; :',process.env.RESPAWN_DIR+'/x'],{stdio:'ignore'}).unref()},50);setTimeout(()=>process.exit(0),30000)`], { detached: true, stdio: 'ignore', env: { ...process.env, RESPAWN_DIR: dir } }); // the dir is in its ENVIRONMENT only: carrying(dir) reads argv, so the respawner itself is not swept
   respawner.unref();
   const id = identOf(respawner.pid as number) as Ident;
   try {
