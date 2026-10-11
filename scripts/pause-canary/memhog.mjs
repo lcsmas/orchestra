@@ -13,7 +13,7 @@ import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fleetSpec } from './ids.mjs';
-import { readSafe, ticks, ident, alive, cgOf, cgDir, eventsOf, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
+import { readSafe, ticks, ident, alive, scopeDirOfPid, oomKillFromDir, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
 import { MEMHOG_BARS, evaluateMemhogCycle, summarizeMemhogCycle, evaluateChainRun, chainVerdict, drillVerdict, memberToldWhy, coordinatorToldWhy, hogMarker, parseSwarm } from './memhog-bars.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -67,6 +67,7 @@ fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
 process.env.ORCHESTRA_HOME = home;
 process.env.HOME = home;
 process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX = UNIT_PREFIX;
+process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = '0';   // #332: disposable scopes stay ≤ 300 MB — no scope-level backstop, the WORK leaf carries the cap (ignored by a keeper without leaves)
 process.env.ORCHESTRA_KEEPER_LINGER_MS = '300000';
 const { assertScratch } = await import(`${REPO}/scripts/session-budget/scratch-guard.mjs`);
 const liveNames = fs.readdirSync(REAL_HOME).filter((n) => n.startsWith('.claude') || n.startsWith('.orchestra'));
@@ -332,15 +333,16 @@ try {
       sessions.set(w.id, st);
       await waitFor(() => initOf(st), 45_000);
       const kp = pidFilePid(w.id); const cliPid = initOf(st)?.pid ?? null;
-      const dir = kp ? cgDir(kp) : null;
-      const inScope = !!dir && path.basename(dir).startsWith(UNIT_PREFIX);
-      const oom0 = dir ? eventsOf(dir).oom_kill ?? 0 : 0;
+      const sdir = kp ? scopeDirOfPid(kp) : null;   // the scope itself, whether the keeper sits in it or in its keeper leaf (#332)
+      const inScope = !!sdir && path.basename(sdir).startsWith(UNIT_PREFIX);
+      const oomOf = () => oomKillFromDir(sdir) ?? undefined;   // re-resolved at each reading: the work leaf appears at keeper boot
+      const oom0 = sdir ? oomOf() ?? 0 : 0;
       let lastKills = 0; let done = 0; let lostAfter = null;
       for (let i = 0; i < CHAIN_N; i++) {
         await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (400 * 1024 * 1024)'`, `t-chain-${i}`, 30_000);
         done++;
         await sleep(CHAIN_GAP_MS);
-        const ev = alive(kp) && dir ? eventsOf(dir).oom_kill : undefined;
+        const ev = alive(kp) && sdir ? oomOf() : undefined;
         if (ev !== undefined) lastKills = ev - oom0;   // the last reading while the scope exists
         if (!alive(kp) || !alive(cliPid)) { lostAfter = lastKills; break; }
       }

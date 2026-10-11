@@ -130,6 +130,14 @@ export const MEMHOG_OS_MUTANTS = [
   ['os-ticks-wrong-field', ".split(' ')[19]", ".split(' ')[18]"],
   ['os-ancestors-two-hops', 'hops < 64', 'hops < 2'],
   ['os-rigprocesses-ticks-null', 'out.push({ pid, ticks: ticks(pid) });', 'out.push({ pid, ticks: null });'],
+  ['os-scopedir-leaves-not-stripped', "SCOPE_LEAVES.includes(path.basename(dir))", "false"],
+  ['os-scopedir-any-parent', "path.basename(path.dirname(dir)).endsWith('.scope')", "true"],
+  ['os-carrier-never-leaf', "scopeDir && exists(path.join(scopeDir, WORK_LEAF))", "false"],
+  ['os-facts-max-from-scope', "rd('memory.max', carrier)", "rd('memory.max', dir)"],
+  ['os-facts-layout-always-flat', "carrier === dir ? 'flat' : 'leaves'", "'flat'"],
+  ['os-oom-from-scope', "{ const d = capCarrierOf(scopeDir); return d ?", "{ const d = scopeDir; return d ?"],
+  ['os-oom-unreadable-zero', "eventsOf(d).oom_kill ?? null", "eventsOf(d).oom_kill ?? 0"],
+  ['os-leaf-names-wrong', "export const SCOPE_LEAVES = ['k', 'w'];", "export const SCOPE_LEAVES = ['k', 'x'];"],
   ['os-kill-marker-substring', "if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').split('\\0').includes(want)) continue;", "if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').includes(want)) continue;"],
 ].map(([name, find, replace]) => [name, find, replace, FO]);
 

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv } from '../../scripts/pause-canary/memhog-os.mjs';
+import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, SCOPE_LEAVES, WORK_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mhos-'));
 const home = path.join(base, 'rig', 'home');
@@ -184,4 +184,62 @@ test('the `leak` control holds the pid of the leftover itself: a detached `sleep
   killByIdentity(left, home);
   assert.equal(alive(leak.pid), true, 'teardown spared the planted leak');
   assert.ok(rigProcesses(home).some((p: { pid: number }) => p.pid === leak.pid), 'and the parent\'s survivors scan would see it');
+});
+
+// ── the scope LAYOUT (#332, Q9): flat scope or two leaves `k` (keeper + CLI) / `w` (tool commands, carries the hard level and the kill counter) — facts read from a FAKE cgroup tree of both shapes ──
+const cgTree = (name: string, files: Record<string, string>) => {
+  const root = path.join(base, 'cg', name);
+  for (const [rel, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
+  return root;
+};
+const UNIT = 'orchestra-rig-wh-h3-abcd1234-0000-4000-8000-000000000011-x.scope';
+const CAP = 268435456;
+const flat = () => cgTree('flat', { [`${UNIT}/memory.max`]: `${CAP}\n`, [`${UNIT}/memory.swap.max`]: '0\n', [`${UNIT}/memory.high`]: 'max\n', [`${UNIT}/memory.events`]: 'low 0\nhigh 0\nmax 3\noom 2\noom_kill 2\n' });
+const leaves = () => cgTree('leaves', {
+  [`${UNIT}/memory.max`]: 'max\n', [`${UNIT}/memory.swap.max`]: '0\n', [`${UNIT}/memory.high`]: 'max\n', [`${UNIT}/memory.events`]: 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n',
+  [`${UNIT}/k/memory.max`]: 'max\n', [`${UNIT}/k/memory.events`]: 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n',
+  [`${UNIT}/w/memory.max`]: `${CAP}\n`, [`${UNIT}/w/memory.events`]: 'low 0\nhigh 0\nmax 5\noom 4\noom_kill 4\n',
+});
+const noPolicy = { policyOf: () => 'continue' };
+
+test('scopeDirOf / capCarrierOf: the keeper\'s cgroup is the scope or one of its two leaves; the cap sits on the work leaf when there is one, else on the scope', () => {
+  const u = `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/${UNIT}`;
+  assert.equal(scopeDirOf(u), u, 'a flat scope');
+  assert.equal(scopeDirOf(`${u}/k`), u, 'the keeper leaf → its scope');
+  assert.equal(scopeDirOf(`${u}/w`), u, 'the work leaf → its scope');
+  assert.equal(scopeDirOf('/sys/fs/cgroup/user.slice/app.slice/k'), '/sys/fs/cgroup/user.slice/app.slice/k', 'a directory merely NAMED k outside a scope is left alone');
+  assert.equal(scopeDirOf(`${u}/other`), `${u}/other`);
+  assert.equal(scopeDirOf(null), null);
+  assert.equal(capCarrierOf(u, () => true), `${u}/w`);
+  assert.equal(capCarrierOf(u, () => false), u);
+  assert.equal(capCarrierOf(null), null);
+});
+
+test('scope facts from a FLAT scope and from a scope with LEAVES: memoryMax is the limit of the cgroup that carries the cap; swap / high / unit are the scope\'s; the layout is named', () => {
+  const f = scopeFactsFromDir(path.join(flat(), UNIT), 'orchestra-rig-wh-h3-', noPolicy);
+  assert.deepEqual({ inRig: f.inRig, unit: f.unit, memoryMax: f.memoryMax, swapMax: f.swapMax, high: f.high, layout: f.layout, policy: f.policy }, { inRig: true, unit: UNIT, memoryMax: CAP, swapMax: '0', high: 'max', layout: 'flat', policy: 'continue' });
+  const l = scopeFactsFromDir(path.join(leaves(), UNIT), 'orchestra-rig-wh-h3-', noPolicy);
+  assert.deepEqual({ inRig: l.inRig, unit: l.unit, memoryMax: l.memoryMax, swapMax: l.swapMax, high: l.high, layout: l.layout }, { inRig: true, unit: UNIT, memoryMax: CAP, swapMax: '0', high: 'max', layout: 'leaves' }, 'the scope\'s own memory.max is "max" (no backstop): the work leaf\'s limit is the one reported');
+  assert.equal(scopeFactsFromDir(path.join(leaves(), UNIT), 'some-other-prefix-', noPolicy).inRig, false);
+  const none = scopeFactsFromDir(null, 'orchestra-rig-wh-h3-', noPolicy);
+  assert.deepEqual({ unit: none.unit, memoryMax: none.memoryMax, layout: none.layout, policy: none.policy }, { unit: null, memoryMax: null, layout: null, policy: null }, 'no scope: nothing is invented');
+});
+
+test('the kill counter is the one of the cgroup that carries the cap: the work leaf\'s (4), never the keeper leaf\'s or the idle scope\'s (0); a flat scope\'s own', () => {
+  assert.equal(oomKillFromDir(path.join(leaves(), UNIT)), 4);
+  assert.equal(oomKillFromDir(path.join(flat(), UNIT)), 2);
+  assert.equal(oomKillFromDir(path.join(base, 'cg', 'does-not-exist')), null, 'unreadable counter is null, never 0');
+  assert.equal(oomKillFromDir(null), null);
+});
+
+test('the leaf names are pinned to the product\'s: src/shared/memory-scope.ts exports them (#332) or has no leaves yet — either way the harness\' pair is exactly k / w', () => {
+  assert.deepEqual([...SCOPE_LEAVES], ['k', 'w']);
+  assert.equal(WORK_LEAF, 'w');
+  const src = fs.readFileSync(fileURLToPath(new URL('../shared/memory-scope.ts', import.meta.url)), 'utf8');
+  if (src.includes('SCOPE_LEAF_WORK')) {
+    assert.match(src, /export const SCOPE_LEAF_KEEPER = 'k';/);
+    assert.match(src, /export const SCOPE_LEAF_WORK = 'w';/);
+  } else {
+    assert.ok(!src.includes('SCOPE_LEAVES'), 'a product without the SCOPE_LEAF_* constants has no half-defined leaves either');
+  }
 });

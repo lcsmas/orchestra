@@ -16,19 +16,36 @@ export const unitsNow = (glob) => (spawnSync('systemctl', ['--user', 'list-units
 export const unitActive = (unit) => !!unit && spawnSync('systemctl', ['--user', 'is-active', unit], { encoding: 'utf8' }).stdout.trim() === 'active';
 export const hostAvailGB = () => Number(/MemAvailable:\s+(\d+) kB/.exec(readSafe('/proc/meminfo') ?? '')?.[1] ?? 0) / 1048576;
 
-/** The scope facts of a keeper pid (null fields when it is in no scope / the pid is gone): what `scopeWhy` in memhog-bars.mjs judges. `unitPrefix` = the rig prefix a scope must carry. */
-export function scopeFactsOf(keeperPid, unitPrefix) {
-  const dir = keeperPid && alive(keeperPid) ? cgDir(keeperPid) : null;
+// ── the scope's LAYOUT (#332, Q9): a scope is flat (the keeper sits in it, one limit) or has two LEAVES — `k` (keeper + CLI, no limit) and `w` (the tool commands; carries the member's HARD level and its kill counters, the scope's own
+//    limit being only a backstop). Every reader below accepts BOTH: the keeper's cgroup is the scope or one of its leaves; the cgroup that CARRIES the cap is `<scope>/w` when it exists, else the scope.
+//    The leaf names are pinned against src/shared/memory-scope.ts (SCOPE_LEAVES) by pause-canary-memhog-os.test.ts as soon as that module has them.
+export const SCOPE_LEAVES = ['k', 'w'];
+export const WORK_LEAF = 'w';
+/** `.../<unit>.scope/<leaf>` → the scope's own directory; any other path is returned as is (a flat scope, a plain cgroup, null). */
+export const scopeDirOf = (dir) => (dir && SCOPE_LEAVES.includes(path.basename(dir)) && path.basename(path.dirname(dir)).endsWith('.scope') ? path.dirname(dir) : dir ?? null);
+/** The cgroup that carries the member's hard level and its `oom_kill` counter: the work leaf when the scope has one, else the scope itself. */
+export const capCarrierOf = (scopeDir, exists = fs.existsSync) => (scopeDir && exists(path.join(scopeDir, WORK_LEAF)) ? path.join(scopeDir, WORK_LEAF) : scopeDir ?? null);
+/** The scope directory of a (live) keeper pid, whether the keeper sits in the scope or in its keeper leaf; null when the pid is gone. */
+export const scopeDirOfPid = (pid) => { const d = pid && alive(pid) ? cgDir(pid) : null; return d ? scopeDirOf(d) : null; };
+
+/** The scope facts of a scope directory (null fields when it is in no scope): what `scopeWhy` in memhog-bars.mjs judges. `memoryMax` is the limit of the cgroup that CARRIES the cap (the work leaf when there is one), `swapMax`/`high`/policy
+ *  are the scope's (systemd sets them on the unit). `unitPrefix` = the rig prefix a scope must carry; `read`/`exists`/`policyOf` are injectable for the unit test. */
+export function scopeFactsFromDir(dir, unitPrefix, { read = readSafe, exists = fs.existsSync, policyOf = (u) => spawnSync('systemctl', ['--user', 'show', '-p', 'OOMPolicy', '--value', u], { encoding: 'utf8' }).stdout.trim() } = {}) {
   const unit = dir && dir.endsWith('.scope') ? path.basename(dir) : null;
-  const rd = (f) => (dir ? readSafe(path.join(dir, f))?.trim() ?? null : null);
+  const carrier = capCarrierOf(dir, exists);
+  const rd = (f, d = dir) => (d ? read(path.join(d, f))?.trim() ?? null : null);
+  const max = rd('memory.max', carrier);
   return {
-    inRig: !!unit && unit.startsWith(unitPrefix), unit, cgroup: dir ? cgOf(keeperPid) : null,
-    memoryMax: dir && rd('memory.max') !== null ? Number(rd('memory.max')) : null, swapMax: rd('memory.swap.max'), high: rd('memory.high'),
-    policy: unit ? spawnSync('systemctl', ['--user', 'show', '-p', 'OOMPolicy', '--value', unit], { encoding: 'utf8' }).stdout.trim() : null,
+    inRig: !!unit && unit.startsWith(unitPrefix), unit, cgroup: dir ? dir.replace(/^\/sys\/fs\/cgroup/, '') : null,
+    memoryMax: max !== null ? Number(max) : null, swapMax: rd('memory.swap.max'), high: rd('memory.high'),
+    layout: !dir ? null : carrier === dir ? 'flat' : 'leaves',
+    policy: unit ? policyOf(unit) : null,
   };
 }
-/** `oom_kill` of the keeper's cgroup (hierarchical memory.events), or null when unreadable. */
-export const oomKillOf = (keeperPid) => { const d = keeperPid && alive(keeperPid) ? cgDir(keeperPid) : null; return d ? eventsOf(d).oom_kill ?? null : null; };
+export const scopeFactsOf = (keeperPid, unitPrefix, deps) => scopeFactsFromDir(scopeDirOfPid(keeperPid), unitPrefix, deps);
+/** `oom_kill` of the cgroup that carries the cap (hierarchical `memory.events`), or null when unreadable — a flat scope's own counter, or the work leaf's (the keeper leaf's would always read 0). */
+export const oomKillFromDir = (scopeDir) => { const d = capCarrierOf(scopeDir); return d ? eventsOf(d).oom_kill ?? null : null; };
+export const oomKillOf = (keeperPid) => oomKillFromDir(scopeDirOfPid(keeperPid));
 
 /** The pid chain from `pid` up to init (the processes that LAUNCHED us — a wrapper carrying the scratch path in its argv is one of them and is never ours to signal). */
 export function ancestorsOf(pid = process.pid) {
