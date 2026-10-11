@@ -96,7 +96,7 @@ const results = [];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 // every page script runs inside a try/catch that RETURNS the page's own error (Electron only says « Script failed to execute »): the failing probe is named, not guessed
 async function ev(win, code) {
-  const r = await ev(win, '(async () => { try { return { v: await (' + code + ') }; } catch (e) { return { err: String((e && e.stack) || e) }; } })()');
+  const r = await win.webContents.executeJavaScript('(async () => { try { return { v: await (' + code + ') }; } catch (e) { return { err: String((e && e.stack) || e) }; } })()');
   if (r && r.err) throw new Error('page script threw: ' + r.err + ' :: ' + code.slice(0, 160));
   return r.v;
 }
