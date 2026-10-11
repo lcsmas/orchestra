@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, backstopCountersFromDir, keeperLogText, SCOPE_LEAVES, WORK_LEAF, KEEPER_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
+import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, backstopCountersFromDir, keeperLogText, hogProcesses, killHogs, ownPlacementWhy, SCOPE_LEAVES, WORK_LEAF, KEEPER_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mhos-'));
 const home = path.join(base, 'rig', 'home');
@@ -255,7 +255,7 @@ test('#343 counters from fake cgroup trees: the keeper leaf\'s, the scope\'s (hi
   assert.deepEqual(backstopCountersFromDir(path.join(f, UNIT)), { k: 0, scope: 2, work: 2, layout: 'flat' });
   assert.equal(backstopCountersFromDir(null), null);
   const broken = cgTree('bs-broken', { [`${UNIT}/memory.events`]: 'oom_kill 0\n', [`${UNIT}/w/memory.events`]: 'oom_kill 0\n' });   // the k leaf is missing its file
-  assert.deepEqual(backstopCountersFromDir(path.join(broken, UNIT)), { k: null, scope: 0, work: 0, layout: 'leaves' }, 'an unreadable counter is null, never 0');
+  assert.equal(backstopCountersFromDir(path.join(broken, UNIT)), null, 'ONE unreadable counter makes the whole reading null (never 0, never a half reading that could replace a good one)');
 });
 
 test('keeperLogText: the rotated .log.old comes first, then the current .log; a missing file reads as empty, never a throw', () => {
@@ -263,4 +263,54 @@ test('keeperLogText: the rotated .log.old comes first, then the current .log; a 
   assert.equal(keeperLogText(h, 'ws1'), '[keeper t] old\n\n[keeper t] new\n');
   assert.equal(keeperLogText(h, 'ws2'), '\n[keeper t] only\n');
   assert.equal(keeperLogText(h, 'nope'), '\n');
+});
+
+test('the FLOOR guard\'s hog selection (review 4, M1): only processes running swarm.py with their working directory under THE rig dir are listed and killed (identity re-read); a swarm.py elsewhere, a non-hog in the rig and a sibling rig whose dir merely starts with ours are left alone', async () => {
+  const rigDir = path.join(base, 'floorrig');
+  fs.mkdirSync(path.join(rigDir, 'wt-w1'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'floorrig-sibling', 'wt-w1'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'elsewhere'), { recursive: true });
+  const proc = (cwd: string, argv: string[]): ChildProcess => {
+    const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)', '--', ...argv], { cwd, stdio: 'ignore', detached: true });
+    kids.push(c);
+    return c;
+  };
+  const hog = proc(path.join(rigDir, 'wt-w1'), ['/repo/scripts/memory-cap/swarm.py', '1', '1174', '5', 'memhog-w1-c1']);
+  const hogChild = proc(path.join(rigDir, 'wt-w1'), ['swarm.py', '1', '1174', '5', 'memhog-w1-c1']);
+  const other = proc(path.join(rigDir, 'wt-w1'), ['not-a-hog.py']);
+  const elsewhere = proc(path.join(base, 'elsewhere'), ['swarm.py']);
+  const sibling = proc(path.join(base, 'floorrig-sibling', 'wt-w1'), ['swarm.py']);
+  await new Promise((r) => setTimeout(r, 400));
+  const listed = hogProcesses(rigDir).map((p: { pid: number }) => p.pid).sort();
+  assert.deepEqual(listed, [hog.pid, hogChild.pid].sort(), 'exactly the two hogs');
+  assert.ok(hogProcesses(rigDir).every((p: { ticks: string }) => typeof p.ticks === 'string'), 'each carries its identity');
+  const done = killHogs(rigDir);
+  assert.deepEqual(done.sort(), [hog.pid, hogChild.pid].sort());
+  assert.equal(await gone(hog.pid as number), true);
+  assert.equal(await gone(hogChild.pid as number), true);
+  for (const c of [other, elsewhere, sibling]) assert.equal(alive(c.pid), true);
+  assert.deepEqual(killHogs(rigDir), [], 'nothing left to stop');
+  // identity: a recycled pid (another start time) is not signalled
+  const hog2 = proc(path.join(rigDir, 'wt-w1'), ['swarm.py']);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(killHogs(rigDir, { readCmd: () => '', cwdOf: () => null }), [], 'the injected readers can say « no hog »: the selection is the readers\', not luck');
+  assert.equal(alive(hog2.pid), true);
+  // identity re-read at signal time: a pid whose start time changed between the listing and the kill (a recycled pid) is NOT signalled
+  let n = 0;
+  assert.deepEqual(killHogs(rigDir, { ticksOf: () => `t${n++}` }), [], 'listing saw t0, the kill saw t1: another process now');
+  assert.equal(alive(hog2.pid), true);
+  assert.deepEqual(killHogs(rigDir, { ticksOf: () => 'same' }), [hog2.pid], 'control: a stable identity is signalled');
+  assert.equal(await gone(hog2.pid as number), true);
+});
+
+test('ownPlacementWhy (review 4, m6): a rig must not be started from inside a member\'s scope leaf or at oom_score_adj > 0', () => {
+  const cg = (p: string) => `0::${p}\n`;
+  assert.equal(ownPlacementWhy({ cgroupText: cg('/user.slice/app.slice/app-orchestra-1.scope'), adjText: '0\n' }), null);
+  assert.equal(ownPlacementWhy({ cgroupText: cg('/user.slice/app.slice/u.scope'), adjText: '0' }), null, 'a flat scope is not a leaf');
+  assert.match(String(ownPlacementWhy({ cgroupText: cg('/user.slice/app.slice/orchestra-member-x.scope/w'), adjText: '0' })), /runs inside .*scope\/w/);
+  assert.match(String(ownPlacementWhy({ cgroupText: cg('/user.slice/app.slice/orchestra-member-x.scope/k'), adjText: '0' })), /runs inside/);
+  assert.equal(ownPlacementWhy({ cgroupText: cg('/user.slice/app.slice/work/w'), adjText: '0' }), null, 'a directory merely named w outside a scope');
+  assert.match(String(ownPlacementWhy({ cgroupText: cg('/x/u.scope'), adjText: '1000\n' })), /oom_score_adj is 1000/);
+  assert.match(String(ownPlacementWhy({ cgroupText: cg('/x/u.scope'), adjText: '' })), /unreadable/);
+  assert.match(String(ownPlacementWhy({ cgroupText: cg('/x/u.scope'), adjText: 'abc' })), /unreadable/);
 });

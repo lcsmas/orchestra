@@ -180,7 +180,7 @@ export function evaluateChainRun(r) {
   // a lost session counts as « the cap killed the chain » only if the CLI was seen up AND the loss followed a kernel kill or took the keeper (the scope's counter dies with it); a CLI that never initialised proves nothing (review 2, finding 6)
   const cliSeen = r.cliSeen === true;
   const lostByCap = lost && ((num(r.lostAfter) && r.lostAfter >= 1) || r.keeperAlive === false);
-  add('premise_chain_killed_tools', r.inScope === true && cliSeen && ((num(r.killsTotal) && r.killsTotal >= planned) || lostByCap), `${r.inScope === true ? 'capped scope' : 'NO capped scope'}; ${r.killsTotal ?? 'NOT MEASURED'} kernel kill(s) over ${r.done ?? '?'} of ${planned} tools${lost ? ' (session lost)' : ''}${cliSeen ? '' : '; the CLI never initialised'}${lost && !lostByCap ? '; lost with no kernel kill and the keeper alive' : ''}`);
+  add('premise_chain_killed_tools', r.inScope === true && cliSeen && ((num(r.killsTotal) && r.killsTotal >= planned) || lostByCap), `${r.inScope === true ? 'capped scope' : 'NO capped scope'}; ${r.killsTotal ?? 'NOT MEASURED'} kernel kill(s) over ${r.done ?? '?'} of ${planned} tools${lost ? ' (session lost)' : ''}${cliSeen ? '' : '; the CLI never initialised'}${lost && !lostByCap ? '; lost with no kernel kill and the keeper alive' : ''}`, { cliSeen, inScope: r.inScope === true });
   const alive = r.keeperAlive === true && r.cliAlive === true;
   add('q9:session_survives_chain', !lost && alive && r.answered === true && r.done === r.planned,
     lost ? `session LOST after ${r.lostAfter} kernel kill(s): keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}`
@@ -188,19 +188,25 @@ export function evaluateChainRun(r) {
     { lostAfter: lost ? r.lostAfter : null, alive });
   // #343: the chain must not trip the scope's backstop either (counted from the k leaf and the scope beyond the work leaf)
   const bs = backstopWhy({ backstop: r.backstop, session: { keeperAlive: r.keeperAlive, cliAlive: r.cliAlive } });
-  add('bar:no_backstop_kill', bs === null, bs ?? 'no k-leaf / beyond-work oom_kill, keeper + CLI alive', { backstop: r.backstop ?? null });
+  add('bar:no_backstop_kill', bs === null, bs ?? 'no k-leaf / beyond-work oom_kill, keeper + CLI alive', { backstop: r.backstop ?? null, episodes: !!r.backstop && (r.backstop.kLeafKills > 0 || r.backstop.beyondWorkKills > 0) });
   return checks;
 }
 
 /** The verdict over the chain exercise (its runs' checks): PASS = no run lost the session or tripped the backstop (a BAR since #332 closed Q9); FAIL = at least one did (a regression of #332 / #343); VOID = a run killed no tool chain (premise RED). */
 export function chainVerdict(runs) {
   if (!Array.isArray(runs) || runs.length === 0) return { verdict: 'VOID', detail: 'no chain run' };
-  const premiseRed = runs.filter((r) => r.some((c) => c.id === 'premise_chain_killed_tools' && !c.ok));
-  if (premiseRed.length) return { verdict: 'VOID', detail: `${premiseRed.length}/${runs.length} run(s) killed no tool chain (premise RED) — nothing measured` };
   const q9 = (r) => r.find((c) => c.id === 'q9:session_survives_chain');
   const bsOf = (r) => r.find((c) => c.id === 'bar:no_backstop_kill');
-  const lost = runs.filter((r) => q9(r)?.ok === false || bsOf(r)?.ok === false);
-  const how = (r) => (q9(r)?.ok === false ? (num(q9(r).lostAfter) ? `session lost after ${q9(r).lostAfter} kill(s)` : q9(r).alive === true ? 'alive but unresponsive' : 'cut short') : `backstop kill: ${clip(bsOf(r).detail, 90)}`);
+  const premiseOf = (r) => r.find((c) => c.id === 'premise_chain_killed_tools');
+  // a run missing a check it must carry measured nothing (review 4, m3: an empty run is not a PASS)
+  const incomplete = runs.filter((r) => !q9(r) || !bsOf(r) || !premiseOf(r));
+  if (incomplete.length) return { verdict: 'VOID', detail: `${incomplete.length}/${runs.length} run(s) carry no complete check set — nothing measured` };
+  // COUNTED backstop kills (a k-leaf / beyond-work oom_kill) are evidence whatever the premise says: a CLI killed by the backstop with the keeper alive and no work-leaf kill must not hide as a VOID (review 4, m3)
+  const counted = runs.filter((r) => bsOf(r).episodes === true);
+  const premiseRed = runs.filter((r) => !premiseOf(r).ok);
+  if (premiseRed.length && counted.length === 0) return { verdict: 'VOID', detail: `${premiseRed.length}/${runs.length} run(s) killed no tool chain (premise RED) — nothing measured` };
+  const lost = runs.filter((r) => q9(r).ok === false || bsOf(r).ok === false);
+  const how = (r) => (bsOf(r).episodes === true ? `backstop kill: ${clip(bsOf(r).detail, 90)}` : q9(r).ok === false ? (num(q9(r).lostAfter) ? `session lost after ${q9(r).lostAfter} kill(s)` : q9(r).alive === true ? 'alive but unresponsive' : 'cut short') : `backstop kill: ${clip(bsOf(r).detail, 90)}`);
   const detail = `${lost.length}/${runs.length} run(s) lost the session or tripped the scope backstop${lost.length ? ` (${lost.map(how).join('; ')})` : ''}`;
   return { verdict: lost.length > 0 ? 'FAIL' : 'PASS', detail };
 }
@@ -256,6 +262,7 @@ export function canaryWord({ hasMh, hasCh, mhVerdict, full, chV, chainSurvBad, l
   let word = hasMh ? (mhVerdict === 'PASS' && !full ? 'PARTIAL' : mhVerdict) : hasCh ? (chV === 'PASS' ? 'PASS' : chV === 'VOID' ? 'VOID' : 'FAIL') : 'NOT-RUN';
   if (hasMh && hasCh && chV !== 'PASS' && (word === 'PASS' || word === 'PARTIAL')) word = chV === 'VOID' ? 'VOID' : 'FAIL';
   if (!hasMh && (chainSurvBad || !liveOk)) word = 'FAIL';
+  if (hasCh && chV === 'FAIL') word = 'FAIL';   // a chain RED that was MEASURED is evidence: a VOID memhog drill never hides it (review 4, m2)
   return word;
 }
 /** Exit code of a verdict word: 0 PASS · 4 PARTIAL · 3 VOID / NOT-RUN (nothing measured) · 1 anything else (a bar is RED — never a retuned number). */

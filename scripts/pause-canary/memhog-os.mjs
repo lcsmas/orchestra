@@ -45,13 +45,14 @@ export function scopeFactsFromDir(dir, unitPrefix, { read = readSafe, exists = f
 }
 export const scopeFactsOf = (keeperPid, unitPrefix, deps) => scopeFactsFromDir(scopeDirOfPid(keeperPid), unitPrefix, deps);
 /** `oom_kill` of the cgroup that carries the cap (hierarchical `memory.events`), or null when unreadable — a flat scope's own counter, or the work leaf's (the keeper leaf's would always read 0). */
-/** #343: the `oom_kill` counters that tell a SCOPE-BACKSTOP episode from the work leaf's hard-level kills — {k (keeper leaf), scope (hierarchical: includes k and w), work (the cap carrier)}; any null = unreadable. A flat scope has no keeper leaf: k is 0 and the scope's counter IS the work one. */
+/** #343: the `oom_kill` counters that tell a SCOPE-BACKSTOP episode from the work leaf's hard-level kills — {k (keeper leaf), scope (hierarchical: includes k and w), work (the cap carrier)}; null = any counter unreadable. A flat scope has no keeper leaf: k is 0 and the scope's counter IS the work one. */
 export function backstopCountersFromDir(scopeDir, exists = fs.existsSync) {
   if (!scopeDir) return null;
   const kills = (d) => { const v = eventsOf(d).oom_kill; return Number.isFinite(v) ? v : null; };
   const leaves = exists(path.join(scopeDir, WORK_LEAF));
   const scope = kills(scopeDir);
-  return { k: leaves ? kills(path.join(scopeDir, KEEPER_LEAF)) : 0, scope, work: leaves ? kills(path.join(scopeDir, WORK_LEAF)) : scope, layout: leaves ? 'leaves' : 'flat' };
+  const c = { k: leaves ? kills(path.join(scopeDir, KEEPER_LEAF)) : 0, scope, work: leaves ? kills(path.join(scopeDir, WORK_LEAF)) : scope, layout: leaves ? 'leaves' : 'flat' };
+  return [c.k, c.scope, c.work].every(Number.isFinite) ? c : null;   // COMPLETE or nothing: a half reading must never replace the last good one (review 4, m1)
 }
 export const oomKillFromDir = (scopeDir) => { const d = capCarrierOf(scopeDir); return d ? eventsOf(d).oom_kill ?? null : null; };
 export const oomKillOf = (keeperPid) => oomKillFromDir(scopeDirOfPid(keeperPid));
@@ -101,3 +102,35 @@ export const standinCliEnv = (home, rssMb) => ({ PATH: process.env.PATH, HOME: h
 
 /** The keeper's own log of a workspace (`<ORCHESTRA_HOME>/keepers/<ws>.log`, with the rotated `.log.old` first): where the post-boot cap-state flips are written (#332-fu). */
 export const keeperLogText = (orchestraHome, wsId, read = readSafe) => ['.log.old', '.log'].map((x) => read(path.join(orchestraHome, 'keepers', `${wsId}${x}`)) ?? '').join('\n');
+
+/** The hog tools of a rig, for the FLOOR guard (review 4, M1): processes whose working directory lies under the rig dir (the workers' worktrees) and whose argv runs `swarm.py` — [{pid, ticks}]. */
+export function hogProcesses(rigDir, { readCmd = (pid) => readSafe(`/proc/${pid}/cmdline`), cwdOf = (pid) => { try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return null; } }, ticksOf = ticks } = {}) {
+  const out = [];
+  for (const name of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    const cwd = cwdOf(pid);
+    if (!cwd || !(cwd + path.sep).startsWith(rigDir + path.sep)) continue;
+    if ((readCmd(pid) ?? '').split('\0').some((a) => /(^|\/)swarm\.py$/.test(a))) out.push({ pid, ticks: ticksOf(pid) });
+  }
+  return out;
+}
+/** SIGKILL the rig's hog tools — identity (pid + start time) re-read at signal time. Returns the pids signalled. */
+export function killHogs(rigDir, deps = {}) {
+  const done = [];
+  const ticksOf = deps.ticksOf ?? ticks;
+  for (const { pid, ticks: t } of hogProcesses(rigDir, deps)) {
+    if (ticksOf(pid) !== t) continue;
+    try { process.kill(pid, 'SIGKILL'); done.push(pid); } catch { /* gone */ }
+  }
+  return done;
+}
+/** Am I inside a capped member's WORK leaf, or at oom_score_adj > 0? Then a rig started from here would sit in that leaf's limit / be the kernel's first victim (review 4, m6): null = fine, else why not. */
+export function ownPlacementWhy({ cgroupText = readSafe('/proc/self/cgroup'), adjText = readSafe('/proc/self/oom_score_adj') } = {}) {
+  const cg = (cgroupText ?? '').split('\n').find((l) => l.startsWith('0::'))?.slice(3) ?? '';
+  if (SCOPE_LEAVES.includes(path.basename(cg)) && path.basename(path.dirname(cg)).endsWith('.scope')) return `this process runs inside ${cg}: a rig started from here would live in that member scope's leaf`;
+  const adjRaw = String(adjText ?? '').trim();
+  if (!/^-?\d+$/.test(adjRaw)) return 'oom_score_adj unreadable';
+  const adj = Number(adjRaw);
+  return adj > 0 ? `oom_score_adj is ${adj}: the rig's processes would inherit it and be the kernel's first victims` : null;
+}

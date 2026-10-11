@@ -380,3 +380,27 @@ test('cap holds: a degradation line in the keeper log is RED on bar:cap_holds_af
   const d = evaluateMemhogCycle({ ...good(), workers: [worker(1), worker(2, { session: ses({ capDegradations: ['memory cap: TRIPWIRE — nothing is capped', 'x'] }) }), worker(3)] }).find((c: Check) => c.id === 'bar:cap_holds_after_kill')!.detail;
   assert.match(d, /w2: keeper\.log reports 2 degradation line\(s\): "memory cap: TRIPWIRE — nothing is capped"/);
 });
+
+test('review 4: a measured chain FAIL is never hidden by a VOID memhog drill; an empty or incomplete chain run is VOID, not PASS; COUNTED backstop kills outrank a premise RED (but a premise RED without counted kills stays VOID); a missing alive fact is RED', () => {
+  const w = (o: W) => canaryWord({ hasMh: true, hasCh: true, mhVerdict: 'PASS', full: true, chV: 'PASS', chainSurvBad: false, liveOk: true, ...o });
+  assert.equal(w({ mhVerdict: 'VOID', chV: 'FAIL' }), 'FAIL', 'm2');
+  assert.equal(w({ mhVerdict: 'VOID', chV: 'PASS' }), 'VOID');
+  assert.equal(w({ mhVerdict: 'VOID', chV: 'VOID' }), 'VOID');
+  assert.equal(w({ mhVerdict: 'FAIL', chV: 'FAIL' }), 'FAIL');
+  assert.equal(canaryWord({ hasMh: false, hasCh: true, mhVerdict: null, full: false, chV: 'FAIL', chainSurvBad: false, liveOk: true }), 'FAIL');
+  assert.equal(chainVerdict([[]]).verdict, 'VOID', 'm3: a run with no checks measured nothing');
+  assert.equal(chainVerdict([evaluateChainRun(chainRun()), []]).verdict, 'VOID');
+  const noBs = evaluateChainRun(chainRun()).filter((c: Check) => c.id !== 'bar:no_backstop_kill');
+  assert.equal(chainVerdict([noBs]).verdict, 'VOID', 'a run lacking the backstop check is incomplete');
+  // a CLI killed by the BACKSTOP: keeper alive, the work leaf saw no kill (premise RED), but k / the scope did
+  const bsKilled = evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 2, keeperAlive: true, cliAlive: false, answered: false, backstop: { kLeafKills: 1, beyondWorkKills: 1 } }));
+  assert.ok(red(bsKilled).includes('premise_chain_killed_tools'));
+  assert.equal(chainVerdict([bsKilled]).verdict, 'FAIL', 'counted backstop kills are evidence whatever the premise says');
+  assert.match(chainVerdict([bsKilled]).detail, /backstop kill/);
+  const noKill = evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 2, keeperAlive: true, cliAlive: false, answered: false }));
+  assert.equal(chainVerdict([noKill]).verdict, 'VOID', 'control: the same loss with ZERO counted kills is still a premise failure');
+  const ses = (o: W) => ({ keeperSame: true, cliSame: true, keeperAlive: true, cliAlive: true, answered: true, scopeActive: true, capState: 'active', ...o });
+  assert.match(String(backstopWhy(worker(1, { session: ses({ keeperAlive: undefined }) }))), /keeper dead/, 'unknown liveness is RED, never alive');
+  assert.match(String(backstopWhy(worker(1, { session: ses({ cliAlive: undefined }) }))), /CLI dead/);
+  assert.match(String(backstopWhy(worker(1, { session: undefined }))), /keeper dead, CLI dead/);
+});

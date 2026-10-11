@@ -17,6 +17,7 @@ import { makeMutantApp, MUTANTS } from './mutants.mjs';
 import { renderTable, BARS, mustFailVerdict } from './bars.mjs';
 import { renderMemhogTable } from './memhog-bars.mjs';
 import { memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB } from './memhog-app-facts.mjs';
+import { ownPlacementWhy } from './memhog-os.mjs';
 import { initBase } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +81,10 @@ if (REHEARSAL && !(MH_CAP_ON && Number(opt('members', '6')) === 1)) { say('PAUSE
 const EX0 = String(opt('exercise', '')).split(',').filter(Boolean);
 if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memhog-app runs ALONE (its own store settings, its own report shape)'); process.exit(2); }   // before ensureApp: a bad invocation must not cost a build
 // the Q11 envelope, checked HERE too (the same pure check the drive applies): a bad invocation must not cost a PACKAGED-app build first
+if (MH_ON) {
+  const placement = ownPlacementWhy();
+  if (placement) { say(`PAUSE-CANARY: VOID — ${placement}. Nothing was run.`); process.exit(3); }
+}
 if (MH_ON) {
   const capGb = Number(opt('cap-gb', '0.25'));
   const capOn = MH_CAP_ON;   // the proof's memhog-app arm is the cap-OFF control (its switch is the ARM's, not a flag): never the Q11 waiver path

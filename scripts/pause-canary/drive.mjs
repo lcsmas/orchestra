@@ -16,7 +16,7 @@ import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
 import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors, backstopDelta } from './memhog-bars.mjs';
 import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope, CAP_ON_START_GB } from './memhog-app-facts.mjs';
-import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir, keeperLogText } from './memhog-os.mjs';
+import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir, keeperLogText, killHogs, hostAvailGB } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -618,6 +618,19 @@ const sampler = setInterval(() => {
     voidReason = `${blowup ? `the RIG grew to ${rigMB.toFixed(0)} MB (mid-work baseline ${curBaselineMB.toFixed(0)} MB) while ` : ''}host below the bar for 3 samples: MemAvailable ${h.availGB.toFixed(2)} GB (< ${RUN_FLOOR_GB}) or load ${h.load1.toFixed(1)} (> ${MAX_LOAD})${rigMB !== null ? `; rig PSS ${rigMB.toFixed(0)} MB` : ''}`;
   }
 }, 5000);
+// FLOOR guard (D-Q15, review 4 M1): the 5 s / 3-sample rule above reacts in 10-15 s, a hog ramp is 12 s — for the packaged memory-hog run MemAvailable is read every 250 ms and the first reading under the floor
+// kills the rig's hog tools (swarm.py under the rig dir, identity re-read) and makes the run VOID, never a PASS.
+let floorTripped = false;
+const floorGuard = MH_APP ? setInterval(() => {
+  if (floorTripped || !curRig) return;
+  const a = hostAvailGB();
+  if (a >= RUN_FLOOR_GB) return;
+  floorTripped = true;
+  const killed = killHogs(curRig.H);
+  voidKind = 'host';
+  voidReason = `FLOOR: MemAvailable ${a.toFixed(2)} GB < ${RUN_FLOOR_GB} GB — the hog tools were stopped (${killed.length} process(es), by identity) and the run is VOID, never a PASS`;
+  say(`!! ${voidReason}`);
+}, 250) : null;
 const h0 = hostNow();
 say(`HOST-START MemAvailable ${h0.availGB.toFixed(2)} GB load ${h0.load1.toFixed(1)} swap used ${h0.swapUsedGB.toFixed(1)} GB`);
 if (h0.availGB < MIN_AVAIL_GB || h0.load1 > MAX_LOAD) { voidReason = `host below the bar at start: MemAvailable ${h0.availGB.toFixed(2)} GB (< ${MIN_AVAIL_GB}) or load ${h0.load1.toFixed(1)} (> ${MAX_LOAD})`; voidKind = 'host'; }
@@ -628,6 +641,7 @@ for (const ex of EXERCISES) {
   results.push(await runExercise(ex));
 }
 clearInterval(sampler);
+if (floorGuard) clearInterval(floorGuard);
 const after = liveSnapshot();
 const same = JSON.stringify(before) === JSON.stringify(after);
 say(`LIVE-AFTER same=${same}`);

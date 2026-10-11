@@ -257,3 +257,15 @@ test('run.mjs wiring of the labelled 1-member REHEARSAL (OPS 7313): one token an
   assert.match(run, /\.\.\.\(REHEARSAL \? \['--rehearsal'\] : \[\]\)/);
   assert.match(drive, /MH_ON_APP && !REHEARSAL \? CAP_ON_START_GB : MH_APP \? 9 : 0/);
 });
+
+test('wiring pins (review 4): the packaged driver reads MemAvailable every 250 ms and the first reading under the floor stops the hog tools and VOIDs the run; run.mjs refuses to start from inside a member leaf / at adj > 0', () => {
+  const drive = fs.readFileSync(new URL('../../scripts/pause-canary/drive.mjs', import.meta.url), 'utf8');
+  const run = fs.readFileSync(new URL('../../scripts/pause-canary/run.mjs', import.meta.url), 'utf8');
+  assert.match(drive, /const floorGuard = MH_APP \? setInterval\(\(\) => \{/);
+  assert.match(drive, /if \(a >= RUN_FLOOR_GB\) return;/);
+  assert.match(drive, /killHogs\(curRig\.H\)/);
+  assert.match(drive, /\}, 250\) : null;/);
+  assert.match(drive, /voidReason = `FLOOR: /);
+  assert.match(drive, /if \(floorGuard\) clearInterval\(floorGuard\);/);
+  assert.match(run, /const placement = ownPlacementWhy\(\);/);
+});
