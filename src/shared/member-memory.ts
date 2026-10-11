@@ -18,6 +18,8 @@ export interface ScopeReading {
   capCurrentBytes?: number | null;
   workingSetBytes?: number | null;
   peakBytes?: number | null;
+  /** #323-fu (review m2): FI-1 `readScopeMemory().limitApplied` — false = `memory.max` reads `max` (no limit applied on this scope), null/absent = unknown. */
+  limitApplied?: boolean | null;
 }
 
 /** #323: a member's usage against the cap its CURRENT session runs under — read from the scope that holds its keeper, so it is the limit the kernel really holds (not what the Garde mémoire window says now). */
@@ -56,6 +58,8 @@ export interface MemberMemoryView {
   outsideCount: number;
   /** #323: usage vs cap of the scope holding the member's keeper; null = no limit applied there (a scope that only carries leftovers, an uncapped scope), unreadable, or the keeper is in no scope. */
   cap: MemberCapView | null;
+  /** #323-fu (review m2): `'not-applied'` = the scope holding the member's keeper is READABLE and its `memory.max` reads `max` — a tracked member with NO limit (the mockup-A dim tooltip says why: no bar, never silence). null = capped (see `cap`), not tracked, no keeper scope, or the limit could not be read (unknown is never claimed as « not applied »). */
+  capNote: 'not-applied' | null;
 }
 
 /** How many Reliquats a member's view carries for display (the IPC payload stays small; the count is exact regardless). */
@@ -98,12 +102,22 @@ export function memberViewFrom(wsId: string, readings: readonly ScopeReading[], 
     outsideBytes: sum(outside.map((o) => (finite(o.rssBytes) ? o.rssBytes : 0))),
     outsideCount: outside.length,
     cap: capOf(readings),
+    capNote: capNoteOf(readings),
   };
+}
+
+/** The scope generation that HOLDS the member's keeper — the session's own; an older generation kept alive by Reliquats is never it. */
+const keeperReading = (readings: readonly ScopeReading[]): ScopeReading | undefined => readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);
+
+/** `'not-applied'` iff the keeper's scope has a finite meter AND explicitly reads « no limit » (never for an unreadable limit, a scope without the keeper, or a numeric cap). */
+function capNoteOf(readings: readonly ScopeReading[]): 'not-applied' | null {
+  const r = keeperReading(readings);
+  return r && finite(r.currentBytes) && r.limitApplied === false ? 'not-applied' : null;
 }
 
 /** The cap view of the scope that holds the keeper — the generation the member's live session runs in. An older generation kept alive by Reliquats has its own limit but is not the session's. */
 function capOf(readings: readonly ScopeReading[]): MemberCapView | null {
-  const r = readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);
+  const r = keeperReading(readings);
   if (!r || !finite(r.currentBytes) || !finite(r.maxBytes) || (r.maxBytes as number) <= 0) return null;
   return { unit: r.unit, hardBytes: r.maxBytes as number, billBytes: finite(r.capCurrentBytes) ? (r.capCurrentBytes as number) : r.currentBytes, workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null, peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: readings.length };
 }

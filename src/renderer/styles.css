@@ -5389,6 +5389,8 @@ button.danger-primary:active {
 .res-capbar.tone-crit .res-capbar-ws { background: var(--red); }
 .res-capbar > .res-capbar-soft { top: -2px; bottom: -2px; width: 1px; border-radius: 0; background: var(--text-dim); }
 /* Not a problem state: how many members run under a cap and which one is closest — information, dim. */
+/* a tracked member with NO limit on its scope: the figure is today's, a faint dotted underline says there is a (dim) tooltip — no bar, never silence (#323-fu, mockup A) */
+.res-cell.res-mem-nocap { cursor: help; text-decoration: underline dotted var(--text-dim); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .res-cap-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
 /* #331 (D-Q4 A'): browsers Orchestra stopped for this workspace since the app started — a RESOLVED count, history tone (the default grey chip), no status colour. Hidden at 0. */
 .res-chip.browsers { text-transform: none; letter-spacing: 0; }

@@ -352,6 +352,8 @@ export interface SessionGroup {
   scopeOnly: boolean;
   /** #323: usage against the cap this member's CURRENT session runs under (the limit the kernel holds on its keeper's scope); null = no cap applied / not scope-tracked / no live session. */
   cap: MemberCapView | null;
+  /** #323-fu (review m2): `'not-applied'` = this tracked member's session scope holds NO limit (dim tooltip, no bar); null otherwise. Live session rows only; absent from an older main. */
+  capNote?: 'not-applied' | null;
 }
 
 /**
@@ -395,6 +397,7 @@ export function groupSessionsByWorkspace(
       reliquats: view && view.reliquats !== null ? { count: view.reliquats, bytes: view.reliquatBytes ?? 0, partial: view.unlisted > 0, procs: view.reliquatProcs } : null,
       scopeOnly: false,
       cap: view?.cap ?? null,
+      capNote: view?.capNote ?? null,
     };
   });
   // #328: a member whose session is gone but whose scope still holds processes (the Reliquats) has no session row — give it one; its containers (if any) fold into the SAME row

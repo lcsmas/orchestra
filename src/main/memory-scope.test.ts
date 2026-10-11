@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseLimitApplied } from '../shared/memory-scope.ts';
 import { appSliceDir, countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, listScopeProcsOrThrow, memberScopes, readScopeMemory, scopePrefix, scopeSupport, userManagerDir, type ScopeEnv } from './memory-scope.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mscope-'));
@@ -171,10 +172,29 @@ test('keeperPid before the keeper wrote its pid file (it listens first): the sco
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
-  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
+  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, limitApplied: true, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
   assert.equal(readScopeMemory({ cgroupDir: path.join(APP, 'gone.scope') }, env()), null);
   fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.maxBytes, null, 'no limit reads as null — "tracked, uncapped"');
+});
+
+test('readScopeMemory (#323-fu, review m2): limitApplied tells « no limit » (memory.max = max) from « unreadable » — only the first is « not applied »', () => {
+  const dir = mkScope('orchestra-ws-wslim-aaaaaa.scope');
+  const lim = () => readScopeMemory({ cgroupDir: dir }, env())?.limitApplied;
+  assert.equal(lim(), true, 'a number: a limit is applied');
+  fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
+  assert.equal(lim(), false, '`max`: the kernel holds no limit');
+  fs.writeFileSync(path.join(dir, 'memory.max'), 'garbage\n');
+  assert.equal(lim(), null, 'unparseable ⇒ unknown, never « not applied »');
+  fs.writeFileSync(path.join(dir, 'memory.max'), '');
+  assert.equal(lim(), null, 'empty ⇒ unknown');
+  fs.rmSync(path.join(dir, 'memory.max'));
+  assert.equal(lim(), false, 'NO memory.max file at all (ENOENT, the cgroup still there): the controller never reached it, no limit CAN apply ⇒ « not applied » (OPS 7262)');
+  assert.equal(parseLimitApplied('max'), false);
+  assert.equal(parseLimitApplied(' max \n'), false);
+  assert.equal(parseLimitApplied('0'), true, 'a 0 limit is a (degenerate) limit, not « none »');
+  assert.equal(parseLimitApplied('maxx'), null);
+  assert.equal(parseLimitApplied('-1'), null);
 });
 
 test('readScopeMemory (FI-1 v1.11, #323): workingSetBytes = memory.current − inactive_file (R5); unreadable memory.stat is null, never the raw figure; never negative', () => {
@@ -392,3 +412,44 @@ test('#332 leaves × #323: the CAP figures (current / working set / peak) are th
   assert.equal(noCur.capCurrentBytes, null, 'a leaf whose memory.current cannot be read is UNKNOWN for the cap, never the scope\'s figure');
   assert.equal(noCur.workingSetBytes, null);
 });
+
+// ─── #323-fu × #332: limitApplied follows the CAP's cgroup (the work leaf `w`), never the scope's own backstop ─────────────────────────────
+
+const limitOf = (scopeDir: string, over: Partial<ScopeEnv> = {}) => {
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env(over));
+  return m === null ? null : { applied: m.limitApplied, max: m.maxBytes };
+};
+const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: simulated`), { code });
+
+test('#323-fu × #332 (1/3): a member CAPPED on its work leaf reads limitApplied TRUE with the leaf\'s number — and a leaf with NO cap reads FALSE although the scope itself carries a numeric backstop (the scope\'s own memory.max is NOT the answer)', () => {
+  const { scopeDir, wDir } = mkLeafScope('orchestra-ws-seam1-1aaaaa.scope', 7101, 7102, 7103);
+  assert.deepEqual(limitOf(scopeDir), { applied: true, max: 268435456 }, 'capped on w ⇒ the cap IS applied (so no « No memory cap applied » can ever show for this member)');
+  fs.writeFileSync(path.join(wDir, 'memory.max'), 'max\n');
+  assert.deepEqual(limitOf(scopeDir), { applied: false, max: null }, 'w says `max`: no cap, whatever the scope\'s backstop number says (reading the scope would have said TRUE)');
+  const scopeOwn = fs.readFileSync(path.join(scopeDir, 'memory.max'), 'utf8').trim();
+  assert.match(scopeOwn, /^\d+$/, 'precondition: the scope\'s own limit file holds a number — the trap');
+});
+
+test('#323-fu × #332 (2/3): w/memory.max ABSENT (ENOENT — a leaf without the controller) ⇒ limitApplied FALSE and maxBytes null (the cell shows); a flat scope with no memory.max file reads the same', () => {
+  const { scopeDir, wDir } = mkLeafScope('orchestra-ws-seam2-1bbbbb.scope', 7111, 7112, 7113);
+  fs.rmSync(path.join(wDir, 'memory.max'));
+  assert.deepEqual(limitOf(scopeDir), { applied: false, max: null });
+  const flat = mkScope('orchestra-ws-seam2flat-1ccccc.scope');
+  fs.rmSync(path.join(flat, 'memory.max'));
+  assert.deepEqual(limitOf(flat), { applied: false, max: null });
+});
+
+test('#323-fu × #332 (3/3): EACCES / EIO / any other failure on w/memory.max ⇒ limitApplied NULL (unknown — never « not applied »); ENOENT while the cgroup directory itself is gone (a scope that vanished mid-read) is unknown too', () => {
+  const { scopeDir, wDir } = mkLeafScope('orchestra-ws-seam3-1ddddd.scope', 7121, 7122, 7123);
+  const failing = (code: string, target: string) => limitOf(scopeDir, { readFile: (p) => { if (p === target) throw errno(code); return fs.readFileSync(p, 'utf8'); } });
+  const wMax = path.join(wDir, 'memory.max');
+  assert.deepEqual(failing('EACCES', wMax), { applied: null, max: null });
+  assert.deepEqual(failing('EIO', wMax), { applied: null, max: null });
+  assert.deepEqual(failing('EMFILE', wMax), { applied: null, max: null });
+  // ENOENT, and the cap cgroup directory is GONE by the time the error is judged (it existed when the cap cgroup was chosen): a vanished scope, not an absent controller ⇒ unknown
+  let wExistsAnswers = 0;
+  const vanished = limitOf(scopeDir, { readFile: (p) => { if (p === wMax) throw errno('ENOENT'); return fs.readFileSync(p, 'utf8'); }, exists: (p) => (p === wDir ? ++wExistsAnswers === 1 : fs.existsSync(p)) });
+  assert.deepEqual(vanished, { applied: null, max: null });
+  assert.ok(wExistsAnswers >= 2, 'precondition: exists(w) was asked twice — once to choose the cap cgroup, once to judge the ENOENT');
+});
+

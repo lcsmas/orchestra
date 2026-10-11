@@ -272,7 +272,7 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
           <div className="mg-section" data-mg-cap-section>
             <div className="mg-section-title">Plafond mémoire <span className="mg-section-sub">(per fleet member)</span></div>
             <div className="mg-cap-switch field-hint" data-mg-cap-switch={capSwitch ? (capSwitch.liveOn ? 'on' : 'off') : ''}>
-              {capSwitch ? capSwitch.text : '…'} — a per-run switch, frozen when the run starts; set it on the Bus page, not here.
+              {capSwitch ? capSwitch.text : '…'} — a per-run switch, frozen when the run starts; set it in « Fleet bus mechanisms » (the bus button in the header), not here.
             </div>
             <div className="field">
               <div className="field-head">

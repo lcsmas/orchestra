@@ -1,7 +1,7 @@
 // #323 self-gate — IN-PLACE mutation sweep of the Plafond mémoire UI + its data layer (D-Q10 A + A): the applied cap per member (FI-1 v1.11), the usage-vs-cap view logic, the Resources bar, the Memory guard window section.
 // Each mutant edits ONE clause of the real source, runs the unit + wiring suites AND the SSR render smoke (scripts/memcap-settings-render-smoke.mjs), and must turn red at least one NAMED test / smoke check.
 // Restored by byte-exact backup + `cmp` after every mutant; `git diff` of the mutated files must be empty at the end (commit first). NOT heavy (unit + SSR only; no app, browser, keeper or scope).
-// Run: node scripts/memcap-settings-mutants.mjs [--only M01,M02] [--check | --check-anchors]
+// Run: node scripts/memcap-settings-mutants.mjs [--only M01_ws_unreadable_is_raw_bill,M02_cap_from_any_scope] [--check | --check-anchors]
 // `expect` = a substring of a reddened unit test title, or `smoke:<check label>` for a failing smoke check — at least one MUST be red. `smoke: true` also runs the smoke.
 
 import fs from 'node:fs';
@@ -10,11 +10,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { descendantsOf, settleBackups } from './mutant-survivors.mjs';
+import { SWEEP_MARK_ENV, finishRunDir, makeRunDir, settleBackups, strayProcesses } from './mutant-survivors.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
-const BACKUP = path.join(os.homedir(), '.cache', 'h2-323', 'mutant-backup');
+const BACKUP_BASE = path.join(os.homedir(), '.cache', 'h2-323', 'mutant-backup');
+const RUN_TOKEN = `${process.pid}-${Date.now()}`;
+process.env[SWEEP_MARK_ENV] = RUN_TOKEN; // inherited by EVERY process this harness spawns (orphans included): the survivors line selects them by this marker, not by ancestry
+let BACKUP = ''; // THIS run's own scratch dir (created once a real sweep starts)
 const args = process.argv.slice(2);
 const KNOWN_FLAGS = new Set(['--only', '--check-anchors', '--check', '--no-rig']);
 const unknownFlags = args.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
@@ -23,7 +26,7 @@ if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must
   process.exit(2);
 }
 const dryCheck = args.includes('--check-anchors') || args.includes('--check');
-const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
+const only = args.includes('--only') && (args[args.indexOf('--only') + 1] ?? '') !== '' ? new Set(args[args.indexOf('--only') + 1].split(',')) : null; // a missing / empty value is refused below, never a crash
 const noRig = true;
 
 const SC = 'src/shared/memory-cap-view.ts';
@@ -38,12 +41,12 @@ const BAR = 'src/renderer/components/CapBar.tsx';
 const RV = 'src/renderer/components/ResourcesView.tsx';
 const WIN = 'src/renderer/components/MemoryGuardSettings.tsx';
 const BP = 'src/main/bus-pane.ts';
-const TESTS = ['src/shared/memory-cap-view.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/shared/member-memory.test.ts', 'src/main/member-memory.test.ts', 'src/main/memory-scope.test.ts', 'src/shared/resources.test.ts', 'src/main/memcap-settings-wiring.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/member-memory-wiring.test.ts', 'src/main/bus-pane.test.ts'];
+const TESTS = ['src/shared/memory-cap-view.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/shared/member-memory.test.ts', 'src/main/member-memory.test.ts', 'src/main/memory-scope.test.ts', 'src/shared/resources.test.ts', 'src/main/memcap-settings-wiring.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/member-memory-wiring.test.ts', 'src/main/bus-pane.test.ts', 'src/main/mutant-survivors.test.ts'];
 
 const MUTANTS = [
   // ── the applied cap per member (FI-1 v1.11 → member view → row) ──
   { id: 'M01_ws_unreadable_is_raw_bill', file: MS, find: "        return null; // unreadable ⇒ unknown, not « the raw figure »", to: "        return current;", expect: ['readScopeMemory (FI-1 v1.11, #323)'] },
-  { id: 'M02_cap_from_any_scope', file: SM, find: "const r = readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);", to: "const r = readings[0];", expect: ["C2 (#323) cap is the keeper"] },
+  { id: 'M02_cap_from_any_scope', file: SM, find: "readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);", to: "readings[0];", expect: ["C2 (#323) cap is the keeper", "C3 (#323-fu, review m2) capNote"] },
   { id: 'M03_zero_limit_is_a_cap', file: SM, find: "|| (r.maxBytes as number) <= 0) return null;", to: "|| (r.maxBytes as number) < 0) return null;", expect: ["C2 (#323) cap is the keeper"] },
   { id: 'M04_unreadable_meter_is_zero_usage', file: SM, find: "if (!r || !finite(r.currentBytes) || !finite(r.maxBytes)", to: "if (!r || !finite(r.maxBytes)", expect: ["C2 (#323) cap is the keeper"] },
   { id: 'M05_junk_working_set_kept', file: SM, find: "workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null,", to: "workingSetBytes: (r.workingSetBytes as number | null) ?? null,", expect: ["C2 (#323) cap is the keeper"] },
@@ -137,8 +140,60 @@ const MUTANTS = [
   { id: 'G02_measured_viewport_not_asserted', file: 'scripts/memcap-screenshot.mjs', find: "m.vw === f.vw && m.vh === f.vh, `measured", to: "true, `measured", expect: ['SWAY GATE (OPS review m3)'] },
   { id: 'G03_png_size_not_asserted', file: 'scripts/memcap-screenshot.mjs', find: "!!pp && pp.w === f.vw && pp.h === f.vh,", to: "!!pp,", expect: ['SWAY GATE (OPS review m3)'] },
   { id: 'G04_a_viewport_dropped', file: 'scripts/memcap-screenshot.mjs', find: "[[1440, 900], [1920, 1080], [1280, 640]]", to: "[[1440, 900], [1920, 1080]]", expect: ['SWAY GATE (OPS review m3)'] },
+  // ── follow-up round (#323-fu): m2 « not applied », m5 wording ──
+  { id: 'N01_max_read_as_applied', file: 'src/shared/memory-scope.ts', find: "  if (v === 'max') return false;", to: "  if (v === 'max') return true;", expect: ['limitApplied tells'] },
+  { id: 'N02_garbage_read_as_not_applied', file: 'src/shared/memory-scope.ts', find: "return /^\\d+$/.test(v) ? true : null;", to: "return /^\\d+$/.test(v) ? true : false;", expect: ['limitApplied tells'] },
+  { id: 'N03_unreadable_limit_read_as_not_applied', file: MS, find: "    limitFileAbsent = (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "    limitFileAbsent = true;", expect: ['#323-fu × #332 (3/3)', 'P18 (#323-fu × #332)'] },
+  { id: 'N04_producer_drops_limit_applied', file: PM, find: "peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null };", to: "peakBytes: mem?.peakBytes ?? null, limitApplied: null };", expect: ['P17 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
+  { id: 'N05_note_without_an_explicit_max', file: SM, find: "r.limitApplied === false ? 'not-applied' : null", to: "r.limitApplied !== true ? 'not-applied' : null", expect: ['C3 (#323-fu'] },
+  { id: 'N06_note_on_an_unreadable_meter', file: SM, find: "return r && finite(r.currentBytes) && r.limitApplied === false", to: "return r && r.limitApplied === false", expect: ['C3 (#323-fu'] },
+  { id: 'N07_note_not_carried_to_the_row', file: SR, find: "      capNote: view?.capNote ?? null,\n", to: "", expect: ['G14 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
+  { id: 'N08_note_cell_without_the_tooltip', file: RV, find: "title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\"", to: "data-res-nocap=\"\"", expect: ['smoke:#323-fu (m2): a tracked member whose scope has NO limit', '#323-fu m2: the « not applied » note travels'], smoke: true },
+  { id: 'N09_tooltip_claims_a_cause', file: SC, find: "so nothing stops it at the hard level.'", to: "so nothing stops it at the hard level, because the Plafond mémoire is disabled.'", expect: ['smoke:#323-fu (m2): the tooltip does not claim a cause'], smoke: true },
+  { id: 'N10_note_cell_without_the_dotted_cue', file: 'src/renderer/styles.css', find: "cursor: help; text-decoration: underline dotted var(--text-dim);", to: "", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'N11_note_on_the_capped_branch_order', file: RV, find: "{row.cap ? (", to: "{row.capNote === 'not-applied' ? (<span className=\"res-cell res-mem-nocap\" title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\">{formatBytes(row.memBytes)}</span>) : row.cap ? (", expect: ['#323-fu m2: the « not applied » note travels', 'RESOURCES: the snapshot carries the levels NOW'], smoke: true },
+  { id: 'N12_window_points_at_the_bus_page', file: WIN, find: "set it in « Fleet bus mechanisms » (the bus button in the header), not here.", to: "set it on the Bus page, not here.", expect: ['#323-fu m5', 'smoke:it says where the switch IS set'], smoke: true },
+  // ── the survivors instrument itself (review m1/m2): it must be able to say FAIL ──
+  { id: 'V20_marker_prefix_match', file: 'scripts/mutant-survivors.mjs', find: "if (!env.includes(needle)) continue;", to: "if (!env.some((e) => e.startsWith(needle))) continue;", expect: ['markedProcesses over a fake /proc'] },
+  { id: 'V21_strays_only_descendants', file: 'scripts/mutant-survivors.mjs', find: "return [...new Set([...descendantsOf(rootPid, procDir), ...markedProcesses(token, procDir, rootPid)])]", to: "return [...new Set([...descendantsOf(rootPid, procDir)])]", expect: ['markedProcesses / strayProcesses: an ORPHAN'] },
+  { id: 'V22_marker_counts_zombies', file: 'scripts/mutant-survivors.mjs', find: "if (/^\\d+ \\(.*\\) Z /s.test(stat)) continue;", to: "", expect: ['markedProcesses over a fake /proc'] },
+  { id: 'V23_marker_counts_self', file: 'scripts/mutant-survivors.mjs', find: "if (!/^\\d+$/.test(n) || Number(n) === self) continue;", to: "if (!/^\\d+$/.test(n)) continue;", expect: ['markedProcesses over a fake /proc'] },
+  { id: 'V24_run_dir_not_unique', file: 'scripts/mutant-survivors.mjs', find: "const dir = path.join(base, `run-${pid}-${now}`);", to: "const dir = path.join(base, 'run');", expect: ['per-run scratch'] },
+  { id: 'V25_run_dir_never_removed', file: 'scripts/mutant-survivors.mjs', find: "if (left === 0) fs.rmSync(dir, { recursive: true, force: true });", to: "", expect: ['per-run scratch'] },
+  { id: 'V26_unrestored_backup_deleted', file: 'scripts/mutant-survivors.mjs', find: "    if (same) fs.rmSync(full, { force: true });\n    else left++;", to: "    fs.rmSync(full, { force: true });", expect: ['settleBackups', 'per-run scratch'] },
+  { id: 'V27_empty_token_selects_everything', file: 'scripts/mutant-survivors.mjs', find: "if (!token) throw new Error(", to: "if (false) throw new Error(", expect: ['markedProcesses / strayProcesses: an ORPHAN'] },
+  // ── pre-review round of the follow-up ──
+  { id: 'N13_note_cell_without_aria_label', file: RV, find: " aria-label={`${formatBytes(row.memBytes)} — ${CAP_NOT_APPLIED_TIP}`}", to: "", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
+  { id: 'N14_note_cell_not_focusable', file: RV, find: " tabIndex={0} role=\"note\"", to: " role=\"note\"", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
+  { id: 'N15_dotted_cue_loses_its_hairline', file: 'src/renderer/styles.css', find: " text-decoration-thickness: 1px; text-underline-offset: 3px; }", to: " }", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'N16_dotted_cue_loses_its_dim_colour', file: 'src/renderer/styles.css', find: "text-decoration: underline dotted var(--text-dim);", to: "text-decoration: underline dotted;", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'N17_remote_row_reads_a_local_view', file: SR, find: "const view = remote ? undefined : viewFor(members, key);", to: "const view = viewFor(members, key);", expect: ['G14 (#323-fu'] },
+  { id: 'N18_undefined_keeper_counts_as_the_keeper', file: SM, find: "readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);", to: "readings.find((x) => x.keeperPid !== null);", expect: ['C3 (#323-fu'] },
+  { id: 'N19_applied_flag_dropped_at_the_single_read', file: MS, find: "limitApplied: limitText !== null ? parseLimitApplied(limitText) : limitFileAbsent ? false : null,", to: "limitApplied: null,", expect: ['limitApplied tells', '#323-fu m2: the « not applied » note travels'] },
+  { id: 'N20_max_bytes_and_applied_read_apart', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: lim('memory.max'),", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'V28_strays_only_the_marker', file: 'scripts/mutant-survivors.mjs', find: "return [...new Set([...descendantsOf(rootPid, procDir), ...markedProcesses(token, procDir, rootPid)])]", to: "return [...new Set([...markedProcesses(token, procDir, rootPid)])]", expect: ['strayProcesses = marked ∪ descendants'] },
+  { id: 'V29_baseline_helper_removes_the_run_dir', file: 'scripts/mutant-survivors.mjs', find: "export function settleBackups(dir, sourceOf) {", to: "export function settleBackups(dir, sourceOf) {\n  process.nextTick(() => { try { if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir); } catch { /* */ } });", expect: ['the sweep harness measures scratch MID-run'] },
+  // ── the #332 seam (OPS 7262): limitApplied follows the CAP cgroup; absent ⇒ false; EACCES/EIO/vanished ⇒ null ──
+  { id: 'Z01_limit_read_from_the_scope_not_the_cap_cgroup', file: MS, find: "limitText = e.readFile(path.join(capDir, 'memory.max'));", to: "limitText = e.readFile(path.join(d, 'memory.max'));", expect: ['#323-fu × #332 (1/3)', 'P18 (#323-fu × #332)'] },
+  { id: 'Z02_absent_limit_file_stays_unknown', file: MS, find: "limitApplied: limitText !== null ? parseLimitApplied(limitText) : limitFileAbsent ? false : null,", to: "limitApplied: limitText !== null ? parseLimitApplied(limitText) : null,", expect: ['#323-fu × #332 (2/3)', 'P18 (#323-fu × #332)', 'readScopeMemory (#323-fu, review m2)'] },
+  { id: 'Z03_any_read_error_counts_as_absent', file: MS, find: "(err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "e.exists(capDir);", expect: ['#323-fu × #332 (3/3)', 'P18 (#323-fu × #332)'] },
+  { id: 'Z04_vanished_scope_counts_as_absent', file: MS, find: "(err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "(err as NodeJS.ErrnoException | null)?.code === 'ENOENT';", expect: ['#323-fu × #332 (3/3)'] },
+  { id: 'Z05_max_bytes_from_the_scope_again', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: lim('memory.max'),", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'Z06_absent_limit_file_reads_a_stale_number', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: limitText === null ? (limitFileAbsent ? 1 : null) : parseCgroupLimit(limitText),", expect: ['#323-fu × #332 (2/3)'] },
 ];
 
+// `--only` takes EXACT mutant ids: an unknown / missing id used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 (OPS review, #323 m3) — now exit 2, nothing run.
+{
+  const i = args.indexOf('--only');
+  const value = i >= 0 ? args[i + 1] : undefined;
+  if (i >= 0 && (value === undefined || value.startsWith('-') || value === '')) { console.error('REFUSING: --only needs a comma-separated list of EXACT mutant ids — NOTHING was run.'); process.exit(2); }
+  if (only && [...only].some((id) => id.trim() === '')) { console.error('REFUSING: --only has an EMPTY id (a stray comma?) — NOTHING was run.'); process.exit(2); }
+  const unknown = only ? [...only].filter((id) => !MUTANTS.some((m) => m.id === id)) : [];
+  if (unknown.length) {
+    console.error(`REFUSING: unknown mutant id(s) ${unknown.join(', ')} — NOTHING was run (ids are exact, e.g. ${MUTANTS[0].id}).`);
+    process.exit(2);
+  }
+}
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 500_000, ...opts });
 
@@ -158,9 +213,11 @@ function smokeRed() {
 }
 function rigRed() { return { red: [], pass: 0, line: '(no rig in this harness)' }; }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
-// MEASURED (gate c/6112245304: these used to return the constant 0): live descendants of THIS harness, and backups that were not proven restored (identical backups are cleaned, the rest counted)
-const strays = () => descendantsOf(process.pid).length;
-const scratchLeft = () => settleBackups(BACKUP, (id) => path.join(REPO, MUTANTS.find((m) => m.id === id)?.file ?? '/nonexistent'));
+// MEASURED (gate c/6112245304: these used to return the constant 0): everything of THIS run still alive (marker + descendants, review m1) and THIS run's own backups not proven restored (identical ones cleaned, the rest counted; per-run dir, review m2)
+const strays = () => strayProcesses(process.pid, RUN_TOKEN).length;
+const sourceOfBackup = (id) => path.join(REPO, MUTANTS.find((m) => m.id === id)?.file ?? '/nonexistent');
+const scratchLeft = () => settleBackups(BACKUP, sourceOfBackup); // mid-run (the baseline reads it): settles, NEVER removes the run dir — the next mutant still writes there
+const scratchFinish = () => finishRunDir(BACKUP, sourceOfBackup); // END of run only; per RUN: another run's backups are never read, counted or deleted
 
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
 // a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
@@ -175,7 +232,7 @@ if (dryCheck) {
   console.log(`ANCHORS: ${MUTANTS.length - bad}/${MUTANTS.length} resolve exactly once`);
   process.exit(bad ? 1 : 0);
 }
-fs.mkdirSync(BACKUP, { recursive: true }); // scratch exists only for a real sweep, never for the dry check
+BACKUP = makeRunDir(BACKUP_BASE); // scratch exists only for a real sweep, never for the dry check
 
 const files = [...new Set(MUTANTS.map((m) => m.file))];
 const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/memcap-settings-mutants.mjs', 'scripts/memcap-settings-render-smoke.mjs']).status !== 0;
@@ -229,7 +286,7 @@ const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
 const post = unitRed();
 for (const r of rows) console.log(`${r.verdict.padEnd(30)} ${r.id.padEnd(40)} ${r.detail}`);
 const killed = rows.filter((r) => r.verdict === 'KILLED').length;
-const sv = strays(); const sc = scratchLeft();
+const sv = strays(); const sc = scratchFinish();
 console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} · survivors: rig processes=${sv} scratch dirs=${sc}`);
 console.log(`MUTANTS: ${killed}/${rows.length} killed by their NAMED test/arm${rows.length === killed ? '' : ` — NOT ALL: ${rows.filter((r) => r.verdict !== 'KILLED').map((r) => `${r.id}=${r.verdict}`).join(', ')}`}`);
 process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && sv === 0 && sc === 0 ? 0 : 1);

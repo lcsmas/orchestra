@@ -38,7 +38,7 @@ test('RESOURCES: the snapshot carries the levels NOW; the table gets them and th
   const v = codeOf('src/renderer/components/ResourcesView.tsx');
   assert.ok(/capLine=\{capSummaryLine\(rows\.map\(\(r\) => \(\{ key: r\.key, name: r\.ws \? r\.ws\.branch : r\.fallbackName, cap: r\.cap \}\)\)\)\}/.test(v));
   assert.ok(/capLevels=\{snap\?\.capLevels \?\? null\}/.test(v));
-  assert.ok(/\{row\.cap \? \(\s*<span className="res-cell res-mem">\s*\{formatBytes\(row\.memBytes\)\}\s*<CapBar cap=\{row\.cap\} levels=\{capLevels\} \/>\s*<\/span>\s*\) : \(\s*<span className="res-cell">\{formatBytes\(row\.memBytes\)\}<\/span>\s*\)\}/.test(v), 'capped ⇒ figure + bar; else today\'s cell');
+  assert.ok(/\{row\.cap \? \(\s*<span className="res-cell res-mem">\s*\{formatBytes\(row\.memBytes\)\}\s*<CapBar cap=\{row\.cap\} levels=\{capLevels\} \/>\s*<\/span>\s*\) : row\.capNote === 'not-applied' \? \(\s*<span className="res-cell res-mem-nocap"[^>]*>\s*\{formatBytes\(row\.memBytes\)\}\s*<\/span>\s*\) : \(\s*<span className="res-cell">\{formatBytes\(row\.memBytes\)\}<\/span>\s*\)\}/.test(v), 'capped ⇒ figure + bar; not applied ⇒ figure + dim tooltip; else today\'s cell');
   assert.ok(/<CapBar cap=\{row\.cap\} levels=\{capLevels\} \/>/.test(v) && !/<CapBar[^>]*scopeOnly/.test(v));
   const g = codeOf('src/shared/resources.ts');
   assert.ok(/cap: view\?\.cap \?\? null,/.test(g) && /scopeOnly: true, cap: null/.test(g) && /scopeOnly: false, cap: null/.test(g), 'only a live session row carries a cap');
@@ -90,4 +90,31 @@ test('SWAY GATE (OPS review m3): the three viewports are IMPOSED by CDP and the 
   assert.ok(/m\.vw === f\.vw && m\.vh === f\.vh/.test(g), 'the measured innerWidth x innerHeight is compared with the request, for EVERY state');
   assert.ok(/pp\.w === f\.vw && pp\.h === f\.vh/.test(g), 'and the decoded capture has the requested size');
   assert.ok(/Page\.captureScreenshot/.test(g), 'the capture is the emulated viewport, not the tiled window');
+});
+
+test('#323-fu m2: the « not applied » note travels FI-1 limitApplied → ScopeReading → member view capNote → SessionGroup.capNote → the dim tooltip cell (after the capped branch, before the plain one)', () => {
+  const fi1 = codeOf('src/main/memory-scope.ts');
+  assert.ok(/limitText = e\.readFile\(path\.join\(capDir, 'memory\.max'\)\);/.test(fi1), 'FI-1 reads memory.max ONCE, from the CAP cgroup (the work leaf when there is one — #332), never the scope\'s own backstop …');
+  assert.ok(/maxBytes: limitText === null \? null : parseCgroupLimit\(limitText\),\s*limitApplied: limitText !== null \? parseLimitApplied\(limitText\) : limitFileAbsent \? false : null,/.test(fi1), '… and that one read feeds BOTH the number and the applied/not-applied/unknown tri-state (a change of the cap\'s cgroup moves them together); an ABSENT file ⇒ false, any other failure ⇒ null');
+  assert.ok(/limitFileAbsent = \(err as NodeJS\.ErrnoException \| null\)\?\.code === 'ENOENT' && e\.exists\(capDir\);/.test(fi1), 'only ENOENT while the cap cgroup still exists counts as « absent » (EACCES/EIO/a vanished scope stay unknown)');
+  assert.ok(/limitApplied: mem\?\.limitApplied \?\? null/.test(codeOf('src/main/member-memory.ts')), 'the producer carries it into the reading');
+  const sm = codeOf('src/shared/member-memory.ts');
+  assert.ok(/r\.limitApplied === false \? 'not-applied' : null/.test(sm) && /capNote: capNoteOf\(readings\)/.test(sm), 'the view derives the note from the keeper scope, only on an explicit « max »');
+  assert.ok(/capNote: view\?\.capNote \?\? null,/.test(codeOf('src/shared/resources.ts')), 'the live session row carries it');
+  const v = codeOf('src/renderer/components/ResourcesView.tsx');
+  const capped = v.indexOf('{row.cap ? (');
+  const noted = v.indexOf("row.capNote === 'not-applied' ? (");
+  const plain = v.indexOf('<span className="res-cell">{formatBytes(row.memBytes)}</span>\n            )}');
+  assert.ok(capped > 0 && noted > capped && plain > noted, 'branch order: capped bar, then the note, then today\'s plain cell');
+  assert.ok(/title=\{CAP_NOT_APPLIED_TIP\} data-res-nocap=""/.test(v) && /import \{ CAP_NOT_APPLIED_TIP, capSummaryLine \}/.test(v));
+  assert.ok(/\.res-cell\.res-mem-nocap \{ cursor: help; text-decoration: underline dotted var\(--text-dim\); text-decoration-thickness: 1px; text-underline-offset: 3px; \}/.test(fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8')), 'the dim cue that a tooltip exists: dotted, DIM colour, hairline, offset — each part pinned');
+  assert.ok(/tabIndex=\{0\} role="note" aria-label=\{`\$\{formatBytes\(row\.memBytes\)\} — \$\{CAP_NOT_APPLIED_TIP\}`\}/.test(v), 'keyboard + assistive tech reach the same explanation (a title alone is mouse-only)');
+});
+
+test('#323-fu m5: the window points at the REAL place of the switch — « Fleet bus mechanisms » (the header bus button) — and never at the read-only Bus page', () => {
+  const w = codeOf('src/renderer/components/MemoryGuardSettings.tsx');
+  assert.ok(/set it in « Fleet bus mechanisms » \(the bus button in the header\), not here\./.test(w));
+  assert.ok(!/Bus page/.test(w), 'no pointer to the read-only pane');
+  assert.ok(/<h2>Fleet bus mechanisms<\/h2>/.test(codeOf('src/renderer/components/BusSwitchSettings.tsx')), 'that name exists where the switch is edited');
+  assert.ok(/title="Fleet bus mechanisms — one switch per mechanism, frozen per run"/.test(codeOf('src/renderer/components/Sidebar.tsx')), 'and the header button carries it');
 });
