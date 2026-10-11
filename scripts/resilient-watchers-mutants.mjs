@@ -136,11 +136,11 @@ const MUTANTS = [
   { id: 'S09_since_is_now', file: WS, find: 'DEGRADED since ${clock(w.since)} (', to: 'DEGRADED since ${clock(now)} (', expect: ['degraded: summary line names'] },
   { id: 'S11_dir_not_in_the_line', file: WS, find: ' · ${w.dir} · meanwhile:', to: ' · meanwhile:', expect: ['degraded: summary line names'] },
   // ── follow-up (review m2): one cause per watcher, one language ──
-  { id: 'S13_estale_called_a_limit', file: WS, find: "    case 'ESTALE':\n      return 'dossier surveillé supprimé ou déplacé';", to: "    case 'ESTALE':\n      return 'limite de surveillance de fichiers atteinte';", expect: ['strip copy (review m2)'] },
-  { id: 'S14_one_cause_for_all_the_watchers', file: WS, find: "groups.set(causeFr(w.lastError), [...new Set([...(groups.get(causeFr(w.lastError)) ?? []), w.label])]);", to: "groups.set(causeFr(d[0].lastError), [...new Set([...(groups.get(causeFr(d[0].lastError)) ?? []), w.label])]);", expect: ['strip copy (review m2)'] },
-  { id: 'S15_tooltip_english_fallback', file: WS, find: "en attendant : ${w.fallbackFr}", to: "en attendant : ${w.fallback}", expect: ['strip tooltip (review m2)', 'strip copy (D-Q8 A)', 'smoke:the tooltip carries one line per degraded watcher'], smoke: true },
-  { id: 'S16_tooltip_english_cause', file: WS, find: "${causeFr(w.lastError)}${w.lastError?.code ? ` (${w.lastError.code})` : ''} · en attendant", to: "${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant", expect: ['strip tooltip (review m2)', 'strip copy (D-Q8 A)', 'smoke:the tooltip carries one line per degraded watcher'], smoke: true },
-  { id: 'S17_snapshot_drops_the_french_fallback', file: RW, find: "fallbackFr: spec.fallbackFr }", to: "fallbackFr: spec.fallback }", expect: ['the snapshot carries BOTH fallbacks'] },
+  { id: 'S18_estale_called_a_limit', file: WS, find: "    case 'ESTALE':\n      return 'dossier surveillé supprimé ou déplacé';", to: "    case 'ESTALE':\n      return 'limite de surveillance de fichiers atteinte';", expect: ['strip copy (review m2)'] },
+  { id: 'S19_one_cause_for_all_the_watchers', file: WS, find: "groups.set(causeFr(w.lastError), [...new Set([...(groups.get(causeFr(w.lastError)) ?? []), w.label])]);", to: "groups.set(causeFr(d[0].lastError), [...new Set([...(groups.get(causeFr(d[0].lastError)) ?? []), w.label])]);", expect: ['strip copy (review m2)'] },
+  { id: 'S20_tooltip_english_fallback', file: WS, find: "en attendant : ${w.fallbackFr}", to: "en attendant : ${w.fallback}", expect: ['strip tooltip (review m2)', 'strip copy (D-Q8 A)', 'smoke:the tooltip carries one line per degraded watcher'], smoke: true },
+  { id: 'S21_tooltip_english_cause', file: WS, find: "${causeFr(w.lastError)}${w.lastError?.code ? ` (${w.lastError.code})` : ''} · en attendant", to: "${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant", expect: ['strip tooltip (review m2)', 'strip copy (D-Q8 A)', 'smoke:the tooltip carries one line per degraded watcher'], smoke: true },
+  { id: 'S22_snapshot_drops_the_french_fallback', file: RW, find: "fallbackFr: spec.fallbackFr }", to: "fallbackFr: spec.fallback }", expect: ['the snapshot carries BOTH fallbacks'] },
   { id: 'S10_strip_never_shown', file: WS, find: "  if (d.length === 0) return null;\n  // ONE cause per group of watchers", to: "  if (d.length === 0) return null;\n  return null;\n  // ONE cause per group of watchers", expect: ['strip copy (D-Q8 A)'] },
   // ── the registry + production binding (src/main/watchers.ts) ──
   { id: 'W01_never_registered', file: WR, find: '      armed.add(handle);\n      inner.start();', to: '      inner.start();', expect: ['EMFILE at arm: bus-status data lists it degraded', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: false },
@@ -246,7 +246,10 @@ const strays = () => {
 const scratchLeft = () => { try { return fs.readdirSync(path.join(os.homedir(), '.cache', 'e2e-rw')).length; } catch { return 0; } };
 
 // `--only` tokens must NAME a mutant (its full id or its leading code): an unknown one used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 — a vacuous green (review m1).
-const wanted = (m) => !only || only.has(m.id) || only.has(m.id.split('_')[0]);
+const codeOf = (m) => m.id.split('_')[0];
+const dupCodes = [...new Set(MUTANTS.map(codeOf).filter((c, i, all) => all.indexOf(c) !== i))];
+if (dupCodes.length) refuse(`two mutants share the code ${dupCodes.join(',')} — --only CODE would select both (rename one)`);
+const wanted = (m) => !only || only.has(m.id) || only.has(codeOf(m));
 if (only) {
   const unknown = [...only].filter((t) => !MUTANTS.some((m) => m.id === t || m.id.split('_')[0] === t));
   if (unknown.length) refuse(`--only names no mutant: ${unknown.join(',')}`);
