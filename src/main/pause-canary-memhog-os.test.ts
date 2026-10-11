@@ -47,22 +47,24 @@ test('rigProcesses: only processes carrying EXACTLY ORCHESTRA_HOME=<home>; a dec
 /** parent (marker) → child (marker) → rigProcesses(home) called IN the child. Printed: the child's pid, its ppid, what it found. */
 const PROBE = `
 import { spawn } from 'node:child_process';
-const [, , mode, osUrl, home, exceptPid] = process.argv;
-if (mode === 'parent') {
-  const c = spawn(process.execPath, [process.argv[1], 'child', osUrl, home, exceptPid], { stdio: ['ignore', 'inherit', 'inherit'] });
+import fs from 'node:fs';
+const [, , depth, osUrl, home, exceptPid] = process.argv;
+const ppidOf = (pid) => Number(fs.readFileSync('/proc/' + pid + '/stat', 'utf8').replace(/^.*\\) \\S /, '').split(' ')[0]);
+if (Number(depth) > 0) {
+  const c = spawn(process.execPath, [process.argv[1], String(Number(depth) - 1), osUrl, home, exceptPid], { stdio: ['ignore', 'inherit', 'inherit'] });
   c.on('exit', (code) => process.exit(code ?? 1));
 } else {
   const { rigProcesses } = await import(osUrl);
   const found = rigProcesses(home, exceptPid ? new Set([Number(exceptPid)]) : undefined).map((p) => p.pid);
-  console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid, found }));
+  console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid, gpid: ppidOf(process.ppid), found }));
 }
 `;
-const probeTree = (exceptPid?: number) => {
+const probeTree = (exceptPid?: number, depth = 1) => {
   const script = path.join(base, 'probe-tree.mjs');
   fs.writeFileSync(script, PROBE);
   const osUrl = new URL('../../scripts/pause-canary/memhog-os.mjs', import.meta.url).href;
-  const out = execFileSync(process.execPath, [script, 'parent', osUrl, home, ...(exceptPid ? [String(exceptPid)] : [])], { env: { PATH: process.env.PATH ?? '', ORCHESTRA_HOME: home }, encoding: 'utf8' });
-  return JSON.parse(out.trim().split('\n').pop() as string) as { pid: number; ppid: number; found: number[] };
+  const out = execFileSync(process.execPath, [script, String(depth), osUrl, home, ...(exceptPid ? [String(exceptPid)] : [])], { env: { PATH: process.env.PATH ?? '', ORCHESTRA_HOME: home }, encoding: 'utf8' });
+  return JSON.parse(out.trim().split('\n').pop() as string) as { pid: number; ppid: number; gpid: number; found: number[] };
 };
 
 test('rigProcesses never returns the calling process or an ancestor even though they carry the marker (a REAL parent→child tree, the marker in their ENVIRON); siblings are found; `except` is honoured', async () => {
@@ -79,11 +81,21 @@ test('rigProcesses never returns the calling process or an ancestor even though 
   assert.ok(ancestorsOf().has(process.pid) && ancestorsOf().has(process.ppid));
 });
 
+test('rigProcesses excludes EVERY ancestor, not only the parent: a grandparent → parent → child tree, all three carrying the marker', async () => {
+  const sib = sleeper({ ORCHESTRA_HOME: home });
+  await new Promise((r) => setTimeout(r, 300));
+  const r = probeTree(undefined, 2);
+  assert.ok(r.gpid > 1 && r.gpid !== r.ppid, 'the tree really has three levels');
+  assert.ok(!r.found.includes(r.pid) && !r.found.includes(r.ppid) && !r.found.includes(r.gpid), 'self, parent and grandparent are all left out');
+  assert.ok(r.found.includes(sib.pid as number), 'a marked non-ancestor is still found');
+});
+
 test('the stand-in CLI is spawned with the rig marker: a REAL stand-in CLI and the tool it runs are both found by rigProcesses (they were invisible to teardown and the survivors count without ORCHESTRA_HOME in their env)', async () => {
   const standin = fileURLToPath(new URL('../../scripts/memory-cap/standin-cli.cjs', import.meta.url));
   const cli = spawn(process.execPath, [standin], { env: standinCliEnv(home, 0), stdio: ['pipe', 'pipe', 'ignore'], detached: true });
   kids.push(cli);
   assert.equal(standinCliEnv(home, 0).ORCHESTRA_HOME, home);
+  assert.equal(standinCliEnv(home, 0).HOME, home, 'the CLI\'s HOME is the rig\'s, never the real one');
   let out = '';
   cli.stdout!.on('data', (d) => { out += d.toString(); });
   for (let i = 0; i < 100 && !out.includes('"init"'); i++) await new Promise((r) => setTimeout(r, 50));
@@ -120,6 +132,46 @@ test('killByIdentity: kills the listed process; skips one whose start time chang
   assert.equal(await gone(a.pid as number), true);
   assert.equal(alive(b.pid), true);
   assert.equal(alive(c.pid), true);
+});
+
+test('killByIdentity: a process whose marker merely STARTS WITH ours (`<home>-sibling`) is not signalled even with the right identity', async () => {
+  const sibling = sleeper({ ORCHESTRA_HOME: `${home}-sibling` });
+  await new Promise((r) => setTimeout(r, 200));
+  const done = killByIdentity([{ pid: sibling.pid, ticks: ticks(sibling.pid) }], home);
+  assert.deepEqual(done, []);
+  assert.equal(alive(sibling.pid), true);
+});
+
+test('ticks() is the /proc start time (field 22): equal to an independent reading, stable, and different for a process started later', async () => {
+  const a = sleeper({});
+  await new Promise((r) => setTimeout(r, 120));
+  const b = sleeper({});
+  await new Promise((r) => setTimeout(r, 150));
+  for (const c of [a, b]) {
+    const ref = execFileSync('awk', ['{print $22}', `/proc/${c.pid}/stat`], { encoding: 'utf8' }).trim();
+    assert.equal(ticks(c.pid), ref);
+    assert.equal(ticks(c.pid), ticks(c.pid), 'stable');
+  }
+  assert.notEqual(ticks(a.pid), ticks(b.pid), 'two processes started 120 ms apart are two identities');
+  assert.equal(ticks(99999999), null, 'no such pid');
+});
+
+test('rigProcesses → killByIdentity composed: every marked process is listed WITH its identity and killed; an unmarked one and a sibling-prefix one are not', async () => {
+  const home2 = path.join(base, 'rig2', 'home');
+  const m1 = sleeper({ ORCHESTRA_HOME: home2 });
+  const m2 = sleeper({ ORCHESTRA_HOME: home2 });
+  const other = sleeper({ ORCHESTRA_HOME: `${home2}-sibling` });
+  const none = sleeper({});
+  await new Promise((r) => setTimeout(r, 200));
+  const list = rigProcesses(home2);
+  assert.deepEqual(list.map((p: { pid: number }) => p.pid).sort(), [m1.pid, m2.pid].sort());
+  for (const p of list) assert.equal(p.ticks, ticks(p.pid), 'each entry carries the identity killByIdentity re-reads');
+  const done = killByIdentity(list, home2);
+  assert.deepEqual(done.sort(), [m1.pid, m2.pid].sort());
+  assert.equal(await gone(m1.pid as number), true);
+  assert.equal(await gone(m2.pid as number), true);
+  assert.equal(alive(other.pid), true);
+  assert.equal(alive(none.pid), true);
 });
 
 test('the `leak` control holds the pid of the leftover itself: a detached `sleep` (not a `setsid` wrapper that exits at once) — and teardown can leave exactly that identity alone', async () => {

@@ -219,3 +219,8 @@ export function renderMemhogTable(cycles) {
   });
   return ['| exercice | cycle | workers | hog tué | session intacte | membre prévenu | coordinateur prévenu | kills noyau | notice membre (s) | notice coord. (s) | verdict |', '|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n');
 }
+
+/** A drill the host cut short (rc 3 / VOID) is no verdict — unless a bar was ALREADY measured RED before the cut: that RED is evidence, the verdict is FAIL (never a VOID that hides it). */
+export function voidOrFail(checks) {
+  return splitChecks(Array.isArray(checks) ? checks : []).barsRed.length > 0 ? 'FAIL' : 'VOID';
+}

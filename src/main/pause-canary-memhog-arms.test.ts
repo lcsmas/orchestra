@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { PROOF_ARMS } from '../../scripts/pause-canary/memhog-arms.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { evaluateMemhogCycle, evaluateChainRun, evaluateSurvivors } from '../../scripts/pause-canary/memhog-bars.mjs';
+import { evaluateMemhogCycle, evaluateChainRun, evaluateSurvivors, REQUIRED_CYCLE_CHECKS } from '../../scripts/pause-canary/memhog-bars.mjs';
 
 type Check = { id: string; ok: boolean; detail: string };
 type W = Record<string, any>;
@@ -67,4 +67,28 @@ test('POSITIVE CONTROL: the match is not vacuous — an arm\'s regex does NOT ma
   const small = PROOF_ARMS.find((a: W) => a.name === 'control:hog-small');
   assert.equal(small.expectDetail.test(chain.detail), false);
   assert.equal(/^0 kernel kill/.test(chain.detail), false, 'the OLD chain regex (review 2) does not match the premise detail: the test can say no');
+});
+
+test('control:chain-cap-off\'s regex is anchored: a BROKEN rig (the CLI never initialised, or the chain cut short) does not read as the expected cap-off VOID', () => {
+  const arm = PROOF_ARMS.find((a: W) => a.name === 'control:chain-cap-off');
+  const detail = (o: W) => evaluateChainRun({ planned: 30, done: 30, killsTotal: 0, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, inScope: false, cliSeen: true, ...o }).find((c: Check) => c.id === 'premise_chain_killed_tools')!.detail;
+  assert.match(detail({}), arm.expectDetail, 'the real cap-OFF chain: 30 of 30 tools, nothing killed');
+  assert.doesNotMatch(detail({ cliSeen: false, done: 1, cliAlive: false, answered: false, lostAfter: 0 }), arm.expectDetail, 'CLI never initialised');
+  assert.doesNotMatch(detail({ done: 12 }), arm.expectDetail, 'chain cut short (12 of 30)');
+  assert.doesNotMatch(detail({ done: 30, lostAfter: 0, keeperAlive: false, cliAlive: false, answered: false }), arm.expectDetail, 'session lost');
+});
+
+test('every proof arm is internally consistent: must-FAIL arms name something to redden, redden and stayGreen are disjoint, and every named id is one the bars really produce', () => {
+  const m = cycle();
+  const known = new Set<string>([...evaluateMemhogCycle(m).map((c: Check) => c.id), ...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors', 'bar:live_config_untouched', 'premise_chain_killed_tools', 'q9:session_survives_chain']);
+  for (const a of PROOF_ARMS as W[]) {
+    if (a.internal) continue;
+    if (a.sabotage || a.switch === 'off') assert.ok((a.redden ?? []).length > 0, `${a.name}: a must-FAIL arm names no instrument to redden`);
+    for (const id of a.redden ?? []) assert.ok(known.has(id), `${a.name}: redden names an id the bars never produce: ${id}`);
+    for (const id of a.stayGreen ?? []) assert.ok(known.has(id), `${a.name}: stayGreen names an id the bars never produce: ${id}`);
+    assert.deepEqual((a.redden ?? []).filter((id: string) => (a.stayGreen ?? []).includes(id)), [], `${a.name}: an id cannot be both RED and GREEN`);
+    for (const id of a.reddenAny ?? []) assert.ok(known.has(id) || id.startsWith('published:'), `${a.name}: reddenAny names ${id}`);
+  }
+  // control: a clean arm has nothing to redden, and the table does carry the must-FAIL arms this test is about
+  assert.equal((PROOF_ARMS as W[]).filter((a) => a.sabotage || a.switch === 'off').length >= 8, true);
 });

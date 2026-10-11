@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, fmtCap, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
+import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, fmtCap, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, voidOrFail, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { mustFailVerdict } from '../../scripts/pause-canary/bars.mjs';
 
@@ -280,4 +280,14 @@ test('renderMemhogTable: an ABORTED cycle (no summary) is a row, not a TypeError
   const table = renderMemhogTable([{ exercise: 'memhog-app', cycle: 1, expectWorkers: 3, summary: summarizeMemhogCycle(m), checks: evaluateMemhogCycle(m), tMemberToldS: 1, tCoordToldS: 1 }, { exercise: 'memhog-app', cycle: 2, expectWorkers: 3, checks: [] }]);
   assert.match(table, /\| memhog-app \| 1 \| 3\/3 .* PASS \|/);
   assert.match(table, /\| memhog-app \| 2 \| n\/a .* ABORTED/);
+});
+
+test('voidOrFail: a drill the host cut short is VOID — unless a bar was already measured RED (then FAIL, the RED is evidence); a RED published timing or a green list stays VOID', () => {
+  const bar = (id: string, ok: boolean) => ({ id, ok, detail: 'x' });
+  assert.equal(voidOrFail([]), 'VOID');
+  assert.equal(voidOrFail(undefined), 'VOID');
+  assert.equal(voidOrFail([bar('bar:hog_killed', true), bar('bar:member_told', true)]), 'VOID');
+  assert.equal(voidOrFail([bar('bar:hog_killed', true), bar('bar:member_told', false)]), 'FAIL');
+  assert.equal(voidOrFail([bar('published:time_to_member_told_s', false)]), 'VOID', 'a published timing is not a bar');
+  assert.equal(voidOrFail([bar('q9:session_survives_chain', false)]), 'VOID', 'the KNOWN-RED instrument is never decisive');
 });

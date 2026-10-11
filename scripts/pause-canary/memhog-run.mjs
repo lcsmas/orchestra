@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { randomPrefix } from './ids.mjs';
 import { liveSnapshot } from './lib.mjs';
-import { MEMHOG_BARS, KNOWN_RED, REQUIRED_CYCLE_CHECKS, renderMemhogTable, drillVerdict, missingChecks, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict } from './memhog-bars.mjs';
+import { MEMHOG_BARS, KNOWN_RED, REQUIRED_CYCLE_CHECKS, renderMemhogTable, drillVerdict, missingChecks, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict, voidOrFail } from './memhog-bars.mjs';
 import { rigProcesses, killByIdentity } from './memhog-os.mjs';
 import { PROOF_ARMS } from './memhog-arms.mjs';
 
@@ -151,7 +151,7 @@ if (!flag('proof')) {
   const ch = parts.find((p) => p.exercise === 'chain');
   const chainSurv = ch ? ch.checks.filter((c) => c.id === 'bar:no_survivors').map((c) => ({ ...c, exercise: 'chain' })) : [];
   const mhChecks = mh ? [...mh.checks, ...chainSurv, { exercise: 'memhog', cycle: 0, ...liveCheck }] : [];
-  const mhVerdict = !mh ? null : mh.rc === 3 || mh.verdict === 'VOID' ? 'VOID' : !complete(mh, cycles) ? 'FAIL' : drillVerdict(mhChecks, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors', 'bar:live_config_untouched']);
+  const mhVerdict = !mh ? null : mh.rc === 3 || mh.verdict === 'VOID' ? voidOrFail(mhChecks) : !complete(mh, cycles) ? 'FAIL' : drillVerdict(mhChecks, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors', 'bar:live_config_untouched']);
   // the Q9 chain's state: a result is only believed when EVERY wanted run reported (a chain cut short is neither KNOWN-RED nor GONE)
   const chRaw = ch ? (ch.exercises[0]?.result ?? ch.verdict) : null;
   const chV = !ch ? null : ['KNOWN-RED', 'KNOWN-RED-GONE'].includes(chRaw) ? (ch.chains.length === cycles ? chRaw : 'INCOMPLETE') : chRaw === 'VOID' || ch.rc === 3 ? 'VOID' : 'ERROR';

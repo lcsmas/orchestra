@@ -15,7 +15,7 @@ import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
 import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors } from './memhog-bars.mjs';
-import { workerFromAppFacts, appMemoryGuardSeed } from './memhog-app-facts.mjs';
+import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope } from './memhog-app-facts.mjs';
 import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
@@ -56,8 +56,10 @@ const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
 if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
 if (!['on', 'off'].includes(MH_SWITCH)) { console.error('--memhog-switch on|off'); process.exit(2); }
-if (MH_APP && (MEMBERS > 6 || CAP_GB > 1 || HOG_MB > 1200)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app (either switch) is bounded by the Q11 envelope: --members ≤ 6, --cap-gb ≤ 1, --hog-mb ≤ 1200 (got ${MEMBERS}, ${CAP_GB}, ${HOG_MB}). Not run.`); process.exit(3); }
-if (MH_ON_APP && (!/Q11/.test(WAIVER ?? '') || CAP_GB < 0.6 || CAP_GB > 1 || SOFT_GB > 0.75 || MEMBERS > 6)) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app with the cap ON runs only inside the LEAD's Q11 envelope (ledger #329 D-Q11, for #324 ONLY): --waiver naming Q11, --cap-gb 0.6..1, --soft-gb ≤ 0.75, --members ≤ 6, one run under the token (got waiver=${WAIVER ?? 'none'}, cap=${CAP_GB}, soft=${SOFT_GB}, members=${MEMBERS}). Nothing was run.`); process.exit(3); }
+if (MH_APP) {
+  const why = memhogAppEnvelope({ members: MEMBERS, capGb: CAP_GB, softGb: SOFT_GB, hogMb: HOG_MB, capOn: MH_ON_APP, waiver: WAIVER });
+  if (why) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app runs only inside the LEAD's Q11 envelope (ledger #329 D-Q11, for #324 ONLY; either switch): ${why}. Nothing was run.`); process.exit(3); }
+}
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
 if (INJECT && (!['orphan-tool', 'app-git', 'late-request', 'gap-request'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git|late-request|gap-request applies to `--exercise dure` only'); process.exit(2); }
 if (!['member', 'confirm', 'legacy'].includes(WINDOW)) { console.error('--window member|confirm|legacy'); process.exit(2); }
@@ -88,7 +90,7 @@ async function runExercise(name) {
   const api = await startApi({ decide: makeModel({ kindOfRole, plan, limited, resetS }), usageHeaders });
   const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE, storeExtra: name === 'memhog-app' ? { memoryGuard: appMemoryGuardSeed(SOFT_GB, CAP_GB) } : {} });
   curRig = rig; curBaselineMB = null;
-  if (name === 'memhog-app') say(`[${name}] app memory guard NEUTRALISED for this rig (Admission OFF, critical 0.5 GB) so only the CAP is under test: ${JSON.stringify(appMemoryGuardSeed(SOFT_GB, CAP_GB))}`);
+  if (name === 'memhog-app') say(`[${name}] app memory guard NEUTRALISED for this rig (Admission OFF, levels 0.6 / 0.5 GB) so only the CAP is under test: ${JSON.stringify(appMemoryGuardSeed(SOFT_GB, CAP_GB))}`);
   say(`[${name}] RIG H=${rig.H} workers=${spec.workers.map((w) => `${w.k}:${w.kind}`).join(' ')}`);
   say(`[${name}] SEED-RUNS ${JSON.stringify(seedRuns(rig, APP_TREE, PAUSE_SWITCH === 'off' ? 'pause-off' : name === 'memhog-app' && MH_SWITCH === 'off' ? 'cap-off' : 'none'))}`);
   const busr = startBusReader(rig, REPO);
@@ -606,7 +608,7 @@ const sampler = setInterval(() => {
     try { rigMB = curRig ? rigMemory(curRig).totalMB : null; } catch { /* the rig is going away */ }
     const blowup = !MH_APP && rigMB !== null && curBaselineMB !== null && rigMB > curBaselineMB * 1.5 + 300;
     voidKind = blowup ? 'blowup' : 'host';
-    voidReason = `${blowup ? `the RIG grew to ${rigMB.toFixed(0)} MB (mid-work baseline ${curBaselineMB.toFixed(0)} MB) while ` : ''}host below the bar for 3 samples: MemAvailable ${h.availGB.toFixed(2)} GB (< ${MIN_AVAIL_GB}) or load ${h.load1.toFixed(1)} (> ${MAX_LOAD})${rigMB !== null ? `; rig PSS ${rigMB.toFixed(0)} MB` : ''}`;
+    voidReason = `${blowup ? `the RIG grew to ${rigMB.toFixed(0)} MB (mid-work baseline ${curBaselineMB.toFixed(0)} MB) while ` : ''}host below the bar for 3 samples: MemAvailable ${h.availGB.toFixed(2)} GB (< ${RUN_FLOOR_GB}) or load ${h.load1.toFixed(1)} (> ${MAX_LOAD})${rigMB !== null ? `; rig PSS ${rigMB.toFixed(0)} MB` : ''}`;
   }
 }, 5000);
 const h0 = hostNow();

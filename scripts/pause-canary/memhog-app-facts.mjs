@@ -7,10 +7,25 @@ export function parseNoticeFile(text) {
   return String(text ?? '').split('\n').filter((l) => l.trim()).map((l) => { try { const j = JSON.parse(l); return j && typeof j === 'object' ? j : null; } catch { return null; } }).filter(Boolean);
 }
 
-/** The memory-guard settings the PACKAGED rig seeds (#324 review 2): the app under test runs its own guard on the REAL host reading, and under the defaults (Admission 6 GB, memory Pause 3 GB) the hogs of 6 members could hold the OPS's wake
- *  (bar:coordinator_told RED on a correct product) or Pause the run. Admission OFF + a critical level at the floor (0.5 GB) leave the CAP as the only memory mechanism under test; the report says so. */
+/** The memory-guard settings the PACKAGED rig seeds (#324 review 2+3): the app under test runs its own guard on the REAL host reading, and under the defaults (Admission 6 GB, memory Pause 3 GB) the hogs of 6 members could hold the OPS's wake,
+ *  Pause the run, or send the #289 alert to the LEAD (an episode opens on the guard STATE `held`, toggle or not — bar:only_coordinator_told RED on a correct product). Admission OFF + the lowest levels the validator allows (critical 0.5 GB, level
+ *  0.6 GB, reopen 1.6 GB) keep the guard open at every reading above 0.6 GB — far below the run's 2 GB floor, which voids the run first — so the CAP is the only memory mechanism under test; the report says so. */
 export function appMemoryGuardSeed(capSoftGb, capHardGb) {
-  return { capSoftGb, capHardGb, admissionGb: 1.5, criticalGb: 0.5, admissionEnabled: false };
+  return { capSoftGb, capHardGb, admissionGb: 0.6, criticalGb: 0.5, admissionEnabled: false };
+}
+
+/** The LEAD's Q11 envelope for the PACKAGED memory-hog run (ledger #329 D-Q11, #324 only), as one pure check: null = inside it, else why not. Every number must be FINITE (`Number('1GB')` is NaN and NaN fails every `>` test:
+ *  the app would then run on its default 6 GiB cap). `capOn` = the frozen `memory_cap` switch ON (the cap-ON run); OFF = the must-FAIL control, whose hogs no scope bounds, so their TOTAL is bounded too. */
+export function memhogAppEnvelope({ members, capGb, softGb, hogMb, capOn, waiver }) {
+  if (![members, capGb, softGb, hogMb].every(Number.isFinite)) return 'an option that must be a number is not (members / cap-gb / soft-gb / hog-mb)';
+  if (!(members >= 1 && members <= 6)) return `--members ${members} is outside 1..6`;
+  if (!(capGb > 0 && capGb <= 1)) return `--cap-gb ${capGb} is above 1 (or not positive)`;
+  if (!(hogMb > 0 && hogMb <= 1200)) return `--hog-mb ${hogMb} is above 1200 (or not positive)`;
+  if (!capOn) return members * hogMb > 3600 ? `${members} hogs of ${hogMb} MB with NO scope to bound them is ${members * hogMb} MB (> 3600)` : null;
+  if (!/Q11/.test(waiver ?? '')) return `--waiver must name Q11 (got ${waiver ?? 'none'})`;
+  if (!(capGb >= 0.6)) return `--cap-gb ${capGb} is below 0.6 (a real claude is ~330 MB; D-Q11 grants 0.6..1)`;
+  if (!(softGb > 0 && softGb <= 0.75 && softGb < capGb)) return `--soft-gb ${softGb} must be in (0, 0.75] and below the hard level ${capGb}`;
+  return null;
 }
 
 /** The keeper's own summary line `memory cap: <STATE> unit=… memory.max=… cgroup=…` (`klog`, src/keeper/index.ts) → the `cap.state` vocabulary of its status probe (active | unprotected | not-applied | no-scope); the LAST one wins, none → null.

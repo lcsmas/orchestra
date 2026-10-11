@@ -71,6 +71,8 @@ export const MEMHOG_MUTANTS = [
   ['chain-lost-by-cap-any-loss', "const lostByCap = lost && ((num(r.lostAfter) && r.lostAfter >= 1) || r.keeperAlive === false);", 'const lostByCap = lost;'],
   ['chain-lost-by-cap-zero-kills', 'num(r.lostAfter) && r.lostAfter >= 1', 'num(r.lostAfter) && r.lostAfter >= 0'],
   ['chain-lost-by-cap-keeper-ignored', ' || r.keeperAlive === false);', ');'],
+  ['voidorfail-always-void', "barsRed.length > 0 ? 'FAIL' : 'VOID'", "barsRed.length > 0 ? 'VOID' : 'VOID'"],
+  ['voidorfail-always-fail', "barsRed.length > 0 ? 'FAIL' : 'VOID'", "barsRed.length >= 0 ? 'FAIL' : 'VOID'"],
   ['table-aborted-cycle-unguarded', 'if (!k) return `| ${c.exercise} | ${c.cycle} | n/a', 'if (false) return `| ${c.exercise} | ${c.cycle} | n/a'],
 ].map(([name, find, replace]) => [name, find, replace, F]);
 
@@ -91,7 +93,19 @@ export const MEMHOG_FACTS_MUTANTS = [
   ['facts-capstate-no-unit-anchor', String.raw`([A-Z]+(?:-[A-Z]+)*) unit=\S+ memory\.max=/g`, String.raw`([A-Z]+(?:-[A-Z]+)*)/g`],
   ['facts-guard-seed-admission-on', 'admissionEnabled: false', 'admissionEnabled: true'],
   ['facts-guard-seed-critical-default', 'criticalGb: 0.5', 'criticalGb: 3'],
-  ['facts-guard-seed-admission-default', 'admissionGb: 1.5', 'admissionGb: 6'],
+  ['facts-guard-seed-admission-default', 'admissionGb: 0.6', 'admissionGb: 6'],
+  ['facts-guard-seed-admission-level-high', 'admissionGb: 0.6', 'admissionGb: 1.5'],
+  ['env-nan-allowed', 'if (![members, capGb, softGb, hogMb].every(Number.isFinite)) return', 'if (false) return'],
+  ['env-members-upper', 'members >= 1 && members <= 6', 'members >= 1 && members <= 7'],
+  ['env-members-lower', 'members >= 1 && members <= 6', 'members <= 6'],
+  ['env-cap-upper', 'capGb > 0 && capGb <= 1', 'capGb > 0 && capGb <= 2'],
+  ['env-hog-upper', 'hogMb > 0 && hogMb <= 1200', 'hogMb > 0 && hogMb <= 4000'],
+  ['env-off-total-ignored', 'return members * hogMb > 3600 ?', 'return false ?'],
+  ['env-off-total-limit', 'members * hogMb > 3600 ?', 'members * hogMb > 7200 ?'],
+  ['env-waiver-ignored', "if (!/Q11/.test(waiver ?? ''))", 'if (false)'],
+  ['env-cap-floor-ignored', 'if (!(capGb >= 0.6))', 'if (false)'],
+  ['env-soft-upper', 'softGb > 0 && softGb <= 0.75', 'softGb > 0 && softGb <= 1'],
+  ['env-soft-below-hard-ignored', ' && softGb < capGb))', '))'],
   ['facts-member-time-zero', 'firstRowMs: rows.length ? Math.min(...rows.map((e) => e.at)) - t0 : null', 'firstRowMs: rows.length ? 0 : null'],
   ['facts-coord-time-zero', 'firstEscMs: esc.length ? Math.min(...esc.map((x) => x.created_at)) - t0 : null', 'firstEscMs: esc.length ? 0 : null'],
   ['facts-up-always', 'up: f.up === true', 'up: true'],
@@ -112,12 +126,19 @@ export const MEMHOG_OS_MUTANTS = [
   ['os-kill-no-identity', 'if (ticks(pid) !== t || ', 'if (false || '],
   ['os-kill-no-marker', "|| !(readSafe(`/proc/${pid}/environ`) ?? '').split('\\0').includes(want)) continue;", ') continue;'],
   ['os-cli-env-no-marker', 'HOME: home, ORCHESTRA_HOME: home, SHELL:', 'HOME: home, SHELL:'],
+  ['os-cli-env-real-home', 'HOME: home, ORCHESTRA_HOME: home', 'HOME: process.env.HOME, ORCHESTRA_HOME: home'],
+  ['os-ticks-wrong-field', ".split(' ')[19]", ".split(' ')[18]"],
+  ['os-ancestors-two-hops', 'hops < 64', 'hops < 2'],
+  ['os-rigprocesses-ticks-null', 'out.push({ pid, ticks: ticks(pid) });', 'out.push({ pid, ticks: null });'],
+  ['os-kill-marker-substring', "if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').split('\\0').includes(want)) continue;", "if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').includes(want)) continue;"],
 ].map(([name, find, replace]) => [name, find, replace, FO]);
 
 // the proof arms (memhog-arms.mjs): a regex that no longer matches the text of its bar reads UNEXPECTED on every run — killed by pause-canary-memhog-arms.test.ts
 const FA = 'memhog-arms.mjs';
 export const MEMHOG_ARMS_MUTANTS = [
-  ['arms-chain-regex-old', String.raw`expectDetail: /^NO capped scope; 0 kernel kill/ }`, String.raw`expectDetail: /^0 kernel kill/ }`],
+  ['arms-chain-regex-old', String.raw`expectDetail: /^NO capped scope; 0 kernel kill\(s\) over (\d+) of \1 tools$/ }`, String.raw`expectDetail: /^0 kernel kill/ }`],
+  ['arms-chain-regex-unanchored', String.raw`of \1 tools$/ }`, String.raw`of \1 tools/ }`],
+  ['arms-chain-regex-no-backref', String.raw`over (\d+) of \1 tools$/ }`, String.raw`over (\d+) of (\d+) tools$/ }`],
   ['arms-coord-regex-old', String.raw`expectDetail: /0 escalation\(s\) to the coordinator for [1-9]/`, String.raw`expectDetail: /0 escalation\(s\) for [1-9]/`],
   ['arms-hog-small-regex-broken', String.raw`expectDetail: /hog NOT killed: killed=0 survived=1|no kill to tell/`, String.raw`expectDetail: /hog was NOT killed: killed=0 survived=1|no kill to tell/`],
   ['arms-leak-regex-broken', String.raw`expectDetail: /[1-9]\d* process\(es\) carrying the rig dir/`, String.raw`expectDetail: /[1-9]\d* process\(es\) carrying the rig home/`],

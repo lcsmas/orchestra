@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed } from '../../scripts/pause-canary/memhog-app-facts.mjs';
+import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope } from '../../scripts/pause-canary/memhog-app-facts.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { evaluateMemhogCycle } from '../../scripts/pause-canary/memhog-bars.mjs';
 import { appendMemNotice } from '../shared/mem-notice-file.ts';
@@ -136,19 +136,19 @@ test('capStateFromKeeperLog reads the keeper\'s REAL summary line: the template 
   assert.equal(capStateFromKeeperLog('memory-cap[ws]: keeper launched in scope u.scope (hard 1073741824 B, swap 0 B)'), null, 'the app\'s launch line says nothing about the keeper\'s cap state');
 });
 
-test('the seeded guard settings survive the app\'s own normalisation, and under them the real decision never holds Admission nor pauses at the readings the six hogs leave (start 9 GB − ~6 GB)', () => {
+test('the seeded guard settings survive the app\'s own normalisation, and under them the real decision never holds Admission nor pauses at any reading above 0.6 GB (the run is voided at 2 GB)', () => {
   const seed = appMemoryGuardSeed(0.75, 1);
   const n = normalizeMemoryGuardSettings(seed);
   for (const k of Object.keys(seed) as Array<keyof typeof seed>) assert.equal(n[k], seed[k], `${k} was normalised away: the app would run its default and the rig would hold/pause`);
   const t = thresholdsFrom(n);
-  for (const availGb of [9, 6, 4, 3.1, 2]) {
+  for (const availGb of [9, 6, 4, 3.1, 2, 1, 0.7]) {
     const d = decideMemoryGuard(INITIAL_GUARD_STATE, availGb * G, t);
-    assert.equal(d.state.admission, 'open', `the guard\'s Admission state is held at ${availGb} GB: the #289 alert would escalate to the LEAD and bar:only_coordinator_told would read RED on a correct product`);
+    assert.equal(d.state.admission, 'open', `the guard\'s Admission STATE is held at ${availGb} GB: the #289 alert opens an episode on that state (toggle or not) and bar:only_coordinator_told would read RED on a correct product`);
     assert.equal(isAdmissionHolding({ admission: d.state.admission, admissionEnabled: n.admissionEnabled }), false, `Admission holds at ${availGb} GB`);
     assert.equal(d.state.pause, 'none', `a memory Pause is due at ${availGb} GB`);
   }
-  // the toggle is the second line: at 1 GB (below the seeded 1.5 GB level) the guard WOULD hold, the OFF toggle keeps the start gates open
-  const low = decideMemoryGuard(INITIAL_GUARD_STATE, 1 * G, t);
+  // below the seeded level the guard WOULD hold (the alert could then fire) — that is far under the run's 2 GB floor, which voids the run first; the toggle is the second line for the start gates
+  const low = decideMemoryGuard(INITIAL_GUARD_STATE, 0.55 * G, t);
   assert.equal(low.state.admission, 'held');
   assert.equal(isAdmissionHolding({ admission: low.state.admission, admissionEnabled: n.admissionEnabled }), false, 'the toggle is OFF');
   assert.equal(low.state.pause, 'none', 'critical is 0.5 GB');
@@ -156,4 +156,34 @@ test('the seeded guard settings survive the app\'s own normalisation, and under 
   const dflt = thresholdsFrom(normalizeMemoryGuardSettings({}));
   assert.equal(decideMemoryGuard(INITIAL_GUARD_STATE, 4 * G, dflt).state.admission, 'held');
   assert.equal(decideMemoryGuard(INITIAL_GUARD_STATE, 2 * G, dflt).state.pause, 'held');
+});
+
+test('the Q11 envelope of the packaged run: inside it ⇒ null; every bound, a NaN option and the cap-OFF hogs\' TOTAL are refused (a NaN fails every `>` test)', () => {
+  const ok = { members: 6, capGb: 1, softGb: 0.75, hogMb: 1174, capOn: true, waiver: 'D-Q11 ledger #329' };
+  assert.equal(memhogAppEnvelope(ok), null, 'the granted run');
+  assert.equal(memhogAppEnvelope({ ...ok, capGb: 0.6, softGb: 0.45, hogMb: 800, members: 3 }), null);
+  const bad = (o: Record<string, unknown>) => memhogAppEnvelope({ ...ok, ...o }) !== null;
+  assert.ok(bad({ members: 7 }), 'more than 6 members');
+  assert.ok(bad({ members: 0 }));
+  assert.ok(bad({ capGb: 1.5 }), 'cap above 1');
+  assert.ok(bad({ capGb: 0.5, softGb: 0.4 }), 'cap-ON below 0.6 (soft below hard, so ONLY the floor refuses it)');
+  assert.ok(bad({ capGb: Number('1GB') }), 'NaN cap: the app would run on its default 6 GiB');
+  assert.ok(bad({ members: Number('six') }));
+  assert.ok(bad({ softGb: Number('x') }));
+  assert.ok(bad({ hogMb: Number('1g') }));
+  assert.ok(bad({ hogMb: 1300 }), 'hog above 1200');
+  assert.ok(bad({ softGb: 0.8 }), 'soft above 0.75');
+  assert.ok(bad({ softGb: 1 }), 'soft above 0.75 and not below hard');
+  assert.ok(bad({ capGb: 0.6, softGb: 0.7 }), 'soft within 0.75 but NOT below the hard level (ONLY that clause refuses it)');
+  assert.ok(bad({ capGb: 0.6, softGb: 0.6 }), 'soft equal to hard');
+  assert.ok(bad({ waiver: 'ledger #329' }), 'a waiver that does not name Q11');
+  assert.ok(bad({ waiver: null }));
+  // the cap-OFF control: no waiver, any cap ≤ 1 (default 0.25), but the hogs no scope bounds are bounded in TOTAL
+  const off = { members: 3, capGb: 0.25, softGb: 0.19, hogMb: 406, capOn: false, waiver: null };
+  assert.equal(memhogAppEnvelope(off), null, 'the plan\'s cap-OFF run: 3 × 406 MB');
+  assert.ok(memhogAppEnvelope({ ...off, softGb: Number('x') }) !== null, 'a non-number is refused on the OFF control too (the finite guard is first, not an accident of a later comparison)');
+  assert.ok(memhogAppEnvelope({ ...off, members: 6, hogMb: 1200 }) !== null, '7200 MB of unbounded hogs');
+  assert.equal(memhogAppEnvelope({ ...off, members: 3, hogMb: 1200 }), null, 'exactly 3600 MB is allowed');
+  assert.ok(memhogAppEnvelope({ ...off, members: 4, hogMb: 1200 }) !== null);
+  assert.ok(memhogAppEnvelope({ ...off, members: 7 }) !== null, 'members bound applies to the OFF control too');
 });
