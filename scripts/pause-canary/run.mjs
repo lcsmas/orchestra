@@ -236,7 +236,7 @@ if (!flag('proof')) {
   say(`\n${table}\n`);
   // the contract shape is 4 exercises × ≥ 3 cycles: a green run of less is PARTIAL, never PASS (`--exercise dures` / `--cycles 0` can no longer print a PASS over an empty table)
   const word = r.verdict === 'PASS' && !full ? 'PARTIAL' : r.verdict;
-  say(`PAUSE-CANARY${REHEARSAL ? ' DRY-REHEARSAL (plumbing, not the Q11 run)' : ''}: ${word}${members < 10 ? ` (${members} workers — labelled, not the 10 of the ticket)` : ''}`);
+  say(`PAUSE-CANARY${REHEARSAL ? ' DRY-REHEARSAL (plumbing, not the Q11 run)' : ''}: ${word}${members < (MH_REPORT ? 6 : 10) ? ` (${members} workers — labelled, not the ${MH_REPORT ? 6 : 10} of the ticket)` : ''}`);
   process.exit(word === 'PASS' ? 0 : word === 'PARTIAL' ? 4 : r.verdict === 'VOID' ? 3 : 1);   // 4 = green but not the contract shape (4 exercises × ≥ 3 cycles): never an exit-0 PASS
 }
 
