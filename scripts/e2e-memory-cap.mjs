@@ -168,7 +168,7 @@ assertScratch('ORCHESTRA_HOME', home, base, live);
 // The daemon bundle the run EXECUTES: rebuild when missing or older than ANY of its sources (a stale bundle reproduces perfectly in isolation).
 const KEEPER_JS = process.env.MC_KEEPER_BUNDLE ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.MC_KEEPER_BUNDLE) {
-  const srcs = ['src/keeper/index.ts', 'src/keeper/memory-watch.ts', 'src/keeper/kernel-oom-log.ts', 'src/shared/keeper-protocol.ts', 'src/shared/memory-scope.ts', 'src/shared/mem-notice-file.ts'].map((s) => path.join(REPO, s)).filter((s) => fs.existsSync(s));
+  const srcs = ['src/keeper/index.ts', 'src/keeper/memory-watch.ts', 'src/keeper/kernel-oom-log.ts', 'src/keeper/member-leaves.ts', 'src/shared/keeper-protocol.ts', 'src/shared/memory-scope.ts', 'src/shared/mem-notice-file.ts'].map((s) => path.join(REPO, s)).filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_JS) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_JS).mtimeMs)) {
     execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
   }
