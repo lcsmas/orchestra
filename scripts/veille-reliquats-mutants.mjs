@@ -91,9 +91,11 @@ if (args.includes('--rig')) {
     const a = apply(file, edits);
     if (a.err) { console.log(`${id}: ${a.err}`); alive++; continue; }
     const r = await guarded(a, () => runArm(VT_RIG_ARM[id]));
-    const killed = !r.ok;
+    // KILLED = the arm ANSWERED and said not-ok (a JSON verdict); an arm that printed none crashed — that proves nothing about the clause
+    const answered = r.json !== null && r.json.ok === false;
+    const killed = answered;
     if (!killed) alive++;
-    console.log(`${id.padEnd(3)} ${killed ? 'KILLED  ' : 'SURVIVED'} rig:${VT_RIG_ARM[id]}  — ${note}`);
+    console.log(`${id.padEnd(3)} ${killed ? 'KILLED  ' : r.ok ? 'SURVIVED' : 'CRASH-ONLY'} rig:${VT_RIG_ARM[id]}  — ${note}`);
   }
   console.log(`rig mutants: ${ids.length - alive} killed / ${ids.length}`);
   process.exit(alive ? 1 : 0);
@@ -108,8 +110,9 @@ for (const [id, file, edits, tests, note] of todo) {
   const a = apply(file, edits);
   if (a.err) { console.log(`${id.padEnd(3)} ANCHOR-ERROR ${a.err}`); survived++; continue; }
   const r = await guarded(a, () => runTests(tests));
-  const verdict = r.rc !== 0 ? 'KILLED' : 'SURVIVED';
-  if (verdict === 'SURVIVED') survived++;
+  // KILLED = a failed ASSERTION (or a hang): a mutant that merely breaks the file (SyntaxError, bad import) is a CRASH, not proof that a test pins the clause
+  const verdict = r.rc === 0 ? 'SURVIVED' : r.timedOut || /ERR_ASSERTION|AssertionError/.test(r.out) ? 'KILLED' : 'CRASH-ONLY';
+  if (verdict !== 'KILLED') survived++;
   console.log(`${id.padEnd(3)} ${verdict.padEnd(9)} rc=${r.rc}${r.timedOut ? ' (HUNG→killed)' : ''} pass=${r.pass} fail=${r.fail}  ${file}  — ${note}`);
 }
 const post = await runTests(allTests, 300000);

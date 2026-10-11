@@ -125,6 +125,6 @@ export function veilleMutants(T = VT) {
     ['B4', 'src/main/resource-monitor.ts', [[".filter((o) => o.client === 'no').length;", '.length;']], [T.wiring], 'the browser count includes browsers a pass would SPARE'],
     // ── the census shares the pass\'s selection ───────────────────────────────────────────────────────────────────────────
     ['B1', 'src/main/browser-reliquats.ts', [['if (!s || s.owner.wsId !== wsId || !d.workspaceKnown(wsId)) continue;', 'if (!s || !d.workspaceKnown(wsId)) continue;']], [T.browser], 'the census counts every workspace\'s orphans'],
-    ['B2', 'src/main/browser-reliquats.ts', [['  if (!launcherDead(p.ppid, parent ? { comm: parent.comm, ppid: parent.ppid } : null)) return null; // launcher alive', '']], [T.browser], 'a browser with a LIVE launcher counts as an orphan (and the pass would stop it)'],
+    ['B2', 'src/main/browser-reliquats.ts', [['  if (!launcherDead(p.ppid, parent ? { comm: parent.comm, ppid: parent.ppid } : null)) return null; // launcher alive: it owns this browser', '']], [T.browser], 'a browser with a LIVE launcher counts as an orphan (and the pass would stop it)'],
   ];
 }
