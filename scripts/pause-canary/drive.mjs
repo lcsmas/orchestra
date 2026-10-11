@@ -32,7 +32,8 @@ const MH_APP = argv.includes('memhog-app');   // --exercise memhog-app (it runs 
 const MH_ON_APP = MH_APP && opt('memhog-switch', 'on') === 'on';
 // Q11 (ledger #329, D-Q11): the cap-ON packaged run is granted for #324 ONLY — hard 1 GiB / soft 768 MiB, 6 members at most, ONE run under the token, MemAvailable > 9 GB BEFORE it starts. 6 scopes of 1 GiB are the design (the hogs are bounded by them), so
 // the 6 GB bar is a START bar (9 GB here) and the run keeps a lower FLOOR that only protects the host; the rig-grew-too-much « blowup » rule is off for it (the hogs live in the rig).
-const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP ? CAP_ON_START_GB : MH_APP ? 9 : 0);   // D-Q15: the cap-ON run starts from 11 GB; the cap-OFF control (hogs no scope bounds) from 9
+const REHEARSAL = argv.includes('--rehearsal');   // OPS 7313: 1-member cap-ON plumbing try, one token, start 9 GB — labelled DRY by the runner
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP && !REHEARSAL ? CAP_ON_START_GB : MH_APP ? 9 : 0);   // D-Q15: the cap-ON run starts from 11 GB; the cap-OFF control (hogs no scope bounds) from 9
 const RUN_FLOOR_GB = MH_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';

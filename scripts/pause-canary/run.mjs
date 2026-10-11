@@ -32,7 +32,9 @@ const OUT = path.resolve(opt('out', path.join(BASE, 'reports', new Date().toISOS
 // Q11 (ledger #329, D-Q11): a `memhog-app` run starts only with MemAvailable > 9 GB and adds no footprint on top (6 scopes of 1 GiB are the design); every other drill keeps the 6 GB bar + footprint
 const MH_ON = args.some((a) => /memhog-app/.test(a));   // the `memhog-app` exercise or its proof arms, either switch (the cap-OFF control's hogs are unbounded: same 9 GB start)
 const MH_CAP_ON = MH_ON && !flag('proof') && opt('memhog-switch', 'on') === 'on';   // the cap-ON packaged run (D-Q15: both heavy tokens, start ≥ 11 GB)
-const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_CAP_ON ? CAP_ON_START_GB : MH_ON ? 9 : 0);
+const REHEARSAL = flag('rehearsal');   // OPS 7313: a 1-member cap-ON PLUMBING try under ONE token, labelled DRY — never the Q11 run (which takes both tokens and 6 members)
+const MH_FULL_RUN = MH_CAP_ON && !REHEARSAL;
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_FULL_RUN ? CAP_ON_START_GB : MH_ON ? 9 : 0);
 initBase(BASE);   // the scratch guard also runs HERE: the runner creates dirs and rm -rf's apps/mut-* under --base before any drive starts
 const HOST_NOTE = `bar ${MIN_AVAIL_GB} GB / load 20${process.env.PC_IGNORE_HOST === '1' ? ' — HOST GUARD IGNORED (PC_IGNORE_HOST=1)' : ''}${MIN_AVAIL_GB !== 6 ? ' — NON-DEFAULT --min-avail-gb' : ''}`;
 const say = (s = '') => console.log(s);
@@ -70,10 +72,11 @@ if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(36)} ${a.ex
 const HEAVY = opt('heavy-token', process.env.MEMHOG_HEAVY_TOKEN ?? '');
 if (MH_ON && !HEAVY) { say('PAUSE-CANARY: VOID — the packaged memhog-app run is a HEAVY rig: run it only under the heavy-rig token (ask the OPS), then pass --heavy-token <ref> (or MEMHOG_HEAVY_TOKEN). Nothing was run.'); process.exit(3); }
 if (MH_ON) {
-  const why = heavyTokensWhy({ heavy: HEAVY, capOn: MH_CAP_ON });
+  const why = heavyTokensWhy({ heavy: HEAVY, capOn: MH_FULL_RUN });
   if (why && HEAVY) { say(`PAUSE-CANARY: VOID — ${why}. Nothing was run.`); process.exit(3); }
 }
 if (MH_ON && HEAVY.startsWith('--')) { say(`PAUSE-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
+if (REHEARSAL && !(MH_CAP_ON && Number(opt('members', '6')) === 1)) { say('PAUSE-CANARY: usage — --rehearsal is the 1-member cap-ON plumbing try of `--exercise memhog-app` (--members 1, no --proof, no --memhog-switch off). Nothing was run.'); process.exit(2); }
 const EX0 = String(opt('exercise', '')).split(',').filter(Boolean);
 if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memhog-app runs ALONE (its own store settings, its own report shape)'); process.exit(2); }   // before ensureApp: a bad invocation must not cost a build
 // the Q11 envelope, checked HERE too (the same pure check the drive applies): a bad invocation must not cost a PACKAGED-app build first
@@ -190,7 +193,7 @@ async function drive({ appBin, appTree, exercise, cycles, members, label, pause,
 const gitInfo = () => ({ head: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD'), originMaster: sh('git', ['ls-remote', 'origin', 'refs/heads/master']).stdout.slice(0, 40) });
 
 /** the `memhog-app` options handed to the drive (the waiver and the cap travel with the exercise) */
-const memhogExtra = (arm = {}) => ['--memhog-switch', arm.memhogSwitch ?? opt('memhog-switch', 'on'), ...['cap-gb', 'soft-gb', 'hog-mb', 'waiver'].flatMap((k) => (opt(k, null) !== null ? [`--${k}`, opt(k)] : []))];
+const memhogExtra = (arm = {}) => [...(REHEARSAL ? ['--rehearsal'] : []), '--memhog-switch', arm.memhogSwitch ?? opt('memhog-switch', 'on'), ...['cap-gb', 'soft-gb', 'hog-mb', 'waiver'].flatMap((k) => (opt(k, null) !== null ? [`--${k}`, opt(k)] : []))];
 function writeReport(kind, body) { fs.mkdirSync(OUT, { recursive: true }); fs.writeFileSync(path.join(OUT, `${kind}.md`), body); say(`\nreport: ${path.join(OUT, `${kind}.md`)}`); }
 
 const claudeVersion = sh(claudeBin, ['--version']).stdout.trim();
@@ -227,13 +230,13 @@ if (!flag('proof')) {
   const full = MH_REPORT ? cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === 1 : KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === wantedEx.length;   // memhog-app is its own shape: ≥ 3 cycles, PASS
   const gi = gitInfo();
   const reds = r.checks.filter((c) => !c.ok);
-  const md = [`# ${MH_REPORT ? 'Pause canary 1b — memory-hog on the PACKAGED app' : 'Pause canary 1 — dummy fleet'} (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, MH_REPORT ? '`bars (never lowered): the overflowing process killed · keeper + CLI survive · the member AND only its coordinator told (#322, read by its own relève) · cap scope applied and still active · memory guard NEUTRALISED (Admission OFF, levels 0.6 / 0.5 GB) so only the cap is under test`' : `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !full ? (MH_REPORT ? ' (PARTIAL: fewer than 3 cycles)' : ' (PARTIAL: not 4 exercises × ≥ 3 cycles)') : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
+  const md = [`# ${MH_REPORT ? `Pause canary 1b — memory-hog on the PACKAGED app${REHEARSAL ? ' — DRY REHEARSAL (1 member, plumbing; NOT the Q11 run)' : ''}` : 'Pause canary 1 — dummy fleet'} (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, MH_REPORT ? '`bars (never lowered): the overflowing process killed · keeper + CLI survive · the member AND only its coordinator told (#322, read by its own relève) · cap scope applied and still active · memory guard NEUTRALISED (Admission OFF, levels 0.6 / 0.5 GB) so only the cap is under test`' : `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !full ? (MH_REPORT ? ' (PARTIAL: fewer than 3 cycles)' : ' (PARTIAL: not 4 exercises × ≥ 3 cycles)') : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
   writeReport('report', md);
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ git: gi, claude: claudeVersion, app: appBin, drive: r }, null, 1));
   say(`\n${table}\n`);
   // the contract shape is 4 exercises × ≥ 3 cycles: a green run of less is PARTIAL, never PASS (`--exercise dures` / `--cycles 0` can no longer print a PASS over an empty table)
   const word = r.verdict === 'PASS' && !full ? 'PARTIAL' : r.verdict;
-  say(`PAUSE-CANARY: ${word}${members < 10 ? ` (${members} workers — labelled, not the 10 of the ticket)` : ''}`);
+  say(`PAUSE-CANARY${REHEARSAL ? ' DRY-REHEARSAL (plumbing, not the Q11 run)' : ''}: ${word}${members < 10 ? ` (${members} workers — labelled, not the 10 of the ticket)` : ''}`);
   process.exit(word === 'PASS' ? 0 : word === 'PARTIAL' ? 4 : r.verdict === 'VOID' ? 3 : 1);   // 4 = green but not the contract shape (4 exercises × ≥ 3 cycles): never an exit-0 PASS
 }
 

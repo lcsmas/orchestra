@@ -242,6 +242,18 @@ test('run.mjs wiring (found by the first real attempt of the proof\'s cap-OFF ar
   const src = fs.readFileSync(new URL('../../scripts/pause-canary/run.mjs', import.meta.url), 'utf8');
   assert.match(src, /const MH_CAP_ON = MH_ON && !flag\('proof'\) && opt\('memhog-switch', 'on'\) === 'on';/);
   assert.match(src, /const capOn = MH_CAP_ON;/);
-  assert.match(src, /heavyTokensWhy\(\{ heavy: HEAVY, capOn: MH_CAP_ON \}\)/);
-  assert.match(src, /MH_CAP_ON \? CAP_ON_START_GB : MH_ON \? 9 : 0/);
+  assert.match(src, /const MH_FULL_RUN = MH_CAP_ON && !REHEARSAL;/);   // the tokens and the start bar hang on the FULL run (the rehearsal has its own test below)
+});
+
+test('run.mjs wiring of the labelled 1-member REHEARSAL (OPS 7313): one token and the 9 GB start apply to it, the full Q11 run keeps both tokens and 11 GB, the rehearsal is refused for anything but 1 member cap-ON, and it is labelled DRY in the report and the final line', () => {
+  const run = fs.readFileSync(new URL('../../scripts/pause-canary/run.mjs', import.meta.url), 'utf8');
+  const drive = fs.readFileSync(new URL('../../scripts/pause-canary/drive.mjs', import.meta.url), 'utf8');
+  assert.match(run, /const MH_FULL_RUN = MH_CAP_ON && !REHEARSAL;/);
+  assert.match(run, /MH_FULL_RUN \? CAP_ON_START_GB : MH_ON \? 9 : 0/);
+  assert.match(run, /heavyTokensWhy\(\{ heavy: HEAVY, capOn: MH_FULL_RUN \}\)/);
+  assert.match(run, /if \(REHEARSAL && !\(MH_CAP_ON && Number\(opt\('members', '6'\)\) === 1\)\)/);
+  assert.match(run, /DRY REHEARSAL \(1 member, plumbing; NOT the Q11 run\)/);
+  assert.match(run, /PAUSE-CANARY\$\{REHEARSAL \? ' DRY-REHEARSAL \(plumbing, not the Q11 run\)' : ''\}/);
+  assert.match(run, /\.\.\.\(REHEARSAL \? \['--rehearsal'\] : \[\]\)/);
+  assert.match(drive, /MH_ON_APP && !REHEARSAL \? CAP_ON_START_GB : MH_APP \? 9 : 0/);
 });
