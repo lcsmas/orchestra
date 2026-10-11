@@ -2,6 +2,7 @@
 // DELEGATED scope it was launched into (`systemd-run --scope -p Delegate=yes`). The keeper moves ITSELF (the scope's own main process, started for exactly this) into `k`; nothing that existed before is moved.
 // Why the keeper must not sit in the limited cgroup: see src/shared/memory-scope.ts (leaves). Electron-free; every cgroupfs operation is injected so the order and the failure handling are unit-tested.
 
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { SCOPE_LEAF_KEEPER, SCOPE_LEAF_WORK } from '../shared/memory-scope.ts';
 import { parseCgroupLimit } from '../shared/memory-scope.ts';
@@ -61,10 +62,41 @@ export function buildMemberLeaves(a: { scopeDir: string; hardBytes: number; pid:
 
 export interface PlacementProbe {
   ok: boolean;
-  /** Did the wrapper RUN (its command produced output)? false = it could not be executed at all: a prefix that cannot run would make EVERY Bash tool call fail. */
+  /** Did the wrapper START? false ONLY with proof it cannot be executed at all (spawn ENOENT / EACCES / ENOEXEC…, shell exit 126 / 127): as the prefix it would make EVERY Bash tool call fail. A timeout, a signal, a non-zero exit or a transient spawn error all read `true` (D-Q13: it started, or may have). */
   ran: boolean;
+  /** The probe was killed for time (its 5 s budget): the wrapper STARTED (slow host), the placement is simply unproven. */
+  timedOut?: boolean;
   /** What the probe saw: the cgroup path the wrapped command reported, or why it could not. */
   saw: string;
+}
+
+/** What one probe spawn came to, before the cgroup line is looked at. */
+export type ProbeRun =
+  | { kind: 'ok'; stdout: string }
+  | { kind: 'timeout' }
+  | { kind: 'cannot-exec'; why: string }
+  | { kind: 'failed'; why: string };
+
+/** The probe's whole budget for ONE attempt = master's single 5 s probe (a wrapper that works but is slow under load must not be mistaken for a broken one). */
+export const PROBE_TIMEOUT_MS = 5000;
+/** Spawn errors that PROVE the wrapper cannot be executed (a path / format problem). Anything else (EAGAIN, ENOMEM, EMFILE, a timeout…) is transient or says nothing about the file. */
+const CANNOT_EXEC_CODES = new Set(['ENOENT', 'EACCES', 'ENOEXEC', 'ENOTDIR', 'ELOOP', 'EISDIR']);
+
+/** Map a `spawnSync` result to what the probe may conclude. Only proof of non-executability reads `cannot-exec` — see {@link PlacementProbe.ran}. */
+export function classifyProbeRun(r: { error?: { code?: string; message?: string } | null; status: number | null; signal: string | null; stdout?: string | null }): ProbeRun {
+  if (r.error) {
+    const code = r.error.code ?? '';
+    if (code === 'ETIMEDOUT') return { kind: 'timeout' };
+    return CANNOT_EXEC_CODES.has(code) ? { kind: 'cannot-exec', why: `spawn ${code}` } : { kind: 'failed', why: `spawn error ${code || r.error.message || '?'}` };
+  }
+  if (r.status === 126 || r.status === 127) return { kind: 'cannot-exec', why: `exit ${r.status} (the shell could not exec)` };
+  if (r.status !== 0) return { kind: 'failed', why: r.signal ? `killed by ${r.signal}` : `exit ${r.status}` };
+  return { kind: 'ok', stdout: r.stdout ?? '' };
+}
+
+/** The real probe spawn: the wrapper on one argument, a minimal environment, `timeoutMs` (default {@link PROBE_TIMEOUT_MS}). */
+export function runProbeSpawn(wrapper: string, args: string[], env: Record<string, string>, timeoutMs = PROBE_TIMEOUT_MS): ProbeRun {
+  return classifyProbeRun(spawnSync(wrapper, args, { env, encoding: 'utf8', timeout: timeoutMs }));
 }
 
 /**
@@ -72,20 +104,23 @@ export interface PlacementProbe {
  * `run` = spawn + capture (injected). A wrapper that is stale, not executable, or cannot write the leaf's cgroup.procs (an unwritable cgroupfs) would otherwise leave EVERY tool in `k`, `w` empty and the cap
  * nothing while the state read `active`. Proves the wrapper and the leaf, not that the CLI honours the prefix (that is `scripts/memory-cap/real-cli-prefix.mjs`, which asserts the placement of the real CLI's tools).
  */
-export function probeToolPlacement(a: { wrapper: string; workDir: string; cgroupRoot: string; parseCgroup: (text: string) => string | null; run: (wrapper: string, args: string[], env: Record<string, string>) => string | null }): PlacementProbe {
-  const out = a.run(a.wrapper, ['cat /proc/self/cgroup'], { PATH: '/usr/local/bin:/usr/bin:/bin', SHELL: '/bin/bash', ORCHESTRA_MEMCAP_WORK_LEAF: a.workDir });
-  if (out === null) return { ok: false, ran: false, saw: 'the wrapper did not run' };
+export function probeToolPlacement(a: { wrapper: string; workDir: string; cgroupRoot: string; parseCgroup: (text: string) => string | null; run: (wrapper: string, args: string[], env: Record<string, string>) => ProbeRun }): PlacementProbe {
+  const r = a.run(a.wrapper, ['cat /proc/self/cgroup'], { PATH: '/usr/local/bin:/usr/bin:/bin', SHELL: '/bin/bash', ORCHESTRA_MEMCAP_WORK_LEAF: a.workDir });
+  if (r.kind === 'cannot-exec') return { ok: false, ran: false, saw: `the wrapper cannot be executed (${r.why})` };
+  if (r.kind === 'timeout') return { ok: false, ran: true, timedOut: true, saw: 'the probe timed out (the wrapper started but did not finish in time)' };
+  if (r.kind === 'failed') return { ok: false, ran: true, saw: `the wrapper started but failed (${r.why})` };
+  const out = r.stdout;
   const cg = a.parseCgroup(out);
   if (cg === null) return { ok: false, ran: true, saw: `no cgroup v2 line in ${JSON.stringify(out.slice(0, 80))}` };
   const where = path.join(a.cgroupRoot, cg);
   return { ok: where === a.workDir, ran: true, saw: where };
 }
 
-/** Probe up to `1 + retries` times and stop at the first success (a single failed spawn under host pressure must not decide a member's whole life). `attempts` = how many probes ran. */
+/** Probe up to `1 + retries` times and stop at the first success (a single failed spawn under host pressure must not decide a member's whole life). NO retry after a TIMEOUT: a slow host does not get a second 5 s. `attempts` = how many probes ran. */
 export function probeWithRetry(probe: () => PlacementProbe, retries = 1): PlacementProbe & { attempts: number } {
   let r = probe();
   let attempts = 1;
-  while (!r.ok && attempts <= retries) {
+  while (!r.ok && !r.timedOut && attempts <= retries) {
     r = probe();
     attempts += 1;
   }

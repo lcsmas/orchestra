@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, probeWithRetry, readLeafCpuUsec, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, createPlacementTripwire, PROBE_TIMEOUT_MS, classifyProbeRun, probeToolPlacement, probeWithRetry, readLeafCpuUsec, runProbeSpawn, type LeafFs, type ProbeRun } from './member-leaves.ts';
 
 const S = '/sys/fs/cgroup/user.slice/app.slice/orchestra-ws-w-abc.scope';
 const HARD = 256 * 1024 * 1024;
@@ -56,7 +59,7 @@ test('#332 probe: the wrapper PLACES a command in the work leaf ⇒ ok; anywhere
   const ROOT = '/sys/fs/cgroup';
   const W = `${ROOT}/user.slice/app.slice/orchestra-ws-w-abc.scope/w`;
   const parse = (t: string): string | null => /^0::(.*)$/m.exec(t)?.[1] ?? null;
-  const mk = (out: string | null) => probeToolPlacement({ wrapper: '/h/bin/oom-tool-wrapper.sh', workDir: W, cgroupRoot: ROOT, parseCgroup: parse, run: (_w, _a, _e) => out });
+  const mk = (out: string | null) => probeToolPlacement({ wrapper: '/h/bin/oom-tool-wrapper.sh', workDir: W, cgroupRoot: ROOT, parseCgroup: parse, run: (_w, _a, _e): ProbeRun => (out === null ? { kind: 'cannot-exec', why: 'spawn ENOENT' } : { kind: 'ok', stdout: out }) });
   assert.deepEqual(mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/w\n'), { ok: true, ran: true, saw: W });
   const inK = mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/k\n');
   assert.equal(inK.ok, false);
@@ -66,12 +69,12 @@ test('#332 probe: the wrapper PLACES a command in the work leaf ⇒ ok; anywhere
   assert.match(mk('garbage\n').saw, /no cgroup v2 line/);
   assert.equal(mk('garbage\n').ran, true, 'it RAN (output came back) — only the placement is unproven');
   assert.equal(inK.ran, true);
-  assert.deepEqual(mk(null), { ok: false, ran: false, saw: 'the wrapper did not run' });
+  assert.deepEqual(mk(null), { ok: false, ran: false, saw: 'the wrapper cannot be executed (spawn ENOENT)' });
 });
 
 test('#332 probe: the probe command and environment — the wrapper gets ONE argument, the work leaf and a PATH/SHELL, nothing from the keeper\'s environment', () => {
   let seen: { w: string; a: string[]; e: Record<string, string> } | null = null;
-  probeToolPlacement({ wrapper: '/h/w.sh', workDir: '/sys/fs/cgroup/x.scope/w', cgroupRoot: '/sys/fs/cgroup', parseCgroup: () => null, run: (w, a, e) => { seen = { w, a, e }; return ''; } });
+  probeToolPlacement({ wrapper: '/h/w.sh', workDir: '/sys/fs/cgroup/x.scope/w', cgroupRoot: '/sys/fs/cgroup', parseCgroup: () => null, run: (w, a, e): ProbeRun => { seen = { w, a, e }; return { kind: 'ok', stdout: '' }; } });
   assert.ok(seen);
   const s = seen as { w: string; a: string[]; e: Record<string, string> };
   assert.equal(s.w, '/h/w.sh');
@@ -172,4 +175,70 @@ test('#332 fu tripwire (review): a tripwire that gives up on an unreadable count
   const tw = createPlacementTripwire({ baseline: 1, readCounter: () => null, onTrip: () => assert.fail('never trips on an unknown'), onGiveUp: (n) => gave.push(n), after: 1, giveUpAfter: 3 });
   for (let i = 0; i < 8; i++) tw.onLine('{"type":"user","tool_result":{"id":"x"}}');
   assert.deepEqual(gave, [3], 'said once, at giveUpAfter');
+});
+
+test('#332-fu m-a (OPS 7281): the probe classification — ONLY proof of non-executability reads `cannot-exec` (prefix dropped); a timeout, a signal, a non-zero exit, a transient spawn error ALL mean the wrapper started', () => {
+  const k = (r: Partial<Parameters<typeof classifyProbeRun>[0]>): ProbeRun => classifyProbeRun({ status: 0, signal: null, stdout: 'x', ...r });
+  assert.deepEqual(k({}), { kind: 'ok', stdout: 'x' });
+  for (const code of ['ENOENT', 'EACCES', 'ENOEXEC', 'ENOTDIR', 'ELOOP', 'EISDIR']) assert.equal(k({ error: { code }, status: null }).kind, 'cannot-exec', code);
+  assert.equal(k({ status: 126 }).kind, 'cannot-exec', 'the shell found it but could not exec');
+  assert.equal(k({ status: 127 }).kind, 'cannot-exec', 'the shell could not find what to exec');
+  assert.deepEqual(k({ error: { code: 'ETIMEDOUT' }, status: null, signal: 'SIGTERM' }), { kind: 'timeout' });
+  for (const code of ['EAGAIN', 'ENOMEM', 'EMFILE', 'E2BIG']) assert.equal(k({ error: { code }, status: null }).kind, 'failed', `${code} is transient: says nothing about the file`);
+  assert.equal(k({ status: 1 }).kind, 'failed');
+  assert.equal(k({ status: null, signal: 'SIGKILL' }).kind, 'failed');
+});
+
+test('#332-fu m-a: a timed-out probe is `ran:true, timedOut` (not ok, NOT « cannot run »); a failed one is `ran:true`; only cannot-exec is `ran:false`', () => {
+  const W = '/sys/fs/cgroup/x.scope/w';
+  const mk = (r: ProbeRun) => probeToolPlacement({ wrapper: '/h/w.sh', workDir: W, cgroupRoot: '/sys/fs/cgroup', parseCgroup: () => null, run: () => r });
+  assert.deepEqual([mk({ kind: 'timeout' }).ok, mk({ kind: 'timeout' }).ran, mk({ kind: 'timeout' }).timedOut], [false, true, true]);
+  assert.deepEqual([mk({ kind: 'failed', why: 'exit 1' }).ran, mk({ kind: 'failed', why: 'exit 1' }).timedOut], [true, undefined]);
+  assert.equal(mk({ kind: 'cannot-exec', why: 'spawn EACCES' }).ran, false);
+});
+
+test('#332-fu m-a: NO retry after a timeout (a slow host does not get a second 5 s); a fast failure is retried once', () => {
+  let n = 0;
+  const slow = probeWithRetry(() => { n += 1; return { ok: false, ran: true, timedOut: true, saw: 't' }; });
+  assert.deepEqual([slow.attempts, n], [1, 1], 'one probe only');
+  let m = 0;
+  const fast = probeWithRetry(() => { m += 1; return { ok: m === 2, ran: true, saw: 'x' }; });
+  assert.deepEqual([fast.ok, fast.attempts], [true, 2]);
+});
+
+const sh = (body: string) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fu-probe-'));
+  const f = path.join(dir, 'wrapper.sh');
+  fs.writeFileSync(f, body, { mode: 0o755 });
+  return { f, dir };
+};
+
+test('#332-fu m-a (OPS 7281) REAL spawn: a wrapper that WORKS but takes 3 s is NOT « cannot run » — it is tolerated inside the 5 s budget (the fu\'s first cut, 2.5 s, dropped the prefix here)', () => {
+  assert.equal(PROBE_TIMEOUT_MS, 5000, 'master\'s single-probe tolerance');
+  const { f, dir } = sh('#!/bin/sh\nsleep 3\nexec /bin/sh -c "$1"\n');
+  try {
+    const t0 = Date.now();
+    const p = probeToolPlacement({ wrapper: f, workDir: '/sys/fs/cgroup/none/w', cgroupRoot: '/sys/fs/cgroup', parseCgroup: (t) => /^0::(.*)$/m.exec(t)?.[1] ?? null, run: runProbeSpawn });
+    const ms = Date.now() - t0;
+    assert.ok(ms >= 2900 && ms < 5000, `it really took ~3 s (${ms} ms)`);
+    assert.equal(p.ran, true, 'it ran: the prefix stays');
+    assert.equal(p.timedOut, undefined);
+    assert.equal(p.ok, false, 'it did not place the probe command in the (nonexistent) work leaf, which is a different, honest verdict');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#332-fu m-a REAL spawn: a wrapper killed for TIME started (ran:true, timedOut); a bad interpreter / a non-executable file cannot be executed (ran:false); a wrapper exiting 1 started', () => {
+  const slow = sh('#!/bin/sh\nsleep 5\n');
+  const noInterp = sh('#!/nonexistent/interpreter\necho hi\n');
+  const noExec = sh('#!/bin/sh\necho hi\n');
+  fs.chmodSync(noExec.f, 0o644);
+  const exits1 = sh('#!/bin/sh\nexit 1\n');
+  try {
+    const run = (f: string, ms = 5000) => probeToolPlacement({ wrapper: f, workDir: '/w', cgroupRoot: '/r', parseCgroup: () => null, run: (w, a, e) => runProbeSpawn(w, a, e, ms) });
+    const t = run(slow.f, 400);
+    assert.deepEqual([t.ran, t.timedOut, t.ok], [true, true, false], 'killed for time ⇒ it STARTED');
+    assert.equal(run(noInterp.f).ran, false, 'ENOENT on the interpreter ⇒ cannot be executed');
+    assert.equal(run(noExec.f).ran, false, 'EACCES ⇒ cannot be executed');
+    assert.equal(run(exits1.f).ran, true, 'it started and exited 1');
+  } finally { for (const x of [slow, noInterp, noExec, exits1]) fs.rmSync(x.dir, { recursive: true, force: true }); }
 });

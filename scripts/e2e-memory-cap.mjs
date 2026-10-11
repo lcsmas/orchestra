@@ -55,6 +55,8 @@ const ARMS = {
   probe_fails_prefix_kept: { mustFailOnMaster: true },
   probe_flaky_retry_passes: { mustFailOnMaster: true },
   probe_unrunnable_prefix_dropped: { mustFailOnMaster: true },
+  probe_slow_wrapper_stays_active: { mustFailOnMaster: true },
+  probe_timeout_prefix_kept: { mustFailOnMaster: true },
   tripwire_tools_not_landing: { mustFailOnMaster: true },
   // review round 1 (OPS m1-m4): a member WITHOUT a scope is stopped as before; a scoped /clear leaves a successor whole and holds off a wake; the pid file is not the only live-keeper signal
   no_scope_changes_nothing: {},
@@ -878,8 +880,9 @@ try {
     check('a tool command runs at adj 1000 in the WORK leaf', lines[0] === '1000' && (lines[1] ?? '').trim().endsWith('/w'), JSON.stringify(lines));
     detail = `state=${pr?.cap?.state}`;
   } else if (ARM === 'probe_unrunnable_prefix_dropped') {
-    // A wrapper that cannot RUN at all (exit 1 on every call): as the shell prefix it would fail EVERY Bash call, so it is dropped — loudly (keeper log + app WARN); the state says not-applied and tools still work.
-    fs.writeFileSync(WRAPPER, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    // A wrapper that cannot be EXECUTED at all (a bad interpreter ⇒ spawn ENOENT; executable bit set, so the app still launches the scope): as the shell prefix it would fail EVERY Bash call, so it is dropped — loudly (keeper log +
+    // app WARN); the state says not-applied and tools still work. (A wrapper that merely exits 1 or times out STARTED: see probe_timeout_prefix_kept.)
+    fs.writeFileSync(WRAPPER, '#!/nonexistent/interpreter\necho unreachable\n', { mode: 0o755 });
     const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
     const up = await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
@@ -892,6 +895,46 @@ try {
     check('the CLI got NO shell prefix (a prefix that cannot run would fail every Bash call)', !initOf(st)?.shellPrefix, `prefix=${initOf(st)?.shellPrefix}`);
     const t = await runTool(st, 'echo still-works', 't-works', 20_000);
     check('a Bash tool command still WORKS', (t?.stdout ?? '').trim() === 'still-works', JSON.stringify(t?.stdout));
+    detail = `state=${pr?.cap?.state}`;
+  } else if (ARM === 'probe_slow_wrapper_stays_active') {
+    // OPS 7281 (m-a): a wrapper that WORKS but takes 3 s on its first call (a loaded host) must not be mistaken for a broken one — the first cut (2.5 s per attempt) dropped the prefix here. Inside the 5 s budget: state active, prefix kept, tools in w.
+    const real = fs.readFileSync(WRAPPER, 'utf8').replace(/^#!.*\n/, '');
+    const marker = path.join(base, 'probe-calls');
+    // slow on EVERY probe call (the probe's command is exactly `cat /proc/self/cgroup`), fast for the real tool commands: a retry cannot rescue a 2.5 s budget here
+    fs.writeFileSync(WRAPPER, `#!/bin/sh\nif [ "$1" = 'cat /proc/self/cgroup' ]; then echo x >> '${marker}'; sleep 3; fi\n${real}`, { mode: 0o755 });
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    const up = await waitFor(() => initOf(st), 45_000);
+    const f = factsOf(ws, st);
+    const klog = readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '';
+    const pr = await kc.probeKeeper(ws);
+    check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
+    const calls = (readSafe(marker) ?? '').split('\n').filter(Boolean).length;
+    check('the probe was slow (3 s) and passed on its FIRST attempt (one probe call, no retry needed)', calls === 1, `probe calls=${calls}`);
+    check('cap.state = active (a slow wrapper that works is a working wrapper)', pr?.cap?.state === 'active', JSON.stringify(pr?.cap ?? null));
+    check('the prefix is set and the log has NO probe-failure / TIMED OUT / could-not-be-RUN line', !!initOf(st)?.shellPrefix && !/did NOT place|TIMED OUT|could not be RUN/.test(klog), `prefix=${initOf(st)?.shellPrefix}`);
+    const t = await runTool(st, 'cat /proc/self/oom_score_adj; cat /proc/self/cgroup', 't-where', 20_000);
+    const lines = (t?.stdout ?? '').trim().split('\n');
+    check('a tool command lands in the WORK leaf at adj 1000', lines[0] === '1000' && (lines[1] ?? '').trim().endsWith('/w'), JSON.stringify(lines));
+    detail = `state=${pr?.cap?.state}`;
+  } else if (ARM === 'probe_timeout_prefix_kept') {
+    // OPS 7281 (m-a): a wrapper that does not finish inside the 5 s budget (a stuck cgroup.procs write) STARTED: the prefix stays (tools keep adj 1000), the state is unprotected (placement unproven), the log is loud — never « cannot run ».
+    const real = fs.readFileSync(WRAPPER, 'utf8').replace(/^#!.*\n/, '');
+    const marker = path.join(base, 'probe-calls');
+    fs.writeFileSync(WRAPPER, `#!/bin/sh\nif [ "$1" = 'cat /proc/self/cgroup' ]; then echo x >> '${marker}'; exec sleep 8; fi\n${real}`, { mode: 0o755 });
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    const up = await waitFor(() => initOf(st), 45_000);
+    const f = factsOf(ws, st);
+    const klog = readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '';
+    const pr = await kc.probeKeeper(ws);
+    check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
+    check('the keeper reports cap.state = unprotected (NOT not-applied: the wrapper started)', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
+    check('the log says the probe TIMED OUT, that the wrapper STARTED and that the prefix stays', /probe TIMED OUT after 5000 ms/.test(klog) && /it STARTED/.test(klog) && /the prefix stays/.test(klog) && !/could not be RUN/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-260));
+    const calls = (readSafe(marker) ?? '').split('\n').filter(Boolean).length;
+    check('NO retry after a timeout: exactly ONE probe call (a slow host does not get a second 5 s)', calls === 1, `probe calls=${calls}`);
+    check('the PREFIX is still set (tools keep adj 1000)', !!initOf(st)?.shellPrefix, `prefix=${initOf(st)?.shellPrefix}`);
+    const t = await runTool(st, 'cat /proc/self/oom_score_adj; cat /proc/self/cgroup', 't-adj', 20_000);
+    const lines = (t?.stdout ?? '').trim().split('\n');
+    check('a tool command runs at adj 1000 (only the probe command stalls)', lines[0] === '1000', JSON.stringify(lines));
     detail = `state=${pr?.cap?.state}`;
   } else if (ARM === 'tripwire_tools_not_landing') {
     // The probe passes (it injects the leaf into the wrapper's env itself), but the CLI does NOT forward ORCHESTRA_MEMCAP_WORK_LEAF to its tools: no tool ever lands in the work leaf. After 3 tool results the tripwire fires, once.

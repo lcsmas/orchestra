@@ -34,7 +34,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   createLineSplitter,
   encodeKeeperFrame,
@@ -53,7 +53,7 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
-import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, probeWithRetry, readLeafCpuUsec, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
+import { buildMemberLeaves, createPlacementTripwire, PROBE_TIMEOUT_MS, probeToolPlacement, probeWithRetry, readLeafCpuUsec, runProbeSpawn, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
 import { INNER_SHELL_PREFIX_ENV, OOM_ADJ_TOOLS, decideCapState, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
@@ -356,9 +356,9 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   }
   // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
   if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
-  // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, before saying `active`. ONE retry (a single spawn failing under host pressure
-  // must not decide a member's whole life; 2 x 2.5 s, no longer than the one 5 s probe it replaces). A wrapper that RAN but landed elsewhere keeps the prefix (tools keep adj 1000 — the kernel still prefers them): only the STATE says
-  // the cap is not held. A wrapper that cannot be EXECUTED at all is dropped as the prefix (it would fail every Bash call) — loudly.
+  // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, before saying `active`. ONE retry after a fast failure (a single spawn failing under host
+  // pressure must not decide a member's whole life), NONE after a timeout; each attempt gets master's 5 s. A wrapper that STARTED (landed elsewhere, timed out, failed) keeps the prefix (tools keep adj 1000 — the kernel still
+  // prefers them): only the STATE says the cap is not proven. Only PROOF that it cannot be EXECUTED (ENOENT / EACCES / ENOEXEC / exit 126-127) drops the prefix (it would fail every Bash call) — loudly (D-Q13).
   let placed = true;
   let wrapperRuns = true;
   if (wrapperOk && cap.wrapper) {
@@ -367,10 +367,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
       workDir: dir,
       cgroupRoot: CGROUP_ROOT,
       parseCgroup: parseProcCgroupV2,
-      run: (w, args, penv) => {
-        const r = spawnSync(w, args, { env: penv, encoding: 'utf8', timeout: 2500 });
-        return r.status === 0 ? r.stdout : null;
-      },
+      run: runProbeSpawn,
     }));
     if (!probe.ok) {
       placed = false;
@@ -378,6 +375,8 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
         wrapperOk = false;
         wrapperRuns = false;
         klog(`memory cap: WARNING — the tool wrapper could not be RUN (${probe.attempts} attempts: ${probe.saw}) — the shell prefix is NOT set (it would fail every Bash call): tools run unwrapped (oom_score_adj 0) and NOTHING is capped at the hard level (state not-applied)`);
+      } else if (probe.timedOut) {
+        klog(`memory cap: WARNING — the tool wrapper probe TIMED OUT after ${PROBE_TIMEOUT_MS} ms: it STARTED (a slow host?) but did not finish, so its placement in the work leaf is UNPROVEN — the prefix stays (tools keep oom_score_adj ${OOM_ADJ_TOOLS}), state unprotected: NOTHING is known to be capped at the hard level`);
       } else {
         klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (${probe.attempts} attempts; saw ${probe.saw}; expected ${dir}) — tool commands run in the KEEPER leaf: NOTHING is capped at the hard level (the prefix stays: they keep oom_score_adj ${OOM_ADJ_TOOLS})`);
       }

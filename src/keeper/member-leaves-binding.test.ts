@@ -61,7 +61,9 @@ test('the wrapper is PROBED at runtime before `active` is claimed: a probe that 
 
 test('review m2 (#332 fu): a probe that still fails after ONE retry keeps the prefix when the wrapper RAN (tools keep adj 1000; the STATE says unprotected, loudly); a wrapper that cannot be EXECUTED is dropped as the prefix', () => {
   assert.match(setup, /const probe = probeWithRetry\(\(\) => probeToolPlacement\(\{/, 'one retry, through the tested helper');
-  assert.match(setup, /\{ env: penv, encoding: 'utf8', timeout: 2500 \}/, 'two probes fit in the one 5 s budget the single probe had');
+  assert.match(setup, /run: runProbeSpawn,/, 'the real spawn + classification live in member-leaves.ts (unit-tested with real wrappers: 3 s tolerated, timeout = started, bad interpreter = cannot run)');
+  assert.doesNotMatch(setup, /spawnSync\(/, 'no hand-rolled spawn in the keeper: a timeout must never be read as « cannot run » again');
+  assert.match(setup, /\} else if \(probe\.timedOut\) \{\n        klog\(`memory cap: WARNING — the tool wrapper probe TIMED OUT after \$\{PROBE_TIMEOUT_MS\} ms: it STARTED/, 'OPS 7281: a timeout keeps the prefix, state unprotected, strong log');
   const block = setup.slice(setup.indexOf('let placed = true;'), setup.indexOf('placementTripwire = null;'));
   assert.match(block, /if \(!probe\.ok\) \{\n      placed = false;\n      if \(!probe\.ran\) \{\n        wrapperOk = false;\n        wrapperRuns = false;/, 'only a wrapper that never RAN is taken off (as the prefix it would fail every Bash call)');
   assert.equal((block.match(/wrapperOk = false/g) ?? []).length, 1, 'no other probe outcome touches wrapperOk');
