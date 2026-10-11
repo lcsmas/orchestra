@@ -72,6 +72,9 @@ if (view === 'table') {
 } else {
   const settings = { admissionGb: 6, criticalGb: 3, admissionEnabled: true, capSoftGb: 3, capHardGb: 6, reliquatWaitMin: 30 };
   const snapshot = { sampled: true, measured: true, availBytes: 11.4 * GB, readAt: 1, admission: 'open', admissionEnabled: true, pause: 'none', episode: 0, pauseCycle: 0, mayReleaseOneStart: true, heldSince: null, pauseSince: null, admissionBytes: 6 * GB, criticalBytes: 3 * GB, releaseMarginBytes: GB, sampleIntervalMs: 60000 };
+  const MG_VIEW = { settings, snapshot, liveAvailBytes: 11.4 * GB, totalBytes: 32 * GB };
+  const CAP_SW = { liveOn: false, runsOn: 1, runsOpen: 3, hostOk: true, text: 'Cap is OFF for new runs · ON on 1 of 3 open runs' };
+  window.__MG_VIEW = MG_VIEW; window.__CAP_SW = CAP_SW; // what the window's own polling (memoryGuard / busCapSummary) gets back: the stub must answer with the REAL shapes, not []
   root.render(React.createElement(MemoryGuardSettings, { onClose: () => {}, initial: { view: { settings, snapshot, liveAvailBytes: 11.4 * GB, totalBytes: 32 * GB }, capSwitch: { liveOn: false, runsOn: 1, runsOpen: 3, hostOk: true, text: 'Cap is OFF for new runs · ON on 1 of 3 open runs' } } }));
 }
 document.title = 'memcap-' + view;
@@ -82,7 +85,7 @@ fs.writeFileSync(path.join(tmp, 'styles.css'), fs.readFileSync(path.join(repoRoo
 fs.writeFileSync(path.join(tmp, 'page.js'), fs.readFileSync(bundleJs));
 fs.writeFileSync(path.join(tmp, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="./styles.css">
 <style>html,body{margin:0;height:100%;}#root{position:relative;min-height:100%;}</style></head><body><div id="root"></div>
-<script>window.orchestra = new Proxy({}, { get: (_t, k) => (String(k).startsWith('on') ? () => () => {} : async () => []) });</script>
+<script>window.orchestra = new Proxy({ memoryGuard: async () => window.__MG_VIEW, busCapSummary: async () => window.__CAP_SW, setMemoryGuard: async () => ({ ok: true, view: window.__MG_VIEW }) }, { get: (t, k) => (k in t ? t[k] : String(k).startsWith('on') ? () => () => {} : async () => []) });</script>
 <script src="./page.js"></script></body></html>`);
 
 const electronBin = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron');
