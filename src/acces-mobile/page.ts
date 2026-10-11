@@ -56,8 +56,15 @@ export const APP_JS = `(function () {
     listEl.textContent = '';
     if (!rows.length) { setState(needsMe.checked ? 'Rien ne t\\'attend.' : 'Aucun workspace.'); return; }
     setState('');
+    // Attention beats grouping: everything en attente / non lu first in one section (rows arrive attention-sorted), then the
+    // rest by repo like the desktop sidebar.
+    var FOR_YOU = 'Pour toi';
     var groups = {}; var order = [];
-    rows.forEach(function (w) { if (!groups[w.group]) { groups[w.group] = []; order.push(w.group); } groups[w.group].push(w); });
+    rows.forEach(function (w) {
+      var g = (w.status === 'waiting' || w.unread) ? FOR_YOU : w.group;
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(w);
+    });
     order.forEach(function (g) {
       listEl.appendChild(el('h2', null, g));
       var ul = el('ul');
@@ -67,7 +74,7 @@ export const APP_JS = `(function () {
         top.appendChild(el('span', 'st', LABEL[w.status] || w.status));
         if (w.unread) top.appendChild(el('span', 'st', 'non lu'));
         li.appendChild(top);
-        li.appendChild(el('div', 'meta', w.branch + ' · ' + w.account));
+        li.appendChild(el('div', 'meta', (g === FOR_YOU ? w.group + ' · ' : '') + w.branch + ' · ' + w.account));
         if (w.statusText) li.appendChild(el('div', 'meta', w.statusText));
         ul.appendChild(li);
       });
