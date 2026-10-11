@@ -33,6 +33,7 @@ import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { ModelDefaultsSettings } from './ModelDefaultsSettings';
 import { MemoryGuardSettings } from './MemoryGuardSettings';
+import { AccesMobileSettings } from './AccesMobileSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
 import { UsageBars } from './UsageBars';
@@ -120,6 +121,15 @@ function ChipIcon() {
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <rect x="6" y="6" width="12" height="12" rx="2" />
       <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
+    </svg>
+  );
+}
+
+function PhoneIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <rect x="6.5" y="2" width="11" height="20" rx="2" />
+      <path d="M11 18.5h2" />
     </svg>
   );
 }
@@ -917,6 +927,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [memoryGuardOpen, setMemoryGuardOpen] = useState(false);
+  const [accesMobileOpen, setAccesMobileOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   // #257 — read once: the row class below is a plain derivation (the row PARTS subscribe themselves).
@@ -1818,6 +1829,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <MemoryIcon />
           </button>
+          {/* Accès mobile (#334, ADR 0006): the phone server process — off by default, tailnet identity + token. */}
+          <button
+            className="header-icon-btn"
+            onClick={() => setAccesMobileOpen(true)}
+            title="Accès mobile — talk to your workspaces from your phone"
+            aria-label="Accès mobile settings"
+            data-am-open
+          >
+            <PhoneIcon />
+          </button>
           {/* Fleet-bus mechanism switches (#118). The SETTINGS write lives here,
               never in the bus pane — the pane is read-only in v1. */}
           <button
@@ -2646,6 +2667,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           />
         )}
         {memoryGuardOpen && <MemoryGuardSettings onClose={() => setMemoryGuardOpen(false)} />}
+        {accesMobileOpen && <AccesMobileSettings onClose={() => setAccesMobileOpen(false)} />}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}
         {accountsSettingsOpen && (
           <AccountsSettings onClose={() => setAccountsSettingsOpen(false)} />

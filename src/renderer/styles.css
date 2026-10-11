@@ -6300,3 +6300,9 @@ button.danger-primary:active {
 .mg-section-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
 .mg-section-sub { font-weight: 400; color: var(--text-dim); }
 .mg-cap-switch { margin-bottom: 8px; }
+/* Accès mobile settings (#334) — reuses the memory-guard dialog rhythm. */
+.acces-mobile-settings .mg-input { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font-variant-numeric: tabular-nums; }
+.acces-mobile-settings .mg-input:focus { outline: none; border-color: var(--accent); }
+.acces-mobile-settings .mg-input-row .mg-input { width: 80px; }
+.acces-mobile-settings input[data-am-login] { width: 100%; box-sizing: border-box; }
+.am-cmd { display: block; padding: 6px 8px; border-radius: 6px; background: var(--bg-2); font-size: 12px; user-select: all; word-break: break-all; }

@@ -164,6 +164,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { memoryGuardView, setMemoryGuardSettings } from './memory-guard-settings.ts';
+import { accesMobileView, setAccesMobileSettings } from './acces-mobile-host.ts';
 import { wakeHeldForMemory } from './admission-wake';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
@@ -385,6 +386,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   setEffortDefaults: 'settings:setEffortDefaults',
   memoryGuard: 'settings:memoryGuard',
   setMemoryGuard: 'settings:setMemoryGuard',
+  accesMobile: 'settings:accesMobile',
+  setAccesMobile: 'settings:setAccesMobile',
   refreshTickets: 'tickets:refresh',
   removeTicket: 'tickets:remove',
   spawnFromTicket: 'tickets:spawn',
@@ -1378,6 +1381,10 @@ export const apiHandlers: ApiHandlerTable = {
 
   // Validated, persisted, then applied HOT (the guard re-samples at once) — see memory-guard-settings.ts.
   setMemoryGuard: async (next) => setMemoryGuardSettings(next, store),
+
+  // Accès mobile (#334): validated → persisted → the server process (re)started or stopped at once — see acces-mobile-host.ts.
+  accesMobile: async () => accesMobileView(),
+  setAccesMobile: async (next) => setAccesMobileSettings(next),
 
   refreshTickets: async () => refreshPinnedTickets(),
 

@@ -14,6 +14,7 @@ import type { SelfTuneRun } from '../shared/self-tune';
 import { normalizeModelDefaults, type ModelDefaults } from '../shared/model-defaults';
 import { normalizeEffortDefaults, type EffortDefaults } from '../shared/effort-defaults';
 import { normalizeMemoryGuardSettings, type MemoryGuardSettings } from '../shared/memory-guard';
+import { normalizeAccesMobileSettings, type AccesMobileSettings } from '../shared/acces-mobile';
 import { scoped } from './logger';
 
 /** Store-scoped logger. Persistence failures are invisible at runtime — every
@@ -76,6 +77,9 @@ interface StoreShape {
   /** Memory guard thresholds (GB) + the global Admission/fast-Veille toggle (#285), raw — shared/memory-guard.ts normalizes.
    *  LIVE values, read at every sample (never frozen per run). Absent → 6 / 3 GB, toggle ON. */
   memoryGuard?: Partial<MemoryGuardSettings>;
+  /** Accès mobile (#334): on/off, ports, allowed Tailscale login — raw, shared/acces-mobile.ts normalizes. Absent → OFF.
+   *  The token is NOT here: it lives in its own 0600 file (main/acces-mobile-host.ts). */
+  accesMobile?: Partial<AccesMobileSettings>;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -465,6 +469,16 @@ class Store {
 
   async setMemoryGuardSettings(next: MemoryGuardSettings): Promise<void> {
     this.data.memoryGuard = next;
+    await this.save();
+  }
+
+  /** Accès mobile settings, normalized (absent / malformed ⇒ OFF). */
+  getAccesMobileSettings(): AccesMobileSettings {
+    return normalizeAccesMobileSettings(this.data.accesMobile);
+  }
+
+  async setAccesMobileSettings(next: AccesMobileSettings): Promise<void> {
+    this.data.accesMobile = next;
     await this.save();
   }
 

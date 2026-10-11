@@ -3,6 +3,7 @@ import type { BusSwitches } from './bus-switches.ts';
 import type { ModelDefaults } from './model-defaults.ts';
 import type { MemoryGuardSettings, MemoryGuardSetResult, MemoryGuardView } from './memory-guard.ts';
 import type { CapSwitchSummary } from './memory-cap-view.ts';
+import type { AccesMobileSettings, AccesMobileSetResult, AccesMobileView } from './acces-mobile.ts';
 import type { EffortDefaults } from './effort-defaults.ts';
 import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { PauseMode } from './pause-lifecycle.ts';
@@ -680,6 +681,11 @@ export interface OrchestraAPI {
   /** Patch the thresholds / toggle. Validated (critical < Admission): an invalid patch writes nothing and resolves `{ok:false,error}`.
    *  A valid one applies HOT — the guard re-samples at once, no restart. */
   setMemoryGuard: (next: Partial<MemoryGuardSettings>) => Promise<MemoryGuardSetResult>;
+  /** Accès mobile (#334): settings + the server process health + the one-time `tailscale serve` command + the pairing fragment. */
+  accesMobile: () => Promise<AccesMobileView>;
+  /** Patch the settings. Invalid (or enabling without a login) writes nothing and resolves `{ok:false,error}`; a valid patch
+   *  (re)starts or stops the server process at once. */
+  setAccesMobile: (next: Partial<AccesMobileSettings>) => Promise<AccesMobileSetResult>;
   /** Re-fetch every pinned ticket from Linear in ONE batched request and
    *  return the refreshed list. Throws if Linear is unreachable / unauthorized,
    *  so the caller can distinguish that from "nothing pinned". */

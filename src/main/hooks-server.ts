@@ -43,6 +43,7 @@ import { currentMemberMemory } from './member-memory-host.ts';
 import { watchersStatus } from './watchers.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
+import { projectMobileWorkspaces } from '../shared/acces-mobile.ts';
 import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
@@ -621,6 +622,10 @@ export async function startHooksServer(): Promise<void> {
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());
+          } else if (route === '/mobile/workspaces') {
+            // Accès mobile (#334): the phone's list — every non-archived workspace, every account. Called only by the Accès
+            // mobile server process, which has already checked the Tailscale identity + token (ADR 0006).
+            send(200, { ok: true, workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts) });
           } else {
             // Default route handles activity events: /event or anything else.
             if (typeof msg.id === 'string' && typeof msg.event === 'string') {
