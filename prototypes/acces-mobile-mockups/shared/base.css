@@ -1,0 +1,37 @@
+/* Shared base: fonts, reset, iPhone chrome (390×844, notch status bar, home bar),
+   iOS keyboard. Variant styles layer on top. */
+@font-face { font-family: "Geist"; src: url("fonts/Geist-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: block; }
+@font-face { font-family: "Inter"; src: url("fonts/InterVariable.woff2") format("woff2"); font-weight: 100 900; font-display: block; }
+@font-face { font-family: "JetBrains Mono"; src: url("fonts/jetbrains-mono-regular.woff2") format("woff2"); font-weight: 400; font-display: block; }
+@font-face { font-family: "JetBrains Mono"; src: url("fonts/jetbrains-mono-bold.woff2") format("woff2"); font-weight: 700; font-display: block; }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 390px; height: 844px; overflow: hidden; background: #000; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+button, input { font: inherit; color: inherit; background: none; border: 0; }
+.ic { flex: none; display: block; }
+.phone { position: relative; width: 390px; height: 844px; overflow: hidden; }
+
+/* status bar + dynamic island + home indicator */
+.sb { position: absolute; z-index: 60; top: 0; left: 0; right: 0; height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 8px 30px 0 40px; font: 600 16px/1 -apple-system, "Inter", sans-serif; pointer-events: none; }
+.sb-island { position: absolute; left: 50%; top: 11px; width: 118px; height: 33px; margin-left: -59px; border-radius: 20px; background: #000; }
+.sb-right { display: flex; align-items: center; gap: 6px; }
+.home { position: absolute; z-index: 60; bottom: 8px; left: 50%; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: currentColor; opacity: .85; }
+
+/* iOS AZERTY keyboard — 390 wide, ~264 tall + 34 home safe area */
+.kb { position: absolute; z-index: 40; left: 0; right: 0; bottom: 0; height: 298px; padding-top: 0; }
+.kb-pred { height: 44px; display: flex; align-items: center; }
+.kb-pred span { flex: 1; text-align: center; font: 400 16px/1 "Inter", sans-serif; position: relative; }
+.kb-pred span + span::before { content: ""; position: absolute; left: 0; top: -9px; height: 18px; width: 1px; background: currentColor; opacity: .18; }
+.kb-keys { padding: 6px 3px 0; display: flex; flex-direction: column; gap: 12px; }
+.kb-row { display: flex; gap: 6px; justify-content: center; }
+.kb-row i { font-style: normal; flex: 0 0 33px; height: 42px; border-radius: 5px; display: grid; place-items: center; font: 400 22px/1 "Inter", sans-serif; box-shadow: 0 1px 0 rgba(0,0,0,.35); }
+.kb-row i.fn { font-size: 15px; }
+.kb-row i.w { flex-basis: 46px; }
+.kb-row.b i.big { flex-basis: 92px; }
+.kb-row.b i.space { flex: 1; font-size: 15px; }
+.kb-dark { background: #1f1f21; color: #fff; }
+.kb-dark .kb-row i { background: #5b5b5e; }
+.kb-dark .kb-row i.fn { background: #3a3a3c; }
+.kb-light { background: #d3d5db; color: #000; }
+.kb-light .kb-row i { background: #fff; box-shadow: 0 1px 0 rgba(0,0,0,.3); }
+.kb-light .kb-row i.fn { background: #abb0bc; }
