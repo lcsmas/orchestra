@@ -111,11 +111,13 @@ async function shoot(win, file, extra) {
 }
 const rectOf = "const rect = (el) => el ? (({ x, y, width, height }) => ({ x, y, width, height }))(el.getBoundingClientRect()) : null;";
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 1300, height: 640, show: true, webPreferences: { offscreen: false } });
+  const win = new BrowserWindow({ width: 1300, height: 640, useContentSize: true, show: true, webPreferences: { offscreen: false } });
   try {
     await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=table' });
     await ready(win, '[data-res-cap]');
     await shoot(win, 'memcap-resources.png', "(() => { " + rectOf + " const bars = [...document.querySelectorAll('[data-res-cap]')].map((b) => { const q = (c) => b.querySelector(c); const cs = (el) => el ? getComputedStyle(el).backgroundColor : null; let a = b; while (a && !a.querySelector('.res-agent-branch')) a = a.parentElement; return { name: a ? a.querySelector('.res-agent-branch').textContent : '', pct: b.getAttribute('data-res-cap'), tone: b.getAttribute('data-res-cap-tone'), rect: rect(b), fill: cs(q('.res-capbar-fill')), fillW: rect(q('.res-capbar-fill'))?.width, ws: cs(q('.res-capbar-ws')), wsW: rect(q('.res-capbar-ws'))?.width, softX: rect(q('.res-capbar-soft'))?.x, title: b.getAttribute('title'), inMem: !!b.closest('.res-mem') }; }); const note = document.querySelector('[data-res-cap-note]'); return { kind: 'table', bars, note: note ? { text: note.innerText, rect: rect(note), color: getComputedStyle(note).color } : null, memCells: document.querySelectorAll('.res-mem').length, scopeOnly: [...document.querySelectorAll('*')].filter((e) => e.children.length === 0 && /verifier-gone/.test(e.textContent)).length, text: document.body.innerText.replace(/\\\\s+/g, ' ') }; })()");
+    win.setContentSize(1440, 900);
+    await wait(300);
     await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=window' });
     await ready(win, '[data-mg-cap-section]');
     await shoot(win, 'memcap-window.png', "(() => { " + rectOf + " const sec = document.querySelector('[data-mg-cap-section]'); const soft = document.querySelector('[data-mg-cap-soft]'), hard = document.querySelector('[data-mg-cap-hard]'), wait = document.querySelector('[data-mg-reliquat-wait]'), adm = document.querySelector('[data-mg-admission]'), crit = document.querySelector('[data-mg-critical]'); return { kind: 'window', sec: rect(sec), secTitleColor: getComputedStyle(sec.querySelector('.mg-section-title')).color, borderTop: getComputedStyle(sec).borderTopColor, soft: { v: soft.value, rect: rect(soft), dis: soft.disabled }, hard: { v: hard.value, rect: rect(hard), dis: hard.disabled }, wait: { v: wait.value, rect: rect(wait), dis: wait.disabled }, admY: rect(adm)?.y, critY: rect(crit)?.y, sw: document.querySelector('[data-mg-cap-switch]')?.getAttribute('data-mg-cap-switch'), swText: document.querySelector('[data-mg-cap-switch]')?.innerText, checkboxes: document.querySelectorAll('input[type=checkbox]').length, err: !!document.querySelector('[data-mg-error]'), text: sec.innerText.replace(/\\\\s+/g, ' ') }; })()");
@@ -123,6 +125,24 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript("(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
     await wait(400);
     await shoot(win, 'memcap-window-refused.png', "(() => { " + rectOf + " const e = document.querySelector('[data-mg-error]'); const soft = document.querySelector('[data-mg-cap-soft]'); return { kind: 'refused', err: e ? { text: e.innerText, role: e.getAttribute('role'), rect: rect(e), color: getComputedStyle(e).color } : null, softV: soft.value, hardV: document.querySelector('[data-mg-cap-hard]').value }; })()");
+    // ── the dialog must FIT (gate c/6112245304: at 1440x900 the window grew to 923 px in a 720 px max-height, clipping the Reliquat wait, the refusal and Done) ──
+    const FIT = "(() => { const R = (el) => el ? (({ x, y, width, height }) => ({ x, y, width, height }))(el.getBoundingClientRect()) : null; const dlg = document.querySelector('[role=dialog]'), body = document.querySelector('[data-mg-body]'), done = [...document.querySelectorAll('[role=dialog] button')].find((b) => /Done/.test(b.textContent)), err = document.querySelector('[data-mg-error]'), waitEl = document.querySelector('[data-mg-reliquat-wait]'); const cs = body ? getComputedStyle(body) : null; return { kind: 'fit', vw: innerWidth, vh: innerHeight, dlg: R(dlg), body: R(body), bodyScroll: body ? { sh: body.scrollHeight, ch: body.clientHeight, oy: cs.overflowY } : null, done: R(done), doneInDialog: !!(done && dlg && dlg.contains(done)), err: R(err), errInBody: !!(err && body && body.contains(err)), wait: R(waitEl) }; })()";
+    for (const [vw, vh] of [[1440, 900], [1920, 1080], [1280, 640]]) {
+      win.setContentSize(vw, vh);
+      await wait(300);
+      await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=window' });
+      await ready(win, '[data-mg-cap-section]');
+      await shoot(win, 'memcap-window-' + vw + 'x' + vh + '.png', "(() => ({ state: 'rest', size: '" + vw + "x" + vh + "' }))()");
+      const rest = await win.webContents.executeJavaScript(FIT);
+      await win.webContents.executeJavaScript("document.querySelector('[data-mg-reliquat-wait]').scrollIntoView({ block: 'end' })");
+      await wait(250);
+      const scrolled = await win.webContents.executeJavaScript(FIT);
+      await win.webContents.executeJavaScript("(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
+      await wait(400);
+      await shoot(win, 'memcap-window-refused-' + vw + 'x' + vh + '.png', "(() => ({ state: 'refused', size: '" + vw + "x" + vh + "' }))()");
+      const refused = await win.webContents.executeJavaScript(FIT);
+      results.push({ kind: 'fits', vw, vh, rest, scrolled, refused });
+    }
     fs.writeFileSync(process.env.PROBE_OUT, JSON.stringify(results));
     app.exit(0);
   } catch (e) {
@@ -143,9 +163,10 @@ console.log('\n#323 D-Q10 A + A — the Plafond mémoire UI, under headless sway
 if (!fs.existsSync(probeOut)) { console.log(`  FAIL the capture produced no output (electron rc=${rc})`); process.exit(1); }
 const shots = JSON.parse(fs.readFileSync(probeOut, 'utf8'));
 if (shots[0]?.error) { console.log(`  FAIL capture threw: ${shots[0].error}`); process.exit(1); }
-check('three captures (Resources table, window, window refused)', shots.length === 3, `got ${shots.length}`);
+const core = shots.filter((x) => x.kind !== 'fits' && !x.state);
+check('three core captures (Resources table, window, window refused)', core.length === 3, `got ${core.length}`);
 const png = (s) => { const f = path.join(outDir, s.file); return fs.existsSync(f) ? decodePng(fs.readFileSync(f)) : null; };
-for (const s of shots) { const p = png(s); check(`${s.file}: PNG written, real dimensions, many colours (not a blank frame)`, !!p && s.width > 600 && s.height > 300 && distinctColours(p) > 30, `${s.width}x${s.height}, ${p ? distinctColours(p) : 0} colours`); }
+for (const s of shots.filter((x) => x.file)) { const p = png(s); check(`${s.file}: PNG written, real dimensions, many colours (not a blank frame)`, !!p && s.width > 600 && s.height > 300 && distinctColours(p) > 30, `${s.width}x${s.height}, ${p ? distinctColours(p) : 0} colours`); }
 
 const t = shots.find((s) => s.kind === 'table');
 if (t) {
@@ -179,7 +200,25 @@ const r = shots.find((s) => s.kind === 'refused');
 if (r) {
   check('soft 7 > hard 6 is REFUSED inline: an alert line, red, and the stored values are not silently replaced', !!r.err && r.err.role === 'alert' && /soft/i.test(r.err.text) && /^rgb\(2[0-5]\d, [0-9]{2,3}, [0-9]{2,3}\)$/.test(r.err.color), JSON.stringify(r));
 }
-console.log(`\nScreenshots: ${shots.map((s) => path.join(outDir, s.file)).join('\n             ')}`);
+// ── the dialog FITS at every viewport (the built-app gate found 923 px in a 720 px dialog) ──
+const inside = (r, vw, vh, eps = 0.75) => !!r && r.x >= -eps && r.y >= -eps && r.x + r.width <= vw + eps && r.y + r.height <= vh + eps;
+const within = (r, o, eps = 0.75) => !!r && !!o && r.x >= o.x - eps && r.y >= o.y - eps && r.x + r.width <= o.x + o.width + eps && r.y + r.height <= o.y + o.height + eps;
+const fits = shots.filter((x) => x.kind === 'fits');
+check('three viewports probed: 1440x900, 1920x1080 and a SHORT 1280x640', fits.length === 3, `got ${fits.length}`);
+for (const f of fits) {
+  const tag = `${f.vw}x${f.vh}`;
+  for (const [state, m] of [['at rest', f.rest], ['scrolled to the Reliquat wait', f.scrolled], ['refusal shown', f.refused]]) {
+    check(`${tag} ${state}: the dialog is entirely inside the viewport`, inside(m.dlg, m.vw, m.vh), JSON.stringify([m.dlg, m.vw, m.vh]));
+    check(`${tag} ${state}: DONE is inside the viewport and inside the dialog (always reachable)`, inside(m.done, m.vw, m.vh) && m.doneInDialog && within(m.done, m.dlg), JSON.stringify([m.done, m.dlg]));
+  }
+  check(`${tag}: the fields scroll INSIDE the dialog when they do not fit (overflow-y auto/scroll) — scrollHeight ${f.rest.bodyScroll?.sh} vs ${f.rest.bodyScroll?.ch}`, !!f.rest.bodyScroll && (f.rest.bodyScroll.sh <= f.rest.bodyScroll.ch + 1 || /auto|scroll/.test(f.rest.bodyScroll.oy)), JSON.stringify(f.rest.bodyScroll));
+  check(`${tag}: scrolled to the end, the Reliquat wait is visible INSIDE the scrolling part and the viewport`, within(f.scrolled.wait, f.scrolled.body) && inside(f.scrolled.wait, f.scrolled.vw, f.scrolled.vh), JSON.stringify([f.scrolled.wait, f.scrolled.body]));
+  check(`${tag}: the refusal line is visible (inside viewport and dialog) and sits OUTSIDE the scrolling part, so it can never scroll away`, !!f.refused.err && inside(f.refused.err, f.refused.vw, f.refused.vh) && within(f.refused.err, f.refused.dlg) && f.refused.errInBody === false, JSON.stringify([f.refused.err, f.refused.errInBody]));
+  const pr = shots.find((x) => x.file === `memcap-window-refused-${tag}.png`);
+  const pp = pr ? png(pr) : null;
+  if (pp && f.refused.done) check(`${tag}: decoded pixels — the Done button is really painted in the refusal capture`, distinctColours(crop(pp, f.refused.done.x, f.refused.done.y, f.refused.done.width, f.refused.done.height)) > 2, JSON.stringify(f.refused.done));
+}
+console.log(`\nScreenshots: ${shots.filter((s) => s.file).map((s) => path.join(outDir, s.file)).join('\n             ')}`);
 fs.rmSync(tmp, { recursive: true, force: true });
 if (failures) { console.log(`\nmemcap-screenshot: ${failures} FAILURE(S)`); process.exit(1); }
 console.log('\nmemcap-screenshot: all checks passed');

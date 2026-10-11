@@ -73,7 +73,9 @@ const dom = (cdp) => cdp.eval(`(() => {
   const q = (s) => document.querySelector(s);
   return { open: !!q('[aria-label="Memory guard"]'), soft: q('[data-mg-cap-soft]')?.value ?? null, hard: q('[data-mg-cap-hard]')?.value ?? null, wait: q('[data-mg-reliquat-wait]')?.value ?? null, admission: q('[data-mg-admission]')?.value ?? null, critical: q('[data-mg-critical]')?.value ?? null,
     error: q('[data-mg-error]')?.textContent.trim() ?? null, sw: q('[data-mg-cap-switch]')?.textContent.trim() ?? null, swAttr: q('[data-mg-cap-switch]')?.getAttribute('data-mg-cap-switch') ?? null, section: !!q('[data-mg-cap-section]'),
-    toggles: document.querySelectorAll('[aria-label="Memory guard"] input[type=checkbox]').length, applies: q('[data-mg-cap-applies]')?.textContent.trim() ?? null };
+    toggles: document.querySelectorAll('[aria-label="Memory guard"] input[type=checkbox]').length, applies: q('[data-mg-cap-applies]')?.textContent.trim() ?? null,
+    fit: (() => { const R = (el) => el ? (({ x, y, width, height }) => ({ x, y, width, height }))(el.getBoundingClientRect()) : null; const dlg = q('[aria-label="Memory guard"]'), body = q('[data-mg-body]'), done = [...(dlg?.querySelectorAll('button') ?? [])].find((b) => /Done/.test(b.textContent)), err = q('[data-mg-error]');
+      return { vw: innerWidth, vh: innerHeight, dlg: R(dlg), body: R(body), bodyScroll: body ? { sh: body.scrollHeight, ch: body.clientHeight, oy: getComputedStyle(body).overflowY } : null, done: R(done), err: R(err), errInBody: !!(err && body && body.contains(err)) }; })() };
 })()`);
 const readStore = (world) => { try { return JSON.parse(fs.readFileSync(path.join(world.ohome, 'userData', 'orchestra', 'store.json'), 'utf8')).memoryGuard ?? null; } catch { return null; } };
 const capRows = (cdp) => cdp.eval(`[...document.querySelectorAll('.res-agent-row')].map((r) => { const b = r.querySelector('[data-res-cap]'); return { name: r.querySelector('.res-agent-branch')?.textContent ?? '', pct: b ? Number(b.getAttribute('data-res-cap')) : null, tone: b?.getAttribute('data-res-cap-tone') ?? null, title: b?.getAttribute('title') ?? null, hasTick: !!b?.querySelector('.res-capbar-soft'), hasWs: !!b?.querySelector('.res-capbar-ws') }; })`);
@@ -106,6 +108,9 @@ async function armCap() {
     const d0 = await waitFor(async () => { const d = await dom(cdp); return d.open && d.soft !== null && d.soft !== '' ? d : null; }, 20000, 'the Memory guard window with its values');
     clause(arm, 'G1/window-has-the-plafond-section-with-the-stored-levels', d0.section && d0.soft === '3' && d0.hard === '6' && d0.wait === '30' && d0.admission === '6' && d0.critical === '3', J(d0));
     clause(arm, 'G1/activation-is-shown-read-only-from-the-frozen-run-switches', /^Cap is (ON|OFF) for new runs · ON on \d+ of \d+ open runs/.test(d0.sw ?? '') && /ON on [1-9]/.test(d0.sw ?? '') && d0.toggles === 1, `"${d0.sw}" (the seeded runs froze memory_cap ON); checkboxes in the window: ${d0.toggles} (the Admission toggle only — no control for the switch)`);
+    const inV = (r, f) => !!r && r.x >= -0.75 && r.y >= -0.75 && r.x + r.width <= f.vw + 0.75 && r.y + r.height <= f.vh + 0.75;
+    clause(arm, 'G1/dialog-fits-the-app-window-and-done-is-reachable', inV(d0.fit.dlg, d0.fit) && inV(d0.fit.done, d0.fit), J(d0.fit));
+    clause(arm, 'G1/fields-scroll-inside-the-dialog-when-they-do-not-fit', !!d0.fit.bodyScroll && (d0.fit.bodyScroll.sh <= d0.fit.bodyScroll.ch + 1 || /auto|scroll/.test(d0.fit.bodyScroll.oy)), J(d0.fit.bodyScroll));
     clause(arm, 'G1/window-says-levels-apply-to-members-started-from-now-on', /started from now on/.test(d0.applies ?? ''), `"${d0.applies}"`);
     await cdp.mouse(5, 890); await sleep(300); await cdp.eval('document.fonts.ready.then(() => true)');
     const winClip = await cdp.eval(`(() => { const b = document.querySelector('[aria-label="Memory guard"]').getBoundingClientRect(); return { x: Math.max(0, b.left - 8), y: Math.max(0, b.top - 8), width: Math.min(1440, b.width + 16), height: Math.min(900, b.height + 16) }; })()`);
@@ -128,6 +133,7 @@ async function armCap() {
     const dBad = await dom(cdp);
     const viewAfter = await cdp.eval(`window.orchestra.memoryGuard().then((v) => JSON.stringify(v.settings))`);
     clause(arm, 'G3/invalid-pair-refused-inline-with-the-reason', /soft level \(0\.3 GB\) must be above 0 and below the hard level \(0\.25 GB\)/.test(dBad.error ?? ''), `error line: "${dBad.error}"`);
+    clause(arm, 'G3/refusal-and-done-are-on-screen-and-the-refusal-never-scrolls-away', inV(dBad.fit.err, dBad.fit) && inV(dBad.fit.done, dBad.fit) && dBad.fit.errInBody === false, J(dBad.fit));
     clause(arm, 'G3/invalid-pair-writes-nothing', J(readStore(world)) === storeBefore && viewBefore === viewAfter && JSON.parse(viewAfter).capSoftGb === 0.1, `store.json before ${storeBefore} after ${J(readStore(world))}; settings by IPC before ${viewBefore} after ${viewAfter}`);
     const winClipBad = await cdp.eval(`(() => { const b = document.querySelector('[aria-label="Memory guard"]').getBoundingClientRect(); return { x: Math.max(0, b.left - 8), y: Math.max(0, b.top - 8), width: Math.min(1440, b.width + 16), height: Math.min(900, b.height + 16) }; })()`);
     const shotBad = await cdp.shot(winClipBad); saveShot(`${LABEL}-2-window-refusal.png`, shotBad);

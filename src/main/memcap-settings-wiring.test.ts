@@ -58,3 +58,26 @@ test('WINDOW (#326): the Reliquat wait is committed alone through the shared pla
   assert.ok(/const shownError = error \?\? liveError \?\? liveCapError \?\? liveWaitError;/.test(w));
   assert.ok(/data-mg-reliquat-wait/.test(w));
 });
+
+test('WINDOW LAYOUT (gate c/6112245304, built app): the fields scroll INSIDE a height-bounded dialog; the refusal line and Done sit OUTSIDE the scrolling part, so a refusal and Done are always on screen', () => {
+  const w = codeOf('src/renderer/components/MemoryGuardSettings.tsx');
+  const open = w.indexOf('<div className="mg-body" data-mg-body>');
+  assert.ok(open > 0, 'the scrolling body exists');
+  const err = w.indexOf('{shownError && (');
+  const actions = w.indexOf('<div className="modal-actions">');
+  assert.ok(err > open && actions > err, 'source order: body … refusal … actions');
+  // the body closes right before the refusal, at the body's own indentation (the file is formatted: the closing tag that precedes `{shownError` is the body's)
+  const indent = /\n( *)<div className="mg-body" data-mg-body>/.exec(w)?.[1];
+  assert.ok(indent !== undefined, 'the opening tag line');
+  const m = new RegExp(`\\n${indent}</div>\\s*\\{shownError && \\(`).exec(w);
+  assert.ok(m, 'the scrolling body is closed BEFORE the refusal line');
+  const close = m!.index;
+  for (const hook of ['data-mg-cap-section', 'data-mg-reliquat-wait', 'data-mg-admission', 'data-mg-critical']) {
+    const at = w.indexOf(hook);
+    assert.ok(at > open && at < close, `${hook} is inside the scrolling body`);
+  }
+  const css = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+  assert.ok(/\.memory-guard-settings \.mg-body \{[^}]*flex: 1 1 auto;[^}]*min-height: 0;[^}]*overflow-y: auto;/.test(css), 'the body is a shrinkable flex child that scrolls');
+  assert.ok(/\.memory-guard-settings \.mg-error \{[^}]*flex: none;/.test(css) && /\.memory-guard-settings \.modal-actions \{[^}]*flex: none;/.test(css), 'the refusal and Done never shrink away');
+  assert.ok(/\.sound-settings \{[^}]*max-height: min\(80vh, 720px\);[^}]*display: flex;[^}]*flex-direction: column;/.test(css), 'the dialog is height-bounded — the thing the body scrolls against');
+});

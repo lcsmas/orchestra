@@ -94,6 +94,15 @@ test('V6 summary line: none capped ⇒ nothing; otherwise the count and the memb
   assert.equal(capSummaryLine([row('feat-x', cap(2.1, 1.6)), row('big-job', cap(5.6, 4)), row('small', cap(0.6, 0.5, 3))]), '3 capped members · closest: big-job 93 % of 6 GB');
 });
 
+test('V6c (gate S10) « closest » is ranked in PERCENT of each member\'s own hard level, not in absolute bytes: two members with DIFFERENT hard levels', () => {
+  const row = (name: string, c: MemberCapView | null) => ({ key: name, name, cap: c });
+  // small: 3.0 of 3.2 GB = 93 % (3 GB absolute); big: 5.0 of 12 GB = 41 % (5 GB absolute) — an absolute-bytes ranking would name `big`
+  assert.equal(capSummaryLine([row('big', cap(5.0, 4.0, 12)), row('small', cap(3.0, 2.5, 3.2))]), '2 capped members · closest: small 93 % of 3.2 GB');
+  assert.equal(capSummaryLine([row('small', cap(3.0, 2.5, 3.2)), row('big', cap(5.0, 4.0, 12))]), '2 capped members · closest: small 93 % of 3.2 GB', 'the order of the rows does not matter');
+  // and the other way round, so a ranking by hard level alone (or by the smallest cap) cannot pass either
+  assert.equal(capSummaryLine([row('tight', cap(2.0, 1.0, 3.0)), row('roomy', cap(11.2, 9.0, 12))]), '2 capped members · closest: roomy 93 % of 12 GB');
+});
+
 test('V6b « closest » is ranked by the BILL / hard (what the kernel kills on), not the working set; the percent is floored; the cap is named exactly like the tooltip', () => {
   const row = (name: string, c: MemberCapView | null) => ({ key: name, name, cap: c });
   assert.equal(capSummaryLine([row('cache-heavy', cap(5.0, 0.5)), row('lean', cap(3.0, 2.9))]), '2 capped members · closest: cache-heavy 83 % of 6 GB', 'the bill 5.0 beats the bill 3.0 although its working set is smaller');

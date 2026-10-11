@@ -176,172 +176,176 @@ export function MemoryGuardSettings({ onClose, initial }: Props) {
           Keeps the host from running out of memory while fleets run. <strong>Changes apply at once</strong> — nothing is frozen per run.
         </div>
 
-        <div className="mg-live">
-          <span className="mg-live-label">Available memory now</span>
-          <span className="mg-live-value" data-mg-live>
-            {view?.liveAvailBytes == null ? '—' : formatGb(view.liveAvailBytes)}
-          </span>
-          {chip && (
-            <span className={`mg-chip ${chip.tone}`} data-mg-chip={chip.tone}>
-              ● {chip.text}
+        {/* #323 review (gate c/6112245304): the window grew past its max-height (923 > 720) and clipped the Reliquat wait, the refusal and Done. The fields scroll; the refusal line and Done stay OUTSIDE the scrolling part, so a refusal and Done are always on screen. */}
+        <div className="mg-body" data-mg-body>
+          <div className="mg-live">
+            <span className="mg-live-label">Available memory now</span>
+            <span className="mg-live-value" data-mg-live>
+              {view?.liveAvailBytes == null ? '—' : formatGb(view.liveAvailBytes)}
             </span>
+            {chip && (
+              <span className={`mg-chip ${chip.tone}`} data-mg-chip={chip.tone}>
+                ● {chip.text}
+              </span>
+            )}
+          </div>
+          {gauge && settings && (
+            <div className="mg-gauge-wrap" aria-hidden="true">
+              <div className="mg-gauge">
+                <div className={`mg-gauge-fill ${gauge.tone}`} style={{ width: pct(gauge.fill) }} />
+                <span className="mg-tick" style={{ left: pct(gauge.critical) }} />
+                <span className="mg-tick" style={{ left: pct(gauge.admission) }} />
+                <span className="mg-tick" style={{ left: pct(gauge.reopen) }} />
+              </div>
+              <div className="mg-ticks">
+                {/* one row per label: 1 GB is ~14 px on a 32 GB scale, so neighbouring labels (admission / reopen are always 1 GB apart) can never share a row */}
+                <span className="mg-tick-label row1" style={{ left: pct(gauge.critical) }}>{settings.criticalGb} crit</span>
+                <span className="mg-tick-label row2" style={{ left: pct(gauge.admission) }}>{settings.admissionGb} admission</span>
+                <span className="mg-tick-label row3" style={{ left: pct(gauge.reopen) }}>{settings.admissionGb + RELEASE_MARGIN_GB} reopen</span>
+              </div>
+            </div>
           )}
-        </div>
-        {gauge && settings && (
-          <div className="mg-gauge-wrap" aria-hidden="true">
-            <div className="mg-gauge">
-              <div className={`mg-gauge-fill ${gauge.tone}`} style={{ width: pct(gauge.fill) }} />
-              <span className="mg-tick" style={{ left: pct(gauge.critical) }} />
-              <span className="mg-tick" style={{ left: pct(gauge.admission) }} />
-              <span className="mg-tick" style={{ left: pct(gauge.reopen) }} />
-            </div>
-            <div className="mg-ticks">
-              {/* one row per label: 1 GB is ~14 px on a 32 GB scale, so neighbouring labels (admission / reopen are always 1 GB apart) can never share a row */}
-              <span className="mg-tick-label row1" style={{ left: pct(gauge.critical) }}>{settings.criticalGb} crit</span>
-              <span className="mg-tick-label row2" style={{ left: pct(gauge.admission) }}>{settings.admissionGb} admission</span>
-              <span className="mg-tick-label row3" style={{ left: pct(gauge.reopen) }}>{settings.admissionGb + RELEASE_MARGIN_GB} reopen</span>
-            </div>
-          </div>
-        )}
 
-        <div className="field">
-          <div className="field-head">
-            <span className="field-label">Admission threshold</span>
-            <span className="field-hint">
-              Below it, automatic starts of fleet members wait and idle members go into Veille. Reopens above{' '}
-              {settings ? settings.admissionGb + RELEASE_MARGIN_GB : '…'} GB.
-            </span>
-          </div>
-          <div className="mg-input-row">
-            <input
-              className="mg-input"
-              inputMode="decimal"
-              aria-label="Admission threshold (GB)"
-              data-mg-admission
-              value={typed.admission}
-              disabled={!settings}
-              onChange={field('admission')}
-              onBlur={commit}
-              onKeyDown={onKey}
-            />
-            <span className="mg-unit">GB</span>
-          </div>
-        </div>
-        <div className="field">
-          <div className="field-head">
-            <span className="field-label">Critical threshold</span>
-            <span className="field-hint">
-              Below it, fleet runs with the <code>pause</code> switch ON are hard-paused; lifted above the Admission threshold.
-            </span>
-          </div>
-          <div className="mg-input-row">
-            <input
-              className="mg-input"
-              inputMode="decimal"
-              aria-label="Critical threshold (GB)"
-              data-mg-critical
-              value={typed.critical}
-              disabled={!settings}
-              onChange={field('critical')}
-              onBlur={commit}
-              onKeyDown={onKey}
-            />
-            <span className="mg-unit">GB</span>
-          </div>
-        </div>
-
-        <label className="mg-toggle">
-          <input
-            type="checkbox"
-            data-mg-toggle
-            checked={settings?.admissionEnabled ?? true}
-            disabled={!settings}
-            onChange={(e) => void apply({ admissionEnabled: e.target.checked })}
-          />
-          <span>
-            <span className="field-label">Hold fleet starts and fast Veille under low memory</span>
-            <span className="field-hint">
-              Off = the guard still measures, shows and logs; it holds nothing. Human actions are never held either way.
-            </span>
-          </span>
-        </label>
-
-        {/* #323 (D-Q10 A): the Plafond mémoire — one section under the thresholds, same hot apply (blur / Enter), same inline refusal. The on/off is NOT a setting (D-Q1): the frozen per-run switch is only SHOWN. */}
-        <div className="mg-section" data-mg-cap-section>
-          <div className="mg-section-title">Plafond mémoire <span className="mg-section-sub">(per fleet member)</span></div>
-          <div className="mg-cap-switch field-hint" data-mg-cap-switch={capSwitch ? (capSwitch.liveOn ? 'on' : 'off') : ''}>
-            {capSwitch ? capSwitch.text : '…'} — a per-run switch, frozen when the run starts; set it on the Bus page, not here.
-          </div>
           <div className="field">
             <div className="field-head">
-              <span className="field-label">Soft level</span>
-              <span className="field-hint">Warns the member and its coordinator when its working set crosses it. No slowdown.</span>
+              <span className="field-label">Admission threshold</span>
+              <span className="field-hint">
+                Below it, automatic starts of fleet members wait and idle members go into Veille. Reopens above{' '}
+                {settings ? settings.admissionGb + RELEASE_MARGIN_GB : '…'} GB.
+              </span>
             </div>
             <div className="mg-input-row">
               <input
                 className="mg-input"
                 inputMode="decimal"
-                aria-label="Memory cap soft level (GB)"
-                data-mg-cap-soft
-                value={typedCap.soft}
+                aria-label="Admission threshold (GB)"
+                data-mg-admission
+                value={typed.admission}
                 disabled={!settings}
-                onChange={capField('soft')}
-                onBlur={commitCap}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitCap();
-                }}
+                onChange={field('admission')}
+                onBlur={commit}
+                onKeyDown={onKey}
               />
               <span className="mg-unit">GB</span>
             </div>
           </div>
           <div className="field">
             <div className="field-head">
-              <span className="field-label">Hard level</span>
-              <span className="field-hint">The kernel's limit: beyond it the heaviest tool process of the member is killed.</span>
+              <span className="field-label">Critical threshold</span>
+              <span className="field-hint">
+                Below it, fleet runs with the <code>pause</code> switch ON are hard-paused; lifted above the Admission threshold.
+              </span>
             </div>
             <div className="mg-input-row">
               <input
                 className="mg-input"
                 inputMode="decimal"
-                aria-label="Memory cap hard level (GB)"
-                data-mg-cap-hard
-                value={typedCap.hard}
+                aria-label="Critical threshold (GB)"
+                data-mg-critical
+                value={typed.critical}
                 disabled={!settings}
-                onChange={capField('hard')}
-                onBlur={commitCap}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitCap();
-                }}
+                onChange={field('critical')}
+                onBlur={commit}
+                onKeyDown={onKey}
               />
               <span className="mg-unit">GB</span>
             </div>
           </div>
-          <div className="field">
-            <div className="field-head">
-              <span className="field-label">Reliquat wait</span>
-              <span className="field-hint">How long an idle member with live Reliquats waits before the Veille stops them and lists them (default 30). Counts only above the normal Veille delay; a fast Veille under memory pressure never waits. Applied hot.</span>
+
+          <label className="mg-toggle">
+            <input
+              type="checkbox"
+              data-mg-toggle
+              checked={settings?.admissionEnabled ?? true}
+              disabled={!settings}
+              onChange={(e) => void apply({ admissionEnabled: e.target.checked })}
+            />
+            <span>
+              <span className="field-label">Hold fleet starts and fast Veille under low memory</span>
+              <span className="field-hint">
+                Off = the guard still measures, shows and logs; it holds nothing. Human actions are never held either way.
+              </span>
+            </span>
+          </label>
+
+          {/* #323 (D-Q10 A): the Plafond mémoire — one section under the thresholds, same hot apply (blur / Enter), same inline refusal. The on/off is NOT a setting (D-Q1): the frozen per-run switch is only SHOWN. */}
+          <div className="mg-section" data-mg-cap-section>
+            <div className="mg-section-title">Plafond mémoire <span className="mg-section-sub">(per fleet member)</span></div>
+            <div className="mg-cap-switch field-hint" data-mg-cap-switch={capSwitch ? (capSwitch.liveOn ? 'on' : 'off') : ''}>
+              {capSwitch ? capSwitch.text : '…'} — a per-run switch, frozen when the run starts; set it on the Bus page, not here.
             </div>
-            <div className="mg-input-row">
-              <input
-                className="mg-input"
-                inputMode="decimal"
-                aria-label="Reliquat wait (minutes)"
-                data-mg-reliquat-wait
-                value={typedWait}
-                disabled={!settings}
-                onChange={(e) => {
-                  setError(null);
-                  setWaitDraft(e.target.value);
-                }}
-                onBlur={commitWait}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitWait();
-                }}
-              />
-              <span className="mg-unit">min</span>
+            <div className="field">
+              <div className="field-head">
+                <span className="field-label">Soft level</span>
+                <span className="field-hint">Warns the member and its coordinator when its working set crosses it. No slowdown.</span>
+              </div>
+              <div className="mg-input-row">
+                <input
+                  className="mg-input"
+                  inputMode="decimal"
+                  aria-label="Memory cap soft level (GB)"
+                  data-mg-cap-soft
+                  value={typedCap.soft}
+                  disabled={!settings}
+                  onChange={capField('soft')}
+                  onBlur={commitCap}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitCap();
+                  }}
+                />
+                <span className="mg-unit">GB</span>
+              </div>
             </div>
+            <div className="field">
+              <div className="field-head">
+                <span className="field-label">Hard level</span>
+                <span className="field-hint">The kernel's limit: beyond it the heaviest tool process of the member is killed.</span>
+              </div>
+              <div className="mg-input-row">
+                <input
+                  className="mg-input"
+                  inputMode="decimal"
+                  aria-label="Memory cap hard level (GB)"
+                  data-mg-cap-hard
+                  value={typedCap.hard}
+                  disabled={!settings}
+                  onChange={capField('hard')}
+                  onBlur={commitCap}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitCap();
+                  }}
+                />
+                <span className="mg-unit">GB</span>
+              </div>
+            </div>
+            <div className="field">
+              <div className="field-head">
+                <span className="field-label">Reliquat wait</span>
+                <span className="field-hint">How long an idle member with live Reliquats waits before the Veille stops them and lists them (default 30). Counts only above the normal Veille delay; a fast Veille under memory pressure never waits. Applied hot.</span>
+              </div>
+              <div className="mg-input-row">
+                <input
+                  className="mg-input"
+                  inputMode="decimal"
+                  aria-label="Reliquat wait (minutes)"
+                  data-mg-reliquat-wait
+                  value={typedWait}
+                  disabled={!settings}
+                  onChange={(e) => {
+                    setError(null);
+                    setWaitDraft(e.target.value);
+                  }}
+                  onBlur={commitWait}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitWait();
+                  }}
+                />
+                <span className="mg-unit">min</span>
+              </div>
+            </div>
+            <div className="field-hint" data-mg-cap-applies>Applies to members started from now on; running sessions keep what they started with.</div>
           </div>
-          <div className="field-hint" data-mg-cap-applies>Applies to members started from now on; running sessions keep what they started with.</div>
+
         </div>
 
         {shownError && (
