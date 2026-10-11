@@ -24,7 +24,7 @@ export function productionVeilleReliquatPort(over: Partial<VeilleReliquatPortDep
   return makeVeilleReliquatPort({
     cliOf: cliOfMember,
     countBrowsers: (wsId) => countBrowserReliquatsOf(wsId),
-    stopBrowsers: (wsId, ctx) => stopBrowserReliquatsOf(wsId, { ignoreWindow: true, ...(ctx?.stillWanted ? { stillWanted: ctx.stillWanted } : {}) }),
+    stopBrowsers: (wsId, ctx) => stopBrowserReliquatsOf(wsId, { ignoreWindow: true, ...(ctx?.stillWanted ? { stillWanted: ctx.stillWanted } : {}), ...(ctx?.stillWantedAfterSignal ? { stillWantedAfterSignal: ctx.stillWantedAfterSignal } : {}) }),
     tell: (wsId, text) => queueInboxText(wsId, text),
     ...over,
   });

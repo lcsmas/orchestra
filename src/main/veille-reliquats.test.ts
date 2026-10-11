@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { judgeVeille, type JudgeDeps, type VeilleReliquatPort } from './veille-reliquats.ts';
+import { judgeVeille, __resetVeilleLogGate, type JudgeDeps, type VeilleReliquatPort } from './veille-reliquats.ts';
 import { emptyReliquatReport, type ReliquatKilled, type ReliquatReport } from '../shared/pause-reliquats.ts';
 import { stripControl } from '../shared/pause-consigne.ts';
 import type { HibernationSignals } from '../shared/hibernation.ts';
@@ -14,10 +14,11 @@ const MIN = 60_000;
 const THRESHOLD = 5 * MIN;
 const DELAY = 30 * MIN;
 
-const ws = (over: Partial<Workspace> = {}): Workspace => ({ id: 'w1', name: 'n', repoPath: '/r', worktreePath: '/w', branch: 'b', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', ...over }) as Workspace;
+/** A FLEET member by default (it has a coordinator): the Reliquat machinery is for the fleet (OPS ruling R11, #326-fu m4). */
+const ws = (over: Partial<Workspace> = {}): Workspace => ({ id: 'w1', name: 'n', repoPath: '/r', worktreePath: '/w', branch: 'b', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', parentId: 'coord', ...over }) as Workspace;
 const sig = (idleMs: number, over: Partial<Omit<HibernationSignals, 'liveReliquats'>> = {}): Omit<HibernationSignals, 'liveReliquats'> => ({
   now: NOW, lastActivityAt: NOW - idleMs, isActive: false, hasLivePty: false, hasLiveSdk: true, hasLiveRunPty: false, hasLiveBackgroundTask: false,
-  thresholdMs: THRESHOLD, admissionHeld: false, reliquatDelayMs: DELAY, ...over,
+  thresholdMs: THRESHOLD, monotonicIdleMs: idleMs, admissionHeld: false, reliquatDelayMs: DELAY, ...over,
 });
 const K = (pid: number): ReliquatKilled => ({ pid, startTicks: pid, comm: 'x', cmd: `proc-${pid}`, cwd: null, startedAt: 0, scope: 's', evidence: 'e', signal: 'SIGTERM', outcome: 'exited' });
 
@@ -32,8 +33,8 @@ class FakePort implements VeilleReliquatPort {
     if (this.live instanceof Error) throw this.live;
     return this.live;
   }
-  stopCtx: { stillWanted(): boolean } | undefined;
-  async stop(wsId: string, ctx?: { stillWanted(): boolean }): Promise<ReliquatReport | null> {
+  stopCtx: { stillWanted(): boolean; stillWantedAfterSignal?(): boolean } | undefined;
+  async stop(wsId: string, ctx?: { stillWanted(): boolean; stillWantedAfterSignal?(): boolean }): Promise<ReliquatReport | null> {
     this.stopCtx = ctx;
     this.calls.push(`stop:${wsId}`);
     if (this.report instanceof Error) throw this.report;
@@ -71,16 +72,127 @@ test('no live Reliquat ⇒ Veille at the NORMAL threshold, nothing stopped, nobo
   assert.equal((v as { stopped: boolean }).stopped, false);
 });
 
-test('the census CANNOT say (unknown, or it throws) ⇒ today\'s Veille, nothing stopped on a guess — and it is logged', async () => {
+test('the census CANNOT say (unknown, or it throws) ⇒ NO Veille this pass (R11, #326-fu m3: UNKNOWN is not NONE), nothing stopped on a guess — and it is logged', async () => {
   for (const live of ['unknown', new Error('boom')] as const) {
+    __resetVeilleLogGate();
     const p = new FakePort();
     p.live = live;
     const log: string[] = [];
     const v = await judgeVeille(ws(), sig(10 * MIN), deps(p, log));
-    assert.equal(v.hibernate, true, String(live));
-    assert.deepEqual(p.calls, ['census:w1']);
+    assert.deepEqual(v, { hibernate: false, why: 'reliquat-census-unknown' }, String(live));
+    assert.deepEqual(p.calls, ['census:w1'], 'nothing stopped, nobody told');
     assert.ok(log.some((l) => /could not be counted|census .* threw/.test(l)), log.join('|'));
+    assert.ok(log.some((l) => /Veille deferred/.test(l)), log.join('|'));
   }
+});
+
+test('the census recovers ⇒ the very next pass puts the member in Veille (a deferral is one sweep, not a ban)', async () => {
+  const p = new FakePort();
+  p.live = 'unknown';
+  assert.equal((await judgeVeille(ws(), sig(10 * MIN), deps(p))).hibernate, false);
+  p.live = 0;
+  assert.equal((await judgeVeille(ws(), sig(10 * MIN), deps(p))).hibernate, true);
+});
+
+test('#326-fu m4 (R11): a member WITHOUT a coordinator is never counted, waited for or stopped — today\'s Veille at the normal threshold, no census paid', async () => {
+  const p = new FakePort();
+  p.live = 5;
+  const v = await judgeVeille(ws({ parentId: undefined }), sig(10 * MIN), deps(p));
+  assert.equal(v.hibernate, true);
+  assert.equal((v as { stopped: boolean }).stopped, false);
+  assert.deepEqual(p.calls, [], 'the port is not consulted at all');
+  assert.equal((await judgeVeille(ws({ parentId: undefined }), sig(10 * MIN, { admissionHeld: true }), deps(p))).hibernate, true, 'nor under a held Admission');
+  assert.deepEqual(p.calls, []);
+  assert.deepEqual(await judgeVeille(ws({ parentId: undefined }), sig(2 * MIN), deps(p)), { hibernate: false, why: 'not-eligible' }, 'the normal threshold still governs');
+});
+
+test('#326-fu m2: the wait is judged on BOTH clocks — a wall clock that jumped (idle 3 h) over a member active a moment ago on the monotonic one WAITS, nothing stopped', async () => {
+  const p = new FakePort();
+  p.live = 2;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  const v = await judgeVeille(ws(), sig(3 * 60 * MIN, { monotonicIdleMs: 20_000 }), deps(p));
+  assert.equal(v.hibernate, false);
+  assert.equal((v as { why: string }).why, 'reliquat-delay');
+  assert.deepEqual(p.calls, ['census:w1'], 'no stop, no notice');
+});
+
+test('#326-fu m2: the notice states the idle time the wait was judged on — the SMALLER clock, never a jumped wall figure', async () => {
+  const p = new FakePort();
+  p.live = 1;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  await judgeVeille(ws(), sig(3 * 60 * MIN, { monotonicIdleMs: 32 * MIN }), deps(p));
+  assert.match(p.told[0].text, /because you had been idle for 32m/);
+});
+
+test('#326-fu m1: the member is judged AGAIN on fresh state BEFORE the first signal — a prompt delivered while the census awaited keeps its Reliquats alive', async () => {
+  const p = new FakePort();
+  p.live = 3;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  const asked: number[] = [];
+  const log: string[] = [];
+  const v = await judgeVeille(ws(), sig(40 * MIN), { ...deps(p, log), stillEligible: (n) => { asked.push(n); return false; } });
+  assert.deepEqual(v, { hibernate: false, why: 'not-eligible' });
+  assert.deepEqual(p.calls, ['census:w1'], 'no stop, no notice');
+  assert.deepEqual(asked, [3], 'asked with the number of Reliquats still to wait for');
+  assert.ok(log.some((l) => /no longer eligible/.test(l) && /NOT stopped/.test(l)), log.join('|'));
+});
+
+test('#326-fu m1: the same fresh question guards EVERY signal round — the stop is handed `wanted` = (the sweep\'s epoch check) AND (fresh eligibility), both read live', async () => {
+  const p = new FakePort();
+  p.live = 2;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  let epochOk = true;
+  let eligible = true;
+  const asked: number[] = [];
+  await judgeVeille(ws(), sig(40 * MIN), { ...deps(p), stillWanted: () => epochOk, stillEligible: (n) => { asked.push(n); return eligible; } });
+  asked.length = 0;
+  assert.equal(p.stopCtx?.stillWanted(), true);
+  assert.deepEqual(asked, [2]);
+  eligible = false;
+  assert.equal(p.stopCtx?.stillWanted(), false, 'a prompt / status change / fresh activity mid-stop ends the signal rounds');
+  eligible = true;
+  epochOk = false;
+  assert.equal(p.stopCtx?.stillWanted(), false, 'a wake or delete mid-stop does too');
+  epochOk = true;
+  assert.equal(p.stopCtx?.stillWanted(), true, 'control: both hold');
+});
+
+test('#326-fu F2: the stop is also handed an AFTER-SIGNAL predicate = (the sweep\'s epoch check) AND (the after-signal freshness) — the hold falling does not end a stop that began, a wake does', async () => {
+  const p = new FakePort();
+  p.live = 2;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  let epochOk = true;
+  let fresh = true;      // eligibility BEFORE the first signal
+  let afterSignal = true;
+  const asked: string[] = [];
+  await judgeVeille(ws(), sig(40 * MIN), { ...deps(p), stillWanted: () => epochOk, stillEligible: (n) => { asked.push(`fresh:${n}`); return fresh; }, stillEligibleAfterSignal: (n) => { asked.push(`after:${n}`); return afterSignal; } });
+  asked.length = 0;
+  fresh = false;         // the hold lapsed: the pre-signal question now says no …
+  assert.equal(p.stopCtx?.stillWanted(), false);
+  assert.equal(p.stopCtx?.stillWantedAfterSignal?.(), true, '… the after-signal one does not');
+  assert.deepEqual(asked, ['fresh:2', 'after:2']);
+  epochOk = false;       // the member woke
+  assert.equal(p.stopCtx?.stillWantedAfterSignal?.(), false);
+  epochOk = true;
+  afterSignal = false;   // fresh activity / a status change
+  assert.equal(p.stopCtx?.stillWantedAfterSignal?.(), false);
+  // no dedicated after-signal dependency ⇒ it falls back to `stillEligible` (the previous behaviour)
+  const p2 = new FakePort();
+  p2.live = 1;
+  p2.report = { ...emptyReliquatReport(['s']), killed: [K(502)] };
+  let f2 = true;
+  await judgeVeille(ws(), sig(40 * MIN), { ...deps(p2), stillEligible: () => f2 });
+  f2 = false;
+  assert.equal(p2.stopCtx?.stillWantedAfterSignal?.(), false);
+});
+
+test('#326-fu m1: no fresh-eligibility dependency (a rig that does not wire it) ⇒ the previous behaviour, unchanged', async () => {
+  const p = new FakePort();
+  p.live = 1;
+  p.report = { ...emptyReliquatReport(['s']), killed: [K(501)] };
+  const v = await judgeVeille(ws(), sig(40 * MIN), deps(p));
+  assert.equal(v.hibernate, true);
+  assert.deepEqual(p.calls, ['census:w1', 'stop:w1', 'tell:w1']);
 });
 
 test('live Reliquats, idle 10 min (< the 30 min delay) ⇒ NO Veille, says how long is left; nothing is stopped yet', async () => {
@@ -188,4 +300,51 @@ test('the stop is handed the sweep\'s « still wanted » check (a wake / delete 
   assert.equal((v as { why: string }).why, 'reliquat-stop-incomplete');
   assert.match((v as { detail: string }).detail, /aborted \(lifted\)/);
   assert.deepEqual(p.calls, ['census:w1', 'stop:w1', 'tell:w1']);
+});
+
+test('an UNKNOWN census is SAID once per member per 5 min (a stuck keeper under a held Admission is re-judged every guard sample), again after 5 min, and a known census re-arms it', async () => {
+  __resetVeilleLogGate();
+  const p = new FakePort();
+  p.live = 'unknown';
+  const log: string[] = [];
+  const said = () => log.filter((l) => /could not be counted/.test(l)).length;
+  for (let i = 0; i < 6; i++) await judgeVeille(ws(), sig(10 * MIN, { now: NOW + i * 10_000 }), deps(p, log));   // 6 guard samples, 10 s apart
+  assert.equal(said(), 1, 'six deferrals, one line');
+  await judgeVeille(ws(), sig(10 * MIN, { now: NOW + 5 * MIN }), deps(p, log));
+  assert.equal(said(), 2, 'said again after 5 min');
+  p.live = 0;
+  assert.equal((await judgeVeille(ws(), sig(10 * MIN, { now: NOW + 6 * MIN }), deps(p, log))).hibernate, true);
+  p.live = 'unknown';
+  await judgeVeille(ws(), sig(10 * MIN, { now: NOW + 6 * MIN + 1000 }), deps(p, log));
+  assert.equal(said(), 3, 'a known census in between re-armed the line');
+  __resetVeilleLogGate();
+});
+
+test('the « to go » figure is the delay minus the SMALLER idle time — a wall-clock jump does not read « nothing left to wait »', async () => {
+  const p = new FakePort();
+  p.live = 2;
+  const v = await judgeVeille(ws(), sig(3 * 60 * MIN, { monotonicIdleMs: 20_000 }), deps(p));
+  assert.deepEqual(v, { hibernate: false, why: 'reliquat-delay', liveReliquats: 2, waitMs: 30 * MIN - 20_000 });
+  const nan = await judgeVeille(ws(), sig(40 * MIN, { monotonicIdleMs: NaN }), deps(p));
+  assert.equal(nan.hibernate, false, 'an unreadable monotonic clock fails closed');
+  assert.equal((nan as { why: string }).why, 'reliquat-delay');
+  assert.equal((nan as { waitMs: number }).waitMs, 30 * MIN, 'and the figure stays a number: the whole delay still to go');
+});
+
+test('a stop that returned NOTHING (a scope-less member\'s browser pass answers null for « none » AND for « stopped by the wake check ») is not « stopped » when the member is no longer wanted — the Veille waits', async () => {
+  const p = new FakePort();
+  p.live = 1;
+  p.report = null;
+  let eligible = true;
+  const park = p.stop.bind(p);
+  p.stop = async (w, c) => { const r = await park(w, c); eligible = false; return r; };   // the member woke DURING the stop
+  const log: string[] = [];
+  const v = await judgeVeille(ws(), sig(40 * MIN), { ...deps(p, log), stillEligible: () => eligible });
+  assert.deepEqual(v, { hibernate: false, why: 'not-eligible' });
+  assert.ok(log.some((l) => /no longer eligible after its Reliquat stop returned nothing/.test(l)), log.join('|'));
+  // control: the same null with the member still wanted is today's « nothing to stop » ⇒ Veille
+  const p2 = new FakePort();
+  p2.live = 1;
+  p2.report = null;
+  assert.equal((await judgeVeille(ws(), sig(40 * MIN), { ...deps(p2), stillEligible: () => true })).hibernate, true);
 });

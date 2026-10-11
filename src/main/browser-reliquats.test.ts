@@ -314,6 +314,34 @@ test('a LIFT during the kill sends nothing more (`aborted: lifted`); nothing is 
   assert.equal(r2.aborted, 'lifted');
 });
 
+test('Veille (#326-fu F2): once a browser group has been signalled, `stillWantedAfterSignal` replaces `stillWanted` — the rest of the list and the SIGKILL escalation are not cancelled by a condition that only held at the start', async () => {
+  const w = new World();
+  w.browser(500, { mode: 'pipe' });
+  w.browser(501, { mode: 'pipe' });
+  w.ignoresTerm.add(500);
+  let calls = 0;
+  const r = await w.pass(new BrowserTracker(), { stillWanted: () => ++calls <= 1, stillWantedAfterSignal: () => true });
+  assert.equal(r.aborted, undefined, 'not lifted');
+  assert.deepEqual(w.signals.map((s) => s.pid).sort((a, b) => a - b).filter((p, i, a) => a.indexOf(p) === i), [500, 501], 'BOTH groups were signalled');
+  assert.ok(w.signals.some((s) => s.pid === 500 && s.sig === 'SIGKILL'), 'the TERM-ignoring browser got its SIGKILL escalation');
+  // control: without the after-signal predicate the lift (false after the first check) cancels the second group, as before
+  const w2 = new World();
+  w2.browser(500, { mode: 'pipe' });
+  w2.browser(501, { mode: 'pipe' });
+  let c2 = 0;
+  const r2 = await w2.pass(new BrowserTracker(), { stillWanted: () => ++c2 <= 1 });
+  assert.equal(r2.aborted, 'lifted');
+  assert.deepEqual(w2.signals.map((s) => s.pid), [500]);
+  // and a member that WOKE (the after-signal predicate false) still ends it
+  const w3 = new World();
+  w3.browser(500, { mode: 'pipe' });
+  w3.browser(501, { mode: 'pipe' });
+  let c3 = 0;
+  const r3 = await w3.pass(new BrowserTracker(), { stillWanted: () => ++c3 <= 1, stillWantedAfterSignal: () => false });
+  assert.equal(r3.aborted, 'lifted');
+  assert.deepEqual(w3.signals.map((s) => s.pid), [500]);
+});
+
 test('write-ahead: onProgress carries the stopped browsers BEFORE the grace wait ends', async () => {
   const w = new World();
   w.browser(500, { mode: 'pipe' });
