@@ -87,6 +87,8 @@ export interface BrowserPassOpts {
   ignoreWindow?: boolean;
   /** Re-checked before every signal round: false ⇒ stop at once (the pause was lifted). */
   stillWanted?: () => boolean;
+  /** Veille (#326-fu F2): consulted INSTEAD of `stillWanted` once a browser group has been signalled (a stop that began finishes unless the member woke / was deleted). */
+  stillWantedAfterSignal?: () => boolean;
   /** Called with the report so far after the SIGTERM batch (the trap persists it: a stopped browser must be in the Bilan even if the app dies next). */
   onProgress?: (report: ReliquatReport) => void;
   /** HUMAN-turn windows (D9): a browser that STARTED inside one belongs to that turn and is spared (listed), exactly like a Reliquat of the scope step. */
@@ -221,7 +223,8 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
   const stopped: BrowserStopped[] = [];
   let aborted: 'lifted' | undefined;
   const wanted = (): boolean => {
-    if (opts.stillWanted && !opts.stillWanted()) { aborted = 'lifted'; return false; }
+    const check = armed.length > 0 && opts.stillWantedAfterSignal ? opts.stillWantedAfterSignal : opts.stillWanted;
+    if (check && !check()) { aborted = 'lifted'; return false; }
     return true;
   };
   const armed: Array<{ t: Target; sent: ProcSample[]; entry: ReliquatKilled }> = [];
