@@ -42,6 +42,12 @@ MUTANTS = [
     ('C7-ask-not-recognized', 'src/shared/acces-mobile-conversation.ts', "a.name === 'AskUserQuestion'", "a.name === 'AskUserQuestionX'", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('C8-id-unvalidated', 'src/acces-mobile/server.ts', "      return id && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;", "      return id || null;", 'RED'),
     ('C9-tap-never-disarmed', 'src/main/acces-mobile-feed-core.ts', "  untap?.();\n  untap = null;\n", "", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
+    ('S1-send-via-agent-path', 'src/main/hooks-server.ts', "                await sdkSend(ws.id, text, undefined, undefined, undefined, false, false, 'human');", "                await dispatchMessageRequest({ to: ws.id, text } as never);", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('S2-no-body-cap', 'src/acces-mobile/server.ts', "        if (Buffer.byteLength(raw) > MOBILE_SEND_MAX_BODY) {", "        if (false) {", 'RED'),
+    ('S3-archived-accepted', 'src/main/hooks-server.ts', "            if (!ws || ws.archived) send(200, { ok: false, error: 'unknown or archived workspace' });", "            if (!ws) send(200, { ok: false, error: 'unknown or archived workspace' });", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('S4-any-content-type', 'src/acces-mobile/server.ts', "      if (!/^application\\/json\\b/i.test(String(req.headers['content-type'] ?? ''))) return refuse(415, 'not-json');\n", "", 'RED'),
+    ('S5-short-send-timeout', 'src/acces-mobile/server.ts', "        relay('/mobile/send', { id, text }, 45_000);", "        relay('/mobile/send', { id, text });", 'RED'),
+    ('S6-blank-accepted', 'src/acces-mobile/server.ts', "        if (typeof text !== 'string' || !text.trim() || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');", "        if (typeof text !== 'string') return refuse(400, 'bad-text');", 'RED'),
     ('M9-token-read-once', 'src/acces-mobile/server.ts', "    const expected = readTokenSafe();\n", "    const expected = ((globalThis as any).__t ??= readTokenSafe()) as string;\n", 'RED'),
     ('M10-shell-without-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const asset0 = STATIC[pathOnly]; if (asset0) { res.writeHead(200); res.end(asset0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED'),
 ]

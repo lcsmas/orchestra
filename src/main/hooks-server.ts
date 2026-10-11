@@ -44,7 +44,7 @@ import { watchersStatus } from './watchers.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
 import { projectMobileWorkspaces } from '../shared/acces-mobile.ts';
-import { validWorkspaceId } from '../shared/acces-mobile-conversation.ts';
+import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, validWorkspaceId } from '../shared/acces-mobile-conversation.ts';
 import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed.ts';
 import { markWorkspaceSeen } from './mark-seen.ts';
 import { repriseStatusView } from './pause-reprise.ts';
@@ -58,7 +58,7 @@ import {
 } from './linear-tickets';
 import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
-import { dispatchReloadSkillsRequest } from './agent-sdk';
+import { dispatchReloadSkillsRequest, sdkSend } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
@@ -189,7 +189,7 @@ export async function startHooksServer(): Promise<void> {
     // caller saw an empty reply and had to guess that the payload was the
     // culprit — so /spawn gets a generous ceiling while other routes stay
     // locked down, and an over-cap request now answers with a clear 413.
-    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : 4096;
+    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : route === '/mobile/send' ? MOBILE_SEND_MAX_BODY : 4096;
     let body = '';
     let tooLarge = false;
     req.setEncoding('utf8');
@@ -635,6 +635,22 @@ export async function startHooksServer(): Promise<void> {
             else {
               await markWorkspaceSeen(msg.id);
               send(200, { ok: true });
+            }
+          } else if (route === '/mobile/send') {
+            // Accès mobile (#338): the human typed this on the phone — the SAME call as the desktop composer (origin 'human': queued
+            // if mid-turn, wakes a Veille session, allowed while a run is paused). NEVER the agent-to-agent `/message` path, whose
+            // fleet gate refuses a member with the bus delivery switch ON.
+            const ws = validWorkspaceId(msg.id) ? store.getWorkspace(msg.id) : undefined;
+            const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+            if (!ws || ws.archived) send(200, { ok: false, error: 'unknown or archived workspace' });
+            else if (!text || text.length > MOBILE_SEND_MAX_CHARS) send(200, { ok: false, error: `message must be 1–${MOBILE_SEND_MAX_CHARS} characters` });
+            else {
+              try {
+                await sdkSend(ws.id, text, undefined, undefined, undefined, false, false, 'human');
+                send(200, { ok: true });
+              } catch (e) {
+                send(200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+              }
             }
           } else if (route === '/mobile/stream') {
             // Long-lived NDJSON: change announcements for the server process to relay to the phone. Ends when it hangs up.

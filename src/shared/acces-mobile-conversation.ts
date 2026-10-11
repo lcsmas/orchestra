@@ -30,6 +30,9 @@ export interface PhoneConversation {
 }
 
 export const MAX_PHONE_LINES = 200;
+/** A message typed on the phone (#338): at most this many characters, and this many bytes of JSON on the wire. */
+export const MOBILE_SEND_MAX_CHARS = 32_000;
+export const MOBILE_SEND_MAX_BODY = 131_072;
 export const MAX_PHONE_TEXT = 4000;
 
 const clip = (s: string, n = MAX_PHONE_TEXT): string => (s.length > n ? `${s.slice(0, n)}…` : s);

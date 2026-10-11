@@ -19,6 +19,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import { startFakeApi } from './session-budget/fake-anthropic-api.mjs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -127,6 +128,7 @@ const world = (() => {
   const repoA = path.join(d, 'repo-orchestra'), repoB = path.join(d, 'repo-perso');
   for (const x of [fakeHome, ohome, cfgA, cfgB, repoA, repoB, path.join(d, 'wt')]) { fs.mkdirSync(x, { recursive: true }); mustBeScratch('seed', x); }
   const wts = [];
+  const coordDir = path.join(d, 'coord'); fs.mkdirSync(coordDir, { recursive: true });
   for (const [repo, name] of [[repoA, 'am-waiting'], [repoA, 'am-idle'], [repoB, 'am-unread'], [repoB, 'am-archived']]) {
     if (!fs.existsSync(path.join(repo, '.git'))) { git(repo, ['init', '-q', '-b', 'main'], fakeHome); fs.writeFileSync(path.join(repo, 'README.md'), '#\n'); git(repo, ['add', '.'], fakeHome); git(repo, ['commit', '-q', '-m', 'seed'], fakeHome); }
     const wt = path.join(d, 'wt', name); git(repo, ['worktree', 'add', '-q', '-b', `e2e/${name}`, wt], fakeHome); wts.push(wt);
@@ -142,7 +144,9 @@ const world = (() => {
   const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude' };
   const workspaces = [
     { ...base, id: 'ws-am-waiting', name: 'am-waiting', repoPath: repoA, worktreePath: wts[0], branch: 'e2e/am-waiting', status: 'waiting', accountId: 'acc-mc' },
-    { ...base, id: 'ws-am-idle', name: 'am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc' },
+    { ...base, id: 'ws-am-idle', name: 'am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc', parentId: 'ws-am-coord' },
+    // #338: am-idle is a FLEET MEMBER of this coordinator's run, whose bus `delivery` switch is ON — the agent `/message` path refuses it.
+    { ...base, id: 'ws-am-coord', name: 'am-coord', kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: coordDir, branch: 'am-coord', status: 'idle' },
     { ...base, id: 'ws-am-unread', name: 'am-unread', repoPath: repoB, worktreePath: wts[2], branch: 'e2e/am-unread', status: 'idle', autoUnread: true, accountId: 'acc-perso', sdkSessionId: HISTORY_SESSION },
     { ...base, id: 'ws-am-archived', name: 'am-archived', repoPath: repoB, worktreePath: wts[3], branch: 'e2e/am-archived', status: 'idle', archived: true, archivedAt: Date.now(), accountId: 'acc-perso' },
   ];
@@ -158,6 +162,22 @@ const stubDir = path.join(world.d, 'bin'); fs.mkdirSync(stubDir, { recursive: tr
 const REAL_CLAUDE = fs.realpathSync(path.join(LIVE_HOME, '.local/bin/claude'));
 fs.symlinkSync(REAL_CLAUDE, path.join(stubDir, 'claude'));
 const TOKEN_FILE = path.join(world.ohome, 'acces-mobile', 'token');
+
+// #338: the coordinator's run with the bus `delivery` switch ON, written by the REAL bus module (bundled, run under Electron-as-node
+// for the better-sqlite3 ABI), exactly as the bus-page rig does.
+{
+  const require_ = createRequire(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const { build } = (() => { try { return require_('esbuild'); } catch { const g = fs.globSync?.(repoRoot + '/node_modules/.pnpm/esbuild@*/node_modules/esbuild') ?? []; if (!g.length) throw new Error('esbuild not resolvable'); return require_(g[0]); } })();
+  const entry = path.join(world.d, 'bus-seed-entry.ts');
+  fs.writeFileSync(entry, `export { openBus, busPath } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};\nexport { startRun } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-runs.ts'))};\nexport { DEFAULT_BUS_SWITCHES } from ${JSON.stringify(path.join(repoRoot, 'src/shared/bus-switches.ts'))};\n`);
+  const bundle = path.join(world.d, 'bus-seed.cjs');
+  await build({ entryPoints: [entry], outfile: bundle, bundle: true, format: 'cjs', platform: 'node', external: ['electron', 'better-sqlite3', 'node-pty'], logLevel: 'silent', nodePaths: [path.join(repoRoot, 'node_modules')] });
+  const runner = path.join(world.d, 'bus-seed-run.cjs');
+  fs.writeFileSync(runner, `const m = require(${JSON.stringify(bundle)}); const db = m.openBus(m.busPath()); m.startRun(db, { id: 'ws-am-coord', kind: 'mission', coordinator: 'ws-am-coord', title: 'am rig fleet' }, { ...m.DEFAULT_BUS_SWITCHES, delivery: true }); db.close(); console.log('SEEDED ' + m.busPath());`);
+  const out = sh(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [runner], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: path.join(repoRoot, 'node_modules') } });
+  if (!out.includes(`SEEDED ${path.join(world.ohome, 'bus.sqlite')}`)) throw new Error(`bus seeding did not report the scratch path: ${out}`);
+}
 
 // ── boot ──
 const cdpPort = await freePort();
@@ -212,7 +232,7 @@ try {
   // security arms against the live port
   const ctl = await req(SOCK, '/api/workspaces', AUTH);
   const rows = ctl.status === 200 ? JSON.parse(ctl.body).workspaces : [];
-  clause('sec/control-200', ctl.status === 200 && rows.length === 3, `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
+  clause('sec/control-200', ctl.status === 200 && rows.length === 4 && rows.some((r) => r.name === "am-coord" && r.group === "Orchestrators"), `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
   // A seeded `waiting` is resolved to idle + non lu at store load (store.ts: no live process can still be asking), so a real
   // en attente needs a live AskUserQuestion (#339). Here: attention rank never decreases, both accounts, archived dropped.
   const rank = (r) => (r.status === 'waiting' ? 0 : r.unread ? 1 : 2);
@@ -248,19 +268,19 @@ try {
   await phone.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
   const prePhone = await phone.eval(`location.href`);
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/#t=${TOKEN}` });
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'three rows on the phone');
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 20000, "four rows on the phone (incl. the coordinator)");
   const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.textContent), text: document.body.innerText })`);
   clause('phone/paired-fragment-stripped', P.stored && !P.href.includes('#') && !P.href.includes(TOKEN), `${prePhone} -> ${P.href}; token stored=${P.stored}`);
   const apiOrder = rows.map((r) => r.id);
-  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(apiOrder) && !P.ids.includes('ws-am-archived') && (P.text.match(/non lu/g) || []).length === 2 && /perso-rig · e2e\/am-unread · perso/.test(P.text) && /e2e\/am-idle · mc/.test(P.text) && P.groups[0] === 'Pour toi' && P.groups.length === 2, `phone rows ${P.ids.join(',')} == api order; groups ${P.groups.join(' | ')}; 2× "non lu"; group · branch · account shown`);
+  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(apiOrder) && !P.ids.includes('ws-am-archived') && (P.text.match(/non lu/g) || []).length === 2 && /perso-rig · e2e\/am-unread · perso/.test(P.text) && /e2e\/am-idle · mc/.test(P.text) && P.groups[0] === 'Pour toi' && P.groups.length === 3 && P.groups.includes('Orchestrators'), `phone rows ${P.ids.join(',')} == api order; groups ${P.groups.join(' | ')}; 2× "non lu"; group · branch · account shown`);
   saveShot('phone-list.png', await phone.shot());
   await phone.send('Page.reload');
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'rows after reload without the fragment');
-  clause('phone/reload-still-paired', true, 'reload without #t= still lists 3 rows (token from localStorage)');
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 20000, 'rows after reload without the fragment');
+  clause('phone/reload-still-paired', true, 'reload without #t= still lists 4 rows (token from localStorage)');
   await phone.eval(`(() => { const c = document.getElementById('needsMe'); c.click(); return true; })()`);
   await sleep(200);
   const filtered = await phone.eval(`[...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id)`);
-  clause('phone/filter-needs-me', filtered.length === 2 && !filtered.includes('ws-am-idle'), `3 -> ${filtered.length} rows: ${filtered.join(',')}`);
+  clause('phone/filter-needs-me', filtered.length === 2 && !filtered.includes('ws-am-idle'), `4 -> ${filtered.length} rows: ${filtered.join(',')}`);
   saveShot('phone-list-needs-me.png', await phone.shot());
   await phone.eval(`(() => { const c = document.getElementById('needsMe'); if (c.checked) c.click(); return true; })()`);
 
@@ -288,6 +308,34 @@ try {
   const modelAfter = fakeApi.requests.filter((r) => r.type === 'model').length;
   clause('conv/live-turn', L.noReload && pre === 0 && L.lines.some((l) => l === 'user:Bonjour depuis le rig') && modelAfter > modelBefore, `${pre} -> ${L.lines.length} lines without reload: ${JSON.stringify(L.lines)}; fake API model requests ${modelBefore} -> ${modelAfter}; refused egress ${fakeApi.egress.length}`);
   saveShot('phone-conversation-live.png', await phone.shot());
+
+  // #338 must-FAIL control: the AGENT path (`/message` on the hooks socket) refuses am-idle — its run has bus delivery ON …
+  const mainSock = environOf(serverPids(TOKEN_FILE)[0]).find((e) => e.startsWith('ORCHESTRA_SOCK=')).slice('ORCHESTRA_SOCK='.length);
+  const viaAgentPath = await new Promise((resolve, reject) => {
+    const r = http.request({ socketPath: mainSock, path: '/message', method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => { let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve(JSON.parse(b))); });
+    r.on('error', reject); r.end(JSON.stringify({ to: 'ws-am-idle', text: 'coordination via the agent path' }));
+  });
+  clause('send/agent-path-refused', viaAgentPath.ok === false && /delivery switch ON/.test(viaAgentPath.error ?? ''), `hooks /message to the fleet member: ${JSON.stringify(viaAgentPath).slice(0, 160)}`);
+  // … while the SAME member takes the human's message from the phone composer (trusted typing + click), and the turn runs.
+  const beforeSend = fakeApi.requests.filter((r) => r.type === 'model').length;
+  await phone.eval(`document.querySelector('.conv-input').focus(); true`);
+  await phone.send('Input.insertText', { text: 'Message tapé sur le téléphone' });
+  const sendBtn = await phone.eval(`(() => { const r = document.querySelector('.conv-send').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await phone.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: sendBtn.x, y: sendBtn.y }] }).catch(() => {});
+  await phone.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }).catch(() => {});
+  await sleep(300);
+  if ((await phone.eval(`document.querySelector('.conv-compose').dataset.state || ''`)) === '') {
+    for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: sendBtn.x, y: sendBtn.y, ...extra });
+  }
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].some((e) => e.textContent === 'Message tapé sur le téléphone')`), 60000, 'the phone message in the conversation');
+  await waitFor(() => fakeApi.requests.filter((r) => r.type === 'model').length > beforeSend, 60000, 'a model request for the phone message');
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].filter((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)})).length >= 2`), 60000, 'the reply to the phone message');
+  const S = await phone.eval(`({ state: document.querySelector('.conv-compose').dataset.state, input: document.querySelector('.conv-input').value, err: document.querySelector('.conv-send-error').textContent })`);
+  clause('send/phone-to-fleet-member', S.state === 'sent' && S.input === '' && !S.err, `composer state ${S.state}, input cleared ${S.input === ''}; model requests ${beforeSend} -> ${fakeApi.requests.filter((r) => r.type === 'model').length}; reply shown`);
+  saveShot('phone-conversation-sent.png', await phone.shot());
+  // errors are never a false « sent »: an archived workspace is refused with a reason
+  const arch = await phone.eval(`fetch('/api/send?id=ws-am-archived', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') }, body: JSON.stringify({ text: 'x' }) }).then((r) => r.json())`);
+  clause('send/archived-refused', arch.ok === false && /archived/.test(arch.error), JSON.stringify(arch));
   await phone.eval(`location.hash = ''; true`);
 
   // settings dialog in the app: health, serve command; TRUSTED toggle off/on
@@ -322,7 +370,7 @@ try {
   const secs = (Date.now() - t0.at) / 1000;
   const mainPct = ((ticks(app.pid) - t0.main) / HZ / secs) * 100, srvPct = ((ticks(pidOn2) - t0.srv) / HZ / secs) * 100;
   const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
-  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 3, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled})`);
+  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 4, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled})`);
 
   // supervision: SIGKILL the server ⇒ restarted
   process.kill(pidOn2, 'SIGKILL');

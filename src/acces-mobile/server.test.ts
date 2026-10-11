@@ -12,6 +12,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { createAccesMobileServer, tokenMatches, MAX_STREAMS, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
 import { CLOSE_INHERITED_FDS, pickSocketDir } from '../shared/acces-mobile.ts';
+import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
 const TOKEN = 'tok_' + 'a'.repeat(40);
@@ -643,3 +644,45 @@ async function waitUntil(fn: () => boolean, ms = 3000): Promise<void> {
     await sleepMs(10);
   }
 }
+
+// ---- #338: send ----
+
+function post(port: number, p: string, headers: Record<string, string>, body: string | Buffer): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: p, method: 'POST', headers }, (res) => {
+      res.on('error', () => resolve({ status: res.statusCode ?? -1, body: '' }));
+      let b = '';
+      res.on('data', (c) => (b += c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+    });
+    req.on('error', (e) => ((e as NodeJS.ErrnoException).code === 'EPIPE' || (e as NodeJS.ErrnoException).code === 'ECONNRESET' ? resolve({ status: -1, body: '' }) : reject(e)));
+    req.end(body);
+  });
+}
+
+test('send: relayed to main with the text, only as POST JSON with identity + token, a long timeout', { timeout: 15_000 }, async () => {
+  const seen: { route: string; body: Record<string, unknown>; timeoutMs?: number }[] = [];
+  const server = createAccesMobileServer({ allowedLogin: LOGIN, readToken: () => TOKEN, upstream: async (route, body, timeoutMs) => (seen.push({ route, body, timeoutMs }), { ok: true }) });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const JSONH = { ...AUTH, 'Content-Type': 'application/json' };
+  try {
+    const ok = await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'Bonjour  ' }));
+    assert.equal(ok.status, 200, 'control');
+    assert.deepEqual(seen, [{ route: '/mobile/send', body: { id: 'w1', text: 'Bonjour  ' }, timeoutMs: 45_000 }]);
+    assert.equal((await post(port, '/api/send?id=w1', { ...ID, 'Content-Type': 'application/json' }, '{"text":"x"}')).status, 401, 'no token');
+    assert.equal((await post(port, '/api/send?id=w1', { 'Tailscale-User-Login': 'colleague@x', Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, '{"text":"x"}')).status, 403, 'colleague');
+    assert.equal((await post(port, '/api/send?id=../x', JSONH, '{"text":"x"}')).status, 400, 'bad id');
+    assert.equal((await post(port, '/api/send?id=w1', { ...AUTH, 'Content-Type': 'text/plain' }, '{"text":"x"}')).status, 415, 'not JSON');
+    assert.equal((await post(port, '/api/send?id=w1', JSONH, 'not json')).status, 400);
+    assert.equal((await post(port, '/api/send?id=w1', JSONH, '{"text":"   "}')).status, 400, 'blank');
+    assert.equal((await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'x'.repeat(MOBILE_SEND_MAX_CHARS + 1) }))).status, 400, 'too many chars');
+    const big = await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'é'.repeat(MOBILE_SEND_MAX_BODY) }));
+    assert.equal(big.status, 413, 'oversized body refused with a readable 413');
+    assert.equal((await get(port, '/api/send?id=w1', AUTH)).status, 404, 'GET is not a send');
+    assert.equal(seen.length, 1, 'no refused request reached main');
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(() => r(null)));
+  }
+});

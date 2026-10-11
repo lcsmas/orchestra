@@ -84,3 +84,14 @@ test('#337: the conversation, seen and stream routes are wired to the feed and t
   assert.match(platform, /current\(\)\.broadcast\(channel, \.\.\.args\);\n\s*if \(taps\.size\) \{\n\s*for \(const t of taps\) \{\n\s*try \{\n\s*t\(channel, args\);\n\s*\} catch \{/, 'every UI push reaches the taps, AFTER the window, and a throwing tap is contained');
   assert.match(entry, /upstreamStream: socketUpstreamStream\(sock\)/);
 });
+
+test('#338: a phone message takes the HUMAN composer path, never the agent-message gate', () => {
+  const block = /\} else if \(route === '\/mobile\/send'\) \{[\s\S]*?\} else if \(route === '\/mobile\/stream'\)/.exec(hooks)?.[0] ?? '';
+  assert.ok(block.includes('validWorkspaceId'), 'control: found the route block');
+  assert.match(block, /await sdkSend\(ws\.id, text, undefined, undefined, undefined, false, false, 'human'\)/);
+  assert.match(read('src/main/api-handlers.ts'), /agentSdkSend: async \(wsId, text, images\) => \{[\s\S]*?await sdkSend\(wsId, text, images, undefined, undefined, false, false, 'human'\)/, 'identical to the desktop composer call');
+  const code = block.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.doesNotMatch(code, /dispatchMessageRequest|decideMessageChannel|sdkDeliver/, 'not the agent-to-agent path');
+  assert.match(block, /ws\.archived/, 'archived workspaces are refused');
+  assert.match(hooks, /route === '\/mobile\/send' \? MOBILE_SEND_MAX_BODY/, 'the body cap fits a message');
+});

@@ -6,10 +6,11 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
+import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 
-export type Upstream = (route: string, body: Record<string, unknown>) => Promise<unknown>;
+export type Upstream = (route: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
 /** A long-lived upstream (main's `/mobile/stream`): one parsed JSON value per line; returns the abort. */
 export type UpstreamStream = (route: string, onMessage: (m: unknown) => void, onEnd: () => void) => () => void;
 
@@ -106,7 +107,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     res.on('error', () => {});
     const method = req.method ?? 'GET';
     const pathOnly = (req.url ?? '/').split('?')[0].split('#')[0];
-    const refuse = (code: 400 | 401 | 403 | 404 | 405 | 429, reason: string): void => {
+    const refuse = (code: 400 | 401 | 403 | 404 | 405 | 413 | 415 | 429, reason: string): void => {
       log(reason, `refused ${code} ${reason} ${method} ${pathOnly.slice(0, 80)}`);
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Length': '0' }).end();
     };
@@ -118,8 +119,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (typeof login !== 'string' || login === '') return refuse(403, 'no-identity');
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
-    // GET everywhere, POST only for the one state change (« seen »). Never a body: ids travel in the query string.
-    if (method !== 'GET' && !(method === 'POST' && pathOnly === '/api/seen')) return refuse(405, 'method');
+    // GET everywhere; POST only for the state changes (« seen », send). Ids travel in the query string; only send has a body.
+    if (method !== 'GET' && !(method === 'POST' && (pathOnly === '/api/seen' || pathOnly === '/api/send'))) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
     const asset = STATIC[pathOnly];
@@ -141,8 +142,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
       res.end(JSON.stringify(obj));
     };
-    const relay = (route: string, body: Record<string, unknown>): void => {
-      opts.upstream(route, body).then(
+    const relay = (route: string, body: Record<string, unknown>, timeoutMs?: number): void => {
+      opts.upstream(route, body, timeoutMs).then(
         (out) => json(200, out),
         (e: unknown) => {
           log('upstream', `upstream ${route} failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -163,6 +164,44 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (pathOnly === '/api/seen' && method === 'POST') {
       const id = wsId();
       return id ? relay('/mobile/seen', { id }) : refuse(400, 'bad-id');
+    }
+    if (pathOnly === '/api/send' && method === 'POST') {
+      // #338: the body is read ONLY after identity + token passed. JSON, capped, one string field.
+      const id = wsId();
+      if (!id) return refuse(400, 'bad-id');
+      if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return refuse(415, 'not-json');
+      let raw = '';
+      let tooBig = false;
+      let discarded = 0;
+      req.setEncoding('utf8');
+      req.on('data', (c: string) => {
+        if (tooBig) {
+          // Answer 413 once, drain a little so the client can read it, then cut a sender that keeps pushing.
+          discarded += c.length;
+          if (discarded > 8 * MOBILE_SEND_MAX_BODY) req.destroy();
+          return;
+        }
+        raw += c;
+        if (Buffer.byteLength(raw) > MOBILE_SEND_MAX_BODY) {
+          tooBig = true;
+          raw = '';
+          res.setHeader('Connection', 'close');
+          refuse(413, 'too-large');
+        }
+      });
+      req.on('end', () => {
+        if (tooBig) return;
+        let text: unknown;
+        try {
+          text = (JSON.parse(raw) as { text?: unknown }).text;
+        } catch {
+          return refuse(400, 'bad-json');
+        }
+        if (typeof text !== 'string' || !text.trim() || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');
+        // A cold session start (CLI boot) can take seconds: give main time to say whether the message was taken.
+        relay('/mobile/send', { id, text }, 45_000);
+      });
+      return;
     }
     if (pathOnly === '/api/stream') {
       if (!opts.upstreamStream) return refuse(404, 'not-found');
@@ -241,8 +280,8 @@ export function socketUpstreamStream(socketPath: string): UpstreamStream {
 }
 
 /** POST JSON to main's hooks server over its Unix socket. */
-export function socketUpstream(socketPath: string, timeoutMs = 5000): Upstream {
-  return (route, body) =>
+export function socketUpstream(socketPath: string, defaultTimeoutMs = 5000): Upstream {
+  return (route, body, timeoutMs = defaultTimeoutMs) =>
     new Promise((resolve, reject) => {
       const payload = JSON.stringify(body);
       const req = http.request(
