@@ -11,6 +11,14 @@
 //   settings/*   the Settings dialog shows "Listening", the serve command; a TRUSTED click turns it off ⇒ port refused,
 //                process gone; on again ⇒ listening — DOM + screenshots
 //   supervise/*  SIGKILL the server ⇒ main restarts it (new pid); SIGKILL the app ⇒ the server exits (no orphan listening)
+//   qr/*         (#336) the Settings dialog: no tailnet host ⇒ no QR + a prompt; a TRUSTED-typed host ⇒ the QR whose RENDERED PIXELS
+//                (screenshot → jsQR, an independent decoder) decode to exactly the URL printed beside it, token in the fragment
+//   regen/*      a TRUSTED click on « Regenerate token »: new token on disk, old token 401 / new 200, the phone paired with the old one
+//                shows « Jeton refusé » and re-pairs from the NEW displayed URL
+//   pwa/*        manifest + icons + apple-touch-icon load behind the identity check, the service worker registers and caches ONLY the
+//                shell, and with the server off (502) or the stand-in gone (connection refused) the phone page is served from that
+//                cache and says « Orchestra injoignable » — then recovers by itself
+//   leak/*       no token in any request line the server saw, none in any log / file under ORCHESTRA_HOME
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -19,6 +27,8 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import jsQR from 'jsqr';
+import { PNG } from 'pngjs';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -61,15 +71,44 @@ function req(socketPath, p, headers = {}) {
 const sockConnects = (socketPath) => new Promise((resolve) => { const s = net.connect({ path: socketPath }); s.setTimeout(1500, () => { s.destroy(); resolve(false); }); s.on('connect', () => { s.destroy(); resolve(true); }); s.on('error', () => resolve(false)); });
 /** A stand-in for `tailscale serve … unix:<sock>`: TCP on loopback for the browser, strips every client-sent Tailscale-User-*
  *  header and sets the tailnet identity of the device it represents (kb/1312/serve) — 502 when the socket is not there. */
-function serveProxy(getSock, login) {
+function serveProxy(getSock, login, seen = [], who = '?') {
   const srv = http.createServer((inReq, inRes) => {
     const headers = Object.fromEntries(Object.entries(inReq.headers).filter(([k]) => !k.toLowerCase().startsWith('tailscale-user-')));
     if (login) headers['tailscale-user-login'] = login;
-    const out = http.request({ socketPath: getSock(), path: inReq.url, method: inReq.method, headers }, (r) => { inRes.writeHead(r.statusCode, r.headers); r.pipe(inRes); });
-    out.on('error', () => { inRes.writeHead(502); inRes.end(); });
+    const line = { who, method: inReq.method, url: inReq.url, ua: String(inReq.headers['user-agent'] ?? ''), status: null }; seen.push(line); // the REQUEST LINE the server would see
+    const out = http.request({ socketPath: getSock(), path: inReq.url, method: inReq.method, headers }, (r) => { line.status = r.statusCode; inRes.writeHead(r.statusCode, r.headers); r.pipe(inRes); });
+    out.on('error', () => { line.status = 502; inRes.writeHead(502); inRes.end(); });
     inReq.pipe(out);
   });
   return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port })));
+}
+/** Stop a stand-in so its port REFUSES connections (keep-alive sockets included), and bring it back on the same port. */
+const stopProxy = (p) => new Promise((res) => { p.srv.closeAllConnections?.(); p.srv.close(() => res()); });
+const startProxy = (p) => new Promise((res, rej) => { p.srv.once('error', rej); p.srv.listen(p.port, '127.0.0.1', () => res()); });
+function proxyGetBin(port, p, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port, path: p, headers }, (res) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => resolve({ status: res.statusCode, type: String(res.headers['content-type'] ?? ''), body: Buffer.concat(c) })); });
+    r.on('error', reject); r.end();
+  });
+}
+/** Decode a QR from PNG bytes with an INDEPENDENT decoder (jsQR); null when none is found. */
+function decodeQr(pngBuf) {
+  const png = PNG.sync.read(pngBuf);
+  return jsQR(new Uint8ClampedArray(png.data.buffer, png.data.byteOffset, png.data.length), png.width, png.height)?.data ?? null;
+}
+/** Every file under `dir` (except `skip`) that contains one of `secrets` — the leak scan. */
+function filesContaining(dir, secrets, skip = new Set()) {
+  const hits = []; let scanned = 0;
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) { walk(f); continue; }
+      if (!e.isFile() || skip.has(f)) continue;
+      try { if (fs.statSync(f).size > 64 * 1024 * 1024) continue; const b = fs.readFileSync(f); scanned++; if (secrets.some((x) => b.includes(x))) hits.push(f); } catch {}
+    }
+  };
+  walk(dir);
+  return { hits, scanned };
 }
 function proxyGet(port, p, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -156,9 +195,10 @@ const logFile = path.join(world.d, 'app.log'); const fd = fs.openSync(logFile, '
 const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
 console.log(`app pid ${app.pid}, cdp ${cdpPort}, log ${logFile}`);
 let SOCK = null;
-const ownerProxy = await serveProxy(() => SOCK, LOGIN);
-const colleagueProxy = await serveProxy(() => SOCK, 'colleague@example.invalid');
-const taggedProxy = await serveProxy(() => SOCK, null); // a tagged device: serve sets no identity
+const seenLines = []; // every request line any stand-in forwarded (leak/* reads it)
+const ownerProxy = await serveProxy(() => SOCK, LOGIN, seenLines, 'owner');
+const colleagueProxy = await serveProxy(() => SOCK, 'colleague@example.invalid', seenLines, 'colleague');
+const taggedProxy = await serveProxy(() => SOCK, null, seenLines, 'tagged'); // a tagged device: serve sets no identity
 let cdp, chrome, phone, exitCode = 1;
 try {
   const target = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${cdpPort}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'app page target');
@@ -219,6 +259,14 @@ try {
     clause(name, r.status === want && !r.body.includes('am-'), `status ${r.status} (want ${want}), body ${r.body.length} bytes`);
   }
   const tcp = tcpListenersOf(pids[0]);
+  // #336: every static asset of the PWA (worker, manifest, icons) is behind the identity check like the shell
+  const ASSET_PATHS = ['/', '/app.js', '/sw.js', '/manifest.webmanifest', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png'];
+  const assetsOwner = await Promise.all(ASSET_PATHS.map((p) => proxyGetBin(ownerProxy.port, p, {})));
+  clause('sec/assets-control-owner', assetsOwner.every((r) => r.status === 200 && r.body.length > 0) && assetsOwner.filter((r) => r.type === 'image/png').length === 3, `owner device through serve: ${ASSET_PATHS.map((p, i) => `${p}=${assetsOwner[i].status}`).join(' ')}`);
+  const assetsAnon = await Promise.all(ASSET_PATHS.map((p) => req(SOCK, p)));
+  const assetsColleague = await Promise.all(ASSET_PATHS.map((p) => proxyGetBin(colleagueProxy.port, p, {})));
+  const assetsForged = await Promise.all(ASSET_PATHS.map((p) => proxyGetBin(taggedProxy.port, p, { 'Tailscale-User-Login': LOGIN })));
+  clause('sec/assets-need-identity', [...assetsAnon, ...assetsColleague, ...assetsForged].every((r) => r.status === 403 && (r.body.length === 0)), `no identity / colleague / tagged device forging the owner header: ${[...assetsAnon, ...assetsColleague, ...assetsForged].map((r) => r.status).join(',')} (all 403, empty bodies) over ${ASSET_PATHS.length} assets`);
   clause('sec/no-tcp-listener', tcp.length === 0, `server pid ${pids[0]} TCP listening sockets: [${tcp.join(', ')}] (app CDP port ${cdpPort})`);
 
   // phone: headless chromium, iPhone metrics, serve's identity header injected
@@ -281,11 +329,165 @@ try {
   const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
   clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 2, `over ${secs.toFixed(0)} s with the phone polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone, filter still on, lists ${polled})`);
 
-  // supervision: SIGKILL the server ⇒ restarted
-  process.kill(pidOn2, 'SIGKILL');
-  const pidOn3 = await waitFor(() => { const p = serverPids(TOKEN_FILE); return p.length && p[0] !== pidOn2 ? p[0] : null; }, 20000, 'a restarted server');
+  // ───────────── #336: pairing QR, regenerate, PWA install, unreachable ─────────────
+  const KEY = 'orchestra.accesMobile.token';
+  const HOST = 'rig-box.tail0000.ts.net';
+  const urlFor = (tok) => `https://${HOST}:${SERVE_PORT}/#t=${tok}`;
+  const storeHost = () => JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).accesMobile?.tailnetHost;
+  const ensureDialog = async () => {
+    if (await cdp.eval(`!!document.querySelector('.acces-mobile-settings')`)) return;
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 895 });
+    await cdp.clickSel('[data-am-open]');
+    await waitFor(() => cdp.eval(`!!document.querySelector('.acces-mobile-settings [data-am-host]')`), 15000, 'the Accès mobile dialog');
+  };
+  const typeInto = async (sel, text) => {
+    await cdp.clickSel(sel);
+    await cdp.eval(`document.querySelector(${JSON.stringify(sel)}).select()`);
+    await cdp.send('Input.insertText', { text });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r' });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  };
+  /** Screenshot the REAL rendered QR element (2× clip) and the whole window — the decoder reads pixels, never the generator's data. */
+  const qrShot = async () => {
+    await cdp.eval(`document.querySelector('[data-am-qr]').scrollIntoView({ block: 'center' })`);
+    await sleep(400);
+    const r = await cdp.eval(`(() => { const b = document.querySelector('[data-am-qr]').getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height, inView: b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight }; })()`);
+    const clip = Buffer.from((await cdp.send('Page.captureScreenshot', { format: 'png', clip: { x: r.x, y: r.y, width: r.width, height: r.height, scale: 2 } }, 25000)).data, 'base64');
+    return { r, clip, full: await cdp.shot() };
+  };
+  await ensureDialog();
+  await cdp.eval(`document.querySelector('.acces-mobile-settings').scrollTo(0, 0)`);
+
+  // qr/* — no host ⇒ no QR (control for the next arms)
+  const noHost = await cdp.eval(`({ qr: !!document.querySelector('[data-am-qr]'), url: !!document.querySelector('[data-am-url]'), prompt: (document.querySelector('[data-am-qr-prompt]') || {}).textContent || '', host: document.querySelector('[data-am-host]').value })`);
+  const view0 = await cdp.eval(`window.orchestra.accesMobile()`);
+  const preQrShot = shots.find((x) => path.basename(x.file) === 'settings-on.png');
+  clause('qr/no-host-no-qr', view0.settings.tailnetHost === '' && view0.pairingUrl === null && !noHost.qr && !noHost.url && /tailnet host/i.test(noHost.prompt) && noHost.host === '' && decodeQr(fs.readFileSync(preQrShot.file)) === null, `no host set: pairingUrl ${view0.pairingUrl}, no QR / URL element, prompt "${noHost.prompt}"; the decoder finds no QR in the earlier real dialog screenshot (it can say no)`);
+
+  // an invalid host is refused with a message, nothing stored, still no QR
+  await typeInto('[data-am-host]', 'https://rig-box.tail0000.ts.net/');
+  await waitFor(() => cdp.eval(`!!document.querySelector('[data-am-error]')`), 10000, 'the host error');
+  const badHost = await cdp.eval(`({ err: document.querySelector('[data-am-error]').textContent, qr: !!document.querySelector('[data-am-qr]') })`);
+  clause('qr/bad-host-refused', /tailnet host/i.test(badHost.err) && !badHost.qr && !storeHost(), `typed "https://rig-box.tail0000.ts.net/": "${badHost.err.trim()}"; no QR, store.tailnetHost=${JSON.stringify(storeHost() ?? null)}`);
+
+  // a valid host as pasted from Self.DNSName (upper case, trailing dot) ⇒ canonical host, QR + URL appear
+  await typeInto('[data-am-host]', HOST.toUpperCase() + '.');
+  await waitFor(() => cdp.eval(`!!document.querySelector('[data-am-qr]') && !!document.querySelector('[data-am-url]')`), 15000, 'the QR code');
+  await waitFor(() => storeHost() === HOST, 10000, 'the host persisted');
+  const hostUi = await cdp.eval(`({ host: document.querySelector('[data-am-host]').value, err: !!document.querySelector('[data-am-error]'), prompt: !!document.querySelector('[data-am-qr-prompt]') })`);
+  const url1 = await cdp.eval(`document.querySelector('[data-am-url]').textContent`);
+  const view1 = await cdp.eval(`window.orchestra.accesMobile()`);
+  clause('qr/url-text', url1 === urlFor(TOKEN) && view1.pairingUrl === url1 && hostUi.host === HOST && !hostUi.err && !hostUi.prompt && !url1.split('#')[0].includes(TOKEN) && new URL(url1).search === '', `host typed "${HOST.toUpperCase()}." ⇒ stored "${storeHost()}"; dialog shows ${url1.replace(TOKEN, '<token>')} — token only after '#', main's view agrees`);
+  const q1 = await qrShot();
+  const dec1 = decodeQr(q1.clip), dec1Full = decodeQr(q1.full);
+  saveShot('settings-qr.png', q1.full);
+  clause('qr/rendered-pixels-decode-to-url', q1.r.inView && dec1 === url1 && dec1Full === url1, `QR element ${Math.round(q1.r.width)}×${Math.round(q1.r.height)} css px in view=${q1.r.inView}; jsQR on the 2× clip ⇒ ${dec1 === url1 ? 'EXACTLY the URL printed beside it' : JSON.stringify(dec1)}; jsQR on the whole window screenshot ⇒ ${dec1Full === url1 ? 'same' : JSON.stringify(dec1Full)}`);
+
+  // regen/* — the phone is paired with TOKEN
+  const phoneKey = () => phone.eval(`localStorage.getItem(${JSON.stringify(KEY)})`);
+  const phoneStatus = () => phone.eval(`fetch('/api/workspaces', { headers: { Authorization: 'Bearer ' + localStorage.getItem(${JSON.stringify(KEY)}) } }).then((r) => r.status)`);
+  const beforeRegen = { stored: await phoneKey(), status: await phoneStatus(), direct: (await req(SOCK, '/api/workspaces', { ...ID, Authorization: `Bearer ${TOKEN}` })).status };
+  await cdp.clickSel('[data-am-regenerate]');
+  await waitFor(() => fs.readFileSync(TOKEN_FILE, 'utf8').trim() !== TOKEN, 10000, 'a new token on disk');
+  const NEW = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+  await waitFor(async () => (await cdp.eval(`document.querySelector('[data-am-url]').textContent`)) === urlFor(NEW), 10000, 'the new URL in the dialog');
+  const regenUi = await cdp.eval(`!!document.querySelector('[data-am-regenerated]')`);
+  const tokStat2 = fs.statSync(TOKEN_FILE), tokDir2 = fs.statSync(path.dirname(TOKEN_FILE));
+  clause('regen/new-token-on-disk-and-in-dialog', beforeRegen.stored === TOKEN && beforeRegen.status === 200 && beforeRegen.direct === 200 && NEW !== TOKEN && /^[A-Za-z0-9_-]{43}$/.test(NEW) && (tokStat2.mode & 0o777) === 0o600 && (tokDir2.mode & 0o777) === 0o700 && regenUi && fs.readdirSync(path.dirname(TOKEN_FILE)).join() === 'token', `trusted click: before — phone stored the old token and got ${beforeRegen.status}; after — token file changed (0600, dir 0700, no tmp left), dialog URL follows, confirmation note shown`);
+  const oldDirect = await req(SOCK, '/api/workspaces', { ...ID, Authorization: `Bearer ${TOKEN}` });
+  const oldViaServe = await proxyGet(ownerProxy.port, '/api/workspaces', { Authorization: `Bearer ${TOKEN}` });
+  const newViaServe = await proxyGet(ownerProxy.port, '/api/workspaces', { Authorization: `Bearer ${NEW}` });
+  clause('regen/old-token-refused-new-accepted', oldDirect.status === 401 && oldViaServe.status === 401 && newViaServe.status === 200 && !oldViaServe.body.includes('am-') && (await phoneStatus()) === 401, `OLD token: direct ${oldDirect.status}, through serve ${oldViaServe.status}, from the paired phone ${await phoneStatus()} (must-FAIL arms); NEW token through serve ${newViaServe.status} (control)`);
+  const q2 = await qrShot();
+  const dec2 = decodeQr(q2.clip);
+  saveShot('settings-qr-regenerated.png', q2.full);
+  clause('regen/qr-follows-the-new-token', dec2 === urlFor(NEW) && dec2 !== dec1 && q2.r.inView, `after regeneration jsQR on the rendered QR ⇒ ${dec2 === urlFor(NEW) ? 'the NEW url' : JSON.stringify(dec2)}; differs from the first QR's content: ${dec2 !== dec1}`);
+  await waitFor(async () => /Jeton refusé/.test(await phone.eval(`document.getElementById('state').textContent`)), 15000, 'the phone to notice the refused token');
+  const refusedText = await phone.eval(`document.getElementById('state').textContent`);
+  saveShot('phone-token-refused.png', await phone.shot());
+  const shown = await cdp.eval(`document.querySelector('[data-am-url]').textContent`);
+  await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/${new URL(shown).hash}` }); // the displayed URL, its origin swapped for the stand-in (no real tailnet here)
+  // Same URL, new fragment ⇒ a same-document navigation (hashchange): the open page keeps its state (the « M'attend seulement » filter is
+  // still ON ⇒ 2 rows) and must adopt the new token by itself — the « Jeton refusé » text is replaced by the list.
+  await waitFor(() => phone.eval(`document.getElementById('state').textContent === '' && document.querySelectorAll('li[data-id]').length === 2`), 20000, 'rows after re-pairing with the new URL').catch(async (e) => {
+    const dbg = await phone.eval(`({ href: location.href, stored: localStorage.getItem(${JSON.stringify(KEY)}), state: (document.getElementById('state') || {}).textContent, rows: document.querySelectorAll('li[data-id]').length })`).catch((x) => String(x));
+    throw new Error(`${e.message} — phone: ${JSON.stringify(dbg)}; wanted token ${NEW}; navigated to ${shown.replace(NEW, '<NEW>')}`);
+  });
+  const rp = await phone.eval(`({ href: location.href, stored: localStorage.getItem(${JSON.stringify(KEY)}) })`);
+  clause('regen/repair-with-new-url', /Jeton refusé/.test(refusedText) && rp.stored === NEW && !rp.href.includes('#') && !rp.href.includes(NEW), `phone showed "${refusedText.trim()}"; opening the NEW displayed URL over the open page ⇒ its list is back (2 rows, filter kept), token stored=${rp.stored === NEW}, address now ${rp.href}`);
+
+  // pwa/* — manifest, icons, apple-touch-icon, service worker, shell-only cache
+  const pm = await phone.send('Page.getAppManifest');
+  const inst = await phone.send('Page.getInstallabilityErrors').catch((e) => ({ installabilityErrors: [{ errorId: `cdp: ${e.message}` }] }));
+  const manifest = JSON.parse(pm.data || '{}');
+  const iconFetch = await Promise.all((manifest.icons || []).map(async (ic) => { const r = await proxyGetBin(ownerProxy.port, new URL(ic.src, `http://127.0.0.1:${ownerProxy.port}/`).pathname, {}); const png = PNG.sync.read(r.body); return { src: ic.src, sizes: ic.sizes, status: r.status, dims: `${png.width}x${png.height}` }; }));
+  const touch = await phone.eval(`(() => { const l = document.querySelector('link[rel="apple-touch-icon"]'); const m = (n) => (document.querySelector('meta[name="' + n + '"]') || {}).content; return { href: l && new URL(l.href).pathname, capable: m('apple-mobile-web-app-capable'), title: m('apple-mobile-web-app-title'), status: m('apple-mobile-web-app-status-bar-style'), manifest: (document.querySelector('link[rel=manifest]') || {}).href }; })()`);
+  const touchPng = await proxyGetBin(ownerProxy.port, touch.href, {});
+  const touchDims = PNG.sync.read(touchPng.body);
+  saveShot('apple-touch-icon.png', touchPng.body);
+  clause('pwa/manifest-icons-touch-icon', pm.errors?.length === 0 && manifest.name === 'Orchestra' && manifest.display === 'standalone' && iconFetch.length === 2 && iconFetch.every((i) => i.status === 200 && i.dims === i.sizes) && touch.href === '/apple-touch-icon.png' && touchDims.width === 180 && touchDims.height === 180 && touch.capable === 'yes' && touch.title === 'Orchestra' && !!touch.status, `Chromium parsed the manifest (errors ${JSON.stringify(pm.errors)}): ${manifest.name}, ${manifest.display}, icons ${iconFetch.map((i) => `${i.src} ${i.dims} ${i.status}`).join(', ')}; apple-touch-icon ${touchDims.width}x${touchDims.height}; apple-mobile-web-app metas ${touch.capable}/${touch.title}/${touch.status}`);
+  clause('pwa/installable', (inst.installabilityErrors || []).length === 0, `Page.getInstallabilityErrors ⇒ ${JSON.stringify(inst.installabilityErrors)}`);
+  const swInfo = await phone.eval(`(async () => { const reg = await navigator.serviceWorker.ready; return { scope: reg.scope, state: reg.active && reg.active.state, script: reg.active && new URL(reg.active.scriptURL).pathname, controlled: !!navigator.serviceWorker.controller }; })()`);
+  const cacheDump = await phone.eval(`(async () => { const secrets = ${JSON.stringify([TOKEN, NEW])}; const out = {}; for (const k of await caches.keys()) { out[k] = []; const c = await caches.open(k); for (const r of await c.keys()) { const res = await c.match(r); const txt = new TextDecoder('latin1').decode(await res.arrayBuffer()); const u = new URL(r.url); out[k].push({ path: u.pathname + u.search + u.hash, status: res.status, leaks: secrets.some((t) => txt.includes(t)) }); } } return out; })()`);
+  const cacheKeys = Object.keys(cacheDump);
+  const cachedPaths = (cacheDump[cacheKeys[0]] || []).map((e) => e.path).sort();
+  clause('pwa/service-worker-shell-only-cache', swInfo.state === 'activated' && swInfo.script === '/sw.js' && swInfo.controlled && cacheKeys.length === 1 && JSON.stringify(cachedPaths) === JSON.stringify(['/', '/app.js', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest']) && cacheDump[cacheKeys[0]].every((e) => e.status === 200 && !e.leaks), `worker ${swInfo.script} ${swInfo.state}, controlling the page=${swInfo.controlled}; Cache Storage ${JSON.stringify(cacheKeys)} holds exactly [${cachedPaths.join(' ')}] — no /api entry (control: the shell IS cached), no token in any body, all 200`);
+
+  // unreachable: Orchestra off (serve ⇒ 502), then the stand-in gone (connection refused) — the page comes from the worker's cache
+  /** Run `act` (a reload / navigation), then wait for a NEW page load (timeOrigin changed) that says « Orchestra injoignable » — the
+   *  old page polls too and would say it before the reload even lands. */
+  const injoignable = async (what, act) => {
+    const t0 = await phone.eval(`performance.timeOrigin`);
+    await act();
+    await waitFor(async () => (await phone.eval(`performance.timeOrigin`)) !== t0 && (await phone.eval(`(document.getElementById('state') || {}).textContent`)) === 'Orchestra injoignable.', 25000, `« Orchestra injoignable » on a fresh load (${what})`);
+  };
+  const shellFromWorker = () => phone.eval(`(() => { const n = performance.getEntriesByType('navigation')[0]; return { shell: !!document.querySelector('h1') && document.querySelector('h1').textContent === 'Orchestra' && !!document.getElementById('needsMe'), workerStart: n ? n.workerStart : -1, controlled: !!navigator.serviceWorker.controller, text: document.body.innerText.trim().replace(/\\s+/g, ' ') }; })()`); // (\\s: this is a template literal — a bare \s would silently become "s")
+  await ensureDialog();
+  await cdp.clickSel('[data-am-toggle]');
+  await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'off'`), 15000, 'health off');
+  await waitFor(async () => !fs.existsSync(SOCK) && serverPids(TOKEN_FILE).length === 0, 15000, 'socket removed + process gone');
+  const nSeen = seenLines.length;
+  await injoignable('server off', () => phone.send('Page.reload'));
+  const off = await shellFromWorker();
+  const sawBadGateway = seenLines.slice(nSeen).filter((l) => l.who === 'owner' && l.ua !== '' && l.url === '/' && l.status === 502); // ua !== '' = the browser (the worker's own fetch carries Chromium's UA, not the emulated iPhone's)
+  saveShot('phone-unreachable.png', await phone.shot());
+  // control: a fresh origin (no worker, no cache) behind the same dead server shows NO app shell — so the shell above can only come from the cache
+  const fresh = await serveProxy(() => SOCK, LOGIN, seenLines, 'fresh-origin');
+  await phone.send('Page.navigate', { url: `http://127.0.0.1:${fresh.port}/` });
+  await sleep(1500);
+  const noWorker = await phone.eval(`({ h1: ((document.querySelector('h1') || {}).textContent || '') === 'Orchestra' && !!document.getElementById('needsMe'), text: ((document.body || {}).innerText || '').trim(), controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller) })`);
+  fresh.srv.closeAllConnections?.(); fresh.srv.close();
+  clause('pwa/unreachable-server-off-served-from-cache', off.shell && off.workerStart > 0 && off.controlled && off.text.includes('Orchestra injoignable') && sawBadGateway.length > 0 && !noWorker.h1 && !noWorker.controlled, `Accès mobile off: reload ⇒ the page still renders (h1 Orchestra, filter box) and says « injoignable »; navigation workerStart=${Math.round(off.workerStart)} ms (served by the worker) while the stand-in answered ${sawBadGateway.length}× 502 for "/"; control — a never-visited origin behind the same dead server renders no shell (app shell=${noWorker.h1}, worker=${noWorker.controlled}, text "${noWorker.text.replace(/\s+/g, ' ').slice(0, 80)}")`);
+  await injoignable('back on the paired origin', () => phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/` }));
+  await stopProxy(ownerProxy);
+  await injoignable('stand-in down: connection refused', () => phone.send('Page.reload'));
+  const down = await shellFromWorker();
+  const refusedConn = !(await connects('127.0.0.1', ownerProxy.port));
+  clause('pwa/unreachable-network-down-served-from-cache', refusedConn && down.shell && down.workerStart > 0 && down.text.includes('Orchestra injoignable'), `connection refused on port ${ownerProxy.port}=${refusedConn}: reload ⇒ shell from the worker's cache (workerStart ${Math.round(down.workerStart)} ms) + « Orchestra injoignable » — ${JSON.stringify(down)}`);
+  // recovery without any reload: stand-in back + Orchestra on ⇒ the open page's own poll fills the list
+  await startProxy(ownerProxy);
+  await cdp.clickSel('[data-am-toggle]');
+  await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'listening'`), 20000, 'health listening again');
   await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
-  clause('supervise/restart-after-kill', (await req(SOCK, '/api/workspaces', AUTH)).status === 200, `SIGKILL pid ${pidOn2} -> restarted as pid ${pidOn3} (stale socket replaced)`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 25000, 'rows back without a reload');
+  clause('pwa/recovers-by-itself', true, 'stand-in + Orchestra back ⇒ the page that said « injoignable » lists 3 workspaces again with no reload (its own 5 s poll)');
+
+  // leak/* — the token never travels in a request line (phone traffic) nor lands in a log / any file under ORCHESTRA_HOME
+  const phoneLines = seenLines.filter((l) => l.ua !== ''); // every browser request (page: iPhone UA; service worker: Chromium UA); the rig's own node requests carry none
+  const tokenInLine = phoneLines.filter((l) => l.url.includes(TOKEN) || l.url.includes(NEW) || /[?&#]t=/.test(l.url));
+  clause('leak/phone-request-lines', phoneLines.length > 20 && phoneLines.some((l) => l.url === '/') && tokenInLine.length === 0, `${phoneLines.length} request lines from the phone's browser + worker (incl. ${phoneLines.filter((l) => l.url === '/').length}× "GET /" — the pairing navigations carried the fragment, the line never did): ${tokenInLine.length} contain a token or t=`);
+  const secrets = [Buffer.from(TOKEN), Buffer.from(NEW)];
+  const scan = filesContaining(world.ohome, secrets, new Set([TOKEN_FILE]));
+  const appLogLeak = secrets.some((x) => fs.readFileSync(logFile).includes(x));
+  const queryArm = seenLines.some((l) => l.url.includes(`?t=${TOKEN}`));
+  clause('leak/no-token-in-logs-or-files', scan.hits.length === 0 && !appLogLeak && scan.scanned > 5 && queryArm, `scanned ${scan.scanned} files under ORCHESTRA_HOME + the app's stdout log for the old and the new token: ${scan.hits.length} hits${scan.hits.length ? ' (' + scan.hits.join(', ') + ')' : ''}; control: the sec/query-token arm DID put the old token in a request line the server refused, and it is still in no log`);
+
+  // supervision: SIGKILL the server ⇒ restarted
+  const pidNow = serverPids(TOKEN_FILE)[0];
+  process.kill(pidNow, 'SIGKILL');
+  const pidOn3 = await waitFor(() => { const p = serverPids(TOKEN_FILE); return p.length && p[0] !== pidNow ? p[0] : null; }, 20000, 'a restarted server');
+  await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
+  clause('supervise/restart-after-kill', (await req(SOCK, '/api/workspaces', { ...ID, Authorization: `Bearer ${NEW}` })).status === 200, `SIGKILL pid ${pidNow} -> restarted as pid ${pidOn3} (stale socket replaced; the regenerated token still the one it accepts)`);
 
   // app crash ⇒ the server exits (no orphan listening)
   cdp.close(); cdp = null;

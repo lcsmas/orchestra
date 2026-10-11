@@ -7,6 +7,8 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
+import { PWA_ICONS } from './icons.ts';
+import { SW_JS } from './sw.ts';
 
 export type Upstream = (route: string, body: Record<string, unknown>) => Promise<unknown>;
 
@@ -59,10 +61,12 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
 };
 
-const STATIC: Record<string, { type: string; body: string }> = {
+const STATIC: Record<string, { type: string; body: string | Buffer }> = {
   '/': { type: 'text/html; charset=utf-8', body: INDEX_HTML },
   '/app.js': { type: 'text/javascript; charset=utf-8', body: APP_JS },
+  '/sw.js': { type: 'text/javascript; charset=utf-8', body: SW_JS },
   '/manifest.webmanifest': { type: 'application/manifest+json', body: MANIFEST_JSON },
+  ...Object.fromEntries(PWA_ICONS.map((i) => [i.path, { type: 'image/png', body: i.png }])),
 };
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */

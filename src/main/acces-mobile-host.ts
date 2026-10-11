@@ -10,11 +10,13 @@ import { store } from './store';
 import { scoped } from './logger';
 import { orchestraHome } from './platform';
 import { getHookSocketPath } from './hooks-server';
+import { readTokenIn, tokenFileIn, writeFreshTokenIn } from './acces-mobile-token';
 import {
   CLOSE_INHERITED_FDS,
   pickSocketDir,
   accesMobileSocketPath as socketPathIn,
   patchAccesMobileSettings,
+  pairingUrl,
   tailscaleServeCommand,
   type AccesMobileHealth,
   type AccesMobileSettings,
@@ -32,7 +34,7 @@ export function accesMobileDir(): string {
   return path.join(orchestraHome(), 'acces-mobile');
 }
 export function accesMobileTokenPath(): string {
-  return path.join(accesMobileDir(), 'token');
+  return tokenFileIn(accesMobileDir());
 }
 /** The server's Unix socket: in $XDG_RUNTIME_DIR (per-user, 0700) when it is ours, else in our own 0700 dir. Stable across
  *  restarts — the human's one-time `tailscale serve … unix:<path>` points at it. */
@@ -47,24 +49,12 @@ function installedServerPath(): string {
 
 /** The current token, or null when none was ever generated. */
 export function readAccesMobileToken(): string | null {
-  try {
-    const t = fs.readFileSync(accesMobileTokenPath(), 'utf8').trim();
-    return t || null;
-  } catch {
-    return null;
-  }
+  return readTokenIn(accesMobileDir());
 }
 
-/** Write a fresh 256-bit token atomically, 0600 in a 0700 dir. The server reads the file at every request: the old token dies at once. */
+/** Write a fresh 256-bit token (acces-mobile-token.ts). The server reads the file at every request: the old token dies at once. */
 export function generateAccesMobileToken(): string {
-  const dir = accesMobileDir();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(dir, 0o700);
-  const token = crypto.randomBytes(32).toString('base64url');
-  const tmp = path.join(dir, `.token.${process.pid}.tmp`);
-  fs.writeFileSync(tmp, token + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, accesMobileTokenPath());
-  return token;
+  return writeFreshTokenIn(accesMobileDir());
 }
 
 function ensureToken(): string {
@@ -250,7 +240,16 @@ export function accesMobileView(): AccesMobileView {
     serveCommand: tailscaleServeCommand(accesMobileSocketPath(), settings.servePort),
     socketPath: accesMobileSocketPath(),
     pairingFragment: token ? `#t=${token}` : null,
+    pairingUrl: pairingUrl(settings.tailnetHost, settings.servePort, token),
   };
+}
+
+/** « Regenerate token » (#336): a new token on disk; the previous one is refused from the next request on. Never logs the token.
+ *  (#337: streams opened with the old token must be re-validated against the file — they outlive a request.) */
+export function regenerateAccesMobileToken(): AccesMobileView {
+  generateAccesMobileToken();
+  log.info('pairing token regenerated — the previous token is refused from now on');
+  return accesMobileView();
 }
 
 export async function setAccesMobileSettings(patch: Partial<AccesMobileSettings>): Promise<AccesMobileSetResult> {

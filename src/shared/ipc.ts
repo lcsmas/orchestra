@@ -686,6 +686,8 @@ export interface OrchestraAPI {
   /** Patch the settings. Invalid (or enabling without a login) writes nothing and resolves `{ok:false,error}`; a valid patch
    *  (re)starts or stops the server process at once. */
   setAccesMobile: (next: Partial<AccesMobileSettings>) => Promise<AccesMobileSetResult>;
+  /** « Regenerate token » (#336): a new pairing token; the previous one is refused from the next request on. Resolves the fresh view. */
+  regenerateAccesMobileToken: () => Promise<AccesMobileView>;
   /** Re-fetch every pinned ticket from Linear in ONE batched request and
    *  return the refreshed list. Throws if Linear is unreachable / unauthorized,
    *  so the caller can distinguish that from "nothing pinned". */

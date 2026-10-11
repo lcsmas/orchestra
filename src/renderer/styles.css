@@ -6307,4 +6307,10 @@ button.danger-primary:active {
 .acces-mobile-settings .mg-input:focus { outline: none; border-color: var(--accent); }
 .acces-mobile-settings .mg-input-row .mg-input { width: 80px; }
 .acces-mobile-settings input[data-am-login] { width: 100%; box-sizing: border-box; }
+.acces-mobile-settings { overflow-y: auto; }
+.am-pair { display: flex; gap: 14px; align-items: flex-start; margin: 6px 0; }
+.am-pair-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.am-pair-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.am-qr { flex: none; border-radius: 6px; background: #fff; }
+.acces-mobile-settings input[data-am-host] { width: 100%; box-sizing: border-box; }
 .am-cmd { display: block; padding: 6px 8px; border-radius: 6px; background: var(--bg-2); font-size: 12px; user-select: all; word-break: break-all; }

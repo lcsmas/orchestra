@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { AccesMobileSettings as Settings, AccesMobileView } from '../../shared/acces-mobile';
+import { AccesMobileQr } from './AccesMobileQr';
 
 interface Props {
   onClose: () => void;
@@ -10,14 +11,17 @@ const POLL_MS = 2000;
 
 /**
  * Accès mobile (#334, ADR 0006): on/off, the one Tailscale login allowed in, the two ports, the server process health, the one-time
- * `tailscale serve` command and the pairing fragment. Off by default; enabling without a login is refused by main. Applies at once.
- * The QR code / regenerate / install flow is #336.
+ * `tailscale serve` command, and the pairing: the tailnet host the human types once, the QR code of `https://<host>:<port>/#t=<token>`
+ * (token in the fragment only) and « Regenerate token » (#336). Off by default; enabling without a login is refused by main. Applies at once.
  */
 export function AccesMobileSettings({ onClose }: Props) {
   const [view, setView] = useState<AccesMobileView | null>(null);
   const [login, setLogin] = useState<string | null>(null);
   const [servePort, setServePort] = useState<string | null>(null);
+  const [host, setHost] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [regenerated, setRegenerated] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const refresh = useCallback(async () => {
     if (document.hidden) return;
@@ -43,6 +47,7 @@ export function AccesMobileSettings({ onClose }: Props) {
       if (res.ok) {
         setLogin(null);
         setServePort(null);
+        setHost(null);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -52,7 +57,20 @@ export function AccesMobileSettings({ onClose }: Props) {
     const p: Partial<Settings> = {};
     if (login !== null) p.allowedLogin = login;
     if (servePort !== null) p.servePort = Number(servePort);
+    if (host !== null) p.tailnetHost = host;
     return p;
+  };
+  const regenerate = async (): Promise<void> => {
+    setRegenerating(true);
+    try {
+      setView(await window.orchestra.regenerateAccesMobileToken());
+      setRegenerated(true);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRegenerating(false);
+    }
   };
   const commit = () => {
     const p = draftPatch();
@@ -108,6 +126,27 @@ export function AccesMobileSettings({ onClose }: Props) {
 
         <div className="field">
           <div className="field-head">
+            <span className="field-label">Tailnet host</span>
+            <span className="field-hint">
+              This machine's name on the tailnet, typed once: <code>tailscale status --json</code> → <code>Self.DNSName</code> (Orchestra never runs
+              tailscale). Without it, no QR code.
+            </span>
+          </div>
+          <input
+            className="mg-input"
+            data-am-host
+            aria-label="Tailnet host"
+            placeholder="my-machine.tailnet-name.ts.net"
+            value={host ?? s?.tailnetHost ?? ''}
+            disabled={!s}
+            onChange={(e) => setHost(e.target.value)}
+            onBlur={commit}
+            onKeyDown={onKey}
+          />
+        </div>
+
+        <div className="field">
+          <div className="field-head">
             <span className="field-label">Tailnet port</span>
             <span className="field-hint">The HTTPS port tailscale serve exposes on your tailnet.</span>
           </div>
@@ -144,15 +183,51 @@ export function AccesMobileSettings({ onClose }: Props) {
             </code>
           </div>
         )}
-        {view?.pairingFragment && (
-          <div className="field">
+        {view && (
+          <div className="field" data-am-pairing>
             <div className="field-head">
               <span className="field-label">Pairing</span>
-              <span className="field-hint">Open https://&lt;this machine&gt;.&lt;tailnet&gt;.ts.net:{s?.servePort} followed by this fragment on the phone.</span>
+              <span className="field-hint">
+                Scan with the phone camera, open the link in Safari, then Share → Add to Home Screen. The token rides in the #fragment: no server
+                or log ever sees it.
+              </span>
             </div>
-            <button className="btn" data-am-copy onClick={() => void navigator.clipboard.writeText(view.pairingFragment ?? '')}>
-              Copy pairing fragment
-            </button>
+            {!s?.tailnetHost ? (
+              <div className="field-hint" data-am-qr-prompt>
+                Set your tailnet host above to get the QR code.
+              </div>
+            ) : !view.pairingUrl ? (
+              <div className="field-hint" data-am-qr-prompt>
+                Turn Accès mobile on to create the pairing token.
+              </div>
+            ) : (
+              <div className="am-pair">
+                <AccesMobileQr text={view.pairingUrl} />
+                <div className="am-pair-side">
+                  <code className="am-cmd" data-am-url>
+                    {view.pairingUrl}
+                  </code>
+                  <div className="am-pair-actions">
+                    <button className="btn" data-am-copy-url onClick={() => void navigator.clipboard.writeText(view.pairingUrl ?? '')}>
+                      Copy link
+                    </button>
+                    <button className="btn" data-am-regenerate disabled={regenerating} onClick={() => void regenerate()}>
+                      Regenerate token
+                    </button>
+                  </div>
+                  {regenerated && (
+                    <div className="field-hint" data-am-regenerated>
+                      New token. The phone paired before is signed out — scan again.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {view.pairingFragment && (
+              <button className="btn" data-am-copy onClick={() => void navigator.clipboard.writeText(view.pairingFragment ?? '')}>
+                Copy pairing fragment
+              </button>
+            )}
           </div>
         )}
 

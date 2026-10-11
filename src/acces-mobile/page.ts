@@ -1,6 +1,8 @@
 // The phone shell (#334 tracer: the workspace list). Static strings, no data inside — data comes from /api/* with the token.
 // Unstyled on purpose: the visual design comes from the mockups (#335) and lands in #340.
 
+import { MANIFEST_ICONS } from './icons.ts';
+
 export const INDEX_HTML = `<!doctype html>
 <html lang="fr">
 <head>
@@ -8,7 +10,11 @@ export const INDEX_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Orchestra">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#111111">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <title>Orchestra</title>
 <style>
 body{font:16px -apple-system,system-ui,sans-serif;margin:0;padding:12px env(safe-area-inset-right) 24px env(safe-area-inset-left)}
@@ -35,11 +41,16 @@ li{padding:10px 12px;border-bottom:1px solid #8883}
 export const APP_JS = `(function () {
   'use strict';
   var KEY = 'orchestra.accesMobile.token';
-  var m = /[#&]t=([A-Za-z0-9_-]{16,256})/.exec(location.hash);
-  if (m) {
+  // Pairing: the token rides in the fragment (never in a request line); store it and strip it from the address. Also on hashchange — a
+  // re-scan of the QR (new token) opened over an already-open page is a same-document navigation: the script does not re-run.
+  function pairFromHash() {
+    var m = /[#&]t=([A-Za-z0-9_-]{16,256})/.exec(location.hash);
+    if (!m) return false;
     try { localStorage.setItem(KEY, m[1]); } catch (e) {}
     history.replaceState(null, '', location.pathname);
+    return true;
   }
+  pairFromHash();
   var token = null;
   try { token = localStorage.getItem(KEY); } catch (e) {}
   var stateEl = document.getElementById('state');
@@ -86,7 +97,8 @@ export const APP_JS = `(function () {
     if (!token) { setState('Pas appairé : scanne le QR code dans Orchestra → Réglages → Accès mobile.'); return; }
     fetch('/api/workspaces', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' })
       .then(function (r) {
-        if (r.status === 401) { setState('Jeton refusé : re-scanne le QR code.'); return null; }
+        // A refused token (regenerated, or revoked) must not leave the last list on screen: the phone lost its access.
+        if (r.status === 401) { last = []; listEl.textContent = ''; setState('Jeton refusé : re-scanne le QR code.'); return null; }
         if (!r.ok) { setState('Orchestra injoignable.'); return null; }
         return r.json();
       })
@@ -94,15 +106,25 @@ export const APP_JS = `(function () {
       .catch(function () { setState('Orchestra injoignable.'); });
   }
   needsMe.addEventListener('change', render);
+  window.addEventListener('hashchange', function () {
+    if (!pairFromHash()) return;
+    try { token = localStorage.getItem(KEY); } catch (e) {}
+    load();
+  });
   load();
   setInterval(load, 5000);
+  // Home-screen install + the offline shell (sw.js caches the static shell only, never /api). A failed registration changes nothing.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(function () {});
 })();
 `;
 
 export const MANIFEST_JSON = JSON.stringify({
   name: 'Orchestra',
   short_name: 'Orchestra',
+  lang: 'fr',
   start_url: '/',
+  scope: '/',
+  icons: MANIFEST_ICONS,
   display: 'standalone',
   background_color: '#111111',
   theme_color: '#111111',
