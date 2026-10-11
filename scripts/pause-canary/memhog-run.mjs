@@ -4,7 +4,7 @@
 //   node scripts/pause-canary/memhog-run.mjs --heavy-token <ref> --proof [--only <arm,…>]    the HARNESS proof: a clean control must PASS, the cap OFF must FAIL, every instrument must be seen RED by a sabotage (the #343 backstop witness included), the Q9 chain must PASS
 //   node scripts/pause-canary/memhog-run.mjs --list                                          the proof arms (no token, nothing run)
 // WHAT IT PROVES (OPS lot 6198): on a dummy fleet LEAD ⊃ OPS ⊃ N workers each in its own kernel memory scope (256 MiB), a process that overflows the cap is killed · the worker's session (keeper + CLI) survives ·
-// the worker AND its coordinator are told (#322, read through the coordinator's own relève) · only the coordinator is told · 0 survivors. The `memory_cap` DEFAULT is NOT flipped by this work (any #343 backstop kill blocks it; the LEAD decides).
+// the worker AND its coordinator are told (#322, read through the coordinator's own relève) · only the coordinator is told · 0 survivors. The `memory_cap` DEFAULT was flipped ON for new runs by the LAST, separate commit of this branch (after the packaged Q11 PASS); this harness does not touch it.
 // SUBSTRATE: the real keeper + real systemd scopes + real scratch bus + the production notice sink, with the H1 stand-in CLI (a real `claude` is ~330 MB: it needs the LEAD's waiver of D2, `--cli claude` is refused).
 // HEAVY: real scopes and kernel OOM kills — run ONLY under the heavy-rig token (ask the OPS), MemAvailable ≥ 6 GB + the rig's footprint, one heavy rig at a time; return the token right after.
 // Exit: 0 PASS (full shape: ≥ 6 workers × ≥ 3 cycles, chain run) · 4 green but PARTIAL · 1 a bar is RED (the Q9 chain and any #343 scope-backstop kill included) (a bug report, never a retuned number) · 3 VOID (host / tooling: nothing measured).
@@ -163,7 +163,7 @@ if (!flag('proof')) {
   const full = exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3 && chV === 'PASS';
   const md = [`# Pause canary 1b — memory-hog exercise (${members} workers + OPS + LEAD, ${cycles} cycles)`, '',
     `tree ${gitHead} (${gitBranch}) · stand-in CLI (a real claude does not fit D2's ≤ 300 MB scopes: NOT run) · cap ${0.25} GB (256 MiB), warning 0.2 GB · heavy token ${HEAVY}`,
-    `host: bar ${MIN_AVAIL_GB} GB / load 20 · min MemAvailable ${mh?.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · \`memory_cap\` default NOT flipped (any #343 backstop kill blocks it; the LEAD decides)`, '', table, '',
+    `host: bar ${MIN_AVAIL_GB} GB / load 20 · min MemAvailable ${mh?.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · \`memory_cap\` live default ON for new runs (flipped after the Q11 PASS; this harness never flips it)`, '', table, '',
     `verdict memhog: **${mhVerdict ?? 'not run'}**${mhVerdict === 'PASS' && !full ? ` (PARTIAL: not ${exercises.includes('chain') ? '' : 'memhog+chain × '}≥ 6 workers × ≥ 3 cycles)` : ''}`,
     ch ? `Q9 chain (a BAR since #332 — ledger #329): **${chV}** — ${ch.exercises[0]?.detail ?? ''}` : 'Q9 chain: not run',
     `#343 scope-backstop kills (a k-leaf oom_kill, a scope oom_kill beyond the work leaf's, keeper/CLI dead): **${bsTotal}** in the memhog cycles, **${bsChain}** in the chain runs${bsTotal + bsChain > 0 ? ' — ANY blocks the default activation (LEAD rule)' : ' — NOTE: this stand-in has NO scope-level limit (reserve 0), so a backstop kill can only appear through the injected squeeze of the witness arms; 0 here proves the instrument, not #343 itself — the packaged run (backstop = hard + 1 GiB) is the real probe'}`,

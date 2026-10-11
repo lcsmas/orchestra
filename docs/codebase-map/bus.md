@@ -507,7 +507,7 @@ value up. Two runs with contradictory flags coexist in one DB by design.
 
 **Live defaults (#258, 2026-10-08):** a live switch the human never set reads
 `LIVE_SWITCH_DEFAULTS` (`src/shared/bus-switches.ts`, via `normalizeLiveSwitches` in
-`getLiveSwitches`, `src/main/bus-settings.ts`) — `pause` and `dockerRelay` ON, the rest OFF.
+`getLiveSwitches`, `src/main/bus-settings.ts`) — `pause`, `dockerRelay` and (since #324, 2026-10-12) `memoryCap` ON, the rest OFF.
 `DEFAULT_BUS_SWITCHES` stays all-OFF: it is the safe fallback (unreadable store, no run row),
 and run rows keep `normalizeSwitches` (a key missing on a row was frozen OFF).
 
@@ -2134,7 +2134,7 @@ Auto-appears in `orchestra bus-status` flags and the Settings toggles (`BusSwitc
 ### The `memoryCap` switch (#320, wave H)
 
 `memoryCap` is the 10th `BusMechanism` (wire `memory_cap` — snake wire / camel key). It gates ONE thing: whether a FLEET MEMBER's keeper is launched in its own kernel memory scope with a hard limit (the Plafond mémoire — `session-keeper.md` → Plafond mémoire).
-Default OFF; frozen onto `run_flags.flags` at run creation; no schema migration. Read at each session START by `src/main/memory-cap-switch.ts` (`busSwitch(db, runId, 'memory_cap')` against the member's `$ORCHESTRA_RUN_ID`); the LEVELS (`capSoftGb`/`capHardGb`)
+**Live default ON since #324** (the packaged Q11 canary PASSED, ledger #329 — the LAST, separate commit of `memhog-canary-impl-h3-324`: `LIVE_SWITCH_DEFAULTS.memoryCap`, revert that commit alone to undo); `DEFAULT_BUS_SWITCHES.memoryCap` stays OFF (the safe fallback: unreadable store, no run row, bus down). **Runs ALREADY open keep their frozen value** — a row frozen before the flip (or a key missing on it) reads OFF forever (`normalizeSwitches`), so their members keep launching UNCAPPED; only a run created after the flip freezes ON. Two existing rules still apply to every switch and are NOT changed here: a MISSION row is re-frozen from the live settings at a wave boundary (D1b — a LEAD's mission therefore picks the new default up at its next OPS launch, an OPS/vague row never), and `memoryCap` is not in `ONE_SWITCH_REFREEZABLE`. A session already started keeps what it started with (the switch is read at each session START). A human's choice (Settings → Switches, OFF) wins over the default. Frozen onto `run_flags.flags` at run creation; no schema migration. Read at each session START by `src/main/memory-cap-switch.ts` (`busSwitch(db, runId, 'memory_cap')` against the member's `$ORCHESTRA_RUN_ID`); the LEVELS (`capSoftGb`/`capHardGb`)
 are NOT frozen — they come from the Garde mémoire settings at that moment. Not "the bus is authoritative": `busSwitchNoticeLines` has its own wording. `orchestra bus-status` shows the switch row (frozen / live) AND a `memory cap:` line with the levels
 and the live member-scope count. NOT in `ONE_SWITCH_REFREEZABLE` (follow-up if the canary needs to flip a running run).
 

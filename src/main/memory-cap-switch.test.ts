@@ -85,3 +85,33 @@ test('against the REAL bus: only the run that froze memory_cap ON reads ON; the 
   closeBus();
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+test('#324 the default flip is for NEW runs only: a run that froze memory_cap OFF (before the flip, or by a human choice) keeps no scope; a run frozen from the live defaults gets one; a session already started is untouched by construction', async () => {
+  const { LIVE_SWITCH_DEFAULTS, normalizeLiveSwitches } = await import('../shared/bus-switches.ts');
+  const { busSwitch, refreezeRun } = await import('./bus-runs.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcs-flip-'));
+  process.env.ORCHESTRA_HOME = dir;
+  const bus = await import('./bus.ts');
+  const db = bus.openBus(path.join(dir, 'bus.sqlite'));
+  const preFlipLive = { ...LIVE_SWITCH_DEFAULTS, memoryCap: false };   // what a build before the flip froze
+  startRun(db, { id: 'old-vague', kind: 'vague', coordinator: 'c', parentRunId: 'old-mission' }, preFlipLive);
+  startRun(db, { id: 'old-mission', kind: 'mission', coordinator: 'c' }, preFlipLive);
+  startRun(db, { id: 'human-off', kind: 'vague', coordinator: 'c' }, normalizeLiveSwitches({ memoryCap: false }));
+  startRun(db, { id: 'new-vague', kind: 'vague', coordinator: 'c' }, normalizeLiveSwitches(undefined));   // a NEW run, default live settings
+  assert.equal(busSwitch(db, 'old-vague', 'memory_cap'), false, 'frozen before the flip: still OFF');
+  assert.equal(busSwitch(db, 'old-mission', 'memory_cap'), false);
+  assert.equal(busSwitch(db, 'human-off', 'memory_cap'), false, 'a human OFF is frozen OFF');
+  assert.equal(busSwitch(db, 'new-vague', 'memory_cap'), true, 'a new run freezes the new default');
+  // the real decision at a session START
+  const real = { ...realMemoryCapDeps, switchOn: (id: string) => busSwitch(db, id, 'memory_cap'), support: () => ({ ok: true } as const), platform: 'linux' };
+  assert.equal(memoryCapSpecFor(args({ runId: 'old-vague' }), real), undefined, 'an OPEN run keeps launching its members UNCAPPED');
+  assert.equal(memoryCapSpecFor(args({ runId: 'human-off' }), real), undefined);
+  assert.ok(memoryCapSpecFor(args({ runId: 'new-vague' }), real), 'a new run caps its fleet members');
+  // re-reading is stable, and a vague row is never re-frozen by a wave boundary (only a MISSION row is — D1b, existing semantics for every switch)
+  assert.equal(refreezeRun(db, 'old-vague', normalizeLiveSwitches(undefined)), false, 'a vague (OPS) row is never re-frozen');
+  assert.equal(busSwitch(db, 'old-vague', 'memory_cap'), false);
+  assert.equal(refreezeRun(db, 'old-mission', normalizeLiveSwitches(undefined)), true, 'a MISSION row re-freezes at a wave boundary to the live settings — the D1b rule that already applied to every switch (the documented caveat)');
+  assert.equal(busSwitch(db, 'old-mission', 'memory_cap'), true);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

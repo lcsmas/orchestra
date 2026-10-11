@@ -427,7 +427,7 @@ Gates: `src/shared/docker-hold.test.ts`, `src/keeper/docker-hold.test.ts` (gate 
 
 ## Plafond mémoire — a fleet member's keeper in its own kernel scope (#320, wave H ledger #329; ADR 0005; contract FI-1)
 
-Behind the per-run **`memory_cap`** bus switch (frozen at run creation, default OFF — `bus.md`), a **fleet member's** keeper (a workspace with a coordinator, `isFleetMember`; a human-created top-level session
+Behind the per-run **`memory_cap`** bus switch (frozen at run creation, live default ON for NEW runs since #324 — runs already open keep their frozen value, `bus.md`), a **fleet member's** keeper (a workspace with a coordinator, `isFleetMember`; a human-created top-level session
 never) is launched by `systemd-run --user --scope -p Delegate=yes` as the MAIN process of a NEW user scope — a parent cgroup with TWO LEAVES (#332): `k` holds the keeper AND the CLI (no limit of their own), `w` holds the TOOL COMMANDS (each Bash command's shell moves itself in, through the `CLAUDE_CODE_SHELL_PREFIX` wrapper reading `ORCHESTRA_MEMCAP_WORK_LEAF`) and carries the member's hard level; the scope itself has a backstop `MemoryMax` = hard + 1 GiB of room for the keeper, the CLI process and whatever starts WITHOUT the shell prefix (the MCP servers and hooks go THROUGH it, into `w`) (`ORCHESTRA_MEMCAP_RESERVE_BYTES`, `0` = none — rigs ≤ 300 MB); the scope is owned by the user manager, so it survives
 an app restart like the keeper. Nothing existing is ever moved into a scope (a running session keeps what it started with; the cap applies at the next session START — spawn, restart, wake).
 

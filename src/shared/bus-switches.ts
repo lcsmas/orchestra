@@ -89,13 +89,14 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
 
 /**
  * Default LIVE setting (what the next run freezes) for a mechanism the human never set.
- * Only `pause` (#258, canaries passed) and `dockerRelay` are ON; DEFAULT_BUS_SWITCHES stays
- * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down).
+ * Only `pause` (#258, canaries passed), `dockerRelay` and `memoryCap` (#324: the packaged Q11 canary PASSED on 2026-10-12, ledger #329) are ON; DEFAULT_BUS_SWITCHES stays
+ * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down). A run that FROZE `memoryCap` before this default existed keeps its row (a missing key was frozen OFF).
  */
 export const LIVE_SWITCH_DEFAULTS: BusSwitches = Object.freeze({
   ...DEFAULT_BUS_SWITCHES,
   pause: true,
   dockerRelay: true,
+  memoryCap: true, // #324 — flipped by the LAST, separate commit of memhog-canary-impl-h3-324 (revert that commit alone to undo)
 });
 
 /** Like {@link normalizeSwitches}, for the LIVE settings only: an absent key (never set, or a
