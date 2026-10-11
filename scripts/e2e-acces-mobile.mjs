@@ -270,6 +270,17 @@ try {
   await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
   clause('settings/toggle-on-again', pidOn2 && pidOn2 !== pidOn && (await req(SOCK, '/api/workspaces', AUTH)).status === 200, `off -> listening, new pid ${pidOn2}`);
 
+  // perf: Accès mobile ON, the phone polling every 5 s, dialog closed — main and server CPU over 30 s (/proc utime+stime delta)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape' }).catch(() => {});
+  const ticks = (pid) => { const f = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' '); return Number(f[11]) + Number(f[12]); };
+  const HZ = 100;
+  const t0 = { main: ticks(app.pid), srv: ticks(pidOn2), at: Date.now() };
+  await sleep(30000);
+  const secs = (Date.now() - t0.at) / 1000;
+  const mainPct = ((ticks(app.pid) - t0.main) / HZ / secs) * 100, srvPct = ((ticks(pidOn2) - t0.srv) / HZ / secs) * 100;
+  const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
+  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 2, `over ${secs.toFixed(0)} s with the phone polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone, filter still on, lists ${polled})`);
+
   // supervision: SIGKILL the server ⇒ restarted
   process.kill(pidOn2, 'SIGKILL');
   const pidOn3 = await waitFor(() => { const p = serverPids(TOKEN_FILE); return p.length && p[0] !== pidOn2 ? p[0] : null; }, 20000, 'a restarted server');
