@@ -650,4 +650,5 @@ test('after-hook canary (opt-in: KEEPER_TEST_LEAVE_CANARY=1 — leaves one live 
   c.send(stdinLine({ echo: 'canary' }));
   await c.wait(stdoutContaining('"echo":"canary"'));
   assert.ok(carrying(ctx.dir).length >= 2, 'a keeper and its CLI are alive and are left for the after hook');
+  c.destroy(); // no open handle: a runner whose `after` does NOT reap must still EXIT (rc 0) so the harness census sees the leftover — an attached socket to a live keeper would hang it
 });
