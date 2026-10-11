@@ -13,7 +13,8 @@ import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fleetSpec } from './ids.mjs';
-import { readSafe, ticks, ident, alive, scopeDirOfPid, oomKillFromDir, backstopCountersFromDir, KEEPER_LEAF, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
+import { readSafe, ticks, ident, alive, scopeDirOfPid, oomKillFromDir, backstopCountersFromDir, KEEPER_LEAF, keeperLogText, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
+import { capDegradationsFromKeeperLog } from './memhog-app-facts.mjs';
 import { MEMHOG_BARS, evaluateMemhogCycle, summarizeMemhogCycle, evaluateChainRun, chainVerdict, backstopDelta, drillVerdict, memberToldWhy, coordinatorToldWhy, hogMarker, parseSwarm } from './memhog-bars.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -322,7 +323,7 @@ try {
           oomKillDelta: delta,
           records: kills.filter((k) => k.ws === w.id).slice(rec0.get(w.id)).map((k) => ({ level: k.level, command: k.command ?? null, pid: k.pid, source: k.source })),
           backstop: backstopDelta(bs0.get(w.id), lastBs.get(w.id)),
-          session: { keeperAlive: alive(kp), cliAlive: alive(pre.cliPid), keeperSame: alive(kp) && ident(kp) === pre.keeperId, cliSame: alive(pre.cliPid) && ident(pre.cliPid) === pre.cliId, answered: probe?.code === 0 && (probe.stdout ?? '').includes(`alive-${w.k}-c${cycle}`), scopeActive: unitActive(scope.unit), capState: pr?.cap?.state ?? null },
+          session: { keeperAlive: alive(kp), cliAlive: alive(pre.cliPid), keeperSame: alive(kp) && ident(kp) === pre.keeperId, cliSame: alive(pre.cliPid) && ident(pre.cliPid) === pre.cliId, answered: probe?.code === 0 && (probe.stdout ?? '').includes(`alive-${w.k}-c${cycle}`), scopeActive: unitActive(scope.unit), capState: pr?.cap?.state ?? null, capDegradations: capDegradationsFromKeeperLog(keeperLogText(home, w.id)) },
           memberKillRows: killRows.map((e) => e.ev.text), softRows: rows.length - killRows.length,
           coordMsgs: msgs.map((x) => ({ kind: x.kind, recipient: x.recipient, body: x.body })),
           coordRead: lot.messages.filter((x) => x.sender === w.id && x.kind === 'escalation' && x.sequence > seq0).length,

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB } from '../../scripts/pause-canary/memhog-app-facts.mjs';
+import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB, capDegradationsFromKeeperLog } from '../../scripts/pause-canary/memhog-app-facts.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { evaluateMemhogCycle } from '../../scripts/pause-canary/memhog-bars.mjs';
 import { appendMemNotice } from '../shared/mem-notice-file.ts';
@@ -25,7 +25,7 @@ const kill = (w: { k: string }, over: Partial<MemKillRecord> = {}): MemKillRecor
 const soft = (w: { k: string }): MemSoftRecord => ({ kind: 'soft', seq: 1, at: T0 + 2000, unit: `orchestra-rig-wh-h3-x-${w.k}.scope`, bytes: 800 * 1024 ** 2, softBytes: 768 * 1024 ** 2, hardBytes: GIB });
 
 /** The keeper's summary line, built from the producer's own template (pinned against src/keeper/index.ts below). */
-const keeperCapLine = (state: string, unit: string) => `2026-10-09T10:00:00.000Z [keeper] memory cap: ${state} unit=${unit} memory.max=${GIB} cgroup=/sys/fs/cgroup/user.slice/${unit}\n`;
+const keeperCapLine = (state: string, unit: string) => `[keeper 2026-10-09T10:00:00.000Z] memory cap: ${state} unit=${unit} memory.max=${GIB} cgroup=/sys/fs/cgroup/user.slice/${unit}\n`;
 
 /** A clean cycle's facts for worker i, built with the real writers. */
 function facts(i: number, over: Record<string, unknown> = {}) {
@@ -200,4 +200,38 @@ test('D-Q15: the cap-ON packaged run takes BOTH heavy tokens (two distinct refs,
   assert.equal(heavyTokensWhy({ heavy: 'tokA', capOn: false }), null, 'the cap-OFF control: one token');
   assert.notEqual(heavyTokensWhy({ heavy: '', capOn: false }), null, 'no token at all');
   assert.notEqual(heavyTokensWhy({ heavy: undefined, capOn: true }), null);
+});
+
+test('OPS 7283 (D-Q14): a cap-state flip AFTER boot reaches only keepers/<ws>.log — every `memory cap:` line that is not a known benign one is a degradation, the bar goes RED on it even though the boot summary still says ACTIVE', () => {
+  const src = fs.readFileSync(new URL('../keeper/index.ts', import.meta.url), 'utf8');
+  assert.ok(src.includes('`[keeper ${new Date().toISOString()}] ${msg}\\n`'), 'the keeper log line format changed: capDegradationsFromKeeperLog strips this prefix');
+  for (const benign of ['memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env', 'memory cap: notice file budget for']) assert.ok(src.includes(benign), `the keeper no longer logs "${benign}": the benign list is stale`);
+  const L = (msg: string) => `[keeper 2026-10-11T10:00:00.000Z] ${msg}\n`;
+  const boot = L('memory cap: ACTIVE unit=u.scope memory.max=1073741824 cgroup=/x/u.scope/w');
+  // benign lines only → nothing
+  assert.deepEqual(capDegradationsFromKeeperLog(boot + L('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)') + L('memory cap: the placement tripwire is NOT armed — /x/cpu.stat is unreadable; the state stays active on the probe\'s word alone') + L('memory cap: the placement tripwire gave up after 40 tool results — cpu.stat stayed unreadable') + L('memory cap: notice file budget for kills full - later ones are only in the keeper log') + L('listening /tmp/x.sock pid=1')), []);
+  assert.deepEqual(capDegradationsFromKeeperLog(''), []);
+  assert.deepEqual(capDegradationsFromKeeperLog(undefined), []);
+  // every degradation text the keeper can write, after the ACTIVE summary
+  for (const bad of [
+    'memory cap: TRIPWIRE — 5 Bash tool results came back but the work leaf was charged no CPU time since the probe: NOTHING is capped',
+    'memory cap: WARNING — the tool wrapper could not be RUN (2 attempts: ENOENT) — the shell prefix is NOT set',
+    'memory cap: the tool wrapper did NOT place a probe command in the work leaf (saw /x/k; expected /x/w) — NOTHING is capped at the hard level',
+    'memory cap: scope u.scope is not delegated or its leaves could not be built (mkdir: EACCES) — the cap is NOT applied',
+    'memory cap: NOT in scope u.scope (cgroup /user.slice) — the keeper was launched plain; no cap, no watch',
+    'memory cap: some line a later release adds',
+  ]) {
+    const d = capDegradationsFromKeeperLog(boot + L(bad));
+    assert.equal(d.length, 1, bad);
+    assert.ok(!d[0].startsWith('[keeper'), 'the log prefix is stripped');
+  }
+  // end to end through the facts: the boot summary says ACTIVE, a later TRIPWIRE line flips the bar
+  const w = wsOf(1);
+  const f = facts(1).f;
+  const flipped = workerFromAppFacts(w, 1, T0, OPS, { ...f, keeperLog: boot + L('memory cap: TRIPWIRE — 5 Bash tool results came back but the work leaf was charged no CPU time') });
+  assert.equal(flipped.session.capState, 'active', 'the summary alone would have missed the flip');
+  assert.equal(flipped.session.capDegradations.length, 1);
+  const cycleOf = (wk: unknown) => ({ exercise: 'memhog-app', cycle: 1, expectWorkers: 1, capGb: 1, opsId: OPS, leadSeen: 0, workers: [wk], tMemberToldS: 1, tCoordToldS: 1 });
+  assert.deepEqual(red(cycleOf(flipped) as ReturnType<typeof cycle>), ['bar:cap_holds_after_kill']);
+  assert.deepEqual(red(cycleOf(workerFromAppFacts(w, 1, T0, OPS, { ...f, keeperLog: boot })) as ReturnType<typeof cycle>), [], 'control: the same facts without the flip line are green');
 });

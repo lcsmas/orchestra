@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, backstopCountersFromDir, SCOPE_LEAVES, WORK_LEAF, KEEPER_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
+import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, backstopCountersFromDir, keeperLogText, SCOPE_LEAVES, WORK_LEAF, KEEPER_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mhos-'));
 const home = path.join(base, 'rig', 'home');
@@ -256,4 +256,11 @@ test('#343 counters from fake cgroup trees: the keeper leaf\'s, the scope\'s (hi
   assert.equal(backstopCountersFromDir(null), null);
   const broken = cgTree('bs-broken', { [`${UNIT}/memory.events`]: 'oom_kill 0\n', [`${UNIT}/w/memory.events`]: 'oom_kill 0\n' });   // the k leaf is missing its file
   assert.deepEqual(backstopCountersFromDir(path.join(broken, UNIT)), { k: null, scope: 0, work: 0, layout: 'leaves' }, 'an unreadable counter is null, never 0');
+});
+
+test('keeperLogText: the rotated .log.old comes first, then the current .log; a missing file reads as empty, never a throw', () => {
+  const h = cgTree('kl', { 'keepers/ws1.log.old': '[keeper t] old\n', 'keepers/ws1.log': '[keeper t] new\n', 'keepers/ws2.log': '[keeper t] only\n' });
+  assert.equal(keeperLogText(h, 'ws1'), '[keeper t] old\n\n[keeper t] new\n');
+  assert.equal(keeperLogText(h, 'ws2'), '\n[keeper t] only\n');
+  assert.equal(keeperLogText(h, 'nope'), '\n');
 });

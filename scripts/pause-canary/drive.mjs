@@ -16,7 +16,7 @@ import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
 import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors, backstopDelta } from './memhog-bars.mjs';
 import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope, CAP_ON_START_GB } from './memhog-app-facts.mjs';
-import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir } from './memhog-os.mjs';
+import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir, keeperLogText } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -251,7 +251,7 @@ async function runExercise(name) {
       await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}b.txt`)), 120000, 500);
       refreshBs();   // after the post-kill probe: a late backstop episode shows here
       const idPost = identities();
-      const keeperLogOf = (id) => ['.log.old', '.log'].map((x) => { try { return fs.readFileSync(`${rig.H}/keepers/${id}${x}`, 'utf8'); } catch { return ''; } }).join('\n');   // the keeper's own `memory cap: <STATE>` line (the app log has none)
+      const keeperLogOf = (id) => keeperLogText(rig.H, id);   // the keeper's own `memory cap:` lines — the boot summary AND any later flip (the app log has none)
       const lots = await lotsOps();
       const workers = [];
       for (const w of wk) {

@@ -98,3 +98,6 @@ export function killByIdentity(list, home) {
 /** The environment the stand-in CLI is spawned with (through the keeper, which passes EXACTLY this env on): it MUST carry `ORCHESTRA_HOME=<home>` — the marker `rigProcesses` / `killByIdentity` / the survivors count select on — or the CLI and every tool
  *  it runs are invisible to teardown and to `bar:no_survivors` (#324 review 2, finding 4). */
 export const standinCliEnv = (home, rssMb) => ({ PATH: process.env.PATH, HOME: home, ORCHESTRA_HOME: home, SHELL: process.env.SHELL ?? '/bin/bash', STANDIN_CLI_RSS_MB: String(rssMb) });
+
+/** The keeper's own log of a workspace (`<ORCHESTRA_HOME>/keepers/<ws>.log`, with the rotated `.log.old` first): where the post-boot cap-state flips are written (#332-fu). */
+export const keeperLogText = (orchestraHome, wsId, read = readSafe) => ['.log.old', '.log'].map((x) => read(path.join(orchestraHome, 'keepers', `${wsId}${x}`)) ?? '').join('\n');

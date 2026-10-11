@@ -45,6 +45,13 @@ export function capStateFromKeeperLog(text) {
   return state;
 }
 
+/** #332-fu (OPS 7283, D-Q14): a member's state can flip AFTER boot (placement tripwire → unprotected, a wrapper that cannot run, a leaf that cannot be built…) and the flip reaches ONLY `keepers/<ws>.log` — not the app, Resources or bus-status. Every `memory cap:` line of the keeper log
+ *  that is not one of the known BENIGN ones (the boot summary, the DBUS note, "tripwire not armed / gave up", the notice-file budget) is a degradation — fail closed: an unknown new line is listed, never dropped. The boot summary's state alone would miss a later flip. */
+const BENIGN_CAP_LINE = [/memory cap: [A-Z]+(?:-[A-Z]+)* unit=\S+ memory\.max=/, /memory cap: DBUS_SESSION_BUS_ADDRESS removed/, /memory cap: the placement tripwire (is NOT armed|gave up)/, /memory cap: notice file budget/];
+export function capDegradationsFromKeeperLog(text) {
+  return String(text ?? '').split('\n').filter((l) => /memory cap:/.test(l) && !BENIGN_CAP_LINE.some((re) => re.test(l))).map((l) => l.replace(/^\[keeper [^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim().slice(0, 220));
+}
+
 /**
  * One worker's metric for one cycle.
  *  w {k,id} · cycle · t0 (ms epoch the hogs were started) · opsId
@@ -72,6 +79,7 @@ export function workerFromAppFacts(w, cycle, t0, opsId, f) {
       answered: f.probeAfter === true,
       scopeActive: f.scopeActive === true,
       capState: capStateFromKeeperLog(f.keeperLog),
+      capDegradations: capDegradationsFromKeeperLog(f.keeperLog),
     },
     memberKillRows: rows.map((e) => e.text),
     coordMsgs: msgs.map((x) => ({ kind: x.kind, recipient: x.recipient, body: x.body })),

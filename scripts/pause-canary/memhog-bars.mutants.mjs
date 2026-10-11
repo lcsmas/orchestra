@@ -98,6 +98,8 @@ export const MEMHOG_MUTANTS = [
   ['word-live-ignored', "if (!hasMh && (chainSurvBad || !liveOk))", "if (!hasMh && chainSurvBad)"],
   ['exit-partial-zero', "word === 'PARTIAL' ? 4 :", "word === 'PARTIAL' ? 0 :"],
   ['exit-void-one', "word === 'VOID' || word === 'NOT-RUN' ? 3 : 1", "word === 'NOT-RUN' ? 3 : 1"],
+  ['caphold-degradation-ignored', "if (Array.isArray(s.capDegradations) && s.capDegradations.length) bad.push(", "if (false) bad.push("],
+  ['caphold-degradation-count', "keeper.log reports ${s.capDegradations.length} degradation line(s)", "keeper.log reports 1 degradation line(s)"],
   ['table-aborted-cycle-unguarded', 'if (!k) return `| ${c.exercise} | ${c.cycle} | n/a', 'if (false) return `| ${c.exercise} | ${c.cycle} | n/a'],
 ].map(([name, find, replace]) => [name, find, replace, F]);
 
@@ -126,6 +128,13 @@ export const MEMHOG_FACTS_MUTANTS = [
   ['tokens-capoff-strict', "if (!capOn) return null;\n  const refs", "const refs"],
   ['tokens-none-ok', "if (!heavy) return 'no --heavy-token';", ""],
   ['start-bar-nine', "export const CAP_ON_START_GB = 11;", "export const CAP_ON_START_GB = 9;"],
+  ['degradation-benign-all', "!BENIGN_CAP_LINE.some((re) => re.test(l))", "false"],
+  ['degradation-none-benign', "!BENIGN_CAP_LINE.some((re) => re.test(l))", "true"],
+  ['degradation-needs-cap-prefix', "/memory cap:/.test(l) && !BENIGN", "true && !BENIGN"],
+  ['degradation-prefix-kept', ".replace(/^\\[keeper [^\\]]*\\]\\s*/, '')", ""],
+  ['degradation-dropped-from-facts', "      capDegradations: capDegradationsFromKeeperLog(f.keeperLog),\n", ""],
+  ['degradation-benign-tripwire-fired', "memory cap: the placement tripwire (is NOT armed|gave up)", "memory cap: (the placement tripwire (is NOT armed|gave up)|TRIPWIRE)"],
+  ['degradation-benign-wrapper-warning', "memory cap: the placement tripwire (is NOT armed|gave up)", "memory cap: (the placement tripwire (is NOT armed|gave up)|WARNING)"],
   ['env-nan-allowed', 'if (![members, capGb, softGb, hogMb].every(Number.isFinite)) return', 'if (false) return'],
   ['env-members-upper', 'members >= 1 && members <= 6', 'members >= 1 && members <= 7'],
   ['env-members-lower', 'members >= 1 && members <= 6', 'members <= 6'],
@@ -174,6 +183,8 @@ export const MEMHOG_OS_MUTANTS = [
   ['os-bs-unreadable-zero', "Number.isFinite(v) ? v : null; };\n  const leaves", "Number.isFinite(v) ? v : 0; };\n  const leaves"],
   ['os-bs-flat-k-null', "kills(path.join(scopeDir, KEEPER_LEAF)) : 0,", "kills(path.join(scopeDir, KEEPER_LEAF)) : null,"],
   ['os-bs-keeper-leaf-name', "export const KEEPER_LEAF = 'k';", "export const KEEPER_LEAF = 'x';"],
+  ['os-keeperlog-order', "['.log.old', '.log'].map((x) => read(", "['.log', '.log.old'].map((x) => read("],
+  ['os-keeperlog-no-old', "['.log.old', '.log'].map((x) => read(", "['.log'].map((x) => read("],
   ['os-kill-marker-substring', "if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').split('\\0').includes(want)) continue;", "if (ticks(pid) !== t || !(readSafe(`/proc/${pid}/environ`) ?? '').includes(want)) continue;"],
 ].map(([name, find, replace]) => [name, find, replace, FO]);
 

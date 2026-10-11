@@ -371,3 +371,12 @@ test('splitChecks: with a KNOWN-RED table the listed ids are published, never de
   assert.deepEqual(shipped.known, [], 'the shipped table is empty: nothing is excused');
   assert.deepEqual(shipped.barsRed.map((c: Check) => c.id), ['x:known', 'bar:b']);
 });
+
+test('cap holds: a degradation line in the keeper log is RED on bar:cap_holds_after_kill with its text, even when the state reads active (OPS 7283)', () => {
+  const ses = (o: W) => ({ keeperSame: true, cliSame: true, keeperAlive: true, cliAlive: true, answered: true, scopeActive: true, capState: 'active', ...o });
+  assert.deepEqual(redOf({}, { session: ses({ capDegradations: [] }) }), []);
+  assert.deepEqual(redOf({}, { session: ses({ capDegradations: undefined }) }), [], 'the stand-in path without a log reading is not penalised here (its state is the live probe)');
+  assert.deepEqual(redOf({}, { session: ses({ capDegradations: ['memory cap: TRIPWIRE — nothing is capped'] }) }), ['bar:cap_holds_after_kill']);
+  const d = evaluateMemhogCycle({ ...good(), workers: [worker(1), worker(2, { session: ses({ capDegradations: ['memory cap: TRIPWIRE — nothing is capped', 'x'] }) }), worker(3)] }).find((c: Check) => c.id === 'bar:cap_holds_after_kill')!.detail;
+  assert.match(d, /w2: keeper\.log reports 2 degradation line\(s\): "memory cap: TRIPWIRE — nothing is capped"/);
+});

@@ -75,6 +75,7 @@ export function capHoldsWhy(w) {
   const bad = [];
   if (s.scopeActive !== true) bad.push('the scope is no longer active (group-kill?)');
   if (s.capState !== 'active') bad.push(`keeper cap.state=${s.capState ?? 'absent'}`);
+  if (Array.isArray(s.capDegradations) && s.capDegradations.length) bad.push(`keeper.log reports ${s.capDegradations.length} degradation line(s): "${clip(s.capDegradations[0], 120)}"`);   // #332-fu D-Q14: a flip after boot is in the keeper log only
   return bad.length ? bad.join(', ') : null;
 }
 
