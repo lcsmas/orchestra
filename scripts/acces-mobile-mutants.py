@@ -33,13 +33,25 @@ MUTANTS = [
     ('Y10-xdg-trusted', 'src/shared/acces-mobile.ts', "    if (st.isDirectory() && st.uid === uid && (st.mode & 0o077) === 0) return runtimeDir;", "    if (st.isDirectory()) return runtimeDir;", 'RED'),
     ('Y11-shared-budget', 'src/acces-mobile/server.ts', "    let b = budgets.get(reason);\n    if (!b) budgets.set(reason,", "    let b = budgets.get('all');\n    if (!b) budgets.set('all',", 'RED'),
     ('Y12-server-close-on-exit', 'src/acces-mobile/index.ts', "function exit(code: number): never {\n  try {\n", "function exit(code: number): never {\n  try {\n    server.close();\n", 'RED'),
-    ('M9-token-read-once', 'src/acces-mobile/server.ts', "      expected = opts.readToken().trim();\n", "      expected = (globalThis as any).__t ??= opts.readToken().trim();\n", 'RED'),
+    ('C1-stream-no-recheck', 'src/acces-mobile/server.ts', "        if (!tokenMatches(presented, readTokenSafe())) close();\n", "", 'RED'),
+    ('C2-seen-on-get', 'src/acces-mobile/server.ts', "    if (pathOnly === '/api/seen' && method === 'POST') {", "    if (pathOnly === '/api/seen') {", 'RED'),
+    ('C3-relay-any-kind', 'src/acces-mobile/server.ts', "          else if (t === 'conv' || t === 'workspaces') res.write", "          else res.write", 'RED'),
+    ('C4-no-stream-cap', 'src/acces-mobile/server.ts', "      if (openStreams >= MAX_STREAMS) return refuse(429, 'too-many-streams');", "      if (false) return refuse(429, 'too-many-streams');", 'RED'),
+    ('C5-miss-not-recorded', 'src/main/acces-mobile-feed-core.ts', "      e.missedWhileLoading = true;\n", "", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
+    ('C6-reload-every-turn', 'src/main/acces-mobile-feed-core.ts', "    if (event.type === 'turn-end' && e.missedWhileLoading) e.reloadPending = true;", "    if (event.type === 'turn-end') e.reloadPending = true;", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
+    ('C7-ask-not-recognized', 'src/shared/acces-mobile-conversation.ts', "a.name === 'AskUserQuestion'", "a.name === 'AskUserQuestionX'", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    ('C8-id-unvalidated', 'src/acces-mobile/server.ts', "      return id && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;", "      return id || null;", 'RED'),
+    ('C9-tap-never-disarmed', 'src/main/acces-mobile-feed-core.ts', "  untap?.();\n  untap = null;\n", "", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
+    ('M9-token-read-once', 'src/acces-mobile/server.ts', "    const expected = readTokenSafe();\n", "    const expected = ((globalThis as any).__t ??= readTokenSafe()) as string;\n", 'RED'),
     ('M10-shell-without-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const asset0 = STATIC[pathOnly]; if (asset0) { res.writeHead(200); res.end(asset0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED'),
 ]
 
 bad = 0
+ONLY = sys.argv[1:]  # optional id prefixes: run a subset (the full set is the gate)
 for m in MUTANTS:
     mid, rel, old, new, expected = m[:5]
+    if ONLY and not any(mid.startswith(p) for p in ONLY):
+        continue
     test = m[5] if len(m) > 5 else TEST
     path = os.path.join(ROOT, rel)
     backup = path + '.mutant-backup'

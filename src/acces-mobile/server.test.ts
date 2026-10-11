@@ -532,7 +532,11 @@ function streamRig(opts: { recheckMs?: number } = {}) {
     aborted: () => aborted,
     setToken: (t: string) => (token = t),
     listen: () => new Promise<number>((r) => server.listen(0, '127.0.0.1', () => r((server.address() as AddressInfo).port))),
-    close: () => new Promise((r) => server.close(() => r(null))),
+    close: () =>
+      new Promise((r) => {
+        server.closeAllConnections(); // a failed arm leaves streams open: close must never wait on them
+        server.close(() => r(null));
+      }),
   };
 }
 
@@ -550,7 +554,7 @@ function openStream(port: number, headers: Record<string, string>): Promise<{ st
   });
 }
 
-test('conversation + seen relay to main with a validated id; seen is the only POST', async () => {
+test('conversation + seen relay to main with a validated id; seen is the only POST', { timeout: 15_000 }, async () => {
   const r = streamRig();
   const port = await r.listen();
   try {
@@ -570,7 +574,7 @@ test('conversation + seen relay to main with a validated id; seen is the only PO
   }
 });
 
-test('stream relays change announcements as SSE, pings as comments, nothing else', async () => {
+test('stream relays change announcements as SSE, pings as comments, nothing else', { timeout: 15_000 }, async () => {
   const r = streamRig({ recheckMs: 10_000 });
   const port = await r.listen();
   try {
@@ -593,7 +597,7 @@ test('stream relays change announcements as SSE, pings as comments, nothing else
   }
 });
 
-test('stream must-FAIL: regenerating the token cuts an open stream (control: an unchanged token keeps it open)', async () => {
+test('stream must-FAIL: regenerating the token cuts an open stream (control: an unchanged token keeps it open)', { timeout: 15_000 }, async () => {
   const r = streamRig({ recheckMs: 50 });
   const port = await r.listen();
   try {
@@ -608,7 +612,7 @@ test('stream must-FAIL: regenerating the token cuts an open stream (control: an 
   }
 });
 
-test('stream: token + identity required, and at most MAX_STREAMS at once', async () => {
+test('stream: token + identity required, and at most MAX_STREAMS at once', { timeout: 15_000 }, async () => {
   const r = streamRig({ recheckMs: 10_000 });
   const port = await r.listen();
   const open: { destroy: () => void }[] = [];

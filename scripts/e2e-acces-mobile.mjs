@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
+import { startFakeApi } from './session-budget/fake-anthropic-api.mjs';
 import path from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -115,6 +116,10 @@ function serverPids(tokenFile) {
 }
 
 // ── seed ──
+const SAMPLE_TRANSCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures/payloads/acces-mobile-transcript.sample.jsonl');
+const HISTORY_SESSION = JSON.parse(fs.readFileSync(SAMPLE_TRANSCRIPT, 'utf8').split('\n')[0]).sessionId;
+const FAKE_REPLY = 'Réponse du faux modèle pour le téléphone';
+const fakeApi = await startFakeApi({ reply: () => ({ text: FAKE_REPLY }) });
 const LOGIN = 'rig.owner@example.invalid';
 const world = (() => {
   const d = path.join(RIG_DIR, 'world');
@@ -126,12 +131,19 @@ const world = (() => {
     if (!fs.existsSync(path.join(repo, '.git'))) { git(repo, ['init', '-q', '-b', 'main'], fakeHome); fs.writeFileSync(path.join(repo, 'README.md'), '#\n'); git(repo, ['add', '.'], fakeHome); git(repo, ['commit', '-q', '-m', 'seed'], fakeHome); }
     const wt = path.join(d, 'wt', name); git(repo, ['worktree', 'add', '-q', '-b', `e2e/${name}`, wt], fakeHome); wts.push(wt);
   }
-  const accounts = [{ id: 'acc-mc', label: 'mc', configDir: cfgA }, { id: 'acc-perso', label: 'perso', configDir: cfgB }];
+  // A pinned account DROPS the inherited ANTHROPIC_* (workspaces.ts accountAgentEnv) unless its own env sets them: point mc at the
+  // fake API through ${...} templates expanded from the app's env.
+  const fakeEnv = { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' };
+  const accounts = [{ id: 'acc-mc', label: 'mc', configDir: cfgA, env: fakeEnv }, { id: 'acc-perso', label: 'perso', configDir: cfgB }];
+  // #337: a transcript captured from the real CLI (texts replaced) as am-unread's history, in ITS account's project dir.
+  const histDir = path.join(cfgB, 'projects', fs.realpathSync(wts[2]).replace(/[^A-Za-z0-9]/g, '-'));
+  fs.mkdirSync(histDir, { recursive: true });
+  fs.copyFileSync(SAMPLE_TRANSCRIPT, path.join(histDir, `${HISTORY_SESSION}.jsonl`));
   const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude' };
   const workspaces = [
     { ...base, id: 'ws-am-waiting', name: 'am-waiting', repoPath: repoA, worktreePath: wts[0], branch: 'e2e/am-waiting', status: 'waiting', accountId: 'acc-mc' },
     { ...base, id: 'ws-am-idle', name: 'am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc' },
-    { ...base, id: 'ws-am-unread', name: 'am-unread', repoPath: repoB, worktreePath: wts[2], branch: 'e2e/am-unread', status: 'idle', autoUnread: true, accountId: 'acc-perso' },
+    { ...base, id: 'ws-am-unread', name: 'am-unread', repoPath: repoB, worktreePath: wts[2], branch: 'e2e/am-unread', status: 'idle', autoUnread: true, accountId: 'acc-perso', sdkSessionId: HISTORY_SESSION },
     { ...base, id: 'ws-am-archived', name: 'am-archived', repoPath: repoB, worktreePath: wts[3], branch: 'e2e/am-archived', status: 'idle', archived: true, archivedAt: Date.now(), accountId: 'acc-perso' },
   ];
   return { d, fakeHome, ohome, accounts, workspaces, repos: [{ path: repoA, name: 'orchestra-rig', defaultBranch: 'main', accountId: 'acc-mc' }, { path: repoB, name: 'perso-rig', defaultBranch: 'main', accountId: 'acc-perso' }] };
@@ -140,8 +152,11 @@ const world = (() => {
 const SERVE_PORT = 8445;
 const storeDir = path.join(world.ohome, 'userData', 'orchestra'); fs.mkdirSync(storeDir, { recursive: true });
 fs.writeFileSync(path.join(storeDir, 'store.json'), JSON.stringify({ repos: world.repos, workspaces: world.workspaces, accounts: world.accounts, selfTuneRuns: [], accesMobile: { enabled: true, port: 47823 /* a pre-review store: must be ignored */, servePort: SERVE_PORT, allowedLogin: LOGIN } }, null, 2));
-const stubDir = path.join(world.d, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
-fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho AM-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
+// #337: the REAL claude CLI (structured sessions resolve `claude` on PATH) against the LOCAL FAKE Anthropic API — zero tokens;
+// every other egress goes to the fake's refusing proxy.
+const stubDir = path.join(world.d, 'bin'); fs.mkdirSync(stubDir, { recursive: true });
+const REAL_CLAUDE = fs.realpathSync(path.join(LIVE_HOME, '.local/bin/claude'));
+fs.symlinkSync(REAL_CLAUDE, path.join(stubDir, 'claude'));
 const TOKEN_FILE = path.join(world.ohome, 'acces-mobile', 'token');
 
 // ── boot ──
@@ -149,7 +164,8 @@ const cdpPort = await freePort();
 const env = { PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
   WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
   ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(cdpPort), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.accounts[0].configDir, LANG: 'C.UTF-8',
-  SECRET_CANARY_FROM_MAIN: 'must-not-reach-the-server' };
+  SECRET_CANARY_FROM_MAIN: 'must-not-reach-the-server',
+  ANTHROPIC_BASE_URL: fakeApi.url, ANTHROPIC_API_KEY: 'sk-ant-fake-rig-key', HTTPS_PROXY: fakeApi.proxyUrl, HTTP_PROXY: fakeApi.proxyUrl, NO_PROXY: '127.0.0.1,localhost' };
 for (const k of ['HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
 sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
 const logFile = path.join(world.d, 'app.log'); const fd = fs.openSync(logFile, 'w');
@@ -246,6 +262,33 @@ try {
   const filtered = await phone.eval(`[...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id)`);
   clause('phone/filter-needs-me', filtered.length === 2 && !filtered.includes('ws-am-idle'), `3 -> ${filtered.length} rows: ${filtered.join(',')}`);
   saveShot('phone-list-needs-me.png', await phone.shot());
+  await phone.eval(`(() => { const c = document.getElementById('needsMe'); if (c.checked) c.click(); return true; })()`);
+
+  // #337 history: open am-unread on the phone ⇒ its transcript (other account) reads as user / tool / assistant, and the desktop's
+  // bell clears (the phone's « seen » is the desktop's).
+  const unreadBefore = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread;
+  await phone.eval(`window.__noReload = 1; document.querySelector('li[data-id="ws-am-unread"]').click(); true`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length === 3`), 20000, 'the history on the phone');
+  const H = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent)`);
+  clause('conv/history', H[0] === 'user:Liste les fichiers du dépôt, s’il te plaît.' && /^tool:✓ Bash · List repository files$/.test(H[1]) && H[2] === 'assistant:Voici les fichiers : README.md et src/.', `phone lines ${JSON.stringify(H)}`);
+  saveShot('phone-conversation-history.png', await phone.shot());
+  await waitFor(() => !JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread, 10000, 'the bell cleared in the store').catch(() => null);
+  const unreadAfter = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread;
+  const deskBell = await cdp.eval(`(() => { const s = window.__orchestraGetState ? window.__orchestraGetState() : null; return s ? (s.workspaces || []).find((w) => w.id === 'ws-am-unread')?.autoUnread ?? null : 'n/a'; })()`).catch(() => 'n/a');
+  clause('conv/seen-clears-bell', unreadBefore === true && !unreadAfter, `store autoUnread ${unreadBefore} -> ${unreadAfter} (desktop state: ${deskBell})`);
+
+  // #337 live: open am-idle, drive a REAL turn from the desktop IPC (real CLI, fake API) ⇒ the phone shows it without a reload.
+  await phone.eval(`location.hash = 'w=ws-am-idle'; true`);
+  await waitFor(() => phone.eval(`document.querySelector('#conv')?.dataset.id === 'ws-am-idle' && !!document.querySelector('#conv')?.dataset.version`), 15000, 'am-idle conversation open');
+  const pre = await phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length`);
+  const modelBefore = fakeApi.requests.filter((r) => r.type === 'model').length;
+  await cdp.eval(`window.orchestra.agentSdkSend('ws-am-idle', 'Bonjour depuis le rig').then(() => true)`);
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].some((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)}))`), 90000, 'the fake reply on the phone');
+  const L = await phone.eval(`({ lines: [...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent.slice(0, 60)), noReload: window.__noReload === 1 })`);
+  const modelAfter = fakeApi.requests.filter((r) => r.type === 'model').length;
+  clause('conv/live-turn', L.noReload && pre === 0 && L.lines.some((l) => l === 'user:Bonjour depuis le rig') && modelAfter > modelBefore, `${pre} -> ${L.lines.length} lines without reload: ${JSON.stringify(L.lines)}; fake API model requests ${modelBefore} -> ${modelAfter}; refused egress ${fakeApi.egress.length}`);
+  saveShot('phone-conversation-live.png', await phone.shot());
+  await phone.eval(`location.hash = ''; true`);
 
   // settings dialog in the app: health, serve command; TRUSTED toggle off/on
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 895 });
@@ -279,7 +322,7 @@ try {
   const secs = (Date.now() - t0.at) / 1000;
   const mainPct = ((ticks(app.pid) - t0.main) / HZ / secs) * 100, srvPct = ((ticks(pidOn2) - t0.srv) / HZ / secs) * 100;
   const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
-  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 2, `over ${secs.toFixed(0)} s with the phone polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone, filter still on, lists ${polled})`);
+  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 3, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled})`);
 
   // supervision: SIGKILL the server ⇒ restarted
   process.kill(pidOn2, 'SIGKILL');
@@ -306,6 +349,11 @@ try {
   for (const p of [ownerProxy, colleagueProxy, taggedProxy]) p.srv.close();
   if (SOCK && fs.existsSync(SOCK)) { try { fs.unlinkSync(SOCK); } catch {} }
   for (const p of [chrome, app]) { if (p?.pid) { try { process.kill(-p.pid, 'SIGKILL'); } catch {} } }
+  // keepers + CLIs are detached from the app: select them by identity (this rig's ORCHESTRA_HOME in their environ)
+  for (const pid of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+    try { if (environOf(pid).includes(`ORCHESTRA_HOME=${world.ohome}`) && +pid !== process.pid) process.kill(+pid, 'SIGKILL'); } catch {}
+  }
+  try { await fakeApi.stop(); } catch {}
   for (const p of serverPids(TOKEN_FILE)) { try { process.kill(p, 'SIGKILL'); } catch {} }
 }
 const fails = results.filter((r) => !r.ok).map((r) => r.name);
