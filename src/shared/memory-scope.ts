@@ -210,6 +210,13 @@ export function parseCgroupLimit(text: string): number | null {
   return /^\d+$/.test(v) ? Number(v) : null;
 }
 
+/** Is a limit APPLIED? `max` ⇒ false (the kernel holds none), a number ⇒ true, anything else ⇒ null (unknown — never read as « not applied »). parseCgroupLimit alone cannot tell `max` from garbage. */
+export function parseLimitApplied(text: string): boolean | null {
+  const v = text.trim();
+  if (v === 'max') return false;
+  return /^\d+$/.test(v) ? true : null;
+}
+
 /** The cgroup-v2 path (`/user.slice/…/x.scope`) in a `/proc/<pid>/cgroup` text, or null (v1 / unreadable). */
 export function parseProcCgroupV2(text: string): string | null {
   for (const line of text.split('\n')) {
@@ -242,6 +249,8 @@ export interface ScopeMemory {
   peakBytes: number | null;
   /** null = no limit (or unreadable). A capped scope reads a number. */
   maxBytes: number | null;
+  /** #323-fu (review m2): true = a limit is applied, false = `memory.max` reads `max` (NO limit — the cap is « not applied » on this scope), null = unreadable / unparseable (unknown, never claimed as « not applied »). */
+  limitApplied: boolean | null;
   highBytes: number | null;
   swapMaxBytes: number | null;
   swapCurrentBytes: number | null;

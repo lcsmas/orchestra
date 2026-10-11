@@ -58,6 +58,9 @@ export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardG
   return parts.join(' · ');
 }
 
+/** The dim tooltip of a tracked member whose session scope holds NO limit (mockup A: « no bar, a dim tooltip says why »). Says what is true and what it means; names no cause it cannot know. */
+export const CAP_NOT_APPLIED_TIP = 'No memory cap applied — this session runs in a scope with no limit, so nothing stops it at the hard level (the Plafond mémoire is off for its run, or the host did not apply it).';
+
 export interface CapRowLike {
   key: string;
   name: string;

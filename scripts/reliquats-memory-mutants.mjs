@@ -3,7 +3,7 @@
 // mutated files must be empty at the end (commit first). A CLI-affecting mutant rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale); the clean build is restored at the end.
 //
 // HEAVY by the wave rule (a mutation sweep): needs the OPS's heavy-rig token + MemAvailable > 6 GB right before. A rig arm starts a real keeper in a disposable ≤ 300 MB scope and prints its survivors.
-// Run: node scripts/reliquats-memory-mutants.mjs [--only M01,M02] [--check | --check-anchors] [--no-rig]
+// Run: node scripts/reliquats-memory-mutants.mjs [--only M01_unreadable_is_zero,M02_generations_not_summed] [--check | --check-anchors] [--no-rig]
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +23,7 @@ if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must
   process.exit(2);
 }
 const dryCheck = args.includes('--check-anchors') || args.includes('--check');
-const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
+const only = args.includes('--only') && (args[args.indexOf('--only') + 1] ?? '') !== '' ? new Set(args[args.indexOf('--only') + 1].split(',')) : null; // a missing / empty value is refused below, never a crash
 const noRig = args.includes('--no-rig');
 
 const S = 'src/shared/member-memory.ts';
@@ -137,6 +137,17 @@ const MUTANTS = [
   { id: 'M43_cli_no_reliquats_line', file: CLI, find: 'process.stdout.write(`${formatReliquatsLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\\n`);', to: 'void 0;', expect: ['W6 /busStatus', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
 ];
 
+// `--only` takes EXACT mutant ids: an unknown / missing id used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 (OPS review, #323 m3) — now exit 2, nothing run.
+{
+  const i = args.indexOf('--only');
+  const value = i >= 0 ? args[i + 1] : undefined;
+  if (i >= 0 && (value === undefined || value.startsWith('-') || value === '')) { console.error('REFUSING: --only needs a comma-separated list of EXACT mutant ids — NOTHING was run.'); process.exit(2); }
+  const unknown = only ? [...only].filter((id) => !MUTANTS.some((m) => m.id === id)) : [];
+  if (unknown.length) {
+    console.error(`REFUSING: unknown mutant id(s) ${unknown.join(', ')} — NOTHING was run (ids are exact, e.g. ${MUTANTS[0].id}).`);
+    process.exit(2);
+  }
+}
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 400_000, ...opts });
 

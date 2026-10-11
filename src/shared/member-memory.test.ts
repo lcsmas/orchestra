@@ -201,6 +201,21 @@ test('C1 (#323) memberViewFrom.cap: the limit, bill, working set and peak of the
   assert.deepEqual(v.cap, { unit: live.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB, scopes: 1 });
 });
 
+test('C3 (#323-fu, review m2) capNote: a tracked member whose KEEPER scope reads `max` is « not-applied » — and only then; a numeric cap, an unreadable limit, an older generation, an unreadable meter and a keeper in no scope are all NOT', () => {
+  const live = { ...reading('k2', 900, [], 9), maxBytes: null, limitApplied: false } as ScopeReading;
+  assert.equal(memberViewFrom('ws-a', [live]).capNote, 'not-applied');
+  assert.equal(memberViewFrom('ws-a', [live]).cap, null, 'still no bar');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, maxBytes: 3072 * MB, limitApplied: true }]).capNote, null, 'a capped member has its bar, not the note');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, limitApplied: null }]).capNote, null, 'an UNREADABLE limit is unknown, never claimed as « not applied »');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, limitApplied: undefined }]).capNote, null, 'a reading from an older producer says nothing');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, currentBytes: null }]).capNote, null, 'unreadable meter: the scope is not really read');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, keeperPid: null }]).capNote, null, 'a scope that only carries leftovers is not the session');
+  const old = { ...reading('k1', 4000, [], null), maxBytes: 6144 * MB, limitApplied: true } as ScopeReading;
+  assert.equal(memberViewFrom('ws-a', [old, live]).capNote, 'not-applied', "the LIVE session's scope decides, not the leftover generation's limit");
+  assert.equal(memberViewFrom('ws-a', [{ ...old, limitApplied: false }, { ...live, maxBytes: 3072 * MB, limitApplied: true }]).capNote, null, 'and a leftover generation without a limit does not flag the member');
+  assert.equal(memberViewFrom('ws-a', []).capNote, null);
+});
+
 test('C2 (#323) cap is the keeper\'s scope, never an older generation kept alive by Reliquats; a keeper in no scope has no cap; no limit / junk / unreadable meter ⇒ null, never 0', () => {
   const old = { ...reading('k1', 4000, [], null), maxBytes: 6144 * MB, workingSetBytes: 3000 * MB, peakBytes: 5000 * MB };
   const live = { ...reading('k2', 900, [], 9), maxBytes: 3072 * MB, workingSetBytes: 700 * MB, peakBytes: 900 * MB };

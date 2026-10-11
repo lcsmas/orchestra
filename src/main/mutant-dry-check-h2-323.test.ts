@@ -56,6 +56,24 @@ for (const script of SCRIPTS) {
       assert.equal(r.scratch, false, args.join(' '));
     }
   });
+  test(`${name}: \`--only\` takes EXACT ids — an unknown, empty or missing one exits 2 with a sentence, nothing launched (it used to print « MUTANTS: 0/0 killed » and exit 0, review #323 m3)`, () => {
+    for (const args of [['--only', 'M01,M02'], ['--only', 'definitely_not_a_mutant'], ['--only'], ['--only', ''], ['--only', '--check'], ['--check', '--only', 'M01']]) {
+      const r = run(script, args);
+      assert.equal(r.status, 2, JSON.stringify(args));
+      assert.match(r.stderr, /REFUSING: (unknown mutant id|--only needs)/, JSON.stringify(args));
+      assert.doesNotMatch(r.stdout, /MUTANTS: 0\/0/, JSON.stringify(args));
+      assert.deepEqual(r.calls, [], JSON.stringify(args));
+      assert.equal(r.scratch, false, JSON.stringify(args));
+    }
+  });
+  test(`${name}: a KNOWN exact id passes the --only gate (control: it is not refused for being an id) — with --check the dry anchor check runs`, () => {
+    const first = /\{ id: '([A-Za-z0-9_]+)'/.exec(fs.readFileSync(path.join(REPO, script), 'utf8'))?.[1];
+    assert.ok(first, 'a real id to try');
+    const r = run(script, ['--check', '--only', first!]);
+    assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /ANCHORS: (\d+)\/\1 resolve exactly once/);
+    assert.deepEqual(r.calls, []);
+  });
   test(`${name} (control): with NO flag the script does reach its first shimmed call — so an empty call log above is evidence, not a blind instrument`, () => {
     const r = run(script, []);
     assert.ok(r.calls.length >= 1, `no shim call recorded; stdout=${r.stdout.slice(0, 200)} stderr=${r.stderr.slice(0, 200)}`);

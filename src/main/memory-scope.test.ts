@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseLimitApplied } from '../shared/memory-scope.ts';
 import { appSliceDir, countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopePrefix, scopeSupport, userManagerDir, type ScopeEnv } from './memory-scope.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mscope-'));
@@ -171,10 +172,29 @@ test('keeperPid before the keeper wrote its pid file (it listens first): the sco
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
-  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
+  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, limitApplied: true, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
   assert.equal(readScopeMemory({ cgroupDir: path.join(APP, 'gone.scope') }, env()), null);
   fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.maxBytes, null, 'no limit reads as null — "tracked, uncapped"');
+});
+
+test('readScopeMemory (#323-fu, review m2): limitApplied tells « no limit » (memory.max = max) from « unreadable » — only the first is « not applied »', () => {
+  const dir = mkScope('orchestra-ws-wslim-aaaaaa.scope');
+  const lim = () => readScopeMemory({ cgroupDir: dir }, env())?.limitApplied;
+  assert.equal(lim(), true, 'a number: a limit is applied');
+  fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
+  assert.equal(lim(), false, '`max`: the kernel holds no limit');
+  fs.writeFileSync(path.join(dir, 'memory.max'), 'garbage\n');
+  assert.equal(lim(), null, 'unparseable ⇒ unknown, never « not applied »');
+  fs.writeFileSync(path.join(dir, 'memory.max'), '');
+  assert.equal(lim(), null, 'empty ⇒ unknown');
+  fs.rmSync(path.join(dir, 'memory.max'));
+  assert.equal(lim(), null, 'no file ⇒ unknown');
+  assert.equal(parseLimitApplied('max'), false);
+  assert.equal(parseLimitApplied(' max \n'), false);
+  assert.equal(parseLimitApplied('0'), true, 'a 0 limit is a (degenerate) limit, not « none »');
+  assert.equal(parseLimitApplied('maxx'), null);
+  assert.equal(parseLimitApplied('-1'), null);
 });
 
 test('readScopeMemory (FI-1 v1.11, #323): workingSetBytes = memory.current − inactive_file (R5); unreadable memory.stat is null, never the raw figure; never negative', () => {

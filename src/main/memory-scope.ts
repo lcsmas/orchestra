@@ -12,6 +12,7 @@ import {
   SCOPE_LEAVES,
   classifyScopeMembers,
   parseCgroupLimit,
+  parseLimitApplied,
   parseMemoryEvents,
   parseMemoryStat,
   parseProcCgroupV2,
@@ -283,11 +284,18 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
   };
   // #332 (the #323 seam): the figures of the CAP — what the hard level compares (current) and the soft level (working set), and the peak — are the cgroup that carries the cap: the work leaf when there is one
   const capCurrent = capDir === d ? current : num(e, path.join(capDir, 'memory.current'));
+  let limitApplied: boolean | null = null;
+  try {
+    limitApplied = parseLimitApplied(e.readFile(path.join(d, 'memory.max')));
+  } catch {
+    /* unreadable ⇒ unknown */
+  }
   return {
     currentBytes: current,
     capCurrentBytes: capCurrent,
     peakBytes: num(e, path.join(capDir, 'memory.peak')),
     maxBytes: lim('memory.max'),
+    limitApplied,
     highBytes: lim('memory.high'),
     swapMaxBytes: lim('memory.swap.max'),
     swapCurrentBytes: num(e, path.join(d, 'memory.swap.current')),

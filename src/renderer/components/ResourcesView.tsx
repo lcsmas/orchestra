@@ -9,7 +9,7 @@ import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionRe
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
 import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-chip';
-import { capSummaryLine } from '../../shared/memory-cap-view';
+import { CAP_NOT_APPLIED_TIP, capSummaryLine } from '../../shared/memory-cap-view';
 import { CapBar } from './CapBar';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
@@ -297,6 +297,10 @@ function AgentRowView({
               <span className="res-cell res-mem">
                 {formatBytes(row.memBytes)}
                 <CapBar cap={row.cap} levels={capLevels} />
+              </span>
+            ) : row.capNote === 'not-applied' ? (
+              <span className="res-cell res-mem-nocap" title={CAP_NOT_APPLIED_TIP} data-res-nocap="">
+                {formatBytes(row.memBytes)}
               </span>
             ) : (
               <span className="res-cell">{formatBytes(row.memBytes)}</span>

@@ -233,6 +233,19 @@ test('P15 (#323) the producer carries the scope\'s own limit, working set and pe
   assert.deepEqual(v.cap, { unit: a.unit, hardBytes: 6144 * MB, billBytes: 2100 * MB, workingSetBytes: 1600 * MB, peakBytes: 2400 * MB, scopes: 1 });
   const { deps: d2 } = host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 2100 * MB }, procs: { [a.unit]: [] } });
   assert.equal(sampleMemberMemory(d2).tracked[0].cap, null, 'a reader that gives no limit (FI-1 v1.10 host) ⇒ no cap, the row stays as today');
+  assert.equal(sampleMemberMemory(d2).tracked[0].capNote, null, 'and no « not applied » claim either: an older reader does not say');
+});
+
+test('P17 (#323-fu, review m2) the producer carries FI-1 limitApplied into the member view: `max` ⇒ capNote « not-applied » (still no cap), unknown ⇒ no note', () => {
+  __resetMemberMemoryForTests();
+  const a = scope('ws-a');
+  const mk = (limitApplied: boolean | null | undefined) => host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 900 * MB }, procs: { [a.unit]: [] }, cap: { [a.unit]: { maxBytes: null, limitApplied } } });
+  const none = sampleMemberMemory(mk(false).deps).tracked[0];
+  assert.equal(none.capNote, 'not-applied');
+  assert.equal(none.cap, null);
+  assert.equal(sampleMemberMemory(mk(null).deps).tracked[0].capNote, null);
+  assert.equal(sampleMemberMemory(mk(undefined).deps).tracked[0].capNote, null);
+  assert.equal(sampleMemberMemory(mk(true).deps).tracked[0].capNote, null, 'a limit applied (even one the reader could not size) is not « not applied »');
 });
 
 test('P16 (#323) the cap view THROUGH H1\'s real FI-1 functions over a fake cgroup + /proc tree: the keeper\'s scope gives its memory.max, bill and working set; a scope without a keeper (leftover generation) gives none', () => {
