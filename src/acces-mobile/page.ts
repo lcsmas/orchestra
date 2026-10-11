@@ -9,6 +9,7 @@ export const INDEX_HTML = `<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Orchestra">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/conversation.css">
 <title>Orchestra</title>
 <style>
 body{font:16px -apple-system,system-ui,sans-serif;margin:0;padding:12px env(safe-area-inset-right) 24px env(safe-area-inset-left)}
@@ -17,16 +18,20 @@ h2{font-size:13px;text-transform:uppercase;opacity:.6;margin:16px 12px 4px}
 #state{margin:8px 12px;opacity:.7}
 label{display:block;margin:4px 12px}
 ul{list-style:none;margin:0;padding:0}
-li{padding:10px 12px;border-bottom:1px solid #8883}
+li{padding:10px 12px;border-bottom:1px solid #8883;cursor:pointer}
 .st{font-size:12px;padding:1px 6px;border-radius:8px;border:1px solid currentColor;margin-left:6px}
 .meta{font-size:13px;opacity:.65}
 </style>
 </head>
 <body>
+<div id="home">
 <h1>Orchestra</h1>
 <label><input type="checkbox" id="needsMe"> M'attend seulement</label>
 <div id="state">Chargement…</div>
 <div id="list"></div>
+</div>
+<div id="conv" hidden></div>
+<script src="/conversation.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
@@ -70,6 +75,7 @@ export const APP_JS = `(function () {
       var ul = el('ul');
       groups[g].forEach(function (w) {
         var li = el('li'); li.dataset.id = w.id; li.dataset.status = w.status; if (w.unread) li.dataset.unread = '1';
+        li.addEventListener('click', function () { location.hash = 'w=' + encodeURIComponent(w.id); });
         var top = el('div'); top.appendChild(el('strong', null, w.name));
         top.appendChild(el('span', 'st', LABEL[w.status] || w.status));
         if (w.unread) top.appendChild(el('span', 'st', 'non lu'));
@@ -94,8 +100,23 @@ export const APP_JS = `(function () {
       .catch(function () { setState('Orchestra injoignable.'); });
   }
   needsMe.addEventListener('change', render);
+  // #337: hash routing to the conversation screen (conversation.js); the list refreshes on the live stream, with a slow poll
+  // as the fallback when the stream is down.
+  var conv = window.OrchestraConversation;
+  function route() {
+    var m2 = /^#w=([A-Za-z0-9-]{1,64})$/.exec(location.hash);
+    var home = document.getElementById('home');
+    if (m2) {
+      var w = last.filter(function (x) { return x.id === m2[1]; })[0];
+      home.hidden = true; conv.open(m2[1], w ? w.name : m2[1]);
+    } else { conv.close(); home.hidden = false; load(); }
+  }
+  window.addEventListener('hashchange', route);
+  conv.onStream(function (m) { if (m.t === 'workspaces' || m.t === 'resume') load(); });
+  conv.connect();
   load();
-  setInterval(load, 5000);
+  route();
+  setInterval(load, 30000);
 })();
 `;
 

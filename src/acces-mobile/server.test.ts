@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
-import { createAccesMobileServer, tokenMatches, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
+import { createAccesMobileServer, tokenMatches, MAX_STREAMS, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
 import { CLOSE_INHERITED_FDS, pickSocketDir } from '../shared/acces-mobile.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
@@ -500,3 +500,142 @@ test('refusal budgets are PER REASON: a colleague flood never hides a bad token 
     await new Promise((r) => server.close(() => r(null)));
   }
 });
+
+// ---- #337: conversation, seen, live stream ----
+
+function streamRig(opts: { recheckMs?: number } = {}) {
+  let token = TOKEN;
+  const calls: { route: string; body: Record<string, unknown> }[] = [];
+  const subscribers = new Set<(m: unknown) => void>();
+  let aborted = 0;
+  const server = createAccesMobileServer({
+    allowedLogin: LOGIN,
+    readToken: () => token,
+    upstream: async (route, body) => {
+      calls.push({ route, body });
+      return { ok: true, route, body };
+    },
+    upstreamStream: (_route, onMessage, _onEnd) => {
+      subscribers.add(onMessage);
+      return () => {
+        aborted++;
+        subscribers.delete(onMessage);
+      };
+    },
+    streamRecheckMs: opts.recheckMs ?? 50,
+  });
+  return {
+    server,
+    calls,
+    push: (m: unknown) => subscribers.forEach((s) => s(m)),
+    subscribers,
+    aborted: () => aborted,
+    setToken: (t: string) => (token = t),
+    listen: () => new Promise<number>((r) => server.listen(0, '127.0.0.1', () => r((server.address() as AddressInfo).port))),
+    close: () => new Promise((r) => server.close(() => r(null))),
+  };
+}
+
+function openStream(port: number, headers: Record<string, string>): Promise<{ status: number; chunks: string[]; ended: Promise<void>; destroy: () => void }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/api/stream', headers }, (res) => {
+      const chunks: string[] = [];
+      res.setEncoding('utf8');
+      res.on('data', (c) => chunks.push(c));
+      const ended = new Promise<void>((r) => res.on('close', () => r()));
+      resolve({ status: res.statusCode ?? 0, chunks, ended, destroy: () => req.destroy() });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('conversation + seen relay to main with a validated id; seen is the only POST', async () => {
+  const r = streamRig();
+  const port = await r.listen();
+  try {
+    const ok = await get(port, '/api/conversation?id=4a6ad23b-ebee', AUTH);
+    assert.equal(ok.status, 200, 'control');
+    assert.deepEqual(r.calls.at(-1), { route: '/mobile/conversation', body: { id: '4a6ad23b-ebee' } });
+    assert.equal((await get(port, '/api/conversation?id=../etc', AUTH)).status, 400);
+    assert.equal((await get(port, '/api/conversation', AUTH)).status, 400);
+    assert.equal((await get(port, '/api/seen?id=abc', AUTH, 'POST')).status, 200, 'control: POST seen');
+    assert.deepEqual(r.calls.at(-1), { route: '/mobile/seen', body: { id: 'abc' } });
+    assert.equal((await get(port, '/api/seen?id=abc', AUTH)).status, 404, 'seen via GET is not a route (no side effect on GET)');
+    assert.equal((await get(port, '/api/conversation?id=abc', AUTH, 'POST')).status, 405, 'POST elsewhere refused');
+    assert.equal((await get(port, '/api/seen?id=abc', ID, 'POST')).status, 401, 'seen needs the token');
+    assert.equal(r.calls.length, 2, 'no refused request reached main');
+  } finally {
+    await r.close();
+  }
+});
+
+test('stream relays change announcements as SSE, pings as comments, nothing else', async () => {
+  const r = streamRig({ recheckMs: 10_000 });
+  const port = await r.listen();
+  try {
+    const s = await openStream(port, AUTH);
+    assert.equal(s.status, 200);
+    await waitUntil(() => r.subscribers.size === 1);
+    r.push({ t: 'conv', id: 'w1', v: 3 });
+    r.push({ t: 'ping' });
+    r.push({ t: 'workspaces' });
+    r.push({ t: 'secret', token: TOKEN });
+    await waitUntil(() => s.chunks.join('').includes('workspaces'));
+    const text = s.chunks.join('');
+    assert.match(text, /data: \{"t":"conv","id":"w1","v":3\}\n\n/);
+    assert.match(text, /: ping\n\n/);
+    assert.ok(!text.includes('secret') && !text.includes(TOKEN), 'unknown message kinds are never relayed');
+    s.destroy();
+    await waitUntil(() => r.aborted() === 1);
+  } finally {
+    await r.close();
+  }
+});
+
+test('stream must-FAIL: regenerating the token cuts an open stream (control: an unchanged token keeps it open)', async () => {
+  const r = streamRig({ recheckMs: 50 });
+  const port = await r.listen();
+  try {
+    const s = await openStream(port, AUTH);
+    await sleepMs(300);
+    assert.equal(r.aborted(), 0, 'control: the stream stays open while the token is unchanged');
+    r.setToken('tok_' + 'n'.repeat(40));
+    await Promise.race([s.ended, sleepMs(2000).then(() => assert.fail('stream not cut after rotation'))]);
+    assert.equal(r.aborted(), 1, 'the upstream subscription is released too');
+  } finally {
+    await r.close();
+  }
+});
+
+test('stream: token + identity required, and at most MAX_STREAMS at once', async () => {
+  const r = streamRig({ recheckMs: 10_000 });
+  const port = await r.listen();
+  const open: { destroy: () => void }[] = [];
+  try {
+    assert.equal((await openStream(port, ID)).status, 401);
+    assert.equal((await openStream(port, { Authorization: `Bearer ${TOKEN}` })).status, 403);
+    for (let i = 0; i < MAX_STREAMS; i++) {
+      const s = await openStream(port, AUTH);
+      assert.equal(s.status, 200, `stream ${i}`);
+      open.push(s);
+    }
+    assert.equal((await openStream(port, AUTH)).status, 429, 'one more is refused');
+    open.pop()!.destroy();
+    await waitUntil(() => r.subscribers.size === MAX_STREAMS - 1);
+    const again = await openStream(port, AUTH);
+    assert.equal(again.status, 200, 'a slot frees when a stream closes');
+    open.push(again);
+  } finally {
+    open.forEach((s) => s.destroy());
+    await r.close();
+  }
+});
+
+async function waitUntil(fn: () => boolean, ms = 3000): Promise<void> {
+  const t0 = Date.now();
+  while (!fn()) {
+    if (Date.now() - t0 > ms) throw new Error('waitUntil timed out');
+    await sleepMs(10);
+  }
+}

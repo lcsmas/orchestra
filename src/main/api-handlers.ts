@@ -165,6 +165,7 @@ import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { memoryGuardView, setMemoryGuardSettings } from './memory-guard-settings.ts';
 import { accesMobileView, setAccesMobileSettings } from './acces-mobile-host.ts';
+import { markWorkspaceSeen } from './mark-seen.ts';
 import { wakeHeldForMemory } from './admission-wake';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
@@ -777,17 +778,7 @@ export const apiHandlers: ApiHandlerTable = {
   // blocked on your answer" — so clearing it on open is a deliberate,
   // pre-existing behaviour: opening the workspace is where you answer. The bell
   // is the part that specifically encodes "never looked at".
-  markSeen: async (id) => {
-    const ws = store.getWorkspace(id);
-    if (!ws || ws.archived) return;
-    const nextStatus = ws.status === 'waiting' ? 'idle' : ws.status;
-    if (nextStatus === ws.status && !ws.autoUnread) return;
-    // Explicit `undefined`, not a dropped key: `workspace:update` is merged
-    // into the renderer store, so omitting it would leave the bell on screen.
-    const updated: Workspace = { ...ws, status: nextStatus, autoUnread: undefined };
-    await store.upsertWorkspace(updated);
-    platform.broadcast('workspace:update', updated);
-  },
+  markSeen: async (id) => markWorkspaceSeen(id), // shared with the Accès mobile (#337) — mark-seen.ts
 
   setActiveWorkspace: async (id) => {
     setActiveWorkspace(id);

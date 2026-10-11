@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createAccesMobileServer, socketUpstream } from './server.ts';
+import { createAccesMobileServer, socketUpstream, socketUpstreamStream } from './server.ts';
 
 function fail(msg: string): never {
   process.stderr.write(`acces-mobile: ${msg}\n`);
@@ -47,6 +47,7 @@ const server = createAccesMobileServer({
   allowedLogin,
   readToken: () => fs.readFileSync(tokenFile, 'utf8'),
   upstream: socketUpstream(sock),
+  upstreamStream: socketUpstreamStream(sock),
   log: (line) => process.stderr.write(`acces-mobile: ${line}\n`),
 });
 server.on('error', (e: NodeJS.ErrnoException) => fail(`listen failed: ${e.code ?? e.message}`));

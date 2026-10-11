@@ -71,3 +71,16 @@ test('the bundle ships with every build (CI uses build:bundles)', () => {
   assert.match(pkg.scripts['build:bundles'], /pnpm run build:acces-mobile/);
   assert.match(pkg.scripts['build:acces-mobile'], /vite\.acces-mobile\.config\.ts/);
 });
+
+test('#337: the conversation, seen and stream routes are wired to the feed and the ONE mark-seen', () => {
+  assert.match(hooks, /route === '\/mobile\/conversation'[\s\S]*?getMobileConversation\(msg\.id\)/);
+  assert.match(hooks, /route === '\/mobile\/seen'[\s\S]*?await markWorkspaceSeen\(msg\.id\)/);
+  assert.match(hooks, /route === '\/mobile\/stream'[\s\S]*?subscribeMobileFeed\([\s\S]*?res\.on\('close', unsubscribe\)/);
+  const handlers = read('src/main/api-handlers.ts');
+  assert.match(handlers, /markSeen: async \(id\) => markWorkspaceSeen\(id\)/, 'the desktop uses the same mark-seen');
+  const feed = read('src/main/acces-mobile-feed.ts');
+  assert.match(feed, /createMobileFeed\(\{ loadHistory: sdkHistory, onBroadcast,/, 'history = the account-aware sdkHistory; live = the platform tap');
+  const platform = read('src/main/platform/index.ts');
+  assert.match(platform, /current\(\)\.broadcast\(channel, \.\.\.args\);\n\s*if \(taps\.size\) for \(const t of taps\) t\(channel, args\);/, 'every UI push reaches the taps');
+  assert.match(entry, /upstreamStream: socketUpstreamStream\(sock\)/);
+});

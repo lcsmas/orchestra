@@ -44,6 +44,9 @@ import { watchersStatus } from './watchers.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
 import { projectMobileWorkspaces } from '../shared/acces-mobile.ts';
+import { validWorkspaceId } from '../shared/acces-mobile-conversation.ts';
+import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed.ts';
+import { markWorkspaceSeen } from './mark-seen.ts';
 import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
@@ -622,6 +625,25 @@ export async function startHooksServer(): Promise<void> {
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());
+          } else if (route === '/mobile/conversation') {
+            // Accès mobile (#337): one workspace's conversation, folded + projected for the phone (account-aware history).
+            if (!validWorkspaceId(msg.id) || !store.getWorkspace(msg.id) || store.getWorkspace(msg.id)?.archived) send(200, { ok: false, error: 'unknown workspace' });
+            else send(200, await getMobileConversation(msg.id));
+          } else if (route === '/mobile/seen') {
+            // The phone opened it: the SAME « seen » as the desktop (clears non lu, resolves en attente) — mark-seen.ts.
+            if (!validWorkspaceId(msg.id) || !store.getWorkspace(msg.id)) send(200, { ok: false, error: 'unknown workspace' });
+            else {
+              await markWorkspaceSeen(msg.id);
+              send(200, { ok: true });
+            }
+          } else if (route === '/mobile/stream') {
+            // Long-lived NDJSON: change announcements for the server process to relay to the phone. Ends when it hangs up.
+            res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' });
+            const unsubscribe = subscribeMobileFeed((m) => {
+              if (!res.writableEnded) res.write(JSON.stringify(m) + '\n');
+            });
+            res.write(JSON.stringify({ t: 'ping' }) + '\n');
+            res.on('close', unsubscribe);
           } else if (route === '/mobile/workspaces') {
             // Accès mobile (#334): the phone's list — every non-archived workspace, every account. Called only by the Accès
             // mobile server process, which has already checked the Tailscale identity + token (ADR 0006).

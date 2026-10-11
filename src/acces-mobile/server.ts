@@ -7,8 +7,11 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
+import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 
 export type Upstream = (route: string, body: Record<string, unknown>) => Promise<unknown>;
+/** A long-lived upstream (main's `/mobile/stream`): one parsed JSON value per line; returns the abort. */
+export type UpstreamStream = (route: string, onMessage: (m: unknown) => void, onEnd: () => void) => () => void;
 
 export interface AccesMobileServerOptions {
   /** Read at EVERY request so a regenerated token applies at once. Throw / '' ⇒ every /api request is refused. */
@@ -16,6 +19,9 @@ export interface AccesMobileServerOptions {
   /** The single allowed Tailscale login. '' ⇒ every request is refused. */
   allowedLogin: string;
   upstream: Upstream;
+  upstreamStream?: UpstreamStream;
+  /** How often an open stream re-checks that its token is still THE token (regenerate / turn-off cut it). */
+  streamRecheckMs?: number;
   /** One line per refusal — reason + method + path, never a header value. Rate-limited (see REFUSAL_LOG_BURST). */
   log?: (line: string) => void;
   /** Monotonic clock (ms) for the refusal-log windows; tests inject one. */
@@ -63,7 +69,12 @@ const STATIC: Record<string, { type: string; body: string }> = {
   '/': { type: 'text/html; charset=utf-8', body: INDEX_HTML },
   '/app.js': { type: 'text/javascript; charset=utf-8', body: APP_JS },
   '/manifest.webmanifest': { type: 'application/manifest+json', body: MANIFEST_JSON },
+  '/conversation.js': { type: 'text/javascript; charset=utf-8', body: CONVERSATION_JS },
+  '/conversation.css': { type: 'text/css; charset=utf-8', body: CONVERSATION_CSS },
 };
+
+/** At most this many live streams at once (one per open phone page is the normal case). */
+export const MAX_STREAMS = 8;
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */
 export function tokenMatches(presented: string, expected: string): boolean {
@@ -82,12 +93,20 @@ function bearer(req: http.IncomingMessage): string {
 
 export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Server {
   const log = rateLimitedLog(opts.log ?? (() => {}), opts.now ?? (() => performance.now()));
+  const readTokenSafe = (): string => {
+    try {
+      return opts.readToken().trim();
+    } catch {
+      return '';
+    }
+  };
+  let openStreams = 0;
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});
     const method = req.method ?? 'GET';
     const pathOnly = (req.url ?? '/').split('?')[0].split('#')[0];
-    const refuse = (code: 401 | 403 | 404 | 405, reason: string): void => {
+    const refuse = (code: 400 | 401 | 403 | 404 | 405 | 429, reason: string): void => {
       log(reason, `refused ${code} ${reason} ${method} ${pathOnly.slice(0, 80)}`);
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Length': '0' }).end();
     };
@@ -99,7 +118,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (typeof login !== 'string' || login === '') return refuse(403, 'no-identity');
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
-    if (method !== 'GET') return refuse(405, 'method');
+    // GET everywhere, POST only for the one state change (« seen »). Never a body: ids travel in the query string.
+    if (method !== 'GET' && !(method === 'POST' && pathOnly === '/api/seen')) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
     const asset = STATIC[pathOnly];
@@ -112,12 +132,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (!pathOnly.startsWith('/api/')) return refuse(404, 'not-found');
 
     // 3) Data: identity AND the current token. The token is never read from the query string.
-    let expected = '';
-    try {
-      expected = opts.readToken().trim();
-    } catch {
-      expected = '';
-    }
+    const expected = readTokenSafe();
     const presented = bearer(req);
     if (!presented) return refuse(401, 'no-token');
     if (!tokenMatches(presented, expected)) return refuse(401, 'bad-token');
@@ -126,18 +141,103 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
       res.end(JSON.stringify(obj));
     };
-    if (pathOnly === '/api/workspaces') {
-      opts.upstream('/mobile/workspaces', {}).then(
+    const relay = (route: string, body: Record<string, unknown>): void => {
+      opts.upstream(route, body).then(
         (out) => json(200, out),
         (e: unknown) => {
-          log('upstream', `upstream /mobile/workspaces failed: ${e instanceof Error ? e.message : String(e)}`);
+          log('upstream', `upstream ${route} failed: ${e instanceof Error ? e.message : String(e)}`);
           json(502, { ok: false, error: 'Orchestra unreachable' });
         },
       );
+    };
+    const query = new URLSearchParams((req.url ?? '').split('?')[1]?.split('#')[0] ?? '');
+    const wsId = (): string | null => {
+      const id = query.get('id');
+      return id && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;
+    };
+    if (pathOnly === '/api/workspaces') return relay('/mobile/workspaces', {});
+    if (pathOnly === '/api/conversation') {
+      const id = wsId();
+      return id ? relay('/mobile/conversation', { id }) : refuse(400, 'bad-id');
+    }
+    if (pathOnly === '/api/seen' && method === 'POST') {
+      const id = wsId();
+      return id ? relay('/mobile/seen', { id }) : refuse(400, 'bad-id');
+    }
+    if (pathOnly === '/api/stream') {
+      if (!opts.upstreamStream) return refuse(404, 'not-found');
+      if (openStreams >= MAX_STREAMS) return refuse(429, 'too-many-streams');
+      openStreams++;
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no' });
+      res.write(': open\n\n');
+      let closed = false;
+      const close = (): void => {
+        if (closed) return;
+        closed = true;
+        openStreams--;
+        clearInterval(recheck);
+        abort();
+        if (!res.writableEnded) res.end();
+      };
+      // A stream outlives the request that authenticated it: re-check the token so Regenerate / turning Accès mobile off
+      // cuts it within streamRecheckMs, instead of streaming to a revoked phone until it reconnects.
+      const recheck = setInterval(() => {
+        if (!tokenMatches(presented, readTokenSafe())) close();
+      }, opts.streamRecheckMs ?? 5000);
+      const abort = opts.upstreamStream(
+        '/mobile/stream',
+        (m) => {
+          if (closed || !m || typeof m !== 'object') return;
+          const t = (m as { t?: unknown }).t;
+          if (t === 'ping') res.write(': ping\n\n');
+          else if (t === 'conv' || t === 'workspaces') res.write(`data: ${JSON.stringify(m)}\n\n`);
+        },
+        close,
+      );
+      res.on('close', close);
       return;
     }
     return refuse(404, 'not-found');
   });
+}
+
+/** Open main's long-lived NDJSON route over its Unix socket. */
+export function socketUpstreamStream(socketPath: string): UpstreamStream {
+  return (route, onMessage, onEnd) => {
+    let ended = false;
+    const end = (): void => {
+      if (ended) return;
+      ended = true;
+      onEnd();
+    };
+    const req = http.request({ socketPath, path: route, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': 2 } }, (res) => {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (c: string) => {
+        buf += c;
+        let i: number;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i);
+          buf = buf.slice(i + 1);
+          if (!line.trim()) continue;
+          try {
+            onMessage(JSON.parse(line));
+          } catch {
+            /* a torn line is dropped, never fatal */
+          }
+        }
+        if (buf.length > 65536) req.destroy(); // a line that never ends is not ours
+      });
+      res.on('end', end);
+      res.on('close', end);
+    });
+    req.on('error', end);
+    req.end('{}');
+    return () => {
+      ended = true;
+      req.destroy();
+    };
+  };
 }
 
 /** POST JSON to main's hooks server over its Unix socket. */

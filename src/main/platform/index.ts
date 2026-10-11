@@ -105,13 +105,26 @@ function current(): OrchestraPlatform {
   return impl;
 }
 
+type BroadcastTap = (channel: string, args: unknown[]) => void;
+const taps = new Set<BroadcastTap>();
+
+/** Observe every push the backend sends its UI (same channel + args), for an in-process consumer that is not the Electron window —
+ *  the Accès mobile feed (#337). Zero cost while nobody listens. A tap must be cheap and must never throw. */
+export function onBroadcast(tap: BroadcastTap): () => void {
+  taps.add(tap);
+  return () => taps.delete(tap);
+}
+
 /** The seam, as a stable importable object — modules call `platform.broadcast`
  *  etc. without caring which implementation the entry point installed. */
 export const platform: OrchestraPlatform = {
   get kind() {
     return current().kind;
   },
-  broadcast: (channel, ...args) => current().broadcast(channel, ...args),
+  broadcast: (channel, ...args) => {
+    current().broadcast(channel, ...args);
+    if (taps.size) for (const t of taps) t(channel, args);
+  },
   broadcastPtyData: (id, data) => current().broadcastPtyData(id, data),
   canBroadcast: () => current().canBroadcast(),
   isFocused: () => current().isFocused(),
