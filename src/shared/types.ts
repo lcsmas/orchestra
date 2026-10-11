@@ -223,7 +223,7 @@ export interface Workspace {
   sdkStartErrors?: Array<{ at: number; message: string }>;
   /** #322 — what the Plafond mémoire did to this member (a command killed / the warning level crossed), persisted so a reopened pane or an app restart still shows the row (`sdkHistory`
    *  interleaves them by `at`). Identity = (unit, seq); capped, newest last. */
-  sdkMemNotices?: Array<{ unit: string; seq: number; at: number; level: 'hard' | 'external' | 'soft'; text: string }>;
+  sdkMemNotices?: Array<{ unit: string; seq: number; at: number; level: 'hard' | 'external' | 'soft'; text: string; row?: MemCapRow }>;
   repoPath: string;
   /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
    * 'orchestrator'`). Purely a sidebar-grouping preference: it files the

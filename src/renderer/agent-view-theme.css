@@ -2512,7 +2512,7 @@ h6.av-md-h {
   font-family: var(--av-mono); font-size: 11px; padding: 0 5px; border-radius: 4px;
   background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
 }
-/* the time keeps the full dim-text token: with the old 0.6 opacity it measured 2.5:1 (review) */
+/* the time keeps the row's full text colour (no opacity): with the old 0.6 opacity it measured 2.5:1 (review) */
 .av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; }
 /* light theme: the small (9.5px) labels need 4.5:1 — the raw tokens measured 4.4 (error) and 3.9 (warn) over the tinted surface, so they go a step darker */
 .av-view[data-agent-theme="light"] .av-notice-memory-cap.is-hard .av-notice-label,

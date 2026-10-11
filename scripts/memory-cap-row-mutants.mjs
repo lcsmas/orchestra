@@ -29,7 +29,6 @@ if (onlyAt >= 0 && (onlyArg === undefined || onlyArg === '' || onlyArg.startsWit
   process.exit(2);
 }
 const only = onlyAt >= 0 ? new Set(onlyArg.split(',')) : null;
-const noRig = true;
 
 const MN = 'src/shared/mem-notice.ts';
 const AE = 'src/shared/agent-events.ts';
@@ -109,18 +108,7 @@ function smokeRed() {
   if (r.status !== 0 && fails.length === 0) fails.push(`smoke:(crashed, exit ${r.status})`);
   return { fails, pass: (out.match(/^\s+ok /gm) ?? []).length, status: r.status };
 }
-function rigRed() { return { red: [], pass: 0, line: '(no rig in this harness)' }; }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
-const strays = () => 0;
-const _unusedStrays = () => {
-  const out = [];
-  for (const n of fs.readdirSync('/proc')) {
-    if (!/^\d+$/.test(n) || Number(n) === process.pid) continue;
-    try { if (fs.readFileSync(`/proc/${n}/cmdline`, 'utf8').includes('e2e-resilient-watchers.mjs')) out.push(Number(n)); } catch { /* gone */ }
-  }
-  return out.length;
-};
-const scratchLeft = () => 0;
 
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
 // a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
@@ -145,9 +133,8 @@ buildCli();
 
 // ── POSITIVE CONTROL: the unmutated tree must be all green (and the CLI fresh), else every "killed" below is vacuous ──
 const base = unitRed();
-const baseRig = rigRed();
 const baseSmoke = smokeRed();
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (pass ${baseRig.pass}, red ${JSON.stringify(baseRig.red)}) | smoke ok ${baseSmoke.pass} fail ${baseSmoke.fails.length} | strays ${strays()} scratch ${scratchLeft()}`);
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | smoke ok ${baseSmoke.pass} fail ${baseSmoke.fails.length}`);
 if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseSmoke.fails.length || baseSmoke.status !== 0) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(2); }
 
 const rows = [];
@@ -172,9 +159,8 @@ for (const m of MUTANTS) {
     if (fs.readFileSync(abs, 'utf8') === original) { rows.push({ id: m.id, verdict: 'NO-OP', detail: 'the mutation changed nothing' }); continue; }
     if (m.cli) buildCli();
     const u = unitRed();
-    const r = rigRed();
     const sm = m.smoke ? smokeRed() : { fails: [] };
-    const red = [...u.names, ...r.red, ...sm.fails];
+    const red = [...u.names, ...sm.fails];
     const hit = m.expect.filter((e) => red.some((n) => n.includes(e)));
     rows.push({ id: m.id, verdict: hit.length > 0 ? 'KILLED' : red.length ? 'KILLED-BUT-NOT-BY-NAMED-ARM' : 'SURVIVED', detail: `named ${JSON.stringify(m.expect)} hit ${JSON.stringify(hit)}; red: ${red.slice(0, 4).join(' | ')}${red.length > 4 ? ` (+${red.length - 4})` : ''}` });
   } finally {
@@ -189,7 +175,6 @@ const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
 const post = unitRed();
 for (const r of rows) console.log(`${r.verdict.padEnd(30)} ${r.id.padEnd(40)} ${r.detail}`);
 const killed = rows.filter((r) => r.verdict === 'KILLED').length;
-const sv = strays(); const sc = scratchLeft();
-console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} · survivors: rig processes=${sv} scratch dirs=${sc}`);
+console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} · nothing else is spawned (node --test + the SSR smoke only)`);
 console.log(`MUTANTS: ${killed}/${rows.length} killed by their NAMED test/arm${rows.length === killed ? '' : ` — NOT ALL: ${rows.filter((r) => r.verdict !== 'KILLED').map((r) => `${r.id}=${r.verdict}`).join(', ')}`}`);
-process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && sv === 0 && sc === 0 ? 0 : 1);
+process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 ? 0 : 1);
