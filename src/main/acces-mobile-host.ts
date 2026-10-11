@@ -11,6 +11,8 @@ import { scoped } from './logger';
 import { orchestraHome } from './platform';
 import { getHookSocketPath } from './hooks-server';
 import {
+  CLOSE_INHERITED_FDS,
+  pickSocketDir,
   accesMobileSocketPath as socketPathIn,
   patchAccesMobileSettings,
   tailscaleServeCommand,
@@ -24,10 +26,6 @@ const log = scoped('acces-mobile');
 
 const MAX_BACKOFF_MS = 30_000;
 
-/** Linux: exec the server through bash after closing every inherited fd above stderr. Electron/Chromium leaves some of its own
- *  sockets without CLOEXEC — the e2e rig caught the server holding main's DevTools LISTEN socket — and the network-facing process
- *  must hold nothing of main's. `$0` is a label; `"$@"` = runtime + script. */
-const CLOSE_INHERITED_FDS = 'shopt -s nullglob; for f in /proc/$$/fd/*; do n=${f##*/}; if [ "$n" -gt 2 ]; then eval "exec $n>&-"; fi; done; exec "$@"';
 const STABLE_UPTIME_MS = 60_000;
 
 export function accesMobileDir(): string {
@@ -40,16 +38,7 @@ export function accesMobileTokenPath(): string {
  *  restarts — the human's one-time `tailscale serve … unix:<path>` points at it. */
 export function accesMobileSocketPath(): string {
   const hash = crypto.createHash('sha256').update(orchestraHome()).digest('hex').slice(0, 12);
-  const rt = process.env.XDG_RUNTIME_DIR;
-  if (rt && path.isAbsolute(rt)) {
-    try {
-      const st = fs.statSync(rt);
-      if (st.isDirectory() && st.uid === process.getuid?.() && (st.mode & 0o077) === 0) return socketPathIn(rt, hash);
-    } catch {
-      /* fall through */
-    }
-  }
-  return socketPathIn(accesMobileDir(), hash);
+  return socketPathIn(pickSocketDir(process.env.XDG_RUNTIME_DIR, fs.statSync, process.getuid?.() ?? -1, accesMobileDir()), hash);
 }
 
 function installedServerPath(): string {

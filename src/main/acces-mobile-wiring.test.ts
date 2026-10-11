@@ -33,7 +33,8 @@ test('the socket route serves the projection (every account, archived dropped)',
 test('main opens no port: the host spawns a process and never listens', () => {
   assert.doesNotMatch(host, /\.listen\(|createServer\(/);
   assert.match(host, /spawn\('\/bin\/bash', \['-c', CLOSE_INHERITED_FDS, 'orchestra-acces-mobile', process\.execPath, script\]/);
-  assert.match(host, /eval "exec \$n>&-"/, 'every inherited fd above stderr is closed before the server runs');
+  assert.match(host, /import \{\n  CLOSE_INHERITED_FDS,/, 'the wrapper is the shared, unit-tested one');
+  assert.match(host, /const viaBash = process\.platform === 'linux' && fs\.existsSync\('\/bin\/bash'\);/, 'the wrapper is used on every Linux host with bash');
 });
 
 test('the network-facing process gets an ALLOWLISTED env, never main\'s', () => {
@@ -56,6 +57,7 @@ test('the server listens on its Unix socket only, created 0600 (umask before bin
 test('a failure of the optional feature never stops main\'s boot', () => {
   assert.match(host, /export function startAccesMobileHost\(\): void \{\n  try \{\n    applyAccesMobile/);
   assert.match(host, /function startChildSafe\(s: AccesMobileSettings\): void \{\n  try \{\n    startChild\(s\);/);
+  assert.match(host, /function startChildSafe[\s\S]*?\} catch \(e\) \{[\s\S]*?scheduleRetry\(msg\);/, 'a thrown start becomes a retry');
   assert.doesNotMatch(host.replace(/function startChildSafe[\s\S]*?\n\}\n/, ''), /[^e]startChild\(desired\)|  startChild\(s\);/, 'every other start goes through startChildSafe');
 });
 

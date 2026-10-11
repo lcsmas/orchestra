@@ -18,7 +18,7 @@ export interface AccesMobileServerOptions {
   upstream: Upstream;
   /** One line per refusal — reason + method + path, never a header value. Rate-limited (see REFUSAL_LOG_BURST). */
   log?: (line: string) => void;
-  /** Clock for the refusal-log window (tests). */
+  /** Monotonic clock (ms) for the refusal-log windows; tests inject one. */
   now?: () => number;
 }
 
@@ -28,23 +28,25 @@ export interface AccesMobileServerOptions {
 export const REFUSAL_LOG_BURST = 20;
 export const REFUSAL_LOG_WINDOW_MS = 60_000;
 
-function rateLimitedLog(log: (l: string) => void, now: () => number): (l: string) => void {
-  let windowStart = now();
-  let count = 0;
-  let suppressed = 0;
-  return (line) => {
+/** One budget PER REASON: a colleague's wrong-identity flood must never hide a bad-token attempt carrying the owner's identity
+ *  (#334 re-review). Clock = monotonic by default, so a wall-clock step back cannot freeze the window. */
+function rateLimitedLog(log: (l: string) => void, now: () => number): (reason: string, line: string) => void {
+  const budgets = new Map<string, { windowStart: number; count: number; suppressed: number }>();
+  return (reason, line) => {
     const t = now();
-    if (t - windowStart >= REFUSAL_LOG_WINDOW_MS) {
-      if (suppressed > 0) log(`refusals: ${suppressed} more suppressed in the last ${Math.round((t - windowStart) / 1000)} s`);
-      windowStart = t;
-      count = 0;
-      suppressed = 0;
+    let b = budgets.get(reason);
+    if (!b) budgets.set(reason, (b = { windowStart: t, count: 0, suppressed: 0 }));
+    if (t - b.windowStart >= REFUSAL_LOG_WINDOW_MS) {
+      if (b.suppressed > 0) log(`refusals: ${b.suppressed} more ${reason} suppressed in the last ${Math.round((t - b.windowStart) / 1000)} s`);
+      b.windowStart = t;
+      b.count = 0;
+      b.suppressed = 0;
     }
-    if (count < REFUSAL_LOG_BURST) {
-      count++;
+    if (b.count < REFUSAL_LOG_BURST) {
+      b.count++;
       log(line);
     } else {
-      suppressed++;
+      b.suppressed++;
     }
   };
 }
@@ -79,14 +81,14 @@ function bearer(req: http.IncomingMessage): string {
 }
 
 export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Server {
-  const log = rateLimitedLog(opts.log ?? (() => {}), opts.now ?? Date.now);
+  const log = rateLimitedLog(opts.log ?? (() => {}), opts.now ?? (() => performance.now()));
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});
     const method = req.method ?? 'GET';
     const pathOnly = (req.url ?? '/').split('?')[0].split('#')[0];
     const refuse = (code: 401 | 403 | 404 | 405, reason: string): void => {
-      log(`refused ${code} ${reason} ${method} ${pathOnly.slice(0, 80)}`);
+      log(reason, `refused ${code} ${reason} ${method} ${pathOnly.slice(0, 80)}`);
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Length': '0' }).end();
     };
 
@@ -128,7 +130,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       opts.upstream('/mobile/workspaces', {}).then(
         (out) => json(200, out),
         (e: unknown) => {
-          log(`upstream /mobile/workspaces failed: ${e instanceof Error ? e.message : String(e)}`);
+          log('upstream', `upstream /mobile/workspaces failed: ${e instanceof Error ? e.message : String(e)}`);
           json(502, { ok: false, error: 'Orchestra unreachable' });
         },
       );

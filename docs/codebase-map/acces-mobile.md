@@ -28,8 +28,8 @@ tracer #334 (list). Pending: pairing/QR/install #336, conversation #337, send #3
   /proc/net/tcp), a real stale socket replaced, token rotation applies at once, exits + unlinks when its pipe closes; a 0755 socket
   dir is refused (control: 0700 starts). Every entry child is SIGKILLed after each test, so a mutant fails instead of hanging.
 - `scripts/acces-mobile-mutants.py` — removes each auth/bind clause in place, requires RED, restores byte-exact; prints CLEAN/DIRTY.
-  18 mutants (auth clauses, socket mode, TCP listener, open dir, exit-with-parent, cached token, rate limit, CSP, token dir chmod,
-  unguarded boot); one documented equivalent (`M6`: the empty-expected guard in `tokenMatches` is shadowed by sha256 inequality).
+  28 mutants (auth clauses, socket mode, TCP listener, open dir, exit-with-parent, cached token, rate limit, CSP, token dir chmod,
+  unguarded boot, non-socket unlink, no/empty fd wrapper, retry catch, dir owner, unlink-by-path, server.close on exit, trusted XDG, shared log budget); one documented equivalent (`M6`: the empty-expected guard in `tokenMatches` is shadowed by sha256 inequality).
   A suite that HANGS under a mutant is reported SURVIVED, never killed.
 - `src/shared/acces-mobile.test.ts` (settings, ordering, accounts), `src/main/acces-mobile-wiring.test.ts` (boot/shutdown order,
   route, no `.listen` in main, env allowlist, token file modes, `build:bundles`).
@@ -56,3 +56,10 @@ tracer #334 (list). Pending: pairing/QR/install #336, conversation #337, send #3
   login set to someone else ⇒ 403, also when forging that login (the forged header never reaches the server); server off ⇒ 502.
 - A Unix-socket target needs `sudo tailscale serve` — an operator alone gets « must be root … to serve a path or Unix socket ».
   Hence the `sudo` in the printed command. Not measured: a real colleague's or a tagged device (no second device).
+
+- Re-review (#334, 2026-10-11): a predecessor exiting LATE deleted its successor's socket (server alive, unreachable, health
+  `listening`). Fix: the entry remembers `ino:ctimeNs` of the socket it bound and unlinks only that; it never calls
+  `server.close()`, because libuv unlinks the bound PATH on close, whatever is there now. Refusal-log budgets are per reason on a
+  monotonic clock (a colleague's flood hid an owner-identity bad token; a wall-clock step back froze the window).
+- Measuring fds: a shell pipeline's own pipes are fds — `ls /proc/$$/fd | sort` reported 3/4 as "inherited" 7/10 runs. The wrapper
+  test lists the target's fds from a fork-free reader and waits for `close`, not `exit`.

@@ -50,10 +50,16 @@ const server = createAccesMobileServer({
   log: (line) => process.stderr.write(`acces-mobile: ${line}\n`),
 });
 server.on('error', (e: NodeJS.ErrnoException) => fail(`listen failed: ${e.code ?? e.message}`));
+/** Inode of the socket WE bound: on exit we unlink the path only if it is still ours. A successor may already have replaced it
+ *  (restart / login change without waiting for us), and deleting ITS socket leaves it alive but unreachable (#334 re-review). For
+ *  the same reason we never call server.close(): libuv unlinks the bound PATH on close, whatever is there now. */
+let bound: string | null = null; // `ino:ctimeNs` — an inode number alone can be reused by the successor's bind
+const identity = (st: fs.BigIntStats): string => `${st.ino}:${st.ctimeNs}`;
 process.umask(0o177);
 server.listen(sockPath, () => {
   try {
     fs.chmodSync(sockPath, 0o600); // belt and braces: umask already made it 0600
+    bound = identity(fs.lstatSync(sockPath, { bigint: true }));
   } catch (e) {
     fail(`chmod failed: ${(e as Error).message}`);
   }
@@ -62,8 +68,7 @@ server.listen(sockPath, () => {
 
 function exit(code: number): never {
   try {
-    server.close();
-    fs.unlinkSync(sockPath);
+    if (bound !== null && identity(fs.lstatSync(sockPath, { bigint: true })) === bound) fs.unlinkSync(sockPath);
   } catch {
     /* already gone */
   }

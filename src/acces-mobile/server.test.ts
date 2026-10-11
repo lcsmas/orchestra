@@ -11,6 +11,7 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { createAccesMobileServer, tokenMatches, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
+import { CLOSE_INHERITED_FDS, pickSocketDir } from '../shared/acces-mobile.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
 const TOKEN = 'tok_' + 'a'.repeat(40);
@@ -232,7 +233,7 @@ test('refusal logging is rate-limited: a flood costs at most REFUSAL_LOG_BURST l
     assert.equal(logs.length, REFUSAL_LOG_BURST, `100 refusals ⇒ ${logs.length} lines`);
     t += REFUSAL_LOG_WINDOW_MS;
     await get(port, '/api/workspaces', { 'Tailscale-User-Login': 'colleague@x' });
-    assert.match(logs[REFUSAL_LOG_BURST], /^refusals: 80 more suppressed/);
+    assert.match(logs[REFUSAL_LOG_BURST], /^refusals: 80 more wrong-identity suppressed/);
     assert.match(logs[REFUSAL_LOG_BURST + 1], /^refused 403 wrong-identity/);
   } finally {
     await new Promise((r) => server.close(() => r(null)));
@@ -389,4 +390,113 @@ test('entry must-FAIL: a socket directory open to others is refused (control: th
   await assert.rejects(bad.ready, /must be owned by this user and mode 0700/);
   assert.equal(await Promise.race([bad.exited, sleepMs(5000).then(() => 'still running')]), 2);
   assert.equal(fs.existsSync(path.join(open, 'am.sock')), false, 'nothing bound in the open dir');
+});
+
+test('entry must-FAIL: a late-exiting predecessor never deletes its successor\'s socket (control: the successor answers)', { timeout: 30_000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acces-mobile-'));
+  fs.chmodSync(dir, 0o700);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenFile = path.join(dir, 'token');
+  fs.writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
+  const mainSock = path.join(dir, 'main.sock');
+  const fakeMain = http.createServer((_q, res) => res.end(JSON.stringify(ROWS)));
+  await new Promise<void>((r) => fakeMain.listen(mainSock, r));
+  t.after(() => fakeMain.close());
+  const env = { ACCES_MOBILE_SOCKET: path.join(dir, 'am.sock'), ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: mainSock };
+  const oldSrv = startEntry(env);
+  await oldSrv.ready;
+  const newSrv = startEntry(env); // replaces the path while the old one is still alive (restart without waiting)
+  await newSrv.ready;
+  assert.equal((await sockGet(env.ACCES_MOBILE_SOCKET, '/api/workspaces', AUTH)).status, 200, 'control: the successor answers');
+  oldSrv.child.stdin.end(); // the predecessor exits LATE
+  assert.equal(await Promise.race([oldSrv.exited, sleepMs(5000).then(() => 'still running')]), 0);
+  assert.ok(fs.existsSync(env.ACCES_MOBILE_SOCKET), 'the successor\'s socket file survives the predecessor\'s exit');
+  assert.equal((await sockGet(env.ACCES_MOBILE_SOCKET, '/api/workspaces', AUTH)).status, 200, 'and still answers');
+  newSrv.child.stdin.end();
+  assert.equal(await Promise.race([newSrv.exited, sleepMs(5000).then(() => 'still running')]), 0);
+  assert.equal(fs.existsSync(env.ACCES_MOBILE_SOCKET), false, 'the last one out removes its own socket');
+});
+
+test('entry must-FAIL: a non-socket at the socket path is refused and left intact; a dir owned by someone else is refused', { timeout: 30_000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acces-mobile-'));
+  fs.chmodSync(dir, 0o700);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenFile = path.join(dir, 'token');
+  fs.writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
+  const base = { ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: path.join(dir, 'main.sock') };
+  const victim = path.join(dir, 'am.sock');
+  fs.writeFileSync(victim, 'precious');
+  const a = startEntry({ ...base, ACCES_MOBILE_SOCKET: victim });
+  await assert.rejects(a.ready, /exists and is not a socket/);
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious', 'never unlinked');
+  // a 0700 directory owned by root: passes the mode clause, so only the OWNER clause can refuse it
+  const rootDir = ['/root', '/etc/nftables', '/boot/grub2', '/etc/grub.d', '/etc/sudoers.d', '/var/lib/private'].find((d) => {
+    try {
+      const st = fs.statSync(d);
+      return st.isDirectory() && st.uid === 0 && (st.mode & 0o077) === 0;
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(rootDir, 'instrument: found a root-owned 0700 directory to aim at');
+  assert.notEqual(process.getuid?.(), 0, 'instrument: not running as root');
+  const b = startEntry({ ...base, ACCES_MOBILE_SOCKET: path.join(rootDir!, 'am.sock') });
+  await assert.rejects(b.ready, /must be owned by this user and mode 0700/);
+});
+
+test('the exec wrapper closes every inherited fd above stderr (control: without it the target inherits them)', async () => {
+  // fds 3 and 4 are inheritable pipes, 5 a TCP LISTEN socket — what a Chromium fd without CLOEXEC looks like to the child.
+  const listener = net.createServer();
+  await new Promise<void>((r) => listener.listen(0, '127.0.0.1', r));
+  const listenFd = (listener as unknown as { _handle: { fd: number } })._handle.fd;
+  assert.ok(listenFd > 2, 'instrument: got the LISTEN socket fd');
+  const run = (args: string[]) =>
+    new Promise<string>((resolve, reject) => {
+      const c = spawn('/bin/bash', args, { stdio: ['ignore', 'pipe', 'inherit', 'pipe', 'pipe', listenFd] });
+      let out = '';
+      c.stdout!.on('data', (d) => (out += d));
+      c.on('close', () => resolve(out)); // 'close', not 'exit': stdout may still be in flight at exit
+      c.on('error', reject);
+    });
+  try {
+    // The target lists its OWN fds with their objects, with no fork and no pipe of its own (a shell pipeline's pipes are fds too —
+    // a first version of this instrument measured them, 7/10 false FAILs).
+    const lister = ['import os', 'out = []', "for n in sorted(os.listdir('/proc/self/fd'), key=int):", "    try: out.append(n + '=' + os.readlink('/proc/self/fd/' + n))", '    except OSError: pass  # the listing\'s own, already-closed dir fd', "print(' '.join(out))"].join('\n');
+    const target = ['-c', 'exec python3 -I -c "$0"', lister];
+    const listenObj = fs.readlinkSync(`/proc/self/fd/${listenFd}`);
+    const above2 = (out: string) => out.trim().split(/\s+/).filter((kv) => Number(kv.split('=')[0]) > 2);
+    const bare = await run(target);
+    const wrapped = await run(['-c', CLOSE_INHERITED_FDS, 'label', '/bin/bash', ...target]);
+    assert.ok(above2(bare).some((kv) => kv.endsWith(listenObj)) && above2(bare).length >= 3, `control: the bare target inherits the listener + 2 pipes (got "${bare}")`);
+    assert.deepEqual(above2(wrapped), [], `wrapped target fds: "${wrapped}"`);
+  } finally {
+    listener.close();
+  }
+});
+
+test('pickSocketDir: the runtime dir only when it is ours and 0700, else our own dir', () => {
+  const st = (uid: number, mode: number, dir = true) => () => ({ isDirectory: () => dir, uid, mode });
+  assert.equal(pickSocketDir('/run/user/1000', st(1000, 0o40700), 1000, '/fb'), '/run/user/1000', 'control');
+  assert.equal(pickSocketDir('/run/user/1000', st(0, 0o40700), 1000, '/fb'), '/fb', 'not ours');
+  assert.equal(pickSocketDir('/run/user/1000', st(1000, 0o40755), 1000, '/fb'), '/fb', 'open to others');
+  assert.equal(pickSocketDir('/run/user/1000', st(1000, 0o100700, false), 1000, '/fb'), '/fb', 'not a dir');
+  assert.equal(pickSocketDir(undefined, st(1000, 0o40700), 1000, '/fb'), '/fb');
+  assert.equal(pickSocketDir('relative', st(1000, 0o40700), 1000, '/fb'), '/fb');
+  assert.equal(pickSocketDir('/gone', () => { throw new Error('ENOENT'); }, 1000, '/fb'), '/fb');
+});
+
+test('refusal budgets are PER REASON: a colleague flood never hides a bad token from the owner\'s identity', async () => {
+  let t = 0;
+  const logs: string[] = [];
+  const server = createAccesMobileServer({ allowedLogin: LOGIN, readToken: () => TOKEN, upstream: async () => ROWS, log: (l) => logs.push(l), now: () => t });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    for (let i = 0; i < 25; i++) await get(port, '/api/workspaces', { 'Tailscale-User-Login': 'colleague@x' });
+    assert.equal(logs.length, REFUSAL_LOG_BURST, 'control: the colleague flood is capped');
+    await get(port, '/api/workspaces', { ...ID, Authorization: `Bearer ${'q'.repeat(40)}` });
+    assert.match(logs.at(-1)!, /^refused 401 bad-token/, 'the owner-identity bad token is still logged');
+  } finally {
+    await new Promise((r) => server.close(() => r(null)));
+  }
 });

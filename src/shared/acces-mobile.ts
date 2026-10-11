@@ -79,6 +79,29 @@ export function tailscaleServeCommand(socketPath: string, servePort: number): st
   return `sudo tailscale serve --bg --https=${servePort} unix:${socketPath}`;
 }
 
+/** Linux: exec the server through `bash -c` after closing every inherited fd above stderr. Electron/Chromium leaves some of its
+ *  own sockets without CLOEXEC — the e2e rig caught the server holding main's DevTools LISTEN socket — and the network-facing
+ *  process must hold nothing of main's. Usage: bash -c CLOSE_INHERITED_FDS <label> <runtime> <script>. */
+export const CLOSE_INHERITED_FDS = 'shopt -s nullglob; for f in /proc/$$/fd/*; do n=${f##*/}; if [ "$n" -gt 2 ]; then eval "exec $n>&-"; fi; done; exec "$@"';
+
+/** The directory for the socket: $XDG_RUNTIME_DIR only when it is a directory OURS and closed to others (0700), else `fallback`
+ *  (our own 0700 dir). A runtime dir we do not own could let its owner swap the socket. */
+export function pickSocketDir(
+  runtimeDir: string | undefined,
+  stat: (p: string) => { isDirectory(): boolean; uid: number; mode: number },
+  uid: number,
+  fallback: string,
+): string {
+  if (!runtimeDir || !runtimeDir.startsWith('/')) return fallback;
+  try {
+    const st = stat(runtimeDir);
+    if (st.isDirectory() && st.uid === uid && (st.mode & 0o077) === 0) return runtimeDir;
+  } catch {
+    /* missing ⇒ fallback */
+  }
+  return fallback;
+}
+
 /** Where the server listens: a stable path (the serve config outlives restarts), keyed on ORCHESTRA_HOME like the hooks socket, in
  *  the per-user 0700 runtime dir. `homeHash` = first 12 hex of sha256(ORCHESTRA_HOME). */
 export function accesMobileSocketPath(runtimeDir: string, homeHash: string): string {
