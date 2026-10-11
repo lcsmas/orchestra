@@ -137,7 +137,7 @@ export function AccesMobileSettings({ onClose }: Props) {
           <div className="field">
             <div className="field-head">
               <span className="field-label">Once, in a terminal</span>
-              <span className="field-hint">Orchestra never changes your Tailscale config. The target is a Unix socket only you can open.</span>
+              <span className="field-hint">Orchestra never changes your Tailscale config. The target is a Unix socket only you (and tailscaled) can open — Tailscale needs sudo for that.</span>
             </div>
             <code className="am-cmd" data-am-serve-cmd>
               {view.serveCommand}

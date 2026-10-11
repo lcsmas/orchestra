@@ -184,7 +184,7 @@ try {
   await waitFor(() => sockConnects(SOCK), 30000, 'the server socket');
   const sst = fs.statSync(SOCK);
   clause('ctl/socket-0600', sst.isSocket() && (sst.mode & 0o777) === 0o600 && (fs.statSync(path.dirname(SOCK)).mode & 0o077) === 0, `${SOCK} mode ${(sst.mode & 0o777).toString(8)}, dir ${(fs.statSync(path.dirname(SOCK)).mode & 0o777).toString(8)}`);
-  clause('ctl/settings-port-ignored', !('port' in view.settings) && view.serveCommand === `tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}`, `settings ${JSON.stringify(view.settings)}; "${view.serveCommand}"`);
+  clause('ctl/settings-port-ignored', !('port' in view.settings) && view.serveCommand === `sudo tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}`, `settings ${JSON.stringify(view.settings)}; "${view.serveCommand}"`);
   const srvEnv = environOf(pids[0]).map((e) => e.split('=')[0]).sort();
   clause('ctl/server-one-process', pids.length === 1, `pids ${pids.join(',')} argv ${cmdlineOf(pids[0]).join(' ')}`);
   clause('ctl/server-env-allowlisted', !srvEnv.includes('SECRET_CANARY_FROM_MAIN') && !srvEnv.includes('HOME') && !srvEnv.includes('CLAUDE_CONFIG_DIR') && srvEnv.includes('ACCES_MOBILE_SOCKET') && !srvEnv.includes('ACCES_MOBILE_PORT'), `server environ keys: ${srvEnv.join(' ')}`);
@@ -253,7 +253,7 @@ try {
   await cdp.clickSel('[data-am-open]');
   await waitFor(() => cdp.eval(`(document.querySelector('[data-am-health]')||{}).dataset?.amHealth === 'listening'`), 15000, 'dialog health listening');
   const D = await cdp.eval(`(() => { const d = document.querySelector('.acces-mobile-settings'); const r = d.getBoundingClientRect(); return { health: d.querySelector('[data-am-health]').textContent, cmd: d.querySelector('[data-am-serve-cmd]').textContent, login: d.querySelector('[data-am-login]').value, inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight }; })()`);
-  clause('settings/dialog', !preDlg && D.inView && /private local socket/.test(D.health) && D.cmd === `tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}` && D.login === LOGIN, `dialog false->true, in viewport ${D.inView}; "${D.health}"; "${D.cmd}"`);
+  clause('settings/dialog', !preDlg && D.inView && /private local socket/.test(D.health) && D.cmd === `sudo tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}` && D.login === LOGIN, `dialog false->true, in viewport ${D.inView}; "${D.health}"; "${D.cmd}"`);
   saveShot('settings-on.png', await cdp.shot());
   const pidOn = serverPids(TOKEN_FILE)[0];
   await cdp.clickSel('[data-am-toggle]');

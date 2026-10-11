@@ -50,5 +50,9 @@ tracer #334 (list). Pending: pairing/QR/install #336, conversation #337, send #3
   must hold nothing of main's has to close them itself (here: the bash exec wrapper).
 - No Host check: with an HTTPS-only serve entry, a DNS-rebinding origin fails TLS (cert is for the ts.net name) and loopback has
   no TCP port to rebind to.
-- Not real-`tailscale serve`-verified yet: that tailscaled (root, `unconfined_service_t` under SELinux enforcing) connects to the
-  0600 socket in /run/user/<uid> is reasoned, not measured.
+- MEASURED 2026-10-11 through the REAL `tailscale serve` (1.98.9, SELinux enforcing, tailscaled root `unconfined_service_t`), built
+  server on a 0600 socket in /run/user/1000: token ⇒ 200 (tailscaled connects; serve sets the owner's login); no / bad / query
+  token ⇒ 401; a forged colleague `Tailscale-User-Login` + token ⇒ 200 (serve overwrote it with the real login); with the allowed
+  login set to someone else ⇒ 403, also when forging that login (the forged header never reaches the server); server off ⇒ 502.
+- A Unix-socket target needs `sudo tailscale serve` — an operator alone gets « must be root … to serve a path or Unix socket ».
+  Hence the `sudo` in the printed command. Not measured: a real colleague's or a tagged device (no second device).

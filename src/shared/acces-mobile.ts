@@ -75,7 +75,8 @@ export type AccesMobileSetResult = { ok: true; view: AccesMobileView } | { ok: f
 /** The command the human runs ONCE by hand — Orchestra never runs `tailscale` itself (ADR 0006). The target is the server's
  *  0600 Unix socket, never a TCP port: any local process can take a free loopback port and harvest the phone's token (#334 review). */
 export function tailscaleServeCommand(socketPath: string, servePort: number): string {
-  return `tailscale serve --bg --https=${servePort} unix:${socketPath}`;
+  // `sudo`: tailscaled refuses a Unix-socket target from a mere operator (« must be root … to serve a path or Unix socket », 1.98.9).
+  return `sudo tailscale serve --bg --https=${servePort} unix:${socketPath}`;
 }
 
 /** Where the server listens: a stable path (the serve config outlives restarts), keyed on ORCHESTRA_HOME like the hooks socket, in

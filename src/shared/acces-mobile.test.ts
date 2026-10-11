@@ -47,7 +47,7 @@ test('settings patch: enabling without a login is refused; invalid values write 
 test('serve command targets the Unix socket, never a TCP port', () => {
   const sock = accesMobileSocketPath('/run/user/1000/', 'abcdef012345');
   assert.equal(sock, '/run/user/1000/orchestra-acces-mobile-abcdef012345.sock');
-  assert.equal(tailscaleServeCommand(sock, 8445), 'tailscale serve --bg --https=8445 unix:/run/user/1000/orchestra-acces-mobile-abcdef012345.sock');
+  assert.equal(tailscaleServeCommand(sock, 8445), 'sudo tailscale serve --bg --https=8445 unix:/run/user/1000/orchestra-acces-mobile-abcdef012345.sock');
 });
 
 test('sameLogin: exact modulo case/space, never empty', () => {
