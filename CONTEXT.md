@@ -238,3 +238,22 @@ event. It starts a turn by itself. Not a réveil: a réveil comes from the
 fleet bus and carries no content; an avis de tâche comes from the CLI and
 reports on one task.
 _Avoid_: notification (blurs it with a réveil), alert
+
+### Accès mobile
+
+**Accès mobile** (mobile access):
+The opt-in surface that lets the human's phone list the workspaces, read their
+conversations and send them a message, from outside the app's window. Off by
+default; reaches only the human (tailnet identity + token).
+_Avoid_: remote (that is the Docker sandbox), mobile app, API
+
+**En attente** (waiting):
+A workspace whose agent is blocked on the human's answer (an AskUserQuestion,
+a needs-input notice) — the yellow dot. Distinct from **non lu**.
+_Avoid_: idle, finished, blocked (a held run is something else)
+
+**Non lu** (unread):
+A workspace whose turn finished while the human was not looking — the bell.
+Looking at its conversation, on the desktop or through the accès mobile,
+clears it and resolves an en attente workspace to idle.
+_Avoid_: waiting (that is en attente), new
