@@ -214,6 +214,9 @@ test('C3 (#323-fu, review m2) capNote: a tracked member whose KEEPER scope reads
   assert.equal(memberViewFrom('ws-a', [old, live]).capNote, 'not-applied', "the LIVE session's scope decides, not the leftover generation's limit");
   assert.equal(memberViewFrom('ws-a', [{ ...old, limitApplied: false }, { ...live, maxBytes: 3072 * MB, limitApplied: true }]).capNote, null, 'and a leftover generation without a limit does not flag the member');
   assert.equal(memberViewFrom('ws-a', []).capNote, null);
+  const noKeeperField = { ...live, keeperPid: undefined } as unknown as ScopeReading; // a reading from a producer that forgot the field: undefined is NOT a keeper
+  assert.equal(memberViewFrom('ws-a', [noKeeperField]).capNote, null);
+  assert.equal(memberViewFrom('ws-a', [{ ...noKeeperField, maxBytes: 6144 * MB, limitApplied: true }]).cap, null, 'nor a cap');
 });
 
 test('C2 (#323) cap is the keeper\'s scope, never an older generation kept alive by Reliquats; a keeper in no scope has no cap; no limit / junk / unreadable meter ⇒ null, never 0', () => {

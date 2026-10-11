@@ -299,7 +299,7 @@ function AgentRowView({
                 <CapBar cap={row.cap} levels={capLevels} />
               </span>
             ) : row.capNote === 'not-applied' ? (
-              <span className="res-cell res-mem-nocap" title={CAP_NOT_APPLIED_TIP} data-res-nocap="">
+              <span className="res-cell res-mem-nocap" title={CAP_NOT_APPLIED_TIP} data-res-nocap="" tabIndex={0} role="note" aria-label={`${formatBytes(row.memBytes)} — ${CAP_NOT_APPLIED_TIP}`}>
                 {formatBytes(row.memBytes)}
               </span>
             ) : (

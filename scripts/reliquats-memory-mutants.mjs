@@ -142,6 +142,7 @@ const MUTANTS = [
   const i = args.indexOf('--only');
   const value = i >= 0 ? args[i + 1] : undefined;
   if (i >= 0 && (value === undefined || value.startsWith('-') || value === '')) { console.error('REFUSING: --only needs a comma-separated list of EXACT mutant ids — NOTHING was run.'); process.exit(2); }
+  if (only && [...only].some((id) => id.trim() === '')) { console.error('REFUSING: --only has an EMPTY id (a stray comma?) — NOTHING was run.'); process.exit(2); }
   const unknown = only ? [...only].filter((id) => !MUTANTS.some((m) => m.id === id)) : [];
   if (unknown.length) {
     console.error(`REFUSING: unknown mutant id(s) ${unknown.join(', ')} — NOTHING was run (ids are exact, e.g. ${MUTANTS[0].id}).`);

@@ -143,13 +143,13 @@ const MUTANTS = [
   // ── follow-up round (#323-fu): m2 « not applied », m5 wording ──
   { id: 'N01_max_read_as_applied', file: 'src/shared/memory-scope.ts', find: "  if (v === 'max') return false;", to: "  if (v === 'max') return true;", expect: ['limitApplied tells'] },
   { id: 'N02_garbage_read_as_not_applied', file: 'src/shared/memory-scope.ts', find: "return /^\\d+$/.test(v) ? true : null;", to: "return /^\\d+$/.test(v) ? true : false;", expect: ['limitApplied tells'] },
-  { id: 'N03_unreadable_limit_read_as_not_applied', file: MS, find: "  } catch {\n    /* unreadable ⇒ unknown */\n  }\n  return {", to: "  } catch {\n    limitApplied = false;\n  }\n  return {", expect: ['limitApplied tells'] },
+  { id: 'N03_unreadable_limit_read_as_not_applied', file: MS, find: "  } catch {\n    /* unreadable ⇒ both unknown */\n  }", to: "  } catch {\n    limitText = 'max';\n  }", expect: ['limitApplied tells'] },
   { id: 'N04_producer_drops_limit_applied', file: PM, find: "peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null };", to: "peakBytes: mem?.peakBytes ?? null, limitApplied: null };", expect: ['P17 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
   { id: 'N05_note_without_an_explicit_max', file: SM, find: "r.limitApplied === false ? 'not-applied' : null", to: "r.limitApplied !== true ? 'not-applied' : null", expect: ['C3 (#323-fu'] },
   { id: 'N06_note_on_an_unreadable_meter', file: SM, find: "return r && finite(r.currentBytes) && r.limitApplied === false", to: "return r && r.limitApplied === false", expect: ['C3 (#323-fu'] },
   { id: 'N07_note_not_carried_to_the_row', file: SR, find: "      capNote: view?.capNote ?? null,\n", to: "", expect: ['G14 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
   { id: 'N08_note_cell_without_the_tooltip', file: RV, find: "title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\"", to: "data-res-nocap=\"\"", expect: ['smoke:#323-fu (m2): a tracked member whose scope has NO limit', '#323-fu m2: the « not applied » note travels'], smoke: true },
-  { id: 'N09_tooltip_claims_a_cause', file: SC, find: "(the Plafond mémoire is off for its run, or the host did not apply it).", to: "because the Plafond mémoire is disabled.", expect: ['smoke:#323-fu (m2): the tooltip does not claim a cause'], smoke: true },
+  { id: 'N09_tooltip_claims_a_cause', file: SC, find: "so nothing stops it at the hard level.'", to: "so nothing stops it at the hard level, because the Plafond mémoire is disabled.'", expect: ['smoke:#323-fu (m2): the tooltip does not claim a cause'], smoke: true },
   { id: 'N10_note_cell_without_the_dotted_cue', file: 'src/renderer/styles.css', find: "cursor: help; text-decoration: underline dotted var(--text-dim);", to: "", expect: ['#323-fu m2: the « not applied » note travels'] },
   { id: 'N11_note_on_the_capped_branch_order', file: RV, find: "{row.cap ? (", to: "{row.capNote === 'not-applied' ? (<span className=\"res-cell res-mem-nocap\" title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\">{formatBytes(row.memBytes)}</span>) : row.cap ? (", expect: ['#323-fu m2: the « not applied » note travels', 'RESOURCES: the snapshot carries the levels NOW'], smoke: true },
   { id: 'N12_window_points_at_the_bus_page', file: WIN, find: "set it in « Fleet bus mechanisms » (the bus button in the header), not here.", to: "set it on the Bus page, not here.", expect: ['#323-fu m5', 'smoke:it says where the switch IS set'], smoke: true },
@@ -162,6 +162,17 @@ const MUTANTS = [
   { id: 'V25_run_dir_never_removed', file: 'scripts/mutant-survivors.mjs', find: "if (left === 0) fs.rmSync(dir, { recursive: true, force: true });", to: "", expect: ['per-run scratch'] },
   { id: 'V26_unrestored_backup_deleted', file: 'scripts/mutant-survivors.mjs', find: "    if (same) fs.rmSync(full, { force: true });\n    else left++;", to: "    fs.rmSync(full, { force: true });", expect: ['settleBackups', 'per-run scratch'] },
   { id: 'V27_empty_token_selects_everything', file: 'scripts/mutant-survivors.mjs', find: "if (!token) throw new Error(", to: "if (false) throw new Error(", expect: ['markedProcesses / strayProcesses: an ORPHAN'] },
+  // ── pre-review round of the follow-up ──
+  { id: 'N13_note_cell_without_aria_label', file: RV, find: " aria-label={`${formatBytes(row.memBytes)} — ${CAP_NOT_APPLIED_TIP}`}", to: "", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
+  { id: 'N14_note_cell_not_focusable', file: RV, find: " tabIndex={0} role=\"note\"", to: " role=\"note\"", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
+  { id: 'N15_dotted_cue_loses_its_hairline', file: 'src/renderer/styles.css', find: " text-decoration-thickness: 1px; text-underline-offset: 3px; }", to: " }", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'N16_dotted_cue_loses_its_dim_colour', file: 'src/renderer/styles.css', find: "text-decoration: underline dotted var(--text-dim);", to: "text-decoration: underline dotted;", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'N17_remote_row_reads_a_local_view', file: SR, find: "const view = remote ? undefined : viewFor(members, key);", to: "const view = viewFor(members, key);", expect: ['G14 (#323-fu'] },
+  { id: 'N18_undefined_keeper_counts_as_the_keeper', file: SM, find: "readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);", to: "readings.find((x) => x.keeperPid !== null);", expect: ['C3 (#323-fu'] },
+  { id: 'N19_applied_flag_dropped_at_the_single_read', file: MS, find: "limitApplied: limitText === null ? null : parseLimitApplied(limitText),", to: "limitApplied: null,", expect: ['limitApplied tells', '#323-fu m2: the « not applied » note travels'] },
+  { id: 'N20_max_bytes_and_applied_read_apart', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: lim('memory.max'),", expect: ['#323-fu m2: the « not applied » note travels'] },
+  { id: 'V28_strays_only_the_marker', file: 'scripts/mutant-survivors.mjs', find: "return [...new Set([...descendantsOf(rootPid, procDir), ...markedProcesses(token, procDir, rootPid)])]", to: "return [...new Set([...markedProcesses(token, procDir, rootPid)])]", expect: ['strayProcesses = marked ∪ descendants'] },
+  { id: 'V29_baseline_helper_removes_the_run_dir', file: 'scripts/mutant-survivors.mjs', find: "export function settleBackups(dir, sourceOf) {", to: "export function settleBackups(dir, sourceOf) {\n  process.nextTick(() => { try { if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir); } catch { /* */ } });", expect: ['the sweep harness measures scratch MID-run'] },
 ];
 
 // `--only` takes EXACT mutant ids: an unknown / missing id used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 (OPS review, #323 m3) — now exit 2, nothing run.
@@ -169,6 +180,7 @@ const MUTANTS = [
   const i = args.indexOf('--only');
   const value = i >= 0 ? args[i + 1] : undefined;
   if (i >= 0 && (value === undefined || value.startsWith('-') || value === '')) { console.error('REFUSING: --only needs a comma-separated list of EXACT mutant ids — NOTHING was run.'); process.exit(2); }
+  if (only && [...only].some((id) => id.trim() === '')) { console.error('REFUSING: --only has an EMPTY id (a stray comma?) — NOTHING was run.'); process.exit(2); }
   const unknown = only ? [...only].filter((id) => !MUTANTS.some((m) => m.id === id)) : [];
   if (unknown.length) {
     console.error(`REFUSING: unknown mutant id(s) ${unknown.join(', ')} — NOTHING was run (ids are exact, e.g. ${MUTANTS[0].id}).`);

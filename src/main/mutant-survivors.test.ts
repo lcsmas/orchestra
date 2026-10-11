@@ -128,3 +128,38 @@ test('per-run scratch: makeRunDir is unique per run; finishRunDir settles ONLY i
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('strayProcesses = marked ∪ descendants: a child that SCRUBS its environment (env -i) carries no marker but is still our descendant — the ancestry half of the union is pinned', async () => {
+  const tok = `scrub-${process.pid}-${Date.now()}`;
+  const child = spawn('env', ['-i', '/bin/sh', '-c', 'sleep 30 & wait'], { env: { ...process.env, [SWEEP_MARK_ENV]: tok }, stdio: 'ignore', detached: true });
+  await sleep(400);
+  try {
+    const stray = strayProcesses(process.pid, tok) as number[];
+    assert.ok(stray.includes(child.pid!), 'the env-scrubbed child is found by ancestry');
+    assert.ok(!(markedProcesses(tok) as number[]).includes(child.pid!), 'precondition: the marker alone is blind to it (env -i dropped it)');
+  } finally {
+    try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* gone */ }
+  }
+  await sleep(300);
+  assert.deepEqual(strayProcesses(process.pid, tok), []);
+});
+
+test('the sweep harness measures scratch MID-run with the settle-only helper and removes the run dir only at the END (the baseline used the end-of-run helper, deleted the dir, and the first mutant crashed with ENOENT)', async () => {
+  const h = fs.readFileSync(path.join(process.cwd(), 'scripts/memcap-settings-mutants.mjs'), 'utf8');
+  assert.match(h, /const scratchLeft = \(\) => settleBackups\(BACKUP, sourceOfBackup\);/);
+  assert.match(h, /const scratchFinish = \(\) => finishRunDir\(BACKUP, sourceOfBackup\);/);
+  assert.match(h, /const sv = strays\(\); const sc = scratchFinish\(\);/, 'the FINAL verdict is the only finish');
+  assert.equal((h.match(/scratchFinish\(\)/g) ?? []).length, 1, 'called exactly once (the final verdict)');
+  // behavioural half: settling an EMPTY run dir leaves it in place (the next mutant writes its backup there)
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'basel-'));
+  try {
+    const dir = makeRunDir(base, 1, 1);
+    assert.equal(settleBackups(dir, () => '/nonexistent'), 0);
+    await new Promise((r) => setImmediate(r)); // a settle that schedules a clean-up would act after this tick
+    assert.equal(fs.existsSync(dir), true, 'the run dir survives a mid-run measurement');
+    assert.equal(finishRunDir(dir, () => '/nonexistent'), 0);
+    assert.equal(fs.existsSync(dir), false, 'and goes at the end');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

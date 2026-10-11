@@ -93,7 +93,9 @@ test('SWAY GATE (OPS review m3): the three viewports are IMPOSED by CDP and the 
 });
 
 test('#323-fu m2: the « not applied » note travels FI-1 limitApplied → ScopeReading → member view capNote → SessionGroup.capNote → the dim tooltip cell (after the capped branch, before the plain one)', () => {
-  assert.ok(/limitApplied = parseLimitApplied\(e\.readFile\(path\.join\(d, 'memory\.max'\)\)\);/.test(codeOf('src/main/memory-scope.ts')), 'FI-1 reads memory.max for the applied/not-applied/unknown tri-state');
+  const fi1 = codeOf('src/main/memory-scope.ts');
+  assert.ok(/limitText = e\.readFile\(path\.join\(d, 'memory\.max'\)\);/.test(fi1), 'FI-1 reads memory.max ONCE …');
+  assert.ok(/maxBytes: limitText === null \? null : parseCgroupLimit\(limitText\),\s*limitApplied: limitText === null \? null : parseLimitApplied\(limitText\),/.test(fi1), '… and that one read feeds BOTH the number and the applied/not-applied/unknown tri-state (a change of the cap\'s cgroup moves them together)');
   assert.ok(/limitApplied: mem\?\.limitApplied \?\? null/.test(codeOf('src/main/member-memory.ts')), 'the producer carries it into the reading');
   const sm = codeOf('src/shared/member-memory.ts');
   assert.ok(/r\.limitApplied === false \? 'not-applied' : null/.test(sm) && /capNote: capNoteOf\(readings\)/.test(sm), 'the view derives the note from the keeper scope, only on an explicit « max »');
@@ -104,7 +106,8 @@ test('#323-fu m2: the « not applied » note travels FI-1 limitApplied → Scope
   const plain = v.indexOf('<span className="res-cell">{formatBytes(row.memBytes)}</span>\n            )}');
   assert.ok(capped > 0 && noted > capped && plain > noted, 'branch order: capped bar, then the note, then today\'s plain cell');
   assert.ok(/title=\{CAP_NOT_APPLIED_TIP\} data-res-nocap=""/.test(v) && /import \{ CAP_NOT_APPLIED_TIP, capSummaryLine \}/.test(v));
-  assert.ok(/\.res-cell\.res-mem-nocap \{[^}]*cursor: help;[^}]*underline dotted/.test(fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8')), 'the dim cue that a tooltip exists');
+  assert.ok(/\.res-cell\.res-mem-nocap \{ cursor: help; text-decoration: underline dotted var\(--text-dim\); text-decoration-thickness: 1px; text-underline-offset: 3px; \}/.test(fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8')), 'the dim cue that a tooltip exists: dotted, DIM colour, hairline, offset — each part pinned');
+  assert.ok(/tabIndex=\{0\} role="note" aria-label=\{`\$\{formatBytes\(row\.memBytes\)\} — \$\{CAP_NOT_APPLIED_TIP\}`\}/.test(v), 'keyboard + assistive tech reach the same explanation (a title alone is mouse-only)');
 });
 
 test('#323-fu m5: the window points at the REAL place of the switch — « Fleet bus mechanisms » (the header bus button) — and never at the read-only Bus page', () => {

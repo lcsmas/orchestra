@@ -360,14 +360,16 @@ test('G14 (#323-fu, review m2) a LIVE session row of a tracked member whose scop
   const capped = memberViewFrom('ws-a', [{ ...rd(2100, keeper), maxBytes: 6144 * MBg, limitApplied: true }]);
   const unknown = memberViewFrom('ws-u', [{ ...rd(300, keeper), maxBytes: null, limitApplied: null }]);
   const left = memberViewFrom('ws-left', [{ ...rd(300, [{ pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }], null), maxBytes: null, limitApplied: false }]);
-  const { rows } = groupSessionsByWorkspace([sess({ ptyId: 'ws-n:sdk', workspaceId: 'ws-n', kind: 'sdk' }), sess({ ptyId: 'ws-a:sdk', workspaceId: 'ws-a', kind: 'sdk' }), sess({ ptyId: 'ws-u:sdk', workspaceId: 'ws-u', kind: 'sdk' }), sess({ ptyId: 'ws-h:sdk', workspaceId: 'ws-h', kind: 'sdk' }), sess({ ptyId: 'ws-r', workspaceId: 'ws-r', remote: true })], null, rep(none, capped, unknown, left));
+  const remoteView = memberViewFrom('ws-r', [{ ...rd(300, keeper), maxBytes: null, limitApplied: false }]); // a view EXISTS for the sandbox row (a stale local scope of the same id): the row must still ignore it
+  const { rows } = groupSessionsByWorkspace([sess({ ptyId: 'ws-n:sdk', workspaceId: 'ws-n', kind: 'sdk' }), sess({ ptyId: 'ws-a:sdk', workspaceId: 'ws-a', kind: 'sdk' }), sess({ ptyId: 'ws-u:sdk', workspaceId: 'ws-u', kind: 'sdk' }), sess({ ptyId: 'ws-h:sdk', workspaceId: 'ws-h', kind: 'sdk' }), sess({ ptyId: 'ws-r', workspaceId: 'ws-r', remote: true })], null, rep(none, capped, unknown, left, remoteView));
   const by = Object.fromEntries(rows.map((r) => [r.key, r]));
   assert.equal(by['ws-n'].capNote, 'not-applied');
   assert.equal(by['ws-n'].cap, null);
   assert.equal(by['ws-a'].capNote, null, 'a capped member has the bar instead');
   assert.equal(by['ws-u'].capNote, null, 'an unknown limit is not claimed as « not applied »');
-  assert.ok(!by['ws-h'].capNote, 'a member the scopes do not track (a human session) is untouched');
-  assert.ok(!by['ws-r'].capNote, 'a sandbox row never reads a local scope');
+  assert.ok(!by['ws-h'].capNote, 'a session the scopes do not track (no view at all) carries no note');
+  assert.ok(!by['ws-r'].capNote, 'a sandbox row never reads a local scope — even when a view for its id exists');
+  assert.ok(!by['ws-r'].cap, 'nor a cap');
   assert.equal(by['ws-left'].scopeOnly, true);
   assert.ok(!by['ws-left'].capNote, 'a leftover scope row is only the Reliquats row');
 });

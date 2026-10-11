@@ -57,10 +57,19 @@ for (const script of SCRIPTS) {
     }
   });
   test(`${name}: \`--only\` takes EXACT ids — an unknown, empty or missing one exits 2 with a sentence, nothing launched (it used to print « MUTANTS: 0/0 killed » and exit 0, review #323 m3)`, () => {
-    for (const args of [['--only', 'M01,M02'], ['--only', 'definitely_not_a_mutant'], ['--only'], ['--only', ''], ['--only', '--check'], ['--check', '--only', 'M01']]) {
+    const cases: Array<[string[], RegExp]> = [
+      [['--only', 'M01,M02'], /REFUSING: unknown mutant id\(s\) M01, M02 — NOTHING was run/],
+      [['--only', 'definitely_not_a_mutant'], /REFUSING: unknown mutant id\(s\) definitely_not_a_mutant/],
+      [['--only'], /REFUSING: --only needs a comma-separated list/],
+      [['--only', ''], /REFUSING: --only needs a comma-separated list/],
+      [['--only', '--check'], /REFUSING: --only needs a comma-separated list/],
+      [['--check', '--only', 'M01'], /REFUSING: unknown mutant id\(s\) M01/],
+      [['--only', ','], /REFUSING: --only has an EMPTY id/],
+    ];
+    for (const [args, msg] of cases) {
       const r = run(script, args);
       assert.equal(r.status, 2, JSON.stringify(args));
-      assert.match(r.stderr, /REFUSING: (unknown mutant id|--only needs)/, JSON.stringify(args));
+      assert.match(r.stderr, msg, JSON.stringify(args));
       assert.doesNotMatch(r.stdout, /MUTANTS: 0\/0/, JSON.stringify(args));
       assert.deepEqual(r.calls, [], JSON.stringify(args));
       assert.equal(r.scratch, false, JSON.stringify(args));
