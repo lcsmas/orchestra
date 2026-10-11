@@ -10,7 +10,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { SWEEP_MARK_ENV, finishRunDir, makeRunDir, strayProcesses } from './mutant-survivors.mjs';
+import { SWEEP_MARK_ENV, finishRunDir, makeRunDir, settleBackups, strayProcesses } from './mutant-survivors.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -196,7 +196,9 @@ function rigRed() { return { red: [], pass: 0, line: '(no rig in this harness)' 
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 // MEASURED (gate c/6112245304: these used to return the constant 0): everything of THIS run still alive (marker + descendants, review m1) and THIS run's own backups not proven restored (identical ones cleaned, the rest counted; per-run dir, review m2)
 const strays = () => strayProcesses(process.pid, RUN_TOKEN).length;
-const scratchLeft = () => finishRunDir(BACKUP, (id) => path.join(REPO, MUTANTS.find((m) => m.id === id)?.file ?? '/nonexistent')); // per RUN: another run's backups are never read, counted or deleted
+const sourceOfBackup = (id) => path.join(REPO, MUTANTS.find((m) => m.id === id)?.file ?? '/nonexistent');
+const scratchLeft = () => settleBackups(BACKUP, sourceOfBackup); // mid-run (the baseline reads it): settles, NEVER removes the run dir — the next mutant still writes there
+const scratchFinish = () => finishRunDir(BACKUP, sourceOfBackup); // END of run only; per RUN: another run's backups are never read, counted or deleted
 
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
 // a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
@@ -265,7 +267,7 @@ const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
 const post = unitRed();
 for (const r of rows) console.log(`${r.verdict.padEnd(30)} ${r.id.padEnd(40)} ${r.detail}`);
 const killed = rows.filter((r) => r.verdict === 'KILLED').length;
-const sv = strays(); const sc = scratchLeft();
+const sv = strays(); const sc = scratchFinish();
 console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} · survivors: rig processes=${sv} scratch dirs=${sc}`);
 console.log(`MUTANTS: ${killed}/${rows.length} killed by their NAMED test/arm${rows.length === killed ? '' : ` — NOT ALL: ${rows.filter((r) => r.verdict !== 'KILLED').map((r) => `${r.id}=${r.verdict}`).join(', ')}`}`);
 process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && sv === 0 && sc === 0 ? 0 : 1);
