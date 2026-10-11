@@ -205,7 +205,9 @@ test('D-Q15: the cap-ON packaged run takes BOTH heavy tokens (two distinct refs,
 test('OPS 7283 (D-Q14): a cap-state flip AFTER boot reaches only keepers/<ws>.log — every `memory cap:` line that is not a known benign one is a degradation, the bar goes RED on it even though the boot summary still says ACTIVE', () => {
   const src = fs.readFileSync(new URL('../keeper/index.ts', import.meta.url), 'utf8');
   assert.ok(src.includes('`[keeper ${new Date().toISOString()}] ${msg}\\n`'), 'the keeper log line format changed: capDegradationsFromKeeperLog strips this prefix');
-  for (const benign of ['memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env', 'memory cap: notice file budget for']) assert.ok(src.includes(benign), `the keeper no longer logs "${benign}": the benign list is stale`);
+  for (const benign of ['memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env', 'memory cap: notice file budget for', 'memory cap: the placement tripwire is NOT armed', 'memory cap: the placement tripwire gave up after']) assert.ok(src.includes(benign), `the keeper no longer logs "${benign}": the benign list is stale`);
+  // the degradation texts the keeper REALLY writes (#332-fu): the examples below mirror these, and none of them is benign
+  for (const real of ['memory cap: TRIPWIRE — ', 'memory cap: WARNING — the tool wrapper could not be RUN', 'memory cap: WARNING — the tool wrapper probe TIMED OUT', 'memory cap: the tool wrapper did NOT place a probe command in the work leaf', 'is not delegated or its leaves could not be built', 'memory cap: NOT in scope', 'the swap escape is open']) assert.ok(src.includes(real), `the keeper no longer logs "${real}": the degradation examples are stale`);
   const L = (msg: string) => `[keeper 2026-10-11T10:00:00.000Z] ${msg}\n`;
   const boot = L('memory cap: ACTIVE unit=u.scope memory.max=1073741824 cgroup=/x/u.scope/w');
   // benign lines only → nothing
