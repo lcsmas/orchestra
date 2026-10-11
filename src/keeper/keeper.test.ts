@@ -204,8 +204,8 @@ process.stdin.on('data', (d) => {
   }
 });
 `;
-/** Kept alive forever (until SIGKILL) with NO tie to its keeper — the shape that outlived a test runner killed before `after` ran (ppid 1, wave H). Only the teardown witness uses it. */
-const SIGTERM_IGNORING_CLI_BARE = SIGTERM_IGNORING_BODY + `setInterval(() => {}, 1000);\n`;
+/** NO tie to its keeper — the shape that outlived a test runner killed before `after` ran (ppid 1, wave H). Only the teardown witness uses it; a 30 s lifetime cap keeps the witness itself from leaking if ITS runner dies (pre-review F1). */
+const SIGTERM_IGNORING_CLI_BARE = SIGTERM_IGNORING_BODY + `setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000);\n`;
 /** Same, but it exits once its keeper is gone (reparented ⇒ ppid changes): it still ignores SIGTERM and stdin EOF while the keeper lives, so D1/D5 are unchanged, yet it can never outlive a dead runner. */
 const SIGTERM_IGNORING_CLI = SIGTERM_IGNORING_BODY + `const KEEPER = process.ppid; setInterval(() => { if (process.ppid !== KEEPER) process.exit(0); }, 200);\n`;
 const stdoutContaining =
@@ -393,7 +393,7 @@ test('mid-turn detach does NOT linger-kill (no result line yet)', async () => {
   await c.wait(stdoutContaining('"echo":"in-flight"'));
   const keeperPid = pidOf(ctx);
   c.destroy();
-  await sleep(1200); // way past linger; wedge (default 2h) not reached
+  await sleep(1200); // way past linger; the wedge (60 s here, BOUNDED_KEEPER_ENV) not reached
   assert.ok(alive(keeperPid), 'keeper must stay while the turn is in flight');
   // cleanup
   process.kill(keeperPid, 'SIGTERM');
@@ -501,11 +501,8 @@ test('#202 — a second keeper on a live keeper\'s socket refuses to start and t
     // A failing arm must not leave an open socket / live daemon (node --test would hang on it).
     c.destroy();
     for (const p of pids) {
-      try {
-        process.kill(p, 'SIGKILL');
-      } catch {
-        /* gone */
-      }
+      const rec = keepers.find((k) => k.pid === p); // by identity: the start time recorded at launch (a pid we never recorded is not signalled)
+      if (rec) killIdent(rec);
     }
   }
 });
@@ -539,11 +536,8 @@ test('#202 — a keeper\'s exit unlinks only the files it owns (a takeover survi
     c.destroy();
     c2?.destroy();
     for (const p of pids) {
-      try {
-        process.kill(p, 'SIGKILL');
-      } catch {
-        /* gone */
-      }
+      const rec = keepers.find((k) => k.pid === p); // by identity: the start time recorded at launch (a pid we never recorded is not signalled)
+      if (rec) killIdent(rec);
     }
   }
 });
@@ -611,6 +605,27 @@ test('teardown identity guard: a record whose start time no longer matches is NE
   } finally {
     killIdent(strangerId);
     killIdent(targetId);
+  }
+});
+
+test('teardown reports what it could NOT kill: a respawner keeps carrying the dir ⇒ survivors > 0; once the respawner is gone ⇒ 0 (the survivor count is measured, not assumed)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeper-test-respawn-'));
+  // the respawner does NOT carry `dir` in its argv; every child it forks does (`sh -c 'sleep 1; :' <dir>/x`: $0 stays in the argv — a bare `sleep 1` would be exec'd over it) — `reap` kills a child, a new one is there next round
+  const respawner = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process');setInterval(()=>{spawn('sh',['-c','sleep 1; :',process.env.RESPAWN_DIR+'/x'],{stdio:'ignore'}).unref()},50)`], { detached: true, stdio: 'ignore', env: { ...process.env, RESPAWN_DIR: dir } }); // the dir is in its ENVIRONMENT only: carrying(dir) reads argv, so the respawner itself is not swept
+  respawner.unref();
+  const id = identOf(respawner.pid as number) as Ident;
+  try {
+    await sleep(300);
+    const left = await reap([], [dir]);
+    assert.ok(left.length > 0, 'a respawner defeats the sweep: reap must say so');
+    killIdent(id);
+    await waitUntil(() => identOf(id.pid)?.ticks !== id.ticks, 3000, 'the respawner is gone');
+    const after = await reap([], [dir]);
+    assert.equal(after.length, 0, 'nothing left once the respawner is gone');
+  } finally {
+    killIdent(id);
+    await reap([], [dir]);
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

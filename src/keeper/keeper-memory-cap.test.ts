@@ -24,6 +24,7 @@ process.stdin.on('data', (d) => {
   }
 });
 setInterval(() => {}, 1000);
+setTimeout(() => process.exit(0), 120000); // a runner that dies mid-test must not leave this CLI forever (pre-review F1)
 `;
 
 before(() => {

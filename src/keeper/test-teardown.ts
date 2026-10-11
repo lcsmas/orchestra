@@ -31,6 +31,7 @@ export function killIdent(id: Ident): boolean {
 
 /** Live processes whose argv carries `dir` (every test process embeds its own scratch dir). `orEnv` also reads /proc/<pid>/environ (a CLI whose argv does not name the dir). The caller's own pid is excluded. */
 export function carrying(dir: string, orEnv = false): Carrier[] {
+  if (dir.length < 12) throw new Error(`refusing to sweep for a short/empty dir ${JSON.stringify(dir)} (it would match unrelated processes)`);
   const out: Carrier[] = [];
   for (const name of fs.readdirSync('/proc')) {
     const pid = Number(name);

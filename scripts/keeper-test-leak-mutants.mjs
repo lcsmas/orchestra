@@ -28,6 +28,7 @@ const MUTANTS = [
   { id: 'reap-no-group-step', clause: 'the keeper\'s process group is killed first', file: TD, find: '  for (const l of leaders) for (const m of groupOf(l)) killIdent(m);\n', replace: '', arm: { test: KT, pattern: 'identity guard', expect: 'identity guard' } },
   { id: 'reap-no-carrier-sweep', clause: 'then anything still carrying a scratch dir', file: TD, find: '    for (const s of left) killIdent(s);\n', replace: '', arm: { test: KT, pattern: 'teardown witness', expect: 'teardown witness' } },
   { id: 'carrying-ignores-dir', clause: 'carriers are selected by the scratch dir in argv', file: TD, find: 'const hit = cmd?.includes(dir) ||', replace: 'const hit = false ||', arm: { test: KT, pattern: 'teardown witness', expect: 'teardown witness' } },
+  { id: 'reap-returns-empty', clause: 'reap returns the MEASURED survivors (a respawner can defeat the sweep and reap must say so)', file: TD, find: '  return dirs.flatMap((d) => carrying(d, orEnv));\n}', replace: '  return [];\n}', arm: { test: KT, pattern: 'could NOT kill', expect: 'could NOT kill' } },
   { id: 'after-no-reap', clause: 'the after hook reaps (the net for a test that fails mid-way)', file: KT, find: '  const left = await reap(keepers, ctxs.map((c) => c.dir));\n', replace: '  const left: Awaited<ReturnType<typeof reap>> = [];\n', arm: { census: KT, pattern: 'after-hook canary' } },
   { id: 'keeper-not-recorded', clause: 'every keeper launched is recorded with its identity', file: KT, find: '  if (id) keepers.push(id);', replace: '', arm: { test: KT, expect: 'suite leaves 0 survivors' } },
   { id: 'bounded-env-dropped', clause: 'a keeper whose runner died ends itself within ~1 min', file: KT, find: "const BOUNDED_KEEPER_ENV = { ORCHESTRA_KEEPER_LINGER_MS: '60000', ORCHESTRA_KEEPER_WEDGE_MS: '60000', ORCHESTRA_KEEPER_TICK_MS: '2000' };", replace: 'const BOUNDED_KEEPER_ENV = {};', arm: { rig: true } },
@@ -43,7 +44,8 @@ for (let i = 0; i < argv.length; i++) {
   else { console.error(`unknown option ${argv[i]} (fail closed)`); process.exit(2); }
 }
 const todo = only ? MUTANTS.filter((m) => only.includes(m.id)) : MUTANTS;
-if (only && todo.length === 0) { console.error(`--only matched 0 mutants (exact ids): ${MUTANTS.map((m) => m.id).join(' ')}`); process.exit(2); }
+const unknownIds = only ? only.filter((id) => !MUTANTS.some((m) => m.id === id)) : [];
+if (only && (todo.length === 0 || unknownIds.length)) { console.error(`--only names no mutant: ${unknownIds.join(',') || '(empty list)'} — NOTHING was run (exact ids): ${MUTANTS.map((m) => m.id).join(' ')}`); process.exit(2); }
 
 const abs = (f) => path.join(REPO, f);
 const count = (hay, needle) => hay.split(needle).length - 1;
@@ -99,8 +101,9 @@ function runArm(arm, canary) {
     const args = ['--test', '--test-reporter=tap', '--experimental-strip-types', ...(arm.pattern ? ['--test-name-pattern', arm.pattern] : []), file];
     const r = spawnSync(process.execPath, args, { cwd: REPO, env, encoding: 'utf8', timeout: 240_000 });
     const red = [...(r.stdout ?? '').matchAll(/^\s*not ok \d+ - (.*)$/gm)].map((x) => x[1]);
+    const canaryRan = /^\s*ok \d+ - after-hook canary/m.test(r.stdout ?? '');
     const leftover = census(scratch).length;
-    return { rc: r.status, red, leftover, survivors: reapAll(scratch), out: (r.stderr ?? '').trim().slice(-200) };
+    return { rc: r.status, red, leftover, canaryRan, survivors: reapAll(scratch), out: (r.stderr ?? '').trim().slice(-200) };
   } finally {
     reapAll(scratch);
     fs.rmSync(scratch, { recursive: true, force: true });
@@ -109,7 +112,7 @@ function runArm(arm, canary) {
 
 function killed(m, res) {
   if (m.arm.rig) return res.red.includes('BOUNDED');
-  if (m.arm.census) return res.leftover > 0 && res.red.length === 0;
+  if (m.arm.census) return res.leftover > 0 && res.red.length === 0 && res.rc === 0 && res.canaryRan; // a timeout / crash that leaves processes is NOT a kill: the run must exit 0 with the canary test having run
   return res.red.some((t) => t.includes(m.arm.expect)); // an assertion of THE named test — a crash or a syntax error names nothing
 }
 
@@ -139,12 +142,15 @@ if (selftest) {
   const base = runArm({ test: KT }, true);
   const baseOk = base.rc === 0 && base.red.length === 0 && base.leftover === 0 && base.survivors === 0;
   console.log(`baseline keeper.test.ts (canary on): rc=${base.rc} not-ok=${base.red.length} leftover=${base.leftover} SURVIVORS=${base.survivors} => ${baseOk ? 'GREEN' : 'RED'}`);
+  const baseRig = runArm({ rig: true }, false);
+  const baseRigOk = !baseRig.red.length && baseRig.rc === 0 && baseRig.survivors === 0;
+  console.log(`baseline rig arm (bounded-wait 100 s, unmutated): rc=${baseRig.rc} BOUNDED-red=${baseRig.red.length} SURVIVORS=${baseRig.survivors} => ${baseRigOk ? 'GREEN' : 'RED'}`);
   const noop = { id: 'noop', clause: 'no-op control', file: TD, find: 'export function identOf', replace: 'export function identOf', arm: { test: KT, pattern: 'identity guard', expect: 'identity guard' } };
   console.log('== no-op mutant must SURVIVE'); const before = bad; sweep([noop]);
   const noopSurvived = bad === before + 1;
   bad = before;
-  console.log(`CONTROLS ${baseOk && noopSurvived ? 'OK' : 'FAILED'}`);
-  process.exit(baseOk && noopSurvived ? 0 : 1);
+  console.log(`CONTROLS ${baseOk && baseRigOk && noopSurvived ? 'OK' : 'FAILED'}`);
+  process.exit(baseOk && baseRigOk && noopSurvived ? 0 : 1);
 }
 sweep(todo);
 console.log(`MUTANTS: ${todo.length - bad}/${todo.length} killed (rc ${bad ? 1 : 0})`);

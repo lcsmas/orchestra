@@ -4,6 +4,7 @@
 //   node scripts/keeper-test-leak-rig.mjs --selftest                   positive control (a planted orphan must be counted, then reaped): light
 //   node scripts/keeper-test-leak-rig.mjs --check                      print the plan, run NOTHING
 //   node scripts/keeper-test-leak-rig.mjs [--file F] [--trigger N] [--bounded-wait S] [--scratch DIR] [--prefix P]     one run: STARTS REAL KEEPERS — heavy-rig token (ledger §Roster) first
+//   (keeper-memory-cap.test.ts: --file src/keeper/keeper-memory-cap.test.ts --prefix kmc-; TMPDIR and HOME are both the scratch dir)
 //
 // Exit 0 iff FOREVER-ORPHANS=0 AND (no --bounded-wait OR 0 carriers after it) AND SURVIVORS=0 (every leftover is killed by identity: pid + /proc start time re-read before the signal).
 
@@ -47,11 +48,11 @@ function census(dir) {
     const cmd = rd(`/proc/${n}/cmdline`);
     if (!cmd || !cmd.includes(dir)) continue;
     const s = stat(n);
-    if (s && s.state !== 'Z') out.push({ pid: Number(n), ppid: s.ppid, ticks: s.ticks, cmd: cmd.replace(/\0/g, ' ').slice(0, 140) });
+    if (s && s.state !== 'Z') out.push({ pid: Number(n), ppid: s.ppid, ticks: s.ticks, keeper: /keeper\.js/.test(cmd), cmd: cmd.replace(/\0/g, ' ').slice(0, 140) }); // `keeper` is read from the FULL argv (a long node path would push it past the display cut)
   }
   return out;
 }
-const isKeeper = (c) => /keeper\.js/.test(c.cmd);
+const isKeeper = (c) => c.keeper;
 function orphans(list) {
   const keeperPids = new Set(list.filter(isKeeper).map((c) => c.pid));
   return list.filter((c) => !isKeeper(c) && !keeperPids.has(c.ppid));
@@ -79,12 +80,13 @@ async function main() {
       console.log(`RIG selftest => ${verdictOk ? 'PASS' : 'FAIL'}`);
       return;
     }
+    fs.mkdirSync(path.join(scratch, '.cache')); // HOME is private too: keeper-memory-cap.test.ts makes its dirs under $HOME/.cache/kmc-* — a census of TMPDIR alone would see nothing (pre-review F5)
     const logFd = fs.openSync(path.join(scratch, 'runner.log'), 'w');
-    const runner = spawn(process.execPath, ['--test', '--experimental-strip-types', opts.file], { cwd: REPO, env: { ...process.env, TMPDIR: scratch }, detached: true, stdio: ['ignore', logFd, logFd] });
+    const runner = spawn(process.execPath, ['--test', '--experimental-strip-types', opts.file], { cwd: REPO, env: { ...process.env, TMPDIR: scratch, HOME: scratch }, detached: true, stdio: ['ignore', logFd, logFd] });
     const runnerTicks = stat(runner.pid)?.ticks;
     let dirs = 0;
     for (const t0 = Date.now(); Date.now() - t0 < 90_000; await sleep(20)) {
-      dirs = fs.readdirSync(scratch).filter((d) => d.startsWith(opts.prefix)).length;
+      dirs = [scratch, path.join(scratch, '.cache')].flatMap((d) => fs.readdirSync(d)).filter((d) => d.startsWith(opts.prefix)).length;
       if (dirs >= opts.trigger || stat(runner.pid)?.ticks !== runnerTicks) break;
     }
     await sleep(400);
