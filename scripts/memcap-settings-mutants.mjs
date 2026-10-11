@@ -143,7 +143,7 @@ const MUTANTS = [
   // ── follow-up round (#323-fu): m2 « not applied », m5 wording ──
   { id: 'N01_max_read_as_applied', file: 'src/shared/memory-scope.ts', find: "  if (v === 'max') return false;", to: "  if (v === 'max') return true;", expect: ['limitApplied tells'] },
   { id: 'N02_garbage_read_as_not_applied', file: 'src/shared/memory-scope.ts', find: "return /^\\d+$/.test(v) ? true : null;", to: "return /^\\d+$/.test(v) ? true : false;", expect: ['limitApplied tells'] },
-  { id: 'N03_unreadable_limit_read_as_not_applied', file: MS, find: "    limitFileAbsent = (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "    limitFileAbsent = true;", expect: ['limitApplied tells'] },
+  { id: 'N03_unreadable_limit_read_as_not_applied', file: MS, find: "    limitFileAbsent = (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "    limitFileAbsent = true;", expect: ['#323-fu × #332 (3/3)', 'P18 (#323-fu × #332)'] },
   { id: 'N04_producer_drops_limit_applied', file: PM, find: "peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null };", to: "peakBytes: mem?.peakBytes ?? null, limitApplied: null };", expect: ['P17 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
   { id: 'N05_note_without_an_explicit_max', file: SM, find: "r.limitApplied === false ? 'not-applied' : null", to: "r.limitApplied !== true ? 'not-applied' : null", expect: ['C3 (#323-fu'] },
   { id: 'N06_note_on_an_unreadable_meter', file: SM, find: "return r && finite(r.currentBytes) && r.limitApplied === false", to: "return r && r.limitApplied === false", expect: ['C3 (#323-fu'] },
