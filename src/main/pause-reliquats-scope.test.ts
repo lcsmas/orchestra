@@ -208,6 +208,30 @@ test('#332 fu (review m1): with the two leaves, an UNREADABLE leaf is `unreadabl
   assert.deepEqual(d.list(ref), control, 'unchanged env: still the same listing');
 });
 
+test('#332 fu (review m1) REAL fs error, no injected reader: a leaf whose cgroup.procs cannot be READ (EISDIR) is `unreadable` — the Reliquat sitting in the other leaf is never reported as « nobody there »', async (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m4', 'def456');
+  const kDir = path.join(s.dir, 'k');
+  const wDir = path.join(s.dir, 'w');
+  fs.mkdirSync(kDir);
+  fs.mkdirSync(wDir);
+  fs.writeFileSync(path.join(kDir, 'cgroup.procs'), '8301\n');
+  tr.proc(8301, 1, 'python3', 830, kDir); // a Reliquat in the keeper leaf
+  fs.writeFileSync(path.join(wDir, 'cgroup.procs'), '');
+  const d = memberScopeDeps('m4', tr.env);
+  const ref = d.scopes()[0];
+  assert.ok(Array.isArray(d.list(ref)), 'control: both leaves readable ⇒ a listing');
+  fs.rmSync(path.join(wDir, 'cgroup.procs'));
+  fs.mkdirSync(path.join(wDir, 'cgroup.procs')); // readFileSync → EISDIR from the real fs
+  assert.equal(d.list(ref), 'unreadable');
+  const signals: number[] = [];
+  const kill = { supported: true, selfPid: 10, now: () => 0, sleep: async () => {}, readTable: () => [], read: () => 'gone' as const, readClaudePid: () => null, readCwd: () => null, startMs: (x: number) => x, signal: (pid: number) => { signals.push(pid); return true; } } as never;
+  const rep = await killReliquats('m4', d, kill, { keeperPid: null, cliPid: null });
+  assert.ok(rep, 'NOT null');
+  assert.match(rep!.unknown ?? '', /unreadable|could not be listed/, JSON.stringify(rep));
+  assert.deepEqual(signals, [], 'nothing signalled on an unknown');
+});
+
 test('#332 fu (review m1): the killer treats an unreadable LEAF as UNKNOWN — nothing signalled, the report says why (the #325 F2 class)', async (t) => {
   const tr = tree(t);
   const s = tr.scope('m3', 'abc123');
