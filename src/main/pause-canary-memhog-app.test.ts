@@ -269,3 +269,11 @@ test('wiring pins (review 4): the packaged driver reads MemAvailable every 250 m
   assert.match(drive, /if \(floorGuard\) clearInterval\(floorGuard\);/);
   assert.match(run, /const placement = ownPlacementWhy\(\);/);
 });
+
+test('the floor override exists ONLY for the labelled rehearsal (a positive control that makes the guard visibly trip); the Q11 run keeps the 2 GB floor', () => {
+  const drive = fs.readFileSync(new URL('../../scripts/pause-canary/drive.mjs', import.meta.url), 'utf8');
+  const run = fs.readFileSync(new URL('../../scripts/pause-canary/run.mjs', import.meta.url), 'utf8');
+  assert.match(drive, /const FLOOR_TEST = REHEARSAL \? Number\(opt\('floor-gb', NaN\)\) : NaN;/);
+  assert.match(drive, /const RUN_FLOOR_GB = Number\.isFinite\(FLOOR_TEST\) \? FLOOR_TEST : MH_APP \? 2 : MIN_AVAIL_GB;/);
+  assert.match(run, /\.\.\.\(REHEARSAL \? \['floor-gb'\] : \[\]\)/);
+});

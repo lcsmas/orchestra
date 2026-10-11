@@ -198,7 +198,7 @@ async function drive({ appBin, appTree, exercise, cycles, members, label, pause,
 const gitInfo = () => ({ head: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD'), originMaster: sh('git', ['ls-remote', 'origin', 'refs/heads/master']).stdout.slice(0, 40) });
 
 /** the `memhog-app` options handed to the drive (the waiver and the cap travel with the exercise) */
-const memhogExtra = (arm = {}) => [...(REHEARSAL ? ['--rehearsal'] : []), '--memhog-switch', arm.memhogSwitch ?? opt('memhog-switch', 'on'), ...['cap-gb', 'soft-gb', 'hog-mb', 'waiver'].flatMap((k) => (opt(k, null) !== null ? [`--${k}`, opt(k)] : []))];
+const memhogExtra = (arm = {}) => [...(REHEARSAL ? ['--rehearsal'] : []), '--memhog-switch', arm.memhogSwitch ?? opt('memhog-switch', 'on'), ...['cap-gb', 'soft-gb', 'hog-mb', 'waiver', ...(REHEARSAL ? ['floor-gb'] : [])].flatMap((k) => (opt(k, null) !== null ? [`--${k}`, opt(k)] : []))];
 function writeReport(kind, body) { fs.mkdirSync(OUT, { recursive: true }); fs.writeFileSync(path.join(OUT, `${kind}.md`), body); say(`\nreport: ${path.join(OUT, `${kind}.md`)}`); }
 
 const claudeVersion = sh(claudeBin, ['--version']).stdout.trim();

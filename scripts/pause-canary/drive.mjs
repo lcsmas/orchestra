@@ -34,7 +34,9 @@ const MH_ON_APP = MH_APP && opt('memhog-switch', 'on') === 'on';
 // the 6 GB bar is a START bar (9 GB here) and the run keeps a lower FLOOR that only protects the host; the rig-grew-too-much « blowup » rule is off for it (the hogs live in the rig).
 const REHEARSAL = argv.includes('--rehearsal');   // OPS 7313: 1-member cap-ON plumbing try, one token, start 9 GB — labelled DRY by the runner
 const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP && !REHEARSAL ? CAP_ON_START_GB : MH_APP ? 9 : 0);   // D-Q15: the cap-ON run starts from 11 GB; the cap-OFF control (hogs no scope bounds) from 9
-const RUN_FLOOR_GB = MH_APP ? 2 : MIN_AVAIL_GB;
+// --floor-gb exists ONLY for the labelled rehearsal: it lets the floor guard be SEEN tripping (a positive control) — the Q11 run keeps the 2 GB floor
+const FLOOR_TEST = REHEARSAL ? Number(opt('floor-gb', NaN)) : NaN;
+const RUN_FLOOR_GB = Number.isFinite(FLOOR_TEST) ? FLOOR_TEST : MH_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
 const CYCLE_RESULTS_FILE = opt('out', null);
