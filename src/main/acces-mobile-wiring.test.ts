@@ -79,7 +79,10 @@ test('#337: the conversation, seen and stream routes are wired to the feed and t
   const handlers = read('src/main/api-handlers.ts');
   assert.match(handlers, /markSeen: async \(id\) => markWorkspaceSeen\(id\)/, 'the desktop uses the same mark-seen');
   const feed = read('src/main/acces-mobile-feed.ts');
-  assert.match(feed, /createMobileFeed\(\{ loadHistory: sdkHistory, onBroadcast,/, 'history = the account-aware sdkHistory; live = the platform tap');
+  assert.match(feed, /createMobileFeed\(\{\n\s*loadHistory: sdkHistory,\n\s*onBroadcast,\n\s*liveAsks: sdkLiveAnswerables,\n\s*isRunning: \(id\) => store\.getWorkspace\(id\)\?\.status === 'running',/, 'history = sdkHistory; live = the tap; asks = the parked answerables; running = the store');
+  const conv = read('src/acces-mobile/conversation.ts');
+  assert.ok(conv.includes('textContent'), 'control: the phone JS renders with textContent');
+  assert.doesNotMatch(conv, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/, 'agent text never becomes markup');
   const platform = read('src/main/platform/index.ts');
   assert.match(platform, /current\(\)\.broadcast\(channel, \.\.\.args\);\n\s*if \(taps\.size\) \{\n\s*for \(const t of taps\) \{\n\s*try \{\n\s*t\(channel, args\);\n\s*\} catch \{/, 'every UI push reaches the taps, AFTER the window, and a throwing tap is contained');
   assert.match(entry, /upstreamStream: socketUpstreamStream\(sock\)/);
@@ -93,5 +96,9 @@ test('#338: a phone message takes the HUMAN composer path, never the agent-messa
   const code = block.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
   assert.doesNotMatch(code, /dispatchMessageRequest|decideMessageChannel|sdkDeliver/, 'not the agent-to-agent path');
   assert.match(block, /ws\.archived/, 'archived workspaces are refused');
-  assert.match(hooks, /route === '\/mobile\/send' \? MOBILE_SEND_MAX_BODY/, 'the body cap fits a message');
+  assert.match(hooks, /route === '\/mobile\/send' \|\| route === '\/mobile\/answer' \? MOBILE_SEND_MAX_BODY/, 'the body cap fits a message (and an answer)');
+});
+
+test('#337 review: archived workspaces are refused by the conversation route', () => {
+  assert.match(hooks, /route === '\/mobile\/conversation'\) \{[\s\S]{0,300}?store\.getWorkspace\(msg\.id\)\?\.archived\) send\(200, \{ ok: false/);
 });

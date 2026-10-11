@@ -1531,6 +1531,14 @@ export interface AgentUserDialogRequestEvent extends AgentEventBase {
 /** An MCP server requested user input (SDK `onElicitation`). `form` mode wants
  *  values matching {@link requestedSchema}; `url` mode wants the user to visit
  *  {@link url} (browser-based auth) and then confirm. */
+/** #339: main resolved a parked answerable (from ANY surface — the desktop dialog or the Accès mobile phone). Folded by every
+ *  surface so the card disappears everywhere at once; before it existed only the answering renderer cleared its own copy. */
+export interface AgentAnswerableResolvedEvent extends AgentEventBase {
+  type: 'answerable-resolved';
+  kind: 'permission' | 'user-dialog' | 'elicitation';
+  requestId: string;
+}
+
 export interface AgentElicitationRequestEvent extends AgentEventBase {
   type: 'elicitation-request';
   /** The manager's key for the parked `onElicitation` call — echo it back. */
@@ -1971,6 +1979,7 @@ export type AgentEvent =
   | AgentPermissionRequestEvent
   | AgentUserDialogRequestEvent
   | AgentElicitationRequestEvent
+  | AgentAnswerableResolvedEvent
   | AgentUserMessageEvent
   | AgentQueueUpdateEvent
   | AgentLocalCommandEvent

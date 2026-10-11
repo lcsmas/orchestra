@@ -13,6 +13,7 @@ export const CONVERSATION_JS = `(function () {
   var handlers = [];
   var backoff = 1000;
   var ctrl = null;
+  var everConnected = false;
   function onStream(fn) { handlers.push(fn); }
   function connect() {
     if (!token()) return;
@@ -20,7 +21,7 @@ export const CONVERSATION_JS = `(function () {
     var c = new AbortController(); ctrl = c;
     fetch('/api/stream', { headers: auth(), cache: 'no-store', signal: c.signal }).then(function (r) {
       if (!r.ok || !r.body) throw new Error('status ' + r.status);
-      backoff = 1000;
+      var healthy = false;
       var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
       function pump() {
         return reader.read().then(function (x) {
@@ -29,6 +30,13 @@ export const CONVERSATION_JS = `(function () {
           var i;
           while ((i = buf.indexOf('\\n\\n')) >= 0) {
             var block = buf.slice(0, i); buf = buf.slice(i + 2);
+            // Only a REAL message proves main is behind the stream (the server answers 200 even when main is gone): reset the
+            // backoff then, and catch up on whatever was announced while we were away (#337 review m1/m2).
+            if (!healthy && block !== ': open') {
+              healthy = true; backoff = 1000;
+              if (everConnected) handlers.forEach(function (h) { h({ t: 'resume' }); });
+              everConnected = true;
+            }
             if (block.indexOf('data: ') === 0) {
               try { var m = JSON.parse(block.slice(6)); handlers.forEach(function (h) { h(m); }); } catch (e) {}
             }
@@ -65,13 +73,7 @@ export const CONVERSATION_JS = `(function () {
     c.asks.forEach(function (a) {
       var box = el('div', 'ask'); box.dataset.kind = a.kind;
       if (a.kind === 'askUser') {
-        a.questions.forEach(function (q) {
-          box.appendChild(el('div', 'ask-q', q.question));
-          var opts = el('div', 'ask-opts');
-          q.options.forEach(function (o) { var b = el('button', 'ask-opt', o.label); b.disabled = true; b.title = o.description || ''; opts.appendChild(b); });
-          box.appendChild(opts);
-        });
-        box.appendChild(el('div', 'ask-hint', 'Réponse depuis le téléphone : bientôt. Réponds sur le bureau pour l’instant.'));
+        renderAskUser(box, a);
       } else {
         box.appendChild(el('div', 'ask-q', a.title));
         box.appendChild(el('div', 'ask-hint', 'À traiter sur le bureau.'));
@@ -80,9 +82,62 @@ export const CONVERSATION_JS = `(function () {
     });
     root.querySelector('.conv-running').hidden = !c.running;
     root.dataset.version = String(c.version);
+    lastConv = c;
     if (nearBottom || version < 0) list.scrollTop = list.scrollHeight;
     version = c.version;
   }
+  // #339: answering an AskUserQuestion. The selection survives re-renders (every stream announcement redraws the screen).
+  var picks = {}; // requestId -> question -> { labels: [], other: '' }
+  function renderAskUser(box, a) {
+    var st = picks[a.requestId] || (picks[a.requestId] = {});
+    a.questions.forEach(function (q) {
+      var cur = st[q.question] || (st[q.question] = { labels: [], other: '' });
+      if (q.header) box.appendChild(el('div', 'ask-h', q.header));
+      box.appendChild(el('div', 'ask-q', q.question));
+      var opts = el('div', 'ask-opts');
+      q.options.forEach(function (o) {
+        var b = el('button', 'ask-opt', o.label); b.type = 'button'; b.title = o.description || '';
+        if (cur.labels.indexOf(o.label) >= 0) b.classList.add('picked');
+        b.addEventListener('click', function () {
+          var i = cur.labels.indexOf(o.label);
+          if (q.multiSelect) { if (i >= 0) cur.labels.splice(i, 1); else cur.labels.push(o.label); }
+          else { cur.labels = i >= 0 ? [] : [o.label]; cur.other = ''; }
+          rerenderAsks();
+        });
+        opts.appendChild(b);
+      });
+      box.appendChild(opts);
+      var other = el('input', 'ask-other'); other.placeholder = 'Autre réponse…'; other.value = cur.other; other.maxLength = 2000;
+      other.addEventListener('input', function () { cur.other = other.value; if (!q.multiSelect && other.value.trim()) { cur.labels = []; opts.querySelectorAll('.picked').forEach(function (p) { p.classList.remove('picked'); }); } syncSubmit(); });
+      box.appendChild(other);
+    });
+    var submit = el('button', 'ask-submit', 'Répondre'); submit.type = 'button';
+    var status = el('div', 'ask-status', st.__status || ''); status.setAttribute('role', 'status');
+    function answers() {
+      var out = {}; var complete = true;
+      a.questions.forEach(function (q) {
+        var cur = st[q.question]; var l = cur.labels.slice();
+        if (cur.other.trim()) { if (q.multiSelect) l.push(cur.other.trim()); else l = [cur.other.trim()]; }
+        if (!l.length) complete = false;
+        out[q.question] = l;
+      });
+      return complete ? out : null;
+    }
+    function syncSubmit() { submit.disabled = !answers() || st.__sending === true; }
+    submit.addEventListener('click', function () {
+      var ans = answers(); if (!ans) return;
+      st.__sending = true; syncSubmit(); status.textContent = 'Envoi…';
+      fetch('/api/answer?id=' + encodeURIComponent(current) + '&request=' + encodeURIComponent(a.requestId), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: JSON.stringify({ answers: ans }) })
+        .then(function (r) { return r.ok ? r.json() : { ok: false, error: r.status === 401 ? 'Jeton refusé.' : 'Orchestra injoignable : la réponse n’est peut-être pas partie.' }; })
+        .then(function (res) { st.__status = res && res.ok ? 'Réponse envoyée.' : ((res && res.error) || 'Échec.'); box.dataset.state = res && res.ok ? 'answered' : 'error'; status.textContent = st.__status; fetchConv(); })
+        .catch(function () { st.__status = 'Réseau coupé : la réponse n’est peut-être pas partie.'; status.textContent = st.__status; })
+        .then(function () { st.__sending = false; syncSubmit(); });
+    });
+    syncSubmit();
+    box.appendChild(submit); box.appendChild(status);
+  }
+  var lastConv = null;
+  function rerenderAsks() { if (lastConv) render(lastConv); }
   function fetchConv() {
     if (!current) return;
     if (inflight) { again = true; return; }
@@ -178,6 +233,13 @@ export const CONVERSATION_CSS = `
 .ask-q{font-weight:600;margin-bottom:6px}
 .ask-opts{display:flex;flex-wrap:wrap;gap:6px}
 .ask-opt{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #8886;background:none}
+.ask-opt.picked{background:#3478f6;color:#fff;border-color:#3478f6}
+.ask-h{font-size:12px;text-transform:uppercase;opacity:.6}
+.ask-other{display:block;width:100%;box-sizing:border-box;margin-top:6px;font:inherit;padding:6px;border-radius:8px;border:1px solid #8886}
+.ask-submit{margin-top:8px;font:inherit;padding:8px 14px;border-radius:10px;border:0;background:#e9a400;color:#000}
+.ask-submit:disabled{opacity:.4}
+.ask-status{font-size:13px;margin-top:4px}
+.ask-status:empty{display:none}
 .ask-hint{font-size:12px;opacity:.7;margin-top:6px}
 .conv-compose{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:Canvas;border-top:1px solid #8883;margin-top:auto}
 .conv-input{flex:1;font:inherit;padding:8px;border-radius:10px;border:1px solid #8886;resize:none;min-width:0}

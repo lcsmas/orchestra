@@ -120,7 +120,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
     // GET everywhere; POST only for the state changes (« seen », send). Ids travel in the query string; only send has a body.
-    if (method !== 'GET' && !(method === 'POST' && (pathOnly === '/api/seen' || pathOnly === '/api/send'))) return refuse(405, 'method');
+    if (method !== 'GET' && !(method === 'POST' && (pathOnly === '/api/seen' || pathOnly === '/api/send' || pathOnly === '/api/answer'))) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
     const asset = STATIC[pathOnly];
@@ -165,10 +165,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       const id = wsId();
       return id ? relay('/mobile/seen', { id }) : refuse(400, 'bad-id');
     }
-    if (pathOnly === '/api/send' && method === 'POST') {
-      // #338: the body is read ONLY after identity + token passed. JSON, capped, one string field.
-      const id = wsId();
-      if (!id) return refuse(400, 'bad-id');
+    /** The body is read ONLY after identity + token passed: JSON, capped at MOBILE_SEND_MAX_BODY (a readable 413, then a short drain). */
+    const readJson = (then: (body: Record<string, unknown>) => void): void => {
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return refuse(415, 'not-json');
       let raw = '';
       let tooBig = false;
@@ -191,17 +189,41 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       });
       req.on('end', () => {
         if (tooBig) return;
-        let text: unknown;
+        let body: unknown;
         try {
-          text = (JSON.parse(raw) as { text?: unknown }).text;
+          body = JSON.parse(raw);
         } catch {
           return refuse(400, 'bad-json');
         }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return refuse(400, 'bad-json');
+        then(body as Record<string, unknown>);
+      });
+    };
+    if (pathOnly === '/api/send' && method === 'POST') {
+      // #338: the human's message — the desktop composer's path in main.
+      const id = wsId();
+      if (!id) return refuse(400, 'bad-id');
+      return readJson((body) => {
+        const text = body.text;
         if (typeof text !== 'string' || !text.trim() || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');
         // A cold session start (CLI boot) can take seconds: give main time to say whether the message was taken.
         relay('/mobile/send', { id, text }, 45_000);
       });
-      return;
+    }
+    if (pathOnly === '/api/answer' && method === 'POST') {
+      // #339: answer a parked AskUserQuestion. Shape-checked here, validated against the real question in main.
+      const id = wsId();
+      const requestId = query.get('request');
+      if (!id) return refuse(400, 'bad-id');
+      if (!requestId || !/^[A-Za-z0-9_-]{1,200}$/.test(requestId)) return refuse(400, 'bad-request-id');
+      return readJson((body) => {
+        const answers = body.answers;
+        const okShape =
+          !!answers && typeof answers === 'object' && !Array.isArray(answers) &&
+          Object.values(answers).every((v) => Array.isArray(v) && v.length <= 50 && v.every((l) => typeof l === 'string' && l.length <= 2000));
+        if (!okShape) return refuse(400, 'bad-answers');
+        relay('/mobile/answer', { id, requestId, answers }, 15_000);
+      });
     }
     if (pathOnly === '/api/stream') {
       if (!opts.upstreamStream) return refuse(404, 'not-found');

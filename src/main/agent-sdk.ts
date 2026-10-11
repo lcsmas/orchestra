@@ -112,6 +112,7 @@ import {
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
+import { ASK_USER_QUESTION, buildAskUserQuestionReply, parseAskUserQuestion } from '../shared/ask-user-question';
 // Value import (.ts extension required — see the THINKING_TOOL_LABEL note in
 // activity.ts): the epoch-SECONDS → epoch-MS conversion for a rate-limit
 // notice's `resetsAt`, done in exactly one place on purpose (#74).
@@ -137,6 +138,7 @@ import type {
   AgentPermissionMode,
   AgentModelInfo,
   AgentPermissionReply,
+  AgentAnswerableEvent,
   AgentAnswerableReply,
   AgentElicitationReply,
   AgentUserDialogReply,
@@ -308,6 +310,12 @@ interface Session {
   /** Parked `canUseTool` calls keyed by requestId; the renderer resolves each
    *  via {@link permissionReply}. */
   pending: Map<string, (result: PermissionResult) => void>;
+  /** #339: the ORIGINAL input of each parked AskUserQuestion, so a reply built away from the renderer (the Accès mobile phone)
+   *  uses the same builder on the same input as the desktop card. Cleared with its `pending` entry. */
+  pendingAsks: Map<string, Record<string, unknown>>;
+  /** #337 review: every parked answerable's request event, keyed `<kind>:<requestId>` — the AUTHORITATIVE « what is the agent
+   *  waiting on » for a surface that was not listening when it was asked (the phone). Entries leave with their settle. */
+  liveAnswerables: Map<string, AgentAnswerableEvent>;
   /** Parked `onUserDialog` calls keyed by requestId (#21); the renderer
    *  resolves each via {@link sdkAnswerableReply} with kind 'user-dialog'.
    *  A SEPARATE map from {@link Session.pending} — the SDK issues requestIds
@@ -1122,13 +1130,12 @@ function makeCanUseTool(session: Session) {
       return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
     const requestId = opts.requestId || randomUUID();
-    emit(
-      session.wsId,
-      makePermissionRequest(session.ctx, requestId, toolName, input, {
-        toolUseId: opts.toolUseID ?? null,
-        title: opts.title,
-      }),
-    );
+    const permissionEvent = makePermissionRequest(session.ctx, requestId, toolName, input, {
+      toolUseId: opts.toolUseID ?? null,
+      title: opts.title,
+    });
+    session.liveAnswerables.set(`permission:${requestId}`, permissionEvent);
+    emit(session.wsId, permissionEvent);
     // The agent is now blocked on the user: flip the sidebar dot to `waiting`
     // (orange) and — if the window is unfocused — raise the "needs input"
     // toast/chime, matching the terminal path's Notification hook. The
@@ -1142,10 +1149,13 @@ function makeCanUseTool(session: Session) {
       // abort, or the turn-end sweep in consume()) restores the dot to
       // `running` — a live PTY owner is respected by resumeRunning's guard.
       const settle = (result: PermissionResult) => {
+        session.pendingAsks.delete(requestId);
+        session.liveAnswerables.delete(`permission:${requestId}`);
         resumeRunning(session.wsId);
         resolve(result);
       };
       session.pending.set(requestId, settle);
+      if (toolName === ASK_USER_QUESTION) session.pendingAsks.set(requestId, input);
       // If the turn is aborted (interrupt) the parked promise must not dangle:
       // deny on abort so the SDK unwinds.
       const onAbort = () => {
@@ -1206,17 +1216,17 @@ function makeOnUserDialog(session: Session) {
       return Promise.resolve(null);
     }
     const requestId = opts.requestId || randomUUID();
-    emit(
-      session.wsId,
-      makeUserDialogRequest(session.ctx, requestId, request.dialogKind, request.payload, {
-        toolUseId: request.toolUseID ?? null,
-      }),
-    );
+    const dialogEvent = makeUserDialogRequest(session.ctx, requestId, request.dialogKind, request.payload, {
+      toolUseId: request.toolUseID ?? null,
+    });
+    session.liveAnswerables.set(`user-dialog:${requestId}`, dialogEvent);
+    emit(session.wsId, dialogEvent);
     // Same "the agent is blocked on the user" signalling as a permission: flip
     // the sidebar dot to `waiting` and raise the needs-input toast/chime.
     fireNeedsInput(session.wsId);
     return new Promise<UserDialogResult | null>((resolve) => {
       const settle = (result: UserDialogResult) => {
+        session.liveAnswerables.delete(`user-dialog:${requestId}`);
         resumeRunning(session.wsId);
         resolve(result);
       };
@@ -1247,10 +1257,13 @@ function makeOnElicitation(session: Session) {
     opts: { signal: AbortSignal; requestId: string },
   ): Promise<ElicitationResult | null> => {
     const requestId = opts.requestId || randomUUID();
-    emit(session.wsId, makeElicitationRequest(session.ctx, requestId, request));
+    const elicitationEvent = makeElicitationRequest(session.ctx, requestId, request);
+    session.liveAnswerables.set(`elicitation:${requestId}`, elicitationEvent);
+    emit(session.wsId, elicitationEvent);
     fireNeedsInput(session.wsId);
     return new Promise<ElicitationResult | null>((resolve) => {
       const settle = (result: ElicitationResult) => {
+        session.liveAnswerables.delete(`elicitation:${requestId}`);
         resumeRunning(session.wsId);
         resolve(result);
       };
@@ -1901,6 +1914,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     gateTurnUuid: null,
     gateTurnHuman: false,
     pending: new Map(),
+    pendingAsks: new Map(),
+    liveAnswerables: new Map(),
     pendingDialogs: new Map(),
     pendingElicitations: new Map(),
     stopping: false,
@@ -4009,17 +4024,62 @@ export function sdkPermissionReply(
   wsId: string,
   requestId: string,
   reply: AgentPermissionReply,
-): void {
+): boolean {
   const session = sessions.get(wsId);
-  if (!session) return;
+  if (!session) return false;
   const resolve = session.pending.get(requestId);
-  if (!resolve) return;
+  if (!resolve) return false; // already answered (another surface) or gone with its turn: never applied twice
   session.pending.delete(requestId);
   if (reply.behavior === 'allow') {
     resolve({ behavior: 'allow', updatedInput: reply.updatedInput });
   } else {
     resolve({ behavior: 'deny', message: reply.message });
   }
+  emitAnswerableResolved(session, 'permission', requestId);
+  return true;
+}
+
+/** #337 review: what the agent is waiting on RIGHT NOW (parked, unanswered), or null when the workspace has no live session. */
+export function sdkLiveAnswerables(wsId: string): AgentAnswerableEvent[] | null {
+  const session = sessions.get(wsId);
+  return session ? [...session.liveAnswerables.values()] : null;
+}
+
+/** #339: tell EVERY surface (desktop renderers, the phone feed) that a parked answerable is settled, so its card goes away
+ *  everywhere — not only on the surface that answered. */
+function emitAnswerableResolved(session: Session, kind: 'permission' | 'user-dialog' | 'elicitation', requestId: string): void {
+  emit(session.wsId, stamp(session.ctx, { type: 'answerable-resolved', kind, requestId }));
+}
+
+/** #339: answer a parked AskUserQuestion from outside the renderer (the Accès mobile phone). `answers` maps question text →
+ *  chosen label(s); a label that is not an option is a free-text « other » answer, as on the desktop card. Every question must be
+ *  answered; a single-select question takes exactly one. The reply is the desktop's: `buildAskUserQuestionReply` on the ORIGINAL
+ *  input. Refused — never applied twice — when the question was already answered or died with its turn. */
+export function sdkAnswerAskUserQuestion(
+  wsId: string,
+  requestId: string,
+  answers: Record<string, string[]>,
+): { ok: true } | { ok: false; error: string } {
+  const session = sessions.get(wsId);
+  const input = session?.pendingAsks.get(requestId);
+  if (!session || !input || !session.pending.has(requestId)) return { ok: false, error: 'already answered, or no longer pending' };
+  const parsed = parseAskUserQuestion(ASK_USER_QUESTION, input);
+  if (!parsed) return { ok: false, error: 'not an answerable question' };
+  const selections: Record<string, string[]> = {};
+  for (const q of parsed.questions) {
+    const picked = (answers[q.question] ?? []).map((l) => (typeof l === 'string' ? l.trim() : '')).filter(Boolean);
+    if (picked.length === 0) return { ok: false, error: `unanswered: ${q.question.slice(0, 80)}` };
+    if (!q.multiSelect && picked.length !== 1) return { ok: false, error: `one answer only: ${q.question.slice(0, 80)}` };
+    if (picked.some((l) => l.length > 2000)) return { ok: false, error: 'answer too long' };
+    selections[q.question] = picked;
+  }
+  const extra = Object.keys(answers).filter((k) => !parsed.questions.some((q) => q.question === k));
+  if (extra.length) return { ok: false, error: 'answer to a question that was not asked' };
+  const applied = sdkPermissionReply(wsId, requestId, {
+    behavior: 'allow',
+    updatedInput: buildAskUserQuestionReply(input, parsed.questions, selections),
+  });
+  return applied ? { ok: true } : { ok: false, error: 'already answered, or no longer pending' };
 }
 
 // ---------- Background tasks (#19) ----------
@@ -4150,6 +4210,7 @@ export function sdkAnswerableReply(
       if (!resolve) return;
       session.pendingDialogs.delete(requestId);
       resolve(toUserDialogResult(answer.reply));
+      emitAnswerableResolved(session, 'user-dialog', requestId);
       return;
     }
     case 'elicitation': {
@@ -4157,6 +4218,7 @@ export function sdkAnswerableReply(
       if (!resolve) return;
       session.pendingElicitations.delete(requestId);
       resolve(toElicitationResult(answer.reply));
+      emitAnswerableResolved(session, 'elicitation', requestId);
       return;
     }
   }

@@ -120,7 +120,14 @@ function serverPids(tokenFile) {
 const SAMPLE_TRANSCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures/payloads/acces-mobile-transcript.sample.jsonl');
 const HISTORY_SESSION = JSON.parse(fs.readFileSync(SAMPLE_TRANSCRIPT, 'utf8').split('\n')[0]).sessionId;
 const FAKE_REPLY = 'Réponse du faux modèle pour le téléphone';
-const fakeApi = await startFakeApi({ reply: () => ({ text: FAKE_REPLY }) });
+// #339: the rig ASKS for a question (wantAsk++) and the next main (tool-carrying) model request answers with a real AskUserQuestion
+// tool call; everything else gets the canned text.
+const ASK_INPUT = { questions: [{ question: 'Quelle option pour le rig ?', header: 'Choix', multiSelect: false, options: [{ label: 'Réponse-rig-A', description: 'la première' }, { label: 'Réponse-rig-B', description: 'la seconde' }] }] };
+let wantAsk = 0;
+const fakeApi = await startFakeApi({ reply: (rec) => {
+  if (rec.tools > 0 && wantAsk > 0) { wantAsk--; return { toolUse: { name: 'AskUserQuestion', input: ASK_INPUT } }; }
+  return { text: FAKE_REPLY };
+} });
 const LOGIN = 'rig.owner@example.invalid';
 const world = (() => {
   const d = path.join(RIG_DIR, 'world');
@@ -336,6 +343,35 @@ try {
   // errors are never a false « sent »: an archived workspace is refused with a reason
   const arch = await phone.eval(`fetch('/api/send?id=ws-am-archived', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') }, body: JSON.stringify({ text: 'x' }) }).then((r) => r.json())`);
   clause('send/archived-refused', arch.ok === false && /archived/.test(arch.error), JSON.stringify(arch));
+
+  // #339 round 1 — the real CLI parks an AskUserQuestion; the PHONE answers it; the card leaves both surfaces; a 2nd answer is refused.
+  wantAsk = 1;
+  await cdp.eval(`window.orchestra.agentSdkSend('ws-am-idle', 'Pose-moi une question').then(() => true)`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .ask[data-kind="askUser"] .ask-opt').length === 2`), 90000, 'the question on the phone');
+  const deskPending1 = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.pendingAnswerables ?? []).map((a) => a.requestId)`);
+  const reqId1 = deskPending1[0];
+  const optB = await phone.eval(`(() => { const b = [...document.querySelectorAll('#conv .ask-opt')].find((x) => x.textContent === 'Réponse-rig-B'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: optB.x, y: optB.y, ...extra });
+  await waitFor(() => phone.eval(`!!document.querySelector('#conv .ask-opt.picked') && !document.querySelector('#conv .ask-submit').disabled`), 5000, 'option picked, submit enabled');
+  saveShot('phone-ask-picked.png', await phone.shot());
+  const sub = await phone.eval(`(() => { const r = document.querySelector('#conv .ask-submit').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: sub.x, y: sub.y, ...extra });
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .ask[data-kind="askUser"]').length === 0`), 30000, 'the question gone from the phone');
+  await waitFor(() => cdp.eval(`(window.__readAgentSession('ws-am-idle')?.pendingAnswerables ?? []).length === 0`), 15000, 'the card gone from the desktop');
+  const toolRes = await waitFor(() => cdp.eval(`(() => { const m = (window.__readAgentSession('ws-am-idle')?.messages ?? []).filter((x) => x.toolUse?.name === 'AskUserQuestion').at(-1); const c = m?.toolResult?.content; return c ? (typeof c === 'string' ? c : JSON.stringify(c)) : null; })()`), 30000, 'the AskUserQuestion tool result');
+  clause('ask/phone-answers', deskPending1.length === 1 && /Réponse-rig-B/.test(toolRes) && !/Réponse-rig-A"/.test(toolRes), `desktop card ${deskPending1.length} -> 0; phone card gone; the CLI's tool result: ${toolRes.slice(0, 140)}`);
+  const again = await phone.eval(`fetch('/api/answer?id=ws-am-idle&request=' + encodeURIComponent(${JSON.stringify(reqId1)}), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') }, body: JSON.stringify({ answers: { 'Quelle option pour le rig ?': ['Réponse-rig-A'] } }) }).then((r) => r.json())`);
+  clause('ask/second-answer-refused', again.ok === false && /already answered/.test(again.error), JSON.stringify(again));
+  saveShot('phone-ask-answered.png', await phone.shot());
+
+  // #339 round 2 — the DESKTOP answers (its real IPC); the phone's card goes away without a reload.
+  wantAsk = 1;
+  await cdp.eval(`window.orchestra.agentSdkSend('ws-am-idle', 'Encore une question').then(() => true)`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .ask[data-kind="askUser"]').length === 1`), 90000, 'the second question on the phone');
+  const p2 = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.pendingAnswerables ?? []).map((a) => ({ requestId: a.requestId, input: a.input }))`);
+  await cdp.eval(`window.orchestra.agentSdkPermissionReply('ws-am-idle', ${JSON.stringify(p2[0].requestId)}, { behavior: 'allow', updatedInput: { ...${JSON.stringify(p2[0].input)}, answers: { 'Quelle option pour le rig ?': 'Réponse-rig-A' } } }).then(() => true)`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .ask[data-kind="askUser"]').length === 0`), 30000, 'the second question gone from the phone');
+  clause('ask/desktop-answers', p2.length === 1 && (await phone.eval(`window.__noReload === 1`)), `desktop answered ${p2[0]?.requestId}; phone card 1 -> 0 without reload`);
   await phone.eval(`location.hash = ''; true`);
 
   // settings dialog in the app: health, serve command; TRUSTED toggle off/on

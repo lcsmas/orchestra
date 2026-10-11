@@ -58,7 +58,7 @@ import {
 } from './linear-tickets';
 import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
-import { dispatchReloadSkillsRequest, sdkSend } from './agent-sdk';
+import { dispatchReloadSkillsRequest, sdkAnswerAskUserQuestion, sdkSend } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
@@ -189,7 +189,7 @@ export async function startHooksServer(): Promise<void> {
     // caller saw an empty reply and had to guess that the payload was the
     // culprit — so /spawn gets a generous ceiling while other routes stay
     // locked down, and an over-cap request now answers with a clear 413.
-    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : route === '/mobile/send' ? MOBILE_SEND_MAX_BODY : 4096;
+    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : route === '/mobile/send' || route === '/mobile/answer' ? MOBILE_SEND_MAX_BODY : 4096;
     let body = '';
     let tooLarge = false;
     req.setEncoding('utf8');
@@ -652,6 +652,16 @@ export async function startHooksServer(): Promise<void> {
                 send(200, { ok: false, error: e instanceof Error ? e.message : String(e) });
               }
             }
+          } else if (route === '/mobile/answer') {
+            // Accès mobile (#339): answer a parked AskUserQuestion from the phone — validated, built with the desktop card's
+            // builder on the original input, refused when already answered (the desktop may have been first).
+            const ws = validWorkspaceId(msg.id) ? store.getWorkspace(msg.id) : undefined;
+            const answers = msg.answers;
+            if (!ws || ws.archived) send(200, { ok: false, error: 'unknown or archived workspace' });
+            else if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 200) send(200, { ok: false, error: 'bad request id' });
+            else if (!answers || typeof answers !== 'object' || Array.isArray(answers) || !Object.values(answers).every((v) => Array.isArray(v) && v.every((l) => typeof l === 'string')))
+              send(200, { ok: false, error: 'answers must map each question to a list of labels' });
+            else send(200, sdkAnswerAskUserQuestion(ws.id, msg.requestId, answers as Record<string, string[]>));
           } else if (route === '/mobile/stream') {
             // Long-lived NDJSON: change announcements for the server process to relay to the phone. Ends when it hangs up.
             res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' });

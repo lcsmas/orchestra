@@ -8,7 +8,7 @@
 
 import { emptySession, foldEvent, foldEvents } from '../shared/agent-events.ts';
 import { projectConversation, type PhoneConversation } from '../shared/acces-mobile-conversation.ts';
-import type { AgentEvent, AgentSession } from '../shared/types.ts';
+import type { AgentAnswerableEvent, AgentEvent, AgentSession } from '../shared/types.ts';
 
 export interface FeedDeps {
   loadHistory: (id: string) => Promise<AgentEvent[]>;
@@ -16,6 +16,13 @@ export interface FeedDeps {
   warn?: (msg: string, err?: unknown) => void;
   announceMs?: number;
   pingMs?: number;
+  /** The AUTHORITATIVE « waiting on the human » list (agent-sdk's parked answerables), or null when no live session. A fold
+   *  cannot be the source: a question asked before the phone opened is in no history, and an answer from another surface is
+   *  only an event if someone emitted it (#337 review M1). */
+  liveAsks?: (id: string) => AgentAnswerableEvent[] | null;
+  /** Mid-turn right now (the store's status) — the history fold always ends with a synthetic turn end (#337 review M2). */
+  isRunning?: (id: string) => boolean;
+  now?: () => number;
 }
 
 /** At most this many folded conversations in memory (LRU), each dropped after IDLE_MS without a read while no stream is open. */
@@ -42,6 +49,7 @@ interface Entry {
 export type MobileFeed = ReturnType<typeof createMobileFeed>;
 
 export function createMobileFeed(deps: FeedDeps) {
+const now = deps.now ?? Date.now;
 const cache = new Map<string, Entry>();
 const listeners = new Set<(m: FeedMessage) => void>();
 let untap: (() => void) | null = null;
@@ -107,8 +115,8 @@ function drop(id: string): void {
 
 function sweep(): void {
   if (!listeners.size) {
-    const now = Date.now();
-    for (const [id, e] of cache) if (now - e.lastRead > IDLE_MS) drop(id);
+    const t = now();
+    for (const [id, e] of cache) if (t - e.lastRead > IDLE_MS) drop(id);
   }
   disarmIfIdle();
 }
@@ -124,6 +132,12 @@ async function load(id: string, e: Entry): Promise<void> {
   }
   e.version++;
   e.reloadPending = false;
+  // Events arrived WHILE we read (#337 review M3: possibly the turn end itself): the read may predate them. Re-fold from disk at
+  // the next read once the turn is over, and tell the phone something changed.
+  if (e.missedWhileLoading) {
+    e.reloadPending = true;
+    announce(id, e);
+  }
 }
 
 /** The phone's conversation for one workspace: folded once from its transcript, then kept live. */
@@ -135,21 +149,31 @@ async function getMobileConversation(id: string): Promise<PhoneConversation> {
       const oldest = [...cache.entries()].sort((a, b) => a[1].lastRead - b[1].lastRead)[0];
       if (oldest) drop(oldest[0]);
     }
-    e = { session: emptySession(id), version: 0, lastRead: Date.now(), loading: null, missedWhileLoading: false, reloadPending: false, announceTimer: null };
+    e = { session: emptySession(id), version: 0, lastRead: now(), loading: null, missedWhileLoading: false, reloadPending: false, announceTimer: null };
     cache.set(id, e);
     const entry = e;
     entry.loading = load(id, entry).finally(() => {
       entry.loading = null;
     });
-  } else if (e.reloadPending && !e.loading && !e.session.running) {
+  } else if (e.reloadPending && !e.loading && !running(id, e)) {
     const entry = e;
     entry.loading = load(id, entry).finally(() => {
       entry.loading = null;
     });
   }
-  e.lastRead = Date.now();
+  e.lastRead = now();
   if (e.loading) await e.loading;
-  return projectConversation(id, e.session, e.version);
+  const live = deps.liveAsks?.(id);
+  const view: AgentSession = {
+    ...e.session,
+    running: running(id, e),
+    ...(live ? { pendingAnswerables: live, pendingPermissions: [] } : {}),
+  };
+  return projectConversation(id, view, e.version);
+}
+
+function running(id: string, e: Entry): boolean {
+  return deps.isRunning ? deps.isRunning(id) : e.session.running;
 }
 
 /** Subscribe to change announcements; returns the unsubscribe. A `ping` every 25 s keeps idle proxies from cutting the stream. */

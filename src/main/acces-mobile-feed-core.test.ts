@@ -108,3 +108,78 @@ test('a workspace change announces « workspaces » to open streams; an unreadab
   assert.equal(r.warns.length, 1);
   off();
 });
+
+// ---- #337 review fixes ----
+
+function askEvent(requestId: string): AgentEvent {
+  return { type: 'permission-request', seq: 3_000_000, at: 1_700_000_000_900, requestId, toolUseId: null, name: 'AskUserQuestion', input: { questions: [{ question: 'Q ?', options: [{ label: 'a' }] }] } } as unknown as AgentEvent;
+}
+
+test('M1: the asks come from the LIVE parked list — an ask raised before the phone opened shows, an answered one goes', async () => {
+  let live: AgentEvent[] | null = [askEvent('r-before')];
+  const taps = new Set<(c: string, a: unknown[]) => void>();
+  const feed = createMobileFeed({ loadHistory: async () => eventsOf(SAMPLE, 1_000_000), onBroadcast: (t) => (taps.add(t), () => taps.delete(t)), liveAsks: () => live as never });
+  const c1 = await feed.getMobileConversation('w1');
+  assert.deepEqual(c1.asks.map((a) => a.requestId), ['r-before'], 'raised before the phone was listening: still shown');
+  // folded ghost: the fold saw an ask the desktop already answered — the live list wins
+  taps.forEach((t) => t('agent:event', ['w1', askEvent('r-ghost')]));
+  live = [];
+  const c2 = await feed.getMobileConversation('w1');
+  assert.deepEqual(c2.asks, [], 'answered elsewhere: gone at once');
+  live = null; // no live session: the fold is all we have
+  const c3 = await feed.getMobileConversation('w1');
+  assert.deepEqual(c3.asks.map((a) => a.requestId), ['r-ghost'], 'control: without a session the fold is the source');
+});
+
+test('M2: « running » is the live status, not the history (which always ends with a synthetic turn end)', async () => {
+  let busy = true;
+  const feed = createMobileFeed({ loadHistory: async () => eventsOf(SAMPLE, 1_000_000), onBroadcast: () => () => {}, isRunning: () => busy });
+  assert.equal((await feed.getMobileConversation('w1')).running, true);
+  busy = false;
+  assert.equal((await feed.getMobileConversation('w1')).running, false);
+});
+
+test('M3: a turn end that lands WHILE the history loads still heals — reload once idle, and the phone is told', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let loads = 0;
+  const taps = new Set<(c: string, a: unknown[]) => void>();
+  const msgs: FeedMessage[] = [];
+  const feed = createMobileFeed({
+    loadHistory: async () => {
+      loads++;
+      if (loads === 1) {
+        await gate;
+        return eventsOf(SAMPLE.slice(0, 1), 1_000_000);
+      }
+      return eventsOf(SAMPLE, 1_000_000);
+    },
+    onBroadcast: (t) => (taps.add(t), () => taps.delete(t)),
+    announceMs: 5,
+  });
+  const off = feed.subscribeMobileFeed((m) => msgs.push(m));
+  const pending = feed.getMobileConversation('w1');
+  taps.forEach((t) => t('agent:event', ['w1', { type: 'turn-end', seq: 2_100_000, at: 1_700_000_001_000 } as unknown as AgentEvent]));
+  release();
+  await pending;
+  await sleep(30);
+  assert.ok(msgs.some((m) => m.t === 'conv'), 'the phone is told to refetch after a load that missed events');
+  const c = await feed.getMobileConversation('w1');
+  assert.equal(loads, 2, 're-folded from disk');
+  assert.deepEqual(c.lines.map((l) => l.kind), ['user', 'tool', 'assistant'], 'the final reply is there');
+  off();
+});
+
+test('sweep: an open stream keeps the conversations; without one, idle ones are dropped', async () => {
+  let t = 1_000_000;
+  const feed = createMobileFeed({ loadHistory: async () => [], onBroadcast: () => () => {}, now: () => t });
+  await feed.getMobileConversation('w1');
+  const off = feed.subscribeMobileFeed(() => {});
+  t += 11 * 60_000;
+  feed.sweep();
+  assert.deepEqual(feed.mobileFeedState().cached, ['w1'], 'kept while a stream is open');
+  off();
+  feed.sweep();
+  assert.deepEqual(feed.mobileFeedState().cached, [], 'dropped once nobody streams');
+  assert.equal(feed.mobileFeedState().tapped, false, 'and the tap released');
+});

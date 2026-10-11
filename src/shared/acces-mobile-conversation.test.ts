@@ -86,3 +86,13 @@ test('workspace ids: uuid-like only', () => {
   assert.equal(validWorkspaceId('4a6ad23b-ebee-497c-b67a-80ff69edf6f5'), true);
   for (const bad of ['', '../x', 'a b', 'x'.repeat(65), 42, null]) assert.equal(validWorkspaceId(bad), false, String(bad));
 });
+
+test('#339: an answerable-resolved event (from ANY surface) removes the ask from the fold', () => {
+  const ask = { type: 'permission-request', seq: 2_000_000, at: 1, requestId: 'req-9', toolUseId: null, name: 'AskUserQuestion', input: { questions: [{ question: 'Q', options: [{ label: 'a' }] }] } } as unknown as AgentEvent;
+  const resolved = { type: 'answerable-resolved', seq: 2_000_001, at: 2, kind: 'permission', requestId: 'req-9' } as AgentEvent;
+  const withAsk = foldEvent(folded(), ask);
+  assert.equal(projectConversation('w', withAsk, 1).asks.length, 1, 'control');
+  assert.equal(projectConversation('w', foldEvent(withAsk, resolved), 2).asks.length, 0);
+  const other = { ...resolved, kind: 'elicitation' } as AgentEvent;
+  assert.equal(projectConversation('w', foldEvent(withAsk, other), 2).asks.length, 1, 'kind + id must both match');
+});

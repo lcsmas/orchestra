@@ -1727,6 +1727,10 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       return { ...next, pendingAnswerables: [...next.pendingAnswerables, event] };
     }
 
+    case 'answerable-resolved':
+      // #339: answered on some surface — drop the card here too (idempotent: a no-op when this surface already cleared it).
+      return clearPendingAnswerable(next, event.kind, event.requestId);
+
     case 'session/update':
       return {
         ...next,

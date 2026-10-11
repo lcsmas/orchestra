@@ -4,7 +4,7 @@ import {
   ASK_USER_QUESTION,
   buildAskUserQuestionReply,
   parseAskUserQuestion,
-} from './askUserQuestion.ts';
+} from './ask-user-question.ts';
 
 const sampleInput = {
   questions: [

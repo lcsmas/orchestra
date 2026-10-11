@@ -54,6 +54,29 @@ export function streamedTextReply({ model = 'claude-fake', text = CANNED_TEXT, i
   ].join('');
 }
 
+/** A complete, wire-valid streamed assistant reply that CALLS A TOOL (stop_reason tool_use) — e.g. AskUserQuestion, so a rig can
+ *  drive the real CLI into a parked question (Accès mobile #339). Opt-in via `reply()` returning `{toolUse}`. */
+export function streamedToolUseReply({ model = 'claude-fake', id = 'msg_fake_1', inputTokens = 12, toolUse }) {
+  const toolId = toolUse.id ?? `toolu_fake_${id}`;
+  return [
+    sseEvent('message_start', {
+      type: 'message_start',
+      message: {
+        id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null,
+        usage: { input_tokens: inputTokens, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      },
+    }),
+    sseEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolId, name: toolUse.name, input: {} } }),
+    sseEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(toolUse.input) } }),
+    sseEvent('content_block_stop', { type: 'content_block_stop', index: 0 }),
+    sseEvent('message_delta', {
+      type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null },
+      usage: { input_tokens: inputTokens, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    }),
+    sseEvent('message_stop', { type: 'message_stop' }),
+  ].join('');
+}
+
 /** The non-streamed variant of the same reply (a `stream:false` /v1/messages call). */
 export function jsonTextReply({ model = 'claude-fake', text = CANNED_TEXT, id = 'msg_fake_1', inputTokens = 12 } = {}) {
   return {
@@ -98,7 +121,7 @@ function summarizeModelBody(buf, markers = {}) {
 /**
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
- * @param {(req: object) => ({text?: string, inputTokens?: number}|undefined)} [opts.reply]   per-model-request override
+ * @param {(req: object) => ({text?: string, inputTokens?: number, toolUse?: {name: string, input: object, id?: string}}|undefined)} [opts.reply]   per-model-request override (`toolUse`: a streamed tool call instead of text)
  * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
  * @param {number} [opts.proxyPort]  fixed port for the egress proxy (default: any free port) — needed when a process must be
  *                                    started with HTTPS_PROXY already pointing at it (NODE_USE_ENV_PROXY is read at bootstrap)
@@ -139,7 +162,10 @@ export async function startFakeApi(opts = {}) {
       const text = override?.text ?? CANNED_TEXT;
       const id = `msg_fake_${++modelSeq}`;
       if (opts.replyDelayMs) await new Promise((r) => setTimeout(r, opts.replyDelayMs));
-      if (rec.stream) {
+      if (rec.stream && override?.toolUse) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'request-id': `req_fake_${rec.seq}` });
+        res.end(streamedToolUseReply({ model: rec.model ?? 'claude-fake', id, inputTokens: override?.inputTokens, toolUse: override.toolUse }));
+      } else if (rec.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'request-id': `req_fake_${rec.seq}` });
         res.end(streamedTextReply({ model: rec.model ?? 'claude-fake', text, id, inputTokens: override?.inputTokens }));
       } else {
