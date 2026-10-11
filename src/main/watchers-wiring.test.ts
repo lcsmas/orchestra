@@ -114,3 +114,24 @@ test('the production retry timer is unref’d: a pending retry never keeps the p
   const i = at(w, 'setTimer: (fn, ms) => {');
   assert.ok(/t\.unref\?\.\(\)/.test(w.slice(i, i + 200)), 'setTimeout(...).unref()');
 });
+
+test('RENDERER (D-Q8 A): the strip sits in the sidebar footer slot right after the Pause-unreadable strip and BEFORE the footer; it is a status (non-blocking), reuses the Pause-unreadable style, carries the hook the drive reads, and offers no control', () => {
+  const sb = codeOf('src/renderer/components/Sidebar.tsx');
+  const a = at(sb, '<PauseUnreadableStrip />');
+  const b = at(sb, '<WatchersStrip />');
+  const c = at(sb, '<div className="sidebar-footer">');
+  assert.ok(a < b && b < c, 'PauseUnreadableStrip → WatchersStrip → sidebar-footer');
+  assert.ok(/import \{ WatchersStrip \} from '\.\/WatchersStrip';/.test(sb));
+  const w = codeOf('src/renderer/components/WatchersStrip.tsx');
+  assert.ok(/className="pause-unreadable watchers-strip"/.test(w) && /role="status"/.test(w) && /data-watchers-chip=""/.test(w), 'same look, status role, drive hook');
+  assert.ok(!/<button|onClick/.test(w), 'no control: it goes away by itself');
+  assert.ok(/if \(!copy\) return null;/.test(w), 'nothing at all while healthy');
+  assert.ok(/watchersStripCopy\(status, Date\.now\(\)\)/.test(w) && /useStore\(\(s\) => s\.watchers\)/.test(w));
+});
+
+test('RENDERER store: the slice is filled by the boot PULL (the page loads after main armed its watchers) and by the push, both through newerWatchers; the preload exposes both', () => {
+  const st = codeOf('src/renderer/store.ts');
+  assert.ok(/orEmpty\('watchersStatus', window\.orchestra\.watchersStatus\(\), null as WatchersStatus \| null\)/.test(st), 'the pull is part of the initial load');
+  assert.ok(/watchers: watchers \? newerWatchers\(get\(\)\.watchers, watchers\) : get\(\)\.watchers,/.test(st), 'a push that landed during the pull is kept');
+  assert.ok(/window\.orchestra\.onWatchersUpdate\(\(status\) => \{\s*useStore\.setState\(\(st\) => \(\{ watchers: newerWatchers\(st\.watchers, status\) \}\)\);\s*\}\);/.test(st), 'the push replaces wholesale, newest wins');
+});

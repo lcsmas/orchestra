@@ -3,6 +3,7 @@
 // the end (commit first). A CLI-affecting mutant rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale); the clean build is restored at the end.
 // NOT heavy by the wave rule: no browser / app / keeper / scope / Docker — unit suites + the rig (one node process per arm + the built CLI). Survivors printed: stray rig processes + leftover scratch dirs.
 // Run: node scripts/resilient-watchers-mutants.mjs [--only R01,R02] [--check-anchors] [--no-rig]
+// `smoke: true` also runs the SSR render smoke (scripts/watchers-strip-render-smoke.mjs): its failing checks become `smoke:<label>`.
 // `expect` = a substring of a reddened unit test title, or `rig:<arm>:<check>` (a failing rig check), or `rig:<arm>` (any check of that arm) — at least one MUST be red.
 
 import fs from 'node:fs';
@@ -35,8 +36,12 @@ const IDX = 'src/main/index.ts';
 const HS = 'src/main/hooks-server.ts';
 const CLI = 'src/cli/index.ts';
 const PRE = 'src/preload/index.ts';
+const STRIP = 'src/renderer/components/WatchersStrip.tsx';
+const STORE = 'src/renderer/store.ts';
+const SIDEBAR = 'src/renderer/components/Sidebar.tsx';
 const TESTS = ['src/shared/resilient-watch.test.ts', 'src/shared/watcher-status.test.ts', 'src/main/watchers.test.ts', 'src/main/watchers-wiring.test.ts', 'src/main/pause-ui-wiring.test.ts', 'src/main/bus-wake-watcher.test.ts'];
-const ALL_ARMS = ['control', 'degraded', 'recovery', 'midlife', 'silent_detach', 'shutdown'];
+const SITES = ['bus-wake', 'pause-ui', 'human-gates', 'inbox-tray', 'pause-trap', 'events-spool', 'login-watch'];
+const ALL_ARMS = ['control', 'degraded', 'recovery', ...SITES.map((x) => `catchup_${x}`), 'midlife', 'silent_detach', 'silent_detach_event', 'shutdown'];
 const SITE_STOP = (id, file, find, to, name) => ({ id, file, find, to, expect: [`SITE ${name}`] });
 
 const MUTANTS = [
@@ -47,7 +52,7 @@ const MUTANTS = [
   { id: 'R04_first_retry_slow', file: RW, find: '[1_000, 2_000, 5_000, 15_000, 30_000, 60_000];', to: '[20_000, 30_000, 60_000];', expect: ['first retry lands within a few seconds', 'rig:recovery:bus_status_clean_within_backoff'], rig: ['recovery'] },
   { id: 'R05_stop_keeps_retrying', file: RW, edits: [{ find: '      stopped = true;\n      clearTimers();\n      closeHandle();', to: '      stopped = true;\n      closeHandle();' }, { find: 'function arm(): void {\n    if (stopped) return;\n', to: 'function arm(): void {\n' }], expect: ['stop() cancels pending retries', 'rig:shutdown:no_retry_after_shutdown'], rig: ['shutdown'] },
   { id: 'R05b_stop_leaves_timers', file: RW, find: '      stopped = true;\n      clearTimers();\n      closeHandle();', to: '      stopped = true;\n      closeHandle();', expect: ['stop() cancels pending retries'] },
-  { id: 'R06_stale_event_acts', file: RW, find: '          if (stopped || myGen !== gen) return;\n          if (spec.filter', to: '          if (stopped) return;\n          if (spec.filter', expect: ['a stale watch (closed, replaced) cannot act'] },
+  { id: 'R06_stale_event_acts', file: RW, find: '          if (stopped || myGen !== gen) return;\n          // The directory ITSELF', to: '          if (stopped) return;\n          // The directory ITSELF', expect: ['a stale watch (closed, replaced) cannot act'] },
   { id: 'R07_stale_error_degrades', file: RW, find: "          if (stopped || myGen !== gen) return; // a stale watch's error is not this watch's", to: '          if (stopped) return;', expect: ['a stale watch (closed, replaced) cannot act'] },
   { id: 'R08_warn_every_failed_retry', file: RW, find: "    if (state !== 'degraded') {\n      state = 'degraded';", to: "    if (true) {\n      state = 'degraded';", expect: ['logging is edge-triggered', 'rig:recovery:log_one_warn_one_info_per_watcher'], rig: ['recovery'] },
   { id: 'R09_no_recovery_info', file: RW, find: '      deps.info(`watcher[${spec.name}]: RECOVERED after ${Math.round(downMs / 1000)} s — directory watch re-armed (${spec.label})`);', to: '      void downMs;', expect: ['logging is edge-triggered', 'rig:recovery:log_one_warn_one_info_per_watcher'], rig: ['recovery'] },
@@ -58,7 +63,7 @@ const MUTANTS = [
   { id: 'R14_lasterror_kept_after_recovery', file: RW, find: '      lastError = null;\n      attempts = 0;', to: '      attempts = 0;', expect: ['at arm → degraded'] },
   { id: 'R15_enospc_not_a_limit', file: RW, find: "if (info.code === 'EMFILE' || info.code === 'ENOSPC') return", to: "if (info.code === 'EMFILE') return", expect: ['describeWatchError / plainWatchError'] },
   { id: 'R16_ensuredir_dropped', file: RW, find: '      if (spec.ensureDir) deps.mkdirp?.(spec.dir);', to: '      void 0;', expect: ['ensureDir: the directory is created before EVERY arm'] },
-  { id: 'R17_health_ignores_new_inode', file: RW, find: 'else if (armedIno !== null && ino !== armedIno) degrade(', to: 'else if (false) degrade(', expect: ['silent detach: the directory replaced', 'rig:silent_detach:rearmed_and_pushed'], rig: ['silent_detach'] },
+  { id: 'R17_health_ignores_new_inode', file: RW, find: 'else if (armedIno !== null && ino !== armedIno) degrade(', to: 'else if (false) degrade(', expect: ['silent detach: the directory replaced', 'rig:silent_detach:rearmed_by_the_inode_check'], rig: ['silent_detach'] },
   { id: 'R18_health_ignores_vanished_dir', file: RW, find: "if (ino === null) degrade({ code: 'ENOENT'", to: "if (false) degrade({ code: 'ENOENT'", expect: ['silent detach: the watched directory vanishing'] },
   { id: 'R19_health_not_rescheduled', file: RW, find: '      else scheduleHealth();', to: '      else void 0;', expect: ['silent detach: the directory replaced'] },
   { id: 'R20_transition_listener_failure_escapes', file: RW, find: '      deps.warn(`watcher[${spec.name}]: transition listener failed`, e);', to: '      throw e;', expect: ['a throwing catch-up'] },
@@ -74,18 +79,54 @@ const MUTANTS = [
   { id: 'R30_inode_sampled_after_the_watch', file: RW, find: '      armedIno = ino0;', to: '      armedIno = deps.inodeOf ? deps.inodeOf(spec.dir) : null;', expect: ['the directory identity is sampled BEFORE'] },
   { id: 'R31_object_error_message_lost', file: RW, find: "const message = typeof o?.message === 'string' ? o.message : String(e);", to: 'const message = e instanceof Error ? e.message : String(e);', expect: ['describeWatchError reads the message of a plain', 'a silent-detach degradation is WORDED'] },
   { id: 'R32_stable_period_zero', file: RW, find: 'export const WATCH_STABLE_MS = 60_000;', to: 'export const WATCH_STABLE_MS = 0;', expect: ['flap guard'] },
+  { id: 'R33_dir_self_rename_ignored', file: RW, find: "if (event === 'rename' && filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {", to: 'if (false) {', expect: ['m1 (#330 review): the directory ITSELF', 'rig:silent_detach_event:rearmed_by_the_directory_rename_within_the_first_backoff'], rig: ['silent_detach_event'] },
+  { id: 'R34_dir_self_rename_matches_any_rename', file: RW, find: "if (event === 'rename' && filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {", to: "if (event === 'rename' && filename !== null) {", expect: ['m1: what is NOT the directory itself does not degrade'] },
+  { id: 'R35_dir_self_rename_matches_any_event_kind', file: RW, find: "if (event === 'rename' && filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {", to: "if (filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {", expect: ['m1: what is NOT the directory itself does not degrade'] },
+  { id: 'R36_root_dir_matches_the_empty_name', file: RW, find: "dirName === '' ? [] : [dirName, spec.dir.split('/').pop() ?? '']", to: "[dirName, spec.dir.split('/').pop() ?? '']", expect: ['m1: what is NOT the directory itself does not degrade'] },
+  { id: 'R37_dir_self_rename_after_the_filter', file: RW, edits: [{ find: "          if (event === 'rename' && filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {\n            degrade({ code: 'ESTALE', message: `watched directory was removed or renamed: ${spec.dir}` });\n            return;\n          }\n          if (spec.filter && !spec.filter(filename)) return;", to: "          if (spec.filter && !spec.filter(filename)) return;\n          if (event === 'rename' && filename !== null && selfNames.includes(filename) && !stillTheSameDir()) {\n            degrade({ code: 'ESTALE', message: `watched directory was removed or renamed: ${spec.dir}` });\n            return;\n          }" }], expect: ['m1 (#330 review): the directory ITSELF', 'rig:silent_detach_event:rearmed_by_the_directory_rename_within_the_first_backoff'], rig: ['silent_detach_event'] },
+  { id: 'R38_trailing_slash_not_stripped', file: RW, find: ".replace(/\\/+$/, '').split('/').pop()", to: ".split('/').pop()", expect: ['m1: what is NOT the directory itself does not degrade'] },
+  { id: 'R39_trailing_slash_empty_name_unmatched', file: RW, find: "[dirName, spec.dir.split('/').pop() ?? '']", to: '[dirName]', expect: ['m2 (#330 review)'] },
+  { id: 'R40_live_dir_self_rename_degrades', file: RW, find: ' && selfNames.includes(filename) && !stillTheSameDir()) {', to: ' && selfNames.includes(filename)) {', expect: ['m1 (#330 review, second pass)', 'm1 on a REAL directory: a chmod'] },
+  { id: 'R41_same_dir_ignores_birth_time', file: RW, find: 'return ino === armedIno && birth !== null && birth === armedBirth;', to: 'return ino === armedIno;', expect: ['m1: anything that does not PROVE'] },
+  { id: 'R42_same_dir_ignores_inode', file: RW, find: 'return ino === armedIno && birth !== null && birth === armedBirth;', to: 'return birth !== null && birth === armedBirth;', expect: ['m1: anything that does not PROVE'] },
+  { id: 'R43_unknown_birth_counts_as_proof', file: RW, edits: [{ find: ' || armedIno === null || armedBirth === null) return false;', to: ' || armedIno === null) return false;' }, { find: 'return ino === armedIno && birth !== null && birth === armedBirth;', to: 'return ino === armedIno && birth === armedBirth;' }], expect: ['m1: anything that does not PROVE'] },
+  { id: 'R44_no_identity_deps_counts_as_proof', file: RW, find: 'if (!deps.inodeOf || !deps.birthOf || armedIno === null || armedBirth === null) return false;', to: 'if (!deps.inodeOf || !deps.birthOf || armedIno === null || armedBirth === null) return true;', expect: ['m1: anything that does not PROVE'] },
+  { id: 'R45_birth_not_sampled_at_arm', file: RW, find: '      armedBirth = birth0;', to: '      armedBirth = null;', expect: ['m1 (#330 review, second pass)'] },
+  { id: 'R46_production_birth_time_never_recorded', file: WR, find: 'return Number.isFinite(b) && b > 0 ? b : null;', to: 'return null;', expect: ['m1 on a REAL directory: a chmod'] },
+  { id: 'R47_production_birth_not_wired', file: WR, find: '  inodeOf,\n  birthOf,\n  get healthMs() {', to: '  inodeOf,\n  get healthMs() {', expect: ['m1 on a REAL directory: a chmod'] },
+  { id: 'R48_registry_rev_not_bumped', file: WR, find: '  rev++;\n  const s = watchersStatus(); // stamped with the NEW rev', to: '  const s = watchersStatus(); // stamped with the NEW rev', expect: ['EMFILE at arm:'] },
+  { id: 'R49_status_rev_not_stamped', file: WR, find: 'return { at: now, rev, watchers:', to: 'return { at: now, rev: 0, watchers:', expect: ['EMFILE at arm:'] },
+  // ── the sidebar strip (D-Q8 A): renderer + store ──
+  { id: 'C01_strip_not_a_status', file: STRIP, find: 'role="status" aria-live="polite"', to: 'role="alert"', expect: ['smoke:two degraded ⇒ the strip', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C02_strip_hook_dropped', file: STRIP, find: ' data-watchers-chip=""', to: '', expect: ['smoke:two degraded ⇒ the strip', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C03_strip_tooltip_dropped', file: STRIP, find: ' title={copy.lines.join(\'\\n\')}', to: '', expect: ['smoke:the tooltip carries one line per degraded watcher'], smoke: true },
+  { id: 'C04_strip_loses_the_pause_style', file: STRIP, find: 'className="pause-unreadable watchers-strip"', to: 'className="watchers-strip"', expect: ['smoke:two degraded ⇒ the strip', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C05_strip_shown_when_healthy', file: STRIP, find: '  if (!copy) return null;\n  return (', to: '  if (!copy && !status) return null;\n  if (!copy) return <div data-watchers-chip="">ok</div>;\n  return (', expect: ['smoke:every watcher ok ⇒ NOTHING', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C06_strip_has_a_dismiss_button', file: STRIP, find: '    </div>\n  );\n}', to: '    <button onClick={() => {}}>×</button></div>\n  );\n}', expect: ['smoke:NO button, link or dismissal', 'RENDERER (D-Q8 A)'], smoke: true },
+  { id: 'C07_store_no_push_subscription', file: STORE, find: 'window.orchestra.onWatchersUpdate((status) => {\n  useStore.setState((st) => ({ watchers: newerWatchers(st.watchers, status) }));\n});\n', to: '', expect: ['smoke:the store subscribed to `watchers:update` at import', 'RENDERER store'], smoke: true },
+  { id: 'C08_store_no_boot_pull', file: STORE, find: '      watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,\n', to: '', expect: ['smoke:the boot PULL fills the slice', 'RENDERER store'], smoke: true },
+  { id: 'C09_store_push_unordered', file: STORE, find: 'watchers: newerWatchers(st.watchers, status) }));', to: 'watchers: status }));', expect: ['smoke:an OLDER push (or a late-answered pull) never rolls it back', 'RENDERER store'], smoke: true },
+  { id: 'C10_store_pull_overwrites_a_newer_push', file: STORE, find: 'watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,', to: 'watchers: watchers ?? get().watchers,', expect: ['RENDERER store', 'smoke:a push that lands WHILE the boot pull is in flight'], smoke: true },
+  { id: 'C11_sidebar_without_the_strip', file: SIDEBAR, find: '      <WatchersStrip />\n', to: '', expect: ['RENDERER (D-Q8 A)'] },
+  { id: 'C12_sidebar_strip_below_the_footer', file: SIDEBAR, edits: [{ find: '      <WatchersStrip />\n      <div className="sidebar-footer">', to: '      <div className="sidebar-footer">' }, { find: '      <RowActionsPopover', to: '      <WatchersStrip />\n      <RowActionsPopover' }], expect: ['RENDERER (D-Q8 A)'] },
   // ── what bus-status and the app say (src/shared/watcher-status.ts) ──
   { id: 'S01_summary_word_lowercase', file: WS, find: '· ${d.length} DEGRADED —', to: '· ${d.length} degraded —', expect: ['degraded: summary line names', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: true },
   { id: 'S02_limit_never_named', file: WS, find: "${limit ? ' (system watch limit reached)' : ''}; the app re-arms by itself", to: "${limit ? '' : ''}; the app re-arms by itself", expect: ['degraded: summary line names', 'a non-limit degradation', 'rig:degraded:bus_status_names_the_system_limit'], rig: ['degraded'], cli: true },
-  { id: 'S03_every_error_is_the_limit', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');", to: 'const limit = true;', expect: ['a non-limit degradation'] },
-  { id: 'S04_edge_key_counts_attempts', file: WS, find: '.map((w) => `${w.name}@${w.since}`)', to: '.map((w) => `${w.name}@${w.since}@${w.attempts}`)', expect: ['degradedOf / degradedLabels / degradedKey'] },
+  { id: 'S03_every_error_is_the_limit', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  const lines = [", to: 'const limit = true;\n  const lines = [', expect: ['a non-limit degradation'] },
+  { id: 'S12_strip_claims_the_limit_for_any_cause', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {", to: 'const limit = true;\n  return {', expect: ['strip copy (D-Q8 A)'] },
+  { id: 'S13_strip_pull_not_ordered', file: WS, find: '(!prev || next.rev >= prev.rev ? next : prev)', to: '(next)', expect: ['newerWatchers'] },
+  { id: 'S14_strip_older_wins', file: WS, find: '(!prev || next.rev >= prev.rev ? next : prev)', to: '(!prev || next.rev <= prev.rev ? next : prev)', expect: ['newerWatchers'] },
+  { id: 'S04_edge_key_counts_attempts', file: WS, find: '.map((w) => `${w.name}@${w.since}:${w.lastError?.code ?? \'\'}`)', to: '.map((w) => `${w.name}@${w.since}:${w.lastError?.code ?? \'\'}@${w.attempts}`)', expect: ['degradedOf / degradedLabels / degradedKey'] },
+  { id: 'S15_strip_order_by_wall_clock', file: WS, find: '(!prev || next.rev >= prev.rev ? next : prev)', to: '(!prev || next.at >= prev.at ? next : prev)', expect: ['newerWatchers', 'smoke:a CLOCK STEPPED BACK'], smoke: true },
+  { id: 'S16_edge_key_ignores_the_cause', file: WS, find: ':${w.lastError?.code ?? \'\'}`)', to: '`)', expect: ['degradedOf / degradedLabels / degradedKey'] },
+  { id: 'S17_strip_time_in_utc', file: WS, find: 'depuis ${localClock(w.since)}', to: 'depuis ${clock(w.since)}', expect: ['strip copy (D-Q8 A)'] },
   { id: 'S05_labels_not_deduplicated', file: WS, find: '[...new Set(degradedOf(s).map((w) => w.label))]', to: 'degradedOf(s).map((w) => w.label)', expect: ['degradedOf / degradedLabels / degradedKey'] },
   { id: 'S06_healthy_prints_nothing', file: WS, find: 'if (d.length === 0) return [`watchers: ${total} ok`];', to: 'if (d.length === 0) return [];', expect: ['all ok → ONE calm line', 'rig:control:bus_status_all_ok'], rig: ['control'], cli: true },
   { id: 'S07_none_armed_silent', file: WS, find: "if (total === 0) return ['watchers: none armed'];", to: 'if (total === 0) return [];', expect: ['all ok → ONE calm line'] },
   { id: 'S08_fallback_not_named', file: WS, find: ' · meanwhile: ${w.fallback}`', to: '`', expect: ['degraded: summary line names'] },
   { id: 'S09_since_is_now', file: WS, find: 'DEGRADED since ${clock(w.since)} (', to: 'DEGRADED since ${clock(now)} (', expect: ['degraded: summary line names'] },
   { id: 'S11_dir_not_in_the_line', file: WS, find: ' · ${w.dir} · meanwhile:', to: ' · meanwhile:', expect: ['degraded: summary line names'] },
-  { id: 'S10_warning_silent', file: WS, find: "  if (d.length === 0) return null;\n  return `${degradedLabels(s)", to: "  if (d.length === 0) return null;\n  return null;\n  return `${degradedLabels(s)", expect: ['watchersWarning'] },
+  { id: 'S10_strip_never_shown', file: WS, find: "  if (d.length === 0) return null;\n  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {\n    title:", to: "  if (d.length === 0) return null;\n  return null;\n  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {\n    title:", expect: ['strip copy (D-Q8 A)'] },
   // ── the registry + production binding (src/main/watchers.ts) ──
   { id: 'W01_never_registered', file: WR, find: '      armed.add(handle);\n      inner.start();', to: '      inner.start();', expect: ['EMFILE at arm: bus-status data lists it degraded', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: false },
   { id: 'W02_stop_keeps_registered', file: WR, find: '      armed.delete(handle); // first:', to: '      void 0; // first:', expect: ['stop() of a DEGRADED watcher clears', 'healthy watcher: listed as ok', 'rig:shutdown:registry_empty_after_shutdown'], rig: ['shutdown'] },
@@ -96,7 +137,7 @@ const MUTANTS = [
   { id: 'W07_status_not_sorted', file: WR, find: '.sort((a, b) => a.name.localeCompare(b.name) || a.dir.localeCompare(b.dir)) };', to: ' };', expect: ['the status is sorted by name'] },
   { id: 'W08_fault_file_existence_ignored', file: WR, find: 'if (f && fs.existsSync(f)) throw', to: 'if (f) throw', expect: ['ORCHESTRA_WATCH_FAULT_FILE: while the file exists'] },
   { id: 'W09_retry_timer_holds_the_process', file: WR, find: '    t.unref?.(); // a pending retry must never keep the process alive (a CLI-less rig, a quit)\n', to: '', expect: ['the production retry timer is unref'] },
-  { id: 'W10_no_health_check_in_production', file: WR, find: '  inodeOf,\n  get healthMs() {', to: '  get healthMs() {', expect: ['rig:silent_detach:rearmed_and_pushed'], rig: ['silent_detach'] },
+  { id: 'W10_no_health_check_in_production', file: WR, find: '  inodeOf,\n  birthOf,\n  get healthMs() {', to: '  birthOf,\n  get healthMs() {', expect: ['rig:silent_detach:rearmed_by_the_inode_check'], rig: ['silent_detach'] },
   { id: 'W11_mkdirp_dep_missing', file: WR, find: '  mkdirp: (d) => void fs.mkdirSync(d, { recursive: true }),\n', to: '', expect: ['ensureDir creates a missing directory'] },
   { id: 'W12_error_event_not_wired', file: WR, find: '  w.on(\'error\', onError);\n', to: '', expect: ['rig:midlife:rearmed_and_caught_up', 'rig:midlife:error_event_has_a_listener'], rig: ['midlife'] },
   { id: 'W13_options_dropped_at_the_binding', file: WR, find: '(primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError, opts)', to: '(primitiveOverride ?? withFaultInjection(realWatch))(dir, onEvent, onError)', expect: ['the primitive receives the site’s persistent option'] },
@@ -104,13 +145,13 @@ const MUTANTS = [
   { id: 'W15_zombie_re_registered', file: WR, find: '      if (stopped) return; // the machine ignores a start after stop(): a zombie must not re-enter the registry\n', to: '', expect: ['start() after stop() does not put a zombie'] },
   { id: 'W16_push_subscription_not_idempotent', file: WR, find: '  if (pushUnsub) return pushUnsub;\n', to: '', expect: ['pushWatchersToRenderer is idempotent'] },
   // ── the seven sites: the catch-up on recovery, the stop, the filter, ensureDir ──
-  { id: 'T01_busWake_no_catchup', file: BW, find: '    onRecover: () => void sweepBusWake(),\n', to: '', expect: ['SITE bus-wake', 'rig:recovery:catchup_wake_delivered'], rig: ['recovery'] },
-  { id: 'T02_pauseUi_no_catchup', file: PU, find: '    onRecover: reconcilePauseUi,\n', to: '', expect: ['SITE pause-ui', 'rig:recovery:catchup_pause_ui_push'], rig: ['recovery'] },
-  { id: 'T03_trap_no_catchup', file: PT, find: '    onRecover: () => {\n      if (activeDeps) void sweepPauseTrap(activeDeps);\n    },\n', to: '', expect: ['SITE pause-trap', 'rig:recovery:catchup_trap_stamped'], rig: ['recovery'] },
-  { id: 'T04_gates_no_catchup', file: HG, find: '    onRecover: reconcileHumanGates,\n', to: '', expect: ['SITE human-gates', 'rig:recovery:catchup_gate_push'], rig: ['recovery'] },
-  { id: 'T05_inbox_no_catchup', file: IT, find: '    onRecover: () => {\n      // a drain by the shell hook while the watch was down never retracted its chip: re-broadcast every live workspace\'s count\n      for (const ws of store.workspaces) if (!ws.archived) broadcastInbox(ws.id);\n    },\n', to: '', expect: ['SITE inbox-tray', 'rig:recovery:catchup_inbox_push'], rig: ['recovery'] },
-  { id: 'T06_spool_no_catchup', file: ES, find: '    onRecover: drainAll,\n', to: '', expect: ['SITE events-spool'] },
-  { id: 'T07_login_no_catchup', file: AU, find: '    onRecover: check,\n', to: '', expect: ['SITE login-watch'] },
+  { id: 'T01_busWake_no_catchup', file: BW, find: '    onRecover: () => void sweepBusWake(),\n', to: '', expect: ['rig:catchup_bus-wake:bus-wake_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_bus-wake'] },
+  { id: 'T02_pauseUi_no_catchup', file: PU, find: '    onRecover: reconcilePauseUi,\n', to: '', expect: ['rig:catchup_pause-ui:pause-ui_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_pause-ui'] },
+  { id: 'T03_trap_no_catchup', file: PT, find: '    onRecover: () => {\n      if (activeDeps) void sweepPauseTrap(activeDeps);\n    },\n', to: '', expect: ['rig:catchup_pause-trap:pause-trap_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_pause-trap'] },
+  { id: 'T04_gates_no_catchup', file: HG, find: '    onRecover: reconcileHumanGates,\n', to: '', expect: ['rig:catchup_human-gates:human-gates_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_human-gates'] },
+  { id: 'T05_inbox_no_catchup', file: IT, find: '    onRecover: () => {\n      // a drain by the shell hook while the watch was down never retracted its chip: re-broadcast every live workspace\'s count\n      for (const ws of store.workspaces) if (!ws.archived) broadcastInbox(ws.id);\n    },\n', to: '', expect: ['rig:catchup_inbox-tray:inbox-tray_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_inbox-tray'] },
+  { id: 'T06_spool_no_catchup', file: ES, find: '    onRecover: drainAll,\n', to: '', expect: ['rig:catchup_events-spool:events-spool_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_events-spool'] },
+  { id: 'T07_login_no_catchup', file: AU, find: '    onRecover: check,\n', to: '', expect: ['rig:catchup_login-watch:login-watch_caught_up_on_recovery_without_a_new_write'], rig: ['catchup_login-watch'] },
   SITE_STOP('T08_busWake_stop_leaks', BW, '  watcher?.stop();\n  watcher = null;\n  started = false;', '  watcher = null;\n  started = false;', 'bus-wake'),
   SITE_STOP('T09_pauseUi_stop_leaks', PU, '  watcher?.stop();\n  watcher = null;', '  watcher = null;', 'pause-ui'),
   SITE_STOP('T10_trap_stop_leaks', PT, '  watcher?.stop();\n  watcher = null;\n  activeDeps = null;', '  watcher = null;\n  activeDeps = null;', 'pause-trap'),
@@ -140,12 +181,30 @@ const MUTANTS = [
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 500_000, ...opts });
 
+// ONE `node --test` per file with its OWN timeout: a mutant that leaks a real fs.watch handle HANGS watchers.test.ts, and in a shared run the kill-by-timeout threw away every other file's already-finished reds
+// (R24 was reported SURVIVED while resilient-watch.test.ts went red on it by hand). A timed-out file is itself a red (`hang: <file>`), never an empty result.
 function unitRed() {
-  const r = sh(process.execPath, ['--test', '--experimental-strip-types', ...TESTS]);
-  const names = [...(r.stdout ?? '').matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1].replace(/\\([#])/g, '$1'));
-  const pass = Number(/^# pass (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
-  const skipped = Number(/^# skipped (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
-  return { names, pass, skipped, status: r.status };
+  const names = [];
+  let pass = 0;
+  let skipped = 0;
+  let status = 0;
+  for (const f of TESTS) {
+    const r = sh(process.execPath, ['--test', '--experimental-strip-types', f], { timeout: 150_000 });
+    const out = r.stdout ?? '';
+    names.push(...[...out.matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1].replace(/\\([#])/g, '$1')));
+    if (r.error || r.signal) { names.push(`hang: ${f} (${r.error?.code ?? r.signal})`); status = 1; }
+    else if (r.status !== 0) status = r.status;
+    pass += Number(/^# pass (\d+)/m.exec(out)?.[1] ?? 0);
+    skipped += Number(/^# skipped (\d+)/m.exec(out)?.[1] ?? 0);
+  }
+  return { names, pass, skipped, status };
+}
+function smokeRed() {
+  const r = sh(process.execPath, [path.join(HERE, 'watchers-strip-render-smoke.mjs')]);
+  const out = r.stdout ?? '';
+  const fails = [...out.matchAll(/^\s+FAIL (.*?)(?: — .*)?$/gm)].map((m) => `smoke:${m[1]}`);
+  if (r.status !== 0 && fails.length === 0) fails.push(`smoke:(crashed, exit ${r.status})`);
+  return { fails, pass: (out.match(/^\s+ok /gm) ?? []).length, status: r.status };
 }
 /** the rig's parent prints `FAIL <arm> (…) — name: note | name: note`; the failing checks become `rig:<arm>:<name>`, plus `rig:<arm>` for the arm */
 function rigRed(arms) {
@@ -153,12 +212,12 @@ function rigRed(arms) {
   const r = sh(process.execPath, ['--experimental-strip-types', '--import', pathToFileURL(path.join(HERE, '.r2-register.mjs')).href, path.join(HERE, 'e2e-resilient-watchers.mjs')], { env: { ...process.env, RIG_ARMS: arms.join(',') } });
   const out = r.stdout ?? '';
   const red = [];
-  for (const m of out.matchAll(/^FAIL (\w+) \([^)]*\)(?: — (.*))?$/gm)) {
+  for (const m of out.matchAll(/^FAIL ([\w-]+) \([^)]*\)(?: — (.*))?$/gm)) {
     red.push(`rig:${m[1]}`);
-    for (const part of (m[2] ?? '').split(' | ')) { const name = /^([a-z0-9_]+):/.exec(part)?.[1]; if (name) red.push(`rig:${m[1]}:${name}`); }
+    for (const part of (m[2] ?? '').split(' | ')) { const name = /^([\w-]+):/.exec(part)?.[1]; if (name) red.push(`rig:${m[1]}:${name}`); }
     if (!m[2]) red.push(`rig:${m[1]}:(no verdict)`);
   }
-  return { red, pass: (out.match(/^PASS \w+/gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('RESILIENT WATCHERS')).pop() ?? `no summary (exit ${r.status})`) };
+  return { red, pass: (out.match(/^PASS [\w-]+ /gm) ?? []).length, line: (out.split('\n').filter((l) => l.startsWith('RESILIENT WATCHERS')).pop() ?? `no summary (exit ${r.status})`) };
 }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 const strays = () => {
@@ -194,8 +253,9 @@ buildCli();
 // ── POSITIVE CONTROL: the unmutated tree must be all green (and the CLI fresh), else every "killed" below is vacuous ──
 const base = unitRed();
 const baseRig = rigRed(ALL_ARMS);
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (pass ${baseRig.pass}, red ${JSON.stringify(baseRig.red)}) | strays ${strays()} scratch ${scratchLeft()}`);
-if (base.names.length || base.status !== 0 || base.skipped !== 0 || (!noRig && (baseRig.red.length || baseRig.pass !== ALL_ARMS.length))) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(2); }
+const baseSmoke = smokeRed();
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | rig: ${baseRig.line} (pass ${baseRig.pass}, red ${JSON.stringify(baseRig.red)}) | smoke ok ${baseSmoke.pass} fail ${baseSmoke.fails.length} | strays ${strays()} scratch ${scratchLeft()}`);
+if (base.names.length || base.status !== 0 || base.skipped !== 0 || (!noRig && (baseRig.red.length || baseRig.pass !== ALL_ARMS.length)) || baseSmoke.fails.length || baseSmoke.status !== 0) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(2); }
 
 const rows = [];
 let restoreBad = false;
@@ -220,7 +280,8 @@ for (const m of MUTANTS) {
     if (m.cli) buildCli();
     const u = unitRed();
     const r = rigRed(m.rig);
-    const red = [...u.names, ...r.red];
+    const sm = m.smoke ? smokeRed() : { fails: [] };
+    const red = [...u.names, ...r.red, ...sm.fails];
     const hit = m.expect.filter((e) => red.some((n) => n.includes(e)));
     rows.push({ id: m.id, verdict: hit.length > 0 ? 'KILLED' : red.length ? 'KILLED-BUT-NOT-BY-NAMED-ARM' : 'SURVIVED', detail: `named ${JSON.stringify(m.expect)} hit ${JSON.stringify(hit)}; red: ${red.slice(0, 4).join(' | ')}${red.length > 4 ? ` (+${red.length - 4})` : ''}` });
   } finally {
