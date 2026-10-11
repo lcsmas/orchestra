@@ -343,7 +343,7 @@ test('G13 (#323) the row carries the cap the member\'s CURRENT session runs unde
   const left = memberViewFrom('ws-left', [{ ...rd(300, [{ pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }], null), maxBytes: 6144 * MBg }]);
   const { rows } = groupSessionsByWorkspace([sess({ ptyId: 'ws-a:sdk', workspaceId: 'ws-a', kind: 'sdk' }), sess({ ptyId: 'ws-b:sdk', workspaceId: 'ws-b', kind: 'sdk' }), sess({ ptyId: 'ws-r', workspaceId: 'ws-r', remote: true })], null, rep(capped, uncapped, left));
   const by = Object.fromEntries(rows.map((r) => [r.key, r]));
-  assert.deepEqual(by['ws-a'].cap, { unit: 'u', hardBytes: 6144 * MBg, billBytes: 2100 * MBg, workingSetBytes: 1600 * MBg, peakBytes: 2400 * MBg });
+  assert.deepEqual(by['ws-a'].cap, { unit: 'u', hardBytes: 6144 * MBg, billBytes: 2100 * MBg, workingSetBytes: 1600 * MBg, peakBytes: 2400 * MBg, scopes: 1 });
   assert.equal(by['ws-b'].cap, null, 'scope without a limit: no cap to compare against');
   assert.equal(by['ws-r'].cap, null, 'a sandbox row never reads a local scope');
   assert.equal(by['ws-left'].scopeOnly, true);
