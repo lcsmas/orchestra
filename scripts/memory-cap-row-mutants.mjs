@@ -10,6 +10,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { descendantsOf, settleBackups } from './mutant-survivors.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -108,6 +109,9 @@ function smokeRed() {
   if (r.status !== 0 && fails.length === 0) fails.push(`smoke:(crashed, exit ${r.status})`);
   return { fails, pass: (out.match(/^\s+ok /gm) ?? []).length, status: r.status };
 }
+// MEASURED, never constants (#323 gate): live descendants of this process, and `*.orig` backups that are NOT byte-identical to their source (a restore that did not happen; identical ones are cleaned).
+const strays = () => descendantsOf(process.pid).length;
+const scratchLeft = () => settleBackups(BACKUP, (id) => path.join(REPO, MUTANTS.find((m) => m.id === id)?.file ?? '/nonexistent'));
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
@@ -134,7 +138,7 @@ buildCli();
 // ── POSITIVE CONTROL: the unmutated tree must be all green (and the CLI fresh), else every "killed" below is vacuous ──
 const base = unitRed();
 const baseSmoke = smokeRed();
-console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | smoke ok ${baseSmoke.pass} fail ${baseSmoke.fails.length}`);
+console.log(`BASELINE unit: pass ${base.pass} fail ${base.names.length} skipped ${base.skipped} | smoke ok ${baseSmoke.pass} fail ${baseSmoke.fails.length} | strays ${strays()} scratch ${scratchLeft()}`);
 if (base.names.length || base.status !== 0 || base.skipped !== 0 || baseSmoke.fails.length || baseSmoke.status !== 0) { console.error('BASELINE NOT GREEN — aborting (nothing was mutated)'); process.exit(2); }
 
 const rows = [];
@@ -173,8 +177,9 @@ const after = Object.fromEntries(files.map((f) => [f, sha(f)]));
 const sameSha = files.every((f) => before[f] === after[f]);
 const gitClean = sh('git', ['diff', '--quiet', '--', ...files]).status === 0;
 const post = unitRed();
+const sv = strays(); const sc = scratchLeft();
 for (const r of rows) console.log(`${r.verdict.padEnd(30)} ${r.id.padEnd(40)} ${r.detail}`);
 const killed = rows.filter((r) => r.verdict === 'KILLED').length;
-console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} · nothing else is spawned (node --test + the SSR smoke only)`);
+console.log(`RESTORED: sha-identical ${sameSha} · git diff clean ${gitClean} · cmp-restore ${!restoreBad} · post-sweep unit fail ${post.names.length} · survivors: processes=${sv} backups=${sc}`);
 console.log(`MUTANTS: ${killed}/${rows.length} killed by their NAMED test/arm${rows.length === killed ? '' : ` — NOT ALL: ${rows.filter((r) => r.verdict !== 'KILLED').map((r) => `${r.id}=${r.verdict}`).join(', ')}`}`);
-process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 ? 0 : 1);
+process.exit(rows.length === killed && sameSha && gitClean && !restoreBad && post.names.length === 0 && sv === 0 && sc === 0 ? 0 : 1);
