@@ -81,3 +81,13 @@ test('WINDOW LAYOUT (gate c/6112245304, built app): the fields scroll INSIDE a h
   assert.ok(/\.memory-guard-settings \.mg-error \{[^}]*flex: none;/.test(css) && /\.memory-guard-settings \.modal-actions \{[^}]*flex: none;/.test(css), 'the refusal and Done never shrink away');
   assert.ok(/\.sound-settings \{[^}]*max-height: min\(80vh, 720px\);[^}]*display: flex;[^}]*flex-direction: column;/.test(css), 'the dialog is height-bounded — the thing the body scrolls against');
 });
+
+test('SWAY GATE (OPS review m3): the three viewports are IMPOSED by CDP and the page\'s MEASURED innerWidth/innerHeight (and the decoded PNG size) are asserted equal to the request — the rig tiles a 1600x1000 output, so setContentSize proves nothing', () => {
+  const g = fs.readFileSync(path.join(ROOT, 'scripts/memcap-screenshot.mjs'), 'utf8');
+  assert.ok(/Emulation\.setDeviceMetricsOverride', \{ width: vw, height: vh, deviceScaleFactor: 1, mobile: false \}/.test(g), 'the viewport is imposed through Emulation.setDeviceMetricsOverride');
+  assert.ok(/\[\[1440, 900\], \[1920, 1080\], \[1280, 640\]\]/.test(g), 'the three viewports');
+  assert.ok(!/setContentSize\(vw, vh\)/.test(g), 'the window-size lever (blind to a tiling compositor) is gone');
+  assert.ok(/m\.vw === f\.vw && m\.vh === f\.vh/.test(g), 'the measured innerWidth x innerHeight is compared with the request, for EVERY state');
+  assert.ok(/pp\.w === f\.vw && pp\.h === f\.vh/.test(g), 'and the decoded capture has the requested size');
+  assert.ok(/Page\.captureScreenshot/.test(g), 'the capture is the emulated viewport, not the tiled window');
+});

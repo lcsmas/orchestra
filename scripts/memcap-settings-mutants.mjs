@@ -133,6 +133,10 @@ const MUTANTS = [
   { id: 'L07_body_wrapper_dropped', file: WIN, find: "<div className=\"mg-body\" data-mg-body>", to: "<div>", expect: ['WINDOW LAYOUT'] },
   { id: 'S10_closest_ranked_in_absolute_bytes', file: SC, find: "b.cap.billBytes / b.cap.hardBytes > a.cap.billBytes / a.cap.hardBytes ? b : a", to: "b.cap.billBytes > a.cap.billBytes ? b : a", expect: ['V6c'] },
   { id: 'S10b_closest_ranked_by_the_smallest_cap', file: SC, find: "b.cap.billBytes / b.cap.hardBytes > a.cap.billBytes / a.cap.hardBytes ? b : a", to: "b.cap.hardBytes < a.cap.hardBytes ? b : a", expect: ['V6c'] },
+  { id: 'G01_viewport_not_imposed', file: 'scripts/memcap-screenshot.mjs', find: "await dbg.sendCommand('Emulation.setDeviceMetricsOverride', { width: vw, height: vh, deviceScaleFactor: 1, mobile: false });", to: "win.setContentSize(vw, vh);", expect: ['SWAY GATE (OPS review m3)'] },
+  { id: 'G02_measured_viewport_not_asserted', file: 'scripts/memcap-screenshot.mjs', find: "m.vw === f.vw && m.vh === f.vh, `measured", to: "true, `measured", expect: ['SWAY GATE (OPS review m3)'] },
+  { id: 'G03_png_size_not_asserted', file: 'scripts/memcap-screenshot.mjs', find: "!!pp && pp.w === f.vw && pp.h === f.vh,", to: "!!pp,", expect: ['SWAY GATE (OPS review m3)'] },
+  { id: 'G04_a_viewport_dropped', file: 'scripts/memcap-screenshot.mjs', find: "[[1440, 900], [1920, 1080], [1280, 640]]", to: "[[1440, 900], [1920, 1080]]", expect: ['SWAY GATE (OPS review m3)'] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
