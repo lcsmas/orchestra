@@ -324,7 +324,8 @@ const fileRecords = (file) => (readSafe(file) ?? '').trim().split('\n').filter(B
 const kernelKilledPids = (unit, sinceSec) => {
   const r = spawnSync('journalctl', ['-k', '--no-pager', '-q', '-o', 'json', '--grep', 'oom-kill:constraint=CONSTRAINT_MEMCG', '--since', `@${sinceSec}`], { encoding: 'utf8', maxBuffer: 16 << 20 });
   return (r.stdout ?? '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l).MESSAGE; } catch { return ''; } })
-    .filter((m) => typeof m === 'string' && m.includes(`/${unit},`)).map((m) => Number(/,pid=(\d+),uid=/.exec(m)?.[1])).filter(Boolean);
+    .filter((m) => typeof m === 'string' && (m.includes(`/${unit},`) || m.includes(`/${unit}/w,`))) // #332: the limit that kills is the WORK leaf's
+    .map((m) => Number(/,pid=(\d+),uid=/.exec(m)?.[1])).filter(Boolean);
 };
 const notified = async (wsId) => { if (memNoticeMod) await memNoticeMod.__memNoticeIdle(wsId); };
 
@@ -974,7 +975,7 @@ try {
     check('precondition: the scope starts BELOW the warning level (else nothing is a crossing)', cur0 < 0.15 * 1024 ** 3 * 0.9, `memory.current=${cur0}`);
     // R5 control FIRST: 130 MB of reclaimable PAGE CACHE pushes memory.current over the level, but it is not a working set — the kernel reclaims it before any kill — so it must NOT warn.
     const cacheFile = path.join(base, 'cache-fill.bin');
-    st.send({ tool: `${python.join(' ')} ${RIG_DIR}/cache-fill.py ${cacheFile} 130 2.5`, id: 't-cache' });
+    st.send({ tool: `${python.join(' ')} ${RIG_DIR}/cache-fill.py ${cacheFile} 170 2.5`, id: 't-cache' }); // #332: the level reads the WORK leaf (tools only) — 170 MB of cache, since the keeper + CLI baseline is no longer in it
     await sleep(1600);
     const curCache = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.current')));
     const inactive = Number((/^inactive_file (\d+)/m.exec(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.stat')) ?? '') ?? [])[1] ?? 0);
@@ -983,7 +984,7 @@ try {
     check('positive control: the page cache DID push raw memory.current over the warning level (the false alarm this guards against was real)', curCache > 0.15 * 1024 ** 3, `memory.current=${(curCache / 1048576).toFixed(0)} MB inactive_file=${(inactive / 1048576).toFixed(0)} MB level=${(0.15 * 1024).toFixed(0)} MB`);
     check('R5: …yet NO warning — the level keys on the working set (memory.current − inactive_file), not on page cache', softs.length === 0, `softs=${softs.length}`);
     const t0 = Date.now();
-    const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/soft-cross.py 120 1.5 1.7 3 soft-notice`, 't-soft', 60_000);
+    const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/soft-cross.py 175 1.5 1.7 3 soft-notice`, 't-soft', 60_000);
     const wall = Date.now() - t0;
     await sleep(1500);
     await notified(ws);
@@ -1122,7 +1123,7 @@ echo DONE`;
     // NOT a hole any more: the keeper closes the swap escape itself on the work leaf (state `active`).
     const realSR = spawnSync('sh', ['-c', 'command -v systemd-run'], { encoding: 'utf8' }).stdout.trim();
     const variants = [
-      { tag: 'nodelegate', drop: 'Delegate=*', what: 'Delegate dropped (the scope is not delegated: no leaves, no cap)' },
+      { tag: 'nodelegate', drop: null, what: 'the scope\'s cgroup directory is not writable (leaves cannot be built: no cap)' },
       { tag: 'noswap', drop: 'MemorySwapMax=*', what: 'MemorySwapMax=0 dropped at the scope (the keeper must close the swap escape itself)' },
     ];
     const realPath = process.env.PATH;
@@ -1131,7 +1132,12 @@ echo DONE`;
       wsList.push(wsv);
       const dir = path.join(base, `shim-${v.tag}`);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nprev=""\nfor a in "$@"; do\n  if [ "$prev" = "-p" ] && [[ "$a" == ${v.drop} ]]; then unset 'args[${'$'}{#args[@]}-1]'; prev=""; continue; fi\n  args+=("$a"); prev="$a"\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      if (v.drop === null) {
+        // pass every argument through, but run the keeper behind a one-line `sh` that makes the scope's own directory read-only first (what a non-delegated / locked cgroup looks like to the keeper's mkdir)
+        fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nseen=0\nfor a in "$@"; do\n  args+=("$a")\n  if [ "$a" = "--" ] && [ $seen = 0 ]; then seen=1; args+=(/bin/sh -c 'chmod a-w "/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)" && exec "$@"' q9-lock); fi\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      } else {
+        fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nprev=""\nfor a in "$@"; do\n  if [ "$prev" = "-p" ] && [[ "$a" == ${v.drop} ]]; then unset 'args[${'$'}{#args[@]}-1]'; prev=""; continue; fi\n  args+=("$a"); prev="$a"\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      }
       process.env.PATH = `${dir}:${realPath}`;
       scopeMod?.resetScopeSupportCache?.();
       const stv = open(wsv, decide(wsv));
@@ -1146,7 +1152,7 @@ echo DONE`;
         check(`[${v.what}] precondition: no leaves exist and the scope has no limit`, !hasLeaves && readSafe(path.join(f.scopeDir ?? '/nonexistent', 'memory.max'))?.trim() === 'max', `leaves=${hasLeaves}`);
         check(`[${v.what}] the keeper reports cap.state = not-applied (never active)`, pr?.cap?.state === 'not-applied', JSON.stringify(pr?.cap ?? null));
         check(`[${v.what}] the tools ARE still wrapped (adj 1000: a backstop episode takes a tool first)`, !!initOf(stv)?.shellPrefix, `prefix=${initOf(stv)?.shellPrefix}`);
-        check(`[${v.what}] the log says why (leaves could not be built) and NO kill watch runs`, /leaves could not be built/.test(klog) && !/memory cap: ACTIVE unit=/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-220));
+        check(`[${v.what}] the log says why (leaves could not be built: mkdir) and NO kill watch runs`, /leaves could not be built \(mkdir keeper leaf/.test(klog) && !/memory cap: ACTIVE unit=/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-220));
         check(`[${v.what}] the app log says UNCAPPED`, await waitFor(() => new RegExp(`memory-cap\\[${wsv}\\]: scope .* NOT applied.* UNCAPPED`).test(orchLog()), 8000), '');
         const cnt = scopeMod?.countMemberScopes();
         check(`[${v.what}] bus-status would count it as a scope WITHOUT a limit`, !!cnt && cnt.unlimited >= 1, JSON.stringify(cnt));

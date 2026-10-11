@@ -155,6 +155,7 @@ fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
 process.env.ORCHESTRA_HOME = home;
 process.env.HOME = home;
 process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX = UNIT_PREFIX;
+process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = "0"; // #332: disposable scopes stay <= 300 MB: no scope-level backstop (the work leaf carries the cap)
 process.env.ORCHESTRA_KEEPER_LINGER_MS = '300000';
 const { assertScratch } = await import(`${HERE_REPO}/scripts/session-budget/scratch-guard.mjs`);
 const liveNames = fs.readdirSync(REAL_HOME).filter((n) => n.startsWith('.claude') || n.startsWith('.orchestra')); // every live config/home dir, whatever its suffix
