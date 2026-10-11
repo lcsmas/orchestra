@@ -171,7 +171,7 @@ test('keeperPid before the keeper wrote its pid file (it listens first): the sco
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
-  assert.deepEqual(m, { currentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
+  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
   assert.equal(readScopeMemory({ cgroupDir: path.join(APP, 'gone.scope') }, env()), null);
   fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.maxBytes, null, 'no limit reads as null — "tracked, uncapped"');
@@ -369,4 +369,24 @@ test('#332 leaves (review): a scope WITH a work leaf whose memory.max is absent 
   const mem = readScopeMemory({ cgroupDir: half.scopeDir }, env());
   assert.equal(mem!.maxBytes, null, 'the work leaf has no limit file: no cap — not the scope\'s backstop');
   assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'counted as a scope WITHOUT a limit');
+});
+
+test('#332 leaves × #323: the CAP figures (current / working set / peak) are the WORK leaf\'s; the scope\'s currentBytes stays the member\'s whole bill (keeper + CLI + tools) — the bar and the MEM column read different cgroups', () => {
+  const { scopeDir, wDir } = mkLeafScope('orchestra-ws-leafy9-1kkkkk.scope', 7091, 7092, 7093);
+  fs.writeFileSync(path.join(scopeDir, 'memory.current'), `${500 * 1048576}\n`); // the bill: 500 MB (keeper + CLI ~340 MB + tools)
+  fs.writeFileSync(path.join(scopeDir, 'memory.stat'), `anon ${400 * 1048576}\ninactive_file ${60 * 1048576}\nactive_file 0\n`);
+  fs.writeFileSync(path.join(scopeDir, 'memory.peak'), `${600 * 1048576}\n`);
+  fs.writeFileSync(path.join(wDir, 'memory.current'), `${160 * 1048576}\n`); // the tools: 160 MB, 40 MB of it reclaimable cache
+  fs.writeFileSync(path.join(wDir, 'memory.stat'), `anon ${120 * 1048576}\ninactive_file ${40 * 1048576}\nactive_file 0\n`);
+  fs.writeFileSync(path.join(wDir, 'memory.peak'), `${200 * 1048576}\n`);
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  assert.equal(m.currentBytes, 500 * 1048576, 'the member\'s whole bill');
+  assert.equal(m.capCurrentBytes, 160 * 1048576, 'what the hard level compares');
+  assert.equal(m.workingSetBytes, 120 * 1048576, 'what the soft level compares: the leaf\'s memory.current − the LEAF\'s inactive_file (not the scope\'s)');
+  assert.equal(m.peakBytes, 200 * 1048576, 'the cap\'s peak');
+  assert.equal(m.maxBytes, 268435456);
+  fs.rmSync(path.join(wDir, 'memory.current'));
+  const noCur = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  assert.equal(noCur.capCurrentBytes, null, 'a leaf whose memory.current cannot be read is UNKNOWN for the cap, never the scope\'s figure');
+  assert.equal(noCur.workingSetBytes, null);
 });

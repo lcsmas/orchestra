@@ -216,3 +216,14 @@ test('C2 (#323) cap is the keeper\'s scope, never an older generation kept alive
   assert.equal(memberViewFrom('ws-a', [{ ...live, workingSetBytes: -5 }]).cap?.workingSetBytes, null, 'a negative one too');
   assert.equal(memberViewFrom('ws-a', [{ ...live, peakBytes: Number.POSITIVE_INFINITY }]).cap?.peakBytes, null);
 });
+
+test('#332 × #323: the cap view\'s bill is the cgroup that carries the cap (capCurrentBytes) while the member\'s MEM figure stays the scope total; absent / junk capCurrentBytes falls back to the scope\'s', () => {
+  const live = { ...reading('k2', 2100, [], 7), maxBytes: 6144 * MB, capCurrentBytes: 1500 * MB, workingSetBytes: 1100 * MB, peakBytes: 1800 * MB };
+  const v = memberViewFrom('ws-a', [live]);
+  assert.equal(v.cap?.billBytes, 1500 * MB, 'the bar compares the TOOLS\' memory.current with the hard level');
+  assert.equal(v.bytes, 2100 * MB, 'the MEM column still counts the whole scope (keeper + CLI + tools)');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, capCurrentBytes: null }]).cap?.billBytes, 2100 * MB, 'no leaf reading: the scope\'s figure');
+  assert.equal(memberViewFrom('ws-a', [{ ...live, capCurrentBytes: Number.NaN }]).cap?.billBytes, 2100 * MB, 'junk: the scope\'s figure, never NaN');
+  const { capCurrentBytes: _omit, ...older } = live;
+  assert.equal(memberViewFrom('ws-a', [older]).cap?.billBytes, 2100 * MB, 'an older reader without the field');
+});

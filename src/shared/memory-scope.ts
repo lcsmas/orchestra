@@ -234,7 +234,11 @@ export function swapLimitApplied(swapMaxText: string | null, swapTotalKb: number
 }
 
 export interface ScopeMemory {
+  /** `memory.current` of the SCOPE: the whole member's bill (keeper + CLI + tools + Reliquats) — what the MEM column of the Resources page adds up. */
   currentBytes: number;
+  /** #332: `memory.current` of the WORK leaf — the figure the hard level really compares (the tools; the keeper and the CLI are in `k`). Equals `currentBytes` for a scope without leaves. null = the leaf exists but is unreadable. */
+  capCurrentBytes: number | null;
+  /** The peak of the cgroup that carries the cap (the work leaf when the scope has one — #332 — else the scope). */
   peakBytes: number | null;
   /** null = no limit (or unreadable). A capped scope reads a number. */
   maxBytes: number | null;
@@ -242,7 +246,7 @@ export interface ScopeMemory {
   swapMaxBytes: number | null;
   swapCurrentBytes: number | null;
   /** FI-1 v1.11 (#323): the WORKING SET (`memory.current` − `inactive_file`, ledger R5) — what the soft level compares; `memory.current` is what the hard level compares (R1). null = `memory.stat` unreadable (never a fabricated figure). */
-  workingSetBytes: number | null;
+  workingSetBytes: number | null; // #332: of the cgroup that carries the cap (the work leaf), like capCurrentBytes
   events: MemoryEvents;
 }
 
