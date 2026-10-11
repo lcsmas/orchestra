@@ -668,7 +668,7 @@ test('teardown reports what it could NOT kill: a respawner keeps carrying the di
   respawner.unref();
   const id = identOf(respawner.pid as number) as Ident;
   try {
-    await sleep(300);
+    await waitUntil(() => carrying(dir).length > 0, 10_000, 'the respawner has started forking carriers (a loaded host starts node slowly)');
     const left = await reap([], [dir]);
     assert.ok(left.length > 0, 'a respawner defeats the sweep: reap must say so');
     killIdent(id);
