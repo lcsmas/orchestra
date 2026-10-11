@@ -94,8 +94,9 @@ test('SWAY GATE (OPS review m3): the three viewports are IMPOSED by CDP and the 
 
 test('#323-fu m2: the « not applied » note travels FI-1 limitApplied → ScopeReading → member view capNote → SessionGroup.capNote → the dim tooltip cell (after the capped branch, before the plain one)', () => {
   const fi1 = codeOf('src/main/memory-scope.ts');
-  assert.ok(/limitText = e\.readFile\(path\.join\(d, 'memory\.max'\)\);/.test(fi1), 'FI-1 reads memory.max ONCE …');
-  assert.ok(/maxBytes: limitText === null \? null : parseCgroupLimit\(limitText\),\s*limitApplied: limitText === null \? null : parseLimitApplied\(limitText\),/.test(fi1), '… and that one read feeds BOTH the number and the applied/not-applied/unknown tri-state (a change of the cap\'s cgroup moves them together)');
+  assert.ok(/limitText = e\.readFile\(path\.join\(capDir, 'memory\.max'\)\);/.test(fi1), 'FI-1 reads memory.max ONCE, from the CAP cgroup (the work leaf when there is one — #332), never the scope\'s own backstop …');
+  assert.ok(/maxBytes: limitText === null \? null : parseCgroupLimit\(limitText\),\s*limitApplied: limitText !== null \? parseLimitApplied\(limitText\) : limitFileAbsent \? false : null,/.test(fi1), '… and that one read feeds BOTH the number and the applied/not-applied/unknown tri-state (a change of the cap\'s cgroup moves them together); an ABSENT file ⇒ false, any other failure ⇒ null');
+  assert.ok(/limitFileAbsent = \(err as NodeJS\.ErrnoException \| null\)\?\.code === 'ENOENT' && e\.exists\(capDir\);/.test(fi1), 'only ENOENT while the cap cgroup still exists counts as « absent » (EACCES/EIO/a vanished scope stay unknown)');
   assert.ok(/limitApplied: mem\?\.limitApplied \?\? null/.test(codeOf('src/main/member-memory.ts')), 'the producer carries it into the reading');
   const sm = codeOf('src/shared/member-memory.ts');
   assert.ok(/r\.limitApplied === false \? 'not-applied' : null/.test(sm) && /capNote: capNoteOf\(readings\)/.test(sm), 'the view derives the note from the keeper scope, only on an explicit « max »');

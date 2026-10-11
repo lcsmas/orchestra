@@ -284,19 +284,23 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
   };
   // #332 (the #323 seam): the figures of the CAP — what the hard level compares (current) and the soft level (working set), and the peak — are the cgroup that carries the cap: the work leaf when there is one
   const capCurrent = capDir === d ? current : num(e, path.join(capDir, 'memory.current'));
-  // ONE read of the cap's limit file feeds BOTH figures (the number AND « is a limit applied at all »): whoever moves the cap's cgroup (#332's work leaf) moves them together
+  // ONE read of the cap's limit file — the CAP cgroup's (`capDir`: the work leaf `w` when there is one, never the scope's own backstop, which is always a number) — feeds BOTH figures: the number AND « is a limit applied at all ».
+  //   · readable ⇒ both derive from the text (`max` ⇒ no limit ⇒ limitApplied false);
+  //   · ENOENT while the cgroup dir still exists ⇒ the controller never reached this cgroup (no `memory.max` file at all): no limit CAN apply ⇒ maxBytes null, limitApplied FALSE (#323-fu seam, OPS 7262);
+  //   · any other failure (EACCES, EIO…), or the dir itself gone mid-read ⇒ UNKNOWN (null): never claimed as « not applied ».
   let limitText: string | null = null;
+  let limitFileAbsent = false;
   try {
-    limitText = e.readFile(path.join(d, 'memory.max'));
-  } catch {
-    /* unreadable ⇒ both unknown */
+    limitText = e.readFile(path.join(capDir, 'memory.max'));
+  } catch (err) {
+    limitFileAbsent = (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);
   }
   return {
     currentBytes: current,
     capCurrentBytes: capCurrent,
     peakBytes: num(e, path.join(capDir, 'memory.peak')),
-    maxBytes: lim('memory.max'),
-    limitApplied: limitText === null ? null : parseLimitApplied(limitText),
+    maxBytes: limitText === null ? null : parseCgroupLimit(limitText),
+    limitApplied: limitText !== null ? parseLimitApplied(limitText) : limitFileAbsent ? false : null,
     highBytes: lim('memory.high'),
     swapMaxBytes: lim('memory.swap.max'),
     swapCurrentBytes: num(e, path.join(d, 'memory.swap.current')),

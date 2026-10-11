@@ -286,6 +286,52 @@ test('P16 (#323) the cap view THROUGH H1\'s real FI-1 functions over a fake cgro
   }
 });
 
+test('P18 (#323-fu × #332) THROUGH the real FI-1 functions over a fake LEAF scope (k keeper leaf + w work leaf, the scope carrying a numeric backstop): a member capped on w has its BAR and NO « not applied » note; the same member with w/memory.max ABSENT shows the note and no bar; an unreadable w/memory.max shows neither (unknown)', () => {
+  __resetMemberMemoryForTests();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'h2-p18-'));
+  try {
+    const uid = 1000, ws = 'wsleaf';
+    const app = path.join(root, 'cg', 'user.slice', `user-${uid}.slice`, `user@${uid}.service`, 'app.slice');
+    const proc = path.join(root, 'proc');
+    const kdir = path.join(root, 'keepers');
+    fs.mkdirSync(kdir, { recursive: true });
+    const scopeDir = path.join(app, `orchestra-ws-${ws}-live01.scope`);
+    const kDir = path.join(scopeDir, 'k');
+    const wDir = path.join(scopeDir, 'w');
+    fs.mkdirSync(kDir, { recursive: true });
+    fs.mkdirSync(wDir, { recursive: true });
+    const put = (d: string, files: Record<string, string>) => { for (const [f, v] of Object.entries(files)) fs.writeFileSync(path.join(d, f), v); };
+    put(scopeDir, { 'memory.current': `${2100 * MB}\n`, 'memory.max': `${6400 * MB}\n`, 'memory.events': 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n', 'memory.swap.max': '0\n', 'cgroup.procs': '' });
+    put(kDir, { 'cgroup.procs': '700\n' });
+    put(wDir, { 'memory.current': `${1500 * MB}\n`, 'memory.max': `${6144 * MB}\n`, 'memory.peak': `${1800 * MB}\n`, 'memory.stat': `inactive_file ${400 * MB}\n`, 'memory.events': 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n', 'cgroup.procs': '' });
+    fs.mkdirSync(path.join(proc, '700'), { recursive: true });
+    fs.writeFileSync(path.join(proc, '700', 'stat'), `700 (node) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7000 1000000 100\n`);
+    fs.writeFileSync(path.join(proc, '700', 'cmdline'), ['node', 'keeper.js', ws].join('\0') + '\0');
+    fs.writeFileSync(path.join(proc, '700', 'cgroup'), `0::${kDir.slice(path.join(root, 'cg').length)}\n`);
+    fs.writeFileSync(path.join(kdir, `${ws}.pid`), JSON.stringify({ pid: 700 }));
+    const mkEnv = (readFile: (p: string) => string) => ({ platform: 'linux', uid, cgroupRoot: path.join(root, 'cg'), procRoot: proc, pageSize: 4096, env: { ORCHESTRA_MEMORY_SCOPE_PREFIX: 'orchestra-ws-' }, readFile, readdir: (p: string) => fs.readdirSync(p), exists: (p: string) => fs.existsSync(p), keeperPidFile: (w: string) => path.join(kdir, `${w}.pid`) });
+    const view = (readFile: (p: string) => string) => {
+      const env = mkEnv(readFile);
+      const deps: MemberMemoryDeps = { now: () => 1, workspaceIds: () => [ws], liveMemberIds: () => [ws], scopes: (w) => memberScopes(w, env), readMemory: (sc) => readScopeMemory(sc, env), listProcs: (sc) => listScopeProcs(sc, null, env), support: () => ({ ok: true }), countScopes: () => 1 };
+      return sampleMemberMemory(deps).tracked[0];
+    };
+    const plain = (p: string) => fs.readFileSync(p, 'utf8');
+    const capped = view(plain);
+    assert.equal(capped.cap?.hardBytes, 6144 * MB, 'the cap is the WORK leaf\'s number, not the scope\'s 6400 MB backstop');
+    assert.equal(capped.capNote, null, 'capped on w ⇒ NEVER « No memory cap applied »');
+    fs.rmSync(path.join(wDir, 'memory.max'));
+    const absent = view(plain);
+    assert.equal(absent.cap, null);
+    assert.equal(absent.capNote, 'not-applied', 'w/memory.max absent: no limit can apply ⇒ the note, although the scope itself holds a number');
+    fs.writeFileSync(path.join(wDir, 'memory.max'), `${6144 * MB}\n`);
+    const denied = view((p) => { if (p === path.join(wDir, 'memory.max')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return plain(p); });
+    assert.equal(denied.cap, null, 'unreadable limit ⇒ no bar');
+    assert.equal(denied.capNote, null, 'unreadable limit ⇒ NOT claimed as « not applied »');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('P16 (#332 × #323) the producer carries the CAP\'s own current (the work leaf\'s) into the cap view while the member\'s MEM figure stays the scope total', () => {
   __resetMemberMemoryForTests();
   const a = scope('ws-a');
