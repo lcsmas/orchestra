@@ -600,6 +600,15 @@ export function formatMemKillLine(wsLabel: string, rec: MemKillRecord): string {
   return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}${amb}${rec.source === 'kernel' ? ' — victim named by the kernel log' : ''}`;
 }
 
+/**
+ * The cap state a keeper reports, from what its setup found. `not-applied` = the cap does not hold at all: the swap escape is open, OR (#332-fu) the tool wrapper cannot be RUN so the shell prefix was dropped (tools run
+ * unwrapped in `k`: nothing is capped). `unprotected` = the wrapper runs but the tools do not land in the work leaf (prefix kept, adj 1000) or there is no wrapper. Else `active`.
+ */
+export function decideCapState(a: { swapOk: boolean; wrapperOk: boolean; wrapperRuns: boolean; placed: boolean }): 'active' | 'unprotected' | 'not-applied' {
+  if (!a.swapOk || !a.wrapperRuns) return 'not-applied';
+  return !a.wrapperOk || !a.placed ? 'unprotected' : 'active';
+}
+
 /** What the app says about a freshly launched scoped keeper, from the state the keeper reports (`helloAck.cap.state`). `warn` states are ones where the promise «a runaway tool dies, the session survives» does NOT hold. */
 export function describeCapState(state: 'active' | 'unprotected' | 'not-applied' | 'no-scope' | undefined, unit: string, hardBytes: number): { level: 'info' | 'warn'; text: string } {
   const hard = `${(hardBytes / GIB).toFixed(2)} GB`;
@@ -609,7 +618,7 @@ export function describeCapState(state: 'active' | 'unprotected' | 'not-applied'
     case 'unprotected':
       return { level: 'warn', text: `scope ${unit}: the tool wrapper is unusable or does not place tool commands in the capped work leaf — NOTHING is capped at the hard level (${hard}); only the scope's backstop limit, if any, holds` };
     case 'not-applied':
-      return { level: 'warn', text: `scope ${unit} exists but its memory limit (${hard}) or its swap limit (0) is NOT applied (memory controller not delegated? no swap accounting?) — this member runs UNCAPPED` };
+      return { level: 'warn', text: `scope ${unit} exists but the cap (${hard}) is NOT applied: its memory limit or swap limit (0) did not take (memory controller not delegated? no swap accounting? leaves not built?), or the tool wrapper cannot be RUN so the shell prefix was dropped — this member runs UNCAPPED` };
     case 'no-scope':
       return { level: 'warn', text: `the keeper is not in scope ${unit} — this member runs UNCAPPED` };
     default:

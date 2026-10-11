@@ -20,6 +20,7 @@ import {
   scopePathOfCgroup,
   classifyScopeMembers,
   decideMemoryCap,
+  decideCapState,
   describeCapState,
   describeCommand,
   estimateOomBadness,
@@ -141,7 +142,7 @@ test('buildScopeLaunchArgv: new DELEGATED scope, OOMPolicy=continue, MemoryMax=h
 
 test('#332 leaves: the scope\'s limit is the hard level + a reserve (the work leaf must trip first); a leaf path maps back to its scope; only the two leaf names are leaves', () => {
   assert.equal(scopeMemoryMaxBytes(6 * GIB), 6 * GIB + KEEPER_LEAF_RESERVE_BYTES);
-  assert.ok(KEEPER_LEAF_RESERVE_BYTES >= 512 * 1024 * 1024, 'room for the keeper + the real CLI (≈330 MB) + its MCP servers: a smaller backstop would trip BEFORE the work leaf and take the session');
+  assert.ok(KEEPER_LEAF_RESERVE_BYTES >= 512 * 1024 * 1024, 'room for the keeper + the real CLI process (≈330 MB) + what starts without the prefix: a smaller backstop would trip BEFORE the work leaf and take the session');
   assert.equal(scopeMemoryMaxBytes(6 * GIB, 0), null, 'reserve 0 = no scope-level limit (rigs ≤ 300 MB)');
   assert.equal(scopeMemoryMaxBytes(6 * GIB, 100), 6 * GIB + 100);
   const env = (v?: string) => ({ [MEMCAP_RESERVE_ENV]: v });
@@ -354,6 +355,18 @@ test('describeCapState (#332): active names the work leaf and says what sits out
   const un = describeCapState('unprotected', 'u.scope', 6 * GIB).text;
   assert.match(un, /NOTHING is capped at the hard level \(6\.00 GB\)/);
   assert.doesNotMatch(un, /kill the CLI/, 'the old text («the kernel would kill the CLI first») is no longer true');
+});
+
+test('decideCapState (#332-fu, OPS 7259): a wrapper that cannot RUN (prefix dropped) or an open swap escape is `not-applied`; a wrapper that ran but missed the work leaf, or no wrapper, is `unprotected`; only a clean setup is `active`', () => {
+  const ok = { swapOk: true, wrapperOk: true, wrapperRuns: true, placed: true };
+  assert.equal(decideCapState(ok), 'active');
+  assert.equal(decideCapState({ ...ok, placed: false }), 'unprotected', 'ran, landed elsewhere: prefix kept, state unprotected');
+  assert.equal(decideCapState({ ...ok, wrapperOk: false }), 'unprotected', 'no usable wrapper');
+  assert.equal(decideCapState({ ...ok, wrapperRuns: false, wrapperOk: false, placed: false }), 'not-applied', 'cannot run: the member is UNCAPPED');
+  assert.equal(decideCapState({ ...ok, swapOk: false }), 'not-applied');
+  assert.equal(decideCapState({ ...ok, swapOk: false, placed: false }), 'not-applied', 'not-applied wins over unprotected');
+  assert.match(describeCapState('not-applied', 'u.scope', 6 * GIB).text, /tool wrapper cannot be RUN/, 'the app WARN names this cause too');
+  assert.equal(describeCapState('not-applied', 'u.scope', 6 * GIB).level, 'warn');
 });
 
 test('describeCapState: only `active` is info; unprotected / not-applied / no-scope / unknown say what the member is left with', () => {

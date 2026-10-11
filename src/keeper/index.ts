@@ -34,7 +34,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   createLineSplitter,
   encodeKeeperFrame,
@@ -53,9 +53,9 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
-import { buildMemberLeaves, probeToolPlacement, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, createPlacementTripwire, PROBE_TIMEOUT_MS, probeToolPlacement, probeWithRetry, readLeafCpuUsec, runProbeSpawn, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
-import { INNER_SHELL_PREFIX_ENV, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, OOM_ADJ_TOOLS, decideCapState, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -206,7 +206,14 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
   child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   state.onSpawn(Date.now());
 
-  const splitStdout = createLineSplitter((line) => state.onStdoutLine(line, Date.now()));
+  const splitStdout = createLineSplitter((line) => {
+    state.onStdoutLine(line, Date.now());
+    try {
+      placementTripwire?.onLine(line);
+    } catch {
+      /* an observer must never take the keeper down */
+    }
+  });
   child.stdout?.on('data', (d: Buffer) => {
     // Always drain; forward only when attached. Line-split a copy for the
     // policy state machine regardless (turn detection must work detached).
@@ -246,6 +253,8 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
 
 type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>;
 let capInfo: CapInfo | null = null;
+/** #332 (review m2c): armed after a good probe; fed the CLI's stdout lines. */
+let placementTripwire: PlacementTripwire | null = null;
 const realLeafFs: LeafFs = {
   mkdir: (p) => {
     try {
@@ -347,24 +356,54 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   }
   // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
   if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
-  // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, once, before saying `active`
+  // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, before saying `active`. ONE retry after a fast failure (a single spawn failing under host
+  // pressure must not decide a member's whole life), NONE after a timeout; each attempt gets master's 5 s. A wrapper that STARTED (landed elsewhere, timed out, failed) keeps the prefix (tools keep adj 1000 — the kernel still
+  // prefers them): only the STATE says the cap is not proven. Only PROOF that it cannot be EXECUTED (ENOENT / EACCES / ENOEXEC / exit 126-127) drops the prefix (it would fail every Bash call) — loudly (D-Q13).
+  let placed = true;
+  let wrapperRuns = true;
   if (wrapperOk && cap.wrapper) {
-    const probe = probeToolPlacement({
-      wrapper: cap.wrapper,
+    const probe = probeWithRetry(() => probeToolPlacement({
+      wrapper: cap.wrapper as string,
       workDir: dir,
       cgroupRoot: CGROUP_ROOT,
       parseCgroup: parseProcCgroupV2,
-      run: (w, args, penv) => {
-        const r = spawnSync(w, args, { env: penv, encoding: 'utf8', timeout: 5000 });
-        return r.status === 0 ? r.stdout : null;
-      },
-    });
+      run: runProbeSpawn,
+    }));
     if (!probe.ok) {
-      wrapperOk = false;
-      klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (saw ${probe.saw}; expected ${dir}) — tool commands run in the keeper leaf: NOTHING is capped at the hard level`);
+      placed = false;
+      if (!probe.ran) {
+        wrapperOk = false;
+        wrapperRuns = false;
+        klog(`memory cap: WARNING — the tool wrapper could not be RUN (${probe.attempts} attempts: ${probe.saw}) — the shell prefix is NOT set (it would fail every Bash call): tools run unwrapped (oom_score_adj 0) and NOTHING is capped at the hard level (state not-applied)`);
+      } else if (probe.timedOut) {
+        klog(`memory cap: WARNING — the tool wrapper probe TIMED OUT after ${PROBE_TIMEOUT_MS} ms: it STARTED (a slow host?) but did not finish, so its placement in the work leaf is UNPROVEN — the prefix stays (tools keep oom_score_adj ${OOM_ADJ_TOOLS}), state unprotected: NOTHING is known to be capped at the hard level`);
+      } else {
+        klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (${probe.attempts} attempts; saw ${probe.saw}; expected ${dir}) — tool commands run in the KEEPER leaf: NOTHING is capped at the hard level (the prefix stays: they keep oom_score_adj ${OOM_ADJ_TOOLS})`);
+      }
     }
   }
-  capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
+  capInfo = { unit: cap.unit, state: decideCapState({ swapOk, wrapperOk, wrapperRuns, placed }), hardBytes: cap.hardBytes };
+  // Tripwire (review m2c): what the probe cannot see — the CLI's OWN env/prefix. After ORCHESTRA_MEMCAP_TRIPWIRE_AFTER (5) Bash tool results, the work leaf must have been charged CPU time (cpu.stat usage_usec: unlike memory.stat's
+  // pgfault it is flushed on read — measured) since the probe; if not, no tool ever landed there. The flip is visible in the keeper log and in every LATER helloAck/probe `cap.state`; the app logs the state once, at spawn.
+  placementTripwire = null;
+  if (capInfo.state === 'active') {
+    const readCpu = (): number | null => readLeafCpuUsec(() => { try { return fs.readFileSync(path.join(dir, 'cpu.stat'), 'utf8'); } catch { return null; } });
+    const base = readCpu();
+    if (base === null) {
+      klog(`memory cap: the placement tripwire is NOT armed — ${path.join(dir, 'cpu.stat')} is unreadable; the state stays active on the probe's word alone`);
+    } else {
+      placementTripwire = createPlacementTripwire({
+        baseline: base,
+        after: intEnv('ORCHESTRA_MEMCAP_TRIPWIRE_AFTER', 5),
+        readCounter: readCpu,
+        onTrip: (n) => {
+          if (capInfo) capInfo = { ...capInfo, state: 'unprotected' };
+          klog(`memory cap: TRIPWIRE — ${n} Bash tool results came back but the work leaf was charged no CPU time since the probe: no tool command has run in the work leaf (the CLI drops ${WORK_LEAF_ENV}, or no longer calls the shell prefix?) — NOTHING is capped at the hard level`);
+        },
+        onGiveUp: (n) => klog(`memory cap: the placement tripwire gave up after ${n} tool results — cpu.stat stayed unreadable; the state stays active on the probe's word alone`),
+      });
+    }
+  }
   // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
   const persist = (rec: MemKillRecord | MemSoftRecord): void => {
     if (!cap.noticeFile) return;

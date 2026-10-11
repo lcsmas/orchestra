@@ -1,6 +1,6 @@
 // The Veille's Reliquat PORT (#326; verdict: veille-reliquats.ts, wording: shared/veille-reliquats.ts, production wiring: veille-reliquats-host.ts). The census, the stop and the notice reuse the Pause's own pieces —
 // nothing here re-derives what a Reliquat is:
-//   - scope-tracked member: FI-1 `memberScopes` / `listScopeProcs` through `memberScopeDeps` (pause-reliquats-scope.ts) and `judgeReliquat` (the SAME verdict the kill applies, so a Reliquat the stop
+//   - scope-tracked member: FI-1 `memberScopes` / `listScopeProcsOrThrow` through `memberScopeDeps` (pause-reliquats-scope.ts) and `judgeReliquat` (the SAME verdict the kill applies, so a Reliquat the stop
 //     would refuse or spare never delays a Veille); stopped by `killReliquats` (identity re-read at signal time, fail closed);
 //   - member with NO tracked scope (`memory_cap` OFF, D-Q1): #331's orphaned headless browsers (`countBrowserReliquatsOf` / `stopBrowserReliquatsOf`, the same selection as the monitor's pass);
 //   - the notice is queued in the member's INBOX (`inbox/<ws>.txt`): printed at its next SessionStart / UserPromptSubmit WITHOUT waking it (a bus row would wake it straight out of its Veille).

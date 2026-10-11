@@ -183,3 +183,70 @@ test('review F1: the adapter names where a process went — cgroupOf reads /proc
   assert.match(d.cgroupOf!(700) ?? '', /abc123\.scope$/);
   assert.equal(d.cgroupOf!(99999), null);
 });
+
+test('#332 fu (review m1): with the two leaves, an UNREADABLE leaf is `unreadable` (UNKNOWN), never an empty listing — the scope\'s own cgroup.procs is empty and always readable; a vanished leaf is `gone`; a readable control lists the Reliquat', (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m2', 'abc123');
+  const kDir = path.join(s.dir, 'k');
+  const wDir = path.join(s.dir, 'w');
+  fs.mkdirSync(kDir);
+  fs.mkdirSync(wDir);
+  fs.writeFileSync(path.join(kDir, 'cgroup.procs'), '8101\n');
+  fs.writeFileSync(path.join(wDir, 'cgroup.procs'), '8102\n');
+  tr.proc(8101, 1, 'node', 810, kDir);
+  tr.proc(8102, 1, 'python3', 811, wDir); // a detached tool: ppid 1 ⇒ a Reliquat
+  const d = memberScopeDeps('m2', tr.env);
+  const ref = d.scopes()[0];
+  const control = d.list(ref);
+  assert.ok(Array.isArray(control), 'control: readable');
+  assert.deepEqual((control as Array<{ pid: number; role: string }>).map((m) => [m.pid, m.role]).sort(), [[8101, 'reliquat'], [8102, 'reliquat']], 'both leaves are listed (no keeper pid file here: both read reliquat)');
+  const wFile = path.join(wDir, 'cgroup.procs');
+  const failing = (code: string) => ({ ...tr.env, readFile: (p: string) => { if (p === wFile) throw Object.assign(new Error(code), { code }); return fs.readFileSync(p, 'utf8'); } });
+  assert.equal(memberScopeDeps('m2', failing('EACCES')).list(ref), 'unreadable', 'EACCES on the work leaf');
+  assert.equal(memberScopeDeps('m2', failing('EIO')).list(ref), 'unreadable', 'EIO on the work leaf');
+  assert.equal(memberScopeDeps('m2', failing('ENODEV')).list(ref), 'gone', 'ENODEV: the leaf died with its scope');
+  assert.deepEqual(d.list(ref), control, 'unchanged env: still the same listing');
+});
+
+test('#332 fu (review m1) REAL fs error, no injected reader: a leaf whose cgroup.procs cannot be READ (EISDIR) is `unreadable` — the Reliquat sitting in the other leaf is never reported as « nobody there »', async (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m4', 'def456');
+  const kDir = path.join(s.dir, 'k');
+  const wDir = path.join(s.dir, 'w');
+  fs.mkdirSync(kDir);
+  fs.mkdirSync(wDir);
+  fs.writeFileSync(path.join(kDir, 'cgroup.procs'), '8301\n');
+  tr.proc(8301, 1, 'python3', 830, kDir); // a Reliquat in the keeper leaf
+  fs.writeFileSync(path.join(wDir, 'cgroup.procs'), '');
+  const d = memberScopeDeps('m4', tr.env);
+  const ref = d.scopes()[0];
+  assert.ok(Array.isArray(d.list(ref)), 'control: both leaves readable ⇒ a listing');
+  fs.rmSync(path.join(wDir, 'cgroup.procs'));
+  fs.mkdirSync(path.join(wDir, 'cgroup.procs')); // readFileSync → EISDIR from the real fs
+  assert.equal(d.list(ref), 'unreadable');
+  const signals: number[] = [];
+  const kill = { supported: true, selfPid: 10, now: () => 0, sleep: async () => {}, readTable: () => [], read: () => 'gone' as const, readClaudePid: () => null, readCwd: () => null, startMs: (x: number) => x, signal: (pid: number) => { signals.push(pid); return true; } } as never;
+  const rep = await killReliquats('m4', d, kill, { keeperPid: null, cliPid: null });
+  assert.ok(rep, 'NOT null');
+  assert.match(rep!.unknown ?? '', /unreadable|could not be listed/, JSON.stringify(rep));
+  assert.deepEqual(signals, [], 'nothing signalled on an unknown');
+});
+
+test('#332 fu (review m1): the killer treats an unreadable LEAF as UNKNOWN — nothing signalled, the report says why (the #325 F2 class)', async (t) => {
+  const tr = tree(t);
+  const s = tr.scope('m3', 'abc123');
+  const wDir = path.join(s.dir, 'w');
+  fs.mkdirSync(path.join(s.dir, 'k'));
+  fs.mkdirSync(wDir);
+  fs.writeFileSync(path.join(s.dir, 'k', 'cgroup.procs'), '');
+  fs.writeFileSync(path.join(wDir, 'cgroup.procs'), '8201\n');
+  tr.proc(8201, 1, 'python3', 820, wDir);
+  const wFile = path.join(wDir, 'cgroup.procs');
+  const env = { ...tr.env, readFile: (p: string) => { if (p === wFile) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return fs.readFileSync(p, 'utf8'); } };
+  const signals: number[] = [];
+  const kill = { supported: true, selfPid: 10, now: () => 0, sleep: async () => {}, readTable: () => [], read: () => 'gone' as const, readClaudePid: () => null, readCwd: () => null, startMs: (x: number) => x, signal: (pid: number) => { signals.push(pid); return true; } } as never;
+  const rep = await killReliquats('m3', memberScopeDeps('m3', env), kill, { keeperPid: null, cliPid: null });
+  assert.ok(rep, 'NOT null (null = no tracked scope = trap complete)');
+  assert.match(rep!.unknown ?? '', /unreadable|could not be listed/, JSON.stringify(rep));
+  assert.deepEqual(signals, [], 'nothing signalled on an unknown');
+});

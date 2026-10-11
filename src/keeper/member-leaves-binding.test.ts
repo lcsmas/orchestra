@@ -49,12 +49,40 @@ test('the CLI is NOT moved: it starts where the keeper is (leaf k); the work lea
 });
 
 test('the wrapper is PROBED at runtime before `active` is claimed: a probe that does not land in the work leaf downgrades the state to unprotected and says so', () => {
-  const probeAt = setup.indexOf('probeToolPlacement({');
-  const stateAt = setup.indexOf("capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected'");
+  const probeAt = setup.indexOf('probeWithRetry(() => probeToolPlacement({');
+  const stateAt = setup.indexOf('capInfo = { unit: cap.unit, state: decideCapState({ swapOk, wrapperOk, wrapperRuns, placed })');
   assert.ok(probeAt > 0 && stateAt > probeAt, 'the probe runs BEFORE the state is decided');
   const block = setup.slice(probeAt, stateAt);
-  assert.match(block, /wrapper: cap\.wrapper,\n\s+workDir: dir,\n\s+cgroupRoot: CGROUP_ROOT,/);
-  assert.match(block, /if \(!probe\.ok\) \{\n\s+wrapperOk = false;/);
+  assert.match(block, /wrapper: cap\.wrapper as string,\n\s+workDir: dir,\n\s+cgroupRoot: CGROUP_ROOT,/);
+  assert.match(block, /if \(!probe\.ok\) \{\n      placed = false;/);
   assert.match(block, /NOTHING is capped at the hard level/);
-  assert.match(setup, /if \(wrapperOk && cap\.wrapper\) \{\n    const probe = /, 'only when a wrapper is in play');
+  assert.match(setup, /if \(wrapperOk && cap\.wrapper\) \{\n    const probe = probeWithRetry\(/, 'only when a wrapper is in play');
+});
+
+test('review m2 (#332 fu): a probe that still fails after ONE retry keeps the prefix when the wrapper RAN (tools keep adj 1000; the STATE says unprotected, loudly); a wrapper that cannot be EXECUTED is dropped as the prefix', () => {
+  assert.match(setup, /const probe = probeWithRetry\(\(\) => probeToolPlacement\(\{/, 'one retry, through the tested helper');
+  assert.match(setup, /run: runProbeSpawn,/, 'the real spawn + classification live in member-leaves.ts (unit-tested with real wrappers: 3 s tolerated, timeout = started, bad interpreter = cannot run)');
+  assert.doesNotMatch(setup, /spawnSync\(/, 'no hand-rolled spawn in the keeper: a timeout must never be read as « cannot run » again');
+  assert.match(setup, /\} else if \(probe\.timedOut\) \{\n        klog\(`memory cap: WARNING — the tool wrapper probe TIMED OUT after \$\{PROBE_TIMEOUT_MS\} ms: it STARTED/, 'OPS 7281: a timeout keeps the prefix, state unprotected, strong log');
+  const block = setup.slice(setup.indexOf('let placed = true;'), setup.indexOf('placementTripwire = null;'));
+  assert.match(block, /if \(!probe\.ok\) \{\n      placed = false;\n      if \(!probe\.ran\) \{\n        wrapperOk = false;\n        wrapperRuns = false;/, 'only a wrapper that never RAN is taken off (as the prefix it would fail every Bash call)');
+  assert.equal((block.match(/wrapperOk = false/g) ?? []).length, 1, 'no other probe outcome touches wrapperOk');
+  assert.match(setup, /state: decideCapState\(\{ swapOk, wrapperOk, wrapperRuns, placed \}\)/, 'the state comes from the tested pure function (unrunnable wrapper ⇒ not-applied)');
+  assert.match(setup, /the prefix stays: they keep oom_score_adj \$\{OOM_ADJ_TOOLS\}/);
+  assert.match(setup, /the shell prefix is NOT set \(it would fail every Bash call\)/);
+  assert.match(setup, /klog\(`memory cap: WARNING — the tool wrapper could not be RUN \(\$\{probe\.attempts\} attempts: \$\{probe\.saw\}\)/, 'OPS 7259: the unrunnable wrapper is announced loudly (keeper log) — the app WARN comes from describeCapState(not-applied)');
+});
+
+test('review m2c (#332 fu): the placement TRIPWIRE is armed only for an `active` state, from the post-probe fault baseline, fed every stdout line of the CLI; tripping flips the state to unprotected and logs once', () => {
+  assert.match(setup, /if \(capInfo\.state === 'active'\) \{\n    const readCpu = \(\): number \| null => readLeafCpuUsec\(/);
+  assert.match(setup, /const base = readCpu\(\);\n    if \(base === null\) \{\n      klog\(`memory cap: the placement tripwire is NOT armed/, 'not arming is said, not silent');
+  assert.match(setup, /readCounter: readCpu,/);
+  assert.match(setup, /onGiveUp: \(n\) => klog\(/);
+  assert.match(setup, /const readCpu = \(\): number \| null => readLeafCpuUsec\(\(\) => \{ try \{ return fs\.readFileSync\(path\.join\(dir, 'cpu\.stat'\), 'utf8'\); \}/, 'the counter file is cpu.stat (flushed on read), not memory.stat');
+  assert.match(setup, /placementTripwire = createPlacementTripwire\(\{\n\s+baseline: base,/);
+  assert.match(setup, /if \(capInfo\) capInfo = \{ \.\.\.capInfo, state: 'unprotected' \};/);
+  assert.match(setup, /TRIPWIRE — \$\{n\} Bash tool results came back/);
+  assert.match(setup, /after: intEnv\('ORCHESTRA_MEMCAP_TRIPWIRE_AFTER', 5\),/);
+  assert.match(startChild, /try \{\n      placementTripwire\?\.onLine\(line\);\n    \} catch \{/, 'an observer never takes the keeper down');
+  assert.ok(setup.indexOf('probeWithRetry(') < setup.indexOf('createPlacementTripwire('), 'armed after the probe');
 });

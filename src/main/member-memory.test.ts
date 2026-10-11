@@ -168,6 +168,41 @@ test('P9 a scope of a workspace we never asked about is counted as STRAY (never 
   assert.equal(sampleMemberMemory(host({ countScopes: () => { throw new Error('EACCES'); } }, base).deps).strayScopes, null);
 });
 
+test('P9b (#332 fu, review m1) THROUGH the real FI-1 binding over a fake two-leaf tree: a leaf whose cgroup.procs cannot be READ (EISDIR, a real fs error) leaves procs UNKNOWN — the Reliquat in the other leaf is not reported as « no Reliquats »; readable leaves list it', () => {
+  __resetMemberMemoryForTests();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fu-p9b-cg-'));
+  const uid = process.getuid!();
+  const app = path.join(root, 'user.slice', `user-${uid}.slice`, `user@${uid}.service`, 'app.slice');
+  const prefix = 'orchestra-rig-wh-fu-p9b-';
+  const saved = { root: process.env.ORCHESTRA_CGROUP_ROOT, prefix: process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX };
+  try {
+    process.env.ORCHESTRA_CGROUP_ROOT = root;
+    process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX = prefix;
+    const dir = path.join(app, `${prefix}wsa-abc123.scope`);
+    fs.mkdirSync(path.join(dir, 'k'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'w'));
+    fs.writeFileSync(path.join(dir, 'memory.current'), `${150 * MB}\n`);
+    fs.writeFileSync(path.join(dir, 'memory.events'), 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n');
+    fs.writeFileSync(path.join(dir, 'cgroup.procs'), '');
+    fs.writeFileSync(path.join(dir, 'k', 'cgroup.procs'), `${process.pid}\n`); // a real live pid in the keeper leaf, no pid file ⇒ a Reliquat
+    fs.writeFileSync(path.join(dir, 'w', 'cgroup.procs'), '');
+    const real = realMemberMemoryDeps({ workspaceIds: () => ['wsa'], liveMemberIds: () => [] });
+    const ok = sampleMemberMemory(real);
+    assert.deepEqual(ok.tracked.map((m) => [m.wsId, m.reliquats]), [['wsa', 1]], 'control: both leaves readable ⇒ the Reliquat is listed');
+    __resetMemberMemoryForTests();
+    fs.rmSync(path.join(dir, 'w', 'cgroup.procs'));
+    fs.mkdirSync(path.join(dir, 'w', 'cgroup.procs')); // readFileSync → EISDIR from the real fs
+    const bad = sampleMemberMemory(realMemberMemoryDeps({ workspaceIds: () => ['wsa'], liveMemberIds: () => [] }));
+    const m = bad.tracked.find((t) => t.wsId === 'wsa');
+    assert.ok(m, 'the member is still tracked (its meter reads)');
+    assert.equal(m!.reliquats, null, 'UNKNOWN (null), never 0');
+  } finally {
+    if (saved.root === undefined) delete process.env.ORCHESTRA_CGROUP_ROOT; else process.env.ORCHESTRA_CGROUP_ROOT = saved.root;
+    if (saved.prefix === undefined) delete process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX; else process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX = saved.prefix;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('P10 a live member whose keeper runs OUTSIDE every scope it has (an older generation\'s leftovers): tracked for those leftovers AND listed untracked for its live session', () => {
   __resetMemberMemoryForTests();
   const stale = { ...scope('ws-a', 'j0'), keeperPid: null };

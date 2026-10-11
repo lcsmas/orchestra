@@ -32,7 +32,10 @@ process.stdin.on('data', (d) => {
       const shell = process.env.SHELL || '/bin/bash';
       const full = prefix ? `${prefix} ${shq(m.tool)}` : m.tool;
       out({ type: 'assistant', toolStart: m.id });
-      const c = spawn(shell, ['-c', full], { stdio: ['ignore', 'pipe', 'pipe'] });
+      // #332 fu: a CLI that does not forward some variables to its tools (STANDIN_CLI_DROP_ENV=A,B) — what the start-time probe cannot see and the runtime tripwire must
+      const toolEnv = { ...process.env };
+      for (const k of String(process.env.STANDIN_CLI_DROP_ENV || '').split(',').filter(Boolean)) delete toolEnv[k];
+      const c = spawn(shell, ['-c', full], { env: toolEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       let so = '';
       c.stdout.on('data', (b) => (so += b));
       c.stderr.on('data', (b) => (so += b));

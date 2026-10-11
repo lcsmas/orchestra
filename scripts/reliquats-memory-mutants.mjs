@@ -70,7 +70,7 @@ const MUTANTS = [
   { id: 'M24_support_throw_escapes', file: P, find: "    support = { ok: false, reason: `scope support could not be probed: ${(e as Error)?.message ?? e}` };", to: '    throw e;', expect: ['P5 a support probe'] },
   { id: 'M25_unsupported_reason_dropped', file: P, find: 'const unsupported = support.ok ? null : support.reason;', to: 'const unsupported = null;', expect: ['P3 no scope anywhere'] },
   { id: 'M26_scopes_ignore_fi1', file: P, find: 'scopes: (wsId) => memberScopes(wsId),', to: 'scopes: (_wsId) => [],', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
-  { id: 'M27_list_procs_ignored', file: P, find: 'listProcs: (s) => listScopeProcs(s),', to: 'listProcs: (_s) => null,', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
+  { id: 'M27_list_procs_ignored', file: P, find: 'listProcs: (s) => listScopeProcsOrThrow(s),', to: 'listProcs: (_s) => null,', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
   // ── the shared read ──
   { id: 'M28_cache_never_expires', file: HOST, find: '&& now - cache.at < MEMBER_MEMORY_TTL_MS) return cache.report;', to: '&& true) return cache.report;', expect: ['W4 the host facade'] },
   { id: 'M29_fresh_ignored', file: HOST, find: 'if (!opts.fresh && cache &&', to: 'if (cache &&', expect: ['W4 the host facade'] },
@@ -116,7 +116,7 @@ const MUTANTS = [
   // ── delta review (renderer round): real FI-1 binding, keeper outside its scopes, keeper without its pid file, archived names ──
   { id: 'M69_count_scopes_stubbed', file: P, find: 'countScopes: () => countMemberScopes()?.total ?? null,', to: 'countScopes: () => null,', expect: ['P7 the REAL FI-1 binding', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
   { id: 'M70_read_memory_stubbed', file: P, find: 'readMemory: (s) => readScopeMemory(s),', to: 'readMemory: (_s) => null,', expect: ['P7 the REAL FI-1 binding'] },
-  { id: 'M71_list_procs_stubbed', file: P, find: '    listProcs: (s) => listScopeProcs(s),\n', to: '    listProcs: (_s) => null,\n', expect: ['P7 the REAL FI-1 binding'] },
+  { id: 'M71_list_procs_stubbed', file: P, find: "    listProcs: (s) => listScopeProcsOrThrow(s), // throws on an unreadable scope or leaf ⇒ the reading's procs are null (unknown), never «no Reliquats»\n", to: '    listProcs: (_s) => null,\n', expect: ['P7 the REAL FI-1 binding'] },
   { id: 'M74_keeperless_member_not_untracked', file: P, find: ' || keeperless.has(id));', to: ');', expect: ['P10 a live member whose keeper runs OUTSIDE'] },
   { id: 'M75_disjoint_rule_dropped', file: S, find: '  if (!view.keeperInScope) return all + view.bytes;\n', to: '', expect: ['M16 keeperInScope', 'G10'] },
   { id: 'M76_keeper_always_in_scope', file: S, find: 'keeperInScope: readings.some((r) => r.keeperPid !== null && r.keeperPid !== undefined),', to: 'keeperInScope: true,', expect: ['M16 keeperInScope', 'G10', 'P10 a live member whose keeper runs OUTSIDE'] },

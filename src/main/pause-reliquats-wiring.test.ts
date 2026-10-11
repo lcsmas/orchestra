@@ -60,11 +60,12 @@ test('the killer signals through ONE call site, preceded by the signal-time judg
   assert.ok(at(loop, "signalOne(t, 'SIGKILL')") > at(loop, 'if (!alive(t)) continue;'), 'SIGKILL only for a same-identity survivor');
 });
 
-test('the scope adapter reads cgroup.procs BEFORE listScopeProcs (gone/unreadable ≠ empty), re-resolves the scope (fresh keeper) at every listing, and an app.slice it cannot READ is UNKNOWN, never « no scope » (F2)', () => {
+test('the scope adapter reads cgroup.procs BEFORE listScopeProcsOrThrow (gone/unreadable ≠ empty), re-resolves the scope (fresh keeper) at every listing, and an app.slice it cannot READ is UNKNOWN, never « no scope » (F2)', () => {
   const code = codeOf('src/main/pause-reliquats-scope.ts');
   const fn = code.slice(at(code, 'list: (scope): ScopeListing => {'));
   assert.ok(at(fn, "e.readFile(path.join(scope.cgroupDir, 'cgroup.procs'))") < at(fn, 'scopesOrThrow(wsId, e).find((s) => s.unit === scope.unit)'));
-  assert.ok(at(fn, 'scopesOrThrow(wsId, e).find((s) => s.unit === scope.unit)') < at(fn, 'listScopeProcs(fresh, null, e)'));
+  assert.ok(at(fn, 'scopesOrThrow(wsId, e).find((s) => s.unit === scope.unit)') < at(fn, 'listScopeProcsOrThrow(fresh, null, e)'), '#332-fu m1: the listing THROWS on an unreadable leaf');
+  assert.ok(at(fn, 'listScopeProcsOrThrow(fresh, null, e)') < fn.lastIndexOf("? 'gone' : 'unreadable'"), 'and its error is judged AFTER the listing: gone vs unknown');
   assert.ok(fn.includes("? 'gone' : 'unreadable'"));
   assert.ok(fn.includes("return 'unreadable'; // the slice could not be listed"), 'a slice that cannot be listed is not « gone »');
   assert.ok(code.includes('scopes: (): ScopeRef[] => scopesOrThrow(wsId, e).map('), 'the scope lookup the killer starts from throws on an unreadable slice');
