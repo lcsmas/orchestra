@@ -829,7 +829,8 @@ try {
     const e3 = eventsOf(f.cgroupDir);
     check('a chain of 10 back-to-back kills under the production-shaped scope (backstop on): keeper and CLI ALIVE, the leaf killed each hog', lost === null && (e3.oom_kill ?? 0) - (e2.oom_kill ?? 0) >= 10, `lostAt=${lost} leaf oom_kill ${e2.oom_kill}->${e3.oom_kill}`);
     const localEv = Object.fromEntries((readSafe(path.join(f.scopeDir, 'memory.events.local')) ?? '').trim().split('\n').filter(Boolean).map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)])); // .local = this cgroup's OWN events (memory.events also counts its descendants')
-    check('...and the SCOPE-level limit never fired (the backstop is untouched: its own max / oom_kill counters stayed 0)', (localEv.max ?? 0) === 0 && (localEv.oom_kill ?? 0) === 0, JSON.stringify(localEv));
+    // `max` counts reclaim at the scope's own limit (page cache of the keeper leaf — the keeper bundle, node modules — is charged to the scope and is reclaimed, no kill): informational. What must hold is NO KILL at the scope level.
+    check('...and the SCOPE-level limit killed NOTHING (the backstop is not what takes a hog: its own oom_kill counter stayed 0; reclaim events `max` are informational)', (localEv.oom_kill ?? 0) === 0 && (localEv.oom_group_kill ?? 0) === 0, JSON.stringify(localEv));
     detail = `scope.max=${sMax} leaf.max=${wMax} chain lost=${lost}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
